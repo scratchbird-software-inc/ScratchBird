@@ -5,7 +5,6 @@
 
 #include "datatype_binary_view.hpp"
 #include "datatype_physical_encoding.hpp"
-#include "../hash/hash_digest_parts.hpp"
 
 #include <algorithm>
 #include <array>
@@ -43,41 +42,41 @@ inline constexpr platform::Uuid kType = U(
 inline constexpr platform::Uuid kCodec = U(
     {0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd8,0x1d});
 
-inline constexpr DatatypePolicyIdentityV1 kDescriptorPolicy{U(
+inline constexpr DatatypePolicyIdentityV3 kDescriptorPolicy{U(
     {0x01,0xa1,0x00,0x8e,0xb7,0xf0,0x79,0x13,0x9a,0x16,0x00,0x04,0x09,0xf9,0xff,0xb1}),1};
-inline constexpr DatatypePolicyIdentityV1 kCanonicalPolicy{U(
+inline constexpr DatatypePolicyIdentityV3 kCanonicalPolicy{U(
     {0x01,0xa1,0x00,0x8e,0xb7,0xf1,0x72,0xb9,0xba,0x08,0x95,0xb6,0x04,0xca,0xeb,0xf3}),1};
-inline constexpr DatatypePolicyIdentityV1 kOrderingPolicy{U(
+inline constexpr DatatypePolicyIdentityV3 kOrderingPolicy{U(
     {0x01,0xa1,0x00,0x8e,0xb7,0xf2,0x7f,0xeb,0x85,0xa8,0x2d,0x74,0xfe,0x2f,0xde,0x38}),1};
-inline constexpr DatatypePolicyIdentityV1 kHashPolicy{U(
+inline constexpr DatatypePolicyIdentityV3 kHashPolicy{U(
     {0x01,0xa1,0x00,0x8e,0xb7,0xf3,0x7a,0x61,0xa1,0x59,0x5d,0xdb,0x1c,0xbc,0x1d,0xf6}),1};
-inline constexpr DatatypePolicyIdentityV1 kRenderPolicy{U(
+inline constexpr DatatypePolicyIdentityV3 kRenderPolicy{U(
     {0x01,0xa1,0x00,0x8e,0xb7,0xf4,0x73,0xf2,0x9e,0x43,0x9d,0xa0,0x1d,0x98,0xe4,0x28}),1};
-inline constexpr DatatypePolicyIdentityV1 kCastPolicy{U(
+inline constexpr DatatypePolicyIdentityV3 kCastPolicy{U(
     {0x01,0xa1,0x00,0x8e,0xb7,0xf5,0x78,0xdf,0x9d,0xba,0xd8,0x2a,0x29,0x55,0x5e,0x94}),1};
-inline constexpr DatatypePolicyIdentityV1 kOperationPolicy{U(
+inline constexpr DatatypePolicyIdentityV3 kOperationPolicy{U(
     {0x01,0xa1,0x00,0x8e,0xb7,0xf6,0x7b,0x7a,0x8e,0xe0,0xff,0xba,0xcb,0xcd,0x7d,0xff}),1};
-inline constexpr DatatypePolicyIdentityV1 kCalendarPolicy{U(
+inline constexpr DatatypePolicyIdentityV3 kCalendarPolicy{U(
     {0x01,0xa1,0x00,0x8e,0xb7,0xf7,0x7c,0x8d,0xa9,0xca,0x66,0x0c,0x34,0x10,0xda,0x57}),1};
-inline constexpr DatatypePolicyIdentityV1 kStorageEpochPolicy{U(
+inline constexpr DatatypePolicyIdentityV3 kStorageEpochPolicy{U(
     {0x01,0xa1,0x00,0x8e,0xb7,0xf9,0x7f,0xb8,0xad,0xc7,0x08,0xa5,0xf6,0x83,0x81,0xa5}),1};
-inline constexpr DatatypePolicyIdentityV1 kTimezoneNonePolicy{U(
+inline constexpr DatatypePolicyIdentityV3 kTimezoneNonePolicy{U(
     {0x01,0xa1,0x00,0x8e,0xb7,0xfa,0x74,0x88,0x8b,0x57,0xc0,0x7c,0x21,0xb7,0x11,0x5a}),1};
-inline constexpr DatatypePolicyIdentityV1 kLeapNaPolicy{U(
+inline constexpr DatatypePolicyIdentityV3 kLeapNaPolicy{U(
     {0x01,0xa1,0x00,0x8e,0xb7,0xfb,0x78,0xa5,0xb7,0x57,0x23,0xfa,0x8f,0x0c,0xaa,0x90}),1};
-inline constexpr DatatypePolicyIdentityV1 kIndexPolicy{U(
+inline constexpr DatatypePolicyIdentityV3 kIndexPolicy{U(
     {0x01,0xa1,0x00,0x8e,0xb7,0xfc,0x70,0x50,0xa2,0xd5,0x69,0x3c,0xf0,0xef,0x4f,0x27}),1};
-inline constexpr DatatypePolicyIdentityV1 kStatisticsPolicy{U(
+inline constexpr DatatypePolicyIdentityV3 kStatisticsPolicy{U(
     {0x01,0xa1,0x00,0x8e,0xb7,0xfd,0x72,0x2e,0x94,0x1e,0xc5,0x39,0x7e,0x9d,0x61,0xbc}),1};
-inline constexpr DatatypePolicyIdentityV1 kBackupPolicy{U(
+inline constexpr DatatypePolicyIdentityV3 kBackupPolicy{U(
     {0x01,0xa1,0x00,0x8e,0xb7,0xfe,0x7f,0x46,0xac,0x7f,0x04,0xa7,0xd6,0x04,0x1b,0x34}),1};
-inline constexpr DatatypePolicyIdentityV1 kProtectionPolicy{U(
+inline constexpr DatatypePolicyIdentityV3 kProtectionPolicy{U(
     {0x01,0xa1,0x00,0x8e,0xb7,0xff,0x71,0x3c,0xb2,0xb9,0xad,0x24,0x4c,0xd3,0x03,0x9c}),1};
-inline constexpr DatatypePolicyIdentityV1 kComponentPolicy{U(
+inline constexpr DatatypePolicyIdentityV3 kComponentPolicy{U(
     {0x01,0xa1,0x00,0x8e,0xb8,0x00,0x77,0xdb,0x95,0x3f,0x86,0xc9,0xa0,0xf2,0x35,0xa9}),1};
-inline constexpr DatatypePolicyIdentityV1 kDiagnosticPolicy{U(
+inline constexpr DatatypePolicyIdentityV3 kDiagnosticPolicy{U(
     {0x01,0xa1,0x00,0x8e,0xb8,0x03,0x71,0x11,0xb3,0x61,0x45,0x0d,0x04,0xde,0x40,0x27}),1};
-inline constexpr DatatypePolicyIdentityV1 kMetricPolicy{U(
+inline constexpr DatatypePolicyIdentityV3 kMetricPolicy{U(
     {0x01,0xa1,0x00,0x8e,0xb8,0x04,0x74,0x9f,0xab,0x09,0xbd,0xde,0xe3,0x6e,0xe5,0xef}),1};
 
 inline constexpr std::array<byte, 32> kProfileFingerprint{{
@@ -212,7 +211,7 @@ Result Success() noexcept {
   return result;
 }
 
-bool Cancelled(const DateExecutionControlV1& control) noexcept {
+bool Cancelled(const DateExecutionControlV3& control) noexcept {
   return control.cancelled != nullptr &&
          control.cancelled(control.cancellation_context);
 }
@@ -227,77 +226,114 @@ void SecureClearBytes(void* pointer, std::size_t bytes) noexcept {
 
 class ScopedSecureClear final {
  public:
-  ScopedSecureClear(void* pointer, std::size_t bytes) noexcept
-      : pointer_(pointer), bytes_(bytes) {}
+  ScopedSecureClear(void* pointer, std::size_t bytes,
+                    DateScrubClassV3 scrub_class = DateScrubClassV3::count,
+                    void (*observer)(void*, DateScrubClassV3, const byte*, u64) noexcept = nullptr,
+                    void* observer_context = nullptr) noexcept
+      : pointer_(pointer), bytes_(bytes), scrub_class_(scrub_class),
+        observer_(observer), observer_context_(observer_context) {}
   ScopedSecureClear(const ScopedSecureClear&) = delete;
   ScopedSecureClear& operator=(const ScopedSecureClear&) = delete;
-  ~ScopedSecureClear() { SecureClearBytes(pointer_, bytes_); }
+  ~ScopedSecureClear() {
+    SecureClearBytes(pointer_, bytes_);
+    if (observer_ != nullptr && scrub_class_ != DateScrubClassV3::count)
+      observer_(observer_context_, scrub_class_,
+                static_cast<const byte*>(pointer_), bytes_);
+  }
 
  private:
   void* pointer_;
   std::size_t bytes_;
+  DateScrubClassV3 scrub_class_;
+  void (*observer_)(void*, DateScrubClassV3, const byte*, u64) noexcept;
+  void* observer_context_;
 };
 
 template <typename T>
 class ScopedVectorSecureClear final {
  public:
-  explicit ScopedVectorSecureClear(std::vector<T>* value) noexcept
-      : value_(value) {}
+  explicit ScopedVectorSecureClear(
+      std::vector<T>* value,
+      DateScrubClassV3 scrub_class = DateScrubClassV3::count,
+      void (*observer)(void*, DateScrubClassV3, const byte*, u64) noexcept = nullptr,
+      void* observer_context = nullptr) noexcept
+      : value_(value), scrub_class_(scrub_class), observer_(observer),
+        observer_context_(observer_context) {}
   ScopedVectorSecureClear(const ScopedVectorSecureClear&) = delete;
   ScopedVectorSecureClear& operator=(const ScopedVectorSecureClear&) = delete;
   ~ScopedVectorSecureClear() {
-    if (value_ != nullptr && !value_->empty())
-      SecureClearBytes(value_->data(), value_->size() * sizeof(T));
+    if (value_ != nullptr && !value_->empty()) {
+      const auto extent = value_->size() * sizeof(T);
+      SecureClearBytes(value_->data(), extent);
+      if (observer_ != nullptr && scrub_class_ != DateScrubClassV3::count)
+        observer_(observer_context_, scrub_class_,
+                  reinterpret_cast<const byte*>(value_->data()), extent);
+    }
   }
   void Disarm() noexcept { value_ = nullptr; }
 
  private:
   std::vector<T>* value_;
+  DateScrubClassV3 scrub_class_;
+  void (*observer_)(void*, DateScrubClassV3, const byte*, u64) noexcept;
+  void* observer_context_;
 };
 
 class ScopedStringSecureClear final {
  public:
-  explicit ScopedStringSecureClear(std::string* value) noexcept
-      : value_(value) {}
+  explicit ScopedStringSecureClear(
+      std::string* value,
+      DateScrubClassV3 scrub_class = DateScrubClassV3::count,
+      void (*observer)(void*, DateScrubClassV3, const byte*, u64) noexcept = nullptr,
+      void* observer_context = nullptr) noexcept
+      : value_(value), scrub_class_(scrub_class), observer_(observer),
+        observer_context_(observer_context) {}
   ScopedStringSecureClear(const ScopedStringSecureClear&) = delete;
   ScopedStringSecureClear& operator=(const ScopedStringSecureClear&) = delete;
   ~ScopedStringSecureClear() {
-    if (value_ != nullptr && !value_->empty())
+    if (value_ != nullptr && !value_->empty()) {
       SecureClearBytes(value_->data(), value_->size());
+      if (observer_ != nullptr && scrub_class_ != DateScrubClassV3::count)
+        observer_(observer_context_, scrub_class_,
+                  reinterpret_cast<const byte*>(value_->data()), value_->size());
+    }
   }
   void Disarm() noexcept { value_ = nullptr; }
 
  private:
   std::string* value_;
+  DateScrubClassV3 scrub_class_;
+  void (*observer_)(void*, DateScrubClassV3, const byte*, u64) noexcept;
+  void* observer_context_;
 };
 
 class ScopedOwnedDateValueClear final {
  public:
-  explicit ScopedOwnedDateValueClear(DateOwnedValueV1* value) noexcept
+  explicit ScopedOwnedDateValueClear(DateOwnedValueV3* value) noexcept
       : value_(value) {}
   ScopedOwnedDateValueClear(const ScopedOwnedDateValueClear&) = delete;
   ScopedOwnedDateValueClear& operator=(const ScopedOwnedDateValueClear&) = delete;
   ~ScopedOwnedDateValueClear() {
     if (value_ == nullptr) return;
     value_->day = 0;
-    value_->state = DateValueStateV1::sql_null;
+    value_->state = DateValueStateV3::sql_null;
     value_->profile.reset();
   }
   void Disarm() noexcept { value_ = nullptr; }
 
  private:
-  DateOwnedValueV1* value_;
+  DateOwnedValueV3* value_;
 };
 
 class ScopedDateValueViewClear final {
  public:
-  explicit ScopedDateValueViewClear(DateValueViewV1* value) noexcept
+  explicit ScopedDateValueViewClear(DateValueViewV3* value) noexcept
       : value_(value) {}
   ~ScopedDateValueViewClear(){
     if(!value_)return;
-    value_->day=0;value_->state=DateValueStateV1::sql_null;value_->profile=nullptr;
+    value_->day=0;value_->state=DateValueStateV3::sql_null;value_->profile=nullptr;
   }
- private:DateValueViewV1* value_;
+ private:DateValueViewV3* value_;
 };
 
 bool RangesOverlap(const void* left, std::size_t left_bytes,
@@ -340,12 +376,12 @@ bool OutputOverlapsDescriptorBuffers(
 }
 
 bool OutputOverlapsProfile(const void* output, std::size_t output_bytes,
-                           const DateValidatedProfileHandleV1& profile) noexcept {
+                           const DateValidatedProfileHandleV3& profile) noexcept {
   return RangesOverlap(output, output_bytes, &profile, sizeof(profile)) ||
       OutputOverlapsIdentityBuffers(output, output_bytes, profile.identity);
 }
 
-bool OutputOverlapsDateInput(const DateValueViewV1& value,
+bool OutputOverlapsDateInput(const DateValueViewV3& value,
                              const void* output,
                              std::size_t output_bytes) noexcept {
   return RangesOverlap(output, output_bytes, &value, sizeof(value)) ||
@@ -353,9 +389,19 @@ bool OutputOverlapsDateInput(const DateValueViewV1& value,
        OutputOverlapsProfile(output, output_bytes, *value.profile));
 }
 
-bool OutputOverlapsOwnedDateInput(const DateOwnedValueV1& value,
+bool OutputOverlapsOwnedDateInput(const DateOwnedValueV3& value,
                                   const void* output,
                                   std::size_t output_bytes) noexcept {
+  return RangesOverlap(output, output_bytes, &value, sizeof(value)) ||
+      RangesOverlap(output, output_bytes, &value.profile,
+                    sizeof(value.profile)) ||
+      (value.profile != nullptr &&
+       OutputOverlapsProfile(output, output_bytes, *value.profile));
+}
+
+bool OutputOverlapsDateOperand(const DateOperandV3& value,
+                               const void* output,
+                               std::size_t output_bytes) noexcept {
   return RangesOverlap(output, output_bytes, &value, sizeof(value)) ||
       RangesOverlap(output, output_bytes, &value.profile,
                     sizeof(value.profile)) ||
@@ -373,12 +419,81 @@ void PutPolicy(byte* output, const PolicyIdentity& policy) noexcept {
   StoreLittle64(output + 16, policy.generation);
 }
 
-bool Digest(std::span<const byte> material,
-            std::array<byte, 32>* output) noexcept {
-  const hash::HashDigestSegment part{material.data(), material.size()};
-  const auto digest = hash::ComputeSha256DigestPartsNative(&part, 1);
-  if (!digest.ok()) return false;
-  *output = digest.digest;
+bool Digest(std::span<const byte> material, std::array<byte, 32>* output,
+            const DateExecutionControlV3* control = nullptr) noexcept {
+  if (output == nullptr) return false;
+  const auto observer = control == nullptr ? nullptr : control->observe_scrubbed;
+  void* observer_context =
+      control == nullptr ? nullptr : control->scrub_observer_context;
+  std::array<u32, 8> state{{0x6a09e667u,0xbb67ae85u,0x3c6ef372u,0xa54ff53au,
+                            0x510e527fu,0x9b05688cu,0x1f83d9abu,0x5be0cd19u}};
+  ScopedSecureClear clear_state(state.data(), state.size() * sizeof(u32),
+      DateScrubClassV3::sha_state, observer, observer_context);
+  constexpr std::array<u32, 64> constants{{
+      0x428a2f98u,0x71374491u,0xb5c0fbcfu,0xe9b5dba5u,0x3956c25bu,0x59f111f1u,0x923f82a4u,0xab1c5ed5u,
+      0xd807aa98u,0x12835b01u,0x243185beu,0x550c7dc3u,0x72be5d74u,0x80deb1feu,0x9bdc06a7u,0xc19bf174u,
+      0xe49b69c1u,0xefbe4786u,0x0fc19dc6u,0x240ca1ccu,0x2de92c6fu,0x4a7484aau,0x5cb0a9dcu,0x76f988dau,
+      0x983e5152u,0xa831c66du,0xb00327c8u,0xbf597fc7u,0xc6e00bf3u,0xd5a79147u,0x06ca6351u,0x14292967u,
+      0x27b70a85u,0x2e1b2138u,0x4d2c6dfcu,0x53380d13u,0x650a7354u,0x766a0abbu,0x81c2c92eu,0x92722c85u,
+      0xa2bfe8a1u,0xa81a664bu,0xc24b8b70u,0xc76c51a3u,0xd192e819u,0xd6990624u,0xf40e3585u,0x106aa070u,
+      0x19a4c116u,0x1e376c08u,0x2748774cu,0x34b0bcb5u,0x391c0cb3u,0x4ed8aa4au,0x5b9cca4fu,0x682e6ff3u,
+      0x748f82eeu,0x78a5636fu,0x84c87814u,0x8cc70208u,0x90befffau,0xa4506cebu,0xbef9a3f7u,0xc67178f2u}};
+  const auto rotate = [](u32 value, unsigned bits) noexcept {
+    return static_cast<u32>((value >> bits) | (value << (32 - bits)));
+  };
+  const auto transform = [&](const byte* block) noexcept {
+    std::array<u32, 64> words{};
+    ScopedSecureClear clear_words(words.data(), words.size() * sizeof(u32),
+        DateScrubClassV3::sha_schedule, observer, observer_context);
+    for (unsigned i = 0; i < 16; ++i)
+      words[i] = (static_cast<u32>(block[i * 4]) << 24) |
+          (static_cast<u32>(block[i * 4 + 1]) << 16) |
+          (static_cast<u32>(block[i * 4 + 2]) << 8) | block[i * 4 + 3];
+    for (unsigned i = 16; i < 64; ++i) {
+      const u32 s0 = rotate(words[i - 15], 7) ^
+          rotate(words[i - 15], 18) ^ (words[i - 15] >> 3);
+      const u32 s1 = rotate(words[i - 2], 17) ^
+          rotate(words[i - 2], 19) ^ (words[i - 2] >> 10);
+      words[i] = words[i - 16] + s0 + words[i - 7] + s1;
+    }
+    u32 a=state[0],b=state[1],c=state[2],d=state[3];
+    u32 e=state[4],f=state[5],g=state[6],h=state[7];
+    for (unsigned i = 0; i < 64; ++i) {
+      const u32 s1 = rotate(e,6)^rotate(e,11)^rotate(e,25);
+      const u32 choose=(e&f)^((~e)&g);
+      const u32 first=h+s1+choose+constants[i]+words[i];
+      const u32 s0=rotate(a,2)^rotate(a,13)^rotate(a,22);
+      const u32 majority=(a&b)^(a&c)^(b&c);
+      const u32 second=s0+majority;
+      h=g;g=f;f=e;e=d+first;d=c;c=b;b=a;a=first+second;
+    }
+    state[0]+=a;state[1]+=b;state[2]+=c;state[3]+=d;
+    state[4]+=e;state[5]+=f;state[6]+=g;state[7]+=h;
+  };
+  std::size_t offset = 0;
+  while (material.size() - offset >= 64) {
+    transform(material.data() + offset);
+    offset += 64;
+  }
+  std::array<byte, 128> tail{};
+  ScopedSecureClear clear_tail(tail.data(), tail.size(),
+      DateScrubClassV3::sha_tail, observer, observer_context);
+  const std::size_t remainder = material.size() - offset;
+  if (remainder != 0)
+    std::memcpy(tail.data(), material.data() + offset, remainder);
+  tail[remainder] = 0x80;
+  const std::size_t padded = remainder < 56 ? 64 : 128;
+  const u64 bits = static_cast<u64>(material.size()) * 8;
+  for (unsigned i = 0; i < 8; ++i)
+    tail[padded - 1 - i] = static_cast<byte>(bits >> (i * 8));
+  transform(tail.data());
+  if (padded == 128) transform(tail.data() + 64);
+  for (unsigned i = 0; i < 8; ++i) {
+    (*output)[i * 4] = static_cast<byte>(state[i] >> 24);
+    (*output)[i * 4 + 1] = static_cast<byte>(state[i] >> 16);
+    (*output)[i * 4 + 2] = static_cast<byte>(state[i] >> 8);
+    (*output)[i * 4 + 3] = static_cast<byte>(state[i]);
+  }
   return true;
 }
 
@@ -433,20 +548,20 @@ bool ExactDateIdentity(const DatatypeTypeCodecIdentityRowV3& row) noexcept {
   return expected != nullptr && EqualV3IdentityIgnoringName(row, *expected);
 }
 
-bool ExactReceipt(const DateAuthorityReceiptV1& receipt) noexcept {
+bool ExactReceipt(const DateAuthorityReceiptV3& receipt) noexcept {
   return receipt.statement_receipt_uuid == kSnapshot &&
       receipt.catalog_snapshot_uuid == kSnapshot &&
       receipt.catalog_generation == 8 && receipt.registry_generation == 8;
 }
 
-std::array<byte, kDateProfileMaterialBytesV1> BuildProfileMaterial(
-    const DateValidatedProfileHandleV1& profile) noexcept {
-  std::array<byte, kDateProfileMaterialBytesV1> material{};
+std::array<byte, kDateProfileMaterialBytesV3> BuildProfileMaterial(
+    const DateValidatedProfileHandleV3& profile) noexcept {
+  std::array<byte, kDateProfileMaterialBytesV3> material{};
   const auto& row = profile.identity.legacy_fields;
   std::memcpy(material.data(), "SBDATP01", 8);
   StoreLittle16(material.data() + 8, 1);
-  StoreLittle16(material.data() + 10, kDateProfileMaterialBytesV1);
-  StoreLittle32(material.data() + 12, kDateProfileMaterialBytesV1);
+  StoreLittle16(material.data() + 10, kDateProfileMaterialBytesV3);
+  StoreLittle32(material.data() + 12, kDateProfileMaterialBytesV3);
   PutUuid(material.data() + 16, profile.receipt.catalog_snapshot_uuid);
   StoreLittle64(material.data() + 32, profile.receipt.catalog_generation);
   StoreLittle64(material.data() + 40, profile.receipt.registry_generation);
@@ -483,13 +598,13 @@ std::array<byte, kDateProfileMaterialBytesV1> BuildProfileMaterial(
   return material;
 }
 
-std::array<byte, kDateComparisonMaterialBytesV1> BuildComparisonMaterial(
-    const DateValidatedProfileHandleV1& profile) noexcept {
-  std::array<byte, kDateComparisonMaterialBytesV1> material{};
+std::array<byte, kDateComparisonMaterialBytesV3> BuildComparisonMaterial(
+    const DateValidatedProfileHandleV3& profile) noexcept {
+  std::array<byte, kDateComparisonMaterialBytesV3> material{};
   const auto& row = profile.identity.legacy_fields;
   std::memcpy(material.data(), "SBDACC01", 8);
   StoreLittle16(material.data() + 8, 1);
-  StoreLittle16(material.data() + 10, kDateComparisonMaterialBytesV1);
+  StoreLittle16(material.data() + 10, kDateComparisonMaterialBytesV3);
   PutUuid(material.data() + 16, profile.receipt.catalog_snapshot_uuid);
   StoreLittle64(material.data() + 32, profile.receipt.catalog_generation);
   StoreLittle64(material.data() + 40, profile.receipt.registry_generation);
@@ -516,7 +631,8 @@ std::array<byte, kDateComparisonMaterialBytesV1> BuildComparisonMaterial(
   return material;
 }
 
-bool ProfileValidNoAlloc(const DateValidatedProfileHandleV1& profile) noexcept {
+bool ProfileValidNoAlloc(const DateValidatedProfileHandleV3& profile,
+                         const DateExecutionControlV3* control = nullptr) noexcept {
   if (!ExactReceipt(profile.receipt) || !ExactDateIdentity(profile.identity) ||
       profile.identity.legacy_fields.catalog_snapshot_uuid != profile.receipt.catalog_snapshot_uuid ||
       profile.identity.legacy_fields.catalog_generation != profile.receipt.catalog_generation ||
@@ -534,13 +650,33 @@ bool ProfileValidNoAlloc(const DateValidatedProfileHandleV1& profile) noexcept {
       !Same(profile.component_adapter_policy, kComponentPolicy) ||
       !Same(profile.diagnostic_policy, kDiagnosticPolicy) ||
       !Same(profile.metric_policy, kMetricPolicy)) return false;
-  const auto profile_material = BuildProfileMaterial(profile);
-  const auto comparison_material = BuildComparisonMaterial(profile);
+  auto profile_material = BuildProfileMaterial(profile);
+  ScopedSecureClear clear_profile_material(
+      profile_material.data(), profile_material.size(),
+      DateScrubClassV3::profile_material,
+      control == nullptr ? nullptr : control->observe_scrubbed,
+      control == nullptr ? nullptr : control->scrub_observer_context);
+  auto comparison_material = BuildComparisonMaterial(profile);
+  ScopedSecureClear clear_comparison_material(
+      comparison_material.data(), comparison_material.size(),
+      DateScrubClassV3::comparison_material,
+      control == nullptr ? nullptr : control->observe_scrubbed,
+      control == nullptr ? nullptr : control->scrub_observer_context);
   std::array<byte, 32> profile_digest{}, comparison_digest{};
+  ScopedSecureClear clear_profile_digest(
+      profile_digest.data(), profile_digest.size(),
+      DateScrubClassV3::profile_digest,
+      control == nullptr ? nullptr : control->observe_scrubbed,
+      control == nullptr ? nullptr : control->scrub_observer_context);
+  ScopedSecureClear clear_comparison_digest(
+      comparison_digest.data(), comparison_digest.size(),
+      DateScrubClassV3::comparison_digest,
+      control == nullptr ? nullptr : control->observe_scrubbed,
+      control == nullptr ? nullptr : control->scrub_observer_context);
   return profile.profile_material == profile_material &&
       profile.comparison_material == comparison_material &&
-      Digest(profile_material, &profile_digest) &&
-      Digest(comparison_material, &comparison_digest) &&
+      Digest(profile_material, &profile_digest, control) &&
+      Digest(comparison_material, &comparison_digest, control) &&
       profile_digest == kProfileFingerprint &&
       comparison_digest == kComparisonFingerprint &&
       profile.profile_fingerprint == profile_digest &&
@@ -606,7 +742,7 @@ bool CivilToDays(std::int64_t year, u8 month, u8 day,
   return true;
 }
 
-DateCivilV1 DaysToCivil(std::int64_t day) noexcept {
+DateCivilV3 DaysToCivil(std::int64_t day) noexcept {
   std::int64_t z = day + 719468;
   const std::int64_t era = FloorDiv(z, 146097);
   const std::int64_t day_of_era = z - era * 146097;
@@ -770,7 +906,7 @@ bool ExecutionDescriptorPresentNoAlloc(
 
 bool ExactCharacterDescriptor(
     const scratchbird::engine::ExecutionTypeDescriptor& descriptor,
-    const DateAuthorityReceiptV1& receipt) noexcept {
+    const DateAuthorityReceiptV3& receipt) noexcept {
   const auto* identity = CurrentIdentityFor(CanonicalTypeId::character);
   return ExactReceipt(receipt) && identity != nullptr &&
       descriptor.length <= 16'777'216 &&
@@ -786,7 +922,7 @@ struct DateCastRowShape {
 };
 
 bool ResolveDateCastRowShape(u32 row, DateCastRowShape* output) noexcept {
-  if (output == nullptr || row == 0 || row > kDateClosedCastPolicyRowsV1)
+  if (output == nullptr || row == 0 || row > kDateClosedCastPolicyRowsV3)
     return false;
   if (row == 1) {
     *output = {true, true, false, CanonicalTypeId::null_type};
@@ -875,14 +1011,14 @@ bool DescriptorBindsIdentity(
   return DescriptorBindsIdentityNoAlloc(descriptor, identity, expected_type);
 }
 
-struct ParsedCanonicalDateDayV1 {
+struct ParsedCanonicalDateDayV3 {
   std::string_view diagnostic_code;
   std::string_view detail;
   std::int32_t day = 0;
   bool ok = false;
 };
 
-ParsedCanonicalDateDayV1 ParseCanonicalDateDayNoAlloc(
+ParsedCanonicalDateDayV3 ParseCanonicalDateDayNoAlloc(
     std::string_view text) noexcept {
   std::int64_t year = 0, month = 0, day = 0;
   if (text.size() == 10) {
@@ -920,30 +1056,30 @@ ParsedCanonicalDateDayV1 ParseCanonicalDateDayNoAlloc(
 
 }  // namespace
 
-DateProfileResultV1 BuildCurrentDateValidatedProfileHandleV1(
+DateProfileResultV3 BuildCurrentDateValidatedProfileHandleV3(
     const platform::Uuid& statement_receipt_uuid) noexcept {
   try {
-    return BuildDateValidatedProfileHandleV1(
+    return BuildDateValidatedProfileHandleV3(
         {statement_receipt_uuid, kSnapshot, 8, 8}, ExpectedDateIdentity());
   } catch (...) {
-    return Failure<DateProfileResultV1>("RESOURCE.BUDGET_EXCEEDED",
+    return Failure<DateProfileResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                         "profile_identity_allocation",
                                         ResourceStatus());
   }
 }
 
-DateProfileResultV1 BuildDateValidatedProfileHandleV1(
-    const DateAuthorityReceiptV1& receipt,
+DateProfileResultV3 BuildDateValidatedProfileHandleV3(
+    const DateAuthorityReceiptV3& receipt,
     const DatatypeTypeCodecIdentityRowV3& identity) noexcept {
   if (!ExactReceipt(receipt) || !ExactDateIdentity(identity) ||
       identity.legacy_fields.catalog_snapshot_uuid != receipt.catalog_snapshot_uuid ||
       identity.legacy_fields.catalog_generation != receipt.catalog_generation ||
       identity.legacy_fields.registry_generation != receipt.registry_generation) {
-    return Failure<DateProfileResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+    return Failure<DateProfileResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                         "receipt_or_identity_invalid");
   }
   try {
-    auto result = Success<DateProfileResultV1>();
+    auto result = Success<DateProfileResultV3>();
     auto& profile = result.profile;
     profile.receipt = receipt;
     profile.identity = identity;
@@ -964,84 +1100,144 @@ DateProfileResultV1 BuildDateValidatedProfileHandleV1(
     profile.comparison_material = BuildComparisonMaterial(profile);
     if (!Digest(profile.profile_material, &profile.profile_fingerprint) ||
         !Digest(profile.comparison_material, &profile.comparison_fingerprint)) {
-      return Failure<DateProfileResultV1>("RESOURCE.BUDGET_EXCEEDED",
+      return Failure<DateProfileResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                           "sha256_provider_failed", ResourceStatus());
     }
     if (!ProfileValidNoAlloc(profile))
-      return Failure<DateProfileResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+      return Failure<DateProfileResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                           "profile_fingerprint_mismatch");
     return result;
   } catch (...) {
-    return Failure<DateProfileResultV1>("RESOURCE.BUDGET_EXCEEDED",
+    return Failure<DateProfileResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                         "profile_allocation", ResourceStatus());
   }
 }
 
-DateValidationResultV1 ValidateDateProfileHandleV1(
-    const DateValidatedProfileHandleV1& profile) noexcept {
-  if (!ProfileValidNoAlloc(profile))
-    return Failure<DateValidationResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+DateValidationResultV3 ValidateDateProfileHandleV3(
+    const DateValidatedProfileHandleV3& profile,
+    const DateExecutionControlV3& control) noexcept {
+  if (!ProfileValidNoAlloc(profile, &control))
+    return Failure<DateValidationResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                            "profile_invalid");
-  auto result = Success<DateValidationResultV1>();
+  if (Cancelled(control))
+    return Failure<DateValidationResultV3>("PROCESS.CANCELLED",
+                                           "before_publication");
+  auto result = Success<DateValidationResultV3>();
   return result;
 }
 
-DateViewResultV1 ValidateDateValueViewV1(const DateValueViewV1& value,
+DateViewResultV3 ValidateDateValueViewV3(const DateValueViewV3& value,
                                         bool null_allowed) noexcept {
   if (value.profile == nullptr || !ProfileValidNoAlloc(*value.profile))
-    return Failure<DateViewResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+    return Failure<DateViewResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                      "profile_missing_or_invalid");
-  if (value.state != DateValueStateV1::value &&
-      value.state != DateValueStateV1::sql_null)
-    return Failure<DateViewResultV1>("DATATYPE.NULL_STATE.INVALID",
+  if (value.state != DateValueStateV3::value &&
+      value.state != DateValueStateV3::sql_null)
+    return Failure<DateViewResultV3>("DATATYPE.NULL_STATE.INVALID",
                                      "state_invalid");
-  if (value.state == DateValueStateV1::sql_null) {
+  if (value.state == DateValueStateV3::sql_null) {
     if (value.day != 0)
-      return Failure<DateViewResultV1>("DATATYPE.NULL_STATE.INVALID",
+      return Failure<DateViewResultV3>("DATATYPE.NULL_STATE.INVALID",
                                        "sql_null_day_nonzero");
     if (!null_allowed)
-      return Failure<DateViewResultV1>("DATATYPE.NULL_NOT_ADMITTED",
+      return Failure<DateViewResultV3>("DATATYPE.NULL_NOT_ADMITTED",
                                        "slot_nonnullable");
   }
-  auto result = Success<DateViewResultV1>();
+  auto result = Success<DateViewResultV3>();
   result.value = value;
   return result;
 }
 
-DateViewResultV1 DecodeCanonicalDateComponentNoAllocV1(
-    const DateValidatedProfileHandleV1& profile, DateValueStateV1 state,
-    bool null_allowed, std::span<const byte> component) noexcept {
-  if (!ProfileValidNoAlloc(profile))
-    return Failure<DateViewResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+DateViewResultV3 AdmitDateOperandV3(const DateOperandV3& operand,
+                                   bool null_allowed) noexcept {
+  if (operand.profile == nullptr || !ProfileValidNoAlloc(*operand.profile))
+    return Failure<DateViewResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+                                     "operand_profile_missing_or_invalid");
+  if (operand.state != DateValueStateV3::value &&
+      operand.state != DateValueStateV3::sql_null)
+    return Failure<DateViewResultV3>("DATATYPE.NULL_STATE.INVALID",
+                                     "operand_state_invalid");
+  if (operand.state == DateValueStateV3::sql_null) {
+    if (operand.day != 0)
+      return Failure<DateViewResultV3>("DATATYPE.NULL_STATE.INVALID",
+                                       "operand_sql_null_day_nonzero");
+    if (!null_allowed)
+      return Failure<DateViewResultV3>("DATATYPE.NULL_NOT_ADMITTED",
+                                       "operand_slot_nonnullable");
+    auto result = Success<DateViewResultV3>();
+    result.value = {operand.profile.get(), DateValueStateV3::sql_null, 0};
+    return result;
+  }
+  if (operand.carrier != DateDayCarrierKindV3::signed_i32 ||
+      operand.day < std::numeric_limits<std::int32_t>::min() ||
+      operand.day > std::numeric_limits<std::int32_t>::max())
+    return Failure<DateViewResultV3>(
+        "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+        "date_operand_not_host_i32");
+  auto result = Success<DateViewResultV3>();
+  result.value = {operand.profile.get(), DateValueStateV3::value,
+                  static_cast<std::int32_t>(operand.day)};
+  return result;
+}
+
+DateViewResultV3 DecodeCanonicalDateComponentNoAllocV3(
+    const DateValidatedProfileHandleV3& profile, DateValueStateV3 state,
+    bool null_allowed, std::span<const byte> component,
+    const DateExecutionControlV3& control) noexcept {
+  if (!ProfileValidNoAlloc(profile, &control))
+    return Failure<DateViewResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                      "component_profile_invalid");
-  if (state != DateValueStateV1::value && state != DateValueStateV1::sql_null)
-    return Failure<DateViewResultV1>("DATATYPE.NULL_STATE.INVALID",
+  if (state != DateValueStateV3::value && state != DateValueStateV3::sql_null)
+    return Failure<DateViewResultV3>("DATATYPE.NULL_STATE.INVALID",
                                      "component_state_invalid");
-  if (state == DateValueStateV1::sql_null) {
+  if (state == DateValueStateV3::sql_null) {
     if (!component.empty())
-      return Failure<DateViewResultV1>("DATATYPE.NULL_STATE.INVALID",
+      return Failure<DateViewResultV3>("DATATYPE.NULL_STATE.INVALID",
                                        "sql_null_component_nonempty");
-    return ValidateDateValueViewV1({&profile, state, 0}, null_allowed);
+    const auto validated = ValidateDateValueViewV3({&profile, state, 0}, null_allowed);
+    if (!validated.ok()) return validated;
+    if (Cancelled(control))
+      return Failure<DateViewResultV3>("PROCESS.CANCELLED",
+                                       "before_publication");
+    return validated;
   }
   if (component.size() != 4)
-    return Failure<DateViewResultV1>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+    return Failure<DateViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
                                      "component_extent_invalid");
   const auto bits = LoadLittle32(component.data());
   const auto day = static_cast<std::int32_t>(bits);
-  return ValidateDateValueViewV1({&profile, state, day}, null_allowed);
+  std::array<byte, 4> reencoded{};
+  ScopedSecureClear clear_reencoded(
+      reencoded.data(), reencoded.size(),
+      DateScrubClassV3::component_decode_reencode,
+      control.observe_scrubbed, control.scrub_observer_context);
+  StoreLittle32(reencoded.data(), static_cast<u32>(day));
+  if (control.force_reencode_mismatch_for_conformance)
+    reencoded[0] ^= 1;
+  if (reencoded != std::array<byte, 4>{component[0], component[1],
+                                      component[2], component[3]})
+    return Failure<DateViewResultV3>(
+        "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID", "component_reencode");
+  const auto validated =
+      ValidateDateValueViewV3({&profile, state, day}, null_allowed);
+  if (!validated.ok()) return validated;
+  if (Cancelled(control))
+    return Failure<DateViewResultV3>("PROCESS.CANCELLED",
+                                     "before_publication");
+  return validated;
 }
 
-DateNoAllocWriteResultV1 EncodeCanonicalDateComponentIntoNoAllocV1(
-    const DateOwnedValueV1& owned_value, byte* output, u64 output_capacity,
-    const DateExecutionControlV1& control) noexcept {
+DateNoAllocWriteResultV3 EncodeCanonicalDateComponentIntoNoAllocV3(
+    const DateOwnedValueV3& owned_value, byte* output, u64 output_capacity,
+    const DateExecutionControlV3& control) noexcept {
   const auto value = owned_value.view();
-  const auto checked = ValidateDateValueViewV1(value, true);
+  const auto checked = ValidateDateValueViewV3(value, true);
   if (!checked.ok())
-    return Failure<DateNoAllocWriteResultV1>(checked.diagnostic.diagnostic_code,
+    return Failure<DateNoAllocWriteResultV3>(checked.diagnostic.diagnostic_code,
                                              checked.diagnostic.detail,
                                              checked.status);
-  auto result = Success<DateNoAllocWriteResultV1>();
-  result.containing_null = value.state == DateValueStateV1::sql_null;
+  auto result = Success<DateNoAllocWriteResultV3>();
+  result.containing_null = value.state == DateValueStateV3::sql_null;
   result.bytes_required = result.containing_null ? 0 : 4;
   // The operation pin is acquired once the carrier and required extent are
   // known.  It therefore remains live across every publication refusal,
@@ -1051,23 +1247,25 @@ DateNoAllocWriteResultV1 EncodeCanonicalDateComponentIntoNoAllocV1(
       (OutputOverlapsOwnedDateInput(owned_value, output, result.bytes_required) ||
        RangesOverlap(output, result.bytes_required, &control,
                      sizeof(control))))
-    return Failure<DateNoAllocWriteResultV1>(
+    return Failure<DateNoAllocWriteResultV3>(
         "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
         "component_output_aliases_input_or_profile");
   if (result.bytes_required > output_capacity ||
       result.bytes_required > control.maximum_allocation_bytes ||
       (result.bytes_required != 0 && output == nullptr)) {
-    auto failure = Failure<DateNoAllocWriteResultV1>(
+    auto failure = Failure<DateNoAllocWriteResultV3>(
         "RESOURCE.BUDGET_EXCEEDED", "component_capacity", ResourceStatus());
     failure.bytes_required = result.bytes_required;
     return failure;
   }
   std::array<byte, 4> staged{};
-  ScopedSecureClear clear_staged(staged.data(), staged.size());
+  ScopedSecureClear clear_staged(
+      staged.data(), staged.size(), DateScrubClassV3::component_encode_staging,
+      control.observe_scrubbed, control.scrub_observer_context);
   if (!result.containing_null)
     StoreLittle32(staged.data(), static_cast<u32>(value.day));
   if (Cancelled(control))
-    return Failure<DateNoAllocWriteResultV1>("PROCESS.CANCELLED",
+    return Failure<DateNoAllocWriteResultV3>("PROCESS.CANCELLED",
                                              "before_publication");
   if (!result.containing_null) {
     std::memcpy(output, staged.data(), staged.size());
@@ -1077,115 +1275,117 @@ DateNoAllocWriteResultV1 EncodeCanonicalDateComponentIntoNoAllocV1(
   return result;
 }
 
-DateBytesResultV1 EncodeCanonicalDateComponentV1(
-    const DateOwnedValueV1& owned_value,
-    const DateExecutionControlV1& control) noexcept {
+DateBytesResultV3 EncodeCanonicalDateComponentV3(
+    const DateOwnedValueV3& owned_value,
+    const DateExecutionControlV3& control) noexcept {
   const auto value = owned_value.view();
-  const auto checked = ValidateDateValueViewV1(value, true);
+  const auto checked = ValidateDateValueViewV3(value, true);
   if (!checked.ok())
-    return Failure<DateBytesResultV1>(checked.diagnostic.diagnostic_code,
+    return Failure<DateBytesResultV3>(checked.diagnostic.diagnostic_code,
                                       checked.diagnostic.detail, checked.status);
-  const u64 required = value.state == DateValueStateV1::sql_null ? 0 : 4;
+  const u64 required = value.state == DateValueStateV3::sql_null ? 0 : 4;
   auto profile_pin = owned_value.profile;
   if (required > control.maximum_allocation_bytes)
-    return Failure<DateBytesResultV1>("RESOURCE.BUDGET_EXCEEDED",
+    return Failure<DateBytesResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                       "component_capacity", ResourceStatus());
   if (Cancelled(control))
-    return Failure<DateBytesResultV1>("PROCESS.CANCELLED", "before_allocation");
-  auto result = Success<DateBytesResultV1>();
-  ScopedVectorSecureClear<byte> clear_result(&result.bytes);
+    return Failure<DateBytesResultV3>("PROCESS.CANCELLED", "before_allocation");
+  auto result = Success<DateBytesResultV3>();
+  ScopedVectorSecureClear<byte> clear_result(
+      &result.bytes, DateScrubClassV3::component_owned_buffer,
+      control.observe_scrubbed, control.scrub_observer_context);
   try { result.bytes.resize(required); }
   catch (...) {
-    return Failure<DateBytesResultV1>("RESOURCE.BUDGET_EXCEEDED",
+    return Failure<DateBytesResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                       "component_allocation", ResourceStatus());
   }
   if (required != 0)
     StoreLittle32(result.bytes.data(), static_cast<u32>(value.day));
   if (Cancelled(control))
-    return Failure<DateBytesResultV1>("PROCESS.CANCELLED",
+    return Failure<DateBytesResultV3>("PROCESS.CANCELLED",
                                       "before_publication");
   clear_result.Disarm();
   (void)profile_pin;
   return result;
 }
 
-DateValueResultV1 ConstructDateFromCivilV1(
-    const std::shared_ptr<const DateValidatedProfileHandleV1>& profile, std::int64_t year,
+DateValueResultV3 ConstructDateFromCivilV3(
+    const std::shared_ptr<const DateValidatedProfileHandleV3>& profile, std::int64_t year,
     std::int64_t month, std::int64_t day, bool null_allowed) noexcept {
-  return ConstructDateFromCivilV1(
+  return ConstructDateFromCivilV3(
       profile,
-      {DateI64CarrierKindV1::signed_i64, DateValueStateV1::value, year},
-      {DateI64CarrierKindV1::signed_i64, DateValueStateV1::value, month},
-      {DateI64CarrierKindV1::signed_i64, DateValueStateV1::value, day},
+      {DateI64CarrierKindV3::signed_i64, DateValueStateV3::value, year},
+      {DateI64CarrierKindV3::signed_i64, DateValueStateV3::value, month},
+      {DateI64CarrierKindV3::signed_i64, DateValueStateV3::value, day},
       null_allowed);
 }
 
-DateValueResultV1 ConstructDateFromCivilV1(
-    const std::shared_ptr<const DateValidatedProfileHandleV1>& profile,
-    const DateNullableI64FactV1& year,
-    const DateNullableI64FactV1& month,
-    const DateNullableI64FactV1& day,
+DateValueResultV3 ConstructDateFromCivilV3(
+    const std::shared_ptr<const DateValidatedProfileHandleV3>& profile,
+    const DateNullableI64FactV3& year,
+    const DateNullableI64FactV3& month,
+    const DateNullableI64FactV3& day,
     bool null_allowed) noexcept {
   if (profile == nullptr || !ProfileValidNoAlloc(*profile))
-    return Failure<DateValueResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+    return Failure<DateValueResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                       "civil_profile_invalid");
-  const DateNullableI64FactV1* facts[] = {&year, &month, &day};
+  const DateNullableI64FactV3* facts[] = {&year, &month, &day};
   for (const auto* fact : facts) {
-    if (fact->state != DateValueStateV1::value &&
-        fact->state != DateValueStateV1::sql_null)
-      return Failure<DateValueResultV1>("DATATYPE.NULL_STATE.INVALID",
+    if (fact->state != DateValueStateV3::value &&
+        fact->state != DateValueStateV3::sql_null)
+      return Failure<DateValueResultV3>("DATATYPE.NULL_STATE.INVALID",
                                         "civil_component_state_invalid");
-    if (fact->state == DateValueStateV1::sql_null &&
-        (fact->carrier != DateI64CarrierKindV1::signed_i64 ||
+    if (fact->state == DateValueStateV3::sql_null &&
+        (fact->carrier != DateI64CarrierKindV3::signed_i64 ||
          fact->value != 0))
-      return Failure<DateValueResultV1>("DATATYPE.NULL_STATE.INVALID",
+      return Failure<DateValueResultV3>("DATATYPE.NULL_STATE.INVALID",
                                         "civil_component_dirty_null");
   }
-  if (year.state == DateValueStateV1::sql_null ||
-      month.state == DateValueStateV1::sql_null ||
-      day.state == DateValueStateV1::sql_null) {
+  if (year.state == DateValueStateV3::sql_null ||
+      month.state == DateValueStateV3::sql_null ||
+      day.state == DateValueStateV3::sql_null) {
     if (!null_allowed)
-      return Failure<DateValueResultV1>("DATATYPE.NULL_NOT_ADMITTED",
+      return Failure<DateValueResultV3>("DATATYPE.NULL_NOT_ADMITTED",
                                         "civil_result_nonnullable");
-    auto result = Success<DateValueResultV1>();
-    result.value = {profile, DateValueStateV1::sql_null, 0};
+    auto result = Success<DateValueResultV3>();
+    result.value = {profile, DateValueStateV3::sql_null, 0};
     return result;
   }
   for (const auto* fact : facts) {
-    if (fact->carrier != DateI64CarrierKindV1::signed_i64)
-      return Failure<DateValueResultV1>(
+    if (fact->carrier != DateI64CarrierKindV3::signed_i64)
+      return Failure<DateValueResultV3>(
           "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
           "civil_component_not_signed_i64");
   }
   if (month.value == 0 || day.value == 0)
-    return Failure<DateValueResultV1>("CTI.TEMPORAL.ZERO_DATE_REFUSED",
+    return Failure<DateValueResultV3>("CTI.TEMPORAL.ZERO_DATE_REFUSED",
                                       "zero_month_or_day");
   if (month.value < 1 || month.value > 12 || day.value < 1 || day.value > 31)
-    return Failure<DateValueResultV1>("CTI.TEMPORAL.INVALID_LITERAL",
+    return Failure<DateValueResultV3>("CTI.TEMPORAL.INVALID_LITERAL",
                                       "civil_field_invalid");
   DateWideSigned offset = 0;
   if (!CivilToDaysWide(year.value, static_cast<u8>(month.value),
                        static_cast<u8>(day.value), &offset))
-    return Failure<DateValueResultV1>("CTI.TEMPORAL.INVALID_LITERAL",
+    return Failure<DateValueResultV3>("CTI.TEMPORAL.INVALID_LITERAL",
                                       "civil_date_invalid");
   if (offset < std::numeric_limits<std::int32_t>::min() ||
       offset > std::numeric_limits<std::int32_t>::max())
-    return Failure<DateValueResultV1>("CTI.TEMPORAL.RANGE_EXCEEDED",
+    return Failure<DateValueResultV3>("CTI.TEMPORAL.RANGE_EXCEEDED",
                                       "civil_date_out_of_range");
-  auto result = Success<DateValueResultV1>();
-  result.value = {profile, DateValueStateV1::value,
+  auto result = Success<DateValueResultV3>();
+  result.value = {profile, DateValueStateV3::value,
                   static_cast<std::int32_t>(offset)};
   return result;
 }
 
-DateCivilResultV1 DecomposeDateCivilV1(const DateValueViewV1& value,
+DateCivilResultV3 DecomposeDateCivilV3(const DateValueViewV3& value,
                                       bool null_allowed) noexcept {
-  const auto checked = ValidateDateValueViewV1(value, null_allowed);
+  const auto checked = ValidateDateValueViewV3(value, null_allowed);
   if (!checked.ok())
-    return Failure<DateCivilResultV1>(checked.diagnostic.diagnostic_code,
+    return Failure<DateCivilResultV3>(checked.diagnostic.diagnostic_code,
                                       checked.diagnostic.detail, checked.status);
-  auto result = Success<DateCivilResultV1>();
-  if (value.state == DateValueStateV1::sql_null) {
+  auto result = Success<DateCivilResultV3>();
+  if (value.state == DateValueStateV3::sql_null) {
     result.is_null = true;
     result.civil = {0, 0, 0};
     return result;
@@ -1194,79 +1394,79 @@ DateCivilResultV1 DecomposeDateCivilV1(const DateValueViewV1& value,
   return result;
 }
 
-DateValueResultV1 ParseCanonicalDateV1(
-    const std::shared_ptr<const DateValidatedProfileHandleV1>& profile, std::string_view text,
+DateValueResultV3 ParseCanonicalDateV3(
+    const std::shared_ptr<const DateValidatedProfileHandleV3>& profile, std::string_view text,
     bool null_allowed) noexcept {
   if (profile == nullptr || !ProfileValidNoAlloc(*profile))
-    return Failure<DateValueResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+    return Failure<DateValueResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                       "parse_profile_invalid");
   (void)null_allowed;
   const auto parsed=ParseCanonicalDateDayNoAlloc(text);
   if(!parsed.ok)
-    return Failure<DateValueResultV1>(parsed.diagnostic_code,parsed.detail);
-  auto result=Success<DateValueResultV1>();
-  result.value={profile,DateValueStateV1::value,parsed.day};
+    return Failure<DateValueResultV3>(parsed.diagnostic_code,parsed.detail);
+  auto result=Success<DateValueResultV3>();
+  result.value={profile,DateValueStateV3::value,parsed.day};
   return result;
 }
 
-DateValueResultV1 ParseCanonicalDateOperandV1(
-    const std::shared_ptr<const DateValidatedProfileHandleV1>& profile,
-    const DateTextOperandV1& operand,
+DateValueResultV3 ParseCanonicalDateOperandV3(
+    const std::shared_ptr<const DateValidatedProfileHandleV3>& profile,
+    const DateTextOperandV3& operand,
     bool null_allowed) noexcept {
   if (profile == nullptr || !ProfileValidNoAlloc(*profile))
-    return Failure<DateValueResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+    return Failure<DateValueResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                       "parse_profile_invalid");
   if (!ExactPeerIdentity(operand.identity, CanonicalTypeId::character) ||
       operand.descriptor == nullptr ||
       !DescriptorBindsIdentity(*operand.descriptor, *operand.identity,
                                CanonicalTypeId::character) ||
       !ExactCharacterDescriptor(*operand.descriptor, profile->receipt))
-    return Failure<DateValueResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+    return Failure<DateValueResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                       "text_operand_authority_invalid");
-  if (operand.state != DateValueStateV1::value &&
-      operand.state != DateValueStateV1::sql_null)
-    return Failure<DateValueResultV1>("DATATYPE.NULL_STATE.INVALID",
+  if (operand.state != DateValueStateV3::value &&
+      operand.state != DateValueStateV3::sql_null)
+    return Failure<DateValueResultV3>("DATATYPE.NULL_STATE.INVALID",
                                       "text_operand_state_invalid");
-  if (operand.state == DateValueStateV1::sql_null) {
-    if (operand.carrier != DateTextCarrierKindV1::utf8_bytes ||
+  if (operand.state == DateValueStateV3::sql_null) {
+    if (operand.carrier != DateTextCarrierKindV3::utf8_bytes ||
         operand.extent != 0 || !operand.bytes.empty())
-      return Failure<DateValueResultV1>("DATATYPE.NULL_STATE.INVALID",
+      return Failure<DateValueResultV3>("DATATYPE.NULL_STATE.INVALID",
                                         "text_operand_dirty_null");
     if (!null_allowed)
-      return Failure<DateValueResultV1>("DATATYPE.NULL_NOT_ADMITTED",
+      return Failure<DateValueResultV3>("DATATYPE.NULL_NOT_ADMITTED",
                                         "parse_result_nonnullable");
-    auto result = Success<DateValueResultV1>();
-    result.value = {profile, DateValueStateV1::sql_null, 0};
+    auto result = Success<DateValueResultV3>();
+    result.value = {profile, DateValueStateV3::sql_null, 0};
     return result;
   }
-  if (operand.carrier != DateTextCarrierKindV1::utf8_bytes)
-    return Failure<DateValueResultV1>(
+  if (operand.carrier != DateTextCarrierKindV3::utf8_bytes)
+    return Failure<DateValueResultV3>(
         "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
         "text_operand_not_byte_sequence");
   if (operand.extent != operand.bytes.size())
-    return Failure<DateValueResultV1>(
+    return Failure<DateValueResultV3>(
         "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
         "text_operand_extent_mismatch");
   if (operand.extent > 16'777'216 ||
       (operand.descriptor->length != 0 &&
        operand.extent > operand.descriptor->length))
-    return Failure<DateValueResultV1>("CTI.TEMPORAL.RANGE_EXCEEDED",
+    return Failure<DateValueResultV3>("CTI.TEMPORAL.RANGE_EXCEEDED",
                                       "text_operand_extent_limit");
-  return ParseCanonicalDateV1(profile, operand.bytes, null_allowed);
+  return ParseCanonicalDateV3(profile, operand.bytes, null_allowed);
 }
 
-DateNoAllocWriteResultV1 RenderCanonicalDateIntoNoAllocV1(
-    const DateOwnedValueV1& owned_value, bool export_literal, char* output,
-    u64 output_capacity, const DateExecutionControlV1& control) noexcept {
+DateNoAllocWriteResultV3 RenderCanonicalDateIntoNoAllocV3(
+    const DateOwnedValueV3& owned_value, bool export_literal, char* output,
+    u64 output_capacity, const DateExecutionControlV3& control) noexcept {
   const auto value = owned_value.view();
-  const auto checked = ValidateDateValueViewV1(value, true);
+  const auto checked = ValidateDateValueViewV3(value, true);
   if (!checked.ok())
-    return Failure<DateNoAllocWriteResultV1>(checked.diagnostic.diagnostic_code,
+    return Failure<DateNoAllocWriteResultV3>(checked.diagnostic.diagnostic_code,
                                              checked.diagnostic.detail,
                                              checked.status);
-  auto result = Success<DateNoAllocWriteResultV1>();
-  const bool containing_null = value.state == DateValueStateV1::sql_null;
-  const auto civil = containing_null ? DateCivilV1{} : DaysToCivil(value.day);
+  auto result = Success<DateNoAllocWriteResultV3>();
+  const bool containing_null = value.state == DateValueStateV3::sql_null;
+  const auto civil = containing_null ? DateCivilV3{} : DaysToCivil(value.day);
   const u64 canonical_bytes = containing_null ? 0u
       : (civil.year >= 0 && civil.year <= 9999 ? 10u : 14u);
   const u64 required = containing_null ? 0u
@@ -1277,25 +1477,29 @@ DateNoAllocWriteResultV1 RenderCanonicalDateIntoNoAllocV1(
   if (output != nullptr &&
       (OutputOverlapsOwnedDateInput(owned_value, output, required) ||
        RangesOverlap(output, required, &control, sizeof(control))))
-    return Failure<DateNoAllocWriteResultV1>(
+    return Failure<DateNoAllocWriteResultV3>(
         "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
         "render_output_aliases_input_or_profile");
   if (required > output_capacity || (required != 0 && output == nullptr)) {
-    auto failure = Failure<DateNoAllocWriteResultV1>(
+    auto failure = Failure<DateNoAllocWriteResultV3>(
         "CTB.TEXT.LENGTH_EXCEEDED", "render_capacity");
     failure.bytes_required = required;
     return failure;
   }
   if (required > control.maximum_allocation_bytes) {
-    auto failure = Failure<DateNoAllocWriteResultV1>(
+    auto failure = Failure<DateNoAllocWriteResultV3>(
         "RESOURCE.BUDGET_EXCEEDED", "render_resource_grant", ResourceStatus());
     failure.bytes_required = required;
     return failure;
   }
   std::array<char, 15> canonical{};
-  ScopedSecureClear clear_canonical(canonical.data(), canonical.size());
+  ScopedSecureClear clear_canonical(
+      canonical.data(), canonical.size(), DateScrubClassV3::render_staging,
+      control.observe_scrubbed, control.scrub_observer_context);
   std::array<char, 21> staged{};
-  ScopedSecureClear clear_staged(staged.data(), staged.size());
+  ScopedSecureClear clear_staged(
+      staged.data(), staged.size(), DateScrubClassV3::render_staging,
+      control.observe_scrubbed, control.scrub_observer_context);
   std::size_t offset = 0;
   if (!containing_null) {
     const int written = civil.year >= 0 && civil.year <= 9999
@@ -1308,7 +1512,7 @@ DateNoAllocWriteResultV1 RenderCanonicalDateIntoNoAllocV1(
                             : static_cast<std::int64_t>(civil.year)),
                         civil.month, civil.day);
     if (written != static_cast<int>(canonical_bytes))
-      return Failure<DateNoAllocWriteResultV1>(
+      return Failure<DateNoAllocWriteResultV3>(
           "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID", "render_internal_extent");
     if (export_literal) {
       std::memcpy(staged.data(), "DATE '", 6);
@@ -1319,7 +1523,7 @@ DateNoAllocWriteResultV1 RenderCanonicalDateIntoNoAllocV1(
     if (export_literal) staged[offset++] = '\'';
   }
   if (Cancelled(control))
-    return Failure<DateNoAllocWriteResultV1>("PROCESS.CANCELLED",
+    return Failure<DateNoAllocWriteResultV3>("PROCESS.CANCELLED",
                                              "before_publication");
   if (offset != 0) std::memcpy(output, staged.data(), offset);
   result.bytes_written = offset;
@@ -1327,34 +1531,38 @@ DateNoAllocWriteResultV1 RenderCanonicalDateIntoNoAllocV1(
   return result;
 }
 
-DateTextResultV1 RenderCanonicalDateV1(
-    const DateOwnedValueV1& owned_value, bool export_literal,
-    const DateExecutionControlV1& control) noexcept {
+DateTextResultV3 RenderCanonicalDateV3(
+    const DateOwnedValueV3& owned_value, bool export_literal,
+    const DateExecutionControlV3& control) noexcept {
   const auto value = owned_value.view();
-  const auto checked = ValidateDateValueViewV1(value, true);
+  const auto checked = ValidateDateValueViewV3(value, true);
   if (!checked.ok())
-    return Failure<DateTextResultV1>(checked.diagnostic.diagnostic_code,
+    return Failure<DateTextResultV3>(checked.diagnostic.diagnostic_code,
                                      checked.diagnostic.detail, checked.status);
   u64 required = 0;
-  if (value.state == DateValueStateV1::value) {
+  if (value.state == DateValueStateV3::value) {
     const auto civil = DaysToCivil(value.day);
     required = (civil.year >= 0 && civil.year <= 9999 ? 10u : 14u) +
         (export_literal ? 7u : 0u);
   }
   auto profile_pin = owned_value.profile;
   if (required > control.maximum_allocation_bytes)
-    return Failure<DateTextResultV1>("RESOURCE.BUDGET_EXCEEDED",
+    return Failure<DateTextResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                      "render_resource_grant", ResourceStatus());
   if (Cancelled(control))
-    return Failure<DateTextResultV1>("PROCESS.CANCELLED", "before_work");
+    return Failure<DateTextResultV3>("PROCESS.CANCELLED", "before_work");
   std::array<char, 21> staged{};
-  ScopedSecureClear clear_staged(staged.data(), staged.size());
-  auto result = Success<DateTextResultV1>();
-  ScopedStringSecureClear clear_result(&result.text);
-  result.containing_null = value.state == DateValueStateV1::sql_null;
+  ScopedSecureClear clear_staged(
+      staged.data(), staged.size(), DateScrubClassV3::render_owned_buffer,
+      control.observe_scrubbed, control.scrub_observer_context);
+  auto result = Success<DateTextResultV3>();
+  ScopedStringSecureClear clear_result(
+      &result.text, DateScrubClassV3::render_owned_buffer,
+      control.observe_scrubbed, control.scrub_observer_context);
+  result.containing_null = value.state == DateValueStateV3::sql_null;
   if (result.containing_null) {
     if (Cancelled(control))
-      return Failure<DateTextResultV1>("PROCESS.CANCELLED",
+      return Failure<DateTextResultV3>("PROCESS.CANCELLED",
                                        "before_publication");
     clear_result.Disarm();
     return result;
@@ -1375,226 +1583,226 @@ DateTextResultV1 RenderCanonicalDateV1(
                           : static_cast<std::int64_t>(civil.year)),
                       civil.month, civil.day);
   if (written != 10 && written != 14)
-    return Failure<DateTextResultV1>(
+    return Failure<DateTextResultV3>(
         "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID", "render_internal_extent");
   offset += static_cast<std::size_t>(written);
   if (export_literal) staged[offset++] = '\'';
   try {
     result.text.assign(staged.data(), offset);
   } catch (...) {
-    return Failure<DateTextResultV1>("RESOURCE.BUDGET_EXCEEDED",
+    return Failure<DateTextResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                      "render_allocation", ResourceStatus());
   }
   if (Cancelled(control))
-    return Failure<DateTextResultV1>("PROCESS.CANCELLED", "before_publication");
+    return Failure<DateTextResultV3>("PROCESS.CANCELLED", "before_publication");
   clear_result.Disarm();
   return result;
 }
 
-DateValueResultV1 ValidateCanonicalDateV1(const DateOwnedValueV1& owned_value,
+DateValueResultV3 ValidateCanonicalDateV3(const DateOwnedValueV3& owned_value,
                                           bool null_allowed) noexcept {
   const auto value = owned_value.view();
-  const auto checked = ValidateDateValueViewV1(value, null_allowed);
+  const auto checked = ValidateDateValueViewV3(value, null_allowed);
   if (!checked.ok())
-    return Failure<DateValueResultV1>(checked.diagnostic.diagnostic_code,
+    return Failure<DateValueResultV3>(checked.diagnostic.diagnostic_code,
                                       checked.diagnostic.detail, checked.status);
-  auto result = Success<DateValueResultV1>();
+  auto result = Success<DateValueResultV3>();
   result.value = owned_value;
   return result;
 }
 
-DateValueResultV1 TruncateDateDayV1(const DateOwnedValueV1& value,
+DateValueResultV3 TruncateDateDayV3(const DateOwnedValueV3& value,
                                     bool null_allowed) noexcept {
-  return ValidateCanonicalDateV1(value, null_allowed);
+  return ValidateCanonicalDateV3(value, null_allowed);
 }
 
-DateValueResultV1 RoundDateDayV1(const DateOwnedValueV1& value,
+DateValueResultV3 RoundDateDayV3(const DateOwnedValueV3& value,
                                  bool null_allowed) noexcept {
-  return ValidateCanonicalDateV1(value, null_allowed);
+  return ValidateCanonicalDateV3(value, null_allowed);
 }
 
-DateIntrinsicDispositionV1 ClassifyDateIntrinsicOperationV1(
-    DateIntrinsicOperationV1 operation) noexcept {
+DateIntrinsicDispositionV3 ClassifyDateIntrinsicOperationV3(
+    DateIntrinsicOperationV3 operation) noexcept {
   const auto ordinal = static_cast<u8>(operation);
-  if (ordinal <= static_cast<u8>(DateIntrinsicOperationV1::round_day))
-    return DateIntrinsicDispositionV1::admitted;
-  if (operation == DateIntrinsicOperationV1::larger_truncate_round_or_bucket ||
-      operation == DateIntrinsicOperationV1::calendar_interval_or_cross_temporal)
-    return DateIntrinsicDispositionV1::registered_refused;
-  if (operation == DateIntrinsicOperationV1::aggregate_min_max_count_dispatch)
-    return DateIntrinsicDispositionV1::receiving_owner;
-  return DateIntrinsicDispositionV1::unknown;
+  if (ordinal <= static_cast<u8>(DateIntrinsicOperationV3::round_day))
+    return DateIntrinsicDispositionV3::admitted;
+  if (operation == DateIntrinsicOperationV3::larger_truncate_round_or_bucket ||
+      operation == DateIntrinsicOperationV3::calendar_interval_or_cross_temporal)
+    return DateIntrinsicDispositionV3::registered_refused;
+  if (operation == DateIntrinsicOperationV3::aggregate_min_max_count_dispatch)
+    return DateIntrinsicDispositionV3::receiving_owner;
+  return DateIntrinsicDispositionV3::unknown;
 }
 
-DateValueResultV1 RefuseDateIntrinsicOperationV1(
-    const DateValueViewV1& operand, DateIntrinsicOperationV1 operation) noexcept {
-  const auto checked = ValidateDateValueViewV1(operand, true);
+DateValueResultV3 RefuseDateIntrinsicOperationV3(
+    const DateValueViewV3& operand, DateIntrinsicOperationV3 operation) noexcept {
+  const auto checked = ValidateDateValueViewV3(operand, true);
   if (!checked.ok())
-    return Failure<DateValueResultV1>(checked.diagnostic.diagnostic_code,
+    return Failure<DateValueResultV3>(checked.diagnostic.diagnostic_code,
                                       checked.diagnostic.detail, checked.status);
-  if (ClassifyDateIntrinsicOperationV1(operation) ==
-      DateIntrinsicDispositionV1::registered_refused)
-    return Failure<DateValueResultV1>("CTI.INTERVAL.CALENDAR_OPERATION_REFUSED",
+  if (ClassifyDateIntrinsicOperationV3(operation) ==
+      DateIntrinsicDispositionV3::registered_refused)
+    return Failure<DateValueResultV3>("CTI.INTERVAL.CALENDAR_OPERATION_REFUSED",
                                       "registered_date_operation_refused");
-  return Failure<DateValueResultV1>("CTI.TEMPORAL.OPERATION_REFUSED",
+  return Failure<DateValueResultV3>("CTI.TEMPORAL.OPERATION_REFUSED",
                                     "date_operation_not_dispatchable_here");
 }
 
-DateValueResultV1 AddDateDaysV1(const DateOwnedValueV1& owned_value,
+DateValueResultV3 AddDateDaysV3(const DateOwnedValueV3& owned_value,
                                std::int64_t delta, bool null_allowed,
-                               const DateExecutionControlV1& control) noexcept {
-  return AddDateDaysV1(
+                               const DateExecutionControlV3& control) noexcept {
+  return AddDateDaysV3(
       owned_value,
-      {DateI64CarrierKindV1::signed_i64, DateValueStateV1::value, delta},
+      {DateI64CarrierKindV3::signed_i64, DateValueStateV3::value, delta},
       null_allowed, control);
 }
 
-DateValueResultV1 AddDateDaysV1(const DateOwnedValueV1& owned_value,
-                               const DateNullableI64FactV1& delta,
+DateValueResultV3 AddDateDaysV3(const DateOwnedValueV3& owned_value,
+                               const DateNullableI64FactV3& delta,
                                bool null_allowed,
-                               const DateExecutionControlV1& control) noexcept {
+                               const DateExecutionControlV3& control) noexcept {
   const auto value = owned_value.view();
-  const auto checked = ValidateDateValueViewV1(value, true);
+  const auto checked = ValidateDateValueViewV3(value, true);
   if (!checked.ok())
-    return Failure<DateValueResultV1>(checked.diagnostic.diagnostic_code,
+    return Failure<DateValueResultV3>(checked.diagnostic.diagnostic_code,
                                       checked.diagnostic.detail, checked.status);
-  if (delta.state != DateValueStateV1::value &&
-      delta.state != DateValueStateV1::sql_null)
-    return Failure<DateValueResultV1>("DATATYPE.NULL_STATE.INVALID",
+  if (delta.state != DateValueStateV3::value &&
+      delta.state != DateValueStateV3::sql_null)
+    return Failure<DateValueResultV3>("DATATYPE.NULL_STATE.INVALID",
                                       "date_delta_state_invalid");
-  if (delta.state == DateValueStateV1::sql_null &&
-      (delta.carrier != DateI64CarrierKindV1::signed_i64 || delta.value != 0))
-    return Failure<DateValueResultV1>("DATATYPE.NULL_STATE.INVALID",
+  if (delta.state == DateValueStateV3::sql_null &&
+      (delta.carrier != DateI64CarrierKindV3::signed_i64 || delta.value != 0))
+    return Failure<DateValueResultV3>("DATATYPE.NULL_STATE.INVALID",
                                       "date_delta_dirty_null");
-  if (value.state == DateValueStateV1::sql_null ||
-      delta.state == DateValueStateV1::sql_null) {
+  if (value.state == DateValueStateV3::sql_null ||
+      delta.state == DateValueStateV3::sql_null) {
     if (!null_allowed)
-      return Failure<DateValueResultV1>("DATATYPE.NULL_NOT_ADMITTED",
+      return Failure<DateValueResultV3>("DATATYPE.NULL_NOT_ADMITTED",
                                         "date_add_result_nonnullable");
-    DateOwnedValueV1 staged{owned_value.profile, DateValueStateV1::sql_null, 0};
+    DateOwnedValueV3 staged{owned_value.profile, DateValueStateV3::sql_null, 0};
     ScopedOwnedDateValueClear clear_staged(&staged);
     if (Cancelled(control)) {
-      return Failure<DateValueResultV1>("PROCESS.CANCELLED",
+      return Failure<DateValueResultV3>("PROCESS.CANCELLED",
                                         "before_atomic_publication");
     }
-    auto result = Success<DateValueResultV1>();
+    auto result = Success<DateValueResultV3>();
     result.value = std::move(staged);
     return result;
   }
-  if (delta.carrier != DateI64CarrierKindV1::signed_i64)
-    return Failure<DateValueResultV1>(
+  if (delta.carrier != DateI64CarrierKindV3::signed_i64)
+    return Failure<DateValueResultV3>(
         "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
         "date_delta_not_signed_i64");
   const auto current = static_cast<std::int64_t>(value.day);
   if (delta.value > std::numeric_limits<std::int32_t>::max() - current ||
       delta.value < std::numeric_limits<std::int32_t>::min() - current)
-    return Failure<DateValueResultV1>("CTI.TEMPORAL.RANGE_EXCEEDED",
+    return Failure<DateValueResultV3>("CTI.TEMPORAL.RANGE_EXCEEDED",
                                       "date_add_range");
-  DateOwnedValueV1 staged{owned_value.profile, DateValueStateV1::value,
+  DateOwnedValueV3 staged{owned_value.profile, DateValueStateV3::value,
                           static_cast<std::int32_t>(current + delta.value)};
   ScopedOwnedDateValueClear clear_staged(&staged);
   if (Cancelled(control)) {
-    return Failure<DateValueResultV1>("PROCESS.CANCELLED",
+    return Failure<DateValueResultV3>("PROCESS.CANCELLED",
                                       "before_atomic_publication");
   }
-  auto result = Success<DateValueResultV1>();
+  auto result = Success<DateValueResultV3>();
   result.value = std::move(staged);
   return result;
 }
 
-DateValueResultV1 SubtractDateDaysV1(const DateOwnedValueV1& owned_value,
+DateValueResultV3 SubtractDateDaysV3(const DateOwnedValueV3& owned_value,
                                     std::int64_t delta, bool null_allowed,
-                                    const DateExecutionControlV1& control) noexcept {
-  return SubtractDateDaysV1(
+                                    const DateExecutionControlV3& control) noexcept {
+  return SubtractDateDaysV3(
       owned_value,
-      {DateI64CarrierKindV1::signed_i64, DateValueStateV1::value, delta},
+      {DateI64CarrierKindV3::signed_i64, DateValueStateV3::value, delta},
       null_allowed, control);
 }
 
-DateValueResultV1 SubtractDateDaysV1(const DateOwnedValueV1& owned_value,
-                                    const DateNullableI64FactV1& delta,
+DateValueResultV3 SubtractDateDaysV3(const DateOwnedValueV3& owned_value,
+                                    const DateNullableI64FactV3& delta,
                                     bool null_allowed,
-                                    const DateExecutionControlV1& control) noexcept {
+                                    const DateExecutionControlV3& control) noexcept {
   const auto value = owned_value.view();
-  const auto checked = ValidateDateValueViewV1(value, true);
+  const auto checked = ValidateDateValueViewV3(value, true);
   if (!checked.ok())
-    return Failure<DateValueResultV1>(checked.diagnostic.diagnostic_code,
+    return Failure<DateValueResultV3>(checked.diagnostic.diagnostic_code,
                                       checked.diagnostic.detail, checked.status);
-  if (delta.state != DateValueStateV1::value &&
-      delta.state != DateValueStateV1::sql_null)
-    return Failure<DateValueResultV1>("DATATYPE.NULL_STATE.INVALID",
+  if (delta.state != DateValueStateV3::value &&
+      delta.state != DateValueStateV3::sql_null)
+    return Failure<DateValueResultV3>("DATATYPE.NULL_STATE.INVALID",
                                       "date_delta_state_invalid");
-  if (delta.state == DateValueStateV1::sql_null &&
-      (delta.carrier != DateI64CarrierKindV1::signed_i64 || delta.value != 0))
-    return Failure<DateValueResultV1>("DATATYPE.NULL_STATE.INVALID",
+  if (delta.state == DateValueStateV3::sql_null &&
+      (delta.carrier != DateI64CarrierKindV3::signed_i64 || delta.value != 0))
+    return Failure<DateValueResultV3>("DATATYPE.NULL_STATE.INVALID",
                                       "date_delta_dirty_null");
-  if (value.state == DateValueStateV1::sql_null ||
-      delta.state == DateValueStateV1::sql_null) {
+  if (value.state == DateValueStateV3::sql_null ||
+      delta.state == DateValueStateV3::sql_null) {
     if (!null_allowed)
-      return Failure<DateValueResultV1>("DATATYPE.NULL_NOT_ADMITTED",
+      return Failure<DateValueResultV3>("DATATYPE.NULL_NOT_ADMITTED",
                                         "date_subtract_result_nonnullable");
-    DateOwnedValueV1 staged{owned_value.profile, DateValueStateV1::sql_null, 0};
+    DateOwnedValueV3 staged{owned_value.profile, DateValueStateV3::sql_null, 0};
     ScopedOwnedDateValueClear clear_staged(&staged);
     if (Cancelled(control)) {
-      return Failure<DateValueResultV1>("PROCESS.CANCELLED",
+      return Failure<DateValueResultV3>("PROCESS.CANCELLED",
                                         "before_atomic_publication");
     }
-    auto result = Success<DateValueResultV1>();
+    auto result = Success<DateValueResultV3>();
     result.value = std::move(staged);
     return result;
   }
-  if (delta.carrier != DateI64CarrierKindV1::signed_i64)
-    return Failure<DateValueResultV1>(
+  if (delta.carrier != DateI64CarrierKindV3::signed_i64)
+    return Failure<DateValueResultV3>(
         "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
         "date_delta_not_signed_i64");
   const auto current = static_cast<std::int64_t>(value.day);
   if (delta.value > current - std::numeric_limits<std::int32_t>::min() ||
       delta.value < current - std::numeric_limits<std::int32_t>::max())
-    return Failure<DateValueResultV1>("CTI.TEMPORAL.RANGE_EXCEEDED",
+    return Failure<DateValueResultV3>("CTI.TEMPORAL.RANGE_EXCEEDED",
                                       "date_subtract_range");
-  DateOwnedValueV1 staged{owned_value.profile, DateValueStateV1::value,
+  DateOwnedValueV3 staged{owned_value.profile, DateValueStateV3::value,
                           static_cast<std::int32_t>(current - delta.value)};
   ScopedOwnedDateValueClear clear_staged(&staged);
   if (Cancelled(control)) {
-    return Failure<DateValueResultV1>("PROCESS.CANCELLED",
+    return Failure<DateValueResultV3>("PROCESS.CANCELLED",
                                       "before_atomic_publication");
   }
-  auto result = Success<DateValueResultV1>();
+  auto result = Success<DateValueResultV3>();
   result.value = std::move(staged);
   return result;
 }
 
-DateValueResultV1 DateSuccessorV1(const DateOwnedValueV1& value,
+DateValueResultV3 DateSuccessorV3(const DateOwnedValueV3& value,
                                  bool null_allowed,
-                                 const DateExecutionControlV1& control) noexcept {
-  return AddDateDaysV1(value, 1, null_allowed, control);
+                                 const DateExecutionControlV3& control) noexcept {
+  return AddDateDaysV3(value, 1, null_allowed, control);
 }
 
-DateValueResultV1 DatePredecessorV1(const DateOwnedValueV1& value,
+DateValueResultV3 DatePredecessorV3(const DateOwnedValueV3& value,
                                    bool null_allowed,
-                                   const DateExecutionControlV1& control) noexcept {
-  return SubtractDateDaysV1(value, 1, null_allowed, control);
+                                   const DateExecutionControlV3& control) noexcept {
+  return SubtractDateDaysV3(value, 1, null_allowed, control);
 }
 
-DateScalarResultV1 DifferenceDateDaysV1(const DateValueViewV1& left,
-                                       const DateValueViewV1& right,
+DateScalarResultV3 DifferenceDateDaysV3(const DateValueViewV3& left,
+                                       const DateValueViewV3& right,
                                        bool null_allowed) noexcept {
-  const auto left_checked = ValidateDateValueViewV1(left, true);
+  const auto left_checked = ValidateDateValueViewV3(left, true);
   if (!left_checked.ok())
-    return Failure<DateScalarResultV1>(left_checked.diagnostic.diagnostic_code,
+    return Failure<DateScalarResultV3>(left_checked.diagnostic.diagnostic_code,
                                        left_checked.diagnostic.detail, left_checked.status);
-  const auto right_checked = ValidateDateValueViewV1(right, true);
+  const auto right_checked = ValidateDateValueViewV3(right, true);
   if (!right_checked.ok())
-    return Failure<DateScalarResultV1>(right_checked.diagnostic.diagnostic_code,
+    return Failure<DateScalarResultV3>(right_checked.diagnostic.diagnostic_code,
                                        right_checked.diagnostic.detail, right_checked.status);
   if (left.profile->comparison_fingerprint != right.profile->comparison_fingerprint)
-    return Failure<DateScalarResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+    return Failure<DateScalarResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                        "comparison_cohort_mismatch");
-  auto result = Success<DateScalarResultV1>();
-  if (left.state == DateValueStateV1::sql_null ||
-      right.state == DateValueStateV1::sql_null) {
+  auto result = Success<DateScalarResultV3>();
+  if (left.state == DateValueStateV3::sql_null ||
+      right.state == DateValueStateV3::sql_null) {
     if (!null_allowed)
-      return Failure<DateScalarResultV1>("DATATYPE.NULL_NOT_ADMITTED",
+      return Failure<DateScalarResultV3>("DATATYPE.NULL_NOT_ADMITTED",
                                          "date_difference_result_nonnullable");
     result.is_null = true;
     return result;
@@ -1604,50 +1812,50 @@ DateScalarResultV1 DifferenceDateDaysV1(const DateValueViewV1& left,
   return result;
 }
 
-DateScalarResultV1 DateIsLeapYearV1(const DateValueViewV1& value,
+DateScalarResultV3 DateIsLeapYearV3(const DateValueViewV3& value,
                                    bool null_allowed) noexcept {
-  const auto civil = DecomposeDateCivilV1(value, null_allowed);
+  const auto civil = DecomposeDateCivilV3(value, null_allowed);
   if (!civil.ok())
-    return Failure<DateScalarResultV1>(civil.diagnostic.diagnostic_code,
+    return Failure<DateScalarResultV3>(civil.diagnostic.diagnostic_code,
                                        "decompose_failed", civil.status);
-  auto result = Success<DateScalarResultV1>();
+  auto result = Success<DateScalarResultV3>();
   result.is_null = civil.is_null;
   result.boolean_value = !civil.is_null && Leap(civil.civil.year);
   result.signed_value = result.boolean_value ? 1 : 0;
   return result;
 }
 
-DateScalarResultV1 DateDaysInMonthV1(const DateValueViewV1& value,
+DateScalarResultV3 DateDaysInMonthV3(const DateValueViewV3& value,
                                     bool null_allowed) noexcept {
-  const auto civil = DecomposeDateCivilV1(value, null_allowed);
+  const auto civil = DecomposeDateCivilV3(value, null_allowed);
   if (!civil.ok())
-    return Failure<DateScalarResultV1>(civil.diagnostic.diagnostic_code,
+    return Failure<DateScalarResultV3>(civil.diagnostic.diagnostic_code,
                                        "decompose_failed", civil.status);
-  auto result = Success<DateScalarResultV1>();
+  auto result = Success<DateScalarResultV3>();
   result.is_null = civil.is_null;
   if (!civil.is_null) result.signed_value = DaysInMonth(civil.civil.year, civil.civil.month);
   return result;
 }
 
-DateScalarResultV1 DateIsoWeekdayV1(const DateValueViewV1& value,
+DateScalarResultV3 DateIsoWeekdayV3(const DateValueViewV3& value,
                                    bool null_allowed) noexcept {
-  const auto checked = ValidateDateValueViewV1(value, null_allowed);
+  const auto checked = ValidateDateValueViewV3(value, null_allowed);
   if (!checked.ok())
-    return Failure<DateScalarResultV1>(checked.diagnostic.diagnostic_code,
+    return Failure<DateScalarResultV3>(checked.diagnostic.diagnostic_code,
                                        checked.diagnostic.detail, checked.status);
-  auto result = Success<DateScalarResultV1>();
-  result.is_null = value.state == DateValueStateV1::sql_null;
+  auto result = Success<DateScalarResultV3>();
+  result.is_null = value.state == DateValueStateV3::sql_null;
   if (!result.is_null) result.signed_value = FloorMod(static_cast<std::int64_t>(value.day) + 3, 7) + 1;
   return result;
 }
 
-DateScalarResultV1 DateDayOfYearV1(const DateValueViewV1& value,
+DateScalarResultV3 DateDayOfYearV3(const DateValueViewV3& value,
                                   bool null_allowed) noexcept {
-  const auto civil = DecomposeDateCivilV1(value, null_allowed);
+  const auto civil = DecomposeDateCivilV3(value, null_allowed);
   if (!civil.ok())
-    return Failure<DateScalarResultV1>(civil.diagnostic.diagnostic_code,
+    return Failure<DateScalarResultV3>(civil.diagnostic.diagnostic_code,
                                        "decompose_failed", civil.status);
-  auto result = Success<DateScalarResultV1>();
+  auto result = Success<DateScalarResultV3>();
   result.is_null = civil.is_null;
   if (!civil.is_null) {
     std::int64_t first = 0;
@@ -1657,26 +1865,26 @@ DateScalarResultV1 DateDayOfYearV1(const DateValueViewV1& value,
   return result;
 }
 
-DateScalarResultV1 DateQuarterV1(const DateValueViewV1& value,
+DateScalarResultV3 DateQuarterV3(const DateValueViewV3& value,
                                 bool null_allowed) noexcept {
-  const auto civil = DecomposeDateCivilV1(value, null_allowed);
+  const auto civil = DecomposeDateCivilV3(value, null_allowed);
   if (!civil.ok())
-    return Failure<DateScalarResultV1>(civil.diagnostic.diagnostic_code,
+    return Failure<DateScalarResultV3>(civil.diagnostic.diagnostic_code,
                                        "decompose_failed", civil.status);
-  auto result = Success<DateScalarResultV1>();
+  auto result = Success<DateScalarResultV3>();
   result.is_null = civil.is_null;
   if (!civil.is_null) result.signed_value = 1 + (civil.civil.month - 1) / 3;
   return result;
 }
 
-DateIsoWeekResultV1 DateIsoWeekV1(const DateValueViewV1& value,
+DateIsoWeekResultV3 DateIsoWeekV3(const DateValueViewV3& value,
                                  bool null_allowed) noexcept {
-  const auto checked = ValidateDateValueViewV1(value, null_allowed);
+  const auto checked = ValidateDateValueViewV3(value, null_allowed);
   if (!checked.ok())
-    return Failure<DateIsoWeekResultV1>(checked.diagnostic.diagnostic_code,
+    return Failure<DateIsoWeekResultV3>(checked.diagnostic.diagnostic_code,
                                         checked.diagnostic.detail, checked.status);
-  auto result = Success<DateIsoWeekResultV1>();
-  if (value.state == DateValueStateV1::sql_null) {
+  auto result = Success<DateIsoWeekResultV3>();
+  if (value.state == DateValueStateV3::sql_null) {
     result.is_null = true;
     return result;
   }
@@ -1695,256 +1903,270 @@ DateIsoWeekResultV1 DateIsoWeekV1(const DateValueViewV1& value,
 }
 
 namespace {
-DateComparisonResultV1 CompareDateValuesResolvedCohort(
-    const DateValueViewV1& left, const DateValueViewV1& right,
+DateComparisonResultV3 CompareDateValuesResolvedCohort(
+    const DateValueViewV3& left, const DateValueViewV3& right,
     const std::array<byte, 32>& right_comparison_fingerprint) noexcept {
   if (left.profile == nullptr || !ProfileValidNoAlloc(*left.profile) ||
       right.profile == nullptr || !ProfileValidNoAlloc(*right.profile))
-    return Failure<DateComparisonResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+    return Failure<DateComparisonResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                            "comparison_profile_invalid");
-  if ((left.state != DateValueStateV1::value &&
-       left.state != DateValueStateV1::sql_null) ||
-      (left.state == DateValueStateV1::sql_null && left.day != 0))
-    return Failure<DateComparisonResultV1>("DATATYPE.NULL_STATE.INVALID",
+  if ((left.state != DateValueStateV3::value &&
+       left.state != DateValueStateV3::sql_null) ||
+      (left.state == DateValueStateV3::sql_null && left.day != 0))
+    return Failure<DateComparisonResultV3>("DATATYPE.NULL_STATE.INVALID",
                                            "comparison_left_state_invalid");
-  if ((right.state != DateValueStateV1::value &&
-       right.state != DateValueStateV1::sql_null) ||
-      (right.state == DateValueStateV1::sql_null && right.day != 0))
-    return Failure<DateComparisonResultV1>("DATATYPE.NULL_STATE.INVALID",
+  if ((right.state != DateValueStateV3::value &&
+       right.state != DateValueStateV3::sql_null) ||
+      (right.state == DateValueStateV3::sql_null && right.day != 0))
+    return Failure<DateComparisonResultV3>("DATATYPE.NULL_STATE.INVALID",
                                            "comparison_right_state_invalid");
   if (left.profile->comparison_fingerprint != right_comparison_fingerprint)
-    return Failure<DateComparisonResultV1>("CTI.TEMPORAL.ORDERING_REFUSED",
+    return Failure<DateComparisonResultV3>("CTI.TEMPORAL.ORDERING_REFUSED",
                                            "comparison_cohort_mismatch");
-  auto result = Success<DateComparisonResultV1>();
-  if (left.state == DateValueStateV1::sql_null || right.state == DateValueStateV1::sql_null) {
-    result.fact = DateComparisonFactV1::unordered_null;
+  auto result = Success<DateComparisonResultV3>();
+  if (left.state == DateValueStateV3::sql_null || right.state == DateValueStateV3::sql_null) {
+    result.fact = DateComparisonFactV3::unordered_null;
     result.null_equivalent = left.state == right.state;
     result.grouping_equivalent = result.null_equivalent;
     return result;
   }
-  result.fact = left.day < right.day ? DateComparisonFactV1::less
-      : left.day > right.day ? DateComparisonFactV1::greater
-                             : DateComparisonFactV1::equal;
-  result.grouping_equivalent = result.fact == DateComparisonFactV1::equal;
+  result.fact = left.day < right.day ? DateComparisonFactV3::less
+      : left.day > right.day ? DateComparisonFactV3::greater
+                             : DateComparisonFactV3::equal;
+  result.grouping_equivalent = result.fact == DateComparisonFactV3::equal;
   return result;
 }
 }  // namespace
 
-DateComparisonResultV1 CompareDateValuesV1(const DateValueViewV1& left,
-                                           const DateValueViewV1& right) noexcept {
+DateComparisonResultV3 CompareDateValuesV3(const DateValueViewV3& left,
+                                           const DateValueViewV3& right) noexcept {
   const std::array<byte, 32> unresolved{};
   return CompareDateValuesResolvedCohort(
       left, right,
       right.profile == nullptr ? unresolved : right.profile->comparison_fingerprint);
 }
 
-DateComparisonResultV1 CompareDateValuesWithValidatedCohortForConformanceV1(
-    const DateValueViewV1& left, const DateValueViewV1& right,
+DateComparisonResultV3 CompareDateValuesWithValidatedCohortForConformanceV3(
+    const DateValueViewV3& left, const DateValueViewV3& right,
     const std::array<byte, 32>& validated_right_comparison_fingerprint) noexcept {
   return CompareDateValuesResolvedCohort(
       left, right, validated_right_comparison_fingerprint);
 }
 
-DateNoAllocWriteResultV1 HashDateValueIntoNoAllocV1(
-    const DateOwnedValueV1& owned_value, byte* output, u64 output_capacity,
-    const DateExecutionControlV1& control) noexcept {
+DateNoAllocWriteResultV3 HashDateValueIntoNoAllocV3(
+    const DateOwnedValueV3& owned_value, byte* output, u64 output_capacity,
+    const DateExecutionControlV3& control) noexcept {
   const auto value = owned_value.view();
-  const auto checked = ValidateDateValueViewV1(value, true);
+  const auto checked = ValidateDateValueViewV3(value, true);
   if (!checked.ok())
-    return Failure<DateNoAllocWriteResultV1>(checked.diagnostic.diagnostic_code,
+    return Failure<DateNoAllocWriteResultV3>(checked.diagnostic.diagnostic_code,
                                              checked.diagnostic.detail,
                                              checked.status);
   auto profile_pin = owned_value.profile;
   if (output != nullptr &&
-      (OutputOverlapsOwnedDateInput(owned_value, output, kDateHashBytesV1) ||
-       RangesOverlap(output, kDateHashBytesV1, &control, sizeof(control))))
-    return Failure<DateNoAllocWriteResultV1>(
+      (OutputOverlapsOwnedDateInput(owned_value, output, kDateHashBytesV3) ||
+       RangesOverlap(output, kDateHashBytesV3, &control, sizeof(control))))
+    return Failure<DateNoAllocWriteResultV3>(
         "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
         "hash_output_aliases_input_or_profile");
-  if (output_capacity < kDateHashBytesV1 ||
-      control.maximum_allocation_bytes < kDateHashBytesV1 || output == nullptr) {
-    auto failure = Failure<DateNoAllocWriteResultV1>(
+  if (output_capacity < kDateHashBytesV3 ||
+      control.maximum_allocation_bytes < kDateHashBytesV3 || output == nullptr) {
+    auto failure = Failure<DateNoAllocWriteResultV3>(
         "RESOURCE.BUDGET_EXCEEDED", "hash_capacity", ResourceStatus());
-    failure.bytes_required = kDateHashBytesV1;
+    failure.bytes_required = kDateHashBytesV3;
     return failure;
   }
   std::array<byte, 105> preimage{};
-  ScopedSecureClear clear_preimage(preimage.data(), preimage.size());
+  ScopedSecureClear clear_preimage(
+      preimage.data(), preimage.size(), DateScrubClassV3::hash_preimage,
+      control.observe_scrubbed, control.scrub_observer_context);
   std::memcpy(preimage.data(), "SBDATH01", 8);
   PutUuid(preimage.data() + 8, value.profile->receipt.catalog_snapshot_uuid);
   StoreLittle64(preimage.data() + 24, value.profile->receipt.catalog_generation);
   StoreLittle64(preimage.data() + 32, value.profile->receipt.registry_generation);
   std::memcpy(preimage.data() + 40, value.profile->comparison_fingerprint.data(), 32);
   PutPolicy(preimage.data() + 72, value.profile->identity.hash_policy);
-  preimage[96] = value.state == DateValueStateV1::sql_null ? 0 : 1;
+  preimage[96] = value.state == DateValueStateV3::sql_null ? 0 : 1;
   StoreLittle32(preimage.data() + 97,
-                value.state == DateValueStateV1::sql_null ? 0u : 4u);
+                value.state == DateValueStateV3::sql_null ? 0u : 4u);
   std::size_t extent = 101;
-  if (value.state == DateValueStateV1::value) {
+  if (value.state == DateValueStateV3::value) {
     StoreLittle32(preimage.data() + 101, static_cast<u32>(value.day));
     extent = 105;
   }
   std::array<byte, 32> digest{};
-  ScopedSecureClear clear_digest(digest.data(), digest.size());
-  if (!Digest(std::span<const byte>(preimage.data(), extent), &digest))
-    return Failure<DateNoAllocWriteResultV1>("RESOURCE.BUDGET_EXCEEDED",
+  ScopedSecureClear clear_digest(
+      digest.data(), digest.size(), DateScrubClassV3::hash_digest,
+      control.observe_scrubbed, control.scrub_observer_context);
+  if (!Digest(std::span<const byte>(preimage.data(), extent), &digest, &control))
+    return Failure<DateNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                              "hash_provider", ResourceStatus());
   if (Cancelled(control))
-    return Failure<DateNoAllocWriteResultV1>("PROCESS.CANCELLED",
+    return Failure<DateNoAllocWriteResultV3>("PROCESS.CANCELLED",
                                              "before_publication");
   std::memcpy(output, digest.data(), digest.size());
-  auto result = Success<DateNoAllocWriteResultV1>();
+  auto result = Success<DateNoAllocWriteResultV3>();
   result.bytes_required = digest.size();
   result.bytes_written = digest.size();
   return result;
 }
 
-DateBytesResultV1 HashDateValueV1(const DateOwnedValueV1& value) noexcept {
-  return HashDateValueV1(value, {});
+DateBytesResultV3 HashDateValueV3(const DateOwnedValueV3& value) noexcept {
+  return HashDateValueV3(value, {});
 }
 
-DateBytesResultV1 HashDateValueV1(
-    const DateOwnedValueV1& owned_value,
-    const DateExecutionControlV1& control) noexcept {
+DateBytesResultV3 HashDateValueV3(
+    const DateOwnedValueV3& owned_value,
+    const DateExecutionControlV3& control) noexcept {
   const auto value = owned_value.view();
-  const auto checked = ValidateDateValueViewV1(value, true);
+  const auto checked = ValidateDateValueViewV3(value, true);
   if (!checked.ok())
-    return Failure<DateBytesResultV1>(checked.diagnostic.diagnostic_code,
+    return Failure<DateBytesResultV3>(checked.diagnostic.diagnostic_code,
                                       checked.diagnostic.detail, checked.status);
   auto profile_pin = owned_value.profile;
-  if (kDateHashBytesV1 > control.maximum_allocation_bytes)
-    return Failure<DateBytesResultV1>("RESOURCE.BUDGET_EXCEEDED",
+  if (kDateHashBytesV3 > control.maximum_allocation_bytes)
+    return Failure<DateBytesResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                       "hash_capacity", ResourceStatus());
   if (Cancelled(control))
-    return Failure<DateBytesResultV1>("PROCESS.CANCELLED", "before_work");
+    return Failure<DateBytesResultV3>("PROCESS.CANCELLED", "before_work");
   std::array<byte, 105> preimage{};
-  ScopedSecureClear clear_preimage(preimage.data(), preimage.size());
+  ScopedSecureClear clear_preimage(
+      preimage.data(), preimage.size(), DateScrubClassV3::hash_preimage,
+      control.observe_scrubbed, control.scrub_observer_context);
   std::memcpy(preimage.data(), "SBDATH01", 8);
   PutUuid(preimage.data() + 8, value.profile->receipt.catalog_snapshot_uuid);
   StoreLittle64(preimage.data() + 24, value.profile->receipt.catalog_generation);
   StoreLittle64(preimage.data() + 32, value.profile->receipt.registry_generation);
   std::memcpy(preimage.data() + 40, value.profile->comparison_fingerprint.data(), 32);
   PutPolicy(preimage.data() + 72, value.profile->identity.hash_policy);
-  preimage[96] = value.state == DateValueStateV1::sql_null ? 0 : 1;
+  preimage[96] = value.state == DateValueStateV3::sql_null ? 0 : 1;
   StoreLittle32(preimage.data() + 97,
-                value.state == DateValueStateV1::sql_null ? 0u : 4u);
+                value.state == DateValueStateV3::sql_null ? 0u : 4u);
   std::size_t extent = 101;
-  if (value.state == DateValueStateV1::value) {
+  if (value.state == DateValueStateV3::value) {
     StoreLittle32(preimage.data() + 101, static_cast<u32>(value.day));
     extent = 105;
   }
-  std::array<byte, kDateHashBytesV1> staged{};
-  ScopedSecureClear clear_staged(staged.data(), staged.size());
-  if (!Digest(std::span<const byte>(preimage.data(), extent), &staged))
-    return Failure<DateBytesResultV1>("RESOURCE.BUDGET_EXCEEDED",
+  std::array<byte, kDateHashBytesV3> staged{};
+  ScopedSecureClear clear_staged(
+      staged.data(), staged.size(), DateScrubClassV3::hash_digest,
+      control.observe_scrubbed, control.scrub_observer_context);
+  if (!Digest(std::span<const byte>(preimage.data(), extent), &staged, &control))
+    return Failure<DateBytesResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                       "hash_provider", ResourceStatus());
-  auto result = Success<DateBytesResultV1>();
-  ScopedVectorSecureClear<byte> clear_result(&result.bytes);
+  auto result = Success<DateBytesResultV3>();
+  ScopedVectorSecureClear<byte> clear_result(
+      &result.bytes, DateScrubClassV3::hash_owned_buffer,
+      control.observe_scrubbed, control.scrub_observer_context);
   try { result.bytes.assign(staged.begin(), staged.end()); }
   catch (...) {
-    return Failure<DateBytesResultV1>("RESOURCE.BUDGET_EXCEEDED",
+    return Failure<DateBytesResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                       "hash_allocation", ResourceStatus());
   }
   if (Cancelled(control))
-    return Failure<DateBytesResultV1>("PROCESS.CANCELLED",
+    return Failure<DateBytesResultV3>("PROCESS.CANCELLED",
                                       "before_publication");
   clear_result.Disarm();
   return result;
 }
 
-DateNoAllocWriteResultV1 MakeDateSortKeyIntoNoAllocV1(
-    const DateOwnedValueV1& owned_value, DateSortDirectionV1 direction,
-    DateNullModeV1 null_mode, byte* output, u64 output_capacity,
-    const DateExecutionControlV1& control) noexcept {
+DateNoAllocWriteResultV3 MakeDateSortKeyIntoNoAllocV3(
+    const DateOwnedValueV3& owned_value, DateSortDirectionV3 direction,
+    DateNullModeV3 null_mode, byte* output, u64 output_capacity,
+    const DateExecutionControlV3& control) noexcept {
   const auto value = owned_value.view();
   if (value.profile == nullptr || !ProfileValidNoAlloc(*value.profile))
-    return Failure<DateNoAllocWriteResultV1>(
+    return Failure<DateNoAllocWriteResultV3>(
         "CTI.TEMPORAL.DESCRIPTOR_INVALID", "key_profile_invalid");
-  if ((direction != DateSortDirectionV1::ascending && direction != DateSortDirectionV1::descending) ||
-      (null_mode != DateNullModeV1::nulls_first && null_mode != DateNullModeV1::nulls_last))
-    return Failure<DateNoAllocWriteResultV1>("CTI.TEMPORAL.INDEX_KEY_REFUSED",
+  if ((direction != DateSortDirectionV3::ascending && direction != DateSortDirectionV3::descending) ||
+      (null_mode != DateNullModeV3::nulls_first && null_mode != DateNullModeV3::nulls_last))
+    return Failure<DateNoAllocWriteResultV3>("CTI.TEMPORAL.INDEX_KEY_REFUSED",
                                              "sort_mode_invalid");
-  const auto checked = ValidateDateValueViewV1(value, true);
+  const auto checked = ValidateDateValueViewV3(value, true);
   if (!checked.ok())
-    return Failure<DateNoAllocWriteResultV1>(checked.diagnostic.diagnostic_code,
+    return Failure<DateNoAllocWriteResultV3>(checked.diagnostic.diagnostic_code,
                                              checked.diagnostic.detail,
                                              checked.status);
-  const std::size_t extent = value.state == DateValueStateV1::sql_null
-      ? kDateNullSortKeyBytesV1 : kDateValueSortKeyBytesV1;
+  const std::size_t extent = value.state == DateValueStateV3::sql_null
+      ? kDateNullSortKeyBytesV3 : kDateValueSortKeyBytesV3;
   auto profile_pin = owned_value.profile;
   if (output != nullptr &&
       (OutputOverlapsOwnedDateInput(owned_value, output, extent) ||
        RangesOverlap(output, extent, &control, sizeof(control))))
-    return Failure<DateNoAllocWriteResultV1>(
+    return Failure<DateNoAllocWriteResultV3>(
         "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
         "sort_key_output_aliases_input_or_profile");
   if (extent > output_capacity || extent > control.maximum_allocation_bytes ||
       output == nullptr) {
-    auto failure = Failure<DateNoAllocWriteResultV1>(
+    auto failure = Failure<DateNoAllocWriteResultV3>(
         "RESOURCE.BUDGET_EXCEEDED", "sort_key_capacity", ResourceStatus());
     failure.bytes_required = extent;
     return failure;
   }
-  std::array<byte, kDateValueSortKeyBytesV1> staged{};
-  ScopedSecureClear clear_staged(staged.data(), staged.size());
+  std::array<byte, kDateValueSortKeyBytesV3> staged{};
+  ScopedSecureClear clear_staged(
+      staged.data(), staged.size(), DateScrubClassV3::ordered_key_staging,
+      control.observe_scrubbed, control.scrub_observer_context);
   std::memcpy(staged.data(), "SBDATK01", 8);
   PutUuid(staged.data() + 8, value.profile->receipt.catalog_snapshot_uuid);
   StoreLittle64(staged.data() + 24, value.profile->receipt.catalog_generation);
   StoreLittle64(staged.data() + 32, value.profile->receipt.registry_generation);
   std::memcpy(staged.data() + 40, value.profile->comparison_fingerprint.data(), 32);
   PutPolicy(staged.data() + 72, value.profile->identity.ordering_policy);
-  staged[96] = direction == DateSortDirectionV1::descending ? 1 : 0;
-  staged[97] = null_mode == DateNullModeV1::nulls_last ? 1 : 0;
-  staged[98] = value.state == DateValueStateV1::value ? 1
-      : (null_mode == DateNullModeV1::nulls_first ? 0 : 2);
-  staged[99] = value.state == DateValueStateV1::value ? 4 : 0;
-  if (value.state == DateValueStateV1::value) {
+  staged[96] = direction == DateSortDirectionV3::descending ? 1 : 0;
+  staged[97] = null_mode == DateNullModeV3::nulls_last ? 1 : 0;
+  staged[98] = value.state == DateValueStateV3::value ? 1
+      : (null_mode == DateNullModeV3::nulls_first ? 0 : 2);
+  staged[99] = value.state == DateValueStateV3::value ? 4 : 0;
+  if (value.state == DateValueStateV3::value) {
     const u32 sortable = static_cast<u32>(value.day) ^ 0x80000000u;
     staged[100] = static_cast<byte>(sortable >> 24);
     staged[101] = static_cast<byte>(sortable >> 16);
     staged[102] = static_cast<byte>(sortable >> 8);
     staged[103] = static_cast<byte>(sortable);
-    if (direction == DateSortDirectionV1::descending)
+    if (direction == DateSortDirectionV3::descending)
       for (std::size_t index = 100; index < 104; ++index)
         staged[index] = static_cast<byte>(~staged[index]);
   }
   if (Cancelled(control))
-    return Failure<DateNoAllocWriteResultV1>("PROCESS.CANCELLED",
+    return Failure<DateNoAllocWriteResultV3>("PROCESS.CANCELLED",
                                              "before_publication");
   std::memcpy(output, staged.data(), extent);
-  auto result = Success<DateNoAllocWriteResultV1>();
+  auto result = Success<DateNoAllocWriteResultV3>();
   result.bytes_required = extent;
   result.bytes_written = extent;
   return result;
 }
 
-DateBytesResultV1 MakeDateSortKeyV1(
-    const DateOwnedValueV1& owned_value, DateSortDirectionV1 direction,
-    DateNullModeV1 null_mode, const DateExecutionControlV1& control) noexcept {
+DateBytesResultV3 MakeDateSortKeyV3(
+    const DateOwnedValueV3& owned_value, DateSortDirectionV3 direction,
+    DateNullModeV3 null_mode, const DateExecutionControlV3& control) noexcept {
   const auto value = owned_value.view();
   if (value.profile == nullptr || !ProfileValidNoAlloc(*value.profile))
-    return Failure<DateBytesResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+    return Failure<DateBytesResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                       "key_profile_invalid");
-  if ((direction != DateSortDirectionV1::ascending &&
-       direction != DateSortDirectionV1::descending) ||
-      (null_mode != DateNullModeV1::nulls_first &&
-       null_mode != DateNullModeV1::nulls_last))
-    return Failure<DateBytesResultV1>("CTI.TEMPORAL.INDEX_KEY_REFUSED",
+  if ((direction != DateSortDirectionV3::ascending &&
+       direction != DateSortDirectionV3::descending) ||
+      (null_mode != DateNullModeV3::nulls_first &&
+       null_mode != DateNullModeV3::nulls_last))
+    return Failure<DateBytesResultV3>("CTI.TEMPORAL.INDEX_KEY_REFUSED",
                                       "sort_mode_invalid");
-  const auto checked = ValidateDateValueViewV1(value, true);
+  const auto checked = ValidateDateValueViewV3(value, true);
   if (!checked.ok())
-    return Failure<DateBytesResultV1>(checked.diagnostic.diagnostic_code,
+    return Failure<DateBytesResultV3>(checked.diagnostic.diagnostic_code,
                                       checked.diagnostic.detail, checked.status);
-  const std::size_t extent = value.state == DateValueStateV1::sql_null
-      ? kDateNullSortKeyBytesV1 : kDateValueSortKeyBytesV1;
+  const std::size_t extent = value.state == DateValueStateV3::sql_null
+      ? kDateNullSortKeyBytesV3 : kDateValueSortKeyBytesV3;
   auto profile_pin = owned_value.profile;
   if (extent > control.maximum_allocation_bytes)
-    return Failure<DateBytesResultV1>("RESOURCE.BUDGET_EXCEEDED",
+    return Failure<DateBytesResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                       "sort_key_capacity", ResourceStatus());
   if (Cancelled(control))
-    return Failure<DateBytesResultV1>("PROCESS.CANCELLED", "before_work");
-  std::array<byte, kDateValueSortKeyBytesV1> staged{};
-  ScopedSecureClear clear_staged(staged.data(), staged.size());
+    return Failure<DateBytesResultV3>("PROCESS.CANCELLED", "before_work");
+  std::array<byte, kDateValueSortKeyBytesV3> staged{};
+  ScopedSecureClear clear_staged(
+      staged.data(), staged.size(), DateScrubClassV3::ordered_key_owned_buffer,
+      control.observe_scrubbed, control.scrub_observer_context);
   std::memcpy(staged.data(), "SBDATK01", 8);
   PutUuid(staged.data() + 8, value.profile->receipt.catalog_snapshot_uuid);
   StoreLittle64(staged.data() + 24, value.profile->receipt.catalog_generation);
@@ -1952,84 +2174,97 @@ DateBytesResultV1 MakeDateSortKeyV1(
   std::memcpy(staged.data() + 40,
               value.profile->comparison_fingerprint.data(), 32);
   PutPolicy(staged.data() + 72, value.profile->identity.ordering_policy);
-  staged[96] = direction == DateSortDirectionV1::descending ? 1 : 0;
-  staged[97] = null_mode == DateNullModeV1::nulls_last ? 1 : 0;
-  staged[98] = value.state == DateValueStateV1::value ? 1
-      : (null_mode == DateNullModeV1::nulls_first ? 0 : 2);
-  staged[99] = value.state == DateValueStateV1::value ? 4 : 0;
-  if (value.state == DateValueStateV1::value) {
+  staged[96] = direction == DateSortDirectionV3::descending ? 1 : 0;
+  staged[97] = null_mode == DateNullModeV3::nulls_last ? 1 : 0;
+  staged[98] = value.state == DateValueStateV3::value ? 1
+      : (null_mode == DateNullModeV3::nulls_first ? 0 : 2);
+  staged[99] = value.state == DateValueStateV3::value ? 4 : 0;
+  if (value.state == DateValueStateV3::value) {
     const u32 sortable = static_cast<u32>(value.day) ^ 0x80000000u;
     staged[100] = static_cast<byte>(sortable >> 24);
     staged[101] = static_cast<byte>(sortable >> 16);
     staged[102] = static_cast<byte>(sortable >> 8);
     staged[103] = static_cast<byte>(sortable);
-    if (direction == DateSortDirectionV1::descending)
+    if (direction == DateSortDirectionV3::descending)
       for (std::size_t index = 100; index < 104; ++index)
         staged[index] = static_cast<byte>(~staged[index]);
   }
-  auto result = Success<DateBytesResultV1>();
-  ScopedVectorSecureClear<byte> clear_result(&result.bytes);
+  auto result = Success<DateBytesResultV3>();
+  ScopedVectorSecureClear<byte> clear_result(
+      &result.bytes, DateScrubClassV3::ordered_key_owned_buffer,
+      control.observe_scrubbed, control.scrub_observer_context);
   try {
     result.bytes.assign(staged.begin(),
                         staged.begin() + static_cast<std::ptrdiff_t>(extent));
   }
   catch (...) {
-    return Failure<DateBytesResultV1>("RESOURCE.BUDGET_EXCEEDED",
+    return Failure<DateBytesResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                       "sort_key_allocation", ResourceStatus());
   }
   if (Cancelled(control))
-    return Failure<DateBytesResultV1>("PROCESS.CANCELLED", "before_publication");
+    return Failure<DateBytesResultV3>("PROCESS.CANCELLED", "before_publication");
   clear_result.Disarm();
   return result;
 }
 
-DateSortKeyViewResultV1 DecodeDateSortKeyNoAllocV1(
-    const DateValidatedProfileHandleV1& profile,
-    std::span<const byte> encoded) noexcept {
+DateSortKeyViewResultV3 DecodeDateSortKeyNoAllocV3(
+    const DateValidatedProfileHandleV3& profile,
+    std::span<const byte> encoded,
+    const DateExecutionControlV3& control) noexcept {
   if ((encoded.size() != 100 && encoded.size() != 104) ||
       std::memcmp(encoded.data(), "SBDATK01", 8) != 0)
-    return Failure<DateSortKeyViewResultV1>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+    return Failure<DateSortKeyViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
                                             "K01_extent_or_magic");
-  if (!ProfileValidNoAlloc(profile) ||
+  if (!ProfileValidNoAlloc(profile, &control) ||
       std::memcmp(encoded.data() + 8, profile.receipt.catalog_snapshot_uuid.bytes.data(), 16) != 0 ||
       LoadLittle64(encoded.data() + 24) != profile.receipt.catalog_generation ||
       LoadLittle64(encoded.data() + 32) != profile.receipt.registry_generation ||
       std::memcmp(encoded.data() + 40, profile.comparison_fingerprint.data(), 32) != 0 ||
       std::memcmp(encoded.data() + 72, kOrderingPolicy.uuid.bytes.data(), 16) != 0 ||
       LoadLittle64(encoded.data() + 88) != kOrderingPolicy.generation)
-    return Failure<DateSortKeyViewResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+    return Failure<DateSortKeyViewResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                             "K02_authority");
   if (encoded[96] > 1 || encoded[97] > 1)
-    return Failure<DateSortKeyViewResultV1>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+    return Failure<DateSortKeyViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
                                             "K03_mode");
-  const auto direction = static_cast<DateSortDirectionV1>(encoded[96]);
-  const auto null_mode = static_cast<DateNullModeV1>(encoded[97]);
-  auto state=DateValueStateV1::sql_null;
+  const auto direction = static_cast<DateSortDirectionV3>(encoded[96]);
+  const auto null_mode = static_cast<DateNullModeV3>(encoded[97]);
+  auto state=DateValueStateV3::sql_null;
   std::int32_t day=0;
-  ScopedSecureClear clear_state(&state,sizeof(state));
-  ScopedSecureClear clear_day(&day,sizeof(day));
+  ScopedSecureClear clear_state(
+      &state, sizeof(state), DateScrubClassV3::ordered_key_decode_reencode,
+      control.observe_scrubbed, control.scrub_observer_context);
+  ScopedSecureClear clear_day(
+      &day, sizeof(day), DateScrubClassV3::ordered_key_decode_reencode,
+      control.observe_scrubbed, control.scrub_observer_context);
   if (encoded.size() == 100) {
-    const byte rank = null_mode == DateNullModeV1::nulls_first ? 0 : 2;
+    const byte rank = null_mode == DateNullModeV3::nulls_first ? 0 : 2;
     if (encoded[98] != rank || encoded[99] != 0)
-      return Failure<DateSortKeyViewResultV1>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+      return Failure<DateSortKeyViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
                                               "K03_null_rank_or_length");
   } else {
     if (encoded[98] != 1 || encoded[99] != 4)
-      return Failure<DateSortKeyViewResultV1>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+      return Failure<DateSortKeyViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
                                               "K03_value_rank_or_length");
     byte suffix[4];
-    ScopedSecureClear clear_suffix(suffix, sizeof(suffix));
+    ScopedSecureClear clear_suffix(
+        suffix, sizeof(suffix),
+        DateScrubClassV3::ordered_key_decode_reencode,
+        control.observe_scrubbed, control.scrub_observer_context);
     std::memcpy(suffix, encoded.data() + 100, 4);
-    if (direction == DateSortDirectionV1::descending)
+    if (direction == DateSortDirectionV3::descending)
       for (auto& octet : suffix) octet = static_cast<byte>(~octet);
     const u32 sortable = (static_cast<u32>(suffix[0]) << 24) |
         (static_cast<u32>(suffix[1]) << 16) |
         (static_cast<u32>(suffix[2]) << 8) | suffix[3];
-    state = DateValueStateV1::value;
+    state = DateValueStateV3::value;
     day = static_cast<std::int32_t>(sortable ^ 0x80000000u);
   }
-  std::array<byte, kDateValueSortKeyBytesV1> reencoded{};
-  ScopedSecureClear clear_reencoded(reencoded.data(), reencoded.size());
+  std::array<byte, kDateValueSortKeyBytesV3> reencoded{};
+  ScopedSecureClear clear_reencoded(
+      reencoded.data(), reencoded.size(),
+      DateScrubClassV3::ordered_key_decode_reencode,
+      control.observe_scrubbed, control.scrub_observer_context);
   std::memcpy(reencoded.data(), "SBDATK01", 8);
   PutUuid(reencoded.data() + 8, profile.receipt.catalog_snapshot_uuid);
   StoreLittle64(reencoded.data() + 24, profile.receipt.catalog_generation);
@@ -2038,50 +2273,55 @@ DateSortKeyViewResultV1 DecodeDateSortKeyNoAllocV1(
   PutPolicy(reencoded.data() + 72, profile.identity.ordering_policy);
   reencoded[96] = encoded[96];
   reencoded[97] = encoded[97];
-  reencoded[98] = state == DateValueStateV1::value ? 1
-      : (null_mode == DateNullModeV1::nulls_first ? 0 : 2);
-  reencoded[99] = state == DateValueStateV1::value ? 4 : 0;
-  if (state == DateValueStateV1::value) {
+  reencoded[98] = state == DateValueStateV3::value ? 1
+      : (null_mode == DateNullModeV3::nulls_first ? 0 : 2);
+  reencoded[99] = state == DateValueStateV3::value ? 4 : 0;
+  if (state == DateValueStateV3::value) {
     const u32 sortable = static_cast<u32>(day) ^ 0x80000000u;
     reencoded[100] = static_cast<byte>(sortable >> 24);
     reencoded[101] = static_cast<byte>(sortable >> 16);
     reencoded[102] = static_cast<byte>(sortable >> 8);
     reencoded[103] = static_cast<byte>(sortable);
-    if (direction == DateSortDirectionV1::descending)
+    if (direction == DateSortDirectionV3::descending)
       for (std::size_t index = 100; index < 104; ++index)
         reencoded[index] = static_cast<byte>(~reencoded[index]);
   }
+  if (control.force_reencode_mismatch_for_conformance)
+    reencoded[0] ^= 1;
   if (!std::equal(reencoded.begin(),
                   reencoded.begin() + static_cast<std::ptrdiff_t>(encoded.size()),
                   encoded.begin()))
-    return Failure<DateSortKeyViewResultV1>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+    return Failure<DateSortKeyViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
                                             "K04_reencode");
-  auto result = Success<DateSortKeyViewResultV1>();
+  if (Cancelled(control))
+    return Failure<DateSortKeyViewResultV3>("PROCESS.CANCELLED",
+                                            "before_publication");
+  auto result = Success<DateSortKeyViewResultV3>();
   result.value = {&profile,direction,null_mode,state,day};
   return result;
 }
 
-DateCastPolicyDispositionV1 ClassifyDateCastPolicyRowV1(
+DateCastPolicyDispositionV3 ClassifyDateCastPolicyRowV3(
     u32 row, DatatypeCastContext context) noexcept {
   if (context != DatatypeCastContext::implicit &&
       context != DatatypeCastContext::assignment &&
       context != DatatypeCastContext::explicit_cast)
-    return DateCastPolicyDispositionV1::forbidden;
-  if (row == 1) return DateCastPolicyDispositionV1::contextual_null;
-  if (row == 53) return DateCastPolicyDispositionV1::identity;
+    return DateCastPolicyDispositionV3::forbidden;
+  if (row == 1) return DateCastPolicyDispositionV3::contextual_null;
+  if (row == 53) return DateCastPolicyDispositionV3::identity;
   if (row == 24 && context == DatatypeCastContext::explicit_cast)
-    return DateCastPolicyDispositionV1::explicit_character_to_date;
+    return DateCastPolicyDispositionV3::explicit_character_to_date;
   if (row == 50 && context == DatatypeCastContext::explicit_cast)
-    return DateCastPolicyDispositionV1::explicit_date_to_character;
-  return DateCastPolicyDispositionV1::forbidden;
+    return DateCastPolicyDispositionV3::explicit_date_to_character;
+  return DateCastPolicyDispositionV3::forbidden;
 }
 
-DateCastResultV1 CastDateValueV1(const DateCastRequestV1& request) noexcept {
+DateCastResultV3 CastDateValueV3(const DateCastRequestV3& request) noexcept {
   DateCastRowShape shape;
   if (!ResolveDateCastRowShape(request.one_based_policy_row, &shape))
-    return Failure<DateCastResultV1>("DATATYPE.CAST_FORBIDDEN",
+    return Failure<DateCastResultV3>("DATATYPE.CAST_FORBIDDEN",
                                      "date_policy_row_required");
-  const auto disposition = ClassifyDateCastPolicyRowV1(
+  const auto disposition = ClassifyDateCastPolicyRowV3(
       request.one_based_policy_row, request.context);
 
   // Row 53 is the sole date-to-date row and therefore has two specialized
@@ -2089,7 +2329,9 @@ DateCastResultV1 CastDateValueV1(const DateCastRequestV1& request) noexcept {
   // endpoint; extra fields are an invalid dynamic request, never an alias for
   // another registry row.
   if (request.one_based_policy_row == 53) {
-    if (request.date_source == nullptr || request.date_target == nullptr ||
+    const bool has_owned_source = request.date_source != nullptr;
+    const bool has_dynamic_source = request.dynamic_date_source != nullptr;
+    if (has_owned_source == has_dynamic_source || request.date_target == nullptr ||
         *request.date_target == nullptr ||
         request.scalar_source != nullptr ||
         request.scalar_source_identity != nullptr ||
@@ -2099,48 +2341,52 @@ DateCastResultV1 CastDateValueV1(const DateCastRequestV1& request) noexcept {
         ExecutionDescriptorPresentNoAlloc(request.scalar_target_descriptor) ||
         request.use_character_output_buffer || request.character_output != nullptr ||
         request.character_output_capacity != 0)
-      return Failure<DateCastResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+      return Failure<DateCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                        "identity_cast_shape_invalid");
-    if (request.date_source->profile == nullptr ||
-        !ProfileValidNoAlloc(*request.date_source->profile))
-      return Failure<DateCastResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+    const auto& source_profile = has_owned_source
+        ? request.date_source->profile
+        : request.dynamic_date_source->profile;
+    if (source_profile == nullptr || !ProfileValidNoAlloc(*source_profile))
+      return Failure<DateCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                        "identity_source_profile_invalid");
     if (!ProfileValidNoAlloc(**request.date_target) ||
-        request.date_source->profile->comparison_fingerprint !=
+        source_profile->comparison_fingerprint !=
             (*request.date_target)->comparison_fingerprint)
-      return Failure<DateCastResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+      return Failure<DateCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                        "identity_cast_cohort_mismatch");
-    const auto source = ValidateDateValueViewV1(request.date_source->view(), true);
+    const auto source = has_owned_source
+        ? ValidateDateValueViewV3(request.date_source->view(), true)
+        : AdmitDateOperandV3(*request.dynamic_date_source, true);
     if (!source.ok())
-      return Failure<DateCastResultV1>(source.diagnostic.diagnostic_code,
+      return Failure<DateCastResultV3>(source.diagnostic.diagnostic_code,
                                        source.diagnostic.detail, source.status);
-    if (request.date_source->state == DateValueStateV1::sql_null &&
+    if (source.value.state == DateValueStateV3::sql_null &&
         !request.target_null_allowed)
-      return Failure<DateCastResultV1>("DATATYPE.NULL_NOT_ADMITTED",
+      return Failure<DateCastResultV3>("DATATYPE.NULL_NOT_ADMITTED",
                                        "identity_target_nonnullable");
-    if (disposition != DateCastPolicyDispositionV1::identity)
-      return Failure<DateCastResultV1>("DATATYPE.CAST_FORBIDDEN",
+    if (disposition != DateCastPolicyDispositionV3::identity)
+      return Failure<DateCastResultV3>("DATATYPE.CAST_FORBIDDEN",
                                        "identity_context_forbidden");
-    auto source_pin = request.date_source->profile;
+    auto source_pin = source_profile;
     auto target_pin = *request.date_target;
-    if (request.date_source->state == DateValueStateV1::value &&
-        request.control.maximum_allocation_bytes < kDateComponentBytesV1) {
-      auto failure = Failure<DateCastResultV1>("RESOURCE.BUDGET_EXCEEDED",
+    if (source.value.state == DateValueStateV3::value &&
+        request.control.maximum_allocation_bytes < kDateComponentBytesV3) {
+      auto failure = Failure<DateCastResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                                 "identity_result_grant",
                                                 ResourceStatus());
-      failure.bytes_required = kDateComponentBytesV1;
+      failure.bytes_required = kDateComponentBytesV3;
       return failure;
     }
     if (Cancelled(request.control))
-      return Failure<DateCastResultV1>("PROCESS.CANCELLED",
+      return Failure<DateCastResultV3>("PROCESS.CANCELLED",
                                        "before_cast_work");
-    DateOwnedValueV1 staged{std::move(target_pin), request.date_source->state,
-                            request.date_source->day};
+    DateOwnedValueV3 staged{std::move(target_pin), source.value.state,
+                            source.value.day};
     ScopedOwnedDateValueClear clear_staged(&staged);
     if (Cancelled(request.control))
-      return Failure<DateCastResultV1>("PROCESS.CANCELLED",
+      return Failure<DateCastResultV3>("PROCESS.CANCELLED",
                                        "before_cast_publication");
-    auto result = Success<DateCastResultV1>();
+    auto result = Success<DateCastResultV3>();
     result.category = DatatypeCastCategory::identity;
     result.produced_date = true;
     result.date_value = std::move(staged);
@@ -2149,54 +2395,55 @@ DateCastResultV1 CastDateValueV1(const DateCastRequestV1& request) noexcept {
 
   if (shape.incoming) {
     if ((request.date_target == nullptr || *request.date_target == nullptr) || request.date_source != nullptr ||
+        request.dynamic_date_source != nullptr ||
         request.scalar_source == nullptr ||
         request.scalar_target != CanonicalTypeId::unknown ||
         request.scalar_target_identity != nullptr ||
         ExecutionDescriptorPresentNoAlloc(request.scalar_target_descriptor) ||
         request.use_character_output_buffer || request.character_output != nullptr ||
         request.character_output_capacity != 0)
-      return Failure<DateCastResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+      return Failure<DateCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                        "incoming_cast_shape_invalid");
     if (shape.contextual_null) {
       // base.null is the process-local contextual sentinel and deliberately
       // has no fabricated V3 type/codec identity.
       if (!ProfileValidNoAlloc(**request.date_target))
-        return Failure<DateCastResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+        return Failure<DateCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                          "date_target_invalid");
       if (request.date_target_descriptor == nullptr ||
           !DescriptorBindsIdentityNoAlloc(*request.date_target_descriptor,
                                           (*request.date_target)->identity,
                                           CanonicalTypeId::date))
-        return Failure<DateCastResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+        return Failure<DateCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                          "date_target_admission_invalid");
       if (request.scalar_source_identity != nullptr ||
           request.scalar_source->type_id != CanonicalTypeId::null_type)
-        return Failure<DateCastResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+        return Failure<DateCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                          "contextual_null_authority_invalid");
       if (ExecutionDescriptorPresentNoAlloc(request.scalar_source->descriptor))
-        return Failure<DateCastResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+        return Failure<DateCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                          "contextual_null_descriptor_forbidden");
       if (!request.scalar_source->is_null ||
           !request.scalar_source->encoded_value.empty())
-        return Failure<DateCastResultV1>("DATATYPE.NULL_STATE.INVALID",
+        return Failure<DateCastResultV3>("DATATYPE.NULL_STATE.INVALID",
                                          "contextual_null_dirty");
       if (!request.target_null_allowed)
-        return Failure<DateCastResultV1>("DATATYPE.NULL_NOT_ADMITTED",
+        return Failure<DateCastResultV3>("DATATYPE.NULL_NOT_ADMITTED",
                                          "target_nonnullable");
-      if (disposition != DateCastPolicyDispositionV1::contextual_null)
-        return Failure<DateCastResultV1>("DATATYPE.CAST_FORBIDDEN",
+      if (disposition != DateCastPolicyDispositionV3::contextual_null)
+        return Failure<DateCastResultV3>("DATATYPE.CAST_FORBIDDEN",
                                          "contextual_null_context_forbidden");
       auto target_pin = *request.date_target;
       if (Cancelled(request.control))
-        return Failure<DateCastResultV1>("PROCESS.CANCELLED",
+        return Failure<DateCastResultV3>("PROCESS.CANCELLED",
                                          "before_cast_work");
-      DateOwnedValueV1 staged{std::move(target_pin),
-                              DateValueStateV1::sql_null, 0};
+      DateOwnedValueV3 staged{std::move(target_pin),
+                              DateValueStateV3::sql_null, 0};
       ScopedOwnedDateValueClear clear_staged(&staged);
       if (Cancelled(request.control))
-        return Failure<DateCastResultV1>("PROCESS.CANCELLED",
+        return Failure<DateCastResultV3>("PROCESS.CANCELLED",
                                          "before_cast_publication");
-      auto result = Success<DateCastResultV1>();
+      auto result = Success<DateCastResultV3>();
       result.category = DatatypeCastCategory::identity;
       result.produced_date = true;
       result.date_value = std::move(staged);
@@ -2206,63 +2453,63 @@ DateCastResultV1 CastDateValueV1(const DateCastRequestV1& request) noexcept {
     // Resolve the complete date target authority before consulting the scalar
     // carrier.  A malformed peer cannot mask a stale or fabricated target.
     if (!ProfileValidNoAlloc(**request.date_target))
-      return Failure<DateCastResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+      return Failure<DateCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                        "date_target_invalid");
     if (request.date_target_descriptor == nullptr ||
         !DescriptorBindsIdentityNoAlloc(*request.date_target_descriptor,
                                         (*request.date_target)->identity,
                                         CanonicalTypeId::date))
-      return Failure<DateCastResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+      return Failure<DateCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                        "date_target_admission_invalid");
     if (shape.peer_type != CanonicalTypeId::unknown &&
         request.scalar_source->type_id != shape.peer_type)
-      return Failure<DateCastResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+      return Failure<DateCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                        "incoming_peer_type_mismatch");
     if (shape.exact_peer_identity) {
       if (!ExactPeerIdentity(request.scalar_source_identity, shape.peer_type) ||
           !DescriptorBindsIdentity(request.scalar_source->descriptor,
                                    *request.scalar_source_identity,
                                    shape.peer_type))
-        return Failure<DateCastResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+        return Failure<DateCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                          "incoming_peer_identity_invalid");
     } else if (request.scalar_source_identity != nullptr) {
-      return Failure<DateCastResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+      return Failure<DateCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                        "unregistered_incoming_identity_claim");
     }
     if (shape.peer_type == CanonicalTypeId::character &&
         !ExactCharacterDescriptor(request.scalar_source->descriptor,
                                   (*request.date_target)->receipt))
-      return Failure<DateCastResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+      return Failure<DateCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                        "character_source_descriptor_invalid");
     if (request.scalar_source->is_null) {
       if (!request.scalar_source->encoded_value.empty())
-        return Failure<DateCastResultV1>("DATATYPE.NULL_STATE.INVALID",
+        return Failure<DateCastResultV3>("DATATYPE.NULL_STATE.INVALID",
                                          "incoming_peer_dirty_null");
       if (!request.target_null_allowed)
-        return Failure<DateCastResultV1>("DATATYPE.NULL_NOT_ADMITTED",
+        return Failure<DateCastResultV3>("DATATYPE.NULL_NOT_ADMITTED",
                                          "target_nonnullable");
     }
-    if (disposition == DateCastPolicyDispositionV1::forbidden)
-      return Failure<DateCastResultV1>("DATATYPE.CAST_FORBIDDEN",
+    if (disposition == DateCastPolicyDispositionV3::forbidden)
+      return Failure<DateCastResultV3>("DATATYPE.CAST_FORBIDDEN",
                                        "closed_date_cast_policy_forbidden");
 
     if (disposition !=
-            DateCastPolicyDispositionV1::explicit_character_to_date ||
+            DateCastPolicyDispositionV3::explicit_character_to_date ||
         shape.peer_type != CanonicalTypeId::character)
-      return Failure<DateCastResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+      return Failure<DateCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                        "character_source_descriptor_invalid");
     if (request.scalar_source->is_null) {
       auto target_pin = *request.date_target;
       if (Cancelled(request.control))
-        return Failure<DateCastResultV1>("PROCESS.CANCELLED",
+        return Failure<DateCastResultV3>("PROCESS.CANCELLED",
                                          "before_cast_work");
-      DateOwnedValueV1 staged{std::move(target_pin),
-                              DateValueStateV1::sql_null, 0};
+      DateOwnedValueV3 staged{std::move(target_pin),
+                              DateValueStateV3::sql_null, 0};
       ScopedOwnedDateValueClear clear_staged(&staged);
       if (Cancelled(request.control))
-        return Failure<DateCastResultV1>("PROCESS.CANCELLED",
+        return Failure<DateCastResultV3>("PROCESS.CANCELLED",
                                          "before_cast_publication");
-      auto result = Success<DateCastResultV1>();
+      auto result = Success<DateCastResultV3>();
       result.category = DatatypeCastCategory::lossless_explicit;
       result.produced_date = true;
       result.date_value = std::move(staged);
@@ -2271,7 +2518,7 @@ DateCastResultV1 CastDateValueV1(const DateCastRequestV1& request) noexcept {
     auto parsed = ParseCanonicalDateDayNoAlloc(
         request.scalar_source->encoded_value);
     if (!parsed.ok)
-      return Failure<DateCastResultV1>(
+      return Failure<DateCastResultV3>(
           parsed.diagnostic_code.empty()
               ? "CTI.TEMPORAL.INVALID_LITERAL"
               : parsed.diagnostic_code,
@@ -2279,33 +2526,35 @@ DateCastResultV1 CastDateValueV1(const DateCastRequestV1& request) noexcept {
     if (request.scalar_source->descriptor.length != 0 &&
         request.scalar_source->encoded_value.size() >
             request.scalar_source->descriptor.length)
-      return Failure<DateCastResultV1>("CTI.TEMPORAL.RANGE_EXCEEDED",
+      return Failure<DateCastResultV3>("CTI.TEMPORAL.RANGE_EXCEEDED",
                                        "character_source_length");
     auto target_pin=*request.date_target;
-    if (request.control.maximum_allocation_bytes < kDateComponentBytesV1) {
-      auto failure = Failure<DateCastResultV1>("RESOURCE.BUDGET_EXCEEDED",
+    if (request.control.maximum_allocation_bytes < kDateComponentBytesV3) {
+      auto failure = Failure<DateCastResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                                 "date_result_grant",
                                                 ResourceStatus());
-      failure.bytes_required = kDateComponentBytesV1;
+      failure.bytes_required = kDateComponentBytesV3;
       return failure;
     }
     if (Cancelled(request.control))
-      return Failure<DateCastResultV1>("PROCESS.CANCELLED",
+      return Failure<DateCastResultV3>("PROCESS.CANCELLED",
                                        "before_cast_work");
-    DateOwnedValueV1 staged{std::move(target_pin),DateValueStateV1::value,
+    DateOwnedValueV3 staged{std::move(target_pin),DateValueStateV3::value,
                             parsed.day};
     ScopedOwnedDateValueClear clear_staged(&staged);
     if (Cancelled(request.control))
-      return Failure<DateCastResultV1>("PROCESS.CANCELLED",
+      return Failure<DateCastResultV3>("PROCESS.CANCELLED",
                                        "before_cast_publication");
-    auto result = Success<DateCastResultV1>();
+    auto result = Success<DateCastResultV3>();
     result.category = DatatypeCastCategory::lossless_explicit;
     result.produced_date = true;
     result.date_value = std::move(staged);
     return result;
   }
 
-  if (request.date_source == nullptr || request.date_target != nullptr ||
+  const bool has_owned_source = request.date_source != nullptr;
+  const bool has_dynamic_source = request.dynamic_date_source != nullptr;
+  if (has_owned_source == has_dynamic_source || request.date_target != nullptr ||
       request.date_target_descriptor != nullptr ||
       request.scalar_source != nullptr ||
       request.scalar_source_identity != nullptr ||
@@ -2314,55 +2563,63 @@ DateCastResultV1 CastDateValueV1(const DateCastRequestV1& request) noexcept {
        (request.character_output != nullptr ||
         request.character_output_capacity != 0)) ||
       (request.one_based_policy_row != 50 && request.use_character_output_buffer))
-    return Failure<DateCastResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+    return Failure<DateCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                      "outgoing_cast_shape_invalid");
-  if (request.date_source->profile == nullptr ||
-      !ProfileValidNoAlloc(*request.date_source->profile))
-    return Failure<DateCastResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+  const auto& source_profile = has_owned_source
+      ? request.date_source->profile
+      : request.dynamic_date_source->profile;
+  if (source_profile == nullptr || !ProfileValidNoAlloc(*source_profile))
+    return Failure<DateCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                      "outgoing_source_profile_invalid");
   if (shape.exact_peer_identity) {
     if (!ExactPeerIdentity(request.scalar_target_identity, shape.peer_type) ||
         !DescriptorBindsIdentity(request.scalar_target_descriptor,
                                  *request.scalar_target_identity,
                                  shape.peer_type))
-      return Failure<DateCastResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+      return Failure<DateCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                        "outgoing_peer_identity_invalid");
   } else if (request.scalar_target_identity != nullptr) {
-    return Failure<DateCastResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+    return Failure<DateCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                      "unregistered_outgoing_identity_claim");
   }
   if (shape.peer_type == CanonicalTypeId::character &&
       !ExactCharacterDescriptor(request.scalar_target_descriptor,
-                                request.date_source->profile->receipt))
-    return Failure<DateCastResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+                                source_profile->receipt))
+    return Failure<DateCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                      "character_target_descriptor_invalid");
-  const auto source = ValidateDateValueViewV1(request.date_source->view(), true);
+  const auto source = has_owned_source
+      ? ValidateDateValueViewV3(request.date_source->view(), true)
+      : AdmitDateOperandV3(*request.dynamic_date_source, true);
   if (!source.ok())
-    return Failure<DateCastResultV1>(source.diagnostic.diagnostic_code,
+    return Failure<DateCastResultV3>(source.diagnostic.diagnostic_code,
                                      source.diagnostic.detail, source.status);
-  if (request.date_source->state == DateValueStateV1::sql_null &&
+  if (source.value.state == DateValueStateV3::sql_null &&
       (!request.target_null_allowed ||
        !request.scalar_target_descriptor.nullable_allowed))
-    return Failure<DateCastResultV1>("DATATYPE.NULL_NOT_ADMITTED",
+    return Failure<DateCastResultV3>("DATATYPE.NULL_NOT_ADMITTED",
                                      "scalar_target_nonnullable");
-  if (disposition == DateCastPolicyDispositionV1::forbidden)
-    return Failure<DateCastResultV1>("DATATYPE.CAST_FORBIDDEN",
+  if (disposition == DateCastPolicyDispositionV3::forbidden)
+    return Failure<DateCastResultV3>("DATATYPE.CAST_FORBIDDEN",
                                      "closed_date_cast_policy_forbidden");
-  if (disposition != DateCastPolicyDispositionV1::explicit_date_to_character ||
+  if (disposition != DateCastPolicyDispositionV3::explicit_date_to_character ||
       shape.peer_type != CanonicalTypeId::character)
-    return Failure<DateCastResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+    return Failure<DateCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                      "character_target_descriptor_invalid");
   u64 publication_extent = 0;
-  if (request.date_source->state == DateValueStateV1::value) {
-    const auto civil = DaysToCivil(request.date_source->day);
+  if (source.value.state == DateValueStateV3::value) {
+    const auto civil = DaysToCivil(source.value.day);
     publication_extent = civil.year >= 0 && civil.year <= 9999 ? 10u : 14u;
   }
-  auto source_pin = request.date_source->profile;
+  auto source_pin = source_profile;
   if (request.use_character_output_buffer &&
       request.character_output != nullptr && publication_extent != 0) {
-    if (OutputOverlapsOwnedDateInput(*request.date_source,
-                                request.character_output,
-                                publication_extent) ||
+    if ((has_owned_source
+             ? OutputOverlapsOwnedDateInput(*request.date_source,
+                                            request.character_output,
+                                            publication_extent)
+             : OutputOverlapsDateOperand(*request.dynamic_date_source,
+                                         request.character_output,
+                                         publication_extent)) ||
         RangesOverlap(request.character_output, publication_extent, &request,
                       sizeof(request)) ||
         (request.scalar_target_identity != nullptr &&
@@ -2379,7 +2636,7 @@ DateCastResultV1 CastDateValueV1(const DateCastRequestV1& request) noexcept {
         OutputOverlapsDescriptorBuffers(request.character_output,
                                         publication_extent,
                                         request.scalar_target_descriptor)) {
-      return Failure<DateCastResultV1>(
+      return Failure<DateCastResultV3>(
           "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
           "character_output_aliases_input_or_profile");
     }
@@ -2387,7 +2644,7 @@ DateCastResultV1 CastDateValueV1(const DateCastRequestV1& request) noexcept {
   if (publication_extent != 0 &&
       request.scalar_target_descriptor.length != 0 &&
       publication_extent > request.scalar_target_descriptor.length) {
-    auto failure = Failure<DateCastResultV1>("CTB.TEXT.LENGTH_EXCEEDED",
+    auto failure = Failure<DateCastResultV3>("CTB.TEXT.LENGTH_EXCEEDED",
                                               "character_target_length");
     failure.bytes_required = publication_extent;
     return failure;
@@ -2395,28 +2652,32 @@ DateCastResultV1 CastDateValueV1(const DateCastRequestV1& request) noexcept {
   if (request.use_character_output_buffer &&
       (publication_extent > request.character_output_capacity ||
        (publication_extent != 0 && request.character_output == nullptr))) {
-    auto failure = Failure<DateCastResultV1>("CTB.TEXT.LENGTH_EXCEEDED",
+    auto failure = Failure<DateCastResultV3>("CTB.TEXT.LENGTH_EXCEEDED",
                                              "character_output_capacity");
     failure.bytes_required = publication_extent;
     return failure;
   }
   if (publication_extent > request.control.maximum_allocation_bytes) {
-    auto failure = Failure<DateCastResultV1>("RESOURCE.BUDGET_EXCEEDED",
+    auto failure = Failure<DateCastResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                               "render_resource_grant",
                                               ResourceStatus());
     failure.bytes_required = publication_extent;
     return failure;
   }
   if (Cancelled(request.control))
-    return Failure<DateCastResultV1>("PROCESS.CANCELLED",
+    return Failure<DateCastResultV3>("PROCESS.CANCELLED",
                                      "before_cast_work");
   std::array<char, 15> rendered_bytes{};
-  ScopedSecureClear clear_rendered(rendered_bytes.data(), rendered_bytes.size());
+  ScopedSecureClear clear_rendered(
+      rendered_bytes.data(), rendered_bytes.size(),
+      DateScrubClassV3::character_render_staging,
+      request.control.observe_scrubbed,
+      request.control.scrub_observer_context);
   const bool containing_null =
-      request.date_source->state == DateValueStateV1::sql_null;
+      source.value.state == DateValueStateV3::sql_null;
   u64 required = 0;
   if (!containing_null) {
-    const auto civil = DaysToCivil(request.date_source->day);
+    const auto civil = DaysToCivil(source.value.day);
     const int written = civil.year >= 0 && civil.year <= 9999
         ? std::snprintf(rendered_bytes.data(), rendered_bytes.size(),
                         "%04d-%02u-%02u", civil.year, civil.month, civil.day)
@@ -2427,21 +2688,24 @@ DateCastResultV1 CastDateValueV1(const DateCastRequestV1& request) noexcept {
                             : static_cast<std::int64_t>(civil.year)),
                         civil.month, civil.day);
     if (written != 10 && written != 14)
-      return Failure<DateCastResultV1>(
+      return Failure<DateCastResultV3>(
           "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID", "date_to_character");
     required = static_cast<u64>(written);
   }
   if (!containing_null && request.scalar_target_descriptor.length != 0 &&
       required > request.scalar_target_descriptor.length) {
-    auto failure = Failure<DateCastResultV1>("CTB.TEXT.LENGTH_EXCEEDED",
+    auto failure = Failure<DateCastResultV3>("CTB.TEXT.LENGTH_EXCEEDED",
                                               "character_target_length");
     failure.bytes_required = required;
     return failure;
   }
   if (request.use_character_output_buffer) {
     if (request.character_output != nullptr && required != 0 &&
-        (OutputOverlapsOwnedDateInput(*request.date_source,
-                                 request.character_output, required) ||
+        ((has_owned_source
+              ? OutputOverlapsOwnedDateInput(*request.date_source,
+                                             request.character_output, required)
+              : OutputOverlapsDateOperand(*request.dynamic_date_source,
+                                          request.character_output, required)) ||
          RangesOverlap(request.character_output, required, &request,
                        sizeof(request)) ||
          (request.scalar_target_identity != nullptr &&
@@ -2456,22 +2720,22 @@ DateCastResultV1 CastDateValueV1(const DateCastRequestV1& request) noexcept {
                        sizeof(request.scalar_target_descriptor)) ||
          OutputOverlapsDescriptorBuffers(request.character_output, required,
                                          request.scalar_target_descriptor)))
-      return Failure<DateCastResultV1>(
+      return Failure<DateCastResultV3>(
           "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
           "character_output_aliases_input_or_profile");
     if (required > request.character_output_capacity ||
         (required != 0 && request.character_output == nullptr)) {
-      auto failure = Failure<DateCastResultV1>("CTB.TEXT.LENGTH_EXCEEDED",
+      auto failure = Failure<DateCastResultV3>("CTB.TEXT.LENGTH_EXCEEDED",
                                                "character_output_capacity");
       failure.bytes_required = required;
       return failure;
     }
     if (Cancelled(request.control))
-      return Failure<DateCastResultV1>("PROCESS.CANCELLED",
+      return Failure<DateCastResultV3>("PROCESS.CANCELLED",
                                        "before_cast_publication");
     if (required != 0)
       std::memcpy(request.character_output, rendered_bytes.data(), required);
-    auto result = Success<DateCastResultV1>();
+    auto result = Success<DateCastResultV3>();
     result.category = DatatypeCastCategory::lossless_explicit;
     result.used_character_output_buffer = true;
     result.bytes_required = required;
@@ -2481,8 +2745,12 @@ DateCastResultV1 CastDateValueV1(const DateCastRequestV1& request) noexcept {
     return result;
   }
   try {
-    auto result = Success<DateCastResultV1>();
-    ScopedStringSecureClear clear_result(&result.scalar_value.encoded_value);
+    auto result = Success<DateCastResultV3>();
+    ScopedStringSecureClear clear_result(
+        &result.scalar_value.encoded_value,
+        DateScrubClassV3::character_render_staging,
+        request.control.observe_scrubbed,
+        request.control.scrub_observer_context);
     result.category = DatatypeCastCategory::lossless_explicit;
     result.scalar_value.type_id = CanonicalTypeId::character;
     result.scalar_value.descriptor = request.scalar_target_descriptor;
@@ -2491,74 +2759,74 @@ DateCastResultV1 CastDateValueV1(const DateCastRequestV1& request) noexcept {
     result.bytes_written = required;
     result.scalar_value.encoded_value.assign(rendered_bytes.data(), required);
     if (Cancelled(request.control))
-      return Failure<DateCastResultV1>("PROCESS.CANCELLED",
+      return Failure<DateCastResultV3>("PROCESS.CANCELLED",
                                        "before_cast_publication");
     clear_result.Disarm();
     return result;
   } catch (...) {
-    return Failure<DateCastResultV1>("RESOURCE.BUDGET_EXCEEDED",
+    return Failure<DateCastResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                      "cast_result_allocation",
                                      ResourceStatus());
   }
 }
 
-DateValidationResultV1 ValidateDateBatchViewV1(const DateBatchViewV1& batch) noexcept {
+DateValidationResultV3 ValidateDateBatchViewV3(const DateBatchViewV3& batch) noexcept {
   if (batch.profile == nullptr || !ProfileValidNoAlloc(*batch.profile))
-    return Failure<DateValidationResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+    return Failure<DateValidationResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                      "batch_profile_invalid");
   // The admitted batch cardinality is u32.  This precedes all extent math,
   // bitmap access, and row reads so an overlarge synthetic span is refused
   // without dereferencing its carrier.
   if (batch.days.size() > std::numeric_limits<u32>::max())
-    return Failure<DateValidationResultV1>("CTI.TEMPORAL.RANGE_EXCEEDED",
+    return Failure<DateValidationResultV3>("CTI.TEMPORAL.RANGE_EXCEEDED",
                                            "batch_row_count");
   if (batch.days.size() >
       std::numeric_limits<std::size_t>::max() / sizeof(std::int32_t))
-    return Failure<DateValidationResultV1>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+    return Failure<DateValidationResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
                                      "batch_days_extent_overflow");
   if (!batch.days.empty() &&
       reinterpret_cast<std::uintptr_t>(batch.days.data()) %
               alignof(std::int32_t) !=
           0)
-    return Failure<DateValidationResultV1>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+    return Failure<DateValidationResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
                                      "batch_days_alignment");
   const std::size_t days_bytes = batch.days.size() * sizeof(std::int32_t);
   if (RangesOverlap(batch.days.data(), days_bytes,
                     batch.null_bitmap_lsb0.data(),
                     batch.null_bitmap_lsb0.size()))
-    return Failure<DateValidationResultV1>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+    return Failure<DateValidationResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
                                      "batch_input_spans_overlap");
   const std::size_t expected_bitmap = batch.days.size() / 8 +
       (batch.days.size() % 8 == 0 ? 0 : 1);
   if (batch.null_bitmap_lsb0.size() != expected_bitmap)
-    return Failure<DateValidationResultV1>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+    return Failure<DateValidationResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
                                      "batch_bitmap_extent");
   if (!batch.null_bitmap_lsb0.empty() && batch.days.size() % 8 != 0) {
     const byte valid = static_cast<byte>((1u << (batch.days.size() % 8)) - 1u);
     if ((batch.null_bitmap_lsb0.back() & static_cast<byte>(~valid)) != 0)
-      return Failure<DateValidationResultV1>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+      return Failure<DateValidationResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
                                        "batch_bitmap_tail");
   }
   for (std::size_t index = 0; index < batch.days.size(); ++index) {
     const bool is_null = (batch.null_bitmap_lsb0[index >> 3] &
                           static_cast<byte>(1u << (index & 7))) != 0;
     if (is_null && batch.days[index] != 0)
-      return Failure<DateValidationResultV1>("DATATYPE.NULL_STATE.INVALID",
+      return Failure<DateValidationResultV3>("DATATYPE.NULL_STATE.INVALID",
                                        "batch_dirty_null_slot");
   }
-  auto result = Success<DateValidationResultV1>();
+  auto result = Success<DateValidationResultV3>();
   return result;
 }
 
-DateBatchExtentsResultV1 ComputeDateBatchExtentsV1(u64 row_count,
+DateBatchExtentsResultV3 ComputeDateBatchExtentsV3(u64 row_count,
                                                    u64 size_limit) noexcept {
   if (row_count > std::numeric_limits<u32>::max())
-    return Failure<DateBatchExtentsResultV1>(
+    return Failure<DateBatchExtentsResultV3>(
         "CTI.TEMPORAL.RANGE_EXCEEDED", "batch_row_count");
   const u64 days_bytes = row_count * 4u;
   const u64 bitmap_bytes = row_count / 8u + (row_count % 8u != 0u ? 1u : 0u);
   if (days_bytes > std::numeric_limits<u64>::max() - bitmap_bytes)
-    return Failure<DateBatchExtentsResultV1>(
+    return Failure<DateBatchExtentsResultV3>(
         "CTI.TEMPORAL.RANGE_EXCEEDED", "batch_extent_overflow");
   const u64 combined = days_bytes + bitmap_bytes;
   const auto size_max = static_cast<u64>(std::numeric_limits<std::size_t>::max());
@@ -2567,7 +2835,7 @@ DateBatchExtentsResultV1 ComputeDateBatchExtentsV1(u64 row_count,
   if (days_bytes > size_max || bitmap_bytes > size_max || combined > size_max ||
       row_count > static_cast<u64>(empty_days.max_size()) ||
       bitmap_bytes > static_cast<u64>(empty_bitmap.max_size())) {
-    auto failure = Failure<DateBatchExtentsResultV1>(
+    auto failure = Failure<DateBatchExtentsResultV3>(
         "RESOURCE.BUDGET_EXCEEDED", "batch_extent_host_limit",
         ResourceStatus());
     failure.days_bytes = days_bytes;
@@ -2577,7 +2845,7 @@ DateBatchExtentsResultV1 ComputeDateBatchExtentsV1(u64 row_count,
   }
   if (days_bytes > size_limit || bitmap_bytes > size_limit ||
       combined > size_limit) {
-    auto failure = Failure<DateBatchExtentsResultV1>(
+    auto failure = Failure<DateBatchExtentsResultV3>(
         "RESOURCE.BUDGET_EXCEEDED", "batch_extent_size_limit",
         ResourceStatus());
     failure.days_bytes = days_bytes;
@@ -2585,27 +2853,27 @@ DateBatchExtentsResultV1 ComputeDateBatchExtentsV1(u64 row_count,
     failure.combined_bytes = combined;
     return failure;
   }
-  auto result = Success<DateBatchExtentsResultV1>();
+  auto result = Success<DateBatchExtentsResultV3>();
   result.days_bytes = days_bytes;
   result.bitmap_bytes = bitmap_bytes;
   result.combined_bytes = combined;
   return result;
 }
 
-DateBatchExtentsResultV1 MaterializeDateBatchIntoV1(
-    const std::shared_ptr<const DateValidatedProfileHandleV1>& profile,
+DateBatchExtentsResultV3 MaterializeDateBatchIntoV3(
+    const std::shared_ptr<const DateValidatedProfileHandleV3>& profile,
     std::span<const std::int32_t> days,
     std::span<const byte> null_bitmap_lsb0,
     std::int32_t* output_days, u64 output_days_bytes,
     byte* output_null_bitmap_lsb0, u64 output_bitmap_bytes,
-    const DateExecutionControlV1& control) noexcept {
-  const auto checked = ValidateDateBatchViewV1(
+    const DateExecutionControlV3& control) noexcept {
+  const auto checked = ValidateDateBatchViewV3(
       {profile.get(), days, null_bitmap_lsb0});
   if (!checked.ok())
-    return Failure<DateBatchExtentsResultV1>(
+    return Failure<DateBatchExtentsResultV3>(
         checked.diagnostic.diagnostic_code, checked.diagnostic.detail,
         checked.status);
-  const auto extents = ComputeDateBatchExtentsV1(
+  const auto extents = ComputeDateBatchExtentsV3(
       days.size(), control.maximum_allocation_bytes);
   if (!extents.ok()) return extents;
   const auto days_bytes = static_cast<std::size_t>(extents.days_bytes);
@@ -2626,7 +2894,7 @@ DateBatchExtentsResultV1 MaterializeDateBatchIntoV1(
   if (profile_overlap) {
     auto refusal_pin = profile;
     (void)refusal_pin;
-    return Failure<DateBatchExtentsResultV1>(
+    return Failure<DateBatchExtentsResultV3>(
         "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
         "batch_publication_profile_overlap");
   }
@@ -2634,21 +2902,21 @@ DateBatchExtentsResultV1 MaterializeDateBatchIntoV1(
       aliases_nonprofile(output_null_bitmap_lsb0, bitmap_bytes) ||
       RangesOverlap(output_days, days_bytes, output_null_bitmap_lsb0,
                     bitmap_bytes))
-    return Failure<DateBatchExtentsResultV1>(
+    return Failure<DateBatchExtentsResultV3>(
         "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
         "batch_publication_spans_overlap");
   if (days_bytes != 0 && output_days != nullptr &&
       reinterpret_cast<std::uintptr_t>(output_days) %
               alignof(std::int32_t) !=
           0)
-    return Failure<DateBatchExtentsResultV1>(
+    return Failure<DateBatchExtentsResultV3>(
         "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
         "batch_output_days_alignment");
   if ((days_bytes != 0 && output_days == nullptr) ||
       output_days_bytes < extents.days_bytes ||
       (bitmap_bytes != 0 && output_null_bitmap_lsb0 == nullptr) ||
       output_bitmap_bytes < extents.bitmap_bytes) {
-    auto failure = Failure<DateBatchExtentsResultV1>(
+    auto failure = Failure<DateBatchExtentsResultV3>(
         "RESOURCE.BUDGET_EXCEEDED", "batch_caller_capacity",
         ResourceStatus());
     failure.days_bytes = extents.days_bytes;
@@ -2657,7 +2925,7 @@ DateBatchExtentsResultV1 MaterializeDateBatchIntoV1(
     return failure;
   }
   if (Cancelled(control))
-    return Failure<DateBatchExtentsResultV1>("PROCESS.CANCELLED",
+    return Failure<DateBatchExtentsResultV3>("PROCESS.CANCELLED",
                                               "batch_before_allocation");
 
   // Acquire the one publication pin only after the no-allocation gates and the
@@ -2665,30 +2933,34 @@ DateBatchExtentsResultV1 MaterializeDateBatchIntoV1(
   auto staged_profile = profile;
   std::vector<std::int32_t> staged_days;
   std::vector<byte> staged_bitmap;
-  ScopedVectorSecureClear<std::int32_t> clear_days(&staged_days);
-  ScopedVectorSecureClear<byte> clear_bitmap(&staged_bitmap);
+  ScopedVectorSecureClear<std::int32_t> clear_days(
+      &staged_days, DateScrubClassV3::batch_days_staging,
+      control.observe_scrubbed, control.scrub_observer_context);
+  ScopedVectorSecureClear<byte> clear_bitmap(
+      &staged_bitmap, DateScrubClassV3::batch_bitmap_staging,
+      control.observe_scrubbed, control.scrub_observer_context);
   try {
     staged_days.resize(days.size());
     staged_bitmap.resize(null_bitmap_lsb0.size());
   } catch (const std::bad_alloc&) {
-    return Failure<DateBatchExtentsResultV1>("RESOURCE.BUDGET_EXCEEDED",
+    return Failure<DateBatchExtentsResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                               "batch_allocation",
                                               ResourceStatus());
   } catch (const std::length_error&) {
-    return Failure<DateBatchExtentsResultV1>("RESOURCE.BUDGET_EXCEEDED",
+    return Failure<DateBatchExtentsResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                               "batch_allocation_length",
                                               ResourceStatus());
   } catch (...) {
-    return Failure<DateBatchExtentsResultV1>("RESOURCE.BUDGET_EXCEEDED",
+    return Failure<DateBatchExtentsResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                               "batch_allocation_exception",
                                               ResourceStatus());
   }
   if (Cancelled(control))
-    return Failure<DateBatchExtentsResultV1>("PROCESS.CANCELLED",
+    return Failure<DateBatchExtentsResultV3>("PROCESS.CANCELLED",
                                               "batch_row0");
   for (std::size_t block = 0; block < days.size(); block += 4096) {
     if (block != 0 && Cancelled(control))
-      return Failure<DateBatchExtentsResultV1>("PROCESS.CANCELLED",
+      return Failure<DateBatchExtentsResultV3>("PROCESS.CANCELLED",
                                                 "batch_row4096");
     const auto end = std::min<std::size_t>(days.size(), block + 4096);
     std::copy(days.begin() + static_cast<std::ptrdiff_t>(block),
@@ -2704,7 +2976,7 @@ DateBatchExtentsResultV1 MaterializeDateBatchIntoV1(
                   static_cast<std::ptrdiff_t>(bitmap_begin));
   }
   if (Cancelled(control))
-    return Failure<DateBatchExtentsResultV1>("PROCESS.CANCELLED",
+    return Failure<DateBatchExtentsResultV3>("PROCESS.CANCELLED",
                                               "batch_before_publication");
   if (days_bytes != 0) std::memcpy(output_days, staged_days.data(), days_bytes);
   if (bitmap_bytes != 0)
@@ -2713,48 +2985,52 @@ DateBatchExtentsResultV1 MaterializeDateBatchIntoV1(
   return extents;
 }
 
-DateBatchResultV1 MaterializeDateBatchV1(
-    std::shared_ptr<const DateValidatedProfileHandleV1> profile,
+DateBatchResultV3 MaterializeDateBatchV3(
+    std::shared_ptr<const DateValidatedProfileHandleV3> profile,
     std::span<const std::int32_t> days,
     std::span<const byte> null_bitmap_lsb0,
-    const DateExecutionControlV1& control) noexcept {
-  const auto checked = ValidateDateBatchViewV1(
+    const DateExecutionControlV3& control) noexcept {
+  const auto checked = ValidateDateBatchViewV3(
       {profile.get(), days, null_bitmap_lsb0});
   if (!checked.ok())
-    return Failure<DateBatchResultV1>(checked.diagnostic.diagnostic_code,
+    return Failure<DateBatchResultV3>(checked.diagnostic.diagnostic_code,
                                       checked.diagnostic.detail, checked.status);
-  const auto extents = ComputeDateBatchExtentsV1(days.size(),
+  const auto extents = ComputeDateBatchExtentsV3(days.size(),
                                                  control.maximum_allocation_bytes);
   if (!extents.ok())
-    return Failure<DateBatchResultV1>(extents.diagnostic.diagnostic_code,
+    return Failure<DateBatchResultV3>(extents.diagnostic.diagnostic_code,
                                       "batch_extents", extents.status);
   if (Cancelled(control))
-    return Failure<DateBatchResultV1>("PROCESS.CANCELLED",
+    return Failure<DateBatchResultV3>("PROCESS.CANCELLED",
                                       "batch_before_allocation");
-  DateOwnedBatchV1 staged;
-  ScopedVectorSecureClear<std::int32_t> clear_days(&staged.days);
-  ScopedVectorSecureClear<byte> clear_bitmap(&staged.null_bitmap_lsb0);
+  DateOwnedBatchV3 staged;
+  ScopedVectorSecureClear<std::int32_t> clear_days(
+      &staged.days, DateScrubClassV3::batch_days_staging,
+      control.observe_scrubbed, control.scrub_observer_context);
+  ScopedVectorSecureClear<byte> clear_bitmap(
+      &staged.null_bitmap_lsb0, DateScrubClassV3::batch_bitmap_staging,
+      control.observe_scrubbed, control.scrub_observer_context);
   staged.profile = std::move(profile);
   try {
     staged.days.resize(days.size());
     staged.null_bitmap_lsb0.resize(null_bitmap_lsb0.size());
   } catch (const std::bad_alloc&) {
-    return Failure<DateBatchResultV1>("RESOURCE.BUDGET_EXCEEDED",
+    return Failure<DateBatchResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                       "batch_allocation", ResourceStatus());
   } catch (const std::length_error&) {
-    return Failure<DateBatchResultV1>("RESOURCE.BUDGET_EXCEEDED",
+    return Failure<DateBatchResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                       "batch_allocation_length",
                                       ResourceStatus());
   } catch (...) {
-    return Failure<DateBatchResultV1>("RESOURCE.BUDGET_EXCEEDED",
+    return Failure<DateBatchResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                       "batch_allocation_exception",
                                       ResourceStatus());
   }
   if (Cancelled(control))
-    return Failure<DateBatchResultV1>("PROCESS.CANCELLED", "batch_row0");
+    return Failure<DateBatchResultV3>("PROCESS.CANCELLED", "batch_row0");
   for (std::size_t block = 0; block < days.size(); block += 4096) {
     if (block != 0 && Cancelled(control))
-      return Failure<DateBatchResultV1>("PROCESS.CANCELLED",
+      return Failure<DateBatchResultV3>("PROCESS.CANCELLED",
                                         "batch_row4096");
     const auto end = std::min<std::size_t>(days.size(), block + 4096);
     std::copy(days.begin() + static_cast<std::ptrdiff_t>(block),
@@ -2770,19 +3046,19 @@ DateBatchResultV1 MaterializeDateBatchV1(
                   static_cast<std::ptrdiff_t>(bitmap_begin));
   }
   if (Cancelled(control))
-    return Failure<DateBatchResultV1>("PROCESS.CANCELLED",
+    return Failure<DateBatchResultV3>("PROCESS.CANCELLED",
                                       "batch_before_publication");
-  auto result = Success<DateBatchResultV1>();
+  auto result = Success<DateBatchResultV3>();
   result.batch = std::move(staged);
   clear_days.Disarm();
   clear_bitmap.Disarm();
   return result;
 }
 
-DateViewResultV1 DecodeDateSbdvalComposedNoAllocV1(
-    const DateValidatedProfileHandleV1& profile, bool null_allowed,
+DateViewResultV3 DecodeDateSbdvalComposedNoAllocV3(
+    const DateValidatedProfileHandleV3& profile, bool null_allowed,
     std::span<const byte> encoded,
-    const DateExecutionControlV1& control) noexcept {
+    const DateExecutionControlV3& control) noexcept {
   const auto frame = DecodeDatatypeBinaryStructuralValueViewNoAlloc(
       encoded.empty() ? nullptr : encoded.data(), encoded.size());
   if (!frame.ok()) {
@@ -2794,102 +3070,115 @@ DateViewResultV1 DecodeDateSbdvalComposedNoAllocV1(
     if (code == "DATATYPE.NULL_STATE.INVALID" && encoded.size() >= 32 &&
         static_cast<CanonicalTypeId>(LoadLittle32(encoded.data() + 8)) !=
             CanonicalTypeId::date)
-      return Failure<DateViewResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+      return Failure<DateViewResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                        "sbdval_type");
-    if (code == "DATATYPE.NULL_STATE.INVALID" && !ProfileValidNoAlloc(profile))
-      return Failure<DateViewResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+    if (code == "DATATYPE.NULL_STATE.INVALID" &&
+        !ProfileValidNoAlloc(profile, &control))
+      return Failure<DateViewResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                        "sbdval_profile");
-    return Failure<DateViewResultV1>(
+    return Failure<DateViewResultV3>(
         code == "DATATYPE.NULL_STATE.INVALID"
             ? "DATATYPE.NULL_STATE.INVALID"
             : "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
         "sbdval_structure", frame.status);
   }
   if (frame.value.type_id != CanonicalTypeId::date)
-    return Failure<DateViewResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+    return Failure<DateViewResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                      "sbdval_type");
-  if (!ProfileValidNoAlloc(profile))
-    return Failure<DateViewResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+  if (!ProfileValidNoAlloc(profile, &control))
+    return Failure<DateViewResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                      "sbdval_profile");
   if (frame.value.payload_is_toast_reference)
-    return Failure<DateViewResultV1>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+    return Failure<DateViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
                                      "sbdval_toast_refused");
-  auto decoded = DecodeCanonicalDateComponentNoAllocV1(
-      profile, frame.value.is_null ? DateValueStateV1::sql_null
-                                   : DateValueStateV1::value,
+  auto component_control = control;
+  component_control.force_reencode_mismatch_for_conformance = false;
+  auto decoded = DecodeCanonicalDateComponentNoAllocV3(
+      profile, frame.value.is_null ? DateValueStateV3::sql_null
+                                   : DateValueStateV3::value,
       null_allowed,
-      std::span<const byte>(frame.value.payload_data, frame.value.payload_bytes));
+      std::span<const byte>(frame.value.payload_data, frame.value.payload_bytes),
+      component_control);
   if (!decoded.ok()) return decoded;
   ScopedDateValueViewClear clear_decoded(&decoded.value);
   std::array<byte, 36> reencoded{};
-  ScopedSecureClear clear_reencoded(reencoded.data(), reencoded.size());
+  ScopedSecureClear clear_reencoded(
+      reencoded.data(), reencoded.size(), DateScrubClassV3::sbdval_reencode,
+      control.observe_scrubbed, control.scrub_observer_context);
   const DatatypeBinaryValueView structural{
       frame.value.type_id, frame.value.is_null,
       frame.value.payload_is_toast_reference, frame.value.payload_data,
       frame.value.payload_bytes};
   const auto rewritten = EncodeDatatypeBinaryStructuralValueIntoNoAlloc(
       structural, reencoded.data(), encoded.size());
+  if (control.force_reencode_mismatch_for_conformance)
+    reencoded[0] ^= 1;
   if (!rewritten.ok() || rewritten.bytes_written != encoded.size() ||
       !std::equal(reencoded.begin(),
                   reencoded.begin() + static_cast<std::ptrdiff_t>(encoded.size()),
                   encoded.begin()))
-    return Failure<DateViewResultV1>(
+    return Failure<DateViewResultV3>(
         "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID", "V08_reencode");
   if (Cancelled(control))
-    return Failure<DateViewResultV1>("PROCESS.CANCELLED",
+    return Failure<DateViewResultV3>("PROCESS.CANCELLED",
                                       "sbdval_before_publication");
-  auto result=Success<DateViewResultV1>();result.value={&profile,decoded.value.state,decoded.value.day};return result;
+  auto result=Success<DateViewResultV3>();result.value={&profile,decoded.value.state,decoded.value.day};return result;
 }
 
-DateBytesResultV1 EncodeDateSbdvalComposedV1(
-    const DateOwnedValueV1& owned_value, bool null_allowed,
-    const DateExecutionControlV1& control) noexcept {
+DateBytesResultV3 EncodeDateSbdvalComposedV3(
+    const DateOwnedValueV3& owned_value, bool null_allowed,
+    const DateExecutionControlV3& control) noexcept {
   const auto value = owned_value.view();
-  const auto checked = ValidateDateValueViewV1(value, null_allowed);
+  const auto checked = ValidateDateValueViewV3(value, null_allowed);
   if (!checked.ok())
-    return Failure<DateBytesResultV1>(checked.diagnostic.diagnostic_code,
+    return Failure<DateBytesResultV3>(checked.diagnostic.diagnostic_code,
                                       checked.diagnostic.detail, checked.status);
-  const std::size_t payload_bytes = value.state == DateValueStateV1::value ? 4 : 0;
+  const std::size_t payload_bytes = value.state == DateValueStateV3::value ? 4 : 0;
   const std::size_t total = 32 + payload_bytes;
   auto profile_pin = owned_value.profile;
   if (total > control.maximum_allocation_bytes)
-    return Failure<DateBytesResultV1>("RESOURCE.BUDGET_EXCEEDED",
+    return Failure<DateBytesResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                       "sbdval_capacity", ResourceStatus());
   if (Cancelled(control))
-    return Failure<DateBytesResultV1>("PROCESS.CANCELLED", "before_allocation");
+    return Failure<DateBytesResultV3>("PROCESS.CANCELLED", "before_allocation");
   std::array<byte, 4> component{};
-  ScopedSecureClear clear_component(component.data(), component.size());
+  ScopedSecureClear clear_component(
+      component.data(), component.size(),
+      DateScrubClassV3::sbdval_component_staging,
+      control.observe_scrubbed, control.scrub_observer_context);
   if (payload_bytes) StoreLittle32(component.data(), static_cast<u32>(value.day));
-  auto result = Success<DateBytesResultV1>();
-  ScopedVectorSecureClear<byte> clear_result(&result.bytes);
+  auto result = Success<DateBytesResultV3>();
+  ScopedVectorSecureClear<byte> clear_result(
+      &result.bytes, DateScrubClassV3::sbdval_reencode,
+      control.observe_scrubbed, control.scrub_observer_context);
   try { result.bytes.resize(total); }
   catch (...) {
-    return Failure<DateBytesResultV1>("RESOURCE.BUDGET_EXCEEDED",
+    return Failure<DateBytesResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                       "sbdval_allocation", ResourceStatus());
   }
   const DatatypeBinaryValueView structural{
-      CanonicalTypeId::date, value.state == DateValueStateV1::sql_null, false,
+      CanonicalTypeId::date, value.state == DateValueStateV3::sql_null, false,
       payload_bytes ? component.data() : nullptr, payload_bytes};
   const auto encoded_result = EncodeDatatypeBinaryStructuralValueIntoNoAlloc(
       structural, result.bytes.data(), result.bytes.size());
   if (!encoded_result.ok() || encoded_result.bytes_written != total)
-    return Failure<DateBytesResultV1>(encoded_result.diagnostic.diagnostic_code,
+    return Failure<DateBytesResultV3>(encoded_result.diagnostic.diagnostic_code,
                                       "sbdval_encode", encoded_result.status);
-  const auto recheck = DecodeDateSbdvalComposedNoAllocV1(
+  const auto recheck = DecodeDateSbdvalComposedNoAllocV3(
       *value.profile, null_allowed, result.bytes, {});
   if (!recheck.ok())
-    return Failure<DateBytesResultV1>(recheck.diagnostic.diagnostic_code,
+    return Failure<DateBytesResultV3>(recheck.diagnostic.diagnostic_code,
                                       "sbdval_recheck", recheck.status);
   if (Cancelled(control))
-    return Failure<DateBytesResultV1>("PROCESS.CANCELLED", "before_publication");
+    return Failure<DateBytesResultV3>("PROCESS.CANCELLED", "before_publication");
   clear_result.Disarm();
   return result;
 }
 
-DateViewResultV1 DecodeDateSbdpvComposedNoAllocV1(
-    const DateValidatedProfileHandleV1& profile, bool null_allowed,
+DateViewResultV3 DecodeDateSbdpvComposedNoAllocV3(
+    const DateValidatedProfileHandleV3& profile, bool null_allowed,
     std::span<const byte> encoded,
-    const DateExecutionControlV1& control) noexcept {
+    const DateExecutionControlV3& control) noexcept {
   const auto frame = DecodeDatatypePhysicalStructuralValueViewNoAlloc(
       encoded.empty() ? nullptr : encoded.data(), encoded.size());
   if (!frame.ok()) {
@@ -2902,107 +3191,119 @@ DateViewResultV1 DecodeDateSbdpvComposedNoAllocV1(
     if (state_refusal && encoded.size() >= 24 &&
         static_cast<CanonicalTypeId>(LoadLittle32(encoded.data() + 8)) !=
             CanonicalTypeId::date)
-      return Failure<DateViewResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+      return Failure<DateViewResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                        "sbdpv_type");
     if (code == "SB-DATATYPE-PHYSICAL-PAYLOAD-REFUSED" &&
         encoded.size() >= 24) {
       const u16 state = LoadLittle16(encoded.data() + 12);
       null_state = state != static_cast<u16>(DatatypePhysicalValueState::value);
     }
-    if (null_state && !ProfileValidNoAlloc(profile))
-      return Failure<DateViewResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+    if (null_state && !ProfileValidNoAlloc(profile, &control))
+      return Failure<DateViewResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                        "sbdpv_profile");
-    return Failure<DateViewResultV1>(
+    return Failure<DateViewResultV3>(
         null_state ? "DATATYPE.NULL_STATE.INVALID"
                    : "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
         "sbdpv_structure", frame.status);
   }
   if (frame.value.type_id != CanonicalTypeId::date)
-    return Failure<DateViewResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+    return Failure<DateViewResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                      "sbdpv_type");
-  if (!ProfileValidNoAlloc(profile))
-    return Failure<DateViewResultV1>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+  if (!ProfileValidNoAlloc(profile, &control))
+    return Failure<DateViewResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                      "sbdpv_profile");
   if (frame.value.state != DatatypePhysicalValueState::value &&
       frame.value.state != DatatypePhysicalValueState::sql_null)
-    return Failure<DateViewResultV1>("DATATYPE.NULL_STATE.INVALID",
+    return Failure<DateViewResultV3>("DATATYPE.NULL_STATE.INVALID",
                                      "sbdpv_state");
-  auto decoded = DecodeCanonicalDateComponentNoAllocV1(
+  auto component_control = control;
+  component_control.force_reencode_mismatch_for_conformance = false;
+  auto decoded = DecodeCanonicalDateComponentNoAllocV3(
       profile,
       frame.value.state == DatatypePhysicalValueState::sql_null
-          ? DateValueStateV1::sql_null : DateValueStateV1::value,
+          ? DateValueStateV3::sql_null : DateValueStateV3::value,
       null_allowed,
-      std::span<const byte>(frame.value.payload_data, frame.value.payload_bytes));
+      std::span<const byte>(frame.value.payload_data, frame.value.payload_bytes),
+      component_control);
   if (!decoded.ok()) return decoded;
   ScopedDateValueViewClear clear_decoded(&decoded.value);
   std::array<byte, 28> reencoded{};
-  ScopedSecureClear clear_reencoded(reencoded.data(), reencoded.size());
+  ScopedSecureClear clear_reencoded(
+      reencoded.data(), reencoded.size(), DateScrubClassV3::sbdpv_reencode,
+      control.observe_scrubbed, control.scrub_observer_context);
   const DatatypePhysicalValueView structural{
       frame.value.type_id, frame.value.state, frame.value.payload_data,
       frame.value.payload_bytes};
   const auto rewritten = EncodeDatatypePhysicalStructuralValueIntoNoAlloc(
       structural, reencoded.data(), encoded.size());
+  if (control.force_reencode_mismatch_for_conformance)
+    reencoded[0] ^= 1;
   if (!rewritten.ok() || rewritten.bytes_written != encoded.size() ||
       !std::equal(reencoded.begin(),
                   reencoded.begin() + static_cast<std::ptrdiff_t>(encoded.size()),
                   encoded.begin()))
-    return Failure<DateViewResultV1>(
+    return Failure<DateViewResultV3>(
         "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID", "PV08_reencode");
   if (Cancelled(control))
-    return Failure<DateViewResultV1>("PROCESS.CANCELLED",
+    return Failure<DateViewResultV3>("PROCESS.CANCELLED",
                                       "sbdpv_before_publication");
-  auto result=Success<DateViewResultV1>();result.value={&profile,decoded.value.state,decoded.value.day};return result;
+  auto result=Success<DateViewResultV3>();result.value={&profile,decoded.value.state,decoded.value.day};return result;
 }
 
-DateBytesResultV1 EncodeDateSbdpvComposedV1(
-    const DateOwnedValueV1& owned_value, bool null_allowed,
-    const DateExecutionControlV1& control) noexcept {
+DateBytesResultV3 EncodeDateSbdpvComposedV3(
+    const DateOwnedValueV3& owned_value, bool null_allowed,
+    const DateExecutionControlV3& control) noexcept {
   const auto value = owned_value.view();
-  const auto checked = ValidateDateValueViewV1(value, null_allowed);
+  const auto checked = ValidateDateValueViewV3(value, null_allowed);
   if (!checked.ok())
-    return Failure<DateBytesResultV1>(checked.diagnostic.diagnostic_code,
+    return Failure<DateBytesResultV3>(checked.diagnostic.diagnostic_code,
                                       checked.diagnostic.detail, checked.status);
-  const std::size_t payload_bytes = value.state == DateValueStateV1::value ? 4 : 0;
+  const std::size_t payload_bytes = value.state == DateValueStateV3::value ? 4 : 0;
   const std::size_t total = 24 + payload_bytes;
   auto profile_pin = owned_value.profile;
   if (total > control.maximum_allocation_bytes)
-    return Failure<DateBytesResultV1>("RESOURCE.BUDGET_EXCEEDED",
+    return Failure<DateBytesResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                       "sbdpv_capacity", ResourceStatus());
   if (Cancelled(control))
-    return Failure<DateBytesResultV1>("PROCESS.CANCELLED", "before_allocation");
+    return Failure<DateBytesResultV3>("PROCESS.CANCELLED", "before_allocation");
   std::array<byte, 4> component{};
-  ScopedSecureClear clear_component(component.data(), component.size());
+  ScopedSecureClear clear_component(
+      component.data(), component.size(),
+      DateScrubClassV3::sbdpv_component_staging,
+      control.observe_scrubbed, control.scrub_observer_context);
   if (payload_bytes) StoreLittle32(component.data(), static_cast<u32>(value.day));
-  auto result = Success<DateBytesResultV1>();
-  ScopedVectorSecureClear<byte> clear_result(&result.bytes);
+  auto result = Success<DateBytesResultV3>();
+  ScopedVectorSecureClear<byte> clear_result(
+      &result.bytes, DateScrubClassV3::sbdpv_reencode,
+      control.observe_scrubbed, control.scrub_observer_context);
   try { result.bytes.resize(total); }
   catch (...) {
-    return Failure<DateBytesResultV1>("RESOURCE.BUDGET_EXCEEDED",
+    return Failure<DateBytesResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                       "sbdpv_allocation", ResourceStatus());
   }
   const DatatypePhysicalValueView structural{
       CanonicalTypeId::date,
-      value.state == DateValueStateV1::sql_null
+      value.state == DateValueStateV3::sql_null
           ? DatatypePhysicalValueState::sql_null
           : DatatypePhysicalValueState::value,
       payload_bytes ? component.data() : nullptr, payload_bytes};
   const auto encoded_result = EncodeDatatypePhysicalStructuralValueIntoNoAlloc(
       structural, result.bytes.data(), result.bytes.size());
   if (!encoded_result.ok() || encoded_result.bytes_written != total)
-    return Failure<DateBytesResultV1>(encoded_result.diagnostic.diagnostic_code,
+    return Failure<DateBytesResultV3>(encoded_result.diagnostic.diagnostic_code,
                                       "sbdpv_encode", encoded_result.status);
-  const auto recheck = DecodeDateSbdpvComposedNoAllocV1(
+  const auto recheck = DecodeDateSbdpvComposedNoAllocV3(
       *value.profile, null_allowed, result.bytes, {});
   if (!recheck.ok())
-    return Failure<DateBytesResultV1>(recheck.diagnostic.diagnostic_code,
+    return Failure<DateBytesResultV3>(recheck.diagnostic.diagnostic_code,
                                       "sbdpv_recheck", recheck.status);
   if (Cancelled(control))
-    return Failure<DateBytesResultV1>("PROCESS.CANCELLED", "before_publication");
+    return Failure<DateBytesResultV3>("PROCESS.CANCELLED", "before_publication");
   clear_result.Disarm();
   return result;
 }
 
-DiagnosticRecord MakeDateDiagnosticV1(Status status,
+DiagnosticRecord MakeDateDiagnosticV3(Status status,
                                       std::string diagnostic_code,
                                       std::string message_key,
                                       std::string detail) {
