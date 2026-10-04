@@ -26,6 +26,7 @@ inline constexpr std::size_t kCanonicalBinaryMaximumBytes = 16'777'216;
 using scratchbird::core::platform::DiagnosticArgument;
 using scratchbird::core::platform::LoadLittle16;
 using scratchbird::core::platform::LoadLittle32;
+using scratchbird::core::platform::LoadLittle64;
 using scratchbird::core::platform::MakeDiagnostic;
 using scratchbird::core::platform::Severity;
 using scratchbird::core::platform::StatusCode;
@@ -486,6 +487,26 @@ DatatypePhysicalEncodingResult EncodeDatatypePhysicalValue(
     return Failure("CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
                    "datatype.date.serialization_profile_missing");
   }
+  if (value.type_id == CanonicalTypeId::time) {
+    if (value.state == DatatypePhysicalValueState::sql_null &&
+        !value.payload.empty())
+      return Failure("DATATYPE.NULL_STATE.INVALID",
+                     "datatype.physical.payload_refused",
+                     "null_payload_present");
+    if (value.state != DatatypePhysicalValueState::sql_null &&
+        value.state != DatatypePhysicalValueState::value)
+      return Failure("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+                     "datatype.physical.payload_refused",
+                     "time_state_not_admitted");
+    if (value.state == DatatypePhysicalValueState::value &&
+        (value.payload.size() != 8 ||
+         LoadLittle64(value.payload.data()) > 86'399'999'999'999ull))
+      return Failure("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+                     "datatype.physical.payload_refused",
+                     "time_component_invalid");
+    return Failure("CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+                   "datatype.time.serialization_profile_missing");
+  }
   std::string detail;
   if (!PayloadAllowedByLayout(value, layout.layout, &detail)) {
     return Failure(PayloadRefusalDiagnosticCode(value.state, detail),
@@ -611,6 +632,21 @@ DatatypePhysicalEncodingResult DecodeDatatypePhysicalValue(
                      "date_component_extent_invalid");
     return Failure("CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
                    "datatype.date.serialization_profile_missing");
+  }
+  if (type_id == CanonicalTypeId::time) {
+    if (state != DatatypePhysicalValueState::sql_null &&
+        state != DatatypePhysicalValueState::value)
+      return Failure("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+                     "datatype.physical.payload_refused",
+                     "time_state_not_admitted");
+    if (state == DatatypePhysicalValueState::value &&
+        (payload_size != 8 ||
+         LoadLittle64(data + kHeaderBytes) > 86'399'999'999'999ull))
+      return Failure("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+                     "datatype.physical.payload_refused",
+                     "time_component_invalid");
+    return Failure("CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+                   "datatype.time.serialization_profile_missing");
   }
   // Reject oversized inline character frames before copying caller-controlled
   // payload bytes into the owned value buffer.

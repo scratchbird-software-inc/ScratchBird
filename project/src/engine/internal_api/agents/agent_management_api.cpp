@@ -1685,11 +1685,12 @@ void UpsertDurableHealth(DurableAgentCatalogImage* image,
 void AppendDurableManagementHistory(DurableAgentCatalogImage* image,
                                     const AgentInstanceRecord& instance,
                                     const AgentEvidenceRecord& evidence,
+                                    const EngineUuid& history_uuid,
                                     std::string operation_id,
                                     platform::u64 now_microseconds) {
   if (image == nullptr) { return; }
   DurableAgentHistoryRecord history;
-  history.history_uuid = evidence.evidence_uuid + ":history";
+  history.history_uuid = IdentityBytes(history_uuid);
   history.subject_uuid = instance.instance_uuid;
   history.event_kind = std::move(operation_id);
   history.diagnostic_code = evidence.diagnostic_code;
@@ -1732,6 +1733,13 @@ std::optional<TResult> PersistDurableManagementMutation(
   const platform::u64 now = agent_context.wall_now_microseconds == 0
                                 ? 1
                                 : agent_context.wall_now_microseconds;
+  const auto history_identity = core::uuid::GenerateDurableEngineIdentityV7(
+      platform::UuidKind::object, now / 1000);
+  if (!history_identity.ok()) {
+    return AgentFailure<TResult>(request, operation_id,
+                                 history_identity.diagnostic.diagnostic_code,
+                                 "management_history_identity_issuance_failed");
+  }
   const auto previous_state = instance->state;
   UpdateInstanceStateFields(instance, target_state, now, dry_run);
 
@@ -1747,7 +1755,8 @@ std::optional<TResult> PersistDurableManagementMutation(
   evidence.redaction_class = "standard";
   image->evidence.push_back(evidence);
   UpsertDurableHealth(image, *instance, evidence, now);
-  AppendDurableManagementHistory(image, *instance, evidence, operation_id, now);
+  AppendDurableManagementHistory(image, *instance, evidence,
+                                history_identity.value.value, operation_id, now);
   const auto refresh =
       RefreshDurableAgentCatalogAuthorityDigest(image, evidence.evidence_uuid);
   if (!refresh.ok) {

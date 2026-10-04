@@ -28,7 +28,12 @@
 #include <set>
 #include <sstream>
 #include <string_view>
+#include <type_traits>
 #include <utility>
+
+#if defined(__GLIBCXX__) && !defined(_WIN32)
+#include <bits/cxxabi_forced.h>
+#endif
 
 #ifndef _WIN32
 #include <pthread.h>
@@ -767,8 +772,14 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
     std::lock_guard<std::mutex> guard(state_mutex_);
     if (!last_stop_result_.ok()) {
       if (diagnostics != nullptr) {
-        diagnostics->insert(diagnostics->end(), last_stop_result_.diagnostics.begin(),
-                            last_stop_result_.diagnostics.end());
+        if (last_stop_result_.diagnostics.empty()) {
+          diagnostics->push_back(RuntimeDiagnostic(
+              "SB_DIAG_AGENT_COORDINATOR_SHUTDOWN_NOT_CLEAN",
+              "Prior cleanup failed before its diagnostic could be retained; engine recovery is required."));
+        } else {
+          diagnostics->insert(diagnostics->end(), last_stop_result_.diagnostics.begin(),
+                              last_stop_result_.diagnostics.end());
+        }
       }
       return false;
     }
@@ -848,8 +859,35 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
       }
       return false;
     }
+    const auto fail_seed = [&](const engine_api::EngineApiDiagnostic& primary,
+                               const std::string& message) {
+      engine_api::EngineRollbackTransactionRequest rollback;
+      rollback.context = seed_tx.context;
+      const auto rolled_back = engine_api::EngineRollbackTransaction(rollback);
+      std::vector<ServerDiagnostic> failures;
+      failures.push_back(RuntimeDiagnostic(primary.code, message, {{"detail", primary.detail}}));
+      if (!rolled_back.ok) {
+        failures.push_back(RuntimeDiagnostic(
+            FirstDiagnosticCode(rolled_back, "SERVER.AGENT_RUNTIME.MGA_ROLLBACK_FAILED"),
+            "The failed catalog seed transaction could not be rolled back.",
+            {{"detail", FirstDiagnosticDetail(rolled_back, "server_agent_transaction_rollback_failed")}}));
+        // Preserve the unresolved cleanup fence even without a diagnostic sink.
+        std::lock_guard<std::mutex> guard(state_mutex_);
+        last_stop_result_.attempted = true;
+        last_stop_result_.durable_cleanup_complete = false;
+        last_stop_result_.diagnostics = failures;
+      }
+      if (diagnostics != nullptr)
+        diagnostics->insert(diagnostics->end(), failures.begin(), failures.end());
+      return false;
+    };
     auto loaded = engine_api::LoadAgentDurableCatalogImage(seed_tx.context, true);
     if (!loaded.ok) {
+      if (loaded.load_disposition !=
+          engine_api::AgentDurableCatalogLoadDisposition::absent) {
+        return fail_seed(loaded.diagnostic,
+            "The server agent runtime durable catalog could not be loaded; no seed was attempted.");
+      }
       engine_api::AgentDurableCatalogStoreRequest seed_request;
       seed_request.context = seed_tx.context;
       seed_request.image = BuildServerAgentRuntimeCatalog(database_uuid_,
@@ -859,17 +897,12 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
           ServerAgentRuntimeUuid(database_uuid_, "catalog_seed", 1750);
       seed_request.production_live_path = true;
       seed_request.fsync_or_checkpoint_evidence = true;
+      seed_request.initialize_only = true;
       const auto seeded =
           engine_api::PersistAgentDurableCatalogImage(seed_request);
       if (!seeded.ok) {
-        RollbackServerAgentTransaction(seed_tx.context);
-        if (diagnostics != nullptr) {
-          diagnostics->push_back(RuntimeDiagnostic(
-              seeded.diagnostic.code,
-              "The server agent runtime durable catalog seed could not be persisted.",
-              {{"detail", seeded.diagnostic.detail}}));
-        }
-        return false;
+        return fail_seed(seeded.diagnostic,
+            "The server agent runtime durable catalog seed could not be persisted.");
       }
     }
     std::string tx_diagnostic;
@@ -1111,13 +1144,16 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
     for (std::size_t i = 0; i < bounded_worker_count; ++i) {
       worker_threads_.emplace_back(&ServerAgentRuntime::WorkerLoop, this, i);
     }
+    // Publication can allocate after the whole cohort has launched. Keep it
+    // inside the same cleanup boundary: failed Start must not strand live
+    // workers for its caller to discover and rescue.
+    WriteStatusSnapshot();
   } catch (...) {
     // Retain the native exception contract, but never leave a partially launched
-    // scheduler/worker set running when thread construction fails.
+    // or fully launched cohort running when construction/publication fails.
     StopWithLifecycleLock();
     throw;
   }
-  WriteStatusSnapshot();
   return true;
 }
 
@@ -1152,6 +1188,15 @@ ServerAgentRuntimeStopResult ServerAgentRuntime::StopWithLifecycleLock() {
   // SEARCH_KEY: SERVER_AGENT_DURABLE_STOP_RESULT
   ServerAgentRuntimeStopResult result;
   result.attempted = true;
+  const auto publish_result = [&] {
+    std::lock_guard<std::mutex> guard(state_mutex_);
+    started_ = false;
+    stopping_.store(false);
+    // Publishing the failure fence must not itself allocate, even when the
+    // original diagnostic could not be constructed. All native users joined.
+    static_assert(std::is_nothrow_move_assignable_v<ServerAgentRuntimeStopResult>);
+    last_stop_result_ = std::move(result);
+  };
   const auto record_failure = [&](const std::string& phase,
                                   const std::string& code,
                                   const std::string& detail) {
@@ -1159,7 +1204,7 @@ ServerAgentRuntimeStopResult ServerAgentRuntime::StopWithLifecycleLock() {
         code, "Server agent durable cleanup did not complete.",
         {{"shutdown_phase", phase}, {"detail", detail}}));
   };
-  {
+  try {
     std::lock_guard<std::mutex> service_guard(runtime_service_mutex_);
     const auto now = CurrentUnixMillis() * 1000;
     const ServerAgentAuthorityEpochs authority_epochs{
@@ -1210,24 +1255,42 @@ ServerAgentRuntimeStopResult ServerAgentRuntime::StopWithLifecycleLock() {
         std::lock_guard<std::mutex> guard(state_mutex_);
         UpdateRuntimeCatalogSnapshotLocked(service.catalog);
         return true;
+#if defined(__GLIBCXX__) && !defined(_WIN32)
+      } catch (const __cxxabiv1::__forced_unwind&) {
+        // POSIX thread exit/cancellation is runtime unwinding, not an opaque
+        // application error. Swallowing it would abort the process. Preserve
+        // propagation; this does not certify cancellation or durable cleanup.
+        throw;
+#endif
       } catch (const std::exception& error) {
         // Storage may throw after partial persistence. Native threads are already
         // joined; retain the failure and leave finality/recovery with the engine.
         record_failure(operation, "SB_DIAG_AGENT_COORDINATOR_SHUTDOWN_NOT_CLEAN",
                        error.what());
         return false;
+      } catch (...) {
+        // An opaque exception can also follow actual durable effects. It must
+        // reach the same failed-result/restart fence, not escape with stopping_
+        // still set and make later Stop return the old unattempted result.
+        record_failure(operation, "SB_DIAG_AGENT_COORDINATOR_SHUTDOWN_NOT_CLEAN",
+                       "non-standard exception during durable cleanup");
+        return false;
       }
     };
     result.durable_cleanup_complete = run_phase(false) && run_phase(true);
+  } catch (...) {
+    // Even constructing a failure diagnostic can throw. Retain failed cleanup
+    // before propagating that exception; repeated Stop must not return the old
+    // unattempted success or retry an operation with potentially durable effects.
+    // Propagation also preserves native forced unwinding; cancellation remains
+    // cooperative-only, not a forced-thread-cancellation safety guarantee.
+    result.durable_cleanup_complete = false;
+    publish_result();
+    throw;
   }
-  {
-    std::lock_guard<std::mutex> guard(state_mutex_);
-    started_ = false;
-    stopping_.store(false);
-    last_stop_result_ = result;
-  }
+  publish_result();
   WriteStatusSnapshot();
-  return result;
+  return last_stop_result_;
 }
 
 ServerAgentRuntimeSnapshot ServerAgentRuntime::Snapshot() const {

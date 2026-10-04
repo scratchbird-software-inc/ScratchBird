@@ -11,6 +11,7 @@
 // SEARCH_KEY: SB_SERVER_IPC_FOUNDATION_ENDPOINT
 
 #include "ipc_server.hpp"
+#include "ipc_client_io.hpp"
 #include "../core/uuid/uuid.hpp"
 #include "public_name_resolution_trace.hpp"
 #include <set>
@@ -50,6 +51,7 @@
 #include <csignal>
 #include <ctime>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -76,6 +78,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <afunix.h>
+#include <io.h>
 #else
 #include <poll.h>
 #include <sys/socket.h>
@@ -218,23 +221,6 @@ bool IpcSocketInterrupted() {
   return ::WSAGetLastError() == WSAEINTR;
 }
 
-void CloseIpcSocket(IpcSocketHandle fd) {
-  if (fd != kInvalidIpcSocket) {
-    ::closesocket(fd);
-  }
-}
-
-int SendIpcSocket(IpcSocketHandle fd, const std::uint8_t* data, std::size_t size) {
-  const auto chunk = static_cast<int>(
-      std::min<std::size_t>(size, static_cast<std::size_t>(std::numeric_limits<int>::max())));
-  return ::send(fd, reinterpret_cast<const char*>(data), chunk, 0);
-}
-
-int RecvIpcSocket(IpcSocketHandle fd, std::uint8_t* data, std::size_t size) {
-  const auto chunk = static_cast<int>(
-      std::min<std::size_t>(size, static_cast<std::size_t>(std::numeric_limits<int>::max())));
-  return ::recv(fd, reinterpret_cast<char*>(data), chunk, 0);
-}
 #else
 using IpcSocketHandle = int;
 constexpr IpcSocketHandle kInvalidIpcSocket = -1;
@@ -247,27 +233,6 @@ bool IpcSocketInterrupted() {
   return errno == EINTR;
 }
 
-void CloseIpcSocket(IpcSocketHandle fd) {
-  if (fd >= 0) {
-    ::close(fd);
-  }
-}
-
-int SendIpcSocket(IpcSocketHandle fd, const std::uint8_t* data, std::size_t size) {
-  const auto chunk =
-      std::min<std::size_t>(size, static_cast<std::size_t>(std::numeric_limits<int>::max()));
-#ifdef MSG_NOSIGNAL
-  return static_cast<int>(::send(fd, data, chunk, MSG_NOSIGNAL));
-#else
-  return static_cast<int>(::send(fd, data, chunk, 0));
-#endif
-}
-
-int RecvIpcSocket(IpcSocketHandle fd, std::uint8_t* data, std::size_t size) {
-  const auto chunk =
-      std::min<std::size_t>(size, static_cast<std::size_t>(std::numeric_limits<int>::max()));
-  return static_cast<int>(::recv(fd, data, chunk, 0));
-}
 #endif
 
 std::string PlatformEndpointPath(const std::filesystem::path& path) {
@@ -282,6 +247,34 @@ void RemoveEndpointPath(const std::string& endpoint) {
   std::error_code ec;
   std::filesystem::remove(endpoint, ec);
 }
+
+// The path string outlives this owner. Binding is recorded only after success:
+// a failed bind must never unlink someone else's endpoint. Native cleanup does
+// not allocate, so a pre-cohort bad_alloc cannot strand the listening socket.
+// Path removal is best effort, as on the existing explicit cleanup paths; this
+// guard is resource ownership, not a durable shutdown or recovery receipt.
+class OwnedListeningEndpoint {
+ public:
+  OwnedListeningEndpoint(IpcSocketHandle fd, const std::string& path) noexcept
+      : socket_(fd), path_(path) {}
+  OwnedListeningEndpoint(const OwnedListeningEndpoint&) = delete;
+  OwnedListeningEndpoint& operator=(const OwnedListeningEndpoint&) = delete;
+  ~OwnedListeningEndpoint() { Reset(); }
+  void Bound() noexcept { bound_ = true; }
+  void Reset() noexcept {
+    socket_.Reset();
+    if (!std::exchange(bound_, false)) return;
+#ifdef _WIN32
+    ::_unlink(path_.c_str());
+#else
+    ::unlink(path_.c_str());
+#endif
+  }
+ private:
+  ipc_detail::OwnedSocket socket_;
+  const std::string& path_;
+  bool bound_ = false;
+};
 
 void ReleaseIdleConnectionHeap(const ServerBootstrapConfig& config,
                                ServerObservabilityState* observability) {
@@ -307,17 +300,7 @@ void ReleaseIdleConnectionHeap(const ServerBootstrapConfig& config,
 }
 
 bool WriteRawAll(IpcSocketHandle fd, const std::vector<std::uint8_t>& data) {
-  std::size_t sent = 0;
-  while (sent < data.size()) {
-    const auto rc = SendIpcSocket(fd, data.data() + sent, data.size() - sent);
-    if (rc < 0) {
-      if (IpcSocketInterrupted()) continue;
-      return false;
-    }
-    if (rc == 0) return false;
-    sent += static_cast<std::size_t>(rc);
-  }
-  return true;
+  return ipc_detail::WriteAll(fd, data, g_stop_requested);
 }
 
 bool WriteAll(IpcSocketHandle fd, const std::vector<std::uint8_t>& data) {
@@ -338,17 +321,7 @@ bool WriteAll(IpcSocketHandle fd, const std::vector<std::uint8_t>& data) {
 
 bool ReadExact(IpcSocketHandle fd, std::vector<std::uint8_t>* data, std::size_t bytes) {
   data->resize(bytes);
-  std::size_t received = 0;
-  while (received < bytes) {
-    const auto rc = RecvIpcSocket(fd, data->data() + received, bytes - received);
-    if (rc < 0) {
-      if (IpcSocketInterrupted()) continue;
-      return false;
-    }
-    if (rc == 0) return false;
-    received += static_cast<std::size_t>(rc);
-  }
-  return true;
+  return ipc_detail::ReadExact(fd, *data, g_stop_requested);
 }
 
 std::uint32_t PhysicalFrameLimit(const ServerBootstrapConfig& config) {
@@ -4771,6 +4744,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
 #endif
 
   const IpcSocketHandle server_fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+  OwnedListeningEndpoint server_endpoint(server_fd, endpoint);
   if (server_fd == kInvalidIpcSocket) {
     result.exit_code = 2;
     result.diagnostics.push_back(EndpointDiagnostic(
@@ -4783,7 +4757,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
   sockaddr_un addr {};
   addr.sun_family = AF_UNIX;
   if (endpoint.size() >= sizeof(addr.sun_path)) {
-    CloseIpcSocket(server_fd);
+    server_endpoint.Reset();
     result.exit_code = 2;
     result.diagnostics.push_back(EndpointDiagnostic(
         "PARSER_SERVER_IPC.ENDPOINT_NAME_INVALID",
@@ -4793,7 +4767,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
   }
   std::strncpy(addr.sun_path, endpoint.c_str(), sizeof(addr.sun_path) - 1);
   if (::bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    CloseIpcSocket(server_fd);
+    server_endpoint.Reset();
     result.exit_code = 2;
     result.diagnostics.push_back(EndpointDiagnostic(
         "PARSER_SERVER_IPC.ENDPOINT_BIND_FAILED",
@@ -4801,12 +4775,12 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
         {{"endpoint", endpoint}, {"error", LastIpcSocketErrorString()}}));
     return result;
   }
+  server_endpoint.Bound();
 #ifndef _WIN32
   ::chmod(endpoint.c_str(), 0600);
 #endif
   if (::listen(server_fd, 16) != 0) {
-    CloseIpcSocket(server_fd);
-    RemoveEndpointPath(endpoint);
+    server_endpoint.Reset();
     result.exit_code = 2;
     result.diagnostics.push_back(EndpointDiagnostic(
         "PARSER_SERVER_IPC.ENDPOINT_LISTEN_FAILED",
@@ -4815,8 +4789,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
     return result;
   }
   if (!WriteEndpointDescriptor(config, engine_state, artifacts, &result.diagnostics)) {
-    CloseIpcSocket(server_fd);
-    RemoveEndpointPath(endpoint);
+    server_endpoint.Reset();
     result.exit_code = 2;
     return result;
   }
@@ -4831,8 +4804,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
   };
   if (!agent_runtime.Start(config, engine_state, &result.diagnostics)) {
     result.exit_code = 2;
-    CloseIpcSocket(server_fd);
-    RemoveEndpointPath(endpoint);
+    server_endpoint.Reset();
     return result;
   }
   ParserEventNotificationRouter event_router;
@@ -4842,8 +4814,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
     result.exit_code = 2;
     result.diagnostics = listener_start.diagnostics;
     stop_agents();
-    CloseIpcSocket(server_fd);
-    RemoveEndpointPath(endpoint);
+    server_endpoint.Reset();
     return result;
   }
   const auto daemon_lifecycle =
@@ -4852,21 +4823,37 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
     result.exit_code = 2;
     result.diagnostics = daemon_lifecycle.diagnostics;
     stop_agents();
-    CloseIpcSocket(server_fd);
-    RemoveEndpointPath(endpoint);
+    server_endpoint.Reset();
     StopManagedServerListeners(&listener_orchestrator, "force");
     return result;
-  }
-  WriteServingState(config, artifacts, daemon_lifecycle);
-  if (!ParserServerStopRequested() && callbacks.on_ready) {
-    callbacks.on_ready();
   }
   ServerMaintenanceCoordinator maintenance_coordinator = BuildMaintenanceCoordinator(config, artifacts);
   ServerObservabilityState observability =
       InitializeServerObservability(config, artifacts, engine_state, parser_registry, listener_orchestrator);
   FairClientDispatchGate client_dispatch_gate;
   std::vector<std::thread> client_threads;
+  std::atomic_flag client_failure_selected{};
+  std::exception_ptr client_failure;
+  const auto record_client_failure = [&]() noexcept {
+    // One writer claims the retained failure without a fallible native lock.
+    // This flag is arbitration, not publication of exception_ptr: no caller
+    // reads the pointer until EVERY client has joined below. Thread completion
+    // supplies the happens-before edge even if another reporter requests stop
+    // before the selected writer has assigned its exception. No spin or retry.
+    if (!client_failure_selected.test_and_set(std::memory_order_relaxed)) {
+      client_failure = std::current_exception();
+    }
+    RequestParserServerStop();
+  };
 
+  try {
+  // Readiness publication is part of this owned cohort's lifetime. A callback
+  // failure must stop agents and listeners even before the first client exists;
+  // the common cleanup path retains this first fault if stopping also fails.
+  WriteServingState(config, artifacts, daemon_lifecycle);
+  if (!ParserServerStopRequested() && callbacks.on_ready) {
+    callbacks.on_ready();
+  }
   while (!ParserServerStopRequested()) {
 #ifdef _WIN32
     fd_set read_set;
@@ -4928,7 +4915,17 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
           {{"error", LastIpcSocketErrorString()}}));
       break;
     }
-    client_threads.emplace_back([client_fd,
+    ipc_detail::OwnedSocket accepted(client_fd);
+    if (!accepted.MakeNonblocking()) {
+      throw std::system_error(
+#ifdef _WIN32
+          ::WSAGetLastError(), std::system_category(),
+#else
+          errno, std::generic_category(),
+#endif
+          "SBPS accepted socket nonblocking setup failed");
+    }
+    client_threads.emplace_back([client = std::move(accepted),
                                  &config,
                                  &artifacts,
                                  &engine_state,
@@ -4939,9 +4936,12 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
                                  &maintenance_coordinator,
                                  &agent_runtime,
                                  &observability,
-                                 &client_dispatch_gate]() {
+                                 &client_dispatch_gate,
+                                 &record_client_failure]() mutable {
+      const auto client_fd = client.get();
       bool release_heap_after_close = false;
       ClientNegotiationState negotiation_state;
+      try {
       while (!ParserServerStopRequested()) {
         if (!ClientSocketReady(client_fd)) {
           continue;
@@ -4950,6 +4950,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
         {
           std::lock_guard<FairClientDispatchGate> dispatch_guard(
               client_dispatch_gate);
+          if (ParserServerStopRequested()) break;
           keep_open = HandleClientFrame(client_fd,
                                         config,
                                         artifacts,
@@ -4971,6 +4972,10 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
           break;
         }
       }
+      } catch (...) {
+        record_client_failure();
+      }
+      try {
       {
         std::lock_guard<FairClientDispatchGate> dispatch_guard(
             client_dispatch_gate);
@@ -4990,26 +4995,34 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
               "server-owned cleanup processed all sessions bound to a closed physical parser channel");
         }
       }
-      CloseIpcSocket(client_fd);
+      client.Reset();
       if (release_heap_after_close) {
         std::lock_guard<FairClientDispatchGate> dispatch_guard(
             client_dispatch_gate);
         ReleaseIdleConnectionHeap(config, &observability);
       }
+      } catch (...) {
+        // The owning socket still closes on this thread. Failed session cleanup
+        // cannot become a successful shutdown or erase an unknown MGA outcome.
+        record_client_failure();
+      }
     });
+  }
+  } catch (...) {
+    // Includes vector allocation and native launch failure with earlier clients.
+    record_client_failure();
   }
 
   RequestParserServerStop();
-  if (callbacks.on_stopping) {
-    callbacks.on_stopping();
-  }
+  try {
+    if (callbacks.on_stopping) callbacks.on_stopping();
+  } catch (...) { record_client_failure(); }
   for (auto& client_thread : client_threads) {
     if (client_thread.joinable()) {
       client_thread.join();
     }
   }
-  CloseIpcSocket(server_fd);
-  RemoveEndpointPath(endpoint);
+  server_endpoint.Reset();
   const bool agents_stopped = stop_agents();
   const auto listener_stop = StopManagedServerListeners(&listener_orchestrator, "graceful");
   if (!listener_stop.diagnostics.empty()) {
@@ -5018,7 +5031,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
                               listener_stop.diagnostics.end());
   }
   // SEARCH_KEY: SERVER_IPC_DURABLE_STOP_FAILURE_PROPAGATION
-  const bool cleanup_ok = agents_stopped && listener_stop.ok;
+  const bool cleanup_ok = agents_stopped && listener_stop.ok && !client_failure;
   RecordServerAuditEvent(&observability, "server.shutdown",
                         cleanup_ok ? "completed" : "failed",
                         cleanup_ok ? "parser-server IPC endpoint stopped"
@@ -5047,6 +5060,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
                               failed.diagnostics.begin(), failed.diagnostics.end());
   }
   result.exit_code = cleanup_ok && result.diagnostics.empty() ? 0 : 2;
+  if (client_failure) std::rethrow_exception(client_failure);
   return result;
 }
 

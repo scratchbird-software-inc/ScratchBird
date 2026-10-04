@@ -31,7 +31,7 @@ using platform::Subsystem;
 constexpr platform::Uuid U(std::array<byte, 16> bytes) { return {bytes}; }
 
 inline constexpr platform::Uuid kSnapshot = U(
-    {0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x07});
+    {0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x08});
 inline constexpr platform::Uuid kDescriptor = U(
     {0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd8,0x29});
 inline constexpr platform::Uuid kType = U(
@@ -73,6 +73,17 @@ inline constexpr DatatypePolicyIdentityV1 kNoPadding{U(
 constexpr bool Same(const DatatypePolicyIdentityV1& a,
                     const DatatypePolicyIdentityV1& b) noexcept {
   return a.uuid == b.uuid && a.generation == b.generation;
+}
+
+constexpr bool Same(const DatatypePolicyIdentityV3& current,
+                    const DatatypePolicyIdentityV1& legacy) noexcept {
+  return current.uuid == legacy.uuid &&
+         current.generation == legacy.generation;
+}
+
+constexpr bool Same(const DatatypePolicyIdentityV3& left,
+                    const DatatypePolicyIdentityV3& right) noexcept {
+  return left.uuid == right.uuid && left.generation == right.generation;
 }
 
 bool IsNil(const platform::Uuid& uuid) noexcept {
@@ -139,7 +150,8 @@ void PutUuid(byte*& p, const platform::Uuid& uuid) noexcept {
 }
 void PutU32(byte*& p, u32 value) noexcept { StoreLittle32(p, value); p += 4; }
 void PutU64(byte*& p, u64 value) noexcept { StoreLittle64(p, value); p += 8; }
-void PutPolicy(byte*& p, const DatatypePolicyIdentityV1& policy) noexcept {
+template <typename PolicyIdentity>
+void PutPolicy(byte*& p, const PolicyIdentity& policy) noexcept {
   PutUuid(p, policy.uuid);
   PutU64(p, policy.generation);
 }
@@ -237,7 +249,7 @@ bool ProfileValidNoAlloc(const BitStringDescriptorProfileV1& profile) noexcept {
 bool ExactReceipt(const BitStringAuthorityReceiptV1& receipt) noexcept {
   return !IsNil(receipt.statement_receipt_uuid) &&
       receipt.catalog_snapshot_uuid == kSnapshot &&
-      receipt.catalog_generation == 7 && receipt.registry_generation == 7;
+      receipt.catalog_generation == 8 && receipt.registry_generation == 8;
 }
 
 bool ExactExtraPolicies(const BitStringDescriptorProfileV1& p) noexcept {

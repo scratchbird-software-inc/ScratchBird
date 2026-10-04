@@ -21,6 +21,7 @@
 #include "disk_device.hpp"
 #include "startup_state.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "transaction/transaction_api.hpp"
 
 #include <algorithm>
 #include "uuid.hpp"
@@ -34,6 +35,7 @@ namespace scratchbird::engine::internal_api {
 namespace {
 
 namespace agents = scratchbird::core::agents;
+using LoadDisposition = AgentDurableCatalogLoadDisposition;
 
 constexpr const char* kAgentCatalogRecordKind = "agent_catalog_image";
 std::string IdentityBytes(const EngineUuid& id) {
@@ -60,6 +62,19 @@ AgentDurableCatalogStoreResult ErrorResult(EngineApiDiagnostic diagnostic) {
   AgentDurableCatalogStoreResult result;
   result.diagnostic = std::move(diagnostic);
   return result;
+}
+
+AgentDurableCatalogStoreResult LoadError(AgentDurableCatalogStoreResult result,
+                                         LoadDisposition disposition) {
+  result.load_disposition = disposition;
+  return result;
+}
+
+bool CreatorRolledBack(const RelationReadSnapshot& state, std::uint64_t creator) {
+  const auto tx = state.transactions.find(creator);
+  // This map is overlaid from MGA inventory by LoadMgaRelationStoreState.
+  // Missing, active, prepared and unresolved inventory never imply absence.
+  return tx != state.transactions.end() && tx->second == "rolled_back";
 }
 
 std::string HexBytes(const unsigned char* bytes, std::size_t size) {
@@ -287,6 +302,10 @@ std::string MissingCatalogRowDetail(const RelationReadSnapshot& state,
 
 AgentDurableCatalogStoreResult PersistAgentDurableCatalogImage(
     const AgentDurableCatalogStoreRequest& request) {
+  if (request.context.database_path.empty()) return ErrorResult("database_path_required");
+  if (request.context.database_path.find('\0') != std::string::npos) {
+    return ErrorResult("database_path_invalid");
+  }
   if (request.production_live_path && !request.fsync_or_checkpoint_evidence) {
     return ErrorResult("fsync_or_checkpoint_evidence_required");
   }
@@ -297,6 +316,19 @@ AgentDurableCatalogStoreResult PersistAgentDurableCatalogImage(
   if (request.context.local_transaction_id == 0 ||
       request.context.transaction_uuid.is_nil()) {
     return ErrorResult("mga_transaction_context_required");
+  }
+
+  // Serialize all catalog API publishers with the engine inventory/finality
+  // guard. An earlier observation cannot authorize initialization on its own.
+  // This is the existing process-local boundary, not a native writable mount.
+  const auto guard = AcquireTransactionInventoryGuard(request.context.database_path);
+  if (request.initialize_only) {
+    auto current = LoadAgentDurableCatalogImage(request.context, request.production_live_path);
+    if (current.load_disposition != LoadDisposition::absent) {
+      if (!current.ok) return current;
+      return LoadError(ErrorResult("catalog_initialization_existing_image"),
+                       LoadDisposition::loaded);
+    }
   }
 
   auto table = EnsureCatalogTable(request.context);
@@ -403,24 +435,43 @@ AgentDurableCatalogStoreResult LoadAgentDurableCatalogImage(
     const AgentDurableCatalogLoadRequest& request) {
   const EngineRequestContext& context = request.context;
   if (context.database_path.empty()) {
-    return ErrorResult("database_path_required");
+    return LoadError(ErrorResult("database_path_required"), LoadDisposition::source_failure);
   }
+  if (context.database_path.find('\0') != std::string::npos) {
+    return LoadError(ErrorResult("database_path_invalid"), LoadDisposition::source_failure);
+  }
+  const auto guard = AcquireTransactionInventoryGuard(context.database_path);
   auto loaded = LoadMgaRelationStoreState(context);
-  if (!loaded.ok) { return ErrorResult(std::move(loaded.diagnostic)); }
+  if (!loaded.ok) {
+    return LoadError(ErrorResult(std::move(loaded.diagnostic)), LoadDisposition::source_failure);
+  }
   const RelationReadSnapshot state = BuildCrudCompatibilityStateFromMga(loaded.state);
   const auto table = FindCatalogTable(state, context);
-  if (!table) { return ErrorResult("catalog_table_not_found"); }
+  if (!table) {
+    const bool retained = std::any_of(state.tables.begin(), state.tables.end(),
+        [&](const auto& candidate) {
+          return candidate.default_name == kAgentDurableCatalogStoreTableName &&
+                 !CreatorRolledBack(state, candidate.creator_tx);
+        });
+    return LoadError(ErrorResult("catalog_table_not_found"),
+                     retained ? LoadDisposition::existing_not_visible : LoadDisposition::absent);
+  }
   const auto latest = LatestCatalogRow(state, context, table->table_uuid);
   if (!latest) {
-    return ErrorResult(MissingCatalogRowDetail(state, context, table->table_uuid));
+    const bool retained = std::any_of(state.row_versions.begin(), state.row_versions.end(),
+        [&](const auto& row) {
+          return row.table_uuid == table->table_uuid && !CreatorRolledBack(state, row.creator_tx);
+        });
+    return LoadError(ErrorResult(MissingCatalogRowDetail(state, context, table->table_uuid)),
+                     retained ? LoadDisposition::existing_not_visible : LoadDisposition::absent);
   }
 
   const auto encoded = CrudFieldValue(latest->values, "encoded_catalog_image");
-  if (!encoded.isPresent()) return ErrorResult("catalog_image_value_state_invalid");
+  if (!encoded.isPresent()) return LoadError(ErrorResult("catalog_image_value_state_invalid"), LoadDisposition::invalid_image);
   auto validation =
       agents::ValidateDurableAgentCatalogImage(encoded.bytes, request.production_live_path);
   if (!validation.status.ok) {
-    return ErrorResult(validation.status.diagnostic_code);
+    return LoadError(ErrorResult(validation.status.diagnostic_code), LoadDisposition::invalid_image);
   }
   const auto expected_root =
       CrudFieldValue(latest->values, "catalog_root_digest");
@@ -429,12 +480,14 @@ AgentDurableCatalogStoreResult LoadAgentDurableCatalogImage(
           ? validation.image.migrations.back().source_root_digest
           : validation.image.authority.catalog_root_digest;
   if (!expected_root.isPresent() || expected_root.bytes.empty() || expected_root != validated_source_root) {
-    return ErrorResult("catalog_root_digest_record_mismatch");
+    return LoadError(ErrorResult("catalog_root_digest_record_mismatch"), LoadDisposition::invalid_image);
   }
+  const auto linkage = CrudFieldValue(latest->values, "storage_linkage_digest");
+  if (!linkage.isPresent()) return LoadError(ErrorResult("storage_linkage_value_state_invalid"), LoadDisposition::invalid_image);
 
   if (validation.migrated && request.persist_schema_migration) {
     if (request.production_live_path && !request.fsync_or_checkpoint_evidence) {
-      return ErrorResult("fsync_or_checkpoint_evidence_required");
+      return LoadError(ErrorResult("fsync_or_checkpoint_evidence_required"), LoadDisposition::source_failure);
     }
     AgentDurableCatalogStoreRequest persist;
     persist.context = context;
@@ -446,7 +499,8 @@ AgentDurableCatalogStoreResult LoadAgentDurableCatalogImage(
     persist.fsync_or_checkpoint_evidence =
         request.fsync_or_checkpoint_evidence;
     auto persisted = PersistAgentDurableCatalogImage(persist);
-    if (!persisted.ok) { return persisted; }
+    if (!persisted.ok) { return LoadError(std::move(persisted), LoadDisposition::source_failure); }
+    persisted.load_disposition = LoadDisposition::loaded;
     persisted.schema_migration_applied = true;
     persisted.schema_migration_persisted = true;
     return persisted;
@@ -454,14 +508,13 @@ AgentDurableCatalogStoreResult LoadAgentDurableCatalogImage(
 
   AgentDurableCatalogStoreResult result;
   result.ok = true;
+  result.load_disposition = LoadDisposition::loaded;
   result.diagnostic = OkDiagnostic();
   result.image = std::move(validation.image);
   result.table_uuid = IdentityBytes(table->table_uuid);
   result.row_uuid = IdentityBytes(latest->row_uuid);
   result.version_uuid = IdentityBytes(latest->version_uuid);
   result.row_event_sequence = latest->sequence;
-  const auto linkage = CrudFieldValue(latest->values, "storage_linkage_digest");
-  if (!linkage.isPresent()) return ErrorResult("storage_linkage_value_state_invalid");
   result.storage_linkage_digest = linkage.bytes;
   result.schema_migration_applied = validation.migrated;
   return result;

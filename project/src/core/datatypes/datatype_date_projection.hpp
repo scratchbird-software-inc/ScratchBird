@@ -14,20 +14,20 @@ namespace scratchbird::core::datatypes {
 
 using platform::i32;
 
-inline constexpr u32 kDateZoneMapEmptyBytesV1 = 96;
-inline constexpr u32 kDateZoneMapValueBytesV1 = 304;
-inline constexpr u32 kDateStatisticsHeaderBytesV1 = 512;
-inline constexpr u32 kDateStatisticsMaximumBytesV1 = 4608;
-inline constexpr u32 kDateBackupNullBytesV1 = 296;
-inline constexpr u32 kDateBackupValueBytesV1 = 300;
+inline constexpr u32 kDateZoneMapEmptyBytesV3 = 96;
+inline constexpr u32 kDateZoneMapValueBytesV3 = 304;
+inline constexpr u32 kDateStatisticsHeaderBytesV3 = 512;
+inline constexpr u32 kDateStatisticsMaximumBytesV3 = 4608;
+inline constexpr u32 kDateBackupNullBytesV3 = 296;
+inline constexpr u32 kDateBackupValueBytesV3 = 300;
 
-enum class DateIndexFamilyV1 : std::uint8_t {
+enum class DateIndexFamilyV3 : std::uint8_t {
   aggregate_sketch, bitmap, brin_like, btree, columnar_zone_map,
   covering_included, document_path, expression, full_text, graph, hash,
   partial_filtered, range_exclusion, spatial, temporary_work, vector_ann,
 };
 
-enum class DateIndexDispositionV1 : std::uint8_t {
+enum class DateIndexDispositionV3 : std::uint8_t {
   admitted_with_recheck,
   admitted_exact_if_budget,
   admitted_payload_only,
@@ -36,7 +36,7 @@ enum class DateIndexDispositionV1 : std::uint8_t {
   not_applicable,
 };
 
-enum class DateProjectionKindV1 : std::uint8_t {
+enum class DateProjectionKindV3 : std::uint8_t {
   none,
   equality_hash,
   sort_key,
@@ -47,7 +47,7 @@ enum class DateProjectionKindV1 : std::uint8_t {
   conditional_underlying,
 };
 
-enum class DateProjectionModeV1 : std::uint8_t {
+enum class DateProjectionModeV3 : std::uint8_t {
   unspecified,
   equality_hash,
   zone_map,
@@ -59,40 +59,40 @@ enum class DateProjectionModeV1 : std::uint8_t {
   ascending_nulls_last_pair,
 };
 
-struct DateIndexResolutionV1 {
-  DateIndexFamilyV1 family = DateIndexFamilyV1::btree;
+struct DateIndexResolutionV3 {
+  DateIndexFamilyV3 family = DateIndexFamilyV3::btree;
   platform::Uuid compatibility_uuid{};
   u64 compatibility_generation = 0;
-  DateIndexDispositionV1 disposition = DateIndexDispositionV1::not_applicable;
-  DateProjectionKindV1 projection = DateProjectionKindV1::none;
+  DateIndexDispositionV3 disposition = DateIndexDispositionV3::not_applicable;
+  DateProjectionKindV3 projection = DateProjectionKindV3::none;
   bool exact_recheck_required = false;
   bool receiving_owner_resolution_required = false;
 };
 
-struct DateIndexProjectionRequestV1 {
-  DateIndexFamilyV1 family = DateIndexFamilyV1::btree;
-  DateProjectionModeV1 mode = DateProjectionModeV1::unspecified;
-  const DateOwnedValueV1* value = nullptr;
-  const DateOwnedValueV1* upper_value = nullptr;
-  const struct DateZoneMapRequestV1* zone_map = nullptr;
-  const DateIndexResolutionV1* selected_conditional_family = nullptr;
+struct DateIndexProjectionRequestV3 {
+  DateIndexFamilyV3 family = DateIndexFamilyV3::btree;
+  DateProjectionModeV3 mode = DateProjectionModeV3::unspecified;
+  const DateOwnedValueV3* value = nullptr;
+  const DateOwnedValueV3* upper_value = nullptr;
+  const struct DateZoneMapRequestV3* zone_map = nullptr;
+  const DateIndexResolutionV3* selected_conditional_family = nullptr;
   u64 provider_max_key_bytes = ~u64{0};
-  DateExecutionControlV1 control;
+  DateExecutionControlV3 control;
 };
 
-struct DateIndexProjectionResultV1 {
+struct DateIndexProjectionResultV3 {
   Status status;
-  DateDiagnosticFactV1 diagnostic;
-  DateIndexResolutionV1 resolution;
+  DateDiagnosticFactV3 diagnostic;
+  DateIndexResolutionV3 resolution;
   std::vector<byte> bytes;
   bool owner_fact_only = false;
   bool ok() const noexcept { return status.ok(); }
 };
 
-DateIndexResolutionV1 ResolveDateIndexFamilyV1(
-    DateIndexFamilyV1 family) noexcept;
+DateIndexResolutionV3 ResolveDateIndexFamilyV3(
+    DateIndexFamilyV3 family) noexcept;
 
-enum class DateIndexPredicateOperationV1 : std::uint8_t {
+enum class DateIndexPredicateOperationV3 : std::uint8_t {
   equality,
   in,
   is_null,
@@ -104,70 +104,71 @@ enum class DateIndexPredicateOperationV1 : std::uint8_t {
   exclusion,
   unsupported,
 };
-enum class DateIndexPredicateFactV1 : std::uint8_t {
+enum class DateIndexPredicateFactV3 : std::uint8_t {
   exact_no_recheck_after_decode_reencode,
   requires_exact_state_day_recheck_never_final_match,
   prune_only_mandatory_source_row_predicate_recheck_never_final_match,
   refused,
 };
-struct DateIndexPredicateResolutionV1 {
+struct DateIndexPredicateResolutionV3 {
   bool admitted = false;
-  DateIndexPredicateFactV1 fact = DateIndexPredicateFactV1::refused;
+  DateIndexPredicateFactV3 fact = DateIndexPredicateFactV3::refused;
   std::string_view diagnostic;
 };
-DateIndexPredicateResolutionV1 ResolveDateIndexPredicateV1(
-    DateIndexFamilyV1 family, DateIndexPredicateOperationV1 operation) noexcept;
-DateIndexProjectionResultV1 ProjectDateIndexValueV1(
-    const DateIndexProjectionRequestV1& request) noexcept;
+DateIndexPredicateResolutionV3 ResolveDateIndexPredicateV3(
+    DateIndexFamilyV3 family, DateIndexPredicateOperationV3 operation) noexcept;
+DateIndexProjectionResultV3 ProjectDateIndexValueV3(
+    const DateIndexProjectionRequestV3& request) noexcept;
 
-struct DateCoveringValueViewV1 {
-  const DateValidatedProfileHandleV1* profile_handle = nullptr;
-  DateValueStateV1 state = DateValueStateV1::value;
+struct DateCoveringValueViewV3 {
+  const DateValidatedProfileHandleV3* profile_handle = nullptr;
+  DateValueStateV3 state = DateValueStateV3::value;
   i32 day = 0;
 };
-struct DateCoveringValueViewResultV1 {
+struct DateCoveringValueViewResultV3 {
   Status status;
-  DateDiagnosticFactV1 diagnostic;
-  DateCoveringValueViewV1 value;
+  DateDiagnosticFactV3 diagnostic;
+  DateCoveringValueViewV3 value;
   bool ok() const noexcept { return status.ok(); }
 };
-DateBytesResultV1 EncodeDateCoveringValueV1(
-    const DateOwnedValueV1& value,
-    const DateExecutionControlV1& control = {}) noexcept;
-DateCoveringValueViewResultV1 DecodeDateCoveringValueNoAllocV1(
-    const DateValidatedProfileHandleV1& profile_handle, bool null_allowed,
-    std::span<const byte> encoded) noexcept;
+DateBytesResultV3 EncodeDateCoveringValueV3(
+    const DateOwnedValueV3& value,
+    const DateExecutionControlV3& control = {}) noexcept;
+DateCoveringValueViewResultV3 DecodeDateCoveringValueNoAllocV3(
+    const DateValidatedProfileHandleV3& profile_handle, bool null_allowed,
+    std::span<const byte> encoded,
+    const DateExecutionControlV3& control = {}) noexcept;
 
-struct DateRangePairViewV1 {
+struct DateRangePairViewV3 {
   i32 lower_day = 0;
   i32 upper_day = 0;
   std::span<const byte> lower_key;
   std::span<const byte> upper_key;
 };
-struct DateRangePairViewResultV1 {
+struct DateRangePairViewResultV3 {
   Status status;
-  DateDiagnosticFactV1 diagnostic;
-  DateRangePairViewV1 value;
+  DateDiagnosticFactV3 diagnostic;
+  DateRangePairViewV3 value;
   bool ok() const noexcept { return status.ok(); }
 };
-DateBytesResultV1 EncodeDateRangePairV1(
-    const DateOwnedValueV1& lower, const DateOwnedValueV1& upper,
-    const DateExecutionControlV1& control = {}) noexcept;
-DateRangePairViewResultV1 DecodeDateRangePairNoAllocV1(
-    const DateValidatedProfileHandleV1& profile_handle,
+DateBytesResultV3 EncodeDateRangePairV3(
+    const DateOwnedValueV3& lower, const DateOwnedValueV3& upper,
+    const DateExecutionControlV3& control = {}) noexcept;
+DateRangePairViewResultV3 DecodeDateRangePairNoAllocV3(
+    const DateValidatedProfileHandleV3& profile_handle,
     std::span<const byte> encoded) noexcept;
 
-struct DateZoneMapRequestV1 {
-  std::shared_ptr<const DateValidatedProfileHandleV1> profile;
-  const DateOwnedValueV1* minimum = nullptr;
-  const DateOwnedValueV1* maximum = nullptr;
+struct DateZoneMapRequestV3 {
+  std::shared_ptr<const DateValidatedProfileHandleV3> profile;
+  const DateOwnedValueV3* minimum = nullptr;
+  const DateOwnedValueV3* maximum = nullptr;
   u64 null_count = 0;
   u64 value_count = 0;
   u64 provider_max_key_bytes = ~u64{0};
-  DateExecutionControlV1 control;
+  DateExecutionControlV3 control;
 };
-struct DateZoneMapViewV1 {
-  const DateValidatedProfileHandleV1* profile_handle = nullptr;
+struct DateZoneMapViewV3 {
+  const DateValidatedProfileHandleV3* profile_handle = nullptr;
   u64 null_count = 0;
   u64 value_count = 0;
   i32 minimum_day = 0;
@@ -175,35 +176,36 @@ struct DateZoneMapViewV1 {
   std::span<const byte> minimum_key;
   std::span<const byte> maximum_key;
 };
-struct DateZoneMapViewResultV1 {
+struct DateZoneMapViewResultV3 {
   Status status;
-  DateDiagnosticFactV1 diagnostic;
-  DateZoneMapViewV1 value;
+  DateDiagnosticFactV3 diagnostic;
+  DateZoneMapViewV3 value;
   bool ok() const noexcept { return status.ok(); }
 };
-DateBytesResultV1 EncodeDateZoneMapV1(
-    const DateZoneMapRequestV1& request) noexcept;
-DateZoneMapViewResultV1 DecodeDateZoneMapNoAllocV1(
-    const DateValidatedProfileHandleV1& profile_handle,
-    std::span<const byte> encoded) noexcept;
+DateBytesResultV3 EncodeDateZoneMapV3(
+    const DateZoneMapRequestV3& request) noexcept;
+DateZoneMapViewResultV3 DecodeDateZoneMapNoAllocV3(
+    const DateValidatedProfileHandleV3& profile_handle,
+    std::span<const byte> encoded,
+    const DateExecutionControlV3& control = {}) noexcept;
 
-struct DateStatisticsHistogramRecordV1 {
+struct DateStatisticsHistogramRecordV3 {
   i32 inclusive_upper_day = 0;
   u64 noncumulative_count = 0;
 };
-struct DateStatisticsMcvRecordV1 {
+struct DateStatisticsMcvRecordV3 {
   std::array<byte, 32> value_hash{};
   u64 frequency = 0;
 };
 // Lifetime pin for the immutable receiving-owner evidence record.  The date
 // datatype validates only the nonnil V7 identity shape; ownership does not
 // confer provenance or authorization.
-struct DateStatisticsProviderEvidenceHandleV1 {
+struct DateStatisticsProviderEvidenceHandleV3 {
   platform::Uuid provider_evidence_uuid{};
 };
-struct DateStatisticsProjectionV1 {
-  std::shared_ptr<const DateValidatedProfileHandleV1> profile;
-  std::shared_ptr<const DateStatisticsProviderEvidenceHandleV1>
+struct DateStatisticsProjectionV3 {
+  std::shared_ptr<const DateValidatedProfileHandleV3> profile;
+  std::shared_ptr<const DateStatisticsProviderEvidenceHandleV3>
       provider_evidence;
   platform::Uuid statistics_uuid{};
   platform::Uuid source_object_uuid{};
@@ -216,11 +218,11 @@ struct DateStatisticsProjectionV1 {
   bool minimum_maximum_present = false;
   i32 minimum_day = 0;
   i32 maximum_day = 0;
-  std::span<const DateStatisticsHistogramRecordV1> histogram;
-  std::span<const DateStatisticsMcvRecordV1> mcv;
+  std::span<const DateStatisticsHistogramRecordV3> histogram;
+  std::span<const DateStatisticsMcvRecordV3> mcv;
 };
-struct DateDecodedStatisticsV1 {
-  std::shared_ptr<const DateValidatedProfileHandleV1> profile;
+struct DateDecodedStatisticsV3 {
+  std::shared_ptr<const DateValidatedProfileHandleV3> profile;
   platform::Uuid statistics_uuid{};
   platform::Uuid source_object_uuid{};
   platform::Uuid provider_evidence_uuid{};
@@ -233,24 +235,24 @@ struct DateDecodedStatisticsV1 {
   bool minimum_maximum_present = false;
   i32 minimum_day = 0;
   i32 maximum_day = 0;
-  std::vector<DateStatisticsHistogramRecordV1> histogram;
-  std::vector<DateStatisticsMcvRecordV1> mcv;
+  std::vector<DateStatisticsHistogramRecordV3> histogram;
+  std::vector<DateStatisticsMcvRecordV3> mcv;
 };
-struct DateStatisticsDecodeResultV1 {
+struct DateStatisticsDecodeResultV3 {
   Status status;
-  DateDiagnosticFactV1 diagnostic;
-  DateDecodedStatisticsV1 statistics;
+  DateDiagnosticFactV3 diagnostic;
+  DateDecodedStatisticsV3 statistics;
   bool ok() const noexcept { return status.ok(); }
 };
-DateBytesResultV1 EncodeDateStatisticsProjectionV1(
-    const DateStatisticsProjectionV1& projection,
-    const DateExecutionControlV1& control = {}) noexcept;
-DateStatisticsDecodeResultV1 DecodeDateStatisticsProjectionV1(
-    const std::shared_ptr<const DateValidatedProfileHandleV1>& profile,
+DateBytesResultV3 EncodeDateStatisticsProjectionV3(
+    const DateStatisticsProjectionV3& projection,
+    const DateExecutionControlV3& control = {}) noexcept;
+DateStatisticsDecodeResultV3 DecodeDateStatisticsProjectionV3(
+    const std::shared_ptr<const DateValidatedProfileHandleV3>& profile,
     std::span<const byte> encoded,
-    const DateExecutionControlV1& control = {}) noexcept;
+    const DateExecutionControlV3& control = {}) noexcept;
 
-enum class DateStatisticsReceivingDispositionV1 : std::uint8_t {
+enum class DateStatisticsReceivingDispositionV3 : std::uint8_t {
   admitted,
   security_denied,
   privacy_denied,
@@ -261,7 +263,7 @@ enum class DateStatisticsReceivingDispositionV1 : std::uint8_t {
   provider_evidence_mismatch,
   manual_review_required,
 };
-enum class DateStatisticsEvidenceClassV1 : std::uint8_t {
+enum class DateStatisticsEvidenceClassV3 : std::uint8_t {
   full_visible_population,
   partial_scan,
   weighted_input,
@@ -269,7 +271,7 @@ enum class DateStatisticsEvidenceClassV1 : std::uint8_t {
   snapshot_merge,
   histogram_source_contradiction,
 };
-struct DateStatisticsReceivingFactsV1 {
+struct DateStatisticsReceivingFactsV3 {
   bool security_visible = false;
   bool privacy_admitted = false;
   u64 schema_epoch = 0;
@@ -277,79 +279,80 @@ struct DateStatisticsReceivingFactsV1 {
   u64 security_epoch = 0;
   platform::Uuid provider_evidence_uuid{};
 };
-DateStatisticsReceivingDispositionV1 ResolveDateStatisticsReceivingFactsV1(
-    const DateDecodedStatisticsV1& decoded,
-    const DateStatisticsReceivingFactsV1& current) noexcept;
-DateStatisticsReceivingDispositionV1 ResolveDateStatisticsEvidenceV1(
-    DateStatisticsEvidenceClassV1 evidence) noexcept;
+DateStatisticsReceivingDispositionV3 ResolveDateStatisticsReceivingFactsV3(
+    const DateDecodedStatisticsV3& decoded,
+    const DateStatisticsReceivingFactsV3& current) noexcept;
+DateStatisticsReceivingDispositionV3 ResolveDateStatisticsEvidenceV3(
+    DateStatisticsEvidenceClassV3 evidence) noexcept;
 
-struct DateBackupTupleViewV1 {
-  const DateValidatedProfileHandleV1* profile_handle = nullptr;
-  DateValueStateV1 state = DateValueStateV1::value;
+struct DateBackupTupleViewV3 {
+  const DateValidatedProfileHandleV3* profile_handle = nullptr;
+  DateValueStateV3 state = DateValueStateV3::value;
   i32 day = 0;
 };
-struct DateBackupTupleViewResultV1 {
+struct DateBackupTupleViewResultV3 {
   Status status;
-  DateDiagnosticFactV1 diagnostic;
-  DateBackupTupleViewV1 tuple;
+  DateDiagnosticFactV3 diagnostic;
+  DateBackupTupleViewV3 tuple;
   bool ok() const noexcept { return status.ok(); }
 };
-DateBytesResultV1 EncodeDateBackupTupleV1(
-    const DateOwnedValueV1& value,
-    const DateExecutionControlV1& control = {}) noexcept;
-DateBackupTupleViewResultV1 DecodeDateBackupTupleNoAllocV1(
-    const DateValidatedProfileHandleV1& profile_handle, bool null_allowed,
-    std::span<const byte> encoded) noexcept;
+DateBytesResultV3 EncodeDateBackupTupleV3(
+    const DateOwnedValueV3& value,
+    const DateExecutionControlV3& control = {}) noexcept;
+DateBackupTupleViewResultV3 DecodeDateBackupTupleNoAllocV3(
+    const DateValidatedProfileHandleV3& profile_handle, bool null_allowed,
+    std::span<const byte> encoded,
+    const DateExecutionControlV3& control = {}) noexcept;
 
-enum class DateProtectionCellV1 : std::uint8_t {
+enum class DateProtectionCellV3 : std::uint8_t {
   canonical_plain, inner_compression, inner_encryption, outer_compression,
   outer_authenticated_protection, outer_compress_then_protect,
   outer_protect_then_compress, page_or_filespace_crypto, transport_tls,
   protected_index,
 };
-struct DateProtectionResolutionV1 {
-  DateProtectionCellV1 cell = DateProtectionCellV1::canonical_plain;
+struct DateProtectionResolutionV3 {
+  DateProtectionCellV3 cell = DateProtectionCellV3::canonical_plain;
   bool datatype_admitted = false;
   bool receiving_owner_handoff = false;
   std::string_view disposition;
   std::string_view diagnostic;
 };
-DateProtectionResolutionV1 ResolveDateProtectionV1(
-    DateProtectionCellV1 cell) noexcept;
+DateProtectionResolutionV3 ResolveDateProtectionV3(
+    DateProtectionCellV3 cell) noexcept;
 
-enum class DateWireLaneV1 : std::uint8_t {
+enum class DateWireLaneV3 : std::uint8_t {
   native_sbwp, parser_server_ipc, canonical_sblr, apache_ignite, cassandra,
   clickhouse, cockroachdb, dolt, duckdb, firebird, foundationdb, immudb,
   influxdb, mariadb, milvus, mongodb, mysql, neo4j, opensearch, postgresql,
   redis, sqlite, tidb, tikv, vitess, xtdb, yugabytedb,
 };
-struct DateWireLaneResolutionV1 {
-  DateWireLaneV1 lane = DateWireLaneV1::native_sbwp;
+struct DateWireLaneResolutionV3 {
+  DateWireLaneV3 lane = DateWireLaneV3::native_sbwp;
   bool admitted = false;
   bool component_mapping_complete = false;
   bool receiving_owner_handoff = true;
   std::string_view disposition;
   std::string_view diagnostic = "CTI.TRANSPORT.UNSUPPORTED";
 };
-DateWireLaneResolutionV1 ResolveDateWireLaneV1(DateWireLaneV1 lane) noexcept;
+DateWireLaneResolutionV3 ResolveDateWireLaneV3(DateWireLaneV3 lane) noexcept;
 
-enum class DateDiagnosticAxisV1 : std::uint8_t {
+enum class DateDiagnosticAxisV3 : std::uint8_t {
   input_parse, descriptor_codec, storage_read_write, cast_invalid,
   cast_range_loss, operation_invalid, bounds_overflow_underflow,
   resource_cancellation, compression_corruption, encryption_auth_key,
   wire_decode_encode, index_key, domain_validation, recovery_corruption,
   statistics_read,
 };
-struct DateDiagnosticRouteV1 {
-  DateDiagnosticAxisV1 axis = DateDiagnosticAxisV1::descriptor_codec;
+struct DateDiagnosticRouteV3 {
+  DateDiagnosticAxisV3 axis = DateDiagnosticAxisV3::descriptor_codec;
   std::string_view code;
   platform::Uuid diagnostic_uuid{};
   std::string_view ordered_parameter_schema;
   std::string_view redaction;
 };
-std::span<const DateDiagnosticRouteV1> DateDiagnosticRoutesV1() noexcept;
+std::span<const DateDiagnosticRouteV3> DateDiagnosticRoutesV3() noexcept;
 
-enum class DateMetricEvidenceTypeV1 : std::uint8_t {
+enum class DateMetricEvidenceTypeV3 : std::uint8_t {
   descriptor_admissions, invalid_literals, range_refusals,
   operation_attempts, operation_success, operation_refusals, cast_attempts,
   cast_success, index_admission_refusals, statistics_stale,
@@ -357,15 +360,15 @@ enum class DateMetricEvidenceTypeV1 : std::uint8_t {
   protection_refusals, merge_manual_review, resource_budget_refusals,
   cancellations, decode_corruption, diagnostic_family,
 };
-struct DateMetricEvidenceTypeDescriptorV1 {
-  DateMetricEvidenceTypeV1 type = DateMetricEvidenceTypeV1::descriptor_admissions;
+struct DateMetricEvidenceTypeDescriptorV3 {
+  DateMetricEvidenceTypeV3 type = DateMetricEvidenceTypeV3::descriptor_admissions;
   platform::Uuid evidence_type_uuid{};
   u64 generation = 0;
   std::string_view metric_name_metadata;
   std::string_view evidence_producer;
   std::string_view accepted_final_outcome;
 };
-std::span<const DateMetricEvidenceTypeDescriptorV1>
-DateMetricEvidenceTypesV1() noexcept;
+std::span<const DateMetricEvidenceTypeDescriptorV3>
+DateMetricEvidenceTypesV3() noexcept;
 
 }  // namespace scratchbird::core::datatypes

@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <new>
 #include <pthread.h>
 #include <semaphore.h>
 #include <string>
@@ -27,6 +28,22 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+
+// Only the Start caller is armed, after all three actual cohort threads exist.
+// One real allocation fails; no runtime/service outcome is replaced.
+thread_local bool post_launch_allocation_armed = false;
+thread_local unsigned post_launch_allocation_failures = 0;
+void* operator new(std::size_t bytes) {
+  if (post_launch_allocation_armed) {
+    post_launch_allocation_armed = false;
+    ++post_launch_allocation_failures;
+    throw std::bad_alloc();
+  }
+  if (void* pointer = std::malloc(bytes ? bytes : 1)) return pointer;
+  throw std::bad_alloc();
+}
+void operator delete(void* pointer) noexcept { std::free(pointer); }
+void operator delete(void* pointer, std::size_t) noexcept { std::free(pointer); }
 
 // SEARCH_KEY: SERVER_AGENT_SHUTDOWN_PREDICATE_PARK_RACE
 // Link against the static C++ runtime so GNU --wrap also observes the native
@@ -99,6 +116,7 @@ server::ServerAgentRuntime* startup_runtime = nullptr;
 bool runtime_threads_ready = false;
 bool startup_failure_injected = false;
 bool cleanup_failure_mode = false;
+bool post_launch_allocation_mode = false;
 unsigned cleanup_sync_failures = 0;
 bool cleanup_after_joins = false;
 thread_local bool track_native_creates = true;
@@ -345,6 +363,10 @@ extern "C" int __wrap_pthread_create(pthread_t* thread, const pthread_attr_t* at
   if (track && created == 0) {
     Require(launched_threads < startup_threads.size(), "unexpected startup thread count");
     startup_threads[launched_threads++] = *thread;
+    if (post_launch_allocation_mode && launched_threads == startup_threads.size()) {
+      startup_failure_injected = true;
+      post_launch_allocation_armed = true;
+    }
   }
   return created;
 }
@@ -356,7 +378,7 @@ extern "C" int __wrap_pthread_mutex_unlock(pthread_mutex_t* mutex) {
     runtime_state_mutex = mutex;
   }
   const int unlocked = __real_pthread_mutex_unlock(mutex);
-  if (startup_probe && !reading_startup_snapshot && mutex == runtime_state_mutex &&
+  if (startup_probe && !post_launch_allocation_armed && !reading_startup_snapshot && mutex == runtime_state_mutex &&
       unlocked == 0) {
     // Inspect only AFTER releasing the state mutex; never recurse on our own
     // Snapshot's unlock. Service-initialization helper threads are not targets.
@@ -981,21 +1003,28 @@ bool CheckStartupFailure(server::ServerAgentRuntime& runtime,
   try {
     (void)runtime.Start(config, engine, &diagnostics);
   } catch (const std::system_error& error) {
-    expected_exception = error.code() == std::errc::resource_unavailable_try_again;
+    expected_exception = !post_launch_allocation_mode &&
+        error.code() == std::errc::resource_unavailable_try_again;
+  } catch (const std::bad_alloc&) {
+    expected_exception = post_launch_allocation_mode && post_launch_allocation_failures == 1;
   } catch (...) {
     // Wrong exception is a failure, but allow the real cleanup below first.
   }
   startup_probe = false;
+  post_launch_allocation_armed = false;
   const auto after_failure = runtime.Snapshot();
   bool all_joined = true;
   for (unsigned i = 0; i < launched_threads; ++i) {
     all_joined = all_joined && startup_joined[i];
   }
-  const bool unwound = expected_exception && launch_attempts == fail_launch &&
-                       launched_threads == fail_launch - 1 && all_joined &&
+  const bool expected_launches = post_launch_allocation_mode
+      ? launch_attempts == 3 && launched_threads == 3
+      : launch_attempts == fail_launch && launched_threads == fail_launch - 1;
+  const bool unwound = expected_exception && expected_launches && all_joined &&
                        !after_failure.started && !after_failure.stopping;
   std::cout << "startup_failure=" << fail_launch
             << " actual_launches=" << launched_threads
+            << " post_launch_allocation_failures=" << post_launch_allocation_failures
             << " all_joined_before_catch=" << all_joined
             << " started_after_catch=" << after_failure.started << '\n';
   // Rescue only after recording the oracle. These joins cannot satisfy it.
@@ -1035,6 +1064,7 @@ bool CheckStartupFailure(server::ServerAgentRuntime& runtime,
   // every actual native create/join in three replacement cohorts. Never let a
   // later successful start conceal a failed original unwind.
   if (!unwound) return false;
+  post_launch_allocation_mode = false;
   return CheckSequentialRestart(runtime, config, engine, diagnostics);
 }
 
@@ -1344,8 +1374,12 @@ int main(int argc, char** argv) {
       (argc == 2 && std::string_view(argv[1]) == "--start-during-stop");
   const bool concurrent_stop = concurrent_stop_failure ||
       (argc == 2 && std::string_view(argv[1]) == "--concurrent-stop");
-  cleanup_failure_mode = argc == 3 && std::string_view(argv[1]) == "--startup-cleanup-failure";
-  const bool startup_failure = cleanup_failure_mode ||
+  post_launch_allocation_mode = argc == 2 &&
+      (std::string_view(argv[1]) == "--post-launch-allocation" ||
+       std::string_view(argv[1]) == "--post-launch-allocation-cleanup-failure");
+  cleanup_failure_mode = (argc == 3 && std::string_view(argv[1]) == "--startup-cleanup-failure") ||
+      (post_launch_allocation_mode && std::string_view(argv[1]) == "--post-launch-allocation-cleanup-failure");
+  const bool startup_failure = post_launch_allocation_mode || cleanup_failure_mode ||
       (argc == 3 && std::string_view(argv[1]) == "--startup-failure");
   const bool binary_boundary = argc == 3 && std::string_view(argv[1]) == "--binary-status-boundary";
   const bool malformed_identity = argc == 4 && std::string_view(argv[1]) == "--malformed-identity";
@@ -1373,7 +1407,7 @@ int main(int argc, char** argv) {
       (argc == 2 && std::string_view(argv[1]) == "--setup-path-failure");
   const bool lifecycle_case = start_stop_mode || active_destruction || failed_snapshot_lifetime || startup_failure ||
       sequential_restart || setup_path_failure || missing_identity;
-  if (startup_failure) {
+  if (startup_failure && !post_launch_allocation_mode) {
     const std::string_view index(argv[2]);
     Require(index == "1" || index == "2" || index == "3", "invalid failed launch index");
     fail_launch = static_cast<unsigned>(index[0] - '0');

@@ -63,7 +63,8 @@ inline bool LookupDatatypeStorageIdentityV1(
         !((snapshot == kDatatypeCohortV4 && catalog_generation == 4 && registry_generation == 4) ||
                 (snapshot == kDatatypeCohortV5 && catalog_generation == 5 && registry_generation == 5) ||
                 (snapshot == kDatatypeCohortV6 && catalog_generation == 6 && registry_generation == 6) ||
-                (snapshot == kDatatypeCohortV7 && catalog_generation == 7 && registry_generation == 7)))
+                (snapshot == kDatatypeCohortV7 && catalog_generation == 7 && registry_generation == 7) ||
+                (snapshot == kDatatypeCohortV8 && catalog_generation == 8 && registry_generation == 8)))
       return false;
     static const auto catalog = LoadCurrentCoreDatatypeCatalogManifest();
     if (!catalog.ok()) return false;

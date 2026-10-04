@@ -75,7 +75,8 @@ void TestEveryCanonicalDatatypePhysicalRoundTrip() {
     // base.bit_string is context-sensitive and has no raw generic semantic
     // path. Its exact V3 receipt/profile adapter is exercised below.
     if (descriptor.type_id == dt::CanonicalTypeId::bit_string ||
-        descriptor.type_id == dt::CanonicalTypeId::date) continue;
+        descriptor.type_id == dt::CanonicalTypeId::date ||
+        descriptor.type_id == dt::CanonicalTypeId::time) continue;
     const auto layout = dt::LookupDatatypeStorageLayout(descriptor.type_id);
     Require(layout.ok(), "MDF-013 missing storage layout");
     RoundTrip(dt::SampleDatatypePhysicalValueForLayout(layout.layout));
@@ -87,11 +88,11 @@ void TestEveryCanonicalDatatypePhysicalRoundTrip() {
   }
 }
 
-std::shared_ptr<const dt::DateValidatedProfileHandleV1> DateProfile() {
+std::shared_ptr<const dt::DateValidatedProfileHandleV3> DateProfile() {
   const auto result =
-      dt::BuildCurrentDateValidatedProfileHandleV1(dt::kDatatypeCohortV7);
+      dt::BuildCurrentDateValidatedProfileHandleV3(dt::kDatatypeCohortV8);
   Require(result.ok(), "MDF-013 current date profile did not resolve");
-  return std::make_shared<const dt::DateValidatedProfileHandleV1>(
+  return std::make_shared<const dt::DateValidatedProfileHandleV3>(
       result.profile);
 }
 
@@ -127,17 +128,17 @@ void TestDateStructuralBoundaryAndComposedAuthority() {
           "MDF-013 raw date SBDPV semantic path was not refused");
 
   const auto profile = DateProfile();
-  const dt::DateOwnedValueV1 value{
-      profile, dt::DateValueStateV1::value, 0};
+  const dt::DateOwnedValueV3 value{
+      profile, dt::DateValueStateV3::value, 0};
   const auto composed =
-      dt::EncodeDateSbdpvComposedV1(value, false);
+      dt::EncodeDateSbdpvComposedV3(value, false);
   Require(composed.ok() && composed.bytes ==
               std::vector<platform::byte>(frame.begin(), frame.end()),
           "MDF-013 composed date SBDPV bytes differ from structural envelope");
-  const auto decoded = dt::DecodeDateSbdpvComposedNoAllocV1(
+  const auto decoded = dt::DecodeDateSbdpvComposedNoAllocV3(
       *profile, false, composed.bytes);
   Require(decoded.ok() && decoded.value.profile == profile.get() &&
-              decoded.value.state == dt::DateValueStateV1::value &&
+              decoded.value.state == dt::DateValueStateV3::value &&
               decoded.value.day == 0,
           "MDF-013 composed date SBDPV did not preserve typed epoch");
 
@@ -153,6 +154,63 @@ void TestDateStructuralBoundaryAndComposedAuthority() {
   Require(!dirty_null.ok() && dirty_null.diagnostic.diagnostic_code ==
               "DATATYPE.NULL_STATE.INVALID",
           "MDF-013 raw date dirty NULL precedence mismatch");
+}
+
+void TestTimeStructuralBoundaryAndRawRefusal() {
+  const std::array<platform::byte, 8> midnight{};
+  const dt::DatatypePhysicalValueView structural{
+      dt::CanonicalTypeId::time,
+      dt::DatatypePhysicalValueState::value,
+      midnight.data(), midnight.size()};
+  std::array<platform::byte, 32> frame{};
+  const auto encoded = dt::EncodeDatatypePhysicalStructuralValueIntoNoAlloc(
+      structural, frame.data(), frame.size());
+  Require(encoded.ok() && encoded.bytes_written == frame.size(),
+          "MDF-013 time structural SBDPV encode failed");
+  const auto structural_decode =
+      dt::DecodeDatatypePhysicalStructuralValueViewNoAlloc(
+          frame.data(), frame.size());
+  Require(structural_decode.ok() &&
+              structural_decode.value.type_id == dt::CanonicalTypeId::time &&
+              structural_decode.value.payload_bytes == midnight.size(),
+          "MDF-013 time structural SBDPV decode failed");
+
+  const auto raw_encode = dt::EncodeDatatypePhysicalValue(
+      {dt::CanonicalTypeId::time, dt::DatatypePhysicalValueState::value,
+       {midnight.begin(), midnight.end()}});
+  const auto raw_decode =
+      dt::DecodeDatatypePhysicalValue(frame.data(), frame.size());
+  Require(!raw_encode.ok() && !raw_decode.ok() &&
+              raw_encode.diagnostic.diagnostic_code ==
+                  "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING" &&
+              raw_decode.diagnostic.diagnostic_code ==
+                  "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+          "MDF-013 raw time SBDPV semantic path was not refused");
+
+  const auto malformed = dt::EncodeDatatypePhysicalValue(
+      {dt::CanonicalTypeId::time, dt::DatatypePhysicalValueState::value,
+       {0, 0, 0, 0, 0, 0, 0}});
+  Require(!malformed.ok() && malformed.diagnostic.diagnostic_code ==
+              "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+          "MDF-013 malformed raw time component precedence mismatch");
+  std::vector<platform::byte> out_of_range(8);
+  std::uint64_t scalar = 86'400'000'000'000ull;
+  for (std::size_t index = 0; index < out_of_range.size(); ++index) {
+    out_of_range[index] = static_cast<platform::byte>(scalar & 0xffu);
+    scalar >>= 8;
+  }
+  const auto invalid_range = dt::EncodeDatatypePhysicalValue(
+      {dt::CanonicalTypeId::time, dt::DatatypePhysicalValueState::value,
+       out_of_range});
+  Require(!invalid_range.ok() && invalid_range.diagnostic.diagnostic_code ==
+              "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+          "MDF-013 out-of-range raw time component was admitted");
+  const auto dirty_null = dt::EncodeDatatypePhysicalValue(
+      {dt::CanonicalTypeId::time, dt::DatatypePhysicalValueState::sql_null,
+       {0}});
+  Require(!dirty_null.ok() && dirty_null.diagnostic.diagnostic_code ==
+              "DATATYPE.NULL_STATE.INVALID",
+          "MDF-013 raw time dirty NULL precedence mismatch");
 }
 
 void TestBitStringStructuralBoundaryAndRawRefusal() {
@@ -276,7 +334,8 @@ void TestRestartPersistenceRoundTrip() {
   std::size_t expected_count = 0;
   for (const auto& descriptor : dt::BuiltinDatatypeDescriptors()) {
     if (descriptor.type_id == dt::CanonicalTypeId::bit_string ||
-        descriptor.type_id == dt::CanonicalTypeId::date) continue;
+        descriptor.type_id == dt::CanonicalTypeId::date ||
+        descriptor.type_id == dt::CanonicalTypeId::time) continue;
     const auto layout = dt::LookupDatatypeStorageLayout(descriptor.type_id);
     const auto encoded = dt::EncodeDatatypePhysicalValue(
         dt::SampleDatatypePhysicalValueForLayout(layout.layout));
@@ -335,6 +394,7 @@ int main() {
   TestEveryCanonicalDatatypePhysicalRoundTrip();
   TestBitStringStructuralBoundaryAndRawRefusal();
   TestDateStructuralBoundaryAndComposedAuthority();
+  TestTimeStructuralBoundaryAndRawRefusal();
   TestOverflowLocatorOpaqueAndProtectedStates();
   TestMalformedPhysicalPayloadsAreRefused();
   TestRestartPersistenceRoundTrip();

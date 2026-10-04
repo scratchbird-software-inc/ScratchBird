@@ -7,9 +7,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/database_fixture_cleanup.hpp"
+#include "agent_binary_identity_fixture.hpp"
+using scratchbird::tests::BinaryFixtureIdentity;
 #include "agents/agent_durable_catalog_store_api.hpp"
 #include "agents/agent_runtime_service_store_api.hpp"
 #include "metric_registry.hpp"
+#include "runtime_service_metric_fixture.hpp"
 #include "transaction/transaction_api.hpp"
 
 #include "agent_durable_catalog.hpp"
@@ -29,6 +33,8 @@ namespace api = scratchbird::engine::internal_api;
 namespace db = scratchbird::storage::database;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
+std::unique_ptr<runtime_service_metric_test::Fixture> metric_fixture;
+bool metric_owner_mismatch = false;
 
 [[noreturn]] void Fail(const std::string& message) {
   std::cerr << message << '\n';
@@ -47,21 +53,7 @@ struct TestDatabase {
 };
 
 void Cleanup(const std::filesystem::path& path) {
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-  for (const char* suffix : {".dirty.manifest",
-                             ".sb.mga_event_sequence_allocator",
-                             ".sb.mga_index_entries",
-                             ".sb.mga_large_values",
-                             ".sb.mga_relation_descriptors",
-                             ".sb.mga_relation_metadata",
-                             ".sb.mga_relation_scope",
-                             ".sb.mga_row_versions",
-                             ".sb.mga_savepoints",
-                             ".sb.mga_secondary_index_delta_ledger",
-                             ".sb.txn_publish"}) {
-    std::filesystem::remove_all(path.string() + suffix, ignored);
-  }
+  scratchbird::tests::RemoveDatabaseFixtureArtifacts(path);
 }
 
 TestDatabase CreateActiveDatabase() {
@@ -87,6 +79,8 @@ TestDatabase CreateActiveDatabase() {
   create.require_resource_seed_pack = false;
   create.allow_overwrite = true;
   Require(db::CreateDatabaseFile(create).ok(), "database creation failed");
+  Require(!metric_fixture, "each service case requires its own process/database owner");
+  metric_fixture = std::make_unique<runtime_service_metric_test::Fixture>(database_uuid.value.value);
 
   api::EngineRequestContext bootstrap_context;
   bootstrap_context.request_id = "aeic-runtime-service-bootstrap";
@@ -125,6 +119,10 @@ api::EngineRequestContext Context(const TestDatabase& database) {
   context.request_id = "aeic-runtime-service-store";
   context.database_path = database.path.string();
   context.database_uuid = database.database_uuid;
+  context.node_uuid = runtime_service_metric_test::node;
+  if (metric_owner_mismatch) {
+    context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000ee02");
+  }
   context.transaction_uuid = database.transaction_uuid;
   context.local_transaction_id = database.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id =
@@ -191,7 +189,7 @@ bool MetricHasLabel(const scratchbird::core::metrics::MetricValue& value,
   return false;
 }
 
-double CurrentMetricValue(const std::string& family,
+std::uint64_t CurrentMetricValue(const std::string& family,
                           const std::string& label_key = {},
                           const std::string& label_value = {}) {
   const auto snapshot =
@@ -201,11 +199,11 @@ double CurrentMetricValue(const std::string& family,
     if (!label_key.empty() && !MetricHasLabel(value, label_key, label_value)) {
       continue;
     }
-    const auto* scalar = std::get_if<double>(&value.value);
-    Require(scalar != nullptr, "runtime service gauge must use its declared float64 scalar");
+    const auto* scalar = std::get_if<std::uint64_t>(&value.value);
+    Require(scalar != nullptr, "runtime service gauge must use its declared uint64 scalar");
     return *scalar;
   }
-  return -1.0;
+  Fail("runtime service metric missing: " + family);
 }
 
 std::string StoreDiagnostic(
@@ -222,9 +220,9 @@ std::string StoreDiagnostic(
 agents::DurableAgentCatalogImage CatalogImage() {
   agents::DurableAgentCatalogImage image;
   agents::AgentInstanceRecord instance;
-  instance.instance_uuid = "018f0000-0000-7000-8000-00000000be11";
+  instance.instance_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be11"));
   instance.agent_type_id = "node_resource_agent";
-  instance.policy_uuid = "018f0000-0000-7000-8000-00000000be12";
+  instance.policy_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be12"));
   instance.scope = "node";
   instance.state = agents::AgentLifecycleState::registered;
   instance.run_generation = 1;
@@ -236,7 +234,7 @@ agents::DurableAgentCatalogImage CatalogImage() {
 
 agents::AgentPolicy SupervisionPolicy() {
   agents::AgentPolicy policy;
-  policy.policy_uuid = "018f0000-0000-7000-8000-00000000be12";
+  policy.policy_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be12"));
   policy.policy_name = "runtime service supervision policy";
   policy.policy_family = "runtime_service_supervision";
   policy.scope = "node";
@@ -265,15 +263,19 @@ agents::DurableAgentCatalogImage CatalogImageWithQueuedAction() {
                         agents::DurableAgentActionState state,
                         const std::string& diagnostic) {
     agents::DurableAgentActionRecord action;
-    action.action_uuid = "018f0000-0000-7000-8000-00000000c0" + suffix;
-    action.instance_uuid = "018f0000-0000-7000-8000-00000000be11";
-    action.owner_uuid = "018f0000-0000-7000-8000-00000000be21";
+    auto action_identity = scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000c000");
+    action_identity.bytes.back() = static_cast<std::uint8_t>(std::stoul(suffix, nullptr, 16));
+    action.action_uuid = BinaryFixtureIdentity(action_identity);
+    action.instance_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be11"));
+    action.owner_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be21"));
     action.operation_id = "agent.test.durable_replay." + suffix;
     action.actuator_provider_id = "test_live_provider";
     action.state = state;
     action.idempotency_key = "agent.test.durable_replay/" + suffix;
     action.input_evidence_digest = "input-digest-" + suffix;
-    action.evidence_uuid = "018f0000-0000-7000-8000-00000000c1" + suffix;
+    auto evidence_identity = action_identity;
+    evidence_identity.bytes[14] = 0xc1;
+    action.evidence_uuid = BinaryFixtureIdentity(evidence_identity);
     action.diagnostic_code = diagnostic;
     action.generation = 1;
     action.outcome_verified = state == agents::DurableAgentActionState::completed;
@@ -296,12 +298,12 @@ agents::DurableAgentCatalogImage CatalogImageWithQueuedAction() {
 
 agents::DurableLeaseRequest LeaseRequest() {
   agents::DurableLeaseRequest request;
-  request.lease_uuid = "018f0000-0000-7000-8000-00000000be20";
-  request.instance_uuid = "018f0000-0000-7000-8000-00000000be11";
-  request.owner_uuid = "018f0000-0000-7000-8000-00000000be21";
+  request.lease_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be20"));
+  request.instance_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be11"));
+  request.owner_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be21"));
   request.now_microseconds = 1000;
   request.lease_duration_microseconds = 5000;
-  request.evidence_uuid = "018f0000-0000-7000-8000-00000000be22";
+  request.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be22"));
   return request;
 }
 
@@ -312,7 +314,7 @@ void TestRuntimeServiceStoreRoundTrip() {
   api::AgentDurableCatalogStoreRequest seed;
   seed.context = context;
   seed.image = CatalogImage();
-  seed.evidence_uuid = "018f0000-0000-7000-8000-00000000be13";
+  seed.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be13"));
   seed.production_live_path = true;
   seed.fsync_or_checkpoint_evidence = true;
   Require(api::PersistAgentDurableCatalogImage(seed).ok,
@@ -325,22 +327,22 @@ void TestRuntimeServiceStoreRoundTrip() {
   open.production_live_path = true;
   open.worker_foreground_protection_enabled = true;
   open.crash_recovery_mode = true;
-  open.service_owner_uuid = "018f0000-0000-7000-8000-00000000be30";
-  open.evidence_uuid = "018f0000-0000-7000-8000-00000000be31";
+  open.service_owner_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be30"));
+  open.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be31"));
   open.fsync_or_checkpoint_evidence = true;
   auto result = service.Open(std::move(open));
   Require(result.status.ok, "store-backed runtime service open failed: " +
                                 result.status.diagnostic_code + ":" +
                                 result.status.detail);
 
-  result = service.Start("018f0000-0000-7000-8000-00000000be32", true);
+  result = service.Start(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be32")), true);
   Require(result.status.ok, "store-backed runtime service start failed");
 
   auto lease = LeaseRequest();
   result = service.AcquireLease(lease, true);
   Require(result.status.ok, "store-backed runtime service lease failed");
 
-  lease.evidence_uuid = "018f0000-0000-7000-8000-00000000be23";
+  lease.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be23"));
   lease.now_microseconds = 1500;
   result = service.HeartbeatLease(lease, true);
   Require(result.status.ok, "store-backed runtime service heartbeat failed");
@@ -361,16 +363,16 @@ void TestRuntimeServiceStoreRoundTrip() {
   reopen.production_live_path = true;
   reopen.worker_foreground_protection_enabled = true;
   reopen.crash_recovery_mode = true;
-  reopen.service_owner_uuid = "018f0000-0000-7000-8000-00000000be30";
-  reopen.evidence_uuid = "018f0000-0000-7000-8000-00000000be33";
+  reopen.service_owner_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be30"));
+  reopen.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be33"));
   reopen.fsync_or_checkpoint_evidence = true;
   result = recovered.Open(std::move(reopen));
   Require(result.status.ok, "recovered service open from store failed: " +
                                 result.status.diagnostic_code + ":" +
                                 result.status.detail);
-  result = recovered.Start("018f0000-0000-7000-8000-00000000be34", true);
+  result = recovered.Start(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be34")), true);
   Require(result.status.ok, "recovered service start failed");
-  lease.evidence_uuid = "018f0000-0000-7000-8000-00000000be24";
+  lease.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be24"));
   lease.now_microseconds = 2000;
   result = recovered.CancelLease(lease,
                                  agents::DurableAgentLeaseState::cancelled,
@@ -393,7 +395,7 @@ void TestRuntimeServiceStoreAcquireLeaseBatchIsAtomic() {
   api::AgentDurableCatalogStoreRequest seed;
   seed.context = context;
   seed.image = CatalogImage();
-  seed.evidence_uuid = "018f0000-0000-7000-8000-00000000be50";
+  seed.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be50"));
   seed.production_live_path = true;
   seed.fsync_or_checkpoint_evidence = true;
   Require(api::PersistAgentDurableCatalogImage(seed).ok,
@@ -406,26 +408,26 @@ void TestRuntimeServiceStoreAcquireLeaseBatchIsAtomic() {
   open.production_live_path = true;
   open.worker_foreground_protection_enabled = true;
   open.crash_recovery_mode = true;
-  open.service_owner_uuid = "018f0000-0000-7000-8000-00000000be51";
-  open.evidence_uuid = "018f0000-0000-7000-8000-00000000be52";
+  open.service_owner_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be51"));
+  open.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be52"));
   open.fsync_or_checkpoint_evidence = true;
   auto result = service.Open(std::move(open));
   Require(result.status.ok, "lease batch runtime service open failed");
-  result = service.Start("018f0000-0000-7000-8000-00000000be53", true);
+  result = service.Start(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be53")), true);
   Require(result.status.ok, "lease batch runtime service start failed");
 
   auto first = LeaseRequest();
-  first.lease_uuid = "018f0000-0000-7000-8000-00000000be54";
-  first.owner_uuid = "018f0000-0000-7000-8000-00000000be55";
-  first.evidence_uuid = "018f0000-0000-7000-8000-00000000be56";
+  first.lease_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be54"));
+  first.owner_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be55"));
+  first.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be56"));
   auto second = LeaseRequest();
-  second.lease_uuid = "018f0000-0000-7000-8000-00000000be57";
-  second.owner_uuid = "018f0000-0000-7000-8000-00000000be58";
-  second.evidence_uuid = "018f0000-0000-7000-8000-00000000be59";
+  second.lease_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be57"));
+  second.owner_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be58"));
+  second.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be59"));
 
   result = service.AcquireLeaseBatch(
       {first, second},
-      "018f0000-0000-7000-8000-00000000be60",
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be60")),
       true);
   Require(result.status.ok, "durable lease batch acquisition failed");
   Require(result.evidence.lifecycle_event == "lease_acquire_batch",
@@ -450,16 +452,16 @@ void TestRuntimeServiceStoreAcquireLeaseBatchIsAtomic() {
   auto renewed_first = first;
   renewed_first.now_microseconds = 2000;
   renewed_first.evidence_uuid =
-      "018f0000-0000-7000-8000-00000000be61";
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be61"));
   auto conflicting_second = second;
   conflicting_second.now_microseconds = 2000;
   conflicting_second.owner_uuid =
-      "018f0000-0000-7000-8000-00000000be62";
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be62"));
   conflicting_second.evidence_uuid =
-      "018f0000-0000-7000-8000-00000000be63";
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be63"));
   result = service.AcquireLeaseBatch(
       {renewed_first, conflicting_second},
-      "018f0000-0000-7000-8000-00000000be64",
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be64")),
       true);
   Require(!result.status.ok &&
               result.status.diagnostic_code ==
@@ -488,7 +490,7 @@ void TestRuntimeServiceStoreRequiresCheckpointEvidence() {
   api::AgentDurableCatalogStoreRequest seed;
   seed.context = context;
   seed.image = CatalogImage();
-  seed.evidence_uuid = "018f0000-0000-7000-8000-00000000be40";
+  seed.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be40"));
   seed.production_live_path = true;
   seed.fsync_or_checkpoint_evidence = true;
   Require(api::PersistAgentDurableCatalogImage(seed).ok,
@@ -500,8 +502,8 @@ void TestRuntimeServiceStoreRequiresCheckpointEvidence() {
   open.manifest = agents::CanonicalAgentManifest();
   open.production_live_path = true;
   open.worker_foreground_protection_enabled = true;
-  open.service_owner_uuid = "018f0000-0000-7000-8000-00000000be41";
-  open.evidence_uuid = "018f0000-0000-7000-8000-00000000be42";
+  open.service_owner_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be41"));
+  open.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be42"));
   open.fsync_or_checkpoint_evidence = false;
   const auto result = service.Open(std::move(open));
   Require(!result.status.ok &&
@@ -519,7 +521,7 @@ void TestRuntimeServiceStoreAcceptsTransactionPerOperation() {
   api::AgentDurableCatalogStoreRequest seed;
   seed.context = seed_context;
   seed.image = CatalogImage();
-  seed.evidence_uuid = "018f0000-0000-7000-8000-00000000bf13";
+  seed.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000bf13"));
   seed.production_live_path = true;
   seed.fsync_or_checkpoint_evidence = true;
   Require(api::PersistAgentDurableCatalogImage(seed).ok,
@@ -535,8 +537,8 @@ void TestRuntimeServiceStoreAcceptsTransactionPerOperation() {
   open.production_live_path = true;
   open.worker_foreground_protection_enabled = true;
   open.crash_recovery_mode = true;
-  open.service_owner_uuid = "018f0000-0000-7000-8000-00000000bf30";
-  open.evidence_uuid = "018f0000-0000-7000-8000-00000000bf31";
+  open.service_owner_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000bf30"));
+  open.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000bf31"));
   open.fsync_or_checkpoint_evidence = true;
   auto result = service.Open(std::move(open));
   Require(result.status.ok, "transaction-per-operation open failed: " +
@@ -547,7 +549,7 @@ void TestRuntimeServiceStoreAcceptsTransactionPerOperation() {
   auto start_context =
       BeginTransactionContext(database, "aeic-runtime-service-store-start");
   service.SetContext(start_context);
-  result = service.Start("018f0000-0000-7000-8000-00000000bf32", true);
+  result = service.Start(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000bf32")), true);
   Require(result.status.ok, "transaction-per-operation start failed");
   CommitContext(start_context);
 
@@ -555,8 +557,8 @@ void TestRuntimeServiceStoreAcceptsTransactionPerOperation() {
       BeginTransactionContext(database, "aeic-runtime-service-store-lease");
   service.SetContext(lease_context);
   auto lease = LeaseRequest();
-  lease.lease_uuid = "018f0000-0000-7000-8000-00000000bf20";
-  lease.evidence_uuid = "018f0000-0000-7000-8000-00000000bf22";
+  lease.lease_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000bf20"));
+  lease.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000bf22"));
   result = service.AcquireLease(lease, true);
   Require(result.status.ok, "transaction-per-operation lease failed");
   CommitContext(lease_context);
@@ -579,7 +581,7 @@ void TestRuntimeServiceStoreDrainShutdownPersist() {
   api::AgentDurableCatalogStoreRequest seed;
   seed.context = seed_context;
   seed.image = CatalogImage();
-  seed.evidence_uuid = "018f0000-0000-7000-8000-00000000bfa0";
+  seed.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000bfa0"));
   seed.production_live_path = true;
   seed.fsync_or_checkpoint_evidence = true;
   Require(api::PersistAgentDurableCatalogImage(seed).ok,
@@ -595,8 +597,8 @@ void TestRuntimeServiceStoreDrainShutdownPersist() {
   open.production_live_path = true;
   open.worker_foreground_protection_enabled = true;
   open.crash_recovery_mode = true;
-  open.service_owner_uuid = "018f0000-0000-7000-8000-00000000bfa1";
-  open.evidence_uuid = "018f0000-0000-7000-8000-00000000bfa2";
+  open.service_owner_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000bfa1"));
+  open.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000bfa2"));
   open.fsync_or_checkpoint_evidence = true;
   auto result = service.Open(std::move(open));
   Require(result.status.ok, "drain shutdown open failed: " +
@@ -607,7 +609,7 @@ void TestRuntimeServiceStoreDrainShutdownPersist() {
   auto start_context =
       BeginTransactionContext(database, "aeic-runtime-service-drain-start");
   service.SetContext(start_context);
-  result = service.Start("018f0000-0000-7000-8000-00000000bfa3", true);
+  result = service.Start(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000bfa3")), true);
   Require(result.status.ok, "drain shutdown start failed");
   CommitContext(start_context);
 
@@ -615,8 +617,8 @@ void TestRuntimeServiceStoreDrainShutdownPersist() {
       BeginTransactionContext(database, "aeic-runtime-service-drain-lease");
   service.SetContext(lease_context);
   auto lease = LeaseRequest();
-  lease.lease_uuid = "018f0000-0000-7000-8000-00000000bfa4";
-  lease.evidence_uuid = "018f0000-0000-7000-8000-00000000bfa5";
+  lease.lease_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000bfa4"));
+  lease.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000bfa5"));
   result = service.AcquireLease(lease, true);
   Require(result.status.ok, "drain shutdown lease failed");
   CommitContext(lease_context);
@@ -624,7 +626,7 @@ void TestRuntimeServiceStoreDrainShutdownPersist() {
   auto drain_context =
       BeginTransactionContext(database, "aeic-runtime-service-drain");
   service.SetContext(drain_context);
-  result = service.Drain("018f0000-0000-7000-8000-00000000bfa6",
+  result = service.Drain(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000bfa6")),
                          6000,
                          true);
   Require(result.status.ok, "runtime service drain failed");
@@ -643,7 +645,7 @@ void TestRuntimeServiceStoreDrainShutdownPersist() {
   auto shutdown_context =
       BeginTransactionContext(database, "aeic-runtime-service-shutdown");
   service.SetContext(shutdown_context);
-  result = service.Shutdown("018f0000-0000-7000-8000-00000000bfa7",
+  result = service.Shutdown(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000bfa7")),
                             7000,
                             true);
   Require(result.status.ok, "runtime service shutdown failed");
@@ -679,7 +681,7 @@ void TestRuntimeServiceStoreSupervisionTransitionsPersist() {
   api::AgentDurableCatalogStoreRequest seed;
   seed.context = seed_context;
   seed.image = CatalogImageWithRunningInstance();
-  seed.evidence_uuid = "018f0000-0000-7000-8000-00000000bfb0";
+  seed.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000bfb0"));
   seed.production_live_path = true;
   seed.fsync_or_checkpoint_evidence = true;
   Require(api::PersistAgentDurableCatalogImage(seed).ok,
@@ -695,8 +697,8 @@ void TestRuntimeServiceStoreSupervisionTransitionsPersist() {
   open.production_live_path = true;
   open.worker_foreground_protection_enabled = true;
   open.crash_recovery_mode = true;
-  open.service_owner_uuid = "018f0000-0000-7000-8000-00000000bfb1";
-  open.evidence_uuid = "018f0000-0000-7000-8000-00000000bfb2";
+  open.service_owner_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000bfb1"));
+  open.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000bfb2"));
   open.fsync_or_checkpoint_evidence = true;
   auto result = service.Open(std::move(open));
   Require(result.status.ok, "supervision transition open failed: " +
@@ -709,12 +711,12 @@ void TestRuntimeServiceStoreSupervisionTransitionsPersist() {
       BeginTransactionContext(database, "aeic-runtime-service-supervision-failure");
   service.SetContext(failure_context);
   result = service.RecordSupervisionFailure(
-      "018f0000-0000-7000-8000-00000000be11",
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be11")),
       policy,
       agents::AgentSupervisionFailureKind::runtime_timeout,
       2000,
       "max_runtime_exceeded",
-      "018f0000-0000-7000-8000-00000000bfb3",
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000bfb3")),
       true);
   Require(result.status.ok, "supervision failure was not persisted");
   CommitContext(failure_context);
@@ -740,10 +742,10 @@ void TestRuntimeServiceStoreSupervisionTransitionsPersist() {
       BeginTransactionContext(database, "aeic-runtime-service-supervision-early");
   service.SetContext(early_restart_context);
   result = service.RequestSupervisionRestart(
-      "018f0000-0000-7000-8000-00000000be11",
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be11")),
       policy,
       2050,
-      "018f0000-0000-7000-8000-00000000bfb4",
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000bfb4")),
       true);
   Require(!result.status.ok &&
               result.status.diagnostic_code == "SB_AGENT_RESTART.BACKOFF_ACTIVE",
@@ -754,10 +756,10 @@ void TestRuntimeServiceStoreSupervisionTransitionsPersist() {
       BeginTransactionContext(database, "aeic-runtime-service-supervision-restart");
   service.SetContext(restart_context);
   result = service.RequestSupervisionRestart(
-      "018f0000-0000-7000-8000-00000000be11",
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be11")),
       policy,
       2200,
-      "018f0000-0000-7000-8000-00000000bfb5",
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000bfb5")),
       true);
   Require(result.status.ok, "supervision restart after backoff failed");
   CommitContext(restart_context);
@@ -777,10 +779,10 @@ void TestRuntimeServiceStoreSupervisionTransitionsPersist() {
       BeginTransactionContext(database, "aeic-runtime-service-supervision-cancel");
   service.SetContext(cancel_context);
   result = service.CancelAgentExecution(
-      "018f0000-0000-7000-8000-00000000be11",
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be11")),
       2300,
       "operator_cancel",
-      "018f0000-0000-7000-8000-00000000bfb6",
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000bfb6")),
       true);
   Require(result.status.ok, "supervision cancel failed");
   CommitContext(cancel_context);
@@ -790,10 +792,10 @@ void TestRuntimeServiceStoreSupervisionTransitionsPersist() {
                               "aeic-runtime-service-supervision-quarantine");
   service.SetContext(quarantine_context);
   result = service.QuarantineAgentExecution(
-      "018f0000-0000-7000-8000-00000000be11",
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be11")),
       2400,
       "queue_integrity_failure",
-      "018f0000-0000-7000-8000-00000000bfb7",
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000bfb7")),
       true);
   Require(result.status.ok, "supervision quarantine failed");
   CommitContext(quarantine_context);
@@ -840,7 +842,7 @@ void TestRuntimeServiceStoreCrashReplayMarksDurableWorkPending() {
   api::AgentDurableCatalogStoreRequest seed;
   seed.context = seed_context;
   seed.image = CatalogImageWithQueuedAction();
-  seed.evidence_uuid = "018f0000-0000-7000-8000-00000000c013";
+  seed.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000c013"));
   seed.production_live_path = true;
   seed.fsync_or_checkpoint_evidence = true;
   Require(api::PersistAgentDurableCatalogImage(seed).ok,
@@ -856,8 +858,8 @@ void TestRuntimeServiceStoreCrashReplayMarksDurableWorkPending() {
   open.production_live_path = true;
   open.worker_foreground_protection_enabled = true;
   open.crash_recovery_mode = true;
-  open.service_owner_uuid = "018f0000-0000-7000-8000-00000000c030";
-  open.evidence_uuid = "018f0000-0000-7000-8000-00000000c031";
+  open.service_owner_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000c030"));
+  open.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000c031"));
   open.fsync_or_checkpoint_evidence = true;
   auto result = service.Open(std::move(open));
   Require(result.status.ok,
@@ -868,7 +870,7 @@ void TestRuntimeServiceStoreCrashReplayMarksDurableWorkPending() {
   auto start_context =
       BeginTransactionContext(database, "aeic-runtime-service-crash-start");
   service.SetContext(start_context);
-  result = service.Start("018f0000-0000-7000-8000-00000000c032", true);
+  result = service.Start(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000c032")), true);
   Require(result.status.ok, "crash replay start failed");
   CommitContext(start_context);
 
@@ -876,8 +878,8 @@ void TestRuntimeServiceStoreCrashReplayMarksDurableWorkPending() {
       BeginTransactionContext(database, "aeic-runtime-service-crash-lease");
   service.SetContext(lease_context);
   auto lease = LeaseRequest();
-  lease.lease_uuid = "018f0000-0000-7000-8000-00000000c020";
-  lease.evidence_uuid = "018f0000-0000-7000-8000-00000000c022";
+  lease.lease_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000c020"));
+  lease.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000c022"));
   result = service.AcquireLease(lease, true);
   Require(result.status.ok, "crash replay live lease acquire failed");
   CommitContext(lease_context);
@@ -891,8 +893,8 @@ void TestRuntimeServiceStoreCrashReplayMarksDurableWorkPending() {
   reopen.production_live_path = true;
   reopen.worker_foreground_protection_enabled = true;
   reopen.crash_recovery_mode = true;
-  reopen.service_owner_uuid = "018f0000-0000-7000-8000-00000000c030";
-  reopen.evidence_uuid = "018f0000-0000-7000-8000-00000000c033";
+  reopen.service_owner_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000c030"));
+  reopen.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000c033"));
   reopen.fsync_or_checkpoint_evidence = true;
   result = recovered.Open(std::move(reopen));
   Require(result.status.ok, "crash replay recovered open failed");
@@ -901,7 +903,7 @@ void TestRuntimeServiceStoreCrashReplayMarksDurableWorkPending() {
   auto recover_context =
       BeginTransactionContext(database, "aeic-runtime-service-crash-recover");
   recovered.SetContext(recover_context);
-  result = recovered.Recover("018f0000-0000-7000-8000-00000000c034",
+  result = recovered.Recover(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000c034")),
                              9000,
                              true);
   Require(result.status.ok, "crash replay recover failed: " +
@@ -951,17 +953,17 @@ void TestRuntimeServiceStoreCrashReplayMarksDurableWorkPending() {
   Require(saw_action_replay, "crash replay action history missing");
   Require(CurrentMetricValue("sb_agent_runtime_service_leases",
                              "state",
-                             "replay_pending") >= 1.0,
+                             "replay_pending") >= 1,
           "runtime service replay-pending lease metric missing");
   Require(CurrentMetricValue("sb_agent_runtime_service_actions",
                              "state",
-                             "replay_pending") >= 2.0,
+                             "replay_pending") >= 2,
           "runtime service replay-pending action metric missing");
   Require(CurrentMetricValue("sb_agent_runtime_service_history_records") >=
-              static_cast<double>(loaded.image.retained_history.size()),
+              loaded.image.retained_history.size(),
           "runtime service retained-history metric missing");
   Require(CurrentMetricValue("sb_agent_runtime_service_catalog_generation") >=
-              1.0,
+              1,
           "runtime service catalog-generation metric missing");
   CommitContext(load_context);
 
@@ -975,7 +977,7 @@ void TestRuntimeServiceStoreRejectsDuplicateLiveLeaseOwner() {
   api::AgentDurableCatalogStoreRequest seed;
   seed.context = seed_context;
   seed.image = CatalogImage();
-  seed.evidence_uuid = "018f0000-0000-7000-8000-00000000d013";
+  seed.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000d013"));
   seed.production_live_path = true;
   seed.fsync_or_checkpoint_evidence = true;
   Require(api::PersistAgentDurableCatalogImage(seed).ok,
@@ -991,8 +993,8 @@ void TestRuntimeServiceStoreRejectsDuplicateLiveLeaseOwner() {
   owner_open.production_live_path = true;
   owner_open.worker_foreground_protection_enabled = true;
   owner_open.crash_recovery_mode = true;
-  owner_open.service_owner_uuid = "018f0000-0000-7000-8000-00000000d030";
-  owner_open.evidence_uuid = "018f0000-0000-7000-8000-00000000d031";
+  owner_open.service_owner_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000d030"));
+  owner_open.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000d031"));
   owner_open.fsync_or_checkpoint_evidence = true;
   auto result = owner.Open(std::move(owner_open));
   Require(result.status.ok, "duplicate owner initial open failed");
@@ -1001,7 +1003,7 @@ void TestRuntimeServiceStoreRejectsDuplicateLiveLeaseOwner() {
   auto owner_start_context =
       BeginTransactionContext(database, "aeic-runtime-service-owner-start");
   owner.SetContext(owner_start_context);
-  result = owner.Start("018f0000-0000-7000-8000-00000000d032", true);
+  result = owner.Start(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000d032")), true);
   Require(result.status.ok, "duplicate owner initial start failed");
   CommitContext(owner_start_context);
 
@@ -1009,8 +1011,8 @@ void TestRuntimeServiceStoreRejectsDuplicateLiveLeaseOwner() {
       BeginTransactionContext(database, "aeic-runtime-service-owner-lease");
   owner.SetContext(owner_lease_context);
   auto lease = LeaseRequest();
-  lease.lease_uuid = "018f0000-0000-7000-8000-00000000d020";
-  lease.evidence_uuid = "018f0000-0000-7000-8000-00000000d022";
+  lease.lease_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000d020"));
+  lease.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000d022"));
   lease.now_microseconds = 10000;
   lease.lease_duration_microseconds = 1000000;
   result = owner.AcquireLease(lease, true);
@@ -1026,8 +1028,8 @@ void TestRuntimeServiceStoreRejectsDuplicateLiveLeaseOwner() {
   contender_open.production_live_path = true;
   contender_open.worker_foreground_protection_enabled = true;
   contender_open.crash_recovery_mode = true;
-  contender_open.service_owner_uuid = "018f0000-0000-7000-8000-00000000d040";
-  contender_open.evidence_uuid = "018f0000-0000-7000-8000-00000000d041";
+  contender_open.service_owner_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000d040"));
+  contender_open.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000d041"));
   contender_open.fsync_or_checkpoint_evidence = true;
   result = contender.Open(std::move(contender_open));
   Require(result.status.ok, "duplicate owner contender open failed");
@@ -1036,7 +1038,7 @@ void TestRuntimeServiceStoreRejectsDuplicateLiveLeaseOwner() {
   auto contender_start_context =
       BeginTransactionContext(database, "aeic-runtime-service-contender-start");
   contender.SetContext(contender_start_context);
-  result = contender.Start("018f0000-0000-7000-8000-00000000d042", true);
+  result = contender.Start(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000d042")), true);
   Require(result.status.ok, "duplicate owner contender start failed");
   CommitContext(contender_start_context);
 
@@ -1044,8 +1046,8 @@ void TestRuntimeServiceStoreRejectsDuplicateLiveLeaseOwner() {
       BeginTransactionContext(database, "aeic-runtime-service-duplicate-owner");
   contender.SetContext(duplicate_context);
   auto duplicate = lease;
-  duplicate.owner_uuid = "018f0000-0000-7000-8000-00000000d099";
-  duplicate.evidence_uuid = "018f0000-0000-7000-8000-00000000d043";
+  duplicate.owner_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000d099"));
+  duplicate.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000d043"));
   duplicate.now_microseconds = 20000;
   result = contender.AcquireLease(duplicate, true);
   Require(!result.status.ok &&
@@ -1059,14 +1061,29 @@ void TestRuntimeServiceStoreRejectsDuplicateLiveLeaseOwner() {
 
 }  // namespace
 
-int main() {
-  TestRuntimeServiceStoreRoundTrip();
-  TestRuntimeServiceStoreAcquireLeaseBatchIsAtomic();
-  TestRuntimeServiceStoreRequiresCheckpointEvidence();
-  TestRuntimeServiceStoreAcceptsTransactionPerOperation();
-  TestRuntimeServiceStoreDrainShutdownPersist();
-  TestRuntimeServiceStoreSupervisionTransitionsPersist();
-  TestRuntimeServiceStoreCrashReplayMarksDurableWorkPending();
-  TestRuntimeServiceStoreRejectsDuplicateLiveLeaseOwner();
+int RunCase(int argc, char** argv) {
+  Require(argc == 2, "run through run_runtime_service_store_cases.py or select one case");
+  const std::string mode = argv[1];
+  metric_owner_mismatch = mode == "metric-owner-mismatch";
+  if (mode == "round-trip" || metric_owner_mismatch) TestRuntimeServiceStoreRoundTrip();
+  else if (mode == "atomic-batch") TestRuntimeServiceStoreAcquireLeaseBatchIsAtomic();
+  else if (mode == "checkpoint-evidence") TestRuntimeServiceStoreRequiresCheckpointEvidence();
+  else if (mode == "transaction-per-operation") TestRuntimeServiceStoreAcceptsTransactionPerOperation();
+  else if (mode == "drain-shutdown") TestRuntimeServiceStoreDrainShutdownPersist();
+  else if (mode == "supervision") TestRuntimeServiceStoreSupervisionTransitionsPersist();
+  else if (mode == "crash-replay") TestRuntimeServiceStoreCrashReplayMarksDurableWorkPending();
+  else if (mode == "duplicate-owner") TestRuntimeServiceStoreRejectsDuplicateLiveLeaseOwner();
+  else Fail("unknown service case");
+  if (mode == "checkpoint-evidence" || metric_owner_mismatch) metric_fixture->VerifyEmpty();
+  else metric_fixture->VerifyAndDrain();
   return EXIT_SUCCESS;
+}
+
+int main(int argc, char** argv) {
+  try {
+    return RunCase(argc, argv);
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }

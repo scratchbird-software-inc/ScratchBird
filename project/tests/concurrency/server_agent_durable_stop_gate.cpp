@@ -7,6 +7,8 @@
 #include "time.hpp"
 #include "uuid.hpp"
 #include "transaction/transaction_api.hpp"
+#include "transaction/startup_transaction_inventory.hpp"
+#include "agents/agent_durable_catalog_store_api.hpp"
 #include "wire/binary_status_packet.hpp"
 
 #include <cerrno>
@@ -16,6 +18,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <new>
 #include <pthread.h>
 #include <semaphore.h>
 #include <string>
@@ -36,6 +39,67 @@ thread_local bool inside_commit = false;
 thread_local bool selected_phase = false;
 thread_local unsigned sync_failures = 0;
 thread_local std::string fault_phase;
+thread_local bool post_commit_exception = false;
+thread_local bool opaque_exception = false;
+thread_local unsigned post_commit_exceptions = 0;
+thread_local engine_api::StartupTransactionInventoryRequest committed_attempt;
+thread_local bool report_allocation_mode = false;
+thread_local bool initial_diagnostic_allocation_mode = false;
+thread_local bool report_allocation_armed = false;
+thread_local unsigned diagnostic_allocations = 0;
+thread_local unsigned diagnostic_allocation_failures = 0;
+thread_local unsigned cleanup_begin_attempts = 0;
+
+void* operator new(std::size_t bytes) {
+  if (report_allocation_armed && bytes == sizeof(server::ServerDiagnostic) &&
+      ++diagnostic_allocations == (initial_diagnostic_allocation_mode ? 1U : 2U)) {
+    report_allocation_armed = false;
+    ++diagnostic_allocation_failures;
+    throw std::bad_alloc();
+  }
+  if (void* pointer = std::malloc(bytes ? bytes : 1)) return pointer;
+  throw std::bad_alloc();
+}
+void operator delete(void* pointer) noexcept { std::free(pointer); }
+void operator delete(void* pointer, std::size_t) noexcept { std::free(pointer); }
+bool catalog_load_fault = false;
+bool catalog_restore_before_rollback = false;
+unsigned catalog_seed_attempts = 0;
+unsigned catalog_begin_attempts = 0;
+unsigned catalog_thread_attempts = 0;
+std::filesystem::path catalog_path;
+std::filesystem::path catalog_held_path;
+
+extern "C" int __real_pthread_create(pthread_t*, const pthread_attr_t*, void* (*)(void*), void*);
+extern "C" int __wrap_pthread_create(pthread_t* thread, const pthread_attr_t* attributes,
+                                      void* (*entry)(void*), void* argument) {
+  if (catalog_load_fault) ++catalog_thread_attempts;
+  return __real_pthread_create(thread, attributes, entry, argument);
+}
+
+extern "C" engine_api::AgentDurableCatalogStoreResult RealCatalogPersist(
+    const engine_api::AgentDurableCatalogStoreRequest&)
+    asm("__real__ZN11scratchbird6engine12internal_api31PersistAgentDurableCatalogImageERKNS1_31AgentDurableCatalogStoreRequestE");
+extern "C" engine_api::AgentDurableCatalogStoreResult WrapCatalogPersist(
+    const engine_api::AgentDurableCatalogStoreRequest&)
+    asm("__wrap__ZN11scratchbird6engine12internal_api31PersistAgentDurableCatalogImageERKNS1_31AgentDurableCatalogStoreRequestE");
+engine_api::AgentDurableCatalogStoreResult WrapCatalogPersist(
+    const engine_api::AgentDurableCatalogStoreRequest& request) {
+  if (catalog_load_fault) ++catalog_seed_attempts;
+  return RealCatalogPersist(request);
+}
+extern "C" engine_api::EngineRollbackTransactionResult RealRollback(
+    const engine_api::EngineRollbackTransactionRequest&)
+    asm("__real__ZN11scratchbird6engine12internal_api25EngineRollbackTransactionERKNS1_32EngineRollbackTransactionRequestE");
+extern "C" engine_api::EngineRollbackTransactionResult WrapRollback(
+    const engine_api::EngineRollbackTransactionRequest&)
+    asm("__wrap__ZN11scratchbird6engine12internal_api25EngineRollbackTransactionERKNS1_32EngineRollbackTransactionRequestE");
+engine_api::EngineRollbackTransactionResult WrapRollback(
+    const engine_api::EngineRollbackTransactionRequest& request) {
+  if (catalog_load_fault && catalog_restore_before_rollback)
+    std::filesystem::rename(catalog_held_path, catalog_path);
+  return RealRollback(request);
+}
 
 // SEARCH_KEY: SERVER_AGENT_STOP_INFLIGHT_ENGINE_CALL
 // Hold a real worker after successful engine transaction admission. This proves
@@ -85,7 +149,7 @@ extern "C" int __wrap_pthread_join(pthread_t thread, void** result) {
 
 extern "C" int __real_fsync(int);
 extern "C" int __wrap_fsync(int fd) {
-  if (fault_armed && selected_phase && inside_commit == fault_at_commit && sync_failures == 0) {
+  if (fault_armed && !post_commit_exception && selected_phase && inside_commit == fault_at_commit && sync_failures == 0) {
     ++sync_failures;
     errno = EIO;
     return -1;
@@ -99,6 +163,9 @@ extern "C" engine_api::EngineBeginTransactionResult WrapBegin(
     const engine_api::EngineBeginTransactionRequest&)
     asm("__wrap__ZN11scratchbird6engine12internal_api22EngineBeginTransactionERKNS1_29EngineBeginTransactionRequestE");
 engine_api::EngineBeginTransactionResult WrapBegin(const engine_api::EngineBeginTransactionRequest& request) {
+  if (request.context.request_id.starts_with("server-agent-service-drain-") ||
+      request.context.request_id.starts_with("server-agent-service-shutdown-"))
+    ++cleanup_begin_attempts;
   selected_phase = false;
   if (worker_held.load() && request.context.request_id.starts_with("server-agent-service-drain-"))
     drain_while_held.store(true);
@@ -107,6 +174,10 @@ engine_api::EngineBeginTransactionResult WrapBegin(const engine_api::EngineBegin
     if (!worker_joined.load()) drain_before_join.store(true);
   }
   auto result = RealBegin(request);
+  if (catalog_load_fault && request.context.request_id.starts_with("server-agent-catalog-seed-")) {
+    ++catalog_begin_attempts;
+    if (result.ok) std::filesystem::rename(catalog_path, catalog_held_path);
+  }
   if (result.ok && inflight_armed.load() &&
       request.context.request_id.starts_with("server-agent-" + inflight_purpose + "-") &&
       inflight_armed.exchange(false)) {
@@ -130,6 +201,15 @@ engine_api::EngineCommitTransactionResult WrapCommit(const engine_api::EngineCom
   inside_commit = true;
   auto result = RealCommit(request);
   inside_commit = false;
+  if (fault_armed && selected_phase && post_commit_exception && result.ok &&
+      post_commit_exceptions == 0) {
+    committed_attempt = {request.context.database_path, request.context.database_uuid,
+                         request.context.transaction_uuid, request.context.local_transaction_id};
+    ++post_commit_exceptions;
+    report_allocation_armed = report_allocation_mode;
+    if (opaque_exception) throw 73;
+    throw std::runtime_error("injected exception after actual durable commit");
+  }
   return result;
 }
 
@@ -188,8 +268,17 @@ int main(int argc, char** argv) {
   const bool sync_fault = mode == "drain-persist-failure" || mode == "shutdown-persist-failure" ||
                           mode == "drain-commit-failure" || mode == "shutdown-commit-failure";
   const bool missing_file = mode == "failure" || mode == "ipc-failure";
-  const bool fail = missing_file || sync_fault;
-  if (!ipc && !fail && !inflight && mode != "success") return 2;
+  const bool catalog_failure = mode.starts_with("catalog-load-");
+  initial_diagnostic_allocation_mode = mode == "drain-commit-initial-diagnostic-allocation" ||
+      mode == "shutdown-commit-initial-diagnostic-allocation";
+  report_allocation_mode = initial_diagnostic_allocation_mode ||
+      mode == "drain-commit-report-allocation" || mode == "shutdown-commit-report-allocation";
+  const bool exception_fault = report_allocation_mode || mode == "drain-commit-exception" || mode == "shutdown-commit-exception" ||
+      mode == "drain-commit-opaque-exception" || mode == "shutdown-commit-opaque-exception";
+  post_commit_exception = exception_fault;
+  opaque_exception = report_allocation_mode || mode.find("opaque") != std::string::npos;
+  const bool fail = missing_file || sync_fault || exception_fault;
+  if (!ipc && !fail && !inflight && !catalog_failure && mode != "success") return 2;
   if (inflight) {
     if (sem_init(&worker_entered, 0, 0) || sem_init(&release_worker, 0, 0) ||
         sem_init(&join_entered, 0, 0)) return 2;
@@ -245,7 +334,49 @@ int main(int argc, char** argv) {
     config.log_file = (root / "server.log").string();
     std::filesystem::create_directories(config.control_dir);
 
-    if (ipc) {
+    if (catalog_failure) {
+      server::ServerAgentRuntime runtime;
+      std::vector<server::ServerDiagnostic> diagnostics;
+      if (!runtime.Start(config, engine, &diagnostics) || !runtime.Stop().ok())
+        throw std::runtime_error("catalog fault initial startup/stop failed");
+      engine_api::EngineRequestContext observer;
+      observer.database_path = path.string();
+      observer.database_uuid = database.database_uuid;
+      const auto before = engine_api::LoadAgentDurableCatalogImage(observer, true);
+      if (!before.ok) throw std::runtime_error("catalog fault initial image unavailable");
+      catalog_path = path;
+      catalog_held_path = held;
+      catalog_restore_before_rollback = mode == "catalog-load-failure";
+      const bool no_sink = mode == "catalog-load-rollback-no-sink";
+      diagnostics.clear();
+      catalog_load_fault = true;
+      const bool started = runtime.Start(config, engine, no_sink ? nullptr : &diagnostics);
+      catalog_load_fault = false;
+      if (std::filesystem::exists(held)) std::filesystem::rename(held, path);
+      const auto snapshot = runtime.Snapshot();
+      const auto after = engine_api::LoadAgentDurableCatalogImage(observer, true);
+      const bool failed_rollback = !catalog_restore_before_rollback;
+      passed = !started && !snapshot.started && catalog_thread_attempts == 0 &&
+               catalog_begin_attempts == 1 && catalog_seed_attempts == 0 &&
+               after.ok && after.version_uuid == before.version_uuid &&
+               snapshot.stop_result.ok() == !failed_rollback;
+      if (!no_sink) {
+        passed = passed && diagnostics.size() == (failed_rollback ? 2u : 1u) &&
+                 diagnostics.front().safe_message.find("no seed was attempted") != std::string::npos;
+      }
+      if (failed_rollback) {
+        passed = passed && snapshot.stop_result.diagnostics.size() == 2 &&
+                 !runtime.Stop().ok() && !runtime.Start(config, engine, nullptr);
+      } else {
+        passed = passed && runtime.Start(config, engine, &diagnostics) && runtime.Stop().ok();
+      }
+      std::cout << "catalog_load_failed=" << !started << " seed_attempts=" << catalog_seed_attempts
+                << " native_thread_attempts=" << catalog_thread_attempts
+                << " begin_attempts=" << catalog_begin_attempts
+                << " diagnostics=" << diagnostics.size()
+                << " original_preserved=" << (after.version_uuid == before.version_uuid)
+                << " rollback_failed=" << failed_rollback << " no_sink=" << no_sink << '\n';
+    } else if (ipc) {
       server::ServerLifecycleArtifacts artifacts;
       artifacts.server_uuid = server_id.value.value;
       artifacts.generation = 1;
@@ -284,7 +415,7 @@ int main(int argc, char** argv) {
       if (!runtime.Start(config, engine, &diagnostics) || !runtime.Snapshot().started)
         throw std::runtime_error("runtime startup failed");
       if (missing_file) std::filesystem::rename(path, held);
-      fault_armed = sync_fault;
+      fault_armed = sync_fault || exception_fault;
       StopObservation stopped;
       bool inflight_ordering = true;
       if (inflight) {
@@ -309,14 +440,35 @@ int main(int argc, char** argv) {
                             !join_returned_while_held.load() && !drain_while_held.load() &&
                             drain_observed.load() && !drain_before_join.load();
       } else {
-        stopped = ObserveStop(runtime);
+        if (report_allocation_mode) {
+          bool delivery_failed = false;
+          try { stopped = ObserveStop(runtime); }
+          catch (const std::bad_alloc&) { delivery_failed = true; }
+          report_allocation_armed = false;
+          const auto cleanup_attempts_before_repeat = cleanup_begin_attempts;
+          const auto retained = runtime.Snapshot();
+          std::cout << "diagnostic_allocations=" << diagnostic_allocations
+                    << " delivery_failed=" << delivery_failed
+                    << " retained_diagnostics=" << retained.stop_result.diagnostics.size()
+                    << " stopping=" << retained.stopping << '\n';
+          inflight_ordering = delivery_failed && diagnostic_allocation_failures == 1 &&
+              !retained.started && !retained.stopping && retained.stop_result.attempted &&
+              !retained.stop_result.durable_cleanup_complete &&
+              !retained.stop_result.ok() &&
+              retained.stop_result.diagnostics.size() == (initial_diagnostic_allocation_mode ? 0U : 1U);
+          stopped = ObserveStop(runtime);
+          inflight_ordering = inflight_ordering &&
+              cleanup_begin_attempts == cleanup_attempts_before_repeat;
+        } else {
+          stopped = ObserveStop(runtime);
+        }
       }
       fault_armed = false;
       const auto repeated = ObserveStop(runtime);
       const auto snapshot = runtime.Snapshot();
       passed = inflight_ordering && stopped.observed && stopped.attempted && !snapshot.started && !snapshot.stopping &&
                stopped.ok == !fail && stopped.durable_cleanup_complete == !fail &&
-               stopped.diagnostics.empty() == !fail && repeated.ok == stopped.ok &&
+               stopped.diagnostics.empty() == (!fail || initial_diagnostic_allocation_mode) && repeated.ok == stopped.ok &&
                repeated.durable_cleanup_complete == stopped.durable_cleanup_complete &&
                repeated.diagnostics.size() == stopped.diagnostics.size();
       for (std::size_t i = 0; i < stopped.diagnostics.size() && i < repeated.diagnostics.size(); ++i) {
@@ -337,6 +489,27 @@ int main(int argc, char** argv) {
         }
         passed = passed && sync_failures == 1 && exact_phase;
       }
+      if (exception_fault) {
+        const auto inventory = engine_api::InspectStartupTransactionInventory(committed_attempt);
+        bool exact_phase = false;
+        bool exact_detail = false;
+        for (const auto& d : stopped.diagnostics) {
+          if (d.code != "SB_DIAG_AGENT_COORDINATOR_SHUTDOWN_NOT_CLEAN") continue;
+          for (const auto& field : d.fields) {
+            exact_phase |= field.key == "shutdown_phase" && field.value == fault_phase + ":commit";
+            exact_detail |= field.key == "detail" && field.value == (opaque_exception
+                ? "non-standard exception during durable cleanup"
+                : "injected exception after actual durable commit");
+          }
+        }
+        passed = passed && post_commit_exceptions == 1 && sync_failures == 0 &&
+            inventory.outcome == engine_api::StartupTransactionInventoryOutcome::committed &&
+            inventory.publication_base.has_value() &&
+            (initial_diagnostic_allocation_mode || (exact_phase && exact_detail));
+        std::cout << "post_commit_exceptions=" << post_commit_exceptions
+                  << " actual_inventory_committed=" <<
+            (inventory.outcome == engine_api::StartupTransactionInventoryOutcome::committed) << '\n';
+      }
       passed = passed && snapshot.stop_result.ok() == stopped.ok &&
                snapshot.stop_result.durable_cleanup_complete == stopped.durable_cleanup_complete &&
                (!fail || server::BuildIparAgentLifecycleProjectionSource(snapshot).lifecycle_state == "failed");
@@ -354,10 +527,16 @@ int main(int argc, char** argv) {
                               << " worker_joined=" << worker_joined.load() << '\n';
     }
   } catch (const std::exception& error) {
+    report_allocation_armed = false;
     std::cerr << error.what() << '\n';
+  } catch (...) {
+    report_allocation_armed = false;
+    fault_armed = false;
+    std::cerr << "non-standard cleanup exception escaped runtime; original committed attempt retained\n";
   }
   // Fixtures are disposable and all actual runtime/IPC objects have left scope.
-  std::filesystem::remove_all(root);
+  if (passed) std::filesystem::remove_all(root);
+  else std::cerr << "retained_failed_fixture=" << root << '\n';
   if (inflight) {
     sem_destroy(&worker_entered);
     sem_destroy(&release_worker);

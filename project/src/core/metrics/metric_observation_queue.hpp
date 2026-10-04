@@ -6,8 +6,32 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <limits>
 
 namespace scratchbird::core::metrics {
+namespace detail {
+// Queue diagnostics only, never admission, identity, generation or ownership.
+// A sticky overflow bit gives exact saturated quiescent counts without a CAS
+// retry loop. Concurrent snapshots are observationally approximate, including
+// while an overflowing increment has not yet published its sticky bit.
+class MetricQueueSaturatingCounter {
+ public:
+  explicit MetricQueueSaturatingCounter(u64 initial = 0) noexcept : value_(initial) {}
+  void Increment() noexcept {
+    if (overflowed_.load(std::memory_order_relaxed)) return;
+    const auto previous = value_.fetch_add(1, std::memory_order_relaxed);
+    if (previous == std::numeric_limits<u64>::max())
+      overflowed_.store(true, std::memory_order_relaxed);
+  }
+  u64 load(std::memory_order order = std::memory_order_relaxed) const noexcept {
+    const auto value = value_.load(order);
+    return overflowed_.load(order) ? std::numeric_limits<u64>::max() : value;
+  }
+ private:
+  std::atomic<u64> value_;
+  std::atomic<bool> overflowed_{false};
+};
+} // namespace detail
 enum class MetricQueueError {
   none, invalid_configuration, invalid_observation, full, busy, duplicate,
   resource_exhausted, empty, stale_lease, token_exhausted
@@ -45,6 +69,9 @@ class MetricObservationQueue {
   MetricQueueError TryEnqueue(const MetricDescriptor&,const MetricSeriesIdentity&,
       const MetricRawSampleRecord&) noexcept;
   MetricQueueLeaseResult TryAcquire() noexcept;
+  // Recorder preflight only. Caller serializes operations on this lease.
+  // No trust, recording, durability or removal is inferred from validation.
+  MetricQueueError TryValidateLease(const MetricObservationLease&) noexcept;
   MetricQueueError TryRelease(const MetricObservationLease&) noexcept;
   // Caller must first complete actual recording or its recorded loss decision.
   // This removes only volatile bytes; it never certifies a transaction outcome.
@@ -60,7 +87,7 @@ class MetricObservationQueue {
   std::deque<std::shared_ptr<const MetricQueuedObservation>> pending_;
   std::size_t wire_bytes_=0;
   u64 next_token_=1,leased_token_=0;
-  std::atomic<u64> admitted_{0},removed_{0},full_{0},busy_{0},invalid_{0},duplicate_{0},allocation_failures_{0};
+  detail::MetricQueueSaturatingCounter admitted_,removed_,full_,busy_,invalid_,duplicate_,allocation_failures_;
   std::atomic<u64> queued_{0},retained_bytes_{0};
 };
 struct MetricQueueCreateResult {

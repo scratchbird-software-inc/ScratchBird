@@ -23,6 +23,17 @@ namespace scratchbird::engine::internal_api {
 inline constexpr const char* kAgentDurableCatalogStoreTableName =
     "sys.agent_durable_catalog_state";
 
+// A load observation is not initialization authority. In particular, absence
+// must be rechecked by the store under its publication guard before mutation.
+enum class AgentDurableCatalogLoadDisposition {
+  not_attempted,
+  loaded,
+  absent,
+  existing_not_visible,
+  source_failure,
+  invalid_image,
+};
+
 struct AgentDurableCatalogStoreRequest {
   EngineRequestContext context;
   scratchbird::core::agents::DurableAgentCatalogImage image;
@@ -30,10 +41,13 @@ struct AgentDurableCatalogStoreRequest {
   std::string expected_catalog_root_digest;
   bool production_live_path = true;
   bool fsync_or_checkpoint_evidence = false;
+  bool initialize_only = false;
 };
 
 struct AgentDurableCatalogStoreResult {
   bool ok = false;
+  AgentDurableCatalogLoadDisposition load_disposition =
+      AgentDurableCatalogLoadDisposition::not_attempted;
   EngineApiDiagnostic diagnostic;
   scratchbird::core::agents::DurableAgentCatalogImage image;
   std::string table_uuid;

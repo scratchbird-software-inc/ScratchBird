@@ -17,8 +17,10 @@
 #include "local_transaction_store.hpp"
 #include "transaction_inventory.hpp"
 #include "uuid.hpp"
+#include "metric_builtin_definitions.hpp"
 
 #include <cstdlib>
+#include <algorithm>
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
@@ -34,6 +36,35 @@ using scratchbird::core::platform::UuidKind;
 
 void Require(bool condition, const std::string& message) {
   if (!condition) { throw std::runtime_error(message); }
+}
+
+void RegisterStorageHealthContractDefinitions() {
+  // Required catalog-contract inputs only. These descriptors deliberately do
+  // not claim producer activation or observations. The existing management
+  // snapshot option seam is not evidence of a live storage observation source.
+  namespace metrics = scratchbird::core::metrics;
+  const auto definitions = metrics::BuiltinMetricDescriptorDefinitions();
+  std::uint32_t ordinal = 1;
+  for (const auto* family : {"sb_storage_fsync_latency_microseconds",
+       "sb_storage_unknown_pages_total", "sb_filespace_health_state",
+       "sb_filespace_device_error_total"}) {
+    const auto found = std::find_if(definitions.begin(), definitions.end(),
+        [&](const auto& definition) { return definition.family == family; });
+    Require(found != definitions.end(), "missing canonical storage health definition");
+    metrics::MetricDescriptor descriptor;
+    static_cast<metrics::MetricDescriptorDefinition&>(descriptor) = *found;
+    descriptor.metric_uuid = scratchbird::tests::FixtureUuid(0x01f2, ordinal++);
+    descriptor.descriptor_generation = 1;
+    descriptor.label_schema_uuid = scratchbird::tests::FixtureUuid(0x01f2, ordinal++);
+    descriptor.label_schema_generation = 1;
+    descriptor.retention_policy_uuid = scratchbird::tests::FixtureUuid(0x01f2, 100);
+    descriptor.retention_policy_generation = 1;
+    descriptor.visibility_policy_uuid = scratchbird::tests::FixtureUuid(0x01f2, 101);
+    descriptor.visibility_policy_generation = 1;
+    descriptor.readiness = metrics::MetricReadiness::contract_ready_unwired;
+    const auto registered = metrics::DefaultMetricRegistry().RegisterDescriptor(descriptor);
+    Require(registered.ok, "storage health contract registration: " + registered.diagnostic_code);
+  }
 }
 
 api::EngineRequestContext Context(std::initializer_list<std::string_view> rights) {
@@ -314,6 +345,12 @@ void TestDurableMutationUpdatesCatalog() {
           "durable health diagnostic not updated");
   Require(!catalog.retained_history.empty(),
           "durable mutation history not retained");
+  for (const auto& history : catalog.retained_history) {
+    Require(history.history_uuid.size() == 16,
+            "management history identity is not binary16");
+    Require(history.history_uuid != history.evidence_uuid,
+            "management history reused its evidence identity");
+  }
   Require(catalog.authority.catalog_generation > before_generation,
           "durable mutation did not advance catalog generation");
   Require(!catalog.authority.previous_catalog_root_digest.empty(),
@@ -516,6 +553,7 @@ void TestNonProductionLegacyCompatibility() {
 
 int main() {
   try {
+    RegisterStorageHealthContractDefinitions();
     TestDurableReadProjection();
     TestProductionMutationRequiresDurableCatalog();
     TestDurableMutationUpdatesCatalog();

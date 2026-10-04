@@ -44,6 +44,9 @@ int main() try {
   const p::Uuid date_descriptor{{0x90,0x01,0,0,0x64,0x61,0x74,0x65,0x80,0,0,0,0,0,0,0}};
   const p::Uuid date_type{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x1c}};
   const p::Uuid date_codec{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x1d}};
+  const p::Uuid time_descriptor{{0x91,0x01,0,0,0x74,0x69,0x7d,0x65,0x80,0,0,0,0,0,0,0}};
+  const p::Uuid time_type{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x1e}};
+  const p::Uuid time_codec{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x1f}};
   const p::Uuid unknown{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xff,0xff}};
   dt::DatatypeStorageIdentityV1 out;
   require(dt::LookupDatatypeStorageIdentityV1(dt::kDatatypeCohortV4,4,4,int64_descriptor,1,&out));
@@ -83,10 +86,10 @@ int main() try {
   require(dt::LookupDatatypeStorageIdentityV1(dt::kDatatypeCohortV3,3,3,int64_descriptor,1,&out));
   require(out.type_uuid==int64_type && out.type_id==dt::CanonicalTypeId::int64);
   require(!dt::LookupDatatypeStorageIdentityV1(dt::kDatatypeCohortV3,3,3,blob_descriptor,1,&out));
-  // D704-D706 remain exact historical date storage identities; only d707 is
-  // the current policy-bearing semantic identity.
-  for (unsigned generation = 4; generation <= 6; ++generation) {
-    auto snapshot = dt::kDatatypeCohortV7;
+  // D704-D707 remain exact historical date storage identities; only D708 is
+  // the current receipt for semantic publication.
+  for (unsigned generation = 4; generation <= 7; ++generation) {
+    auto snapshot = dt::kDatatypeCohortV8;
     snapshot.bytes.back() = static_cast<p::byte>(generation);
     require(dt::LookupDatatypeStorageIdentityV1(
         snapshot, generation, generation, date_descriptor, 1, &out));
@@ -95,7 +98,7 @@ int main() try {
             out.codec->codec_uuid == date_codec);
   }
   require(dt::LookupDatatypeStorageIdentityV1(
-      dt::kDatatypeCohortV7,7,7,date_descriptor,1,&out));
+      dt::kDatatypeCohortV8,8,8,date_descriptor,1,&out));
   require(out.descriptor_uuid == date_descriptor && out.type_uuid == date_type &&
           out.type_id == dt::CanonicalTypeId::date && out.codec &&
           out.codec->codec_uuid == date_codec);
@@ -107,7 +110,7 @@ int main() try {
   allocation_probe::failure_triggered = false;
   allocation_probe::enabled = true;
   const auto measured_lookup = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV7,7,7,date_descriptor,1);
+      dt::kDatatypeCohortV8,8,8,date_descriptor,1);
   allocation_probe::enabled = false;
   require(measured_lookup.ok && allocation_probe::allocation_index > 0);
   const auto lookup_allocation_count = allocation_probe::allocation_index;
@@ -119,7 +122,7 @@ int main() try {
   allocation_probe::enabled = true;
   const bool projection_failure_published =
       dt::LookupDatatypeStorageIdentityV1(
-          dt::kDatatypeCohortV7,7,7,date_descriptor,1,&out);
+          dt::kDatatypeCohortV8,8,8,date_descriptor,1,&out);
   allocation_probe::enabled = false;
   require(allocation_probe::failure_triggered &&
           !projection_failure_published && out.descriptor_uuid == unknown &&
@@ -127,22 +130,35 @@ int main() try {
           out.type_id == dt::CanonicalTypeId::unknown && !out.codec);
 
   require(dt::LookupDatatypeStorageIdentityV1(
-      dt::kDatatypeCohortV7,7,7,date_descriptor,1,&out));
+      dt::kDatatypeCohortV8,8,8,date_descriptor,1,&out));
   require(out.descriptor_uuid == date_descriptor && out.type_uuid == date_type &&
           out.type_id == dt::CanonicalTypeId::date && out.codec &&
           out.codec->codec_uuid == date_codec);
   const auto current_date = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV7,7,7,date_descriptor,1);
+      dt::kDatatypeCohortV8,8,8,date_descriptor,1);
   require(current_date.ok &&
           dt::IsExactCanonicalDateTypeCodecIdentityV3(current_date.row));
   const auto historical_date = dt::LookupDatatypeTypeCodecIdentityV3(
       dt::kDatatypeCohortV6,6,6,date_descriptor,1);
   require(historical_date.ok &&
           !dt::IsExactCanonicalDateTypeCodecIdentityV3(historical_date.row));
+  require(dt::LookupDatatypeStorageIdentityV1(
+      dt::kDatatypeCohortV8,8,8,time_descriptor,1,&out));
+  require(out.descriptor_uuid == time_descriptor && out.type_uuid == time_type &&
+          out.type_id == dt::CanonicalTypeId::time && out.codec &&
+          out.codec->codec_uuid == time_codec);
+  const auto current_time = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV8,8,8,time_descriptor,1);
+  require(current_time.ok &&
+          dt::IsExactCanonicalTimeTypeCodecIdentityV3(current_time.row));
+  const auto historical_time = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV7,7,7,time_descriptor,1);
+  require(historical_time.ok &&
+          !dt::IsExactCanonicalTimeTypeCodecIdentityV3(historical_time.row));
   // Storage-only manifest identities remain available under the current
   // admitted receipt without acquiring a fabricated value codec.
   require(dt::LookupDatatypeStorageIdentityV1(
-      dt::kDatatypeCohortV7,7,7,blob_descriptor,1,&out));
+      dt::kDatatypeCohortV8,8,8,blob_descriptor,1,&out));
   require(out.type_uuid == blob_descriptor && !out.codec);
   std::cout << "datatype_storage_identity_conformance=passed rejected=" << rejected+1 << '\n';
   return 0;
