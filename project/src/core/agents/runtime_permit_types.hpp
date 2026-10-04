@@ -92,6 +92,11 @@ class RuntimePermitGrant {
   RuntimePermitGrant(RuntimePermitGrant&&) noexcept;
   RuntimePermitGrant& operator=(RuntimePermitGrant&&) noexcept;
   explicit operator bool() const noexcept { return ledger_ != nullptr; }
+  // Process-local capability provenance, not a copied governor UUID or policy
+  // authentication. The ledger must remain alive through the capability.
+  bool IssuedBy(const ResourceGovernanceReservationLedger& ledger) const noexcept {
+    return ledger_ == &ledger;
+  }
   const RuntimePermitView* view() const noexcept { return ledger_ ? &view_ : nullptr; }
   RuntimePermitCode Release(const RuntimePermitRequest& expected) noexcept;
   // Administrative cancellation/expiry is an observation, never uncharging.

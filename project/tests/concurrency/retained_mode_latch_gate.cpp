@@ -5,6 +5,8 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
+#include <iostream>
 #include <latch>
 #include <semaphore>
 #include <vector>
@@ -802,8 +804,166 @@ void IntentUpgradeParking() {
   });
 }
 #endif
+// SEARCH_KEY: RETAINED_MODE_LATCH_MIXED_COST_MEASUREMENT
+// Measure actual grants, ordinary protected payload and governed reclamation.
+// This is not a scheduler benchmark, an activated metric or a latency SLO.
+template<std::size_t Workers, unsigned WriteEvery>
+void Measurements() {
+  constexpr std::size_t samples=512, warmup=32;
+  constexpr std::uint64_t salt=0x9e3779b97f4a7c15ULL;
+  struct Sample { std::uint64_t acquire_ns=0, cycle_ns=0; bool write=false; };
+  std::array<Sample,Workers*samples> timings{};
+  std::array<std::uint64_t,Workers> completions{}, worker_ns{};
+  std::array<std::uint32_t,Workers> observed_holders{}, observed_waiters{};
+  std::array<std::uint64_t,512> calibration{};
+  const auto ns=[](auto duration) {
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count());
+  };
+  for(auto& sample:calibration) {
+    const auto start=c::ModeLatchClock::now(); sample=ns(c::ModeLatchClock::now()-start);
+  }
+  std::sort(calibration.begin(),calibration.end());
+  Fixture fixture;
+  c::ModeLatchClock::time_point cleanup;
+  {
+    m::MemorySafeRetirement domain(*fixture.resource,Id(10),4*Workers+4,3*Workers+4);
+    Check(domain.Initialize()==S::ok,"measurement real mode domain");
+    {
+      c::ModeLatchOwner owner(domain);
+      Check(owner.Initialize(Identity(),{Workers,Workers,Workers},Hazard(30))==S::ok,
+            "measurement real retained mode latch");
+      // Only granted exclusive writers modify these ordinary, non-atomic words.
+      std::uint64_t version=0, checksum=salt;
+      std::latch ready(Workers), go(1);
+      std::array<std::jthread,Workers> threads;
+      try {
+        for(std::size_t worker=0;worker<Workers;++worker) {
+          threads[worker]=std::jthread([&,worker] {
+            const unsigned task=99-static_cast<unsigned>(worker);
+            auto operation=Operation(owner,50+worker,task);
+            std::uint64_t last_seen=0;
+            const auto cycle=[&](std::size_t i, bool measured) {
+              const bool write=WriteEvery!=0 && (i+worker)%std::max(1U,WriteEvery)==0;
+              const unsigned serial=static_cast<unsigned>(worker*(samples+warmup)+i+(measured?warmup:0));
+              const auto request=Request(10000+serial,write?M::exclusive_write:M::shared_read,task);
+              auto memory=Memory(200+3*worker,task);
+              memory.record=Id(20000+serial); // Distinct from task/request/hazard identities.
+              c::ModeLatchGrant grant;
+              const auto start=c::ModeLatchClock::now();
+              const auto outcome=operation.Acquire(request,memory,grant,start+10s);
+              const auto acquired=c::ModeLatchClock::now();
+              if(outcome.code!=C::acquired || !grant) Check(false,"measured real mode acquisition");
+              if(checksum!=(version^salt) || version<last_seen)
+                Check(false,"mode readers see coherent monotonic ordinary payload");
+              if(write) { ++version; checksum=version^salt; }
+              last_seen=version;
+              if(measured && i%64==0) {
+                const auto observed=owner.Snapshot().native;
+                observed_holders[worker]=std::max(observed_holders[worker],observed.holders);
+                observed_waiters[worker]=std::max(observed_waiters[worker],observed.waiters);
+              }
+              if(grant.Release(request).code!=C::released) Check(false,"measured real mode release");
+              if(domain.Collect()!=S::ok) Check(false,"measured real grant record collection");
+              if(measured) {
+                timings[worker*samples+i]={ns(acquired-start),ns(c::ModeLatchClock::now()-start),write};
+                ++completions[worker];
+              }
+            };
+            for(std::size_t i=0;i<warmup;++i) cycle(i,false);
+            ready.count_down(); go.wait(); last_seen=0;
+            const auto start=c::ModeLatchClock::now();
+            for(std::size_t i=0;i<samples;++i) cycle(i,true);
+            worker_ns[worker]=ns(c::ModeLatchClock::now()-start);
+          });
+        }
+      } catch(...) {
+        // No worker may remain waiting on the measurement barrier after a
+        // partial native launch. All created workers run finite work and join.
+        go.count_down();
+        for(auto& thread:threads) if(thread.joinable()) thread.join();
+        Check(false,"measurement native thread creation failed");
+      }
+      ready.wait();
+      constexpr auto warmup_writes=WriteEvery==0?0:Workers*warmup/std::max(1U,WriteEvery);
+      Check(version==warmup_writes && checksum==(version^salt),"exact warmup mode payload");
+      version=0; checksum=salt; // All workers wait at go; publish before release.
+      const auto baseline_bytes=fixture.manager.Snapshot().current_bytes;
+      const auto cpu_start=std::clock(); const auto start=c::ModeLatchClock::now();
+      go.count_down();
+      for(auto& thread:threads) thread.join();
+      const auto wall=ns(c::ModeLatchClock::now()-start); const auto cpu_end=std::clock();
+      Check(cpu_start!=std::clock_t(-1) && cpu_end!=std::clock_t(-1) && wall>0,"mode measurement clocks");
+      constexpr auto expected_writes=WriteEvery==0?0:Workers*samples/std::max(1U,WriteEvery);
+      Check(version==expected_writes && checksum==(version^salt),"exact final measured mode payload");
+      for(auto count:completions) Check(count==samples,"every mode worker completes exact work");
+      const auto state=owner.Snapshot();
+      Check(state.operations==0 && state.grants==0 && !state.native.holders &&
+            !state.native.waiters && !state.native.calls,"actual mode references and calls joined");
+      const auto memory=domain.Snapshot();
+      Check(memory.readers==1 && memory.published==1 && !memory.retired && !memory.reclaiming,
+            "all private mode grant records reclaimed before owner cleanup");
+      const auto profile=WriteEvery==0?"shared_read":WriteEvery==1?"exclusive_write":"mixed_7read_1write";
+      for(bool write:{false,true}) {
+        std::vector<std::uint64_t> acquire,cycles;
+        acquire.reserve(timings.size()); cycles.reserve(timings.size());
+        for(const auto& sample:timings) if(sample.write==write) {
+          acquire.push_back(sample.acquire_ns); cycles.push_back(sample.cycle_ns);
+        }
+        if(acquire.empty()) continue;
+        std::sort(acquire.begin(),acquire.end()); std::sort(cycles.begin(),cycles.end());
+        const auto last=acquire.size()-1;
+        std::cout<<"measurement=retained_mode profile="<<profile<<" workers="<<Workers
+            <<" mode="<<(write?"write":"read")<<" samples="<<acquire.size()
+            <<" acquire_p50_ns="<<acquire[last/2]<<" acquire_p99_ns="<<acquire[last*99/100]
+            <<" acquire_max_ns="<<acquire.back()<<" cycle_p50_ns="<<cycles[last/2]
+            <<" cycle_p99_ns="<<cycles[last*99/100]<<" cycle_max_ns="<<cycles.back()<<'\n';
+      }
+      std::cout<<"measurement=retained_mode_run profile="<<profile<<" workers="<<Workers
+          <<" wall_ns="<<wall<<" process_cpu_ns="
+          <<static_cast<double>(cpu_end-cpu_start)*1000000000.0/CLOCKS_PER_SEC
+          <<" cycles_per_second="<<timings.size()*1000000000.0/wall
+          <<" slowest_worker_ns="<<*std::max_element(worker_ns.begin(),worker_ns.end())
+          <<" sampled_max_holders="<<*std::max_element(observed_holders.begin(),observed_holders.end())
+          <<" sampled_max_waiters="<<*std::max_element(observed_waiters.begin(),observed_waiters.end())
+          <<" baseline_governed_bytes="<<baseline_bytes
+          <<" peak_governed_bytes="<<fixture.manager.Snapshot().peak_bytes
+          <<" caller_timing_bytes="<<sizeof(timings)
+          <<" clock_pair_p50_ns="<<calibration[(calibration.size()-1)/2]
+          <<" clock_pair_p99_ns="<<calibration[(calibration.size()-1)*99/100]<<'\n';
+      cleanup=c::ModeLatchClock::now();
+      Check(owner.Close() && owner.FenceAdmission()==S::ok,"measured mode close and fence");
+      Check(owner.Drain(c::ModeLatchClock::now()+10s).code==C::drained,"measured mode owner drain");
+    }
+    Check(domain.Collect()==S::ok,"measured mode owner physically collected");
+  }
+  fixture.Empty();
+  std::cout<<"measurement=retained_mode_cleanup workers="<<Workers<<" write_every="<<WriteEvery
+           <<" cleanup_ns="<<ns(c::ModeLatchClock::now()-cleanup)<<" final_governed_bytes=0\n";
+}
+template<unsigned WriteEvery> void MeasurementWorkers() {
+  Measurements<1,WriteEvery>(); Measurements<2,WriteEvery>();
+  Measurements<4,WriteEvery>(); Measurements<8,WriteEvery>();
+}
 } // namespace
-int main() {
+int main(int argc,char** argv) {
+  if(argc==2 && std::string_view(argv[1])=="--measure") {
+    std::cout<<"measurement_profile=component_only clock=steady_clock cpu_clock=process"
+        " cycle_includes_grant_collection=true observation_every=64"
+        " clocks_and_validation_included=true latency_slo_claimed=false";
+#if defined(SB_MODE_NATIVE_FAULT_GATE)
+    std::cout<<" native_fault_wrappers=enabled";
+#else
+    std::cout<<" native_fault_wrappers=disabled";
+#endif
+#if defined(__OPTIMIZE__)
+    std::cout<<" compiler_optimization=enabled\n";
+#else
+    std::cout<<" compiler_optimization=disabled\n";
+#endif
+    MeasurementWorkers<0>(); MeasurementWorkers<1>(); MeasurementWorkers<8>();
+    std::printf("PASS retained mode measurements: %u checks\n",checks.load());
+    return 0;
+  }
   SharedOrderMatrix(); SharedOrderLifetime(); ClassBinding(); IntentUpgrade();
   Matrix(); Ownership(); Nonrecursive(); Exhaustion(); MultipleRetainedHolders(); RetainedTerminals();
 #if defined(SB_MODE_NATIVE_FAULT_GATE)

@@ -37,8 +37,21 @@ std::string DiagnosticDetail(const EngineApiDiagnostic& diagnostic) {
   return diagnostic.code;
 }
 
+void PublishRuntimeServiceCount(const char* family, core::platform::u64 count,
+                               std::string state = {}) {
+  core::metrics::MetricLabelSet labels{{"component", "agent.runtime_service"}};
+  if (!state.empty()) labels.push_back({"state", std::move(state)});
+  // Counts and generations use the canonical uint64 schema. The legacy
+  // double-valued convenience helpers cannot represent this producer contract.
+  (void)core::metrics::DefaultMetricRegistry().SetGauge(
+      family, std::move(labels), count, "agent_runtime");
+}
+
 void PublishRuntimeServiceMetrics(
-    const agents::AgentRuntimeServiceResult& result) {
+    const agents::AgentRuntimeServiceResult& result,
+    const EngineRequestContext& context) {
+  if (!core::metrics::DefaultMetricRegistry().ObservationOwnerMatches(
+          context.database_uuid, context.node_uuid)) return;
   const std::string event = result.evidence.lifecycle_event.empty()
                                 ? "unknown"
                                 : result.evidence.lifecycle_event;
@@ -55,12 +68,12 @@ void PublishRuntimeServiceMetrics(
       agents::DurableAgentLeaseState::replay_pending,
       agents::DurableAgentLeaseState::expired};
   for (const auto state : lease_states) {
-    double count = 0.0;
+    core::platform::u64 count = 0;
     for (const auto& lease : result.catalog.leases) {
-      if (lease.state == state) { count += 1.0; }
+      if (lease.state == state) { ++count; }
     }
-    (void)scratchbird::core::metrics::PublishAgentRuntimeServiceLeaseCount(
-        count, agents::DurableAgentLeaseStateName(state));
+    PublishRuntimeServiceCount("sb_agent_runtime_service_leases",
+                               count, agents::DurableAgentLeaseStateName(state));
   }
 
   const std::array<agents::DurableAgentActionState, 6> action_states = {
@@ -71,18 +84,18 @@ void PublishRuntimeServiceMetrics(
       agents::DurableAgentActionState::replay_pending,
       agents::DurableAgentActionState::quarantined};
   for (const auto state : action_states) {
-    double count = 0.0;
+    core::platform::u64 count = 0;
     for (const auto& action : result.catalog.actions) {
-      if (action.state == state) { count += 1.0; }
+      if (action.state == state) { ++count; }
     }
-    (void)scratchbird::core::metrics::PublishAgentRuntimeServiceActionCount(
-        count, agents::DurableAgentActionStateName(state));
+    PublishRuntimeServiceCount("sb_agent_runtime_service_actions",
+                               count, agents::DurableAgentActionStateName(state));
   }
 
-  (void)scratchbird::core::metrics::PublishAgentRuntimeServiceHistoryCount(
-      static_cast<double>(result.catalog.retained_history.size()));
-  (void)scratchbird::core::metrics::PublishAgentRuntimeServiceCatalogGeneration(
-      static_cast<double>(result.catalog.authority.catalog_generation));
+  PublishRuntimeServiceCount("sb_agent_runtime_service_history_records",
+      static_cast<core::platform::u64>(result.catalog.retained_history.size()));
+  PublishRuntimeServiceCount("sb_agent_runtime_service_catalog_generation",
+      result.catalog.authority.catalog_generation);
 }
 
 }  // namespace
@@ -287,7 +300,7 @@ agents::AgentRuntimeServiceResult AgentRuntimeServiceStore::PersistResult(
       stored.image.authority.durable_catalog_authority;
   result.evidence.mga_transaction_evidence =
       stored.image.authority.mga_transaction_evidence;
-  PublishRuntimeServiceMetrics(result);
+  PublishRuntimeServiceMetrics(result, context_);
   return result;
 }
 

@@ -9,11 +9,7 @@
 namespace scratchbird::core::metrics {
 namespace {
 using E=MetricQueueError;
-void Increment(std::atomic<u64>& counter) noexcept {
-  auto value=counter.load(std::memory_order_relaxed);
-  while(value!=std::numeric_limits<u64>::max()&&
-      !counter.compare_exchange_weak(value,value+1,std::memory_order_relaxed)){}
-}
+void Increment(detail::MetricQueueSaturatingCounter& counter) noexcept { counter.Increment(); }
 }
 MetricQueueCreateResult MetricObservationQueue::Create(MetricQueueBinding binding,MetricQueueLimits limits) noexcept {
   if(!core::uuid::IsEngineIdentityUuid(binding.database_uuid)||!core::uuid::IsEngineIdentityUuid(binding.node_uuid)||
@@ -61,6 +57,15 @@ MetricQueueLeaseResult MetricObservationQueue::TryAcquire() noexcept {
     next_token_=next_token_==std::numeric_limits<u64>::max()?0:next_token_+1;
     return {E::none,{leased_token_,pending_.front()}};
   }catch(...){return {Reject(E::invalid_observation),{}};}
+}
+MetricQueueError MetricObservationQueue::TryValidateLease(const MetricObservationLease& lease) noexcept {
+  try {
+    std::unique_lock<std::mutex> guard(mutex_,std::try_to_lock);
+    if(!guard.owns_lock())return E::busy;
+    if(!lease.token||lease.token!=leased_token_||pending_.empty()||lease.observation!=pending_.front())
+      return E::stale_lease;
+    return E::none;
+  }catch(...){return E::invalid_observation;}
 }
 MetricQueueError MetricObservationQueue::Finish(const MetricObservationLease& lease,bool remove) noexcept {
   try {

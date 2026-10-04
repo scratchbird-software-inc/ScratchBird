@@ -304,43 +304,58 @@ bool ProcessAlive(std::int64_t pid) {
   return active;
 #else
   const auto native_pid = static_cast<pid_t>(pid);
-  return native_pid > 0 && (::kill(native_pid, 0) == 0 || errno == EPERM);
+  return native_pid > 0 && static_cast<std::int64_t>(native_pid) == pid &&
+         (::kill(native_pid, 0) == 0 || errno == EPERM);
 #endif
 }
 
 bool ReapIfExited(std::int64_t pid) {
+  if (pid <= 0) return true;
 #ifdef _WIN32
   HANDLE handle = OpenListenerProcessHandle(pid, SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION);
-  if (handle == nullptr) return true;
+  if (handle == nullptr) return false;
   const DWORD wait = ::WaitForSingleObject(handle, 0);
   ::CloseHandle(handle);
   return wait == WAIT_OBJECT_0;
 #else
   const auto native_pid = static_cast<pid_t>(pid);
-  if (pid <= 0) return true;
+  if (native_pid <= 0 || static_cast<std::int64_t>(native_pid) != pid) return false;
   int status = 0;
-  const auto rc = ::waitpid(native_pid, &status, WNOHANG);
+  pid_t rc;
+  do {
+    rc = ::waitpid(native_pid, &status, WNOHANG);
+  } while (rc < 0 && errno == EINTR);
   return rc == native_pid;
 #endif
 }
 
 bool TerminateListenerProcess(std::int64_t pid) {
+  if (pid <= 0) return true;
 #ifdef _WIN32
   HANDLE handle = OpenListenerProcessHandle(pid, SYNCHRONIZE | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION);
-  if (handle == nullptr) return true;
-  const BOOL terminated = ::TerminateProcess(handle, 1);
-  if (terminated) {
-    (void)::WaitForSingleObject(handle, 1000);
-  }
+  if (handle == nullptr) return false;
+  // A termination request is not evidence that the process has exited.
+  (void)::TerminateProcess(handle, 1);
+  const DWORD wait = ::WaitForSingleObject(handle, 1000);
   ::CloseHandle(handle);
-  return terminated != 0;
+  return wait == WAIT_OBJECT_0;
 #else
   const auto native_pid = static_cast<pid_t>(pid);
-  if (native_pid <= 0) return true;
-  if (::kill(native_pid, SIGKILL) != 0 && errno != ESRCH) return false;
+  if (native_pid <= 0 || static_cast<std::int64_t>(native_pid) != pid) return false;
+  // Confirm that this is still our waitable child before sending a signal.
+  // ECHILD is not an exit receipt and must not permit signalling a reused PID.
   int status = 0;
-  (void)::waitpid(native_pid, &status, 0);
-  return true;
+  pid_t rc;
+  do {
+    rc = ::waitpid(native_pid, &status, WNOHANG);
+  } while (rc < 0 && errno == EINTR);
+  if (rc == native_pid) return true;
+  if (rc < 0) return false;
+  if (::kill(native_pid, SIGKILL) != 0 && errno != ESRCH) return false;
+  do {
+    rc = ::waitpid(native_pid, &status, 0);
+  } while (rc < 0 && errno == EINTR);
+  return rc == native_pid;
 #endif
 }
 
@@ -505,12 +520,22 @@ ServerListenerOperationResult LaunchListener(ServerListenerProfileRuntime* profi
     result.state_after = profile->state;
     return result;
   }
-  if (profile->pid > 0 && ProcessAlive(profile->pid)) {
-    profile->state = "running";
-    result.ok = true;
-    result.outcome = "already_running";
-    result.state_after = profile->state;
-    return result;
+  if (profile->pid > 0) {
+    if (ReapIfExited(profile->pid)) {
+      profile->pid = -1;
+    } else {
+      if (ProcessAlive(profile->pid)) {
+        result.ok = true;
+        result.outcome = "already_running";
+      } else {
+        result.diagnostics.push_back(ListenerDiagnostic(
+            "MANAGER.LISTENER_STOP_FAILED",
+            "The previous listener exit is unconfirmed; replacement is not permitted.",
+            {{"pid", std::to_string(profile->pid)}}));
+      }
+      result.state_after = profile->state;
+      return result;
+    }
   }
   if (!ServerManagedListenerDbbtKey().has_value()) {
     profile->state = "failed";
@@ -637,6 +662,7 @@ ServerListenerOperationResult LaunchListener(ServerListenerProfileRuntime* profi
   while (std::chrono::steady_clock::now() < deadline) {
     const DWORD wait = ::WaitForSingleObject(process.hProcess, 0);
     if (wait == WAIT_OBJECT_0) {
+      profile->pid = -1;
       profile->state = "failed";
       profile->diagnostic_code = "LISTENER.START_FAILED";
       result.diagnostics.push_back(ListenerDiagnostic(
@@ -660,7 +686,9 @@ ServerListenerOperationResult LaunchListener(ServerListenerProfileRuntime* profi
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
   (void)::TerminateProcess(process.hProcess, 1);
-  (void)::WaitForSingleObject(process.hProcess, 1000);
+  if (::WaitForSingleObject(process.hProcess, 1000) == WAIT_OBJECT_0) {
+    profile->pid = -1;
+  }
   ::CloseHandle(process.hProcess);
   profile->state = "failed";
   profile->diagnostic_code = "LISTENER.START_TIMEOUT";
@@ -704,6 +732,7 @@ ServerListenerOperationResult LaunchListener(ServerListenerProfileRuntime* profi
                         std::chrono::milliseconds(profile->ready_timeout_ms);
   while (std::chrono::steady_clock::now() < deadline) {
     if (ReapIfExited(static_cast<std::int64_t>(pid))) {
+      profile->pid = -1;
       profile->state = "failed";
       profile->diagnostic_code = "LISTENER.START_FAILED";
       result.diagnostics.push_back(ListenerDiagnostic(
@@ -726,11 +755,14 @@ ServerListenerOperationResult LaunchListener(ServerListenerProfileRuntime* profi
   }
   ::kill(pid, SIGTERM);
   for (int i = 0; i < 50; ++i) {
-    if (ReapIfExited(static_cast<std::int64_t>(pid))) break;
+    if (ReapIfExited(static_cast<std::int64_t>(pid))) {
+      profile->pid = -1;
+      break;
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
-  if (ProcessAlive(static_cast<std::int64_t>(pid))) {
-    (void)TerminateListenerProcess(static_cast<std::int64_t>(pid));
+  if (profile->pid > 0 && TerminateListenerProcess(static_cast<std::int64_t>(pid))) {
+    profile->pid = -1;
   }
   profile->state = "failed";
   profile->diagnostic_code = "LISTENER.START_TIMEOUT";
@@ -778,7 +810,7 @@ ServerListenerOperationResult StopListenerProcess(ServerListenerProfileRuntime* 
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-    if (profile->pid > 0 && ProcessAlive(pid) && mode != "force") {
+    if (profile->pid > 0 && mode != "force") {
       profile->state = "draining";
       profile->diagnostic_code = "LISTENER.GRACEFUL_STOP_EXIT_TIMEOUT";
       profile->last_transition = command;
@@ -794,10 +826,26 @@ ServerListenerOperationResult StopListenerProcess(ServerListenerProfileRuntime* 
            {"listener_response", profile->last_management_response}}));
       return result;
     }
-    if (profile->pid > 0 && ProcessAlive(pid)) {
+    if (profile->pid > 0) {
       if (TerminateListenerProcess(pid)) {
         profile->pid = -1;
       }
+    }
+    if (profile->pid > 0) {
+      // Retain ownership and eligibility for a later stop attempt. Neither a
+      // management acknowledgement nor selecting force proves native exit.
+      profile->state = "draining";
+      profile->diagnostic_code = "MANAGER.LISTENER_STOP_FAILED";
+      profile->last_transition = command;
+      result.outcome = "refused";
+      result.state_after = profile->state;
+      result.diagnostics = std::move(stop.diagnostics);
+      result.diagnostics.push_back(ListenerDiagnostic(
+          profile->diagnostic_code,
+          "The owned listener process exit could not be confirmed; ownership is retained.",
+          {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)},
+           {"pid", std::to_string(pid)}}));
+      return result;
     }
   }
   profile->enabled = false;
@@ -1021,7 +1069,7 @@ ServerListenerOperationResult StopManagedServerListeners(ServerListenerOrchestra
     auto stopped = StopListenerProcess(&profile, mode);
     if (!stopped.ok) {
       aggregate.ok = false;
-      aggregate.outcome = "completed_with_management_warning";
+      aggregate.outcome = "refused";
       aggregate.diagnostics.insert(aggregate.diagnostics.end(),
                                    stopped.diagnostics.begin(),
                                    stopped.diagnostics.end());
@@ -1082,7 +1130,8 @@ ServerListenerOperationResult ApplyListenerOperation(ServerListenerOrchestrator*
   } else if (operation_key == "restart_listener") {
     result.generation = ++orchestrator->generation;
     profile->enabled = true;
-    StopListenerProcess(profile, "force");
+    auto stopped = StopListenerProcess(profile, "force");
+    if (!stopped.ok) return stopped;
     profile->enabled = true;
     profile->state = "stopped";
     return LaunchListener(profile, config, artifacts);

@@ -13,6 +13,7 @@ using scratchbird::tests::BinaryFixtureIdentity;
 #include "agents/agent_durable_catalog_store_api.hpp"
 #include "agents/agent_runtime_service_store_api.hpp"
 #include "metric_registry.hpp"
+#include "runtime_service_metric_fixture.hpp"
 #include "transaction/transaction_api.hpp"
 
 #include "agent_durable_catalog.hpp"
@@ -32,6 +33,8 @@ namespace api = scratchbird::engine::internal_api;
 namespace db = scratchbird::storage::database;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
+std::unique_ptr<runtime_service_metric_test::Fixture> metric_fixture;
+bool metric_owner_mismatch = false;
 
 [[noreturn]] void Fail(const std::string& message) {
   std::cerr << message << '\n';
@@ -76,6 +79,8 @@ TestDatabase CreateActiveDatabase() {
   create.require_resource_seed_pack = false;
   create.allow_overwrite = true;
   Require(db::CreateDatabaseFile(create).ok(), "database creation failed");
+  Require(!metric_fixture, "each service case requires its own process/database owner");
+  metric_fixture = std::make_unique<runtime_service_metric_test::Fixture>(database_uuid.value.value);
 
   api::EngineRequestContext bootstrap_context;
   bootstrap_context.request_id = "aeic-runtime-service-bootstrap";
@@ -114,6 +119,10 @@ api::EngineRequestContext Context(const TestDatabase& database) {
   context.request_id = "aeic-runtime-service-store";
   context.database_path = database.path.string();
   context.database_uuid = database.database_uuid;
+  context.node_uuid = runtime_service_metric_test::node;
+  if (metric_owner_mismatch) {
+    context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000ee02");
+  }
   context.transaction_uuid = database.transaction_uuid;
   context.local_transaction_id = database.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id =
@@ -180,7 +189,7 @@ bool MetricHasLabel(const scratchbird::core::metrics::MetricValue& value,
   return false;
 }
 
-double CurrentMetricValue(const std::string& family,
+std::uint64_t CurrentMetricValue(const std::string& family,
                           const std::string& label_key = {},
                           const std::string& label_value = {}) {
   const auto snapshot =
@@ -190,11 +199,11 @@ double CurrentMetricValue(const std::string& family,
     if (!label_key.empty() && !MetricHasLabel(value, label_key, label_value)) {
       continue;
     }
-    const auto* scalar = std::get_if<double>(&value.value);
-    Require(scalar != nullptr, "runtime service gauge must use its declared float64 scalar");
+    const auto* scalar = std::get_if<std::uint64_t>(&value.value);
+    Require(scalar != nullptr, "runtime service gauge must use its declared uint64 scalar");
     return *scalar;
   }
-  return -1.0;
+  Fail("runtime service metric missing: " + family);
 }
 
 std::string StoreDiagnostic(
@@ -944,17 +953,17 @@ void TestRuntimeServiceStoreCrashReplayMarksDurableWorkPending() {
   Require(saw_action_replay, "crash replay action history missing");
   Require(CurrentMetricValue("sb_agent_runtime_service_leases",
                              "state",
-                             "replay_pending") >= 1.0,
+                             "replay_pending") >= 1,
           "runtime service replay-pending lease metric missing");
   Require(CurrentMetricValue("sb_agent_runtime_service_actions",
                              "state",
-                             "replay_pending") >= 2.0,
+                             "replay_pending") >= 2,
           "runtime service replay-pending action metric missing");
   Require(CurrentMetricValue("sb_agent_runtime_service_history_records") >=
-              static_cast<double>(loaded.image.retained_history.size()),
+              loaded.image.retained_history.size(),
           "runtime service retained-history metric missing");
   Require(CurrentMetricValue("sb_agent_runtime_service_catalog_generation") >=
-              1.0,
+              1,
           "runtime service catalog-generation metric missing");
   CommitContext(load_context);
 
@@ -1052,14 +1061,29 @@ void TestRuntimeServiceStoreRejectsDuplicateLiveLeaseOwner() {
 
 }  // namespace
 
-int main() {
-  TestRuntimeServiceStoreRoundTrip();
-  TestRuntimeServiceStoreAcquireLeaseBatchIsAtomic();
-  TestRuntimeServiceStoreRequiresCheckpointEvidence();
-  TestRuntimeServiceStoreAcceptsTransactionPerOperation();
-  TestRuntimeServiceStoreDrainShutdownPersist();
-  TestRuntimeServiceStoreSupervisionTransitionsPersist();
-  TestRuntimeServiceStoreCrashReplayMarksDurableWorkPending();
-  TestRuntimeServiceStoreRejectsDuplicateLiveLeaseOwner();
+int RunCase(int argc, char** argv) {
+  Require(argc == 2, "run through run_runtime_service_store_cases.py or select one case");
+  const std::string mode = argv[1];
+  metric_owner_mismatch = mode == "metric-owner-mismatch";
+  if (mode == "round-trip" || metric_owner_mismatch) TestRuntimeServiceStoreRoundTrip();
+  else if (mode == "atomic-batch") TestRuntimeServiceStoreAcquireLeaseBatchIsAtomic();
+  else if (mode == "checkpoint-evidence") TestRuntimeServiceStoreRequiresCheckpointEvidence();
+  else if (mode == "transaction-per-operation") TestRuntimeServiceStoreAcceptsTransactionPerOperation();
+  else if (mode == "drain-shutdown") TestRuntimeServiceStoreDrainShutdownPersist();
+  else if (mode == "supervision") TestRuntimeServiceStoreSupervisionTransitionsPersist();
+  else if (mode == "crash-replay") TestRuntimeServiceStoreCrashReplayMarksDurableWorkPending();
+  else if (mode == "duplicate-owner") TestRuntimeServiceStoreRejectsDuplicateLiveLeaseOwner();
+  else Fail("unknown service case");
+  if (mode == "checkpoint-evidence" || metric_owner_mismatch) metric_fixture->VerifyEmpty();
+  else metric_fixture->VerifyAndDrain();
   return EXIT_SUCCESS;
+}
+
+int main(int argc, char** argv) {
+  try {
+    return RunCase(argc, argv);
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }

@@ -111,8 +111,12 @@ class ServerAgentRuntime {
   ServerAgentRuntime& operator=(const ServerAgentRuntime&) = delete;
   ~ServerAgentRuntime();
 
-  // Thread-launch failures retain the exception channel, after stopping/joining
-  // the partially launched runtime. This does not certify durable cleanup.
+  // Lifecycle contract: cooperative cancellation only (DR-MGA-RUNTIME-002).
+  // Callers must not forcibly cancel/exit a thread inside Start/Stop or terminate
+  // owned workers. Request stop, drain, and join before releasing their state.
+  // Forced process termination requires recovery; it is not clean shutdown.
+  // Thread-launch and post-launch publication failures retain the exception
+  // channel after stopping/joining the cohort. This does not certify durable cleanup.
   bool Start(const ServerBootstrapConfig& config,
              const HostedEngineState& engine_state,
              std::vector<ServerDiagnostic>* diagnostics);
@@ -124,6 +128,11 @@ class ServerAgentRuntime {
   // Return does not constitute a clean durable/node shutdown receipt.
   // Repeated calls retain the same result. Failed durable cleanup requires
   // owning-engine recovery; Start cannot silently discard that failure.
+  // Once the completed result is cached, allocation failure during result-copy
+  // delivery does not discard its diagnostics; a later Stop can retrieve them.
+  // If initial failure reporting itself throws after native joins, failed cleanup
+  // is still cached, possibly without diagnostics. The exception propagates;
+  // repeated Stop does not repeat durable operations and Start remains refused.
   ServerAgentRuntimeStopResult Stop();
   ServerAgentRuntimeSnapshot Snapshot() const;
 

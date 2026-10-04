@@ -8,7 +8,88 @@
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+add_executable(runtime_task_queue_claim_gate "${PROJECT_SOURCE_DIR}/tests/concurrency/runtime_task_queue_claim_gate.cpp")
+target_compile_features(runtime_task_queue_claim_gate PRIVATE cxx_std_20)
+target_include_directories(runtime_task_queue_claim_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/core/runtime")
+target_link_libraries(runtime_task_queue_claim_gate PRIVATE sb_core_resource_governance sb_core_memory sb_core_uuid)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  target_compile_definitions(runtime_task_queue_claim_gate PRIVATE SB_QUEUE_CLAIM_FAULTS)
+  target_link_options(runtime_task_queue_claim_gate PRIVATE -Wl,--wrap=pthread_mutex_lock)
+endif()
+add_test(NAME runtime_task_queue_claim_gate COMMAND runtime_task_queue_claim_gate)
+set_tests_properties(runtime_task_queue_claim_gate PROPERTIES TIMEOUT 60 LABELS "concurrency;queue;claims;runtime_permits")
+
+add_executable(runtime_scheduler_descriptor_gate "${PROJECT_SOURCE_DIR}/tests/concurrency/runtime_scheduler_descriptor_gate.cpp")
+target_compile_features(runtime_scheduler_descriptor_gate PRIVATE cxx_std_20)
+target_include_directories(runtime_scheduler_descriptor_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/core/runtime")
+target_link_libraries(runtime_scheduler_descriptor_gate PRIVATE sb_core_resource_governance sb_core_memory sb_core_uuid)
+add_test(NAME runtime_scheduler_descriptor_gate COMMAND runtime_scheduler_descriptor_gate)
+set_tests_properties(runtime_scheduler_descriptor_gate PROPERTIES TIMEOUT 30 LABELS "concurrency;binary_uuid;scheduler_descriptor;governed_memory")
+
+add_executable(runtime_task_queue_measurement_gate "${PROJECT_SOURCE_DIR}/tests/concurrency/runtime_task_queue_measurement_gate.cpp")
+target_compile_features(runtime_task_queue_measurement_gate PRIVATE cxx_std_20)
+target_include_directories(runtime_task_queue_measurement_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/core/runtime")
+target_link_libraries(runtime_task_queue_measurement_gate PRIVATE sb_core_resource_governance sb_core_memory sb_core_uuid)
+add_test(NAME runtime_task_queue_measurement_gate COMMAND runtime_task_queue_measurement_gate)
+set_tests_properties(runtime_task_queue_measurement_gate PROPERTIES TIMEOUT 120 LABELS "concurrency;queue;measurement;governed_memory")
+
+add_executable(retained_runtime_task_queue_gate "${PROJECT_SOURCE_DIR}/tests/concurrency/retained_runtime_task_queue_gate.cpp")
+target_compile_features(retained_runtime_task_queue_gate PRIVATE cxx_std_20)
+target_include_directories(retained_runtime_task_queue_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/core/runtime")
+target_link_libraries(retained_runtime_task_queue_gate PRIVATE sb_core_resource_governance sb_core_memory sb_core_uuid)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  target_compile_definitions(retained_runtime_task_queue_gate PRIVATE SB_QUEUE_RETAINED_FAULTS)
+  target_link_options(retained_runtime_task_queue_gate PRIVATE -Wl,--wrap=pthread_cond_timedwait)
+endif()
+add_test(NAME retained_runtime_task_queue_gate COMMAND retained_runtime_task_queue_gate)
+set_tests_properties(retained_runtime_task_queue_gate PROPERTIES TIMEOUT 60 LABELS "concurrency;queue;retirement;drain")
+
+add_executable(native_runtime_task_queue_gate "${PROJECT_SOURCE_DIR}/tests/concurrency/native_runtime_task_queue_gate.cpp")
+target_compile_features(native_runtime_task_queue_gate PRIVATE cxx_std_20)
+target_include_directories(native_runtime_task_queue_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/core/runtime")
+target_link_libraries(native_runtime_task_queue_gate PRIVATE sb_core_resource_governance sb_core_memory sb_core_uuid)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  target_compile_definitions(native_runtime_task_queue_gate PRIVATE SB_QUEUE_NATIVE_FAULTS)
+  target_link_options(native_runtime_task_queue_gate PRIVATE -Wl,--wrap=pthread_mutex_lock)
+endif()
+add_test(NAME native_runtime_task_queue_gate COMMAND native_runtime_task_queue_gate)
+set_tests_properties(native_runtime_task_queue_gate PROPERTIES TIMEOUT 60 LABELS "concurrency;queue;governed_memory;runtime_permits")
+
+add_executable(runtime_task_descriptor_gate "${PROJECT_SOURCE_DIR}/tests/concurrency/runtime_task_descriptor_gate.cpp")
+target_compile_features(runtime_task_descriptor_gate PRIVATE cxx_std_20)
+target_include_directories(runtime_task_descriptor_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/core/runtime" "${PROJECT_SOURCE_DIR}/src/core/concurrency")
+target_link_libraries(runtime_task_descriptor_gate PRIVATE sb_core_resource_governance sb_core_memory sb_core_uuid)
+add_test(NAME runtime_task_descriptor_gate COMMAND runtime_task_descriptor_gate)
+set_tests_properties(runtime_task_descriptor_gate PROPERTIES TIMEOUT 30 LABELS "concurrency;binary_uuid;task_descriptor;governed_memory")
+
+add_executable(runtime_identity_records_gate "${PROJECT_SOURCE_DIR}/tests/concurrency/runtime_identity_records_gate.cpp")
+target_compile_features(runtime_identity_records_gate PRIVATE cxx_std_20)
+target_include_directories(runtime_identity_records_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/core/runtime" "${PROJECT_SOURCE_DIR}/src/core/concurrency")
+target_link_libraries(runtime_identity_records_gate PRIVATE sb_core_resource_governance sb_core_memory sb_core_uuid)
+add_test(NAME runtime_identity_records_gate COMMAND runtime_identity_records_gate)
+set_tests_properties(runtime_identity_records_gate PROPERTIES TIMEOUT 30 LABELS "concurrency;binary_uuid;runtime_records;governed_memory")
+
+add_executable(runtime_task_state_gate "${PROJECT_SOURCE_DIR}/tests/concurrency/runtime_task_state_gate.cpp")
+target_compile_features(runtime_task_state_gate PRIVATE cxx_std_20)
+target_include_directories(runtime_task_state_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/core/concurrency")
+add_test(NAME runtime_task_state_gate COMMAND runtime_task_state_gate)
+set_tests_properties(runtime_task_state_gate PROPERTIES TIMEOUT 10 LABELS "concurrency;task_state;definitions")
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  add_executable(native_committed_metric_observation_gate native_committed_metric_observation_gate.cpp)
+  target_compile_features(native_committed_metric_observation_gate PRIVATE cxx_std_23)
+  target_link_libraries(native_committed_metric_observation_gate PRIVATE sb_engine_internal_api)
+  target_link_options(native_committed_metric_observation_gate PRIVATE -Wl,--wrap=pwrite -Wl,--wrap=pthread_mutex_trylock)
+  add_test(NAME native_committed_metric_observation_gate COMMAND native_committed_metric_observation_gate)
+  set_tests_properties(native_committed_metric_observation_gate PROPERTIES TIMEOUT 180 LABELS "agents;metrics;physical_MGA")
+  add_executable(listener_process_stop_gate "${PROJECT_SOURCE_DIR}/tests/concurrency/listener_process_stop_gate.cpp")
+  target_compile_features(listener_process_stop_gate PRIVATE cxx_std_23)
+  target_link_libraries(listener_process_stop_gate PRIVATE sb_server_core)
+  target_link_options(listener_process_stop_gate PRIVATE -Wl,--wrap=kill -Wl,--wrap=waitpid)
+  foreach(mode force-success kill-denied wait-failed wait-interrupted graceful-refused restart-denied retry wait-retry unconfirmed-owner invalid-native-pid)
+    add_test(NAME listener_process_stop_${mode} COMMAND listener_process_stop_gate ${mode})
+    set_tests_properties(listener_process_stop_${mode} PROPERTIES TIMEOUT 30 LABELS "concurrency;listener;shutdown")
+  endforeach()
   add_executable(ipc_client_io_gate "${PROJECT_SOURCE_DIR}/tests/concurrency/ipc_client_io_gate.cpp")
   target_compile_features(ipc_client_io_gate PRIVATE cxx_std_23)
   target_link_libraries(ipc_client_io_gate PRIVATE pthread)
@@ -110,6 +191,9 @@ add_executable(retained_condition_wait_gate
   "${PROJECT_SOURCE_DIR}/tests/concurrency/retained_condition_wait_gate.cpp")
 add_executable(retained_mode_latch_gate
   "${PROJECT_SOURCE_DIR}/tests/concurrency/retained_mode_latch_gate.cpp")
+add_test(NAME retained_mode_latch_measurement_gate COMMAND retained_mode_latch_gate --measure)
+set_tests_properties(retained_mode_latch_measurement_gate PROPERTIES
+  TIMEOUT 120 LABELS "concurrency;multiholder;measurement;not_performance_acceptance")
 target_compile_features(retained_mode_latch_gate PRIVATE cxx_std_23)
 target_link_libraries(retained_mode_latch_gate PRIVATE sb_core_concurrency)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -308,6 +392,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
     COMMAND server_agent_shutdown_wakeup_gate --failed-snapshot-lifetime)
   set_tests_properties(server_agent_failed_snapshot_lifetime_gate PROPERTIES
     TIMEOUT 120 LABELS "agents;concurrency;shutdown;durable_result;lifetime;linux_proof")
+  # Native post-launch publication failures use the same owned cleanup boundary.
+  foreach(publication_mode post-launch-allocation post-launch-allocation-cleanup-failure)
+    add_test(NAME server_agent_${publication_mode}_gate
+      COMMAND server_agent_shutdown_wakeup_gate --${publication_mode})
+    set_tests_properties(server_agent_${publication_mode}_gate PROPERTIES
+      TIMEOUT 120 LABELS "agents;concurrency;startup;partial_failure;linux_proof")
+  endforeach()
   foreach(failed_launch RANGE 1 3)
     add_test(NAME server_agent_startup_failure_${failed_launch}_gate
       COMMAND server_agent_shutdown_wakeup_gate --startup-failure ${failed_launch})
@@ -375,6 +466,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
     -Wl,--wrap=_ZN11scratchbird6engine12internal_api23EngineCommitTransactionERKNS1_30EngineCommitTransactionRequestE)
   foreach(stop_mode success failure ipc-failure ipc-success
       drain-persist-failure shutdown-persist-failure drain-commit-failure shutdown-commit-failure
+      drain-commit-exception shutdown-commit-exception drain-commit-opaque-exception shutdown-commit-opaque-exception
+      drain-commit-report-allocation shutdown-commit-report-allocation
+      drain-commit-initial-diagnostic-allocation shutdown-commit-initial-diagnostic-allocation
       inflight-page inflight-growth)
     add_test(NAME server_agent_durable_stop_${stop_mode}_gate
       COMMAND server_agent_durable_stop_gate ${stop_mode})
@@ -637,7 +731,8 @@ target_link_libraries(agent_runtime_service_store_gate PRIVATE
   sb_engine_internal_api
 )
 add_test(NAME agent_runtime_service_store_gate
-  COMMAND agent_runtime_service_store_gate)
+  COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/run_runtime_service_store_cases.py"
+    $<TARGET_FILE:agent_runtime_service_store_gate>)
 set_tests_properties(agent_runtime_service_store_gate PROPERTIES
   LABELS "agent_runtime_service_store_gate;AEIC-011;AEIC-012;agents;agent_runtime;mga_catalog_store;runtime_service;leases;mga_transaction_regression"
 )
