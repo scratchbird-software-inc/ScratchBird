@@ -185,8 +185,8 @@ inline NativeBtreeTreeMemoryResult ReadNativeBtreeTreeWithMemoryFromOpenDevices(
       const auto f=std::lower_bound(files.begin(),files.end(),ref.filespace_uuid,[](const auto& a,const auto& id){return a.source.filespace_uuid<id;});
       return f==files.end()||f->source.filespace_uuid!=ref.filespace_uuid||f->source.page_size_profile_uuid!=ref.page_size_profile_uuid||ref.page_number>=f->total_pages?
         files.size():static_cast<std::size_t>(f-files.begin());};
-    std::size_t todo=1,count=0,leaf_count=0,image_used=0,cells_used=0;pending[0]={root};
-    while(todo){const auto next=pending[--todo];const auto fs=filespace(next.ref);
+    std::size_t pending_count=1,count=0,leaf_count=0,image_used=0,cells_used=0;pending[0]={root};
+    while(pending_count){const auto next=pending[--pending_count];const auto fs=filespace(next.ref);
       if(fs==files.size()){fail(T::invalid_filespace);return out;}const auto& f=files[fs];
       if(f.role!=5&&f.role!=6){fail(T::invalid_filespace);return out;}
       if(f.flags&disk::FilespaceBootstrapFlag::payload_encrypted){fail(T::encrypted_requires_crypto_authority);return out;}
@@ -228,11 +228,11 @@ inline NativeBtreeTreeMemoryResult ReadNativeBtreeTreeWithMemoryFromOpenDevices(
       pages[count]=decoded;image_used+=f.size;cells_used+=required.cells;
       const auto index=count++;
       if(!p.tree_level){leaves[leaf_count++]=index;continue;}
-      if(p.cells.size()+1>pending.size()-todo){fail(T::resource_exhausted);return out;}
+      if(p.cells.size()+1>pending.size()-pending_count){fail(T::resource_exhausted);return out;}
       const auto child_level=static_cast<core::platform::u16>(p.tree_level-1);
       for(std::size_t i=p.cells.size();i>0;--i){const auto& c=p.cells[i-1];
-        pending[todo++]={*c.child,index,child_level,c.key,i==p.cells.size()?p.high_fence:std::optional{p.cells[i].key}};}
-      pending[todo++]={*p.first_child,index,child_level,p.low_fence,p.cells.front().key};
+        pending[pending_count++]={*c.child,index,child_level,c.key,i==p.cells.size()?p.high_fence:std::optional{p.cells[i].key}};}
+      pending[pending_count++]={*p.first_child,index,child_level,p.low_fence,p.cells.front().key};
     }
     for(const auto index:levels)if(index!=missing&&pages[index].page->right){fail(T::tree_sibling_mismatch);return out;}
     out.pages=pages.first(count);out.leaves=leaves.first(leaf_count);out.retained_image_bytes=image_used;
