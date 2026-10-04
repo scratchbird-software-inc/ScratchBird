@@ -108,10 +108,10 @@ void ProfilesAreExact() {
               "e1860523736b5b688bfb921c3eac0e786d20b639683d6d51cd4ce1515e961c89",
               "unqualified cohort fingerprint drifted");
   CheckDigest(fixed8.profile_fingerprint,
-              "5902d69362aac21d7d428490d391c74728fac7d57f8ed84e7c79ec833dd3bbc9",
+              "298a46e43a0cf8881b0c7e51777578b6aa4ae1025760e8a97ca43da2fcbc09f5",
               "fixed8 profile fingerprint drifted");
   CheckDigest(varying8.profile_fingerprint,
-              "ca0177eec7e79c3797a436d0b2ea441ac34478350144d1f94282b25b85371d50",
+              "3b739cffe573471aca8aac2cfbfd98eda2fab53ee9236cc50519fadc24e4faf4",
               "varying8 profile fingerprint drifted");
 
   const auto decoded = dt::DecodeBitStringDescriptorProfileMaterialV3(

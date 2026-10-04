@@ -1625,7 +1625,7 @@ void TestOwnerAndObservabilityRegistries() {
       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2});
   const platform::Uuid statement_receipt_uuid(
       {0x01, 0x9d, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0xd7,
-       0x09});
+       0x10});
   std::array<dt::TimeDiagnosticRouteParameterV3, 5> route_payload{};
   route_payload[0].token = "request_uuid";
   route_payload[0].scalar_type = DS::uuid;
