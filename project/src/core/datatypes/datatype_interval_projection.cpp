@@ -378,7 +378,7 @@ IntervalCoveringValueViewResultV3 DecodeIntervalCoveringValueNoAllocV3(const Int
   if(!ValidProfile(h,&c))return FailView<IntervalCoveringValueViewResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","profile");
   if(e.empty())return FailView<IntervalCoveringValueViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","minimum_extent");
   IntervalValueStateV3 state;std::int32_t months=0,days=0;std::int64_t ns=0;
-  if(e[0]==1){if(e.size()!=1)return FailView<IntervalCoveringValueViewResultV3>("DATATYPE.NULL_STATE.INVALID","null_extent");if(!null_allowed)return FailView<IntervalCoveringValueViewResultV3>("DATATYPE.NULL_NOT_ADMITTED");state=IntervalValueStateV3::sql_null;}
+  if(e[0]==1){if(e.size()!=1)return FailView<IntervalCoveringValueViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","null_extent");if(!null_allowed)return FailView<IntervalCoveringValueViewResultV3>("DATATYPE.NULL_NOT_ADMITTED");state=IntervalValueStateV3::sql_null;}
   else if(e[0]==0){if(e.size()!=17)return FailView<IntervalCoveringValueViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","value_extent");auto nested=c;nested.maximum_allocation_bytes=~u64{0};nested.cancelled=nullptr;nested.cancellation_context=nullptr;auto d=DecodeCanonicalIntervalComponentNoAllocV3(h,IntervalValueStateV3::value,false,e.subspan(1),nested);if(!d.ok())return FailView<IntervalCoveringValueViewResultV3>(d.diagnostic.diagnostic_code,d.diagnostic.detail);state=d.value.state;months=d.value.months;days=d.value.civil_days;ns=d.value.fixed_nanoseconds;}
   else return FailView<IntervalCoveringValueViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","state");
   std::array<byte,17> canonical{};ArrayClearGuard<17> clear(&canonical,IntervalScrubClassV3::covering_decode_reencode,&c);canonical[0]=state==IntervalValueStateV3::sql_null?1:0;if(state==IntervalValueStateV3::value)EncodeComponentRaw({&h,state,months,days,ns},canonical.data()+1);
@@ -888,15 +888,222 @@ IntervalProtectionCombinationResolutionV3 AdmitIntervalProtectionCombinationV3(
   return ResolveIntervalProtectionCombinationV3(storage, stream, index);
 }
 
-IntervalWireLaneResolutionV3 ResolveIntervalWireLaneV3(IntervalWireLaneV3 lane) noexcept {
-  if (static_cast<unsigned>(lane) >= 27)
-    return {lane, false, false, true, "unknown_lane_fail_closed", "CTI.TRANSPORT.UNSUPPORTED"};
-  const bool native = static_cast<unsigned>(lane) <=
+IntervalWireLaneResolutionV3 ResolveIntervalWireLaneV3(
+    const IntervalWireLaneRequestV3& request) noexcept {
+  const auto expected_ordinal = static_cast<unsigned>(request.expected_lane);
+  const auto supplied_ordinal = static_cast<unsigned>(request.supplied_lane);
+  const bool expected_known = expected_ordinal < 27;
+  const bool native = expected_known && expected_ordinal <=
       static_cast<unsigned>(IntervalWireLaneV3::canonical_sblr);
-  return {lane, false, native, true,
-          native ? "unsupported_current_outer_version_unallocated"
-                 : "unsupported_no_manifest_listed_compatibility_profile",
-          "CTI.TRANSPORT.UNSUPPORTED"};
+  IntervalWireLaneResolutionV3 result{
+      request.expected_lane, false, native, true, {}, {}};
+  if (request.profile_handle == nullptr) {
+    result.disposition = "profile_missing";
+    result.diagnostic = "CTI.INTERVAL.DESCRIPTOR_INVALID";
+    return result;
+  }
+  if (!ValidProfile(*request.profile_handle)) {
+    result.disposition = "profile_invalid";
+    result.diagnostic = "CTI.INTERVAL.DESCRIPTOR_INVALID";
+    return result;
+  }
+  if (!expected_known) {
+    result.disposition = "unknown_expected_lane_fail_closed";
+    result.diagnostic = "CTI.TRANSPORT.UNSUPPORTED";
+    return result;
+  }
+  if (supplied_ordinal >= 27 || request.supplied_lane != request.expected_lane) {
+    result.disposition = "supplied_lane_mismatch";
+    result.diagnostic = "CTI.TRANSPORT.UNSUPPORTED";
+    return result;
+  }
+  if (request.supplied_component_mapping_complete != native) {
+    result.disposition = "component_mapping_mismatch";
+    result.diagnostic = "CTI.TRANSPORT.UNSUPPORTED";
+    return result;
+  }
+  if (static_cast<unsigned>(request.attempt) >= 5) {
+    result.disposition = "unknown_attempt_fail_closed";
+    result.diagnostic = "CTI.TRANSPORT.UNSUPPORTED";
+    return result;
+  }
+  result.disposition = native
+      ? "unsupported_current_outer_version_unallocated"
+      : "unsupported_no_manifest_listed_compatibility_profile";
+  result.diagnostic = "CTI.TRANSPORT.UNSUPPORTED";
+  return result;
+}
+
+std::span<const IntervalDiagnosticParameterSchemaEntryV3>
+IntervalDiagnosticParameterSchemaV3(IntervalDiagnosticAxisV3 axis) noexcept {
+  using K = IntervalDiagnosticParameterKindV3;
+  using E = IntervalDiagnosticParameterSchemaEntryV3;
+  static constexpr u64 kU32Max = std::numeric_limits<u32>::max();
+  static constexpr std::array<E,3> input{{
+      {"input_extent_u32",K::unsigned_u64,kU32Max},
+      {"failure_offset_u32",K::unsigned_u64,kU32Max},
+      {"reason_enum",K::token}}};
+  static constexpr std::array<E,4> descriptor{{
+      {"receipt_uuid",K::uuid},{"catalog_generation_u64",K::unsigned_u64},
+      {"registry_generation_u64",K::unsigned_u64},
+      {"identity_kind_enum",K::token}}};
+  static constexpr std::array<E,3> storage{{
+      {"extent_u64",K::unsigned_u64},{"offset_u64",K::unsigned_u64},
+      {"reason_enum",K::token}}};
+  static constexpr std::array<E,4> cast_invalid{{
+      {"source_type_uuid",K::uuid},{"target_type_uuid",K::uuid},
+      {"cast_context_enum",K::token},{"reason_enum",K::token}}};
+  static constexpr std::array<E,4> cast_range{{
+      {"component_enum",K::token},{"extent_u64",K::unsigned_u64},
+      {"required_extent_u64",K::unsigned_u64},{"reason_enum",K::token}}};
+  static constexpr std::array<E,2> operation{{
+      {"operation_enum",K::token},{"reason_enum",K::token}}};
+  static constexpr std::array<E,3> bounds{{
+      {"operation_enum",K::token},{"component_enum",K::token},
+      {"reason_enum",K::token}}};
+  static constexpr std::array<E,4> resource{{
+      {"operation_enum",K::token},{"required_extent_u64",K::unsigned_u64},
+      {"available_extent_u64",K::unsigned_u64},{"checkpoint_enum",K::token}}};
+  static constexpr std::array<E,3> compression{{
+      {"protection_mode_enum",K::token},{"extent_u64",K::unsigned_u64},
+      {"reason_enum",K::token}}};
+  static constexpr std::array<E,3> encryption{{
+      {"protection_mode_enum",K::token},{"authorization_state_enum",K::token},
+      {"reason_enum",K::token}}};
+  static constexpr std::array<E,5> wire{{
+      {"lane_enum",K::token},{"direction_enum",K::token},
+      {"extent_u64",K::unsigned_u64},{"offset_u64",K::unsigned_u64},
+      {"reason_enum",K::token}}};
+  static constexpr std::array<E,3> index{{
+      {"index_family_enum",K::token},{"operation_enum",K::token},
+      {"reason_enum",K::token}}};
+  static constexpr std::array<E,3> domain{{
+      {"state_enum",K::token},{"operation_enum",K::token},
+      {"reason_enum",K::token}}};
+  static constexpr std::array<E,4> statistics{{
+      {"statistics_uuid",K::uuid},{"source_object_uuid",K::uuid},
+      {"provider_evidence_uuid",K::uuid},{"epoch_kind_enum",K::token}}};
+  switch(axis) {
+    case IntervalDiagnosticAxisV3::input_parse: return input;
+    case IntervalDiagnosticAxisV3::descriptor_codec: return descriptor;
+    case IntervalDiagnosticAxisV3::storage_read_write: return storage;
+    case IntervalDiagnosticAxisV3::cast_invalid: return cast_invalid;
+    case IntervalDiagnosticAxisV3::cast_range_loss: return cast_range;
+    case IntervalDiagnosticAxisV3::operation_invalid: return operation;
+    case IntervalDiagnosticAxisV3::bounds_overflow_underflow: return bounds;
+    case IntervalDiagnosticAxisV3::resource_cancellation: return resource;
+    case IntervalDiagnosticAxisV3::compression_corruption: return compression;
+    case IntervalDiagnosticAxisV3::encryption_auth_key: return encryption;
+    case IntervalDiagnosticAxisV3::wire_decode_encode: return wire;
+    case IntervalDiagnosticAxisV3::index_key: return index;
+    case IntervalDiagnosticAxisV3::domain_validation: return domain;
+    case IntervalDiagnosticAxisV3::recovery_corruption: return storage;
+    case IntervalDiagnosticAxisV3::statistics_read: return statistics;
+  }
+  return {};
+}
+
+namespace {
+constexpr std::array<std::string_view,37> kIntervalDiagnosticCodes{{
+    "SBLR.OPERAND_INVALID","CTI.TEMPORAL.INVALID_LITERAL",
+    "SECURITY.ACCESS_DENIED","CTI.INTERVAL.DESCRIPTOR_INVALID",
+    "CTI.INTERVAL.SUBTYPE_MISMATCH","STORAGE.PAGE_CHECKSUM_FAILED",
+    "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","DATATYPE.CAST_FORBIDDEN",
+    "CTI.TEMPORAL.INVALID_LITERAL","CTI.TEMPORAL.RANGE_EXCEEDED",
+    "CTB.TEXT.LENGTH_EXCEEDED","CTI.INTERVAL.CALENDAR_OPERATION_REFUSED",
+    "CTI.TEMPORAL.ORDERING_REFUSED","CTI.TEMPORAL.RANGE_EXCEEDED",
+    "RESOURCE.BUDGET_EXCEEDED","PROCESS.CANCELLED",
+    "CTI.TEMPORAL.PROTECTION_UNSUPPORTED",
+    "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","SECURITY.ACCESS_DENIED",
+    "CTI.TEMPORAL.PROTECTION_UNSUPPORTED","SBLR.OPERAND_INVALID",
+    "SBLR.ENVELOPE.CHECKSUM_INVALID",
+    "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+    "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+    "CTI.TRANSPORT.UNSUPPORTED","CTI.TEMPORAL.ORDERING_REFUSED",
+    "OPTIMIZER.INDEX_COMPATIBILITY_MISSING",
+    "CTI.TEMPORAL.INDEX_KEY_REFUSED","DATATYPE.NULL_STATE.INVALID",
+    "DATATYPE.NULL_NOT_ADMITTED","DOMAIN.CONSTRAINT_FAILED",
+    "STORAGE.PAGE_CHECKSUM_FAILED",
+    "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+    "CTI.MERGE.MANUAL_REVIEW_REQUIRED","SECURITY.ACCESS_DENIED",
+    "OPTIMIZER.STATISTICS_PRIVACY_DENIED",
+    "OPTIMIZER.STATISTICS_EPOCH_MISMATCH"}};
+constexpr std::array<std::string_view,9> kForbiddenDiagnosticParameters{{
+    "component_value","canonical_text","encoded_bytes","raw_bytes",
+    "hash_preimage","secret","address","diagnostic_prose",
+    "reference_engine_name"}};
+bool ForbiddenDiagnosticParameter(std::string_view name) noexcept {
+  return std::find(kForbiddenDiagnosticParameters.begin(),
+                   kForbiddenDiagnosticParameters.end(),name) !=
+      kForbiddenDiagnosticParameters.end();
+}
+}  // namespace
+
+IntervalDiagnosticEmissionValidationResultV3
+ValidateIntervalDiagnosticEmissionV3(
+    const IntervalDiagnosticEmissionRequestV3& request) noexcept {
+  using D = IntervalDiagnosticEmissionDispositionV3;
+  IntervalDiagnosticEmissionValidationResultV3 result;
+  const auto routes = IntervalDiagnosticMetricRoutesV3();
+  std::size_t route_index = routes.size();
+  for(std::size_t i=0;i<routes.size();++i) {
+    if(routes[i].key==request.route_key) { route_index=i; break; }
+  }
+  if(route_index==routes.size() || route_index>=kIntervalDiagnosticCodes.size() ||
+      request.diagnostic_uuid!=request.route_key.diagnostic_uuid ||
+      request.diagnostic_code!=kIntervalDiagnosticCodes[route_index]) {
+    result.disposition=D::route_mismatch;return result;
+  }
+  for(const auto& parameter:request.parameters) {
+    if(ForbiddenDiagnosticParameter(parameter.name)) {
+      result.disposition=D::forbidden_parameter;return result;
+    }
+  }
+  if(request.parameters.size()>kIntervalDiagnosticParameterCapacityV3) {
+    result.disposition=D::resource_refused;
+    result.diagnostic={BudgetError(),"RESOURCE.BUDGET_EXCEEDED",
+                       "diagnostic_parameter_capacity"};
+    return result;
+  }
+  const auto schema=IntervalDiagnosticParameterSchemaV3(request.route_key.axis);
+  if(request.parameters.size()<schema.size()) {
+    result.disposition=D::missing_parameter;return result;
+  }
+  if(request.parameters.size()>schema.size()) {
+    result.disposition=D::extra_parameter;return result;
+  }
+  if(!request.scalar_values_in_range) {
+    result.disposition=D::out_of_range_parameter;return result;
+  }
+  for(std::size_t i=0;i<schema.size();++i) {
+    const auto& supplied=request.parameters[i];const auto& expected=schema[i];
+    if(supplied.name!=expected.name) {
+      result.disposition=D::wrong_parameter_order;return result;
+    }
+    if(supplied.kind!=expected.kind) {
+      result.disposition=D::wrong_parameter_type;return result;
+    }
+    if((supplied.kind==IntervalDiagnosticParameterKindV3::uuid &&
+        supplied.uuid_value.is_nil()) ||
+       (supplied.kind==IntervalDiagnosticParameterKindV3::unsigned_u64 &&
+        supplied.unsigned_value>expected.maximum_unsigned_value) ||
+       (supplied.kind==IntervalDiagnosticParameterKindV3::token &&
+        supplied.token_value.empty())) {
+      result.disposition=D::out_of_range_parameter;return result;
+    }
+    result.parameters_validated=static_cast<std::uint8_t>(i+1);
+  }
+  if(Cancelled(request.control)) {
+    result=IntervalDiagnosticEmissionValidationResultV3{};
+    result.disposition=D::cancelled;
+    result.diagnostic={Error(),"PROCESS.CANCELLED",
+                       "diagnostic_before_publication"};
+    return result;
+  }
+  result.disposition=D::admitted;
+  result.diagnostic_emission_admitted=true;
+  result.diagnostic_parameter_publication_admitted=true;
+  return result;
 }
 
 namespace {
@@ -1110,6 +1317,35 @@ IntervalMetricEvidenceValidationResultV3 ValidateIntervalMetricEvidenceV3(
   result.idempotency = {evidence.process_epoch, evidence.event_sequence,
                         evidence.source_event_uuid, evidence.evidence_type_uuid};
   result.receiving_owner_update_admitted = true;
+  return result;
+}
+
+IntervalMetricEvidenceValidationResultV3 ValidateIntervalMetricEvidenceV3(
+    const IntervalValidatedProfileHandleV3& profile,
+    const IntervalDiagnosticRouteKeyV3& selected,
+    std::span<const IntervalMetricEvidenceV3> evidence,
+    const IntervalMetricEvidenceValidationContextV3& context,
+    const IntervalExecutionControlV3& control) noexcept {
+  using D = IntervalMetricEvidenceDispositionV3;
+  IntervalMetricEvidenceValidationResultV3 result;
+  if (!ValidProfile(profile)) {
+    result.disposition=D::profile_refused;
+    return result;
+  }
+  if (evidence.size()!=1) {
+    result.disposition=D::resource_refused;
+    result.diagnostic={BudgetError(),"RESOURCE.BUDGET_EXCEEDED",
+                       "metric_evidence_capacity"};
+    return result;
+  }
+  result=ValidateIntervalMetricEvidenceV3(profile,selected,evidence.front(),context);
+  if(!result.ok()) return result;
+  if(Cancelled(control)) {
+    result=IntervalMetricEvidenceValidationResultV3{};
+    result.disposition=D::cancelled;
+    result.diagnostic={Error(),"PROCESS.CANCELLED",
+                       "metric_before_publication"};
+  }
   return result;
 }
 

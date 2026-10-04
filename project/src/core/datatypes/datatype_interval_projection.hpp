@@ -392,6 +392,21 @@ enum class IntervalWireLaneV3 : std::uint8_t {
   sqlite = 21, tidb = 22, tikv = 23, vitess = 24, xtdb = 25,
   yugabytedb = 26,
 };
+enum class IntervalWireAttemptKindV3 : std::uint8_t {
+  capability_query = 0,
+  outer_version = 1,
+  admission = 2,
+  typed_null = 3,
+  present = 4,
+};
+struct IntervalWireLaneRequestV3 {
+  const IntervalValidatedProfileHandleV3* profile_handle = nullptr;
+  IntervalWireLaneV3 expected_lane = IntervalWireLaneV3::native_sbwp;
+  IntervalWireLaneV3 supplied_lane = IntervalWireLaneV3::native_sbwp;
+  bool supplied_component_mapping_complete = true;
+  IntervalWireAttemptKindV3 attempt =
+      IntervalWireAttemptKindV3::capability_query;
+};
 struct IntervalWireLaneResolutionV3 {
   IntervalWireLaneV3 lane = IntervalWireLaneV3::native_sbwp;
   bool admitted = false;
@@ -401,7 +416,7 @@ struct IntervalWireLaneResolutionV3 {
   std::string_view diagnostic = "CTI.TRANSPORT.UNSUPPORTED";
 };
 IntervalWireLaneResolutionV3 ResolveIntervalWireLaneV3(
-    IntervalWireLaneV3 lane) noexcept;
+    const IntervalWireLaneRequestV3& request) noexcept;
 
 enum class IntervalDiagnosticAxisV3 : std::uint8_t {
   input_parse = 0,
@@ -420,6 +435,60 @@ enum class IntervalDiagnosticAxisV3 : std::uint8_t {
   recovery_corruption = 13,
   statistics_read = 14,
 };
+
+struct IntervalDiagnosticRouteKeyV3 {
+  IntervalDiagnosticAxisV3 axis = IntervalDiagnosticAxisV3::descriptor_codec;
+  platform::Uuid diagnostic_uuid{};
+  bool operator==(const IntervalDiagnosticRouteKeyV3&) const = default;
+};
+
+struct IntervalDiagnosticParameterSchemaEntryV3 {
+  std::string_view name;
+  IntervalDiagnosticParameterKindV3 kind =
+      IntervalDiagnosticParameterKindV3::none;
+  u64 maximum_unsigned_value = ~u64{0};
+};
+
+struct IntervalDiagnosticEmissionRequestV3 {
+  IntervalDiagnosticRouteKeyV3 route_key;
+  std::string_view diagnostic_code;
+  platform::Uuid diagnostic_uuid{};
+  std::span<const IntervalDiagnosticParameterV3> parameters;
+  bool scalar_values_in_range = true;
+  IntervalExecutionControlV3 control;
+};
+
+enum class IntervalDiagnosticEmissionDispositionV3 : std::uint8_t {
+  admitted = 0,
+  route_mismatch = 1,
+  forbidden_parameter = 2,
+  missing_parameter = 3,
+  extra_parameter = 4,
+  wrong_parameter_order = 5,
+  wrong_parameter_type = 6,
+  out_of_range_parameter = 7,
+  resource_refused = 8,
+  cancelled = 9,
+};
+
+struct IntervalDiagnosticEmissionValidationResultV3 {
+  IntervalDiagnosticEmissionDispositionV3 disposition =
+      IntervalDiagnosticEmissionDispositionV3::route_mismatch;
+  IntervalDiagnosticFactV3 diagnostic;
+  std::uint8_t parameters_validated = 0;
+  bool diagnostic_emission_admitted = false;
+  bool diagnostic_parameter_publication_admitted = false;
+  bool ok() const noexcept {
+    return disposition == IntervalDiagnosticEmissionDispositionV3::admitted;
+  }
+};
+
+std::span<const IntervalDiagnosticParameterSchemaEntryV3>
+IntervalDiagnosticParameterSchemaV3(IntervalDiagnosticAxisV3 axis) noexcept;
+
+IntervalDiagnosticEmissionValidationResultV3
+ValidateIntervalDiagnosticEmissionV3(
+    const IntervalDiagnosticEmissionRequestV3& request) noexcept;
 
 enum class IntervalMetricEvidenceTypeV3 : std::uint8_t {
   validation_failure_total = 0,
@@ -509,12 +578,6 @@ struct IntervalMetricEvidenceTypeDescriptorV3 {
   std::string_view update_responsibility;
   std::string_view emission;
   std::string_view update_owner;
-};
-
-struct IntervalDiagnosticRouteKeyV3 {
-  IntervalDiagnosticAxisV3 axis = IntervalDiagnosticAxisV3::descriptor_codec;
-  platform::Uuid diagnostic_uuid{};
-  bool operator==(const IntervalDiagnosticRouteKeyV3&) const = default;
 };
 
 struct IntervalDiagnosticMetricRouteV3 {
@@ -640,6 +703,8 @@ enum class IntervalMetricEvidenceDispositionV3 : std::uint8_t {
   invalid_counter_delta = 9,
   stale_process_epoch = 10,
   counter_overflow = 11,
+  resource_refused = 12,
+  cancelled = 13,
 };
 
 struct IntervalMetricEvidenceIdempotencyFactV3 {
@@ -654,6 +719,7 @@ struct IntervalMetricEvidenceValidationResultV3 {
       IntervalMetricEvidenceDispositionV3::missing_field;
   IntervalMetricEvidenceTypeV3 type =
       IntervalMetricEvidenceTypeV3::validation_failure_total;
+  IntervalDiagnosticFactV3 diagnostic;
   IntervalMetricEvidenceIdempotencyFactV3 idempotency;
   bool receiving_owner_update_admitted = false;
   bool datatype_outcome_unchanged = true;
@@ -668,6 +734,13 @@ IntervalMetricEvidenceValidationResultV3 ValidateIntervalMetricEvidenceV3(
     const IntervalDiagnosticRouteKeyV3& selected_final_diagnostic,
     const IntervalMetricEvidenceV3& evidence,
     const IntervalMetricEvidenceValidationContextV3& context) noexcept;
+
+IntervalMetricEvidenceValidationResultV3 ValidateIntervalMetricEvidenceV3(
+    const IntervalValidatedProfileHandleV3& profile,
+    const IntervalDiagnosticRouteKeyV3& selected_final_diagnostic,
+    std::span<const IntervalMetricEvidenceV3> evidence,
+    const IntervalMetricEvidenceValidationContextV3& context,
+    const IntervalExecutionControlV3& control) noexcept;
 
 enum class IntervalMetricReplayDispositionV3 : std::uint8_t {
   independent_source_admitted = 0,
