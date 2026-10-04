@@ -695,6 +695,9 @@ bool ValidCastContext(DatatypeCastContext context) noexcept {
   return false;
 }
 
+const char* GenericIntervalStructuralDiagnosticCode(
+    const DatatypeOperationValue& value);
+
 bool CanonicalOperationValueValid(const DatatypeOperationValue& value) {
   if (value.type_id == CanonicalTypeId::unknown ||
       value.type_id == CanonicalTypeId::null_type) {
@@ -706,7 +709,8 @@ bool CanonicalOperationValueValid(const DatatypeOperationValue& value) {
   // The generic carrier has no current receipt or complete temporal profile.
   if (value.type_id == CanonicalTypeId::date ||
       value.type_id == CanonicalTypeId::time ||
-      value.type_id == CanonicalTypeId::timestamp)
+      value.type_id == CanonicalTypeId::timestamp ||
+      value.type_id == CanonicalTypeId::interval)
     return false;
   if (value.is_null) {
     return value.encoded_value.empty() &&
@@ -803,6 +807,11 @@ const char* CanonicalOperationValueDiagnosticCode(
   if (value.type_id == CanonicalTypeId::unknown ||
       value.type_id == CanonicalTypeId::null_type) {
     return "DATATYPE.DESCRIPTOR.INVALID";
+  }
+  if (value.type_id == CanonicalTypeId::interval) {
+    if (const char* code = GenericIntervalStructuralDiagnosticCode(value))
+      return code;
+    return "CTI.INTERVAL.DESCRIPTOR_INVALID";
   }
   if (IsUuid(value.type_id) &&
       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(value.descriptor,
@@ -937,6 +946,20 @@ const char* GenericTimestampStructuralDiagnosticCode(
   if (ExecutionDescriptorPresent(value.descriptor) &&
       !ExecutionDescriptorValidForType(value.descriptor, value.type_id))
     return "CTI.TEMPORAL.DESCRIPTOR_INVALID";
+  if (value.is_null && !value.encoded_value.empty())
+    return "DATATYPE.NULL_STATE.INVALID";
+  if (value.is_null && ExecutionDescriptorPresent(value.descriptor) &&
+      !value.descriptor.nullable_allowed)
+    return "DATATYPE.NULL_NOT_ADMITTED";
+  return nullptr;
+}
+
+const char* GenericIntervalStructuralDiagnosticCode(
+    const DatatypeOperationValue& value) {
+  if (value.type_id != CanonicalTypeId::interval) return nullptr;
+  if (ExecutionDescriptorPresent(value.descriptor) &&
+      !ExecutionDescriptorValidForType(value.descriptor, value.type_id))
+    return "CTI.INTERVAL.DESCRIPTOR_INVALID";
   if (value.is_null && !value.encoded_value.empty())
     return "DATATYPE.NULL_STATE.INVALID";
   if (value.is_null && ExecutionDescriptorPresent(value.descriptor) &&
@@ -3030,7 +3053,9 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
   // These types require authenticated V3 receipts and complete profiles. This
   // legacy enum-only classifier cannot admit even an apparent identity pair;
   // callers must use the profile-aware type API.
-  if (source_type_id == CanonicalTypeId::bit_string ||
+  if (source_type_id == CanonicalTypeId::interval ||
+      target_type_id == CanonicalTypeId::interval ||
+      source_type_id == CanonicalTypeId::bit_string ||
       target_type_id == CanonicalTypeId::bit_string ||
       source_type_id == CanonicalTypeId::date ||
       target_type_id == CanonicalTypeId::date ||
@@ -3149,13 +3174,13 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
     return DatatypeCastCategory::lossless_explicit;
   }
   if ((IsNumeric(source_type_id) || source_type_id == CanonicalTypeId::boolean ||
-       IsTemporal(source_type_id) || source_type_id == CanonicalTypeId::interval || IsDocument(source_type_id)) &&
+       IsTemporal(source_type_id) || IsDocument(source_type_id)) &&
       IsCharacter(target_type_id)) {
     return DatatypeCastCategory::lossless_explicit;
   }
   if (IsCharacter(source_type_id) &&
       (IsNumeric(target_type_id) || target_type_id == CanonicalTypeId::boolean ||
-       IsTemporal(target_type_id) || target_type_id == CanonicalTypeId::interval || IsDocument(target_type_id))) {
+       IsTemporal(target_type_id) || IsDocument(target_type_id))) {
     return DatatypeCastCategory::lossless_explicit;
   }
   if ((IsBinaryLike(source_type_id) && IsCharacter(target_type_id)) ||
@@ -3171,6 +3196,22 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
 }
 
 DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
+  if (request.value.type_id == CanonicalTypeId::interval ||
+      request.target_type_id == CanonicalTypeId::interval) {
+    if (const char* code = GenericIntervalStructuralDiagnosticCode(request.value))
+      return CastFailure("interval_generic_structural_refusal",
+                         DatatypeCastCategory::forbidden, code);
+    if (request.target_type_id == CanonicalTypeId::interval &&
+        ExecutionDescriptorPresent(request.target_descriptor) &&
+        !ExecutionDescriptorValidForType(request.target_descriptor,
+                                         CanonicalTypeId::interval))
+      return CastFailure("interval_target_descriptor_invalid",
+                         DatatypeCastCategory::forbidden,
+                         "CTI.INTERVAL.DESCRIPTOR_INVALID");
+    return CastFailure("interval_d710_profile_required",
+                       DatatypeCastCategory::forbidden,
+                       "CTI.INTERVAL.DESCRIPTOR_INVALID");
+  }
   if (request.value.type_id == CanonicalTypeId::timestamp ||
       request.target_type_id == CanonicalTypeId::timestamp) {
     if (const char* code =
@@ -3184,7 +3225,7 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
       return CastFailure("timestamp_target_descriptor_invalid",
                          DatatypeCastCategory::forbidden,
                          "CTI.TEMPORAL.DESCRIPTOR_INVALID");
-    return CastFailure("timestamp_d709_profile_required",
+    return CastFailure("timestamp_d710_profile_required",
                        DatatypeCastCategory::forbidden,
                        "CTI.TEMPORAL.DESCRIPTOR_INVALID");
   }
@@ -3200,7 +3241,7 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
       return CastFailure("time_target_descriptor_invalid",
                          DatatypeCastCategory::forbidden,
                          "CTI.TEMPORAL.DESCRIPTOR_INVALID");
-    return CastFailure("time_d709_profile_required",
+    return CastFailure("time_d710_profile_required",
                        DatatypeCastCategory::forbidden,
                        "CTI.TEMPORAL.DESCRIPTOR_INVALID");
   }
@@ -3216,7 +3257,7 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
       return CastFailure("date_target_descriptor_invalid",
                          DatatypeCastCategory::forbidden,
                          "CTI.TEMPORAL.DESCRIPTOR_INVALID");
-    return CastFailure("date_d709_profile_required",
+    return CastFailure("date_d710_profile_required",
                        DatatypeCastCategory::forbidden,
                        "CTI.TEMPORAL.DESCRIPTOR_INVALID");
   }
@@ -3996,10 +4037,6 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
     if (!TimeText(value)) { return CastFailure("time_invalid", result.category); }
     return result;
   }
-  if (request.target_type_id == CanonicalTypeId::interval) {
-    if (!StartsWith(value, "P") && !DecimalIntegerText(value, true)) { return CastFailure("interval_invalid", result.category); }
-    return result;
-  }
   if (request.target_type_id == CanonicalTypeId::set_value) {
     EncodedSetFrame frame;
     if (!ParseEncodedSet(value, &frame)) {
@@ -4026,23 +4063,29 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
 }
 
 DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request) {
+  if (request.value.type_id == CanonicalTypeId::interval) {
+    if (const char* code = GenericIntervalStructuralDiagnosticCode(request.value))
+      return ExtractFailure("interval_generic_structural_refusal", code);
+    return ExtractFailure("interval_d710_profile_required",
+                          "CTI.INTERVAL.DESCRIPTOR_INVALID");
+  }
   if (request.value.type_id == CanonicalTypeId::timestamp) {
     if (const char* code =
             GenericTimestampStructuralDiagnosticCode(request.value))
       return ExtractFailure("timestamp_generic_structural_refusal", code);
-    return ExtractFailure("timestamp_d709_profile_required",
+    return ExtractFailure("timestamp_d710_profile_required",
                           "CTI.TEMPORAL.DESCRIPTOR_INVALID");
   }
   if (request.value.type_id == CanonicalTypeId::time) {
     if (const char* code = GenericTimeStructuralDiagnosticCode(request.value))
       return ExtractFailure("time_generic_structural_refusal", code);
-    return ExtractFailure("time_d709_profile_required",
+    return ExtractFailure("time_d710_profile_required",
                           "CTI.TEMPORAL.DESCRIPTOR_INVALID");
   }
   if (request.value.type_id == CanonicalTypeId::date) {
     if (const char* code = GenericDateStructuralDiagnosticCode(request.value))
       return ExtractFailure("date_generic_structural_refusal", code);
-    return ExtractFailure("date_d709_profile_required",
+    return ExtractFailure("date_d710_profile_required",
                           "CTI.TEMPORAL.DESCRIPTOR_INVALID");
   }
   if (IsBinary(request.value.type_id) &&
@@ -4218,10 +4261,7 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
   }
   if (request.value.is_null) {
     CanonicalTypeId result_type = CanonicalTypeId::unknown;
-    if (request.value.type_id == CanonicalTypeId::interval &&
-               (field == "seconds" || field == "total_seconds")) {
-      result_type = CanonicalTypeId::int64;
-    } else if (request.value.type_id == CanonicalTypeId::character &&
+    if (request.value.type_id == CanonicalTypeId::character &&
                (field == "character_length" || field == "octet_length" || field == "length")) {
       result_type = CanonicalTypeId::uint64;
     } else if ((request.value.type_id == CanonicalTypeId::binary ||
@@ -4263,12 +4303,6 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
     return ExtractFailure("unsupported_binary_field:" + field);
   }
   const std::string value = request.value.encoded_value;
-  if (request.value.type_id == CanonicalTypeId::interval) {
-    if (field == "seconds" || field == "total_seconds") {
-      return ExtractFailure("interval_int64_result_profile_unresolved");
-    }
-    return ExtractFailure("unsupported_interval_field:" + field);
-  }
   if (request.value.type_id == CanonicalTypeId::character) {
     if (field == "character_length" || field == "length") {
       std::uint64_t scalar_count = 0;
@@ -5449,6 +5483,22 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
   DatatypeComparisonResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (request.left.type_id == CanonicalTypeId::interval ||
+      request.right.type_id == CanonicalTypeId::interval) {
+    const char* interval_code =
+        GenericIntervalStructuralDiagnosticCode(request.left);
+    if (interval_code == nullptr)
+      interval_code = GenericIntervalStructuralDiagnosticCode(request.right);
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status,
+        interval_code != nullptr ? interval_code
+                                 : "CTI.INTERVAL.DESCRIPTOR_INVALID",
+        "datatype.comparison.rejected",
+        interval_code != nullptr ? "interval_generic_structural_refusal"
+                                 : "interval_d710_profile_required");
+    return result;
+  }
   if (request.left.type_id == CanonicalTypeId::timestamp ||
       request.right.type_id == CanonicalTypeId::timestamp) {
     const char* timestamp_code =
@@ -5462,7 +5512,7 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
                                   : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
         "datatype.comparison.rejected",
         timestamp_code != nullptr ? "timestamp_generic_structural_refusal"
-                                  : "timestamp_d709_profile_required");
+                                  : "timestamp_d710_profile_required");
     return result;
   }
   if (request.left.type_id == CanonicalTypeId::time ||
@@ -5476,7 +5526,7 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
         time_code != nullptr ? time_code : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
         "datatype.comparison.rejected",
         time_code != nullptr ? "time_generic_structural_refusal"
-                             : "time_d709_profile_required");
+                             : "time_d710_profile_required");
     return result;
   }
   if (request.left.type_id == CanonicalTypeId::date ||
@@ -5490,7 +5540,7 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
         date_code != nullptr ? date_code : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
         "datatype.comparison.rejected",
         date_code != nullptr ? "date_generic_structural_refusal"
-                             : "date_d709_profile_required");
+                             : "date_d710_profile_required");
     return result;
   }
   if (request.left.type_id == CanonicalTypeId::bit_string ||
@@ -6557,6 +6607,13 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
   DatatypeSortKeyResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (request.value.type_id == CanonicalTypeId::interval) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "CTI.TEMPORAL.ORDERING_REFUSED",
+        "datatype.sort_key.rejected", "interval_has_no_natural_order");
+    return result;
+  }
   if (request.value.type_id == CanonicalTypeId::timestamp) {
     const char* timestamp_code =
         GenericTimestampStructuralDiagnosticCode(request.value);
@@ -6567,7 +6624,7 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
                                   : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
         "datatype.sort_key.rejected",
         timestamp_code != nullptr ? "timestamp_generic_structural_refusal"
-                                  : "timestamp_d709_profile_required");
+                                  : "timestamp_d710_profile_required");
     return result;
   }
   if (request.value.type_id == CanonicalTypeId::time) {
@@ -6578,7 +6635,7 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
         time_code != nullptr ? time_code : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
         "datatype.sort_key.rejected",
         time_code != nullptr ? "time_generic_structural_refusal"
-                             : "time_d709_profile_required");
+                             : "time_d710_profile_required");
     return result;
   }
   if (request.value.type_id == CanonicalTypeId::date) {
@@ -6589,7 +6646,7 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
         date_code != nullptr ? date_code : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
         "datatype.sort_key.rejected",
         date_code != nullptr ? "date_generic_structural_refusal"
-                             : "date_d709_profile_required");
+                             : "date_d710_profile_required");
     return result;
   }
   if (request.value.type_id == CanonicalTypeId::bit_string) {
@@ -6973,7 +7030,7 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
     result.sort_key = "11:" + ordered;
     return result;
   }
-  if (IsTemporal(request.value.type_id) || request.value.type_id == CanonicalTypeId::interval) {
+  if (IsTemporal(request.value.type_id)) {
     result.sort_key = "30:" + value;
     return result;
   }
@@ -6985,6 +7042,19 @@ DatatypeHashResult HashDatatypeValue(const DatatypeHashRequest& request) {
   DatatypeHashResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (request.value.type_id == CanonicalTypeId::interval) {
+    const char* interval_code =
+        GenericIntervalStructuralDiagnosticCode(request.value);
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status,
+        interval_code != nullptr ? interval_code
+                                 : "CTI.INTERVAL.DESCRIPTOR_INVALID",
+        "datatype.hash.rejected",
+        interval_code != nullptr ? "interval_generic_structural_refusal"
+                                 : "interval_d710_profile_required");
+    return result;
+  }
   if (request.value.type_id == CanonicalTypeId::timestamp) {
     const char* timestamp_code =
         GenericTimestampStructuralDiagnosticCode(request.value);
@@ -6995,7 +7065,7 @@ DatatypeHashResult HashDatatypeValue(const DatatypeHashRequest& request) {
                                   : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
         "datatype.hash.rejected",
         timestamp_code != nullptr ? "timestamp_generic_structural_refusal"
-                                  : "timestamp_d709_profile_required");
+                                  : "timestamp_d710_profile_required");
     return result;
   }
   if (request.value.type_id == CanonicalTypeId::time) {
@@ -7006,7 +7076,7 @@ DatatypeHashResult HashDatatypeValue(const DatatypeHashRequest& request) {
         time_code != nullptr ? time_code : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
         "datatype.hash.rejected",
         time_code != nullptr ? "time_generic_structural_refusal"
-                             : "time_d709_profile_required");
+                             : "time_d710_profile_required");
     return result;
   }
   if (request.value.type_id == CanonicalTypeId::date) {
@@ -7017,7 +7087,7 @@ DatatypeHashResult HashDatatypeValue(const DatatypeHashRequest& request) {
         date_code != nullptr ? date_code : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
         "datatype.hash.rejected",
         date_code != nullptr ? "date_generic_structural_refusal"
-                             : "date_d709_profile_required");
+                             : "date_d710_profile_required");
     return result;
   }
   if (request.value.type_id == CanonicalTypeId::bit_string) {
@@ -7136,6 +7206,20 @@ DatatypeSerializationResult SerializeDatatypeValue(
   DatatypeSerializationResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (request.value.type_id == CanonicalTypeId::interval) {
+    const char* interval_code =
+        GenericIntervalStructuralDiagnosticCode(request.value);
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status,
+        interval_code != nullptr
+            ? interval_code
+            : "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+        "datatype.serialization.rejected",
+        interval_code != nullptr ? "interval_generic_structural_refusal"
+                                 : "interval_composed_adapter_required");
+    return result;
+  }
   if (request.value.type_id == CanonicalTypeId::timestamp) {
     const char* timestamp_code =
         GenericTimestampStructuralDiagnosticCode(request.value);
@@ -7382,6 +7466,15 @@ static DatatypeDeserializationResult DeserializeDatatypeValueUnchecked(
   DatatypeDeserializationResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (request.expected_type_id == CanonicalTypeId::interval ||
+      StartsWith(request.serialized_value, "SBDV1;type=interval;")) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+        "datatype.deserialization.rejected",
+        "interval_composed_adapter_required");
+    return result;
+  }
   if (request.expected_type_id == CanonicalTypeId::bit_string ||
       StartsWith(request.serialized_value, "SBDV1;type=bit_string;")) {
     result.status = ErrorStatus();
@@ -7867,6 +7960,19 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
   result.diagnostic =
       MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
   result.explicit_display_boundary = true;
+  if (request.value.type_id == CanonicalTypeId::interval) {
+    const char* interval_code =
+        GenericIntervalStructuralDiagnosticCode(request.value);
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status,
+        interval_code != nullptr ? interval_code
+                                 : "CTI.INTERVAL.DESCRIPTOR_INVALID",
+        "datatype.display_render.rejected",
+        interval_code != nullptr ? "interval_generic_structural_refusal"
+                                 : "interval_d710_profile_required");
+    return result;
+  }
   if (request.value.type_id == CanonicalTypeId::timestamp) {
     const char* timestamp_code =
         GenericTimestampStructuralDiagnosticCode(request.value);
@@ -7877,7 +7983,7 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
                                   : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
         "datatype.display_render.rejected",
         timestamp_code != nullptr ? "timestamp_generic_structural_refusal"
-                                  : "timestamp_d709_profile_required");
+                                  : "timestamp_d710_profile_required");
     return result;
   }
   if (request.value.type_id == CanonicalTypeId::time) {
@@ -7888,7 +7994,7 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
         time_code != nullptr ? time_code : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
         "datatype.display_render.rejected",
         time_code != nullptr ? "time_generic_structural_refusal"
-                             : "time_d709_profile_required");
+                             : "time_d710_profile_required");
     return result;
   }
   if (request.value.type_id == CanonicalTypeId::date) {
@@ -7899,7 +8005,7 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
         date_code != nullptr ? date_code : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
         "datatype.display_render.rejected",
         date_code != nullptr ? "date_generic_structural_refusal"
-                             : "date_d709_profile_required");
+                             : "date_d710_profile_required");
     return result;
   }
   if (request.value.type_id == CanonicalTypeId::bit_string) {
