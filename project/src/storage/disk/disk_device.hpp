@@ -249,6 +249,8 @@ class FileDevice {
   // Only the native source factory may detach the path serialization guard,
   // while it transfers exclusive ownership of independently OS-locked handles.
   bool CanAdoptIndependentSource() const noexcept;
+  // Actual child-only source retirement; caller abandons inherited mutex state.
+  bool AbandonInheritedSource() noexcept;
   static u64 SourceOwnershipProcessId() noexcept;
   u64 open_process_id_ = 0;
   std::thread::id open_thread_id_;

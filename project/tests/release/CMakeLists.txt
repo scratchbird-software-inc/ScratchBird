@@ -309,6 +309,38 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     LABELS "storage;binary_uuid;real_files;partial_effects;not_runtime_acceptance")
 endif()
 if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
+  # Consume the unchanged 01f issuer; storage owns this integration fixture.
+  target_sources(sbsql_sblr_alignment_native_management_control_bundle PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/server/database_ownership.cpp")
+  target_compile_definitions(sbsql_sblr_alignment_native_management_control_bundle PRIVATE SB_NATIVE_ROUTE_SOURCE_TESTS=1)
+  foreach(via_route RANGE 0 1)
+    foreach(initial RANGE 0 1)
+      foreach(profile RANGE 2 4)
+        foreach(primary RANGE 0 4)
+          foreach(secondary RANGE 0 4)
+            add_test(NAME native_owned_source_memory_${via_route}_${initial}_${profile}_${primary}_${secondary}_gate
+              COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-owned-source-memory
+                ${via_route} ${initial} ${profile} ${primary} ${secondary})
+            set_tests_properties(native_owned_source_memory_${via_route}_${initial}_${profile}_${primary}_${secondary}_gate
+              PROPERTIES TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;owned_device_lifetime;not_runtime_acceptance")
+          endforeach()
+        endforeach()
+        foreach(route RANGE 0 8)
+          set(last_shard 0)
+          if(route LESS_EQUAL 6)
+            set(last_shard 15)
+          endif()
+          foreach(shard RANGE 0 ${last_shard})
+            add_test(NAME native_owned_source_memory_fault_${via_route}_${initial}_${profile}_${route}_${shard}_gate
+              COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-owned-source-faults
+                ${via_route} ${initial} ${profile} ${route} ${shard})
+            set_tests_properties(native_owned_source_memory_fault_${via_route}_${initial}_${profile}_${route}_${shard}_gate
+              PROPERTIES TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;fault_injection;owned_device_lifetime;not_runtime_acceptance")
+          endforeach()
+        endforeach()
+      endforeach()
+    endforeach()
+  endforeach()
   foreach(route RANGE 0 2)
     if(route EQUAL 2)
       set(owned_directory_last 31)

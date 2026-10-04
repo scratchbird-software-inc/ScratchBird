@@ -13,6 +13,10 @@
 #include "native_current_checkpoint_source_memory.hpp"
 #include "native_selected_checkpoint_read_lease.hpp"
 #include "native_selected_checkpoint_memory_lease.hpp"
+#include "native_owned_checkpoint_source.hpp"
+#ifdef SB_NATIVE_ROUTE_SOURCE_TESTS
+#include "../../src/server/database_ownership.hpp"
+#endif
 #include "native_checkpoint_inventory_memory.hpp"
 #include "native_management_control_authority.hpp"
 #include "native_management_publication_recovery.hpp"
@@ -1019,6 +1023,7 @@ struct DirectoryTransition {
 #include "native_current_checkpoint_source_memory_checks.hpp"
 #define SB_SELECTED_LEASE_HASH_PROBE 1
 #include "native_selected_checkpoint_memory_lease_checks.hpp"
+#include "native_owned_checkpoint_memory_checks.hpp"
 
 struct DirectoryHistoryFixture {
  DirectoryTransition t;d::FileDevice untouched;std::filesystem::path secondary_path,untouched_path;u64 budget;
@@ -1561,6 +1566,14 @@ void RepeatedDirectoryHistory(unsigned profile,int only_size=-1){for(unsigned si
  f.Reopen();const auto reopened=f.Read();Check(reopened.ok()&&reopened.entries.size()==2&&reopened.entries[0].control_allocation_images==original.control_allocation_images,"old allocation capacity survives repeated growth and readonly reopen");
 }}
 
+void DirectoryOwnedSourceMemory(unsigned primary,unsigned secondary,bool reverse,unsigned profile,
+ bool target,bool reserve,bool initial,bool via_route,int fault_route=9,unsigned shard=0,unsigned shards=1){
+ DirectoryHistoryFixture f(primary,secondary,reverse,profile,target,reserve,profile==2,!initial);
+ const auto allowance=16*1024*std::max<u64>(f.t.fixture.size,d::kCanonicalFilespacePageProfiles[secondary].page_size_bytes);
+ owned_source_memory::Checks(f.t.fixture.devices,allowance,
+   primary==secondary&&!reverse&&!target&&reserve==(profile!=2),via_route,fault_route,shard,shards);
+ f.Reopen();
+}
 void DirectorySelectedLeaseMemory(unsigned primary,unsigned secondary,bool reverse,unsigned profile,
  bool target,bool reserve,bool initial=false,bool repeated=false,int route=8,unsigned shard=0,unsigned shards=1){
  DirectoryHistoryFixture f(primary,secondary,reverse,profile,target,reserve,profile==2,!initial);
@@ -3856,6 +3869,26 @@ int main(int argc,char** argv){
    const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"control graph Close profile");DirectoryControlClose(profile);return 0;
  }
 
+ if(argc==7&&std::string_view(argv[1])=="--directory-owned-source-memory"){
+  const auto via_route=std::stoi(argv[2]),initial=std::stoi(argv[3]),profile=std::stoi(argv[4]),
+    primary=std::stoi(argv[5]),secondary=std::stoi(argv[6]);
+  Check(via_route>=0&&via_route<=1&&initial>=0&&initial<=1&&profile>=2&&profile<=4&&
+    primary>=0&&primary<5&&secondary>=0&&secondary<5,"owned source pair arguments");
+  for(bool reverse:{false,true})for(bool target:{false,true})for(bool reserve:{false,true}){
+   if(profile==2&&(target||reserve))continue;if(profile==3&&!reserve)continue;
+   DirectoryOwnedSourceMemory(primary,secondary,reverse,profile,target,reserve,initial,via_route);
+  }
+  std::cout<<"PASS owned source pair checks="<<checks<<'\n';return 0;
+ }
+ if(argc==7&&std::string_view(argv[1])=="--directory-owned-source-faults"){
+  const auto via_route=std::stoi(argv[2]),initial=std::stoi(argv[3]),profile=std::stoi(argv[4]),
+    route=std::stoi(argv[5]),shard=std::stoi(argv[6]);
+  const unsigned shards=route<=6?16:1;
+  Check(via_route>=0&&via_route<=1&&initial>=0&&initial<=1&&profile>=2&&profile<=4&&
+    route>=0&&route<=8&&shard>=0&&unsigned(shard)<shards,"owned source fault arguments");
+  DirectoryOwnedSourceMemory(0,0,false,profile,false,profile!=2,initial,via_route,route,shard,shards);
+  std::cout<<"PASS owned source fault checks="<<checks<<'\n';return 0;
+ }
  if(argc==6&&std::string_view(argv[1])=="--directory-selected-lease-memory"){
   const auto initial=std::stoi(argv[2]),profile=std::stoi(argv[3]),primary=std::stoi(argv[4]),secondary=std::stoi(argv[5]);
   Check(initial>=0&&initial<=1&&profile>=2&&profile<=4&&primary>=0&&primary<5&&secondary>=0&&secondary<5,"selected lease pair arguments");

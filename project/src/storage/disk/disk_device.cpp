@@ -1471,6 +1471,25 @@ FileDevice::~FileDevice() {
 
 u64 FileDevice::SourceOwnershipProcessId() noexcept { return OwnershipProcessId(); }
 
+
+bool FileDevice::AbandonInheritedSource() noexcept {
+  if(!open_process_id_||open_process_id_==OwnershipProcessId())return false;
+  // The native source abandons this object's inherited mutex/provider state
+  // until child exec/exit. Close-only must not unlock parent's descriptions.
+  (void)route_owner_storage_guard_.release();
+#ifdef _WIN32
+  if(file_handle_!=nullptr){::CloseHandle(static_cast<HANDLE>(file_handle_));file_handle_=nullptr;}
+  if(owner_lock_handle_!=nullptr){::CloseHandle(static_cast<HANDLE>(owner_lock_handle_));owner_lock_handle_=nullptr;}
+#else
+  if(file_fd_>=0){(void)::close(file_fd_);file_fd_=-1;}
+  if(owner_lock_fd_>=0){(void)::close(owner_lock_fd_);owner_lock_fd_=-1;}
+#endif
+  // Qualified route teardown is itself process-aware and close-only. Drop the
+  // private route pin rather than retaining its duplicate OS handles to exit.
+  route_owner_lease_.reset();
+  return true;
+}
+
 bool FileDevice::CanAdoptIndependentSource() const noexcept {
   return open_process_id_ == OwnershipProcessId() &&
          open_thread_id_ == std::this_thread::get_id() &&
