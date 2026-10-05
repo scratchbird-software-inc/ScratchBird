@@ -56,6 +56,12 @@ struct NativePublicationGraphDigest {
   bool ok() const noexcept{return error==NativePublicationPlanError::none;}
 };
 NativePublicationPlanImage EncodeNativePublicationPlan(const NativePublicationPlan&) noexcept;
+// Fixed native plan copied into a disjoint caller-admitted page. No heap-backed
+// image or textual provider diagnostic. Short/invalid inputs leave output alone;
+// hash failure may alter its prefix but returns no plan, digest or byte span.
+// Output suffix stays untouched. This is not publication/admission authority.
+NativePublicationPlanViewImage EncodeNativePublicationPlanInto(
+    const NativePublicationPlan&,std::span<byte> output) noexcept;
 NativePublicationPlanImage DecodeNativePublicationPlan(const std::vector<byte>&) noexcept;
 NativePublicationGraphDigest ComputeNativePublicationTargetGraphDigest(const std::vector<byte>& checkpoint) noexcept;
 // Complete checkpoint decode and projection with caller-backed roots. Fixed

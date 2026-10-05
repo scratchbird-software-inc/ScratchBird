@@ -1059,8 +1059,11 @@ OwnedInventoryGraph AssembleInventory(Context& context,
     if(!encoded.ok())throw encoded.error==page::NativeAllocationError::resource_exhausted?E::resource_exhausted:
       encoded.error==page::NativeAllocationError::hash_failure?E::hash_failure:E::image_failure;
   }
+  const auto inventory_scratch_count=inventory_images.empty()?0:std::min<u64>(per_inventory,inventory.entries.size());
+  std::vector<std::size_t> inventory_indices(inventory_scratch_count);
+  std::vector<byte> inventory_markers(inventory_scratch_count);
   for(std::size_t i=0;i<inventory_images.size();++i) {
-    page::NativeTransactionInventoryPage image;image.header=inventory_headers[i];image.object_uuid=inventory_root.object_uuid;
+    page::NativeTransactionInventoryPageConstView image;image.header=inventory_headers[i];image.object_uuid=inventory_root.object_uuid;
     image.inventory_generation=watermark.watermark;
     image.previous=i?std::optional{ControlRef(inventory_headers[i-1])}:std::nullopt;
     image.next=i+1<inventory_headers.size()?std::optional{ControlRef(inventory_headers[i+1])}:std::nullopt;
@@ -1068,11 +1071,11 @@ OwnedInventoryGraph AssembleInventory(Context& context,
     image.inventory.next_commit_sequence=inventory.next_commit_sequence;
     const auto first=std::min<u64>(i*per_inventory,inventory.entries.size());
     const auto count=std::min<u64>(per_inventory,inventory.entries.size()-first);
-    image.inventory.entries.assign(inventory.entries.begin()+first,inventory.entries.begin()+first+count);
-    auto encoded=page::EncodeNativeTransactionInventoryPage(image);
+    image.inventory.entries=std::span<const mga::TransactionInventoryEntry>(inventory.entries).subspan(first,count);
+    inventory_images[i].resize(size);
+    auto encoded=page::EncodeNativeTransactionInventoryPageInto(image,inventory_images[i],inventory_indices,inventory_markers);
     if(!encoded.ok())throw encoded.error==page::NativeInventoryError::resource_exhausted?E::resource_exhausted:
       encoded.error==page::NativeInventoryError::hash_failure?E::hash_failure:E::image_failure;
-    inventory_images[i]=std::move(encoded.bytes);
   }
   auto extent=EncodeNativeManagementExtent(record,extent_object,extent_headers,budget);ControlExtentError(extent.error);
   if(growth){auto after=*growth_before;++after.page_generation;++after.root_set_generation;after.total_pages+=preallocation->page_count;
@@ -1145,7 +1148,9 @@ OwnedInventoryGraph AssembleInventory(Context& context,
   auto checkpoint=EncodeNativeCheckpointRoot(target);ControlCheckpointError(checkpoint.error);
   const auto projection=ComputeNativePublicationTargetGraphDigest(checkpoint.bytes);ControlPlanError(projection.error);
   plan.target_graph_sha256=projection.sha256;
-  const auto plan_image=EncodeNativePublicationPlan(plan);ControlPlanError(plan_image.error);
+  // The first checkpoint image has served its projection purpose. Reuse those
+  // bytes for the plan digest before constructing the final checkpoint below.
+  const auto plan_image=EncodeNativePublicationPlanInto(plan,checkpoint.bytes);ControlPlanError(plan_image.error);
   std::find_if(target.roots.begin(),target.roots.end(),[](const auto& r){return r.role==16;})->sha256=plan_image.sha256;
   checkpoint=EncodeNativeCheckpointRoot(target);ControlCheckpointError(checkpoint.error);
   graph.checkpoint=std::move(checkpoint.bytes);graph.extent=std::move(extent.pages);graph.bundle=std::move(bundle.pages);

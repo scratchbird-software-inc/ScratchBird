@@ -163,6 +163,29 @@ struct Scratch {
   explicit Scratch(usize n):entries(n),indices(n),markers(n){}
   auto Decode(std::span<const byte> b){return pg::DecodeNativeTransactionInventoryPageInto(b,entries,indices,markers);}
 };
+template<class Page> pg::NativeTransactionInventoryPageConstView ConstPage(const Page& p){
+  return {p.header,p.object_uuid,p.inventory_generation,p.previous,p.next,
+    {p.inventory.next_local_transaction_id,p.inventory.next_commit_sequence,p.inventory.entries}};
+}
+template<class Page> void BoundedEncode(const Page& p){
+  pg::NativeTransactionInventoryPage owning;
+  owning.header=p.header;owning.object_uuid=p.object_uuid;owning.inventory_generation=p.inventory_generation;
+  owning.previous=p.previous;owning.next=p.next;owning.inventory.next_local_transaction_id=p.inventory.next_local_transaction_id;
+  owning.inventory.next_commit_sequence=p.inventory.next_commit_sequence;
+  owning.inventory.entries.assign(p.inventory.entries.begin(),p.inventory.entries.end());
+  const auto expected=pg::EncodeNativeTransactionInventoryPage(owning);const auto input=ConstPage(p);
+  Bytes output(p.header.page_size_bytes+17,0xa7),markers(p.inventory.entries.size()+1,0xa7);
+  std::vector<usize> indices(p.inventory.entries.size()+1,std::numeric_limits<usize>::max());
+  const auto encoded=DenyCodecAllocation([&]{return pg::EncodeNativeTransactionInventoryPageInto(input,std::span(output).subspan(1),indices,markers);});
+  Check(encoded.error==expected.error,"bounded inventory encoder preserves complete owning validation");
+  if(expected.ok()){
+    const auto oracle=Oracle(p);
+    Check(encoded.ok()&&encoded.bytes.data()==output.data()+1&&encoded.bytes.size()==oracle.size()&&
+      std::equal(encoded.bytes.begin(),encoded.bytes.end(),oracle.begin(),oracle.end()),"immutable entries encode exact independent bytes and horizons");
+    Check(output.front()==0xa7&&std::all_of(output.begin()+1+oracle.size(),output.end(),[](byte b){return b==0xa7;}),"unaligned output prefix and oversized suffix unchanged");
+  }else Check(!encoded.ok()&&encoded.bytes.empty()&&std::all_of(output.begin(),output.end(),[](byte b){return b==0xa7;}),"invalid inventory cannot expose or modify a page prefix");
+  Check(indices.back()==std::numeric_limits<usize>::max()&&markers.back()==0xa7,"only required validation scratch prefix touched");
+}
 namespace m=scratchbird::core::memory;
 using ME=db::NativeInventoryMemoryError;
 struct MemoryFixture {
@@ -530,6 +553,46 @@ struct MemoryFile {
   auto Read(MemoryFixture& f){reads=hashes=0;return db::ReadNativeInventoryWithMemoryFromOpenDevice(device,expected,value.object_uuid,f.memory,f.binding);}
 };
 void NoPage(const db::NativeInventoryMemoryResult& r){Check(!r.ok()&&!r.page&&r.image.empty()&&!r.arena,"refusal exposes no image metadata or owner prefix");}
+void MemoryEncodingTests(){
+  for(unsigned profile=0;profile<5;++profile)for(unsigned member=0;member<5;++member){
+    const auto page_bytes=d::kCanonicalFilespacePageProfiles[profile].page_size_bytes;
+    for(unsigned count:{0u,8u,(page_bytes-384)/72}){
+      MemoryFile file(profile);auto expected=Example(profile,member,count);file.Store(Oracle(expected));
+      MemoryFixture source(db::NativeInventoryWorkspaceBytes(expected.header.page_size_profile_uuid));
+      // The shared arena applies max_align_t even to byte allocations. Account
+      // for the exact padding between the index array and marker array.
+      const usize alignment=alignof(std::max_align_t),index_bytes=count*sizeof(usize);
+      const usize padding=(alignment-index_bytes%alignment)%alignment;
+      const usize output_bytes=page_bytes+index_bytes+padding+count;
+      MemoryFixture output(output_bytes);auto read=file.Read(source);Check(read.ok(),"actual admitted inventory source for encoding");
+      auto granted=output.memory.CreateArena(output.binding,output_bytes,page_bytes);Check(granted.ok(),"admit destination and validation scratch before source guard");
+      auto page=granted.arena.Allocate(page_bytes,1);Check(page.ok(),"actual destination backing");
+      std::span<usize> indices;std::span<byte> markers;
+      if(count){auto ids=granted.arena.Allocate(count*sizeof(usize),alignof(usize));auto bits=granted.arena.Allocate(count,1);
+        Check(ids.ok()&&bits.ok(),"actual charged uniqueness indices and duplicate markers");
+        indices={static_cast<usize*>(ids.pointer),count};markers={static_cast<byte*>(bits.pointer),count};
+        for(auto& id:indices)std::construct_at(&id);
+      }
+      Check(granted.arena.Snapshot().consumed_bytes==output_bytes&&granted.arena.Snapshot().retained_bytes==output_bytes,
+        "destination grant exactly covers page scratch and real alignment padding");
+      ++expected.inventory_generation;++read.page->inventory_generation;
+      const auto oracle=Oracle(expected);const auto input=ConstPage(*read.page);
+      {auto guard=file.device.AcquireOperationGuard();observation_device_mutex=guard.mutex();memory_probes=locked_memory_probes=0;
+        budget=0;const auto encoded=pg::EncodeNativeTransactionInventoryPageInto(input,{static_cast<byte*>(page.pointer),page_bytes},indices,markers);
+        const auto remaining=budget;budget=-1;observation_device_mutex=nullptr;
+        Check(encoded.ok()&&remaining==0&&!memory_probes&&!locked_memory_probes&&
+          std::equal(encoded.bytes.begin(),encoded.bytes.end(),oracle.begin(),oracle.end()),"guarded inventory encoding uses admitted backing only without memory callbacks");
+        const auto write=file.device.WriteAt(expected.header.page_number*u64{page_bytes},encoded.bytes.data(),encoded.bytes.size());
+        Check(write.ok()&&write.bytes_transferred==encoded.bytes.size()&&file.device.Sync().ok(),"staged inventory image persisted and synchronized exactly");
+      }
+      read={};granted={};output.memory={};output.Empty();
+      Check(file.device.Close().ok()&&file.device.Open(file.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"read-only reopen of actual staged inventory");
+      auto reopened=file.Read(source);Check(reopened.ok()&&Oracle(*reopened.page)==oracle&&
+        std::equal(reopened.image.begin(),reopened.image.end(),oracle.begin(),oracle.end()),"all binary inventory entries counters horizons and links survive reopen");
+      reopened={};source.memory={};source.Empty();
+    }
+  }
+}
 void MemoryTests(){
   for(unsigned profile=0;profile<5;++profile){MemoryFile file(profile);
     const auto capacity=db::NativeInventoryWorkspaceBytes(file.value.header.page_size_profile_uuid);
@@ -832,6 +895,55 @@ void CompleteInventoryValidation(){
   auto misaligned=std::span<usize>(reinterpret_cast<usize*>(raw.data()+1),8);
   Check(DenyCodecAllocation([&]{return pg::ValidateNativeTransactionInventoryView(view,misaligned,markers);}).error==E::invalid_backing,"misaligned index scratch refused");
 }
+void EncodingFailures(){
+  for(unsigned profile=0;profile<5;++profile){auto p=Example(profile);auto input=ConstPage(p);
+    const auto original=Oracle(p);Bytes output(original.size(),0xa7),markers(8,0xa7);std::vector<usize> indices(8,99);
+    const auto unchanged=[&]{return std::all_of(output.begin(),output.end(),[](byte b){return b==0xa7;});};
+    for(const auto size:{usize{0},usize{1},original.size()-1}){
+      const auto r=DenyCodecAllocation([&]{return pg::EncodeNativeTransactionInventoryPageInto(input,std::span(output).first(size),indices,markers);});
+      Check(r.error==E::resource_exhausted&&r.bytes.empty()&&unchanged(),"short inventory output refuses without a partial write");
+    }
+    for(unsigned field=0;field<2;++field)for(usize size:{usize{0},usize{7}}){
+      const auto r=DenyCodecAllocation([&]{return pg::EncodeNativeTransactionInventoryPageInto(input,output,
+        std::span(indices).first(field==0?size:8),std::span(markers).first(field==1?size:8));});
+      Check(r.error==E::resource_exhausted&&r.bytes.empty()&&unchanged(),"both empty and short inventory scratch regions have no heap fallback");
+    }
+    for(unsigned pair=0;pair<10;++pair){auto v=input;auto image=std::span(output);auto ids=std::span(indices);auto bits=std::span(markers);
+      if(pair==0)v.inventory.entries={reinterpret_cast<const Entry*>(&v),1};
+      if(pair==1)image={reinterpret_cast<byte*>(&v),sizeof(v)};
+      if(pair==2)image={reinterpret_cast<byte*>(p.inventory.entries.data()),p.inventory.entries.size()*sizeof(Entry)};
+      if(pair==3)ids={reinterpret_cast<usize*>(&v),1};
+      if(pair==4)ids={reinterpret_cast<usize*>(p.inventory.entries.data()),1};
+      if(pair==5)ids={reinterpret_cast<usize*>(output.data()),1};
+      if(pair==6)bits={reinterpret_cast<byte*>(&v),1};
+      if(pair==7)bits={reinterpret_cast<byte*>(p.inventory.entries.data()),1};
+      if(pair==8)bits={output.data(),1};
+      if(pair==9)bits={reinterpret_cast<byte*>(indices.data()),1};
+      const auto r=DenyCodecAllocation([&]{return pg::EncodeNativeTransactionInventoryPageInto(v,image,ids,bits);});
+      Check(r.error==E::invalid_backing&&r.bytes.empty()&&unchanged()&&Oracle(p)==original,"all ten inventory descriptor/entry/output/scratch alias pairs refuse before mutation");
+    }
+    {Bytes oversized(original.size()+1,0xa7);
+      const auto r=DenyCodecAllocation([&]{return pg::EncodeNativeTransactionInventoryPageInto(input,oversized,indices,{oversized.data()+original.size(),1});});
+      Check(r.error==E::invalid_backing&&r.bytes.empty()&&std::all_of(oversized.begin(),oversized.end(),[](byte b){return b==0xa7;}),"unused output suffix cannot alias marker scratch");
+    }
+    alignas(Entry) std::array<byte,sizeof(Entry)*9> raw{};
+    for(unsigned bad=0;bad<3;++bad){auto v=input;auto ids=std::span(indices);
+      if(bad==0)v.inventory.entries={reinterpret_cast<const Entry*>(raw.data()+1),8};
+      if(bad==1)ids={reinterpret_cast<usize*>(raw.data()+1),8};
+      if(bad==2)v.inventory.entries={p.inventory.entries.data(),std::numeric_limits<usize>::max()/sizeof(Entry)+1};
+      const auto r=DenyCodecAllocation([&]{return pg::EncodeNativeTransactionInventoryPageInto(v,output,ids,markers);});
+      Check(r.error==E::invalid_backing&&r.bytes.empty()&&unchanged(),"unaligned native or arithmetic-wrapped input refuses before access");
+    }
+    hashes=0;hash_at=1;auto failed=DenyCodecAllocation([&]{return pg::EncodeNativeTransactionInventoryPageInto(input,output,indices,markers);});hash_at=0;
+    Check(failed.error==E::hash_failure&&failed.bytes.empty(),"inventory encoding context failure exposes no successful page");
+    for(unsigned mode=1;mode<=4;++mode){hashes=0;fault_context=1;fault=mode;
+      failed=DenyCodecAllocation([&]{return pg::EncodeNativeTransactionInventoryPageInto(input,output,indices,markers);});
+      Check(!fault&&failed.error==E::hash_failure&&failed.bytes.empty(),"every inventory encoding digest phase and short digest fail without heap");
+    }
+    const auto retry=DenyCodecAllocation([&]{return pg::EncodeNativeTransactionInventoryPageInto(input,output,indices,markers);});
+    Check(retry.ok()&&output==original&&Oracle(p)==original,"valid retry restores exact inventory image without mutating inputs");
+  }
+}
 void Codecs(){
   for(unsigned profile=0;profile<5;++profile){const usize maximum=(d::kCanonicalFilespacePageProfiles[profile].page_size_bytes-384)/72;
     Scratch scratch(maximum);
@@ -841,15 +953,18 @@ void Codecs(){
       Check(r.ok()&&!allocations&&remaining==0,"all lifecycle scope archive flag and 25 link profile pairs decode without heap");
       Check(r.page->inventory.entries.data()==scratch.entries.data()&&r.page->inventory.entries.size()==8&&Oracle(*r.page)==b,"exact native entry and counter decoding");
       const auto owning=pg::DecodeNativeTransactionInventoryPage(b);Check(owning.ok()&&owning.bytes==b&&!owning.page->inventory.publication_base,"legacy owning route retains independent image and no publication base");
+      BoundedEncode(*r.page);
     }
     for(unsigned n:{0u,1u,unsigned(maximum-1),unsigned(maximum)}){
       auto p=Example(profile,profile,n);const auto bytes=Oracle(p);allocations=0;measuring=true;budget=0;auto r=scratch.Decode(bytes);auto remaining=budget;budget=-1;measuring=false;
       Check(r.ok()&&r.page->inventory.entries.size()==n&&!allocations&&remaining==0&&Oracle(*r.page)==bytes,"zero single and maximum native entries have no hidden trees or image copy");
+      BoundedEncode(*r.page);
       if(n)for(unsigned field=0;field<3;++field){auto entries=std::span(scratch.entries).first(n);auto indices=std::span(scratch.indices).first(n);auto markers=std::span(scratch.markers).first(n);
         if(field==0)entries=entries.first(n-1);if(field==1)indices=indices.first(n-1);if(field==2)markers=markers.first(n-1);
         auto short_result=pg::DecodeNativeTransactionInventoryPageInto(bytes,entries,indices,markers);
         Check(!short_result.page&&short_result.error==E::resource_exhausted,"each individual native or scratch shortfall refuses");}
     }
+    BoundedEncode(Example(profile,profile,unsigned(maximum+1)));
   }
   Scratch scratch(128);auto p=Example();auto good=Oracle(p);
   for(usize i=0;i<good.size();++i){auto bad=good;bad[i]^=1;auto r=scratch.Decode(bad);Check(!r.page,"every-byte corruption refuses without metadata");}
@@ -880,30 +995,34 @@ void Codecs(){
     }
     const auto b=Oracle(bad);auto owned=pg::DecodeNativeTransactionInventoryPage(b);auto borrowed=scratch.Decode(b);
     Check(!owned.page&&!borrowed.page&&owned.error==borrowed.error,"re-sealed invalid structure and links preserve exact owning refusal");
+    BoundedEncode(bad);
   }
   for(unsigned at:{128u,136u,138u,140u,188u,288u,296u,304u,312u,352u,412u,8191u}){auto b=good;b[at]^=0x80;Seal(b);auto r=scratch.Decode(b);Check(!r.page,"re-sealed framing flags horizon and padding refuse");}
   auto stable=Example(0,0,2,6);stable.inventory.entries[1].state=mga::TransactionState::active;stable.inventory.entries[1].commit_sequence=0;
   stable.inventory.entries[1].stable_snapshot=true;const auto stable_image=Oracle(stable);
   auto stable_result=scratch.Decode(stable_image);Check(stable_result.ok()&&Horizons(stable_result.page->inventory)==std::array<u64,3>{2,2,1},"stable reader retains earlier local transaction committed after begin");
+  BoundedEncode(stable);
   for(unsigned at=0;at<16;++at){auto distinct=Example(0,0,2,2);distinct.inventory.entries[1].identity.transaction_uuid=distinct.inventory.entries[0].identity.transaction_uuid;
     distinct.inventory.entries[1].identity.transaction_uuid.value.bytes[at]^=1;
     Check(scratch.Decode(Oracle(distinct)).ok(),"full binary UUID key distinguishes every byte without text or truncation");}
   for(unsigned first=0;first<8;++first)for(unsigned second=0;second<8;++second)if(first!=second){auto duplicate=Example(0,0,8,6);
     duplicate.inventory.entries[second].identity.transaction_uuid=duplicate.inventory.entries[first].identity.transaction_uuid;
-    auto r=scratch.Decode(Oracle(duplicate));Check(!r.page&&r.error==E::invalid_inventory,"duplicate binary identity detected at every original-order position pair");
+    auto r=scratch.Decode(Oracle(duplicate));Check(!r.page&&r.error==E::invalid_inventory,"duplicate binary identity detected at every original-order position pair");BoundedEncode(duplicate);
     duplicate=Example(0,0,8,6);duplicate.inventory.entries[second].commit_sequence=duplicate.inventory.entries[first].commit_sequence;
-    r=scratch.Decode(Oracle(duplicate));Check(!r.page&&r.error==E::invalid_inventory,"duplicate commit order detected at every position pair");}
+    r=scratch.Decode(Oracle(duplicate));Check(!r.page&&r.error==E::invalid_inventory,"duplicate commit order detected at every position pair");BoundedEncode(duplicate);}
   for(bool archived:{false,true})for(unsigned active_state:{2u,13u})for(unsigned boundary:{0u,1u}){
     auto v=stable;v.inventory.entries[0].state=archived?mga::TransactionState::archived:mga::TransactionState::committed;
     v.inventory.entries[0].archived_from_state=archived?mga::TransactionState::committed:mga::TransactionState::none;
     v.inventory.entries[1].state=mga::TransactionState(active_state);v.inventory.entries[1].begin_visible_through_commit_sequence=boundary;
     auto r=scratch.Decode(Oracle(v));Check(r.ok()&&Horizons(r.page->inventory)==std::array<u64,3>{2,2,boundary?2u:1u},"both active reader states and archived outcomes preserve exact begin-commit visibility boundary");
+    BoundedEncode(v);
   }
   for(unsigned links=0;links<4;++links){auto v=p;if(!(links&1))v.previous.reset();if(!(links&2))v.next.reset();
-    Check(scratch.Decode(Oracle(v)).ok(),"all predecessor successor presence combinations retain their inspection meaning");}
+    Check(scratch.Decode(Oracle(v)).ok(),"all predecessor successor presence combinations retain their inspection meaning");BoundedEncode(v);}
   auto maximum=Example(0,0,1,6);maximum.inventory.next_local_transaction_id=maximum.inventory.next_commit_sequence=std::numeric_limits<u64>::max();
   maximum.inventory.entries[0].identity.local_id.value=maximum.inventory.entries[0].commit_sequence=std::numeric_limits<u64>::max()-1;
   Check(scratch.Decode(Oracle(maximum)).ok(),"maximum counters and final number remain exact uint64");
+  BoundedEncode(maximum);
   auto multi=Example(0,0,3,2);multi.inventory.entries[0].state=mga::TransactionState::committed;multi.inventory.entries[0].commit_sequence=2;
   multi.inventory.entries[1].stable_snapshot=multi.inventory.entries[2].stable_snapshot=true;
   multi.inventory.entries[1].begin_visible_through_commit_sequence=2;multi.inventory.entries[2].begin_visible_through_commit_sequence=1;
@@ -917,5 +1036,5 @@ void Codecs(){
   Check(!future.ok()&&!future.horizons.valid&&future.diagnostic.message_key=="transaction.horizon.future_snapshot_horizon","shared projection preserves future snapshot vector");
 }
 }
-int main(){try{CompleteInventoryChains();CompleteInventoryEvolution();CompleteInventoryValidation();Codecs();MemoryTests();std::cout<<"PASS governed inventory checks="<<checks<<" not_SQL_E2E=true\n";return 0;}
+int main(){try{CompleteInventoryChains();CompleteInventoryEvolution();CompleteInventoryValidation();Codecs();EncodingFailures();MemoryTests();MemoryEncodingTests();std::cout<<"PASS governed inventory checks="<<checks<<" not_SQL_E2E=true\n";return 0;}
   catch(...){budget=-1;std::cerr<<"FAIL checks="<<checks<<'\n';return 1;}}

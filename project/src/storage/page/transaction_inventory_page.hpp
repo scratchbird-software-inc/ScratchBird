@@ -55,6 +55,17 @@ struct NativeTransactionInventoryPageView {
   std::optional<scratchbird::storage::disk::NativePageReference> previous,next;
   NativeTransactionInventoryView inventory;
 };
+struct NativeTransactionInventoryConstView {
+  u64 next_local_transaction_id=1,next_commit_sequence=1;
+  std::span<const scratchbird::transaction::mga::TransactionInventoryEntry> entries;
+};
+struct NativeTransactionInventoryPageConstView {
+  scratchbird::storage::disk::NativeCommonPageHeader header;
+  scratchbird::core::platform::Uuid object_uuid;
+  u64 inventory_generation=0;
+  std::optional<scratchbird::storage::disk::NativePageReference> previous,next;
+  NativeTransactionInventoryConstView inventory;
+};
 enum class NativeInventoryError {
   none, invalid_header, invalid_family, invalid_reference, invalid_inventory,
   invalid_integrity, hash_failure, resource_exhausted, invalid_filespace,
@@ -89,6 +100,21 @@ struct NativeTransactionInventoryPageResult {
 };
 NativeTransactionInventoryPageResult EncodeNativeTransactionInventoryPage(
     const NativeTransactionInventoryPage&) noexcept;
+struct NativeTransactionInventoryEncoding {
+  NativeInventoryError error=NativeInventoryError::invalid_family;
+  std::span<const byte> bytes;
+  bool ok() const noexcept{return error==NativeInventoryError::none&&!bytes.empty();}
+};
+// Immutable entries and no publication-CAS base. One index and marker per entry
+// are required, with no owning fallback. All descriptor/input/output/scratch
+// regions must be disjoint and native entries/indices aligned. Success borrows
+// exactly one output page; oversized output and scratch suffixes are untouched.
+// Validation/short backing leave output unchanged; scratch may change. Hash
+// failure may change the page prefix but returns no successful bytes. Admit
+// actual backing before retaining source guards. Not publication authority.
+NativeTransactionInventoryEncoding EncodeNativeTransactionInventoryPageInto(
+    const NativeTransactionInventoryPageConstView&,std::span<byte> output,
+    std::span<std::size_t> uniqueness_indices,std::span<byte> duplicate_markers) noexcept;
 NativeTransactionInventoryPageResult DecodeNativeTransactionInventoryPage(
     const std::vector<byte>&) noexcept;
 struct NativeTransactionInventoryPageViewResult {

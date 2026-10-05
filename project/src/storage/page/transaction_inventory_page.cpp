@@ -508,7 +508,7 @@ Error Validate(const NativeTransactionInventoryPage& p) {
 }
 // Sort caller-owned indices, never records. Mark duplicates at their original
 // positions so the shared rule loop preserves the owning validator's first error.
-const char* ValidateBorrowed(const NativeTransactionInventoryView& inventory,
+template<class Inventory> const char* ValidateBorrowed(const Inventory& inventory,
     std::span<std::size_t> indices,std::span<byte> markers) {
   const auto rows=inventory.entries;const auto count=rows.size();
   for(std::size_t i=0;i<count;++i){indices[i]=i;markers[i]=0;}
@@ -533,17 +533,10 @@ core_hash::Sha256PartsResult Digest(std::span<const byte> bytes) {
       {bytes.data()+digest_at+32,bytes.size()-digest_at-32}};
   return core_hash::ComputeSha256DigestPartsNative(parts,3);
 }
-} // namespace native_inventory
-
-NativeTransactionInventoryPageResult EncodeNativeTransactionInventoryPage(
-    const NativeTransactionInventoryPage& p) noexcept {
-  using namespace native_inventory;
-  try {
-    const auto valid=Validate(p); if (valid!=Error::none) return Fail(valid);
-    const auto horizons=ComputeLocalTransactionHorizons(p.inventory);
-    if (!horizons.ok()) return Fail(Error::invalid_inventory);
+template<class Page> Error EncodeValues(const Page& p,const LocalTransactionHorizons& horizons,std::span<byte> bytes){
     const auto header=disk::EncodeNativeCommonPageHeader(p.header);
-    std::vector<byte> bytes(p.header.page_size_bytes,0);
+    if(!header.ok())return Error::invalid_header;
+    std::fill(bytes.begin(),bytes.end(),0);
     std::copy(header.bytes->begin(),header.bytes->end(),bytes.begin());
     auto* f=bytes.data()+family;
     std::copy(magic.begin(),magic.end(),f); StoreLittle16(f+8,1); StoreLittle16(f+10,256);
@@ -554,9 +547,9 @@ NativeTransactionInventoryPageResult EncodeNativeTransactionInventoryPage(
     StoreLittle32(f+56,static_cast<u32>(p.inventory.entries.size()));
     if (p.previous) PutRef(f+64,*p.previous);
     if (p.next) PutRef(f+112,*p.next);
-    StoreLittle64(f+160,horizons.horizons.oldest_interesting_transaction.value);
-    StoreLittle64(f+168,horizons.horizons.oldest_active_transaction.value);
-    StoreLittle64(f+176,horizons.horizons.oldest_snapshot_transaction.value);
+    StoreLittle64(f+160,horizons.oldest_interesting_transaction.value);
+    StoreLittle64(f+168,horizons.oldest_active_transaction.value);
+    StoreLittle64(f+176,horizons.oldest_snapshot_transaction.value);
     std::size_t at=entries;
     for (const auto& e:p.inventory.entries) {
       auto* out=bytes.data()+at;
@@ -568,13 +561,56 @@ NativeTransactionInventoryPageResult EncodeNativeTransactionInventoryPage(
       StoreLittle64(out+56,e.begin_visible_through_commit_sequence); StoreLittle64(out+64,e.commit_sequence);
       at+=kEntryBytes;
     }
-    const auto digest=Digest(bytes); if (!digest.ok()) return Fail(Error::hash_failure);
+    const auto digest=Digest(bytes); if (!digest.ok()) return Error::hash_failure;
     std::copy(digest.digest.begin(),digest.digest.end(),bytes.begin()+digest_at);
+    return Error::none;
+}
+} // namespace native_inventory
+
+NativeTransactionInventoryPageResult EncodeNativeTransactionInventoryPage(
+    const NativeTransactionInventoryPage& p) noexcept {
+  using namespace native_inventory;
+  try {
+    const auto valid=Validate(p); if(valid!=Error::none)return Fail(valid);
+    const auto horizons=ComputeLocalTransactionHorizons(p.inventory);
+    if(!horizons.ok())return Fail(Error::invalid_inventory);
+    std::vector<byte> bytes(p.header.page_size_bytes);
+    const auto encoded=EncodeValues(p,horizons.horizons,bytes);if(encoded!=Error::none)return Fail(encoded);
     auto page=p; page.inventory.publication_base.reset();
     return {Error::none,std::move(page),std::move(bytes)};
   } catch (const std::bad_alloc&) { return Fail(Error::resource_exhausted); }
     catch (const std::length_error&) { return Fail(Error::resource_exhausted); }
     catch (...) { return Fail(Error::invalid_inventory); }
+}
+
+NativeTransactionInventoryEncoding EncodeNativeTransactionInventoryPageInto(
+    const NativeTransactionInventoryPageConstView& p,std::span<byte> output,
+    std::span<std::size_t> indices,std::span<byte> markers) noexcept {
+  using namespace native_inventory;
+  try{
+    if(reinterpret_cast<std::uintptr_t>(p.inventory.entries.data())%alignof(TransactionInventoryEntry)||
+       reinterpret_cast<std::uintptr_t>(indices.data())%alignof(std::size_t)||
+       !disk::detail::DisjointNativeDecodeRegions(std::span(&p,1),p.inventory.entries,output,indices,markers))
+      return {Error::invalid_backing,{}};
+    // Preserve structural error precedence without touching short scratch.
+    bool short_scratch=false;
+    const auto valid=Validate(p,[&](const auto& inventory){
+      if(indices.size()<inventory.entries.size()||markers.size()<inventory.entries.size()){
+        short_scratch=true;return "insufficient_backing";
+      }
+      return ValidateBorrowed(inventory,indices,markers);
+    });
+    if(short_scratch)return {Error::resource_exhausted,{}};
+    if(valid!=Error::none)return {valid,{}};
+    if(output.size()<p.header.page_size_bytes)return {Error::resource_exhausted,{}};
+    LocalTransactionHorizons horizons;
+    if(mga::detail::ProjectValidatedLocalHorizons(p.inventory,{},horizons))return {Error::invalid_inventory,{}};
+    auto bytes=output.first(p.header.page_size_bytes);
+    const auto encoded=EncodeValues(p,horizons,bytes);if(encoded!=Error::none)return {encoded,{}};
+    return {Error::none,bytes};
+  }catch(const std::bad_alloc&){return {Error::resource_exhausted,{}};}
+   catch(const std::length_error&){return {Error::resource_exhausted,{}};}
+   catch(...){return {Error::invalid_inventory,{}};}
 }
 
 namespace {

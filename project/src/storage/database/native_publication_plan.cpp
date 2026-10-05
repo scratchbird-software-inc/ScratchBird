@@ -83,11 +83,15 @@ E Validate(const NativePublicationPlan& p){
   return E::none;
 }
 }
-NativePublicationPlanImage EncodeNativePublicationPlan(const NativePublicationPlan& p) noexcept {
+NativePublicationPlanViewImage EncodeNativePublicationPlanInto(const NativePublicationPlan& p,std::span<byte> output) noexcept {
+  const auto fail=[](E e){NativePublicationPlanViewImage r;r.error=e;return r;};
   try {
-    const auto valid=Validate(p);if(valid!=E::none)return Fail(valid);
-    const auto h=disk::EncodeNativeCommonPageHeader(p.header);if(!h.ok())return Fail(E::invalid_header);
-    std::vector<byte> b(p.header.page_size_bytes,0);std::copy(h.bytes->begin(),h.bytes->end(),b.begin());auto* f=b.data()+128;
+    if(!disk::detail::DisjointNativeDecodeRegions(std::span(&p,1),output))return fail(E::invalid_workspace);
+    const auto valid=Validate(p);if(valid!=E::none)return fail(valid);
+    if(output.size()<p.header.page_size_bytes)return fail(E::resource_exhausted);
+    const auto h=disk::EncodeNativeCommonPageHeader(p.header);if(!h.ok())return fail(E::invalid_header);
+    auto b=output.first(p.header.page_size_bytes);std::fill(b.begin(),b.end(),0);
+    std::copy(h.bytes->begin(),h.bytes->end(),b.begin());auto* f=b.data()+128;
     const bool extent=p.management_extent.has_value(),bundle=p.control_bundle.has_value(),sequence=p.base_selection_generation.has_value(),profile=p.intent.recovery_profile!=0,inventory=p.intent.recovery_profile==2,preallocation=p.intent.recovery_profile==3,directory=bundle&&p.control_bundle->directory_count,startup=p.intent.startup_binding.has_value();std::copy_n(startup?"SBPPM009":directory?"SBPPM008":preallocation?"SBPPM007":inventory?"SBPPM006":profile?"SBPPM005":sequence?"SBPPM004":bundle?"SBPPM003":extent?"SBPPM002":"SBPPM001",8,f);StoreLittle16(f+8,startup?9:directory?8:preallocation?7:inventory?6:profile?5:sequence?4:bundle?3:extent?2:1);StoreLittle16(f+10,bundle?1024:extent?896:640);StoreLittle32(f+12,bundle?1152:extent?1024:768);
     Put(f+16,p.object_uuid);Put(f+32,p.bootstrap_uuid);Put(f+48,p.timeline_uuid);Put(f+64,p.operation_uuid);Put(f+80,p.intent.initiator_uuid);Put(f+96,p.intent.request_context_uuid);Put(f+112,p.intent.policy_snapshot_uuid);Put(f+128,p.security_snapshot_uuid);
     std::copy(p.intent.normalized_request_sha256.begin(),p.intent.normalized_request_sha256.end(),f+144);std::copy(p.reservation_state_sha256.begin(),p.reservation_state_sha256.end(),f+176);
@@ -107,9 +111,17 @@ NativePublicationPlanImage EncodeNativePublicationPlan(const NativePublicationPl
       Put(f+960,binding.operation_uuid);Put(f+976,binding.session_uuid);Put(f+992,binding.transaction_uuid);
       StoreLittle64(f+1008,binding.local_transaction_id);StoreLittle64(f+1016,binding.fence_generation);
     }
-    const auto sha=ImageHash(b);if(!sha.ok())return Fail(E::hash_failure);std::copy(sha.digest.begin(),sha.digest.end(),f+560);
-    const auto reference=core::hash::ComputeSha256Digest(b);if(!reference.ok())return Fail(E::hash_failure);
-    return {E::none,p,reference.digest,std::move(b)};
+    const auto sha=ImageHash(b);if(!sha.ok())return fail(E::hash_failure);std::copy(sha.digest.begin(),sha.digest.end(),f+560);
+    const auto reference=core::hash::ComputeSha256DigestNative(b.data(),b.size());if(!reference.ok())return fail(E::hash_failure);
+    return {E::none,p,reference.digest,b};
+  }catch(const std::bad_alloc&){return fail(E::resource_exhausted);}catch(const std::length_error&){return fail(E::resource_exhausted);}catch(...){return fail(E::invalid_family);}
+}
+NativePublicationPlanImage EncodeNativePublicationPlan(const NativePublicationPlan& p) noexcept {
+  try{
+    const auto valid=Validate(p);if(valid!=E::none)return Fail(valid);
+    std::vector<byte> bytes(p.header.page_size_bytes);
+    const auto encoded=EncodeNativePublicationPlanInto(p,bytes);if(!encoded.ok())return Fail(encoded.error);
+    return {E::none,encoded.plan,encoded.sha256,std::move(bytes)};
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::invalid_family);}
 }
 namespace {
