@@ -107,6 +107,30 @@ void Failed(const db::NativePublicationPlanImage& r){Check(!r.ok()&&!r.plan&&r.b
 void Failed(const db::NativePublicationPlanViewImage& r){
  Check(!r.ok()&&!r.plan&&r.bytes.empty()&&std::all_of(r.sha256.begin(),r.sha256.end(),[](byte v){return !v;}),"no failed borrowed plan prefix");
 }
+void PlanEncodingChecks(const db::NativePublicationPlan& p,const Bytes& oracle){
+ Bytes backing(oracle.size()+17,0xa7);
+ const auto call=[&](std::span<byte> output){allocation_budget=0;
+  auto result=db::EncodeNativePublicationPlanInto(p,output);const bool denied=allocation_budget==0;allocation_budget=-1;
+  Check(denied,"caller-backed plan encoding has no owning image or diagnostic allocation");return result;};
+ const auto encoded=call(std::span(backing).subspan(1));
+ Check(encoded.ok()&&encoded.bytes.data()==backing.data()+1&&encoded.bytes.size()==oracle.size()&&encoded.sha256==Sha(oracle)&&
+  std::equal(encoded.bytes.begin(),encoded.bytes.end(),oracle.begin(),oracle.end()),"bounded plan encoding matches every independent byte and full reference digest");
+ Check(backing.front()==0xa7&&std::all_of(backing.begin()+1+oracle.size(),backing.end(),[](byte b){return b==0xa7;}),"unaligned plan output and unused suffix preserved");
+ for(const auto n:{std::size_t{0},std::size_t{1},oracle.size()-1}){
+  std::fill(backing.begin(),backing.end(),0xa7);const auto r=call(std::span(backing).first(n));Failed(r);
+  Check(r.error==E::resource_exhausted&&std::all_of(backing.begin(),backing.end(),[](byte b){return b==0xa7;}),"short plan backing is unchanged");
+ }
+ auto alias=p;allocation_budget=0;const auto refused=db::EncodeNativePublicationPlanInto(alias,{reinterpret_cast<byte*>(&alias),sizeof(alias)});
+ const auto remaining=allocation_budget;allocation_budget=-1;Failed(refused);
+ Check(remaining==0&&refused.error==E::invalid_workspace&&Oracle(alias,LoadLittle16(oracle.data()+136))==oracle,"aliased descriptor cannot be overwritten");
+ for(unsigned mode=1;mode<=5;++mode)for(unsigned digest=1;digest<=2;++digest){
+  hash_fault=mode;hash_target=digest;hash_seen=0;hash_active=false;
+  const auto r=call(backing);const bool consumed=!hash_fault;hash_fault=0;hash_active=false;Failed(r);
+  Check(consumed&&r.error==E::hash_failure,"both embedded and reference hashes refuse every provider failure without a result prefix");
+ }
+ const auto retry=call(backing);Check(retry.ok()&&retry.sha256==Sha(oracle)&&
+  std::equal(retry.bytes.begin(),retry.bytes.end(),oracle.begin(),oracle.end()),"plan encoding retry recomputes both complete hashes");
+}
 db::NativePublicationPlanImage Decode(const Bytes& image){
  const bool compare=allocation_budget<0&&!counting&&!hash_fault&&!hash_counting;
  auto result=db::DecodeNativePublicationPlan(image);
@@ -122,7 +146,11 @@ db::NativePublicationPlanImage Decode(const Bytes& image){
  }
  return result;
 }
-void Bad(const db::NativePublicationPlan& p){Failed(db::EncodeNativePublicationPlan(p));const auto raw=Oracle(p);Failed(Decode(raw));}
+void Bad(const db::NativePublicationPlan& p){const auto owned=db::EncodeNativePublicationPlan(p);Failed(owned);
+ Bytes output(p.header.page_size_bytes,0xa7);allocation_budget=0;const auto borrowed=db::EncodeNativePublicationPlanInto(p,output);
+ const auto remaining=allocation_budget;allocation_budget=-1;Failed(borrowed);
+ Check(remaining==0&&borrowed.error==owned.error&&std::all_of(output.begin(),output.end(),[](byte b){return b==0xa7;}),"invalid plans share exact borrowed refusal without writes");
+ const auto raw=Oracle(p);Failed(Decode(raw));}
 struct Fixture {
  std::filesystem::path path;d::FileDevice device;std::vector<d::NativeFilespaceDevice> devices;u64 size,budget;
  Fixture(unsigned profile){
@@ -405,6 +433,7 @@ void BorrowedVersions(const db::NativePublicationPlan& base){
   if(version==9)p.intent.startup_binding=db::NativeStartupBinding{p.management_extent->operation_uuid,Id(2003),Id(2004),2,3};
   const auto image=Oracle(p,version);const auto encoded=db::EncodeNativePublicationPlan(p);
   Check(encoded.ok()&&encoded.bytes==image,"independent all-nine-version canonical bytes");
+  PlanEncodingChecks(p,image);
   const auto decoded=Decode(image);Check(decoded.ok()&&decoded.sha256==Sha(image),"borrowed version full reference hash");
   RecordBindingBackingChecks(p,version);
   for(unsigned mode=1;mode<=5;++mode)for(unsigned digest=1;digest<=2;++digest){

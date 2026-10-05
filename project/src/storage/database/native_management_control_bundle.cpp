@@ -316,6 +316,20 @@ NativeManagementControlBundleRead Decode(const Pages& pages,const Root& r,const 
   const auto view=DecodeView(pages,r,db,bootstrap,budget,scratch);
   return MaterializeBundle(view);
 }
+void EncodePage(const Root& root,const Header& common,const Uuid& bootstrap,
+    Image payload,u64 index,std::array<byte,32>& next,std::span<byte> b){
+  const auto header=disk::EncodeNativeCommonPageHeader(common);Require(header.ok(),E::invalid_header);
+  std::fill(b.begin(),b.end(),0);std::copy(header.bytes->begin(),header.bytes->end(),b.begin());auto* f=b.data()+128;
+  const auto capacity=b.size()-384;const u64 offset=index*capacity;
+  const u32 length=static_cast<u32>(std::min<u64>(capacity,payload.size()-offset));
+  std::copy_n(Magic(root),8,f);StoreLittle16(f+8,Version(root));StoreLittle16(f+10,256);StoreLittle32(f+12,384+length);
+  Put(f+16,root.object_uuid);Put(f+32,bootstrap);Put(f+48,root.operation_uuid);StoreLittle64(f+64,root.map_count);StoreLittle64(f+72,payload.size());
+  StoreLittle64(f+80,offset);StoreLittle64(f+88,index);StoreLittle64(f+96,root.page_count);StoreLittle64(f+104,root.first.page_number);
+  std::copy(root.aggregate_sha256.begin(),root.aggregate_sha256.end(),f+112);StoreLittle32(f+144,length);StoreLittle64(f+148,root.inventory_count);
+  StoreLittle32(f+156,root.directory_count?8:0);StoreLittle64(f+224,root.directory_count);StoreLittle64(f+232,root.growth_image_count);
+  std::copy(next.begin(),next.end(),f+160);std::copy_n(payload.begin()+offset,length,b.begin()+384);
+  const auto seal=Seal(b);std::copy(seal.begin(),seal.end(),f+192);next=Hash(b);
+}
 } // namespace
 NativeManagementControlBundleError ValidateNativeManagementControlBundleRoot(const Root& r,const Uuid& db,const Uuid& bootstrap,u64 budget) noexcept {
   u32 size=0;return CheckShape(r,db,bootstrap,budget,size);
@@ -325,18 +339,51 @@ NativeManagementControlBundleImage EncodeNativeManagementControlBundle(const Pag
     BundleHeapMemory heap;std::pmr::monotonic_buffer_resource backing(&heap);Scratch scratch{&backing};
     Require(!headers.empty()&&!maps.empty(),E::invalid_request);Root root;root.first=Self(headers.front());root.object_uuid=object;root.operation_uuid=attempt;root.map_count=maps.size();root.inventory_count=inventory.size();root.directory_count=directory.size();root.page_count=headers.size();root.growth_image_count=growth.size();
     if(root.directory_count)for(const auto* chain:{&maps,&inventory,&directory,&growth})for(const auto& b:*chain){const auto limit=std::numeric_limits<u64>::max();Require(b.size()<=limit-8&&root.payload_bytes<=limit-8-b.size(),E::invalid_extent);root.payload_bytes+=8+b.size();}
-    const auto size=Shape(root,db,bootstrap,budget,false),capacity=size-384;std::pmr::set<Uuid> ids(scratch.resource);for(std::size_t i=0;i<headers.size();++i)Common(headers[i],root,db,bootstrap,size,i,ids);
+    const auto size=Shape(root,db,bootstrap,budget,false);std::pmr::set<Uuid> ids(scratch.resource);for(std::size_t i=0;i<headers.size();++i)Common(headers[i],root,db,bootstrap,size,i,ids);
     if(root.directory_count)MixedMaps(maps,inventory,directory,headers,root,db,scratch);else Maps(maps,inventory,headers,root,db,size,scratch);
     Growth(growth,maps,directory,root,db,bootstrap,scratch);
     Bytes payload;payload.reserve(static_cast<std::size_t>(PayloadBytes(root,size)));for(const auto* chain:{&maps,&inventory,&directory,&growth})for(const auto& b:*chain){
       if(root.directory_count){const auto at=payload.size();payload.resize(at+8);StoreLittle64(payload.data()+at,b.size());}payload.insert(payload.end(),b.begin(),b.end());}root.aggregate_sha256=Hash(payload);
     Pages pages(headers.size());std::array<byte,32> next{};
-    for(std::size_t left=pages.size();left;--left){const auto i=left-1;auto& b=pages[i];b.resize(size);const auto header=disk::EncodeNativeCommonPageHeader(headers[i]);Require(header.ok(),E::invalid_header);std::copy(header.bytes->begin(),header.bytes->end(),b.begin());auto* f=b.data()+128;const u64 offset=u64{i}*capacity;const u32 length=static_cast<u32>(std::min<u64>(capacity,payload.size()-offset));
-      std::copy_n(Magic(root),8,f);StoreLittle16(f+8,Version(root));StoreLittle16(f+10,256);StoreLittle32(f+12,384+length);Put(f+16,object);Put(f+32,bootstrap);Put(f+48,attempt);StoreLittle64(f+64,root.map_count);StoreLittle64(f+72,payload.size());StoreLittle64(f+80,offset);StoreLittle64(f+88,i);StoreLittle64(f+96,root.page_count);StoreLittle64(f+104,root.first.page_number);std::copy(root.aggregate_sha256.begin(),root.aggregate_sha256.end(),f+112);StoreLittle32(f+144,length);StoreLittle64(f+148,root.inventory_count);StoreLittle32(f+156,root.directory_count?8:0);StoreLittle64(f+224,root.directory_count);StoreLittle64(f+232,root.growth_image_count);std::copy(next.begin(),next.end(),f+160);std::copy_n(payload.begin()+offset,length,b.begin()+384);
-      const auto seal=Seal(b);std::copy(seal.begin(),seal.end(),f+192);next=Hash(b);
-    }
+    for(std::size_t left=pages.size();left;--left){const auto i=left-1;auto& b=pages[i];b.resize(size);EncodePage(root,headers[i],bootstrap,payload,i,next,b);}
     root.first_page_sha256=next;return {E::none,root,std::move(pages)};
   }catch(E e){return Fail<NativeManagementControlBundleImage>(e);}catch(const std::bad_alloc&){return Fail<NativeManagementControlBundleImage>(E::resource_exhausted);}catch(const std::length_error&){return Fail<NativeManagementControlBundleImage>(E::resource_exhausted);}catch(...){return Fail<NativeManagementControlBundleImage>(E::invalid_extent);}
+}
+NativeManagementControlBundleEncoding EncodeNativeManagementControlBundleInto(
+    std::span<const Image> maps,const Uuid& db,const Uuid& bootstrap,const Uuid& object,const Uuid& attempt,
+    std::span<const Header> headers,u64 budget,std::span<byte> output,std::span<byte> backing,
+    std::span<const Image> inventory,std::span<const Image> directory,std::span<const Image> growth) noexcept {
+  const auto fail=[](E e){return Fail<NativeManagementControlBundleEncoding>(e);};
+  const auto disjoint=[&](auto input){return disk::detail::DisjointNativeDecodeRegions(input,output,backing);};
+  if(!disjoint(std::span(&db,1))||!disjoint(std::span(&bootstrap,1))||!disjoint(std::span(&object,1))||
+     !disjoint(std::span(&attempt,1))||!disjoint(headers)||
+     (!headers.empty()&&reinterpret_cast<std::uintptr_t>(headers.data())%alignof(Header)))return fail(E::invalid_workspace);
+  const std::array chains{maps,inventory,directory,growth};
+  for(const auto chain:chains){
+    if(!disjoint(chain)||(!chain.empty()&&reinterpret_cast<std::uintptr_t>(chain.data())%alignof(Image)))return fail(E::invalid_workspace);
+    for(const auto raw:chain)if(!disjoint(raw))return fail(E::invalid_workspace);
+  }
+  try{
+    Require(!headers.empty()&&!maps.empty(),E::invalid_request);
+    Root root;root.first=Self(headers.front());root.object_uuid=object;root.operation_uuid=attempt;
+    root.map_count=maps.size();root.inventory_count=inventory.size();root.directory_count=directory.size();root.page_count=headers.size();root.growth_image_count=growth.size();
+    if(root.directory_count)for(const auto chain:chains)for(const auto raw:chain){
+      const auto limit=std::numeric_limits<u64>::max();Require(raw.size()<=limit-8&&root.payload_bytes<=limit-8-raw.size(),E::invalid_extent);root.payload_bytes+=8+raw.size();}
+    const auto size=Shape(root,db,bootstrap,budget,false);Require(headers.size()<=output.size()/size,E::resource_exhausted);
+    BundleMemory memory(backing);Scratch scratch{&memory};std::pmr::set<Uuid> ids(scratch.resource);
+    for(std::size_t i=0;i<headers.size();++i)Common(headers[i],root,db,bootstrap,size,i,ids);
+    if(root.directory_count)MixedMaps(maps,inventory,directory,headers,root,db,scratch);else Maps(maps,inventory,headers,root,db,size,scratch);
+    Growth(growth,maps,directory,root,db,bootstrap,scratch);
+    auto payload=scratch.Array<byte>(static_cast<std::size_t>(PayloadBytes(root,size)));std::size_t at=0;
+    for(const auto chain:chains)for(const auto raw:chain){
+      if(root.directory_count){StoreLittle64(payload.data()+at,raw.size());at+=8;}
+      std::copy(raw.begin(),raw.end(),payload.begin()+at);at+=raw.size();}
+    Require(at==payload.size(),E::invalid_extent);root.aggregate_sha256=Hash(payload);
+    auto pages=output.first(headers.size()*size);std::array<byte,32> next{};
+    for(std::size_t left=headers.size();left;--left){const auto i=left-1;EncodePage(root,headers[i],bootstrap,payload,i,next,pages.subspan(i*size,size));}
+    root.first_page_sha256=next;return {E::none,root,pages,memory.used()};
+  }catch(E e){return fail(e);}catch(const std::bad_alloc&){return fail(E::resource_exhausted);}
+   catch(const std::length_error&){return fail(E::resource_exhausted);}catch(...){return fail(E::invalid_extent);}
 }
 NativeManagementControlBundleRead DecodeNativeManagementControlBundle(const Pages& pages,const Root& r,const Uuid& db,const Uuid& bootstrap,u64 budget) noexcept {
   try{return Decode(pages,r,db,bootstrap,budget);}catch(E e){return Fail<NativeManagementControlBundleRead>(e);}catch(const std::bad_alloc&){return Fail<NativeManagementControlBundleRead>(E::resource_exhausted);}catch(const std::length_error&){return Fail<NativeManagementControlBundleRead>(E::resource_exhausted);}catch(...){return Fail<NativeManagementControlBundleRead>(E::invalid_extent);}

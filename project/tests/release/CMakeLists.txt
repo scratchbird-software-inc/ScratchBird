@@ -86,6 +86,21 @@ if(NOT TARGET sb_core_agents_cluster_boundary)
   )
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(crypto_memory_adapter_gate crypto_memory_adapter_gate.cpp)
+  target_compile_features(crypto_memory_adapter_gate PRIVATE cxx_std_20)
+  target_link_libraries(crypto_memory_adapter_gate PRIVATE sb_core_hash sb_core_memory)
+  target_link_options(crypto_memory_adapter_gate PRIVATE
+    "LINKER:--wrap=pthread_mutex_lock"
+    "LINKER:--wrap=EVP_MD_CTX_new" "LINKER:--wrap=EVP_DigestInit_ex"
+    "LINKER:--wrap=EVP_DigestUpdate" "LINKER:--wrap=EVP_DigestFinal_ex")
+  foreach(mode bounded late custom)
+    add_test(NAME crypto_memory_adapter_${mode}_gate COMMAND crypto_memory_adapter_gate ${mode})
+    set_tests_properties(crypto_memory_adapter_${mode}_gate PROPERTIES
+      TIMEOUT 60 LABELS "storage;crypto;actual_memory;binary_uuid;not_runtime_acceptance")
+  endforeach()
+endif()
+
 option(SB_PUBLIC_RELEASE_EXPORT_NESTED
   "Suppress recursive public export CTest registration while proving a staged public tree"
   OFF)
@@ -319,6 +334,20 @@ if(TARGET sbsql_sblr_alignment_native_storage_components)
     TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;fault_injection;not_runtime_acceptance")
 endif()
 if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
+  # New exhaustive encoding faults are independently scheduled by profile.
+  # Preserve existing aggregate codec/read gates and their original deadlines.
+  foreach(primary RANGE 0 4)
+    add_test(NAME native_bundle_encoding_legacy_${primary}_gate
+      COMMAND sbsql_sblr_alignment_native_management_control_bundle --bundle-encoding ${primary})
+    set_tests_properties(native_bundle_encoding_legacy_${primary}_gate PROPERTIES
+      LABELS "storage;binary_uuid;memory;bundle_encoding;fault_injection;real_files;not_publication_acceptance" TIMEOUT 120)
+    foreach(secondary RANGE 0 4)
+      add_test(NAME native_bundle_encoding_${primary}_${secondary}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --bundle-encoding ${primary} ${secondary})
+      set_tests_properties(native_bundle_encoding_${primary}_${secondary}_gate PROPERTIES
+        LABELS "storage;binary_uuid;memory;bundle_encoding;mixed_page_profiles;fault_injection;real_files;not_publication_acceptance" TIMEOUT 120)
+    endforeach()
+  endforeach()
   # Consume the unchanged 01f issuer; storage owns this integration fixture.
   target_sources(sbsql_sblr_alignment_native_management_control_bundle PRIVATE
     "${PROJECT_SOURCE_DIR}/src/server/database_ownership.cpp")
@@ -911,7 +940,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_definitions(native_checkpoint_selection_memory_gate PRIVATE SB_NATIVE_SELECTOR_MEMORY_TESTS=1)
   target_link_libraries(native_checkpoint_selection_memory_gate PRIVATE sb_storage_database)
   target_link_options(native_checkpoint_selection_memory_gate PRIVATE
-    -Wl,--wrap=pread -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
+    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
     -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex)
   add_test(NAME native_checkpoint_selection_memory_gate COMMAND native_checkpoint_selection_memory_gate)
   set_tests_properties(native_checkpoint_selection_memory_gate PROPERTIES

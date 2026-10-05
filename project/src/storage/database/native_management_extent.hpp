@@ -58,6 +58,21 @@ struct NativeManagementExtentViewWorkspace {
   // max(2*page_count+1,2*step_count+7) slots, compared as full binary UUIDs.
   std::span<Uuid> identities;
 };
+struct NativeManagementExtentEncoding {
+  NativeManagementExtentError error=NativeManagementExtentError::invalid_request;
+  std::optional<NativeManagementExtentRoot> root;
+  // Ordered complete physical pages concatenated without gaps; exact prefix.
+  std::span<const byte> pages;
+  bool ok() const noexcept {return error==NativeManagementExtentError::none&&root.has_value();}
+};
+// Complete staged-image encoding only. Output, aggregate scratch and identity
+// scratch must be mutually disjoint and excluded from ALL input backing.
+// Identity capacity is max(2*page_count+1,2*step_count+7). No implicit heap,
+// allocation authority, physical effect or durable publication is supplied.
+NativeManagementExtentEncoding EncodeNativeManagementExtentInto(
+  const NativeManagementOperationView&,const Uuid& object_uuid,
+  std::span<const disk::NativeCommonPageHeader>,u64 budget,std::span<byte> output,
+  std::span<byte> aggregate,std::span<Uuid> identities) noexcept;
 // Complete immutable extent/aggregate inspection. All input page spans, their
 // descriptor array, root, and caller arrays are disjoint. Aggregate and steps
 // outlive the record; this is not an actual grant or publication/history proof.

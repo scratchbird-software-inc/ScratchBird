@@ -132,6 +132,23 @@ struct ViewBacking {
 void Failed(const db::NativeManagementExtentViewRead& r){
   Check(!r.ok()&&!r.record&&r.page_headers.empty()&&r.aggregate.empty(),"no borrowed extent prefix");
 }
+void Failed(const db::NativeManagementExtentEncoding& r){
+  Check(!r.ok()&&!r.root&&r.pages.empty(),"no bounded encoded extent prefix");
+}
+void EncodingParity(const db::NativeManagementOperationView& record,
+    std::span<const d::NativeCommonPageHeader> headers,const db::NativeManagementExtentRoot& root,const Pages& expected){
+  const auto aggregate_oracle=Oracle(record);const auto size=headers.front().page_size_bytes;
+  Bytes output(headers.size()*size+19,0xa7),aggregate(aggregate_oracle.size());
+  std::vector<Uuid> identities(std::max(2*headers.size()+1,2*record.steps.size()+7));
+  allocation_budget=0;const auto result=db::EncodeNativeManagementExtentInto(record,root.object_uuid,headers,budget,
+    std::span<byte>(output).subspan(1),aggregate,identities);
+  const auto left=allocation_budget;allocation_budget=-1;
+  Check(left==0&&result.ok()&&*result.root==root&&result.pages.data()==output.data()+1&&result.pages.size()==headers.size()*size,
+    "bounded complete physical extent and root use caller backing without C++ allocation");
+  for(std::size_t i=0;i<expected.size();++i)Check(std::equal(expected[i].begin(),expected[i].end(),result.pages.begin()+i*size),"every bounded physical page equals independent stored bytes");
+  Check(aggregate==aggregate_oracle&&Oracle(record)==aggregate_oracle&&output.front()==0xa7&&
+    std::all_of(output.begin()+1+result.pages.size(),output.end(),[](byte b){return b==0xa7;}),"unaligned extent output preserves suffix and immutable operation backing");
+}
 db::NativeManagementExtentRead Decode(const Pages& pages,const db::NativeManagementExtentRoot& root,
     const Uuid& database,const Uuid& bootstrap,u64 limit){
   const bool compare=allocation_budget<0&&!counting&&!hash_counting&&!hash_fault;
@@ -143,6 +160,7 @@ db::NativeManagementExtentRead Decode(const Pages& pages,const db::NativeManagem
     const bool no_allocation=allocation_budget==0;allocation_budget=-1;
     Check(no_allocation&&view.error==result.error,"complete borrowed extent parity without C++ allocation");
     if(result.ok()){
+      EncodingParity(*view.record,view.page_headers,root,pages);
       Check(view.ok()&&Oracle(*view.record)==Oracle(*result.record),"independent complete borrowed aggregate reconstruction");
       Check(view.aggregate.data()==backing.aggregate.data()&&view.aggregate.size()==root.aggregate_bytes&&
         view.page_headers.data()==backing.headers.data()&&view.page_headers.size()==result.page_headers.size(),
@@ -285,7 +303,18 @@ struct Fixture {
 };
 void Physical(unsigned profile,bool exact=false){Fixture f(profile);auto o=Record(2*(f.size-384)+17);o.bootstrap_uuid=f.bootstrap;
  if(exact){o.normalized_request_bytes.resize(f.size+37);for(std::size_t n=0;n<o.normalized_request_bytes.size();++n)o.normalized_request_bytes[n]=static_cast<byte>(n);o.normalized_request_sha256=Sha(o.normalized_request_bytes);}
- const auto headers=Headers(o,profile);const auto pages=ExtentOracle(o,headers);const auto encoded=db::EncodeNativeManagementExtent(o,Id(5000),headers,budget);Check(encoded.ok()&&encoded.pages==pages,"physical oracle");const auto root=*encoded.root;f.Write(pages);
+ const auto headers=Headers(o,profile);const auto pages=ExtentOracle(o,headers);const auto encoded=db::EncodeNativeManagementExtent(o,Id(5000),headers,budget);Check(encoded.ok()&&encoded.pages==pages,"physical oracle");const auto root=*encoded.root;
+ // Persist the actual bounded encoder output, not merely the oracle image.
+ ViewBacking source(pages,root);const auto borrowed=db::DecodeNativeManagementExtentInto(source.pages,root,o.database_uuid,o.bootstrap_uuid,budget,source.Workspace());Check(borrowed.ok(),"physical bounded source");
+ Bytes staged(headers.size()*f.size),aggregate(root.aggregate_bytes);std::vector<Uuid> identities(std::max(2*headers.size()+1,2*borrowed.record->steps.size()+7));
+ {auto guard=f.device.AcquireOperationGuard();allocation_budget=0;
+  const auto bounded=db::EncodeNativeManagementExtentInto(*borrowed.record,root.object_uuid,headers,budget,staged,aggregate,identities);
+  const auto left=allocation_budget;allocation_budget=-1;
+  Check(left==0&&bounded.ok()&&*bounded.root==root,"actual device guard bounded complete extent encoding");
+  for(std::size_t i=0;i<pages.size();++i){const auto bytes=bounded.pages.subspan(i*f.size,f.size);
+   Check(std::equal(pages[i].begin(),pages[i].end(),bytes.begin()),"physical bounded image independent oracle");
+   const auto written=f.device.WriteAt((64+i)*f.size,bytes.data(),bytes.size());Check(written.ok()&&written.bytes_transferred==bytes.size(),"write actual bounded extent output");}
+  Check(f.device.Sync().ok(),"bounded extent sync before reopen");}
  const auto call=[&](){return db::ReadNativeManagementExtentFromOpenDevice(f.file,root,o.database_uuid,o.bootstrap_uuid,budget);};
  io_counting=true;reads=writes=syncs=0;const auto read=call();io_counting=false;const auto sites=reads;Check(read.ok()&&*read.record==o&&writes==0&&syncs==0,"read complete actual extent without writes or syncs");
  Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok()&&call().ok(),"owned reopen");
@@ -304,7 +333,62 @@ void Physical(unsigned profile,bool exact=false){Fixture f(profile);auto o=Recor
  Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"read-only owned reopen");Check(call().ok(),"read-only physical inspection");
  Check(f.device.Close().ok(),"close reader fixture");Failed(call());
 }
-void Test(){BorrowedBounds();for(unsigned profile=0;profile<5;++profile){const u64 cap=d::kCanonicalFilespacePageProfiles[profile].page_size_bytes-384;for(const u64 size:{u64{513},cap,cap+1,2*cap+17}){const auto o=Record(size);Good(o,Headers(o,profile));}Physical(profile);Physical(profile,true);}
+void EncodingBounds(){
+ for(unsigned profile=0;profile<5;++profile)for(bool exact:{false,true}){
+  auto record=Record(d::kCanonicalFilespacePageProfiles[profile].page_size_bytes);
+  if(exact){record.normalized_request_bytes={0,255,1,0,2};record.normalized_request_sha256=Sha(record.normalized_request_bytes);}
+  auto headers=Headers(record,profile);auto expected=ExtentOracle(record,headers);
+  const auto image=db::EncodeNativeManagementExtent(record,Id(5000),headers,budget);Check(image.ok()&&image.pages==expected,"independent extent encoding boundary fixture");
+  ViewBacking backing(expected,*image.root);const auto decoded=db::DecodeNativeManagementExtentInto(backing.pages,*image.root,record.database_uuid,record.bootstrap_uuid,budget,backing.Workspace());Check(decoded.ok(),"bounded immutable operation for extent encoding");
+  auto view=*decoded.record;const auto object=Id(5000);const auto size=headers.front().page_size_bytes;
+  const auto slots=std::max(2*headers.size()+1,2*view.steps.size()+7);
+  Bytes output(headers.size()*size,0xa9),aggregate(Oracle(record).size(),0xb7);
+  const auto untouched=output;const auto original=Oracle(view);std::vector<Uuid> identities(slots);
+  const u64 allowance=output.size()+4*aggregate.size()+2*size;
+  const auto call=[&](const auto& value,std::span<const d::NativeCommonPageHeader> pages,u64 limit,std::span<byte> dest,std::span<byte> work,std::span<Uuid> ids){
+   allocation_budget=0;const auto r=db::EncodeNativeManagementExtentInto(value,object,pages,limit,dest,work,ids);
+   const auto left=allocation_budget;allocation_budget=-1;Check(left==0,"extent encoding and refusals need no C++ allocation");return r;};
+  const auto refuse=[&](const auto& value,std::span<const d::NativeCommonPageHeader> pages,u64 limit,std::span<byte> dest,std::span<byte> work,std::span<Uuid> ids,E error){
+   const auto r=call(value,pages,limit,dest,work,ids);Failed(r);Check(r.error==error&&output==untouched&&Oracle(view)==original,"extent pre-write refusal preserves physical output and input");};
+  for(std::size_t n:{std::size_t{0},std::size_t{1},output.size()-1})refuse(view,headers,budget,std::span<byte>(output).first(n),aggregate,identities,E::resource_exhausted);
+  for(std::size_t n:{std::size_t{0},std::size_t{1},aggregate.size()-1})refuse(view,headers,budget,output,std::span<byte>(aggregate).first(n),identities,E::resource_exhausted);
+  for(std::size_t n:{std::size_t{0},slots-1})refuse(view,headers,budget,output,aggregate,std::span<Uuid>(identities).first(n),E::resource_exhausted);
+  refuse(view,headers,allowance-1,output,aggregate,identities,E::resource_exhausted);
+  refuse(view,{},budget,output,aggregate,identities,E::invalid_request);
+  auto altered=headers;altered[1].page_uuid=altered[0].page_uuid;refuse(view,altered,budget,output,aggregate,identities,E::invalid_identity);
+  altered=headers;altered[1].page_number++;refuse(view,altered,budget,output,aggregate,identities,E::binding_mismatch);
+  auto malformed=view;malformed.uuid={};refuse(malformed,headers,budget,output,aggregate,identities,E::invalid_record);
+  const auto bytes=[](const void* p,std::size_t n){return std::span<byte>{static_cast<byte*>(const_cast<void*>(p)),n};};
+  std::vector<std::span<byte>> inputs{bytes(&view,sizeof(view)),bytes(&object,sizeof(object)),bytes(headers.data(),headers.size()*sizeof(headers[0])),
+    bytes(view.steps.data(),view.steps.size_bytes()),bytes(view.idempotency_key.data(),view.idempotency_key.size()),bytes(view.steps.back().idempotency_key.data(),view.steps.back().idempotency_key.size())};
+  if(exact)inputs.push_back(bytes(view.normalized_request_bytes.data(),view.normalized_request_bytes.size()));
+  for(auto input:inputs){
+   refuse(view,headers,budget,input,aggregate,identities,E::invalid_workspace);
+   refuse(view,headers,budget,output,input,identities,E::invalid_workspace);
+   refuse(view,headers,budget,output,aggregate,{reinterpret_cast<Uuid*>(input.data()),slots},E::invalid_workspace);
+  }
+  refuse(view,headers,budget,output,output,identities,E::invalid_workspace);
+  refuse(view,headers,budget,output,aggregate,{reinterpret_cast<Uuid*>(output.data()),slots},E::invalid_workspace);
+  refuse(view,headers,budget,output,aggregate,{reinterpret_cast<Uuid*>(aggregate.data()),slots},E::invalid_workspace);
+  refuse(view,headers,budget,output,aggregate,{reinterpret_cast<Uuid*>(output.data()+output.size()-1),slots},E::invalid_workspace);
+  refuse(view,{reinterpret_cast<const d::NativeCommonPageHeader*>(reinterpret_cast<const byte*>(headers.data())+1),headers.size()},budget,output,aggregate,identities,E::invalid_workspace);
+  refuse(view,{headers.data(),std::numeric_limits<std::size_t>::max()/sizeof(headers[0])+1},budget,output,aggregate,identities,E::invalid_workspace);
+  malformed=view;malformed.steps={reinterpret_cast<const db::NativeManagementStepView*>(reinterpret_cast<const byte*>(view.steps.data())+1),1};
+  refuse(malformed,headers,budget,output,aggregate,identities,E::invalid_workspace);
+  Bytes spare(output.size()+32,0x91);malformed=view;malformed.idempotency_key={reinterpret_cast<const char*>(spare.data()+output.size()+16),1};
+  refuse(malformed,headers,budget,spare,aggregate,identities,E::invalid_workspace);
+  Check(std::all_of(spare.begin(),spare.end(),[](byte b){return b==0x91;}),"unused physical output suffix remains protected input");
+  const auto accepted=call(view,headers,allowance,output,aggregate,identities);Check(accepted.ok()&&*accepted.root==*image.root,"exact conservative extent allowance succeeds");
+  for(unsigned fault=1;fault<=5;++fault)for(unsigned digest=1;digest<=2*headers.size()+(exact?3u:2u);++digest){
+   hash_fault=fault;hash_target=digest;hash_seen=0;hash_active=false;
+   const auto r=call(view,headers,budget,output,aggregate,identities);const bool consumed=!hash_fault;hash_fault=0;
+   Failed(r);Check(consumed&&r.error==E::hash_failure&&Oracle(view)==original,"all request aggregate and physical page hashes have prefix-free fixed failures");
+   const auto retry=call(view,headers,budget,output,aggregate,identities);Check(retry.ok()&&*retry.root==*image.root,"exact bounded extent retry after provider failure");
+  }
+  EncodingParity(view,headers,*image.root,expected);
+ }
+}
+void Test(){BorrowedBounds();EncodingBounds();for(unsigned profile=0;profile<5;++profile){const u64 cap=d::kCanonicalFilespacePageProfiles[profile].page_size_bytes-384;for(const u64 size:{u64{513},cap,cap+1,2*cap+17}){const auto o=Record(size);Good(o,Headers(o,profile));}Physical(profile);Physical(profile,true);}
  const auto o=Record(2*(8192-384)+17);CodecFaults(o,Headers(o,0));
  auto exact=o;exact.normalized_request_bytes.assign(8192+37,0xab);exact.normalized_request_sha256=Sha(exact.normalized_request_bytes);Good(exact,Headers(exact,0));CodecFaults(exact,Headers(exact,0));
  const auto tiny=Record(513);const auto image=db::EncodeNativeManagementExtent(tiny,Id(5000),Headers(tiny,0),budget);for(std::size_t at=0;at<image.pages[0].size();++at){auto bad=image.pages;bad[0][at]^=1;Failed(Decode(bad,*image.root,tiny.database_uuid,tiny.bootstrap_uuid,budget));}

@@ -6,6 +6,7 @@
 #include "filespace_page_zero.hpp"
 #include <array>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace scratchbird::storage::database {
@@ -59,7 +60,8 @@ struct NativePublicationWatermark {
 };
 enum class NativePublicationWatermarkError {
   none, invalid_header, invalid_family, invalid_identity, invalid_reference,
-  invalid_integrity, hash_failure, resource_exhausted, invalid_pair, repair_required
+  invalid_integrity, hash_failure, resource_exhausted, invalid_pair, repair_required,
+  invalid_backing
 };
 struct NativePublicationWatermarkImage {
   NativePublicationWatermarkError error = NativePublicationWatermarkError::invalid_family;
@@ -70,6 +72,29 @@ struct NativePublicationWatermarkImage {
     return error == NativePublicationWatermarkError::none && state.has_value();
   }
 };
+// Fixed fields only. No retained page copy or source address. These values are
+// image-level evidence, never a generation reservation or publication lease.
+struct NativePublicationWatermarkValue {
+  NativePublicationWatermarkError error=NativePublicationWatermarkError::invalid_family;
+  std::optional<NativePublicationWatermark> state;
+  std::array<byte,32> state_sha256{};
+  bool ok() const noexcept {return error==NativePublicationWatermarkError::none&&state.has_value();}
+};
+struct NativePublicationWatermarkViewImage {
+  NativePublicationWatermarkError error=NativePublicationWatermarkError::invalid_family;
+  std::optional<NativePublicationWatermark> state;
+  std::array<byte,32> state_sha256{};
+  std::span<const byte> bytes;
+  bool ok() const noexcept {return error==NativePublicationWatermarkError::none&&state.has_value()&&!bytes.empty();}
+};
+// The complete output must exclude the input value; only one physical-page
+// prefix is initialized. A failure returns no usable prefix, though late hash
+// failure may leave staging bytes. Memory admission precedes device guards.
+NativePublicationWatermarkViewImage EncodeNativePublicationWatermarkInto(
+    const NativePublicationWatermark&,std::span<byte>) noexcept;
+NativePublicationWatermarkValue DecodeNativePublicationWatermarkValue(std::span<const byte>) noexcept;
+NativePublicationWatermarkValue ClassifyNativePublicationWatermarkPairValue(
+    std::span<const byte>,std::span<const byte>) noexcept;
 NativePublicationWatermarkImage EncodeNativePublicationWatermark(
     const NativePublicationWatermark&) noexcept;
 NativePublicationWatermarkImage DecodeNativePublicationWatermark(

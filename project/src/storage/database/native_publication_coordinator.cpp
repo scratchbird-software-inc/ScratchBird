@@ -56,7 +56,7 @@ struct Context {
   NativeBoundCheckpointSelection bound;
   std::array<disk::NativeCommonPageHeader,2> headers;
   std::array<std::vector<byte>,2> bytes;
-  std::array<NativePublicationWatermarkImage,2> decoded;
+  std::array<NativePublicationWatermarkValue,2> decoded;
   NativePublicationSnapshot snapshot;
   bool stable=false;
   NativePublicationEffects local_effects{true};
@@ -166,18 +166,17 @@ std::unique_ptr<Context> Prepare(const Uuid& database,const std::vector<disk::Na
       if(bound_header.error==disk::NativeCommonPageHeaderError::resource_exhausted)throw E::resource_exhausted;
       Require(bound_header.ok()&&common.header->flags==0&&common.header->page_size_bytes==size,E::binding_mismatch);
     }
-    c->decoded[i]=DecodeNativePublicationWatermark(bytes);auto& d=c->decoded[i];Backend(d.error);
+    c->decoded[i]=DecodeNativePublicationWatermarkValue(bytes);auto& d=c->decoded[i];Backend(d.error);
     if(d.ok()){
       const disk::NativeCommonPageHeaderBinding expected{binding,root->page_number,root->page_generation,0x500,allocation->page_uuid};
       Require(disk::DecodeNativeCommonPageHeader(bytes.data(),128,&expected).ok()&&d.state->object_uuid==root->object_uuid,E::binding_mismatch);
       BindState(*c,*d.state);
     }
-    std::vector<byte>().swap(d.bytes);
   }
   Require(c->headers[0].page_uuid!=c->headers[1].page_uuid,E::allocation_mismatch);
   unsigned selected=0;
   if(c->decoded[0].ok()&&c->decoded[1].ok()){
-    const auto pair=ClassifyNativePublicationWatermarkPair(c->bytes[0],c->bytes[1]);Backend(pair.error);
+    const auto pair=ClassifyNativePublicationWatermarkPairValue(c->bytes[0],c->bytes[1]);Backend(pair.error);
     c->stable=pair.ok();
     if(!c->stable)Require(pair.error==NativePublicationWatermarkError::repair_required&&
       (c->decoded[0].state->watermark>c->decoded[1].state->watermark||
@@ -277,7 +276,7 @@ NativePublicationReservation ReserveNativePublicationGenerationOnOpenDevices(con
     w.abandonment.reset();
     const auto& s=c->snapshot.selection;w.base_checkpoint=s.checkpoint;w.base_checkpoint_object_uuid=s.checkpoint_object_uuid;
     w.base_checkpoint_sha256=s.checkpoint_sha256;w.base_checkpoint_generation=s.checkpoint_generation;w.base_root_set_generation=s.root_set_generation;
-    auto images=EncodePair(*c,w);const auto encoded=DecodeNativePublicationWatermark(images[0]);Backend(encoded.error);Require(encoded.ok(),E::image_failure);
+    auto images=EncodePair(*c,w);const auto encoded=DecodeNativePublicationWatermarkValue(images[0]);Backend(encoded.error);Require(encoded.ok(),E::image_failure);
     auto impl=std::make_unique<NativePublicationLease::Impl>();impl->snapshot={s,*encoded.state,encoded.state_sha256};impl->context=std::move(c);
     auto lease=std::unique_ptr<NativePublicationLease>(new NativePublicationLease(std::move(impl)));
     std::vector<byte> scratch(lease->impl_->context->zero.bootstrap.page_size_bytes);
@@ -337,7 +336,7 @@ static NativePublicationInspection AbandonNativeControlPublicationOnOpenDevices(
       Require(SameBase(expected,c->snapshot),E::stale_base);
       next.abandonment=NativePublicationWatermark::Abandonment{resolution,c->snapshot.state_sha256};
     }
-    auto images=EncodePair(*c,next);const auto decoded=DecodeNativePublicationWatermark(images[0]);Backend(decoded.error);Require(decoded.ok(),E::image_failure);
+    auto images=EncodePair(*c,next);const auto decoded=DecodeNativePublicationWatermarkValue(images[0]);Backend(decoded.error);Require(decoded.ok(),E::image_failure);
     NativePublicationSnapshot planned{c->snapshot.selection,*decoded.state,decoded.state_sha256};std::vector<byte> scratch(size);
     c->effects=&effects;Publish(*c,images,scratch);
     auto final=Prepare(database,devices,primary,budget-used+6*size,true,false);charge(final->bound.retained_image_bytes);
@@ -412,9 +411,8 @@ NativePublicationInspection InstallNativeManagementPublicationOnLease(NativePubl
     next.publication_plan=NativePublicationWatermark::PlanAnchor{
       {plan.header.filespace_uuid,plan.header.page_number,plan.header.page_generation,plan.header.page_size_profile_uuid},
       plan.object_uuid,image.sha256,plan.reservation_state_sha256};
-    auto images=EncodePair(*c,next);auto decoded=DecodeNativePublicationWatermark(images[0]);Backend(decoded.error);Require(decoded.ok(),E::image_failure);
+    auto images=EncodePair(*c,next);auto decoded=DecodeNativePublicationWatermarkValue(images[0]);Backend(decoded.error);Require(decoded.ok(),E::image_failure);
     NativePublicationSnapshot snapshot{c->snapshot.selection,*decoded.state,decoded.state_sha256};
-    std::vector<byte>().swap(decoded.bytes);
     static_assert(std::is_nothrow_copy_assignable_v<NativePublicationSnapshot>);
     for(unsigned i=0;i<2;++i){auto& slot=c->decoded[i];slot.error=NativePublicationWatermarkError::none;
       slot.state=next;slot.state->header=c->headers[i];slot.state_sha256=snapshot.state_sha256;}
@@ -607,8 +605,8 @@ NativePublicationInspection InstallNativeManagementControlGraphOnLease(NativePub
       read(target,target.before);if(!original.publication_plan)Require(std::all_of(target.before.begin(),target.before.end(),[](byte b){return !b;}),E::preimage_changed);
     }
     auto next=original;next.publication_plan=NativePublicationWatermark::PlanAnchor{ControlRef(plan.header),plan.object_uuid,image.sha256,plan.reservation_state_sha256};
-    auto images=EncodePair(*c,next);auto decoded=DecodeNativePublicationWatermark(images[0]);Backend(decoded.error);Require(decoded.ok(),E::image_failure);
-    NativePublicationSnapshot snapshot{c->snapshot.selection,*decoded.state,decoded.state_sha256};Bytes().swap(decoded.bytes);
+    auto images=EncodePair(*c,next);auto decoded=DecodeNativePublicationWatermarkValue(images[0]);Backend(decoded.error);Require(decoded.ok(),E::image_failure);
+    NativePublicationSnapshot snapshot{c->snapshot.selection,*decoded.state,decoded.state_sha256};
     for(unsigned i=0;i<2;++i){auto& slot=c->decoded[i];slot.error=NativePublicationWatermarkError::none;slot.state=next;slot.state->header=c->headers[i];slot.state_sha256=snapshot.state_sha256;}
     c->snapshot=snapshot;c->stable=true;
     const auto install=[&](std::size_t first,std::size_t end){for(std::size_t n=end;n>first;--n){auto& target=artifacts[n-1];read(target,scratch);Require(scratch==target.before,E::preimage_changed);
@@ -1059,8 +1057,11 @@ OwnedInventoryGraph AssembleInventory(Context& context,
     if(!encoded.ok())throw encoded.error==page::NativeAllocationError::resource_exhausted?E::resource_exhausted:
       encoded.error==page::NativeAllocationError::hash_failure?E::hash_failure:E::image_failure;
   }
+  const auto inventory_scratch_count=inventory_images.empty()?0:std::min<u64>(per_inventory,inventory.entries.size());
+  std::vector<std::size_t> inventory_indices(inventory_scratch_count);
+  std::vector<byte> inventory_markers(inventory_scratch_count);
   for(std::size_t i=0;i<inventory_images.size();++i) {
-    page::NativeTransactionInventoryPage image;image.header=inventory_headers[i];image.object_uuid=inventory_root.object_uuid;
+    page::NativeTransactionInventoryPageConstView image;image.header=inventory_headers[i];image.object_uuid=inventory_root.object_uuid;
     image.inventory_generation=watermark.watermark;
     image.previous=i?std::optional{ControlRef(inventory_headers[i-1])}:std::nullopt;
     image.next=i+1<inventory_headers.size()?std::optional{ControlRef(inventory_headers[i+1])}:std::nullopt;
@@ -1068,11 +1069,11 @@ OwnedInventoryGraph AssembleInventory(Context& context,
     image.inventory.next_commit_sequence=inventory.next_commit_sequence;
     const auto first=std::min<u64>(i*per_inventory,inventory.entries.size());
     const auto count=std::min<u64>(per_inventory,inventory.entries.size()-first);
-    image.inventory.entries.assign(inventory.entries.begin()+first,inventory.entries.begin()+first+count);
-    auto encoded=page::EncodeNativeTransactionInventoryPage(image);
+    image.inventory.entries=std::span<const mga::TransactionInventoryEntry>(inventory.entries).subspan(first,count);
+    inventory_images[i].resize(size);
+    auto encoded=page::EncodeNativeTransactionInventoryPageInto(image,inventory_images[i],inventory_indices,inventory_markers);
     if(!encoded.ok())throw encoded.error==page::NativeInventoryError::resource_exhausted?E::resource_exhausted:
       encoded.error==page::NativeInventoryError::hash_failure?E::hash_failure:E::image_failure;
-    inventory_images[i]=std::move(encoded.bytes);
   }
   auto extent=EncodeNativeManagementExtent(record,extent_object,extent_headers,budget);ControlExtentError(extent.error);
   if(growth){auto after=*growth_before;++after.page_generation;++after.root_set_generation;after.total_pages+=preallocation->page_count;
@@ -1145,7 +1146,9 @@ OwnedInventoryGraph AssembleInventory(Context& context,
   auto checkpoint=EncodeNativeCheckpointRoot(target);ControlCheckpointError(checkpoint.error);
   const auto projection=ComputeNativePublicationTargetGraphDigest(checkpoint.bytes);ControlPlanError(projection.error);
   plan.target_graph_sha256=projection.sha256;
-  const auto plan_image=EncodeNativePublicationPlan(plan);ControlPlanError(plan_image.error);
+  // The first checkpoint image has served its projection purpose. Reuse those
+  // bytes for the plan digest before constructing the final checkpoint below.
+  const auto plan_image=EncodeNativePublicationPlanInto(plan,checkpoint.bytes);ControlPlanError(plan_image.error);
   std::find_if(target.roots.begin(),target.roots.end(),[](const auto& r){return r.role==16;})->sha256=plan_image.sha256;
   checkpoint=EncodeNativeCheckpointRoot(target);ControlCheckpointError(checkpoint.error);
   graph.checkpoint=std::move(checkpoint.bytes);graph.extent=std::move(extent.pages);graph.bundle=std::move(bundle.pages);

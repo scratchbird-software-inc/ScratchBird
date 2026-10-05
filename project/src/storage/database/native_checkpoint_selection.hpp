@@ -47,6 +47,17 @@ struct NativeCheckpointSelectionValue {
   std::optional<NativeCheckpointSelection> selection;
   bool ok() const noexcept {return error==NativeCheckpointSelectionError::none&&selection.has_value();}
 };
+struct NativeCheckpointSelectionViewImage {
+  NativeCheckpointSelectionError error=NativeCheckpointSelectionError::invalid_family;
+  std::optional<NativeCheckpointSelection> selection;
+  std::span<const byte> bytes;
+  bool ok() const noexcept {return error==NativeCheckpointSelectionError::none&&selection.has_value()&&!bytes.empty();}
+};
+// Complete output excludes the fixed input, including its optional predecessor.
+// Exactly one physical-page prefix is initialized; late failure may leave
+// staging bytes but returns no selection/image. No publication authority.
+NativeCheckpointSelectionViewImage EncodeNativeCheckpointSelectionInto(
+    const NativeCheckpointSelection&,std::span<byte>) noexcept;
 NativeCheckpointSelectionValue DecodeNativeCheckpointSelectionValue(std::span<const byte>) noexcept;
 NativeCheckpointSelectionImage EncodeNativeCheckpointSelection(const NativeCheckpointSelection&) noexcept;
 NativeCheckpointSelectionImage DecodeNativeCheckpointSelection(const std::vector<byte>&) noexcept;

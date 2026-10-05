@@ -5,8 +5,11 @@
 #include <openssl/sha.h>
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
+#include <cstddef>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <new>
 #include <source_location>
 #include <stdexcept>
@@ -101,7 +104,106 @@ void Empty(const db::NativePublicationWatermarkImage& r) {
   Check(!r.ok()&&!r.state&&r.bytes.empty()&&std::all_of(r.state_sha256.begin(),r.state_sha256.end(),[](byte v){return !v;}),
         "no state/image/digest on failure");
 }
-void Invalid(const db::NativePublicationWatermark& s){Empty(db::EncodeNativePublicationWatermark(s));Empty(db::DecodeNativePublicationWatermark(Oracle(s)));}
+template<class Call> auto NoHeap(Call&& call){
+  allocations=0;counting=true;allocation_budget=0;auto result=call();
+  const auto count=allocations;const auto left=allocation_budget;
+  allocation_budget=-1;counting=false;
+  Check(count==0&&left==0,"bounded watermark makes no C++ allocation on success or failure");return result;
+}
+template<class Result> void EmptyFixed(const Result& r){
+  Check(!r.ok()&&!r.state&&std::all_of(r.state_sha256.begin(),r.state_sha256.end(),[](byte v){return !v;}),
+    "fixed watermark failure has no state or digest prefix");
+  if constexpr(requires{r.bytes;})Check(r.bytes.empty(),"failed bounded watermark has no usable image");
+}
+void DecodeParity(const Bytes& image){
+  const auto expected=db::DecodeNativePublicationWatermark(image);
+  const auto actual=NoHeap([&]{return db::DecodeNativePublicationWatermarkValue(image);});
+  Check(actual.error==expected.error,"fixed decode preserves exact error class");
+  if(actual.ok())Check(Oracle(*actual.state)==image&&actual.state_sha256==expected.state_sha256,"fixed decode retains all fields");
+  else EmptyFixed(actual);
+}
+void Invalid(const db::NativePublicationWatermark& s){
+  const auto expected=db::EncodeNativePublicationWatermark(s);Empty(expected);
+  Bytes output(d::kCanonicalFilespacePageProfiles.back().page_size_bytes,0xa5);
+  const auto actual=NoHeap([&]{return db::EncodeNativePublicationWatermarkInto(s,output);});
+  EmptyFixed(actual);Check(actual.error==expected.error,"bounded malformed input preserves exact error");
+  const auto image=Oracle(s);Empty(db::DecodeNativePublicationWatermark(image));DecodeParity(image);
+}
+void Bounded(const db::NativePublicationWatermark& state){
+  const auto expected=Oracle(state),other=Oracle(Other(state));
+  Bytes output(expected.size()+2,0xa5);auto span=std::span(output).subspan(1,expected.size());
+  const auto check_image=[&](const auto& result){Check(result.ok()&&result.bytes.data()==span.data()&&
+    result.bytes.size()==expected.size()&&std::equal(result.bytes.begin(),result.bytes.end(),expected.begin())&&
+    Oracle(*result.state)==expected&&std::equal(result.state_sha256.begin(),result.state_sha256.end(),expected.begin()+368),
+    "bounded encoding exact independent bytes and complete value");};
+  check_image(NoHeap([&]{return db::EncodeNativePublicationWatermarkInto(state,span);}));
+  Check(output.front()==0xa5&&output.back()==0xa5,"unaligned encoding preserves prefix and suffix");
+  const auto wide=NoHeap([&]{return db::EncodeNativePublicationWatermarkInto(state,std::span(output).subspan(1));});
+  check_image(wide);Check(output.back()==0xa5,"oversized destination keeps suffix unchanged");
+  for(const auto size:{std::size_t(0),std::size_t(1),expected.size()-1}){
+    std::fill(output.begin(),output.end(),0xa5);
+    const auto r=NoHeap([&]{return db::EncodeNativePublicationWatermarkInto(state,span.first(size));});
+    EmptyFixed(r);Check(r.error==E::resource_exhausted&&std::all_of(output.begin(),output.end(),[](byte v){return v==0xa5;}),"short backing refuses before output write");
+  }
+  auto alias=state;std::array<byte,sizeof(alias)> before{};std::memcpy(before.data(),&alias,sizeof(alias));
+  for(auto offset:{std::size_t(0),sizeof(alias)-1}){
+    const auto r=NoHeap([&]{return db::EncodeNativePublicationWatermarkInto(alias,{reinterpret_cast<byte*>(&alias)+offset,sizeof(alias)-offset});});
+    EmptyFixed(r);Check(r.error==E::invalid_backing&&std::memcmp(before.data(),&alias,sizeof(alias))==0,"entire input value excluded before modification");
+  }
+  // A suffix alias is forbidden even when the written physical prefix would
+  // not itself overwrite the input. Use a real aligned object in valid storage.
+  constexpr auto suffix_offset=d::kCanonicalFilespacePageProfiles.back().page_size_bytes;
+  std::vector<std::max_align_t> shared((suffix_offset+sizeof(state)+sizeof(std::max_align_t)-1)/sizeof(std::max_align_t));
+  auto* bytes=reinterpret_cast<byte*>(shared.data());auto* suffix=std::construct_at(reinterpret_cast<db::NativePublicationWatermark*>(bytes+suffix_offset),state);
+  const Bytes shared_before(bytes,bytes+shared.size()*sizeof(std::max_align_t));
+  const auto overlap=NoHeap([&]{return db::EncodeNativePublicationWatermarkInto(*suffix,{bytes,shared_before.size()});});
+  EmptyFixed(overlap);Check(overlap.error==E::invalid_backing&&std::equal(shared_before.begin(),shared_before.end(),bytes),"suffix input alias preserves all bytes");std::destroy_at(suffix);
+  DecodeParity(expected);
+  for(const auto size:{std::size_t(0),std::size_t(127),expected.size()-1,expected.size()+1}){
+    auto short_image=expected;short_image.resize(size);DecodeParity(short_image);
+  }
+  for(const auto at:{std::size_t(0),std::size_t(128),std::size_t(136),std::size_t(368),std::size_t(400),std::size_t(767),expected.size()-1}){
+    auto corrupt=expected;corrupt[at]^=1;DecodeParity(corrupt);
+    if(at>=128){Seal(corrupt);DecodeParity(corrupt);}
+  }
+  auto torn=other;torn.back()^=1;
+  auto next=Next(Other(state));next.publication_plan.reset();next.abandonment.reset();
+  const auto next_bytes=Oracle(next);
+  for(const auto* first:std::array<const Bytes*,2>{&expected,&torn})for(const auto* second:std::array<const Bytes*,4>{&other,&expected,&torn,&next_bytes}){
+    const auto expected_pair=db::ClassifyNativePublicationWatermarkPair(*first,*second);
+    const auto actual=NoHeap([&]{return db::ClassifyNativePublicationWatermarkPairValue(*first,*second);});
+    Check(actual.error==expected_pair.error,"fixed stable damaged adjacent and conflicting pair parity");
+    if(actual.ok())Check(Oracle(*actual.state)==*first&&actual.state_sha256==expected_pair.state_sha256,"stable pair returns exact first state");else EmptyFixed(actual);
+  }
+  const unsigned sites=2+state.publication_plan.has_value()+state.abandonment.has_value();
+  for(unsigned route=0;route<3;++route)for(unsigned mode=1;mode<=5;++mode)for(unsigned site=1;site<=sites*(route==2?2u:1u);++site){
+    hash_fault=mode;hash_target=site;hash_seen=0;hash_active=false;
+    if(!route){const auto r=NoHeap([&]{return db::EncodeNativePublicationWatermarkInto(state,span);});EmptyFixed(r);Check(r.error==E::hash_failure&&!hash_fault,"every bounded encoder hash fault consumed");}
+    else {const auto r=NoHeap([&]{return route==1?db::DecodeNativePublicationWatermarkValue(expected):db::ClassifyNativePublicationWatermarkPairValue(expected,other);});EmptyFixed(r);Check(r.error==E::hash_failure&&!hash_fault,"every fixed decoder/pair hash fault consumed");}
+    hash_active=false;check_image(NoHeap([&]{return db::EncodeNativePublicationWatermarkInto(state,span);}));
+    const auto decoded=NoHeap([&]{return db::DecodeNativePublicationWatermarkValue(expected);});
+    const auto pair=NoHeap([&]{return db::ClassifyNativePublicationWatermarkPairValue(expected,other);});
+    Check(decoded.ok()&&pair.ok()&&decoded.state_sha256==pair.state_sha256,"exact retry after each provider fault");
+  }
+}
+void BoundedTests(){
+  for(unsigned profile=0;profile<5;++profile){Bounded(Example(profile));Bounded(Next(Example(profile)));
+    for(unsigned kind=0;kind<6;++kind)for(bool attached:{false,true})for(bool resolved:{false,true}){
+      if(resolved&&(kind!=1&&kind!=2))continue;
+      auto state=Next(Example(profile));state.intent=db::NativePublicationIntent{Id(40),Id(41),Id(42),{},4,u16(kind==5?2:kind)};
+      state.intent->normalized_request_sha256.fill(43);
+      if(kind==5)state.intent->startup_binding=db::NativeStartupBinding{Id(50),Id(51),Id(52),13,19};
+      if(attached){const auto origin=Oracle(state);db::NativePublicationWatermark::PlanAnchor anchor;
+        anchor.page={Id(2),30,2,state.header.page_size_profile_uuid};anchor.object_uuid=Id(44);anchor.sha256.fill(45);
+        std::copy_n(origin.begin()+368,32,anchor.reservation_state_sha256.begin());state.publication_plan=anchor;}
+      if(resolved){const auto pending=Oracle(state);state.abandonment=db::NativePublicationWatermark::Abandonment{Id(46),{}};
+        std::copy_n(pending.begin()+368,32,state.abandonment->pending_state_sha256.begin());}
+      Bounded(state);
+    }
+    auto overflow=Example(profile);overflow.base_checkpoint.page_number=u64(std::numeric_limits<std::streamoff>::max())/overflow.header.page_size_bytes;
+    Invalid(overflow);
+  }
+}
 void IntentTests(){
   for(unsigned profile=0;profile<5;++profile){auto state=Next(Example(profile));
     db::NativePublicationIntent intent;intent.initiator_uuid=Id(40);intent.request_context_uuid=Id(41);intent.policy_snapshot_uuid=Id(42);
@@ -272,6 +374,7 @@ void StartupBindingTests() {
   }
 }
 void Test() {
+  BoundedTests();
   StartupBindingTests();
   for(unsigned recovery=3;recovery<=4;++recovery)for(unsigned profile=0;profile<5;++profile)for(bool attached:{false,true}){
     auto state=Next(Example(profile));state.intent=db::NativePublicationIntent{Id(40),Id(41),Id(42),{},4,u16(recovery)};

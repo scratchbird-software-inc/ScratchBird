@@ -26,9 +26,6 @@ void Put(byte* p,const Uuid& id){std::copy(id.bytes.begin(),id.bytes.end(),p);}
 Uuid Get(const byte* p){Uuid id;std::copy_n(p,16,id.bytes.begin());return id;}
 E RecordError(NativeManagementOperationError e){return e==NativeManagementOperationError::resource_exhausted?E::resource_exhausted:e==NativeManagementOperationError::hash_failure?E::hash_failure:E::invalid_record;}
 template<class T>T Fail(E e){T r;r.error=e;return r;}
-auto Hash(const Bytes& b){const auto r=core::hash::ComputeSha256Digest(b);Require(r.ok(),E::hash_failure);return r.digest;}
-auto Seal(const Bytes& b){const std::array<byte,32> zero{};const core::hash::HashDigestSegment parts[]={{b.data(),320},{zero.data(),32},{b.data()+352,b.size()-352}};
-  const auto r=core::hash::ComputeSha256DigestParts(parts,3);Require(r.ok(),E::hash_failure);return r.digest;}
 E CheckShape(const Root& r,const Uuid& database,const Uuid& bootstrap,u64 budget,u32& size,bool require_root_digest=true){
   const auto* profile=disk::FindCanonicalFilespacePageProfile(r.first.page_size_profile_uuid);
   if(!profile||!V7(database)||!V7(bootstrap)||!V7(r.object_uuid)||!V7(r.operation_uuid)||
@@ -90,6 +87,24 @@ E Common(const disk::NativeCommonPageHeader& h,const Root& r,const Uuid& databas
      h.page_uuid==r.object_uuid||h.page_uuid==r.operation_uuid||!ids.Insert(h.page_uuid))
     return E::invalid_identity;
   return E::none;
+}
+E EncodePage(const Root& root,const disk::NativeCommonPageHeader& header,
+    const Uuid& bootstrap,std::span<const byte> aggregate,u32 index,
+    std::array<byte,32>& next,std::span<byte> b){
+  const auto encoded=disk::EncodeNativeCommonPageHeader(header);if(!encoded.ok())return E::invalid_header;
+  std::fill(b.begin(),b.end(),0);std::copy(encoded.bytes->begin(),encoded.bytes->end(),b.begin());auto* f=b.data()+128;
+  const u64 capacity=b.size()-384,offset=u64{index}*capacity;
+  const u32 length=std::min<u64>(capacity,u64{root.aggregate_bytes}-offset);
+  std::copy_n("SBMGP001",8,f);StoreLittle16(f+8,1);StoreLittle16(f+10,256);StoreLittle32(f+12,384+length);
+  Put(f+16,root.object_uuid);Put(f+32,bootstrap);Put(f+48,root.operation_uuid);StoreLittle64(f+64,root.revision);
+  StoreLittle32(f+72,root.aggregate_bytes);StoreLittle32(f+76,offset);StoreLittle32(f+80,index);StoreLittle32(f+84,root.page_count);StoreLittle64(f+88,root.first.page_number);
+  std::copy(root.aggregate_sha256.begin(),root.aggregate_sha256.end(),f+96);StoreLittle32(f+128,length);std::copy(next.begin(),next.end(),f+160);
+  std::copy_n(aggregate.begin()+offset,length,b.begin()+384);
+  const std::array<byte,32> zero{};const core::hash::HashDigestSegment parts[]={{b.data(),320},{zero.data(),32},{b.data()+352,b.size()-352}};
+  const auto seal=core::hash::ComputeSha256DigestPartsNative(parts,3);if(!seal.ok())return E::hash_failure;
+  std::copy(seal.digest.begin(),seal.digest.end(),f+192);
+  const auto digest=core::hash::ComputeSha256DigestNative(b.data(),b.size());if(!digest.ok())return E::hash_failure;
+  next=digest.digest;return E::none;
 }
 bool WorkspaceValid(std::span<const std::span<const byte>> pages,const Root& root,
     const Uuid& database,const Uuid& bootstrap,const NativeManagementExtentViewWorkspace& w){
@@ -190,21 +205,47 @@ NativeManagementExtentImage EncodeNativeManagementExtent(const NativeManagementO
     root.operation_uuid=record.uuid;root.revision=record.revision;root.aggregate_bytes=aggregate.bytes.size();
     Require(headers.size()<=std::numeric_limits<u32>::max(),E::resource_exhausted);root.page_count=headers.size();root.aggregate_sha256=aggregate.sha256;
     // The root commitment is produced only after all actual page hashes exist.
-    const auto size=Shape(root,record.database_uuid,record.bootstrap_uuid,budget,false),capacity=size-384;
+    const auto size=Shape(root,record.database_uuid,record.bootstrap_uuid,budget,false);
     OwnedIdentities ids;for(u32 i=0;i<root.page_count;++i){const auto error=Common(headers[i],root,record.database_uuid,record.bootstrap_uuid,size,i,ids);Require(error==E::none,error);}
     std::vector<Bytes> pages(root.page_count);std::array<byte,32> next{};
-    for(u32 remaining=root.page_count;remaining;--remaining){const auto i=remaining-1;const auto encoded=disk::EncodeNativeCommonPageHeader(headers[i]);Require(encoded.ok(),E::invalid_header);
-      auto& b=pages[i];b.resize(size);std::copy(encoded.bytes->begin(),encoded.bytes->end(),b.begin());auto* f=b.data()+128;
-      const u64 offset=u64{i}*capacity;const u32 length=std::min<u64>(capacity,u64{root.aggregate_bytes}-offset);
-      std::copy_n("SBMGP001",8,f);StoreLittle16(f+8,1);StoreLittle16(f+10,256);StoreLittle32(f+12,384+length);
-      Put(f+16,object);Put(f+32,record.bootstrap_uuid);Put(f+48,record.uuid);StoreLittle64(f+64,record.revision);
-      StoreLittle32(f+72,root.aggregate_bytes);StoreLittle32(f+76,offset);StoreLittle32(f+80,i);StoreLittle32(f+84,root.page_count);StoreLittle64(f+88,h.page_number);
-      std::copy(aggregate.sha256.begin(),aggregate.sha256.end(),f+96);StoreLittle32(f+128,length);std::copy(next.begin(),next.end(),f+160);
-      std::copy_n(aggregate.bytes.begin()+offset,length,b.begin()+384);const auto seal=Seal(b);std::copy(seal.begin(),seal.end(),f+192);next=Hash(b);
+    for(u32 remaining=root.page_count;remaining;--remaining){const auto i=remaining-1;
+      auto& b=pages[i];b.resize(size);const auto error=EncodePage(root,headers[i],record.bootstrap_uuid,aggregate.bytes,i,next,b);Require(error==E::none,error);
     }
     root.first_page_sha256=next;return {E::none,root,std::move(pages)};
   }catch(E e){return Fail<NativeManagementExtentImage>(e);}catch(const std::bad_alloc&){return Fail<NativeManagementExtentImage>(E::resource_exhausted);}
   catch(const std::length_error&){return Fail<NativeManagementExtentImage>(E::resource_exhausted);}catch(...){return Fail<NativeManagementExtentImage>(E::invalid_record);}
+}
+NativeManagementExtentEncoding EncodeNativeManagementExtentInto(
+    const NativeManagementOperationView& record,const Uuid& object,
+    std::span<const disk::NativeCommonPageHeader> headers,u64 budget,std::span<byte> output,
+    std::span<byte> aggregate,std::span<Uuid> identities) noexcept {
+  using disk::detail::DisjointNativeDecodeRegions;
+  const auto fail=[](E e){return Fail<NativeManagementExtentEncoding>(e);};
+  const auto excludes=[&](auto input){return DisjointNativeDecodeRegions(input,output,aggregate,identities);};
+  const auto bytes=[](std::string_view key){return std::span<const byte>{reinterpret_cast<const byte*>(key.data()),key.size()};};
+  if(!excludes(std::span(&record,1))||!excludes(std::span(&object,1))||!excludes(headers)||
+     !excludes(record.steps)||!excludes(record.normalized_request_bytes)||!excludes(bytes(record.idempotency_key))||
+     (!headers.empty()&&reinterpret_cast<std::uintptr_t>(headers.data())%alignof(disk::NativeCommonPageHeader))||
+     (!record.steps.empty()&&reinterpret_cast<std::uintptr_t>(record.steps.data())%alignof(NativeManagementStepView)))return fail(E::invalid_workspace);
+  for(const auto& step:record.steps)if(!excludes(bytes(step.idempotency_key)))return fail(E::invalid_workspace);
+  if(headers.empty())return fail(E::invalid_request);
+  if(headers.size()>std::numeric_limits<u32>::max()||headers.size()>(std::numeric_limits<std::size_t>::max()-1)/2||
+     identities.size()<2*headers.size()+1)return fail(E::resource_exhausted);
+  const auto encoded=EncodeNativeManagementOperationInto(record,budget,aggregate,identities);
+  if(!encoded.ok())return fail(encoded.error==NativeManagementOperationError::invalid_workspace?E::invalid_workspace:RecordError(encoded.error));
+  const auto& h=headers.front();Root root;root.first={h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid};
+  root.object_uuid=object;root.operation_uuid=record.uuid;root.revision=record.revision;
+  root.aggregate_bytes=encoded.bytes.size();root.page_count=headers.size();root.aggregate_sha256=encoded.sha256;
+  u32 size=0;const auto shape=CheckShape(root,record.database_uuid,record.bootstrap_uuid,budget,size,false);if(shape!=E::none)return fail(shape);
+  if(headers.size()>output.size()/size)return fail(E::resource_exhausted);
+  BoundedIdentities ids(identities.first(2*headers.size()+1));
+  for(u32 i=0;i<root.page_count;++i){const auto error=Common(headers[i],root,record.database_uuid,record.bootstrap_uuid,size,i,ids);if(error!=E::none)return fail(error);}
+  auto pages=output.first(headers.size()*size);std::array<byte,32> next{};
+  for(u32 remaining=root.page_count;remaining;--remaining){const auto i=remaining-1;
+    const auto error=EncodePage(root,headers[i],record.bootstrap_uuid,encoded.bytes,i,next,pages.subspan(std::size_t{i}*size,size));
+    if(error!=E::none)return fail(error);
+  }
+  root.first_page_sha256=next;return {E::none,root,pages};
 }
 NativeManagementExtentRead DecodeNativeManagementExtent(const std::vector<Bytes>& pages,const Root& r,const Uuid& database,const Uuid& bootstrap,u64 budget) noexcept {
   try{return Decode<false>(pages,r,database,bootstrap,budget);}

@@ -75,7 +75,7 @@ std::atomic<unsigned> historical_read_pause{0};
 #ifdef NATIVE_HISTORICAL_BUNDLE_SIZE_FAULTS
 unsigned historical_stats=0,historical_stat_fault=0;bool historical_stat_counting=false;
 #endif
-bool repeated_entropy=false;
+bool repeated_entropy=false,qualify_bundle_encoding=false;
 std::atomic<bool> owned_clock_controlled{false};
 std::atomic<std::uint64_t> owned_clock_millis{1700000000123ULL},owned_clock_ticks{1};
 off_t corrupt_offset=0;bool corrupt_was_zero=false;
@@ -379,11 +379,55 @@ db::NativeManagementControlBundleRead DecodeBundle(const Pages& pages,const db::
  }
  return result;
 }
+void BoundedBundleEncodingChecks(const Pages& pages,const db::NativeManagementControlBundleRoot& root,
+ const Uuid& database,const Uuid& bootstrap,u64 budget){
+ using Error=db::NativeManagementControlBundleError;
+ BundleBacking source(pages),scratch(pages);
+ const auto view=db::DecodeNativeManagementControlBundleInto(source.pages,root,database,bootstrap,budget,source.bytes);Check(view.ok(),"complete independent encoding input");
+ const auto size=pages.front().size(),total=pages.size()*size;
+ Bytes output(total+19,0xa7);auto dest=std::span<byte>(output).subspan(1);
+ const auto call=[&](std::span<byte> target,std::span<byte> work,u64 allowance){
+  allocation_budget=0;const auto result=db::EncodeNativeManagementControlBundleInto(view.allocation_images,database,bootstrap,root.object_uuid,root.operation_uuid,
+   view.page_headers,allowance,target,work,view.inventory_images,view.directory_images,view.growth_images);
+  const auto left=allocation_budget;allocation_budget=-1;Check(left==0,"complete bundle encoding uses caller metadata and payload backing");return result;
+ };
+ const auto empty=[&](const auto& result){Check(!result.ok()&&!result.root&&result.pages.empty()&&!result.backing_bytes_used,"bounded encoded bundle failure exposes no prefix");};
+ const auto equal=[&](const auto& result){Check(result.ok()&&*result.root==root&&result.pages.size()==total&&result.pages.data()==dest.data()&&
+   result.backing_bytes_used&&result.backing_bytes_used<=scratch.bytes.size(),"bounded complete bundle root and retained output");
+  for(std::size_t i=0;i<pages.size();++i)Check(std::equal(pages[i].begin(),pages[i].end(),result.pages.begin()+i*size),"full bounded bundle bytes match independent physical oracle");
+  Check(output.front()==0xa7&&std::all_of(output.begin()+1+total,output.end(),[](byte b){return b==0xa7;}),"unaligned encoded bundle preserves unused output");};
+ const auto baseline=call(dest,scratch.bytes,budget);equal(baseline);const auto used=baseline.backing_bytes_used;
+ equal(call(dest,std::span<byte>(scratch.bytes).first(used),budget));
+ const auto before=output;
+ for(const auto n:{std::size_t{0},std::size_t{1},used/2,used-1}){const auto r=call(dest,std::span<byte>(scratch.bytes).first(n),budget);
+  empty(r);Check(r.error==Error::resource_exhausted&&output==before,"exact and short encoding backing refuses before physical output");}
+ for(const auto n:{std::size_t{0},std::size_t{1},total-1}){const auto r=call(dest.first(n),scratch.bytes,budget);
+  empty(r);Check(r.error==Error::resource_exhausted&&output==before,"short physical output retains no partial encoded bundle");}
+ for(std::size_t offset=1;offset<alignof(std::max_align_t);++offset)equal(call(dest,std::span<byte>(scratch.bytes).subspan(offset),budget));
+ const auto aliased=[&](std::span<byte> target,std::span<byte> work){const Bytes target_before(target.begin(),target.end()),work_before(work.begin(),work.end());
+  const auto r=call(target,work,budget);empty(r);Check(r.error==Error::invalid_workspace&&std::equal(target_before.begin(),target_before.end(),target.begin())&&
+    std::equal(work_before.begin(),work_before.end(),work.begin()),"encoding alias refuses before mutating any region");};
+ const auto bytes=[](const void* p,std::size_t n){return std::span<byte>{static_cast<byte*>(const_cast<void*>(p)),n};};
+ std::vector<std::span<byte>> inputs{bytes(&database,sizeof(database)),bytes(&bootstrap,sizeof(bootstrap)),bytes(&root.object_uuid,sizeof(Uuid)),bytes(&root.operation_uuid,sizeof(Uuid)),
+  bytes(view.page_headers.data(),view.page_headers.size_bytes())};
+ for(const auto family:{view.allocation_images,view.inventory_images,view.directory_images,view.growth_images}){
+  if(!family.empty())inputs.push_back(bytes(family.data(),family.size_bytes()));
+  for(const auto raw:family){inputs.push_back(bytes(raw.data(),raw.size()));inputs.push_back(bytes(raw.data()+raw.size()-1,1));}
+ }
+ for(const auto input:inputs){aliased(input,scratch.bytes);aliased(dest,input);}aliased(dest,dest);
+ hash_seen=0;hash_counting=true;const auto measured=call(dest,scratch.bytes,budget);hash_counting=false;equal(measured);const auto hashes=hash_seen;
+ Check(hashes>2*pages.size(),"all nested validation and encoded reference hashes counted");
+ for(unsigned fault=1;fault<=5;++fault)for(unsigned at=1;at<=hashes;++at){hash_fault=fault;hash_target=at;hash_seen=0;hash_active=false;
+  const auto r=call(dest,scratch.bytes,budget);const bool consumed=!hash_fault;hash_fault=0;hash_active=false;
+  empty(r);Check(consumed&&r.error==Error::hash_failure,"every bounded bundle provider failure retains typed error without C++ allocation");
+  equal(call(dest,scratch.bytes,budget));}
+}
 void BoundedBundleChecks(const Pages& pages,const db::NativeManagementControlBundleRoot& root,
  const Uuid& database,const Uuid& bootstrap,u64 budget){
  using Error=db::NativeManagementControlBundleError;
  BundleBacking backing(pages);const auto owned=db::DecodeNativeManagementControlBundle(pages,root,database,bootstrap,budget);
  Check(owned.ok(),"bounded fixture is complete");
+ if(qualify_bundle_encoding)BoundedBundleEncodingChecks(pages,root,database,bootstrap,budget);
  const auto call=[&](std::span<byte> bytes){
   allocation_budget=0;const auto r=db::DecodeNativeManagementControlBundleInto(backing.pages,root,database,bootstrap,budget,bytes);
   const bool untouched=allocation_budget==0;allocation_budget=-1;Check(untouched,"bounded result does not allocate process storage");return r;
@@ -491,6 +535,34 @@ void BundleDeviceMemoryChecks(const d::NativeFilespaceDevice& file,const db::Nat
   for(std::size_t i=0;i<a.size();++i)Check(std::equal(a[i].begin(),a[i].end(),b[i].begin(),b[i].end()),"actual grant retains all original image bytes");};
  same_images(expected.allocation_images,result.bundle.allocation_images);same_images(expected.inventory_images,result.bundle.inventory_images);
  same_images(expected.directory_images,result.bundle.directory_images);same_images(expected.growth_images,result.bundle.growth_images);
+ // Source, destination and complete validation scratch are all real retained
+ // binary-bound grants before acquiring the device guard. Encoding has no
+ // memory-governor callback or owning-container fallback under that guard;
+ // charge checks and final backing release occur only after the guard exits.
+ {
+  const std::size_t output_bytes=root.page_count*page_bytes;
+  BundleMemoryFixture destination(output_bytes+capacity);
+  auto granted=destination.memory.CreateArena(destination.binding,output_bytes+capacity,page_bytes);
+  Check(granted.ok(),"actual complete bundle destination grant before fence");
+  auto physical=granted.arena.Allocate(output_bytes,1),metadata=granted.arena.Allocate(capacity,1);
+  Check(physical.ok()&&metadata.ok()&&granted.arena.Snapshot().consumed_bytes==output_bytes+capacity,
+    "actual destination grant includes exact physical and full metadata backing");
+  db::NativeManagementControlBundleEncoding encoded;
+  {auto guard=file.device->AcquireOperationGuard();memory_probes=memory_locked_probes=0;memory_probe_mutex=mutex;allocation_budget=0;
+   const auto& source=result.bundle;
+   encoded=db::EncodeNativeManagementControlBundleInto(source.allocation_images,f.binding.database_uuid,bootstrap,root.object_uuid,root.operation_uuid,
+    source.page_headers,allowance,{static_cast<byte*>(physical.pointer),output_bytes},{static_cast<byte*>(metadata.pointer),capacity},
+    source.inventory_images,source.directory_images,source.growth_images);
+   const auto left=allocation_budget;allocation_budget=-1;memory_probe_mutex=nullptr;
+   Check(left==0&&!memory_probes&&!memory_locked_probes&&encoded.ok()&&*encoded.root==root,
+    "guarded complete bundle encoding uses only pre-admitted source destination and scratch");
+  }
+  for(std::size_t i=0;i<input.size();++i)Check(std::equal(input[i].begin(),input[i].end(),encoded.pages.begin()+i*page_bytes),
+    "actual granted bounded output equals every stored physical source byte");
+  Check(destination.manager.Snapshot().current_bytes==output_bytes+capacity&&destination.ledger.Snapshot().current_bytes==output_bytes+capacity,
+    "all actual destination bytes remain charged while output is live");
+  encoded={};granted={};destination.memory={};destination.Empty();
+ }
  reads=0;io_counting=true;auto exhausted=call(f.binding);io_counting=false;failed(exhausted);
  Check(exhausted.error==M::memory_allocation_failure&&!reads,"held backing prevents an uncharged second reader");
  for(unsigned field=0;field<4;++field){auto wrong=f.binding;const std::array<Uuid*,4> values{&wrong.database_uuid,&wrong.operation_uuid,&wrong.owner_uuid,&wrong.context_uuid};
@@ -4038,6 +4110,14 @@ void Test(unsigned profile){Fixture f(profile);Graph g(f);Bundle b(g);BoundedBun
 int main(int argc,char** argv){
  try{
  std::cout<<std::unitbuf;
+ if((argc==3||argc==4)&&std::string_view(argv[1])=="--bundle-encoding"){
+   qualify_bundle_encoding=true;const auto primary=std::stoi(argv[2]);
+   Check(primary>=0&&primary<5,"bundle encoding primary profile");
+   if(argc==3){InventoryBundle(primary);Test(primary);}
+   else{const auto secondary=std::stoi(argv[3]);Check(secondary>=0&&secondary<5,"bundle encoding secondary profile");
+     for(bool reverse:{false,true})MixedDirectoryBundle(primary,secondary,reverse);}
+   std::cout<<"PASS bounded bundle encoding checks="<<checks<<" not_publication_acceptance=true\n";return 0;
+ }
  if(argc==4&&std::string_view(argv[1])=="--reservation-source"){
    const auto primary=std::stoi(argv[2]),secondary=std::stoi(argv[3]);
    Check(primary>=0&&primary<5&&secondary>=0&&secondary<5,"reservation source profiles");

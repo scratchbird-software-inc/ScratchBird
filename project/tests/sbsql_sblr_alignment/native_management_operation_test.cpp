@@ -75,6 +75,17 @@ struct BorrowedOperation {
    identities(2*(steps.size()+3)+1){}
  auto Workspace(){return db::NativeManagementOperationViewWorkspace{steps,identities};}
 };
+void EncodingParity(const db::NativeManagementOperationView& value,const Bytes& expected) {
+ Bytes output(expected.size()+19,0xa7);std::vector<Uuid> scratch(2*(value.steps.size()+3)+1);
+ const auto before=Oracle(value);const auto digest=Sha(expected);
+ allocation_budget=0;const auto encoded=db::EncodeNativeManagementOperationInto(value,expected.size(),
+   std::span<byte>(output).subspan(1),scratch);
+ const auto remaining=allocation_budget;allocation_budget=-1;
+ Check(remaining==0&&encoded.ok()&&encoded.bytes.data()==output.data()+1&&encoded.bytes.size()==expected.size()&&
+   encoded.sha256==digest&&std::equal(expected.begin(),expected.end(),encoded.bytes.begin()),"bounded encoder complete independent bytes and digest without C++ allocation");
+ Check(output.front()==0xa7&&std::all_of(output.begin()+1+expected.size(),output.end(),[](byte b){return b==0xa7;})&&
+   Oracle(value)==before&&Oracle(*encoded.record)==expected,"unaligned output preserves suffix and complete immutable input");
+}
 void BorrowedParity(const Bytes& raw,u64 limit,const db::NativeManagementOperationImage& expected) {
  BorrowedOperation storage(raw);
  allocation_budget=0;storage.image=db::DecodeNativeManagementOperationInto(raw,limit,storage.Workspace());
@@ -91,6 +102,7 @@ void BorrowedParity(const Bytes& raw,u64 limit,const db::NativeManagementOperati
  for(const auto& s:value.steps)Check(within(s.idempotency_key.data(),s.idempotency_key.size()),"step text borrows original bytes");
  allocation_budget=0;const auto valid=db::ValidateNativeManagementOperationView(value,storage.identities);
  const auto left=allocation_budget;allocation_budget=-1;Check(left==0&&valid==E::none,"view shape validation uses bounded full identities");
+ EncodingParity(value,raw);
 }
 db::NativeManagementOperationImage Decode(const Bytes& bytes,u64 limit) {
  const bool parity=allocation_budget<0&&!counting&&!hash_fault;
@@ -193,6 +205,57 @@ void ExactRequests(){
    const auto result=call();const bool consumed=!hash_fault;hash_fault=0;Empty(result);Check(consumed&&result.error==E::hash_failure,"request and aggregate digest failures are distinct from invalid input");}
  }
 }
+void EncodingBounds(){
+ for(bool exact:{false,true}){
+  auto operation=Example();operation.steps={Step(),Step(1,2)};
+  operation.idempotency_key=std::string(512,'k');operation.steps[1].idempotency_key=std::string(512,'s');
+  if(exact){operation.normalized_request_bytes={0,255,1,0,2};operation.normalized_request_sha256=Sha(operation.normalized_request_bytes);}
+  const auto raw=Oracle(operation);BorrowedOperation backing(raw);
+  backing.image=db::DecodeNativeManagementOperationInto(backing.bytes,budget,backing.Workspace());Check(backing.image.ok(),"encoding bounds fixture");
+  auto value=*backing.image.record;const auto slots=2*(value.steps.size()+3)+1;
+  std::vector<Uuid> scratch(slots);Bytes output(raw.size(),0xa9);const auto unchanged=output;
+  const auto encode=[&](const auto& input,u64 limit,std::span<byte> destination,std::span<Uuid> identities){
+   allocation_budget=0;auto result=db::EncodeNativeManagementOperationInto(input,limit,destination,identities);
+   const auto left=allocation_budget;allocation_budget=-1;Check(left==0,"bounded encoding success and refusal never allocate");return result;};
+  const auto refuse=[&](const auto& input,u64 limit,std::span<byte> destination,std::span<Uuid> identities,E error){
+   const auto result=encode(input,limit,destination,identities);Empty(result);
+   Check(result.error==error&&output==unchanged&&backing.bytes==raw,"pre-write refusal preserves all encoded and input bytes");};
+  for(std::size_t size:{std::size_t{0},std::size_t{1},raw.size()-1})refuse(value,budget,std::span<byte>(output).first(size),scratch,E::resource_exhausted);
+  for(u64 limit:{u64{0},u64{511},u64(raw.size()-1)})refuse(value,limit,output,scratch,E::resource_exhausted);
+  for(std::size_t size:{std::size_t{0},slots-1})refuse(value,budget,output,std::span<Uuid>(scratch).first(size),E::resource_exhausted);
+  auto malformed=value;malformed.database_uuid={};refuse(malformed,budget,output,scratch,E::invalid_identity);
+  malformed=value;malformed.idempotency_key={};refuse(malformed,budget,output,scratch,E::invalid_utf8);
+  malformed=value;malformed.revision=0;refuse(malformed,budget,output,scratch,E::invalid_record);
+  if(exact){malformed=value;malformed.normalized_request_sha256[0]^=1;refuse(malformed,budget,output,scratch,E::invalid_integrity);}
+  // Aliasing checks use the entire supplied regions, not just encoded prefixes.
+  const auto bytes=[](const void* p,std::size_t n){return std::span<byte>{static_cast<byte*>(const_cast<void*>(p)),n};};
+  refuse(value,budget,bytes(&value,sizeof(value)),scratch,E::invalid_workspace);
+  refuse(value,budget,bytes(value.steps.data(),value.steps.size_bytes()),scratch,E::invalid_workspace);
+  refuse(value,budget,bytes(value.idempotency_key.data(),value.idempotency_key.size()),scratch,E::invalid_workspace);
+  refuse(value,budget,bytes(value.steps[1].idempotency_key.data(),value.steps[1].idempotency_key.size()),scratch,E::invalid_workspace);
+  if(exact)refuse(value,budget,bytes(value.normalized_request_bytes.data(),value.normalized_request_bytes.size()),scratch,E::invalid_workspace);
+  refuse(value,budget,output,{reinterpret_cast<Uuid*>(output.data()+output.size()-1),slots},E::invalid_workspace);
+  refuse(value,budget,output,{reinterpret_cast<Uuid*>(&value),slots},E::invalid_workspace);
+  refuse(value,budget,output,{reinterpret_cast<Uuid*>(backing.steps.data()),slots},E::invalid_workspace);
+  refuse(value,budget,output,{reinterpret_cast<Uuid*>(const_cast<char*>(value.idempotency_key.data())),slots},E::invalid_workspace);
+  refuse(value,budget,output,{reinterpret_cast<Uuid*>(const_cast<char*>(value.steps[1].idempotency_key.data())),slots},E::invalid_workspace);
+  if(exact)refuse(value,budget,output,{reinterpret_cast<Uuid*>(const_cast<byte*>(value.normalized_request_bytes.data())),slots},E::invalid_workspace);
+  malformed=value;malformed.steps={reinterpret_cast<const db::NativeManagementStepView*>(reinterpret_cast<const byte*>(value.steps.data())+1),1};
+  refuse(malformed,budget,output,scratch,E::invalid_workspace);
+  malformed=value;malformed.steps={value.steps.data(),std::numeric_limits<std::size_t>::max()/sizeof(db::NativeManagementStepView)+1};
+  refuse(malformed,budget,output,scratch,E::invalid_workspace);
+  Bytes suffixed(raw.size()+1024,0x91);malformed=value;malformed.idempotency_key={reinterpret_cast<const char*>(suffixed.data()+raw.size()+512),1};
+  refuse(malformed,budget,suffixed,scratch,E::invalid_workspace);
+  Check(std::all_of(suffixed.begin(),suffixed.end(),[](byte b){return b==0x91;}),"unused output suffix cannot contain borrowed input");
+  for(unsigned fault=1;fault<=5;++fault)for(unsigned digest=1;digest<=(exact?3u:2u);++digest){
+   hash_fault=fault;hash_target=digest;hash_seen=0;hash_active=false;
+   const auto result=encode(value,budget,output,scratch);const bool consumed=!hash_fault;hash_fault=0;
+   Empty(result);Check(consumed&&result.error==E::hash_failure&&backing.bytes==raw,"each request seal and reference provider failure preserves immutable input and exposes no prefix");
+   const auto retry=encode(value,budget,output,scratch);Check(retry.ok()&&output==raw&&retry.sha256==Sha(raw),"exact encoding retry after hash failure");
+  }
+  EncodingParity(value,raw);
+ }
+}
 void BorrowedBounds(){
  auto operation=Example();operation.steps={Step(),Step()};operation.steps[1].uuid=Id(400);operation.steps[1].ordinal=2;
  operation.idempotency_key=std::string(512,'k');operation.normalized_request_bytes={0,1,2,0,255};
@@ -290,7 +353,7 @@ void FixedHash(){
    Check(left==0&&!hash_fault&&r.error==hash::Sha256DigestError::provider_failure,"one-shot provider and short digest failures retain fixed native classification");failed(r);}
 }
 void Test(){
- FixedHash();BorrowedBounds();
+ FixedHash();BorrowedBounds();EncodingBounds();
  ExactRequests();
  for(unsigned state=1;state<=15;++state)Good(Example(state));
  auto early=Example(15);early.phase_uuid=early.resource_plan_uuid=early.lock_plan_uuid=early.security_snapshot_uuid={};early.generation_guards={};Good(early);

@@ -1964,7 +1964,28 @@ IoResult FileDevice::ReadAtImpl(u64 offset, void* buffer, usize bytes, ReadLaten
   return result;
 }
 
-IoResult FileDevice::WriteAt(u64 offset, const void* buffer, usize bytes) {
+FileDevice::WriteLatencyBatch::~WriteLatencyBatch(){
+  for(usize i=0;i<count_;++i){const auto& sample=samples_[i];
+    device_.PublishIoLatency(sample.sync?LatencyOperation::sync:LatencyOperation::write,
+      sample.micros,sample.result,sample.context,sample.opened);
+  }
+}
+IoResult FileDevice::WriteLatencyBatch::WriteAt(u64 offset,const void* buffer,usize bytes){
+  return device_.WriteAtImpl(offset,buffer,bytes,this);
+}
+IoResult FileDevice::WriteLatencyBatch::Sync(){return device_.SyncImpl(this);}
+void FileDevice::CaptureWriteLatency(WriteLatencyBatch* batch,bool sync,double micros,const char* result) noexcept {
+  if(!batch)ObserveIoLatency(sync?LatencyOperation::sync:LatencyOperation::write,micros,result);
+  else if(batch->count_<batch->samples_.size())
+    batch->samples_[batch->count_++]={metric_context_,micros,result,sync,!path_.empty()};
+  else {
+    auto value=rejected_io_latency_.load(std::memory_order_relaxed);
+    while(value!=std::numeric_limits<u64>::max()&&!rejected_io_latency_.compare_exchange_weak(
+      value,value+1,std::memory_order_relaxed)){}
+  }
+}
+IoResult FileDevice::WriteAt(u64 offset,const void* buffer,usize bytes){return WriteAtImpl(offset,buffer,bytes,nullptr);}
+IoResult FileDevice::WriteAtImpl(u64 offset, const void* buffer, usize bytes,WriteLatencyBatch* batch) {
   const auto operation_guard = AcquireOperationGuard();
   const auto metric_start = Clock::now();
   if (!is_open()) {
@@ -2022,7 +2043,7 @@ IoResult FileDevice::WriteAt(u64 offset, const void* buffer, usize bytes) {
   IoResult result;
   result.status = DiskOkStatus();
   result.bytes_transferred = bytes;
-  ObserveIoLatency(LatencyOperation::write,ElapsedMicros(metric_start),"ok");
+  CaptureWriteLatency(batch,false,ElapsedMicros(metric_start),"ok");
   return result;
 }
 
@@ -2162,7 +2183,8 @@ PreallocateExtentResult FileDevice::PreallocateExtent(u64 offset, u64 bytes) {
   return result;
 }
 
-IoResult FileDevice::Sync() {
+IoResult FileDevice::Sync(){return SyncImpl(nullptr);}
+IoResult FileDevice::SyncImpl(WriteLatencyBatch* batch) {
   const auto operation_guard = AcquireOperationGuard();
   const auto metric_start = Clock::now();
   if (!is_open()) {
@@ -2173,7 +2195,7 @@ IoResult FileDevice::Sync() {
   if (read_only_) {
     IoResult result;
     result.status = DiskOkStatus();
-    ObserveIoLatency(LatencyOperation::sync,ElapsedMicros(metric_start),"read_only_noop");
+    CaptureWriteLatency(batch,true,ElapsedMicros(metric_start),"read_only_noop");
     return result;
   }
 
@@ -2190,7 +2212,7 @@ IoResult FileDevice::Sync() {
 
   IoResult result;
   result.status = DiskOkStatus();
-  ObserveIoLatency(LatencyOperation::sync,ElapsedMicros(metric_start),"ok");
+  CaptureWriteLatency(batch,true,ElapsedMicros(metric_start),"ok");
   return result;
 }
 
