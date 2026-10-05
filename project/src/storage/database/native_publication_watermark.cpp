@@ -3,6 +3,7 @@
 #include "native_publication_watermark.hpp"
 #include "disk_device.hpp"
 #include "hash_digest_parts.hpp"
+#include "../disk/native_decoded_storage_ranges.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -46,22 +47,26 @@ void PutRef(byte* bytes, const disk::NativePageReference& ref) {
 }
 bool ValidRef(const disk::NativePageReference& ref) {
   const auto* profile = disk::FindCanonicalFilespacePageProfile(ref.page_size_profile_uuid);
-  return V7(ref.filespace_uuid) && profile && ref.page_number && ref.page_generation &&
-         ref.page_number < std::numeric_limits<u64>::max() / profile->page_size_bytes &&
-         disk::CheckFileDeviceExtent(ref.page_number * profile->page_size_bytes,
-                                     profile->page_size_bytes).ok();
+  if(!V7(ref.filespace_uuid)||!profile||!ref.page_number||!ref.page_generation||
+      ref.page_number>=std::numeric_limits<u64>::max()/profile->page_size_bytes)return false;
+  // Same checked device extent, without constructing dynamic diagnostics on
+  // malformed references inside a caller-backed representation path.
+  const u64 size=profile->page_size_bytes,offset=ref.page_number*size;
+  const u64 limit=static_cast<u64>(std::numeric_limits<std::streamoff>::max());
+  return size<=static_cast<u64>(std::numeric_limits<std::streamsize>::max())&&
+    offset<=limit&&size<=limit-offset;
 }
 NativePublicationWatermarkImage Fail(E error) {
   NativePublicationWatermarkImage result;
   result.error = error;
   return result;
 }
-auto ImageDigest(const std::vector<byte>& bytes) {
+auto ImageDigest(std::span<const byte> bytes) {
   const std::array<byte, 32> zeros{};
   const core::hash::HashDigestSegment parts[] = {
       {bytes.data(), kImageSeal}, {zeros.data(), zeros.size()},
       {bytes.data() + kImageSeal + 32, bytes.size() - kImageSeal - 32}};
-  return core::hash::ComputeSha256DigestParts(parts, 3);
+  return core::hash::ComputeSha256DigestPartsNative(parts, 3);
 }
 E Validate(const NativePublicationWatermark& state) {
   const auto& header = state.header;
@@ -108,11 +113,12 @@ E Validate(const NativePublicationWatermark& state) {
   return E::none;
 }
 auto StateDigest(const byte* family,u16 version) {
-  if(version==1)return core::hash::ComputeSha256Digest(family,240);
+  if(version==1){const core::hash::HashDigestSegment part{family,240};
+    return core::hash::ComputeSha256DigestPartsNative(&part,1);}
   const auto& domain=version==5?kStartupDomain:version==4?kResolutionDomain:version==3?kPlanDomain:kIntentDomain;
   const core::hash::HashDigestSegment parts[]={{domain.data(),domain.size()},
     {family,240},{family+304,version>=3?336u:208u}};
-  return core::hash::ComputeSha256DigestParts(parts,3);
+  return core::hash::ComputeSha256DigestPartsNative(parts,3);
 }
 auto OriginDigest(const byte* family,u16 version) {
   std::array<byte,640> original{};
@@ -137,14 +143,18 @@ bool SameBase(const NativePublicationWatermark& a, const NativePublicationWaterm
 }
 }  // namespace
 
-NativePublicationWatermarkImage EncodeNativePublicationWatermark(
-    const NativePublicationWatermark& state) noexcept {
+NativePublicationWatermarkViewImage EncodeNativePublicationWatermarkInto(
+    const NativePublicationWatermark& state,std::span<byte> output) noexcept {
+  const auto Fail=[](E error){NativePublicationWatermarkViewImage result;result.error=error;return result;};
   try {
+    if(!disk::detail::DisjointNativeDecodeRegions(std::span(&state,1),output))return Fail(E::invalid_backing);
     const auto valid = Validate(state);
     if (valid != E::none) return Fail(valid);
+    if(output.size()<state.header.page_size_bytes)return Fail(E::resource_exhausted);
     const auto common = disk::EncodeNativeCommonPageHeader(state.header);
     if (!common.ok()) return Fail(E::invalid_header);
-    std::vector<byte> bytes(state.header.page_size_bytes, 0);
+    auto bytes=output.first(state.header.page_size_bytes);
+    std::fill(bytes.begin(),bytes.end(),0);
     std::copy(common.bytes->begin(), common.bytes->end(), bytes.begin());
     auto* family = bytes.data() + 128;
     const bool intent=state.intent.has_value();const u16 version=intent&&state.intent->startup_binding?5:intent&&state.intent->recovery_profile?4:state.publication_plan?3:intent?2:1;
@@ -194,15 +204,30 @@ NativePublicationWatermarkImage EncodeNativePublicationWatermark(
     const auto image_hash = ImageDigest(bytes);
     if (!image_hash.ok()) return Fail(E::hash_failure);
     std::copy(image_hash.digest.begin(), image_hash.digest.end(), bytes.begin() + kImageSeal);
-    return {E::none, state, state_hash.digest, std::move(bytes)};
+    return {E::none, state, state_hash.digest, bytes};
   } catch (const std::bad_alloc&) { return Fail(E::resource_exhausted); }
     catch (const std::length_error&) { return Fail(E::resource_exhausted); }
     catch (...) { return Fail(E::invalid_family); }
 }
 
-NativePublicationWatermarkImage DecodeNativePublicationWatermark(
-    const std::vector<byte>& bytes) noexcept {
+NativePublicationWatermarkImage EncodeNativePublicationWatermark(
+    const NativePublicationWatermark& state) noexcept {
   try {
+    const auto valid=Validate(state);if(valid!=E::none)return Fail(valid);
+    std::vector<byte> bytes(state.header.page_size_bytes);
+    const auto encoded=EncodeNativePublicationWatermarkInto(state,bytes);
+    if(!encoded.ok())return Fail(encoded.error);
+    return {E::none,encoded.state,encoded.state_sha256,std::move(bytes)};
+  }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}
+   catch(const std::length_error&){return Fail(E::resource_exhausted);}
+   catch(...){return Fail(E::invalid_family);}
+}
+
+NativePublicationWatermarkValue DecodeNativePublicationWatermarkValue(
+    std::span<const byte> bytes) noexcept {
+  const auto Fail=[](E error){NativePublicationWatermarkValue result;result.error=error;return result;};
+  try {
+    if(!disk::detail::DisjointNativeDecodeRegions(bytes))return Fail(E::invalid_backing);
     if (bytes.size() < kUsed) return Fail(E::invalid_header);
     const auto common = disk::DecodeNativeCommonPageHeader(bytes.data(), 128);
     if (!common.ok() || common.header->page_type != 0x0500 || common.header->flags ||
@@ -264,19 +289,31 @@ NativePublicationWatermarkImage DecodeNativePublicationWatermark(
     }
     const auto valid = Validate(state);
     if (valid != E::none) return Fail(valid);
-    return {E::none, std::move(state), state_hash.digest, bytes};
+    return {E::none, std::move(state), state_hash.digest};
   } catch (const std::bad_alloc&) { return Fail(E::resource_exhausted); }
     catch (const std::length_error&) { return Fail(E::resource_exhausted); }
     catch (...) { return Fail(E::invalid_family); }
 }
 
-NativePublicationWatermarkImage ClassifyNativePublicationWatermarkPair(
-    const std::vector<byte>& first, const std::vector<byte>& second) noexcept {
+NativePublicationWatermarkImage DecodeNativePublicationWatermark(
+    const std::vector<byte>& bytes) noexcept {
   try {
-    auto left = DecodeNativePublicationWatermark(first);
-    auto right = DecodeNativePublicationWatermark(second);
+    auto decoded=DecodeNativePublicationWatermarkValue(bytes);
+    if(!decoded.ok())return Fail(decoded.error);
+    return {E::none,std::move(decoded.state),decoded.state_sha256,bytes};
+  }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}
+   catch(const std::length_error&){return Fail(E::resource_exhausted);}
+   catch(...){return Fail(E::invalid_family);}
+}
+
+NativePublicationWatermarkValue ClassifyNativePublicationWatermarkPairValue(
+    std::span<const byte> first,std::span<const byte> second) noexcept {
+  const auto Fail=[](E error){NativePublicationWatermarkValue result;result.error=error;return result;};
+  try {
+    auto left = DecodeNativePublicationWatermarkValue(first);
+    auto right = DecodeNativePublicationWatermarkValue(second);
     for (const auto* result : {&left, &right})
-      if (result->error == E::hash_failure || result->error == E::resource_exhausted)
+      if (result->error == E::hash_failure || result->error == E::resource_exhausted || result->error==E::invalid_backing)
         return Fail(result->error);
     if (!left.ok() || !right.ok())
       return Fail(left.ok() || right.ok() ? E::repair_required : E::invalid_pair);
@@ -328,5 +365,15 @@ NativePublicationWatermarkImage ClassifyNativePublicationWatermarkPair(
   } catch (const std::bad_alloc&) { return Fail(E::resource_exhausted); }
     catch (const std::length_error&) { return Fail(E::resource_exhausted); }
     catch (...) { return Fail(E::invalid_pair); }
+}
+NativePublicationWatermarkImage ClassifyNativePublicationWatermarkPair(
+    const std::vector<byte>& first,const std::vector<byte>& second) noexcept {
+  try {
+    auto classified=ClassifyNativePublicationWatermarkPairValue(first,second);
+    if(!classified.ok())return Fail(classified.error);
+    return {E::none,std::move(classified.state),classified.state_sha256,first};
+  }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}
+   catch(const std::length_error&){return Fail(E::resource_exhausted);}
+   catch(...){return Fail(E::invalid_pair);}
 }
 }  // namespace scratchbird::storage::database

@@ -925,7 +925,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_definitions(native_checkpoint_selection_memory_gate PRIVATE SB_NATIVE_SELECTOR_MEMORY_TESTS=1)
   target_link_libraries(native_checkpoint_selection_memory_gate PRIVATE sb_storage_database)
   target_link_options(native_checkpoint_selection_memory_gate PRIVATE
-    -Wl,--wrap=pread -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
+    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
     -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex)
   add_test(NAME native_checkpoint_selection_memory_gate COMMAND native_checkpoint_selection_memory_gate)
   set_tests_properties(native_checkpoint_selection_memory_gate PROPERTIES

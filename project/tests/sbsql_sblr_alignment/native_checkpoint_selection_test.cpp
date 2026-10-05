@@ -5,8 +5,11 @@
 #include <openssl/sha.h>
 #include <algorithm>
 #include <cstdlib>
+#include <cstddef>
+#include <cstring>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <new>
 #include <source_location>
 #include <stdexcept>
@@ -18,7 +21,16 @@
 #include <unistd.h>
 #endif
 namespace {thread_local long allocation_budget=-1;thread_local bool counting=false;thread_local unsigned long allocations=0;thread_local unsigned hash_fault=0;}
-void* operator new(std::size_t n){if(counting)++allocations;if(allocation_budget==0){allocation_budget=-1;throw std::bad_alloc();}if(allocation_budget>0)--allocation_budget;if(auto* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
+#if defined(SB_NATIVE_SELECTOR_MEMORY_TESTS)
+namespace {thread_local std::recursive_mutex* metric_publication_mutex=nullptr;thread_local bool metric_publication_unlocked=false;
+void ProbeMetricPublication(){if(auto* mutex=metric_publication_mutex){metric_publication_mutex=nullptr;
+  bool unlocked=false;std::thread probe([&]{unlocked=mutex->try_lock();if(unlocked)mutex->unlock();});probe.join();metric_publication_unlocked=unlocked;}}}
+#endif
+void* operator new(std::size_t n){
+#if defined(SB_NATIVE_SELECTOR_MEMORY_TESTS)
+  ProbeMetricPublication();
+#endif
+  if(counting)++allocations;if(allocation_budget==0){allocation_budget=-1;throw std::bad_alloc();}if(allocation_budget>0)--allocation_budget;if(auto* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t n){return ::operator new(n);}
 void operator delete(void* p) noexcept{std::free(p);}void operator delete[](void* p) noexcept{std::free(p);}
 void operator delete(void* p,std::size_t) noexcept{std::free(p);}void operator delete[](void* p,std::size_t) noexcept{std::free(p);}
@@ -36,11 +48,19 @@ void* operator new(std::size_t n,std::align_val_t a){if(counting)++allocations;
 void operator delete(void* p,std::align_val_t)noexcept{CheckDeallocationLock();std::free(p);}
 void operator delete(void* p,std::size_t,std::align_val_t)noexcept{CheckDeallocationLock();std::free(p);}
 namespace {thread_local unsigned reads=0,fail_read=0,short_read=0,eof_read=0;thread_local void* last_read_buffer=nullptr;}
+namespace {thread_local unsigned writes=0,fail_write=0,partial_write=0,zero_write=0,syncs=0,fail_sync=0;}
 extern "C" ssize_t __real_pread(int,void*,size_t,off_t);
 extern "C" ssize_t __wrap_pread(int fd,void* data,size_t n,off_t offset){++reads;last_read_buffer=data;
   if(fail_read&&reads==fail_read){errno=EIO;return -1;}
   if(eof_read&&reads==eof_read)return 0;
   return __real_pread(fd,data,short_read&&reads==short_read?n-1:n,offset);}
+extern "C" ssize_t __real_pwrite(int,const void*,size_t,off_t);
+extern "C" ssize_t __wrap_pwrite(int fd,const void* data,size_t n,off_t offset){++writes;
+  if(fail_write&&writes==fail_write){errno=EIO;return -1;}
+  if(zero_write&&writes==zero_write)return 0;
+  return __real_pwrite(fd,data,partial_write&&writes==partial_write?n/2:n,offset);}
+extern "C" int __real_fsync(int);
+extern "C" int __wrap_fsync(int fd){++syncs;if(fail_sync&&syncs==fail_sync){errno=EIO;return -1;}return __real_fsync(fd);}
 #endif
 extern "C" EVP_MD_CTX* __real_EVP_MD_CTX_new();
 extern "C" EVP_MD_CTX* __wrap_EVP_MD_CTX_new(){if(hash_fault==1){hash_fault=0;return nullptr;}return __real_EVP_MD_CTX_new();}
@@ -78,11 +98,49 @@ auto Other(db::NativeCheckpointSelection s){s.header.page_uuid=Id(9);s.header.pa
 auto Next(db::NativeCheckpointSelection s){s.previous_selection_generation=s.selection_generation++;s.previous_checkpoint=s.checkpoint;s.previous_checkpoint_object_uuid=s.checkpoint_object_uuid;s.previous_checkpoint_sha256=s.checkpoint_sha256;
   s.publication_uuid=Id(10);s.checkpoint.page_number=23;s.checkpoint.page_generation++;s.checkpoint_sha256.fill(11);s.checkpoint_generation++;s.root_set_generation++;return s;}
 void Empty(const db::NativeCheckpointSelectionImage& r){Check(!r.ok()&&!r.selection&&r.bytes.empty(),"image failure returns no prefix");}
+void Empty(const db::NativeCheckpointSelectionViewImage& r){Check(!r.ok()&&!r.selection&&r.bytes.empty(),"bounded image failure returns no prefix");}
 void Empty(const db::NativeCheckpointSelectionPair& r){Check(!r.ok()&&!r.selection,"pair failure returns no usable selection");}
 void InvalidImage(const Bytes& b){const auto owned=db::DecodeNativeCheckpointSelection(b);Empty(owned);
-  const auto value=db::DecodeNativeCheckpointSelectionValue(b);
+  const auto value=DenyCodecAllocation([&]{return db::DecodeNativeCheckpointSelectionValue(b);});
   Check(!value.ok()&&!value.selection&&value.error==owned.error,"value and owning decoder preserve exact refusal without prefix");}
-void Invalid(const db::NativeCheckpointSelection& s){Empty(db::EncodeNativeCheckpointSelection(s));InvalidImage(Oracle(s));}
+void Invalid(const db::NativeCheckpointSelection& s){
+  const auto expected=db::EncodeNativeCheckpointSelection(s);Empty(expected);
+  Bytes output(d::kCanonicalFilespacePageProfiles.back().page_size_bytes,0xa5);
+  const auto actual=DenyCodecAllocation([&]{return db::EncodeNativeCheckpointSelectionInto(s,output);});
+  Empty(actual);Check(actual.error==expected.error&&std::all_of(output.begin(),output.end(),[](byte v){return v==0xa5;}),"bounded invalid input refuses with exact error before write");InvalidImage(Oracle(s));
+}
+void EncodingTest(const db::NativeCheckpointSelection& s){
+  const auto expected=Oracle(s);Bytes output(expected.size()+2,0xa5);
+  const auto span=std::span(output).subspan(1,expected.size());
+  const auto parity=[&](const auto& r){Check(r.ok()&&r.bytes.data()==span.data()&&r.bytes.size()==expected.size()&&
+    std::equal(r.bytes.begin(),r.bytes.end(),expected.begin())&&Oracle(*r.selection)==expected,"exact independent bounded selector bytes and fields");};
+  parity(DenyCodecAllocation([&]{return db::EncodeNativeCheckpointSelectionInto(s,span);}));
+  Check(output.front()==0xa5&&output.back()==0xa5,"unaligned output exact prefix only");
+  parity(DenyCodecAllocation([&]{return db::EncodeNativeCheckpointSelectionInto(s,std::span(output).subspan(1));}));
+  Check(output.back()==0xa5,"oversized backing suffix untouched");
+  for(const auto size:{std::size_t(0),std::size_t(1),expected.size()-1}){
+    std::fill(output.begin(),output.end(),0xa5);
+    const auto r=DenyCodecAllocation([&]{return db::EncodeNativeCheckpointSelectionInto(s,span.first(size));});Empty(r);
+    Check(r.error==E::resource_exhausted&&std::all_of(output.begin(),output.end(),[](byte v){return v==0xa5;}),"short output refuses without modification");
+  }
+  auto alias=s;std::array<byte,sizeof(alias)> before{};std::memcpy(before.data(),&alias,sizeof(alias));
+  for(const auto offset:{std::size_t(0),sizeof(alias)-1}){
+    const auto r=DenyCodecAllocation([&]{return db::EncodeNativeCheckpointSelectionInto(alias,{reinterpret_cast<byte*>(&alias)+offset,sizeof(alias)-offset});});Empty(r);
+    Check(r.error==E::invalid_backing&&std::memcmp(before.data(),&alias,sizeof(alias))==0,"complete input excluded including predecessor and last byte");
+  }
+  constexpr auto suffix_offset=d::kCanonicalFilespacePageProfiles.back().page_size_bytes;
+  std::vector<std::max_align_t> shared((suffix_offset+sizeof(s)+sizeof(std::max_align_t)-1)/sizeof(std::max_align_t));
+  auto* bytes=reinterpret_cast<byte*>(shared.data());auto* suffix=std::construct_at(reinterpret_cast<db::NativeCheckpointSelection*>(bytes+suffix_offset),s);
+  const Bytes original(bytes,bytes+shared.size()*sizeof(std::max_align_t));
+  const auto overlap=DenyCodecAllocation([&]{return db::EncodeNativeCheckpointSelectionInto(*suffix,{bytes,original.size()});});Empty(overlap);
+  Check(overlap.error==E::invalid_backing&&std::equal(original.begin(),original.end(),bytes),"suffix input alias refused before any write");std::destroy_at(suffix);
+  for(unsigned mode=1;mode<=5;++mode){hash_fault=mode;
+    const auto r=DenyCodecAllocation([&]{return db::EncodeNativeCheckpointSelectionInto(s,span);});Empty(r);
+    Check(!hash_fault&&r.error==E::hash_failure,"each seal provider fault leaves no bounded success prefix");
+    parity(DenyCodecAllocation([&]{return db::EncodeNativeCheckpointSelectionInto(s,span);}));
+  }
+  auto overflow=s;overflow.checkpoint.page_number=u64(std::numeric_limits<std::streamoff>::max())/s.header.page_size_bytes;Invalid(overflow);
+}
 #if defined(SB_NATIVE_SELECTOR_MEMORY_TESTS)
 namespace m=scratchbird::core::memory;
 using ME=db::NativeCheckpointSelectionMemoryError;
@@ -156,6 +214,57 @@ void MemoryTest(){
       "all-profile independently packed bytes and fields preserved");
     Check(f.manager.Snapshot().current_bytes==size&&f.memory.Snapshot().allocated_bytes==size,
       "returned image stays exactly charged");
+    {
+      MemoryFixture destination(size);
+      allocation_device_mutex=file.device.AcquireOperationGuard().mutex();allocation_lock_free=false;
+      auto payload=destination.memory.AllocatePage(file.value.header.page_size_profile_uuid);
+      Check(payload.ok()&&!allocation_device_mutex&&allocation_lock_free,"actual selector encoding backing before device fence");
+      {
+        d::FileDevice::WriteLatencyBatch batch(file.device);
+        Check(&batch.device()==&file.device,"write observation batch retains exact device");
+        {
+          const auto guard=file.device.AcquireOperationGuard();
+          const auto encoded=DenyCodecAllocation([&]{return db::EncodeNativeCheckpointSelectionInto(*result.selection,{payload.buffer.data(),payload.buffer.size()});});
+          Check(encoded.ok()&&std::equal(file.bytes.begin(),file.bytes.end(),encoded.bytes.begin()),"actual retained source and admitted encoding under guard");
+          const auto rejected=file.device.rejected_io_latency_observations(),failed=file.device.failed_io_latency_observations();
+          for(unsigned i=0;i<15;++i){const auto write=DenyCodecAllocation([&]{return batch.WriteAt(file.value.header.page_number*u64(size),encoded.bytes.data(),encoded.bytes.size());});
+            Check(write.ok()&&write.bytes_transferred==size,"actual staged bounded selector write");}
+          const auto sync=DenyCodecAllocation([&]{return batch.Sync();});
+          Check(sync.ok()&&file.device.rejected_io_latency_observations()==rejected&&file.device.failed_io_latency_observations()==failed,"sixteen captures including sync without telemetry callback");
+          const auto overflow=DenyCodecAllocation([&]{return batch.WriteAt(file.value.header.page_number*u64(size),encoded.bytes.data(),encoded.bytes.size());});
+          Check(overflow.ok()&&overflow.bytes_transferred==size&&file.device.rejected_io_latency_observations()==rejected+1&&file.device.failed_io_latency_observations()==failed,"seventeenth observation rejected without cancelling physical write");
+        }
+        metric_publication_mutex=file.device.AcquireOperationGuard().mutex();metric_publication_unlocked=false;
+      }
+      Check(!metric_publication_mutex&&metric_publication_unlocked,"write and sync observations publish only after compound guard releases");
+      {
+        d::FileDevice::WriteLatencyBatch batch(file.device);const auto guard=file.device.AcquireOperationGuard();
+        const auto offset=file.value.header.page_number*u64(size);
+        writes=0;partial_write=1;fail_write=2;const auto partial=batch.WriteAt(offset,payload.buffer.data(),size);partial_write=fail_write=0;
+        Check(!partial.ok()&&partial.bytes_transferred==size/2,"batched error retains actual partial physical prefix");
+        writes=0;zero_write=1;const auto zero=batch.WriteAt(offset,payload.buffer.data(),size);zero_write=0;
+        Check(!zero.ok()&&!zero.bytes_transferred,"zero native progress remains a failed write");
+        syncs=0;fail_sync=1;const auto failed_sync=batch.Sync();fail_sync=0;
+        Check(!failed_sync.ok(),"batched native synchronization failure is preserved");
+        const auto retry=batch.WriteAt(offset,payload.buffer.data(),size);
+        Check(retry.ok()&&retry.bytes_transferred==size&&batch.Sync().ok(),"original staged bytes can be exactly retried and synchronized");
+        Check(!batch.WriteAt(offset,nullptr,1).ok()&&!batch.WriteAt(UINT64_MAX,payload.buffer.data(),size).ok(),"batched invalid buffer and overflowing range refuse");
+      }
+      Check(destination.manager.Snapshot().current_bytes==size&&destination.memory.Snapshot().allocated_bytes==size&&destination.ledger.Snapshot().current_bytes==size,"bounded selector image remains exactly charged");
+      Check(file.device.Close().ok()&&file.device.Open(file.path.string(),d::FileOpenMode::open_existing).ok(),"reopen staged bounded selector");
+      const auto read=file.device.ReadAt(file.value.header.page_number*u64(size),payload.buffer.data(),size);
+      Check(read.ok()&&read.bytes_transferred==size&&std::equal(file.bytes.begin(),file.bytes.end(),payload.buffer.data()),"independent full physical bytes after reopen");
+      Check(file.device.Close().ok()&&file.device.Open(file.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"open read-only batch control");
+      {
+        d::FileDevice::WriteLatencyBatch batch(file.device);const auto guard=file.device.AcquireOperationGuard();
+        Check(!batch.WriteAt(file.value.header.page_number*u64(size),payload.buffer.data(),size).ok(),"batch preserves read-only write refusal");
+        const auto sync=DenyCodecAllocation([&]{return batch.Sync();});Check(sync.ok(),"read-only sync keeps existing no-op semantics");
+      }
+      Check(file.device.Close().ok()&&file.device.Open(file.path.string(),d::FileOpenMode::open_existing).ok(),"restore original writable fixture");
+      deallocation_device_mutex=file.device.AcquireOperationGuard().mutex();deallocation_lock_free=false;
+      Check(payload.buffer.Reset().ok()&&deallocation_lock_free,"actual encoded payload released after device guard");
+      destination.memory={};destination.Empty();
+    }
     auto refused=file.Read(f);NoImage(refused);Check(refused.error==ME::memory_allocation_failure&&
       refused.memory_error==db::NativeStorageMemoryError::resource_exhausted&&!reads&&!refused.page_bytes_read,
       "retained image prevents cumulative overcommit before payload read");
@@ -236,6 +345,7 @@ void MemoryTest(){
 void Test(){
   for(unsigned p=0;p<5;++p)for(bool successor:{false,true}){
     auto s=Example(p);if(successor)s=Next(s);const auto first=Oracle(s),second=Oracle(Other(s));const auto e=db::EncodeNativeCheckpointSelection(s);
+    EncodingTest(s);
     Check(e.ok()&&e.bytes==first,"exact independently packed selector image");const auto decoded=db::DecodeNativeCheckpointSelection(first);Check(decoded.ok()&&Oracle(*decoded.selection)==first,"all selector fields preserved");
     // No global/new payload allocation is permitted, including at 128KiB.
     // The provider's own SHA context is a separate existing resource boundary.

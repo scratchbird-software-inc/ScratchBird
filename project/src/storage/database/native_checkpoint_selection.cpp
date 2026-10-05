@@ -3,6 +3,7 @@
 #include "native_checkpoint_selection.hpp"
 #include "disk_device.hpp"
 #include "hash_digest_parts.hpp"
+#include "../disk/native_decoded_storage_ranges.hpp"
 #include <algorithm>
 #include <limits>
 #include <new>
@@ -21,8 +22,10 @@ void PutUuid(byte* p,const Uuid& id){std::copy(id.bytes.begin(),id.bytes.end(),p
 disk::NativePageReference GetRef(const byte* p){return {GetUuid(p),LoadLittle64(p+16),LoadLittle64(p+24),GetUuid(p+32)};}
 void PutRef(byte* p,const disk::NativePageReference& r){PutUuid(p,r.filespace_uuid);StoreLittle64(p+16,r.page_number);StoreLittle64(p+24,r.page_generation);PutUuid(p+32,r.page_size_profile_uuid);}
 bool Ref(const disk::NativePageReference& r){const auto* p=disk::FindCanonicalFilespacePageProfile(r.page_size_profile_uuid);
-  return V7(r.filespace_uuid)&&p&&r.page_number&&r.page_generation&&r.page_number<std::numeric_limits<u64>::max()/p->page_size_bytes&&
-    disk::CheckFileDeviceExtent(r.page_number*p->page_size_bytes,p->page_size_bytes).ok();}
+  if(!V7(r.filespace_uuid)||!p||!r.page_number||!r.page_generation||r.page_number>=std::numeric_limits<u64>::max()/p->page_size_bytes)return false;
+  const u64 size=p->page_size_bytes,offset=r.page_number*size;
+  const u64 limit=static_cast<u64>(std::numeric_limits<std::streamoff>::max());
+  return size<=static_cast<u64>(std::numeric_limits<std::streamsize>::max())&&offset<=limit&&size<=limit-offset;}
 NativeCheckpointSelectionImage Fail(E e){NativeCheckpointSelectionImage r;r.error=e;return r;}
 auto Digest(std::span<const byte> b){const std::array<byte,32> zero{};const core::hash::HashDigestSegment parts[]={{b.data(),seal},{zero.data(),32},{b.data()+seal+32,b.size()-seal-32}};
   return core::hash::ComputeSha256DigestPartsNative(parts,3);}
@@ -52,10 +55,13 @@ bool SamePayload(const NativeCheckpointSelection& a,const NativeCheckpointSelect
     a.previous_checkpoint_object_uuid==b.previous_checkpoint_object_uuid&&a.previous_checkpoint_sha256==b.previous_checkpoint_sha256;
 }
 }
-NativeCheckpointSelectionImage EncodeNativeCheckpointSelection(const NativeCheckpointSelection& s) noexcept {
+NativeCheckpointSelectionViewImage EncodeNativeCheckpointSelectionInto(const NativeCheckpointSelection& s,std::span<byte> output) noexcept {
+  const auto Fail=[](E e){NativeCheckpointSelectionViewImage r;r.error=e;return r;};
   try {
+    if(!disk::detail::DisjointNativeDecodeRegions(std::span(&s,1),output))return Fail(E::invalid_backing);
     const auto valid=Validate(s);if(valid!=E::none)return Fail(valid);
-    std::vector<byte> bytes(s.header.page_size_bytes,0);const auto header=disk::EncodeNativeCommonPageHeader(s.header);
+    if(output.size()<s.header.page_size_bytes)return Fail(E::resource_exhausted);
+    auto bytes=output.first(s.header.page_size_bytes);std::fill(bytes.begin(),bytes.end(),0);const auto header=disk::EncodeNativeCommonPageHeader(s.header);
     if(!header.ok())return Fail(E::invalid_header);std::copy(header.bytes->begin(),header.bytes->end(),bytes.begin());
     auto* f=bytes.data()+128;std::copy_n("SBDCP001",8,f);StoreLittle16(f+8,1);StoreLittle16(f+10,384);StoreLittle32(f+12,used);
     PutUuid(f+16,s.object_uuid);PutUuid(f+32,s.bootstrap_uuid);StoreLittle64(f+48,s.selection_generation);PutUuid(f+56,s.publication_uuid);
@@ -64,12 +70,21 @@ NativeCheckpointSelectionImage EncodeNativeCheckpointSelection(const NativeCheck
     StoreLittle64(f+200,s.previous_selection_generation);if(s.previous_checkpoint)PutRef(f+208,*s.previous_checkpoint);
     PutUuid(f+256,s.previous_checkpoint_object_uuid);std::copy(s.previous_checkpoint_sha256.begin(),s.previous_checkpoint_sha256.end(),f+272);
     const auto digest=Digest(bytes);if(!digest.ok())return Fail(E::hash_failure);std::copy(digest.digest.begin(),digest.digest.end(),bytes.begin()+seal);
-    return {E::none,s,std::move(bytes)};
+    return {E::none,s,bytes};
+  }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::invalid_family);}
+}
+NativeCheckpointSelectionImage EncodeNativeCheckpointSelection(const NativeCheckpointSelection& s) noexcept {
+  try {
+    const auto valid=Validate(s);if(valid!=E::none)return Fail(valid);
+    std::vector<byte> bytes(s.header.page_size_bytes);
+    auto encoded=EncodeNativeCheckpointSelectionInto(s,bytes);if(!encoded.ok())return Fail(encoded.error);
+    return {E::none,std::move(encoded.selection),std::move(bytes)};
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::invalid_family);}
 }
 NativeCheckpointSelectionValue DecodeNativeCheckpointSelectionValue(std::span<const byte> bytes) noexcept {
   const auto fail=[](E e){NativeCheckpointSelectionValue r;r.error=e;return r;};
   try {
+    if(!disk::detail::DisjointNativeDecodeRegions(bytes))return fail(E::invalid_backing);
     if(bytes.size()<used)return fail(E::invalid_header);const auto header=disk::DecodeNativeCommonPageHeader(bytes.data(),128);
     if(!header.ok()||header.header->page_type!=0x30e||header.header->flags||bytes.size()!=header.header->page_size_bytes)return fail(E::invalid_header);
     const auto digest=Digest(bytes);if(!digest.ok())return fail(E::hash_failure);
@@ -95,7 +110,7 @@ NativeCheckpointSelectionPair ClassifyNativeCheckpointSelectionPair(std::span<co
   const auto fail=[](E e){NativeCheckpointSelectionPair r;r.error=e;return r;};
   try {
     const auto left=DecodeNativeCheckpointSelectionValue(first),right=DecodeNativeCheckpointSelectionValue(second);
-    for(const auto* result:{&left,&right})if(result->error==E::hash_failure||result->error==E::resource_exhausted)return fail(result->error);
+    for(const auto* result:{&left,&right})if(result->error==E::hash_failure||result->error==E::resource_exhausted||result->error==E::invalid_backing)return fail(result->error);
     if(!left.ok()||!right.ok())return fail(left.ok()||right.ok()?E::repair_required:E::invalid_pair);
     const auto& a=*left.selection;const auto& b=*right.selection;
     if(a.header.database_uuid!=b.header.database_uuid||a.header.filespace_uuid!=b.header.filespace_uuid||a.header.page_size_profile_uuid!=b.header.page_size_profile_uuid||

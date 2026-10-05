@@ -215,6 +215,30 @@ class FileDevice {
     std::array<Sample,16> samples_{};
     usize count_ = 0;
   };
+  // Same lifetime rule as ReadLatencyBatch: declare before ALL enclosing
+  // operation/source guards. Capture only; telemetry publishes after unlock.
+  // Physical validation/effects and error diagnostics are unchanged.
+  class WriteLatencyBatch {
+   public:
+    explicit WriteLatencyBatch(FileDevice& device) noexcept : device_(device) {}
+    WriteLatencyBatch(const WriteLatencyBatch&) = delete;
+    WriteLatencyBatch& operator=(const WriteLatencyBatch&) = delete;
+    ~WriteLatencyBatch();
+    const FileDevice& device() const noexcept {return device_;}
+    IoResult WriteAt(u64 offset,const void* buffer,usize bytes);
+    IoResult Sync();
+   private:
+    friend class FileDevice;
+    struct Sample {
+      std::shared_ptr<const MetricContext> context;
+      double micros=0;
+      const char* result="ok";
+      bool sync=false,opened=false;
+    };
+    FileDevice& device_;
+    std::array<Sample,16> samples_{};
+    usize count_=0;
+  };
   IoResult WriteAt(u64 offset, const void* buffer, usize bytes);
   PreallocateExtentResult PreallocateExtent(u64 offset, u64 bytes);
   IoResult Sync();
@@ -259,6 +283,9 @@ class FileDevice {
   void PublishIoLatency(LatencyOperation, double micros, const char* result,
                         const std::shared_ptr<const MetricContext>&, bool opened) noexcept;
   IoResult ReadAtImpl(u64 offset, void* buffer, usize bytes, ReadLatencyBatch*);
+  IoResult WriteAtImpl(u64 offset,const void* buffer,usize bytes,WriteLatencyBatch*);
+  IoResult SyncImpl(WriteLatencyBatch*);
+  void CaptureWriteLatency(WriteLatencyBatch*,bool sync,double micros,const char* result) noexcept;
   std::atomic<u64> rejected_io_latency_{0}, failed_io_latency_{0};
   mutable std::recursive_mutex operation_mutex_;
   IoResult MakeIoError(std::string diagnostic_code,
