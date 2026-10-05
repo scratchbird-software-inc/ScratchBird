@@ -1612,6 +1612,29 @@ void TestExactBlobIdentity() {
       dt::kDatatypeCohortV11, 11, 11, descriptor, 1);
   Check(lookup.ok && dt::IsExactCanonicalBlobTypeCodecIdentityV3(lookup.row),
         "exact d711 base.blob identity is absent");
+  const auto descriptor_identity =
+      dt::LookupDatatypeDescriptorIdentityV3(dt::CanonicalTypeId::blob);
+  Check(descriptor_identity.ok && descriptor_identity.diagnostic_id.empty() &&
+            descriptor_identity.descriptor_uuid.kind ==
+                scratchbird::core::platform::UuidKind::object &&
+            descriptor_identity.descriptor_uuid.value == descriptor &&
+            descriptor_identity.descriptor_generation == 1,
+        "datatype descriptor API does not publish exact base.blob UUID identity");
+  Check(!dt::LookupDatatypeDescriptorIdentityV3(
+             dt::CanonicalTypeId::unknown).ok,
+        "descriptor identity API fabricated an unknown-type UUID");
+  const auto catalog = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  const auto catalog_blob = catalog.ok()
+      ? dt::LookupDatatypeCatalogRow(catalog.manifest,
+                                     dt::CanonicalTypeId::blob)
+      : dt::DatatypeCatalogManifestResult{};
+  Check(catalog.ok() && catalog_blob.ok() &&
+            catalog_blob.manifest.descriptor_rows.size() == 1 &&
+            catalog_blob.manifest.descriptor_rows.front().descriptor_uuid.kind ==
+                scratchbird::core::platform::UuidKind::object &&
+            catalog_blob.manifest.descriptor_rows.front().descriptor_uuid.value ==
+                descriptor,
+        "catalog still selects the synthetic name-derived base.blob UUID");
   const auto& row = lookup.row;
   const auto& legacy = row.legacy_fields;
   Check(legacy.type_uuid == type && legacy.type_generation == 1 &&
