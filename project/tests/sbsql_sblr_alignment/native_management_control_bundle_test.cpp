@@ -4140,6 +4140,10 @@ int main(int argc,char** argv){
    const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"control graph Close profile");DirectoryControlClose(profile);return 0;
  }
 
+ if(argc==3&&std::string_view(argv[1])=="--guarded-snapshot-observation"){
+  const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"guarded snapshot profile");
+  DirectoryGuardedSnapshotObservation(profile);std::cout<<"PASS guarded snapshot observation checks="<<checks<<'\n';return 0;
+ }
  if((argc==5||argc==6)&&std::string_view(argv[1])=="--guarded-catalog-relation"){
   const auto indexed=std::stoi(argv[2]),primary=std::stoi(argv[3]),secondary=std::stoi(argv[4]);
   const auto fault=argc==6?std::stoi(argv[5]):0;

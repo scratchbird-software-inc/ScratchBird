@@ -81,6 +81,34 @@ struct SnapshotVectorResult {
 // Engine-private ownership of an already published snapshot. A pin cannot be
 // reconstructed from a descriptor or survive explicit transaction/recovery
 // revocation. It retains the cleanup horizon until its last owner releases it.
+enum class PublishedSnapshotObservationError { none, unknown, revoked, lock_failure };
+struct PublishedSnapshotObservation {
+  PublishedSnapshotObservationError error = PublishedSnapshotObservationError::unknown;
+  const SnapshotVectorDescriptor* descriptor = nullptr;
+  bool ok() const noexcept {
+    return error == PublishedSnapshotObservationError::none && descriptor;
+  }
+  // Static message-vector identifiers; rendering a diagnostic may allocate and
+  // belongs outside storage guards. No caller descriptor grants authority.
+  const char* diagnostic_code() const noexcept {
+    switch (error) {
+      case PublishedSnapshotObservationError::none: return "";
+      case PublishedSnapshotObservationError::unknown: return "SB-MGA-SNAPSHOT-VECTOR-UNKNOWN";
+      case PublishedSnapshotObservationError::revoked: return "SB-MGA-SNAPSHOT-VECTOR-REVOKED";
+      case PublishedSnapshotObservationError::lock_failure: return "SB-MGA-SNAPSHOT-VECTOR-LOCK-FAILURE";
+    }
+    return "SB-MGA-SNAPSHOT-VECTOR-UNKNOWN";
+  }
+  const char* message_key() const noexcept {
+    switch (error) {
+      case PublishedSnapshotObservationError::none: return "";
+      case PublishedSnapshotObservationError::unknown: return "transaction.snapshot_vector.unknown";
+      case PublishedSnapshotObservationError::revoked: return "transaction.snapshot_vector.revoked";
+      case PublishedSnapshotObservationError::lock_failure: return "transaction.snapshot_vector.lock_failure";
+    }
+    return "transaction.snapshot_vector.unknown";
+  }
+};
 class PublishedSnapshotPin final {
  public:
   PublishedSnapshotPin() noexcept = default;
@@ -91,6 +119,13 @@ class PublishedSnapshotPin final {
   // Ownership only; Resolve also checks explicit revocation.
   bool valid() const noexcept { return lease_ != nullptr; }
   SnapshotVectorResult Resolve() const;
+  // Allocation-free observation of immutable publication-owned backing. The
+  // caller must retain this pin throughout use and observe again after work:
+  // a previously returned view is not ongoing authorization after revocation.
+  // Moving a pin transfers backing lifetime; Release/destruction ends it.
+  // Concurrent Observe calls are supported; concurrent mutation of this SAME
+  // pin object (move/Release/destruction) requires caller synchronization.
+  PublishedSnapshotObservation Observe() const noexcept;
   void Release() noexcept { lease_.reset(); }
  private:
   struct Lease;

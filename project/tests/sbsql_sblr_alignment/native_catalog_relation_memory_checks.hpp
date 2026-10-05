@@ -2,6 +2,74 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 // Included after actual directory fixtures and common catalog envelope builders.
+void DirectoryGuardedSnapshotObservation(unsigned primary){
+ using E=mga::PublishedSnapshotObservationError;
+ DirectoryHistoryFixture f(primary,(primary+1)%5,false,2,false,false,true,false);
+ auto& storage=f.t.fixture;const auto cp=*db::DecodeNativeCheckpointRoot(f.t.base_cp).root;
+ const auto ref=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==1;});
+ Check(ref!=cp.roots.end(),"snapshot fixture actual inventory root");
+ auto decoded=page::DecodeNativeTransactionInventoryPage(storage.Read(ref->page.page_number));
+ Check(decoded.ok(),"snapshot fixture actual decoded inventory");
+ // The actual MGA publisher owns these candidate snapshots; this does not
+ // claim the candidate transaction has been published to the selected files.
+ auto pending=mga::BeginLocalTransaction(decoded.page->inventory,{UuidKind::transaction,Id(63101)},1999999999998ULL);
+ Check(pending.ok(),"snapshot candidate in-doubt transaction begun");
+ pending=mga::PrepareLocalTransaction(std::move(pending.inventory),pending.entry.identity.local_id);
+ Check(pending.ok(),"snapshot candidate in-doubt transaction prepared through MGA");
+ auto begun=mga::BeginLocalTransaction(std::move(pending.inventory),{UuidKind::transaction,Id(63100)},2000000000000ULL);
+ Check(begun.ok(),"snapshot candidate reader begun through real MGA");
+ const auto owner=begun.inventory.entries.back().identity;
+ auto published=mga::PublishStatementStableSnapshotVector(begun.inventory,owner.local_id,2000000000001ULL);
+ Check(published.ok(),"real published snapshot authority");
+ Check(!published.descriptor.active_excluded_local_transaction_ids.empty()&&
+   !published.descriptor.in_doubt_excluded_local_transaction_ids.empty(),"both exclusion vectors have actual captured entries");
+ auto pin=mga::RetainPublishedSnapshotVector(published.descriptor.snapshot_uuid);
+ auto second=mga::RetainPublishedSnapshotVector(published.descriptor.snapshot_uuid);
+ Check(pin.valid()&&second.valid(),"independent retained snapshot pins");
+ const auto oracle=pin.Resolve();Check(oracle.ok(),"owning snapshot oracle");
+ auto moved=std::move(pin);
+ checkpoint_inventory_memory::Grant source_memory(32*1024*1024);
+ std::atomic<unsigned> barrier{0};
+ std::thread revoker([&]{while(!barrier.load(std::memory_order_acquire))std::this_thread::yield();
+   mga::RevokePublishedSnapshotVectorsForTransaction(owner.transaction_uuid,owner.local_id);
+   barrier.store(2,std::memory_order_release);});
+ {
+  auto source=db::AcquireNativeSelectedCheckpointMemoryLease(Id(1),storage.devices,Id(2),
+    {32*1024*1024,32*1024*1024},source_memory.memory,source_memory.binding);
+  Check(source.ok(),"actual guarded source for nonallocating snapshot observation");
+  allocation_budget=0;
+  const auto unknown=pin.Observe(),first=moved.Observe(),other=second.Observe();
+  Check(unknown.error==E::unknown&&!unknown.descriptor&&
+    std::string_view(unknown.diagnostic_code())=="SB-MGA-SNAPSHOT-VECTOR-UNKNOWN"&&
+    std::string_view(unknown.message_key())=="transaction.snapshot_vector.unknown","moved pin exact no-allocation diagnostics");
+  Check(first.ok()&&other.ok()&&first.descriptor==other.descriptor,"pins borrow same immutable published backing");
+  const auto& a=*first.descriptor;const auto& b=oracle.descriptor;
+  Check(a.snapshot_uuid.value==b.snapshot_uuid.value&&a.owning_transaction_uuid.value==b.owning_transaction_uuid.value&&
+    a.owning_transaction.value==b.owning_transaction.value&&a.visible_committed_high_watermark==b.visible_committed_high_watermark&&
+    a.oldest_active_transaction.value==b.oldest_active_transaction.value&&a.oldest_interesting_transaction.value==b.oldest_interesting_transaction.value&&
+    a.oldest_snapshot_transaction.value==b.oldest_snapshot_transaction.value&&a.retention_horizon_transaction.value==b.retention_horizon_transaction.value&&
+    a.active_excluded_local_transaction_ids==b.active_excluded_local_transaction_ids&&
+    a.in_doubt_excluded_local_transaction_ids==b.in_doubt_excluded_local_transaction_ids&&a.snapshot_kind==b.snapshot_kind&&
+    a.publication_inventory_next_local_transaction_id==b.publication_inventory_next_local_transaction_id&&
+    a.inventory_authoritative&&a.complete,"every observed scalar and exclusion matches real owning oracle");
+  mga::ReleasePublishedSnapshotVector(a.snapshot_uuid);
+  Check(moved.Observe().ok()&&second.Observe().ok(),"ordinary publication release preserves retained pins");
+  Check(!mga::RetainPublishedSnapshotVector(a.snapshot_uuid).valid(),"released publication rejects new pin");
+  barrier.store(1,std::memory_order_release);
+  while(barrier.load(std::memory_order_acquire)!=2)std::this_thread::yield();
+  const auto revoked=moved.Observe(),revoked_second=second.Observe();
+  Check(revoked.error==E::revoked&&!revoked.descriptor&&revoked_second.error==E::revoked&&!revoked_second.descriptor&&
+    std::string_view(revoked.diagnostic_code())=="SB-MGA-SNAPSHOT-VECTOR-REVOKED"&&
+    std::string_view(revoked.message_key())=="transaction.snapshot_vector.revoked","concurrent transaction revocation refuses without stale descriptor");
+  Check(first.descriptor->snapshot_uuid.value==b.snapshot_uuid.value&&first.descriptor->active_excluded_local_transaction_ids==b.active_excluded_local_transaction_ids,
+    "revocation does not mutate borrowed backing while pin remains retained");
+  const auto left=allocation_budget;allocation_budget=-1;
+  Check(left==0,"success unknown revoked and static diagnostics perform no heap allocation beneath source guard");
+ }
+ revoker.join();moved.Release();second.Release();
+ Check(moved.Observe().error==E::unknown&&!moved.Observe().descriptor,"released pin loses observation");
+ source_memory.memory={};source_memory.Empty();
+}
 void DirectoryCatalogRelationMemory(unsigned primary,unsigned secondary,bool indexed,unsigned fault=0){
  using E=db::NativeCatalogRelationLeaseError;
  const bool refusal=fault>=1&&fault<=6,empty=fault==9,known_outcome=fault==7||fault==8;
