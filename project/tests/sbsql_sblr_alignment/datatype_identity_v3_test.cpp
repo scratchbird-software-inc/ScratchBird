@@ -1802,6 +1802,9 @@ void TestBlobLegacyRouteIsolation() {
   Check(legacy_wire.type_family == 0 && legacy_wire.type_code == 0 &&
             legacy_wire.type_version == 0 && legacy_wire.type_flags == 0,
         "base.blob still maps to the numeric V1 native-wire LOB family");
+  Check(dt::CanonicalTypeIdFromWireTypeId(legacy_wire) ==
+            dt::CanonicalTypeId::unknown,
+        "the unallocated all-zero native-wire identity inferred base.blob");
   dt::CanonicalWireTypeId old_lob_wire;
   old_lob_wire.type_family =
       static_cast<std::uint16_t>(dt::CanonicalWireTypeFamily::lob);
