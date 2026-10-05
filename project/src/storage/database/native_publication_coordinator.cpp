@@ -1047,10 +1047,17 @@ OwnedInventoryGraph AssembleInventory(Context& context,
     const u64 records_at=(384+(map.states.size()+1)/2+7)&~u64{7};
     const u64 page_size=map.header.page_size_bytes;
     Require(records_at<=page_size&&map.records.size()<=(page_size-records_at)/128,E::resource_exhausted);
-    auto encoded=page::EncodeNativeAllocationMap(map);
+    // Serialize into the graph's retained image directly. The owning codec
+    // would also copy every state/record array into a discarded result map.
+    // This removes that hidden copy; the enclosing owning graph still requires
+    // its own resource-governed construction before claiming bounded admission.
+    map_images[i].resize(page_size);
+    const page::NativeAllocationMapConstView view{map.header,map.object_uuid,map.map_generation,
+      map.capacity_generation,map.total_pages,map.first_page,map.creator_transaction_uuid,
+      map.creator_local_transaction_id,map.next,map.next_sha256,map.states,map.records,map.creator_operation_uuid};
+    const auto encoded=page::EncodeNativeAllocationMapInto(view,map_images[i]);
     if(!encoded.ok())throw encoded.error==page::NativeAllocationError::resource_exhausted?E::resource_exhausted:
       encoded.error==page::NativeAllocationError::hash_failure?E::hash_failure:E::image_failure;
-    map_images[i]=std::move(encoded.bytes);
   }
   for(std::size_t i=0;i<inventory_images.size();++i) {
     page::NativeTransactionInventoryPage image;image.header=inventory_headers[i];image.object_uuid=inventory_root.object_uuid;

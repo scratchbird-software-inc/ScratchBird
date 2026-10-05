@@ -109,14 +109,10 @@ template<class Map> E Validate(const Map& map) {
   }
   return record == map.records.size() ? E::none : E::invalid_record;
 }
-}  // namespace
-
-NativeAllocationMapResult EncodeNativeAllocationMap(const NativeAllocationMap& map) noexcept {
-  try {
-    const auto valid = Validate(map); if (valid != E::none) return Fail(valid);
-    std::vector<byte> bytes(map.header.page_size_bytes, 0);
+template<class Map> E EncodeValues(const Map& map,std::span<byte> bytes) {
+    std::fill(bytes.begin(),bytes.end(),0);
     const auto header = disk::EncodeNativeCommonPageHeader(map.header);
-    if (!header.ok()) return Fail(E::invalid_header);
+    if (!header.ok()) return E::invalid_header;
     std::copy(header.bytes->begin(), header.bytes->end(), bytes.begin());
     auto* f = bytes.data() + 128;
     const bool operation_lineage = HasOperationLineage(map);
@@ -142,8 +138,35 @@ NativeAllocationMapResult EncodeNativeAllocationMap(const NativeAllocationMap& m
       StoreLittle64(p + 88, r.reuse_horizon); StoreLittle32(p + 96, r.page_type);
       PutUuid(p + 100, r.creator_operation_uuid);
     }
-    const auto digest = Digest(bytes, true); if (!digest.ok()) return Fail(E::hash_failure);
+    const auto digest = Digest(bytes, true); if (!digest.ok()) return E::hash_failure;
     std::copy(digest.digest.begin(), digest.digest.end(), bytes.begin() + seal);
+    return E::none;
+}
+}  // namespace
+
+NativeAllocationMapEncoding EncodeNativeAllocationMapInto(
+    const NativeAllocationMapConstView& map,std::span<byte> output) noexcept {
+  try {
+    // Reject descriptor aliasing too: zeroing output must never invalidate the
+    // header/length/reference values the writer is still consuming.
+    if(!detail::DisjointNativeDecodeRegions(output,std::span{&map,1})||
+       !detail::DisjointNativeDecodeRegions(output,map.states)||
+       !detail::DisjointNativeDecodeRegions(output,map.records))return {E::invalid_workspace,{}};
+    const auto valid=Validate(map);if(valid!=E::none)return {valid,{}};
+    if(output.size()<map.header.page_size_bytes)return {E::resource_exhausted,{}};
+    const auto bytes=output.first(map.header.page_size_bytes);
+    const auto error=EncodeValues(map,bytes);if(error!=E::none)return {error,{}};
+    return {E::none,bytes};
+  }catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}
+   catch(const std::length_error&){return {E::resource_exhausted,{}};}
+   catch(...){return {E::invalid_family,{}};}
+}
+
+NativeAllocationMapResult EncodeNativeAllocationMap(const NativeAllocationMap& map) noexcept {
+  try {
+    const auto valid = Validate(map); if (valid != E::none) return Fail(valid);
+    std::vector<byte> bytes(map.header.page_size_bytes);
+    const auto error=EncodeValues(map,bytes);if(error!=E::none)return Fail(error);
     return {E::none, map, std::move(bytes)};
   } catch (const std::bad_alloc&) { return Fail(E::resource_exhausted); }
     catch (const std::length_error&) { return Fail(E::resource_exhausted); }
