@@ -20,6 +20,8 @@ import subprocess
 import sys
 from typing import Any
 
+from public_nested_dependency_config import dependency_configure_args
+
 
 FORBIDDEN_REFERENCE_FRAGMENTS = (
     "docs" + "/" + "execution-plans",
@@ -134,6 +136,7 @@ def configure_build_install(args: argparse.Namespace, work_root: Path) -> tuple[
         "-DSCRATCHBIRD_ENABLE_HOTPATH_TRACE=OFF",
         "-DSCRATCHBIRD_ENABLE_EXEC_PROFILE_TRACE=OFF",
         "-DSCRATCHBIRD_ENABLE_PREPARED_TRACE=OFF",
+        *dependency_configure_args(args.build_root / "CMakeCache.txt"),
     ]
     for name in (
         "SB_LLVM_PROJECT_ROOT",

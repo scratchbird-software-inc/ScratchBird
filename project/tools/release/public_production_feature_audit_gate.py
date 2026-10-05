@@ -20,6 +20,8 @@ import subprocess
 import sys
 from typing import Any
 
+from public_nested_dependency_config import dependency_configure_args
+
 
 FORBIDDEN_REFERENCE_FRAGMENTS = (
     "docs" + "/" + "execution-plans",
@@ -223,6 +225,7 @@ def llvm_cmake_definitions_from_env() -> list[str]:
 def matrix_commands(args: argparse.Namespace, project_root: Path) -> list[tuple[str, list[str]]]:
     cmake_root = project_root / "cmake"
     llvm_definitions = llvm_cmake_definitions_from_env()
+    dependency_definitions = dependency_configure_args(args.build_root / "CMakeCache.txt")
     return [
         (
             "agent_build_matrix",
@@ -235,6 +238,7 @@ def matrix_commands(args: argparse.Namespace, project_root: Path) -> list[tuple[
                 f"-DSB_PROJECT_SOURCE_DIR={project_root}",
                 f"-DSB_CONFIGURE_GATE_BINARY_ROOT={args.work_root / 'agent_configure'}",
                 *llvm_definitions,
+                *dependency_definitions,
                 "-P",
                 str(cmake_root / "AgentProductionConfigureGateMatrix.cmake"),
             ],
@@ -250,6 +254,7 @@ def matrix_commands(args: argparse.Namespace, project_root: Path) -> list[tuple[
                 f"-DSB_PROJECT_SOURCE_DIR={project_root}",
                 f"-DSB_CONFIGURE_GATE_BINARY_ROOT={args.work_root / 'optimizer_configure'}",
                 *llvm_definitions,
+                *dependency_definitions,
                 "-P",
                 str(cmake_root / "OptimizerProductionConfigureGateMatrix.cmake"),
             ],
