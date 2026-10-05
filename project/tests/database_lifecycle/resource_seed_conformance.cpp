@@ -39,6 +39,7 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -62,8 +63,8 @@ struct DecodedRecord {
 };
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  // Unwind the owned fixture cleanup even on a failed conformance assertion.
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -969,6 +970,7 @@ void RequireBinaryResourceCorruptionRefusal(const std::filesystem::path& path,
     std::size_t row_offset;
     std::vector<p::byte> body;
     catalog::CatalogTypedRecord record;
+    p::u32 ordinal;
   };
   std::vector<Stored> targets;
   struct StoredAlias {
@@ -1006,7 +1008,7 @@ void RequireBinaryResourceCorruptionRefusal(const std::filesystem::path& path,
             Require(resource.ok(),"corruption fixture original collation invalid");
             selected=resource.record->charset_name=="GBK" && resource.record->default_for_charset;
           }
-          if(selected) targets.push_back({number,offset,body,decoded.record});
+          if(selected) targets.push_back({number,offset,body,decoded.record,row.ordinal});
         }
         if(row.kind==page::CatalogPageRowKind::charset_alias_record) {
           const auto alias=catalog::DecodeCatalogResourceAliasRecord(row.payload);
@@ -1047,7 +1049,8 @@ void RequireBinaryResourceCorruptionRefusal(const std::filesystem::path& path,
       }
       Fail("corruption fixture field missing");
     };
-    const auto mutate=[&](const std::function<void(std::string&)>& mutation) {
+    const auto mutate=[&](const std::function<void(std::string&)>& mutation,
+                          bool foreign_visibility_schema = false) {
       auto payload=target.record.payload;
       mutation(payload);
       Require(payload.size()==target.record.payload.size(),"corruption fixture changed row size");
@@ -1056,6 +1059,9 @@ void RequireBinaryResourceCorruptionRefusal(const std::filesystem::path& path,
       const auto record_size=p::LoadLittle32(body.data()+target.row_offset+8);
       Require(record_size==96+payload.size(),"corruption fixture common record size invalid");
       std::copy(payload.begin(),payload.end(),body.begin()+record_start+96);
+      Require(std::equal(body.begin()+record_start,body.begin()+record_start+96,
+                         target.body.begin()+record_start),
+              "corruption fixture changed common header or binary identities");
       // Catalog page v1 uses this historical offset basis (not seed-artifact FNV).
       p::u64 hash=1469598103934665603ULL;
       for(std::size_t i=0;i<record_size;++i) { hash^=body[record_start+i]; hash*=1099511628211ULL; }
@@ -1064,13 +1070,21 @@ void RequireBinaryResourceCorruptionRefusal(const std::filesystem::path& path,
       const auto checked=page::ParseCatalogPageBody(body,target.page_number);
       Require(checked.ok(),"corruption fixture failed to reseal outer catalog page");
       for(const auto& row:checked.body.rows) {
-        if(row.kind==page::CatalogPageRowKind::typed_catalog_record)
-          Require(catalog::DecodeCatalogTypedRecord(row).ok(),"corruption fixture broke common record envelope");
+        if(row.kind!=page::CatalogPageRowKind::typed_catalog_record) continue;
+        const auto decoded=catalog::DecodeCatalogTypedRecord(row);
+        if(foreign_visibility_schema && row.ordinal==target.ordinal) {
+          Require(!decoded.ok() && decoded.diagnostic.diagnostic_code=="CATALOG.INVALID_INPUT" &&
+                      decoded.diagnostic.message_key=="catalog.metric_visibility.invalid",
+                  "foreign visibility schema did not fail at exact payload/header binding");
+        } else {
+          Require(decoded.ok(),"corruption fixture broke common record envelope");
+        }
       }
       write(body);
       const auto before=all_bytes();
       const auto refused=db::OpenDatabaseFile(open);
-      RequireFailureCode(refused,"SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+      RequireFailureCode(refused,foreign_visibility_schema ? "CATALOG.INVALID_INPUT" :
+                         "SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
                          "checksum-valid corrupt resource catalog admitted");
       Require(all_bytes()==before,"refused read-only resource admission changed database");
       ++refused_count;
@@ -1082,7 +1096,12 @@ void RequireBinaryResourceCorruptionRefusal(const std::filesystem::path& path,
       RequirePersistedGbkRecords(DecodeTypedRecords(ReadCatalogRows(path,page_size)),
                                 restored.state.resource_seed_catalog);
     };
-    mutate([](std::string& b){b[16]^=1;}); // Unknown owning schema with valid outer envelopes.
+    // Unknown and registered-but-foreign schemas exercise different admission
+    // layers. Preserve the original XOR vector: collation65558 XOR1 is now the
+    // registered visibility policy65559, not an unknown resource schema.
+    mutate([](std::string& b){std::fill_n(b.begin()+16,4,static_cast<char>(0xff));});
+    mutate([](std::string& b){b[16]^=1;},
+           target.record.header.kind==catalog::CatalogRecordKind::collation);
     mutate([](std::string& b){const std::string legacy="creator_tx=1 family=";
       b.assign(b.size(),'x');b.replace(0,legacy.size(),legacy);});
     mutate([&](std::string& b){b[field_offset(2)]=static_cast<char>(0xff);});
@@ -1152,12 +1171,14 @@ void RequireBinaryResourceCorruptionRefusal(const std::filesystem::path& path,
     RequireAllResourceDescriptorValues(expected,restored.state.resource_seed_catalog);
     ++refused_count;
   }
+  Require(refused_count==32,
+          "resource corruption matrix did not execute every required vector");
   std::cout << "checksum_valid_resource_corruptions_refused=" << refused_count << '\n';
 }
 
 }  // namespace
 
-int main() {
+int RunConformance() {
   auto memory_policy = memory::DefaultLocalEngineMemoryPolicy();
   memory_policy.policy_name = "database_lifecycle_resource_seed_conformance";
   const auto memory_configured = memory::ConfigureDefaultMemoryManagerForFixture(
@@ -1273,4 +1294,12 @@ int main() {
   RequireGbkRelationDescriptorPersistence(database_path, created, now);
 
   return EXIT_SUCCESS;
+}
+
+int main() {
+  try { return RunConformance(); }
+  catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }
