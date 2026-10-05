@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "transaction_cleanup.hpp"
+#include "transaction_inventory_validation.hpp"
 #include "uuid.hpp"
 
 #include <cstdlib>
@@ -45,31 +46,33 @@ TypedUuid NewUuid(UuidKind kind) {
   return generated.value;
 }
 
-mga::TransactionIdentity NewTransactionIdentity(u64 local_id) {
-  const auto identity = mga::MakeTransactionIdentity(mga::MakeLocalTransactionId(local_id),
-                                                    NewUuid(UuidKind::transaction),
-                                                    mga::TransactionScope::local_node);
-  Require(identity.ok(), "DBLC-013AB transaction identity generation failed");
-  return identity.identity;
-}
-
-mga::TransactionInventoryEntry InventoryEntry(u64 local_id, mga::TransactionState state) {
-  mga::TransactionInventoryEntry entry;
-  entry.identity = NewTransactionIdentity(local_id);
-  entry.state = state;
-  entry.begin_unix_epoch_millis = NextMillis();
-  if (mga::IsTerminalTransactionState(state)) {
-    entry.final_unix_epoch_millis = NextMillis();
-    entry.evidence_record_written = true;
+mga::TransactionInventoryEntry InventoryEntry(mga::LocalTransactionInventory* inventory,
+                                              mga::TransactionState state) {
+  // Pure model conformance: use the real candidate transforms for allocation,
+  // immutable BEGIN boundaries and commit order. This is not durable publication.
+  auto transition = mga::BeginLocalTransaction(*inventory, NewUuid(UuidKind::transaction), NextMillis());
+  Require(transition.ok(), "DBLC-013AB model BEGIN failed");
+  const auto local_id = transition.entry.identity.local_id;
+  if (state == mga::TransactionState::committed) {
+    transition = mga::CommitLocalTransaction(std::move(transition.inventory), local_id, NextMillis());
+  } else if (state == mga::TransactionState::rolled_back) {
+    transition = mga::RollbackLocalTransaction(std::move(transition.inventory), local_id, NextMillis());
+  } else {
+    Require(state == mga::TransactionState::prepared || state == mga::TransactionState::limbo,
+            "DBLC-013AB unexpected fixture lifecycle state");
+    transition = mga::PrepareLocalTransaction(std::move(transition.inventory), local_id);
   }
-  return entry;
-}
-
-mga::LocalTransactionInventory Inventory(std::vector<mga::TransactionInventoryEntry> entries) {
-  mga::LocalTransactionInventory inventory;
-  inventory.next_local_transaction_id = 20;
-  inventory.entries = std::move(entries);
-  return inventory;
+  Require(transition.ok(), "DBLC-013AB model lifecycle transition failed");
+  if (state == mga::TransactionState::limbo) {
+    Require(mga::CheckTransactionStateTransition(transition.entry.state, state).ok(),
+            "DBLC-013AB prepared-to-limbo transition is not allowed");
+    transition.entry.state = state;
+    transition.inventory.entries.back().state = state;
+  }
+  Require(*mga::ValidateLocalTransactionInventoryStructure(transition.inventory) == '\0',
+          "DBLC-013AB model inventory is structurally invalid");
+  *inventory = std::move(transition.inventory);
+  return transition.entry;
 }
 
 mga::RowVersionMetadata Version(const mga::TransactionInventoryEntry& creator,
@@ -287,7 +290,9 @@ void TestFailClosedDiagnostics(const mga::LocalTransactionInventory& inventory,
           "DBLC-013AB retained-vector limit diagnostic mismatch");
 
   auto missing_creator = BaseWorkset(inventory);
-  const auto outside_inventory = InventoryEntry(99, mga::TransactionState::committed);
+  auto separate_inventory = mga::MakeEmptyLocalTransactionInventory();
+  separate_inventory.next_local_transaction_id = 99;
+  const auto outside_inventory = InventoryEntry(&separate_inventory, mga::TransactionState::committed);
   missing_creator.row_versions = {
       Version(outside_inventory, mga::RowVersionState::committed, 160, true),
   };
@@ -297,20 +302,59 @@ void TestFailClosedDiagnostics(const mga::LocalTransactionInventory& inventory,
           "DBLC-013AB missing creator diagnostic mismatch");
 }
 
+void TestInvalidCommitSequences(const mga::LocalTransactionInventory& inventory,
+                                const mga::TransactionInventoryEntry& committed) {
+  for (unsigned fault = 0; fault < 3; ++fault) {
+    auto workset = BaseWorkset(inventory);
+    workset.row_versions = {Version(committed, mga::RowVersionState::committed, 170, true)};
+    if (fault == 0) workset.inventory.entries[0].commit_sequence = 0;
+    if (fault == 1) workset.inventory.entries[0].commit_sequence = inventory.entries[2].commit_sequence;
+    if (fault == 2) workset.inventory.next_commit_sequence = inventory.entries[3].commit_sequence;
+    const auto result = Sweep(workset);
+    Require(!result.ok() && result.diagnostic.diagnostic_code ==
+                "SB-MGA-CLEANUP-HORIZON-INVENTORY-INVALID",
+            "DBLC-013AB invalid commit sequence inventory was accepted");
+    Require(result.diagnostic.message_key ==
+                (fault == 1 ? "transaction.cleanup_horizon.duplicate_commit_sequence"
+                            : "transaction.cleanup_horizon.commit_sequence_invalid"),
+            "DBLC-013AB invalid commit sequence reason mismatch");
+    // This component reports the supplied candidate count as scanned, even
+    // on admission failure. Check the actual decision/effect fields separately.
+    Require(result.scanned_row_version_count == workset.row_versions.size(),
+            "DBLC-013AB supplied candidate count mismatch");
+    Require(!result.cleanup.cleanup_horizon_authoritative &&
+                result.cleanup.authoritative_cleanup_horizon_local_transaction_id == 0 &&
+                result.cleanup.reclaimed_row_version_count == 0 &&
+                result.cleanup.retained_row_version_count == 0 &&
+                result.cleanup.retained_row_versions.empty() &&
+                result.cleanup.reclaim_evidence_records.empty() &&
+                !result.cleanup.physical_storage_mutated,
+            "DBLC-013AB invalid inventory reached cleanup decisions or effects");
+  }
+  Require(*mga::ValidateLocalTransactionInventoryStructure(inventory) == '\0',
+          "DBLC-013AB malformed-copy checks changed the original inventory");
+}
+
 }  // namespace
 
 int main() {
-  const auto committed_old = InventoryEntry(1, mga::TransactionState::committed);
-  const auto rolled_back = InventoryEntry(2, mga::TransactionState::rolled_back);
-  const auto committed_latest = InventoryEntry(3, mga::TransactionState::committed);
-  const auto retained = InventoryEntry(4, mga::TransactionState::committed);
-  const auto prepared = InventoryEntry(5, mga::TransactionState::prepared);
-  const auto limbo = InventoryEntry(6, mga::TransactionState::limbo);
-  const auto inventory = Inventory({committed_old, rolled_back, committed_latest, retained, prepared, limbo});
+  auto inventory = mga::MakeEmptyLocalTransactionInventory();
+  const auto committed_old = InventoryEntry(&inventory, mga::TransactionState::committed);
+  const auto rolled_back = InventoryEntry(&inventory, mga::TransactionState::rolled_back);
+  const auto committed_latest = InventoryEntry(&inventory, mga::TransactionState::committed);
+  const auto retained = InventoryEntry(&inventory, mga::TransactionState::committed);
+  const auto prepared = InventoryEntry(&inventory, mga::TransactionState::prepared);
+  const auto limbo = InventoryEntry(&inventory, mga::TransactionState::limbo);
+  Require(committed_old.commit_sequence == 1 && committed_latest.commit_sequence == 2 &&
+              retained.commit_sequence == 3 && inventory.next_commit_sequence == 4,
+          "DBLC-013AB model commit order was not produced by actual transitions");
 
   TestSuccessfulBoundedSweep(inventory, committed_old, rolled_back, committed_latest);
   TestRetentionAndBackupArchiveHolds(inventory, retained);
   TestLimboAndUnknownOutcomeProtection(inventory, prepared, limbo);
   TestFailClosedDiagnostics(inventory, retained);
+  TestInvalidCommitSequences(inventory, retained);
+  std::cout << "DBLC-013AB lifecycle inventory, cleanup holds, budgets and "
+               "three malformed commit-sequence vectors passed\n";
   return EXIT_SUCCESS;
 }
