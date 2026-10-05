@@ -22,5 +22,6 @@ add_library(sb_storage_disk
 target_compile_features(sb_storage_disk PUBLIC cxx_std_20)
 target_include_directories(sb_storage_disk PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(sb_storage_disk PUBLIC sb_core_platform sb_core_metrics)
+target_link_libraries(sb_storage_disk PRIVATE sb_core_hash)
 find_package(OpenSSL REQUIRED)
 target_link_libraries(sb_storage_disk PRIVATE OpenSSL::Crypto)
