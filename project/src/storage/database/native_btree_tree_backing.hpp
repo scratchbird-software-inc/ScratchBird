@@ -203,7 +203,8 @@ namespace btree_memory_detail {
 struct Reader {
  static NativeBtreeTreeReadResult Run(const Uuid& database,std::span<const disk::NativeFilespaceDevice> supplied,
      std::span<Batch> batches,const disk::NativePageReference& root,
-     const page::NativeBtreeDependencies& dependencies,NativeBtreeTreePreparedMemory& w) noexcept {
+     const page::NativeBtreeDependencies& dependencies,NativeBtreeTreePreparedMemory& w,
+     std::size_t image_limit=std::numeric_limits<std::size_t>::max()) noexcept {
   using E=NativeBtreeTreeMemoryError;using T=page::NativeBtreeError;
   NativeBtreeTreeReadResult out;
   const auto fail=[&](T e){out.error=e==T::resource_exhausted?E::resource_exhausted:E::tree_failure;out.tree_error=e;};
@@ -222,7 +223,8 @@ struct Reader {
       for(std::size_t j=0;j<i;++j)if(supplied[j].device==f.device){fail(T::invalid_filespace);return out;}
       files[i]={f};
     }
-    const auto limits=w.limits_;auto pending=w.pending_;auto pages=w.pages_;auto leaves=w.leaves_;
+    auto limits=w.limits_;limits.maximum_retained_image_bytes=std::min(limits.maximum_retained_image_bytes,image_limit);
+    auto pending=w.pending_;auto pages=w.pages_;auto leaves=w.leaves_;
     auto levels=w.levels_;auto slots=w.slots_;auto identities=w.identities_;auto cells=w.cells_;
     auto references=w.references_;auto roots=w.roots_;auto zero_bytes=w.zero_bytes_;auto image_bytes=w.image_bytes_;
     std::fill(slots.begin(),slots.end(),missing);std::fill(identities.begin(),identities.end(),missing);

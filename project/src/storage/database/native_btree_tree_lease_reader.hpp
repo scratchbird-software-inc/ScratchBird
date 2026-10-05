@@ -12,7 +12,8 @@ class NativeBtreeTreeLeaseReader {
  public:
   static NativeBtreeTreeReadResult Read(const NativeSelectedCheckpointMemoryLease& lease,
       const disk::NativePageReference& root,const page::NativeBtreeDependencies& dependencies,
-      NativeBtreeTreePreparedMemory& backing) noexcept {
+      NativeBtreeTreePreparedMemory& backing,
+      std::size_t image_limit=std::numeric_limits<std::size_t>::max()) noexcept {
     lease.CheckThread();
     if(!lease.selection_.checkpoint_inventory.checkpoint)return {};
     const auto& checkpoint=*lease.selection_.checkpoint_inventory.checkpoint;
@@ -21,7 +22,7 @@ class NativeBtreeTreeLeaseReader {
       out.tree_error=page::NativeBtreeError::cluster_requires_authority;return out;
     }
     return btree_memory_detail::Reader::Run(checkpoint.header.database_uuid,lease.devices_,
-      {lease.batches_,lease.batch_count_},root,dependencies,backing);
+      {lease.batches_,lease.batch_count_},root,dependencies,backing,image_limit);
   }
 };
 } // namespace scratchbird::storage::database

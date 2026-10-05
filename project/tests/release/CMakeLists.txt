@@ -323,6 +323,36 @@ if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
   target_sources(sbsql_sblr_alignment_native_management_control_bundle PRIVATE
     "${PROJECT_SOURCE_DIR}/src/server/database_ownership.cpp")
   target_compile_definitions(sbsql_sblr_alignment_native_management_control_bundle PRIVATE SB_NATIVE_ROUTE_SOURCE_TESTS=1)
+  foreach(indexed RANGE 0 1)
+    foreach(primary RANGE 0 4)
+      foreach(secondary RANGE 0 4)
+        add_test(NAME native_catalog_relation_lease_${indexed}_${primary}_${secondary}_gate
+          COMMAND sbsql_sblr_alignment_native_management_control_bundle --guarded-catalog-relation ${indexed} ${primary} ${secondary})
+        set_tests_properties(native_catalog_relation_lease_${indexed}_${primary}_${secondary}_gate PROPERTIES
+          TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;catalog_metadata;fault_injection;not_runtime_acceptance")
+      endforeach()
+    endforeach()
+  endforeach()
+  foreach(primary RANGE 0 4)
+    math(EXPR secondary "(${primary}+1)%5")
+    foreach(scenario RANGE 7 9)
+      if(scenario EQUAL 9)
+        set(relation_indexed 0)
+      else()
+        set(relation_indexed 1)
+      endif()
+      add_test(NAME native_catalog_relation_lease_outcome_${primary}_${scenario}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --guarded-catalog-relation ${relation_indexed} ${primary} ${secondary} ${scenario})
+      set_tests_properties(native_catalog_relation_lease_outcome_${primary}_${scenario}_gate PROPERTIES
+        TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;catalog_metadata;fault_injection;not_runtime_acceptance")
+    endforeach()
+    foreach(fault RANGE 1 6)
+      add_test(NAME native_catalog_relation_lease_refusal_${primary}_${fault}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --guarded-catalog-relation 1 ${primary} ${secondary} ${fault})
+      set_tests_properties(native_catalog_relation_lease_refusal_${primary}_${fault}_gate PROPERTIES
+        TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;catalog_metadata;fault_injection;not_runtime_acceptance")
+    endforeach()
+  endforeach()
   foreach(primary RANGE 0 4)
     foreach(secondary RANGE 0 4)
       add_test(NAME native_guarded_btree_memory_${primary}_${secondary}_gate

@@ -22,18 +22,18 @@ struct Meter final:std::pmr::memory_resource {
 };
 // Common-envelope storage fixture only, not ordinary-table family admission or
 // a catalog publication operation. Install before source ownership is acquired.
-db::NativeCatalogLeafResult PopulatedLeaf(db::NativeCatalogLeafPage leaf,const mga::TransactionIdentity& creator){
+db::NativeCatalogLeafResult PopulatedLeaf(db::NativeCatalogLeafPage leaf,const mga::TransactionIdentity& creator,unsigned identity_offset=0){
  namespace catalog=scratchbird::core::catalog;
  Check(leaf.body.rows.empty(),"populate only a fresh empty fixture leaf");
  for(unsigned i=0;i<2;++i){
   page::RowDataRecord row;row.storage_generation=1;
-  row.row_uuid={UuidKind::row,Id(60000+i)};row.version_uuid=Id(60010+i);
+  row.row_uuid={UuidKind::row,Id(60000+i+identity_offset)};row.version_uuid=Id(60010+i+identity_offset);
   row.transaction_uuid=creator.transaction_uuid;row.local_transaction_id=creator.local_id.value;
   row.internal_row_ordinal=row.stable_slot_id=i+1;
   catalog::CatalogMetadataVersion metadata;
   metadata.record.header.kind=catalog::CatalogRecordKind::sql_object;
   metadata.record.header.row_uuid=row.row_uuid;
-  metadata.record.header.object_uuid={UuidKind::object,Id(60020+i)};
+  metadata.record.header.object_uuid={UuidKind::object,Id(60020+i+identity_offset)};
   metadata.record.header.parent_uuid={UuidKind::schema,Id(60030)};
   metadata.owning_schema_uuid=metadata.record.header.parent_uuid;
   metadata.owner_uuid={UuidKind::principal,Id(60031)};metadata.audit_uuid={UuidKind::object,Id(60032)};

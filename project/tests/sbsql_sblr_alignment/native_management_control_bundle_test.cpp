@@ -16,6 +16,7 @@
 #include "native_owned_checkpoint_source.hpp"
 #include "native_catalog_leaf_lease_reader.hpp"
 #include "native_catalog_roots_lease_reader.hpp"
+#include "native_catalog_relation_lease_reader.hpp"
 #ifdef SB_NATIVE_ROUTE_SOURCE_TESTS
 #include "../../src/server/database_ownership.hpp"
 #endif
@@ -1570,6 +1571,7 @@ void RepeatedDirectoryHistory(unsigned profile,int only_size=-1){for(unsigned si
  f.Reopen();const auto reopened=f.Read();Check(reopened.ok()&&reopened.entries.size()==2&&reopened.entries[0].control_allocation_images==original.control_allocation_images,"old allocation capacity survives repeated growth and readonly reopen");
 }}
 
+#include "native_catalog_relation_memory_checks.hpp"
 void DirectoryGuardedBtree(unsigned primary,unsigned secondary){
  // Actual non-serving storage fixture, not allocation or catalog publication.
  DirectoryHistoryFixture f(primary,secondary,false,2,false,false,true,false);
@@ -4138,6 +4140,13 @@ int main(int argc,char** argv){
    const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"control graph Close profile");DirectoryControlClose(profile);return 0;
  }
 
+ if((argc==5||argc==6)&&std::string_view(argv[1])=="--guarded-catalog-relation"){
+  const auto indexed=std::stoi(argv[2]),primary=std::stoi(argv[3]),secondary=std::stoi(argv[4]);
+  const auto fault=argc==6?std::stoi(argv[5]):0;
+  Check(indexed>=0&&indexed<=1&&primary>=0&&primary<5&&secondary>=0&&secondary<5&&fault>=0&&fault<=9&&
+    (!fault||(fault==9?!indexed:bool(indexed))),"guarded catalog relation arguments");
+  DirectoryCatalogRelationMemory(primary,secondary,indexed,fault);std::cout<<"PASS guarded catalog relation checks="<<checks<<'\n';return 0;
+ }
  if(argc==4&&std::string_view(argv[1])=="--guarded-btree-memory"){
   const auto primary=std::stoi(argv[2]),secondary=std::stoi(argv[3]);
   Check(primary>=0&&primary<5&&secondary>=0&&secondary<5,"guarded tree profiles");
