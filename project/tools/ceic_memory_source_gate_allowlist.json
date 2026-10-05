@@ -8,14 +8,8 @@
   {
     "category": "direct_delete",
     "path": "project/src/core/memory/memory.cpp",
-    "pattern": "::operator delete(replacement.pointer, std::align_val_t(replacement.alignment))",
-    "reason": "Approved MemoryManager rollback cleanup for a failed replacement allocation; it releases through the memory backend and does not create hot-path allocation authority."
-  },
-  {
-    "category": "direct_delete",
-    "path": "project/src/core/memory/memory.cpp",
-    "pattern": "::operator delete(pointer, std::align_val_t(record.alignment))",
-    "reason": "Approved MemoryManager deallocation backend for previously accounted records; allocator evidence remains non-authoritative for transaction and recovery decisions."
+    "pattern": "::operator delete(pointer, std::align_val_t(alignment))",
+    "reason": "Approved single internal ReleaseAlignedAllocationStorage backend. Existing allocator callers retain active-owner validation or exact pending-allocation ownership, protected-memory cleanup, and their accounting and reservation release ordering. The one-site exception does not authorize raw deallocation in consumers."
   },
   {
     "category": "direct_new",
@@ -50,8 +44,8 @@
   {
     "category": "direct_new",
     "path": "project/src/core/memory/reservation_backed_memory_resource.cpp",
-    "pattern": "new ReservationBackedMemoryResource(std::move(request), reserved.token)",
-    "reason": "Approved reservation-backed memory API handle construction after CEIC-011 ledger reservation; the handle owns governed release evidence."
+    "pattern": "new ReservationBackedMemoryResource(std::move(request), reserved.token, std::move(retained.lease))",
+    "reason": "Approved reservation-backed memory API handle construction after CEIC-011 ledger reservation, commit and retained-ledger-lease admission. The handle owns rollback while physical capacity is acquired before publication. This exact factory exception does not approve payload allocation outside the governed resource."
   },
   {
     "category": "direct_new",

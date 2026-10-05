@@ -69,6 +69,13 @@ constexpr const char* kProtectedMemoryAllocationCallsite = "core.memory.protecte
 constexpr const char* kProtectedMemoryAuthorityNote =
     "protected_memory_evidence_only_not_transaction_finality_visibility_security_authorization_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority";
 
+// The only raw aligned-release backend. Callers retain responsibility for
+// ownership validation, protected-memory cleanup and accounting order; this
+// helper neither admits a pointer nor makes released capacity reusable.
+void ReleaseAlignedAllocationStorage(void* pointer, usize alignment) noexcept {
+  ::operator delete(pointer, std::align_val_t(alignment));
+}
+
 u64 EffectiveHardLimit(const AllocationPolicy& policy) {
   if (policy.hard_limit_bytes != 0) {
     return policy.hard_limit_bytes;
@@ -1159,7 +1166,7 @@ AllocationResult BoundedAllocator::Reallocate(void* pointer, usize bytes, usize 
     bool found = false;
     const auto old = RemoveAllocation(pointer, &found);
     if (policy_.zero_memory_on_release) SecureZeroMemory(pointer, old.bytes);
-    ::operator delete(pointer, std::align_val_t(old.alignment));
+    ReleaseAlignedAllocationStorage(pointer, old.alignment);
   }
   (void)pending.release();
   return replacement;
@@ -1215,7 +1222,7 @@ DeallocationResult BoundedAllocator::DeallocateImpl(
     if (owned != active_.end()) {
       if (policy_.zero_memory_on_release || evidence) SecureZeroMemory(pointer, owned->second.bytes);
       if (evidence) ReleaseProtectedPlatformEvidence(pointer, owned->second.bytes, *evidence);
-      ::operator delete(pointer, std::align_val_t(owned->second.alignment));
+      ReleaseAlignedAllocationStorage(pointer, owned->second.alignment);
     }
     // Credit becomes reusable only after physical storage is gone.
     record = RemoveAllocation(pointer, &found);
@@ -1257,7 +1264,7 @@ Status BoundedAllocator::DeallocateNoAllocImpl(
   if (owned == active_.end()) return MemoryStatus(StatusCode::memory_unknown_pointer, Severity::error);
   if (policy_.zero_memory_on_release || evidence) SecureZeroMemory(pointer, owned->second.bytes);
   if (evidence) ReleaseProtectedPlatformEvidence(pointer, owned->second.bytes, *evidence);
-  ::operator delete(pointer, std::align_val_t(owned->second.alignment));
+  ReleaseAlignedAllocationStorage(pointer, owned->second.alignment);
   bool found = false;
   auto record = RemoveAllocation(pointer, &found);
   if (!found) return MemoryStatus(StatusCode::memory_unknown_pointer, Severity::error);
@@ -1951,7 +1958,7 @@ AllocationResult BoundedAllocator::AllocateRecorded(usize bytes, usize alignment
     const auto committed = sharded_accounting_->Commit(reserved.token);
     if (!committed.ok()) {
       if (policy_.zero_memory_on_release) SecureZeroMemory(pointer, bytes);
-      ::operator delete(pointer, std::align_val_t(alignment));
+      ReleaseAlignedAllocationStorage(pointer, alignment);
       (void)sharded_accounting_->ReleaseNoAlloc(reserved.token);
       return {committed.status, nullptr, 0, 0, {}};
     }
@@ -1995,7 +2002,7 @@ AllocationResult BoundedAllocator::AllocateRecorded(usize bytes, usize alignment
   } catch (...) {
     if (pointer) {
       if (policy_.zero_memory_on_release) SecureZeroMemory(pointer, bytes);
-      ::operator delete(pointer, std::align_val_t(alignment));
+      ReleaseAlignedAllocationStorage(pointer, alignment);
     }
     (void)sharded_accounting_->ReleaseNoAlloc(reserved.token);
     throw;
