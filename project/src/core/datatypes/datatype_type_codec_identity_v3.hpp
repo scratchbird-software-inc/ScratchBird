@@ -5,6 +5,7 @@
 #include "admitted_datatype_cohort.hpp"
 #include "datatype_catalog_manifest.hpp"
 
+#include <array>
 #include <span>
 #include <string>
 #include <string_view>
@@ -26,6 +27,21 @@ struct DatatypePolicyIdentityV3 {
   u64 generation = 0;
 };
 
+// Native V3 width and profile facts. These fields are authoritative when
+// present and prevent a current row from being truncated into the frozen u32
+// V1 width carrier. A nil profile UUID with generation zero and an all-zero
+// fingerprint means the row has no policy profile tuple.
+struct DatatypeNativeIdentityFieldsV3 {
+  bool present = false;
+  u64 canonical_value_minimum_bytes = 0;
+  u64 canonical_value_maximum_bytes = 0;
+  u64 canonical_value_transport_width = 0;
+  bool canonical_value_variable_width = false;
+  platform::Uuid policy_profile_uuid;
+  u64 policy_profile_generation = 0;
+  std::array<platform::byte, 32> profile_fingerprint_sha256{};
+};
+
 // V3 is the current policy-bearing carrier. The nested V1 row is an exact,
 // lossy legacy projection surface; its ABI and predecessor rows remain fixed.
 struct DatatypeTypeCodecIdentityRowV3 {
@@ -35,6 +51,7 @@ struct DatatypeTypeCodecIdentityRowV3 {
   DatatypePolicyIdentityV3 ordering_policy;
   DatatypePolicyIdentityV3 hash_policy;
   DatatypePolicyIdentityV3 operation_policy;
+  DatatypeNativeIdentityFieldsV3 native_fields;
 };
 
 struct DatatypeTypeCodecIdentityLookupV3 {
@@ -72,8 +89,10 @@ inline constexpr std::string_view kDatatypeCohortV9IdentityDigestSha256 =
     "7c3eed94150522b474faa22307a3f94a7753898084de09c67bd108e36fa3a978";
 inline constexpr std::string_view kDatatypeCohortV10IdentityDigestSha256 =
     "90d4e17c5e98a684422399b16d73b38d3391905ebb775241426755a7323249a3";
+inline constexpr std::string_view kDatatypeCohortV11IdentityDigestSha256 =
+    "8d6cb5b855450a355f05863bc2b0c3652d7b694a1e6ebd6758f1a41408840327";
 
-// These predicates compare the semantic current d710 row. Canonical-name and
+// These predicates compare the semantic current d711 row. Canonical-name and
 // codec-id strings are presentation labels and never establish identity. Type
 // codes, payloads, and predecessor identities cannot substitute for the exact
 // UUID/generation/codec-version/policy tuple and physical/semantic fields.
@@ -93,6 +112,9 @@ bool IsExactCanonicalTimestampTypeCodecIdentityV3(
     const DatatypeTypeCodecIdentityRowV3& row) noexcept;
 
 bool IsExactCanonicalIntervalTypeCodecIdentityV3(
+    const DatatypeTypeCodecIdentityRowV3& row) noexcept;
+
+bool IsExactCanonicalBlobTypeCodecIdentityV3(
     const DatatypeTypeCodecIdentityRowV3& row) noexcept;
 
 // The only cross-carrier conversion is the explicit lossy V3-to-V1

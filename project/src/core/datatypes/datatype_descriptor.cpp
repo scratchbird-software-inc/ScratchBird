@@ -434,6 +434,22 @@ const std::vector<DatatypeDescriptor>& BuiltinDatatypeDescriptors() {
   return descriptors;
 }
 
+DatatypeDescriptorIdentityResultV3 LookupDatatypeDescriptorIdentityV3(
+    CanonicalTypeId type_id) noexcept {
+  DatatypeDescriptorIdentityResultV3 result;
+  if (type_id != CanonicalTypeId::blob) {
+    result.diagnostic_id = "DATATYPE.DESCRIPTOR.IDENTITY_NOT_PUBLISHED_V3";
+    return result;
+  }
+  result.descriptor_uuid.kind = platform::UuidKind::object;
+  result.descriptor_uuid.value = platform::Uuid{{
+      0x01,0x6f,0xd1,0xd3,0x0d,0xaf,0x59,0x67,
+      0xb4,0xd7,0x07,0xfe,0x85,0x9a,0x41,0x8e}};
+  result.descriptor_generation = 1;
+  result.ok = true;
+  return result;
+}
+
 DatatypeDescriptorResult LookupDatatypeDescriptor(CanonicalTypeId type_id) {
   for (const DatatypeDescriptor& descriptor : BuiltinDatatypeDescriptors()) {
     if (descriptor.type_id == type_id) {

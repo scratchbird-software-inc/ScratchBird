@@ -57,6 +57,8 @@ using NativeAllocationMap=NativeAllocationMapData<std::vector<NativeAllocationSt
   std::vector<NativeAllocationRecord>>;
 using NativeAllocationMapView=NativeAllocationMapData<std::span<NativeAllocationState>,
   std::span<NativeAllocationRecord>>;
+using NativeAllocationMapConstView=NativeAllocationMapData<std::span<const NativeAllocationState>,
+  std::span<const NativeAllocationRecord>>;
 enum class NativeAllocationError {
   none, invalid_header, invalid_family, invalid_identity, invalid_range,
   invalid_state, invalid_record, invalid_reference, invalid_integrity,
@@ -71,6 +73,18 @@ struct NativeAllocationMapResult {
   bool ok() const noexcept { return error == NativeAllocationError::none && map.has_value(); }
 };
 NativeAllocationMapResult EncodeNativeAllocationMap(const NativeAllocationMap&) noexcept;
+struct NativeAllocationMapEncoding {
+  NativeAllocationError error=NativeAllocationError::invalid_family;
+  std::span<const byte> bytes;
+  bool ok() const noexcept{return error==NativeAllocationError::none&&!bytes.empty();}
+};
+// Writes one canonical page into externally admitted backing with no heap
+// fallback. Output must be disjoint from the descriptor and both input spans.
+// An oversized output retains its untouched suffix. Failure returns no image;
+// the page-sized output prefix is unspecified after hashing begins. This is
+// image construction, not allocation admission or durable publication.
+NativeAllocationMapEncoding EncodeNativeAllocationMapInto(
+    const NativeAllocationMapConstView&,std::span<byte> output) noexcept;
 NativeAllocationMapResult DecodeNativeAllocationMap(const std::vector<byte>&) noexcept;
 struct NativeAllocationMapViewResult {
   NativeAllocationError error=NativeAllocationError::invalid_family;

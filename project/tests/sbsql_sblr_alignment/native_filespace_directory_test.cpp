@@ -169,14 +169,35 @@ p::NativeFilespaceDirectory Example(unsigned profile=0){auto zero=Zero(profile,2
 }
 void Empty(const p::NativeFilespaceDirectoryResult& r){Check(!r.ok()&&!r.directory&&r.bytes.empty(),"no failed directory prefix");}
 void Empty(const p::NativeFilespaceDirectoryChainResult& r){Check(!r.ok()&&r.pages.empty()&&!r.retained_image_bytes,"no failed chain prefix");}
-void Invalid(const p::NativeFilespaceDirectory& v){Empty(p::EncodeNativeFilespaceDirectory(v));Empty(p::DecodeNativeFilespaceDirectory(Oracle(v)));}
+template<class Directory> p::NativeFilespaceDirectoryConstView ConstDirectory(const Directory& d){
+  return {d.header,d.object_uuid,d.directory_generation,d.creator_transaction_uuid,d.creator_local_transaction_id,
+    d.total_records,d.first_record,d.next,d.next_sha256,d.records,d.creator_operation_uuid};
+}
+template<class Directory> void BoundedEncode(const Directory& value){
+  const auto input=ConstDirectory(value);const auto expected=p::EncodeNativeFilespaceDirectory(
+    {value.header,value.object_uuid,value.directory_generation,value.creator_transaction_uuid,value.creator_local_transaction_id,
+     value.total_records,value.first_record,value.next,value.next_sha256,{value.records.begin(),value.records.end()},value.creator_operation_uuid});
+  Bytes output(value.header.page_size_bytes+17,0xa7);std::vector<Uuid> scratch(value.records.size()+1,Id(253));
+  const auto encoded=DenyCodecAllocation([&]{return p::EncodeNativeFilespaceDirectoryInto(input,std::span(output).subspan(1),scratch);});
+  Check(encoded.error==expected.error,"bounded directory encoding preserves owning validation classification");
+  if(expected.ok()){
+    const auto oracle=Oracle(value);
+    Check(encoded.ok()&&encoded.bytes.data()==output.data()+1&&encoded.bytes.size()==oracle.size()&&
+      std::equal(encoded.bytes.begin(),encoded.bytes.end(),oracle.begin(),oracle.end()),"borrowed encoder equals independent complete canonical image");
+    Check(output.front()==0xa7&&std::all_of(output.begin()+1+oracle.size(),output.end(),[](byte b){return b==0xa7;}),"unaligned bounded encoding leaves prefix and oversized suffix untouched");
+    Check(scratch.back()==Id(253),"only the required binary UUID scratch is used");
+  }else Check(!encoded.ok()&&encoded.bytes.empty()&&std::all_of(output.begin(),output.end(),[](byte b){return b==0xa7;}),"invalid directory exposes no bytes and never writes output");
+}
+void Invalid(const p::NativeFilespaceDirectory& v){Empty(p::EncodeNativeFilespaceDirectory(v));Empty(p::DecodeNativeFilespaceDirectory(Oracle(v)));BoundedEncode(v);}
 void Codecs(){for(unsigned profile=0;profile<5;++profile){auto v=Example(profile);
     for(unsigned role=1;role<=14;++role)for(unsigned state=1;state<=15;++state){v.records[0].bootstrap.filespace_role=role;v.records[0].bootstrap.lifecycle_state=state;
       const auto b=Oracle(v);auto r=p::EncodeNativeFilespaceDirectory(v);Check(r.ok()&&r.bytes==b,"independent all-profile directory encoding");
+      BoundedEncode(v);
       r=p::DecodeNativeFilespaceDirectory(b);Check(r.ok()&&Oracle(*r.directory)==b,"independent all-state directory decoding");}
     v=Example(profile);v.records[0].bootstrap.flags=3;v.records[0].bootstrap.encryption_profile_uuid=Id(99);
     v.records[0].operation=d::NativePageReference{Id(2),25,3,v.header.page_size_profile_uuid};
     Check(p::DecodeNativeFilespaceDirectory(Oracle(v)).ok(),"encrypted cluster declaration and operation structurally representable");
+    BoundedEncode(v);
   }
   const auto good=Oracle(Example());for(std::size_t i=0;i<good.size();++i){auto b=good;b[i]^=1;Empty(p::DecodeNativeFilespaceDirectory(b));}
   for(unsigned at:{128u,136u,138u,140u,212u,328u,383u,8191u}){auto b=good;b[at]^=1;Seal(b);Empty(p::DecodeNativeFilespaceDirectory(b));}
@@ -187,7 +208,7 @@ void Codecs(){for(unsigned profile=0;profile<5;++profile){auto v=Example(profile
       case 10:r.page_zero_generation=0;break;case 11:r.root_set_generation=0;break;case 12:r.total_pages=0;break;
       case 13:r.total_pages=std::numeric_limits<u64>::max();break;case 14:r.bootstrap.filespace_role=15;break;case 15:r.bootstrap.lifecycle_state=0;break;
       case 16:r.bootstrap.flags=4;break;case 17:r.bootstrap.encryption_profile_uuid=Id(8);break;case 18:r.bootstrap.page_size_bytes=4096;break;
-      case 19:r.bootstrap.database_uuid=Id(9);Empty(p::EncodeNativeFilespaceDirectory(v));continue;
+      case 19:r.bootstrap.database_uuid=Id(9);Empty(p::EncodeNativeFilespaceDirectory(v));BoundedEncode(v);continue;
       case 20:v.total_records=2;v.records.push_back(r);break;case 21:r.operation=d::NativePageReference{Id(2),0,1,v.header.page_size_profile_uuid};break;}
     Invalid(v);
   }
@@ -207,6 +228,24 @@ void BorrowedCodecs(){
     if(variant==2)for(auto& r:value.records){p::NativeFilespaceAllocationRoot root;
       root.page={r.bootstrap.filespace_uuid,17,5,r.bootstrap.page_size_profile_uuid};root.object_uuid=Id(100);root.sha256.fill(0x71);
       root.map_generation=9;root.capacity_generation=11;r.allocation_root=root;}
+    if(variant==2)for(unsigned fault=0;fault<10;++fault){auto bad=value;auto& root=*bad.records[0].allocation_root;
+      if(fault==0)root.object_uuid={};
+      if(fault==1)root.sha256.fill(0);
+      if(fault==2)root.map_generation=0;
+      if(fault==3)root.capacity_generation=0;
+      if(fault==4)root.page.filespace_uuid=Id(3);
+      if(fault==5)root.page.page_size_profile_uuid=d::kCanonicalFilespacePageProfiles[(profile+1)%5].uuid;
+      if(fault==6)root.page.page_number=bad.records[0].total_pages;
+      if(fault==7)root.page.page_number=bad.header.page_number;
+      if(fault==8)root.page.page_generation=0;
+      if(fault==9)root.page.page_number=0;
+      Check(p::EncodeNativeFilespaceDirectory(bad).error==E::invalid_reference,"independent malformed allocation-root refusal");BoundedEncode(bad);
+    }
+    {auto chained=value;++chained.total_records;chained.next=d::NativePageReference{Id(2),18,5,chained.header.page_size_profile_uuid};chained.next_sha256.fill(0x71);
+      Check(p::EncodeNativeFilespaceDirectory(chained).ok(),"valid nonterminal directory record range");BoundedEncode(chained);
+      chained.next->page_number=chained.header.page_number;BoundedEncode(chained);
+      chained.next.reset();BoundedEncode(chained);
+    }
     auto bytes=Oracle(value);std::vector<p::NativeFilespaceDirectoryRecord> records(value.records.size());std::vector<Uuid> scratch(records.size());
     allocations=0;count_allocations=true;allocation_budget=0;
     const auto result=p::DecodeNativeFilespaceDirectoryInto(bytes,records,scratch);
@@ -214,6 +253,51 @@ void BorrowedCodecs(){
     Check(result.ok()&&remaining==0&&allocations==0,"caller-backed directory has no hidden vectors or UUID tree allocations");
     Check(result.directory->records.data()==records.data()&&Oracle(*result.directory)==bytes,"full independent v1/v2 mixed-profile metadata and unchanged record order");
     Check(scratch[0]<scratch[1]&&records[0].bootstrap.filespace_uuid==value.records[0].bootstrap.filespace_uuid,"binary UUID scratch sorting does not reorder directory records");
+    BoundedEncode(*result.directory);
+    auto input=ConstDirectory(*result.directory);Bytes encoded_bytes(bytes.size(),0xa7);
+    const auto unchanged=[&]{return std::all_of(encoded_bytes.begin(),encoded_bytes.end(),[](byte b){return b==0xa7;});};
+    for(const auto size:{std::size_t{0},std::size_t{1},bytes.size()-1}){
+      const auto r=DenyCodecAllocation([&]{return p::EncodeNativeFilespaceDirectoryInto(input,std::span(encoded_bytes).first(size),scratch);});
+      Check(r.error==E::resource_exhausted&&r.bytes.empty()&&unchanged(),"short page backing has no partial write");
+    }
+    for(std::size_t size=0;size<scratch.size();++size){
+      const auto r=DenyCodecAllocation([&]{return p::EncodeNativeFilespaceDirectoryInto(input,encoded_bytes,std::span(scratch).first(size));});
+      Check(r.error==E::resource_exhausted&&r.bytes.empty()&&unchanged(),"empty or short uniqueness scratch never falls back to heap");
+    }
+    for(unsigned overlap=0;overlap<7;++overlap){
+      auto destination=std::span(encoded_bytes);auto work=std::span(scratch);
+      if(overlap==0)destination={reinterpret_cast<byte*>(&input),sizeof(input)};
+      if(overlap==1)destination={reinterpret_cast<byte*>(records.data()),records.size()*sizeof(records[0])};
+      if(overlap==2)destination={reinterpret_cast<byte*>(work.data()),work.size_bytes()};
+      if(overlap==3)work={reinterpret_cast<Uuid*>(&input),1};
+      if(overlap==4)work={reinterpret_cast<Uuid*>(records.data()),1};
+      if(overlap==5)work={reinterpret_cast<Uuid*>(encoded_bytes.data()+encoded_bytes.size()-sizeof(Uuid)),1};
+      const auto original_records=input.records;
+      if(overlap==6)input.records={reinterpret_cast<const p::NativeFilespaceDirectoryRecord*>(&input),1};
+      const auto r=DenyCodecAllocation([&]{return p::EncodeNativeFilespaceDirectoryInto(input,destination,work);});
+      input.records=original_records;
+      Check(r.error==E::invalid_backing&&r.bytes.empty()&&unchanged()&&Oracle(*result.directory)==bytes,"every overlapping region pair refuses before scratch or page mutation");
+    }
+    {Bytes oversized(bytes.size()+sizeof(Uuid),0xa7);
+      const auto r=DenyCodecAllocation([&]{return p::EncodeNativeFilespaceDirectoryInto(input,oversized,
+        {reinterpret_cast<Uuid*>(oversized.data()+bytes.size()),1});});
+      Check(r.error==E::invalid_backing&&r.bytes.empty()&&std::all_of(oversized.begin(),oversized.end(),[](byte b){return b==0xa7;}),"scratch cannot alias even the unused suffix of oversized output");
+    }
+    {Bytes misaligned(records.size()*sizeof(records[0])+alignof(p::NativeFilespaceDirectoryRecord),0xa7);
+      auto bad=input;bad.records={reinterpret_cast<const p::NativeFilespaceDirectoryRecord*>(misaligned.data()+1),records.size()};
+      const auto r=DenyCodecAllocation([&]{return p::EncodeNativeFilespaceDirectoryInto(bad,encoded_bytes,scratch);});
+      Check(r.error==E::invalid_backing&&r.bytes.empty()&&unchanged(),"misaligned native input is rejected before dereference");
+    }
+    hash_calls=0;fail_hash=1;
+    auto encoded_failure=DenyCodecAllocation([&]{return p::EncodeNativeFilespaceDirectoryInto(input,encoded_bytes,scratch);});fail_hash=0;
+    Check(encoded_failure.error==E::hash_failure&&encoded_failure.bytes.empty(),"encoding digest-context refusal publishes no image");
+#ifdef SB_NATIVE_DIRECTORY_MEMORY_TESTS
+    for(unsigned mode=2;mode<=5;++mode){method_fault=mode;
+      encoded_failure=DenyCodecAllocation([&]{return p::EncodeNativeFilespaceDirectoryInto(input,encoded_bytes,scratch);});
+      Check(!method_fault&&encoded_failure.error==E::hash_failure&&encoded_failure.bytes.empty(),"encoding digest phase and short-output failures are exact");
+    }
+#endif
+    Check(DenyCodecAllocation([&]{return p::EncodeNativeFilespaceDirectoryInto(input,encoded_bytes,scratch);}).ok()&&encoded_bytes==bytes,"successful encode retry restores canonical bytes after hash refusal");
     for(unsigned part=0;part<2;++part){const auto r=p::DecodeNativeFilespaceDirectoryInto(bytes,
       std::span(records).first(records.size()-(part==0)),std::span(scratch).first(scratch.size()-(part==1)));
       Check(!r.directory&&r.error==E::resource_exhausted,"short record or UUID scratch publishes no directory prefix");}
@@ -224,6 +308,7 @@ void BorrowedCodecs(){
     Bytes unaligned(1,0);unaligned.insert(unaligned.end(),bytes.begin(),bytes.end());
     Check(p::DecodeNativeFilespaceDirectoryInto(std::span<const byte>(unaligned).subspan(1),records,scratch).ok(),"unaligned directory image decoded bytewise");
     auto duplicate=value;duplicate.records[1].page_zero_uuid=duplicate.records[0].page_zero_uuid;
+    BoundedEncode(duplicate);
     auto duplicate_result=p::DecodeNativeFilespaceDirectoryInto(Oracle(duplicate),records,scratch);
     Check(!duplicate_result.directory&&duplicate_result.error==E::invalid_record,"duplicate binary page-zero UUID still refused");
     for(unsigned at:{128u,136u,138u,140u,208u,383u}){auto bad=bytes;bad[at]^=0x80;Seal(bad);
@@ -241,13 +326,17 @@ void BorrowedCodecs(){
     std::fill(bytes.begin(),bytes.end(),0);std::fill(scratch.begin(),scratch.end(),Uuid{});
     Check(Oracle(*result.directory)==Oracle(value),"decoded records retain neither encoded image nor scratch lifetime");
   }
-  for(unsigned profile=0;profile<5;++profile){auto value=Example(profile);const auto count=(value.header.page_size_bytes-384)/192;
+  for(unsigned profile=0;profile<5;++profile)for(bool extended:{false,true}){auto value=Example(profile);
+    if(extended){value.creator_transaction_uuid={};value.creator_local_transaction_id=0;value.creator_operation_uuid=Id(98);}
+    const auto count=(value.header.page_size_bytes-384)/(extended?320:192);
     value.records.resize(count,value.records.front());value.total_records=count;
     const auto id=[](u32 n){auto r=Id(0);for(unsigned i=0;i<4;++i)r.bytes[15-i]=byte(n>>(8*i));return r;};
     for(unsigned i=0;i<count;++i){auto& r=value.records[i];r.bootstrap.filespace_uuid=id(1000+i);r.page_zero_uuid=id(10000+i);r.locator_uuid=id(20000+i);}
     auto bytes=Oracle(value);std::vector<p::NativeFilespaceDirectoryRecord> records(count);std::vector<Uuid> scratch(count);
     allocation_budget=0;auto result=p::DecodeNativeFilespaceDirectoryInto(bytes,records,scratch);const auto remaining=allocation_budget;allocation_budget=-1;
     Check(result.ok()&&remaining==0&&result.directory->records.size()==count&&Oracle(*result.directory)==bytes,"maximum-count directory uses exact admitted metadata and scratch");
+    BoundedEncode(*result.directory);
+    value.records.push_back(value.records.back());++value.total_records;BoundedEncode(value);
   }
   const auto good=Oracle(Example());std::array<p::NativeFilespaceDirectoryRecord,1> records;std::array<Uuid,1> scratch;
   for(std::size_t i=0;i<good.size();++i){auto bad=good;bad[i]^=1;auto r=p::DecodeNativeFilespaceDirectoryInto(bad,records,scratch);Check(!r.directory&&!r.ok(),"every corrupted byte refuses without borrowed prefix");}
@@ -316,6 +405,45 @@ struct MemoryFile {
   auto Read(MemoryFixture& f){reads=hash_calls=0;return db::ReadNativeFilespaceDirectoryWithMemoryFromOpenDevice(device,expected,value.object_uuid,f.memory,f.binding);}
 };
 void NoDirectory(const db::NativeDirectoryMemoryResult& r){Check(!r.ok()&&!r.directory&&r.image.empty()&&!r.arena,"refusal exposes no image metadata or owner prefix");}
+void MemoryEncodingTests(){
+  for(unsigned profile=0;profile<5;++profile)for(unsigned secondary=0;secondary<5;++secondary)for(unsigned lineage=0;lineage<3;++lineage){
+    MemoryFile file(profile);auto expected=file.value;const auto second=Zero(secondary,3);
+    expected.records.push_back({second.bootstrap,Id(91),second.page_uuid,second.page_generation,second.root_set_generation,second.total_pages,1,{}});
+    expected.total_records=2;
+    if(lineage==1){expected.creator_transaction_uuid={};expected.creator_local_transaction_id=0;expected.creator_operation_uuid=Id(98);}
+    if(lineage==2)for(auto& record:expected.records){p::NativeFilespaceAllocationRoot root;
+      root.page={record.bootstrap.filespace_uuid,17,5,record.bootstrap.page_size_profile_uuid};root.object_uuid=Id(100);
+      root.sha256.fill(0x71);root.map_generation=9;root.capacity_generation=11;record.allocation_root=root;}
+    file.Store(Oracle(expected));
+    MemoryFixture source(db::NativeDirectoryWorkspaceBytes(expected.header.page_size_profile_uuid));
+    const auto output_bytes=expected.header.page_size_bytes+expected.records.size()*sizeof(Uuid);
+    MemoryFixture output(output_bytes);auto read=file.Read(source);Check(read.ok(),"actual granted source directory for construction");
+    auto granted=output.memory.CreateArena(output.binding,output_bytes,expected.header.page_size_bytes);
+    Check(granted.ok(),"admit actual destination and UUID scratch before device guard");
+    auto page=granted.arena.Allocate(expected.header.page_size_bytes,1);
+    auto work=granted.arena.Allocate(expected.records.size()*sizeof(Uuid),alignof(Uuid));
+    Check(page.ok()&&work.ok(),"bounded arena provides actual image and uniqueness storage");
+    const std::span<byte> destination{static_cast<byte*>(page.pointer),expected.header.page_size_bytes};
+    const std::span<Uuid> scratch{static_cast<Uuid*>(work.pointer),expected.records.size()};
+    for(auto& id:scratch)std::construct_at(&id);
+    ++expected.directory_generation;++read.directory->directory_generation;
+    ++expected.records[1].verification_epoch;++read.directory->records[1].verification_epoch;
+    const auto oracle=Oracle(expected);const auto input=ConstDirectory(*read.directory);
+    {auto guard=file.device.AcquireOperationGuard();observation_device_mutex=guard.mutex();memory_probes=locked_memory_probes=0;
+      allocation_budget=0;const auto encoded=p::EncodeNativeFilespaceDirectoryInto(input,destination,scratch);
+      const auto remaining=allocation_budget;allocation_budget=-1;observation_device_mutex=nullptr;
+      Check(encoded.ok()&&remaining==0&&!memory_probes&&!locked_memory_probes&&
+        std::equal(encoded.bytes.begin(),encoded.bytes.end(),oracle.begin(),oracle.end()),"guarded directory encoder consumes only actual admitted backing without governor or heap callbacks");
+      const auto write=file.device.WriteAt(expected.header.page_number*u64{expected.header.page_size_bytes},encoded.bytes.data(),encoded.bytes.size());
+      Check(write.ok()&&write.bytes_transferred==encoded.bytes.size()&&file.device.Sync().ok(),"persist and synchronize exact staged directory image");
+    }
+    read={};granted={};output.memory={};output.Empty();
+    Check(file.device.Close().ok()&&file.device.Open(file.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"read-only reopen of staged directory image");
+    auto reopened=file.Read(source);Check(reopened.ok()&&Oracle(*reopened.directory)==oracle&&
+      std::equal(reopened.image.begin(),reopened.image.end(),oracle.begin(),oracle.end()),"binary roots lineage and updated metadata survive actual persisted reopen");
+    reopened={};source.memory={};source.Empty();
+  }
+}
 void MemoryTests(){
   for(unsigned profile=0;profile<5;++profile){MemoryFile file(profile);
     const auto capacity=db::NativeDirectoryWorkspaceBytes(file.value.header.page_size_profile_uuid);
@@ -754,7 +882,7 @@ void Chains(){for(unsigned profile=0;profile<5;++profile)for(unsigned secondary=
 }
 int main(){try{Codecs();BorrowedCodecs();Chains();
 #ifdef SB_NATIVE_DIRECTORY_MEMORY_TESTS
-    MemoryTests();
+    MemoryTests();MemoryEncodingTests();
 #endif
     std::cout<<"PASS directory checks="<<checks<<" not_SQL_E2E=true\n";return 0;}
   catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}

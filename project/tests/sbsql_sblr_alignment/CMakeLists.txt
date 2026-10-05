@@ -10505,6 +10505,40 @@ set_tests_properties(sbsql_sblr_alignment_datatype_identity_v3 PROPERTIES
   LABELS "datatype;base_date;base_time;base_timestamp;base_bit_string;base_binary;identity_v3;d710;history_d701_d708;not_runtime_acceptance"
   TIMEOUT 120)
 
+add_executable(sbsql_sblr_alignment_base_blob_profile_value
+  base_blob_profile_value_test.cpp)
+target_compile_features(sbsql_sblr_alignment_base_blob_profile_value PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_base_blob_profile_value PRIVATE sb_core_datatypes)
+add_test(NAME sbsql_sblr_alignment_base_blob_profile_value
+  COMMAND sbsql_sblr_alignment_base_blob_profile_value)
+set_tests_properties(sbsql_sblr_alignment_base_blob_profile_value PROPERTIES
+  LABELS "datatype;base_blob;v11;profile;materialized_value;fail_closed_lifetime;not_runtime_acceptance"
+  TIMEOUT 180)
+
+add_executable(sbsql_sblr_alignment_base_blob_lifetime_abi_c
+  base_blob_lifetime_abi_c_test.c)
+target_include_directories(sbsql_sblr_alignment_base_blob_lifetime_abi_c PRIVATE
+  ${PROJECT_SOURCE_DIR}/include)
+set_target_properties(sbsql_sblr_alignment_base_blob_lifetime_abi_c PROPERTIES
+  C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS NO)
+add_test(NAME sbsql_sblr_alignment_base_blob_lifetime_abi_c
+  COMMAND sbsql_sblr_alignment_base_blob_lifetime_abi_c)
+set_tests_properties(sbsql_sblr_alignment_base_blob_lifetime_abi_c PROPERTIES
+  LABELS "datatype;base_blob;lifetime_authority;canonical_c_abi_layout"
+  TIMEOUT 30)
+
+add_executable(sbsql_sblr_alignment_base_blob_lifetime_abi_cpp20
+  base_blob_lifetime_abi_cpp20_test.cpp)
+target_include_directories(sbsql_sblr_alignment_base_blob_lifetime_abi_cpp20 PRIVATE
+  ${PROJECT_SOURCE_DIR}/include)
+set_target_properties(sbsql_sblr_alignment_base_blob_lifetime_abi_cpp20 PROPERTIES
+  CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
+add_test(NAME sbsql_sblr_alignment_base_blob_lifetime_abi_cpp20
+  COMMAND sbsql_sblr_alignment_base_blob_lifetime_abi_cpp20)
+set_tests_properties(sbsql_sblr_alignment_base_blob_lifetime_abi_cpp20 PROPERTIES
+  LABELS "datatype;base_blob;lifetime_authority;canonical_c_abi_layout"
+  TIMEOUT 30)
+
 add_executable(sbsql_sblr_alignment_base_bit_string_profile_value
   base_bit_string_profile_value_test.cpp)
 target_compile_features(sbsql_sblr_alignment_base_bit_string_profile_value PRIVATE cxx_std_23)

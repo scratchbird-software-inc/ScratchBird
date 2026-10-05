@@ -317,12 +317,17 @@ void Store32(Word value, std::uint8_t* output) noexcept {
         return false;
     }
 
-    const std::uint64_t expected_total =
-        (state.current_chunk_counter * kChunkBytes) +
+    const std::uint64_t current_chunk_bytes =
         (static_cast<std::uint64_t>(state.blocks_compressed) * kBlockBytes) +
         state.block_length;
+    if (state.current_chunk_counter >
+        (kBlake3IncrementalMaximumInputBytesV3 - current_chunk_bytes) /
+            kChunkBytes) {
+        return false;
+    }
+    const std::uint64_t expected_total =
+        (state.current_chunk_counter * kChunkBytes) + current_chunk_bytes;
     if (expected_total != state.total_input_bytes ||
-        expected_total > kBlake3IncrementalMaximumInputBytesV3 ||
         state.cv_stack_length != PopulationCount(state.current_chunk_counter)) {
         return false;
     }

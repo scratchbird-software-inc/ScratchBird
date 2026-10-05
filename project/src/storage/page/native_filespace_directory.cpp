@@ -40,7 +40,7 @@ bool SameBootstrap(const disk::FilespaceBootstrap& a,const disk::FilespaceBootst
     a.flags==b.flags&&a.filespace_role==b.filespace_role&&a.lifecycle_state==b.lifecycle_state;}
 template<class Directory> bool Extended(const Directory& d){return !d.creator_operation_uuid.is_nil()||
   std::any_of(d.records.begin(),d.records.end(),[](const auto& r){return r.allocation_root.has_value();});}
-template<class Directory> E Validate(const Directory& d,std::span<Uuid> zero_ids={}){const auto& h=d.header;
+template<bool OwnScratch=true,class Directory> E Validate(const Directory& d,std::span<Uuid> zero_ids={}){const auto& h=d.header;
   if(!disk::EncodeNativeCommonPageHeader(h).ok()||h.page_type!=9||h.flags)return E::invalid_header;
   const bool transaction=V7(d.creator_transaction_uuid)&&d.creator_local_transaction_id&&d.creator_operation_uuid.is_nil();
   const bool operation=V7(d.creator_operation_uuid)&&d.creator_transaction_uuid.is_nil()&&!d.creator_local_transaction_id;
@@ -52,7 +52,7 @@ template<class Directory> E Validate(const Directory& d,std::span<Uuid> zero_ids
   if(d.next&&(!Ref(*d.next)||(d.next->filespace_uuid==h.filespace_uuid&&
       (d.next->page_number==h.page_number||d.next->page_size_profile_uuid!=h.page_size_profile_uuid))))return E::invalid_reference;
   std::vector<Uuid> owning_scratch;
-  if(zero_ids.empty()){owning_scratch.resize(d.records.size());zero_ids=owning_scratch;}
+  if constexpr(OwnScratch)if(zero_ids.empty()){owning_scratch.resize(d.records.size());zero_ids=owning_scratch;}
   if(zero_ids.size()<d.records.size())return E::resource_exhausted;
   zero_ids=zero_ids.first(d.records.size());
   for(std::size_t i=0;i<d.records.size();++i)zero_ids[i]=d.records[i].page_zero_uuid;
@@ -74,13 +74,11 @@ template<class Directory> E Validate(const Directory& d,std::span<Uuid> zero_ids
   }
   return E::none;
 }
-}
-
-NativeFilespaceDirectoryResult EncodeNativeFilespaceDirectory(const NativeFilespaceDirectory& d) noexcept {
-  try{const auto valid=Validate(d);if(valid!=E::none)return Fail(valid);
+template<class Directory> E EncodeValues(const Directory& d,std::span<byte> b){
     const bool extended=Extended(d);const auto width=extended?extended_width:base_width;
-    std::vector<byte> b(d.header.page_size_bytes,0);const auto common=disk::EncodeNativeCommonPageHeader(d.header);
-    if(!common.ok())return Fail(E::invalid_header);std::copy(common.bytes->begin(),common.bytes->end(),b.begin());
+    const auto common=disk::EncodeNativeCommonPageHeader(d.header);
+    if(!common.ok())return E::invalid_header;
+    std::fill(b.begin(),b.end(),0);std::copy(common.bytes->begin(),common.bytes->end(),b.begin());
     auto* f=b.data()+128;std::copy_n(extended?"SBFDIR02":"SBFDIR01",8,f);StoreLittle16(f+8,extended?2:1);StoreLittle16(f+10,256);StoreLittle32(f+12,start+width*d.records.size());
     PutUuid(f+16,d.object_uuid);StoreLittle64(f+32,d.directory_generation);PutUuid(f+40,d.creator_transaction_uuid);
     StoreLittle64(f+56,d.creator_local_transaction_id);StoreLittle64(f+64,d.total_records);StoreLittle64(f+72,d.first_record);
@@ -94,9 +92,32 @@ NativeFilespaceDirectoryResult EncodeNativeFilespaceDirectory(const NativeFilesp
       if(r.allocation_root){const auto& root=*r.allocation_root;PutRef(p+192,root.page);PutUuid(p+240,root.object_uuid);
         std::copy(root.sha256.begin(),root.sha256.end(),p+256);StoreLittle64(p+288,root.map_generation);StoreLittle64(p+296,root.capacity_generation);}
     }
-    const auto digest=Digest(b,true);if(!digest.ok())return Fail(E::hash_failure);std::copy(digest.digest.begin(),digest.digest.end(),b.begin()+seal);
+    const auto digest=Digest(b,true);if(!digest.ok())return E::hash_failure;std::copy(digest.digest.begin(),digest.digest.end(),b.begin()+seal);
+    return E::none;
+}
+}
+
+NativeFilespaceDirectoryResult EncodeNativeFilespaceDirectory(const NativeFilespaceDirectory& d) noexcept {
+  try{const auto valid=Validate(d);if(valid!=E::none)return Fail(valid);
+    std::vector<byte> b(d.header.page_size_bytes);
+    const auto encoded=EncodeValues(d,b);if(encoded!=E::none)return Fail(encoded);
     return {E::none,d,std::move(b)};
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::invalid_family);}
+}
+NativeFilespaceDirectoryEncoding EncodeNativeFilespaceDirectoryInto(
+    const NativeFilespaceDirectoryConstView& d,std::span<byte> output,std::span<Uuid> scratch) noexcept {
+  try{
+    if(reinterpret_cast<std::uintptr_t>(d.records.data())%alignof(NativeFilespaceDirectoryRecord)||
+       reinterpret_cast<std::uintptr_t>(scratch.data())%alignof(Uuid)||
+       !detail::DisjointNativeDecodeRegions(std::span(&d,1),d.records,output,scratch))return {E::invalid_backing,{}};
+    const auto valid=Validate<false>(d,scratch);if(valid!=E::none)return {valid,{}};
+    if(output.size()<d.header.page_size_bytes)return {E::resource_exhausted,{}};
+    auto bytes=output.first(d.header.page_size_bytes);
+    const auto encoded=EncodeValues(d,bytes);if(encoded!=E::none)return {encoded,{}};
+    return {E::none,bytes};
+  }catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}
+   catch(const std::length_error&){return {E::resource_exhausted,{}};}
+   catch(...){return {E::invalid_family,{}};}
 }
 namespace {
 template<class Directory,class Prepare> E DecodeValues(std::span<const byte> b,Directory& d,

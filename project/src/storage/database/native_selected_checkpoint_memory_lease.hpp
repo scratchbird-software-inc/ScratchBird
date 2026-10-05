@@ -47,12 +47,18 @@ class NativeSelectedCheckpointMemoryLease {
   std::thread::id thread_;
   Guard* guards_=nullptr;std::size_t guard_count_=0;
   Batch* batches_=nullptr;std::size_t batch_count_=0;
+  std::span<const disk::NativeFilespaceDevice> devices_;
   disk::FilespaceRootReference checkpoint_;
   NativeReadBoundCheckpointSelection selection_;
   NativeReadCheckpointDirectory directory_;
   u64 retained_image_bytes_=0;
   std::size_t backing_bytes_used_=0;
   friend class NativeSelectedCheckpointMemoryHandle;
+  friend class NativeCatalogLeafLeaseReader;
+  friend class NativeCatalogRootsLeaseReader;
+  friend class NativeBtreeTreeLeaseReader;
+  friend class NativeAllocationLeaseReader;
+  friend class NativePageReservationLeaseReader;
   friend NativeSelectedCheckpointMemoryResult AcquireNativeSelectedCheckpointMemoryLease(
       const Uuid&,std::span<const disk::NativeFilespaceDevice>,const Uuid&,
       NativeSelectedCheckpointMemoryLimits,NativeStorageMemory&,const NativeStorageMemoryBinding&) noexcept;
@@ -142,6 +148,7 @@ inline NativeSelectedCheckpointMemoryResult AcquireNativeSelectedCheckpointMemor
     auto& lease=*handle.lease_;
     auto devices=scratch.Copy<disk::NativeFilespaceDevice>(files);
     std::sort(devices.begin(),devices.end(),[](const auto& a,const auto& b){return a.filespace_uuid<b.filespace_uuid;});
+    lease.devices_=devices;
     auto pointers=scratch.Array<L::Batch*>(devices.size());
     if(devices.size()>std::numeric_limits<std::size_t>::max()/sizeof(L::Batch)||
         devices.size()>std::numeric_limits<std::size_t>::max()/sizeof(L::Guard))throw std::bad_alloc();

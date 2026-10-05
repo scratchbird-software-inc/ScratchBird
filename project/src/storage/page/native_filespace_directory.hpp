@@ -46,6 +46,7 @@ template<class Records> struct NativeFilespaceDirectoryData {
 };
 using NativeFilespaceDirectory=NativeFilespaceDirectoryData<std::vector<NativeFilespaceDirectoryRecord>>;
 using NativeFilespaceDirectoryView=NativeFilespaceDirectoryData<std::span<NativeFilespaceDirectoryRecord>>;
+using NativeFilespaceDirectoryConstView=NativeFilespaceDirectoryData<std::span<const NativeFilespaceDirectoryRecord>>;
 enum class NativeDirectoryError {
   none, invalid_header, invalid_family, invalid_record, invalid_reference,
   invalid_integrity, hash_failure, resource_exhausted, invalid_filespace,
@@ -58,6 +59,22 @@ struct NativeFilespaceDirectoryResult {
   bool ok() const noexcept { return error==NativeDirectoryError::none && directory.has_value(); }
 };
 NativeFilespaceDirectoryResult EncodeNativeFilespaceDirectory(const NativeFilespaceDirectory&) noexcept;
+struct NativeFilespaceDirectoryEncoding {
+  NativeDirectoryError error=NativeDirectoryError::invalid_family;
+  std::span<const byte> bytes;
+  bool ok() const noexcept {return error==NativeDirectoryError::none&&!bytes.empty();}
+};
+// Descriptor, records, entire output and uniqueness scratch must be disjoint;
+// records and UUID scratch must have their normal native alignment.
+// One UUID of scratch per record is required; there is no heap fallback.
+// Success returns exactly one page in output and leaves its suffix untouched.
+// Validation/short-backing refusals leave output unchanged. Scratch may change;
+// hash failure may change the page prefix, but never returns usable bytes.
+// Caller admits backing before source guards and keeps inputs immutable.
+// This constructs an image, not an allocation/publication or durability grant.
+NativeFilespaceDirectoryEncoding EncodeNativeFilespaceDirectoryInto(
+    const NativeFilespaceDirectoryConstView&,std::span<byte> output,
+    std::span<Uuid> uniqueness_scratch) noexcept;
 NativeFilespaceDirectoryResult DecodeNativeFilespaceDirectory(const std::vector<byte>&) noexcept;
 struct NativeFilespaceDirectoryViewResult {
   NativeDirectoryError error=NativeDirectoryError::invalid_family;

@@ -14,6 +14,13 @@
 #include "native_selected_checkpoint_read_lease.hpp"
 #include "native_selected_checkpoint_memory_lease.hpp"
 #include "native_owned_checkpoint_source.hpp"
+#include "native_catalog_leaf_lease_reader.hpp"
+#include "native_catalog_roots_lease_reader.hpp"
+#include "native_catalog_relation_lease_reader.hpp"
+#include "native_catalog_visibility_lease_reader.hpp"
+#include "native_allocation_lease_reader.hpp"
+#include "native_page_reservation_lease_reader.hpp"
+#include "row_version_observation.hpp"
 #ifdef SB_NATIVE_ROUTE_SOURCE_TESTS
 #include "../../src/server/database_ownership.hpp"
 #endif
@@ -26,6 +33,8 @@
 #include <filesystem>
 #include <unistd.h>
 #include <openssl/evp.h>
+#include "native_btree_tree_lease_reader.hpp"
+#include "native_btree_tree_memory.hpp"
 #include <openssl/sha.h>
 #include <algorithm>
 #include <array>
@@ -1114,6 +1123,8 @@ struct DirectoryHistoryFixture {
      untouched.Open(untouched_path.string(),mode).ok(),"owned actual history reopen");}
 };
 void EmptyHistory(const db::NativeManagementHistory& h){Check(!h.ok()&&!h.anchor&&!h.selection&&h.entries.empty()&&h.latest.empty()&&h.idempotency.empty()&&!h.verified_image_bytes,"failed history has no provenance prefix");}
+#include "native_allocation_lease_checks.hpp"
+#include "native_page_reservation_lease_checks.hpp"
 void DirectoryInstallationRefusals(unsigned primary){for(bool readonly:{false,true}){
  DirectoryHistoryFixture f(primary,primary,true,readonly?3:2,true,true,false,false);auto& t=f.t;
  if(readonly)Check(t.fixture.secondary.Close().ok()&&t.fixture.secondary.Open(f.secondary_path.string(),d::FileOpenMode::open_existing_read_only).ok(),"readonly candidate member fixture");
@@ -1566,13 +1577,280 @@ void RepeatedDirectoryHistory(unsigned profile,int only_size=-1){for(unsigned si
  f.Reopen();const auto reopened=f.Read();Check(reopened.ok()&&reopened.entries.size()==2&&reopened.entries[0].control_allocation_images==original.control_allocation_images,"old allocation capacity survives repeated growth and readonly reopen");
 }}
 
+#include "native_catalog_relation_memory_checks.hpp"
+#include "native_catalog_visibility_memory_checks.hpp"
+void DirectoryGuardedBtree(unsigned primary,unsigned secondary){
+ // Actual non-serving storage fixture, not allocation or catalog publication.
+ DirectoryHistoryFixture f(primary,secondary,false,2,false,false,true,false);
+ auto& storage=f.t.fixture;const auto& profile=d::kCanonicalFilespacePageProfiles[secondary];
+ const auto size=profile.page_size_bytes;std::array<page::NativeBtreePage,3> nodes;
+ const page::NativeBtreeKey split{{2},Id(61310),Id(61311)};
+ for(unsigned i=0;i<3;++i){auto& n=nodes[i];
+  n.header={size,i?0x202u:0x200u,Id(1),i==2?Id(11):f.t.other,Id(61300+i),248+i,1,0,profile.uuid};
+  if(i==2){n.header.page_size_bytes=storage.size;n.header.page_size_profile_uuid=d::kCanonicalFilespacePageProfiles[primary].uuid;}
+  n.dependencies={Id(61303),1,1,Id(61304),Id(61305),Id(61306),{}};n.dependencies.dependency_map_sha256.fill(37);
+  n.creator_transaction_uuid=Id(5);n.creator_local_transaction_id=1;n.maintenance_state=1;
+ }
+ nodes[0].tree_level=1;nodes[0].first_child=Self(nodes[1].header);
+ nodes[0].cells.push_back({split,false,Self(nodes[2].header),{}});
+ nodes[1].parent=nodes[2].parent=Self(nodes[0].header);
+ nodes[1].right=Self(nodes[2].header);nodes[2].left=Self(nodes[1].header);
+ nodes[1].high_fence=nodes[2].low_fence=split;
+ const d::NativePageReference base{Id(2),5,1,d::kCanonicalFilespacePageProfiles[primary].uuid};
+ nodes[1].cells.push_back({{{1},Id(61312),Id(61313)},false,{},base});
+ nodes[2].cells.push_back({split,true,{},base});
+ for(const auto& n:nodes){const auto encoded=page::EncodeNativeBtreePage(n);
+  Check(encoded.ok(),"valid canonical native navigation fixture");f.Write(encoded.bytes);}
+ for(const auto& id:{f.t.other,Id(11)}){
+  auto* device=f.File(id);Bytes zero_image(size),map_image(size);
+  Check(device->ReadAt(0,zero_image.data(),size).ok()&&device->ReadAt(size,map_image.data(),size).ok(),"actual original navigation member state");
+  auto decoded_zero=d::DecodeFilespacePageZero(zero_image.data(),zero_image.size());
+  auto decoded_map=page::DecodeNativeAllocationMap(map_image);
+  Check(decoded_zero.ok()&&decoded_map.ok(),"actual map and page zero for navigation fixture");
+  auto zero=*decoded_zero.record;auto map=*decoded_map.map;
+  if(id==Id(11)){
+   const auto& child_profile=d::kCanonicalFilespacePageProfiles[primary];
+   zero.bootstrap.page_size_bytes=child_profile.page_size_bytes;zero.bootstrap.page_size_profile_uuid=child_profile.uuid;
+   for(auto& r:zero.roots)r.page_size_profile_uuid=child_profile.uuid;
+   map.header.page_size_bytes=child_profile.page_size_bytes;map.header.page_size_profile_uuid=child_profile.uuid;
+   std::filesystem::resize_file(f.untouched_path,512*static_cast<u64>(child_profile.page_size_bytes));
+   for(auto& member:storage.devices)if(member.filespace_uuid==id)member.page_size_profile_uuid=child_profile.uuid;
+  }
+  for(const auto& n:nodes)if(n.header.filespace_uuid==id){
+   Check(map.states[n.header.page_number]==State::free,"native fixture tree slot was genuinely free");
+   map.states[n.header.page_number]=State::allocated;--zero.free_pages;
+   map.records.push_back({n.header.page_number,Id(61400+n.header.page_number),n.header.page_uuid,n.dependencies.index_uuid,
+     n.creator_transaction_uuid,n.creator_local_transaction_id,1,0,n.header.page_type,{}});
+  }
+  std::sort(map.records.begin(),map.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});
+  f.Write(MapOracle(map));const auto encoded=d::EncodeFilespacePageZero(zero);Check(encoded.ok(),"rebound navigation page zero");
+  Check(device->WriteAt(0,encoded.bytes->data(),encoded.bytes->size()).ok()&&device->Sync().ok(),"native navigation fixture barrier");
+ }
+ // Bind the changed third-member profile into the complete selected fixture.
+ auto directory=*page::DecodeNativeFilespaceDirectory(f.t.base.directory_images.front()).directory;
+ for(auto& member:directory.records)if(member.bootstrap.filespace_uuid==Id(11)){
+  member.bootstrap.page_size_bytes=storage.size;member.bootstrap.page_size_profile_uuid=d::kCanonicalFilespacePageProfiles[primary].uuid;}
+ const auto directory_image=DirectoryImageOracle(directory);f.Write(directory_image);
+ auto checkpoint=*db::DecodeNativeCheckpointRoot(f.t.base_cp).root;
+ for(auto& ref:checkpoint.roots)if(ref.role==3)ref.sha256=Sha(directory_image);
+ const auto cp=db::EncodeNativeCheckpointRoot(checkpoint);Check(cp.ok(),"complete cross-profile navigation source checkpoint");f.Write(cp.bytes);
+ const auto digest=Sha(cp.bytes);
+ for(const auto& ref:f.t.graph.zero.roots){
+  if(ref.kind==18||ref.kind==19){auto selector=*db::DecodeNativeCheckpointSelection(storage.Read(ref.page_number)).selection;
+   selector.checkpoint_sha256=digest;f.Write(SelectorOracle(selector));}
+  if(ref.kind==20||ref.kind==21){auto watermark=*db::DecodeNativePublicationWatermark(storage.Read(ref.page_number)).state;
+   watermark.base_checkpoint_sha256=digest;const auto encoded=db::EncodeNativePublicationWatermark(watermark);
+   Check(encoded.ok(),"cross-profile navigation source watermark");f.Write(encoded.bytes);}
+ }
+ Check(storage.device.Sync().ok(),"complete cross-profile native source barrier");
+ const auto root=Self(nodes[0].header);const auto dependencies=nodes[0].dependencies;
+ const db::NativeBtreeTreeMemoryLimits limits{3,2*static_cast<std::size_t>(size)+storage.size};
+ const auto expected=page::ReadNativeBtreeTreeFromOpenDevices(Id(1),storage.devices,root,dependencies,limits.maximum_retained_image_bytes);
+ Check(expected.ok()&&expected.pages.size()==3&&expected.leaves.size()==2,"independent owning traversal of actual tree before source admission");
+ const auto& maximum=d::kCanonicalFilespacePageProfiles.back();
+ const auto bytes=db::NativeBtreeTreeWorkspaceBytes(maximum.uuid,storage.devices.size(),limits);
+ checkpoint_inventory_memory::Grant grant(bytes),source_grant(32*1024*1024);
+ for(unsigned field=0;field<4;++field){auto wrong=grant.binding;
+  const std::array<Uuid*,4> ids{&wrong.database_uuid,&wrong.operation_uuid,&wrong.owner_uuid,&wrong.context_uuid};*ids[field]=Id(61999);
+  const auto no=db::PrepareNativeBtreeTreeRead(maximum.uuid,storage.devices.size(),limits,grant.memory,wrong);
+  Check(!no.ok()&&!no.workspace&&no.memory_error==db::NativeStorageMemoryError::invalid_binding,"every binary tree grant dimension enforced");}
+ {checkpoint_inventory_memory::Grant short_grant(bytes-1);
+  const auto no=db::PrepareNativeBtreeTreeRead(maximum.uuid,storage.devices.size(),limits,short_grant.memory,short_grant.binding);
+  Check(!no.ok()&&!no.workspace,"one-byte-short actual tree backing cannot fall back");short_grant.memory={};short_grant.Empty();}
+ auto prepared=db::PrepareNativeBtreeTreeRead(maximum.uuid,storage.devices.size(),limits,grant.memory,grant.binding);
+ Check(prepared.ok(),"complete actual navigation backing admitted before source fences");
+ auto moved=std::move(prepared.workspace);
+ {
+  auto source=db::AcquireNativeSelectedCheckpointMemoryLease(Id(1),storage.devices,Id(2),
+    {16*1024*std::max<u64>(storage.size,size),32*1024*1024},source_grant.memory,source_grant.binding);
+  Check(source.ok(),"actual selected checkpoint source and cohort held for navigation");
+  const auto read=[&]{return db::NativeBtreeTreeLeaseReader::Read(*source.lease,root,dependencies,prepared.workspace);};
+  const auto failed=[](const auto& r){Check(!r.ok()&&r.pages.empty()&&r.leaves.empty()&&!r.retained_image_bytes,
+    "failed guarded tree exposes no navigation prefix");};
+  const auto absent=read();failed(absent);Check(!absent.physical_bytes_read,"moved tree backing refuses without reads");
+  prepared.workspace=std::move(moved);
+  reads=writes=syncs=0;io_counting=true;hash_counting=true;hash_seen=0;allocation_budget=0;
+  auto actual=read();const auto left=allocation_budget;allocation_budget=-1;io_counting=hash_counting=false;
+  const auto read_sites=reads,hash_sites=hash_seen;
+  Check(left==0&&actual.ok()&&read_sites==9&&!writes&&!syncs&&actual.pages.size()==expected.pages.size()&&
+    actual.retained_image_bytes==expected.retained_image_bytes&&std::equal(actual.leaves.begin(),actual.leaves.end(),expected.leaves.begin(),expected.leaves.end()),
+    "complete retained navigation tree uses no heap under the existing source guards");
+  for(std::size_t i=0;i<actual.pages.size();++i)Check(std::equal(actual.pages[i].bytes.begin(),actual.pages[i].bytes.end(),
+    expected.pages[i].bytes.begin(),expected.pages[i].bytes.end()),"guarded navigation matches complete independent owning image");
+  for(unsigned mode=0;mode<2;++mode)for(unsigned site=1;site<=read_sites;++site){
+   reads=0;history_observed_read_bytes=0;io_counting=true;if(mode)corrupt_read=site;else read_fault=site;
+   const auto no=read();io_counting=false;read_fault=corrupt_read=0;failed(no);
+   Check(reads>=site&&no.physical_bytes_read==history_observed_read_bytes,"every guarded tree read/corruption preserves physical receipt");}
+  for(unsigned mode=1;mode<=5;++mode)for(unsigned site=1;site<=hash_sites;++site){
+   hash_fault=mode;hash_target=site;hash_seen=0;hash_active=false;
+   const auto no=read();const bool consumed=!hash_fault;hash_fault=0;hash_active=false;failed(no);
+   Check(consumed,"each guarded tree hash failure consumed");}
+#ifdef NATIVE_HISTORICAL_BUNDLE_SIZE_FAULTS
+  for(unsigned site=1;site<=storage.devices.size();++site){
+   historical_stat_counting=true;historical_stats=0;historical_stat_fault=site;
+   const auto no=read();historical_stat_counting=false;historical_stat_fault=0;failed(no);
+   Check(historical_stats>=site&&no.tree_error==page::NativeBtreeError::io_failure,"each retained member size failure refuses");}
+#endif
+  auto wrong=dependencies;wrong.storage_generation++;
+  const auto no=db::NativeBtreeTreeLeaseReader::Read(*source.lease,root,wrong,prepared.workspace);failed(no);
+  Check(no.tree_error==page::NativeBtreeError::binding_mismatch,"complete expected dependency tuple remains required");
+  allocation_budget=0;const auto retried=read();const auto remaining=allocation_budget;allocation_budget=-1;
+  Check(retried.ok()&&remaining==0,"same retained source can retry complete tree without new backing");
+ }
+ prepared={};grant.memory={};grant.Empty();
+ for(unsigned mode=0;mode<4;++mode){
+  if(mode==3&&primary==0&&secondary==0)continue;
+  auto bounded=limits;auto devices=storage.devices.size();auto maximum_profile=maximum.uuid;
+  if(mode==0)--devices;if(mode==1)--bounded.maximum_pages;if(mode==2)--bounded.maximum_retained_image_bytes;
+  if(mode==3)maximum_profile=d::kCanonicalFilespacePageProfiles.front().uuid;
+  checkpoint_inventory_memory::Grant narrow(db::NativeBtreeTreeWorkspaceBytes(maximum_profile,devices,bounded));
+  auto backing=db::PrepareNativeBtreeTreeRead(maximum_profile,devices,bounded,narrow.memory,narrow.binding);
+  Check(backing.ok(),"bounded real tree workspace prepared before source lease");
+  {
+   auto source=db::AcquireNativeSelectedCheckpointMemoryLease(Id(1),storage.devices,Id(2),
+     {16*1024*std::max<u64>(storage.size,size),32*1024*1024},source_grant.memory,source_grant.binding);
+   Check(source.ok(),"bounded tree test retains actual selected source");allocation_budget=0;
+   const auto no=db::NativeBtreeTreeLeaseReader::Read(*source.lease,root,dependencies,backing.workspace);
+   const auto left=allocation_budget;allocation_budget=-1;
+   Check(left==0&&!no.ok()&&no.error==db::NativeBtreeTreeMemoryError::resource_exhausted&&
+     no.pages.empty()&&no.leaves.empty()&&!no.retained_image_bytes&&((mode==1||mode==2)||!no.physical_bytes_read),
+     "every insufficient guarded tree bound fails without fallback or a successful prefix");
+  }
+  backing={};narrow.memory={};narrow.Empty();
+ }
+ source_grant.memory={};source_grant.Empty();
+ f.Reopen();const auto reopened=page::ReadNativeBtreeTreeFromOpenDevices(Id(1),storage.devices,root,dependencies,limits.maximum_retained_image_bytes);
+ Check(reopened.ok()&&reopened.pages.size()==3,"independent read-only reopen preserves actual tree");
+}
+void DirectoryDistinctCatalogRoots(unsigned primary,unsigned secondary,bool via_route,unsigned creator_fault=0){
+ // Build a complete non-serving physical fixture before source admission. This
+ // is not an allocation/publication API: map, directory, zero, checkpoint and
+ // both selector/watermark replicas are all rebound as fixture construction.
+ DirectoryHistoryFixture f(primary,secondary,false,2,false,false,true,false);
+ auto& t=f.t;auto& storage=t.fixture;auto cp=*db::DecodeNativeCheckpointRoot(t.base_cp).root;
+ const auto cat=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==5;});
+ Check(cat!=cp.roots.end(),"distinct-root actual catalog reference");
+ const d::FilespaceRootReference cat_ref{2,cat->page_type,cat->page.filespace_uuid,cat->page.page_number,
+   cat->page.page_generation,cat->page.page_size_profile_uuid,cat->object_uuid};
+ const auto existing=page::ReadNativeCatalogRootFromOpenDevice(*f.File(cat->page.filespace_uuid),Id(1),cat_ref);
+ Check(existing.ok(),"distinct-root original catalog image");auto feature=*existing.root;
+ const auto& p=d::kCanonicalFilespacePageProfiles[secondary];
+ feature.header={p.page_size_bytes,5,Id(1),t.other,Id(61201),248,1,0,p.uuid};
+ feature.root_kind=8;feature.object_uuid=Id(61202);
+ feature.roots.erase(feature.roots.begin(),feature.roots.end()-1);
+ Bytes changed_inventory;
+ if(creator_fault==1)feature.creator_transaction_uuid=Id(61203);
+ if(creator_fault==2)feature.creator_local_transaction_id=999999;
+ if(creator_fault>=3){
+  auto inventory_ref=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==1;});
+  Check(inventory_ref!=cp.roots.end(),"actual inventory for unresolved root creator fixture");
+  const auto stored=page::DecodeNativeTransactionInventoryPage(storage.Read(inventory_ref->page.page_number));
+  Check(stored.ok(),"actual original inventory image");auto inventory=*stored.page;
+  auto begun=mga::BeginLocalTransaction(inventory.inventory,{UuidKind::transaction,Id(61204)},2000000000000ULL);
+  Check(begun.ok(),"valid pure inventory candidate for uncommitted creator");
+  const auto identity=begun.inventory.entries.back().identity;
+  if(creator_fault==4){auto rollback=mga::RollbackLocalTransaction(begun.inventory,identity.local_id,2000000000001ULL);
+   Check(rollback.ok(),"valid rollback creator inventory candidate");begun.inventory=std::move(rollback.inventory);}
+  inventory.inventory=std::move(begun.inventory);changed_inventory=InventoryOracle(inventory);
+  Check(page::EncodeNativeTransactionInventoryPage(inventory).bytes==changed_inventory,"independent complete creator inventory bytes");
+  inventory_ref->sha256=Sha(changed_inventory);cp.selected_local_transaction_id=inventory.inventory.next_local_transaction_id-1;
+  feature.creator_transaction_uuid=identity.transaction_uuid.value;feature.creator_local_transaction_id=identity.local_id.value;
+ }
+ const auto image=page::EncodeNativeCatalogRoot(feature);Check(image.ok(),"distinct-root complete feature image");
+ auto maps=t.before.at(t.other);auto& map=Cover(maps,248);
+ Check(map.states[248-map.first_page]==State::free,"distinct feature slot is actually free in the fixture map");
+ map.states[248-map.first_page]=State::allocated;
+ map.records.push_back({248,Id(61200),feature.header.page_uuid,feature.object_uuid,
+   existing.root->creator_transaction_uuid,existing.root->creator_local_transaction_id,1,0,5,{}});
+ std::sort(map.records.begin(),map.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});
+ Find(maps,0).page_type=1;
+ const auto map_images=EncodeMaps(maps);
+ auto other_zero=t.zeros.at(t.other);other_zero.bootstrap.filespace_role=2;--other_zero.free_pages;
+ other_zero.roots.push_back({8,5,t.other,248,1,p.uuid,feature.object_uuid});
+ const auto other_image=d::EncodeFilespacePageZero(other_zero);Check(other_image.ok(),"complete non-serving metadata member zero");
+ auto primary_zero=t.graph.zero;
+ auto zero_feature=std::find_if(primary_zero.roots.begin(),primary_zero.roots.end(),[](const auto& r){return r.kind==8;});
+ Check(zero_feature!=primary_zero.roots.end(),"actual feature directory slot");*zero_feature=other_zero.roots.back();
+ const auto primary_image=d::EncodeFilespacePageZero(primary_zero);Check(primary_image.ok(),"primary cross-profile feature reference");
+ auto directory=*page::DecodeNativeFilespaceDirectory(t.base.directory_images.front()).directory;
+ auto member=std::find_if(directory.records.begin(),directory.records.end(),[&](const auto& r){return r.bootstrap.filespace_uuid==t.other;});
+ Check(member!=directory.records.end(),"actual metadata member directory record");member->bootstrap=other_zero.bootstrap;
+ if(member->allocation_root)member->allocation_root->sha256=Sha(map_images.front());
+ const auto directory_image=DirectoryImageOracle(directory);
+ Check(page::EncodeNativeFilespaceDirectory(directory).bytes==directory_image,"independent complete rebound directory");
+ auto cp_directory=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==3;});
+ auto cp_feature=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==9;});
+ Check(cp_directory!=cp.roots.end()&&cp_feature!=cp.roots.end(),"actual checkpoint directory and feature roles");
+ cp_directory->sha256=Sha(directory_image);
+ *cp_feature={9,5,Self(feature.header),feature.object_uuid,Sha(image.bytes)};
+ const auto checkpoint=db::EncodeNativeCheckpointRoot(cp);Check(checkpoint.ok(),"distinct feature bound checkpoint");
+ const auto write=[&](d::FileDevice& device,u64 at,const Bytes& raw){auto io=device.WriteAt(at,raw.data(),raw.size());
+   Check(io.ok()&&io.bytes_transferred==raw.size(),"write complete distinct-root fixture image");};
+ for(const auto& raw:map_images)f.Write(raw);
+ if(!changed_inventory.empty())f.Write(changed_inventory);
+ f.Write(image.bytes);f.Write(directory_image);f.Write(checkpoint.bytes);
+ write(storage.device,0,*primary_image.bytes);write(storage.secondary,0,*other_image.bytes);
+ const auto digest=Sha(checkpoint.bytes);
+ for(const auto& ref:primary_zero.roots){
+  if(ref.kind==18||ref.kind==19){auto selector=*db::DecodeNativeCheckpointSelection(storage.Read(ref.page_number)).selection;
+   selector.checkpoint_sha256=digest;write(storage.device,ref.page_number*storage.size,SelectorOracle(selector));}
+  if(ref.kind==20||ref.kind==21){auto watermark=*db::DecodeNativePublicationWatermark(storage.Read(ref.page_number)).state;
+   watermark.base_checkpoint_sha256=digest;const auto encoded=db::EncodeNativePublicationWatermark(watermark);
+   Check(encoded.ok(),"distinct feature original watermark binding");write(storage.device,ref.page_number*storage.size,encoded.bytes);}
+ }
+ for(const auto& device:storage.devices)Check(device.device->Sync().ok(),"distinct root fixture barrier");
+ const auto allowance=16*1024*std::max<u64>(storage.size,p.page_size_bytes);
+ if(creator_fault){
+  using E=db::NativeCatalogRootsLeaseError;
+  const auto& maximum=d::kCanonicalFilespacePageProfiles.back();
+  constexpr std::size_t source_bytes=32*1024*1024;
+  checkpoint_inventory_memory::Grant source_grant(source_bytes),root_grant(db::NativeCatalogRootsWorkspaceBytes(maximum.uuid));
+  auto prepared=db::PrepareNativeCatalogRootsRead(maximum.uuid,root_grant.memory,root_grant.binding);
+  Check(prepared.ok(),"root failure fixture has actual admitted backing");
+  {
+   auto source=db::AcquireNativeSelectedCheckpointMemoryLease(Id(1),storage.devices,Id(2),{allowance,source_bytes},source_grant.memory,source_grant.binding);
+   Check(source.ok(),"actual selected source remains valid independently of the bad catalog creator");
+   allocation_budget=0;
+   const auto rejected=db::NativeCatalogRootsLeaseReader::Read(*source.lease,storage.size+p.page_size_bytes,prepared.workspace);
+   const auto left=allocation_budget;allocation_budget=-1;
+   Check(left==0&&rejected.error==(creator_fault<=2?E::creator_mismatch:E::creator_not_committed)&&
+     rejected.catalogs.empty()&&!rejected.retained_image_bytes&&
+     rejected.physical_bytes_read==2*d::kFilespaceBootstrapBytes+2*(storage.size+p.page_size_bytes),
+     "late mismatched missing unresolved or rollback creator has an exact failure and no verified first-root prefix");
+  }
+  prepared={};root_grant.memory={};source_grant.memory={};root_grant.Empty();source_grant.Empty();return;
+ }
+ owned_source_memory::Checks(storage.devices,allowance,false,via_route);
+ f.Reopen();
+ const d::FilespaceRootReference checkpoint_ref{9,0x300,cp.header.filespace_uuid,cp.header.page_number,
+   cp.header.page_generation,cp.header.page_size_profile_uuid,cp.object_uuid};
+ const auto reopened=db::VerifyNativeCheckpointCatalogRootsFromOpenDevices(Id(1),storage.devices,checkpoint_ref,allowance);
+ Check(reopened.ok()&&reopened.catalogs.size()==2&&reopened.feature_root_index==1&&
+   reopened.catalogs[1].bytes==image.bytes,"actual distinct cross-profile feature survives independent read-only reopen");
+}
 void DirectoryOwnedSourceMemory(unsigned primary,unsigned secondary,bool reverse,unsigned profile,
- bool target,bool reserve,bool initial,bool via_route,int fault_route=9,unsigned shard=0,unsigned shards=1){
+ bool target,bool reserve,bool initial,bool via_route,int fault_route=9,unsigned shard=0,unsigned shards=1,bool populated=false){
  DirectoryHistoryFixture f(primary,secondary,reverse,profile,target,reserve,profile==2,!initial);
  const auto allowance=16*1024*std::max<u64>(f.t.fixture.size,d::kCanonicalFilespacePageProfiles[secondary].page_size_bytes);
  owned_source_memory::Checks(f.t.fixture.devices,allowance,
-   primary==secondary&&!reverse&&!target&&reserve==(profile!=2),via_route,fault_route,shard,shards);
+   primary==secondary&&!reverse&&!target&&reserve==(profile!=2),via_route,fault_route,shard,shards,populated);
  f.Reopen();
+ if(populated){
+  const auto selected=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),f.t.fixture.devices,Id(2),allowance);
+  Check(selected.ok(),"reopened populated fixture selected source");
+  const auto& roots=selected.checkpoint_inventory.checkpoint->roots;
+  const auto root=std::find_if(roots.begin(),roots.end(),[](const auto& r){return r.role==5;});
+  Check(root!=roots.end(),"reopened populated fixture catalog binding");
+  auto* device=f.File(root->page.filespace_uuid);
+  const d::FilespaceRootReference ref{2,root->page_type,root->page.filespace_uuid,root->page.page_number,
+    root->page.page_generation,root->page.page_size_profile_uuid,root->object_uuid};
+  const auto catalog=page::ReadNativeCatalogRootFromOpenDevice(*device,Id(1),ref);
+  Check(catalog.ok(),"reopened populated fixture catalog root");
+  const auto object=std::find_if(catalog.root->roots.begin(),catalog.root->roots.end(),[](const auto& r){return r.role==1;});
+  Check(object!=catalog.root->roots.end(),"reopened populated fixture object head");
+  const auto leaf=db::ReadNativeCatalogLeafFromOpenDevice(*f.File(object->page.filespace_uuid),Id(1),*object);
+  Check(leaf.ok()&&leaf.metadata.size()==2,"populated records survive independent read-only device reopen");
+ }
 }
 void DirectorySelectedLeaseMemory(unsigned primary,unsigned secondary,bool reverse,unsigned profile,
  bool target,bool reserve,bool initial=false,bool repeated=false,int route=8,unsigned shard=0,unsigned shards=1){
@@ -3760,6 +4038,29 @@ void Test(unsigned profile){Fixture f(profile);Graph g(f);Bundle b(g);BoundedBun
 int main(int argc,char** argv){
  try{
  std::cout<<std::unitbuf;
+ if(argc==4&&std::string_view(argv[1])=="--reservation-source"){
+   const auto primary=std::stoi(argv[2]),secondary=std::stoi(argv[3]);
+   Check(primary>=0&&primary<5&&secondary>=0&&secondary<5,"reservation source profiles");
+   ReservationSource(primary,secondary);
+   std::cout<<"PASS reservation source checks="<<checks<<" not_allocation_acceptance=true\n";return 0;
+ }
+ if(argc==4&&std::string_view(argv[1])=="--directory-delta-shard"){
+   const auto profile=std::stoi(argv[2]),primary=std::stoi(argv[3]);
+   Check(profile>=2&&profile<=4&&primary>=0&&primary<5,"directory delta shard arguments");
+   unsigned cases=0;
+   // Exact partition of --directory-delta by primary page profile. Keep every
+   // secondary profile, ordering, target and state, including all deep fault
+   // sweeps inside DirectoryDelta. The legacy aggregate remains an oracle.
+   for(unsigned secondary=0;secondary<5;++secondary)
+    for(bool reverse:{false,true})for(bool target:{false,true})for(bool reserve:{false,true}){
+     if(profile==2&&(target||reserve))continue;
+     if(profile==3&&!reserve)continue;
+     DirectoryDelta(primary,secondary,reverse,profile,target,reserve);++cases;
+    }
+   Check(cases==(profile==2?10u:profile==3?20u:40u),"complete exact directory delta partition");
+   std::cout<<"PASS directory delta shard profile="<<profile<<" primary="<<primary<<" cases="<<cases
+     <<" checks="<<checks<<" not_runtime_acceptance=true\n";return 0;
+ }
  if(argc==3&&std::string_view(argv[1])=="--startup-binding"){
    const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"startup binding profile");
    ReservationEffects(profile,true);
@@ -3869,6 +4170,46 @@ int main(int argc,char** argv){
    const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"control graph Close profile");DirectoryControlClose(profile);return 0;
  }
 
+ if(argc==5&&std::string_view(argv[1])=="--guarded-allocation"){
+  const auto scenario=std::stoi(argv[2]),primary=std::stoi(argv[3]),secondary=std::stoi(argv[4]);
+  Check(scenario>=0&&scenario<4&&primary>=0&&primary<5&&secondary>=0&&secondary<5,"guarded allocation profiles");
+  DirectoryAllocationLease(scenario,primary,secondary);std::cout<<"PASS guarded allocation checks="<<checks<<'\n';return 0;
+ }
+ if(argc==3&&std::string_view(argv[1])=="--guarded-visibility-observation"){
+  const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"guarded visibility profile");
+  DirectoryGuardedVisibilityObservation(profile);std::cout<<"PASS guarded visibility observation checks="<<checks<<'\n';return 0;
+ }
+ if(argc==3&&std::string_view(argv[1])=="--guarded-snapshot-observation"){
+  const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"guarded snapshot profile");
+  DirectoryGuardedSnapshotObservation(profile);std::cout<<"PASS guarded snapshot observation checks="<<checks<<'\n';return 0;
+ }
+ if((argc==5||argc==6)&&(std::string_view(argv[1])=="--guarded-catalog-relation"||std::string_view(argv[1])=="--guarded-catalog-visibility")){
+  const auto indexed=std::stoi(argv[2]),primary=std::stoi(argv[3]),secondary=std::stoi(argv[4]);
+  const auto fault=argc==6?std::stoi(argv[5]):0;
+  Check(indexed>=0&&indexed<=1&&primary>=0&&primary<5&&secondary>=0&&secondary<5&&fault>=0&&fault<=24&&
+    (fault<=9||std::string_view(argv[1])=="--guarded-catalog-visibility")&&
+    (!fault||(fault==9?!indexed:bool(indexed))),"guarded catalog relation arguments");
+  DirectoryCatalogRelationMemory(primary,secondary,indexed,fault,std::string_view(argv[1])=="--guarded-catalog-visibility");std::cout<<"PASS guarded catalog relation checks="<<checks<<'\n';return 0;
+ }
+ if(argc==4&&std::string_view(argv[1])=="--guarded-btree-memory"){
+  const auto primary=std::stoi(argv[2]),secondary=std::stoi(argv[3]);
+  Check(primary>=0&&primary<5&&secondary>=0&&secondary<5,"guarded tree profiles");
+  DirectoryGuardedBtree(primary,secondary);std::cout<<"PASS guarded tree checks="<<checks<<'\n';return 0;
+ }
+ if((argc==5||argc==6)&&std::string_view(argv[1])=="--catalog-distinct-roots-memory"){
+  const auto route=std::stoi(argv[2]),primary=std::stoi(argv[3]),secondary=std::stoi(argv[4]);
+  const auto fault=argc==6?std::stoi(argv[5]):0;
+  Check(route>=0&&route<=1&&primary>=0&&primary<5&&secondary>=0&&secondary<5&&fault>=0&&fault<=4,"distinct catalog root arguments");
+  DirectoryDistinctCatalogRoots(primary,secondary,route,fault);
+  std::cout<<"PASS distinct guarded catalog roots checks="<<checks<<'\n';return 0;
+ }
+ if(argc==4&&std::string_view(argv[1])=="--catalog-populated-owned-source-memory"){
+  const auto via_route=std::stoi(argv[2]),profile=std::stoi(argv[3]);
+  Check(via_route>=0&&via_route<=1&&profile>=0&&profile<5,"populated guarded catalog arguments");
+  for(bool reverse:{false,true})
+   DirectoryOwnedSourceMemory(profile,(profile+1)%5,reverse,2,false,false,true,via_route,9,0,1,true);
+  std::cout<<"PASS populated guarded catalog checks="<<checks<<'\n';return 0;
+ }
  if(argc==7&&std::string_view(argv[1])=="--directory-owned-source-memory"){
   const auto via_route=std::stoi(argv[2]),initial=std::stoi(argv[3]),profile=std::stoi(argv[4]),
     primary=std::stoi(argv[5]),secondary=std::stoi(argv[6]);

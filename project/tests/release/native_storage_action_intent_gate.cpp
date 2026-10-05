@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_storage_action_intent.hpp"
+#include "native_page_reservation_intent.hpp"
 #include "native_management_extent.hpp"
 #include "native_creation_workspace.hpp"
 #include "disk_device.hpp"
@@ -554,10 +555,14 @@ void Physical(const I& i){
   // The extent is intentionally unselected. This does not assert allocation,
   // operation admission, checkpoint publication, or actual growth effects.
 }
+#include "native_page_reservation_intent_checks.hpp"
 }
 int main(){
   try{for(unsigned profile=0;profile<5;++profile)for(unsigned action=1;action<=2;++action){
     const auto i=Example(profile,action);Good(i);Malformed(i);Bounds(i);Binding(i);BoundedIntentFaults(i);Faults(i);Physical(i);
-  }std::cout<<"PASS native storage action intent checks="<<checks<<'\n';return 0;
+  }
+  for(unsigned target=0;target<5;++target)for(unsigned checkpoint=0;checkpoint<5;++checkpoint)
+    ReservationIntentChecks(target,checkpoint);
+  std::cout<<"PASS native storage action and page reservation intent checks="<<checks<<'\n';return 0;
   }catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}
 }

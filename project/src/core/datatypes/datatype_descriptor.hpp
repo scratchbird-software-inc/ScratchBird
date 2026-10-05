@@ -14,6 +14,7 @@
 #include "runtime_platform.hpp"
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace scratchbird::core::datatypes {
@@ -179,6 +180,15 @@ struct DatatypeDescriptorResult {
   }
 };
 
+// UUID identity is independent of every presentation spelling. Datatypes are
+// added here only after Core publishes an exact descriptor UUID/generation.
+struct DatatypeDescriptorIdentityResultV3 {
+  bool ok = false;
+  TypedUuid descriptor_uuid;
+  u64 descriptor_generation = 0;
+  std::string_view diagnostic_id;
+};
+
 struct DatatypeCapabilityCheck {
   Status status;
   std::vector<DiagnosticRecord> diagnostics;
@@ -220,6 +230,8 @@ const char* CanonicalTypeName(CanonicalTypeId type_id);
 const char* TypeWidthClassName(TypeWidthClass width_class);
 const std::vector<DatatypeDescriptor>& BuiltinDatatypeDescriptors();
 DatatypeDescriptorResult LookupDatatypeDescriptor(CanonicalTypeId type_id);
+DatatypeDescriptorIdentityResultV3 LookupDatatypeDescriptorIdentityV3(
+    CanonicalTypeId type_id) noexcept;
 DatatypeDescriptorResult ValidateDatatypeDescriptor(const DatatypeDescriptor& descriptor);
 DatatypeCapabilityCheck CheckDatatypeMandatoryCapabilities(const RuntimeCapabilityManifest& manifest);
 ExecutionTypeDescriptorResult BuildExecutionTypeDescriptorFromCatalog(

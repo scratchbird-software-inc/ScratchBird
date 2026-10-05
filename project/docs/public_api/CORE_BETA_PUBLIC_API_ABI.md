@@ -29,6 +29,7 @@ regression input; this document is the human-readable API/ABI inventory.
 
 These are the public headers installed from `project/include/scratchbird/engine`:
 
+- `project/include/scratchbird/engine/blob_lifetime_abi.h`
 - `project/include/scratchbird/engine/descriptor.hpp`
 - `project/include/scratchbird/engine/diagnostic.h`
 - `project/include/scratchbird/engine/engine.h`
@@ -99,6 +100,23 @@ inside the engine/server boundary and are not public binary-view fields.
   - `project/include/scratchbird/engine/version.h`
   - `project/src/engine/public_abi.cpp`
 - Execution authority: `engine_sblr_internal_api_only`.
+
+### `blob_lifetime_authority_c_abi_v3`
+
+- Classification: core.
+- Contract version: `base_blob_lifetime_authority_c_abi_v3_generation_1`.
+- Source path:
+  `project/include/scratchbird/engine/blob_lifetime_abi.h`.
+- Entry-point family: `BlobLifetimeAuthorityV3_callback_table`, containing
+  `retain`, `probe`, `begin_access`, `end_access`, and `release` callbacks.
+- Execution authority: `engine_sblr_internal_api_only`. The callback table
+  admits bounded immutable blob access; it does not acquire MGA finality or
+  create an exported `sb_engine_*` symbol.
+- ABI v3 generation 1 is a standalone C11 contract for x86-64 SysV and
+  Win64 little-endian targets. Consumers include its header explicitly. It
+  remains outside `engine.h` so the general engine umbrella stays usable on
+  supported non-x86-64 targets. This surface does not change the separate
+  engine public ABI v1 macros or packed version.
 
 ### `embedded_engine_cpp_wrappers_v1`
 

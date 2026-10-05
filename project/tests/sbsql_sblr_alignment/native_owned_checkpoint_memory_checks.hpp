@@ -20,7 +20,40 @@ struct Meter final:std::pmr::memory_resource {
  void do_deallocate(void*,std::size_t,std::size_t) override {}
  bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override{return this==&other;}
 };
-void Checks(std::span<const d::NativeFilespaceDevice> borrowed,u64 allowance,bool deep=false,bool via_route=false,int fault_route=9,unsigned fault_shard=0,unsigned fault_shards=1){
+// Common-envelope storage fixture only, not ordinary-table family admission or
+// a catalog publication operation. Install before source ownership is acquired.
+db::NativeCatalogLeafResult PopulatedLeaf(db::NativeCatalogLeafPage leaf,const mga::TransactionIdentity& creator,unsigned identity_offset=0){
+ namespace catalog=scratchbird::core::catalog;
+ Check(leaf.body.rows.empty(),"populate only a fresh empty fixture leaf");
+ for(unsigned i=0;i<2;++i){
+  page::RowDataRecord row;row.storage_generation=1;
+  row.row_uuid={UuidKind::row,Id(60000+i+identity_offset)};row.version_uuid=Id(60010+i+identity_offset);
+  row.transaction_uuid=creator.transaction_uuid;row.local_transaction_id=creator.local_id.value;
+  row.internal_row_ordinal=row.stable_slot_id=i+1;
+  catalog::CatalogMetadataVersion metadata;
+  metadata.record.header.kind=catalog::CatalogRecordKind::sql_object;
+  metadata.record.header.row_uuid=row.row_uuid;
+  metadata.record.header.object_uuid={UuidKind::object,Id(60020+i+identity_offset)};
+  metadata.record.header.parent_uuid={UuidKind::schema,Id(60030)};
+  metadata.owning_schema_uuid=metadata.record.header.parent_uuid;
+  metadata.owner_uuid={UuidKind::principal,Id(60031)};metadata.audit_uuid={UuidKind::object,Id(60032)};
+  metadata.creator_transaction_uuid=creator.transaction_uuid;
+  metadata.creator_local_transaction_id=creator.local_id.value;
+  metadata.definition_version=metadata.schema_epoch=metadata.security_epoch=metadata.catalog_generation=1;
+  metadata.dependency_generation=metadata.invalidation_generation=1;
+  metadata.lifecycle=catalog::CatalogObjectLifecycle::active;metadata.status=catalog::CatalogObjectStatus::active;
+  metadata.trace_search_key="GUARDED-LEAF-STORAGE-FIXTURE";
+  metadata.object_subtype="application";metadata.retention_class="catalog_history";
+  metadata.record.payload="guarded-leaf-common-envelope";
+  const auto encoded=catalog::EncodeCatalogMetadataVersion(metadata);
+  Check(encoded.ok(),"complete populated common metadata envelope");
+  page::RowDataCell cell;cell.column_ordinal=1;
+  cell.value.type_id=scratchbird::core::datatypes::CanonicalTypeId::binary;
+  cell.value.payload=encoded.bytes;row.cells.push_back(std::move(cell));leaf.body.rows.push_back(std::move(row));
+ }
+ return db::EncodeNativeCatalogLeaf(leaf);
+}
+void Checks(std::span<const d::NativeFilespaceDevice> borrowed,u64 allowance,bool deep=false,bool via_route=false,int fault_route=9,unsigned fault_shard=0,unsigned fault_shards=1,bool populated=false){
  std::vector<d::NativeFilespaceDevice> original(borrowed.begin(),borrowed.end());
  if(via_route){const auto primary=std::find_if(original.begin(),original.end(),[](const auto& f){return f.filespace_uuid==Id(2);});
   Check(primary!=original.end(),"route cohort includes the actual primary");std::rotate(original.begin(),primary,primary+1);}
@@ -31,6 +64,37 @@ void Checks(std::span<const d::NativeFilespaceDevice> borrowed,u64 allowance,boo
   Check(result.ok(),"independent full selected source before exclusive memory ownership");
   expected_selection=result.lease->selection();expected_directory=result.lease->directory();
   root=result.lease->checkpoint();images=result.lease->retained_image_bytes();
+ }
+ std::vector<page::NativeCatalogRootReference> leaf_refs;
+ std::vector<Bytes> leaf_images;
+ db::NativeCheckpointCatalogResult expected_catalogs;
+ if(fault_route==9){
+  expected_catalogs=db::VerifyNativeCheckpointCatalogRootsFromOpenDevices(Id(1),original,root,allowance);
+  Check(expected_catalogs.ok(),"independent complete checkpoint/catalog creator binding before governed adoption");
+  const auto& roots=expected_selection.checkpoint_inventory.checkpoint->roots;
+  const auto catalog=std::find_if(roots.begin(),roots.end(),[](const auto& r){return r.role==5;});
+  Check(catalog!=roots.end(),"actual selected checkpoint has a catalog root");
+  const auto member=std::find_if(original.begin(),original.end(),[&](const auto& f){return f.filespace_uuid==catalog->page.filespace_uuid;});
+  Check(member!=original.end(),"actual catalog filespace is retained");
+  const d::FilespaceRootReference reference{2,catalog->page_type,catalog->page.filespace_uuid,catalog->page.page_number,
+    catalog->page.page_generation,catalog->page.page_size_profile_uuid,catalog->object_uuid};
+  const auto observed=page::ReadNativeCatalogRootFromOpenDevice(*member->device,Id(1),reference);
+  Check(observed.ok(),"actual catalog root before governed source adoption");
+  for(const auto& ref:observed.root->roots){
+   Check(ref.page_type==6,"genesis catalog fixture uses actual direct heads");
+   auto leaf=db::ReadNativeCatalogLeafFromOpenDevice(*member->device,Id(1),ref);
+   Check(leaf.ok(),"independent owning leaf read before guarded composition");
+   if(populated&&ref.role==1){
+    leaf=PopulatedLeaf(*leaf.page,expected_selection.checkpoint_inventory.inventory.entries.front().identity);
+    Check(leaf.ok()&&leaf.metadata.size()==2,"canonical populated object-catalog fixture image");
+    const auto write=member->device->WriteAt(ref.page.page_number*leaf.bytes.size(),leaf.bytes.data(),leaf.bytes.size());
+    Check(write.ok()&&write.bytes_transferred==leaf.bytes.size()&&member->device->Sync().ok(),
+      "persist populated fixture before acquiring owned source");
+    const auto reread=db::ReadNativeCatalogLeafFromOpenDevice(*member->device,Id(1),ref);
+    Check(reread.ok()&&reread.bytes==leaf.bytes&&reread.metadata.size()==2,"independent owning decode of persisted populated leaf");
+   }
+   leaf_refs.push_back(ref);leaf_images.push_back(leaf.bytes);
+  }
  }
  // Some later operation proofs require the omitted member themselves. Preserve
  // their earlier exact source failure; only a fully valid partial reader may
@@ -290,6 +354,190 @@ void Checks(std::span<const d::NativeFilespaceDevice> borrowed,u64 allowance,boo
 #endif
   Check(Source::Read(admitted.owner,allowance).error==E::memory_required,"legacy read cannot bypass actual-grant source admission");
   {const auto held=read(admitted.owner);parity(held);}
+  if(fault_route==9){
+   const auto& largest=d::kCanonicalFilespacePageProfiles.back();
+   const auto amount=db::NativeCatalogRootsWorkspaceBytes(largest.uuid);
+   c::Grant root_memory(amount);
+   for(unsigned field=0;field<4;++field){
+    auto wrong=root_memory.binding;
+    const std::array<Uuid*,4> ids{&wrong.database_uuid,&wrong.operation_uuid,&wrong.owner_uuid,&wrong.context_uuid};
+    *ids[field]=Id(65503);
+    const auto refused=db::PrepareNativeCatalogRootsRead(largest.uuid,root_memory.memory,wrong);
+    Check(!refused.ok()&&!refused.workspace&&refused.memory_error==db::NativeStorageMemoryError::invalid_binding&&
+      !root_memory.manager.Snapshot().current_bytes,"root backing checks every binary grant dimension");
+   }
+   {
+    c::Grant short_grant(amount-1);
+    const auto refused=db::PrepareNativeCatalogRootsRead(largest.uuid,short_grant.memory,short_grant.binding);
+    Check(!refused.ok()&&!refused.workspace,"root backing requires the full actual grant");
+    short_grant.memory={};short_grant.Empty();
+   }
+   std::vector<Bytes> resealed;
+   for(const auto& catalog:expected_catalogs.catalogs){
+    auto changed=*catalog.root;++changed.schema_epoch;
+    auto encoded=page::EncodeNativeCatalogRoot(changed);
+    Check(encoded.ok(),"well-framed root with changed schema epoch for checkpoint digest refusal");
+    resealed.push_back(std::move(encoded.bytes));
+   }
+   auto prepared=db::PrepareNativeCatalogRootsRead(largest.uuid,root_memory.memory,root_memory.binding);
+   Check(prepared.ok(),"both catalog root images admitted before source guards");
+   auto moved=std::move(prepared.workspace);
+   u64 expected_bytes=0;for(const auto& catalog:expected_catalogs.catalogs)expected_bytes+=catalog.bytes.size();
+   {
+    const auto held=read(admitted.owner);parity(held);
+    const auto moved_from=db::NativeCatalogRootsLeaseReader::Read(held.lease.source(),expected_bytes,prepared.workspace);
+    Check(!moved_from.ok()&&!moved_from.physical_bytes_read,"moved-from root backing refuses before I/O");
+    prepared.workspace=std::move(moved);
+    allocation_budget=0;
+    const auto actual=db::NativeCatalogRootsLeaseReader::Read(held.lease.source(),expected_bytes,prepared.workspace);
+    const auto left=allocation_budget;allocation_budget=-1;
+    Check(left==0&&actual.ok()&&actual.catalogs.size()==expected_catalogs.catalogs.size()&&
+      actual.feature_root_index==expected_catalogs.feature_root_index&&actual.retained_image_bytes==expected_bytes,
+      "both actual catalog roots and committed creators resolved without heap fallback under retained guards");
+    for(std::size_t i=0;i<actual.catalogs.size();++i){
+     const auto& observed=actual.catalogs[i];const auto& expected=expected_catalogs.catalogs[i];
+     Check(std::equal(observed.image.begin(),observed.image.end(),expected.bytes.begin(),expected.bytes.end())&&
+       observed.root.object_uuid==expected.root->object_uuid&&observed.root.roots.size()==expected.root->roots.size(),
+       "guarded catalog images and native reference counts match independent owning reads");
+     const auto& creator=held.lease.source().selection().checkpoint_inventory.inventory.entries[observed.inventory_entry_index];
+     Check(creator.identity.transaction_uuid.value==observed.root.creator_transaction_uuid&&mga::HasCommittedInventoryOutcome(creator),
+       "guarded catalog creator points into actual retained committed inventory");
+    }
+    const auto failed=[](const auto& result){Check(!result.ok()&&result.catalogs.empty()&&!result.retained_image_bytes,
+      "failed catalog-root composition returns no root prefix or retained-image success counter");};
+    const auto short_read=db::NativeCatalogRootsLeaseReader::Read(held.lease.source(),expected_bytes-1,prepared.workspace);
+    failed(short_read);Check(short_read.error==db::NativeCatalogRootsLeaseError::resource_exhausted,"one-byte-short root image budget refuses");
+    db::NativeCatalogRootsPreparedMemory absent;
+    const auto no_backing=db::NativeCatalogRootsLeaseReader::Read(held.lease.source(),expected_bytes,absent);
+    failed(no_backing);Check(!no_backing.physical_bytes_read,"absent root backing refuses before I/O");
+    for(std::size_t i=0;i<resealed.size();++i){
+     replacement_bytes=resealed[i].data();replacement_length=resealed[i].size();
+     replacement_offset=expected_catalogs.catalogs[i].root->header.page_number*replacement_length;
+     replacement_seen=0;replacement_at=1;
+     const auto refusal=db::NativeCatalogRootsLeaseReader::Read(held.lease.source(),expected_bytes,prepared.workspace);
+     replacement_bytes=nullptr;failed(refusal);
+     Check(replacement_seen&&refusal.error==db::NativeCatalogRootsLeaseError::integrity_failure,
+       "valid inner root checksum does not replace selected checkpoint full-image digest");
+    }
+    for(unsigned kind=0;kind<2;++kind)for(unsigned site=1;site<=3*actual.catalogs.size();++site){
+     reads=writes=syncs=0;history_observed_read_bytes=0;io_counting=true;
+     if(kind==0)read_fault=site;else corrupt_read=site;
+     const auto refusal=db::NativeCatalogRootsLeaseReader::Read(held.lease.source(),expected_bytes,prepared.workspace);
+     io_counting=false;read_fault=corrupt_read=0;failed(refusal);
+     Check(reads>=site&&!writes&&!syncs&&refusal.physical_bytes_read==history_observed_read_bytes,
+       "every guarded root read/corruption fault preserves exact physical receipts without effects");
+    }
+    hash_counting=true;hash_seen=0;
+    const auto measured=db::NativeCatalogRootsLeaseReader::Read(held.lease.source(),expected_bytes,prepared.workspace);
+    const auto hashes=hash_seen;hash_counting=false;
+    Check(measured.ok()&&hashes,"measure actual root cryptographic verification sites");
+    for(unsigned mode=1;mode<=5;++mode)for(unsigned site=1;site<=hashes;++site){
+     hash_fault=mode;hash_target=site;hash_seen=0;hash_active=false;
+     const auto refusal=db::NativeCatalogRootsLeaseReader::Read(held.lease.source(),expected_bytes,prepared.workspace);
+     const bool consumed=!hash_fault;hash_fault=0;hash_active=false;failed(refusal);
+     Check(consumed,"every root hash provider failure is exercised without successful prefix");
+    }
+#ifdef NATIVE_HISTORICAL_BUNDLE_SIZE_FAULTS
+    for(unsigned site=1;site<=2*actual.catalogs.size();++site){
+     historical_stat_counting=true;historical_stats=0;historical_stat_fault=site;
+     const auto refusal=db::NativeCatalogRootsLeaseReader::Read(held.lease.source(),expected_bytes,prepared.workspace);
+     historical_stat_counting=false;historical_stat_fault=0;failed(refusal);
+     Check(historical_stats>=site&&refusal.error==db::NativeCatalogRootsLeaseError::io_failure,
+       "each actual root capacity observation failure preserves typed refusal");
+    }
+#endif
+    allocation_budget=0;
+    const auto retry=db::NativeCatalogRootsLeaseReader::Read(held.lease.source(),expected_bytes,prepared.workspace);
+    const auto untouched=allocation_budget;allocation_budget=-1;
+    Check(untouched==0&&retry.ok(),"same retained lease resolves both roots after failures");
+   }
+   prepared={};root_memory.memory={};root_memory.Empty();
+  }
+  for(std::size_t i=0;i<leaf_refs.size();++i){
+   const auto& ref=leaf_refs[i];
+   const auto bytes=db::NativeCatalogLeafWorkspaceBytes(ref.page.page_size_profile_uuid);
+   c::Grant catalog_memory(bytes);
+   for(unsigned field=0;field<4;++field){
+    auto wrong=catalog_memory.binding;
+    const std::array<Uuid*,4> ids{&wrong.database_uuid,&wrong.operation_uuid,&wrong.owner_uuid,&wrong.context_uuid};
+    *ids[field]=Id(65502);
+    const auto rejected=db::PrepareNativeCatalogLeafRead(ref.page.page_size_profile_uuid,catalog_memory.memory,wrong);
+    Check(!rejected.ok()&&!rejected.workspace&&rejected.memory_error==db::NativeStorageMemoryError::invalid_binding&&
+      !catalog_memory.manager.Snapshot().current_bytes,"every binary grant ownership dimension checked before leaf backing admission");
+   }
+   {
+    c::Grant short_grant(bytes-1);
+    const auto rejected=db::PrepareNativeCatalogLeafRead(ref.page.page_size_profile_uuid,short_grant.memory,short_grant.binding);
+    Check(!rejected.ok()&&!rejected.workspace,"one-byte-short actual catalog grant has no fallback");
+    short_grant.memory={};short_grant.Empty();
+   }
+   {
+    allocation_budget=0;
+    const auto rejected=db::PrepareNativeCatalogLeafRead(ref.page.page_size_profile_uuid,catalog_memory.memory,catalog_memory.binding);
+    const auto consumed=allocation_budget;allocation_budget=-1;
+    Check(consumed<0&&!rejected.ok()&&!rejected.workspace&&!catalog_memory.manager.Snapshot().current_bytes,
+      "failed catalog backing allocation leaves no retained memory or fabricated workspace");
+   }
+   auto prepared=db::PrepareNativeCatalogLeafRead(ref.page.page_size_profile_uuid,catalog_memory.memory,catalog_memory.binding);
+   Check(prepared.ok(),"catalog backing admitted before owned source guard");
+   auto moved=std::move(prepared.workspace);
+   {
+    const auto held=read(admitted.owner);parity(held);
+    const auto moved_from=db::NativeCatalogLeafLeaseReader::Read(held.lease.source(),ref,prepared.workspace);
+    Check(!moved_from.ok()&&!moved_from.bytes_read,"moved-from admitted backing refuses before I/O");
+    prepared.workspace=std::move(moved);
+    allocation_budget=0;
+    const auto observed=db::NativeCatalogLeafLeaseReader::Read(held.lease.source(),ref,prepared.workspace);
+    const auto remaining=allocation_budget;allocation_budget=-1;
+    Check(remaining==0&&observed.ok()&&observed.image.size()==leaf_images[i].size()&&
+      std::equal(observed.image.begin(),observed.image.end(),leaf_images[i].begin()),
+      "complete actual catalog leaf under retained owned source uses only pre-admitted memory");
+    Check(observed.bytes_read==d::kFilespaceBootstrapBytes+2*observed.image.size(),
+      "guarded reader reports exact physical source bytes");
+    if(populated&&ref.role==1){
+     Check(observed.leaf.page->metadata.size()==2&&observed.leaf.page->body.rows.size()==2,
+       "guarded populated reader retains every metadata row without heap fallback");
+     for(const auto& record:observed.leaf.page->metadata){
+      Check(record.row_index<2&&record.version_uuid==Id(60010+record.row_index)&&
+        record.metadata.record.header.object_uuid.value==Id(60020+record.row_index)&&
+        record.metadata.record.payload=="guarded-leaf-common-envelope",
+        "populated borrowed metadata preserves exact binary identity and complete payload");
+     }
+    }
+    for(unsigned fault=0;fault<4;++fault){
+     auto wrong=ref;
+     if(fault==0)++wrong.page.page_generation;
+     if(fault==1)wrong.page.filespace_uuid=Id(65500);
+     if(fault==2)wrong.object_uuid=Id(65501);
+     if(fault==3)wrong.page.page_size_profile_uuid={};
+     allocation_budget=0;
+     const auto refused=db::NativeCatalogLeafLeaseReader::Read(held.lease.source(),wrong,prepared.workspace);
+     const auto left=allocation_budget;allocation_budget=-1;
+     Check(left==0&&!refused.ok()&&refused.image.empty()&&!refused.leaf.page,
+       "wrong guarded leaf identity/profile has no partial image or allocating fallback");
+    }
+    db::NativeCatalogLeafPreparedMemory absent;
+    const auto missing=db::NativeCatalogLeafLeaseReader::Read(held.lease.source(),ref,absent);
+    Check(!missing.ok()&&!missing.bytes_read,"missing admitted catalog backing refuses before I/O");
+    for(unsigned fault=0;fault<2;++fault)for(unsigned site=1;site<=3;++site){
+     reads=writes=syncs=0;history_observed_read_bytes=0;io_counting=true;
+     if(fault==0)read_fault=site;else corrupt_read=site;
+     const auto failed=db::NativeCatalogLeafLeaseReader::Read(held.lease.source(),ref,prepared.workspace);
+     io_counting=false;read_fault=corrupt_read=0;
+     Check(reads>=site&&!failed.ok()&&failed.image.empty()&&!failed.leaf.page&&
+       !writes&&!syncs&&failed.bytes_read==history_observed_read_bytes,
+       "every physical read/corruption failure has exact effects and no successful prefix under the same lease");
+     if(fault==0)Check(failed.error==db::NativeCatalogLeafMemoryError::io_failure&&!failed.io_status.ok()&&
+       failed.io_diagnostic.diagnostic_code=="SB-STORAGE-DISK-READ-SHORT",
+       "guarded read preserves full physical I/O diagnostic");
+    }
+    allocation_budget=0;
+    const auto retry=db::NativeCatalogLeafLeaseReader::Read(held.lease.source(),ref,prepared.workspace);
+    const auto left=allocation_budget;allocation_budget=-1;
+    Check(left==0&&retry.ok(),"same retained source remains usable after failed leaf observations");
+   }
+   prepared={};catalog_memory.memory={};catalog_memory.Empty();
+  }
   no_transient_payload();admitted.owner.reset();persistent.Empty();
  }
  open();

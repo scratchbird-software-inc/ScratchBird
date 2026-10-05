@@ -312,11 +312,126 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_tests_properties(native_page_zero_growth_body_gate PROPERTIES TIMEOUT 120
     LABELS "storage;binary_uuid;real_files;partial_effects;not_runtime_acceptance")
 endif()
+if(TARGET sbsql_sblr_alignment_native_storage_components)
+  add_test(NAME native_btree_memory_shared_regression_gate
+    COMMAND sbsql_sblr_alignment_native_storage_components --native-btree-memory-only)
+  set_tests_properties(native_btree_memory_shared_regression_gate PROPERTIES
+    TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;fault_injection;not_runtime_acceptance")
+endif()
 if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
   # Consume the unchanged 01f issuer; storage owns this integration fixture.
   target_sources(sbsql_sblr_alignment_native_management_control_bundle PRIVATE
     "${PROJECT_SOURCE_DIR}/src/server/database_ownership.cpp")
   target_compile_definitions(sbsql_sblr_alignment_native_management_control_bundle PRIVATE SB_NATIVE_ROUTE_SOURCE_TESTS=1)
+  foreach(primary RANGE 0 4)
+    foreach(secondary RANGE 0 4)
+      add_test(NAME native_reservation_source_${primary}_${secondary}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --reservation-source ${primary} ${secondary})
+      set_tests_properties(native_reservation_source_${primary}_${secondary}_gate PROPERTIES
+        TIMEOUT 120 LABELS "storage;memory;binary_uuid;real_files;allocation_map;fault_injection;not_allocation_acceptance")
+    endforeach()
+  endforeach()
+  foreach(scenario RANGE 0 3)
+    foreach(primary RANGE 0 4)
+      foreach(secondary RANGE 0 4)
+        add_test(NAME native_allocation_lease_${scenario}_${primary}_${secondary}_gate
+          COMMAND sbsql_sblr_alignment_native_management_control_bundle --guarded-allocation ${scenario} ${primary} ${secondary})
+        set_tests_properties(native_allocation_lease_${scenario}_${primary}_${secondary}_gate PROPERTIES
+          TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;allocation_map;fault_injection;not_runtime_acceptance")
+      endforeach()
+    endforeach()
+  endforeach()
+  foreach(indexed RANGE 0 1)
+    foreach(primary RANGE 0 4)
+      foreach(secondary RANGE 0 4)
+        add_test(NAME native_catalog_relation_lease_${indexed}_${primary}_${secondary}_gate
+          COMMAND sbsql_sblr_alignment_native_management_control_bundle --guarded-catalog-relation ${indexed} ${primary} ${secondary})
+        set_tests_properties(native_catalog_relation_lease_${indexed}_${primary}_${secondary}_gate PROPERTIES
+          TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;catalog_metadata;fault_injection;not_runtime_acceptance")
+        add_test(NAME native_catalog_visibility_lease_${indexed}_${primary}_${secondary}_gate
+          COMMAND sbsql_sblr_alignment_native_management_control_bundle --guarded-catalog-visibility ${indexed} ${primary} ${secondary})
+        set_tests_properties(native_catalog_visibility_lease_${indexed}_${primary}_${secondary}_gate PROPERTIES
+          TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;catalog_metadata;mga_visibility;fault_injection;not_runtime_acceptance")
+      endforeach()
+    endforeach()
+  endforeach()
+  foreach(primary RANGE 0 4)
+    add_test(NAME native_guarded_snapshot_observation_${primary}_gate
+      COMMAND sbsql_sblr_alignment_native_management_control_bundle --guarded-snapshot-observation ${primary})
+    set_tests_properties(native_guarded_snapshot_observation_${primary}_gate PROPERTIES
+      TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;snapshot;revocation;not_runtime_acceptance")
+    add_test(NAME native_guarded_visibility_observation_${primary}_gate
+      COMMAND sbsql_sblr_alignment_native_management_control_bundle --guarded-visibility-observation ${primary})
+    set_tests_properties(native_guarded_visibility_observation_${primary}_gate PROPERTIES
+      TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;mga_visibility;not_runtime_acceptance")
+    math(EXPR secondary "(${primary}+1)%5")
+    foreach(scenario RANGE 7 9)
+      if(scenario EQUAL 9)
+        set(relation_indexed 0)
+      else()
+        set(relation_indexed 1)
+      endif()
+      add_test(NAME native_catalog_relation_lease_outcome_${primary}_${scenario}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --guarded-catalog-relation ${relation_indexed} ${primary} ${secondary} ${scenario})
+      set_tests_properties(native_catalog_relation_lease_outcome_${primary}_${scenario}_gate PROPERTIES
+        TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;catalog_metadata;fault_injection;not_runtime_acceptance")
+      add_test(NAME native_catalog_visibility_lease_outcome_${primary}_${scenario}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --guarded-catalog-visibility ${relation_indexed} ${primary} ${secondary} ${scenario})
+      set_tests_properties(native_catalog_visibility_lease_outcome_${primary}_${scenario}_gate PROPERTIES
+        TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;catalog_metadata;mga_visibility;fault_injection;not_runtime_acceptance")
+    endforeach()
+    foreach(chain RANGE 10 24)
+      add_test(NAME native_catalog_visibility_chain_${primary}_${chain}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --guarded-catalog-visibility 1 ${primary} ${secondary} ${chain})
+      set_tests_properties(native_catalog_visibility_chain_${primary}_${chain}_gate PROPERTIES
+        TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;catalog_metadata;mga_visibility;version_chain;not_runtime_acceptance")
+    endforeach()
+    foreach(fault RANGE 1 6)
+      add_test(NAME native_catalog_relation_lease_refusal_${primary}_${fault}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --guarded-catalog-relation 1 ${primary} ${secondary} ${fault})
+      set_tests_properties(native_catalog_relation_lease_refusal_${primary}_${fault}_gate PROPERTIES
+        TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;catalog_metadata;fault_injection;not_runtime_acceptance")
+      add_test(NAME native_catalog_visibility_lease_refusal_${primary}_${fault}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --guarded-catalog-visibility 1 ${primary} ${secondary} ${fault})
+      set_tests_properties(native_catalog_visibility_lease_refusal_${primary}_${fault}_gate PROPERTIES
+        TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;catalog_metadata;mga_visibility;fault_injection;not_runtime_acceptance")
+    endforeach()
+  endforeach()
+  foreach(primary RANGE 0 4)
+    foreach(secondary RANGE 0 4)
+      add_test(NAME native_guarded_btree_memory_${primary}_${secondary}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --guarded-btree-memory ${primary} ${secondary})
+      set_tests_properties(native_guarded_btree_memory_${primary}_${secondary}_gate PROPERTIES
+        TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;catalog_metadata;fault_injection;not_runtime_acceptance")
+    endforeach()
+  endforeach()
+  foreach(profile RANGE 0 4)
+    math(EXPR secondary "(${profile}+1)%5")
+    foreach(fault RANGE 1 4)
+      add_test(NAME native_catalog_roots_creator_refusal_${profile}_${fault}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --catalog-distinct-roots-memory 0 ${profile} ${secondary} ${fault})
+      set_tests_properties(native_catalog_roots_creator_refusal_${profile}_${fault}_gate PROPERTIES
+        TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;catalog_metadata;fault_injection;not_runtime_acceptance")
+    endforeach()
+  endforeach()
+  foreach(via_route RANGE 0 1)
+    foreach(primary RANGE 0 4)
+      foreach(secondary RANGE 0 4)
+        add_test(NAME native_catalog_distinct_roots_memory_${via_route}_${primary}_${secondary}_gate
+          COMMAND sbsql_sblr_alignment_native_management_control_bundle --catalog-distinct-roots-memory ${via_route} ${primary} ${secondary})
+        set_tests_properties(native_catalog_distinct_roots_memory_${via_route}_${primary}_${secondary}_gate PROPERTIES
+          TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;catalog_metadata;owned_device_lifetime;not_runtime_acceptance")
+      endforeach()
+    endforeach()
+  endforeach()
+  foreach(via_route RANGE 0 1)
+    foreach(profile RANGE 0 4)
+      add_test(NAME native_catalog_populated_owned_memory_${via_route}_${profile}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --catalog-populated-owned-source-memory ${via_route} ${profile})
+      set_tests_properties(native_catalog_populated_owned_memory_${via_route}_${profile}_gate PROPERTIES
+        TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;catalog_metadata;owned_device_lifetime;not_runtime_acceptance")
+    endforeach()
+  endforeach()
   foreach(via_route RANGE 0 1)
     foreach(initial RANGE 0 1)
       foreach(profile RANGE 2 4)
@@ -678,10 +793,15 @@ if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
       set_tests_properties(native_directory_history_${profile}_${primary}_gate PROPERTIES TIMEOUT 120
         LABELS "storage;binary_uuid;real_files;historical_provenance;not_runtime_acceptance")
     endforeach()
-    add_test(NAME native_directory_allocation_delta_${profile}_gate
-      COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-delta ${profile})
-    set_tests_properties(native_directory_allocation_delta_${profile}_gate PROPERTIES TIMEOUT 120
-      LABELS "storage;binary_uuid;immutable_transition;not_runtime_acceptance")
+    # Partition the complete matrix, not its assertions: profile4 has 200
+    # real-file/mutation cases and exceeded the aggregate 120-second deadline.
+    # All primary/secondary page sizes and ordering/target/state cases remain.
+    foreach(primary RANGE 0 4)
+      add_test(NAME native_directory_allocation_delta_${profile}_${primary}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-delta-shard ${profile} ${primary})
+      set_tests_properties(native_directory_allocation_delta_${profile}_${primary}_gate PROPERTIES TIMEOUT 120
+        LABELS "storage;binary_uuid;immutable_transition;not_runtime_acceptance")
+    endforeach()
     add_test(NAME native_directory_allocation_delta_faults_${profile}_gate
       COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-delta-faults ${profile})
     set_tests_properties(native_directory_allocation_delta_faults_${profile}_gate PROPERTIES TIMEOUT 120

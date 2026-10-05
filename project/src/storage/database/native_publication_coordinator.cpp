@@ -1047,10 +1047,17 @@ OwnedInventoryGraph AssembleInventory(Context& context,
     const u64 records_at=(384+(map.states.size()+1)/2+7)&~u64{7};
     const u64 page_size=map.header.page_size_bytes;
     Require(records_at<=page_size&&map.records.size()<=(page_size-records_at)/128,E::resource_exhausted);
-    auto encoded=page::EncodeNativeAllocationMap(map);
+    // Serialize into the graph's retained image directly. The owning codec
+    // would also copy every state/record array into a discarded result map.
+    // This removes that hidden copy; the enclosing owning graph still requires
+    // its own resource-governed construction before claiming bounded admission.
+    map_images[i].resize(page_size);
+    const page::NativeAllocationMapConstView view{map.header,map.object_uuid,map.map_generation,
+      map.capacity_generation,map.total_pages,map.first_page,map.creator_transaction_uuid,
+      map.creator_local_transaction_id,map.next,map.next_sha256,map.states,map.records,map.creator_operation_uuid};
+    const auto encoded=page::EncodeNativeAllocationMapInto(view,map_images[i]);
     if(!encoded.ok())throw encoded.error==page::NativeAllocationError::resource_exhausted?E::resource_exhausted:
       encoded.error==page::NativeAllocationError::hash_failure?E::hash_failure:E::image_failure;
-    map_images[i]=std::move(encoded.bytes);
   }
   for(std::size_t i=0;i<inventory_images.size();++i) {
     page::NativeTransactionInventoryPage image;image.header=inventory_headers[i];image.object_uuid=inventory_root.object_uuid;
@@ -1086,16 +1093,17 @@ OwnedInventoryGraph AssembleInventory(Context& context,
       member.allocation_root=page::NativeFilespaceAllocationRoot{ControlRef(maps[i].header),maps[i].object_uuid,
         ControlHash(map_images[i]),maps[i].map_generation,maps[i].capacity_generation};
     const u64 per_directory=(size-384)/320;
-    for(std::size_t i=directory_count;i--;){page::NativeFilespaceDirectory image;
+    std::vector<Uuid> directory_scratch(std::min<u64>(per_directory,directory_records.size()));
+    for(std::size_t i=directory_count;i--;){page::NativeFilespaceDirectoryConstView image;
       image.header=directory_headers[i];image.object_uuid=directory_root.object_uuid;image.directory_generation=watermark.watermark;
       image.creator_operation_uuid=watermark.operation_uuid;image.total_records=directory_records.size();image.first_record=i*per_directory;
       const auto end=std::min<u64>(directory_records.size(),image.first_record+per_directory);
-      image.records.assign(directory_records.begin()+image.first_record,directory_records.begin()+end);
+      image.records=std::span<const page::NativeFilespaceDirectoryRecord>(directory_records).subspan(image.first_record,end-image.first_record);
       if(i+1<directory_count){image.next=ControlRef(directory_headers[i+1]);image.next_sha256=ControlHash(directory_images[i+1]);}
-      auto encoded=page::EncodeNativeFilespaceDirectory(image);
+      directory_images[i].resize(size);
+      auto encoded=page::EncodeNativeFilespaceDirectoryInto(image,directory_images[i],directory_scratch);
       if(!encoded.ok())throw encoded.error==page::NativeDirectoryError::resource_exhausted?E::resource_exhausted:
         encoded.error==page::NativeDirectoryError::hash_failure?E::hash_failure:E::image_failure;
-      directory_images[i]=std::move(encoded.bytes);
     }
   }
   // The bundle uses binary filespace order, independently of primary ownership.

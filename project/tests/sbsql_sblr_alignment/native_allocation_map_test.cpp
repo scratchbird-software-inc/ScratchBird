@@ -235,10 +235,26 @@ void Empty(const p::NativeAllocationChainResult& r) {
   Check(!r.ok() && r.pages.empty() && r.retained_image_bytes==0 &&
         std::all_of(r.state_counts.begin(),r.state_counts.end(),[](u64 n){return n==0;}), "no partial chain failure");
 }
+template<class Map> p::NativeAllocationMapConstView ConstMap(const Map& m){
+  return {m.header,m.object_uuid,m.map_generation,m.capacity_generation,m.total_pages,m.first_page,
+    m.creator_transaction_uuid,m.creator_local_transaction_id,m.next,m.next_sha256,m.states,m.records,m.creator_operation_uuid};
+}
+void BoundedEncode(const p::NativeAllocationMap& m,const Bytes& expected,E error=E::none){
+  const auto view=ConstMap(m);Bytes backing(expected.size()+3,0xa5);
+  const auto result=DenyCodecAllocation([&]{return p::EncodeNativeAllocationMapInto(view,std::span(backing).subspan(1));});
+  Check(result.error==error,"bounded encoder shares exact owning validation");
+  if(error==E::none)Check(result.ok()&&result.bytes.data()==backing.data()+1&&result.bytes.size()==expected.size()&&
+    std::equal(result.bytes.begin(),result.bytes.end(),expected.begin(),expected.end())&&
+    backing.front()==0xa5&&backing[backing.size()-2]==0xa5&&backing.back()==0xa5,
+    "unaligned bounded encoding equals independent full image and preserves output suffix");
+  else Check(!result.ok()&&result.bytes.empty()&&std::all_of(backing.begin(),backing.end(),[](byte b){return b==0xa5;}),
+    "invalid input neither exposes an image nor touches backing");
+}
 void Codecs() {
   for (unsigned profile=0;profile<5;++profile) {
     const auto m=Example(profile); const auto expected=Oracle(m); const auto encoded=p::EncodeNativeAllocationMap(m);
     Check(encoded.ok() && encoded.bytes==expected,"complete independent allocation image");
+    BoundedEncode(m,expected);
     const auto decoded=p::DecodeNativeAllocationMap(expected);
     Check(decoded.ok() && decoded.map->states==m.states && decoded.map->records==m.records,
           "all allocation states and exact binary ownership records");
@@ -267,7 +283,8 @@ void Codecs() {
     if(mutation==20)m.next=d::NativePageReference{Id(2),2,1,good.header.page_size_profile_uuid};
     if(mutation==21)m.next_sha256[0]=1; if(mutation==22)m.total_pages=12;
     if(mutation==23)m.records[0].page_uuid.bytes[8]=0; if(mutation==24)m.records[0].creator_local_transaction_id=0;
-    Empty(p::EncodeNativeAllocationMap(m)); Empty(p::DecodeNativeAllocationMap(Oracle(m)));
+    const auto encoded=p::EncodeNativeAllocationMap(m);Empty(encoded);BoundedEncode(m,bytes,encoded.error);
+    Empty(p::DecodeNativeAllocationMap(Oracle(m)));
   }
   for (std::size_t at : {128u,136u,138u,140u,304u,308u,344u,383u,389u,390u,391u,492u,8191u}) {
     auto bad=bytes; bad[at]^=0x80; Seal(bad); Empty(p::DecodeNativeAllocationMap(bad));
@@ -299,6 +316,7 @@ void OperationCodecs() {
         for(unsigned i=0;i<m.records.size();++i)if(mask&(1u<<i))OperationOwned(m.records[i],110+i);
         const auto expected=Oracle(m);const auto encoded=p::EncodeNativeAllocationMap(m);
         Check(encoded.ok()&&encoded.bytes==expected,"independent mixed-owner image");
+        BoundedEncode(m,expected);
         Check(expected[135]==((mask||map_owner)?'2':'1')&&expected[136]==((mask||map_owner)?2:1),
               "canonical version selected by actual owner presence");
         const auto decoded=p::DecodeNativeAllocationMap(expected);
@@ -319,6 +337,7 @@ void OperationCodecs() {
         const bool valid=(tx==1&&op==0&&number!=0)||(tx==0&&op==1&&number==0);
         const auto encoded=p::EncodeNativeAllocationMap(m),decoded=p::DecodeNativeAllocationMap(Oracle(m));
         Check(encoded.ok()==valid&&decoded.ok()==valid,"complete owner identity and number truth table");
+        BoundedEncode(m,Oracle(m),encoded.error);
         if(!valid){Empty(encoded);Empty(decoded);}
       }
     auto m=original;OperationOwned(m);for(auto& r:m.records)OperationOwned(r);
@@ -367,6 +386,29 @@ void BorrowedCodecs() {
     const auto remaining=allocation_budget;allocation_budget=-1;count_allocations=false;
     Check(value.ok()&&remaining==0&&observed_allocations==0,"caller-backed decoder has no hidden image/metadata allocation");
     const auto& m=*value.map;
+    auto input=ConstMap(m);Bytes encoded(bytes.size());
+    auto output=DenyCodecAllocation([&]{return p::EncodeNativeAllocationMapInto(input,encoded);});
+    Check(output.ok()&&encoded==bytes,"grant-shaped borrowed decode-to-encode retains exact original bytes");
+    for(std::size_t n:{std::size_t{0},std::size_t{1},bytes.size()-1}){
+      std::fill(encoded.begin(),encoded.end(),0xa5);
+      output=DenyCodecAllocation([&]{return p::EncodeNativeAllocationMapInto(input,std::span(encoded).first(n));});
+      Check(output.error==E::resource_exhausted&&output.bytes.empty()&&
+        std::all_of(encoded.begin(),encoded.end(),[](byte b){return b==0xa5;}),"short output cannot produce a partial image");
+    }
+    for(auto alias:{std::span<byte>{reinterpret_cast<byte*>(&input),sizeof(input)},
+        std::span<byte>{reinterpret_cast<byte*>(states.data()),states.size()*sizeof(S)},
+        std::span<byte>{reinterpret_cast<byte*>(records.data()),records.size()*sizeof(p::NativeAllocationRecord)}}){
+      output=DenyCodecAllocation([&]{return p::EncodeNativeAllocationMapInto(input,alias);});
+      Check(output.error==E::invalid_workspace&&output.bytes.empty(),"descriptor and both input arrays cannot alias output");
+    }
+    fail_hash=true;output=DenyCodecAllocation([&]{return p::EncodeNativeAllocationMapInto(input,encoded);});
+    Check(!fail_hash&&output.error==E::hash_failure&&output.bytes.empty(),"bounded encoder hash allocation failure has no success prefix");
+#ifdef SB_NATIVE_ALLOCATION_MEMORY_TESTS
+    for(unsigned mode=2;mode<=5;++mode){method_fault=mode;
+      output=DenyCodecAllocation([&]{return p::EncodeNativeAllocationMapInto(input,encoded);});
+      Check(!method_fault&&output.error==E::hash_failure&&output.bytes.empty(),"all encoder digest failures have typed allocation-free refusal");}
+#endif
+    Check(p::EncodeNativeAllocationMapInto(input,encoded).ok()&&encoded==bytes,"exact encoding retry after all failures");
     Check(m.states.data()==states.data()&&m.records.data()==records.data()&&
       std::equal(m.states.begin(),m.states.end(),expected.states.begin(),expected.states.end())&&
       std::equal(m.records.begin(),m.records.end(),expected.records.begin(),expected.records.end()),"exact independent state and record arrays in supplied backing");
@@ -415,6 +457,9 @@ void BorrowedCodecs() {
     const auto result=p::DecodeNativeAllocationMapInto(bytes,states,{});
     Check(result.ok()&&result.map->states.size()==expected.states.size()&&result.map->records.empty()&&
       std::all_of(states.begin(),states.end(),[](S s){return s==S::free;}),"maximum packed bitmap has exact decoded backing and no fabricated records");
+    BoundedEncode(expected,bytes);
+    expected.states.push_back(S::free);++expected.total_pages;
+    BoundedEncode(expected,bytes,E::invalid_range);
   }
   const auto expected=Example();const auto bytes=Oracle(expected);
   std::vector<S> states(expected.states.size());std::vector<p::NativeAllocationRecord> records(expected.records.size());
@@ -489,6 +534,44 @@ struct MemoryFile {
   auto Read(MemoryFixture& f){reads=hashes=0;return db::ReadNativeAllocationMapWithMemoryFromOpenDevice(device,expected,value.object_uuid,f.memory,f.binding);}
 };
 void NoMap(const db::NativeAllocationMapMemoryResult& r){Check(!r.ok()&&!r.map&&r.image.empty()&&!r.arena,"refusal exposes no image metadata or owner prefix");}
+void MemoryEncodingTests(){
+  for(unsigned profile=0;profile<5;++profile){
+    MemoryFile file(profile);
+    const auto capacity=db::NativeAllocationMapWorkspaceBytes(file.value.header.page_size_profile_uuid);
+    MemoryFixture source(capacity),output(file.value.header.page_size_bytes);
+    auto read=file.Read(source);Check(read.ok(),"actual admitted source map for encoding");
+    auto granted=output.memory.AllocatePage(file.value.header.page_size_profile_uuid);
+    Check(granted.ok(),"actual admitted destination page before device guard");
+    // A staged map can have operation-owned metadata and transaction-owned
+    // reservations. This fixture proves bytes, not selected allocation authority.
+    auto expected=file.value;OperationOwned(expected);
+    auto reservation=std::find_if(expected.records.begin(),expected.records.end(),[](const auto& r){return r.page_number==3;});
+    Check(reservation!=expected.records.end(),"existing reservation test slot");
+    reservation->page_uuid=Id(200);reservation->page_generation=1;
+    OperationOwned(*read.map);
+    for(auto& r:read.map->records)if(r.page_number==3){r.page_uuid=Id(200);r.page_generation=1;}
+    const auto oracle=Oracle(expected);const auto input=ConstMap(*read.map);
+    {auto guard=file.device.AcquireOperationGuard();
+      observation_device_mutex=guard.mutex();memory_probes=locked_memory_probes=0;
+      allocation_budget=0;const auto encoded=p::EncodeNativeAllocationMapInto(input,{granted.buffer.data(),granted.buffer.size()});
+      const auto remaining=allocation_budget;allocation_budget=-1;observation_device_mutex=nullptr;
+      Check(encoded.ok()&&remaining==0&&!memory_probes&&!locked_memory_probes&&
+        std::equal(encoded.bytes.begin(),encoded.bytes.end(),oracle.begin(),oracle.end()),
+        "canonical map encoding beneath actual guard uses only retained admitted bytes");
+      const auto write=file.device.WriteAt(expected.header.page_number*u64{expected.header.page_size_bytes},encoded.bytes.data(),encoded.bytes.size());
+      Check(write.ok()&&write.bytes_transferred==encoded.bytes.size()&&file.device.Sync().ok(),"persist exact staged allocation image");
+    }
+    read={};Check(granted.buffer.Reset().ok(),"release destination after guard");
+    output.memory={};output.Empty();
+    Check(file.device.Close().ok()&&file.device.Open(file.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"reopen persisted staged map read-only");
+    auto reopened=file.Read(source);Check(reopened.ok()&&reopened.image.size()==oracle.size()&&
+      std::equal(reopened.image.begin(),reopened.image.end(),oracle.begin(),oracle.end())&&
+      std::equal(reopened.map->records.begin(),reopened.map->records.end(),expected.records.begin(),expected.records.end())&&
+      reopened.map->creator_operation_uuid==expected.creator_operation_uuid,
+      "exact binary transaction reservation and operation map lineage survive physical reopen");
+    reopened={};source.memory={};source.Empty();
+  }
+}
 void MemoryTests(){
   for(unsigned profile=0;profile<5;++profile){MemoryFile file(profile);
     const auto capacity=db::NativeAllocationMapWorkspaceBytes(file.value.header.page_size_profile_uuid);
@@ -1045,7 +1128,7 @@ void RetainedChain() {
 int main(){
   try { Codecs();OperationCodecs();BorrowedCodecs();RetainedChain();
 #ifdef SB_NATIVE_ALLOCATION_MEMORY_TESTS
-    MemoryTests();
+    MemoryEncodingTests();MemoryTests();
 #endif
     std::cout<<"native allocation checks="<<checks<<" failures=0\n"; }
   catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}

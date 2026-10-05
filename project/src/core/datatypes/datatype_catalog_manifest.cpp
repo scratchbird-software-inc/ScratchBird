@@ -93,6 +93,10 @@ bool TypedUuidEquals(const TypedUuid& left, const TypedUuid& right) {
 
 TypedUuid AuthoritativeDatatypeDescriptorUuid(const CanonicalTypeId type_id,
                                               const std::string& stable_name) {
+  const auto native_identity = LookupDatatypeDescriptorIdentityV3(type_id);
+  if (native_identity.ok) {
+    return native_identity.descriptor_uuid;
+  }
   if (type_id == CanonicalTypeId::int32) {
     TypedUuid uuid;
     uuid.kind = UuidKind::object;

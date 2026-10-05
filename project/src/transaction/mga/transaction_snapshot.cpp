@@ -53,7 +53,9 @@ u64 LatestCommittedLocalTransactionId(const LocalTransactionInventory& inventory
 }
 
 struct PublishedSnapshotVector {
-  SnapshotVectorDescriptor descriptor;
+  explicit PublishedSnapshotVector(SnapshotVectorDescriptor value)
+      : descriptor(std::move(value)) {}
+  const SnapshotVectorDescriptor descriptor;
   bool revoked = false;
   bool publication_released = false;
   std::size_t pins = 0;
@@ -216,6 +218,21 @@ SnapshotVectorResult PublishedSnapshotPin::Resolve() const {
   result.status = SnapshotOkStatus();
   result.descriptor = published.descriptor;
   return result;
+}
+
+PublishedSnapshotObservation PublishedSnapshotPin::Observe() const noexcept {
+  using E = PublishedSnapshotObservationError;
+  if (!lease_) return {E::unknown, nullptr};
+  try {
+    std::lock_guard<std::mutex> guard(SnapshotVectorRegistryMutex());
+    const auto& published = *lease_->published;
+    if (published.revoked) return {E::revoked, nullptr};
+    return {E::none, &published.descriptor};
+  } catch (...) {
+    // Lock acquisition is the only throwing operation here. Even failure to
+    // construct its exception must not terminate a guarded storage reader.
+    return {E::lock_failure, nullptr};
+  }
 }
 
 void ReleasePublishedSnapshotVector(const TypedUuid& snapshot_uuid) {
@@ -474,7 +491,7 @@ SnapshotVectorResult PublishStatementStableSnapshotVector(
           "transaction.snapshot_vector.incomplete");
     }
     SnapshotVectorRegistry().emplace(
-        key, std::make_shared<PublishedSnapshotVector>(PublishedSnapshotVector{descriptor}));
+        key, std::make_shared<PublishedSnapshotVector>(descriptor));
     SnapshotVectorResult result;
     result.status = SnapshotOkStatus();
     result.descriptor = std::move(descriptor);
