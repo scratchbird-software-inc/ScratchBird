@@ -28,8 +28,6 @@ template<class S> constexpr std::array<std::pair<std::size_t,Uuid S::*>,10> Step
  {0,&S::uuid},{16,&S::operation_uuid},{32,&S::family_uuid},{48,&S::target_uuid},
  {128,&S::started_at},{144,&S::completed_at},{160,&S::evidence_uuid},
  {176,&S::metric_evidence_uuid},{192,&S::diagnostic_uuid},{208,&S::boundary_uuid}}};
-constexpr auto& operation_ids=OperationIds<O>;
-constexpr auto& step_ids=StepIds<S>;
 struct OwningIdentities {
   std::set<Uuid> values;
   bool Insert(const Uuid& id){return values.insert(id).second;}
@@ -182,9 +180,11 @@ NativeManagementOperationImage Fail(E e){NativeManagementOperationImage r;r.erro
 auto Seal(std::span<const byte> b){const std::array<byte,32> zeros{};const core::hash::HashDigestSegment parts[]={{b.data(),480},{zeros.data(),32},{b.data()+512,b.size()-512}};return core::hash::ComputeSha256DigestPartsNative(parts,3);}
 void Put(byte* p,const Uuid& id){std::copy(id.bytes.begin(),id.bytes.end(),p);}
 Uuid Get(const byte* p){Uuid id;std::copy_n(p,16,id.bytes.begin());return id;}
-std::size_t Size(const O& o,u64 budget){u64 n=512;Require(budget>=n,E::resource_exhausted);
- const auto add=[&](u64 size){Require(size<=budget-n&&size<=std::numeric_limits<u32>::max()-n,E::resource_exhausted);n+=size;};
- add(o.idempotency_key.size());add(o.normalized_request_bytes.size());for(const auto& s:o.steps){add(256);add(s.idempotency_key.size());}return static_cast<std::size_t>(n);
+template<class Op> bool Size(const Op& o,u64 budget,std::size_t& size){u64 n=512;if(budget<n)return false;
+ const auto add=[&](u64 bytes){if(bytes>budget-n||bytes>std::numeric_limits<u32>::max()-n)return false;n+=bytes;return true;};
+ if(!add(o.idempotency_key.size())||!add(o.normalized_request_bytes.size()))return false;
+ for(const auto& s:o.steps)if(!add(256)||!add(s.idempotency_key.size()))return false;
+ size=static_cast<std::size_t>(n);return true;
 }
 } // namespace
 NativeManagementOperationError ValidateNativeManagementOperation(const O& o) noexcept {
@@ -193,22 +193,29 @@ NativeManagementOperationError ValidateNativeManagementOperation(const O& o) noe
 NativeManagementOperationError ValidateNativeManagementOperationEvolution(const O& a,const O& b) noexcept {
  try{return EvolutionValues(a,b,[](const auto& o){OwningIdentities ids;return ValidateValues(o,ids);});}catch(E e){return e;}catch(const std::bad_alloc&){return E::resource_exhausted;}catch(const std::length_error&){return E::resource_exhausted;}catch(...){return E::invalid_record;}
 }
-NativeManagementOperationImage EncodeNativeManagementOperation(const O& o,u64 budget) noexcept {
- try{const auto size=Size(o,budget);const auto valid=ValidateNativeManagementOperation(o);Require(valid==E::none,valid);const bool exact=!o.normalized_request_bytes.empty();
-  std::vector<byte> b(size,0);std::copy_n(exact?"SBMGO002":"SBMGO001",8,b.begin());StoreLittle16(b.data()+8,exact?2:1);StoreLittle16(b.data()+10,512);StoreLittle32(b.data()+12,size);
-  for(const auto& [at,member]:operation_ids)Put(b.data()+at,o.*member);
+namespace {
+template<class Op> core::hash::Sha256DigestNativeResult EncodeValues(const Op& o,std::span<byte> b) {
+  using Step=typename std::remove_cvref_t<decltype(o.steps)>::value_type;
+  const bool exact=!o.normalized_request_bytes.empty();std::fill(b.begin(),b.end(),0);
+  std::copy_n(exact?"SBMGO002":"SBMGO001",8,b.begin());StoreLittle16(b.data()+8,exact?2:1);StoreLittle16(b.data()+10,512);StoreLittle32(b.data()+12,b.size());
+  for(const auto& [at,member]:OperationIds<Op>)Put(b.data()+at,o.*member);
   std::copy(o.normalized_request_sha256.begin(),o.normalized_request_sha256.end(),b.begin()+272);
   u32 flags=(o.evidence_required?16u:0u)|(o.metrics_required?32u:0u);for(unsigned i=0;i<4;++i)if(o.generation_guards[i]){flags|=1u<<i;StoreLittle64(b.data()+416+8*i,*o.generation_guards[i]);}
   StoreLittle64(b.data()+448,o.revision);StoreLittle32(b.data()+456,o.steps.size());StoreLittle32(b.data()+460,o.idempotency_key.size());StoreLittle16(b.data()+464,u16(o.state));StoreLittle16(b.data()+466,u16(o.scope));StoreLittle16(b.data()+468,o.initiator_kind);StoreLittle16(b.data()+470,u16(o.restart));StoreLittle32(b.data()+472,flags);
   std::size_t at=512;std::copy(o.idempotency_key.begin(),o.idempotency_key.end(),b.begin()+at);at+=o.idempotency_key.size();
   StoreLittle32(b.data()+476,o.normalized_request_bytes.size());
   std::copy(o.normalized_request_bytes.begin(),o.normalized_request_bytes.end(),b.begin()+at);at+=o.normalized_request_bytes.size();
-  for(const auto& s:o.steps){auto* p=b.data()+at;for(const auto& [offset,member]:step_ids)Put(p+offset,s.*member);
+  for(const auto& s:o.steps){auto* p=b.data()+at;for(const auto& [offset,member]:StepIds<Step>)Put(p+offset,s.*member);
    std::copy(s.precondition_sha256.begin(),s.precondition_sha256.end(),p+64);std::copy(s.postcondition_sha256.begin(),s.postcondition_sha256.end(),p+96);
    StoreLittle32(p+224,s.ordinal);StoreLittle32(p+228,s.idempotency_key.size());StoreLittle16(p+232,u16(s.state));StoreLittle16(p+234,u16(s.mutation));StoreLittle16(p+236,u16(s.compensation));StoreLittle16(p+238,u16(s.recovery));StoreLittle32(p+240,(s.evidence_required?1u:0u)|(s.metrics_required?2u:0u)|(s.idempotent?4u:0u));
    at+=256;std::copy(s.idempotency_key.begin(),s.idempotency_key.end(),b.begin()+at);at+=s.idempotency_key.size();}
-  const auto seal=Seal(b);Require(seal.ok(),E::hash_failure);std::copy(seal.digest.begin(),seal.digest.end(),b.begin()+480);
-  const auto digest=core::hash::ComputeSha256Digest(b);Require(digest.ok(),E::hash_failure);return {E::none,o,std::move(b),digest.digest};
+  const auto seal=Seal(b);if(!seal.ok())return {};std::copy(seal.digest.begin(),seal.digest.end(),b.begin()+480);
+  return core::hash::ComputeSha256DigestNative(b.data(),b.size());
+}
+} // namespace
+NativeManagementOperationImage EncodeNativeManagementOperation(const O& o,u64 budget) noexcept {
+ try{std::size_t size=0;Require(Size(o,budget,size),E::resource_exhausted);const auto valid=ValidateNativeManagementOperation(o);Require(valid==E::none,valid);
+  std::vector<byte> b(size);const auto digest=EncodeValues(o,b);Require(digest.ok(),E::hash_failure);return {E::none,o,std::move(b),digest.digest};
  }catch(E e){return Fail(e);}catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::invalid_record);}
 }
 namespace {
@@ -268,6 +275,22 @@ E ValidateView(const NativeManagementOperationView& o,std::span<Uuid> scratch) {
  BorrowedIdentities ids(scratch.first(count));return ValidateValues(o,ids);
 }
 } // namespace
+NativeManagementOperationViewImage EncodeNativeManagementOperationInto(
+ const NativeManagementOperationView& o,u64 budget,std::span<byte> output,std::span<Uuid> ids) noexcept {
+ const auto fail=[](E e){NativeManagementOperationViewImage result;result.error=e;return result;};
+ try{
+  const auto bytes=[](const void* p,std::size_t n){return std::span<const byte>{static_cast<const byte*>(p),n};};
+  if(!disk::detail::DisjointNativeDecodeRegions(bytes(&o,sizeof(o)),o.steps,output,ids)||
+     (!o.steps.empty()&&reinterpret_cast<std::uintptr_t>(o.steps.data())%alignof(NativeManagementStepView))||
+     !disk::detail::DisjointNativeDecodeRegions(o.normalized_request_bytes,output,ids)||
+     !disk::detail::DisjointNativeDecodeRegions(bytes(o.idempotency_key.data(),o.idempotency_key.size()),output,ids))return fail(E::invalid_workspace);
+  for(const auto& s:o.steps)if(!disk::detail::DisjointNativeDecodeRegions(bytes(s.idempotency_key.data(),s.idempotency_key.size()),output,ids))return fail(E::invalid_workspace);
+  std::size_t size=0;if(!Size(o,budget,size)||output.size()<size)return fail(E::resource_exhausted);
+  const auto valid=ValidateView(o,ids);if(valid!=E::none)return fail(valid);
+  auto encoded=output.first(size);const auto digest=EncodeValues(o,encoded);if(!digest.ok())return fail(E::hash_failure);
+  return {E::none,o,encoded,digest.digest};
+ }catch(E e){return fail(e);}catch(const std::bad_alloc&){return fail(E::resource_exhausted);}catch(const std::length_error&){return fail(E::resource_exhausted);}catch(...){return fail(E::invalid_record);}
+}
 NativeManagementOperationImage DecodeNativeManagementOperation(const std::vector<byte>& b,u64 budget) noexcept {
  return DecodeOperation<false>(b,budget,{});
 }

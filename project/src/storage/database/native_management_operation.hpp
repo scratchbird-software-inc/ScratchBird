@@ -127,6 +127,14 @@ struct NativeManagementOperationViewWorkspace {
   std::span<NativeManagementStepView> steps;
   std::span<Uuid> identities;
 };
+// Encode immutable borrowed fields into caller backing. Identity scratch needs
+// 2*(step_count+3)+1 slots. Entire output and scratch must be disjoint from each
+// other and all input backing. Native step backing must be aligned. Success
+// borrows the input record and exact output prefix; spare output is untouched.
+// No hidden heap fallback, admission, publication or durability is implied.
+NativeManagementOperationViewImage EncodeNativeManagementOperationInto(
+  const NativeManagementOperationView&,u64 maximum_encoded_bytes,
+  std::span<byte> output,std::span<Uuid> identities) noexcept;
 // Identity scratch requires 2*(step_count+3)+1 slots. All backing must be
 // aligned and disjoint from the entire input. Returned text/request views borrow
 // immutable bytes; steps and their backing outlive the view. No failure prefix,
