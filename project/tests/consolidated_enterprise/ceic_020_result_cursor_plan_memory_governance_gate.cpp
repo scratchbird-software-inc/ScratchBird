@@ -109,7 +109,7 @@ void SeedBudgets(memory::HierarchicalMemoryBudgetLedger* ledger,
                  const memory::ResultCursorPlanMemoryScope& scope,
                  u64 hard = 64ull * 1024ull) {
   SetBudget(ledger, memory::HierarchicalMemoryScopeKind::process,
-            "local-process", hard);
+            scope.process_id, hard);
   SetBudget(ledger, memory::HierarchicalMemoryScopeKind::database,
             scope.database_id, hard);
   SetBudget(ledger, memory::HierarchicalMemoryScopeKind::tenant,
@@ -128,6 +128,8 @@ void SeedBudgets(memory::HierarchicalMemoryBudgetLedger* ledger,
 
 memory::ResultCursorPlanMemoryScope BaseScope(std::string suffix = "a") {
   memory::ResultCursorPlanMemoryScope scope;
+  scope.process_id = FixtureIdentity(suffix, 13);
+  scope.plan_cache_entry_id = FixtureIdentity(suffix, 14);
   scope.database_id = FixtureIdentity(suffix, 1);
   scope.tenant_id = FixtureIdentity(suffix, 2);
   scope.user_id = FixtureIdentity(suffix, 3);
@@ -476,6 +478,7 @@ void OptimizerPlanCacheMemoryIsGoverned() {
 internal::EngineDescriptor Descriptor(std::string suffix) {
   internal::EngineDescriptor descriptor;
   descriptor.descriptor_uuid = FixtureIdentity(suffix, 21);
+  descriptor.type_uuid = FixtureIdentity(suffix, 23);
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = "INTEGER";
   descriptor.encoded_descriptor = "int32:" + suffix;
@@ -529,6 +532,7 @@ void PreparedTemplateMemoryIsGoverned() {
   governance.estimated_descriptor_snapshot_bytes = 128;
 
   auto prepared = cache.PrepareGoverned(Admission("prepared"), governance);
+  if (!prepared.ok) std::cerr << prepared.diagnostic_code << ": " << prepared.detail << '\n';
   Require(prepared.ok && prepared.prepared_template != nullptr,
           "CEIC-020 governed prepared template failed");
   Require(prepared.prepared_template->memory_governed &&
@@ -548,6 +552,16 @@ void PreparedTemplateMemoryIsGoverned() {
   auto invalidated = cache.InvalidateGovernedByEpoch(Epochs(300), &governor);
   Require(invalidated == 1,
           "CEIC-020 governed prepared template epoch invalidation failed");
+  Require(!cache.Lookup(Admission("prepared").key),
+          "CEIC-020 invalidated template remained available to new readers");
+  Require(governor.Snapshot().prepared_statement_count == 1 &&
+              governor.Snapshot().descriptor_snapshot_count == 1,
+          "CEIC-020 invalidation released charges still owned by retained readers");
+  prepared.prepared_template.reset();
+  Require(governor.Snapshot().prepared_statement_count == 1 &&
+              governor.Snapshot().descriptor_snapshot_count == 1,
+          "CEIC-020 first reader release lost the remaining reader's charges");
+  reused.prepared_template.reset();
   Require(governor.Snapshot().prepared_statement_count == 0 &&
               governor.Snapshot().descriptor_snapshot_count == 0,
           "CEIC-020 governed prepared template invalidation leaked memory");

@@ -11,6 +11,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <iterator>
+#include <limits>
+#include <new>
 #include <string>
 #include <utility>
 
@@ -618,18 +620,57 @@ void AddEmergencyDiagnosticEvidence(MemoryPressureDecision* decision) {
 }  // namespace
 
 EmergencyMemoryReserve::EmergencyMemoryReserve(u64 configured_bytes) {
+  tag_.category = MemoryCategory::diagnostics;
+  tag_.lifetime = MemoryLifetime::process;
+  tag_.purpose = "emergency_diagnostic_reserve";
+  Reset(configured_bytes);
+}
+
+EmergencyMemoryReserve::EmergencyMemoryReserve(MemoryManager& manager, MemoryTag tag,
+                                             u64 configured_bytes)
+    : manager_(&manager), tag_(std::move(tag)) {
   Reset(configured_bytes);
 }
 
 void EmergencyMemoryReserve::Reset(u64 configured_bytes) {
+  if (!TryReset(configured_bytes)) throw std::bad_alloc();
+}
+
+bool EmergencyMemoryReserve::TryReset(u64 configured_bytes, DiagnosticRecord* failure) {
+  std::lock_guard lock(mutex_);
+  if (configured_bytes > std::numeric_limits<usize>::max()) return false;
+  ScopedAllocation replacement;
+  MemoryManager* admitted_manager = manager_;
+  if (configured_bytes != 0) {
+    if (!admitted_manager) admitted_manager = &DefaultMemoryManager();
+    auto result = admitted_manager->AllocateScoped(static_cast<usize>(configured_bytes),
+                                                   alignof(std::max_align_t), tag_);
+    if (!result.ok()) {
+      if (failure) *failure = std::move(result.diagnostic);
+      return false;
+    }
+    // Initialize every byte before emergency use, independently of the
+    // ordinary allocator's zeroing policy. This touches the backing now;
+    // it does not promise locked pages or immunity to later OS pressure.
+    SecureZeroMemory(result.allocation.data(), result.allocation.size());
+    replacement = std::move(result.allocation);
+  }
+  // Keep the previous allocation until replacement has actually succeeded.
+  // Replacement peak usage is admitted by the same shared governor.
+  if (backing_.valid() && !backing_.Reset().ok()) return false;
+  backing_ = std::move(replacement);
+  manager_ = admitted_manager;
   configured_bytes_ = configured_bytes;
   available_bytes_ = configured_bytes;
   released_bytes_ = 0;
-  allocated_ = configured_bytes != 0;
+  allocated_ = backing_.valid();
   released_ = false;
+  if (allocated_) manager_->allocator()->SetEmergencyReserveAvailable(backing_.data(), true);
+  return true;
 }
 
 EmergencyMemoryReserveSnapshot EmergencyMemoryReserve::Snapshot() const {
+  std::lock_guard lock(mutex_);
   EmergencyMemoryReserveSnapshot snapshot;
   snapshot.configured_bytes = configured_bytes_;
   snapshot.available_bytes = available_bytes_;
@@ -640,13 +681,21 @@ EmergencyMemoryReserveSnapshot EmergencyMemoryReserve::Snapshot() const {
 }
 
 u64 EmergencyMemoryReserve::ReleaseForEmergencyDiagnostics() {
+  std::lock_guard lock(mutex_);
   if (!allocated_ || released_ || available_bytes_ == 0) {
     return 0;
   }
+  manager_->allocator()->SetEmergencyReserveAvailable(backing_.data(), false);
   released_bytes_ = available_bytes_;
   available_bytes_ = 0;
   released_ = true;
   return released_bytes_;
+}
+
+std::span<std::byte> EmergencyMemoryReserve::DiagnosticsBuffer() {
+  std::lock_guard lock(mutex_);
+  if (!released_ || !backing_.valid()) return {};
+  return {static_cast<std::byte*>(backing_.data()), backing_.size()};
 }
 
 bool MemoryPressureDecision::HasAction(MemoryPressureActionKind action) const {

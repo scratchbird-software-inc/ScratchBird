@@ -76,7 +76,7 @@ DiagnosticRecord PolicyDiagnostic(std::string code,
                         "Correct the memory policy configuration and reload the server configuration.");
 }
 
-bool ParsePositiveU64(const std::string& raw, u64* out) {
+bool ParseUnsignedU64(const std::string& raw, u64* out) {
   const auto value = TrimAscii(raw);
   if (value.empty()) {
     return false;
@@ -92,21 +92,28 @@ bool ParsePositiveU64(const std::string& raw, u64* out) {
     }
     parsed = parsed * 10ull + digit;
   }
-  if (parsed == 0) {
-    return false;
-  }
   *out = parsed;
   return true;
 }
 
-std::optional<std::string> ReadFirstLine(const std::filesystem::path& path) {
-  std::ifstream in(path);
+std::optional<std::string> ReadBoundedText(const std::filesystem::path& path,
+                                       std::size_t maximum_bytes) {
+  std::ifstream in(path, std::ios::binary);
   if (!in) {
     return std::nullopt;
   }
-  std::string line;
-  std::getline(in, line);
-  return line;
+  std::string text;
+  char ch;
+  while (in.get(ch)) {
+    if (text.size() == maximum_bytes || ch == '\0') {
+      return std::nullopt;
+    }
+    text.push_back(ch);
+  }
+  if (!in.eof()) {
+    return std::nullopt;
+  }
+  return text;
 }
 
 MemoryCeilingSignal UnavailableSignal(MemoryCeilingSignalKind kind,
@@ -124,7 +131,7 @@ MemoryCeilingSignal UnavailableSignal(MemoryCeilingSignalKind kind,
 
 MemoryCeilingSignal ParseCgroupLimit(MemoryCeilingSignalKind kind,
                                      const std::filesystem::path& path) {
-  auto line = ReadFirstLine(path);
+  auto line = ReadBoundedText(path, 4096);
   if (!line) {
     return UnavailableSignal(kind, path.string(), "cgroup_v2_memory_ceiling_unavailable");
   }
@@ -141,7 +148,8 @@ MemoryCeilingSignal ParseCgroupLimit(MemoryCeilingSignalKind kind,
     return signal;
   }
   u64 bytes = 0;
-  if (!ParsePositiveU64(signal.raw_value, &bytes)) {
+  // Zero is a restrictive finite limit, not the cgroup "max" sentinel.
+  if (!ParseUnsignedU64(signal.raw_value, &bytes)) {
     signal.valid = false;
     signal.evidence = "cgroup_v2_memory_ceiling_invalid";
     return signal;
@@ -150,6 +158,198 @@ MemoryCeilingSignal ParseCgroupLimit(MemoryCeilingSignalKind kind,
   signal.bytes = bytes;
   return signal;
 }
+
+#if defined(__linux__)
+bool SafeAbsoluteCgroupPath(const std::filesystem::path& path) {
+  if (!path.is_absolute()) {
+    return false;
+  }
+  std::size_t depth = 0;
+  for (const auto& component : path) {
+    if (component.empty() || component == "." || component == ".." || ++depth > 256) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::optional<std::string> DecodeMountPath(const std::string& raw) {
+  std::string result;
+  for (std::size_t i = 0; i < raw.size(); ++i) {
+    if (raw[i] != '\\') {
+      result.push_back(raw[i]);
+      continue;
+    }
+    const auto escape = raw.substr(i, 4);
+    if (escape == "\\040") result.push_back(' ');
+    else if (escape == "\\011") result.push_back('\t');
+    else if (escape == "\\012") result.push_back('\n');
+    else if (escape == "\\134") result.push_back('\\');
+    else return std::nullopt;
+    i += 3;
+  }
+  return result;
+}
+
+void IncompleteCgroup(HostContainerMemoryCeilings* ceilings,
+                      const std::string& source, const std::string& reason) {
+  ceilings->container_limit_incomplete = true;
+  ceilings->signals.push_back(UnavailableSignal(
+      MemoryCeilingSignalKind::cgroup_v2_memory_max, source, reason));
+}
+
+void ProbeCgroupDirectory(const std::filesystem::path& directory,
+                          bool hierarchy_root, HostContainerMemoryCeilings* ceilings) {
+  auto maximum = ParseCgroupLimit(MemoryCeilingSignalKind::cgroup_v2_memory_max,
+                                  directory / "memory.max");
+  auto high = ParseCgroupLimit(MemoryCeilingSignalKind::cgroup_v2_memory_high,
+                               directory / "memory.high");
+  // The global v2 root has no memory limit files. A namespace root exposing
+  // those files is a real constrained subgroup, with ancestors outside view.
+  if (hierarchy_root && (maximum.available || high.available)) {
+    IncompleteCgroup(ceilings, directory.string(), "cgroup_hidden_ancestors");
+  }
+  if (hierarchy_root) {
+    // Unlike memory interfaces, cgroup.type is present on every non-root
+    // cgroup, including one whose memory controller is disabled. Namespace
+    // virtualization must not make that subgroup look like the global root.
+    std::error_code error;
+    if (std::filesystem::symlink_status(directory / "cgroup.type", error).type() !=
+        std::filesystem::file_type::not_found) {
+      IncompleteCgroup(ceilings, directory.string(), "cgroup_root_not_verified");
+    }
+  }
+  if (!maximum.available && !high.available) {
+    const auto controllers = ReadBoundedText(directory / "cgroup.controllers", 4096);
+    bool memory_controller = false;
+    if (controllers) {
+      std::istringstream tokens(*controllers);
+      std::string token;
+      while (tokens >> token) memory_controller |= token == "memory";
+    }
+    std::error_code max_error, high_error;
+    const auto max_status = std::filesystem::symlink_status(directory / "memory.max", max_error);
+    const auto high_status = std::filesystem::symlink_status(directory / "memory.high", high_error);
+    const bool both_absent = max_status.type() == std::filesystem::file_type::not_found &&
+                             high_status.type() == std::filesystem::file_type::not_found;
+    if (controllers && both_absent && (hierarchy_root || !memory_controller)) {
+      // No local interface; parents are still visited for inherited limits.
+      return;
+    }
+  }
+  if (!maximum.available || !maximum.valid || !high.available || !high.valid) {
+    ceilings->container_limit_incomplete = true;
+  }
+  ceilings->signals.push_back(std::move(maximum));
+  ceilings->signals.push_back(std::move(high));
+}
+
+void ProbeProcessCgroup(const PlatformMemoryCeilingProbePaths& paths,
+                        HostContainerMemoryCeilings* ceilings) {
+  if (!paths.cgroup_v2_root.empty()) {
+    ProbeCgroupDirectory(paths.cgroup_v2_root, false, ceilings);
+    return;
+  }
+  constexpr std::size_t kMaxProcBytes = 1024 * 1024;
+  const auto membership = ReadBoundedText(paths.proc_self_cgroup, kMaxProcBytes);
+  const auto mounts = ReadBoundedText(paths.proc_self_mountinfo, kMaxProcBytes);
+  if (!membership || !mounts || mounts->empty()) {
+    IncompleteCgroup(ceilings, "proc_self_cgroup", "cgroup_discovery_source_unavailable");
+    return;
+  }
+  std::optional<std::filesystem::path> member;
+  std::istringstream memberships(*membership);
+  std::string line;
+  bool invalid = false;
+  while (std::getline(memberships, line)) {
+    const auto first = line.find(':');
+    const auto second = first == std::string::npos ? first : line.find(':', first + 1);
+    u64 hierarchy = 0;
+    if (first == std::string::npos || second == std::string::npos ||
+        !ParseUnsignedU64(line.substr(0, first), &hierarchy)) {
+      invalid = true;
+      continue;
+    }
+    const auto controllers = line.substr(first + 1, second - first - 1);
+    if ((hierarchy == 0) != controllers.empty() ||
+        !SafeAbsoluteCgroupPath(line.substr(second + 1))) {
+      invalid = true;
+      continue;
+    }
+    if (hierarchy == 0 && controllers.empty()) {
+      const std::filesystem::path path(line.substr(second + 1));
+      if (member || !SafeAbsoluteCgroupPath(path)) invalid = true;
+      else member = path;
+    } else if (("," + controllers + ",").find(",memory,") != std::string::npos) {
+      // An applicable v1 controller is not evidence of an unlimited v2 limit.
+      IncompleteCgroup(ceilings, paths.proc_self_cgroup, "cgroup_v1_memory_unresolved");
+    }
+  }
+  if (invalid || membership->empty()) {
+    IncompleteCgroup(ceilings, paths.proc_self_cgroup, "cgroup_membership_invalid");
+    return;
+  }
+  std::istringstream mount_lines(*mounts);
+  std::size_t matching_mounts = 0;
+  bool has_v2_mount = false;
+  while (std::getline(mount_lines, line)) {
+    std::istringstream tokens(line);
+    std::vector<std::string> fields;
+    std::string token;
+    while (tokens >> token) fields.push_back(token);
+    const auto separator = std::find(fields.begin(), fields.end(), "-");
+    const auto split = static_cast<std::size_t>(separator - fields.begin());
+    if (split < 6 || split + 3 >= fields.size()) {
+      IncompleteCgroup(ceilings, paths.proc_self_mountinfo, "cgroup_mountinfo_invalid");
+      continue;
+    }
+    if (fields[split + 1] != "cgroup2") continue;
+    has_v2_mount = true;
+    const auto root_text = DecodeMountPath(fields[3]);
+    const auto mount_text = DecodeMountPath(fields[4]);
+    if (!root_text || !mount_text || !SafeAbsoluteCgroupPath(*root_text) ||
+        !SafeAbsoluteCgroupPath(*mount_text)) {
+      IncompleteCgroup(ceilings, paths.proc_self_mountinfo, "cgroup_mount_path_invalid");
+      continue;
+    }
+    if (!member) continue;
+    const std::filesystem::path root(*root_text), mount(*mount_text);
+    const auto relative = member->lexically_relative(root);
+    if (relative.empty() || *relative.begin() == "..") continue;
+    ++matching_mounts;
+    if (root != "/") {
+      IncompleteCgroup(ceilings, mount.string(), "cgroup_hidden_ancestors");
+    }
+    auto directory = relative == "." ? mount : (mount / relative).lexically_normal();
+    for (;;) {
+      // Never follow a substituted directory symlink into an unrelated tree.
+      std::error_code error;
+      if (std::filesystem::symlink_status(directory, error).type() !=
+          std::filesystem::file_type::directory) {
+        IncompleteCgroup(ceilings, directory.string(), "cgroup_directory_unavailable");
+      } else {
+        ProbeCgroupDirectory(directory, directory == mount && root == "/", ceilings);
+      }
+      if (directory == mount) break;
+      const auto parent = directory.parent_path();
+      if (parent == directory || parent.empty()) {
+        IncompleteCgroup(ceilings, mount.string(), "cgroup_mount_boundary_invalid");
+        break;
+      }
+      directory = parent;
+    }
+  }
+  if ((member && matching_mounts != 1) || (!member && has_v2_mount)) {
+    IncompleteCgroup(ceilings, paths.proc_self_mountinfo, "cgroup_mount_binding_unresolved");
+  }
+  // This detects changes during collection; it does not claim an atomic kernel
+  // snapshot. The activation consumer must revalidate its selected observation.
+  if (ReadBoundedText(paths.proc_self_cgroup, kMaxProcBytes) != membership ||
+      ReadBoundedText(paths.proc_self_mountinfo, kMaxProcBytes) != mounts) {
+    IncompleteCgroup(ceilings, "proc_self_cgroup", "cgroup_membership_or_mount_changed");
+  }
+}
+#endif
 
 MemoryCeilingSignal ParseMemTotal(const std::filesystem::path& path) {
   std::ifstream in(path);
@@ -177,7 +377,7 @@ MemoryCeilingSignal ParseMemTotal(const std::filesystem::path& path) {
     std::string unit;
     stream >> amount >> unit;
     u64 kib = 0;
-    if (!ParsePositiveU64(amount, &kib) || (unit != "kB" && unit != "KB" && unit != "kb") ||
+    if (!ParseUnsignedU64(amount, &kib) || kib == 0 || (unit != "kB" && unit != "KB" && unit != "kb") ||
         kib > std::numeric_limits<u64>::max() / 1024ull) {
       signal.valid = false;
       signal.evidence = "proc_meminfo_memtotal_invalid";
@@ -474,11 +674,7 @@ HostContainerMemoryCeilings ProbeHostContainerMemoryCeilings(
   ceilings.platform_supported = true;
 #if defined(__linux__)
   ceilings.platform_name = "linux";
-  const std::filesystem::path cgroup_root(paths.cgroup_v2_root);
-  ceilings.signals.push_back(ParseCgroupLimit(MemoryCeilingSignalKind::cgroup_v2_memory_max,
-                                              cgroup_root / "memory.max"));
-  ceilings.signals.push_back(ParseCgroupLimit(MemoryCeilingSignalKind::cgroup_v2_memory_high,
-                                              cgroup_root / "memory.high"));
+  ProbeProcessCgroup(paths, &ceilings);
   ceilings.signals.push_back(ParseMemTotal(std::filesystem::path(paths.proc_meminfo)));
 #elif defined(__APPLE__)
   ceilings.platform_name = "macos";
@@ -501,6 +697,14 @@ HostContainerMemoryCeilings ProbeHostContainerMemoryCeilings(
   }
   FinalizeAvailableCeiling(&ceilings);
   return ceilings;
+}
+
+u64 DefaultBootstrapEmergencyReserveBytes(u64 effective_budget_bytes) noexcept {
+  constexpr u64 minimum = 128ull * 1024ull * 1024ull;
+  constexpr u64 maximum = 1024ull * 1024ull * 1024ull;
+  const u64 percentage = (effective_budget_bytes / 100) * 3 +
+                        ((effective_budget_bytes % 100) * 3 + 99) / 100;
+  return std::clamp(percentage, minimum, maximum);
 }
 
 MemoryPolicyConfigResolveResult ResolveMemoryPolicyConfig(const MemoryPolicyConfig& config) {
@@ -530,6 +734,30 @@ MemoryPolicyConfigResolveResult ResolveMemoryPolicyConfig(const MemoryPolicyConf
                                                       *result.platform_ceiling_bytes)
                                            : config.hard_limit_bytes;
 
+  const bool incomplete_container = result.ceiling_evidence.container_limit_incomplete ||
+      std::any_of(result.ceiling_evidence.signals.begin(), result.ceiling_evidence.signals.end(),
+          [](const MemoryCeilingSignal& signal) {
+            return (signal.kind == MemoryCeilingSignalKind::cgroup_v2_memory_max ||
+                    signal.kind == MemoryCeilingSignalKind::cgroup_v2_memory_high ||
+                    signal.kind == MemoryCeilingSignalKind::windows_job_object_memory_limit) &&
+                   signal.available && !signal.valid;
+          });
+  if (incomplete_container) {
+    result.ceiling_evidence.container_limit_incomplete = true;
+    if (!config.allow_degraded_container_limit || config.require_platform_memory_ceiling ||
+        config.degraded_container_cap_bytes == 0) {
+      result.diagnostics.push_back(PolicyDiagnostic(
+          "MEMORY.CONTAINER_LIMIT_UNVERIFIED", "memory.container_limit_unverified",
+          {{"policy_generation", std::to_string(config.policy_generation)},
+           {"reason", config.require_platform_memory_ceiling ? "verified_limit_required" :
+                       !config.allow_degraded_container_limit ? "degraded_not_enabled" : "missing_finite_cap"}}));
+    } else {
+      result.effective_hard_limit_bytes = std::min(result.effective_hard_limit_bytes,
+                                                 config.degraded_container_cap_bytes);
+      result.degraded_container_limit = true;
+    }
+  }
+
   if (config.require_platform_memory_ceiling && HasInvalidCeilingSignal(result.ceiling_evidence)) {
     AddInvalidCeilingDiagnostics(&result.diagnostics, result.ceiling_evidence);
   }
@@ -555,6 +783,16 @@ MemoryPolicyConfigResolveResult ResolveMemoryPolicyConfig(const MemoryPolicyConf
         "memory.policy_hard_limit_too_small",
         {{"field", "hard_limit_bytes"},
          {"value", std::to_string(config.hard_limit_bytes)},
+         {"minimum_bytes", std::to_string(kMinimumProductionMemoryHardLimitBytes)}}));
+  } else if (result.effective_hard_limit_bytes < kMinimumProductionMemoryHardLimitBytes) {
+    // Platform clamping must not bypass the production minimum. In particular,
+    // a finite zero ceiling must never become an allocator's unlimited policy.
+    // Keep the observed ceiling intact for diagnostics; do not raise it.
+    result.diagnostics.push_back(PolicyDiagnostic(
+        "MEMORY.POLICY_HARD_LIMIT_TOO_SMALL",
+        "memory.policy_hard_limit_too_small",
+        {{"field", "effective_hard_limit_bytes"},
+         {"value", std::to_string(result.effective_hard_limit_bytes)},
          {"minimum_bytes", std::to_string(kMinimumProductionMemoryHardLimitBytes)}}));
   }
   ValidateLimit(&result.diagnostics,
@@ -596,7 +834,22 @@ MemoryPolicyConfigResolveResult ResolveMemoryPolicyConfig(const MemoryPolicyConf
          {"policy_generation", std::to_string(config.policy_generation)}}));
   }
   if (!result.ok()) {
+    result.degraded_container_limit = false;
     return result;
+  }
+
+  if (result.degraded_container_limit) {
+    result.warnings.push_back(MakeDiagnostic(
+        StatusCode::ok, Severity::warning, Subsystem::memory,
+        "MEMORY.CONTAINER_LIMIT_DEGRADED", "memory.container_limit_degraded",
+        {{"policy_generation", std::to_string(config.policy_generation)},
+         {"reason", "applicable_container_limit_incomplete"},
+         {"configured_hard_limit_bytes", std::to_string(config.hard_limit_bytes)},
+         {"degraded_cap_bytes", std::to_string(config.degraded_container_cap_bytes)},
+         {"known_ceiling_bytes", result.platform_ceiling_bytes ? std::to_string(*result.platform_ceiling_bytes) : "unavailable"},
+         {"effective_hard_limit_bytes", std::to_string(result.effective_hard_limit_bytes)}},
+        {}, "core.memory.policy_config",
+        "Restore container limit discovery; the degraded cap is not a verified container allowance."));
   }
 
   result.policy.policy_name = config.policy_name.empty()

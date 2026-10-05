@@ -130,7 +130,11 @@ constexpr const char* MemoryBinaryScopeKindName(MemoryBinaryScopeKind kind) {
   return "invalid";
 }
 struct MemoryBinaryOwnership {
-  std::array<MemoryBinaryUuid, 7> scopes{};
+  // Cover every declared scope without changing existing enum ordinals.
+  // This is an in-process carrier, not a serialized ownership format.
+  static constexpr usize scope_count =
+      static_cast<usize>(MemoryBinaryScopeKind::descriptor_snapshot) + 1;
+  std::array<MemoryBinaryUuid, scope_count> scopes{};
   bool empty() const {
     for (const auto& uuid : scopes) if (MemoryUuidPresent(uuid)) return false;
     return true;
@@ -184,6 +188,35 @@ struct AllocationPolicy {
   bool zero_memory_on_release = false;
   bool reject_over_soft_limit = false;
   bool refuse_all_allocations = false;
+};
+
+// Low-level immediate narrowing only. Policy selection and lifecycle-boundary
+// activation remain the caller's responsibility. This cannot enlarge an OS
+// envelope, change allocation behavior, or revoke already admitted credit.
+enum class MemoryExistingGrantRule { grandfather, reject_change };
+struct MemoryPolicyBinding {
+  MemoryBinaryUuid policy_uuid{};
+  u64 generation = 0;
+  auto operator<=>(const MemoryPolicyBinding&) const = default;
+};
+struct MemoryLimitReduction {
+  MemoryBinaryUuid policy_uuid{};
+  u64 expected_generation = 0;
+  u64 hard_limit_bytes = 0;
+  u64 soft_limit_bytes = 0;
+  u64 per_context_limit_bytes = 0;
+  u64 page_buffer_pool_limit_bytes = 0;
+  MemoryExistingGrantRule existing_grants = MemoryExistingGrantRule::grandfather;
+};
+enum class MemoryLimitActivationStatus {
+  applied, invalid_request, stale_generation, generation_exhausted,
+  expansion_forbidden, existing_grants_exceed_limit
+};
+struct MemoryLimitActivationReceipt {
+  MemoryLimitActivationStatus status = MemoryLimitActivationStatus::invalid_request;
+  MemoryBinaryUuid policy_uuid{};
+  u64 generation = 0;
+  bool ok() const { return status == MemoryLimitActivationStatus::applied; }
 };
 
 // SB-MEMORY-CONTEXT-ANCHOR
@@ -254,6 +287,10 @@ struct MemoryAccountingSnapshot {
   // Unconsumed admission credits, not resident/committed storage.
   u64 reserved_capacity_bytes = 0;
   u64 active_capacity_reservation_count = 0;
+  // Initialized physical reserve backing still withheld for emergency use.
+  // Not ordinary policy headroom; transferred diagnostic backing remains in
+  // current_bytes but is no longer available emergency reserve.
+  u64 emergency_reserve_available_bytes = 0;
 };
 
 struct AllocationResult {
@@ -262,6 +299,13 @@ struct AllocationResult {
   usize bytes = 0;
   usize alignment = 0;
   DiagnosticRecord diagnostic;
+  // Admission evidence, not authority to use an allocation after its lifetime.
+  // Capacity conversion retains the original grant's binding. Reallocation
+  // admits replacement storage under the current policy before releasing old
+  // storage; failure leaves the old allocation and its binding unchanged.
+  // Absence means no binding supplied by this producer, not bootstrap generation
+  // zero. Suballocators must propagate their backing receipt before claiming it.
+  std::optional<MemoryPolicyBinding> policy_binding;
 
   bool ok() const {
     return status.ok() && pointer != nullptr;
@@ -570,12 +614,16 @@ class MemoryCapacityReservation {
   MemoryCapacityReservation& operator=(const MemoryCapacityReservation&) = delete;
   ~MemoryCapacityReservation();
   AllocationResult Allocate(usize bytes, usize alignment = 0);
+  // Immutable admission evidence; generation zero denotes constructor policy
+  // before any typed activation, not a catalog-selected policy identity.
+  MemoryPolicyBinding policy_binding() const { return policy_binding_; }
  private:
   MemoryCapacityReservation(BoundedAllocator* allocator, u64 id, MemoryTag tag)
       : allocator_(allocator), id_(id), tag_(std::move(tag)) {}
   BoundedAllocator* allocator_;
   u64 id_;
   MemoryTag tag_;
+  MemoryPolicyBinding policy_binding_;
   friend class BoundedAllocator;
 };
 struct MemoryCapacityReservationResult {
@@ -613,7 +661,11 @@ class BoundedAllocator {
                                        const ProtectedMemoryEvidence& evidence);
   Status DeallocateProtectedNoAlloc(void* pointer, const ProtectedMemoryEvidence& evidence);
   MemoryAccountingSnapshot Snapshot() const;
-  const AllocationPolicy& policy() const;
+  AllocationPolicy policy() const;
+  // Allocation-free compare-and-activate under the admission lock. On failure
+  // the receipt identifies the unchanged active generation and policy.
+  MemoryLimitActivationReceipt ReduceLimits(const MemoryLimitReduction& request);
+  MemoryPolicyBinding PolicyBinding() const;
   MemoryFailureInjectionConfigurationResult EnableAllocationFailureInjection(
       MemoryFailureInjectionConfiguration configuration);
   MemoryFailureInjectionConfigurationResult DisableAllocationFailureInjection();
@@ -625,6 +677,9 @@ class BoundedAllocator {
 
  private:
   friend class MemoryCapacityReservation;
+  friend class EmergencyMemoryReserve;
+  // Trusted reserve owner only; does not admit, release or allocate storage.
+  void SetEmergencyReserveAvailable(void* pointer, bool available);
   AllocationResult AllocateImpl(usize bytes, usize alignment, MemoryTag tag, u64 capacity_id);
   void CloseCapacity(u64 id);
   struct CapacityRecord {
@@ -633,6 +688,7 @@ class BoundedAllocator {
     bool open = true;
     MemoryCategory category = MemoryCategory::unknown;
     std::vector<MemoryContextKey> context_keys;
+    MemoryPolicyBinding policy_binding;
   };
   void AddCapacityCredits(CapacityRecord& record, u64 bytes);
   void ConsumeCapacityCredits(CapacityRecord& record, u64 bytes);
@@ -656,6 +712,8 @@ class BoundedAllocator {
     bool sharded_accounting_committed = false;
     std::vector<MemoryContextKey> context_keys;
     u64 capacity_id = 0;
+    MemoryPolicyBinding policy_binding;
+    bool emergency_reserve_available = false;
   };
 
   struct CategoryAccounting {
@@ -737,11 +795,14 @@ class BoundedAllocator {
                                                  std::vector<DiagnosticArgument> extra_arguments = {}) const;
   void RecordFailure(const MemoryTag& tag, bool policy_rejection, bool unknown_pointer);
   void RecordFailure(MemoryCategory category, bool policy_rejection, bool unknown_pointer);
-  AllocationResult AllocateRecorded(usize bytes, usize alignment, const MemoryTag& tag);
+  AllocationResult AllocateRecorded(usize bytes, usize alignment, const MemoryTag& tag,
+                                  MemoryPolicyBinding binding);
   void ApplyAllocationRemovalAccounting(const AllocationRecord& record);
   AllocationRecord RemoveAllocation(void* pointer, bool* found);
 
   AllocationPolicy policy_;
+  MemoryBinaryUuid active_policy_uuid_{};
+  u64 active_policy_generation_ = 0;
   mutable std::mutex mutex_;
   MemoryAccountingSnapshot accounting_;
   std::unique_ptr<ShardedMemoryAccountingLedger> sharded_accounting_;
@@ -812,6 +873,8 @@ class ArenaAllocator {
     usize bytes = 0;
     usize alignment = 0;
     usize used = 0;
+    // Immutable admission evidence from this exact physical backing.
+    std::optional<MemoryPolicyBinding> policy_binding;
   };
 
   BoundedAllocator* allocator_ = nullptr;
@@ -836,7 +899,7 @@ class MemoryManager {
   ScopedPageBufferResult AllocateScopedPageBuffer(PageBufferRequest request);
   ArenaAllocator CreateArena(MemoryTag tag);
   MemoryAccountingSnapshot Snapshot() const;
-  const AllocationPolicy& policy() const;
+  AllocationPolicy policy() const;
   MemoryFailureInjectionConfigurationResult EnableAllocationFailureInjection(
       MemoryFailureInjectionConfiguration configuration);
   MemoryFailureInjectionConfigurationResult DisableAllocationFailureInjection();

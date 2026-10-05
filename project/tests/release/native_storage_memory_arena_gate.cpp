@@ -66,20 +66,35 @@ struct File {
   File(){char name[]="/tmp/sb-native-arena-XXXXXX";const auto* p=mkdtemp(name);if(!p)throw std::runtime_error("mkdtemp");directory=p;path=directory/"payload.bin";}
   ~File(){std::error_code ec;std::filesystem::remove_all(directory,ec);}
 };
+m::MemoryPolicyBinding ActivatePolicy(Fixture& f,u64 expected,u64 limit){
+  m::MemoryLimitReduction request;
+  request.policy_uuid=Id(static_cast<byte>(70+expected)).bytes;
+  request.expected_generation=expected;
+  request.hard_limit_bytes=request.soft_limit_bytes=request.per_context_limit_bytes=
+      request.page_buffer_pool_limit_bytes=limit;
+  request.existing_grants=m::MemoryExistingGrantRule::reject_change;
+  const auto result=f.manager.allocator()->ReduceLimits(request);
+  Check(result.ok()&&result.generation==expected+1,"actual generation activation");
+  return f.manager.allocator()->PolicyBinding();
+}
 void Backends(){
   for(bool shared:{false,true}){
     Fixture f(8192);std::shared_ptr<m::ReservationBackedMemoryResource> resource;
+    const auto original=ActivatePolicy(f,0,2097152);
     if(shared)resource=f.Grant();
     m::MemoryTag tag;tag.category=m::MemoryCategory::page_buffer;tag.purpose="legacy arena conformance";
     auto arena=shared?m::ArenaAllocator(resource):f.manager.CreateArena(tag);
     Check(arena.ReserveBacking(256,64).ok(),"exact first backing");
+    const auto current=ActivatePolicy(f,1,1048576);
     auto cap=arena.CapacitySnapshot();Check(cap.retained_bytes==256&&!cap.consumed_bytes&&cap.chunk_count==1,"preallocation consumes no payload");
     auto first=arena.AllocateWithinCapacity(1,64,0);Check(first.ok()&&reinterpret_cast<std::uintptr_t>(first.pointer)%64==0,"first aligned byte");
+    Check(first.policy_binding==original,"old backing keeps its exact original policy generation");
     *static_cast<byte*>(first.pointer)=0xab;
     const auto before=allocations;
     auto second=arena.AllocateWithinCapacity(128,128,0);
     Check(second.ok()&&reinterpret_cast<std::uintptr_t>(second.pointer)%128==0,"padding alignment within backing");
     Check(allocations==before,"no control allocation on existing-backing path");
+    Check(second.policy_binding==original,"zero-growth receipt does not consult current governor generation");
     const auto used=arena.CapacitySnapshot().consumed_bytes;
     Check(used==192||used==256,"padding is charged from actual address");
     auto denied=arena.AllocateWithinCapacity(256,0,0);
@@ -93,11 +108,15 @@ void Backends(){
     Check(arena.CapacitySnapshot().retained_bytes==256&&arena.CapacitySnapshot().consumed_bytes==used,"invalid requests preserve chunks/cursor");
     Check(arena.ReserveBacking(256,256).ok()&&arena.CapacitySnapshot().retained_bytes==512,"exact second chunk");
     auto third=arena.AllocateWithinCapacity(256,256,0);Check(third.ok(),"full second chunk consumed");
+    const auto expected=shared?original:current;
+    Check(third.policy_binding==expected,"new chunk inherits actual admission or original capacity grant");
     Check(f.manager.Snapshot().current_bytes==512,"actual physical retained bytes");
     if(shared)Check(resource->Snapshot().allocated_bytes==512&&f.ledger.Snapshot().current_bytes==8192,"actual full parent grant retained");
     m::ArenaAllocator moved(std::move(arena));
     Check(!arena.CapacitySnapshot().retained_bytes&&moved.CapacitySnapshot().retained_bytes==512&&*static_cast<byte*>(first.pointer)==0xab,"move preserves real data");
     arena=std::move(moved);Check(!moved.CapacitySnapshot().retained_bytes,"move assignment sole owner");
+    auto grown=arena.AllocateWithinCapacity(512,64,512);
+    Check(grown.ok()&&grown.policy_binding==expected,"growth return propagates backing receipt after move");
     fail_after=0;auto reset=arena.ResetNoAlloc();const auto remaining=fail_after;fail_after=-1;
     Check(reset.ok()&&remaining==0&&!arena.CapacitySnapshot().retained_bytes&&!f.manager.Snapshot().current_bytes,"allocation-free actual reset");
     Check(arena.Reset().ok(),"idempotent reset");
@@ -132,6 +151,7 @@ void NoGovernorReentry(){
   Fixture f(8192);std::shared_ptr<m::ReservationBackedMemoryResource> resource=f.Grant();
   {
     m::ArenaAllocator arena(resource);Check(arena.ReserveBacking(4096).ok(),"pre-admit arena before competing physical allocation");
+    const auto original=f.manager.allocator()->PolicyBinding();
     BlockPhysicalAllocation block;m::AllocationResult competing;
     std::thread worker([&]{block_physical=&block;competing=resource->Allocate({4096,4096,{}});block_physical=nullptr;});
     {
@@ -146,6 +166,7 @@ void NoGovernorReentry(){
     {std::lock_guard lock(block.mutex);before_return=!block.returned;block.release=true;block.changed.notify_all();}
     worker.join();
     Check(value.ok()&&remaining==0&&before_return&&competing.ok(),"zero-growth allocation does not reenter either real governor lock");
+    Check(value.policy_binding==original,"fenced receipt preserves backing binding without governor reentry");
     Check(resource->DeallocateNoAlloc(competing.pointer,competing.bytes,competing.alignment).ok(),"release competing physical payload");
     auto replacement=m::ArenaAllocator(resource);Check(replacement.ReserveBacking(256).ok(),"populated move destination");
     fail_after=0;replacement=std::move(arena);const auto move_remaining=fail_after;fail_after=-1;
@@ -157,10 +178,11 @@ void NoGovernorReentry(){
 }
 void NativeFiles(){
   for(const auto& profile:d::kCanonicalFilespacePageProfiles){
-    Fixture f(profile.page_size_bytes);auto memory=f.Memory();
+    Fixture f(profile.page_size_bytes);const auto original=ActivatePolicy(f,0,2097152);auto memory=f.Memory();
     auto result=memory.CreateArena(f.binding,profile.page_size_bytes,profile.page_size_bytes);
     Check(result.ok()&&result.backing.bytes==profile.page_size_bytes,"native exact page backing");
     Check(result.arena.binding().operation_uuid==f.binding.operation_uuid,"binary operation retained");
+    (void)ActivatePolicy(f,1,1048576);
     File file;d::FileDevice device;Check(device.Open(file.path.string(),d::FileOpenMode::create_new).ok(),"open real file");
     m::AllocationResult payload;
     {
@@ -168,6 +190,7 @@ void NativeFiles(){
       payload=result.arena.Allocate(profile.page_size_bytes,profile.page_size_bytes);
       const auto remaining=fail_after;fail_after=-1;
       Check(payload.ok()&&remaining==0,"fenced consumption uses only preadmitted shared backing");
+      Check(payload.policy_binding==original,"real-file page profile retains original backing generation");
       auto* data=static_cast<byte*>(payload.pointer);
       for(usize n=0;n<payload.bytes;++n)data[n]=byte((n*17+23)%251);
       const auto io=device.WriteAt(0,data,payload.bytes);Check(io.ok()&&io.bytes_transferred==payload.bytes,"write actual arena payload");

@@ -9,8 +9,11 @@
 #pragma once
 
 #include "runtime_platform.hpp"
+#include "memory.hpp"
 
 #include <functional>
+#include <mutex>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -165,12 +168,25 @@ struct EmergencyMemoryReserveSnapshot {
 class EmergencyMemoryReserve {
  public:
   explicit EmergencyMemoryReserve(u64 configured_bytes = 0);
+  // The shared manager must outlive this owner. Native callers pass their
+  // actual binary ownership tag; no private allocator or synthetic charge.
+  EmergencyMemoryReserve(MemoryManager& manager, MemoryTag tag, u64 configured_bytes = 0);
 
   void Reset(u64 configured_bytes);
+  // Bootstrap/quiescent operation. Failed replacement preserves existing
+  // backing and diagnostic access. Reset/destruction require users quiesced.
+  bool TryReset(u64 configured_bytes, DiagnosticRecord* failure = nullptr);
   EmergencyMemoryReserveSnapshot Snapshot() const;
   u64 ReleaseForEmergencyDiagnostics();
+  // Release transfers use to the bounded diagnostic consumer; backing remains
+  // charged, so ordinary allocations cannot steal emergency capacity.
+  std::span<std::byte> DiagnosticsBuffer();
 
  private:
+  mutable std::mutex mutex_;
+  MemoryManager* manager_ = nullptr;
+  MemoryTag tag_;
+  ScopedAllocation backing_;
   u64 configured_bytes_ = 0;
   u64 available_bytes_ = 0;
   u64 released_bytes_ = 0;

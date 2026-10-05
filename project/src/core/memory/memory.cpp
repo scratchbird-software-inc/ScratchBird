@@ -17,6 +17,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <iterator>
 #include <initializer_list>
 #include <limits>
@@ -106,7 +107,7 @@ scratchbird::core::metrics::MetricLabelSet MemoryMetricLabels(
   return labels;
 }
 
-bool PublishMemorySnapshot(const MemoryAccountingSnapshot& snapshot, const AllocationPolicy& policy) {
+bool PublishMemorySnapshot(const MemoryAccountingSnapshot& snapshot) {
   bool published = true;
   published = scratchbird::core::metrics::SetGauge(
       "sb_memory_allocated_bytes",
@@ -116,7 +117,7 @@ bool PublishMemorySnapshot(const MemoryAccountingSnapshot& snapshot, const Alloc
   published = scratchbird::core::metrics::SetGauge(
       "sb_memory_emergency_reserve_bytes",
       MemoryMetricLabels({{"component", "core.memory"}, {"operation", "snapshot"}}),
-      EffectiveHardLimit(policy) > snapshot.current_bytes ? static_cast<double>(EffectiveHardLimit(policy) - snapshot.current_bytes) : 0.0,
+      snapshot.emergency_reserve_available_bytes,
       "core_memory").ok && published;
   for (const auto& category : snapshot.categories) {
     published = scratchbird::core::metrics::SetGauge(
@@ -807,9 +808,11 @@ MemoryCapacityReservationResult BoundedAllocator::ReserveCapacity(usize bytes, M
     return {MemoryStatus(StatusCode::memory_limit_exceeded, Severity::error), {}};
   category_accounting_.try_emplace(tag.category);
   for (const auto& key : prepared.context_keys) context_accounting_.try_emplace(key);
+  prepared.policy_binding = {active_policy_uuid_, active_policy_generation_};
   auto inserted = capacity_reservations_.emplace(next_capacity_id_, std::move(prepared));
   AddCapacityCredits(inserted.first->second, bytes);
   lease->id_ = next_capacity_id_++;
+  lease->policy_binding_ = {active_policy_uuid_, active_policy_generation_};
   ++accounting_.active_capacity_reservation_count;
   return {OkStatus(), std::move(lease)};
 } catch (const std::bad_alloc&) {
@@ -1037,7 +1040,9 @@ AllocationResult BoundedAllocator::AllocateImpl(
       return result;
     }
 
-    result = AllocateRecorded(bytes, alignment, tag);
+    const auto binding = capacity_id ? capacity->second.policy_binding :
+        MemoryPolicyBinding{active_policy_uuid_, active_policy_generation_};
+    result = AllocateRecorded(bytes, alignment, tag, binding);
     if (!result.ok()) {
       failure_recorded = true;
       RecordFailure(tag, false, false);
@@ -1057,7 +1062,7 @@ AllocationResult BoundedAllocator::AllocateImpl(
   result.bytes = bytes;
   result.alignment = alignment;
   try {
-  const bool snapshot_published = PublishMemorySnapshot(Snapshot(), policy_);
+  const bool snapshot_published = PublishMemorySnapshot(Snapshot());
   const auto latency_published = scratchbird::core::metrics::ObserveHistogram(
       "sb_memory_allocation_latency_microseconds",
       MemoryMetricLabels({{"component", "core.memory"}, {"operation", "allocate"}, {"result", "ok"},
@@ -1271,6 +1276,19 @@ Status BoundedAllocator::DeallocateNoAllocImpl(
   return OkStatus();
 }
 
+void BoundedAllocator::SetEmergencyReserveAvailable(void* pointer, bool available) {
+  std::lock_guard lock(mutex_);
+  const auto owned = active_.find(pointer);
+  // Only the reserve's retained ScopedAllocation can reach this private API.
+  // Losing that record violates ownership; never fabricate reserve capacity.
+  if (owned == active_.end()) std::terminate();
+  auto& record = owned->second;
+  if (record.emergency_reserve_available == available) return;
+  if (available) accounting_.emergency_reserve_available_bytes += record.bytes;
+  else accounting_.emergency_reserve_available_bytes -= record.bytes;
+  record.emergency_reserve_available = available;
+}
+
 MemoryAccountingSnapshot BoundedAllocator::Snapshot() const {
   std::lock_guard<std::mutex> lock(mutex_);
   MemoryAccountingSnapshot snapshot = accounting_;
@@ -1334,8 +1352,82 @@ MemoryAccountingSnapshot BoundedAllocator::Snapshot() const {
   return snapshot;
 }
 
-const AllocationPolicy& BoundedAllocator::policy() const {
+AllocationPolicy BoundedAllocator::policy() const {
+  std::lock_guard lock(mutex_);
   return policy_;
+}
+
+MemoryPolicyBinding BoundedAllocator::PolicyBinding() const {
+  std::lock_guard lock(mutex_);
+  return {active_policy_uuid_, active_policy_generation_};
+}
+
+MemoryLimitActivationReceipt BoundedAllocator::ReduceLimits(const MemoryLimitReduction& request) {
+  std::lock_guard lock(mutex_);
+  MemoryLimitActivationReceipt receipt;
+  receipt.policy_uuid = active_policy_uuid_;
+  receipt.generation = active_policy_generation_;
+  if (!MemorySystemUuidValid(request.policy_uuid) || !request.hard_limit_bytes ||
+      request.soft_limit_bytes > request.hard_limit_bytes ||
+      request.per_context_limit_bytes > request.hard_limit_bytes ||
+      request.page_buffer_pool_limit_bytes > request.hard_limit_bytes ||
+      (request.existing_grants != MemoryExistingGrantRule::grandfather &&
+       request.existing_grants != MemoryExistingGrantRule::reject_change) ||
+      policy_.refuse_all_allocations) return receipt;
+  if (request.expected_generation != active_policy_generation_) {
+    receipt.status = MemoryLimitActivationStatus::stale_generation;
+    return receipt;
+  }
+  if (active_policy_generation_ == std::numeric_limits<u64>::max()) {
+    receipt.status = MemoryLimitActivationStatus::generation_exhausted;
+    return receipt;
+  }
+  const auto expands = [](u64 old_limit, u64 new_limit) {
+    return old_limit && (!new_limit || new_limit > old_limit);
+  };
+  if (expands(EffectiveHardLimit(policy_), request.hard_limit_bytes) ||
+      expands(policy_.soft_limit_bytes, request.soft_limit_bytes) ||
+      expands(policy_.per_context_limit_bytes, request.per_context_limit_bytes) ||
+      expands(policy_.page_buffer_pool_limit_bytes, request.page_buffer_pool_limit_bytes)) {
+    receipt.status = MemoryLimitActivationStatus::expansion_forbidden;
+    return receipt;
+  }
+  // Subtraction avoids overflow even when admitted live and unused credit are
+  // individually representable but their sum is not.
+  const auto exceeds = [](u64 limit, u64 live, u64 unused) {
+    return limit && (live > limit || unused > limit - live);
+  };
+  if (request.existing_grants == MemoryExistingGrantRule::reject_change) {
+    bool conflict = exceeds(request.hard_limit_bytes, accounting_.current_bytes,
+                            accounting_.reserved_capacity_bytes) ||
+        (policy_.reject_over_soft_limit &&
+         exceeds(request.soft_limit_bytes, accounting_.current_bytes,
+                 accounting_.reserved_capacity_bytes));
+    const auto page = category_accounting_.find(MemoryCategory::page_buffer);
+    if (page != category_accounting_.end())
+      conflict = conflict || exceeds(request.page_buffer_pool_limit_bytes,
+          page->second.current_bytes, page->second.reserved_capacity_bytes);
+    for (const auto& entry : context_accounting_)
+      conflict = conflict || exceeds(request.per_context_limit_bytes,
+          entry.second.current_bytes, entry.second.reserved_capacity_bytes);
+    if (conflict) {
+      receipt.status = MemoryLimitActivationStatus::existing_grants_exceed_limit;
+      return receipt;
+    }
+  }
+  // Only numeric limits change. Immutable behavior flags remain safe for
+  // allocation/release paths that read them after leaving the admission lock.
+  policy_.byte_limit = request.hard_limit_bytes;
+  policy_.hard_limit_bytes = request.hard_limit_bytes;
+  policy_.soft_limit_bytes = request.soft_limit_bytes;
+  policy_.per_context_limit_bytes = request.per_context_limit_bytes;
+  policy_.page_buffer_pool_limit_bytes = request.page_buffer_pool_limit_bytes;
+  active_policy_uuid_ = request.policy_uuid;
+  ++active_policy_generation_;
+  receipt.status = MemoryLimitActivationStatus::applied;
+  receipt.policy_uuid = active_policy_uuid_;
+  receipt.generation = active_policy_generation_;
+  return receipt;
 }
 
 MemoryFailureInjectionConfigurationResult BoundedAllocator::EnableAllocationFailureInjection(
@@ -1931,12 +2023,14 @@ void BoundedAllocator::PublishFailureTelemetryNoThrow() {
   }
 }
 
-AllocationResult BoundedAllocator::AllocateRecorded(usize bytes, usize alignment, const MemoryTag& tag) {
+AllocationResult BoundedAllocator::AllocateRecorded(usize bytes, usize alignment, const MemoryTag& tag,
+                                                   MemoryPolicyBinding binding) {
   // All fallible metadata preparation precedes reservation and physical storage.
   AllocationRecord record;
   record.bytes = bytes;
   record.alignment = alignment;
   record.tag = tag;
+  record.policy_binding = binding;
   record.context_keys = ContextKeysForTag(tag);
   category_accounting_.try_emplace(tag.category);
   for (const auto& key : record.context_keys) context_accounting_.try_emplace(key);
@@ -1998,7 +2092,7 @@ AllocationResult BoundedAllocator::AllocateRecorded(usize bytes, usize alignment
       ++context.active_allocation_count;
     }
 
-    return {OkStatus(), pointer, bytes, alignment, {}};
+    return {OkStatus(), pointer, bytes, alignment, {}, published_record.policy_binding};
   } catch (...) {
     if (pointer) {
       if (policy_.zero_memory_on_release) SecureZeroMemory(pointer, bytes);
@@ -2010,6 +2104,8 @@ AllocationResult BoundedAllocator::AllocateRecorded(usize bytes, usize alignment
 }
 
 void BoundedAllocator::ApplyAllocationRemovalAccounting(const AllocationRecord& record) {
+  if (record.emergency_reserve_available)
+    accounting_.emergency_reserve_available_bytes -= record.bytes;
   if (record.capacity_id != 0) {
     auto capacity = capacity_reservations_.find(record.capacity_id);
     auto& owner = capacity->second;
@@ -2178,6 +2274,7 @@ AllocationResult ArenaAllocator::AllocateWithinCapacity(usize bytes, usize align
       result.pointer = static_cast<unsigned char*>(it->pointer) + *offset;
       result.bytes = bytes;
       result.alignment = alignment;
+      result.policy_binding = it->policy_binding;
       return result;
     }
   }
@@ -2196,6 +2293,7 @@ AllocationResult ArenaAllocator::AllocateWithinCapacity(usize bytes, usize align
   result.pointer = chunk.pointer;
   result.bytes = bytes;
   result.alignment = alignment;
+  result.policy_binding = chunk.policy_binding;
   return result;
 } catch (const std::bad_alloc&) {
   AllocationResult result;
@@ -2220,7 +2318,7 @@ ArenaBackingResult ArenaAllocator::ReserveBacking(usize bytes, usize alignment) 
   result.diagnostic = std::move(backing.diagnostic);
   if (!backing.ok()) return result;
   // No fallible work remains after the real provider publishes its allocation.
-  chunks_.push_back({backing.pointer, backing.bytes, backing.alignment, 0});
+  chunks_.push_back({backing.pointer, backing.bytes, backing.alignment, 0, backing.policy_binding});
   result.bytes = backing.bytes;
   result.alignment = backing.alignment;
   return result;
@@ -2333,7 +2431,7 @@ MemoryAccountingSnapshot MemoryManager::Snapshot() const {
   return allocator_.Snapshot();
 }
 
-const AllocationPolicy& MemoryManager::policy() const {
+AllocationPolicy MemoryManager::policy() const {
   return allocator_.policy();
 }
 

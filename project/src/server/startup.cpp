@@ -12,7 +12,9 @@
 #include "host_platform_admission.hpp"
 
 #include "memory.hpp"
+#include "uuid.hpp"
 
+#include <algorithm>
 #include <sstream>
 
 namespace scratchbird::server {
@@ -83,11 +85,8 @@ ServerDiagnostic MemoryConfigInstallDiagnostic(
   return result;
 }
 
-}  // namespace
-
-ServerStartupResult RunServerStartup(const ServerCliOptions& cli) {
+ServerStartupResult CompleteServerStartup(ServerConfigLoadResult config) {
   ServerStartupResult result;
-  auto config = ResolveServerBootstrapConfig(cli);
   result.effective_config = config.config;
   if (!config.ok()) {
     result.exit_code = 2;
@@ -122,6 +121,24 @@ ServerStartupResult RunServerStartup(const ServerCliOptions& cli) {
     result.exit_code = 2;
     return result;
   }
+  namespace memory = scratchbird::core::memory;
+  const auto reserve_bytes = memory::DefaultBootstrapEmergencyReserveBytes(
+      memory_policy.effective_hard_limit_bytes);
+  auto reserve_failure = [&](const char* reason) {
+    result.exit_code = 2;
+    result.diagnostics.push_back({
+        "MEMORY.EMERGENCY_RESERVE_INVALID",
+        "memory.emergency_reserve_invalid", ServerDiagnosticSeverity::kError,
+        "The bootstrap emergency reserve could not be admitted.",
+        {{"reason", reason}, {"emergency_reserve_bytes", std::to_string(reserve_bytes)},
+         {"effective_hard_limit_bytes", std::to_string(memory_policy.effective_hard_limit_bytes)},
+         {"hard_limit_bytes", std::to_string(config.config.memory_hard_limit_bytes)},
+         {"min_startup_available_bytes", std::to_string(config.config.memory_min_startup_available_bytes)}}});
+  };
+  if (reserve_bytes >= memory_policy.effective_hard_limit_bytes) {
+    reserve_failure("emergency_reserve_leaves_no_ordinary_capacity");
+    return result;
+  }
   auto memory_install = scratchbird::core::memory::ConfigureDefaultMemoryManager(
       memory_policy.policy,
       config.config.memory_policy_provenance);
@@ -129,6 +146,88 @@ ServerStartupResult RunServerStartup(const ServerCliOptions& cli) {
     result.diagnostics.push_back(MemoryConfigInstallDiagnostic(memory_install.diagnostic));
     result.exit_code = 2;
     return result;
+  }
+
+  const auto owner = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+  const auto context = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+  if (!owner || !context) {
+    result.exit_code = 2;
+    result.diagnostics.push_back({"SERVER.RUNTIME.OWNER_TOKEN_INVALID",
+        "server.runtime.owner_token_invalid", ServerDiagnosticSeverity::kError,
+        "A native bootstrap memory owner identity could not be issued.", {}});
+    return result;
+  }
+  memory::MemoryTag tag;
+  tag.category = memory::MemoryCategory::diagnostics;
+  tag.lifetime = memory::MemoryLifetime::process;
+  tag.purpose = "server_bootstrap_emergency_reserve";
+  tag.binary_ownership[memory::MemoryBinaryScopeKind::owner] = owner->bytes;
+  tag.binary_ownership[memory::MemoryBinaryScopeKind::context] = context->bytes;
+  try {
+    auto reserve = std::make_unique<memory::EmergencyMemoryReserve>(
+        memory::DefaultMemoryManager(), std::move(tag));
+    scratchbird::core::platform::DiagnosticRecord failure;
+    if (!reserve->TryReset(reserve_bytes, &failure)) {
+      if (!failure.diagnostic_code.empty()) {
+        result.diagnostics.push_back(MemoryConfigInstallDiagnostic(failure));
+        result.exit_code = 2;
+      } else {
+        reserve_failure("emergency_backing_unavailable");
+      }
+      return result;
+    }
+    result.emergency_reserve = std::move(reserve);
+  } catch (const std::bad_alloc&) {
+    // Allocation failure cannot yield an admission grant, including failure
+    // to construct the diagnostic itself. Bounded emergency logging is a
+    // separate consumer; do not recurse into it before backing exists.
+    result.exit_code = 2;
+    try { reserve_failure("emergency_backing_allocation_failed"); }
+    catch (const std::bad_alloc&) {}
+    return result;
+  }
+  // Allocating and initializing the reserve can take time. Re-observe before
+  // publishing admission; never silently keep an installed stale envelope.
+  // This is a conservative observation check, not an atomic OS-limit fence.
+  const auto activation_policy = ResolveServerMemoryAllocationPolicy(config.config);
+  if (!activation_policy.ok()) {
+    result.emergency_reserve.reset();
+    result.exit_code = 2;
+    for (const auto& diagnostic : activation_policy.diagnostics) {
+      result.diagnostics.push_back(MemoryConfigInstallDiagnostic(diagnostic));
+    }
+    return result;
+  }
+  const auto& before = memory_policy.ceiling_evidence;
+  const auto& after = activation_policy.ceiling_evidence;
+  const bool unchanged =
+      memory_policy.effective_hard_limit_bytes == activation_policy.effective_hard_limit_bytes &&
+      memory_policy.degraded_container_limit == activation_policy.degraded_container_limit &&
+      before.platform_name == after.platform_name &&
+      before.platform_supported == after.platform_supported &&
+      before.container_limit_incomplete == after.container_limit_incomplete &&
+      before.available_ceiling_bytes == after.available_ceiling_bytes &&
+      std::equal(before.signals.begin(), before.signals.end(),
+                 after.signals.begin(), after.signals.end(), [](const auto& a, const auto& b) {
+        return a.kind == b.kind && a.source == b.source && a.raw_value == b.raw_value &&
+               a.available == b.available && a.valid == b.valid &&
+               a.finite == b.finite && a.bytes == b.bytes && a.evidence == b.evidence;
+      });
+  if (!unchanged) {
+    result.emergency_reserve.reset();
+    reserve_failure("memory_envelope_changed_during_bootstrap");
+    result.diagnostics.back().fields.push_back({"activation_effective_hard_limit_bytes",
+        std::to_string(activation_policy.effective_hard_limit_bytes)});
+    return result;
+  }
+  for (const auto& warning : memory_policy.warnings) {
+    auto diagnostic = MemoryConfigInstallDiagnostic(warning);
+    diagnostic.severity = ServerDiagnosticSeverity::kWarning;
+    diagnostic.safe_message =
+        "Starting with an explicitly capped degraded memory policy; the container limit remains unverified.";
+    // Preserve canonical private identity; expose only numeric generation.
+    diagnostic.fields.push_back({"memory_generation", std::to_string(config.config.memory_policy_generation)});
+    result.diagnostics.push_back(std::move(diagnostic));
   }
 
   if (config.config.mode == ServerMode::kValidationOnly) {
@@ -149,6 +248,32 @@ ServerStartupResult RunServerStartup(const ServerCliOptions& cli) {
   result.serving_requested = config.config.sbps_enabled;
   result.stdout_text = StartupSummaryJson(config.config, lifecycle.artifacts);
   return result;
+}
+
+}  // namespace
+
+ServerStartupResult RunServerStartup(const ServerCliOptions& cli) {
+  return CompleteServerStartup(ResolveServerBootstrapConfig(cli));
+}
+
+ServerStartupResult RunServerStartup(const ServerCliOptions& cli,
+                                    const ServerConfigResolutionContext& context) {
+  return CompleteServerStartup(ResolveServerBootstrapConfig(cli, context));
+}
+
+bool WriteServerStartupDiagnostics(const ServerStartupResult& startup,
+                                   std::ostream& channel) noexcept {
+  try {
+    for (const auto& diagnostic : startup.diagnostics) {
+      channel << ToMessageVectorJsonLine(diagnostic) << '\n';
+      if (!channel) return false;
+    }
+    channel.flush();
+    return static_cast<bool>(channel);
+  } catch (...) {
+    // No recursive diagnostics on the same failed channel, and no grant.
+    return false;
+  }
 }
 
 }  // namespace scratchbird::server
