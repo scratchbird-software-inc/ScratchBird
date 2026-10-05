@@ -25,6 +25,7 @@ add_library(sb_core_catalog
   catalog_storage_record_codec.cpp
   catalog_schema_definition.cpp
   catalog_table_definition.cpp
+  catalog_table_datatype_binding.cpp
   catalog_metric_retention_policy.cpp
   catalog_metric_visibility_policy.cpp
   catalog_metric_descriptor.cpp
