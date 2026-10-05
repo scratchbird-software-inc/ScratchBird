@@ -1173,7 +1173,7 @@ void RequireBinaryResourceCorruptionRefusal(const std::filesystem::path& path,
     RequireAllResourceDescriptorValues(expected,restored.state.resource_seed_catalog);
     ++refused_count;
   }
-  Require(refused_count==32,
+  Require(refused_count==34,
           "resource corruption matrix did not execute every required vector");
   std::cout << "checksum_valid_resource_corruptions_refused=" << refused_count << '\n';
 }
