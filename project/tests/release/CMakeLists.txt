@@ -323,6 +323,16 @@ if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
   target_sources(sbsql_sblr_alignment_native_management_control_bundle PRIVATE
     "${PROJECT_SOURCE_DIR}/src/server/database_ownership.cpp")
   target_compile_definitions(sbsql_sblr_alignment_native_management_control_bundle PRIVATE SB_NATIVE_ROUTE_SOURCE_TESTS=1)
+  foreach(scenario RANGE 0 3)
+    foreach(primary RANGE 0 4)
+      foreach(secondary RANGE 0 4)
+        add_test(NAME native_allocation_lease_${scenario}_${primary}_${secondary}_gate
+          COMMAND sbsql_sblr_alignment_native_management_control_bundle --guarded-allocation ${scenario} ${primary} ${secondary})
+        set_tests_properties(native_allocation_lease_${scenario}_${primary}_${secondary}_gate PROPERTIES
+          TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;allocation_map;fault_injection;not_runtime_acceptance")
+      endforeach()
+    endforeach()
+  endforeach()
   foreach(indexed RANGE 0 1)
     foreach(primary RANGE 0 4)
       foreach(secondary RANGE 0 4)

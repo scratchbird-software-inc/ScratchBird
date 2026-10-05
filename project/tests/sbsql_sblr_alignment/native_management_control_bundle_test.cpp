@@ -18,6 +18,7 @@
 #include "native_catalog_roots_lease_reader.hpp"
 #include "native_catalog_relation_lease_reader.hpp"
 #include "native_catalog_visibility_lease_reader.hpp"
+#include "native_allocation_lease_reader.hpp"
 #include "row_version_observation.hpp"
 #ifdef SB_NATIVE_ROUTE_SOURCE_TESTS
 #include "../../src/server/database_ownership.hpp"
@@ -1121,6 +1122,7 @@ struct DirectoryHistoryFixture {
      untouched.Open(untouched_path.string(),mode).ok(),"owned actual history reopen");}
 };
 void EmptyHistory(const db::NativeManagementHistory& h){Check(!h.ok()&&!h.anchor&&!h.selection&&h.entries.empty()&&h.latest.empty()&&h.idempotency.empty()&&!h.verified_image_bytes,"failed history has no provenance prefix");}
+#include "native_allocation_lease_checks.hpp"
 void DirectoryInstallationRefusals(unsigned primary){for(bool readonly:{false,true}){
  DirectoryHistoryFixture f(primary,primary,true,readonly?3:2,true,true,false,false);auto& t=f.t;
  if(readonly)Check(t.fixture.secondary.Close().ok()&&t.fixture.secondary.Open(f.secondary_path.string(),d::FileOpenMode::open_existing_read_only).ok(),"readonly candidate member fixture");
@@ -4143,6 +4145,11 @@ int main(int argc,char** argv){
    const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"control graph Close profile");DirectoryControlClose(profile);return 0;
  }
 
+ if(argc==5&&std::string_view(argv[1])=="--guarded-allocation"){
+  const auto scenario=std::stoi(argv[2]),primary=std::stoi(argv[3]),secondary=std::stoi(argv[4]);
+  Check(scenario>=0&&scenario<4&&primary>=0&&primary<5&&secondary>=0&&secondary<5,"guarded allocation profiles");
+  DirectoryAllocationLease(scenario,primary,secondary);std::cout<<"PASS guarded allocation checks="<<checks<<'\n';return 0;
+ }
  if(argc==3&&std::string_view(argv[1])=="--guarded-visibility-observation"){
   const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"guarded visibility profile");
   DirectoryGuardedVisibilityObservation(profile);std::cout<<"PASS guarded visibility observation checks="<<checks<<'\n';return 0;
