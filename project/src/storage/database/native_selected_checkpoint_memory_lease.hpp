@@ -56,6 +56,7 @@ class NativeSelectedCheckpointMemoryLease {
   friend class NativeSelectedCheckpointMemoryHandle;
   friend class NativeCatalogLeafLeaseReader;
   friend class NativeCatalogRootsLeaseReader;
+  friend class NativeBtreeTreeLeaseReader;
   friend NativeSelectedCheckpointMemoryResult AcquireNativeSelectedCheckpointMemoryLease(
       const Uuid&,std::span<const disk::NativeFilespaceDevice>,const Uuid&,
       NativeSelectedCheckpointMemoryLimits,NativeStorageMemory&,const NativeStorageMemoryBinding&) noexcept;

@@ -312,11 +312,25 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_tests_properties(native_page_zero_growth_body_gate PROPERTIES TIMEOUT 120
     LABELS "storage;binary_uuid;real_files;partial_effects;not_runtime_acceptance")
 endif()
+if(TARGET sbsql_sblr_alignment_native_storage_components)
+  add_test(NAME native_btree_memory_shared_regression_gate
+    COMMAND sbsql_sblr_alignment_native_storage_components --native-btree-memory-only)
+  set_tests_properties(native_btree_memory_shared_regression_gate PROPERTIES
+    TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;fault_injection;not_runtime_acceptance")
+endif()
 if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
   # Consume the unchanged 01f issuer; storage owns this integration fixture.
   target_sources(sbsql_sblr_alignment_native_management_control_bundle PRIVATE
     "${PROJECT_SOURCE_DIR}/src/server/database_ownership.cpp")
   target_compile_definitions(sbsql_sblr_alignment_native_management_control_bundle PRIVATE SB_NATIVE_ROUTE_SOURCE_TESTS=1)
+  foreach(primary RANGE 0 4)
+    foreach(secondary RANGE 0 4)
+      add_test(NAME native_guarded_btree_memory_${primary}_${secondary}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --guarded-btree-memory ${primary} ${secondary})
+      set_tests_properties(native_guarded_btree_memory_${primary}_${secondary}_gate PROPERTIES
+        TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;catalog_metadata;fault_injection;not_runtime_acceptance")
+    endforeach()
+  endforeach()
   foreach(profile RANGE 0 4)
     math(EXPR secondary "(${profile}+1)%5")
     foreach(fault RANGE 1 4)

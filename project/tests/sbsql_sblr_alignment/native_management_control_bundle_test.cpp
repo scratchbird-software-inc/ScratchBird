@@ -28,6 +28,8 @@
 #include <filesystem>
 #include <unistd.h>
 #include <openssl/evp.h>
+#include "native_btree_tree_lease_reader.hpp"
+#include "native_btree_tree_memory.hpp"
 #include <openssl/sha.h>
 #include <algorithm>
 #include <array>
@@ -1568,6 +1570,149 @@ void RepeatedDirectoryHistory(unsigned profile,int only_size=-1){for(unsigned si
  f.Reopen();const auto reopened=f.Read();Check(reopened.ok()&&reopened.entries.size()==2&&reopened.entries[0].control_allocation_images==original.control_allocation_images,"old allocation capacity survives repeated growth and readonly reopen");
 }}
 
+void DirectoryGuardedBtree(unsigned primary,unsigned secondary){
+ // Actual non-serving storage fixture, not allocation or catalog publication.
+ DirectoryHistoryFixture f(primary,secondary,false,2,false,false,true,false);
+ auto& storage=f.t.fixture;const auto& profile=d::kCanonicalFilespacePageProfiles[secondary];
+ const auto size=profile.page_size_bytes;std::array<page::NativeBtreePage,3> nodes;
+ const page::NativeBtreeKey split{{2},Id(61310),Id(61311)};
+ for(unsigned i=0;i<3;++i){auto& n=nodes[i];
+  n.header={size,i?0x202u:0x200u,Id(1),i==2?Id(11):f.t.other,Id(61300+i),248+i,1,0,profile.uuid};
+  if(i==2){n.header.page_size_bytes=storage.size;n.header.page_size_profile_uuid=d::kCanonicalFilespacePageProfiles[primary].uuid;}
+  n.dependencies={Id(61303),1,1,Id(61304),Id(61305),Id(61306),{}};n.dependencies.dependency_map_sha256.fill(37);
+  n.creator_transaction_uuid=Id(5);n.creator_local_transaction_id=1;n.maintenance_state=1;
+ }
+ nodes[0].tree_level=1;nodes[0].first_child=Self(nodes[1].header);
+ nodes[0].cells.push_back({split,false,Self(nodes[2].header),{}});
+ nodes[1].parent=nodes[2].parent=Self(nodes[0].header);
+ nodes[1].right=Self(nodes[2].header);nodes[2].left=Self(nodes[1].header);
+ nodes[1].high_fence=nodes[2].low_fence=split;
+ const d::NativePageReference base{Id(2),5,1,d::kCanonicalFilespacePageProfiles[primary].uuid};
+ nodes[1].cells.push_back({{{1},Id(61312),Id(61313)},false,{},base});
+ nodes[2].cells.push_back({split,true,{},base});
+ for(const auto& n:nodes){const auto encoded=page::EncodeNativeBtreePage(n);
+  Check(encoded.ok(),"valid canonical native navigation fixture");f.Write(encoded.bytes);}
+ for(const auto& id:{f.t.other,Id(11)}){
+  auto* device=f.File(id);Bytes zero_image(size),map_image(size);
+  Check(device->ReadAt(0,zero_image.data(),size).ok()&&device->ReadAt(size,map_image.data(),size).ok(),"actual original navigation member state");
+  auto decoded_zero=d::DecodeFilespacePageZero(zero_image.data(),zero_image.size());
+  auto decoded_map=page::DecodeNativeAllocationMap(map_image);
+  Check(decoded_zero.ok()&&decoded_map.ok(),"actual map and page zero for navigation fixture");
+  auto zero=*decoded_zero.record;auto map=*decoded_map.map;
+  if(id==Id(11)){
+   const auto& child_profile=d::kCanonicalFilespacePageProfiles[primary];
+   zero.bootstrap.page_size_bytes=child_profile.page_size_bytes;zero.bootstrap.page_size_profile_uuid=child_profile.uuid;
+   for(auto& r:zero.roots)r.page_size_profile_uuid=child_profile.uuid;
+   map.header.page_size_bytes=child_profile.page_size_bytes;map.header.page_size_profile_uuid=child_profile.uuid;
+   std::filesystem::resize_file(f.untouched_path,512*static_cast<u64>(child_profile.page_size_bytes));
+   for(auto& member:storage.devices)if(member.filespace_uuid==id)member.page_size_profile_uuid=child_profile.uuid;
+  }
+  for(const auto& n:nodes)if(n.header.filespace_uuid==id){
+   Check(map.states[n.header.page_number]==State::free,"native fixture tree slot was genuinely free");
+   map.states[n.header.page_number]=State::allocated;--zero.free_pages;
+   map.records.push_back({n.header.page_number,Id(61400+n.header.page_number),n.header.page_uuid,n.dependencies.index_uuid,
+     n.creator_transaction_uuid,n.creator_local_transaction_id,1,0,n.header.page_type,{}});
+  }
+  std::sort(map.records.begin(),map.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});
+  f.Write(MapOracle(map));const auto encoded=d::EncodeFilespacePageZero(zero);Check(encoded.ok(),"rebound navigation page zero");
+  Check(device->WriteAt(0,encoded.bytes->data(),encoded.bytes->size()).ok()&&device->Sync().ok(),"native navigation fixture barrier");
+ }
+ // Bind the changed third-member profile into the complete selected fixture.
+ auto directory=*page::DecodeNativeFilespaceDirectory(f.t.base.directory_images.front()).directory;
+ for(auto& member:directory.records)if(member.bootstrap.filespace_uuid==Id(11)){
+  member.bootstrap.page_size_bytes=storage.size;member.bootstrap.page_size_profile_uuid=d::kCanonicalFilespacePageProfiles[primary].uuid;}
+ const auto directory_image=DirectoryImageOracle(directory);f.Write(directory_image);
+ auto checkpoint=*db::DecodeNativeCheckpointRoot(f.t.base_cp).root;
+ for(auto& ref:checkpoint.roots)if(ref.role==3)ref.sha256=Sha(directory_image);
+ const auto cp=db::EncodeNativeCheckpointRoot(checkpoint);Check(cp.ok(),"complete cross-profile navigation source checkpoint");f.Write(cp.bytes);
+ const auto digest=Sha(cp.bytes);
+ for(const auto& ref:f.t.graph.zero.roots){
+  if(ref.kind==18||ref.kind==19){auto selector=*db::DecodeNativeCheckpointSelection(storage.Read(ref.page_number)).selection;
+   selector.checkpoint_sha256=digest;f.Write(SelectorOracle(selector));}
+  if(ref.kind==20||ref.kind==21){auto watermark=*db::DecodeNativePublicationWatermark(storage.Read(ref.page_number)).state;
+   watermark.base_checkpoint_sha256=digest;const auto encoded=db::EncodeNativePublicationWatermark(watermark);
+   Check(encoded.ok(),"cross-profile navigation source watermark");f.Write(encoded.bytes);}
+ }
+ Check(storage.device.Sync().ok(),"complete cross-profile native source barrier");
+ const auto root=Self(nodes[0].header);const auto dependencies=nodes[0].dependencies;
+ const db::NativeBtreeTreeMemoryLimits limits{3,2*static_cast<std::size_t>(size)+storage.size};
+ const auto expected=page::ReadNativeBtreeTreeFromOpenDevices(Id(1),storage.devices,root,dependencies,limits.maximum_retained_image_bytes);
+ Check(expected.ok()&&expected.pages.size()==3&&expected.leaves.size()==2,"independent owning traversal of actual tree before source admission");
+ const auto& maximum=d::kCanonicalFilespacePageProfiles.back();
+ const auto bytes=db::NativeBtreeTreeWorkspaceBytes(maximum.uuid,storage.devices.size(),limits);
+ checkpoint_inventory_memory::Grant grant(bytes),source_grant(32*1024*1024);
+ for(unsigned field=0;field<4;++field){auto wrong=grant.binding;
+  const std::array<Uuid*,4> ids{&wrong.database_uuid,&wrong.operation_uuid,&wrong.owner_uuid,&wrong.context_uuid};*ids[field]=Id(61999);
+  const auto no=db::PrepareNativeBtreeTreeRead(maximum.uuid,storage.devices.size(),limits,grant.memory,wrong);
+  Check(!no.ok()&&!no.workspace&&no.memory_error==db::NativeStorageMemoryError::invalid_binding,"every binary tree grant dimension enforced");}
+ {checkpoint_inventory_memory::Grant short_grant(bytes-1);
+  const auto no=db::PrepareNativeBtreeTreeRead(maximum.uuid,storage.devices.size(),limits,short_grant.memory,short_grant.binding);
+  Check(!no.ok()&&!no.workspace,"one-byte-short actual tree backing cannot fall back");short_grant.memory={};short_grant.Empty();}
+ auto prepared=db::PrepareNativeBtreeTreeRead(maximum.uuid,storage.devices.size(),limits,grant.memory,grant.binding);
+ Check(prepared.ok(),"complete actual navigation backing admitted before source fences");
+ auto moved=std::move(prepared.workspace);
+ {
+  auto source=db::AcquireNativeSelectedCheckpointMemoryLease(Id(1),storage.devices,Id(2),
+    {16*1024*std::max<u64>(storage.size,size),32*1024*1024},source_grant.memory,source_grant.binding);
+  Check(source.ok(),"actual selected checkpoint source and cohort held for navigation");
+  const auto read=[&]{return db::NativeBtreeTreeLeaseReader::Read(*source.lease,root,dependencies,prepared.workspace);};
+  const auto failed=[](const auto& r){Check(!r.ok()&&r.pages.empty()&&r.leaves.empty()&&!r.retained_image_bytes,
+    "failed guarded tree exposes no navigation prefix");};
+  const auto absent=read();failed(absent);Check(!absent.physical_bytes_read,"moved tree backing refuses without reads");
+  prepared.workspace=std::move(moved);
+  reads=writes=syncs=0;io_counting=true;hash_counting=true;hash_seen=0;allocation_budget=0;
+  auto actual=read();const auto left=allocation_budget;allocation_budget=-1;io_counting=hash_counting=false;
+  const auto read_sites=reads,hash_sites=hash_seen;
+  Check(left==0&&actual.ok()&&read_sites==9&&!writes&&!syncs&&actual.pages.size()==expected.pages.size()&&
+    actual.retained_image_bytes==expected.retained_image_bytes&&std::equal(actual.leaves.begin(),actual.leaves.end(),expected.leaves.begin(),expected.leaves.end()),
+    "complete retained navigation tree uses no heap under the existing source guards");
+  for(std::size_t i=0;i<actual.pages.size();++i)Check(std::equal(actual.pages[i].bytes.begin(),actual.pages[i].bytes.end(),
+    expected.pages[i].bytes.begin(),expected.pages[i].bytes.end()),"guarded navigation matches complete independent owning image");
+  for(unsigned mode=0;mode<2;++mode)for(unsigned site=1;site<=read_sites;++site){
+   reads=0;history_observed_read_bytes=0;io_counting=true;if(mode)corrupt_read=site;else read_fault=site;
+   const auto no=read();io_counting=false;read_fault=corrupt_read=0;failed(no);
+   Check(reads>=site&&no.physical_bytes_read==history_observed_read_bytes,"every guarded tree read/corruption preserves physical receipt");}
+  for(unsigned mode=1;mode<=5;++mode)for(unsigned site=1;site<=hash_sites;++site){
+   hash_fault=mode;hash_target=site;hash_seen=0;hash_active=false;
+   const auto no=read();const bool consumed=!hash_fault;hash_fault=0;hash_active=false;failed(no);
+   Check(consumed,"each guarded tree hash failure consumed");}
+#ifdef NATIVE_HISTORICAL_BUNDLE_SIZE_FAULTS
+  for(unsigned site=1;site<=storage.devices.size();++site){
+   historical_stat_counting=true;historical_stats=0;historical_stat_fault=site;
+   const auto no=read();historical_stat_counting=false;historical_stat_fault=0;failed(no);
+   Check(historical_stats>=site&&no.tree_error==page::NativeBtreeError::io_failure,"each retained member size failure refuses");}
+#endif
+  auto wrong=dependencies;wrong.storage_generation++;
+  const auto no=db::NativeBtreeTreeLeaseReader::Read(*source.lease,root,wrong,prepared.workspace);failed(no);
+  Check(no.tree_error==page::NativeBtreeError::binding_mismatch,"complete expected dependency tuple remains required");
+  allocation_budget=0;const auto retried=read();const auto remaining=allocation_budget;allocation_budget=-1;
+  Check(retried.ok()&&remaining==0,"same retained source can retry complete tree without new backing");
+ }
+ prepared={};grant.memory={};grant.Empty();
+ for(unsigned mode=0;mode<4;++mode){
+  if(mode==3&&primary==0&&secondary==0)continue;
+  auto bounded=limits;auto devices=storage.devices.size();auto maximum_profile=maximum.uuid;
+  if(mode==0)--devices;if(mode==1)--bounded.maximum_pages;if(mode==2)--bounded.maximum_retained_image_bytes;
+  if(mode==3)maximum_profile=d::kCanonicalFilespacePageProfiles.front().uuid;
+  checkpoint_inventory_memory::Grant narrow(db::NativeBtreeTreeWorkspaceBytes(maximum_profile,devices,bounded));
+  auto backing=db::PrepareNativeBtreeTreeRead(maximum_profile,devices,bounded,narrow.memory,narrow.binding);
+  Check(backing.ok(),"bounded real tree workspace prepared before source lease");
+  {
+   auto source=db::AcquireNativeSelectedCheckpointMemoryLease(Id(1),storage.devices,Id(2),
+     {16*1024*std::max<u64>(storage.size,size),32*1024*1024},source_grant.memory,source_grant.binding);
+   Check(source.ok(),"bounded tree test retains actual selected source");allocation_budget=0;
+   const auto no=db::NativeBtreeTreeLeaseReader::Read(*source.lease,root,dependencies,backing.workspace);
+   const auto left=allocation_budget;allocation_budget=-1;
+   Check(left==0&&!no.ok()&&no.error==db::NativeBtreeTreeMemoryError::resource_exhausted&&
+     no.pages.empty()&&no.leaves.empty()&&!no.retained_image_bytes&&((mode==1||mode==2)||!no.physical_bytes_read),
+     "every insufficient guarded tree bound fails without fallback or a successful prefix");
+  }
+  backing={};narrow.memory={};narrow.Empty();
+ }
+ source_grant.memory={};source_grant.Empty();
+ f.Reopen();const auto reopened=page::ReadNativeBtreeTreeFromOpenDevices(Id(1),storage.devices,root,dependencies,limits.maximum_retained_image_bytes);
+ Check(reopened.ok()&&reopened.pages.size()==3,"independent read-only reopen preserves actual tree");
+}
 void DirectoryDistinctCatalogRoots(unsigned primary,unsigned secondary,bool via_route,unsigned creator_fault=0){
  // Build a complete non-serving physical fixture before source admission. This
  // is not an allocation/publication API: map, directory, zero, checkpoint and
@@ -3993,6 +4138,11 @@ int main(int argc,char** argv){
    const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"control graph Close profile");DirectoryControlClose(profile);return 0;
  }
 
+ if(argc==4&&std::string_view(argv[1])=="--guarded-btree-memory"){
+  const auto primary=std::stoi(argv[2]),secondary=std::stoi(argv[3]);
+  Check(primary>=0&&primary<5&&secondary>=0&&secondary<5,"guarded tree profiles");
+  DirectoryGuardedBtree(primary,secondary);std::cout<<"PASS guarded tree checks="<<checks<<'\n';return 0;
+ }
  if((argc==5||argc==6)&&std::string_view(argv[1])=="--catalog-distinct-roots-memory"){
   const auto route=std::stoi(argv[2]),primary=std::stoi(argv[3]),secondary=std::stoi(argv[4]);
   const auto fault=argc==6?std::stoi(argv[5]):0;
