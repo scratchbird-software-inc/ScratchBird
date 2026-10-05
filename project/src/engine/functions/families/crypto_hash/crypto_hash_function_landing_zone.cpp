@@ -13,6 +13,7 @@
 #include "uuid.hpp"
 #include "blake3_digest.hpp"
 #include "scrypt_kdf.hpp"
+#include "sblr/sblr_uint16_projection_profile.hpp"
 #include "../../../../core/common/crypto_random.hpp"
 
 #include <openssl/evp.h>
@@ -445,6 +446,12 @@ FunctionCallResult ScryptFunction(const FunctionCallRequest& request) {
   constexpr std::array<std::string_view,6> types{"character","binary","uint64","uint32","uint32","uint16"};
   for(std::size_t i=0;i<6;++i) {
     const auto& value=request.arguments[i].value;
+    if(i==5) {
+      if(!scratchbird::engine::sblr::SblrUint16PayloadValid(value) ||
+         (value.projection_descriptor &&
+          !scratchbird::engine::sblr::SblrUint16ProjectionResolved(value)))return invalid();
+      continue;
+    }
     if(value.descriptor_id!=types[i]||!value.uuid_value.is_nil()||value.has_int64_value||value.has_real64_value)return invalid();
     if(i!=0&&(!value.charset_name.empty()||!value.collation_name.empty()))return invalid();
     if(value.is_null) {
@@ -456,7 +463,7 @@ FunctionCallResult ScryptFunction(const FunctionCallRequest& request) {
       if(value.payload_kind!=Kind::binary||value.has_uint64_value||!value.text_value.empty()||!value.encoded_value.empty())return invalid();
     } else {
       if(value.payload_kind!=Kind::unsigned_integer||!value.has_uint64_value||!value.binary_value.empty())return invalid();
-      const auto maximum=i==2?std::numeric_limits<std::uint64_t>::max():(i==5?std::uint64_t{65535}:std::uint64_t{0xffffffff});
+      const auto maximum=i==2?std::numeric_limits<std::uint64_t>::max():std::uint64_t{0xffffffff};
       if(value.uint64_value>maximum)return invalid();
       const auto decimal=std::to_string(value.uint64_value);
       if((!value.text_value.empty()&&value.text_value!=decimal)||(!value.encoded_value.empty()&&value.encoded_value!=decimal))return invalid();

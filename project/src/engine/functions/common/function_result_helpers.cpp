@@ -67,8 +67,12 @@ scratchbird::engine::sblr::SblrValue MakeUint64Value(std::string descriptor_id, 
   value.uint64_value = uint_value;
   value.has_uint64_value = true;
   value.payload_kind = scratchbird::engine::sblr::SblrValuePayloadKind::unsigned_integer;
-  value.encoded_value = std::to_string(uint_value);
-  value.text_value = value.encoded_value;
+  // uint16 has one native unsigned payload. Its projection boundary emits
+  // canonical LE2 bytes; decimal text is not an alternate engine carrier.
+  if (value.descriptor_id != "uint16") {
+    value.encoded_value = std::to_string(uint_value);
+    value.text_value = value.encoded_value;
+  }
   value.is_null = false;
   return value;
 }

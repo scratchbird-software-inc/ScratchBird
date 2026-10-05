@@ -4,6 +4,7 @@
 
 #include "sblr_runtime.hpp"
 #include "sblr_binary_value_carrier.hpp"
+#include "sblr_uint16_projection_profile.hpp"
 #include "../internal_api/query/projection_api.hpp"
 
 #include <algorithm>
@@ -42,10 +43,21 @@ inline SblrValue SblrValueFromProjectionArgument(
   value.descriptor_id = type_name;
   // Invalid carriers are unresolved non-NULL values, never manufactured NULLs.
   value.is_null = false;
-  // Core defines uint16 bytes, but no Engine/SBLR projection carrier profile
-  // currently binds those bytes to this adapter. Refuse every state until one
-  // authority is registered instead of treating native bytes as decimal text.
-  if (type_name == "uint16") return value;
+  if (type_name == "uint16" || ReferencesUint16Projection(argument.descriptor)) {
+    if (!Uint16ProjectionArgumentValid(argument)) return value;
+    // Finish fallible binding ownership before constructing any resolved value.
+    value.projection_descriptor =
+        std::make_shared<const internal_api::EngineDescriptor>(argument.descriptor);
+    value.is_null = argument.is_null ||
+        argument.state == internal_api::EngineValueState::sql_null;
+    if (!value.is_null) {
+      value.uint64_value = static_cast<std::uint64_t>(argument.binary_value[0]) |
+          (static_cast<std::uint64_t>(argument.binary_value[1]) << 8u);
+      value.has_uint64_value = true;
+      value.payload_kind = SblrValuePayloadKind::unsigned_integer;
+    }
+    return value;
+  }
   if (argument.state != internal_api::EngineValueState::value &&
       argument.state != internal_api::EngineValueState::sql_null) return value;
   const bool is_null = argument.is_null ||
@@ -97,7 +109,7 @@ inline SblrValue SblrValueFromProjectionArgument(
     value.payload_kind = SblrValuePayloadKind::none;
     return value;
   }
-  if (type_name == "uint8" || type_name == "uint16" ||
+  if (type_name == "uint8" ||
       type_name == "uint32" || type_name == "uint64") {
     const auto parsed = std::from_chars(
         argument.encoded_value.data(),
@@ -161,7 +173,8 @@ inline bool ProjectionArgumentEncodingValid(
     const internal_api::EngineProjectionFunctionArgument& argument) {
   if (argument.type_name.empty()) return false;
   const auto type = projection_value_detail::LowerAscii(argument.type_name);
-  if (type == "uint16") return false;
+  if (type == "uint16" || ReferencesUint16Projection(argument.descriptor))
+    return Uint16ProjectionArgumentValid(argument);
   if (type == "binary" || type == "varbinary" || type == "uuid" || type == "uuid_array") {
     if (argument.state != internal_api::EngineValueState::value &&
         argument.state != internal_api::EngineValueState::sql_null) return false;
@@ -178,7 +191,8 @@ inline bool ProjectionArgumentEncodingValid(
 
 inline bool ProjectionSblrValueResolved(const SblrValue& value) {
   if (value.descriptor_id.empty()) return false;
-  if (value.descriptor_id == "uint16") return false;
+  if (value.descriptor_id == "uint16" || value.projection_descriptor)
+    return SblrUint16ProjectionResolved(value);
   if (value.payload_kind == SblrValuePayloadKind::uuid_text) return false;
   if (value.is_null && (value.descriptor_id == "binary" ||
       value.descriptor_id == "varbinary" || value.descriptor_id == "uuid" ||
@@ -196,8 +210,18 @@ inline bool ProjectionSblrValueResolved(const SblrValue& value) {
 }
 
 inline internal_api::EngineTypedValue EngineTypedValueFromSblrValue(const SblrValue& value) {
-  if (value.descriptor_id == "uint16")
-    throw std::invalid_argument("SBLR uint16 projection carrier profile is unresolved");
+  if (value.descriptor_id == "uint16" || value.projection_descriptor) {
+    if (!SblrUint16ProjectionResolved(value))
+      throw std::invalid_argument("invalid or unbound SBLR uint16 projection carrier");
+    internal_api::EngineTypedValue out;
+    out.descriptor = *value.projection_descriptor;
+    out.setState(value.is_null ? internal_api::EngineValueState::sql_null
+                              : internal_api::EngineValueState::value);
+    if (!value.is_null)
+      out.binary_value = {static_cast<std::uint8_t>(value.uint64_value & 0xffu),
+                          static_cast<std::uint8_t>(value.uint64_value >> 8u)};
+    return out;
+  }
   if (value.payload_kind == SblrValuePayloadKind::uuid_text ||
       (!value.is_null && (value.descriptor_id == "uuid" ||
                          value.payload_kind == SblrValuePayloadKind::uuid_binary) &&

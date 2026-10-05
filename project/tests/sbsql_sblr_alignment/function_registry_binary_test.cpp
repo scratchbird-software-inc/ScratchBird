@@ -1305,6 +1305,8 @@ void ScryptCancellation() {
   request.context.engine_request_context=nullptr;
 }
 
+scratchbird::engine::internal_api::EngineDescriptor Uint16ProjectionDescriptor();
+
 void ProjectionBinaryValues() {
   namespace api = scratchbird::engine::internal_api;
   for (const char* type : {"binary", "varbinary"}) for (unsigned size : {0u, 1u, 16u, 257u, 65535u}) {
@@ -1457,12 +1459,16 @@ void ProjectionBinaryValues() {
   const auto* scrypt_entry = package.registry.Lookup("sb.crypto.scrypt");
   Check(scrypt_entry != nullptr, "projection scrypt seed exists");
   if (scrypt_entry) {
+    for (const std::uint16_t output_bytes : {std::uint16_t{1}, std::uint16_t{64}, std::uint16_t{65535}}) {
     std::vector<api::EngineTypedValue> values(6);
     const char* types[]{"character", "binary", "uint64", "uint32", "uint32", "uint16"};
     for (unsigned i = 0; i < 6; ++i) values[i].descriptor.canonical_type_name = types[i];
     values[0].encoded_value = std::string("a\0b", 3); values[1].binary_value = {0, 255, 1, 128};
-    values[2].encoded_value = "16"; values[3].encoded_value = "1"; values[4].encoded_value = "1"; values[5].encoded_value = "64";
-    std::array<unsigned char, 64> expected{};
+    values[2].encoded_value = "16"; values[3].encoded_value = "1"; values[4].encoded_value = "1";
+    values[5].descriptor = Uint16ProjectionDescriptor();
+    values[5].binary_value = {static_cast<std::uint8_t>(output_bytes & 255),
+                              static_cast<std::uint8_t>(output_bytes >> 8)};
+    std::vector<unsigned char> expected(output_bytes);
     Check(__real_EVP_PBE_scrypt(values[0].encoded_value.data(), 3, values[1].binary_value.data(), 4, 16, 1, 1,
                               1024 * 1024, expected.data(), expected.size()) == 1, "independent scrypt oracle computes nonempty opaque salt");
     f::FunctionCallRequest request; request.context.function_uuid = scrypt_entry->function_uuid;
@@ -1479,6 +1485,194 @@ void ProjectionBinaryValues() {
       Check(output.binary_value.size() == expected.size() && std::equal(output.binary_value.begin(), output.binary_value.end(), expected.begin()) &&
             output.encoded_value.empty(), "projection scrypt response matches entire independent key without hex encoding");
     }
+    // A numerically identical decimal shadow must fail before any KDF effect.
+    auto bad = request;
+    bad.arguments[5].value.text_value = std::to_string(output_bytes);
+    api::EngineRequestContext refusal_owner;
+    unsigned refusal_probes = 0;
+    refusal_owner.query_cancellation_requested = [&] {++refusal_probes; return false;};
+    bad.context.engine_request_context = &refusal_owner;
+    const auto refused = f::DispatchCryptoHashFunction(bad);
+    Check(refusal_probes == 0 && !refused.result.ok() && refused.result.scalar_values.empty() &&
+          !refused.result.diagnostics.empty() &&
+          refused.result.diagnostics.front().diagnostic_id == "CRYPTO.PASSWORD.INVALID_PARAMETER",
+          "scrypt rejects even matching decimal shadows before KDF admission");
+    bad = request;
+    bad.context.engine_request_context = &refusal_owner;
+    auto stale_binding = std::make_shared<api::EngineDescriptor>(*bad.arguments[5].value.projection_descriptor);
+    stale_binding->datatype_descriptor_generation = 2;
+    bad.arguments[5].value.projection_descriptor = stale_binding;
+    const auto stale_result = f::DispatchCryptoHashFunction(bad);
+    Check(refusal_probes == 0 && !stale_result.result.ok() && stale_result.result.scalar_values.empty() &&
+          !stale_result.result.diagnostics.empty() &&
+          stale_result.result.diagnostics.front().diagnostic_id == "CRYPTO.PASSWORD.INVALID_PARAMETER",
+          "scrypt refuses supplied stale projection bindings before KDF admission");
+    values[5].binary_value.clear();
+    values[5].setState(api::EngineValueState::sql_null);
+    auto null_request = request;
+    null_request.arguments[5].value = s::SblrValueFromProjectionArgument(
+        api::MakeProjectionFunctionArgument("output_bytes", values[5]));
+    const auto null_result = f::DispatchCryptoHashFunction(null_request);
+    Check(null_result.result.ok() && null_result.result.scalar_values.size() == 1 &&
+          null_result.result.scalar_values.front().is_null,
+          "actual uint16 projection producer preserves Scrypt NULL semantics");
+    }
+  }
+}
+
+scratchbird::engine::internal_api::EngineDescriptor Uint16ProjectionDescriptor() {
+  scratchbird::engine::internal_api::EngineDescriptor descriptor;
+  descriptor.descriptor_uuid = Base();
+  descriptor.descriptor_kind = "scalar";
+  descriptor.canonical_type_name = "uint16";
+  descriptor.encoded_descriptor = "nullability=nullable;fixture_metadata=" + std::string(200, 'm');
+  descriptor.type_uuid = {{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x06}};
+  descriptor.datatype_descriptor_uuid = {{0x79,0,0,0,0x75,0x69,0x7e,0x74,0xb1,0x36,0,0,0,0,0,0}};
+  descriptor.datatype_descriptor_generation = 1;
+  return descriptor;
+}
+
+void ProjectionUint16Values() {
+  namespace api = scratchbird::engine::internal_api;
+  api::EngineTypedValue source;
+  source.descriptor = Uint16ProjectionDescriptor();
+  source.binary_value.resize(2);
+  for (std::uint32_t number = 0; number <= 65535; ++number) {
+    source.binary_value[0] = static_cast<std::uint8_t>(number & 255);
+    source.binary_value[1] = static_cast<std::uint8_t>(number >> 8);
+    const auto argument = api::MakeProjectionFunctionArgument("value", source);
+    const auto native = s::SblrValueFromProjectionArgument(argument);
+    Check(s::ProjectionArgumentEncodingValid(argument) &&
+          s::ProjectionSblrValueResolved(native) && !native.is_null &&
+          native.uint64_value == number && native.has_uint64_value &&
+          native.text_value.empty() && native.encoded_value.empty() && native.binary_value.empty(),
+          "every uint16 LE2 value becomes exactly one native unsigned scalar");
+    const auto result = s::EngineTypedValueFromSblrValue(native);
+    Check(result.descriptor == source.descriptor && result.state == api::EngineValueState::value &&
+          !result.is_null && result.binary_value == source.binary_value && result.encoded_value.empty(),
+          "every uint16 round trip preserves exact bytes and complete descriptor");
+  }
+  source.binary_value = {0x34, 0x32};
+  auto argument = api::MakeProjectionFunctionArgument("value", source);
+  auto native = s::SblrValueFromProjectionArgument(argument);
+  Check(native.uint64_value == 12852, "ASCII-looking uint16 bytes are not parsed as decimal digits");
+  argument.descriptor.encoded_descriptor = "changed after conversion";
+  argument.descriptor.descriptor_uuid = {};
+  Check(s::EngineTypedValueFromSblrValue(native).descriptor == source.descriptor,
+        "SBLR projection owns an immutable complete binding independent of input lifetime");
+  argument = api::MakeProjectionFunctionArgument("value", source);
+  const auto reject_argument = [&](const api::EngineProjectionFunctionArgument& bad) {
+    const auto unresolved = s::SblrValueFromProjectionArgument(bad);
+    Check(!s::ProjectionArgumentEncodingValid(bad) && !s::ProjectionSblrValueResolved(unresolved) &&
+          !unresolved.is_null && unresolved.payload_kind == s::SblrValuePayloadKind::none &&
+          !unresolved.projection_descriptor,
+          "malformed uint16 ingress never publishes a value or manufactures NULL");
+  };
+  for (unsigned width : {0u, 1u, 3u, 8u, 16u, 36u}) {
+    auto bad = argument; bad.binary_value.resize(width); reject_argument(bad);
+  }
+  for (unsigned fault = 0; fault < 17; ++fault) {
+    auto bad = argument;
+    if (fault == 0) bad.encoded_value = "12852";
+    if (fault == 1) {bad.encoded_value = "42"; bad.binary_value.clear();}
+    if (fault == 2) bad.descriptor = {};
+    if (fault == 3) bad.descriptor.type_uuid.bytes[15] ^= 1;
+    if (fault == 4) bad.descriptor.datatype_descriptor_uuid.bytes[15] ^= 1;
+    if (fault == 5) bad.descriptor.datatype_descriptor_generation = 0;
+    if (fault == 6) bad.descriptor.datatype_descriptor_generation = 2;
+    if (fault == 7) bad.descriptor.descriptor_uuid = {};
+    if (fault == 8) bad.descriptor.descriptor_uuid.bytes[6] = 0x40;
+    if (fault == 9) bad.descriptor.descriptor_uuid.bytes[8] = 0;
+    if (fault == 10) bad.descriptor.canonical_type_name = "uint32";
+    if (fault == 11) bad.descriptor.descriptor_kind = "domain";
+    if (fault == 12) bad.descriptor.charset_uuid = Base();
+    if (fault == 13) bad.descriptor.collation_uuid = Base();
+    if (fault == 14) {bad.type_name = "uint32"; bad.binary_value.clear(); bad.is_null = true;}
+    if (fault == 15 || fault == 16) {
+      bad.type_name = bad.descriptor.canonical_type_name = "uint32";
+      bad.binary_value.clear(); bad.is_null = true;
+      if (fault == 15) bad.descriptor.type_uuid = {};
+      else bad.descriptor.datatype_descriptor_uuid = {};
+    }
+    reject_argument(bad);
+  }
+  for (unsigned state = 0; state <= 255; ++state) {
+    auto candidate = argument;
+    candidate.state = static_cast<api::EngineValueState>(state);
+    candidate.is_null = true;
+    candidate.binary_value.clear();
+    if (state > 1) {reject_argument(candidate); continue;}
+    auto null_value = s::SblrValueFromProjectionArgument(candidate);
+    const auto result = s::EngineTypedValueFromSblrValue(null_value);
+    Check(s::ProjectionArgumentEncodingValid(candidate) && null_value.is_null &&
+          result.isSqlNull() && result.binary_value.empty() && result.encoded_value.empty() &&
+          result.descriptor == source.descriptor, "both documented SQL_NULL carriers preserve exact binding");
+    candidate.binary_value = {0, 0}; reject_argument(candidate);
+    candidate.binary_value.clear(); candidate.encoded_value = "0"; reject_argument(candidate);
+  }
+  for (bool is_null : {false, true}) {
+    auto valid = native;
+    if (is_null) {valid.is_null = true; valid.uint64_value = 0; valid.has_uint64_value = false;
+                 valid.payload_kind = s::SblrValuePayloadKind::none;}
+    for (unsigned fault = 0; fault < 18; ++fault) {
+      auto bad = valid;
+      if (fault == 0) bad.text_value = "12852";
+      if (fault == 1) bad.encoded_value = "12852";
+      if (fault == 2) bad.binary_value = {0x34, 0x32};
+      if (fault == 3) bad.uuid_value = Base();
+      if (fault == 4) bad.uuid_array_value = {Base()};
+      if (fault == 5) bad.has_int64_value = true;
+      if (fault == 6) bad.has_real64_value = true;
+      if (fault == 7) bad.int64_value = 1;
+      if (fault == 8) bad.real64_value = 1;
+      if (fault == 9) bad.charset_name = "UTF8";
+      if (fault == 10) bad.collation_name = "binary";
+      if (fault == 11) bad.projection_descriptor.reset();
+      if (fault == 12) bad.uint64_value = 65536;
+      if (fault == 13) bad.uint64_value = ~std::uint64_t{0};
+      if (fault == 14) bad.payload_kind = s::SblrValuePayloadKind::signed_integer;
+      if (fault == 15) bad.has_uint64_value = !valid.has_uint64_value;
+      if (fault == 16) {
+        auto binding = std::make_shared<api::EngineDescriptor>(*valid.projection_descriptor);
+        binding->datatype_descriptor_generation = 2; bad.projection_descriptor = binding;
+      }
+      if (fault == 17) bad.descriptor_id = "uint32";
+      bool rejected = false;
+      try {(void)s::EngineTypedValueFromSblrValue(bad);} catch (const std::invalid_argument&) {rejected = true;}
+      Check(!s::ProjectionSblrValueResolved(bad) && rejected,
+            "uint16 egress refuses mixed, out-of-range, null-payload and unbound carriers");
+    }
+  }
+  // Both validators must remain allocation-free; conversion owns metadata and
+  // bytes, and must preserve caller state at every failing allocation.
+  fail_after = 0;
+  const bool validated = s::Uint16ProjectionArgumentValid(argument) && s::SblrUint16ProjectionResolved(native);
+  fail_after = -1;
+  Check(validated, "uint16 structural validation does not allocate");
+  for (bool ingress : {true, false}) {
+    bool completed = false; unsigned faults = 0;
+    for (long budget = 0; budget < 32; ++budget) {
+      api::EngineTypedValue output; output.encoded_value = "sentinel";
+      s::SblrValue projected; projected.descriptor_id = "sentinel";
+      fail_after = budget;
+      try {
+        if (ingress) projected = s::SblrValueFromProjectionArgument(argument);
+        else output = s::EngineTypedValueFromSblrValue(native);
+        fail_after = -1; completed = true;
+      } catch (const std::bad_alloc&) {fail_after = -1; ++faults;}
+      Check(argument.descriptor == source.descriptor && argument.binary_value == source.binary_value &&
+            *native.projection_descriptor == source.descriptor && native.uint64_value == 12852,
+            "uint16 conversion allocation failure preserves all source data and binding");
+      if (!completed) Check(ingress ? projected.descriptor_id == "sentinel" : output.encoded_value == "sentinel",
+                            "failed uint16 conversion never assigns a partial output");
+      else {
+        Check(ingress ? s::ProjectionSblrValueResolved(projected) : output.binary_value == source.binary_value,
+              "uint16 conversion eventually succeeds after allocation fault sweep");
+        break;
+      }
+    }
+    allocation_faults += faults;
+    Check(completed && faults >= 2, "both directions exercise actual binding and payload allocation faults");
   }
 }
 
@@ -1498,6 +1692,7 @@ int main() {
   BinaryAggregate();
   BinaryUuidValues();
   ProjectionBinaryValues();
+  ProjectionUint16Values();
   CryptoUuidGeneration();
   CryptoFixedDigests();
   Blake3KnownAnswers();

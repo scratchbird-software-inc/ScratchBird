@@ -653,6 +653,26 @@ void ConsumerCarrierBoundaries() {
   }
 
   api::EngineProjectionFunctionArgument projected_text;
+  // The registered projection profile accepts the actual Core-bound native
+  // descriptor. Unbound legacy carriers below must still fail unchanged.
+  for (const std::uint32_t number : {0u, 255u, 256u, 32768u, 65535u}) {
+    api::EngineTypedValue source;
+    source.descriptor = EngineUint16Descriptor(true);
+    source.binary_value = {static_cast<std::uint8_t>(number & 255),
+                           static_cast<std::uint8_t>(number >> 8)};
+    for (bool is_null : {false, true}) {
+      if (is_null) {source.binary_value.clear(); source.setState(api::EngineValueState::sql_null);}
+      const auto argument = api::MakeProjectionFunctionArgument("value", source);
+      const auto projected = sblr::SblrValueFromProjectionArgument(argument);
+      Check(sblr::ProjectionArgumentEncodingValid(argument) &&
+                sblr::ProjectionSblrValueResolved(projected),
+            "uint16 projection profile matches the actual Core catalog descriptor");
+      const auto output = sblr::EngineTypedValueFromSblrValue(projected);
+      Check(output.descriptor == source.descriptor && output.binary_value == source.binary_value &&
+                output.encoded_value.empty() && output.state == source.state && output.isSqlNull() == is_null,
+            "Core-bound uint16 projection preserves exact identity, value, and NULL state");
+    }
+  }
   projected_text.type_name = "uint16";
   projected_text.encoded_value = "42";
   api::EngineProjectionFunctionArgument projected_binary;
