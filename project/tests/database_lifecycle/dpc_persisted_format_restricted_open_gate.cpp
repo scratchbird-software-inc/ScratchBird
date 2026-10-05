@@ -1,4 +1,5 @@
 #include "../support/binary_uuid_fixture.hpp"
+#include "../agents/agent_binary_identity_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -15,7 +16,9 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <limits>
 #include <set>
 #include <string>
 #include <string_view>
@@ -456,8 +459,8 @@ void ValidateManagementPayload(const std::vector<PersistedSurfaceContract>& surf
 struct LifecycleFixture {
   std::filesystem::path temp_dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string filespace_uuid;
+  TypedUuid database_uuid;
+  TypedUuid filespace_uuid;
 };
 
 LifecycleFixture CreateLifecycleFixture() {
@@ -473,8 +476,8 @@ LifecycleFixture CreateLifecycleFixture() {
   LifecycleFixture fixture;
   fixture.temp_dir = temp_dir;
   fixture.database_path = temp_dir / "dpc009_restricted_open.sbdb";
-  fixture.database_uuid = UuidText(database_uuid.value);
-  fixture.filespace_uuid = UuidText(filespace_uuid.value);
+  fixture.database_uuid = database_uuid.value;
+  fixture.filespace_uuid = filespace_uuid.value;
 
   db::DatabaseCreateConfig create;
   create.path = fixture.database_path.string();
@@ -519,11 +522,95 @@ db::DatabaseLifecycleRepairConfig RepairConfig(
   config.operation_uuid = scratchbird::tests::FixtureUuid(1259, 3);
   config.actor_uuid = scratchbird::tests::FixtureUuid(1259, 4);
   config.repair_plan_id = std::move(repair_plan_id);
-  config.expected_database_uuid = fixture.database_uuid;
-  config.expected_filespace_uuid = fixture.filespace_uuid;
+  config.expected_database_uuid =
+      scratchbird::tests::BinaryFixtureIdentity(fixture.database_uuid.value);
+  config.expected_filespace_uuid =
+      scratchbird::tests::BinaryFixtureIdentity(fixture.filespace_uuid.value);
   config.repair_admission_proven = admitted;
   config.allow_mutation = admitted;
   return config;
+}
+
+std::string ReadLifecycleDatabaseBytes(const LifecycleFixture& fixture) {
+  const auto size = std::filesystem::file_size(fixture.database_path);
+  Require(size <= std::numeric_limits<std::size_t>::max() &&
+              size <= static_cast<std::uintmax_t>(
+                          std::numeric_limits<std::streamsize>::max()),
+          "DPC-009 database size cannot be captured exactly");
+  std::ifstream input(fixture.database_path, std::ios::binary);
+  Require(input.is_open(), "DPC-009 database byte capture open failed");
+  std::string bytes(static_cast<std::size_t>(size), '\0');
+  input.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+  Require(input.gcount() == static_cast<std::streamsize>(bytes.size()) &&
+              !input.bad() && input.peek() == std::char_traits<char>::eof() &&
+              !input.bad(),
+          "DPC-009 database byte capture was incomplete or changed size");
+  return bytes;
+}
+
+void ValidateRejectedRepairIdentityProofs(const LifecycleFixture& fixture) {
+  const auto database_bytes =
+      scratchbird::tests::BinaryFixtureIdentity(fixture.database_uuid.value);
+  const auto filespace_bytes =
+      scratchbird::tests::BinaryFixtureIdentity(fixture.filespace_uuid.value);
+  Require(database_bytes.size() == 16 && filespace_bytes.size() == 16,
+          "DPC-009 fixture identity did not retain binary16");
+  auto wrong_database = database_bytes;
+  auto wrong_filespace = filespace_bytes;
+  // Changing a payload bit preserves the UUID version/variant while making the
+  // identity different. A correctly sized UUID is not the owning UUID.
+  wrong_database.back() = static_cast<char>(wrong_database.back() ^ 1);
+  wrong_filespace.back() = static_cast<char>(wrong_filespace.back() ^ 1);
+  struct ProofCase {
+    const char* label;
+    std::string database;
+    std::string filespace;
+  };
+  const std::vector<ProofCase> cases = {
+      {"text database", UuidText(fixture.database_uuid), filespace_bytes},
+      {"text filespace", database_bytes, UuidText(fixture.filespace_uuid)},
+      {"both text", UuidText(fixture.database_uuid), UuidText(fixture.filespace_uuid)},
+      {"wrong database", wrong_database, filespace_bytes},
+      {"wrong filespace", database_bytes, wrong_filespace},
+      {"missing database", {}, filespace_bytes},
+      {"missing filespace", database_bytes, {}},
+      {"both missing", {}, {}},
+      {"nil database", std::string(16, '\0'), filespace_bytes},
+      {"nil filespace", database_bytes, std::string(16, '\0')},
+      {"short database", database_bytes.substr(0, 15), filespace_bytes},
+      {"long filespace", database_bytes, filespace_bytes + '\0'},
+  };
+  const auto before = ReadLifecycleDatabaseBytes(fixture);
+  for (const auto& test : cases) {
+    auto config = RepairConfig(fixture, "clear_verified_write_fence", true);
+    config.expected_database_uuid = test.database;
+    config.expected_filespace_uuid = test.filespace;
+    Require(!config.engine_read_identity_proof,
+            "DPC-009 negative proof must not use an identity bypass");
+    const auto refused = db::RepairDatabaseLifecycle(config);
+    bool exact_detail = false;
+    for (const auto& argument : refused.diagnostic.arguments) {
+      const auto* detail = argument.text();
+      if (argument.key == "detail" && detail != nullptr &&
+          *detail == "repair_requires_exact_database_and_filespace_uuid_proof") {
+        exact_detail = true;
+      }
+    }
+    if (refused.ok() || !exact_detail) {
+      std::cerr << "DPC-009 rejected identity case: " << test.label << '\n';
+    }
+    Require(!refused.ok() && exact_detail &&
+                refused.diagnostic.diagnostic_code == "ENGINE.DBLC_REPAIR_REFUSED" &&
+                refused.diagnostic.message_key == "storage.database_lifecycle.repair_refused",
+            "DPC-009 invalid identity proof was not refused at the identity boundary");
+    const auto ordinary_open =
+        db::OpenDatabaseFile({fixture.database_path.string(), false, false, false});
+    Require(!ordinary_open.ok() && ordinary_open.diagnostic.diagnostic_code ==
+                "SB-DB-LIFECYCLE-RESTRICTED-OPEN-REQUIRED",
+            "DPC-009 identity refusal cleared the write fence");
+    Require(ReadLifecycleDatabaseBytes(fixture) == before,
+            "DPC-009 identity refusal changed database bytes");
+  }
 }
 
 void ValidateRestrictedOpenLifecycleHelpers() {
@@ -550,6 +637,8 @@ void ValidateRestrictedOpenLifecycleHelpers() {
               refused.diagnostic.diagnostic_code == "ENGINE.DBLC_REPAIR_REFUSED",
           "DPC-009 repair without restricted admission was not refused");
 
+  ValidateRejectedRepairIdentityProofs(fixture);
+
   const auto repaired = db::RepairDatabaseLifecycle(
       RepairConfig(fixture, "clear_verified_write_fence", true));
   Require(repaired.ok() &&
@@ -558,8 +647,11 @@ void ValidateRestrictedOpenLifecycleHelpers() {
 
   const auto opened_after_repair =
       db::OpenDatabaseFile({fixture.database_path.string(), false, false, false});
-  Require(opened_after_repair.ok(),
-          "DPC-009 ordinary open after restricted repair failed");
+  Require(opened_after_repair.ok() &&
+              !opened_after_repair.state.write_admission_fenced &&
+              opened_after_repair.state.database_uuid.value == fixture.database_uuid.value &&
+              opened_after_repair.state.filespace_uuid.value == fixture.filespace_uuid.value,
+          "DPC-009 ordinary reopen did not preserve identity and clear the repaired fence");
 
   std::filesystem::remove_all(fixture.temp_dir);
 }
