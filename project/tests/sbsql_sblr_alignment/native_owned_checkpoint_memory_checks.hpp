@@ -32,6 +32,25 @@ void Checks(std::span<const d::NativeFilespaceDevice> borrowed,u64 allowance,boo
   expected_selection=result.lease->selection();expected_directory=result.lease->directory();
   root=result.lease->checkpoint();images=result.lease->retained_image_bytes();
  }
+ std::vector<page::NativeCatalogRootReference> leaf_refs;
+ std::vector<Bytes> leaf_images;
+ if(fault_route==9){
+  const auto& roots=expected_selection.checkpoint_inventory.checkpoint->roots;
+  const auto catalog=std::find_if(roots.begin(),roots.end(),[](const auto& r){return r.role==5;});
+  Check(catalog!=roots.end(),"actual selected checkpoint has a catalog root");
+  const auto member=std::find_if(original.begin(),original.end(),[&](const auto& f){return f.filespace_uuid==catalog->page.filespace_uuid;});
+  Check(member!=original.end(),"actual catalog filespace is retained");
+  const d::FilespaceRootReference reference{2,catalog->page_type,catalog->page.filespace_uuid,catalog->page.page_number,
+    catalog->page.page_generation,catalog->page.page_size_profile_uuid,catalog->object_uuid};
+  const auto observed=page::ReadNativeCatalogRootFromOpenDevice(*member->device,Id(1),reference);
+  Check(observed.ok(),"actual catalog root before governed source adoption");
+  for(const auto& ref:observed.root->roots){
+   Check(ref.page_type==6,"genesis catalog fixture uses actual direct heads");
+   const auto leaf=db::ReadNativeCatalogLeafFromOpenDevice(*member->device,Id(1),ref);
+   Check(leaf.ok(),"independent owning leaf read before guarded composition");
+   leaf_refs.push_back(ref);leaf_images.push_back(leaf.bytes);
+  }
+ }
  // Some later operation proofs require the omitted member themselves. Preserve
  // their earlier exact source failure; only a fully valid partial reader may
  // reach the owning layer's separate complete-directory count check.
@@ -290,6 +309,81 @@ void Checks(std::span<const d::NativeFilespaceDevice> borrowed,u64 allowance,boo
 #endif
   Check(Source::Read(admitted.owner,allowance).error==E::memory_required,"legacy read cannot bypass actual-grant source admission");
   {const auto held=read(admitted.owner);parity(held);}
+  for(std::size_t i=0;i<leaf_refs.size();++i){
+   const auto& ref=leaf_refs[i];
+   const auto bytes=db::NativeCatalogLeafWorkspaceBytes(ref.page.page_size_profile_uuid);
+   c::Grant catalog_memory(bytes);
+   for(unsigned field=0;field<4;++field){
+    auto wrong=catalog_memory.binding;
+    const std::array<Uuid*,4> ids{&wrong.database_uuid,&wrong.operation_uuid,&wrong.owner_uuid,&wrong.context_uuid};
+    *ids[field]=Id(65502);
+    const auto rejected=db::PrepareNativeCatalogLeafRead(ref.page.page_size_profile_uuid,catalog_memory.memory,wrong);
+    Check(!rejected.ok()&&!rejected.workspace&&rejected.memory_error==db::NativeStorageMemoryError::invalid_binding&&
+      !catalog_memory.manager.Snapshot().current_bytes,"every binary grant ownership dimension checked before leaf backing admission");
+   }
+   {
+    c::Grant short_grant(bytes-1);
+    const auto rejected=db::PrepareNativeCatalogLeafRead(ref.page.page_size_profile_uuid,short_grant.memory,short_grant.binding);
+    Check(!rejected.ok()&&!rejected.workspace,"one-byte-short actual catalog grant has no fallback");
+    short_grant.memory={};short_grant.Empty();
+   }
+   {
+    allocation_budget=0;
+    const auto rejected=db::PrepareNativeCatalogLeafRead(ref.page.page_size_profile_uuid,catalog_memory.memory,catalog_memory.binding);
+    const auto consumed=allocation_budget;allocation_budget=-1;
+    Check(consumed<0&&!rejected.ok()&&!rejected.workspace&&!catalog_memory.manager.Snapshot().current_bytes,
+      "failed catalog backing allocation leaves no retained memory or fabricated workspace");
+   }
+   auto prepared=db::PrepareNativeCatalogLeafRead(ref.page.page_size_profile_uuid,catalog_memory.memory,catalog_memory.binding);
+   Check(prepared.ok(),"catalog backing admitted before owned source guard");
+   auto moved=std::move(prepared.workspace);
+   {
+    const auto held=read(admitted.owner);parity(held);
+    const auto moved_from=db::NativeCatalogLeafLeaseReader::Read(held.lease.source(),ref,prepared.workspace);
+    Check(!moved_from.ok()&&!moved_from.bytes_read,"moved-from admitted backing refuses before I/O");
+    prepared.workspace=std::move(moved);
+    allocation_budget=0;
+    const auto observed=db::NativeCatalogLeafLeaseReader::Read(held.lease.source(),ref,prepared.workspace);
+    const auto remaining=allocation_budget;allocation_budget=-1;
+    Check(remaining==0&&observed.ok()&&observed.image.size()==leaf_images[i].size()&&
+      std::equal(observed.image.begin(),observed.image.end(),leaf_images[i].begin()),
+      "complete actual catalog leaf under retained owned source uses only pre-admitted memory");
+    Check(observed.bytes_read==d::kFilespaceBootstrapBytes+2*observed.image.size(),
+      "guarded reader reports exact physical source bytes");
+    for(unsigned fault=0;fault<4;++fault){
+     auto wrong=ref;
+     if(fault==0)++wrong.page.page_generation;
+     if(fault==1)wrong.page.filespace_uuid=Id(65500);
+     if(fault==2)wrong.object_uuid=Id(65501);
+     if(fault==3)wrong.page.page_size_profile_uuid={};
+     allocation_budget=0;
+     const auto refused=db::NativeCatalogLeafLeaseReader::Read(held.lease.source(),wrong,prepared.workspace);
+     const auto left=allocation_budget;allocation_budget=-1;
+     Check(left==0&&!refused.ok()&&refused.image.empty()&&!refused.leaf.page,
+       "wrong guarded leaf identity/profile has no partial image or allocating fallback");
+    }
+    db::NativeCatalogLeafPreparedMemory absent;
+    const auto missing=db::NativeCatalogLeafLeaseReader::Read(held.lease.source(),ref,absent);
+    Check(!missing.ok()&&!missing.bytes_read,"missing admitted catalog backing refuses before I/O");
+    for(unsigned fault=0;fault<2;++fault)for(unsigned site=1;site<=3;++site){
+     reads=writes=syncs=0;history_observed_read_bytes=0;io_counting=true;
+     if(fault==0)read_fault=site;else corrupt_read=site;
+     const auto failed=db::NativeCatalogLeafLeaseReader::Read(held.lease.source(),ref,prepared.workspace);
+     io_counting=false;read_fault=corrupt_read=0;
+     Check(reads>=site&&!failed.ok()&&failed.image.empty()&&!failed.leaf.page&&
+       !writes&&!syncs&&failed.bytes_read==history_observed_read_bytes,
+       "every physical read/corruption failure has exact effects and no successful prefix under the same lease");
+     if(fault==0)Check(failed.error==db::NativeCatalogLeafMemoryError::io_failure&&!failed.io_status.ok()&&
+       failed.io_diagnostic.diagnostic_code=="SB-STORAGE-DISK-READ-SHORT",
+       "guarded read preserves full physical I/O diagnostic");
+    }
+    allocation_budget=0;
+    const auto retry=db::NativeCatalogLeafLeaseReader::Read(held.lease.source(),ref,prepared.workspace);
+    const auto left=allocation_budget;allocation_budget=-1;
+    Check(left==0&&retry.ok(),"same retained source remains usable after failed leaf observations");
+   }
+   prepared={};catalog_memory.memory={};catalog_memory.Empty();
+  }
   no_transient_payload();admitted.owner.reset();persistent.Empty();
  }
  open();

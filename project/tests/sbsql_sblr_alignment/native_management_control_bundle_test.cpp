@@ -14,6 +14,7 @@
 #include "native_selected_checkpoint_read_lease.hpp"
 #include "native_selected_checkpoint_memory_lease.hpp"
 #include "native_owned_checkpoint_source.hpp"
+#include "native_catalog_leaf_lease_reader.hpp"
 #ifdef SB_NATIVE_ROUTE_SOURCE_TESTS
 #include "../../src/server/database_ownership.hpp"
 #endif
