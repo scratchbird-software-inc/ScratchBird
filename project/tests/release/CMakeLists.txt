@@ -945,6 +945,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME native_checkpoint_selection_memory_gate COMMAND native_checkpoint_selection_memory_gate)
   set_tests_properties(native_checkpoint_selection_memory_gate PROPERTIES
     TIMEOUT 120 LABELS "storage;memory;binary_uuid;actual_files;fault_injection;not_runtime_acceptance")
+  add_executable(bounded_device_io_gate bounded_device_io_gate.cpp)
+  target_compile_features(bounded_device_io_gate PRIVATE cxx_std_23)
+  target_link_libraries(bounded_device_io_gate PRIVATE sb_storage_disk)
+  target_link_options(bounded_device_io_gate PRIVATE
+    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync -Wl,--wrap=fstat)
+  add_test(NAME bounded_device_io_gate COMMAND bounded_device_io_gate)
+  set_tests_properties(bounded_device_io_gate PROPERTIES
+    TIMEOUT 120 LABELS "storage;memory;binary_uuid;actual_files;fault_injection;not_runtime_acceptance")
   add_executable(native_allocation_map_memory_gate ../sbsql_sblr_alignment/native_allocation_map_test.cpp)
   target_compile_features(native_allocation_map_memory_gate PRIVATE cxx_std_23)
   target_compile_definitions(native_allocation_map_memory_gate PRIVATE SB_NATIVE_ALLOCATION_MEMORY_TESTS=1 NATIVE_HISTORICAL_IO_FAULTS=1)

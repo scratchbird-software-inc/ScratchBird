@@ -22,6 +22,10 @@ struct NativeCheckpointSelectionMemoryResult {
   NativeCheckpointSelectionError selection_error=NativeCheckpointSelectionError::none;
   core::platform::Status allocation_status,io_status;
   core::platform::DiagnosticRecord allocation_diagnostic;
+  // Fixed last backend receipt survives allocation denial; diagnostic rendering
+  // belongs to the caller after the owned device fence has been released.
+  disk::BoundedIoResult io_receipt;
+  u64 bootstrap_bytes_read=0;
   u64 page_bytes_read=0;
   std::optional<NativeCheckpointSelection> selection;
   NativeStorageBuffer image;
@@ -33,6 +37,8 @@ struct NativeCheckpointSelectionMemoryResult {
 // STORAGE-NATIVE-SELECTOR-MEMORY-001. A single inspected image, not a selected
 // checkpoint or serving grant. The target is NOT assumed to be a current root.
 // The owning node's actual manager/ledger must outlive the returned page owner.
+// Enter without an outer device/source guard: admission and final observations
+// surround the complete owned fence. Compound owners use BoundedIoBatch instead.
 inline NativeCheckpointSelectionMemoryResult ReadNativeCheckpointSelectionWithMemoryFromOpenDevice(
     disk::FileDevice& device,const disk::NativeCommonPageHeaderBinding& expected,
     const Uuid& object,NativeStorageMemory& memory,
@@ -59,15 +65,32 @@ inline NativeCheckpointSelectionMemoryResult ReadNativeCheckpointSelectionWithMe
     out.memory_error=payload.error;out.allocation_status=payload.allocation_status;
     out.allocation_diagnostic=std::move(payload.diagnostic);
     if(!payload.ok()){out.error=E::memory_allocation_failure;return out;}
+    disk::FileDevice::BoundedIoBatch observations(device);
     const auto guard=device.AcquireOperationGuard();
-    const auto bootstrap=disk::ReadFilespaceBootstrapFromOpenDevice(device,&expected.filespace);
+    disk::SerializedFilespaceBootstrap bootstrap_image{};
+    out.io_receipt=observations.ReadAt(0,bootstrap_image.data(),bootstrap_image.size());
+    out.bootstrap_bytes_read=out.io_receipt.bytes_transferred;
+    const auto record_status=[&]{
+      out.io_status={out.io_receipt.ok()?core::platform::StatusCode::ok:
+        core::platform::StatusCode::platform_required_feature_missing,
+        out.io_receipt.ok()?core::platform::Severity::info:core::platform::Severity::error,
+        core::platform::Subsystem::storage_disk};
+    };
+    record_status();
+    if(!out.io_receipt.ok()){
+      out.error=E::bootstrap_failure;
+      out.bootstrap_error=out.io_receipt.error==disk::BoundedIoError::not_open
+        ?disk::FilespaceBootstrapError::device_not_open:disk::FilespaceBootstrapError::io_failure;
+      return out;
+    }
+    const auto bootstrap=disk::DecodeFilespaceBootstrap(bootstrap_image.data(),bootstrap_image.size(),&expected.filespace);
     if(!bootstrap.ok()){out.error=E::bootstrap_failure;out.bootstrap_error=bootstrap.error;return out;}
     if(bootstrap.preamble->flags&disk::FilespaceBootstrapFlag::payload_encrypted){
       out.error=E::encrypted_requires_authority;return out;
     }
-    const auto read=device.ReadAt(offset,payload.buffer.data(),payload.buffer.size());
-    out.io_status=read.status;out.page_bytes_read=read.bytes_transferred;
-    if(!read.ok()||read.bytes_transferred!=payload.buffer.size()){out.error=E::io_failure;return out;}
+    out.io_receipt=observations.ReadAt(offset,payload.buffer.data(),payload.buffer.size());
+    record_status();out.page_bytes_read=out.io_receipt.bytes_transferred;
+    if(!out.io_receipt.ok()||out.io_receipt.bytes_transferred!=payload.buffer.size()){out.error=E::io_failure;return out;}
     const auto header=disk::DecodeNativeCommonPageHeader(payload.buffer.data(),128,&expected);
     if(!header.ok()){out.error=E::header_failure;out.header_error=header.error;return out;}
     auto decoded=DecodeNativeCheckpointSelectionValue({payload.buffer.data(),payload.buffer.size()});

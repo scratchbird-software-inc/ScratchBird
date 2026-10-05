@@ -266,13 +266,13 @@ bool WindowsSharingConflict(DWORD error) {
   return error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION;
 }
 
-bool DurableSyncHandle(HANDLE handle, std::string* detail) {
+bool DurableSyncHandle(HANDLE handle, std::string* detail, u32* native_error = nullptr) {
   if (::FlushFileBuffers(handle) != 0) {
     return true;
   }
-  if (detail != nullptr) {
-    *detail = WindowsLastErrorText();
-  }
+  const auto error = ::GetLastError();
+  if (native_error) *native_error = error;
+  if (detail != nullptr) *detail = WindowsLastErrorText(error);
   return false;
 }
 
@@ -466,7 +466,7 @@ bool NativeReadAt(void* file_handle,
                   void* buffer,
                   usize bytes,
                   usize* transferred,
-                  std::string* detail) {
+                  std::string* detail, u32* native_error = nullptr) {
   HANDLE handle = static_cast<HANDLE>(file_handle);
   auto* cursor = static_cast<char*>(buffer);
   usize total = 0;
@@ -481,6 +481,7 @@ bool NativeReadAt(void* file_handle,
       if (error == ERROR_HANDLE_EOF) {
         break;
       }
+      if (native_error) *native_error = error;
       if (detail != nullptr) {
         *detail = WindowsLastErrorText(error);
       }
@@ -505,7 +506,7 @@ bool NativeWriteAt(void* file_handle,
                    const void* buffer,
                    usize bytes,
                    usize* transferred,
-                   std::string* detail) {
+                   std::string* detail, u32* native_error = nullptr) {
   HANDLE handle = static_cast<HANDLE>(file_handle);
   const auto* cursor = static_cast<const char*>(buffer);
   usize total = 0;
@@ -515,10 +516,12 @@ bool NativeWriteAt(void* file_handle,
         static_cast<usize>(std::numeric_limits<DWORD>::max())));
     OVERLAPPED overlapped = OffsetToOverlapped(offset + total);
     DWORD written = 0;
-    if (::WriteFile(handle, cursor + total, chunk, &written, &overlapped) == 0 ||
-        written == 0) {
+    const bool success = ::WriteFile(handle, cursor + total, chunk, &written, &overlapped) != 0;
+    if (!success || written == 0) {
+      const auto error = success ? DWORD{0} : ::GetLastError();
+      if (native_error) *native_error = error;
       if (detail != nullptr) {
-        *detail = WindowsLastErrorText();
+        *detail = success ? "short write" : WindowsLastErrorText(error);
       }
       if (transferred != nullptr) {
         *transferred = total;
@@ -533,11 +536,14 @@ bool NativeWriteAt(void* file_handle,
   return true;
 }
 
-bool NativeFileSize(void* file_handle, u64* size_bytes, std::string* detail) {
+bool NativeFileSize(void* file_handle, u64* size_bytes, std::string* detail,
+                    u32* native_error = nullptr) {
   LARGE_INTEGER size{};
   if (::GetFileSizeEx(static_cast<HANDLE>(file_handle), &size) == 0) {
+    const auto error = ::GetLastError();
+    if (native_error) *native_error = error;
     if (detail != nullptr) {
-      *detail = WindowsLastErrorText();
+      *detail = WindowsLastErrorText(error);
     }
     return false;
   }
@@ -639,13 +645,13 @@ int ForcedOrderedWriteOpenFlag() {
 #endif
 }
 
-bool DurableSyncFd(int fd, std::string* detail) {
+bool DurableSyncFd(int fd, std::string* detail, u32* native_error = nullptr) {
   if (::fsync(fd) == 0) {
     return true;
   }
-  if (detail != nullptr) {
-    *detail = std::strerror(errno);
-  }
+  const int error = errno;
+  if (native_error) *native_error = static_cast<u32>(error);
+  if (detail != nullptr) *detail = std::strerror(error);
   return false;
 }
 
@@ -752,7 +758,7 @@ bool NativeReadAt(int fd,
                   void* buffer,
                   usize bytes,
                   usize* transferred,
-                  std::string* detail) {
+                  std::string* detail, u32* native_error = nullptr) {
   auto* cursor = static_cast<char*>(buffer);
   usize total = 0;
   while (total < bytes) {
@@ -764,11 +770,13 @@ bool NativeReadAt(int fd,
                             chunk,
                             static_cast<off_t>(offset + total));
     if (rc < 0) {
-      if (errno == EINTR) {
+      const int error = errno;
+      if (error == EINTR) {
         continue;
       }
+      if (native_error) *native_error = static_cast<u32>(error);
       if (detail != nullptr) {
-        *detail = std::strerror(errno);
+        *detail = std::strerror(error);
       }
       if (transferred != nullptr) {
         *transferred = total;
@@ -791,7 +799,7 @@ bool NativeWriteAt(int fd,
                    const void* buffer,
                    usize bytes,
                    usize* transferred,
-                   std::string* detail) {
+                   std::string* detail, u32* native_error = nullptr) {
   const auto* cursor = static_cast<const char*>(buffer);
   usize total = 0;
   while (total < bytes) {
@@ -803,11 +811,13 @@ bool NativeWriteAt(int fd,
                              chunk,
                              static_cast<off_t>(offset + total));
     if (rc < 0) {
-      if (errno == EINTR) {
+      const int error = errno;
+      if (error == EINTR) {
         continue;
       }
+      if (native_error) *native_error = static_cast<u32>(error);
       if (detail != nullptr) {
-        *detail = std::strerror(errno);
+        *detail = std::strerror(error);
       }
       if (transferred != nullptr) {
         *transferred = total;
@@ -831,11 +841,14 @@ bool NativeWriteAt(int fd,
   return true;
 }
 
-bool NativeFileSize(int fd, u64* size_bytes, std::string* detail) {
+bool NativeFileSize(int fd, u64* size_bytes, std::string* detail,
+                    u32* native_error = nullptr) {
   struct stat st {};
   if (::fstat(fd, &st) != 0) {
+    const int error = errno;
+    if (native_error) *native_error = static_cast<u32>(error);
     if (detail != nullptr) {
-      *detail = std::strerror(errno);
+      *detail = std::strerror(error);
     }
     return false;
   }
@@ -1411,6 +1424,169 @@ struct FileDevice::MetricContext {
   core::platform::Uuid database,filespace,node;
   std::string role,device_class;
 };
+
+namespace {
+BoundedIoError BoundedExtentError(u64 offset, usize bytes) noexcept {
+  // Preserve the public stream limits and also validate the native offset type
+  // before narrowing (off_t need not have the same width on every platform).
+  u64 maximum = static_cast<u64>(std::numeric_limits<std::streamoff>::max());
+#ifndef _WIN32
+  maximum = std::min(maximum, static_cast<u64>(std::numeric_limits<off_t>::max()));
+#endif
+  if (offset > maximum) return BoundedIoError::offset_overflow;
+  if (bytes > static_cast<u64>(std::numeric_limits<std::streamsize>::max()))
+    return BoundedIoError::count_overflow;
+  if (bytes > maximum - offset) return BoundedIoError::extent_overflow;
+  return BoundedIoError::none;
+}
+struct IoMessage { const char* code; const char* key; };
+IoMessage BoundedIoMessage(const BoundedIoResult& r) noexcept {
+  switch (r.error) {
+    case BoundedIoError::none: return {"", ""};
+    case BoundedIoError::not_open:
+      return r.operation == BoundedIoOperation::size
+        ? IoMessage{"SB-STORAGE-DISK-SIZE-NOT-OPEN", "storage.disk.size_not_open"}
+        : IoMessage{"SB-STORAGE-DISK-NOT-OPEN", "storage.disk.not_open"};
+    case BoundedIoError::null_buffer:
+      return r.operation == BoundedIoOperation::read
+        ? IoMessage{"SB-STORAGE-DISK-READ-BUFFER-NULL", "storage.disk.read_buffer_null"}
+        : IoMessage{"SB-STORAGE-DISK-WRITE-BUFFER-NULL", "storage.disk.write_buffer_null"};
+    case BoundedIoError::read_only:
+      return {"SB-STORAGE-DISK-WRITE-READ-ONLY", "storage.disk.write_read_only"};
+    case BoundedIoError::offset_overflow:
+      return {"SB-STORAGE-DISK-OFFSET-CONVERSION-OVERFLOW", "storage.disk.offset_conversion_overflow"};
+    case BoundedIoError::count_overflow:
+      return {"SB-STORAGE-DISK-BYTE-COUNT-CONVERSION-OVERFLOW", "storage.disk.byte_count_conversion_overflow"};
+    case BoundedIoError::extent_overflow:
+      return {"SB-STORAGE-DISK-EXTENT-OVERFLOW", "storage.disk.extent_overflow"};
+    default: break;
+  }
+  switch (r.operation) {
+    case BoundedIoOperation::read: return {"SB-STORAGE-DISK-READ-SHORT", "storage.disk.read_short"};
+    case BoundedIoOperation::write: return {"SB-STORAGE-DISK-WRITE-FAILED", "storage.disk.write_failed"};
+    case BoundedIoOperation::sync: return {"SB-STORAGE-DISK-SYNC-FAILED", "storage.disk.sync_failed"};
+    case BoundedIoOperation::size: return {"SB-STORAGE-DISK-SIZE-FAILED", "storage.disk.size_failed"};
+  }
+  return {"SB-STORAGE-DISK-WRITE-FAILED", "storage.disk.write_failed"};
+}
+void IncrementSaturating(std::atomic<u64>& counter) noexcept {
+  auto value = counter.load(std::memory_order_relaxed);
+  while (value != std::numeric_limits<u64>::max() &&
+         !counter.compare_exchange_weak(value, value + 1, std::memory_order_relaxed)) {}
+}
+} // namespace
+
+IoResult RenderBoundedIoResult(const BoundedIoResult& receipt, const std::string& path) {
+  IoResult result;
+  result.status = receipt.ok() ? DiskOkStatus() : DiskErrorStatus();
+  result.bytes_transferred = receipt.bytes_transferred;
+  if (!receipt.ok()) {
+    const auto message = BoundedIoMessage(receipt);
+    result.diagnostic = MakeDiagnostic(result.status.code, result.status.severity,
+      result.status.subsystem, message.code, message.key,
+      {{"path", path}, {"offset", std::to_string(receipt.offset)},
+       {"requested_bytes", std::to_string(receipt.requested_bytes)},
+       {"bytes_transferred", std::to_string(receipt.bytes_transferred)},
+       {"native_error", std::to_string(receipt.native_error)},
+       {"native_attempted", receipt.native_attempted ? "true" : "false"}},
+      {}, "storage.disk");
+  }
+  return result;
+}
+
+BoundedIoResult FileDevice::BoundedIoBatch::ReadAt(u64 offset, void* buffer, usize bytes) {
+  return Run(BoundedIoOperation::read, offset, buffer, nullptr, bytes);
+}
+BoundedIoResult FileDevice::BoundedIoBatch::WriteAt(u64 offset, const void* buffer, usize bytes) {
+  return Run(BoundedIoOperation::write, offset, nullptr, buffer, bytes);
+}
+BoundedIoResult FileDevice::BoundedIoBatch::Sync() {
+  return Run(BoundedIoOperation::sync, 0, nullptr, nullptr, 0);
+}
+BoundedIoResult FileDevice::BoundedIoBatch::Size() {
+  return Run(BoundedIoOperation::size, 0, nullptr, nullptr, 0);
+}
+BoundedIoResult FileDevice::BoundedIoBatch::Run(BoundedIoOperation operation,
+    u64 offset, void* read_buffer, const void* write_buffer, usize bytes) {
+  const auto guard = device_.AcquireOperationGuard();
+  const auto start = Clock::now();
+  BoundedIoResult r;
+  r.operation = operation;
+  r.offset = offset;
+  r.requested_bytes = bytes;
+#ifdef _WIN32
+  const auto handle = device_.file_handle_;
+  const bool opened = handle != nullptr;
+#else
+  const auto handle = device_.file_fd_;
+  const bool opened = handle >= 0;
+#endif
+  const bool reading = operation == BoundedIoOperation::read;
+  const bool writing = operation == BoundedIoOperation::write;
+  if (!opened) r.error = BoundedIoError::not_open;
+  else if (bytes && ((reading && !read_buffer) || (writing && !write_buffer)))
+    r.error = BoundedIoError::null_buffer;
+  else if (writing && device_.read_only_) r.error = BoundedIoError::read_only;
+  else if (reading || writing) {
+    r.error = BoundedExtentError(offset, bytes);
+    if (r.ok() && bytes) {
+      r.native_attempted = true;
+      const bool success = reading
+        ? NativeReadAt(handle, offset, read_buffer, bytes, &r.bytes_transferred, nullptr, &r.native_error)
+        : NativeWriteAt(handle, offset, write_buffer, bytes, &r.bytes_transferred, nullptr, &r.native_error);
+      if (!success) r.error = r.native_error ? BoundedIoError::native_failure : BoundedIoError::short_transfer;
+    }
+  } else if (operation == BoundedIoOperation::size) {
+    r.native_attempted = true;
+    if (!NativeFileSize(handle, &r.size_bytes, nullptr, &r.native_error))
+      r.error = r.native_error ? BoundedIoError::native_failure : BoundedIoError::invalid_size;
+  } else if (device_.read_only_) r.read_only_noop = true;
+  else {
+    r.native_attempted = true;
+#ifdef _WIN32
+    r.synchronized = DurableSyncHandle(static_cast<HANDLE>(handle), nullptr, &r.native_error);
+#else
+    r.synchronized = DurableSyncFd(handle, nullptr, &r.native_error);
+#endif
+    if (!r.synchronized) r.error = BoundedIoError::native_failure;
+  }
+  if (count_ < samples_.size())
+    samples_[count_++] = {device_.metric_context_, r, ElapsedMicros(start), opened};
+  else IncrementSaturating(device_.rejected_io_latency_);
+  return r;
+}
+
+FileDevice::BoundedIoBatch::~BoundedIoBatch() {
+  namespace metrics = scratchbird::core::metrics;
+  for (usize i = 0; i < count_; ++i) {
+    const auto& sample = samples_[i];
+    const auto& r = sample.receipt;
+    if (!r.ok()) {
+      try {
+        const auto message = BoundedIoMessage(r);
+        bool accepted = metrics::IncrementCounter("sb_storage_device_errors_total",
+          metrics::Labels({{"component", "storage.disk"}, {"reason", message.code},
+            {"device_class", sample.opened ? "file" : "unopened"}}), 1.0, "storage_disk").ok;
+        if (sample.context && !sample.context->filespace.is_nil()) {
+          const auto& c = *sample.context;
+          accepted = metrics::RecordFilespaceDeviceError(message.code, c.database, c.filespace,
+            c.node, c.role, c.device_class).ok && accepted;
+        }
+        if (r.error == BoundedIoError::read_only)
+          accepted = metrics::IncrementCounter("sb_storage_device_policy_violations_total",
+            metrics::Labels({{"component", "storage.disk"}, {"reason", "read_only_write_rejected"},
+              {"unknown_page_policy", "reject_all"}, {"device_class", "file"}}), 1.0, "storage_disk").ok && accepted;
+        if (!accepted) IncrementSaturating(device_.rejected_io_latency_);
+      } catch (...) { IncrementSaturating(device_.failed_io_latency_); }
+    }
+    if (r.operation != BoundedIoOperation::size && (r.native_attempted || r.read_only_noop)) {
+      const auto operation = r.operation == BoundedIoOperation::read ? LatencyOperation::read
+        : r.operation == BoundedIoOperation::write ? LatencyOperation::write : LatencyOperation::sync;
+      device_.PublishIoLatency(operation, sample.micros,
+        r.read_only_noop ? "read_only_noop" : r.ok() ? "ok" : "error", sample.context, sample.opened);
+    }
+  }
+}
 
 void FileDevice::ObserveIoLatency(LatencyOperation operation,double micros,const char* result) noexcept {
   PublishIoLatency(operation,micros,result,metric_context_,!path_.empty());
@@ -2354,23 +2530,14 @@ const char* UnknownPagePolicyName(UnknownPagePolicy policy) {
 }
 
 CheckedFileExtentResult CheckFileDeviceExtent(u64 offset, usize bytes) {
-  const auto max_streamoff = static_cast<u64>(std::numeric_limits<std::streamoff>::max());
-  const auto max_streamsize = static_cast<u64>(std::numeric_limits<std::streamsize>::max());
-  if (offset > max_streamoff) {
-    return DiskCheckedExtentError("SB-STORAGE-DISK-OFFSET-CONVERSION-OVERFLOW",
-                                  "storage.disk.offset_conversion_overflow",
-                                  std::to_string(offset));
-  }
-  if (static_cast<u64>(bytes) > max_streamsize) {
-    return DiskCheckedExtentError("SB-STORAGE-DISK-BYTE-COUNT-CONVERSION-OVERFLOW",
-                                  "storage.disk.byte_count_conversion_overflow",
-                                  std::to_string(bytes));
-  }
-  if (AddWouldOverflow(offset, static_cast<u64>(bytes)) ||
-      offset + static_cast<u64>(bytes) > max_streamoff) {
-    return DiskCheckedExtentError("SB-STORAGE-DISK-EXTENT-OVERFLOW",
-                                  "storage.disk.extent_overflow",
-                                  std::to_string(offset) + ":" + std::to_string(bytes));
+  BoundedIoResult receipt;
+  receipt.error = BoundedExtentError(offset, bytes);
+  if (!receipt.ok()) {
+    const auto message = BoundedIoMessage(receipt);
+    const auto detail = receipt.error == BoundedIoError::offset_overflow ? std::to_string(offset)
+      : receipt.error == BoundedIoError::count_overflow ? std::to_string(bytes)
+      : std::to_string(offset) + ":" + std::to_string(bytes);
+    return DiskCheckedExtentError(message.code, message.key, detail);
   }
 
   CheckedFileExtentResult result;

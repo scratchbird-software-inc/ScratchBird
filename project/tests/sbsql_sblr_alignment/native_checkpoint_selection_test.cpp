@@ -48,11 +48,12 @@ void* operator new(std::size_t n,std::align_val_t a){if(counting)++allocations;
 void operator delete(void* p,std::align_val_t)noexcept{CheckDeallocationLock();std::free(p);}
 void operator delete(void* p,std::size_t,std::align_val_t)noexcept{CheckDeallocationLock();std::free(p);}
 namespace {thread_local unsigned reads=0,fail_read=0,short_read=0,eof_read=0;thread_local void* last_read_buffer=nullptr;}
+namespace {thread_local std::recursive_mutex* read_failure_probe=nullptr;}
 namespace {thread_local unsigned writes=0,fail_write=0,partial_write=0,zero_write=0,syncs=0,fail_sync=0;}
 extern "C" ssize_t __real_pread(int,void*,size_t,off_t);
 extern "C" ssize_t __wrap_pread(int fd,void* data,size_t n,off_t offset){++reads;last_read_buffer=data;
-  if(fail_read&&reads==fail_read){errno=EIO;return -1;}
-  if(eof_read&&reads==eof_read)return 0;
+  if(fail_read&&reads==fail_read){metric_publication_mutex=read_failure_probe;errno=EIO;return -1;}
+  if(eof_read&&reads==eof_read){metric_publication_mutex=read_failure_probe;return 0;}
   return __real_pread(fd,data,short_read&&reads==short_read?n-1:n,offset);}
 extern "C" ssize_t __real_pwrite(int,const void*,size_t,off_t);
 extern "C" ssize_t __wrap_pwrite(int fd,const void* data,size_t n,off_t offset){++writes;
@@ -312,9 +313,16 @@ void MemoryTest(){
         !mismatch.manager.Snapshot().current_bytes,"actual file and header/object binding mismatch retains exact refusal");
       mismatch.memory={};mismatch.Empty();}
     for(unsigned fault=1;fault<=2;++fault)for(bool short_io:{false,true}){
+      read_failure_probe=file.device.AcquireOperationGuard().mutex();metric_publication_unlocked=false;
       if(short_io){short_read=fault;eof_read=fault+1;}else fail_read=fault;const auto r=file.Read(valid);fail_read=short_read=eof_read=0;
+      read_failure_probe=nullptr;
+      Check(!metric_publication_mutex&&metric_publication_unlocked,"first allocation after backend failure occurs only after device unlock");
       NoImage(r);Check(r.error==(fault==1?ME::bootstrap_failure:ME::io_failure)&&!valid.manager.Snapshot().current_bytes,
         "every physical read fails/shortens without leaked payload or prefix");
+      Check(r.io_receipt.error==(short_io?d::BoundedIoError::short_transfer:d::BoundedIoError::native_failure)&&
+        r.io_receipt.native_attempted&&r.io_receipt.native_error==(short_io?0u:unsigned(EIO))&&!r.io_status.ok(),
+        "fixed failure receipt retains native error versus EOF and failed status");
+      Check(r.bootstrap_bytes_read==(fault==1?(short_io?4095u:0u):4096u),"bootstrap partial bytes retained separately");
       if(fault==2)Check(r.page_bytes_read==(short_io?size-1:0),"exact partial page read count retained");}
     for(unsigned fault=1;fault<=2;++fault){short_read=fault;auto r=file.Read(valid);short_read=0;
       Check(r.ok()&&reads==3&&r.page_bytes_read==size,"device completes legal partial read without false truncation");}
