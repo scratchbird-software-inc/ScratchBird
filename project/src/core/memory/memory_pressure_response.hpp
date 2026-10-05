@@ -256,6 +256,10 @@ struct MemoryPressureEmergencyDiagnosticEvidence {
   u64 row_count = 0;
   u64 max_rows = 0;
   u64 top_context_count = 0;
+  // Planning is not capture or delivery. Only the actual diagnostic consumer
+  // can supply emitted/row_count evidence; model flags cannot establish it.
+  bool requested = false;
+  u64 planned_row_count = 0;
 };
 
 struct MemoryPressureDecision {

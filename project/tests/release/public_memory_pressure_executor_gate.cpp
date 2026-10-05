@@ -454,7 +454,7 @@ memory::MemoryPressureActionExecutionResult RunDiagnostics(
   snapshot.protected_material_present = true;
   snapshot.support_bundle_sink_available = true;
   const auto result = impl::EvaluateSupportBundleTriage(snapshot);
-  if (!decision.emergency_diagnostics.emitted || !result.ok() ||
+  if (!decision.emergency_diagnostics.requested || decision.emergency_diagnostics.emitted || !result.ok() ||
       result.decision !=
           impl::SupportBundleTriageDecisionKind::prepare_redacted_bundle ||
       !result.protected_material_suppressed) {

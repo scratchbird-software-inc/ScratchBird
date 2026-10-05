@@ -10,6 +10,9 @@
 #include "llvm_memory_accounting.hpp"
 
 #include <algorithm>
+#include <new>
+#include <stdexcept>
+#include <string_view>
 #include <utility>
 
 namespace scratchbird::core::memory {
@@ -69,24 +72,40 @@ DiagnosticRecord MakeLlvmMemoryDiagnostic(
       "Reserve ScratchBird foreign memory for LLVM loader, code, data, JIT, AOT, and native allocations before calling LLVM or native code.");
 }
 
-void AddMetric(std::vector<metrics::MetricValue>* metrics_out,
-               const std::string& family,
-               metrics::MetricLabelSet labels,
-               double value,
-               bool gauge) {
-  if (gauge) {
-    (void)metrics::DefaultMetricRegistry().SetGauge(
-        family, labels, value, "llvm_memory_accounting");
-  } else {
-    (void)metrics::DefaultMetricRegistry().IncrementCounter(
-        family, labels, value, "llvm_memory_accounting");
-  }
-  for (const auto& metric : metrics::DefaultMetricRegistry().SnapshotCurrent()) {
-    if (metric.family == family) {
-      if (metrics_out != nullptr) {
-        metrics_out->push_back(metric);
-      }
+void AddMetric(LlvmMemoryMetricPublication& publication,
+               std::vector<metrics::MetricValue>* metrics_out,
+               const char* family, const LlvmMemoryAccountingRequest& request,
+               const char* result, std::string_view reason, u64 value,
+               bool gauge) noexcept {
+  ++publication.attempted;
+  try {
+    metrics::MetricLabelSet labels{{"component", "llvm_memory"},
+        {"operation", request.operation_id}, {"result", result},
+        {"reason", std::string(reason)}};
+    auto& registry = metrics::DefaultMetricRegistry();
+    auto outcome = gauge
+        ? registry.SetGauge(family, labels, value, "llvm_memory_accounting")
+        : registry.IncrementCounter(family, labels, value, "llvm_memory_accounting");
+    if (!outcome.ok) {
+      publication.last_refusal = std::move(outcome);
+      return; // Never return a stale snapshot as evidence of rejected publication.
     }
+    ++publication.accepted;
+    if (!metrics_out) return;
+    // Current same-series view only, not a durable observation receipt.
+    for (const auto& metric : registry.SnapshotCurrent(false)) {
+      if (metric.family != family || metric.labels.size() != labels.size()) continue;
+      const bool exact = std::all_of(labels.begin(), labels.end(), [&](const auto& label) {
+        return std::any_of(metric.labels.begin(), metric.labels.end(), [&](const auto& candidate) {
+          return candidate.key == label.key && candidate.value == label.value;
+        });
+      });
+      if (exact) metrics_out->push_back(metric);
+    }
+  } catch (const std::bad_alloc&) {
+    publication.allocation_failed = true;
+  } catch (const std::length_error&) {
+    publication.allocation_failed = true;
   }
 }
 
@@ -153,13 +172,9 @@ LlvmMemoryAccountingAcquireResult RefuseAcquire(
   AddBaseEvidence(&result.evidence, request);
   result.evidence.push_back("llvm_memory.fail_closed=true");
   result.evidence.push_back("llvm_memory.reservation_created=false");
-  AddMetric(&result.metrics,
+  AddMetric(result.metric_publication, &result.metrics,
             "sb_llvm_foreign_memory_refusals_total",
-            {{"component", "llvm_memory"},
-             {"operation", request.operation_id},
-             {"result", "refused"},
-             {"reason", result.diagnostic.diagnostic_code}},
-            1.0,
+            request, "refused", result.diagnostic.diagnostic_code, u64{1},
             false);
   return result;
 }
@@ -501,14 +516,10 @@ LlvmMemoryAccountingReleaseResult LlvmMemoryAccountingReservation::Release(
       {{"reservation_count",
         std::to_string(result.released_reservation_count)},
        {"released_bytes", std::to_string(result.released_bytes)}});
-  (void)metrics::DefaultMetricRegistry().SetGauge(
+  AddMetric(result.metric_publication, nullptr,
       "sb_llvm_foreign_memory_reserved_bytes",
-      {{"component", "llvm_memory"},
-       {"operation", request_.operation_id},
-       {"result", "current"},
-       {"reason", ForeignMemoryLinkageModeName(request_.linkage_mode)}},
-      0.0,
-      "llvm_memory_accounting");
+      request_, "current", ForeignMemoryLinkageModeName(request_.linkage_mode),
+      u64{0}, true);
   return result;
 }
 
@@ -601,21 +612,15 @@ LlvmMemoryAccountingAcquireResult AcquireLlvmMemoryAccountingReservation(
         std::to_string(result.reservation->reservation_count())},
        {"reserved_bytes", std::to_string(reserved_bytes)},
        {"linkage_mode", ForeignMemoryLinkageModeName(request.linkage_mode)}});
-  AddMetric(&result.metrics,
+  AddMetric(result.metric_publication, &result.metrics,
             "sb_llvm_foreign_memory_reservations_total",
-            {{"component", "llvm_memory"},
-             {"operation", request.operation_id},
-             {"result", "reserved"},
-             {"reason", ForeignMemoryLinkageModeName(request.linkage_mode)}},
-            static_cast<double>(result.reservation->reservation_count()),
+            request, "reserved", ForeignMemoryLinkageModeName(request.linkage_mode),
+            result.reservation->reservation_count(),
             false);
-  AddMetric(&result.metrics,
+  AddMetric(result.metric_publication, &result.metrics,
             "sb_llvm_foreign_memory_reserved_bytes",
-            {{"component", "llvm_memory"},
-             {"operation", request.operation_id},
-             {"result", "current"},
-             {"reason", ForeignMemoryLinkageModeName(request.linkage_mode)}},
-            static_cast<double>(reserved_bytes),
+            request, "current", ForeignMemoryLinkageModeName(request.linkage_mode),
+            reserved_bytes,
             true);
   return result;
 }

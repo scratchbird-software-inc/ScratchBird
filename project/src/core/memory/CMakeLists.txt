@@ -16,6 +16,7 @@ endif()
 
 add_library(sb_core_memory
   background_memory_reclamation.cpp
+  emergency_diagnostic_queue.cpp
   foreign_memory_reservation.cpp
   hierarchical_memory_budget_ledger.cpp
   kdf_resource_governor.cpp

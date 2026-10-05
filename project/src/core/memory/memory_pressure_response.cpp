@@ -87,7 +87,25 @@ u64 PercentOf(u64 numerator, u64 denominator) {
   if (numerator >= denominator) {
     return 100;
   }
-  return (numerator * 100) / denominator;
+  if (numerator <= std::numeric_limits<u64>::max() / 100) {
+    return (numerator * 100) / denominator;
+  }
+  // Find the greatest p with numerator >= ceil(denominator * p / 100).
+  // Splitting denominator first keeps every intermediate representable;
+  // integer comparisons preserve exact threshold behavior without floating
+  // point rounding or a platform-specific wider integer. At most seven steps.
+  const u64 hundreds = denominator / 100;
+  const u64 remainder = denominator % 100;
+  u64 low = 0;
+  u64 high = 99;
+  while (low < high) {
+    const u64 candidate = low + (high - low + 1) / 2;
+    const u64 threshold = hundreds * candidate +
+        (remainder * candidate + 99) / 100;
+    if (numerator >= threshold) low = candidate;
+    else high = candidate - 1;
+  }
+  return low;
 }
 
 u64 BudgetPressurePercent(const MemoryPressureObservation& observation) {
@@ -573,20 +591,14 @@ MemoryPressureEmergencyDiagnosticEvidence BuildEmergencyDiagnosticEvidence(
     const MemoryPressureObservation& observation,
     const MemoryPressureDecision& decision) {
   MemoryPressureEmergencyDiagnosticEvidence evidence;
-  evidence.emitted = observation.emergency_diagnostics_supported;
-  evidence.bounded = observation.emergency_logger.bounded;
-  evidence.allocation_free_logger =
-      observation.emergency_logger.modeled &&
-      observation.emergency_logger.allocation_free;
-  evidence.redaction_before_buffering =
-      observation.emergency_logger.redaction_before_buffering;
-  evidence.protected_material_excluded =
-      observation.emergency_logger.protected_material_excluded;
+  evidence.requested = observation.emergency_diagnostics_supported;
+  // No sink or canonical producer ran here. Preserve the request's bound,
+  // but never promote caller-supplied model booleans into execution evidence.
   evidence.full_support_bundle_deferred = true;
   evidence.max_rows = policy.max_emergency_diagnostic_rows;
   evidence.top_context_count = decision.top_contexts.size();
   const u64 fixed_rows = 7;
-  evidence.row_count =
+  evidence.planned_row_count =
       std::min(evidence.max_rows, fixed_rows + evidence.top_context_count);
   return evidence;
 }
@@ -597,6 +609,10 @@ void AddEmergencyDiagnosticEvidence(MemoryPressureDecision* decision) {
   }
   decision->evidence.push_back("memory_pressure.emergency_diagnostics.emitted=" +
                                BoolString(decision->emergency_diagnostics.emitted));
+  decision->evidence.push_back("memory_pressure.emergency_diagnostics.requested=" +
+                               BoolString(decision->emergency_diagnostics.requested));
+  decision->evidence.push_back("memory_pressure.emergency_diagnostics.planned_row_count=" +
+                               std::to_string(decision->emergency_diagnostics.planned_row_count));
   decision->evidence.push_back("memory_pressure.emergency_diagnostics.bounded=" +
                                BoolString(decision->emergency_diagnostics.bounded));
   decision->evidence.push_back(
@@ -1156,7 +1172,7 @@ MemoryPressureDecision PlanMemoryPressureResponse(
                               std::to_string(decision.emergency_reserve.released_bytes));
   decision.evidence.push_back("memory_pressure.emergency_reserve.released=" +
                               BoolString(decision.emergency_reserve_released));
-  if (decision.emergency_diagnostics.emitted) {
+  if (decision.emergency_diagnostics.requested) {
     AddEmergencyDiagnosticEvidence(&decision);
   }
   AddActionEvidence(&decision);

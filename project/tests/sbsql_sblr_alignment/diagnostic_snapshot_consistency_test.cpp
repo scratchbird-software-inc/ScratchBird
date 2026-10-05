@@ -80,7 +80,7 @@ void Refused(const Snapshot& input) {
 }
 void RegistryCases() {
   const auto catalog = d::CanonicalDiagnosticCodeCatalog();
-  Check(catalog.size == 1423, "canonical registry coverage changed; update reviewed oracle count");
+  Check(catalog.size == 1540, "canonical registry coverage changed; update reviewed oracle count");
   for (const auto& row : catalog) {
     const auto input = Source(row);
     const auto previous_faults = consumed_faults;

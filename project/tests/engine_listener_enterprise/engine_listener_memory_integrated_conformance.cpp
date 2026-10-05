@@ -417,10 +417,12 @@ void ProvePressureDecisionAndExecutors() {
   Require(decision.emergency_reserve_released &&
               decision.emergency_reserve_released_bytes == 4096,
           "ELER-050 emergency reserve was not released for diagnostics");
-  Require(decision.emergency_diagnostics.emitted &&
-              decision.emergency_diagnostics.bounded &&
-              decision.emergency_diagnostics.allocation_free_logger,
-          "ELER-050 emergency diagnostics were not bounded/allocation-free");
+  Require(decision.emergency_diagnostics.requested &&
+              !decision.emergency_diagnostics.emitted &&
+              !decision.emergency_diagnostics.allocation_free_logger &&
+              decision.emergency_diagnostics.row_count == 0 &&
+              decision.emergency_diagnostics.planned_row_count <= decision.emergency_diagnostics.max_rows,
+          "ELER-050 pressure planning claimed diagnostic delivery");
   Require(decision.top_contexts.size() == 4,
           "ELER-050 pressure top contexts were not bounded");
 

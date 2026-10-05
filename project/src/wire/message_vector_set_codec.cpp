@@ -31,10 +31,10 @@ bool Uuid(Bytes b,bool nullable=false) noexcept {
 Bytes TextBytes(std::string_view s) noexcept {
   return {reinterpret_cast<const std::uint8_t*>(s.data()),s.size()};
 }
-void Put(Buffer& b,std::size_t at,std::uint64_t n,unsigned width) {
+void Put(std::span<std::uint8_t> b,std::size_t at,std::uint64_t n,unsigned width) {
   for(unsigned i=0;i<width;++i) b[at+i]=std::uint8_t(n>>(8*i));
 }
-void PutUuid(Buffer& b,std::size_t at,const MessageUuid& uuid) {
+void PutUuid(std::span<std::uint8_t> b,std::size_t at,const MessageUuid& uuid) {
   std::copy(uuid.begin(),uuid.end(),b.begin()+at);
 }
 MessageUuid GetUuid(Bytes b,std::size_t at) {
@@ -121,29 +121,49 @@ bool SetHeaderValid(const MessageSet& s) noexcept {
 bool FlagsMatch(std::uint32_t flags,bool redacted,bool finality,bool notification) noexcept {
   return bool(flags&1)==redacted && bool(flags&2)==finality && (!(flags&4) || notification);
 }
-Error AppendTlv(const ValueTlv& v,Buffer& out) {
-  Buffer encoded;const auto status=EncodeValueTlv(v,&encoded);
-  if(status!=Error::none) return status;
-  if(encoded.size()>kRecordLimit-out.size()) return Error::malformed;
-  out.insert(out.end(),encoded.begin(),encoded.end());return Error::none;
+std::size_t TlvSize(const ValueTlv& v) noexcept {
+  return Align4(8+v.key.size()+v.value.size());
 }
-Error EncodeRecord(const MessageRecord& r,Buffer& b) {
-  b.assign(112,0);Put(b,8,1,2);b[10]=r.message_class;b[11]=r.severity;Put(b,12,r.flags,4);
+// Called only after RecordValid has bounded every individual value/string.
+std::size_t RecordSize(const MessageRecord& r) noexcept {
+  std::size_t size=112;
+  for(const auto& s:r.text) size+=Align4(s.size());
+  for(const auto& v:r.parameters) size+=TlvSize(v);
+  size+=TlvSize(r.context);
+  for(const auto& v:r.details) size+=TlvSize(v);
+  for(const auto& v:r.causes) size+=TlvSize(v);
+  return size;
+}
+void WriteTlv(const ValueTlv& v,std::span<std::uint8_t> b,std::size_t& at) noexcept {
+  Put(b,at,v.key.size(),2);Put(b,at+2,static_cast<std::uint16_t>(v.type),2);
+  Put(b,at+4,v.value.size(),4);
+  std::copy(v.key.begin(),v.key.end(),b.begin()+at+8);
+  std::copy(v.value.begin(),v.value.end(),b.begin()+at+8+v.key.size());
+  at+=TlvSize(v);
+}
+void WriteRecord(const MessageRecord& r,std::span<std::uint8_t> b) noexcept {
+  std::fill(b.begin(),b.end(),0);
+  Put(b,8,1,2);b[10]=r.message_class;b[11]=r.severity;Put(b,12,r.flags,4);
   PutUuid(b,16,r.vector_uuid);PutUuid(b,32,r.canonical_source_uuid);
   PutUuid(b,48,r.request_uuid);PutUuid(b,64,r.correlation_uuid);
   Put(b,80,r.policy_generation,8);Put(b,88,r.source_component,4);
   for(unsigned i=0;i<5;++i) Put(b,92+2*i,r.text[i].size(),2);
   Put(b,102,r.parameters.size(),2);Put(b,104,r.details.size()+1,2);Put(b,106,r.causes.size(),2);
   b[108]=r.retryability;b[109]=r.redaction_state;
+  std::size_t at=112;
   for(const auto& s:r.text) {
-    if(Align4(s.size())>kRecordLimit-b.size()) return Error::malformed;
-    b.insert(b.end(),s.begin(),s.end());b.resize(Align4(b.size()),0);
+    std::copy(s.begin(),s.end(),b.begin()+at);at+=Align4(s.size());
   }
-  for(const auto& v:r.parameters) {const auto e=AppendTlv(v,b);if(e!=Error::none) return e;}
-  if(const auto e=AppendTlv(r.context,b);e!=Error::none) return e;
-  for(const auto& v:r.details) {const auto e=AppendTlv(v,b);if(e!=Error::none) return e;}
-  for(const auto& v:r.causes) {const auto e=AppendTlv(v,b);if(e!=Error::none) return e;}
-  Put(b,0,b.size(),4);Put(b,4,Crc(b,4),4);return Error::none;
+  for(const auto& v:r.parameters) WriteTlv(v,b,at);
+  WriteTlv(r.context,b,at);
+  for(const auto& v:r.details) WriteTlv(v,b,at);
+  for(const auto& v:r.causes) WriteTlv(v,b,at);
+  Put(b,0,b.size(),4);Put(b,4,Crc(b,4),4);
+}
+Error EncodeRecord(const MessageRecord& r,Buffer& b) {
+  const auto size=RecordSize(r);
+  if(size>kRecordLimit) return Error::malformed;
+  b.resize(size);WriteRecord(r,b);return Error::none;
 }
 Error ReadTlv(Bytes b,std::size_t* at,ValueTlv* v) {
   if(*at>b.size() || b.size()-*at<8) return Error::malformed;
@@ -189,6 +209,66 @@ Error DecodeRecord(Bytes b,MessageRecord& r) {
   return at==b.size()?Error::none:Error::malformed;
 }
 } // namespace
+
+BoundedSetReceipt EncodeMessageSetInto(const MessageSet& input,
+    std::span<std::uint8_t> output) noexcept {
+  using Status=BoundedSetStatus;
+  if(!SetHeaderValid(input)) return {Status::malformed,0};
+  std::size_t size=64;
+  bool redacted=false,finality=false,notification=false;
+  for(std::size_t i=0;i<input.records.size();++i) {
+    const auto& r=input.records[i];ContextSummary summary;
+    if(!RecordValid(r,input.registry_generation,&summary)) return {Status::malformed,0};
+    for(std::size_t j=0;j<i;++j)
+      if(input.records[j].vector_uuid==r.vector_uuid) return {Status::malformed,0};
+    const auto record_size=RecordSize(r);
+    if(record_size>kRecordLimit || record_size>kSetLimit-size) return {Status::malformed,0};
+    size+=record_size;
+    redacted|=r.redaction_state!=0;finality|=summary.finality!=0 || r.message_class==6;
+    notification|=r.message_class==3;
+  }
+  if(!FlagsMatch(input.flags,redacted,finality,notification)) return {Status::malformed,0};
+  if(output.size()<size) return {Status::destination_too_small,size};
+  auto bytes=output.first(size);
+  // Reject before writing even when the destination aliases a late record or
+  // an owning container. Integer distance avoids unrelated pointer ordering.
+  const auto overlaps=[&](const void* data,std::size_t count) noexcept {
+    if(count==0) return false;
+    const auto a=reinterpret_cast<std::uintptr_t>(bytes.data());
+    const auto b=reinterpret_cast<std::uintptr_t>(data);
+    return a<=b ? b-a<bytes.size() : a-b<count;
+  };
+  const auto value_overlaps=[&](const ValueTlv& v) noexcept {
+    return overlaps(&v,sizeof(v)) || overlaps(v.key.data(),v.key.size()+1) ||
+        overlaps(v.value.data(),v.value.size());
+  };
+  if(overlaps(&input,sizeof(input)) ||
+     overlaps(input.records.data(),input.records.size()*sizeof(MessageRecord)))
+    return {Status::overlapping_input,size};
+  for(const auto& r:input.records) {
+    for(const auto& s:r.text)
+      if(overlaps(s.data(),s.size()+1)) return {Status::overlapping_input,size};
+    if(value_overlaps(r.context)) return {Status::overlapping_input,size};
+    for(const auto& v:r.parameters)
+      if(value_overlaps(v)) return {Status::overlapping_input,size};
+    for(const auto& v:r.details)
+      if(value_overlaps(v)) return {Status::overlapping_input,size};
+    for(const auto& v:r.causes)
+      if(value_overlaps(v)) return {Status::overlapping_input,size};
+  }
+  std::fill(bytes.begin(),bytes.begin()+64,0);
+  std::size_t at=64;
+  for(const auto& r:input.records) {
+    const auto record_size=RecordSize(r);
+    WriteRecord(r,bytes.subspan(at,record_size));at+=record_size;
+  }
+  Put(bytes,0,0x564d4253,4);Put(bytes,4,64,2);Put(bytes,6,1,2);
+  Put(bytes,8,input.flags,4);Put(bytes,12,input.records.size(),4);Put(bytes,16,size,4);
+  Put(bytes,20,input.records.empty()?0:Crc(Bytes(bytes).subspan(64)),4);
+  Put(bytes,24,input.registry_generation,8);PutUuid(bytes,32,input.set_uuid);
+  Put(bytes,48,input.max_render_bytes,4);Put(bytes,52,Crc(Bytes(bytes).first(64),52),4);
+  return {Status::ok,size};
+}
 
 ValueCodecError EncodeMessageSet(const MessageSet& input,Buffer* output) noexcept {
   if(!output || !SetHeaderValid(input)) return Error::malformed;
