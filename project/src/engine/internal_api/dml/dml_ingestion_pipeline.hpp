@@ -112,6 +112,9 @@ class DmlIngestionPipeline {
   DmlIngestionPipelineStats FencePreallocator();
   DmlIngestionPipelineStats DrainWriters();
   DmlIngestionPipelineStats Fence();
+  // Owner-side quiescence without allocating/copying a statistics receipt.
+  // Never call from a callback. Closes admission and joins all workers.
+  void StopAndJoin() noexcept;
   DmlIngestionPipelineStats Snapshot() const;
 
  private:
@@ -142,6 +145,7 @@ class DmlIngestionPipeline {
 
   DmlIngestionPipelineConfig config_;
   mutable std::mutex mutex_;
+  std::mutex join_mutex_;
   std::condition_variable prework_available_;
   std::condition_variable prework_space_available_;
   std::condition_variable write_available_;
@@ -149,6 +153,7 @@ class DmlIngestionPipeline {
   std::deque<PreworkQueueItem> prework_queue_;
   std::deque<QueuedWriteTask> write_queue_;
   EngineApiU64 prework_queued_bytes_ = 0;
+  EngineApiU64 active_writers_ = 0;
   bool started_ = false;
   bool prework_stop_requested_ = false;
   bool write_stop_requested_ = false;
@@ -156,6 +161,19 @@ class DmlIngestionPipeline {
   std::thread preallocator_worker_;
   std::vector<std::thread> writer_workers_;
   DmlIngestionPipelineStats stats_;
+};
+
+// Declare after objects borrowed by write callbacks, before submitting work.
+// Captures then outlive quiescence on normal return and exception unwind.
+class DmlIngestionWriteScope {
+ public:
+  explicit DmlIngestionWriteScope(DmlIngestionPipeline& pipeline) noexcept
+      : pipeline_(pipeline) {}
+  ~DmlIngestionWriteScope() { pipeline_.StopAndJoin(); }
+  DmlIngestionWriteScope(const DmlIngestionWriteScope&) = delete;
+  DmlIngestionWriteScope& operator=(const DmlIngestionWriteScope&) = delete;
+ private:
+  DmlIngestionPipeline& pipeline_;
 };
 
 EngineApiU64 DmlIngestionOptionU64(const std::vector<std::string>& options,

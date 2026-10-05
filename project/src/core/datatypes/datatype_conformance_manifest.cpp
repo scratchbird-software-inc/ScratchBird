@@ -184,7 +184,11 @@ DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
     const DateAuthorityReceiptV3& date_receipt,
     bool date_null_allowed,
     const TimeAuthorityReceiptV3& time_receipt,
-    bool time_null_allowed) {
+    bool time_null_allowed,
+    const TimestampAuthorityReceiptV3& timestamp_receipt,
+    bool timestamp_null_allowed,
+    const IntervalAuthorityReceiptV3& interval_receipt,
+    bool interval_null_allowed) {
   DatatypeConformanceManifestResult result;
   result.status = ManifestOkStatus();
   result.manifest.manifest_key = kCurrentCoreDatatypeConformanceManifestKey;
@@ -195,7 +199,9 @@ DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
   for (const DatatypeDescriptor& descriptor : BuiltinDatatypeDescriptors()) {
     if (descriptor.type_id == CanonicalTypeId::bit_string ||
         descriptor.type_id == CanonicalTypeId::date ||
-        descriptor.type_id == CanonicalTypeId::time) {
+        descriptor.type_id == CanonicalTypeId::time ||
+        descriptor.type_id == CanonicalTypeId::timestamp ||
+        descriptor.type_id == CanonicalTypeId::interval) {
       continue;
     }
     DatatypeConformanceExample example;
@@ -336,6 +342,115 @@ DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
   time_example.source_marker = "BASE-TIME-CONFORMANCE-V3";
   result.manifest.time_examples.push_back(std::move(time_example));
 
+  const auto timestamp_identity = std::find_if(
+      current_v3.begin(), current_v3.end(),
+      [](const DatatypeTypeCodecIdentityRowV3& row) {
+        return IsExactCanonicalTimestampTypeCodecIdentityV3(row);
+      });
+  if (timestamp_identity == current_v3.end()) {
+    AddFailure(&result,
+               "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+               "datatype.conformance.timestamp_v3_identity_missing");
+    return result;
+  }
+  const auto timestamp_profile = BuildTimestampValidatedProfileHandleV3(
+      timestamp_receipt, *timestamp_identity);
+  if (!timestamp_profile.ok()) {
+    AddOwnedFailure(
+        &result,
+        MakeTimestampDiagnosticV3(
+            timestamp_profile.status,
+            std::string(timestamp_profile.diagnostic.diagnostic_code),
+            "datatype.conformance.timestamp_profile_build_refused",
+            std::string(timestamp_profile.diagnostic.detail)));
+    return result;
+  }
+  const auto timestamp_profile_owner =
+      std::make_shared<const TimestampValidatedProfileHandleV3>(
+          timestamp_profile.profile);
+  const TimestampOwnedValueV3 timestamp_value{
+      timestamp_profile_owner, TimestampValueStateV3::value, 0, 0};
+  const auto timestamp_component =
+      EncodeCanonicalTimestampComponentV3(timestamp_value);
+  if (!timestamp_component.ok()) {
+    AddOwnedFailure(
+        &result,
+        MakeTimestampDiagnosticV3(
+            timestamp_component.status,
+            std::string(timestamp_component.diagnostic.diagnostic_code),
+            "datatype.conformance.timestamp_component_encode_refused",
+            std::string(timestamp_component.diagnostic.detail)));
+    return result;
+  }
+  TimestampConformanceExampleV3 timestamp_example;
+  timestamp_example.receipt = timestamp_receipt;
+  timestamp_example.identity = *timestamp_identity;
+  timestamp_example.profile = timestamp_profile.profile;
+  timestamp_example.null_allowed = timestamp_null_allowed;
+  timestamp_example.state = TimestampValueStateV3::value;
+  timestamp_example.canonical_component = timestamp_component.bytes;
+  timestamp_example.source =
+      DatatypeConformanceExampleSource::current_core_registry;
+  timestamp_example.evidence_path =
+      "project/src/core/datatypes/datatype_timestamp.cpp";
+  timestamp_example.source_marker = "BASE-TIMESTAMP-CONFORMANCE-V3";
+  result.manifest.timestamp_examples.push_back(std::move(timestamp_example));
+
+  const auto interval_identity = std::find_if(
+      current_v3.begin(), current_v3.end(),
+      [](const DatatypeTypeCodecIdentityRowV3& row) {
+        return IsExactCanonicalIntervalTypeCodecIdentityV3(row);
+      });
+  if (interval_identity == current_v3.end()) {
+    AddFailure(&result, "CTI.INTERVAL.DESCRIPTOR_INVALID",
+               "datatype.conformance.interval_v3_identity_missing");
+    return result;
+  }
+  const auto interval_profile = BuildIntervalValidatedProfileHandleV3(
+      interval_receipt, *interval_identity);
+  if (!interval_profile.ok()) {
+    AddFailure(&result,
+               std::string(interval_profile.diagnostic.diagnostic_code),
+               "datatype.conformance.interval_profile_build_refused",
+               std::string(interval_profile.diagnostic.detail));
+    return result;
+  }
+  const auto interval_profile_owner =
+      std::make_shared<const IntervalValidatedProfileHandleV3>(
+          interval_profile.profile);
+  const IntervalOwnedValueV3 interval_value{
+      interval_profile_owner, IntervalValueStateV3::value, 0, 0, 0};
+  const auto interval_component =
+      EncodeCanonicalIntervalComponentV3(interval_value);
+  if (!interval_component.ok() || interval_component.bytes.size() != 16 ||
+      !std::all_of(interval_component.bytes.begin(),
+                   interval_component.bytes.end(),
+                   [](byte value) { return value == 0; })) {
+    AddFailure(
+        &result,
+        interval_component.ok()
+            ? "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID"
+            : std::string(interval_component.diagnostic.diagnostic_code),
+        "datatype.conformance.interval_component_encode_refused",
+        interval_component.ok()
+            ? "zero_tuple_not_exact_le16"
+            : std::string(interval_component.diagnostic.detail));
+    return result;
+  }
+  IntervalConformanceExampleV3 interval_example;
+  interval_example.receipt = interval_receipt;
+  interval_example.identity = *interval_identity;
+  interval_example.profile = interval_profile.profile;
+  interval_example.null_allowed = interval_null_allowed;
+  interval_example.state = IntervalValueStateV3::value;
+  interval_example.canonical_component = interval_component.bytes;
+  interval_example.source =
+      DatatypeConformanceExampleSource::current_core_registry;
+  interval_example.evidence_path =
+      "project/src/core/datatypes/datatype_interval.cpp";
+  interval_example.source_marker = "BASE-INTERVAL-CONFORMANCE-V3";
+  result.manifest.interval_examples.push_back(std::move(interval_example));
+
   return result;
 }
 
@@ -363,7 +478,9 @@ DatatypeConformanceManifestResult ExecuteDatatypeConformanceManifest(
   for (const DatatypeDescriptor& descriptor : BuiltinDatatypeDescriptors()) {
     if (descriptor.type_id != CanonicalTypeId::bit_string &&
         descriptor.type_id != CanonicalTypeId::date &&
-        descriptor.type_id != CanonicalTypeId::time) {
+        descriptor.type_id != CanonicalTypeId::time &&
+        descriptor.type_id != CanonicalTypeId::timestamp &&
+        descriptor.type_id != CanonicalTypeId::interval) {
       required.insert(descriptor.type_id);
     }
   }
@@ -671,6 +788,158 @@ DatatypeConformanceManifestResult ExecuteDatatypeConformanceManifest(
     }
     ++result.executed_examples;
     ++result.executed_time_examples;
+  }
+
+  if (manifest.timestamp_examples.size() != 1) {
+    AddFailure(&result,
+               "SB-DATATYPE-CONFORMANCE-MANIFEST-ROW-MISSING",
+               "datatype.conformance.timestamp_v3_example_count",
+               std::to_string(manifest.timestamp_examples.size()));
+  }
+  for (const TimestampConformanceExampleV3& example :
+       manifest.timestamp_examples) {
+    if (example.source !=
+        DatatypeConformanceExampleSource::current_core_registry) {
+      AddFailure(&result,
+                 "SB-DATATYPE-CONFORMANCE-DOCS-ONLY-EXAMPLE-REFUSED",
+                 "datatype.conformance.timestamp_docs_only_refused",
+                 DatatypeConformanceExampleSourceName(example.source));
+      continue;
+    }
+    if (EvidencePathForbidden(example.evidence_path)) {
+      AddFailure(&result,
+                 "SB-DATATYPE-CONFORMANCE-EVIDENCE-PATH-REFUSED",
+                 "datatype.conformance.timestamp_evidence_path_refused",
+                 example.evidence_path);
+      continue;
+    }
+    if (!IsExactCanonicalTimestampTypeCodecIdentityV3(example.identity)) {
+      AddFailure(&result,
+                 "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+                 "datatype.conformance.timestamp_identity_refused");
+      continue;
+    }
+    const auto profile = ValidateTimestampProfileHandleV3(example.profile);
+    if (!profile.ok()) {
+      AddOwnedFailure(
+          &result,
+          MakeTimestampDiagnosticV3(
+              profile.status,
+              std::string(profile.diagnostic.diagnostic_code),
+              "datatype.conformance.timestamp_profile_validation_refused",
+              std::string(profile.diagnostic.detail)));
+      continue;
+    }
+    if (example.receipt.statement_receipt_uuid !=
+            example.profile.receipt.statement_receipt_uuid ||
+        example.receipt.catalog_snapshot_uuid !=
+            example.profile.receipt.catalog_snapshot_uuid ||
+        example.receipt.catalog_generation !=
+            example.profile.receipt.catalog_generation ||
+        example.receipt.registry_generation !=
+            example.profile.receipt.registry_generation) {
+      AddFailure(&result,
+                 "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+                 "datatype.conformance.timestamp_receipt_refused");
+      continue;
+    }
+    const auto decoded = DecodeCanonicalTimestampComponentNoAllocV3(
+        example.profile, example.state, example.null_allowed,
+        example.canonical_component);
+    if (!decoded.ok()) {
+      AddOwnedFailure(
+          &result,
+          MakeTimestampDiagnosticV3(
+              decoded.status,
+              std::string(decoded.diagnostic.diagnostic_code),
+              "datatype.conformance.timestamp_component_refused",
+              std::string(decoded.diagnostic.detail)));
+      continue;
+    }
+    if (decoded.value.profile != &example.profile ||
+        decoded.value.state != example.state ||
+        decoded.value.civil_day != 0 ||
+        decoded.value.nanoseconds_since_midnight != 0) {
+      AddFailure(&result,
+                 "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+                 "datatype.conformance.timestamp_component_refused");
+      continue;
+    }
+    ++result.executed_examples;
+    ++result.executed_timestamp_examples;
+  }
+
+  if (manifest.interval_examples.size() != 1) {
+    AddFailure(&result,
+               "SB-DATATYPE-CONFORMANCE-MANIFEST-ROW-MISSING",
+               "datatype.conformance.interval_v3_example_count",
+               std::to_string(manifest.interval_examples.size()));
+  }
+  for (const IntervalConformanceExampleV3& example :
+       manifest.interval_examples) {
+    if (example.source !=
+        DatatypeConformanceExampleSource::current_core_registry) {
+      AddFailure(&result,
+                 "SB-DATATYPE-CONFORMANCE-DOCS-ONLY-EXAMPLE-REFUSED",
+                 "datatype.conformance.interval_docs_only_refused",
+                 DatatypeConformanceExampleSourceName(example.source));
+      continue;
+    }
+    if (EvidencePathForbidden(example.evidence_path)) {
+      AddFailure(&result,
+                 "SB-DATATYPE-CONFORMANCE-EVIDENCE-PATH-REFUSED",
+                 "datatype.conformance.interval_evidence_path_refused",
+                 example.evidence_path);
+      continue;
+    }
+    if (!IsExactCanonicalIntervalTypeCodecIdentityV3(example.identity)) {
+      AddFailure(&result,
+                 "CTI.INTERVAL.DESCRIPTOR_INVALID",
+                 "datatype.conformance.interval_identity_refused");
+      continue;
+    }
+    const auto profile = ValidateIntervalProfileHandleV3(example.profile);
+    if (!profile.ok()) {
+      AddFailure(&result,
+                 std::string(profile.diagnostic.diagnostic_code),
+                 "datatype.conformance.interval_profile_validation_refused",
+                 std::string(profile.diagnostic.detail));
+      continue;
+    }
+    if (example.receipt.statement_receipt_uuid !=
+            example.profile.receipt.statement_receipt_uuid ||
+        example.receipt.catalog_snapshot_uuid !=
+            example.profile.receipt.catalog_snapshot_uuid ||
+        example.receipt.catalog_generation !=
+            example.profile.receipt.catalog_generation ||
+        example.receipt.registry_generation !=
+            example.profile.receipt.registry_generation) {
+      AddFailure(&result,
+                 "CTI.INTERVAL.DESCRIPTOR_INVALID",
+                 "datatype.conformance.interval_receipt_refused");
+      continue;
+    }
+    const auto decoded = DecodeCanonicalIntervalComponentNoAllocV3(
+        example.profile, example.state, example.null_allowed,
+        example.canonical_component);
+    if (!decoded.ok()) {
+      AddFailure(&result,
+                 std::string(decoded.diagnostic.diagnostic_code),
+                 "datatype.conformance.interval_component_refused",
+                 std::string(decoded.diagnostic.detail));
+      continue;
+    }
+    if (decoded.value.profile != &example.profile ||
+        decoded.value.state != example.state || decoded.value.months != 0 ||
+        decoded.value.civil_days != 0 ||
+        decoded.value.fixed_nanoseconds != 0) {
+      AddFailure(&result,
+                 "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+                 "datatype.conformance.interval_component_refused");
+      continue;
+    }
+    ++result.executed_examples;
+    ++result.executed_interval_examples;
   }
 
   for (const CanonicalTypeId type_id : required) {

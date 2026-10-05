@@ -173,6 +173,15 @@ DatatypeDescriptorSerializationResult SerializeDatatypeDescriptor(const Datatype
     result.diagnostic = validation.diagnostic;
     return result;
   }
+  if (descriptor.type_id == CanonicalTypeId::interval) {
+    result.status = DatatypeExchangeErrorStatus();
+    result.diagnostic = MakeDatatypeExchangeDiagnostic(
+        result.status,
+        "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+        "datatype.interval.legacy_descriptor_serialization_refused",
+        "SBDTV001 cannot carry the exact d710 receipt or complete interval profile");
+    return result;
+  }
   if (descriptor.type_id == CanonicalTypeId::bit_string) {
     result.status = DatatypeExchangeErrorStatus();
     result.diagnostic = MakeDatatypeExchangeDiagnostic(
@@ -188,7 +197,7 @@ DatatypeDescriptorSerializationResult SerializeDatatypeDescriptor(const Datatype
         result.status,
         "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
         "datatype.date.legacy_descriptor_serialization_refused",
-        "SBDTV001 cannot carry the exact d709 receipt or complete date profile");
+        "SBDTV001 cannot carry the exact d710 receipt or complete date profile");
     return result;
   }
   if (descriptor.type_id == CanonicalTypeId::time) {
@@ -197,7 +206,16 @@ DatatypeDescriptorSerializationResult SerializeDatatypeDescriptor(const Datatype
         result.status,
         "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
         "datatype.time.legacy_descriptor_serialization_refused",
-        "SBDTV001 cannot carry the exact d709 receipt or complete time profile");
+        "SBDTV001 cannot carry the exact d710 receipt or complete time profile");
+    return result;
+  }
+  if (descriptor.type_id == CanonicalTypeId::timestamp) {
+    result.status = DatatypeExchangeErrorStatus();
+    result.diagnostic = MakeDatatypeExchangeDiagnostic(
+        result.status,
+        "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+        "datatype.timestamp.legacy_descriptor_serialization_refused",
+        "SBDTV001 cannot carry the exact d710 receipt or complete timestamp profile");
     return result;
   }
   result.status = DatatypeExchangeOkStatus();
@@ -229,6 +247,15 @@ DatatypeDescriptorResult ParseDatatypeDescriptor(const SerializedDatatypeDescrip
   DatatypeDescriptorResult lookup = LookupDatatypeDescriptor(type_id);
   if (!lookup.ok()) {
     return lookup;
+  }
+  if (type_id == CanonicalTypeId::interval) {
+    result.status = DatatypeExchangeErrorStatus();
+    result.diagnostic = MakeDatatypeExchangeDiagnostic(
+        result.status,
+        "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+        "datatype.interval.legacy_descriptor_parse_refused",
+        "SBDTV001 cannot establish exact d710 interval authority");
+    return result;
   }
 
   const auto family = static_cast<TypeFamily>(LoadLittle16(serialized.data() + kOffsetFamily));
@@ -267,7 +294,7 @@ DatatypeDescriptorResult ParseDatatypeDescriptor(const SerializedDatatypeDescrip
         result.status,
         "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
         "datatype.date.legacy_descriptor_parse_refused",
-        "SBDTV001 cannot establish exact d709 date authority");
+        "SBDTV001 cannot establish exact d710 date authority");
     return result;
   }
   if (type_id == CanonicalTypeId::time) {
@@ -276,7 +303,16 @@ DatatypeDescriptorResult ParseDatatypeDescriptor(const SerializedDatatypeDescrip
         result.status,
         "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
         "datatype.time.legacy_descriptor_parse_refused",
-        "SBDTV001 cannot establish exact d709 time authority");
+        "SBDTV001 cannot establish exact d710 time authority");
+    return result;
+  }
+  if (type_id == CanonicalTypeId::timestamp) {
+    result.status = DatatypeExchangeErrorStatus();
+    result.diagnostic = MakeDatatypeExchangeDiagnostic(
+        result.status,
+        "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+        "datatype.timestamp.legacy_descriptor_parse_refused",
+        "SBDTV001 cannot establish exact d710 timestamp authority");
     return result;
   }
 
@@ -344,6 +380,18 @@ DatatypeConversionDiagnosticResult DescribeDatatypeConversion(CanonicalTypeId so
   result.source_type_id = source_type_id;
   result.target_type_id = target_type_id;
 
+  if (source_type_id == CanonicalTypeId::interval ||
+      target_type_id == CanonicalTypeId::interval) {
+    result.status = DatatypeExchangeErrorStatus();
+    result.kind = ConversionDiagnosticKind::unsupported;
+    result.diagnostic = MakeDatatypeExchangeDiagnostic(
+        result.status,
+        "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+        "datatype.interval.legacy_conversion_description_refused",
+        "canonical enum or name cannot replace the exact d710 interval profile and closed cast registry");
+    return result;
+  }
+
   DatatypeDescriptorResult source = LookupDatatypeDescriptor(source_type_id);
   DatatypeDescriptorResult target = LookupDatatypeDescriptor(target_type_id);
   if (!source.ok() || !target.ok()) {
@@ -374,7 +422,7 @@ DatatypeConversionDiagnosticResult DescribeDatatypeConversion(CanonicalTypeId so
         result.status,
         "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
         "datatype.date.legacy_conversion_description_refused",
-        "canonical enum or name cannot replace the exact d709 date profile and closed cast registry");
+        "canonical enum or name cannot replace the exact d710 date profile and closed cast registry");
     return result;
   }
   if (source_type_id == CanonicalTypeId::time ||
@@ -385,7 +433,18 @@ DatatypeConversionDiagnosticResult DescribeDatatypeConversion(CanonicalTypeId so
         result.status,
         "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
         "datatype.time.legacy_conversion_description_refused",
-        "canonical enum or name cannot replace the exact d709 time profile and closed cast registry");
+        "canonical enum or name cannot replace the exact d710 time profile and closed cast registry");
+    return result;
+  }
+  if (source_type_id == CanonicalTypeId::timestamp ||
+      target_type_id == CanonicalTypeId::timestamp) {
+    result.status = DatatypeExchangeErrorStatus();
+    result.kind = ConversionDiagnosticKind::unsupported;
+    result.diagnostic = MakeDatatypeExchangeDiagnostic(
+        result.status,
+        "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+        "datatype.timestamp.legacy_conversion_description_refused",
+        "canonical enum or name cannot replace the exact d710 timestamp profile and closed cast registry");
     return result;
   }
 

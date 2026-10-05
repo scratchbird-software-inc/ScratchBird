@@ -20,6 +20,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from public_nested_dependency_config import dependency_configure_args
+
 from public_reference_acquisition_policy import (
     REFERENCE_ACQUISITION_PREFIX,
     iter_public_reference_acquisition_metadata,
@@ -543,11 +545,19 @@ def configure_staged_project(args, stage_root: Path, build_root: Path) -> None:
         "-DSCRATCHBIRD_ENABLE_HOTPATH_TRACE=OFF",
         "-DSCRATCHBIRD_ENABLE_EXEC_PROFILE_TRACE=OFF",
         "-DSCRATCHBIRD_ENABLE_PREPARED_TRACE=OFF",
+        *dependency_configure_args(getattr(args, "dependency_cache", None)),
     ]
     if args.c_compiler:
         command.append(f"-DCMAKE_C_COMPILER={args.c_compiler}")
     if args.cxx_compiler:
         command.append(f"-DCMAKE_CXX_COMPILER={args.cxx_compiler}")
+    for argument, setting in (
+        ("hardening_c_compiler", "SB_PUBLIC_RELEASE_HARDENING_C_COMPILER"),
+        ("hardening_cxx_compiler", "SB_PUBLIC_RELEASE_HARDENING_CXX_COMPILER"),
+    ):
+        selected = getattr(args, argument, "")
+        if selected:
+            command.append(f"-D{setting}={selected}")
     for name in (
         "SB_LLVM_PROJECT_ROOT",
         "SB_LLVM_TOOLS_ROOT",
@@ -767,10 +777,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", type=Path, required=True)
     parser.add_argument("--staging-root", type=Path, required=True)
+    parser.add_argument("--dependency-cache", type=Path,
+                        help="parent CMake cache supplying dependency locations only")
     parser.add_argument("--cmake", default="cmake")
     parser.add_argument("--ctest", default="ctest")
     parser.add_argument("--c-compiler", default="")
     parser.add_argument("--cxx-compiler", default="")
+    parser.add_argument("--hardening-c-compiler", default="")
+    parser.add_argument("--hardening-cxx-compiler", default="")
     parser.add_argument("--parallel", type=int, default=1)
     args = parser.parse_args()
 

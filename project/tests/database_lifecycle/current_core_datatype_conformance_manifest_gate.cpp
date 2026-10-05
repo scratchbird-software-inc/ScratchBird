@@ -44,33 +44,52 @@ dt::BitStringAuthorityReceiptV3 BitStringReceipt() {
   receipt.statement_receipt_uuid.bytes = {
       0x01, 0xa0, 0xff, 0x27, 0x45, 0x62, 0x7a, 0x11,
       0x8b, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
-  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV9;
-  receipt.catalog_generation = 9;
-  receipt.registry_generation = 9;
+  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV10;
+  receipt.catalog_generation = 10;
+  receipt.registry_generation = 10;
   return receipt;
 }
 
 dt::DateAuthorityReceiptV3 DateReceipt() {
   dt::DateAuthorityReceiptV3 receipt;
-  receipt.statement_receipt_uuid = dt::kDatatypeCohortV9;
-  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV9;
-  receipt.catalog_generation = 9;
-  receipt.registry_generation = 9;
+  receipt.statement_receipt_uuid = dt::kDatatypeCohortV10;
+  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV10;
+  receipt.catalog_generation = 10;
+  receipt.registry_generation = 10;
   return receipt;
 }
 
 dt::TimeAuthorityReceiptV3 TimeReceipt() {
   dt::TimeAuthorityReceiptV3 receipt;
-  receipt.statement_receipt_uuid = dt::kDatatypeCohortV9;
-  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV9;
-  receipt.catalog_generation = 9;
-  receipt.registry_generation = 9;
+  receipt.statement_receipt_uuid = dt::kDatatypeCohortV10;
+  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV10;
+  receipt.catalog_generation = 10;
+  receipt.registry_generation = 10;
+  return receipt;
+}
+
+dt::TimestampAuthorityReceiptV3 TimestampReceipt() {
+  dt::TimestampAuthorityReceiptV3 receipt;
+  receipt.statement_receipt_uuid = dt::kDatatypeCohortV10;
+  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV10;
+  receipt.catalog_generation = 10;
+  receipt.registry_generation = 10;
+  return receipt;
+}
+
+dt::IntervalAuthorityReceiptV3 IntervalReceipt() {
+  dt::IntervalAuthorityReceiptV3 receipt;
+  receipt.statement_receipt_uuid = dt::kDatatypeCohortV10;
+  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV10;
+  receipt.catalog_generation = 10;
+  receipt.registry_generation = 10;
   return receipt;
 }
 
 dt::DatatypeConformanceManifestResult LoadManifest() {
   return dt::LoadCurrentCoreDatatypeConformanceManifest(
-      BitStringReceipt(), false, DateReceipt(), false, TimeReceipt(), false);
+      BitStringReceipt(), false, DateReceipt(), false, TimeReceipt(), false,
+      TimestampReceipt(), false, IntervalReceipt(), false);
 }
 
 dt::SerializedDatatypeDescriptor EncodeDescriptorFixture(
@@ -115,7 +134,9 @@ void TestManifestLoadsAndExecutesAllCurrentCoreRows() {
   Require(loaded.manifest.examples.size() +
                   loaded.manifest.bit_string_examples.size() +
                   loaded.manifest.date_examples.size() +
-                  loaded.manifest.time_examples.size() ==
+                  loaded.manifest.time_examples.size() +
+                  loaded.manifest.timestamp_examples.size() +
+                  loaded.manifest.interval_examples.size() ==
               dt::BuiltinDatatypeDescriptors().size(),
           "MDF-015 manifest must inventory every canonical datatype row");
   Require(loaded.manifest.bit_string_examples.size() == 1,
@@ -126,20 +147,37 @@ void TestManifestLoadsAndExecutesAllCurrentCoreRows() {
   Require(bit.canonical_component.size() == 4,
           "MDF-015 bit-string example must use canonical empty PRESENT bytes");
   Require(loaded.manifest.date_examples.size() == 1,
-          "MDF-015 must carry exactly one separate d709 date example");
+          "MDF-015 must carry exactly one separate d710 date example");
   const auto& date = loaded.manifest.date_examples.front();
   Require(dt::IsExactCanonicalDateTypeCodecIdentityV3(date.identity),
-          "MDF-015 date example must carry the exact d709 identity");
+          "MDF-015 date example must carry the exact d710 identity");
   Require(date.canonical_component == std::vector<scratchbird::core::platform::byte>(4, 0),
           "MDF-015 date example must use the exact epoch LE4 component");
   Require(loaded.manifest.time_examples.size() == 1,
-          "MDF-015 must carry exactly one separate d709 time example");
+          "MDF-015 must carry exactly one separate d710 time example");
   const auto& time = loaded.manifest.time_examples.front();
   Require(dt::IsExactCanonicalTimeTypeCodecIdentityV3(time.identity),
-          "MDF-015 time example must carry the exact d709 identity");
+          "MDF-015 time example must carry the exact d710 identity");
   Require(time.canonical_component ==
               std::vector<scratchbird::core::platform::byte>(8, 0),
           "MDF-015 time example must use the exact midnight LE8 component");
+  Require(loaded.manifest.timestamp_examples.size() == 1,
+          "MDF-015 must carry exactly one separate d710 timestamp example");
+  const auto& timestamp = loaded.manifest.timestamp_examples.front();
+  Require(dt::IsExactCanonicalTimestampTypeCodecIdentityV3(
+              timestamp.identity),
+          "MDF-015 timestamp example must carry the exact d710 identity");
+  Require(timestamp.canonical_component ==
+              std::vector<scratchbird::core::platform::byte>(16, 0),
+          "MDF-015 timestamp example must use the exact epoch LE16 component");
+  Require(loaded.manifest.interval_examples.size() == 1,
+          "MDF-015 must carry exactly one separate d710 interval example");
+  const auto& interval = loaded.manifest.interval_examples.front();
+  Require(dt::IsExactCanonicalIntervalTypeCodecIdentityV3(interval.identity),
+          "MDF-015 interval example must carry the exact d710 identity");
+  Require(interval.canonical_component ==
+              std::vector<scratchbird::core::platform::byte>(16, 0),
+          "MDF-015 interval example must use the exact zero-tuple LE16 component");
 
   const auto executed =
       dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
@@ -149,9 +187,123 @@ void TestManifestLoadsAndExecutesAllCurrentCoreRows() {
   Require(executed.executed_bit_string_examples == 1,
           "MDF-015 did not execute the exact V3 bit-string example");
   Require(executed.executed_date_examples == 1,
-          "MDF-015 did not execute the exact d709 date example");
+          "MDF-015 did not execute the exact d710 date example");
   Require(executed.executed_time_examples == 1,
-          "MDF-015 did not execute the exact d709 time example");
+          "MDF-015 did not execute the exact d710 time example");
+  Require(executed.executed_timestamp_examples == 1,
+          "MDF-015 did not execute the exact d710 timestamp example");
+  Require(executed.executed_interval_examples == 1,
+          "MDF-015 did not execute the exact d710 interval example");
+}
+
+void TestLegacyAndMalformedIntervalEvidenceIsRefused() {
+  const auto descriptor =
+      dt::LookupDatatypeDescriptor(dt::CanonicalTypeId::interval);
+  Require(descriptor.ok(), "MDF-015 interval descriptor row missing");
+  const auto encoded = dt::SerializeDatatypeDescriptor(descriptor.descriptor);
+  Require(!encoded.ok(), "MDF-015 admitted interval through SBDTV001");
+  Require(encoded.diagnostic.diagnostic_code ==
+              "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+          "MDF-015 legacy interval serialization diagnostic mismatch");
+
+  const auto exact_legacy = EncodeDescriptorFixture(descriptor.descriptor);
+  const auto parsed = dt::ParseDatatypeDescriptor(exact_legacy);
+  Require(!parsed.ok(), "MDF-015 parsed interval through SBDTV001");
+  Require(parsed.diagnostic.diagnostic_code ==
+              "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+          "MDF-015 legacy interval parse diagnostic mismatch");
+
+  const auto conversion = dt::DescribeDatatypeConversion(
+      dt::CanonicalTypeId::interval, dt::CanonicalTypeId::interval);
+  Require(!conversion.ok() &&
+              conversion.kind == dt::ConversionDiagnosticKind::unsupported,
+          "MDF-015 admitted enum-derived interval conversion evidence");
+  Require(conversion.diagnostic.diagnostic_code ==
+              "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+          "MDF-015 legacy interval conversion diagnostic mismatch");
+
+  auto loaded = LoadManifest();
+  loaded.manifest.interval_examples[0]
+      .identity.legacy_fields.type_uuid.bytes[15] ^= 1u;
+  auto result = dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
+  Require(!result.ok() &&
+              HasDiagnostic(result, "CTI.INTERVAL.DESCRIPTOR_INVALID"),
+          "MDF-015 accepted a mutated interval identity");
+
+  loaded = LoadManifest();
+  loaded.manifest.interval_examples[0].receipt.statement_receipt_uuid
+      .bytes[15] ^= 1u;
+  result = dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
+  Require(!result.ok() &&
+              HasDiagnostic(result, "CTI.INTERVAL.DESCRIPTOR_INVALID"),
+          "MDF-015 accepted a substituted interval receipt");
+
+  loaded = LoadManifest();
+  loaded.manifest.interval_examples[0].profile.profile_fingerprint[0] ^= 1u;
+  result = dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
+  Require(!result.ok() &&
+              HasDiagnostic(result, "CTI.INTERVAL.DESCRIPTOR_INVALID"),
+          "MDF-015 accepted a mutated interval profile");
+
+  loaded = LoadManifest();
+  loaded.manifest.interval_examples[0].state =
+      static_cast<dt::IntervalValueStateV3>(0xff);
+  result = dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
+  Require(!result.ok() &&
+              HasDiagnostic(result, "DATATYPE.NULL_STATE.INVALID"),
+          "MDF-015 accepted an invalid interval value state");
+
+  loaded = LoadManifest();
+  loaded.manifest.interval_examples[0].canonical_component.pop_back();
+  result = dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
+  Require(!result.ok() && HasDiagnostic(
+                              result,
+                              "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID"),
+          "MDF-015 accepted an invalid interval component extent");
+
+  loaded = LoadManifest();
+  loaded.manifest.interval_examples[0].canonical_component[0] = 1;
+  result = dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
+  Require(!result.ok() && HasDiagnostic(
+                              result,
+                              "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID"),
+          "MDF-015 accepted a nonzero interval conformance component");
+}
+
+void TestLegacyTimestampEvidenceIsRefused() {
+  auto loaded = LoadManifest();
+  loaded.manifest.timestamp_examples[0].receipt.statement_receipt_uuid
+      .bytes[15] ^= 1u;
+  const auto crossed_receipt =
+      dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
+  Require(!crossed_receipt.ok(),
+          "MDF-015 accepted a substituted timestamp statement receipt");
+  Require(HasDiagnostic(crossed_receipt, "CTI.TEMPORAL.DESCRIPTOR_INVALID"),
+          "MDF-015 timestamp receipt-substitution diagnostic missing");
+
+  const auto descriptor =
+      dt::LookupDatatypeDescriptor(dt::CanonicalTypeId::timestamp);
+  Require(descriptor.ok(), "MDF-015 timestamp descriptor row missing");
+  const auto encoded = dt::SerializeDatatypeDescriptor(descriptor.descriptor);
+  Require(!encoded.ok(), "MDF-015 admitted timestamp through SBDTV001");
+  Require(encoded.diagnostic.diagnostic_code ==
+              "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+          "MDF-015 legacy timestamp serialization diagnostic mismatch");
+
+  const auto exact_legacy = EncodeDescriptorFixture(descriptor.descriptor);
+  const auto parsed = dt::ParseDatatypeDescriptor(exact_legacy);
+  Require(!parsed.ok(), "MDF-015 parsed timestamp through SBDTV001");
+  Require(parsed.diagnostic.diagnostic_code ==
+              "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+          "MDF-015 legacy timestamp parse diagnostic mismatch");
+
+  const auto conversion = dt::DescribeDatatypeConversion(
+      dt::CanonicalTypeId::timestamp, dt::CanonicalTypeId::timestamp);
+  Require(!conversion.ok(),
+          "MDF-015 admitted enum-derived timestamp conversion evidence");
+  Require(conversion.diagnostic.diagnostic_code ==
+              "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+          "MDF-015 legacy timestamp conversion diagnostic mismatch");
 }
 
 void TestLegacyTimeEvidenceIsRefused() {
@@ -437,6 +589,8 @@ int main() {
   TestLegacyBitStringEvidenceIsRefused();
   TestLegacyDateEvidenceIsRefused();
   TestLegacyTimeEvidenceIsRefused();
+  TestLegacyTimestampEvidenceIsRefused();
+  TestLegacyAndMalformedIntervalEvidenceIsRefused();
   TestD708TemporalIdentitiesRemainHistoricalOnly();
   std::cout << "current_core_datatype_conformance_manifest_gate=passed\n";
   return EXIT_SUCCESS;

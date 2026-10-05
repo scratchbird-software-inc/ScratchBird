@@ -29,7 +29,7 @@ Install or provide:
 - cppcheck
 - clang-tidy-18 cppcheck
 - ASan and UBSan
-- TSan where platform support is available
+- TSan with a working runtime for the required hardening gate
 - SB_PUBLIC_RELEASE_WARNINGS_AS_ERRORS=ON
 - SB_PUBLIC_RELEASE_SANITIZER_PROFILE=asan-ubsan
 
@@ -42,12 +42,64 @@ Use the development packages above, or explicitly provide
 `SBL_NUMERIC_MPFR_INCLUDE_DIR`, and `SBL_NUMERIC_MPFR_LIBRARY` for a non-system
 installation. Do not depend on another developer's build directory for headers.
 
+Nested export, install and hardening checks must receive those configured
+dependency locations and repeat the reference backend's version, link and
+thread-local-runtime checks; cached successes are not transferable proof.
+
+The required hardening gate builds and runs all three profiles (`none`,
+`asan-ubsan`, `tsan`). A missing or unloadable sanitizer runtime is a failed
+qualification, not a passing waiver. The default nested compiler is the main
+build compiler. To select a separately installed, host-compatible sanitizer
+toolchain without changing the main compiler, configure both options, for example:
+
+```sh
+cmake -S project -B build-linux-public-release-proof \
+  -DSB_PUBLIC_RELEASE_HARDENING_C_COMPILER=/usr/bin/clang-21 \
+  -DSB_PUBLIC_RELEASE_HARDENING_CXX_COMPILER=/usr/bin/clang++-21
+```
+
+This is an explicit toolchain choice, not an automatic fallback after a failed
+test. All profiles still require successful configure, build and execution,
+with warnings treated as errors. Toolchain smoke probes do not qualify the
+entire engine under sanitizers; retain the broader component/regression evidence.
+
 ```sh
 cmake -S project -B build-linux-public-release-proof -G Ninja -DCMAKE_BUILD_TYPE=Release -DSB_BUILD_TESTS=ON -DSB_BUILD_COMPATIBILITY_PARSERS=OFF -DSB_BUILD_PUBLIC_RELEASE_CORRECTNESS=ON -DSB_NONCLUSTER_ENGINE_PROFILE=release-complete -DSB_ENABLE_CLUSTER_PROVIDER=OFF -DSCRATCHBIRD_ENABLE_DEBUG_LOGS=OFF -DSCRATCHBIRD_ENABLE_HOTPATH_TRACE=OFF -DSCRATCHBIRD_ENABLE_EXEC_PROFILE_TRACE=OFF -DSCRATCHBIRD_ENABLE_PREPARED_TRACE=OFF -DSB_LLVM_LINK_MODE=dynamic
 cmake --build build-linux-public-release-proof -j2
 ctest --test-dir build-linux-public-release-proof -L public_release_correctness --output-on-failure
 ctest --test-dir build-linux-public-release-proof -L engine_listener_enterprise --output-on-failure
 ```
+
+Full driver regressions also require the native language toolchains, not just
+the C++ packages above. Run them from an environment where the installed SDKs
+are configured and their executables are on `PATH`:
+
+- Julia must resolve the driver's project dependencies and successfully run
+  package instantiation, precompilation and imports. A version check alone
+  does not qualify the native-tool fixture.
+- Mojo needs its SDK configuration as well as its executable. For an SDK using
+  `MODULAR_HOME`, preserve its actual `modular.cfg` package, compiler and import
+  paths. Its cache and crash-report directories must be writable by the build
+  account. A build-owned configuration can retain the installed SDK paths while
+  assigning an owned cache directory; do not change another account's private
+  crash database permissions or disable diagnostics to conceal initialization
+  failures.
+
+Require all toolchains and disable waivers when qualifying the complete suite:
+
+```sh
+env SB_DRIVER_REQUIRE_ALL_TOOLCHAINS=1 SB_DRIVER_ALLOW_TOOLCHAIN_WAIVERS=0 \
+  ctest --test-dir build-linux-public-release-proof --parallel 1 \
+  --output-on-failure --no-tests=error
+```
+
+The native-tool staging fixture must build every required compiled driver and
+resolve every required runtime before its dependent checks run. A retained old
+executable does not qualify a failed rebuild. Matrix `--plan-only` checks and
+Mojo's deterministic fallback integration DSNs are not live engine/transport
+proof. That coverage requires real configured endpoints, including the listener
+matrix, and inspection of the logs for skipped checks; never manufacture an
+endpoint or suppress a failing check to obtain a passing result.
 
 cluster execution succeeds without the external cluster provider only for the
 public noncluster release-complete profile.

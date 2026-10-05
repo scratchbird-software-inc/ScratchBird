@@ -9,6 +9,18 @@
 find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)
 
+# The standalone parser consumes neutral listener-control transport, not server
+# runtime. Enroll the actual target so isolated QOW builds inherit its protocol
+# headers and link implementation instead of treating its name as a bare library.
+if(NOT TARGET sbl_manager_protocol)
+  add_subdirectory(${PROJECT_SOURCE_DIR}/src/manager/protocol
+                   ${CMAKE_CURRENT_BINARY_DIR}/manager_protocol)
+endif()
+if(NOT TARGET sbl_listener_control_plane)
+  add_subdirectory(${PROJECT_SOURCE_DIR}/src/listener
+                   ${CMAKE_CURRENT_BINARY_DIR}/listener_control)
+endif()
+
 if(NOT TARGET sbl_parser_server_ipc_schema)
   add_subdirectory(${PROJECT_SOURCE_DIR}/src/wire/parser_server_ipc ${CMAKE_CURRENT_BINARY_DIR}/parser_server_ipc_schema)
 endif()

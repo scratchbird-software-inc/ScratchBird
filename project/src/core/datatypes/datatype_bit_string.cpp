@@ -31,7 +31,7 @@ using platform::Subsystem;
 constexpr platform::Uuid U(std::array<byte, 16> bytes) { return {bytes}; }
 
 inline constexpr platform::Uuid kSnapshot = U(
-    {0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x09});
+    {0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x10});
 inline constexpr platform::Uuid kDescriptor = U(
     {0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd8,0x29});
 inline constexpr platform::Uuid kType = U(
@@ -238,7 +238,7 @@ bool ProfileValidNoAlloc(const BitStringDescriptorProfileV3& profile) noexcept {
 bool ExactReceipt(const BitStringAuthorityReceiptV3& receipt) noexcept {
   return !IsNil(receipt.statement_receipt_uuid) &&
       receipt.catalog_snapshot_uuid == kSnapshot &&
-      receipt.catalog_generation == 9 && receipt.registry_generation == 9;
+      receipt.catalog_generation == 10 && receipt.registry_generation == 10;
 }
 
 bool ExactExtraPolicies(const BitStringDescriptorProfileV3& p) noexcept {

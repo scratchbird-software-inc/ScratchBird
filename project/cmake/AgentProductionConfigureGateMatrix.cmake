@@ -18,12 +18,12 @@ if(NOT DEFINED SB_CONFIGURE_GATE_BINARY_ROOT)
       "${CMAKE_CURRENT_BINARY_DIR}/agent_production_configure_gate")
 endif()
 
+include("${CMAKE_CURRENT_LIST_DIR}/NestedDependencyConfigureArgs.cmake")
 set(_sb_agent_configure_common_args)
 foreach(_sb_forwarded_var
         CMAKE_C_COMPILER
         CMAKE_CXX_COMPILER
         CMAKE_MAKE_PROGRAM
-        CMAKE_PREFIX_PATH
         CMAKE_OSX_ARCHITECTURES
         CMAKE_OSX_DEPLOYMENT_TARGET
         ICU_ROOT
@@ -42,6 +42,7 @@ foreach(_sb_forwarded_var
          "-D${_sb_forwarded_var}=${${_sb_forwarded_var}}")
   endif()
 endforeach()
+sb_append_nested_dependency_configure_args(_sb_agent_configure_common_args)
 
 set(_sb_agent_configure_generator_args)
 if(DEFINED SB_CONFIGURE_GATE_GENERATOR AND NOT "${SB_CONFIGURE_GATE_GENERATOR}" STREQUAL "")

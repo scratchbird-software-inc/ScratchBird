@@ -1324,8 +1324,8 @@ const DatatypeTypeCodecIdentityRowV3* FindD707Row(
   return nullptr;
 }
 
-const std::array<DatatypeTypeCodecIdentityRowV3, 226> kIdentityRowsV3 = [] {
-  std::array<DatatypeTypeCodecIdentityRowV3, 226> rows{};
+const std::array<DatatypeTypeCodecIdentityRowV3, 259> kIdentityRowsV3 = [] {
+  std::array<DatatypeTypeCodecIdentityRowV3, 259> rows{};
   std::copy(kIdentityRowsThroughV7.begin(), kIdentityRowsThroughV7.end(),
             rows.begin());
   std::size_t output = kIdentityRowsThroughV7.size();
@@ -1335,6 +1335,9 @@ const std::array<DatatypeTypeCodecIdentityRowV3, 226> kIdentityRowsV3 = [] {
   const platform::Uuid timestamp_descriptor{{
       0x92,0x01,0x00,0x00,0x74,0x69,0x7d,0x65,
       0xb3,0x74,0x61,0x6d,0x70,0x00,0x00,0x00}};
+  const platform::Uuid interval_descriptor{{
+      0x93,0x01,0x00,0x00,0x69,0x6e,0x74,0x65,
+      0xb2,0x76,0x61,0x6c,0x00,0x00,0x00,0x00}};
   for (const auto& descriptor : kD708DescriptorOrder) {
     const auto* predecessor = FindD707Row(descriptor);
     if (predecessor == nullptr) {
@@ -1441,15 +1444,60 @@ const std::array<DatatypeTypeCodecIdentityRowV3, 226> kIdentityRowsV3 = [] {
     }
     rows[output++] = std::move(successor);
   }
+
+  // D710 materializes all 33 exact d709 predecessors. Only base.interval
+  // receives new semantic policy identities; every physical field and every
+  // non-interval semantic field remains byte-for-byte inherited.
+  for (const auto& descriptor : kD708DescriptorOrder) {
+    const DatatypeTypeCodecIdentityRowV3* predecessor = nullptr;
+    for (std::size_t index = 0; index < output; ++index) {
+      const auto& candidate = rows[index].legacy_fields;
+      if (candidate.catalog_snapshot_uuid == kDatatypeCohortV9 &&
+          candidate.catalog_generation == 9 &&
+          candidate.registry_generation == 9 &&
+          candidate.descriptor_uuid == descriptor &&
+          candidate.descriptor_generation == 1) {
+        predecessor = &rows[index];
+        break;
+      }
+    }
+    if (predecessor == nullptr) {
+      ++output;
+      continue;
+    }
+    auto successor = *predecessor;
+    auto& legacy = successor.legacy_fields;
+    legacy.catalog_snapshot_uuid = kDatatypeCohortV10;
+    legacy.catalog_generation = 10;
+    legacy.registry_generation = 10;
+    if (descriptor == interval_descriptor) {
+      successor.descriptor_policy = {Uuid({{
+          0x01,0xa1,0x05,0x10,0x69,0x6e,0x70,0x00,
+          0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x01}}), 1};
+      successor.canonicalization_policy = {Uuid({{
+          0x01,0xa1,0x05,0x10,0x69,0x6e,0x70,0x00,
+          0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x02}}), 1};
+      successor.ordering_policy = {Uuid({{
+          0x01,0xa1,0x05,0x10,0x69,0x6e,0x70,0x00,
+          0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x03}}), 1};
+      successor.hash_policy = {Uuid({{
+          0x01,0xa1,0x05,0x10,0x69,0x6e,0x70,0x00,
+          0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x04}}), 1};
+      successor.operation_policy = {Uuid({{
+          0x01,0xa1,0x05,0x10,0x69,0x6e,0x70,0x00,
+          0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x05}}), 1};
+    }
+    rows[output++] = std::move(successor);
+  }
   return rows;
 }();
 
 const DatatypeTypeCodecIdentityRowV3* CurrentRow(
     const platform::Uuid& descriptor) noexcept {
   for (const auto& row : kIdentityRowsV3) {
-    if (row.legacy_fields.catalog_snapshot_uuid == kDatatypeCohortV9 &&
-        row.legacy_fields.catalog_generation == 9 &&
-        row.legacy_fields.registry_generation == 9 &&
+    if (row.legacy_fields.catalog_snapshot_uuid == kDatatypeCohortV10 &&
+        row.legacy_fields.catalog_generation == 10 &&
+        row.legacy_fields.registry_generation == 10 &&
         row.legacy_fields.descriptor_uuid == descriptor &&
         row.legacy_fields.descriptor_generation == 1) {
       return &row;
@@ -1565,6 +1613,13 @@ bool IsExactCanonicalTimestampTypeCodecIdentityV3(
   return IsExactCurrentRow(
       row, Uuid({{0x92,0x01,0x00,0x00,0x74,0x69,0x7d,0x65,
                   0xb3,0x74,0x61,0x6d,0x70,0x00,0x00,0x00}}));
+}
+
+bool IsExactCanonicalIntervalTypeCodecIdentityV3(
+    const DatatypeTypeCodecIdentityRowV3& row) noexcept {
+  return IsExactCurrentRow(
+      row, Uuid({{0x93,0x01,0x00,0x00,0x69,0x6e,0x74,0x65,
+                  0xb2,0x76,0x61,0x6c,0x00,0x00,0x00,0x00}}));
 }
 
 DatatypeTypeCodecIdentityProjectionV1 ProjectDatatypeTypeCodecIdentityV3ToV1(

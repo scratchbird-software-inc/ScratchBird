@@ -109,11 +109,13 @@ int main() {
     policy.session_quota_bytes = 64;
     const auto request = Request();
     std::string allocation_id;
+    std::filesystem::path spill_path;
     {
       memory::TempWorkspaceLifecycleManager manager(policy);
       const auto result = manager.AllocateSpillFile(request);
       Require(result.ok() && result.record.has_value(), "actual spill allocation");
       allocation_id = result.record->allocation_id;
+      spill_path = result.record->path;
       Require(result.record->owner == request.owner, "live owner equality");
     }
     const auto manifest = owned.path / ".scratchbird_temp_workspace_manifest.v3";
@@ -229,14 +231,39 @@ int main() {
     }
     Write(manifest, original);
     // Old text versions lack fences: preserve them and refuse, never auto-upgrade.
+    // Exercise both a legacy-only directory and one also holding a valid v3 file.
+    const auto spill_before_legacy = Read(spill_path);
     for (unsigned version : {1u,2u}) {
-      const auto legacy = owned.path /
-          (".scratchbird_temp_workspace_manifest.v" + std::to_string(version));
-      Write(legacy, "legacy text metadata");
-      memory::TempWorkspaceLifecycleManager manager(policy);
-      Require(!manager.AllocateSpillFile(request).ok() &&
-              manager.ActiveRecords().empty(), "legacy metadata refused");
-      std::filesystem::remove(legacy);
+      for (bool current_present : {false,true}) {
+        Write(manifest, original);
+        if (!current_present)
+          Require(std::filesystem::remove(manifest), "remove owned v3 test manifest");
+        const auto legacy = owned.path /
+            (".scratchbird_temp_workspace_manifest.v" + std::to_string(version));
+        const auto legacy_bytes = std::string("legacy text metadata version ") + std::to_string(version);
+        Write(legacy, legacy_bytes);
+        {
+          memory::TempWorkspaceLifecycleManager manager(policy);
+          Require(manager.ActiveRecords().empty() && manager.Snapshot().active_bytes == 0 &&
+                  !manager.Find(allocation_id).has_value(), "legacy recovery publishes no prefix");
+          const auto allocation = manager.AllocateSpillFile(request);
+          Require(!allocation.ok() && !allocation.record.has_value() &&
+                  !allocation.diagnostic.diagnostic_code.empty(), "legacy metadata allocation refused");
+          const auto cleanup = manager.CleanupOnShutdown();
+          Require(!cleanup.ok() && cleanup.cleaned_count == 0 &&
+                  manager.Snapshot().active_bytes == 0, "legacy metadata cleanup refused");
+          Require(Read(legacy) == legacy_bytes, "legacy manifest evidence was changed");
+          Require(Read(spill_path) == spill_before_legacy, "legacy recovery changed spill bytes");
+          Require(std::filesystem::exists(manifest) == current_present,
+                  "legacy recovery created or removed a v3 manifest");
+          if (current_present)
+            Require(Read(manifest) == original, "legacy refusal changed current manifest bytes");
+        }
+        Require(Read(legacy) == legacy_bytes && Read(spill_path) == spill_before_legacy,
+                "legacy failure teardown changed retained evidence");
+        Require(std::filesystem::remove(legacy), "remove owned legacy test manifest");
+        ++negatives;
+      }
     }
     Write(manifest, original);
     {

@@ -881,6 +881,10 @@ std::optional<std::string> MakeSecureRandomToken(std::string* error) {
   return HexEncode(bytes);
 }
 
+// MMCH_SECURE_TEMP_WORKSPACE: both platform implementations below validate the
+// root and exclusively create an owner-only file without following links. The
+// live allocation path consumes this result under its rollback ownership guard.
+// This traceability anchor does not replace the secure-create conformance tests.
 struct SecureCreateResult {
   bool ok = false;
   StatusCode status_code = StatusCode::memory_allocation_failed;

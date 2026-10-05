@@ -21,6 +21,8 @@ import subprocess
 import sys
 from typing import Any
 
+from public_nested_dependency_config import dependency_configure_args
+
 
 FORBIDDEN_REFERENCE_FRAGMENTS = (
     "docs" + "/" + "execution-plans",
@@ -100,10 +102,10 @@ def run_command(
     )
     output = proc.stdout or ""
     if proc.returncode != 0:
-        if allowed_failure_markers and (
-            any(marker in output for marker in allowed_failure_markers)
-            or proc.returncode < 0
-        ):
+        matched_marker = next(
+            (marker for marker in allowed_failure_markers if marker in output), None
+        )
+        if matched_marker is not None:
             return {
                 "label": label,
                 "tool": Path(command[0]).name,
@@ -111,6 +113,7 @@ def run_command(
                 "stdout_sha256": command_digest(output),
                 "status": "runtime_unavailable_fail_closed",
                 "diagnostic": unavailable_diagnostic,
+                "matched_failure_marker": matched_marker,
             }
         print(output, file=sys.stderr)
         fail(f"command_failed:{label}:exit={proc.returncode}")
@@ -399,6 +402,7 @@ def configure_build_run_probe(
         "-DSB_PUBLIC_RELEASE_WARNINGS_AS_ERRORS=ON",
         f"-DSB_PUBLIC_RELEASE_SANITIZER_PROFILE={profile}",
         *llvm_configure_args_from_env(),
+        *dependency_configure_args(args.build_root / "CMakeCache.txt"),
     ]
     if args.c_compiler:
         configure.append(f"-DCMAKE_C_COMPILER={args.c_compiler}")
@@ -518,10 +522,10 @@ def build_evidence(args: argparse.Namespace) -> dict[str, Any]:
             "git_history_required": False,
             "warnings_as_errors": "required_for_public_hardening_profiles",
             "sanitizer_profiles": list(SANITIZER_PROFILES),
-            "tsan_scope": "configure_and_build_required_runtime_may_fail_closed_when_runner_cannot_load_tsan",
+            "tsan_scope": "configure_build_and_runtime_required_unavailable_is_not_qualification",
             "tsan_runtime_unavailable_diagnostic": "SB_DIAG_TSAN_RUNTIME_UNAVAILABLE",
             "windows_asan_ubsan_runtime_unavailable_diagnostic": "SB_DIAG_WINDOWS_ASAN_UBSAN_RUNTIME_UNAVAILABLE",
-            "windows_sanitizer_runtime_scope": "configure_required_build_may_fail_closed_when_windows_gnu_toolchain_does_not_ship_profile_runtime",
+            "windows_sanitizer_runtime_scope": "configure_build_and_runtime_required_unavailable_is_not_qualification",
             "static_analysis_tools": ["clang-tidy", "cppcheck"],
             "release_proof_is_evidence_only": True,
         },
@@ -535,6 +539,27 @@ def build_evidence(args: argparse.Namespace) -> dict[str, Any]:
         json.dumps(evidence, sort_keys=True, separators=(",", ":"))
     )
     return evidence
+
+
+def profile_qualification_errors(records: list[dict[str, Any]]) -> list[str]:
+    """Every required profile must actually configure, build, and run."""
+    errors: list[str] = []
+    if [record.get("profile") for record in records] != list(SANITIZER_PROFILES):
+        errors.append("profile_inventory_mismatch")
+    for record in records:
+        profile = record.get("profile", "missing")
+        if record.get("status") != "passed":
+            errors.append(f"profile_not_passed:{profile}")
+        commands = record.get("commands", [])
+        expected_labels = [
+            f"configure_{profile}", f"build_probe_{profile}", f"run_probe_{profile}"
+        ]
+        if [command.get("label") for command in commands] != expected_labels:
+            errors.append(f"profile_command_inventory_mismatch:{profile}")
+        for command in commands:
+            if command.get("status") != "passed" or command.get("returncode") != 0:
+                errors.append(f"profile_command_not_passed:{profile}:{command.get('label')}")
+    return errors
 
 
 def main() -> int:
@@ -558,6 +583,9 @@ def main() -> int:
     output.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"public_sanitizer_static_analysis_output={output.relative_to(stable_absolute(args.build_root)).as_posix()}")
     print(f"public_sanitizer_static_analysis_sha256={evidence['evidence_sha256']}")
+    errors = profile_qualification_errors(evidence["profile_builds"])
+    if errors:
+        fail("required_profiles_not_qualified:" + ",".join(errors))
     print("public_sanitizer_static_analysis_gate=passed")
     return 0
 

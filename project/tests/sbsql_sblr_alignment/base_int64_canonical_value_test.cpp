@@ -315,11 +315,17 @@ void RepresentationAndCodecs() {
         "int64 decoder refuses a null output pointer");
 
   dt::DatatypeExtractRequest extract;
-  extract.value = {dt::CanonicalTypeId::interval, "123", false};
-  extract.field = "total_seconds";
+  extract.value = {dt::CanonicalTypeId::interval, std::string(16, '\0'), false};
+  extract.field = "months";
   extract.result_descriptor = Int64Descriptor();
-  Check(!dt::ExtractDatatypeField(extract).ok(),
-        "interval extraction refuses rather than relabeling text as int64 bytes");
+  const auto interval_extract = dt::ExtractDatatypeField(extract);
+  Check(!interval_extract.ok() &&
+            interval_extract.diagnostic.diagnostic_code ==
+                "CTI.INTERVAL.DESCRIPTOR_INVALID" &&
+            interval_extract.value.type_id == dt::CanonicalTypeId::unknown &&
+            !interval_extract.value.is_null &&
+            interval_extract.value.encoded_value.empty(),
+        "generic interval months extraction requires exact profile authority");
 
   std::int64_t text_like = 0;
   Check(dt::DecodeCanonicalInt64Value(std::string{"12345678", 8}, &text_like) &&

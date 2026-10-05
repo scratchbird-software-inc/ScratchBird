@@ -711,6 +711,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SB_BUILD_SBSQL_PARSER_WORKER)
     LABELS "sbsql_sblr_alignment;IA-04;parser_component;not_runtime_acceptance"
     TIMEOUT 60)
 endif()
+add_executable(sbsql_sblr_alignment_blake3_incremental_v3
+  blake3_incremental_v3_test.cpp)
+target_compile_features(sbsql_sblr_alignment_blake3_incremental_v3 PRIVATE cxx_std_17)
+target_link_libraries(sbsql_sblr_alignment_blake3_incremental_v3 PRIVATE sb_core_hash)
+add_test(NAME sbsql_sblr_alignment_blake3_incremental_v3
+  COMMAND sbsql_sblr_alignment_blake3_incremental_v3)
+set_tests_properties(sbsql_sblr_alignment_blake3_incremental_v3 PROPERTIES
+  LABELS "sbsql_sblr_alignment;blake3;streaming;allocation_free;component_regression;not_runtime_acceptance"
+  TIMEOUT 120)
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_function_registry_binary
     function_registry_binary_test.cpp
@@ -10485,7 +10495,7 @@ target_link_libraries(sbsql_sblr_alignment_datatype_identity_v3 PRIVATE sb_core_
 add_test(NAME sbsql_sblr_alignment_datatype_identity_v3
   COMMAND sbsql_sblr_alignment_datatype_identity_v3)
 set_tests_properties(sbsql_sblr_alignment_datatype_identity_v3 PROPERTIES
-  LABELS "datatype;base_date;base_time;base_timestamp;base_bit_string;base_binary;identity_v3;d709;history_d701_d708;not_runtime_acceptance"
+  LABELS "datatype;base_date;base_time;base_timestamp;base_bit_string;base_binary;identity_v3;d710;history_d701_d708;not_runtime_acceptance"
   TIMEOUT 120)
 
 add_executable(sbsql_sblr_alignment_base_bit_string_profile_value
@@ -10536,7 +10546,7 @@ target_link_libraries(sbsql_sblr_alignment_base_date_profile_value PRIVATE sb_co
 add_test(NAME sbsql_sblr_alignment_base_date_profile_value
   COMMAND sbsql_sblr_alignment_base_date_profile_value)
 set_tests_properties(sbsql_sblr_alignment_base_date_profile_value PROPERTIES
-  LABELS "datatype;base_date;d709;profile;canonical_le4;civil_text;not_runtime_acceptance"
+  LABELS "datatype;base_date;d710;profile;canonical_le4;civil_text;not_runtime_acceptance"
   TIMEOUT 180)
 
 add_executable(sbsql_sblr_alignment_base_date_operations_casts
@@ -10546,7 +10556,7 @@ target_link_libraries(sbsql_sblr_alignment_base_date_operations_casts PRIVATE sb
 add_test(NAME sbsql_sblr_alignment_base_date_operations_casts
   COMMAND sbsql_sblr_alignment_base_date_operations_casts)
 set_tests_properties(sbsql_sblr_alignment_base_date_operations_casts PROPERTIES
-  LABELS "datatype;base_date;d709;casts;comparison;hash;sort_key;not_runtime_acceptance"
+  LABELS "datatype;base_date;d710;casts;comparison;hash;sort_key;not_runtime_acceptance"
   TIMEOUT 240)
 
 add_executable(sbsql_sblr_alignment_base_date_intrinsics
@@ -10556,7 +10566,7 @@ target_link_libraries(sbsql_sblr_alignment_base_date_intrinsics PRIVATE sb_core_
 add_test(NAME sbsql_sblr_alignment_base_date_intrinsics
   COMMAND sbsql_sblr_alignment_base_date_intrinsics)
 set_tests_properties(sbsql_sblr_alignment_base_date_intrinsics PROPERTIES
-  LABELS "datatype;base_date;d709;intrinsics;calendar;null_precedence;not_runtime_acceptance"
+  LABELS "datatype;base_date;d710;intrinsics;calendar;null_precedence;not_runtime_acceptance"
   TIMEOUT 240)
 
 add_executable(sbsql_sblr_alignment_base_date_component_persistence
@@ -10567,7 +10577,7 @@ target_link_libraries(sbsql_sblr_alignment_base_date_component_persistence PRIVA
 add_test(NAME sbsql_sblr_alignment_base_date_component_persistence
   COMMAND sbsql_sblr_alignment_base_date_component_persistence)
 set_tests_properties(sbsql_sblr_alignment_base_date_component_persistence PROPERTIES
-  LABELS "datatype;base_date;d709;component_persistence;sbdval;sbdpv;not_page_mga"
+  LABELS "datatype;base_date;d710;component_persistence;sbdval;sbdpv;not_page_mga"
   TIMEOUT 240)
 
 add_executable(sbsql_sblr_alignment_base_date_projection_observability
@@ -10577,7 +10587,7 @@ target_link_libraries(sbsql_sblr_alignment_base_date_projection_observability PR
 add_test(NAME sbsql_sblr_alignment_base_date_projection_observability
   COMMAND sbsql_sblr_alignment_base_date_projection_observability)
 set_tests_properties(sbsql_sblr_alignment_base_date_projection_observability PROPERTIES
-  LABELS "datatype;base_date;d709;index_projection;statistics;backup;observability;not_runtime_acceptance"
+  LABELS "datatype;base_date;d710;index_projection;statistics;backup;observability;not_runtime_acceptance"
   TIMEOUT 240)
 
 add_executable(sbsql_sblr_alignment_base_date_publication_atomicity
@@ -10587,7 +10597,7 @@ target_link_libraries(sbsql_sblr_alignment_base_date_publication_atomicity PRIVA
 add_test(NAME sbsql_sblr_alignment_base_date_publication_atomicity
   COMMAND sbsql_sblr_alignment_base_date_publication_atomicity)
 set_tests_properties(sbsql_sblr_alignment_base_date_publication_atomicity PROPERTIES
-  LABELS "datatype;base_date;d709;resource;cancellation;atomicity;not_runtime_acceptance"
+  LABELS "datatype;base_date;d710;resource;cancellation;atomicity;not_runtime_acceptance"
   TIMEOUT 240)
 
 add_executable(sbsql_sblr_alignment_base_time_profile_value
@@ -10597,7 +10607,7 @@ target_link_libraries(sbsql_sblr_alignment_base_time_profile_value PRIVATE sb_co
 add_test(NAME sbsql_sblr_alignment_base_time_profile_value
   COMMAND sbsql_sblr_alignment_base_time_profile_value)
 set_tests_properties(sbsql_sblr_alignment_base_time_profile_value PROPERTIES
-  LABELS "datatype;base_time;d709;profile;canonical_le8;civil_text;null_state;not_runtime_acceptance"
+  LABELS "datatype;base_time;d710;profile;canonical_le8;civil_text;null_state;not_runtime_acceptance"
   TIMEOUT 180)
 
 add_executable(sbsql_sblr_alignment_base_time_operations_casts
@@ -10607,7 +10617,7 @@ target_link_libraries(sbsql_sblr_alignment_base_time_operations_casts PRIVATE sb
 add_test(NAME sbsql_sblr_alignment_base_time_operations_casts
   COMMAND sbsql_sblr_alignment_base_time_operations_casts)
 set_tests_properties(sbsql_sblr_alignment_base_time_operations_casts PROPERTIES
-  LABELS "datatype;base_time;d709;casts;comparison;hash;sort_key;v3_identity;not_runtime_acceptance"
+  LABELS "datatype;base_time;d710;casts;comparison;hash;sort_key;v3_identity;not_runtime_acceptance"
   TIMEOUT 240)
 
 add_executable(sbsql_sblr_alignment_base_time_intrinsics
@@ -10617,7 +10627,7 @@ target_link_libraries(sbsql_sblr_alignment_base_time_intrinsics PRIVATE sb_core_
 add_test(NAME sbsql_sblr_alignment_base_time_intrinsics
   COMMAND sbsql_sblr_alignment_base_time_intrinsics)
 set_tests_properties(sbsql_sblr_alignment_base_time_intrinsics PROPERTIES
-  LABELS "datatype;base_time;d709;intrinsics;civil_time;null_precedence;checked_nonwrap;not_runtime_acceptance"
+  LABELS "datatype;base_time;d710;intrinsics;civil_time;null_precedence;checked_nonwrap;not_runtime_acceptance"
   TIMEOUT 240)
 
 add_executable(sbsql_sblr_alignment_base_time_component_persistence
@@ -10630,7 +10640,7 @@ target_link_options(sbsql_sblr_alignment_base_time_component_persistence PRIVATE
 add_test(NAME sbsql_sblr_alignment_base_time_component_persistence
   COMMAND sbsql_sblr_alignment_base_time_component_persistence)
 set_tests_properties(sbsql_sblr_alignment_base_time_component_persistence PROPERTIES
-  LABELS "datatype;base_time;d709;component_persistence;sbdval;sbdpv;allocation_free_diagnostic;not_page_mga"
+  LABELS "datatype;base_time;d710;component_persistence;sbdval;sbdpv;allocation_free_diagnostic;not_page_mga"
   TIMEOUT 240)
 
 add_executable(sbsql_sblr_alignment_base_time_projection_observability
@@ -10640,7 +10650,7 @@ target_link_libraries(sbsql_sblr_alignment_base_time_projection_observability PR
 add_test(NAME sbsql_sblr_alignment_base_time_projection_observability
   COMMAND sbsql_sblr_alignment_base_time_projection_observability)
 set_tests_properties(sbsql_sblr_alignment_base_time_projection_observability PROPERTIES
-  LABELS "datatype;base_time;d709;index_projection;statistics;backup;observability;not_runtime_acceptance"
+  LABELS "datatype;base_time;d710;index_projection;statistics;backup;observability;not_runtime_acceptance"
   TIMEOUT 240)
 
 add_executable(sbsql_sblr_alignment_base_time_publication_atomicity
@@ -10650,8 +10660,134 @@ target_link_libraries(sbsql_sblr_alignment_base_time_publication_atomicity PRIVA
 add_test(NAME sbsql_sblr_alignment_base_time_publication_atomicity
   COMMAND sbsql_sblr_alignment_base_time_publication_atomicity)
 set_tests_properties(sbsql_sblr_alignment_base_time_publication_atomicity PROPERTIES
-  LABELS "datatype;base_time;d709;resource;cancellation;atomicity;not_runtime_acceptance"
+  LABELS "datatype;base_time;d710;resource;cancellation;atomicity;not_runtime_acceptance"
   TIMEOUT 240)
+
+add_executable(sbsql_sblr_alignment_base_timestamp_profile_value
+  base_timestamp_profile_value_test.cpp)
+target_compile_features(sbsql_sblr_alignment_base_timestamp_profile_value PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_base_timestamp_profile_value PRIVATE sb_core_datatypes)
+add_test(NAME sbsql_sblr_alignment_base_timestamp_profile_value
+  COMMAND sbsql_sblr_alignment_base_timestamp_profile_value)
+set_tests_properties(sbsql_sblr_alignment_base_timestamp_profile_value PROPERTIES
+  LABELS "datatype;base_timestamp;d710;profile;canonical_le16;local_civil_text;null_state;not_runtime_acceptance"
+  TIMEOUT 180)
+
+add_executable(sbsql_sblr_alignment_base_timestamp_operations_casts
+  base_timestamp_operations_casts_test.cpp)
+target_compile_features(sbsql_sblr_alignment_base_timestamp_operations_casts PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_base_timestamp_operations_casts PRIVATE sb_core_datatypes)
+add_test(NAME sbsql_sblr_alignment_base_timestamp_operations_casts
+  COMMAND sbsql_sblr_alignment_base_timestamp_operations_casts)
+set_tests_properties(sbsql_sblr_alignment_base_timestamp_operations_casts PROPERTIES
+  LABELS "datatype;base_timestamp;d710;casts;comparison;hash;sort_key;local_civil;not_runtime_acceptance"
+  TIMEOUT 240)
+
+add_executable(sbsql_sblr_alignment_base_timestamp_intrinsics
+  base_timestamp_intrinsics_test.cpp)
+target_compile_features(sbsql_sblr_alignment_base_timestamp_intrinsics PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_base_timestamp_intrinsics PRIVATE sb_core_datatypes)
+add_test(NAME sbsql_sblr_alignment_base_timestamp_intrinsics
+  COMMAND sbsql_sblr_alignment_base_timestamp_intrinsics)
+set_tests_properties(sbsql_sblr_alignment_base_timestamp_intrinsics PROPERTIES
+  LABELS "datatype;base_timestamp;d710;intrinsics;local_civil;null_precedence;checked_cross_day;not_runtime_acceptance"
+  TIMEOUT 240)
+
+add_executable(sbsql_sblr_alignment_base_timestamp_component_persistence
+  base_timestamp_component_persistence_test.cpp)
+target_compile_features(sbsql_sblr_alignment_base_timestamp_component_persistence PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_base_timestamp_component_persistence PRIVATE
+  sb_core_datatypes sb_storage_disk)
+target_link_options(sbsql_sblr_alignment_base_timestamp_component_persistence PRIVATE
+  "-Wl,--wrap=_ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv")
+add_test(NAME sbsql_sblr_alignment_base_timestamp_component_persistence
+  COMMAND sbsql_sblr_alignment_base_timestamp_component_persistence)
+set_tests_properties(sbsql_sblr_alignment_base_timestamp_component_persistence PROPERTIES
+  LABELS "datatype;base_timestamp;d710;component_persistence;sbdval;sbdpv;local_civil;not_page_mga"
+  TIMEOUT 240)
+
+add_executable(sbsql_sblr_alignment_base_timestamp_projection_observability
+  base_timestamp_projection_observability_test.cpp)
+target_compile_features(sbsql_sblr_alignment_base_timestamp_projection_observability PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_base_timestamp_projection_observability PRIVATE sb_core_datatypes)
+add_test(NAME sbsql_sblr_alignment_base_timestamp_projection_observability
+  COMMAND sbsql_sblr_alignment_base_timestamp_projection_observability)
+set_tests_properties(sbsql_sblr_alignment_base_timestamp_projection_observability PROPERTIES
+  LABELS "datatype;base_timestamp;d710;index_projection;statistics;backup;observability;not_runtime_acceptance"
+  TIMEOUT 240)
+
+add_executable(sbsql_sblr_alignment_base_timestamp_publication_atomicity
+  base_timestamp_publication_atomicity_test.cpp)
+target_compile_features(sbsql_sblr_alignment_base_timestamp_publication_atomicity PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_base_timestamp_publication_atomicity PRIVATE sb_core_datatypes)
+add_test(NAME sbsql_sblr_alignment_base_timestamp_publication_atomicity
+  COMMAND sbsql_sblr_alignment_base_timestamp_publication_atomicity)
+set_tests_properties(sbsql_sblr_alignment_base_timestamp_publication_atomicity PROPERTIES
+  LABELS "datatype;base_timestamp;d710;resource;cancellation;atomicity;not_runtime_acceptance"
+  TIMEOUT 240)
+
+add_executable(sbsql_sblr_alignment_base_interval_profile_value
+  base_interval_profile_value_test.cpp)
+target_compile_features(sbsql_sblr_alignment_base_interval_profile_value PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_base_interval_profile_value PRIVATE sb_core_datatypes)
+add_test(NAME sbsql_sblr_alignment_base_interval_profile_value
+  COMMAND sbsql_sblr_alignment_base_interval_profile_value)
+set_tests_properties(sbsql_sblr_alignment_base_interval_profile_value PROPERTIES
+  LABELS "datatype;base_interval;d710;sbsql_sblr_alignment;profile;canonical_le16;mixed_interval;not_runtime_acceptance"
+  TIMEOUT 240)
+
+add_executable(sbsql_sblr_alignment_base_interval_operations_casts
+  base_interval_operations_casts_test.cpp)
+target_compile_features(sbsql_sblr_alignment_base_interval_operations_casts PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_base_interval_operations_casts PRIVATE sb_core_datatypes)
+target_link_options(sbsql_sblr_alignment_base_interval_operations_casts PRIVATE
+  "-Wl,--wrap=_ZN11scratchbird4core9datatypes19CastIntervalValueV3ERKNS1_21IntervalCastRequestV3E")
+add_test(NAME sbsql_sblr_alignment_base_interval_operations_casts
+  COMMAND sbsql_sblr_alignment_base_interval_operations_casts)
+set_tests_properties(sbsql_sblr_alignment_base_interval_operations_casts PROPERTIES
+  LABELS "datatype;base_interval;d710;sbsql_sblr_alignment;casts;equality;hash;no_order;not_runtime_acceptance"
+  TIMEOUT 300)
+
+add_executable(sbsql_sblr_alignment_base_interval_intrinsics
+  base_interval_intrinsics_test.cpp)
+target_compile_features(sbsql_sblr_alignment_base_interval_intrinsics PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_base_interval_intrinsics PRIVATE sb_core_datatypes)
+add_test(NAME sbsql_sblr_alignment_base_interval_intrinsics
+  COMMAND sbsql_sblr_alignment_base_interval_intrinsics)
+set_tests_properties(sbsql_sblr_alignment_base_interval_intrinsics PROPERTIES
+  LABELS "datatype;base_interval;d710;sbsql_sblr_alignment;intrinsics;component_arithmetic;no_carry;not_runtime_acceptance"
+  TIMEOUT 240)
+
+add_executable(sbsql_sblr_alignment_base_interval_component_persistence
+  base_interval_component_persistence_test.cpp)
+target_compile_features(sbsql_sblr_alignment_base_interval_component_persistence PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_base_interval_component_persistence PRIVATE
+  sb_core_datatypes sb_storage_disk)
+add_test(NAME sbsql_sblr_alignment_base_interval_component_persistence
+  COMMAND sbsql_sblr_alignment_base_interval_component_persistence)
+set_tests_properties(sbsql_sblr_alignment_base_interval_component_persistence PROPERTIES
+  LABELS "datatype;base_interval;d710;sbsql_sblr_alignment;storage_component;component_persistence;sbdval;sbdpv;backup;not_page_mga"
+  TIMEOUT 300)
+
+add_executable(sbsql_sblr_alignment_base_interval_projection_observability
+  base_interval_projection_observability_test.cpp)
+target_compile_features(sbsql_sblr_alignment_base_interval_projection_observability PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_base_interval_projection_observability PRIVATE sb_core_datatypes)
+add_test(NAME sbsql_sblr_alignment_base_interval_projection_observability
+  COMMAND sbsql_sblr_alignment_base_interval_projection_observability)
+set_tests_properties(sbsql_sblr_alignment_base_interval_projection_observability PROPERTIES
+  LABELS "datatype;base_interval;d710;sbsql_sblr_alignment;equality_projection;statistics;protection;metrics;not_runtime_acceptance"
+  TIMEOUT 300)
+
+add_executable(sbsql_sblr_alignment_base_interval_publication_atomicity
+  base_interval_publication_atomicity_test.cpp)
+target_compile_features(sbsql_sblr_alignment_base_interval_publication_atomicity PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_base_interval_publication_atomicity PRIVATE sb_core_datatypes)
+add_test(NAME sbsql_sblr_alignment_base_interval_publication_atomicity
+  COMMAND sbsql_sblr_alignment_base_interval_publication_atomicity)
+set_tests_properties(sbsql_sblr_alignment_base_interval_publication_atomicity PROPERTIES
+  LABELS "datatype;base_interval;d710;sbsql_sblr_alignment;wire_refusal;resource;cancellation;atomicity;not_runtime_acceptance"
+  TIMEOUT 300)
 
 add_executable(sbsql_sblr_alignment_base_character_canonical_value
   base_character_canonical_value_test.cpp)

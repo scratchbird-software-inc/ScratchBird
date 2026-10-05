@@ -13,8 +13,12 @@ add_library(sb_core_datatypes
   datatype_bit_string_projection.cpp
   datatype_date.cpp
   datatype_date_projection.cpp
+  datatype_interval.cpp
+  datatype_interval_projection.cpp
   datatype_time.cpp
   datatype_time_projection.cpp
+  datatype_timestamp.cpp
+  datatype_timestamp_projection.cpp
   datatype_catalog_manifest.cpp
   datatype_conformance_manifest.cpp
   datatype_descriptor.cpp

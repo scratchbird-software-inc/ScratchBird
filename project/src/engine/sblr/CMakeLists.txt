@@ -361,6 +361,10 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
     sb_qow_typed_scalar_descriptor_contract
     sb_qow_optimizer_admission
     sb_sblr_operation_wire_codec
+    # Result metadata/value preservation calls the real transport-name and
+    # spatial binary codecs. These are implementation dependencies, not mocks.
+    sb_wire_typed_result_transport_codec
+    sb_engine_internal_api
   )
   set(SB_QOW_SBLR_TESTS_ENROLLED TRUE PARENT_SCOPE)
   return()

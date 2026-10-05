@@ -19,6 +19,7 @@
 #include "physical_mga_cow_store.hpp"
 #include "row_data_page.hpp"
 #include "security_crypto_policy.hpp"
+#include "security_model.hpp"
 #include "startup_state.hpp"
 #include "transaction/transaction_api.hpp"
 #include "transaction_snapshot.hpp"
@@ -344,7 +345,7 @@ bool ValidateDecodedBatch(const ParsedBatch& batch,
       batch.successor_generation != batch.prior_generation + 1 ||
       row.local_transaction_id != batch.creator_tx ||
       !SameUuid(row.transaction_uuid.value, batch.transaction_uuid) ||
-      batch.events.size() != 4) {
+      (batch.events.size() != 4 && batch.events.size() != 3)) {
     return refuse("batch_identity_or_generation_invalid");
   }
   storage::DatabaseLocalSecurityBatchEnvelopeV1 carrier;
@@ -937,8 +938,16 @@ AppendDatabaseLocalSecurityEventBatchV1(
                                   unsealed_events.end());
   const std::uint64_t successor_generation =
       loaded.state.security_context_generation + 1;
+  const bool derived_cache = events.size() == 2 &&
+      sec_event::Decode(events.front())[1] == "DEFINER_CACHE";
+  if (derived_cache && (!context.authorization_context.present ||
+                        !SecurityContextHasRight(context, "POLICY_ADMIN"))) {
+    result.diagnostic = ErrorDiagnostic(kDatabaseLocalSecurityDiagnosticAuthorityRequired,
+                                       "derived_cache_policy_admin_required");
+    return result;
+  }
   std::string refusal;
-  if (!ValidateUnsealedEvents(events, context.local_transaction_id,
+  if (!derived_cache && !ValidateUnsealedEvents(events, context.local_transaction_id,
                               context.principal_uuid,
                               successor_generation, &refusal)) {
     result.diagnostic = ErrorDiagnostic(
@@ -977,6 +986,8 @@ AppendDatabaseLocalSecurityEventBatchV1(
   batch.predecessor_page_generation =
       locator_runtime.selected.selected_locator.head_page_generation;
   batch.events = events;
+  // Both variants pass the shared native validator before any physical write.
+  // Cache publication has no fabricated authority or invalidation event.
   const auto encoded = EncodeBatch(batch);
   if (encoded.empty()) {
     result.diagnostic = ErrorDiagnostic(

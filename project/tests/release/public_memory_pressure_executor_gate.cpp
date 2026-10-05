@@ -381,13 +381,25 @@ memory::MemoryPressureActionExecutionResult RunQueryCancel(
   request.bytes = 256;
   request.purpose = "cancel";
   const auto grant = arena.Grant(request);
-  if (!grant.ok() || ledger.Snapshot().current_bytes != 256) {
+  const auto before_cancel = arena.Snapshot();
+  const auto retained = before_cancel.retained_heap_bytes;
+  if (!grant.ok() || !grant.grant.has_value() || grant.grant->spilled ||
+      grant.grant->bytes != 256 || before_cancel.current_bytes != 256 ||
+      before_cancel.active_grant_count != 1 || retained < 256 ||
+      retained > QueryLimits(false).hard_limit_bytes ||
+      ledger.Snapshot().current_bytes != retained ||
+      unified.Snapshot().total_bytes != retained ||
+      allocator.Snapshot().current_bytes != retained) {
     return Failure(action, "core.memory.query_memory_arena",
                    "cancel_grant_setup_failed");
   }
   const auto cancel = arena.Cancel("public_memory_pressure_executor_gate");
-  if (!cancel.ok() || arena.Snapshot().active_grant_count != 0 ||
+  const auto after_cancel = arena.Snapshot();
+  if (!cancel.ok() || after_cancel.active_grant_count != 0 ||
+      after_cancel.current_bytes != 0 || after_cancel.retained_heap_bytes != 0 ||
+      after_cancel.consumed_heap_bytes != 0 || after_cancel.heap_chunk_count != 0 ||
       ledger.Snapshot().current_bytes != 0 ||
+      allocator.Snapshot().current_bytes != 0 ||
       unified.Snapshot().total_bytes != 0) {
     return Failure(action, "core.memory.query_memory_arena.cancel",
                    "query_cancel_not_routed");
@@ -562,6 +574,14 @@ void ExecutesEveryBoundExecutor(const std::filesystem::path& temp_root) {
   ExecutionCounters counters;
   auto result =
       memory::ExecuteMemoryPressureDecision(decision, Executors(&counters, temp_root));
+  if (!result.ok()) {
+    std::cerr << "failed pressure action: "
+              << memory::MemoryPressureActionKindName(result.failed_action)
+              << "; diagnostic: " << result.diagnostic.diagnostic_code << '\n';
+    for (const auto& evidence : result.evidence) {
+      std::cerr << evidence << '\n';
+    }
+  }
   Require(result.ok(), "bound pressure executors should succeed");
   Require(result.page_cache_shrink_executed,
           "page-cache shrink executor was not marked executed");

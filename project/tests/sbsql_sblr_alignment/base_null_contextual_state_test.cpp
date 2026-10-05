@@ -13,6 +13,7 @@
 #include "datatype_layout.hpp"
 #include "datatype_operations.hpp"
 #include "datatype_physical_encoding.hpp"
+#include "datatype_timestamp.hpp"
 #include "disk_device.hpp"
 #include "sbl_numeric.hpp"
 
@@ -23,6 +24,7 @@
 #include <filesystem>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -260,9 +262,10 @@ void ContextualBindingPreservesTargetType() {
         continue;
       }
       if (descriptor.type_id == dt::CanonicalTypeId::date ||
-          descriptor.type_id == dt::CanonicalTypeId::time) {
+          descriptor.type_id == dt::CanonicalTypeId::time ||
+          descriptor.type_id == dt::CanonicalTypeId::timestamp) {
         CheckRejectedAs(bound, "CTI.TEMPORAL.DESCRIPTOR_INVALID",
-                        "generic contextual temporal NULL without D709 profile");
+                        "generic contextual temporal NULL without D710 profile");
         dt::DatatypeCastRequest identity;
         identity.value = TypedNull(descriptor.type_id, target_descriptor);
         identity.target_type_id = descriptor.type_id;
@@ -270,7 +273,7 @@ void ContextualBindingPreservesTargetType() {
         identity.target_descriptor = target_descriptor;
         CheckRejectedAs(dt::CastDatatypeValue(identity),
                         "CTI.TEMPORAL.DESCRIPTOR_INVALID",
-                        "generic typed temporal NULL identity without D709 profile");
+                        "generic typed temporal NULL identity without D710 profile");
         continue;
       }
       Check(bound.ok(), "contextual NULL did not bind in " + label);
@@ -418,7 +421,8 @@ void ContextualBindingPreservesTargetType() {
                       descriptor.type_id == dt::CanonicalTypeId::bit_string
                           ? "CTB.BIT.DESCRIPTOR_INVALID"
                           : descriptor.type_id == dt::CanonicalTypeId::date ||
-                                    descriptor.type_id == dt::CanonicalTypeId::time
+                                    descriptor.type_id == dt::CanonicalTypeId::time ||
+                                    descriptor.type_id == dt::CanonicalTypeId::timestamp
                           ? "CTI.TEMPORAL.DESCRIPTOR_INVALID"
                           : "DATATYPE.CAST_FORBIDDEN",
                       std::string("concrete typed NULL cast to null_type from ") +
@@ -877,15 +881,16 @@ void DurableCodecsRequireConcreteTypes() {
       continue;
     }
     if (descriptor.type_id == dt::CanonicalTypeId::date ||
-        descriptor.type_id == dt::CanonicalTypeId::time) {
+        descriptor.type_id == dt::CanonicalTypeId::time ||
+        descriptor.type_id == dt::CanonicalTypeId::timestamp) {
       CheckRejectedAs(encoded, "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
-                      "generic temporal NULL binary encode without D709 profile");
+                      "generic temporal NULL binary encode without D710 profile");
       dt::DatatypePhysicalValue physical_null;
       physical_null.type_id = descriptor.type_id;
       physical_null.state = dt::DatatypePhysicalValueState::sql_null;
       CheckRejectedAs(dt::EncodeDatatypePhysicalValue(physical_null),
                       "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
-                      "generic temporal NULL physical encode without D709 profile");
+                      "generic temporal NULL physical encode without D710 profile");
       continue;
     }
     Check(encoded.ok(), "typed NULL binary encoding failed for " + label);
@@ -979,10 +984,11 @@ void SerializationRetainsConcreteType() {
       continue;
     }
     if (descriptor.type_id == dt::CanonicalTypeId::date ||
-        descriptor.type_id == dt::CanonicalTypeId::time) {
+        descriptor.type_id == dt::CanonicalTypeId::time ||
+        descriptor.type_id == dt::CanonicalTypeId::timestamp) {
       CheckRejectedAs(serialized,
                       "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
-                      "generic temporal NULL serialization without D709 profile");
+                      "generic temporal NULL serialization without D710 profile");
       Check(serialized.serialized_value.empty(),
             "generic temporal NULL serialization published output");
       continue;
@@ -2042,17 +2048,17 @@ void BitStringNullRequiresExactV3Profile() {
   const auto descriptor = platform::Uuid{{
       0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x29}};
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV9, 9, 9, descriptor, 1);
+      dt::kDatatypeCohortV10, 10, 10, descriptor, 1);
   Check(identity.ok &&
             dt::IsExactCanonicalBitStringTypeCodecIdentityV3(identity.row),
-        "lookup exact current D709 bit-string identity for typed NULL");
+        "lookup exact current D710 bit-string identity for typed NULL");
   const auto historical = dt::LookupDatatypeTypeCodecIdentityV3(
       dt::kDatatypeCohortV6, 6, 6, descriptor, 1);
   Check(historical.ok &&
             !dt::IsExactCanonicalBitStringTypeCodecIdentityV3(historical.row),
         "d706 bit-string identity remains exact historical evidence");
   dt::BitStringAuthorityReceiptV3 receipt{
-      TypedObjectUuid(0x62).value, dt::kDatatypeCohortV9, 9, 9};
+      TypedObjectUuid(0x62).value, dt::kDatatypeCohortV10, 10, 10};
   const auto profile = dt::BuildBitStringDescriptorProfileV3(
       {receipt, identity.row,
        dt::BitStringSurfaceProfileKindV3::unqualified,
@@ -2079,6 +2085,81 @@ void BitStringNullRequiresExactV3Profile() {
         "generic SBDV1 admitted typed bit-string NULL without V3 profile");
 }
 
+void TimestampNullRequiresExactV3Profile() {
+  const platform::Uuid d710{{
+      0x01, 0x9d, 0, 0, 0, 0, 0x70, 0,
+      0x80, 0, 0, 0, 0, 0, 0xd7, 0x10}};
+  auto built = dt::BuildCurrentTimestampValidatedProfileHandleV3(d710);
+  Check(built.ok(), "build exact current d710 timestamp profile for typed NULL");
+  if (!built.ok()) {
+    return;
+  }
+  const auto profile =
+      std::make_shared<const dt::TimestampValidatedProfileHandleV3>(
+          std::move(built.profile));
+  dt::TimestampOwnedValueV3 typed_null{
+      profile, dt::TimestampValueStateV3::sql_null, 0, 0};
+  Check(dt::ValidateTimestampValueViewV3(typed_null.view(), true).ok(),
+        "exact-profile typed timestamp NULL was refused");
+  const auto nonnullable =
+      dt::ValidateTimestampValueViewV3(typed_null.view(), false);
+  Check(!nonnullable.ok() && nonnullable.diagnostic.diagnostic_code ==
+                                 "DATATYPE.NULL_NOT_ADMITTED",
+        "nonnullable timestamp NULL was admitted");
+
+  auto dirty_null = typed_null;
+  dirty_null.civil_day = 1;
+  dirty_null.nanoseconds_since_midnight = 1;
+  const auto dirty = dt::ValidateTimestampValueViewV3(dirty_null.view(), true);
+  Check(!dirty.ok() && dirty.diagnostic.diagnostic_code ==
+                            "DATATYPE.NULL_STATE.INVALID",
+        "payload-bearing timestamp NULL lost null-state precedence");
+
+  auto invalid_profile = *profile;
+  invalid_profile.profile_fingerprint[0] ^= 1;
+  const auto invalid_profile_ptr =
+      std::make_shared<const dt::TimestampValidatedProfileHandleV3>(
+          std::move(invalid_profile));
+  dirty_null.profile = invalid_profile_ptr;
+  const auto invalid_authority =
+      dt::ValidateTimestampValueViewV3(dirty_null.view(), true);
+  Check(!invalid_authority.ok() &&
+            invalid_authority.diagnostic.diagnostic_code ==
+                "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+        "timestamp profile authority did not precede dirty-NULL state");
+
+  const auto timestamp_descriptor =
+      DescriptorFor(dt::CanonicalTypeId::timestamp, 0x63u);
+  dt::DatatypeOperationValue contextual_null{
+      dt::CanonicalTypeId::null_type, "payload", true};
+  dt::TimestampCastRequestV3 contextual;
+  contextual.one_based_policy_row = 1;
+  contextual.scalar_source = &contextual_null;
+  contextual.timestamp_target = &profile;
+  contextual.timestamp_target_descriptor = &timestamp_descriptor;
+  auto invalid_target_descriptor = timestamp_descriptor;
+  ++invalid_target_descriptor.descriptor_epoch;
+  contextual.timestamp_target_descriptor = &invalid_target_descriptor;
+  const auto descriptor_first = dt::CastTimestampValueV3(contextual);
+  Check(!descriptor_first.ok() &&
+            descriptor_first.diagnostic.diagnostic_code ==
+                "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+        "timestamp target descriptor did not precede dirty contextual NULL");
+  contextual.timestamp_target_descriptor = &timestamp_descriptor;
+  const auto state_second = dt::CastTimestampValueV3(contextual);
+  Check(!state_second.ok() && state_second.diagnostic.diagnostic_code ==
+                                  "DATATYPE.NULL_STATE.INVALID",
+        "timestamp contextual cast did not reject dirty NULL state");
+  contextual_null.encoded_value.clear();
+  const auto admitted = dt::CastTimestampValueV3(contextual);
+  Check(admitted.ok() && admitted.produced_timestamp &&
+            admitted.timestamp_value.state ==
+                dt::TimestampValueStateV3::sql_null &&
+            admitted.timestamp_value.civil_day == 0 &&
+            admitted.timestamp_value.nanoseconds_since_midnight == 0,
+        "exact-profile contextual timestamp NULL did not bind cleanly");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -2094,6 +2175,7 @@ int main(int argc, char** argv) {
   PhysicalMalformedRecordsAreRefused();
   PhysicalCodecPersistsThroughFileDevice(fs::absolute(argv[0]));
   BitStringNullRequiresExactV3Profile();
+  TimestampNullRequiresExactV3Profile();
   std::cout << "base NULL contextual-state checks=" << checks
             << " failures=" << failures << '\n';
   return failures == 0 ? 0 : 1;

@@ -239,11 +239,12 @@ DmlIngestionPipeline::DmlIngestionPipeline(DmlIngestionPipelineConfig config)
 }
 
 DmlIngestionPipeline::~DmlIngestionPipeline() {
-  (void)Fence();
+  StopAndJoin();
 }
 
 bool DmlIngestionPipeline::Start() {
   std::lock_guard<std::mutex> lock(mutex_);
+  if (fenced_ || stats_.failed) return false;
   if (started_) {
     return !stats_.failed;
   }
@@ -353,6 +354,7 @@ bool DmlIngestionPipeline::EnqueuePreallocationBatch(
     return true;
   }
   std::unique_lock<std::mutex> lock(mutex_);
+  if (fenced_ || prework_stop_requested_ || stats_.failed) return false;
   if (!stats_.preallocator_enabled) {
     return true;
   }
@@ -390,20 +392,36 @@ bool DmlIngestionPipeline::EnqueueWrite(DmlIngestionWriteTask task) {
     SetFailure(PipelineDiagnostic("write_task_callback_required"));
     return false;
   }
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::unique_lock<std::mutex> lock(mutex_);
+  if (fenced_ || write_stop_requested_ || stats_.failed) return false;
   if (!stats_.writer_enabled) {
+    ++active_writers_;
+    ++stats_.write_tasks_enqueued;
+    stats_.write_rows_enqueued += task.row_count;
+    lock.unlock();
     const auto execute_start = PipelineClock::now();
-    const auto diagnostic = task.execute();
+    auto diagnostic = OkDiagnostic();
+    try {
+      diagnostic = task.execute();
+    } catch (...) {
+      diagnostic = PipelineDiagnostic("write_task_exception");
+    }
+    lock.lock();
+    --active_writers_;
     stats_.write_inline_execute_us +=
         ElapsedMicros(execute_start, PipelineClock::now());
     if (diagnostic.error) {
+      if (!stats_.failed) stats_.diagnostic = std::move(diagnostic);
       stats_.failed = true;
-      stats_.diagnostic = diagnostic;
+      write_stop_requested_ = true;
+      prework_stop_requested_ = true;
+      write_available_.notify_all();
+      prework_available_.notify_all();
+      prework_space_available_.notify_all();
+      write_drained_.notify_all();
       return false;
     }
-    ++stats_.write_tasks_enqueued;
     ++stats_.write_tasks_completed;
-    stats_.write_rows_enqueued += task.row_count;
     stats_.write_rows_completed += task.row_count;
     write_drained_.notify_all();
     return true;
@@ -423,6 +441,7 @@ bool DmlIngestionPipeline::EnqueueWrite(DmlIngestionWriteTask task) {
 }
 
 DmlIngestionPipelineStats DmlIngestionPipeline::FencePreallocator() {
+  std::lock_guard<std::mutex> joining(join_mutex_);
   {
     std::lock_guard<std::mutex> lock(mutex_);
     prework_stop_requested_ = true;
@@ -440,8 +459,9 @@ DmlIngestionPipelineStats DmlIngestionPipeline::DrainWriters() {
   std::unique_lock<std::mutex> lock(mutex_);
   const auto drain_start = PipelineClock::now();
   write_drained_.wait(lock, [&]() {
-    return stats_.failed ||
-           stats_.write_tasks_completed >= stats_.write_tasks_enqueued;
+    return active_writers_ == 0 &&
+           (stats_.failed ||
+            stats_.write_tasks_completed >= stats_.write_tasks_enqueued);
   });
   stats_.write_drain_wait_us +=
       ElapsedMicros(drain_start, PipelineClock::now());
@@ -620,6 +640,7 @@ void DmlIngestionPipeline::WriterLoop() {
       }
       queued = std::move(write_queue_.front());
       write_queue_.pop_front();
+      ++active_writers_;
     }
     const EngineApiU64 queue_wait_us =
         ElapsedMicros(queued.enqueued_at, PipelineClock::now());
@@ -633,6 +654,7 @@ void DmlIngestionPipeline::WriterLoop() {
     const EngineApiU64 execute_us =
         ElapsedMicros(execute_start, PipelineClock::now());
     std::lock_guard<std::mutex> lock(mutex_);
+    --active_writers_;
     stats_.write_queue_wait_us += queue_wait_us;
     stats_.write_task_execute_us += execute_us;
     AddPhaseMicros(&stats_.write_phase_queue_wait_us,
@@ -642,8 +664,8 @@ void DmlIngestionPipeline::WriterLoop() {
                    queued.task.phase,
                    execute_us);
     if (diagnostic.error) {
+      if (!stats_.failed) stats_.diagnostic = std::move(diagnostic);
       stats_.failed = true;
-      stats_.diagnostic = diagnostic;
       write_stop_requested_ = true;
       prework_stop_requested_ = true;
       write_available_.notify_all();
@@ -660,8 +682,8 @@ void DmlIngestionPipeline::WriterLoop() {
 
 void DmlIngestionPipeline::SetFailure(EngineApiDiagnostic diagnostic) {
   std::lock_guard<std::mutex> lock(mutex_);
+  if (!stats_.failed) stats_.diagnostic = std::move(diagnostic);
   stats_.failed = true;
-  stats_.diagnostic = std::move(diagnostic);
   prework_stop_requested_ = true;
   write_stop_requested_ = true;
   prework_available_.notify_all();
@@ -671,11 +693,15 @@ void DmlIngestionPipeline::SetFailure(EngineApiDiagnostic diagnostic) {
 }
 
 DmlIngestionPipelineStats DmlIngestionPipeline::Fence() {
+  StopAndJoin();
+  return Snapshot();
+}
+
+void DmlIngestionPipeline::StopAndJoin() noexcept {
+  // A concurrent fence waits for actual joins, not just closed admission.
+  std::lock_guard<std::mutex> joining(join_mutex_);
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (fenced_) {
-      return stats_;
-    }
     fenced_ = true;
     prework_stop_requested_ = true;
     write_stop_requested_ = true;
@@ -692,8 +718,8 @@ DmlIngestionPipelineStats DmlIngestionPipeline::Fence() {
       worker.join();
     }
   }
-  std::lock_guard<std::mutex> lock(mutex_);
-  return stats_;
+  std::unique_lock<std::mutex> lock(mutex_);
+  write_drained_.wait(lock, [&] { return active_writers_ == 0; });
 }
 
 DmlIngestionPipelineStats DmlIngestionPipeline::Snapshot() const {

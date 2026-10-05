@@ -9,6 +9,7 @@
 #include "datatype_physical_encoding.hpp"
 #include "datatype_date.hpp"
 #include "datatype_time.hpp"
+#include "datatype_timestamp.hpp"
 
 #include <array>
 #include <cstdint>
@@ -77,7 +78,8 @@ void TestEveryCanonicalDatatypePhysicalRoundTrip() {
     // path. Its exact V3 receipt/profile adapter is exercised below.
     if (descriptor.type_id == dt::CanonicalTypeId::bit_string ||
         descriptor.type_id == dt::CanonicalTypeId::date ||
-        descriptor.type_id == dt::CanonicalTypeId::time) continue;
+        descriptor.type_id == dt::CanonicalTypeId::time ||
+        descriptor.type_id == dt::CanonicalTypeId::timestamp) continue;
     const auto layout = dt::LookupDatatypeStorageLayout(descriptor.type_id);
     Require(layout.ok(), "MDF-013 missing storage layout");
     RoundTrip(dt::SampleDatatypePhysicalValueForLayout(layout.layout));
@@ -91,7 +93,7 @@ void TestEveryCanonicalDatatypePhysicalRoundTrip() {
 
 std::shared_ptr<const dt::DateValidatedProfileHandleV3> DateProfile() {
   const auto result =
-      dt::BuildCurrentDateValidatedProfileHandleV3(dt::kDatatypeCohortV9);
+      dt::BuildCurrentDateValidatedProfileHandleV3(dt::kDatatypeCohortV10);
   Require(result.ok(), "MDF-013 current date profile did not resolve");
   return std::make_shared<const dt::DateValidatedProfileHandleV3>(
       result.profile);
@@ -99,9 +101,17 @@ std::shared_ptr<const dt::DateValidatedProfileHandleV3> DateProfile() {
 
 std::shared_ptr<const dt::TimeValidatedProfileHandleV3> TimeProfile() {
   const auto result =
-      dt::BuildCurrentTimeValidatedProfileHandleV3(dt::kDatatypeCohortV9);
+      dt::BuildCurrentTimeValidatedProfileHandleV3(dt::kDatatypeCohortV10);
   Require(result.ok(), "MDF-013 current time profile did not resolve");
   return std::make_shared<const dt::TimeValidatedProfileHandleV3>(
+      result.profile);
+}
+
+std::shared_ptr<const dt::TimestampValidatedProfileHandleV3> TimestampProfile() {
+  const auto result =
+      dt::BuildCurrentTimestampValidatedProfileHandleV3(dt::kDatatypeCohortV10);
+  Require(result.ok(), "MDF-013 current timestamp profile did not resolve");
+  return std::make_shared<const dt::TimestampValidatedProfileHandleV3>(
       result.profile);
 }
 
@@ -110,10 +120,14 @@ void TestD708TemporalProfileReceiptsAreRefusedAsCurrent() {
       dt::BuildCurrentDateValidatedProfileHandleV3(dt::kDatatypeCohortV8);
   const auto time =
       dt::BuildCurrentTimeValidatedProfileHandleV3(dt::kDatatypeCohortV8);
-  Require(!date.ok() && !time.ok() &&
+  const auto timestamp =
+      dt::BuildCurrentTimestampValidatedProfileHandleV3(dt::kDatatypeCohortV8);
+  Require(!date.ok() && !time.ok() && !timestamp.ok() &&
               date.diagnostic.diagnostic_code ==
                   "CTI.TEMPORAL.DESCRIPTOR_INVALID" &&
               time.diagnostic.diagnostic_code ==
+                  "CTI.TEMPORAL.DESCRIPTOR_INVALID" &&
+              timestamp.diagnostic.diagnostic_code ==
                   "CTI.TEMPORAL.DESCRIPTOR_INVALID",
           "MDF-013 admitted historical d708 temporal receipt as current");
 }
@@ -249,6 +263,73 @@ void TestTimeStructuralBoundaryAndRawRefusal() {
           "MDF-013 raw time dirty NULL precedence mismatch");
 }
 
+void TestTimestampStructuralBoundaryAndRawRefusal() {
+  const std::array<platform::byte, 16> epoch{};
+  const dt::DatatypePhysicalValueView structural{
+      dt::CanonicalTypeId::timestamp,
+      dt::DatatypePhysicalValueState::value,
+      epoch.data(), epoch.size()};
+  std::array<platform::byte, 40> frame{};
+  const auto encoded = dt::EncodeDatatypePhysicalStructuralValueIntoNoAlloc(
+      structural, frame.data(), frame.size());
+  Require(encoded.ok() && encoded.bytes_written == frame.size(),
+          "MDF-013 timestamp structural SBDPV encode failed");
+  const auto structural_decode =
+      dt::DecodeDatatypePhysicalStructuralValueViewNoAlloc(
+          frame.data(), frame.size());
+  Require(structural_decode.ok() &&
+              structural_decode.value.type_id == dt::CanonicalTypeId::timestamp &&
+              structural_decode.value.payload_bytes == epoch.size(),
+          "MDF-013 timestamp structural SBDPV decode failed");
+
+  const auto raw_encode = dt::EncodeDatatypePhysicalValue(
+      {dt::CanonicalTypeId::timestamp, dt::DatatypePhysicalValueState::value,
+       {epoch.begin(), epoch.end()}});
+  const auto raw_decode = dt::DecodeDatatypePhysicalValue(frame.data(), frame.size());
+  Require(!raw_encode.ok() && !raw_decode.ok() &&
+              raw_encode.diagnostic.diagnostic_code ==
+                  "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING" &&
+              raw_decode.diagnostic.diagnostic_code ==
+                  "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+          "MDF-013 raw timestamp SBDPV semantic path was not refused");
+
+  const auto profile = TimestampProfile();
+  const dt::TimestampOwnedValueV3 value{
+      profile, dt::TimestampValueStateV3::value, 0, 0};
+  const auto composed = dt::EncodeTimestampSbdpvComposedV3(value, false);
+  Require(composed.ok() && composed.bytes.size() == frame.size() &&
+              std::equal(composed.bytes.begin(), composed.bytes.end(), frame.begin()),
+          "MDF-013 composed timestamp SBDPV bytes differ from structural envelope");
+  const auto decoded = dt::DecodeTimestampSbdpvComposedNoAllocV3(
+      *profile, false, composed.bytes);
+  Require(decoded.ok() && decoded.value.profile == profile.get() &&
+              decoded.value.state == dt::TimestampValueStateV3::value &&
+              decoded.value.civil_day == 0 &&
+              decoded.value.nanoseconds_since_midnight == 0,
+          "MDF-013 composed timestamp SBDPV did not preserve local-civil epoch");
+
+  const auto malformed = dt::EncodeDatatypePhysicalValue(
+      {dt::CanonicalTypeId::timestamp, dt::DatatypePhysicalValueState::value,
+       std::vector<platform::byte>(15)});
+  Require(!malformed.ok() && malformed.diagnostic.diagnostic_code ==
+              "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+          "MDF-013 malformed raw timestamp component precedence mismatch");
+  std::vector<platform::byte> invalid_nanosecond(16);
+  platform::StoreLittle32(invalid_nanosecond.data() + 8, 1'000'000'000u);
+  const auto invalid = dt::EncodeDatatypePhysicalValue(
+      {dt::CanonicalTypeId::timestamp, dt::DatatypePhysicalValueState::value,
+       invalid_nanosecond});
+  Require(!invalid.ok() && invalid.diagnostic.diagnostic_code ==
+              "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+          "MDF-013 invalid timestamp nanosecond component was admitted");
+  const auto dirty_null = dt::EncodeDatatypePhysicalValue(
+      {dt::CanonicalTypeId::timestamp, dt::DatatypePhysicalValueState::sql_null,
+       {0}});
+  Require(!dirty_null.ok() && dirty_null.diagnostic.diagnostic_code ==
+              "DATATYPE.NULL_STATE.INVALID",
+          "MDF-013 raw timestamp dirty NULL precedence mismatch");
+}
+
 void TestBitStringStructuralBoundaryAndRawRefusal() {
   const std::array<platform::byte, 5> component{{1, 0, 0, 0, 0x80}};
   const dt::DatatypePhysicalValueView structural{
@@ -371,7 +452,8 @@ void TestRestartPersistenceRoundTrip() {
   for (const auto& descriptor : dt::BuiltinDatatypeDescriptors()) {
     if (descriptor.type_id == dt::CanonicalTypeId::bit_string ||
         descriptor.type_id == dt::CanonicalTypeId::date ||
-        descriptor.type_id == dt::CanonicalTypeId::time) continue;
+        descriptor.type_id == dt::CanonicalTypeId::time ||
+        descriptor.type_id == dt::CanonicalTypeId::timestamp) continue;
     const auto layout = dt::LookupDatatypeStorageLayout(descriptor.type_id);
     const auto encoded = dt::EncodeDatatypePhysicalValue(
         dt::SampleDatatypePhysicalValueForLayout(layout.layout));
@@ -431,6 +513,7 @@ int main() {
   TestBitStringStructuralBoundaryAndRawRefusal();
   TestDateStructuralBoundaryAndComposedAuthority();
   TestTimeStructuralBoundaryAndRawRefusal();
+  TestTimestampStructuralBoundaryAndRawRefusal();
   TestD708TemporalProfileReceiptsAreRefusedAsCurrent();
   TestOverflowLocatorOpaqueAndProtectedStates();
   TestMalformedPhysicalPayloadsAreRefused();

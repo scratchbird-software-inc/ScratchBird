@@ -19,6 +19,10 @@
 #include <variant>
 #include <vector>
 
+namespace scratchbird::engine::internal_api {
+struct EngineDescriptor;
+}
+
 namespace scratchbird::engine::sblr {
 
 using SblrUuid = scratchbird::core::platform::Uuid;
@@ -97,6 +101,10 @@ struct SblrValue {
   bool has_int64_value = false;
   bool has_uint64_value = false;
   bool has_real64_value = false;
+  // Immutable binding metadata retained by native projection adapters. It is
+  // not a catalog/security receipt. Unused by legacy carriers; owned separately
+  // so their per-value storage does not contain a full EngineDescriptor.
+  std::shared_ptr<const internal_api::EngineDescriptor> projection_descriptor;
 };
 
 struct SblrResultRow {

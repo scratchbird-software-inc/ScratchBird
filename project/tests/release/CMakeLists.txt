@@ -92,6 +92,10 @@ option(SB_PUBLIC_RELEASE_EXPORT_NESTED
 option(SB_PUBLIC_RELEASE_HARDENING_NESTED
   "Suppress recursive public hardening CTest registration while proving sanitizer/static-analysis profiles"
   OFF)
+set(SB_PUBLIC_RELEASE_HARDENING_C_COMPILER "${CMAKE_C_COMPILER}" CACHE FILEPATH
+  "C compiler for all required nested sanitizer profiles (defaults to the main compiler)")
+set(SB_PUBLIC_RELEASE_HARDENING_CXX_COMPILER "${CMAKE_CXX_COMPILER}" CACHE FILEPATH
+  "C++ compiler for all required nested sanitizer profiles (defaults to the main compiler)")
 set(SB_PUBLIC_RELEASE_EXPORT_BUILD_PARALLELISM "4" CACHE STRING
   "Maximum parallel compile jobs used by the clean public-project export proof")
 if(NOT SB_PUBLIC_RELEASE_EXPORT_BUILD_PARALLELISM MATCHES "^[1-9][0-9]*$")
@@ -2530,6 +2534,15 @@ set_tests_properties(public_sbsql_parser_sync_gate PROPERTIES
   LABELS "public_release_correctness;public_sbsql_parser_sync_gate;ELER-089;ELER-GATE-089;release_hygiene;sbsql_parser_spec_execution_plan_sync;row_expanded_sync;compatibility_dialect_paste_through_rejection;linux_proof"
 )
 
+add_test(
+  NAME public_sanitizer_result_contract_test
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/public_sanitizer_result_contract_test.py
+)
+set_tests_properties(public_sanitizer_result_contract_test PROPERTIES
+  LABELS "public_release_correctness;sanitizer;qualification_integrity;fail_closed;linux_proof"
+)
+
 add_executable(public_sanitizer_warning_probe
   public_sanitizer_warning_probe.cpp
 )
@@ -2547,8 +2560,8 @@ if(NOT SB_PUBLIC_RELEASE_HARDENING_NESTED)
             --output ${CMAKE_CURRENT_BINARY_DIR}/public_sanitizer_static_analysis_gate/public_sanitizer_static_analysis.json
             --cmake ${CMAKE_COMMAND}
             --generator Ninja
-            --c-compiler ${CMAKE_C_COMPILER}
-            --cxx-compiler ${CMAKE_CXX_COMPILER}
+            --c-compiler "${SB_PUBLIC_RELEASE_HARDENING_C_COMPILER}"
+            --cxx-compiler "${SB_PUBLIC_RELEASE_HARDENING_CXX_COMPILER}"
   )
   set_tests_properties(public_sanitizer_static_analysis_gate PROPERTIES
     LABELS "public_release_correctness;public_sanitizer_static_analysis_gate;PCR-GATE-110;PCR-110;ELER-108;ELER-GATE-108;release_hygiene;sanitizer;static_analysis;warnings_as_errors;source_hygiene;compiler_hardening;release_artifact_trust;linux_proof"
@@ -2683,6 +2696,17 @@ add_test(
 )
 set_tests_properties(public_release_version_metadata_gate PROPERTIES
   LABELS "public_release_correctness;public_release_version_metadata_gate;PCR-GATE-112;PCR-112;ELER-108;ELER-GATE-108;release_hygiene;version_metadata;compatibility;database_format;catalog_schema;catalog_codec;datatype_wire;debug_symbols;fail_closed;release_artifact_trust;linux_proof"
+)
+
+# Nested configurations retain dependency locations, never cached probe results.
+add_test(
+  NAME public_nested_dependency_config_test
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/public_nested_dependency_config_test.py
+)
+set_tests_properties(public_nested_dependency_config_test PROPERTIES
+  LABELS "public_release_correctness;release_hygiene;dependency_configuration;source_archive_safe;linux_proof"
+  ENVIRONMENT "SB_TEST_CMAKE_COMMAND=${CMAKE_COMMAND}"
 )
 
 # PUBLIC_PROJECT_EXPORT_COPY_FILTER_TEST
@@ -3395,10 +3419,13 @@ if(NOT SB_PUBLIC_RELEASE_EXPORT_NESTED)
             ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/release/public_project_export_gate.py
             --repo-root ${CMAKE_CURRENT_SOURCE_DIR}/../../..
             --staging-root ${CMAKE_CURRENT_BINARY_DIR}/public_project_export_gate
+            --dependency-cache "${CMAKE_BINARY_DIR}/CMakeCache.txt"
             --cmake ${CMAKE_COMMAND}
             --ctest ${CMAKE_CTEST_COMMAND}
             --c-compiler ${CMAKE_C_COMPILER}
             --cxx-compiler ${CMAKE_CXX_COMPILER}
+            --hardening-c-compiler "${SB_PUBLIC_RELEASE_HARDENING_C_COMPILER}"
+            --hardening-cxx-compiler "${SB_PUBLIC_RELEASE_HARDENING_CXX_COMPILER}"
             --parallel ${SB_PUBLIC_RELEASE_EXPORT_BUILD_PARALLELISM}
   )
   # PUBLIC_RELEASE_CLEANUP_GATE
