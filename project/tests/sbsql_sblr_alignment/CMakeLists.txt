@@ -695,6 +695,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SB_BUILD_SBSQL_PARSER_WORKER)
     LABELS "sbsql_sblr_alignment;IA-04;parser_component;not_runtime_acceptance"
     TIMEOUT 60)
 endif()
+add_executable(sbsql_sblr_alignment_blake3_incremental_v3
+  blake3_incremental_v3_test.cpp)
+target_compile_features(sbsql_sblr_alignment_blake3_incremental_v3 PRIVATE cxx_std_17)
+target_link_libraries(sbsql_sblr_alignment_blake3_incremental_v3 PRIVATE sb_core_hash)
+add_test(NAME sbsql_sblr_alignment_blake3_incremental_v3
+  COMMAND sbsql_sblr_alignment_blake3_incremental_v3)
+set_tests_properties(sbsql_sblr_alignment_blake3_incremental_v3 PROPERTIES
+  LABELS "sbsql_sblr_alignment;blake3;streaming;allocation_free;component_regression;not_runtime_acceptance"
+  TIMEOUT 120)
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_function_registry_binary
     function_registry_binary_test.cpp
