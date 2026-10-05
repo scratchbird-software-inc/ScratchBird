@@ -232,6 +232,22 @@ bool SamePolicy(const dt::DatatypePolicyIdentityV3& left,
   return left.uuid == right.uuid && left.generation == right.generation;
 }
 
+bool SameNative(const dt::DatatypeNativeIdentityFieldsV3& left,
+                const dt::DatatypeNativeIdentityFieldsV3& right) {
+  return left.present == right.present &&
+         left.canonical_value_minimum_bytes ==
+             right.canonical_value_minimum_bytes &&
+         left.canonical_value_maximum_bytes ==
+             right.canonical_value_maximum_bytes &&
+         left.canonical_value_transport_width ==
+             right.canonical_value_transport_width &&
+         left.canonical_value_variable_width ==
+             right.canonical_value_variable_width &&
+         left.policy_profile_uuid == right.policy_profile_uuid &&
+         left.policy_profile_generation == right.policy_profile_generation &&
+         left.profile_fingerprint_sha256 == right.profile_fingerprint_sha256;
+}
+
 bool SameV3Identity(const dt::DatatypeTypeCodecIdentityRowV3& left,
                     const dt::DatatypeTypeCodecIdentityRowV3& right) {
   return SameLegacyIdentity(left.legacy_fields, right.legacy_fields) &&
@@ -240,7 +256,8 @@ bool SameV3Identity(const dt::DatatypeTypeCodecIdentityRowV3& left,
                     right.canonicalization_policy) &&
          SamePolicy(left.ordering_policy, right.ordering_policy) &&
          SamePolicy(left.hash_policy, right.hash_policy) &&
-         SamePolicy(left.operation_policy, right.operation_policy);
+         SamePolicy(left.operation_policy, right.operation_policy) &&
+         SameNative(left.native_fields, right.native_fields);
 }
 
 void AppendU64(std::vector<Byte>* out, std::uint64_t value) {
@@ -455,18 +472,19 @@ void TestPopulationAndAuthoritativeRows() {
                                 dt::DatatypePolicyIdentityV3>);
 
   const auto v3 = dt::CurrentDatatypeTypeCodecIdentityRowsV3();
-  Check(v3.size() == 259, "V3 registry does not contain 259 rows");
+  Check(v3.size() == 293, "V3 registry does not contain 293 rows");
 
-  std::array<std::size_t, 10> counts{};
+  std::array<std::size_t, 11> counts{};
   for (const auto& row : v3) {
     const auto generation = row.legacy_fields.catalog_generation;
-    Check(generation >= 1 && generation <= 10 &&
+    Check(generation >= 1 && generation <= 11 &&
               row.legacy_fields.registry_generation == generation,
           "V3 row has a mixed or invalid cohort generation");
     ++counts[generation - 1];
   }
-  Check(counts == std::array<std::size_t, 10>{6, 12, 13, 31, 32, 33, 33, 33, 33, 33},
-        "V3 cohort row counts differ from admitted Core d710");
+  Check(counts == std::array<std::size_t, 11>{
+            6, 12, 13, 31, 32, 33, 33, 33, 33, 33, 34},
+        "V3 cohort row counts differ from admitted Core d711");
 
   Check(dt::kDatatypeCohortV7IdentityDigestSha256 ==
             "f10857ec395d4ebca02ec21c785251a668d98f3c0e69eeba11324f3807832dcc",
@@ -480,15 +498,18 @@ void TestPopulationAndAuthoritativeRows() {
   Check(dt::kDatatypeCohortV10IdentityDigestSha256 ==
             "90d4e17c5e98a684422399b16d73b38d3391905ebb775241426755a7323249a3",
         "d710 Core cohort digest binding changed");
+  Check(dt::kDatatypeCohortV11IdentityDigestSha256 ==
+            "8d6cb5b855450a355f05863bc2b0c3652d7b694a1e6ebd6758f1a41408840327",
+        "d711 Core cohort digest binding changed");
 
   const auto registry_digest = InternalCompiledMaterialDigest(v3);
   if (registry_digest !=
-      "528e3051994923b9875e7a6000edbfba66c9d0cd0499f2b56a91ebeb5b273e87") {
+      "ca07250c01e11301b2bbdb2a26ab8bea68eed7a5910907a5bec56889898dbafc") {
     std::cerr << "observed_internal_compiled_material_digest=" << registry_digest << '\n';
     Fail("internal compiled V3 material changed");
   }
 
-  constexpr std::array<std::string_view, 10> expected_cohort_digests{{
+  constexpr std::array<std::string_view, 11> expected_cohort_digests{{
       "c3f32a278b09243fe3556ba9520c6ad95fb0995035813f92244c775b1bc4e3e2",
       "72399142c162281c1f81e1ec64175f546b26baa45f0fd241abab5823d913e166",
       "3ca980ce8e214c713d53bffcfb34e73bc64094065c8e2f93ed264e530cfeb299",
@@ -499,8 +520,9 @@ void TestPopulationAndAuthoritativeRows() {
       "2ba35727670308890132276ed9a64fffffe72046690e4a7adf962d2fe02132c2",
       "aaac0121339b61d74613dc9a95b35c7f61a3a32fc780a02f5db2286e9bebaa4d",
       "d70417ccc10c2dd672416901be8cfea511cca6f8f78cc85a0cda0f198d8638ed",
+      "1cdd4807c44eb728c367a0bfe652cf84add696ef1a58a7a4e5981fcbafe787ad",
   }};
-  for (std::uint64_t generation = 1; generation <= 10; ++generation) {
+  for (std::uint64_t generation = 1; generation <= 11; ++generation) {
     std::vector<dt::DatatypeTypeCodecIdentityRowV3> cohort;
     for (const auto& row : v3) {
       if (row.legacy_fields.catalog_generation == generation)
@@ -527,12 +549,15 @@ void TestPopulationAndAuthoritativeRows() {
       FixtureUuidLiteral("92010000-7469-7d65-b374-616d70000000");
   const auto interval_descriptor =
       FixtureUuidLiteral("93010000-696e-7465-b276-616c00000000");
+  const auto blob_descriptor =
+      FixtureUuidLiteral("016fd1d3-0daf-5967-b4d7-07fe859a418e");
   std::size_t binary_policy_rows = 0;
   std::size_t bit_policy_rows = 0;
   std::size_t date_policy_rows = 0;
   std::size_t time_policy_rows = 0;
   std::size_t timestamp_policy_rows = 0;
   std::size_t interval_policy_rows = 0;
+  std::size_t blob_policy_rows = 0;
   for (const auto& row : v3) {
     const auto lookup = dt::LookupDatatypeTypeCodecIdentityV3(
         row.legacy_fields.catalog_snapshot_uuid,
@@ -542,6 +567,27 @@ void TestPopulationAndAuthoritativeRows() {
         row.legacy_fields.descriptor_generation);
     Check(lookup.ok && SameV3Identity(lookup.row, row),
           "exact V3 tuple did not resolve to its authoritative row");
+
+    if (row.legacy_fields.catalog_generation == 11) {
+      Check(row.native_fields.present,
+            "d711 row lacks its lossless V3 native identity fields");
+      if (row.legacy_fields.descriptor_uuid != blob_descriptor) {
+        Check(row.native_fields.canonical_value_minimum_bytes ==
+                      row.legacy_fields.canonical_value_minimum_bytes &&
+                  row.native_fields.canonical_value_maximum_bytes ==
+                      row.legacy_fields.canonical_value_maximum_bytes &&
+                  row.native_fields.canonical_value_transport_width ==
+                      row.legacy_fields.canonical_value_exact_bytes &&
+                  row.native_fields.canonical_value_variable_width ==
+                      row.legacy_fields.canonical_value_variable_width &&
+                  row.native_fields.policy_profile_uuid.is_nil() &&
+                  row.native_fields.policy_profile_generation == 0,
+              "d711 predecessor reseal changed its native extent/profile facts");
+      }
+    } else {
+      Check(!row.native_fields.present,
+            "historical predecessor acquired V3-native successor authority");
+    }
 
     if (row.legacy_fields.descriptor_uuid == binary_descriptor) {
       Check(!row.descriptor_policy.uuid.is_nil() &&
@@ -607,7 +653,7 @@ void TestPopulationAndAuthoritativeRows() {
             "base.timestamp current policy authority is incomplete");
       ++timestamp_policy_rows;
     } else if (row.legacy_fields.descriptor_uuid == interval_descriptor &&
-               row.legacy_fields.catalog_generation == 10) {
+               row.legacy_fields.catalog_generation >= 10) {
       Check(!row.descriptor_policy.uuid.is_nil() &&
                 !row.canonicalization_policy.uuid.is_nil() &&
                 !row.ordering_policy.uuid.is_nil() &&
@@ -620,6 +666,20 @@ void TestPopulationAndAuthoritativeRows() {
                 row.operation_policy.generation == 1,
             "base.interval d710 policy authority is incomplete");
       ++interval_policy_rows;
+    } else if (row.legacy_fields.descriptor_uuid == blob_descriptor &&
+               row.legacy_fields.catalog_generation == 11) {
+      Check(!row.descriptor_policy.uuid.is_nil() &&
+                !row.canonicalization_policy.uuid.is_nil() &&
+                !row.ordering_policy.uuid.is_nil() &&
+                !row.hash_policy.uuid.is_nil() &&
+                !row.operation_policy.uuid.is_nil() &&
+                row.descriptor_policy.generation == 1 &&
+                row.canonicalization_policy.generation == 1 &&
+                row.ordering_policy.generation == 1 &&
+                row.hash_policy.generation == 1 &&
+                row.operation_policy.generation == 1,
+            "base.blob d711 policy authority is incomplete");
+      ++blob_policy_rows;
     } else {
       Check(row.descriptor_policy.uuid.is_nil() &&
                 row.descriptor_policy.generation == 0 &&
@@ -634,13 +694,15 @@ void TestPopulationAndAuthoritativeRows() {
             "V3 row contains an unregistered policy identity");
     }
   }
-  Check(binary_policy_rows == 8 && bit_policy_rows == 5 &&
-            date_policy_rows == 4 && time_policy_rows == 3 &&
-            timestamp_policy_rows == 2 && interval_policy_rows == 1,
+  Check(binary_policy_rows == 9 && bit_policy_rows == 6 &&
+            date_policy_rows == 5 && time_policy_rows == 4 &&
+            timestamp_policy_rows == 3 && interval_policy_rows == 2 &&
+            blob_policy_rows == 1,
         "V3 policy-bearing row population changed");
 
-  const std::array<std::size_t, 10> expected_inherited{0, 6, 12, 13, 31, 32, 27, 25, 32, 32};
-  std::array<std::size_t, 10> inherited_counts{};
+  const std::array<std::size_t, 11> expected_inherited{
+      0, 6, 12, 13, 31, 32, 27, 25, 32, 32, 33};
+  std::array<std::size_t, 11> inherited_counts{};
   for (const auto& current : v3) {
     const auto generation = current.legacy_fields.catalog_generation;
     if (generation == 1) continue;
@@ -813,7 +875,7 @@ void TestExactBitStringIdentity() {
   const auto type = FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d82a");
   const auto codec = FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d82b");
   const auto lookup = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV10, 10, 10, descriptor, 1);
+      dt::kDatatypeCohortV11, 11, 11, descriptor, 1);
   Check(lookup.ok && dt::IsExactCanonicalBitStringTypeCodecIdentityV3(lookup.row),
         "exact d710 bit-string row did not resolve");
   const auto historical = dt::LookupDatatypeTypeCodecIdentityV3(
@@ -863,9 +925,9 @@ void TestExactBitStringIdentity() {
                                                    descriptor, 1).ok &&
             !dt::LookupDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV9, 10, 10,
                                                    descriptor, 1).ok &&
-            !dt::LookupDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV10, 10, 10,
+            !dt::LookupDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV11, 11, 11,
                                                    type, 1).ok &&
-            !dt::LookupDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV10, 10, 10,
+            !dt::LookupDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV11, 11, 11,
                                                    codec, 1).ok,
         "V3 lookup inferred an identity from a mismatched tuple");
 
@@ -1032,15 +1094,15 @@ void TestExactCurrentBinaryDateAndCodecClosures() {
       FixtureUuidLiteral("92010000-7469-7d65-b374-616d70000000");
 
   const auto binary = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV10, 10, 10, binary_descriptor, 1);
+      dt::kDatatypeCohortV11, 11, 11, binary_descriptor, 1);
   const auto bit = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV10, 10, 10, bit_descriptor, 1);
+      dt::kDatatypeCohortV11, 11, 11, bit_descriptor, 1);
   const auto date = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV10, 10, 10, date_descriptor, 1);
+      dt::kDatatypeCohortV11, 11, 11, date_descriptor, 1);
   const auto time = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV10, 10, 10, time_descriptor, 1);
+      dt::kDatatypeCohortV11, 11, 11, time_descriptor, 1);
   const auto timestamp = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV10, 10, 10, timestamp_descriptor, 1);
+      dt::kDatatypeCohortV11, 11, 11, timestamp_descriptor, 1);
   Check(binary.ok && dt::IsExactCanonicalBinaryTypeCodecIdentityV3(binary.row),
         "exact current binary identity is absent");
   Check(bit.ok && dt::IsExactCanonicalBitStringTypeCodecIdentityV3(bit.row),
@@ -1465,7 +1527,7 @@ void TestExactIntervalIdentity() {
   const auto descriptor =
       FixtureUuidLiteral("93010000-696e-7465-b276-616c00000000");
   const auto lookup = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV10, 10, 10, descriptor, 1);
+      dt::kDatatypeCohortV11, 11, 11, descriptor, 1);
   Check(lookup.ok && dt::IsExactCanonicalIntervalTypeCodecIdentityV3(lookup.row),
         "exact d710 interval identity is absent");
   const auto& row = lookup.row;
@@ -1536,6 +1598,109 @@ void TestExactIntervalIdentity() {
   }
 }
 
+void TestExactBlobIdentity() {
+  using scratchbird::tests::FixtureUuidLiteral;
+  const auto descriptor =
+      FixtureUuidLiteral("016fd1d3-0daf-5967-b4d7-07fe859a418e");
+  const auto type =
+      FixtureUuidLiteral("01a1095f-f205-7b29-b679-2ab3755b37d2");
+  const auto codec =
+      FixtureUuidLiteral("01a1095f-f205-79fe-b1f0-29f1e0f49b05");
+  const auto profile =
+      FixtureUuidLiteral("01a1095f-f205-739c-8166-221dfe6b818d");
+  const auto lookup = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV11, 11, 11, descriptor, 1);
+  Check(lookup.ok && dt::IsExactCanonicalBlobTypeCodecIdentityV3(lookup.row),
+        "exact d711 base.blob identity is absent");
+  const auto& row = lookup.row;
+  const auto& legacy = row.legacy_fields;
+  Check(legacy.type_uuid == type && legacy.type_generation == 1 &&
+            legacy.codec_uuid == codec && legacy.codec_id ==
+                "datatype.blob.stream.v1" &&
+            legacy.codec_version == 1 && legacy.codec_generation == 1 &&
+            legacy.canonical_binary_type_code == 500 &&
+            legacy.canonical_value_variable_width && legacy.null_supported &&
+            legacy.empty_value_distinct_from_sql_null &&
+            legacy.sql_null_requires_zero_payload &&
+            legacy.variable_width_storage_without_truncation,
+        "base.blob legacy projection surface differs from Core");
+  constexpr std::array<Byte, 32> fingerprint{{
+      0x5f,0x6d,0xe3,0x00,0x9a,0xce,0x30,0xc9,
+      0x70,0x93,0x0b,0x0b,0x26,0x95,0xf4,0x20,
+      0x1e,0x78,0x69,0x91,0xfb,0x7b,0x9e,0xf5,
+      0xb4,0x95,0x5b,0x04,0x01,0x43,0x5b,0xc8}};
+  Check(row.native_fields.present &&
+            row.native_fields.canonical_value_minimum_bytes == 0 &&
+            row.native_fields.canonical_value_maximum_bytes ==
+                static_cast<std::uint64_t>(INT64_MAX) &&
+            row.native_fields.canonical_value_transport_width == 0 &&
+            row.native_fields.canonical_value_variable_width &&
+            row.native_fields.policy_profile_uuid == profile &&
+            row.native_fields.policy_profile_generation == 1 &&
+            row.native_fields.profile_fingerprint_sha256 == fingerprint,
+        "base.blob lossless extent/profile tuple differs from Core");
+
+  const std::array expected_policies{
+      FixtureUuidLiteral("01a1095f-f205-7daf-b6f1-291724840de4"),
+      FixtureUuidLiteral("01a1095f-f205-7fc9-8fec-e6ada4889d1c"),
+      FixtureUuidLiteral("01a1095f-f205-74ae-a0cc-24aa665f5047"),
+      FixtureUuidLiteral("01a1095f-f205-77f1-aac4-0e0bd39fe398"),
+      FixtureUuidLiteral("01a1095f-f205-7c23-a0d0-91ccd2a078a6"),
+  };
+  const std::array actual_policies{
+      row.descriptor_policy, row.canonicalization_policy, row.ordering_policy,
+      row.hash_policy, row.operation_policy};
+  for (std::size_t index = 0; index < actual_policies.size(); ++index) {
+    Check(actual_policies[index].uuid == expected_policies[index] &&
+              actual_policies[index].generation == 1,
+          "base.blob five-policy identity differs from Core");
+  }
+
+  auto renamed = row;
+  renamed.legacy_fields.canonical_name = "objeto_binario";
+  renamed.legacy_fields.codec_id = "etiqueta_blob_localizada";
+  Check(dt::IsExactCanonicalBlobTypeCodecIdentityV3(renamed),
+        "localized base.blob labels changed UUID identity");
+
+  const auto reject = [&](auto mutate, std::string_view message) {
+    auto changed = row;
+    mutate(changed);
+    Check(!dt::IsExactCanonicalBlobTypeCodecIdentityV3(changed), message);
+  };
+  reject([](auto& value) { --value.native_fields.canonical_value_maximum_bytes; },
+         "truncated base.blob u64 maximum was admitted");
+  reject([](auto& value) { value.native_fields.present = false; },
+         "base.blob without V3-native fields was admitted");
+  reject([](auto& value) { value.native_fields.policy_profile_uuid.bytes[0] ^= 1; },
+         "mutated base.blob profile UUID was admitted");
+  reject([](auto& value) { ++value.native_fields.policy_profile_generation; },
+         "mutated base.blob profile generation was admitted");
+  reject([](auto& value) { value.native_fields.profile_fingerprint_sha256[31] ^= 1; },
+         "mutated base.blob profile fingerprint was admitted");
+  reject([](auto& value) { value.legacy_fields.descriptor_uuid.bytes[15] ^= 1; },
+         "mutated base.blob descriptor UUID was admitted");
+  reject([](auto& value) { value.legacy_fields.type_uuid.bytes[15] ^= 1; },
+         "mutated base.blob type UUID was admitted");
+  reject([](auto& value) { value.legacy_fields.codec_uuid.bytes[15] ^= 1; },
+         "mutated base.blob codec UUID was admitted");
+  reject([](auto& value) { value.hash_policy.generation = 2; },
+         "mutated base.blob hash policy was admitted");
+
+  const auto projection = dt::ProjectDatatypeTypeCodecIdentityV3ToV1(row);
+  Check(!projection.ok &&
+            projection.diagnostic_id ==
+                "DATATYPE.V1_PROJECTION_UNREPRESENTABLE" &&
+            SameLegacyIdentity(projection.row, {}),
+        "base.blob was truncated into the frozen V1 identity carrier");
+  Check(!dt::LookupDatatypeTypeCodecIdentityV3(
+             dt::kDatatypeCohortV10, 10, 10, descriptor, 1).ok,
+        "base.blob leaked into the historical d710 cohort");
+  Check(!dt::LookupDatatypeTypeCodecIdentityV3(
+             dt::kDatatypeCohortV11, 11, 11,
+             FixtureUuidLiteral("f4010000-626c-7f62-8000-000000000000"), 1).ok,
+        "synthetic name-derived base.blob descriptor was admitted");
+}
+
 void TestLookupAllocationFailureIsContained() {
   using scratchbird::tests::FixtureUuidLiteral;
   const auto date_descriptor =
@@ -1552,7 +1717,7 @@ void TestLookupAllocationFailureIsContained() {
 
   allocation_probe::fail_next = true;
   const auto refused = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV10, 10, 10, date_descriptor, 1);
+      dt::kDatatypeCohortV11, 11, 11, date_descriptor, 1);
   Check(!allocation_probe::fail_next,
         "identity row copy did not exercise the allocation-failure probe");
   Check(!refused.ok &&
@@ -1561,7 +1726,7 @@ void TestLookupAllocationFailureIsContained() {
         "identity row allocation failure escaped or lost its admitted diagnostic");
 
   const auto recovered = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV10, 10, 10, date_descriptor, 1);
+      dt::kDatatypeCohortV11, 11, 11, date_descriptor, 1);
   Check(recovered.ok && recovered.diagnostic_id.empty() &&
             dt::IsExactCanonicalDateTypeCodecIdentityV3(recovered.row),
         "identity lookup did not recover after an injected allocation failure");
@@ -1594,6 +1759,7 @@ int main() {
   TestExactBitStringIdentity();
   TestExactCurrentBinaryDateAndCodecClosures();
   TestExactIntervalIdentity();
+  TestExactBlobIdentity();
   TestLookupAllocationFailureIsContained();
   std::cout << "datatype_identity_v3_test=passed\n";
   return EXIT_SUCCESS;

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <new>
 #include <type_traits>
 #include <utility>
@@ -79,6 +80,22 @@ bool EqualLegacyFields(const DatatypeTypeCodecIdentityRowV1& left,
 bool EqualPolicy(const DatatypePolicyIdentityV3& left,
                  const DatatypePolicyIdentityV3& right) noexcept {
   return left.uuid == right.uuid && left.generation == right.generation;
+}
+
+bool EqualNativeFields(const DatatypeNativeIdentityFieldsV3& left,
+                       const DatatypeNativeIdentityFieldsV3& right) noexcept {
+  return left.present == right.present &&
+         left.canonical_value_minimum_bytes ==
+             right.canonical_value_minimum_bytes &&
+         left.canonical_value_maximum_bytes ==
+             right.canonical_value_maximum_bytes &&
+         left.canonical_value_transport_width ==
+             right.canonical_value_transport_width &&
+         left.canonical_value_variable_width ==
+             right.canonical_value_variable_width &&
+         left.policy_profile_uuid == right.policy_profile_uuid &&
+         left.policy_profile_generation == right.policy_profile_generation &&
+         left.profile_fingerprint_sha256 == right.profile_fingerprint_sha256;
 }
 
 DatatypeTypeCodecIdentityRowV3 CanonicalBitStringRowV6() {
@@ -1324,8 +1341,8 @@ const DatatypeTypeCodecIdentityRowV3* FindD707Row(
   return nullptr;
 }
 
-const std::array<DatatypeTypeCodecIdentityRowV3, 259> kIdentityRowsV3 = [] {
-  std::array<DatatypeTypeCodecIdentityRowV3, 259> rows{};
+const std::array<DatatypeTypeCodecIdentityRowV3, 293> kIdentityRowsV3 = [] {
+  std::array<DatatypeTypeCodecIdentityRowV3, 293> rows{};
   std::copy(kIdentityRowsThroughV7.begin(), kIdentityRowsThroughV7.end(),
             rows.begin());
   std::size_t output = kIdentityRowsThroughV7.size();
@@ -1489,15 +1506,116 @@ const std::array<DatatypeTypeCodecIdentityRowV3, 259> kIdentityRowsV3 = [] {
     }
     rows[output++] = std::move(successor);
   }
+
+  // D711 reseals all 33 exact D710 rows without semantic changes, then
+  // appends the native base.blob row. The V3-native extent fields are the
+  // lossless authority; the nested V1 widths remain historical projections.
+  for (const auto& descriptor : kD708DescriptorOrder) {
+    const DatatypeTypeCodecIdentityRowV3* predecessor = nullptr;
+    for (std::size_t index = 0; index < output; ++index) {
+      const auto& candidate = rows[index].legacy_fields;
+      if (candidate.catalog_snapshot_uuid == kDatatypeCohortV10 &&
+          candidate.catalog_generation == 10 &&
+          candidate.registry_generation == 10 &&
+          candidate.descriptor_uuid == descriptor &&
+          candidate.descriptor_generation == 1) {
+        predecessor = &rows[index];
+        break;
+      }
+    }
+    if (predecessor == nullptr) {
+      ++output;
+      continue;
+    }
+    auto successor = *predecessor;
+    auto& legacy = successor.legacy_fields;
+    legacy.catalog_snapshot_uuid = kDatatypeCohortV11;
+    legacy.catalog_generation = 11;
+    legacy.registry_generation = 11;
+    successor.native_fields.present = true;
+    successor.native_fields.canonical_value_minimum_bytes =
+        legacy.canonical_value_minimum_bytes;
+    successor.native_fields.canonical_value_maximum_bytes =
+        legacy.canonical_value_maximum_bytes;
+    successor.native_fields.canonical_value_transport_width =
+        legacy.canonical_value_exact_bytes;
+    successor.native_fields.canonical_value_variable_width =
+        legacy.canonical_value_variable_width;
+    rows[output++] = std::move(successor);
+  }
+
+  DatatypeTypeCodecIdentityRowV3 blob;
+  auto& legacy = blob.legacy_fields;
+  legacy.catalog_snapshot_uuid = kDatatypeCohortV11;
+  legacy.catalog_generation = 11;
+  legacy.registry_generation = 11;
+  legacy.descriptor_uuid = Uuid({{
+      0x01,0x6f,0xd1,0xd3,0x0d,0xaf,0x59,0x67,
+      0xb4,0xd7,0x07,0xfe,0x85,0x9a,0x41,0x8e}});
+  legacy.descriptor_generation = 1;
+  legacy.type_uuid = Uuid({{
+      0x01,0xa1,0x09,0x5f,0xf2,0x05,0x7b,0x29,
+      0xb6,0x79,0x2a,0xb3,0x75,0x5b,0x37,0xd2}});
+  legacy.type_generation = 1;
+  legacy.codec_uuid = Uuid({{
+      0x01,0xa1,0x09,0x5f,0xf2,0x05,0x79,0xfe,
+      0xb1,0xf0,0x29,0xf1,0xe0,0xf4,0x9b,0x05}});
+  legacy.codec_id = "datatype.blob.stream.v1";
+  legacy.codec_version = 1;
+  legacy.codec_generation = 1;
+  legacy.canonical_value_bytes = 0;
+  legacy.null_supported = true;
+  legacy.canonical_name = "blob";
+  legacy.null_encoding_code = 1;
+  legacy.canonical_binary_type_code = 500;
+  legacy.canonical_value_variable_width = true;
+  legacy.canonical_value_exact_zero_is_width_marker = true;
+  legacy.canonical_byte_order = "octet_sequence";
+  legacy.canonical_representation =
+      "exact_ordered_octets_canonical_component_SBBLOB03";
+  legacy.empty_value_distinct_from_sql_null = true;
+  legacy.sql_null_requires_zero_payload = true;
+  legacy.variable_width_storage_without_truncation = true;
+  blob.descriptor_policy = {Uuid({{
+      0x01,0xa1,0x09,0x5f,0xf2,0x05,0x7d,0xaf,
+      0xb6,0xf1,0x29,0x17,0x24,0x84,0x0d,0xe4}}), 1};
+  blob.canonicalization_policy = {Uuid({{
+      0x01,0xa1,0x09,0x5f,0xf2,0x05,0x7f,0xc9,
+      0x8f,0xec,0xe6,0xad,0xa4,0x88,0x9d,0x1c}}), 1};
+  blob.ordering_policy = {Uuid({{
+      0x01,0xa1,0x09,0x5f,0xf2,0x05,0x74,0xae,
+      0xa0,0xcc,0x24,0xaa,0x66,0x5f,0x50,0x47}}), 1};
+  blob.hash_policy = {Uuid({{
+      0x01,0xa1,0x09,0x5f,0xf2,0x05,0x77,0xf1,
+      0xaa,0xc4,0x0e,0x0b,0xd3,0x9f,0xe3,0x98}}), 1};
+  blob.operation_policy = {Uuid({{
+      0x01,0xa1,0x09,0x5f,0xf2,0x05,0x7c,0x23,
+      0xa0,0xd0,0x91,0xcc,0xd2,0xa0,0x78,0xa6}}), 1};
+  blob.native_fields.present = true;
+  blob.native_fields.canonical_value_minimum_bytes = 0;
+  blob.native_fields.canonical_value_maximum_bytes =
+      static_cast<u64>(INT64_MAX);
+  blob.native_fields.canonical_value_transport_width = 0;
+  blob.native_fields.canonical_value_variable_width = true;
+  blob.native_fields.policy_profile_uuid = Uuid({{
+      0x01,0xa1,0x09,0x5f,0xf2,0x05,0x73,0x9c,
+      0x81,0x66,0x22,0x1d,0xfe,0x6b,0x81,0x8d}});
+  blob.native_fields.policy_profile_generation = 1;
+  blob.native_fields.profile_fingerprint_sha256 = {{
+      0x5f,0x6d,0xe3,0x00,0x9a,0xce,0x30,0xc9,
+      0x70,0x93,0x0b,0x0b,0x26,0x95,0xf4,0x20,
+      0x1e,0x78,0x69,0x91,0xfb,0x7b,0x9e,0xf5,
+      0xb4,0x95,0x5b,0x04,0x01,0x43,0x5b,0xc8}};
+  rows[output++] = std::move(blob);
   return rows;
 }();
 
 const DatatypeTypeCodecIdentityRowV3* CurrentRow(
     const platform::Uuid& descriptor) noexcept {
   for (const auto& row : kIdentityRowsV3) {
-    if (row.legacy_fields.catalog_snapshot_uuid == kDatatypeCohortV10 &&
-        row.legacy_fields.catalog_generation == 10 &&
-        row.legacy_fields.registry_generation == 10 &&
+    if (row.legacy_fields.catalog_snapshot_uuid == kDatatypeCohortV11 &&
+        row.legacy_fields.catalog_generation == 11 &&
+        row.legacy_fields.registry_generation == 11 &&
         row.legacy_fields.descriptor_uuid == descriptor &&
         row.legacy_fields.descriptor_generation == 1) {
       return &row;
@@ -1516,7 +1634,8 @@ bool IsExactCurrentRow(const DatatypeTypeCodecIdentityRowV3& row,
                      expected->canonicalization_policy) &&
          EqualPolicy(row.ordering_policy, expected->ordering_policy) &&
          EqualPolicy(row.hash_policy, expected->hash_policy) &&
-         EqualPolicy(row.operation_policy, expected->operation_policy);
+         EqualPolicy(row.operation_policy, expected->operation_policy) &&
+         EqualNativeFields(row.native_fields, expected->native_fields);
 }
 
 }  // namespace
@@ -1622,9 +1741,26 @@ bool IsExactCanonicalIntervalTypeCodecIdentityV3(
                   0xb2,0x76,0x61,0x6c,0x00,0x00,0x00,0x00}}));
 }
 
+bool IsExactCanonicalBlobTypeCodecIdentityV3(
+    const DatatypeTypeCodecIdentityRowV3& row) noexcept {
+  return IsExactCurrentRow(
+      row, Uuid({{0x01,0x6f,0xd1,0xd3,0x0d,0xaf,0x59,0x67,
+                  0xb4,0xd7,0x07,0xfe,0x85,0x9a,0x41,0x8e}}));
+}
+
 DatatypeTypeCodecIdentityProjectionV1 ProjectDatatypeTypeCodecIdentityV3ToV1(
     const DatatypeTypeCodecIdentityRowV3& row) noexcept {
   DatatypeTypeCodecIdentityProjectionV1 result;
+  if (row.native_fields.present &&
+      (row.native_fields.canonical_value_minimum_bytes >
+           std::numeric_limits<u32>::max() ||
+       row.native_fields.canonical_value_maximum_bytes >
+           std::numeric_limits<u32>::max() ||
+       row.native_fields.canonical_value_transport_width >
+           std::numeric_limits<u32>::max())) {
+    result.diagnostic_id = "DATATYPE.V1_PROJECTION_UNREPRESENTABLE";
+    return result;
+  }
   DatatypeTypeCodecIdentityRowV1 staged;
   try {
     staged = row.legacy_fields;
