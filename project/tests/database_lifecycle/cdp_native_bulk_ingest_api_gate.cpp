@@ -46,6 +46,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <set>
 #include <string>
 #include <string_view>
@@ -195,8 +196,60 @@ api::EngineTypedValue ScalarValue(std::string canonical_type_name,
   typed.descriptor.descriptor_kind = "scalar";
   typed.descriptor.canonical_type_name = canonical_type_name;
   typed.descriptor.encoded_descriptor = "canonical=" + canonical_type_name;
-  typed.encoded_value = std::move(value);
+  const bool signed_integer = canonical_type_name == "int8" ||
+      canonical_type_name == "int16" || canonical_type_name == "int32" ||
+      canonical_type_name == "int64" || canonical_type_name == "int128";
+  const bool unsigned_integer = canonical_type_name == "uint8" ||
+      canonical_type_name == "uint16" || canonical_type_name == "uint32" ||
+      canonical_type_name == "uint64" || canonical_type_name == "uint128";
+  if (signed_integer || unsigned_integer) {
+    const auto width_name = canonical_type_name.substr(signed_integer ? 3 : 4);
+    const std::size_t width = width_name == "8" ? 1 : width_name == "16" ? 2 :
+        width_name == "32" ? 4 : width_name == "64" ? 8 : width_name == "128" ? 16 : 0;
+    Require(width != 0 && !value.empty(), "invalid integer fixture type/value");
+    const bool negative = value.front() == '-';
+    Require(!negative || signed_integer, "negative unsigned fixture value");
+    typed.binary_value.assign(width, 0);
+    Require(value.size() > (negative ? 1u : 0u), "empty integer fixture magnitude");
+    // Independent decimal-to-LE fixture construction, including 128-bit bounds;
+    // no engine parser, native-width extension or production codec as oracle.
+    for (std::size_t index = negative ? 1 : 0; index < value.size(); ++index) {
+      Require(value[index] >= '0' && value[index] <= '9', "nondecimal integer fixture");
+      unsigned carry = value[index] - '0';
+      for (auto& byte : typed.binary_value) {
+        const unsigned next = byte * 10u + carry;
+        byte = static_cast<std::uint8_t>(next);
+        carry = next >> 8;
+      }
+      Require(carry == 0, "integer fixture overflow");
+    }
+    if (signed_integer) {
+      const auto high = typed.binary_value.back();
+      Require(high < 0x80 || (negative && high == 0x80 &&
+          std::all_of(typed.binary_value.begin(), typed.binary_value.end() - 1,
+                      [](auto byte) { return byte == 0; })), "signed fixture overflow");
+    }
+    if (negative) {
+      unsigned carry = 1;
+      for (auto& byte : typed.binary_value) {
+        const unsigned next = static_cast<unsigned>(static_cast<std::uint8_t>(~byte)) + carry;
+        byte = static_cast<std::uint8_t>(next);
+        carry = next >> 8;
+      }
+    }
+  } else {
+    typed.encoded_value = std::move(value);
+  }
   return typed;
+}
+
+std::int64_t ReadInt64Payload(const api::CrudStoredValue& value) {
+  Require(value.isPresent() && value.bytes.size() == 8,
+          "CDP-040 retained int64 payload is not PRESENT binary LE8");
+  std::uint64_t bits = 0;
+  for (unsigned index = 0; index < 8; ++index)
+    bits |= static_cast<std::uint64_t>(static_cast<unsigned char>(value.bytes[index])) << (index * 8);
+  return std::bit_cast<std::int64_t>(bits);
 }
 
 api::EngineTypedValue BinaryScalarValue(std::string canonical_type_name,
@@ -568,7 +621,7 @@ std::vector<api::EngineRowValue> Rows(std::string prefix, int count) {
   return rows;
 }
 
-api::EngineRowValue Int64IndexedRow(int value, platform::u64 salt) {
+api::EngineRowValue Int64IndexedRow(std::int64_t value, platform::u64 salt) {
   api::EngineRowValue row;
   row.requested_row_uuid =
       NewIdentity(platform::UuidKind::object, salt);
@@ -579,7 +632,7 @@ api::EngineRowValue Int64IndexedRow(int value, platform::u64 salt) {
   return row;
 }
 
-api::EngineRowValue Int64IndexedRow(int value) {
+api::EngineRowValue Int64IndexedRow(std::int64_t value) {
   return Int64IndexedRow(value, static_cast<platform::u64>(1180 + value));
 }
 
@@ -1692,9 +1745,9 @@ void TestTypedInt64IndexKeysUseBinaryOrder() {
     }
     const auto payload = ScalarLogicalPayload(entry.payload_value);
     Require(payload.isPresent(), "CDP-040 int64 index payload became NULL");
-    if (payload.bytes == "2") {
+    if (ReadInt64Payload(payload) == 2) {
       key_two = entry.key_value;
-    } else if (payload.bytes == "10") {
+    } else if (ReadInt64Payload(payload) == 10) {
       key_ten = entry.key_value;
     }
   }
@@ -1713,36 +1766,41 @@ void TestTypedInt64IndexKeysUseFullSignedSortOrder() {
   const auto result = api::EngineExecuteNativeBulkIngest(
       NativeRequest(fixture,
                     context,
-                    {Int64IndexedRow(-257, 11801),
+                    {Int64IndexedRow(std::numeric_limits<std::int64_t>::min(), 11800),
+                     Int64IndexedRow(-257, 11801),
                      Int64IndexedRow(-1, 11802),
                      Int64IndexedRow(0, 11803),
                      Int64IndexedRow(2, 11804),
-                     Int64IndexedRow(256, 11805)}));
+                     Int64IndexedRow(256, 11805),
+                     Int64IndexedRow(std::numeric_limits<std::int64_t>::max(), 11806)}));
   RequireOk(result, "CDP-040 typed int64 signed sort native bulk ingest failed");
   Require(EvidenceU64(result.evidence,
-                      "direct_index_key_typed_candidates") == 5,
+                      "direct_index_key_typed_candidates") == 7,
           "CDP-040 typed int64 signed sort did not inspect every key");
   Require(EvidenceU64(result.evidence,
-                      "direct_index_key_typed_encoded") == 5,
+                      "direct_index_key_typed_encoded") == 7,
           "CDP-040 typed int64 signed sort did not encode every key");
   Require(EvidenceU64(result.evidence,
                       "direct_index_key_typed_fallback") == 0,
           "CDP-040 typed int64 signed sort fell back to display text");
   Require(EvidenceU64(result.evidence,
-                      "direct_index_key_sbkobin_keys") == 5,
+                      "direct_index_key_sbkobin_keys") == 7,
           "CDP-040 typed int64 signed sort did not emit SBKOBIN keys");
 
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "CDP-040 typed int64 signed sort state reload failed");
-  std::map<std::string, std::string> keys_by_value;
+  std::map<std::int64_t, std::string> keys_by_value;
   for (const auto& entry : loaded.state.index_entries) {
     if (entry.index_uuid == fixture.index_uuid) {
       const auto payload = ScalarLogicalPayload(entry.payload_value);
       Require(payload.isPresent(), "CDP-040 signed int64 index payload became NULL");
-      keys_by_value[payload.bytes] = entry.key_value;
+      keys_by_value[ReadInt64Payload(payload)] = entry.key_value;
     }
   }
-  const std::vector<std::string> order = {"-257", "-1", "0", "2", "256"};
+  const std::vector<std::int64_t> order = {
+      std::numeric_limits<std::int64_t>::min(), -257, -1, 0, 2, 256,
+      std::numeric_limits<std::int64_t>::max()};
+  Require(keys_by_value.size() == order.size(), "signed int64 key membership changed");
   for (const auto& value : order) {
     Require(keys_by_value[value].rfind("SBKOBIN:", 0) == 0,
             "CDP-040 signed int64 sort key was not SBKOBIN");
@@ -1784,7 +1842,7 @@ void TestTypedNullIndexKeyUsesNullOrder() {
     const auto payload = ScalarLogicalPayload(entry.payload_value);
     if (payload.isSqlNull()) {
       key_null = entry.key_value;
-    } else if (payload.isPresent() && payload.bytes == "0") {
+    } else if (ReadInt64Payload(payload) == 0) {
       key_zero = entry.key_value;
     }
   }
@@ -2457,6 +2515,7 @@ void TestMalformedInlineFixedTypedValueRefuses() {
   auto fixture = MakeTypedScalarFixture("malformed_inline_fixed", 1600);
   auto context = Begin(fixture, "cdp040-malformed-inline-fixed");
   auto bad_row = TypedScalarRow(1);
+  bad_row.fields.front().second.binary_value.clear();
   bad_row.fields.front().second.encoded_value = "not-an-int64";
   const auto result = api::EngineExecuteNativeBulkIngest(
       NativeRequest(fixture, context, {std::move(bad_row)}));
@@ -3132,11 +3191,19 @@ void TestSblrRegistryEntry() {
 int main(int argc, char** argv) try {
   const bool fixed_scalar_only = argc == 2 && std::string_view(argv[1]) == "--native-fixed-scalars";
   const bool typed_null_only = argc == 2 && std::string_view(argv[1]) == "--native-typed-null";
-  Require(argc == 1 || fixed_scalar_only || typed_null_only, "unknown native bulk gate arguments");
+  const bool integer_only = argc == 2 && std::string_view(argv[1]) == "--native-int64-index";
+  Require(argc == 1 || fixed_scalar_only || typed_null_only || integer_only,
+          "unknown native bulk gate arguments");
   ConfigureMemoryFixture();
   if (typed_null_only) {
     TestNullAndCharacterRowPageStorage();
     std::cout << "native_typed_null_storage=passed committed_reopen_type=int64\n";
+    return EXIT_SUCCESS;
+  }
+  if (integer_only) {
+    TestTypedInt64IndexKeysUseBinaryOrder();
+    TestTypedInt64IndexKeysUseFullSignedSortOrder();
+    std::cout << "native_int64_index=binary_le8 signed_bounds=passed\n";
     return EXIT_SUCCESS;
   }
   TestSblrRegistryEntry();

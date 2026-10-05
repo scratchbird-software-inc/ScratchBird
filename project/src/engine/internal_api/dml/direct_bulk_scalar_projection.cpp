@@ -104,7 +104,10 @@ CrudStoredValue DirectTypedStoredValue(const EngineTypedValue& typed) {
     throw std::invalid_argument(
         "uint16 direct row carrier profile is unresolved");
   }
-  return DirectTypedValueTextPayload(typed);
+  // Retained rows and index admission consume native bytes, not display text.
+  // In particular, formatting LE integers here loses their canonical width and
+  // makes the persisted carrier disagree with the physical row-page payload.
+  return CrudTypedValuePayload(typed);
 }
 
 EngineApiU64 DirectTypedValuePayloadSize(const EngineTypedValue& typed) {
