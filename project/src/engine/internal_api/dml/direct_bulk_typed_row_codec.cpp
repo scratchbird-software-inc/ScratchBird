@@ -977,13 +977,16 @@ scratchbird::storage::page::RowDataCell DirectPhysicalCellFromTypedValue(
     std::string_view target_canonical_type_name) {
   scratchbird::storage::page::RowDataCell cell;
   cell.column_ordinal = ordinal;
+  dt::CanonicalTypeId target_type =
+      dt::CanonicalTypeIdFromStableName(std::string(target_canonical_type_name));
   if (typed.isSqlNull()) {
-    cell.value.type_id = dt::CanonicalTypeId::null_type;
+    if (target_type == dt::CanonicalTypeId::unknown || target_type == dt::CanonicalTypeId::null_type)
+      throw std::invalid_argument("physical NULL requires a concrete bound column type");
+    // NULL is a state of the bound column type, not a standalone datatype.
+    cell.value.type_id = target_type;
     cell.value.is_null = true;
     return cell;
   }
-  dt::CanonicalTypeId target_type =
-      dt::CanonicalTypeIdFromStableName(std::string(target_canonical_type_name));
   if (target_type == dt::CanonicalTypeId::unknown) {
     target_type = dt::CanonicalTypeIdFromStableName(
         typed.descriptor.canonical_type_name);
@@ -1016,7 +1019,10 @@ scratchbird::storage::page::RowDataCell DirectPhysicalCellFromTypedValueWithPlan
   scratchbird::storage::page::RowDataCell cell;
   cell.column_ordinal = ordinal;
   if (typed.isSqlNull()) {
-    cell.value.type_id = dt::CanonicalTypeId::null_type;
+    if (column_plan.target_type == dt::CanonicalTypeId::unknown ||
+        column_plan.target_type == dt::CanonicalTypeId::null_type)
+      throw std::invalid_argument("physical NULL requires a concrete bound column type");
+    cell.value.type_id = column_plan.target_type;
     cell.value.is_null = true;
     return cell;
   }
@@ -1053,7 +1059,7 @@ scratchbird::storage::page::RowDataCell DirectPhysicalCellFromTypedValueWithPlan
 }
 
 std::vector<scratchbird::storage::page::RowDataCell> DirectPhysicalCells(
-    const CrudValueFields& values) {
+    const CrudValueFields& values, const InsertRowEncoderPlan* row_encoder_plan) {
   std::vector<scratchbird::storage::page::RowDataCell> cells;
   cells.reserve(values.size());
   std::uint16_t ordinal = 1;
@@ -1075,8 +1081,19 @@ std::vector<scratchbird::storage::page::RowDataCell> DirectPhysicalCells(
     cell.value.type_id = dt::CanonicalTypeId::binary;
     cell.value.payload_is_toast_reference = lob;
     if (value.second.isSqlNull()) {
+      if (row_encoder_plan == nullptr)
+        throw std::invalid_argument("physical NULL requires a bound column descriptor");
+      const auto column = std::find_if(row_encoder_plan->columns.begin(),
+          row_encoder_plan->columns.end(), [&](const auto& candidate) {
+            return candidate.column_name == value.first;
+          });
+      if (column == row_encoder_plan->columns.end())
+        throw std::invalid_argument("physical NULL column descriptor missing");
       cell.value.is_null = true;
-      cell.value.type_id = dt::CanonicalTypeId::null_type;
+      cell.value.type_id = dt::CanonicalTypeIdFromStableName(column->canonical_type_name);
+      if (cell.value.type_id == dt::CanonicalTypeId::unknown ||
+          cell.value.type_id == dt::CanonicalTypeId::null_type)
+        throw std::invalid_argument("physical NULL requires a concrete bound column type");
     }
     cells.push_back(std::move(cell));
   }
@@ -1093,6 +1110,8 @@ DirectPhysicalTypedCells DirectPhysicalCellsFromTypedInputRow(
   for (std::size_t field_index = 0; field_index < input_row.fields.size(); ++field_index) {
     const auto& field = input_row.fields[field_index];
     const auto& typed = field.second;
+    if (typed.isSqlNull() && (!typed.encoded_value.empty() || !typed.binary_value.empty()))
+      throw std::invalid_argument("physical SQL NULL must not carry a payload");
     const std::string_view target_type =
         field_index < row_encoder_plan.columns.size()
             ? std::string_view(row_encoder_plan.columns[field_index].canonical_type_name)
@@ -1139,7 +1158,8 @@ BuildDirectFixedWidthPayloadValidationPlan(
         dt::CanonicalTypeIdFromStableName(column_plan.canonical_type_name);
     if (column_plan.target_type == dt::CanonicalTypeId::unknown &&
         first_row != nullptr &&
-        index < first_row->fields.size()) {
+        index < first_row->fields.size() &&
+        !first_row->fields[index].second.isSqlNull()) {
       const std::string& input_type =
           first_row->fields[index].second.descriptor.canonical_type_name;
       const dt::CanonicalTypeId input_type_id =

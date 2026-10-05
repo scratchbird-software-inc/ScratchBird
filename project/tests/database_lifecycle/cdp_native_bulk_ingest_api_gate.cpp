@@ -1642,7 +1642,9 @@ void TestNullAndCharacterRowPageStorage() {
   for (const auto& row : page.visible_rows) {
     for (const auto& cell : row.cells) {
       if (cell.value.is_null &&
-          cell.value.type_id == dt::CanonicalTypeId::null_type) {
+          cell.column_ordinal == 1 &&
+          cell.value.type_id == dt::CanonicalTypeId::int64 &&
+          cell.value.payload.empty() && !cell.value.payload_is_toast_reference) {
         ++null_cells;
       }
       if (!cell.value.is_null &&
@@ -1652,7 +1654,7 @@ void TestNullAndCharacterRowPageStorage() {
     }
   }
   Require(null_cells == 1,
-          "CDP-040 recovered null row-page cell was not typed null");
+          "CDP-040 recovered NULL lost its int64 column type or carried payload/reference state");
   Require(character_cells == 1,
           "CDP-040 recovered character row-page cell was not typed");
 }
@@ -3129,8 +3131,14 @@ void TestSblrRegistryEntry() {
 
 int main(int argc, char** argv) try {
   const bool fixed_scalar_only = argc == 2 && std::string_view(argv[1]) == "--native-fixed-scalars";
-  Require(argc == 1 || fixed_scalar_only, "unknown native bulk gate arguments");
+  const bool typed_null_only = argc == 2 && std::string_view(argv[1]) == "--native-typed-null";
+  Require(argc == 1 || fixed_scalar_only || typed_null_only, "unknown native bulk gate arguments");
   ConfigureMemoryFixture();
+  if (typed_null_only) {
+    TestNullAndCharacterRowPageStorage();
+    std::cout << "native_typed_null_storage=passed committed_reopen_type=int64\n";
+    return EXIT_SUCCESS;
+  }
   TestSblrRegistryEntry();
   TestApiAndSblrAcceptedRoutes();
   TestNullAndCharacterRowPageStorage();
