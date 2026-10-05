@@ -4036,6 +4036,23 @@ void Test(unsigned profile){Fixture f(profile);Graph g(f);Bundle b(g);BoundedBun
 int main(int argc,char** argv){
  try{
  std::cout<<std::unitbuf;
+ if(argc==4&&std::string_view(argv[1])=="--directory-delta-shard"){
+   const auto profile=std::stoi(argv[2]),primary=std::stoi(argv[3]);
+   Check(profile>=2&&profile<=4&&primary>=0&&primary<5,"directory delta shard arguments");
+   unsigned cases=0;
+   // Exact partition of --directory-delta by primary page profile. Keep every
+   // secondary profile, ordering, target and state, including all deep fault
+   // sweeps inside DirectoryDelta. The legacy aggregate remains an oracle.
+   for(unsigned secondary=0;secondary<5;++secondary)
+    for(bool reverse:{false,true})for(bool target:{false,true})for(bool reserve:{false,true}){
+     if(profile==2&&(target||reserve))continue;
+     if(profile==3&&!reserve)continue;
+     DirectoryDelta(primary,secondary,reverse,profile,target,reserve);++cases;
+    }
+   Check(cases==(profile==2?10u:profile==3?20u:40u),"complete exact directory delta partition");
+   std::cout<<"PASS directory delta shard profile="<<profile<<" primary="<<primary<<" cases="<<cases
+     <<" checks="<<checks<<" not_runtime_acceptance=true\n";return 0;
+ }
  if(argc==3&&std::string_view(argv[1])=="--startup-binding"){
    const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"startup binding profile");
    ReservationEffects(profile,true);

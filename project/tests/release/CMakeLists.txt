@@ -785,10 +785,15 @@ if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
       set_tests_properties(native_directory_history_${profile}_${primary}_gate PROPERTIES TIMEOUT 120
         LABELS "storage;binary_uuid;real_files;historical_provenance;not_runtime_acceptance")
     endforeach()
-    add_test(NAME native_directory_allocation_delta_${profile}_gate
-      COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-delta ${profile})
-    set_tests_properties(native_directory_allocation_delta_${profile}_gate PROPERTIES TIMEOUT 120
-      LABELS "storage;binary_uuid;immutable_transition;not_runtime_acceptance")
+    # Partition the complete matrix, not its assertions: profile4 has 200
+    # real-file/mutation cases and exceeded the aggregate 120-second deadline.
+    # All primary/secondary page sizes and ordering/target/state cases remain.
+    foreach(primary RANGE 0 4)
+      add_test(NAME native_directory_allocation_delta_${profile}_${primary}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-delta-shard ${profile} ${primary})
+      set_tests_properties(native_directory_allocation_delta_${profile}_${primary}_gate PROPERTIES TIMEOUT 120
+        LABELS "storage;binary_uuid;immutable_transition;not_runtime_acceptance")
+    endforeach()
     add_test(NAME native_directory_allocation_delta_faults_${profile}_gate
       COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-delta-faults ${profile})
     set_tests_properties(native_directory_allocation_delta_faults_${profile}_gate PROPERTIES TIMEOUT 120
