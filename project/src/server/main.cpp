@@ -47,9 +47,7 @@ int RunServerProduct(
   if (!startup.stdout_text.empty()) {
     std::cout << startup.stdout_text;
   }
-  if (!startup.diagnostics.empty()) {
-    EmitDiagnostics(startup.diagnostics);
-  }
+  if (!scratchbird::server::WriteServerStartupDiagnostics(startup, std::cerr)) return 2;
   if (startup.exit_code != 0 ||
       startup.effective_config.mode == scratchbird::server::ServerMode::kValidationOnly) {
     return startup.exit_code;

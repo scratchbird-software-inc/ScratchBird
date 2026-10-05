@@ -47,11 +47,18 @@ struct HostContainerMemoryCeilings {
   bool platform_supported = false;
   std::vector<MemoryCeilingSignal> signals;
   std::optional<u64> available_ceiling_bytes;
+  // The owning detector could not establish a known applicable container limit.
+  // This is observation state, never permission to bypass the missing limit.
+  bool container_limit_incomplete = false;
 };
 
 struct PlatformMemoryCeilingProbePaths {
-  std::string cgroup_v2_root = "/sys/fs/cgroup";
+  // Empty selects process membership/mount discovery. A nonempty directory is
+  // an explicit single-directory probe (for isolated fixtures/embedding).
+  std::string cgroup_v2_root;
   std::string proc_meminfo = "/proc/meminfo";
+  std::string proc_self_cgroup = "/proc/self/cgroup";
+  std::string proc_self_mountinfo = "/proc/self/mountinfo";
 };
 
 struct MemoryPolicyConfig {
@@ -76,6 +83,8 @@ struct MemoryPolicyConfig {
   u64 policy_generation = 1;
   bool enable_platform_memory_probe = true;
   bool require_platform_memory_ceiling = false;
+  bool allow_degraded_container_limit = false;
+  u64 degraded_container_cap_bytes = 0;
   PlatformMemoryCeilingProbePaths platform_probe_paths;
   std::optional<HostContainerMemoryCeilings> platform_ceiling_override;
 };
@@ -83,6 +92,8 @@ struct MemoryPolicyConfig {
 struct MemoryPolicyConfigResolveResult {
   AllocationPolicy policy;
   std::vector<DiagnosticRecord> diagnostics;
+  std::vector<DiagnosticRecord> warnings;
+  bool degraded_container_limit = false;
   u64 configured_hard_limit_bytes = 0;
   std::optional<u64> platform_ceiling_bytes;
   u64 effective_hard_limit_bytes = 0;
@@ -97,5 +108,8 @@ const char* MemoryCeilingSignalKindName(MemoryCeilingSignalKind kind);
 HostContainerMemoryCeilings ProbeHostContainerMemoryCeilings(
     const PlatformMemoryCeilingProbePaths& paths = {});
 MemoryPolicyConfigResolveResult ResolveMemoryPolicyConfig(const MemoryPolicyConfig& config);
+// Core mixed_default bootstrap requirement only; not a selected database,
+// security or cluster profile grant. Round fractional bytes upward, never wrap.
+u64 DefaultBootstrapEmergencyReserveBytes(u64 effective_budget_bytes) noexcept;
 
 }  // namespace scratchbird::core::memory

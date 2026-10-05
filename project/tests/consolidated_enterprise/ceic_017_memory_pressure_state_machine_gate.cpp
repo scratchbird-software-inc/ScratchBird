@@ -9,8 +9,14 @@
 // CEIC-017 focused validation for memory pressure state transitions,
 // hard-OOM survival modeling, and emergency diagnostic evidence.
 #include "memory_pressure_response.hpp"
+#include "metric_builtin_definitions.hpp"
+#include "metric_label_key.hpp"
+#include "metric_observation_queue.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <cstdlib>
+#include <atomic>
+#include <thread>
 #include <iostream>
 #include <string_view>
 #include <vector>
@@ -375,9 +381,231 @@ void RecoveryDoesNotReadmitTooFast() {
           "CEIC-017 stable recovery should not retain pressure actions");
 }
 
+void AllDeclaredBinaryOwnershipScopesAreCharged() {
+  memory::AllocationPolicy policy;
+  policy.hard_limit_bytes = policy.byte_limit = 8192;
+  policy.per_context_limit_bytes = 4096;
+  memory::MemoryManager manager(policy);
+  memory::MemoryTag tag;
+  tag.category = memory::MemoryCategory::diagnostics;
+  tag.lifetime = memory::MemoryLifetime::process;
+  tag.purpose = "complete_binary_scope_conformance";
+  constexpr auto count = static_cast<std::size_t>(memory::MemoryBinaryScopeKind::descriptor_snapshot) + 1;
+  Require(tag.binary_ownership.scopes.size() == count,
+          "binary ownership carrier omits declared process and downstream scopes");
+  for (std::size_t i = 0; i < count; ++i) {
+    auto& uuid = tag.binary_ownership[static_cast<memory::MemoryBinaryScopeKind>(i)];
+    uuid[6] = 0x70;
+    uuid[8] = 0x80;
+    uuid[15] = static_cast<std::uint8_t>(i + 1);
+  }
+  {
+    memory::EmergencyMemoryReserve reserve(manager, tag, 4096);
+    const auto snapshot = manager.Snapshot();
+    Require(snapshot.current_bytes == 4096,
+            "scope attribution must not multiply physical backing charges");
+    for (std::size_t i = 0; i < count; ++i) {
+      const auto kind = static_cast<memory::MemoryBinaryScopeKind>(i);
+      std::size_t matches = 0;
+      for (const auto& context : snapshot.contexts) {
+        if (context.binary_scope && context.binary_scope->kind == kind &&
+            context.binary_scope->uuid == tag.binary_ownership[kind]) {
+          ++matches;
+          Require(context.current_bytes == 4096 && context.scope_id.empty(),
+                  "each declared scope must retain exact binary charges");
+        }
+      }
+      Require(matches == 1, "declared binary scope absent or duplicated in accounting");
+    }
+    auto sibling = tag;
+    for (std::size_t i = 0; i < count; ++i) {
+      const auto kind = static_cast<memory::MemoryBinaryScopeKind>(i);
+      if (kind != memory::MemoryBinaryScopeKind::process)
+        sibling.binary_ownership[kind][15] += 64;
+    }
+    Require(!manager.AllocateScoped(1, alignof(std::max_align_t), sibling).ok() &&
+                manager.Snapshot().current_bytes == 4096,
+            "shared process scope must enforce its limit across distinct children");
+  }
+  Require(manager.Snapshot().current_bytes == 0,
+          "complete binary ownership teardown must release physical charges");
+  auto malformed = tag;
+  malformed.binary_ownership[memory::MemoryBinaryScopeKind::descriptor_snapshot][6] = 0x40;
+  Require(!memory::MemoryBinaryOwnershipValid(malformed) &&
+              !manager.AllocateScoped(4096, alignof(std::max_align_t), malformed).ok() &&
+              manager.Snapshot().current_bytes == 0,
+          "extended scope validation must refuse invalid UUIDs without a physical charge");
+  auto mixed = tag;
+  mixed.owner = "legacy-owner";
+  Require(!memory::MemoryBinaryOwnershipValid(mixed),
+          "extended binary scopes must not permit mixed legacy ownership");
+}
+
+void RegisterReserveMetricFixture() {
+  namespace metrics = scratchbird::core::metrics;
+  auto id = [](unsigned char ordinal) {
+    auto value = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000ee00");
+    value.bytes[15] = ordinal;
+    return value;
+  };
+  auto queue = metrics::MetricObservationQueue::Create({id(1), id(2), {}}, {128, 65536});
+  Require(queue.ok(), "reserve metric observation queue creation failed");
+  auto& registry = metrics::DefaultMetricRegistry();
+  Require(registry.BindObservationQueue(std::move(queue.queue)).ok, "reserve metric queue binding failed");
+  const auto definitions = metrics::BuiltinMetricDescriptorDefinitions();
+  const auto found = std::find_if(definitions.begin(), definitions.end(), [](const auto& d) {
+    return d.family == "sb_memory_emergency_reserve_bytes";
+  });
+  Require(found != definitions.end(), "canonical reserve metric definition missing");
+  metrics::MetricRetentionPolicy policy;
+  policy.policy_uuid = id(3); policy.generation = 1;
+  policy.policy_name = "reserve component observation fixture";
+  metrics::MetricDescriptor descriptor;
+  static_cast<metrics::MetricDescriptorDefinition&>(descriptor) = *found;
+  descriptor.metric_uuid = id(4); descriptor.descriptor_generation = 1;
+  descriptor.label_schema_uuid = id(5); descriptor.label_schema_generation = 1;
+  descriptor.retention_policy_uuid = policy.policy_uuid;
+  descriptor.retention_policy_generation = policy.generation;
+  descriptor.visibility_policy_uuid = id(6); descriptor.visibility_policy_generation = 1;
+  descriptor.readiness = metrics::MetricReadiness::implemented;
+  Require(registry.RegisterDescriptor(descriptor).ok, "reserve metric descriptor registration failed");
+  metrics::MetricHistoryBinding binding;
+  static_cast<metrics::MetricDescriptorBinding&>(binding) = descriptor;
+  binding.database_uuid = id(1); binding.node_uuid = id(2);
+  auto series = metrics::MakeMetricSeriesIdentity(descriptor,
+      {{"component", "core.memory"}, {"operation", "snapshot"}}, policy, binding, id(7), 1);
+  Require(series.ok() && registry.RegisterSeries(*series.record, policy).ok,
+          "reserve metric series registration failed");
+}
+
+void CheckPublishedReserve(memory::MemoryManager& manager, const memory::MemoryTag& tag,
+                           std::uint64_t expected) {
+  // Exercise the actual allocation-time producer, not a fabricated gauge.
+  // This component fixture does not qualify periodic runtime collection.
+  auto sample_trigger = manager.AllocateScoped(1, 0, tag);
+  Require(sample_trigger.ok(), "reserve metric sampling allocation failed");
+  bool observed = false;
+  for (const auto& sample : scratchbird::core::metrics::DefaultMetricRegistry().SnapshotCurrent(false)) {
+    if (sample.family != "sb_memory_emergency_reserve_bytes") continue;
+    const auto* bytes = std::get_if<std::uint64_t>(&sample.value);
+    Require(bytes && *bytes == expected, "reserve gauge must publish exact actual available backing");
+    observed = true;
+  }
+  Require(observed, "actual reserve metric observation missing");
+}
+
+void EmergencyReserveOwnsGovernedBacking() {
+  RegisterReserveMetricFixture();
+  memory::AllocationPolicy policy;
+  policy.hard_limit_bytes = policy.byte_limit = 8192;
+  policy.zero_memory_on_allocate = false;
+  memory::MemoryManager manager(policy);
+  memory::MemoryTag tag;
+  tag.category = memory::MemoryCategory::diagnostics;
+  tag.lifetime = memory::MemoryLifetime::process;
+  tag.purpose = "emergency_reserve_conformance";
+  Require(manager.Snapshot().emergency_reserve_available_bytes == 0,
+          "ordinary unused policy headroom is not emergency reserve");
+  CheckPublishedReserve(manager, tag, 0);
+  for (auto kind : {memory::MemoryBinaryScopeKind::context,
+                    memory::MemoryBinaryScopeKind::owner}) {
+    auto& uuid = tag.binary_ownership[kind];
+    uuid[6] = 0x70;
+    uuid[8] = 0x80;
+    uuid[15] = kind == memory::MemoryBinaryScopeKind::context ? 1 : 2;
+  }
+  {
+    memory::EmergencyMemoryReserve reserve(manager, tag, 4096);
+    Require(reserve.Snapshot().allocated && manager.Snapshot().current_bytes == 4096,
+            "reserve must retain real shared-governor backing");
+    Require(manager.Snapshot().emergency_reserve_available_bytes == 4096,
+            "initialized reserve must be attributed to its actual governor");
+    CheckPublishedReserve(manager, tag, 4096);
+    Require(!reserve.TryReset(8192) && manager.Snapshot().emergency_reserve_available_bytes == 4096,
+            "failed replacement must preserve unconsumed reserve availability");
+    {
+      memory::EmergencyMemoryReserve second(manager, tag, 1024);
+      Require(manager.Snapshot().emergency_reserve_available_bytes == 5120,
+              "multiple reserves must aggregate actual distinct backing once");
+    }
+    Require(manager.Snapshot().emergency_reserve_available_bytes == 4096,
+            "unconsumed reserve destruction must remove available backing");
+    for (auto kind : {memory::MemoryBinaryScopeKind::context,
+                      memory::MemoryBinaryScopeKind::owner}) {
+      bool found = false;
+      for (const auto& context : manager.Snapshot().contexts) {
+        if (context.binary_scope && context.binary_scope->kind == kind &&
+            context.binary_scope->uuid == tag.binary_ownership[kind]) {
+          found = context.current_bytes == 4096 && context.scope_id.empty();
+        }
+      }
+      Require(found, "reserve must charge exact binary identities without text UUID conversion");
+    }
+    Require(reserve.DiagnosticsBuffer().empty(), "unreleased reserve must not expose diagnostic use");
+    auto refused = manager.AllocateScoped(8192, alignof(std::max_align_t), tag);
+    Require(!refused.ok(), "ordinary allocation bypassed retained emergency charge");
+    std::atomic<std::uint64_t> released{0};
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 8; ++i) {
+      threads.emplace_back([&] { released += reserve.ReleaseForEmergencyDiagnostics(); });
+    }
+    for (auto& thread : threads) thread.join();
+    Require(released == 4096 && reserve.Snapshot().released_bytes == 4096,
+            "concurrent diagnostic transfer must happen exactly once");
+    Require(manager.Snapshot().emergency_reserve_available_bytes == 0,
+            "transferred diagnostic storage must not remain available reserve");
+    CheckPublishedReserve(manager, tag, 0);
+    auto buffer = reserve.DiagnosticsBuffer();
+    Require(buffer.size() == 4096 && manager.Snapshot().current_bytes == 4096,
+            "diagnostic transfer must preserve the physical charge");
+    Require(std::all_of(buffer.begin(), buffer.end(), [](std::byte value) {
+              return value == std::byte{0};
+            }), "emergency backing must be initialized before diagnostic transfer");
+    buffer.front() = std::byte{0x35};
+    buffer.back() = std::byte{0x79};
+    memory::DiagnosticRecord failure;
+    Require(!reserve.TryReset(8192, &failure) &&
+                failure.diagnostic_code == "SB-MEMORY-ALLOC-LIMIT-EXCEEDED",
+            "replacement must preserve the shared governor's exact failure diagnostic");
+    Require(reserve.DiagnosticsBuffer().data() == buffer.data() &&
+                reserve.DiagnosticsBuffer().front() == std::byte{0x35} &&
+                reserve.DiagnosticsBuffer().back() == std::byte{0x79} &&
+                reserve.Snapshot().released_bytes == 4096 && manager.Snapshot().current_bytes == 4096,
+            "failed replacement must preserve bytes and exact prior ownership");
+    Require(reserve.TryReset(2048) && manager.Snapshot().current_bytes == 2048 &&
+                reserve.DiagnosticsBuffer().empty() && reserve.Snapshot().available_bytes == 2048,
+            "successful replacement must retire old backing and restore withheld state");
+    Require(manager.Snapshot().emergency_reserve_available_bytes == 2048,
+            "replacement reserve accounting must reflect actual new backing");
+    Require(reserve.ReleaseForEmergencyDiagnostics() == 2048,
+            "replacement reserve transfer failed");
+    auto replacement_buffer = reserve.DiagnosticsBuffer();
+    Require(std::all_of(replacement_buffer.begin(), replacement_buffer.end(), [](std::byte value) {
+              return value == std::byte{0};
+            }), "replacement reserve must not expose previous allocation contents");
+    Require(reserve.TryReset(0) && !reserve.Snapshot().allocated &&
+                manager.Snapshot().current_bytes == 0,
+            "zero reset must release actual charges");
+    Require(reserve.TryReset(4096), "reserve reinitialization failed");
+  }
+  Require(manager.Snapshot().current_bytes == 0 && manager.Snapshot().active_allocation_count == 0,
+          "reserve destruction leaked physical ownership");
+  Require(manager.Snapshot().emergency_reserve_available_bytes == 0,
+          "final reserve destruction leaked available-reserve accounting");
+  CheckPublishedReserve(manager, tag, 0);
+}
+
 }  // namespace
 
 int main() {
+  memory::EmergencyMemoryReserve early_reserve;
+  Require(!early_reserve.TryReset(4096) && !early_reserve.Snapshot().allocated,
+          "unconfigured governor must not yield a synthetic reserve");
+  Require(memory::ConfigureDefaultMemoryManager(memory::DefaultLocalEngineMemoryPolicy(),
+                                                "ceic017_pressure_fixture").ok(),
+          "CEIC-017 must initialize the shared governor before acquiring real reserves");
+  Require(early_reserve.TryReset(4096) && early_reserve.TryReset(0),
+          "failed early admission must permit retry after governor initialization");
   std::cout << "CEIC-017 authority_note=memory_pressure_evidence_only;"
                "not_transaction_finality_visibility_security_authorization_"
                "recovery_parser_reference_wal_benchmark_optimizer_plan_index_"
@@ -389,5 +617,7 @@ int main() {
   EmergencyReserveAndDiagnosticsAreBounded();
   UnsafeAuthorityFailsClosed();
   RecoveryDoesNotReadmitTooFast();
+  EmergencyReserveOwnsGovernedBacking();
+  AllDeclaredBinaryOwnershipScopesAreCharged();
   return EXIT_SUCCESS;
 }

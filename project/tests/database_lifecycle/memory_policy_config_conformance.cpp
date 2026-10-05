@@ -8,14 +8,25 @@
 
 #include "config.hpp"
 #include "memory_policy_config.hpp"
+#include "startup.hpp"
 
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
+
+#if defined(__linux__)
+#include <cerrno>
+#include <sys/resource.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -390,6 +401,626 @@ bool FixturePathProbeIsDeterministic() {
                 "fixture path effective hard limit mismatch");
 }
 
+bool ProcessCgroupDiscoveryIncludesAncestors() {
+#if defined(__linux__)
+  const auto root = TempRoot() / "membership_probe";
+  const auto mount = root / "mounted tree";
+  const auto parent = mount / "tenant";
+  const auto leaf = parent / "server";
+  std::filesystem::create_directories(leaf);
+  auto write = [](const std::filesystem::path& path, const std::string& value) {
+    std::ofstream out(path);
+    out << value;
+  };
+  memory::PlatformMemoryCeilingProbePaths paths;
+  paths.proc_self_cgroup = (root / "membership").string();
+  paths.proc_self_mountinfo = (root / "mountinfo").string();
+  paths.proc_meminfo = (root / "meminfo").string();
+  write(paths.proc_meminfo, "MemTotal: 524288 kB\n");
+  write(paths.proc_self_cgroup, "0::/tenant/server\n");
+  std::string escaped_mount = mount.string();
+  escaped_mount.replace(escaped_mount.find(' '), 1, "\\040");
+  const std::string mount_line = "37 28 0:31 / " + escaped_mount +
+      " rw,nosuid shared:9 - cgroup2 cgroup2 rw\n";
+  write(paths.proc_self_mountinfo, mount_line);
+  write(mount / "cgroup.controllers", "cpu memory pids\n");
+  write(parent / "memory.max", std::to_string(128 * kMiB) + "\n");
+  write(parent / "memory.high", "max\n");
+  write(leaf / "memory.max", std::to_string(256 * kMiB) + "\n");
+  write(leaf / "memory.high", "max\n");
+  auto observed = memory::ProbeHostContainerMemoryCeilings(paths);
+  bool ok = Expect(!observed.container_limit_incomplete,
+                   "visible complete hierarchy must resolve") &&
+            Expect(observed.available_ceiling_bytes == 128 * kMiB,
+                   "parent clamp must constrain the selected process leaf");
+  write(parent / "memory.high", "0\n");
+  observed = memory::ProbeHostContainerMemoryCeilings(paths);
+  ok = Expect(observed.available_ceiling_bytes == 0,
+              "zero ancestor limit must remain restrictive") && ok;
+  write(parent / "memory.high", "invalid\n");
+  observed = memory::ProbeHostContainerMemoryCeilings(paths);
+  ok = Expect(observed.container_limit_incomplete &&
+                  observed.available_ceiling_bytes == 128 * kMiB,
+              "invalid ancestor must retain known clamps and incomplete state") && ok;
+  write(parent / "memory.high", "max\n");
+  std::filesystem::remove(leaf / "memory.max");
+  observed = memory::ProbeHostContainerMemoryCeilings(paths);
+  ok = Expect(observed.container_limit_incomplete &&
+                  observed.available_ceiling_bytes == 128 * kMiB,
+              "missing applicable leaf limit cannot fall back to host RAM") && ok;
+  memory::MemoryPolicyConfig config;
+  config.platform_probe_paths = paths;
+  config.hard_limit_bytes = 256 * kMiB;
+  config.soft_limit_bytes = 0;
+  config.per_context_limit_bytes = 0;
+  config.page_buffer_pool_limit_bytes = 0;
+  auto resolved = memory::ResolveMemoryPolicyConfig(config);
+  ok = Expect(!resolved.ok() && HasDiagnostic(resolved, "MEMORY.CONTAINER_LIMIT_UNVERIFIED"),
+              "real incomplete source must refuse normal admission") && ok;
+  config.allow_degraded_container_limit = true;
+  config.degraded_container_cap_bytes = 64 * kMiB;
+  resolved = memory::ResolveMemoryPolicyConfig(config);
+  ok = Expect(resolved.ok() && resolved.degraded_container_limit &&
+                  resolved.effective_hard_limit_bytes == 64 * kMiB &&
+                  resolved.warnings.size() == 1,
+              "real incomplete source must consume explicit degraded policy") && ok;
+  write(leaf / "memory.max", "max\n");
+  // Namespace roots remain incomplete even without local memory interfaces.
+  write(mount / "cgroup.type", "domain\n");
+  observed = memory::ProbeHostContainerMemoryCeilings(paths);
+  ok = Expect(observed.container_limit_incomplete,
+              "namespace root with disabled memory still hides ancestors") && ok;
+  std::filesystem::remove(mount / "cgroup.type");
+  std::filesystem::remove(leaf / "memory.max");
+  std::filesystem::remove(leaf / "memory.high");
+  write(leaf / "cgroup.controllers", "cpu pids\n");
+  observed = memory::ProbeHostContainerMemoryCeilings(paths);
+  ok = Expect(!observed.container_limit_incomplete &&
+                  observed.available_ceiling_bytes == 128 * kMiB,
+              "disabled local controller must retain inherited parent clamp") && ok;
+  write(leaf / "memory.max", "max\n");
+  write(leaf / "memory.high", "max\n");
+  for (const std::string membership : {"0::/tenant/../server\n", "0::/tenant/server\n0::/\n",
+                                       "0::relative\n", "5::/tenant\n", "0:cpu:/tenant\n",
+                                       "garbage\n"}) {
+    write(paths.proc_self_cgroup, membership);
+    observed = memory::ProbeHostContainerMemoryCeilings(paths);
+    ok = Expect(observed.container_limit_incomplete,
+                "ambiguous or escaping membership must refuse complete discovery") && ok;
+  }
+  write(paths.proc_self_cgroup, "0::/tenant/server\n");
+  write(paths.proc_self_mountinfo, "37 28 0:31 /tenant " + escaped_mount +
+      " rw - cgroup2 cgroup2 rw\n");
+  observed = memory::ProbeHostContainerMemoryCeilings(paths);
+  ok = Expect(observed.container_limit_incomplete,
+              "hidden ancestors cannot be certified by a subtree mount") && ok;
+  write(paths.proc_self_mountinfo, mount_line + mount_line);
+  observed = memory::ProbeHostContainerMemoryCeilings(paths);
+  ok = Expect(observed.container_limit_incomplete,
+              "ambiguous mounts cannot certify the selected hierarchy") && ok;
+  write(paths.proc_self_mountinfo, "37 28 0:31 / " + escaped_mount +
+      "/ rw - cgroup2 cgroup2 rw\n");
+  observed = memory::ProbeHostContainerMemoryCeilings(paths);
+  ok = Expect(observed.container_limit_incomplete,
+              "noncanonical mount boundary must terminate with incomplete evidence") && ok;
+  write(paths.proc_self_mountinfo, mount_line);
+  write(paths.proc_self_cgroup, "0::/\n");
+  observed = memory::ProbeHostContainerMemoryCeilings(paths);
+  ok = Expect(!observed.container_limit_incomplete,
+              "global-root membership must terminate at mount root") && ok;
+  write(paths.proc_self_cgroup, "5:memory:/tenant\n");
+  write(paths.proc_self_mountinfo, "37 28 0:31 / /other rw - tmpfs tmpfs rw\n");
+  observed = memory::ProbeHostContainerMemoryCeilings(paths);
+  ok = Expect(observed.container_limit_incomplete,
+              "unimplemented applicable v1 limits are unknown not unsupported") && ok;
+  write(paths.proc_self_cgroup, "5:cpu:/tenant\n");
+  observed = memory::ProbeHostContainerMemoryCeilings(paths);
+  ok = Expect(!observed.container_limit_incomplete,
+              "demonstrably inapplicable memory hierarchy is not unknown") && ok;
+  write(paths.proc_self_mountinfo, "");
+  observed = memory::ProbeHostContainerMemoryCeilings(paths);
+  ok = Expect(observed.container_limit_incomplete,
+              "empty mount data cannot prove the controller inapplicable") && ok;
+  write(paths.proc_self_mountinfo, mount_line);
+  write(paths.proc_self_cgroup, std::string(1024 * 1024 + 1, 'x'));
+  observed = memory::ProbeHostContainerMemoryCeilings(paths);
+  ok = Expect(observed.container_limit_incomplete,
+              "oversized discovery source must fail boundedly") && ok;
+  std::filesystem::remove(paths.proc_self_cgroup);
+  observed = memory::ProbeHostContainerMemoryCeilings(paths);
+  ok = Expect(observed.container_limit_incomplete,
+              "unavailable membership must not certify host fallback") && ok;
+  return ok;
+#else
+  return true;
+#endif
+}
+
+bool ZeroCgroupCeilingRemainsRestrictive() {
+#if defined(__linux__)
+  const auto root = TempRoot() / "zero_ceiling_probe";
+  std::filesystem::create_directories(root);
+  memory::PlatformMemoryCeilingProbePaths paths;
+  paths.cgroup_v2_root = root.string();
+  paths.proc_meminfo = (root / "meminfo").string();
+  { std::ofstream out(paths.proc_meminfo); out << "MemTotal: 524288 kB\n"; }
+  bool ok = true;
+  for (const auto zero_file : {"memory.max", "memory.high"}) {
+    for (const auto name : {"memory.max", "memory.high"}) {
+      std::ofstream out(root / name);
+      out << (std::string_view(name) == zero_file ? "0\n" : "max\n");
+    }
+    const auto ceilings = memory::ProbeHostContainerMemoryCeilings(paths);
+    ok = Expect(ceilings.available_ceiling_bytes == 0,
+                "zero cgroup ceiling must not fall back to host memory") && ok;
+    for (const auto& signal : ceilings.signals) {
+      if (signal.source == (root / zero_file).string()) {
+        ok = Expect(signal.available && signal.valid && signal.finite && signal.bytes == 0,
+                    "zero cgroup signal must remain available valid and finite") && ok;
+      }
+    }
+    for (bool required : {false, true}) {
+      memory::MemoryPolicyConfig config;
+      config.hard_limit_bytes = memory::kMinimumProductionMemoryHardLimitBytes;
+      config.soft_limit_bytes = config.per_context_limit_bytes = config.page_buffer_pool_limit_bytes = 0;
+      config.platform_probe_paths = paths;
+      config.require_platform_memory_ceiling = required;
+      const auto resolved = memory::ResolveMemoryPolicyConfig(config);
+      ok = Expect(!resolved.ok() && resolved.effective_hard_limit_bytes == 0,
+                  "actual zero cgroup limit must prevent policy admission in either mode") && ok;
+      ok = Expect(HasDiagnostic(resolved, "MEMORY.POLICY_HARD_LIMIT_TOO_SMALL"),
+                  "actual zero cgroup limit must reach effective minimum validation") && ok;
+      ok = Expect(!HasDiagnostic(resolved, "MEMORY.POLICY_INVALID_CEILING_VALUE"),
+                  "zero is not malformed cgroup data") && ok;
+    }
+  }
+  return ok;
+#else
+  return true;  // Linux cgroup probe is not compiled on other platforms.
+#endif
+}
+
+bool CgroupNumericParsingPreservesSignalClassification() {
+#if defined(__linux__)
+  const auto root = TempRoot() / "numeric_ceiling_probe";
+  std::filesystem::create_directories(root);
+  memory::PlatformMemoryCeilingProbePaths paths;
+  paths.cgroup_v2_root = root.string();
+  paths.proc_meminfo = (root / "meminfo").string();
+  { std::ofstream out(root / "memory.high"); out << "max\n"; }
+  // A real host total of zero remains invalid even though cgroup zero is valid.
+  { std::ofstream out(paths.proc_meminfo); out << "MemTotal: 0 kB\n"; }
+  struct Case { const char* text; bool valid; bool finite; std::uint64_t bytes; };
+  const Case cases[] = {
+      {"0", true, true, 0}, {" 0\t", true, true, 0}, {"1", true, true, 1},
+      {"18446744073709551615", true, true, UINT64_MAX}, {"max", true, false, 0},
+      {"", false, false, 0}, {"-1", false, false, 0}, {"+0", false, false, 0},
+      {"0 garbage", false, false, 0}, {"1.5", false, false, 0},
+      {"18446744073709551616", false, false, 0}, {"MAX", false, false, 0}};
+  bool ok = true;
+  for (const auto& item : cases) {
+    { std::ofstream out(root / "memory.max"); out << item.text << '\n'; }
+    const auto ceilings = memory::ProbeHostContainerMemoryCeilings(paths);
+    bool saw_limit = false, saw_memtotal = false;
+    for (const auto& signal : ceilings.signals) {
+      if (signal.kind == memory::MemoryCeilingSignalKind::cgroup_v2_memory_max) {
+        saw_limit = true;
+        ok = Expect(signal.available && signal.valid == item.valid &&
+                        signal.finite == item.finite && signal.bytes == item.bytes,
+                    "cgroup numeric signal classification mismatch") && ok;
+      }
+      if (signal.kind == memory::MemoryCeilingSignalKind::proc_meminfo_memtotal) {
+        saw_memtotal = true;
+        ok = Expect(signal.available && !signal.valid && !signal.finite,
+                    "zero MemTotal must remain invalid") && ok;
+      }
+    }
+    ok = Expect(saw_limit && saw_memtotal, "probe omitted required signal evidence") && ok;
+  }
+  return ok;
+#else
+  return true;
+#endif
+}
+
+bool IncompleteContainerAdmissionRequiresExplicitCap() {
+  memory::MemoryPolicyConfig config;
+  config.hard_limit_bytes = 256ull * kMiB;
+  config.soft_limit_bytes = config.per_context_limit_bytes = config.page_buffer_pool_limit_bytes = 0;
+  config.platform_ceiling_override = DirectCeilings(128ull * kMiB, 128ull * kMiB, 512ull * kMiB);
+  config.platform_ceiling_override->container_limit_incomplete = true;
+  bool ok = true;
+  for (bool enabled : {false, true}) {
+    for (bool strict : {false, true}) {
+      for (const auto cap : {std::uint64_t{0}, std::uint64_t{64} * kMiB, std::uint64_t{192} * kMiB}) {
+        config.allow_degraded_container_limit = enabled;
+        config.require_platform_memory_ceiling = strict;
+        config.degraded_container_cap_bytes = cap;
+        const auto result = memory::ResolveMemoryPolicyConfig(config);
+        const bool accepted = enabled && !strict && cap != 0;
+        ok = Expect(result.ok() == accepted, "incomplete container admission mismatch") && ok;
+        ok = Expect(result.ceiling_evidence.container_limit_incomplete,
+                    "degraded resolution erased incomplete evidence") && ok;
+        ok = Expect(result.degraded_container_limit == accepted &&
+                        result.warnings.size() == (accepted ? 1u : 0u),
+                    "degraded result/warning must only accompany accepted policy") && ok;
+        if (accepted) {
+          const auto expected = cap < 128ull * kMiB ? cap : 128ull * kMiB;
+          ok = Expect(result.policy.hard_limit_bytes == expected &&
+                          result.warnings.front().diagnostic_code == "MEMORY.CONTAINER_LIMIT_DEGRADED",
+                      "degraded policy must clamp and retain its warning") && ok;
+          ok = Expect(result.warnings.front().status.severity ==
+                          scratchbird::core::platform::Severity::warning,
+                      "degraded outcome must retain warning severity") && ok;
+        } else {
+          ok = Expect(HasDiagnostic(result, "MEMORY.CONTAINER_LIMIT_UNVERIFIED"),
+                      "unverified container refusal missing") && ok;
+        }
+      }
+    }
+  }
+  config.allow_degraded_container_limit = true;
+  config.require_platform_memory_ceiling = false;
+  config.degraded_container_cap_bytes = 1;
+  const auto tiny = memory::ResolveMemoryPolicyConfig(config);
+  ok = Expect(!tiny.ok() && tiny.warnings.empty() && !tiny.degraded_container_limit,
+              "degraded cap cannot waive minimum budget") && ok;
+  config.degraded_container_cap_bytes = 64ull * kMiB;
+  config.platform_ceiling_override->signals[0].bytes = 0;
+  const auto zero = memory::ResolveMemoryPolicyConfig(config);
+  ok = Expect(!zero.ok() && zero.effective_hard_limit_bytes == 0 && zero.warnings.empty(),
+              "degraded cap cannot raise a known zero ceiling") && ok;
+  config.platform_ceiling_override->signals[0].bytes = 128ull * kMiB;
+  config.platform_ceiling_override->container_limit_incomplete = false;
+  config.platform_ceiling_override->signals[0].valid = false;
+  const auto malformed = memory::ResolveMemoryPolicyConfig(config);
+  ok = Expect(malformed.ok() && malformed.degraded_container_limit,
+              "known malformed container signal must use explicit degraded mode") && ok;
+  const auto parsed = Load("degraded_fields.conf",
+      "hard_limit_bytes = 1073741824\nsoft_limit_bytes = 0\n"
+      "per_context_limit_bytes = 0\npage_buffer_pool_limit_bytes = 0\n"
+      "enable_platform_memory_probe = false\nallow_degraded_container_limit = true\n"
+      "degraded_container_cap_bytes = 67108864\n");
+  ok = Expect(parsed.ok() && parsed.config.memory_allow_degraded_container_limit &&
+                  parsed.config.memory_degraded_container_cap_bytes == 64ull * kMiB,
+              "explicit degraded settings must survive config loading") && ok;
+  return ok;
+}
+
+bool StartupFloorUsesEffectivePlatformLimit() {
+#if defined(__linux__)
+  // Isolate the real platform clamp: no parent/host limit changes and no memory
+  // exhaustion. The child only parses a small configuration under this ceiling.
+  const auto child = ::fork();
+  if (child < 0) return Expect(false, "startup floor fork failed");
+  if (child == 0) {
+    struct rlimit limit {};
+    if (::getrlimit(RLIMIT_AS, &limit) != 0) ::_exit(2);
+    const auto ceiling = static_cast<rlim_t>(2048ull * kMiB);
+    if (limit.rlim_cur == RLIM_INFINITY || limit.rlim_cur > ceiling)
+      limit.rlim_cur = ceiling;
+    if (::setrlimit(RLIMIT_AS, &limit) != 0) ::_exit(3);
+    const auto loaded = Load("effective_startup_floor.conf",
+        "hard_limit_bytes = 4294967296\n"
+        "soft_limit_bytes = 0\n"
+        "per_context_limit_bytes = 0\n"
+        "page_buffer_pool_limit_bytes = 0\n"
+        "min_startup_available_bytes = 3221225472\n"
+        "enable_platform_memory_probe = true\n"
+        "require_platform_memory_ceiling = false\n");
+    bool ok = Expect(!loaded.ok(), "platform clamp below startup floor must refuse") &&
+        Expect(HasDiagnostic(loaded, "CONFIG.MEMORY_POLICY_MIN_STARTUP_UNAVAILABLE"),
+               "effective startup-floor diagnostic missing");
+    const auto detected = memory::ProbeHostContainerMemoryCeilings().available_ceiling_bytes;
+    if (!detected || *detected < memory::kMinimumProductionMemoryHardLimitBytes ||
+        *detected > 2048ull * kMiB) ::_exit(4);
+    for (const auto& diagnostic : loaded.diagnostics) {
+      if (diagnostic.code != "CONFIG.MEMORY_POLICY_MIN_STARTUP_UNAVAILABLE") continue;
+      bool configured = false, effective = false, floor = false;
+      for (const auto& field : diagnostic.fields) {
+        configured |= field.key == "hard_limit_bytes" && field.value == "4294967296";
+        effective |= field.key == "effective_hard_limit_bytes" && field.value == std::to_string(*detected);
+        floor |= field.key == "min_startup_available_bytes" && field.value == "3221225472";
+      }
+      ok = Expect(configured && effective && floor,
+                  "startup floor diagnostic must distinguish requested and effective limits") && ok;
+    }
+    for (const auto floor : {*detected - 1, *detected, *detected + 1}) {
+      const auto boundary = Load("effective_startup_boundary.conf",
+          "hard_limit_bytes = 4294967296\n"
+          "soft_limit_bytes = 0\nper_context_limit_bytes = 0\n"
+          "page_buffer_pool_limit_bytes = 0\n"
+          "enable_platform_memory_probe = true\nrequire_platform_memory_ceiling = false\n"
+          "min_startup_available_bytes = " + std::to_string(floor) + "\n");
+      ok = Expect(boundary.ok() == (floor <= *detected),
+                  "effective startup-floor equality boundary mismatch") && ok;
+    }
+    ::_exit(ok ? 0 : 1);
+  }
+  int status = 0;
+  pid_t waited;
+  do { waited = ::waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
+  return Expect(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+                "limited startup-floor child failed");
+#else
+  return true;
+#endif
+}
+
+bool EffectiveHardPreservesProductionMinimum() {
+  bool ok = true;
+  const auto minimum = memory::kMinimumProductionMemoryHardLimitBytes;
+  for (bool required : {false, true}) {
+    for (const auto ceiling : {std::uint64_t{0}, std::uint64_t{1}, minimum - 1, minimum}) {
+      memory::MemoryPolicyConfig config;
+      config.hard_limit_bytes = minimum;
+      config.soft_limit_bytes = 0;
+      config.per_context_limit_bytes = 0;
+      config.page_buffer_pool_limit_bytes = 0;
+      config.require_platform_memory_ceiling = required;
+      config.platform_ceiling_override = DirectCeilings(ceiling, ceiling, 512ull * kMiB);
+      const auto resolved = memory::ResolveMemoryPolicyConfig(config);
+      ok = Expect(resolved.platform_ceiling_bytes == ceiling,
+                  "finite ceiling, including zero, must remain observable") && ok;
+      ok = Expect(resolved.effective_hard_limit_bytes == ceiling,
+                  "refusal must preserve the actual effective ceiling") && ok;
+      if (ceiling < minimum) {
+        ok = Expect(!resolved.ok(), "subminimum effective policy must refuse") && ok;
+        ok = Expect(HasDiagnostic(resolved, "MEMORY.POLICY_HARD_LIMIT_TOO_SMALL"),
+                    "effective minimum diagnostic missing") && ok;
+      } else {
+        ok = Expect(resolved.ok(), "exact minimum effective policy must succeed") && ok;
+        ok = Expect(resolved.policy.byte_limit == minimum &&
+                        resolved.policy.hard_limit_bytes == minimum,
+                    "accepted policy must retain the finite minimum") && ok;
+      }
+    }
+  }
+  return ok;
+}
+
+bool DegradedStartupWarningDelivery() {
+#if defined(__linux__)
+  const auto child = ::fork();
+  if (child < 0) return Expect(false, "warning startup fork failed");
+  if (child == 0) {
+    const auto root = TempRoot() / "warning_startup";
+    std::filesystem::create_directories(root);
+    { std::ofstream out(root / "memory.max"); out << 512 * kMiB << '\n'; }
+    { std::ofstream out(root / "meminfo"); out << "MemTotal: 524288 kB\n"; }
+    // Missing memory.high is an actual incomplete file observation, not an
+    // injected accepted policy or a fabricated server warning.
+    server::ServerConfigResolutionContext context;
+    context.current_directory = root;
+    context.include_system_paths = false;
+    context.memory_probe_paths.cgroup_v2_root = root.string();
+    context.memory_probe_paths.proc_meminfo = (root / "meminfo").string();
+    server::ServerCliOptions cli;
+    cli.validate_config = true;
+    cli.config_path = WriteConfig("warning_startup_refused.conf",
+        "hard_limit_bytes = 268435456\nsoft_limit_bytes = 0\n"
+        "per_context_limit_bytes = 0\npage_buffer_pool_limit_bytes = 0\n"
+        "min_startup_available_bytes = 16777216\n").string();
+    const auto refused = server::RunServerStartup(cli, context);
+    bool refused_unverified = false;
+    for (const auto& diagnostic : refused.diagnostics) {
+      refused_unverified |= diagnostic.code == "MEMORY.CONTAINER_LIMIT_UNVERIFIED";
+    }
+    bool ok = Expect(refused.exit_code == 2 && refused_unverified,
+                     "actual startup must refuse incomplete discovery without opt-in");
+    cli.config_path = WriteConfig("warning_startup_insufficient_reserve.conf",
+        "hard_limit_bytes = 1073741824\nsoft_limit_bytes = 0\n"
+        "per_context_limit_bytes = 0\npage_buffer_pool_limit_bytes = 0\n"
+        "min_startup_available_bytes = 16777216\n"
+        "allow_degraded_container_limit = true\ndegraded_container_cap_bytes = 67108864\n").string();
+    const auto insufficient = server::RunServerStartup(cli, context);
+    ok = Expect(insufficient.exit_code == 2 && !insufficient.emergency_reserve &&
+                    insufficient.diagnostics.size() == 1 &&
+                    insufficient.diagnostics.front().code == "MEMORY.EMERGENCY_RESERVE_INVALID",
+                "degraded startup cannot waive the default emergency reserve") && ok;
+    for (const auto& diagnostic : insufficient.diagnostics) {
+      ok = Expect(diagnostic.code != "MEMORY.CONTAINER_LIMIT_DEGRADED",
+                  "failed reserve admission must not emit a degraded-success warning") && ok;
+    }
+    cli.config_path = WriteConfig("warning_startup.conf",
+        "hard_limit_bytes = 1073741824\nsoft_limit_bytes = 0\n"
+        "per_context_limit_bytes = 0\npage_buffer_pool_limit_bytes = 0\n"
+        "min_startup_available_bytes = 16777216\npolicy_generation = 7\n"
+        "allow_degraded_container_limit = true\ndegraded_container_cap_bytes = 268435456\n").string();
+    auto startup = server::RunServerStartup(cli, context);
+    ok = Expect(startup.exit_code == 0 && startup.diagnostics.size() == 1,
+                "real degraded startup must retain exactly one warning") && ok;
+    ok = Expect(startup.emergency_reserve &&
+                    startup.emergency_reserve->Snapshot().available_bytes == 128 * kMiB &&
+                    memory::DefaultMemoryManager().Snapshot().current_bytes == 128 * kMiB,
+                "startup must own real emergency backing before reporting readiness") && ok;
+    unsigned binary_charges = 0;
+    for (const auto& scope : memory::DefaultMemoryManager().Snapshot().contexts) {
+      if (scope.current_bytes == 128 * kMiB && scope.binary_scope && scope.scope_id.empty() &&
+          memory::MemorySystemUuidValid(scope.binary_scope->uuid)) ++binary_charges;
+    }
+    ok = Expect(binary_charges == 2, "startup backing must retain native owner/context identities") && ok;
+    const auto competing = memory::DefaultMemoryManager().AllocateScoped(
+        128 * kMiB + 1, alignof(std::max_align_t), {});
+    ok = Expect(!competing.ok(), "ordinary allocation cannot spend bootstrap reserve backing") && ok;
+    if (startup.diagnostics.size() == 1) {
+      const auto& warning = startup.diagnostics.front();
+      ok = Expect(warning.code == "MEMORY.CONTAINER_LIMIT_DEGRADED" &&
+                      warning.severity == server::ServerDiagnosticSeverity::kWarning &&
+                      warning.native_platform_source.has_value(),
+                  "startup must preserve native warning severity and evidence") && ok;
+      for (const auto& expected : std::vector<std::pair<std::string, std::string>>{
+               {"memory_generation", "7"}, {"configured_hard_limit_bytes", "1073741824"},
+               {"degraded_cap_bytes", "268435456"}, {"known_ceiling_bytes", "536870912"},
+               {"effective_hard_limit_bytes", "268435456"}}) {
+        bool found = false;
+        for (const auto& field : warning.fields) {
+          found |= field.key == expected.first && field.value == expected.second;
+        }
+        ok = Expect(found, "startup warning changed the selected budget evidence") && ok;
+      }
+    }
+    std::ostringstream output;
+    ok = Expect(server::WriteServerStartupDiagnostics(startup, output),
+                "healthy warning channel must succeed") && ok;
+    const auto rendered = output.str();
+    for (const auto* field : {"MEMORY.CONTAINER_LIMIT_DEGRADED", "memory_generation",
+                              "configured_hard_limit_bytes", "degraded_cap_bytes",
+                              "known_ceiling_bytes", "effective_hard_limit_bytes",
+                              "applicable_container_limit_incomplete"}) {
+      ok = Expect(rendered.find(field) != std::string::npos,
+                  "operator warning omitted required public evidence") && ok;
+    }
+    ok = Expect(rendered.find(root.string()) == std::string::npos,
+                "public warning leaked a protected discovery path") && ok;
+    struct FailedWrite : std::streambuf {
+      std::streamsize xsputn(const char*, std::streamsize) override { return 0; }
+      int_type overflow(int_type) override { return traits_type::eof(); }
+    } failed_write;
+    std::ostream broken(&failed_write);
+    ok = Expect(!server::WriteServerStartupDiagnostics(startup, broken),
+                "failed warning write must prohibit admission") && ok;
+    broken.clear();
+    broken.exceptions(std::ios::badbit | std::ios::failbit);
+    ok = Expect(!server::WriteServerStartupDiagnostics(startup, broken),
+                "throwing warning channel must prohibit admission") && ok;
+    struct FailedFlush : std::stringbuf { int sync() override { return -1; } } failed_flush;
+    std::ostream unflushed(&failed_flush);
+    ok = Expect(!server::WriteServerStartupDiagnostics(startup, unflushed) &&
+                    !failed_flush.str().empty(),
+                "buffered warning with failed flush must prohibit admission") && ok;
+    std::ofstream full_device("/dev/full");
+    ok = Expect(full_device.is_open() &&
+                    !server::WriteServerStartupDiagnostics(startup, full_device),
+                "real OS channel write failure must prohibit admission") && ok;
+    startup.emergency_reserve.reset();
+    ok = Expect(memory::DefaultMemoryManager().Snapshot().current_bytes == 0,
+                "startup owner teardown must release real reserve charges") && ok;
+    ::_exit(ok ? 0 : 2);
+  }
+  int status = 0;
+  pid_t waited;
+  do { waited = ::waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
+  return Expect(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+                "degraded startup warning child failed");
+#else
+  return true;
+#endif
+}
+
+bool StartupRechecksEnvelopeAfterReserve(std::uint64_t final_limit, bool pinned_budget) {
+#if defined(__linux__)
+  const auto child = ::fork();
+  if (child < 0) return Expect(false, "activation recheck fork failed");
+  if (child == 0) {
+    ::alarm(20);  // Bound a fixture handshake failure; never change host limits.
+    const auto root = TempRoot() / "activation_recheck";
+    std::filesystem::create_directories(root);
+    const auto maximum = root / "memory.max";
+    const auto high = root / "memory.high";
+    if (::mkfifo(maximum.c_str(), 0600) || ::mkfifo(high.c_str(), 0600)) ::_exit(1);
+    { std::ofstream out(root / "meminfo"); out << "MemTotal: 1048576 kB\n"; }
+    server::ServerConfigResolutionContext context;
+    context.current_directory = root;
+    context.include_system_paths = false;
+    context.memory_probe_paths.cgroup_v2_root = root.string();
+    context.memory_probe_paths.proc_meminfo = (root / "meminfo").string();
+    server::ServerCliOptions cli;
+    cli.validate_config = true;
+    cli.config_path = WriteConfig("activation_recheck.conf",
+        std::string("hard_limit_bytes = ") + (pinned_budget ? "268435456" : "1073741824") +
+        "\nsoft_limit_bytes = 0\n"
+        "per_context_limit_bytes = 0\npage_buffer_pool_limit_bytes = 0\n"
+        "min_startup_available_bytes = 16777216\n").string();
+    // The second FIFO makes each complete probe a handshake: its reader is
+    // reached only after the preceding maximum reader has closed. No sleeps
+    // or timing assumptions are needed to move the limit after installation.
+    std::thread source([&] {
+      for (const std::uint64_t limit : std::vector<std::uint64_t>{512 * kMiB, 512 * kMiB, final_limit}) {
+        { std::ofstream out(maximum); out << limit << '\n'; }
+        { std::ofstream out(high); out << "max\n"; }
+      }
+    });
+    auto startup = server::RunServerStartup(cli, context);
+    source.join();
+    bool changed = false;
+    for (const auto& diagnostic : startup.diagnostics) {
+      if (final_limit == 0 && diagnostic.severity == server::ServerDiagnosticSeverity::kError &&
+          diagnostic.code == "MEMORY.POLICY_HARD_LIMIT_TOO_SMALL") {
+        for (const auto& field : diagnostic.fields) {
+          changed |= field.key == "value" && field.value == "0";
+        }
+      }
+      for (const auto& field : diagnostic.fields) {
+        changed |= diagnostic.code == "MEMORY.EMERGENCY_RESERVE_INVALID" &&
+                   field.key == "reason" && field.value == "memory_envelope_changed_during_bootstrap";
+      }
+    }
+    const bool ok = Expect(startup.exit_code == 2 && changed && !startup.serving_requested &&
+        startup.stdout_text.empty() && !startup.emergency_reserve &&
+        memory::DefaultMemoryManager().Snapshot().current_bytes == 0,
+        "changed post-reserve envelope must refuse admission and release backing");
+    std::filesystem::remove_all(root);
+    ::_exit(ok ? 0 : 1);
+  }
+  int status = 0;
+  pid_t waited;
+  do { waited = ::waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
+  return Expect(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+                "post-reserve activation child failed");
+#else
+  return true;
+#endif
+}
+
+bool DefaultBootstrapReserveSizingIsBounded() {
+  bool ok = true;
+  const std::uint64_t minimum = 128 * kMiB;
+  const auto transition = minimum * 100 / 3;
+  for (const auto& [budget, expected] : std::vector<std::pair<std::uint64_t, std::uint64_t>>{
+           {0, minimum}, {minimum, minimum}, {1024 * kMiB, minimum},
+           {transition, minimum}, {transition + 1, minimum + 1},
+           {8192 * kMiB, 257698038}, {UINT64_MAX, 1024 * kMiB}}) {
+    ok = Expect(memory::DefaultBootstrapEmergencyReserveBytes(budget) == expected,
+                "default reserve percentage/minimum/maximum/overflow boundary mismatch") && ok;
+  }
+  return ok;
+}
+
+bool FinalMemoryResolutionRechecksStartupFloor() {
+#if defined(__linux__)
+  const auto child = ::fork();
+  if (child < 0) return Expect(false, "final memory resolution fork failed");
+  if (child == 0) {
+    const auto loaded = Load("final_startup_floor.conf",
+        "hard_limit_bytes = 268435456\nsoft_limit_bytes = 0\n"
+        "per_context_limit_bytes = 0\npage_buffer_pool_limit_bytes = 0\n"
+        "min_startup_available_bytes = 201326592\n"
+        "enable_platform_memory_probe = true\n");
+    if (!Expect(loaded.ok(), "initial configuration must meet its startup floor")) ::_exit(2);
+    struct rlimit limit {};
+    if (::getrlimit(RLIMIT_AS, &limit) != 0) ::_exit(3);
+    const auto ceiling = static_cast<rlim_t>(128 * kMiB);
+    if (limit.rlim_cur == RLIM_INFINITY || limit.rlim_cur > ceiling) limit.rlim_cur = ceiling;
+    if (::setrlimit(RLIMIT_AS, &limit) != 0) ::_exit(4);
+    const auto resolved = server::ResolveServerMemoryAllocationPolicy(loaded.config);
+    const bool ok = Expect(!resolved.ok() &&
+                              HasDiagnostic(resolved, "CONFIG.MEMORY_POLICY_MIN_STARTUP_UNAVAILABLE"),
+                          "fresh pre-install resolution must reject a newly unreachable floor") &&
+                    Expect(resolved.effective_hard_limit_bytes <= 128 * kMiB,
+                           "final resolution must retain the changed platform clamp");
+    ::_exit(ok ? 0 : 5);
+  }
+  int status = 0;
+  pid_t waited;
+  do { waited = ::waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
+  return Expect(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+                "final memory startup-floor child failed");
+#else
+  return true;
+#endif
+}
+
 bool EffectiveHardBoundsDerivedLimits() {
   memory::MemoryPolicyConfig config;
   config.hard_limit_bytes = 256ull * kMiB;
@@ -465,6 +1096,18 @@ int main() {
   ok = RequiredUnavailableCeilingFailsClosed() && ok;
   ok = FixturePathProbeIsDeterministic() && ok;
   ok = EffectiveHardBoundsDerivedLimits() && ok;
+  ok = EffectiveHardPreservesProductionMinimum() && ok;
+  ok = ZeroCgroupCeilingRemainsRestrictive() && ok;
+  ok = ProcessCgroupDiscoveryIncludesAncestors() && ok;
+  ok = CgroupNumericParsingPreservesSignalClassification() && ok;
+  ok = StartupFloorUsesEffectivePlatformLimit() && ok;
+  ok = FinalMemoryResolutionRechecksStartupFloor() && ok;
+  ok = DegradedStartupWarningDelivery() && ok;
+  ok = StartupRechecksEnvelopeAfterReserve(256 * kMiB, false) && ok;
+  ok = StartupRechecksEnvelopeAfterReserve(384 * kMiB, true) && ok;
+  ok = StartupRechecksEnvelopeAfterReserve(0, false) && ok;
+  ok = DefaultBootstrapReserveSizingIsBounded() && ok;
+  ok = IncompleteContainerAdmissionRequiresExplicitCap() && ok;
   ok = DefaultManagerInstallsConfiguredPolicyOnce() && ok;
   ok = PackagedResourceRootsResolveBesideExecutable() && ok;
   ok = InvalidConfigFailsClosed("soft_gt_hard.conf",

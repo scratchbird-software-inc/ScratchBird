@@ -137,7 +137,10 @@ struct ServerBootstrapConfig {
       "default_policy_pack:default-local-password:server_memory_cache_policy";
   std::uint64_t memory_policy_generation = 1;
   bool memory_enable_platform_memory_probe = true;
+  scratchbird::core::memory::PlatformMemoryCeilingProbePaths memory_probe_paths;
   bool memory_require_platform_memory_ceiling = false;
+  bool memory_allow_degraded_container_limit = false;
+  std::uint64_t memory_degraded_container_cap_bytes = 0;
   std::filesystem::path parser_registry_path;
   std::uint64_t parser_worker_restart_max = 3;
   std::uint64_t parser_worker_restart_window_ms = 60000;
@@ -172,6 +175,9 @@ struct ServerConfigResolutionContext {
   // ordered root set so platform precedence is exercised without depending
   // on the machine running the test.
   std::vector<std::filesystem::path> system_config_roots;
+  // Trusted embedding/test dependency, never decoded from server configuration
+  // or environment. Production defaults inspect the actual process sources.
+  scratchbird::core::memory::PlatformMemoryCeilingProbePaths memory_probe_paths;
 };
 
 struct ServerConfigCompatibilityResult {

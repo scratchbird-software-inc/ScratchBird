@@ -209,6 +209,8 @@ const std::set<std::string>& KnownKeys() {
       "server.memory.policy_generation",
       "server.memory.enable_platform_memory_probe",
       "server.memory.require_platform_memory_ceiling",
+      "server.memory.allow_degraded_container_limit",
+      "server.memory.degraded_container_cap_bytes",
       "server.parser.registry_path",
       "server.parser.worker_restart_max",
       "server.parser.worker_restart_window_ms",
@@ -1058,13 +1060,16 @@ memory::MemoryPolicyConfig BuildMemoryPolicyConfig(const ServerBootstrapConfig& 
   memory_config.reload_generation = config.config_reload_generation;
   memory_config.policy_generation = config.memory_policy_generation;
   memory_config.enable_platform_memory_probe = config.memory_enable_platform_memory_probe;
+  memory_config.platform_probe_paths = config.memory_probe_paths;
   memory_config.require_platform_memory_ceiling = config.memory_require_platform_memory_ceiling;
+  memory_config.allow_degraded_container_limit = config.memory_allow_degraded_container_limit;
+  memory_config.degraded_container_cap_bytes = config.memory_degraded_container_cap_bytes;
   return memory_config;
 }
 
 bool ValidateServerMemoryPolicy(const ServerBootstrapConfig& config,
                                 std::vector<ServerDiagnostic>* diagnostics) {
-  const auto resolved = memory::ResolveMemoryPolicyConfig(BuildMemoryPolicyConfig(config));
+  const auto resolved = ResolveServerMemoryAllocationPolicy(config);
   if (!resolved.ok()) {
     for (const auto& diagnostic : resolved.diagnostics) {
       std::vector<ServerDiagnosticField> fields;
@@ -1081,17 +1086,6 @@ bool ValidateServerMemoryPolicy(const ServerBootstrapConfig& config,
       translated.native_platform_source = diagnostic;
       diagnostics->push_back(std::move(translated));
     }
-    return false;
-  }
-  if (config.memory_hard_limit_bytes < config.memory_min_startup_available_bytes) {
-    diagnostics->push_back(ConfigDiagnostic(
-        "CONFIG.MEMORY_POLICY_MIN_STARTUP_UNAVAILABLE",
-        "config.memory_policy_min_startup_unavailable",
-        "The configured memory hard limit is below the startup memory availability floor.",
-        {{"hard_limit_bytes", std::to_string(config.memory_hard_limit_bytes)},
-         {"min_startup_available_bytes",
-          std::to_string(config.memory_min_startup_available_bytes)},
-         {"provenance", config.memory_policy_provenance}}));
     return false;
   }
   return true;
@@ -1386,6 +1380,15 @@ bool ApplyParsedConfig(const ParsedConfig& parsed,
       if (!ParseBool(value, &config->memory_require_platform_memory_ceiling)) {
         return invalid("CONFIG.VALUE_INVALID_BOOL", key, value);
       }
+    } else if (key == "server.memory.allow_degraded_container_limit") {
+      if (!ParseBool(value, &config->memory_allow_degraded_container_limit)) {
+        return invalid("CONFIG.VALUE_INVALID_BOOL", key, value);
+      }
+    } else if (key == "server.memory.degraded_container_cap_bytes") {
+      if (!ParseUint64(value, &config->memory_degraded_container_cap_bytes) ||
+          config->memory_degraded_container_cap_bytes == 0) {
+        return invalid("CONFIG.VALUE_INVALID_UINT", key, value);
+      }
     } else if (key == "server.parser.registry_path") {
       config->parser_registry_path = configured_path(value);
     } else if (key == "server.parser.worker_restart_max") {
@@ -1664,13 +1667,33 @@ std::string ServerDatabaseRuntimeScopeId(const std::filesystem::path& database_p
 
 memory::MemoryPolicyConfigResolveResult ResolveServerMemoryAllocationPolicy(
     const ServerBootstrapConfig& config) {
-  return memory::ResolveMemoryPolicyConfig(BuildMemoryPolicyConfig(config));
+  auto resolved = memory::ResolveMemoryPolicyConfig(BuildMemoryPolicyConfig(config));
+  // Both configuration validation and the final pre-install probe use this
+  // check. A platform clamp may have changed since configuration was loaded.
+  if (resolved.ok() &&
+      resolved.effective_hard_limit_bytes < config.memory_min_startup_available_bytes) {
+    using namespace scratchbird::core::platform;
+    resolved.diagnostics.push_back(MakeDiagnostic(
+        StatusCode::memory_invalid_request, Severity::error, Subsystem::memory,
+        "CONFIG.MEMORY_POLICY_MIN_STARTUP_UNAVAILABLE",
+        "config.memory_policy_min_startup_unavailable",
+        {{"hard_limit_bytes", std::to_string(config.memory_hard_limit_bytes)},
+         {"effective_hard_limit_bytes", std::to_string(resolved.effective_hard_limit_bytes)},
+         {"min_startup_available_bytes", std::to_string(config.memory_min_startup_available_bytes)},
+         {"provenance", config.memory_policy_provenance}},
+        {}, "server.config.memory_policy",
+        "Provide sufficient admitted memory for the configured startup floor."));
+    resolved.warnings.clear();
+    resolved.degraded_container_limit = false;
+  }
+  return resolved;
 }
 
 ServerConfigLoadResult ResolveServerBootstrapConfig(
     const ServerCliOptions& cli,
     const ServerConfigResolutionContext& context) {
   ServerConfigLoadResult result;
+  result.config.memory_probe_paths = context.memory_probe_paths;
   auto selected = DiscoverConfigFile(cli, context);
   std::optional<ParsedConfig> parsed_config;
   if (selected) {

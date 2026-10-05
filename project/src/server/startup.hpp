@@ -14,8 +14,11 @@
 #include "config.hpp"
 #include "diagnostics.hpp"
 #include "lifecycle.hpp"
+#include "memory_pressure_response.hpp"
 
 #include <string>
+#include <iosfwd>
+#include <memory>
 #include <vector>
 
 namespace scratchbird::server {
@@ -27,8 +30,17 @@ struct ServerStartupResult {
   ServerBootstrapConfig effective_config;
   ServerLifecycleArtifacts lifecycle_artifacts;
   bool serving_requested = false;
+  // Main keeps this owner alive until hosted-engine and worker teardown. It
+  // is bootstrap backing, not final database/cluster policy activation.
+  std::unique_ptr<scratchbird::core::memory::EmergencyMemoryReserve> emergency_reserve;
 };
 
 ServerStartupResult RunServerStartup(const ServerCliOptions& cli);
+ServerStartupResult RunServerStartup(const ServerCliOptions& cli,
+                                    const ServerConfigResolutionContext& context);
+// False forbids ordinary admission: serialization, write and flush must all
+// succeed. This is channel delivery evidence, not operator acknowledgement.
+bool WriteServerStartupDiagnostics(const ServerStartupResult& startup,
+                                   std::ostream& channel) noexcept;
 
 }  // namespace scratchbird::server

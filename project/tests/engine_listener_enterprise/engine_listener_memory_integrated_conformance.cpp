@@ -558,8 +558,12 @@ void ProveLowMemorySupportBundle() {
       tag.statement_id = "ELER050-SECRET-token-value";
       tag.query_id = "ELER050-SECRET-token-value";
     }
+    // Keep the sensitive context among the selected top four. Other real
+    // accounting categories can consume bounded output rows before the later
+    // diagnostic canary; redaction coverage must not depend on that tail fitting.
+    const auto bytes = i == 5 ? memory::usize{4096} : 256 + static_cast<memory::usize>(i * 64);
     auto allocation = memory::DefaultMemoryManager().Allocate(
-        256 + static_cast<memory::usize>(i * 64),
+        bytes,
         alignof(std::max_align_t),
         std::move(tag));
     Require(allocation.ok(), "ELER-050 support-bundle allocation failed");
