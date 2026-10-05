@@ -304,11 +304,15 @@ void RepresentationAndCodecs() {
           "int64 codecs reject non-eight-byte present payload");
     const dt::DatatypeOperationValue operation{
         dt::CanonicalTypeId::int64, malformed, false};
+    dt::DatatypeCastRequest malformed_identity;
+    malformed_identity.value = operation;
+    malformed_identity.target_type_id = dt::CanonicalTypeId::int64;
     Check(!dt::CompareDatatypeValues({operation, Int64(0)}).ok() &&
               !dt::MakeDatatypeSortKey({operation}).ok() &&
               !dt::SerializeDatatypeValue({operation}).ok() &&
               !dt::HashDatatypeValue({operation}).ok() &&
-              !dt::RenderDatatypeValueForDisplay({operation}).ok(),
+              !dt::RenderDatatypeValueForDisplay({operation}).ok() &&
+              !dt::CastDatatypeValue(malformed_identity).ok(),
           "int64 operation surfaces reject malformed carrier widths");
   }
   Check(!dt::DecodeCanonicalInt64Value(std::string(8, '\0'), nullptr),
@@ -657,13 +661,14 @@ void NullAndAbsentPolicies() {
         "int64 label-only pseudo-descriptor cannot replace UUID identity");
 
   for (const auto& candidate : dt::BuiltinDatatypeDescriptors()) {
+    const auto expected = candidate.type_id == dt::CanonicalTypeId::int64
+        ? dt::DatatypeCastCategory::identity
+        : dt::DatatypeCastCategory::forbidden;
     Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::int64,
-                                   candidate.type_id) ==
-              dt::DatatypeCastCategory::forbidden &&
+                                   candidate.type_id) == expected &&
               dt::ClassifyDatatypeCast(candidate.type_id,
-                                       dt::CanonicalTypeId::int64) ==
-              dt::DatatypeCastCategory::forbidden,
-          "all registered present-value casts incident to int64 refuse");
+                                       dt::CanonicalTypeId::int64) == expected,
+          "only the registered int64 identity cast is admitted");
   }
   for (const auto context : {dt::DatatypeCastContext::implicit,
                              dt::DatatypeCastContext::assignment,
@@ -681,8 +686,18 @@ void NullAndAbsentPolicies() {
     present.reference_compatibility_profile = false;
 
     present.target_type_id = dt::CanonicalTypeId::int64;
-    Check(!dt::CastDatatypeValue(present).ok(),
-          "present int64 identity cast refuses in every context");
+    const auto identity = dt::CastDatatypeValue(present);
+    Check(identity.ok() &&
+              identity.category == dt::DatatypeCastCategory::identity &&
+              identity.value.type_id == dt::CanonicalTypeId::int64 &&
+              !identity.value.is_null &&
+              identity.value.encoded_value == present.value.encoded_value &&
+              std::equal(identity.value.descriptor.descriptor_uuid.bytes,
+                         identity.value.descriptor.descriptor_uuid.bytes + 16,
+                         present.value.descriptor.descriptor_uuid.bytes) &&
+              identity.value.descriptor.stable_name ==
+                  present.value.descriptor.stable_name,
+          "present int64 identity preserves native bytes and source descriptor in every context");
 
     present.value = {dt::CanonicalTypeId::int16,
                      std::string{'\x2a', '\0'}, false};
@@ -714,6 +729,28 @@ void NullAndAbsentPolicies() {
                      "incoming typed NULL to int64 refuses without cast policy");
 
   }
+
+  dt::DatatypeCastRequest labeled_identity;
+  labeled_identity.value = Int64(-42);
+  labeled_identity.target_type_id = dt::CanonicalTypeId::int64;
+  labeled_identity.target_descriptor = labeled_identity.value.descriptor;
+  labeled_identity.target_descriptor.stable_name = "localized-bigint";
+  const auto labeled = dt::CastDatatypeValue(labeled_identity);
+  Check(labeled.ok() &&
+            labeled.category == dt::DatatypeCastCategory::identity &&
+            labeled.value.encoded_value == labeled_identity.value.encoded_value &&
+            std::equal(labeled.value.descriptor.descriptor_uuid.bytes,
+                       labeled.value.descriptor.descriptor_uuid.bytes + 16,
+                       labeled_identity.target_descriptor.descriptor_uuid.bytes) &&
+            labeled.value.descriptor.stable_name == "localized-bigint",
+        "int64 identity accepts label aliases for one UUID-bound descriptor");
+
+  auto mismatched_identity = labeled_identity;
+  mismatched_identity.target_descriptor.nullable_allowed =
+      !mismatched_identity.value.descriptor.nullable_allowed;
+  CheckCastRefused(dt::CastDatatypeValue(mismatched_identity),
+                   "DATATYPE.DESCRIPTOR.INVALID",
+                   "int64 identity rejects unequal UUID-bound descriptor metadata");
 
   dt::DatatypeNumericOperationRequest numeric;
   numeric.type_id = dt::CanonicalTypeId::int64;

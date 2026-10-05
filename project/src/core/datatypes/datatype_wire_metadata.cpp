@@ -770,9 +770,10 @@ CanonicalWireTypeId WireTypeIdForCanonicalTypeId(CanonicalTypeId type_id) {
     case CanonicalTypeId::interval:
       return WireId(CanonicalWireTypeFamily::interval, 1);
     case CanonicalTypeId::blob:
-      return WireId(CanonicalWireTypeFamily::lob,
-                    1,
-                    CanonicalWireTypeFlagBit(CanonicalWireTypeFlag::lob_locator_metadata_required));
+      // The numeric LOB family is a V1 route and its locator flag collapses
+      // logical content with a receiving row/MGA carrier. Current V11 blob
+      // transport requires an exact receipt-aware consumer handoff.
+      return {};
     case CanonicalTypeId::document:
       return WireId(CanonicalWireTypeFamily::document, 1);
     case CanonicalTypeId::json_document:
@@ -907,17 +908,21 @@ CanonicalWireTypeId WireTypeIdForCanonicalTypeId(CanonicalTypeId type_id) {
 }
 
 CanonicalTypeId CanonicalTypeIdFromWireTypeId(const CanonicalWireTypeId& wire_type_id) {
+  if (wire_type_id.type_family == 0 && wire_type_id.type_code == 0 &&
+      wire_type_id.type_version == 0 && wire_type_id.type_flags == 0) {
+    return CanonicalTypeId::unknown;
+  }
   for (const auto& descriptor : BuiltinDatatypeDescriptors()) {
     const auto candidate = WireTypeIdForCanonicalTypeId(descriptor.type_id);
+    if (candidate.type_family == 0 || candidate.type_code == 0 ||
+        candidate.type_version == 0) {
+      continue;
+    }
     if (candidate.type_family == wire_type_id.type_family &&
         candidate.type_code == wire_type_id.type_code &&
         candidate.type_version == wire_type_id.type_version) {
       return descriptor.type_id;
     }
-  }
-  if (wire_type_id.type_family == 0 && wire_type_id.type_code == 0 &&
-      wire_type_id.type_version == 0 && wire_type_id.type_flags == 0) {
-    return CanonicalTypeId::unknown;
   }
   return CanonicalTypeId::unknown;
 }

@@ -311,7 +311,7 @@ bool IsValidFixedPayloadSize(const DatatypeStorageLayout& layout, u32 payload_si
   if (layout.storage_class == DatatypeStorageClass::inline_fixed) {
     return payload_size == layout.inline_bytes;
   }
-  if (layout.type_id == CanonicalTypeId::decimal || layout.type_id == CanonicalTypeId::blob) {
+  if (layout.type_id == CanonicalTypeId::decimal) {
     return payload_size == layout.inline_bytes;
   }
   return true;
@@ -342,6 +342,10 @@ DatatypeBinaryAllocationFreeViewResult BinaryStructuralValidation(
     }
     DatatypeBinaryValueView clean = value;
     clean.payload_data = nullptr;
+    if (value.type_id == CanonicalTypeId::blob) {
+      return BinaryNoAllocError("BLOB.V1_V2_REFUSED",
+                                "datatype.blob.v1_v2_refused");
+    }
     return BinaryNoAllocOk(clean);
   }
   if ((value.payload_bytes != 0 && value.payload_data == nullptr) ||
@@ -349,6 +353,10 @@ DatatypeBinaryAllocationFreeViewResult BinaryStructuralValidation(
       value.payload_bytes > std::numeric_limits<std::size_t>::max() -
                                 kDatatypeBinaryEnvelopeHeaderBytes) {
     return BinaryNoAllocFrameError(0, "borrowed_payload_bounds_invalid");
+  }
+  if (value.type_id == CanonicalTypeId::blob) {
+    return BinaryNoAllocError("BLOB.V1_V2_REFUSED",
+                              "datatype.blob.v1_v2_refused");
   }
   return BinaryNoAllocOk(value);
 }
@@ -1066,6 +1074,11 @@ DatatypeBinaryViewResult ValidateDatatypeBinaryValueView(const DatatypeBinaryVal
           "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
           "datatype.timestamp.serialization_profile_missing");
     }
+    if (value.type_id == CanonicalTypeId::blob) {
+      return BinaryViewError(
+          "BLOB.V1_V2_REFUSED", "datatype.blob.v1_v2_refused",
+          "SBDVAL01 cannot establish the exact V11 blob receipt or profile");
+    }
     DatatypeBinaryViewResult result;
     result.status = BinaryOkStatus();
     return result;
@@ -1079,6 +1092,14 @@ DatatypeBinaryViewResult ValidateDatatypeBinaryValueView(const DatatypeBinaryVal
     return BinaryViewError(
         "CTB.BIT.SERIALIZATION_PROFILE_MISSING",
         "datatype.bit_string.serialization_profile_missing");
+  }
+  // SBDVAL01 and its toast flag are V1/V2 compatibility carriers. They do
+  // not carry the exact V11 blob receipt/profile and cannot represent the
+  // SBBLOB03 logical component or the separate authenticated row locator.
+  if (value.type_id == CanonicalTypeId::blob) {
+    return BinaryViewError(
+        "BLOB.V1_V2_REFUSED", "datatype.blob.v1_v2_refused",
+        "SBDVAL01 cannot establish the exact V11 blob receipt or profile");
   }
   // Canonical type 400 has a structural LE4 component, but those bytes and
   // the enum do not establish the exact d710 receipt or 584-byte profile.

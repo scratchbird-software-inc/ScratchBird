@@ -26,7 +26,10 @@ enum class DatatypeStorageClass : u16 {
   inline_variable,
   descriptor_payload,
   toast_reference,
-  unknown
+  unknown,
+  // Logical large value whose row/page carrier is selected by a receiving
+  // authority. This is never a persisted locator or live handle.
+  logical_large_value
 };
 
 enum class DatatypeBinaryEncoding : u16 {
@@ -63,7 +66,10 @@ enum class DatatypeBinaryEncoding : u16 {
   // Appended to preserve every previously published enum value.
   u32le_bit_count_msb0_packed,
   // Distinct current d710 timezone-free local-civil timestamp encoding.
-  timestamp_civil_tuple
+  timestamp_civil_tuple,
+  // Current base.blob logical component. Row external locators remain outside
+  // this datatype component classification.
+  blob_component_v3
 };
 
 struct DatatypeStorageLayout {

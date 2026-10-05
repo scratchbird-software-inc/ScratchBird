@@ -77,6 +77,7 @@ const char* DatatypeStorageClassName(DatatypeStorageClass storage_class) {
     case DatatypeStorageClass::inline_variable: return "inline_variable";
     case DatatypeStorageClass::descriptor_payload: return "descriptor_payload";
     case DatatypeStorageClass::toast_reference: return "toast_reference";
+    case DatatypeStorageClass::logical_large_value: return "logical_large_value";
     case DatatypeStorageClass::unknown: return "unknown";
   }
   return "unknown";
@@ -115,6 +116,7 @@ const char* DatatypeBinaryEncodingName(DatatypeBinaryEncoding encoding) {
     case DatatypeBinaryEncoding::result_set_descriptor: return "result_set_descriptor";
     case DatatypeBinaryEncoding::u32le_bit_count_msb0_packed: return "u32le_bit_count_msb0_packed";
     case DatatypeBinaryEncoding::timestamp_civil_tuple: return "timestamp_civil_tuple";
+    case DatatypeBinaryEncoding::blob_component_v3: return "blob_component_v3";
     case DatatypeBinaryEncoding::unknown: return "unknown";
   }
   return "unknown";
@@ -166,7 +168,10 @@ const std::vector<DatatypeStorageLayout>& BuiltinDatatypeStorageLayouts() {
              DatatypeBinaryEncoding::interval_tuple, 16, 8, true, false,
              false, false, false, false,
              "signed i32 months, signed i32 civil days, signed i64 fixed nanoseconds LE16; semantic use requires the exact d710 interval profile; no natural ordering"),
-      Layout(CanonicalTypeId::blob, DatatypeStorageClass::toast_reference, DatatypeBinaryEncoding::toast_locator, 24, 8, true, false, false, false, true),
+      Layout(CanonicalTypeId::blob, DatatypeStorageClass::logical_large_value,
+             DatatypeBinaryEncoding::blob_component_v3, 0, 8, true, false,
+             false, false, false, false,
+             "V3 logical VALUE or SQL_NULL component; row external locator is a separate MGA carrier"),
       Layout(CanonicalTypeId::document, DatatypeStorageClass::descriptor_payload, DatatypeBinaryEncoding::structured_canonical_binary, 0, 8, true, false, false, false, true),
       Layout(CanonicalTypeId::json_document, DatatypeStorageClass::descriptor_payload, DatatypeBinaryEncoding::structured_canonical_binary, 0, 8, true, false, false, false, true),
       Layout(CanonicalTypeId::binary_json_document, DatatypeStorageClass::descriptor_payload, DatatypeBinaryEncoding::structured_canonical_binary, 0, 8, true, false, false, false, true),

@@ -10505,6 +10505,16 @@ set_tests_properties(sbsql_sblr_alignment_datatype_identity_v3 PROPERTIES
   LABELS "datatype;base_date;base_time;base_timestamp;base_bit_string;base_binary;identity_v3;d710;history_d701_d708;not_runtime_acceptance"
   TIMEOUT 120)
 
+add_executable(sbsql_sblr_alignment_base_blob_profile_value
+  base_blob_profile_value_test.cpp)
+target_compile_features(sbsql_sblr_alignment_base_blob_profile_value PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_base_blob_profile_value PRIVATE sb_core_datatypes)
+add_test(NAME sbsql_sblr_alignment_base_blob_profile_value
+  COMMAND sbsql_sblr_alignment_base_blob_profile_value)
+set_tests_properties(sbsql_sblr_alignment_base_blob_profile_value PROPERTIES
+  LABELS "datatype;base_blob;v11;profile;materialized_value;fail_closed_lifetime;not_runtime_acceptance"
+  TIMEOUT 180)
+
 add_executable(sbsql_sblr_alignment_base_bit_string_profile_value
   base_bit_string_profile_value_test.cpp)
 target_compile_features(sbsql_sblr_alignment_base_bit_string_profile_value PRIVATE cxx_std_23)
