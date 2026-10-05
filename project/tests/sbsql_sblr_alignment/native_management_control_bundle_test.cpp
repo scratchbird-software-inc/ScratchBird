@@ -1568,12 +1568,28 @@ void RepeatedDirectoryHistory(unsigned profile,int only_size=-1){for(unsigned si
 }}
 
 void DirectoryOwnedSourceMemory(unsigned primary,unsigned secondary,bool reverse,unsigned profile,
- bool target,bool reserve,bool initial,bool via_route,int fault_route=9,unsigned shard=0,unsigned shards=1){
+ bool target,bool reserve,bool initial,bool via_route,int fault_route=9,unsigned shard=0,unsigned shards=1,bool populated=false){
  DirectoryHistoryFixture f(primary,secondary,reverse,profile,target,reserve,profile==2,!initial);
  const auto allowance=16*1024*std::max<u64>(f.t.fixture.size,d::kCanonicalFilespacePageProfiles[secondary].page_size_bytes);
  owned_source_memory::Checks(f.t.fixture.devices,allowance,
-   primary==secondary&&!reverse&&!target&&reserve==(profile!=2),via_route,fault_route,shard,shards);
+   primary==secondary&&!reverse&&!target&&reserve==(profile!=2),via_route,fault_route,shard,shards,populated);
  f.Reopen();
+ if(populated){
+  const auto selected=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),f.t.fixture.devices,Id(2),allowance);
+  Check(selected.ok(),"reopened populated fixture selected source");
+  const auto& roots=selected.checkpoint_inventory.checkpoint->roots;
+  const auto root=std::find_if(roots.begin(),roots.end(),[](const auto& r){return r.role==5;});
+  Check(root!=roots.end(),"reopened populated fixture catalog binding");
+  auto* device=f.File(root->page.filespace_uuid);
+  const d::FilespaceRootReference ref{2,root->page_type,root->page.filespace_uuid,root->page.page_number,
+    root->page.page_generation,root->page.page_size_profile_uuid,root->object_uuid};
+  const auto catalog=page::ReadNativeCatalogRootFromOpenDevice(*device,Id(1),ref);
+  Check(catalog.ok(),"reopened populated fixture catalog root");
+  const auto object=std::find_if(catalog.root->roots.begin(),catalog.root->roots.end(),[](const auto& r){return r.role==1;});
+  Check(object!=catalog.root->roots.end(),"reopened populated fixture object head");
+  const auto leaf=db::ReadNativeCatalogLeafFromOpenDevice(*f.File(object->page.filespace_uuid),Id(1),*object);
+  Check(leaf.ok()&&leaf.metadata.size()==2,"populated records survive independent read-only device reopen");
+ }
 }
 void DirectorySelectedLeaseMemory(unsigned primary,unsigned secondary,bool reverse,unsigned profile,
  bool target,bool reserve,bool initial=false,bool repeated=false,int route=8,unsigned shard=0,unsigned shards=1){
@@ -3870,6 +3886,13 @@ int main(int argc,char** argv){
    const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"control graph Close profile");DirectoryControlClose(profile);return 0;
  }
 
+ if(argc==4&&std::string_view(argv[1])=="--catalog-populated-owned-source-memory"){
+  const auto via_route=std::stoi(argv[2]),profile=std::stoi(argv[3]);
+  Check(via_route>=0&&via_route<=1&&profile>=0&&profile<5,"populated guarded catalog arguments");
+  for(bool reverse:{false,true})
+   DirectoryOwnedSourceMemory(profile,(profile+1)%5,reverse,2,false,false,true,via_route,9,0,1,true);
+  std::cout<<"PASS populated guarded catalog checks="<<checks<<'\n';return 0;
+ }
  if(argc==7&&std::string_view(argv[1])=="--directory-owned-source-memory"){
   const auto via_route=std::stoi(argv[2]),initial=std::stoi(argv[3]),profile=std::stoi(argv[4]),
     primary=std::stoi(argv[5]),secondary=std::stoi(argv[6]);

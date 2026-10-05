@@ -20,7 +20,40 @@ struct Meter final:std::pmr::memory_resource {
  void do_deallocate(void*,std::size_t,std::size_t) override {}
  bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override{return this==&other;}
 };
-void Checks(std::span<const d::NativeFilespaceDevice> borrowed,u64 allowance,bool deep=false,bool via_route=false,int fault_route=9,unsigned fault_shard=0,unsigned fault_shards=1){
+// Common-envelope storage fixture only, not ordinary-table family admission or
+// a catalog publication operation. Install before source ownership is acquired.
+db::NativeCatalogLeafResult PopulatedLeaf(db::NativeCatalogLeafPage leaf,const mga::TransactionIdentity& creator){
+ namespace catalog=scratchbird::core::catalog;
+ Check(leaf.body.rows.empty(),"populate only a fresh empty fixture leaf");
+ for(unsigned i=0;i<2;++i){
+  page::RowDataRecord row;row.storage_generation=1;
+  row.row_uuid={UuidKind::row,Id(60000+i)};row.version_uuid=Id(60010+i);
+  row.transaction_uuid=creator.transaction_uuid;row.local_transaction_id=creator.local_id.value;
+  row.internal_row_ordinal=row.stable_slot_id=i+1;
+  catalog::CatalogMetadataVersion metadata;
+  metadata.record.header.kind=catalog::CatalogRecordKind::sql_object;
+  metadata.record.header.row_uuid=row.row_uuid;
+  metadata.record.header.object_uuid={UuidKind::object,Id(60020+i)};
+  metadata.record.header.parent_uuid={UuidKind::schema,Id(60030)};
+  metadata.owning_schema_uuid=metadata.record.header.parent_uuid;
+  metadata.owner_uuid={UuidKind::principal,Id(60031)};metadata.audit_uuid={UuidKind::object,Id(60032)};
+  metadata.creator_transaction_uuid=creator.transaction_uuid;
+  metadata.creator_local_transaction_id=creator.local_id.value;
+  metadata.definition_version=metadata.schema_epoch=metadata.security_epoch=metadata.catalog_generation=1;
+  metadata.dependency_generation=metadata.invalidation_generation=1;
+  metadata.lifecycle=catalog::CatalogObjectLifecycle::active;metadata.status=catalog::CatalogObjectStatus::active;
+  metadata.trace_search_key="GUARDED-LEAF-STORAGE-FIXTURE";
+  metadata.object_subtype="application";metadata.retention_class="catalog_history";
+  metadata.record.payload="guarded-leaf-common-envelope";
+  const auto encoded=catalog::EncodeCatalogMetadataVersion(metadata);
+  Check(encoded.ok(),"complete populated common metadata envelope");
+  page::RowDataCell cell;cell.column_ordinal=1;
+  cell.value.type_id=scratchbird::core::datatypes::CanonicalTypeId::binary;
+  cell.value.payload=encoded.bytes;row.cells.push_back(std::move(cell));leaf.body.rows.push_back(std::move(row));
+ }
+ return db::EncodeNativeCatalogLeaf(leaf);
+}
+void Checks(std::span<const d::NativeFilespaceDevice> borrowed,u64 allowance,bool deep=false,bool via_route=false,int fault_route=9,unsigned fault_shard=0,unsigned fault_shards=1,bool populated=false){
  std::vector<d::NativeFilespaceDevice> original(borrowed.begin(),borrowed.end());
  if(via_route){const auto primary=std::find_if(original.begin(),original.end(),[](const auto& f){return f.filespace_uuid==Id(2);});
   Check(primary!=original.end(),"route cohort includes the actual primary");std::rotate(original.begin(),primary,primary+1);}
@@ -46,8 +79,17 @@ void Checks(std::span<const d::NativeFilespaceDevice> borrowed,u64 allowance,boo
   Check(observed.ok(),"actual catalog root before governed source adoption");
   for(const auto& ref:observed.root->roots){
    Check(ref.page_type==6,"genesis catalog fixture uses actual direct heads");
-   const auto leaf=db::ReadNativeCatalogLeafFromOpenDevice(*member->device,Id(1),ref);
+   auto leaf=db::ReadNativeCatalogLeafFromOpenDevice(*member->device,Id(1),ref);
    Check(leaf.ok(),"independent owning leaf read before guarded composition");
+   if(populated&&ref.role==1){
+    leaf=PopulatedLeaf(*leaf.page,expected_selection.checkpoint_inventory.inventory.entries.front().identity);
+    Check(leaf.ok()&&leaf.metadata.size()==2,"canonical populated object-catalog fixture image");
+    const auto write=member->device->WriteAt(ref.page.page_number*leaf.bytes.size(),leaf.bytes.data(),leaf.bytes.size());
+    Check(write.ok()&&write.bytes_transferred==leaf.bytes.size()&&member->device->Sync().ok(),
+      "persist populated fixture before acquiring owned source");
+    const auto reread=db::ReadNativeCatalogLeafFromOpenDevice(*member->device,Id(1),ref);
+    Check(reread.ok()&&reread.bytes==leaf.bytes&&reread.metadata.size()==2,"independent owning decode of persisted populated leaf");
+   }
    leaf_refs.push_back(ref);leaf_images.push_back(leaf.bytes);
   }
  }
@@ -350,6 +392,16 @@ void Checks(std::span<const d::NativeFilespaceDevice> borrowed,u64 allowance,boo
       "complete actual catalog leaf under retained owned source uses only pre-admitted memory");
     Check(observed.bytes_read==d::kFilespaceBootstrapBytes+2*observed.image.size(),
       "guarded reader reports exact physical source bytes");
+    if(populated&&ref.role==1){
+     Check(observed.leaf.page->metadata.size()==2&&observed.leaf.page->body.rows.size()==2,
+       "guarded populated reader retains every metadata row without heap fallback");
+     for(const auto& record:observed.leaf.page->metadata){
+      Check(record.row_index<2&&record.version_uuid==Id(60010+record.row_index)&&
+        record.metadata.record.header.object_uuid.value==Id(60020+record.row_index)&&
+        record.metadata.record.payload=="guarded-leaf-common-envelope",
+        "populated borrowed metadata preserves exact binary identity and complete payload");
+     }
+    }
     for(unsigned fault=0;fault<4;++fault){
      auto wrong=ref;
      if(fault==0)++wrong.page.page_generation;
