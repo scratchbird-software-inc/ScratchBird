@@ -4268,7 +4268,7 @@ DirectPhysicalMgaCowWriteResult WriteDirectPhysicalMgaCowRows(
     } else {
       cow.cells = DirectPhysicalCells(value_batch == nullptr
                                           ? row.values
-                                          : (*value_batch)[index]);
+                                          : (*value_batch)[index], row_encoder_plan);
     }
     batch.mutations.push_back(std::move(cow));
   }
