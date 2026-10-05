@@ -8,14 +8,21 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "security/protected_material_api.hpp"
+#include "../support/durable_authorization_fixture.hpp"
+#include "transaction/transaction_api.hpp"
+#include "local_transaction_store.hpp"
+#include "uuid.hpp"
 
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <unistd.h>
 #include <vector>
 
@@ -39,8 +46,7 @@ constexpr auto kPolicyAudit = scratchbird::tests::FixtureUuidLiteral("019e18d0-0
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
-    std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -53,25 +59,118 @@ std::filesystem::path MakeTempDir() {
   return std::filesystem::path(made);
 }
 
+struct DatabaseFixture {
+  engine_api::EngineRequestContext context;
+  // Test phase labels select real transaction boundaries; they are never
+  // installed as local transaction numbers or visibility watermarks.
+  std::uint64_t phase = 0;
+};
+
+std::map<std::filesystem::path, DatabaseFixture> database_fixtures;
+
+void RequireApiOk(const engine_api::EngineApiResult& result,
+                  std::string_view message) {
+  if (!result.ok) {
+    for (const auto& diagnostic : result.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
+  Require(result.ok, message);
+}
+
+void RequireInventoryState(const engine_api::EngineRequestContext& context,
+                           scratchbird::transaction::mga::TransactionState expected) {
+  namespace mga = scratchbird::transaction::mga;
+  const auto loaded = scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(
+      context.database_path);
+  Require(loaded.ok(), "DBLC-013Z actual transaction inventory read failed");
+  const auto entry = mga::LookupLocalTransaction(
+      loaded.inventory, mga::MakeLocalTransactionId(context.local_transaction_id));
+  Require(entry.ok() && entry.entry.identity.transaction_uuid.value == context.transaction_uuid &&
+              scratchbird::core::uuid::IsEngineIdentityUuid(context.transaction_uuid) &&
+              entry.entry.state == expected &&
+              entry.entry.begin_visible_through_local_transaction_id ==
+                  context.snapshot_visible_through_local_transaction_id,
+          "DBLC-013Z transaction identity/state/snapshot not backed by durable inventory");
+  if (expected == mga::TransactionState::committed) {
+    Require(entry.entry.commit_sequence != 0 && entry.entry.evidence_record_written,
+            "DBLC-013Z transaction commitment lacks durable sequence/evidence");
+  }
+}
+
+void Commit(DatabaseFixture& fixture) {
+  if (fixture.context.local_transaction_id == 0) return;
+  engine_api::EngineCommitTransactionRequest request;
+  request.context = fixture.context;
+  RequireApiOk(engine_api::EngineCommitTransaction(request),
+               "DBLC-013Z actual fixture transaction commit failed");
+  RequireInventoryState(fixture.context, scratchbird::transaction::mga::TransactionState::committed);
+  fixture.context.local_transaction_id = 0;
+  fixture.context.transaction_uuid = {};
+  fixture.context.snapshot_visible_through_local_transaction_id = 0;
+}
+
 engine_api::EngineRequestContext Context(const std::filesystem::path& database_path,
                                          engine_api::EngineUuid database_uuid = kDatabaseA,
                                          std::uint64_t epoch = 1000,
-                                         std::uint64_t local_transaction_id = 1) {
-  engine_api::EngineRequestContext context;
-  context.trust_mode = engine_api::EngineTrustMode::embedded_in_process;
-  context.database_path = database_path.string();
-  context.database_uuid = database_uuid;
-  context.security_context_present = true;
-  context.trace_tags.push_back("security.bootstrap");
-  context.trace_tags.push_back("security.fixture_trace_authority");
-  context.trace_tags.push_back("right:KEY_RELEASE_APPROVE");
-  context.trace_tags.push_back("right:PROTECTED_MATERIAL_RELEASE");
+                                         std::uint64_t transaction_phase = 1) {
+  auto [position, inserted] = database_fixtures.try_emplace(database_path);
+  auto& fixture = position->second;
+  auto& context = fixture.context;
+  if (inserted) {
+    namespace db = scratchbird::storage::database;
+    namespace platform = scratchbird::core::platform;
+    db::DatabaseCreateConfig create;
+    create.path = database_path.string();
+    create.database_uuid = {platform::UuidKind::database, database_uuid};
+    create.filespace_uuid = {platform::UuidKind::filespace,
+                            database_uuid == kDatabaseA ? kFilespaceA : kFilespaceB};
+    create.page_size = 16384;
+    create.creation_unix_epoch_millis = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    create.require_resource_seed_pack = false;
+    create.allow_minimal_resource_bootstrap = true;
+    create.require_bootstrap_principal = true;
+    create.bootstrap_principal_name = "encryption_fixture_owner";
+    create.bootstrap_credential_fingerprint =
+        "local-password-pbkdf2-sha256:v1:iterations=600000:salt=0123456789abcdef0123456789abcdef:verifier=4ce03aa5a5657aaf221192635ed9c63acdb76d78a0994ec6e6ab55286e29e6a5";
+    const auto created = db::CreateDatabaseFile(create);
+    if (!created.ok()) std::cerr << created.diagnostic.diagnostic_code << ':'
+                                << created.diagnostic.message_key << '\n';
+    Require(created.ok(), "DBLC-013Z actual database creation failed");
+    const auto bootstrap = db::ReadDatabaseBootstrapSecurityCatalog(create.path);
+    Require(bootstrap.ok() && bootstrap.state.present && bootstrap.state.committed_by_inventory,
+            "DBLC-013Z durable bootstrap principal missing");
+    context.trust_mode = engine_api::EngineTrustMode::embedded_in_process;
+    context.database_path = create.path;
+    context.database_uuid = database_uuid;
+    context.principal_uuid = bootstrap.state.principal_uuid.value;
+    context.session_uuid = scratchbird::tests::FixtureUuid(1415, 100);
+    context.catalog_generation_id = 1;
+    context.name_resolution_epoch = 1;
+    context.security_context_present = true;
+  }
   context.resource_epoch = epoch;
-  context.local_transaction_id = local_transaction_id;
-  context.snapshot_visible_through_local_transaction_id = local_transaction_id;
-  std::ofstream touch(database_path, std::ios::app);
-  Require(static_cast<bool>(touch), "DBLC-013Z database fixture create failed");
-  return context;
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
+  if (fixture.phase != transaction_phase) {
+    Commit(fixture);
+    engine_api::EngineBeginTransactionRequest begin;
+    begin.context = context;
+    begin.isolation_level = "read_committed";
+    const auto begun = engine_api::EngineBeginTransaction(begin);
+    RequireApiOk(begun, "DBLC-013Z actual fixture transaction begin failed");
+    context.local_transaction_id = begun.local_transaction_id;
+    context.transaction_uuid = begun.transaction_uuid;
+    context.snapshot_visible_through_local_transaction_id =
+        begun.snapshot_visible_through_local_transaction_id;
+    context.transaction_isolation_level = begun.isolation_level;
+    RequireInventoryState(context, scratchbird::transaction::mga::TransactionState::active);
+    fixture.phase = transaction_phase;
+  }
+  auto result = context;
+  // The wrong-owner negative case changes only the submitted identity, never
+  // the real source database or its materialized authorization.
+  result.database_uuid = database_uuid;
+  return result;
 }
 
 engine_api::EngineRequestContext NoAuthorityContext(const std::filesystem::path& database_path) {
@@ -262,6 +361,23 @@ void TestScopeAndMissingAuthorityRefusals(const std::filesystem::path& database_
   const auto refused = engine_api::EngineAdmitEncryptionKey(no_auth);
   Require(!refused.ok && HasDiagnostic(refused, "SECURITY.PROTECTED_MATERIAL.AUTHORITY_DENIED"),
           "DBLC-013Z missing key authority was not refused");
+
+  auto trace_only = context;
+  trace_only.authorization_context = {};
+  trace_only.trace_tags = {"security.bootstrap", "security.fixture_trace_authority",
+                           "right:KEY_RELEASE_APPROVE", "right:PROTECTED_MATERIAL_RELEASE"};
+  const auto forged = Admit(trace_only, scratchbird::tests::FixtureUuid(1415, 10));
+  Require(!forged.ok && !forged.key_admitted && !forged.cache_entry_active &&
+              HasDiagnostic(forged, "SECURITY.PROTECTED_MATERIAL.AUTHORITY_DENIED"),
+          "DBLC-013Z trace-only fixture authority admitted protected material");
+  engine_api::EngineInspectProtectedMaterialCacheRequest inspect_refused;
+  inspect_refused.context = context;
+  inspect_refused.key_uuid = scratchbird::tests::FixtureUuid(1415, 10);
+  inspect_refused.option_envelopes.push_back("protected_material_authority:engine");
+  const auto refused_state = engine_api::EngineInspectProtectedMaterialCache(inspect_refused);
+  Require(refused_state.ok && refused_state.entries.empty() &&
+              refused_state.active_entry_count == 0,
+          "DBLC-013Z trace-only refusal left a protected-material cache entry");
 
   engine_api::EngineAdmitEncryptionKeyRequest parser_auth;
   parser_auth.context = context;
@@ -586,10 +702,18 @@ void TestProtectedMaterialCatalogLifecycle(const std::filesystem::path& database
 int main() {
   const auto temp_dir = MakeTempDir();
   const auto database_path = temp_dir / "dblc013z.sbdb";
-  TestAdmissionInspectAndEncryptedOpen(database_path);
-  TestScopeAndMissingAuthorityRefusals(database_path);
-  TestRotationExpiryPurgeAndShutdown(database_path);
-  TestPlaintextRefusalAndNoDiagnosticLeak(database_path);
-  TestProtectedMaterialCatalogLifecycle(database_path);
+  try {
+    TestAdmissionInspectAndEncryptedOpen(database_path);
+    TestScopeAndMissingAuthorityRefusals(database_path);
+    TestRotationExpiryPurgeAndShutdown(database_path);
+    TestPlaintextRefusalAndNoDiagnosticLeak(database_path);
+    TestProtectedMaterialCatalogLifecycle(database_path);
+    for (auto& [path, fixture] : database_fixtures) Commit(fixture);
+    database_fixtures.clear();
+    std::filesystem::remove_all(temp_dir);
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << "\nRetained failing fixture: " << temp_dir << '\n';
+    return EXIT_FAILURE;
+  }
   return EXIT_SUCCESS;
 }
