@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "query/expression_api.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -36,9 +37,13 @@ api::EngineDescriptor Descriptor(const unsigned suffix,
                                  std::string type,
                                  std::string nullability = "nullable") {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical =
-      "019f0000-0000-7200-8000-0000000028" +
-      std::string(suffix < 10 ? "0" : "") + std::to_string(suffix);
+  descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(28, suffix);
+  // The existing INT64 registry identity is distinct from the occurrence UUID.
+  descriptor.type_uuid = scratchbird::tests::FixtureUuidLiteral(
+      "019d0000-0000-7000-8000-00000000d712");
+  descriptor.datatype_descriptor_uuid = scratchbird::tests::FixtureUuidLiteral(
+      "019d0000-0000-7000-8000-00000000d711");
+  descriptor.datatype_descriptor_generation = 1;
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = std::move(type);
   descriptor.encoded_descriptor =
@@ -58,13 +63,7 @@ api::EngineTypedValue Value(const api::EngineDescriptor& descriptor,
 
 bool EqualValue(const api::EngineTypedValue& left,
                 const api::EngineTypedValue& right) {
-  return left.descriptor.descriptor_uuid.canonical ==
-             right.descriptor.descriptor_uuid.canonical &&
-         left.descriptor.descriptor_kind == right.descriptor.descriptor_kind &&
-         left.descriptor.canonical_type_name ==
-             right.descriptor.canonical_type_name &&
-         left.descriptor.encoded_descriptor ==
-             right.descriptor.encoded_descriptor &&
+  return left.descriptor == right.descriptor &&
          left.encoded_value == right.encoded_value &&
          left.binary_value == right.binary_value &&
          left.is_null == right.is_null && left.state == right.state;
@@ -96,19 +95,25 @@ bool AtomicPreservingRefusal(const api::EngineTypedValue& input,
 bool ValidateSupportedCoercion() {
   const auto source = Descriptor(1, "int64");
   const auto target = Descriptor(2, "int64");
-  const auto input = Value(source, "42");
+  // The scalar-operation adapter carries integer bytes in encoded_value;
+  // this is LE8, not a decimal spelling or a second simultaneous carrier.
+  auto payload = std::string(8, '\0');
+  payload[0] = 42;
+  const auto input = Value(source, payload);
   api::EngineTypedValue output;
   std::string category;
   std::string reason;
   std::string detail;
   const bool ok = Coerce(
       input, target, &output, &category, &reason, &detail);
+  if (!ok) std::cerr << "coercion refusal: " << reason << ':' << detail << '\n';
   return Require(ok, "supported canonical coercion was refused") &&
          Require(reason.empty() && detail.empty() && !category.empty(),
                  "supported coercion emitted refusal state") &&
-         Require(output.descriptor.descriptor_uuid.canonical ==
-                     target.descriptor_uuid.canonical &&
-                     output.encoded_value == "42" &&
+         Require(output.descriptor.descriptor_uuid ==
+                     target.descriptor_uuid &&
+                     output.encoded_value == payload &&
+                     output.binary_value.empty() &&
                      output.state == api::EngineValueState::value,
                  "supported coercion did not preserve target descriptor identity");
 }
@@ -135,7 +140,7 @@ bool ValidateRefusals() {
   {
     auto input = Value(source, "19");
     auto malformed_target = target;
-    malformed_target.descriptor_uuid.canonical = "malformed";
+    malformed_target.descriptor_uuid.bytes[8] = 0;  // Invalid UUID variant.
     passed &= Require(
         AtomicPreservingRefusal(input, malformed_target, "descriptor_invalid"),
         "malformed target descriptor was accepted or rewrote the input");

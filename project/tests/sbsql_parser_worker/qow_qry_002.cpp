@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "query/plan_api.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <cstdint>
 #include <cstdlib>
@@ -38,14 +39,14 @@ api::TypedRelationalDag SharedDag() {
   api::TypedRelationalDag dag;
   dag.root_node_id = 4;
   dag.descriptors = {
-      {1, "019f0000-0000-7200-8000-000000000201",
-       "019f0000-0000-7300-8000-000000000211",
+      {1, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000000201"),
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7300-8000-000000000211"),
        api::RelationalNullability::kNonNull},
-      {2, "019f0000-0000-7200-8000-000000000202",
-       "019f0000-0000-7300-8000-000000000212",
+      {2, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000000202"),
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7300-8000-000000000212"),
        api::RelationalNullability::kNonNull},
-      {3, "019f0000-0000-7200-8000-000000000203",
-       "019f0000-0000-7300-8000-000000000213",
+      {3, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000000203"),
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7300-8000-000000000213"),
        api::RelationalNullability::kNonNull},
   };
   api::RelationalExpressionRecord literal;
@@ -69,14 +70,14 @@ api::TypedRelationalDag SharedDag() {
 api::TypedRelationalDag GroupingSetDag() {
   auto dag = SharedDag();
   dag.wire_version = 2;
-  dag.bound_sblr_tree_uuid = "019f0000-0000-7000-8000-000000000281";
-  dag.bound_catalog_epoch_uuid = "019f0000-0000-7000-8000-000000000282";
-  dag.bound_security_context_uuid = "019f0000-0000-7000-8000-000000000283";
-  dag.statement_uuid = "019f0000-0000-7000-8000-000000000284";
-  dag.owning_transaction_uuid = "019f0000-0000-7000-8000-000000000285";
-  dag.statement_snapshot_uuid = "019f0000-0000-7000-8000-000000000286";
+  dag.bound_sblr_tree_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000281");
+  dag.bound_catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000282");
+  dag.bound_security_context_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000283");
+  dag.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000284");
+  dag.owning_transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000285");
+  dag.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000286");
   dag.statement_metadata_snapshot_uuid =
-      "019f0000-0000-7000-8000-000000000287";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000287");
   dag.local_transaction_id = 0xffff'ffff'ffff'ff00ULL;
   dag.snapshot_visible_through_local_transaction_id = 0;
   for (auto& node : dag.nodes) {
@@ -95,22 +96,22 @@ api::TypedRelationalDag GroupingSetDag() {
 api::TypedRelationalDag WindowDag() {
   api::TypedRelationalDag dag;
   dag.wire_version = 2;
-  dag.bound_sblr_tree_uuid = "019f0000-0000-7000-8000-000000000291";
-  dag.bound_catalog_epoch_uuid = "019f0000-0000-7000-8000-000000000292";
-  dag.bound_security_context_uuid = "019f0000-0000-7000-8000-000000000293";
-  dag.statement_uuid = "019f0000-0000-7000-8000-000000000294";
-  dag.owning_transaction_uuid = "019f0000-0000-7000-8000-000000000295";
-  dag.statement_snapshot_uuid = "019f0000-0000-7000-8000-000000000296";
+  dag.bound_sblr_tree_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000291");
+  dag.bound_catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000292");
+  dag.bound_security_context_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000293");
+  dag.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000294");
+  dag.owning_transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000295");
+  dag.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000296");
   dag.statement_metadata_snapshot_uuid =
-      "019f0000-0000-7000-8000-000000000297";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000297");
   dag.local_transaction_id = 29;
   dag.root_node_id = 2;
   dag.descriptors = {
-      {1, "019f0000-0000-7200-8000-000000000291",
-       "019f0000-0000-7300-8000-000000000291",
+      {1, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000000291"),
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7300-8000-000000000291"),
        api::RelationalNullability::kNonNull},
-      {2, "019f0000-0000-7200-8000-000000000292",
-       "019f0000-0000-7300-8000-000000000292",
+      {2, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000000292"),
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7300-8000-000000000292"),
        api::RelationalNullability::kNonNull},
   };
   api::RelationalExpressionRecord identifier;
@@ -118,12 +119,12 @@ api::TypedRelationalDag WindowDag() {
   identifier.expression_kind = api::RelationalExpressionKind::kIdentifier;
   identifier.result_descriptor_id = 1;
   identifier.bound_name_uuid =
-      "019f0000-0000-7600-8000-000000000291";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7600-8000-000000000291");
   api::RelationalExpressionRecord function;
   function.expression_id = 2;
   function.expression_kind = api::RelationalExpressionKind::kFunctionCall;
   function.result_descriptor_id = 2;
-  function.function_uuid = "019de5fc-2400-7539-bcce-00eef3ae7220";
+  function.function_uuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-7539-bcce-00eef3ae7220");
   dag.expressions = {std::move(identifier), std::move(function)};
   dag.outputs = {
       {1, 1, 1, "account_id", 1, false, 0},
@@ -143,40 +144,40 @@ api::TypedRelationalDag WindowDag() {
   window.bound_expression_ids = {1, 2};
   window.semantic_variant_id = "window.row-number.v1";
   window.required_property_uuids = {
-      "019f0000-0000-7200-8000-000000000298",
-      "019f0000-0000-7200-8000-000000000299",
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000000298"),
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000000299"),
   };
   window.delivered_property_uuids = {
-      "019f0000-0000-7200-8000-000000000298",
-      "019f0000-0000-7200-8000-000000000299",
-      "019f0000-0000-7200-8000-00000000029a",
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000000298"),
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000000299"),
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-00000000029a"),
   };
   dag.nodes = {std::move(scan), std::move(window)};
   api::RelationalPropertyRecord partitioning;
   partitioning.property_uuid =
-      "019f0000-0000-7200-8000-000000000298";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000000298");
   partitioning.property_kind = api::RelationalPropertyKind::kPartitioning;
   partitioning.origin_node_id = 2;
   partitioning.expression_ids = {1};
   api::RelationalPropertyRecord ordering;
-  ordering.property_uuid = "019f0000-0000-7200-8000-000000000299";
+  ordering.property_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000000299");
   ordering.property_kind = api::RelationalPropertyKind::kOrdering;
   ordering.origin_node_id = 2;
   ordering.ordering_terms = {
       {1, api::RelationalPropertySortDirection::kAscending,
-       api::RelationalPropertyNullPlacement::kNullsLast, ""},
+       api::RelationalPropertyNullPlacement::kNullsLast, {}},
   };
   api::RelationalPropertyRecord window_property;
   window_property.property_uuid =
-      "019f0000-0000-7200-8000-00000000029a";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-00000000029a");
   window_property.property_kind = api::RelationalPropertyKind::kWindow;
   window_property.origin_node_id = 2;
   window_property.dependency_property_uuids = {
-      "019f0000-0000-7200-8000-000000000298",
-      "019f0000-0000-7200-8000-000000000299",
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000000298"),
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000000299"),
   };
   window_property.window_frame_descriptor_uuid =
-      "019f0000-0000-7200-8000-00000000029b";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-00000000029b");
   dag.properties = {std::move(partitioning), std::move(ordering),
                     std::move(window_property)};
   api::RelationalWindowDefinitionRecord definition;
@@ -185,7 +186,7 @@ api::TypedRelationalDag WindowDag() {
   definition.partition_expression_ids = {1};
   definition.ordering_terms = {
       {1, api::RelationalPropertySortDirection::kAscending,
-       api::RelationalPropertyNullPlacement::kNullsLast, ""},
+       api::RelationalPropertyNullPlacement::kNullsLast, {}},
   };
   dag.window_definitions.push_back(std::move(definition));
   api::RelationalWindowInvocationRecord invocation;
@@ -195,7 +196,7 @@ api::TypedRelationalDag WindowDag() {
   invocation.window_definition_id = 1;
   invocation.function_abi_version = 1;
   invocation.builtin_id = "sb.window.row_number";
-  invocation.function_uuid = "019de5fc-2400-7539-bcce-00eef3ae7220";
+  invocation.function_uuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-7539-bcce-00eef3ae7220");
   invocation.result_descriptor_id = 2;
   invocation.output_name_utf8 = "sequence_no";
   dag.window_invocations.push_back(std::move(invocation));
@@ -217,7 +218,7 @@ api::TypedRelationalDag NamedWindowDag() {
   ordered.inherited_window_id = 1;
   ordered.ordering_terms = {
       {1, api::RelationalPropertySortDirection::kAscending,
-       api::RelationalPropertyNullPlacement::kNullsLast, ""},
+       api::RelationalPropertyNullPlacement::kNullsLast, {}},
   };
   api::RelationalWindowDefinitionRecord framed;
   framed.window_id = 3;
@@ -330,8 +331,8 @@ bool ValidateDescriptorUuidOccurrenceAuthority() {
     auto dag = SharedDag();
     auto& first = dag.descriptors[0];
     auto& second = dag.descriptors[1];
-    first.descriptor_uuid = "019d0000-0000-7000-8000-00000000d718";
-    first.type_uuid = "019d0000-0000-7000-8000-00000000d719";
+    first.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d718");
+    first.type_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d719");
     first.nullability = api::RelationalNullability::kNullable;
     first.width = 256;
     first.datatype_identity_authoritative = true;
@@ -341,9 +342,9 @@ bool ValidateDescriptorUuidOccurrenceAuthority() {
     first.codec_version = 1;
     first.codec_generation = 1;
     first.statement_receipt_uuid =
-        "019f0000-0000-7000-8000-0000000002a1";
+        scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-0000000002a1");
     first.datatype_catalog_snapshot_uuid =
-        "019d0000-0000-7000-8000-00000000d701";
+        scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
     first.datatype_catalog_generation = 1;
     first.datatype_registry_generation = 1;
 
@@ -372,17 +373,17 @@ bool ValidateDescriptorUuidOccurrenceAuthority() {
   auto mixed_distinct_uuid = make_authoritative();
   auto& mixed_distinct = mixed_distinct_uuid.descriptors[1];
   mixed_distinct.descriptor_uuid =
-      "019f0000-0000-7200-8000-0000000002a3";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-0000000002a3");
   mixed_distinct.type_uuid =
-      "019f0000-0000-7300-8000-0000000002a4";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7300-8000-0000000002a4");
   mixed_distinct.datatype_identity_authoritative = false;
   mixed_distinct.descriptor_generation = 0;
   mixed_distinct.type_generation = 0;
   mixed_distinct.codec_id.clear();
   mixed_distinct.codec_version = 0;
   mixed_distinct.codec_generation = 0;
-  mixed_distinct.statement_receipt_uuid.clear();
-  mixed_distinct.datatype_catalog_snapshot_uuid.clear();
+  mixed_distinct.statement_receipt_uuid = {};
+  mixed_distinct.datatype_catalog_snapshot_uuid = {};
   mixed_distinct.datatype_catalog_generation = 0;
   mixed_distinct.datatype_registry_generation = 0;
   const auto mixed_distinct_result =
@@ -411,7 +412,7 @@ bool ValidateDescriptorUuidOccurrenceAuthority() {
     switch (field) {
       case 0:
         second.type_uuid =
-            "019f0000-0000-7300-8000-0000000002b0";
+            scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7300-8000-0000000002b0");
         break;
       case 1: second.descriptor_generation = 2; break;
       case 2: second.type_generation = 2; break;
@@ -420,11 +421,11 @@ bool ValidateDescriptorUuidOccurrenceAuthority() {
       case 5: second.codec_generation = 2; break;
       case 6:
         second.statement_receipt_uuid =
-            "019f0000-0000-7000-8000-0000000002b6";
+            scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-0000000002b6");
         break;
       case 7:
         second.datatype_catalog_snapshot_uuid =
-            "019f0000-0000-7000-8000-0000000002b7";
+            scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-0000000002b7");
         break;
       case 8: second.datatype_catalog_generation = 2; break;
       case 9: second.datatype_registry_generation = 2; break;
@@ -446,8 +447,8 @@ bool ValidateDescriptorUuidOccurrenceAuthority() {
   mixed_same.codec_id.clear();
   mixed_same.codec_version = 0;
   mixed_same.codec_generation = 0;
-  mixed_same.statement_receipt_uuid.clear();
-  mixed_same.datatype_catalog_snapshot_uuid.clear();
+  mixed_same.statement_receipt_uuid = {};
+  mixed_same.datatype_catalog_snapshot_uuid = {};
   mixed_same.datatype_catalog_generation = 0;
   mixed_same.datatype_registry_generation = 0;
   const auto mixed_same_result =
@@ -505,8 +506,8 @@ bool ValidateDuplicateAndDanglingRefusal() {
 bool ValidateCycleRefusal() {
   api::TypedRelationalDag dag;
   dag.descriptors = {
-      {1, "019f0000-0000-7200-8000-000000000221",
-       "019f0000-0000-7300-8000-000000000231",
+      {1, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000000221"),
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7300-8000-000000000231"),
        api::RelationalNullability::kNonNull}};
   dag.root_node_id = 1;
   dag.nodes = {
@@ -536,8 +537,8 @@ bool ValidateSharingRefusal() {
 bool ValidateOrphanRefusal() {
   auto dag = SharedDag();
   dag.descriptors.push_back(
-      {4, "019f0000-0000-7200-8000-000000000204",
-       "019f0000-0000-7300-8000-000000000214",
+      {4, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000000204"),
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7300-8000-000000000214"),
        api::RelationalNullability::kNonNull});
   dag.nodes.push_back(
       {5, api::RelationalDagNodeKind::kScan, {}, {4}, false});
@@ -553,8 +554,8 @@ bool ValidateOrphanRefusal() {
 bool ValidateDepthLimitRefusal() {
   api::TypedRelationalDag dag;
   dag.descriptors = {
-      {1, "019f0000-0000-7200-8000-000000000241",
-       "019f0000-0000-7300-8000-000000000251",
+      {1, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000000241"),
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7300-8000-000000000251"),
        api::RelationalNullability::kNonNull}};
   api::RelationalExpressionRecord literal;
   literal.expression_id = 1;
@@ -588,8 +589,8 @@ bool ValidateDepthLimitRefusal() {
 bool ValidateFanoutLimitRefusal() {
   api::TypedRelationalDag dag;
   dag.descriptors = {
-      {1, "019f0000-0000-7200-8000-000000000261",
-       "019f0000-0000-7300-8000-000000000271",
+      {1, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000000261"),
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7300-8000-000000000271"),
        api::RelationalNullability::kNonNull}};
   api::RelationalDagNode root;
   root.node_id = 1026;
