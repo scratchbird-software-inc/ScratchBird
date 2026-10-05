@@ -56,7 +56,7 @@ int main() {
   const auto catalog=d::CanonicalDiagnosticCodeCatalog();
   // Includes native bulk policy, shutdown identity and retained agent notices. Check the
   // exact admitted Core import, not a minimum row count.
-  Check(catalog.size==1533 && catalog.data!=nullptr,"complete Core code inventory missing");
+  Check(catalog.size==1537 && catalog.data!=nullptr,"complete Core code inventory missing");
   Sample("BLOB.IO_FAILED",S::error,true,
          "only after input authority environment or policy changes as applicable",
          "reject_abort_scrub_no_output","DATATYPE.BLOB");
@@ -69,6 +69,18 @@ int main() {
   Sample("MEMORY.CONTAINER_LIMIT_DEGRADED",S::warning,false,
          "restore_discovery_then_readmit",
          "deliver_warning_before_ordinary_admission_and_retain_incomplete_state","MEMORY");
+  Sample("MEMORY.EMERGENCY_RESERVE_INVALID",S::error,true,
+         "after_corrected_policy_or_available_capacity",
+         "reject_policy_or_startup_without_ordinary_admission","MEMORY");
+  Sample("SB-MGA-SNAPSHOT-VECTOR-UNKNOWN",S::error,true,
+         "only_with_actual_live_retained_pin",
+         "refuse_without_descriptor_or_completed_prefix","TRANSACTION.SNAPSHOT");
+  Sample("SB-MGA-SNAPSHOT-VECTOR-REVOKED",S::error,true,
+         "never_reuse_revoked_pin_or_copied_descriptor",
+         "refuse_without_descriptor_or_completed_prefix","TRANSACTION.SNAPSHOT");
+  Sample("SB-MGA-SNAPSHOT-VECTOR-LOCK-FAILURE",S::error,true,
+         "after_successful_fresh_pin_observation",
+         "refuse_without_descriptor_or_completed_prefix","TRANSACTION.SNAPSHOT");
   const auto* blob_io=d::FindCanonicalDiagnosticCode("BLOB.IO_FAILED");
   const auto* blob_lifetime=d::FindCanonicalDiagnosticCode("BLOB.LIFETIME_AUTHORITY_UNAVAILABLE");
   Check(blob_io && blob_io->sqlstate=="58030" &&
@@ -299,7 +311,7 @@ int main() {
     Check(found==nullptr,"unknown code was invented, normalized or guessed");
   }
   constexpr std::array<std::uint8_t,32> expected_source{
-    0xf0,0x75,0x44,0xfd,0xcc,0x59,0x8f,0x65,0xb2,0x35,0xc4,0xce,0x20,0x8f,0xa6,0x64,0x99,0x9e,0x36,0x6a,0x76,0x5c,0xf8,0x58,0x03,0xb8,0x26,0xe4,0xe7,0x1a,0x44,0xb5};
+    0x3f,0xe8,0x84,0x00,0x4f,0x46,0x07,0xce,0xf0,0xc3,0x57,0xdf,0x10,0x7f,0xc8,0x27,0xc9,0xc9,0x2c,0xa5,0xbc,0x33,0x86,0xa6,0x99,0x57,0x34,0x27,0x07,0xda,0x42,0x44};
   Check(d::CanonicalDiagnosticCodeSourceSha256()==expected_source,"Core source provenance differs");
   std::cout<<"canonical_diagnostic_catalog rows="<<catalog.size<<" checks="<<checks
            <<" failures="<<failures<<'\n';
