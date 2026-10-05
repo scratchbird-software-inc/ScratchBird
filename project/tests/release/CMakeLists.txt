@@ -317,6 +317,25 @@ if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
   target_sources(sbsql_sblr_alignment_native_management_control_bundle PRIVATE
     "${PROJECT_SOURCE_DIR}/src/server/database_ownership.cpp")
   target_compile_definitions(sbsql_sblr_alignment_native_management_control_bundle PRIVATE SB_NATIVE_ROUTE_SOURCE_TESTS=1)
+  foreach(profile RANGE 0 4)
+    math(EXPR secondary "(${profile}+1)%5")
+    foreach(fault RANGE 1 4)
+      add_test(NAME native_catalog_roots_creator_refusal_${profile}_${fault}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --catalog-distinct-roots-memory 0 ${profile} ${secondary} ${fault})
+      set_tests_properties(native_catalog_roots_creator_refusal_${profile}_${fault}_gate PROPERTIES
+        TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;catalog_metadata;fault_injection;not_runtime_acceptance")
+    endforeach()
+  endforeach()
+  foreach(via_route RANGE 0 1)
+    foreach(primary RANGE 0 4)
+      foreach(secondary RANGE 0 4)
+        add_test(NAME native_catalog_distinct_roots_memory_${via_route}_${primary}_${secondary}_gate
+          COMMAND sbsql_sblr_alignment_native_management_control_bundle --catalog-distinct-roots-memory ${via_route} ${primary} ${secondary})
+        set_tests_properties(native_catalog_distinct_roots_memory_${via_route}_${primary}_${secondary}_gate PROPERTIES
+          TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;catalog_metadata;owned_device_lifetime;not_runtime_acceptance")
+      endforeach()
+    endforeach()
+  endforeach()
   foreach(via_route RANGE 0 1)
     foreach(profile RANGE 0 4)
       add_test(NAME native_catalog_populated_owned_memory_${via_route}_${profile}_gate
