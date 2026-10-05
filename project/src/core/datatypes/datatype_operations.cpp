@@ -3161,10 +3161,14 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
         ? DatatypeCastCategory::identity
         : DatatypeCastCategory::forbidden;
   }
-  // Core defines these types' value bytes but has not registered any complete
-  // non-NULL cast pair, including identity. Contextual base.null binding is
-  // admitted above; all other INT16/UINT16/INT32/UINT32/INT64/UINT64 routes
-  // remain fail-closed.
+  // INT64 has an exact canonical LE8 identity operation. Core has not admitted
+  // any cross-type PRESENT pair involving INT64, or any complete PRESENT cast
+  // pair involving the other fixed-width types below. Contextual base.null
+  // binding was admitted above.
+  if (source_type_id == CanonicalTypeId::int64 &&
+      target_type_id == CanonicalTypeId::int64) {
+    return DatatypeCastCategory::identity;
+  }
   if (source_type_id == CanonicalTypeId::int16 ||
       target_type_id == CanonicalTypeId::int16 ||
       source_type_id == CanonicalTypeId::uint16 ||
@@ -3529,6 +3533,10 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
       (IsCanonical128Integer(request.value.type_id) ||
        IsReal128(request.value.type_id)) &&
       request.target_type_id == request.value.type_id;
+  const bool canonical_int64_present_identity =
+      !request.value.is_null &&
+      request.value.type_id == CanonicalTypeId::int64 &&
+      request.target_type_id == CanonicalTypeId::int64;
   const bool typed_null_identity_descriptor_matches =
       request.value.type_id == CanonicalTypeId::binary
           ? ExecutionDescriptorEqualsIgnoringNullability(
@@ -3856,6 +3864,32 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
         result_is_null
             ? "decimal_float_cross_type_typed_null_cast_policy_unresolved"
             : "decimal_float_present_cast_policy_unresolved");
+  }
+  if (canonical_int64_present_identity) {
+    const bool source_descriptor_present =
+        ExecutionDescriptorPresent(request.value.descriptor);
+    const bool target_descriptor_present =
+        ExecutionDescriptorPresent(request.target_descriptor);
+    if ((source_descriptor_present && target_descriptor_present &&
+         !ExecutionDescriptorEquals(request.value.descriptor,
+                                    request.target_descriptor)) ||
+        (source_descriptor_present != target_descriptor_present &&
+         (DescriptorHasDomainBinding(request.value.descriptor) ||
+          DescriptorHasDomainBinding(request.target_descriptor)))) {
+      return CastFailure("int64_identity_descriptor_mismatch",
+                         DatatypeCastCategory::forbidden,
+                         "DATATYPE.DESCRIPTOR.INVALID");
+    }
+    DatatypeCastResult identity;
+    identity.status = OkStatus();
+    identity.category = DatatypeCastCategory::identity;
+    identity.value = request.value;
+    if (target_descriptor_present) {
+      identity.value.descriptor = request.target_descriptor;
+    }
+    identity.diagnostic = MakeDatatypeOperationDiagnostic(
+        identity.status, "SB_DATATYPE_OK", "datatype.ok");
+    return identity;
   }
   if (canonical_128_present_identity) {
     if (!ExecutionDescriptorEquals(request.value.descriptor,
