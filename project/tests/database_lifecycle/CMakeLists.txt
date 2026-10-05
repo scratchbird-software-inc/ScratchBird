@@ -728,6 +728,12 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   add_executable(cdp_native_bulk_ingest_api_gate
     cdp_native_bulk_ingest_api_gate.cpp
   )
+  add_executable(dml_ingestion_lifetime_conformance dml_ingestion_lifetime_conformance.cpp)
+  target_compile_features(dml_ingestion_lifetime_conformance PRIVATE cxx_std_20)
+  target_link_libraries(dml_ingestion_lifetime_conformance PRIVATE sb_engine_internal_api)
+  add_test(NAME dml_ingestion_lifetime_conformance COMMAND dml_ingestion_lifetime_conformance)
+  set_tests_properties(dml_ingestion_lifetime_conformance PROPERTIES
+    TIMEOUT 30 LABELS "database_lifecycle;dml_ingestion;worker_lifetime;concurrency")
   target_compile_features(cdp_native_bulk_ingest_api_gate PRIVATE cxx_std_20)
   target_link_libraries(cdp_native_bulk_ingest_api_gate
     PRIVATE

@@ -8174,6 +8174,9 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
            return rows_appended;
          }});
   };
+  // Follow all callback captures: the earlier preallocation pipeline would
+  // otherwise join after their destruction on early return/exception unwind.
+  DmlIngestionWriteScope ingestion_write_scope(ingestion_pipeline);
 	  if (!ingestion_pipeline.EnqueueWrite(
 	          {"physical_cow_write",
 	           static_cast<EngineApiU64>(staged_rows.size()),
