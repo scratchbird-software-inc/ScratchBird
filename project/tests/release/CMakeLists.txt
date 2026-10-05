@@ -338,6 +338,10 @@ if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
       COMMAND sbsql_sblr_alignment_native_management_control_bundle --guarded-snapshot-observation ${primary})
     set_tests_properties(native_guarded_snapshot_observation_${primary}_gate PROPERTIES
       TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;snapshot;revocation;not_runtime_acceptance")
+    add_test(NAME native_guarded_visibility_observation_${primary}_gate
+      COMMAND sbsql_sblr_alignment_native_management_control_bundle --guarded-visibility-observation ${primary})
+    set_tests_properties(native_guarded_visibility_observation_${primary}_gate PROPERTIES
+      TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;mga_visibility;not_runtime_acceptance")
     math(EXPR secondary "(${primary}+1)%5")
     foreach(scenario RANGE 7 9)
       if(scenario EQUAL 9)

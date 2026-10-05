@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "row_version.hpp"
+#include "row_version_observation.hpp"
 
 #include <algorithm>
 #include <utility>
@@ -25,17 +26,8 @@ Status RowVersionOkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::transaction_mga};
 }
 
-Status RowVersionWarningStatus() {
-  return {StatusCode::platform_required_feature_missing, Severity::warning, Subsystem::transaction_mga};
-}
-
 Status RowVersionErrorStatus() {
   return {StatusCode::platform_required_feature_missing, Severity::error, Subsystem::transaction_mga};
-}
-
-bool IsReaderOwnVersion(const RowVersionMetadata& metadata, const VisibilitySnapshot& snapshot) {
-  return snapshot.reader_transaction.valid() &&
-         metadata.identity.creator_transaction.local_id.value == snapshot.reader_transaction.value;
 }
 
 bool TypedUuidMatches(const TypedUuid& left, const TypedUuid& right) {
@@ -107,27 +99,8 @@ RowIdentityResult MakeRowIdentity(TypedUuid row_uuid) {
 }
 
 RowIdentityResult ValidateRowIdentity(const RowIdentity& identity) {
-  RowIdentityResult result;
-  result.status = RowVersionOkStatus();
-  result.identity = identity;
-
-  if (identity.row_uuid.kind != UuidKind::row || !identity.row_uuid.valid()) {
-    result.status = RowVersionErrorStatus();
-    result.diagnostic = MakeRowVersionDiagnostic(result.status,
-                                                 "SB-ROW-INVALID-ROW-UUID-KIND",
-                                                 "row_version.invalid_row_uuid_kind");
-    return result;
-  }
-
-  if (!scratchbird::core::uuid::IsEngineIdentityUuid(identity.row_uuid.value)) {
-    result.status = RowVersionErrorStatus();
-    result.diagnostic = MakeRowVersionDiagnostic(result.status,
-                                                 "SB-ROW-ROW-UUID-MUST-BE-V7",
-                                                 "row_version.row_uuid_must_be_v7");
-    return result;
-  }
-
-  return result;
+  const auto observed = ObserveRowIdentity(identity);
+  return {observed.status, identity, MaterializeMgaObservationDiagnostic(observed)};
 }
 
 RowVersionIdentityResult MakeRowVersionIdentity(RowIdentity row,
@@ -143,224 +116,27 @@ RowVersionIdentityResult MakeRowVersionIdentity(RowIdentity row,
 }
 
 RowVersionIdentityResult ValidateRowVersionIdentity(const RowVersionIdentity& identity) {
-  RowVersionIdentityResult result;
-  result.status = RowVersionOkStatus();
-  result.identity = identity;
-  if (!scratchbird::core::uuid::IsEngineIdentityUuid(identity.version_uuid) ||
-      identity.version_uuid == identity.row.row_uuid.value) {
-    result.status = RowVersionErrorStatus();
-    result.diagnostic = MakeRowVersionDiagnostic(result.status, "CATALOG.INVALID_INPUT",
-        "row_version.invalid_version_uuid");
-    return result;
-  }
-
-  RowIdentityResult row_result = ValidateRowIdentity(identity.row);
-  if (!row_result.ok()) {
-    result.status = row_result.status;
-    result.diagnostic = row_result.diagnostic;
-    return result;
-  }
-
-  TransactionIdentityResult transaction_result = ValidateTransactionIdentity(identity.creator_transaction);
-  if (!transaction_result.ok()) {
-    result.status = transaction_result.status;
-    result.diagnostic = transaction_result.diagnostic;
-    return result;
-  }
-
-  if (identity.version_sequence == kInvalidRowVersionSequence) {
-    result.status = RowVersionErrorStatus();
-    result.diagnostic = MakeRowVersionDiagnostic(result.status,
-                                                 "SB-ROW-INVALID-VERSION-SEQUENCE",
-                                                 "row_version.invalid_version_sequence");
-    return result;
-  }
-
-  return result;
+  const auto observed = ObserveRowVersionIdentity(identity);
+  return {observed.status, identity, MaterializeMgaObservationDiagnostic(observed)};
 }
 
 RowVersionMetadataResult ValidateRowVersionMetadata(const RowVersionMetadata& metadata) {
-  RowVersionMetadataResult result;
-  result.status = RowVersionOkStatus();
-  result.metadata = metadata;
-
-  RowVersionIdentityResult identity_result = ValidateRowVersionIdentity(metadata.identity);
-  if (!identity_result.ok()) {
-    result.status = identity_result.status;
-    result.diagnostic = identity_result.diagnostic;
-    return result;
-  }
-
-  if (metadata.state == RowVersionState::unknown) {
-    result.status = RowVersionErrorStatus();
-    result.diagnostic = MakeRowVersionDiagnostic(result.status,
-                                                 "SB-ROW-UNKNOWN-VERSION-STATE",
-                                                 "row_version.unknown_version_state");
-    return result;
-  }
-
-  if (metadata.creator_transaction_state == TransactionState::none ||
-      metadata.creator_transaction_state == TransactionState::archived) {
-    result.status = RowVersionErrorStatus();
-    result.diagnostic = MakeRowVersionDiagnostic(result.status,
-                                                 "SB-ROW-UNKNOWN-CREATOR-TRANSACTION-STATE",
-                                                 "row_version.unknown_creator_transaction_state");
-    return result;
-  }
-
-  if (!metadata.payload_present && metadata.state != RowVersionState::delete_marker &&
-      metadata.state != RowVersionState::rolled_back) {
-    result.status = RowVersionErrorStatus();
-    result.diagnostic = MakeRowVersionDiagnostic(result.status,
-                                                 "SB-ROW-MISSING-VERSION-PAYLOAD",
-                                                 "row_version.missing_version_payload",
-                                                 RowVersionStateName(metadata.state));
-    return result;
-  }
-
-  if (metadata.chain.has_previous() &&
-      metadata.chain.previous_version_sequence >= metadata.identity.version_sequence) {
-    result.status = RowVersionErrorStatus();
-    result.diagnostic = MakeRowVersionDiagnostic(result.status,
-                                                 "SB-ROW-INVALID-PREVIOUS-VERSION-LINK",
-                                                 "row_version.invalid_previous_version_link");
-    return result;
-  }
-
-  if (metadata.chain.has_next() &&
-      metadata.chain.next_version_sequence <= metadata.identity.version_sequence) {
-    result.status = RowVersionErrorStatus();
-    result.diagnostic = MakeRowVersionDiagnostic(result.status,
-                                                 "SB-ROW-INVALID-NEXT-VERSION-LINK",
-                                                 "row_version.invalid_next_version_link");
-    return result;
-  }
-
-  return result;
+  const auto observed = ObserveRowVersionMetadata(metadata);
+  return {observed.status, metadata, MaterializeMgaObservationDiagnostic(observed)};
 }
-
-namespace {
-VisibilityResult EvaluateVisibilityImpl(const RowVersionMetadata& metadata,
-                                       const VisibilitySnapshot& snapshot,
-                                       bool evaluate_delete_effect) {
-  VisibilityResult result;
-  result.status = RowVersionOkStatus();
-
-  RowVersionMetadataResult metadata_result = ValidateRowVersionMetadata(metadata);
-  if (!metadata_result.ok()) {
-    result.status = metadata_result.status;
-    result.decision = VisibilityDecision::unknown;
-    result.diagnostic = metadata_result.diagnostic;
-    return result;
-  }
-
-  auto state = metadata.state;
-  if (evaluate_delete_effect && state == RowVersionState::delete_marker) {
-    switch (metadata.creator_transaction_state) {
-      case TransactionState::committed: state = RowVersionState::committed; break;
-      case TransactionState::rolled_back:
-      case TransactionState::failed_terminal: state = RowVersionState::rolled_back; break;
-      case TransactionState::prepared: state = RowVersionState::prepared; break;
-      case TransactionState::limbo: state = RowVersionState::limbo; break;
-      case TransactionState::recovering: state = RowVersionState::recovery_required; break;
-      case TransactionState::created:
-      case TransactionState::active:
-      case TransactionState::preparing:
-      case TransactionState::committing:
-      case TransactionState::rolling_back:
-      case TransactionState::read_only_active: state = RowVersionState::uncommitted; break;
-      default:
-        result.status = RowVersionErrorStatus();
-        result.decision = VisibilityDecision::unknown;
-        result.diagnostic = MakeRowVersionDiagnostic(result.status,
-            "SB-ROW-UNKNOWN-CREATOR-TRANSACTION-STATE", "row_version.unknown_creator_transaction_state");
-        return result;
-    }
-  }
-  if (state == RowVersionState::recovery_required || state == RowVersionState::limbo) {
-    result.status = RowVersionWarningStatus();
-    result.decision = VisibilityDecision::requires_recovery;
-    result.diagnostic = MakeRowVersionDiagnostic(result.status,
-                                                 "SB-ROW-VISIBILITY-REQUIRES-RECOVERY",
-                                                 "row_version.visibility_requires_recovery",
-                                                 RowVersionStateName(metadata.state));
-    return result;
-  }
-
-  if (state == RowVersionState::prepared || state == RowVersionState::uncommitted) {
-    if (snapshot.allow_reader_own_uncommitted && IsReaderOwnVersion(metadata, snapshot)) {
-      result.decision = VisibilityDecision::visible;
-      return result;
-    }
-
-    result.status = RowVersionWarningStatus();
-    result.decision = VisibilityDecision::wait_for_transaction;
-    result.diagnostic = MakeRowVersionDiagnostic(result.status,
-                                                 "SB-ROW-VISIBILITY-WAITS-FOR-TRANSACTION",
-                                                 "row_version.visibility_waits_for_transaction",
-                                                 RowVersionStateName(metadata.state));
-    return result;
-  }
-
-  if (state == RowVersionState::rolled_back || state == RowVersionState::delete_marker) {
-    result.decision = VisibilityDecision::invisible;
-    return result;
-  }
-
-  if (!(state == RowVersionState::committed &&
-        metadata.creator_transaction_state == TransactionState::committed)) {
-    result.status = RowVersionWarningStatus();
-    result.decision = VisibilityDecision::wait_for_transaction;
-    result.diagnostic = MakeRowVersionDiagnostic(result.status,
-                                                 "SB-ROW-CREATOR-NOT-COMMITTED",
-                                                 "row_version.creator_not_committed",
-                                                 TransactionStateName(metadata.creator_transaction_state));
-    return result;
-  }
-
-  if ((snapshot.visible_through_local_transaction_id_is_boundary ||
-       snapshot.visible_through_local_transaction_id != kInvalidLocalTransactionId) &&
-      metadata.identity.creator_transaction.local_id.value > snapshot.visible_through_local_transaction_id) {
-    result.decision = VisibilityDecision::invisible;
-    return result;
-  }
-
-  const auto creator = metadata.identity.creator_transaction.local_id.value;
-  if (snapshot.visible_through_commit_sequence_is_boundary) {
-    if (metadata.creator_commit_sequence == 0) {
-      result.status = RowVersionErrorStatus();
-      result.decision = VisibilityDecision::unknown;
-      result.diagnostic = MakeRowVersionDiagnostic(result.status,
-          "CATALOG.INVALID_INPUT", "row_version.creator_commit_sequence_missing");
-      return result;
-    }
-    if (metadata.creator_commit_sequence > snapshot.visible_through_commit_sequence) {
-      result.decision = VisibilityDecision::invisible;
-      return result;
-    }
-  }
-  const auto excluded = [creator](const auto& values) {
-    return std::find(values.begin(), values.end(), creator) != values.end();
-  };
-  if (excluded(snapshot.active_excluded_local_transaction_ids) ||
-      excluded(snapshot.in_doubt_excluded_local_transaction_ids)) {
-    result.decision = VisibilityDecision::invisible;
-    return result;
-  }
-
-  result.decision = VisibilityDecision::visible;
-  return result;
-}
-}  // namespace
 
 VisibilityResult EvaluateVisibility(const RowVersionMetadata& metadata,
                                     const VisibilitySnapshot& snapshot) {
-  return EvaluateVisibilityImpl(metadata, snapshot, false);
+  const auto observed = ObserveVisibility(metadata, BorrowVisibilitySnapshot(snapshot));
+  return {observed.outcome.status, observed.decision,
+          MaterializeMgaObservationDiagnostic(observed.outcome)};
 }
 
 VisibilityResult EvaluateVersionEffectVisibility(const RowVersionMetadata& metadata,
                                                 const VisibilitySnapshot& snapshot) {
-  return EvaluateVisibilityImpl(metadata, snapshot, true);
+  const auto observed = ObserveVersionEffectVisibility(metadata, BorrowVisibilitySnapshot(snapshot));
+  return {observed.outcome.status, observed.decision,
+          MaterializeMgaObservationDiagnostic(observed.outcome)};
 }
 
 HotStableRowHeadDecisionResult EvaluateHotStableRowHeadDecision(

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "transaction_state.hpp"
+#include "transaction_identity_observation.hpp"
 
 #include <array>
 #include <utility>
@@ -232,43 +233,8 @@ TransactionIdentityResult MakeTransactionIdentity(LocalTransactionId local_id,
 }
 
 TransactionIdentityResult ValidateTransactionIdentity(const TransactionIdentity& identity) {
-  TransactionIdentityResult result;
-  result.status = TransactionOkStatus();
-  result.identity = identity;
-
-  if (!identity.local_id.valid()) {
-    result.status = TransactionErrorStatus();
-    result.diagnostic = MakeTransactionDiagnostic(result.status,
-                                                  "SB-TXN-INVALID-LOCAL-TRANSACTION-ID",
-                                                  "transaction.invalid_local_transaction_id");
-    return result;
-  }
-
-  if (identity.transaction_uuid.kind != UuidKind::transaction || !identity.transaction_uuid.valid()) {
-    result.status = TransactionErrorStatus();
-    result.diagnostic = MakeTransactionDiagnostic(result.status,
-                                                  "SB-TXN-INVALID-TRANSACTION-UUID-KIND",
-                                                  "transaction.invalid_transaction_uuid_kind");
-    return result;
-  }
-
-  if (!scratchbird::core::uuid::IsEngineIdentityUuid(identity.transaction_uuid.value)) {
-    result.status = TransactionErrorStatus();
-    result.diagnostic = MakeTransactionDiagnostic(result.status,
-                                                  "SB-TXN-UUID-MUST-BE-V7",
-                                                  "transaction.transaction_uuid_must_be_v7");
-    return result;
-  }
-
-  if (identity.scope == TransactionScope::unknown) {
-    result.status = TransactionErrorStatus();
-    result.diagnostic = MakeTransactionDiagnostic(result.status,
-                                                  "SB-TXN-UNKNOWN-TRANSACTION-SCOPE",
-                                                  "transaction.unknown_transaction_scope");
-    return result;
-  }
-
-  return result;
+  const auto observed = ObserveTransactionIdentity(identity);
+  return {observed.status, identity, MaterializeMgaObservationDiagnostic(observed)};
 }
 
 TransactionTransitionResult CheckTransactionStateTransition(TransactionState from,

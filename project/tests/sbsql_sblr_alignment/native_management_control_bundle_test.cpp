@@ -17,6 +17,7 @@
 #include "native_catalog_leaf_lease_reader.hpp"
 #include "native_catalog_roots_lease_reader.hpp"
 #include "native_catalog_relation_lease_reader.hpp"
+#include "row_version_observation.hpp"
 #ifdef SB_NATIVE_ROUTE_SOURCE_TESTS
 #include "../../src/server/database_ownership.hpp"
 #endif
@@ -1572,6 +1573,7 @@ void RepeatedDirectoryHistory(unsigned profile,int only_size=-1){for(unsigned si
 }}
 
 #include "native_catalog_relation_memory_checks.hpp"
+#include "native_catalog_visibility_memory_checks.hpp"
 void DirectoryGuardedBtree(unsigned primary,unsigned secondary){
  // Actual non-serving storage fixture, not allocation or catalog publication.
  DirectoryHistoryFixture f(primary,secondary,false,2,false,false,true,false);
@@ -4140,6 +4142,10 @@ int main(int argc,char** argv){
    const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"control graph Close profile");DirectoryControlClose(profile);return 0;
  }
 
+ if(argc==3&&std::string_view(argv[1])=="--guarded-visibility-observation"){
+  const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"guarded visibility profile");
+  DirectoryGuardedVisibilityObservation(profile);std::cout<<"PASS guarded visibility observation checks="<<checks<<'\n';return 0;
+ }
  if(argc==3&&std::string_view(argv[1])=="--guarded-snapshot-observation"){
   const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"guarded snapshot profile");
   DirectoryGuardedSnapshotObservation(profile);std::cout<<"PASS guarded snapshot observation checks="<<checks<<'\n';return 0;
