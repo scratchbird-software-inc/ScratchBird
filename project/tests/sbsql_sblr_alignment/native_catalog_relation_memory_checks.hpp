@@ -70,9 +70,10 @@ void DirectoryGuardedSnapshotObservation(unsigned primary){
  Check(moved.Observe().error==E::unknown&&!moved.Observe().descriptor,"released pin loses observation");
  source_memory.memory={};source_memory.Empty();
 }
-void DirectoryCatalogRelationMemory(unsigned primary,unsigned secondary,bool indexed,unsigned fault=0){
+#include "native_catalog_visibility_selection_checks.hpp"
+void DirectoryCatalogRelationMemory(unsigned primary,unsigned secondary,bool indexed,unsigned fault=0,bool visibility=false){
  using E=db::NativeCatalogRelationLeaseError;
- const bool refusal=fault>=1&&fault<=6,empty=fault==9,known_outcome=fault==7||fault==8;
+ const bool refusal=fault>=1&&fault<=6,empty=fault==9,known_outcome=fault==7||fault==8||fault==17||fault==18||fault==23||fault==24;
  const unsigned expected_rows=empty?0:indexed?4:2;
  DirectoryHistoryFixture f(primary,secondary,false,2,false,false,true,false);
  auto& storage=f.t.fixture;auto cp=*db::DecodeNativeCheckpointRoot(f.t.base_cp).root;
@@ -116,14 +117,67 @@ void DirectoryCatalogRelationMemory(unsigned primary,unsigned secondary,bool ind
   auto bad=owned_source_memory::PopulatedLeaf(second_page,missing,2);Check(bad.ok(),"well-framed unresolved hidden creator");
   auto mixed=*second.page;mixed.body.rows[1]=bad.page->body.rows[1];second=db::EncodeNativeCatalogLeaf(mixed);
   Check(second.ok(),"only unindexed row carries missing creator");}
+ const auto localize=[&](db::NativeCatalogLeafPage& leaf,bool successor){namespace catalog=scratchbird::core::catalog;
+  auto& row=leaf.body.rows[0];auto decoded=catalog::DecodeCatalogMetadataVersion(row.cells[0].value.payload);Check(decoded.ok(),"common metadata before resident name");
+  auto m=decoded.record;const bool entry=fault>=21;
+  m.record.header.kind=catalog::CatalogRecordKind::localized_name;m.object_subtype=entry?"name_entry":"name_vector";
+  m.record.header.parent_uuid={UuidKind::object,Id(63910)};m.security_policy_uuid={UuidKind::object,Id(63911)};
+  m.default_name_uuid=entry?m.record.header.object_uuid:TypedUuid{UuidKind::object,Id(63912)};
+  m.name_vector_uuid=entry?m.record.header.parent_uuid:m.record.header.object_uuid;
+  if(entry)m.resource_epoch=1;
+  catalog::CatalogNamePayload payload;
+  if(entry){catalog::CatalogNameEntry e;e.name_entry_uuid=m.record.header.object_uuid;e.name_vector_uuid=m.name_vector_uuid;
+    e.object_uuid={UuidKind::object,Id(63913)};e.object_class="table";e.scope_uuid={UuidKind::object,Id(63914)};
+    e.parent_schema_uuid=m.owning_schema_uuid;e.language_tag="fr-CA";e.dialect_profile_uuid={UuidKind::object,Id(63915)};
+    e.identifier_profile_uuid={UuidKind::object,Id(63916)};e.raw_name_text=e.display_name=successor?"renamed":"original";
+    e.catalog_generation_id=m.catalog_generation;e.created_transaction_uuid=creator.transaction_uuid;
+    if(successor&&fault==22)e.created_transaction_uuid={UuidKind::transaction,Id(63917)};
+    e.security_policy_uuid=m.security_policy_uuid;e.resource_epoch=m.resource_epoch;e.name_resolution_epoch=successor?2:1;
+    e.lifecycle_state=catalog::CatalogNameLifecycle::active;payload=e;
+  }else{catalog::CatalogNameVector v;v.name_vector_uuid=m.name_vector_uuid;v.object_uuid=m.record.header.parent_uuid;
+    v.object_class=successor&&fault==20?"view":"table";v.owning_schema_uuid=m.owning_schema_uuid;
+    v.default_language_tag=successor?"de-DE":"fr-CA";v.default_name_entry_uuid=m.default_name_uuid;
+    v.name_collision_policy_uuid={UuidKind::object,Id(63918)};v.catalog_generation_id=m.catalog_generation;
+    v.security_policy_uuid=m.security_policy_uuid;v.lifecycle_state=catalog::CatalogNameLifecycle::active;payload=v;}
+  catalog::CatalogNameVersionBinding b{{UuidKind::database,leaf.header.database_uuid},{UuidKind::filespace,leaf.header.filespace_uuid},
+    row.row_uuid,{UuidKind::row,row.version_uuid},m.record.header.object_uuid,row.transaction_uuid,leaf.body.page_number,row.stable_slot_id,
+    row.storage_generation,row.row_version,row.local_transaction_id,m.catalog_generation};
+  const auto envelope=catalog::EncodeCatalogNameEnvelope({b,payload});Check(envelope.ok(),"canonical fully bound resident name envelope");
+  m.record.payload.assign(envelope.bytes.begin(),envelope.bytes.end());const auto encoded=catalog::EncodeCatalogMetadataVersion(m);
+  Check(encoded.ok(),"common metadata binds complete resident name payload");row.cells[0].value.payload=encoded.bytes;
+ };
+ if(fault>=19&&fault<=22){auto initial=*first.page;localize(initial,false);first=db::EncodeNativeCatalogLeaf(initial);
+  Check(first.ok(),"complete original resident name leaf");f.Write(first.bytes);}
+ if(fault>=10&&fault<=22){namespace catalog=scratchbird::core::catalog;
+  auto amended=*second.page;auto& row=amended.body.rows[0];const auto& original=first.page->body.rows[0];
+  auto decoded=catalog::DecodeCatalogMetadataVersion(original.cells[0].value.payload);Check(decoded.ok(),"original complete chain metadata");auto metadata=decoded.record;
+  row.row_uuid=original.row_uuid;row.row_version=2;row.previous_row_version=1;row.previous_version_uuid=original.version_uuid;
+  metadata.definition_version=2;
+  if(fault==11)metadata.definition_version=3;
+  if(fault==12)row.previous_version_uuid=Id(63900);
+  if(fault==13){row.row_uuid={UuidKind::row,Id(63901)};row.row_version=1;row.previous_row_version=0;row.previous_version_uuid={};metadata.definition_version=1;}
+  if(fault==14)metadata.record.header.object_uuid.value=Id(63902);
+  if(fault==15){row.row_uuid={UuidKind::row,Id(63903)};metadata.record.header.object_uuid.value=Id(63904);}
+  if(fault==16){metadata.record.header.deleted=true;metadata.lifecycle=catalog::CatalogObjectLifecycle::dropped;
+    metadata.status=catalog::CatalogObjectStatus::retired;metadata.retired_transaction_uuid=creator.transaction_uuid;}
+  if(fault==17||fault==18){row.transaction_uuid=row_creator.transaction_uuid;row.local_transaction_id=row_creator.local_id.value;
+    metadata.creator_transaction_uuid=row_creator.transaction_uuid;metadata.creator_local_transaction_id=row_creator.local_id.value;}
+  if(fault==17){row.row_version=10;row.previous_row_version=9;row.previous_version_uuid=Id(63905);metadata.definition_version=10;}
+  metadata.record.header.row_uuid=row.row_uuid;
+  const auto encoded=catalog::EncodeCatalogMetadataVersion(metadata);Check(encoded.ok(),"well-formed chain variant metadata");row.cells[0].value.payload=encoded.bytes;
+  if(fault>=19)localize(amended,true);
+  second=db::EncodeNativeCatalogLeaf(amended);Check(second.ok(),"well-formed cross-page version chain fixture");
+ }
  page::NativeBtreePage tree;
  tree.header={q.page_size_bytes,0x200,Id(1),f.t.other,Id(62002),248,1,0,q.uuid};
  tree.dependencies={Id(62003),1,1,Id(62004),Id(62005),Id(62006),{}};tree.dependencies.dependency_map_sha256.fill(39);
- tree.creator_transaction_uuid=row_creator.transaction_uuid.value;tree.creator_local_transaction_id=row_creator.local_id.value;
+ const auto navigation_creator=fault>=10?creator:row_creator;
+ tree.creator_transaction_uuid=navigation_creator.transaction_uuid.value;tree.creator_local_transaction_id=navigation_creator.local_id.value;
  tree.maintenance_state=1;
  // Two different keys share each first row. The second row on each page is
  // deliberately unindexed but must still be checked against actual inventory.
- for(unsigned i=0;!empty&&i<4;++i){const auto& row=(i<2?first:second).page->body.rows.front();
+ for(unsigned i=0;!empty&&i<4;++i){const auto& rows=(i<2?first:second).page->body.rows;
+  const auto& row=i>=2&&fault>=23?rows.back():rows.front();
   tree.cells.push_back({{{static_cast<byte>(i+1)},row.row_uuid.value,row.version_uuid},i==3,{},
     i<2?original_head.page:Self(second.page->header)});}
  if(fault==3)tree.cells.back().key.row_uuid=Id(62090);
@@ -163,6 +217,7 @@ void DirectoryCatalogRelationMemory(unsigned primary,unsigned secondary,bool ind
  auto oracle=db::ReadNativeCheckpointCatalogRelationFromOpenDevices(Id(1),storage.devices,checkpoint_ref,2,1,binding,allowance);
  Check(oracle.ok()==!refusal,"independent owning relation reader agrees on fixture validity");
  const db::NativeCatalogRelationMemoryLimits limits{d::kCanonicalFilespacePageProfiles.back().uuid,3,2,empty?0u:4u,empty?0u:4u,{1,q.page_size_bytes}};
+ if(visibility){CheckCatalogVisibilitySelection(f,checkpoint_ref,binding,limits,allowance,fault);return;}
  const auto bytes=db::NativeCatalogRelationWorkspaceBytes(limits);
  checkpoint_inventory_memory::Grant memory(bytes),source_memory(32*1024*1024);
  if(!refusal){
