@@ -67,6 +67,7 @@ constexpr std::array<byte, 8> kSecurityBatchMagic = {
 constexpr u16 kSecurityBatchMajor = 1;
 constexpr u16 kLegacySecurityBatchMinor = 0;
 constexpr u16 kCurrentSecurityBatchMinor = 1;
+constexpr u16 kDerivedCacheSecurityBatchMinor = 2;
 constexpr std::size_t kLegacySecurityBatchFixedBytes = 140;
 constexpr std::size_t kCurrentSecurityBatchFixedBytes =
     kDatabaseLocalSecurityBatchEnvelopeBytesV1;
@@ -718,7 +719,7 @@ bool ValidateLifecycleBatchInternal(
           std::numeric_limits<u64>::max() ||
       batch.successor_security_context_generation !=
           batch.prior_security_context_generation + 1 ||
-      batch.events.size() != 4) {
+      (batch.events.size() != 4 && batch.events.size() != 3)) {
     return RefuseBatch(refusal, "batch_identity_or_generation_invalid");
   }
   const auto actor = core_uuid::MakeDurableEngineIdentityUuid(
@@ -728,7 +729,31 @@ bool ValidateLifecycleBatchInternal(
   }
 
   const auto authority_parts = sec_event::Decode(batch.events[0]);
-  if (authority_parts.size() < 2 ||
+  const bool derived_cache = batch.events.size() == 3;
+  u64 event_generation = batch.successor_security_context_generation;
+  if (derived_cache) {
+    u64 creator = 0;
+    if (authority_parts.size() != 9 || authority_parts[1] != "DEFINER_CACHE" ||
+        !ParseExactU64(authority_parts[2], &creator) || creator != batch.creator_local_transaction_id ||
+        !ParseExactU64(authority_parts[8], &event_generation) || event_generation == 0 ||
+        event_generation > batch.prior_security_context_generation ||
+        authority_parts[6].empty() || authority_parts[7] != "allow" ||
+        !core_uuid::MakeDurableEngineIdentityUuid(UuidKind::principal, authority_parts.identity(4)).ok() ||
+        !core_uuid::MakeDurableEngineIdentityUuid(UuidKind::object, authority_parts.identity(5)).ok()) {
+      return RefuseBatch(refusal, "derived_cache_event_invalid");
+    }
+    // Identity material stays binary, with exact fixed-width UUID framing.
+    const auto definer = authority_parts.identity(4);
+    const auto target = authority_parts.identity(5);
+    std::string key_material(reinterpret_cast<const char*>(definer.bytes.data()), definer.bytes.size());
+    key_material.append(reinterpret_cast<const char*>(target.bytes.data()), target.bytes.size());
+    key_material += authority_parts[6] + "|" + std::to_string(event_generation);
+    const auto key_digest = core_hash::ComputeSha256Digest(
+        reinterpret_cast<const byte*>(key_material.data()), key_material.size());
+    if (!key_digest.ok() || authority_parts[3] !=
+        "definer-cache:v1:sha256:" + core_hash::HexLower(key_digest.digest))
+      return RefuseBatch(refusal, "derived_cache_key_binding_invalid");
+  } else if (authority_parts.size() < 2 ||
       !IsAuthorityLifecycleKind(authority_parts[1]) ||
       !ValidateLifecycleLine(
           batch.events[0], authority_parts[1],
@@ -743,20 +768,33 @@ bool ValidateLifecycleBatchInternal(
   sec_event::Parts audit_parts;
   if (!ValidateLifecycleLine(
           batch.events[1], "AUDIT", batch.creator_local_transaction_id,
-          batch.successor_security_context_generation, &audit_parts) ||
+          event_generation, &audit_parts) ||
       audit_parts.identity(5) != batch.actor_principal_uuid || audit_parts[7] != "success") {
     return RefuseBatch(refusal, "audit_event_invalid");
   }
-  if (!ValidateLifecycleLine(
+  if (derived_cache) {
+    constexpr std::string_view operation = "security.definer_rights_cache.prime";
+    constexpr char hex[] = "0123456789abcdef";
+    std::string encoded_operation;
+    for (const unsigned char c : operation) {
+      encoded_operation.push_back(hex[c >> 4]);
+      encoded_operation.push_back(hex[c & 15]);
+    }
+    if (audit_parts[4] != encoded_operation ||
+        audit_parts.identity(6) != authority_parts.identity(5) ||
+        audit_parts.identity(10) != authority_parts.identity(4) ||
+        audit_parts[11] != "definer_uuid")
+      return RefuseBatch(refusal, "derived_cache_audit_binding_invalid");
+  } else if (!ValidateLifecycleLine(
           batch.events[2], "CACHE_INVALIDATE",
           batch.creator_local_transaction_id,
           batch.successor_security_context_generation, nullptr)) {
     return RefuseBatch(refusal, "cache_invalidation_event_invalid");
   }
-  const auto successor_parts = sec_event::Decode(batch.events[3]);
+  const auto successor_parts = sec_event::Decode(batch.events.back());
   u64 successor_tx = 0;
   u64 successor_generation = 0;
-  const std::string unsealed = sec_event::Frame(batch.events, 3);
+  const std::string unsealed = sec_event::Frame(batch.events, batch.events.size() - 1);
   const auto digest = core_hash::ComputeSha256Digest(
       reinterpret_cast<const byte*>(unsealed.data()), unsealed.size());
   if (!digest.ok() ||
@@ -1142,7 +1180,8 @@ std::vector<byte> EncodeDatabaseLocalSecurityBatchEnvelopeV1(
   std::copy(kSecurityBatchMagic.begin(), kSecurityBatchMagic.end(),
             encoded.begin());
   StoreU16(&encoded, 8, kSecurityBatchMajor);
-  StoreU16(&encoded, 10, kCurrentSecurityBatchMinor);
+  StoreU16(&encoded, 10, batch.events.size() == 3
+      ? kDerivedCacheSecurityBatchMinor : kCurrentSecurityBatchMinor);
   StoreUuid(&encoded, 12, batch.database_uuid);
   StoreUuid(&encoded, 28, batch.relation_uuid);
   StoreUuid(&encoded, 44, batch.transaction_uuid);
@@ -1169,7 +1208,8 @@ bool DecodeDatabaseLocalSecurityBatchEnvelopeV1(
       !std::equal(kSecurityBatchMagic.begin(), kSecurityBatchMagic.end(),
                   encoded.begin()) ||
       LoadU16(encoded, 8) != kSecurityBatchMajor ||
-      LoadU16(encoded, 10) != kCurrentSecurityBatchMinor) {
+      (LoadU16(encoded, 10) != kCurrentSecurityBatchMinor &&
+       LoadU16(encoded, 10) != kDerivedCacheSecurityBatchMinor)) {
     return RefuseBatch(refusal, "batch_magic_version_or_length_invalid");
   }
   DatabaseLocalSecurityBatchEnvelopeV1 decoded;
@@ -1185,7 +1225,8 @@ bool DecodeDatabaseLocalSecurityBatchEnvelopeV1(
   decoded.predecessor_page_uuid = LoadUuid(encoded, 108);
   decoded.predecessor_page_number = LoadU64(encoded, 124);
   decoded.predecessor_page_generation = LoadU64(encoded, 132);
-  if (event_count != 4 || payload_size == 0 ||
+  const u32 expected_events = LoadU16(encoded, 10) == kDerivedCacheSecurityBatchMinor ? 3 : 4;
+  if (event_count != expected_events || payload_size == 0 ||
       payload_size != encoded.size() - kCurrentSecurityBatchFixedBytes) {
     return RefuseBatch(refusal, "batch_payload_shape_invalid");
   }

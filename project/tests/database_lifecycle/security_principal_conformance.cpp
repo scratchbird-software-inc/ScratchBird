@@ -8,14 +8,27 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "security/security_principal_lifecycle.hpp"
+#include "../support/durable_authorization_fixture.hpp"
+#include "transaction/transaction_api.hpp"
+#include "local_transaction_store.hpp"
+#include "uuid.hpp"
+#include "security/database_local_security_event_store.hpp"
+#include "database_local_private_relation_locator.hpp"
+#include "security_lifecycle_event_codec.hpp"
+#include "hash_digest.hpp"
 
+#include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <unistd.h>
 #include <vector>
 #include <type_traits>
@@ -24,7 +37,7 @@ namespace {
 
 namespace engine_api = scratchbird::engine::internal_api;
 
-constexpr std::string_view kDatabaseUuid = "019e1a14-013a-7000-8000-0000000000ae";
+constexpr auto kDatabaseUuid = scratchbird::tests::FixtureUuidLiteral("019e1a14-013a-7000-8000-0000000000ae");
 constexpr auto kAdminPrincipal = scratchbird::tests::FixtureUuid(1500, 1);
 constexpr auto kUserAlice = scratchbird::tests::FixtureUuid(1500, 2);
 constexpr auto kUserBob = scratchbird::tests::FixtureUuid(1500, 3);
@@ -36,8 +49,7 @@ constexpr std::string_view kProtectedSecret = "credential-secret-dblc013ae";
 constexpr std::string_view kPlaintextSecret = "CorrectHorseBatteryStaple-DBLC013AE";
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -53,42 +65,190 @@ std::filesystem::path MakeTempDir() {
   return std::filesystem::path(made);
 }
 
+struct NativeFixture {
+  struct BeginBoundary {
+    std::uint64_t allocation = 0, commit_sequence = 0, committed_local_id = 0;
+  };
+  engine_api::EngineRequestContext owner;
+  std::optional<engine_api::EngineRequestContext> writer;
+  std::uint64_t writer_phase = 0;
+  // Phase labels are test bookkeeping, never transaction IDs or watermarks.
+  std::map<std::uint64_t, engine_api::EngineRequestContext> readers;
+  std::map<std::uint64_t, engine_api::EngineRequestContext> committed_writers;
+  std::map<engine_api::EngineUuid, BeginBoundary> admitted_boundaries;
+} fixture;
+
+void RequireNativeOk(const engine_api::EngineApiResult& result, std::string_view message) {
+  if (!result.ok)
+    for (const auto& diagnostic : result.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  Require(result.ok, message);
+}
+
+void RequireInventoryState(const engine_api::EngineRequestContext& context,
+                           scratchbird::transaction::mga::TransactionState expected) {
+  namespace mga = scratchbird::transaction::mga;
+  const auto loaded = scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(
+      context.database_path);
+  Require(loaded.ok(), "DBLC-013AE native transaction inventory read failed");
+  const auto found = mga::LookupLocalTransaction(
+      loaded.inventory, mga::MakeLocalTransactionId(context.local_transaction_id));
+  const auto admitted = fixture.admitted_boundaries.find(context.transaction_uuid);
+  Require(admitted != fixture.admitted_boundaries.end(), "DBLC-013AE transaction lacks BEGIN observation");
+  const auto& boundary = admitted->second;
+  if (!found.ok() || found.entry.state != expected ||
+      found.entry.identity.transaction_uuid.value != context.transaction_uuid ||
+      found.entry.begin_visible_through_local_transaction_id != boundary.allocation ||
+      found.entry.begin_visible_through_commit_sequence != boundary.commit_sequence ||
+      context.snapshot_visible_through_local_transaction_id != boundary.committed_local_id ||
+      !found.entry.stable_snapshot)
+    std::cerr << "native inventory tx=" << context.local_transaction_id
+              << " found=" << found.ok() << " expected_state=" << static_cast<int>(expected)
+              << " state=" << static_cast<int>(found.entry.state)
+              << " identity_match=" << (found.entry.identity.transaction_uuid.value == context.transaction_uuid)
+              << " begin_allocation=" << found.entry.begin_visible_through_local_transaction_id
+              << " expected_allocation=" << boundary.allocation
+              << " begin_commit_sequence=" << found.entry.begin_visible_through_commit_sequence
+              << " expected_commit_sequence=" << boundary.commit_sequence
+              << " context_visibility=" << context.snapshot_visible_through_local_transaction_id
+              << " expected_context_visibility=" << boundary.committed_local_id
+              << " stable_snapshot=" << found.entry.stable_snapshot << '\n';
+  Require(found.ok() && found.entry.state == expected &&
+              found.entry.identity.transaction_uuid.value == context.transaction_uuid &&
+              scratchbird::core::uuid::IsEngineIdentityUuid(context.transaction_uuid) &&
+              found.entry.begin_visible_through_local_transaction_id == boundary.allocation &&
+              found.entry.begin_visible_through_commit_sequence == boundary.commit_sequence &&
+              context.snapshot_visible_through_local_transaction_id == boundary.committed_local_id &&
+              found.entry.stable_snapshot,
+          "DBLC-013AE transaction identity/snapshot not backed by actual inventory");
+  if (expected == mga::TransactionState::committed)
+    Require(found.entry.commit_sequence != 0 && found.entry.evidence_record_written,
+            "DBLC-013AE native commitment lacks sequence/evidence");
+}
+
+void InitializeNativeFixture(const std::filesystem::path& database_path) {
+  namespace db = scratchbird::storage::database;
+  namespace platform = scratchbird::core::platform;
+  db::DatabaseCreateConfig create;
+  create.path = database_path.string();
+  create.database_uuid = {platform::UuidKind::database, kDatabaseUuid};
+  create.filespace_uuid = {platform::UuidKind::filespace, scratchbird::tests::FixtureUuid(1500, 10)};
+  create.page_size = 16384;
+  create.creation_unix_epoch_millis = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  create.require_resource_seed_pack = false;
+  create.allow_minimal_resource_bootstrap = true;
+  create.require_bootstrap_principal = true;
+  create.bootstrap_principal_name = "security_fixture_owner";
+  create.bootstrap_credential_fingerprint =
+      "local-password-pbkdf2-sha256:v1:iterations=600000:salt=0123456789abcdef0123456789abcdef:verifier=4ce03aa5a5657aaf221192635ed9c63acdb76d78a0994ec6e6ab55286e29e6a5";
+  const auto created = db::CreateDatabaseFile(create);
+  if (!created.ok()) std::cerr << created.diagnostic.diagnostic_code << ':'
+                              << created.diagnostic.message_key << '\n';
+  Require(created.ok(), "DBLC-013AE actual database creation failed");
+  const auto bootstrap = db::ReadDatabaseBootstrapSecurityCatalog(create.path);
+  Require(bootstrap.ok() && bootstrap.state.present && bootstrap.state.committed_by_inventory,
+          "DBLC-013AE durable bootstrap principal unavailable");
+  fixture.owner.trust_mode = engine_api::EngineTrustMode::embedded_in_process;
+  fixture.owner.database_path = create.path;
+  fixture.owner.database_uuid = kDatabaseUuid;
+  fixture.owner.principal_uuid = bootstrap.state.principal_uuid.value;
+  fixture.owner.session_uuid = scratchbird::tests::FixtureUuid(1500, 11);
+  fixture.owner.catalog_generation_id = 1;
+  // This embedded fixture has one fixed resource configuration, with no reload.
+  // Its epoch is request metadata, not a replacement for a resource grant.
+  fixture.owner.resource_epoch = 1;
+  fixture.owner.name_resolution_epoch = 1;
+  fixture.owner.security_context_present = true;
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(fixture.owner);
+}
+
+void CommitNative(const engine_api::EngineRequestContext& context) {
+  engine_api::EngineCommitTransactionRequest request;
+  request.context = context;
+  RequireNativeOk(engine_api::EngineCommitTransaction(request),
+                  "DBLC-013AE actual transaction commit failed");
+  RequireInventoryState(context, scratchbird::transaction::mga::TransactionState::committed);
+}
+
+void CommitWriter() {
+  if (!fixture.writer) return;
+  CommitNative(*fixture.writer);
+  fixture.committed_writers.emplace(fixture.writer_phase, *fixture.writer);
+  fixture.writer.reset();
+}
+
 engine_api::EngineRequestContext Context(const std::filesystem::path& database_path,
-                                         std::uint64_t tx,
+                                         std::uint64_t phase,
                                          engine_api::EngineUuid principal,
-                                         std::uint64_t visible_through = 0,
-                                         bool admin = false) {
-  engine_api::EngineRequestContext context;
-  context.trust_mode = admin
-                           ? engine_api::EngineTrustMode::embedded_in_process
-                           : engine_api::EngineTrustMode::server_isolated;
-  context.database_path = database_path.string();
-  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e1a14-013a-7000-8000-0000000000ae");
-  context.local_transaction_id = tx;
-  context.transaction_uuid = scratchbird::tests::FixtureUuid(1500, 100 + static_cast<std::uint32_t>(tx));
-  context.principal_uuid = std::move(principal);
-  context.security_context_present = true;
-  context.snapshot_visible_through_local_transaction_id = visible_through;
+                                         std::uint64_t snapshot_phase = 0,
+                                         bool admin = false,
+                                         bool commit_pending_writer = true) {
+  Require(database_path == fixture.owner.database_path,
+          "DBLC-013AE fixture owning database mismatch");
+  if (fixture.writer && fixture.writer_phase != phase && commit_pending_writer) CommitWriter();
+  if (!admin && snapshot_phase != phase) {
+    const auto old = fixture.readers.find(snapshot_phase);
+    if (old != fixture.readers.end()) {
+      Require(old->second.principal_uuid == principal,
+              "DBLC-013AE retained reader belongs to another principal");
+      RequireInventoryState(old->second, scratchbird::transaction::mga::TransactionState::active);
+      return old->second;
+    }
+    Require(snapshot_phase == 0 || fixture.committed_writers.contains(snapshot_phase),
+            "DBLC-013AE requested snapshot phase was never executed");
+  }
+  if (admin && fixture.writer) return *fixture.writer;
+  auto context = fixture.owner;
   if (admin) {
-    context.trace_tags.push_back("security.fixture_trace_authority");
-    context.trace_tags.push_back("right:SEC_IDENTITY_ADMIN");
-    context.trace_tags.push_back("right:SEC_MEMBERSHIP_ADMIN");
-    context.trace_tags.push_back("right:SEC_GRANT_ADMIN");
-    context.trace_tags.push_back("right:POLICY_ADMIN");
-    context.trace_tags.push_back("right:AUDIT_READ");
+    Require(principal == kAdminPrincipal, "DBLC-013AE invalid bootstrap-owner fixture label");
+    scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
+  } else {
+    context.trust_mode = engine_api::EngineTrustMode::server_isolated;
+    context.principal_uuid = principal;
+    context.authorization_context = {};
+  }
+  engine_api::EngineBeginTransactionRequest begin;
+  begin.context = context;
+  begin.isolation_level = "snapshot";
+  const auto prior = scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(
+      context.database_path);
+  Require(prior.ok() && prior.inventory.next_local_transaction_id != 0 &&
+              prior.inventory.next_commit_sequence != 0,
+          "DBLC-013AE pre-BEGIN native inventory unavailable");
+  NativeFixture::BeginBoundary boundary;
+  boundary.allocation = prior.inventory.next_local_transaction_id - 1;
+  boundary.commit_sequence = prior.inventory.next_commit_sequence - 1;
+  for (const auto& row : prior.inventory.entries)
+    if (scratchbird::transaction::mga::InventoryVisibilityState(row) ==
+        scratchbird::transaction::mga::TransactionState::committed)
+      boundary.committed_local_id = std::max(boundary.committed_local_id, row.identity.local_id.value);
+  const auto begun = engine_api::EngineBeginTransaction(begin);
+  RequireNativeOk(begun, "DBLC-013AE actual transaction begin failed");
+  Require(begun.local_transaction_id == prior.inventory.next_local_transaction_id &&
+              fixture.admitted_boundaries.emplace(begun.transaction_uuid, boundary).second,
+          "DBLC-013AE BEGIN did not allocate the exact fresh native identity");
+  context.local_transaction_id = begun.local_transaction_id;
+  context.transaction_uuid = begun.transaction_uuid;
+  context.snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  context.transaction_isolation_level = begun.isolation_level;
+  RequireInventoryState(context, scratchbird::transaction::mga::TransactionState::active);
+  if (admin) {
+    fixture.writer = context;
+    fixture.writer_phase = phase;
+  } else {
+    Require(fixture.readers.emplace(phase, context).second,
+            "DBLC-013AE duplicate reader phase");
   }
   return context;
 }
 
 engine_api::EngineRequestContext NoAuthorityContext(const std::filesystem::path& database_path,
-                                                    std::uint64_t tx) {
-  engine_api::EngineRequestContext context;
-  context.trust_mode = engine_api::EngineTrustMode::server_isolated;
-  context.database_path = database_path.string();
-  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e1a14-013a-7000-8000-0000000000ae");
-  context.local_transaction_id = tx;
-  context.transaction_uuid = scratchbird::tests::FixtureUuid(1500, 100 + static_cast<std::uint32_t>(tx));
-  context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 2501);
+                                                    std::uint64_t phase) {
+  auto context = Context(database_path, phase, kUserBob, phase);
+  context.security_context_present = false;
+  context.authorization_context = {};
   return context;
 }
 
@@ -294,6 +454,10 @@ void TestDefaultDenyGrantRevokeAndMgaVisibility(const std::filesystem::path& dat
           "DBLC-013AE grant did not publish cache invalidation");
 
   const auto before_grant = EvaluatePrivilege(database_path, 22, 20, kUserAlice, "SELECT");
+  if (before_grant.ok || !HasDiagnostic(before_grant,
+          engine_api::kSecurityPrincipalDiagnosticGrantNotVisible))
+    for (const auto& diagnostic : before_grant.diagnostics)
+      std::cerr << "before-grant reader: " << diagnostic.code << ':' << diagnostic.detail << '\n';
   Require(!before_grant.ok &&
               HasDiagnostic(before_grant,
                             engine_api::kSecurityPrincipalDiagnosticGrantNotVisible),
@@ -342,6 +506,50 @@ void TestDefaultDenyGrantRevokeAndMgaVisibility(const std::filesystem::path& dat
   const auto current_cache_result = engine_api::EngineSecurityValidatePolicyCache(current_cache);
   Require(current_cache_result.ok && current_cache_result.cache_valid,
           "DBLC-013AE current authorization policy cache was rejected");
+}
+
+void TestUncommittedAndRolledBackGrants(const std::filesystem::path& database_path) {
+  constexpr auto target = scratchbird::tests::FixtureUuid(1501, 5);
+  const auto old_reader = Context(database_path, 100, kUserBob, 100);
+  const auto granted = GrantPrivilege(database_path, 101, kUserBob, "principal", "SELECT", target);
+  RequireOk(granted, "DBLC-013AE pending grant setup failed");
+  Require(fixture.writer.has_value(), "DBLC-013AE grant writer lost its lifetime");
+  const auto writer = *fixture.writer;
+  const auto concurrent_reader = Context(database_path, 102, kUserBob, 102, false, false);
+  RequireInventoryState(writer, scratchbird::transaction::mga::TransactionState::active);
+
+  engine_api::EngineSecurityEvaluatePrivilegeRequest inspect;
+  inspect.principal_uuid = kUserBob;
+  inspect.target_object_uuid = target;
+  inspect.target_object_kind = "table";
+  inspect.privilege = "SELECT";
+  inspect.option_envelopes.push_back("authorization_authority:engine");
+  inspect.context = writer;
+  const auto own = engine_api::EngineSecurityEvaluatePrivilege(inspect);
+  Require(own.ok && own.authorized, "DBLC-013AE writer could not see its own pending grant");
+  for (const auto& reader : {old_reader, concurrent_reader}) {
+    inspect.context = reader;
+    const auto denied = engine_api::EngineSecurityEvaluatePrivilege(inspect);
+    Require(!denied.ok && !denied.authorized &&
+                HasDiagnostic(denied, engine_api::kSecurityPrincipalDiagnosticDefaultDeny) &&
+                !HasDiagnostic(denied, engine_api::kSecurityPrincipalDiagnosticGrantNotVisible),
+            "DBLC-013AE diagnostic lookup exposed another transaction's uncommitted grant");
+  }
+  engine_api::EngineRollbackTransactionRequest rollback;
+  rollback.context = writer;
+  RequireNativeOk(engine_api::EngineRollbackTransaction(rollback),
+                  "DBLC-013AE actual pending-grant rollback failed");
+  RequireInventoryState(writer, scratchbird::transaction::mga::TransactionState::rolled_back);
+  fixture.writer.reset();
+  const auto fresh_reader = Context(database_path, 103, kUserBob, 103);
+  for (const auto& reader : {old_reader, concurrent_reader, fresh_reader}) {
+    inspect.context = reader;
+    const auto denied = engine_api::EngineSecurityEvaluatePrivilege(inspect);
+    Require(!denied.ok && !denied.authorized &&
+                HasDiagnostic(denied, engine_api::kSecurityPrincipalDiagnosticDefaultDeny) &&
+                !HasDiagnostic(denied, engine_api::kSecurityPrincipalDiagnosticGrantNotVisible),
+            "DBLC-013AE diagnostic lookup exposed a rolled-back grant");
+  }
 }
 
 void TestRowSecurityAndDefinerRightsCache(const std::filesystem::path& database_path) {
@@ -418,6 +626,136 @@ void TestRowSecurityAndDefinerRightsCache(const std::filesystem::path& database_
           "DBLC-013AE stale row policy generation was accepted");
 }
 
+void TestDerivedCacheRollbackAndVisibility(const std::filesystem::path& database_path) {
+  constexpr auto target = scratchbird::tests::FixtureUuid(1501, 6);
+  const auto grant = GrantPrivilege(database_path, 200, kDefiner, "principal", "SELECT", target);
+  RequireOk(grant, "DBLC-013AE rollback-cache grant setup failed");
+  engine_api::EngineSecurityPrimeDefinerRightsCacheRequest prime;
+  prime.context = Context(database_path, 201, kAdminPrincipal, 201, true);
+  prime.definer_principal_uuid = kDefiner;
+  prime.target_object_uuid = target;
+  prime.privilege = "SELECT";
+  const auto before = engine_api::LoadSecurityPrincipalLifecycleState(prime.context);
+  Require(before.ok, "DBLC-013AE pre-cache native load failed");
+  const auto primed = engine_api::EngineSecurityPrimeDefinerRightsCache(prime);
+  RequireOk(primed, "DBLC-013AE rollback-cache prime failed");
+  const auto after = engine_api::LoadSecurityPrincipalLifecycleState(prime.context);
+  Require(after.ok && after.state.security_context_generation == before.state.security_context_generation + 1 &&
+              after.state.policy_generation == before.state.policy_generation &&
+              after.state.cache_invalidation_epoch == before.state.cache_invalidation_epoch,
+          "DBLC-013AE derived cache changed policy/invalidation or lost publication lineage");
+  engine_api::EngineSecurityValidateDefinerRightsCacheRequest validate;
+  validate.context = prime.context;
+  validate.cache_key = primed.cache_key;
+  validate.observed_policy_generation = primed.policy_generation;
+  validate.observed_cache_invalidation_epoch = grant.cache_invalidation_epoch;
+  const auto own = engine_api::EngineSecurityValidateDefinerRightsCache(validate);
+  Require(own.ok && own.cache_valid, "DBLC-013AE own uncommitted cache not visible");
+  const auto concurrent = Context(database_path, 202, kUserAlice, 202, false, false);
+  validate.context = concurrent;
+  const auto pending = engine_api::EngineSecurityValidateDefinerRightsCache(validate);
+  Require(!pending.ok && HasDiagnostic(pending, engine_api::kSecurityPrincipalDiagnosticCacheMissing),
+          "DBLC-013AE pending derived cache leaked to another reader");
+  engine_api::EngineRollbackTransactionRequest rollback;
+  rollback.context = prime.context;
+  RequireNativeOk(engine_api::EngineRollbackTransaction(rollback), "DBLC-013AE cache rollback failed");
+  RequireInventoryState(prime.context, scratchbird::transaction::mga::TransactionState::rolled_back);
+  fixture.writer.reset();
+  validate.context = Context(database_path, 203, kUserAlice, 203);
+  const auto rolled_back = engine_api::EngineSecurityValidateDefinerRightsCache(validate);
+  Require(!rolled_back.ok && HasDiagnostic(rolled_back, engine_api::kSecurityPrincipalDiagnosticCacheMissing),
+          "DBLC-013AE rolled-back cache survived fresh native load");
+}
+
+void TestDerivedCacheBatchCodec() {
+  namespace db = scratchbird::storage::database;
+  namespace codec = db::security_event_codec;
+  namespace hash = scratchbird::core::hash;
+  const auto loaded = engine_api::LoadDatabaseLocalSecurityEventStoreV1(fixture.owner);
+  Require(loaded.ok, "DBLC-013AE cache codec native source read failed");
+  const auto& events = loaded.state.events;
+  std::size_t index = 0;
+  while (index < events.size() && codec::Decode(events[index])[1] != "DEFINER_CACHE") ++index;
+  Require(index + 2 < events.size(), "DBLC-013AE committed native cache batch missing");
+  db::DatabaseLocalSecurityBatchEnvelopeV1 batch;
+  batch.database_uuid = fixture.owner.database_uuid;
+  batch.relation_uuid = engine_api::kDatabaseLocalSecurityRelationUuidV1;
+  batch.events.assign(events.begin() + index, events.begin() + index + 3);
+  const auto first = codec::Decode(batch.events.front());
+  batch.creator_local_transaction_id = std::stoull(first[2]);
+  batch.actor_principal_uuid = codec::Decode(batch.events[1]).identity(5);
+  batch.successor_security_context_generation = std::stoull(codec::Decode(batch.events.back())[3]);
+  batch.prior_security_context_generation = batch.successor_security_context_generation - 1;
+  const auto inventory = db::LoadLocalTransactionInventoryFromDatabase(fixture.owner.database_path);
+  Require(inventory.ok(), "DBLC-013AE cache codec inventory unavailable");
+  const auto creator = scratchbird::transaction::mga::LookupLocalTransaction(inventory.inventory,
+      scratchbird::transaction::mga::MakeLocalTransactionId(batch.creator_local_transaction_id));
+  Require(creator.ok(), "DBLC-013AE cache codec creator missing");
+  batch.transaction_uuid = creator.entry.identity.transaction_uuid.value;
+  const auto bytes = db::EncodeDatabaseLocalSecurityBatchEnvelopeV1(batch);
+  Require(bytes.size() > 12 && bytes[8] == 1 && bytes[9] == 0 && bytes[10] == 2 && bytes[11] == 0,
+          "DBLC-013AE derived cache native version not 1.2");
+  db::DatabaseLocalSecurityBatchEnvelopeV1 restored;
+  Require(db::DecodeDatabaseLocalSecurityBatchEnvelopeV1(bytes, &restored) && restored.events == batch.events,
+          "DBLC-013AE cache codec round trip changed native fields");
+  for (std::size_t size = 0; size < bytes.size(); ++size) {
+    auto truncated = bytes;
+    truncated.resize(size);
+    Require(!db::DecodeDatabaseLocalSecurityBatchEnvelopeV1(truncated, &restored),
+            "DBLC-013AE cache codec accepted a truncated record");
+  }
+  auto wrong_version = bytes;
+  wrong_version[10] = 1;
+  Require(!db::DecodeDatabaseLocalSecurityBatchEnvelopeV1(wrong_version, &restored),
+          "DBLC-013AE authority variant accepted the cache shape");
+  const auto reseal = [](auto& value) {
+    const auto framed = codec::Frame(value.events, value.events.size() - 1);
+    const auto digest = hash::ComputeSha256Digest(
+        reinterpret_cast<const std::uint8_t*>(framed.data()), framed.size());
+    Require(digest.ok(), "DBLC-013AE negative-vector seal failed");
+    value.events.back() = codec::Encode("AUTH_CONTEXT_SUCCESSOR", value.creator_local_transaction_id,
+        {std::to_string(value.successor_security_context_generation),
+         "security-context-successor:v1:sha256:" + hash::HexLower(digest.digest)});
+  };
+  const auto reject = [&](auto value) {
+    reseal(value); // Reject semantic corruption even with a fresh valid seal.
+    Require(!db::ValidateDatabaseLocalSecurityLifecycleBatchV1(value) &&
+                db::EncodeDatabaseLocalSecurityBatchEnvelopeV1(value).empty(),
+            "DBLC-013AE cache codec accepted an invalid sealed batch");
+  };
+  auto wrong = batch;
+  wrong.events.erase(wrong.events.begin() + 1);
+  reject(wrong);
+  wrong = batch;
+  wrong.events.insert(wrong.events.begin() + 2, batch.events[1]);
+  reject(wrong);
+  wrong = batch;
+  std::swap(wrong.events[0], wrong.events[1]);
+  reject(wrong);
+  wrong = batch;
+  wrong.actor_principal_uuid = kUserAlice;
+  reject(wrong);
+  const auto corrupt = [&](std::size_t event, std::size_t field, codec::Field replacement) {
+    auto value = batch;
+    auto parts = codec::Decode(value.events[event]);
+    parts.fields[field] = std::move(replacement);
+    std::vector<codec::Field> fields(parts.fields.begin() + 3, parts.fields.end());
+    value.events[event] = codec::Encode(parts[1], std::stoull(parts[2]), std::move(fields));
+    reject(std::move(value));
+  };
+  corrupt(0, 3, std::string("forged-cache-key"));
+  corrupt(0, 4, engine_api::EngineUuid{});
+  corrupt(0, 5, scratchbird::tests::FixtureUuid(1501, 99));
+  corrupt(0, 7, std::string("deny"));
+  corrupt(0, 8, std::string("0"));
+  corrupt(0, 8, std::to_string(batch.successor_security_context_generation));
+  corrupt(1, 4, std::string("invalid-operation"));
+  corrupt(1, 5, kUserAlice);
+  corrupt(1, 6, scratchbird::tests::FixtureUuid(1501, 99));
+  corrupt(1, 10, kUserAlice);
+  corrupt(1, 11, std::string("grantee_uuid"));
+}
+
 void TestAuditEvidenceAndAuthorityDiagnostics(const std::filesystem::path& database_path) {
   engine_api::EngineSecurityInspectAuditRequest inspect;
   inspect.context = Context(database_path, 60, kAdminPrincipal, 60, true);
@@ -438,6 +776,22 @@ void TestAuditEvidenceAndAuthorityDiagnostics(const std::filesystem::path& datab
                             engine_api::kSecurityPrincipalDiagnosticAuthorityRequired),
           "DBLC-013AE missing security authority did not produce stable diagnostic");
 
+  const auto before_spoof = engine_api::LoadSecurityPrincipalLifecycleState(fixture.owner);
+  Require(before_spoof.ok, "DBLC-013AE pre-spoof native security read failed");
+  auto trace_spoof = no_authority;
+  trace_spoof.context.security_context_present = true;
+  trace_spoof.context.trace_tags = {"security.fixture_trace_authority", "right:SEC_IDENTITY_ADMIN"};
+  const auto spoofed = engine_api::EngineSecurityCreatePrincipal(trace_spoof);
+  Require(!spoofed.ok && HasDiagnostic(spoofed,
+              engine_api::kSecurityPrincipalDiagnosticAuthorityRequired),
+          "DBLC-013AE trace tags conferred security authority");
+  const auto after_spoof = engine_api::LoadSecurityPrincipalLifecycleState(fixture.owner);
+  Require(after_spoof.ok &&
+              after_spoof.state.principals.size() == before_spoof.state.principals.size() &&
+              std::none_of(after_spoof.state.principals.begin(), after_spoof.state.principals.end(),
+                  [&](const auto& row) { return row.principal_uuid == trace_spoof.principal_uuid; }),
+          "DBLC-013AE refused trace-only create changed native principal state");
+
   engine_api::EngineSecurityCreatePrincipalRequest parser_authority;
   parser_authority.context = Context(database_path, 62, kAdminPrincipal, 62, true);
   parser_authority.principal_uuid = scratchbird::tests::FixtureUuid(1501, 4);
@@ -452,15 +806,37 @@ void TestAuditEvidenceAndAuthorityDiagnostics(const std::filesystem::path& datab
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
   const auto temp_dir = MakeTempDir();
   const auto database_path = temp_dir / "dblc013ae.sbdb";
-
-  TestPrincipalRoleGroupAndProtectedMaterial(database_path);
-  TestDefaultDenyGrantRevokeAndMgaVisibility(database_path);
-  TestRowSecurityAndDefinerRightsCache(database_path);
-  TestAuditEvidenceAndAuthorityDiagnostics(database_path);
-
-  std::filesystem::remove_all(temp_dir);
-  return EXIT_SUCCESS;
+  try {
+    const bool grant_visibility_only = argc == 2 &&
+        std::string_view(argv[1]) == "--native-grant-visibility";
+    Require(argc == 1 || grant_visibility_only, "DBLC-013AE unsupported test selection");
+    InitializeNativeFixture(database_path);
+    TestPrincipalRoleGroupAndProtectedMaterial(database_path);
+    TestDefaultDenyGrantRevokeAndMgaVisibility(database_path);
+    TestUncommittedAndRolledBackGrants(database_path);
+    if (!grant_visibility_only) {
+      TestRowSecurityAndDefinerRightsCache(database_path);
+      TestDerivedCacheRollbackAndVisibility(database_path);
+      TestDerivedCacheBatchCodec();
+    }
+    TestAuditEvidenceAndAuthorityDiagnostics(database_path);
+    CommitWriter();
+    for (const auto& [phase, reader] : fixture.readers) CommitNative(reader);
+    const auto reopened = engine_api::LoadSecurityPrincipalLifecycleState(fixture.owner);
+    Require(reopened.ok, "DBLC-013AE final native security reopen failed");
+    for (const auto identity : {kUserAlice, kUserBob, kDefiner})
+      Require(std::any_of(reopened.state.principals.begin(), reopened.state.principals.end(),
+                          [&](const auto& row) { return row.principal_uuid == identity && !row.deleted; }),
+              "DBLC-013AE committed principal missing after fresh native read");
+    fixture.readers.clear();
+    fixture.committed_writers.clear();
+    std::filesystem::remove_all(temp_dir);
+    return EXIT_SUCCESS;
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << "\nRetained DBLC-013AE fixture: " << temp_dir << '\n';
+    return EXIT_FAILURE;
+  }
 }

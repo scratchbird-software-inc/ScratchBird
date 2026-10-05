@@ -916,8 +916,8 @@ std::mutex g_security_lifecycle_event_append_mutex;
 
 bool AdvancesAuthorizationContext(const std::string& event) {
   const auto parts = sec_event::Decode(event);
-  static constexpr std::array<std::string_view, 8> kinds = {
-      "PRINCIPAL", "ROLE", "GROUP", "MEMBERSHIP", "GRANT", "REVOKE", "ROW_POLICY", "PRIVILEGE_TEMPLATE"};
+  static constexpr std::array<std::string_view, 9> kinds = {
+      "PRINCIPAL", "ROLE", "GROUP", "MEMBERSHIP", "GRANT", "REVOKE", "ROW_POLICY", "PRIVILEGE_TEMPLATE", "DEFINER_CACHE"};
   return parts.size() >= 3 && std::find(kinds.begin(), kinds.end(), parts[1]) != kinds.end();
 }
 
@@ -1033,8 +1033,12 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
       provider_context.trace_tags.emplace_back(
           kDatabaseLocalSecurityLifecycleBootstrapAuthorityTagV1);
     }
+    // The non-authorizing diagnostic lookup asks whether a committed grant
+    // exists beyond this reader's snapshot. It must not re-read the already
+    // filtered snapshot or expose another transaction's uncommitted grant.
+    // Ordinary authorization continues to use the native reader snapshot.
     const auto visibility =
-        provider_context.local_transaction_id == 0
+        !options.enforce_visibility || provider_context.local_transaction_id == 0
             ? DatabaseLocalSecurityEventVisibilityV1::latest_committed
             : DatabaseLocalSecurityEventVisibilityV1::
                   include_reader_own_uncommitted;
@@ -1478,6 +1482,7 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
 std::uint64_t NextGeneration(const EngineSecurityPrincipalLifecycleState& state) {
   return std::max({state.security_generation,
                    state.policy_generation,
+                   state.security_context_generation,
                    state.cache_invalidation_epoch}) + 1;
 }
 

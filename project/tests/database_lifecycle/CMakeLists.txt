@@ -2741,6 +2741,15 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   set_tests_properties(database_lifecycle_security_principal_conformance PROPERTIES
     LABELS "database_lifecycle_security_principal_conformance;database_lifecycle_security_principal;database_lifecycle;database_lifecycle_security;authorization_privilege_gate;audit_event_gate;security_policy_gate;mga_transaction_regression"
   )
+  # Independent diagnostic-adapter regression; the complete conformance test
+  # above remains enrolled unchanged, including definer-cache and row policies.
+  add_test(
+    NAME database_lifecycle_security_grant_visibility_conformance
+    COMMAND database_lifecycle_security_principal_conformance --native-grant-visibility
+  )
+  set_tests_properties(database_lifecycle_security_grant_visibility_conformance PROPERTIES
+    LABELS "database_lifecycle;database_lifecycle_security;authorization_privilege_gate;mga_transaction_regression"
+  )
 
   add_executable(database_local_security_event_store_conformance
     database_local_security_event_store_conformance.cpp
