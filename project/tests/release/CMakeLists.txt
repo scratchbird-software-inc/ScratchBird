@@ -86,6 +86,21 @@ if(NOT TARGET sb_core_agents_cluster_boundary)
   )
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(crypto_memory_adapter_gate crypto_memory_adapter_gate.cpp)
+  target_compile_features(crypto_memory_adapter_gate PRIVATE cxx_std_20)
+  target_link_libraries(crypto_memory_adapter_gate PRIVATE sb_core_hash sb_core_memory)
+  target_link_options(crypto_memory_adapter_gate PRIVATE
+    "LINKER:--wrap=pthread_mutex_lock"
+    "LINKER:--wrap=EVP_MD_CTX_new" "LINKER:--wrap=EVP_DigestInit_ex"
+    "LINKER:--wrap=EVP_DigestUpdate" "LINKER:--wrap=EVP_DigestFinal_ex")
+  foreach(mode bounded late custom)
+    add_test(NAME crypto_memory_adapter_${mode}_gate COMMAND crypto_memory_adapter_gate ${mode})
+    set_tests_properties(crypto_memory_adapter_${mode}_gate PROPERTIES
+      TIMEOUT 60 LABELS "storage;crypto;actual_memory;binary_uuid;not_runtime_acceptance")
+  endforeach()
+endif()
+
 option(SB_PUBLIC_RELEASE_EXPORT_NESTED
   "Suppress recursive public export CTest registration while proving a staged public tree"
   OFF)

@@ -8,6 +8,7 @@
 
 #include "hash_digest.hpp"
 #include "hash_digest_parts.hpp"
+#include "crypto_memory_adapter.hpp"
 
 #include <openssl/evp.h>
 #include <openssl/crypto.h>
@@ -62,6 +63,7 @@ HashDigestResult ComputeSha256Digest(const std::vector<byte>& payload) {
 
 Sha256PartsResult ComputeSha256DigestPartsNative(const HashDigestSegment* segments,
                                         std::size_t segment_count) {
+  if(auto* prepared=CurrentPreparedSha256())return prepared->Compute(segments,segment_count);
   if (segment_count != 0 && segments == nullptr)
     return Sha256PartsResult{Sha256PartsError::segments_missing,{}};
   // SHA256 encodes the input length in a 64-bit bit count. Check every borrowed
@@ -104,6 +106,12 @@ HashDigestResult ComputeSha256DigestParts(const HashDigestSegment* segments,
 }
 
 Sha256DigestNativeResult ComputeSha256DigestNative(const byte* payload,std::size_t payload_size) {
+  if(auto* prepared=CurrentPreparedSha256()){
+    const HashDigestSegment segment{payload,payload_size};const auto result=prepared->Compute(&segment,1);
+    if(result.ok())return {Sha256DigestError::none,result.digest};
+    return {result.error==Sha256PartsError::segment_extent_invalid?Sha256DigestError::payload_extent_invalid:
+      Sha256DigestError::provider_failure,{}};
+  }
   if ((payload_size != 0 && payload == nullptr) || payload_size > std::numeric_limits<u64>::max()/8)
     return {Sha256DigestError::payload_extent_invalid,{}};
   Sha256DigestNativeResult result;
