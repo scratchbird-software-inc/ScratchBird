@@ -11,6 +11,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <type_traits>
 #include <vector>
 
@@ -45,7 +46,7 @@ enum class Blake3IncrementalLifecycleV3 : std::uint8_t {
 };
 
 inline constexpr std::uint64_t kBlake3IncrementalMaximumInputBytesV3 =
-    static_cast<std::uint64_t>(INT64_MAX);
+    std::numeric_limits<std::uint64_t>::max();
 inline constexpr std::size_t kBlake3IncrementalCvStackCapacityV3 = 54;
 inline constexpr std::uint32_t kBlake3IncrementalStateMagicV3 = 0x334b4c42U;
 inline constexpr std::uint16_t kBlake3IncrementalStateAbiVersionV3 = 3;

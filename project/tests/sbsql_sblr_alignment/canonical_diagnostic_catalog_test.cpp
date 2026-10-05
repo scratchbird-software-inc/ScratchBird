@@ -56,7 +56,39 @@ int main() {
   const auto catalog=d::CanonicalDiagnosticCodeCatalog();
   // Includes native bulk policy, shutdown identity and retained agent notices. Check the
   // exact admitted Core import, not a minimum row count.
-  Check(catalog.size==1448 && catalog.data!=nullptr,"complete Core code inventory missing");
+  Check(catalog.size==1537 && catalog.data!=nullptr,"complete Core code inventory missing");
+  Sample("BLOB.IO_FAILED",S::error,true,
+         "only after input authority environment or policy changes as applicable",
+         "reject_abort_scrub_no_output","DATATYPE.BLOB");
+  Sample("BLOB.LIFETIME_AUTHORITY_UNAVAILABLE",S::error,true,
+         "only after authority availability and full revalidation",
+         "reject_no_content_no_output","DATATYPE.BLOB");
+  Sample("MEMORY.CONTAINER_LIMIT_UNVERIFIED",S::error,true,
+         "after_corrected_discovery_or_explicit_admitted_degraded_policy",
+         "refuse_ordinary_startup","MEMORY");
+  Sample("MEMORY.CONTAINER_LIMIT_DEGRADED",S::warning,false,
+         "restore_discovery_then_readmit",
+         "deliver_warning_before_ordinary_admission_and_retain_incomplete_state","MEMORY");
+  Sample("MEMORY.EMERGENCY_RESERVE_INVALID",S::error,true,
+         "after_corrected_policy_or_available_capacity",
+         "reject_policy_or_startup_without_ordinary_admission","MEMORY");
+  Sample("SB-MGA-SNAPSHOT-VECTOR-UNKNOWN",S::error,true,
+         "only_with_actual_live_retained_pin",
+         "refuse_without_descriptor_or_completed_prefix","TRANSACTION.SNAPSHOT");
+  Sample("SB-MGA-SNAPSHOT-VECTOR-REVOKED",S::error,true,
+         "never_reuse_revoked_pin_or_copied_descriptor",
+         "refuse_without_descriptor_or_completed_prefix","TRANSACTION.SNAPSHOT");
+  Sample("SB-MGA-SNAPSHOT-VECTOR-LOCK-FAILURE",S::error,true,
+         "after_successful_fresh_pin_observation",
+         "refuse_without_descriptor_or_completed_prefix","TRANSACTION.SNAPSHOT");
+  const auto* blob_io=d::FindCanonicalDiagnosticCode("BLOB.IO_FAILED");
+  const auto* blob_lifetime=d::FindCanonicalDiagnosticCode("BLOB.LIFETIME_AUTHORITY_UNAVAILABLE");
+  Check(blob_io && blob_io->sqlstate=="58030" &&
+        blob_io->numeric_binding=="not_applicable",
+        "blob I/O diagnostic binding differs");
+  Check(blob_lifetime && blob_lifetime->sqlstate=="58000" &&
+        blob_lifetime->numeric_binding=="not_applicable",
+        "blob lifetime authority diagnostic binding differs");
   for(const std::string_view code:{"AGENT.INVALID_STATE",
       "diag.mga.concurrency.invalid_primitive_descriptor",
       "diag.mga.concurrency.latch_timeout","diag.mga.concurrency.fail_safe_release",
@@ -86,7 +118,7 @@ int main() {
     unspecified_outcome+=row.required_outcome=="not_specified";
     previous=row.code;
   }
-  Check(unspecified_retry==373 && unspecified_outcome==790,
+  Check(unspecified_retry==373 && unspecified_outcome==788,
         "missing behavior metadata was silently filled or removed");
   Sample("AUDIT_TRIGGER.EXTERNAL_TRANSACTION_COMMITTED",S::informational,false,
          "not_specified","return_to_parent_statement","AUDIT_TRIGGER");
@@ -279,7 +311,7 @@ int main() {
     Check(found==nullptr,"unknown code was invented, normalized or guessed");
   }
   constexpr std::array<std::uint8_t,32> expected_source{
-    0x62,0x5c,0x5e,0x12,0x59,0x90,0x3d,0x0c,0x48,0x05,0x35,0x4e,0x30,0x71,0x7e,0x5a,0x3e,0x36,0x68,0xef,0x93,0xac,0x45,0x02,0xa2,0xab,0x20,0xb0,0xca,0xf2,0x41,0xd9};
+    0x3f,0xe8,0x84,0x00,0x4f,0x46,0x07,0xce,0xf0,0xc3,0x57,0xdf,0x10,0x7f,0xc8,0x27,0xc9,0xc9,0x2c,0xa5,0xbc,0x33,0x86,0xa6,0x99,0x57,0x34,0x27,0x07,0xda,0x42,0x44};
   Check(d::CanonicalDiagnosticCodeSourceSha256()==expected_source,"Core source provenance differs");
   std::cout<<"canonical_diagnostic_catalog rows="<<catalog.size<<" checks="<<checks
            <<" failures="<<failures<<'\n';
