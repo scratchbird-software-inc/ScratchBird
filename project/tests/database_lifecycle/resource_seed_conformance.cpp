@@ -1082,7 +1082,10 @@ void RequireBinaryResourceCorruptionRefusal(const std::filesystem::path& path,
       RequirePersistedGbkRecords(DecodeTypedRecords(ReadCatalogRows(path,page_size)),
                                 restored.state.resource_seed_catalog);
     };
-    mutate([](std::string& b){b[16]^=1;}); // Unknown owning schema with valid outer envelopes.
+    // Zero is an invalid owning schema under SBCV, with valid outer envelopes.
+    // Flipping bit0 is not an unknown-schema oracle: collation65558 becomes
+    // metric-visibility65559 and its owning validator rejects at another layer.
+    mutate([](std::string& b){b.replace(16,4,4,'\0');});
     mutate([](std::string& b){const std::string legacy="creator_tx=1 family=";
       b.assign(b.size(),'x');b.replace(0,legacy.size(),legacy);});
     mutate([&](std::string& b){b[field_offset(2)]=static_cast<char>(0xff);});

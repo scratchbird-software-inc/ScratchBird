@@ -5190,6 +5190,7 @@ void TestMgaRelationStorageCodec() {
   index.predicate_value = std::string("p\0q", 3);
   source.indexes.push_back(index);
   const auto encoded = api::SerializeMgaRelationStorageDescriptor(source);
+  Require(encoded.size() == 70, "revision2 field-count oracle");
   const auto field = [](auto& fields, std::string_view key) -> auto& {
     const auto found = std::find_if(fields.begin(), fields.end(), [&](const auto& f) { return f.first == key; });
     if (found == fields.end()) throw std::runtime_error("missing expected relation field");
@@ -5220,6 +5221,54 @@ void TestMgaRelationStorageCodec() {
         result.indexes.empty() && result.descriptor_status == "invalid_binary_relation_fields",
         "malformed relation fields published partial descriptor authority");
   };
+  for (const auto& [key, value] : encoded) {
+    auto bad = encoded;
+    std::erase_if(bad, [&](const auto& item) { return item.first == key; });
+    refused(bad);
+  }
+  for (const auto* key : {"unknown", "column.0.unknown", "index.0.unknown"}) {
+    auto bad = encoded; bad.emplace_back(key, "unadmitted"); refused(bad);
+  }
+  {
+    auto complete = encoded;
+    complete.emplace_back("column.4294967295.contextual_text_descriptor_sidecar_v2", "not_a_valid_sidecar");
+    complete.emplace_back("column.4294967295.contextual_text_descriptor_sidecar_v2.sha256", "not_a_valid_hash");
+    complete.emplace_back("contextual_text_descriptor_sidecar_set_v2.seal_sha256", "not_a_valid_seal");
+    // This proves base extraction only, never sidecar validity. The separate
+    // owning sidecar validator must reject these deliberately invalid values.
+    Require(api::DeserializeMgaRelationStorageDescriptor(complete) == source,
+            "base reader rejected recognized sidecar extension keys or consumed them as authority");
+    complete.push_back(complete.back()); refused(complete);
+    for (const auto* key : {"column.00.contextual_text_descriptor_sidecar_v2",
+                           "column.4294967296.contextual_text_descriptor_sidecar_v2",
+                           "column.0.extra.contextual_text_descriptor_sidecar_v2"}) {
+      auto bad = encoded; bad.emplace_back(key, "unadmitted"); refused(bad);
+    }
+  }
+  for (const auto* key : {"page_size", "root_page_number", "allocation_root_page_number",
+                         "column.0.character_length", "column.0.max_inline_bytes",
+                         "column.1.character_length", "column.1.max_inline_bytes"}) {
+    for (const auto* value : {"", "-1", "+1", "1junk", " 1", "1 ", "18446744073709551616"}) {
+      auto bad = encoded; field(bad, key) = value; refused(bad);
+    }
+  }
+  for (const auto* key : {"page_size", "column.0.character_length", "column.1.character_length"}) {
+    auto bad = encoded; field(bad, key) = "4294967296"; refused(bad);
+    for (const auto* value : {"0", "4294967295"}) {
+      auto valid = encoded; field(valid, key) = value;
+      Require(api::SerializeMgaRelationStorageDescriptor(
+          api::DeserializeMgaRelationStorageDescriptor(valid)) == valid,
+          "explicit u32 structural boundary changed; physical/profile admission is separate");
+    }
+  }
+  {
+    auto bad = encoded; field(bad, "required_evidence_kinds") = "claimed_success"; refused(bad);
+    auto valid = encoded; field(valid, "column.0.name_key").clear();
+    field(valid, "index.0.predicate_value") = std::string("arbitrary\0bytes", 15);
+    Require(api::SerializeMgaRelationStorageDescriptor(
+        api::DeserializeMgaRelationStorageDescriptor(valid)) == valid,
+        "explicit descriptive bytes were defaulted or interpreted as authority");
+  }
   for (const auto& [key, identity] : identities) {
     for (unsigned mutation = 0; mutation < 6; ++mutation) {
       auto bad = encoded;
@@ -5240,6 +5289,69 @@ void TestMgaRelationStorageCodec() {
   }
   for (const auto* key : {"column_count", "index_count"}) {
     auto bad = encoded; field(bad, key) = "18446744073709551615"; refused(bad);
+  }
+  {
+    auto bad = encoded; field(bad, "column_count") = "1"; refused(bad);
+    bad = encoded; field(bad, "index_count") = "0"; refused(bad);
+    for (const auto* key : {"column.2.uuid", "index.1.uuid", "column.01.uuid",
+                           "column.-1.uuid", "column.+1.uuid", "column..uuid",
+                           "column.0.", "index.0", "index.18446744073709551616.uuid"}) {
+      bad = encoded; bad.emplace_back(key, field(encoded, "column.0.uuid")); refused(bad);
+    }
+    auto no_indexes = source; no_indexes.indexes.clear();
+    Require(api::DeserializeMgaRelationStorageDescriptor(
+        api::SerializeMgaRelationStorageDescriptor(no_indexes)) == no_indexes,
+        "empty index vector refused");
+  }
+  for (const auto* key : {"column.0.ordinal", "column.1.ordinal"}) {
+    for (const auto* value : {"", "-1", "+1", "1junk", "4294967296", "18446744073709551616"}) {
+      auto bad = encoded; field(bad, key) = value; refused(bad);
+    }
+    auto bad = encoded;
+    std::erase_if(bad, [&](const auto& f) { return f.first == key; });
+    refused(bad);
+  }
+  {
+    auto bad = encoded; field(bad, "column.1.ordinal") = "0"; refused(bad);
+    bad = encoded; field(bad, "column.0.ordinal") = "1"; refused(bad);
+    bad = encoded; field(bad, "column.1.uuid") = field(bad, "column.0.uuid"); refused(bad);
+  }
+  for (const auto* key : {"column.0.nullable", "column.0.generated", "column.0.identity",
+                         "column.1.nullable", "column.1.generated", "column.1.identity",
+                         "index.0.unique", "index.0.approximate"}) {
+    for (const auto& value : {std::string{}, std::string{"true"}, std::string{"false"},
+                             std::string{"2"}, std::string{"01"}, std::string{" 1"},
+                             std::string{"1 "}, std::string{"0\0", 2}}) {
+      auto bad = encoded; field(bad, key) = value; refused(bad);
+    }
+    auto bad = encoded;
+    std::erase_if(bad, [&](const auto& f) { return f.first == key; }); refused(bad);
+    for (const auto* value : {"0", "1"}) {
+      auto valid = encoded; field(valid, key) = value;
+      const auto result = api::DeserializeMgaRelationStorageDescriptor(valid);
+      Require(result.descriptor_status != "invalid_binary_relation_fields" &&
+          api::SerializeMgaRelationStorageDescriptor(result) == valid,
+          "canonical definition boolean was not preserved");
+    }
+  }
+  for (unsigned mutation = 0; mutation < 4; ++mutation) {
+    auto bad = source;
+    if (mutation == 0) bad.columns.clear();
+    if (mutation == 1) bad.columns[1].ordinal = 0;
+    if (mutation == 2) bad.columns[0].ordinal = 1;
+    if (mutation == 3) bad.columns[1].column_uuid = bad.columns[0].column_uuid;
+    bool threw = false;
+    try { (void)api::SerializeMgaRelationStorageDescriptor(bad); }
+    catch (const std::invalid_argument&) { threw = true; }
+    Require(threw, "relation serializer admitted invalid column cohort");
+  }
+  {
+    auto sparse = source;
+    sparse.columns[0].ordinal = UINT32_MAX;
+    sparse.columns[1].ordinal = 9;
+    Require(api::DeserializeMgaRelationStorageDescriptor(
+        api::SerializeMgaRelationStorageDescriptor(sparse)) == sparse,
+        "structural codec renumbered explicit ordinals or invented alteration policy");
   }
   for (unsigned mutation = 0; mutation < 5; ++mutation) {
     auto bad = encoded;
@@ -5281,6 +5393,59 @@ void TestMgaRelationStorageCodec() {
           destination_descriptor.descriptor_uuid == Id(99) && destination_descriptor.columns.empty()),
           "actual relation codec allocation failure partially published"); ++faults;
     }
+  }
+}
+
+void TestMgaColumnOrdinalContinuity() {
+  api::MgaRelationStorageDescriptor previous;
+  previous.relation_uuid = Id(1);
+  for (unsigned n = 0; n < 3; ++n) {
+    api::MgaRelationColumnStorageDescriptor column;
+    column.column_uuid = Id(10 + n);
+    column.ordinal = n == 2 ? UINT32_MAX : n * 7;
+    previous.columns.push_back(column);
+  }
+  const auto unchanged = previous;
+  for (unsigned removed = 0; removed < 3; ++removed) {
+    auto successor = previous;
+    successor.columns.erase(successor.columns.begin() + removed);
+    std::reverse(successor.columns.begin(), successor.columns.end());
+    Require(api::MgaRelationStoragePreservesSurvivingColumnOrdinals(previous, successor),
+            "column drop or independent presentation order renumbered survivors");
+    auto changed = successor;
+    changed.columns.front().ordinal = 9;
+    Require(!api::MgaRelationStoragePreservesSurvivingColumnOrdinals(previous, changed),
+            "surviving column ordinal mutation admitted");
+    Require(previous == unchanged, "ordinal comparison mutated retained predecessor");
+  }
+  for (unsigned mutation = 0; mutation < 6; ++mutation) {
+    auto bad = previous;
+    if (mutation == 0) bad.relation_uuid = Id(2);
+    if (mutation == 1) bad.columns.clear();
+    if (mutation == 2) bad.columns[1].column_uuid = bad.columns[0].column_uuid;
+    if (mutation == 3) bad.columns[1].ordinal = bad.columns[0].ordinal;
+    if (mutation == 4) bad.columns[1].column_uuid = {};
+    if (mutation == 5) bad.relation_uuid = {};
+    Require(!api::MgaRelationStoragePreservesSurvivingColumnOrdinals(previous, bad) &&
+            !api::MgaRelationStoragePreservesSurvivingColumnOrdinals(bad, previous),
+            "invalid predecessor/successor cohort admitted");
+  }
+  auto successor = previous;
+  successor.columns[0].column_uuid = Id(50);
+  Require(api::MgaRelationStoragePreservesSurvivingColumnOrdinals(previous, successor),
+          "structural continuity comparison invented new-column admission policy");
+  const auto before = allocations;
+  Require(api::MgaRelationStoragePreservesSurvivingColumnOrdinals(previous, previous),
+          "unchanged cohort refused");
+  const auto sites = allocations - before;
+  Require(sites > 0, "ordinal comparison allocation-fault coverage empty");
+  for (std::size_t site = 0; site < sites; ++site) {
+    fail_after = site; bool threw = false;
+    try { (void)api::MgaRelationStoragePreservesSurvivingColumnOrdinals(previous, previous); }
+    catch (const std::bad_alloc&) { threw = true; }
+    fail_after = -1;
+    Require(threw && previous == unchanged, "ordinal comparison swallowed allocation failure or mutated input");
+    ++faults;
   }
 }
 
@@ -5770,6 +5935,7 @@ int main() {
     TestBoundColumnCreationIdentity();
     TestMgaBinaryIdentityFields();
     TestMgaRelationStorageCodec();
+    TestMgaColumnOrdinalContinuity();
     TestCanonicalRenderReplies();
     TestPublicRelationTypeShape();
     TestPublicRelationProjection();

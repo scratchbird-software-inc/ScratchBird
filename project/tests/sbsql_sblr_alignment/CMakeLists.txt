@@ -1,3 +1,19 @@
+add_executable(sbsql_sblr_alignment_catalog_column_ordinals catalog_column_ordinals_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_column_ordinals PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_catalog_column_ordinals PRIVATE ${PROJECT_SOURCE_DIR}/src)
+add_test(NAME sbsql_sblr_alignment_catalog_column_ordinals COMMAND sbsql_sblr_alignment_catalog_column_ordinals)
+set_tests_properties(sbsql_sblr_alignment_catalog_column_ordinals PROPERTIES
+  TIMEOUT 60 LABELS "sbsql_sblr_alignment;catalog;column_ordinals;component_codec;not_native_table_CRUD")
+
+add_executable(sbsql_sblr_alignment_mga_relation_descriptor_validation
+  mga_relation_descriptor_validation_test.cpp)
+target_compile_features(sbsql_sblr_alignment_mga_relation_descriptor_validation PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_mga_relation_descriptor_validation PRIVATE sb_engine_internal_api)
+add_test(NAME sbsql_sblr_alignment_mga_relation_descriptor_validation
+  COMMAND sbsql_sblr_alignment_mga_relation_descriptor_validation)
+set_tests_properties(sbsql_sblr_alignment_mga_relation_descriptor_validation PROPERTIES
+  TIMEOUT 60 LABELS "sbsql_sblr_alignment;binary_uuid;relational_descriptor;component_regression;not_native_table_CRUD")
+
 add_executable(sbsql_sblr_alignment_catalog_security_record catalog_security_record_test.cpp)
 target_compile_features(sbsql_sblr_alignment_catalog_security_record PRIVATE cxx_std_23)
 target_link_libraries(sbsql_sblr_alignment_catalog_security_record PRIVATE sb_core_catalog)
@@ -944,6 +960,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     TIMEOUT 60)
   add_executable(sbsql_sblr_alignment_filespace_page_zero filespace_page_zero_test.cpp)
   include(native_storage_components.cmake)
+  # The standalone storage closure compiles the shared catalog dispatcher
+  # directly. Register its new ordinary-table family dependency without editing
+  # the storage owner's component-list file or changing any storage behavior.
+  target_sources(sbsql_sblr_alignment_native_storage_components PRIVATE
+    ../../src/core/catalog/catalog_table_definition.cpp)
   add_executable(sbsql_sblr_alignment_catalog_metric_retention_staging catalog_metric_retention_staging_test.cpp)
   target_compile_features(sbsql_sblr_alignment_catalog_metric_retention_staging PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_catalog_metric_retention_staging PRIVATE sb_storage_database OpenSSL::Crypto)
@@ -1344,6 +1365,7 @@ add_executable(sbsql_sblr_alignment_catalog_metric_retention_policy
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_storage_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_schema_definition.cpp
+  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_table_definition.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_records.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_retention_policy.cpp)
 target_compile_features(sbsql_sblr_alignment_catalog_metric_retention_policy PRIVATE cxx_std_23)
@@ -1374,6 +1396,7 @@ add_executable(sbsql_sblr_alignment_catalog_metric_descriptor
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_storage_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_schema_definition.cpp
+  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_table_definition.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_records.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_scalar.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_update.cpp
@@ -1429,6 +1452,7 @@ add_executable(sbsql_sblr_alignment_catalog_metric_label_schema
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_storage_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_schema_definition.cpp
+  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_table_definition.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_records.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_scalar.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_update.cpp
@@ -1460,6 +1484,7 @@ add_executable(sbsql_sblr_alignment_catalog_metric_series
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_storage_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_schema_definition.cpp
+  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_table_definition.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_records.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_scalar.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_update.cpp
@@ -1492,6 +1517,7 @@ add_executable(sbsql_sblr_alignment_catalog_metric_binding
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_storage_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_schema_definition.cpp
+  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_table_definition.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_records.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_scalar.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_update.cpp
@@ -2002,6 +2028,13 @@ add_test(NAME sbsql_sblr_alignment_catalog_filespace_record
 set_tests_properties(sbsql_sblr_alignment_catalog_filespace_record PROPERTIES
   LABELS "sbsql_sblr_alignment;IA-03;component_regression;binary_uuid;catalog_payload;real_storage"
   TIMEOUT 120)
+
+add_executable(sbsql_sblr_alignment_catalog_table_definition catalog_table_definition_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_table_definition PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_table_definition PRIVATE sb_core_catalog sb_storage_database)
+add_test(NAME sbsql_sblr_alignment_catalog_table_definition COMMAND sbsql_sblr_alignment_catalog_table_definition)
+set_tests_properties(sbsql_sblr_alignment_catalog_table_definition PROPERTIES
+  TIMEOUT 120 LABELS "sbsql_sblr_alignment;catalog;binary_uuid;native_definition;not_native_table_CRUD")
 
 add_executable(sbsql_sblr_alignment_catalog_schema_definition catalog_schema_definition_test.cpp)
 target_compile_features(sbsql_sblr_alignment_catalog_schema_definition PRIVATE cxx_std_23)
@@ -9763,7 +9796,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_features(sbsql_sblr_alignment_native_management_control_bundle PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_native_management_control_bundle PRIVATE sb_storage_database)
   target_link_options(sbsql_sblr_alignment_native_management_control_bundle PRIVATE
-    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync -Wl,--wrap=RAND_bytes
+    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync -Wl,--wrap=RAND_bytes -Wl,--wrap=posix_fallocate
     -Wl,--wrap=_ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv
     -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
     -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex -Wl,--wrap=EVP_Digest)

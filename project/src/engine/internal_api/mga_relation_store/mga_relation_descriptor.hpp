@@ -112,6 +112,31 @@ struct MgaRelationStorageDescriptor {
 };
 
 EngineApiDiagnostic ValidateMgaRelationStorageDescriptor(const MgaRelationStorageDescriptor& descriptor);
+// Structural successor comparison only. Surviving binary column identities
+// retain stored ordinals; gaps and independent vector order are preserved.
+// Validates cohort identity/ordinal uniqueness, not live catalog admission,
+// new-column/retired-slot reuse permission, generations or MGA publication.
+// May propagate allocation failure; never mutates either descriptor.
+bool MgaRelationStoragePreservesSurvivingColumnOrdinals(
+    const MgaRelationStorageDescriptor& previous,
+    const MgaRelationStorageDescriptor& successor);
+// Structural checks against explicitly supplied persisted table high-water
+// fields. Never infer history from live columns. These do not authenticate the
+// selected versions, reserve a range, validate other descriptor fields or
+// publish catalog state. A higher high-water is not proof of range allocation.
+enum class MgaColumnOrdinalStateError : std::uint8_t {
+  none, invalid_table_identity, invalid_high_water, invalid_column_cohort,
+  column_not_below_high_water, table_identity_mismatch, high_water_decreased,
+  surviving_ordinal_changed, retired_ordinal_reused
+};
+MgaColumnOrdinalStateError ValidateMgaRelationColumnOrdinalState(
+    const MgaRelationStorageDescriptor&, std::uint64_t next_column_ordinal);
+// Error precedence: previous state, successor state, table mismatch, decreased
+// high-water, changed survivor, reused historical ordinal. May throw bad_alloc;
+// both inputs remain unchanged on every path. Reorder/drop do not reset history.
+MgaColumnOrdinalStateError ValidateMgaRelationColumnOrdinalEvolution(
+    const MgaRelationStorageDescriptor& previous, std::uint64_t previous_high_water,
+    const MgaRelationStorageDescriptor& successor, std::uint64_t successor_high_water);
 std::vector<std::pair<std::string, std::string>> SerializeMgaRelationStorageDescriptor(
     const MgaRelationStorageDescriptor& descriptor);
 MgaRelationStorageDescriptor DeserializeMgaRelationStorageDescriptor(

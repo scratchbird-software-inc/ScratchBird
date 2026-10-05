@@ -14,6 +14,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <limits>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -149,10 +150,20 @@ EngineApiDiagnostic ValidateMgaRelationStorageDescriptor(const MgaRelationStorag
   if (descriptor.columns.empty()) {
     return MakeInvalidRequestDiagnostic("mga.relation_descriptor", "at_least_one_column_required");
   }
+  std::set<decltype(EngineUuid{}.bytes)> column_identities;
+  std::set<std::uint32_t> stored_ordinals;
   for (const auto& column : descriptor.columns) {
     if (!core::uuid::IsEngineIdentityUuid(column.column_uuid) ||
         !core::uuid::IsEngineIdentityUuid(column.value_descriptor.descriptor_uuid)) {
       return MakeInvalidRequestDiagnostic("mga.relation_descriptor", "column_uuid_required");
+    }
+    // Direct typed callers must retain the same cohort invariants as decoded
+    // callers. Stored ordinals are unique, not necessarily dense or sorted.
+    if (!column_identities.insert(column.column_uuid.bytes).second) {
+      return MakeInvalidRequestDiagnostic("mga.relation_descriptor", "duplicate_column_uuid");
+    }
+    if (!stored_ordinals.insert(column.ordinal).second) {
+      return MakeInvalidRequestDiagnostic("mga.relation_descriptor", "duplicate_column_ordinal");
     }
     if (column.column_generation == 0) {
       return MakeInvalidRequestDiagnostic(

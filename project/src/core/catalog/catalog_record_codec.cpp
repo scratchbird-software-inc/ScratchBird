@@ -9,6 +9,7 @@
 #include "catalog_record_codec.hpp"
 #include "catalog_metric_current_value.hpp"
 #include "catalog_schema_definition.hpp"
+#include "catalog_table_definition.hpp"
 #include "catalog_security_record_codec.hpp"
 #include "catalog_storage_record_codec.hpp"
 #include "catalog_metric_retention_policy.hpp"
@@ -132,6 +133,18 @@ CatalogTypedRecordViewResult ValidateCatalogTypedRecordView(CatalogTypedRecordVi
     if(const auto error=DurableIdentityError(record.header.parent_uuid))return {{},*error};
   }
 
+  // These are ordinary-table family schemas, not a transition of every record
+  // sharing the broad table/column kinds (including bootstrap descriptors).
+  // Complete metadata admission also dispatches on the explicit subtype, so a
+  // corrupt schema marker cannot bypass an ordinary-table family check.
+  if (IsCatalogTableDefinitionPayload(record.payload) &&
+      !CatalogTableDefinitionMatchesHeader(record))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.table_definition.invalid",
+                      "table_binary_payload_or_header_invalid");
+  if (IsCatalogColumnDefinitionPayload(record.payload) &&
+      !CatalogColumnDefinitionMatchesHeader(record))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.column_definition.invalid",
+                      "column_binary_payload_or_header_invalid");
   if (IsCatalogRuntimeAuthorityBindingPayload(record.payload) &&
       !CatalogRuntimeAuthorityBindingMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.runtime_authority_binding.invalid",
@@ -385,6 +398,14 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
        IsCatalogRuntimeAuthorityBindingPayload(value.record.payload)) &&
       !CatalogRuntimeAuthorityBindingMatchesMetadata(value))
     return MetadataViewError("runtime_authority_definition_binding_invalid");
+  if ((IsCatalogTableDefinitionPayload(value.record.payload) ||
+       value.object_subtype == "ordinary_persistent_table") &&
+      !CatalogTableDefinitionMatchesMetadata(value))
+    return MetadataViewError("table_definition_binding_invalid");
+  if ((IsCatalogColumnDefinitionPayload(value.record.payload) ||
+       value.object_subtype == "persistent_table_column") &&
+      !CatalogColumnDefinitionMatchesMetadata(value))
+    return MetadataViewError("column_definition_binding_invalid");
   const bool retired = value.record.header.deleted;
   if ((value.object_subtype == "metric_visibility" ||
        IsCatalogMetricVisibilityPolicyPayload(value.record.payload)) &&
@@ -595,6 +616,8 @@ bool CatalogMetadataPreservesFamilyOrigin(
       CatalogSchedulerQueueProfilePreservesOrigin(previous,successor) &&
       CatalogSchedulerFairnessProfilePreservesOrigin(previous,successor) &&
       CatalogSchemaDefinitionPreservesOrigin(previous,successor) &&
+      CatalogTableDefinitionPreservesOrigin(previous,successor) &&
+      CatalogColumnDefinitionPreservesOrigin(previous,successor) &&
       CatalogStorageActionPolicyPreservesOrigin(previous,successor) &&
       CatalogStorageActionAttachmentPreservesOrigin(previous,successor) &&
       CatalogMetricRetentionPolicyPreservesOrigin(previous,successor) &&
