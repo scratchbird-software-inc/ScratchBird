@@ -730,6 +730,12 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   )
   add_executable(dml_ingestion_lifetime_conformance dml_ingestion_lifetime_conformance.cpp)
   add_executable(dml_typed_null_storage_conformance dml_typed_null_storage_conformance.cpp)
+  add_executable(dml_native_scalar_storage_conformance dml_native_scalar_storage_conformance.cpp)
+  target_compile_features(dml_native_scalar_storage_conformance PRIVATE cxx_std_23)
+  target_link_libraries(dml_native_scalar_storage_conformance PRIVATE sb_engine_internal_api)
+  add_test(NAME dml_native_scalar_storage_conformance COMMAND dml_native_scalar_storage_conformance)
+  set_tests_properties(dml_native_scalar_storage_conformance PROPERTIES
+    LABELS "database_lifecycle_storage;native_scalar;binary_uuid")
   target_compile_features(dml_typed_null_storage_conformance PRIVATE cxx_std_23)
   target_link_libraries(dml_typed_null_storage_conformance PRIVATE sb_engine_internal_api)
   add_test(NAME dml_typed_null_storage_conformance COMMAND dml_typed_null_storage_conformance)
@@ -766,6 +772,10 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   # retain every original case, including this same committed/reopen check.
   add_test(NAME cdp_native_typed_null_storage_gate
     COMMAND cdp_native_bulk_ingest_api_gate --native-typed-null)
+  add_test(NAME cdp_native_int64_index_storage_gate
+    COMMAND cdp_native_bulk_ingest_api_gate --native-int64-index)
+  set_tests_properties(cdp_native_int64_index_storage_gate PROPERTIES
+    LABELS "database_lifecycle_storage;native_scalar;mga_transaction_regression")
   set_tests_properties(cdp_native_typed_null_storage_gate PROPERTIES
     LABELS "database_lifecycle_storage;typed_null;mga_transaction_regression")
   set_tests_properties(cdp_native_fixed_scalar_uuid_bulk_gate PROPERTIES
