@@ -30,6 +30,25 @@ struct NativeManagementControlBundleImage {
   std::vector<std::vector<byte>> pages;
   bool ok() const noexcept{return error==NativeManagementControlBundleError::none&&root.has_value();}
 };
+struct NativeManagementControlBundleEncoding {
+  NativeManagementControlBundleError error=NativeManagementControlBundleError::invalid_request;
+  std::optional<NativeManagementControlBundleRoot> root;
+  std::span<const byte> pages;
+  std::size_t backing_bytes_used=0;
+  bool ok() const noexcept{return error==NativeManagementControlBundleError::none&&root.has_value();}
+};
+// Complete immutable construction. All validation metadata and payload use
+// backing; ordered physical pages use output. Both entire regions must be
+// disjoint from each other and every input region. No implicit heap fallback,
+// actual memory grant, source admission or publication permission is supplied.
+NativeManagementControlBundleEncoding EncodeNativeManagementControlBundleInto(
+  std::span<const std::span<const byte>> allocation_images,const Uuid& database,
+  const Uuid& bootstrap,const Uuid& object,const Uuid& attempt,
+  std::span<const disk::NativeCommonPageHeader> headers,u64 budget,
+  std::span<byte> output,std::span<byte> backing,
+  std::span<const std::span<const byte>> inventory_images={},
+  std::span<const std::span<const byte>> directory_images={},
+  std::span<const std::span<const byte>> growth_images={}) noexcept;
 struct NativeManagementControlBundleRead {
   NativeManagementControlBundleError error=NativeManagementControlBundleError::invalid_request;
   std::vector<std::vector<byte>> allocation_images;

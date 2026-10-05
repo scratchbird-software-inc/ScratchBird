@@ -319,6 +319,20 @@ if(TARGET sbsql_sblr_alignment_native_storage_components)
     TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;fault_injection;not_runtime_acceptance")
 endif()
 if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
+  # New exhaustive encoding faults are independently scheduled by profile.
+  # Preserve existing aggregate codec/read gates and their original deadlines.
+  foreach(primary RANGE 0 4)
+    add_test(NAME native_bundle_encoding_legacy_${primary}_gate
+      COMMAND sbsql_sblr_alignment_native_management_control_bundle --bundle-encoding ${primary})
+    set_tests_properties(native_bundle_encoding_legacy_${primary}_gate PROPERTIES
+      LABELS "storage;binary_uuid;memory;bundle_encoding;fault_injection;real_files;not_publication_acceptance" TIMEOUT 120)
+    foreach(secondary RANGE 0 4)
+      add_test(NAME native_bundle_encoding_${primary}_${secondary}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --bundle-encoding ${primary} ${secondary})
+      set_tests_properties(native_bundle_encoding_${primary}_${secondary}_gate PROPERTIES
+        LABELS "storage;binary_uuid;memory;bundle_encoding;mixed_page_profiles;fault_injection;real_files;not_publication_acceptance" TIMEOUT 120)
+    endforeach()
+  endforeach()
   # Consume the unchanged 01f issuer; storage owns this integration fixture.
   target_sources(sbsql_sblr_alignment_native_management_control_bundle PRIVATE
     "${PROJECT_SOURCE_DIR}/src/server/database_ownership.cpp")
