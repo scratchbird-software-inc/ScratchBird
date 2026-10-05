@@ -376,28 +376,70 @@ void InvalidStateAndOverflow() {
     changed.cv_stack[0][0] = 1;
     Check(IsRefused(changed), "dirty unused CV slot was accepted");
 
-    h::Blake3IncrementalStateV3 maximum{};
-    Check(h::InitializeBlake3IncrementalV3(&maximum) ==
+    h::Blake3IncrementalStateV3 above_int64{};
+    Check(h::InitializeBlake3IncrementalV3(&above_int64) ==
               h::Blake3IncrementalStatusV3::kOk,
-          "maximum-state setup initialization failed");
-    maximum.total_input_bytes =
-        h::kBlake3IncrementalMaximumInputBytesV3;
-    maximum.current_chunk_counter =
+          "above-INT64 setup initialization failed");
+    above_int64.total_input_bytes =
+        static_cast<std::uint64_t>(INT64_MAX) + 153U;
+    above_int64.current_chunk_counter = (std::uint64_t{1} << 53U);
+    above_int64.blocks_compressed = 2;
+    above_int64.block_length = 24;
+    above_int64.cv_stack_length = 1;
+    Check(h::UpdateBlake3IncrementalV3(&above_int64, nullptr, 0) ==
+              h::Blake3IncrementalStatusV3::kOk,
+          "structurally valid state above INT64_MAX was rejected");
+
+    h::Blake3IncrementalStateV3 protected_boundary{};
+    Check(h::InitializeBlake3IncrementalV3(&protected_boundary) ==
+              h::Blake3IncrementalStatusV3::kOk,
+          "protected-boundary setup initialization failed");
+    protected_boundary.total_input_bytes =
+        h::kBlake3IncrementalMaximumInputBytesV3 - 41U;
+    protected_boundary.current_chunk_counter =
         h::kBlake3IncrementalMaximumInputBytesV3 / 1024U;
-    maximum.blocks_compressed = 15;
-    maximum.block_length = 63;
-    maximum.cv_stack_length = 53;
-    Check(h::UpdateBlake3IncrementalV3(&maximum, nullptr, 0) ==
+    protected_boundary.blocks_compressed = 15;
+    protected_boundary.block_length = 22;
+    protected_boundary.cv_stack_length = 54;
+    std::array<std::uint8_t, 41> backup_digest_domain{};
+    Check(h::UpdateBlake3IncrementalV3(
+              &protected_boundary, backup_digest_domain.data(),
+              backup_digest_domain.size()) ==
+              h::Blake3IncrementalStatusV3::kOk &&
+              protected_boundary.total_input_bytes ==
+                  h::kBlake3IncrementalMaximumInputBytesV3 &&
+              protected_boundary.block_length == 63,
+          "41-byte backup digest domain did not reach exact UINT64_MAX");
+    Check(h::UpdateBlake3IncrementalV3(&protected_boundary, nullptr, 0) ==
               h::Blake3IncrementalStatusV3::kOk,
-          "structurally valid INT64_MAX state was rejected");
+          "structurally valid UINT64_MAX state was rejected");
     const std::uint8_t byte = 0;
-    Check(h::UpdateBlake3IncrementalV3(&maximum, &byte, 1) ==
+    Check(h::UpdateBlake3IncrementalV3(&protected_boundary, &byte, 1) ==
               h::Blake3IncrementalStatusV3::kLengthOverflow,
-          "INT64_MAX plus one byte did not report length overflow");
-    Check(maximum.lifecycle == h::Blake3IncrementalLifecycleV3::kFailed &&
-              maximum.total_input_bytes == 0 &&
-              maximum.current_chunk_counter == 0,
+          "UINT64_MAX plus one byte did not report length overflow");
+    Check(protected_boundary.lifecycle ==
+                  h::Blake3IncrementalLifecycleV3::kFailed &&
+              protected_boundary.total_input_bytes == 0 &&
+              protected_boundary.current_chunk_counter == 0,
           "length-overflow refusal did not scrub and poison state");
+
+    h::Blake3IncrementalStateV3 wrapping{};
+    Check(h::InitializeBlake3IncrementalV3(&wrapping) ==
+              h::Blake3IncrementalStatusV3::kOk,
+          "wrapping-state setup initialization failed");
+    wrapping.current_chunk_counter =
+        h::kBlake3IncrementalMaximumInputBytesV3 / 1024U;
+    wrapping.blocks_compressed = 15;
+    wrapping.block_length = 64;
+    wrapping.cv_stack_length = 54;
+    wrapping.total_input_bytes = 0;
+    Check(h::UpdateBlake3IncrementalV3(&wrapping, nullptr, 0) ==
+                  h::Blake3IncrementalStatusV3::kInvalidState &&
+              wrapping.lifecycle ==
+                  h::Blake3IncrementalLifecycleV3::kFailed &&
+              wrapping.total_input_bytes == 0 &&
+              wrapping.current_chunk_counter == 0,
+          "overflow-wrapping active state was not refused and scrubbed");
 }
 
 void PointerAliasingAndTransitions() {
@@ -645,8 +687,9 @@ void BranchingAndIrregularSegments() {
 int main() {
     static_assert(sizeof(h::Blake3IncrementalStateV3) == 1856);
     static_assert(h::kBlake3IncrementalCvStackCapacityV3 == 54);
+    static_assert(h::kBlake3IncrementalMaximumInputBytesV3 == UINT64_MAX);
     static_assert((h::kBlake3IncrementalMaximumInputBytesV3 / 1024U) ==
-                  9007199254740991ULL);
+                  18014398509481983ULL);
 
     OfficialKnownAnswersAndSegmentation();
     LifecycleAndScrub();
