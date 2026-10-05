@@ -706,6 +706,10 @@ bool CanonicalOperationValueValid(const DatatypeOperationValue& value) {
   if (!LookupDatatypeDescriptor(value.type_id).ok()) {
     return false;
   }
+  // DatatypeOperationValue is a V1 materialized/name-selected carrier. The
+  // current blob cohort is admitted only through its exact receipt-aware V3
+  // streaming API.
+  if (value.type_id == CanonicalTypeId::blob) return false;
   // The generic carrier has no current receipt or complete temporal profile.
   if (value.type_id == CanonicalTypeId::date ||
       value.type_id == CanonicalTypeId::time ||
@@ -807,6 +811,14 @@ const char* CanonicalOperationValueDiagnosticCode(
   if (value.type_id == CanonicalTypeId::unknown ||
       value.type_id == CanonicalTypeId::null_type) {
     return "DATATYPE.DESCRIPTOR.INVALID";
+  }
+  if (value.type_id == CanonicalTypeId::blob) {
+    if (value.is_null && !value.encoded_value.empty())
+      return "DATATYPE.NULL_STATE.INVALID";
+    if (value.is_null && ExecutionDescriptorPresent(value.descriptor) &&
+        !value.descriptor.nullable_allowed)
+      return "DATATYPE.NULL_NOT_ADMITTED";
+    return "BLOB.V1_V2_REFUSED";
   }
   if (value.type_id == CanonicalTypeId::interval) {
     if (const char* code = GenericIntervalStructuralDiagnosticCode(value))
@@ -1114,7 +1126,7 @@ bool IsTemporal(CanonicalTypeId type_id) {
 }
 
 bool IsBinaryLike(CanonicalTypeId type_id) {
-  return type_id == CanonicalTypeId::binary || type_id == CanonicalTypeId::blob;
+  return type_id == CanonicalTypeId::binary;
 }
 
 bool IsDocument(CanonicalTypeId type_id) {
@@ -1130,7 +1142,6 @@ bool IsOpaqueRenderOnly(CanonicalTypeId type_id) {
 
 bool DisplayAsMetadataSummary(CanonicalTypeId type_id) {
   switch (type_id) {
-    case CanonicalTypeId::blob:
     case CanonicalTypeId::binary_json_document:
     case CanonicalTypeId::bson_document:
     case CanonicalTypeId::raster:
@@ -3082,7 +3093,9 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
   // These types require authenticated V3 receipts and complete profiles. This
   // legacy enum-only classifier cannot admit even an apparent identity pair;
   // callers must use the profile-aware type API.
-  if (source_type_id == CanonicalTypeId::interval ||
+  if (source_type_id == CanonicalTypeId::blob ||
+      target_type_id == CanonicalTypeId::blob ||
+      source_type_id == CanonicalTypeId::interval ||
       target_type_id == CanonicalTypeId::interval ||
       source_type_id == CanonicalTypeId::bit_string ||
       target_type_id == CanonicalTypeId::bit_string ||
@@ -3225,6 +3238,18 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
 }
 
 DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
+  if (request.value.type_id == CanonicalTypeId::blob ||
+      request.target_type_id == CanonicalTypeId::blob) {
+    if (request.value.type_id == CanonicalTypeId::blob &&
+        request.value.is_null && !request.value.encoded_value.empty()) {
+      return CastFailure("blob_null_payload_present",
+                         DatatypeCastCategory::forbidden,
+                         "DATATYPE.NULL_STATE.INVALID");
+    }
+    return CastFailure("base_blob_v1_v2_route_refused",
+                       DatatypeCastCategory::forbidden,
+                       "BLOB.V1_V2_REFUSED");
+  }
   if (request.value.type_id == CanonicalTypeId::interval ||
       request.target_type_id == CanonicalTypeId::interval) {
     if (const char* code = GenericIntervalStructuralDiagnosticCode(request.value))
@@ -4092,6 +4117,13 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
 }
 
 DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request) {
+  if (request.value.type_id == CanonicalTypeId::blob) {
+    if (request.value.is_null && !request.value.encoded_value.empty())
+      return ExtractFailure("blob_null_payload_present",
+                            "DATATYPE.NULL_STATE.INVALID");
+    return ExtractFailure("base_blob_v1_v2_route_refused",
+                          "BLOB.V1_V2_REFUSED");
+  }
   if (request.value.type_id == CanonicalTypeId::interval) {
     if (const char* code = GenericIntervalStructuralDiagnosticCode(request.value))
       return ExtractFailure("interval_generic_structural_refusal", code);
@@ -4293,8 +4325,7 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
     if (request.value.type_id == CanonicalTypeId::character &&
                (field == "character_length" || field == "octet_length" || field == "length")) {
       result_type = CanonicalTypeId::uint64;
-    } else if ((request.value.type_id == CanonicalTypeId::binary ||
-                request.value.type_id == CanonicalTypeId::blob) &&
+    } else if (request.value.type_id == CanonicalTypeId::binary &&
                (field == "octet_length" || field == "length")) {
       result_type = CanonicalTypeId::uint64;
     }
@@ -4349,13 +4380,6 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
       return result;
     }
     return ExtractFailure("unsupported_text_field:" + field);
-  }
-  if (request.value.type_id == CanonicalTypeId::blob) {
-    if (field == "octet_length" || field == "length") {
-      result.value = UInt64Value(value.size());
-      return result;
-    }
-    return ExtractFailure("unsupported_binary_field:" + field);
   }
   if (request.value.type_id == CanonicalTypeId::set_value && field == "cardinality") {
     EncodedSetFrame frame;
@@ -7245,6 +7269,19 @@ DatatypeSerializationResult SerializeDatatypeValue(
   DatatypeSerializationResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (request.value.type_id == CanonicalTypeId::blob) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status,
+        request.value.is_null && !request.value.encoded_value.empty()
+            ? "DATATYPE.NULL_STATE.INVALID"
+            : "BLOB.V1_V2_REFUSED",
+        "datatype.serialization.rejected",
+        request.value.is_null && !request.value.encoded_value.empty()
+            ? "blob_null_payload_present"
+            : "generic_sbdv1_lacks_exact_blob_receipt");
+    return result;
+  }
   if (request.value.type_id == CanonicalTypeId::interval) {
     const char* interval_code =
         GenericIntervalStructuralDiagnosticCode(request.value);
@@ -7505,6 +7542,15 @@ static DatatypeDeserializationResult DeserializeDatatypeValueUnchecked(
   DatatypeDeserializationResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (request.expected_type_id == CanonicalTypeId::blob ||
+      LegacySbdv1EncodedTypeIs(request.serialized_value, "blob")) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "BLOB.V1_V2_REFUSED",
+        "datatype.deserialization.rejected",
+        "generic_sbdv1_lacks_exact_blob_receipt");
+    return result;
+  }
   if (request.expected_type_id == CanonicalTypeId::interval ||
       LegacySbdv1EncodedTypeIs(request.serialized_value, "interval")) {
     result.status = ErrorStatus();

@@ -182,6 +182,15 @@ DatatypeDescriptorSerializationResult SerializeDatatypeDescriptor(const Datatype
         "SBDTV001 cannot carry the exact d710 receipt or complete interval profile");
     return result;
   }
+  if (descriptor.type_id == CanonicalTypeId::blob) {
+    result.status = DatatypeExchangeErrorStatus();
+    result.diagnostic = MakeDatatypeExchangeDiagnostic(
+        result.status,
+        "BLOB.V1_V2_REFUSED",
+        "datatype.blob.legacy_descriptor_serialization_refused",
+        "SBDTV001 cannot carry the exact V11 blob receipt or profile");
+    return result;
+  }
   if (descriptor.type_id == CanonicalTypeId::bit_string) {
     result.status = DatatypeExchangeErrorStatus();
     result.diagnostic = MakeDatatypeExchangeDiagnostic(
@@ -255,6 +264,15 @@ DatatypeDescriptorResult ParseDatatypeDescriptor(const SerializedDatatypeDescrip
         "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
         "datatype.interval.legacy_descriptor_parse_refused",
         "SBDTV001 cannot establish exact d710 interval authority");
+    return result;
+  }
+  if (type_id == CanonicalTypeId::blob) {
+    result.status = DatatypeExchangeErrorStatus();
+    result.diagnostic = MakeDatatypeExchangeDiagnostic(
+        result.status,
+        "BLOB.V1_V2_REFUSED",
+        "datatype.blob.legacy_descriptor_parse_refused",
+        "SBDTV001 cannot establish exact V11 blob authority");
     return result;
   }
 

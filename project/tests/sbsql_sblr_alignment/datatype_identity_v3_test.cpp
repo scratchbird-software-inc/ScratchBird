@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../../src/core/datatypes/datatype_type_codec_identity_v3.hpp"
+#include "../../src/core/datatypes/datatype_binary.hpp"
+#include "../../src/core/datatypes/datatype_exchange.hpp"
+#include "../../src/core/datatypes/datatype_layout.hpp"
+#include "../../src/core/datatypes/datatype_operations.hpp"
+#include "../../src/core/datatypes/datatype_physical_encoding.hpp"
+#include "../../src/core/datatypes/datatype_storage_identity.hpp"
+#include "../../src/core/datatypes/datatype_wire_metadata.hpp"
 #include "../../src/core/hash/hash_digest.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 
@@ -1724,6 +1731,111 @@ void TestExactBlobIdentity() {
         "synthetic name-derived base.blob descriptor was admitted");
 }
 
+void TestBlobLegacyRouteIsolation() {
+  using scratchbird::tests::FixtureUuidLiteral;
+  const auto descriptor_uuid =
+      FixtureUuidLiteral("016fd1d3-0daf-5967-b4d7-07fe859a418e");
+
+  const auto layout = dt::LookupDatatypeStorageLayout(
+      dt::CanonicalTypeId::blob);
+  Check(layout.ok() &&
+            layout.layout.storage_class ==
+                dt::DatatypeStorageClass::logical_large_value &&
+            layout.layout.encoding ==
+                dt::DatatypeBinaryEncoding::blob_component_v3 &&
+            layout.layout.inline_bytes == 0 &&
+            layout.layout.requires_descriptor &&
+            !layout.layout.may_overflow_to_toast,
+        "base.blob still publishes a V1/V2 toast or inline layout");
+
+  const auto descriptor =
+      dt::LookupDatatypeDescriptor(dt::CanonicalTypeId::blob);
+  Check(descriptor.ok(), "base.blob descriptor lookup failed");
+  const auto legacy_descriptor =
+      dt::SerializeDatatypeDescriptor(descriptor.descriptor);
+  Check(!legacy_descriptor.ok() &&
+            legacy_descriptor.diagnostic.diagnostic_code ==
+                "BLOB.V1_V2_REFUSED",
+        "SBDTV001 serialized the current base.blob cohort");
+
+  dt::DatatypeBinaryValue generic_value;
+  generic_value.type_id = dt::CanonicalTypeId::blob;
+  generic_value.payload = {Byte{0x00}};
+  const auto generic_binary = dt::EncodeDatatypeBinaryValue(generic_value);
+  Check(!generic_binary.ok() &&
+            generic_binary.diagnostic.diagnostic_code ==
+                "BLOB.V1_V2_REFUSED",
+        "SBDVAL01 encoded the current base.blob cohort");
+  const dt::DatatypeBinaryValueView borrowed_blob{
+      dt::CanonicalTypeId::blob, false, false,
+      generic_value.payload.data(), generic_value.payload.size()};
+  const auto structural_binary =
+      dt::ValidateDatatypeBinaryStructuralValueViewNoAlloc(borrowed_blob);
+  Check(!structural_binary.ok() &&
+            structural_binary.diagnostic.diagnostic_code ==
+                "BLOB.V1_V2_REFUSED",
+        "structural SBDVAL01 admitted the current base.blob cohort");
+
+  dt::DatatypePhysicalValue generic_physical;
+  generic_physical.type_id = dt::CanonicalTypeId::blob;
+  generic_physical.state = dt::DatatypePhysicalValueState::value;
+  generic_physical.payload = {Byte{0x00}};
+  const auto physical =
+      dt::EncodeDatatypePhysicalValue(generic_physical);
+  Check(!physical.ok() &&
+            physical.diagnostic.diagnostic_code ==
+                "BLOB.V1_V2_REFUSED",
+        "SBDPV001 encoded the current base.blob cohort");
+  const dt::DatatypePhysicalValueView borrowed_physical{
+      dt::CanonicalTypeId::blob, dt::DatatypePhysicalValueState::value,
+      generic_physical.payload.data(), generic_physical.payload.size()};
+  const auto structural_physical =
+      dt::ValidateDatatypePhysicalStructuralValueViewNoAlloc(
+          borrowed_physical);
+  Check(!structural_physical.ok() &&
+            structural_physical.diagnostic.diagnostic_code ==
+                "BLOB.V1_V2_REFUSED",
+        "structural SBDPV001 admitted the current base.blob cohort");
+
+  const auto legacy_wire =
+      dt::WireTypeIdForCanonicalTypeId(dt::CanonicalTypeId::blob);
+  Check(legacy_wire.type_family == 0 && legacy_wire.type_code == 0 &&
+            legacy_wire.type_version == 0 && legacy_wire.type_flags == 0,
+        "base.blob still maps to the numeric V1 native-wire LOB family");
+  dt::CanonicalWireTypeId old_lob_wire;
+  old_lob_wire.type_family =
+      static_cast<std::uint16_t>(dt::CanonicalWireTypeFamily::lob);
+  old_lob_wire.type_code = 1;
+  old_lob_wire.type_version = 1;
+  old_lob_wire.type_flags = dt::CanonicalWireTypeFlagBit(
+      dt::CanonicalWireTypeFlag::lob_locator_metadata_required);
+  Check(dt::CanonicalTypeIdFromWireTypeId(old_lob_wire) ==
+            dt::CanonicalTypeId::unknown,
+        "numeric V1 native-wire LOB metadata inferred base.blob identity");
+
+  Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::blob,
+                                 dt::CanonicalTypeId::blob, false) ==
+            dt::DatatypeCastCategory::forbidden &&
+            dt::ClassifyDatatypeCast(dt::CanonicalTypeId::binary,
+                                     dt::CanonicalTypeId::blob, false) ==
+                dt::DatatypeCastCategory::forbidden,
+        "enum-only generic casts admitted the current base.blob cohort");
+
+  dt::DatatypeStorageIdentityV3 storage_v3;
+  Check(dt::LookupDatatypeStorageIdentityV3(
+            dt::kDatatypeCohortV11, 11, 11, descriptor_uuid, 1,
+            &storage_v3) &&
+            storage_v3.type_id == dt::CanonicalTypeId::blob &&
+            storage_v3.codec.has_value() &&
+            dt::IsExactCanonicalBlobTypeCodecIdentityV3(*storage_v3.codec),
+        "V3 storage identity did not preserve exact base.blob authority");
+  dt::DatatypeStorageIdentityV1 storage_v1;
+  Check(!dt::LookupDatatypeStorageIdentityV1(
+            dt::kDatatypeCohortV11, 11, 11, descriptor_uuid, 1,
+            &storage_v1),
+        "base.blob downgraded into the historical V1 storage identity");
+}
+
 void TestLookupAllocationFailureIsContained() {
   using scratchbird::tests::FixtureUuidLiteral;
   const auto date_descriptor =
@@ -1783,6 +1895,7 @@ int main() {
   TestExactCurrentBinaryDateAndCodecClosures();
   TestExactIntervalIdentity();
   TestExactBlobIdentity();
+  TestBlobLegacyRouteIsolation();
   TestLookupAllocationFailureIsContained();
   std::cout << "datatype_identity_v3_test=passed\n";
   return EXIT_SUCCESS;

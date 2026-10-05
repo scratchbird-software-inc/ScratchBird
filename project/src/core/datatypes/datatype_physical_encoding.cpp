@@ -156,6 +156,11 @@ DatatypePhysicalAllocationFreeViewResult PhysicalStructuralValidation(
     }
     DatatypePhysicalValueView clean = value;
     clean.payload_data = nullptr;
+    if (value.type_id == CanonicalTypeId::blob) {
+      return PhysicalNoAllocError("BLOB.V1_V2_REFUSED",
+                                  "datatype.blob.v1_v2_refused",
+                                  "SBDPV001 cannot establish V11 blob authority");
+    }
     return PhysicalNoAllocOk(clean);
   }
   if ((value.payload_bytes != 0 && value.payload_data == nullptr) ||
@@ -165,6 +170,11 @@ DatatypePhysicalAllocationFreeViewResult PhysicalStructuralValidation(
     return PhysicalNoAllocError("SB-DATATYPE-PHYSICAL-LENGTH-MISMATCH",
                                 "datatype.physical.length_mismatch",
                                 "borrowed_payload_bounds_invalid");
+  }
+  if (value.type_id == CanonicalTypeId::blob) {
+    return PhysicalNoAllocError("BLOB.V1_V2_REFUSED",
+                                "datatype.blob.v1_v2_refused",
+                                "SBDPV001 cannot establish V11 blob authority");
   }
   return PhysicalNoAllocOk(value);
 }
@@ -471,6 +481,17 @@ DatatypePhysicalEncodingResult EncodeDatatypePhysicalValue(
                    "datatype.physical.payload_too_large",
                    CanonicalTypeName(value.type_id));
   }
+  if (value.type_id == CanonicalTypeId::blob) {
+    if (value.state == DatatypePhysicalValueState::sql_null &&
+        !value.payload.empty()) {
+      return Failure("DATATYPE.NULL_STATE.INVALID",
+                     "datatype.physical.payload_refused",
+                     "null_payload_present");
+    }
+    return Failure("BLOB.V1_V2_REFUSED",
+                   "datatype.blob.v1_v2_refused",
+                   "SBDPV001 cannot establish V11 blob authority");
+  }
   if (value.type_id == CanonicalTypeId::bit_string) {
     if (value.state == DatatypePhysicalValueState::sql_null &&
         !value.payload.empty())
@@ -647,6 +668,13 @@ DatatypePhysicalEncodingResult DecodeDatatypePhysicalValue(
     return Failure("DATATYPE.NULL_STATE.INVALID",
                    "datatype.physical.payload_refused",
                    "null_payload_present");
+  }
+  // Complete frame integrity is established above before selecting the legacy
+  // route diagnostic. SBDPV001 never admits the current V11 blob cohort.
+  if (type_id == CanonicalTypeId::blob) {
+    return Failure("BLOB.V1_V2_REFUSED",
+                   "datatype.blob.v1_v2_refused",
+                   "SBDPV001 cannot establish V11 blob authority");
   }
   if (type_id == CanonicalTypeId::bit_string) {
     if (state != DatatypePhysicalValueState::sql_null &&
