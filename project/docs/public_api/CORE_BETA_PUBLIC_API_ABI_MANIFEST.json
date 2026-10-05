@@ -21,6 +21,7 @@
   },
   "packaged_include_root": "project/include/scratchbird/engine",
   "public_headers": [
+    "project/include/scratchbird/engine/blob_lifetime_abi.h",
     "project/include/scratchbird/engine/descriptor.hpp",
     "project/include/scratchbird/engine/diagnostic.h",
     "project/include/scratchbird/engine/engine.h",
@@ -75,6 +76,16 @@
         "project/src/engine/public_abi.cpp"
       ],
       "entry_point_family": "sb_engine_*",
+      "execution_authority": "engine_sblr_internal_api_only"
+    },
+    {
+      "surface_id": "blob_lifetime_authority_c_abi_v3",
+      "classification": "core",
+      "contract_version": "base_blob_lifetime_authority_c_abi_v3_generation_1",
+      "source_paths": [
+        "project/include/scratchbird/engine/blob_lifetime_abi.h"
+      ],
+      "entry_point_family": "BlobLifetimeAuthorityV3_callback_table",
       "execution_authority": "engine_sblr_internal_api_only"
     },
     {
