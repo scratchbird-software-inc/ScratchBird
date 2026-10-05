@@ -3036,6 +3036,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/docs/public_api/CORE_BETA_PUBLIC_API_ABI_M
   )
 endif()
 
+function(sb_link_enrolled_engine_modules)
 foreach(sb_engine_internal_module_target IN ITEMS
     sb_engine_internal_api
     sb_engine_sblr
@@ -3052,6 +3053,11 @@ foreach(sb_engine_internal_module_target IN ITEMS
     endif()
   endif()
 endforeach()
+endfunction()
+# Some isolated test topologies enroll production engine modules in later
+# subdirectories. Resolve their real transitive dependencies after enrollment,
+# rather than compiling public_abi with an incomplete include/link closure.
+cmake_language(DEFER CALL sb_link_enrolled_engine_modules)
 
 if(TARGET sb_engine_shared AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT APPLE)
   set(sb_engine_shared_export_map
