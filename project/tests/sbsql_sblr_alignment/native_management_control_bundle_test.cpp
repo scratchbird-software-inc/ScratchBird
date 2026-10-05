@@ -19,6 +19,7 @@
 #include "native_catalog_relation_lease_reader.hpp"
 #include "native_catalog_visibility_lease_reader.hpp"
 #include "native_allocation_lease_reader.hpp"
+#include "native_page_reservation_lease_reader.hpp"
 #include "row_version_observation.hpp"
 #ifdef SB_NATIVE_ROUTE_SOURCE_TESTS
 #include "../../src/server/database_ownership.hpp"
@@ -1123,6 +1124,7 @@ struct DirectoryHistoryFixture {
 };
 void EmptyHistory(const db::NativeManagementHistory& h){Check(!h.ok()&&!h.anchor&&!h.selection&&h.entries.empty()&&h.latest.empty()&&h.idempotency.empty()&&!h.verified_image_bytes,"failed history has no provenance prefix");}
 #include "native_allocation_lease_checks.hpp"
+#include "native_page_reservation_lease_checks.hpp"
 void DirectoryInstallationRefusals(unsigned primary){for(bool readonly:{false,true}){
  DirectoryHistoryFixture f(primary,primary,true,readonly?3:2,true,true,false,false);auto& t=f.t;
  if(readonly)Check(t.fixture.secondary.Close().ok()&&t.fixture.secondary.Open(f.secondary_path.string(),d::FileOpenMode::open_existing_read_only).ok(),"readonly candidate member fixture");
@@ -4036,6 +4038,12 @@ void Test(unsigned profile){Fixture f(profile);Graph g(f);Bundle b(g);BoundedBun
 int main(int argc,char** argv){
  try{
  std::cout<<std::unitbuf;
+ if(argc==4&&std::string_view(argv[1])=="--reservation-source"){
+   const auto primary=std::stoi(argv[2]),secondary=std::stoi(argv[3]);
+   Check(primary>=0&&primary<5&&secondary>=0&&secondary<5,"reservation source profiles");
+   ReservationSource(primary,secondary);
+   std::cout<<"PASS reservation source checks="<<checks<<" not_allocation_acceptance=true\n";return 0;
+ }
  if(argc==4&&std::string_view(argv[1])=="--directory-delta-shard"){
    const auto profile=std::stoi(argv[2]),primary=std::stoi(argv[3]);
    Check(profile>=2&&profile<=4&&primary>=0&&primary<5,"directory delta shard arguments");
