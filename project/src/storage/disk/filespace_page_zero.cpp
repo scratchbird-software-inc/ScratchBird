@@ -60,7 +60,7 @@ template<class Roots> Error Validate(const FilespacePageZeroData<Roots>& value) 
   if(!value.total_pages||value.total_pages>max/h.page_size_bytes
       ||value.free_pages>=value.total_pages
       ||value.preallocated_pages>=value.total_pages-value.free_pages
-      ||!CheckFileDeviceExtent(value.total_pages*h.page_size_bytes,0).ok()) return Error::invalid_capacity;
+      ||CheckFileDeviceExtentNative(value.total_pages*h.page_size_bytes,0)!=BoundedIoError::none) return Error::invalid_capacity;
   if(value.roots.size()>32) return Error::invalid_root_directory;
   u16 previous=0; u32 kinds=0;
   for(const auto& root:value.roots) {
@@ -71,7 +71,7 @@ template<class Roots> Error Validate(const FilespacePageZeroData<Roots>& value) 
     previous=root.kind; kinds|=u32{1}<<root.kind;
     const auto* profile=FindCanonicalFilespacePageProfile(root.page_size_profile_uuid);
     if(!profile||root.page_number>=max/profile->page_size_bytes
-        ||!CheckFileDeviceExtent(root.page_number*profile->page_size_bytes,profile->page_size_bytes).ok())
+        ||CheckFileDeviceExtentNative(root.page_number*profile->page_size_bytes,profile->page_size_bytes)!=BoundedIoError::none)
       return Error::invalid_root_directory;
     if(Same(root.filespace_uuid,h.filespace_uuid)
         &&(!Same(root.page_size_profile_uuid,h.page_size_profile_uuid)||root.page_number>=value.total_pages))
@@ -112,7 +112,7 @@ template<class Roots> Error Validate(const FilespacePageZeroData<Roots>& value) 
   }
   return Error::none;
 }
-bool WriteCommon(byte* b,const FilespacePageZero& value) noexcept {
+template<class Roots> bool WriteCommon(byte* b,const FilespacePageZeroData<Roots>& value) noexcept {
   const auto& h=value.bootstrap;
   NativeCommonPageHeader common;
   common.page_size_bytes=h.page_size_bytes;
@@ -145,15 +145,21 @@ u32 CanonicalPageZeroRootPageType(u16 kind) noexcept {
       0x300,0x303,0x305,0x307,0x30b,0x515,0x406,0x401,0x309,0x30e,0x30e,0x500,0x500}};
   return kind<types.size()?types[kind]:0;
 }
-FilespacePageZeroEncodeResult EncodeFilespacePageZero(const FilespacePageZero& value) noexcept {
+namespace {
+template<class Roots> FilespacePageZeroEncodedView EncodeInto(
+    const FilespacePageZeroData<Roots>& value,std::span<byte> output) noexcept {
   try {
+    if(!detail::DisjointNativeDecodeRegions(output,std::span(&value,1),std::span(value.roots)))
+      return {Error::invalid_backing,{}};
     const auto error=Validate(value);
-    if(error!=Error::none) return {error,std::nullopt};
+    if(error!=Error::none) return {error,{}};
+    if(output.size()<value.bootstrap.page_size_bytes)return {Error::resource_exhausted,{}};
     const auto preamble=EncodeFilespaceBootstrap(value.bootstrap);
-    if(!preamble.ok()) return {BootstrapError(preamble.error),std::nullopt};
-    std::vector<byte> bytes(value.bootstrap.page_size_bytes,0);
+    if(!preamble.ok()) return {BootstrapError(preamble.error),{}};
+    auto bytes=output.first(value.bootstrap.page_size_bytes);
+    std::fill(bytes.begin(),bytes.end(),0);
     std::copy(preamble.bytes->begin(),preamble.bytes->end(),bytes.begin());
-    if(!WriteCommon(bytes.data()+common_offset,value)) return {Error::invalid_common_header,std::nullopt};
+    if(!WriteCommon(bytes.data()+common_offset,value)) return {Error::invalid_common_header,{}};
     auto* b=bytes.data()+family_offset; const auto& h=value.bootstrap;
     std::copy(family_magic.begin(),family_magic.end(),b);
     StoreLittle32(b+8,256); StoreLittle32(b+12,static_cast<u32>(value.roots.size()));
@@ -173,8 +179,30 @@ FilespacePageZeroEncodeResult EncodeFilespacePageZero(const FilespacePageZero& v
       PutUuid(entry+40,root.page_size_profile_uuid); PutUuid(entry+56,root.object_uuid); entry+=80;
     }
     std::array<byte,32> digest{};
-    if(!FullDigest(bytes.data(),bytes.size(),digest)) return {Error::hash_provider_failure,std::nullopt};
+    if(!FullDigest(bytes.data(),bytes.size(),digest)) return {Error::hash_provider_failure,{}};
     std::copy(digest.begin(),digest.end(),bytes.begin()+digest_offset);
+    return {Error::none,bytes};
+  } catch(const std::bad_alloc&) { return {Error::resource_exhausted,{}}; }
+    catch(const std::length_error&) { return {Error::resource_exhausted,{}}; }
+    catch(...) { return {Error::invalid_family,{}}; }
+}
+} // namespace
+FilespacePageZeroEncodedView EncodeFilespacePageZeroInto(const FilespacePageZero& value,std::span<byte> output) noexcept {
+  return EncodeInto(value,output);
+}
+FilespacePageZeroEncodedView EncodeFilespacePageZeroInto(const FilespacePageZeroView& value,std::span<byte> output) noexcept {
+  return EncodeInto(value,output);
+}
+FilespacePageZeroEncodedView EncodeFilespacePageZeroInto(const FilespacePageZeroConstView& value,std::span<byte> output) noexcept {
+  return EncodeInto(value,output);
+}
+FilespacePageZeroEncodeResult EncodeFilespacePageZero(const FilespacePageZero& value) noexcept {
+  try {
+    const auto error=Validate(value);
+    if(error!=Error::none)return {error,std::nullopt};
+    std::vector<byte> bytes(value.bootstrap.page_size_bytes);
+    const auto encoded=EncodeFilespacePageZeroInto(value,bytes);
+    if(!encoded.ok())return {encoded.error,std::nullopt};
     return {Error::none,std::move(bytes)};
   } catch(const std::bad_alloc&) { return {Error::resource_exhausted,std::nullopt}; }
     catch(const std::length_error&) { return {Error::resource_exhausted,std::nullopt}; }

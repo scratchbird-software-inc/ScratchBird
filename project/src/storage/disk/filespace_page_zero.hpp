@@ -32,6 +32,7 @@ template<class Roots> struct FilespacePageZeroData {
 };
 using FilespacePageZero=FilespacePageZeroData<std::vector<FilespaceRootReference>>;
 using FilespacePageZeroView=FilespacePageZeroData<std::span<FilespaceRootReference>>;
+using FilespacePageZeroConstView=FilespacePageZeroData<std::span<const FilespaceRootReference>>;
 enum class FilespacePageZeroError {
   none, invalid_bootstrap, invalid_common_header, invalid_family,
   integrity_mismatch, hash_provider_failure, invalid_capacity,
@@ -67,6 +68,17 @@ struct FilespacePageZeroEncodeResult {
   std::optional<std::vector<byte>> bytes;
   bool ok() const noexcept { return error == FilespacePageZeroError::none && bytes.has_value(); }
 };
+struct FilespacePageZeroEncodedView {
+  FilespacePageZeroError error=FilespacePageZeroError::invalid_family;
+  std::span<const core::platform::byte> bytes;
+  bool ok() const noexcept {return error==FilespacePageZeroError::none&&!bytes.empty();}
+};
+// Whole supplied output must be disjoint from the value and its root storage.
+// Success exposes exactly one canonical page in caller-owned backing. No image
+// is exposed on failure; bytes after provider failure are not valid evidence.
+FilespacePageZeroEncodedView EncodeFilespacePageZeroInto(const FilespacePageZero&,std::span<core::platform::byte>) noexcept;
+FilespacePageZeroEncodedView EncodeFilespacePageZeroInto(const FilespacePageZeroView&,std::span<core::platform::byte>) noexcept;
+FilespacePageZeroEncodedView EncodeFilespacePageZeroInto(const FilespacePageZeroConstView&,std::span<core::platform::byte>) noexcept;
 struct FilespacePageZeroViewResult {
   FilespacePageZeroError error=FilespacePageZeroError::invalid_family;
   std::optional<FilespacePageZeroView> record;

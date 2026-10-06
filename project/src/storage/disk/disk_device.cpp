@@ -1476,6 +1476,10 @@ void IncrementSaturating(std::atomic<u64>& counter) noexcept {
 }
 } // namespace
 
+BoundedIoError CheckFileDeviceExtentNative(u64 offset, usize bytes) noexcept {
+  return BoundedExtentError(offset, bytes);
+}
+
 IoResult RenderBoundedIoResult(const BoundedIoResult& receipt, const std::string& path) {
   IoResult result;
   result.status = receipt.ok() ? DiskOkStatus() : DiskErrorStatus();
