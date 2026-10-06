@@ -4,26 +4,25 @@
 // Companion-reader component evidence only. Caller row visibility is supplied
 // here; real MGA selection/rollback/restart is covered by the server route gate.
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include "mga_relation_store/mga_large_value_store.hpp"
 #include "mga_relation_store/mga_large_value_codec.hpp"
 #include "mga_relation_store/mga_row_codec.hpp"
 #include "mga_relation_store/mga_heap_runtime_support.hpp"
 #include "dml/direct_bulk_typed_row_codec.hpp"
-#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 
 namespace api = scratchbird::engine::internal_api;
-int main() {
+int main() try {
   unsigned checks = 0, failures = 0;
   const auto expect = [&](bool condition, const char* detail) {
     ++checks; if (!condition) { ++failures; std::cerr << detail << '\n'; }
   };
-  const auto root = std::filesystem::temp_directory_path() /
-      ("sb_i8_large_reader_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-  std::filesystem::create_directory(root);
+  scratchbird::tests::OwnedTempDirectory directory;
+  const auto root = directory.path();
   api::EngineRequestContext context;
   context.database_path = (root / "component.sbdb").string();
   context.local_transaction_id = 1;
@@ -78,13 +77,29 @@ int main() {
   mixed.values.push_back({"legacy_marker", "SBMGA_LARGE_VALUE:ordinary-data"});
   mixed.values.push_back({"null", api::CrudStoredValue::SqlNull()});
   mixed.values.push_back({"empty", ""});
-  const auto physical = api::dml::detail::DirectPhysicalCells(mixed.values);
+  // This component exercises opaque retained binary cells. NULL still needs
+  // an explicit bound column type; its type must not be inferred from bytes.
+  api::InsertRowEncoderPlan plan;
+  for (const auto& field : mixed.values) {
+    api::InsertRowEncoderColumnPlan column;
+    column.column_name = field.first;
+    column.canonical_type_name = "binary";
+    plan.columns.push_back(std::move(column));
+  }
+  const auto physical = api::dml::detail::DirectPhysicalCells(mixed.values, &plan);
   expect(physical.size() == mixed.values.size() &&
          physical[0].value.payload_is_toast_reference &&
          !physical[1].value.payload_is_toast_reference &&
          !physical[2].value.payload_is_toast_reference &&
-         physical[3].value.is_null && !physical[4].value.is_null,
+         physical[3].value.is_null &&
+         physical[3].value.type_id == scratchbird::core::datatypes::CanonicalTypeId::binary &&
+         physical[3].value.payload.empty() && !physical[4].value.is_null,
          "physical cells inferred LOB or NULL state from payload spelling");
+  bool unbound_null_refused = false;
+  try {
+    (void)api::dml::detail::DirectPhysicalCells(mixed.values, nullptr);
+  } catch (const std::invalid_argument&) { unbound_null_refused = true; }
+  expect(unbound_null_refused, "physical NULL admitted without a bound column type");
   for (std::size_t i = 0; i < physical.size(); ++i) {
     const auto encoded = scratchbird::core::datatypes::EncodeDatatypeBinaryValue(physical[i].value);
     const auto decoded = scratchbird::core::datatypes::DecodeDatatypeBinaryValue(encoded.encoded);
@@ -101,7 +116,7 @@ int main() {
     bool refused = false;
     try {
       (void)api::dml::detail::DirectPhysicalCells(
-          {{"payload", {api::EngineValueState::lob_handle, malformed}}});
+          {{"payload", {api::EngineValueState::lob_handle, malformed}}}, &plan);
     } catch (const std::invalid_argument&) { refused = true; }
     expect(refused, "physical cell admitted malformed LOB identity");
   }
@@ -258,6 +273,9 @@ int main() {
              forced_rows[0].values[0].second == api::CrudStoredValue(literal_locator),
          "forced overflow did not materialize exact present locator-shaped bytes");
   std::cout << "checks=" << checks << " failures=" << failures << " artifacts=" << root << '\n';
-  if (!failures) std::filesystem::remove_all(root);
+  directory.Cleanup();
   return failures ? 1 : 0;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return 1;
 }
