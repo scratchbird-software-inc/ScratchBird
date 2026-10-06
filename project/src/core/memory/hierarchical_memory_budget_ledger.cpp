@@ -310,7 +310,9 @@ HierarchicalMemoryReservationLease& HierarchicalMemoryReservationLease::operator
 }
 
 HierarchicalMemoryReservationLease::~HierarchicalMemoryReservationLease() {
-  (void)Reset();
+  // No concurrent users may survive destruction. An explicitly reset/moved
+  // lease has no ownership left and requires no fallible lock acquisition.
+  if (ledger_) (void)Reset();
 }
 
 bool HierarchicalMemoryReservationLease::valid() const {

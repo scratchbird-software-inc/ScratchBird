@@ -223,7 +223,9 @@ ReservationBackedMemoryResource::ReservationBackedMemoryResource(
     : request_(std::move(request)), token_(token), lease_(std::move(lease)) {}
 
 ReservationBackedMemoryResource::~ReservationBackedMemoryResource() {
-  (void)ReleaseNoAlloc();
+  // Destruction requires external quiescence. Successful explicit release
+  // must not reacquire native locks from a noexcept destructor.
+  if (!released_) (void)ReleaseNoAlloc();
 }
 
 bool ReservationBackedMemoryResource::active() const {
@@ -460,6 +462,7 @@ Status ReservationBackedMemoryResource::ReleaseNoAllocLocked() {
   }
   // Only this retained owning context can uncharge the grant, and only after
   // every actual physical buffer has been freed. Revocation alone cannot.
+  if (physical_capacity_) physical_capacity_->Close();
   physical_capacity_.reset();
   const auto status = lease_.Reset();
   if (status.ok()) {

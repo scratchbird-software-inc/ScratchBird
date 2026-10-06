@@ -752,7 +752,11 @@ BoundedAllocator::BoundedAllocator(AllocationPolicy policy)
 BoundedAllocator::~BoundedAllocator() {
   // Allocator destruction is context teardown. Its scoped consumers must die
   // first; any remaining raw allocations still belong to this context.
-  while (!active_.empty()) (void)DeallocateNoAlloc(active_.begin()->first);
+  while (!active_.empty()) {
+    // A refused accounting commit retains the allocation. Destruction has no
+    // retry owner left: do not spin forever or pretend that cleanup succeeded.
+    if (!DeallocateNoAlloc(active_.begin()->first).ok()) std::terminate();
+  }
 }
 
 AllocationResult BoundedAllocator::Allocate(usize bytes, usize alignment, MemoryTag tag) {
@@ -760,10 +764,17 @@ AllocationResult BoundedAllocator::Allocate(usize bytes, usize alignment, Memory
 }
 
 MemoryCapacityReservation::~MemoryCapacityReservation() {
+  Close();
+}
+
+void MemoryCapacityReservation::Close() {
+  if (!allocator_) return;
   allocator_->CloseCapacity(id_);
+  allocator_ = nullptr;
 }
 
 AllocationResult MemoryCapacityReservation::Allocate(usize bytes, usize alignment) try {
+  if (!allocator_) return {{StatusCode::memory_invalid_request, Severity::error, Subsystem::memory}, nullptr, 0, 0, {}};
   return allocator_->AllocateImpl(bytes, alignment, tag_, id_);
 } catch (const std::bad_alloc&) {
   return {{StatusCode::memory_allocation_failed, Severity::error, Subsystem::memory},
@@ -1168,10 +1179,8 @@ AllocationResult BoundedAllocator::Reallocate(void* pointer, usize bytes, usize 
     }
     // No release can race this copy. All fallible work precedes consumption.
     std::memcpy(replacement.pointer, pointer, std::min(original->second.bytes, replacement.bytes));
-    bool found = false;
-    const auto old = RemoveAllocation(pointer, &found);
-    if (policy_.zero_memory_on_release) SecureZeroMemory(pointer, old.bytes);
-    ReleaseAlignedAllocationStorage(pointer, old.alignment);
+    const auto released = ReleaseAllocationLocked(pointer, nullptr);
+    if (!released.ok()) return {released, nullptr, 0, 0, {}};
   }
   (void)pending.release();
   return replacement;
@@ -1207,8 +1216,6 @@ DeallocationResult BoundedAllocator::DeallocateImpl(
     return result;
   }
 
-  bool found = false;
-  AllocationRecord record;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto injected = EvaluateFailureInjectionLocked(tag);
@@ -1223,18 +1230,11 @@ DeallocationResult BoundedAllocator::DeallocateImpl(
                                                          injected);
       return result;
     }
-    const auto owned = active_.find(pointer);
-    if (owned != active_.end()) {
-      if (policy_.zero_memory_on_release || evidence) SecureZeroMemory(pointer, owned->second.bytes);
-      if (evidence) ReleaseProtectedPlatformEvidence(pointer, owned->second.bytes, *evidence);
-      ReleaseAlignedAllocationStorage(pointer, owned->second.alignment);
-    }
-    // Credit becomes reusable only after physical storage is gone.
-    record = RemoveAllocation(pointer, &found);
-    if (!found) {
+    const auto status = ReleaseAllocationLocked(pointer, evidence);
+    if (!status.ok()) {
       failure_recorded = true;
     RecordFailure(tag, false, true);
-      result.status = MemoryStatus(StatusCode::memory_unknown_pointer, Severity::error);
+      result.status = status;
       result.diagnostic = MakeMemoryDiagnostic(result.status,
                                                "SB-MEMORY-DEALLOC-UNKNOWN-POINTER",
                                                "memory.deallocate.unknown_pointer",
@@ -1265,14 +1265,44 @@ Status BoundedAllocator::DeallocateNoAllocImpl(
     void* pointer, const ProtectedMemoryEvidence* evidence) {
   if (!pointer) return OkStatus();
   std::lock_guard lock(mutex_);
+  return ReleaseAllocationLocked(pointer, evidence);
+}
+
+Status BoundedAllocator::ReleaseAllocationLocked(
+    void* pointer, const ProtectedMemoryEvidence* evidence) {
   const auto owned = active_.find(pointer);
   if (owned == active_.end()) return MemoryStatus(StatusCode::memory_unknown_pointer, Severity::error);
-  if (policy_.zero_memory_on_release || evidence) SecureZeroMemory(pointer, owned->second.bytes);
-  if (evidence) ReleaseProtectedPlatformEvidence(pointer, owned->second.bytes, *evidence);
-  ReleaseAlignedAllocationStorage(pointer, owned->second.alignment);
-  bool found = false;
-  auto record = RemoveAllocation(pointer, &found);
-  if (!found) return MemoryStatus(StatusCode::memory_unknown_pointer, Severity::error);
+  const auto& record = owned->second;
+  if (!category_accounting_.contains(record.tag.category))
+    return MemoryStatus(StatusCode::memory_invalid_request, Severity::error);
+  if (record.capacity_id) {
+    const auto capacity = capacity_reservations_.find(record.capacity_id);
+    if (capacity == capacity_reservations_.end() || capacity->second.live_bytes < record.bytes ||
+        !category_accounting_.contains(capacity->second.category))
+      return MemoryStatus(StatusCode::memory_invalid_request, Severity::error);
+    for (const auto& key : capacity->second.context_keys)
+      if (!context_accounting_.contains(key)) return MemoryStatus(StatusCode::memory_invalid_request, Severity::error);
+  }
+  struct Effect { BoundedAllocator* allocator; void* pointer; const ProtectedMemoryEvidence* evidence; };
+  Effect effect{this, pointer, evidence};
+  const auto release = +[](void* context) noexcept {
+    auto& e = *static_cast<Effect*>(context);
+    auto& a = *e.allocator;
+    const auto& record = a.active_.find(e.pointer)->second;
+    if (a.policy_.zero_memory_on_release || e.evidence) SecureZeroMemory(e.pointer, record.bytes);
+    if (e.evidence) ReleaseProtectedPlatformEvidence(e.pointer, record.bytes, *e.evidence);
+    ReleaseAlignedAllocationStorage(e.pointer, record.alignment);
+    bool found = false;
+    (void)a.RemoveAllocation(e.pointer, &found);
+  };
+  if (record.sharded_accounting_committed) {
+    if (!sharded_accounting_) return MemoryStatus(StatusCode::memory_invalid_request, Severity::error);
+    ShardedMemoryAccountingToken token;
+    token.token_id = record.sharded_token_id; token.bytes = record.bytes;
+    token.shard_index = record.sharded_shard_index;
+    return sharded_accounting_->ReleaseAllocationNoAlloc(token, release, &effect);
+  }
+  release(&effect);
   return OkStatus();
 }
 
@@ -2113,13 +2143,8 @@ void BoundedAllocator::ApplyAllocationRemovalAccounting(const AllocationRecord& 
     if (owner.open) AddCapacityCredits(owner, record.bytes);
     else if (owner.live_bytes == 0) capacity_reservations_.erase(capacity);
   }
-  if (record.sharded_accounting_committed && sharded_accounting_ != nullptr) {
-    ShardedMemoryAccountingToken token;
-    token.token_id = record.sharded_token_id;
-    token.bytes = record.bytes;
-    token.shard_index = record.sharded_shard_index;
-    (void)sharded_accounting_->ReleaseNoAlloc(token);
-  }
+  // Sharded token admission is held by ReleaseAllocationLocked. Its credit
+  // refund follows this physical/local commit, without a second fallible lock.
 
   SubtractCounter(accounting_.current_bytes, record.bytes);
   DecrementCounter(accounting_.active_allocation_count);

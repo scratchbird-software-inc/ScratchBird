@@ -613,6 +613,9 @@ class MemoryCapacityReservation {
   MemoryCapacityReservation(const MemoryCapacityReservation&) = delete;
   MemoryCapacityReservation& operator=(const MemoryCapacityReservation&) = delete;
   ~MemoryCapacityReservation();
+  // Explicit quiescent close permits retry if the allocator lock fails. A
+  // successful close makes destruction inert; no live buffer is freed here.
+  void Close();
   AllocationResult Allocate(usize bytes, usize alignment = 0);
   // Immutable admission evidence; generation zero denotes constructor policy
   // before any typed activation, not a catalog-selected policy identity.
@@ -798,6 +801,7 @@ class BoundedAllocator {
   AllocationResult AllocateRecorded(usize bytes, usize alignment, const MemoryTag& tag,
                                   MemoryPolicyBinding binding);
   void ApplyAllocationRemovalAccounting(const AllocationRecord& record);
+  Status ReleaseAllocationLocked(void* pointer, const ProtectedMemoryEvidence* evidence);
   AllocationRecord RemoveAllocation(void* pointer, bool* found);
 
   AllocationPolicy policy_;

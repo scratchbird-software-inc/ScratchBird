@@ -8,6 +8,19 @@
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(runtime_crypto_pool_owner_gate "${PROJECT_SOURCE_DIR}/tests/concurrency/runtime_crypto_pool_owner_gate.cpp")
+  target_compile_features(runtime_crypto_pool_owner_gate PRIVATE cxx_std_20)
+  target_include_directories(runtime_crypto_pool_owner_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/core/runtime")
+  target_link_libraries(runtime_crypto_pool_owner_gate PRIVATE sb_core_hash sb_core_memory)
+  target_link_options(runtime_crypto_pool_owner_gate PRIVATE "LINKER:--wrap=pthread_mutex_lock")
+  foreach(mode lifecycle late custom cleanup_fault)
+    add_test(NAME runtime_crypto_pool_owner_${mode}_gate COMMAND runtime_crypto_pool_owner_gate ${mode})
+    set_tests_properties(runtime_crypto_pool_owner_${mode}_gate PROPERTIES
+      TIMEOUT 60 LABELS "runtime;crypto;actual_memory;binary_uuid;component;not_runtime_acceptance")
+  endforeach()
+endif()
+
 add_executable(catalog_scheduler_policy_gate catalog_scheduler_policy_gate.cpp)
 target_compile_features(catalog_scheduler_policy_gate PRIVATE cxx_std_23)
 target_link_libraries(catalog_scheduler_policy_gate PRIVATE sb_core_catalog)

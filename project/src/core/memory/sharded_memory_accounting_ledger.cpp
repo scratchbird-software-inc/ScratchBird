@@ -452,7 +452,8 @@ Status ShardedMemoryAccountingLedger::ReleaseNoAlloc(ShardedMemoryAccountingToke
 }
 
 ShardedMemoryAccountingOperationResult ShardedMemoryAccountingLedger::ReleaseImpl(
-    ShardedMemoryAccountingToken token, bool materialize_diagnostic) {
+    ShardedMemoryAccountingToken token, bool materialize_diagnostic,
+    void (*effect)(void*) noexcept, void* context) {
   ShardedMemoryAccountingOperationResult result;
   result.status = OkStatus();
   if (!token.valid() || token.shard_index >= shards_.size()) {
@@ -501,6 +502,7 @@ ShardedMemoryAccountingOperationResult ShardedMemoryAccountingLedger::ReleaseImp
   }
 
   if (record.state == ShardedMemoryAccountingTokenState::reserved) {
+    if (effect) return no_alloc_failure(); // No physical owner for a reservation.
     shard.reserved_bytes -= record.bytes;
     --shard.active_reservation_count;
     ++shard.release_count;
@@ -530,6 +532,23 @@ ShardedMemoryAccountingOperationResult ShardedMemoryAccountingLedger::ReleaseImp
                          {"current_bytes", std::to_string(shard.current_bytes)}});
   }
 
+  // Preflight every keyed access before the irreversible physical effect.
+  // A corrupt/missing accounting row must retain the caller's backing/token.
+  if (!shard.categories.contains(record.tag.category)) return no_alloc_failure();
+  for (const auto& scope : record.scope_ids) {
+    const auto categories = shard.context_categories.find(scope);
+    if (!shard.contexts.contains(scope) || categories == shard.context_categories.end() ||
+        !categories->second.contains(record.tag.category)) return no_alloc_failure();
+    if (record.owner_key) {
+      const auto owners = shard.context_owners.find(scope);
+      if (owners == shard.context_owners.end() || !owners->second.contains(*record.owner_key))
+        return no_alloc_failure();
+    }
+    if (IsPageBufferAccounting(record) && !shard.context_page_buffers.contains(scope))
+      return no_alloc_failure();
+  }
+  if (record.owner_key && !shard.owners.contains(*record.owner_key)) return no_alloc_failure();
+  if (effect) effect(context);
   shard.current_bytes -= record.bytes;
   --shard.active_allocation_count;
   ++shard.release_count;
@@ -560,6 +579,11 @@ ShardedMemoryAccountingOperationResult ShardedMemoryAccountingLedger::ReleaseImp
   global_outstanding_bytes_.fetch_sub(record.bytes, std::memory_order_relaxed);
   shard.active_tokens.erase(it);
   return result;
+}
+
+Status ShardedMemoryAccountingLedger::ReleaseAllocationNoAlloc(
+    ShardedMemoryAccountingToken token, void (*effect)(void*) noexcept, void* context) {
+  return ReleaseImpl(token, false, effect, context).status;
 }
 
 ShardedMemoryAccountingSnapshot ShardedMemoryAccountingLedger::Snapshot() const {

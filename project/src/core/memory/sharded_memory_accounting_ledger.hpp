@@ -201,9 +201,16 @@ class ShardedMemoryAccountingLedger {
   };
 
  private:
+  friend class BoundedAllocator;
+  // Allocator-only physical release commit. Lock/token/metadata validation
+  // precedes the nonthrowing effect; credit is refunded only after it returns.
+  // The effect must not acquire locks, allocate or reenter this ledger.
+  Status ReleaseAllocationNoAlloc(ShardedMemoryAccountingToken token,
+      void (*effect)(void*) noexcept, void* context);
   ShardedMemoryAccountingSnapshot SnapshotForScope(ShardedMemoryScopeKey context) const;
   ShardedMemoryAccountingOperationResult ReleaseImpl(
-      ShardedMemoryAccountingToken token, bool materialize_diagnostic);
+      ShardedMemoryAccountingToken token, bool materialize_diagnostic,
+      void (*effect)(void*) noexcept = nullptr, void* context = nullptr);
   Shard& ShardForIndex(usize shard_index);
   const Shard& ShardForIndex(usize shard_index) const;
   ShardedMemoryAccountingOperationResult TokenFailure(Shard& shard,
