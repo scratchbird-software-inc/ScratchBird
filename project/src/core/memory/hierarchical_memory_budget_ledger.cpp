@@ -946,6 +946,25 @@ HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::ReleaseI
   return result;
 }
 
+HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::CancelNoAlloc(
+    HierarchicalMemoryReservationToken token) {
+  HierarchicalMemoryBudgetOperationResult failure;
+  failure.status = BudgetStatus(StatusCode::memory_unknown_pointer, Severity::error);
+  failure.diagnostic.status = failure.status;
+  if (!token.valid()) {
+    failed_release_count_.fetch_add(1, std::memory_order_relaxed);
+    return failure;
+  }
+  TokenShard& shard = TokenShardForIndex(TokenShardIndex(token.token_id));
+  std::lock_guard lock(shard.mutex);
+  auto it = shard.tokens.find(token.token_id);
+  if (it == shard.tokens.end() || it->second.token.bytes != token.bytes) {
+    failed_release_count_.fetch_add(1, std::memory_order_relaxed);
+    return failure;
+  }
+  return CleanupLocked(shard, token.token_id, CleanupReason::cancel, false);
+}
+
 HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::Cancel(
     HierarchicalMemoryReservationToken token) {
   if (!token.valid()) {
@@ -1213,9 +1232,16 @@ const HierarchicalMemoryBudgetLedger::TokenShard& HierarchicalMemoryBudgetLedger
 HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::CleanupLocked(
     TokenShard& token_shard,
     u64 token_id,
-    CleanupReason reason) {
+    CleanupReason reason,
+    bool materialize_diagnostic) {
   auto it = token_shard.tokens.find(token_id);
   if (it == token_shard.tokens.end()) {
+    if (!materialize_diagnostic) {
+      HierarchicalMemoryBudgetOperationResult result;
+      result.status = BudgetStatus(StatusCode::memory_unknown_pointer, Severity::error);
+      result.diagnostic.status = result.status;
+      return result;
+    }
     return TokenFailure(StatusCode::memory_unknown_pointer,
                         "SB-MEMORY-BUDGET-CLEANUP-UNKNOWN-RESERVATION",
                         "memory.budget.cleanup.unknown_reservation",
@@ -1242,7 +1268,9 @@ HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::CleanupL
     return result;
   }
   ScopeLocks scope_locks(*this, record.scope_shard_indexes);
-  const auto accounting_release = accounting_.Release(record.accounting_token);
+  const auto accounting_release = materialize_diagnostic
+      ? accounting_.Release(record.accounting_token)
+      : ShardedMemoryAccountingOperationResult{accounting_.ReleaseNoAlloc(record.accounting_token), {}};
   if (!accounting_release.ok()) {
     HierarchicalMemoryBudgetOperationResult result;
     result.status = accounting_release.status;

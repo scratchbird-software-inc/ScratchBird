@@ -56,7 +56,19 @@ int main() {
   const auto catalog=d::CanonicalDiagnosticCodeCatalog();
   // Includes native bulk policy, shutdown identity and retained agent notices. Check the
   // exact admitted Core import, not a minimum row count.
-  Check(catalog.size==1537 && catalog.data!=nullptr,"complete Core code inventory missing");
+  Check(catalog.size==1540 && catalog.data!=nullptr,"complete Core code inventory missing");
+  Sample("MEMORY.LEAK_CLASSIFIED",S::informational,false,"not_applicable",
+         "report_retention_preserve_ownership_and_operation_outcome","MEMORY");
+  Sample("MEMORY.LEAK_SUSPECTED",S::warning,false,"not_applicable",
+         "record_suspicion_require_investigation_preserve_ownership","MEMORY");
+  Sample("MEMORY.LEAK_CONFIRMED",S::error,true,
+         "only_after_owner_remediation_and_revalidation",
+         "record_cleanup_failure_require_owner_remediation_preserve_ownership","MEMORY");
+  for (const auto code : {"MEMORY.LEAK_CLASSIFIED", "MEMORY.LEAK_SUSPECTED", "MEMORY.LEAK_CONFIRMED"}) {
+    const auto* row=d::FindCanonicalDiagnosticCode(code);
+    Check(row && row->sqlstate=="not_applicable" && row->numeric_binding=="not_applicable",
+          "retention classification invented a public SQLSTATE or numeric binding");
+  }
   Sample("BLOB.IO_FAILED",S::error,true,
          "only after input authority environment or policy changes as applicable",
          "reject_abort_scrub_no_output","DATATYPE.BLOB");
@@ -311,7 +323,7 @@ int main() {
     Check(found==nullptr,"unknown code was invented, normalized or guessed");
   }
   constexpr std::array<std::uint8_t,32> expected_source{
-    0x3f,0xe8,0x84,0x00,0x4f,0x46,0x07,0xce,0xf0,0xc3,0x57,0xdf,0x10,0x7f,0xc8,0x27,0xc9,0xc9,0x2c,0xa5,0xbc,0x33,0x86,0xa6,0x99,0x57,0x34,0x27,0x07,0xda,0x42,0x44};
+    0x8d,0x06,0x58,0xa9,0xca,0xb9,0xd9,0x0c,0xd0,0xa5,0x42,0x78,0xbf,0x6e,0xbb,0x72,0x59,0xc2,0x3e,0x1a,0xd5,0x60,0x87,0xf2,0x60,0x8e,0xd7,0x9d,0x25,0x5f,0x9c,0x94};
   Check(d::CanonicalDiagnosticCodeSourceSha256()==expected_source,"Core source provenance differs");
   std::cout<<"canonical_diagnostic_catalog rows="<<catalog.size<<" checks="<<checks
            <<" failures="<<failures<<'\n';

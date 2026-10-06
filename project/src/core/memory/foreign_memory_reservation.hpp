@@ -243,6 +243,10 @@ class ForeignMemoryReservation {
 
   ForeignMemoryReservationReleaseResult Release(
       ForeignMemoryReleaseEvent event = ForeignMemoryReleaseEvent::explicit_release);
+  // No diagnostic/evidence allocation. The ledger must outlive the handle;
+  // provider backing must already be released before relinquishing its charge.
+  ForeignMemoryReservationReleaseResult ReleaseNoAlloc(
+      ForeignMemoryReleaseEvent event = ForeignMemoryReleaseEvent::explicit_release);
   ForeignMemoryReservationReleaseResult Cancel();
   ForeignMemoryReservationObservationResult UpdateObservedBytes(
       u64 observed_bytes,
@@ -316,11 +320,17 @@ class ForeignMemoryReservationLedger {
     u64 observed_bytes = 0;
     ForeignMemoryConfidence confidence = ForeignMemoryConfidence::unknown;
     std::shared_ptr<ForeignMemoryReservation::HandleState> state;
+    // Stable map nodes, established before publication; cleanup never builds
+    // an allocating textual scope key. Binary and legacy alternatives stay exact.
+    BucketAccounting* source_accounting = nullptr;
+    BucketAccounting* scope_accounting = nullptr;
   };
 
   ForeignMemoryReservationReleaseResult ReleaseReservation(
       ForeignMemoryReservationToken token,
-      ForeignMemoryReleaseEvent event);
+      ForeignMemoryReleaseEvent event,
+      bool materialize = true,
+      const ForeignMemoryReservation::HandleState* state = nullptr);
   ForeignMemoryReservationObservationResult UpdateObservedBytes(
       ForeignMemoryReservationToken token,
       u64 observed_bytes,

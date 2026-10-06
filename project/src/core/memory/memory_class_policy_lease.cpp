@@ -9,7 +9,9 @@
 #include "memory_class_policy_lease.hpp"
 
 #include <algorithm>
+#include <new>
 #include <set>
+#include <stdexcept>
 #include <utility>
 
 namespace scratchbird::core::memory {
@@ -496,7 +498,7 @@ MemoryClassPolicyLeaseManager::SetClassPolicy(MemoryClassPolicy policy) {
 }
 
 MemoryBudgetLeaseDecision MemoryClassPolicyLeaseManager::AcquireLease(
-    MemoryBudgetLeaseRequest request) {
+    MemoryBudgetLeaseRequest request) try {
   MemoryClassPolicy policy;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -635,9 +637,17 @@ MemoryBudgetLeaseDecision MemoryClassPolicyLeaseManager::AcquireLease(
                         false);
   }
 
+  // Every exit before publication, including diagnostic allocation failure,
+  // returns the reservation without needing memory to perform cleanup.
+  struct PendingReservation {
+    HierarchicalMemoryBudgetLedger* ledger;
+    HierarchicalMemoryReservationToken token;
+    bool published = false;
+    ~PendingReservation() { if (!published) (void)ledger->ReleaseNoAlloc(token); }
+  } pending{ledger_, reservation.token};
+
   auto commit = ledger_->Commit(reservation.token);
   if (!commit.ok()) {
-    (void)ledger_->Release(reservation.token);
     return FailDecision(request,
                         policy,
                         MemoryClassPressureAction::deny,
@@ -652,6 +662,13 @@ MemoryBudgetLeaseDecision MemoryClassPolicyLeaseManager::AcquireLease(
   MemoryBudgetLeaseToken lease;
   {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (next_lease_id_ == 0 || next_creation_sequence_ == 0) {
+      MemoryBudgetLeaseDecision exhausted;
+      exhausted.status = LeaseStatus(StatusCode::memory_limit_exceeded, Severity::error);
+      exhausted.diagnostic.status = exhausted.status;
+      exhausted.fail_closed = true;
+      return exhausted;
+    }
     lease.lease_id = next_lease_id_++;
     lease.bytes = request.requested_bytes;
     lease.creation_sequence = next_creation_sequence_++;
@@ -670,21 +687,35 @@ MemoryBudgetLeaseDecision MemoryClassPolicyLeaseManager::AcquireLease(
     record.max_renewals = policy.max_renewals;
     record.pressure_action = action;
     record.protected_material = policy.requires_protected_material_route;
-    leases_[lease.lease_id] = std::move(record);
-
+    // Prepare the entire returned decision before either manager accounting
+    // or its owning record becomes visible. Existing records never overwrite.
+    auto decision = GrantDecision(request, policy, lease, action);
     auto& state = classes_[policy.kind];
+    leases_.emplace(lease.lease_id, std::move(record));
     state.active_bytes += request.requested_bytes;
     ++state.active_lease_count;
     ++state.created_lease_count;
     active_bytes_ += request.requested_bytes;
     ++created_lease_count_;
+    pending.published = true;
+    return decision;
   }
-
-  return GrantDecision(request, policy, lease, action);
+} catch (const std::bad_alloc&) {
+  MemoryBudgetLeaseDecision result;
+  result.status = LeaseStatus(StatusCode::memory_allocation_failed, Severity::error);
+  result.diagnostic.status = result.status;
+  result.fail_closed = true;
+  return result;
+} catch (const std::length_error&) {
+  MemoryBudgetLeaseDecision result;
+  result.status = LeaseStatus(StatusCode::memory_allocation_failed, Severity::error);
+  result.diagnostic.status = result.status;
+  result.fail_closed = true;
+  return result;
 }
 
 MemoryBudgetLeaseRenewalResult MemoryClassPolicyLeaseManager::RenewLease(
-    MemoryBudgetLeaseRenewalRequest request) {
+    MemoryBudgetLeaseRenewalRequest request) try {
   MemoryBudgetLeaseRenewalResult result;
   std::string provenance_reason;
   if (!SafeProvenance(request.provenance, &provenance_reason)) {
@@ -784,29 +815,66 @@ MemoryBudgetLeaseRenewalResult MemoryClassPolicyLeaseManager::RenewLease(
     return result;
   }
 
-  record.deadline_ms = new_deadline;
-  ++record.renewal_count;
-  ++renewal_count_;
+  auto prepared_record = record;
+  prepared_record.deadline_ms = new_deadline;
+  ++prepared_record.renewal_count;
   auto& state = classes_[record.class_kind];
-  ++state.renewal_count;
 
   result.status = OkStatus();
   result.lease = record.lease;
-  result.deadline_ms = record.deadline_ms;
-  result.renewal_count = record.renewal_count;
+  result.deadline_ms = prepared_record.deadline_ms;
+  result.renewal_count = prepared_record.renewal_count;
   result.diagnostic = MakeLeaseDiagnostic(
       result.status,
       "SB-MEMORY-CLASS-LEASE-RENEWED",
       "memory.class_lease.renewed",
       {{"lease_id", std::to_string(record.lease.lease_id)},
-       {"deadline_ms", std::to_string(record.deadline_ms)},
-       {"renewal_count", std::to_string(record.renewal_count)}});
-  AttachRenewalEvidence(&result, record, "renewed");
+       {"deadline_ms", std::to_string(prepared_record.deadline_ms)},
+       {"renewal_count", std::to_string(prepared_record.renewal_count)}});
+  AttachRenewalEvidence(&result, prepared_record, "renewed");
+  record.deadline_ms = new_deadline;
+  ++record.renewal_count;
+  ++renewal_count_;
+  ++state.renewal_count;
+  return result;
+} catch (const std::bad_alloc&) {
+  MemoryBudgetLeaseRenewalResult result;
+  result.status = LeaseStatus(StatusCode::memory_allocation_failed, Severity::error);
+  result.diagnostic.status = result.status;
+  result.fail_closed = true;
+  return result;
+} catch (const std::length_error&) {
+  MemoryBudgetLeaseRenewalResult result;
+  result.status = LeaseStatus(StatusCode::memory_allocation_failed, Severity::error);
+  result.diagnostic.status = result.status;
+  result.fail_closed = true;
+  return result;
+}
+
+HierarchicalMemoryBudgetOperationResult MemoryClassPolicyLeaseManager::CancelLeaseNoAlloc(
+    MemoryBudgetLeaseToken lease) {
+  std::lock_guard lock(mutex_);
+  auto it = leases_.find(lease.lease_id);
+  if (it == leases_.end() || !LeaseMatches(it->second.lease, lease)) {
+    HierarchicalMemoryBudgetOperationResult result;
+    result.status = LeaseStatus(StatusCode::memory_unknown_pointer, Severity::error);
+    result.diagnostic.status = result.status;
+    return result;
+  }
+  auto result = ledger_->CancelNoAlloc(it->second.lease.reservation);
+  if (!result.ok()) return result;
+  auto& state = classes_.at(it->second.class_kind);
+  state.active_bytes -= it->second.lease.bytes;
+  --state.active_lease_count;
+  ++state.cancel_cleanup_count;
+  active_bytes_ -= it->second.lease.bytes;
+  ++cancel_cleanup_count_;
+  leases_.erase(it);
   return result;
 }
 
 MemoryBudgetLeaseCleanupResult MemoryClassPolicyLeaseManager::CancelLease(
-    MemoryBudgetLeaseToken lease) {
+    MemoryBudgetLeaseToken lease) try {
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = leases_.find(lease.lease_id);
   MemoryBudgetLeaseCleanupResult result;
@@ -827,10 +895,24 @@ MemoryBudgetLeaseCleanupResult MemoryClassPolicyLeaseManager::CancelLease(
     return result;
   }
   return CleanupLeaseLocked(lease.lease_id, MemoryBudgetLeaseCleanupReason::cancel);
+} catch (const std::bad_alloc&) {
+  MemoryBudgetLeaseCleanupResult result;
+  result.reason = MemoryBudgetLeaseCleanupReason::cancel;
+  result.status = LeaseStatus(StatusCode::memory_allocation_failed, Severity::error);
+  result.diagnostic.status = result.status;
+  result.fail_closed = true;
+  return result;
+} catch (const std::length_error&) {
+  MemoryBudgetLeaseCleanupResult result;
+  result.reason = MemoryBudgetLeaseCleanupReason::cancel;
+  result.status = LeaseStatus(StatusCode::memory_allocation_failed, Severity::error);
+  result.diagnostic.status = result.status;
+  result.fail_closed = true;
+  return result;
 }
 
 MemoryBudgetLeaseCleanupResult
-MemoryClassPolicyLeaseManager::CleanupExpiredLeases(u64 now_ms) {
+MemoryClassPolicyLeaseManager::CleanupExpiredLeases(u64 now_ms) try {
   std::lock_guard<std::mutex> lock(mutex_);
   MemoryBudgetLeaseCleanupResult cleanup;
   cleanup.status = OkStatus();
@@ -841,6 +923,10 @@ MemoryClassPolicyLeaseManager::CleanupExpiredLeases(u64 now_ms) {
       expired.push_back(entry.first);
     }
   }
+  // Prepare aggregate evidence before any release. Per-item cleanup returns a
+  // typed failure, preserving already completed counts on a partial batch.
+  AttachCleanupEvidence(&cleanup, MemoryBudgetLeaseCleanupReason::expired,
+                        "expired_leases");
   for (u64 lease_id : expired) {
     auto result = CleanupLeaseLocked(lease_id,
                                      MemoryBudgetLeaseCleanupReason::expired);
@@ -849,18 +935,31 @@ MemoryClassPolicyLeaseManager::CleanupExpiredLeases(u64 now_ms) {
       cleanup.cleaned_bytes += result.cleaned_bytes;
     } else {
       cleanup.status = result.status;
-      cleanup.diagnostic = result.diagnostic;
+      cleanup.diagnostic = std::move(result.diagnostic);
       cleanup.fail_closed = true;
       break;
     }
   }
-  AttachCleanupEvidence(&cleanup, MemoryBudgetLeaseCleanupReason::expired,
-                        "expired_leases");
+  cleanup.metrics.front().value = cleanup.cleaned_lease_count;
   return cleanup;
+} catch (const std::bad_alloc&) {
+  MemoryBudgetLeaseCleanupResult result;
+  result.reason = MemoryBudgetLeaseCleanupReason::expired;
+  result.status = LeaseStatus(StatusCode::memory_allocation_failed, Severity::error);
+  result.diagnostic.status = result.status;
+  result.fail_closed = true;
+  return result;
+} catch (const std::length_error&) {
+  MemoryBudgetLeaseCleanupResult result;
+  result.reason = MemoryBudgetLeaseCleanupReason::expired;
+  result.status = LeaseStatus(StatusCode::memory_allocation_failed, Severity::error);
+  result.diagnostic.status = result.status;
+  result.fail_closed = true;
+  return result;
 }
 
 MemoryBudgetLeaseCleanupResult MemoryClassPolicyLeaseManager::CleanupOwner(
-    std::string owner_id) {
+    std::string owner_id) try {
   std::lock_guard<std::mutex> lock(mutex_);
   MemoryBudgetLeaseCleanupResult cleanup;
   cleanup.reason = MemoryBudgetLeaseCleanupReason::owner_disconnect;
@@ -885,6 +984,9 @@ MemoryBudgetLeaseCleanupResult MemoryClassPolicyLeaseManager::CleanupOwner(
       owned.push_back(entry.first);
     }
   }
+  AttachCleanupEvidence(&cleanup,
+                        MemoryBudgetLeaseCleanupReason::owner_disconnect,
+                        owner_id);
   for (u64 lease_id : owned) {
     auto result = CleanupLeaseLocked(
         lease_id, MemoryBudgetLeaseCleanupReason::owner_disconnect);
@@ -893,15 +995,27 @@ MemoryBudgetLeaseCleanupResult MemoryClassPolicyLeaseManager::CleanupOwner(
       cleanup.cleaned_bytes += result.cleaned_bytes;
     } else {
       cleanup.status = result.status;
-      cleanup.diagnostic = result.diagnostic;
+      cleanup.diagnostic = std::move(result.diagnostic);
       cleanup.fail_closed = true;
       break;
     }
   }
-  AttachCleanupEvidence(&cleanup,
-                        MemoryBudgetLeaseCleanupReason::owner_disconnect,
-                        owner_id);
+  cleanup.metrics.front().value = cleanup.cleaned_lease_count;
   return cleanup;
+} catch (const std::bad_alloc&) {
+  MemoryBudgetLeaseCleanupResult result;
+  result.reason = MemoryBudgetLeaseCleanupReason::owner_disconnect;
+  result.status = LeaseStatus(StatusCode::memory_allocation_failed, Severity::error);
+  result.diagnostic.status = result.status;
+  result.fail_closed = true;
+  return result;
+} catch (const std::length_error&) {
+  MemoryBudgetLeaseCleanupResult result;
+  result.reason = MemoryBudgetLeaseCleanupReason::owner_disconnect;
+  result.status = LeaseStatus(StatusCode::memory_allocation_failed, Severity::error);
+  result.diagnostic.status = result.status;
+  result.fail_closed = true;
+  return result;
 }
 
 MemoryBudgetLeaseRecoveryResult
@@ -1155,7 +1269,7 @@ MemoryBudgetLeaseDecision MemoryClassPolicyLeaseManager::GrantDecision(
 MemoryBudgetLeaseCleanupResult
 MemoryClassPolicyLeaseManager::CleanupLeaseLocked(
     u64 lease_id,
-    MemoryBudgetLeaseCleanupReason reason) {
+    MemoryBudgetLeaseCleanupReason reason) try {
   MemoryBudgetLeaseCleanupResult result;
   result.reason = reason;
   auto it = leases_.find(lease_id);
@@ -1173,22 +1287,40 @@ MemoryClassPolicyLeaseManager::CleanupLeaseLocked(
     return result;
   }
 
-  const LeaseRecord record = it->second;
+  const LeaseRecord& record = it->second;
+  auto& state = classes_.at(record.class_kind);
+  // All fallible response preparation precedes lower-ledger effects. A failed
+  // response cannot destroy the lease's retry handle or hide completed work.
+  result.status = OkStatus();
+  result.cleaned_lease_count = 1;
+  result.cleaned_bytes = record.lease.bytes;
+  result.diagnostic = MakeLeaseDiagnostic(
+      result.status,
+      "SB-MEMORY-CLASS-LEASE-CLEANED",
+      "memory.class_lease.cleaned",
+      {{"reason", MemoryBudgetLeaseCleanupReasonName(reason)},
+       {"lease_id", std::to_string(record.lease.lease_id)},
+       {"class", record.class_name},
+       {"bytes", std::to_string(record.lease.bytes)}});
+  AttachCleanupEvidence(&result, reason, record.owner_id);
   HierarchicalMemoryBudgetOperationResult ledger_result;
   if (reason == MemoryBudgetLeaseCleanupReason::cancel) {
-    ledger_result = ledger_->Cancel(record.lease.reservation);
+    ledger_result = ledger_->CancelNoAlloc(record.lease.reservation);
   } else {
-    ledger_result = ledger_->Release(record.lease.reservation);
+    ledger_result.status = ledger_->ReleaseNoAlloc(record.lease.reservation);
+    ledger_result.diagnostic.status = ledger_result.status;
   }
   if (!ledger_result.ok()) {
     result.status = ledger_result.status;
-    result.diagnostic = ledger_result.diagnostic;
+    result.diagnostic = std::move(ledger_result.diagnostic);
+    result.diagnostic.status = result.status;
+    result.cleaned_lease_count = 0;
+    result.cleaned_bytes = 0;
+    result.metrics.front().value = 0;
     result.fail_closed = true;
-    AttachCleanupEvidence(&result, reason, record.owner_id);
     return result;
   }
 
-  auto& state = classes_[record.class_kind];
   state.active_bytes =
       state.active_bytes >= record.lease.bytes
           ? state.active_bytes - record.lease.bytes
@@ -1214,19 +1346,20 @@ MemoryClassPolicyLeaseManager::CleanupLeaseLocked(
       break;
   }
   leases_.erase(it);
-
-  result.status = OkStatus();
-  result.cleaned_lease_count = 1;
-  result.cleaned_bytes = record.lease.bytes;
-  result.diagnostic = MakeLeaseDiagnostic(
-      result.status,
-      "SB-MEMORY-CLASS-LEASE-CLEANED",
-      "memory.class_lease.cleaned",
-      {{"reason", MemoryBudgetLeaseCleanupReasonName(reason)},
-       {"lease_id", std::to_string(record.lease.lease_id)},
-       {"class", record.class_name},
-       {"bytes", std::to_string(record.lease.bytes)}});
-  AttachCleanupEvidence(&result, reason, record.owner_id);
+  return result;
+} catch (const std::bad_alloc&) {
+  MemoryBudgetLeaseCleanupResult result;
+  result.reason = reason;
+  result.status = LeaseStatus(StatusCode::memory_allocation_failed, Severity::error);
+  result.diagnostic.status = result.status;
+  result.fail_closed = true;
+  return result;
+} catch (const std::length_error&) {
+  MemoryBudgetLeaseCleanupResult result;
+  result.reason = reason;
+  result.status = LeaseStatus(StatusCode::memory_allocation_failed, Severity::error);
+  result.diagnostic.status = result.status;
+  result.fail_closed = true;
   return result;
 }
 

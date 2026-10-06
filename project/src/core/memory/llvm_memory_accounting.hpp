@@ -77,6 +77,16 @@ struct LlvmMemoryAccountingSnapshot {
   std::vector<std::string> evidence;
 };
 
+// Observation acceptance is separate from memory acquisition/release. Accepted
+// means queued by the registry, not durably recorded. Missing catalog/source
+// binding never authorizes this producer to manufacture runtime identities.
+struct LlvmMemoryMetricPublication {
+  u64 attempted = 0;
+  u64 accepted = 0;
+  bool allocation_failed = false;
+  metrics::MetricValidationResult last_refusal;
+};
+
 struct LlvmMemoryAccountingReleaseResult {
   Status status;
   bool fail_closed = false;
@@ -85,6 +95,7 @@ struct LlvmMemoryAccountingReleaseResult {
   u64 released_bytes = 0;
   DiagnosticRecord diagnostic;
   std::vector<std::string> evidence;
+  LlvmMemoryMetricPublication metric_publication;
 
   bool ok() const {
     return status.ok() && !fail_closed;
@@ -141,6 +152,7 @@ struct LlvmMemoryAccountingAcquireResult {
   DiagnosticRecord diagnostic;
   std::vector<std::string> evidence;
   std::vector<scratchbird::core::metrics::MetricValue> metrics;
+  LlvmMemoryMetricPublication metric_publication;
 
   bool ok() const {
     return status.ok() && !fail_closed && reservation != nullptr;

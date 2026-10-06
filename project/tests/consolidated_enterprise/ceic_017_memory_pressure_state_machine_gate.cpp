@@ -18,6 +18,7 @@
 #include <atomic>
 #include <thread>
 #include <iostream>
+#include <limits>
 #include <string_view>
 #include <vector>
 
@@ -82,6 +83,67 @@ memory::MemoryPressureObservation BaseObservation() {
       "database:ceic-017-db",
       "session:ceic-017-low-priority"};
   return observation;
+}
+
+void PressurePercentRetainsExactUint64Boundaries() {
+  using memory::u64;
+  constexpr u64 maximum = std::numeric_limits<u64>::max();
+  // Exercise every byte-ratio source through the real planner. These are
+  // numeric observations, not allocations of the represented byte counts.
+  for (unsigned source = 0; source != 6; ++source) {
+    auto check = [&](u64 current, u64 limit, u64 expected) {
+      memory::MemoryPressureObservation observation;
+      observation.route_label = "engine.memory.uint64_boundary";
+      switch (source) {
+        case 0: observation.current_bytes = current;
+                observation.hard_limit_bytes = limit; break;
+        case 1: observation.unified_budget_bytes = current;
+                observation.unified_budget_limit_bytes = limit; break;
+        case 2: observation.linux_cgroup.current_bytes = current;
+                observation.linux_cgroup.max_bytes = limit; break;
+        case 3: observation.windows_job.job_memory_bytes = current;
+                observation.windows_job.job_memory_limit_bytes = limit; break;
+        case 4: observation.page_cache_resident_bytes = current;
+                observation.page_cache_target_bytes = limit; break;
+        case 5: observation.current_bytes = current;
+                observation.soft_limit_bytes = limit; break;
+      }
+      const auto decision = memory::PlanMemoryPressureResponse(Policy(), observation);
+      Require(decision.ok() && decision.pressure_percent == expected,
+              "uint64 pressure percentage lost exact boundary");
+      // Cache occupancy feeds reclaim pressure rather than the process
+      // emergency gate; all five budget inputs must preserve that gate.
+      if (source != 4 && expected >= Policy().emergency_pressure_percent) {
+        Require(decision.new_state == memory::MemoryPressureState::emergency_pressure &&
+                    !decision.ordinary_admission_allowed &&
+                    decision.HasAction(memory::MemoryPressureActionKind::refuse_allocation),
+                "large byte count bypassed emergency admission denial");
+      }
+    };
+    for (const u64 denominator : {u64{1}, u64{99}, u64{100}, u64{101},
+                                  maximum / 100, maximum / 100 + 1,
+                                  maximum - 99, maximum}) {
+      check(0, denominator, 0);
+      check(denominator, denominator, 100);
+      check(maximum, denominator, 100);
+      if (denominator < 100) continue;
+      // Independent sequential threshold oracle; checks the exact byte
+      // before and at every whole-percent transition, including overflow
+      // edges in the original numerator-times-100 expression.
+      u64 threshold = 0;
+      u64 remainder = 0;
+      for (u64 percent = 1; percent <= 99; ++percent) {
+        threshold += denominator / 100;
+        remainder += denominator % 100;
+        threshold += remainder / 100;
+        remainder %= 100;
+        const auto ceiling = threshold + (remainder != 0);
+        check(ceiling - 1, denominator, percent - 1);
+        check(ceiling, denominator, percent);
+      }
+    }
+    check(maximum, 0, 0);
+  }
 }
 
 void RequireTransitionEvidence(const memory::MemoryPressureDecision& decision,
@@ -312,12 +374,16 @@ void EmergencyReserveAndDiagnosticsAreBounded() {
           "CEIC-017 emergency reserve was not released exactly once");
   Require(reserve.Snapshot().available_bytes == 0,
           "CEIC-017 emergency reserve still available after release");
-  Require(decision.emergency_diagnostics.emitted &&
-              decision.emergency_diagnostics.bounded &&
-              decision.emergency_diagnostics.allocation_free_logger &&
-              decision.emergency_diagnostics.row_count <=
+  Require(decision.emergency_diagnostics.requested &&
+              !decision.emergency_diagnostics.emitted &&
+              !decision.emergency_diagnostics.bounded &&
+              !decision.emergency_diagnostics.allocation_free_logger &&
+              !decision.emergency_diagnostics.redaction_before_buffering &&
+              !decision.emergency_diagnostics.protected_material_excluded &&
+              decision.emergency_diagnostics.row_count == 0 &&
+              decision.emergency_diagnostics.planned_row_count <=
                   decision.emergency_diagnostics.max_rows,
-          "CEIC-017 emergency diagnostics were not bounded/allocation-free");
+          "CEIC-017 planning falsely claimed diagnostic emission or exceeded requested bound");
   Require(Contains(decision.evidence,
                    "memory_pressure.linux_cgroup.oom_events=1"),
           "CEIC-017 cgroup memory-event evidence missing");
@@ -612,6 +678,7 @@ int main() {
                "finality_or_agent_action_authority"
             << '\n';
   SyntheticStateTransitions();
+  PressurePercentRetainsExactUint64Boundaries();
   SoftPressurePlansSpillThrottleAndBackgroundAction();
   HighPressureShrinksCacheAndCancelsLowPriorityWork();
   EmergencyReserveAndDiagnosticsAreBounded();

@@ -183,6 +183,11 @@ void Reject(const m::MessageSet& s) {
   B bytes={1,2,3},before=bytes;
   Check(m::EncodeMessageSet(s,&bytes)==E::malformed && bytes==before,
         "malformed set encoded or prior output changed");
+  fail_after=0;
+  const auto receipt=m::EncodeMessageSetInto(s,bytes);
+  fail_after=-1;
+  Check(receipt.status==m::BoundedSetStatus::malformed && receipt.bytes==0 && bytes==before,
+        "bounded malformed encoding changed output or allocated");
   RejectBytes(Raw(s));
 }
 void Accept(const m::MessageSet& s,bool truncate=false) {
@@ -190,6 +195,22 @@ void Accept(const m::MessageSet& s,bool truncate=false) {
   Check(m::EncodeMessageSet(s,&out)==E::none && out==expected,"set encoding differs from exact Core oracle");
   m::MessageSet decoded;
   Check(m::DecodeMessageSet(expected,&decoded)==E::none && decoded==s,"set decoder dropped or changed canonical data");
+  B bounded(expected.size()+7,0xa5);
+  fail_after=0;
+  const auto measured=m::EncodeMessageSetInto(s,{});
+  const auto short_buffer=m::EncodeMessageSetInto(s,std::span(bounded).first(expected.size()-1));
+  fail_after=-1;
+  Check(measured.status==m::BoundedSetStatus::destination_too_small && measured.bytes==expected.size() &&
+        short_buffer.status==m::BoundedSetStatus::destination_too_small && short_buffer.bytes==expected.size() &&
+        std::all_of(bounded.begin(),bounded.end(),[](auto b){return b==0xa5;}),
+        "bounded sizing/short-buffer call changed output or lost exact size");
+  fail_after=0;
+  const auto encoded=m::EncodeMessageSetInto(s,bounded);
+  fail_after=-1;
+  Check(encoded.status==m::BoundedSetStatus::ok && encoded.bytes==expected.size() &&
+        std::equal(expected.begin(),expected.end(),bounded.begin()) &&
+        std::all_of(bounded.begin()+expected.size(),bounded.end(),[](auto b){return b==0xa5;}),
+        "allocation-free encoding differs from exact Core oracle or changed trailing capacity");
   if(truncate) for(std::size_t i=0;i<expected.size();++i)
     RejectBytes(B(expected.begin(),expected.begin()+i));
 }
@@ -197,6 +218,20 @@ void Accept(const m::MessageSet& s,bool truncate=false) {
 int main() {
   Check(Crc(Text("123456789"))==0xe3069283u,"independent Castagnoli check value wrong");
   const auto base=Base();Accept(base,true);
+  {
+    auto alias=base;
+    const auto required=Raw(alias).size();
+    // Give the context's vector enough live storage to hold the output without
+    // changing its logical value; its unused capacity still backs the span.
+    alias.records[0].context.value.reserve(required);
+    const auto before=alias;
+    fail_after=0;
+    const auto receipt=m::EncodeMessageSetInto(alias,
+        {alias.records[0].context.value.data(),required});
+    fail_after=-1;
+    Check(receipt.status==m::BoundedSetStatus::overlapping_input && alias==before,
+          "bounded encoder admitted overlapping input or damaged the source");
+  }
   auto empty=base;empty.records.clear();Accept(empty,true);
   {
     auto zero=base;zero.records[0]=ZeroCrcRecord(zero.records[0]);

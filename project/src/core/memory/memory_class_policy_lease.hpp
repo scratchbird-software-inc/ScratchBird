@@ -316,9 +316,17 @@ class MemoryClassPolicyLeaseManager {
   MemoryClassPolicyLeaseManager& operator=(const MemoryClassPolicyLeaseManager&) = delete;
 
   HierarchicalMemoryBudgetOperationResult SetClassPolicy(MemoryClassPolicy policy);
+  // Allocation failures while preparing records or result evidence leave no
+  // newly owned reservation/lease. Renewal prepares its complete result before
+  // changing the deadline or renewal count. Move prebuilt requests when testing
+  // exhaustion: copying a by-value argument occurs outside this API boundary.
   MemoryBudgetLeaseDecision AcquireLease(MemoryBudgetLeaseRequest request);
   MemoryBudgetLeaseRenewalResult RenewLease(MemoryBudgetLeaseRenewalRequest request);
   MemoryBudgetLeaseCleanupResult CancelLease(MemoryBudgetLeaseToken lease);
+  // Allocation-free cancellation receipt for cleanup under exhaustion. Does
+  // not render or emit diagnostics. Retained grants remain charged; the caller
+  // must drain their physical owners. Invalid tokens never cancel another lease.
+  HierarchicalMemoryBudgetOperationResult CancelLeaseNoAlloc(MemoryBudgetLeaseToken lease);
   MemoryBudgetLeaseCleanupResult CleanupExpiredLeases(u64 now_ms);
   MemoryBudgetLeaseCleanupResult CleanupOwner(std::string owner_id);
   MemoryBudgetLeaseRecoveryResult ClassifyRecovery(

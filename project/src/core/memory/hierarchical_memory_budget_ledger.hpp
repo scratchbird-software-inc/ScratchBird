@@ -293,6 +293,9 @@ class HierarchicalMemoryBudgetLedger {
   Status ReleaseNoAlloc(HierarchicalMemoryReservationToken token);
   HierarchicalMemoryRetainResult Retain(HierarchicalMemoryReservationToken token);
   HierarchicalMemoryBudgetOperationResult Cancel(HierarchicalMemoryReservationToken token);
+  // Teardown result only: no diagnostic string construction, including invalid
+  // handles. Retained payload ownership is revoked, never prematurely refunded.
+  HierarchicalMemoryBudgetOperationResult CancelNoAlloc(HierarchicalMemoryReservationToken token);
   HierarchicalMemoryCleanupResult CleanupOwner(std::string owner_id);
   HierarchicalMemoryCleanupResult CleanupOwner(const MemoryBinaryUuid& owner_uuid);
   HierarchicalMemoryCleanupResult CleanupExpiredLeases(u64 now_ms);
@@ -402,7 +405,8 @@ class HierarchicalMemoryBudgetLedger {
 
   HierarchicalMemoryBudgetOperationResult CleanupLocked(TokenShard& token_shard,
                                                         u64 token_id,
-                                                        CleanupReason reason);
+                                                        CleanupReason reason,
+                                                        bool materialize_diagnostic = true);
   HierarchicalMemoryBudgetOperationResult TokenFailure(scratchbird::core::platform::StatusCode code,
                                                        std::string diagnostic_code,
                                                        std::string message_key,

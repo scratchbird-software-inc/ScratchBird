@@ -13,6 +13,10 @@
 #include "llvm_memory_accounting.hpp"
 #include "memory_support_bundle.hpp"
 #include "native_compile.hpp"
+#include "metric_builtin_definitions.hpp"
+#include "metric_observation_queue.hpp"
+#include <algorithm>
+#include <map>
 
 #include <cstdlib>
 #include <iostream>
@@ -36,6 +40,67 @@ using scratchbird::core::platform::u64;
 void Require(bool condition, std::string_view message) {
   if (!condition) {
     Fail(message);
+  }
+}
+
+namespace metrics = scratchbird::core::metrics;
+bool metric_fixture_ready = false;
+std::shared_ptr<metrics::MetricObservationQueue> metric_queue;
+metrics::MetricRetentionPolicy metric_policy;
+std::map<std::string, metrics::MetricDescriptor> metric_descriptors;
+std::map<metrics::MetricUuid, metrics::MetricSeriesIdentity> metric_series;
+metrics::MetricUuid MetricId(unsigned n) {
+  auto id = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000ef00");
+  id.bytes[14] = static_cast<unsigned char>(n >> 8);
+  id.bytes[15] = static_cast<unsigned char>(n);
+  return id;
+}
+unsigned next_metric_id = 10;
+void RegisterMetricFixture() {
+  auto queue = metrics::MetricObservationQueue::Create({MetricId(1), MetricId(2), {}}, {128, 1024*1024});
+  Require(queue.ok(), "create LLVM observation queue");
+  metric_queue = std::move(queue.queue);
+  auto& registry = metrics::DefaultMetricRegistry();
+  Require(registry.BindObservationQueue(metric_queue).ok, "bind LLVM node observation source");
+  metric_policy.policy_uuid = MetricId(3); metric_policy.generation = 1;
+  metric_policy.policy_name = "LLVM component retention fixture";
+  const auto definitions = metrics::BuiltinMetricDescriptorDefinitions();
+  for (const auto* family : {"sb_llvm_foreign_memory_reservations_total",
+                           "sb_llvm_foreign_memory_reserved_bytes",
+                           "sb_llvm_foreign_memory_refusals_total"}) {
+    const auto found = std::find_if(definitions.begin(), definitions.end(),
+        [&](const auto& d) { return d.family == family; });
+    Require(found != definitions.end(), "LLVM compiled metric definition missing");
+    metrics::MetricDescriptor descriptor;
+    static_cast<metrics::MetricDescriptorDefinition&>(descriptor) = *found;
+    descriptor.metric_uuid = MetricId(next_metric_id++); descriptor.descriptor_generation = 1;
+    descriptor.label_schema_uuid = MetricId(next_metric_id++); descriptor.label_schema_generation = 1;
+    descriptor.retention_policy_uuid = metric_policy.policy_uuid; descriptor.retention_policy_generation = 1;
+    descriptor.visibility_policy_uuid = MetricId(next_metric_id++); descriptor.visibility_policy_generation = 1;
+    descriptor.readiness = metrics::MetricReadiness::implemented;
+    Require(registry.RegisterDescriptor(descriptor).ok, "register LLVM fixture descriptor");
+    metric_descriptors.emplace(family, std::move(descriptor));
+  }
+  metric_fixture_ready = true;
+}
+void RegisterRequestMetrics(const memory::LlvmMemoryAccountingRequest& request) {
+  if (!metric_fixture_ready) return;
+  for (const auto& [family, descriptor] : metric_descriptors) {
+    const bool refusal = family == "sb_llvm_foreign_memory_refusals_total";
+    const char* result = refusal ? "refused" :
+        family == "sb_llvm_foreign_memory_reserved_bytes" ? "current" : "reserved";
+    const char* reason = refusal ? "SB_CEIC_061_LLVM_MEMORY_REQUEST_REFUSED" :
+        memory::ForeignMemoryLinkageModeName(request.linkage_mode);
+    metrics::MetricHistoryBinding binding;
+    static_cast<metrics::MetricDescriptorBinding&>(binding) = descriptor;
+    binding.database_uuid = MetricId(1); binding.node_uuid = MetricId(2);
+    const auto series = metrics::MakeMetricSeriesIdentity(descriptor,
+        {{"component", "llvm_memory"}, {"operation", request.operation_id},
+         {"result", result}, {"reason", reason}}, metric_policy, binding,
+        MetricId(next_metric_id++), 1);
+    Require(series.ok() && metrics::DefaultMetricRegistry().RegisterSeries(*series.record, metric_policy).ok,
+            "register LLVM fixture series");
+    metric_series.emplace(series.record->series_uuid, *series.record);
   }
 }
 
@@ -85,15 +150,15 @@ bool HasGaugeValue(std::string_view family,
                    std::string_view operation,
                    std::string_view result,
                    std::string_view reason,
-                   double value) {
+                   u64 value) {
   for (const auto& metric :
        scratchbird::core::metrics::DefaultMetricRegistry().SnapshotCurrent()) {
     if (metric.family == family &&
         MetricHasLabel(metric, "operation", operation) &&
         MetricHasLabel(metric, "result", result) &&
         MetricHasLabel(metric, "reason", reason) &&
-        std::holds_alternative<double>(metric.value) &&
-        std::get<double>(metric.value) == value) {
+        std::holds_alternative<u64>(metric.value) &&
+        std::get<u64>(metric.value) == value) {
       return true;
     }
   }
@@ -161,6 +226,7 @@ memory::LlvmMemoryAccountingRequest LlvmRequest(
                       "reserve_before_llvm_or_native_call=true",
                       "memory_evidence_only=true",
                       "cluster_optimization_external_provider_only=true"};
+  RegisterRequestMetrics(request);
   return request;
 }
 
@@ -204,6 +270,9 @@ void ValidateDynamicDefaultAndCleanup(
   auto acquired =
       memory::AcquireLlvmMemoryAccountingReservation(std::move(request));
   Require(acquired.ok(), "dynamic LLVM memory reservation failed");
+  Require(acquired.metric_publication.attempted == 2 && acquired.metric_publication.accepted == 2 &&
+          !acquired.metric_publication.allocation_failed && acquired.metrics.size() == 2,
+          "LLVM acquisition did not publish exactly its two typed series");
   Require(Contains(acquired.evidence,
                    "CEIC-061_LLVM_DYNAMIC_STATIC_MEMORY_ACCOUNTING"),
           "CEIC-061 dynamic evidence anchor missing");
@@ -234,6 +303,8 @@ void ValidateDynamicDefaultAndCleanup(
   const auto released = acquired.reservation->Release(
       memory::ForeignMemoryReleaseEvent::adapter_shutdown);
   Require(released.ok(), "dynamic LLVM release failed");
+  Require(released.metric_publication.attempted == 1 && released.metric_publication.accepted == 1,
+          "LLVM release zero observation was not accepted");
   Require(released.released_reservation_count == 4,
           "dynamic release count mismatch");
   Require(Contains(released.evidence, "llvm_memory.release.phase=dynamic_loader"),
@@ -418,9 +489,103 @@ void ValidateAuthorityRefusals(
           "LLVM authority refusal omitted no-authority evidence");
 }
 
+void ValidateUnregisteredPublication() {
+  memory::HierarchicalMemoryBudgetLedger lower;
+  memory::ForeignMemoryReservationLedger foreign;
+  auto acquired = memory::AcquireLlvmMemoryAccountingReservation(LlvmRequest(
+      &lower, &foreign, memory::ForeignMemoryLinkageMode::dynamic_library, "unregistered"));
+  Require(acquired.ok() && acquired.metrics.empty() &&
+          acquired.metric_publication.attempted == 2 && acquired.metric_publication.accepted == 0 &&
+          acquired.metric_publication.last_refusal.diagnostic_code == "SB-METRICS-FAMILY-UNKNOWN",
+          "unregistered observation must not fabricate samples or alter reservation outcome");
+  const auto released = acquired.reservation->Release();
+  Require(released.ok() && released.metric_publication.accepted == 0 && lower.Snapshot().current_bytes == 0,
+          "missing metrics registration must not hide completed release");
+  Require(metrics::DefaultMetricRegistry().Descriptors().empty(),
+          "LLVM producer must not manufacture catalog identities");
+}
+
+void ValidateExactValuesAndMissingSeries() {
+  memory::HierarchicalMemoryBudgetLedger lower;
+  memory::ForeignMemoryReservationLedger foreign;
+  auto request = LlvmRequest(&lower, &foreign,
+      memory::ForeignMemoryLinkageMode::dynamic_library, "exact-integer");
+  request.reserve_loader_or_link_metadata = request.reserve_code = request.reserve_data = false;
+  request.native_bytes = (u64{1} << 53) + 1;
+  auto acquired = memory::AcquireLlvmMemoryAccountingReservation(request);
+  Require(acquired.ok() && acquired.metric_publication.accepted == 2 && acquired.metrics.size() == 2,
+          "exact integer reservation observation failed");
+  Require(HasGaugeValue("sb_llvm_foreign_memory_reserved_bytes", request.operation_id,
+                       "current", "dynamic_library", request.native_bytes),
+          "bytes above double precision must remain exact uint64");
+  for (const auto& metric : acquired.metrics)
+    Require(MetricHasLabel(metric, "operation", request.operation_id),
+            "LLVM result captured another operation's series");
+  Require(acquired.reservation->Release().ok(), "exact integer accounting release");
+  request.operation_id += "-not-registered";
+  auto missing = memory::AcquireLlvmMemoryAccountingReservation(request);
+  Require(missing.ok() && missing.metrics.empty() && missing.metric_publication.accepted == 0 &&
+          missing.metric_publication.last_refusal.diagnostic_code == "METRIC.OBSERVATION_SOURCE_UNAVAILABLE",
+          "missing series must not reuse another operation's prior samples");
+  Require(missing.reservation->Release().ok() && lower.Snapshot().current_bytes == 0,
+          "missing series must not prevent actual cleanup");
+}
+
+void ValidateObservationWireAndQueueFailure() {
+  bool exact_seen = false;
+  unsigned decoded_count = 0;
+  for (;;) {
+    auto held = metric_queue->TryAcquire();
+    if (held.error == metrics::MetricQueueError::empty) break;
+    Require(held.ok(), "acquire actual LLVM observation");
+    const auto& observation = *held.lease.observation;
+    const auto& series = metric_series.at(observation.series_uuid);
+    const auto& descriptor = metric_descriptors.at(series.metric_family);
+    const auto decoded = metrics::DecodeMetricRawSample(descriptor, series, observation.bytes);
+    Require(decoded.ok() && observation.binding.database_uuid == MetricId(1) &&
+            observation.binding.node_uuid == MetricId(2) && observation.binding.cluster_uuid.is_nil(),
+            "LLVM observation wire or exact binary node ownership invalid");
+    if (series.metric_family == "sb_llvm_foreign_memory_reserved_bytes" &&
+        std::get<u64>(decoded.record->value.value) == (u64{1} << 53) + 1) exact_seen = true;
+    // Component fixture consumes/discards validated observations; no durable
+    // recorder, catalog activation or production retention proof is claimed.
+    Require(metric_queue->TryRemove(held.lease) == metrics::MetricQueueError::none,
+            "retire inspected fixture observation");
+    ++decoded_count;
+  }
+  Require(exact_seen && decoded_count > 0, "missing exact large-byte wire observation");
+  memory::HierarchicalMemoryBudgetLedger lower;
+  memory::ForeignMemoryReservationLedger foreign;
+  auto request = LlvmRequest(&lower, &foreign,
+      memory::ForeignMemoryLinkageMode::dynamic_library, "queue-full");
+  auto warm = memory::AcquireLlvmMemoryAccountingReservation(request);
+  Require(warm.ok() && warm.metric_publication.accepted == 2 && warm.reservation->Release().ok(),
+          "queue-full prior sample setup");
+  auto& registry = metrics::DefaultMetricRegistry();
+  for (unsigned i = 0; i != 256; ++i) {
+    const auto published = registry.IncrementCounter("sb_llvm_foreign_memory_reservations_total",
+        {{"component", "llvm_memory"}, {"operation", request.operation_id},
+         {"result", "reserved"}, {"reason", "dynamic_library"}}, u64{1}, "llvm_memory_accounting");
+    if (!published.ok) break;
+  }
+  Require(metric_queue->Stats().full != 0, "real observation queue did not fill");
+  const auto admitted = metric_queue->Stats().admitted;
+  auto blocked = memory::AcquireLlvmMemoryAccountingReservation(request);
+  Require(blocked.ok() && blocked.metric_publication.attempted == 2 &&
+          blocked.metric_publication.accepted == 0 && blocked.metrics.empty() &&
+          metric_queue->Stats().admitted == admitted && lower.Snapshot().current_bytes == 2304,
+          "rejected publication returned old samples or changed memory outcome");
+  const auto released = blocked.reservation->Release();
+  Require(released.ok() && released.metric_publication.accepted == 0 &&
+          lower.Snapshot().current_bytes == 0 && foreign.Snapshot().current_estimated_bytes == 0,
+          "full observation queue prevented actual release");
+}
+
 }  // namespace
 
 int main() {
+  ValidateUnregisteredPublication();
+  RegisterMetricFixture();
   memory::HierarchicalMemoryBudgetLedger budget_ledger;
   memory::ForeignMemoryReservationLedger foreign_ledger;
   SetBudget(&budget_ledger,
@@ -433,6 +598,8 @@ int main() {
   ValidateProviderRefusalAndFixtureSeparation(&budget_ledger, &foreign_ledger);
   ValidateNativeCompileMemoryPath(&budget_ledger, &foreign_ledger);
   ValidateAuthorityRefusals(&budget_ledger, &foreign_ledger);
+  ValidateExactValuesAndMissingSeries();
+  ValidateObservationWireAndQueueFailure();
 
   Require(foreign_ledger.Snapshot().active_reservation_count == 0,
           "foreign ledger leaked active LLVM reservations");

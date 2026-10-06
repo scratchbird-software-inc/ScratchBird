@@ -10,6 +10,8 @@
 #include "foreign_memory_reservation.hpp"
 
 #include <algorithm>
+#include <new>
+#include <stdexcept>
 #include <utility>
 
 namespace scratchbird::core::memory {
@@ -430,7 +432,7 @@ ForeignMemoryReservation::ForeignMemoryReservation(
       state_(std::move(state)) {}
 
 ForeignMemoryReservation::~ForeignMemoryReservation() {
-  (void)Release(ForeignMemoryReleaseEvent::scope_exit);
+  if (owner_) (void)ReleaseNoAlloc(ForeignMemoryReleaseEvent::scope_exit);
 }
 
 bool ForeignMemoryReservation::active() const {
@@ -447,7 +449,7 @@ const ForeignMemoryReservationRequest& ForeignMemoryReservation::request() const
 }
 
 ForeignMemoryReservationReleaseResult ForeignMemoryReservation::Release(
-    ForeignMemoryReleaseEvent event) {
+    ForeignMemoryReleaseEvent event) try {
   ForeignMemoryReservationReleaseResult result;
   result.status = OkStatus();
   if (state_ == nullptr || owner_ == nullptr || !token_.valid()) {
@@ -462,18 +464,26 @@ ForeignMemoryReservationReleaseResult ForeignMemoryReservation::Release(
     result.evidence.push_back(kAuthorityScope);
     return result;
   }
-  bool was_released = state_->released.exchange(true);
-  if (was_released) {
-    result.released = true;
-    result.evidence.push_back(kEvidenceAnchor);
-    result.evidence.push_back(kAuthorityScope);
-    result.evidence.push_back("foreign_memory.release.already_released=true");
-    return result;
-  }
-  result = owner_->ReleaseReservation(token_, event);
-  if (!result.ok()) {
-    state_->released.store(false);
-  }
+  return owner_->ReleaseReservation(token_, event, true, state_.get());
+} catch (const std::bad_alloc&) {
+  ForeignMemoryReservationReleaseResult result;
+  result.status = ErrorStatus(StatusCode::memory_allocation_failed);
+  result.fail_closed = true;
+  return result;
+} catch (const std::length_error&) {
+  ForeignMemoryReservationReleaseResult result;
+  result.status = ErrorStatus(StatusCode::memory_allocation_failed);
+  result.fail_closed = true;
+  return result;
+}
+
+ForeignMemoryReservationReleaseResult ForeignMemoryReservation::ReleaseNoAlloc(
+    ForeignMemoryReleaseEvent event) {
+  if (state_ && owner_ && token_.valid())
+    return owner_->ReleaseReservation(token_, event, false, state_.get());
+  ForeignMemoryReservationReleaseResult result;
+  result.status = ErrorStatus(StatusCode::memory_unknown_pointer);
+  result.fail_closed = true;
   return result;
 }
 
@@ -523,7 +533,7 @@ ForeignMemoryActiveReservationSnapshot ForeignMemoryReservation::Snapshot() cons
 }
 
 ForeignMemoryReservationAcquireResult ForeignMemoryReservationLedger::Reserve(
-    ForeignMemoryReservationRequest request) {
+    ForeignMemoryReservationRequest request) try {
   if (request.estimated_bytes == 0 && request.observed_bytes != 0) {
     request.estimated_bytes = request.observed_bytes;
   }
@@ -604,9 +614,14 @@ ForeignMemoryReservationAcquireResult ForeignMemoryReservationLedger::Reserve(
     return result;
   }
 
+  struct PendingReservation {
+    HierarchicalMemoryBudgetLedger* ledger;
+    HierarchicalMemoryReservationToken token;
+    bool published = false;
+    ~PendingReservation() { if (!published) (void)ledger->ReleaseNoAlloc(token); }
+  } pending{request.reservation_ledger, reserved.token};
   auto committed = request.reservation_ledger->Commit(reserved.token);
   if (!committed.ok()) {
-    (void)request.reservation_ledger->Release(reserved.token);
     std::lock_guard<std::mutex> lock(mutex_);
     ++fail_closed_refusal_count_;
     auto result = RefuseAcquire(
@@ -622,8 +637,17 @@ ForeignMemoryReservationAcquireResult ForeignMemoryReservationLedger::Reserve(
     return result;
   }
 
-  const u64 reservation_id =
-      next_reservation_id_.fetch_add(1, std::memory_order_relaxed);
+  // Zero is the exhausted sentinel. Failed preparations may leave gaps, but
+  // no live or historical local receipt is ever reissued after wrap.
+  u64 reservation_id = next_reservation_id_.load(std::memory_order_relaxed);
+  while (reservation_id != 0 && !next_reservation_id_.compare_exchange_weak(
+      reservation_id, reservation_id + 1, std::memory_order_relaxed)) {}
+  if (reservation_id == 0) {
+    ForeignMemoryReservationAcquireResult result;
+    result.status = ErrorStatus(StatusCode::memory_limit_exceeded);
+    result.fail_closed = true;
+    return result;
+  }
   auto state = std::make_shared<ForeignMemoryReservation::HandleState>();
   ForeignMemoryReservationToken token{reservation_id, reserved.token};
   ReservationRecord record;
@@ -633,16 +657,10 @@ ForeignMemoryReservationAcquireResult ForeignMemoryReservationLedger::Reserve(
   record.confidence = request.confidence;
   record.state = state;
 
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    ApplyReservationLocked(record);
-    records_[reservation_id] = record;
-  }
-
   ForeignMemoryReservationAcquireResult result;
   result.status = OkStatus();
   result.reservation.reset(
-      new ForeignMemoryReservation(this, std::move(request), token, state));
+      new ForeignMemoryReservation(nullptr, std::move(request), token, state));
   AddBaseEvidence(&result.evidence, result.reservation->request());
   result.evidence.push_back("foreign_memory.reservation_created=true");
   result.evidence.push_back("foreign_memory.reservation_committed=true");
@@ -659,69 +677,114 @@ ForeignMemoryReservationAcquireResult ForeignMemoryReservationLedger::Reserve(
         std::to_string(result.reservation->request().estimated_bytes)},
        {"observed_bytes",
         std::to_string(result.reservation->request().observed_bytes)}});
+  {
+    std::lock_guard lock(mutex_);
+    auto [source, source_added] = source_accounting_.try_emplace(record.request.source);
+    auto scope = owning_scope_accounting_.end();
+    bool scope_added = false;
+    try {
+      auto inserted = owning_scope_accounting_.try_emplace(
+          std::make_pair(record.request.owning_scope, record.request.binary_owning_scope_uuid));
+      scope = inserted.first;
+      scope_added = inserted.second;
+      record.source_accounting = &source->second;
+      record.scope_accounting = &scope->second;
+      auto [entry, added] = records_.emplace(reservation_id, std::move(record));
+      if (!added) std::terminate(); // monotonic private receipt invariant
+      ApplyReservationLocked(entry->second);
+    } catch (...) {
+      if (scope_added) owning_scope_accounting_.erase(scope);
+      if (source_added) source_accounting_.erase(source);
+      throw;
+    }
+    result.reservation->owner_ = this;
+    pending.published = true;
+  }
+  return result;
+} catch (const std::bad_alloc&) {
+  ForeignMemoryReservationAcquireResult result;
+  result.status = ErrorStatus(StatusCode::memory_allocation_failed);
+  result.fail_closed = true;
+  return result;
+} catch (const std::length_error&) {
+  ForeignMemoryReservationAcquireResult result;
+  result.status = ErrorStatus(StatusCode::memory_allocation_failed);
+  result.fail_closed = true;
   return result;
 }
 
 ForeignMemoryReservationReleaseResult
 ForeignMemoryReservationLedger::ReleaseReservation(
     ForeignMemoryReservationToken token,
-    ForeignMemoryReleaseEvent event) {
-  ReservationRecord record;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto it = records_.find(token.reservation_id);
-    if (it == records_.end() ||
-        it->second.token.ledger_token.token_id != token.ledger_token.token_id ||
-        it->second.token.ledger_token.bytes != token.ledger_token.bytes) {
-      ++failed_release_count_;
-      return RefuseRelease(token,
-                           "SB_CEIC_016_FOREIGN_MEMORY_RELEASE_UNKNOWN",
-                           "memory.ceic_016.foreign.release_unknown",
-                           it == records_.end() ? "reservation_not_found"
-                                                : "reservation_token_mismatch");
-    }
-    record = it->second;
-    records_.erase(it);
-  }
-
-  auto released = record.request.reservation_ledger->Release(token.ledger_token);
-  if (!released.ok()) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    ++failed_release_count_;
-    records_[token.reservation_id] = record;
-    if (record.state != nullptr) {
-      record.state->released.store(false);
-    }
-    auto refused = RefuseRelease(
-        token,
-        "SB_CEIC_016_FOREIGN_MEMORY_LEDGER_RELEASE_REFUSED",
-        "memory.ceic_016.foreign.ledger_release_refused",
-        released.diagnostic.diagnostic_code.empty()
-            ? "hierarchical_memory_budget_release_refused"
-            : released.diagnostic.diagnostic_code,
-        released.status.code);
-    refused.diagnostic = released.diagnostic;
-    return refused;
-  }
-
+    ForeignMemoryReleaseEvent event, bool materialize,
+    const ForeignMemoryReservation::HandleState* state) try {
+  std::lock_guard<std::mutex> lock(mutex_);
   ForeignMemoryReservationReleaseResult result;
   result.status = OkStatus();
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    ApplyReleaseLocked(record, event);
-    result.snapshot = SnapshotForRecordLocked(record);
+  if (state && state->released.load()) {
+    result.released = true;
+    if (materialize) {
+      result.evidence.push_back(kEvidenceAnchor);
+      result.evidence.push_back(kAuthorityScope);
+      result.evidence.push_back("foreign_memory.release.already_released=true");
+    }
+    return result;
   }
+  auto it = records_.find(token.reservation_id);
+  if (it == records_.end() ||
+      it->second.token.ledger_token.token_id != token.ledger_token.token_id ||
+      it->second.token.ledger_token.bytes != token.ledger_token.bytes) {
+    ++failed_release_count_;
+    if (!materialize) {
+      result.status = ErrorStatus(StatusCode::memory_unknown_pointer);
+      result.fail_closed = true;
+      return result;
+    }
+    return RefuseRelease(token,
+                         "SB_CEIC_016_FOREIGN_MEMORY_RELEASE_UNKNOWN",
+                         "memory.ceic_016.foreign.release_unknown",
+                         it == records_.end() ? "reservation_not_found"
+                                              : "reservation_token_mismatch");
+  }
+  const auto& record = it->second;
+  if (materialize) {
+    result.snapshot = SnapshotForRecordLocked(record);
+    AddBaseEvidence(&result.evidence, record.request);
+    result.evidence.push_back("foreign_memory.release_event=" +
+                              std::string(ForeignMemoryReleaseEventName(event)));
+    result.evidence.push_back("foreign_memory.reservation_released=true");
+    result.diagnostic = MakeForeignMemoryDiagnostic(
+        result.status,
+        "SB_CEIC_016_FOREIGN_MEMORY_RELEASED",
+        "memory.ceic_016.foreign.released",
+        {{"source", ForeignMemorySourceName(record.request.source)},
+         {"reservation_id", std::to_string(token.reservation_id)}});
+  }
+  const auto released = record.request.reservation_ledger->ReleaseNoAlloc(token.ledger_token);
+  if (!released.ok()) {
+    ++failed_release_count_;
+    // Keep the record, state and all foreign charges for exact-owner retry.
+    // Prepared success evidence must not escape as evidence of a failed release.
+    result = {};
+    result.status = released;
+    result.diagnostic.status = released;
+    result.fail_closed = true;
+    return result;
+  }
+  ApplyReleaseLocked(record, event);
+  record.state->released.store(true);
+  records_.erase(it);
   result.released = true;
-  AddBaseEvidence(&result.evidence, record.request);
-  result.evidence.push_back("foreign_memory.release_event=" +
-                            std::string(ForeignMemoryReleaseEventName(event)));
-  result.evidence.push_back("foreign_memory.reservation_released=true");
-  result.diagnostic = MakeForeignMemoryDiagnostic(
-      result.status,
-      "SB_CEIC_016_FOREIGN_MEMORY_RELEASED",
-      "memory.ceic_016.foreign.released",
-      {{"source", ForeignMemorySourceName(record.request.source)},
-       {"reservation_id", std::to_string(token.reservation_id)}});
+  return result;
+} catch (const std::bad_alloc&) {
+  ForeignMemoryReservationReleaseResult result;
+  result.status = ErrorStatus(StatusCode::memory_allocation_failed);
+  result.fail_closed = true;
+  return result;
+} catch (const std::length_error&) {
+  ForeignMemoryReservationReleaseResult result;
+  result.status = ErrorStatus(StatusCode::memory_allocation_failed);
+  result.fail_closed = true;
   return result;
 }
 
@@ -798,6 +861,7 @@ ForeignMemoryReservationCleanupResult
 ForeignMemoryReservationLedger::CleanupOwnerImpl(
     std::string_view owner_id, const MemoryBinaryUuid& owner_uuid) {
   ForeignMemoryReservationCleanupResult cleanup;
+  try {
   cleanup.status = OkStatus();
   cleanup.evidence.push_back(kEvidenceAnchor);
   cleanup.evidence.push_back(kAuthorityScope);
@@ -831,27 +895,14 @@ ForeignMemoryReservationLedger::CleanupOwnerImpl(
             });
 
   for (const auto& token : tokens) {
-    u64 estimated = 0;
-    u64 observed = 0;
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      auto it = records_.find(token.reservation_id);
-      if (it != records_.end()) {
-        estimated = it->second.request.estimated_bytes;
-        observed = it->second.observed_bytes;
-        if (it->second.state != nullptr) {
-          it->second.state->released.store(true);
-        }
-      }
-    }
     auto released = ReleaseReservation(token, ForeignMemoryReleaseEvent::owner_cleanup);
     if (released.ok()) {
       ++cleanup.cleaned_reservation_count;
-      cleanup.cleaned_estimated_bytes += estimated;
-      cleanup.cleaned_observed_bytes += observed;
+      cleanup.cleaned_estimated_bytes += released.snapshot.estimated_bytes;
+      cleanup.cleaned_observed_bytes += released.snapshot.observed_bytes;
     } else {
       cleanup.status = released.status;
-      cleanup.diagnostic = released.diagnostic;
+      cleanup.diagnostic = std::move(released.diagnostic);
       break;
     }
   }
@@ -860,6 +911,15 @@ ForeignMemoryReservationLedger::CleanupOwnerImpl(
   cleanup.evidence.push_back(
       "foreign_memory.owner_cleanup.cleaned_estimated_bytes=" +
       std::to_string(cleanup.cleaned_estimated_bytes));
+  } catch (const std::bad_alloc&) {
+    cleanup.status = ErrorStatus(StatusCode::memory_allocation_failed);
+    cleanup.diagnostic = {};
+    cleanup.diagnostic.status = cleanup.status;
+  } catch (const std::length_error&) {
+    cleanup.status = ErrorStatus(StatusCode::memory_allocation_failed);
+    cleanup.diagnostic = {};
+    cleanup.diagnostic.status = cleanup.status;
+  }
   return cleanup;
 }
 
@@ -931,7 +991,7 @@ void ForeignMemoryReservationLedger::ApplyReservationLocked(
   UpdatePeak(current_observed_bytes_, &peak_observed_bytes_);
   ++reservation_count_;
 
-  auto& source = source_accounting_[record.request.source];
+  auto& source = *record.source_accounting;
   ++source.active_reservation_count;
   source.current_estimated_bytes += estimated;
   source.current_observed_bytes += observed;
@@ -939,7 +999,7 @@ void ForeignMemoryReservationLedger::ApplyReservationLocked(
   UpdatePeak(source.current_observed_bytes, &source.peak_observed_bytes);
   ++source.reservation_count;
 
-  auto& scope = owning_scope_accounting_[{record.request.owning_scope, record.request.binary_owning_scope_uuid}];
+  auto& scope = *record.scope_accounting;
   ++scope.active_reservation_count;
   scope.current_estimated_bytes += estimated;
   scope.current_observed_bytes += observed;
@@ -956,27 +1016,27 @@ void ForeignMemoryReservationLedger::ApplyObservedDeltaLocked(
   if (observed_bytes >= previous) {
     const u64 delta = observed_bytes - previous;
     current_observed_bytes_ += delta;
-    source_accounting_[record->request.source].current_observed_bytes += delta;
-    owning_scope_accounting_[{record->request.owning_scope, record->request.binary_owning_scope_uuid}].current_observed_bytes += delta;
+    record->source_accounting->current_observed_bytes += delta;
+    record->scope_accounting->current_observed_bytes += delta;
   } else {
     const u64 delta = previous - observed_bytes;
     current_observed_bytes_ =
         current_observed_bytes_ >= delta ? current_observed_bytes_ - delta : 0;
-    auto& source = source_accounting_[record->request.source];
+    auto& source = *record->source_accounting;
     source.current_observed_bytes =
         source.current_observed_bytes >= delta
             ? source.current_observed_bytes - delta
             : 0;
-    auto& scope = owning_scope_accounting_[{record->request.owning_scope, record->request.binary_owning_scope_uuid}];
+    auto& scope = *record->scope_accounting;
     scope.current_observed_bytes =
         scope.current_observed_bytes >= delta
             ? scope.current_observed_bytes - delta
             : 0;
   }
   UpdatePeak(current_observed_bytes_, &peak_observed_bytes_);
-  auto& source = source_accounting_[record->request.source];
+  auto& source = *record->source_accounting;
   UpdatePeak(source.current_observed_bytes, &source.peak_observed_bytes);
-  auto& scope = owning_scope_accounting_[{record->request.owning_scope, record->request.binary_owning_scope_uuid}];
+  auto& scope = *record->scope_accounting;
   UpdatePeak(scope.current_observed_bytes, &scope.peak_observed_bytes);
   record->observed_bytes = observed_bytes;
   record->confidence = confidence;
@@ -1000,7 +1060,7 @@ void ForeignMemoryReservationLedger::ApplyReleaseLocked(
     ++owner_cleanup_count_;
   }
 
-  auto& source = source_accounting_[record.request.source];
+  auto& source = *record.source_accounting;
   if (source.active_reservation_count != 0) {
     --source.active_reservation_count;
   }
@@ -1019,7 +1079,7 @@ void ForeignMemoryReservationLedger::ApplyReleaseLocked(
     ++source.owner_cleanup_count;
   }
 
-  auto& scope = owning_scope_accounting_[{record.request.owning_scope, record.request.binary_owning_scope_uuid}];
+  auto& scope = *record.scope_accounting;
   if (scope.active_reservation_count != 0) {
     --scope.active_reservation_count;
   }

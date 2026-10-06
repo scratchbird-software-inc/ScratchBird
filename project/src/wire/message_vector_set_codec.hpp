@@ -41,6 +41,20 @@ struct MessageSet {
 // Caller output is unchanged on every failure, including allocation failure.
 [[nodiscard]] ValueCodecError EncodeMessageSet(const MessageSet& input,
     std::vector<std::uint8_t>* output) noexcept;
+enum class BoundedSetStatus { ok, malformed, destination_too_small, overlapping_input };
+struct BoundedSetReceipt {
+  BoundedSetStatus status=BoundedSetStatus::malformed;
+  // Required/written bytes for a valid input; zero for malformed input.
+  std::size_t bytes=0;
+};
+// Allocation-free structural encoding of an already prepared, immutable input.
+// Empty output measures the required capacity. Failure never modifies output;
+// success modifies only the returned prefix. Overlap with input storage rejects.
+// Duplicate identity checks are quadratic in the bounded record count; intended
+// for small emergency sets, not a substitute for bulk encoding throughput.
+// Preparation, identity issuance, authorization and redaction remain upstream.
+[[nodiscard]] BoundedSetReceipt EncodeMessageSetInto(const MessageSet& input,
+    std::span<std::uint8_t> output) noexcept;
 [[nodiscard]] ValueCodecError DecodeMessageSet(std::span<const std::uint8_t> input,
     MessageSet* output) noexcept;
 } // namespace scratchbird::wire::message_vector

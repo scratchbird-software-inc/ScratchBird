@@ -8,6 +8,34 @@
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+add_executable(foreign_memory_fault_gate foreign_memory_fault_gate.cpp)
+target_link_libraries(foreign_memory_fault_gate PRIVATE sb_core_memory)
+target_compile_features(foreign_memory_fault_gate PRIVATE cxx_std_20)
+add_test(NAME foreign_memory_fault_gate COMMAND foreign_memory_fault_gate)
+set_tests_properties(foreign_memory_fault_gate PROPERTIES
+  TIMEOUT 120 LABELS "memory;foreign_memory;allocation_failure;concurrency")
+
+add_executable(memory_class_lease_fault_gate memory_class_lease_fault_gate.cpp)
+target_link_libraries(memory_class_lease_fault_gate PRIVATE sb_core_memory)
+target_compile_features(memory_class_lease_fault_gate PRIVATE cxx_std_20)
+add_test(NAME memory_class_lease_fault_gate COMMAND memory_class_lease_fault_gate)
+set_tests_properties(memory_class_lease_fault_gate PROPERTIES
+  TIMEOUT 120 LABELS "memory;leases;allocation_failure;failure_atomicity")
+
+add_executable(emergency_diagnostic_queue_gate emergency_diagnostic_queue_gate.cpp)
+target_link_libraries(emergency_diagnostic_queue_gate PRIVATE sb_core_memory)
+target_compile_features(emergency_diagnostic_queue_gate PRIVATE cxx_std_20)
+add_test(NAME emergency_diagnostic_queue_gate COMMAND emergency_diagnostic_queue_gate)
+set_tests_properties(emergency_diagnostic_queue_gate PROPERTIES
+  TIMEOUT 60 LABELS "memory;emergency_reserve;low_memory_diagnostics;concurrency")
+
+add_executable(emergency_canonical_capture_gate emergency_canonical_capture_gate.cpp)
+target_link_libraries(emergency_canonical_capture_gate PRIVATE sb_core_memory sb_wire_message_vector_set_codec)
+target_compile_features(emergency_canonical_capture_gate PRIVATE cxx_std_20)
+add_test(NAME emergency_canonical_capture_gate COMMAND emergency_canonical_capture_gate)
+set_tests_properties(emergency_canonical_capture_gate PROPERTIES
+  TIMEOUT 60 LABELS "memory;emergency_reserve;low_memory_diagnostics;canonical_wire")
+
 set(SB_PRIVATE_REPO_ROOT "${PROJECT_SOURCE_DIR}/..")
 set(SB_CONSOLIDATED_ENTERPRISE_PROOF_GATE
   "${SB_PRIVATE_REPO_ROOT}/project/tools/consolidated_enterprise_proof_gate.py"
