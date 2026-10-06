@@ -3,6 +3,7 @@
 #include "../../../src/core/datatypes/datatype_timestamp.hpp"
 #include "../../../src/core/time/time.hpp"
 #include "disk_device.hpp"
+#include "../support/owned_temp_directory.hpp"
 
 #include <algorithm>
 #include <array>
@@ -24,7 +25,7 @@ extern "C" scratchbird::core::time::ClockSnapshotResult __real__ZN11scratchbird4
 extern "C" scratchbird::core::time::ClockSnapshotResult __wrap__ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv(){++file_device_clock_calls;return __real__ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv();}
 namespace {
 unsigned checks=0;
-void Check(bool value,std::string_view message){++checks;if(!value){std::cerr<<"FAIL "<<message<<'\n';std::exit(1);}}
+void Check(bool value,std::string_view message){++checks;if(!value){std::cerr<<"FAIL "<<message<<'\n';throw std::runtime_error(std::string(message));}}
 bool AlwaysCancel(void*) noexcept{return true;}
 p::Uuid D710(){return p::Uuid{{1,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x10}};}
 std::shared_ptr<const dt::TimestampValidatedProfileHandleV3> Profile(){auto r=dt::BuildCurrentTimestampValidatedProfileHandleV3(D710());Check(r.ok(),"profile");return std::make_shared<const dt::TimestampValidatedProfileHandleV3>(std::move(r.profile));}
@@ -41,7 +42,7 @@ constexpr std::array<Fixture,7> kFixtures{{
  {dt::TimestampValueStateV3::value,INT32_MAX,86'399'999'999'999ull,"ffffffffbfa80000ffc99a3b00000000"},
 }};
 
-std::vector<p::byte> Reopen(const fs::path& path,std::span<const p::byte> image){file_device_clock_calls=0;std::error_code error;fs::remove(path,error);disk::FileDevice writer;Check(writer.Open(path.string(),disk::FileOpenMode::create_new).ok(),"FileDevice create");auto write=writer.WriteAt(0,image.data(),image.size());Check(write.ok()&&write.bytes_transferred==image.size()&&writer.Sync().ok()&&writer.Close().ok(),"FileDevice write sync close");disk::FileDevice reader;Check(reader.Open(path.string(),disk::FileOpenMode::open_existing_read_only).ok(),"FileDevice independent reopen");std::vector<p::byte> restored(image.size());auto read=reader.ReadAt(0,restored.data(),restored.size());Check(read.ok()&&read.bytes_transferred==restored.size()&&reader.Close().ok(),"FileDevice read close");fs::remove(path,error);Check(file_device_clock_calls==0,"local-civil timestamp persistence has no clock dependency");return restored;}
+std::vector<p::byte> Reopen(const fs::path& filename,std::span<const p::byte> image){scratchbird::tests::OwnedTempDirectory directory;const auto path=directory.path()/filename.filename();file_device_clock_calls=0;disk::FileDevice writer;Check(writer.Open(path.string(),disk::FileOpenMode::create_new).ok(),"FileDevice create");auto write=writer.WriteAt(0,image.data(),image.size());Check(write.ok()&&write.bytes_transferred==image.size()&&writer.Sync().ok()&&writer.Close().ok(),"FileDevice write sync close");disk::FileDevice reader;Check(reader.Open(path.string(),disk::FileOpenMode::open_existing_read_only).ok(),"FileDevice independent reopen");std::vector<p::byte> restored(image.size());auto read=reader.ReadAt(0,restored.data(),restored.size());Check(read.ok()&&read.bytes_transferred==restored.size()&&reader.Close().ok(),"FileDevice read close");directory.Cleanup();Check(file_device_clock_calls==0,"local-civil timestamp persistence has no clock dependency");return restored;}
 void Append(std::vector<p::byte>* image,std::span<const p::byte> record){std::array<p::byte,4> extent{};p::StoreLittle32(extent.data(),static_cast<p::u32>(record.size()));image->insert(image->end(),extent.begin(),extent.end());image->insert(image->end(),record.begin(),record.end());}
 
 void ComponentsAndFrames(const std::shared_ptr<const dt::TimestampValidatedProfileHandleV3>& profile){std::vector<p::byte> image;for(const auto& fixture:kFixtures){dt::TimestampOwnedValueV3 value{profile,fixture.state,fixture.day,fixture.nanos};auto component=dt::EncodeCanonicalTimestampComponentV3(value);Check(component.ok()&&component.bytes==Hex(fixture.component),"exact zero-or-LE16 component");auto decoded=dt::DecodeCanonicalTimestampComponentNoAllocV3(*profile,fixture.state,true,component.bytes);Check(decoded.ok()&&decoded.value.civil_day==fixture.day&&decoded.value.nanoseconds_since_midnight==fixture.nanos,"component roundtrip");auto sbdval=dt::EncodeTimestampSbdvalComposedV3(value,true);Check(sbdval.ok()&&sbdval.bytes.size()==(fixture.state==dt::TimestampValueStateV3::sql_null?32:48),"SBDVAL composed extent");auto decoded_sbdval=dt::DecodeTimestampSbdvalComposedNoAllocV3(*profile,true,sbdval.bytes);Check(decoded_sbdval.ok()&&decoded_sbdval.value.state==fixture.state&&decoded_sbdval.value.civil_day==fixture.day&&decoded_sbdval.value.nanoseconds_since_midnight==fixture.nanos,"SBDVAL profile-aware roundtrip");auto sbdpv=dt::EncodeTimestampSbdpvComposedV3(value,true);Check(sbdpv.ok()&&sbdpv.bytes.size()==(fixture.state==dt::TimestampValueStateV3::sql_null?24:40),"SBDPV composed extent");auto decoded_sbdpv=dt::DecodeTimestampSbdpvComposedNoAllocV3(*profile,true,sbdpv.bytes);Check(decoded_sbdpv.ok()&&decoded_sbdpv.value.state==fixture.state&&decoded_sbdpv.value.civil_day==fixture.day&&decoded_sbdpv.value.nanoseconds_since_midnight==fixture.nanos,"SBDPV profile-aware roundtrip");Append(&image,sbdval.bytes);Append(&image,sbdpv.bytes);}
@@ -95,4 +96,4 @@ void Mutations(const std::shared_ptr<const dt::TimestampValidatedProfileHandleV3
   auto historical=*profile;historical.identity.legacy_fields.codec_uuid=p::Uuid{{1,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x21}};Check(!dt::ValidateTimestampProfileHandleV3(historical).ok(),"historical d821 UTC codec refuses current local-civil decode");
 }
 }  // namespace
-int main(){auto profile=Profile();ComponentsAndFrames(profile);PersistenceOracle(profile);Mutations(profile);std::cout<<"PASS base.timestamp V3 component/persistence checks="<<checks<<"\n";}
+int main() try {auto profile=Profile();ComponentsAndFrames(profile);PersistenceOracle(profile);Mutations(profile);std::cout<<"PASS base.timestamp V3 component/persistence checks="<<checks<<"\n";} catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}

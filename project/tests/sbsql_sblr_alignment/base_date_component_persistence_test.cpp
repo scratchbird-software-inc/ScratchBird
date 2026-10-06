@@ -4,6 +4,7 @@
 #include "datatype_physical_encoding.hpp"
 #include "disk_device.hpp"
 #include "hash_digest_parts.hpp"
+#include "../support/owned_temp_directory.hpp"
 
 #include <algorithm>
 #include <array>
@@ -35,6 +36,29 @@ void Require(bool condition, const char* message) {
   if (!condition) {
     throw std::runtime_error(message);
   }
+}
+
+void TestFixtureIsolationAndFailureCleanup() {
+  fs::path failed_path;
+  scratchbird::tests::OwnedTempDirectory sibling;
+  try {
+    scratchbird::tests::OwnedTempDirectory directory;
+    failed_path = directory.path();
+    Require(failed_path != sibling.path(), "fixture paths must be unique");
+    disk::FileDevice writer;
+    Require(writer.Open((failed_path / "failure-image").string(),
+                        disk::FileOpenMode::create_new).ok(),
+            "failure cleanup fixture open");
+    throw 7;  // Device destructor must release its lease before directory cleanup.
+  } catch (int marker) {
+    Require(marker == 7, "unexpected cleanup injection");
+  }
+  Require(!failed_path.empty() && !fs::exists(failed_path),
+          "exception cleanup removes image and ownership sidecars");
+  Require(fs::is_directory(sibling.path()), "cleanup preserves sibling fixture");
+  const auto sibling_path = sibling.path();
+  sibling.Cleanup();
+  Require(!fs::exists(sibling_path), "explicit cleanup removes owned directory");
 }
 
 platform::Uuid StatementReceipt() {
@@ -538,9 +562,9 @@ void AppendLengthPrefixed(std::vector<platform::byte>* image,
 }
 
 std::vector<platform::byte> FileDeviceCloseReopen(
-    const fs::path& path, std::span<const platform::byte> image) {
-  std::error_code error;
-  fs::remove(path, error);
+    const fs::path& filename, std::span<const platform::byte> image) {
+  scratchbird::tests::OwnedTempDirectory directory;
+  const auto path = directory.path() / filename.filename();
   disk::FileDevice writer;
   Require(writer.Open(path.string(), disk::FileOpenMode::create_new).ok(),
           "open conformance image for write");
@@ -558,7 +582,7 @@ std::vector<platform::byte> FileDeviceCloseReopen(
   Require(read.ok() && read.bytes_transferred == restored.size() &&
               reader.Close().ok(),
           "read and independently close conformance image");
-  fs::remove(path, error);
+  directory.Cleanup();
   return restored;
 }
 
@@ -708,11 +732,15 @@ void TestOracleMutations(const std::shared_ptr<const dt::DateValidatedProfileHan
 
 }  // namespace
 
-int main() {
+int main() try {
+  TestFixtureIsolationAndFailureCleanup();
   const auto profile = std::make_shared<const dt::DateValidatedProfileHandleV3>(Profile());
   TestComponentFrames(profile);
   TestRawProfileRefusals();
   TestOraclePositives(profile);
   TestOracleMutations(profile);
   return 0;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return 1;
 }

@@ -4,6 +4,7 @@
 #include "datatype_interval_projection.hpp"
 #include "datatype_physical_encoding.hpp"
 #include "disk_device.hpp"
+#include "../support/owned_temp_directory.hpp"
 
 #include <array>
 #include <cstdint>
@@ -26,7 +27,7 @@ unsigned checks = 0;
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << "FAIL " << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 void Check(bool value, std::string_view message) {
   ++checks;
@@ -495,11 +496,6 @@ constexpr std::array<PersistenceVector, 16> kPersistence{{
     {"sql_null", true, 0, 0, 0, "5342445056303031930100000000000000000000461be993"},
 }};
 
-struct ArtifactGuard {
-  std::filesystem::path path;
-  ~ArtifactGuard() { std::error_code ignored; std::filesystem::remove(path, ignored); }
-};
-
 std::uint32_t PhysicalChecksum(dt::CanonicalTypeId type,
                                dt::DatatypePhysicalValueState state,
                                std::span<const p::byte> payload) {
@@ -530,9 +526,8 @@ std::vector<p::byte> WrongTypeFrame(std::span<const p::byte> component) {
 
 void ExactPersistenceCorpus(
     const std::shared_ptr<const dt::IntervalValidatedProfileHandleV3>& profile) {
-  const auto path = std::filesystem::temp_directory_path() /
-      "scratchbird_base_interval_d710_component_exact.bin";
-  ArtifactGuard cleanup{path};
+  scratchbird::tests::OwnedTempDirectory directory;
+  const auto path = directory.path() / "interval-component.bin";
   std::error_code ignored; std::filesystem::remove(path, ignored);
 
   for (const auto& vector : kPersistence) {
@@ -661,6 +656,7 @@ void ExactPersistenceCorpus(
   expect_storage_refusal(*profile, present, "PROCESS.CANCELLED",
                          "before_publication",
                          "storage cancel before publication", control);
+  directory.Cleanup();
 }
 
 void BatchBoundaries(
@@ -695,7 +691,7 @@ void BatchBoundaries(
 }
 }  // namespace
 
-int main() {
+int main() try {
   const auto profile = Profile();
   ExactComponentExtentCorpus(profile);
   ExactComposedCorpus(profile);
@@ -708,4 +704,7 @@ int main() {
                " backup_extent_mutations=738"
                " backup_semantic_mutations=6 persistence_positive=16"
                " persistence_negative=12\n";
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return 1;
 }

@@ -99,13 +99,19 @@ bool SameIdentity(const DatatypeTypeCodecIdentityRowV3&a,const DatatypeTypeCodec
 }
 const DatatypeTypeCodecIdentityRowV3* Current(CanonicalTypeId type) noexcept {
  const auto rows=CurrentDatatypeTypeCodecIdentityRowsV3();
- if(rows.size()!=259)return nullptr;
+ // Unrelated successor rows do not invalidate this exact D710 receipt.
  const auto code=static_cast<u32>(type);
  const DatatypeTypeCodecIdentityRowV3* found=nullptr;
  for(const auto&r:rows)if(r.legacy_fields.catalog_snapshot_uuid==kSnapshot&&r.legacy_fields.catalog_generation==10&&r.legacy_fields.registry_generation==10&&r.legacy_fields.canonical_binary_type_code==code){if(found)return nullptr;found=&r;}
  return found;
 }
 bool ExactReceipt(const IntervalAuthorityReceiptV3&r) noexcept{return r.statement_receipt_uuid==kSnapshot&&r.catalog_snapshot_uuid==kSnapshot&&r.catalog_generation==10&&r.registry_generation==10;}
+bool IdentityMatchesReceipt(const DatatypeTypeCodecIdentityRowV3&i,
+                            const IntervalAuthorityReceiptV3&r) noexcept {
+ return i.legacy_fields.catalog_snapshot_uuid==r.catalog_snapshot_uuid &&
+        i.legacy_fields.catalog_generation==r.catalog_generation &&
+        i.legacy_fields.registry_generation==r.registry_generation;
+}
 void PutUuid(byte*out,const platform::Uuid&u) noexcept{std::memcpy(out,u.bytes.data(),16);} void PutPolicy(byte*out,const DatatypePolicyIdentityV3&p) noexcept{PutUuid(out,p.uuid);StoreLittle64(out+16,p.generation);}
 
 template<std::size_t N> void CommonHeader(std::array<byte,N>&m,const char magic[9],const IntervalValidatedProfileHandleV3&p) noexcept {
@@ -150,7 +156,7 @@ bool Digest(std::span<const byte> in,std::array<byte,32>*out,const IntervalExecu
 }
 
 bool ProfileValid(const IntervalValidatedProfileHandleV3&p,const IntervalExecutionControlV3*ctl=nullptr) noexcept {
- if(!ExactReceipt(p.receipt)||!IsExactCanonicalIntervalTypeCodecIdentityV3(p.identity)||p.identity.legacy_fields.descriptor_uuid!=kDescriptor||p.identity.legacy_fields.type_uuid!=kType||p.identity.legacy_fields.codec_uuid!=kCodec||
+ if(!ExactReceipt(p.receipt)||!IdentityMatchesReceipt(p.identity,p.receipt)||!IsExactCanonicalIntervalTypeCodecIdentityV3(p.identity)||p.identity.legacy_fields.descriptor_uuid!=kDescriptor||p.identity.legacy_fields.type_uuid!=kType||p.identity.legacy_fields.codec_uuid!=kCodec||
  !Same(p.identity.descriptor_policy,kDescriptorPolicy)||!Same(p.identity.canonicalization_policy,kCanonicalPolicy)||!Same(p.identity.ordering_policy,kNoOrderPolicy)||!Same(p.identity.hash_policy,kHashPolicy)||!Same(p.identity.operation_policy,kOperationPolicy)||
  !Same(p.render_policy,kRenderPolicy)||!Same(p.cast_policy,kCastPolicy)||!Same(p.subtype_policy,kSubtypePolicy)||!Same(p.precision_policy,kPrecisionPolicy)||!Same(p.normalization_policy,kNormalizationPolicy)||!Same(p.temporal_application_boundary_policy,kTemporalBoundaryPolicy)||!Same(p.storage_epoch_policy,kStorageEpochPolicy)||!Same(p.index_policy,kIndexPolicy)||!Same(p.statistics_policy,kStatisticsPolicy)||!Same(p.backup_transport_policy,kBackupPolicy)||!Same(p.protection_policy,kProtectionPolicy)||!Same(p.component_adapter_policy,kComponentPolicy)||!Same(p.diagnostic_policy,kDiagnosticPolicy)||!Same(p.metric_policy,kMetricPolicy))return false;
  auto pm=ProfileMaterial(p);Clear cp(pm.data(),pm.size(),IntervalScrubClassV3::profile_material,ctl);
@@ -246,7 +252,7 @@ IntervalProfileResultV3 BuildCurrentIntervalValidatedProfileHandleV3(const platf
  return BuildIntervalValidatedProfileHandleV3({statement,kSnapshot,10,10},*i);
 }
 IntervalProfileResultV3 BuildIntervalValidatedProfileHandleV3(const IntervalAuthorityReceiptV3&r,const DatatypeTypeCodecIdentityRowV3&i) noexcept {
- if(!ExactReceipt(r)||!IsExactCanonicalIntervalTypeCodecIdentityV3(i))return Failure<IntervalProfileResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","receipt_or_identity_invalid");
+ if(!ExactReceipt(r)||!IdentityMatchesReceipt(i,r)||!IsExactCanonicalIntervalTypeCodecIdentityV3(i))return Failure<IntervalProfileResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","receipt_or_identity_invalid");
  try{auto out=Success<IntervalProfileResultV3>();auto&p=out.profile;ProfileBuildClear clear(&p);p.receipt=r;p.identity=i;p.render_policy=kRenderPolicy;p.cast_policy=kCastPolicy;p.subtype_policy=kSubtypePolicy;p.precision_policy=kPrecisionPolicy;p.normalization_policy=kNormalizationPolicy;p.temporal_application_boundary_policy=kTemporalBoundaryPolicy;p.storage_epoch_policy=kStorageEpochPolicy;p.index_policy=kIndexPolicy;p.statistics_policy=kStatisticsPolicy;p.backup_transport_policy=kBackupPolicy;p.protection_policy=kProtectionPolicy;p.component_adapter_policy=kComponentPolicy;p.diagnostic_policy=kDiagnosticPolicy;p.metric_policy=kMetricPolicy;
  auto pm=ProfileMaterial(p);Clear cpm(pm.data(),pm.size(),IntervalScrubClassV3::profile_material);p.profile_material=pm;
  auto em=EqualityMaterial(p);Clear cem(em.data(),em.size(),IntervalScrubClassV3::equality_material);p.equality_material=em;

@@ -29,6 +29,15 @@ Status ManifestOkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::datatypes};
 }
 
+template <typename Receipt>
+bool IdentityMatchesReceipt(const DatatypeTypeCodecIdentityRowV3& identity,
+                            const Receipt& receipt) noexcept {
+  const auto& row = identity.legacy_fields;
+  return row.catalog_snapshot_uuid == receipt.catalog_snapshot_uuid &&
+         row.catalog_generation == receipt.catalog_generation &&
+         row.registry_generation == receipt.registry_generation;
+}
+
 Status ManifestErrorStatus() {
   return {StatusCode::platform_required_feature_missing,
           Severity::error,
@@ -236,8 +245,9 @@ DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
   const auto current_v3 = CurrentDatatypeTypeCodecIdentityRowsV3();
   const auto bit_identity = std::find_if(
       current_v3.begin(), current_v3.end(),
-      [](const DatatypeTypeCodecIdentityRowV3& row) {
-        return IsExactCanonicalBitStringTypeCodecIdentityV3(row);
+      [&](const DatatypeTypeCodecIdentityRowV3& row) {
+        return IdentityMatchesReceipt(row, bit_string_receipt) &&
+               IsExactCanonicalBitStringTypeCodecIdentityV3(row);
       });
   if (bit_identity == current_v3.end()) {
     AddFailure(&result,
@@ -272,8 +282,9 @@ DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
 
   const auto date_identity = std::find_if(
       current_v3.begin(), current_v3.end(),
-      [](const DatatypeTypeCodecIdentityRowV3& row) {
-        return IsExactCanonicalDateTypeCodecIdentityV3(row);
+      [&](const DatatypeTypeCodecIdentityRowV3& row) {
+        return IdentityMatchesReceipt(row, date_receipt) &&
+               IsExactCanonicalDateTypeCodecIdentityV3(row);
       });
   if (date_identity == current_v3.end()) {
     AddFailure(&result,
@@ -308,8 +319,9 @@ DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
 
   const auto time_identity = std::find_if(
       current_v3.begin(), current_v3.end(),
-      [](const DatatypeTypeCodecIdentityRowV3& row) {
-        return IsExactCanonicalTimeTypeCodecIdentityV3(row);
+      [&](const DatatypeTypeCodecIdentityRowV3& row) {
+        return IdentityMatchesReceipt(row, time_receipt) &&
+               IsExactCanonicalTimeTypeCodecIdentityV3(row);
       });
   if (time_identity == current_v3.end()) {
     AddFailure(&result,
@@ -344,8 +356,9 @@ DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
 
   const auto timestamp_identity = std::find_if(
       current_v3.begin(), current_v3.end(),
-      [](const DatatypeTypeCodecIdentityRowV3& row) {
-        return IsExactCanonicalTimestampTypeCodecIdentityV3(row);
+      [&](const DatatypeTypeCodecIdentityRowV3& row) {
+        return IdentityMatchesReceipt(row, timestamp_receipt) &&
+               IsExactCanonicalTimestampTypeCodecIdentityV3(row);
       });
   if (timestamp_identity == current_v3.end()) {
     AddFailure(&result,
@@ -398,8 +411,9 @@ DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
 
   const auto interval_identity = std::find_if(
       current_v3.begin(), current_v3.end(),
-      [](const DatatypeTypeCodecIdentityRowV3& row) {
-        return IsExactCanonicalIntervalTypeCodecIdentityV3(row);
+      [&](const DatatypeTypeCodecIdentityRowV3& row) {
+        return IdentityMatchesReceipt(row, interval_receipt) &&
+               IsExactCanonicalIntervalTypeCodecIdentityV3(row);
       });
   if (interval_identity == current_v3.end()) {
     AddFailure(&result, "CTI.INTERVAL.DESCRIPTOR_INVALID",
@@ -589,7 +603,8 @@ DatatypeConformanceManifestResult ExecuteDatatypeConformanceManifest(
                  example.evidence_path);
       continue;
     }
-    if (!IsExactCanonicalBitStringTypeCodecIdentityV3(example.identity)) {
+    if (!IdentityMatchesReceipt(example.identity, example.receipt) ||
+        !IsExactCanonicalBitStringTypeCodecIdentityV3(example.identity)) {
       AddFailure(&result,
                  "CTB.BIT.DESCRIPTOR_INVALID",
                  "datatype.conformance.bit_string_identity_refused");
@@ -659,7 +674,8 @@ DatatypeConformanceManifestResult ExecuteDatatypeConformanceManifest(
                  example.evidence_path);
       continue;
     }
-    if (!IsExactCanonicalDateTypeCodecIdentityV3(example.identity)) {
+    if (!IdentityMatchesReceipt(example.identity, example.receipt) ||
+        !IsExactCanonicalDateTypeCodecIdentityV3(example.identity)) {
       AddFailure(&result,
                  "CTI.TEMPORAL.DESCRIPTOR_INVALID",
                  "datatype.conformance.date_identity_refused");
@@ -735,7 +751,8 @@ DatatypeConformanceManifestResult ExecuteDatatypeConformanceManifest(
                  example.evidence_path);
       continue;
     }
-    if (!IsExactCanonicalTimeTypeCodecIdentityV3(example.identity)) {
+    if (!IdentityMatchesReceipt(example.identity, example.receipt) ||
+        !IsExactCanonicalTimeTypeCodecIdentityV3(example.identity)) {
       AddFailure(&result,
                  "CTI.TEMPORAL.DESCRIPTOR_INVALID",
                  "datatype.conformance.time_identity_refused");
@@ -813,7 +830,8 @@ DatatypeConformanceManifestResult ExecuteDatatypeConformanceManifest(
                  example.evidence_path);
       continue;
     }
-    if (!IsExactCanonicalTimestampTypeCodecIdentityV3(example.identity)) {
+    if (!IdentityMatchesReceipt(example.identity, example.receipt) ||
+        !IsExactCanonicalTimestampTypeCodecIdentityV3(example.identity)) {
       AddFailure(&result,
                  "CTI.TEMPORAL.DESCRIPTOR_INVALID",
                  "datatype.conformance.timestamp_identity_refused");
@@ -892,7 +910,8 @@ DatatypeConformanceManifestResult ExecuteDatatypeConformanceManifest(
                  example.evidence_path);
       continue;
     }
-    if (!IsExactCanonicalIntervalTypeCodecIdentityV3(example.identity)) {
+    if (!IdentityMatchesReceipt(example.identity, example.receipt) ||
+        !IsExactCanonicalIntervalTypeCodecIdentityV3(example.identity)) {
       AddFailure(&result,
                  "CTI.INTERVAL.DESCRIPTOR_INVALID",
                  "datatype.conformance.interval_identity_refused");

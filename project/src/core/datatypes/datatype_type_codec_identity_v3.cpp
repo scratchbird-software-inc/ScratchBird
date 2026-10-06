@@ -1610,23 +1610,36 @@ const std::array<DatatypeTypeCodecIdentityRowV3, 293> kIdentityRowsV3 = [] {
   return rows;
 }();
 
-const DatatypeTypeCodecIdentityRowV3* CurrentRow(
+const DatatypeTypeCodecIdentityRowV3* CanonicalProfileRow(
+    const DatatypeTypeCodecIdentityRowV3& supplied,
     const platform::Uuid& descriptor) noexcept {
+  const auto& receipt = supplied.legacy_fields;
+  // Authenticating a row is not admitting it to a different live receipt.
+  // D710 profiles remain bound to D710; D711 inherited their semantics, not
+  // permission to relabel old receipts. Earlier profile cohorts stay excluded.
+  if (!((receipt.catalog_snapshot_uuid == kDatatypeCohortV10 &&
+         receipt.catalog_generation == 10 && receipt.registry_generation == 10) ||
+        (receipt.catalog_snapshot_uuid == kDatatypeCohortV11 &&
+         receipt.catalog_generation == 11 && receipt.registry_generation == 11))) {
+    return nullptr;
+  }
+  const DatatypeTypeCodecIdentityRowV3* found = nullptr;
   for (const auto& row : kIdentityRowsV3) {
-    if (row.legacy_fields.catalog_snapshot_uuid == kDatatypeCohortV11 &&
-        row.legacy_fields.catalog_generation == 11 &&
-        row.legacy_fields.registry_generation == 11 &&
+    if (row.legacy_fields.catalog_snapshot_uuid == receipt.catalog_snapshot_uuid &&
+        row.legacy_fields.catalog_generation == receipt.catalog_generation &&
+        row.legacy_fields.registry_generation == receipt.registry_generation &&
         row.legacy_fields.descriptor_uuid == descriptor &&
         row.legacy_fields.descriptor_generation == 1) {
-      return &row;
+      if (found != nullptr) return nullptr;
+      found = &row;
     }
   }
-  return nullptr;
+  return found;
 }
 
 bool IsExactCurrentRow(const DatatypeTypeCodecIdentityRowV3& row,
                        const platform::Uuid& descriptor) noexcept {
-  const auto* expected = CurrentRow(descriptor);
+  const auto* expected = CanonicalProfileRow(row, descriptor);
   return expected != nullptr &&
          EqualLegacyFields(row.legacy_fields, expected->legacy_fields) &&
          EqualPolicy(row.descriptor_policy, expected->descriptor_policy) &&

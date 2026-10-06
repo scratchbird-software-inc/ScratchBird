@@ -115,6 +115,33 @@ void Values(const std::shared_ptr<const dt::IntervalValidatedProfileHandleV3>& p
   std::array<p::byte,17> misaligned{};auto source=dt::ConstructIntervalV3(profile,17,-23,86400000000000ll);Check(source.ok(),"misalignment source");auto raw=dt::EncodeCanonicalIntervalComponentV3(source.value);Check(raw.ok(),"misalignment encode");std::copy(raw.bytes.begin(),raw.bytes.end(),misaligned.begin()+1);auto md=dt::DecodeCanonicalIntervalComponentNoAllocV3(*profile,dt::IntervalValueStateV3::value,true,std::span<const p::byte>(misaligned.data()+1,16));Check(md.ok()&&md.value.months==17&&md.value.civil_days==-23&&md.value.fixed_nanoseconds==86400000000000ll,"misaligned LE16 admitted without unaligned access");
   dt::IntervalOwnedValueV3 nullv{profile,dt::IntervalValueStateV3::sql_null,0,0,0};auto nh=dt::HashIntervalValueV3(nullv);Check(nh.ok()&&hex(nh.bytes)=="bc67ce9998c0a782fa11ca0f9ce418ef25047fc4fc38fbbcb8caa6c6cf0327cf","sealed SQL NULL hash");
 }
+void ReceiptCohortIsolation(const std::shared_ptr<const dt::IntervalValidatedProfileHandleV3>& profile) {
+  const auto successor = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV11, 11, 11,
+      profile->identity.legacy_fields.descriptor_uuid, 1);
+  Check(successor.ok && dt::IsExactCanonicalIntervalTypeCodecIdentityV3(successor.row),
+        "successor row authentic independently of live receipt");
+  auto built = dt::BuildIntervalValidatedProfileHandleV3(profile->receipt, successor.row);
+  Check(!built.ok() && built.diagnostic.diagnostic_code == "CTI.INTERVAL.DESCRIPTOR_INVALID" &&
+        built.profile.identity.legacy_fields.descriptor_uuid.is_nil(),
+        "D710 receipt cannot construct a profile from D711 identity");
+  auto mixed = *profile;
+  mixed.identity = successor.row;
+  auto validated = dt::ValidateIntervalProfileHandleV3(mixed);
+  Check(!validated.ok() && validated.diagnostic.diagnostic_code == "CTI.INTERVAL.DESCRIPTOR_INVALID",
+        "unchanged D710 material and digest cannot authorize D711 identity");
+  auto receipt = profile->receipt;
+  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV11;
+  receipt.catalog_generation = receipt.registry_generation = 11;
+  built = dt::BuildIntervalValidatedProfileHandleV3(receipt, successor.row);
+  Check(!built.ok() && built.diagnostic.diagnostic_code == "CTI.INTERVAL.DESCRIPTOR_INVALID",
+        "D710 statement receipt cannot authorize D711 snapshot");
+  receipt.statement_receipt_uuid = dt::kDatatypeCohortV11;
+  built = dt::BuildIntervalValidatedProfileHandleV3(receipt, successor.row);
+  Check(!built.ok() && built.diagnostic.diagnostic_code == "CTI.INTERVAL.DESCRIPTOR_INVALID",
+        "D711 interval profile requires separate owning-profile admission");
+}
+
 void Aliases(const std::shared_ptr<const dt::IntervalValidatedProfileHandleV3>& profile){
   for(unsigned n=0;n<5;++n){dt::IntervalAliasResolutionEvidenceV3 e;e.audit_case=static_cast<dt::IntervalRequiredAliasAuditCaseV3>(n);e.registry_resolution_succeeded=true;e.registry_receipt=profile->receipt;e.resolved_identity=profile->identity;auto r=dt::AuditIntervalRequiredAliasResolutionV3(e,*profile);Check(r.ok()&&r.disposition==dt::IntervalAliasAuditDispositionV3::same_authenticated_interval_cohort&&r.same_interval_cohort&&!r.converter_required&&!r.runtime_name_authority_granted,"five aliases resolve to one authenticated cohort");}
   dt::IntervalAliasResolutionEvidenceV3 e;auto r=dt::AuditIntervalRequiredAliasResolutionV3(e,*profile);Check(!r.ok()&&r.disposition==dt::IntervalAliasAuditDispositionV3::registry_unresolved,"unresolved display name has no authority");
@@ -124,4 +151,4 @@ void Aliases(const std::shared_ptr<const dt::IntervalValidatedProfileHandleV3>& 
   e.audit_case=static_cast<dt::IntervalRequiredAliasAuditCaseV3>(255);r=dt::AuditIntervalRequiredAliasResolutionV3(e,*profile);Check(!r.ok()&&r.disposition==dt::IntervalAliasAuditDispositionV3::unknown_audit_case,"unknown alias case");
 }
 }
-int main(){auto profile=Profile();Authority(profile);Values(profile);Aliases(profile);std::cout<<"PASS checks="<<checks<<" profile_mutations=1904 invalid_profiles=5 role_uuids=44 fixed_vectors=16 aliases=5 identities=110 uuid_pairs=219 cast_rows=221 cast_decisions=663 intrinsics=13\n";}
+int main(){auto profile=Profile();Authority(profile);Values(profile);Aliases(profile);ReceiptCohortIsolation(profile);std::cout<<"PASS checks="<<checks<<" profile_mutations=1904 invalid_profiles=5 role_uuids=44 fixed_vectors=16 aliases=5 identities=110 uuid_pairs=219 cast_rows=221 cast_decisions=663 intrinsics=13\n";}

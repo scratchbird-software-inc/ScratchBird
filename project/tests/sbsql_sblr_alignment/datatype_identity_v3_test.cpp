@@ -3,6 +3,7 @@
 
 #include "../../src/core/datatypes/datatype_type_codec_identity_v3.hpp"
 #include "../../src/core/datatypes/datatype_binary.hpp"
+#include "../../src/core/datatypes/datatype_conformance_manifest.hpp"
 #include "../../src/core/datatypes/datatype_exchange.hpp"
 #include "../../src/core/datatypes/datatype_layout.hpp"
 #include "../../src/core/datatypes/datatype_operations.hpp"
@@ -1839,6 +1840,119 @@ void TestBlobLegacyRouteIsolation() {
         "base.blob downgraded into the historical V1 storage identity");
 }
 
+void TestExactProfileCohortsRemainIndependent() {
+  using scratchbird::tests::FixtureUuidLiteral;
+  using Predicate = bool (*)(const dt::DatatypeTypeCodecIdentityRowV3&) noexcept;
+  struct Case { scratchbird::core::platform::Uuid descriptor; Predicate exact; };
+  const Case cases[] = {
+      {FixtureUuidLiteral("2d010000-6269-7e61-b279-000000000000"), dt::IsExactCanonicalBinaryTypeCodecIdentityV3},
+      {FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d829"), dt::IsExactCanonicalBitStringTypeCodecIdentityV3},
+      {FixtureUuidLiteral("90010000-6461-7465-8000-000000000000"), dt::IsExactCanonicalDateTypeCodecIdentityV3},
+      {FixtureUuidLiteral("91010000-7469-7d65-8000-000000000000"), dt::IsExactCanonicalTimeTypeCodecIdentityV3},
+      {FixtureUuidLiteral("92010000-7469-7d65-b374-616d70000000"), dt::IsExactCanonicalTimestampTypeCodecIdentityV3},
+      {FixtureUuidLiteral("93010000-696e-7465-b276-616c00000000"), dt::IsExactCanonicalIntervalTypeCodecIdentityV3}};
+  for (const auto& test : cases) {
+    const auto descriptor = test.descriptor;
+    const auto old = dt::LookupDatatypeTypeCodecIdentityV3(
+        dt::kDatatypeCohortV10, 10, 10, descriptor, 1);
+    const auto next = dt::LookupDatatypeTypeCodecIdentityV3(
+        dt::kDatatypeCohortV11, 11, 11, descriptor, 1);
+    Check(old.ok && next.ok && test.exact(old.row) && test.exact(next.row),
+          "exact retained/current profile identity rejected");
+    const auto historical = dt::LookupDatatypeTypeCodecIdentityV3(
+        dt::kDatatypeCohortV9, 9, 9, descriptor, 1);
+    Check(historical.ok && !test.exact(historical.row),
+          "older profile admitted without an owning profile contract");
+    for (const auto* original : {&old.row, &next.row}) {
+      auto changed = *original;
+      changed.legacy_fields.catalog_snapshot_uuid =
+          original == &old.row ? dt::kDatatypeCohortV11 : dt::kDatatypeCohortV10;
+      Check(!test.exact(changed), "mixed snapshot admitted");
+      changed = *original;
+      ++changed.legacy_fields.catalog_generation;
+      Check(!test.exact(changed), "mixed catalog generation admitted");
+      changed = *original;
+      ++changed.legacy_fields.registry_generation;
+      Check(!test.exact(changed), "mixed registry generation admitted");
+      changed = *original;
+      ++changed.legacy_fields.descriptor_generation;
+      Check(!test.exact(changed), "unregistered descriptor generation admitted");
+      changed = *original;
+      ++changed.legacy_fields.codec_generation;
+      Check(!test.exact(changed), "unregistered codec generation admitted");
+      for (auto member : {&dt::DatatypeTypeCodecIdentityRowV3::descriptor_policy,
+                          &dt::DatatypeTypeCodecIdentityRowV3::canonicalization_policy,
+                          &dt::DatatypeTypeCodecIdentityRowV3::ordering_policy,
+                          &dt::DatatypeTypeCodecIdentityRowV3::hash_policy,
+                          &dt::DatatypeTypeCodecIdentityRowV3::operation_policy}) {
+        changed = *original;
+        ++(changed.*member).generation;
+        Check(!test.exact(changed), "unregistered policy generation admitted");
+        changed = *original;
+        (changed.*member).uuid.bytes[0] ^= 1;
+        Check(!test.exact(changed), "unregistered binary policy identity admitted");
+      }
+      changed = *original;
+      changed.native_fields = original == &old.row ? next.row.native_fields
+                                                  : old.row.native_fields;
+      Check(!test.exact(changed), "native fields laundered across cohorts");
+      changed = *original;
+      changed.legacy_fields.canonical_name = "localized display only";
+      changed.legacy_fields.codec_id = "localized codec label";
+      Check(test.exact(changed), "display labels treated as identity");
+    }
+  }
+}
+
+void TestConformanceExamplesBindExactReceipts() {
+  const auto snapshot = dt::kDatatypeCohortV10;
+  const auto loaded = dt::LoadCurrentCoreDatatypeConformanceManifest(
+      {snapshot, snapshot, 10, 10}, false,
+      {snapshot, snapshot, 10, 10}, false,
+      {snapshot, snapshot, 10, 10}, false,
+      {snapshot, snapshot, 10, 10}, false,
+      {snapshot, snapshot, 10, 10}, false);
+  // Isolate the five typed routes: other manifest coverage/diagnostics are
+  // qualified separately by the complete-manifest gate, not suppressed here.
+  const auto test = [&](auto examples, auto executed, std::string_view message) {
+    Check((loaded.manifest.*examples).size() == 1,
+          "exact receipt failed to load typed conformance example");
+    dt::DatatypeConformanceManifest isolated;
+    isolated.manifest_key = dt::kCurrentCoreDatatypeConformanceManifestKey;
+    isolated.inventory_source_path = "project/src/core/datatypes/datatype_descriptor.cpp";
+    isolated.*examples = loaded.manifest.*examples;
+    const auto valid = dt::ExecuteDatatypeConformanceManifest(isolated);
+    Check(valid.*executed == 1, "exact typed example did not execute");
+    auto& example = (isolated.*examples).front();
+    const auto successor = dt::LookupDatatypeTypeCodecIdentityV3(
+        dt::kDatatypeCohortV11, 11, 11,
+        example.identity.legacy_fields.descriptor_uuid, 1);
+    Check(successor.ok, "missing successor fixture");
+    example.identity = successor.row;
+    const auto refused = dt::ExecuteDatatypeConformanceManifest(isolated);
+    Check(refused.*executed == 0, "mixed-cohort evidence was executed");
+    bool exact_diagnostic = false;
+    for (const auto& diagnostic : refused.diagnostics)
+      if (diagnostic.message_key == message) exact_diagnostic = true;
+    Check(exact_diagnostic, "mixed-cohort evidence lost exact identity diagnostic");
+  };
+  test(&dt::DatatypeConformanceManifest::bit_string_examples,
+       &dt::DatatypeConformanceManifestResult::executed_bit_string_examples,
+       "datatype.conformance.bit_string_identity_refused");
+  test(&dt::DatatypeConformanceManifest::date_examples,
+       &dt::DatatypeConformanceManifestResult::executed_date_examples,
+       "datatype.conformance.date_identity_refused");
+  test(&dt::DatatypeConformanceManifest::time_examples,
+       &dt::DatatypeConformanceManifestResult::executed_time_examples,
+       "datatype.conformance.time_identity_refused");
+  test(&dt::DatatypeConformanceManifest::timestamp_examples,
+       &dt::DatatypeConformanceManifestResult::executed_timestamp_examples,
+       "datatype.conformance.timestamp_identity_refused");
+  test(&dt::DatatypeConformanceManifest::interval_examples,
+       &dt::DatatypeConformanceManifestResult::executed_interval_examples,
+       "datatype.conformance.interval_identity_refused");
+}
+
 void TestLookupAllocationFailureIsContained() {
   using scratchbird::tests::FixtureUuidLiteral;
   const auto date_descriptor =
@@ -1899,6 +2013,8 @@ int main() {
   TestExactIntervalIdentity();
   TestExactBlobIdentity();
   TestBlobLegacyRouteIsolation();
+  TestExactProfileCohortsRemainIndependent();
+  TestConformanceExamplesBindExactReceipts();
   TestLookupAllocationFailureIsContained();
   std::cout << "datatype_identity_v3_test=passed\n";
   return EXIT_SUCCESS;

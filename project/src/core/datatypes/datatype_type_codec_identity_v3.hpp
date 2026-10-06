@@ -92,7 +92,10 @@ inline constexpr std::string_view kDatatypeCohortV10IdentityDigestSha256 =
 inline constexpr std::string_view kDatatypeCohortV11IdentityDigestSha256 =
     "8d6cb5b855450a355f05863bc2b0c3652d7b694a1e6ebd6758f1a41408840327";
 
-// These predicates compare the semantic current d711 row. Canonical-name and
+// These predicates authenticate exact d710 or inherited d711 profile rows;
+// they never rebind a row to a different receipt. The owning profile must also
+// validate its live receipt and supported cohort. BLOB exists only in d711.
+// Earlier profile cohorts are not admitted here. Canonical-name and
 // codec-id strings are presentation labels and never establish identity. Type
 // codes, payloads, and predecessor identities cannot substitute for the exact
 // UUID/generation/codec-version/policy tuple and physical/semantic fields.
