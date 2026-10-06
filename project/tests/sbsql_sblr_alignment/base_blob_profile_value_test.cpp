@@ -59,7 +59,7 @@ void ExactV11ProfileAuthority() {
         profile.receipt.registry_generation == 11,
         "V11 receipt tuple mismatch");
 
-  const auto& identity = profile.identity.legacy_fields;
+  const auto& identity = profile.identity;
   Check(identity.descriptor_uuid == U({
             0x01,0x6f,0xd1,0xd3,0x0d,0xaf,0x59,0x67,
             0xb4,0xd7,0x07,0xfe,0x85,0x9a,0x41,0x8e}) &&
@@ -113,10 +113,13 @@ void ExactV11ProfileAuthority() {
           "blob policy UUID/generation mismatch");
   }
 
-  auto aliases = profile;
-  aliases.identity.legacy_fields.canonical_name = "BLOB";
-  aliases.identity.legacy_fields.codec_id = "presentation-only-codec-label";
-  Check(dt::ValidateBlobProfileHandleV3(aliases).ok(),
+  auto alias_row = CurrentBlobIdentity();
+  alias_row.legacy_fields.canonical_name = "BLOB";
+  alias_row.legacy_fields.codec_id = "presentation-only-codec-label";
+  const auto aliases = dt::BuildBlobValidatedProfileHandleV3(profile.receipt, alias_row);
+  Check(aliases.ok() && dt::ValidateBlobProfileHandleV3(aliases.profile).ok() &&
+            aliases.profile.identity.descriptor_uuid == profile.identity.descriptor_uuid &&
+            aliases.profile.identity.codec_uuid == profile.identity.codec_uuid,
         "presentation labels became profile authority");
 
   auto changed = profile;
@@ -128,27 +131,27 @@ void ExactV11ProfileAuthority() {
   Check(!dt::ValidateBlobProfileHandleV3(changed).ok(),
         "changed catalog generation admitted");
   changed = profile;
-  changed.identity.legacy_fields.descriptor_uuid.bytes[0] ^= 1;
+  changed.identity.descriptor_uuid.bytes[0] ^= 1;
   Check(!dt::ValidateBlobProfileHandleV3(changed).ok(),
         "changed descriptor UUID admitted");
   changed = profile;
-  ++changed.identity.legacy_fields.descriptor_generation;
+  ++changed.identity.descriptor_generation;
   Check(!dt::ValidateBlobProfileHandleV3(changed).ok(),
         "changed descriptor generation admitted");
   changed = profile;
-  changed.identity.legacy_fields.type_uuid.bytes[0] ^= 1;
+  changed.identity.type_uuid.bytes[0] ^= 1;
   Check(!dt::ValidateBlobProfileHandleV3(changed).ok(),
         "changed type UUID admitted");
   changed = profile;
-  ++changed.identity.legacy_fields.type_generation;
+  ++changed.identity.type_generation;
   Check(!dt::ValidateBlobProfileHandleV3(changed).ok(),
         "changed type generation admitted");
   changed = profile;
-  changed.identity.legacy_fields.codec_uuid.bytes[0] ^= 1;
+  changed.identity.codec_uuid.bytes[0] ^= 1;
   Check(!dt::ValidateBlobProfileHandleV3(changed).ok(),
         "changed codec UUID admitted");
   changed = profile;
-  ++changed.identity.legacy_fields.codec_generation;
+  ++changed.identity.codec_generation;
   Check(!dt::ValidateBlobProfileHandleV3(changed).ok(),
         "changed codec generation admitted");
   changed = profile;
@@ -197,98 +200,101 @@ void ExactV11ProfileAuthority() {
       {dt::kBlobV11ReceiptUuid, dt::kDatatypeCohortV11, 11, 11},
       wrong_identity);
   Check(!refused.ok() &&
-            refused.diagnostic.diagnostic_code ==
-                "CINL.LOB.DESCRIPTOR_INVALID",
+            refused.diagnostic == dt::BlobStructuralDiagnosticV3::descriptor_invalid,
         "wrong identity built profile");
 }
+
+// Structural validation must never publish an unretained view, on success or
+// failure. The removed legacy result.value cannot regress back into this API.
+template <class T>
+concept PublishesRawValue = requires(T result) { result.value; };
+static_assert(!PublishesRawValue<dt::BlobValidationResultV3>);
+template <class T>
+concept HasPresentationLabel = requires(T identity) { identity.canonical_name; };
+static_assert(!HasPresentationLabel<dt::BlobTypeCodecIdentitySnapshotV3>);
 
 void MaterializedViewStatesAndLifetimeLimit() {
   auto profile = Profile();
   const dt::BlobExecutionControlV3 zero_budget{};
-
+  using D = dt::BlobStructuralDiagnosticV3;
+  const dt::BlobMaterializedValueViewV3 empty_input{
+      &profile, dt::BlobValueStateV3::value, 0, {}};
   const auto empty = dt::ValidateBlobMaterializedValueViewNoAllocV3(
-      {&profile, dt::BlobValueStateV3::value, 0, {}}, true, zero_budget);
-  Check(empty.ok() && empty.value.profile == &profile &&
-            empty.value.state == dt::BlobValueStateV3::value &&
-            empty.value.logical_length == 0 && empty.value.bytes.empty(),
-        "empty VALUE refused");
+      empty_input, true, zero_budget);
+  Check(empty.ok() && empty.diagnostic == D::none &&
+            empty_input.profile == &profile &&
+            empty_input.state == dt::BlobValueStateV3::value &&
+            empty_input.logical_length == 0 && empty_input.bytes.empty(),
+        "empty VALUE refused or structural input mutated");
 
+  const dt::BlobMaterializedValueViewV3 null_input{
+      &profile, dt::BlobValueStateV3::sql_null, 0, {}};
   const auto clean_null = dt::ValidateBlobMaterializedValueViewNoAllocV3(
-      {&profile, dt::BlobValueStateV3::sql_null, 0, {}}, true, zero_budget);
-  Check(clean_null.ok() &&
-            clean_null.value.state == dt::BlobValueStateV3::sql_null,
-        "clean SQL_NULL refused");
+      null_input, true, zero_budget);
+  Check(clean_null.ok() && clean_null.diagnostic == D::none &&
+            null_input.state == dt::BlobValueStateV3::sql_null &&
+            null_input.logical_length == 0 && null_input.bytes.empty(),
+        "clean SQL_NULL refused or structural input mutated");
   Check(dt::ValidateBlobProfileHandleV3(profile, zero_budget).ok(),
         "zero budget refused allocation-free profile validation");
   const auto nonnullable = dt::ValidateBlobMaterializedValueViewNoAllocV3(
-      {&profile, dt::BlobValueStateV3::sql_null, 0, {}}, false);
-  Check(!nonnullable.ok() &&
-            nonnullable.diagnostic.diagnostic_code == "BLOB.STATE_INVALID",
+      null_input, false);
+  Check(!nonnullable.ok() && nonnullable.diagnostic == D::state_invalid,
         "SQL_NULL admitted to nonnullable slot");
 
   const std::array<platform::byte, 3> bytes{{0x00, 0x7f, 0xff}};
   const auto dirty_null = dt::ValidateBlobMaterializedValueViewNoAllocV3(
       {&profile, dt::BlobValueStateV3::sql_null, bytes.size(), bytes}, true);
-  Check(!dirty_null.ok() &&
-            dirty_null.diagnostic.diagnostic_code == "BLOB.STATE_INVALID" &&
-            dirty_null.value.profile == nullptr &&
-            dirty_null.value.bytes.empty(),
-        "dirty SQL_NULL published content");
+  Check(!dirty_null.ok() && dirty_null.diagnostic == D::state_invalid,
+        "dirty SQL_NULL admitted");
+  const auto oversized_null = dt::ValidateBlobMaterializedValueViewNoAllocV3(
+      {&profile, dt::BlobValueStateV3::sql_null,
+       dt::kBlobMaximumLogicalBytesV3 + 1, {}}, true);
+  Check(!oversized_null.ok() && oversized_null.diagnostic == D::state_invalid,
+        "NULL-shape failure lost precedence to VALUE length bounds");
+  const auto null_with_bytes = dt::ValidateBlobMaterializedValueViewNoAllocV3(
+      {&profile, dt::BlobValueStateV3::sql_null, 0, bytes}, true);
+  Check(!null_with_bytes.ok() && null_with_bytes.diagnostic == D::state_invalid,
+        "NULL zero declared length hid nonempty span");
 
   const auto nonempty = dt::ValidateBlobMaterializedValueViewNoAllocV3(
       {&profile, dt::BlobValueStateV3::value, bytes.size(), bytes}, true);
-  Check(!nonempty.ok() &&
-            nonempty.diagnostic.diagnostic_code ==
-                "CINL.LOB.DESCRIPTOR_INVALID" &&
-            nonempty.diagnostic.detail ==
-                "nonempty_value_requires_published_lifetime_authority" &&
-            nonempty.value.profile == nullptr && nonempty.value.bytes.empty(),
+  Check(!nonempty.ok() && nonempty.diagnostic == D::descriptor_invalid,
         "nonempty VALUE bypassed missing lifetime authority");
 
+  // This API validates structural inputs only. Extent and range refusals
+  // precede a nonempty raw-span lifetime refusal; no branch returns a value.
   const auto mismatched_nonempty =
       dt::ValidateBlobMaterializedValueViewNoAllocV3(
           {&profile, dt::BlobValueStateV3::value, 1, {}}, true);
   Check(!mismatched_nonempty.ok() &&
-            mismatched_nonempty.diagnostic.detail ==
-                "nonempty_value_requires_published_lifetime_authority",
-        "declared nonempty VALUE bypassed lifetime gate");
-
+            mismatched_nonempty.diagnostic == D::canonical_encoding_invalid,
+        "declared nonempty VALUE bypassed exact extent validation");
   const auto extent_mismatch = dt::ValidateBlobMaterializedValueViewNoAllocV3(
       {&profile, dt::BlobValueStateV3::value, bytes.size() + 1, bytes}, true,
       zero_budget);
   Check(!extent_mismatch.ok() &&
-            extent_mismatch.diagnostic.detail ==
-                "nonempty_value_requires_published_lifetime_authority" &&
-            extent_mismatch.value.profile == nullptr,
-        "extent mismatch bypassed the earlier lifetime gate");
-
+            extent_mismatch.diagnostic == D::canonical_encoding_invalid,
+        "extent mismatch bypassed structural validation");
   const auto above_maximum =
       dt::ValidateBlobMaterializedValueViewNoAllocV3(
           {&profile, dt::BlobValueStateV3::value,
-           dt::kBlobMaximumLogicalBytesV3 + 1, {}},
-          true, zero_budget);
-  Check(!above_maximum.ok() &&
-            above_maximum.diagnostic.detail ==
-                "nonempty_value_requires_published_lifetime_authority" &&
-            above_maximum.value.profile == nullptr,
-        ">INT64_MAX claim bypassed the earlier lifetime gate");
+           dt::kBlobMaximumLogicalBytesV3 + 1, {}}, true, zero_budget);
+  Check(!above_maximum.ok() && above_maximum.diagnostic == D::length_exceeded,
+        ">INT64_MAX claim bypassed range validation");
 
   const auto invalid_state = dt::ValidateBlobMaterializedValueViewNoAllocV3(
       {&profile, static_cast<dt::BlobValueStateV3>(0xff), bytes.size(), bytes},
       true);
-  Check(!invalid_state.ok() &&
-            invalid_state.diagnostic.diagnostic_code == "BLOB.STATE_INVALID",
+  Check(!invalid_state.ok() && invalid_state.diagnostic == D::state_invalid,
         "invalid state did not precede content admission");
 
   auto invalid_profile = profile;
   invalid_profile.profile_fingerprint[0] ^= 1;
   const auto bad_profile = dt::ValidateBlobMaterializedValueViewNoAllocV3(
       {&invalid_profile, static_cast<dt::BlobValueStateV3>(0xff),
-       bytes.size(), bytes},
-      true);
-  Check(!bad_profile.ok() &&
-            bad_profile.diagnostic.diagnostic_code ==
-                "CINL.LOB.DESCRIPTOR_INVALID",
+       bytes.size(), bytes}, true);
+  Check(!bad_profile.ok() && bad_profile.diagnostic == D::descriptor_invalid,
         "profile authority did not precede state/content");
 }
 

@@ -10517,6 +10517,19 @@ set_tests_properties(sbsql_sblr_alignment_base_blob_profile_value PROPERTIES
 
 add_executable(sbsql_sblr_alignment_base_blob_lifetime_abi_c
   base_blob_lifetime_abi_c_test.c)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # The runtime is portable; this harness uses fork/mmap and Linux death tests.
+  add_executable(sbsql_sblr_alignment_base_blob_lifetime_runtime
+    base_blob_lifetime_v8_runtime_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_base_blob_lifetime_runtime PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_base_blob_lifetime_runtime PRIVATE
+    sb_core_datatypes Threads::Threads)
+  add_test(NAME sbsql_sblr_alignment_base_blob_lifetime_runtime
+    COMMAND sbsql_sblr_alignment_base_blob_lifetime_runtime)
+  set_tests_properties(sbsql_sblr_alignment_base_blob_lifetime_runtime PROPERTIES
+    LABELS "datatype;base_blob;lifetime;binary_uuid;concurrency;allocation;malformed_reply;component_regression"
+    TIMEOUT 180)
+endif()
 target_include_directories(sbsql_sblr_alignment_base_blob_lifetime_abi_c PRIVATE
   ${PROJECT_SOURCE_DIR}/include)
 set_target_properties(sbsql_sblr_alignment_base_blob_lifetime_abi_c PROPERTIES
