@@ -37,18 +37,28 @@ bool allocation_lock_free=false,deallocation_lock_free=false;
 std::recursive_mutex* observation_mutex=nullptr;
 unsigned guarded_observations=0;
 bool observation_unlocked=false;
+std::recursive_mutex* backend_failure_probe=nullptr;
+std::recursive_mutex* next_allocation_probe=nullptr;
+bool failure_allocation_unlocked=false,deny_failure_observation=false;
+void ProbeFailureAllocation(){if(auto* mutex=next_allocation_probe){
+  next_allocation_probe=nullptr;bool available=false;
+  std::thread worker([&]{available=mutex->try_lock();if(available)mutex->unlock();});worker.join();
+  failure_allocation_unlocked=available;
+  if(deny_failure_observation)throw std::bad_alloc();
+}}
 void ProbeObservation(){if(observation_mutex){bool available=false;
   std::thread worker([&]{available=observation_mutex->try_lock();if(available)observation_mutex->unlock();});worker.join();
   ++guarded_observations;observation_unlocked|=available;}}
 void ProbeCleanup(){if(deallocation_device_mutex){auto* mutex=deallocation_device_mutex;deallocation_device_mutex=nullptr;
   bool available=false;std::thread worker([&]{available=mutex->try_lock();if(available)mutex->unlock();});worker.join();deallocation_lock_free=available;}}
 }
-void* operator new(std::size_t n){if(measuring)++allocations;if(budget==0){budget=-1;throw std::bad_alloc();}
+void* operator new(std::size_t n){ProbeFailureAllocation();if(measuring)++allocations;if(budget==0){budget=-1;throw std::bad_alloc();}
   if(budget>0)--budget;if(auto* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t n){return ::operator new(n);}
 void operator delete(void* p)noexcept{std::free(p);}void operator delete[](void* p)noexcept{std::free(p);}
 void operator delete(void* p,std::size_t)noexcept{std::free(p);}void operator delete[](void* p,std::size_t)noexcept{std::free(p);}
 void* operator new(std::size_t n,std::align_val_t a){
+  ProbeFailureAllocation();
   if(measuring)++allocations;if(budget==0){budget=-1;throw std::bad_alloc();}if(budget>0)--budget;
   if(allocation_device_mutex){auto* mutex=allocation_device_mutex;allocation_device_mutex=nullptr;
     bool available=false;std::thread worker([&]{available=mutex->try_lock();if(available)mutex->unlock();});worker.join();allocation_lock_free=available;}
@@ -61,13 +71,14 @@ extern "C" ssize_t __real_pread(int,void*,size_t,off_t);
 extern "C" ssize_t __wrap_pread(int fd,void* p,size_t n,off_t at){
   ++reads;last_read_buffer=p;ProbeObservation();
   if(changed_prefix&&reads==2){if(__real_pwrite(fd,changed_prefix->data(),changed_prefix->size(),0)!=ssize_t(changed_prefix->size()))std::abort();}
-if(fail_read==reads){errno=EIO;return -1;}if(eof_read&&eof_read==reads)return 0;
+if(fail_read==reads){next_allocation_probe=backend_failure_probe;errno=EIO;return -1;}
+  if(eof_read&&eof_read==reads){next_allocation_probe=backend_failure_probe;return 0;}
   return __real_pread(fd,p,short_read&&short_read==reads?n-1:n,at);
 }
 extern "C" ssize_t __real_pwrite(int,const void*,size_t,off_t);
 extern "C" ssize_t __wrap_pwrite(int fd,const void* p,size_t n,off_t at){++writes;return __real_pwrite(fd,p,n,at);}
 extern "C" int __real_fstat(int,struct stat*);
-extern "C" int __wrap_fstat(int fd,struct stat* s){++stats;ProbeObservation();if(fail_stat==stats){errno=EIO;return -1;}
+extern "C" int __wrap_fstat(int fd,struct stat* s){++stats;ProbeObservation();if(fail_stat==stats){next_allocation_probe=backend_failure_probe;errno=EIO;return -1;}
   if(resize_stat==stats&&ftruncate(fd,resize_bytes))std::abort();return __real_fstat(fd,s);}
 extern "C" int __real_fsync(int);
 extern "C" int __wrap_fsync(int fd){++syncs;return __real_fsync(fd);}
@@ -305,6 +316,31 @@ void MemoryTests(){
     const auto no_writes=writes,no_syncs=syncs;
     for(unsigned n=1;n<=2;++n){fail_read=n;auto r=file.Read(valid);fail_read=0;NoRecord(r);Check(r.error==ME::io_failure&&reads==n&&!valid.manager.Snapshot().current_bytes,"each actual read failure releases memory");}
     for(unsigned n=1;n<=2;++n){fail_stat=n;auto r=file.Read(valid);fail_stat=0;NoRecord(r);Check(r.error==ME::io_failure&&stats==n,"both physical size failures remain typed");}
+    for(unsigned route=0;route<3;++route)for(unsigned n=1;n<=2;++n)for(bool deny:{false,true}){
+      backend_failure_probe=file.device.AcquireOperationGuard().mutex();
+      failure_allocation_unlocked=false;deny_failure_observation=deny;
+      if(route==0)fail_read=n;
+      else if(route==1)fail_stat=n;
+      else {short_read=n;eof_read=n+1;}
+      const auto r=file.Read(valid);
+      fail_read=fail_stat=short_read=eof_read=0;backend_failure_probe=nullptr;deny_failure_observation=false;
+      Check(!next_allocation_probe&&failure_allocation_unlocked,
+        "first allocation after native error or EOF is outside the complete device fence");
+      NoRecord(r);Check(r.error==ME::io_failure&&!r.io_status.ok()&&!valid.manager.Snapshot().current_bytes,
+        "diagnostic/observation allocation failure never erases backend cause or retains unreported backing");
+      Check(r.io_receipt.operation==(route==1?d::BoundedIoOperation::size:d::BoundedIoOperation::read)&&
+        r.io_receipt.error==(route==2?d::BoundedIoError::short_transfer:d::BoundedIoError::native_failure)&&
+        r.io_receipt.native_attempted&&r.io_receipt.native_error==(route==2?0u:unsigned(EIO)),
+        "fixed receipt distinguishes both size failures, both read failures and EOF");
+      if(route!=1){
+        Check(r.bootstrap_bytes_read==(n==1?(route==2?4095u:0u):4096u),"exact failed bootstrap progress");
+        Check(r.page_bytes_read==(n==2&&route==2?file.bytes.size()-1:0),"exact failed payload progress");
+      }else Check(r.size_before==(n==2?std::optional<u64>(file.value.total_pages*file.bytes.size()):std::nullopt)&&
+        !r.size_after,"failed size is absent, not a zero-size observation");
+      const auto rendered=d::RenderBoundedIoResult(r.io_receipt,file.path.string());
+      Check(!rendered.ok()&&rendered.bytes_transferred==r.io_receipt.bytes_transferred,
+        "outside-guard diagnostic retains exact physical progress");
+    }
     short_read=2;{auto r=file.Read(valid);Check(r.ok()&&reads==3,"short read completes");}short_read=0;
     short_read=2;eof_read=3;{auto r=file.Read(valid);NoRecord(r);Check(r.error==ME::io_failure&&r.page_bytes_read==file.bytes.size()-1,"partial image progress retained");}short_read=eof_read=0;
     bootstrap_fault=true;{auto r=file.Read(valid);NoRecord(r);Check(!bootstrap_fault&&r.error==ME::bootstrap_failure,"actual bootstrap hash failure");}
@@ -332,7 +368,8 @@ void MemoryTests(){
         r={};Check(!valid.manager.Snapshot().current_bytes&&!valid.memory.Snapshot().allocated_bytes,"all fault cleanup physical charges released");{auto retry=file.Read(valid);Check(retry.ok(),"same owner retries every allocation failure");}}
       Check(sites>0,"allocation fault sweep reached");std::cout<<"governed page-zero metadata faults="<<sites<<'\n';
     }
-    Check(file.device.Close().ok(),"close source");auto closed=file.Read(valid);NoRecord(closed);Check(closed.error==ME::bootstrap_failure&&closed.bootstrap_error==d::FilespaceBootstrapError::device_not_open,"closed device never reopened");
+    Check(file.device.Close().ok(),"close source");auto closed=file.Read(valid);NoRecord(closed);Check(closed.error==ME::bootstrap_failure&&closed.bootstrap_error==d::FilespaceBootstrapError::device_not_open&&
+      closed.io_receipt.error==d::BoundedIoError::not_open&&!closed.io_receipt.native_attempted&&!closed.io_status.ok(),"closed device never reopened or reported as native I/O");
     valid.memory={};valid.Empty();
   }
 }
