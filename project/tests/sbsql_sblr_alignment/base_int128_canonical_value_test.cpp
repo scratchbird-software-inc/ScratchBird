@@ -669,18 +669,47 @@ void NumericAndCastAdapter() {
           "int128 PRESENT-to-real128 cast refuses without publishing output");
   }
 
-  dt::DatatypeCastRequest compatibility;
-  compatibility.value = Int128("42");
-  compatibility.target_type_id = dt::CanonicalTypeId::binary;
-  compatibility.context = dt::DatatypeCastContext::explicit_cast;
-  compatibility.explicit_cast = true;
-  compatibility.reference_compatibility_profile = true;
-  const auto compatibility_value = dt::CastDatatypeValue(compatibility);
-  Check(compatibility_value.ok() &&
-            compatibility_value.category ==
-                dt::DatatypeCastCategory::reference_compatibility_explicit &&
-            compatibility_value.value.encoded_value == "42",
-        "existing reference conversion receives boundary text instead of LE16");
+  // BIN-CAST-007 is forbidden even under donor compatibility.
+  // Keep the lexical boundary test on its admitted character route.
+  for (bool compatibility : {false, true}) {
+    dt::DatatypeCastRequest render;
+    render.value = Int128("42");
+    render.target_type_id = dt::CanonicalTypeId::character;
+    render.target_descriptor = DescriptorFor(dt::CanonicalTypeId::character);
+    render.context = dt::DatatypeCastContext::explicit_cast;
+    render.explicit_cast = true;
+    render.reference_compatibility_profile = compatibility;
+    const auto rendered = dt::CastDatatypeValue(render);
+    Check(rendered.ok() && rendered.value.encoded_value == "42" &&
+              rendered.value.type_id == dt::CanonicalTypeId::character &&
+              !rendered.value.is_null,
+          "admitted character conversion receives decimal text instead of LE16");
+    for (auto context : {dt::DatatypeCastContext::implicit,
+                         dt::DatatypeCastContext::assignment,
+                         dt::DatatypeCastContext::explicit_cast}) {
+      for (bool null_value : {false, true}) {
+        dt::DatatypeCastRequest binary;
+        binary.value = Int128("42");
+        binary.value.is_null = null_value;
+        if (null_value) binary.value.encoded_value.clear();
+        binary.value.descriptor.nullable_allowed = true;
+        binary.target_type_id = dt::CanonicalTypeId::binary;
+        binary.target_descriptor = DescriptorFor(dt::CanonicalTypeId::binary);
+        binary.target_descriptor.nullable_allowed = true;
+        binary.context = context;
+        binary.explicit_cast = context == dt::DatatypeCastContext::explicit_cast;
+        binary.reference_compatibility_profile = compatibility;
+        const auto source = binary.value.encoded_value;
+        const auto refused = dt::CastDatatypeValue(binary);
+        Check(!refused.ok() && refused.category == dt::DatatypeCastCategory::forbidden &&
+                  refused.diagnostic.diagnostic_code == "DATATYPE.CAST_FORBIDDEN" &&
+                  refused.value.type_id == dt::CanonicalTypeId::unknown &&
+                  refused.value.encoded_value.empty() && !refused.value.is_null &&
+                  binary.value.encoded_value == source,
+              "integer-to-binary policy refuses atomically in every context and compatibility mode");
+      }
+    }
+  }
   Check(!dt::HashDatatypeValue({Int128("0")}).ok(),
         "int128 hash refuses without a descriptor-versioned profile");
 }
