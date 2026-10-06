@@ -101,6 +101,7 @@ void Test(h::CryptoMemoryPool& pool,const h::CryptoMemoryBinding& binding,db::Na
   h::PreparedSha256 session;Check(session.Prepare(pool,binding)==E::none,"prepare provider before guards");
   for(unsigned own=0;own<5;++own){Fixture f;
     auto payload=memory.AllocatePage(d::kCanonicalFilespacePageProfiles[own].uuid);Check(payload.ok(),"actual image backing");
+    auto destination=memory.AllocatePage(d::kCanonicalFilespacePageProfiles[own].uuid);Check(destination.ok(),"actual encoded image backing");
     for(unsigned member=0;member<5;++member){const auto example=Example(own,member);
       const auto legacy=d::EncodeFilespacePageZero(example);Check(legacy.ok(),"existing canonical encoder");
       const auto bootstrap=d::EncodeFilespaceBootstrap(example.bootstrap);Check(bootstrap.ok(),"existing canonical bootstrap");
@@ -131,18 +132,34 @@ void Test(h::CryptoMemoryPool& pool,const h::CryptoMemoryBinding& binding,db::Na
             "every binary root field preserved");}
         const auto encoded=d::EncodeFilespaceBootstrap(example.bootstrap);
         Check(encoded.ok()&&encoded.bytes==bootstrap.bytes,"prepared bootstrap emits identical canonical bytes");
+        const auto bounded=d::EncodeFilespacePageZeroInto(example,{destination.buffer.data(),destination.buffer.size()});
+        Check(bounded.ok()&&std::equal(bounded.bytes.begin(),bounded.bytes.end(),legacy.bytes->begin()),"complete canonical page encoded into actual admitted backing under guard");
+        const auto& v=*decoded.record;
+        const d::FilespacePageZeroConstView readonly{v.bootstrap,v.page_uuid,v.creation_operation_uuid,v.writer_identity_uuid,
+          v.page_generation,v.root_set_generation,v.total_pages,v.free_pages,v.preallocated_pages,v.creation_utc_millis,v.roots};
+        const auto const_image=d::EncodeFilespacePageZeroInto(readonly,{destination.buffer.data(),destination.buffer.size()});
+        Check(const_image.ok()&&std::equal(const_image.bytes.begin(),const_image.bytes.end(),legacy.bytes->begin()),"read-only root view uses same full bounded encoder");
+        Check(observations.WriteAt(0,const_image.bytes.data(),const_image.bytes.size()).ok()&&observations.Sync().synchronized,
+          "real encoded image write and durable synchronization under allocation denial");
         Check(process.Snapshot().allocations==root_before.allocations,"guarded hashing never falls back to process pool");
       }
       Check(pool.Snapshot().allocations>op_before.allocations&&pool.Snapshot().live_bytes==op_before.live_bytes&&
         pool.Snapshot().backing_bytes==op_before.backing_bytes&&memory.Snapshot().allocated_bytes==charge,"actual retained provider backing and charge unchanged");
-      for(unsigned phase=1;phase<=2;++phase)for(unsigned mode=1;mode<=4;++mode){
+      for(unsigned phase=1;phase<=2;++phase)for(unsigned mode=1;mode<=4;++mode)for(bool encoding:{false,true}){
         Check(session.Prepare(pool,binding)==E::none,"explicit reprepare outside guard");
         hash_number=0;fault_hash=phase;fault=mode;
         {h::PreparedSha256Scope route(session);const auto guard=f.device.AcquireOperationGuard();GuardedDenial denied;
+          if(encoding){
+            const auto failed=d::EncodeFilespacePageZeroInto(example,{destination.buffer.data(),destination.buffer.size()});
+            Check(!fault&&failed.bytes.empty()&&failed.error==d::FilespacePageZeroError::hash_provider_failure,"both encoding provider positions refuse without published span");
+            const auto retry=d::EncodeFilespacePageZeroInto(example,{destination.buffer.data(),destination.buffer.size()});
+            Check(retry.bytes.empty()&&retry.error==d::FilespacePageZeroError::hash_provider_failure,"poisoned encoder never falls back");
+          }else{
           const auto failed=d::DecodeFilespacePageZeroInto({payload.buffer.data(),payload.buffer.size()},roots);
           Check(!fault&&!failed.record&&failed.error==d::FilespacePageZeroError::hash_provider_failure,"each bootstrap/full-image provider stage refuses without prefix");
           const auto retry=d::DecodeFilespacePageZeroInto({payload.buffer.data(),payload.buffer.size()},roots);
           Check(!retry.record&&retry.error==d::FilespacePageZeroError::hash_provider_failure,"poisoned provider never falls back");
+          }
         }
       }
       Check(session.Prepare(pool,binding)==E::none,"recover prepared provider after failures");
@@ -153,6 +170,7 @@ void Test(h::CryptoMemoryPool& pool,const h::CryptoMemoryBinding& binding,db::Na
       Check(observations.ReadAt(0,payload.buffer.data(),payload.buffer.size()).ok()&&
         d::DecodeFilespacePageZeroInto({payload.buffer.data(),payload.buffer.size()},roots).ok(),"reopened native image validates under actual bounded provider");}
     Check(payload.buffer.Reset().ok(),"release admitted image outside fence");
+    Check(destination.buffer.Reset().ok(),"release admitted encoding after all guards");
   }
   Check(session.Close()==E::none,"close prepared context outside device guards");
 }

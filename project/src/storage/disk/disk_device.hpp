@@ -130,6 +130,8 @@ struct BoundedIoResult {
 // diagnostic data supplied by the owner, never a resource identity. Does not
 // publish metrics (the originating batch already owns those observations).
 IoResult RenderBoundedIoResult(const BoundedIoResult&, const std::string& path);
+// Pure fixed validation for codecs; no I/O, locks or diagnostic allocations.
+BoundedIoError CheckFileDeviceExtentNative(u64 offset, usize bytes) noexcept;
 
 struct CheckedFileExtentResult {
   Status status;

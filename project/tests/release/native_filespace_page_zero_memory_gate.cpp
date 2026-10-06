@@ -184,8 +184,51 @@ void Codecs(){
       allocations=0;measuring=true;budget=0;auto r=d::DecodeFilespacePageZeroInto(bytes,roots);const auto remaining=budget;budget=-1;measuring=false;
       Check(r.ok()&&!allocations&&remaining==0,"all roles states flags and 25 mixed profile pairs decode without hidden allocation");
       Check(r.record->roots.data()==roots.data()&&r.record->roots.size()==value.roots.size()&&Oracle(*r.record)==bytes,"exact-length caller-owned native binary roots");
+      Bytes encoded(bytes.size()+2,0xa5);
+      const auto& v=*r.record;
+      const d::FilespacePageZeroConstView readonly{v.bootstrap,v.page_uuid,v.creation_operation_uuid,v.writer_identity_uuid,
+        v.page_generation,v.root_set_generation,v.total_pages,v.free_pages,v.preallocated_pages,v.creation_utc_millis,v.roots};
+      allocations=0;measuring=true;budget=0;
+      const auto owned=d::EncodeFilespacePageZeroInto(value,std::span(encoded).subspan(1,bytes.size()));
+      const auto borrowed=d::EncodeFilespacePageZeroInto(*r.record,std::span(encoded).subspan(1,bytes.size()));
+      const auto immutable=d::EncodeFilespacePageZeroInto(readonly,std::span(encoded).subspan(1,bytes.size()));
+      const auto encode_remaining=budget;budget=-1;measuring=false;
+      Check(owned.ok()&&borrowed.ok()&&immutable.ok()&&!allocations&&encode_remaining==0&&
+        owned.bytes.data()==encoded.data()+1&&borrowed.bytes.size()==bytes.size()&&
+        encoded.front()==0xa5&&encoded.back()==0xa5&&std::equal(bytes.begin(),bytes.end(),owned.bytes.begin()),
+        "all bounded encoders preserve every independent byte for all roles states flags and25pairs");
     }
   auto value=Example(0,0,1,1,2);auto good=Oracle(value);
+  Bytes encoded(good.size()+16,0xa5);
+  budget=0;const auto oversized=d::EncodeFilespacePageZeroInto(value,encoded);const auto oversized_remaining=budget;budget=-1;
+  Check(oversized.ok()&&oversized.bytes.size()==good.size()&&oversized_remaining==0&&
+    std::equal(good.begin(),good.end(),encoded.begin())&&std::all_of(encoded.begin()+good.size(),encoded.end(),[](byte b){return b==0xa5;}),
+    "oversized output returns exact page and leaves whole suffix untouched");
+  std::fill(encoded.begin(),encoded.end(),0xa5);
+  budget=0;const auto null_output=d::EncodeFilespacePageZeroInto(value,{static_cast<byte*>(nullptr),1});const auto null_remaining=budget;budget=-1;
+  Check(null_output.error==E::invalid_backing&&null_output.bytes.empty()&&null_remaining==0,"null nonempty output refused before access");
+  for(const auto length:{std::size_t(0),std::size_t(1),good.size()-1}){
+    budget=0;const auto short_output=d::EncodeFilespacePageZeroInto(value,std::span(encoded).first(length));
+    const auto remaining=budget;budget=-1;
+    Check(short_output.error==E::resource_exhausted&&short_output.bytes.empty()&&remaining==0&&
+      std::all_of(encoded.begin(),encoded.end(),[](byte b){return b==0xa5;}),"short output refuses before mutation or diagnostic allocation");
+  }
+  for(const bool roots_alias:{false,true}){
+    auto* alias=roots_alias?reinterpret_cast<byte*>(value.roots.data()):reinterpret_cast<byte*>(&value);
+    const auto size=roots_alias?value.roots.size()*sizeof(value.roots[0]):sizeof(value);
+    budget=0;const auto refused=d::EncodeFilespacePageZeroInto(value,{alias,size});const auto remaining=budget;budget=-1;
+    Check(refused.error==E::invalid_backing&&refused.bytes.empty()&&remaining==0&&Oracle(value)==good,"value and nested root aliases refuse before write");
+  }
+  budget=0;const auto wrapped_output=d::EncodeFilespacePageZeroInto(value,{encoded.data(),std::numeric_limits<usize>::max()});
+  const auto wrap_remaining=budget;budget=-1;
+  Check(wrapped_output.error==E::invalid_backing&&wrapped_output.bytes.empty()&&wrap_remaining==0,"wrapped whole output refuses without access");
+  for(bool root_overflow:{false,true}){auto invalid=value;
+    if(root_overflow)invalid.roots.front().page_number=static_cast<u64>(std::numeric_limits<std::streamoff>::max())/8192;
+    else invalid.total_pages=static_cast<u64>(std::numeric_limits<std::streamoff>::max())/8192+1;
+    budget=0;const auto refused=d::EncodeFilespacePageZeroInto(invalid,encoded);const auto remaining=budget;budget=-1;
+    Check(refused.error==(root_overflow?E::invalid_root_directory:E::invalid_capacity)&&refused.bytes.empty()&&remaining==0,
+      "signed physical extent failures retain exact structural errors without rendering");
+  }
   for(unsigned count=0;count<value.roots.size();++count){auto r=d::DecodeFilespacePageZeroInto(good,std::span(roots).first(count));Check(!r.record&&r.error==E::resource_exhausted,"every undersized output refuses");}
   auto overlap=d::DecodeFilespacePageZeroInto(good,{reinterpret_cast<d::FilespaceRootReference*>(good.data()),32});
   Check(!overlap.record&&overlap.error==E::invalid_backing&&good==Oracle(value),"overlap refuses before writing");
@@ -213,6 +256,11 @@ void Codecs(){
     }
     auto image=Oracle(bad);auto owned=d::DecodeFilespacePageZero(image.data(),image.size());auto borrowed=d::DecodeFilespacePageZeroInto(image,roots);
     Check(!borrowed.record&&!owned.record&&borrowed.error==owned.error,"shared full semantic validation rejects independently sealed invalid page");
+    const auto expected_encode=d::EncodeFilespacePageZero(bad);
+    std::fill(encoded.begin(),encoded.end(),0xa5);budget=0;
+    const auto refused=d::EncodeFilespacePageZeroInto(bad,encoded);const auto remaining=budget;budget=-1;
+    Check(!refused.ok()&&refused.bytes.empty()&&refused.error==expected_encode.error&&remaining==0&&
+      std::all_of(encoded.begin(),encoded.end(),[](byte b){return b==0xa5;}),"every invalid structural value refuses encoding before mutation with fixed error");
   }
   for(unsigned at:{4232u,4236u,4240u,4256u,4352u,4356u,4358u,4364u,4440u,4444u,4482u,4552u,8191u}){
     auto bad=good;bad[at]^=0x80;Seal(bad);auto owned=d::DecodeFilespacePageZero(bad.data(),bad.size());auto borrowed=d::DecodeFilespacePageZeroInto(bad,roots);
