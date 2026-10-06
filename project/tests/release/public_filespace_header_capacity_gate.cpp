@@ -9,6 +9,7 @@
 #include "filespace_header.hpp"
 #include "filespace_lifecycle.hpp"
 #include "uuid.hpp"
+#include "../support/owned_temp_directory.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -30,6 +31,7 @@ namespace {
 
 namespace filespace = scratchbird::storage::filespace;
 namespace uuid = scratchbird::core::uuid;
+std::filesystem::path fixture_root;
 #if defined(__linux__)
 bool native_faults_active = false, fail_header_write = false, fail_header_sync = false;
 bool fail_verification_read = false, mismatch_verification_size = false;
@@ -42,8 +44,7 @@ using scratchbird::core::platform::TypedUuid;
 using scratchbird::core::platform::UuidKind;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -59,16 +60,12 @@ TypedUuid MakeUuid(UuidKind kind, std::uint64_t salt) {
 }
 
 std::filesystem::path TempPath(std::string_view name) {
-  const auto dir = std::filesystem::temp_directory_path() /
-                   "sb_public_filespace_header_capacity_gate";
-  std::filesystem::create_directories(dir);
-  return dir / std::string(name);
+  return fixture_root / std::string(name);
 }
 
 void RemoveIfPresent(const std::filesystem::path& path) {
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-  std::filesystem::remove(path.string() + ".sb.owner.lock", ignored);
+  std::filesystem::remove(path);
+  std::filesystem::remove(path.string() + ".sb.owner.lock");
 }
 
 filespace::PhysicalFilespaceHeader MakeHeader() {
@@ -465,7 +462,9 @@ extern "C" ssize_t __wrap_pwrite(int fd, const void* bytes, size_t size, off_t o
 }
 #endif
 
-int main() {
+int main() try {
+  scratchbird::tests::OwnedTempDirectory directory;
+  fixture_root = directory.path();
   HeaderMaintenancePreservesBytes();
 #if defined(__linux__)
   GrowthKeepsRetainedFileAndAppliedEffects();
@@ -476,5 +475,9 @@ int main() {
   HeaderReadRejectsFileSizeMismatch();
   RegistryRoundTripsCapacityAndWriterIdentity();
   AttachComparesHeaderRegistryCapacity();
+  directory.Cleanup();
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

@@ -1,4 +1,5 @@
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -28,8 +29,7 @@ namespace mem = scratchbird::core::memory;
 namespace platform = scratchbird::core::platform;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -144,9 +144,7 @@ exec::ExecutorOperatorMemoryAuthority Authority() {
   return authority;
 }
 
-void AllOperatorKindsRequestAndReleaseArenaGrants() {
-  const auto root = std::filesystem::temp_directory_path() / "sb_mmch020_live_operator_memory";
-  std::filesystem::remove_all(root);
+void AllOperatorKindsRequestAndReleaseArenaGrants(const std::filesystem::path& root) {
   mem::BoundedAllocator allocator(AllocationPolicy());
   mem::TempWorkspaceLifecycleManager temp(TempPolicy(root));
   mem::QueryMemoryArena arena(Context(), Limits(), &allocator, &temp);
@@ -224,12 +222,9 @@ void AllOperatorKindsRequestAndReleaseArenaGrants() {
           "MMCH-020 operator releases leaked query memory");
   Require(allocator.Snapshot().leak_candidate_count == 0,
           "MMCH-020 allocator leak candidates remained");
-  std::filesystem::remove_all(root);
 }
 
-void UnsafeOperatorMemoryRequestsFailClosed() {
-  const auto root = std::filesystem::temp_directory_path() / "sb_mmch020_refuse";
-  std::filesystem::remove_all(root);
+void UnsafeOperatorMemoryRequestsFailClosed(const std::filesystem::path& root) {
   mem::BoundedAllocator allocator(AllocationPolicy());
   mem::TempWorkspaceLifecycleManager temp(TempPolicy(root));
   mem::QueryMemoryArena arena(Context(), Limits(), &allocator, &temp);
@@ -266,16 +261,20 @@ void UnsafeOperatorMemoryRequestsFailClosed() {
               refused.diagnostic.diagnostic_code ==
                   "SB_EXECUTOR_OPERATOR_MEMORY.SECURITY_RECHECK_REQUIRED",
           "MMCH-020 missing security recheck did not fail closed");
-  std::filesystem::remove_all(root);
 }
 
 }  // namespace
 
-int main() {
+int main() try {
+  scratchbird::tests::OwnedTempDirectory directory;
   std::cout << "MMCH-020 authority_note=live_operator_memory_grants_evidence_only;"
                "not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"
             << '\n';
-  AllOperatorKindsRequestAndReleaseArenaGrants();
-  UnsafeOperatorMemoryRequestsFailClosed();
+  AllOperatorKindsRequestAndReleaseArenaGrants(directory.path() / "live");
+  UnsafeOperatorMemoryRequestsFailClosed(directory.path() / "refuse");
+  directory.Cleanup();
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

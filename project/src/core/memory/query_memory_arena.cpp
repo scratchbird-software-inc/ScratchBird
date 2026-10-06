@@ -57,6 +57,13 @@ std::string BoolText(bool value) {
   return value ? "true" : "false";
 }
 
+void AppendAuthorityEvidence(std::vector<std::string>* evidence) {
+  evidence->push_back("query_memory_arena.transaction_finality_authority=false");
+  evidence->push_back("query_memory_arena.visibility_authority=false");
+  evidence->push_back("query_memory_arena.parser_execution_authority=false");
+  evidence->push_back("query_memory_arena.recovery_authority=false");
+}
+
 std::vector<HierarchicalMemoryScopeRef> ScopeChainForContext(
     const QueryMemoryContext& context) {
   std::vector<HierarchicalMemoryScopeRef> chain;
@@ -557,6 +564,10 @@ QueryMemoryArenaReleaseResult QueryMemoryArena::ReleaseLocked(const QueryMemoryU
 QueryMemoryArenaReleaseResult QueryMemoryArena::CleanupAllLocked() {
   QueryMemoryArenaReleaseResult result;
   result.status = OkStatus();
+  // Aggregate cleanup does not retain each grant's evidence. Preserve the
+  // same authority boundary for Cancel and Reset, including an empty arena.
+  // Allocate these diagnostic strings before any irreversible cleanup.
+  AppendAuthorityEvidence(&result.evidence);
   // Stop new grants even if cleanup fails; Release/Reset can retry retained
   // owners. Iteration never discards records whose release did not complete.
   released_ = true;
@@ -1038,10 +1049,7 @@ void QueryMemoryArena::AppendBaseEvidence(std::vector<std::string>* evidence,
                       std::to_string(counters.spilled_count));
   evidence->push_back("query_memory_arena.cancelled_count=" +
                       std::to_string(counters.cancelled_count));
-  evidence->push_back("query_memory_arena.transaction_finality_authority=false");
-  evidence->push_back("query_memory_arena.visibility_authority=false");
-  evidence->push_back("query_memory_arena.parser_execution_authority=false");
-  evidence->push_back("query_memory_arena.recovery_authority=false");
+  AppendAuthorityEvidence(evidence);
 }
 
 DiagnosticRecord QueryMemoryArena::MakeArenaDiagnostic(Status status,

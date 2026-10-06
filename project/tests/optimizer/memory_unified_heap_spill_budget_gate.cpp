@@ -10,6 +10,7 @@
 #include "query_memory_arena.hpp"
 #include "temp_workspace_lifecycle.hpp"
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -24,8 +25,7 @@ namespace mem = scratchbird::core::memory;
 using scratchbird::tests::FixtureUuid;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -188,11 +188,7 @@ void DirectUnifiedLedger() {
           "MMCH-031 owner cleanup leaked unified reservations");
 }
 
-void QueryArenaUnifiedBudget() {
-  const auto root =
-      std::filesystem::temp_directory_path() / "sb_mmch031_unified_budget";
-  std::filesystem::remove_all(root);
-
+void QueryArenaUnifiedBudget(const std::filesystem::path& root) {
   mem::BoundedAllocator allocator(AllocationPolicy());
   mem::TempWorkspaceLifecycleManager temp(TempPolicy(root));
   mem::UnifiedMemorySpillBudgetLedger ledger(FixtureUuid(31, 9), 100);
@@ -272,11 +268,16 @@ void QueryArenaUnifiedBudget() {
 
 }  // namespace
 
-int main() {
+int main() try {
+  scratchbird::tests::OwnedTempDirectory directory;
   std::cout << "MMCH-031 authority_note=unified_heap_spill_budget_evidence_only;"
                "not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"
             << '\n';
   DirectUnifiedLedger();
-  QueryArenaUnifiedBudget();
+  QueryArenaUnifiedBudget(directory.path());
+  directory.Cleanup();
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "memory.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "operator_memory_grant.hpp"
 #include "query_memory_arena.hpp"
@@ -30,8 +31,7 @@ namespace platform = scratchbird::core::platform;
 
 // MMCH_MEMORY_CANCEL_ROLLBACK_CLEANUP
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -151,18 +151,12 @@ exec::ExecutorOperatorMemoryAuthority Authority() {
 }
 
 struct Harness {
-  explicit Harness(std::string suffix, std::uint32_t ordinal)
-      : root(std::filesystem::temp_directory_path() / ("sb_mmch022_" + suffix)),
+  explicit Harness(const std::filesystem::path& parent, std::string suffix, std::uint32_t ordinal)
+      : root(parent / suffix),
         allocator(AllocationPolicy()),
         temp(TempPolicy(root)),
         unified(scratchbird::tests::FixtureUuid(1484, 100 + ordinal), 256 * 1024),
-        arena(Context(ordinal), Limits(), &allocator, &temp, &unified) {
-    std::filesystem::remove_all(root);
-  }
-
-  ~Harness() {
-    std::filesystem::remove_all(root);
-  }
+        arena(Context(ordinal), Limits(), &allocator, &temp, &unified) {}
 
   void RequireClean(std::string_view label) {
     const auto snapshot = arena.Snapshot();
@@ -186,8 +180,8 @@ struct Harness {
   mem::QueryMemoryArena arena;
 };
 
-void CancellationReleasesSpillAndBudget() {
-  Harness harness("cancel", 1);
+void CancellationReleasesSpillAndBudget(const std::filesystem::path& root) {
+  Harness harness(root, "cancel", 1);
   exec::ExecutorQueryMemoryRequest request;
   request.shape = exec::ExecutorQueryShape::search;
   request.bytes = 80 * 1024;
@@ -212,8 +206,8 @@ void CancellationReleasesSpillAndBudget() {
   harness.RequireClean("cancel");
 }
 
-void RollbackCleanupDoesNotBecomeFinalityAuthority() {
-  Harness harness("rollback", 2);
+void RollbackCleanupDoesNotBecomeFinalityAuthority(const std::filesystem::path& root) {
+  Harness harness(root, "rollback", 2);
   exec::ExecutorQueryMemoryRequest request;
   request.shape = exec::ExecutorQueryShape::dml;
   request.bytes = 4096;
@@ -231,8 +225,8 @@ void RollbackCleanupDoesNotBecomeFinalityAuthority() {
   harness.RequireClean("rollback");
 }
 
-void AutocommitFailureReleasesOperatorGrant() {
-  Harness harness("autocommit", 3);
+void AutocommitFailureReleasesOperatorGrant(const std::filesystem::path& root) {
+  Harness harness(root, "autocommit", 3);
   exec::ExecutorOperatorMemoryRequest request;
   request.operator_kind = exec::ExecutorMemoryOperatorKind::dml_write;
   request.route_label = "embedded.sblr.dml.autocommit_failure";
@@ -255,8 +249,8 @@ void AutocommitFailureReleasesOperatorGrant() {
   harness.RequireClean("autocommit");
 }
 
-void RefusedGrantLeavesNoResidue() {
-  Harness harness("refused", 4);
+void RefusedGrantLeavesNoResidue(const std::filesystem::path& root) {
+  Harness harness(root, "refused", 4);
   exec::ExecutorQueryMemoryRequest request;
   request.shape = exec::ExecutorQueryShape::relational;
   request.bytes = 512 * 1024;
@@ -271,15 +265,41 @@ void RefusedGrantLeavesNoResidue() {
   harness.RequireClean("refused");
 }
 
+void ResetPreservesAuthorityBoundary(const std::filesystem::path& root) {
+  Harness harness(root, "reset", 5);
+  mem::QueryMemoryGrantRequest request;
+  request.family = mem::QueryMemoryFamily::relational;
+  request.bytes = 4096;
+  request.purpose = "mmch022.reset";
+  const auto grant = harness.arena.Grant(request);
+  Require(grant.ok(), "MMCH-022 reset grant setup failed");
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    const auto reset = harness.arena.Reset();
+    Require(reset.ok(), "MMCH-022 reset cleanup failed");
+    RequireAuthorityEvidence(reset.evidence);
+    for (const auto* boundary : {"transaction_finality", "visibility", "parser_execution", "recovery"})
+      Require(EvidenceHas(reset.evidence,
+                          std::string("query_memory_arena.") + boundary + "_authority=false"),
+              "MMCH-022 reset lost an authority boundary");
+    harness.RequireClean("reset");
+  }
+}
+
 }  // namespace
 
-int main() {
+int main() try {
+  scratchbird::tests::OwnedTempDirectory directory;
   std::cout << "MMCH-022 authority_note=cancel_rollback_cleanup_evidence_only;"
                "not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"
             << '\n';
-  CancellationReleasesSpillAndBudget();
-  RollbackCleanupDoesNotBecomeFinalityAuthority();
-  AutocommitFailureReleasesOperatorGrant();
-  RefusedGrantLeavesNoResidue();
+  CancellationReleasesSpillAndBudget(directory.path());
+  RollbackCleanupDoesNotBecomeFinalityAuthority(directory.path());
+  AutocommitFailureReleasesOperatorGrant(directory.path());
+  RefusedGrantLeavesNoResidue(directory.path());
+  ResetPreservesAuthorityBoundary(directory.path());
+  directory.Cleanup();
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }
