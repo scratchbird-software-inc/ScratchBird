@@ -107,6 +107,30 @@ struct IoResult {
   }
 };
 
+// Fixed receipt for admitted compound operations. No diagnostic rendering,
+// heap allocation, telemetry publication or ownership claims during I/O.
+enum class BoundedIoOperation { read, write, sync, size };
+enum class BoundedIoError {
+  none, not_open, null_buffer, read_only, offset_overflow, count_overflow,
+  extent_overflow, native_failure, short_transfer, invalid_size
+};
+struct BoundedIoResult {
+  BoundedIoOperation operation = BoundedIoOperation::read;
+  BoundedIoError error = BoundedIoError::none;
+  u64 offset = 0;
+  usize requested_bytes = 0, bytes_transferred = 0;
+  u64 size_bytes = 0;
+  u32 native_error = 0;
+  bool native_attempted = false;
+  bool synchronized = false;
+  bool read_only_noop = false;
+  bool ok() const noexcept { return error == BoundedIoError::none; }
+};
+// Render only after releasing ALL enclosing device/source guards. The path is
+// diagnostic data supplied by the owner, never a resource identity. Does not
+// publish metrics (the originating batch already owns those observations).
+IoResult RenderBoundedIoResult(const BoundedIoResult&, const std::string& path);
+
 struct CheckedFileExtentResult {
   Status status;
   u64 offset = 0;
@@ -191,6 +215,33 @@ class FileDevice {
   IoResult Open(std::string path, FileOpenMode mode);
   IoResult Close();
   IoResult ReadAt(u64 offset, void* buffer, usize bytes);
+  // Declare before ALL enclosing device/source guards; device outlives batch.
+  // Fixed receipts include partial effects and numeric native errors. Captured
+  // metrics, including refusals, publish only at batch destruction after unlock.
+  // Overflow loses observations, never physical effects; loss is counted.
+  class BoundedIoBatch {
+   public:
+    explicit BoundedIoBatch(FileDevice& device) noexcept : device_(device) {}
+    BoundedIoBatch(const BoundedIoBatch&) = delete;
+    BoundedIoBatch& operator=(const BoundedIoBatch&) = delete;
+    ~BoundedIoBatch();
+    const FileDevice& device() const noexcept { return device_; }
+    BoundedIoResult ReadAt(u64 offset, void* buffer, usize bytes);
+    BoundedIoResult WriteAt(u64 offset, const void* buffer, usize bytes);
+    BoundedIoResult Sync();
+    BoundedIoResult Size();
+   private:
+    struct Sample {
+      std::shared_ptr<const MetricContext> context;
+      BoundedIoResult receipt;
+      double micros = 0;
+      bool opened = false;
+    };
+    BoundedIoResult Run(BoundedIoOperation, u64, void*, const void*, usize);
+    FileDevice& device_;
+    std::array<Sample,16> samples_{};
+    usize count_ = 0;
+  };
   // Fixed stack capture for compound readers. Declare BEFORE the operation
   // guard, and never enter with an already held device guard: destruction
   // publishes the retained observations only after the compound fence unlocks.

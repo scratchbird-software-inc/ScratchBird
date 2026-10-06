@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "filespace_bootstrap.hpp"
+#include "crypto_memory_adapter.hpp"
 #include "disk_device.hpp"
 #include <openssl/evp.h>
 #include <algorithm>
@@ -27,6 +28,12 @@ void WriteUuid(byte* bytes, const Uuid& id) noexcept {
   std::copy(id.bytes.begin(), id.bytes.end(), bytes);
 }
 bool Digest(const byte* bytes, std::array<byte, 32>& digest) noexcept {
+  if (auto* prepared = core::hash::CurrentPreparedSha256()) {
+    const core::hash::HashDigestSegment part{bytes, 104};
+    const auto result = prepared->Compute(&part, 1);
+    digest = result.digest;
+    return result.ok(); // A failed admitted provider never falls back.
+  }
   unsigned length = 0;
   return EVP_Digest(bytes, 104, digest.data(), &length, EVP_sha256(), nullptr) == 1
       && length == digest.size();

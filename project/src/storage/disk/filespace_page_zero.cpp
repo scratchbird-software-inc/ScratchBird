@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "filespace_page_zero.hpp"
+#include "crypto_memory_adapter.hpp"
 #include "native_common_page_header.hpp"
 #include "disk_device.hpp"
 #include "native_decoded_storage_ranges.hpp"
@@ -28,6 +29,12 @@ bool Zero(const byte* b,std::size_t n) noexcept {
 void PutUuid(byte* b,const Uuid& id) noexcept { std::copy(id.bytes.begin(),id.bytes.end(),b); }
 Uuid GetUuid(const byte* b) noexcept { Uuid id; std::copy_n(b,16,id.bytes.begin()); return id; }
 bool FullDigest(const byte* b,std::size_t size,std::array<byte,32>& out) noexcept {
+  if(auto* prepared=core::hash::CurrentPreparedSha256()){
+    const std::array<byte,32> zero{};
+    const core::hash::HashDigestSegment parts[]={{b,digest_offset},{zero.data(),zero.size()},
+      {b+directory_offset,size-directory_offset}};
+    const auto result=prepared->Compute(parts,3);out=result.digest;return result.ok();
+  }
   std::unique_ptr<EVP_MD_CTX,decltype(&EVP_MD_CTX_free)> ctx(EVP_MD_CTX_new(),EVP_MD_CTX_free);
   std::array<byte,32> zero{}; unsigned count=0;
   return ctx && EVP_DigestInit_ex(ctx.get(),EVP_sha256(),nullptr)==1
