@@ -1639,6 +1639,46 @@ bool QowCompareCanonicalNonCollatedScalarsV1(
     *refusal_detail = "canonical comparison operand encoding is invalid";
     return false;
   }
+  if (type_id == dt::CanonicalTypeId::uuid) {
+    // This seam selects only the canonical base profile. Do not silently drop
+    // a caller's donor/time ordering or any unprojected descriptor modifier.
+    const auto canonical_metadata = [](const EngineDescriptor& descriptor) {
+      CatalogColumnMetadata fields;
+      if (!AdmitCatalogColumnMetadata(descriptor.encoded_descriptor, &fields) ||
+          !fields.identities.empty()) return false;
+      for (const auto& [name, value] : fields.text) {
+        if (name != "nullability" && name != "nullable") return false;
+      }
+      return true;
+    };
+    if (!canonical_metadata(left_value.descriptor) ||
+        !canonical_metadata(right_value.descriptor)) {
+      *refusal_detail = "DATATYPE.DESCRIPTOR.INVALID:UUID comparison has unsupported profile or modifiers";
+      return false;
+    }
+    dt::DatatypeComparisonRequest request;
+    request.left.type_id = request.right.type_id = type_id;
+    request.left.encoded_value = std::move(left_encoded);
+    request.right.encoded_value = std::move(right_encoded);
+    if (!QowBoundExecutionTypeDescriptorV1(
+            left_value.descriptor, type_id, &request.left.descriptor,
+            refusal_detail) ||
+        !QowBoundExecutionTypeDescriptorV1(
+            right_value.descriptor, type_id, &request.right.descriptor,
+            refusal_detail) ||
+        !dt::ResolveCanonicalUuidOrderingProfileV1(
+            request.left.descriptor, &request.uuid_ordering)) {
+      *refusal_detail = "DATATYPE.DESCRIPTOR.INVALID:" + *refusal_detail;
+      return false;
+    }
+    const auto compared = dt::CompareDatatypeValues(request);
+    if (!compared.ok()) {
+      *refusal_detail = compared.diagnostic.diagnostic_code;
+      return false;
+    }
+    *comparison = compared.comparison;
+    return true;
+  }
   const auto validate = [type_id](const std::string& bytes) {
     dt::DatatypeCastRequest request;
     request.value.type_id = type_id;

@@ -1,24 +1,48 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 // Component API regression for exact UUID bindings, identity casts and the
-// explicit UUID/BINARY boundary; not SQL/IPC or comparison qualification.
+// explicit UUID/BINARY boundary and bound canonical ordering; not SQL/IPC.
 #include "executor/descriptor_value_runtime.hpp"
 #include "internal_api/query/expression_api.hpp"
 #include "internal_api/catalog/datatype_bootstrap_identity.hpp"
+#include "internal_api/catalog/column_metadata_codec.hpp"
 #include "sblr/canonical_query_descriptor_support.hpp"
 #include "sblr/canonical_query_object_free_composition_support.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_operations.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 
+#include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace api = scratchbird::engine::internal_api;
 namespace exec = scratchbird::engine::executor;
+// Measure the warmed key operation, then fail its final allocation (key
+// reserve). Do not assume a particular standard library's string capacity.
+// One-shot failure permits allocation of diagnostics.
+namespace {
+thread_local bool track_uuid_key_allocations = false;
+thread_local std::size_t uuid_key_allocation_count = 0;
+thread_local std::size_t fail_uuid_key_allocation = 0;
+}
+void* operator new(std::size_t bytes) {
+  if (track_uuid_key_allocations &&
+      ++uuid_key_allocation_count == fail_uuid_key_allocation) {
+    track_uuid_key_allocations = false;
+    fail_uuid_key_allocation = 0;
+    throw std::bad_alloc();
+  }
+  if (void* allocation = std::malloc(bytes ? bytes : 1)) return allocation;
+  throw std::bad_alloc();
+}
+void operator delete(void* allocation) noexcept { std::free(allocation); }
+void operator delete(void* allocation, std::size_t) noexcept { std::free(allocation); }
 namespace {
 unsigned checks = 0;
 void Check(bool passed, const char* detail) {
@@ -147,6 +171,12 @@ void LiteralBindings() {
     CoreIdentity(value,nullable);
     auto nullable_value=value;nullable_value.descriptor=nullable;
     Both(nullable_value,expected);CoreIdentity(nullable_value,expected);
+    const auto& next=values.batch.rows[(pattern+1)%130].values.front();
+    const int byte_order=std::memcmp(value.binary_value.data(),next.binary_value.data(),16);
+    int comparison=99;std::string detail;
+    Check(api::QowCompareCanonicalNonCollatedScalarsV1(value,next,&comparison,&detail)&&
+        comparison==(byte_order<0?-1:byte_order>0?1:0)&&detail.empty(),
+        "actual VALUES output retains sufficient binding for canonical UUID ordering");
   }
   for(unsigned mutation=0;mutation<18;++mutation) {
     auto invalid=source;
@@ -197,6 +227,229 @@ void LiteralBindings() {
     const auto partial_rows=s::MaterializeValues(malformed,logical,{});
     Check(!partial_rows.ok&&partial_rows.batch.rows.empty()&&partial_rows.batch.columns.empty()&&
         partial_rows.result_bindings.empty(),"last malformed UUID literal publishes no prior row prefix");
+  }
+}
+
+void CanonicalOrdering() {
+  namespace dt = scratchbird::core::datatypes;
+  const auto descriptor = Descriptor("uuid", 3);
+  std::vector<api::EngineTypedValue> values;
+  std::vector<dt::DatatypeOperationValue> operands;
+  std::vector<std::string> keys;
+  dt::DatatypeUuidOrderingProfileV1 profile;
+  for (unsigned pattern = 0; pattern < 130; ++pattern) {
+    auto value = exec::MakeExecutorValue(descriptor, {}, false);
+    value.binary_value.assign(16, pattern == 1 ? 0xff : 0);
+    if (pattern >= 2) value.binary_value[(pattern - 2) / 8] =
+        static_cast<std::uint8_t>(1u << ((pattern - 2) % 8));
+    dt::DatatypeOperationValue operand;
+    operand.type_id = dt::CanonicalTypeId::uuid;
+    operand.encoded_value.assign(value.binary_value.begin(), value.binary_value.end());
+    std::string detail;
+    Check(exec::BuildBoundExecutionTypeDescriptor(descriptor, operand.type_id,
+        &operand.descriptor, &detail), "ordering fixture requires actual supplied descriptor binding");
+    Check(dt::ResolveCanonicalUuidOrderingProfileV1(operand.descriptor, &profile),
+        "canonical base UUID descriptor resolves default ordering");
+    dt::DatatypeSortKeyRequest key_request{operand};
+    key_request.uuid_ordering = profile;
+    const auto key = dt::MakeDatatypeSortKey(key_request);
+    Check(key.ok() && key.sort_key.size() == 66 &&
+        key.sort_key.substr(50) == operand.encoded_value,
+        "bound UUID key retains all16 canonical bytes and full binary provenance");
+    Check(std::memcmp(key.sort_key.data(), profile.profile_uuid.bytes.data(), 16) == 0 &&
+        std::memcmp(key.sort_key.data() + 24, operand.descriptor.descriptor_uuid.bytes, 16) == 0 &&
+        key.sort_key[23] == 1 && key.sort_key[48] == 0 && key.sort_key[49] == 1,
+        "key prefix has exact binary profile, descriptor, generation and state framing");
+    values.push_back(value);
+    operands.push_back(operand);
+    keys.push_back(key.sort_key);
+  }
+  const auto sign = [](int x) { return x < 0 ? -1 : x > 0 ? 1 : 0; };
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    for (std::size_t j = 0; j < values.size(); ++j) {
+      const int expected = sign(std::memcmp(values[i].binary_value.data(),
+                                           values[j].binary_value.data(), 16));
+      dt::DatatypeComparisonRequest request{operands[i], operands[j]};
+      request.uuid_ordering = profile;
+      const auto compared = dt::CompareDatatypeValues(request);
+      Check(compared.ok() && compared.comparison == expected,
+          "Core comparison differs from unsigned canonical-byte oracle");
+      int comparison = 99;
+      std::string detail;
+      Check(api::QowCompareCanonicalNonCollatedScalarsV1(values[i], values[j],
+          &comparison, &detail) && comparison == expected && detail.empty(),
+          "bound QOW UUID comparison differs from Core/oracle");
+      Check(sign(keys[i].compare(keys[j])) == expected,
+          "UUID sort key disagrees with comparison");
+      request.right.descriptor.nullable_allowed = false;
+      const auto nonnull = dt::CompareDatatypeValues(request);
+      Check(nonnull.ok() && nonnull.comparison == expected,
+          "PRESENT nullability must not alter UUID order");
+    }
+  }
+  auto null = operands.front();
+  null.is_null = true;
+  null.encoded_value.clear();
+  for (auto ordering : {dt::DatatypeNullOrdering::nulls_first,
+                        dt::DatatypeNullOrdering::nulls_last}) {
+    dt::DatatypeSortKeyRequest null_key_request{null};
+    null_key_request.uuid_ordering = profile;
+    null_key_request.null_ordering = ordering;
+    const auto null_key = dt::MakeDatatypeSortKey(null_key_request);
+    Check(null_key.ok() && null_key.sort_key.size() == 50,
+        "typed NULL key is framed without a UUID payload");
+    for (const auto& operand : operands) {
+      dt::DatatypeComparisonRequest request{null, operand};
+      request.uuid_ordering = profile;
+      request.null_ordering = ordering;
+      const int expected = ordering == dt::DatatypeNullOrdering::nulls_first ? -1 : 1;
+      auto compared = dt::CompareDatatypeValues(request);
+      Check(compared.ok() && compared.comparison == expected, "NULL ordering is independent of UUID value order");
+      std::swap(request.left, request.right);
+      compared = dt::CompareDatatypeValues(request);
+      Check(compared.ok() && compared.comparison == -expected, "NULL order is antisymmetric");
+      dt::DatatypeSortKeyRequest present_key_request{operand};
+      present_key_request.uuid_ordering = profile;
+      present_key_request.null_ordering = ordering;
+      const auto present_key = dt::MakeDatatypeSortKey(present_key_request);
+      Check(present_key.ok() && sign(null_key.sort_key.compare(present_key.sort_key)) == expected,
+          "NULL key agrees with comparison for every bit pattern");
+    }
+    dt::DatatypeComparisonRequest both_null{null, null};
+    both_null.uuid_ordering = profile;
+    both_null.null_ordering = ordering;
+    const auto equal = dt::CompareDatatypeValues(both_null);
+    Check(equal.ok() && equal.comparison == 0, "two admitted NULLs sort equally");
+  }
+  const auto refuse_operand = [&](const dt::DatatypeOperationValue& invalid) {
+    for (bool swap : {false, true}) {
+      dt::DatatypeComparisonRequest request{invalid, operands.front()};
+      if (swap) std::swap(request.left, request.right);
+      request.uuid_ordering = profile;
+      const auto result = dt::CompareDatatypeValues(request);
+      Check(!result.ok() && result.comparison == 0 && !result.diagnostic.diagnostic_code.empty(),
+          "invalid UUID ordering operand must not publish comparison");
+    }
+    dt::DatatypeSortKeyRequest request{invalid};
+    request.uuid_ordering = profile;
+    const auto result = dt::MakeDatatypeSortKey(request);
+    Check(!result.ok() && result.sort_key.empty() && !result.diagnostic.diagnostic_code.empty(),
+        "invalid UUID ordering operand must not publish key prefix");
+  };
+  for (unsigned width : {0u, 15u, 17u, 36u}) {
+    auto invalid = operands.front(); invalid.encoded_value.assign(width, 'x');
+    refuse_operand(invalid);
+  }
+  auto invalid = null; invalid.encoded_value.assign(16, '\0'); refuse_operand(invalid);
+  invalid = null; invalid.descriptor.nullable_allowed = false; refuse_operand(invalid);
+  for (unsigned mutation = 0; mutation < 7; ++mutation) {
+    invalid = operands.front();
+    switch (mutation) {
+      case 0: invalid.descriptor = {}; break;
+      case 1: ++invalid.descriptor.descriptor_epoch; break;
+      case 2: {
+        const auto domain = scratchbird::tests::FixtureUuid(2086, 99);
+        std::copy(domain.bytes.begin(), domain.bytes.end(), invalid.descriptor.domain_uuid.bytes);
+        break;
+      }
+      case 3: invalid.descriptor.bit_width = 64; break;
+      case 4: invalid.descriptor.descriptor_authoritative = false; break;
+      case 5: invalid.descriptor.parser_independent = false; break;
+      case 6: invalid.descriptor.descriptor_uuid.bytes[15] ^= 1; break;
+    }
+    auto resolved = profile;
+    Check(!dt::ResolveCanonicalUuidOrderingProfileV1(invalid.descriptor, &resolved) &&
+        resolved.profile_uuid == dt::DatatypeUuidOrderingProfileV1{}.profile_uuid &&
+        resolved.generation == 0, "resolver clears stale output for invalid descriptor/domain");
+    refuse_operand(invalid);
+  }
+  for (unsigned mutation = 0; mutation < 6; ++mutation) {
+    for (const auto& operand : {operands.front(), null}) {
+      dt::DatatypeComparisonRequest request{operand, operand};
+      request.uuid_ordering = profile;
+      switch (mutation) {
+        case 0: request.uuid_ordering = {}; break;
+        case 1: ++request.uuid_ordering.generation; break;
+        case 2: request.uuid_ordering.generation = 0; break;
+        case 3: request.uuid_ordering.profile_uuid.bytes[15] ^= 1; break;
+        case 4: request.null_ordering = static_cast<dt::DatatypeNullOrdering>(99); break;
+        case 5: request.case_insensitive_character_compare = true; break;
+      }
+      const auto compared = dt::CompareDatatypeValues(request);
+      dt::DatatypeSortKeyRequest key_request{operand};
+      key_request.uuid_ordering = request.uuid_ordering;
+      key_request.null_ordering = request.null_ordering;
+      key_request.case_insensitive_character_compare = request.case_insensitive_character_compare;
+      const auto key = dt::MakeDatatypeSortKey(key_request);
+      Check(!compared.ok() && compared.comparison == 0 && !key.ok() && key.sort_key.empty(),
+          "unknown, absent or stale profile and invalid options fail even for two NULLs");
+    }
+  }
+  dt::DatatypeComparisonRequest mixed{operands.front(), operands.front()};
+  mixed.uuid_ordering = profile;
+  mixed.right.type_id = dt::CanonicalTypeId::uint128;
+  Check(!dt::CompareDatatypeValues(mixed).ok(), "UUID bytes cannot infer numeric operand conversion");
+  for (unsigned mutation = 0; mutation < 12; ++mutation) {
+    auto bad = values.front();
+    switch (mutation) {
+      case 0: bad.descriptor.datatype_descriptor_uuid = {}; break;
+      case 1: ++bad.descriptor.datatype_descriptor_generation; break;
+      case 2: bad.encoded_value = "text"; break;
+      case 3: bad.binary_value.resize(15); break;
+      case 4: bad.state = api::EngineValueState::missing; break;
+      case 5: bad.is_null = true; break;
+      case 6: bad.descriptor.encoded_descriptor += ";ordering=guid"; break;
+      case 7: bad.descriptor.encoded_descriptor += ";ordering=timeuuid"; break;
+      case 8: bad.descriptor.encoded_descriptor += ";width=64"; break;
+      case 9: bad.descriptor.encoded_descriptor += ";precision=0"; break;
+      case 10: bad.descriptor.encoded_descriptor += ";scale=0"; break;
+      case 11: bad.descriptor.encoded_descriptor += ";timezone_profile_id=1"; break;
+    }
+    for (bool swap : {false, true}) {
+      int comparison = 99; std::string detail;
+      Check(!api::QowCompareCanonicalNonCollatedScalarsV1(
+          swap ? values.front() : bad, swap ? bad : values.front(), &comparison, &detail) &&
+          comparison == 0 && !detail.empty(), "QOW preserves binding/carrier/state rejection");
+    }
+  }
+  for (unsigned mutation = 0; mutation < 4; ++mutation) {
+    api::CatalogColumnMetadata fields;
+    fields.text["nullability"] = "nullable";
+    if (mutation == 1) fields.text["ordering"] = "guid";
+    if (mutation == 2) fields.identities["ordering_profile_uuid"] =
+        scratchbird::tests::FixtureUuid(2086, 100);
+    if (mutation == 3) fields.text["width"] = "128";
+    auto framed = values.front();
+    Check(api::EncodeCatalogColumnMetadata(fields, &framed.descriptor.encoded_descriptor),
+        "framed UUID metadata fixture must encode");
+    for (bool swap : {false, true}) {
+      int comparison = 99; std::string detail;
+      const bool accepted = api::QowCompareCanonicalNonCollatedScalarsV1(
+          swap ? values.front() : framed, swap ? framed : values.front(), &comparison, &detail);
+      Check(accepted == (mutation == 0) && comparison == 0 &&
+          detail.empty() == accepted, "framed UUID metadata preserves exact admission and rejects ignored fields");
+    }
+  }
+  for (const auto& operand : {operands.front(), null}) {
+    dt::DatatypeSortKeyRequest request{operand};
+    request.uuid_ordering = profile;
+    uuid_key_allocation_count = fail_uuid_key_allocation = 0;
+    track_uuid_key_allocations = true;
+    const auto warmed = dt::MakeDatatypeSortKey(request);
+    track_uuid_key_allocations = false;
+    const auto allocation_count = uuid_key_allocation_count;
+    Check(warmed.ok() && allocation_count > 0, "key allocation fault must target a warmed allocating operation");
+    fail_uuid_key_allocation = allocation_count;
+    uuid_key_allocation_count = 0;
+    track_uuid_key_allocations = true;
+    const auto failed = dt::MakeDatatypeSortKey(request);
+    const bool injected = fail_uuid_key_allocation == 0;
+    track_uuid_key_allocations = false;
+    fail_uuid_key_allocation = 0;
+    Check(injected && !failed.ok() && failed.sort_key.empty() &&
+        failed.status.code == scratchbird::core::platform::StatusCode::memory_allocation_failed,
+        "UUID key allocation fault returns resource failure without prefix");
+    Check(dt::MakeDatatypeSortKey(request).ok(), "UUID key operation recovers after allocation failure");
   }
 }
 }
@@ -264,7 +517,8 @@ int main() try {
   null.binary_value.push_back(0);
   Reject(null, binary);
   LiteralBindings();
-  std::cout << "native_uuid_cast_binding checks=" << checks << " patterns=130 failures=0\n";
+  CanonicalOrdering();
+  std::cout << "native_uuid_cast_binding checks=" << checks << " patterns=130 uuid_pairs=16900 failures=0\n";
   return EXIT_SUCCESS;
 } catch (const std::exception& error) {
   std::cerr << "FAIL check=" << checks << ' ' << error.what() << '\n';

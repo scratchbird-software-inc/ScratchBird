@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <initializer_list>
 #include <iostream>
 #include <limits>
@@ -1411,14 +1412,14 @@ void TestBinaryUuidOperations() {
   const auto hashed = dt::HashDatatypeValue({value});
   Require(!sorted.ok() && sorted.sort_key.empty() &&
               DiagnosticDetail(sorted.diagnostic) ==
-                  "uuid_sort_key_policy_unresolved" &&
+                  "uuid_ordering_profile_invalid" &&
               !compared.ok() &&
               DiagnosticDetail(compared.diagnostic) ==
-                  "uuid_comparison_policy_unresolved" &&
+                  "uuid_ordering_profile_invalid" &&
               !hashed.ok() && hashed.stable_hash_hex.empty() &&
               DiagnosticDetail(hashed.diagnostic) ==
                   "uuid_hash_policy_unresolved",
-          "UUID order/comparison/hash did not fail at unresolved policy");
+          "UUID order/comparison/hash bypassed missing profile or unresolved hash policy");
   for (auto invalid : {UuidValue(bytes.substr(1)),
                        UuidValue("01020304-0506-7000-8000-090a3b7c00ff")}) {
     const auto invalid_serialized = dt::SerializeDatatypeValue({invalid});
@@ -1458,14 +1459,15 @@ void TestBinaryUuidOperations() {
   cast.target_type_id = dt::CanonicalTypeId::uuid;
   cast.target_descriptor = Descriptor(dt::CanonicalTypeId::uuid);
   const auto uuid_identity = dt::CastDatatypeValue(cast);
-  Require(!uuid_identity.ok() &&
-              uuid_identity.diagnostic.diagnostic_code ==
-                  "DATATYPE.CAST_FORBIDDEN" &&
-              DiagnosticDetail(uuid_identity.diagnostic) ==
-                  "uuid_present_cast_policy_unresolved" &&
-              uuid_identity.value.type_id == dt::CanonicalTypeId::unknown &&
-              uuid_identity.value.encoded_value.empty(),
-          "UUID identity did not retain its unresolved owner policy");
+  Require(uuid_identity.ok() &&
+              uuid_identity.category == dt::DatatypeCastCategory::identity &&
+              uuid_identity.value.type_id == dt::CanonicalTypeId::uuid &&
+              !uuid_identity.value.is_null &&
+              std::memcmp(uuid_identity.value.descriptor.descriptor_uuid.bytes,
+                          cast.target_descriptor.descriptor_uuid.bytes, 16) == 0 &&
+              uuid_identity.value.descriptor.descriptor_epoch == cast.target_descriptor.descriptor_epoch &&
+              uuid_identity.value.encoded_value == bytes,
+          "bound UUID identity cast did not preserve its raw16 value and binding");
 
   cast.target_type_id = dt::CanonicalTypeId::binary;
   cast.target_descriptor = Descriptor(dt::CanonicalTypeId::binary);

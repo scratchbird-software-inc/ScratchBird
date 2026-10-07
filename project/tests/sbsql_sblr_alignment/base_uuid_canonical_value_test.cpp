@@ -660,13 +660,13 @@ void PresentCastsAndProtectedOperations() {
   extract.result_descriptor = DescriptorFor(dt::CanonicalTypeId::uint8);
   const auto extracted = dt::ExtractDatatypeField(extract);
   Check(RejectedAs(compared, "SB_DATATYPE_COMPARISON_REJECTED",
-                   "uuid_comparison_policy_unresolved") &&
+                   "uuid_ordering_profile_invalid") &&
             RejectedAs(null_compared, "SB_DATATYPE_COMPARISON_REJECTED",
-                       "uuid_comparison_policy_unresolved") &&
+                       "uuid_ordering_profile_invalid") &&
             RejectedAs(key, "SB_DATATYPE_SORT_KEY_REJECTED",
-                       "uuid_sort_key_policy_unresolved") &&
+                       "uuid_ordering_profile_invalid") &&
             RejectedAs(null_key, "SB_DATATYPE_SORT_KEY_REJECTED",
-                       "uuid_sort_key_policy_unresolved") &&
+                       "uuid_ordering_profile_invalid") &&
             RejectedAs(hash, "SB_DATATYPE_HASH_REJECTED",
                        "uuid_hash_policy_unresolved") &&
             RejectedAs(null_hash, "SB_DATATYPE_HASH_REJECTED",

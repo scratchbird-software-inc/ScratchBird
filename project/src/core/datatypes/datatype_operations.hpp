@@ -203,6 +203,25 @@ struct DatatypeNumericOperationResult {
   }
 };
 
+// Ordering semantics, not statement, catalog, index or security authority.
+// Absence is deliberately unbound; consumers must not infer a profile from
+// payload width, UUID version bits, display spelling or host GUID layout.
+struct DatatypeUuidOrderingProfileV1 {
+  platform::Uuid profile_uuid{};
+  platform::u64 generation = 0;
+};
+
+inline constexpr DatatypeUuidOrderingProfileV1 kCanonicalUuidOrderingProfileV1{
+    platform::Uuid{{0x01, 0xa1, 0x16, 0xe6, 0xa8, 0xfe, 0x7e, 0x77,
+                    0x9e, 0x95, 0xd2, 0xd0, 0x8b, 0x4a, 0x43, 0x71}}, 1};
+
+// Resolve only the exact current base.uuid descriptor (nullable occurrences
+// included). Domains and donor/time ordering require separate explicit profiles.
+// Clears output on refusal. Does not acquire or authenticate owning admission.
+bool ResolveCanonicalUuidOrderingProfileV1(
+    const scratchbird::engine::ExecutionTypeDescriptor& descriptor,
+    DatatypeUuidOrderingProfileV1* profile);
+
 struct DatatypeComparisonRequest {
   DatatypeOperationValue left;
   DatatypeOperationValue right;
@@ -211,6 +230,7 @@ struct DatatypeComparisonRequest {
   DatatypeTextSeedAuthority text_seed;
   // Execution mechanism only: the caller retains descriptor/context authority.
   DatatypeNumericContext numeric_context;
+  DatatypeUuidOrderingProfileV1 uuid_ordering;
 };
 
 struct DatatypeComparisonResult {
@@ -229,6 +249,7 @@ struct DatatypeSortKeyRequest {
   DatatypeNullOrdering null_ordering = DatatypeNullOrdering::nulls_first;
   bool case_insensitive_character_compare = false;
   DatatypeTextSeedAuthority text_seed;
+  DatatypeUuidOrderingProfileV1 uuid_ordering;
 };
 
 struct DatatypeSortKeyResult {

@@ -5585,6 +5585,17 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
   return result;
 }
 
+bool ResolveCanonicalUuidOrderingProfileV1(
+    const scratchbird::engine::ExecutionTypeDescriptor& descriptor,
+    DatatypeUuidOrderingProfileV1* profile) {
+  if (profile == nullptr) return false;
+  *profile = {};
+  if (!ExecutionDescriptorExactlyMatchesCurrentBuiltinIgnoringNullability(
+          descriptor, CanonicalTypeId::uuid)) return false;
+  *profile = kCanonicalUuidOrderingProfileV1;
+  return true;
+}
+
 DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& request) {
   DatatypeComparisonResult result;
   result.status = OkStatus();
@@ -5750,15 +5761,22 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
   const bool uuid_incident = IsUuid(request.left.type_id) ||
       IsUuid(request.right.type_id);
   if (uuid_incident) {
+    if (!IsUuid(request.left.type_id) || !IsUuid(request.right.type_id)) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, "SB_DATATYPE_COMPARISON_REJECTED",
+          "datatype.comparison.rejected", "uuid_operand_type_mismatch");
+      return result;
+    }
     const auto uuid_descriptor_invalid = [](const DatatypeOperationValue& value) {
       return IsUuid(value.type_id) &&
-          !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+          !ExecutionDescriptorExactlyMatchesCurrentBuiltinIgnoringNullability(
               value.descriptor, CanonicalTypeId::uuid);
     };
     if (uuid_descriptor_invalid(request.left) ||
         uuid_descriptor_invalid(request.right) ||
         (IsUuid(request.left.type_id) && IsUuid(request.right.type_id) &&
-         !ExecutionDescriptorEquals(request.left.descriptor,
+         !ExecutionDescriptorEqualsIgnoringNullability(request.left.descriptor,
                                     request.right.descriptor))) {
       result.status = ErrorStatus();
       result.diagnostic = MakeDatatypeOperationDiagnostic(
@@ -5783,10 +5801,39 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
           "datatype.comparison.rejected", "uuid_comparison_value_invalid");
       return result;
     }
-    result.status = ErrorStatus();
-    result.diagnostic = MakeDatatypeOperationDiagnostic(
-        result.status, "SB_DATATYPE_COMPARISON_REJECTED",
-        "datatype.comparison.rejected", "uuid_comparison_policy_unresolved");
+    if (request.uuid_ordering.profile_uuid !=
+            kCanonicalUuidOrderingProfileV1.profile_uuid ||
+        request.uuid_ordering.generation !=
+            kCanonicalUuidOrderingProfileV1.generation ||
+        request.case_insensitive_character_compare) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, "SB_DATATYPE_COMPARISON_REJECTED",
+          "datatype.comparison.rejected", "uuid_ordering_profile_invalid");
+      return result;
+    }
+    if (request.null_ordering != DatatypeNullOrdering::nulls_first &&
+        request.null_ordering != DatatypeNullOrdering::nulls_last) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, "SB_DATATYPE_COMPARISON_REJECTED",
+          "datatype.comparison.rejected", "invalid_null_ordering");
+      return result;
+    }
+    if (request.left.is_null || request.right.is_null) {
+      if (request.left.is_null && request.right.is_null) return result;
+      const int null_compare =
+          request.null_ordering == DatatypeNullOrdering::nulls_first ? -1 : 1;
+      result.comparison = request.left.is_null ? null_compare : -null_compare;
+      return result;
+    }
+    for (std::size_t index = 0; index < 16; ++index) {
+      const auto left = static_cast<unsigned char>(request.left.encoded_value[index]);
+      const auto right = static_cast<unsigned char>(request.right.encoded_value[index]);
+      if (left == right) continue;
+      result.comparison = left < right ? -1 : 1;
+      break;
+    }
     return result;
   }
   const bool ip_address_incident = IsIpAddress(request.left.type_id) ||
@@ -6846,7 +6893,7 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
     }
   }
   if (IsUuid(request.value.type_id) &&
-      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltinIgnoringNullability(
           request.value.descriptor, request.value.type_id)) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(
@@ -6955,10 +7002,51 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
     return result;
   }
   if (IsUuid(request.value.type_id)) {
-    result.status = ErrorStatus();
-    result.diagnostic = MakeDatatypeOperationDiagnostic(
-        result.status, "SB_DATATYPE_SORT_KEY_REJECTED",
-        "datatype.sort_key.rejected", "uuid_sort_key_policy_unresolved");
+    if (request.uuid_ordering.profile_uuid !=
+            kCanonicalUuidOrderingProfileV1.profile_uuid ||
+        request.uuid_ordering.generation !=
+            kCanonicalUuidOrderingProfileV1.generation ||
+        request.case_insensitive_character_compare) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, "SB_DATATYPE_SORT_KEY_REJECTED",
+          "datatype.sort_key.rejected", "uuid_ordering_profile_invalid");
+      return result;
+    }
+    if (request.null_ordering != DatatypeNullOrdering::nulls_first &&
+        request.null_ordering != DatatypeNullOrdering::nulls_last) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, "SB_DATATYPE_SORT_KEY_REJECTED",
+          "datatype.sort_key.rejected", "invalid_null_ordering");
+      return result;
+    }
+    try {
+      // Keys are comparable only within this exact semantic space. Binary
+      // identities/generations prevent reuse across descriptor/profile changes.
+      auto& key = result.sort_key;
+      key.reserve(66);
+      const auto append_generation = [&](platform::u64 generation) {
+        for (int shift = 56; shift >= 0; shift -= 8)
+          key.push_back(static_cast<char>((generation >> shift) & 0xffu));
+      };
+      for (auto byte : request.uuid_ordering.profile_uuid.bytes)
+        key.push_back(static_cast<char>(byte));
+      append_generation(request.uuid_ordering.generation);
+      for (auto byte : request.value.descriptor.descriptor_uuid.bytes)
+        key.push_back(static_cast<char>(byte));
+      append_generation(request.value.descriptor.descriptor_epoch);
+      key.push_back(request.null_ordering == DatatypeNullOrdering::nulls_first ? '\0' : '\1');
+      key.push_back(request.value.is_null
+          ? (request.null_ordering == DatatypeNullOrdering::nulls_first ? '\0' : '\2') : '\1');
+      if (!request.value.is_null) key.append(request.value.encoded_value);
+    } catch (const std::bad_alloc&) {
+      result.sort_key.clear();
+      result.status = ResourceErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, "SB_DATATYPE_SORT_KEY_REJECTED",
+          "datatype.sort_key.rejected", "uuid_sort_key_allocation_failed");
+    }
     return result;
   }
   if (IsIpAddress(request.value.type_id)) {
