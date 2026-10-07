@@ -528,6 +528,25 @@ bool CharacterDescriptor(const scratchbird::engine::ExecutionTypeDescriptor* des
       descriptor->parser_independent;
 }
 
+bool EmptyContextualDescriptor(
+    const scratchbird::engine::ExecutionTypeDescriptor& d) noexcept {
+  const auto nil = [](const scratchbird::engine::Uuid& uuid) {
+    return std::all_of(std::begin(uuid.bytes), std::end(uuid.bytes),
+                       [](byte value) { return value == 0; });
+  };
+  return nil(d.descriptor_uuid) && d.descriptor_epoch == 0 &&
+      d.canonical_type_id == 0 &&
+      d.family == scratchbird::engine::ExecutionTypeFamily::unknown &&
+      d.width_class == scratchbird::engine::ExecutionTypeWidthClass::unknown &&
+      d.stable_name.empty() && d.bit_width == 0 && d.precision == 0 &&
+      d.scale == 0 && d.length == 0 && d.vector_dimensions == 0 &&
+      d.container_rank == 0 && d.modifier_flags == 0 &&
+      nil(d.domain_uuid) && d.domain_stack.empty() && nil(d.charset_uuid) &&
+      nil(d.collation_uuid) && nil(d.timezone_uuid) &&
+      nil(d.element_descriptor_uuid) && nil(d.security_policy_uuid) &&
+      d.nullable_allowed && d.descriptor_authoritative && d.parser_independent;
+}
+
 bool TimeDescriptor(const scratchbird::engine::ExecutionTypeDescriptor* descriptor,
                     const DatatypeTypeCodecIdentityRowV3& identity,
                     bool expected_nullable) noexcept {
@@ -1145,6 +1164,13 @@ TimeCastResultV3 CastTimeValueV3(const TimeCastRequestV3& request) noexcept {
        !ProfileValidNoAlloc(**request.time_target)||
        !TimeDescriptor(request.time_target_descriptor,(*request.time_target)->identity,request.target_null_allowed))
       return Failure<TimeCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID","target_profile");
+    // TIME-CAST-001 has no source descriptor/type/codec authority. Preserve
+    // supplied-authority validation before the contextual NULL state gate.
+    if(request.scalar_source_identity!=nullptr||
+       (request.scalar_source!=nullptr&&
+        !EmptyContextualDescriptor(request.scalar_source->descriptor)))
+      return Failure<TimeCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+                                       "contextual_null_authority_invalid");
     if(request.scalar_source==nullptr||request.scalar_source->type_id!=CanonicalTypeId::null_type||!request.scalar_source->is_null||!request.scalar_source->encoded_value.empty())return Failure<TimeCastResultV3>("DATATYPE.NULL_STATE.INVALID","contextual_null");
     if(!request.target_null_allowed)
       return Failure<TimeCastResultV3>("DATATYPE.NULL_NOT_ADMITTED","target_null");

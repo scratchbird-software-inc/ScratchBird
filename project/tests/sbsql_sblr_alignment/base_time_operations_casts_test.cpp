@@ -375,6 +375,63 @@ n.target_null_allowed=false;auto contextual_not_admitted=dt::CastTimeValueV3(n);
 auto nonnullable_null_target=td;nonnullable_null_target.nullable_allowed=false;n.time_target_descriptor=&nonnullable_null_target;n.target_null_allowed=false;auto contextual_null_refused=dt::CastTimeValueV3(n);Check(!contextual_null_refused.ok()&&contextual_null_refused.diagnostic.diagnostic_code=="DATATYPE.NULL_NOT_ADMITTED"&&!contextual_null_refused.produced_time,"contextual NULL refused by nonnullable target");n.time_target_descriptor=&td;n.target_null_allowed=true;
 nullv.encoded_value="dirty";
 Check(dt::CastTimeValueV3(n).diagnostic.diagnostic_code=="DATATYPE.NULL_STATE.INVALID","dirty contextual NULL");
+for(auto context:{dt::DatatypeCastContext::implicit,dt::DatatypeCastContext::assignment,dt::DatatypeCastContext::explicit_cast}) {
+ n.context=context;
+ nullv.descriptor={};nullv.encoded_value.clear();n.scalar_source_identity=nullptr;
+ const auto clean=dt::CastTimeValueV3(n);
+ Check(clean.ok()&&clean.produced_time&&clean.time_value.profile==p0&&
+     clean.time_value.state==dt::TimeValueStateV3::sql_null&&
+     clean.time_value.nanoseconds_since_midnight==0,
+     "bare contextual TIME NULL binds exact target in every context");
+ for(unsigned mutation=0;mutation<29;++mutation) {
+  nullv.descriptor={};n.scalar_source_identity=nullptr;
+  auto& d=nullv.descriptor;
+  switch(mutation) {
+   case 0:d=td;break;
+   case 1:d.descriptor_uuid.bytes[0]=1;break;
+   case 2:d.descriptor_epoch=1;break;
+   case 3:d.canonical_type_id=401;break;
+   case 4:d.family=td.family;break;
+   case 5:d.width_class=td.width_class;break;
+   case 6:d.stable_name="null";break;
+   case 7:d.bit_width=1;break;
+   case 8:d.precision=1;break;
+   case 9:d.scale=1;break;
+   case 10:d.length=1;break;
+   case 11:d.vector_dimensions=1;break;
+   case 12:d.container_rank=1;break;
+   case 13:d.modifier_flags=1;break;
+   case 14:d.domain_uuid.bytes[0]=1;break;
+   case 15:d.domain_stack.push_back(td.descriptor_uuid);break;
+   case 16:d.charset_uuid.bytes[0]=1;break;
+   case 17:d.collation_uuid.bytes[0]=1;break;
+   case 18:d.timezone_uuid.bytes[0]=1;break;
+   case 19:d.element_descriptor_uuid.bytes[0]=1;break;
+   case 20:d.security_policy_uuid.bytes[0]=1;break;
+   case 21:d.nullable_allowed=false;break;
+   case 22:d.descriptor_authoritative=false;break;
+   case 23:d.parser_independent=false;break;
+   case 24:d=cd;break;
+   case 25:d.domain_stack.push_back({});break;
+   case 26:n.scalar_source_identity=ci;break;
+   case 27:n.scalar_source_identity=Identity(dt::CanonicalTypeId::time);break;
+   case 28:d=td;n.scalar_source_identity=ci;break;
+  }
+  for(bool dirty:{false,true}) {
+   nullv.encoded_value=dirty?"dirty":"";
+   const auto refused=dt::CastTimeValueV3(n);
+   Check(!refused.ok()&&refused.diagnostic.diagnostic_code=="CTI.TEMPORAL.DESCRIPTOR_INVALID"&&
+       !refused.produced_time&&!refused.time_value.profile&&
+       refused.category==dt::DatatypeCastCategory::forbidden&&
+       refused.time_value.nanoseconds_since_midnight==0&&
+       refused.scalar_value.type_id==dt::CanonicalTypeId::unknown&&
+       refused.scalar_value.encoded_value.empty()&&!refused.used_character_output_buffer&&
+       refused.bytes_required==0&&refused.bytes_written==0,
+       "contextual TIME NULL source authority refuses before state without output");
+  }
+ }
+}
+nullv.descriptor={};n.scalar_source_identity=nullptr;nullv.encoded_value="dirty";
 n.time_target=&invalid_target;Check(dt::CastTimeValueV3(n).diagnostic.diagnostic_code=="CTI.TEMPORAL.DESCRIPTOR_INVALID","contextual target authority precedes dirty NULL");
 }
 }
