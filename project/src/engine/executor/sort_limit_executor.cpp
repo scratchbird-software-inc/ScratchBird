@@ -511,7 +511,9 @@ bool CompareOrderValues(
   engine::ExecutionTypeDescriptor left_bound_descriptor;
   engine::ExecutionTypeDescriptor right_bound_descriptor;
   const bool has_null = left.isSqlNull() || right.isSqlNull();
-  if (has_null || type_id == dt::CanonicalTypeId::uuid) {
+  const bool canonical_binary_order = type_id == dt::CanonicalTypeId::uuid ||
+                                      type_id == dt::CanonicalTypeId::int64;
+  if (has_null || canonical_binary_order) {
     std::string descriptor_detail;
     if (!BuildBoundExecutionTypeDescriptor(
             left.descriptor, type_id, &left_bound_descriptor,
@@ -527,7 +529,7 @@ bool CompareOrderValues(
     }
   }
   dt::DatatypeUuidOrderingProfileV1 uuid_ordering;
-  if (type_id == dt::CanonicalTypeId::uuid) {
+  if (canonical_binary_order) {
     // This physical seam selects the canonical base profile only. Never
     // silently erase a donor profile, domain, or unprojected modifier.
     const auto canonical_metadata = [](const auto& descriptor) {
@@ -550,9 +552,10 @@ bool CompareOrderValues(
          term.direction != CanonicalDescriptorOrderDirection::descending) ||
         (term.null_placement != CanonicalDescriptorNullPlacement::first &&
          term.null_placement != CanonicalDescriptorNullPlacement::last) ||
-        !dt::ResolveCanonicalUuidOrderingProfileV1(
-            left_bound_descriptor, &uuid_ordering)) {
-      *refusal_detail = "DATATYPE.DESCRIPTOR.INVALID:UUID order profile or modifiers are unsupported";
+        (type_id == dt::CanonicalTypeId::uuid &&
+         !dt::ResolveCanonicalUuidOrderingProfileV1(
+             left_bound_descriptor, &uuid_ordering))) {
+      *refusal_detail = "DATATYPE.DESCRIPTOR.INVALID:binary scalar order profile or modifiers are unsupported";
       return false;
     }
   }
@@ -585,21 +588,25 @@ bool CompareOrderValues(
       !left.binary_value.empty() || !right.binary_value.empty();
   if (carries_binary_payload && type_id != dt::CanonicalTypeId::binary &&
       type_id != dt::CanonicalTypeId::uuid &&
+      type_id != dt::CanonicalTypeId::int64 &&
       type_id != dt::CanonicalTypeId::int128) {
     *refusal_detail =
         "order operand carries binary payload for a non-binary type";
     return false;
   }
   if (type_id == dt::CanonicalTypeId::uuid ||
-      type_id == dt::CanonicalTypeId::binary) {
+      type_id == dt::CanonicalTypeId::binary ||
+      type_id == dt::CanonicalTypeId::int64) {
     const auto canonical_binary = [type_id](const auto& value) {
       return value.is_null ||
              (value.encoded_value.empty() &&
               (type_id != dt::CanonicalTypeId::uuid ||
-               value.binary_value.size() == 16));
+               value.binary_value.size() == 16) &&
+              (type_id != dt::CanonicalTypeId::int64 ||
+               value.binary_value.size() == 8));
     };
     if (!canonical_binary(left) || !canonical_binary(right)) {
-      *refusal_detail = "UUID/binary order operand has noncanonical payload";
+      *refusal_detail = "binary scalar order operand has noncanonical payload";
       return false;
     }
   }
@@ -621,7 +628,7 @@ bool CompareOrderValues(
   std::string left_encoded = left.encoded_value;
   std::string right_encoded = right.encoded_value;
   if (type_id == dt::CanonicalTypeId::binary ||
-      type_id == dt::CanonicalTypeId::uuid) {
+      canonical_binary_order) {
     if (!left.binary_value.empty()) {
       left_encoded.assign(
           reinterpret_cast<const char*>(left.binary_value.data()),
@@ -672,7 +679,25 @@ bool CompareOrderValues(
     }
     timezone_normalized = true;
   }
-  if (has_null || type_id == dt::CanonicalTypeId::uuid) {
+  if (type_id == dt::CanonicalTypeId::int64) {
+    // The physical order term owns NULL placement. Use the admitted INT64
+    // canonical key operation, not a generic SQL comparison or text cast.
+    dt::DatatypeSortKeyRequest left_key_request, right_key_request;
+    left_key_request.value = {type_id, std::move(left_encoded), left.isSqlNull(),
+                              left_bound_descriptor};
+    right_key_request.value = {type_id, std::move(right_encoded), right.isSqlNull(),
+                               right_bound_descriptor};
+    left_key_request.null_ordering = right_key_request.null_ordering = null_ordering;
+    const auto left_key = dt::MakeDatatypeSortKey(left_key_request);
+    const auto right_key = dt::MakeDatatypeSortKey(right_key_request);
+    if (!left_key.ok() || !right_key.ok()) {
+      *refusal_detail = !left_key.ok() ? left_key.diagnostic.diagnostic_code
+                                      : right_key.diagnostic.diagnostic_code;
+      return false;
+    }
+    *comparison = left_key.sort_key < right_key.sort_key ? -1 :
+                  (left_key.sort_key > right_key.sort_key ? 1 : 0);
+  } else if (has_null || type_id == dt::CanonicalTypeId::uuid) {
     dt::DatatypeComparisonRequest request;
     request.left.type_id = type_id;
     request.left.encoded_value = std::move(left_encoded);
@@ -1213,6 +1238,7 @@ CanonicalDescriptorEqualityKeyPlan PlanCanonicalDescriptorEqualityKey(
   const std::size_t payload_bytes =
       (type_id == dt::CanonicalTypeId::binary ||
        type_id == dt::CanonicalTypeId::uuid ||
+       type_id == dt::CanonicalTypeId::int64 ||
        type_id == dt::CanonicalTypeId::int128) && !value.binary_value.empty()
           ? value.binary_value.size()
           : value.encoded_value.size();
@@ -1230,6 +1256,8 @@ CanonicalDescriptorEqualityKeyPlan PlanCanonicalDescriptorEqualityKey(
     // Generation1 Core key: binary profile and descriptor UUIDs/generations,
     // NULL placement/state tags (50 bytes), then the 16 canonical data bytes.
     sort_key_bound = 66;
+  } else if (type_id == dt::CanonicalTypeId::int64) {
+    sort_key_bound = 9;  // containing state tag plus sign-transformed BE8
   } else if (type_id == dt::CanonicalTypeId::character &&
       term.text_seed.comparison_profile == scratchbird::core::resources::CollationProfile::utf8_binary) {
     // TextComparisonCohort carries three binary UUIDs and three u64 epochs/
@@ -1485,7 +1513,8 @@ CanonicalDescriptorEqualityKeyResult MakeCanonicalDescriptorEqualityKey(
 
   std::string encoded_value = value.encoded_value;
   if ((type_id == dt::CanonicalTypeId::binary ||
-       type_id == dt::CanonicalTypeId::uuid) &&
+       type_id == dt::CanonicalTypeId::uuid ||
+       type_id == dt::CanonicalTypeId::int64) &&
       !value.binary_value.empty()) {
     encoded_value.assign(
         reinterpret_cast<const char*>(value.binary_value.data()),
@@ -1497,7 +1526,7 @@ CanonicalDescriptorEqualityKeyResult MakeCanonicalDescriptorEqualityKey(
   cast_request.value.is_null = false;
   cast_request.target_type_id = type_id;
   cast_request.explicit_cast = true;
-  if (type_id == dt::CanonicalTypeId::uuid) {
+  if (type_id == dt::CanonicalTypeId::uuid || type_id == dt::CanonicalTypeId::int64) {
     std::string detail;
     if (!BuildBoundExecutionTypeDescriptor(value.descriptor, type_id,
                                            &cast_request.value.descriptor, &detail)) {
@@ -1506,8 +1535,8 @@ CanonicalDescriptorEqualityKeyResult MakeCanonicalDescriptorEqualityKey(
     }
   }
   dt::DatatypeSortKeyRequest sort_request;
-  if (type_id == dt::CanonicalTypeId::uuid) {
-    // UUID has a canonical fixed-width binary carrier already checked by the
+  if (type_id == dt::CanonicalTypeId::uuid || type_id == dt::CanonicalTypeId::int64) {
+    // These canonical fixed-width binary carriers were already checked by the
     // self comparison. The key operation revalidates the exact binding,
     // profile and payload; an extra identity cast adds copies, not authority.
     sort_request.value = std::move(cast_request.value);

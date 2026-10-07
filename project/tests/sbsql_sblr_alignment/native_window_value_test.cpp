@@ -5,14 +5,94 @@
 #include "executor_foundation.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include <array>
+#include <limits>
 #include <stdexcept>
 using Bytes = std::vector<std::uint8_t>;
 using Cell = std::optional<Bytes>;
+unsigned checks = 0;
 void Check(bool ok, const char* message) {
+  ++checks;
   if (!ok) throw std::runtime_error(message);
+}
+api::EngineTypedValue NativeInteger(const api::EngineDescriptor& descriptor,
+                                   std::int64_t number) {
+  auto value = WindowValue(descriptor, {});
+  const auto bits = static_cast<std::uint64_t>(number);
+  for (unsigned byte = 0; byte < 8; ++byte)
+    value.binary_value.push_back(static_cast<std::uint8_t>(bits >> (byte * 8)));
+  return value;
+}
+void NativeIntegerOrdering() {
+  const auto descriptor = WindowDescriptor(5000, "int64",
+      exec::MakeExecutorDescriptor("int64").type_uuid, "nullability=nullable");
+  const std::array<std::int64_t, 9> numbers = {
+      std::numeric_limits<std::int64_t>::min(), -65536, -256, -1, 0, 1, 255, 256,
+      std::numeric_limits<std::int64_t>::max()};
+  exec::CanonicalDescriptorOrderTerm term;
+  term.expression_descriptor_id = 5000;
+  for (auto placement : {exec::CanonicalDescriptorNullPlacement::first,
+                         exec::CanonicalDescriptorNullPlacement::last}) {
+    term.null_placement = placement;
+    for (bool descending : {false, true}) {
+      term.direction = descending ? exec::CanonicalDescriptorOrderDirection::descending
+                                  : exec::CanonicalDescriptorOrderDirection::ascending;
+      for (const auto a : numbers) for (const auto b : numbers) {
+        const auto left = NativeInteger(descriptor, a), right = NativeInteger(descriptor, b);
+        const auto result = exec::CompareCanonicalDescriptorOrderValues(left, right, term);
+        const int expected = a < b ? -1 : (a > b ? 1 : 0);
+        Check(result.diagnostic.ok && result.comparison == (descending ? -expected : expected),
+              "binary INT64 physical ordering differs from signed integer oracle");
+        const auto left_key = exec::MakeCanonicalDescriptorEqualityKey(left, term);
+        const auto right_key = exec::MakeCanonicalDescriptorEqualityKey(right, term);
+        const auto plan = exec::PlanCanonicalDescriptorEqualityKey(left, term);
+        Check(left_key.diagnostic.ok && right_key.diagnostic.ok && plan.diagnostic.ok &&
+              (left_key.equality_key == right_key.equality_key) == (a == b) &&
+              left_key.equality_key.capacity() <= plan.retained_key_bytes,
+              "binary INT64 equality or memory plan differs from independent oracle");
+      }
+      const auto empty = WindowNull(descriptor), zero = NativeInteger(descriptor, 0);
+      const int expected = placement == exec::CanonicalDescriptorNullPlacement::first ? -1 : 1;
+      const auto left = exec::CompareCanonicalDescriptorOrderValues(empty, zero, term);
+      const auto right = exec::CompareCanonicalDescriptorOrderValues(zero, empty, term);
+      const auto null_key = exec::MakeCanonicalDescriptorEqualityKey(empty, term);
+      const auto zero_key = exec::MakeCanonicalDescriptorEqualityKey(zero, term);
+      Check(left.diagnostic.ok && left.comparison == expected &&
+            right.diagnostic.ok && right.comparison == -expected &&
+            null_key.diagnostic.ok && zero_key.diagnostic.ok &&
+            null_key.equality_key != zero_key.equality_key,
+            "INT64 containing NULL placement changed with sort direction or aliases zero");
+    }
+  }
+  for (unsigned mutation = 0; mutation < 10; ++mutation) {
+    auto bad = NativeInteger(descriptor, 1);
+    switch (mutation) {
+      case 0: bad.descriptor.datatype_descriptor_uuid = {}; break;
+      case 1: ++bad.descriptor.datatype_descriptor_generation; break;
+      case 2: bad.descriptor.type_uuid = {}; break;
+      case 3: bad.binary_value.pop_back(); break;
+      case 4: bad.binary_value.push_back(0); break;
+      case 5: bad.encoded_value = "1"; break;
+      case 6: bad.binary_value.clear(); bad.encoded_value = "12345678"; break;
+      case 7: bad.state = api::EngineValueState::missing; break;
+      case 8: bad.is_null = true; bad.state = api::EngineValueState::sql_null; break;
+      case 9: bad.descriptor.encoded_descriptor += ";ordering_profile=unsigned"; break;
+    }
+    const auto zero = NativeInteger(descriptor, 0);
+    const auto key = exec::MakeCanonicalDescriptorEqualityKey(bad, term);
+    Check(!exec::CompareCanonicalDescriptorOrderValues(bad, zero, term).diagnostic.ok &&
+          !exec::CompareCanonicalDescriptorOrderValues(zero, bad, term).diagnostic.ok &&
+          !key.diagnostic.ok && key.equality_key.empty(),
+          "physical INT64 accepted an unbound or malformed operand");
+  }
 }
 void NativeWindows(const char* type, unsigned pattern) {
   auto partition = Window401Request();
+  for (auto& row : partition.input_batch.rows) {
+    for (auto& value : row.values) {
+      if (value.descriptor.canonical_type_name == "int64" && !value.is_null)
+        value = NativeInteger(value.descriptor, std::stoll(value.encoded_value));
+    }
+  }
   auto& column = partition.input_batch.columns[4];
   column.descriptor = WindowDescriptor(4105, type, exec::MakeExecutorDescriptor(type).type_uuid,
                                        "nullability=nullable");
@@ -32,6 +112,10 @@ void NativeWindows(const char* type, unsigned pattern) {
   const auto frames = ExecuteFrame(partition, ExplicitFrame(exec::CanonicalWindowFrameUnit::rows,
       FrameBound(exec::CanonicalWindowFrameBoundKind::unbounded_preceding),
       FrameBound(exec::CanonicalWindowFrameBoundKind::unbounded_following)));
+  if (!frames.diagnostic.ok) {
+    const auto ordered = exec::ExecuteCanonicalWindowPartitionOrder(partition);
+    std::cerr << ordered.diagnostic.detail << '\n' << frames.diagnostic.detail << '\n';
+  }
   Check(frames.diagnostic.ok, "native window frame execution failed");
   // Independent oracle from this fixture's fixed partition/order columns.
   const std::array<unsigned, 9> order = {1, 5, 8, 0, 7, 2, 3, 4, 6};
@@ -56,7 +140,7 @@ void NativeWindows(const char* type, unsigned pattern) {
     const auto integer_descriptor = WindowDescriptor(5000, "int64",
         exec::MakeExecutorDescriptor("int64").type_uuid, "nullability=non_null");
     if (fn == 4) {
-      request.nth_values = std::vector<api::EngineTypedValue>(9, WindowValue(integer_descriptor, "2"));
+      request.nth_values = std::vector<api::EngineTypedValue>(9, NativeInteger(integer_descriptor, 2));
       request.nth_origin = exec::CanonicalWindowNthOrigin::from_first;
       request.null_treatment = exec::CanonicalWindowNullTreatment::respect_nulls;
     }
@@ -79,13 +163,32 @@ void NativeWindows(const char* type, unsigned pattern) {
             "native window selection lost bits, target binding, NULL, or empty binary");
     }
     if (pattern != 0) continue;
+    if (fn == 4) {
+      for (const auto position : {std::int64_t{0}, std::int64_t{1}, std::numeric_limits<std::int64_t>::max()}) {
+        auto boundary = request;
+        boundary.nth_values = std::vector<api::EngineTypedValue>(9, NativeInteger(integer_descriptor, position));
+        const auto result = exec::ExecuteCanonicalWindowValue(boundary);
+        if (position == 0) {
+          Check(!result.diagnostic.ok && result.values.empty(), "NTH_VALUE accepted zero position");
+          continue;
+        }
+        Check(result.diagnostic.ok && result.values.size() == 9, "NTH_VALUE refused valid INT64 boundary");
+        for (unsigned row = 0; row < 9; ++row) {
+          const Cell expected = position == 1 ? input[order[begin[row]]] : Cell{};
+          Check(result.values[row].is_null == !expected.has_value() &&
+                result.values[row].binary_value == expected.value_or(Bytes{}),
+                "NTH_VALUE boundary wrapped or lost selected value");
+        }
+      }
+    }
     if (fn < 2) {
       auto with_default = request;
-      with_default.offset_values = std::vector<api::EngineTypedValue>(9, WindowValue(integer_descriptor, "1"));
+      with_default.offset_values = std::vector<api::EngineTypedValue>(9, NativeInteger(integer_descriptor, 1));
       auto fallback = WindowValue(column.descriptor, {});
       fallback.binary_value = Bytes(std::string_view(type) == "uuid" ? 16 : 3, 0x9c);
       with_default.default_values = std::vector<api::EngineTypedValue>(9, fallback);
       const auto defaulted = exec::ExecuteCanonicalWindowValue(with_default);
+      if (!defaulted.diagnostic.ok) std::cerr << defaulted.diagnostic.detail << '\n';
       Check(defaulted.diagnostic.ok && defaulted.values.size() == 9 &&
             defaulted.converted_default_value_count == 9, "native window default conversion failed");
       for (unsigned row = 0; row < 9; ++row) {
@@ -100,6 +203,50 @@ void NativeWindows(const char* type, unsigned pattern) {
       const auto refused_default = exec::ExecuteCanonicalWindowValue(with_default);
       Check(!refused_default.diagnostic.ok && refused_default.values.empty(),
             "ambiguous native window default published results");
+      for (unsigned mutation = 0; mutation < 12; ++mutation) {
+        auto invalid = request;
+        auto offset = NativeInteger(integer_descriptor, 1);
+        switch (mutation) {
+          case 0: offset.descriptor.datatype_descriptor_uuid = {}; break;
+          case 1: ++offset.descriptor.datatype_descriptor_generation; break;
+          case 2: offset.binary_value.pop_back(); break;
+          case 3: offset.binary_value.push_back(0); break;
+          case 4: offset.encoded_value = "1"; break;
+          case 5: offset = NativeInteger(integer_descriptor, -1); break;
+          case 6: offset = WindowNull(integer_descriptor); break;
+          case 7: offset.binary_value.clear(); offset.encoded_value = "12345678"; break;
+          case 8: offset.descriptor.encoded_descriptor += ";width=32"; break;
+          case 9: offset.descriptor.encoded_descriptor += ";precision=1"; break;
+          case 10: offset.descriptor.charset_uuid = WindowUuid(4200); break;
+          case 11: offset.descriptor.collation_uuid = kWindowCollationUuid; break;
+        }
+        invalid.offset_values = std::vector<api::EngineTypedValue>(9, offset);
+        const auto refused = exec::ExecuteCanonicalWindowValue(invalid);
+        Check(!refused.diagnostic.ok && refused.values.empty(),
+              "window accepted malformed/unbound/negative canonical INT64 offset");
+        invalid.function = exec::CanonicalWindowValueFunction::nth_value;
+        invalid.function_uuid = ids[4];
+        invalid.offset_values.reset();
+        invalid.nth_values = std::vector<api::EngineTypedValue>(9, offset);
+        invalid.nth_origin = exec::CanonicalWindowNthOrigin::from_first;
+        invalid.null_treatment = exec::CanonicalWindowNullTreatment::respect_nulls;
+        const auto refused_nth = exec::ExecuteCanonicalWindowValue(invalid);
+        Check(!refused_nth.diagnostic.ok && refused_nth.values.empty(),
+              "NTH_VALUE accepted malformed/unbound/negative canonical INT64 position");
+      }
+      for (const auto offset : {std::int64_t{0}, std::numeric_limits<std::int64_t>::max()}) {
+        auto boundary = request;
+        boundary.offset_values = std::vector<api::EngineTypedValue>(9, NativeInteger(integer_descriptor, offset));
+        const auto result = exec::ExecuteCanonicalWindowValue(boundary);
+        Check(result.diagnostic.ok && result.values.size() == 9,
+              "window rejected a valid INT64 offset boundary");
+        for (unsigned row = 0; row < 9; ++row) {
+          const Cell expected = offset == 0 ? input[order[row]] : Cell{};
+          Check(result.values[row].is_null == !expected.has_value() &&
+                result.values[row].binary_value == expected.value_or(Bytes{}),
+                "window offset boundary wrapped or lost NULL/value data");
+        }
+      }
     }
     for (unsigned mutation = 0; mutation < 3; ++mutation) {
       auto changed = request;
@@ -113,6 +260,8 @@ void NativeWindows(const char* type, unsigned pattern) {
   }
 }
 int main() {
+  NativeIntegerOrdering();
   for (unsigned pattern = 0; pattern < 130; ++pattern) NativeWindows("uuid", pattern);
   NativeWindows("binary", 0);
+  std::cout << "native_window_value checks=" << checks << " uuid_patterns=130 failures=0\n";
 }

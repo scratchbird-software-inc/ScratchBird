@@ -11,6 +11,7 @@
 #include "descriptor_value_runtime.hpp"
 #include "aggregate_executor_internal.hpp"
 #include "temp_spill_executor.hpp"
+#include "catalog/column_metadata_codec.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -9080,8 +9081,13 @@ ConvertWindowAssignmentValue(
   api::EngineTypedValue validated, converted;
   std::string category, cast_detail;
   if (!api::QowApplyCanonicalDescriptorCoercionV1(
-          source, source.descriptor, false, &validated, &category, &cast_detail) ||
-      !api::QowApplyCanonicalDescriptorCoercionV1(
+          source, source.descriptor, false, &validated, &category, &cast_detail)) {
+    return fail(std::move(cast_detail));
+  }
+  // Exact occurrence equality makes the second request identical. Retain the
+  // fully validated result, not an unchecked copy or a cached admission.
+  if (source.descriptor == target) return validated;
+  if (!api::QowApplyCanonicalDescriptorCoercionV1(
           source, target, false, &converted, &category, &cast_detail)) {
     return fail(std::move(cast_detail));
   }
@@ -9120,7 +9126,7 @@ bool CanonicalWindowInt64Operand(
       dt::CanonicalTypeIdFromStableName(
           value.descriptor.canonical_type_name) != dt::CanonicalTypeId::int64 ||
       value.state != api::EngineValueState::value || value.is_null ||
-      !value.binary_value.empty() ||
+      !value.encoded_value.empty() || value.binary_value.size() != 8 ||
       value.descriptor.descriptor_uuid ==
           request.result_column.descriptor.descriptor_uuid ||
       !RankingIdentityIndependent(
@@ -9140,10 +9146,23 @@ bool CanonicalWindowInt64Operand(
       (*nullability != "non_null" && *nullability != "nullable")) {
     return false;
   }
-  const auto parsed = DecodeInt64Value(value);
-  if (!parsed.ok()) return false;
-  *decoded = parsed.value;
-  return true;
+  engine::ExecutionTypeDescriptor bound;
+  std::string detail;
+  api::CatalogColumnMetadata fields;
+  if (!api::AdmitCatalogColumnMetadata(value.descriptor.encoded_descriptor, &fields) ||
+      !fields.identities.empty() || !value.descriptor.charset_uuid.is_nil() ||
+      !value.descriptor.collation_uuid.is_nil()) return false;
+  for (const auto& [name, field] : fields.text) {
+    if (name != "nullability" && name != "nullable") return false;
+  }
+  if (!BuildBoundExecutionTypeDescriptor(value.descriptor,
+          dt::CanonicalTypeId::int64, &bound, &detail)) return false;
+  dt::DatatypeCastRequest identity;
+  identity.value.type_id = identity.target_type_id = dt::CanonicalTypeId::int64;
+  identity.value.descriptor = identity.target_descriptor = bound;
+  identity.value.encoded_value.assign(value.binary_value.begin(), value.binary_value.end());
+  const auto checked = dt::CastDatatypeValue(identity);
+  return checked.ok() && dt::DecodeCanonicalInt64Value(checked.value.encoded_value, decoded);
 }
 
 }  // namespace
@@ -9260,14 +9279,14 @@ static CanonicalWindowValueResult ExecuteCanonicalWindowValueStrategy(
   source_values.reserve(row_count);
   std::string assignment_detail;
   for (const auto& row : request.frames.ordered_batch.rows) {
-    const auto converted = ConvertWindowAssignmentValue(
+    auto converted = ConvertWindowAssignmentValue(
         row.values[*value_column_index], request.result_column.descriptor,
         &assignment_detail);
     if (!converted.has_value()) {
       return refuse("QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR",
                     std::move(assignment_detail));
     }
-    source_values.push_back(*converted);
+    source_values.push_back(std::move(*converted));
   }
 
   const bool navigation =
@@ -9311,13 +9330,13 @@ static CanonicalWindowValueResult ExecuteCanonicalWindowValueStrategy(
       }
       defaults.reserve(row_count);
       for (const auto& value : *request.default_values) {
-        const auto converted = ConvertWindowAssignmentValue(
+        auto converted = ConvertWindowAssignmentValue(
             value, request.result_column.descriptor, &assignment_detail);
         if (!converted.has_value()) {
           return refuse("QOW-DIAG-WINDOW-DEFAULT-TYPE",
                         std::move(assignment_detail));
         }
-        defaults.push_back(*converted);
+        defaults.push_back(std::move(*converted));
       }
     }
   } else if (request.function == CanonicalWindowValueFunction::nth_value) {
