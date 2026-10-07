@@ -7,6 +7,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 add_library(sb_core_metrics
+  ../config/metric_policy_config.cpp
   adaptive_tuning_metrics_evidence.cpp
   cluster_metric_descriptors.cpp
   metric_contracts.cpp

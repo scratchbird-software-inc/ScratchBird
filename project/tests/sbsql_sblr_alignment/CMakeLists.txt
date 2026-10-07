@@ -1231,6 +1231,17 @@ if(NOT TARGET sb_core_diagnostic_catalog)
   add_subdirectory(${PROJECT_SOURCE_DIR}/src/core/diagnostics
                    ${CMAKE_CURRENT_BINARY_DIR}/core_diagnostics)
 endif()
+add_executable(sbsql_sblr_alignment_metric_policy_config metric_policy_config_test.cpp)
+target_compile_features(sbsql_sblr_alignment_metric_policy_config PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_metric_policy_config PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/core/config)
+target_link_libraries(sbsql_sblr_alignment_metric_policy_config PRIVATE sb_core_metrics)
+add_test(NAME sbsql_sblr_alignment_metric_policy_config
+  COMMAND sbsql_sblr_alignment_metric_policy_config ${CMAKE_SOURCE_DIR}/config/templates)
+set_tests_properties(sbsql_sblr_alignment_metric_policy_config PROPERTIES
+  LABELS "sbsql_sblr_alignment;metrics;policy;component_regression;not_runtime_acceptance"
+  TIMEOUT 30)
+
 add_executable(sbsql_sblr_alignment_metric_retention_policy_identity
   metric_retention_policy_identity_test.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_retention_policy.cpp)
