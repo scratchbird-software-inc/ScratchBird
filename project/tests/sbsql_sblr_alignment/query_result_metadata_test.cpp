@@ -6,8 +6,33 @@
 #include "query/expression_api.hpp"
 
 #include <array>
+#include <cstdlib>
 #include <iostream>
+#include <new>
 #include <stdexcept>
+
+namespace {
+thread_local bool track_metadata_allocations = false;
+thread_local std::size_t metadata_allocations = 0;
+thread_local std::size_t metadata_allocation_bytes = 0;
+thread_local std::size_t metadata_largest_allocation = 0;
+thread_local std::size_t fail_metadata_allocation = 0;
+}
+void* operator new(std::size_t bytes) {
+  if (track_metadata_allocations) {
+    ++metadata_allocations;
+    metadata_allocation_bytes += bytes;
+    if (bytes > metadata_largest_allocation) metadata_largest_allocation = bytes;
+    if (metadata_allocations == fail_metadata_allocation) {
+      track_metadata_allocations = false; // Diagnostics must be able to allocate.
+      throw std::bad_alloc();
+    }
+  }
+  if (void* allocation = std::malloc(bytes ? bytes : 1)) return allocation;
+  throw std::bad_alloc();
+}
+void operator delete(void* allocation) noexcept { std::free(allocation); }
+void operator delete(void* allocation, std::size_t) noexcept { std::free(allocation); }
 
 namespace api = scratchbird::engine::internal_api;
 namespace engine = scratchbird::engine::sblr;
@@ -116,9 +141,85 @@ void Reject(Mutation mutation, const char* expected = "DATATYPE.DESCRIPTOR.INVAL
   Check(!f.shape.query_metadata, "failure clears stale metadata atomically");
   Check(f.code == expected && !f.detail.empty(), "exact negative diagnostic");
 }
+void AllocationConformance() {
+  for (const std::size_t width : {1u, 4u, 1024u}) {
+    Fixture f(identities[2], width, 0);
+    f.context.maximum_typed_result_transport_bytes_per_packet = api::kMaximumTypedResultTransportBytesPerPacket;
+    Check(f.Run(), "allocation measurement warmup");
+    metadata_allocations = metadata_allocation_bytes = fail_metadata_allocation = 0;
+    track_metadata_allocations = true;
+    const bool ok = f.Run();
+    track_metadata_allocations = false;
+    Check(ok && f.shape.query_metadata->columns.size() == width, "measured complete schema publication");
+    std::cout << "metadata_allocations columns=" << width << " count=" << metadata_allocations
+              << " bytes=" << metadata_allocation_bytes << '\n';
+  }
+  std::size_t faults = 0;
+  for (const std::size_t width : {1u, 4u}) {
+    Fixture baseline(identities[2], width, 2);
+    Check(baseline.Run(), "fault fixture publishes an initial immutable schema");
+    const auto prior = baseline.shape.query_metadata;
+    metadata_allocations = metadata_allocation_bytes = fail_metadata_allocation = 0;
+    track_metadata_allocations = true;
+    const bool measured = baseline.Run();
+    track_metadata_allocations = false;
+    const auto allocation_count = metadata_allocations;
+    Check(measured && allocation_count > 0, "fault sweep measures actual publication allocations");
+    for (std::size_t fail = 1; fail <= allocation_count; ++fail) {
+      Fixture candidate(identities[2], width, 2);
+      candidate.shape.query_metadata = prior;
+      const auto original_columns = candidate.shape.columns;
+      metadata_allocations = metadata_allocation_bytes = 0;
+      fail_metadata_allocation = fail;
+      track_metadata_allocations = true;
+      const bool published = candidate.Run();
+      track_metadata_allocations = false;
+      fail_metadata_allocation = 0;
+      Check(!published && candidate.code == "RESOURCE.BUDGET_EXCEEDED" &&
+                !candidate.detail.empty() && !candidate.shape.query_metadata &&
+                !candidate.shape.query_values && metadata_allocations == fail,
+            "every allocation failure refuses without stale or partial metadata");
+      Check(candidate.shape.columns == original_columns && candidate.shape.rows.size() == 2 &&
+                prior->columns.size() == width,
+            "allocation failure preserves source columns/rows and previous immutable schema");
+      for (const auto& row : candidate.shape.rows) {
+        Check(row.fields.size() == width, "allocation failure preserves every source field");
+        for (std::size_t column = 0; column < width; ++column)
+          Check(row.fields[column].second.descriptor == original_columns[column] &&
+                    row.fields[column].first == "same;=résumé" &&
+                    row.fields[column].second.encoded_value == "FALSE-looking_text_not_type_authority" &&
+                    row.fields[column].second.binary_value.empty(),
+                "allocation failure neither mutates nor renders source data");
+      }
+      Check(candidate.Run() && candidate.shape.query_metadata->columns.size() == width,
+            "allocation failure retains a retryable schema source");
+      ++faults;
+    }
+  }
+  std::cout << "metadata_allocation_faults=" << faults << '\n';
+  Fixture tiny_budget(identities[2], 4096, 0);
+  tiny_budget.context.maximum_typed_result_transport_bytes_per_packet = 1;
+  metadata_allocations = metadata_allocation_bytes = metadata_largest_allocation = 0;
+  track_metadata_allocations = true;
+  const bool published = tiny_budget.Run();
+  track_metadata_allocations = false;
+  Check(!published && tiny_budget.code == "RESOURCE.BUDGET_EXCEEDED" &&
+            !tiny_budget.shape.query_metadata &&
+            metadata_largest_allocation < 4096 * sizeof(api::EngineQueryResultColumnV1),
+        "tiny packet budget cannot preallocate a full-width metadata vector");
+}
 }
 
 int main() try {
+  // Optional diagnostic I/O deliberately swallows allocation failures. Keep
+  // publication-allocation measurements independent of an inherited trace sink
+  // and do not let this standalone test append to somebody else's trace file.
+#if defined(_WIN32)
+  if (_putenv_s("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE", "") != 0)
+#else
+  if (::unsetenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE") != 0)
+#endif
+    throw std::runtime_error("cannot isolate optional metadata trace environment");
   constexpr std::size_t expected_cases = 6 * 3 * 4 * 3;
   std::cout << "expected_schema_tuples=" << expected_cases << '\n';
   std::size_t cases = 0;
@@ -264,6 +365,11 @@ int main() try {
     left.descriptor.encoded_descriptor = "nullability=non_null";
     left.descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d734");
     left.descriptor.type_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d735");
+    const auto current_uuid = scratchbird::engine::executor::MakeExecutorDescriptor("uuid");
+    Check(current_uuid.type_uuid == left.descriptor.type_uuid,
+          "UUID fixture type agrees with the independently fixed registry identity");
+    left.descriptor.datatype_descriptor_uuid = current_uuid.datatype_descriptor_uuid;
+    left.descriptor.datatype_descriptor_generation = current_uuid.datatype_descriptor_generation;
     left.state = api::EngineValueState::value;
     right = left;
     const std::string bytes("\x01\x02\x03\x04\x05\x06\x70\x00\x80\x00\x09\x0a\x3b\x7c\x00\xff",16);
@@ -295,6 +401,11 @@ int main() try {
     left.descriptor.encoded_descriptor = "nullability=non_null";
     left.descriptor.descriptor_uuid = identities[5].descriptor;
     left.descriptor.type_uuid = identities[5].type;
+    const auto current_text = scratchbird::engine::executor::MakeExecutorDescriptor("text");
+    Check(current_text.type_uuid == left.descriptor.type_uuid,
+          "TEXT fixture type agrees with independently fixed registry identity");
+    left.descriptor.datatype_descriptor_uuid = current_text.datatype_descriptor_uuid;
+    left.descriptor.datatype_descriptor_generation = current_text.datatype_descriptor_generation;
     left.descriptor.collation_uuid = scratchbird::tests::FixtureUuid(1900,1);
     left.encoded_value = "a"; right = left;
     api::EngineSqlTruthValue truth;
@@ -416,7 +527,8 @@ int main() try {
     Check(!f.Run() && !f.shape.query_metadata, "missing ambiguous or cyclic CTE producer refused");
   }
   }
-  Check(checks == 6561 + 8 + 5 + 1, "fixed check population including binary/outer-join and text-carrier refusal regressions");
+  Check(checks == 6561 + 8 + 5 + 1 + 2, "fixed check population including binary/outer-join and text-carrier refusal regressions");
+  AllocationConformance();
   std::cout << "PASS schema_tuples=" << cases << " checks=" << checks << '\n';
   return 0;
 } catch (const std::exception& e) {

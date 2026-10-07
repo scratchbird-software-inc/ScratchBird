@@ -143,18 +143,28 @@ bool PreserveCanonicalQueryResultMetadataV1(
         return refuse("query descriptor handle is absent or duplicated");
     // Enumerate the actual admitted catalog descriptors under this receipt.
     // No synthetic snapshot, stable-name lookup, or nearest generation is used.
-    std::vector<dt::DatatypeTypeCodecIdentityRowV1> identities;
+    // Borrow immutable compiled rows for this invocation only. Every output
+    // still revalidates the supplied receipt/cohort and exact codec tuple;
+    // copying the registry's strings does not add authority.
+    std::vector<const dt::DatatypeTypeCodecIdentityRowV1*> identities;
     for (const auto& candidate : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
       if (candidate.catalog_snapshot_uuid == context.datatype_catalog_snapshot_uuid &&
           candidate.catalog_generation == context.datatype_catalog_generation &&
           candidate.registry_generation == context.datatype_registry_generation)
-        identities.push_back(candidate);
+        identities.push_back(&candidate);
     }
     const auto ceiling = context.maximum_typed_result_transport_bytes_per_packet;
     if (ceiling < api::kMinimumTypedResultTransportBytesPerPacket ||
         ceiling > api::kMaximumTypedResultTransportBytesPerPacket)
       return refuse("query descriptor packet budget is not engine-admitted", "RESOURCE.BUDGET_EXCEEDED");
     std::uint64_t bytes = wire::kTypedResultRowDescriptorHeaderBytes;
+    // Bound preallocation by both the hard column limit and the admitted
+    // packet's minimum per-column encoding. Tiny budgets cannot trigger a
+    // full-width allocation before the normal exact budget check.
+    const auto columns_within_budget = ceiling >= bytes
+        ? (ceiling - bytes) / wire::kTypedResultColumnDescriptorPrefixBytes : 0;
+    metadata->columns.reserve(static_cast<std::size_t>(
+        std::min<std::uint64_t>(shape->columns.size(), columns_within_budget)));
     std::map<std::string, std::uint32_t> occurrences;
     for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal) {
       if (cancelled())
@@ -174,10 +184,10 @@ bool PreserveCanonicalQueryResultMetadataV1(
           bound.datatype_registry_generation != context.datatype_registry_generation)
         return refuse("query output descriptor is stale or belongs to another receipt");
       const dt::DatatypeTypeCodecIdentityRowV1* identity = nullptr;
-      for (const auto& candidate : identities) {
-        if (!ExactIdentity(bound, candidate)) continue;
+      for (const auto* candidate : identities) {
+        if (!ExactIdentity(bound, *candidate)) continue;
         if (identity) return refuse("query datatype codec identity is ambiguous");
-        identity = &candidate;
+        identity = candidate;
       }
       if (!identity) return refuse("query datatype codec identity does not resolve");
       const auto published = metadata->columns.size();
