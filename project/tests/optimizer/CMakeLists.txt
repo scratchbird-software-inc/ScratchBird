@@ -1311,6 +1311,8 @@ set_tests_properties(optimizer_enterprise_llvm_boundary_gate PROPERTIES
   LABELS "optimizer_enterprise_llvm_boundary_gate;OEIC-004;OEIC-070;OEIC-072;optimizer;enterprise;llvm;mga_transaction_regression"
 )
 
+set(_sb_llvm_configure_dependency_args)
+sb_append_nested_dependency_configure_args(_sb_llvm_configure_dependency_args)
 add_test(
   NAME optimizer_enterprise_llvm_configure_gate
   COMMAND "${CMAKE_COMMAND}"
@@ -1325,6 +1327,7 @@ add_test(
           "-DLLVM_DIR=${LLVM_DIR}"
           "-DODBC_INCLUDE_DIR=${ODBC_INCLUDE_DIR}"
           "-DODBC_LIBRARY=${ODBC_LIBRARY}"
+          ${_sb_llvm_configure_dependency_args}
           -P "${PROJECT_SOURCE_DIR}/cmake/OptimizerLlvmConfigureGate.cmake"
 )
 set_tests_properties(optimizer_enterprise_llvm_configure_gate PROPERTIES

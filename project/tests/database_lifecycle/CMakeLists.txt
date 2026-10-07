@@ -1102,6 +1102,7 @@ add_test(
   NAME database_lifecycle_traceability_static
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/traceability_static.py"
           --repo-root "${SB_PRIVATE_REPO_ROOT}"
+          --report "${CMAKE_CURRENT_BINARY_DIR}/DATABASE_LIFECYCLE_STATIC_TRACEABILITY_REPORT.md"
 )
 set_tests_properties(database_lifecycle_traceability_static PROPERTIES
   LABELS "database_lifecycle_traceability;DBLC_STATIC_TRACEABILITY_COVERAGE;DBLC_P13R_TRACEABILITY_COMPLETE;database_lifecycle"

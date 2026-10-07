@@ -15,13 +15,10 @@ import argparse
 import importlib.util
 from pathlib import Path
 import sys
+import tempfile
 
 
 TRACEABILITY_AUDIT = "project/tools/database_lifecycle/lifecycle_traceability_audit.py"
-REPORT = (
-    "project/tests/database_lifecycle/fixtures/full_database_lifecycle_closure/"
-    "artifacts/DATABASE_LIFECYCLE_TRACEABILITY_REPORT.md"
-)
 
 
 def load_audit(repo_root: Path):
@@ -38,11 +35,22 @@ def load_audit(repo_root: Path):
 def main() -> int:
     parser = argparse.ArgumentParser(description="DBLC_STATIC_TRACEABILITY_COVERAGE")
     parser.add_argument("--repo-root", required=True)
+    parser.add_argument("--report", type=Path,
+                        help="generated evidence path outside the source tree")
     args = parser.parse_args()
 
     repo_root = Path(args.repo_root).resolve()
     module = load_audit(repo_root)
-    rc = module.run_audit(repo_root, repo_root / REPORT)
+    # An ordinary regression must not regenerate the tracked assurance artifact.
+    # CTest retains its report in the build tree; standalone runs use owned temp.
+    if args.report is not None:
+        report = args.report.resolve()
+        if report.is_relative_to(repo_root / "project"):
+            parser.error("--report must be outside the project source tree")
+        rc = module.run_audit(repo_root, report)
+    else:
+        with tempfile.TemporaryDirectory(prefix="sb-traceability-") as temporary:
+            rc = module.run_audit(repo_root, Path(temporary) / "report.md")
     if rc == 0:
         print("DBLC_STATIC_TRACEABILITY_COVERAGE=passed")
     return rc

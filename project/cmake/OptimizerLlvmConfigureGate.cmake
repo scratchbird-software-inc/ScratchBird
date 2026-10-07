@@ -55,6 +55,9 @@ foreach(_sb_forwarded_var
   endif()
 endforeach()
 
+include("${CMAKE_CURRENT_LIST_DIR}/NestedDependencyConfigureArgs.cmake")
+sb_append_nested_dependency_configure_args(_sb_configure_common_args)
+
 function(_configure_llvm_mode mode)
   set(_binary_dir "${SB_CONFIGURE_GATE_BINARY_ROOT}/${mode}")
   file(REMOVE_RECURSE "${_binary_dir}")
