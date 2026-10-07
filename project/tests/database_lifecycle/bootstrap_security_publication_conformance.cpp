@@ -220,12 +220,26 @@ void WriteCatalogRows(const std::filesystem::path& path,
   const auto opened =
       device.Open(path.string(), disk::FileOpenMode::open_existing);
   Require(opened.ok(), "tamper catalog write open failed");
+  const auto original_size = device.Size();
+  Require(original_size.ok(), "tamper catalog size inspection failed");
+  std::vector<scratchbird::core::platform::byte> existing(
+      page_size - disk::kPageHeaderSerializedBytes);
   for (const auto& catalog_page : page_set.pages) {
     const auto offset = page::CheckedPageBodyOffset(
         page_size,
         catalog_page.page_number,
         disk::kPageHeaderSerializedBytes);
     Require(offset.ok(), "tamper catalog write offset failed");
+    // The semantic mutation corpus retains the complete rebuilt catalog, but
+    // usually changes only a few pages. Prove exact equality before avoiding a
+    // redundant forced-ordered write; never skip a changed byte or final Sync.
+    Require(existing.size() == catalog_page.body.size(), "tamper body profile mismatch");
+    if (offset.offset <= original_size.size_bytes &&
+        existing.size() <= original_size.size_bytes - offset.offset) {
+      Require(device.ReadAt(offset.offset, existing.data(), existing.size()).ok(),
+              "tamper catalog comparison read failed");
+      if (existing == catalog_page.body) continue;
+    }
     const auto written = device.WriteAt(offset.offset,
                                         catalog_page.body.data(),
                                         catalog_page.body.size());

@@ -1182,6 +1182,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_physical_mga_owned_device physical_mga_owned_device_test.cpp)
+  add_executable(sbsql_sblr_alignment_catalog_initial_page_write catalog_initial_page_write_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_catalog_initial_page_write PRIVATE cxx_std_23)
+  target_compile_definitions(sbsql_sblr_alignment_catalog_initial_page_write PRIVATE
+    SB_CATALOG_TEST_SEED_ROOT="${PROJECT_SOURCE_DIR}/resources/seed-packs/initial-resource-pack")
+  target_link_libraries(sbsql_sblr_alignment_catalog_initial_page_write PRIVATE sb_storage_database)
+  target_link_options(sbsql_sblr_alignment_catalog_initial_page_write PRIVATE "-Wl,--wrap=pwrite")
+  add_test(NAME sbsql_sblr_alignment_catalog_initial_page_write COMMAND sbsql_sblr_alignment_catalog_initial_page_write)
+  set_tests_properties(sbsql_sblr_alignment_catalog_initial_page_write PROPERTIES
+    TIMEOUT 240 LABELS "sbsql_sblr_alignment;component_regression;catalog_bootstrap;physical_IO;crash_recovery;not_SQL_E2E")
   target_compile_features(sbsql_sblr_alignment_physical_mga_owned_device PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_physical_mga_owned_device PRIVATE
     sb_transaction_mga sb_storage_database sb_core_uuid)

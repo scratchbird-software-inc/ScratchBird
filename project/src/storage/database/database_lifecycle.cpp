@@ -727,6 +727,25 @@ DatabaseLifecycleResult ValidateCatalogMigrationEvidence(const std::vector<Catal
   return result;
 }
 
+scratchbird::storage::page::ManagedPageHeaderResult BuildInitialPageHeader(
+    const PageManagerContext& context, PageType page_type, u64 page_number,
+    u64 creation_unix_epoch_millis) {
+  const auto generated = GenerateEngineIdentityV7(UuidKind::page, creation_unix_epoch_millis + page_number);
+  if (!generated.ok()) {
+    scratchbird::storage::page::ManagedPageHeaderResult result;
+    result.status = generated.status;
+    result.diagnostic = generated.diagnostic;
+    return result;
+  }
+  ManagedPageHeaderRequest request;
+  request.context = context;
+  request.page_type = page_type;
+  request.page_number = page_number;
+  request.page_uuid = generated.value;
+  request.page_generation = 1;
+  return BuildManagedPageHeader(request);
+}
+
 DatabaseLifecycleResult WriteInitialPageHeader(FileDevice* device,
                                                const PageManagerContext& context,
                                                PageType page_type,
@@ -4484,14 +4503,24 @@ DatabaseLifecycleResult WriteCatalogPageBodies(FileDevice* device,
     std::memcpy(buffer_bytes + kPageHeaderSerializedBytes, page.body.data(), page.body.size());
 
     if (page.page_number != kCatalogPageNumber) {
-      const auto page_header = WriteInitialPageHeader(device,
-                                                      page_context,
+      // This is a fresh create image or an unpublished sealed migration copy,
+      // never a live catalog update. Assemble the already bounded body and its
+      // native header in the existing managed page buffer. One ordered full-
+      // page write replaces header/zero-page then body writes. This does not
+      // assert atomic page I/O or change Sync/MGA publication ordering.
+      const auto page_header = BuildInitialPageHeader(page_context,
                                                       PageType::catalog,
                                                       page.page_number,
                                                       creation_unix_epoch_millis);
       if (!page_header.ok()) {
-        return page_header;
+        return PropagateDiagnostic(page_header.status, page_header.diagnostic);
       }
+      std::memcpy(buffer_bytes, page_header.serialized.data(), page_header.serialized.size());
+      const auto page_offset = CheckedPageOffset(page_context.page_size, page.page_number);
+      if (!page_offset.ok()) return PropagateDiagnostic(page_offset.status, page_offset.diagnostic);
+      const auto written = device->WriteAt(page_offset.offset, buffer_bytes, page_buffer.buffer.size());
+      if (!written.ok()) return PropagateDiagnostic(written.status, written.diagnostic);
+      continue;
     }
 
     const auto body_offset = CheckedPageBodyOffset(page_context.page_size,
@@ -6050,19 +6079,7 @@ DatabaseLifecycleResult WriteInitialPageHeader(FileDevice* device,
                                                PageType page_type,
                                                u64 page_number,
                                                u64 creation_unix_epoch_millis) {
-  const auto generated = GenerateEngineIdentityV7(UuidKind::page, creation_unix_epoch_millis + page_number);
-  if (!generated.ok()) {
-    return PropagateDiagnostic(generated.status, generated.diagnostic);
-  }
-
-  ManagedPageHeaderRequest request;
-  request.context = context;
-  request.page_type = page_type;
-  request.page_number = page_number;
-  request.page_uuid = generated.value;
-  request.page_generation = 1;
-
-  const auto built = BuildManagedPageHeader(request);
+  const auto built = BuildInitialPageHeader(context, page_type, page_number, creation_unix_epoch_millis);
   if (!built.ok()) {
     return PropagateDiagnostic(built.status, built.diagnostic);
   }
