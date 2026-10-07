@@ -106,6 +106,12 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 file(MAKE_DIRECTORY "${SB_DRIVER_BUILD_ROOT}")
 
+add_test(NAME driver_component_runner_interpreter_gate
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/driver_component_runner_test.py")
+set_tests_properties(driver_component_runner_interpreter_gate PROPERTIES
+  TIMEOUT 30 LABELS "driver;test_infrastructure;component_regression"
+  ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONPYCACHEPREFIX=${SB_DRIVER_BUILD_ROOT}/pycache")
+
 function(sb_add_driver_gate test_name mode)
   add_test(
     NAME "${test_name}"
@@ -141,6 +147,7 @@ function(sb_add_driver_component_gate test_name component)
       "--project-root" "${PROJECT_SOURCE_DIR}"
       "--build-root" "${SB_DRIVER_BUILD_ROOT}"
       "--component" "${component}"
+      "--dependency-cache" "${CMAKE_BINARY_DIR}/CMakeCache.txt"
       ${toolchain_waiver_args}
   )
   set_tests_properties("${test_name}" PROPERTIES

@@ -29,6 +29,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+# Use the same allowlist as the public nested-build gate. This forwards
+# dependency locations, never cached qualification or feature decisions.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools" / "release"))
+from public_nested_dependency_config import dependency_configure_args
+
 
 DRIVERS_ROOT_PARTS = ("project", "drivers")
 SKIP_CODE = 77
@@ -153,6 +158,7 @@ class Context:
     component: str
     allow_toolchain_waivers: bool
     require_all_toolchains: bool
+    dependency_cache: Path | None = None
 
     @property
     def category(self) -> str:
@@ -252,6 +258,11 @@ def resolve_argv(argv: list[str], env: dict[str, str]) -> list[str]:
     if not argv:
         return argv
     executable = argv[0]
+    if executable == "python3":
+        # CMake/the launcher already selected this interpreter. Re-resolving
+        # Python through PATH can switch to another SDK's environment, losing
+        # the test dependencies or Python version selected by the caller.
+        return [sys.executable, *argv[1:]]
     if any(sep in executable for sep in ("/", "\\")) or Path(executable).is_absolute():
         return argv
     resolved = shutil.which(executable, path=env.get("PATH"))
@@ -319,6 +330,7 @@ def run_command(
     with log_path.open("w", encoding="utf-8") as handle:
         handle.write(f"$ {' '.join(argv)}\n")
         handle.write(f"cwd={cwd}\n\n")
+        handle.flush()  # Child writes share this descriptor, not Python's buffer.
         try:
             proc = subprocess.run(
                 argv,
@@ -426,7 +438,8 @@ def check_toolchains(ctx: Context) -> int:
         if ctx.require_all_toolchains:
             return fail(message)
         return print_skip(message)
-    missing = [tool for tool in COMPONENT_TOOLCHAINS.get(ctx.component, []) if shutil.which(tool) is None]
+    missing = [tool for tool in COMPONENT_TOOLCHAINS.get(ctx.component, [])
+               if tool != "python3" and shutil.which(tool) is None]
     if not missing:
         return 0
     message = f"{ctx.component} missing toolchain(s): {', '.join(missing)}"
@@ -474,6 +487,10 @@ def check_source_artifacts(ctx: Context) -> int:
 
 
 def run_cmake_component(ctx: Context, source_dir: Path, extra_configure_args: list[str] | None = None) -> int:
+    try:
+        dependency_args = dependency_configure_args(ctx.dependency_cache)
+    except (OSError, ValueError) as error:
+        return fail(f"nested dependency configuration invalid: {error}")
     build_dir = ctx.component_build_root / "cmake"
     build_dir.mkdir(parents=True, exist_ok=True)
     configure = [
@@ -484,7 +501,7 @@ def run_cmake_component(ctx: Context, source_dir: Path, extra_configure_args: li
         str(build_dir),
         "-DBUILD_TESTING=ON",
         f"-DCMAKE_INSTALL_PREFIX={ctx.component_build_root / 'install'}",
-    ] + (extra_configure_args or [])
+    ] + dependency_args + (extra_configure_args or [])
     parallel = os.environ.get("CMAKE_BUILD_PARALLEL_LEVEL", "2") or "2"
     if not parallel.isdecimal() or int(parallel) < 1:
         return fail("CMAKE_BUILD_PARALLEL_LEVEL must be a positive integer")
@@ -1053,6 +1070,8 @@ def main() -> int:
     parser.add_argument("--project-root", type=Path, required=True)
     parser.add_argument("--build-root", type=Path, required=True)
     parser.add_argument("--component", required=True)
+    parser.add_argument("--dependency-cache", type=Path,
+                        help="parent CMake cache supplying only dependency locations")
     parser.add_argument("--require-all-toolchains", action="store_true")
     parser.add_argument("--allow-toolchain-waivers", action="store_true")
     args = parser.parse_args()
@@ -1064,6 +1083,7 @@ def main() -> int:
         component=args.component,
         allow_toolchain_waivers=args.allow_toolchain_waivers,
         require_all_toolchains=args.require_all_toolchains,
+        dependency_cache=args.dependency_cache.resolve() if args.dependency_cache else None,
     )
     ctx.component_build_root.mkdir(parents=True, exist_ok=True)
     if not ctx.source_dir.is_dir():
