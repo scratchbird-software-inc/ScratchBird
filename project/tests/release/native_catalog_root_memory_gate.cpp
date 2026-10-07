@@ -242,6 +242,20 @@ void MemoryTests(){
     {auto r=file.Read(valid);NoPage(r);Check(r.error==ME::catalog_root_failure&&deallocation_lock_free,"failed image cleanup occurs after releasing device guard");}file.Store(file.bytes);
     file.Bootstrap(0,Id(99));{auto r=file.Read(valid);NoPage(r);Check(r.error==ME::bootstrap_failure,"actual bootstrap identity mismatch");}file.Bootstrap(1);
     {auto r=file.Read(valid);NoPage(r);Check(r.error==ME::encrypted_requires_authority&&reads==1,"encrypted filespace refuses before catalog_root payload I/O");}file.Bootstrap();
+    for(const u32 flags:{2u,3u}) {
+      file.Bootstrap(flags);const auto before_writes=writes,before_syncs=syncs;
+      auto r=file.Read(valid);NoPage(r);
+      Check(r.error==((flags&1)?ME::encrypted_requires_authority:ME::cluster_requires_authority)&&reads==1&&
+        !r.page_bytes_read&&!valid.manager.Snapshot().current_bytes&&writes==before_writes&&syncs==before_syncs,
+        "actual protected filespace refuses before payload with released charge and no mutation");
+    }file.Bootstrap();
+    for(const u32 flags:{2u,4u,8u,12u,14u}) {
+      auto protected_root=file.value;protected_root.header.flags=flags;file.Store(Oracle(protected_root));
+      const auto before_writes=writes,before_syncs=syncs;auto r=file.Read(valid);NoPage(r);
+      Check(r.error==((flags&2)?ME::cluster_requires_authority:ME::header_policy_requires_authority)&&
+        !valid.manager.Snapshot().current_bytes&&writes==before_writes&&syncs==before_syncs,
+        "catalog root header policy cannot become local authority through valid checksums");
+    }file.Store(file.bytes);
     {auto encrypted=file.value;encrypted.header.flags=1;file.Store(Oracle(encrypted));auto r=file.Read(valid);NoPage(r);
       Check(r.error==ME::encrypted_requires_authority,"encrypted common header never parsed as plaintext");}file.Store(file.bytes);
     if(!root){
@@ -250,7 +264,9 @@ void MemoryTests(){
           auto v=Example(profile,member,kind,generation,types,flags);const auto image=Oracle(v);
           file.expected.page_type=v.header.page_type;file.Store(image);auto r=file.Read(valid);
           if(flags&1){NoPage(r);Check(r.error==ME::encrypted_requires_authority,"physical encrypted bytes require owning crypto route");}
-          else Check(r.ok()&&Oracle(*r.page)==image,"actual kinds generations target roles and native flags preserved");
+          else if(flags&2){NoPage(r);Check(r.error==ME::cluster_requires_authority,"every cluster header variant requires cluster authority");}
+          else if(flags&12){NoPage(r);Check(r.error==ME::header_policy_requires_authority,"every other protected header variant requires its owning policy");}
+          else Check(r.ok()&&Oracle(*r.page)==image,"actual unprotected kinds generations and target roles preserved");
         }
       file.expected=original_binding;
     }

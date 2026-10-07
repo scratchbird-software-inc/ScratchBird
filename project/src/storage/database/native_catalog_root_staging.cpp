@@ -44,7 +44,16 @@ NativeCatalogRootStageResult StageNativeCatalogRootSuccessorFromOpenDevices(
     const disk::FilespaceRootReference prior_ref{root.root_kind,previous->page_type,previous->page.filespace_uuid,
       previous->page.page_number,previous->page.page_generation,previous->page.page_size_profile_uuid,previous->object_uuid};
     auto prior=page::ReadNativeCatalogRootFromOpenDevice(*prior_file->device,h.database_uuid,prior_ref);
-    if(!prior.ok()){auto r=Fail(E::predecessor_failure);r.root_error=prior.error;return r;}
+    if(!prior.ok()) {
+      // The reader now refuses protected headers before returning an image.
+      // Preserve staging's existing header-authority disposition and retain
+      // the exact nested crypto/cluster/policy reason for the owning route.
+      using R=page::NativeCatalogRootError;
+      const bool authority=prior.error==R::encrypted_requires_crypto_authority||
+        prior.error==R::cluster_requires_authority||prior.error==R::header_policy_requires_authority;
+      auto r=Fail(authority?E::header_requires_authority:E::predecessor_failure);
+      r.root_error=prior.error;return r;
+    }
     const auto prior_digest=hash::ComputeSha256Digest(prior.bytes);if(!prior_digest.ok())return Fail(E::hash_failure);
     if(prior_digest.digest!=previous->sha256||prior_digest.digest!=root.predecessor_sha256)return Fail(E::predecessor_mismatch);
     const auto& predecessor=*prior.root;

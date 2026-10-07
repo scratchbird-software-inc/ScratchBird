@@ -2054,6 +2054,8 @@ NativeCatalogLeafResult ReadNativeCatalogLeafFromOpenDevice(
       return LeafFailure(LeafError::invalid_filespace);
     if (zero.record->bootstrap.flags & disk::FilespaceBootstrapFlag::payload_encrypted)
       return LeafFailure(LeafError::encrypted_requires_crypto_authority);
+    if (zero.record->bootstrap.flags & disk::FilespaceBootstrapFlag::cluster_authority_required)
+      return LeafFailure(LeafError::cluster_requires_authority);
     std::vector<scratchbird::core::platform::byte> bytes(profile->page_size_bytes);
     const auto io=device.ReadAt(p.page_number*profile->page_size_bytes,bytes.data(),bytes.size());
     if (!io.ok() || io.bytes_transferred!=bytes.size()) return LeafFailure(LeafError::io_failure);

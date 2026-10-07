@@ -3797,6 +3797,16 @@ void CanonicalCatalogRootStaging(){using E=db::NativeCatalogRootStageError;using
       std::sort(map.records.begin(),map.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});}
     page::NativeFilespaceDirectory directory;directory.header={sizes[p],9,Id(1),Id(2),Id(80),15,105,0,Profile(p)};directory.object_uuid=Id(45);directory.directory_generation=1;directory.creator_transaction_uuid=Id(98);directory.creator_local_transaction_id=17;directory.total_records=2;
     const auto put=[&](auto& file,u64 number,unsigned size,const Bytes& b){const auto io=file.WriteAt(number*size,b.data(),b.size());Check(io.ok()&&io.bytes_transferred==b.size()&&file.Sync().ok(),"persist independent root staging fixture");};
+    // Only fixture preparation may omit an exact no-op rewrite. Read the actual
+    // owned file each time: no cached image can hide a production mutation.
+    // Keep every synchronization and leave stage/reset fault paths unchanged.
+    unsigned fixture_writes=0,fixture_unchanged=0;
+    const auto put_fixture=[&](auto& file,u64 number,unsigned size,const Bytes& b){
+      Bytes actual(b.size());const auto read=file.ReadAt(number*size,actual.data(),actual.size());
+      Check(read.ok()&&read.bytes_transferred==actual.size(),"read exact current root fixture image");
+      if(actual!=b){put(file,number,size,b);++fixture_writes;}
+      else {Check(file.Sync().ok(),"unchanged root fixture still synchronized");++fixture_unchanged;}
+    };
     const auto persist=[&](){directory.records.clear();for(const auto* z:{&z1,&z2})directory.records.push_back({z->bootstrap,Id(z==&z1?190:191),z->page_uuid,z->page_generation,z->root_set_generation,z->total_pages,0,{}});
       const auto ib=InventoryOracle(inv,13,13,13),mb=AllocationOracle(map),dbb=DirectoryOracle(directory),prior=RootOracle(old);
       cp.roots[0]={1,0x301,InventoryRef(inv),inv.object_uuid,WholeRootHash(ib)};
@@ -3804,9 +3814,9 @@ void CanonicalCatalogRootStaging(){using E=db::NativeCatalogRootStageError;using
       cp.roots[3]={4,3,{Id(2),map.header.page_number,map.header.page_generation,Profile(p)},Id(43),WholeRootHash(mb)};
       cp.roots[selected_role-1]={static_cast<disk::u16>(selected_role),old.header.page_type,{Id(7),12,102,Profile(q)},old.object_uuid,WholeRootHash(prior)};
       const auto cb=CheckpointOracle(cp);
-      put(first,0,sizes[p],Oracle(z1));put(second,0,sizes[q],Oracle(z2));put(first,14,sizes[p],ib);put(first,map.header.page_number,sizes[p],mb);put(first,15,sizes[p],dbb);put(second,12,sizes[q],prior);put(first,19,sizes[p],cb);
+      put_fixture(first,0,sizes[p],Oracle(z1));put_fixture(second,0,sizes[q],Oracle(z2));put_fixture(first,14,sizes[p],ib);put_fixture(first,map.header.page_number,sizes[p],mb);put_fixture(first,15,sizes[p],dbb);put_fixture(second,12,sizes[q],prior);put_fixture(first,19,sizes[p],cb);
       if(selected){db::NativeCheckpointSelection selection;selection.header={sizes[p],0x30e,Id(1),Id(2),Id(155),27,1,0,Profile(p)};selection.object_uuid=Id(154);selection.bootstrap_uuid=z1.page_uuid;selection.publication_uuid=Id(153);selection.selection_generation=1;selection.checkpoint={Id(2),19,109,Profile(p)};selection.checkpoint_object_uuid=cp.object_uuid;selection.checkpoint_sha256=WholeRootHash(cb);selection.checkpoint_generation=1;selection.root_set_generation=8;selection.timeline_uuid=cp.timeline_uuid;
-        put(first,27,sizes[p],SelectionOracle(selection));selection.header.page_number=28;selection.header.page_uuid=Id(156);put(first,28,sizes[p],SelectionOracle(selection));}};
+        put_fixture(first,27,sizes[p],SelectionOracle(selection));selection.header.page_number=28;selection.header.page_uuid=Id(156);put_fixture(first,28,sizes[p],SelectionOracle(selection));}};
     const std::vector<disk::NativeFilespaceDevice> devices{{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}};
     // A selector-bound genesis retains two selector images and its selected
     // allocation image in addition to the checkpoint/inventory pair. The
@@ -3853,7 +3863,16 @@ void CanonicalCatalogRootStaging(){using E=db::NativeCatalogRootStageError;using
     for(unsigned n=0;n<6;++n){map=original_map;if(n==0)map.states[30]=S::allocated;if(n==1)map.records.back().owner_uuid=Id(202);if(n==2)map.records.back().page_generation++;if(n==3)map.records.back().page_uuid=Id(203);if(n==4)map.records.back().page_type=6;if(n==5)map.records.back().allocation_uuid=map.records.front().allocation_uuid;persist();empty(stage(budget));Check(bytes()==blank,"invalid reservation cannot stage root");}
     map=original_map;root.header.page_uuid=old.header.page_uuid;map.records.back().page_uuid=old.header.page_uuid;persist();empty(stage(budget));Check(bytes()==blank,"new root cannot reuse predecessor page UUID");root=saved;map=original_map;
     const auto prior_saved=old;
-    old.header.flags=2;root.predecessor_sha256=WholeRootHash(RootOracle(old));persist();result=stage(budget);empty(result);Check(result.error==E::header_requires_authority,"predecessor header policy is not silently cleared");old=prior_saved;root=saved;
+    for(const unsigned flags:{1u,2u,3u,4u,8u,12u,14u}) {
+      old.header.flags=flags;root.predecessor_sha256=WholeRootHash(RootOracle(old));
+      persist();result=stage(budget);empty(result);
+      const auto expected_error=(flags&1u)?page::NativeCatalogRootError::encrypted_requires_crypto_authority:
+        (flags&2u)?page::NativeCatalogRootError::cluster_requires_authority:
+        page::NativeCatalogRootError::header_policy_requires_authority;
+      Check(result.error==E::header_requires_authority&&result.root_error==expected_error,
+        "predecessor header policy preserves staging and exact nested authority without effects");
+      Check(bytes()==blank,"protected predecessor cannot modify reserved successor");
+    }old=prior_saved;root=saved;
     z2.bootstrap.flags=disk::FilespaceBootstrapFlag::cluster_authority_required;persist();result=stage(budget);empty(result);Check(result.error==E::cluster_requires_authority,"cluster-owned predecessor requires its provider");z2.bootstrap.flags=0;
     z2.bootstrap.flags=disk::FilespaceBootstrapFlag::payload_encrypted;z2.bootstrap.encryption_profile_uuid=Id(4);persist();result=stage(budget);empty(result);Check(result.error==E::header_requires_authority,"encrypted predecessor requires crypto authority");z2.bootstrap.flags=0;z2.bootstrap.encryption_profile_uuid={};
     if(kind==8){old.root_kind=2;old.roots=RootExample(q).roots;for(auto& r:old.roots)r.page.filespace_uuid=Id(7);root.predecessor_sha256=WholeRootHash(RootOracle(old));persist();result=stage(budget);empty(result);Check(result.error==E::predecessor_mismatch,"shared feature root is not a dedicated-root predecessor");old=prior_saved;root=saved;}
@@ -3869,6 +3888,9 @@ void CanonicalCatalogRootStaging(){using E=db::NativeCatalogRootStageError;using
     Check(first.Close().ok()&&second.Close().ok(),"release root filespaces for fresh executable");const auto child=::fork();Check(child>=0,"fork actual root reader");
     if(child==0){const auto profile=std::to_string(p),family=std::to_string(kind);::execl("/proc/self/exe","root-stage-probe","--catalog-root-stage-probe",fixture.root.c_str(),profile.c_str(),family.c_str(),nullptr);::_exit(125);}
     int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable resolves staged root and unchanged predecessor");
+    Check(fixture_writes&&fixture_unchanged,"fixture exercises both actual changed writes and compared no-op images");
+    std::error_code cleanup_error;std::filesystem::remove_all(fixture.root,cleanup_error);
+    Check(!cleanup_error&&!std::filesystem::exists(fixture.root),"root staging fixtures removed after devices and child close");
   }
 }
 

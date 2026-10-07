@@ -510,12 +510,16 @@ NativeCatalogRootResult ReadNativeCatalogRootFromOpenDevice(
     if (z.bootstrap.filespace_role>4 || ref.page_number>=z.total_pages) return Fail(Error::invalid_filespace);
     if (z.bootstrap.flags & disk::FilespaceBootstrapFlag::payload_encrypted)
       return Fail(Error::encrypted_requires_crypto_authority);
+    if (z.bootstrap.flags & disk::FilespaceBootstrapFlag::cluster_authority_required)
+      return Fail(Error::cluster_requires_authority);
     std::vector<byte> bytes(z.bootstrap.page_size_bytes);
     const auto io=device.ReadAt(ref.page_number*z.bootstrap.page_size_bytes,bytes.data(),bytes.size());
     if (!io.ok() || io.bytes_transferred!=bytes.size()) return Fail(Error::io_failure);
     const auto raw_header=disk::DecodeNativeCommonPageHeader(bytes.data(),128);
     if (!raw_header.ok()) return Fail(Error::invalid_header);
     if (raw_header.header->flags & 1u) return Fail(Error::encrypted_requires_crypto_authority);
+    if (raw_header.header->flags & 2u) return Fail(Error::cluster_requires_authority);
+    if (raw_header.header->flags & 12u) return Fail(Error::header_policy_requires_authority);
     auto result=DecodeNativeCatalogRoot(bytes); if (!result.ok()) return result;
     const auto& r=*result.root; const auto& h=r.header;
     if (!Same(h.database_uuid,database_uuid) || !Same(h.filespace_uuid,ref.filespace_uuid)

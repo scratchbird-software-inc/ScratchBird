@@ -18,7 +18,8 @@ using core::platform::byte;
 enum class NativeCatalogRootMemoryError {
   none, invalid_request, memory_binding_failure, memory_allocation_failure,
   bootstrap_failure, header_failure, catalog_root_failure, object_mismatch,
-  io_failure, resource_exhausted, lock_failure, encrypted_requires_authority
+  io_failure, resource_exhausted, lock_failure, encrypted_requires_authority,
+  cluster_requires_authority, header_policy_requires_authority
 };
 // One image, all six native root-reference slots and native alignment padding.
 // Every byte of this real backing is charged even when a sparse image uses less.
@@ -86,12 +87,17 @@ inline NativeCatalogRootMemoryResult ReadNativeCatalogRootWithMemoryFromOpenDevi
     if(bootstrap.preamble->flags&disk::FilespaceBootstrapFlag::payload_encrypted){
       out.error=E::encrypted_requires_authority;return out;
     }
+    if(bootstrap.preamble->flags&disk::FilespaceBootstrapFlag::cluster_authority_required){
+      out.error=E::cluster_requires_authority;return out;
+    }
     auto read=device.ReadAt(offset,image.pointer,image.bytes);
     out.io_status=read.status;out.io_diagnostic=std::move(read.diagnostic);out.page_bytes_read=read.bytes_transferred;
     if(!read.ok()||read.bytes_transferred!=image.bytes){out.error=E::io_failure;return out;}
     const auto header=disk::DecodeNativeCommonPageHeader(static_cast<const byte*>(image.pointer),128,&expected);
     if(!header.ok()){out.error=E::header_failure;out.header_error=header.error;return out;}
     if(header.header->flags&1u){out.error=E::encrypted_requires_authority;return out;}
+    if(header.header->flags&2u){out.error=E::cluster_requires_authority;return out;}
+    if(header.header->flags&12u){out.error=E::header_policy_requires_authority;return out;}
     const std::span<const byte> bytes{static_cast<const byte*>(image.pointer),image.bytes};
     auto decoded=page::DecodeNativeCatalogRootInto(bytes,records);
     out.catalog_root_error=decoded.error;

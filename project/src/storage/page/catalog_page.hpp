@@ -48,7 +48,8 @@ struct NativeCatalogRoot {
 enum class NativeCatalogRootError {
   none, invalid_header, invalid_family, invalid_reference, invalid_roots,
   invalid_integrity, hash_failure, resource_exhausted, invalid_filespace,
-  binding_mismatch, io_failure, encrypted_requires_crypto_authority, history_mismatch, invalid_backing
+  binding_mismatch, io_failure, encrypted_requires_crypto_authority, history_mismatch, invalid_backing,
+  cluster_requires_authority, header_policy_requires_authority
 };
 struct NativeCatalogRootView {
   scratchbird::storage::disk::NativeCommonPageHeader header;
