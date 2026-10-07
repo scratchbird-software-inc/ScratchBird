@@ -13,6 +13,7 @@
 #include "datatype_type_codec_identity_v3.hpp"
 #include "disk_device.hpp"
 #include "runtime_platform.hpp"
+#include "../support/owned_temp_directory.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1362,7 +1363,11 @@ void RenderAndClosedCastFamilies() {
                             dt::CanonicalTypeId::real128,
                             dt::CanonicalTypeId::int32}) {
     const auto result = ExplicitCast(Present("abc"), target);
-    Check(RejectedAs(result, "DATATYPE.CAST_FORBIDDEN") &&
+    // BLOB now owns a V3 profile API; the generic V1/V2 entrypoint must retain
+    // that exact route diagnostic, not relabel it as generic cast admission.
+    Check(RejectedAs(result, target==dt::CanonicalTypeId::blob
+                                ? "BLOB.V1_V2_REFUSED" : "DATATYPE.CAST_FORBIDDEN") &&
+              dt::ClassifyDatatypeCast(dt::CanonicalTypeId::binary,target)==dt::DatatypeCastCategory::forbidden &&
               result.value.encoded_value.empty(),
           "closed base.binary cast registry forbids every other target family");
   }
@@ -1506,18 +1511,10 @@ void FileDevicePersistence() {
   for (const auto& frame : frames)
     expected.insert(expected.end(), frame.begin(), frame.end());
 
-#ifdef _WIN32
-  const auto pid = ::_getpid();
-#else
-  const auto pid = ::getpid();
-#endif
-  const fs::path path = fs::temp_directory_path() /
-      ("sb-base-binary-" + std::to_string(pid) + ".test-container");
-  struct Cleanup {
-    fs::path path;
-    ~Cleanup() { std::error_code error; fs::remove(path, error); }
-  } cleanup{path};
-
+  scratchbird::tests::OwnedTempDirectory fixture;
+  const auto root=fixture.path();
+  const fs::path path=root/"binary.test-container";
+  {
   disk::FileDevice writer;
   Check(writer.Open(path.string(), disk::FileOpenMode::create_new).ok(),
         "create test-owned binary persistence envelope");
@@ -1618,6 +1615,9 @@ void FileDevicePersistence() {
             !dt::DecodeDatatypePhysicalValue(
                 frames[1].data(), frames[1].size() - 1).ok(),
         "binary physical decoder rejects corruption and truncation");
+  }
+  fixture.Cleanup();
+  Check(!fs::exists(root),"binary fixture and owner sidecars cleaned after all devices close");
 }
 
 }  // namespace

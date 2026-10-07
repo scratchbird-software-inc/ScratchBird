@@ -17,6 +17,13 @@
 
 namespace scratchbird::engine::sblr {
 
+// Preserve an already admitted canonical UUID literal's exact registry binding.
+// This validates supplied cohort/codec fields; it does not issue a statement
+// receipt, resolve a column occurrence, or grant catalog/security authority.
+bool BuildExactCanonicalUuidRuntimeDescriptorV1(
+    const scratchbird::engine::internal_api::RelationalTypeDescriptor& source,
+    scratchbird::engine::internal_api::EngineDescriptor* output);
+
 // Owns exact descriptor/result-shape comparison and nullability projection.
 // It does not create catalog descriptors or validate persisted authority.
 scratchbird::engine::executor::CanonicalResultNullability ResultNullability(

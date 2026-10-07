@@ -8,10 +8,48 @@
 
 #include "canonical_query_descriptor_support.hpp"
 #include "catalog/column_metadata_codec.hpp"
+#include "datatype_catalog_manifest.hpp"
 
 namespace scratchbird::engine::sblr {
 namespace api = scratchbird::engine::internal_api;
 namespace exec = scratchbird::engine::executor;
+
+bool BuildExactCanonicalUuidRuntimeDescriptorV1(
+    const api::RelationalTypeDescriptor& source, api::EngineDescriptor* output) {
+  if (!output) return false;
+  *output = {};
+  namespace dt = scratchbird::core::datatypes;
+  if (!source.datatype_identity_authoritative ||
+      !core::uuid::IsEngineIdentityUuid(source.statement_receipt_uuid) ||
+      (source.nullability != api::RelationalNullability::kNonNull &&
+       source.nullability != api::RelationalNullability::kNullable) ||
+      source.collation_uuid || source.timezone_profile_id || source.width ||
+      source.precision || source.scale) return false;
+  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+      source.datatype_catalog_snapshot_uuid, source.datatype_catalog_generation,
+      source.datatype_registry_generation, source.descriptor_uuid,
+      source.descriptor_generation);
+  if (!identity.ok) return false;
+  const auto& row = identity.row;
+  if (row.canonical_name != "uuid" ||
+      row.canonical_binary_type_code != static_cast<std::uint32_t>(dt::CanonicalTypeId::uuid) ||
+      row.descriptor_uuid != source.descriptor_uuid ||
+      row.descriptor_generation != source.descriptor_generation ||
+      row.type_uuid != source.type_uuid || row.type_generation != source.type_generation ||
+      row.codec_id != source.codec_id || row.codec_version != source.codec_version ||
+      row.codec_generation != source.codec_generation) return false;
+  api::EngineDescriptor descriptor;
+  descriptor.descriptor_uuid = source.descriptor_uuid;
+  descriptor.type_uuid = source.type_uuid;
+  descriptor.datatype_descriptor_uuid = row.descriptor_uuid;
+  descriptor.datatype_descriptor_generation = row.descriptor_generation;
+  descriptor.descriptor_kind = "scalar";
+  descriptor.canonical_type_name = "uuid";
+  descriptor.encoded_descriptor = source.nullability == api::RelationalNullability::kNullable
+      ? "nullability=nullable" : "nullability=non_null";
+  *output = std::move(descriptor);
+  return true;
+}
 
 // SEARCH_KEY: SB_ENGINE_CANONICAL_QUERY_DESCRIPTOR_SUPPORT_AUTHORITY
 std::optional<std::string> ExactEncodedDescriptorField(

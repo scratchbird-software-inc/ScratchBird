@@ -9,6 +9,7 @@
 #include "datatype_physical_encoding.hpp"
 #include "disk_device.hpp"
 #include "runtime_platform.hpp"
+#include "../support/owned_temp_directory.hpp"
 
 #include <algorithm>
 #include <array>
@@ -469,7 +470,7 @@ void NullAndDescriptorRules() {
         "UUID NULL rejects a non-exact nonnullable target before policy");
 }
 
-void PresentSemanticsRefuse() {
+void PresentCastsAndProtectedOperations() {
   const auto present = Present();
   const auto original = present.encoded_value;
   auto binary_descriptor = DescriptorFor(dt::CanonicalTypeId::binary);
@@ -482,18 +483,18 @@ void PresentSemanticsRefuse() {
   alias_identity.target_descriptor = present.descriptor;
   const auto alias_cast = dt::CastDatatypeValue(alias_identity);
   const auto alias_serialized = dt::SerializeDatatypeValue({alias_present});
-  Check(RejectedAs(alias_cast, "DATATYPE.CAST_FORBIDDEN",
-                   "uuid_present_cast_policy_unresolved") &&
+  Check(alias_cast.ok() && alias_cast.category==dt::DatatypeCastCategory::identity &&
+            alias_cast.value.encoded_value==original && !alias_cast.value.is_null &&
             RejectedAs(alias_serialized,
                        "SB_DATATYPE_SERIALIZATION_REJECTED",
                        "uuid_serialization_policy_unresolved") &&
-            alias_cast.value.encoded_value.empty() &&
             alias_serialized.serialized_value.empty(),
         "UUID display aliases do not replace UUID identity or bypass policy");
   for (const auto candidate : {dt::CanonicalTypeId::uuid,
                                dt::CanonicalTypeId::binary,
                                dt::CanonicalTypeId::character}) {
-    const auto expected = candidate == dt::CanonicalTypeId::binary
+    const auto expected = candidate == dt::CanonicalTypeId::uuid
+        ? dt::DatatypeCastCategory::identity : candidate == dt::CanonicalTypeId::binary
         ? dt::DatatypeCastCategory::lossless_explicit
         : dt::DatatypeCastCategory::forbidden;
     Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::uuid, candidate) ==
@@ -505,7 +506,7 @@ void PresentSemanticsRefuse() {
               expected &&
               dt::ClassifyDatatypeCast(candidate, dt::CanonicalTypeId::uuid,
                                        true) == expected,
-          "UUID/binary classifications are explicit-only while UUID identity and text remain unresolved");
+          "UUID identity is classified separately from explicit binary conversion and unresolved text policy");
   }
   for (const auto context : {dt::DatatypeCastContext::implicit,
                              dt::DatatypeCastContext::assignment,
@@ -531,13 +532,14 @@ void PresentSemanticsRefuse() {
       incoming.target_type_id = dt::CanonicalTypeId::uuid;
       incoming.target_descriptor = present.descriptor;
       const auto incoming_result = dt::CastDatatypeValue(incoming);
-      const bool identity_refused =
-          RejectedAs(identity_result, "DATATYPE.CAST_FORBIDDEN",
-                     "uuid_present_cast_policy_unresolved") &&
-          identity_result.value.type_id == dt::CanonicalTypeId::unknown &&
-          identity_result.value.encoded_value.empty();
+      const bool identity_preserved = identity_result.ok() &&
+          identity_result.category==dt::DatatypeCastCategory::identity &&
+          identity_result.value.type_id==dt::CanonicalTypeId::uuid &&
+          !identity_result.value.is_null && identity_result.value.encoded_value==original &&
+          SameUuidBytes(identity_result.value.descriptor.descriptor_uuid,present.descriptor.descriptor_uuid) &&
+          identity_result.value.descriptor.descriptor_epoch==present.descriptor.descriptor_epoch;
       if (context == dt::DatatypeCastContext::explicit_cast) {
-        Check(identity_refused && outgoing_result.ok() && incoming_result.ok() &&
+        Check(identity_preserved && outgoing_result.ok() && incoming_result.ok() &&
                   outgoing_result.category ==
                       dt::DatatypeCastCategory::lossless_explicit &&
                   incoming_result.category ==
@@ -551,9 +553,9 @@ void PresentSemanticsRefuse() {
                   outgoing_result.value.encoded_value == original &&
                   incoming_result.value.encoded_value == original &&
                   present.encoded_value == original,
-              "explicit UUID/binary raw16 casts preserve all 16 bytes while UUID identity remains owner-refused");
+              "explicit UUID/binary and UUID identity casts preserve all16 bytes without granting other operations");
       } else {
-        Check(identity_refused &&
+        Check(identity_preserved &&
                   RejectedAs(outgoing_result, "DATATYPE.CAST_FORBIDDEN",
                              "explicit_cast_required") &&
                   RejectedAs(incoming_result, "DATATYPE.CAST_FORBIDDEN",
@@ -948,18 +950,10 @@ void FileDevicePersistence() {
   for (const auto& frame : frames)
     expected.insert(expected.end(), frame.begin(), frame.end());
 
-#ifdef _WIN32
-  const auto pid = ::_getpid();
-#else
-  const auto pid = ::getpid();
-#endif
-  const fs::path path = fs::temp_directory_path() /
-      ("sb-base-uuid-" + std::to_string(pid) + ".carrier");
-  struct Cleanup {
-    fs::path path;
-    ~Cleanup() { std::error_code error; fs::remove(path, error); }
-  } cleanup{path};
-
+  scratchbird::tests::OwnedTempDirectory fixture;
+  const auto root=fixture.path();
+  const fs::path path=root/"uuid.carrier";
+  {
   disk::FileDevice writer;
   Check(writer.Open(path.string(), disk::FileOpenMode::create_new).ok(),
         "create test-owned UUID persistence envelope");
@@ -1062,6 +1056,9 @@ void FileDevicePersistence() {
                    frame.data(), frame.size() - 1).ok(),
           "UUID physical decoder rejects corruption and truncation");
   }
+  }
+  fixture.Cleanup();
+  Check(!fs::exists(root),"UUID fixture and owner sidecars cleaned after all devices close");
 }
 
 }  // namespace
@@ -1070,7 +1067,7 @@ int main() {
   ExactIdentityAndCohorts();
   Raw16AndLowerCodecs();
   NullAndDescriptorRules();
-  PresentSemanticsRefuse();
+  PresentCastsAndProtectedOperations();
   DescriptorCarrierAndFramePrecedence();
   SetSurfacesRefuse();
   FileDevicePersistence();

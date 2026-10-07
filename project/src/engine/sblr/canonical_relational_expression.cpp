@@ -9,6 +9,7 @@
 #include "canonical_relational_expression.hpp"
 #include "hash_digest.hpp"
 #include "sblr_literal_runtime.hpp"
+#include "canonical_query_descriptor_support.hpp"
 
 #include "datatype_catalog_manifest.hpp"
 #include "../internal_api/catalog/datatype_bootstrap_identity.hpp"
@@ -3024,6 +3025,11 @@ bool CanonicalRelationalExpressionRuntime::BuildDescriptor(
     return false;
   }
   const auto& source = *found->second;
+  if (type_name == "uuid" && source.datatype_identity_authoritative) {
+    if (BuildExactCanonicalUuidRuntimeDescriptorV1(source, descriptor)) return true;
+    *refusal_detail = "canonical UUID datatype receipt binding is invalid";
+    return false;
+  }
   if (source.descriptor_uuid == source.type_uuid) {
     if (type_name == "boolean" &&
         BuildExactCanonicalBooleanRuntimeDescriptorV1(

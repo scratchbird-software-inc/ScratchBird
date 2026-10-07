@@ -226,6 +226,13 @@ MaterializedValues MaterializeValues(
       engine_descriptor.encoded_descriptor +=
           ";scale=" + std::to_string(*descriptor->second->scale);
     }
+    if (type_names[column] == "uuid" && descriptor->second->datatype_identity_authoritative &&
+        !BuildExactCanonicalUuidRuntimeDescriptorV1(*descriptor->second, &engine_descriptor)) {
+      result.batch = {};
+      result.result_bindings.clear();
+      result.detail = "live VALUES canonical UUID datatype receipt binding is invalid";
+      return result;
+    }
     result.batch.columns.push_back(
         {outputs[column]->output_name_utf8, engine_descriptor,
          descriptor->second->nullability ==

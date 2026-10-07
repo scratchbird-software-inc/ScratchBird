@@ -744,7 +744,7 @@ bool CanonicalOperationValueValid(const DatatypeOperationValue& value) {
         value.encoded_value.size() == 16;
   }
   if (IsUuid(value.type_id)) {
-    return ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+    return ExecutionDescriptorExactlyMatchesCurrentBuiltinIgnoringNullability(
                value.descriptor, value.type_id) &&
         value.encoded_value.size() == 16;
   }
@@ -3131,7 +3131,10 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
   if (!LookupDatatypeDescriptor(source_type_id).ok()) {
     return DatatypeCastCategory::forbidden;
   }
-  // The structural UUID/IP-address raw 16-octet carriers, network-prefix raw
+  if (IsUuid(source_type_id) && IsUuid(target_type_id)) {
+    return DatatypeCastCategory::identity;
+  }
+  // Other structural UUID/IP-address raw 16-octet carriers, network-prefix raw
   // 18-octet carrier, and MAC-address raw 8-octet carrier are known, but no
   // PRESENT cast operation is admitted without the missing policy receipt.
   // Contextual NULL binding was handled above.
@@ -3338,6 +3341,11 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
   }
   const bool source_is_contextual_null =
       request.value.type_id == CanonicalTypeId::null_type;
+  const auto uuid_descriptor_valid = [](const ExecutionTypeDescriptor& descriptor,
+                                        bool is_null) {
+    return is_null ? ExecutionDescriptorExactlyMatchesCurrentBuiltin(descriptor, CanonicalTypeId::uuid)
+                   : ExecutionDescriptorExactlyMatchesCurrentBuiltinIgnoringNullability(descriptor, CanonicalTypeId::uuid);
+  };
   if (source_is_contextual_null &&
       ExecutionDescriptorPresent(request.value.descriptor)) {
     return CastFailure("contextual_null_carries_descriptor",
@@ -3345,11 +3353,9 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
                        "DATATYPE.DESCRIPTOR.INVALID");
   }
   if ((IsBinary(request.value.type_id) && IsUuid(request.target_type_id) &&
-       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
-           request.target_descriptor, CanonicalTypeId::uuid)) ||
+       !uuid_descriptor_valid(request.target_descriptor, request.value.is_null)) ||
       (IsUuid(request.value.type_id) && IsBinary(request.target_type_id) &&
-       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
-           request.value.descriptor, CanonicalTypeId::uuid))) {
+       !uuid_descriptor_valid(request.value.descriptor, request.value.is_null))) {
     return CastFailure("uuid_binary_cast_descriptor_invalid",
                        DatatypeCastCategory::forbidden,
                        "CINL.IDENTITY.DESCRIPTOR_INVALID");
@@ -3361,8 +3367,7 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
        (IsDecimalFloat(request.value.type_id) &&
         !DecimalFloatDescriptorValidForPresent(request.value.descriptor)) ||
        (IsUuid(request.value.type_id) &&
-        !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
-            request.value.descriptor, request.value.type_id)) ||
+        !uuid_descriptor_valid(request.value.descriptor, false)) ||
        (IsIpAddress(request.value.type_id) &&
         !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
             request.value.descriptor, request.value.type_id)) ||
@@ -3385,8 +3390,7 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
       (request.value.type_id == CanonicalTypeId::unknown ||
        !LookupDatatypeDescriptor(request.value.type_id).ok() ||
        (IsUuid(request.value.type_id) &&
-        !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
-            request.value.descriptor, request.value.type_id)) ||
+        !uuid_descriptor_valid(request.value.descriptor, request.value.is_null)) ||
        (IsIpAddress(request.value.type_id) &&
         !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
             request.value.descriptor, request.value.type_id)) ||
@@ -3433,8 +3437,7 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
        (IsDecimalFloat(request.target_type_id) &&
         !DecimalFloatDescriptorValidForPresent(request.target_descriptor)) ||
        (IsUuid(request.target_type_id) &&
-        !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
-            request.target_descriptor, request.target_type_id)) ||
+        !uuid_descriptor_valid(request.target_descriptor, false)) ||
        (IsIpAddress(request.target_type_id) &&
         !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
             request.target_descriptor, request.target_type_id)) ||
@@ -3456,8 +3459,7 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
   if (!target_is_unresolved &&
       (!LookupDatatypeDescriptor(request.target_type_id).ok() ||
        (IsUuid(request.target_type_id) &&
-        !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
-            request.target_descriptor, request.target_type_id)) ||
+        !uuid_descriptor_valid(request.target_descriptor, result_is_null)) ||
        (IsIpAddress(request.target_type_id) &&
         !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
             request.target_descriptor, request.target_type_id)) ||
@@ -3751,11 +3753,9 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
            !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
                request.target_descriptor, CanonicalTypeId::character)) ||
           (IsUuid(request.value.type_id) &&
-           !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
-               request.value.descriptor, CanonicalTypeId::uuid)) ||
+           !uuid_descriptor_valid(request.value.descriptor, request.value.is_null)) ||
           (IsUuid(request.target_type_id) &&
-           !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
-               request.target_descriptor, CanonicalTypeId::uuid))) {
+           !uuid_descriptor_valid(request.target_descriptor, result_is_null))) {
         return CastFailure("binary_cast_descriptor_invalid", category,
                            "DATATYPE.DESCRIPTOR.INVALID");
       }
@@ -3823,6 +3823,25 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
       failure.diagnostic.status = failure.status;
       return failure;
     }
+  }
+  if (IsUuid(request.value.type_id) && IsUuid(request.target_type_id)) {
+    // Both exact current descriptors and the native 16-byte source were
+    // validated above. Identity casts copy data; they do not generate an
+    // identity, render text, compare/order values, or grant object authority.
+    if (!ExecutionDescriptorEqualsIgnoringNullability(
+            request.value.descriptor, request.target_descriptor)) {
+      return CastFailure("uuid_identity_descriptor_mismatch",
+                         DatatypeCastCategory::forbidden,
+                         "CINL.IDENTITY.DESCRIPTOR_INVALID");
+    }
+    DatatypeCastResult identity;
+    identity.status = OkStatus();
+    identity.category = DatatypeCastCategory::identity;
+    identity.value = request.value;
+    identity.value.descriptor = request.target_descriptor;
+    identity.diagnostic = MakeDatatypeOperationDiagnostic(
+        identity.status, "SB_DATATYPE_OK", "datatype.ok");
+    return identity;
   }
   if (IsUuid(request.value.type_id) || IsUuid(request.target_type_id)) {
     return CastFailure(
