@@ -76,25 +76,33 @@ bool EngineUuidEquals(const scratchbird::engine::Uuid& left,
   return true;
 }
 
+// Only this immutable, process-built catalogue may amortize validation. Public
+// caller-supplied manifests still pass through LookupDatatypeCatalogRow's full
+// validation on every admission. No supplied descriptor or outcome is cached.
+const DatatypeCatalogDescriptorRow* CurrentValidatedBuiltinRow(
+    CanonicalTypeId type_id) {
+  static const DatatypeCatalogManifestResult current = [] {
+    auto loaded = LoadCurrentCoreDatatypeCatalogManifest();
+    if (!loaded.ok()) return loaded;
+    return ValidateDatatypeCatalogManifest(loaded.manifest);
+  }();
+  if (!current.ok()) return nullptr;
+  for (const auto& row : current.manifest.descriptor_rows) {
+    if (row.type_id == type_id) return &row;
+  }
+  return nullptr;
+}
+
 bool ExecutionDescriptorMatchesCurrentBuiltinCatalog(
     const ExecutionTypeDescriptor& descriptor,
     CanonicalTypeId type_id) {
-  static const DatatypeCatalogManifestResult current =
-      LoadCurrentCoreDatatypeCatalogManifest();
-  if (!current.ok()) {
-    return false;
-  }
-  for (const auto& row : current.manifest.descriptor_rows) {
-    if (row.type_id != type_id) {
-      continue;
-    }
-    scratchbird::engine::Uuid row_uuid{};
-    std::copy(row.descriptor_uuid.value.bytes.begin(),
-              row.descriptor_uuid.value.bytes.end(), row_uuid.bytes);
-    return EngineUuidEquals(descriptor.descriptor_uuid, row_uuid) &&
-        descriptor.descriptor_epoch == row.descriptor_epoch;
-  }
-  return false;
+  const auto* row = CurrentValidatedBuiltinRow(type_id);
+  if (row == nullptr) return false;
+  scratchbird::engine::Uuid row_uuid{};
+  std::copy(row->descriptor_uuid.value.bytes.begin(),
+            row->descriptor_uuid.value.bytes.end(), row_uuid.bytes);
+  return EngineUuidEquals(descriptor.descriptor_uuid, row_uuid) &&
+      descriptor.descriptor_epoch == row->descriptor_epoch;
 }
 
 bool DescriptorHasFlag(const ExecutionTypeDescriptor& descriptor,
@@ -326,15 +334,11 @@ bool ExecutionDescriptorExactlyMatchesCurrentBuiltin(
     const ExecutionTypeDescriptor& descriptor,
     CanonicalTypeId type_id) {
   if (!ExecutionDescriptorValidForType(descriptor, type_id)) return false;
-  static const DatatypeCatalogManifestResult current =
-      LoadCurrentCoreDatatypeCatalogManifest();
-  if (!current.ok()) return false;
-  const auto row = LookupDatatypeCatalogRow(current.manifest, type_id);
-  if (!row.ok() || row.manifest.descriptor_rows.size() != 1) return false;
+  const auto* row = CurrentValidatedBuiltinRow(type_id);
+  if (row == nullptr) return false;
   CatalogExecutionTypeMetadata metadata;
-  metadata.descriptor_uuid = row.manifest.descriptor_rows.front().descriptor_uuid;
-  metadata.descriptor_epoch =
-      row.manifest.descriptor_rows.front().descriptor_epoch;
+  metadata.descriptor_uuid = row->descriptor_uuid;
+  metadata.descriptor_epoch = row->descriptor_epoch;
   const auto expected =
       LookupExecutionTypeDescriptorFromCatalog(type_id, metadata);
   return expected.ok() &&
@@ -345,15 +349,11 @@ bool ExecutionDescriptorExactlyMatchesCurrentBuiltinIgnoringNullability(
     const ExecutionTypeDescriptor& descriptor,
     CanonicalTypeId type_id) {
   if (!ExecutionDescriptorValidForType(descriptor, type_id)) return false;
-  static const DatatypeCatalogManifestResult current =
-      LoadCurrentCoreDatatypeCatalogManifest();
-  if (!current.ok()) return false;
-  const auto row = LookupDatatypeCatalogRow(current.manifest, type_id);
-  if (!row.ok() || row.manifest.descriptor_rows.size() != 1) return false;
+  const auto* row = CurrentValidatedBuiltinRow(type_id);
+  if (row == nullptr) return false;
   CatalogExecutionTypeMetadata metadata;
-  metadata.descriptor_uuid = row.manifest.descriptor_rows.front().descriptor_uuid;
-  metadata.descriptor_epoch =
-      row.manifest.descriptor_rows.front().descriptor_epoch;
+  metadata.descriptor_uuid = row->descriptor_uuid;
+  metadata.descriptor_epoch = row->descriptor_epoch;
   const auto expected =
       LookupExecutionTypeDescriptorFromCatalog(type_id, metadata);
   return expected.ok() && ExecutionDescriptorEqualsIgnoringNullability(

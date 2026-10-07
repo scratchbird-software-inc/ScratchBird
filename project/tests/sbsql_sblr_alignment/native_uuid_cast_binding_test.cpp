@@ -439,6 +439,10 @@ void CanonicalOrdering() {
     track_uuid_key_allocations = false;
     const auto allocation_count = uuid_key_allocation_count;
     Check(warmed.ok() && allocation_count > 0, "key allocation fault must target a warmed allocating operation");
+    Check(allocation_count <= 64,
+        "warmed UUID key must not allocate whole-manifest copies per descriptor validation");
+    std::cout << "uuid_key_allocations=" << allocation_count
+              << " null=" << operand.is_null << '\n';
     fail_uuid_key_allocation = allocation_count;
     uuid_key_allocation_count = 0;
     track_uuid_key_allocations = true;
