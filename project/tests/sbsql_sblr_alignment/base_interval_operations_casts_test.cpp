@@ -405,6 +405,68 @@ void CastFailureBoundaries(
         "contextual dirty NULL refuses atomically");
 }
 
+void ContextualNullHasNoSourceDescriptor(
+    const std::shared_ptr<const dt::IntervalValidatedProfileHandleV3>& profile) {
+  const auto target = Descriptor(dt::CanonicalTypeId::interval);
+  for (auto context : {dt::DatatypeCastContext::implicit,
+                       dt::DatatypeCastContext::assignment,
+                       dt::DatatypeCastContext::explicit_cast}) {
+    dt::DatatypeOperationValue source{dt::CanonicalTypeId::null_type, {}, true};
+    dt::IntervalCastRequestV3 request;
+    request.one_based_policy_row = 158;
+    request.context = context;
+    request.scalar_source = &source;
+    request.interval_target = &profile;
+    request.interval_target_descriptor = &target;
+    const auto valid = dt::CastIntervalValueV3(request);
+    Check(valid.ok() && valid.produced_interval &&
+        valid.interval_value.profile == profile &&
+        valid.interval_value.state == dt::IntervalValueStateV3::sql_null &&
+        valid.interval_value.months == 0 && valid.interval_value.civil_days == 0 &&
+        valid.interval_value.fixed_nanoseconds == 0,
+        "bare contextual NULL binds exact profile in every cast context");
+    for (unsigned mutation = 0; mutation < 26; ++mutation) {
+      source.descriptor = {};
+      auto& d = source.descriptor;
+      switch (mutation) {
+        case 0: d = target; break;
+        case 1: d.descriptor_uuid.bytes[0] = 1; break;
+        case 2: d.descriptor_epoch = 1; break;
+        case 3: d.canonical_type_id = 403; break;
+        case 4: d.family = target.family; break;
+        case 5: d.width_class = target.width_class; break;
+        case 6: d.stable_name = "null"; break;
+        case 7: d.bit_width = 1; break;
+        case 8: d.precision = 1; break;
+        case 9: d.scale = 1; break;
+        case 10: d.length = 1; break;
+        case 11: d.vector_dimensions = 1; break;
+        case 12: d.container_rank = 1; break;
+        case 13: d.modifier_flags = 1; break;
+        case 14: d.domain_uuid.bytes[0] = 1; break;
+        case 15: d.domain_stack.push_back(target.descriptor_uuid); break;
+        case 16: d.charset_uuid.bytes[0] = 1; break;
+        case 17: d.collation_uuid.bytes[0] = 1; break;
+        case 18: d.timezone_uuid.bytes[0] = 1; break;
+        case 19: d.element_descriptor_uuid.bytes[0] = 1; break;
+        case 20: d.security_policy_uuid.bytes[0] = 1; break;
+        case 21: d.nullable_allowed = false; break;
+        case 22: d.descriptor_authoritative = false; break;
+        case 23: d.parser_independent = false; break;
+        case 24: d = Descriptor(dt::CanonicalTypeId::character); break;
+        case 25: d.domain_stack.push_back({}); break;
+      }
+      for (bool dirty : {false, true}) {
+        source.encoded_value = dirty ? "dirty" : "";
+        const auto result = dt::CastIntervalValueV3(request);
+        Check(AtomicCastFailure(result) &&
+            result.diagnostic.diagnostic_code == "CTI.INTERVAL.DESCRIPTOR_INVALID",
+            "contextual NULL source descriptor must refuse before dirty state");
+      }
+    }
+  }
+}
+
 void GenericCarrierRefusal() {
   dt::DatatypeCastRequest request;
   request.value.type_id = dt::CanonicalTypeId::interval;
@@ -699,6 +761,7 @@ int main() {
   auto profile = Profile();
   CastCorpus(profile);
   CastFailureBoundaries(profile);
+  ContextualNullHasNoSourceDescriptor(profile);
   GenericCarrierRefusal();
   Properties(profile);
   MalformedShrink(profile);

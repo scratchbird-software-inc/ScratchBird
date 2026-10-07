@@ -206,6 +206,24 @@ template<class I> char* AppendInt(char*p,char*e,I value) noexcept{auto r=std::to
 
 bool EngineUuidEqual(const scratchbird::engine::Uuid&a,const platform::Uuid&b) noexcept{return std::equal(std::begin(a.bytes),std::end(a.bytes),b.bytes.begin());}
 bool EngineUuidNil(const scratchbird::engine::Uuid&a) noexcept{return std::all_of(std::begin(a.bytes),std::end(a.bytes),[](byte b){return b==0;});}
+bool EmptyContextualDescriptor(
+    const scratchbird::engine::ExecutionTypeDescriptor& d) noexcept {
+  // INTERVAL-CAST-158 is a process-local NULL sentinel, not a datatype.
+  // Even a label-only or malformed partial descriptor is supplied authority
+  // and must not disappear when the target interval profile is attached.
+  return EngineUuidNil(d.descriptor_uuid) && d.descriptor_epoch == 0 &&
+      d.canonical_type_id == 0 &&
+      d.family == scratchbird::engine::ExecutionTypeFamily::unknown &&
+      d.width_class == scratchbird::engine::ExecutionTypeWidthClass::unknown &&
+      d.stable_name.empty() && d.bit_width == 0 && d.precision == 0 &&
+      d.scale == 0 && d.length == 0 && d.vector_dimensions == 0 &&
+      d.container_rank == 0 && d.modifier_flags == 0 &&
+      EngineUuidNil(d.domain_uuid) && d.domain_stack.empty() &&
+      EngineUuidNil(d.charset_uuid) && EngineUuidNil(d.collation_uuid) &&
+      EngineUuidNil(d.timezone_uuid) && EngineUuidNil(d.element_descriptor_uuid) &&
+      EngineUuidNil(d.security_policy_uuid) && d.nullable_allowed &&
+      d.descriptor_authoritative && d.parser_independent;
+}
 bool DescriptorBinds(const scratchbird::engine::ExecutionTypeDescriptor&d,const DatatypeTypeCodecIdentityRowV3&i,CanonicalTypeId t) noexcept {
  const auto*c=Current(t);
  if(!c||!SameIdentity(i,*c)||!EngineUuidEqual(d.descriptor_uuid,i.legacy_fields.descriptor_uuid)||d.descriptor_epoch!=i.legacy_fields.descriptor_generation||d.canonical_type_id!=static_cast<u32>(t)||!d.descriptor_authoritative||!d.parser_independent||!EngineUuidNil(d.domain_uuid)||!d.domain_stack.empty()||!EngineUuidNil(d.charset_uuid)||!EngineUuidNil(d.collation_uuid)||!EngineUuidNil(d.timezone_uuid)||!EngineUuidNil(d.element_descriptor_uuid)||!EngineUuidNil(d.security_policy_uuid)||d.vector_dimensions!=0||d.container_rank!=0)return false;
@@ -721,7 +739,8 @@ IntervalCastResultV3 CastIntervalValueV3(const IntervalCastRequestV3&r) noexcept
       !DescriptorBinds(*r.interval_target_descriptor,
                        (**r.interval_target).identity,CanonicalTypeId::interval))
      return fail("CTI.INTERVAL.DESCRIPTOR_INVALID","target_authority_invalid");
-   if(r.scalar_source->type_id!=CanonicalTypeId::null_type)
+   if(r.scalar_source->type_id!=CanonicalTypeId::null_type||
+      !EmptyContextualDescriptor(r.scalar_source->descriptor))
      return fail("CTI.INTERVAL.DESCRIPTOR_INVALID","contextual_null_authority_invalid");
    if(!r.scalar_source->is_null||!r.scalar_source->encoded_value.empty())
      return fail("DATATYPE.NULL_STATE.INVALID","contextual_null_invalid");

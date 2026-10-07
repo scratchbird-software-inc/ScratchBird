@@ -14,8 +14,10 @@
 #include "datatype_operations.hpp"
 #include "datatype_physical_encoding.hpp"
 #include "datatype_timestamp.hpp"
+#include "datatype_interval.hpp"
 #include "disk_device.hpp"
 #include "sbl_numeric.hpp"
+#include "../support/owned_temp_directory.hpp"
 
 #include <algorithm>
 #include <array>
@@ -72,7 +74,7 @@ void CheckRejectedAs(const Result& result, const std::string& code,
                      const std::string& message) {
   Check(!result.ok(), message + " was admitted");
   Check(result.diagnostic.diagnostic_code == code,
-        message + " reported " + result.diagnostic.diagnostic_code +
+        message + " reported " + std::string(result.diagnostic.diagnostic_code) +
             " instead of " + code);
 }
 
@@ -263,8 +265,11 @@ void ContextualBindingPreservesTargetType() {
       }
       if (descriptor.type_id == dt::CanonicalTypeId::date ||
           descriptor.type_id == dt::CanonicalTypeId::time ||
-          descriptor.type_id == dt::CanonicalTypeId::timestamp) {
-        CheckRejectedAs(bound, "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+          descriptor.type_id == dt::CanonicalTypeId::timestamp ||
+          descriptor.type_id == dt::CanonicalTypeId::interval) {
+        const char* code = descriptor.type_id == dt::CanonicalTypeId::interval
+            ? "CTI.INTERVAL.DESCRIPTOR_INVALID" : "CTI.TEMPORAL.DESCRIPTOR_INVALID";
+        CheckRejectedAs(bound, code,
                         "generic contextual temporal NULL without D710 profile");
         dt::DatatypeCastRequest identity;
         identity.value = TypedNull(descriptor.type_id, target_descriptor);
@@ -272,7 +277,7 @@ void ContextualBindingPreservesTargetType() {
         identity.context = context;
         identity.target_descriptor = target_descriptor;
         CheckRejectedAs(dt::CastDatatypeValue(identity),
-                        "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+                        code,
                         "generic typed temporal NULL identity without D710 profile");
         continue;
       }
@@ -420,6 +425,8 @@ void ContextualBindingPreservesTargetType() {
       CheckRejectedAs(dt::CastDatatypeValue(cast_to_null),
                       descriptor.type_id == dt::CanonicalTypeId::bit_string
                           ? "CTB.BIT.DESCRIPTOR_INVALID"
+                          : descriptor.type_id == dt::CanonicalTypeId::interval
+                          ? "CTI.INTERVAL.DESCRIPTOR_INVALID"
                           : descriptor.type_id == dt::CanonicalTypeId::date ||
                                     descriptor.type_id == dt::CanonicalTypeId::time ||
                                     descriptor.type_id == dt::CanonicalTypeId::timestamp
@@ -985,7 +992,8 @@ void SerializationRetainsConcreteType() {
     }
     if (descriptor.type_id == dt::CanonicalTypeId::date ||
         descriptor.type_id == dt::CanonicalTypeId::time ||
-        descriptor.type_id == dt::CanonicalTypeId::timestamp) {
+        descriptor.type_id == dt::CanonicalTypeId::timestamp ||
+        descriptor.type_id == dt::CanonicalTypeId::interval) {
       CheckRejectedAs(serialized,
                       "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
                       "generic temporal NULL serialization without D710 profile");
@@ -2160,6 +2168,110 @@ void TimestampNullRequiresExactV3Profile() {
         "exact-profile contextual timestamp NULL did not bind cleanly");
 }
 
+void IntervalNullRequiresExactV3Profile() {
+  const int before_checks = checks, before_failures = failures;
+  const platform::Uuid d710{{
+      0x01, 0x9d, 0, 0, 0, 0, 0x70, 0,
+      0x80, 0, 0, 0, 0, 0, 0xd7, 0x10}};
+  auto built = dt::BuildCurrentIntervalValidatedProfileHandleV3(d710);
+  Check(built.ok(), "build exact interval profile for contextual NULL");
+  if (!built.ok()) return;
+  const auto profile = std::make_shared<const dt::IntervalValidatedProfileHandleV3>(
+      std::move(built.profile));
+  const auto target = DescriptorFor(dt::CanonicalTypeId::interval, 0x64u);
+  const dt::DatatypeOperationValue source{dt::CanonicalTypeId::null_type, {}, true};
+  for (auto context : {dt::DatatypeCastContext::implicit,
+                       dt::DatatypeCastContext::assignment,
+                       dt::DatatypeCastContext::explicit_cast}) {
+    dt::IntervalCastRequestV3 request;
+    request.one_based_policy_row = 158;
+    request.context = context;
+    request.scalar_source = &source;
+    request.interval_target = &profile;
+    request.interval_target_descriptor = &target;
+    const auto bound = dt::CastIntervalValueV3(request);
+    Check(bound.ok() && bound.produced_interval &&
+        bound.interval_value.profile == profile &&
+        bound.interval_value.state == dt::IntervalValueStateV3::sql_null &&
+        bound.interval_value.months == 0 && bound.interval_value.civil_days == 0 &&
+        bound.interval_value.fixed_nanoseconds == 0,
+        "contextual interval NULL retains exact profile and zero components");
+    if (!bound.ok()) continue;
+    dt::IntervalCastRequestV3 identity;
+    identity.one_based_policy_row = 39;
+    identity.context = context;
+    identity.interval_source = &bound.interval_value;
+    identity.interval_target = &profile;
+    const auto copied = dt::CastIntervalValueV3(identity);
+    Check(copied.ok() && copied.category == dt::DatatypeCastCategory::identity &&
+        copied.produced_interval && copied.interval_value.profile == profile &&
+        copied.interval_value.state == dt::IntervalValueStateV3::sql_null &&
+        copied.interval_value.months == 0 && copied.interval_value.civil_days == 0 &&
+        copied.interval_value.fixed_nanoseconds == 0,
+        "interval NULL identity preserves state and profile in every context");
+    request.target_null_allowed = false;
+    CheckRejectedAs(dt::CastIntervalValueV3(request), "DATATYPE.NULL_NOT_ADMITTED",
+        "contextual interval NULL into nonnullable target");
+    identity.target_null_allowed = false;
+    CheckRejectedAs(dt::CastIntervalValueV3(identity), "DATATYPE.NULL_NOT_ADMITTED",
+        "interval NULL identity into nonnullable target");
+
+    const auto component = dt::EncodeCanonicalIntervalComponentV3(bound.interval_value);
+    Check(component.ok() && component.bytes.empty(), "interval NULL component has zero payload");
+    const auto decoded = dt::DecodeCanonicalIntervalComponentNoAllocV3(
+        *profile, dt::IntervalValueStateV3::sql_null, true, component.bytes);
+    Check(decoded.ok() && decoded.value.profile == profile.get() &&
+        decoded.value.state == dt::IntervalValueStateV3::sql_null &&
+        decoded.value.months == 0 && decoded.value.civil_days == 0 &&
+        decoded.value.fixed_nanoseconds == 0, "interval NULL component round trip retains binding");
+    const auto wire = dt::EncodeIntervalSbdvalComposedV3(bound.interval_value, true);
+    Check(wire.ok(), "interval NULL containing binary frame encodes");
+    const auto unwired = dt::DecodeIntervalSbdvalComposedNoAllocV3(*profile, true, wire.bytes);
+    Check(unwired.ok() && unwired.value.profile == profile.get() &&
+        unwired.value.state == dt::IntervalValueStateV3::sql_null,
+        "interval NULL binary frame round trip retains exact profile and state");
+    const auto physical = dt::EncodeIntervalSbdpvComposedV3(bound.interval_value, true);
+    Check(physical.ok() && physical.bytes.size() == 24,
+        "interval NULL physical frame has header only");
+    scratchbird::tests::OwnedTempDirectory directory;
+    const auto root = directory.path();
+    const auto path = root / "interval-null.bin";
+    std::vector<platform::byte> reopened(physical.bytes.size(), 0xa5);
+    {
+      disk::FileDevice writer;
+      Check(writer.Open(path.string(), disk::FileOpenMode::create_new).ok(),
+          "interval NULL create real persistence fixture");
+      const auto written = writer.WriteAt(0, physical.bytes.data(), physical.bytes.size());
+      Check(written.ok() && written.bytes_transferred == physical.bytes.size() &&
+          writer.Sync().ok() && writer.Close().ok(), "interval NULL write sync close");
+      disk::FileDevice reader;
+      Check(reader.Open(path.string(), disk::FileOpenMode::open_existing_read_only).ok(),
+          "interval NULL reopen real fixture");
+      const auto read = reader.ReadAt(0, reopened.data(), reopened.size());
+      Check(read.ok() && read.bytes_transferred == reopened.size() && reader.Close().ok() &&
+          reopened == physical.bytes, "interval NULL persisted bytes survive reopen exactly");
+    }
+    directory.Cleanup();
+    Check(!fs::exists(root), "interval NULL fixture and owner sidecars removed");
+    const auto restored = dt::DecodeIntervalSbdpvComposedNoAllocV3(*profile, true, reopened);
+    Check(restored.ok() && restored.value.profile == profile.get() &&
+        restored.value.state == dt::IntervalValueStateV3::sql_null &&
+        restored.value.months == 0 && restored.value.civil_days == 0 &&
+        restored.value.fixed_nanoseconds == 0, "persisted interval NULL decodes with exact profile");
+    CheckRejectedAs(dt::DecodeIntervalSbdpvComposedNoAllocV3(*profile, false, reopened),
+        "DATATYPE.NULL_NOT_ADMITTED", "persisted interval NULL nonnullable decode");
+    auto stale = *profile; ++stale.receipt.registry_generation;
+    CheckRejectedAs(dt::DecodeIntervalSbdpvComposedNoAllocV3(stale, true, reopened),
+        "CTI.INTERVAL.DESCRIPTOR_INVALID", "persisted interval NULL stale profile");
+    auto dirty = bound.interval_value; dirty.months = 1;
+    const auto refused = dt::EncodeIntervalSbdpvComposedV3(dirty, true);
+    CheckRejectedAs(refused, "DATATYPE.NULL_STATE.INVALID", "dirty interval NULL physical encode");
+    Check(refused.bytes.empty(), "dirty interval NULL has no physical output prefix");
+  }
+  std::cout << "interval NULL profile checks=" << checks - before_checks
+            << " failures=" << failures - before_failures << '\n';
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -2176,6 +2288,7 @@ int main(int argc, char** argv) {
   PhysicalCodecPersistsThroughFileDevice(fs::absolute(argv[0]));
   BitStringNullRequiresExactV3Profile();
   TimestampNullRequiresExactV3Profile();
+  IntervalNullRequiresExactV3Profile();
   std::cout << "base NULL contextual-state checks=" << checks
             << " failures=" << failures << '\n';
   return failures == 0 ? 0 : 1;
