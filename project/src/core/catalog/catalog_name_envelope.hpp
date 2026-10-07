@@ -22,6 +22,9 @@ struct CatalogNameVersionBinding {
   u64 catalog_generation = 0;
 };
 using CatalogNamePayload = std::variant<CatalogNameVector, CatalogNameEntry>;
+// Size includes the resident binding header, but does not validate a not-yet
+// allocated physical locator. Actual encoding must validate that binding.
+std::optional<std::size_t> CatalogNameEnvelopeEncodedBytes(const CatalogNamePayload&);
 // Structural family/common binding. Referenced objects, profiles and policy
 // must still be resolved by the owning catalog transaction.
 bool CatalogNamePayloadMatchesMetadata(const CatalogNamePayload&, const CatalogMetadataVersion&);

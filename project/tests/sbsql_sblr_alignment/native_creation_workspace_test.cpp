@@ -29,7 +29,7 @@ namespace page=scratchbird::storage::page;
 namespace mga=scratchbird::transaction::mga;
 namespace fs=std::filesystem;
 namespace {
-bool count_allocations=false,repeat_entropy=false,clock_failure=false,clock_allocation_failure=false;
+bool count_allocations=false,repeat_entropy=false,zero_entropy=false,clock_failure=false,clock_allocation_failure=false;
 constexpr u64 observed_uuid_millis=u64{1}<<40;
 unsigned allocations=0,allocation_fault=0,context_fault=0;
 std::atomic<bool> pause_write=false,write_paused=false,resume_write=false;
@@ -267,7 +267,7 @@ extern "C" int __wrap_fsync(int fd){if(Hit(sync_call)){errno=EIO;return -1;}cons
   if(armed&&r==0){watermark_synced|=watermark_written;if(selector_phase==1)selector_phase=2;if(selector_phase==4)selector_phase=5;}return r;}
 extern "C" int __real_RAND_bytes(unsigned char*,int);
 extern "C" int __wrap_RAND_bytes(unsigned char* bytes,int count){
-  if(Hit(random_call))return 0;if(repeat_entropy){if(count!=16)return 0;const auto collision=Id(3);std::copy(collision.bytes.begin(),collision.bytes.end(),bytes);return 1;}return __real_RAND_bytes(bytes,count);}
+  if(Hit(random_call))return 0;if(zero_entropy){std::fill_n(bytes,count,0);return 1;}if(repeat_entropy){if(count!=16)return 0;const auto collision=Id(3);std::copy(collision.bytes.begin(),collision.bytes.end(),bytes);return 1;}return __real_RAND_bytes(bytes,count);}
 extern "C" int __real_EVP_Digest(const void*,size_t,unsigned char*,unsigned int*,const EVP_MD*,ENGINE*);
 extern "C" int __wrap_EVP_Digest(const void* data,size_t count,unsigned char* md,unsigned int* size,const EVP_MD* type,ENGINE* engine){
   if(Hit(hash_call))return 0;return __real_EVP_Digest(data,count,md,size,type,engine);
@@ -289,7 +289,11 @@ extern "C" scratchbird::core::time::ClockSnapshotResult __wrap__ZN11scratchbird4
   result.value={{100},{static_cast<i64>(observed_uuid_millis/1000),static_cast<u32>((observed_uuid_millis%1000)*1000000)}};
   return result;
 }
+#include "native_creation_catalog_checks.hpp"
 int main(int argc,char** argv){try{
+  if(argc==2&&std::string(argv[1])=="--populated") {
+    PopulatedWorkspaceChecks();std::cout<<"populated native workspace checks="<<checks<<'\n';return 0;
+  }
   if(argc==4&&std::string_view(argv[1])=="--inspect"){
     disk::FileDevice device;Check(device.Open(argv[2],disk::FileOpenMode::open_existing_read_only).ok(),"fresh process owns node");
     Inspect(device,Request(std::stoul(argv[3]),64));Check(device.Close().ok(),"fresh process closes owned node");return 0;

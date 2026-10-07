@@ -23,4 +23,11 @@ NativeCreationRecoveryResult RecoverNativeCreationWorkspaceSelectionOnOpenDevice
     disk::FileDevice&,const disk::FilespaceBootstrapBinding&,
     const core::platform::Uuid& creation_operation_uuid,
     core::platform::u64 maximum_retained_image_bytes) noexcept;
+// The owning creator supplies the exact original admitted seed, not current
+// configuration defaults. Every resident definition and physical name binding
+// must match before either selector may be repaired. No identity reissuance.
+NativeCreationRecoveryResult RecoverPopulatedNativeCreationWorkspaceSelectionOnOpenDevice(
+    disk::FileDevice&,const disk::FilespaceBootstrapBinding&,
+    const core::platform::Uuid& creation_operation_uuid,const NativeCreationCatalogSeed&,
+    core::platform::u64 maximum_retained_image_bytes) noexcept;
 }  // namespace scratchbird::storage::database

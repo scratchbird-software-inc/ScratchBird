@@ -446,6 +446,11 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
   return std::nullopt;
 }
 
+std::optional<std::size_t> CatalogMetadataVersionEncodedBytes(const CatalogMetadataVersionView& v) {
+  if(ValidateCatalogMetadataVersionView(v))return {};
+  return kMetadataHeaderBytes+kBinaryHeaderBytes+v.record.payload.size()+v.trace_search_key.size()+
+      v.object_subtype.size()+v.retention_class.size();
+}
 CatalogMetadataVersionCodecResult EncodeCatalogMetadataVersion(const CatalogMetadataVersion& value) {
   const auto view=BorrowCatalogMetadataVersion(value);
   if(const auto error=ValidateCatalogMetadataVersionView(view))return MetadataFailure(*error);

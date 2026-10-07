@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_creation_workspace_recovery.hpp"
+#include "native_creation_catalog_input.hpp"
 #include "native_publication_watermark.hpp"
 #include "disk_device.hpp"
 #include "hash_digest.hpp"
@@ -37,6 +38,11 @@ constexpr std::array<u32,20> types{0,0x300,0x301,9,8,0x303,0x302,5,10,11,6,6,6,6
 NativeCreationRecoveryResult RecoverNativeCreationWorkspaceSelectionOnOpenDevice(
     disk::FileDevice& device,const disk::FilespaceBootstrapBinding& binding,
     const Uuid& operation,u64 budget) noexcept {
+  return RecoverPopulatedNativeCreationWorkspaceSelectionOnOpenDevice(device,binding,operation,{},budget);
+}
+NativeCreationRecoveryResult RecoverPopulatedNativeCreationWorkspaceSelectionOnOpenDevice(
+    disk::FileDevice& device,const disk::FilespaceBootstrapBinding& binding,
+    const Uuid& operation,const NativeCreationCatalogSeed& seed,u64 budget) noexcept {
   try {
     const auto guard=device.AcquireOperationGuard();
     Require(core::uuid::IsEngineIdentityUuid(operation)&&core::uuid::IsEngineIdentityUuid(binding.database_uuid)&&
@@ -104,13 +110,49 @@ NativeCreationRecoveryResult RecoverNativeCreationWorkspaceSelectionOnOpenDevice
     receipt.construction_transaction.local_id=mga::MakeLocalTransactionId(1);
     receipt.construction_transaction.scope=mga::TransactionScope::local_node;
     receipt.total_pages=total;receipt.free_pages=z.free_pages;receipt.map_pages=maps;
+    std::set<Uuid> versions;
     for(unsigned i=0;i<6;++i){const u64 n=maps+10+i;
       const auto decoded=DecodeNativeCatalogLeaf(images[n].bytes);Valid(decoded);
       NativeCatalogLeafPage leaf;leaf.header=images[n].header;leaf.body.relation_uuid=decoded.page->body.relation_uuid;
       images[n].owner=leaf.body.relation_uuid.value;
       leaf.body.segment_id=leaf.body.segment_generation=leaf.body.page_generation=leaf.body.compaction_generation=1;leaf.body.page_number=n;
+      Require(decoded.page->body.rows.size()==seed[i].size());
+      u64 remaining=size-128-32-page::kRowDataPageBodyHeaderBytes;
+      for(std::size_t j=0;j<seed[i].size();++j) {
+        const auto bytes=NativeCreationCatalogRowBytes(seed[i][j]);
+        Require(bytes&&*bytes<=remaining);remaining-=*bytes;
+        auto m=seed[i][j].metadata;
+        const bool name=m.record.header.kind==core::catalog::CatalogRecordKind::localized_name;
+        Require(m.authority_scope==core::catalog::CatalogAuthorityScope::local&&
+          m.creator_transaction_uuid.kind==UuidKind::transaction&&m.creator_transaction_uuid.value==creator&&
+          m.creator_local_transaction_id==1&&m.definition_version==1&&!m.record.header.deleted&&
+          m.schema_epoch==1&&m.security_epoch==1&&m.catalog_generation==1&&name==seed[i][j].name.has_value()&&
+          (!name||(m.record.payload.empty()&&core::catalog::CatalogNamePayloadMatchesMetadata(*seed[i][j].name,m))));
+        unique(m.record.header.object_uuid.value);unique(m.record.header.row_uuid.value);
+        page::RowDataRecord row;row.row_uuid=m.record.header.row_uuid;
+        row.version_uuid=decoded.page->body.rows[j].version_uuid;unique(row.version_uuid);versions.insert(row.version_uuid);
+        row.transaction_uuid={UuidKind::transaction,creator};row.local_transaction_id=1;
+        row.internal_row_ordinal=row.stable_slot_id=static_cast<u32>(j+1);row.row_version=row.storage_generation=1;
+        if(name) {
+          const core::catalog::CatalogNameVersionBinding resident{
+            {UuidKind::database,b.database_uuid},{UuidKind::filespace,b.filespace_uuid},row.row_uuid,
+            {UuidKind::row,row.version_uuid},m.record.header.object_uuid,row.transaction_uuid,n,
+            row.stable_slot_id,1,1,1,m.catalog_generation};
+          const auto encoded=core::catalog::EncodeCatalogNameEnvelope({resident,*seed[i][j].name});
+          Require(encoded.ok());m.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
+        }
+        const auto encoded=core::catalog::EncodeCatalogMetadataVersion(m);Require(encoded.ok());
+        core::datatypes::DatatypeBinaryValue cell;
+        cell.type_id=core::datatypes::CanonicalTypeId::binary;cell.payload=encoded.bytes;
+        row.cells.push_back({1,std::move(cell)});leaf.body.rows.push_back(std::move(row));
+      }
+      receipt.catalog_rows[i]=seed[i].size();
       same(n,EncodeNativeCatalogLeaf(leaf));receipt.relations[i]={static_cast<u16>(i+1),6,ref(n),images[n].owner};
     }
+    for(const auto& relation:seed)for(const auto& record:relation)
+      ReserveNativeCreationCatalogReferences(record,[&](const Uuid& id){
+        Require(!versions.contains(id)&&id!=timeline);ids.insert(id);
+      });
     for(unsigned control:{7u,8u,9u}){const u64 n=maps+control;
       const auto decoded=page::DecodeNativeCatalogRoot(images[n].bytes);Valid(decoded);
       page::NativeCatalogRoot c;c.header=images[n].header;c.object_uuid=images[n].owner=decoded.root->object_uuid;

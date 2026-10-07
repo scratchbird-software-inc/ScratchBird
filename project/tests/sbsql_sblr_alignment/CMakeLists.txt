@@ -1030,6 +1030,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     -Wl,--wrap=pwrite -Wl,--wrap=pread -Wl,--wrap=fsync -Wl,--wrap=RAND_bytes -Wl,--wrap=EVP_Digest
     -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex)
   add_test(NAME sbsql_sblr_alignment_native_creation_workspace COMMAND sbsql_sblr_alignment_native_creation_workspace)
+  add_test(NAME sbsql_sblr_alignment_native_creation_catalog
+    COMMAND sbsql_sblr_alignment_native_creation_workspace --populated)
+  set_tests_properties(sbsql_sblr_alignment_native_creation_catalog PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_creation;actual_files;metric_catalog;not_SQL_E2E" TIMEOUT 180)
   set_tests_properties(sbsql_sblr_alignment_native_creation_workspace PROPERTIES
     LABELS "sbsql_sblr_alignment;native_creation;actual_files;duplex_publication;not_SQL_E2E" TIMEOUT 180)
   foreach(shard RANGE 0 3)

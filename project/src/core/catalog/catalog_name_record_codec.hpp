@@ -123,6 +123,9 @@ CatalogNameVectorView BorrowCatalogNameVector(const CatalogNameVector& record);
 CatalogNameEntryView BorrowCatalogNameEntry(const CatalogNameEntry& record);
 CatalogValueError ValidateCatalogNameVector(const CatalogNameVectorView& record);
 CatalogValueError ValidateCatalogNameEntry(const CatalogNameEntryView& record);
+// Exact validated SBCV sizes, with all variable input borrowed; no allocation.
+std::optional<std::size_t> CatalogNameEncodedBytes(const CatalogNameVectorView&);
+std::optional<std::size_t> CatalogNameEncodedBytes(const CatalogNameEntryView&);
 CatalogNameRecordDecodeResult<CatalogNameVectorView> DecodeCatalogNameVectorView(std::span<const byte> bytes);
 CatalogNameRecordDecodeResult<CatalogNameEntryView> DecodeCatalogNameEntryView(std::span<const byte> bytes);
 CatalogNameVector MaterializeCatalogNameVector(const CatalogNameVectorView& record);

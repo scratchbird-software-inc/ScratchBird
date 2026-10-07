@@ -177,6 +177,8 @@ CatalogMetadataVersionViewResult DecodeCatalogMetadataVersionView(
     std::span<const scratchbird::core::platform::byte> bytes);
 std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(
     const CatalogMetadataVersionView&);
+// Complete structural validation and exact envelope size, without allocation.
+std::optional<std::size_t> CatalogMetadataVersionEncodedBytes(const CatalogMetadataVersionView&);
 CatalogMetadataVersion MaterializeCatalogMetadataVersion(const CatalogMetadataVersionView&);
 
 

@@ -243,6 +243,20 @@ CatalogValueError ValidateCatalogNameVector(const CatalogNameVectorView& record)
   return ValidateCatalogValueFields(CatalogNameVectorSchemaView(),
       {fields.fields.data(), fields.count});
 }
+std::optional<std::size_t> CatalogNameEncodedBytes(const CatalogNameVectorView& r) {
+  if(ValidateCatalogNameVector(r)!=Error::none)return {};
+  NativeNameFields fields;VisitVector(r,[&](u16 id,const auto& v){fields.Add(id,v);});
+  std::size_t bytes=kCatalogValueBlockHeaderBytes;
+  for(std::size_t i=0;i<fields.count;++i)bytes+=8+fields.fields[i].bytes.size();
+  return bytes;
+}
+std::optional<std::size_t> CatalogNameEncodedBytes(const CatalogNameEntryView& r) {
+  if(ValidateCatalogNameEntry(r)!=Error::none)return {};
+  NativeNameFields fields;VisitEntry(r,[&](u16 id,const auto& v){fields.Add(id,v);});
+  std::size_t bytes=kCatalogValueBlockHeaderBytes;
+  for(std::size_t i=0;i<fields.count;++i)bytes+=8+fields.fields[i].bytes.size();
+  return bytes;
+}
 CatalogValueError ValidateCatalogNameEntry(const CatalogNameEntryView& record) {
   if (!ValidEntry(record)) return Error::invalid_value;
   NativeNameFields fields;

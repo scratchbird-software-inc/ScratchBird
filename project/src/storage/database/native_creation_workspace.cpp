@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_creation_workspace.hpp"
+#include "native_creation_catalog_input.hpp"
 #include "native_publication_watermark.hpp"
 #include "disk_device.hpp"
 #include "hash_digest.hpp"
@@ -41,6 +42,13 @@ u64 Coverage(u64 size) {
 NativeCreationWorkspaceResult InitializeNativeCreationWorkspaceOnOpenDevice(
     disk::FileDevice& device,const NativeFilespaceInitializationRequest& request,u64 budget,
     core::uuid::StandaloneUuidV7Issuer& issuer) noexcept {
+  return InitializePopulatedNativeCreationWorkspaceOnOpenDevice(device,request,{},budget,issuer);
+}
+
+NativeCreationWorkspaceResult InitializePopulatedNativeCreationWorkspaceOnOpenDevice(
+    disk::FileDevice& device,const NativeFilespaceInitializationRequest& request,
+    const NativeCreationCatalogSeed& seed,u64 budget,
+    core::uuid::StandaloneUuidV7Issuer& issuer) noexcept {
   try {
     const auto guard=device.AcquireOperationGuard();
     const auto& b=request.bootstrap;
@@ -74,6 +82,32 @@ NativeCreationWorkspaceResult InitializeNativeCreationWorkspaceOnOpenDevice(
         b.checksum_profile_uuid,request.operation_uuid,request.writer_uuid,request.creator.transaction_uuid.value,
         request.policy_snapshot_uuid})
       if(!ids.insert(id).second) return Fail(E::invalid_request);
+    // Validate the complete batch before issuing storage identities or writing.
+    // Every admitted row is a first version under this construction transaction.
+    // Keep supplied object/row identities reserved against generated identities.
+    for(const auto& relation:seed) {
+      if(relation.size()>size/128) return Fail(E::catalog_capacity_exceeded);
+      u64 remaining=size-128-32-page::kRowDataPageBodyHeaderBytes;
+      for(const auto& record:relation) {
+        const auto& m=record.metadata;
+        const bool name=m.record.header.kind==core::catalog::CatalogRecordKind::localized_name;
+        if(m.authority_scope!=core::catalog::CatalogAuthorityScope::local||
+           m.creator_transaction_uuid.kind!=UuidKind::transaction||
+           m.creator_transaction_uuid.value!=request.creator.transaction_uuid.value||
+           m.creator_local_transaction_id!=1||m.definition_version!=1||m.record.header.deleted||
+           m.schema_epoch!=1||m.security_epoch!=1||m.catalog_generation!=1||
+           name!=record.name.has_value()||
+           (name&&(!m.record.payload.empty()||!core::catalog::CatalogNamePayloadMatchesMetadata(*record.name,m)))||
+           !ids.insert(m.record.header.object_uuid.value).second||
+           !ids.insert(m.record.header.row_uuid.value).second) return Fail(E::invalid_catalog_input);
+        const auto bytes=NativeCreationCatalogRowBytes(record);
+        if(!bytes)return Fail(E::invalid_catalog_input);
+        if(*bytes>remaining)return Fail(E::catalog_capacity_exceeded);
+        remaining-=*bytes;
+      }
+    }
+    for(const auto& relation:seed)for(const auto& record:relation)
+      ReserveNativeCreationCatalogReferences(record,[&](const Uuid& id){ids.insert(id);});
     const auto issue=[&](UuidKind kind)->Uuid {
       const auto id=issuer.Issue(kind);
       if(id.error==core::uuid::StandaloneUuidV7Error::resource_exhausted) throw E::resource_exhausted;
@@ -126,7 +160,34 @@ NativeCreationWorkspaceResult InitializeNativeCreationWorkspaceOnOpenDevice(
       leaf.body.relation_uuid={UuidKind::object,images[n].owner};
       leaf.body.segment_id=leaf.body.segment_generation=leaf.body.page_generation=leaf.body.compaction_generation=1;
       leaf.body.page_number=n;
-      save(n,EncodeNativeCatalogLeaf(leaf));
+      u32 slot=0;
+      for(const auto& record:seed[i]) {
+        auto metadata=record.metadata;
+        page::RowDataRecord row;row.row_uuid=metadata.record.header.row_uuid;
+        row.version_uuid=issue(UuidKind::row);row.transaction_uuid=request.creator.transaction_uuid;
+        row.local_transaction_id=1;row.internal_row_ordinal=++slot;row.stable_slot_id=slot;
+        row.row_version=row.storage_generation=1;
+        if(record.name) {
+          const core::catalog::CatalogNameVersionBinding binding{
+            {UuidKind::database,b.database_uuid},{UuidKind::filespace,b.filespace_uuid},
+            row.row_uuid,{UuidKind::row,row.version_uuid},metadata.record.header.object_uuid,
+            row.transaction_uuid,n,slot,1,1,1,metadata.catalog_generation};
+          const auto name=core::catalog::EncodeCatalogNameEnvelope({binding,*record.name});
+          if(!name.ok()) return Fail(E::invalid_catalog_input);
+          metadata.record.payload.assign(name.bytes.begin(),name.bytes.end());
+        }
+        const auto encoded=core::catalog::EncodeCatalogMetadataVersion(metadata);
+        if(!encoded.ok()) return Fail(E::invalid_catalog_input);
+        core::datatypes::DatatypeBinaryValue cell;
+        cell.type_id=core::datatypes::CanonicalTypeId::binary;cell.payload=encoded.bytes;
+        row.cells.push_back({1,std::move(cell)});leaf.body.rows.push_back(std::move(row));
+      }
+      auto encoded=EncodeNativeCatalogLeaf(leaf);
+      if(!encoded.ok()) return Fail(encoded.error==NativeCatalogLeafError::resource_exhausted
+        ?E::resource_exhausted:encoded.error==NativeCatalogLeafError::hash_failure
+        ?E::hash_failure:encoded.error==NativeCatalogLeafError::invalid_body
+        ?E::catalog_capacity_exceeded:E::invalid_catalog_input);
+      save(n,std::move(encoded));receipt.catalog_rows[i]=seed[i].size();
       receipt.relations[i]={static_cast<u16>(i+1),6,ref(n),images[n].owner};
     }
     for(const auto control:{catalog,configuration,security}) {
@@ -299,9 +360,15 @@ NativeCreationWorkspaceResult InitializeNativeCreationWorkspaceOnOpenDevice(
     if(auto r=graph_error(VerifyCurrentNativeCheckpointDirectoryFromOpenDevices(b.database_uuid,devices,receipt.checkpoint,budget)))return *r;
     if(auto r=graph_error(VerifyCurrentNativeCheckpointSystemStateFromOpenDevices(b.database_uuid,devices,receipt.checkpoint,budget)))return *r;
     if(auto r=graph_error(VerifyCurrentNativeCheckpointHorizonFromOpenDevices(b.database_uuid,devices,receipt.checkpoint,budget)))return *r;
-    for(const auto& relation:receipt.relations) {
+    for(std::size_t i=0;i<receipt.relations.size();++i) {
+      const auto& relation=receipt.relations[i];
       const auto leaf=ReadNativeCatalogLeafFromOpenDevice(device,b.database_uuid,relation);
-      if(!leaf.ok()||!leaf.page->body.rows.empty())return Fail(E::graph_failure);
+      if(!leaf.ok()||leaf.page->body.rows.size()!=receipt.catalog_rows[i])return Fail(E::graph_failure);
+      if(receipt.catalog_rows[i]) {
+        const auto committed=ReadNativeCommittedCatalogVersionsFromOpenDevices(b.database_uuid,
+          devices,receipt.checkpoint,2,static_cast<u16>(i+1),{relation.object_uuid,{}},budget);
+        if(!committed.ok()||committed.rows.size()!=receipt.catalog_rows[i])return Fail(E::graph_failure);
+      }
     }
     NativeCreationWorkspaceResult result;result.error=E::none;result.receipt=std::move(receipt);return result;
   }catch(E error){return Fail(error);}
