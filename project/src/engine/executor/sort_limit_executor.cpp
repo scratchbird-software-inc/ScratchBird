@@ -10,6 +10,7 @@
 #include "hash_digest.hpp"
 #include "sbl_numeric.hpp"
 #include "uuid.hpp"
+#include "catalog/column_metadata_codec.hpp"
 
 #include <algorithm>
 #include <array>
@@ -510,7 +511,7 @@ bool CompareOrderValues(
   engine::ExecutionTypeDescriptor left_bound_descriptor;
   engine::ExecutionTypeDescriptor right_bound_descriptor;
   const bool has_null = left.isSqlNull() || right.isSqlNull();
-  if (has_null) {
+  if (has_null || type_id == dt::CanonicalTypeId::uuid) {
     std::string descriptor_detail;
     if (!BuildBoundExecutionTypeDescriptor(
             left.descriptor, type_id, &left_bound_descriptor,
@@ -522,6 +523,36 @@ bool CompareOrderValues(
           (descriptor_detail.empty()
                ? std::string("order operand descriptor authority is unresolved")
                : std::move(descriptor_detail));
+      return false;
+    }
+  }
+  dt::DatatypeUuidOrderingProfileV1 uuid_ordering;
+  if (type_id == dt::CanonicalTypeId::uuid) {
+    // This physical seam selects the canonical base profile only. Never
+    // silently erase a donor profile, domain, or unprojected modifier.
+    const auto canonical_metadata = [](const auto& descriptor) {
+      internal_api::CatalogColumnMetadata fields;
+      if (!internal_api::AdmitCatalogColumnMetadata(
+              descriptor.encoded_descriptor, &fields) ||
+          !fields.identities.empty()) return false;
+      for (const auto& [name, value] : fields.text) {
+        if (name != "nullability" && name != "nullable") return false;
+      }
+      return true;
+    };
+    if (!canonical_metadata(left.descriptor) ||
+        !canonical_metadata(right.descriptor) ||
+        term.expression_descriptor_id == 0 ||
+        !term.collation_uuid.is_nil() || term.resource_epoch != 0 ||
+        term.collation_epoch != 0 || term.timezone_epoch != 0 ||
+        !TextSeedAbsent(term.text_seed) || !TimezoneSeedAbsent(term.timezone_seed) ||
+        (term.direction != CanonicalDescriptorOrderDirection::ascending &&
+         term.direction != CanonicalDescriptorOrderDirection::descending) ||
+        (term.null_placement != CanonicalDescriptorNullPlacement::first &&
+         term.null_placement != CanonicalDescriptorNullPlacement::last) ||
+        !dt::ResolveCanonicalUuidOrderingProfileV1(
+            left_bound_descriptor, &uuid_ordering)) {
+      *refusal_detail = "DATATYPE.DESCRIPTOR.INVALID:UUID order profile or modifiers are unsupported";
       return false;
     }
   }
@@ -641,21 +672,22 @@ bool CompareOrderValues(
     }
     timezone_normalized = true;
   }
-  if (has_null) {
+  if (has_null || type_id == dt::CanonicalTypeId::uuid) {
     dt::DatatypeComparisonRequest request;
     request.left.type_id = type_id;
-    request.left.encoded_value = left_encoded;
+    request.left.encoded_value = std::move(left_encoded);
     request.left.is_null =
         left.state ==
         scratchbird::engine::internal_api::EngineValueState::sql_null;
     request.right.type_id = type_id;
-    request.right.encoded_value = right_encoded;
+    request.right.encoded_value = std::move(right_encoded);
     request.right.is_null =
         right.state ==
         scratchbird::engine::internal_api::EngineValueState::sql_null;
     request.left.descriptor = left_bound_descriptor;
     request.right.descriptor = right_bound_descriptor;
     request.null_ordering = null_ordering;
+    request.uuid_ordering = uuid_ordering;
     const auto compared = dt::CompareDatatypeValues(request);
     if (!compared.ok()) {
       *refusal_detail = compared.diagnostic.diagnostic_code + ":" +
@@ -1194,7 +1226,11 @@ CanonicalDescriptorEqualityKeyPlan PlanCanonicalDescriptorEqualityKey(
   }
   std::size_t sort_key_bound = 0;
   std::size_t numeric_backend_workspace_bound = 0;
-  if (type_id == dt::CanonicalTypeId::character &&
+  if (type_id == dt::CanonicalTypeId::uuid) {
+    // Generation1 Core key: binary profile and descriptor UUIDs/generations,
+    // NULL placement/state tags (50 bytes), then the 16 canonical data bytes.
+    sort_key_bound = 66;
+  } else if (type_id == dt::CanonicalTypeId::character &&
       term.text_seed.comparison_profile == scratchbird::core::resources::CollationProfile::utf8_binary) {
     // TextComparisonCohort carries three binary UUIDs and three u64 epochs/
     // profile values after its three-byte discriminator, independent of names.
@@ -1461,16 +1497,38 @@ CanonicalDescriptorEqualityKeyResult MakeCanonicalDescriptorEqualityKey(
   cast_request.value.is_null = false;
   cast_request.target_type_id = type_id;
   cast_request.explicit_cast = true;
-  const auto checked = dt::CastDatatypeValue(cast_request);
-  if (!checked.ok()) {
-    result.diagnostic = Refusal(
-        "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
-        checked.diagnostic.diagnostic_code);
-    return result;
+  if (type_id == dt::CanonicalTypeId::uuid) {
+    std::string detail;
+    if (!BuildBoundExecutionTypeDescriptor(value.descriptor, type_id,
+                                           &cast_request.value.descriptor, &detail)) {
+      result.diagnostic = Refusal("DATATYPE.DESCRIPTOR.INVALID", std::move(detail));
+      return result;
+    }
   }
   dt::DatatypeSortKeyRequest sort_request;
-  sort_request.value = checked.value;
+  if (type_id == dt::CanonicalTypeId::uuid) {
+    // UUID has a canonical fixed-width binary carrier already checked by the
+    // self comparison. The key operation revalidates the exact binding,
+    // profile and payload; an extra identity cast adds copies, not authority.
+    sort_request.value = std::move(cast_request.value);
+  } else {
+    auto checked = dt::CastDatatypeValue(cast_request);
+    if (!checked.ok()) {
+      result.diagnostic = Refusal(
+          "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+          checked.diagnostic.diagnostic_code);
+      return result;
+    }
+    sort_request.value = std::move(checked.value);
+  }
   sort_request.null_ordering = dt::DatatypeNullOrdering::nulls_first;
+  if (type_id == dt::CanonicalTypeId::uuid &&
+      !dt::ResolveCanonicalUuidOrderingProfileV1(
+          sort_request.value.descriptor, &sort_request.uuid_ordering)) {
+    result.diagnostic = Refusal("DATATYPE.DESCRIPTOR.INVALID",
+                                "UUID equality key profile is unbound");
+    return result;
+  }
   if (type_id == dt::CanonicalTypeId::character) {
     sort_request.case_insensitive_character_compare =
         term.text_seed.collation_case_insensitive;

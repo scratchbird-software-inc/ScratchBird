@@ -522,6 +522,102 @@ int main() try {
   Reject(null, binary);
   LiteralBindings();
   CanonicalOrdering();
+  // The physical sort/equality path is distinct from the QOW scalar comparator.
+  // Exercise it directly: neither path may discard the supplied UUID binding.
+  {
+    exec::CanonicalDescriptorOrderTerm term;
+    term.expression_descriptor_id = 1;
+    std::vector<api::EngineTypedValue> values;
+    std::vector<std::string> keys;
+    for (unsigned pattern = 0; pattern < 130; ++pattern) {
+      auto value = exec::MakeExecutorValue(uuid, {}, false);
+      value.binary_value.assign(16, pattern == 1 ? 0xff : 0);
+      if (pattern >= 2) value.binary_value[(pattern - 2) / 8] =
+          static_cast<std::uint8_t>(1u << ((pattern - 2) % 8));
+      const auto key = exec::MakeCanonicalDescriptorEqualityKey(value, term);
+      if (!key.diagnostic.ok) std::cerr << key.diagnostic.detail << '\n';
+      Check(key.diagnostic.ok && !key.equality_key.empty(),
+            "physical UUID equality key lost admitted datatype binding");
+      const auto plan = exec::PlanCanonicalDescriptorEqualityKey(value, term);
+      Check(plan.diagnostic.ok && key.equality_key.capacity() <= plan.retained_key_bytes &&
+            plan.peak_workspace_bytes >= plan.retained_key_bytes,
+            "physical UUID equality key exceeded planned allocation");
+      keys.push_back(key.equality_key);
+      values.push_back(std::move(value));
+    }
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      for (std::size_t j = 0; j < values.size(); ++j) {
+        const auto& a = values[i].binary_value;
+        const auto& b = values[j].binary_value;
+        const int expected = a < b ? -1 : (b < a ? 1 : 0);
+        for (bool descending : {false, true}) {
+          term.direction = descending ? exec::CanonicalDescriptorOrderDirection::descending
+                                      : exec::CanonicalDescriptorOrderDirection::ascending;
+          const auto result = exec::CompareCanonicalDescriptorOrderValues(values[i], values[j], term);
+          Check(result.diagnostic.ok && result.comparison == (descending ? -expected : expected),
+                "physical UUID ordering disagrees with unsigned canonical bytes");
+        }
+        Check((keys[i] == keys[j]) == (expected == 0), "physical UUID equality key collision");
+      }
+    }
+    for (auto placement : {exec::CanonicalDescriptorNullPlacement::first,
+                           exec::CanonicalDescriptorNullPlacement::last}) {
+      term.null_placement = placement;
+      term.direction = exec::CanonicalDescriptorOrderDirection::ascending;
+      auto empty = exec::MakeExecutorValue(uuid, {}, true);
+      const int expected = placement == exec::CanonicalDescriptorNullPlacement::first ? -1 : 1;
+      const auto compared = exec::CompareCanonicalDescriptorOrderValues(empty, values[0], term);
+      const auto reversed = exec::CompareCanonicalDescriptorOrderValues(values[0], empty, term);
+      const auto key = exec::MakeCanonicalDescriptorEqualityKey(empty, term);
+      Check(compared.diagnostic.ok && compared.comparison == expected &&
+            reversed.diagnostic.ok && reversed.comparison == -expected &&
+            key.diagnostic.ok && key.equality_key != keys[0],
+            "physical UUID NULL ordering or equality aliases nil UUID");
+    }
+    for (unsigned mutation = 0; mutation < 13; ++mutation) {
+      auto bad = values[0];
+      switch (mutation) {
+        case 0: bad.descriptor.datatype_descriptor_uuid = {}; break;
+        case 1: ++bad.descriptor.datatype_descriptor_generation; break;
+        case 2: bad.descriptor.type_uuid = binary.type_uuid; break;
+        case 3: bad.encoded_value = "forbidden UUID text"; break;
+        case 4: bad.binary_value.pop_back(); break;
+        case 5: bad.binary_value.push_back(0); break;
+        case 6: bad.state = api::EngineValueState::missing; break;
+        case 7: bad.is_null = true; break;
+        case 8: bad.state = api::EngineValueState::sql_null; bad.is_null = true; break;
+        case 9: bad.descriptor.encoded_descriptor += ";ordering_profile=guid"; break;
+        case 10: bad.descriptor.encoded_descriptor += ";width=128"; break;
+        case 11: bad.descriptor.collation_uuid = uuid.descriptor_uuid; break;
+        case 12: bad.descriptor.descriptor_uuid = {}; break;
+      }
+      Check(!exec::CompareCanonicalDescriptorOrderValues(bad, values[0], term).diagnostic.ok &&
+            !exec::CompareCanonicalDescriptorOrderValues(values[0], bad, term).diagnostic.ok,
+            "physical UUID ordering admitted stale binding or malformed carrier");
+      const auto key = exec::MakeCanonicalDescriptorEqualityKey(bad, term);
+      Check(!key.diagnostic.ok && key.equality_key.empty(),
+            "physical UUID equality published a key after refusal");
+    }
+    for (unsigned mutation = 0; mutation < 6; ++mutation) {
+      auto invalid_term = term;
+      switch (mutation) {
+        case 0: invalid_term.direction = static_cast<exec::CanonicalDescriptorOrderDirection>(255); break;
+        case 1: invalid_term.null_placement = static_cast<exec::CanonicalDescriptorNullPlacement>(255); break;
+        case 2: invalid_term.collation_uuid = uuid.descriptor_uuid; break;
+        case 3: invalid_term.text_seed.active = true; break;
+        case 4: invalid_term.timezone_epoch = 1; break;
+        case 5: invalid_term.expression_descriptor_id = 0; break;
+      }
+      Check(!exec::CompareCanonicalDescriptorOrderValues(values[0], values[1], invalid_term).diagnostic.ok &&
+            !exec::MakeCanonicalDescriptorEqualityKey(values[0], invalid_term).diagnostic.ok,
+            "physical UUID order admitted unsupported order-term authority");
+      const auto empty = exec::MakeExecutorValue(uuid, {}, true);
+      Check(!exec::CompareCanonicalDescriptorOrderValues(empty, values[0], invalid_term).diagnostic.ok &&
+            !exec::CompareCanonicalDescriptorOrderValues(empty, empty, invalid_term).diagnostic.ok &&
+            !exec::MakeCanonicalDescriptorEqualityKey(empty, invalid_term).diagnostic.ok,
+            "physical UUID NULL bypassed invalid order-term admission");
+    }
+  }
   std::cout << "native_uuid_cast_binding checks=" << checks << " patterns=130 uuid_pairs=16900 failures=0\n";
   return EXIT_SUCCESS;
 } catch (const std::exception& error) {
