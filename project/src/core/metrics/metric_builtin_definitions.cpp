@@ -67,6 +67,13 @@ MetricDescriptorDefinition Descriptor(std::string family,
   descriptor.help = std::move(help);
   descriptor.producer_owner = std::move(producer_owner);
   descriptor.security_family = cluster_only ? "OBS_METRICS_READ_FAMILY:cluster" : "OBS_METRICS_READ_FAMILY";
+  // Exact local family requirements, not a namespace-prefix default. Policy
+  // configuration may not rewrite these requirements during materialization.
+  if (descriptor.family == "sb_tx_begin_total" || descriptor.family == "sb_tx_commit_total" ||
+      descriptor.family == "sb_tx_active_transactions" ||
+      descriptor.family == "sb_mga_cleanup_horizon_local_transaction_id" ||
+      descriptor.family == "sb_metric_samples_rejected_total")
+    descriptor.security_family = "OBS_METRICS_READ_DATABASE";
   descriptor.visibility = cluster_only ? MetricVisibilityScope::cluster : MetricVisibilityScope::family;
   descriptor.cluster_only = cluster_only;
   descriptor.labels = CommonLabels();

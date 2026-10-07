@@ -1030,6 +1030,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     -Wl,--wrap=pwrite -Wl,--wrap=pread -Wl,--wrap=fsync -Wl,--wrap=RAND_bytes -Wl,--wrap=EVP_Digest
     -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex)
   add_test(NAME sbsql_sblr_alignment_native_creation_workspace COMMAND sbsql_sblr_alignment_native_creation_workspace)
+  add_test(NAME sbsql_sblr_alignment_native_metric_config
+    COMMAND sbsql_sblr_alignment_native_creation_workspace --metric-config ${CMAKE_SOURCE_DIR}/config/templates)
+  set_tests_properties(sbsql_sblr_alignment_native_metric_config PROPERTIES
+    TIMEOUT 180 LABELS "actual_files;native_creation;metric_catalog;not_SQL_E2E")
   add_test(NAME sbsql_sblr_alignment_native_creation_catalog
     COMMAND sbsql_sblr_alignment_native_creation_workspace --populated)
   set_tests_properties(sbsql_sblr_alignment_native_creation_catalog PROPERTIES

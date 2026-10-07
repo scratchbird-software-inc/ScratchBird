@@ -64,14 +64,29 @@ CatalogValueEncodeResult EncodeCatalogMetricRetentionPolicy(const CatalogMetricR
   const auto& p = r.policy;
   std::vector<byte> grains;
   for (const auto grain : p.rollup_grains) grains.push_back(static_cast<byte>(grain));
-  return EncodeCatalogValueBlock(CatalogMetricRetentionPolicySchema(), {
-      {1, TypedUuid{UuidKind::object, p.policy_uuid}}, {2, p.generation},
-      {3, p.policy_name}, {4, Code(p.scope, kScopes)}, {5, static_cast<u64>(p.mode)},
-      {6, p.raw_retention_seconds}, {7, p.rollup_retention_seconds}, {8, std::move(grains)},
-      {9, p.purge_batch_limit}, {10, p.max_cardinality}, {11, Code(p.overflow_behavior, kOverflow)},
-      {12, p.edit_right}, {13, p.default_admin_group}, {14, p.evidence_required},
-      {15, r.origin_transaction_uuid}, {16, r.origin_local_transaction_id},
-  });
+  // Construct owning fields individually, keeping throwing value construction
+  // in separate RAII boundaries. The allocation-fault regression covers unwind
+  // here, including the former aggregate-list failure path. This also avoids
+  // the initializer-list's second copy of every string/vector.
+  std::vector<CatalogValueField> fields;
+  fields.reserve(16);
+  fields.push_back({1, TypedUuid{UuidKind::object, p.policy_uuid}});
+  fields.push_back({2, p.generation});
+  fields.push_back({3, p.policy_name});
+  fields.push_back({4, Code(p.scope, kScopes)});
+  fields.push_back({5, static_cast<u64>(p.mode)});
+  fields.push_back({6, p.raw_retention_seconds});
+  fields.push_back({7, p.rollup_retention_seconds});
+  fields.push_back({8, std::move(grains)});
+  fields.push_back({9, p.purge_batch_limit});
+  fields.push_back({10, p.max_cardinality});
+  fields.push_back({11, Code(p.overflow_behavior, kOverflow)});
+  fields.push_back({12, p.edit_right});
+  fields.push_back({13, p.default_admin_group});
+  fields.push_back({14, p.evidence_required});
+  fields.push_back({15, r.origin_transaction_uuid});
+  fields.push_back({16, r.origin_local_transaction_id});
+  return EncodeCatalogValueBlock(CatalogMetricRetentionPolicySchema(), fields);
 }
 
 CatalogMetricRetentionPolicyViewResult DecodeCatalogMetricRetentionPolicyView(std::string_view bytes) {

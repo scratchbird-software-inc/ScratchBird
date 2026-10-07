@@ -46,11 +46,19 @@ const CatalogValueSchema& CatalogMetricVisibilityPolicySchema() {
 }
 CatalogValueEncodeResult EncodeCatalogMetricVisibilityPolicy(const CatalogMetricVisibilityPolicy& r) {
   if (!Valid(r)) return {CatalogValueError::invalid_value,{}};
-  return EncodeCatalogValueBlock(CatalogMetricVisibilityPolicySchema(),{
-      {1,TypedUuid{UuidKind::object,r.policy_uuid}}, {2,r.generation},
-      {3,TypedUuid{UuidKind::database,r.database_uuid}}, {4,TypedUuid{UuidKind::object,r.metric_uuid}},
-      {5,r.read_right}, {6,r.sensitive_read_right}, {7,r.origin_transaction_uuid},
-      {8,r.origin_local_transaction_id}});
+  // Keep each throwing value construction in its own RAII boundary, as in
+  // retention encoding; no aggregate variant-list cleanup on allocation failure.
+  std::vector<CatalogValueField> fields;
+  fields.reserve(8);
+  fields.push_back({1,TypedUuid{UuidKind::object,r.policy_uuid}});
+  fields.push_back({2,r.generation});
+  fields.push_back({3,TypedUuid{UuidKind::database,r.database_uuid}});
+  fields.push_back({4,TypedUuid{UuidKind::object,r.metric_uuid}});
+  fields.push_back({5,r.read_right});
+  fields.push_back({6,r.sensitive_read_right});
+  fields.push_back({7,r.origin_transaction_uuid});
+  fields.push_back({8,r.origin_local_transaction_id});
+  return EncodeCatalogValueBlock(CatalogMetricVisibilityPolicySchema(),fields);
 }
 CatalogMetricVisibilityPolicyViewResult DecodeCatalogMetricVisibilityPolicyView(std::string_view bytes) {
   if (bytes.size()>1024) return {CatalogValueError::size_limit,{}};

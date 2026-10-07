@@ -290,7 +290,11 @@ extern "C" scratchbird::core::time::ClockSnapshotResult __wrap__ZN11scratchbird4
   return result;
 }
 #include "native_creation_catalog_checks.hpp"
+#include "native_metric_config_checks.hpp"
 int main(int argc,char** argv){try{
+  if(argc==3&&std::string_view(argv[1])=="--metric-config") {
+    NativeMetricConfigChecks(argv[2]);std::cout<<"native metric config checks="<<checks<<'\n';return 0;
+  }
   if(argc==2&&std::string(argv[1])=="--populated") {
     PopulatedWorkspaceChecks();std::cout<<"populated native workspace checks="<<checks<<'\n';return 0;
   }
