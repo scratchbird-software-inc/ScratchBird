@@ -74,7 +74,8 @@ FunctionCallResult CastNativeBinaryValue(const FunctionCallRequest& request,
   if (!s::SblrNativeCastCarrierValid(input))
     return RefuseFunctionInvalidInput(request, "cast input has conflicting native value carriers");
   auto result = s::EvaluateSblrCastForm(request.context.function_id, input, target,
-                                      request.context.sblr_context, true, false);
+                                      request.context.sblr_context, true, false,
+                                      request.result_descriptor);
   if (!result.ok()) {
     const bool suppressible_conversion_failure = std::any_of(
         result.diagnostics.begin(), result.diagnostics.end(),
@@ -86,12 +87,18 @@ FunctionCallResult CastNativeBinaryValue(const FunctionCallRequest& request,
               [](const auto& field) {
                 const auto* detail = std::get_if<std::string>(&field.value);
                 return field.key == "datatype_detail" && detail != nullptr &&
-                    (*detail == "uuid_binary_length_invalid" ||
-                     *detail == "binary_hex_invalid");
+                    *detail == "binary_uuid_requires_exactly_16_octets";
               });
         });
-    if (try_conversion && suppressible_conversion_failure)
-      return MakeFunctionSuccess(request, {MakeNullValue(target)});
+    if (try_conversion && suppressible_conversion_failure) {
+      // TRY_CAST may publish NULL only if the exact admitted target accepts it.
+      auto null = MakeNullValue(target);
+      null.projection_descriptor = request.result_descriptor;
+      auto converted = s::EvaluateSblrCastForm(request.context.function_id, null, target,
+          request.context.sblr_context, true, false, request.result_descriptor);
+      if (converted.ok()) converted.scalar_values.front().descriptor_id = target;
+      return FunctionCallResult{std::move(converted)};
+    }
     FunctionCallResult refused;
     refused.result = std::move(result);
     return refused;

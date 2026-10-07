@@ -9007,6 +9007,10 @@ api::EngineProjectionFunctionResult EvaluateProjectionFunction(
   }
 
   functions::FunctionCallRequest function_request;
+  if (!request.result_descriptor.descriptor_uuid.is_nil()) {
+    function_request.result_descriptor =
+        std::make_shared<const api::EngineDescriptor>(request.result_descriptor);
+  }
   function_request.context.function_uuid = request.function_uuid;
   function_request.context.function_id = request.function_id;
   function_request.context.engine_request_context = &request.context;
@@ -9098,6 +9102,7 @@ BuildCanonicalRelationalExpressionRuntimeServices(
   services.function_evaluator =
       [context](const api::EngineUuid& function_uuid,
                 const std::vector<api::EngineTypedValue>& arguments,
+                const api::EngineDescriptor& result_descriptor,
                 api::EngineTypedValue* value,
                 std::string* diagnostic_id,
                 std::string* refusal_detail) {
@@ -9113,6 +9118,7 @@ BuildCanonicalRelationalExpressionRuntimeServices(
         api::EngineProjectionFunctionRequest request;
         request.context = context;
         request.function_uuid = function_uuid;
+        request.result_descriptor = result_descriptor;
         request.function_id =
             entry != nullptr
                 ? entry->function_id

@@ -525,6 +525,7 @@ int main() {
       [&function_called, text_descriptor](
           const std::string_view function_uuid,
           const std::vector<api::EngineTypedValue>& arguments,
+          const api::EngineDescriptor&,
           api::EngineTypedValue* output,
           std::string*,
           std::string*) {

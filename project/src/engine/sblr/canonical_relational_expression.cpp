@@ -3025,9 +3025,11 @@ bool CanonicalRelationalExpressionRuntime::BuildDescriptor(
     return false;
   }
   const auto& source = *found->second;
-  if (type_name == "uuid" && source.datatype_identity_authoritative) {
-    if (BuildExactCanonicalUuidRuntimeDescriptorV1(source, descriptor)) return true;
-    *refusal_detail = "canonical UUID datatype receipt binding is invalid";
+  if (type_name == "uuid" || type_name == "binary" || type_name == "varbinary") {
+    const auto type = type_name == "uuid" ? dt::CanonicalTypeId::uuid
+                                          : dt::CanonicalTypeId::binary;
+    if (BuildExactCanonicalScalarRuntimeDescriptorV1(source, type, descriptor)) return true;
+    *refusal_detail = "canonical native binary datatype receipt binding is invalid";
     return false;
   }
   if (source.descriptor_uuid == source.type_uuid) {
@@ -3575,7 +3577,7 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
     api::EngineTypedValue computed;
     std::string diagnostic_id;
     if (!services_.function_evaluator(
-            *expression.function_uuid, arguments, &computed, &diagnostic_id,
+            *expression.function_uuid, arguments, result_descriptor, &computed, &diagnostic_id,
             refusal_detail)) {
       *refusal_detail =
           (diagnostic_id.empty()

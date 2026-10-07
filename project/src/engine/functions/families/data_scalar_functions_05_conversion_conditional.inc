@@ -62,6 +62,8 @@
       return RefuseFunctionInvalidInput(request, "safe_cast/try_cast target descriptor is required");
     }
     const auto& value = request.arguments[0].value;
+    if (NativeBinaryCast(value, target_descriptor))
+      return CastNativeBinaryValue(request, target_descriptor, try_conversion);
     if (IsSqlNull(value)) {
       if (!scratchbird::engine::sblr::SblrNullPayloadEmpty(value)) {
         return RefuseFunctionWithDiagnostic(
@@ -76,8 +78,6 @@
           "DATATYPE.DESCRIPTOR.INVALID",
           "SBLR NULL cast input lacks an exact bound execution descriptor");
     }
-    if (NativeBinaryCast(value, target_descriptor))
-      return CastNativeBinaryValue(request, target_descriptor, try_conversion);
     auto null_result = [&](std::string descriptor) {
       return MakeFunctionSuccess(request, {MakeNullValue(std::move(descriptor))});
     };

@@ -93,6 +93,7 @@ struct EngineProjectionFunctionRequest {
   // Metadata only; dispatch authority is function_uuid.
   std::string function_id;
   std::vector<EngineProjectionFunctionArgument> arguments;
+  EngineDescriptor result_descriptor;
 };
 
 struct EngineProjectionFunctionResult {

@@ -211,6 +211,11 @@ void LiteralBindings() {
   auto refused=expected;
   Check(!s::BuildExactCanonicalUuidRuntimeDescriptorV1(unadmitted,&refused)&&
       refused==api::EngineDescriptor{},"bare registry fields are not an admitted literal binding");
+  dag.descriptors.front()=unadmitted;
+  const auto unbound_values=s::MaterializeValues(dag,logical,{});
+  Check(!unbound_values.ok&&unbound_values.batch.rows.empty()&&
+      unbound_values.batch.columns.empty()&&unbound_values.result_bindings.empty(),
+      "unadmitted UUID VALUES cannot publish an unbound payload-only result");
   dag.descriptors.front()=source;
   auto second=source;second.descriptor_id=2;++second.descriptor_generation;
   auto two_columns=dag;two_columns.descriptors.push_back(second);

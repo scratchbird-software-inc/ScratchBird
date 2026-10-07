@@ -42,7 +42,8 @@ SblrResult EvaluateSblrCastForm(std::string_view operation_id,
                                 std::string_view target_descriptor_id,
                                 const SblrExecutionContext& context,
                                 bool explicit_cast,
-                                bool reference_compatibility_profile) {
+                                bool reference_compatibility_profile,
+                                std::shared_ptr<const internal_api::EngineDescriptor> target_binding) {
   if (!SblrNativeCastCarrierValid(value)) {
     return SpecialFormFailure(operation_id, context, "SBLR.DESCRIPTOR_MISMATCH",
                               "cast source has conflicting or non-native value carriers");
@@ -61,7 +62,36 @@ SblrResult EvaluateSblrCastForm(std::string_view operation_id,
   request.value.is_null = value.is_null;
   request.target_type_id = target_type;
   request.explicit_cast = explicit_cast;
+  request.context = explicit_cast ? datatypes::DatatypeCastContext::explicit_cast
+                                  : datatypes::DatatypeCastContext::implicit;
   request.reference_compatibility_profile = reference_compatibility_profile;
+
+  if (value.projection_descriptor || target_binding) {
+    // This native adapter consumes supplied bindings; target spelling is only
+    // checked for agreement and cannot supply missing descriptor authority.
+    const auto native_type = [](auto type) {
+      return type == datatypes::CanonicalTypeId::uuid ||
+             type == datatypes::CanonicalTypeId::binary;
+    };
+    const auto bind = [&](const auto& binding, auto type, auto* descriptor) {
+      if (!binding || !native_type(type) ||
+          CanonicalTypeFromDescriptor(binding->canonical_type_name) != type ||
+          !binding->charset_uuid.is_nil() || !binding->collation_uuid.is_nil()) return false;
+      internal_api::CatalogColumnMetadata fields;
+      if (!internal_api::AdmitCatalogColumnMetadata(binding->encoded_descriptor, &fields) ||
+          !fields.identities.empty()) return false;
+      for (const auto& [key, ignored] : fields.text)
+        if (key != "nullability" && key != "nullable") return false;
+      std::string detail;
+      return executor::BuildBoundExecutionTypeDescriptor(*binding, type, descriptor, &detail);
+    };
+    if (reference_compatibility_profile ||
+        !bind(value.projection_descriptor, request.value.type_id, &request.value.descriptor) ||
+        !bind(target_binding, target_type, &request.target_descriptor)) {
+      return SpecialFormFailure(operation_id, context, "DATATYPE.DESCRIPTOR.INVALID",
+                                "native cast requires exact source and target bindings without modifiers");
+    }
+  }
 
   if (!value.is_null && request.value.type_id == datatypes::CanonicalTypeId::unknown) {
     return SpecialFormFailure(operation_id,
@@ -91,7 +121,9 @@ SblrResult EvaluateSblrCastForm(std::string_view operation_id,
     return failure;
   }
 
-  return ScalarResult(operation_id, SblrValueFromDatatypeValue(result.value));
+  auto published = SblrValueFromDatatypeValue(result.value);
+  published.projection_descriptor = std::move(target_binding);
+  return ScalarResult(operation_id, std::move(published));
 }
 
 SblrResult EvaluateSblrExtractForm(std::string_view operation_id,

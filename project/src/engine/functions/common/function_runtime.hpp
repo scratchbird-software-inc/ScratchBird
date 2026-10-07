@@ -140,6 +140,8 @@ struct FunctionCallContext {
 struct FunctionCallRequest {
   FunctionCallContext context;
   std::vector<FunctionArgument> arguments;
+  // Supplied by the bound expression, never inferred from a target spelling.
+  std::shared_ptr<const scratchbird::engine::internal_api::EngineDescriptor> result_descriptor;
 };
 
 struct FunctionCallResult {

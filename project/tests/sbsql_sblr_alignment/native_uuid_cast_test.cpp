@@ -7,23 +7,57 @@
 #include "sblr/sblr_operator_runtime.hpp"
 #include "sblr/sblr_projection_value_runtime.hpp"
 #include "sblr/canonical_query_object_free_composition_support.hpp"
+#include "sblr/canonical_query_descriptor_support.hpp"
 #include "sblr/canonical_query_aggregate_registration.hpp"
 #include "internal_api/query/expression_api.hpp"
+#include "internal_api/catalog/datatype_bootstrap_identity.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "datatype_operations.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include <cstdlib>
 #include <iostream>
+#include <new>
 #include <stdexcept>
+
+// Warmed component-operation allocation evidence; no failure injection or
+// skipped validation. Exact counts are observations, not allocator ABI rules.
+thread_local bool track_native_cast_allocations = false;
+thread_local std::size_t native_cast_allocations = 0;
+void* operator new(std::size_t bytes) {
+  if (track_native_cast_allocations) ++native_cast_allocations;
+  if (void* allocation = std::malloc(bytes ? bytes : 1)) return allocation;
+  throw std::bad_alloc();
+}
+void operator delete(void* allocation) noexcept { std::free(allocation); }
+void operator delete(void* allocation, std::size_t) noexcept { std::free(allocation); }
 
 namespace s = scratchbird::engine::sblr;
 namespace f = scratchbird::engine::functions;
+unsigned checks = 0;
 void Check(bool pass, const char* message) {
+  ++checks;
   if (!pass) { std::cerr << message << '\n'; std::exit(1); }
+}
+std::shared_ptr<const scratchbird::engine::internal_api::EngineDescriptor> Binding(
+    std::string type) {
+  if (type == "varbinary") type = "binary";
+  auto descriptor = scratchbird::engine::executor::MakeExecutorDescriptor(type);
+  descriptor.descriptor_kind = "scalar";
+  descriptor.encoded_descriptor = "nullability=nullable";
+  return std::make_shared<const scratchbird::engine::internal_api::EngineDescriptor>(std::move(descriptor));
+}
+s::SblrValue Bound(s::SblrValue value) {
+  value.projection_descriptor = Binding(value.descriptor_id);
+  return value;
 }
 s::SblrResult CallValues(const f::FunctionRegistry& registry, const char* name,
                          std::vector<s::SblrValue> values) {
   const auto* entry = registry.Lookup(name);
   Check(entry != nullptr, "cast absent from actual callable registry");
   f::FunctionCallRequest request;
+  if (values.size() == 2 && values[1].payload_kind == s::SblrValuePayloadKind::text &&
+      (std::string_view(name).find("cast") != std::string_view::npos))
+    request.result_descriptor = Binding(values[1].text_value);
   request.context.function_uuid = entry->function_uuid;
   request.context.security_allowed = request.context.policy_allowed = true;
   Check(registry.BindCallContext(request.context) != nullptr, "binary callable binding failed");
@@ -197,7 +231,9 @@ void NativeExecutorUuidValue(const scratchbird::engine::internal_api::EngineType
         "bound native UUID function result was refused"); preserved(result.value, uuid);
   auto null = native;
   null.binary_value.clear(); null.is_null = true; null.state = api::EngineValueState::sql_null;
-  const auto null_bytes = exec::CastDescriptorValue(null, binary, &diagnostic);
+  auto unbound_null = null;
+  unbound_null.descriptor.datatype_descriptor_uuid = {};
+  const auto null_bytes = exec::CastDescriptorValue(unbound_null, binary, &diagnostic);
   Check(!diagnostic.ok &&
             diagnostic.diagnostic_code == "DATATYPE.DESCRIPTOR.INVALID" &&
             null_bytes.descriptor.canonical_type_name.empty(),
@@ -248,13 +284,31 @@ void NativeExecutorUuidValue(const scratchbird::engine::internal_api::EngineType
   Check(!diagnostic.ok, "executor interpreted textual UUID data as a native UUID");
 }
 
-void NativeUuidValues() {
+void NativeUuidValues(const f::FunctionRegistry& registry) {
   namespace api = scratchbird::engine::internal_api;
   api::TypedRelationalDag dag;
+  namespace dt = scratchbird::core::datatypes;
+  const auto builtin = scratchbird::engine::executor::MakeExecutorDescriptor("uuid");
+  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+      api::kBootstrapDatatypeCatalogUuid, api::kBootstrapDatatypeCatalogGeneration,
+      api::kBootstrapDatatypeRegistryGeneration, builtin.datatype_descriptor_uuid,
+      builtin.datatype_descriptor_generation);
+  Check(identity.ok, "VALUES fixture cannot resolve the actual UUID codec row");
+  const auto& row = identity.row;
   api::RelationalTypeDescriptor descriptor;
   descriptor.descriptor_id = 1;
-  descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(2081, 1);
-  descriptor.type_uuid = s::ExactCanonicalCoreDatatypeTypeUuidV1("uuid");
+  descriptor.descriptor_uuid = row.descriptor_uuid;
+  descriptor.type_uuid = row.type_uuid;
+  descriptor.datatype_identity_authoritative = true;
+  descriptor.descriptor_generation = row.descriptor_generation;
+  descriptor.type_generation = row.type_generation;
+  descriptor.codec_id = row.codec_id;
+  descriptor.codec_version = row.codec_version;
+  descriptor.codec_generation = row.codec_generation;
+  descriptor.statement_receipt_uuid = scratchbird::tests::FixtureUuid(2081, 1);
+  descriptor.datatype_catalog_snapshot_uuid = row.catalog_snapshot_uuid;
+  descriptor.datatype_catalog_generation = row.catalog_generation;
+  descriptor.datatype_registry_generation = row.registry_generation;
   descriptor.nullability = api::RelationalNullability::kNonNull;
   Check(!descriptor.type_uuid.is_nil(), "VALUES UUID datatype absent from actual catalog");
   dag.descriptors.push_back(descriptor);
@@ -399,6 +453,71 @@ void NativeUuidValues() {
     Check(!refused.ok && refused.batch.rows.empty() && refused.result_bindings.empty(),
           "malformed UUID VALUES literal published data");
   }
+  // Real expression evaluation -> supplied callback binding -> registered
+  // cast -> Core -> native projection. This is a component seam, not IPC or
+  // statement-security admission; the callback adds the callable's type label.
+  for (const auto* type : {"uuid", "binary"}) {
+    auto function_dag = dag;
+    auto output_descriptor = descriptor;
+    const auto runtime_target = Binding(type);
+    const auto target_identity = dt::LookupDatatypeTypeCodecIdentityV1(
+        api::kBootstrapDatatypeCatalogUuid, api::kBootstrapDatatypeCatalogGeneration,
+        api::kBootstrapDatatypeRegistryGeneration, runtime_target->datatype_descriptor_uuid,
+        runtime_target->datatype_descriptor_generation);
+    Check(target_identity.ok, "relational callable target codec missing");
+    const auto& target_row = target_identity.row;
+    output_descriptor.descriptor_id = 2;
+    output_descriptor.descriptor_uuid = target_row.descriptor_uuid;
+    output_descriptor.type_uuid = target_row.type_uuid;
+    output_descriptor.descriptor_generation = target_row.descriptor_generation;
+    output_descriptor.type_generation = target_row.type_generation;
+    output_descriptor.codec_id = target_row.codec_id;
+    output_descriptor.codec_version = target_row.codec_version;
+    output_descriptor.codec_generation = target_row.codec_generation;
+    function_dag.descriptors.push_back(output_descriptor);
+    api::RelationalExpressionRecord function;
+    function.expression_id = 131;
+    function.expression_kind = api::RelationalExpressionKind::kFunctionCall;
+    function.result_descriptor_id = 2;
+    function.function_uuid = registry.Lookup("data.scalar.cast")->function_uuid;
+    function.child_expression_ids = {2}; // all-ones UUID, not a system UUIDv7.
+    function_dag.expressions.push_back(function);
+    bool called = false;
+    api::EngineDescriptor expected_binding;
+    Check(s::BuildExactCanonicalScalarRuntimeDescriptorV1(output_descriptor,
+              dt::CanonicalTypeIdFromStableName(type), &expected_binding),
+          "relational callable fixture target invalid");
+    s::CanonicalRelationalExpressionRuntimeServices services;
+    services.function_evaluator = [&](const api::EngineUuid& function_id,
+        const std::vector<api::EngineTypedValue>& arguments,
+        const api::EngineDescriptor& supplied_target, api::EngineTypedValue* output,
+        std::string*, std::string*) {
+      called = true;
+      Check(arguments.size() == 1 && supplied_target == expected_binding &&
+                !arguments.front().descriptor.datatype_descriptor_uuid.is_nil(),
+            "relational callback dropped the bound argument/result descriptor");
+      f::FunctionCallRequest request;
+      request.context.function_uuid = function_id;
+      request.context.security_allowed = request.context.policy_allowed = true;
+      Check(registry.BindCallContext(request.context) != nullptr, "relational cast lookup failed");
+      request.result_descriptor = std::make_shared<const api::EngineDescriptor>(supplied_target);
+      request.arguments = {{"value", s::SblrValueFromProjectionArgument(
+          api::MakeProjectionFunctionArgument("arg", arguments.front()))},
+          {"target", f::MakeTextValue("text", type)}};
+      const auto dispatched = f::DispatchFunctionCall(registry, std::move(request)).result;
+      if (!dispatched.ok()) return false;
+      *output = s::EngineTypedValueFromSblrValue(Scalar(dispatched));
+      return true;
+    };
+    s::CanonicalRelationalExpressionRuntime runtime(function_dag, services);
+    api::EngineTypedValue output;
+    std::string detail;
+    const bool ok = runtime.Evaluate(131, type, &output, &detail);
+    if (!ok) std::cerr << detail << '\n';
+    Check(ok && called && output.descriptor == expected_binding &&
+              output.binary_value == std::vector<std::uint8_t>(16, 0xff) &&
+              output.encoded_value.empty(), "relational callable cast failed exact native publication");
+  }
 }
 void NativeBinarySort() {
   namespace exec = scratchbird::engine::executor;
@@ -430,25 +549,160 @@ void NativeBinarySort() {
     }
   }
 }
+void NativeCastBindingContracts(const f::FunctionRegistry& registry) {
+  namespace api = scratchbird::engine::internal_api;
+  const auto target = Binding("uuid");
+  auto uuid = Bound(s::MakeSblrUuidValue({}));
+  auto binary = Bound(f::MakeBinaryValue("binary", std::vector<std::uint8_t>(16, 0xff)));
+  const auto dispatch = [&](const char* name, s::SblrValue value,
+                            std::shared_ptr<const api::EngineDescriptor> result_binding) {
+    f::FunctionCallRequest request;
+    request.context.function_uuid = registry.Lookup(name)->function_uuid;
+    request.context.security_allowed = request.context.policy_allowed = true;
+    Check(registry.BindCallContext(request.context) != nullptr, "bound cast function lookup");
+    request.result_descriptor = std::move(result_binding);
+    request.arguments = {{"value", std::move(value)}, {"target", f::MakeTextValue("text", "uuid")}};
+    return f::DispatchFunctionCall(registry, std::move(request)).result;
+  };
+  for (const auto* name : {"data.scalar.cast", "sb.scalar.safe_cast", "sb.scalar.try_cast"}) {
+    for (const auto& source : {uuid, binary}) {
+      const auto result = dispatch(name, source, target);
+      const auto& scalar = Scalar(result);
+      Check(scalar.projection_descriptor == target &&
+                s::EngineTypedValueFromSblrValue(scalar).descriptor == *target,
+            "cast publication dropped or reconstructed its admitted target");
+      for (bool null_source : {false, true}) {
+        for (bool mutate_target : {false, true}) {
+          for (unsigned mutation = 0; mutation < 12; ++mutation) {
+            auto input = source;
+            if (null_source) {
+              input.is_null = true; input.payload_kind = s::SblrValuePayloadKind::none;
+              input.uuid_value = {}; input.binary_value.clear();
+            }
+            auto binding = std::make_shared<api::EngineDescriptor>(
+                mutate_target ? *target : *source.projection_descriptor);
+            switch (mutation) {
+              case 0: binding->descriptor_uuid = {}; break;
+              case 1: binding->datatype_descriptor_uuid = {}; break;
+              case 2: ++binding->datatype_descriptor_generation; break;
+              case 3: binding->type_uuid = {}; break;
+              case 4: binding->canonical_type_name = "int64"; break;
+              case 5: binding->encoded_descriptor += ";width=16"; break;
+              case 6: binding->encoded_descriptor += ";precision=16"; break;
+              case 7: binding->charset_uuid = scratchbird::tests::FixtureUuid(2081, 20); break;
+              case 8: binding->encoded_descriptor += ";nullability=nullable"; break;
+              case 9: binding->encoded_descriptor = "nullability=unknown"; break;
+              case 10: binding->descriptor_kind = "record"; break;
+              case 11: binding->encoded_descriptor += ";uuid_ordering_profile=guid"; break;
+            }
+            if (!mutate_target) input.projection_descriptor = binding;
+            const auto refused = dispatch(name, input, mutate_target ? binding : target);
+            Check(!refused.ok() && refused.scalar_values.empty() &&
+                      !refused.diagnostics.empty() &&
+                      refused.diagnostics.front().diagnostic_id == "DATATYPE.DESCRIPTOR.INVALID",
+                  "cast/SAFE_CAST/TRY_CAST laundered invalid source or target binding");
+          }
+        }
+      }
+      auto unbound = source; unbound.projection_descriptor.reset();
+      Check(!dispatch(name, unbound, target).ok() && !dispatch(name, source, {}).ok(),
+            "cast inferred missing authority from native payload or target spelling");
+    }
+    auto null = uuid; null.is_null = true; null.payload_kind = s::SblrValuePayloadKind::none;
+    const auto null_result = dispatch(name, null, target);
+    const auto& scalar = Scalar(null_result);
+    Check(s::SblrNullPayloadEmpty(scalar) && scalar.projection_descriptor == target,
+          "bound native NULL cast lost exact target or acquired a payload");
+    auto bad_length = binary; bad_length.binary_value.resize(15);
+    auto nonnull = std::make_shared<api::EngineDescriptor>(*target);
+    nonnull->encoded_descriptor = "nullability=non_null";
+    Check(!dispatch(name, bad_length, nonnull).ok(), "TRY_CAST created NULL for nonnullable target");
+    auto nonnull_source = std::make_shared<api::EngineDescriptor>(*binary.projection_descriptor);
+    nonnull_source->encoded_descriptor = "nullability=non_null";
+    bad_length.projection_descriptor = nonnull_source;
+    const auto length_result = dispatch(name, bad_length, target);
+    if (std::string_view(name) == "sb.scalar.try_cast") {
+      Check(s::SblrNullPayloadEmpty(Scalar(length_result)) &&
+                Scalar(length_result).projection_descriptor == target,
+            "TRY_CAST wrongly requires nullable source to publish nullable target");
+    } else {
+      Check(!length_result.ok() && length_result.scalar_values.empty(),
+            "ordinary/SAFE_CAST suppressed native length failure");
+    }
+    auto bad_null = null; bad_null.binary_value = {0};
+    Check(!dispatch(name, bad_null, target).ok(), "cast suppressed a malformed NULL carrier");
+  }
+  for (auto source : {uuid, binary}) {
+    for (bool null_source : {false, true}) {
+      if (null_source) {
+        source.is_null = true; source.payload_kind = s::SblrValuePayloadKind::none;
+        source.uuid_value = {}; source.binary_value.clear();
+      }
+      const auto engine = s::EngineTypedValueFromSblrValue(source);
+      const auto argument = api::MakeProjectionFunctionArgument("arg", engine);
+      Check(s::ProjectionArgumentEncodingValid(argument), "bound native projection argument invalid");
+      const auto adapted = s::SblrValueFromProjectionArgument(argument);
+      Check(s::ProjectionSblrValueResolved(adapted) && adapted.projection_descriptor &&
+                *adapted.projection_descriptor == engine.descriptor,
+            "projection argument dropped native datatype identity");
+      const auto restored = s::EngineTypedValueFromSblrValue(adapted);
+      Check(restored.descriptor == engine.descriptor && restored.binary_value == engine.binary_value &&
+                restored.state == engine.state && restored.is_null == engine.is_null,
+            "projection roundtrip altered binding, NULL state or native bytes");
+      auto compatibility_null = argument;
+      compatibility_null.binary_value.clear();
+      for (bool flag : {false, true}) {
+        compatibility_null.is_null = flag;
+        compatibility_null.state = flag ? api::EngineValueState::value : api::EngineValueState::sql_null;
+        const auto normalized = s::EngineTypedValueFromSblrValue(
+            s::SblrValueFromProjectionArgument(compatibility_null));
+        Check(s::ProjectionArgumentEncodingValid(compatibility_null) &&
+                  normalized.state == api::EngineValueState::sql_null && normalized.is_null &&
+                  normalized.binary_value.empty() && normalized.descriptor == engine.descriptor,
+              "projection NULL compatibility input failed canonical state normalization");
+        auto invalid = compatibility_null; invalid.binary_value = {0};
+        Check(!s::ProjectionArgumentEncodingValid(invalid), "projection accepted NULL with binary payload");
+      }
+    }
+  }
+}
+void NativeCastAllocationSample() {
+  const auto uuid = Bound(s::MakeSblrUuidValue({}));
+  const auto binary = Bound(f::MakeBinaryValue("binary", std::vector<std::uint8_t>(16)));
+  for (const auto& [source, type] : {
+      std::pair{uuid, "uuid"}, {uuid, "binary"}, {binary, "uuid"}}) {
+    const auto target = Binding(type);
+    Check(s::EvaluateSblrCastForm("cast", source, type, {}, true, false, target).ok(),
+          "allocation sample warmup failed");
+    native_cast_allocations = 0;
+    track_native_cast_allocations = true;
+    const auto result = s::EvaluateSblrCastForm("cast", source, type, {}, true, false, target);
+    track_native_cast_allocations = false;
+    Check(result.ok(), "allocation sample operation failed");
+    std::cout << "native_cast_allocations " << source.descriptor_id << "->" << type
+              << '=' << native_cast_allocations << '\n';
+  }
+}
 int main() {
+  const auto package = f::BuildStandardFunctionSeedPackage();
   NativeBinarySort();
   NativeBuiltinDescriptors();
-  NativeUuidValues();
+  NativeUuidValues(package.registry);
   NativeComparisons();
-  const auto package = f::BuildStandardFunctionSeedPackage();
+  NativeCastBindingContracts(package.registry);
   const char* functions[] = {"data.scalar.cast", "sb.scalar.safe_cast", "sb.scalar.try_cast"};
   for (unsigned pattern = 0; pattern < 130; ++pattern) {
     s::SblrUuid id;
     if (pattern == 1) id.bytes.fill(0xff);
     if (pattern >= 2) id.bytes[(pattern - 2) / 8] = std::uint8_t(1u << ((pattern - 2) % 8));
     const std::vector<std::uint8_t> bytes(id.bytes.begin(), id.bytes.end());
-    const auto uuid = s::MakeSblrUuidValue(id);
-    const auto binary = f::MakeBinaryValue("binary", bytes);
-    Published(Scalar(s::EvaluateSblrCastForm("cast", uuid, "uuid", {}, false, false)), bytes, "uuid");
-    Published(Scalar(s::EvaluateSblrCastForm("cast", uuid, "binary", {}, true, false)), bytes, "binary");
-    Published(Scalar(s::EvaluateSblrCastForm("cast", binary, "uuid", {}, true, false)), bytes, "uuid");
-    Check(!s::EvaluateSblrCastForm("cast", uuid, "binary", {}, false, false).ok(), "implicit UUID/binary cast bypassed permission");
-    Check(!s::EvaluateSblrCastForm("cast", binary, "uuid", {}, false, false).ok(), "implicit binary/UUID cast bypassed permission");
+    const auto uuid = Bound(s::MakeSblrUuidValue(id));
+    const auto binary = Bound(f::MakeBinaryValue("binary", bytes));
+    Published(Scalar(s::EvaluateSblrCastForm("cast", uuid, "uuid", {}, false, false, Binding("uuid"))), bytes, "uuid");
+    Published(Scalar(s::EvaluateSblrCastForm("cast", uuid, "binary", {}, true, false, Binding("binary"))), bytes, "binary");
+    Published(Scalar(s::EvaluateSblrCastForm("cast", binary, "uuid", {}, true, false, Binding("uuid"))), bytes, "uuid");
+    Check(!s::EvaluateSblrCastForm("cast", uuid, "binary", {}, false, false, Binding("binary")).ok(), "implicit UUID/binary cast bypassed permission");
+    Check(!s::EvaluateSblrCastForm("cast", binary, "uuid", {}, false, false, Binding("uuid")).ok(), "implicit binary/UUID cast bypassed permission");
     for (const auto* function : functions) {
       Published(Scalar(Call(package.registry, function, uuid, "uuid")), bytes, "uuid");
       Published(Scalar(Call(package.registry, function, uuid, "binary")), bytes, "binary");
@@ -474,7 +728,7 @@ int main() {
     }
   }
   s::SblrUuid id; id.bytes.fill(0x55);
-  const auto native = s::MakeSblrUuidValue(id);
+  const auto native = Bound(s::MakeSblrUuidValue(id));
   for (const auto* function : functions)
     Check(!Call(package.registry, function, native, "not_a_type").ok(), "safe cast manufactured a NULL with an unknown target type");
   for (unsigned gate = 0; gate < 3; ++gate) {
@@ -497,7 +751,7 @@ int main() {
             !Call(package.registry, functions[2], native, "text").ok(),
         "SAFE_CAST or TRY_CAST hid a forbidden UUID presentation cast");
   for (unsigned length : {0u, 1u, 15u, 17u, 36u}) {
-    const auto binary = f::MakeBinaryValue("binary", std::vector<std::uint8_t>(length, 0x55));
+    const auto binary = Bound(f::MakeBinaryValue("binary", std::vector<std::uint8_t>(length, 0x55)));
     Check(!Call(package.registry, functions[0], binary, "uuid").ok(), "wrong UUID length cast successfully");
     Check(!Call(package.registry, functions[1], binary, "uuid").ok(),
           "SAFE_CAST hid an invalid UUID binary length");
@@ -536,5 +790,6 @@ int main() {
   try { (void)f::MakeTextValue("uuid", "019f1122-3344-7566-8788-99aabbccddee"); }
   catch (const std::invalid_argument&) { refused = true; }
   Check(refused, "text factory still manufactures engine UUIDs");
-  std::cout << "native UUID casts preserve all 128 bits through function and projection publication\n";
+  NativeCastAllocationSample();
+  std::cout << "native UUID casts preserve all 128 bits through function and projection publication; checks=" << checks << '\n';
 }

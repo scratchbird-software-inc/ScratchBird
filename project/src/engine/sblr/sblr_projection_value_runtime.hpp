@@ -34,6 +34,16 @@ inline bool BinaryCarrierValid(const SblrValue& value) noexcept {
 inline bool EmptyNullCarrier(const SblrValue& value) noexcept {
   return SblrNullPayloadEmpty(value);
 }
+inline bool NativeBinaryType(std::string_view type) noexcept {
+  return type == "uuid" || type == "binary" || type == "varbinary";
+}
+inline bool NativeBinaryBindingAgrees(const SblrValue& value) noexcept {
+  if (!value.projection_descriptor) return true; // Payload-only legacy adapter.
+  const auto& type = value.projection_descriptor->canonical_type_name;
+  return (value.descriptor_id == "uuid" && type == "uuid") ||
+      ((value.descriptor_id == "binary" || value.descriptor_id == "varbinary") &&
+       (type == "binary" || type == "varbinary"));
+}
 }  // namespace projection_value_detail
 
 inline SblrValue SblrValueFromProjectionArgument(
@@ -62,6 +72,15 @@ inline SblrValue SblrValueFromProjectionArgument(
       argument.state != internal_api::EngineValueState::sql_null) return value;
   const bool is_null = argument.is_null ||
       argument.state == internal_api::EngineValueState::sql_null;
+  if (projection_value_detail::NativeBinaryType(type_name)) {
+    if (!argument.encoded_value.empty() ||
+        (is_null && !argument.binary_value.empty())) return value;
+    if (!argument.descriptor.descriptor_uuid.is_nil()) {
+      value.projection_descriptor =
+          std::make_shared<const internal_api::EngineDescriptor>(argument.descriptor);
+      if (!projection_value_detail::NativeBinaryBindingAgrees(value)) return SblrValue{};
+    }
+  }
   if (is_null) {
     if (!argument.encoded_value.empty() || !argument.binary_value.empty()) return value;
     value.is_null = true;
@@ -191,8 +210,12 @@ inline bool ProjectionArgumentEncodingValid(
 
 inline bool ProjectionSblrValueResolved(const SblrValue& value) {
   if (value.descriptor_id.empty()) return false;
-  if (value.descriptor_id == "uint16" || value.projection_descriptor)
+  if (value.descriptor_id == "uint16" ||
+      (value.projection_descriptor && ReferencesUint16Projection(*value.projection_descriptor)))
     return SblrUint16ProjectionResolved(value);
+  if (value.projection_descriptor &&
+      (!projection_value_detail::NativeBinaryType(value.descriptor_id) ||
+       !projection_value_detail::NativeBinaryBindingAgrees(value))) return false;
   if (value.payload_kind == SblrValuePayloadKind::uuid_text) return false;
   if (value.is_null && (value.descriptor_id == "binary" ||
       value.descriptor_id == "varbinary" || value.descriptor_id == "uuid" ||
@@ -210,7 +233,8 @@ inline bool ProjectionSblrValueResolved(const SblrValue& value) {
 }
 
 inline internal_api::EngineTypedValue EngineTypedValueFromSblrValue(const SblrValue& value) {
-  if (value.descriptor_id == "uint16" || value.projection_descriptor) {
+  if (value.descriptor_id == "uint16" ||
+      (value.projection_descriptor && ReferencesUint16Projection(*value.projection_descriptor))) {
     if (!SblrUint16ProjectionResolved(value))
       throw std::invalid_argument("invalid or unbound SBLR uint16 projection carrier");
     internal_api::EngineTypedValue out;
@@ -222,6 +246,10 @@ inline internal_api::EngineTypedValue EngineTypedValueFromSblrValue(const SblrVa
                           static_cast<std::uint8_t>(value.uint64_value >> 8u)};
     return out;
   }
+  if (value.projection_descriptor &&
+      (!projection_value_detail::NativeBinaryType(value.descriptor_id) ||
+       !projection_value_detail::NativeBinaryBindingAgrees(value)))
+    throw std::invalid_argument("conflicting SBLR native projection binding");
   if (value.payload_kind == SblrValuePayloadKind::uuid_text ||
       (!value.is_null && (value.descriptor_id == "uuid" ||
                          value.payload_kind == SblrValuePayloadKind::uuid_binary) &&
@@ -236,9 +264,13 @@ inline internal_api::EngineTypedValue EngineTypedValueFromSblrValue(const SblrVa
       !projection_value_detail::EmptyNullCarrier(value))
     throw std::invalid_argument("conflicting SBLR NULL payload representations");
   internal_api::EngineTypedValue out;
-  out.descriptor.descriptor_kind = "scalar";
-  out.descriptor.canonical_type_name = value.descriptor_id;
-  out.descriptor.encoded_descriptor = "type=" + out.descriptor.canonical_type_name;
+  if (value.projection_descriptor) {
+    out.descriptor = *value.projection_descriptor;
+  } else {
+    out.descriptor.descriptor_kind = "scalar";
+    out.descriptor.canonical_type_name = value.descriptor_id;
+    out.descriptor.encoded_descriptor = "type=" + out.descriptor.canonical_type_name;
+  }
   out.is_null = value.is_null;
   if (out.is_null) {
     out.encoded_value.clear();

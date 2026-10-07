@@ -226,11 +226,12 @@ MaterializedValues MaterializeValues(
       engine_descriptor.encoded_descriptor +=
           ";scale=" + std::to_string(*descriptor->second->scale);
     }
-    if (type_names[column] == "uuid" && descriptor->second->datatype_identity_authoritative &&
-        !BuildExactCanonicalUuidRuntimeDescriptorV1(*descriptor->second, &engine_descriptor)) {
+    const auto native_type = dt::CanonicalTypeIdFromStableName(type_names[column]);
+    if ((native_type == dt::CanonicalTypeId::uuid || native_type == dt::CanonicalTypeId::binary) &&
+        !BuildExactCanonicalScalarRuntimeDescriptorV1(*descriptor->second, native_type, &engine_descriptor)) {
       result.batch = {};
       result.result_bindings.clear();
-      result.detail = "live VALUES canonical UUID datatype receipt binding is invalid";
+      result.detail = "live VALUES canonical native binary datatype receipt binding is invalid";
       return result;
     }
     result.batch.columns.push_back(
