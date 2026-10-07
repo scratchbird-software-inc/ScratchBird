@@ -274,10 +274,12 @@ void ExactIdentityAndHardCodedVectors() {
   const auto p4s2 = descriptor_with(4, 2);
   Check(p4s2.ok() && p4s2.descriptor.precision == 4 &&
             p4s2.descriptor.scale == 2 &&
-            !descriptor_with(39, 0).ok() &&
+            descriptor_with(39, 0).ok() &&
+            descriptor_with(76, 76).ok() &&
+            !descriptor_with(77, 0).ok() &&
             !descriptor_with(38, 39).ok() &&
             !descriptor_with(4, 5).ok(),
-        "descriptor metadata construction accepts a bounded profile and rejects p>38 s>38 or s>p without admitting its semantics");
+        "descriptor metadata permits the two exact codecs and rejects p>76 or s>p without inferring an operation policy");
 
   for (const auto cohort : std::array{
            std::tuple{dt::kDatatypeCohortV1, 1ULL, 1ULL},

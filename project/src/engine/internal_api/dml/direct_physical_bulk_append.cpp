@@ -1838,13 +1838,16 @@ bool DirectSortableTypedIndexPayload(
   }
   switch (target_type) {
     case dt::CanonicalTypeId::decimal: {
-      const auto decimal = scratchbird::libraries::sbl_numeric::DecodeExactDecimalLittleEndian(
-          raw.data(), raw.size());
-      if (!decimal.ok) return false;
-      // Numeric VALUE decoding is not display rendering. Use the shared
-      // datatype numeric ordering, never the little-endian storage bytes.
+      // This produces a candidate only. The publication scope still rebinds
+      // against the actual column before admitting effects. Never render the
+      // stored coefficient as text to obtain an index key.
+      engine::ExecutionTypeDescriptor descriptor;
+      std::string detail;
+      if (!executor::BuildBoundExecutionTypeDescriptor(
+              typed.descriptor, target_type, &descriptor, &detail)) return false;
       dt::DatatypeSortKeyRequest request;
-      request.value = {target_type, decimal.canonical_lexical, false};
+      request.value = {target_type, std::string(raw.begin(), raw.end()), false};
+      if (!dt::BindExactDecimalSortKeyProfile(descriptor, &request)) return false;
       const auto key = dt::MakeDatatypeSortKey(request);
       if (!key.ok()) return false;
       out->assign(key.sort_key.begin(), key.sort_key.end());

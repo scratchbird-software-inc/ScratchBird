@@ -250,7 +250,17 @@ struct DatatypeSortKeyRequest {
   bool case_insensitive_character_compare = false;
   DatatypeTextSeedAuthority text_seed;
   DatatypeUuidOrderingProfileV1 uuid_ordering;
+  // Explicit binary profile binding for a validated DECIMAL(p,s) occurrence.
+  // Nil identities never activate a default or infer semantics from payload.
+  platform::Uuid decimal_ordering_uuid{};
+  platform::u64 decimal_ordering_generation = 0;
+  platform::Uuid decimal_codec_uuid{};
+  platform::u64 decimal_codec_generation = 0;
 };
+
+bool BindExactDecimalSortKeyProfile(
+    const scratchbird::engine::ExecutionTypeDescriptor& descriptor,
+    DatatypeSortKeyRequest* request);
 
 struct DatatypeSortKeyResult {
   Status status;

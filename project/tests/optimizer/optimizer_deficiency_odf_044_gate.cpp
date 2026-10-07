@@ -630,7 +630,8 @@ void OrderedKeyAuthorityAndValueStates() {
             "ODF-044 native datatype fixture authority missing");
     binding.descriptor = {platform::UuidKind::object, row->descriptor_uuid};
     auto source = scratchbird::engine::executor::MakeExecutorDescriptor(
-        dt::CanonicalTypeName(type), "nullability=nullable");
+        dt::CanonicalTypeName(type), type == dt::CanonicalTypeId::decimal
+            ? "nullability=nullable;precision=38;scale=1" : "nullability=nullable");
     std::string binding_detail;
     Require(api::bound_index_key::BuildOrderedColumnExecutionDescriptor(
                 source, binding.datatype, true, &binding.execution_descriptor, &binding_detail),

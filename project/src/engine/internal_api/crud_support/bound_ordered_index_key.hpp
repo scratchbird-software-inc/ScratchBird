@@ -71,14 +71,23 @@ inline bool BuildOrderedColumnExecutionDescriptor(
     *detail = "index column nullability authorities disagree";
     return false;
   }
+  if (type == core::datatypes::CanonicalTypeId::decimal &&
+      (fields.text.contains("precision") != fields.text.contains("scale") ||
+       (fields.text.contains("precision") && fields.text.at("precision") == "0"))) {
+    *detail = "decimal occurrence requires a complete nonzero precision/scale binding";
+    return false;
+  }
   if (type == core::datatypes::CanonicalTypeId::int64 ||
-      type == core::datatypes::CanonicalTypeId::uuid) {
+      type == core::datatypes::CanonicalTypeId::uuid ||
+      type == core::datatypes::CanonicalTypeId::decimal) {
     if (!source.charset_uuid.is_nil() ||
         !source.collation_uuid.is_nil()) {
       *detail = "base index column has unsupported resource or domain metadata";
       return false;
     }
     for (const auto& [name, identity] : fields.identities) {
+      if (type == core::datatypes::CanonicalTypeId::decimal &&
+          (name == "decimal_codec_uuid" || name == "codec_uuid")) continue;
       if ((name == "type_uuid" && identity == datatype.type_uuid) ||
           (name == "datatype_descriptor_uuid" && identity == datatype.descriptor_uuid) ||
           (name == "codec_uuid" && datatype.codec && identity == datatype.codec->codec_uuid)) continue;
@@ -86,6 +95,9 @@ inline bool BuildOrderedColumnExecutionDescriptor(
       return false;
     }
     for (const auto& [name, value] : fields.text) {
+      if (type == core::datatypes::CanonicalTypeId::decimal &&
+          (name == "precision" || name == "scale" || name == "decimal_codec_generation" ||
+           name == "codec_generation" || name == "codec_version" || name == "codec_id")) continue;
       if (datatype.codec) {
         const auto& codec = *datatype.codec;
         if ((name == "datatype_descriptor_generation" && value == std::to_string(codec.descriptor_generation)) ||
@@ -120,6 +132,37 @@ inline bool BuildOrderedColumnExecutionDescriptor(
   if (staged.nullable_allowed != nullable) {
     *detail = "index column nullability authorities disagree";
     return false;
+  }
+  if (type == core::datatypes::CanonicalTypeId::decimal) {
+    core::datatypes::DatatypeSortKeyRequest expected;
+    if (!core::datatypes::BindExactDecimalSortKeyProfile(staged, &expected)) {
+      *detail = "decimal occurrence profile is invalid";
+      return false;
+    }
+    const bool wide = staged.precision > 38;
+    const bool explicit_codec = fields.identities.contains("decimal_codec_uuid") ||
+                                fields.identities.contains("codec_uuid");
+    if (wide && !explicit_codec) {
+      *detail = "wide decimal occurrence requires an explicit binary codec identity";
+      return false;
+    }
+    for (const auto name : {"decimal_codec_uuid", "codec_uuid"}) {
+      const auto found = fields.identities.find(name);
+      const char* generation = std::string_view(name) == "codec_uuid"
+          ? "codec_generation" : "decimal_codec_generation";
+      if ((found != fields.identities.end() &&
+           (found->second != expected.decimal_codec_uuid ||
+            !fields.text.contains(generation) || fields.text.at(generation) != "1")) ||
+          (found == fields.identities.end() && fields.text.contains(generation))) {
+        *detail = "decimal occurrence codec identity or generation disagrees";
+        return false;
+      }
+    }
+    if (!agrees("codec_version", "1") ||
+        !agrees("codec_id", wide ? "datatype.decimal.base1e9.le40.v1" : "datatype.decimal.base1e9.le.v1")) {
+      *detail = "decimal occurrence codec format disagrees";
+      return false;
+    }
   }
   *output = std::move(staged);
   return true;
@@ -263,17 +306,10 @@ inline bool EncodeOrderedIndexKey(std::string_view logical_key,
       return false;
     }
     request.text_seed = binding.text_seed;
-    if (binding.datatype.type_id == core::datatypes::CanonicalTypeId::decimal && !value.isSqlNull()) {
-      // Decimal retained values carry the canonical 24-byte coefficient/scale
-      // codec. Numeric decoding is explicit; never guess from byte contents
-      // whether a storage value might instead be a decimal spelling.
-      const auto decoded = libraries::sbl_numeric::DecodeExactDecimalLittleEndian(
-          reinterpret_cast<const std::uint8_t*>(value.bytes.data()), value.bytes.size());
-      if (!decoded.ok) {
-        *diagnostic = MakeInvalidRequestDiagnostic("mga.index_store", "sorted_index_decimal_value_invalid");
-        return false;
-      }
-      request.value.encoded_value = decoded.canonical_lexical;
+    if (binding.datatype.type_id == core::datatypes::CanonicalTypeId::decimal &&
+        !core::datatypes::BindExactDecimalSortKeyProfile(binding.execution_descriptor, &request)) {
+      *diagnostic = MakeInvalidRequestDiagnostic("mga.index_store", "sorted_index_decimal_profile_invalid");
+      return false;
     }
     std::string sort_key;
     if (binding.datatype.type_id == core::datatypes::CanonicalTypeId::decimal_float) {

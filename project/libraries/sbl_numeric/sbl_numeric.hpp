@@ -150,6 +150,45 @@ ExactDecimalBinaryResult EncodeExactDecimalLittleEndian(std::string_view value);
 ExactDecimalBinaryResult DecodeExactDecimalLittleEndian(
     const std::uint8_t* bytes, std::size_t size);
 
+// Bound DECIMAL(p,s) value codecs. The selected codec is explicit, never
+// inferred from the payload length or header. V1 literal encoding above is
+// unchanged and does not supply a column's precision/scale authority.
+enum class ExactDecimalCodec : std::uint8_t { le24_v1 = 1, le40_v1 = 2 };
+struct ExactDecimalProfile {
+  ExactDecimalCodec codec = ExactDecimalCodec::le24_v1;
+  std::uint32_t precision = 0;
+  std::uint32_t scale = 0;
+};
+enum class ExactDecimalError : std::uint8_t {
+  none, invalid_profile, invalid_encoding, scale_loss, precision_overflow,
+  invalid_text
+};
+const char* ExactDecimalErrorName(ExactDecimalError error) noexcept;
+bool ExactDecimalProfileValid(const ExactDecimalProfile& profile) noexcept;
+// Validation and ordering allocate no memory and never render/parse text.
+ExactDecimalError ValidateExactDecimal(
+    const std::uint8_t* bytes, std::size_t size,
+    const ExactDecimalProfile& profile) noexcept;
+struct ExactDecimalOrderKeyResult {
+  ExactDecimalError error = ExactDecimalError::none;
+  std::optional<std::array<std::uint8_t, 40>> key;
+};
+ExactDecimalOrderKeyResult MakeExactDecimalOrderKey(
+    const std::uint8_t* bytes, std::size_t size,
+    const ExactDecimalProfile& profile) noexcept;
+struct BoundExactDecimalResult {
+  ExactDecimalError error = ExactDecimalError::none;
+  std::vector<std::uint8_t> bytes;
+  std::string text;
+  bool ok() const { return error == ExactDecimalError::none && !bytes.empty(); }
+};
+// Explicit text boundaries; no rounding or precision loss is permitted.
+BoundExactDecimalResult EncodeBoundExactDecimal(
+    std::string_view text, const ExactDecimalProfile& profile);
+BoundExactDecimalResult DecodeBoundExactDecimal(
+    const std::uint8_t* bytes, std::size_t size,
+    const ExactDecimalProfile& profile, bool render_text = false);
+
 using Decimal128Bytes = std::array<std::uint8_t, 16>;
 enum class Decimal128Class : std::uint8_t { finite, infinity, quiet_nan, signaling_nan };
 struct Decimal128Value {

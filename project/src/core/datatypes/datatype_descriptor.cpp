@@ -614,7 +614,7 @@ ExecutionTypeDescriptorResult BuildExecutionTypeDescriptorFromCatalog(
   result.descriptor.scale = metadata.scale != 0 ? metadata.scale : descriptor.default_scale;
   if (descriptor.type_id == CanonicalTypeId::decimal &&
       (result.descriptor.precision == 0 ||
-       result.descriptor.precision > 38 || result.descriptor.scale > 38 ||
+       result.descriptor.precision > 76 || result.descriptor.scale > 76 ||
        result.descriptor.scale > result.descriptor.precision)) {
     return DescriptorBuildFailure(
         "DATATYPE.DESCRIPTOR.INVALID",

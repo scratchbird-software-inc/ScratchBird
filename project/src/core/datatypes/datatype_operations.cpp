@@ -163,7 +163,7 @@ bool ExecutionDescriptorValidForType(
       (precision_parameterized &&
        (descriptor.precision == 0 || descriptor.scale > descriptor.precision ||
         (type_id == CanonicalTypeId::decimal &&
-         (descriptor.precision > 38 || descriptor.scale > 38)))) ||
+         (descriptor.precision > 76 || descriptor.scale > 76)))) ||
       (!length_allowed && descriptor.length != 0) ||
       (descriptor.family != scratchbird::engine::ExecutionTypeFamily::vector &&
        descriptor.vector_dimensions != 0) ||
@@ -6810,10 +6810,93 @@ bool CanonicalHashPayload(const DatatypeOperationValue& value,
   return true;
 }
 
+namespace {
+constexpr platform::Uuid kExactDecimalOrderUuid{{
+    0x01,0xa1,0x18,0x6b,0xdf,0x04,0x75,0x4f,0x98,0xf7,0x47,0x0b,0x3b,0x66,0x47,0xa4}};
+constexpr platform::Uuid kExactDecimal24CodecUuid{{
+    0x01,0xa1,0x18,0x6b,0xdf,0x04,0x76,0x0a,0xa3,0xd5,0xd0,0x2d,0x2e,0xe3,0x01,0x54}};
+constexpr platform::Uuid kExactDecimal40CodecUuid{{
+    0x01,0xa1,0x18,0x6b,0xdf,0x04,0x7b,0x1b,0x9c,0xaf,0x87,0xb3,0xbd,0x29,0x94,0x3e}};
+}
+
+bool BindExactDecimalSortKeyProfile(const ExecutionTypeDescriptor& descriptor,
+                                   DatatypeSortKeyRequest* request) {
+  if (!request || !DecimalDescriptorValidForPresent(descriptor) ||
+      !EngineUuidIsNil(descriptor.security_policy_uuid) ||
+      !EngineUuidIsNil(descriptor.element_descriptor_uuid)) return false;
+  request->value.descriptor = descriptor;
+  request->decimal_ordering_uuid = kExactDecimalOrderUuid;
+  request->decimal_ordering_generation = 1;
+  request->decimal_codec_uuid = descriptor.precision <= 38
+      ? kExactDecimal24CodecUuid : kExactDecimal40CodecUuid;
+  request->decimal_codec_generation = 1;
+  return true;
+}
+
 DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request) {
   DatatypeSortKeyResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (IsDecimal(request.value.type_id) &&
+      (!request.decimal_ordering_uuid.is_nil() || request.decimal_ordering_generation ||
+       !request.decimal_codec_uuid.is_nil() || request.decimal_codec_generation)) {
+    namespace numeric = scratchbird::libraries::sbl_numeric;
+    const auto refuse = [&](const char* code, const char* detail) {
+      result.sort_key.clear();
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, code, "datatype.sort_key.rejected", detail);
+      return result;
+    };
+    DatatypeSortKeyRequest expected;
+    const auto& descriptor = request.value.descriptor;
+    if (!BindExactDecimalSortKeyProfile(descriptor, &expected) ||
+        request.decimal_ordering_uuid != expected.decimal_ordering_uuid ||
+        request.decimal_ordering_generation != 1 ||
+        request.decimal_codec_uuid != expected.decimal_codec_uuid ||
+        request.decimal_codec_generation != 1)
+      return refuse("DATATYPE.DESCRIPTOR.INVALID", "decimal_profile_invalid");
+    if (request.case_insensitive_character_compare ||
+        (request.null_ordering != DatatypeNullOrdering::nulls_first &&
+         request.null_ordering != DatatypeNullOrdering::nulls_last))
+      return refuse("SB_DATATYPE_SORT_KEY_REJECTED", "decimal_ordering_settings_invalid");
+    numeric::ExactDecimalProfile profile{
+        descriptor.precision <= 38 ? numeric::ExactDecimalCodec::le24_v1
+                                   : numeric::ExactDecimalCodec::le40_v1,
+        descriptor.precision, descriptor.scale};
+    numeric::ExactDecimalOrderKeyResult body;
+    if (request.value.is_null) {
+      if (!descriptor.nullable_allowed || !request.value.encoded_value.empty())
+        return refuse("SB_DATATYPE_SORT_KEY_REJECTED", "decimal_null_state_invalid");
+    } else {
+      body = numeric::MakeExactDecimalOrderKey(
+          reinterpret_cast<const std::uint8_t*>(request.value.encoded_value.data()),
+          request.value.encoded_value.size(), profile);
+      if (!body.key) return refuse("SB_DATATYPE_SORT_KEY_REJECTED",
+          numeric::ExactDecimalErrorName(body.error));
+    }
+    try {
+      auto& key = result.sort_key;
+      key.reserve(116);
+      const auto identity = [&](const auto& uuid, std::uint64_t generation) {
+        for (auto byte : uuid.bytes) key.push_back(static_cast<char>(byte));
+        for (unsigned i = 8; i; --i)
+          key.push_back(static_cast<char>(generation >> (8*(i-1))));
+      };
+      identity(request.decimal_ordering_uuid, request.decimal_ordering_generation);
+      identity(request.decimal_codec_uuid, request.decimal_codec_generation);
+      identity(descriptor.descriptor_uuid, descriptor.descriptor_epoch);
+      key.push_back(static_cast<char>(descriptor.precision));
+      key.push_back(static_cast<char>(descriptor.scale));
+      key.push_back(request.null_ordering == DatatypeNullOrdering::nulls_first ? '\0' : '\1');
+      key.push_back(request.value.is_null
+          ? (request.null_ordering == DatatypeNullOrdering::nulls_first ? '\0' : '\2') : '\1');
+      if (body.key) key.append(reinterpret_cast<const char*>(body.key->data()), body.key->size());
+    } catch (const std::bad_alloc&) {
+      return refuse("SB_DATATYPE_SORT_KEY_REJECTED", "decimal_sort_key_allocation_failed");
+    }
+    return result;
+  }
   if (request.value.type_id == CanonicalTypeId::interval) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(
