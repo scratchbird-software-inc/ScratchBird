@@ -2547,6 +2547,22 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
     request.value.is_null = false;
     request.target_type_id = CanonicalDescriptorTypeId(target_descriptor);
     request.explicit_cast = true;
+    request.context = dt::DatatypeCastContext::explicit_cast;
+    std::string detail;
+    if (!BoundExecutionTypeDescriptor(value.descriptor, request.value.type_id,
+                                      &request.value.descriptor, &detail)) {
+      SetDiagnostic(diagnostic,
+                    ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID",
+                                    "source descriptor: " + detail));
+      return {};
+    }
+    if (!BoundExecutionTypeDescriptor(target_descriptor, request.target_type_id,
+                                      &request.target_descriptor, &detail)) {
+      SetDiagnostic(diagnostic,
+                    ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID",
+                                    "target descriptor: " + detail));
+      return {};
+    }
     if (IsUuidType(value.descriptor) || IsBinaryType(value.descriptor)) {
       request.value.encoded_value.assign(value.binary_value.begin(), value.binary_value.end());
     } else {

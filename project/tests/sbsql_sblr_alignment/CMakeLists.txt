@@ -84,6 +84,14 @@ set_tests_properties(sbsql_sblr_alignment_native_uuid_cast PROPERTIES
 
 # Component tests include their owning implementation to exercise private
 # binary codec helpers, and link real engine dependencies for the full gate.
+add_executable(sbsql_sblr_alignment_native_uuid_cast_binding native_uuid_cast_binding_test.cpp)
+target_compile_features(sbsql_sblr_alignment_native_uuid_cast_binding PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_uuid_cast_binding PRIVATE ../../src/engine)
+target_link_libraries(sbsql_sblr_alignment_native_uuid_cast_binding PRIVATE sb_engine_executor sb_engine_internal_api)
+add_test(NAME sbsql_sblr_alignment_native_uuid_cast_binding COMMAND sbsql_sblr_alignment_native_uuid_cast_binding)
+set_tests_properties(sbsql_sblr_alignment_native_uuid_cast_binding PROPERTIES
+  TIMEOUT 60 LABELS "sbsql_sblr_alignment;binary_uuid;scalar_cast;component_regression;not_runtime_acceptance")
+
 add_executable(sbsql_sblr_alignment_native_set_value native_set_value_test.cpp)
 add_executable(sbsql_sblr_alignment_native_window_value native_window_value_test.cpp)
 target_compile_features(sbsql_sblr_alignment_native_window_value PRIVATE cxx_std_23)

@@ -691,7 +691,7 @@ bool QowApplyCanonicalDescriptorCoercionV1(
   request.context = explicit_cast ? dt::DatatypeCastContext::explicit_cast
                                   : dt::DatatypeCastContext::implicit;
   request.explicit_cast = explicit_cast;
-  if (request.value.is_null) {
+  {
     if (!QowBoundExecutionTypeDescriptorV1(
             input_value.descriptor, source_type,
             &request.value.descriptor, refusal_detail)) {
