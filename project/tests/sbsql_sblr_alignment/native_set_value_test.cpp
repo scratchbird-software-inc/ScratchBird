@@ -3,6 +3,9 @@
 #define QOW_QRY_016_TYPE_FIXTURE_ONLY
 #include "../sbsql_parser_worker/qow_qry_016_type.cpp"
 #include "canonical_query_set_composition.hpp"
+#include "canonical_query_descriptor_support.hpp"
+#include "catalog/datatype_bootstrap_identity.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include <map>
 #include <optional>
 #include <stdexcept>
@@ -11,7 +14,9 @@ namespace s = scratchbird::engine::sblr;
 using Bytes = std::vector<std::uint8_t>;
 using Cell = std::optional<Bytes>;
 using Bag = std::map<Cell, std::size_t>;
+unsigned set_checks = 0;
 void Check(bool ok, const char* message) {
+  ++set_checks;
   if (!ok) throw std::runtime_error(message);
 }
 Bag Counts(const std::vector<Cell>& cells) {
@@ -39,7 +44,10 @@ Bag Oracle(const std::vector<Cell>& left, const std::vector<Cell>& right,
 void Fill(exec::DescriptorBatch& batch, const std::vector<Cell>& cells, const char* type) {
   auto descriptor = batch.columns.front().descriptor;
   descriptor.canonical_type_name = type;
-  descriptor.type_uuid = exec::MakeExecutorDescriptor(type).type_uuid;
+  const auto builtin = exec::MakeExecutorDescriptor(type);
+  descriptor.type_uuid = builtin.type_uuid;
+  descriptor.datatype_descriptor_uuid = builtin.datatype_descriptor_uuid;
+  descriptor.datatype_descriptor_generation = builtin.datatype_descriptor_generation;
   Check(!descriptor.type_uuid.is_nil(), "native datatype has no Core identity");
   batch.columns.front().descriptor = descriptor;
   batch.rows.clear();
@@ -100,6 +108,8 @@ void NativeSets(const char* type) {
     Fill(request.left_batch, left, type); Fill(request.right_batch, right, type);
     request.result_columns.front().descriptor.canonical_type_name = type;
     request.result_columns.front().descriptor.type_uuid = request.left_batch.columns.front().descriptor.type_uuid;
+    request.result_columns.front().descriptor.datatype_descriptor_uuid = request.left_batch.columns.front().descriptor.datatype_descriptor_uuid;
+    request.result_columns.front().descriptor.datatype_descriptor_generation = request.left_batch.columns.front().descriptor.datatype_descriptor_generation;
     const auto semantic = "set-operation." + OperationName(operation) + (distinct ? "-distinct" : "-all") +
         (by_name ? ".by-name" : "") + (reconcile ? ".type-reconciled" : "") + ".v1";
     const auto profile = s::ResolveLiveSetOperationProfileForComposition(semantic);
@@ -137,12 +147,49 @@ void NativeSets(const char* type) {
       descriptor.descriptor_uuid = column.descriptor.descriptor_uuid;
       descriptor.type_uuid = column.descriptor.type_uuid;
       descriptor.nullability = api::RelationalNullability::kNullable;
+      const auto identity = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+          api::kBootstrapDatatypeCatalogUuid, api::kBootstrapDatatypeCatalogGeneration,
+          api::kBootstrapDatatypeRegistryGeneration, column.descriptor.datatype_descriptor_uuid,
+          column.descriptor.datatype_descriptor_generation);
+      Check(identity.ok, "set fixture requires actual current datatype codec binding");
+      const auto& row = identity.row;
+      descriptor.descriptor_uuid = row.descriptor_uuid;
+      descriptor.datatype_identity_authoritative = true;
+      descriptor.descriptor_generation = row.descriptor_generation;
+      descriptor.type_generation = row.type_generation;
+      descriptor.codec_id = row.codec_id;
+      descriptor.codec_version = row.codec_version;
+      descriptor.codec_generation = row.codec_generation;
+      descriptor.statement_receipt_uuid = scratchbird::tests::FixtureUuid(2087, 1);
+      descriptor.datatype_catalog_snapshot_uuid = row.catalog_snapshot_uuid;
+      descriptor.datatype_catalog_generation = row.catalog_generation;
+      descriptor.datatype_registry_generation = row.registry_generation;
       dag.descriptors.push_back(descriptor);
     }
     s::plan::CanonicalLogicalRelationalNode root;
     root.logical_node_id = 4703; root.output_descriptor_ids = {4703};
     const auto prepared = s::PrepareSetOperationRootForComposition({}, dag, root, l, r, profile);
     Check(prepared.ok, "native set root preparation failed");
+    for (unsigned mutation = 0; mutation < 12; ++mutation) {
+      auto invalid_dag = dag;
+      auto& target = invalid_dag.descriptors.back();
+      switch (mutation) {
+        case 0: target.datatype_identity_authoritative = false; break;
+        case 1: ++target.descriptor_generation; break;
+        case 2: ++target.type_generation; break;
+        case 3: target.codec_id += ".stale"; break;
+        case 4: ++target.codec_generation; break;
+        case 5: ++target.datatype_registry_generation; break;
+        case 6: target.datatype_catalog_snapshot_uuid = {}; break;
+        case 7: target.statement_receipt_uuid = {}; break;
+        case 8: target.width = 16; break;
+        case 9: target.precision = 1; break;
+        case 10: target.collation_uuid = target.type_uuid; break;
+        case 11: target.nullability = api::RelationalNullability::kUnknown; break;
+      }
+      Check(!s::PrepareSetOperationRootForComposition({}, invalid_dag, root, l, r, profile).ok,
+            "set preparation admitted missing/stale/modified datatype binding");
+    }
     const auto planned = s::MaterializeSetOperationPlanningStateForComposition(prepared, profile, l, r);
     if (!planned.values.ok) std::cerr << planned.values.detail << '\n';
     Check(planned.values.ok, "native set planning failed");
@@ -169,7 +216,71 @@ void NativeSets(const char* type) {
     }
   }
 }
+void NumericResultBindings() {
+  namespace dt = scratchbird::core::datatypes;
+  for (const char* name : {"int32", "int64"}) {
+    const auto builtin = exec::MakeExecutorDescriptor(name);
+    const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+        api::kBootstrapDatatypeCatalogUuid, api::kBootstrapDatatypeCatalogGeneration,
+        api::kBootstrapDatatypeRegistryGeneration, builtin.datatype_descriptor_uuid,
+        builtin.datatype_descriptor_generation);
+    Check(identity.ok, "numeric result binding has no current codec row");
+    const auto& row = identity.row;
+    api::RelationalTypeDescriptor source;
+    source.descriptor_id = 1;
+    source.descriptor_uuid = row.descriptor_uuid;
+    source.type_uuid = row.type_uuid;
+    source.nullability = api::RelationalNullability::kNullable;
+    source.datatype_identity_authoritative = true;
+    source.descriptor_generation = row.descriptor_generation;
+    source.type_generation = row.type_generation;
+    source.codec_id = row.codec_id;
+    source.codec_version = row.codec_version;
+    source.codec_generation = row.codec_generation;
+    source.statement_receipt_uuid = scratchbird::tests::FixtureUuid(2087, 2);
+    source.datatype_catalog_snapshot_uuid = row.catalog_snapshot_uuid;
+    source.datatype_catalog_generation = row.catalog_generation;
+    source.datatype_registry_generation = row.registry_generation;
+    const auto type = dt::CanonicalTypeIdFromStableName(name);
+    api::EngineDescriptor output;
+    Check(s::BuildExactCanonicalScalarRuntimeDescriptorV1(source, type, &output) &&
+          output.datatype_descriptor_uuid == row.descriptor_uuid &&
+          output.datatype_descriptor_generation == row.descriptor_generation &&
+          output.type_uuid == row.type_uuid && output.canonical_type_name == name &&
+          output.encoded_descriptor == "nullability=nullable",
+          "numeric result projection lost exact supplied binding");
+    const auto good = output;
+    for (unsigned mutation = 0; mutation < 17; ++mutation) {
+      auto invalid = source;
+      switch (mutation) {
+        case 0: invalid.datatype_identity_authoritative = false; break;
+        case 1: invalid.descriptor_uuid = {}; break;
+        case 2: ++invalid.descriptor_generation; break;
+        case 3: invalid.type_uuid = {}; break;
+        case 4: ++invalid.type_generation; break;
+        case 5: invalid.codec_id += "stale"; break;
+        case 6: ++invalid.codec_version; break;
+        case 7: ++invalid.codec_generation; break;
+        case 8: invalid.datatype_catalog_snapshot_uuid = {}; break;
+        case 9: ++invalid.datatype_catalog_generation; break;
+        case 10: ++invalid.datatype_registry_generation; break;
+        case 11: invalid.statement_receipt_uuid = {}; break;
+        case 12: invalid.nullability = api::RelationalNullability::kUnknown; break;
+        case 13: invalid.width = 4; break;
+        case 14: invalid.precision = 1; break;
+        case 15: invalid.scale = 1; break;
+        case 16: invalid.collation_uuid = row.type_uuid; break;
+      }
+      output = good;
+      Check(!s::BuildExactCanonicalScalarRuntimeDescriptorV1(invalid, type, &output) &&
+            output == api::EngineDescriptor{}, "refused numeric binding retained prior output or acquired authority");
+    }
+  }
+}
+
 int main() {
+  NumericResultBindings();
   Check(ValidateSetOperationTypeReconciliation(), "existing numeric set reconciliation regressed");
   NativeSets("uuid"); NativeSets("binary");
+  std::cout << "native_set_value checks=" << set_checks << " native_profiles=48 failures=0\n";
 }

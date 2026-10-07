@@ -72,6 +72,8 @@ void PublishScalarCastValue(const core::datatypes::DatatypeOperationValue& cast,
               cast.encoded_value, &output->encoded_value);
     if (!decoded) output->encoded_value.clear();
   } else if (cast.type_id == core::datatypes::CanonicalTypeId::uuid ||
+      cast.type_id == core::datatypes::CanonicalTypeId::int32 ||
+      cast.type_id == core::datatypes::CanonicalTypeId::int64 ||
       cast.type_id == core::datatypes::CanonicalTypeId::binary) {
     output->binary_value.assign(cast.encoded_value.begin(), cast.encoded_value.end());
   } else {
@@ -119,9 +121,13 @@ bool ScalarCastInputEncoding(const EngineTypedValue& input,
         : core::datatypes::EncodeCanonicalUint8Value(input.encoded_value, bytes);
   }
   const bool binary = type == core::datatypes::CanonicalTypeId::uuid ||
+                      type == core::datatypes::CanonicalTypeId::int32 ||
+                      type == core::datatypes::CanonicalTypeId::int64 ||
                       type == core::datatypes::CanonicalTypeId::binary;
   if (binary && (!input.encoded_value.empty() ||
-      (type == core::datatypes::CanonicalTypeId::uuid && input.binary_value.size() != 16)))
+      (type == core::datatypes::CanonicalTypeId::uuid && input.binary_value.size() != 16) ||
+      (type == core::datatypes::CanonicalTypeId::int32 && input.binary_value.size() != 4) ||
+      (type == core::datatypes::CanonicalTypeId::int64 && input.binary_value.size() != 8)))
     return false;
   if (!input.binary_value.empty()) {
     if (!binary || !input.encoded_value.empty()) return false;
@@ -686,6 +692,22 @@ bool QowApplyCanonicalDescriptorCoercionV1(
   }
   dt::DatatypeCastRequest request;
   request.value.type_id = source_type;
+  const auto canonical_integer_metadata = [](const EngineDescriptor& descriptor,
+                                               dt::CanonicalTypeId type) {
+    if (type != dt::CanonicalTypeId::int32 && type != dt::CanonicalTypeId::int64) return true;
+    CatalogColumnMetadata fields;
+    if (!AdmitCatalogColumnMetadata(descriptor.encoded_descriptor, &fields) ||
+        !fields.identities.empty() || !descriptor.charset_uuid.is_nil() ||
+        !descriptor.collation_uuid.is_nil()) return false;
+    for (const auto& [name, value] : fields.text)
+      if (name != "nullability" && name != "nullable") return false;
+    return true;
+  };
+  if (!canonical_integer_metadata(input_value.descriptor, source_type) ||
+      !canonical_integer_metadata(target_descriptor, target_type)) {
+    *refusal_detail = "DATATYPE.DESCRIPTOR.INVALID:unsupported integer cast metadata";
+    return false;
+  }
   request.value.is_null = input_value.isSqlNull();
   request.target_type_id = target_type;
   request.context = explicit_cast ? dt::DatatypeCastContext::explicit_cast

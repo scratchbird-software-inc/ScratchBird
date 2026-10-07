@@ -17,6 +17,11 @@
 
 namespace scratchbird::engine::sblr {
 
+bool BuildExactCanonicalScalarRuntimeDescriptorV1(
+    const scratchbird::engine::internal_api::RelationalTypeDescriptor& source,
+    scratchbird::core::datatypes::CanonicalTypeId expected_type,
+    scratchbird::engine::internal_api::EngineDescriptor* output);
+
 // Preserve an already admitted canonical UUID literal's exact registry binding.
 // This validates supplied cohort/codec fields; it does not issue a statement
 // receipt, resolve a column occurrence, or grant catalog/security authority.

@@ -3164,7 +3164,16 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
         ? DatatypeCastCategory::identity
         : DatatypeCastCategory::forbidden;
   }
-  // INT64 has an exact canonical LE8 identity operation. Core has not admitted
+  if (source_type_id == CanonicalTypeId::int32 &&
+      target_type_id == CanonicalTypeId::int32) {
+    return DatatypeCastCategory::identity;
+  }
+  if (source_type_id == CanonicalTypeId::int32 &&
+      target_type_id == CanonicalTypeId::int64) {
+    return DatatypeCastCategory::lossless_implicit;
+  }
+  // INT64 has an exact canonical LE8 identity operation. Apart from the
+  // exact INT32 widening above, Core has not admitted
   // any cross-type PRESENT pair involving INT64, or any complete PRESENT cast
   // pair involving the other fixed-width types below. Contextual base.null
   // binding was admitted above.
@@ -3720,6 +3729,41 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
     null_identity.diagnostic = MakeDatatypeOperationDiagnostic(
         null_identity.status, "SB_DATATYPE_OK", "datatype.ok");
     return null_identity;
+  }
+  if (request.value.type_id == CanonicalTypeId::int32 &&
+      (request.target_type_id == CanonicalTypeId::int32 ||
+       request.target_type_id == CanonicalTypeId::int64)) {
+    // Current builtin scalar rules only: no domain, modifier or descriptorless
+    // coercion. PRESENT slot nullability does not change mathematical value.
+    if (!ExecutionDescriptorExactlyMatchesCurrentBuiltinIgnoringNullability(
+            request.value.descriptor, request.value.type_id) ||
+        !ExecutionDescriptorExactlyMatchesCurrentBuiltinIgnoringNullability(
+            request.target_descriptor, request.target_type_id)) {
+      return CastFailure("int32_cast_requires_exact_builtin_descriptors",
+                         DatatypeCastCategory::forbidden,
+                         "DATATYPE.DESCRIPTOR.INVALID");
+    }
+    DatatypeCastResult converted;
+    converted.status = OkStatus();
+    converted.category = request.target_type_id == CanonicalTypeId::int32
+        ? DatatypeCastCategory::identity : DatatypeCastCategory::lossless_implicit;
+    converted.value.type_id = request.target_type_id;
+    converted.value.descriptor = request.target_descriptor;
+    converted.value.is_null = request.value.is_null;
+    if (!request.value.is_null) {
+      std::int64_t number = 0;
+      if (!DecodeCanonicalInt32Value(request.value.encoded_value, &number)) {
+        return CastFailure("int32_cast_source_noncanonical", converted.category,
+                           "NUMERIC.ENCODING.NONCANONICAL");
+      }
+      if (request.target_type_id == CanonicalTypeId::int32)
+        converted.value.encoded_value = request.value.encoded_value;
+      else if (!EncodeCanonicalInt64Value(number, &converted.value.encoded_value))
+        return CastFailure("int32_widening_failed", converted.category);
+    }
+    converted.diagnostic = MakeDatatypeOperationDiagnostic(
+        converted.status, "SB_DATATYPE_OK", "datatype.ok");
+    return converted;
   }
   const bool binary_incident = IsBinary(request.value.type_id) ||
       IsBinary(request.target_type_id);

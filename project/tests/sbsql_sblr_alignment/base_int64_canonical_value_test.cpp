@@ -664,11 +664,13 @@ void NullAndAbsentPolicies() {
     const auto expected = candidate.type_id == dt::CanonicalTypeId::int64
         ? dt::DatatypeCastCategory::identity
         : dt::DatatypeCastCategory::forbidden;
+    const auto incoming = candidate.type_id == dt::CanonicalTypeId::int32
+        ? dt::DatatypeCastCategory::lossless_implicit : expected;
     Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::int64,
                                    candidate.type_id) == expected &&
               dt::ClassifyDatatypeCast(candidate.type_id,
-                                       dt::CanonicalTypeId::int64) == expected,
-          "only the registered int64 identity cast is admitted");
+                                       dt::CanonicalTypeId::int64) == incoming,
+          "int64 admits identity and the registered int32 widening only");
   }
   for (const auto context : {dt::DatatypeCastContext::implicit,
                              dt::DatatypeCastContext::assignment,

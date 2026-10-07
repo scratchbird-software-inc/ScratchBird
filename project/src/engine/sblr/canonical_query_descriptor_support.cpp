@@ -16,9 +16,20 @@ namespace exec = scratchbird::engine::executor;
 
 bool BuildExactCanonicalUuidRuntimeDescriptorV1(
     const api::RelationalTypeDescriptor& source, api::EngineDescriptor* output) {
+  return BuildExactCanonicalScalarRuntimeDescriptorV1(
+      source, core::datatypes::CanonicalTypeId::uuid, output);
+}
+
+bool BuildExactCanonicalScalarRuntimeDescriptorV1(
+    const api::RelationalTypeDescriptor& source,
+    core::datatypes::CanonicalTypeId expected_type, api::EngineDescriptor* output) {
   if (!output) return false;
   *output = {};
   namespace dt = scratchbird::core::datatypes;
+  if (expected_type != dt::CanonicalTypeId::uuid &&
+      expected_type != dt::CanonicalTypeId::binary &&
+      expected_type != dt::CanonicalTypeId::int32 &&
+      expected_type != dt::CanonicalTypeId::int64) return false;
   if (!source.datatype_identity_authoritative ||
       !core::uuid::IsEngineIdentityUuid(source.statement_receipt_uuid) ||
       (source.nullability != api::RelationalNullability::kNonNull &&
@@ -31,8 +42,7 @@ bool BuildExactCanonicalUuidRuntimeDescriptorV1(
       source.descriptor_generation);
   if (!identity.ok) return false;
   const auto& row = identity.row;
-  if (row.canonical_name != "uuid" ||
-      row.canonical_binary_type_code != static_cast<std::uint32_t>(dt::CanonicalTypeId::uuid) ||
+  if (row.canonical_binary_type_code != static_cast<std::uint32_t>(expected_type) ||
       row.descriptor_uuid != source.descriptor_uuid ||
       row.descriptor_generation != source.descriptor_generation ||
       row.type_uuid != source.type_uuid || row.type_generation != source.type_generation ||
@@ -44,7 +54,7 @@ bool BuildExactCanonicalUuidRuntimeDescriptorV1(
   descriptor.datatype_descriptor_uuid = row.descriptor_uuid;
   descriptor.datatype_descriptor_generation = row.descriptor_generation;
   descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = "uuid";
+  descriptor.canonical_type_name = dt::CanonicalTypeName(expected_type);
   descriptor.encoded_descriptor = source.nullability == api::RelationalNullability::kNullable
       ? "nullability=nullable" : "nullability=non_null";
   *output = std::move(descriptor);

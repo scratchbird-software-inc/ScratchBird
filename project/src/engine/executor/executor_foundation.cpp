@@ -5070,12 +5070,20 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
             batch->columns[column].descriptor.canonical_type_name);
         const auto target_type = dt::CanonicalTypeIdFromStableName(
             request.result_columns[column].descriptor.canonical_type_name);
+        const bool exact_native_cast =
+            (source_type == target_type &&
+             (source_type == dt::CanonicalTypeId::uuid || source_type == dt::CanonicalTypeId::binary ||
+              source_type == dt::CanonicalTypeId::int32 || source_type == dt::CanonicalTypeId::int64)) ||
+            (source_type == dt::CanonicalTypeId::int32 && target_type == dt::CanonicalTypeId::int64);
         for (auto& row : batch->rows) {
           internal_api::EngineTypedValue validated, converted;
           std::string category;
-          if (!internal_api::QowApplyCanonicalDescriptorCoercionV1(
+          // These native casts validate the complete source and target in one
+          // call and never normalize the source. Avoid a duplicate identity
+          // cast and payload allocation; other conversion profiles retain it.
+          if ((!exact_native_cast && !internal_api::QowApplyCanonicalDescriptorCoercionV1(
                   row.values[column], row.values[column].descriptor, false,
-                  &validated, &category, &reconciliation_detail) ||
+                  &validated, &category, &reconciliation_detail)) ||
               !internal_api::QowApplyCanonicalDescriptorCoercionV1(
                   row.values[column], request.result_columns[column].descriptor,
                   false, &converted, &category, &reconciliation_detail)) {

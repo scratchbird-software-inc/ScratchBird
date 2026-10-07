@@ -655,13 +655,16 @@ void NullAndAbsentPolicies() {
   }
 
   for (const auto& candidate : dt::BuiltinDatatypeDescriptors()) {
+    const auto outgoing = candidate.type_id == dt::CanonicalTypeId::int32
+        ? dt::DatatypeCastCategory::identity : candidate.type_id == dt::CanonicalTypeId::int64
+        ? dt::DatatypeCastCategory::lossless_implicit : dt::DatatypeCastCategory::forbidden;
+    const auto incoming = candidate.type_id == dt::CanonicalTypeId::int32
+        ? dt::DatatypeCastCategory::identity : dt::DatatypeCastCategory::forbidden;
     Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::int32,
-                                   candidate.type_id) ==
-              dt::DatatypeCastCategory::forbidden &&
+                                   candidate.type_id) == outgoing &&
               dt::ClassifyDatatypeCast(candidate.type_id,
-                                       dt::CanonicalTypeId::int32) ==
-              dt::DatatypeCastCategory::forbidden,
-          "all registered present-value casts incident to int32 refuse");
+                                       dt::CanonicalTypeId::int32) == incoming,
+          "int32 admits only exact identity and lossless int64 widening");
   }
   for (const auto context : {dt::DatatypeCastContext::implicit,
                              dt::DatatypeCastContext::assignment,
@@ -684,6 +687,96 @@ void NullAndAbsentPolicies() {
     Check(!dt::CastDatatypeValue(present).ok(),
           "present int32 incoming cast refuses in every context");
 
+  }
+  const auto target_descriptor = DescriptorFor(dt::CanonicalTypeId::int64);
+  dt::DatatypeCastRequest overflowing_reverse;
+  overflowing_reverse.value = {dt::CanonicalTypeId::int64,
+      std::string{'\0', '\0', '\0', static_cast<char>(0x80), '\0', '\0', '\0', '\0'},
+      false, target_descriptor};
+  overflowing_reverse.target_type_id = dt::CanonicalTypeId::int32;
+  overflowing_reverse.target_descriptor = descriptor;
+  overflowing_reverse.context = dt::DatatypeCastContext::explicit_cast;
+  CheckCastRefused(dt::CastDatatypeValue(overflowing_reverse), "DATATYPE.CAST_FORBIDDEN",
+                   "widening never admits overflowing reverse narrowing or truncation");
+  for (const auto context : {dt::DatatypeCastContext::implicit,
+                             dt::DatatypeCastContext::assignment,
+                             dt::DatatypeCastContext::explicit_cast}) {
+    for (std::int64_t number : {-2147483648LL, -65536LL, -1LL, 0LL, 1LL, 65536LL, 2147483647LL}) {
+      for (bool nullable : {false, true}) for (bool target_nullable : {false, true}) {
+        dt::DatatypeCastRequest request;
+        request.value = Int32(number);
+        request.value.descriptor = descriptor;
+        request.value.descriptor.nullable_allowed = nullable;
+        request.target_type_id = dt::CanonicalTypeId::int64;
+        request.target_descriptor = target_descriptor;
+        request.target_descriptor.nullable_allowed = target_nullable;
+        request.context = context;
+        const auto widened = dt::CastDatatypeValue(request);
+        std::string expected;
+        const auto raw = static_cast<std::uint64_t>(number);
+        for (unsigned byte = 0; byte < 8; ++byte) expected.push_back(static_cast<char>(raw >> (byte * 8)));
+        Check(widened.ok() && widened.category == dt::DatatypeCastCategory::lossless_implicit &&
+              !widened.value.is_null && widened.value.encoded_value == expected &&
+              widened.value.type_id == dt::CanonicalTypeId::int64 &&
+              widened.value.descriptor.nullable_allowed == target_nullable,
+              "int32 widening preserves signed value and exact target nullability");
+        request.target_type_id = dt::CanonicalTypeId::int32;
+        request.target_descriptor = descriptor;
+        request.target_descriptor.nullable_allowed = target_nullable;
+        const auto identity = dt::CastDatatypeValue(request);
+        Check(identity.ok() && identity.category == dt::DatatypeCastCategory::identity &&
+              identity.value.encoded_value == request.value.encoded_value &&
+              identity.value.descriptor.nullable_allowed == target_nullable,
+              "bound int32 identity preserves all bits in every context");
+      }
+    }
+    dt::DatatypeCastRequest request;
+    request.value = null_value;
+    request.target_type_id = dt::CanonicalTypeId::int64;
+    request.target_descriptor = target_descriptor;
+    request.context = context;
+    for (const auto target : {dt::CanonicalTypeId::int32, dt::CanonicalTypeId::int64}) {
+      for (unsigned mutation = 0; mutation < 9; ++mutation) {
+        auto invalid = request;
+        invalid.value = Int32(42);
+        invalid.value.descriptor = descriptor;
+        invalid.target_type_id = target;
+        invalid.target_descriptor = target == dt::CanonicalTypeId::int32 ? descriptor : target_descriptor;
+        switch (mutation) {
+          case 0: invalid.value.descriptor = {}; break;
+          case 1: ++invalid.value.descriptor.descriptor_epoch; break;
+          case 2: invalid.target_descriptor = {}; break;
+          case 3: ++invalid.target_descriptor.descriptor_epoch; break;
+          case 4: invalid.target_descriptor.precision = 1; break;
+          case 5: invalid.value.encoded_value.pop_back(); break;
+          case 6: invalid.value.encoded_value.push_back(0); break;
+          case 7: invalid.value.is_null = true; break;
+          case 8: invalid.value.descriptor.precision = 1; break;
+        }
+        const auto refused = dt::CastDatatypeValue(invalid);
+        Check(!refused.ok() && refused.value.type_id == dt::CanonicalTypeId::unknown &&
+              refused.value.encoded_value.empty(), "PRESENT int32 cast rejects malformed descriptor/carrier without output");
+      }
+    }
+    const auto widened_null = dt::CastDatatypeValue(request);
+    Check(widened_null.ok() && widened_null.value.is_null && widened_null.value.encoded_value.empty() &&
+          widened_null.value.type_id == dt::CanonicalTypeId::int64,
+          "int32 typed NULL widens to admitted nullable int64");
+    for (unsigned mutation = 0; mutation < 7; ++mutation) {
+      auto invalid = request;
+      switch (mutation) {
+        case 0: invalid.value.descriptor = {}; break;
+        case 1: ++invalid.value.descriptor.descriptor_epoch; break;
+        case 2: invalid.target_descriptor = {}; break;
+        case 3: ++invalid.target_descriptor.descriptor_epoch; break;
+        case 4: invalid.target_descriptor.precision = 1; break;
+        case 5: invalid.value.encoded_value = "hidden NULL bytes"; break;
+        case 6: invalid.target_descriptor.nullable_allowed = false; break;
+      }
+      const auto refused = dt::CastDatatypeValue(invalid);
+      Check(!refused.ok() && refused.value.type_id == dt::CanonicalTypeId::unknown &&
+            refused.value.encoded_value.empty(), "int32 widening never bypasses NULL/descriptor authority");
+    }
   }
   const auto null_first = dt::MakeDatatypeSortKey(
       {null_value, dt::DatatypeNullOrdering::nulls_first});

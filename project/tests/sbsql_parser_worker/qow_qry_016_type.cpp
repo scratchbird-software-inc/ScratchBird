@@ -116,16 +116,34 @@ api::EngineDescriptor Descriptor(const api::EngineUuid& descriptor_uuid,
   descriptor.descriptor_uuid = descriptor_uuid;
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = std::string(type_name);
-  descriptor.type_uuid = type_uuid;
+  const auto builtin = exec::MakeExecutorDescriptor(std::string(type_name));
+  descriptor.type_uuid = builtin.type_uuid.is_nil() ? type_uuid : builtin.type_uuid;
+  descriptor.datatype_descriptor_uuid = builtin.datatype_descriptor_uuid;
+  descriptor.datatype_descriptor_generation = builtin.datatype_descriptor_generation;
   descriptor.encoded_descriptor = "nullability=nullable";
   return descriptor;
+}
+
+std::vector<std::uint8_t> IntegerBytes(std::int64_t number, unsigned width) {
+  std::vector<std::uint8_t> bytes;
+  const auto bits = static_cast<std::uint64_t>(number);
+  for (unsigned byte = 0; byte < width; ++byte)
+    bytes.push_back(static_cast<std::uint8_t>(bits >> (byte * 8)));
+  return bytes;
+}
+
+bool IsInteger(const api::EngineTypedValue& value, std::int64_t number) {
+  return value.state == api::EngineValueState::value && !value.is_null &&
+      value.encoded_value.empty() && value.binary_value == IntegerBytes(number, 8);
 }
 
 api::EngineTypedValue Value(const api::EngineDescriptor& descriptor,
                             std::string encoded) {
   api::EngineTypedValue value;
   value.descriptor = descriptor;
-  value.encoded_value = std::move(encoded);
+  if (descriptor.canonical_type_name == "int32" || descriptor.canonical_type_name == "int64")
+    value.binary_value = IntegerBytes(std::stoll(encoded), descriptor.canonical_type_name == "int32" ? 4 : 8);
+  else value.encoded_value = std::move(encoded);
   value.state = api::EngineValueState::value;
   return value;
 }
@@ -251,6 +269,7 @@ bool ValidateSetOperationTypeReconciliation() {
   auto request = Request(exec::CanonicalSetOperationKind::kUnion,
                          exec::CanonicalSetOperationQuantifier::kDistinct);
   auto result = exec::ExecuteCanonicalSetOperationDistinct(request);
+  if (!result.diagnostic.ok) std::cerr << result.diagnostic.detail << '\n';
   passed &= Require(
       result.diagnostic.ok && result.output_batch.rows.size() == 4 &&
           result.eliminated_duplicate_row_count == 3 &&
@@ -259,11 +278,11 @@ bool ValidateSetOperationTypeReconciliation() {
               std::vector<std::string>{"int64"} &&
           result.implementation_id ==
               "setop.union-distinct.ordinal.type-reconciled.typed.v1" &&
-          result.output_batch.rows[0].values[0].encoded_value == "1" &&
-          result.output_batch.rows[1].values[0].encoded_value == "2" &&
+          IsInteger(result.output_batch.rows[0].values[0], 1) &&
+          IsInteger(result.output_batch.rows[1].values[0], 2) &&
           result.output_batch.rows[2].values[0].state ==
               api::EngineValueState::sql_null &&
-          result.output_batch.rows[3].values[0].encoded_value == "3" &&
+          IsInteger(result.output_batch.rows[3].values[0], 3) &&
           result.output_batch.rows[0].values[0]
                   .descriptor.descriptor_uuid ==
               request.result_columns[0].descriptor.descriptor_uuid &&
@@ -278,7 +297,7 @@ bool ValidateSetOperationTypeReconciliation() {
       exec::CanonicalSetOperationQuantifier::kDistinct));
   passed &= Require(
       result.diagnostic.ok && result.output_batch.rows.size() == 2 &&
-          result.output_batch.rows[0].values[0].encoded_value == "1" &&
+          IsInteger(result.output_batch.rows[0].values[0], 1) &&
           result.output_batch.rows[1].values[0].state ==
               api::EngineValueState::sql_null,
       "INTERSECT DISTINCT did not compare reconciled typed membership");
@@ -288,7 +307,7 @@ bool ValidateSetOperationTypeReconciliation() {
       exec::CanonicalSetOperationQuantifier::kDistinct));
   passed &= Require(
       result.diagnostic.ok && result.output_batch.rows.size() == 1 &&
-          result.output_batch.rows[0].values[0].encoded_value == "2" &&
+          IsInteger(result.output_batch.rows[0].values[0], 2) &&
           result.eliminated_duplicate_row_count == 1,
       "EXCEPT DISTINCT did not use reconciled membership");
 
@@ -297,8 +316,8 @@ bool ValidateSetOperationTypeReconciliation() {
       exec::CanonicalSetOperationQuantifier::kAll));
   passed &= Require(
       result.diagnostic.ok && result.output_batch.rows.size() == 7 &&
-          result.output_batch.rows[0].values[0].encoded_value == "1" &&
-          result.output_batch.rows[3].values[0].encoded_value == "2" &&
+          IsInteger(result.output_batch.rows[0].values[0], 1) &&
+          IsInteger(result.output_batch.rows[3].values[0], 2) &&
           result.coerced_value_count == 4,
       "UNION ALL did not publish reconciled multiplicities");
 
@@ -338,7 +357,31 @@ bool ValidateSetOperationTypeReconciliation() {
           result.diagnostic.diagnostic_code ==
               "QOW-DIAG-QRY-016-TYPE-REFUSAL-V1" &&
           result.output_batch.rows.empty(),
-      "out-of-range source value reached set equality");
+      "mixed textual and canonical integer source reached set equality");
+
+  request = Request(exec::CanonicalSetOperationKind::kUnion,
+                    exec::CanonicalSetOperationQuantifier::kDistinct);
+  request.left_batch.rows[0].values[0].binary_value = IntegerBytes(2147483648LL, 8);
+  result = exec::ExecuteCanonicalSetOperationDistinct(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "oversized integer carrier was truncated to fit INT32 before reconciliation");
+  for (unsigned mutation = 0; mutation < 6; ++mutation) {
+    request = Request(exec::CanonicalSetOperationKind::kUnion,
+                      exec::CanonicalSetOperationQuantifier::kDistinct);
+    auto changed = request.left_batch.columns.front().descriptor;
+    switch (mutation) {
+      case 0: changed.datatype_descriptor_uuid = {}; break;
+      case 1: ++changed.datatype_descriptor_generation; break;
+      case 2: changed.encoded_descriptor += ";width=4"; break;
+      case 3: changed.encoded_descriptor += ";precision=1"; break;
+      case 4: changed.charset_uuid = changed.type_uuid; break;
+      case 5: changed.type_uuid = {}; break;
+    }
+    ReplaceBatchDescriptor(&request.left_batch, changed);
+    result = exec::ExecuteCanonicalSetOperationDistinct(request);
+    passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                      "integer reconciliation dropped unhandled metadata or stale source authority");
+  }
 
   request = Request(exec::CanonicalSetOperationKind::kUnion,
                     exec::CanonicalSetOperationQuantifier::kDistinct);

@@ -1004,6 +1004,13 @@ PreparedSetOperationRoot PrepareSetOperationRoot(
       engine_descriptor.encoded_descriptor +=
           ";scale=" + std::to_string(*descriptor->second->scale);
     }
+    const auto result_type = dt::CanonicalTypeIdFromStableName(result_type_name);
+    if ((result_type == dt::CanonicalTypeId::uuid || result_type == dt::CanonicalTypeId::binary ||
+         result_type == dt::CanonicalTypeId::int32 || result_type == dt::CanonicalTypeId::int64) &&
+        !BuildExactCanonicalScalarRuntimeDescriptorV1(*descriptor->second, result_type, &engine_descriptor)) {
+      result.detail = "set-operation result lacks exact admitted datatype/codec binding";
+      return result;
+    }
     const bool nullable = descriptor->second->nullability ==
                           api::RelationalNullability::kNullable;
     if (nullable != (left_column.nullable || right_column.nullable)) {
