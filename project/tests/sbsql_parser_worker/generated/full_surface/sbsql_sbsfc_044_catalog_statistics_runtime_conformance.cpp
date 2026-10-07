@@ -56,7 +56,7 @@ constexpr std::uint64_t kExpectedVisibleRows = 2;
 // Independent accounting of the fixture's documented relation-size estimate:
 // Identities occupy 16 bytes including nil. Retained named values carry a
 // state octet; metadata attributes do not. SBCLKEY2 contains an 8-byte magic,
-// 4-byte arity, 1-byte state, 4-byte length and the one-byte id. SBVALS01 has
+// 4-byte arity, 1-byte state, 4-byte length and the eight-byte LE id. SBVALS01 has
 // a 12-byte header plus the length-prefixed name, state and value. These are
 // retained metadata/value estimates, not page sizes or process allocations.
 // Binary note metadata: SBMETA02 + schema + counts, two text fields
@@ -65,9 +65,9 @@ constexpr std::uint64_t kNoteMetadataBytes =
     8 + 4 + 9 + 4 + 4 + (4 + 16 + 4 + 8) + (4 + 4 + 4 + 9) +
     (4 + 12 + 16) + (4 + 14 + 16);
 constexpr std::uint64_t kTableBytes = 96 + 2 * 16 + 22 + (8 + 2 + 10) + (8 + 4 + kNoteMetadataBytes);
-constexpr std::uint64_t kRowBytes = 128 + 4 * 16 + (9 + 2 + 1) + (9 + 4 + 5);
+constexpr std::uint64_t kRowBytes = 128 + 4 * 16 + (9 + 2 + 8) + (9 + 4 + 5);
 constexpr std::uint64_t kIndexBytes = 128 + 2 * 16 + 2 + 5 + 24 + 29 + (8 + 2);
-constexpr std::uint64_t kLogicalKeyBytes = 8 + 4 + 1 + 4 + 1;
+constexpr std::uint64_t kLogicalKeyBytes = 8 + 4 + 1 + 4 + 8;
 // SBKOBIN: + SBKO + rank + scalar kind + typed UUID + generation +
 // absent collation + present int64 payload (six escaped zero bytes) + end.
 constexpr std::uint64_t kPhysicalKeyBytes = 8 + 4 + 1 + 4 + 17 + 8 + 1 + 1 + 8 + 6 + 2;
@@ -176,7 +176,7 @@ void SeedCatalogStatisticsFixture(api::EngineRequestContext& context) {
   row_a.table_uuid = scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000101");
   row_a.row_uuid = scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000201");
   row_a.version_uuid = scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000301");
-  row_a.values = {{"id", "1"}, {"note", "alpha"}};
+  row_a.values = {{"id", std::string("\x01\0\0\0\0\0\0\0", 8)}, {"note", "alpha"}};
   diagnostic = api::AppendMgaRowVersion(context, row_a, nullptr);
   Require(!diagnostic.error, "SBSFC044 row A append failed");
   diagnostic = api::AppendMgaIndexEntriesForIndex(context, index, row_a.row_uuid, row_a.version_uuid, row_a.values);
@@ -187,7 +187,7 @@ void SeedCatalogStatisticsFixture(api::EngineRequestContext& context) {
   row_b.table_uuid = scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000101");
   row_b.row_uuid = scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000202");
   row_b.version_uuid = scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000302");
-  row_b.values = {{"id", "2"}, {"note", "bravo"}};
+  row_b.values = {{"id", std::string("\x02\0\0\0\0\0\0\0", 8)}, {"note", "bravo"}};
   diagnostic = api::AppendMgaRowVersion(context, row_b, nullptr);
   Require(!diagnostic.error, "SBSFC044 row B append failed");
   diagnostic = api::AppendMgaIndexEntriesForIndex(context, index, row_b.row_uuid, row_b.version_uuid, row_b.values);
@@ -371,10 +371,11 @@ int main() {
     Require((row_a && !seen_a) || (row_b && !seen_b), "SBSFC044 retained row identity drifted");
     seen_a = seen_a || row_a;
     seen_b = seen_b || row_b;
-    const std::string value = row_a ? "1" : "2";
+    const std::string value = row_a ? std::string("\x01\0\0\0\0\0\0\0", 8)
+                                    : std::string("\x02\0\0\0\0\0\0\0", 8);
     const auto key = scratchbird::tests::ExpectedInt64OrderedIndexKey(
         datatype.datatype_descriptor_uuid, datatype.datatype_descriptor_generation, row_a ? 1 : 2);
-    const std::string payload = std::string("SBCLKEY2\x01\x00\x00\x00\x00\x01\x00\x00\x00", 17) + value;
+    const std::string payload = std::string("SBCLKEY2\x01\x00\x00\x00\x00\x08\x00\x00\x00", 17) + value;
     Require(entry.column_name == "id" && entry.family == "btree" && entry.entry_kind == "exact" &&
                 entry.key_value == key && entry.payload_value == payload &&
                 key.size() == kPhysicalKeyBytes && payload.size() == kIndexPayloadBytes,

@@ -145,21 +145,24 @@ api::EngineTypedValue TextValue(std::string value) {
   return typed;
 }
 
-api::EngineTypedValue BigintValue(std::string value) {
+api::EngineTypedValue BigintValue(std::int64_t value) {
   api::EngineTypedValue typed;
   typed.descriptor.descriptor_kind = "scalar";
   typed.descriptor.canonical_type_name = "int64";
   typed.descriptor.encoded_descriptor = "type=int64";
-  typed.encoded_value = std::move(value);
+  if (!scratchbird::core::datatypes::EncodeCanonicalInt64Value(
+          value, &typed.encoded_value)) {
+    Fail("canonical INT64 seed encoding failed");
+  }
   return typed;
 }
 
 api::EngineRowValue CopyStreamRow(api::EngineUuid row_uuid,
-                                  std::string id,
+                                  std::int64_t id,
                                   std::string payload) {
   api::EngineRowValue row;
   row.requested_row_uuid = std::move(row_uuid);
-  row.fields.push_back({"id", BigintValue(std::move(id))});
+  row.fields.push_back({"id", BigintValue(id)});
   row.fields.push_back({"payload", TextValue(std::move(payload))});
   return row;
 }
@@ -574,7 +577,7 @@ void SeedCopyStreamFixtureRow(const SeedSession& session, const api::EngineReque
   request.target_table.uuid = table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows.push_back(CopyStreamRow(NewUuid(UuidKind::row),
-                                             "6",
+                                                6,
                                              "stream-baseline"));
   const auto inserted = api::EngineInsertRows(request);
   if (!inserted.ok || inserted.inserted_count != request.input_rows.size()) {

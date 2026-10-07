@@ -108,6 +108,21 @@ void Refusals(const char* name, std::string bytes) {
   std::string detail;
   Check(key::BuildOrderedColumnExecutionDescriptor(source, bound.datatype, false, &projected, &detail) &&
         !projected.nullable_allowed, "typed storage nullability was replaced by a default");
+  for (const auto label : {"canonical", "canonical_type", "type"}) {
+    source.encoded_descriptor = std::string(label) + "=" + name;
+    Check(key::BuildOrderedColumnExecutionDescriptor(source, bound.datatype, false,
+          &projected, &detail) && !projected.nullable_allowed,
+          "matching declaration label was refused");
+    source.encoded_descriptor += ";nullable=false";
+    const auto expected = projected;
+    source.encoded_descriptor.replace(source.encoded_descriptor.find('=') + 1,
+                                     std::string(name).size(), "different");
+    Check(!key::BuildOrderedColumnExecutionDescriptor(source, bound.datatype, false,
+          &projected, &detail) && std::equal(std::begin(projected.descriptor_uuid.bytes),
+              std::end(projected.descriptor_uuid.bytes), std::begin(expected.descriptor_uuid.bytes)) &&
+          projected.nullable_allowed == expected.nullable_allowed,
+          "contradictory declaration label was accepted or changed output");
+  }
   const auto& codec = *bound.datatype.codec;
   api::CatalogColumnMetadata fields;
   fields.identities = {{"type_uuid", bound.datatype.type_uuid},

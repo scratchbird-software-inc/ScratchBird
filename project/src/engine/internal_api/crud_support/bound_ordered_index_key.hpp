@@ -95,6 +95,17 @@ inline bool BuildOrderedColumnExecutionDescriptor(
       return false;
     }
     for (const auto& [name, value] : fields.text) {
+      // These are redundant declaration labels, not datatype identities. A
+      // compiler may emit any of the three keys, but it may not contradict
+      // the supplied column's label. The UUID/generation checks above and
+      // the exact registry lookup below remain the datatype authority.
+      if (name == "canonical" || name == "canonical_type" || name == "type") {
+        if (value != source.canonical_type_name) {
+          *detail = "index column datatype declaration labels disagree";
+          return false;
+        }
+        continue;
+      }
       if (type == core::datatypes::CanonicalTypeId::decimal &&
           (name == "precision" || name == "scale" || name == "decimal_codec_generation" ||
            name == "codec_generation" || name == "codec_version" || name == "codec_id")) continue;
@@ -109,7 +120,7 @@ inline bool BuildOrderedColumnExecutionDescriptor(
       }
       // Catalog declaration attributes do not change the base comparison
       // profile. Semantic modifiers must not be dropped by the projection.
-      if (name != "canonical" && name != "type" && name != "nullable" &&
+      if (name != "nullable" &&
           name != "nullability" && name != "not_null" && name != "primary_key" && name != "pk" &&
           name != "unique" && name != "generated" && name != "identity" &&
           name != "default" && name != "default_value") {
