@@ -443,6 +443,9 @@ if(SB_AGENT_PRODUCTION_BUILD)
   add_compile_definitions(SCRATCHBIRD_AGENT_PRODUCTION_BUILD=1)
 endif()
 # PUBLIC_PRODUCTION_FEATURE_AUDIT
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/NestedDependencyConfigureArgs.cmake")
+set(_sb_production_configure_dependency_args)
+sb_append_nested_dependency_configure_args(_sb_production_configure_dependency_args)
 add_test(
   NAME agent_production_build_cmake_gate
   COMMAND "${CMAKE_COMMAND}"
@@ -474,6 +477,7 @@ add_test(
           "-DSB_LLVM_RUNTIME_LIBRARY=${SB_LLVM_RUNTIME_LIBRARY}"
           "-DSB_LLVM_LINK_MODE=${SB_LLVM_LINK_MODE}"
           "-DSB_LLVM_MIN_MAJOR=${SB_LLVM_MIN_MAJOR}"
+          ${_sb_production_configure_dependency_args}
           -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/AgentProductionConfigureGateMatrix.cmake"
 )
 set_tests_properties(agent_production_build_configure_gate PROPERTIES
@@ -524,6 +528,7 @@ add_test(
           "-DSB_LLVM_RUNTIME_LIBRARY=${SB_LLVM_RUNTIME_LIBRARY}"
           "-DSB_LLVM_LINK_MODE=${SB_LLVM_LINK_MODE}"
           "-DSB_LLVM_MIN_MAJOR=${SB_LLVM_MIN_MAJOR}"
+          ${_sb_production_configure_dependency_args}
           -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/OptimizerProductionConfigureGateMatrix.cmake"
 )
 set_tests_properties(optimizer_production_build_configure_gate PROPERTIES

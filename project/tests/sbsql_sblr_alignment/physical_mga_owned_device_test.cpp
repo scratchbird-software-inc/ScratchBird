@@ -2247,6 +2247,19 @@ void NativeInventoryLongChain() {
   const auto root=disk::ParsePageHeader(root_bytes);Check(root.ok(),"long chain root identity");
   const auto page_at=[&](u64 i) {return i?f.first_page+i-1:db::kTransactionInventoryPageNumber;};
   std::vector<platform::Uuid> transaction_ids;transaction_ids.reserve(count);
+  // Bounded fixture construction only. Preserve every independently encoded
+  // page; do not alter device durability or the production inventory reader.
+  constexpr u64 fixture_batch_pages = 16;
+  std::vector<platform::byte> fixture_batch(fixture_batch_pages * page_size, 0);
+  u64 batch_first_page = 0, batch_pages = 0;
+  const auto flush_fixture = [&] {
+    if (!batch_pages) return;
+    Check(f.device.WriteAt(batch_first_page * page_size, fixture_batch.data(),
+                          batch_pages * page_size).ok(),
+          "persist complete bounded inventory fixture batch");
+    batch_pages = 0;
+    std::fill(fixture_batch.begin(), fixture_batch.end(), 0);
+  };
   for(u64 i=0;i<count;++i) {
     page::TransactionInventoryPageBody body;body.page_number=page_at(i);
     body.previous_page_number=i?page_at(i-1):0;body.next_page_number=i+1<count?page_at(i+1):0;
@@ -2259,9 +2272,19 @@ void NativeInventoryLongChain() {
     auto header=root.header;header.page_number=body.page_number;
     if(i) header.page_uuid=Id(UuidKind::page).value;
     const auto serialized=disk::SerializePageHeader(header);Check(serialized.ok(),"long-chain exact page header");
-    Check(f.device.WriteAt(body.page_number*page_size,serialized.serialized.data(),serialized.serialized.size()).ok()
-      &&f.device.WriteAt(body.page_number*page_size+128,encoded.serialized.data(),encoded.serialized.size()).ok(),"persist actual long inventory chain");
+    Check(serialized.serialized.size() == 128 &&
+              encoded.serialized.size() <= page_size - 128,
+          "independent inventory fixture page must fit its native profile");
+    if (batch_pages && body.page_number != batch_first_page + batch_pages)
+      flush_fixture();
+    if (!batch_pages) batch_first_page = body.page_number;
+    auto* destination = fixture_batch.data() + batch_pages * page_size;
+    std::copy(serialized.serialized.begin(), serialized.serialized.end(), destination);
+    std::copy(encoded.serialized.begin(), encoded.serialized.end(), destination + 128);
+    ++batch_pages;
+    if (batch_pages == fixture_batch_pages) flush_fixture();
   }
+  flush_fixture();
   Check(f.device.Sync().ok(),"sync long inventory chain");
   const auto writes=write_calls;
   const auto loaded=db::LoadLocalTransactionInventoryFromOpenDevice(&f.device,page_size);

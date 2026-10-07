@@ -1182,7 +1182,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME sbsql_sblr_alignment_physical_mga_owned_device COMMAND sbsql_sblr_alignment_physical_mga_owned_device)
   set_tests_properties(sbsql_sblr_alignment_physical_mga_owned_device PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-07;component_regression;physical_MGA;node_ownership"
-    TIMEOUT 60)
+    # Full real-file, crash/failure and ownership corpus, not a latency gate.
+    # Measured with forced ordered writes; keep a finite slow-storage budget.
+    TIMEOUT 180)
 endif()
 if(UNIX)
   add_executable(sbsql_sblr_alignment_table_content_generation table_content_generation_test.cpp)
@@ -2861,6 +2863,12 @@ if(NOT SB_ENABLE_CLUSTER_PROVIDER)
     add_test(NAME ${_cluster_stub_target} COMMAND ${_cluster_stub_target})
     set_tests_properties(${_cluster_stub_target} PROPERTIES TIMEOUT 60
       LABELS "sbsql_sblr_alignment;compile_link_provider_component;IA-EXT-OPT")
+    if(_cluster_compat_name STREQUAL "agent_evidence_audit_redaction_retention_gate")
+      # Both variants exercise three real, resource-seeded durable catalogs.
+      # Keep every security/redaction/tamper assertion and a finite I/O budget.
+      set_tests_properties(${_cluster_compat_target} ${_cluster_stub_target}
+        PROPERTIES TIMEOUT 240)
+    endif()
   endforeach()
   function(sbsql_alignment_register_compile_link_parser_consumers)
    if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core)
