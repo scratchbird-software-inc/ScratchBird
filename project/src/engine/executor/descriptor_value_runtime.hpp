@@ -3657,6 +3657,10 @@ CanonicalInt128SumFinalizeResultV1 FinalizeCanonicalInt128SumV1(
     const CanonicalInt128SumStateV1& state,
     const scratchbird::engine::internal_api::EngineDescriptor& descriptor);
 Int64DecodeResult DecodeInt64Value(const scratchbird::engine::internal_api::EngineTypedValue& value);
+// Exact current INT64 binding and exclusive canonical binary payload. No
+// legacy decimal-text admission or reconstruction of missing datatype identity.
+bool DecodeBoundInt64Value(const scratchbird::engine::internal_api::EngineTypedValue& value,
+                          std::int64_t* decoded, std::string* refusal_detail);
 bool IsCanonicalBoundedSignedIntegerDescriptor(
     const scratchbird::engine::internal_api::EngineDescriptor& descriptor);
 BoolDecodeResult DecodeBoolValue(const scratchbird::engine::internal_api::EngineTypedValue& value);

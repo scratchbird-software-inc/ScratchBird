@@ -3025,9 +3025,11 @@ bool CanonicalRelationalExpressionRuntime::BuildDescriptor(
     return false;
   }
   const auto& source = *found->second;
-  if (type_name == "uuid" || type_name == "binary" || type_name == "varbinary") {
-    const auto type = type_name == "uuid" ? dt::CanonicalTypeId::uuid
-                                          : dt::CanonicalTypeId::binary;
+  const auto native_type = dt::CanonicalTypeIdFromStableName(std::string(type_name));
+  if (native_type == dt::CanonicalTypeId::uuid ||
+      native_type == dt::CanonicalTypeId::binary ||
+      native_type == dt::CanonicalTypeId::int64) {
+    const auto type = native_type;
     if (BuildExactCanonicalScalarRuntimeDescriptorV1(source, type, descriptor)) return true;
     *refusal_detail = "canonical native binary datatype receipt binding is invalid";
     return false;
@@ -3379,6 +3381,17 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
         literal.binary_value = typed.canonical_value_bytes;
         return finish(std::move(literal));
       }
+      if (dt::CanonicalTypeIdFromStableName(inferred_type) == dt::CanonicalTypeId::int64) {
+        if (*expression.literal_kind != api::RelationalLiteralKind::kNumeric ||
+            typed.descriptor_generation !=
+                descriptors_.at(expression.result_descriptor_id)->descriptor_generation ||
+            typed.canonical_value_bytes.size() != 8) {
+          *refusal_detail = "typed INT64 literal requires its numeric kind, exact generation and 8 bytes";
+          return false;
+        }
+        literal.binary_value = typed.canonical_value_bytes;
+        return finish(std::move(literal));
+      }
       const auto int64_value=DecodeSblrLiteralInt64LeV1(
           typed.canonical_value_bytes.data(),typed.canonical_value_bytes.size());
       const auto decimal_value=DecodeSblrLiteralExactDecimalV1(
@@ -3416,6 +3429,10 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
       literal.binary_value.assign(bytes.begin(), bytes.end());
       literal.encoded_value.clear();
       return finish(std::move(literal));
+    }
+    if (dt::CanonicalTypeIdFromStableName(inferred_type) == dt::CanonicalTypeId::int64) {
+      *refusal_detail = "INT64 literal requires its descriptor-bound binary carrier";
+      return false;
     }
     std::string payload = *expression.literal_or_parameter_ref;
     if (*expression.literal_kind == api::RelationalLiteralKind::kBoolean) {

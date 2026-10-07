@@ -7,12 +7,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/canonical_int64_literal_fixture.hpp"
 #include "engine/sblr/canonical_query_aggregate_registration.hpp"
 #include "engine/sblr/canonical_query_node_composition.hpp"
 #include "engine/sblr/canonical_query_object_free_composition_support.hpp"
 #include "engine/sblr/canonical_query_set_composition.hpp"
+#include "engine/sblr/canonical_query_scalar_support.hpp"
 
 #include <array>
+#include <bit>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -182,11 +185,7 @@ void RowBindingAndBounds(Results& results) {
   results.Check(!sblr::PrepareInputRowBindingForComposition(
       dag, 3, {101, 102}, &binding, &detail) && binding.slots.empty(), "dangling row child");
 
-  api::RelationalTypeDescriptor descriptor;
-  descriptor.descriptor_id = 1;
-  descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000009c01");
-  descriptor.type_uuid = sblr::ExactCanonicalCoreDatatypeTypeUuidV1("int64");
-  descriptor.nullability = api::RelationalNullability::kNonNull;
+  const auto descriptor = scratchbird::tests::Int64LiteralDescriptor(1);
   dag = {};
   dag.descriptors = {descriptor};
   expression = {};
@@ -194,20 +193,132 @@ void RowBindingAndBounds(Results& results) {
   expression.expression_kind = api::RelationalExpressionKind::kLiteral;
   expression.result_descriptor_id = 1;
   expression.literal_kind = api::RelationalLiteralKind::kNumeric;
-  for (const auto payload : {"0", "17", "9223372036854775807", "-1", "9223372036854775808"}) {
-    expression.literal_or_parameter_ref = payload;
+  for (const auto payload : {std::int64_t{0}, std::int64_t{17},
+       std::numeric_limits<std::int64_t>::max(), std::int64_t{-1},
+       std::numeric_limits<std::int64_t>::min()}) {
+    scratchbird::tests::SetInt64Literal(expression, descriptor, payload);
     dag.expressions = {expression};
     sblr::CanonicalRelationalExpressionRuntime runtime(dag);
     std::uint64_t bound = 99;
     const bool ok = sblr::EvaluateNonNegativeRowBoundForComposition(&runtime, 1, &bound, &detail);
-    const bool admitted = std::string_view(payload) != "-1" &&
-                          std::string_view(payload) != "9223372036854775808";
-    results.Check(ok == admitted && (!admitted || bound == std::stoull(payload)),
-                  "row bound: " + std::string(payload));
+    const bool admitted = payload >= 0;
+    results.Check(ok == admitted && (admitted ? bound == static_cast<std::uint64_t>(payload) : bound == 99),
+                  "row bound: " + std::to_string(payload));
+  }
+  // Decimal spelling belongs to parser admission, not the engine value carrier.
+  for (const auto text : {"0", "17", "9223372036854775808"}) {
+    auto invalid = expression;
+    invalid.literal_typed_value_v1.reset();
+    invalid.literal_or_parameter_ref = text;
+    dag.expressions = {invalid};
+    sblr::CanonicalRelationalExpressionRuntime runtime(dag);
+    std::uint64_t bound = 99;
+    results.Check(!sblr::EvaluateNonNegativeRowBoundForComposition(&runtime, 1, &bound, &detail) && bound == 99,
+                  "text/overflow row bound refused");
+  }
+  scratchbird::tests::SetInt64Literal(expression, descriptor, 17);
+  for (unsigned mutation = 0; mutation < std::size(scratchbird::tests::kInvalidInt64LiteralCases); ++mutation) {
+    dag.descriptors = {descriptor};
+    dag.expressions = {expression};
+    scratchbird::tests::InvalidateInt64Literal(mutation, dag.descriptors[0], dag.expressions[0]);
+    sblr::CanonicalRelationalExpressionRuntime runtime(dag);
+    std::uint64_t bound = 99;
+    results.Check(!sblr::EvaluateNonNegativeRowBoundForComposition(&runtime, 1, &bound, &detail) &&
+                  bound == 99 && !detail.empty(), scratchbird::tests::kInvalidInt64LiteralCases[mutation]);
+  }
+  dag.descriptors = {descriptor};
+  dag.expressions = {expression};
+  sblr::CanonicalRelationalExpressionRuntime runtime(dag);
+  api::EngineTypedValue native;
+  results.Check(runtime.EvaluateForConsumer(1, "int64", api::EngineCanonicalExpressionConsumer::projection,
+      &native, &detail) && native.encoded_value.empty() && native.binary_value.size() == 8 &&
+      native.descriptor.datatype_descriptor_uuid == descriptor.descriptor_uuid &&
+      native.descriptor.datatype_descriptor_generation == descriptor.descriptor_generation,
+      "runtime preserves exact binary INT64 binding");
+  for (unsigned mutation = 0; mutation < 12; ++mutation) {
+    auto invalid = native;
+    switch (mutation) {
+      case 0: invalid.encoded_value = "17"; break;
+      case 1: invalid.binary_value.clear(); invalid.encoded_value = "17"; break;
+      case 2: invalid.binary_value.resize(7); break;
+      case 3: invalid.descriptor.datatype_descriptor_uuid = {}; break;
+      case 4: ++invalid.descriptor.datatype_descriptor_generation; break;
+      case 5: invalid.descriptor.encoded_descriptor += ";width=64"; break;
+      case 6: invalid.descriptor.collation_uuid = scratchbird::tests::FixtureUuid(1401, 506); break;
+      case 7: invalid.descriptor.type_uuid = {}; break;
+      case 8: invalid.descriptor.descriptor_uuid = {}; break;
+      case 9: invalid.descriptor.descriptor_kind = "domain"; break;
+      case 10: invalid.is_null = true; break;
+      case 11: invalid.state = api::EngineValueState::sql_null; break;
+    }
+    std::int64_t decoded = 99;
+    results.Check(!sblr::DecodeCanonicalInt64Scalar(invalid, &decoded, &detail) && decoded == 99 && !detail.empty(),
+                  "bound scalar decoder refuses malformed identity/carrier atomically");
+    exec::DescriptorBatch batch;
+    batch.columns.push_back({"int64_value", invalid.descriptor, false, 1});
+    batch.rows.push_back({{invalid}});
+    results.Check(!exec::ValidateDescriptorBatch(batch).ok,
+                  "batch validator refuses the same malformed bound INT64");
   }
   std::uint64_t bound = 0;
   results.Check(!sblr::EvaluateNonNegativeRowBoundForComposition(nullptr, 1, &bound, &detail),
                 "missing row-bound runtime");
+}
+
+void NativeInt64Values(Results& results) {
+  api::TypedRelationalDag dag;
+  dag.descriptors.push_back(scratchbird::tests::Int64LiteralDescriptor(1));
+  api::RelationalDagNode node;
+  node.node_id = 1;
+  node.node_kind = api::RelationalDagNodeKind::kValues;
+  node.output_descriptor_ids = {1};
+  node.semantic_variant_id = "values.literal-table.v1";
+  dag.outputs.push_back({1, 1, 1, "int64_value", 1, true, 0});
+  std::vector<std::int64_t> expected{0, -1};
+  for (unsigned bit = 0; bit < 64; ++bit) {
+    expected.push_back(std::bit_cast<std::int64_t>(std::uint64_t{1} << bit));
+    expected.push_back(std::bit_cast<std::int64_t>(~(std::uint64_t{1} << bit)));
+  }
+  for (unsigned i = 0; i < expected.size(); ++i) {
+    api::RelationalExpressionRecord expression;
+    expression.expression_id = i + 1;
+    expression.expression_kind = api::RelationalExpressionKind::kLiteral;
+    expression.result_descriptor_id = 1;
+    expression.literal_kind = api::RelationalLiteralKind::kNumeric;
+    scratchbird::tests::SetInt64Literal(expression, dag.descriptors[0], expected[i]);
+    dag.expressions.push_back(expression);
+    dag.values_rows.push_back({i + 1, {i + 1}});
+    node.values_row_ids.push_back(i + 1);
+  }
+  dag.nodes.push_back(node);
+  scratchbird::engine::planner::CanonicalLogicalRelationalNode logical;
+  logical.logical_node_id = 1;
+  const auto materialized = sblr::MaterializeValues(dag, logical, {});
+  results.Check(materialized.ok && materialized.batch.rows.size() == expected.size(),
+                "INT64 VALUES materialization preserves all bit patterns");
+  if (!materialized.ok) std::cerr << materialized.detail << '\n';
+  if (materialized.ok) {
+    const auto& column = materialized.batch.columns[0].descriptor;
+    results.Check(column.datatype_descriptor_uuid == dag.descriptors[0].descriptor_uuid &&
+                  column.datatype_descriptor_generation == dag.descriptors[0].descriptor_generation,
+                  "INT64 VALUES column retains exact datatype authority");
+    for (unsigned i = 0; i < expected.size(); ++i) {
+      const auto& value = materialized.batch.rows[i].values[0];
+      std::int64_t decoded = 0;
+      std::string detail;
+      results.Check(value.descriptor == column && value.encoded_value.empty() &&
+          value.binary_value == dag.expressions[i].literal_typed_value_v1->canonical_value_bytes &&
+          sblr::DecodeCanonicalInt64Scalar(value, &decoded, &detail) && decoded == expected[i],
+          "INT64 VALUES has no text conversion or lost binding");
+    }
+  }
+  for (unsigned mutation = 0; mutation < std::size(scratchbird::tests::kInvalidInt64LiteralCases); ++mutation) {
+    auto invalid = dag;
+    scratchbird::tests::InvalidateInt64Literal(mutation, invalid.descriptors[0], invalid.expressions.back());
+    const auto refused = sblr::MaterializeValues(invalid, logical, {});
+    results.Check(!refused.ok && refused.batch.columns.empty() && refused.batch.rows.empty() &&
+                  refused.result_bindings.empty(), "bad INT64 VALUES binding or final row publishes no prefix");
+  }
 }
 
 }  // namespace
@@ -217,6 +328,7 @@ int main() {
   SetProfilesAndBounds(results);
   SubqueryProfilesAndCardinality(results);
   RowBindingAndBounds(results);
+  NativeInt64Values(results);
   std::cout << "relational_preparation_cases=" << results.cases
             << " failures=" << results.failures << '\n';
   return results.failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;

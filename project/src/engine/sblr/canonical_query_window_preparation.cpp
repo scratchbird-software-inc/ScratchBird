@@ -43,6 +43,24 @@ namespace plan = scratchbird::engine::planner;
 
 namespace {
 
+// A datatype UUID may be shared by independent expression occurrences. Only
+// exact same-cohort bindings may use that sharing; arbitrary UUID aliasing is
+// not a substitute for distinct descriptor handles or admitted type authority.
+bool IndependentBoundInt64Occurrences(const api::TypedRelationalDag& dag,
+                                     const api::RelationalTypeDescriptor& a,
+                                     const api::RelationalTypeDescriptor& b) {
+  api::EngineDescriptor left, right;
+  return a.descriptor_id != 0 && b.descriptor_id != 0 && a.descriptor_id != b.descriptor_id &&
+      std::ranges::count(dag.descriptors, a.descriptor_id, &api::RelationalTypeDescriptor::descriptor_id) == 1 &&
+      std::ranges::count(dag.descriptors, b.descriptor_id, &api::RelationalTypeDescriptor::descriptor_id) == 1 &&
+      a.statement_receipt_uuid == b.statement_receipt_uuid &&
+      a.datatype_catalog_snapshot_uuid == b.datatype_catalog_snapshot_uuid &&
+      a.datatype_catalog_generation == b.datatype_catalog_generation &&
+      a.datatype_registry_generation == b.datatype_registry_generation &&
+      BuildExactCanonicalScalarRuntimeDescriptorV1(a, core::datatypes::CanonicalTypeId::int64, &left) &&
+      BuildExactCanonicalScalarRuntimeDescriptorV1(b, core::datatypes::CanonicalTypeId::int64, &right);
+}
+
 bool DirectValueWindowUsesExactTypeV1(
     const api::TypedRelationalDag& dag,
     const std::uint32_t relation_node_id,
@@ -802,12 +820,17 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
         argument->function_uuid.has_value() ||
         argument->literal_kind != api::RelationalLiteralKind::kNumeric ||
         argument->operator_name.has_value() ||
-        !argument->literal_or_parameter_ref.has_value() ||
+        argument->literal_or_parameter_ref.has_value() ||
+        !argument->literal_typed_value_v1.has_value() ||
         argument_descriptor == dag.descriptors.end() ||
+        std::ranges::count(dag.expressions, argument_expression_id,
+                          &api::RelationalExpressionRecord::expression_id) != 1 ||
+        std::ranges::count(dag.descriptors, argument->result_descriptor_id,
+                          &api::RelationalTypeDescriptor::descriptor_id) != 1 ||
         argument_descriptor->descriptor_id ==
             result_descriptor->descriptor_id ||
-        argument_descriptor->descriptor_uuid ==
-            result_descriptor->descriptor_uuid ||
+        (argument_descriptor->descriptor_uuid == result_descriptor->descriptor_uuid &&
+         !IndependentBoundInt64Occurrences(dag, *argument_descriptor, *result_descriptor)) ||
         argument_descriptor->descriptor_uuid == profile.function_uuid ||
         argument_descriptor->descriptor_uuid ==
             prepared_sort.ordering_property_uuid ||
@@ -833,7 +856,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
             api::EngineCanonicalExpressionConsumer::window, &operand,
             &operand_detail) ||
         operand.state != api::EngineValueState::value || operand.is_null ||
-        !operand.binary_value.empty() ||
+        !operand.encoded_value.empty() ||
         operand.descriptor.canonical_type_name != "int64" ||
         !api::QowCanonicalDescriptorIdentityV1(operand.descriptor) ||
         operand.descriptor.descriptor_uuid !=
@@ -843,8 +866,8 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
       if (!operand_detail.empty()) result.detail += ": " + operand_detail;
       return result;
     }
-    const auto decoded = exec::DecodeInt64Value(operand);
-    if (!decoded.ok() || decoded.value <= 0) {
+    std::int64_t decoded = 0;
+    if (!DecodeCanonicalInt64Scalar(operand, &decoded, &operand_detail) || decoded <= 0) {
       result.detail = std::string(family_label) +
                       " NTILE bucket count must be positive int64";
       return result;
@@ -889,8 +912,8 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
         value_column == previous_logical.output_descriptor_ids.end() ||
         argument_descriptor->descriptor_id ==
             result_descriptor->descriptor_id ||
-        argument_descriptor->descriptor_uuid ==
-            result_descriptor->descriptor_uuid ||
+        (argument_descriptor->descriptor_uuid == result_descriptor->descriptor_uuid &&
+         !IndependentBoundInt64Occurrences(dag, *argument_descriptor, *result_descriptor)) ||
         argument_descriptor->descriptor_uuid == profile.function_uuid ||
         (aggregate_window &&
          (!exact_aggregate_argument_type ||
@@ -961,8 +984,13 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
           position->function_uuid.has_value() ||
           position->literal_kind != api::RelationalLiteralKind::kNumeric ||
           position->operator_name.has_value() ||
-          !position->literal_or_parameter_ref.has_value() ||
+          position->literal_or_parameter_ref.has_value() ||
+          !position->literal_typed_value_v1.has_value() ||
           position_descriptor == dag.descriptors.end() ||
+          std::ranges::count(dag.expressions, position_expression_id,
+                            &api::RelationalExpressionRecord::expression_id) != 1 ||
+          std::ranges::count(dag.descriptors, position->result_descriptor_id,
+                            &api::RelationalTypeDescriptor::descriptor_id) != 1 ||
           typed_order_expression == dag.expressions.end() ||
           typed_order_expression->expression_kind !=
               api::RelationalExpressionKind::kIdentifier ||
@@ -974,12 +1002,12 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
               result_descriptor->descriptor_id ||
           position_descriptor->descriptor_id ==
               typed_order_descriptor->descriptor_id ||
-          position_descriptor->descriptor_uuid ==
-              argument_descriptor->descriptor_uuid ||
-          position_descriptor->descriptor_uuid ==
-              result_descriptor->descriptor_uuid ||
-          position_descriptor->descriptor_uuid ==
-              typed_order_descriptor->descriptor_uuid ||
+          (position_descriptor->descriptor_uuid == argument_descriptor->descriptor_uuid &&
+           !IndependentBoundInt64Occurrences(dag, *position_descriptor, *argument_descriptor)) ||
+          (position_descriptor->descriptor_uuid == result_descriptor->descriptor_uuid &&
+           !IndependentBoundInt64Occurrences(dag, *position_descriptor, *result_descriptor)) ||
+          (position_descriptor->descriptor_uuid == typed_order_descriptor->descriptor_uuid &&
+           !IndependentBoundInt64Occurrences(dag, *position_descriptor, *typed_order_descriptor)) ||
           position_descriptor->descriptor_uuid == profile.function_uuid ||
           position_descriptor->descriptor_uuid ==
               prepared_sort.ordering_property_uuid ||
@@ -1005,7 +1033,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
               api::EngineCanonicalExpressionConsumer::window, &operand,
               &operand_detail) ||
           operand.state != api::EngineValueState::value || operand.is_null ||
-          !operand.binary_value.empty() ||
+          !operand.encoded_value.empty() ||
           operand.descriptor.canonical_type_name != "int64" ||
           !api::QowCanonicalDescriptorIdentityV1(operand.descriptor) ||
           operand.descriptor.descriptor_uuid !=
@@ -1015,8 +1043,8 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
         if (!operand_detail.empty()) result.detail += ": " + operand_detail;
         return result;
       }
-      const auto decoded = exec::DecodeInt64Value(operand);
-      if (!decoded.ok() || decoded.value <= 0) {
+      std::int64_t decoded = 0;
+      if (!DecodeCanonicalInt64Scalar(operand, &decoded, &operand_detail) || decoded <= 0) {
         result.detail = std::string(family_label) +
                         " NTH_VALUE position must be positive int64";
         return result;

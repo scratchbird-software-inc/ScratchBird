@@ -147,36 +147,7 @@ bool EncodeCanonicalScalarEqualityKey(const api::EngineTypedValue& value,
 bool DecodeCanonicalInt64Scalar(const api::EngineTypedValue& value,
                                 std::int64_t* decoded,
                                 std::string* refusal_detail) {
-  if (decoded == nullptr || refusal_detail == nullptr) return false;
-  const bool textual = !value.encoded_value.empty();
-  const bool binary = !value.binary_value.empty();
-  if (value.state != api::EngineValueState::value || value.is_null ||
-      value.descriptor.canonical_type_name != "int64" || textual == binary) {
-    *refusal_detail = "scalar is not a non-NULL canonical int64 value";
-    return false;
-  }
-  if (textual) {
-    const auto [end, error] = std::from_chars(
-        value.encoded_value.data(),
-        value.encoded_value.data() + value.encoded_value.size(), *decoded);
-    if (error != std::errc{} ||
-        end != value.encoded_value.data() + value.encoded_value.size()) {
-      *refusal_detail = "scalar is outside exact int64 admission";
-      return false;
-    }
-  } else {
-    if (value.binary_value.size() != sizeof(std::int64_t)) {
-      *refusal_detail = "scalar binary int64 payload is malformed";
-      return false;
-    }
-    std::uint64_t encoded = 0;
-    for (std::size_t index = 0; index < sizeof(encoded); ++index) {
-      encoded |= static_cast<std::uint64_t>(value.binary_value[index])
-                 << (index * 8);
-    }
-    *decoded = std::bit_cast<std::int64_t>(encoded);
-  }
-  return true;
+  return exec::DecodeBoundInt64Value(value, decoded, refusal_detail);
 }
 
 }  // namespace scratchbird::engine::sblr

@@ -259,8 +259,116 @@ void NativeWindows(const char* type, unsigned pattern) {
     }
   }
 }
+void NativeIntegerWindowPositions() {
+  auto partition = Window401Request();
+  for (auto& row : partition.input_batch.rows) for (auto& value : row.values)
+    if (value.descriptor.canonical_type_name == "int64" && !value.is_null)
+      value = NativeInteger(value.descriptor, std::stoll(value.encoded_value));
+  auto descriptor = exec::MakeExecutorDescriptor("int64", "nullability=non_null");
+  descriptor.descriptor_kind = "scalar";
+  auto& column = partition.input_batch.columns[4];
+  column.descriptor = descriptor;
+  column.descriptor.encoded_descriptor = "nullability=nullable";
+  column.nullable = true;
+  for (unsigned row = 0; row < 9; ++row)
+    partition.input_batch.rows[row].values[4] = NativeInteger(column.descriptor, 100 + row);
+  const auto frames = ExecuteFrame(partition, ExplicitFrame(exec::CanonicalWindowFrameUnit::rows,
+      FrameBound(exec::CanonicalWindowFrameBoundKind::unbounded_preceding),
+      FrameBound(exec::CanonicalWindowFrameBoundKind::unbounded_following)));
+  Check(frames.diagnostic.ok, "integer window frame failed");
+  exec::CanonicalWindowRankingRequest ntile;
+  ntile.frames = frames;
+  ntile.function = exec::CanonicalWindowRankingFunction::ntile;
+  ntile.function_uuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-7047-9474-232ca488c094");
+  ntile.output_descriptor = descriptor;
+  ntile.mga_authority = partition.mga_authority;
+  const std::array<std::int64_t, 9> three = {1, 1, 2, 2, 3, 1, 1, 2, 1};
+  const std::array<std::int64_t, 9> many = {1, 2, 3, 4, 5, 1, 1, 2, 1};
+  for (const auto count : {std::int64_t{1}, std::int64_t{3}, std::int64_t{8},
+                         std::numeric_limits<std::int64_t>::max()}) {
+    ntile.ntile_bucket_count = NativeInteger(descriptor, count);
+    const auto result = exec::ExecuteCanonicalWindowRanking(ntile);
+    if (!result.diagnostic.ok) std::cerr << result.diagnostic.detail << '\n';
+    Check(result.diagnostic.ok && result.values.size() == 9 && result.resolved_ntile_bucket_count == count,
+          "binary NTILE execution refused exact shared datatype identity");
+    for (unsigned row = 0; row < 9; ++row) {
+      std::int64_t actual = 0;
+      std::string detail;
+      Check(exec::DecodeBoundInt64Value(result.values[row], &actual, &detail) &&
+            actual == (count == 1 ? 1 : count == 3 ? three[row] : many[row]) &&
+            result.values[row].encoded_value.empty(), "NTILE output differs from independent bucket oracle");
+    }
+  }
+  for (unsigned mutation = 0; mutation < 7; ++mutation) {
+    auto invalid = ntile;
+    auto& value = *invalid.ntile_bucket_count;
+    switch (mutation) {
+      case 0: value = NativeInteger(descriptor, 0); break;
+      case 1: value = NativeInteger(descriptor, -1); break;
+      case 2: value.encoded_value = "3"; break;
+      case 3: value.binary_value.clear(); value.encoded_value = "3"; break;
+      case 4: ++value.descriptor.datatype_descriptor_generation; break;
+      case 5: value.binary_value.pop_back(); break;
+      case 6: ++invalid.output_descriptor.datatype_descriptor_generation; break;
+    }
+    const auto result = exec::ExecuteCanonicalWindowRanking(invalid);
+    Check(!result.diagnostic.ok && result.values.empty(), "NTILE accepted invalid input or published a prefix");
+  }
+  auto empty_partition = partition;
+  empty_partition.input_batch.rows.clear();
+  auto empty_ntile = ntile;
+  empty_ntile.frames = ExecuteFrame(empty_partition, ExplicitFrame(exec::CanonicalWindowFrameUnit::rows,
+      FrameBound(exec::CanonicalWindowFrameBoundKind::unbounded_preceding),
+      FrameBound(exec::CanonicalWindowFrameBoundKind::unbounded_following)));
+  Check(empty_ntile.frames.diagnostic.ok, "empty integer window frame failed");
+  // A distinct occurrence UUID prevents the argument identity guard from
+  // accidentally detecting stale output metadata instead of output admission.
+  empty_ntile.output_descriptor.descriptor_uuid =
+      scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-7001-8000-000000004999");
+  const auto empty_result = exec::ExecuteCanonicalWindowRanking(empty_ntile);
+  Check(empty_result.diagnostic.ok && empty_result.values.empty(),
+        "exact empty NTILE output binding was refused");
+  for (unsigned mutation = 0; mutation < 3; ++mutation) {
+    auto invalid = empty_ntile;
+    switch (mutation) {
+      case 0: ++invalid.output_descriptor.datatype_descriptor_generation; break;
+      case 1: invalid.output_descriptor.encoded_descriptor += ";precision=1"; break;
+      case 2: invalid.output_descriptor.datatype_descriptor_uuid = {}; break;
+    }
+    const auto result = exec::ExecuteCanonicalWindowRanking(invalid);
+    Check(!result.diagnostic.ok && result.values.empty(),
+          "empty NTILE bypassed exact output binding admission");
+  }
+  exec::CanonicalWindowValueRequest nth;
+  nth.frames = frames;
+  nth.function = exec::CanonicalWindowValueFunction::nth_value;
+  nth.function_uuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-7dc9-80e6-9f2ccf08076f");
+  nth.value_expression_descriptor_id = 4005;
+  nth.result_column = column;
+  nth.result_column.descriptor_id = 4999;
+  nth.result_column.stable_name = "integer_nth";
+  nth.mga_authority = partition.mga_authority;
+  nth.nth_values = std::vector<api::EngineTypedValue>(9, NativeInteger(descriptor, 2));
+  nth.nth_origin = exec::CanonicalWindowNthOrigin::from_first;
+  nth.null_treatment = exec::CanonicalWindowNullTreatment::respect_nulls;
+  const auto selected = exec::ExecuteCanonicalWindowValue(nth);
+  if (!selected.diagnostic.ok) std::cerr << selected.diagnostic.detail << '\n';
+  Check(selected.diagnostic.ok && selected.values.size() == 9,
+        "NTH_VALUE rejects shared INT64 datatype despite distinct expression handles");
+  const std::array<std::int64_t, 9> expected = {105, 105, 105, 105, 105, -1, 104, 104, -1};
+  for (unsigned row = 0; row < 9; ++row) {
+    std::int64_t actual = 0;
+    std::string detail;
+    const auto& value = selected.values[row];
+    Check(expected[row] == -1 ? value.isSqlNull() && value.binary_value.empty() && value.encoded_value.empty()
+        : exec::DecodeBoundInt64Value(value, &actual, &detail) && actual == expected[row],
+        "NTH_VALUE binary selection differs from independent partition oracle");
+  }
+}
+
 int main() {
   NativeIntegerOrdering();
+  NativeIntegerWindowPositions();
   for (unsigned pattern = 0; pattern < 130; ++pattern) NativeWindows("uuid", pattern);
   NativeWindows("binary", 0);
   std::cout << "native_window_value checks=" << checks << " uuid_patterns=130 failures=0\n";

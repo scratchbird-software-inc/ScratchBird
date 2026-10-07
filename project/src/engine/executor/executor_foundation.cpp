@@ -8174,9 +8174,33 @@ bool RankingOutputDescriptorValid(
   }
   const auto type =
       dt::CanonicalTypeIdFromStableName(descriptor.canonical_type_name);
+  if (request.function == CanonicalWindowRankingFunction::ntile) {
+    // Admit the supplied output binding even when the frame has no rows.
+    // Zero is only an identity-validation probe, never a published bucket.
+    internal_api::EngineTypedValue probe;
+    probe.descriptor = descriptor;
+    probe.setState(internal_api::EngineValueState::value);
+    probe.binary_value.resize(8, 0);
+    std::int64_t decoded = 0;
+    std::string detail;
+    return DecodeBoundInt64Value(probe, &decoded, &detail);
+  }
   return RankingIntegerResult(request.function)
              ? type == dt::CanonicalTypeId::int64
              : RankingRealType(type);
+}
+
+bool SharedCanonicalInt64DatatypeIdentity(
+    const internal_api::EngineDescriptor& a,
+    const internal_api::EngineDescriptor& b) {
+  // These are datatype identities, not expression occurrence handles. The
+  // caller validates each complete binding at its own value/result boundary.
+  return a.descriptor_uuid == a.datatype_descriptor_uuid &&
+      b.descriptor_uuid == b.datatype_descriptor_uuid &&
+      a.datatype_descriptor_uuid == b.datatype_descriptor_uuid &&
+      a.datatype_descriptor_generation == b.datatype_descriptor_generation &&
+      a.type_uuid == b.type_uuid && a.canonical_type_name == "int64" &&
+      b.canonical_type_name == "int64";
 }
 
 bool CanonicalRankingNtileOperand(
@@ -8195,10 +8219,10 @@ bool CanonicalRankingNtileOperand(
       !RankingIdentityIndependent(operand.descriptor.descriptor_uuid,
                                   request.frames,
                                   request.function_uuid) ||
-      operand.descriptor.descriptor_uuid ==
-          request.output_descriptor.descriptor_uuid ||
+      (operand.descriptor.descriptor_uuid == request.output_descriptor.descriptor_uuid &&
+       !SharedCanonicalInt64DatatypeIdentity(operand.descriptor, request.output_descriptor)) ||
       operand.state != api::EngineValueState::value || operand.is_null ||
-      !operand.binary_value.empty()) {
+      !operand.encoded_value.empty() || operand.binary_value.size() != 8) {
     return false;
   }
   const auto type_uuid =
@@ -8210,9 +8234,10 @@ bool CanonicalRankingNtileOperand(
       !nullability.has_value() || *nullability != "non_null") {
     return false;
   }
-  const auto decoded = DecodeInt64Value(operand);
-  if (!decoded.ok() || decoded.value <= 0) return false;
-  *bucket_count = static_cast<std::uint64_t>(decoded.value);
+  std::int64_t decoded = 0;
+  std::string detail;
+  if (!DecodeBoundInt64Value(operand, &decoded, &detail) || decoded <= 0) return false;
+  *bucket_count = static_cast<std::uint64_t>(decoded);
   return true;
 }
 
@@ -8768,7 +8793,16 @@ CanonicalWindowNtileValueResult ComputeCanonicalWindowNtileValue(
       bucket > request.partition_row_count) {
     return refuse("NTILE produced a bucket outside its bounded partition");
   }
-  result.value = RankingInt64Value(request.output_descriptor, bucket);
+  internal_api::EngineTypedValue value;
+  value.descriptor = request.output_descriptor;
+  value.setState(internal_api::EngineValueState::value);
+  value.binary_value.resize(8);
+  for (unsigned byte = 0; byte < 8; ++byte)
+    value.binary_value[byte] = static_cast<std::uint8_t>(bucket >> (byte * 8));
+  std::int64_t decoded = 0;
+  std::string detail;
+  if (!DecodeBoundInt64Value(value, &decoded, &detail)) return refuse(detail);
+  result.value = std::move(value);
   result.diagnostic = {};
   return result;
 }
@@ -9135,8 +9169,8 @@ bool CanonicalWindowInt64Operand(
           value.descriptor.canonical_type_name) != dt::CanonicalTypeId::int64 ||
       value.state != api::EngineValueState::value || value.is_null ||
       !value.encoded_value.empty() || value.binary_value.size() != 8 ||
-      value.descriptor.descriptor_uuid ==
-          request.result_column.descriptor.descriptor_uuid ||
+      (value.descriptor.descriptor_uuid == request.result_column.descriptor.descriptor_uuid &&
+       !SharedCanonicalInt64DatatypeIdentity(value.descriptor, request.result_column.descriptor)) ||
       !RankingIdentityIndependent(
           value.descriptor.descriptor_uuid, request.frames,
           request.function_uuid)) {

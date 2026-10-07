@@ -227,7 +227,8 @@ MaterializedValues MaterializeValues(
           ";scale=" + std::to_string(*descriptor->second->scale);
     }
     const auto native_type = dt::CanonicalTypeIdFromStableName(type_names[column]);
-    if ((native_type == dt::CanonicalTypeId::uuid || native_type == dt::CanonicalTypeId::binary) &&
+    if ((native_type == dt::CanonicalTypeId::uuid || native_type == dt::CanonicalTypeId::binary ||
+         native_type == dt::CanonicalTypeId::int64) &&
         !BuildExactCanonicalScalarRuntimeDescriptorV1(*descriptor->second, native_type, &engine_descriptor)) {
       result.batch = {};
       result.result_bindings.clear();
@@ -271,17 +272,9 @@ MaterializedValues MaterializeValues(
         result.result_bindings.clear();
         return result;
       }
-      // int64 decimal projection.
-      if (value.descriptor.canonical_type_name == "int64" && !value.binary_value.empty()) {
-        std::int64_t decoded = 0;
-        if (!DecodeCanonicalInt64Scalar(value, &decoded, &result.detail)) {
-          result.batch = {};
-          result.result_bindings.clear();
-          return result;
-        }
-        value.encoded_value = std::to_string(decoded);
-        value.binary_value.clear();
-      }
+      // Keep admitted canonical bytes intact. Rendering belongs to the parser
+      // or client, not the engine's VALUES-to-operator boundary. The complete
+      // batch below still validates every value and exact column descriptor.
       if (value.descriptor.descriptor_uuid !=
           result.batch.columns[column].descriptor.descriptor_uuid) {
         auto rebound = api::QowPreserveCanonicalDescriptorAfterScalarV1(

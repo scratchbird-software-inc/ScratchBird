@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/canonical_int64_literal_fixture.hpp"
+#include "engine/sblr/canonical_query_scalar_support.hpp"
 #include "engine/sblr/canonical_query_aggregate_registration.hpp"
 #include "engine/sblr/canonical_query_node_composition.hpp"
 #include "engine/sblr/canonical_query_object_free_composition_support.hpp"
@@ -16,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <string_view>
 
@@ -102,7 +105,7 @@ struct Fixture {
     dag.root_node_id = 3;
     dag.descriptors = {Descriptor(101, "int64"), Descriptor(102, value_type),
         Descriptor(103, selected.result_type_name, navigation || (aggregate && !count)),
-        Descriptor(104, "int64")};
+        scratchbird::tests::Int64LiteralDescriptor(104)};
     result_type = dag.descriptors[2].type_uuid;
     for (unsigned id = 1; id <= 2; ++id) {
       api::RelationalExpressionRecord expression;
@@ -117,7 +120,7 @@ struct Fixture {
     literal.expression_kind = api::RelationalExpressionKind::kLiteral;
     literal.result_descriptor_id = 104;
     literal.literal_kind = api::RelationalLiteralKind::kNumeric;
-    literal.literal_or_parameter_ref = "2";
+    scratchbird::tests::SetInt64Literal(literal, dag.descriptors[3], 2);
     dag.expressions.push_back(literal);
     api::RelationalExpressionRecord function;
     function.expression_id = 3;
@@ -216,13 +219,17 @@ void BindingMatrix(Results& results) {
         bound.window_frame_descriptor_uuid == Id(303), profile.display_name);
     if (!bound.ok) std::cerr << bound.detail << '\n';
     if (profile.builtin_id == "sb.window.ntile") {
+      std::int64_t decoded = 0;
+      std::string detail;
       results.Check(bound.ntile_bucket_count_operand.has_value() &&
-          exec::DecodeInt64Value(*bound.ntile_bucket_count_operand).value == 2,
+          sblr::DecodeCanonicalInt64Scalar(*bound.ntile_bucket_count_operand, &decoded, &detail) && decoded == 2,
           "NTILE literal binding");
     }
     if (profile.builtin_id == "sb.window.nth_value") {
+      std::int64_t decoded = 0;
+      std::string detail;
       results.Check(bound.nth_value_position_operand.has_value() &&
-          exec::DecodeInt64Value(*bound.nth_value_position_operand).value == 2 &&
+          sblr::DecodeCanonicalInt64Scalar(*bound.nth_value_position_operand, &decoded, &detail) && decoded == 2 &&
           bound.navigation_value_column == 1, "NTH_VALUE literal/value binding");
     }
     fixture.dag.window_invocations.push_back(fixture.dag.window_invocations[0]);
@@ -267,8 +274,64 @@ void BindingMatrix(Results& results) {
   projected.dag.outputs[0].expression_id = 2;
   results.Check(!projected.Bind(true).ok, "Project-root passthrough lineage mismatch");
   for (auto profile : {sblr::kGlobalNtileProfile, sblr::kGlobalNthValueProfile}) {
+    Fixture fully_bound(profile);
+    for (auto& descriptor : fully_bound.dag.descriptors) {
+      const auto nullability = descriptor.nullability;
+      descriptor = scratchbird::tests::Int64LiteralDescriptor(descriptor.descriptor_id);
+      descriptor.nullability = nullability;
+    }
+    results.Check(fully_bound.Bind().ok, "same exact INT64 datatype with independent occurrence handles");
+    for (unsigned index = 0; index < 4; ++index) {
+      if (profile.builtin_id == "sb.window.ntile" && index < 2) continue;
+      auto duplicate = fully_bound;
+      auto peer = duplicate.dag.descriptors[index];
+      ++peer.descriptor_generation;
+      duplicate.dag.descriptors.push_back(peer);
+      results.Check(!duplicate.Bind().ok, "shared datatype cannot hide duplicate peer descriptor records");
+    }
+    auto duplicate_expression = fully_bound;
+    duplicate_expression.dag.expressions.push_back(duplicate_expression.dag.expressions[2]);
+    results.Check(!duplicate_expression.Bind().ok, "duplicate position expression refused");
+    for (unsigned index = 0; index < 3; ++index) {
+      auto aliased = fully_bound;
+      aliased.dag.descriptors[3].descriptor_id = aliased.dag.descriptors[index].descriptor_id;
+      aliased.dag.expressions[2].result_descriptor_id = aliased.dag.descriptors[index].descriptor_id;
+      results.Check(!aliased.Bind().ok, "shared datatype never authorizes an aliased occurrence handle");
+    }
+    for (unsigned index = 0; index < 3; ++index) {
+      auto stale = fully_bound;
+      ++stale.dag.descriptors[index].descriptor_generation;
+      // NTILE does not consume either input column during binding, but must
+      // validate its shared result/argument datatype identity.
+      if (profile.builtin_id == "sb.window.ntile" && index < 2) continue;
+      results.Check(!stale.Bind().ok, "shared datatype equality cannot hide stale authority");
+    }
+    for (const auto value : {std::int64_t{1}, std::int64_t{2}, std::numeric_limits<std::int64_t>::max(),
+         std::int64_t{0}, std::int64_t{-1}, std::numeric_limits<std::int64_t>::min()}) {
+      Fixture fixture(profile);
+      scratchbird::tests::SetInt64Literal(fixture.dag.expressions[2], fixture.dag.descriptors[3], value);
+      const auto bound = fixture.Bind();
+      results.Check(bound.ok == (value > 0), std::string(profile.display_name) + " native bound " + std::to_string(value));
+      if (bound.ok) {
+        const auto& operand = profile.builtin_id == "sb.window.ntile"
+            ? bound.ntile_bucket_count_operand : bound.nth_value_position_operand;
+        std::int64_t decoded = 0;
+        std::string detail;
+        results.Check(operand && sblr::DecodeCanonicalInt64Scalar(*operand, &decoded, &detail) && decoded == value &&
+                      operand->encoded_value.empty() && operand->binary_value.size() == 8,
+                      "window retained exact binary position");
+      }
+    }
+    for (unsigned mutation = 0; mutation < std::size(scratchbird::tests::kInvalidInt64LiteralCases); ++mutation) {
+      Fixture fixture(profile);
+      scratchbird::tests::InvalidateInt64Literal(mutation, fixture.dag.descriptors[3], fixture.dag.expressions[2]);
+      const auto bound = fixture.Bind();
+      results.Check(!bound.ok && !bound.ntile_bucket_count_operand && !bound.nth_value_position_operand,
+                    scratchbird::tests::kInvalidInt64LiteralCases[mutation]);
+    }
     for (const auto literal : {"0", "-1", "9223372036854775808"}) {
       Fixture fixture(profile);
+      fixture.dag.expressions[2].literal_typed_value_v1.reset();
       fixture.dag.expressions[2].literal_or_parameter_ref = literal;
       results.Check(!fixture.Bind().ok, std::string(profile.display_name) + " invalid literal " + literal);
     }

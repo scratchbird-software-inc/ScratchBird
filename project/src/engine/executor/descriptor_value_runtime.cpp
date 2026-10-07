@@ -1177,6 +1177,15 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
             "non-value sentinel or legacy NULL flag reached operator", row,
             column);
       }
+      if (CanonicalDescriptorTypeId(expected.descriptor) == CanonicalTypeId::int64) {
+        std::int64_t decoded = 0;
+        std::string detail;
+        if (!DecodeBoundInt64Value(value, &decoded, &detail)) {
+          return ErrorDiagnostic("QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
+                                 std::move(detail), row, column);
+        }
+        continue;
+      }
       if (!value.binary_value.empty() &&
           (IsInt64Type(expected.descriptor) ||
            IsBoolType(expected.descriptor) ||
@@ -2971,6 +2980,45 @@ CanonicalInt128SumFinalizeResultV1 FinalizeCanonicalInt128SumV1(
   }
   result.diagnostic = OkDiagnostic();
   return result;
+}
+
+bool DecodeBoundInt64Value(const EngineTypedValue& value,
+                          std::int64_t* decoded, std::string* refusal_detail) {
+  namespace dt = scratchbird::core::datatypes;
+  if (!decoded || !refusal_detail) return false;
+  refusal_detail->clear();
+  if (value.state != EngineValueState::value || value.is_null ||
+      value.descriptor.canonical_type_name != "int64" ||
+      !value.encoded_value.empty() || value.binary_value.size() != 8) {
+    *refusal_detail = "scalar is not a non-NULL canonical int64 value";
+    return false;
+  }
+  internal_api::CatalogColumnMetadata fields;
+  if (!internal_api::AdmitCatalogColumnMetadata(value.descriptor.encoded_descriptor, &fields) ||
+      !fields.identities.empty() || !value.descriptor.charset_uuid.is_nil() ||
+      !value.descriptor.collation_uuid.is_nil()) {
+    *refusal_detail = "scalar INT64 metadata is invalid";
+    return false;
+  }
+  for (const auto& [name, field] : fields.text) {
+    if (name != "nullability" && name != "nullable") {
+      *refusal_detail = "scalar INT64 has an unsupported modifier";
+      return false;
+    }
+  }
+  engine::ExecutionTypeDescriptor descriptor;
+  if (!BoundExecutionTypeDescriptor(value.descriptor, CanonicalTypeId::int64,
+                                    &descriptor, refusal_detail)) return false;
+  dt::DatatypeCastRequest request;
+  request.value.type_id = request.target_type_id = CanonicalTypeId::int64;
+  request.value.descriptor = request.target_descriptor = descriptor;
+  request.value.encoded_value.assign(value.binary_value.begin(), value.binary_value.end());
+  const auto checked = dt::CastDatatypeValue(request);
+  if (!checked.ok()) {
+    *refusal_detail = checked.diagnostic.diagnostic_code + ":" + checked.diagnostic.message_key;
+    return false;
+  }
+  return dt::DecodeCanonicalInt64Value(checked.value.encoded_value, decoded);
 }
 
 Int64DecodeResult DecodeInt64Value(const EngineTypedValue& value) {
