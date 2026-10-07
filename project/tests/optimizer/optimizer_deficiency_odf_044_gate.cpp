@@ -28,6 +28,7 @@
 #include <filesystem>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -41,8 +42,8 @@ namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  // Unwind live fixtures so failing regressions do not retain their databases.
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -216,6 +217,12 @@ api::CrudTableRecord Table(const Fixture& fixture,
   Require(api::EncodeCatalogColumnMetadata(attributes, &encoded),
           "ODF-044 bound text column encoding failed");
   table.columns.push_back({"id", encoded});
+  // The key-state tests below explicitly exercise NULL city values. Publish
+  // that actual nullable column; the primary id remains nonnullable.
+  attributes.text.erase("not_null");
+  attributes.text["nullable"] = "true";
+  Require(api::EncodeCatalogColumnMetadata(attributes, &encoded),
+          "ODF-044 nullable city metadata encoding failed");
   table.columns.push_back({"city", encoded});
   return table;
 }
@@ -575,8 +582,10 @@ void OrderedKeyAuthorityAndValueStates() {
                        const std::vector<api::bound_index_key::OrderedIndexColumn>& binding) {
     std::string encoded;
     bool is_null = false;
-    Require(api::bound_index_key::EncodeOrderedIndexKey(api::EncodeStoredLogicalKey(values),
-                binding, &encoded, &is_null, &diagnostic), "ODF-044 bound key encoding failed");
+    const bool ok = api::bound_index_key::EncodeOrderedIndexKey(api::EncodeStoredLogicalKey(values),
+                binding, &encoded, &is_null, &diagnostic);
+    if (!ok) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+    Require(ok, "ODF-044 bound key encoding failed");
     Require(is_null == std::any_of(values.begin(), values.end(), [](const auto& value) {
               return value.isSqlNull(); }), "ODF-044 index NULL state was inferred from payload bytes");
     return encoded;
@@ -620,9 +629,15 @@ void OrderedKeyAuthorityAndValueStates() {
                 row->descriptor_uuid, row->descriptor_generation, &binding.datatype),
             "ODF-044 native datatype fixture authority missing");
     binding.descriptor = {platform::UuidKind::object, row->descriptor_uuid};
+    auto source = scratchbird::engine::executor::MakeExecutorDescriptor(
+        dt::CanonicalTypeName(type), "nullability=nullable");
+    std::string binding_detail;
+    Require(api::bound_index_key::BuildOrderedColumnExecutionDescriptor(
+                source, binding.datatype, true, &binding.execution_descriptor, &binding_detail),
+            "ODF-044 native execution descriptor binding missing");
     if (type == dt::CanonicalTypeId::int32) {
-      Require(key({"-10"}, {binding}) < key({"2"}, {binding}) &&
-                  key({"2"}, {binding}) < key({"100"}, {binding}),
+      Require(key({std::string{"\xf6\xff\xff\xff", 4}}, {binding}) < key({std::string{"\x02\0\0\0", 4}}, {binding}) &&
+                  key({std::string{"\x02\0\0\0", 4}}, {binding}) < key({std::string{"\x64\0\0\0", 4}}, {binding}),
               "ODF-044 integer physical order is lexical");
     } else if (type == dt::CanonicalTypeId::decimal) {
       // Independent coefficient/scale codec bytes for -1, 0, 0.1 and 1.
@@ -786,7 +801,7 @@ void OrderedKeyAuthorityAndValueStates() {
 
 }  // namespace
 
-int main() {
+int main() try {
   auto policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
   policy.policy_name = "odf044_statement_fixture";
   Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
@@ -797,4 +812,7 @@ int main() {
   CreateIndexBackfillsWithSortedExactBuild();
   OrderedKeyAuthorityAndValueStates();
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

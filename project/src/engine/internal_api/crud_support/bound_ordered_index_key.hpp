@@ -3,9 +3,11 @@
 #pragma once
 #include "api_diagnostics.hpp"
 #include "catalog/name_resolution_api.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include "crud_support/composite_logical_key.hpp"
 #include "crud_support/crud_store.hpp"
 #include "datatype_storage_identity.hpp"
+#include "engine/executor/descriptor_value_runtime.hpp"
 #include "index_key_encoding.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "sbl_numeric.hpp"
@@ -35,12 +37,93 @@ struct OrderedIndexColumn {
   core::datatypes::DatatypeTextSeedAuthority text_seed;
   core::platform::TypedUuid descriptor;
   core::platform::TypedUuid collation;
+  engine::ExecutionTypeDescriptor execution_descriptor;
 };
 
 struct PublicationBindingStatistics {
   std::uint64_t resource_lookups = 0;
   std::uint64_t resource_reuses = 0;
 };
+
+// Pure projection of a supplied column, not catalog admission. Effectful
+// callers must first load it through their fresh PublicationBindingScope.
+inline bool BuildOrderedColumnExecutionDescriptor(
+    const EngineDescriptor& source, const core::datatypes::DatatypeStorageIdentityV1& datatype,
+    bool nullable, engine::ExecutionTypeDescriptor* output, std::string* detail) {
+  if (!output || !detail) return false;
+  const auto type = datatype.type_id;
+  CatalogColumnMetadata fields;
+  if (!AdmitCatalogColumnMetadata(source.encoded_descriptor, &fields) ||
+      source.datatype_descriptor_uuid != datatype.descriptor_uuid ||
+      source.datatype_descriptor_generation != datatype.descriptor_generation ||
+      source.type_uuid != datatype.type_uuid) {
+    *detail = "index column datatype authorities disagree";
+    return false;
+  }
+  const auto agrees = [&](const char* name, const char* expected) {
+    const auto found = fields.text.find(name);
+    return found == fields.text.end() || found->second == expected;
+  };
+  if (!agrees("nullable", nullable ? "true" : "false") ||
+      !agrees("nullability", nullable ? "nullable" : "non_null") ||
+      !agrees("not_null", nullable ? "false" : "true") ||
+      (fields.text.contains("nullable") && fields.text.contains("nullability"))) {
+    *detail = "index column nullability authorities disagree";
+    return false;
+  }
+  if (type == core::datatypes::CanonicalTypeId::int64 ||
+      type == core::datatypes::CanonicalTypeId::uuid) {
+    if (!source.charset_uuid.is_nil() ||
+        !source.collation_uuid.is_nil()) {
+      *detail = "base index column has unsupported resource or domain metadata";
+      return false;
+    }
+    for (const auto& [name, identity] : fields.identities) {
+      if ((name == "type_uuid" && identity == datatype.type_uuid) ||
+          (name == "datatype_descriptor_uuid" && identity == datatype.descriptor_uuid) ||
+          (name == "codec_uuid" && datatype.codec && identity == datatype.codec->codec_uuid)) continue;
+      *detail = "base index column identity metadata disagrees with its binding";
+      return false;
+    }
+    for (const auto& [name, value] : fields.text) {
+      if (datatype.codec) {
+        const auto& codec = *datatype.codec;
+        if ((name == "datatype_descriptor_generation" && value == std::to_string(codec.descriptor_generation)) ||
+            (name == "type_generation" && value == std::to_string(codec.type_generation)) ||
+            (name == "codec_id" && value == codec.codec_id) ||
+            (name == "codec_version" && value == std::to_string(codec.codec_version)) ||
+            (name == "codec_generation" && value == std::to_string(codec.codec_generation)) ||
+            (name == "null_encoding" && value == std::to_string(codec.null_encoding_code))) continue;
+      }
+      // Catalog declaration attributes do not change the base comparison
+      // profile. Semantic modifiers must not be dropped by the projection.
+      if (name != "canonical" && name != "type" && name != "nullable" &&
+          name != "nullability" && name != "not_null" && name != "primary_key" && name != "pk" &&
+          name != "unique" && name != "generated" && name != "identity" &&
+          name != "default" && name != "default_value") {
+        *detail = "base index column has an unsupported modifier";
+        return false;
+      }
+    }
+  }
+  // The typed storage column owns nullability. Legacy metadata can omit its
+  // duplicate spelling, but any supplied spelling must agree with that owner.
+  auto projection = source;
+  if (!fields.text.contains("nullable") && !fields.text.contains("nullability"))
+    fields.text["nullable"] = nullable ? "true" : "false";
+  if (!EncodeCatalogColumnMetadata(fields, &projection.encoded_descriptor)) {
+    *detail = "index column metadata projection failed";
+    return false;
+  }
+  engine::ExecutionTypeDescriptor staged;
+  if (!executor::BuildBoundExecutionTypeDescriptor(projection, type, &staged, detail)) return false;
+  if (staged.nullable_allowed != nullable) {
+    *detail = "index column nullability authorities disagree";
+    return false;
+  }
+  *output = std::move(staged);
+  return true;
+}
 
 // This scope cannot be constructed or retained by callers. Each public helper
 // creates it on the stack for one fixed context and destroys it before return.
@@ -95,6 +178,11 @@ class PublicationBindingScope {
                                                      column.datatype.descriptor_uuid);
     if (!descriptor.ok()) return refuse("sorted_index_datatype_identity_invalid");
     column.descriptor = descriptor.value;
+    std::string descriptor_detail;
+    if (!BuildOrderedColumnExecutionDescriptor(value, column.datatype, found->nullable,
+            &column.execution_descriptor, &descriptor_detail)) {
+      return refuse("sorted_index_execution_descriptor_invalid:" + descriptor_detail);
+    }
     if (column.datatype.type_id == core::datatypes::CanonicalTypeId::character) {
       EngineResourceDescriptorLookupResult resource;
       const auto cached = collations_.find(found->collation_uuid);
@@ -159,6 +247,21 @@ inline bool EncodeOrderedIndexKey(std::string_view logical_key,
     }
     core::datatypes::DatatypeSortKeyRequest request;
     request.value = {binding.datatype.type_id, value.bytes, value.isSqlNull()};
+    if (!std::equal(std::begin(binding.execution_descriptor.descriptor_uuid.bytes),
+                   std::end(binding.execution_descriptor.descriptor_uuid.bytes),
+                   binding.datatype.descriptor_uuid.bytes.begin()) ||
+        binding.execution_descriptor.descriptor_epoch != binding.datatype.descriptor_generation ||
+        binding.descriptor.value != binding.datatype.descriptor_uuid) {
+      *diagnostic = MakeInvalidRequestDiagnostic("mga.index_store", "sorted_index_execution_binding_mismatch");
+      return false;
+    }
+    request.value.descriptor = binding.execution_descriptor;
+    if (binding.datatype.type_id == core::datatypes::CanonicalTypeId::uuid &&
+        !core::datatypes::ResolveCanonicalUuidOrderingProfileV1(
+            binding.execution_descriptor, &request.uuid_ordering)) {
+      *diagnostic = MakeInvalidRequestDiagnostic("mga.index_store", "sorted_index_uuid_ordering_profile_invalid");
+      return false;
+    }
     request.text_seed = binding.text_seed;
     if (binding.datatype.type_id == core::datatypes::CanonicalTypeId::decimal && !value.isSqlNull()) {
       // Decimal retained values carry the canonical 24-byte coefficient/scale

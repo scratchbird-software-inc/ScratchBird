@@ -774,6 +774,10 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     COMMAND cdp_native_bulk_ingest_api_gate --native-typed-null)
   add_test(NAME cdp_native_int64_index_storage_gate
     COMMAND cdp_native_bulk_ingest_api_gate --native-int64-index)
+  add_test(NAME cdp_native_bound_ordered_index_storage_gate
+    COMMAND cdp_native_bulk_ingest_api_gate --native-ordered-index)
+  set_tests_properties(cdp_native_bound_ordered_index_storage_gate PROPERTIES
+    LABELS "database_lifecycle_storage;native_scalar;binary_uuid;index;mga_transaction_regression")
   set_tests_properties(cdp_native_int64_index_storage_gate PROPERTIES
     LABELS "database_lifecycle_storage;native_scalar;mga_transaction_regression")
   set_tests_properties(cdp_native_typed_null_storage_gate PROPERTIES

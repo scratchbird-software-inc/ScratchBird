@@ -1,6 +1,7 @@
 #include "../support/engine_evidence_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
 #include "../support/published_ddl_table_fixture.hpp"
+#include "../support/uuid_index_key_oracle.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -2129,7 +2130,7 @@ void TestNativeUuidCompositeIndex() {
   for (const auto& [left, right] : values) {
     // Independent byte oracle: no call to the producer's key encoder. Each
     // component has nonnull rank, scalar kind, binary descriptor and epoch,
-    // absent collation, present-value state and zero-escaped raw16 payload.
+    // absent collation and zero-escaped complete UUID comparison payload.
     std::string expected = "SBKOBIN:SBKO";
     for (const auto& value : {left, right}) {
       expected.append("\x7f\0\0\0\1", 5);
@@ -2139,12 +2140,9 @@ void TestNativeUuidCompositeIndex() {
       for (int shift = 56; shift >= 0; shift -= 8)
         expected.push_back(static_cast<char>((descriptor.descriptor_epoch >> shift) & 0xff));
       expected.push_back('\0');
-      expected.push_back('\1');
-      for (const auto byte : value.bytes) {
-        expected.push_back(static_cast<char>(byte));
-        if (byte == 0) expected.push_back(static_cast<char>(0xff));
-      }
-      expected.append(2, '\0');
+      scratchbird::tests::AppendEscapedUuidIndexOracle(expected, descriptor.descriptor_uuid.value,
+          descriptor.descriptor_epoch,
+          std::string_view(reinterpret_cast<const char*>(value.bytes.data()), 16));
     }
     expected_keys.insert(std::move(expected));
   }
@@ -2299,12 +2297,7 @@ void TestNativeUuidBinaryIndexAndValues(bool unique = true) {
     for (int shift = 56; shift >= 0; shift -= 8)
       expected.push_back(static_cast<char>((generation >> shift) & 0xff));
     expected.push_back('\0');
-    expected.push_back('\1');
-    for (const unsigned char byte : payload.bytes) {
-      expected.push_back(static_cast<char>(byte));
-      if (byte == 0) expected.push_back(static_cast<char>(0xff));
-    }
-    expected.append(2, '\0');
+    scratchbird::tests::AppendEscapedUuidIndexOracle(expected, descriptor.value, generation, payload.bytes);
     Require(entry.key_value == expected,
             "stored UUID key differs from independent canonical binary encoding");
     native_keys.emplace(payload.bytes, entry.key_value);
@@ -3192,9 +3185,20 @@ int main(int argc, char** argv) try {
   const bool fixed_scalar_only = argc == 2 && std::string_view(argv[1]) == "--native-fixed-scalars";
   const bool typed_null_only = argc == 2 && std::string_view(argv[1]) == "--native-typed-null";
   const bool integer_only = argc == 2 && std::string_view(argv[1]) == "--native-int64-index";
-  Require(argc == 1 || fixed_scalar_only || typed_null_only || integer_only,
+  const bool ordered_only = argc == 2 && std::string_view(argv[1]) == "--native-ordered-index";
+  Require(argc == 1 || fixed_scalar_only || typed_null_only || integer_only || ordered_only,
           "unknown native bulk gate arguments");
   ConfigureMemoryFixture();
+  if (ordered_only) {
+    TestTypedInt64IndexKeysUseBinaryOrder();
+    TestTypedInt64IndexKeysUseFullSignedSortOrder();
+    TestTypedNullIndexKeyUsesNullOrder();
+    TestNativeUuidBinaryIndexAndValues();
+    TestNativeUuidBinaryIndexAndValues(false);
+    TestNativeUuidCompositeIndex();
+    std::cout << "native_bound_ordered_index=passed signed_bounds=null_uuid_unique_nonunique_compound_reopen\n";
+    return EXIT_SUCCESS;
+  }
   if (typed_null_only) {
     TestNullAndCharacterRowPageStorage();
     std::cout << "native_typed_null_storage=passed committed_reopen_type=int64\n";
