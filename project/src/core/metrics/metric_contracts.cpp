@@ -12,6 +12,7 @@
 #include "uuid.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <iterator>
 #include <utility>
 
@@ -1032,17 +1033,30 @@ MetricValidationResult PublishOptimizerPlanEstimateErrorRatio(double ratio,
 MetricValidationResult PublishOptimizerRuntimeFeedbackSample(
     const OptimizerRuntimeFeedbackMetricSample& sample,
     std::string operator_family,
-    std::string plan_shape) {
+    std::string plan_shape,
+    std::vector<MetricValidationResult>* observations) {
+  if (observations) observations->clear();
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(sample.database_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(sample.node_uuid) ||
+      !DefaultMetricRegistry().ObservationOwnerMatches(sample.database_uuid, sample.node_uuid))
+    return MetricError("METRIC.OBSERVATION_SOURCE_UNAVAILABLE", "feedback sample owner does not match the observation source");
+  if (!std::isfinite(sample.estimated_latency_microseconds) || sample.estimated_latency_microseconds < 0 ||
+      !std::isfinite(sample.actual_latency_microseconds) || sample.actual_latency_microseconds < 0)
+    return MetricError("METRIC.VALUE_INVALID", "feedback latency must be finite and nonnegative");
   auto status = RequireNonEmpty(operator_family, "operator_family");
   if (!status.ok) { return status; }
   status = RequireNonEmpty(plan_shape, "plan_shape");
   if (!status.ok) { return status; }
 
+  if (observations) observations->reserve(17);
+
   const auto labels = Labels({{"component", "optimizer.feedback"},
                               {"operator_family", std::move(operator_family)},
                               {"plan_shape", std::move(plan_shape)}});
-  const auto publish = [&](const std::string& family, double value) {
-    return SetGauge(family, labels, value, "optimizer_executor_feedback");
+  const auto publish = [&](const std::string& family, MetricScalar value) {
+    const auto result = SetGauge(family, labels, value, "optimizer_executor_feedback");
+    if (observations) observations->push_back(result);
+    return result;
   };
 
   status = publish("sb_optimizer_feedback_estimated_rows", sample.estimated_rows);

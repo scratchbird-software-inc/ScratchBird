@@ -9,10 +9,12 @@
 #include "optimizer_cost_full.hpp"
 #include "optimizer_feedback.hpp"
 #include "metric_contracts.hpp"
+#include "../support/metric_projection_fixture.hpp"
 
 #include <algorithm>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -306,6 +308,8 @@ bool CalibrationIsBoundedAndDeterministic() {
 }
 
 bool ObservabilityMetricContractsAreImplemented() {
+  scratchbird::tests::MetricProjectionFixture fixture(scratchbird::tests::FixtureUuid(1276, 1),
+                                                      scratchbird::tests::FixtureUuid(1276, 2), 1277);
   const std::vector<std::string> required_families = {
       "sb_optimizer_plan_estimate_error_ratio",
       "sb_optimizer_feedback_estimated_rows",
@@ -326,6 +330,10 @@ bool ObservabilityMetricContractsAreImplemented() {
       "sb_optimizer_feedback_estimated_resource_units",
       "sb_optimizer_feedback_actual_resource_units",
   };
+  const metrics::MetricLabelSet labels{{"component", "optimizer.feedback"}, {"operator_family", "table_scan"},
+                                      {"plan_shape", "rel.customer.scan"}};
+  for (const auto& family : required_families) fixture.Admit(family, labels);
+  fixture.Seal();
   for (const auto& family : required_families) {
     const auto* descriptor = metrics::DefaultMetricRegistry().FindDescriptor(family);
     if (!Require(descriptor != nullptr, "optimizer feedback metric descriptor missing: " + family) ||
@@ -338,6 +346,8 @@ bool ObservabilityMetricContractsAreImplemented() {
   }
 
   metrics::OptimizerRuntimeFeedbackMetricSample sample;
+  sample.database_uuid = scratchbird::tests::FixtureUuid(1276, 1);
+  sample.node_uuid = scratchbird::tests::FixtureUuid(1276, 2);
   sample.estimated_rows = 100;
   sample.actual_rows = 105;
   sample.estimated_pages = 16;
@@ -358,8 +368,34 @@ bool ObservabilityMetricContractsAreImplemented() {
   const auto published = metrics::PublishOptimizerRuntimeFeedbackSample(sample,
                                                                         "table_scan",
                                                                         "rel.customer.scan");
-  return Require(published.ok,
-                 "optimizer feedback metric sample publish failed: " + published.diagnostic_code);
+  if (!Require(published.ok, "optimizer feedback metric sample publish failed: " + published.diagnostic_code)) return false;
+  fixture.ExpectProduced(17); fixture.Seal();
+  fixture.Produced(metrics::PublishOptimizerPlanEstimateErrorRatio(1.05, "table_scan", "rel.customer.scan"));
+  fixture.Seal();
+  auto bad = sample;
+  bad.node_uuid = scratchbird::tests::FixtureUuid(1276, 99);
+  if (!Require(!metrics::PublishOptimizerRuntimeFeedbackSample(bad, "table_scan", "rel.customer.scan").ok,
+               "foreign feedback owner accepted")) return false;
+  for (auto member : {&metrics::OptimizerRuntimeFeedbackMetricSample::estimated_latency_microseconds,
+                      &metrics::OptimizerRuntimeFeedbackMetricSample::actual_latency_microseconds})
+    for (auto invalid : {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(), -1.0}) {
+      bad = sample; bad.*member = invalid;
+      std::vector<metrics::MetricValidationResult> effects;
+      if (!Require(!metrics::PublishOptimizerRuntimeFeedbackSample(bad, "table_scan", "rel.customer.scan", &effects).ok && effects.empty(),
+                   "invalid feedback duration had effects")) return false;
+    }
+  fixture.VerifyReadOnly();
+  auto partial_labels = labels;
+  partial_labels[2].value = "partial-feedback";
+  fixture.Admit("sb_optimizer_feedback_estimated_rows", partial_labels);
+  fixture.Admit("sb_optimizer_feedback_actual_rows", partial_labels);
+  std::vector<metrics::MetricValidationResult> effects;
+  const auto partial = metrics::PublishOptimizerRuntimeFeedbackSample(sample, "table_scan", "partial-feedback", &effects);
+  if (!Require(!partial.ok && effects.size() == 3 && effects[0].ok && effects[1].ok && !effects[2].ok,
+               "feedback failure hid prior accepted samples")) return false;
+  fixture.ExpectProduced(2); fixture.Seal();
+  fixture.VerifyAndDrain();
+  return true;
 }
 
 }  // namespace

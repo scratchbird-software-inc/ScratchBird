@@ -35,7 +35,9 @@ struct ExecutorOperatorMetricAuthority {
 };
 
 struct ExecutorOperatorActualsSample {
-  std::string scope_uuid;
+  scratchbird::core::metrics::MetricUuid scope_uuid;
+  scratchbird::core::metrics::MetricUuid database_uuid;
+  scratchbird::core::metrics::MetricUuid node_uuid;
   std::string route_label;
   std::string plan_node_id;
   std::string operator_family;
@@ -70,12 +72,16 @@ struct ExecutorOperatorActualsSample {
 
 struct ExecutorOperatorMetricPublishResult {
   bool ok = false;
+  scratchbird::core::metrics::MetricUuid scope_uuid;
   std::string diagnostic_code;
   std::string detail;
   std::vector<std::string> evidence;
   std::vector<scratchbird::core::metrics::MetricValidationResult>
       metric_results;
 };
+
+const std::vector<scratchbird::core::metrics::MetricDescriptorDefinition>&
+ExecutorOperatorActualsMetricDescriptorDefinitions();
 
 scratchbird::core::metrics::MetricValidationResult
 EnsureExecutorOperatorActualsMetricDescriptors(

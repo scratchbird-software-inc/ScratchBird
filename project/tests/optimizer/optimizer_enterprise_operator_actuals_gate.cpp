@@ -10,9 +10,11 @@
 #include "executor_operator_metrics.hpp"
 #include "metric_registry.hpp"
 #include "optimizer_metric_manifest.hpp"
+#include "../support/metric_projection_fixture.hpp"
 
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -45,7 +47,9 @@ exec::ExecutorOperatorActualsSample SampleFor(const std::string& family,
                                               std::uint64_t rows_examined,
                                               std::uint64_t rows_filtered) {
   exec::ExecutorOperatorActualsSample sample;
-  sample.scope_uuid = "database-uuid-1";
+  sample.scope_uuid = scratchbird::tests::FixtureUuid(1274, 1);
+  sample.database_uuid = scratchbird::tests::FixtureUuid(1274, 2);
+  sample.node_uuid = scratchbird::tests::FixtureUuid(1274, 3);
   sample.route_label = "embedded";
   sample.plan_node_id = node_id;
   sample.operator_family = family;
@@ -87,7 +91,20 @@ bool HasMetricValue(const std::vector<metrics::MetricValue>& snapshot,
   return false;
 }
 
-void PublishAndRequire(exec::ExecutorOperatorActualsSample sample) {
+void Admit(scratchbird::tests::MetricProjectionFixture& fixture,
+           const exec::ExecutorOperatorActualsSample& sample) {
+  for (const auto& definition : exec::ExecutorOperatorActualsMetricDescriptorDefinitions())
+    fixture.AdmitDefinition(definition, {{"scope_uuid", sample.scope_uuid}, {"route_label", sample.route_label},
+        {"plan_node_id", sample.plan_node_id}, {"metric_family", definition.family.substr(std::string("sb_optimizer_").size())},
+        {"source_generation", std::to_string(sample.source_generation)}, {"evidence_digest", sample.evidence_digest}});
+  static const auto definitions = metrics::BuiltinMetricDescriptorDefinitions();
+  for (const auto& definition : definitions) if (definition.family.starts_with("sb_optimizer_feedback_"))
+    fixture.AdmitDefinition(definition, {{"component", "optimizer.feedback"}, {"operator_family", sample.operator_family},
+        {"plan_shape", sample.plan_shape}});
+}
+
+void PublishAndRequire(scratchbird::tests::MetricProjectionFixture& fixture, exec::ExecutorOperatorActualsSample sample) {
+  Admit(fixture, sample);
   auto result = exec::PublishExecutorOperatorActuals(sample);
   if (!result.ok) {
     std::cerr << result.diagnostic_code << ": " << result.detail << '\n';
@@ -99,6 +116,8 @@ void PublishAndRequire(exec::ExecutorOperatorActualsSample sample) {
     }
   }
   Require(result.ok, "valid operator actuals sample was refused");
+  Require(result.scope_uuid == sample.scope_uuid && result.metric_results.size() == 23, "incomplete native operator receipt");
+  fixture.ExpectProduced(23); fixture.Seal();
   Require(result.diagnostic_code == "SB_EXECUTOR_OPERATOR_ACTUALS.OK",
           "unexpected operator actuals diagnostic");
   bool advisory = false;
@@ -110,17 +129,13 @@ void PublishAndRequire(exec::ExecutorOperatorActualsSample sample) {
   Require(advisory, "operator actuals evidence did not record advisory-only status");
 }
 
-void TestRealBatchOperatorActuals() {
+void TestRealBatchOperatorActuals(scratchbird::tests::MetricProjectionFixture& fixture) {
   // SEARCH_KEY: OEIC_EXECUTOR_OPERATOR_ACTUALS_METRICS
-  Require(opt::EnsureOptimizerEnterpriseMetricDescriptors().ok,
-          "optimizer metric descriptors failed");
-  Require(exec::EnsureExecutorOperatorActualsMetricDescriptors().ok,
-          "executor operator metric descriptors failed");
 
   auto input = exec::MakeBatch("orders",
                               {{{1, 10}}, {{2, 20}}, {{3, 30}}, {{4, 40}}});
   auto filtered = exec::FilterGreaterThan(input, 1, 15);
-  PublishAndRequire(SampleFor("filter",
+  PublishAndRequire(fixture, SampleFor("filter",
                               "filter-node",
                               input.rows.size(),
                               filtered.rows.size(),
@@ -128,7 +143,7 @@ void TestRealBatchOperatorActuals() {
                               input.rows.size() - filtered.rows.size()));
 
   auto sorted = exec::SortByColumn(input, 1, false);
-  PublishAndRequire(SampleFor("sort",
+  PublishAndRequire(fixture, SampleFor("sort",
                               "sort-node",
                               input.rows.size(),
                               sorted.rows.size(),
@@ -137,7 +152,7 @@ void TestRealBatchOperatorActuals() {
 
   auto right = exec::MakeBatch("customers", {{{1, 100}}, {{3, 300}}});
   auto joined = exec::HashJoinEqual(input, right, 0, 0);
-  PublishAndRequire(SampleFor("hash_join",
+  PublishAndRequire(fixture, SampleFor("hash_join",
                               "join-node",
                               2,
                               joined.rows.size(),
@@ -145,7 +160,7 @@ void TestRealBatchOperatorActuals() {
                               0));
 
   auto aggregate = exec::AggregateSumByKey(input, 0, 1);
-  PublishAndRequire(SampleFor("aggregate",
+  PublishAndRequire(fixture, SampleFor("aggregate",
                               "aggregate-node",
                               input.rows.size(),
                               aggregate.rows.size(),
@@ -153,7 +168,7 @@ void TestRealBatchOperatorActuals() {
                               0));
 
   auto window = exec::AddRowNumberWindow(input, 1);
-  PublishAndRequire(SampleFor("window",
+  PublishAndRequire(fixture, SampleFor("window",
                               "window-node",
                               input.rows.size(),
                               window.rows.size(),
@@ -161,7 +176,7 @@ void TestRealBatchOperatorActuals() {
                               0));
 
   auto setop = exec::SetUnionDistinct(input, right);
-  PublishAndRequire(SampleFor("set_operation",
+  PublishAndRequire(fixture, SampleFor("set_operation",
                               "setop-node",
                               input.rows.size() + right.rows.size(),
                               setop.rows.size(),
@@ -169,7 +184,7 @@ void TestRealBatchOperatorActuals() {
                               0));
 
   auto dml_result_rows = exec::MakeBatch("dml.write.result", {{{1}}, {{2}}});
-  PublishAndRequire(SampleFor("dml_write",
+  PublishAndRequire(fixture, SampleFor("dml_write",
                               "dml-node",
                               2,
                               dml_result_rows.rows.size(),
@@ -177,7 +192,7 @@ void TestRealBatchOperatorActuals() {
                               0));
 
   auto result_frame = exec::SetUnionAll(filtered, aggregate);
-  PublishAndRequire(SampleFor("result_frame",
+  PublishAndRequire(fixture, SampleFor("result_frame",
                               "result-frame-node",
                               filtered.rows.size() + aggregate.rows.size(),
                               result_frame.rows.size(),
@@ -230,11 +245,79 @@ void TestAuthorityRefusals() {
           "missing MGA/security evidence was not refused");
 }
 
+void TestExactValuesAndEffects(scratchbird::tests::MetricProjectionFixture& fixture) {
+  using Sample = exec::ExecutorOperatorActualsSample;
+  auto sample = SampleFor("native_bounds", "bounds-node", 1, 1, 1, 0);
+  Admit(fixture, sample); fixture.Seal();
+  for (const auto count : {std::uint64_t{0}, (std::uint64_t{1} << 53) + 1, std::numeric_limits<std::uint64_t>::max()}) {
+    for (auto member : {&Sample::estimated_rows, &Sample::actual_rows, &Sample::rows_examined, &Sample::rows_filtered,
+                        &Sample::estimated_pages, &Sample::actual_pages, &Sample::estimated_io_operations,
+                        &Sample::actual_io_operations, &Sample::estimated_visibility_recheck_rows,
+                        &Sample::actual_visibility_recheck_rows, &Sample::estimated_spill_bytes, &Sample::actual_spill_bytes,
+                        &Sample::spill_passes, &Sample::memory_grant_bytes, &Sample::peak_memory_bytes,
+                        &Sample::estimated_resource_units, &Sample::actual_resource_units}) sample.*member = count;
+    sample.loop_count = count == 0 ? 1 : count;
+    const auto result = exec::PublishExecutorOperatorActuals(sample);
+    Require(result.ok && result.metric_results.size() == 23 && result.scope_uuid == sample.scope_uuid,
+            "exact UINT64 actuals rejected");
+    fixture.ExpectProduced(23); fixture.Seal();
+    std::size_t matched = 0;
+    for (const auto& value : metrics::DefaultMetricRegistry().SnapshotCurrent(false)) {
+      bool selected = false;
+      for (const auto& label : value.labels)
+        if ((label.key == "plan_node_id" && std::get<std::string>(label.value) == "bounds-node") ||
+            (label.key == "operator_family" && std::get<std::string>(label.value) == "native_bounds")) selected = true;
+      if (!selected) continue;
+      if (value.family == "sb_optimizer_operator_cpu_time" || value.family.ends_with("latency_microseconds")) continue;
+      Require(std::holds_alternative<std::uint64_t>(value.value) &&
+                  std::get<std::uint64_t>(value.value) == (value.family == "sb_optimizer_operator_loop_count" ? sample.loop_count : count),
+              "executor/feedback count rounded: " + value.family);
+      ++matched;
+    }
+    Require(matched == 20, "native operator/feedback values missing");
+  }
+  const auto refuse = [&](const Sample& bad) {
+    const auto result = exec::PublishExecutorOperatorActuals(bad);
+    Require(!result.ok && result.metric_results.empty() && result.scope_uuid == bad.scope_uuid,
+            "bad operator input was not refused before effects");
+    fixture.VerifyReadOnly();
+  };
+  for (auto member : {&Sample::estimated_latency_microseconds, &Sample::actual_latency_microseconds, &Sample::cpu_time_microseconds})
+    for (auto value : {(std::uint64_t{1} << 53) + 1, std::numeric_limits<std::uint64_t>::max()}) {
+      auto bad = sample; bad.*member = value; refuse(bad);
+    }
+  auto bad = sample; bad.scope_uuid = {}; refuse(bad);
+  bad = sample; bad.database_uuid = scratchbird::tests::FixtureUuid(1274, 99); refuse(bad);
+  bad = sample; bad.node_uuid = scratchbird::tests::FixtureUuid(1274, 99); refuse(bad);
+  bad = sample; bad.loop_count = 0; refuse(bad);
+  bad = sample; bad.rows_examined = 0; bad.rows_filtered = 1; refuse(bad);
+  for (auto value : {std::uint64_t{0}, std::uint64_t{1} << 63}) {
+    sample.estimated_latency_microseconds = sample.actual_latency_microseconds = sample.cpu_time_microseconds = value;
+    Require(exec::PublishExecutorOperatorActuals(sample).ok, "exact FLOAT64 duration refused");
+    fixture.ExpectProduced(23); fixture.Seal();
+  }
+  sample.plan_node_id = "unadmitted-node";
+  const auto result = exec::PublishExecutorOperatorActuals(sample);
+  Require(!result.ok && result.metric_results.size() == 23 && result.diagnostic_code != "SB_EXECUTOR_OPERATOR_ACTUALS.OK",
+          "partial executor publication claimed success");
+  for (std::size_t i = 0; i < result.metric_results.size(); ++i)
+    Require(result.metric_results[i].ok == (i >= 6), "partial publication lost accepted/refused outcome");
+  fixture.ExpectProduced(17); fixture.Seal();
+}
+
 }  // namespace
 
 int main() {
-  TestRealBatchOperatorActuals();
+  metrics::MetricRegistry empty;
+  Require(!exec::EnsureExecutorOperatorActualsMetricDescriptors(&empty).ok &&
+              !empty.FindDescriptor("sb_optimizer_operator_actual_rows"), "operator verification fabricated admission");
+  auto sample = SampleFor("filter", "filter-node", 4, 3, 4, 1);
+  scratchbird::tests::MetricProjectionFixture fixture(sample.database_uuid, sample.node_uuid, 1275, 512);
+  TestRealBatchOperatorActuals(fixture);
   TestAuthorityRefusals();
+  fixture.VerifyReadOnly();
+  TestExactValuesAndEffects(fixture);
+  fixture.VerifyAndDrain();
   std::cout << "optimizer enterprise operator actuals gate passed\n";
   return 0;
 }

@@ -7,8 +7,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "executor_operator_metrics.hpp"
+#include "metric_bound_definition.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <limits>
 #include <string_view>
 #include <utility>
@@ -25,14 +28,11 @@ using metrics::MetricType;
 using metrics::MetricUnit;
 using metrics::MetricValidationResult;
 
-constexpr std::uint64_t kMaxMetricValue =
-    std::numeric_limits<std::uint64_t>::max() / 4;
-
-MetricDescriptor Descriptor(std::string family,
+metrics::MetricDescriptorDefinition Descriptor(std::string family,
                             MetricType type,
                             MetricUnit unit,
                             std::string help) {
-  MetricDescriptor descriptor;
+  metrics::MetricDescriptorDefinition descriptor;
   descriptor.family = std::move(family);
   descriptor.type = type;
   descriptor.unit = unit;
@@ -40,27 +40,18 @@ MetricDescriptor Descriptor(std::string family,
   descriptor.help = std::move(help);
   descriptor.producer_owner = "executor_runtime";
   descriptor.security_family = "OPTIMIZER_METRICS";
-  descriptor.readiness = MetricReadiness::implemented;
-  descriptor.labels = {MetricLabelDescriptor{"scope_uuid", true, false},
+  descriptor.value_type = type == MetricType::histogram ? metrics::MetricScalarType::float64 : metrics::MetricScalarType::uint64;
+  descriptor.labels = {MetricLabelDescriptor{"scope_uuid", true, false, metrics::MetricLabelType::system_uuid},
                        MetricLabelDescriptor{"route_label", true, false},
                        MetricLabelDescriptor{"plan_node_id", true, false},
                        MetricLabelDescriptor{"metric_family", true, false},
                        MetricLabelDescriptor{"source_generation", true, false},
                        MetricLabelDescriptor{"evidence_digest", true, true}};
   if (type == MetricType::histogram) {
-    descriptor.histogram_buckets = {1, 10, 100, 1000, 10000, 100000,
-                                    1000000, 10000000};
+    descriptor.histogram_buckets = {1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0,
+                                    1000000.0, 10000000.0};
   }
   return descriptor;
-}
-
-MetricValidationResult RegisterIfMissing(metrics::MetricRegistry* registry,
-                                         MetricDescriptor descriptor) {
-  auto& target = registry == nullptr ? metrics::DefaultMetricRegistry() : *registry;
-  if (target.FindDescriptor(descriptor.family) != nullptr) {
-    return metrics::MetricOk();
-  }
-  return target.RegisterDescriptor(std::move(descriptor));
 }
 
 bool UnsafeAuthority(const ExecutorOperatorMetricAuthority& authority) {
@@ -83,6 +74,7 @@ ExecutorOperatorMetricPublishResult Refuse(const ExecutorOperatorActualsSample& 
                                            std::string detail) {
   ExecutorOperatorMetricPublishResult result;
   result.ok = false;
+  result.scope_uuid = sample.scope_uuid;
   result.diagnostic_code = std::move(code);
   result.detail = std::move(detail);
   AddEvidence(&result, "OEIC_EXECUTOR_OPERATOR_ACTUALS_METRICS");
@@ -98,8 +90,13 @@ ExecutorOperatorMetricPublishResult Refuse(const ExecutorOperatorActualsSample& 
 
 bool EmptyRequiredField(const ExecutorOperatorActualsSample& sample,
                         std::string* field) {
-  if (sample.scope_uuid.empty()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(sample.scope_uuid)) {
     if (field != nullptr) *field = "scope_uuid";
+    return true;
+  }
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(sample.database_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(sample.node_uuid)) {
+    if (field != nullptr) *field = "observation_owner";
     return true;
   }
   if (sample.route_label.empty()) {
@@ -126,29 +123,14 @@ bool EmptyRequiredField(const ExecutorOperatorActualsSample& sample,
 }
 
 bool ValueOverflowRisk(const ExecutorOperatorActualsSample& sample) {
-  const std::uint64_t values[] = {sample.estimated_rows,
-                                  sample.actual_rows,
-                                  sample.rows_examined,
-                                  sample.rows_filtered,
-                                  sample.loop_count,
-                                  sample.estimated_pages,
-                                  sample.actual_pages,
-                                  sample.estimated_io_operations,
-                                  sample.actual_io_operations,
-                                  sample.estimated_visibility_recheck_rows,
-                                  sample.actual_visibility_recheck_rows,
-                                  sample.estimated_spill_bytes,
-                                  sample.actual_spill_bytes,
-                                  sample.spill_passes,
-                                  sample.memory_grant_bytes,
-                                  sample.peak_memory_bytes,
-                                  sample.estimated_latency_microseconds,
+  // Only durations cross into the registered FLOAT64 profile. Counts retain
+  // the full UINT64 range, without an unrelated UINT64_MAX/4 cutoff.
+  const std::uint64_t values[] = {sample.estimated_latency_microseconds,
                                   sample.actual_latency_microseconds,
-                                  sample.cpu_time_microseconds,
-                                  sample.estimated_resource_units,
-                                  sample.actual_resource_units};
+                                  sample.cpu_time_microseconds};
   return std::any_of(std::begin(values), std::end(values), [](std::uint64_t value) {
-    return value > kMaxMetricValue;
+    const auto width = std::bit_width(value);
+    return width > 53 && (value & ((std::uint64_t{1} << (width - 53)) - 1)) != 0;
   });
 }
 
@@ -185,7 +167,7 @@ void Gauge(ExecutorOperatorMetricPublishResult* result,
        metrics::DefaultMetricRegistry().SetGauge(
            family,
            LabelsFor(sample, std::move(metric_family)),
-           static_cast<double>(value),
+           value,
            "executor_runtime"));
 }
 
@@ -204,9 +186,9 @@ void Histogram(ExecutorOperatorMetricPublishResult* result,
 
 }  // namespace
 
-metrics::MetricValidationResult EnsureExecutorOperatorActualsMetricDescriptors(
-    metrics::MetricRegistry* registry) {
-  const MetricDescriptor descriptors[] = {
+const std::vector<metrics::MetricDescriptorDefinition>&
+ExecutorOperatorActualsMetricDescriptorDefinitions() {
+  static const std::vector<metrics::MetricDescriptorDefinition> descriptors = {
       Descriptor("sb_optimizer_operator_actual_rows",
                  MetricType::gauge,
                  MetricUnit::count,
@@ -231,8 +213,14 @@ metrics::MetricValidationResult EnsureExecutorOperatorActualsMetricDescriptors(
                  MetricType::gauge,
                  MetricUnit::count,
                  "Executor operator spill passes.")};
-  for (const auto& descriptor : descriptors) {
-    const auto result = RegisterIfMissing(registry, descriptor);
+  return descriptors;
+}
+
+metrics::MetricValidationResult EnsureExecutorOperatorActualsMetricDescriptors(
+    metrics::MetricRegistry* registry) {
+  for (const auto& descriptor : ExecutorOperatorActualsMetricDescriptorDefinitions()) {
+    const auto result = metrics::ValidateBoundMetricDefinition(
+        registry ? *registry : metrics::DefaultMetricRegistry(), descriptor);
     if (!result.ok) {
       return result;
     }
@@ -287,8 +275,15 @@ ExecutorOperatorMetricPublishResult PublishExecutorOperatorActuals(
                   "executor.operator_actuals.unsafe_authority");
   }
 
+  if (!metrics::DefaultMetricRegistry().ObservationOwnerMatches(sample.database_uuid, sample.node_uuid))
+    return Refuse(sample, "METRIC.OBSERVATION_SOURCE_UNAVAILABLE", "executor sample owner does not match the observation source");
+  const auto descriptors = EnsureExecutorOperatorActualsMetricDescriptors();
+  if (!descriptors.ok) return Refuse(sample, descriptors.diagnostic_code, descriptors.detail);
+
   ExecutorOperatorMetricPublishResult result;
   result.ok = true;
+  result.metric_results.reserve(23);
+  result.scope_uuid = sample.scope_uuid;
   result.diagnostic_code = "SB_EXECUTOR_OPERATOR_ACTUALS.OK";
   AddEvidence(&result, "OEIC_EXECUTOR_OPERATOR_ACTUALS_METRICS");
   AddEvidence(&result, "executor.operator_actuals.fail_closed=false");
@@ -299,7 +294,6 @@ ExecutorOperatorMetricPublishResult PublishExecutorOperatorActuals(
   AddEvidence(&result, "executor.operator_actuals.recovery_authority=false");
   AddEvidence(&result, "executor.operator_actuals.benchmark_authority=false");
 
-  Push(&result, EnsureExecutorOperatorActualsMetricDescriptors());
   Gauge(&result, sample, "sb_optimizer_operator_actual_rows",
         "operator_actual_rows", sample.actual_rows);
   Gauge(&result, sample, "sb_optimizer_operator_rows_examined",
@@ -314,35 +308,39 @@ ExecutorOperatorMetricPublishResult PublishExecutorOperatorActuals(
         sample.spill_passes);
 
   metrics::OptimizerRuntimeFeedbackMetricSample feedback;
-  feedback.estimated_rows = static_cast<double>(sample.estimated_rows);
-  feedback.actual_rows = static_cast<double>(sample.actual_rows);
-  feedback.estimated_pages = static_cast<double>(sample.estimated_pages);
-  feedback.actual_pages = static_cast<double>(sample.actual_pages);
+  feedback.database_uuid = sample.database_uuid;
+  feedback.node_uuid = sample.node_uuid;
+  feedback.estimated_rows = sample.estimated_rows;
+  feedback.actual_rows = sample.actual_rows;
+  feedback.estimated_pages = sample.estimated_pages;
+  feedback.actual_pages = sample.actual_pages;
   feedback.estimated_io_operations =
-      static_cast<double>(sample.estimated_io_operations);
-  feedback.actual_io_operations = static_cast<double>(sample.actual_io_operations);
+      sample.estimated_io_operations;
+  feedback.actual_io_operations = sample.actual_io_operations;
   feedback.estimated_visibility_recheck_rows =
-      static_cast<double>(sample.estimated_visibility_recheck_rows);
+      sample.estimated_visibility_recheck_rows;
   feedback.actual_visibility_recheck_rows =
-      static_cast<double>(sample.actual_visibility_recheck_rows);
+      sample.actual_visibility_recheck_rows;
   feedback.estimated_spill_bytes =
-      static_cast<double>(sample.estimated_spill_bytes);
-  feedback.actual_spill_bytes = static_cast<double>(sample.actual_spill_bytes);
-  feedback.memory_grant_bytes = static_cast<double>(sample.memory_grant_bytes);
-  feedback.peak_memory_bytes = static_cast<double>(sample.peak_memory_bytes);
+      sample.estimated_spill_bytes;
+  feedback.actual_spill_bytes = sample.actual_spill_bytes;
+  feedback.memory_grant_bytes = sample.memory_grant_bytes;
+  feedback.peak_memory_bytes = sample.peak_memory_bytes;
   feedback.recommended_memory_grant_bytes =
-      static_cast<double>(std::max(sample.memory_grant_bytes,
-                                   sample.peak_memory_bytes));
+      std::max(sample.memory_grant_bytes, sample.peak_memory_bytes);
   feedback.estimated_latency_microseconds =
       static_cast<double>(sample.estimated_latency_microseconds);
   feedback.actual_latency_microseconds =
       static_cast<double>(sample.actual_latency_microseconds);
   feedback.estimated_resource_units =
-      static_cast<double>(sample.estimated_resource_units);
+      sample.estimated_resource_units;
   feedback.actual_resource_units =
-      static_cast<double>(sample.actual_resource_units);
-  Push(&result, metrics::PublishOptimizerRuntimeFeedbackSample(
-                    feedback, sample.operator_family, sample.plan_shape));
+      sample.actual_resource_units;
+  std::vector<metrics::MetricValidationResult> feedback_results;
+  const auto feedback_status = metrics::PublishOptimizerRuntimeFeedbackSample(
+      feedback, sample.operator_family, sample.plan_shape, &feedback_results);
+  if (feedback_results.empty()) Push(&result, feedback_status);
+  for (auto& item : feedback_results) Push(&result, std::move(item));
 
   if (!result.ok && result.diagnostic_code == "SB_EXECUTOR_OPERATOR_ACTUALS.OK") {
     result.diagnostic_code =

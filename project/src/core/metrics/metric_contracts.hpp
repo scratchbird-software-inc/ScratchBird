@@ -337,29 +337,35 @@ MetricValidationResult PublishOptimizerPlanEstimateErrorRatio(double ratio,
 
 // SEARCH_KEY: SB_OPTIMIZER_FEEDBACK_METRIC_CONTRACTS
 struct OptimizerRuntimeFeedbackMetricSample {
-  double estimated_rows = 0.0;
-  double actual_rows = 0.0;
-  double estimated_pages = 0.0;
-  double actual_pages = 0.0;
-  double estimated_io_operations = 0.0;
-  double actual_io_operations = 0.0;
-  double estimated_visibility_recheck_rows = 0.0;
-  double actual_visibility_recheck_rows = 0.0;
-  double estimated_spill_bytes = 0.0;
-  double actual_spill_bytes = 0.0;
-  double memory_grant_bytes = 0.0;
-  double peak_memory_bytes = 0.0;
-  double recommended_memory_grant_bytes = 0.0;
+  MetricUuid database_uuid;
+  MetricUuid node_uuid;
+  std::uint64_t estimated_rows = 0;
+  std::uint64_t actual_rows = 0;
+  std::uint64_t estimated_pages = 0;
+  std::uint64_t actual_pages = 0;
+  std::uint64_t estimated_io_operations = 0;
+  std::uint64_t actual_io_operations = 0;
+  std::uint64_t estimated_visibility_recheck_rows = 0;
+  std::uint64_t actual_visibility_recheck_rows = 0;
+  std::uint64_t estimated_spill_bytes = 0;
+  std::uint64_t actual_spill_bytes = 0;
+  std::uint64_t memory_grant_bytes = 0;
+  std::uint64_t peak_memory_bytes = 0;
+  std::uint64_t recommended_memory_grant_bytes = 0;
   double estimated_latency_microseconds = 0.0;
   double actual_latency_microseconds = 0.0;
-  double estimated_resource_units = 0.0;
-  double actual_resource_units = 0.0;
+  std::uint64_t estimated_resource_units = 0;
+  std::uint64_t actual_resource_units = 0;
 };
 
+// Publishes in the declared field order, stopping at the first refusal.
+// Optional outcomes include every attempted sample, including accepted effects
+// retained before failure; they are not a durable-recording receipt.
 MetricValidationResult PublishOptimizerRuntimeFeedbackSample(
     const OptimizerRuntimeFeedbackMetricSample& sample,
     std::string operator_family,
-    std::string plan_shape);
+    std::string plan_shape,
+    std::vector<MetricValidationResult>* observations = nullptr);
 
 // SEARCH_KEY: ODFR_CONTENTION_TELEMETRY_CONTRACT
 struct LockLatchContentionSample {

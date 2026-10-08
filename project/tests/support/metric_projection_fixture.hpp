@@ -21,10 +21,11 @@ class MetricProjectionFixture {
   using Uuid = core::metrics::MetricUuid;
   using Labels = core::metrics::MetricLabelSet;
   using Scalar = core::metrics::MetricScalar;
-  MetricProjectionFixture(Uuid database, Uuid node, unsigned fixture_domain)
+  MetricProjectionFixture(Uuid database, Uuid node, unsigned fixture_domain,
+                          std::size_t observation_capacity = 256)
       : database_(database), node_(node), fixture_domain_(fixture_domain) {
     auto made = core::metrics::MetricObservationQueue::Create(
-        {database, node, {}}, {256, 1024 * 1024});
+        {database, node, {}}, {observation_capacity, 1024 * 1024});
     Check(made.ok(), "projection observation queue creation failed");
     queue_ = std::move(made.queue);
     Check(core::metrics::DefaultMetricRegistry().BindObservationQueue(queue_).ok,
