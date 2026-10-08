@@ -1911,7 +1911,8 @@ void TestConformanceExamplesBindExactReceipts() {
       {snapshot, snapshot, 10, 10}, false,
       {snapshot, snapshot, 10, 10}, false,
       {snapshot, snapshot, 10, 10}, false,
-      {snapshot, snapshot, 10, 10}, false);
+      {snapshot, snapshot, 10, 10}, false,
+      {dt::kBlobV11ReceiptUuid, dt::kDatatypeCohortV11, 11, 11}, false);
   // Isolate the five typed routes: other manifest coverage/diagnostics are
   // qualified separately by the complete-manifest gate, not suppressed here.
   const auto test = [&](auto examples, auto executed, std::string_view message) {

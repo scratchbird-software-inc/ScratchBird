@@ -197,7 +197,9 @@ DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
     const TimestampAuthorityReceiptV3& timestamp_receipt,
     bool timestamp_null_allowed,
     const IntervalAuthorityReceiptV3& interval_receipt,
-    bool interval_null_allowed) {
+    bool interval_null_allowed,
+    const BlobAuthorityReceiptV3& blob_receipt,
+    bool blob_null_allowed) {
   DatatypeConformanceManifestResult result;
   result.status = ManifestOkStatus();
   result.manifest.manifest_key = kCurrentCoreDatatypeConformanceManifestKey;
@@ -210,7 +212,8 @@ DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
         descriptor.type_id == CanonicalTypeId::date ||
         descriptor.type_id == CanonicalTypeId::time ||
         descriptor.type_id == CanonicalTypeId::timestamp ||
-        descriptor.type_id == CanonicalTypeId::interval) {
+        descriptor.type_id == CanonicalTypeId::interval ||
+        descriptor.type_id == CanonicalTypeId::blob) {
       continue;
     }
     DatatypeConformanceExample example;
@@ -465,6 +468,35 @@ DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
   interval_example.source_marker = "BASE-INTERVAL-CONFORMANCE-V3";
   result.manifest.interval_examples.push_back(std::move(interval_example));
 
+  const auto blob_identity = std::find_if(current_v3.begin(), current_v3.end(),
+      [&](const auto& row) {
+        return IdentityMatchesReceipt(row, blob_receipt) &&
+            IsExactCanonicalBlobTypeCodecIdentityV3(row);
+      });
+  if (blob_identity == current_v3.end()) {
+    AddFailure(&result, "BLOB.DESCRIPTOR_INVALID",
+               "datatype.conformance.blob_identity_refused");
+    return result;
+  }
+  const auto blob_profile = BuildBlobValidatedProfileHandleV3(blob_receipt, *blob_identity);
+  if (!blob_profile.ok()) {
+    AddFailure(&result, "BLOB.DESCRIPTOR_INVALID",
+               "datatype.conformance.blob_profile_refused");
+    return result;
+  }
+  BlobConformanceExampleV3 blob_example;
+  blob_example.receipt = blob_receipt;
+  blob_example.identity = *blob_identity;
+  blob_example.profile = blob_profile.profile;
+  blob_example.null_allowed = blob_null_allowed;
+  // Empty VALUE validates the structural profile without pretending that a
+  // raw nonempty span has receiver-authenticated lifetime authority.
+  blob_example.logical_length = 0;
+  blob_example.source = DatatypeConformanceExampleSource::current_core_registry;
+  blob_example.evidence_path = "project/src/core/datatypes/datatype_blob.cpp";
+  blob_example.source_marker = "BASE-BLOB-STRUCTURAL-CONFORMANCE-V3";
+  result.manifest.blob_examples.push_back(std::move(blob_example));
+
   return result;
 }
 
@@ -494,7 +526,8 @@ DatatypeConformanceManifestResult ExecuteDatatypeConformanceManifest(
         descriptor.type_id != CanonicalTypeId::date &&
         descriptor.type_id != CanonicalTypeId::time &&
         descriptor.type_id != CanonicalTypeId::timestamp &&
-        descriptor.type_id != CanonicalTypeId::interval) {
+        descriptor.type_id != CanonicalTypeId::interval &&
+        descriptor.type_id != CanonicalTypeId::blob) {
       required.insert(descriptor.type_id);
     }
   }
@@ -959,6 +992,51 @@ DatatypeConformanceManifestResult ExecuteDatatypeConformanceManifest(
     }
     ++result.executed_examples;
     ++result.executed_interval_examples;
+  }
+
+  if (manifest.blob_examples.size() != 1) {
+    AddFailure(&result, "SB-DATATYPE-CONFORMANCE-MANIFEST-ROW-MISSING",
+               "datatype.conformance.blob_v3_example_count",
+               std::to_string(manifest.blob_examples.size()));
+  }
+  for (const auto& example : manifest.blob_examples) {
+    if (example.source != DatatypeConformanceExampleSource::current_core_registry) {
+      AddFailure(&result, "SB-DATATYPE-CONFORMANCE-DOCS-ONLY-EXAMPLE-REFUSED",
+                 "datatype.conformance.blob_docs_only_refused");
+      continue;
+    }
+    if (EvidencePathForbidden(example.evidence_path)) {
+      AddFailure(&result, "SB-DATATYPE-CONFORMANCE-EVIDENCE-PATH-REFUSED",
+                 "datatype.conformance.blob_evidence_path_refused", example.evidence_path);
+      continue;
+    }
+    if (!IdentityMatchesReceipt(example.identity, example.receipt) ||
+        !IsExactCanonicalBlobTypeCodecIdentityV3(example.identity)) {
+      AddFailure(&result, "BLOB.DESCRIPTOR_INVALID",
+                 "datatype.conformance.blob_identity_refused");
+      continue;
+    }
+    const auto expected = BuildBlobValidatedProfileHandleV3(example.receipt, example.identity);
+    if (!expected.ok() || !ValidateBlobProfileHandleV3(example.profile).ok() ||
+        example.receipt.receipt_uuid != example.profile.receipt.receipt_uuid ||
+        example.receipt.catalog_snapshot_uuid != example.profile.receipt.catalog_snapshot_uuid ||
+        example.receipt.catalog_generation != example.profile.receipt.catalog_generation ||
+        example.receipt.registry_generation != example.profile.receipt.registry_generation) {
+      AddFailure(&result, "BLOB.DESCRIPTOR_INVALID",
+                 "datatype.conformance.blob_profile_refused");
+      continue;
+    }
+    const BlobMaterializedValueViewV3 view{&example.profile, example.state,
+        example.logical_length, example.canonical_component};
+    const auto checked = ValidateBlobMaterializedValueViewNoAllocV3(view, example.null_allowed);
+    if (!checked.ok()) {
+      AddFailure(&result, "SB-DATATYPE-CONFORMANCE-ENCODED-EXAMPLE-REFUSED",
+                 "datatype.conformance.blob_component_refused",
+                 std::to_string(static_cast<unsigned>(checked.diagnostic)));
+      continue;
+    }
+    ++result.executed_examples;
+    ++result.executed_blob_examples;
   }
 
   for (const CanonicalTypeId type_id : required) {

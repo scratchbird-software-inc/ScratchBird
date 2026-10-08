@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "datatype_conformance_manifest.hpp"
+#include "../support/diagnostic_value_fixture.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -89,7 +90,8 @@ dt::IntervalAuthorityReceiptV3 IntervalReceipt() {
 dt::DatatypeConformanceManifestResult LoadManifest() {
   return dt::LoadCurrentCoreDatatypeConformanceManifest(
       BitStringReceipt(), false, DateReceipt(), false, TimeReceipt(), false,
-      TimestampReceipt(), false, IntervalReceipt(), false);
+      TimestampReceipt(), false, IntervalReceipt(), false,
+      {dt::kBlobV11ReceiptUuid, dt::kDatatypeCohortV11, 11, 11}, false);
 }
 
 dt::SerializedDatatypeDescriptor EncodeDescriptorFixture(
@@ -124,6 +126,13 @@ dt::SerializedDatatypeDescriptor EncodeDescriptorFixture(
 
 void TestManifestLoadsAndExecutesAllCurrentCoreRows() {
   const auto loaded = LoadManifest();
+  if (!loaded.ok()) for (const auto& diagnostic : loaded.diagnostics) {
+    std::cerr << diagnostic.diagnostic_code << ':' << diagnostic.message_key;
+    for (const auto& argument : diagnostic.arguments)
+      std::cerr << ' ' << argument.key << '='
+                << scratchbird::tests::DiagnosticArgumentDisplay(argument);
+    std::cerr << '\n';
+  }
   Require(loaded.ok(), "MDF-015 manifest loader must build without diagnostics");
   Require(loaded.manifest.manifest_key ==
               dt::kCurrentCoreDatatypeConformanceManifestKey,
@@ -136,7 +145,8 @@ void TestManifestLoadsAndExecutesAllCurrentCoreRows() {
                   loaded.manifest.date_examples.size() +
                   loaded.manifest.time_examples.size() +
                   loaded.manifest.timestamp_examples.size() +
-                  loaded.manifest.interval_examples.size() ==
+                  loaded.manifest.interval_examples.size() +
+                  loaded.manifest.blob_examples.size() ==
               dt::BuiltinDatatypeDescriptors().size(),
           "MDF-015 manifest must inventory every canonical datatype row");
   Require(loaded.manifest.bit_string_examples.size() == 1,
@@ -181,6 +191,13 @@ void TestManifestLoadsAndExecutesAllCurrentCoreRows() {
 
   const auto executed =
       dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
+  if (!executed.ok()) for (const auto& diagnostic : executed.diagnostics) {
+    std::cerr << diagnostic.diagnostic_code << ':' << diagnostic.message_key;
+    for (const auto& argument : diagnostic.arguments)
+      std::cerr << ' ' << argument.key << '='
+                << scratchbird::tests::DiagnosticArgumentDisplay(argument);
+    std::cerr << '\n';
+  }
   Require(executed.ok(), "MDF-015 manifest examples must execute cleanly");
   Require(executed.executed_examples == dt::BuiltinDatatypeDescriptors().size(),
           "MDF-015 did not execute every encoded datatype example");
@@ -194,6 +211,70 @@ void TestManifestLoadsAndExecutesAllCurrentCoreRows() {
           "MDF-015 did not execute the exact d710 timestamp example");
   Require(executed.executed_interval_examples == 1,
           "MDF-015 did not execute the exact d710 interval example");
+  Require(loaded.manifest.blob_examples.size() == 1 && executed.executed_blob_examples == 1 &&
+              loaded.manifest.blob_examples.front().canonical_component.empty() &&
+              loaded.manifest.blob_examples.front().logical_length == 0 &&
+              loaded.manifest.blob_examples.front().state == dt::BlobValueStateV3::value,
+          "MDF-015 lost the exact V11 BLOB structural example");
+}
+
+void TestBlobStructuralEvidence() {
+  const auto loaded = LoadManifest();
+  Require(loaded.ok(), "BLOB conformance fixture load failed");
+  const auto rejected = [&](const auto& mutation, std::string_view key) {
+    auto manifest = loaded.manifest;
+    mutation(manifest.blob_examples.front());
+    const auto result = dt::ExecuteDatatypeConformanceManifest(manifest);
+    const bool exact = std::any_of(result.diagnostics.begin(), result.diagnostics.end(),
+        [&](const auto& diagnostic) { return diagnostic.message_key == key; });
+    Require(!result.ok() && result.executed_blob_examples == 0 && exact,
+            "invalid BLOB structural evidence executed or lost its diagnostic");
+  };
+  rejected([](auto& e) { ++e.receipt.catalog_generation; },
+           "datatype.conformance.blob_identity_refused");
+  rejected([](auto& e) { ++e.identity.legacy_fields.descriptor_generation; },
+           "datatype.conformance.blob_identity_refused");
+  rejected([](auto& e) { e.receipt.receipt_uuid.bytes[0] ^= 1; },
+           "datatype.conformance.blob_profile_refused");
+  rejected([](auto& e) { e.profile.profile_fingerprint[0] ^= 1; },
+           "datatype.conformance.blob_profile_refused");
+  rejected([](auto& e) { ++e.logical_length; },
+           "datatype.conformance.blob_component_refused");
+  rejected([](auto& e) { e.canonical_component = {0x00, 0x80, 0xff}; e.logical_length = 3; },
+           "datatype.conformance.blob_component_refused");
+  rejected([](auto& e) { e.state = static_cast<dt::BlobValueStateV3>(2); },
+           "datatype.conformance.blob_component_refused");
+  rejected([](auto& e) { e.state = dt::BlobValueStateV3::sql_null; e.null_allowed = true;
+                         e.canonical_component = {0}; },
+           "datatype.conformance.blob_component_refused");
+  rejected([](auto& e) { e.canonical_component.clear(); e.logical_length = 0;
+                         e.state = dt::BlobValueStateV3::sql_null; },
+           "datatype.conformance.blob_component_refused");
+  rejected([](auto& e) { e.source = dt::DatatypeConformanceExampleSource::documentation_only; },
+           "datatype.conformance.blob_docs_only_refused");
+  rejected([](auto& e) { e.evidence_path = "docs/unsupported.md"; },
+           "datatype.conformance.blob_evidence_path_refused");
+  for (bool null_value : {false, true}) {
+    auto manifest = loaded.manifest;
+    auto& blob = manifest.blob_examples.front();
+    blob.canonical_component.clear();
+    blob.logical_length = 0;
+    blob.null_allowed = true;
+    blob.state = null_value ? dt::BlobValueStateV3::sql_null : dt::BlobValueStateV3::value;
+    const auto result = dt::ExecuteDatatypeConformanceManifest(manifest);
+    Require(result.ok() && result.executed_blob_examples == 1,
+            "empty BLOB and clean SQL NULL structural states did not both execute");
+  }
+  for (bool duplicate : {false, true}) {
+    auto manifest = loaded.manifest;
+    if (duplicate) manifest.blob_examples.push_back(manifest.blob_examples.front());
+    else manifest.blob_examples.clear();
+    Require(!dt::ExecuteDatatypeConformanceManifest(manifest).ok(),
+            "missing or duplicate BLOB manifest row accepted");
+  }
+  Require(!dt::SerializeDatatypeDescriptor(
+              dt::LookupDatatypeDescriptor(dt::CanonicalTypeId::blob).descriptor).ok(),
+          "legacy BLOB descriptor serialization became admitted");
 }
 
 void TestLegacyAndMalformedIntervalEvidenceIsRefused() {
@@ -583,6 +664,7 @@ int main() {
   // DEFER-DPE-EXAMPLE-CORPUS
   // DEFER-DTYPE-CONFORMANCE-MANIFESTS
   TestManifestLoadsAndExecutesAllCurrentCoreRows();
+  TestBlobStructuralEvidence();
   TestManifestFailsWhenCanonicalRowIsMissing();
   TestDocumentationOnlyAndPrivateExamplesAreRejected();
   TestParserAuthorityAndCorruptEncodingAreRejected();

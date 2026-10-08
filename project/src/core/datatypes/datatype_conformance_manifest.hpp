@@ -9,6 +9,7 @@
 #pragma once
 
 #include "datatype_bit_string.hpp"
+#include "datatype_blob.hpp"
 #include "datatype_date.hpp"
 #include "datatype_interval.hpp"
 #include "datatype_time.hpp"
@@ -117,6 +118,21 @@ struct IntervalConformanceExampleV3 {
   std::string source_marker;
 };
 
+// Structural carrier conformance only. A materialized span is not a retained
+// lifetime capability, storage publication, or proof of streaming execution.
+struct BlobConformanceExampleV3 {
+  BlobAuthorityReceiptV3 receipt;
+  DatatypeTypeCodecIdentityRowV3 identity;
+  BlobValidatedProfileHandleV3 profile;
+  bool null_allowed = false;
+  BlobValueStateV3 state = BlobValueStateV3::value;
+  std::uint64_t logical_length = 0;
+  std::vector<byte> canonical_component;
+  DatatypeConformanceExampleSource source = DatatypeConformanceExampleSource::unknown;
+  std::string evidence_path;
+  std::string source_marker;
+};
+
 struct DatatypeConformanceManifest {
   std::string manifest_key;
   std::string inventory_source_path;
@@ -126,6 +142,7 @@ struct DatatypeConformanceManifest {
   std::vector<TimeConformanceExampleV3> time_examples;
   std::vector<TimestampConformanceExampleV3> timestamp_examples;
   std::vector<IntervalConformanceExampleV3> interval_examples;
+  std::vector<BlobConformanceExampleV3> blob_examples;
   bool parser_authority_allowed = false;
 };
 
@@ -140,6 +157,7 @@ struct DatatypeConformanceManifestResult {
   std::size_t executed_time_examples = 0;
   std::size_t executed_timestamp_examples = 0;
   std::size_t executed_interval_examples = 0;
+  std::size_t executed_blob_examples = 0;
 
   bool ok() const {
     return status.ok() && diagnostics.empty();
@@ -159,7 +177,9 @@ DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
     const TimestampAuthorityReceiptV3& timestamp_receipt,
     bool timestamp_null_allowed,
     const IntervalAuthorityReceiptV3& interval_receipt,
-    bool interval_null_allowed);
+    bool interval_null_allowed,
+    const BlobAuthorityReceiptV3& blob_receipt,
+    bool blob_null_allowed);
 
 DatatypeConformanceManifestResult ExecuteDatatypeConformanceManifest(
     const DatatypeConformanceManifest& manifest);
