@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "canonical_query_current_heap_join_composition.hpp"
+#include "mga_relation_store/stored_scalar_payload.hpp"
+#include "mga_relation_store/stored_int64_descriptor.hpp"
 #include "canonical_query_aggregate_registration.hpp"
 #include "canonical_query_descriptor_support.hpp"
 #include "canonical_query_filter_registration.hpp"
@@ -2065,6 +2067,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
         prepared.columns.push_back(&*column);
         prepared.descriptors.push_back(column->value_descriptor);
         prepared.descriptors.back().descriptor_kind = "scalar";
+        if (api::StoredScalarPayloadKindForV1(column->value_descriptor.canonical_type_name) ==
+                api::StoredScalarPayloadKindV1::int64_le8 &&
+            !api::ProjectStoredInt64DescriptorV1(input.context, column->value_descriptor,
+                column->nullable, &prepared.descriptors.back(), detail)) return false;
       }
       *binding = std::move(prepared);
       return true;
@@ -2284,8 +2290,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
             if (!row.nulls[key_ordinal]) {
               api::EngineTypedValue key;
               key.descriptor = binding->descriptors[key_ordinal];
-              key.encoded_value = row.values[key_ordinal];
-              key.state = api::EngineValueState::value;
+              if (!api::RestoreStoredScalarPayloadV1(row.values[key_ordinal],
+                      api::EngineValueState::value, &key)) return false;
               const auto decoded = exec::DecodeInt64Value(key);
               if (!decoded.ok()) return false;
               row.key = decoded.value;
@@ -2453,20 +2459,22 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
                                     const StreamingCompactRow& compact,
                                     std::vector<api::EngineTypedValue>* values) {
       values->clear();
+      if (compact.nulls.size() != binding.descriptors.size() ||
+          compact.values.size() != binding.descriptors.size()) return false;
       values->reserve(binding.descriptors.size());
       for (std::size_t ordinal = 0; ordinal < binding.descriptors.size();
            ++ordinal) {
         api::EngineTypedValue value;
         value.descriptor = binding.descriptors[ordinal];
-        if (compact.nulls[ordinal]) {
-          value.is_null = true;
-          value.state = api::EngineValueState::sql_null;
-        } else {
-          value.encoded_value = compact.values[ordinal];
-          value.state = api::EngineValueState::value;
+        if (!api::RestoreStoredScalarPayloadV1(compact.values[ordinal],
+                compact.nulls[ordinal] ? api::EngineValueState::sql_null
+                                       : api::EngineValueState::value, &value)) {
+          values->clear();
+          return false;
         }
         values->push_back(std::move(value));
       }
+      return true;
     };
     std::vector<api::EngineTypedValue> left_values;
     std::vector<api::EngineTypedValue> right_values;
@@ -2609,7 +2617,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
         return false;
       }
       if (!right_row.key_present) return true;
-      materialize_row(right_binding, right_row, &right_values);
+      if (!materialize_row(right_binding, right_row, &right_values)) {
+        stream_detail = "streaming hash right payload failed canonical restoration";
+        join_ok = false;
+        return false;
+      }
       const auto lower = std::lower_bound(
           build_index.begin(), build_index.end(), right_row.key,
           [](const auto& entry, const std::int64_t key) {
@@ -2627,7 +2639,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
           return false;
         }
         const auto& left_row = left_rows[match->row_ordinal];
-        materialize_row(left_binding, left_row, &left_values);
+        if (!materialize_row(left_binding, left_row, &left_values)) {
+          stream_detail = "streaming hash left payload failed canonical restoration";
+          join_ok = false;
+          return false;
+        }
         api::EngineSqlTruthValue truth = api::EngineSqlTruthValue::true_value;
         if (streaming_hash_join->node->bound_expression_ids.front() !=
             streaming_hash_key_expression_id) {

@@ -1500,6 +1500,12 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   engine_descriptor.encoded_descriptor =
       std::string("nullability=") +
       (result_nullable ? "nullable" : "non_null");
+  if (engine_descriptor.canonical_type_name == "int64" &&
+      !BuildExactCanonicalScalarRuntimeDescriptorV1(*descriptor,
+          core::datatypes::CanonicalTypeId::int64, &engine_descriptor)) {
+    result.detail = "aggregate INT64 result lacks exact admitted datatype authority";
+    return result;
+  }
   result.result_column = {output->output_name_utf8, engine_descriptor,
                           result_nullable, descriptor->descriptor_id};
   exec::CanonicalResultColumnBinding binding;

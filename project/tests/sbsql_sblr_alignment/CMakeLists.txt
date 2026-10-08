@@ -467,6 +467,22 @@ set_tests_properties(sbsql_sblr_alignment_api_result_snapshot PROPERTIES TIMEOUT
   LABELS "sbsql_sblr_alignment;binary_uuid;prepared_result_snapshot;actual_codec;not_runtime_acceptance")
 
 add_executable(sbsql_sblr_alignment_stored_scalar_native_payload stored_scalar_native_payload_test.cpp)
+add_executable(sbsql_sblr_alignment_native_aggregate_value native_aggregate_value_test.cpp)
+target_compile_features(sbsql_sblr_alignment_native_aggregate_value PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_native_aggregate_value PRIVATE sb_engine_executor)
+foreach(aggregate_case IN ITEMS 007_aggregate 011_empty 011_filter 011_distinct 011_ordered 011_state 011_spill 011_registry)
+  if(NOT (SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS))
+    add_executable(qow_qry_${aggregate_case}_test_v1 ../sbsql_parser_worker/qow_qry_${aggregate_case}.cpp)
+    target_compile_features(qow_qry_${aggregate_case}_test_v1 PRIVATE cxx_std_23)
+    target_link_libraries(qow_qry_${aggregate_case}_test_v1 PRIVATE sb_engine_executor)
+    add_test(NAME qow_qry_${aggregate_case}_v1 COMMAND qow_qry_${aggregate_case}_test_v1)
+    set_tests_properties(qow_qry_${aggregate_case}_v1 PROPERTIES TIMEOUT 120
+      LABELS "component_regression;native_int64;aggregate")
+  endif()
+endforeach()
+add_test(NAME sbsql_sblr_alignment_native_aggregate_value COMMAND sbsql_sblr_alignment_native_aggregate_value)
+set_tests_properties(sbsql_sblr_alignment_native_aggregate_value PROPERTIES TIMEOUT 120
+  LABELS "sbsql_sblr_alignment;native_binding;aggregate;component_regression")
 target_compile_features(sbsql_sblr_alignment_stored_scalar_native_payload PRIVATE cxx_std_23)
 target_include_directories(sbsql_sblr_alignment_stored_scalar_native_payload PRIVATE ../../src ../../src/engine ../../src/engine/functions)
 target_link_libraries(sbsql_sblr_alignment_stored_scalar_native_payload PRIVATE sb_core_uuid sb_core_datatypes sb_core_diagnostic_catalog sb_engine_sblr)

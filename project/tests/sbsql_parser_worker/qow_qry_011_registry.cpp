@@ -7,8 +7,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "descriptor_value_runtime.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/native_int64_fixture.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "uuid.hpp"
+#include "../../src/core/resources/resource_seed_pack.hpp"
+#include <filesystem>
 
 #include <algorithm>
 #include <cmath>
@@ -27,8 +31,8 @@ namespace uuid = scratchbird::core::uuid;
 
 namespace {
 
-constexpr std::string_view kCollationUuid =
-    "019f0000-0000-7400-8000-000000002101";
+constexpr api::EngineUuid kCollationUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7400-8000-000000002101");
 constexpr std::uint64_t kOwnerLocalTransactionId =
     0xffff'ffff'ffff'ff00ULL;
 constexpr std::uint64_t kOldestActiveLocalTransactionId =
@@ -49,12 +53,12 @@ bool Require(const bool condition, const std::string_view detail) {
 }
 
 exec::PhysicalMgaStatementContext StatementContext(
-    const std::string& statement_snapshot_uuid) {
+    const api::EngineUuid& statement_snapshot_uuid) {
   return {
-      "019f0000-0000-7200-8000-00000000f601",
-      "019f0000-0000-7200-8000-00000000f602",
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-00000000f601"),
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-00000000f602"),
       statement_snapshot_uuid,
-      "019f0000-0000-7200-8000-00000000f603",
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-00000000f603"),
       kOwnerLocalTransactionId,
       0,
       kOldestActiveLocalTransactionId,
@@ -106,12 +110,12 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
   SetStatementContext(dag, context);
   for (auto& node : dag->nodes) {
     node.selected_alternative_uuid =
-        "019f0000-0000-7200-8000-00000000f604";
+        scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-00000000f604");
     node.executor_capability_uuid =
-        "019f0000-0000-7200-8000-00000000f605";
+        scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-00000000f605");
     node.executor_capability_abi_version = 1;
     node.cost_vector_uuid =
-        "019f0000-0000-7200-8000-00000000f606";
+        scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-00000000f606");
     node.memory_bytes_required =
         node.node_kind == exec::PhysicalNodeKind::kAggregate
             ? kAggregateMemoryGrantBytes
@@ -129,33 +133,41 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
   return authority;
 }
 
-api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
-                                 const std::string& type_uuid,
+api::EngineDescriptor Descriptor(const api::EngineUuid& descriptor_uuid,
                                  const std::string& type_name,
                                  const bool nullable = true) {
-  api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = descriptor_uuid;
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = type_name;
-  descriptor.encoded_descriptor =
-      "type_uuid=" + type_uuid +
-      ";nullability=" + (nullable ? "nullable" : "non_null");
-  return descriptor;
+  auto type = dt::CanonicalTypeIdFromStableName(type_name);
+  if (type_name.starts_with("list<")) type = dt::CanonicalTypeId::list;
+  return scratchbird::tests::ExactScalarDescriptorFixture(type, type_name, descriptor_uuid,
+      std::string("nullability=") + (nullable ? "nullable" : "non_null"));
 }
 
 void SetResultNullability(exec::CanonicalAggregateRuntimeRequest* request,
                           const bool nullable) {
   request->result_column.nullable = nullable;
-  const auto marker = request->result_column.descriptor.encoded_descriptor.find(
-      ";nullability=");
-  if (marker == std::string::npos) std::abort();
-  request->result_column.descriptor.encoded_descriptor.resize(marker);
-  request->result_column.descriptor.encoded_descriptor +=
-      ";nullability=" + std::string(nullable ? "nullable" : "non_null");
+  request->result_column.descriptor.encoded_descriptor =
+      std::string("nullability=") + (nullable ? "nullable" : "non_null");
 }
 
 dt::DatatypeTextSeedAuthority CollationSeed() {
+  namespace resources = scratchbird::core::resources;
+  static const auto image = [] {
+    resources::ResourceSeedLoadConfig config;
+    config.seed_pack_root = (std::filesystem::path(__FILE__).lexically_normal().parent_path().parent_path().parent_path() /
+        "resources/seed-packs/initial-resource-pack").string();
+    const auto loaded = resources::LoadResourceSeedPack(config);
+    if (!loaded.ok() || !loaded.image.unicode_collation)
+      throw std::runtime_error("aggregate fixture collation resource failed admission");
+    return loaded.image;
+  }();
   dt::DatatypeTextSeedAuthority seed;
+  seed.database_uuid = scratchbird::tests::FixtureUuid(211, 1);
+  seed.charset_uuid = scratchbird::tests::FixtureUuid(211, 2);
+  seed.collation_uuid = kCollationUuid;
+  seed.resource_epoch = 41;
+  seed.collation_epoch = 42;
+  seed.comparison_profile = resources::CollationProfile::uca17_root_secondary;
+  seed.unicode_collation = image.unicode_collation;
   seed.active = true;
   seed.seed_pack_name = "qow.seed";
   seed.seed_pack_version = "1";
@@ -190,33 +202,11 @@ void BindEqualityAuthority(exec::CanonicalAggregateRuntimeRequest* request) {
   if (!diagnostic.ok) std::abort();
 }
 
-std::string CoreDescriptorUuid(const std::string_view stable_name,
-                               const std::string_view fallback) {
-  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
-  if (!manifest.ok()) std::abort();
-  const auto found = std::ranges::find_if(
-      manifest.manifest.descriptor_rows,
-      [&](const auto& row) { return row.stable_name == stable_name; });
-  if (found == manifest.manifest.descriptor_rows.end() ||
-      !found->descriptor_uuid.valid()) {
-    return std::string(fallback);
-  }
-  const auto descriptor_uuid = uuid::UuidToString(found->descriptor_uuid.value);
-  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      "019d0000-0000-7000-8000-00000000d701",
-      manifest.manifest.catalog_epoch, 1, descriptor_uuid,
-      found->descriptor_epoch);
-  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
-}
-
-api::EngineDescriptor TextDescriptor(const std::string& descriptor_uuid) {
+api::EngineDescriptor TextDescriptor(const api::EngineUuid& descriptor_uuid) {
   auto descriptor = Descriptor(
       descriptor_uuid,
-      CoreDescriptorUuid("text",
-                         "019f0000-0000-7300-8000-000000002105"),
       "text");
-  descriptor.encoded_descriptor +=
-      ";collation_uuid=" + std::string(kCollationUuid);
+  descriptor.collation_uuid = kCollationUuid;
   return descriptor;
 }
 
@@ -224,6 +214,8 @@ api::EngineTypedValue Value(const api::EngineDescriptor& descriptor,
                             const std::string& encoded) {
   api::EngineTypedValue value;
   value.descriptor = descriptor;
+  if (descriptor.canonical_type_name == "int64")
+    return scratchbird::tests::NativeInt64Fixture(descriptor, encoded);
   value.encoded_value = encoded;
   value.state = api::EngineValueState::value;
   return value;
@@ -251,52 +243,42 @@ exec::CanonicalAggregateRuntimeRequest Request(
     const std::string& result_type,
     const bool count_star = false) {
   const auto int_descriptor = Descriptor(
-      "019f0000-0000-7200-8000-000000002101",
-      CoreDescriptorUuid("int64",
-                         "019f0000-0000-7300-8000-000000002101"),
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002101"),
       "int64");
   const auto real_descriptor = Descriptor(
-      "019f0000-0000-7200-8000-000000002102",
-      CoreDescriptorUuid("real64",
-                         "019f0000-0000-7300-8000-000000002102"),
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002102"),
       "real64");
   const auto bool_descriptor = Descriptor(
-      "019f0000-0000-7200-8000-000000002103",
-      CoreDescriptorUuid("boolean",
-                         "019f0000-0000-7300-8000-000000002103"),
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002103"),
       "boolean");
   const auto key_descriptor = Descriptor(
-      "019f0000-0000-7200-8000-000000002104",
-      CoreDescriptorUuid("int64",
-                         "019f0000-0000-7300-8000-000000002104"),
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002104"),
       "int64");
   const auto result_descriptor = Descriptor(
-      "019f0000-0000-7200-8000-000000002199",
-      CoreDescriptorUuid(result_type,
-                         "019f0000-0000-7300-8000-000000002199"),
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002199"),
       result_type, function != exec::CanonicalAggregateFunction::count);
 
   exec::CanonicalAggregateRuntimeRequest request;
   request.physical_dag.selected_plan_uuid =
-      "019f0000-0000-7200-8000-000000002110";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002110");
   request.physical_dag.root_physical_node_id = 2102;
   request.physical_dag.admission_evidence = {
       {exec::PhysicalAdmissionStage::kBoundRequest,
-       "019f0000-0000-7200-8000-000000002111"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002111")},
       {exec::PhysicalAdmissionStage::kCatalogEpoch,
-       "019f0000-0000-7200-8000-000000002112"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002112")},
       {exec::PhysicalAdmissionStage::kSecurity,
-       "019f0000-0000-7200-8000-000000002113"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002113")},
       {exec::PhysicalAdmissionStage::kMgaStatementBoundary,
-       "019f0000-0000-7200-8000-000000002114"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002114")},
       {exec::PhysicalAdmissionStage::kPolicyCapability,
-       "019f0000-0000-7200-8000-000000002115"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002115")},
       {exec::PhysicalAdmissionStage::kResource,
-       "019f0000-0000-7200-8000-000000002116"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002116")},
       {exec::PhysicalAdmissionStage::kStatisticsProvenance,
-       "019f0000-0000-7200-8000-000000002117"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002117")},
       {exec::PhysicalAdmissionStage::kCanonicalRoute,
-       "019f0000-0000-7200-8000-000000002118"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002118")},
   };
   request.physical_dag.nodes = {
       {.physical_node_id = 2101,
@@ -340,6 +322,26 @@ exec::CanonicalAggregateRuntimeRequest Request(
                            2199};
   request.mga_authority = BindPhysicalAbiV2(&request.physical_dag);
   return request;
+}
+
+bool ScalarMatches(const api::EngineTypedValue& value, const std::string& expected) {
+  return value.descriptor.canonical_type_name == "int64"
+      ? scratchbird::tests::NativeInt64Equals(value, std::stoll(expected))
+      : value.encoded_value == expected;
+}
+
+std::string TextListFixture(std::initializer_list<std::optional<std::string>> values) {
+  std::string bytes = "SBTL0001";
+  const auto u32 = [&](std::uint32_t n) {
+    for (unsigned i = 0; i < 4; ++i) bytes.push_back(static_cast<char>(n >> (i * 8)));
+  };
+  u32(values.size());
+  for (const auto& value : values) {
+    bytes.push_back(value ? 1 : 0);
+    u32(value ? value->size() : 0);
+    if (value) bytes += *value;
+  }
+  return bytes;
 }
 
 bool SameScalar(const exec::CanonicalAggregateRuntimeResult& left,
@@ -402,7 +404,7 @@ exec::CanonicalAggregateRuntimeRequest CollectionRequest(
                  : "json");
   auto request = Request(function, 0, 2101, result_type);
   const auto text_descriptor =
-      TextDescriptor("019f0000-0000-7200-8000-000000002101");
+      TextDescriptor(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002101"));
   request.input_batch.columns[0].descriptor = text_descriptor;
   request.input_batch.rows[0].values[0] = Value(text_descriptor, "a");
   request.input_batch.rows[1].values[0] = Value(text_descriptor, "b");
@@ -466,7 +468,8 @@ exec::CanonicalAggregateRuntimeRequest TopKRequest() {
   const auto& entry = Entry(exec::CanonicalAggregateFunction::approx_top_k);
   request.descriptor = {entry.abi_version, entry.function, entry.builtin_id,
                         entry.function_uuid, false};
-  request.result_column.descriptor.canonical_type_name = "json";
+  request.result_column.descriptor = Descriptor(
+      request.result_column.descriptor.descriptor_uuid, "json");
   SetResultNullability(&request, true);
   request.aggregate_order_terms.clear();
   request.aggregate_separator = ",";
@@ -484,6 +487,10 @@ exec::CanonicalAggregateRuntimeRequest TopKRequest() {
 
 bool NearScalar(const exec::CanonicalAggregateRuntimeResult& result,
                 const double expected) {
+  if (result.diagnostic.ok && result.output_batch.rows.size() == 1 &&
+      result.output_batch.rows[0].values[0].descriptor.canonical_type_name == "int64")
+    return scratchbird::tests::NativeInt64Equals(result.output_batch.rows[0].values[0],
+                                                static_cast<std::int64_t>(expected));
   return result.diagnostic.ok && result.output_batch.rows.size() == 1 &&
          result.output_batch.rows[0].values[0].state ==
              api::EngineValueState::value &&
@@ -500,7 +507,7 @@ bool ValidateCanonicalAggregateRegistry() {
       exec::ValidateCanonicalAggregateRuntimeRegistryV1().empty(),
       "canonical global aggregate registry self-validation failed");
   std::set<std::string> ids;
-  std::set<std::string> uuids;
+  std::set<api::EngineUuid> uuids;
   std::set<exec::CanonicalAggregateFunction> functions;
   std::size_t executable_count = 0;
   std::size_t aggregate_window_count = 0;
@@ -546,7 +553,7 @@ bool ValidateCanonicalAggregateRegistry() {
                             "sb.aggregate.count" &&
                         Entry(exec::CanonicalAggregateFunction::regr_syy)
                                 .function_uuid ==
-                            "019dffbb-f000-74f7-98ba-c24ead6d30df",
+                            scratchbird::tests::FixtureUuidLiteral("019dffbb-f000-74f7-98ba-c24ead6d30df"),
                     "registry endpoints do not match seed authority");
   passed &= Require(
       exec::LookupCanonicalAggregateByFunctionV1(
@@ -554,7 +561,7 @@ bool ValidateCanonicalAggregateRegistry() {
           exec::LookupCanonicalAggregateByBuiltinIdV1(
               "sb.aggregate.registry_bypass") == nullptr &&
           exec::LookupCanonicalAggregateByUuidV1(
-              "019f0000-0000-7000-8000-00000000ffff") == nullptr &&
+              scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000ffff")) == nullptr &&
           exec::LookupCanonicalAggregateExactV1(
               1, exec::CanonicalAggregateFunction::sum,
               "sb.aggregate.sum",
@@ -589,8 +596,7 @@ bool ValidateCanonicalAggregateRegistry() {
         exec::CanonicalAggregateExecutionStrategy::partitioned_combine;
     const auto partitioned = exec::ExecuteCanonicalAggregateRuntime(request);
     passed &= Require(serial.diagnostic.ok &&
-                          serial.output_batch.rows[0].values[0].encoded_value ==
-                              test_case.expected &&
+                          ScalarMatches(serial.output_batch.rows[0].values[0], test_case.expected) &&
                           serial.every_descriptor_field_consumed &&
                           serial.shared_state_authority_used &&
                           serial.authority.engine_mga_snapshot_bound &&
@@ -726,8 +732,7 @@ bool ValidateCanonicalAggregateRegistry() {
   passed &= Require(boundary.diagnostic.ok &&
                         boundary.output_batch.rows[0].values[0].state ==
                             api::EngineValueState::value &&
-                        boundary.output_batch.rows[0].values[0].encoded_value ==
-                            "1",
+                        ScalarMatches(boundary.output_batch.rows[0].values[0], "1"),
                     "REGR_COUNT singleton did not produce non-NULL one");
 
   auto constant_y =
@@ -767,11 +772,11 @@ bool ValidateCanonicalAggregateRegistry() {
 
   struct CollectionCase {
     exec::CanonicalAggregateFunction function;
-    const char* expected;
+    std::string expected;
   };
   const std::vector<CollectionCase> collection_cases = {
       {exec::CanonicalAggregateFunction::array_agg,
-       "list[text:b;text:d;text:a;NULL]"},
+       TextListFixture({"b", "d", "a", std::nullopt})},
       {exec::CanonicalAggregateFunction::string_agg, "b|d|a"},
       {exec::CanonicalAggregateFunction::json_agg,
        R"(["b","d","a",null])"},
@@ -785,9 +790,14 @@ bool ValidateCanonicalAggregateRegistry() {
     request.forced_strategy =
         exec::CanonicalAggregateExecutionStrategy::partitioned_combine;
     const auto partitioned = exec::ExecuteCanonicalAggregateRuntime(request);
+    if (!serial.diagnostic.ok)
+      std::cerr << "collection " << static_cast<unsigned>(test_case.function) << ':'
+                << serial.diagnostic.diagnostic_code << ':' << serial.diagnostic.detail << '\n';
+    else if (serial.output_batch.rows[0].values[0].encoded_value != test_case.expected)
+      std::cerr << "collection " << static_cast<unsigned>(test_case.function) << " actual="
+                << serial.output_batch.rows[0].values[0].encoded_value << '\n';
     passed &= Require(serial.diagnostic.ok &&
-                          serial.output_batch.rows[0].values[0].encoded_value ==
-                              test_case.expected &&
+                          ScalarMatches(serial.output_batch.rows[0].values[0], test_case.expected) &&
                           serial.aggregate_order_applied &&
                           serial.order_comparison_count != 0 &&
                           serial.state_bytes != 0 &&
@@ -796,7 +806,7 @@ bool ValidateCanonicalAggregateRegistry() {
   }
 
   const std::vector<CollectionCase> nullable_collection_boundaries = {
-      {exec::CanonicalAggregateFunction::array_agg, "list[text:a]"},
+      {exec::CanonicalAggregateFunction::array_agg, TextListFixture({"a"})},
       {exec::CanonicalAggregateFunction::json_agg, R"(["a"])"},
       {exec::CanonicalAggregateFunction::json_object_agg,
        R"({"dup":1.5})"},
@@ -813,8 +823,7 @@ bool ValidateCanonicalAggregateRegistry() {
         singleton_result.diagnostic.ok &&
             singleton_result.output_batch.rows[0].values[0].state ==
                 api::EngineValueState::value &&
-            singleton_result.output_batch.rows[0].values[0].encoded_value ==
-                test_case.expected &&
+            ScalarMatches(singleton_result.output_batch.rows[0].values[0], test_case.expected) &&
             empty_result.diagnostic.ok &&
             empty_result.output_batch.rows[0].values[0].state ==
                 api::EngineValueState::sql_null,
@@ -829,8 +838,7 @@ bool ValidateCanonicalAggregateRegistry() {
   passed &= Require(collection.diagnostic.ok &&
                         collection.output_batch.rows[0].values[0].state ==
                             api::EngineValueState::value &&
-                        collection.output_batch.rows[0].values[0]
-                                .encoded_value == "a",
+                        ScalarMatches(collection.output_batch.rows[0].values[0], "a"),
                     "STRING_AGG singleton incorrectly applied its separator");
 
   auto empty_string =
@@ -854,8 +862,7 @@ bool ValidateCanonicalAggregateRegistry() {
   listagg.listagg_max_output_bytes = 12;
   collection = exec::ExecuteCanonicalAggregateRuntime(listagg);
   passed &= Require(collection.diagnostic.ok &&
-                        collection.output_batch.rows[0].values[0]
-                                .encoded_value == "east|...(2)",
+                        ScalarMatches(collection.output_batch.rows[0].values[0], "east|...(2)"),
                     "LISTAGG truncation did not preserve ordered boundaries");
 
   listagg.listagg_overflow_mode = exec::CanonicalListaggOverflowMode::error;
@@ -961,8 +968,7 @@ bool ValidateCanonicalAggregateRegistry() {
       exec::CanonicalAggregateExecutionStrategy::partitioned_combine;
   auto ordered_partitioned = exec::ExecuteCanonicalAggregateRuntime(mode);
   passed &= Require(ordered.diagnostic.ok &&
-                        ordered.output_batch.rows[0].values[0].encoded_value ==
-                            "4" &&
+                        ScalarMatches(ordered.output_batch.rows[0].values[0], "4") &&
                         SameScalar(ordered, ordered_partitioned),
                     "MODE frequency/tie rule or merge parity failed");
 
@@ -978,8 +984,7 @@ bool ValidateCanonicalAggregateRegistry() {
   auto approximate_partitioned =
       exec::ExecuteCanonicalAggregateRuntime(approximate_distinct);
   passed &= Require(approximate.diagnostic.ok &&
-                        approximate.output_batch.rows[0].values[0]
-                                .encoded_value == "2" &&
+                        ScalarMatches(approximate.output_batch.rows[0].values[0], "2") &&
                         SameScalar(approximate, approximate_partitioned),
                     "approximate distinct state or merge parity failed");
 
@@ -1047,7 +1052,7 @@ bool ValidateCanonicalAggregateRegistry() {
                         sum.order_comparison_count != 0 &&
                         sum.distinct_tuple_count == 2 &&
                         sum.transition_count == 2 &&
-                        sum.output_batch.rows[0].values[0].encoded_value == "3",
+                        ScalarMatches(sum.output_batch.rows[0].values[0], "3"),
                     "FILTER/DISTINCT/two-term ORDER BY did not execute one canonical modifier pipeline");
   auto partitioned_sum_request = sum_request;
   partitioned_sum_request.forced_strategy =
@@ -1090,9 +1095,9 @@ bool ValidateCanonicalAggregateRegistry() {
   auto binary_safe_distinct =
       CollectionRequest(exec::CanonicalAggregateFunction::json_object_agg);
   const auto collision_key_descriptor =
-      TextDescriptor("019f0000-0000-7200-8000-000000002181");
+      TextDescriptor(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002181"));
   const auto collision_value_descriptor =
-      TextDescriptor("019f0000-0000-7200-8000-000000002182");
+      TextDescriptor(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002182"));
   binary_safe_distinct.input_batch.columns[0].descriptor =
       collision_key_descriptor;
   binary_safe_distinct.input_batch.columns[1].descriptor =
@@ -1110,6 +1115,8 @@ bool ValidateCanonicalAggregateRegistry() {
   BindEqualityAuthority(&binary_safe_distinct);
   const auto binary_safe =
       exec::ExecuteCanonicalAggregateRuntime(binary_safe_distinct);
+  if (!binary_safe.diagnostic.ok)
+    std::cerr << binary_safe.diagnostic.diagnostic_code << ':' << binary_safe.diagnostic.detail << '\n';
   passed &= Require(binary_safe.diagnostic.ok &&
                         binary_safe.distinct_tuple_count == 2 &&
                         binary_safe.transition_count == 2 &&
@@ -1174,16 +1181,14 @@ bool ValidateCanonicalAggregateRegistry() {
   empty_count.input_batch.rows.clear();
   empty = exec::ExecuteCanonicalAggregateRuntime(empty_count);
   passed &= Require(empty.diagnostic.ok &&
-                        empty.output_batch.rows[0].values[0].encoded_value ==
-                            "0",
+                        ScalarMatches(empty.output_batch.rows[0].values[0], "0"),
                     "empty COUNT(*) did not produce zero");
   auto empty_count_expression = Request(
       exec::CanonicalAggregateFunction::count, 0, 2101, "int64");
   empty_count_expression.input_batch.rows.clear();
   empty = exec::ExecuteCanonicalAggregateRuntime(empty_count_expression);
   passed &= Require(empty.diagnostic.ok &&
-                        empty.output_batch.rows[0].values[0].encoded_value ==
-                            "0",
+                        ScalarMatches(empty.output_batch.rows[0].values[0], "0"),
                     "empty COUNT(expression) did not produce zero");
   auto empty_regr_count =
       PairStatisticalRequest(exec::CanonicalAggregateFunction::regr_count);
@@ -1192,8 +1197,7 @@ bool ValidateCanonicalAggregateRegistry() {
   passed &= Require(empty.diagnostic.ok &&
                         empty.output_batch.rows[0].values[0].state ==
                             api::EngineValueState::value &&
-                        empty.output_batch.rows[0].values[0].encoded_value ==
-                            "0",
+                        ScalarMatches(empty.output_batch.rows[0].values[0], "0"),
                     "empty REGR_COUNT did not produce non-NULL zero");
   for (const auto function : {
            exec::CanonicalAggregateFunction::corr,

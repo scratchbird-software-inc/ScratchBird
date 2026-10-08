@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "executor_foundation.hpp"
+#include "native_int64_payload.hpp"
 
 #include "descriptor_value_runtime.hpp"
 #include "aggregate_executor_internal.hpp"
@@ -499,8 +500,7 @@ FinalizeCanonicalInt64SumValue(
   EngineTypedValue value;
   value.descriptor = state.result_column.descriptor;
   if (state.has_value) {
-    value.encoded_value = std::to_string(state.accumulated_value);
-    value.state = EngineValueState::value;
+    value = EncodeInt64Value(state.accumulated_value, state.result_column.descriptor);
   } else {
     value.is_null = true;
     value.state = EngineValueState::sql_null;
@@ -647,6 +647,8 @@ CanonicalInt64SumStateResult ExecuteCanonicalInt64SumState(
   }
   DescriptorBatch result_schema;
   result_schema.columns = {request.result_column};
+  result.diagnostic = detail::ValidateAggregateInt64ResultDescriptor(request.result_column);
+  if (!result.diagnostic.ok) return result;
   auto result_validation = ValidateCanonicalDescriptorBatch(
       result_schema, selected_node->output_descriptor_ids);
   if (!result_validation.ok) {
@@ -740,6 +742,8 @@ CanonicalInt64SumFinalizeResult ExecuteCanonicalInt64SumFinalize(
 
   DescriptorBatch result_schema;
   result_schema.columns = {state.result_column};
+  result.diagnostic = detail::ValidateAggregateInt64ResultDescriptor(state.result_column);
+  if (!result.diagnostic.ok) return result;
   auto schema_validation = ValidateCanonicalDescriptorBatch(
       result_schema, selected_node->output_descriptor_ids);
   if (!schema_validation.ok) {
@@ -868,6 +872,10 @@ CanonicalInt64SumGroupResult ExecuteCanonicalInt64SumGroups(
   DescriptorBatch result_schema;
   result_schema.columns = {request.key_result_column,
                            request.sum_result_column};
+  result.diagnostic = detail::ValidateAggregateInt64ResultDescriptor(request.key_result_column);
+  if (!result.diagnostic.ok) return result;
+  result.diagnostic = detail::ValidateAggregateInt64ResultDescriptor(request.sum_result_column);
+  if (!result.diagnostic.ok) return result;
   auto schema_validation = ValidateCanonicalDescriptorBatch(
       result_schema, selected_node->output_descriptor_ids);
   if (!schema_validation.ok) {
@@ -943,7 +951,7 @@ CanonicalInt64SumGroupResult ExecuteCanonicalInt64SumGroups(
       CanonicalInt64SumGroupState group;
       group.group_key.descriptor = request.key_result_column.descriptor;
       if (key.has_value()) {
-        group.group_key.encoded_value = std::to_string(*key);
+        group.group_key = EncodeInt64Value(*key, request.key_result_column.descriptor);
         group.group_key.state = EngineValueState::value;
       } else {
         group.group_key.is_null = true;

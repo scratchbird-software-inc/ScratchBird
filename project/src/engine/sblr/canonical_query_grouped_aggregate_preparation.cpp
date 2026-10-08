@@ -506,6 +506,11 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
           engine_descriptor.canonical_type_name = "int64";
           engine_descriptor.type_uuid = descriptor->type_uuid;
           engine_descriptor.encoded_descriptor = "nullability=non_null";
+          if (!BuildExactCanonicalScalarRuntimeDescriptorV1(*descriptor,
+                  core::datatypes::CanonicalTypeId::int64, &engine_descriptor)) {
+            result.detail = "grouping indicator lacks exact admitted INT64 datatype authority";
+            return false;
+          }
           result.grouping_projection_columns.push_back(
               {output->output_name_utf8, engine_descriptor, false,
                descriptor_id});

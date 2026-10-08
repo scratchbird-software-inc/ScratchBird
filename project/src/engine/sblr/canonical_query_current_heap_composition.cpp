@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "canonical_query_current_heap_composition.hpp"
+#include "../executor/native_int64_payload.hpp"
 #include "mga_relation_store/stored_scalar_payload.hpp"
 #include "mga_relation_store/stored_int64_descriptor.hpp"
 #include "canonical_query_aggregate_composition.hpp"
@@ -2132,8 +2133,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
         api::EngineTypedValue key_value;
         key_value.descriptor = binding.descriptors[0];
         if (key.has_value()) {
-          key_value.encoded_value = std::to_string(*key);
-          key_value.state = api::EngineValueState::value;
+          key_value = exec::EncodeInt64Value(*key, binding.descriptors[0]);
         } else {
           key_value.is_null = true;
           key_value.state = api::EngineValueState::sql_null;

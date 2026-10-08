@@ -7,10 +7,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "descriptor_value_runtime.hpp"
+#include "native_int64_payload.hpp"
 
 #include "aggregate_executor_internal.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "../internal_api/catalog/datatype_bootstrap_identity.hpp"
+#include "../internal_api/catalog/column_metadata_codec.hpp"
 #include "datatype_document.hpp"
 #include "datatype_operations.hpp"
 #include "temp_spill_executor.hpp"
@@ -409,10 +411,28 @@ void AppendAggregateJsonEscaped(const std::string_view input,
   output->push_back('"');
 }
 
+bool FormatAggregateInt64Payload(const EngineTypedValue& value,
+                                 std::array<char, 20>* buffer, std::size_t* size) {
+  std::int64_t number = 0;
+  std::string detail;
+  if (!DecodeBoundInt64Value(value, &number, &detail)) return false;
+  const auto converted = std::to_chars(buffer->data(), buffer->data() + buffer->size(), number);
+  if (converted.ec != std::errc{}) return false;
+  *size = static_cast<std::size_t>(converted.ptr - buffer->data());
+  return true;
+}
+
 bool RenderAggregateScalarPayload(const EngineTypedValue& value,
                                   std::string* rendered) {
   if (rendered == nullptr) return false;
   const auto& type = value.descriptor.canonical_type_name;
+  if (type == "int64") {
+    std::array<char, 20> buffer;
+    std::size_t size = 0;
+    if (!FormatAggregateInt64Payload(value, &buffer, &size)) return false;
+    rendered->assign(buffer.data(), size);
+    return true;
+  }
   const bool binary_backed =
       type == "binary" || type == "blob" || type == "bytes" ||
       (value.encoded_value.empty() && !value.binary_value.empty());
@@ -1031,10 +1051,12 @@ std::string FormatAggregateReal(const long double value) {
 
 bool CompareAggregateValues(const EngineTypedValue& left,
                             const EngineTypedValue& right,
+                            std::uint32_t expression_descriptor_id,
                             int* comparison,
                             std::string* detail) {
   if (comparison == nullptr || detail == nullptr) return false;
   CanonicalDescriptorOrderTerm term;
+  term.expression_descriptor_id = expression_descriptor_id;
   const auto compared = CompareCanonicalDescriptorOrderValues(left, right,
                                                                term);
   if (!compared.diagnostic.ok) {
@@ -1271,7 +1293,7 @@ bool TransitionCanonicalAggregateCore(
       }
       int comparison = 0;
       std::string detail;
-      if (!CompareAggregateValues(value, *state->extremum, &comparison,
+      if (!CompareAggregateValues(value, *state->extremum, request.value_expression_descriptor_ids.front(), &comparison,
                                   &detail)) {
         *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-COMPARE-V1",
                               std::move(detail));
@@ -1649,7 +1671,7 @@ bool MergeCanonicalAggregateCore(
   }
   int comparison = 0;
   std::string detail;
-  if (!CompareAggregateValues(*source.extremum, *target->extremum,
+  if (!CompareAggregateValues(*source.extremum, *target->extremum, request.value_expression_descriptor_ids.front(),
                               &comparison, &detail)) {
     *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-COMPARE-V1",
                           std::move(detail));
@@ -1736,6 +1758,13 @@ bool ValidateCanonicalAggregateResultType(
     const CanonicalAggregateRuntimeRequest& request,
     const DescriptorBatch& input_batch,
     DescriptorRuntimeDiagnostic* diagnostic) {
+  if (request.result_column.descriptor.canonical_type_name == "int64") {
+    const auto admission = detail::ValidateAggregateInt64ResultDescriptor(request.result_column);
+    if (!admission.ok) {
+      *diagnostic = admission;
+      return false;
+    }
+  }
   const auto function = request.descriptor.function;
   const bool fixed_int64_result =
       function == CanonicalAggregateFunction::count ||
@@ -1971,12 +2000,12 @@ bool ValidateCanonicalAggregateInputType(
     const auto& type =
         input_batch.columns[request.value_columns.front()]
             .descriptor.canonical_type_name;
-    if (type == "text" || type == "varchar" || type == "char") {
+    if (type == "text" || type == "varchar" || type == "char" || type == "int64") {
       return true;
     }
     *diagnostic = Refusal(
         "QOW-DIAG-QRY-011-REGISTRY-TYPE-V1",
-        "APPROX_TOP_K requires a canonical text input descriptor");
+        "APPROX_TOP_K requires a canonical text or INT64 input descriptor");
     return false;
   }
   const auto& type = input_batch
@@ -2054,6 +2083,10 @@ bool AggregateScalarRenderedSize(const EngineTypedValue& value,
                                  std::size_t* size) {
   if (size == nullptr) return false;
   const auto& type = value.descriptor.canonical_type_name;
+  if (type == "int64") {
+    std::array<char, 20> buffer;
+    return FormatAggregateInt64Payload(value, &buffer, size);
+  }
   const bool binary_backed =
       type == "binary" || type == "blob" || type == "bytes" ||
       (value.encoded_value.empty() && !value.binary_value.empty());
@@ -2083,6 +2116,12 @@ bool AggregateScalarJsonEscapedSize(const EngineTypedValue& value,
                                     std::size_t* escaped_bytes) {
   if (scalar_bytes == nullptr || escaped_bytes == nullptr) return false;
   const auto& type = value.descriptor.canonical_type_name;
+  if (type == "int64") {
+    std::array<char, 20> buffer;
+    if (!FormatAggregateInt64Payload(value, &buffer, scalar_bytes)) return false;
+    *escaped_bytes = *scalar_bytes + 2;  // decimal sign/digits need no escaping
+    return true;
+  }
   const bool binary_backed =
       type == "binary" || type == "blob" || type == "bytes" ||
       (value.encoded_value.empty() && !value.binary_value.empty());
@@ -2167,18 +2206,17 @@ bool PlanCanonicalAggregateFinalization(
   }
   if (function == CanonicalAggregateFunction::count ||
       function == CanonicalAggregateFunction::regr_count) {
-    plan->output_bytes =
-        AggregateDecimalDigitCount(state.non_null_count);
+    plan->output_bytes = 8;
     return true;
   }
   if (function == CanonicalAggregateFunction::approx_count_distinct) {
-    plan->output_bytes = AggregateDecimalDigitCount(
-        state.approximate_distinct_entries.size());
+    plan->output_bytes = 8;
     return true;
   }
   if (IsCanonicalHypotheticalSetFunction(function) &&
       state.ordered_numeric_values.empty()) {
-    plan->output_bytes = 1;
+    plan->output_bytes = function == CanonicalAggregateFunction::rank ||
+                         function == CanonicalAggregateFunction::dense_rank ? 8 : 1;
     return true;
   }
   if (function == CanonicalAggregateFunction::array_agg &&
@@ -2285,7 +2323,8 @@ bool PlanCanonicalAggregateFinalization(
   }
   if (IsCanonicalHypotheticalSetFunction(function) ||
       IsCanonicalQuantileFunction(function)) {
-    plan->output_bytes = 64;
+    plan->output_bytes = function == CanonicalAggregateFunction::rank ||
+                         function == CanonicalAggregateFunction::dense_rank ? 8 : 64;
     if (!CheckedAggregateFinalizationMultiply(
             state.ordered_numeric_values.size(), sizeof(long double),
             &plan->peak_workspace_bytes)) {
@@ -2387,6 +2426,7 @@ bool PlanCanonicalAggregateFinalization(
     return true;
   }
   plan->output_bytes =
+      function == CanonicalAggregateFunction::sum && IsType(request.result_column, "int64") ? 8 :
       function == CanonicalAggregateFunction::bool_and ||
               function == CanonicalAggregateFunction::bool_or ||
               function == CanonicalAggregateFunction::every
@@ -2408,8 +2448,8 @@ EngineTypedValue FinalizeCanonicalAggregateCoreUnchecked(
                             "COUNT exceeds int64 result profile");
       return {};
     }
-    return AggregateValue(request.result_column,
-                          std::to_string(state.non_null_count));
+    return EncodeInt64Value(static_cast<std::int64_t>(state.non_null_count),
+                            request.result_column.descriptor);
   }
   if (function == CanonicalAggregateFunction::array_agg &&
       request.result_column.descriptor.canonical_type_name == "list<text nullable>") {
@@ -2663,7 +2703,7 @@ EngineTypedValue FinalizeCanonicalAggregateCoreUnchecked(
                               "hypothetical RANK exceeds int64");
         return {};
       }
-      return AggregateValue(request.result_column, std::to_string(less + 1));
+      return EncodeInt64Value(static_cast<std::int64_t>(less + 1), request.result_column.descriptor);
     }
     if (function == CanonicalAggregateFunction::dense_rank) {
       values.erase(std::unique(values.begin(), values.end()), values.end());
@@ -2676,8 +2716,8 @@ EngineTypedValue FinalizeCanonicalAggregateCoreUnchecked(
                               "hypothetical DENSE_RANK exceeds int64");
         return {};
       }
-      return AggregateValue(request.result_column,
-                            std::to_string(distinct_less + 1));
+      return EncodeInt64Value(static_cast<std::int64_t>(distinct_less + 1),
+                              request.result_column.descriptor);
     }
     long double result_value = 0.0L;
     if (function == CanonicalAggregateFunction::percent_rank) {
@@ -2736,9 +2776,8 @@ EngineTypedValue FinalizeCanonicalAggregateCoreUnchecked(
                             "approximate distinct count exceeds int64");
       return {};
     }
-    return AggregateValue(
-        request.result_column,
-        std::to_string(state.approximate_distinct_entries.size()));
+    return EncodeInt64Value(static_cast<std::int64_t>(state.approximate_distinct_entries.size()),
+                            request.result_column.descriptor);
   }
   if (function == CanonicalAggregateFunction::mode) {
     if (state.frequency_values.empty()) return AggregateNull(request.result_column);
@@ -2793,8 +2832,8 @@ EngineTypedValue FinalizeCanonicalAggregateCoreUnchecked(
                             "REGR_COUNT exceeds int64 result profile");
       return {};
     }
-    return AggregateValue(request.result_column,
-                          std::to_string(state.non_null_count));
+    return EncodeInt64Value(static_cast<std::int64_t>(state.non_null_count),
+                            request.result_column.descriptor);
   }
   if (state.non_null_count == 0) return AggregateNull(request.result_column);
   if (function == CanonicalAggregateFunction::sum) {
@@ -2807,9 +2846,8 @@ EngineTypedValue FinalizeCanonicalAggregateCoreUnchecked(
                               "SUM exceeds int64 result width");
         return {};
       }
-      return AggregateValue(
-          request.result_column,
-          std::to_string(static_cast<std::int64_t>(state.int64_sum)));
+      return EncodeInt64Value(static_cast<std::int64_t>(state.int64_sum),
+                              request.result_column.descriptor);
     }
     if (!std::isfinite(static_cast<double>(state.real_sum))) {
       *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-OVERFLOW-V1",
@@ -4641,6 +4679,38 @@ bool IsCanonicalAggregateStateSpillUuid(const internal_api::EngineUuid& value) {
 
 }  // namespace
 
+DescriptorRuntimeDiagnostic detail::ValidateAggregateInt64ResultDescriptor(
+    const ExecutorColumnDescriptor& column) {
+  try {
+    // Validate the supplied binding independently of cardinality, including NULL
+    // results. This probe is never published and confers no execution authority.
+    const auto probe = EncodeInt64Value(0, column.descriptor);
+    std::int64_t decoded = 0;
+    std::string reason;
+    if (!DecodeBoundInt64Value(probe, &decoded, &reason))
+      return Refusal("DATATYPE.DESCRIPTOR.INVALID", reason);
+    internal_api::CatalogColumnMetadata fields;
+    if (!internal_api::AdmitCatalogColumnMetadata(
+            column.descriptor.encoded_descriptor, &fields)) {
+      return Refusal("DATATYPE.DESCRIPTOR.INVALID",
+                     "aggregate result metadata is invalid");
+    }
+    const auto nullable = fields.text.find("nullability");
+    const auto legacy = fields.text.find("nullable");
+    const bool allows_null = nullable != fields.text.end()
+        ? nullable->second == "nullable"
+        : legacy != fields.text.end() && legacy->second == "true";
+    if (column.nullable != allows_null) {
+      return Refusal("DATATYPE.DESCRIPTOR.INVALID",
+                     "aggregate result column and datatype nullability disagree");
+    }
+    return {};
+  } catch (const std::bad_alloc&) {
+    return Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                   "aggregate result admission allocation failed");
+  }
+}
+
 DescriptorRuntimeDiagnostic BindCanonicalAggregateEqualityAuthorityProfile(
     CanonicalAggregateRuntimeRequest* request,
     const DescriptorBatch& input_batch) {
@@ -4738,6 +4808,8 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStarBound(
     return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
                           "COUNT(*) output descriptor is not bound int64"));
   }
+  const auto result_binding = detail::ValidateAggregateInt64ResultDescriptor(execution_count_column);
+  if (!result_binding.ok) return refuse(result_binding);
   auto input_validation = ValidateCanonicalDescriptorBatch(
       execution_input_batch, input_node->output_descriptor_ids);
   if (!input_validation.ok) return refuse(std::move(input_validation));
@@ -4761,16 +4833,7 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStarBound(
   const auto node_memory_grant =
       AggregateNodeMemoryGrant(execution_dag, *selected_node);
   std::size_t input_payload_bytes = 0;
-  std::size_t output_payload_bytes = 1;
-  auto remaining_count = input_cardinality;
-  do {
-    if (!CheckedAggregateFinalizationAdd(&output_payload_bytes, 1)) {
-      return refuse(Refusal(
-          "SBLR.PLAN_TREE.RESOURCE_LIMIT",
-          "COUNT(*) output payload accounting overflowed"));
-    }
-    remaining_count /= 10;
-  } while (remaining_count != 0);
+  const std::size_t output_payload_bytes = 1 + 8;
   std::size_t peak_live_payload_bytes = 0;
   if (!node_memory_grant.has_value() ||
       !AggregateBatchPayloadBytes(execution_input_batch,
@@ -4788,10 +4851,8 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStarBound(
         "grant"));
   }
 
-  EngineTypedValue count_value;
-  count_value.descriptor = execution_count_column.descriptor;
-  count_value.encoded_value = std::to_string(input_cardinality);
-  count_value.state = EngineValueState::value;
+  auto count_value = EncodeInt64Value(static_cast<std::int64_t>(input_cardinality),
+                                      execution_count_column.descriptor);
   result.output_batch.columns.reserve(1);
   result.output_batch.columns.push_back(execution_count_column);
   result.output_batch.rows.resize(1);

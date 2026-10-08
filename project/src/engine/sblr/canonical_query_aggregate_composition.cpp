@@ -16,6 +16,7 @@
 #include "canonical_query_runtime_memory_support.hpp"
 #include "canonical_query_scalar_support.hpp"
 #include "canonical_relational_expression.hpp"
+#include "engine/executor/native_int64_payload.hpp"
 
 #include <algorithm>
 #include <array>
@@ -615,15 +616,17 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
             return step;
           }
           for (const auto& metadata : aggregate_result.groups) {
+            std::uint64_t indicator_bytes = 0;
             if (metadata.grouping_id >
                     static_cast<std::uint64_t>(
                         std::numeric_limits<std::int64_t>::max()) ||
+                !CheckedMultiply(prepared_root.key_terms.size(), 8, &indicator_bytes) ||
                 !CheckedAdd(expected_output_memory_bytes,
-                            prepared_root.key_terms.size(),
+                            indicator_bytes,
                             &expected_output_memory_bytes) ||
                 !CheckedAdd(
                     expected_output_memory_bytes,
-                    CanonicalUnsignedDecimalWidth(metadata.grouping_id),
+                    8,
                     &expected_output_memory_bytes)) {
               step.diagnostic.ok = false;
               step.diagnostic.diagnostic_code =
@@ -661,21 +664,14 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
             const auto& metadata = aggregate_result.groups[group_ordinal];
             for (std::size_t key_ordinal = 0;
                  key_ordinal < prepared_root.key_terms.size(); ++key_ordinal) {
-              api::EngineTypedValue indicator;
-              indicator.descriptor =
-                  prepared_root.grouping_projection_columns[key_ordinal]
-                      .descriptor;
-              indicator.encoded_value =
-                  metadata.grouping_indicators[key_ordinal] ? "1" : "0";
-              indicator.state = api::EngineValueState::value;
+              auto indicator = exec::EncodeInt64Value(
+                  metadata.grouping_indicators[key_ordinal] ? 1 : 0,
+                  prepared_root.grouping_projection_columns[key_ordinal].descriptor);
               output_row.values.push_back(std::move(indicator));
             }
-            api::EngineTypedValue grouping_id;
-            grouping_id.descriptor =
-                prepared_root.grouping_projection_columns.back().descriptor;
-            grouping_id.encoded_value =
-                std::to_string(metadata.grouping_id);
-            grouping_id.state = api::EngineValueState::value;
+            auto grouping_id = exec::EncodeInt64Value(
+                static_cast<std::int64_t>(metadata.grouping_id),
+                prepared_root.grouping_projection_columns.back().descriptor);
             output_row.values.push_back(std::move(grouping_id));
           }
           const auto projected_validation =

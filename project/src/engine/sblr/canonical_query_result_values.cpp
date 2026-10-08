@@ -189,7 +189,7 @@ bool PreserveCanonicalQueryResultValuesV1(
   if (!diagnostic_code || !detail) return false;
   diagnostic_code->clear();
   detail->clear();
-  const auto refuse = [&](const char* why, const char* code = "DATATYPE.DESCRIPTOR.INVALID") {
+  const auto refuse = [&](const std::string& why, const char* code = "DATATYPE.DESCRIPTOR.INVALID") {
     *diagnostic_code = code;
     *detail = why;
     return false;
@@ -295,7 +295,10 @@ bool PreserveCanonicalQueryResultValuesV1(
                value.encoded_value.size() > maximum_payload))
             return refuse("query cell cannot fit the live packet ceiling", "RESOURCE.BUDGET_EXCEEDED");
           if (!MaterializePayload(value, column, maximum_payload, &cell.canonical_payload))
-            return refuse("query execution value is not canonical for its exact datatype codec");
+            return refuse("query execution value is not canonical for its exact datatype codec;column=" +
+                          std::to_string(i) + ";type=" + value.descriptor.canonical_type_name +
+                          ";encoded_bytes=" + std::to_string(value.encoded_value.size()) +
+                          ";binary_bytes=" + std::to_string(value.binary_value.size()));
         }
         row_bytes += 52 + cell.canonical_payload.size();
         typed_row.cells.push_back(std::move(cell));

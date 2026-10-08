@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "descriptor_value_runtime.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/native_int64_fixture.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -30,11 +32,8 @@ bool Require(const bool condition, const std::string_view detail) {
   return condition;
 }
 
-std::string ContextUuid(const unsigned value) {
-  char buffer[37]{};
-  std::snprintf(buffer, sizeof(buffer),
-                "019f0000-0000-7620-8000-%012u", value);
-  return buffer;
+api::EngineUuid ContextUuid(const unsigned value) {
+  return scratchbird::tests::FixtureUuid(7620, value);
 }
 
 exec::CanonicalExecutionMgaAuthority ClosureAuthority(
@@ -134,10 +133,10 @@ template <typename Result>
 bool AtomicStatementContextRefusal(const Result& result) {
   return !result.diagnostic.ok && result.output_batch.rows.empty() &&
          result.output_batch.columns.empty() &&
-         result.selected_plan_uuid.empty() &&
+         result.selected_plan_uuid.is_nil() &&
          result.executed_physical_node_id == 0 &&
          result.causal_counter_id == 0 &&
-         result.mga_statement_context.statement_uuid.empty();
+         result.mga_statement_context.statement_uuid.is_nil();
 }
 
 template <typename Request, typename Execute>
@@ -201,12 +200,12 @@ bool ValidateStatementContextMatrix(Request base, Execute execute) {
   mutate_carried(
       [](auto& context) { context = exec::PhysicalMgaStatementContext{}; },
       true, "missing carried context produced aggregate rows");
-  mutate_carried([](auto& context) { context.statement_uuid = "malformed"; },
+  mutate_carried([](auto& context) { context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-4620-0000-000000000001"); },
                  true, "malformed statement UUID produced aggregate rows");
   mutate_carried(
       [](auto& context) {
         context.statement_metadata_snapshot_uuid =
-            "00000000-0000-0000-0000-000000000000";
+            scratchbird::tests::FixtureUuidLiteral("00000000-0000-0000-0000-000000000000");
       },
       true, "nil metadata snapshot UUID produced aggregate rows");
   mutate_carried(
@@ -265,26 +264,21 @@ bool ValidateStatementContextMatrix(Request base, Execute execute) {
   return passed;
 }
 
-api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
+api::EngineDescriptor Descriptor(const api::EngineUuid& descriptor_uuid,
                                  const std::string& type_name,
-                                 const std::string& type_uuid,
                                  const std::string& nullability) {
-  api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = descriptor_uuid;
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = type_name;
-  descriptor.encoded_descriptor =
-      "type_uuid=" + type_uuid + ";nullability=" + nullability;
-  return descriptor;
+  return scratchbird::tests::ExactScalarDescriptorFixture(
+      scratchbird::core::datatypes::CanonicalTypeIdFromStableName(type_name), type_name,
+      descriptor_uuid, "nullability=" + nullability);
 }
 
 exec::CanonicalDescriptorCountRequest Request() {
   const auto input_descriptor = Descriptor(
-      "019f0000-0000-7200-8000-000000007301", "decimal",
-      "019f0000-0000-7300-8000-000000007302", "nullable");
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007301"), "decimal",
+      "nullable");
   const auto count_descriptor = Descriptor(
-      "019f0000-0000-7200-8000-000000007303", "int64",
-      "019f0000-0000-7300-8000-000000007304", "non_null");
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007303"), "int64",
+      "non_null");
   api::EngineTypedValue value;
   value.descriptor = input_descriptor;
   value.encoded_value = "3.00";
@@ -295,27 +289,27 @@ exec::CanonicalDescriptorCountRequest Request() {
 
   exec::CanonicalDescriptorCountRequest request;
   request.physical_dag.selected_plan_uuid =
-      "019f0000-0000-7200-8000-000000007305";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007305");
   request.physical_dag.root_physical_node_id = 732;
   request.physical_dag.local_transaction_id = 733;
   request.physical_dag.statement_snapshot_id = 734;
   request.physical_dag.admission_evidence = {
       {exec::PhysicalAdmissionStage::kBoundRequest,
-       "019f0000-0000-7200-8000-000000007311"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007311")},
       {exec::PhysicalAdmissionStage::kCatalogEpoch,
-       "019f0000-0000-7200-8000-000000007312"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007312")},
       {exec::PhysicalAdmissionStage::kSecurity,
-       "019f0000-0000-7200-8000-000000007313"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007313")},
       {exec::PhysicalAdmissionStage::kMgaStatementBoundary,
-       "019f0000-0000-7200-8000-000000007314"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007314")},
       {exec::PhysicalAdmissionStage::kPolicyCapability,
-       "019f0000-0000-7200-8000-000000007315"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007315")},
       {exec::PhysicalAdmissionStage::kResource,
-       "019f0000-0000-7200-8000-000000007316"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007316")},
       {exec::PhysicalAdmissionStage::kStatisticsProvenance,
-       "019f0000-0000-7200-8000-000000007317"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007317")},
       {exec::PhysicalAdmissionStage::kCanonicalRoute,
-       "019f0000-0000-7200-8000-000000007318"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007318")},
   };
   request.physical_dag.nodes = {
       {.physical_node_id = 731,
@@ -355,8 +349,7 @@ bool ValidatePhysicalCountStar() {
                             Request().physical_dag.mga_statement_context),
                     "typed physical aggregate node was not executable");
   passed &= Require(result.output_batch.rows.size() == 1 &&
-                        result.output_batch.rows[0].values[0].encoded_value ==
-                            "3" &&
+                        scratchbird::tests::NativeInt64Equals(result.output_batch.rows[0].values[0], 3) &&
                         result.output_batch.rows[0].values[0].state ==
                             api::EngineValueState::value,
                     "COUNT(*) did not count physical rows including NULL");
@@ -369,8 +362,7 @@ bool ValidatePhysicalCountStar() {
   result = exec::ExecuteCanonicalDescriptorCountStar(request);
   passed &= Require(result.diagnostic.ok &&
                         result.output_batch.rows.size() == 1 &&
-                        result.output_batch.rows[0].values[0].encoded_value ==
-                            "0" &&
+                        scratchbird::tests::NativeInt64Equals(result.output_batch.rows[0].values[0], 0) &&
                         exec::PhysicalMgaStatementContextEqual(
                             result.mga_statement_context,
                             request.physical_dag.mga_statement_context),

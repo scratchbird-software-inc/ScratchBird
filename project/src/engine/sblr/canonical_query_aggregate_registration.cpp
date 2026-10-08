@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "canonical_query_aggregate_registration.hpp"
+#include "engine/executor/native_int64_payload.hpp"
 
 #include "canonical_query_descriptor_support.hpp"
 #include "canonical_query_physical_registration.hpp"
@@ -1284,15 +1285,17 @@ MakeLiveGroupedCountSumRegistration(
             return step;
           }
           for (const auto& metadata : grouped.groups) {
+            std::uint64_t indicator_bytes = 0;
             if (metadata.grouping_id >
                     static_cast<std::uint64_t>(
                         std::numeric_limits<std::int64_t>::max()) ||
+                !CheckedMultiply(prepared.key_terms.size(), 8, &indicator_bytes) ||
                 !CheckedAdd(expected_output_memory_bytes,
-                            prepared.key_terms.size(),
+                            indicator_bytes,
                             &expected_output_memory_bytes) ||
                 !CheckedAdd(
                     expected_output_memory_bytes,
-                    CanonicalUnsignedDecimalWidth(metadata.grouping_id),
+                    8,
                     &expected_output_memory_bytes)) {
               step.diagnostic.ok = false;
               step.diagnostic.diagnostic_code =
@@ -1328,21 +1331,14 @@ MakeLiveGroupedCountSumRegistration(
             const auto& metadata = grouped.groups[group_ordinal];
             for (std::size_t key_ordinal = 0;
                  key_ordinal < prepared.key_terms.size(); ++key_ordinal) {
-              api::EngineTypedValue indicator;
-              indicator.descriptor =
-                  prepared.grouping_projection_columns[key_ordinal]
-                      .descriptor;
-              indicator.encoded_value =
-                  metadata.grouping_indicators[key_ordinal] ? "1" : "0";
-              indicator.state = api::EngineValueState::value;
+              auto indicator = exec::EncodeInt64Value(
+                  metadata.grouping_indicators[key_ordinal] ? 1 : 0,
+                  prepared.grouping_projection_columns[key_ordinal].descriptor);
               output_row.values.push_back(std::move(indicator));
             }
-            api::EngineTypedValue grouping_id;
-            grouping_id.descriptor =
-                prepared.grouping_projection_columns.back().descriptor;
-            grouping_id.encoded_value =
-                std::to_string(metadata.grouping_id);
-            grouping_id.state = api::EngineValueState::value;
+            auto grouping_id = exec::EncodeInt64Value(
+                static_cast<std::int64_t>(metadata.grouping_id),
+                prepared.grouping_projection_columns.back().descriptor);
             output_row.values.push_back(std::move(grouping_id));
           }
           const auto projected = exec::ValidateCanonicalDescriptorBatch(

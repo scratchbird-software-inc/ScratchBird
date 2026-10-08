@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "descriptor_value_runtime.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/native_int64_fixture.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -38,12 +40,12 @@ bool Require(const bool condition, const std::string_view detail) {
 }
 
 exec::PhysicalMgaStatementContext StatementContext(
-    const std::string& statement_snapshot_uuid) {
+    const api::EngineUuid& statement_snapshot_uuid) {
   return {
-      "019f0000-0000-7200-8000-00000000f801",
-      "019f0000-0000-7200-8000-00000000f802",
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-00000000f801"),
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-00000000f802"),
       statement_snapshot_uuid,
-      "019f0000-0000-7200-8000-00000000f803",
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-00000000f803"),
       kOwnerLocalTransactionId,
       0,
       kOldestActiveLocalTransactionId,
@@ -95,12 +97,12 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
   SetStatementContext(dag, context);
   for (auto& node : dag->nodes) {
     node.selected_alternative_uuid =
-        "019f0000-0000-7200-8000-00000000f804";
+        scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-00000000f804");
     node.executor_capability_uuid =
-        "019f0000-0000-7200-8000-00000000f805";
+        scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-00000000f805");
     node.executor_capability_abi_version = 1;
     node.cost_vector_uuid =
-        "019f0000-0000-7200-8000-00000000f806";
+        scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-00000000f806");
     node.memory_bytes_required = 1;
     node.engine_capability_validated = true;
   }
@@ -115,24 +117,16 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
   return authority;
 }
 
-api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
-                                 const std::string& type_uuid) {
-  api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = descriptor_uuid;
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = "int64";
-  descriptor.encoded_descriptor =
-      "type_uuid=" + type_uuid + ";nullability=nullable";
-  return descriptor;
+api::EngineDescriptor Descriptor(const api::EngineUuid& descriptor_uuid) {
+  return scratchbird::tests::ExactScalarDescriptorFixture(
+      scratchbird::core::datatypes::CanonicalTypeId::int64, "int64",
+      descriptor_uuid,
+      "nullability=nullable");
 }
 
 api::EngineTypedValue Value(const api::EngineDescriptor& descriptor,
                             const std::string& encoded) {
-  api::EngineTypedValue value;
-  value.descriptor = descriptor;
-  value.encoded_value = encoded;
-  value.state = api::EngineValueState::value;
-  return value;
+  return scratchbird::tests::NativeInt64Fixture(descriptor, encoded);
 }
 
 api::EngineTypedValue Null(const api::EngineDescriptor& descriptor) {
@@ -145,37 +139,34 @@ api::EngineTypedValue Null(const api::EngineDescriptor& descriptor) {
 
 exec::CanonicalInt64SumOrderedRequest Request() {
   const auto value_descriptor = Descriptor(
-      "019f0000-0000-7200-8000-000000001701",
-      "019f0000-0000-7300-8000-000000001702");
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000001701"));
   const auto order_descriptor = Descriptor(
-      "019f0000-0000-7200-8000-000000001703",
-      "019f0000-0000-7300-8000-000000001704");
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000001703"));
   const auto result_descriptor = Descriptor(
-      "019f0000-0000-7200-8000-000000001705",
-      "019f0000-0000-7300-8000-000000001706");
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000001705"));
 
   exec::CanonicalInt64SumOrderedRequest request;
   auto& aggregate = request.aggregate_request;
   aggregate.physical_dag.selected_plan_uuid =
-      "019f0000-0000-7200-8000-000000001707";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000001707");
   aggregate.physical_dag.root_physical_node_id = 1703;
   aggregate.physical_dag.admission_evidence = {
       {exec::PhysicalAdmissionStage::kBoundRequest,
-       "019f0000-0000-7200-8000-000000001711"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000001711")},
       {exec::PhysicalAdmissionStage::kCatalogEpoch,
-       "019f0000-0000-7200-8000-000000001712"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000001712")},
       {exec::PhysicalAdmissionStage::kSecurity,
-       "019f0000-0000-7200-8000-000000001713"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000001713")},
       {exec::PhysicalAdmissionStage::kMgaStatementBoundary,
-       "019f0000-0000-7200-8000-000000001714"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000001714")},
       {exec::PhysicalAdmissionStage::kPolicyCapability,
-       "019f0000-0000-7200-8000-000000001715"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000001715")},
       {exec::PhysicalAdmissionStage::kResource,
-       "019f0000-0000-7200-8000-000000001716"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000001716")},
       {exec::PhysicalAdmissionStage::kStatisticsProvenance,
-       "019f0000-0000-7200-8000-000000001717"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000001717")},
       {exec::PhysicalAdmissionStage::kCanonicalRoute,
-       "019f0000-0000-7200-8000-000000001718"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000001718")},
   };
   aggregate.physical_dag.nodes = {
       {.physical_node_id = 1702,
@@ -206,7 +197,7 @@ exec::CanonicalInt64SumOrderedRequest Request() {
   request.order_column = 1;
   request.order_expression_descriptor_id = 1702;
   request.deterministic_tie_evidence_uuid =
-      "019f0000-0000-7200-8000-000000001719";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000001719");
   aggregate.mga_authority = BindPhysicalAbiV2(&aggregate.physical_dag);
   return request;
 }
@@ -278,7 +269,7 @@ bool ValidateAggregateOrderedArguments() {
                     "unbound ordered-argument direction was accepted");
 
   request = Request();
-  request.deterministic_tie_evidence_uuid.clear();
+  request.deterministic_tie_evidence_uuid = {};
   result = exec::ExecuteCanonicalInt64SumOrdered(request);
   passed &= Require(!result.diagnostic.ok,
                     "missing ordered-argument tie evidence was accepted");
