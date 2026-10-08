@@ -7,6 +7,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "index_optimizer_runtime_metrics.hpp"
+#include "metric_bound_definition.hpp"
+#include "uuid.hpp"
+#include <cmath>
 
 #include <utility>
 
@@ -22,12 +25,12 @@ using metrics::MetricType;
 using metrics::MetricUnit;
 using metrics::MetricValidationResult;
 
-MetricDescriptor Descriptor(std::string family,
+metrics::MetricDescriptorDefinition Descriptor(std::string family,
                             MetricType type,
                             MetricUnit unit,
                             std::string producer_owner,
                             std::string help) {
-  MetricDescriptor descriptor;
+  metrics::MetricDescriptorDefinition descriptor;
   descriptor.family = std::move(family);
   descriptor.type = type;
   descriptor.unit = unit;
@@ -35,8 +38,10 @@ MetricDescriptor Descriptor(std::string family,
   descriptor.help = std::move(help);
   descriptor.producer_owner = std::move(producer_owner);
   descriptor.security_family = "OPTIMIZER_METRICS";
-  descriptor.readiness = MetricReadiness::implemented;
-  descriptor.labels = {MetricLabelDescriptor{"scope_uuid", true, false},
+  descriptor.value_type = unit == MetricUnit::ratio ? metrics::MetricScalarType::float64 : metrics::MetricScalarType::uint64;
+  descriptor.labels = {MetricLabelDescriptor{"scope_uuid", true, false, metrics::MetricLabelType::system_uuid},
+                       MetricLabelDescriptor{"index_uuid", false, false, metrics::MetricLabelType::system_uuid},
+                       MetricLabelDescriptor{"index_generation", false, false},
                        MetricLabelDescriptor{"route_label", true, false},
                        MetricLabelDescriptor{"plan_node_id", false, false},
                        MetricLabelDescriptor{"metric_family", true, false},
@@ -44,15 +49,6 @@ MetricDescriptor Descriptor(std::string family,
                        MetricLabelDescriptor{"source_generation", true, false},
                        MetricLabelDescriptor{"evidence_digest", true, true}};
   return descriptor;
-}
-
-MetricValidationResult RegisterIfMissing(metrics::MetricRegistry* registry,
-                                         MetricDescriptor descriptor) {
-  auto& target = registry == nullptr ? metrics::DefaultMetricRegistry() : *registry;
-  if (target.FindDescriptor(descriptor.family) != nullptr) {
-    return metrics::MetricOk();
-  }
-  return target.RegisterDescriptor(std::move(descriptor));
 }
 
 bool UnsafeAuthority(const IndexOptimizerRuntimeMetricAuthority& authority) {
@@ -82,8 +78,8 @@ IndexOptimizerRuntimeMetricPublishResult Refuse(
   result.detail = std::move(detail);
   AddEvidence(&result, "OEIC_INDEX_FAMILY_OPTIMIZER_METRICS");
   AddEvidence(&result, "optimizer.index_metrics.fail_closed=true");
-  AddEvidence(&result, "optimizer.index_metrics.index_uuid=" +
-                           sample.index_uuid);
+  result.index_uuid = sample.index_uuid;
+  result.index_generation = sample.index_generation;
   AddEvidence(&result, "optimizer.index_metrics.index_family=" +
                            sample.index_family);
   AddEvidence(&result, "optimizer.index_metrics.refused=" +
@@ -93,7 +89,7 @@ IndexOptimizerRuntimeMetricPublishResult Refuse(
 
 bool EmptyRequiredField(const IndexOptimizerRuntimeMetricSample& sample,
                         std::string* field) {
-  if (sample.scope_uuid.empty()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(sample.scope_uuid)) {
     if (field != nullptr) *field = "scope_uuid";
     return true;
   }
@@ -101,7 +97,7 @@ bool EmptyRequiredField(const IndexOptimizerRuntimeMetricSample& sample,
     if (field != nullptr) *field = "route_label";
     return true;
   }
-  if (sample.index_uuid.empty()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(sample.index_uuid)) {
     if (field != nullptr) *field = "index_uuid";
     return true;
   }
@@ -109,8 +105,13 @@ bool EmptyRequiredField(const IndexOptimizerRuntimeMetricSample& sample,
     if (field != nullptr) *field = "index_family";
     return true;
   }
-  if (sample.index_generation.empty()) {
+  if (sample.index_generation == 0) {
     if (field != nullptr) *field = "index_generation";
+    return true;
+  }
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(sample.database_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(sample.node_uuid)) {
+    if (field != nullptr) *field = "observation_owner";
     return true;
   }
   if (sample.evidence_digest.empty()) {
@@ -121,7 +122,7 @@ bool EmptyRequiredField(const IndexOptimizerRuntimeMetricSample& sample,
 }
 
 bool RatioInvalid(const std::optional<double>& value) {
-  return value.has_value() && (*value < 0.0 || *value > 1.0);
+  return value.has_value() && (!std::isfinite(*value) || *value < 0.0 || *value > 1.0);
 }
 
 metrics::MetricLabelSet LabelsFor(
@@ -129,6 +130,8 @@ metrics::MetricLabelSet LabelsFor(
     std::string metric_family) {
   metrics::MetricLabelSet labels = {
       {"scope_uuid", sample.scope_uuid},
+      {"index_uuid", sample.index_uuid},
+      {"index_generation", std::to_string(sample.index_generation)},
       {"route_label", sample.route_label},
       {"metric_family", std::move(metric_family)},
       {"source_generation", std::to_string(sample.source_generation)},
@@ -157,7 +160,7 @@ void Gauge(IndexOptimizerRuntimeMetricPublishResult* result,
            const IndexOptimizerRuntimeMetricSample& sample,
            const std::string& family,
            const std::string& metric_family,
-           double value,
+           metrics::MetricScalar value,
            const std::string& producer_owner) {
   Push(result,
        metrics::DefaultMetricRegistry().SetGauge(
@@ -170,12 +173,9 @@ void Counter(IndexOptimizerRuntimeMetricPublishResult* result,
              const std::string& metric_family,
              std::uint64_t value,
              const std::string& producer_owner) {
-  if (value == 0) {
-    return;
-  }
   Push(result,
        metrics::DefaultMetricRegistry().IncrementCounter(
-           family, LabelsFor(sample, metric_family), static_cast<double>(value),
+           family, LabelsFor(sample, metric_family), value,
            producer_owner));
 }
 
@@ -186,9 +186,9 @@ bool Present(const std::optional<T>& value) {
 
 }  // namespace
 
-metrics::MetricValidationResult EnsureIndexOptimizerRuntimeMetricDescriptors(
-    metrics::MetricRegistry* registry) {
-  const MetricDescriptor descriptors[] = {
+const std::vector<metrics::MetricDescriptorDefinition>&
+IndexOptimizerRuntimeMetricDescriptorDefinitions() {
+  static const std::vector<metrics::MetricDescriptorDefinition> descriptors = {
       Descriptor("sb_optimizer_index_selectivity", MetricType::gauge,
                  MetricUnit::ratio, "index_runtime",
                  "Optimizer-visible index selectivity observation."),
@@ -246,8 +246,14 @@ metrics::MetricValidationResult EnsureIndexOptimizerRuntimeMetricDescriptors(
       Descriptor("sb_optimizer_document_path_selectivity", MetricType::gauge,
                  MetricUnit::ratio, "document_provider",
                  "Optimizer-visible document-path selectivity.")};
-  for (const auto& descriptor : descriptors) {
-    const auto result = RegisterIfMissing(registry, descriptor);
+  return descriptors;
+}
+
+metrics::MetricValidationResult EnsureIndexOptimizerRuntimeMetricDescriptors(
+    metrics::MetricRegistry* registry) {
+  for (const auto& descriptor : IndexOptimizerRuntimeMetricDescriptorDefinitions()) {
+    const auto result = metrics::ValidateBoundMetricDefinition(
+        registry ? *registry : metrics::DefaultMetricRegistry(), descriptor);
     if (!result.ok) {
       return result;
     }
@@ -342,8 +348,15 @@ IndexOptimizerRuntimeMetricPublishResult PublishIndexOptimizerRuntimeMetrics(
                   "optimizer.index_metrics.ratio_invalid");
   }
 
+  if (!metrics::DefaultMetricRegistry().ObservationOwnerMatches(sample.database_uuid, sample.node_uuid))
+    return Refuse(sample, "METRIC.OBSERVATION_SOURCE_UNAVAILABLE", "index sample does not match the bound observation owner");
+  const auto descriptors = EnsureIndexOptimizerRuntimeMetricDescriptors();
+  if (!descriptors.ok) return Refuse(sample, descriptors.diagnostic_code, descriptors.detail);
+
   IndexOptimizerRuntimeMetricPublishResult result;
   result.ok = true;
+  result.index_uuid = sample.index_uuid;
+  result.index_generation = sample.index_generation;
   result.diagnostic_code = "SB_OPTIMIZER_INDEX_METRICS.OK";
   AddEvidence(&result, "OEIC_INDEX_FAMILY_OPTIMIZER_METRICS");
   AddEvidence(&result, "optimizer.index_metrics.fail_closed=false");
@@ -355,7 +368,6 @@ IndexOptimizerRuntimeMetricPublishResult PublishIndexOptimizerRuntimeMetrics(
   AddEvidence(&result, "optimizer.index_metrics.wal_redo_authority=false");
   AddEvidence(&result, "optimizer.index_metrics.cluster_authority=false");
 
-  Push(&result, EnsureIndexOptimizerRuntimeMetricDescriptors());
   if (sample.index_selectivity) {
     Gauge(&result, sample, "sb_optimizer_index_selectivity",
           "index_selectivity", *sample.index_selectivity, "index_runtime");
@@ -373,7 +385,7 @@ IndexOptimizerRuntimeMetricPublishResult PublishIndexOptimizerRuntimeMetrics(
   if (sample.index_backlog_entries) {
     Gauge(&result, sample, "sb_optimizer_index_backlog_entries",
           "index_backlog_entries",
-          static_cast<double>(*sample.index_backlog_entries), "index_runtime");
+          *sample.index_backlog_entries, "index_runtime");
   }
   if (sample.btree_depth) {
     Gauge(&result, sample, "sb_optimizer_btree_depth", "btree_depth",

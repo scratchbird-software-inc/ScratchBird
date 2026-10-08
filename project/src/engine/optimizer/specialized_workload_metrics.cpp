@@ -7,7 +7,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "specialized_workload_metrics.hpp"
+#include "metric_bound_definition.hpp"
+#include "uuid.hpp"
 
+#include <cmath>
 #include <utility>
 
 namespace scratchbird::engine::optimizer {
@@ -22,12 +25,12 @@ using metrics::MetricType;
 using metrics::MetricUnit;
 using metrics::MetricValidationResult;
 
-MetricDescriptor Descriptor(std::string family,
+metrics::MetricDescriptorDefinition Descriptor(std::string family,
                             MetricType type,
                             MetricUnit unit,
                             std::string producer_owner,
                             std::string help) {
-  MetricDescriptor descriptor;
+  metrics::MetricDescriptorDefinition descriptor;
   descriptor.family = std::move(family);
   descriptor.type = type;
   descriptor.unit = unit;
@@ -35,8 +38,10 @@ MetricDescriptor Descriptor(std::string family,
   descriptor.help = std::move(help);
   descriptor.producer_owner = std::move(producer_owner);
   descriptor.security_family = "OPTIMIZER_METRICS";
-  descriptor.readiness = MetricReadiness::implemented;
-  descriptor.labels = {MetricLabelDescriptor{"scope_uuid", true, false},
+  descriptor.value_type = unit == MetricUnit::ratio ? metrics::MetricScalarType::float64 : metrics::MetricScalarType::uint64;
+  descriptor.labels = {MetricLabelDescriptor{"scope_uuid", true, false, metrics::MetricLabelType::system_uuid},
+                       MetricLabelDescriptor{"index_uuid", false, false, metrics::MetricLabelType::system_uuid},
+                       MetricLabelDescriptor{"index_generation", false, false},
                        MetricLabelDescriptor{"route_label", true, false},
                        MetricLabelDescriptor{"plan_node_id", false, false},
                        MetricLabelDescriptor{"metric_family", true, false},
@@ -44,15 +49,6 @@ MetricDescriptor Descriptor(std::string family,
                        MetricLabelDescriptor{"source_generation", true, false},
                        MetricLabelDescriptor{"evidence_digest", true, true}};
   return descriptor;
-}
-
-MetricValidationResult RegisterIfMissing(metrics::MetricRegistry* registry,
-                                         MetricDescriptor descriptor) {
-  auto& target = registry == nullptr ? metrics::DefaultMetricRegistry() : *registry;
-  if (target.FindDescriptor(descriptor.family) != nullptr) {
-    return metrics::MetricOk();
-  }
-  return target.RegisterDescriptor(std::move(descriptor));
 }
 
 bool UnsafeAuthority(const SpecializedWorkloadMetricAuthority& authority) {
@@ -78,6 +74,8 @@ SpecializedWorkloadMetricPublishResult Refuse(
     std::string detail) {
   SpecializedWorkloadMetricPublishResult result;
   result.ok = false;
+  result.scope_uuid = sample.scope_uuid;
+  result.index_generation = sample.index_generation;
   result.diagnostic_code = std::move(code);
   result.detail = std::move(detail);
   AddEvidence(&result, "OEIC_SPECIALIZED_WORKLOAD_OPTIMIZER_METRICS");
@@ -93,7 +91,7 @@ SpecializedWorkloadMetricPublishResult Refuse(
 
 bool EmptyRequiredField(const SpecializedWorkloadMetricSample& sample,
                         std::string* field) {
-  if (sample.scope_uuid.empty()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(sample.scope_uuid)) {
     if (field != nullptr) *field = "scope_uuid";
     return true;
   }
@@ -109,7 +107,7 @@ bool EmptyRequiredField(const SpecializedWorkloadMetricSample& sample,
     if (field != nullptr) *field = "provider_id";
     return true;
   }
-  if (sample.index_generation.empty()) {
+  if (sample.index_generation == 0) {
     if (field != nullptr) *field = "index_generation";
     return true;
   }
@@ -121,11 +119,16 @@ bool EmptyRequiredField(const SpecializedWorkloadMetricSample& sample,
     if (field != nullptr) *field = "evidence_digest";
     return true;
   }
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(sample.database_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(sample.node_uuid)) {
+    if (field != nullptr) *field = "observation_owner";
+    return true;
+  }
   return false;
 }
 
 bool RatioInvalid(const std::optional<double>& value) {
-  return value.has_value() && (*value < 0.0 || *value > 1.0);
+  return value.has_value() && (!std::isfinite(*value) || *value < 0.0 || *value > 1.0);
 }
 
 template <typename T>
@@ -137,6 +140,7 @@ metrics::MetricLabelSet LabelsFor(const SpecializedWorkloadMetricSample& sample,
                                   std::string metric_family) {
   metrics::MetricLabelSet labels = {
       {"scope_uuid", sample.scope_uuid},
+      {"index_generation", std::to_string(sample.index_generation)},
       {"route_label", sample.route_label},
       {"metric_family", std::move(metric_family)},
       {"source_generation", std::to_string(sample.source_generation)},
@@ -165,7 +169,7 @@ void Gauge(SpecializedWorkloadMetricPublishResult* result,
            const SpecializedWorkloadMetricSample& sample,
            const std::string& family,
            const std::string& metric_family,
-           double value,
+           metrics::MetricScalar value,
            const std::string& producer_owner) {
   Push(result,
        metrics::DefaultMetricRegistry().SetGauge(
@@ -178,20 +182,17 @@ void Counter(SpecializedWorkloadMetricPublishResult* result,
              const std::string& metric_family,
              std::uint64_t value,
              const std::string& producer_owner) {
-  if (value == 0) {
-    return;
-  }
   Push(result,
        metrics::DefaultMetricRegistry().IncrementCounter(
-           family, LabelsFor(sample, metric_family), static_cast<double>(value),
+           family, LabelsFor(sample, metric_family), value,
            producer_owner));
 }
 
 }  // namespace
 
-metrics::MetricValidationResult EnsureSpecializedWorkloadMetricDescriptors(
-    metrics::MetricRegistry* registry) {
-  const MetricDescriptor descriptors[] = {
+const std::vector<metrics::MetricDescriptorDefinition>&
+SpecializedWorkloadMetricDescriptorDefinitions() {
+  static const std::vector<metrics::MetricDescriptorDefinition> descriptors = {
       Descriptor("sb_optimizer_candidate_set_cardinality", MetricType::gauge,
                  MetricUnit::count, "candidate_set_runtime",
                  "Optimizer-visible specialized route candidate-set cardinality."),
@@ -234,8 +235,14 @@ metrics::MetricValidationResult EnsureSpecializedWorkloadMetricDescriptors(
       Descriptor("sb_optimizer_time_series_rollup_selectivity", MetricType::gauge,
                  MetricUnit::ratio, "time_series_runtime",
                  "Optimizer-visible time-series rollup selectivity.")};
-  for (const auto& descriptor : descriptors) {
-    const auto result = RegisterIfMissing(registry, descriptor);
+  return descriptors;
+}
+
+metrics::MetricValidationResult EnsureSpecializedWorkloadMetricDescriptors(
+    metrics::MetricRegistry* registry) {
+  for (const auto& descriptor : SpecializedWorkloadMetricDescriptorDefinitions()) {
+    const auto result = metrics::ValidateBoundMetricDefinition(
+        registry ? *registry : metrics::DefaultMetricRegistry(), descriptor);
     if (!result.ok) {
       return result;
     }
@@ -332,8 +339,15 @@ SpecializedWorkloadMetricPublishResult PublishSpecializedWorkloadMetrics(
                   "optimizer.specialized_metrics.ratio_invalid");
   }
 
+  if (!metrics::DefaultMetricRegistry().ObservationOwnerMatches(sample.database_uuid, sample.node_uuid))
+    return Refuse(sample, "METRIC.OBSERVATION_SOURCE_UNAVAILABLE", "specialized sample does not match the bound observation owner");
+  const auto descriptors = EnsureSpecializedWorkloadMetricDescriptors();
+  if (!descriptors.ok) return Refuse(sample, descriptors.diagnostic_code, descriptors.detail);
+
   SpecializedWorkloadMetricPublishResult result;
   result.ok = true;
+  result.scope_uuid = sample.scope_uuid;
+  result.index_generation = sample.index_generation;
   result.diagnostic_code = "SB_OPTIMIZER_SPECIALIZED_METRICS.OK";
   AddEvidence(&result, "OEIC_SPECIALIZED_WORKLOAD_OPTIMIZER_METRICS");
   AddEvidence(&result, "optimizer.specialized_metrics.fail_closed=false");
@@ -345,7 +359,6 @@ SpecializedWorkloadMetricPublishResult PublishSpecializedWorkloadMetrics(
   AddEvidence(&result, "optimizer.specialized_metrics.wal_redo_authority=false");
   AddEvidence(&result, "optimizer.specialized_metrics.cluster_authority=false");
 
-  Push(&result, EnsureSpecializedWorkloadMetricDescriptors());
   if (sample.candidate_set_cardinality) {
     Gauge(&result, sample, "sb_optimizer_candidate_set_cardinality",
           "candidate_set_cardinality", *sample.candidate_set_cardinality,

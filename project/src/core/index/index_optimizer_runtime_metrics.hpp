@@ -46,12 +46,14 @@ struct IndexOptimizerRuntimeMetricAuthority {
 };
 
 struct IndexOptimizerRuntimeMetricSample {
-  std::string scope_uuid;
+  scratchbird::core::metrics::MetricUuid scope_uuid;
+  scratchbird::core::metrics::MetricUuid database_uuid;
+  scratchbird::core::metrics::MetricUuid node_uuid;
   std::string route_label;
   std::string plan_node_id;
-  std::string index_uuid;
+  scratchbird::core::metrics::MetricUuid index_uuid;
   std::string index_family;
-  std::string index_generation;
+  std::uint64_t index_generation = 0;
   std::string evidence_digest;
   std::uint64_t source_generation = 0;
   std::uint64_t freshness_microseconds = 0;
@@ -61,20 +63,20 @@ struct IndexOptimizerRuntimeMetricSample {
   std::optional<double> index_false_positive_ratio;
   std::optional<std::uint64_t> index_recheck_count;
   std::optional<std::uint64_t> index_backlog_entries;
-  std::optional<double> btree_depth;
-  std::optional<double> btree_leaf_pages;
-  std::optional<double> hash_collision_depth;
-  std::optional<double> hash_overflow_depth;
+  std::optional<std::uint64_t> btree_depth;
+  std::optional<std::uint64_t> btree_leaf_pages;
+  std::optional<std::uint64_t> hash_collision_depth;
+  std::optional<std::uint64_t> hash_overflow_depth;
   std::optional<double> bitmap_density;
   std::optional<double> bloom_observed_fpr;
   std::optional<double> zone_prune_selectivity;
-  std::optional<double> text_posting_length;
+  std::optional<std::uint64_t> text_posting_length;
   std::optional<std::uint64_t> text_blockmax_skips;
   std::optional<double> vector_recall_observed;
-  std::optional<double> vector_rerank_count;
+  std::optional<std::uint64_t> vector_rerank_count;
   std::optional<double> vector_tombstone_ratio;
-  std::optional<double> graph_frontier_width;
-  std::optional<double> graph_adjacency_degree;
+  std::optional<std::uint64_t> graph_frontier_width;
+  std::optional<std::uint64_t> graph_adjacency_degree;
   std::optional<double> document_path_selectivity;
 
   IndexOptimizerRuntimeMetricAuthority authority;
@@ -85,9 +87,14 @@ struct IndexOptimizerRuntimeMetricPublishResult {
   std::string diagnostic_code;
   std::string detail;
   std::vector<std::string> evidence;
+  scratchbird::core::metrics::MetricUuid index_uuid;
+  std::uint64_t index_generation = 0;
   std::vector<scratchbird::core::metrics::MetricValidationResult>
       metric_results;
 };
+
+const std::vector<scratchbird::core::metrics::MetricDescriptorDefinition>&
+IndexOptimizerRuntimeMetricDescriptorDefinitions();
 
 scratchbird::core::metrics::MetricValidationResult
 EnsureIndexOptimizerRuntimeMetricDescriptors(
