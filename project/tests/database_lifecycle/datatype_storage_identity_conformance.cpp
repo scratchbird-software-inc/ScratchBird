@@ -6,6 +6,7 @@
 #include <limits>
 #include <new>
 #include <stdexcept>
+#include <source_location>
 #include <utility>
 
 namespace allocation_probe {
@@ -38,7 +39,9 @@ namespace dt = scratchbird::core::datatypes;
 namespace p = scratchbird::core::platform;
 
 int main() try {
-  auto require = [](bool ok) { if (!ok) throw std::runtime_error("storage binding oracle failed"); };
+  auto require = [](bool ok, const std::source_location where = std::source_location::current()) {
+    if (!ok) throw std::runtime_error("storage binding oracle failed at line " + std::to_string(where.line()));
+  };
   const p::Uuid int64_descriptor{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x11}};
   const p::Uuid int64_type{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x12}};
   const p::Uuid blob_descriptor{{0xf4,0x01,0,0,0x62,0x6c,0x7f,0x62,0x80,0,0,0,0,0,0,0}};
@@ -94,6 +97,50 @@ int main() try {
   // D704-D709 remain exact historical date storage identities. D710 is the
   // current policy-bearing V3 receipt for semantic publication.
   dt::DatatypeStorageIdentityV3 out_v3;
+  // Every predecessor retains its exact storage-only BLOB identity. No row
+  // acquires the D711 codec merely because the current catalog advanced.
+  const p::Uuid current_blob_descriptor{{0x01,0x6f,0xd1,0xd3,0x0d,0xaf,0x59,0x67,
+                                        0xb4,0xd7,0x07,0xfe,0x85,0x9a,0x41,0x8e}};
+  for (unsigned generation = 4; generation <= 10; ++generation) {
+    const p::Uuid snapshots[] = {dt::kDatatypeCohortV4, dt::kDatatypeCohortV5,
+        dt::kDatatypeCohortV6, dt::kDatatypeCohortV7, dt::kDatatypeCohortV8,
+        dt::kDatatypeCohortV9, dt::kDatatypeCohortV10};
+    const auto& snapshot = snapshots[generation - 4];
+    require(dt::LookupDatatypeStorageIdentityV3(snapshot, generation, generation,
+                                                blob_descriptor, 1, &out_v3));
+    require(out_v3.descriptor_uuid == blob_descriptor && out_v3.descriptor_generation == 1 &&
+            out_v3.type_uuid == blob_descriptor && out_v3.type_id == dt::CanonicalTypeId::blob &&
+            !out_v3.codec);
+    const auto unchanged = [&] {
+      require(out_v3.descriptor_uuid == blob_descriptor && out_v3.descriptor_generation == 1 &&
+              out_v3.type_uuid == blob_descriptor && out_v3.type_id == dt::CanonicalTypeId::blob &&
+              !out_v3.codec);
+    };
+    for (unsigned bit = 0; bit < 128; ++bit) {
+      auto changed = blob_descriptor;
+      changed.bytes[bit / 8] ^= static_cast<p::byte>(1u << (bit % 8));
+      require(!dt::LookupDatatypeStorageIdentityV3(snapshot, generation, generation,
+                                                   changed, 1, &out_v3));
+      unchanged();
+    }
+    require(!dt::LookupDatatypeStorageIdentityV3(snapshot, generation, generation,
+                                                 current_blob_descriptor, 1, &out_v3));
+    unchanged();
+    require(!dt::LookupDatatypeStorageIdentityV3(snapshot, generation, generation,
+                                                 blob_descriptor, 2, &out_v3));
+    unchanged();
+  }
+  require(!dt::LookupDatatypeStorageIdentityV3(dt::kDatatypeCohortV11,11,11,
+                                               blob_descriptor,1,&out_v3));
+  require(out_v3.descriptor_uuid == blob_descriptor && out_v3.descriptor_generation == 1 &&
+          out_v3.type_uuid == blob_descriptor && out_v3.type_id == dt::CanonicalTypeId::blob && !out_v3.codec);
+  const p::Uuid current_blob_type{{0x01,0xa1,0x09,0x5f,0xf2,0x05,0x7b,0x29,
+                                  0xb6,0x79,0x2a,0xb3,0x75,0x5b,0x37,0xd2}};
+  require(dt::LookupDatatypeStorageIdentityV3(dt::kDatatypeCohortV11,11,11,
+                                              current_blob_descriptor,1,&out_v3));
+  require(out_v3.descriptor_uuid == current_blob_descriptor && out_v3.descriptor_generation == 1 &&
+          out_v3.type_uuid == current_blob_type && out_v3.type_id == dt::CanonicalTypeId::blob &&
+          out_v3.codec && dt::IsExactCanonicalBlobTypeCodecIdentityV3(*out_v3.codec));
   for (unsigned generation = 4; generation <= 8; ++generation) {
     auto snapshot = dt::kDatatypeCohortV8;
     snapshot.bytes.back() = static_cast<p::byte>(generation);
