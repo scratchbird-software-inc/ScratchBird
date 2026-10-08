@@ -363,13 +363,15 @@ void NullAndAbsentPolicies() {
         "uint16 cannot cast to the standalone NULL sentinel");
 
   for (const auto& candidate : dt::BuiltinDatatypeDescriptors()) {
-    Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::uint16,
-                                   candidate.type_id) ==
-              dt::DatatypeCastCategory::forbidden &&
-              dt::ClassifyDatatypeCast(candidate.type_id,
-                                       dt::CanonicalTypeId::uint16) ==
-              dt::DatatypeCastCategory::forbidden,
-          "all registered present-value casts incident to uint16 refuse");
+    const auto outgoing = candidate.type_id == dt::CanonicalTypeId::real64
+        ? dt::DatatypeCastCategory::lossless_implicit : dt::DatatypeCastCategory::forbidden;
+    const auto incoming = candidate.type_id == dt::CanonicalTypeId::real64
+        ? dt::DatatypeCastCategory::lossy_explicit : dt::DatatypeCastCategory::forbidden;
+    for (bool compatibility : {false, true}) {
+      Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::uint16, candidate.type_id, compatibility) == outgoing &&
+            dt::ClassifyDatatypeCast(candidate.type_id, dt::CanonicalTypeId::uint16, compatibility) == incoming,
+            "uint16 cast matrix includes exact REAL64 widening and checked narrowing categories");
+    }
   }
   for (const auto context : {dt::DatatypeCastContext::implicit,
                              dt::DatatypeCastContext::assignment,

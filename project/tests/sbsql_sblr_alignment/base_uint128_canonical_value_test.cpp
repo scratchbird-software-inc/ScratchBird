@@ -719,16 +719,18 @@ void NumericAndCastAdapter() {
     real64_cast.target_descriptor = DescriptorFor(dt::CanonicalTypeId::real64);
     const auto real64_source_before = real64_cast.value.encoded_value;
     const auto real64_value = dt::CastDatatypeValue(real64_cast);
-    Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::uint128,
-                                   dt::CanonicalTypeId::real64) ==
-                  dt::DatatypeCastCategory::forbidden &&
-              !real64_value.ok() &&
-              real64_value.category == dt::DatatypeCastCategory::forbidden &&
-              real64_value.value.type_id == dt::CanonicalTypeId::unknown &&
-              real64_value.value.encoded_value.empty() &&
-              !real64_value.value.is_null &&
+    Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::uint128, dt::CanonicalTypeId::real64) ==
+              dt::DatatypeCastCategory::lossy_explicit &&
               real64_cast.value.encoded_value == real64_source_before,
-          "uint128 PRESENT-to-real64 cast refuses without publishing output");
+          "uint128 REAL64 conversion is checked and leaves source intact");
+    if(context == dt::DatatypeCastContext::implicit) {
+      Check(!real64_value.ok() && real64_value.value.encoded_value.empty(),
+            "potentially inexact REAL64 conversion is not implicit");
+    } else {
+      const std::string expected("\0\0\0\0\0\0\x45\x40",8);
+      Check(real64_value.ok() && real64_value.value.encoded_value==expected &&
+                !real64_value.numeric_facts.inexact, "42 converts to exact native binary64");
+    }
   }
 
   for (const auto context : {dt::DatatypeCastContext::implicit,

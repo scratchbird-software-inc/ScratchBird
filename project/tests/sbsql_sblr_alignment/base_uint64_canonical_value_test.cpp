@@ -679,13 +679,15 @@ void NullAndAbsentPolicies() {
         "uint64 label-only pseudo-descriptor cannot replace UUID identity");
 
   for (const auto& candidate : dt::BuiltinDatatypeDescriptors()) {
-    Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::uint64,
-                                   candidate.type_id) ==
-              dt::DatatypeCastCategory::forbidden &&
-              dt::ClassifyDatatypeCast(candidate.type_id,
-                                       dt::CanonicalTypeId::uint64) ==
-              dt::DatatypeCastCategory::forbidden,
-          "all registered present-value casts incident to uint64 refuse");
+    const auto outgoing = candidate.type_id == dt::CanonicalTypeId::real64
+        ? dt::DatatypeCastCategory::lossy_explicit : dt::DatatypeCastCategory::forbidden;
+    const auto incoming = candidate.type_id == dt::CanonicalTypeId::real64
+        ? dt::DatatypeCastCategory::lossy_explicit : dt::DatatypeCastCategory::forbidden;
+    for (bool compatibility : {false, true}) {
+      Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::uint64, candidate.type_id, compatibility) == outgoing &&
+            dt::ClassifyDatatypeCast(candidate.type_id, dt::CanonicalTypeId::uint64, compatibility) == incoming,
+            "uint64 cast matrix includes exact REAL64 widening and checked narrowing categories");
+    }
   }
   for (const auto context : {dt::DatatypeCastContext::implicit,
                              dt::DatatypeCastContext::assignment,

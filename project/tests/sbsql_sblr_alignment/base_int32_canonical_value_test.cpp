@@ -655,16 +655,17 @@ void NullAndAbsentPolicies() {
   }
 
   for (const auto& candidate : dt::BuiltinDatatypeDescriptors()) {
-    const auto outgoing = candidate.type_id == dt::CanonicalTypeId::int32
-        ? dt::DatatypeCastCategory::identity : candidate.type_id == dt::CanonicalTypeId::int64
-        ? dt::DatatypeCastCategory::lossless_implicit : dt::DatatypeCastCategory::forbidden;
-    const auto incoming = candidate.type_id == dt::CanonicalTypeId::int32
-        ? dt::DatatypeCastCategory::identity : dt::DatatypeCastCategory::forbidden;
-    Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::int32,
-                                   candidate.type_id) == outgoing &&
-              dt::ClassifyDatatypeCast(candidate.type_id,
-                                       dt::CanonicalTypeId::int32) == incoming,
-          "int32 admits only exact identity and lossless int64 widening");
+    const auto outgoing = candidate.type_id == dt::CanonicalTypeId::int32 ? dt::DatatypeCastCategory::identity :
+        (candidate.type_id == dt::CanonicalTypeId::int64 || candidate.type_id == dt::CanonicalTypeId::real64)
+            ? dt::DatatypeCastCategory::lossless_implicit : dt::DatatypeCastCategory::forbidden;
+    const auto incoming = candidate.type_id == dt::CanonicalTypeId::int32 ? dt::DatatypeCastCategory::identity :
+        candidate.type_id == dt::CanonicalTypeId::real64 ? dt::DatatypeCastCategory::lossy_explicit :
+        dt::DatatypeCastCategory::forbidden;
+    for (bool compatibility : {false, true}) {
+      Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::int32, candidate.type_id, compatibility) == outgoing &&
+            dt::ClassifyDatatypeCast(candidate.type_id, dt::CanonicalTypeId::int32, compatibility) == incoming,
+            "int32 cast matrix includes exact REAL64 widening and checked narrowing categories");
+    }
   }
   for (const auto context : {dt::DatatypeCastContext::implicit,
                              dt::DatatypeCastContext::assignment,

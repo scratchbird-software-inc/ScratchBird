@@ -73,6 +73,7 @@ struct DescriptorRuntimeDiagnostic {
   std::string detail;
   std::size_t row_index = 0;
   std::size_t column_index = 0;
+  core::datatypes::DatatypeNumericFacts numeric_facts;
 };
 
 enum class CanonicalMgaAuthorityOrigin : std::uint8_t {

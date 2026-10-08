@@ -506,7 +506,7 @@ void TestCastPersistenceAndSilentDowngradeRefusal() {
               "DATATYPE.CAST_FORBIDDEN",
           "MDF-014 silent downgrade diagnostic mismatch");
   Require(DiagnosticDetail(silent_downgrade.diagnostic) ==
-              "real64_present_cast_policy_unresolved",
+              "explicit_cast_required",
           "MDF-014 silent downgrade refusal detail mismatch");
   Require(silent_downgrade.value.type_id == dt::CanonicalTypeId::unknown &&
               silent_downgrade.value.encoded_value.empty(),

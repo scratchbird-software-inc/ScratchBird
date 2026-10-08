@@ -554,19 +554,15 @@ void NullAndAbsentPolicies() {
   }
 
   for (const auto& candidate : dt::BuiltinDatatypeDescriptors()) {
-    Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::uint32,
-                                   candidate.type_id) ==
-              dt::DatatypeCastCategory::forbidden &&
-              dt::ClassifyDatatypeCast(candidate.type_id,
-                                       dt::CanonicalTypeId::uint32) ==
-              dt::DatatypeCastCategory::forbidden &&
-              dt::ClassifyDatatypeCast(dt::CanonicalTypeId::uint32,
-                                       candidate.type_id, true) ==
-              dt::DatatypeCastCategory::forbidden &&
-              dt::ClassifyDatatypeCast(candidate.type_id,
-                                       dt::CanonicalTypeId::uint32, true) ==
-              dt::DatatypeCastCategory::forbidden,
-          "all present-value casts incident to uint32 refuse with or without compatibility profile");
+    const auto outgoing = candidate.type_id == dt::CanonicalTypeId::real64
+        ? dt::DatatypeCastCategory::lossless_implicit : dt::DatatypeCastCategory::forbidden;
+    const auto incoming = candidate.type_id == dt::CanonicalTypeId::real64
+        ? dt::DatatypeCastCategory::lossy_explicit : dt::DatatypeCastCategory::forbidden;
+    for (bool compatibility : {false, true}) {
+      Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::uint32, candidate.type_id, compatibility) == outgoing &&
+            dt::ClassifyDatatypeCast(candidate.type_id, dt::CanonicalTypeId::uint32, compatibility) == incoming,
+            "uint32 cast matrix includes exact REAL64 widening and checked narrowing categories");
+    }
   }
   for (const auto context : {dt::DatatypeCastContext::implicit,
                              dt::DatatypeCastContext::assignment,

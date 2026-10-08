@@ -106,7 +106,7 @@ struct Fixture {
         api::EngineTypedValue value;
         value.descriptor = d;
         if (null) value.setState(api::EngineValueState::sql_null);
-        else if (binary) value.binary_value = v.bytes;
+        else if (binary || v.code==dt::CanonicalTypeId::real64) value.binary_value = v.bytes;
         else value.encoded_value = v.lexical;
         row.fields.emplace_back("same;=é", std::move(value));
       }
@@ -130,6 +130,9 @@ void Reject(std::size_t type, Mutation mutation, const char* code = "DATATYPE.DE
 }
 
 int main() try {
+  Reject(6,[](Fixture& fixture) {
+    fixture.Value().binary_value.clear();fixture.Value().encoded_value="1.5";
+  });
   Fixture historical_timestamp(13);
   const auto historical_identity = dt::LookupDatatypeTypeCodecIdentityV1(
       historical_timestamp.context.datatype_catalog_snapshot_uuid, 4, 4,

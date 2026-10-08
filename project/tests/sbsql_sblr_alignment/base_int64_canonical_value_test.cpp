@@ -661,16 +661,16 @@ void NullAndAbsentPolicies() {
         "int64 label-only pseudo-descriptor cannot replace UUID identity");
 
   for (const auto& candidate : dt::BuiltinDatatypeDescriptors()) {
-    const auto expected = candidate.type_id == dt::CanonicalTypeId::int64
-        ? dt::DatatypeCastCategory::identity
-        : dt::DatatypeCastCategory::forbidden;
+    const auto outgoing = candidate.type_id == dt::CanonicalTypeId::int64 ? dt::DatatypeCastCategory::identity :
+        candidate.type_id == dt::CanonicalTypeId::real64 ? dt::DatatypeCastCategory::lossy_explicit :
+        dt::DatatypeCastCategory::forbidden;
     const auto incoming = candidate.type_id == dt::CanonicalTypeId::int32
-        ? dt::DatatypeCastCategory::lossless_implicit : expected;
-    Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::int64,
-                                   candidate.type_id) == expected &&
-              dt::ClassifyDatatypeCast(candidate.type_id,
-                                       dt::CanonicalTypeId::int64) == incoming,
-          "int64 admits identity and the registered int32 widening only");
+        ? dt::DatatypeCastCategory::lossless_implicit : outgoing;
+    for (bool compatibility : {false, true}) {
+      Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::int64, candidate.type_id, compatibility) == outgoing &&
+            dt::ClassifyDatatypeCast(candidate.type_id, dt::CanonicalTypeId::int64, compatibility) == incoming,
+            "int64 cast matrix includes exact REAL64 widening and checked narrowing categories");
+    }
   }
   for (const auto context : {dt::DatatypeCastContext::implicit,
                              dt::DatatypeCastContext::assignment,

@@ -13,6 +13,7 @@
 #include "../../core/uuid/uuid.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <charconv>
 #include <cctype>
 #include <cmath>
@@ -541,25 +542,6 @@ bool ParseBoundedSignedIntegerStrict(const EngineDescriptor& descriptor,
   return true;
 }
 
-bool ParseReal64Strict(const std::string& text, double* out) {
-  if (out == nullptr || text.empty()) { return false; }
-  char* end = nullptr;
-  const double parsed = std::strtod(text.c_str(), &end);
-  if (end == nullptr || end == text.c_str() || *end != '\0' || !std::isfinite(parsed)) {
-    return false;
-  }
-  *out = parsed;
-  return true;
-}
-
-std::string FormatReal64(double value) {
-  if (value == 0.0) return "0";
-  std::ostringstream out;
-  out.imbue(std::locale::classic());
-  out << std::setprecision(17) << value;
-  return out.str();
-}
-
 bool ParseFixedWidthNumber(const std::string& text, std::size_t offset, std::size_t width, std::int64_t* out) {
   if (out == nullptr || offset > text.size() || width > text.size() - offset) {
     return false;
@@ -612,7 +594,8 @@ std::vector<std::string> RowKey(const DescriptorTuple& tuple) {
         if (decoded.ok()) canonical_payload = decoded.value ? "true" : "false";
       } else if (IsReal64Type(value.descriptor)) {
         const auto decoded = DecodeReal64Value(value);
-        if (decoded.ok()) canonical_payload = FormatReal64(decoded.value);
+        canonical_payload.assign(value.binary_value.begin(),value.binary_value.end());
+        if (decoded.ok() && decoded.value==0) canonical_payload.assign(8,'\0');
       } else if (IsBinaryType(value.descriptor) &&
                  !value.binary_value.empty()) {
         canonical_payload.assign(
@@ -681,12 +664,14 @@ std::optional<std::string> EqualityKeyForValue(const EngineTypedValue& value,
     return "i:" + std::to_string(parsed);
   }
   if (IsReal64Type(descriptor)) {
-    double parsed = 0.0;
-    if (!ParseReal64Strict(value.encoded_value, &parsed)) {
-      SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_REAL64_DECODE_FAILED", value.encoded_value, row, column));
+    const auto decoded=DecodeReal64Value(value);
+    if (!decoded.ok()) {
+      SetDiagnostic(diagnostic, decoded.diagnostic);
       return std::nullopt;
     }
-    return "r:" + FormatReal64(parsed);
+    std::string key(value.binary_value.begin(),value.binary_value.end());
+    if(decoded.value==0) key.assign(8,'\0');
+    return "r:" + key;
   }
   if (IsBoolType(descriptor)) {
     const std::string text = LowerAscii(value.encoded_value);
@@ -751,14 +736,12 @@ bool DescriptorValueGreaterThan(const EngineTypedValue& value,
     return true;
   }
   if (IsReal64Type(descriptor)) {
-    double lhs = 0.0;
-    double rhs = 0.0;
-    if (!ParseReal64Strict(value.encoded_value, &lhs) ||
-        !ParseReal64Strict(bound.encoded_value, &rhs)) {
-      SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_REAL64_DECODE_FAILED", value.encoded_value, row, column));
+    const auto lhs=DecodeReal64Value(value), rhs=DecodeReal64Value(bound);
+    if (!lhs.ok() || !rhs.ok()) {
+      SetDiagnostic(diagnostic, !lhs.ok() ? lhs.diagnostic : rhs.diagnostic);
       return false;
     }
-    *out = lhs > rhs;
+    *out = lhs.value > rhs.value;
     return true;
   }
   SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_FILTER_TYPE_UNSUPPORTED",
@@ -1225,6 +1208,11 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
         }
         continue;
       }
+      if (CanonicalDescriptorTypeId(expected.descriptor) == CanonicalTypeId::real64) {
+        const auto decoded=DecodeReal64Value(value);
+        if (!decoded.ok()) return ErrorDiagnostic(decoded.diagnostic.diagnostic_code, decoded.diagnostic.detail,row,column);
+        continue;
+      }
       if (!value.binary_value.empty() &&
           (IsInt64Type(expected.descriptor) ||
            IsBoolType(expected.descriptor) ||
@@ -1247,11 +1235,6 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
         if (!AsciiEqualFold(text, "true") &&
             !AsciiEqualFold(text, "false") && text != "1" && text != "0") {
           return ErrorDiagnostic("SB_EXECUTOR_BOOL_DECODE_FAILED", value.encoded_value, row, column);
-        }
-      } else if (IsReal64Type(expected.descriptor)) {
-        double ignored = 0.0;
-        if (!ParseReal64Strict(value.encoded_value, &ignored)) {
-          return ErrorDiagnostic("SB_EXECUTOR_REAL64_DECODE_FAILED", value.encoded_value, row, column);
         }
       } else if (IsCanonicalInt128DescriptorV1(expected.descriptor)) {
         if (!value.encoded_value.empty() ||
@@ -2347,60 +2330,57 @@ EngineTypedValue EvaluateDescriptorExpression(DescriptorExpressionOperator op,
     case DescriptorExpressionOperator::kReal64Divide:
     case DescriptorExpressionOperator::kReal64Equal:
     case DescriptorExpressionOperator::kReal64GreaterThan: {
+      const auto failed_value=[] {
+        EngineTypedValue value;value.setState(EngineValueState::error);return value;
+      };
       const auto l = DecodeReal64Value(left);
       if (!l.ok()) {
         SetDiagnostic(diagnostic, l.diagnostic);
-        return {};
+        return failed_value();
       }
       const auto r = DecodeReal64Value(right);
       if (!r.ok()) {
         SetDiagnostic(diagnostic, r.diagnostic);
-        return {};
+        return failed_value();
       }
-      switch (op) {
-        case DescriptorExpressionOperator::kReal64Add:
-        case DescriptorExpressionOperator::kReal64Subtract:
-        case DescriptorExpressionOperator::kReal64Multiply: {
-          double value = 0.0;
-          if (op == DescriptorExpressionOperator::kReal64Add) {
-            value = l.value + r.value;
-          } else if (op == DescriptorExpressionOperator::kReal64Subtract) {
-            value = l.value - r.value;
-          } else {
-            value = l.value * r.value;
-          }
-          if (!std::isfinite(value)) {
-            SetDiagnostic(diagnostic, ErrorDiagnostic(
-                "SB_EXECUTOR_NUMERIC_OVERFLOW",
-                "real64 arithmetic produced a non-finite value"));
-            return {};
-          }
-          SetDiagnostic(diagnostic, OkDiagnostic());
-          return EncodeReal64Value(value);
-        }
-        case DescriptorExpressionOperator::kReal64Divide:
-          if (r.value == 0.0) {
-            SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_DIVIDE_BY_ZERO", "real64 divide by zero"));
-            return {};
-          }
-          if (!std::isfinite(l.value / r.value)) {
-            SetDiagnostic(diagnostic, ErrorDiagnostic(
-                "SB_EXECUTOR_NUMERIC_OVERFLOW",
-                "real64 divide produced a non-finite value"));
-            return {};
-          }
-          SetDiagnostic(diagnostic, OkDiagnostic());
-          return EncodeReal64Value(l.value / r.value);
-        case DescriptorExpressionOperator::kReal64Equal:
-          SetDiagnostic(diagnostic, OkDiagnostic());
-          return EncodeBoolValue(l.value == r.value);
-        case DescriptorExpressionOperator::kReal64GreaterThan:
-          SetDiagnostic(diagnostic, OkDiagnostic());
-          return EncodeBoolValue(l.value > r.value);
-        default:
-          break;
+      namespace dt=scratchbird::core::datatypes;
+      dt::DatatypeNumericOperationRequest request;
+      request.type_id=CanonicalTypeId::real64;
+      request.left={CanonicalTypeId::real64,std::string(left.binary_value.begin(),left.binary_value.end()),false};
+      request.right={CanonicalTypeId::real64,std::string(right.binary_value.begin(),right.binary_value.end()),false};
+      std::string detail;
+      if (!BoundExecutionTypeDescriptor(left.descriptor,request.type_id,&request.left.descriptor,&detail) ||
+          !BoundExecutionTypeDescriptor(right.descriptor,request.type_id,&request.right.descriptor,&detail)) {
+        SetDiagnostic(diagnostic,ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID",detail)); return failed_value();
       }
-      break;
+      const bool compare=op==DescriptorExpressionOperator::kReal64Equal ||
+                         op==DescriptorExpressionOperator::kReal64GreaterThan;
+      if(compare) {
+        const auto compared=dt::CompareDatatypeValues({request.left,request.right});
+        auto report=compared.ok() ? OkDiagnostic()
+            : ErrorDiagnostic(compared.diagnostic.diagnostic_code,compared.diagnostic.message_key);
+        report.numeric_facts=compared.numeric_facts;
+        SetDiagnostic(diagnostic,std::move(report));
+        if(!compared.ok()) return failed_value();
+        return EncodeBoolValue(op==DescriptorExpressionOperator::kReal64Equal
+            ? compared.comparison==0 : compared.comparison>0);
+      }
+      request.result_descriptor=request.left.descriptor;
+      switch(op) {
+        case DescriptorExpressionOperator::kReal64Add: request.operation=dt::DatatypeNumericOperationKind::add; break;
+        case DescriptorExpressionOperator::kReal64Subtract: request.operation=dt::DatatypeNumericOperationKind::subtract; break;
+        case DescriptorExpressionOperator::kReal64Multiply: request.operation=dt::DatatypeNumericOperationKind::multiply; break;
+        default: request.operation=dt::DatatypeNumericOperationKind::divide; break;
+      }
+      const auto calculated=dt::ApplyNumericOperation(request);
+      auto report=calculated.ok() ? OkDiagnostic()
+          : ErrorDiagnostic(calculated.diagnostic.diagnostic_code,calculated.diagnostic.message_key);
+      report.numeric_facts=calculated.numeric_facts;
+      SetDiagnostic(diagnostic,std::move(report));
+      if(!calculated.ok()) return failed_value();
+      auto output=MakeExecutorValue(left.descriptor,{},false);
+      output.binary_value.assign(calculated.value.encoded_value.begin(),calculated.value.encoded_value.end());
+      return output;
     }
     case DescriptorExpressionOperator::kTextConcat:
       if (left.state == EngineValueState::sql_null ||
@@ -2522,20 +2502,56 @@ EngineTypedValue EvaluateDescriptorCoalesce(const std::vector<EngineTypedValue>&
 EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
                                      const EngineDescriptor& target_descriptor,
                                      DescriptorRuntimeDiagnostic* diagnostic) {
+  const auto failed_value = [] {
+    EngineTypedValue failed;
+    failed.setState(EngineValueState::error);
+    return failed;
+  };
   if (!IsKnownScalarType(target_descriptor)) {
     SetDiagnostic(diagnostic, ErrorDiagnostic(
         "DATATYPE.DESCRIPTOR.INVALID",
         "cast target descriptor does not name an admitted scalar type"));
-    return {};
+    return failed_value();
   }
   if (!IsKnownScalarType(value.descriptor)) {
     SetDiagnostic(diagnostic, ErrorDiagnostic(
         "DATATYPE.DESCRIPTOR.INVALID",
         "cast source descriptor does not name an admitted scalar type"));
-    return {};
+    return failed_value();
   }
   namespace dt = scratchbird::core::datatypes;
   dt::DatatypeCastRequest null_request;
+  if (CanonicalDescriptorTypeId(value.descriptor) == CanonicalTypeId::real64 ||
+      CanonicalDescriptorTypeId(target_descriptor) == CanonicalTypeId::real64) {
+    dt::DatatypeCastRequest request;
+    request.value.type_id=CanonicalDescriptorTypeId(value.descriptor);
+    request.target_type_id=CanonicalDescriptorTypeId(target_descriptor);
+    request.value.is_null=value.isSqlNull();
+    request.explicit_cast=true; request.context=dt::DatatypeCastContext::explicit_cast;
+    std::string detail;
+    if (!BoundExecutionTypeDescriptor(value.descriptor,request.value.type_id,&request.value.descriptor,&detail) ||
+        !BoundExecutionTypeDescriptor(target_descriptor,request.target_type_id,&request.target_descriptor,&detail)) {
+      SetDiagnostic(diagnostic,ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID",detail)); return failed_value();
+    }
+    const bool text=request.value.type_id==CanonicalTypeId::character;
+    if ((value.state!=EngineValueState::value && value.state!=EngineValueState::sql_null) ||
+        value.is_null!=value.isSqlNull() ||
+        (value.isSqlNull() && (!value.encoded_value.empty() || !value.binary_value.empty())) ||
+        (text ? !value.binary_value.empty() : !value.encoded_value.empty())) {
+      SetDiagnostic(diagnostic,ErrorDiagnostic("NUMERIC.ENCODING.NONCANONICAL","cast carrier invalid")); return failed_value();
+    }
+    request.value.encoded_value=text ? value.encoded_value
+        : std::string(value.binary_value.begin(),value.binary_value.end());
+    const auto cast=dt::CastDatatypeValue(request);
+    auto report=cast.ok() ? OkDiagnostic() : ErrorDiagnostic(cast.diagnostic.diagnostic_code,cast.diagnostic.message_key);
+    report.numeric_facts=cast.numeric_facts;
+    SetDiagnostic(diagnostic,std::move(report));
+    if(!cast.ok()) return failed_value();
+    auto output=MakeExecutorValue(target_descriptor,{},cast.value.is_null);
+    if(request.target_type_id==CanonicalTypeId::character) output.encoded_value=cast.value.encoded_value;
+    else output.binary_value.assign(cast.value.encoded_value.begin(),cast.value.encoded_value.end());
+    return output;
+  }
   if (value.isSqlNull()) {
     null_request.value.type_id = CanonicalDescriptorTypeId(value.descriptor);
     null_request.value.is_null = true;
@@ -2549,7 +2565,7 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
       SetDiagnostic(diagnostic,
                     ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID",
                                     "source descriptor: " + detail));
-      return {};
+      return failed_value();
     }
     if (!BoundExecutionTypeDescriptor(
             target_descriptor, null_request.target_type_id,
@@ -2557,7 +2573,7 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
       SetDiagnostic(diagnostic,
                     ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID",
                                     "target descriptor: " + detail));
-      return {};
+      return failed_value();
     }
     if (value.state != EngineValueState::sql_null || !value.is_null ||
         !value.encoded_value.empty() || !value.binary_value.empty()) {
@@ -2565,7 +2581,7 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
           diagnostic,
           ErrorDiagnostic("DATATYPE.NULL_STATE.INVALID",
                           "SQL NULL requires the canonical state, flag, and zero payload"));
-      return {};
+      return failed_value();
     }
   }
   DescriptorBatch source_batch;
@@ -2574,7 +2590,7 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
   const auto source_validation = ValidateDescriptorBatch(source_batch);
   if (!source_validation.ok) {
     SetDiagnostic(diagnostic, source_validation);
-    return {};
+    return failed_value();
   }
   if (value.isSqlNull()) {
     const auto cast = dt::CastDatatypeValue(null_request);
@@ -2582,7 +2598,7 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
       SetDiagnostic(diagnostic,
                     ErrorDiagnostic(cast.diagnostic.diagnostic_code,
                                     cast.diagnostic.message_key));
-      return {};
+      return failed_value();
     }
     auto output = MakeExecutorValue(target_descriptor, {}, true);
     SetDiagnostic(diagnostic, OkDiagnostic());
@@ -2602,14 +2618,14 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
       SetDiagnostic(diagnostic,
                     ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID",
                                     "source descriptor: " + detail));
-      return {};
+      return failed_value();
     }
     if (!BoundExecutionTypeDescriptor(target_descriptor, request.target_type_id,
                                       &request.target_descriptor, &detail)) {
       SetDiagnostic(diagnostic,
                     ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID",
                                     "target descriptor: " + detail));
-      return {};
+      return failed_value();
     }
     if (IsUuidType(value.descriptor) || IsBinaryType(value.descriptor)) {
       request.value.encoded_value.assign(value.binary_value.begin(), value.binary_value.end());
@@ -2620,7 +2636,7 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
     if (!cast.ok()) {
       SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_CAST_FAILED",
                                                cast.diagnostic.diagnostic_code));
-      return {};
+      return failed_value();
     }
     auto output = MakeExecutorValue(target_descriptor, {}, cast.value.is_null);
     if (!cast.value.is_null)
@@ -2638,7 +2654,7 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
     const auto decoded = DecodeInt64Value(value);
     if (!decoded.ok()) {
       SetDiagnostic(diagnostic, decoded.diagnostic);
-      return {};
+      return failed_value();
     }
     std::int64_t target_value = 0;
     if (!ParseBoundedSignedIntegerStrict(target_descriptor,
@@ -2647,7 +2663,7 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
       SetDiagnostic(diagnostic,
                     ErrorDiagnostic("SB_EXECUTOR_CAST_FAILED",
                                     value.encoded_value));
-      return {};
+      return failed_value();
     }
     SetDiagnostic(diagnostic, OkDiagnostic());
     return MakeExecutorValue(target_descriptor, std::to_string(target_value), false);
@@ -2656,26 +2672,17 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
     const auto decoded = DecodeBoolValue(value);
     if (!decoded.ok()) {
       SetDiagnostic(diagnostic, decoded.diagnostic);
-      return {};
+      return failed_value();
     }
     SetDiagnostic(diagnostic, OkDiagnostic());
     return MakeExecutorValue(target_descriptor, decoded.value ? "true" : "false", false);
-  }
-  if (IsReal64Type(target_descriptor) && IsReal64Type(value.descriptor)) {
-    const auto decoded = DecodeReal64Value(value);
-    if (!decoded.ok()) {
-      SetDiagnostic(diagnostic, decoded.diagnostic);
-      return {};
-    }
-    SetDiagnostic(diagnostic, OkDiagnostic());
-    return MakeExecutorValue(target_descriptor, FormatReal64(decoded.value), false);
   }
   if (IsTextType(target_descriptor)) {
     if (IsInt64Type(value.descriptor)) {
       const auto decoded = DecodeInt64Value(value);
       if (!decoded.ok()) {
         SetDiagnostic(diagnostic, decoded.diagnostic);
-        return {};
+        return failed_value();
       }
       SetDiagnostic(diagnostic, OkDiagnostic());
       return MakeExecutorValue(target_descriptor, std::to_string(decoded.value), false);
@@ -2684,19 +2691,10 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
       const auto decoded = DecodeBoolValue(value);
       if (!decoded.ok()) {
         SetDiagnostic(diagnostic, decoded.diagnostic);
-        return {};
+        return failed_value();
       }
       SetDiagnostic(diagnostic, OkDiagnostic());
       return MakeExecutorValue(target_descriptor, decoded.value ? "true" : "false", false);
-    }
-    if (IsReal64Type(value.descriptor)) {
-      const auto decoded = DecodeReal64Value(value);
-      if (!decoded.ok()) {
-        SetDiagnostic(diagnostic, decoded.diagnostic);
-        return {};
-      }
-      SetDiagnostic(diagnostic, OkDiagnostic());
-      return MakeExecutorValue(target_descriptor, FormatReal64(decoded.value), false);
     }
     SetDiagnostic(diagnostic, OkDiagnostic());
     return MakeExecutorValue(target_descriptor, value.encoded_value, false);
@@ -2715,28 +2713,10 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
                                          value.encoded_value,
                                          &parsed)) {
       SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_CAST_FAILED", value.encoded_value));
-      return {};
+      return failed_value();
     }
     SetDiagnostic(diagnostic, OkDiagnostic());
     return MakeExecutorValue(target_descriptor, std::to_string(parsed), false);
-  }
-  if (IsReal64Type(target_descriptor) && IsInt64Type(value.descriptor)) {
-    const auto decoded = DecodeInt64Value(value);
-    if (!decoded.ok()) {
-      SetDiagnostic(diagnostic, decoded.diagnostic);
-      return {};
-    }
-    SetDiagnostic(diagnostic, OkDiagnostic());
-    return MakeExecutorValue(target_descriptor, FormatReal64(static_cast<double>(decoded.value)), false);
-  }
-  if (IsReal64Type(target_descriptor) && IsTextType(value.descriptor)) {
-    double parsed = 0.0;
-    if (!ParseReal64Strict(value.encoded_value, &parsed)) {
-      SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_CAST_FAILED", value.encoded_value));
-      return {};
-    }
-    SetDiagnostic(diagnostic, OkDiagnostic());
-    return MakeExecutorValue(target_descriptor, FormatReal64(parsed), false);
   }
   if (IsBoolType(target_descriptor) && IsTextType(value.descriptor)) {
     const std::string text = LowerAscii(value.encoded_value);
@@ -2749,10 +2729,10 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
       return MakeExecutorValue(target_descriptor, "false", false);
     }
     SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_CAST_FAILED", value.encoded_value));
-    return {};
+    return failed_value();
   }
   SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_CAST_UNSUPPORTED", value.descriptor.canonical_type_name + "->" + target_descriptor.canonical_type_name));
-  return {};
+  return failed_value();
 }
 
 EngineTypedValue ExtractDescriptorField(const EngineTypedValue& value,
@@ -3177,7 +3157,7 @@ Real64DecodeResult DecodeReal64Value(const EngineTypedValue& value) {
   }
   if (value.state !=
           scratchbird::engine::internal_api::EngineValueState::value ||
-      value.is_null || !value.binary_value.empty()) {
+      value.is_null || !value.encoded_value.empty() || value.binary_value.size()!=8) {
     result.diagnostic = ErrorDiagnostic(
         "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
         "real64 decode received a non-value sentinel or auxiliary binary "
@@ -3188,10 +3168,21 @@ Real64DecodeResult DecodeReal64Value(const EngineTypedValue& value) {
     result.diagnostic = ErrorDiagnostic("SB_EXECUTOR_VALUE_DESCRIPTOR_MISMATCH", value.descriptor.canonical_type_name);
     return result;
   }
-  if (!ParseReal64Strict(value.encoded_value, &result.value)) {
-    result.diagnostic = ErrorDiagnostic("SB_EXECUTOR_REAL64_DECODE_FAILED", value.encoded_value);
+  scratchbird::engine::ExecutionTypeDescriptor bound;
+  std::string detail;
+  if (!BoundExecutionTypeDescriptor(value.descriptor,CanonicalTypeId::real64,&bound,&detail)) {
+    result.diagnostic = ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID", detail);
     return result;
   }
+  static_assert(sizeof(double)==8 && std::numeric_limits<double>::is_iec559 &&
+                std::numeric_limits<double>::digits==53);
+  std::uint64_t bits=0;
+  for(unsigned i=0;i<8;++i) bits |= std::uint64_t(value.binary_value[i]) << (8*i);
+  if(((bits>>52)&2047)==2047) {
+    result.diagnostic = ErrorDiagnostic("NUMERIC.REAL64.INVALID", "nonfinite value requires explicit admission");
+    return result;
+  }
+  result.value=std::bit_cast<double>(bits);
   result.diagnostic = OkDiagnostic();
   return result;
 }
@@ -3212,7 +3203,12 @@ EngineTypedValue EncodeBoolValue(bool value) {
 }
 
 EngineTypedValue EncodeReal64Value(double value) {
-  return MakeExecutorValue(MakeExecutorDescriptor("real64"), FormatReal64(value), false);
+  static_assert(sizeof(double)==8 && std::numeric_limits<double>::is_iec559 &&
+                std::numeric_limits<double>::digits==53);
+  auto encoded=MakeExecutorValue(MakeExecutorDescriptor("real64","nullability=non_null"),{},false);
+  const auto bits=std::bit_cast<std::uint64_t>(value);
+  for(unsigned i=0;i<8;++i) encoded.binary_value.push_back(static_cast<std::uint8_t>(bits>>(8*i)));
+  return encoded;
 }
 
 EngineTypedValue EncodeTextValue(std::string value) {

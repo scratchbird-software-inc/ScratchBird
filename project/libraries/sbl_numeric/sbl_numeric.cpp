@@ -24,7 +24,10 @@
 #include <boost/multiprecision/cpp_int.hpp>
 
 namespace scratchbird::libraries::sbl_numeric {
-namespace detail { NumericResult Real128ReferenceOperation(const NumericRequest& request); }
+namespace detail {
+NumericResult Real128ReferenceOperation(const NumericRequest& request);
+NumericResult Real64ReferenceOperation(const NumericRequest& request);
+}
 namespace {
 
 using boost::multiprecision::cpp_int;
@@ -537,6 +540,7 @@ const char* NumericTypeName(NumericType type) {
     case NumericType::decimal: return "decimal";
     case NumericType::decimal_float: return "decimal_float";
     case NumericType::real128: return "real128";
+    case NumericType::real64: return "real64";
   }
   return "unknown";
 }
@@ -857,6 +861,7 @@ NumericBinaryResult MakeUint128OrderKeyLittleEndian(
 
 NumericResult ApplyNumericOperation(const NumericRequest& request) {
   if (request.type == NumericType::real128) return detail::Real128ReferenceOperation(request);
+  if (request.type == NumericType::real64) return detail::Real64ReferenceOperation(request);
   NumericResult result;
   result.value = {request.type, {}, false};
   if (request.left.is_null || (request.operation != NumericOperation::canonicalize && request.right.is_null)) {
@@ -874,6 +879,8 @@ NumericResult ApplyNumericOperation(const NumericRequest& request) {
       return DecimalFloatOperation(request);
     case NumericType::real128:
       return detail::Real128ReferenceOperation(request);
+    case NumericType::real64:
+      return detail::Real64ReferenceOperation(request);
   }
   return Failure(NumericStatusCode::invalid_operation, "numeric.type_invalid");
 }

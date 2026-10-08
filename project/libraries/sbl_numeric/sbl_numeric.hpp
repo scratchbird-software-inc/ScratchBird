@@ -25,7 +25,8 @@ enum class NumericType : std::uint16_t {
   decimal_float = 1,
   real128 = 2,
   int128 = 3,
-  uint128 = 4
+  uint128 = 4,
+  real64 = 5
 };
 
 enum class NumericOperation : std::uint16_t {
@@ -101,6 +102,7 @@ const char* NumericOperationName(NumericOperation operation);
 const char* Real128BackendName();
 bool Real128BackendAvailable() noexcept;
 // Runtime thread owner calls this only after its MPFR work has quiesced.
+// REAL64 shares this backend and thread cache; the legacy API name is retained.
 void ReleaseReal128ThreadCache() noexcept;
 NumericResult ApplyNumericOperation(const NumericRequest& request);
 using Real128Bytes = std::array<std::uint8_t, 16>;
@@ -132,6 +134,47 @@ struct Real128TotalOrderKeyResult {
 };
 Real128TotalOrderKeyResult MakeReal128TotalOrderKey(
     const std::uint8_t* bytes, std::size_t size, const NumericContext& context = {});
+// Binary64 uses the same reference semantics at precision 53, with gradual
+// underflow to 2^-1074. No host floating-point rounding or text intermediate.
+using Real64Bytes = std::array<std::uint8_t, 8>;
+struct Real64BinaryResult {
+  NumericResult numeric;
+  std::optional<Real64Bytes> bytes;
+};
+struct Real64BinaryRequest {
+  NumericOperation operation = NumericOperation::canonicalize;
+  std::optional<Real64Bytes> left;
+  std::optional<Real64Bytes> right;
+  NumericContext context;
+};
+struct Real64TotalOrderKeyResult {
+  NumericResult numeric;
+  std::optional<Real64Bytes> key;
+};
+Real64BinaryResult EncodeReal64LittleEndian(
+    std::string_view text, const NumericContext& context = {});
+Real64BinaryResult DecodeReal64LittleEndian(
+    const std::uint8_t* bytes, std::size_t size, const NumericContext& context = {},
+    bool render_canonical_text = false);
+Real64BinaryResult ApplyReal64BinaryOperation(const Real64BinaryRequest& request);
+Real64TotalOrderKeyResult MakeReal64TotalOrderKey(
+    const std::uint8_t* bytes, std::size_t size, const NumericContext& context = {});
+// Native casts round once; integral destinations reject fractional values,
+// nonfinite values and range loss instead of truncating or saturating.
+Real64BinaryResult IntegerLittleEndianToReal64(
+    const std::uint8_t* bytes, std::size_t size, bool is_signed,
+    const NumericContext& context = {});
+struct Real64IntegerResult {
+  NumericResult numeric;
+  std::vector<std::uint8_t> bytes;
+};
+Real64IntegerResult Real64ToIntegerLittleEndian(
+    const Real64Bytes& bytes, std::size_t width, bool is_signed,
+    const NumericContext& context = {});
+Real64BinaryResult Real128ToReal64(
+    const Real128Bytes& bytes, const NumericContext& context = {});
+Real128BinaryResult Real64ToReal128(
+    const Real64Bytes& bytes, const NumericContext& context = {});
 // Canonical signed two's-complement storage payload; no host encoding accepted.
 NumericResult DecodeInt128LittleEndian(const std::vector<std::uint8_t>& payload);
 inline constexpr std::size_t kExactDecimalBinaryBytes = 24;

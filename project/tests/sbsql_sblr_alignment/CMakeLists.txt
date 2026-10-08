@@ -676,6 +676,14 @@ set_tests_properties(sbsql_sblr_alignment_real128_typed_expression PROPERTIES
   LABELS "sbsql_sblr_alignment;numeric_reference;production_linkage;component_regression;not_runtime_acceptance"
   TIMEOUT 120)
 
+add_executable(sbsql_sblr_alignment_real64_typed_expression real64_typed_expression_test.cpp)
+target_compile_features(sbsql_sblr_alignment_real64_typed_expression PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_real64_typed_expression PRIVATE sb_engine_typed_scalar_descriptor_contract)
+add_test(NAME sbsql_sblr_alignment_real64_typed_expression COMMAND sbsql_sblr_alignment_real64_typed_expression)
+set_tests_properties(sbsql_sblr_alignment_real64_typed_expression PROPERTIES
+  LABELS "sbsql_sblr_alignment;numeric_reference;production_linkage;component_regression;not_runtime_acceptance"
+  TIMEOUT 120)
+
 add_executable(sbsql_sblr_alignment_real128_binary_codec real128_binary_codec_test.cpp)
 target_compile_features(sbsql_sblr_alignment_real128_binary_codec PRIVATE cxx_std_17)
 target_include_directories(sbsql_sblr_alignment_real128_binary_codec PRIVATE
@@ -703,6 +711,15 @@ add_test(NAME sbsql_sblr_alignment_numeric_consumer_reference
 set_tests_properties(sbsql_sblr_alignment_numeric_consumer_reference PROPERTIES
   LABELS "sbsql_sblr_alignment;numeric_reference;production_linkage;component_regression;not_runtime_acceptance"
   TIMEOUT 120)
+
+add_executable(sbsql_sblr_alignment_real64_reference real64_reference_test.cpp)
+target_compile_features(sbsql_sblr_alignment_real64_reference PRIVATE cxx_std_17)
+target_include_directories(sbsql_sblr_alignment_real64_reference PRIVATE
+  ${SBL_NUMERIC_MPFR_INCLUDE_DIR} ${SBL_NUMERIC_GMP_INCLUDE_DIR})
+target_link_libraries(sbsql_sblr_alignment_real64_reference PRIVATE sbl_numeric Threads::Threads)
+add_test(NAME sbsql_sblr_alignment_real64_reference COMMAND sbsql_sblr_alignment_real64_reference)
+set_tests_properties(sbsql_sblr_alignment_real64_reference PROPERTIES TIMEOUT 120
+  LABELS "sbsql_sblr_alignment;real64;numeric;native_binary;component_regression")
 
 add_executable(sbsql_sblr_alignment_real128_reference real128_reference_test.cpp)
 target_compile_features(sbsql_sblr_alignment_real128_reference PRIVATE cxx_std_17)
@@ -2735,6 +2752,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(sbsql_sblr_alignment_subquery_component PUBLIC
     sb_core_uuid sb_core_platform sb_core_memory sb_core_datatypes sb_core_hash
     sb_core_metrics sbl_numeric sb_engine_typed_scalar_descriptor_contract Threads::Threads)
+  add_executable(sbsql_sblr_alignment_real64_executor_native real64_executor_native_test.cpp
+    ../../src/engine/executor/sort_limit_executor.cpp)
+  target_compile_options(sbsql_sblr_alignment_real64_executor_native PRIVATE -ffunction-sections -fdata-sections)
+  target_compile_definitions(sbsql_sblr_alignment_real64_executor_native PRIVATE
+    $<TARGET_PROPERTY:sb_engine_executor,COMPILE_DEFINITIONS>)
+  target_link_libraries(sbsql_sblr_alignment_real64_executor_native PRIVATE sbsql_sblr_alignment_subquery_component)
+  target_link_options(sbsql_sblr_alignment_real64_executor_native PRIVATE -Wl,--gc-sections)
+  add_test(NAME sbsql_sblr_alignment_real64_executor_native COMMAND sbsql_sblr_alignment_real64_executor_native)
+  set_tests_properties(sbsql_sblr_alignment_real64_executor_native PROPERTIES
+    LABELS "sbsql_sblr_alignment;real64;native_binary;component_regression;not_runtime_acceptance" TIMEOUT 120)
   foreach(subquery_kind IN ITEMS table scalar row exists quantified correlated lateral)
     add_executable(sbsql_sblr_alignment_subquery_binary_${subquery_kind}
       ../sbsql_parser_worker/qow_qry_013_${subquery_kind}.cpp)

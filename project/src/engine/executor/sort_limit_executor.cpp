@@ -512,7 +512,8 @@ bool CompareOrderValues(
   engine::ExecutionTypeDescriptor right_bound_descriptor;
   const bool has_null = left.isSqlNull() || right.isSqlNull();
   const bool canonical_binary_order = type_id == dt::CanonicalTypeId::uuid ||
-                                      (type_id == dt::CanonicalTypeId::int32 || type_id == dt::CanonicalTypeId::int64);
+                                      (type_id == dt::CanonicalTypeId::int32 || type_id == dt::CanonicalTypeId::int64 ||
+                                       type_id == dt::CanonicalTypeId::real64);
   if (has_null || canonical_binary_order) {
     std::string descriptor_detail;
     if (!BuildBoundExecutionTypeDescriptor(
@@ -590,6 +591,7 @@ bool CompareOrderValues(
       type_id != dt::CanonicalTypeId::uuid &&
       type_id != dt::CanonicalTypeId::int32 &&
       type_id != dt::CanonicalTypeId::int64 &&
+      type_id != dt::CanonicalTypeId::real64 &&
       type_id != dt::CanonicalTypeId::int128) {
     *refusal_detail =
         "order operand carries binary payload for a non-binary type";
@@ -597,14 +599,15 @@ bool CompareOrderValues(
   }
   if (type_id == dt::CanonicalTypeId::uuid ||
       type_id == dt::CanonicalTypeId::binary ||
-      type_id == dt::CanonicalTypeId::int32 || type_id == dt::CanonicalTypeId::int64) {
+      type_id == dt::CanonicalTypeId::int32 || type_id == dt::CanonicalTypeId::int64 ||
+      type_id == dt::CanonicalTypeId::real64) {
     const auto canonical_binary = [type_id](const auto& value) {
       return value.is_null ||
              (value.encoded_value.empty() &&
               (type_id != dt::CanonicalTypeId::uuid ||
                value.binary_value.size() == 16) &&
               (type_id != dt::CanonicalTypeId::int32 || value.binary_value.size() == 4) &&
-              (type_id != dt::CanonicalTypeId::int64 ||
+              ((type_id != dt::CanonicalTypeId::int64 && type_id != dt::CanonicalTypeId::real64) ||
                value.binary_value.size() == 8));
     };
     if (!canonical_binary(left) || !canonical_binary(right)) {
@@ -681,8 +684,9 @@ bool CompareOrderValues(
     }
     timezone_normalized = true;
   }
-  if (type_id == dt::CanonicalTypeId::int32 || type_id == dt::CanonicalTypeId::int64) {
-    // The physical order term owns NULL placement. Use the admitted signed integer
+  if (type_id == dt::CanonicalTypeId::int32 || type_id == dt::CanonicalTypeId::int64 ||
+      type_id == dt::CanonicalTypeId::real64) {
+    // The physical order term owns NULL placement. Use the admitted native numeric
     // canonical key operation, not a generic SQL comparison or text cast.
     dt::DatatypeSortKeyRequest left_key_request, right_key_request;
     left_key_request.value = {type_id, std::move(left_encoded), left.isSqlNull(),
@@ -1241,6 +1245,7 @@ CanonicalDescriptorEqualityKeyPlan PlanCanonicalDescriptorEqualityKey(
       (type_id == dt::CanonicalTypeId::binary ||
        type_id == dt::CanonicalTypeId::uuid ||
        type_id == dt::CanonicalTypeId::int32 || type_id == dt::CanonicalTypeId::int64 ||
+       type_id == dt::CanonicalTypeId::real64 ||
        type_id == dt::CanonicalTypeId::int128) && !value.binary_value.empty()
           ? value.binary_value.size()
           : value.encoded_value.size();
@@ -1258,7 +1263,8 @@ CanonicalDescriptorEqualityKeyPlan PlanCanonicalDescriptorEqualityKey(
     // Generation1 Core key: binary profile and descriptor UUIDs/generations,
     // NULL placement/state tags (50 bytes), then the 16 canonical data bytes.
     sort_key_bound = 66;
-  } else if (type_id == dt::CanonicalTypeId::int32 || type_id == dt::CanonicalTypeId::int64) {
+  } else if (type_id == dt::CanonicalTypeId::int32 || type_id == dt::CanonicalTypeId::int64 ||
+             type_id == dt::CanonicalTypeId::real64) {
     sort_key_bound = type_id == dt::CanonicalTypeId::int32 ? 5 : 9;  // state tag plus sign-transformed native key
   } else if (type_id == dt::CanonicalTypeId::character &&
       term.text_seed.comparison_profile == scratchbird::core::resources::CollationProfile::utf8_binary) {
@@ -1514,7 +1520,8 @@ CanonicalDescriptorEqualityKeyResult MakeCanonicalDescriptorEqualityKey(
   std::string encoded_value = value.encoded_value;
   if ((type_id == dt::CanonicalTypeId::binary ||
        type_id == dt::CanonicalTypeId::uuid ||
-       type_id == dt::CanonicalTypeId::int32 || type_id == dt::CanonicalTypeId::int64) &&
+       type_id == dt::CanonicalTypeId::int32 || type_id == dt::CanonicalTypeId::int64 ||
+       type_id == dt::CanonicalTypeId::real64) &&
       !value.binary_value.empty()) {
     encoded_value.assign(
         reinterpret_cast<const char*>(value.binary_value.data()),
@@ -1527,7 +1534,7 @@ CanonicalDescriptorEqualityKeyResult MakeCanonicalDescriptorEqualityKey(
   cast_request.target_type_id = type_id;
   cast_request.explicit_cast = true;
   if (type_id == dt::CanonicalTypeId::uuid || type_id == dt::CanonicalTypeId::int32 ||
-      type_id == dt::CanonicalTypeId::int64) {
+      type_id == dt::CanonicalTypeId::int64 || type_id == dt::CanonicalTypeId::real64) {
     std::string detail;
     if (!BuildBoundExecutionTypeDescriptor(value.descriptor, type_id,
                                            &cast_request.value.descriptor, &detail)) {
@@ -1537,7 +1544,7 @@ CanonicalDescriptorEqualityKeyResult MakeCanonicalDescriptorEqualityKey(
   }
   dt::DatatypeSortKeyRequest sort_request;
   if (type_id == dt::CanonicalTypeId::uuid || type_id == dt::CanonicalTypeId::int32 ||
-      type_id == dt::CanonicalTypeId::int64) {
+      type_id == dt::CanonicalTypeId::int64 || type_id == dt::CanonicalTypeId::real64) {
     // These canonical fixed-width binary carriers were already checked by the
     // self comparison. The key operation revalidates the exact binding,
     // profile and payload; an extra identity cast adds copies, not authority.

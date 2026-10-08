@@ -18,6 +18,7 @@
 #include "../../../core/uuid/uuid.hpp"
 
 #include <algorithm>
+#include <exception>
 #include <array>
 #include <bit>
 #include <charconv>
@@ -74,6 +75,8 @@ void PublishScalarCastValue(const core::datatypes::DatatypeOperationValue& cast,
   } else if (cast.type_id == core::datatypes::CanonicalTypeId::uuid ||
       cast.type_id == core::datatypes::CanonicalTypeId::int32 ||
       cast.type_id == core::datatypes::CanonicalTypeId::int64 ||
+      cast.type_id == core::datatypes::CanonicalTypeId::real64 ||
+      cast.type_id == core::datatypes::CanonicalTypeId::real128 ||
       cast.type_id == core::datatypes::CanonicalTypeId::binary) {
     output->binary_value.assign(cast.encoded_value.begin(), cast.encoded_value.end());
   } else {
@@ -123,10 +126,14 @@ bool ScalarCastInputEncoding(const EngineTypedValue& input,
   const bool binary = type == core::datatypes::CanonicalTypeId::uuid ||
                       type == core::datatypes::CanonicalTypeId::int32 ||
                       type == core::datatypes::CanonicalTypeId::int64 ||
+                      type == core::datatypes::CanonicalTypeId::real64 ||
+                      type == core::datatypes::CanonicalTypeId::real128 ||
                       type == core::datatypes::CanonicalTypeId::binary;
   if (binary && (!input.encoded_value.empty() ||
       (type == core::datatypes::CanonicalTypeId::uuid && input.binary_value.size() != 16) ||
       (type == core::datatypes::CanonicalTypeId::int32 && input.binary_value.size() != 4) ||
+      (type == core::datatypes::CanonicalTypeId::real64 && input.binary_value.size() != 8) ||
+      (type == core::datatypes::CanonicalTypeId::real128 && input.binary_value.size() != 16) ||
       (type == core::datatypes::CanonicalTypeId::int64 && input.binary_value.size() != 8)))
     return false;
   if (!input.binary_value.empty()) {
@@ -310,6 +317,11 @@ bool QowCanonicalComparableEncodingV1(
       type_id == dt::CanonicalTypeId::int32 ||
       type_id == dt::CanonicalTypeId::int64) {
     return ScalarCastInputEncoding(value, type_id, encoded_value);
+  }
+  if (type_id == dt::CanonicalTypeId::real64) {
+    if (!value.encoded_value.empty() || value.binary_value.size() != 8) return false;
+    encoded_value->assign(reinterpret_cast<const char*>(value.binary_value.data()), 8);
+    return true;
   }
   if (type_id == dt::CanonicalTypeId::boolean) {
     if (!value.binary_value.empty()) {
@@ -1023,6 +1035,13 @@ bool QowApplyCanonicalNumericScalarV1(
     scratchbird::core::datatypes::DatatypeNumericFacts* numeric_facts) {
   namespace dt = scratchbird::core::datatypes;
   if (output_value == nullptr || refusal_detail == nullptr) return false;
+  struct UnwindPublication {
+    EngineTypedValue* output;
+    int exceptions=std::uncaught_exceptions();
+    ~UnwindPublication() {
+      if(std::uncaught_exceptions()>exceptions) { *output={}; output->state=EngineValueState::error; }
+    }
+  } unwind_publication{output_value};
   const bool binary_operation =
       operation != dt::DatatypeNumericOperationKind::canonicalize;
   refusal_detail->clear();
@@ -1039,7 +1058,7 @@ bool QowApplyCanonicalNumericScalarV1(
   engine::ExecutionTypeDescriptor output_descriptor;
   const bool has_sql_null_state = left_value.isSqlNull() ||
       (binary_operation && right_value.isSqlNull());
-  if (has_sql_null_state &&
+  if ((has_sql_null_state || result_type == dt::CanonicalTypeId::real64) &&
       (!QowBoundExecutionTypeDescriptorV1(
            left_value.descriptor, left_type, &left_descriptor,
            refusal_detail) ||
@@ -1094,6 +1113,31 @@ bool QowApplyCanonicalNumericScalarV1(
   if (dt::CanonicalTypeIdFromStableName(result_descriptor.canonical_type_name) == dt::CanonicalTypeId::real128)
     return ApplyCanonicalBinary128Scalar(left_value, right_value, result_descriptor,
         operation, context, output_value, refusal_detail, numeric_facts);
+  if (result_type == dt::CanonicalTypeId::real64) {
+    const auto staged_descriptor=result_descriptor;
+    dt::DatatypeNumericOperationRequest request;
+    request.operation=operation; request.type_id=result_type; request.context=context;
+    request.left={left_type, {}, left_value.isSqlNull(), left_descriptor};
+    request.right={right_type, {}, right_value.isSqlNull(), right_descriptor};
+    request.result_descriptor=output_descriptor;
+    const bool valid=ScalarCastInputEncoding(left_value,left_type,&request.left.encoded_value) &&
+        (!binary_operation || ScalarCastInputEncoding(right_value,right_type,&request.right.encoded_value));
+    *output_value={}; output_value->state=EngineValueState::error;
+    if (numeric_facts) *numeric_facts={};
+    if (!valid) {
+      *refusal_detail="NUMERIC.ENCODING.NONCANONICAL";
+      if(numeric_facts) numeric_facts->invalid=true;
+      return false;
+    }
+    const auto result=dt::ApplyNumericOperation(request);
+    if(numeric_facts) *numeric_facts=result.numeric_facts;
+    if(!result.ok()) { *refusal_detail=result.diagnostic.diagnostic_code; return false; }
+    EngineTypedValue staged;
+    PublishScalarCastValue(result.value,staged_descriptor,&staged);
+    *output_value=std::move(staged);
+    refusal_detail->clear();
+    return true;
+  }
   if (numeric_facts) *numeric_facts = {};
   *output_value = EngineTypedValue{};
   output_value->state = EngineValueState::error;
@@ -1675,7 +1719,8 @@ bool QowCompareCanonicalNonCollatedScalarsV1(
   }
   if (type_id == dt::CanonicalTypeId::uuid ||
       type_id == dt::CanonicalTypeId::int32 ||
-      type_id == dt::CanonicalTypeId::int64) {
+      type_id == dt::CanonicalTypeId::int64 ||
+      type_id == dt::CanonicalTypeId::real64) {
     // This seam selects only the canonical base profile. Do not silently drop
     // a caller's donor/time ordering or any unprojected descriptor modifier.
     const auto canonical_metadata = [](const EngineDescriptor& descriptor) {

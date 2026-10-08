@@ -158,6 +158,18 @@ dt::DatatypeCastResult Cast(dt::DatatypeOperationValue value,
   if (target == dt::CanonicalTypeId::decimal) {
     request.target_descriptor = DecimalDescriptor();
   }
+  if (target == dt::CanonicalTypeId::real64) {
+    const auto manifest=dt::LoadCurrentCoreDatatypeCatalogManifest();
+    const auto row=dt::LookupDatatypeCatalogRow(manifest.manifest,target);
+    Check(row.ok() && row.manifest.descriptor_rows.size()==1,"exact REAL64 target fixture");
+    if(row.ok() && row.manifest.descriptor_rows.size()==1) {
+      dt::CatalogExecutionTypeMetadata metadata;
+      metadata.descriptor_uuid=row.manifest.descriptor_rows[0].descriptor_uuid;
+      metadata.descriptor_epoch=row.manifest.descriptor_rows[0].descriptor_epoch;
+      request.target_descriptor=dt::LookupExecutionTypeDescriptorFromCatalog(target,metadata).descriptor;
+    }
+    if(request.value.type_id==dt::CanonicalTypeId::int8) request.value.descriptor=Descriptor();
+  }
   return dt::CastDatatypeValue(request);
 }
 
@@ -314,14 +326,13 @@ void OperationsAndSerialization() {
                 "decimal_present_cast_policy_unresolved" &&
             exact_numeric.value.type_id == dt::CanonicalTypeId::unknown &&
             exact_numeric.value.encoded_value.empty() &&
-            !approximate_numeric.ok() &&
-            approximate_numeric.value.type_id ==
-                dt::CanonicalTypeId::unknown &&
-            approximate_numeric.value.encoded_value.empty() &&
+            approximate_numeric.ok() &&
+            approximate_numeric.value.encoded_value == std::string("\0\0\0\0\0\0\x60\xc0",8) &&
+            !approximate_numeric.numeric_facts.inexact &&
             dt::ClassifyDatatypeCast(dt::CanonicalTypeId::int8,
                                      dt::CanonicalTypeId::real64) ==
-                dt::DatatypeCastCategory::forbidden,
-        "int8-to-decimal and int8-to-real64 remain fail-closed without pair policy");
+                dt::DatatypeCastCategory::lossless_implicit,
+        "int8 REAL64 widening is exact; decimal still requires its pair policy");
   const auto narrowed = Cast(
       {dt::CanonicalTypeId::int16, std::string{'\x7f', '\0'}, false},
                              dt::CanonicalTypeId::int8,
@@ -369,8 +380,8 @@ void OperationsAndSerialization() {
             real64_input.value.encoded_value.empty() &&
             dt::ClassifyDatatypeCast(dt::CanonicalTypeId::real64,
                                      dt::CanonicalTypeId::int8) ==
-                dt::DatatypeCastCategory::forbidden,
-        "real64-to-int8 decimal-text conversion refuses");
+                dt::DatatypeCastCategory::lossy_explicit,
+        "REAL64 text pretending to be a native carrier still refuses");
   const auto assigned_numeric = Cast(
       Decimal("12"), dt::CanonicalTypeId::int8,
       dt::DatatypeCastContext::assignment);

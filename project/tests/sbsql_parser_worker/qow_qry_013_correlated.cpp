@@ -8,6 +8,7 @@
 
 #include "descriptor_value_runtime.hpp"
 #include "../sbsql_sblr_alignment/binary_uuid_fixture.hpp"
+#include "../support/native_int64_fixture.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -111,19 +112,22 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
 }
 
 api::EngineDescriptor Descriptor(const api::EngineUuid& descriptor_uuid,
-                                 const api::EngineUuid& type_uuid,
                                  const std::string& type_name) {
-  api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid = descriptor_uuid;
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = type_name;
-  descriptor.type_uuid = type_uuid;
-  descriptor.encoded_descriptor = "nullability=nullable";
-  return descriptor;
+  namespace dt = scratchbird::core::datatypes;
+  const auto type = type_name == "int64" ? dt::CanonicalTypeId::int64
+      : type_name == "real64" ? dt::CanonicalTypeId::real64
+      : type_name == "text" ? dt::CanonicalTypeId::character
+      : throw std::runtime_error("unexpected correlated fixture type");
+  return scratchbird::tests::ExactScalarDescriptorFixture(
+      type, type_name, descriptor_uuid, "nullability=nullable");
 }
 
 api::EngineTypedValue Value(const api::EngineDescriptor& descriptor,
                             const std::string& encoded) {
+  if (descriptor.canonical_type_name == "int64")
+    return scratchbird::tests::NativeInt64Fixture(descriptor, encoded);
+  if (descriptor.canonical_type_name == "real64")
+    return scratchbird::tests::NativeReal64Fixture(descriptor, encoded);
   api::EngineTypedValue value;
   value.descriptor = descriptor;
   value.encoded_value = encoded;
@@ -142,16 +146,16 @@ api::EngineTypedValue Null(const api::EngineDescriptor& descriptor) {
 exec::CanonicalCorrelatedSubqueryRequest Request() {
   const auto outer_key = Descriptor(
       BinaryUuid("019f0000-0000-7200-8000-000000003001"),
-      BinaryUuid("019f0000-0000-7300-8000-000000003002"), "int64");
+      "int64");
   const auto outer_payload = Descriptor(
       BinaryUuid("019f0000-0000-7200-8000-000000003003"),
-      BinaryUuid("019f0000-0000-7300-8000-000000003004"), "text");
+      "text");
   const auto inner_key = Descriptor(
       BinaryUuid("019f0000-0000-7200-8000-000000003005"),
-      BinaryUuid("019f0000-0000-7300-8000-000000003006"), "int64");
+      "int64");
   const auto inner_payload = Descriptor(
       BinaryUuid("019f0000-0000-7200-8000-000000003007"),
-      BinaryUuid("019f0000-0000-7300-8000-000000003008"), "text");
+      "text");
 
   exec::CanonicalCorrelatedSubqueryRequest request;
   request.physical_dag.selected_plan_uuid =
@@ -226,10 +230,10 @@ exec::CanonicalCorrelatedSubqueryRequest Real64Request() {
   auto request = Request();
   const auto outer_key = Descriptor(
       BinaryUuid("019f0000-0000-7200-8000-000000003021"),
-      BinaryUuid("019f0000-0000-7300-8000-000000003022"), "real64");
+      "real64");
   const auto inner_key = Descriptor(
       BinaryUuid("019f0000-0000-7200-8000-000000003023"),
-      BinaryUuid("019f0000-0000-7300-8000-000000003024"), "real64");
+      "real64");
   request.outer_batch.columns[0].descriptor = outer_key;
   request.inner_batch.columns[0].descriptor = inner_key;
   request.outer_batch.rows[0].values[0] = Value(outer_key, "1.5");
@@ -254,7 +258,7 @@ bool ValidateCorrelatedSubquery() {
           result.comparison_count == 9 && result.result_row_count == 5 &&
           result.scopes.size() == 4 &&
           result.scopes[0].outer_row_index == 0 &&
-          result.scopes[0].bound_outer_value.encoded_value == "1" &&
+          scratchbird::tests::NativeInt64Equals(result.scopes[0].bound_outer_value, 1) &&
           result.scopes[0].output_batch.rows.size() == 2 &&
           result.scopes[0].output_batch.rows[0].values[1].encoded_value ==
               "inner-a" &&
@@ -293,13 +297,19 @@ bool ValidateCorrelatedSubquery() {
                         result.comparison_count == 0,
                     "empty outer relation invented correlated scopes");
 
-  request = Request();
-  request.inner_batch.rows[2].values[0].encoded_value = "bad";
-  result = exec::ExecuteCanonicalCorrelatedSubquery(request);
-  passed &= Require(!result.diagnostic.ok && result.scopes.empty() &&
-                        result.scope_execution_count == 0 &&
-                        result.result_row_count == 0,
-                    "malformed later inner key published earlier scopes");
+  for (unsigned mutation = 0; mutation < 4; ++mutation) {
+    request = Request();
+    auto& invalid = request.inner_batch.rows[2].values[0];
+    if (mutation == 0) invalid.encoded_value = "bad";
+    if (mutation == 1) invalid.binary_value.clear();
+    if (mutation == 2) invalid.binary_value.pop_back();
+    if (mutation == 3) invalid.binary_value.push_back(0);
+    result = exec::ExecuteCanonicalCorrelatedSubquery(request);
+    passed &= Require(!result.diagnostic.ok && result.scopes.empty() &&
+                          result.scope_execution_count == 0 &&
+                          result.result_row_count == 0,
+                      "malformed later inner key published earlier scopes");
+  }
 
   request = Real64Request();
   result = exec::ExecuteCanonicalCorrelatedSubquery(request);
@@ -309,7 +319,8 @@ bool ValidateCorrelatedSubquery() {
           result.scopes[0].output_batch.rows.size() == 2 &&
           result.scopes[2].output_batch.rows.size() == 1 &&
           result.scopes[3].output_batch.rows.size() == 2,
-      "descriptor-compatible real64 correlated equality was refused");
+      "descriptor-compatible real64 correlated equality was refused: " +
+          result.diagnostic.diagnostic_code + ":" + result.diagnostic.detail);
 
   request = Real64Request();
   request.inner_batch.columns[0].descriptor.canonical_type_name = "int64";

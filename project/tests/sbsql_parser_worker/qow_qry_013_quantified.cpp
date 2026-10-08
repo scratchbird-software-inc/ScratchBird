@@ -8,6 +8,7 @@
 
 #include "descriptor_value_runtime.hpp"
 #include "../sbsql_sblr_alignment/binary_uuid_fixture.hpp"
+#include "../support/native_int64_fixture.hpp"
 
 #include "datatype_catalog_manifest.hpp"
 #include "uuid.hpp"
@@ -116,31 +117,22 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
 }
 
 api::EngineDescriptor Descriptor(const api::EngineUuid& descriptor_uuid,
-                                 const api::EngineUuid& type_uuid,
                                  const std::string& type_name,
                                  const std::string& nullability) {
-  api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid = descriptor_uuid;
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = type_name;
-  descriptor.type_uuid = type_uuid;
-  descriptor.encoded_descriptor = "nullability=" + nullability;
-  return descriptor;
-}
-
-api::EngineUuid CoreTypeUuid(const std::string_view stable_name) {
-  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
-  if (!manifest.ok()) return {};
-  for (const auto& row : manifest.manifest.descriptor_rows) {
-    if (row.stable_name == stable_name && row.descriptor_uuid.valid()) {
-      return row.descriptor_uuid.value;
-    }
-  }
-  return {};
+  const auto type = type_name == "int64" ? dt::CanonicalTypeId::int64
+      : type_name == "real64" ? dt::CanonicalTypeId::real64
+      : type_name == "boolean" ? dt::CanonicalTypeId::boolean
+      : throw std::runtime_error("unexpected quantified fixture type");
+  return scratchbird::tests::ExactScalarDescriptorFixture(
+      type, type_name, descriptor_uuid, "nullability=" + nullability);
 }
 
 api::EngineTypedValue Value(const api::EngineDescriptor& descriptor,
                             const std::string& encoded) {
+  if (descriptor.canonical_type_name == "int64")
+    return scratchbird::tests::NativeInt64Fixture(descriptor, encoded);
+  if (descriptor.canonical_type_name == "real64")
+    return scratchbird::tests::NativeReal64Fixture(descriptor, encoded);
   api::EngineTypedValue value;
   value.descriptor = descriptor;
   value.encoded_value = encoded;
@@ -159,13 +151,13 @@ api::EngineTypedValue Null(const api::EngineDescriptor& descriptor) {
 exec::CanonicalQuantifiedSubqueryRequest Request() {
   const auto right = Descriptor(
       BinaryUuid("019f0000-0000-7200-8000-000000002901"),
-      BinaryUuid("019f0000-0000-7300-8000-000000002902"), "int64", "nullable");
+      "int64", "nullable");
   const auto left = Descriptor(
       BinaryUuid("019f0000-0000-7200-8000-000000002903"),
-      BinaryUuid("019f0000-0000-7300-8000-000000002904"), "int64", "nullable");
+      "int64", "nullable");
   const auto boolean_result = Descriptor(
       BinaryUuid("019f0000-0000-7200-8000-000000002905"),
-      CoreTypeUuid("boolean"), "boolean", "nullable");
+      "boolean", "nullable");
 
   exec::CanonicalQuantifiedSubqueryRequest request;
   auto& table = request.table_request;
@@ -227,10 +219,10 @@ exec::CanonicalQuantifiedSubqueryRequest Real64Request() {
   auto request = Request();
   const auto right = Descriptor(
       BinaryUuid("019f0000-0000-7200-8000-000000002921"),
-      BinaryUuid("019f0000-0000-7300-8000-000000002922"), "real64", "nullable");
+      "real64", "nullable");
   const auto left = Descriptor(
       BinaryUuid("019f0000-0000-7200-8000-000000002923"),
-      BinaryUuid("019f0000-0000-7300-8000-000000002924"), "real64", "nullable");
+      "real64", "nullable");
   request.table_request.input_batch = exec::MakeDescriptorBatch(
       {{"quantified_right", right, true, 2901}},
       {{{Value(right, "1.5")}},
@@ -267,7 +259,7 @@ bool ValidateQuantifiedSubquery() {
       "equality ANY did not let TRUE dominate UNKNOWN");
 
   auto request = Request();
-  request.left_value.encoded_value = "4";
+  request.left_value = Value(request.left_operand_column.descriptor, "4");
   result = exec::ExecuteCanonicalQuantifiedSubquery(request);
   passed &= Require(
       result.diagnostic.ok && result.truth_value == Truth::unknown &&
@@ -289,7 +281,7 @@ bool ValidateQuantifiedSubquery() {
   request = Request();
   request.quantifier = Quantifier::kAll;
   request.comparison_operator = Operation::greater_than;
-  request.left_value.encoded_value = "5";
+  request.left_value = Value(request.left_operand_column.descriptor, "5");
   result = exec::ExecuteCanonicalQuantifiedSubquery(request);
   passed &= Require(result.diagnostic.ok &&
                         result.truth_value == Truth::unknown,
@@ -330,14 +322,20 @@ bool ValidateQuantifiedSubquery() {
                         result.truth_value == Truth::unknown,
                     "NULL left operand did not produce UNKNOWN comparisons");
 
-  request = Request();
-  request.table_request.input_batch.rows[2].values[0].encoded_value = "bad";
-  result = exec::ExecuteCanonicalQuantifiedSubquery(request);
-  passed &= Require(!result.diagnostic.ok &&
-                        result.output_batch.rows.empty() &&
-                        result.truth_value == Truth::unspecified &&
-                        result.comparison_count == 0,
-                    "early TRUE hid a malformed later operand");
+  for (unsigned mutation = 0; mutation < 4; ++mutation) {
+    request = Request();
+    auto& invalid = request.table_request.input_batch.rows[2].values[0];
+    if (mutation == 0) invalid.encoded_value = "bad";
+    if (mutation == 1) invalid.binary_value.clear();
+    if (mutation == 2) invalid.binary_value.pop_back();
+    if (mutation == 3) invalid.binary_value.push_back(0);
+    result = exec::ExecuteCanonicalQuantifiedSubquery(request);
+    passed &= Require(!result.diagnostic.ok &&
+                          result.output_batch.rows.empty() &&
+                          result.truth_value == Truth::unspecified &&
+                          result.comparison_count == 0,
+                      "early TRUE hid a malformed later operand");
+  }
 
   request = Real64Request();
   result = exec::ExecuteCanonicalQuantifiedSubquery(request);
@@ -345,7 +343,8 @@ bool ValidateQuantifiedSubquery() {
       result.diagnostic.ok && result.truth_value == Truth::true_value &&
           result.comparison_count == 3 &&
           result.output_batch.rows[0].values[0].encoded_value == "true",
-      "descriptor-compatible real64 ANY comparison was refused");
+      "descriptor-compatible real64 ANY comparison was refused: " +
+          result.diagnostic.diagnostic_code + ":" + result.diagnostic.detail);
 
   request = Real64Request();
   request.left_value.descriptor.canonical_type_name = "int64";

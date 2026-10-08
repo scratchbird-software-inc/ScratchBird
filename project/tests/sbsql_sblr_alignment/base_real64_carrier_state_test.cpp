@@ -551,279 +551,116 @@ void NullStateAndDescriptors() {
         "generic framing round trips real64 typed NULL state and descriptor");
 }
 
-void PresentSemanticSurfacesRefuse() {
-  const auto present = Present(0xa55a3cc39669f00fULL);
-  const auto original_payload = present.encoded_value;
-
-  for (const auto& candidate : dt::BuiltinDatatypeDescriptors()) {
-    Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::real64,
-                                   candidate.type_id) ==
-                  dt::DatatypeCastCategory::forbidden &&
-              dt::ClassifyDatatypeCast(candidate.type_id,
-                                       dt::CanonicalTypeId::real64) ==
-                  dt::DatatypeCastCategory::forbidden &&
-              dt::ClassifyDatatypeCast(dt::CanonicalTypeId::real64,
-                                       candidate.type_id, true) ==
-                  dt::DatatypeCastCategory::forbidden &&
-              dt::ClassifyDatatypeCast(candidate.type_id,
-                                       dt::CanonicalTypeId::real64, true) ==
-                  dt::DatatypeCastCategory::forbidden,
-          "every registered cast classifier pair incident to real64 refuses");
-  }
-
-  const auto character_descriptor =
-      DescriptorFor(dt::CanonicalTypeId::character);
-  for (const auto& candidate : dt::BuiltinDatatypeDescriptors()) {
-    const auto candidate_descriptor = DescriptorFor(candidate.type_id);
-    dt::DatatypeOperationValue candidate_value{
-        candidate.type_id, "test-only-present-placeholder", false};
-    candidate_value.descriptor = candidate_descriptor;
-    const std::string expected_policy_detail =
-        candidate.type_id == dt::CanonicalTypeId::real16
-            ? "real16_present_cast_policy_unresolved"
-            : candidate.type_id == dt::CanonicalTypeId::bfloat16
-                ? "bfloat16_present_cast_policy_unresolved"
-                : candidate.type_id == dt::CanonicalTypeId::real32
-                    ? "real32_present_cast_policy_unresolved"
-                    : "real64_present_cast_policy_unresolved";
-    for (const auto context : {dt::DatatypeCastContext::implicit,
-                               dt::DatatypeCastContext::assignment,
-                               dt::DatatypeCastContext::explicit_cast}) {
-      for (const bool compatibility_profile : {false, true}) {
-        dt::DatatypeCastRequest outgoing;
-        outgoing.value = present;
-        outgoing.target_type_id = candidate.type_id;
-        outgoing.target_descriptor = candidate_descriptor;
-        outgoing.context = context;
-        outgoing.explicit_cast =
-            context == dt::DatatypeCastContext::explicit_cast;
-        outgoing.reference_compatibility_profile = compatibility_profile;
-        const auto outgoing_result = dt::CastDatatypeValue(outgoing);
-
-        dt::DatatypeCastRequest incoming;
-        incoming.value = candidate_value;
-        incoming.target_type_id = dt::CanonicalTypeId::real64;
-        incoming.target_descriptor = present.descriptor;
-        incoming.context = context;
-        incoming.explicit_cast =
-            context == dt::DatatypeCastContext::explicit_cast;
-        incoming.reference_compatibility_profile = compatibility_profile;
-        const auto incoming_result = dt::CastDatatypeValue(incoming);
-
-        const auto outgoing_expected = scratchbird::tests::GenericCastProfileBoundary(
-            candidate.type_id).value_or(scratchbird::tests::CastRefusalExpectation{
-                "DATATYPE.CAST_FORBIDDEN", expected_policy_detail});
-        auto incoming_expected = outgoing_expected;
-        // Malformed decimal placeholders are rejected before scalar policy.
-        if (candidate.type_id == dt::CanonicalTypeId::decimal)
-          incoming_expected = {"NUMERIC.ENCODING.NONCANONICAL", "decimal_source_value_noncanonical"};
-        if (candidate.type_id == dt::CanonicalTypeId::decimal_float)
-          incoming_expected = {"NUMERIC.ENCODING.NONCANONICAL", "decimal_float_source_value_noncanonical"};
-        if (const auto canonical = scratchbird::tests::CanonicalDecimalPeerOne(candidate.type_id)) {
-          auto valid_incoming = incoming;
-          valid_incoming.value.encoded_value = *canonical;
-          const auto refused = dt::CastDatatypeValue(valid_incoming);
-          Check(!refused.ok() && refused.category == dt::DatatypeCastCategory::forbidden &&
-                    refused.value.type_id == dt::CanonicalTypeId::unknown &&
-                    refused.value.encoded_value.empty() && !refused.value.is_null &&
-                    refused.diagnostic.diagnostic_code == "DATATYPE.CAST_FORBIDDEN" &&
-                    DiagnosticDetail(refused.diagnostic) == expected_policy_detail &&
-                    valid_incoming.value.encoded_value == *canonical,
-                "canonical decimal peer must reach exact approximate numeric policy refusal");
-        }
-
-        Check(!outgoing_result.ok() &&
-                  outgoing_result.category ==
-                      dt::DatatypeCastCategory::forbidden &&
-                  outgoing_result.value.type_id ==
-                      dt::CanonicalTypeId::unknown &&
-                  outgoing_result.value.encoded_value.empty() &&
-                  outgoing_result.diagnostic.diagnostic_code ==
-                      outgoing_expected.code &&
-                  DiagnosticDetail(outgoing_result.diagnostic) ==
-                      outgoing_expected.detail &&
-                  !incoming_result.ok() &&
-                  incoming_result.category ==
-                      dt::DatatypeCastCategory::forbidden &&
-                  incoming_result.value.type_id ==
-                      dt::CanonicalTypeId::unknown &&
-                  incoming_result.value.encoded_value.empty() &&
-                  incoming_result.diagnostic.diagnostic_code ==
-                      incoming_expected.code &&
-                  DiagnosticDetail(incoming_result.diagnostic) ==
-                      incoming_expected.detail &&
-                  present.encoded_value == original_payload &&
-                  candidate_value.encoded_value ==
-                      "test-only-present-placeholder",
-              std::string("runtime PRESENT casts incident to real64: peer=") +
-                  dt::CanonicalTypeName(candidate.type_id) + " outgoing=" +
-                  outgoing_result.diagnostic.diagnostic_code + ":" +
-                  DiagnosticDetail(outgoing_result.diagnostic) + " incoming=" +
-                  incoming_result.diagnostic.diagnostic_code + ":" +
-                  DiagnosticDetail(incoming_result.diagnostic));
+void PresentSemanticSurfacesWork() {
+  using T=dt::CanonicalTypeId;
+  const auto present=Present(0x3ff8000000000000ULL); // 1.5
+  const auto one=Present(0x3ff0000000000000ULL);
+  const auto zero=Present(0), negative_zero=Present(0x8000000000000000ULL);
+  const auto character_descriptor=DescriptorFor(T::character);
+  const auto cast=[&](dt::DatatypeOperationValue value,T target,
+                      dt::DatatypeCastContext context=dt::DatatypeCastContext::explicit_cast) {
+    dt::DatatypeCastRequest request;
+    request.value=std::move(value); request.target_type_id=target;
+    request.target_descriptor=DescriptorFor(target); request.context=context;
+    return dt::CastDatatypeValue(request);
+  };
+  for(const auto& candidate:dt::BuiltinDatatypeDescriptors()) {
+    const auto type=candidate.type_id;
+    const bool integer=type==T::int8 || type==T::uint8 || type==T::int16 || type==T::uint16 ||
+        type==T::int32 || type==T::uint32 || type==T::int64 || type==T::uint64 ||
+        type==T::int128 || type==T::uint128;
+    const bool peer=integer || type==T::character || type==T::real64 || type==T::real128;
+    for(bool compatibility:{false,true}) {
+      Check((dt::ClassifyDatatypeCast(T::real64,type,compatibility)!=dt::DatatypeCastCategory::forbidden)==peer,
+            "REAL64 outgoing classifier matrix");
+      Check((dt::ClassifyDatatypeCast(type,T::real64,compatibility)!=dt::DatatypeCastCategory::forbidden)==
+                (peer || type==T::null_type),"REAL64 incoming classifier matrix");
+    }
+    if(integer) {
+      const auto exact=cast(one,type);
+      Check(exact.ok() && !exact.value.encoded_value.empty() && exact.value.encoded_value[0]==1,
+            "integral REAL64 casts to every native integer width");
+      if(exact.ok()) {
+        const auto roundtrip=cast(exact.value,T::real64);
+        Check(roundtrip.ok() && roundtrip.value.encoded_value==one.encoded_value,"integer native cast roundtrip");
       }
+      const auto fractional=cast(present,type);
+      Check(!fractional.ok() && fractional.value.encoded_value.empty() && fractional.numeric_facts.invalid &&
+                fractional.numeric_facts.inexact,"fractional conversion refuses with loss facts");
+      const auto implicit=cast(one,type,dt::DatatypeCastContext::implicit);
+      Check(!implicit.ok(),"REAL64 integer narrowing is not implicit");
+      Check(cast(one,type,dt::DatatypeCastContext::assignment).ok(),"exact integer assignment is admitted");
+    } else if(!peer && type!=T::null_type) {
+      Check(!cast(one,type).ok(),"unrelated type cannot reinterpret REAL64 bytes");
     }
   }
-
-  for (const auto context : {dt::DatatypeCastContext::implicit,
-                             dt::DatatypeCastContext::assignment,
-                             dt::DatatypeCastContext::explicit_cast}) {
-    for (const bool compatibility_profile : {false, true}) {
-      dt::DatatypeCastRequest identity;
-      identity.value = present;
-      identity.target_type_id = dt::CanonicalTypeId::real64;
-      identity.target_descriptor = present.descriptor;
-      identity.context = context;
-      identity.explicit_cast =
-          context == dt::DatatypeCastContext::explicit_cast;
-      identity.reference_compatibility_profile = compatibility_profile;
-      const auto identity_result = dt::CastDatatypeValue(identity);
-
-      dt::DatatypeCastRequest outgoing;
-      outgoing.value = present;
-      outgoing.target_type_id = dt::CanonicalTypeId::character;
-      outgoing.target_descriptor = character_descriptor;
-      outgoing.context = context;
-      outgoing.explicit_cast =
-          context == dt::DatatypeCastContext::explicit_cast;
-      outgoing.reference_compatibility_profile = compatibility_profile;
-      const auto outgoing_result = dt::CastDatatypeValue(outgoing);
-
-      dt::DatatypeCastRequest incoming;
-      incoming.value = {dt::CanonicalTypeId::character, "1", false};
-      incoming.value.descriptor = character_descriptor;
-      incoming.target_type_id = dt::CanonicalTypeId::real64;
-      incoming.target_descriptor = present.descriptor;
-      incoming.context = context;
-      incoming.explicit_cast =
-          context == dt::DatatypeCastContext::explicit_cast;
-      incoming.reference_compatibility_profile = compatibility_profile;
-      const auto incoming_result = dt::CastDatatypeValue(incoming);
-      Check(!identity_result.ok() &&
-                identity_result.value.type_id == dt::CanonicalTypeId::unknown &&
-                identity_result.value.encoded_value.empty() &&
-                !identity_result.value.is_null &&
-                identity.value.encoded_value == original_payload &&
-                !outgoing_result.ok() &&
-                outgoing_result.value.encoded_value.empty() &&
-                !incoming_result.ok() &&
-                incoming_result.value.encoded_value.empty(),
-            "representative PRESENT casts refuse in every context/profile");
-
-      dt::DatatypeCastRequest null_outgoing;
-      null_outgoing.value = TypedNull();
-      null_outgoing.target_type_id = dt::CanonicalTypeId::character;
-      null_outgoing.target_descriptor = character_descriptor;
-      null_outgoing.context = context;
-      null_outgoing.explicit_cast =
-          context == dt::DatatypeCastContext::explicit_cast;
-      null_outgoing.reference_compatibility_profile = compatibility_profile;
-      const auto null_outgoing_result =
-          dt::CastDatatypeValue(null_outgoing);
-
-      dt::DatatypeCastRequest null_incoming;
-      null_incoming.value = {dt::CanonicalTypeId::character, {}, true};
-      null_incoming.value.descriptor = character_descriptor;
-      null_incoming.target_type_id = dt::CanonicalTypeId::real64;
-      null_incoming.target_descriptor = present.descriptor;
-      null_incoming.context = context;
-      null_incoming.explicit_cast =
-          context == dt::DatatypeCastContext::explicit_cast;
-      null_incoming.reference_compatibility_profile = compatibility_profile;
-      const auto null_incoming_result =
-          dt::CastDatatypeValue(null_incoming);
-      Check(!null_outgoing_result.ok() &&
-                null_outgoing_result.value.type_id ==
-                    dt::CanonicalTypeId::unknown &&
-                null_outgoing_result.value.encoded_value.empty() &&
-                !null_incoming_result.ok() &&
-                null_incoming_result.value.type_id ==
-                    dt::CanonicalTypeId::unknown &&
-                null_incoming_result.value.encoded_value.empty(),
-            "typed NULL real64 cross casts refuse in every context/profile");
-    }
+  for(auto context:{dt::DatatypeCastContext::implicit,dt::DatatypeCastContext::assignment,
+                    dt::DatatypeCastContext::explicit_cast}) {
+    auto identity=cast(present,T::real64,context);
+    Check(identity.ok() && identity.value.encoded_value==present.encoded_value,"exact identity preserves payload");
   }
+  auto text=cast(present,T::character);
+  Check(dt::ClassifyDatatypeCast(T::real64,T::character,false)==dt::DatatypeCastCategory::lossy_explicit &&
+        dt::ClassifyDatatypeCast(T::character,T::real64,false)==dt::DatatypeCastCategory::lossy_explicit,
+        "text conversion classification admits possible rounding and NaN payload loss");
+  Check(text.ok() && text.value.encoded_value=="1.5","explicit text rendering");
+  auto parsed=cast(text.value,T::real64);
+  Check(parsed.ok() && parsed.value.encoded_value==present.encoded_value,"explicit text roundtrip");
+  for(const auto* malformed:{"","1x","1 2","NaN","Infinity","1e+","0x"}) {
+    dt::DatatypeOperationValue input{T::character,malformed,false,character_descriptor};
+    auto failure=cast(input,T::real64);
+    Check(!failure.ok() && failure.value.encoded_value.empty() &&
+              failure.diagnostic.diagnostic_code=="NUMERIC.REAL64.INVALID","invalid text cast has exact diagnostic");
+  }
+  auto wide=cast(present,T::real128);
+  auto narrow=cast(wide.value,T::real64);
+  Check(wide.ok() && wide.value.encoded_value.size()==16 && narrow.ok() &&
+            narrow.value.encoded_value==present.encoded_value,"native binary widening and narrowing");
+  auto max=Present(0x7fefffffffffffffULL);
+  Check(!cast(max,T::int128).ok() && !cast(max,T::uint128).ok(),"finite integer overflow rejected");
 
-  for (const auto operation : {
-           dt::DatatypeNumericOperationKind::canonicalize,
-           dt::DatatypeNumericOperationKind::add,
-           dt::DatatypeNumericOperationKind::subtract,
-           dt::DatatypeNumericOperationKind::multiply,
-           dt::DatatypeNumericOperationKind::divide,
-           dt::DatatypeNumericOperationKind::compare}) {
+  for(const auto [operation,expected]:{
+      std::pair{dt::DatatypeNumericOperationKind::canonicalize,0x3ff8000000000000ULL},
+      std::pair{dt::DatatypeNumericOperationKind::add,0x4004000000000000ULL},
+      std::pair{dt::DatatypeNumericOperationKind::subtract,0x3fe0000000000000ULL},
+      std::pair{dt::DatatypeNumericOperationKind::multiply,0x3ff8000000000000ULL},
+      std::pair{dt::DatatypeNumericOperationKind::divide,0x3ff8000000000000ULL}}) {
     dt::DatatypeNumericOperationRequest request;
-    request.operation = operation;
-    request.type_id = dt::CanonicalTypeId::real64;
-    request.left = present;
-    request.right = present;
-    request.result_descriptor = operation ==
-            dt::DatatypeNumericOperationKind::compare
-        ? DescriptorFor(dt::CanonicalTypeId::boolean)
-        : present.descriptor;
-    const auto result = dt::ApplyNumericOperation(request);
-    Check(!result.ok() && result.value.type_id == dt::CanonicalTypeId::unknown &&
-              result.value.encoded_value.empty() && !result.value.is_null &&
-              result.comparison == 0 && result.numeric_facts.invalid &&
-              result.diagnostic.diagnostic_code ==
-                  "SB_DATATYPE_NUMERIC_OPERATION_REJECTED" &&
-              DiagnosticDetail(result.diagnostic) ==
-                  "real64_numeric_policy_unresolved" &&
-              request.left.encoded_value == original_payload &&
-              request.right.encoded_value == original_payload,
-          "every PRESENT real64 numeric operation refuses atomically");
+    request.operation=operation;request.type_id=T::real64;
+    request.left=present;request.right=one;request.result_descriptor=present.descriptor;
+    const auto result=dt::ApplyNumericOperation(request);
+    Check(result.ok() && result.value.encoded_value==Carrier(expected) &&
+              !result.numeric_facts.inexact,"native arithmetic exact output");
+    auto null=TypedNull();request.left=null;request.right=null;request.result_descriptor=null.descriptor;
+    const auto null_result=dt::ApplyNumericOperation(request);
+    Check(null_result.ok() && null_result.value.is_null && null_result.value.encoded_value.empty(),
+          "typed NULL arithmetic does not manufacture a payload");
+    request.context.rounding=static_cast<dt::DatatypeRoundingMode>(99);
+    Check(!dt::ApplyNumericOperation(request).ok(),"NULL cannot bypass invalid numeric context");
   }
-
-  auto alias_left = present;
-  auto alias_right = present;
-  alias_left.descriptor.stable_name = "opaque-carrier";
-  alias_right.descriptor.stable_name = "transport-bits-32";
-  auto compared = dt::CompareDatatypeValues({alias_left, alias_right});
-  Check(!compared.ok() && compared.comparison == 0 &&
-            compared.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_COMPARISON_REJECTED" &&
-            DiagnosticDetail(compared.diagnostic) ==
-                "real64_comparison_policy_unresolved",
-        "real64 aliases do not enable PRESENT comparison semantics");
-
-  auto mismatched = present;
-  mismatched.descriptor.security_policy_uuid = FixtureV7Uuid(0xd0);
-  mismatched.descriptor.modifier_flags |=
-      scratchbird::engine::ExecutionTypeModifierFlagBit(
-          scratchbird::engine::ExecutionTypeModifierFlag::security_policy_uuid);
-  const auto mismatch_left =
-      dt::CompareDatatypeValues({mismatched, present});
-  const auto mismatch_right =
-      dt::CompareDatatypeValues({present, mismatched});
-  const auto null_value = TypedNull();
-  const auto present_null =
-      dt::CompareDatatypeValues({present, null_value});
-  const auto null_present =
-      dt::CompareDatatypeValues({null_value, present});
-  const auto null_null =
-      dt::CompareDatatypeValues({null_value, null_value});
-  Check(!mismatch_left.ok() && mismatch_left.comparison == 0 &&
-            mismatch_left.diagnostic.diagnostic_code ==
-                "DATATYPE.DESCRIPTOR.INVALID" &&
-            !mismatch_right.ok() && mismatch_right.comparison == 0 &&
-            mismatch_right.diagnostic.diagnostic_code ==
-                "DATATYPE.DESCRIPTOR.INVALID" &&
-            !present_null.ok() && present_null.comparison == 0 &&
-            present_null.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_COMPARISON_REJECTED" &&
-            DiagnosticDetail(present_null.diagnostic) ==
-                "real64_comparison_policy_unresolved" &&
-            !null_present.ok() && null_present.comparison == 0 &&
-            null_present.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_COMPARISON_REJECTED" &&
-            DiagnosticDetail(null_present.diagnostic) ==
-                "real64_comparison_policy_unresolved" &&
-            !null_null.ok() && null_null.comparison == 0 &&
-            null_null.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_COMPARISON_REJECTED" &&
-            DiagnosticDetail(null_null.diagnostic) ==
-                "real64_comparison_policy_unresolved",
-        "real64 comparison refuses descriptor mismatch and NULL cases");
-
+  Check(dt::CompareDatatypeValues({present,one}).comparison>0,"native ordered comparison");
+  auto nonnullable=one;nonnullable.descriptor.nullable_allowed=false;
+  Check(dt::CompareDatatypeValues({nonnullable,one}).ok() &&
+            dt::CompareDatatypeValues({nonnullable,one}).comparison==0,
+        "PRESENT numeric comparison accepts different NULL admission flags");
+  dt::DatatypeNumericOperationRequest mixed_nullability;
+  mixed_nullability.type_id=T::real64;mixed_nullability.operation=dt::DatatypeNumericOperationKind::add;
+  mixed_nullability.left=nonnullable;mixed_nullability.right=one;
+  mixed_nullability.result_descriptor=nonnullable.descriptor;
+  auto mixed_result=dt::ApplyNumericOperation(mixed_nullability);
+  Check(mixed_result.ok() && mixed_result.value.encoded_value==Carrier(0x4000000000000000ULL),
+        "PRESENT arithmetic does not treat NULL admission as numeric identity");
+  mixed_nullability.right=TypedNull();
+  Check(!dt::ApplyNumericOperation(mixed_nullability).ok(),"nonnullable result still rejects actual NULL");
+  Check(dt::CompareDatatypeValues({zero,negative_zero}).ok() &&
+            dt::CompareDatatypeValues({zero,negative_zero}).comparison==0,"signed zero numeric equality");
+  auto alias_left=one,alias_right=one;
+  alias_left.descriptor.stable_name="display alias";alias_right.descriptor.stable_name="another alias";
+  Check(dt::CompareDatatypeValues({alias_left,alias_right}).ok(),"display aliases are not identity");
+  auto mismatched=present;
+  mismatched.descriptor.security_policy_uuid=FixtureV7Uuid(0xd0);
+  mismatched.descriptor.modifier_flags |= scratchbird::engine::ExecutionTypeModifierFlagBit(
+      scratchbird::engine::ExecutionTypeModifierFlag::security_policy_uuid);
   auto descriptorless_present = present;
   descriptorless_present.descriptor = {};
   auto label_only_present = descriptorless_present;
@@ -916,417 +753,94 @@ void PresentSemanticSurfacesRefuse() {
     }
   }
 
-  dt::DatatypeExtractRequest exact_extract;
-  exact_extract.value = present;
-  exact_extract.field = "unsupported";
-  const auto exact_extract_result = dt::ExtractDatatypeField(exact_extract);
-  Check(!exact_extract_result.ok() &&
-            exact_extract_result.value.type_id == dt::CanonicalTypeId::unknown &&
-            exact_extract_result.value.encoded_value.empty() &&
-            exact_extract_result.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_EXTRACT_REJECTED" &&
-            DiagnosticDetail(exact_extract_result.diagnostic) ==
-                "real64_extract_policy_unresolved",
-        "exact-descriptor real64 extraction reaches supported refusal");
-  for (const auto& invalid :
-       {descriptorless_present, label_only_present,
-        dt::DatatypeOperationValue{dt::CanonicalTypeId::real64,
-                                   present.encoded_value, false,
-                                   character_descriptor}}) {
-    auto request = exact_extract;
-    request.value = invalid;
-    const auto result = dt::ExtractDatatypeField(request);
-    const bool valid_failure = !result.ok() &&
-              result.value.type_id == dt::CanonicalTypeId::unknown &&
-              result.value.encoded_value.empty() &&
-              result.diagnostic.diagnostic_code ==
-                  "DATATYPE.DESCRIPTOR.INVALID" &&
-              DiagnosticDetail(result.diagnostic) ==
-                  "real64_extract_descriptor_invalid";
-    Check(valid_failure,
-          "real64 extraction validates PRESENT descriptor before policy: " +
-              result.diagnostic.diagnostic_code + "/" +
-              DiagnosticDetail(result.diagnostic));
+
+  Check(dt::MakeDatatypeSortKey({zero}).sort_key==dt::MakeDatatypeSortKey({negative_zero}).sort_key,
+        "numeric sort coalesces signed zero");
+  Check(dt::HashDatatypeValue({zero}).stable_hash_hex==dt::HashDatatypeValue({negative_zero}).stable_hash_hex,
+        "numeric hash coalesces signed zero");
+  auto previous=dt::MakeDatatypeSortKey({Present(0xffefffffffffffffULL)});
+  for(auto bits:{0xbff0000000000000ULL,0x8000000000000001ULL,0ULL,1ULL,
+                 0x3ff0000000000000ULL,0x7fefffffffffffffULL}) {
+    auto next=dt::MakeDatatypeSortKey({Present(bits)});
+    Check(previous.ok() && next.ok() && previous.sort_key<next.sort_key,"native sort monotonicity");
+    previous=std::move(next);
   }
-
-  const auto key = dt::MakeDatatypeSortKey({present});
-  const auto null_key = dt::MakeDatatypeSortKey({null_value});
-  const auto hash = dt::HashDatatypeValue({present});
-  const auto null_hash = dt::HashDatatypeValue({null_value});
-  const auto display = dt::RenderDatatypeValueForDisplay({present});
-  const auto null_display = dt::RenderDatatypeValueForDisplay({null_value});
-  const auto serialized = dt::SerializeDatatypeValue({present});
-  Check(!key.ok() && key.sort_key.empty() &&
-            key.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_SORT_KEY_REJECTED" &&
-            DiagnosticDetail(key.diagnostic) ==
-                "real64_sort_key_policy_unresolved" &&
-            !null_key.ok() && null_key.sort_key.empty() &&
-            null_key.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_SORT_KEY_REJECTED" &&
-            DiagnosticDetail(null_key.diagnostic) ==
-                "real64_sort_key_policy_unresolved" &&
-            !hash.ok() && hash.stable_hash_hex.empty() &&
-            hash.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_HASH_REJECTED" &&
-            DiagnosticDetail(hash.diagnostic) ==
-                "real64_hash_policy_unresolved" &&
-            !null_hash.ok() && null_hash.stable_hash_hex.empty() &&
-            null_hash.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_HASH_REJECTED" &&
-            DiagnosticDetail(null_hash.diagnostic) ==
-                "real64_hash_policy_unresolved" &&
-            !display.ok() && display.canonical_type_name.empty() &&
-            display.display_value.empty() &&
-            display.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_DISPLAY_RENDER_REJECTED" &&
-            DiagnosticDetail(display.diagnostic) ==
-                "real64_display_policy_unresolved" &&
-            !null_display.ok() &&
-            null_display.canonical_type_name.empty() &&
-            null_display.display_value.empty() &&
-            null_display.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_DISPLAY_RENDER_REJECTED" &&
-            DiagnosticDetail(null_display.diagnostic) ==
-                "real64_display_policy_unresolved" &&
-            !serialized.ok() && serialized.serialized_value.empty() &&
-            serialized.descriptor.canonical_type_id == 0 &&
-            serialized.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_SERIALIZATION_REJECTED" &&
-            DiagnosticDetail(serialized.diagnostic) ==
-                "real64_present_value_policy_unresolved",
-        "real64 key, hash, display, and PRESENT serialization fail closed");
-
+  for(auto bits:{0x7ff0000000000000ULL,0x7ff8000000000001ULL,0xfff0000000000001ULL}) {
+    auto special=Present(bits);
+    Check(!dt::HashDatatypeValue({special}).ok() && !dt::MakeDatatypeSortKey({special}).ok(),
+          "default finite hash and order refuse specials");
+    auto identity=cast(special,T::real64);
+    Check(!identity.ok(),"default numeric identity requires special admission");
+  }
+  Check(dt::RenderDatatypeValueForDisplay({present}).display_value=="1.5","display uses explicit decimal boundary");
+  Check(dt::RenderDatatypeValueForDisplay({negative_zero}).display_value=="-0","display preserves signed zero");
+  Check(dt::RenderDatatypeValueForDisplay({TypedNull()}).display_value=="NULL","display NULL");
+  const auto serialized=dt::SerializeDatatypeValue({present});
   dt::DatatypeDeserializationRequest restore;
-  restore.expected_type_id = dt::CanonicalTypeId::real64;
-  restore.expected_descriptor = present.descriptor;
-  restore.serialized_value = "SBDV1;type=real64;state=value;payload=0ff06996c33c5aa5";
-  const auto restored = dt::DeserializeDatatypeValue(restore);
-  Check(!restored.ok() &&
-            restored.value.type_id == dt::CanonicalTypeId::unknown &&
-            restored.value.encoded_value.empty() && !restored.value.is_null &&
-            restored.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_DESERIALIZATION_REJECTED" &&
-            DiagnosticDetail(restored.diagnostic) ==
-                "real64_present_value_policy_unresolved",
-        "generic framing cannot re-admit a PRESENT real64 operation value");
-
-  for (const auto& invalid_expected_descriptor :
-       {scratchbird::engine::ExecutionTypeDescriptor{},
-        label_only_present.descriptor, character_descriptor,
-        mismatched.descriptor}) {
-    auto invalid_restore = restore;
-    invalid_restore.expected_descriptor = invalid_expected_descriptor;
-    const auto invalid_result =
-        dt::DeserializeDatatypeValue(invalid_restore);
-    Check(!invalid_result.ok() &&
-              invalid_result.value.type_id == dt::CanonicalTypeId::unknown &&
-              invalid_result.value.encoded_value.empty() &&
-              !invalid_result.value.is_null &&
-              invalid_result.diagnostic.diagnostic_code ==
-                  "DATATYPE.DESCRIPTOR.INVALID",
-          "invalid real64 deserialize descriptor precedes semantic policy");
-  }
-
-  auto malformed_hex_restore = restore;
-  malformed_hex_restore.serialized_value =
-      "SBDV1;type=real64;state=value;payload=zz";
-  const auto malformed_hex =
-      dt::DeserializeDatatypeValue(malformed_hex_restore);
-  auto invalid_descriptor_malformed_hex = malformed_hex_restore;
-  invalid_descriptor_malformed_hex.expected_descriptor = character_descriptor;
-  const auto invalid_descriptor_first =
-      dt::DeserializeDatatypeValue(invalid_descriptor_malformed_hex);
-  for (const auto& non_exact_descriptor :
-       {scratchbird::engine::ExecutionTypeDescriptor{},
-        label_only_present.descriptor, mismatched.descriptor}) {
-    auto non_exact_malformed_hex = malformed_hex_restore;
-    non_exact_malformed_hex.expected_descriptor = non_exact_descriptor;
-    const auto descriptor_precedence =
-        dt::DeserializeDatatypeValue(non_exact_malformed_hex);
-    Check(!descriptor_precedence.ok() &&
-              descriptor_precedence.value.type_id ==
-                  dt::CanonicalTypeId::unknown &&
-              descriptor_precedence.value.encoded_value.empty() &&
-              !descriptor_precedence.value.is_null &&
-              descriptor_precedence.diagnostic.diagnostic_code ==
-                  "DATATYPE.DESCRIPTOR.INVALID" &&
-              DiagnosticDetail(descriptor_precedence.diagnostic) ==
-                  "expected_descriptor_invalid",
-          "non-exact real64 descriptor precedes malformed payload hex");
-  }
-  Check(!malformed_hex.ok() &&
-            malformed_hex.value.type_id == dt::CanonicalTypeId::unknown &&
-            malformed_hex.value.encoded_value.empty() &&
-            malformed_hex.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_DESERIALIZATION_REJECTED" &&
-            DiagnosticDetail(malformed_hex.diagnostic) ==
-                "payload_hex_invalid" &&
-            !invalid_descriptor_first.ok() &&
-            invalid_descriptor_first.value.type_id ==
-                dt::CanonicalTypeId::unknown &&
-            invalid_descriptor_first.value.encoded_value.empty() &&
-            invalid_descriptor_first.diagnostic.diagnostic_code ==
-                "DATATYPE.DESCRIPTOR.INVALID" &&
-            DiagnosticDetail(invalid_descriptor_first.diagnostic) ==
-                "expected_descriptor_invalid",
-        "real64 deserialization preserves descriptor and frame precedence");
-
-  for (const auto payload : {std::string_view{"00"},
-                             std::string_view{"00000000"},
-                             std::string_view{"00000000000000"},
-                             std::string_view{"000000000000000000"}}) {
-    auto wrong_width_restore = restore;
-    wrong_width_restore.serialized_value =
-        "SBDV1;type=real64;state=value;payload=" + std::string(payload);
-    const auto wrong_width =
-        dt::DeserializeDatatypeValue(wrong_width_restore);
-    Check(!wrong_width.ok() &&
-              wrong_width.value.type_id == dt::CanonicalTypeId::unknown &&
-              wrong_width.value.encoded_value.empty() &&
-              wrong_width.diagnostic.diagnostic_code ==
-                  "SB_DATATYPE_DESERIALIZATION_REJECTED" &&
-              DiagnosticDetail(wrong_width.diagnostic) ==
-                  "real64_present_value_policy_unresolved",
-          "wrong-width real64 generic frames cannot gain semantic admission");
-  }
-
-  dt::DatatypeSetDescriptor set_descriptor;
-  set_descriptor.element_type_id = dt::CanonicalTypeId::real64;
-  set_descriptor.element_descriptor = present.descriptor;
-  const auto encoded_set = dt::EncodeSetValue(set_descriptor, {present});
-  const auto empty_set = dt::EncodeSetValue(set_descriptor, {});
-  Check(!encoded_set.ok() && encoded_set.encoded_set.empty() &&
-            encoded_set.value.type_id == dt::CanonicalTypeId::unknown &&
-            encoded_set.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_SET_OPERATION_REJECTED" &&
-            DiagnosticDetail(encoded_set.diagnostic) ==
-                "real64_set_semantics_policy_unresolved" &&
-            !empty_set.ok() && empty_set.encoded_set.empty() &&
-            empty_set.value.type_id == dt::CanonicalTypeId::unknown &&
-            empty_set.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_SET_OPERATION_REJECTED" &&
-            DiagnosticDetail(empty_set.diagnostic) ==
-                "real64_set_semantics_policy_unresolved",
-        "PRESENT and empty real64 set construction refuse at policy");
-
-  auto nullable_set_descriptor = set_descriptor;
-  nullable_set_descriptor.allow_null_elements = true;
-  const auto typed_null_set = dt::EncodeSetValue(
-      nullable_set_descriptor, {null_value});
-  const auto duplicate_null_set = dt::EncodeSetValue(
-      nullable_set_descriptor, {null_value, null_value});
-  Check(!typed_null_set.ok() && typed_null_set.encoded_set.empty() &&
-            typed_null_set.value.type_id == dt::CanonicalTypeId::unknown &&
-            DiagnosticDetail(typed_null_set.diagnostic) ==
-                "real64_set_semantics_policy_unresolved" &&
-            !duplicate_null_set.ok() &&
-            duplicate_null_set.encoded_set.empty() &&
-            duplicate_null_set.value.type_id == dt::CanonicalTypeId::unknown &&
-            DiagnosticDetail(duplicate_null_set.diagnostic) ==
-                "real64_set_semantics_policy_unresolved",
-        "typed-NULL-only real64 sets refuse before deduplication or grouping");
-
-  const std::string valid_frame = RealSetFrame(
-      present.descriptor, "V" + LowerHex(present.encoded_value));
-
-  for (const auto& invalid_descriptor :
-       {scratchbird::engine::ExecutionTypeDescriptor{},
-        label_only_present.descriptor, character_descriptor}) {
-    auto invalid_set_descriptor = set_descriptor;
-    invalid_set_descriptor.element_descriptor = invalid_descriptor;
-    const auto encoded = dt::EncodeSetValue(invalid_set_descriptor, {});
-    dt::DatatypeSetOperationRequest request;
-    request.operation = dt::DatatypeSetOperationKind::membership;
-    request.descriptor = invalid_set_descriptor;
-    request.left_encoded_set = "malformed-must-not-win";
-    request.right_value = present;
-    const auto applied = dt::ApplySetOperation(request);
-    const bool valid_failure =
-        !encoded.ok() && encoded.encoded_set.empty() &&
-              encoded.diagnostic.diagnostic_code ==
-                  "DATATYPE.DESCRIPTOR.INVALID" &&
-              DiagnosticDetail(encoded.diagnostic) ==
-                  "set_element_descriptor_invalid" &&
-              !applied.ok() && applied.encoded_set.empty() &&
-              applied.value.type_id == dt::CanonicalTypeId::unknown &&
-              applied.diagnostic.diagnostic_code ==
-                  "DATATYPE.DESCRIPTOR.INVALID" &&
-              DiagnosticDetail(applied.diagnostic) ==
-                  "set_element_descriptor_invalid";
-    Check(valid_failure,
-          "real64 set descriptor failure precedes frame or semantic policy: " +
-              encoded.diagnostic.diagnostic_code + "/" +
-              DiagnosticDetail(encoded.diagnostic) + " versus " +
-              applied.diagnostic.diagnostic_code + "/" +
-              DiagnosticDetail(applied.diagnostic));
-  }
-
-  for (const auto operation : {dt::DatatypeSetOperationKind::membership,
-                               dt::DatatypeSetOperationKind::equals,
-                               dt::DatatypeSetOperationKind::subset,
-                               dt::DatatypeSetOperationKind::superset,
-                               dt::DatatypeSetOperationKind::cardinality}) {
-    dt::DatatypeSetOperationRequest request;
-    request.operation = operation;
-    request.descriptor = set_descriptor;
-    request.left_encoded_set = valid_frame;
-    request.right_value = present;
-    request.right_encoded_set = valid_frame;
-    const auto result = dt::ApplySetOperation(request);
-    Check(!result.ok() && result.encoded_set.empty() &&
-              result.value.type_id == dt::CanonicalTypeId::unknown &&
-              result.value.encoded_value.empty() &&
-              DiagnosticDetail(result.diagnostic) ==
-                  "real64_set_semantics_policy_unresolved",
-          "a valid real64 set frame reaches only unresolved-policy refusal");
-  }
-
-  for (const auto operation : {dt::DatatypeSetOperationKind::equals,
-                               dt::DatatypeSetOperationKind::subset,
-                               dt::DatatypeSetOperationKind::superset}) {
-    dt::DatatypeSetOperationRequest malformed_right;
-    malformed_right.operation = operation;
-    malformed_right.descriptor = set_descriptor;
-    malformed_right.left_encoded_set = valid_frame;
-    malformed_right.right_encoded_set = "malformed-right-frame";
-    const auto malformed = dt::ApplySetOperation(malformed_right);
-
-    auto mismatched_right = malformed_right;
-    mismatched_right.right_encoded_set = RealSetFrame(
-        present.descriptor, "V" + LowerHex(present.encoded_value),
-        false, true);
-    const auto descriptor_mismatch =
-        dt::ApplySetOperation(mismatched_right);
-    Check(!malformed.ok() && malformed.encoded_set.empty() &&
-              malformed.value.type_id == dt::CanonicalTypeId::unknown &&
-              malformed.diagnostic.diagnostic_code ==
-                  "SB_DATATYPE_SET_OPERATION_REJECTED" &&
-              DiagnosticDetail(malformed.diagnostic) ==
-                  "right_set_encoding_invalid" &&
-              !descriptor_mismatch.ok() &&
-              descriptor_mismatch.encoded_set.empty() &&
-              descriptor_mismatch.value.type_id ==
-                  dt::CanonicalTypeId::unknown &&
-              descriptor_mismatch.diagnostic.diagnostic_code ==
-                  "DATATYPE.DESCRIPTOR.INVALID" &&
-              DiagnosticDetail(descriptor_mismatch.diagnostic) ==
-                  "right_set_descriptor_mismatch",
-          "real64 binary set operations validate the right frame first");
-  }
-
-  const auto membership = [&](const dt::DatatypeOperationValue& value,
-                              const dt::DatatypeSetDescriptor& descriptor =
-                                  dt::DatatypeSetDescriptor{}) {
-    dt::DatatypeSetOperationRequest request;
-    request.operation = dt::DatatypeSetOperationKind::membership;
-    request.descriptor =
-        descriptor.element_type_id == dt::CanonicalTypeId::unknown
-            ? set_descriptor
-            : descriptor;
-    request.left_encoded_set = valid_frame;
-    request.right_value = value;
-    return dt::ApplySetOperation(request);
-  };
-
-  dt::DatatypeSetOperationRequest nullable_null_membership;
-  nullable_null_membership.operation =
-      dt::DatatypeSetOperationKind::membership;
-  nullable_null_membership.descriptor = nullable_set_descriptor;
-  nullable_null_membership.left_encoded_set =
-      RealSetFrame(present.descriptor, "N", true);
-  nullable_null_membership.right_value = null_value;
-  const auto nullable_null_membership_result =
-      dt::ApplySetOperation(nullable_null_membership);
-  Check(!nullable_null_membership_result.ok() &&
-            nullable_null_membership_result.encoded_set.empty() &&
-            nullable_null_membership_result.value.type_id ==
-                dt::CanonicalTypeId::unknown &&
-            nullable_null_membership_result.value.encoded_value.empty() &&
-            nullable_null_membership_result.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_SET_OPERATION_REJECTED" &&
-            DiagnosticDetail(nullable_null_membership_result.diagnostic) ==
-                "real64_set_semantics_policy_unresolved",
-        "nullable clean real64 NULL membership reaches policy refusal");
-
-  dt::DatatypeOperationValue wrong_type{
-      dt::CanonicalTypeId::character, "x", false};
-  wrong_type.descriptor = DescriptorFor(dt::CanonicalTypeId::character);
-  const auto wrong_type_result = membership(wrong_type);
-  auto missing_membership_descriptor = present;
-  missing_membership_descriptor.descriptor = {};
-  const auto missing_descriptor_result =
-      membership(missing_membership_descriptor);
-  const auto wrong_descriptor_result = membership(mismatched);
-  auto dirty_null = null_value;
-  dirty_null.encoded_value = Carrier(0);
-  const auto dirty_null_result = membership(dirty_null);
-  const auto null_disallowed_result = membership(null_value);
-  Check(!wrong_type_result.ok() &&
-            wrong_type_result.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_SET_OPERATION_REJECTED" &&
-            DiagnosticDetail(wrong_type_result.diagnostic) ==
-                "set_membership_type_mismatch" &&
-            !missing_descriptor_result.ok() &&
-            missing_descriptor_result.diagnostic.diagnostic_code ==
-                "DATATYPE.DESCRIPTOR.INVALID" &&
-            DiagnosticDetail(missing_descriptor_result.diagnostic) ==
-                "set_membership_descriptor_mismatch" &&
-            !wrong_descriptor_result.ok() &&
-            wrong_descriptor_result.diagnostic.diagnostic_code ==
-                "DATATYPE.DESCRIPTOR.INVALID" &&
-            DiagnosticDetail(wrong_descriptor_result.diagnostic) ==
-                "set_membership_descriptor_mismatch" &&
-            !dirty_null_result.ok() &&
-            dirty_null_result.diagnostic.diagnostic_code ==
-                "DATATYPE.NULL_STATE.INVALID" &&
-            DiagnosticDetail(dirty_null_result.diagnostic) ==
-                "set_membership_null_state_invalid" &&
-            !null_disallowed_result.ok() &&
-            null_disallowed_result.diagnostic.diagnostic_code ==
-                "DATATYPE.NULL_NOT_ADMITTED" &&
-            DiagnosticDetail(null_disallowed_result.diagnostic) ==
-                "set_membership_null_forbidden",
-        "real64 membership validates type, descriptor, and NULL state first");
-
-  for (const auto width : {1u, 2u, 4u, 7u, 9u}) {
-    auto malformed_present = present;
-    malformed_present.encoded_value.assign(width, '\0');
-    const auto result = membership(malformed_present);
-    Check(!result.ok() && result.encoded_set.empty() &&
-              result.value.type_id == dt::CanonicalTypeId::unknown &&
-              result.diagnostic.diagnostic_code ==
-                  "SB_DATATYPE_SET_OPERATION_REJECTED" &&
-              DiagnosticDetail(result.diagnostic) ==
-                  "set_membership_value_invalid",
-          "real64 membership rejects wrong-width PRESENT carrier before policy");
-  }
-
-  for (const auto malformed_item : {"V00", "V00000000", "V00000000000000", "V000000000000000000"}) {
-    const std::string malformed_frame =
-        RealSetFrame(present.descriptor, malformed_item);
-    for (const auto operation : {dt::DatatypeSetOperationKind::membership,
-                                 dt::DatatypeSetOperationKind::equals,
-                                 dt::DatatypeSetOperationKind::subset,
-                                 dt::DatatypeSetOperationKind::superset,
-                                 dt::DatatypeSetOperationKind::cardinality}) {
-      dt::DatatypeSetOperationRequest request;
-      request.operation = operation;
-      request.descriptor = set_descriptor;
-      request.left_encoded_set = malformed_frame;
-      request.right_value = present;
-      request.right_encoded_set = valid_frame;
-      const auto result = dt::ApplySetOperation(request);
-      Check(!result.ok() && result.encoded_set.empty() &&
-                result.value.type_id == dt::CanonicalTypeId::unknown &&
-                result.value.encoded_value.empty() &&
-                result.diagnostic.diagnostic_code ==
-                    "SB_DATATYPE_SET_OPERATION_REJECTED" &&
-                DiagnosticDetail(result.diagnostic) ==
-                    "left_set_encoding_invalid",
-            "wrong-width real64 set items refuse before semantic policy");
+  restore.expected_type_id=T::real64;restore.expected_descriptor=present.descriptor;
+  restore.serialized_value=serialized.serialized_value;
+  auto restored=dt::DeserializeDatatypeValue(restore);
+  Check(serialized.ok() && restored.ok() && restored.value.encoded_value==present.encoded_value,
+        "generic explicit frame roundtrip preserves native payload");
+  for(const auto& invalid_descriptor:{scratchbird::engine::ExecutionTypeDescriptor{},
+                                     label_only_present.descriptor,character_descriptor,mismatched.descriptor}) {
+    auto invalid=restore;invalid.expected_descriptor=invalid_descriptor;
+    for(const auto* payload:{"zz","000000000000f83f"}) {
+      invalid.serialized_value="SBDV1;type=real64;state=value;payload="+std::string(payload);
+      const auto failure=dt::DeserializeDatatypeValue(invalid);
+      Check(!failure.ok() && failure.value.encoded_value.empty() &&
+                failure.diagnostic.diagnostic_code=="DATATYPE.DESCRIPTOR.INVALID",
+            "descriptor rejection precedes malformed frame payload");
     }
   }
+  for(const auto* payload:{"zz","","00","00000000","00000000000000","000000000000000000"}) {
+    auto invalid=restore;invalid.serialized_value="SBDV1;type=real64;state=value;payload="+std::string(payload);
+    auto failure=dt::DeserializeDatatypeValue(invalid);
+    Check(!failure.ok() && failure.value.encoded_value.empty(),"malformed width and hex refuse without value");
+  }
+  dt::DatatypeExtractRequest extract;extract.value=present;extract.field="unsupported";
+  Check(!dt::ExtractDatatypeField(extract).ok(),"REAL64 has no arbitrary extract fields");
+
+  dt::DatatypeSetDescriptor descriptor;descriptor.element_type_id=T::real64;descriptor.element_descriptor=present.descriptor;
+  const auto set=dt::EncodeSetValue(descriptor,{zero,negative_zero,one,present});
+  Check(set.ok() && dt::EncodeSetValue(descriptor,{}).ok(),"real64 set values and empty set admitted");
+  for(auto operation:{dt::DatatypeSetOperationKind::equals,dt::DatatypeSetOperationKind::subset,
+                      dt::DatatypeSetOperationKind::superset,dt::DatatypeSetOperationKind::membership}) {
+    dt::DatatypeSetOperationRequest request;
+    request.operation=operation;request.descriptor=descriptor;
+    request.left_encoded_set=set.encoded_set;request.right_encoded_set=set.encoded_set;request.right_value=negative_zero;
+    auto result=dt::ApplySetOperation(request);
+    Check(result.ok() && result.value.encoded_value==std::string(1,'\1'),"native set semantics and zero membership");
+    for(const auto* malformed_item:{"V00","V00000000","V00000000000000","V000000000000000000","Vzz",
+                                    "V010000000000f87f"}) {
+      request.left_encoded_set=RealSetFrame(present.descriptor,malformed_item);
+      result=dt::ApplySetOperation(request);
+      Check(!result.ok() && result.value.encoded_value.empty(),"malformed/special set item rejected before effects");
+    }
+    request.left_encoded_set=set.encoded_set;
+    if(operation!=dt::DatatypeSetOperationKind::membership) {
+      request.right_encoded_set="malformed";
+      Check(!dt::ApplySetOperation(request).ok(),"malformed right set rejected");
+    }
+  }
+  for(unsigned width:{0u,1u,2u,4u,7u,9u,16u}) {
+    auto malformed=present;malformed.encoded_value.assign(width,'\0');
+    Check(!cast(malformed,T::real64).ok() && !dt::CompareDatatypeValues({malformed,one}).ok() &&
+              !dt::MakeDatatypeSortKey({malformed}).ok() && !dt::HashDatatypeValue({malformed}).ok() &&
+              !dt::SerializeDatatypeValue({malformed}).ok() &&
+              !dt::RenderDatatypeValueForDisplay({malformed}).ok(),"all scalar surfaces reject wrong widths");
+    Check(!dt::EncodeSetValue(descriptor,{malformed}).ok(),"set encoding rejects wrong native widths");
+    dt::DatatypeNumericOperationRequest numeric;
+    numeric.type_id=T::real64;numeric.left=malformed;numeric.result_descriptor=present.descriptor;
+    const auto bad_numeric=dt::ApplyNumericOperation(numeric);
+    Check(!bad_numeric.ok() && bad_numeric.diagnostic.diagnostic_code=="NUMERIC.ENCODING.NONCANONICAL" &&
+              bad_numeric.numeric_facts.invalid && bad_numeric.value.encoded_value.empty(),
+          "malformed numeric carrier has exact encoding diagnostic and no substitute value");
+  }
+  auto nullable=descriptor;nullable.allow_null_elements=true;nullable.element_descriptor=TypedNull().descriptor;
+  Check(dt::EncodeSetValue(nullable,{TypedNull()}).ok(),"nullable set preserves external NULL");
+  Check(!dt::EncodeSetValue(descriptor,{TypedNull()}).ok(),"nonnullable set refuses NULL");
+  Check(!dt::EncodeSetValue(descriptor,{Present(0x7ff8000000000001ULL)}).ok(),"set rejects unadmitted NaN");
 }
 
 std::uint32_t OraclePhysicalChecksum(
@@ -1562,7 +1076,7 @@ int main() {
   CarrierAndLowerCodecs();
   DescriptorEnvelope();
   NullStateAndDescriptors();
-  PresentSemanticSurfacesRefuse();
+  PresentSemanticSurfacesWork();
   Persistence();
   std::cout << "base real64 carrier/state checks=" << checks
             << " failures=" << failures << '\n';

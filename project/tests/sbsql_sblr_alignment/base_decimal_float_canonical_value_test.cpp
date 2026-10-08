@@ -681,7 +681,7 @@ void PresentSemanticSurfacesRefuse() {
         : candidate.type_id == dt::CanonicalTypeId::real32
             ? "real32_present_cast_policy_unresolved"
         : candidate.type_id == dt::CanonicalTypeId::real64
-            ? "real64_present_cast_policy_unresolved"
+            ? "real64_cast_pair_not_admitted"
         : candidate.type_id == dt::CanonicalTypeId::decimal
             ? "decimal_present_cast_policy_unresolved"
             : "decimal_float_present_cast_policy_unresolved";
@@ -726,6 +726,7 @@ void PresentSemanticSurfacesRefuse() {
                   ? "decimal_cross_type_typed_null_cast_policy_unresolved"
                   : "decimal_float_cross_type_typed_null_cast_policy_unresolved";
           switch (candidate.type_id) {
+            case dt::CanonicalTypeId::real64: null_detail = "real64_cast_pair_not_admitted"; break;
             case dt::CanonicalTypeId::uuid: null_detail = "uuid_cross_type_typed_null_cast_policy_unresolved"; break;
             case dt::CanonicalTypeId::ip_address: null_detail = "ip_address_cross_type_typed_null_cast_policy_unresolved"; break;
             case dt::CanonicalTypeId::network_prefix: null_detail = "network_prefix_cross_type_typed_null_cast_policy_unresolved"; break;

@@ -110,17 +110,7 @@ bool MaterializePayload(const api::EngineTypedValue& value,
       break;
     }
     case dt::CanonicalTypeId::real64:
-      if (!binary) {
-        double real{};
-        const auto parsed = std::from_chars(value.encoded_value.data(),
-            value.encoded_value.data() + value.encoded_value.size(), real);
-        if (parsed.ec != std::errc{} ||
-            parsed.ptr != value.encoded_value.data() + value.encoded_value.size()) return false;
-        const auto bits = std::bit_cast<std::uint64_t>(real);
-        payload->resize(8);
-        for (std::size_t i = 0; i < 8; ++i)
-          (*payload)[i] = static_cast<std::uint8_t>(bits >> (8 * i));
-      }
+      if (!binary || value.binary_value.size()!=8) return false;
       break;
     case dt::CanonicalTypeId::timestamp:
       if (!binary) {

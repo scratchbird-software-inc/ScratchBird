@@ -56,7 +56,7 @@ int main() {
   const auto catalog=d::CanonicalDiagnosticCodeCatalog();
   // Includes native bulk policy, shutdown identity and retained agent notices. Check the
   // exact admitted Core import, not a minimum row count.
-  Check(catalog.size==1540 && catalog.data!=nullptr,"complete Core code inventory missing");
+  Check(catalog.size==1544 && catalog.data!=nullptr,"complete Core code inventory missing");
   Sample("MEMORY.LEAK_CLASSIFIED",S::informational,false,"not_applicable",
          "report_retention_preserve_ownership_and_operation_outcome","MEMORY");
   Sample("MEMORY.LEAK_SUSPECTED",S::warning,false,"not_applicable",
@@ -215,6 +215,10 @@ int main() {
   Sample("NUMERIC.REAL128.INVALID",S::error,true,"retry_only_with_corrected_input_or_context","reject_invalid_operation_or_report_unordered_comparison","NUMERIC");
   Sample("NUMERIC.REAL128.OVERFLOW",S::error,true,"retry_only_with_corrected_input_or_context","reject_without_numeric_value","NUMERIC");
   Sample("NUMERIC.REAL128.UNDERFLOW",S::warning,false,"not_applicable","preserve_rounded_value_and_underflow_inexact_facts","NUMERIC");
+  Sample("NUMERIC.REAL64.DIVIDE_BY_ZERO",S::error,true,"retry_only_with_corrected_input","reject_without_numeric_value","NUMERIC");
+  Sample("NUMERIC.REAL64.INVALID",S::error,true,"retry_only_with_corrected_input_or_context","reject_invalid_operation_or_report_unordered_comparison","NUMERIC");
+  Sample("NUMERIC.REAL64.OVERFLOW",S::error,true,"retry_only_with_corrected_input_or_context","reject_without_numeric_value","NUMERIC");
+  Sample("NUMERIC.REAL64.UNDERFLOW",S::warning,false,"not_applicable","preserve_rounded_value_and_underflow_inexact_facts","NUMERIC");
   Sample("STORAGE.CREATE_ARTIFACT_CONFLICT",S::error,true,
          "retry_only_after_corrected_artifact_ownership_and_fresh_admission",
          "preserve_existing_artifacts_without_creation_publication","STORAGE");
@@ -323,7 +327,7 @@ int main() {
     Check(found==nullptr,"unknown code was invented, normalized or guessed");
   }
   constexpr std::array<std::uint8_t,32> expected_source{
-    0x8d,0x06,0x58,0xa9,0xca,0xb9,0xd9,0x0c,0xd0,0xa5,0x42,0x78,0xbf,0x6e,0xbb,0x72,0x59,0xc2,0x3e,0x1a,0xd5,0x60,0x87,0xf2,0x60,0x8e,0xd7,0x9d,0x25,0x5f,0x9c,0x94};
+    0x3d,0xef,0xf7,0x91,0xcc,0xc3,0xb6,0x77,0xf5,0xb8,0x3f,0xe0,0x37,0xe1,0x38,0x34,0xdf,0x7b,0x1a,0x38,0x64,0xb9,0xb5,0x69,0x5e,0xbf,0xb0,0x21,0xe3,0xc1,0x15,0x9f};
   Check(d::CanonicalDiagnosticCodeSourceSha256()==expected_source,"Core source provenance differs");
   std::cout<<"canonical_diagnostic_catalog rows="<<catalog.size<<" checks="<<checks
            <<" failures="<<failures<<'\n';
