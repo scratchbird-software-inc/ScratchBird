@@ -149,6 +149,14 @@ struct DatatypeBinaryViewResult {
 DatatypeBinaryViewResult ValidateDatatypeBinaryValueView(
     const DatatypeBinaryValueView& value);
 
+struct DatatypeTypeCodecIdentityRowV1;
+// Historical UTC component validation only. Revalidates the entire supplied
+// immutable registry row; never grants current local-civil/V3 authority. The
+// containing owner must independently admit its live receipt and nullability.
+DatatypeBinaryViewResult ValidateHistoricalTimestampUtcValueViewV1(
+    const DatatypeTypeCodecIdentityRowV1& identity,
+    const DatatypeBinaryValueView& value);
+
 // Writes the unchanged SBDVAL01 envelope to caller-owned capacity. Validation
 // and capacity failure leave destination bytes unchanged. Successful writes
 // affect exactly bytes_written bytes; payload/destination overlap is allowed.
@@ -170,6 +178,16 @@ struct DatatypeBinaryDecodedViewResult {
 // such as typed result packets must separately forbid that role when required.
 // Refusal exposes no payload view. No payload-sized temporary is allocated.
 DatatypeBinaryDecodedViewResult DecodeDatatypeBinaryValueView(
+    const byte* encoded, std::size_t encoded_bytes);
+
+// Frozen SBDVAL01 framing composed with the bound historical UTC validator.
+// Encode failure leaves destination unchanged; decode failure exposes no view.
+DatatypeBinaryViewResult EncodeHistoricalTimestampUtcValueIntoV1(
+    const DatatypeTypeCodecIdentityRowV1& identity,
+    const DatatypeBinaryValueView& value, byte* destination,
+    std::size_t destination_bytes);
+DatatypeBinaryDecodedViewResult DecodeHistoricalTimestampUtcValueViewV1(
+    const DatatypeTypeCodecIdentityRowV1& identity,
     const byte* encoded, std::size_t encoded_bytes);
 
 }  // namespace scratchbird::core::datatypes

@@ -4,6 +4,9 @@
 #include "engine/sblr/canonical_query_result_values.hpp"
 #include "sbl_numeric.hpp"
 #include "datatype_binary.hpp"
+#include "datatype_binary_view.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "canonical_utf8.hpp"
 #include "wire/typed_update_carrier_codec.hpp"
 
@@ -12,6 +15,7 @@
 #include <chrono>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 
@@ -126,6 +130,39 @@ void Reject(std::size_t type, Mutation mutation, const char* code = "DATATYPE.DE
 }
 
 int main() try {
+  Fixture historical_timestamp(13);
+  const auto historical_identity = dt::LookupDatatypeTypeCodecIdentityV1(
+      historical_timestamp.context.datatype_catalog_snapshot_uuid, 4, 4,
+      vectors[13].descriptor, 1);
+  Check(historical_identity.ok, "historical UTC exact registry identity");
+  std::array<std::uint8_t,48> historical_frame{};
+  const dt::DatatypeBinaryValueView historical_view{dt::CanonicalTypeId::timestamp,
+      false,false,vectors[13].bytes.data(),16};
+  const auto historical_encoded = dt::EncodeHistoricalTimestampUtcValueIntoV1(
+      historical_identity.row,historical_view,historical_frame.data(),historical_frame.size());
+  Check(historical_encoded.ok() && historical_encoded.bytes_written == historical_frame.size(),
+        "bound historical UTC SBDVAL frame encoded: " +
+        historical_encoded.diagnostic.diagnostic_code + ":" +
+        historical_encoded.diagnostic.message_key);
+  const auto historical_decoded = dt::DecodeHistoricalTimestampUtcValueViewV1(
+      historical_identity.row,historical_frame.data(),historical_frame.size());
+  Check(historical_decoded.ok() && historical_decoded.value.payload_bytes == 16 &&
+        std::equal(vectors[13].bytes.begin(),vectors[13].bytes.end(),
+                   historical_decoded.value.payload_data), "bound historical UTC frame round trip");
+  for (unsigned size = 0; size < historical_frame.size(); ++size) {
+    std::array<std::uint8_t,48> target;
+    target.fill(0xa5);
+    const auto before = target;
+    Check(!dt::EncodeHistoricalTimestampUtcValueIntoV1(historical_identity.row,
+              historical_view,target.data(),size).ok() && target == before,
+          "historical UTC short destination remains untouched");
+    auto corrupt = historical_frame;
+    corrupt[size] ^= 1;
+    const auto rejected = dt::DecodeHistoricalTimestampUtcValueViewV1(
+        historical_identity.row,corrupt.data(),corrupt.size());
+    Check(!rejected.ok() && rejected.value.payload_data == nullptr &&
+          rejected.value.payload_bytes == 0, "historical UTC corrupt frame exposes no view");
+  }
   // Independent Gregorian calendar oracle, not the production temporal parser.
   for (const int year : {1,4,100,400,1600,1900,1969,1970,2000,2100,2400,9999})
   for (unsigned month = 1; month <= 12; ++month)
@@ -170,9 +207,83 @@ int main() try {
     Check(f.Run() == (nanos < 1000000000U), "timestamp nanosecond range");
     dt::DatatypeBinaryValue value;
     value.type_id = dt::CanonicalTypeId::timestamp; value.payload = f.Value().binary_value;
-    Check(dt::ValidateDatatypeBinaryValue(value).ok() == (nanos < 1000000000U),
-          "timestamp generic binary validator uses same canonical range");
+    Check(dt::ValidateHistoricalTimestampUtcValueViewV1(historical_identity.row,
+              {value.type_id,false,false,value.payload.data(),value.payload.size()}).ok()
+              == (nanos < 1000000000U),
+          "bound historical timestamp validator uses same canonical range");
+    Check(!dt::ValidateDatatypeBinaryValue(value).ok(),
+          "enum-only timestamp cannot establish temporal profile authority");
   }
+  for (std::int64_t seconds : {std::numeric_limits<std::int64_t>::min(),
+                              std::int64_t{-185542587187201}, std::int64_t{-1},
+                              std::int64_t{0}, std::int64_t{185542587187200},
+                              std::numeric_limits<std::int64_t>::max()}) {
+    Fixture f(13,1,1,true);
+    for (unsigned i = 0; i < 8; ++i)
+      f.Value().binary_value[i] = static_cast<std::uint64_t>(seconds) >> (8*i);
+    Check(f.Run(), "historical UTC seconds are not current civil coordinates");
+    Check(f.shape.query_values->rows[0].cells[0].canonical_payload == f.Value().binary_value,
+          "historical UTC full signed domain preserved exactly");
+  }
+  for (unsigned mutation = 0; mutation < 18; ++mutation) {
+    auto identity = historical_identity.row;
+    switch (mutation) {
+      case 0: identity.catalog_snapshot_uuid = {}; break;
+      case 1: ++identity.catalog_generation; break;
+      case 2: ++identity.registry_generation; break;
+      case 3: identity.descriptor_uuid = {}; break;
+      case 4: ++identity.descriptor_generation; break;
+      case 5: identity.type_uuid = {}; break;
+      case 6: ++identity.type_generation; break;
+      case 7: identity.codec_uuid = {}; break;
+      case 8: ++identity.codec_generation; break;
+      case 9: ++identity.codec_version; break;
+      case 10: identity.codec_id += "wrong"; break;
+      case 11: --identity.canonical_value_bytes; break;
+      case 12: identity.canonical_name += "wrong"; break;
+      case 13: ++identity.canonical_binary_type_code; break;
+      case 14: identity.canonical_representation += "wrong"; break;
+      case 15: identity.null_supported = !identity.null_supported; break;
+      case 16: identity.numeric_context_generation = 1; break;
+      case 17: identity.comparison_profile += "wrong"; break;
+    }
+    for (bool null : {false,true}) {
+      const auto result = dt::ValidateHistoricalTimestampUtcValueViewV1(identity,
+          {dt::CanonicalTypeId::timestamp,null,false,
+           null ? nullptr : vectors[13].bytes.data(),null ? std::size_t{0} : std::size_t{16}});
+      Check(!result.ok() && result.diagnostic.diagnostic_code == "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+            "complete historical identity checked before present/NULL payload");
+    }
+    std::array<std::uint8_t,48> target;
+    target.fill(0xa5);
+    const auto before = target;
+    Check(!dt::EncodeHistoricalTimestampUtcValueIntoV1(identity,historical_view,
+              target.data(),target.size()).ok() && target == before,
+          "historical identity failure cannot modify frame destination");
+    const auto decoded = dt::DecodeHistoricalTimestampUtcValueViewV1(
+        identity,historical_frame.data(),historical_frame.size());
+    Check(!decoded.ok() && decoded.value.payload_data == nullptr &&
+          decoded.value.payload_bytes == 0,
+          "historical identity failure cannot expose decoded frame");
+  }
+  const auto current_identity = dt::LookupDatatypeTypeCodecIdentityV3(
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d710"),
+      10,10,vectors[13].descriptor,1);
+  Check(current_identity.ok, "current local-civil identity exists independently");
+  Check(!dt::ValidateHistoricalTimestampUtcValueViewV1(current_identity.row.legacy_fields,
+            {dt::CanonicalTypeId::timestamp,false,false,
+             vectors[13].bytes.data(),16}).ok(),
+        "current local-civil identity never admits historical UTC bytes");
+  for (const auto view : {
+       dt::DatatypeBinaryValueView{dt::CanonicalTypeId::timestamp,false,false,nullptr,16},
+       dt::DatatypeBinaryValueView{dt::CanonicalTypeId::timestamp,false,true,vectors[13].bytes.data(),16},
+       dt::DatatypeBinaryValueView{dt::CanonicalTypeId::timestamp,true,false,vectors[13].bytes.data(),16},
+       dt::DatatypeBinaryValueView{dt::CanonicalTypeId::timestamp,true,true,nullptr,0}})
+    Check(!dt::ValidateHistoricalTimestampUtcValueViewV1(historical_identity.row,view).ok(),
+          "historical UTC malformed borrowed/NULL/TOAST state refused");
+  Check(dt::ValidateHistoricalTimestampUtcValueViewV1(historical_identity.row,
+            {dt::CanonicalTypeId::timestamp,true,false,nullptr,0}).ok(),
+        "historical UTC clean containing NULL supported");
   for (unsigned mutation = 0; mutation < 6; ++mutation) {
     dt::DatatypeBinaryValue value;
     value.type_id = dt::CanonicalTypeId::geometry;
@@ -267,6 +378,26 @@ int main() try {
     descriptor.datatype_catalog_snapshot_uuid = f.metadata->datatype_catalog_snapshot_uuid;
     descriptor.datatype_catalog_generation = descriptor.datatype_registry_generation = f.context.datatype_catalog_generation;
     for (const auto& c : f.metadata->columns) descriptor.columns.push_back(c.transport);
+    if (type == 13) {
+      for (unsigned mutation = 0; mutation < 10; ++mutation) {
+        auto invalid = descriptor;
+        auto& column = invalid.columns[0];
+        switch (mutation) {
+          case 0: invalid.datatype_catalog_snapshot_uuid[15] ^= 1; break;
+          case 1: ++invalid.datatype_catalog_generation; break;
+          case 2: ++invalid.datatype_registry_generation; break;
+          case 3: column.descriptor_uuid[15] ^= 1; break;
+          case 4: ++column.descriptor_generation; break;
+          case 5: column.type_uuid[15] ^= 1; break;
+          case 6: ++column.type_generation; break;
+          case 7: column.codec_id += "wrong"; break;
+          case 8: ++column.codec_generation; break;
+          case 9: ++column.codec_version; break;
+        }
+        Check(!wire::EncodeTypedResultRowDescriptor(invalid).ok(),
+              "historical wire identity required independently of row/NULL count");
+      }
+    }
     const auto encoded_descriptor = wire::EncodeTypedResultRowDescriptor(descriptor);
     Check(encoded_descriptor.ok(), "all six registry codec widths encode including DECIMAL");
     const auto decoded_descriptor = wire::DecodeTypedResultRowDescriptor(encoded_descriptor.encoded);

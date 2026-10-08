@@ -148,6 +148,8 @@ struct DatatypeTypeCodecIdentityRowV1 {
   u64 comparison_policy_generation = 0;
   std::string comparison_profile;
   bool allow_special_values = false;
+
+  bool operator==(const DatatypeTypeCodecIdentityRowV1&) const = default;
 };
 
 struct DatatypeTypeCodecIdentityLookupV1 {

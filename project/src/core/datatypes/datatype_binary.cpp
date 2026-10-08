@@ -8,6 +8,7 @@
 
 #include "datatype_binary.hpp"
 #include "datatype_binary_view.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "canonical_utf8.hpp"
 #include "structured_value_codec.hpp"
 #include "sbl_numeric.hpp"
@@ -248,6 +249,7 @@ DatatypeBinaryViewResult MaterializeBinaryViewResult(
     const DatatypeBinaryAllocationFreeViewResult& source) {
   DatatypeBinaryViewResult result;
   result.status = source.status;
+  result.bytes_written = source.bytes_written;
   if (!source.ok()) {
     result.diagnostic = MaterializeBinaryDiagnostic(source.diagnostic);
   }
@@ -1020,6 +1022,75 @@ DecodeCanonicalBinaryValueViewNoAlloc(
     const DatatypeBinaryDiagnosticContextV1& context) noexcept {
   return DecodeCanonicalBinaryValueViewNoAllocCore(
       encoded, encoded_bytes, context, false);
+}
+
+DatatypeBinaryViewResult ValidateHistoricalTimestampUtcValueViewV1(
+    const DatatypeTypeCodecIdentityRowV1& identity,
+    const DatatypeBinaryValueView& value) {
+  constexpr platform::Uuid utc_codec{{0x01,0x9d,0,0,0,0,0x70,0,
+                                      0x80,0,0,0,0,0,0xd8,0x21}};
+  std::size_t matches = 0;
+  for (const auto& row : CurrentDatatypeTypeCodecIdentityRowsV1()) {
+    if (identity.catalog_snapshot_uuid == row.catalog_snapshot_uuid &&
+        identity.catalog_generation == row.catalog_generation &&
+        identity.registry_generation == row.registry_generation &&
+        identity.descriptor_uuid == row.descriptor_uuid &&
+        identity.descriptor_generation == row.descriptor_generation) {
+      if (identity != row) {
+        matches = 0;
+        break;
+      }
+      ++matches;
+    }
+  }
+  if (matches != 1 || identity.codec_uuid != utc_codec ||
+      identity.canonical_binary_type_code !=
+          static_cast<u32>(CanonicalTypeId::timestamp) ||
+      value.type_id != CanonicalTypeId::timestamp) {
+    return BinaryViewError("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+                           "datatype.timestamp.historical_utc_descriptor_invalid");
+  }
+  if (value.is_null) {
+    if (!identity.null_supported || value.payload_bytes != 0 ||
+        value.payload_is_toast_reference)
+      return BinaryViewError("DATATYPE.NULL_STATE.INVALID",
+                             "datatype.binary.null_has_payload");
+  } else if (value.payload_is_toast_reference || !value.payload_data ||
+             value.payload_bytes != 16 ||
+             LoadLittle32(value.payload_data + 8) >= 1'000'000'000U ||
+             LoadLittle32(value.payload_data + 12) != 0) {
+    return BinaryViewError("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+                           "datatype.timestamp.historical_utc_component_invalid");
+  }
+  // Every signed-i64 Unix second belongs to this historical component domain.
+  // Applying the current civil-day bounds would change the frozen UTC codec.
+  DatatypeBinaryViewResult result;
+  result.status = BinaryOkStatus();
+  return result;
+}
+
+DatatypeBinaryViewResult EncodeHistoricalTimestampUtcValueIntoV1(
+    const DatatypeTypeCodecIdentityRowV1& identity,
+    const DatatypeBinaryValueView& value, byte* destination,
+    std::size_t destination_bytes) {
+  auto validation = ValidateHistoricalTimestampUtcValueViewV1(identity, value);
+  if (!validation.ok()) return validation;
+  return MaterializeBinaryViewResult(EncodeDatatypeBinaryStructuralValueIntoNoAlloc(
+      value, destination, destination_bytes));
+}
+
+DatatypeBinaryDecodedViewResult DecodeHistoricalTimestampUtcValueViewV1(
+    const DatatypeTypeCodecIdentityRowV1& identity,
+    const byte* encoded, std::size_t encoded_bytes) {
+  const auto frame = DecodeDatatypeBinaryStructuralValueViewNoAlloc(encoded, encoded_bytes);
+  auto validation = frame.ok()
+      ? ValidateHistoricalTimestampUtcValueViewV1(identity, frame.value)
+      : MaterializeBinaryViewResult(frame);
+  DatatypeBinaryDecodedViewResult result;
+  result.status = validation.status;
+  result.diagnostic = std::move(validation.diagnostic);
+  if (result.ok()) result.value = frame.value;
+  return result;
 }
 
 DatatypeBinaryViewResult ValidateDatatypeBinaryValueView(const DatatypeBinaryValueView& value) {

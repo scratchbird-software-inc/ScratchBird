@@ -45,6 +45,7 @@ bool EncodeInteger(std::string_view text, std::vector<std::uint8_t>* payload) {
 
 bool MaterializePayload(const api::EngineTypedValue& value,
                         const api::EngineQueryResultColumnV1& column,
+                        const dt::DatatypeTypeCodecIdentityRowV1& identity,
                         std::uint64_t maximum_payload,
                         std::vector<std::uint8_t>* payload) {
   if (!value.binary_value.empty() && !value.encoded_value.empty()) return false;
@@ -174,8 +175,11 @@ bool MaterializePayload(const api::EngineTypedValue& value,
   if (payload->size() > maximum_payload ||
       (column.transport.canonical_value_bytes != 0 &&
        payload->size() != column.transport.canonical_value_bytes)) return false;
-  return dt::ValidateDatatypeBinaryValueView(
-      {type, false, false, payload->data(), payload->size()}).ok();
+  const dt::DatatypeBinaryValueView view{
+      type, false, false, payload->data(), payload->size()};
+  if (type == dt::CanonicalTypeId::timestamp)
+    return dt::ValidateHistoricalTimestampUtcValueViewV1(identity, view).ok();
+  return dt::ValidateDatatypeBinaryValueView(view).ok();
 }
 
 }  // namespace
@@ -216,6 +220,8 @@ bool PreserveCanonicalQueryResultValuesV1(
         ceiling > api::kMaximumTypedResultTransportBytesPerPacket)
       return refuse("query value packet ceiling is not engine admitted", "RESOURCE.BUDGET_EXCEEDED");
     std::map<std::string, std::uint32_t> occurrences;
+    std::vector<const dt::DatatypeTypeCodecIdentityRowV1*> identities;
+    identities.reserve(metadata->columns.size());
     std::uint64_t descriptor_bytes = wire::kTypedResultRowDescriptorHeaderBytes;
     for (std::size_t i = 0; i < metadata->columns.size(); ++i) {
       if (cancelled()) return refuse("query value publication cancelled", "PROCESS.CANCELLED");
@@ -231,12 +237,14 @@ bool PreserveCanonicalQueryResultValuesV1(
                : !shape->columns[i].collation_uuid.is_nil()))
         return refuse("query value column identity differs from engine schema");
       std::size_t matches = 0;
+      const dt::DatatypeTypeCodecIdentityRowV1* matched_identity = nullptr;
       for (const auto& identity : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
         if (identity.catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
             identity.catalog_generation != context.datatype_catalog_generation ||
             identity.registry_generation != context.datatype_registry_generation ||
             !SameUuid(identity.descriptor_uuid, transport.descriptor_uuid)) continue;
         ++matches;
+        matched_identity = &identity;
         if (identity.descriptor_generation != transport.descriptor_generation ||
             !SameUuid(identity.type_uuid, transport.type_uuid) ||
             identity.type_generation != transport.type_generation ||
@@ -247,6 +255,7 @@ bool PreserveCanonicalQueryResultValuesV1(
           return refuse("query value datatype codec differs from exact registry authority");
       }
       if (matches != 1) return refuse("query value datatype descriptor is absent or ambiguous");
+      identities.push_back(matched_identity);
       // Descriptor validity is independent of cardinality and SQL NULLs.
       if (transport.canonical_type_id == dt::CanonicalTypeId::decimal &&
           (!column.precision || !column.scale || *column.precision == 0 ||
@@ -294,7 +303,8 @@ bool PreserveCanonicalQueryResultValuesV1(
               (column.transport.canonical_type_id == dt::CanonicalTypeId::character &&
                value.encoded_value.size() > maximum_payload))
             return refuse("query cell cannot fit the live packet ceiling", "RESOURCE.BUDGET_EXCEEDED");
-          if (!MaterializePayload(value, column, maximum_payload, &cell.canonical_payload))
+          if (!MaterializePayload(value, column, *identities[i], maximum_payload,
+                                  &cell.canonical_payload))
             return refuse("query execution value is not canonical for its exact datatype codec;column=" +
                           std::to_string(i) + ";type=" + value.descriptor.canonical_type_name +
                           ";encoded_bytes=" + std::to_string(value.encoded_value.size()) +

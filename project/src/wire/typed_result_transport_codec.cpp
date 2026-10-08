@@ -12,6 +12,7 @@
 
 #include "datatype_binary.hpp"
 #include "datatype_binary_view.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "canonical_utf8.hpp"
 #include "sbl_numeric.hpp"
 #include "datatype_layout.hpp"
@@ -296,6 +297,29 @@ bool AddWithinLimit(u64 left, u64 right, u64 limit, u64* sum) {
   return true;
 }
 
+const datatypes::DatatypeTypeCodecIdentityRowV1* HistoricalTimestampIdentity(
+    const TypedResultRowDescriptor& descriptor,
+    const TypedResultColumnDescriptor& column) {
+  const datatypes::DatatypeTypeCodecIdentityRowV1* matched = nullptr;
+  for (const auto& identity : datatypes::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+    if (identity.catalog_snapshot_uuid.bytes != descriptor.datatype_catalog_snapshot_uuid ||
+        identity.catalog_generation != descriptor.datatype_catalog_generation ||
+        identity.registry_generation != descriptor.datatype_registry_generation ||
+        identity.descriptor_uuid.bytes != column.descriptor_uuid ||
+        identity.descriptor_generation != column.descriptor_generation) continue;
+    if (matched || identity.type_uuid.bytes != column.type_uuid ||
+        identity.type_generation != column.type_generation ||
+        identity.codec_id != column.codec_id ||
+        identity.codec_version != column.codec_version ||
+        identity.codec_generation != column.codec_generation ||
+        identity.canonical_value_bytes != column.canonical_value_bytes ||
+        identity.canonical_binary_type_code != static_cast<u32>(column.canonical_type_id))
+      return nullptr;
+    matched = &identity;
+  }
+  return matched;
+}
+
 DescriptorValidation ValidateDescriptor(
     const TypedResultRowDescriptor& descriptor) {
   if (InvalidPresentSystemUuid(descriptor.descriptor_uuid) ||
@@ -354,6 +378,10 @@ DescriptorValidation ValidateDescriptor(
     }
     const auto layout =
         datatypes::LookupDatatypeStorageLayout(column.canonical_type_id);
+    if (column.canonical_type_id == CanonicalTypeId::timestamp &&
+        !HistoricalTimestampIdentity(descriptor, column))
+      return {DescriptorValidationKind::datatype,
+              "timestamp_exact_historical_codec_binding_required"};
     if (!layout.ok()) {
       return {DescriptorValidationKind::datatype,
               "column_canonical_type_unsupported"};
@@ -1029,11 +1057,17 @@ TypedResultBatchCodecResult EncodeTypedResultBatchStorage(
       WriteCellHeader(cell, static_cast<u32>(value_bytes), rows.data() + cell_begin);
       const auto value_offset = rows.size();
       rows.resize(value_offset + static_cast<std::size_t>(value_bytes));
-      const auto encoded_value = datatypes::EncodeDatatypeBinaryValueInto(
-          {column.canonical_type_id,
+      const datatypes::DatatypeBinaryValueView view{column.canonical_type_id,
            cell.state == TypedResultValueState::sql_null, false,
-           cell.canonical_payload.data(), cell.canonical_payload.size()},
-          rows.data() + value_offset, static_cast<std::size_t>(value_bytes));
+           cell.canonical_payload.data(), cell.canonical_payload.size()};
+      const auto* historical = column.canonical_type_id == CanonicalTypeId::timestamp
+          ? HistoricalTimestampIdentity(canonical_descriptor, column) : nullptr;
+      const auto encoded_value = historical
+          ? datatypes::EncodeHistoricalTimestampUtcValueIntoV1(
+                *historical, view, rows.data() + value_offset,
+                static_cast<std::size_t>(value_bytes))
+          : datatypes::EncodeDatatypeBinaryValueInto(
+                view, rows.data() + value_offset, static_cast<std::size_t>(value_bytes));
       if (!encoded_value.ok() || encoded_value.bytes_written != value_bytes) {
         return BatchError(TypedResultCodecStatus::value_invalid,
                           kDatatypeDescriptorInvalid,
@@ -1309,8 +1343,12 @@ TypedResultPacketViewResult DecodeTypedResultPacketView(
                           kDatatypeDescriptorInvalid,
                           "datatype_value_envelope_forbidden_or_malformed");
       }
-      const auto decoded_value =
-          datatypes::DecodeDatatypeBinaryValueView(encoded_value, value_bytes);
+      const auto* historical = column.canonical_type_id == CanonicalTypeId::timestamp
+          ? HistoricalTimestampIdentity(canonical_descriptor, column) : nullptr;
+      const auto decoded_value = historical
+          ? datatypes::DecodeHistoricalTimestampUtcValueViewV1(
+                *historical, encoded_value, value_bytes)
+          : datatypes::DecodeDatatypeBinaryValueView(encoded_value, value_bytes);
       if (!decoded_value.ok() ||
           decoded_value.value.type_id != column.canonical_type_id ||
           decoded_value.value.payload_is_toast_reference ||
