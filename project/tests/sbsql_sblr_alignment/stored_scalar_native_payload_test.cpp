@@ -1,6 +1,14 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "engine/internal_api/mga_relation_store/stored_scalar_payload.hpp"
+#include "engine/public_abi_int64_payload.hpp"
+#include "wire/public_result_packet.hpp"
+#include "engine/sblr/sblr_projection_value_runtime.hpp"
+#include "engine/sblr/sblr_sequence_runtime.hpp"
+#include "engine/internal_api/dml/constraint_enforcement.hpp"
+#include "engine/internal_api/dml/dml_executable_trigger_runtime.hpp"
+#include "engine/functions/dispatch/function_dispatch.hpp"
+#include "engine/functions/registry/function_seed_registry.hpp"
 
 #include <array>
 #include <cstdlib>
@@ -95,10 +103,16 @@ void OtherCarriersAndState() {
   const std::array<std::string, 5> payloads{
       "", "<NULL>", std::string("\0\xff\r\n|", 5), std::string(16, '\0'), std::string(257, 'x')};
   for (const char* type : {"binary", "bytes", "blob", "BINARY", "ByTeS", "BLOB", "text", "int64"}) {
-    const bool binary = std::string_view(type) != "text" && std::string_view(type) != "int64";
+    const bool integer = std::string_view(type) == "int64";
+    const bool binary = std::string_view(type) != "text";
     const auto sentinel = Sentinel(type);
     for (const auto& bytes : payloads) {
       auto value = sentinel;
+      if (integer) {
+        Require(!api::RestoreStoredScalarPayloadV1(bytes, State::value, &value) && Equal(value, sentinel),
+                "INT64 accepted an invalid width or changed its output");
+        continue;
+      }
       Require(api::RestoreStoredScalarPayloadV1(bytes, State::value, &value), "scalar projection failed");
       const std::vector<std::uint8_t> expected(bytes.begin(), bytes.end());
       Require(value.descriptor == sentinel.descriptor && !value.is_null && value.state == State::value &&
@@ -131,9 +145,10 @@ void OtherCarriersAndState() {
           "absent type silently selected a text carrier");
 }
 void AliasAndAllocation() {
-  for (const char* type : {"text", "binary", "uuid"}) {
+  for (const char* type : {"text", "binary", "uuid", "int64"}) {
     auto value = Sentinel(type);
-    value.encoded_value = std::string(type == std::string_view("uuid") ? 16 : 257, 'q');
+    value.encoded_value = std::string(type == std::string_view("uuid") ? 16 :
+                                    type == std::string_view("int64") ? 8 : 257, 'q');
     const auto bytes = value.encoded_value;
     Require(api::RestoreStoredScalarPayloadV1(value.encoded_value, State::value, &value) &&
                 api::StoredScalarPayloadMatchesV1(value, bytes, State::value), "aliased text source was overwritten");
@@ -159,7 +174,245 @@ void AliasAndAllocation() {
     Require(completed && faults != 0, "allocation fault path was not exercised");
   }
 }
+void Int64Values() {
+  for (const char* type : {"int64", "INT64"}) {
+    const auto sentinel = Sentinel(type);
+    for (const auto& bytes : {std::string(8, '\0'), std::string(8, '\xff'),
+          std::string("\0\0\0\0\0\0\0\x80", 8),
+          std::string("\xff\xff\xff\xff\xff\xff\xff\x7f", 8),
+          std::string("12345678")}) {
+      auto value = sentinel;
+      Require(api::RestoreStoredScalarPayloadV1(bytes, State::value, &value) &&
+                  api::StoredScalarPayloadMatchesV1(value, bytes, State::value) &&
+                  value.binary_value == std::vector<std::uint8_t>(bytes.begin(), bytes.end()) &&
+                  value.encoded_value.empty(),
+              "INT64 zero, signed bound, -1 or text-looking binary pattern changed");
+    }
+    for (unsigned offset = 0; offset < 8; ++offset) {
+      for (unsigned octet = 0; octet < 256; ++octet) {
+        // Includes NULs and every octet at every position. No display parser
+        // or production encoder as oracle.
+        std::string bytes(8, '\0');
+        bytes[offset] = static_cast<char>(octet);
+        auto value = sentinel;
+        Require(api::RestoreStoredScalarPayloadV1(bytes, State::value, &value) &&
+                    value.descriptor == sentinel.descriptor && !value.is_null &&
+                    value.encoded_value.empty() && value.binary_value.size() == 8,
+                "INT64 restore did not preserve its native carrier and descriptor");
+        for (unsigned i = 0; i < 8; ++i)
+          Require(value.binary_value[i] == static_cast<unsigned char>(bytes[i]),
+                  "INT64 restore changed an octet");
+        Require(api::StoredScalarPayloadMatchesV1(value, bytes, State::value),
+                "INT64 native receipt did not match");
+        auto changed = bytes; changed[(offset + 1) % 8] ^= 1;
+        Require(!api::StoredScalarPayloadMatchesV1(value, changed, State::value),
+                "INT64 receipt accepted different bytes");
+        value.encoded_value = bytes;
+        Require(!api::StoredScalarPayloadMatchesV1(value, bytes, State::value),
+                "INT64 receipt accepted both payload arms");
+        value.binary_value.clear();
+        Require(!api::StoredScalarPayloadMatchesV1(value, bytes, State::value),
+                "INT64 receipt accepted the encoded arm");
+      }
+    }
+    for (unsigned length = 0; length <= 128; ++length) {
+      if (length == 8) continue;
+      auto value = sentinel;
+      const std::string bytes(length, '1');
+      Require(!api::RestoreStoredScalarPayloadV1(bytes, State::value, &value) && Equal(value, sentinel),
+              "INT64 invalid width accepted or changed output");
+      value.setState(State::value); value.encoded_value.clear();
+      value.binary_value.assign(bytes.begin(), bytes.end());
+      Require(!api::StoredScalarPayloadMatchesV1(value, bytes, State::value),
+              "INT64 receipt admitted a malformed native width");
+    }
+  }
+}
+void NativeRegisteredAggregate() {
+  namespace sblr = scratchbird::engine::sblr;
+  namespace functions = scratchbird::engine::functions;
+  const auto package = functions::BuildStandardFunctionSeedPackage();
+  const auto* entry = package.registry.Lookup("sb.aggregate.regr_count");
+  Require(entry != nullptr, "registered regression-count function missing");
+  for (unsigned null_mask = 0; null_mask < 4; ++null_mask) {
+    functions::FunctionCallRequest request;
+    request.context.function_uuid = entry->function_uuid;
+    request.context.security_allowed = request.context.policy_allowed = true;
+    for (unsigned ordinal = 0; ordinal < 2; ++ordinal) {
+      api::EngineProjectionFunctionArgument argument;
+      argument.type_name = "int64";
+      argument.descriptor.canonical_type_name = "int64";
+      if (null_mask & (1u << ordinal)) {
+        argument.is_null = true;
+        argument.state = State::sql_null;
+      } else {
+        argument.binary_value.assign(8, 0);
+        argument.binary_value[0] = static_cast<std::uint8_t>(ordinal + 2);
+      }
+      request.arguments.push_back({"arg" + std::to_string(ordinal),
+          sblr::SblrValueFromProjectionArgument(argument)});
+    }
+    const auto result = functions::DispatchFunctionCall(package.registry, std::move(request)).result;
+    Require(result.ok() && result.scalar_values.size() == 1 &&
+                sblr::ProjectionSblrValueResolved(result.scalar_values.front()),
+            "registered REGR_COUNT result rejected by the production projection bridge");
+    const auto value = sblr::EngineTypedValueFromSblrValue(result.scalar_values.front());
+    std::vector<std::uint8_t> expected(8, 0);
+    expected[0] = null_mask == 0 ? 1 : 0;
+    Require(value.binary_value == expected && value.encoded_value.empty() && !value.isSqlNull(),
+            "registered REGR_COUNT lost native count or NULL-pair semantics");
+  }
+}
+
+void NativeSequenceConsumers() {
+  namespace sblr = scratchbird::engine::sblr;
+  auto identity = Sentinel("int64").descriptor.descriptor_uuid;
+  identity.bytes.back() = 99;
+  sblr::SblrExecutionContext context;
+  context.local_transaction_id = 7;
+  context.transaction_uuid = identity;
+  context.transaction_uuid.bytes.back() = 98;
+  auto& registry = sblr::ProcessSblrSequenceRegistry();
+  sblr::SblrSequenceDefinition definition;
+  definition.sequence_uuid = identity;
+  Require(sblr::RegisterSblrSequence(&registry, definition, context).ok(),
+          "native sequence fixture registration failed");
+  Require(sblr::RegisterSblrSequenceAlias(&registry, identity, "native_int64_default", context).ok(),
+          "native sequence alias registration failed");
+  sblr::SblrSequenceRequest request;
+  request.context = context;
+  request.sequence_uuid = identity;
+  request.is_called = false;
+  for (const auto number : {std::int64_t{0}, std::int64_t{-1}, std::int64_t{42},
+                           std::numeric_limits<std::int64_t>::min(),
+                           std::numeric_limits<std::int64_t>::max()}) {
+    request.set_value = number;
+    for (const auto& result : {sblr::SetSblrSequenceValue(&registry, request),
+                              sblr::NextSblrSequenceValue(&registry, request),
+                              sblr::CurrentSblrSequenceValue(&registry, request)}) {
+      Require(result.ok() && result.scalar_values.size() == 1 &&
+                  sblr::ProjectionSblrValueResolved(result.scalar_values.front()),
+              "sequence result was rejected by the scalar publication bridge");
+      const auto value = sblr::EngineTypedValueFromSblrValue(result.scalar_values.front());
+      Require(value.binary_value.size() == 8 && value.encoded_value.empty(),
+              "sequence publication retained a text carrier");
+      for (unsigned byte = 0; byte < 8; ++byte)
+        Require(value.binary_value[byte] == static_cast<std::uint8_t>(
+                    static_cast<std::uint64_t>(number) >> (8 * byte)),
+                "sequence publication changed signed boundary bits");
+    }
+  }
+  api::EngineRequestContext engine_context;
+  engine_context.local_transaction_id = context.local_transaction_id;
+  engine_context.transaction_uuid = context.transaction_uuid;
+  api::CrudTableRecord table;
+  table.table_uuid = identity;
+  table.columns = {{"id", "canonical=int64;default=sequence_next:native_int64_default"}};
+  request.set_value = 41;
+  Require(sblr::SetSblrSequenceValue(&registry, request).ok(), "default sequence reset failed");
+  const auto defaults = api::ApplyConstraintDefaultsForInsert(engine_context, table, {});
+  Require(defaults.ok && defaults.values.size() == 1 && defaults.values.front().first == "id" &&
+              defaults.values.front().second == "41",
+          "legacy default consumer lost its native sequence value");
+  std::uint64_t audit_id = 123;
+  api::EngineApiDiagnostic diagnostic;
+  Require(api::dml_trigger_runtime::NextSequenceAuditId(engine_context, identity, &audit_id, &diagnostic) &&
+              audit_id == 42, "trigger consumer lost its native sequence value");
+  for (auto number : {std::int64_t{-1}, std::int64_t{0}}) {
+    request.set_value = number;
+    Require(sblr::SetSblrSequenceValue(&registry, request).ok(), "invalid audit fixture reset failed");
+    audit_id = 123;
+    Require(!api::dml_trigger_runtime::NextSequenceAuditId(engine_context, identity, &audit_id, &diagnostic) &&
+                audit_id == 123 && diagnostic.code == "TRIGGER.RUNTIME.SEQUENCE_VALUE_INVALID",
+            "trigger admitted nonpositive sequence id or changed output on refusal");
+  }
+}
+
+void PublicInt64Transport() {
+  namespace packet = scratchbird::wire::public_result;
+  using scratchbird::engine::PublicInt64ScalarPayloadV1;
+  const std::array<std::pair<std::string, std::int64_t>, 5> cases{{
+      {std::string(8, '\0'), 0}, {std::string(8, '\xff'), -1},
+      {std::string("\x01\0\0\0\0\0\0\0", 8), 1},
+      {std::string("\0\0\0\0\0\0\0\x80", 8), INT64_MIN},
+      {std::string("\xff\xff\xff\xff\xff\xff\xff\x7f", 8), INT64_MAX}}};
+  for (const auto& [bytes, expected] : cases) {
+    api::EngineTypedValue value;
+    value.descriptor.canonical_type_name = "int64";
+    value.binary_value.assign(bytes.begin(), bytes.end());
+    std::string_view payload = "sentinel";
+    Require(PublicInt64ScalarPayloadV1(value, &payload) && payload == bytes,
+            "public INT64 projection lost native bytes");
+    namespace sblr = scratchbird::engine::sblr;
+    api::EngineProjectionFunctionArgument argument;
+    argument.type_name = "int64";
+    argument.descriptor = value.descriptor;
+    argument.binary_value = value.binary_value;
+    const auto native = sblr::SblrValueFromProjectionArgument(argument);
+    Require(sblr::ProjectionSblrValueResolved(native) && native.has_int64_value &&
+                native.int64_value == expected && native.encoded_value.empty() && native.text_value.empty(),
+            "INT64 SBLR input bridge lost native bits");
+    const auto projected = sblr::EngineTypedValueFromSblrValue(native);
+    Require(projected.binary_value == value.binary_value && projected.encoded_value.empty() &&
+                projected.descriptor == value.descriptor,
+            "INT64 SBLR output bridge lost bits or descriptor");
+    for (unsigned mutation = 0; mutation < 7; ++mutation) {
+      auto invalid = native;
+      if (mutation == 0) invalid.encoded_value = "0";
+      if (mutation == 1) invalid.text_value = "0";
+      if (mutation == 2) invalid.binary_value.assign(8, 0);
+      if (mutation == 3) invalid.has_uint64_value = true;
+      if (mutation == 4) invalid.is_null = true;
+      if (mutation == 5) invalid.charset_name = "utf8";
+      if (mutation == 6) invalid.collation_name = "binary";
+      Require(!sblr::ProjectionSblrValueResolved(invalid), "conflicting INT64 SBLR representation accepted");
+      bool refused = false;
+      try { (void)sblr::EngineTypedValueFromSblrValue(invalid); }
+      catch (const std::invalid_argument&) { refused = true; }
+      Require(refused, "INT64 SBLR publisher accepted conflicting representation");
+    }
+    std::string encoded;
+    Require(packet::Encode(std::vector<packet::FieldView>{{"v", packet::Kind::signed_integer, payload}}, &encoded),
+            "public INT64 framing failed");
+    std::vector<packet::Field> fields;
+    Require(packet::Decode(encoded, &fields) && fields.size() == 1 &&
+                fields[0].value == bytes && packet::AsSigned(fields[0]) == expected &&
+                !packet::AsUnsigned(fields[0]), "signed binary result bits/kind changed");
+    value.encoded_value = "1";
+    payload = "sentinel";
+    Require(!PublicInt64ScalarPayloadV1(value, &payload) && payload == "sentinel",
+            "public INT64 accepted dual payload or changed destination on refusal");
+    value.encoded_value.clear();
+    value.is_null = true;
+    Require(!PublicInt64ScalarPayloadV1(value, &payload), "inconsistent NULL accepted");
+  }
+  for (unsigned n = 0; n < 129; ++n) {
+    if (n == 8) continue;
+    api::EngineTypedValue value;
+    value.descriptor.canonical_type_name = "INT64";
+    value.binary_value.assign(n, 0);
+    std::string_view payload = "sentinel";
+    Require(!PublicInt64ScalarPayloadV1(value, &payload) && payload == "sentinel",
+            "public INT64 wrong width accepted");
+    Require(!packet::Valid({"v", packet::Kind::signed_integer, std::string(n, '1')}),
+            "wire INT64 wrong width accepted");
+  }
+  api::EngineTypedValue null;
+  null.descriptor.canonical_type_name = "int64";
+  null.setState(State::sql_null);
+  std::string_view payload;
+  Require(PublicInt64ScalarPayloadV1(null, &payload) && payload.empty(),
+          "NULL manufactured an integer payload");
+  null.binary_value.assign(8, 0);
+  Require(!PublicInt64ScalarPayloadV1(null, &payload), "NULL retained native payload");
+  for (unsigned kind = 7; kind < 256; ++kind)
+    Require(!packet::Valid({"v", static_cast<packet::Kind>(kind), std::string(8, '\0')}),
+            "unknown wire kind accepted");
+}
 int main() {
-  UuidValues(); OtherCarriersAndState(); AliasAndAllocation();
+  UuidValues(); Int64Values(); OtherCarriersAndState(); AliasAndAllocation();
+  PublicInt64Transport();
+  NativeSequenceConsumers();
+  NativeRegisteredAggregate();
   std::cout << "stored scalar native payload checks=" << checks << '\n';
 }

@@ -1,6 +1,7 @@
 #include "../../../support/binary_uuid_fixture.hpp"
 #include "../../../support/engine_statement_fixture.hpp"
 #include "../../../support/ordered_integer_key_oracle.hpp"
+#include "../../../support/database_fixture_cleanup.hpp"
 #include "../../../database_lifecycle/database_lifecycle_test_memory.hpp"
 #include "../../../support/projection_uuid_literal_checks.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
@@ -92,14 +93,7 @@ std::filesystem::path TempDatabasePath() {
 }
 
 void CleanupDatabase(const std::filesystem::path& path) {
-  std::filesystem::remove(path);
-  std::filesystem::remove(path.string() + ".sb.api_events");
-  std::filesystem::remove(path.string() + ".sb.mga_row_versions");
-  std::filesystem::remove(path.string() + ".sb.mga_relation_metadata");
-  std::filesystem::remove(path.string() + ".sb.mga_index_entries");
-  std::filesystem::remove(path.string() + ".sb.mga_relation_descriptors");
-  std::filesystem::remove(path.string() + ".sb.mga_large_values");
-  std::filesystem::remove(path.string() + ".sb.mga_savepoints");
+  scratchbird::tests::RemoveDatabaseFixtureArtifacts(path);
 }
 
 db::DatabaseCreateConfig CreateFixtureDatabase(const std::filesystem::path& path) {

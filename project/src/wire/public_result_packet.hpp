@@ -3,6 +3,7 @@
 #pragma once
 
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -16,15 +17,15 @@ namespace scratchbird::wire::public_result {
 // UUID atoms are exactly 16 bytes; the client owns any display rendering.
 inline constexpr std::string_view kMagic = "SBRES002";
 inline constexpr std::size_t kMaximumFields = std::numeric_limits<std::uint32_t>::max();
-enum class Kind : std::uint8_t { text = 0, bytes = 1, uuid = 2, unsigned_integer = 3, row = 4, evidence = 5 };
+enum class Kind : std::uint8_t { text = 0, bytes = 1, uuid = 2, unsigned_integer = 3, row = 4, evidence = 5, signed_integer = 6 };
 struct FieldView { std::string_view name; Kind kind; std::string_view value; };
 struct Field { std::string name; Kind kind; std::string value; };
 inline bool Valid(FieldView field) {
   const auto kind = static_cast<std::uint8_t>(field.kind);
   return !field.name.empty() && field.name.size() <= std::numeric_limits<std::uint32_t>::max() &&
-         kind <= static_cast<std::uint8_t>(Kind::evidence) &&
+         kind <= static_cast<std::uint8_t>(Kind::signed_integer) &&
          (field.kind != Kind::uuid || field.value.size() == 16) &&
-         (field.kind != Kind::unsigned_integer || field.value.size() == 8);
+         ((field.kind != Kind::unsigned_integer && field.kind != Kind::signed_integer) || field.value.size() == 8);
 }
 template<class Emit>
 bool Visit(const std::vector<FieldView>& fields, Emit&& emit) {
@@ -129,5 +130,14 @@ inline std::optional<std::uint64_t> AsUnsigned(const Field& field) {
   std::uint64_t value = 0;
   for (unsigned i = 0; i < 8; ++i) value |= static_cast<std::uint64_t>(static_cast<unsigned char>(field.value[i])) << (8 * i);
   return value;
+}
+// Signed values use the canonical two's-complement LE8 carrier. Rendering is
+// exclusively a parser/client concern, never an engine transport operation.
+inline std::optional<std::int64_t> AsSigned(const Field& field) {
+  if (field.kind != Kind::signed_integer || field.value.size() != 8) return std::nullopt;
+  std::uint64_t bits = 0;
+  for (unsigned i = 0; i < 8; ++i)
+    bits |= static_cast<std::uint64_t>(static_cast<unsigned char>(field.value[i])) << (8 * i);
+  return std::bit_cast<std::int64_t>(bits);
 }
 } // namespace scratchbird::wire::public_result

@@ -26,6 +26,10 @@ inline std::string DisplayPublicResultPacket(std::string_view packet,
       const auto number = result::AsUnsigned(field);
       if (!number) throw std::invalid_argument("client result integer invalid");
       text += std::to_string(*number);
+    } else if (field.kind == result::Kind::signed_integer) {
+      const auto number = result::AsSigned(field);
+      if (!number) throw std::invalid_argument("client result signed integer invalid");
+      text += std::to_string(*number);
     } else if (field.kind == result::Kind::uuid || field.kind == result::Kind::bytes) {
       if (field.kind == result::Kind::bytes) text += "hex:";
       for (std::size_t i = 0; i < field.value.size(); ++i) {

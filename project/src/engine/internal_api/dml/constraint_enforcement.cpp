@@ -15,6 +15,7 @@
 #include "dml/transactional_relation_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "sblr_sequence_runtime.hpp"
+#include "sblr_binary_value_carrier.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -319,8 +320,12 @@ std::optional<CrudStoredValue> MaterializeDefault(const EngineRequestContext& co
     request.result_descriptor_id = "int64";
     const auto result = scratchbird::engine::sblr::NextSblrSequenceValue(
         &scratchbird::engine::sblr::ProcessSblrSequenceRegistry(), request);
-    if (!result.ok() || result.scalar_values.empty()) return std::nullopt;
-    return result.scalar_values.front().encoded_value;
+    if (!result.ok() || result.scalar_values.size() != 1 ||
+        !scratchbird::engine::sblr::SblrInt64PayloadValid(result.scalar_values.front()))
+      return std::nullopt;
+    // This legacy default-envelope API consumes a lexical CrudStoredValue;
+    // it must not require a redundant text arm in the native sequence result.
+    return std::to_string(result.scalar_values.front().int64_value);
   }
   const std::string lower = LowerAscii(envelope);
   if (lower == "null") { return CrudStoredValue::SqlNull(); }

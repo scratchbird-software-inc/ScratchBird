@@ -31,19 +31,30 @@ bool BuildExactCanonicalScalarRuntimeDescriptorV1(
       expected_type != dt::CanonicalTypeId::int32 &&
       expected_type != dt::CanonicalTypeId::int64) return false;
   if (!source.datatype_identity_authoritative ||
+      !core::uuid::IsEngineIdentityUuid(source.descriptor_uuid) ||
       !core::uuid::IsEngineIdentityUuid(source.statement_receipt_uuid) ||
       (source.nullability != api::RelationalNullability::kNonNull &&
        source.nullability != api::RelationalNullability::kNullable) ||
       source.collation_uuid || source.timezone_profile_id || source.width ||
       source.precision || source.scale) return false;
-  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      source.datatype_catalog_snapshot_uuid, source.datatype_catalog_generation,
-      source.datatype_registry_generation, source.descriptor_uuid,
-      source.descriptor_generation);
-  if (!identity.ok) return false;
-  const auto& row = identity.row;
+  // descriptor_uuid identifies this admitted statement occurrence (for a
+  // literal, its SBLP profile), not the catalog datatype definition. Resolve
+  // the latter only within the supplied exact cohort and type identity, as
+  // dispatch admission does. Never replace the occurrence or use a name or
+  // nearest/latest registry generation to fill missing authority.
+  const dt::DatatypeTypeCodecIdentityRowV1* matched = nullptr;
+  for (const auto& candidate : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+    if (candidate.catalog_snapshot_uuid != source.datatype_catalog_snapshot_uuid ||
+        candidate.catalog_generation != source.datatype_catalog_generation ||
+        candidate.registry_generation != source.datatype_registry_generation ||
+        candidate.type_uuid != source.type_uuid ||
+        candidate.descriptor_generation != source.descriptor_generation) continue;
+    if (matched) return false;
+    matched = &candidate;
+  }
+  if (!matched) return false;
+  const auto& row = *matched;
   if (row.canonical_binary_type_code != static_cast<std::uint32_t>(expected_type) ||
-      row.descriptor_uuid != source.descriptor_uuid ||
       row.descriptor_generation != source.descriptor_generation ||
       row.type_uuid != source.type_uuid || row.type_generation != source.type_generation ||
       row.codec_id != source.codec_id || row.codec_version != source.codec_version ||

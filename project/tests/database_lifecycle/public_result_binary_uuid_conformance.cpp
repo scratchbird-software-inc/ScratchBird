@@ -101,6 +101,12 @@ void CheckNativeUuidPublication() {
 
 int main() {
   CheckNativeUuidPublication();
+  std::string signed_packet;
+  CHECK(packet::Encode(std::vector<packet::Field>{
+      {"negative", packet::Kind::signed_integer, std::string(8, '\xff')},
+      {"minimum", packet::Kind::signed_integer, std::string("\0\0\0\0\0\0\0\x80", 8)}}, &signed_packet));
+  CHECK(scratchbird::tests::DisplayPublicResultPacket(signed_packet) ==
+        "negative=-1\nminimum=-9223372036854775808\n");
   const std::string uuid("\x01\x9f\x00\x0a\x3b\x7c\x70\x00\x80\x00\x3d\x3a\xff\x00\x00\x01", 16);
   const std::string uuid_text = "019f000a-3b7c-7000-8000-3d3aff000001";
   std::vector<packet::Field> fields = {

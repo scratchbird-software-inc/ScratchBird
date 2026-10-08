@@ -75,6 +75,12 @@ struct WireResponse {
   std::string text;
 };
 
+// Read-only conformance projection of the production renderer shared by
+// immediate results and FETCH. This never admits or executes a statement.
+bool DecodePublicResultRowsForTest(
+    std::string_view payload, std::vector<std::uint32_t>* type_oids,
+    std::vector<std::vector<std::optional<std::string>>>* rows);
+
 enum class PreparedParameterPayloadEncoding : std::uint8_t {
   utf8_text = 0,
   binary = 1,

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "wire/sbsql_test_wire.hpp"
+#include "wire/public_result_packet.hpp"
 #include "embedded/embedded_engine_client.hpp"
 #include "database_lifecycle.hpp"
 #include "parser_server_client.hpp"
@@ -928,7 +929,86 @@ void CheckScriptIngestPartialQueryFrames() {
 
 }  // namespace
 
+void CheckSignedPublicResultRows() {
+  namespace packet = scratchbird::wire::public_result;
+  const auto frame = [](packet::Kind kind, std::string bytes, std::string metadata) {
+    std::string row, result;
+    Require(packet::Encode(std::vector<packet::Field>{{"v", kind, std::move(bytes)}}, &row), "row encode failed");
+    Require(packet::Encode(std::vector<packet::Field>{
+        {"row[0]", packet::Kind::row, row},
+        {"row_meta[0]", packet::Kind::text, std::move(metadata)}}, &result), "result encode failed");
+    return result;
+  };
+  std::vector<std::uint32_t> types;
+  std::vector<std::vector<std::optional<std::string>>> rows;
+  const std::array<std::pair<std::string, std::string>, 4> values{{
+      {std::string(8, '\0'), "0"}, {std::string(8, '\xff'), "-1"},
+      {std::string("\0\0\0\0\0\0\0\x80", 8), "-9223372036854775808"},
+      {std::string("\xff\xff\xff\xff\xff\xff\xff\x7f", 8), "9223372036854775807"}}};
+  for (const auto& [bytes, expected] : values) {
+    Require(scratchbird::parser::sbsql::DecodePublicResultRowsForTest(
+        frame(packet::Kind::signed_integer, bytes, "v:int64:not_null"), &types, &rows) &&
+        types == std::vector<std::uint32_t>{20} && rows.size() == 1 &&
+        rows[0].size() == 1 && rows[0][0] == expected, "signed public result rendering failed");
+  }
+  Require(scratchbird::parser::sbsql::DecodePublicResultRowsForTest(
+      frame(packet::Kind::text, "", "v:int64:null"), &types, &rows) &&
+      types == std::vector<std::uint32_t>{20} && !rows[0][0], "all-NULL INT64 schema/value lost");
+  const auto refuse = [&](packet::Kind kind, std::string bytes, std::string metadata) {
+    const auto old_types = types;
+    const auto old_rows = rows;
+    Require(!scratchbird::parser::sbsql::DecodePublicResultRowsForTest(
+        frame(kind, std::move(bytes), std::move(metadata)), &types, &rows) &&
+        types == old_types && rows == old_rows, "conflicting INT64 result accepted or output changed");
+  };
+  refuse(packet::Kind::signed_integer, std::string(8, '\0'), "v:text:not_null");
+  refuse(packet::Kind::signed_integer, std::string(8, '\0'), "v:int64:null");
+  refuse(packet::Kind::text, "0", "v:int64:not_null");
+  refuse(packet::Kind::text, "0", "v:int64:null");
+  refuse(packet::Kind::bytes, "", "v:int64:null");
+  Require(scratchbird::parser::sbsql::DecodePublicResultRowsForTest(
+      frame(packet::Kind::signed_integer, std::string(8, '\xff'), "v:InT64:not_null"), &types, &rows) &&
+      rows[0][0] == "-1", "mixed-case canonical INT64 label disagrees across adapters");
+  const auto two_rows = [&](bool reverse) {
+    std::vector<packet::Field> records;
+    for (unsigned i = 0; i < 2; ++i) {
+      const bool integer = (i == 0) != reverse;
+      std::vector<packet::Field> part;
+      Require(packet::Decode(frame(integer ? packet::Kind::signed_integer : packet::Kind::text,
+          integer ? std::string(8, '\0') : "abc",
+          integer ? "v:int64:not_null" : "v:text:not_null"), &part), "fixture decode failed");
+      part[0].name = "row[" + std::to_string(i) + "]";
+      part[1].name = "row_meta[" + std::to_string(i) + "]";
+      records.insert(records.end(), part.begin(), part.end());
+    }
+    std::string payload;
+    Require(packet::Encode(records, &payload), "two row fixture encode failed");
+    Require(!scratchbird::parser::sbsql::DecodePublicResultRowsForTest(payload, &types, &rows),
+            "cross-row signed/text type change accepted");
+  };
+  two_rows(false); two_rows(true);
+  std::vector<packet::Field> duplicate_records;
+  for (unsigned i = 0; i < 2; ++i) {
+    std::string row;
+    Require(packet::Encode(std::vector<packet::Field>{
+        {"v", i == 0 ? packet::Kind::text : packet::Kind::signed_integer,
+              i == 0 ? std::string{} : std::string(8, '\xff')},
+        {"v", packet::Kind::text, "text"}}, &row), "duplicate fixture row failed");
+    duplicate_records.push_back({"row[" + std::to_string(i) + "]", packet::Kind::row, row});
+    duplicate_records.push_back({"row_meta[" + std::to_string(i) + "]", packet::Kind::text,
+        i == 0 ? "v:int64:null;v:text:not_null" : "v:int64:not_null;v:text:not_null"});
+  }
+  std::string duplicate_payload;
+  Require(packet::Encode(duplicate_records, &duplicate_payload) &&
+      scratchbird::parser::sbsql::DecodePublicResultRowsForTest(duplicate_payload, &types, &rows) &&
+      types == std::vector<std::uint32_t>({20, 25}) && rows.size() == 2 &&
+      !rows[0][0] && rows[0][1] == "text" && rows[1][0] == "-1" && rows[1][1] == "text",
+      "duplicate names or NULL-first INT64 schema lost");
+  std::cout << "signed public result renderer conformance passed\n";
+}
+
 int main() {
+  CheckSignedPublicResultRows();
   ::signal(SIGPIPE, SIG_IGN);
   // Hosted engines bind one database per process for its lifetime. Each
   // independent scenario must start with its own process, not reset that

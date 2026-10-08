@@ -13246,7 +13246,11 @@ std::map<std::string, std::string> ParseSemicolonFields(std::string_view row) {
     std::vector<scratchbird::wire::public_result::Field> fields;
     if (!scratchbird::wire::public_result::Decode(row, &fields)) return {};
     std::map<std::string, std::string> values;
-    for (auto& field : fields) values.emplace(std::move(field.name), std::move(field.value));
+    for (auto& field : fields) {
+      if (const auto value = scratchbird::wire::public_result::AsSigned(field))
+        field.value = std::to_string(*value);
+      values.emplace(std::move(field.name), std::move(field.value));
+    }
     return values;
   }
 
@@ -13272,7 +13276,11 @@ std::vector<std::pair<std::string, std::string>> ParseSemicolonFieldOrder(
     std::vector<scratchbird::wire::public_result::Field> fields;
     if (!scratchbird::wire::public_result::Decode(row, &fields)) return {};
     std::vector<std::pair<std::string, std::string>> values;
-    for (auto& field : fields) values.emplace_back(std::move(field.name), std::move(field.value));
+    for (auto& field : fields) {
+      if (const auto value = scratchbird::wire::public_result::AsSigned(field))
+        field.value = std::to_string(*value);
+      values.emplace_back(std::move(field.name), std::move(field.value));
+    }
     return values;
   }
 

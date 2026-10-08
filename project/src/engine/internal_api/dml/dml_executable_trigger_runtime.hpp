@@ -18,6 +18,7 @@
 #include "extensibility/executable_object_lifecycle.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "sblr_sequence_runtime.hpp"
+#include "sblr_binary_value_carrier.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -254,8 +255,9 @@ inline bool NextSequenceAuditId(const EngineRequestContext& context,
     }
     return false;
   }
-  const std::uint64_t parsed = ParseAuditId(result.scalar_values.front().encoded_value);
-  if (parsed == 0) {
+  const auto& value = result.scalar_values.front();
+  if (result.scalar_values.size() != 1 ||
+      !scratchbird::engine::sblr::SblrInt64PayloadValid(value) || value.int64_value <= 0) {
     if (diagnostic != nullptr) {
       *diagnostic = EngineApiDiagnostic{
           "TRIGGER.RUNTIME.SEQUENCE_VALUE_INVALID",
@@ -265,7 +267,7 @@ inline bool NextSequenceAuditId(const EngineRequestContext& context,
     }
     return false;
   }
-  *audit_id = parsed;
+  *audit_id = static_cast<std::uint64_t>(value.int64_value);
   return true;
 }
 

@@ -14,6 +14,7 @@
 #include "engine/public_abi_typed_result.hpp"
 #include "engine/public_abi_diagnostic_severity.hpp"
 #include "engine/public_abi_uuid_payload.hpp"
+#include "engine/public_abi_int64_payload.hpp"
 #include "engine/statement_management_ack_codec.hpp"
 #include "engine/statement_context_receipt_retention.hpp"
 #include "engine/statement_identity_binding.hpp"
@@ -3818,7 +3819,14 @@ std::string api_row_value(const scratchbird::engine::internal_api::EngineApiResu
     }
     auto kind = public_result::Kind::text;
     const auto& type = value.descriptor.canonical_type_name;
-    if (scratchbird::engine::PublicUuidScalarTypeV1(type)) {
+    if (scratchbird::engine::PublicInt64ScalarTypeV1(type)) {
+      std::string_view payload;
+      if (!scratchbird::engine::PublicInt64ScalarPayloadV1(value, &payload))
+        throw std::invalid_argument("public_result_int64_carrier_invalid");
+      bytes.assign(payload);
+      if (!value.is_null) kind = public_result::Kind::signed_integer;
+    }
+    else if (scratchbird::engine::PublicUuidScalarTypeV1(type)) {
       std::string_view payload;
       if (!scratchbird::engine::PublicUuidScalarPayloadV1(value, &payload))
         throw std::invalid_argument("public_result_uuid_carrier_invalid");
@@ -31280,10 +31288,19 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
   } else {
     result->rows_produced = static_cast<std::uint64_t>(
         dispatched.api_result.result_shape.rows.size());
-    result->row_values = api_row_values(dispatched.api_result);
-    result->row_metadata_values =
-        api_row_metadata_values(dispatched.api_result);
-    result->evidence_values = api_evidence_values(dispatched.api_result);
+    try {
+      result->row_values = api_row_values(dispatched.api_result);
+      result->row_metadata_values = api_row_metadata_values(dispatched.api_result);
+      result->evidence_values = api_evidence_values(dispatched.api_result);
+    } catch (const std::invalid_argument& error) {
+      // A malformed internal result is not success and must not escape the
+      // ABI into the server thread. This does not undo execution or claim
+      // transaction rollback; the engine-owned transaction remains authoritative.
+      delete result;
+      return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4006,
+                         "SBLR.EXECUTION_FAILED",
+                         "sblr.public_result.carrier_invalid", error.what());
+    }
   }
   if(ddl_alter_rewrite_rule_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_ddl_alter_rewrite_rule");auto consumed=scratchbird::engine::internal_api::ConsumeSblrDdlAlterRewriteRuleDescriptor(c,ddl_alter_rewrite_rule_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4140,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrDdlAlterRewriteRuleResultV1 rr;rr.body[24]=1;rr.body[56]=1;rr.availability=ddl_alter_rewrite_rule_availability_generation;rr.publication_barrier[0]=1;ddl_alter_rewrite_rule_result_bytes=scratchbird::engine::sblr::EncodeSblrDdlAlterRewriteRuleResultV1(rr);if(ddl_alter_rewrite_rule_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4140,"SYSTEM.CONFIG_FAILED","sblr.ddl_alter_rewrite_rule.result_encoding_failed");result->result_kind="ddl_result";const auto digest=scratchbird::core::hash::ComputeSha256Digest(ddl_alter_rewrite_rule_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=ddl_alter_rewrite_rule_executor\texecutor_id=engine.op.ddl_alter_rewrite_rule\topcode=SBLR_DDL_ALTER_REWRITE_RULE\topcode_code=1618\topcode_version=1.0\toperand_descriptor_id=rewrite_rule_alter_descriptor\tresult_descriptor_id=ddl_result\tresult_descriptor_version=1\tddl_alter_rewrite_rule_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<ddl_alter_rewrite_rule_availability_generation<<"\tparent_success_barrier=passed\n";}}
   if(ddl_drop_rewrite_rule_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_ddl_drop_rewrite_rule");auto consumed=scratchbird::engine::internal_api::ConsumeSblrDdlDropRewriteRuleDescriptor(c,ddl_drop_rewrite_rule_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4141,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrDdlDropRewriteRuleResultV1 rr;rr.body[24]=1;rr.body[56]=1;rr.availability=ddl_drop_rewrite_rule_availability_generation;rr.publication_barrier[0]=1;ddl_drop_rewrite_rule_result_bytes=scratchbird::engine::sblr::EncodeSblrDdlDropRewriteRuleResultV1(rr);if(ddl_drop_rewrite_rule_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4141,"SYSTEM.CONFIG_FAILED","sblr.ddl_drop_rewrite_rule.result_encoding_failed");result->result_kind="ddl_result";const auto digest=scratchbird::core::hash::ComputeSha256Digest(ddl_drop_rewrite_rule_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=ddl_drop_rewrite_rule_executor\texecutor_id=engine.op.ddl_drop_rewrite_rule\topcode=SBLR_DDL_DROP_REWRITE_RULE\topcode_code=1619\topcode_version=1.0\toperand_descriptor_id=rewrite_rule_drop_descriptor\tresult_descriptor_id=ddl_result\tresult_descriptor_version=1\tddl_drop_rewrite_rule_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<ddl_drop_rewrite_rule_availability_generation<<"\tparent_success_barrier=passed\n";}}

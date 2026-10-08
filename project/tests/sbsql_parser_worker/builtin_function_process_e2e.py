@@ -31,11 +31,11 @@ def check_name_resolution_trace(path):
             offset += width
             kind, width = struct.unpack_from("<BQ", packet, offset)
             offset += 9
-            assert kind <= 5 and offset + width <= len(packet) and name not in result
+            assert kind <= 6 and offset + width <= len(packet) and name not in result
             value = packet[offset:offset + width]
             offset += width
             assert kind != 2 or width == 16
-            assert kind != 3 or width == 8
+            assert kind not in (3, 6) or width == 8
             result[name] = kind, value
         assert offset == len(packet)
         return result

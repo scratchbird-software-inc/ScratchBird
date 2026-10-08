@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "../support/binary_uuid_fixture.hpp"
 #include "sblr_sequence_runtime.hpp"
+#include "sblr_binary_value_carrier.hpp"
 #include "../../src/core/uuid/uuid.hpp"
 
 #include <cstdlib>
@@ -16,7 +17,8 @@ void Require(bool condition, const char* message) {
 }
 std::int64_t Number(const s::SblrResult& result) {
   Require(result.ok() && result.scalar_values.size() == 1 &&
-              result.scalar_values.front().has_int64_value, "sequence result unavailable");
+              s::SblrInt64PayloadValid(result.scalar_values.front()),
+          "sequence result unavailable or retained a non-native carrier");
   return result.scalar_values.front().int64_value;
 }
 s::SblrValue Text(std::string value) {

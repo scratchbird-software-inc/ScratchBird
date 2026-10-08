@@ -210,6 +210,18 @@ def main() -> int:
         output = (work / "sb_isql.out").read_text(encoding="utf-8", errors="replace").strip()
         if output != "1":
             raise SmokeError(f"sb_isql SELECT 1 returned {output!r}")
+        # All values traverse parser -> engine -> binary result -> parser -> CLI.
+        # These independent decimal expectations also catch sign/byte-order loss.
+        for expected in ("0", "-1", "9223372036854775807"):
+            result = subprocess.run(
+                [args.sb_isql, str(database), "--host=127.0.0.1", f"--port={port}",
+                 "--sslmode=disable", "-U", "alice", "-P", PASSWORD,
+                 "-q", "-A", "-t", "-c", f"SELECT {expected}"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            actual = result.stdout.decode("utf-8", errors="strict").strip()
+            if result.returncode != 0 or actual != expected:
+                raise SmokeError(f"INT64 result {expected}: rc={result.returncode}, value={actual!r}, error={result.stderr!r}")
         print(f"sbsql_sb_isql_live_route_smoke=passed work={work}")
         return 0
     except Exception as exc:  # noqa: BLE001 - ctest should receive the concrete failure.

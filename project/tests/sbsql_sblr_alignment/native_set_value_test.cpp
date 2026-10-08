@@ -250,7 +250,17 @@ void NumericResultBindings() {
           output.encoded_descriptor == "nullability=nullable",
           "numeric result projection lost exact supplied binding");
     const auto good = output;
-    for (unsigned mutation = 0; mutation < 17; ++mutation) {
+    // A statement-local SBLP occurrence is not the canonical datatype UUID.
+    auto occurrence = source;
+    occurrence.descriptor_uuid = scratchbird::tests::FixtureUuid(2087, 31);
+    Check(occurrence.descriptor_uuid != row.descriptor_uuid &&
+          s::BuildExactCanonicalScalarRuntimeDescriptorV1(occurrence, type, &output) &&
+          output.descriptor_uuid == occurrence.descriptor_uuid &&
+          output.datatype_descriptor_uuid == row.descriptor_uuid &&
+          output.datatype_descriptor_generation == row.descriptor_generation &&
+          output.type_uuid == row.type_uuid,
+          "occurrence identity was confused with canonical datatype identity");
+    for (unsigned mutation = 0; mutation < 18; ++mutation) {
       auto invalid = source;
       switch (mutation) {
         case 0: invalid.datatype_identity_authoritative = false; break;
@@ -270,6 +280,7 @@ void NumericResultBindings() {
         case 14: invalid.precision = 1; break;
         case 15: invalid.scale = 1; break;
         case 16: invalid.collation_uuid = row.type_uuid; break;
+        case 17: invalid.descriptor_uuid.bytes[6] = 0x40; break;
       }
       output = good;
       Check(!s::BuildExactCanonicalScalarRuntimeDescriptorV1(invalid, type, &output) &&

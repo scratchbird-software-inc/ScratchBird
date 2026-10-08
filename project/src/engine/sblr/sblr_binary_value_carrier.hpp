@@ -4,6 +4,15 @@
 #include "sblr_runtime.hpp"
 
 namespace scratchbird::engine::sblr {
+// Native scalar payload validation only; binding admission is separate.
+inline bool SblrInt64PayloadValid(const SblrValue& value) noexcept {
+  return !value.is_null && value.descriptor_id == "int64" &&
+      value.payload_kind == SblrValuePayloadKind::signed_integer &&
+      value.has_int64_value && !value.has_uint64_value && !value.has_real64_value &&
+      value.encoded_value.empty() && value.text_value.empty() && value.binary_value.empty() &&
+      value.uuid_value.is_nil() && value.uuid_array_value.empty() &&
+      value.charset_name.empty() && value.collation_name.empty();
+}
 // Representation validation only. UUID data has no system-identity version or
 // variant restriction; descriptor/permission admission belongs to the caller.
 inline bool SblrUuidPayloadValid(const SblrValue& value) noexcept {

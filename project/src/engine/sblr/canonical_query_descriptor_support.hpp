@@ -17,6 +17,10 @@
 
 namespace scratchbird::engine::sblr {
 
+// Project an already admitted statement occurrence without conflating its
+// UUID with the canonical datatype descriptor UUID. The caller retains live
+// receipt/occurrence authorization; this helper matches the exact supplied
+// type/codec/cohort and carries both identities into the runtime descriptor.
 bool BuildExactCanonicalScalarRuntimeDescriptorV1(
     const scratchbird::engine::internal_api::RelationalTypeDescriptor& source,
     scratchbird::core::datatypes::CanonicalTypeId expected_type,

@@ -59,8 +59,6 @@ SblrValue Int64Value(std::int64_t value) {
   out.has_int64_value = true;
   out.int64_value = value;
   out.payload_kind = SblrValuePayloadKind::signed_integer;
-  out.encoded_value = std::to_string(value);
-  out.text_value = std::to_string(value);
   return out;
 }
 

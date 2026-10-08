@@ -25,8 +25,10 @@ SblrValue Int64Value(std::string descriptor_id, std::int64_t value) {
   out.is_null = false;
   out.has_int64_value = true;
   out.int64_value = value;
-  out.encoded_value = std::to_string(value);
-  out.text_value = out.encoded_value;
+  if (out.descriptor_id != "int64") {
+    out.encoded_value = std::to_string(value);
+    out.text_value = out.encoded_value;
+  }
   return out;
 }
 

@@ -471,7 +471,10 @@ std::map<std::string, std::string> SemicolonFields(std::string_view text) {
     std::vector<scratchbird::wire::public_result::Field> fields;
     if (!scratchbird::wire::public_result::Decode(text, &fields)) return {};
     std::map<std::string, std::string> values;
-    for (const auto& field : fields) if (!values.emplace(field.name, field.value).second) return {};
+    for (const auto& field : fields) {
+      const auto number = scratchbird::wire::public_result::AsSigned(field);
+      if (!values.emplace(field.name, number ? std::to_string(*number) : field.value).second) return {};
+    }
     return values;
   }
 

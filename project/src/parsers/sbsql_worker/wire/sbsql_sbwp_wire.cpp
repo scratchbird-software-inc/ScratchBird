@@ -3614,8 +3614,12 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
   // still admitting intentionally sparse observability rows whose named fields
   // vary from row to row.
   std::map<std::pair<std::string, std::size_t>, std::size_t> column_index;
+  // 0: not yet typed (e.g. empty NULL carrier), 1: INT64, 2: another type.
+  // Use the exact name-plus-occurrence column ordinal, not the display name.
+  std::vector<std::uint8_t> integer_column_kinds;
   std::string previous_row_index;
   std::vector<std::pair<std::string, std::size_t>> previous_fields;
+  std::vector<scratchbird::wire::public_result::Kind> previous_kinds;
   std::vector<std::string> records;
   if (payload.starts_with(scratchbird::wire::public_result::kMagic)) {
     std::vector<scratchbird::wire::public_result::Field> fields;
@@ -3658,6 +3662,28 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
             field.substr(0, type_separator) != previous_fields[ordinal].first)
           return malformed_metadata();
         const auto state = field.substr(state_separator + 1);
+        const auto type = field.substr(type_separator + 1, state_separator - type_separator - 1);
+        bool int64_type = type.size() == 5;
+        constexpr std::string_view int64_label = "int64";
+        for (std::size_t i = 0; int64_type && i < type.size(); ++i) {
+          const auto ch = type[i];
+          int64_type = (ch >= 'A' && ch <= 'Z' ? ch + ('a' - 'A') : ch) == int64_label[i];
+        }
+        const auto kind = previous_kinds[ordinal];
+        const auto& cell = rowset.rows.back()[previous_fields[ordinal].second];
+        auto& column_kind = integer_column_kinds[previous_fields[ordinal].second];
+        const auto declared_kind = int64_type ? 1 : 2;
+        if (column_kind && column_kind != declared_kind) return malformed_metadata();
+        column_kind = declared_kind;
+        if (kind == scratchbird::wire::public_result::Kind::signed_integer &&
+            (!int64_type || state != "not_null")) return malformed_metadata();
+        if (int64_type) {
+          if ((state == "not_null" && kind != scratchbird::wire::public_result::Kind::signed_integer) ||
+              (state == "null" && (kind != scratchbird::wire::public_result::Kind::text ||
+                                   !cell || !cell->empty()))) return malformed_metadata();
+          auto& column = rowset.columns[previous_fields[ordinal].second];
+          column.type_oid = kOidInt8; column.type_size = 8; column.format = 0;
+        }
         if (state == "null") {
           rowset.rows.back()[previous_fields[ordinal].second] = std::nullopt;
         } else if (state != "not_null") return malformed_metadata();
@@ -3680,6 +3706,7 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
     const std::string_view body = std::string_view(line).substr(eq + 2);
     previous_row_index = line.substr(4, eq - 4);
     previous_fields.clear();
+    previous_kinds.clear();
     std::vector<scratchbird::wire::public_result::Field> typed_fields;
     if (body.starts_with(scratchbird::wire::public_result::kMagic) &&
         !scratchbird::wire::public_result::Decode(body, &typed_fields)) {
@@ -3709,6 +3736,7 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
         column.name = name.empty() ? "column" + std::to_string(ordinal + 1) : name;
         column.type_oid = InferTypeOid(value);
         rowset.columns.push_back(std::move(column));
+        integer_column_kinds.push_back(0);
         for (auto& existing : rowset.rows) {
           existing.resize(rowset.columns.size());
         }
@@ -3719,9 +3747,35 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
         auto& column = rowset.columns[found->second];
         column.type_oid = kOidUuid; column.type_size = 16; column.format = 1;
       }
-      ++field_ordinal;
       row[found->second] = value;
+      if (!typed_fields.empty() && typed_fields[field_ordinal].kind == scratchbird::wire::public_result::Kind::signed_integer) {
+        if (integer_column_kinds[found->second] == 2) {
+          rowset.malformed = true;
+          rowset.malformed_detail = "The engine result column changed its signed integer type.";
+          return rowset;
+        }
+        integer_column_kinds[found->second] = 1;
+        const auto number = scratchbird::wire::public_result::AsSigned(typed_fields[field_ordinal]);
+        if (!number) {
+          rowset.malformed = true;
+          rowset.malformed_detail = "The engine signed integer carrier is invalid.";
+          return rowset;
+        }
+        auto& column = rowset.columns[found->second];
+        column.type_oid = kOidInt8; column.type_size = 8; column.format = 0;
+        row[found->second] = std::to_string(*number);
+      } else if (!value.empty()) {
+        if (integer_column_kinds[found->second] == 1) {
+          rowset.malformed = true;
+          rowset.malformed_detail = "The engine result column lost its signed integer carrier.";
+          return rowset;
+        }
+        integer_column_kinds[found->second] = 2;
+      }
+      ++field_ordinal;
       previous_fields.emplace_back(name, found->second);
+      previous_kinds.push_back(typed_fields.empty() ? scratchbird::wire::public_result::Kind::text
+                                                   : typed_fields[field_ordinal - 1].kind);
     }
     rowset.rows.push_back(std::move(row));
   }
@@ -7258,6 +7312,19 @@ bool HandleStartup(SbsqlTestWireSession* session,
 }
 
 } // namespace
+
+bool DecodePublicResultRowsForTest(
+    std::string_view payload, std::vector<std::uint32_t>* type_oids,
+    std::vector<std::vector<std::optional<std::string>>>* rows) {
+  if (!type_oids || !rows) return false;
+  auto parsed = ParseRowsFromResultPayload(payload);
+  if (parsed.malformed) return false;
+  std::vector<std::uint32_t> oids;
+  for (const auto& column : parsed.columns) oids.push_back(column.type_oid);
+  *type_oids = std::move(oids);
+  *rows = std::move(parsed.rows);
+  return true;
+}
 
 bool SbsqlTestWireSession::AuthenticateCredentials(const AuthCredentialEnvelope& credentials,
                                                    MessageVectorSet* messages) {

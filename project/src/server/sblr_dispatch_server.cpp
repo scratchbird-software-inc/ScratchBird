@@ -1,4 +1,5 @@
 #include "wire/public_result_packet.hpp"
+#include "engine/public_abi_int64_payload.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -5768,7 +5769,14 @@ std::string ServerApiRowValue(const engine_api::EngineApiResult& api_result,
     std::string bytes = value.encoded_value;
     auto kind = public_result::Kind::text;
     const auto& type = value.descriptor.canonical_type_name;
-    if (!value.is_null && (type == "uuid" || type == "uuid16")) {
+    if (scratchbird::engine::PublicInt64ScalarTypeV1(type)) {
+      std::string_view payload;
+      if (!scratchbird::engine::PublicInt64ScalarPayloadV1(value, &payload))
+        throw std::invalid_argument("public_result_int64_carrier_invalid");
+      bytes.assign(payload);
+      if (!value.is_null) kind = public_result::Kind::signed_integer;
+    }
+    else if (!value.is_null && (type == "uuid" || type == "uuid16")) {
       if (value.binary_value.empty()) {
         // Legacy retained columnar values carry raw UUID16 in std::string.
         if (bytes.size() != 16)

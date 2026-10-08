@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "canonical_query_current_heap_composition.hpp"
+#include "mga_relation_store/stored_scalar_payload.hpp"
 #include "canonical_query_aggregate_composition.hpp"
 #include "canonical_query_aggregate_registration.hpp"
 #include "canonical_query_descriptor_support.hpp"
@@ -287,17 +288,19 @@ bool MaterializeCurrentHeapStreamingRow(
       compact.nulls.size() != binding.descriptors.size()) {
     return false;
   }
+  // Reuse the caller's row-vector allocation; discard prior payloads before
+  // materialization so streaming does not retain two rows outside its budget.
   values->clear();
   values->reserve(binding.descriptors.size());
   for (std::size_t ordinal = 0; ordinal < binding.descriptors.size(); ++ordinal) {
     api::EngineTypedValue value;
     value.descriptor = binding.descriptors[ordinal];
-    if (compact.nulls[ordinal] != 0) {
-      value.is_null = true;
-      value.state = api::EngineValueState::sql_null;
-    } else {
-      value.encoded_value = compact.values[ordinal];
-      value.state = api::EngineValueState::value;
+    if (compact.nulls[ordinal] > 1 ||
+        !api::RestoreStoredScalarPayloadV1(compact.values[ordinal],
+            compact.nulls[ordinal] ? api::EngineValueState::sql_null
+                                   : api::EngineValueState::value, &value)) {
+      values->clear();
+      return false;
     }
     values->push_back(std::move(value));
   }

@@ -10,11 +10,13 @@
 
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/native_catalog_column_fixture.hpp"
+#include "../support/sb_test_temp_compat.hpp"
 #include <type_traits>
 #include <stdexcept>
 #include "wire/public_result_packet.hpp"
 #include "database_lifecycle.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "datatype_operations.hpp"
 #include "ddl/create_api.hpp"
 #include "dml/insert_api.hpp"
 #include "ipc_server.hpp"
@@ -218,10 +220,12 @@ Fixture CreateFixture(bool credentialed_full_route = false) {
   Fixture fixture;
   fixture.salt = static_cast<std::uint64_t>(
       std::chrono::steady_clock::now().time_since_epoch().count());
-  fixture.directory = std::filesystem::temp_directory_path() /
-                      ("qow_live_statement_context_" +
-                       std::to_string(fixture.salt));
-  std::filesystem::create_directories(fixture.directory);
+  // Leave room for AF_UNIX endpoints under an externally selected TMPDIR.
+  // mkdtemp also makes this a newly owned directory, not a timestamp name
+  // that could reopen and later remove a pre-existing fixture.
+  auto directory = (std::filesystem::temp_directory_path() / "qow-XXXXXX").string();
+  Require(::mkdtemp(directory.data()) != nullptr, "private query fixture directory creation failed");
+  fixture.directory = directory;
   fixture.database_path = fixture.directory / "live_context.sbdb";
 
   db::DatabaseCreateConfig create;
@@ -1751,7 +1755,8 @@ void CreateObjectBackedRelation(Fixture* fixture) {
       nullable_order_typed.is_null = true;
       nullable_order_typed.state = api::EngineValueState::sql_null;
     } else {
-      nullable_order_typed.encoded_value = value == 1 ? "20" : "10";
+      Require(dt::EncodeCanonicalInt64Value(value == 1 ? 20 : 10,
+                  &nullable_order_typed.encoded_value), "INT64 fixture encoding failed");
     }
     api::EngineTypedValue boolean_typed;
     boolean_typed.descriptor.descriptor_kind = "scalar";
@@ -1805,7 +1810,8 @@ void CreateObjectBackedRelation(Fixture* fixture) {
     limit_typed.descriptor.descriptor_kind = "scalar";
     limit_typed.descriptor.canonical_type_name = "int64";
     limit_typed.descriptor.encoded_descriptor = "type=int64";
-    limit_typed.encoded_value = std::to_string(value);
+    Require(dt::EncodeCanonicalInt64Value(value, &limit_typed.encoded_value),
+            "INT64 fixture encoding failed");
     api::EngineRowValue row;
     row.fields.push_back({"join_value", std::move(typed)});
     row.fields.push_back(
@@ -1885,13 +1891,16 @@ void CreateObjectBackedRelation(Fixture* fixture) {
       columnar_seeds{{{shared_row_uuid, 7, "matched"},
                       {columnar_only_row_uuid, 9, "columnar-only"}}};
   for (const auto& [row_uuid, join_key, payload] : columnar_seeds) {
+    std::string join_key_bytes;
+    Require(dt::EncodeCanonicalInt64Value(join_key, &join_key_bytes),
+            "columnar INT64 fixture encoding failed");
     api::EngineRowValue row;
     row.requested_row_uuid = row_uuid;
     row.fields.push_back(
         {"row_uuid", make_typed_value("uuid", uuid_descriptor, row_uuid)});
     row.fields.push_back(
         {"join_key", make_typed_value("int64", int64_descriptor,
-                                      std::to_string(join_key))});
+                                      std::move(join_key_bytes))});
     row.fields.push_back(
         {"payload", make_typed_value("text", text_descriptor, payload)});
     columnar_insert.input_rows.push_back(std::move(row));
@@ -2011,11 +2020,11 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       "AS input(key_a,amount) GROUP BY key_a;";
   server::ServerBootstrapConfig config;
   config.mode = server::ServerMode::kForeground;
-  config.control_dir = fixture.directory / "server-control";
+  config.control_dir = fixture.directory / "sc";
   config.data_dir = fixture.directory / "server-data";
   config.lifecycle_state_file = config.control_dir / "lifecycle.state";
   config.lifecycle_journal_file = config.control_dir / "lifecycle.journal";
-  config.sbps_endpoint = config.control_dir / "packet7.sbps.sock";
+  config.sbps_endpoint = config.control_dir / "s.sock";
   config.database_default_path = fixture.database_path;
   config.embedded_direct_mode = true;
   config.sbps_enabled = true;
