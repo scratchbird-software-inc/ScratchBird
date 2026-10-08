@@ -929,6 +929,10 @@ void CheckScriptIngestPartialQueryFrames() {
 
 }  // namespace
 
+namespace scratchbird::parser::sbsql {
+bool PublicResultBatchSchemaMatchesForTest(std::string_view first, std::string_view next);
+}
+
 void CheckSignedPublicResultRows() {
   namespace packet = scratchbird::wire::public_result;
   const auto frame = [](packet::Kind kind, std::string bytes, std::string metadata) {
@@ -987,6 +991,73 @@ void CheckSignedPublicResultRows() {
             "cross-row signed/text type change accepted");
   };
   two_rows(false); two_rows(true);
+  for (const std::int64_t number : {std::int64_t{INT32_MIN}, std::int64_t{-1}, std::int64_t{0}, std::int64_t{INT32_MAX}}) {
+    std::string bytes;
+    for (unsigned byte = 0; byte < 8; ++byte)
+      bytes.push_back(static_cast<char>(static_cast<std::uint64_t>(number) >> (byte * 8)));
+    Require(scratchbird::parser::sbsql::DecodePublicResultRowsForTest(
+        frame(packet::Kind::signed_integer, bytes, "v:InT32:not_null"), &types, &rows) &&
+        types == std::vector<std::uint32_t>{23} && rows[0][0] == std::to_string(number),
+        "native INT32 packet width or sign extension differs from oracle");
+  }
+  for (const std::int64_t number : {std::int64_t{INT32_MIN} - 1, std::int64_t{INT32_MAX} + 1}) {
+    std::string bytes;
+    for (unsigned byte = 0; byte < 8; ++byte)
+      bytes.push_back(static_cast<char>(static_cast<std::uint64_t>(number) >> (byte * 8)));
+    refuse(packet::Kind::signed_integer, bytes, "v:int32:not_null");
+  }
+  refuse(packet::Kind::text, "0", "v:int32:not_null");
+  refuse(packet::Kind::signed_integer, std::string(8, '\0'), "v:int32:null");
+  const auto first32 = frame(packet::Kind::signed_integer, std::string(8, '\xff'), "v:int32:not_null");
+  const auto null32 = frame(packet::Kind::text, "", "v:int32:null");
+  const auto first64 = frame(packet::Kind::signed_integer, std::string(8, '\xff'), "v:int64:not_null");
+  Require(scratchbird::parser::sbsql::PublicResultBatchSchemaMatchesForTest(first32, null32) &&
+      scratchbird::parser::sbsql::PublicResultBatchSchemaMatchesForTest(null32, first32) &&
+      !scratchbird::parser::sbsql::PublicResultBatchSchemaMatchesForTest(first32, first64) &&
+      !scratchbird::parser::sbsql::PublicResultBatchSchemaMatchesForTest(first64, first32),
+      "FETCH column width differs from its first published schema");
+  {
+    std::vector<packet::Field> records;
+    Require(packet::Decode(first32, &records), "missing metadata fixture decode failed");
+    std::string null_row;
+    Require(packet::Encode(std::vector<packet::Field>{{"v", packet::Kind::text, ""}}, &null_row),
+            "empty row fixture encode failed");
+    records.push_back({"row[1]", packet::Kind::row, null_row});
+    std::string payload;
+    Require(packet::Encode(records, &payload) &&
+        !scratchbird::parser::sbsql::DecodePublicResultRowsForTest(payload, &types, &rows),
+        "empty integer row without NULL metadata was published");
+    records.resize(1);
+    Require(packet::Encode(records, &payload) &&
+        !scratchbird::parser::sbsql::DecodePublicResultRowsForTest(payload, &types, &rows),
+        "signed row without width metadata was published");
+  }
+  for (const char* first_type : {"int32", "int64"}) {
+    for (bool null_first : {false, true}) for (bool conflict : {false, true}) {
+      std::vector<packet::Field> records;
+      for (unsigned row = 0; row < 2; ++row) {
+        const bool null = row == 0 && null_first;
+        const std::string type = row == 1 && conflict
+            ? (std::string_view(first_type) == "int32" ? "int64" : "int32") : first_type;
+        std::vector<packet::Field> part;
+        Require(packet::Decode(frame(null ? packet::Kind::text : packet::Kind::signed_integer,
+            null ? std::string{} : std::string(8, '\xff'), "v:" + type + (null ? ":null" : ":not_null")),
+            &part), "width fixture decode failed");
+        part[0].name = "row[" + std::to_string(row) + "]";
+        part[1].name = "row_meta[" + std::to_string(row) + "]";
+        records.insert(records.end(), part.begin(), part.end());
+      }
+      std::string payload;
+      Require(packet::Encode(records, &payload), "width fixture encode failed");
+      const auto saved_types = types;
+      const auto saved_rows = rows;
+      const bool ok = scratchbird::parser::sbsql::DecodePublicResultRowsForTest(payload, &types, &rows);
+      Require(ok != conflict && (conflict ? types == saved_types && rows == saved_rows
+          : types == std::vector<std::uint32_t>{std::string_view(first_type) == "int32" ? 23u : 20u} &&
+              rows.size() == 2 && rows[1][0] == "-1" && (!null_first || !rows[0][0])),
+          "cross-row native width changed or NULL-first width was lost");
+    }
+  }
   std::vector<packet::Field> duplicate_records;
   for (unsigned i = 0; i < 2; ++i) {
     std::string row;

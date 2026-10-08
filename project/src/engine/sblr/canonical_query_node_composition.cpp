@@ -30,6 +30,7 @@
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_operations.hpp"
 #include "engine/executor/executor_foundation.hpp"
+#include "engine/executor/native_int64_payload.hpp"
 #include "engine/optimizer/relational_planner.hpp"
 #include "query/expression_api.hpp"
 
@@ -2306,11 +2307,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           exec::DescriptorBatch output;
           output.columns.push_back(prepared.result_column);
           exec::DescriptorTuple tuple;
-          api::EngineTypedValue count;
-          count.descriptor = prepared.result_column.descriptor;
-          count.encoded_value = std::to_string(input_row_count);
-          count.is_null = false;
-          count.state = api::EngineValueState::value;
+          auto count = exec::EncodeInt64Value(static_cast<std::int64_t>(input_row_count),
+                                             prepared.result_column.descriptor);
           tuple.values.push_back(std::move(count));
           output.rows.push_back(std::move(tuple));
           const auto canonical = exec::ValidateCanonicalDescriptorBatch(
@@ -4671,6 +4669,12 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           descriptor.type_uuid = output_descriptor->type_uuid;
             descriptor.encoded_descriptor = "nullability=non_null";
         }
+        if (descriptor.canonical_type_name == "int64" &&
+            !BuildExactCanonicalScalarRuntimeDescriptorV1(*output_descriptor,
+                core::datatypes::CanonicalTypeId::int64, &descriptor)) {
+          return refuse("DATATYPE.DESCRIPTOR.INVALID",
+                        "composed window result lacks its exact datatype/codec binding");
+        }
         exec::ExecutorColumnDescriptor ranking_column{
             ranking.outputs.back()->output_name_utf8, descriptor,
             value_window && !aggregate_count_window,
@@ -4888,7 +4892,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             value.state = aggregate_count_window
                               ? api::EngineValueState::value
                               : api::EngineValueState::sql_null;
-            if (aggregate_count_window) value.encoded_value = "0";
+            if (aggregate_count_window) value = exec::EncodeInt64Value(0, descriptor);
           } else if (value_window) {
             value.descriptor = descriptor;
             std::optional<std::size_t> target_row;
@@ -4988,9 +4992,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             }
             value = std::move(rank.value);
           } else {
-            value.descriptor = descriptor;
-            value.state = api::EngineValueState::value;
-            value.encoded_value = std::to_string(row + 1);
+            value = exec::EncodeInt64Value(static_cast<std::int64_t>(row + 1), descriptor);
           }
           output.rows[row].values.push_back(std::move(value));
         }

@@ -2333,6 +2333,8 @@ bool PlanCanonicalAggregateFinalization(
     return true;
   }
   if (function == CanonicalAggregateFunction::mode) {
+    if (request.result_column.descriptor.canonical_type_name == "int64")
+      plan->output_bytes = 8;
     for (const auto& candidate : state.frequency_values) {
       std::size_t candidate_bytes = 0;
       if (!AggregateTypedValuePayloadBytes(candidate.representative,
@@ -2345,6 +2347,10 @@ bool PlanCanonicalAggregateFinalization(
   }
   if (function == CanonicalAggregateFunction::min ||
       function == CanonicalAggregateFunction::max) {
+    if (request.result_column.descriptor.canonical_type_name == "int64") {
+      plan->output_bytes = state.extremum.has_value() ? 8 : 0;
+      return true;
+    }
     return !state.extremum.has_value() ||
            AggregateTypedValuePayloadBytes(*state.extremum,
                                            &plan->output_bytes);
@@ -2791,6 +2797,11 @@ EngineTypedValue FinalizeCanonicalAggregateCoreUnchecked(
       if (replace) selected = index;
     }
     auto value = state.frequency_values[selected].representative;
+    if (request.result_column.descriptor.canonical_type_name == "int64") {
+      const auto integer = DecodeInt64Value(value);
+      if (!integer.ok()) { *diagnostic = integer.diagnostic; return {}; }
+      return EncodeInt64Value(integer.value, request.result_column.descriptor);
+    }
     value.descriptor = request.result_column.descriptor;
     return value;
   }
@@ -2970,6 +2981,11 @@ EngineTypedValue FinalizeCanonicalAggregateCoreUnchecked(
   if (function == CanonicalAggregateFunction::min ||
       function == CanonicalAggregateFunction::max) {
     auto value = *state.extremum;
+    if (request.result_column.descriptor.canonical_type_name == "int64") {
+      const auto integer = DecodeInt64Value(value);
+      if (!integer.ok()) { *diagnostic = integer.diagnostic; return {}; }
+      return EncodeInt64Value(integer.value, request.result_column.descriptor);
+    }
     value.descriptor = request.result_column.descriptor;
     return value;
   }

@@ -12,6 +12,7 @@
 #include "dml/insert_batch.hpp"
 #include "dml/insert_descriptor_key.hpp"
 #include "crud_support/native_value_payload.hpp"
+#include "dml/direct_bulk_typed_row_codec.hpp"
 
 #include "api_diagnostics.hpp"
 #include "deferred_secondary_index_runtime_policy.hpp"
@@ -1597,7 +1598,9 @@ PreparedInsertRow PrepareInsertRowForBatch(const EngineInsertRowsRequest& reques
         }
         const auto& typed = input_row.fields[index].second;
         row.values.push_back({input_row.fields[index].first,
-                              CrudTypedValuePayload(typed)});
+                              dml::detail::DirectStoredValueForColumn(typed,
+                                  core::datatypes::CanonicalTypeIdFromStableName(
+                                      column.canonical_type_name))});
         consumed[index] = true;
         break;
       }

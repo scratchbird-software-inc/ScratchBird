@@ -515,34 +515,17 @@ bool PromoteBoundedSignedComparisonValues(
     const auto source_type = dt::CanonicalTypeIdFromStableName(
         value->descriptor.canonical_type_name);
     if (source_type == target_type) return true;
-    if (value->isSqlNull()) {
-      if (!value->encoded_value.empty() || !value->binary_value.empty()) {
-        return false;
-      }
-      value->descriptor = target_descriptor;
-      return true;
-    }
-    if (value->state != api::EngineValueState::value || value->is_null ||
-        value->encoded_value.empty() || !value->binary_value.empty()) {
-      return false;
-    }
-    dt::DatatypeCastRequest request;
-    request.value.type_id = source_type;
-    request.value.encoded_value = value->encoded_value;
-    request.target_type_id = target_type;
-    request.explicit_cast = false;
-    const auto widened = dt::CastDatatypeValue(request);
-    if (!widened.ok() || widened.value.is_null) return false;
-    value->descriptor = target_descriptor;
-    value->encoded_value = widened.value.encoded_value;
-    value->binary_value.clear();
-    value->is_null = false;
-    value->state = api::EngineValueState::value;
+    api::EngineTypedValue widened;
+    std::string category;
+    if (!api::QowApplyCanonicalDescriptorCoercionV1(
+            *value, target_descriptor, false, &widened, &category,
+            refusal_detail)) return false;
+    *value = std::move(widened);
     return true;
   };
   if (!promote(left) || !promote(right)) {
-    *refusal_detail =
-        "lossless signed-integer comparison promotion failed";
+    *refusal_detail = "lossless signed-integer comparison promotion failed: " +
+                      *refusal_detail;
     return false;
   }
   return true;
@@ -3028,6 +3011,8 @@ bool CanonicalRelationalExpressionRuntime::BuildDescriptor(
   const auto native_type = dt::CanonicalTypeIdFromStableName(std::string(type_name));
   if (native_type == dt::CanonicalTypeId::uuid ||
       native_type == dt::CanonicalTypeId::binary ||
+      native_type == dt::CanonicalTypeId::boolean ||
+      native_type == dt::CanonicalTypeId::int32 ||
       native_type == dt::CanonicalTypeId::int64) {
     const auto type = native_type;
     if (BuildExactCanonicalScalarRuntimeDescriptorV1(source, type, descriptor)) return true;

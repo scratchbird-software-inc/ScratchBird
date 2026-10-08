@@ -15,6 +15,7 @@
 #include "catalog/column_metadata_codec.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cctype>
 #include <charconv>
 #include <cstdint>
@@ -8116,13 +8117,19 @@ bool RankingIntegerResult(const CanonicalWindowRankingFunction function) {
          function == CanonicalWindowRankingFunction::ntile;
 }
 
-bool RankingRealType(const scratchbird::core::datatypes::CanonicalTypeId type) {
-  namespace dt = scratchbird::core::datatypes;
-  return type == dt::CanonicalTypeId::bfloat16 ||
-         type == dt::CanonicalTypeId::real16 ||
-         type == dt::CanonicalTypeId::real32 ||
-         type == dt::CanonicalTypeId::real64 ||
-         type == dt::CanonicalTypeId::real128;
+bool RankingRealDescriptorValid(const internal_api::EngineDescriptor& descriptor) {
+  internal_api::CatalogColumnMetadata fields;
+  if (descriptor.canonical_type_name != "real64" ||
+      descriptor.descriptor_kind != "scalar" ||
+      !descriptor.charset_uuid.is_nil() || !descriptor.collation_uuid.is_nil() ||
+      !internal_api::AdmitCatalogColumnMetadata(descriptor.encoded_descriptor, &fields) ||
+      !fields.identities.empty() || fields.text.size() != 1 ||
+      !fields.text.contains("nullability") ||
+      fields.text.at("nullability") != "non_null") return false;
+  engine::ExecutionTypeDescriptor admitted;
+  std::string detail;
+  return BuildBoundExecutionTypeDescriptor(descriptor,
+      core::datatypes::CanonicalTypeId::real64, &admitted, &detail);
 }
 
 std::optional<std::string_view> RankingDescriptorField(
@@ -8180,11 +8187,9 @@ bool RankingOutputDescriptorValid(
                                   request.function_uuid)) {
     return false;
   }
-  const auto type =
-      dt::CanonicalTypeIdFromStableName(descriptor.canonical_type_name);
-  if (request.function == CanonicalWindowRankingFunction::ntile) {
+  if (RankingIntegerResult(request.function)) {
     // Admit the supplied output binding even when the frame has no rows.
-    // Zero is only an identity-validation probe, never a published bucket.
+    // Zero is only an identity-validation probe, never a published rank/bucket.
     internal_api::EngineTypedValue probe;
     probe.descriptor = descriptor;
     probe.setState(internal_api::EngineValueState::value);
@@ -8193,9 +8198,7 @@ bool RankingOutputDescriptorValid(
     std::string detail;
     return DecodeBoundInt64Value(probe, &decoded, &detail);
   }
-  return RankingIntegerResult(request.function)
-             ? type == dt::CanonicalTypeId::int64
-             : RankingRealType(type);
+  return RankingRealDescriptorValid(descriptor);
 }
 
 bool SharedCanonicalInt64DatatypeIdentity(
@@ -8539,27 +8542,7 @@ bool CanonicalWindowFrameEvidenceValid(
 scratchbird::engine::internal_api::EngineTypedValue RankingInt64Value(
     const scratchbird::engine::internal_api::EngineDescriptor& descriptor,
     const std::uint64_t value) {
-  scratchbird::engine::internal_api::EngineTypedValue output;
-  output.descriptor = descriptor;
-  output.encoded_value = std::to_string(value);
-  output.state =
-      scratchbird::engine::internal_api::EngineValueState::value;
-  return output;
-}
-
-std::string ExactRatioText(std::uint64_t numerator,
-                           const std::uint64_t denominator) {
-  if (denominator == 0) return {};
-  std::string output = std::to_string(numerator / denominator);
-  auto remainder = numerator % denominator;
-  if (remainder == 0) return output;
-  output.push_back('.');
-  for (std::size_t digit = 0; digit < 34 && remainder != 0; ++digit) {
-    const auto scaled = static_cast<unsigned __int128>(remainder) * 10;
-    output.push_back(static_cast<char>('0' + scaled / denominator));
-    remainder = static_cast<std::uint64_t>(scaled % denominator);
-  }
-  return output;
+  return EncodeInt64Value(static_cast<std::int64_t>(value), descriptor);
 }
 
 std::optional<scratchbird::engine::internal_api::EngineTypedValue>
@@ -8567,21 +8550,37 @@ RankingRealValue(
     const scratchbird::engine::internal_api::EngineDescriptor& descriptor,
     const std::uint64_t numerator,
     const std::uint64_t denominator) {
-  namespace dt = scratchbird::core::datatypes;
-  const auto target_type =
-      dt::CanonicalTypeIdFromStableName(descriptor.canonical_type_name);
-  dt::DatatypeCastRequest cast;
-  cast.value.type_id = dt::CanonicalTypeId::decimal_float;
-  cast.value.encoded_value = ExactRatioText(numerator, denominator);
-  cast.target_type_id = target_type;
-  cast.explicit_cast = true;
-  const auto converted = dt::CastDatatypeValue(cast);
-  if (!converted.ok() || converted.value.is_null) return std::nullopt;
-  scratchbird::engine::internal_api::EngineTypedValue output;
+  if (!RankingRealDescriptorValid(descriptor) || denominator == 0 ||
+      numerator > denominator || denominator > INT64_MAX) return std::nullopt;
+  // Exact bounded rational -> IEEE binary64, nearest-even. Keeping the
+  // remainder avoids both integer-to-double double rounding and the former
+  // invented decimal-float descriptor/text cast. The smallest nonzero ratio
+  // is 1/INT64_MAX, so no subnormal/overflow path is possible.
+  std::uint64_t bits = 0;
+  if (numerator != 0) {
+    auto normalized = numerator;
+    int exponent = 0;
+    while (normalized < denominator) { normalized *= 2; --exponent; }
+    auto remainder = normalized - denominator;
+    std::uint64_t significand = std::uint64_t{1} << 52;
+    for (int bit = 51; bit >= 0; --bit) {
+      remainder *= 2;
+      if (remainder >= denominator) {
+        significand |= std::uint64_t{1} << bit;
+        remainder -= denominator;
+      }
+    }
+    const auto twice_remainder = remainder * 2;
+    if (twice_remainder > denominator ||
+        (twice_remainder == denominator && (significand & 1))) ++significand;
+    if (significand == (std::uint64_t{1} << 53)) {
+      significand >>= 1; ++exponent;
+    }
+    bits = (static_cast<std::uint64_t>(exponent + 1023) << 52) |
+           (significand & ((std::uint64_t{1} << 52) - 1));
+  }
+  auto output = EncodeReal64Value(std::bit_cast<double>(bits));
   output.descriptor = descriptor;
-  output.encoded_value = converted.value.encoded_value;
-  output.state =
-      scratchbird::engine::internal_api::EngineValueState::value;
   return output;
 }
 
@@ -8632,6 +8631,9 @@ CanonicalWindowIntegerRankValueResult ComputeCanonicalWindowIntegerRankValue(
   }
   result.value = RankingInt64Value(request.output_descriptor,
                                    request.one_based_rank);
+  std::int64_t decoded = 0;
+  std::string detail;
+  if (!DecodeBoundInt64Value(result.value, &decoded, &detail)) return refuse(detail);
   result.diagnostic = {};
   return result;
 }
@@ -9137,6 +9139,20 @@ ConvertWindowAssignmentValue(
   // Exact occurrence equality makes the second request identical. Retain the
   // fully validated result, not an unchecked copy or a cached admission.
   if (source.descriptor == target) return validated;
+  if (source_type == target_type &&
+      source.descriptor.datatype_descriptor_uuid == target.datatype_descriptor_uuid &&
+      source.descriptor.datatype_descriptor_generation == target.datatype_descriptor_generation &&
+      source.descriptor.charset_uuid == target.charset_uuid &&
+      CanonicalDerivedDescriptorTypeMatches(source.descriptor,
+          *source_nullability == "nullable", target, true)) {
+    // A navigation slot may add NULL for an absent frame position. This is
+    // assignment to an independently admitted nullable occurrence, not a cast
+    // that claims source and target nullability policies are identical.
+    validated.descriptor = target;
+    if (!api::QowApplyCanonicalDescriptorCoercionV1(validated, target, false,
+            &converted, &category, &cast_detail)) return fail(std::move(cast_detail));
+    return converted;
+  }
   if (!api::QowApplyCanonicalDescriptorCoercionV1(
           source, target, false, &converted, &category, &cast_detail)) {
     return fail(std::move(cast_detail));

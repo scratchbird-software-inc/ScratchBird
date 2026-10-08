@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <arpa/inet.h>
+#include "../../src/wire/binary_status_packet.hpp"
+#include <array>
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
@@ -130,18 +132,38 @@ bool WaitForPath(const std::filesystem::path& path) {
   return false;
 }
 
-bool FileContains(const std::filesystem::path& path, const std::string& needle) {
-  std::ifstream in(path);
-  std::string line;
-  while (std::getline(in, line)) {
-    if (line.find(needle) != std::string::npos) return true;
+bool HasCompletedDisconnect(const std::filesystem::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return false;
+  bool found = false;
+  std::size_t total = 0;
+  while (in.peek() != std::char_traits<char>::eof()) {
+    std::array<char, 16> header{};
+    if (!in.read(header.data(), header.size()) ||
+        std::string_view(header.data(), 8) != "SBOBS002") return false;
+    std::uint64_t size = 0;
+    for (unsigned i = 0; i < 8; ++i)
+      size |= std::uint64_t(static_cast<unsigned char>(header[8 + i])) << (8 * i);
+    if (size > 1024 * 1024 || total > 16 * 1024 * 1024 - size - header.size()) return false;
+    total += size + header.size();
+    std::string payload(size, '\0');
+    if (!in.read(payload.data(), payload.size())) return false;
+    std::vector<scratchbird::wire::public_result::Field> fields;
+    if (!scratchbird::wire::binary_status::Decode(payload, &fields)) return false;
+    std::string text;
+    for (const auto& field : fields) if (field.name == "text") text += field.value;
+    // Snapshot frames contain several events. Only a standalone audit event
+    // proves that this disconnect, rather than another event, completed.
+    if (text.starts_with("{\"audit_event\":{") &&
+        text.find("\"event_type\":\"server.disconnect_notice\"") != std::string::npos &&
+        text.find("\"outcome\":\"completed\"") != std::string::npos) found = true;
   }
-  return false;
+  return found;
 }
 
-bool WaitForFileContains(const std::filesystem::path& path, const std::string& needle) {
+bool WaitForCompletedDisconnect(const std::filesystem::path& path) {
   for (int i = 0; i < 120; ++i) {
-    if (FileContains(path, needle)) return true;
+    if (HasCompletedDisconnect(path)) return true;
     std::this_thread::sleep_for(std::chrono::milliseconds(25));
   }
   return false;
@@ -234,17 +256,26 @@ bool ExecuteAndExpectResultRows(int fd,
 bool ExecuteAndExpectMessage(int fd,
                              std::string_view sql,
                              std::string_view message_prefix,
-                             std::string* line) {
+                             std::string* line,
+                             std::string_view exact_detail = {}) {
   std::string command = "EXECUTE ";
   command += sql;
   command += '\n';
   if (!WriteAll(fd, command)) return false;
   for (int i = 0; i < 512 && ReadLine(fd, line); ++i) {
     if (line->starts_with(message_prefix)) {
+      if (!exact_detail.empty()) {
+        const auto field = std::string("detail=") + std::string(exact_detail);
+        const auto at = line->find(field);
+        if (at == std::string::npos ||
+            (at + field.size() < line->size() && (*line)[at + field.size()] != ' '))
+          return false;
+      }
       DrainAvailableLines(fd, line);
       return true;
     }
     if (line->starts_with("RESULT ")) return false;
+    if (line->starts_with("ROW ") || line->starts_with("CURSOR ")) return false;
     if (line->starts_with("MESSAGE ")) return false;
   }
   return false;
@@ -903,8 +934,8 @@ int main(int argc, char** argv) {
   if (!ExecuteAndExpectMessage(
           fd,
           "CREATE PROCEDURE replay_cursor_procedure(route_cursor cursor)",
-          "MESSAGE ERROR SBSQL.IMPL.NOT_AVAILABLE",
-          &line)) {
+          "MESSAGE ERROR SBLR.OPERAND.INVALID ",
+          &line, "ddl_create_procedure_parameter_type_invalid")) {
     std::cerr << "ROUTINE-CURSOR-GATE-009 full route routine cursor parent did not fail closed under "
               << work << " last_line=" << line << '\n';
     ::close(fd);
@@ -1093,7 +1124,7 @@ int main(int argc, char** argv) {
   }
   ::close(fd);
   const bool saw_disconnect_notice =
-      WaitForFileContains(server_control / "sb_server.audit.jsonl", "server.disconnect_notice");
+      WaitForCompletedDisconnect(server_control / "sb_server.audit.sbobs");
   StopProcess(listener_pid);
   StopProcess(server_pid);
   if (!saw_disconnect_notice) {

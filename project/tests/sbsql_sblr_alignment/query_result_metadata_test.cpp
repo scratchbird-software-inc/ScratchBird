@@ -4,6 +4,7 @@
 #include "engine/sblr/canonical_query_result_metadata.hpp"
 #include "engine/executor/descriptor_value_runtime.hpp"
 #include "query/expression_api.hpp"
+#include "engine/sblr/relational_descriptor_codec.hpp"
 
 #include <array>
 #include <cstdlib>
@@ -412,6 +413,35 @@ int main() try {
     std::string detail;
     Check(api::QowEvaluateCanonicalComparisonTruthV1(left,right,0,api::EngineComparisonPredicateOperator::equal,&truth,&detail) && truth == api::EngineSqlTruthValue::true_value,
           "TEXT truth seam lost binary collation identity");
+    const auto catalog_left = left;
+    Fixture text_fixture(identities[5]);
+    auto binary_descriptor = text_fixture.dag.descriptors.front();
+    binary_descriptor.collation_uuid = left.descriptor.collation_uuid;
+    std::vector<std::uint8_t> binary_metadata;
+    Check(scratchbird::engine::sblr::EncodeRelationalTypeDescriptorV1(
+              binary_descriptor, &binary_metadata), "TEXT binary descriptor encoding");
+    left.descriptor.encoded_descriptor.assign(binary_metadata.begin(), binary_metadata.end());
+    right = left;
+    const bool binary_truth = api::QowEvaluateCanonicalComparisonTruthV1(left,right,0,
+              api::EngineComparisonPredicateOperator::equal,&truth,&detail) &&
+              truth == api::EngineSqlTruthValue::true_value;
+    if (!binary_truth) std::cerr << "binary TEXT refusal=" << detail << '\n';
+    Check(binary_truth,
+          "TEXT truth seam refused exact binary relational metadata");
+    for (unsigned mutation = 0; mutation < 4; ++mutation) {
+      auto stale = binary_descriptor;
+      if (mutation == 0) ++stale.codec_generation;
+      if (mutation == 1) ++stale.datatype_registry_generation;
+      if (mutation == 2) ++stale.type_generation;
+      if (mutation == 3) stale.descriptor_uuid = scratchbird::tests::FixtureUuid(1900,3);
+      Check(scratchbird::engine::sblr::EncodeRelationalTypeDescriptorV1(stale, &binary_metadata),
+            "stale TEXT descriptor framing");
+      right.descriptor.encoded_descriptor.assign(binary_metadata.begin(), binary_metadata.end());
+      Check(!api::QowEvaluateCanonicalComparisonTruthV1(left,right,0,
+                api::EngineComparisonPredicateOperator::equal,&truth,&detail),
+            "TEXT truth seam admitted mismatched binary authority");
+    }
+    left = catalog_left; right = left;
     right.descriptor.collation_uuid = scratchbird::tests::FixtureUuid(1900,2);
     Check(!api::QowEvaluateCanonicalComparisonTruthV1(left,right,0,api::EngineComparisonPredicateOperator::equal,&truth,&detail), "mismatched binary collation admitted");
     left.descriptor.collation_uuid = {}; right.descriptor.collation_uuid = {};
@@ -527,7 +557,7 @@ int main() try {
     Check(!f.Run() && !f.shape.query_metadata, "missing ambiguous or cyclic CTE producer refused");
   }
   }
-  Check(checks == 6561 + 8 + 5 + 1 + 2, "fixed check population including binary/outer-join and text-carrier refusal regressions");
+  Check(checks == 6561 + 8 + 5 + 1 + 2 + 10, "fixed check population including binary/outer-join and text-carrier refusal regressions");
   AllocationConformance();
   std::cout << "PASS schema_tuples=" << cases << " checks=" << checks << '\n';
   return 0;

@@ -228,6 +228,7 @@ MaterializedValues MaterializeValues(
     }
     const auto native_type = dt::CanonicalTypeIdFromStableName(type_names[column]);
     if ((native_type == dt::CanonicalTypeId::uuid || native_type == dt::CanonicalTypeId::binary ||
+         native_type == dt::CanonicalTypeId::int32 ||
          native_type == dt::CanonicalTypeId::int64) &&
         !BuildExactCanonicalScalarRuntimeDescriptorV1(*descriptor->second, native_type, &engine_descriptor)) {
       result.batch = {};

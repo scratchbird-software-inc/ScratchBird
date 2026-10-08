@@ -1,0 +1,298 @@
+// Copyright (c) 2026 ScratchBird Software Inc.
+// SPDX-License-Identifier: MPL-2.0
+#include "query/expression_api.hpp"
+#include "mga_relation_store/stored_scalar_payload.hpp"
+#include "mga_relation_store/stored_integer_descriptor.hpp"
+#include "descriptor_value_runtime.hpp"
+#include "executor_foundation.hpp"
+#include "engine/public_abi_int64_payload.hpp"
+#include "wire/public_result_packet.hpp"
+#include "dml/direct_bulk_typed_row_codec.hpp"
+#include "engine/sblr/native_row_field.hpp"
+#include "../support/exact_datatype_descriptor_fixture.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+#include <array>
+#include <bit>
+#include <iostream>
+#include <limits>
+#include <stdexcept>
+
+namespace api = scratchbird::engine::internal_api;
+namespace dt = scratchbird::core::datatypes;
+namespace ex = scratchbird::engine::executor;
+unsigned checks = 0;
+void Check(bool condition, const char* message) {
+  ++checks;
+  if (!condition) throw std::runtime_error(message);
+}
+api::EngineTypedValue Value(dt::CanonicalTypeId type, unsigned width,
+                            std::int64_t number, unsigned occurrence) {
+  api::EngineTypedValue value;
+  value.descriptor = scratchbird::tests::ExactScalarDescriptorFixture(
+      type, width == 4 ? "int32" : "int64",
+      scratchbird::tests::FixtureUuid(32, occurrence), "nullability=nullable");
+  value.setState(api::EngineValueState::value);
+  for (unsigned byte = 0; byte < width; ++byte)
+    value.binary_value.push_back(static_cast<std::uint8_t>(
+        static_cast<std::uint64_t>(number) >> (8 * byte)));
+  return value;
+}
+int main() {
+  namespace bulk = api::dml::detail;
+  for (const auto width : {4u, 8u}) {
+    namespace sblr = scratchbird::engine::sblr;
+    for (unsigned bytes = 0; bytes <= 16; ++bytes) {
+      sblr::SblrOperand operand;
+      operand.name = "n";
+      operand.type = width == 4 ? "row_new_field_binary16.int32" : "row_new_field_binary16.int64";
+      operand.value_kind = sblr::SblrValueKind::literal_typed;
+      operand.value_body.resize(40 + bytes, 0);
+      operand.value_body[16] = 16 + bytes;
+      const auto row = scratchbird::tests::FixtureUuid(32, 61);
+      std::copy(row.bytes.begin(), row.bytes.end(), operand.value_body.begin() + 24);
+      Check(sblr::DecodeNativeRowField(operand).has_value() == (bytes == width),
+            "native SBLR row field admitted wrong signed integer width");
+    }
+    auto display = Value(width == 4 ? dt::CanonicalTypeId::int32 : dt::CanonicalTypeId::int64,
+                         width, 1, 1);
+    display.binary_value.clear(); display.encoded_value = "1";
+    std::vector<std::uint8_t> packed;
+    Check(!bulk::DirectPackTypedPayload(dt::CanonicalTypeId::int64, display, &packed),
+          "integer source accepted display text as native data");
+  }
+  {
+    api::EngineInsertRowsRequest request;
+    api::BoundInsertRowTemplate row_template;
+    row_template.max_inline_encoded_bytes = 1024;
+    api::InsertRowEncoderPlan encoder;
+    api::InsertRowEncoderColumnPlan narrow, wide;
+    narrow.column_name = "narrow"; narrow.canonical_type_name = "int32";
+    wide.column_name = "wide"; wide.canonical_type_name = "int64";
+    encoder.columns = {narrow, wide};
+    api::EngineRowValue source;
+    source.requested_row_uuid = scratchbird::tests::FixtureUuid(32, 60);
+    source.fields = {{"wide", Value(dt::CanonicalTypeId::int64, 8, INT64_MAX, 1)},
+                     {"narrow", Value(dt::CanonicalTypeId::int64, 8, INT32_MIN, 2)}};
+    const auto prepared = api::PrepareInsertRowForBatch(request, source, row_template, encoder);
+    Check(prepared.values.size() == 2 && prepared.values[0].first == "narrow" &&
+              prepared.values[0].second.bytes == std::string("\0\0\0\x80", 4) &&
+              prepared.values[1].first == "wide" && prepared.values[1].second.bytes.size() == 8 &&
+              prepared.encoded_bytes == 22,
+          "reordered INSERT encoded against source order or accounted source width");
+    source.fields.erase(source.fields.begin());
+    const auto partial = api::PrepareInsertRowForBatch(request, source, row_template, encoder);
+    Check(partial.values[0].first == "narrow" && partial.values[0].second.bytes.size() == 4,
+          "subset INSERT lost destination integer width");
+  }
+  for (auto source_width : {4u, 8u}) for (auto target_width : {4u, 8u}) {
+    for (std::int64_t integer : {INT64_MIN, std::int64_t(INT32_MIN) - 1,
+          std::int64_t(INT32_MIN), std::int64_t(-1), std::int64_t(0),
+          std::int64_t(1), std::int64_t(INT32_MAX),
+          std::int64_t(INT32_MAX) + 1, INT64_MAX}) {
+      if (source_width == 4 && (integer < INT32_MIN || integer > INT32_MAX)) continue;
+      const auto source_type = source_width == 4 ? dt::CanonicalTypeId::int32 : dt::CanonicalTypeId::int64;
+      const auto target_type = target_width == 4 ? dt::CanonicalTypeId::int32 : dt::CanonicalTypeId::int64;
+      const auto source = Value(source_type, source_width, integer, 1);
+      const bool fits = target_width == 8 || (integer >= INT32_MIN && integer <= INT32_MAX);
+      std::vector<std::uint8_t> packed;
+      Check(bulk::DirectPackTypedPayload(target_type, source, &packed) == fits,
+            "integer storage conversion ignored target range");
+      if (fits) {
+        const auto expected = Value(target_type, target_width, integer, 2);
+        const auto stored = bulk::DirectStoredValueForColumn(source, target_type);
+        Check(packed == expected.binary_value && stored.isPresent() &&
+                  stored.bytes == std::string(packed.begin(), packed.end()),
+              "physical and retained integer payloads disagree");
+        if (source_width < target_width) {
+          api::EngineTypedValue promoted;
+          std::string category, detail;
+          Check(api::QowApplyCanonicalDescriptorCoercionV1(source, expected.descriptor,
+                    false, &promoted, &category, &detail) &&
+                    promoted.binary_value == expected.binary_value && promoted.encoded_value.empty(),
+                "bound comparison widening lost native integer value");
+        }
+      } else {
+        bool refused = false;
+        try { (void)bulk::DirectStoredValueForColumn(source, target_type); }
+        catch (const std::invalid_argument&) { refused = true; }
+        Check(refused && packed.empty(), "invalid integer storage conversion published a value");
+      }
+    }
+  }
+  for (const auto target : {dt::CanonicalTypeId::int32, dt::CanonicalTypeId::int64}) {
+    for (unsigned mutation = 0; mutation < 5; ++mutation) {
+      auto bad = Value(dt::CanonicalTypeId::int64, 8, -1, 1);
+      if (mutation == 0) bad.encoded_value = "-1";
+      if (mutation == 1) bad.descriptor.canonical_type_name = "int32";
+      if (mutation == 2) bad.descriptor.canonical_type_name = "uint64";
+      if (mutation == 3) bad.descriptor.canonical_type_name = "real64";
+      if (mutation == 4) bad.binary_value.pop_back();
+      std::vector<std::uint8_t> packed;
+      Check(!bulk::DirectPackTypedPayload(target, bad, &packed) && packed.empty(),
+            "malformed or overflowing source integer admitted by storage");
+    }
+  }
+  for (const unsigned width : {4, 8}) {
+    const auto type = width == 4 ? dt::CanonicalTypeId::int32 : dt::CanonicalTypeId::int64;
+    const std::array<std::int64_t, 11> numbers = {
+        width == 4 ? INT32_MIN : INT64_MIN, -65536, -256, -1, 0, 1, 127, 255, 256, 65536,
+        width == 4 ? INT32_MAX : INT64_MAX};
+    for (const auto a : numbers) for (const auto b : numbers) {
+      const auto left = Value(type, width, a, 1), right = Value(type, width, b, 2);
+      int comparison = 42;
+      std::string detail;
+      Check(api::QowCompareCanonicalNonCollatedScalarsV1(left, right, &comparison, &detail),
+            "exact native integer comparison refused");
+      Check(comparison == (a < b ? -1 : a > b ? 1 : 0),
+            "native integer comparison differs from signed oracle");
+      for (bool descending : {false, true}) {
+        ex::CanonicalDescriptorOrderTerm term;
+        term.expression_descriptor_id = 1;
+        term.direction = descending ? ex::CanonicalDescriptorOrderDirection::descending
+                                    : ex::CanonicalDescriptorOrderDirection::ascending;
+        const auto ordered = ex::CompareCanonicalDescriptorOrderValues(left, right, term);
+        Check(ordered.diagnostic.ok && ordered.comparison == (descending ? -comparison : comparison),
+              "native integer physical ordering differs from signed oracle");
+        const auto ka = ex::MakeCanonicalDescriptorEqualityKey(left, term);
+        // Equality keys are occurrence-bound. SQL comparison above exercises
+        // distinct occurrences; physical keys compare values in one column.
+        auto same_column = right;
+        same_column.descriptor = left.descriptor;
+        const auto kb = ex::MakeCanonicalDescriptorEqualityKey(same_column, term);
+        const auto plan = ex::PlanCanonicalDescriptorEqualityKey(left, term);
+        Check(ka.diagnostic.ok && kb.diagnostic.ok && plan.diagnostic.ok &&
+                  (ka.equality_key == kb.equality_key) == (a == b) &&
+                  ka.equality_key.capacity() <= plan.retained_key_bytes,
+              "native integer equality key or admitted size is incorrect");
+      }
+    }
+    for (const auto number : numbers) {
+      const auto original = Value(type, width, number, 1);
+      const std::string bytes(original.binary_value.begin(), original.binary_value.end());
+      auto restored = original;
+      restored.encoded_value = "stale";
+      restored.binary_value.clear();
+      Check(api::RestoreStoredScalarPayloadV1(bytes, api::EngineValueState::value, &restored) &&
+                restored.descriptor == original.descriptor && restored.encoded_value.empty() &&
+                restored.binary_value == original.binary_value &&
+                api::StoredScalarPayloadMatchesV1(restored, bytes, api::EngineValueState::value),
+            "stored native integer restoration changed binding or bits");
+      const auto decoded = ex::DecodeInt64Value(restored);
+      Check(decoded.diagnostic.ok && decoded.value == number, "native integer decode changed value");
+      std::array<char, 8> widened;
+      std::string_view payload;
+      Check(scratchbird::engine::PublicSignedIntegerScalarPayloadV1(restored, &widened, &payload),
+            "native signed integer wire projection refused");
+      namespace packet = scratchbird::wire::public_result;
+      const packet::Field field{"integer", packet::Kind::signed_integer, std::string(payload)};
+      Check(packet::AsSigned(field) == number && restored.binary_value == original.binary_value &&
+                restored.descriptor == original.descriptor,
+            "signed wire extension changed value or native carrier");
+      for (unsigned length = 0; length <= 16; ++length) {
+        if (length == width) continue;
+        auto bad = original;
+        Check(!api::RestoreStoredScalarPayloadV1(std::string(length, 'x'),
+                  api::EngineValueState::value, &bad) &&
+                  bad.descriptor == original.descriptor && bad.binary_value == original.binary_value &&
+                  bad.encoded_value.empty(), "invalid stored width mutated destination");
+      }
+    }
+    const auto present = Value(type, width, 0, 1);
+    if (type == dt::CanonicalTypeId::int64) {
+      auto non_null = present;
+      non_null.descriptor.encoded_descriptor = "nullability=non_null";
+      int comparison = 42;
+      std::string detail;
+      Check(!api::QowCompareCanonicalNonCollatedScalarsV1(present, non_null, &comparison, &detail) &&
+                comparison == 0 && !detail.empty(),
+            "comparison silently normalized distinct Core nullability profiles");
+    }
+    for (unsigned cardinality : {0, 1, 2}) {
+      for (unsigned mutation = 0; mutation != 7; ++mutation) {
+        ex::DescriptorBatch batch;
+        ex::ExecutorColumnDescriptor column;
+        column.descriptor = present.descriptor;
+        column.descriptor_id = 1;
+        column.stable_name = "integer";
+        column.nullable = true;
+        if (mutation == 1) ++column.descriptor.datatype_descriptor_generation;
+        if (mutation == 2) column.descriptor.type_uuid = {};
+        if (mutation == 3) column.descriptor.descriptor_uuid = {};
+        if (mutation == 4) column.descriptor.encoded_descriptor = "nullability=non_null";
+        if (mutation == 5) column.descriptor.encoded_descriptor += ";precision=8";
+        if (mutation == 6) column.nullable = false;
+        batch.columns.push_back(column);
+        if (cardinality) {
+          auto value = present;
+          value.descriptor = column.descriptor;
+          if (cardinality == 2) {
+            value.binary_value.clear();
+            value.setState(api::EngineValueState::sql_null);
+          }
+          batch.rows.push_back({{value}});
+        }
+        Check(ex::ValidateDescriptorBatch(batch).ok == (mutation == 0),
+              "integer batch admission depends on row cardinality or NULL state");
+      }
+    }
+    auto null = present;
+    Check(api::RestoreStoredScalarPayloadV1({}, api::EngineValueState::sql_null, &null) &&
+              null.is_null && null.binary_value.empty() && null.encoded_value.empty() &&
+              api::StoredScalarPayloadMatchesV1(null, {}, api::EngineValueState::sql_null),
+          "containing NULL retained a native integer payload");
+    for (auto placement : {ex::CanonicalDescriptorNullPlacement::first,
+                           ex::CanonicalDescriptorNullPlacement::last}) {
+      for (auto direction : {ex::CanonicalDescriptorOrderDirection::ascending,
+                             ex::CanonicalDescriptorOrderDirection::descending}) {
+        ex::CanonicalDescriptorOrderTerm term;
+        term.expression_descriptor_id = 1;
+        term.direction = direction;
+        term.null_placement = placement;
+        const auto ordered = ex::CompareCanonicalDescriptorOrderValues(null, present, term);
+        const auto reverse = ex::CompareCanonicalDescriptorOrderValues(present, null, term);
+        const int expected = placement == ex::CanonicalDescriptorNullPlacement::first ? -1 : 1;
+        const auto kn = ex::MakeCanonicalDescriptorEqualityKey(null, term);
+        const auto kp = ex::MakeCanonicalDescriptorEqualityKey(present, term);
+        Check(ordered.diagnostic.ok && reverse.diagnostic.ok && ordered.comparison == expected &&
+                  reverse.comparison == -expected && kn.diagnostic.ok && kp.diagnostic.ok &&
+                  kn.equality_key != kp.equality_key,
+              "native integer NULL ordering changed with direction or aliases zero");
+      }
+    }
+    for (bool mutate_left : {false, true}) for (unsigned mutation = 0; mutation < 14; ++mutation) {
+      auto left = Value(type, width, -1, 1), right = Value(type, width, 1, 2);
+      auto& bad = mutate_left ? left : right;
+      switch (mutation) {
+        case 0: bad.binary_value.pop_back(); break;
+        case 1: bad.binary_value.push_back(0); break;
+        case 2: bad.encoded_value = "1"; break;
+        case 3: bad.binary_value.clear(); bad.encoded_value = "1"; break;
+        case 4: bad.descriptor.datatype_descriptor_uuid = {}; break;
+        case 5: ++bad.descriptor.datatype_descriptor_generation; break;
+        case 6: bad.descriptor.type_uuid = {}; break;
+        case 7: bad.descriptor.descriptor_uuid = {}; break;
+        case 8: bad.descriptor.encoded_descriptor += ";precision=8"; break;
+        case 9: bad.descriptor.charset_uuid = bad.descriptor.type_uuid; break;
+        case 10: bad.descriptor.collation_uuid = bad.descriptor.type_uuid; break;
+        case 11: bad.is_null = true; break;
+        case 12: bad.setState(api::EngineValueState::sql_null); break;
+        case 13: bad.binary_value.clear(); break;
+      }
+      int comparison = 42;
+      std::string detail;
+      Check(!api::QowCompareCanonicalNonCollatedScalarsV1(left, right, &comparison, &detail) &&
+                comparison == 0 && !detail.empty(),
+            "invalid native integer operand published comparison");
+      if (mutation <= 3 || mutation >= 11) {
+        std::array<char, 8> widened;
+        widened.fill('!');
+        const auto sentinel = widened;
+        std::string_view payload = "unchanged";
+        Check(!scratchbird::engine::PublicSignedIntegerScalarPayloadV1(bad, &widened, &payload) &&
+                  widened == sentinel && payload == "unchanged",
+              "invalid signed integer wire carrier changed output or was accepted");
+      }
+    }
+  }
+  std::cout << "native integer comparison checks=" << checks << '\n';
+}

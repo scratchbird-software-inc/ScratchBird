@@ -185,6 +185,10 @@ bool CastNumeric(const api::EngineTypedValue& source,
 bool ValidateNonnegativeNumeric(const api::EngineTypedValue& value) {
   const auto source_type = dt::CanonicalTypeIdFromStableName(
       value.descriptor.canonical_type_name);
+  if (source_type == dt::CanonicalTypeId::int32 || source_type == dt::CanonicalTypeId::int64) {
+    const auto decoded = DecodeInt64Value(value);
+    return decoded.ok() && decoded.value >= 0;
+  }
   if (!IsNumeric(source_type) || value.isSqlNull() ||
       value.state != api::EngineValueState::value || !value.binary_value.empty()) {
     return false;
@@ -203,6 +207,9 @@ bool ValidateNonnegativeNumeric(const api::EngineTypedValue& value) {
 }
 
 struct NumericRangeThreshold {
+  // Internal frame coordinate, not a published INT128 datatype value. An
+  // INT64 key +/- a nonnegative INT64 offset fits exactly without saturation.
+  std::optional<__int128> signed_coordinate;
   dt::CanonicalTypeId work_type = dt::CanonicalTypeId::unknown;
   dt::DatatypeOperationValue value;
   dt::DatatypeNumericContext context;
@@ -215,6 +222,14 @@ bool NumericThreshold(const api::EngineTypedValue& current,
   if (threshold == nullptr) return false;
   const auto order_type = dt::CanonicalTypeIdFromStableName(
       current.descriptor.canonical_type_name);
+  if (order_type == dt::CanonicalTypeId::int32 || order_type == dt::CanonicalTypeId::int64) {
+    const auto left = DecodeInt64Value(current);
+    const auto right = DecodeInt64Value(offset);
+    if (!left.ok() || !right.ok() || right.value < 0) return false;
+    threshold->signed_coordinate = static_cast<__int128>(left.value) +
+        (add ? static_cast<__int128>(right.value) : -static_cast<__int128>(right.value));
+    return true;
+  }
   const auto work_type = NumericWorkType(order_type);
   dt::DatatypeOperationValue left;
   dt::DatatypeOperationValue right;
@@ -898,7 +913,7 @@ bool ResolveFrame(const CanonicalWindowFrameRequest& request,
         resolved->unit == CanonicalWindowFrameUnit::groups) {
       const auto decoded = DecodeInt64Value(offset);
       if (!decoded.ok() || offset.state != api::EngineValueState::value ||
-          !offset.binary_value.empty() || decoded.value < 0) {
+          offset.descriptor.canonical_type_name != "int64" || decoded.value < 0) {
         *detail = "ROWS and GROUPS offsets require a non-negative int64";
         return false;
       }
@@ -912,6 +927,12 @@ bool ResolveFrame(const CanonicalWindowFrameRequest& request,
               .columns[request.partition_order.order_terms.front().column]
               .descriptor.canonical_type_name);
       if (IsNumeric(order_type)) {
+        const auto offset_type = dt::CanonicalTypeIdFromStableName(offset.descriptor.canonical_type_name);
+        if ((order_type == dt::CanonicalTypeId::int32 || order_type == dt::CanonicalTypeId::int64) &&
+            offset_type != dt::CanonicalTypeId::int32 && offset_type != dt::CanonicalTypeId::int64) {
+          *detail = "native integer RANGE requires a native signed integer offset";
+          return false;
+        }
         if (!ValidateNonnegativeNumeric(offset)) {
           *detail = "numeric RANGE offset is NULL, negative, or incompatible";
           return false;
@@ -1107,6 +1128,18 @@ bool CompareRangeRowToThreshold(
     std::string* detail) {
   const auto& term = input.order_terms.front();
   const auto& value = ComparisonBatch(input).rows[row].values[term.column];
+  if (!temporal && numeric_threshold.signed_coordinate.has_value()) {
+    const auto decoded = DecodeInt64Value(value);
+    if (!decoded.ok()) {
+      *detail = "native integer RANGE order value is invalid";
+      return false;
+    }
+    const auto coordinate = static_cast<__int128>(decoded.value);
+    *comparison = coordinate < *numeric_threshold.signed_coordinate ? -1
+        : coordinate > *numeric_threshold.signed_coordinate ? 1 : 0;
+    if (term.direction == CanonicalDescriptorOrderDirection::descending) *comparison = -*comparison;
+    return true;
+  }
   if (temporal) {
     TemporalPoint point;
     if (!ParseTemporalPoint(value, &point)) {
@@ -1251,6 +1284,10 @@ bool RangeSemanticallyReversed(
           return false;
         }
         *temporal = TemporalOrdinal(point);
+      } else if (current_type == dt::CanonicalTypeId::int32 || current_type == dt::CanonicalTypeId::int64) {
+        const auto decoded = DecodeInt64Value(current_value);
+        if (!decoded.ok()) { *detail = "native integer RANGE current value is invalid"; return false; }
+        numeric->signed_coordinate = decoded.value;
       } else {
         numeric->work_type = NumericWorkType(current_type);
         numeric->context =
@@ -1289,6 +1326,14 @@ bool RangeSemanticallyReversed(
     if (term.direction == CanonicalDescriptorOrderDirection::descending) {
       comparison = -comparison;
     }
+  } else if (start_numeric.signed_coordinate || end_numeric.signed_coordinate) {
+    if (!start_numeric.signed_coordinate || !end_numeric.signed_coordinate) {
+      *detail = "numeric RANGE bounds use incompatible coordinates";
+      return false;
+    }
+    comparison = *start_numeric.signed_coordinate < *end_numeric.signed_coordinate ? -1
+        : *start_numeric.signed_coordinate > *end_numeric.signed_coordinate ? 1 : 0;
+    if (term.direction == CanonicalDescriptorOrderDirection::descending) comparison = -comparison;
   } else {
     if (start_numeric.work_type != end_numeric.work_type) {
       *detail = "numeric RANGE bounds use different widened types";

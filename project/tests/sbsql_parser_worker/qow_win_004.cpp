@@ -13,6 +13,8 @@
 #include "../sbsql_sblr_alignment/binary_uuid_fixture.hpp"
 
 #include <cstdio>
+#include <bit>
+#include <charconv>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -92,7 +94,29 @@ api::EngineTypedValue WindowValue(const api::EngineDescriptor& descriptor,
   value.descriptor = descriptor;
   value.encoded_value = encoded;
   value.state = api::EngineValueState::value;
+  if ((descriptor.canonical_type_name == "int64" || descriptor.canonical_type_name == "int32") && !encoded.empty()) {
+    std::int64_t number = 0;
+    const auto parsed = std::from_chars(encoded.data(), encoded.data() + encoded.size(), number);
+    const bool int32 = descriptor.canonical_type_name == "int32";
+    if (parsed.ec == std::errc{} && parsed.ptr == encoded.data() + encoded.size() &&
+        (!int32 || (number >= INT32_MIN && number <= INT32_MAX))) {
+      value.encoded_value.clear();
+      const auto bits = static_cast<std::uint64_t>(number);
+      for (unsigned byte = 0; byte < (int32 ? 4u : 8u); ++byte)
+        value.binary_value.push_back(static_cast<std::uint8_t>(bits >> (8 * byte)));
+    }
+  }
   return value;
+}
+
+std::string WindowScalarText(const api::EngineTypedValue& value) {
+  if (value.descriptor.canonical_type_name != "int64") return value.encoded_value;
+  if (!value.encoded_value.empty() || value.binary_value.size() != 8 || value.isSqlNull())
+    throw std::runtime_error("window fixture received a noncanonical INT64 result");
+  std::uint64_t bits = 0;
+  for (unsigned byte = 0; byte < 8; ++byte)
+    bits |= static_cast<std::uint64_t>(value.binary_value[byte]) << (8 * byte);
+  return std::to_string(std::bit_cast<std::int64_t>(bits));
 }
 
 api::EngineTypedValue WindowNull(const api::EngineDescriptor& descriptor) {
@@ -330,7 +354,7 @@ exec::CanonicalWindowPartitionOrderRequest Window401Request() {
 std::vector<std::string> WindowPayloads(const exec::DescriptorBatch& batch) {
   std::vector<std::string> values;
   for (const auto& row : batch.rows) {
-    values.push_back(row.values[4].encoded_value);
+    values.push_back(WindowScalarText(row.values[4]));
   }
   return values;
 }

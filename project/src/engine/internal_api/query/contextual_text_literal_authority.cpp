@@ -2268,6 +2268,17 @@ PrepareContextualTextLiteralAuthorityV2(
             "engine.contextual_text_literal.runtime_descriptor_invalid");
         return result;
       }
+      // The contextual literal has its own occurrence, but the same exact
+      // admitted TEXT datatype as its target. Preserve that catalog binding
+      // when installing the binary relational descriptor for comparison.
+      if (graph_binding.exact_descriptor.type_uuid != projected_target_descriptor.type_uuid ||
+          projected_target_descriptor.datatype_descriptor_uuid.is_nil() ||
+          projected_target_descriptor.datatype_descriptor_generation == 0) {
+        result.diagnostic = Diagnostic("CTB.TEXT.DESCRIPTOR_INVALID",
+            "engine.contextual_text_literal.runtime_datatype_binding_invalid");
+        return result;
+      }
+      runtime.value.descriptor = projected_target_descriptor;
       runtime.value.descriptor.descriptor_uuid = graph_binding.exact_descriptor.descriptor_uuid;
       runtime.value.descriptor.type_uuid = graph_binding.exact_descriptor.type_uuid;
       runtime.value.descriptor.collation_uuid = *graph_binding.exact_descriptor.collation_uuid;

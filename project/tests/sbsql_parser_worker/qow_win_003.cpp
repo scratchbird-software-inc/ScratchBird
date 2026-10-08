@@ -220,7 +220,7 @@ bool ValidateRowsGroupsRangeAndDefaults() {
     auto derived_order = row.values[2].isSqlNull()
                              ? WindowNull(hidden_order_descriptor)
                              : WindowValue(hidden_order_descriptor,
-                                           row.values[2].encoded_value);
+                                           WindowScalarText(row.values[2]));
     hidden_keys.rows.push_back(
         {{row.values[0], row.values[1], std::move(derived_order)}});
   }

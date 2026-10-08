@@ -164,7 +164,7 @@ bool QowBoundExecutionTypeDescriptorV1(
       descriptor.datatype_descriptor_generation == 0) {
     return refuse("bound scalar datatype descriptor identity is incomplete");
   }
-  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+  auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
       kBootstrapDatatypeCatalogUuid, kBootstrapDatatypeCatalogGeneration,
       kBootstrapDatatypeRegistryGeneration,
       descriptor.datatype_descriptor_uuid,
@@ -180,7 +180,27 @@ bool QowBoundExecutionTypeDescriptorV1(
 
   CatalogColumnMetadata fields;
   if (!AdmitCatalogColumnMetadata(descriptor.encoded_descriptor, &fields)) {
-    return refuse("bound scalar descriptor metadata is not admitted column metadata");
+    RelationalTypeDescriptor relational;
+    if (type_id != dt::CanonicalTypeId::character ||
+        !QowDecodeCanonicalTextDescriptorV1(descriptor, &relational))
+      return refuse("bound scalar descriptor metadata is not admitted column metadata or exact relational TEXT metadata");
+    identity = dt::LookupDatatypeTypeCodecIdentityV1(
+        relational.datatype_catalog_snapshot_uuid,
+        relational.datatype_catalog_generation, relational.datatype_registry_generation,
+        descriptor.datatype_descriptor_uuid, descriptor.datatype_descriptor_generation);
+    if (!identity.ok || identity.row.type_uuid != descriptor.type_uuid ||
+        identity.row.canonical_binary_type_code != static_cast<std::uint32_t>(type_id) ||
+        relational.descriptor_generation != identity.row.descriptor_generation ||
+        relational.type_generation != identity.row.type_generation ||
+        relational.codec_id != identity.row.codec_id ||
+        relational.codec_version != identity.row.codec_version ||
+        relational.codec_generation != identity.row.codec_generation ||
+        (relational.nullability != RelationalNullability::kNullable &&
+         relational.nullability != RelationalNullability::kNonNull))
+      return refuse("bound scalar descriptor metadata is not admitted column metadata or exact relational TEXT metadata");
+    fields.text["nullability"] = relational.nullability == RelationalNullability::kNullable
+        ? "nullable" : "non_null";
+    if (relational.width) fields.text["length"] = std::to_string(*relational.width);
   }
   if (fields.identities.contains("domain_uuid")) {
     return refuse("bound domain descriptor lacks the complete ordered domain stack");
@@ -286,7 +306,9 @@ bool QowCanonicalComparableEncodingV1(
   if (encoded_value == nullptr) return false;
   encoded_value->clear();
   if (type_id == dt::CanonicalTypeId::int8 ||
-      type_id == dt::CanonicalTypeId::uint8) {
+      type_id == dt::CanonicalTypeId::uint8 ||
+      type_id == dt::CanonicalTypeId::int32 ||
+      type_id == dt::CanonicalTypeId::int64) {
     return ScalarCastInputEncoding(value, type_id, encoded_value);
   }
   if (type_id == dt::CanonicalTypeId::boolean) {
@@ -321,17 +343,7 @@ bool QowCanonicalComparableEncodingV1(
     *encoded_value = value.encoded_value;
     return true;
   }
-  if (!value.encoded_value.empty() || type_id != dt::CanonicalTypeId::int64 ||
-      value.binary_value.size() != 8) {
-    return false;
-  }
-  std::uint64_t raw = 0;
-  for (std::size_t index = 0; index < value.binary_value.size(); ++index) {
-    raw |= static_cast<std::uint64_t>(value.binary_value[index]) <<
-           (index * 8);
-  }
-  *encoded_value = std::to_string(std::bit_cast<std::int64_t>(raw));
-  return true;
+  return false;
 }
 
 template <typename Real>
@@ -1661,7 +1673,9 @@ bool QowCompareCanonicalNonCollatedScalarsV1(
     *refusal_detail = "canonical comparison operand encoding is invalid";
     return false;
   }
-  if (type_id == dt::CanonicalTypeId::uuid) {
+  if (type_id == dt::CanonicalTypeId::uuid ||
+      type_id == dt::CanonicalTypeId::int32 ||
+      type_id == dt::CanonicalTypeId::int64) {
     // This seam selects only the canonical base profile. Do not silently drop
     // a caller's donor/time ordering or any unprojected descriptor modifier.
     const auto canonical_metadata = [](const EngineDescriptor& descriptor) {
@@ -1675,7 +1689,7 @@ bool QowCompareCanonicalNonCollatedScalarsV1(
     };
     if (!canonical_metadata(left_value.descriptor) ||
         !canonical_metadata(right_value.descriptor)) {
-      *refusal_detail = "DATATYPE.DESCRIPTOR.INVALID:UUID comparison has unsupported profile or modifiers";
+      *refusal_detail = "DATATYPE.DESCRIPTOR.INVALID:binary scalar comparison has unsupported profile or modifiers";
       return false;
     }
     dt::DatatypeComparisonRequest request;
@@ -1688,8 +1702,9 @@ bool QowCompareCanonicalNonCollatedScalarsV1(
         !QowBoundExecutionTypeDescriptorV1(
             right_value.descriptor, type_id, &request.right.descriptor,
             refusal_detail) ||
-        !dt::ResolveCanonicalUuidOrderingProfileV1(
-            request.left.descriptor, &request.uuid_ordering)) {
+        (type_id == dt::CanonicalTypeId::uuid &&
+         !dt::ResolveCanonicalUuidOrderingProfileV1(
+             request.left.descriptor, &request.uuid_ordering))) {
       *refusal_detail = "DATATYPE.DESCRIPTOR.INVALID:" + *refusal_detail;
       return false;
     }

@@ -9,7 +9,7 @@
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "mga_relation_store/mga_heap_runtime_support.hpp"
 #include "mga_relation_store/stored_scalar_payload.hpp"
-#include "mga_relation_store/stored_int64_descriptor.hpp"
+#include "mga_relation_store/stored_integer_descriptor.hpp"
 
 #include "api_diagnostics.hpp"
 #include "catalog/column_metadata_codec.hpp"
@@ -962,9 +962,9 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
     }
     projected_columns.push_back(&column);
     auto output_descriptor = column.value_descriptor;
-    if (output_descriptor.canonical_type_name == "int64") {
+    if ((output_descriptor.canonical_type_name == "int64" || output_descriptor.canonical_type_name == "int32")) {
       std::string projection_detail;
-      if (!api::ProjectStoredInt64DescriptorV1(context, column.value_descriptor,
+      if (!api::ProjectStoredIntegerDescriptorV1(context, column.value_descriptor,
                                               nullable, &output_descriptor,
                                               &projection_detail)) {
         return invalid("SB_DIAG_MGA_READ_RELATION_DESCRIPTOR_INVALID",
@@ -1070,7 +1070,9 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
         if (!api::RestoreStoredScalarPayloadV1(
                 encoded_value->bytes, encoded_value->state, &value)) {
           return invalid("QOW-DIAG-QRY-004-HEAP-VALUE-V1",
-                         "stored scalar has no valid native payload", true);
+                         "stored scalar has no valid native payload: type=" +
+                             value.descriptor.canonical_type_name + ", bytes=" +
+                             std::to_string(encoded_value->bytes.size()), true);
         }
       }
       tuple.values.push_back(std::move(value));

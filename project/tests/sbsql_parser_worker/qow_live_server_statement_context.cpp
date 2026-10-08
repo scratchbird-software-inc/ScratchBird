@@ -1446,9 +1446,10 @@ void CreateObjectBackedRelation(Fixture* fixture) {
     const auto codec = dt::LookupDatatypeTypeCodecIdentityV1(
         context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
         context.datatype_registry_generation, row.descriptor_uuid.value, row.descriptor_epoch);
+    Require(codec.ok, "object-backed fixture exact datatype codec unavailable");
     descriptor.datatype_descriptor_uuid = row.descriptor_uuid.value;
     descriptor.datatype_descriptor_generation = row.descriptor_epoch;
-    descriptor.type_uuid = codec.ok ? codec.row.type_uuid : row.descriptor_uuid.value;
+    descriptor.type_uuid = codec.row.type_uuid;
   };
   std::uint64_t column_salt = fixture->salt + 200;
   const auto bind_columns = [&](api::EngineCreateTableRequest& request) {
@@ -1483,16 +1484,16 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   column.ordinal = 0;
   column.names.push_back(PrimaryName("integer_value"));
   column.descriptor.descriptor_kind = "scalar";
-  column.descriptor.canonical_type_name = "integer";
-  column.descriptor.encoded_descriptor = "type=integer";
+  column.descriptor.canonical_type_name = "int32";
+  column.descriptor.encoded_descriptor = "type=int32";
   column.nullable = false;
   table.table_columns.push_back(std::move(column));
   api::EngineColumnDefinition auxiliary_column;
   auxiliary_column.ordinal = 1;
   auxiliary_column.names.push_back(PrimaryName("auxiliary_value"));
   auxiliary_column.descriptor.descriptor_kind = "scalar";
-  auxiliary_column.descriptor.canonical_type_name = "integer";
-  auxiliary_column.descriptor.encoded_descriptor = "type=integer";
+  auxiliary_column.descriptor.canonical_type_name = "int32";
+  auxiliary_column.descriptor.encoded_descriptor = "type=int32";
   auxiliary_column.nullable = false;
   table.table_columns.push_back(std::move(auxiliary_column));
   api::EngineColumnDefinition nullable_order_column;
@@ -1532,8 +1533,8 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   join_column.ordinal = 0;
   join_column.names.push_back(PrimaryName("join_value"));
   join_column.descriptor.descriptor_kind = "scalar";
-  join_column.descriptor.canonical_type_name = "integer";
-  join_column.descriptor.encoded_descriptor = "type=integer";
+  join_column.descriptor.canonical_type_name = "int32";
+  join_column.descriptor.encoded_descriptor = "type=int32";
   join_column.nullable = false;
   join_table.table_columns.push_back(std::move(join_column));
   api::EngineColumnDefinition join_auxiliary_column;
@@ -1541,8 +1542,8 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   join_auxiliary_column.names.push_back(
       PrimaryName("join_auxiliary_value"));
   join_auxiliary_column.descriptor.descriptor_kind = "scalar";
-  join_auxiliary_column.descriptor.canonical_type_name = "integer";
-  join_auxiliary_column.descriptor.encoded_descriptor = "type=integer";
+  join_auxiliary_column.descriptor.canonical_type_name = "int32";
+  join_auxiliary_column.descriptor.encoded_descriptor = "type=int32";
   join_auxiliary_column.nullable = false;
   join_table.table_columns.push_back(std::move(join_auxiliary_column));
   api::EngineColumnDefinition join_limit_column;
@@ -1732,6 +1733,12 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   Require(uuid_data_inserted.inserted_count == 4,
           "user UUID fixture did not persist all values and SQL NULL");
 
+  const auto native_int32 = [](std::int32_t number) {
+    std::vector<std::uint8_t> bytes;
+    for (unsigned shift = 0; shift != 32; shift += 8)
+      bytes.push_back(static_cast<std::uint8_t>(static_cast<std::uint32_t>(number) >> shift));
+    return bytes;
+  };
   api::EngineInsertRowsRequest insert;
   insert.context = context;
   insert.target_table.uuid = fixture->relation_uuid.value;
@@ -1739,14 +1746,14 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   for (std::int64_t value = 1; value <= 3; ++value) {
     api::EngineTypedValue typed;
     typed.descriptor.descriptor_kind = "scalar";
-    typed.descriptor.canonical_type_name = "integer";
-    typed.descriptor.encoded_descriptor = "type=integer";
-    typed.encoded_value = std::to_string(value);
+    typed.descriptor.canonical_type_name = "int32";
+    typed.descriptor.encoded_descriptor = "type=int32";
+    typed.binary_value = native_int32(static_cast<std::int32_t>(value));
     api::EngineTypedValue auxiliary_typed;
     auxiliary_typed.descriptor.descriptor_kind = "scalar";
-    auxiliary_typed.descriptor.canonical_type_name = "integer";
-    auxiliary_typed.descriptor.encoded_descriptor = "type=integer";
-    auxiliary_typed.encoded_value = std::to_string(100 + value);
+    auxiliary_typed.descriptor.canonical_type_name = "int32";
+    auxiliary_typed.descriptor.encoded_descriptor = "type=int32";
+    auxiliary_typed.binary_value = native_int32(static_cast<std::int32_t>(100 + value));
     api::EngineTypedValue nullable_order_typed;
     nullable_order_typed.descriptor.descriptor_kind = "scalar";
     nullable_order_typed.descriptor.canonical_type_name = "int64";
@@ -1757,6 +1764,9 @@ void CreateObjectBackedRelation(Fixture* fixture) {
     } else {
       Require(dt::EncodeCanonicalInt64Value(value == 1 ? 20 : 10,
                   &nullable_order_typed.encoded_value), "INT64 fixture encoding failed");
+      nullable_order_typed.binary_value.assign(nullable_order_typed.encoded_value.begin(),
+                                              nullable_order_typed.encoded_value.end());
+      nullable_order_typed.encoded_value.clear();
     }
     api::EngineTypedValue boolean_typed;
     boolean_typed.descriptor.descriptor_kind = "scalar";
@@ -1797,21 +1807,22 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   for (const std::int64_t value : {2, 3, 4}) {
     api::EngineTypedValue typed;
     typed.descriptor.descriptor_kind = "scalar";
-    typed.descriptor.canonical_type_name = "integer";
-    typed.descriptor.encoded_descriptor = "type=integer";
-    typed.encoded_value = std::to_string(value);
+    typed.descriptor.canonical_type_name = "int32";
+    typed.descriptor.encoded_descriptor = "type=int32";
+    typed.binary_value = native_int32(static_cast<std::int32_t>(value));
     api::EngineTypedValue auxiliary_typed;
     auxiliary_typed.descriptor.descriptor_kind = "scalar";
-    auxiliary_typed.descriptor.canonical_type_name = "integer";
-    auxiliary_typed.descriptor.encoded_descriptor = "type=integer";
-    auxiliary_typed.encoded_value =
-        value == 2 ? "999" : (value == 3 ? "103" : "101");
+    auxiliary_typed.descriptor.canonical_type_name = "int32";
+    auxiliary_typed.descriptor.encoded_descriptor = "type=int32";
+    auxiliary_typed.binary_value = native_int32(value == 2 ? 999 : (value == 3 ? 103 : 101));
     api::EngineTypedValue limit_typed;
     limit_typed.descriptor.descriptor_kind = "scalar";
     limit_typed.descriptor.canonical_type_name = "int64";
     limit_typed.descriptor.encoded_descriptor = "type=int64";
     Require(dt::EncodeCanonicalInt64Value(value, &limit_typed.encoded_value),
             "INT64 fixture encoding failed");
+    limit_typed.binary_value.assign(limit_typed.encoded_value.begin(), limit_typed.encoded_value.end());
+    limit_typed.encoded_value.clear();
     api::EngineRowValue row;
     row.fields.push_back({"join_value", std::move(typed)});
     row.fields.push_back(
@@ -1836,6 +1847,8 @@ void CreateObjectBackedRelation(Fixture* fixture) {
     value.descriptor.encoded_descriptor = std::move(encoded_descriptor);
     if constexpr (std::is_same_v<decltype(encoded_value), api::EngineUuid>)
       value.binary_value.assign(encoded_value.bytes.begin(), encoded_value.bytes.end());
+    else if (value.descriptor.canonical_type_name == "int64")
+      value.binary_value.assign(encoded_value.begin(), encoded_value.end());
     else value.encoded_value = std::move(encoded_value);
     return value;
   };
@@ -1970,6 +1983,12 @@ std::string ScalarResultText(std::string_view packet) {
       std::vector<result::Field> nested;
       Require(result::Decode(field.value, &nested), "result record is not canonical binary framing");
       for (const auto& value : nested) {
+        if (value.kind == result::Kind::signed_integer) {
+          const auto number = result::AsSigned(value);
+          Require(number.has_value(), "signed result field has invalid width");
+          scalar += value.name + "=" + std::to_string(*number) + ";";
+          continue;
+        }
         if (value.kind == result::Kind::bytes && value.value.starts_with("SBTL0001")) {
           const auto& bytes = value.value;
           Require(bytes.size() >= 12, "list result header truncated");

@@ -61,6 +61,11 @@ struct DirectFixedWidthPayloadValidationStats {
   std::map<dt::CanonicalTypeId, std::uint64_t> text_pack_attempts_by_type;
 };
 
+// The caller supplies the admitted destination column type. Retained values
+// must have the same width as physical cells, never the source display width.
+CrudStoredValue DirectStoredValueForColumn(
+    const EngineTypedValue& typed, dt::CanonicalTypeId target_type);
+
 bool DirectPackTypedPayload(
     dt::CanonicalTypeId target_type,
     const EngineTypedValue& typed,

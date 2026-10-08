@@ -120,6 +120,23 @@ int main() {
           "aggregate admission allocation failure lost typed resource diagnostic");
   }
   Check(exhausted_allocations, "aggregate admission allocation sweep did not finish");
+  for (const auto [fn, expected] : {std::pair{Fn::min, 1}, {Fn::max, 2}, {Fn::mode, 2}}) {
+    auto request = NativeRequest(fn);
+    auto& column = request.input_batch.columns[0];
+    column.descriptor.canonical_type_name = "int32";
+    BindColumn(column);
+    for (auto& row : request.input_batch.rows) {
+      row.values[0].descriptor = column.descriptor;
+      if (!row.values[0].isSqlNull()) row.values[0].binary_value.resize(4);
+    }
+    if (fn == Fn::mode) BindEqualityAuthority(&request);
+    request.maximum_final_output_bytes = 8;
+    CheckResult(request, exec::ExecuteCanonicalAggregateRuntime(request), expected);
+    request.maximum_final_output_bytes = 7;
+    const auto short_grant = exec::ExecuteCanonicalAggregateRuntime(request);
+    Check(!short_grant.diagnostic.ok && short_grant.output_batch.rows.empty(),
+          "selected INT32 aggregate result bypassed INT64 output grant");
+  }
   for (const auto [fn, expected] : {std::pair{Fn::count, 4}, {Fn::sum, 5}, {Fn::regr_count, 2},
                                    {Fn::rank, 2}, {Fn::dense_rank, 2}, {Fn::approx_count_distinct, 2},
                                    {Fn::min, 1}, {Fn::max, 2}, {Fn::mode, 2}}) {

@@ -150,10 +150,12 @@ api::EngineTypedValue BigintValue(std::int64_t value) {
   typed.descriptor.descriptor_kind = "scalar";
   typed.descriptor.canonical_type_name = "int64";
   typed.descriptor.encoded_descriptor = "type=int64";
+  std::string encoded;
   if (!scratchbird::core::datatypes::EncodeCanonicalInt64Value(
-          value, &typed.encoded_value)) {
+          value, &encoded)) {
     Fail("canonical INT64 seed encoding failed");
   }
+  typed.binary_value.assign(encoded.begin(), encoded.end());
   return typed;
 }
 

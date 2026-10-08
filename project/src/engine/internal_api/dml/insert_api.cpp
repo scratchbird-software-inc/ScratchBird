@@ -3827,11 +3827,16 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
   staged_insert_rows.reserve(input_rows.size());
   for (const auto& input_row : input_rows) {
     AddInsertTrace(&batch_context, "insert.row.convert", "row", std::to_string(batch_context.actual_row_count));
-    PreparedInsertRow prepared =
-        PrepareInsertRowForBatch(request,
+    PreparedInsertRow prepared;
+    try {
+      prepared = PrepareInsertRowForBatch(request,
                                  input_row,
                                  batch_context.row_template,
                                  batch_context.row_encoder_plan);
+    } catch (const std::invalid_argument& failure) {
+      return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context,
+          "dml.insert_rows", MakeInvalidRequestDiagnostic("dml.insert_rows", failure.what()));
+    }
     auto values = prepared.values;
     const auto default_validation =
         ApplyConstraintDefaultsForInsert(request.context, *table, values, &constraint_cache);

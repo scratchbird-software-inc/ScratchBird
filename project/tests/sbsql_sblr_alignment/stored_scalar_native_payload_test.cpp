@@ -1,7 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "engine/internal_api/mga_relation_store/stored_scalar_payload.hpp"
-#include "engine/internal_api/mga_relation_store/stored_int64_descriptor.hpp"
+#include "engine/internal_api/mga_relation_store/stored_integer_descriptor.hpp"
 #include "engine/executor/descriptor_value_runtime.hpp"
 #include "engine/public_abi_int64_payload.hpp"
 #include "wire/public_result_packet.hpp"
@@ -411,17 +411,20 @@ void PublicInt64Transport() {
     Require(!packet::Valid({"v", static_cast<packet::Kind>(kind), std::string(8, '\0')}),
             "unknown wire kind accepted");
 }
-void StoredInt64Descriptors() {
+void StoredIntegerDescriptors() {
   namespace dt = scratchbird::core::datatypes;
-  unsigned rows = 0;
+  unsigned int32_rows = 0, int64_rows = 0;
   for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
-    if (row.canonical_binary_type_code != static_cast<std::uint32_t>(dt::CanonicalTypeId::int64)) continue;
-    ++rows;
+    const bool int32 = row.canonical_binary_type_code == static_cast<std::uint32_t>(dt::CanonicalTypeId::int32);
+    if (!int32 && row.canonical_binary_type_code != static_cast<std::uint32_t>(dt::CanonicalTypeId::int64)) continue;
+    const char* type = int32 ? "int32" : "int64";
+    const unsigned width = int32 ? 4 : 8;
+    if (int32) ++int32_rows; else ++int64_rows;
     api::EngineRequestContext context;
     context.datatype_catalog_snapshot_uuid = row.catalog_snapshot_uuid;
     context.datatype_catalog_generation = row.catalog_generation;
     context.datatype_registry_generation = row.registry_generation;
-    auto source = Sentinel("int64").descriptor;
+    auto source = Sentinel(type).descriptor;
     source.type_uuid = row.type_uuid;
     source.datatype_descriptor_uuid = row.descriptor_uuid;
     source.datatype_descriptor_generation = row.descriptor_generation;
@@ -431,7 +434,7 @@ void StoredInt64Descriptors() {
       metadata.identities = {{"type_uuid", row.type_uuid},
           {"datatype_descriptor_uuid", row.descriptor_uuid}};
       if (!row.codec_uuid.is_nil()) metadata.identities["codec_uuid"] = row.codec_uuid;
-      metadata.text = {{"canonical", "int64"}, {"canonical_type", "int64"}, {"type", "int64"},
+      metadata.text = {{"canonical", type}, {"canonical_type", type}, {"type", type},
           {"nullable", nullable ? "true" : "false"},
           {"nullability", nullable ? "nullable" : "non_null"},
           {"not_null", nullable ? "false" : "true"},
@@ -443,7 +446,7 @@ void StoredInt64Descriptors() {
       Require(api::EncodeCatalogColumnMetadata(metadata, &source.encoded_descriptor), "fixture encoding failed");
       auto output = Sentinel("output").descriptor;
       std::string detail;
-      const bool projected = api::ProjectStoredInt64DescriptorV1(context, source, nullable, &output, &detail);
+      const bool projected = api::ProjectStoredIntegerDescriptorV1(context, source, nullable, &output, &detail);
       if (!projected) std::cerr << "cohort=" << row.catalog_generation << " nullable=" << nullable
                                 << " detail=" << detail << '\n';
       Require(projected, "valid exact catalog INT64 projection refused");
@@ -452,7 +455,7 @@ void StoredInt64Descriptors() {
       expected.encoded_descriptor = nullable ? "nullability=nullable" : "nullability=non_null";
       Require(output == expected && detail.empty(), "INT64 projection lost occurrence/datatype binding");
       auto aliased = source;
-      Require(api::ProjectStoredInt64DescriptorV1(context, aliased, nullable, &aliased, &detail) &&
+      Require(api::ProjectStoredIntegerDescriptorV1(context, aliased, nullable, &aliased, &detail) &&
                   aliased == expected, "aliased projection changed source before validation");
       unsigned faults = 0;
       bool completed = false;
@@ -462,7 +465,7 @@ void StoredInt64Descriptors() {
         const auto original_source = source;
         fail_after = allocation;
         try {
-          const bool ok = api::ProjectStoredInt64DescriptorV1(context, source, nullable, &candidate, &detail);
+          const bool ok = api::ProjectStoredIntegerDescriptorV1(context, source, nullable, &candidate, &detail);
           fail_after = -1;
           Require(ok && candidate == expected, "allocation sweep refused valid descriptor");
           completed = true;
@@ -476,22 +479,27 @@ void StoredInt64Descriptors() {
       Require(completed && faults != 0, "descriptor allocation fault path not exercised");
       api::EngineTypedValue value;
       value.descriptor = output;
-      Require(api::RestoreStoredScalarPayloadV1(std::string(8, '\xff'), State::value, &value) &&
-                  value.binary_value == std::vector<std::uint8_t>(8, 255), "projected payload changed");
+      Require(api::RestoreStoredScalarPayloadV1(std::string(width, '\xff'), State::value, &value) &&
+                  value.binary_value == std::vector<std::uint8_t>(width, 255), "projected payload changed");
       std::int64_t decoded = 42;
-      Require(scratchbird::engine::executor::DecodeBoundInt64Value(value, &decoded, &detail) && decoded == -1,
+      const auto read = scratchbird::engine::executor::DecodeInt64Value(value);
+      Require(read.ok() && read.value == -1,
               "projected stored descriptor rejected by strict scalar decoder");
+      if (!int32)
+        Require(scratchbird::engine::executor::DecodeBoundInt64Value(value, &decoded, &detail) &&
+                    decoded == -1, "INT64 strict bound decoder rejected stored projection");
       if (nullable) {
         Require(api::RestoreStoredScalarPayloadV1({}, State::sql_null, &value) && value.is_null,
                 "projected nullable column lost NULL");
         decoded = 42;
-        Require(!scratchbird::engine::executor::DecodeBoundInt64Value(value, &decoded, &detail) && decoded == 42,
+        Require(!scratchbird::engine::executor::DecodeInt64Value(value).ok() &&
+                    !scratchbird::engine::executor::DecodeBoundInt64Value(value, &decoded, &detail) && decoded == 42,
                 "NULL decoded into a PRESENT integer or changed output");
       }
       const auto reject = [&](const auto& ctx, const auto& invalid) {
         auto unchanged = Sentinel("output").descriptor;
         const auto original = unchanged;
-        Require(!api::ProjectStoredInt64DescriptorV1(ctx, invalid, nullable, &unchanged, &detail) &&
+        Require(!api::ProjectStoredIntegerDescriptorV1(ctx, invalid, nullable, &unchanged, &detail) &&
                     unchanged == original && !detail.empty(), "invalid projection accepted or output changed");
       };
       for (unsigned change = 0; change < 8; ++change) {
@@ -514,7 +522,7 @@ void StoredInt64Descriptors() {
       for (const auto kind : {"executor.scalar", "canonical_type_descriptor"}) {
         auto alternate = source;
         alternate.descriptor_kind = kind;
-        Require(api::ProjectStoredInt64DescriptorV1(context, alternate, nullable, &output, &detail) &&
+        Require(api::ProjectStoredIntegerDescriptorV1(context, alternate, nullable, &output, &detail) &&
                     output == expected, "execution scalar kind refused");
       }
       {
@@ -559,16 +567,16 @@ void StoredInt64Descriptors() {
         changed.text.erase(key);
         auto single = source;
         Require(api::EncodeCatalogColumnMetadata(changed, &single.encoded_descriptor) &&
-                    api::ProjectStoredInt64DescriptorV1(context, single, nullable, &output, &detail),
+                    api::ProjectStoredIntegerDescriptorV1(context, single, nullable, &output, &detail),
                 "single consistent nullability spelling refused");
       }
     }
   }
-  Require(rows != 0, "no INT64 registry cohort exercised");
+  Require(int32_rows != 0 && int64_rows != 0, "both signed integer registry cohorts were not exercised");
 }
 
 int main() {
-  StoredInt64Descriptors();
+  StoredIntegerDescriptors();
   UuidValues(); Int64Values(); OtherCarriersAndState(); AliasAndAllocation();
   PublicInt64Transport();
   NativeSequenceConsumers();

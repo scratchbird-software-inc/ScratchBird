@@ -110,7 +110,7 @@ void VerifyNtileExecution() {
   Check(result.diagnostic.ok && result.output_batch.rows.size() == 5,
         "NTILE with independent capability and receipt failed execution");
   for (unsigned row = 0; row < 5; ++row) {
-    Check(result.output_batch.rows[row].values.back().encoded_value ==
+    Check(WindowScalarText(result.output_batch.rows[row].values.back()) ==
               std::to_string(row / 2 + 1), "NTILE produced wrong bucket");
   }
   for (unsigned bit = 0; bit < 128; ++bit) {
@@ -157,7 +157,7 @@ void VerifyNtileExecution() {
         ? std::array<const char*, 5>{"1", "1", "2", "3", "3"}
         : std::array<const char*, 5>{"1", "1", "3", "4", "4"};
     for (unsigned row = 0; row < 5; ++row)
-      Check(ranked.output_batch.rows[row].values.back().encoded_value == expected[row],
+      Check(WindowScalarText(ranked.output_batch.rows[row].values.back()) == expected[row],
             "peer ranking produced the wrong value");
   }
 }

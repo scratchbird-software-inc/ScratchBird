@@ -5,7 +5,9 @@
 #include "executor_foundation.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include <array>
+#include <bit>
 #include <limits>
+#include <locale>
 #include <stdexcept>
 using Bytes = std::vector<std::uint8_t>;
 using Cell = std::optional<Bytes>;
@@ -13,6 +15,19 @@ unsigned checks = 0;
 void Check(bool ok, const char* message) {
   ++checks;
   if (!ok) throw std::runtime_error(message);
+}
+api::EngineDescriptor InvalidRatioDescriptor(api::EngineDescriptor descriptor, unsigned mutation) {
+  switch (mutation) {
+    case 0: descriptor.datatype_descriptor_uuid = {}; break;
+    case 1: ++descriptor.datatype_descriptor_generation; break;
+    case 2: descriptor.type_uuid = scratchbird::tests::FixtureUuid(39, 9); break;
+    case 3: descriptor.descriptor_uuid = {}; break;
+    case 4: descriptor.charset_uuid = scratchbird::tests::FixtureUuid(39, 8); break;
+    case 5: descriptor.encoded_descriptor += ";precision=1"; break;
+    case 6: descriptor.encoded_descriptor = "nullability=nullable"; break;
+    case 7: descriptor.collation_uuid = scratchbird::tests::FixtureUuid(39, 7); break;
+  }
+  return descriptor;
 }
 api::EngineTypedValue NativeInteger(const api::EngineDescriptor& descriptor,
                                    std::int64_t number) {
@@ -90,7 +105,7 @@ void NativeWindows(const char* type, unsigned pattern) {
   for (auto& row : partition.input_batch.rows) {
     for (auto& value : row.values) {
       if (value.descriptor.canonical_type_name == "int64" && !value.is_null)
-        value = NativeInteger(value.descriptor, std::stoll(value.encoded_value));
+        value = NativeInteger(value.descriptor, std::stoll(WindowScalarText(value)));
     }
   }
   auto& column = partition.input_batch.columns[4];
@@ -263,7 +278,7 @@ void NativeIntegerWindowPositions() {
   auto partition = Window401Request();
   for (auto& row : partition.input_batch.rows) for (auto& value : row.values)
     if (value.descriptor.canonical_type_name == "int64" && !value.is_null)
-      value = NativeInteger(value.descriptor, std::stoll(value.encoded_value));
+      value = NativeInteger(value.descriptor, std::stoll(WindowScalarText(value)));
   auto descriptor = exec::MakeExecutorDescriptor("int64", "nullability=non_null");
   descriptor.descriptor_kind = "scalar";
   auto& column = partition.input_batch.columns[4];
@@ -321,6 +336,66 @@ void NativeIntegerWindowPositions() {
       FrameBound(exec::CanonicalWindowFrameBoundKind::unbounded_preceding),
       FrameBound(exec::CanonicalWindowFrameBoundKind::unbounded_following)));
   Check(empty_ntile.frames.diagnostic.ok, "empty integer window frame failed");
+  for (bool percent : {false, true}) {
+    auto ranking = empty_ntile;
+    ranking.function = percent ? exec::CanonicalWindowRankingFunction::percent_rank
+                               : exec::CanonicalWindowRankingFunction::cume_dist;
+    ranking.function_uuid = percent
+        ? scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-7d86-86fe-96f3f27b5dd6")
+        : scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-721c-be64-2568b64a02b9");
+    ranking.ntile_bucket_count.reset();
+    ranking.output_descriptor = WindowDescriptor(6010, "real64",
+        exec::MakeExecutorDescriptor("real64").type_uuid, "nullability=non_null");
+    const auto good = exec::ExecuteCanonicalWindowRanking(ranking);
+    Check(good.diagnostic.ok && good.values.empty(), "exact empty real ranking binding refused");
+    for (unsigned mutation = 0; mutation < 8; ++mutation) {
+      auto invalid = ranking;
+      invalid.output_descriptor = InvalidRatioDescriptor(ranking.output_descriptor, mutation);
+      const auto refused = exec::ExecuteCanonicalWindowRanking(invalid);
+      Check(!refused.diagnostic.ok && refused.values.empty(), "empty real ranking bypassed binding admission");
+    }
+  }
+  const std::array<exec::CanonicalWindowRankingFunction, 3> ranking_functions = {
+      exec::CanonicalWindowRankingFunction::row_number,
+      exec::CanonicalWindowRankingFunction::rank,
+      exec::CanonicalWindowRankingFunction::dense_rank};
+  const std::array<api::EngineUuid, 3> ranking_ids = {
+      scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-7539-bcce-00eef3ae7220"),
+      scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-7b94-870d-0dd789ca70ab"),
+      scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-741d-bef0-f079fd3ba494")};
+  const std::array<std::array<std::int64_t, 9>, 3> ranking_oracles = {{
+      {1, 2, 3, 4, 5, 1, 1, 2, 1}, {1, 1, 3, 4, 5, 1, 1, 1, 1},
+      {1, 1, 2, 3, 4, 1, 1, 1, 1}}};
+  for (unsigned function = 0; function < ranking_functions.size(); ++function) {
+    for (bool empty : {false, true}) {
+      auto ranking = empty ? empty_ntile : ntile;
+      ranking.function = ranking_functions[function];
+      ranking.function_uuid = ranking_ids[function];
+      ranking.ntile_bucket_count.reset();
+      ranking.output_descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(33, function + 1);
+      const auto ranked = exec::ExecuteCanonicalWindowRanking(ranking);
+      Check(ranked.diagnostic.ok && ranked.values.size() == (empty ? 0 : 9),
+            "native integer ranking refused an exact output descriptor");
+      for (unsigned row = 0; row < ranked.values.size(); ++row) {
+        std::int64_t actual = 0;
+        std::string detail;
+        Check(exec::DecodeBoundInt64Value(ranked.values[row], &actual, &detail) &&
+                  actual == ranking_oracles[function][row] &&
+                  ranked.values[row].descriptor == ranking.output_descriptor,
+              "native rank bytes, binding or value differ from independent oracle");
+      }
+      for (unsigned mutation = 0; mutation != 4; ++mutation) {
+        auto invalid = ranking;
+        if (mutation == 0) ++invalid.output_descriptor.datatype_descriptor_generation;
+        if (mutation == 1) invalid.output_descriptor.type_uuid = {};
+        if (mutation == 2) invalid.output_descriptor.encoded_descriptor += ";precision=1";
+        if (mutation == 3) invalid.output_descriptor.datatype_descriptor_uuid = {};
+        const auto refused = exec::ExecuteCanonicalWindowRanking(invalid);
+        Check(!refused.diagnostic.ok && refused.values.empty(),
+              "integer ranking accepted stale binding or published a partial result");
+      }
+    }
+  }
   // A distinct occurrence UUID prevents the argument identity guard from
   // accidentally detecting stale output metadata instead of output admission.
   empty_ntile.output_descriptor.descriptor_uuid =
@@ -366,7 +441,156 @@ void NativeIntegerWindowPositions() {
   }
 }
 
+void NativeRangeBoundaries() {
+  for (bool empty : {false, true}) {
+    auto partition = Window401Request();
+    partition.order_terms.resize(1);
+    if (empty) partition.input_batch.rows.clear();
+    for (auto unit : {exec::CanonicalWindowFrameUnit::rows,
+                      exec::CanonicalWindowFrameUnit::groups,
+                      exec::CanonicalWindowFrameUnit::range}) {
+      const auto operand = NativeInteger(exec::MakeExecutorDescriptor("int64", "nullability=non_null"), 1);
+      const auto frame = ExplicitFrame(unit,
+          FrameBound(exec::CanonicalWindowFrameBoundKind::offset_preceding, operand),
+          FrameBound(exec::CanonicalWindowFrameBoundKind::current_row));
+      Check(ExecuteFrame(partition, frame).diagnostic.ok, "native frame offset refused before mutation");
+      for (unsigned mutation = 0; mutation < 8; ++mutation) {
+        auto invalid = frame;
+        auto& bad = *invalid.start->offset;
+        if (mutation == 0) bad.descriptor.datatype_descriptor_uuid = {};
+        if (mutation == 1) ++bad.descriptor.datatype_descriptor_generation;
+        if (mutation == 2) bad.descriptor.encoded_descriptor += ";precision=1";
+        if (mutation == 3) bad.descriptor.type_uuid = {};
+        if (mutation == 4) bad.encoded_value = "1";
+        if (mutation == 5) { bad.binary_value.clear(); bad.encoded_value = "1"; }
+        if (mutation == 6) bad.binary_value.pop_back();
+        if (mutation == 7) bad = NativeInteger(bad.descriptor, -1);
+        const auto refused = ExecuteFrame(partition, invalid);
+        Check(!refused.diagnostic.ok && refused.effective_frames.empty(),
+              "frame offset bypassed exact admission on populated or empty partition");
+      }
+    }
+  }
+  for (bool descending : {false, true}) {
+    auto partition = Window401Request();
+    partition.order_terms.resize(1);
+    partition.order_terms[0].direction = descending
+        ? exec::CanonicalDescriptorOrderDirection::descending
+        : exec::CanonicalDescriptorOrderDirection::ascending;
+    partition.input_batch.rows.resize(5);
+    const std::array<std::int64_t, 5> keys{INT64_MIN, -1, 0, 1, INT64_MAX};
+    for (unsigned row = 0; row < 5; ++row) {
+      partition.input_batch.rows[row].values[0] = partition.input_batch.rows[0].values[0];
+      partition.input_batch.rows[row].values[1] = partition.input_batch.rows[0].values[1];
+      partition.input_batch.rows[row].values[2] = NativeInteger(
+          partition.input_batch.columns[2].descriptor, keys[row]);
+    }
+    for (const auto offset : {std::int64_t{0}, std::int64_t{1}, std::int64_t{INT64_MAX}}) {
+      const auto operand = NativeInteger(exec::MakeExecutorDescriptor("int64", "nullability=non_null"), offset);
+      auto frame = ExplicitFrame(exec::CanonicalWindowFrameUnit::range,
+          FrameBound(exec::CanonicalWindowFrameBoundKind::offset_preceding, operand),
+          FrameBound(exec::CanonicalWindowFrameBoundKind::offset_following, operand));
+      const auto result = ExecuteFrame(partition, frame);
+      if (!result.diagnostic.ok) std::cerr << result.diagnostic.detail << '\n';
+      Check(result.diagnostic.ok && result.effective_frames.size() == 5,
+            "native RANGE refused exact bound-extreme coordinates");
+      for (unsigned row = 0; row < 5; ++row) {
+        std::vector<std::size_t> expected;
+        const auto key = static_cast<std::uint64_t>(keys[descending ? 4 - row : row]) ^ (std::uint64_t{1} << 63);
+        for (unsigned candidate = 0; candidate < 5; ++candidate) {
+          const auto other = static_cast<std::uint64_t>(keys[descending ? 4 - candidate : candidate]) ^ (std::uint64_t{1} << 63);
+          const auto distance = key > other ? key - other : other - key;
+          if (distance <= static_cast<std::uint64_t>(offset)) expected.push_back(candidate);
+        }
+        Check(result.effective_frames[row].effective_row_indices == expected,
+              "RANGE overflowed or disagreed with independent unsigned-distance oracle");
+      }
+      for (unsigned mutation = 0; mutation < 4; ++mutation) {
+        auto invalid = frame;
+        auto& bad = *invalid.start->offset;
+        if (mutation == 0) ++bad.descriptor.datatype_descriptor_generation;
+        if (mutation == 1) bad.encoded_value = "1";
+        if (mutation == 2) bad.binary_value.pop_back();
+        if (mutation == 3) bad = NativeInteger(bad.descriptor, -1);
+        const auto refused = ExecuteFrame(partition, invalid);
+        Check(!refused.diagnostic.ok && refused.effective_frames.empty(),
+              "RANGE accepted malformed or negative native offset");
+      }
+    }
+  }
+}
+
+void ExactRankingRatios() {
+  struct CommaNumbers : std::numpunct<char> {
+    char do_decimal_point() const override { return ','; }
+    char do_thousands_sep() const override { return '.'; }
+    std::string do_grouping() const override { return "\3"; }
+  };
+  struct RestoreLocale {
+    std::locale original = std::locale();
+    ~RestoreLocale() { std::locale::global(original); }
+  } restore;
+  std::locale::global(std::locale(std::locale::classic(), new CommaNumbers));
+  const auto descriptor = WindowDescriptor(6000, "real64",
+      exec::MakeExecutorDescriptor("real64").type_uuid, "nullability=non_null");
+  struct Ratio { std::uint64_t numerator, denominator, bits; };
+  const std::array<Ratio, 7> ratios{{
+      {1, 3, 0x3fd5555555555555ULL}, {2, 3, 0x3fe5555555555555ULL},
+      {1, 1, 0x3ff0000000000000ULL},
+      {1, INT64_MAX, 0x3c00000000000000ULL},
+      {INT64_MAX - 1, INT64_MAX, 0x3ff0000000000000ULL},
+      {9007199254740993ULL, 18014398509481984ULL, 0x3fe0000000000000ULL},
+      {9007199254740995ULL, 18014398509481984ULL, 0x3fe0000000000002ULL}
+  }};
+  for (const auto& ratio : ratios) {
+    exec::CanonicalWindowCumeDistValueRequest request;
+    request.function_abi_version = 1;
+    request.builtin_id = "sb.window.cume_dist";
+    request.function_uuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-721c-be64-2568b64a02b9");
+    request.output_descriptor = descriptor;
+    request.cumulative_row_count = ratio.numerator;
+    request.partition_row_count = ratio.denominator;
+    const auto result = exec::ComputeCanonicalWindowCumeDistValue(request);
+    Check(result.diagnostic.ok && result.value.descriptor == descriptor &&
+              std::bit_cast<std::uint64_t>(std::stod(result.value.encoded_value)) == ratio.bits,
+          "CUME_DIST differs from independent nearest-even binary64 ratio oracle");
+    for (unsigned mutation = 0; mutation < 8; ++mutation) {
+      auto invalid = request;
+      invalid.output_descriptor = InvalidRatioDescriptor(descriptor, mutation);
+      const auto refused = exec::ComputeCanonicalWindowCumeDistValue(invalid);
+      Check(!refused.diagnostic.ok && refused.value.encoded_value.empty() &&
+                refused.value.binary_value.empty(), "CUME_DIST accepted invalid output binding");
+    }
+    if (ratio.denominator < INT64_MAX) {
+      exec::CanonicalWindowPercentRankValueRequest percent;
+      percent.function_abi_version = 1;
+      percent.builtin_id = "sb.window.percent_rank";
+      percent.function_uuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-7d86-86fe-96f3f27b5dd6");
+      percent.output_descriptor = descriptor;
+      percent.one_based_rank = ratio.numerator + 1;
+      percent.partition_row_count = ratio.denominator + 1;
+      const auto ranked = exec::ComputeCanonicalWindowPercentRankValue(percent);
+      Check(ranked.diagnostic.ok &&
+                std::bit_cast<std::uint64_t>(std::stod(ranked.value.encoded_value)) == ratio.bits,
+            "PERCENT_RANK differs from independent rational oracle");
+      percent.one_based_rank = 1;
+      const auto zero = exec::ComputeCanonicalWindowPercentRankValue(percent);
+      Check(zero.diagnostic.ok && std::stod(zero.value.encoded_value) == 0,
+            "first PERCENT_RANK is not zero");
+      for (unsigned mutation = 0; mutation < 8; ++mutation) {
+        auto invalid = percent;
+        invalid.output_descriptor = InvalidRatioDescriptor(descriptor, mutation);
+        const auto refused = exec::ComputeCanonicalWindowPercentRankValue(invalid);
+        Check(!refused.diagnostic.ok && refused.value.encoded_value.empty() &&
+                  refused.value.binary_value.empty(), "PERCENT_RANK zero bypassed output binding admission");
+      }
+    }
+  }
+}
+
 int main() {
+  NativeRangeBoundaries();
+  ExactRankingRatios();
   NativeIntegerOrdering();
   NativeIntegerWindowPositions();
   for (unsigned pattern = 0; pattern < 130; ++pattern) NativeWindows("uuid", pattern);

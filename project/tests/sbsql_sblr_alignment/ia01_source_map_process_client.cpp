@@ -1995,8 +1995,16 @@ END;)SBSQL";
       const bool no_held_authority =
           invoke_invalid ? !session.HasHeldProcedureInvokeForWire()
                          : !session.HasHeldDdlCreateProcedureForWire();
+      bool exact_cursor_refusal = true;
+      if (!invoke_invalid) {
+        const auto refused_cursor = session.RunPipeline(
+            "CREATE PROCEDURE replay_cursor_procedure(route_cursor cursor)", true);
+        exact_cursor_refusal = exact_pre_sblr_refusal(refused_cursor,
+            "SBLR.OPERAND.INVALID", "ddl_create_procedure_parameter_type_invalid") &&
+            !session.HasHeldDdlCreateProcedureForWire();
+      }
       auto rolled_back = session.RunPipeline("ROLLBACK TRANSACTION", true);
-      if (!exact_shape_refusal || !exact_authority_refusal ||
+      if (!exact_shape_refusal || !exact_authority_refusal || !exact_cursor_refusal ||
           !no_held_authority || !rolled_back.accepted ||
           rolled_back.messages.has_errors()) {
         dump_failure("parameter_refusal_contract_failed",

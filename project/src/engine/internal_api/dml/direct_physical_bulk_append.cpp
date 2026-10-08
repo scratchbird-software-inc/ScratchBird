@@ -2331,7 +2331,7 @@ void DirectAppendStageSimpleTypedIndexEntries(
     }
     DirectPrecomputedIndexEntry entry{
         std::move(encoded_key),
-        EncodeStoredLogicalKey({DirectTypedStoredValue(typed)}),
+        EncodeStoredLogicalKey({detail::DirectStoredValueForColumn(typed, plan.target_type)}),
         row.row_uuid,
         row.version_uuid,
         source_ordinal, typed.isSqlNull()};
@@ -2641,7 +2641,19 @@ std::string DirectNativePacketPayloadText(
 }
 
 CrudStoredValue DirectNativePacketStoredValue(const EngineNativeRowPacketFrame& frame,
-                                              const DirectNativePacketValueRef& ref) {
+                                              const DirectNativePacketValueRef& ref,
+                                              dt::CanonicalTypeId target_type) {
+  if (!ref.is_null && (target_type == dt::CanonicalTypeId::int32 ||
+                       target_type == dt::CanonicalTypeId::int64)) {
+    EngineTypedValue value;
+    value.descriptor.canonical_type_name = DirectNativePacketTypeName(ref.tag);
+    const auto payload = DirectNativePacketPayloadSpan(frame, ref);
+    if (ref.tag == 1)
+      value.encoded_value.assign(reinterpret_cast<const char*>(payload.data()), payload.size());
+    else
+      value.binary_value.assign(payload.begin(), payload.end());
+    return detail::DirectStoredValueForColumn(value, target_type);
+  }
   return ref.is_null ? CrudStoredValue::SqlNull()
                      : CrudStoredValue(DirectNativePacketPayloadText(frame, ref));
 }
@@ -3029,7 +3041,7 @@ bool DirectBuildTypedSimpleIndexKeyFromNativePacket(
               inline_payload.data(),
               inline_size),
           encoded_key)) {
-    *payload_value = EncodeStoredLogicalKey({DirectNativePacketStoredValue(frame, ref)});
+    *payload_value = EncodeStoredLogicalKey({DirectNativePacketStoredValue(frame, ref, target_type)});
     if (stats != nullptr) {
       ++stats->typed_key_encoded;
       ++stats->sbkobin_keys;
@@ -3057,7 +3069,7 @@ bool DirectBuildTypedSimpleIndexKeyFromNativePacket(
     if (stats != nullptr) { ++stats->typed_key_fallback; }
     return false;
   }
-  *payload_value = EncodeStoredLogicalKey({DirectNativePacketStoredValue(frame, ref)});
+  *payload_value = EncodeStoredLogicalKey({DirectNativePacketStoredValue(frame, ref, target_type)});
   if (stats != nullptr) {
     ++stats->typed_key_encoded;
     ++stats->sbkobin_keys;
@@ -3126,7 +3138,7 @@ void DirectAppendStageSimpleNativePacketIndexEntries(
                                                    typed_key_stats)) {
         continue;
       }
-      payload_value = EncodeStoredLogicalKey({DirectTypedStoredValue(typed)});
+      payload_value = EncodeStoredLogicalKey({detail::DirectStoredValueForColumn(typed, plan.target_type)});
     }
     const bool null_key = DirectEncodedScalarKeyIsNull(encoded_key);
     DirectPrecomputedIndexEntry entry{
@@ -4056,21 +4068,39 @@ const std::string& DirectInputFieldName(
   return input_row.fields[field_index].first;
 }
 
+dt::CanonicalTypeId DirectColumnTypeForField(
+    const InsertRowEncoderPlan& encoder, std::string_view field,
+    std::size_t ordinal) {
+  if (ordinal < encoder.columns.size() && encoder.columns[ordinal].column_name == field)
+    return dt::CanonicalTypeIdFromStableName(encoder.columns[ordinal].canonical_type_name);
+  const InsertRowEncoderColumnPlan* selected = nullptr;
+  for (const auto& column : encoder.columns) {
+    if (column.column_name != field) continue;
+    if (selected != nullptr) throw std::invalid_argument("ambiguous destination column");
+    selected = &column;
+  }
+  if (selected == nullptr) throw std::invalid_argument("destination column missing");
+  return dt::CanonicalTypeIdFromStableName(selected->canonical_type_name);
+}
+
 PreparedInsertRow PrepareDirectBulkOrderedRowFast(
     const EngineRowValue& input_row,
     const BoundInsertRowTemplate& row_template,
+    const InsertRowEncoderPlan& encoder,
     const EngineUuid& row_uuid,
     bool force_large_values) {
   PreparedInsertRow row;
   row.row_uuid = row_uuid;
   row.values.reserve(input_row.fields.size());
-  for (const auto& [field, typed] : input_row.fields) {
+  for (std::size_t index = 0; index < input_row.fields.size(); ++index) {
+    const auto& [field, typed] = input_row.fields[index];
     if (typed.is_null) {
       row.values.push_back({field, CrudStoredValue::SqlNull()});
       row.encoded_bytes += field.size() + 0;
     } else {
-      row.values.push_back({field, DirectTypedStoredValue(typed)});
-      row.encoded_bytes += field.size() + DirectTypedValuePayloadSize(typed);
+      row.values.push_back({field, detail::DirectStoredValueForColumn(typed,
+          DirectColumnTypeForField(encoder, field, index))});
+      row.encoded_bytes += field.size() + row.values.back().second.bytes.size();
     }
   }
   row.toast_required = row.encoded_bytes > row_template.max_inline_encoded_bytes ||
@@ -4082,6 +4112,7 @@ PreparedInsertRow PrepareDirectBulkSharedFieldOrderRowFast(
     const DirectPhysicalBulkAppendRequest& request,
     const EngineRowValue& input_row,
     const BoundInsertRowTemplate& row_template,
+    const InsertRowEncoderPlan& encoder,
     const EngineUuid& row_uuid,
     bool force_large_values) {
   PreparedInsertRow row;
@@ -4094,8 +4125,9 @@ PreparedInsertRow PrepareDirectBulkSharedFieldOrderRowFast(
       row.values.push_back({field, CrudStoredValue::SqlNull()});
       row.encoded_bytes += field.size() + 0;
     } else {
-      row.values.push_back({field, DirectTypedStoredValue(typed)});
-      row.encoded_bytes += field.size() + DirectTypedValuePayloadSize(typed);
+      row.values.push_back({field, detail::DirectStoredValueForColumn(typed,
+          DirectColumnTypeForField(encoder, field, field_index))});
+      row.encoded_bytes += field.size() + row.values.back().second.bytes.size();
     }
   }
   row.toast_required = row.encoded_bytes > row_template.max_inline_encoded_bytes ||
@@ -5704,6 +5736,39 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                  : "direct_physical_bulk_insert_target_scoped"});
   result.evidence.push_back({"relation_descriptor",
                              relation_descriptor.descriptor_uuid});
+  // Validate every supplied signed-integer destination before row identities,
+  // preallocation workers or staging. This also covers reordered/subset input
+  // and packet routes that cannot use the exact-order bulk validator.
+  try {
+    for (const auto& row : request.borrowed_input_rows) {
+      for (std::size_t ordinal = 0; ordinal < row.fields.size(); ++ordinal) {
+        const auto& field = DirectInputFieldName(request, row, ordinal);
+        const auto type = DirectColumnTypeForField(batch_context.row_encoder_plan, field, ordinal);
+        if (type == dt::CanonicalTypeId::int32 || type == dt::CanonicalTypeId::int64)
+          (void)detail::DirectStoredValueForColumn(row.fields[ordinal].second, type);
+      }
+    }
+    if (request.native_row_packet != nullptr && request.native_row_packet->present) {
+      const auto& frame = *request.native_row_packet;
+      if (frame.field_order.size() != frame.column_count)
+        throw std::invalid_argument("native packet destination shape invalid");
+      for (std::size_t ordinal = 0; ordinal < frame.field_order.size(); ++ordinal) {
+        const auto type = DirectColumnTypeForField(batch_context.row_encoder_plan,
+                                                   frame.field_order[ordinal], ordinal);
+        if (type != dt::CanonicalTypeId::int32 && type != dt::CanonicalTypeId::int64) continue;
+        for (std::size_t row = 0; row < frame.row_count; ++row) {
+          DirectNativePacketValueRef ref;
+          if (!DirectNativePacketValueRefAt(frame, row, ordinal, &ref))
+            throw std::invalid_argument("native packet scalar invalid");
+          (void)DirectNativePacketStoredValue(frame, ref, type);
+        }
+      }
+    }
+  } catch (const std::invalid_argument& failure) {
+    return DirectBulkFailureWithEvidence(request,
+        MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append", failure.what()),
+        "integer_destination_payload_refused", result.evidence, result.dml_summary);
+  }
   DirectBulkUuidBatch uuid_batch;
   try {
     uuid_batch = BuildDirectBulkUuidBatch(request, direct_row_count);
@@ -6452,8 +6517,9 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                 "native_row_packet_value_decode_failed");
           }
           row_values.emplace_back(native_frame.field_order[field_index],
-                                  DirectNativePacketStoredValue(native_frame,
-                                                                value_ref));
+                                  DirectNativePacketStoredValue(native_frame, value_ref,
+                                      DirectColumnTypeForField(batch_context.row_encoder_plan,
+                                          native_frame.field_order[field_index], field_index)));
         }
         logical_value_batch.push_back(std::move(row_values));
       }
@@ -6513,7 +6579,9 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	              "native_row_packet_value_decode_failed");
 	        }
 	        auto value =
-	            DirectNativePacketStoredValue(native_frame, value_ref);
+	            DirectNativePacketStoredValue(native_frame, value_ref,
+                    DirectColumnTypeForField(batch_context.row_encoder_plan,
+                        native_frame.field_order[field_index], field_index));
 	        encoded_bytes += native_frame.field_order[field_index].size() +
 	                         value.bytes.size();
 	        values.emplace_back(native_frame.field_order[field_index],
@@ -6916,12 +6984,15 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
               encoded_bytes += field.size() + 0;
             }
           } else {
+            auto stored = detail::DirectStoredValueForColumn(typed,
+                DirectColumnTypeForField(batch_context.row_encoder_plan, field, field_index));
+            const auto stored_bytes = stored.bytes.size();
             if (!native_bulk_typed_logical_batch_bypass) {
               staged_value_target.emplace_back(field,
-                                               DirectTypedValueTextPayload(typed));
+                                               std::move(stored));
             }
             if (row_stage_needs_encoded_bytes) {
-              encoded_bytes += field.size() + DirectTypedValuePayloadSize(typed);
+              encoded_bytes += field.size() + stored_bytes;
             }
           }
         }
@@ -7048,11 +7119,13 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
             ? PrepareDirectBulkSharedFieldOrderRowFast(request,
                                                        input_row,
                                                        batch_context.row_template,
+                                                       batch_context.row_encoder_plan,
                                                        uuid_batch.row_uuids[row_ordinal],
                                                        force_large_values_for_insert)
         : can_use_shared_ordered_row_fast_path
             ? PrepareDirectBulkOrderedRowFast(input_row,
                                               batch_context.row_template,
+                                              batch_context.row_encoder_plan,
                                               uuid_batch.row_uuids[row_ordinal],
                                               force_large_values_for_insert)
             : can_use_ordered_row_fast_path &&
@@ -7061,6 +7134,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                                batch_context.row_encoder_plan)
                   ? PrepareDirectBulkOrderedRowFast(input_row,
                                                     batch_context.row_template,
+                                                    batch_context.row_encoder_plan,
                                                     uuid_batch.row_uuids[row_ordinal],
                                                     force_large_values_for_insert)
                   : PrepareInsertRowForBatch(synthetic_insert,
@@ -7345,7 +7419,9 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	              const std::string& field =
 	                  DirectInputFieldName(request, input_row, field_index);
 	              values.emplace_back(field,
-	                                  DirectTypedStoredValue(typed));
+	                                  detail::DirectStoredValueForColumn(typed,
+                                      DirectColumnTypeForField(batch_context.row_encoder_plan,
+                                          field, field_index)));
 	            }
 	            logical_value_batch.push_back(std::move(values));
 	          }
@@ -7371,8 +7447,9 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	                return false;
 	              }
 	              values.emplace_back(native_frame.field_order[field_index],
-	                                  DirectNativePacketStoredValue(native_frame,
-	                                                                value_ref));
+	                                  DirectNativePacketStoredValue(native_frame, value_ref,
+                                      DirectColumnTypeForField(batch_context.row_encoder_plan,
+                                          native_frame.field_order[field_index], field_index)));
 	            }
 	            logical_value_batch.push_back(std::move(values));
 	          }

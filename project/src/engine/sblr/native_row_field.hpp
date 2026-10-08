@@ -45,7 +45,9 @@ inline std::optional<NativeRowFieldView> DecodeNativeRowField(const SblrOperand&
   result.is_null = is_null;
   result.allocate_row_identity = IsNewNativeRowFieldType(operand.type);
   if ((is_null && !result.payload.empty()) ||
-      (!is_null && operand.type.ends_with(".uuid") && result.payload.size() != 16))
+      (!is_null && operand.type.ends_with(".uuid") && result.payload.size() != 16) ||
+      (!is_null && operand.type.ends_with(".int32") && result.payload.size() != 4) ||
+      (!is_null && operand.type.ends_with(".int64") && result.payload.size() != 8))
     return std::nullopt;
   return result;
 }

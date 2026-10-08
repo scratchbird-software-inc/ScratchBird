@@ -18780,9 +18780,9 @@ bool ConsumeOptionalIfNotExists(const CstDocument& cst, std::size_t* index) {
 
 std::string RouteCanonicalTypeName(std::string_view type_text) {
   const std::string upper = ToUpperAscii(type_text);
-  if (upper == "INT" || upper == "INTEGER") return "int";
+  if (upper == "INT" || upper == "INTEGER") return "int32";
   if (upper == "SMALLINT") return "smallint";
-  if (upper == "BIGINT") return "bigint";
+  if (upper == "BIGINT") return "int64";
   if (upper == "DOUBLE PRECISION") return "double";
   if (upper == "FLOAT") return "float";
   if (upper == "DOUBLE") return "double";
@@ -21733,7 +21733,7 @@ std::optional<std::string> CreateTableRouteExecutionEnvelope(
     // In particular, do not attach non-authoritative source metadata to the
     // engine's exact canonical TEXT descriptor merely because SQL used TEXT.
     if (!column.raw_type.empty() &&
-        ToUpperAscii(column.raw_type) != ToUpperAscii(column.canonical_type)) {
+        RouteCanonicalTypeName(column.raw_type) != column.canonical_type) {
       AppendDescriptorFlag(&descriptor, "source_type", column.raw_type);
     }
     AppendDescriptorFlag(&descriptor, "nullable", column.nullable ? "true" : "false");

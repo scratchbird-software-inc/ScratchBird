@@ -20,6 +20,7 @@
 #include <exception>
 #include <iomanip>
 #include <limits>
+#include <locale>
 #include <map>
 #include <optional>
 #include <set>
@@ -554,6 +555,7 @@ bool ParseReal64Strict(const std::string& text, double* out) {
 std::string FormatReal64(double value) {
   if (value == 0.0) return "0";
   std::ostringstream out;
+  out.imbue(std::locale::classic());
   out << std::setprecision(17) << value;
   return out.str();
 }
@@ -1085,6 +1087,9 @@ bool DeriveCanonicalNullableDescriptorEncoding(
   return true;
 }
 
+static bool DecodeBoundSignedIntegerValue(const EngineTypedValue& value,
+    CanonicalTypeId type, std::int64_t* decoded, std::string* refusal_detail);
+
 DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
     const DescriptorBatch& batch,
     const DescriptorCancellationProbe cancellation_requested,
@@ -1131,6 +1136,31 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
     }
     if (!IsKnownScalarType(descriptor)) {
       return ErrorDiagnostic("SB_EXECUTOR_DESCRIPTOR_TYPE_UNSUPPORTED", descriptor.canonical_type_name, 0, column);
+    }
+    const auto type = CanonicalDescriptorTypeId(descriptor);
+    if (type == CanonicalTypeId::int32 || type == CanonicalTypeId::int64) {
+      try {
+        // Descriptor admission cannot depend on whether a row is present or
+        // NULL. The private probe carries no execution or storage authority.
+        EngineTypedValue probe;
+        probe.descriptor = descriptor;
+        probe.setState(internal_api::EngineValueState::value);
+        probe.binary_value.assign(type == CanonicalTypeId::int32 ? 4 : 8, 0);
+        std::int64_t ignored = 0;
+        std::string reason;
+        if (!DecodeBoundSignedIntegerValue(probe, type, &ignored, &reason))
+          return ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID", std::move(reason) +
+              " column=" + batch.columns[column].stable_name +
+              " type=" + descriptor.canonical_type_name, 0, column);
+        engine::ExecutionTypeDescriptor bound;
+        if (!BoundExecutionTypeDescriptor(descriptor, type, &bound, &reason) ||
+            bound.nullable_allowed != batch.columns[column].nullable)
+          return ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID",
+              "integer column and bound descriptor nullability disagree", 0, column);
+      } catch (const std::bad_alloc&) {
+        return ErrorDiagnostic("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+            "integer column admission allocation failed", 0, column);
+      }
     }
     if (CanonicalDescriptorTypeId(descriptor) == CanonicalTypeId::int128 &&
         !IsCanonicalInt128DescriptorV1(descriptor)) {
@@ -1183,6 +1213,15 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
         if (!DecodeBoundInt64Value(value, &decoded, &detail)) {
           return ErrorDiagnostic("QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
                                  std::move(detail), row, column);
+        }
+        continue;
+      }
+      if (CanonicalDescriptorTypeId(expected.descriptor) == CanonicalTypeId::int32) {
+        const auto decoded = DecodeInt64Value(value);
+        if (!value.encoded_value.empty() || value.binary_value.size() != 4 || !decoded.ok()) {
+          return ErrorDiagnostic("QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
+                                 "INT32 requires an exact bound native LE4 value:" +
+                                     decoded.diagnostic.detail, row, column);
         }
         continue;
       }
@@ -2982,35 +3021,37 @@ CanonicalInt128SumFinalizeResultV1 FinalizeCanonicalInt128SumV1(
   return result;
 }
 
-bool DecodeBoundInt64Value(const EngineTypedValue& value,
-                          std::int64_t* decoded, std::string* refusal_detail) {
+static bool DecodeBoundSignedIntegerValue(const EngineTypedValue& value,
+                          CanonicalTypeId type, std::int64_t* decoded,
+                          std::string* refusal_detail) {
   namespace dt = scratchbird::core::datatypes;
   if (!decoded || !refusal_detail) return false;
   refusal_detail->clear();
   if (value.state != EngineValueState::value || value.is_null ||
-      value.descriptor.canonical_type_name != "int64" ||
-      !value.encoded_value.empty() || value.binary_value.size() != 8) {
-    *refusal_detail = "scalar is not a non-NULL canonical int64 value";
+      value.descriptor.canonical_type_name != (type == CanonicalTypeId::int32 ? "int32" : "int64") ||
+      !value.encoded_value.empty() ||
+      value.binary_value.size() != (type == CanonicalTypeId::int32 ? 4 : 8)) {
+    *refusal_detail = "scalar is not a non-NULL canonical signed integer value";
     return false;
   }
   internal_api::CatalogColumnMetadata fields;
   if (!internal_api::AdmitCatalogColumnMetadata(value.descriptor.encoded_descriptor, &fields) ||
       !fields.identities.empty() || !value.descriptor.charset_uuid.is_nil() ||
       !value.descriptor.collation_uuid.is_nil()) {
-    *refusal_detail = "scalar INT64 metadata is invalid";
+    *refusal_detail = "scalar signed integer metadata is invalid";
     return false;
   }
   for (const auto& [name, field] : fields.text) {
     if (name != "nullability" && name != "nullable") {
-      *refusal_detail = "scalar INT64 has an unsupported modifier";
+      *refusal_detail = "scalar signed integer has an unsupported modifier";
       return false;
     }
   }
   engine::ExecutionTypeDescriptor descriptor;
-  if (!BoundExecutionTypeDescriptor(value.descriptor, CanonicalTypeId::int64,
+  if (!BoundExecutionTypeDescriptor(value.descriptor, type,
                                     &descriptor, refusal_detail)) return false;
   dt::DatatypeCastRequest request;
-  request.value.type_id = request.target_type_id = CanonicalTypeId::int64;
+  request.value.type_id = request.target_type_id = type;
   request.value.descriptor = request.target_descriptor = descriptor;
   request.value.encoded_value.assign(value.binary_value.begin(), value.binary_value.end());
   const auto checked = dt::CastDatatypeValue(request);
@@ -3018,7 +3059,14 @@ bool DecodeBoundInt64Value(const EngineTypedValue& value,
     *refusal_detail = checked.diagnostic.diagnostic_code + ":" + checked.diagnostic.message_key;
     return false;
   }
-  return dt::DecodeCanonicalInt64Value(checked.value.encoded_value, decoded);
+  return type == CanonicalTypeId::int32
+      ? dt::DecodeCanonicalInt32Value(checked.value.encoded_value, decoded)
+      : dt::DecodeCanonicalInt64Value(checked.value.encoded_value, decoded);
+}
+
+bool DecodeBoundInt64Value(const EngineTypedValue& value,
+                          std::int64_t* decoded, std::string* refusal_detail) {
+  return DecodeBoundSignedIntegerValue(value, CanonicalTypeId::int64, decoded, refusal_detail);
 }
 
 Int64DecodeResult DecodeInt64Value(const EngineTypedValue& value) {
@@ -3048,27 +3096,19 @@ Int64DecodeResult DecodeInt64Value(const EngineTypedValue& value) {
     result.diagnostic = ErrorDiagnostic("SB_EXECUTOR_VALUE_DESCRIPTOR_MISMATCH", value.descriptor.canonical_type_name);
     return result;
   }
-  if (!value.binary_value.empty()) {
-    if (CanonicalDescriptorTypeId(value.descriptor) !=
-            CanonicalTypeId::int64 ||
-        value.binary_value.size() != sizeof(std::int64_t)) {
-      result.diagnostic = ErrorDiagnostic(
-          "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
-          "binary int64 payload is not the exact canonical width");
+  const auto canonical_type = CanonicalDescriptorTypeId(value.descriptor);
+  if (canonical_type == CanonicalTypeId::int32 || canonical_type == CanonicalTypeId::int64) {
+    std::string detail;
+    if (!DecodeBoundSignedIntegerValue(value, canonical_type, &result.value, &detail)) {
+      result.diagnostic = ErrorDiagnostic("QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1", std::move(detail));
       return result;
     }
-    std::uint64_t encoded = 0;
-    for (std::size_t index = 0; index < value.binary_value.size(); ++index) {
-      encoded |= static_cast<std::uint64_t>(value.binary_value[index])
-                 << (index * 8U);
-    }
-    if ((encoded & (std::uint64_t{1} << 63U)) == 0) {
-      result.value = static_cast<std::int64_t>(encoded);
-    } else {
-      result.value =
-          -1 - static_cast<std::int64_t>(~encoded);
-    }
     result.diagnostic = OkDiagnostic();
+    return result;
+  }
+  if (!value.binary_value.empty()) {
+    result.diagnostic = ErrorDiagnostic("QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
+                                        "unsupported binary signed integer type");
     return result;
   }
   if (!ParseBoundedSignedIntegerStrict(value.descriptor,
@@ -3157,7 +3197,14 @@ Real64DecodeResult DecodeReal64Value(const EngineTypedValue& value) {
 }
 
 EngineTypedValue EncodeInt64Value(std::int64_t value) {
-  return MakeExecutorValue(MakeExecutorDescriptor("int64"), std::to_string(value), false);
+  EngineTypedValue encoded;
+  encoded.descriptor = MakeExecutorDescriptor("int64", "nullability=non_null");
+  encoded.setState(EngineValueState::value);
+  const auto bits = static_cast<std::uint64_t>(value);
+  encoded.binary_value.resize(8);
+  for (unsigned byte = 0; byte < 8; ++byte)
+    encoded.binary_value[byte] = static_cast<std::uint8_t>(bits >> (byte * 8));
+  return encoded;
 }
 
 EngineTypedValue EncodeBoolValue(bool value) {

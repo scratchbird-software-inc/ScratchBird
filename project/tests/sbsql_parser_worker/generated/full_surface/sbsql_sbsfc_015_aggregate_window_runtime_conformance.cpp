@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../../../support/binary_uuid_fixture.hpp"
+#include "../../../support/exact_datatype_descriptor_fixture.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "catalog/datatype_bootstrap_identity.hpp"
 #include "descriptor_value_runtime.hpp"
@@ -282,18 +283,19 @@ api::EngineUuid FixtureUuid(const unsigned value) {
 api::EngineDescriptor CanonicalDescriptor(const unsigned identity,
                                           const std::string_view type_name,
                                           const bool nullable) {
-  api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid = FixtureUuid(identity);
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = std::string(type_name);
-  descriptor.type_uuid = CoreTypeUuid(type_name);
-  descriptor.encoded_descriptor = std::string("nullability=") + (nullable ? "nullable" : "non_null");
-  return descriptor;
+  return scratchbird::tests::ExactScalarDescriptorFixture(
+      dt::CanonicalTypeIdFromStableName(std::string(type_name)), std::string(type_name),
+      FixtureUuid(identity), std::string("nullability=") + (nullable ? "nullable" : "non_null"));
 }
 
 api::EngineTypedValue CanonicalValue(const api::EngineDescriptor& descriptor,
                                      const std::string& encoded) {
   api::EngineTypedValue value;
+  if (descriptor.canonical_type_name == "int64") {
+    auto native = exec::EncodeInt64Value(std::stoll(encoded));
+    native.descriptor = descriptor;
+    return native;
+  }
   value.descriptor = descriptor;
   value.encoded_value = encoded;
   value.is_null = false;
@@ -492,7 +494,9 @@ scratchbird::engine::sblr::SblrResult CanonicalNumericScalar(
   }
   try {
     if (value.descriptor.canonical_type_name == "int64") {
-      return CanonicalScalar(Int64Value(std::stoll(value.encoded_value)));
+      const auto decoded = exec::DecodeInt64Value(value);
+      if (!decoded.diagnostic.ok) return CanonicalDiagnosticFailure(decoded.diagnostic);
+      return CanonicalScalar(Int64Value(decoded.value));
     }
     if (value.descriptor.canonical_type_name == "real64") {
       return CanonicalScalar(Real64Value(std::stod(value.encoded_value)));
@@ -853,7 +857,11 @@ scratchbird::engine::sblr::SblrResult RunCanonicalNavigation(
   }
   std::size_t source_index = 0;
   try {
-    source_index = static_cast<std::size_t>(std::stoull(output.encoded_value));
+    const auto decoded = exec::DecodeInt64Value(output);
+    if (!decoded.diagnostic.ok || decoded.value < 0)
+      return CanonicalFailure("QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
+                              "canonical navigation proxy is not a nonnegative native integer");
+    source_index = static_cast<std::size_t>(decoded.value);
   } catch (const std::exception&) {
     return CanonicalFailure("QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
                             "canonical navigation proxy is not decodable");

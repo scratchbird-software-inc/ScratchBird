@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/direct_bulk_typed_row_codec.hpp"
+#include "crud_support/native_value_payload.hpp"
 #include "datatype_binary_view.hpp"
 #include "mga_relation_store/mga_large_value_codec.hpp"
 
@@ -895,6 +896,29 @@ bool DirectParseRealPayload(dt::CanonicalTypeId type_id,
 bool DirectPackTypedPayload(dt::CanonicalTypeId target_type,
                             const EngineTypedValue& typed,
                             std::vector<scratchbird::core::platform::byte>* out) {
+  if (target_type == dt::CanonicalTypeId::int32 ||
+      target_type == dt::CanonicalTypeId::int64) {
+    if (out == nullptr || typed.isSqlNull() ||
+        typed.state != EngineValueState::value) return false;
+    const auto width = target_type == dt::CanonicalTypeId::int32 ? 4u : 8u;
+    if (typed.binary_value.empty()) {
+      if (typed.descriptor.canonical_type_name == "int32" ||
+          typed.descriptor.canonical_type_name == "int64") return false;
+      return DirectParseSignedIntegerPayload(typed.encoded_value, width, out);
+    }
+    if (!typed.encoded_value.empty()) return false;
+    const auto source = dt::CanonicalTypeIdFromStableName(
+        typed.descriptor.canonical_type_name);
+    const auto source_layout = dt::LookupDatatypeStorageLayout(source);
+    if ((!DirectTargetIsSignedInteger(source) &&
+         !DirectTargetIsUnsignedInteger(source)) || !source_layout.ok() ||
+        source_layout.layout.inline_bytes != typed.binary_value.size()) return false;
+    std::int64_t integer = 0;
+    if (!DirectReadBinarySignedI64(typed, &integer) ||
+        !DirectSignedI64FitsBytes(integer, width)) return false;
+    DirectAppendLittleUnsigned(out, static_cast<std::uint64_t>(integer), width);
+    return true;
+  }
   if (target_type == dt::CanonicalTypeId::uuid ||
       target_type == dt::CanonicalTypeId::enum_value) {
     if (typed.binary_value.size() != 16 || !typed.encoded_value.empty()) return false;
@@ -971,6 +995,19 @@ bool DirectPackTypedPayload(dt::CanonicalTypeId target_type,
   }
 }
 
+CrudStoredValue DirectStoredValueForColumn(
+    const EngineTypedValue& typed, dt::CanonicalTypeId target_type) {
+  if (typed.isSqlNull() || typed.state != EngineValueState::value ||
+      (target_type != dt::CanonicalTypeId::int32 &&
+       target_type != dt::CanonicalTypeId::int64))
+    return CrudTypedValuePayload(typed);
+  std::vector<scratchbird::core::platform::byte> payload;
+  if (!DirectPackTypedPayload(target_type, typed, &payload))
+    throw std::invalid_argument("signed integer column payload invalid or out of range");
+  return CrudStoredValue(std::string(
+      reinterpret_cast<const char*>(payload.data()), payload.size()));
+}
+
 scratchbird::storage::page::RowDataCell DirectPhysicalCellFromTypedValue(
     std::uint16_t ordinal,
     const EngineTypedValue& typed,
@@ -1031,10 +1068,12 @@ scratchbird::storage::page::RowDataCell DirectPhysicalCellFromTypedValueWithPlan
       !column_plan.character_type) {
     std::vector<scratchbird::core::platform::byte> payload;
     if (column_plan.inline_fixed) {
-      if (DirectPackBinaryIntegerPayload(target_type,
+      const bool signed_native = target_type == dt::CanonicalTypeId::int32 ||
+                                 target_type == dt::CanonicalTypeId::int64;
+      if ((!signed_native && DirectPackBinaryIntegerPayload(target_type,
                                           typed,
                                           column_plan.inline_bytes,
-                                          &payload) ||
+                                          &payload)) ||
           DirectPackTypedPayload(target_type, typed, &payload)) {
         cell.value.type_id = target_type;
         cell.value.payload = std::move(payload);
@@ -1231,6 +1270,22 @@ std::string DirectFixedWidthTypedPayloadFailure(
       continue;
     }
     const std::size_t inline_bytes = column.inline_bytes;
+    if (target_type == dt::CanonicalTypeId::int32 ||
+        target_type == dt::CanonicalTypeId::int64) {
+      std::vector<scratchbird::core::platform::byte> payload;
+      if (!DirectPackTypedPayload(target_type, typed, &payload))
+        return "typed_fixed_payload_invalid:" + column.column_name + ":" +
+               std::string(dt::CanonicalTypeName(target_type));
+      if (stats != nullptr) {
+        if (typed.binary_value.size() == inline_bytes) ++stats->binary_exact_hits;
+        else if (!typed.binary_value.empty()) ++stats->binary_integer_downcast_hits;
+        else {
+          ++stats->text_pack_attempts;
+          ++stats->text_pack_successes;
+        }
+      }
+      continue;
+    }
     if ((target_type == dt::CanonicalTypeId::uuid ||
          target_type == dt::CanonicalTypeId::enum_value) &&
         (typed.binary_value.size() != 16 || !typed.encoded_value.empty())) {

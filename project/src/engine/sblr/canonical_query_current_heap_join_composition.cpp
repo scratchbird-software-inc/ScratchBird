@@ -8,7 +8,7 @@
 
 #include "canonical_query_current_heap_join_composition.hpp"
 #include "mga_relation_store/stored_scalar_payload.hpp"
-#include "mga_relation_store/stored_int64_descriptor.hpp"
+#include "mga_relation_store/stored_integer_descriptor.hpp"
 #include "canonical_query_aggregate_registration.hpp"
 #include "canonical_query_descriptor_support.hpp"
 #include "canonical_query_filter_registration.hpp"
@@ -2067,9 +2067,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
         prepared.columns.push_back(&*column);
         prepared.descriptors.push_back(column->value_descriptor);
         prepared.descriptors.back().descriptor_kind = "scalar";
-        if (api::StoredScalarPayloadKindForV1(column->value_descriptor.canonical_type_name) ==
-                api::StoredScalarPayloadKindV1::int64_le8 &&
-            !api::ProjectStoredInt64DescriptorV1(input.context, column->value_descriptor,
+        if ((column->value_descriptor.canonical_type_name == "int64" ||
+             column->value_descriptor.canonical_type_name == "int32") &&
+            !api::ProjectStoredIntegerDescriptorV1(input.context, column->value_descriptor,
                 column->nullable, &prepared.descriptors.back(), detail)) return false;
       }
       *binding = std::move(prepared);

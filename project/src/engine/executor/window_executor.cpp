@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "executor_foundation.hpp"
+#include "native_int64_payload.hpp"
+#include "aggregate_executor_internal.hpp"
 
 #include "datatype_catalog_manifest.hpp"
 #include "../internal_api/catalog/datatype_bootstrap_identity.hpp"
@@ -62,27 +64,9 @@ bool RowNumberBatchPayloadBytes(const DescriptorBatch& batch,
 
 bool RowNumberEncodedPayloadBytes(const std::size_t row_count,
                                   std::uint64_t* bytes) {
-  if (bytes == nullptr) return false;
-  *bytes = 0;
-  const auto maximum_row = static_cast<std::uint64_t>(row_count);
-  std::uint64_t first = 1;
-  std::uint64_t width = 1;
-  while (first <= maximum_row) {
-    if (first > std::numeric_limits<std::uint64_t>::max() / 10) {
-      return false;
-    }
-    const auto last = std::min(maximum_row, first * 10 - 1);
-    const auto count = last - first + 1;
-    if (count > std::numeric_limits<std::uint64_t>::max() / width ||
-        count * width >
-            std::numeric_limits<std::uint64_t>::max() - *bytes) {
-      return false;
-    }
-    *bytes += count * width;
-    if (last == maximum_row) break;
-    first *= 10;
-    ++width;
-  }
+  if (bytes == nullptr || row_count > std::numeric_limits<std::uint64_t>::max() / 8)
+    return false;
+  *bytes = static_cast<std::uint64_t>(row_count) * 8;
   return true;
 }
 
@@ -762,6 +746,8 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumberBound(
   auto input_validation = ValidateCanonicalDescriptorBatch(
       execution_ordered_input_batch, input_node->output_descriptor_ids);
   if (!input_validation.ok) return refuse(std::move(input_validation));
+  const auto result_binding = detail::ValidateAggregateInt64ResultDescriptor(request.row_number_column);
+  if (!result_binding.ok) return refuse(result_binding);
   if (execution_ordered_input_batch.rows.size() >
       static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
     return refuse(Refusal("QOW-DIAG-QRY-007-WINDOW-OVERFLOW-V1",
@@ -801,10 +787,8 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumberBound(
   result.output_batch.columns.push_back(request.row_number_column);
   result.output_batch.rows = execution_ordered_input_batch.rows;
   for (std::size_t row = 0; row < result.output_batch.rows.size(); ++row) {
-    EngineTypedValue row_number;
-    row_number.descriptor = request.row_number_column.descriptor;
-    row_number.encoded_value = std::to_string(row + 1);
-    row_number.state = EngineValueState::value;
+    auto row_number = EncodeInt64Value(static_cast<std::int64_t>(row + 1),
+                                      request.row_number_column.descriptor);
     result.output_batch.rows[row].values.push_back(std::move(row_number));
   }
   auto output_validation = ValidateCanonicalDescriptorBatch(
@@ -979,7 +963,8 @@ CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtileBound(
           execution_ordered_input_batch.columns.size() ||
       request.bucket_count_operand.state != EngineValueState::value ||
       request.bucket_count_operand.is_null ||
-      !request.bucket_count_operand.binary_value.empty() ||
+      !request.bucket_count_operand.encoded_value.empty() ||
+      request.bucket_count_operand.binary_value.size() != 8 ||
       request.bucket_count_operand.descriptor.descriptor_kind != "scalar" ||
       request.bucket_count_operand.descriptor.canonical_type_name != "int64" ||
       !scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
@@ -1469,7 +1454,8 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
       request.nth_value_respect_nulls_explicit &&
       nth_operand->state ==
           scratchbird::engine::internal_api::EngineValueState::value &&
-      !nth_operand->is_null && nth_operand->binary_value.empty() &&
+      !nth_operand->is_null && nth_operand->encoded_value.empty() &&
+      nth_operand->binary_value.size() == 8 &&
       nth_operand->descriptor.descriptor_kind == "scalar" &&
       nth_operand->descriptor.canonical_type_name == "int64" &&
       scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(

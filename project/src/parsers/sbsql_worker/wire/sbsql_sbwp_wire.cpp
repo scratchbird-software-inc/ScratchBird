@@ -303,6 +303,7 @@ struct SbwpColumn {
   std::int32_t type_modifier{-1};
   std::uint8_t format{0};
   bool nullable{true};
+  bool operator==(const SbwpColumn&) const = default;
 };
 
 struct RowSet {
@@ -3614,12 +3615,18 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
   // still admitting intentionally sparse observability rows whose named fields
   // vary from row to row.
   std::map<std::pair<std::string, std::size_t>, std::size_t> column_index;
-  // 0: not yet typed (e.g. empty NULL carrier), 1: INT64, 2: another type.
+  // 0: unknown, 1: INT64, 2: other, 3: INT32, 4: awaiting integer metadata.
   // Use the exact name-plus-occurrence column ordinal, not the display name.
   std::vector<std::uint8_t> integer_column_kinds;
   std::string previous_row_index;
   std::vector<std::pair<std::string, std::size_t>> previous_fields;
   std::vector<scratchbird::wire::public_result::Kind> previous_kinds;
+  const auto pending_integer_metadata = [&]() {
+    return std::ranges::any_of(previous_fields, [&](const auto& field) {
+      const auto kind = integer_column_kinds[field.second];
+      return kind == 1 || kind == 3 || kind == 4;
+    });
+  };
   std::vector<std::string> records;
   if (payload.starts_with(scratchbird::wire::public_result::kMagic)) {
     std::vector<scratchbird::wire::public_result::Field> fields;
@@ -3663,26 +3670,41 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
           return malformed_metadata();
         const auto state = field.substr(state_separator + 1);
         const auto type = field.substr(type_separator + 1, state_separator - type_separator - 1);
-        bool int64_type = type.size() == 5;
-        constexpr std::string_view int64_label = "int64";
-        for (std::size_t i = 0; int64_type && i < type.size(); ++i) {
-          const auto ch = type[i];
-          int64_type = (ch >= 'A' && ch <= 'Z' ? ch + ('a' - 'A') : ch) == int64_label[i];
-        }
+        const auto type_is = [type](std::string_view expected) {
+          if (type.size() != expected.size()) return false;
+          for (std::size_t i = 0; i < type.size(); ++i) {
+            const auto ch = type[i];
+            if ((ch >= 'A' && ch <= 'Z' ? ch + ('a' - 'A') : ch) != expected[i]) return false;
+          }
+          return true;
+        };
+        const bool int64_type = type_is("int64"), int32_type = type_is("int32");
+        const bool integer_type = int64_type || int32_type;
         const auto kind = previous_kinds[ordinal];
         const auto& cell = rowset.rows.back()[previous_fields[ordinal].second];
         auto& column_kind = integer_column_kinds[previous_fields[ordinal].second];
-        const auto declared_kind = int64_type ? 1 : 2;
-        if (column_kind && column_kind != declared_kind) return malformed_metadata();
+        // 4 means a native signed field whose metadata has not arrived yet.
+        // Once declared, widths remain distinct even across NULL-first rows.
+        const auto declared_kind = int64_type ? 1 : int32_type ? 3 : 2;
+        if (column_kind && column_kind != 4 && column_kind != declared_kind) return malformed_metadata();
         column_kind = declared_kind;
         if (kind == scratchbird::wire::public_result::Kind::signed_integer &&
-            (!int64_type || state != "not_null")) return malformed_metadata();
-        if (int64_type) {
+            (!integer_type || state != "not_null")) return malformed_metadata();
+        if (integer_type) {
           if ((state == "not_null" && kind != scratchbird::wire::public_result::Kind::signed_integer) ||
               (state == "null" && (kind != scratchbird::wire::public_result::Kind::text ||
                                    !cell || !cell->empty()))) return malformed_metadata();
           auto& column = rowset.columns[previous_fields[ordinal].second];
-          column.type_oid = kOidInt8; column.type_size = 8; column.format = 0;
+          if (int32_type && state == "not_null") {
+            std::int32_t number = 0;
+            if (!cell) return malformed_metadata();
+            const auto parsed = std::from_chars(cell->data(), cell->data() + cell->size(), number);
+            if (parsed.ec != std::errc{} || parsed.ptr != cell->data() + cell->size())
+              return malformed_metadata();
+          }
+          column.type_oid = int32_type ? kOidInt4 : kOidInt8;
+          column.type_size = int32_type ? 4 : 8;
+          column.format = 0;
         }
         if (state == "null") {
           rowset.rows.back()[previous_fields[ordinal].second] = std::nullopt;
@@ -3693,9 +3715,15 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
       }
       if (ordinal != previous_fields.size()) return malformed_metadata();
       previous_fields.clear();
+      previous_kinds.clear();
       continue;
     }
     if (!line.starts_with("row[")) continue;
+    if (pending_integer_metadata()) {
+      rowset.malformed = true;
+      rowset.malformed_detail = "The engine signed integer row lacks exact width metadata.";
+      return rowset;
+    }
     const auto eq = line.find("]=");
     if (eq == std::string::npos) {
       rowset.malformed = true;
@@ -3754,7 +3782,7 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
           rowset.malformed_detail = "The engine result column changed its signed integer type.";
           return rowset;
         }
-        integer_column_kinds[found->second] = 1;
+        if (!integer_column_kinds[found->second]) integer_column_kinds[found->second] = 4;
         const auto number = scratchbird::wire::public_result::AsSigned(typed_fields[field_ordinal]);
         if (!number) {
           rowset.malformed = true;
@@ -3765,7 +3793,9 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
         column.type_oid = kOidInt8; column.type_size = 8; column.format = 0;
         row[found->second] = std::to_string(*number);
       } else if (!value.empty()) {
-        if (integer_column_kinds[found->second] == 1) {
+        if (integer_column_kinds[found->second] == 1 ||
+            integer_column_kinds[found->second] == 3 ||
+            integer_column_kinds[found->second] == 4) {
           rowset.malformed = true;
           rowset.malformed_detail = "The engine result column lost its signed integer carrier.";
           return rowset;
@@ -3778,6 +3808,11 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
                                                    : typed_fields[field_ordinal - 1].kind);
     }
     rowset.rows.push_back(std::move(row));
+  }
+  if (pending_integer_metadata()) {
+    rowset.malformed = true;
+    rowset.malformed_detail = "The engine signed integer row lacks exact width metadata.";
+    return rowset;
   }
   if (rowset.rows.empty()) {
     return ParseSyntheticJsonRowsFromResultPayload(payload);
@@ -4893,6 +4928,7 @@ bool SendPipelineResult(ClientIo* io,
   if (!result.server_cursor_uuid.is_nil() &&
       session != nullptr) {
     bool row_description_sent = false;
+    std::vector<SbwpColumn> emitted_schema;
     std::uint64_t emitted_rows = 0;
     bool end_of_cursor = false;
     while (!end_of_cursor) {
@@ -4922,7 +4958,14 @@ bool SendPipelineResult(ClientIo* io,
                          rowset.malformed_detail);
       }
       if (!rowset.rows.empty()) {
+        if (row_description_sent && rowset.columns != emitted_schema) {
+          (void)session->CancelCursorOnRoute(result.server_cursor_uuid);
+          return SendError(io, state, "XX000",
+                           "PARSER_SERVER_IPC.EXECUTE_RESULT_SCHEMA_MISMATCH",
+                           "cursor fetch changed the published column schema");
+        }
         if (!row_description_sent) {
+          emitted_schema = rowset.columns;
           if (!SendFrame(io,
                          state,
                          kRowDescription,
@@ -7324,6 +7367,13 @@ bool DecodePublicResultRowsForTest(
   *type_oids = std::move(oids);
   *rows = std::move(parsed.rows);
   return true;
+}
+
+bool PublicResultBatchSchemaMatchesForTest(std::string_view first, std::string_view next) {
+  const auto left = ParseRowsFromResultPayload(first);
+  const auto right = ParseRowsFromResultPayload(next);
+  return !left.malformed && !right.malformed && !left.rows.empty() &&
+      !right.rows.empty() && left.columns == right.columns;
 }
 
 bool SbsqlTestWireSession::AuthenticateCredentials(const AuthCredentialEnvelope& credentials,

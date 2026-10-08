@@ -5130,7 +5130,8 @@ void MaterializeCompactInsertRows(const SblrOperationEnvelope& envelope,
       if (!EncodeCompactCanonicalScalarBinary(cell, &value.binary_value)) {
         return;
       }
-      if (type == "uuid" || type == "binary") value.encoded_value.clear();
+      if (type == "uuid" || type == "binary" || type == "int32" ||
+          type == "int64") value.encoded_value.clear();
       value.is_null = cell.is_null || type == "null";
       if (value.is_null) {
         value.encoded_value.clear();
@@ -5333,7 +5334,11 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
       if (!value.descriptor.canonical_type_name.empty()) {
         value.descriptor.encoded_descriptor = "type=" + value.descriptor.canonical_type_name;
       }
-      if (value.descriptor.canonical_type_name == "uuid" && !row_null_field) {
+      if (binary_row && !row_null_field &&
+          (value.descriptor.canonical_type_name == "int32" ||
+           value.descriptor.canonical_type_name == "int64")) {
+        value.binary_value.assign(operand_value.begin(), operand_value.end());
+      } else if (value.descriptor.canonical_type_name == "uuid" && !row_null_field) {
         // User UUID values may have any version, but their carrier is binary16.
         if (operand_value.size() != 16) continue;
         value.binary_value.assign(operand_value.begin(), operand_value.end());

@@ -28,6 +28,7 @@ bool BuildExactCanonicalScalarRuntimeDescriptorV1(
   namespace dt = scratchbird::core::datatypes;
   if (expected_type != dt::CanonicalTypeId::uuid &&
       expected_type != dt::CanonicalTypeId::binary &&
+      expected_type != dt::CanonicalTypeId::boolean &&
       expected_type != dt::CanonicalTypeId::int32 &&
       expected_type != dt::CanonicalTypeId::int64) return false;
   if (!source.datatype_identity_authoritative ||

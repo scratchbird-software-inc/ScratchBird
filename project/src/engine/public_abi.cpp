@@ -3819,10 +3819,12 @@ std::string api_row_value(const scratchbird::engine::internal_api::EngineApiResu
     }
     auto kind = public_result::Kind::text;
     const auto& type = value.descriptor.canonical_type_name;
-    if (scratchbird::engine::PublicInt64ScalarTypeV1(type)) {
+    if (scratchbird::engine::PublicInt64ScalarTypeV1(type) ||
+        scratchbird::engine::PublicInt32ScalarTypeV1(type)) {
       std::string_view payload;
-      if (!scratchbird::engine::PublicInt64ScalarPayloadV1(value, &payload))
-        throw std::invalid_argument("public_result_int64_carrier_invalid");
+      std::array<char, 8> widened;
+      if (!scratchbird::engine::PublicSignedIntegerScalarPayloadV1(value, &widened, &payload))
+        throw std::invalid_argument("public_result_signed_integer_carrier_invalid");
       bytes.assign(payload);
       if (!value.is_null) kind = public_result::Kind::signed_integer;
     }

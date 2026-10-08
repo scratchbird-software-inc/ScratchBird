@@ -9,6 +9,8 @@
 #include "descriptor_value_runtime.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "uuid.hpp"
+#include "../support/native_int64_fixture.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -28,23 +30,8 @@ namespace uuid = scratchbird::core::uuid;
 
 namespace {
 
-std::string CoreTypeUuid(const std::string_view stable_name) {
-  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
-  if (!manifest.ok()) std::abort();
-  const auto found = std::ranges::find_if(
-      manifest.manifest.descriptor_rows,
-      [&](const auto& row) { return row.stable_name == stable_name; });
-  if (found == manifest.manifest.descriptor_rows.end() ||
-      !found->descriptor_uuid.valid()) {
-    std::abort();
-  }
-  const auto descriptor_uuid = uuid::UuidToString(found->descriptor_uuid.value);
-  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      "019d0000-0000-7000-8000-00000000d701",
-      manifest.manifest.catalog_epoch, 1, descriptor_uuid,
-      found->descriptor_epoch);
-  if (!identity.ok) std::abort();
-  return identity.row.type_uuid;
+api::EngineUuid CoreTypeUuid(const std::string_view stable_name) {
+  return exec::MakeExecutorDescriptor(std::string(stable_name)).type_uuid;
 }
 
 bool Require(const bool condition, const std::string_view detail) {
@@ -52,11 +39,8 @@ bool Require(const bool condition, const std::string_view detail) {
   return condition;
 }
 
-std::string ContextUuid(const unsigned value) {
-  char buffer[37]{};
-  std::snprintf(buffer, sizeof(buffer),
-                "019f0000-0000-7660-8000-%012u", value);
-  return buffer;
+api::EngineUuid ContextUuid(const unsigned value) {
+  return scratchbird::tests::FixtureUuid(66, value);
 }
 
 exec::CanonicalExecutionMgaAuthority ClosureAuthority(
@@ -158,10 +142,10 @@ template <typename Result>
 bool AtomicStatementContextRefusal(const Result& result) {
   return !result.diagnostic.ok && result.output_batch.rows.empty() &&
          result.output_batch.columns.empty() &&
-         result.selected_plan_uuid.empty() &&
+         result.selected_plan_uuid.is_nil() &&
          result.executed_physical_node_id == 0 &&
          result.causal_counter_id == 0 &&
-         result.mga_statement_context.statement_uuid.empty();
+         result.mga_statement_context.statement_uuid.is_nil();
 }
 
 template <typename Request, typename Execute>
@@ -226,7 +210,7 @@ bool ValidateStatementContextMatrix(Request base, Execute execute) {
 
   auto malformed = base;
   auto malformed_context = malformed.physical_dag.mga_statement_context;
-  malformed_context.statement_uuid = "malformed";
+  malformed_context.statement_uuid.bytes[6] = 0x40;
   ReplaceCarriedContext(&malformed, std::move(malformed_context), true);
   expect_refusal(std::move(malformed),
                  "malformed statement UUID reached descriptor output");
@@ -234,7 +218,7 @@ bool ValidateStatementContextMatrix(Request base, Execute execute) {
   auto nil = base;
   auto nil_context = nil.physical_dag.mga_statement_context;
   nil_context.statement_metadata_snapshot_uuid =
-      "00000000-0000-0000-0000-000000000000";
+      scratchbird::tests::FixtureUuidLiteral("00000000-0000-0000-0000-000000000000");
   ReplaceCarriedContext(&nil, std::move(nil_context), true);
   expect_refusal(std::move(nil),
                  "nil metadata snapshot UUID reached descriptor output");
@@ -307,55 +291,49 @@ bool ValidateStatementContextMatrix(Request base, Execute execute) {
 }
 
 
-api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
-                                 const std::string& type_uuid,
+api::EngineDescriptor Descriptor(const api::EngineUuid& descriptor_uuid,
+                                 const api::EngineUuid& type_uuid,
                                  const std::string& nullability) {
-  api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = descriptor_uuid;
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = "int64";
-  descriptor.encoded_descriptor =
-      "type_uuid=" + type_uuid + ";nullability=" + nullability;
+  auto descriptor = scratchbird::tests::ExactScalarDescriptorFixture(
+      dt::CanonicalTypeId::int64, "int64", descriptor_uuid, "nullability=" + nullability);
+  if (descriptor.type_uuid != type_uuid) std::abort();
   return descriptor;
 }
 
 exec::CanonicalDescriptorRowNumberRequest Request() {
   const auto input_descriptor = Descriptor(
-      "019f0000-0000-7200-8000-000000007501",
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007501"),
       CoreTypeUuid("int64"), "nullable");
   const auto row_number_descriptor = Descriptor(
-      "019f0000-0000-7200-8000-000000007503",
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007503"),
       CoreTypeUuid("int64"), "non_null");
   const auto value = [&](const std::string& encoded) {
-    api::EngineTypedValue typed;
-    typed.descriptor = input_descriptor;
-    typed.encoded_value = encoded;
-    return typed;
+    return scratchbird::tests::NativeInt64Fixture(input_descriptor, encoded);
   };
 
   exec::CanonicalDescriptorRowNumberRequest request;
   request.physical_dag.selected_plan_uuid =
-      "019f0000-0000-7200-8000-000000007505";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007505");
   request.physical_dag.root_physical_node_id = 753;
   request.physical_dag.local_transaction_id = 754;
   request.physical_dag.statement_snapshot_id = 755;
   request.physical_dag.admission_evidence = {
       {exec::PhysicalAdmissionStage::kBoundRequest,
-       "019f0000-0000-7200-8000-000000007511"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007511")},
       {exec::PhysicalAdmissionStage::kCatalogEpoch,
-       "019f0000-0000-7200-8000-000000007512"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007512")},
       {exec::PhysicalAdmissionStage::kSecurity,
-       "019f0000-0000-7200-8000-000000007513"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007513")},
       {exec::PhysicalAdmissionStage::kMgaStatementBoundary,
-       "019f0000-0000-7200-8000-000000007514"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007514")},
       {exec::PhysicalAdmissionStage::kPolicyCapability,
-       "019f0000-0000-7200-8000-000000007515"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007515")},
       {exec::PhysicalAdmissionStage::kResource,
-       "019f0000-0000-7200-8000-000000007516"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007516")},
       {exec::PhysicalAdmissionStage::kStatisticsProvenance,
-       "019f0000-0000-7200-8000-000000007517"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007517")},
       {exec::PhysicalAdmissionStage::kCanonicalRoute,
-       "019f0000-0000-7200-8000-000000007518"},
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007518")},
   };
   request.physical_dag.nodes = {
       {.physical_node_id = 751,
@@ -395,7 +373,7 @@ exec::CanonicalDescriptorRowNumberRequest Request() {
   request.row_number_column =
       {"row_number", row_number_descriptor, false, 752};
   request.deterministic_order_evidence_uuid =
-      "019f0000-0000-7200-8000-000000007519";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007519");
   request.mga_authority =
       ClosureAuthority(request.physical_dag.mga_statement_context);
   return request;
@@ -415,10 +393,10 @@ bool ValidatePhysicalRowNumber() {
       "typed physical ROW_NUMBER node or statement context was not executable");
   passed &= Require(
       result.output_batch.rows.size() == 2 &&
-          result.output_batch.rows[0].values[0].encoded_value == "2" &&
-          result.output_batch.rows[0].values[1].encoded_value == "1" &&
-          result.output_batch.rows[1].values[0].encoded_value == "5" &&
-          result.output_batch.rows[1].values[1].encoded_value == "2",
+          scratchbird::tests::NativeInt64Equals(result.output_batch.rows[0].values[0], 2) &&
+          scratchbird::tests::NativeInt64Equals(result.output_batch.rows[0].values[1], 1) &&
+          scratchbird::tests::NativeInt64Equals(result.output_batch.rows[1].values[0], 5) &&
+          scratchbird::tests::NativeInt64Equals(result.output_batch.rows[1].values[1], 2),
       "ROW_NUMBER changed input order or assigned wrong ordinals");
   passed &= Require(result.output_batch.columns.size() == 2 &&
                         result.output_batch.columns[1].descriptor_id == 752 &&
@@ -426,6 +404,19 @@ bool ValidatePhysicalRowNumber() {
                     "ROW_NUMBER lost its bound non-null descriptor");
 
   auto request = Request();
+  // Two native LE8 input cells, one containing-batch byte, and two LE8
+  // outputs: the executor retains input and output copies simultaneously.
+  constexpr std::uint64_t exact_payload_grant = 2 * (1 + 2 * 8) + 2 * 8;
+  request.physical_dag.nodes.back().memory_bytes_required = exact_payload_grant;
+  const auto exact = exec::ExecuteCanonicalDescriptorRowNumber(request);
+  passed &= Require(exact.diagnostic.ok && exact.output_batch.rows.size() == 2,
+                    "exact native ROW_NUMBER payload grant was refused");
+  --request.physical_dag.nodes.back().memory_bytes_required;
+  const auto short_grant = exec::ExecuteCanonicalDescriptorRowNumber(request);
+  passed &= Require(AtomicStatementContextRefusal(short_grant) &&
+                        short_grant.diagnostic.diagnostic_code == "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                    "one-byte-short ROW_NUMBER grant published a result");
+  request = Request();
   request.ordered_input_batch.rows.clear();
   result = exec::ExecuteCanonicalDescriptorRowNumber(request);
   passed &= Require(
@@ -437,7 +428,7 @@ bool ValidatePhysicalRowNumber() {
                     "empty ROW_NUMBER input lost output descriptors");
 
   request = Request();
-  request.deterministic_order_evidence_uuid.clear();
+  request.deterministic_order_evidence_uuid = {};
   result = exec::ExecuteCanonicalDescriptorRowNumber(request);
   passed &= Require(
       AtomicStatementContextRefusal(result),
