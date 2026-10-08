@@ -23,13 +23,9 @@ struct DatatypeMetricsManagementRequest {
   bool metrics_read_authorized = false;
   bool allow_sensitive_labels = false;
   bool support_bundle_requested = false;
+  metrics::MetricUuid database_uuid;
+  metrics::MetricUuid node_uuid;
   metrics::MetricUuid principal_uuid;
-  CanonicalTypeId canonical_type = CanonicalTypeId::unknown;
-  CanonicalTypeId source_type = CanonicalTypeId::unknown;
-  CanonicalTypeId target_type = CanonicalTypeId::unknown;
-  std::string operation;
-  std::string result;
-  std::string reason;
   std::string protected_payload_sample;
 };
 
@@ -48,6 +44,8 @@ struct DatatypeMetricsManagementResult {
   bool redaction_applied = false;
 };
 
+// Read-only projection of retained node observations. Reading metrics never
+// manufactures datatype operations, descriptor counts or redaction events.
 DatatypeMetricsManagementResult PublishDatatypeMetricsManagementSurface(
     const DatatypeMetricsManagementRequest& request);
 

@@ -8,9 +8,7 @@
 
 #include "datatype_metrics_redaction.hpp"
 
-#include "metric_contracts.hpp"
-
-
+#include "uuid.hpp"
 
 namespace scratchbird::core::datatypes {
 namespace {
@@ -25,17 +23,6 @@ void AddDiagnostic(DatatypeMetricsManagementResult* result,
                    std::string diagnostic) {
   result->diagnostics.push_back(std::move(diagnostic));
   result->ok = false;
-}
-
-void AddMetricFailure(DatatypeMetricsManagementResult* result,
-                      const metrics::MetricValidationResult& status) {
-  if (!status.ok) {
-    AddDiagnostic(result, status.diagnostic_code + ":" + status.detail);
-  }
-}
-
-metrics::MetricLabelSet Labels(std::initializer_list<metrics::MetricLabel> labels) {
-  return metrics::MetricLabelSet(labels.begin(), labels.end());
 }
 
 bool DatatypeMetricFamily(const std::string& family) {
@@ -55,87 +42,11 @@ DatatypeMetricsManagementResult PublishDatatypeMetricsManagementSurface(
     return result;
   }
 
-  const std::string canonical_type = CanonicalTypeName(request.canonical_type);
-  const std::string source_type = CanonicalTypeName(request.source_type);
-  const std::string target_type = CanonicalTypeName(request.target_type);
-  const std::string operation = request.operation.empty() ? "inspect" : request.operation;
-  const std::string outcome = request.result.empty() ? "ok" : request.result;
-  const std::string reason = request.reason.empty() ? "none" : request.reason;
-
-  AddMetricFailure(&result,
-                   metrics::RecordDatatypeOperation(canonical_type,
-                                                    operation,
-                                                    outcome,
-                                                    reason));
-  AddMetricFailure(&result,
-                   metrics::RecordDatatypeCast(source_type,
-                                               target_type,
-                                               outcome,
-                                               reason));
-  AddMetricFailure(&result,
-                   metrics::RecordDatatypeNumericBackend("sbl_numeric",
-                                                         canonical_type,
-                                                         operation,
-                                                         outcome,
-                                                         reason));
-  AddMetricFailure(&result,
-                   metrics::PublishDatatypeCatalogDescriptorCount(
-                       static_cast<double>(BuiltinDatatypeDescriptors().size()),
-                       outcome));
-
   auto& registry = metrics::DefaultMetricRegistry();
-  AddMetricFailure(&result,
-                   registry.IncrementCounter(
-                       "sb_datatype_physical_encoding_total",
-                       Labels({{"component", "datatype.physical"},
-                               {"canonical_type", canonical_type},
-                               {"operation", "encode"},
-                               {"result", outcome},
-                               {"reason", reason}}),
-                       1.0,
-                       "datatype_runtime"));
-  AddMetricFailure(&result,
-                   registry.IncrementCounter(
-                       "sb_datatype_chunk_event_total",
-                       Labels({{"component", "datatype.physical"},
-                               {"canonical_type", canonical_type},
-                               {"operation", "chunk"},
-                               {"result", outcome},
-                               {"reason", reason}}),
-                       1.0,
-                       "datatype_runtime"));
-  AddMetricFailure(&result,
-                   registry.IncrementCounter(
-                       "sb_datatype_comparison_total",
-                       Labels({{"component", "datatype.operations"},
-                               {"canonical_type", canonical_type},
-                               {"operation", "compare"},
-                               {"result", outcome},
-                               {"reason", reason}}),
-                       1.0,
-                       "datatype_runtime"));
-  AddMetricFailure(&result,
-                   registry.IncrementCounter(
-                       "sb_datatype_locator_event_total",
-                       Labels({{"component", "datatype.locator"},
-                               {"canonical_type", canonical_type},
-                               {"operation", "locator"},
-                               {"result", outcome},
-                               {"reason", reason}}),
-                       1.0,
-                       "datatype_runtime"));
-  AddMetricFailure(&result,
-                   registry.IncrementCounter(
-                       "sb_datatype_redaction_total",
-                       Labels({{"component", "datatype.redaction"},
-                               {"canonical_type", canonical_type},
-                               {"operation", "support_bundle"},
-                               {"result", "redacted"},
-                               {"reason", "protected_payload"}}),
-                       1.0,
-                       "datatype_runtime"));
-
-  if (!result.diagnostics.empty()) {
+  if (!core::uuid::IsEngineIdentityUuid(request.database_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(request.node_uuid) ||
+      !registry.ObservationOwnerMatches(request.database_uuid, request.node_uuid)) {
+    AddDiagnostic(&result, "METRIC.OBSERVATION_SOURCE_UNAVAILABLE:datatype metric owner is not bound");
     return result;
   }
 

@@ -8,6 +8,7 @@
 
 #include "storage_metrics_management.hpp"
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/metric_projection_fixture.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -164,8 +165,56 @@ void TestRedactionAuthorizationAndStaleInvalidation() {
 int main() {
   // MDF-018-CURRENT-CORE-STORAGE-METRICS-MANAGEMENT
   // DEFER-SPM-*
+  const auto request = AuthorizedRequest();
+  const auto unbound = metrics::PublishStorageMetricsManagementSurface(request);
+  Require(!unbound.ok && unbound.visible_metrics.empty(), "unbound storage owner accepted");
+  scratchbird::tests::MetricProjectionFixture fixture(request.database_uuid, request.node_uuid, 1037);
+  const auto empty = metrics::PublishStorageMetricsManagementSurface(request);
+  Require(empty.ok && empty.visible_metrics.empty() && empty.support_bundle_records.empty(),
+          "management read fabricated storage observations");
+  const metrics::MetricLabelSet labels{{"database_uuid", request.database_uuid},
+      {"node_uuid", request.node_uuid}, {"filespace_uuid", request.filespace_uuid}};
+  // Independent measurements supplied at the metric producer boundary; no
+  // physical storage, backup or archive completion is inferred from them.
+  for (const auto* family : {"sb_filespace_total_bytes", "sb_filespace_reserved_bytes",
+       "sb_page_free_count", "sb_page_cache_resident_pages", "sb_archive_lag_bytes",
+       "sb_storage_pressure_total", "sb_temp_workspace_bytes", "sb_index_build_workspace_bytes",
+       "sb_storage_support_redaction_total"}) {
+    fixture.Admit(family, labels);
+    fixture.Emit(family, labels, std::uint64_t{17});
+  }
+  for (const auto* family : {"sb_filespace_device_read_latency_microseconds",
+       "sb_page_fragmentation_ratio", "sb_backup_progress_percent", "sb_restore_drill_duration_microseconds"}) {
+    fixture.Admit(family, labels);
+    fixture.Emit(family, labels, 0.25);
+  }
+  fixture.Seal();
+  fixture.VerifyAdmissionRefusals("sb_filespace_total_bytes", labels, std::uint64_t{17});
   TestStorageMetricDescriptorsAndEmission();
   TestRedactionAuthorizationAndStaleInvalidation();
+  for (bool database : {true, false}) {
+    auto foreign = request;
+    (database ? foreign.database_uuid : foreign.node_uuid) = scratchbird::tests::FixtureUuid(1037, 4);
+    const auto refused = metrics::PublishStorageMetricsManagementSurface(foreign);
+    Require(!refused.ok && refused.visible_metrics.empty() && refused.support_bundle_records.empty(),
+            "foreign storage metric owner accepted");
+  }
+  auto foreign_space = request;
+  foreign_space.filespace_uuid = scratchbird::tests::FixtureUuid(1037, 5);
+  const auto other = metrics::PublishStorageMetricsManagementSurface(foreign_space);
+  Require(other.ok && other.visible_metrics.empty() && other.support_bundle_records.empty(),
+          "storage projection included a different filespace");
+  const auto retained = metrics::PublishStorageMetricsManagementSurface(request);
+  Require(retained.ok && retained.visible_metrics.size() == 13, "storage observation inventory changed");
+  for (const auto& value : retained.visible_metrics) {
+    if (const auto* count = std::get_if<std::uint64_t>(&value.value))
+      Require(*count == 17, "storage projection altered native integer sample");
+    else {
+      const auto* fraction = std::get_if<double>(&value.value);
+      Require(fraction && *fraction == 0.25, "storage projection altered fractional sample");
+    }
+  }
+  fixture.VerifyAndDrain();
   std::cout << "current_core_storage_metrics_management_gate=passed\n";
   return EXIT_SUCCESS;
 }

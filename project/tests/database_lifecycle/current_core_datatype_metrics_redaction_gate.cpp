@@ -8,6 +8,7 @@
 
 #include "datatype_metrics_redaction.hpp"
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/metric_projection_fixture.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -50,12 +51,8 @@ dt::DatatypeMetricsManagementRequest AuthorizedRequest() {
   request.support_bundle_requested = true;
   request.allow_sensitive_labels = false;
   request.principal_uuid = scratchbird::tests::FixtureUuid(1034, 1);
-  request.canonical_type = dt::CanonicalTypeId::decimal;
-  request.source_type = dt::CanonicalTypeId::character;
-  request.target_type = dt::CanonicalTypeId::decimal;
-  request.operation = "cast";
-  request.result = "ok";
-  request.reason = "none";
+  request.database_uuid = scratchbird::tests::FixtureUuid(1034, 2);
+  request.node_uuid = scratchbird::tests::FixtureUuid(1034, 3);
   request.protected_payload_sample = "RAW_PROTECTED_DATATYPE_PAYLOAD";
   return request;
 }
@@ -136,8 +133,48 @@ void TestSupportBundleRedactionAndVisibilityRefusal() {
 int main() {
   // MDF-016-CURRENT-CORE-DATATYPE-METRICS-REDACTION
   // DEFER-DTM-*
+  const auto request = AuthorizedRequest();
+  const auto unbound = dt::PublishDatatypeMetricsManagementSurface(request);
+  Require(!unbound.ok && unbound.visible_metrics.empty(), "unbound datatype observation owner accepted");
+  scratchbird::tests::MetricProjectionFixture fixture(request.database_uuid, request.node_uuid, 1034);
+  const auto empty = dt::PublishDatatypeMetricsManagementSurface(request);
+  Require(empty.ok && empty.visible_metrics.empty() && empty.support_bundle_records.empty(),
+          "management read fabricated datatype observations");
+  // Controlled observations qualify the projection/codec boundary, not the
+  // underlying datatype operations or catalog bootstrap.
+  for (const auto* family : {"sb_datatype_operation_total", "sb_datatype_cast_total",
+       "sb_datatype_numeric_backend_total", "sb_datatype_catalog_descriptors",
+       "sb_datatype_physical_encoding_total", "sb_datatype_chunk_event_total",
+       "sb_datatype_comparison_total", "sb_datatype_locator_event_total", "sb_datatype_redaction_total"}) {
+    metrics::MetricLabelSet labels{{"principal_uuid", request.principal_uuid}, {"canonical_type", "decimal"}};
+    fixture.Admit(family, labels);
+    fixture.Emit(family, labels, std::uint64_t{7});
+  }
+  fixture.Seal();
+  fixture.VerifyAdmissionRefusals("sb_datatype_operation_total",
+      {{"principal_uuid", request.principal_uuid}, {"canonical_type", "decimal"}}, std::uint64_t{7});
   TestDatatypeMetricDescriptorsAndEmission();
   TestSupportBundleRedactionAndVisibilityRefusal();
+  for (bool database : {true, false}) {
+    auto foreign = request;
+    (database ? foreign.database_uuid : foreign.node_uuid) = scratchbird::tests::FixtureUuid(1034, 4);
+    const auto refused = dt::PublishDatatypeMetricsManagementSurface(foreign);
+    Require(!refused.ok && refused.visible_metrics.empty() && refused.support_bundle_records.empty(),
+            "foreign datatype metric owner accepted");
+  }
+  auto missing_owner = request; missing_owner.database_uuid = {};
+  const auto missing = dt::PublishDatatypeMetricsManagementSurface(missing_owner);
+  Require(!missing.ok && missing.visible_metrics.empty() && missing.support_bundle_records.empty(),
+          "missing datatype metric owner accepted");
+  const auto retained = dt::PublishDatatypeMetricsManagementSurface(request);
+  Require(retained.ok && retained.visible_metrics.size() == 9, "datatype observation inventory changed");
+  for (const auto& value : retained.visible_metrics) {
+    const auto* count = std::get_if<std::uint64_t>(&value.value);
+    Require(count && *count == 7, "management read altered native datatype count");
+    for (const auto& label : value.labels)
+      Require(label.key != "principal_uuid", "datatype sensitive UUID label leaked");
+  }
+  fixture.VerifyAndDrain();
   std::cout << "current_core_datatype_metrics_redaction_gate=passed\n";
   return EXIT_SUCCESS;
 }
