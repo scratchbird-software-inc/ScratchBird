@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "datatype_bit_string.hpp"
+#include "datatype_blob.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 
@@ -387,7 +388,8 @@ engine::ExecutionTypeDescriptor Descriptor(dt::CanonicalTypeId type) {
   metadata.descriptor_uuid = row.manifest.descriptor_rows.front().descriptor_uuid;
   metadata.descriptor_epoch = row.manifest.descriptor_rows.front().descriptor_epoch;
   const auto result = dt::LookupExecutionTypeDescriptorFromCatalog(type, metadata);
-  Check(result.ok(), "execution descriptor construction failed");
+  Check(result.ok(), std::string("execution descriptor construction failed: ") +
+                        dt::CanonicalTypeName(type));
   return result.descriptor;
 }
 
@@ -1003,6 +1005,11 @@ void CastsAndClosedRegistry() {
       dt::DatatypeCastContext::assignment,
       dt::DatatypeCastContext::explicit_cast};
   unsigned executed_paths = 0;
+  const auto blob_profile = dt::BuildCurrentBlobValidatedProfileHandleV3(
+      dt::kBlobV11ReceiptUuid);
+  Check(blob_profile.ok(), "native BLOB peer profile unavailable");
+  const dt::BlobMaterializedValueViewV3 blob_source{
+      &blob_profile.profile, dt::BlobValueStateV3::value, 0, {}};
   for (std::size_t row_index = 0; row_index < std::size(kClosedCastPolicy);
        ++row_index) {
     const auto& row = kClosedCastPolicy[row_index];
@@ -1019,7 +1026,7 @@ void CastsAndClosedRegistry() {
             std::string(row.row_id) + " failed compiled identity resolution");
     }
     dt::DatatypeOperationValue scalar_source;
-    if (!source_is_bit) {
+    if (!source_is_bit && source_type != dt::CanonicalTypeId::blob) {
       if (row.identities_resolved)
         scalar_source = ClosedCastScalar(source_type);
       else
@@ -1027,6 +1034,26 @@ void CastsAndClosedRegistry() {
     }
     for (std::size_t context_index = 0; context_index < contexts.size();
          ++context_index) {
+      if (source_type == dt::CanonicalTypeId::blob || target_type == dt::CanonicalTypeId::blob) {
+        dt::BitStringBlobClosedCastRequestV3 native;
+        native.context = contexts[context_index];
+        if (source_is_bit) {
+          native.bit_source = &bit5; native.blob_target = &blob_profile.profile;
+        } else {
+          native.blob_source = &blob_source; native.bit_target = &profile;
+        }
+        const auto actual = dt::AdmitBitStringBlobClosedCastV3(native);
+        const auto* fact = std::get_if<dt::BitStringBlobCastForbiddenV3>(&actual.diagnostic);
+        Check(row.contexts[context_index] == ClosedCastExpectation::forbidden &&
+                  !actual.status.ok() && fact && fact->cast_context == context_index + 1 &&
+                  fact->reason == 84 && fact->source_type.kind == 1 && fact->target_type.kind == 1 &&
+                  fact->source_type.type_generation == 1 && fact->target_type.type_generation == 1 &&
+                  fact->source_type.type_uuid == (source_is_bit ? profile.identity.legacy_fields.type_uuid : blob_profile.profile.identity.type_uuid) &&
+                  fact->target_type.type_uuid == (source_is_bit ? blob_profile.profile.identity.type_uuid : profile.identity.legacy_fields.type_uuid),
+              "native BLOB closed matrix cell failed");
+        ++executed_paths;
+        continue;
+      }
       dt::BitStringCastRequestV3 request;
       request.context = contexts[context_index];
       if (source_is_bit)
@@ -1074,6 +1101,152 @@ void CastsAndClosedRegistry() {
 bool CancelOnSecondCheck(void* state) noexcept {
   auto* calls = static_cast<unsigned*>(state);
   return ++*calls >= 2;
+}
+
+void NativeBlobClosedPair() {
+  const auto profile = Profile();
+  const auto built = dt::BuildCurrentBlobValidatedProfileHandleV3(dt::kBlobV11ReceiptUuid);
+  Check(built.ok(), "native BLOB closed-pair profile");
+  auto blob_profile = built.profile;
+  std::vector<platform::byte> bits;
+  auto bit = View(profile, "101", &bits);
+  const auto original_bits = bits;
+  dt::BlobMaterializedValueViewV3 blob{
+      &blob_profile, dt::BlobValueStateV3::value, 0, {}};
+  dt::BitStringBlobClosedCastRequestV3 incoming, outgoing;
+  incoming.blob_source = &blob; incoming.bit_target = &profile;
+  outgoing.bit_source = &bit; outgoing.blob_target = &blob_profile;
+  const auto refused = [&](const dt::BitStringBlobClosedCastRequestV3& request,
+                           std::string_view expected) {
+    const auto result = dt::AdmitBitStringBlobClosedCastV3(request);
+    Check(!result.status.ok() && bits == original_bits,
+          "native BLOB pair status or input changed");
+    using K = dt::BitStringBlobAdmissionFailureKindV3;
+    if (const auto* failure = std::get_if<dt::BitStringBlobAdmissionFailureV3>(&result.diagnostic)) {
+      if (expected == "shape") Check(failure->kind == K::shape, "native request shape gate");
+      else if (expected == "context") Check(failure->kind == K::context, "native context gate");
+      else if (expected == "bit_profile") Check(failure->kind == K::bit_profile, "native bit profile gate");
+      else if (expected == "bit_state") Check(failure->kind == K::bit_state, "native bit state gate");
+      else {
+        auto diagnostic = dt::BlobStructuralDiagnosticV3::descriptor_invalid;
+        if (expected == "BLOB.STATE_INVALID") diagnostic = dt::BlobStructuralDiagnosticV3::state_invalid;
+        else if (expected == "BLOB.LENGTH_EXCEEDED") diagnostic = dt::BlobStructuralDiagnosticV3::length_exceeded;
+        else if (expected == "extent") diagnostic = dt::BlobStructuralDiagnosticV3::canonical_encoding_invalid;
+        else Check(expected == "CINL.LOB.DESCRIPTOR_INVALID", "unexpected admission refusal");
+        Check(failure->kind == K::blob_structure && failure->blob_diagnostic == diagnostic,
+              "native BLOB structural diagnostic lost");
+      }
+    } else if (const auto* fact = std::get_if<dt::BitStringBlobCastForbiddenV3>(&result.diagnostic)) {
+      Check(expected == "DATATYPE.CAST_FORBIDDEN", "unexpected closed-pair refusal");
+      const auto context = request.context == dt::DatatypeCastContext::implicit ? 1 :
+                           request.context == dt::DatatypeCastContext::assignment ? 2 : 3;
+      Check(fact->source_type.kind == 1 && fact->target_type.kind == 1 &&
+                fact->source_type.type_uuid == (request.blob_source ? blob_profile.identity.type_uuid : profile.identity.legacy_fields.type_uuid) &&
+                fact->target_type.type_uuid == (request.blob_source ? profile.identity.legacy_fields.type_uuid : blob_profile.identity.type_uuid) &&
+                fact->source_type.type_generation == 1 && fact->target_type.type_generation == 1 &&
+                fact->cast_context == context && fact->reason == 84,
+            "native typed CastTypeRefV1/context/reason vector");
+    } else if (const auto* fact = std::get_if<dt::BitStringBlobNullNotAdmittedV3>(&result.diagnostic)) {
+      Check(expected == "DATATYPE.NULL_NOT_ADMITTED" &&
+                fact->descriptor_ref.descriptor_uuid == (request.blob_source ? profile.identity.legacy_fields.descriptor_uuid : blob_profile.identity.descriptor_uuid) &&
+                fact->descriptor_ref.descriptor_generation == 1 && fact->boundary == 1 && fact->reason == 1,
+            "native typed NULL descriptor reference vector");
+    } else {
+      const auto* cancelled = std::get_if<dt::BitStringBlobCastCancelledV3>(&result.diagnostic);
+      Check(expected == "PROCESS.CANCELLED" && cancelled &&
+                cancelled->operation_enum == 7 && cancelled->phase_enum == 1,
+            "native typed pre-retain cancellation vector");
+    }
+  };
+  const auto both = [&](std::string_view code) {
+    refused(incoming, code); refused(outgoing, code);
+  };
+  for (const auto context : {dt::DatatypeCastContext::implicit,
+                             dt::DatatypeCastContext::assignment,
+                             dt::DatatypeCastContext::explicit_cast}) {
+    incoming.context = outgoing.context = context;
+    incoming.control.maximum_allocation_bytes = outgoing.control.maximum_allocation_bytes = 0;
+    both("DATATYPE.CAST_FORBIDDEN");
+    blob.state = dt::BlobValueStateV3::sql_null;
+    bit.state = dt::BitStringValueStateV3::sql_null;
+    bit.logical_bit_count = 0; bit.packed_msb0 = {};
+    both("DATATYPE.CAST_FORBIDDEN");
+    incoming.target_null_allowed = outgoing.target_null_allowed = false;
+    both("DATATYPE.NULL_NOT_ADMITTED");
+    incoming.target_null_allowed = outgoing.target_null_allowed = true;
+    blob.state = dt::BlobValueStateV3::value;
+    bit = View(profile, "101", &bits);
+  }
+  for (std::size_t byte = 0; byte < 16; ++byte) {
+    blob_profile.identity.descriptor_uuid.bytes[byte] ^= 1;
+    both("CINL.LOB.DESCRIPTOR_INVALID"); blob_profile = built.profile;
+    blob_profile.receipt.catalog_snapshot_uuid.bytes[byte] ^= 1;
+    both("CINL.LOB.DESCRIPTOR_INVALID"); blob_profile = built.profile;
+    blob_profile.profile_uuid.bytes[byte] ^= 1;
+    both("CINL.LOB.DESCRIPTOR_INVALID"); blob_profile = built.profile;
+  }
+  for (std::size_t index = 0; index < dt::kBlobPolicyBindingCountV3; ++index) {
+    blob_profile.policy_bindings[index].generation += 1;
+    both("CINL.LOB.DESCRIPTOR_INVALID"); blob_profile = built.profile;
+    blob_profile.policy_bindings[index].uuid.bytes[0] ^= 1;
+    both("CINL.LOB.DESCRIPTOR_INVALID"); blob_profile = built.profile;
+  }
+  for (auto* generation : {&blob_profile.receipt.catalog_generation,
+                           &blob_profile.receipt.registry_generation,
+                           &blob_profile.identity.descriptor_generation,
+                           &blob_profile.profile_generation}) {
+    ++*generation; both("CINL.LOB.DESCRIPTOR_INVALID"); --*generation;
+  }
+  for (std::size_t byte = 0; byte < blob_profile.profile_fingerprint.size(); ++byte) {
+    blob_profile.profile_fingerprint[byte] ^= 1;
+    both("CINL.LOB.DESCRIPTOR_INVALID"); blob_profile = built.profile;
+  }
+  auto invalid_bit_profile = profile;
+  invalid_bit_profile.receipt.catalog_generation += 1;
+  incoming.bit_target = &invalid_bit_profile;
+  refused(incoming, "bit_profile"); incoming.bit_target = &profile;
+  bit.profile = &invalid_bit_profile;
+  refused(outgoing, "bit_profile"); bit.profile = &profile;
+  bit.state = static_cast<dt::BitStringValueStateV3>(99);
+  refused(outgoing, "bit_state");
+  bit.state = dt::BitStringValueStateV3::sql_null;
+  refused(outgoing, "bit_state"); // Dirty NULL retains original count/payload.
+  bit.state = dt::BitStringValueStateV3::present;
+  const auto owned_fact = dt::AdmitBitStringBlobClosedCastV3(incoming);
+  blob_profile.identity.type_uuid.bytes[0] ^= 1;
+  Check(std::get<dt::BitStringBlobCastForbiddenV3>(owned_fact.diagnostic).source_type.type_uuid ==
+            built.profile.identity.type_uuid, "native refusal borrowed mutable identity");
+  blob_profile = built.profile;
+  blob.profile = nullptr;
+  refused(incoming, "CINL.LOB.DESCRIPTOR_INVALID"); blob.profile = &blob_profile;
+  blob.state = static_cast<dt::BlobValueStateV3>(99);
+  refused(incoming, "BLOB.STATE_INVALID");
+  blob.state = dt::BlobValueStateV3::sql_null; blob.logical_length = 1;
+  refused(incoming, "BLOB.STATE_INVALID");
+  blob.state = dt::BlobValueStateV3::value;
+  refused(incoming, "extent");
+  const std::array<platform::byte, 1> raw_blob{0x55};
+  blob.bytes = raw_blob;
+  refused(incoming, "CINL.LOB.DESCRIPTOR_INVALID"); // No lifetime authority.
+  Check(raw_blob[0] == 0x55, "closed cast touched raw BLOB content");
+  blob.logical_length = dt::kBlobMaximumLogicalBytesV3 + 1;
+  refused(incoming, "BLOB.LENGTH_EXCEEDED");
+  blob.logical_length = 0; blob.bytes = {};
+  unsigned cancellation_calls = 0;
+  const auto cancel = [](void* context) noexcept {
+    ++*static_cast<unsigned*>(context); return true;
+  };
+  incoming.control.cancelled = outgoing.control.cancelled = cancel;
+  incoming.control.cancellation_context = outgoing.control.cancellation_context = &cancellation_calls;
+  both("PROCESS.CANCELLED");
+  Check(cancellation_calls == 2, "closed pair cancellation not checked exactly once");
+  incoming.control.cancelled = outgoing.control.cancelled = nullptr;
+  incoming.bit_source = &bit;
+  refused(incoming, "shape"); incoming.bit_source = nullptr;
+  outgoing.blob_source = &blob;
+  refused(outgoing, "shape"); outgoing.blob_source = nullptr;
+  incoming.context = outgoing.context = static_cast<dt::DatatypeCastContext>(99);
+  both("context");
 }
 struct CancelAtCall {
   unsigned calls = 0;
@@ -1301,6 +1474,7 @@ int main() {
   Operations();
   ComparisonHashAndKeys();
   CastsAndClosedRegistry();
+  NativeBlobClosedPair();
   ResourceCancellationAndGenericRefusal();
   TypedMetricApi();
   std::cout << "base.bit_string operation/cast checks: " << checks << '\n';

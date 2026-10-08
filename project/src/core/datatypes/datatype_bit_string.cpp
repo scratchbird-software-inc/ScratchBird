@@ -4,6 +4,7 @@
 #include "datatype_bit_string.hpp"
 
 #include "datatype_binary_view.hpp"
+#include "datatype_blob.hpp"
 #include "datatype_physical_encoding.hpp"
 #include "../hash/hash_digest_parts.hpp"
 
@@ -1159,6 +1160,70 @@ BitStringRenderResultV3 RenderBitStringValueV3(const BitStringValueViewV3& value
   auto result=Success<BitStringRenderResultV3>();if(value.state==BitStringValueStateV3::sql_null){result.containing_null=true;return result;}
   const u64 required=value.logical_bit_count+(export_literal?3:2);if(required>control.maximum_allocation_bytes)return Failure<BitStringRenderResultV3>("RESOURCE.BUDGET_EXCEEDED","render_grant_too_small",ResourceStatus());if(Cancelled(control))return Failure<BitStringRenderResultV3>("PROCESS.CANCELLED","before_allocation");
   try{result.text.reserve(static_cast<std::size_t>(required));result.text+=export_literal?"B'":"0b";for(u64 i=0;i<value.logical_bit_count;++i){result.text.push_back(ReadBit(value,i)?'1':'0');if(CancellationCheckpoint(control,i + 1u))return Failure<BitStringRenderResultV3>("PROCESS.CANCELLED","render_checkpoint");}if(export_literal)result.text.push_back('\'');}catch(const std::bad_alloc&){return Failure<BitStringRenderResultV3>("RESOURCE.BUDGET_EXCEEDED","render_allocation_failed",ResourceStatus());}return result;
+}
+
+BitStringBlobClosedCastResultV3 AdmitBitStringBlobClosedCastV3(
+    const BitStringBlobClosedCastRequestV3& request) noexcept {
+  using K = BitStringBlobAdmissionFailureKindV3;
+  const auto refused = [](K kind, BlobStructuralDiagnosticV3 diagnostic =
+                                      BlobStructuralDiagnosticV3::none) noexcept {
+    return BitStringBlobClosedCastResultV3{ErrorStatus(),
+        BitStringBlobAdmissionFailureV3{kind, diagnostic}};
+  };
+  const bool incoming = request.blob_source != nullptr;
+  if ((incoming && (request.blob_target || request.bit_source || !request.bit_target)) ||
+      (!incoming && (!request.bit_source || !request.blob_target || request.bit_target)))
+    return refused(K::shape);
+  u8 context = 0;
+  switch (request.context) {
+    case DatatypeCastContext::implicit: context = 1; break;
+    case DatatypeCastContext::assignment: context = 2; break;
+    case DatatypeCastContext::explicit_cast: context = 3; break;
+    default: return refused(K::context);
+  }
+  bool source_null = false;
+  const BlobValidatedProfileHandleV3* blob = nullptr;
+  const BitStringDescriptorProfileV3* bit = nullptr;
+  if (incoming) {
+    const auto checked = ValidateBlobMaterializedValueViewNoAllocV3(*request.blob_source);
+    if (!checked.ok()) return refused(K::blob_structure, checked.diagnostic);
+    blob = request.blob_source->profile;
+    bit = request.bit_target;
+    if (!ProfileValidNoAlloc(*bit)) return refused(K::bit_profile);
+    source_null = request.blob_source->state == BlobValueStateV3::sql_null;
+  } else {
+    bit = request.bit_source->profile;
+    if (!bit || !ProfileValidNoAlloc(*bit)) return refused(K::bit_profile);
+    const auto& value = *request.bit_source;
+    if ((value.state != BitStringValueStateV3::present &&
+         value.state != BitStringValueStateV3::sql_null) ||
+        (value.state == BitStringValueStateV3::sql_null &&
+         (value.logical_bit_count != 0 || !value.packed_msb0.empty())))
+      return refused(K::bit_state);
+    blob = request.blob_target;
+    const auto checked = ValidateBlobProfileHandleV3(*blob);
+    if (!checked.ok()) return refused(K::blob_structure, checked.diagnostic);
+    source_null = value.state == BitStringValueStateV3::sql_null;
+  }
+  if (source_null && !request.target_null_allowed) {
+    BitStringBlobNullNotAdmittedV3 fact;
+    fact.descriptor_ref.descriptor_uuid = incoming
+        ? bit->identity.legacy_fields.descriptor_uuid : blob->identity.descriptor_uuid;
+    fact.descriptor_ref.descriptor_generation = incoming
+        ? bit->identity.legacy_fields.descriptor_generation : blob->identity.descriptor_generation;
+    return {ErrorStatus(), fact};
+  }
+  if (Cancelled(request.control))
+    return {ErrorStatus(), BitStringBlobCastCancelledV3{}};
+  BitStringBlobCastForbiddenV3 fact;
+  const BitStringBlobTypeRefV3 bit_ref{1, bit->identity.legacy_fields.type_uuid,
+                                     bit->identity.legacy_fields.type_generation};
+  const BitStringBlobTypeRefV3 blob_ref{1, blob->identity.type_uuid,
+                                      blob->identity.type_generation};
+  fact.source_type = incoming ? blob_ref : bit_ref;
+  fact.target_type = incoming ? bit_ref : blob_ref;
+  fact.cast_context = context;
+  return {ErrorStatus(), fact};
 }
 
 BitStringCastResultV3 CastBitStringValueV3(

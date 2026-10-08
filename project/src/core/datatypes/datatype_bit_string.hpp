@@ -3,6 +3,7 @@
 #pragma once
 
 #include "datatype_operations.hpp"
+#include "datatype_blob.hpp"
 #include "datatype_type_codec_identity_v3.hpp"
 
 #include <array>
@@ -10,8 +11,10 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <variant>
 
 namespace scratchbird::core::datatypes {
+
 
 using platform::u8;
 
@@ -315,6 +318,52 @@ struct BitStringCastResultV3 {
 };
 BitStringCastResultV3 CastBitStringValueV3(
     const BitStringCastRequestV3& request) noexcept;
+
+// Native admission for the two forbidden BLOB/BIT cells. This is deliberately
+// separate from the generic scalar-value cast ABI. It cannot produce a value
+// or a detail-only DiagnosticRecord that loses typed diagnostic references.
+struct BitStringBlobClosedCastRequestV3 {
+  const BitStringValueViewV3* bit_source = nullptr;
+  const BlobMaterializedValueViewV3* blob_source = nullptr;
+  const BitStringDescriptorProfileV3* bit_target = nullptr;
+  const BlobValidatedProfileHandleV3* blob_target = nullptr;
+  DatatypeCastContext context = DatatypeCastContext::implicit;
+  bool target_null_allowed = true;
+  BitStringExecutionControlV3 control;
+};
+enum class BitStringBlobAdmissionFailureKindV3 : u8 {
+  shape = 1, context, bit_profile, bit_state, blob_structure
+};
+struct BitStringBlobAdmissionFailureV3 {
+  BitStringBlobAdmissionFailureKindV3 kind;
+  BlobStructuralDiagnosticV3 blob_diagnostic = BlobStructuralDiagnosticV3::none;
+};
+struct BitStringBlobTypeRefV3 {
+  u8 kind = 1; // CastTypeRefV1 concrete_type; no contextual type in this API.
+  platform::Uuid type_uuid;
+  u64 type_generation = 0;
+};
+struct BitStringBlobCastForbiddenV3 {
+  BitStringBlobTypeRefV3 source_type, target_type;
+  u8 cast_context = 0; // Diagnostic ABI: implicit=1, assignment=2, explicit=3.
+  u8 reason = 84; // Exact registered forbidden_pair_or_context cell.
+};
+struct BitStringBlobNullNotAdmittedV3 {
+  struct { platform::Uuid descriptor_uuid; u64 descriptor_generation = 0; } descriptor_ref;
+  u8 boundary = 1; // Native closed-pair target admission.
+  u8 reason = 1; // Target disallows SQL NULL.
+};
+struct BitStringBlobCastCancelledV3 {
+  u8 operation_enum = 7;
+  u8 phase_enum = 1; // Pre-retain admission: no callback has run.
+};
+struct BitStringBlobClosedCastResultV3 {
+  Status status;
+  std::variant<BitStringBlobAdmissionFailureV3, BitStringBlobCastForbiddenV3,
+               BitStringBlobNullNotAdmittedV3, BitStringBlobCastCancelledV3> diagnostic;
+};
+BitStringBlobClosedCastResultV3 AdmitBitStringBlobClosedCastV3(
+    const BitStringBlobClosedCastRequestV3& request) noexcept;
 
 // The composed adapters are the only admitted semantic use of type code 302.
 // They accept an exact live profile and wrap or unwrap the unchanged structural
