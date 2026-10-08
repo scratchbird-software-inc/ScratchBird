@@ -8,6 +8,7 @@
 
 #include "descriptor_value_runtime.hpp"
 #include "../sbsql_sblr_alignment/binary_uuid_fixture.hpp"
+#include "../support/native_int64_fixture.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -114,19 +115,19 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
 }
 
 api::EngineDescriptor Descriptor(const api::EngineUuid& descriptor_uuid,
-                                 const api::EngineUuid& type_uuid,
                                  const std::string& type_name) {
-  api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid = descriptor_uuid;
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = type_name;
-  descriptor.type_uuid = type_uuid;
-  descriptor.encoded_descriptor = "nullability=nullable";
-  return descriptor;
+  namespace dt = scratchbird::core::datatypes;
+  const auto type = type_name == "int64" ? dt::CanonicalTypeId::int64
+      : type_name == "text" ? dt::CanonicalTypeId::character
+      : throw std::runtime_error("unexpected lateral fixture type");
+  return scratchbird::tests::ExactScalarDescriptorFixture(
+      type, type_name, descriptor_uuid, "nullability=nullable");
 }
 
 api::EngineTypedValue Value(const api::EngineDescriptor& descriptor,
                             const std::string& encoded) {
+  if (descriptor.canonical_type_name == "int64")
+    return scratchbird::tests::NativeInt64Fixture(descriptor, encoded);
   api::EngineTypedValue value;
   value.descriptor = descriptor;
   value.encoded_value = encoded;
@@ -145,16 +146,16 @@ api::EngineTypedValue Null(const api::EngineDescriptor& descriptor) {
 exec::CanonicalCorrelatedSubqueryRequest CorrelatedRequest() {
   const auto outer_key = Descriptor(
       BinaryUuid("019f0000-0000-7200-8000-000000003101"),
-      BinaryUuid("019f0000-0000-7300-8000-000000003102"), "int64");
+      "int64");
   const auto outer_payload = Descriptor(
       BinaryUuid("019f0000-0000-7200-8000-000000003103"),
-      BinaryUuid("019f0000-0000-7300-8000-000000003104"), "text");
+      "text");
   const auto inner_key = Descriptor(
       BinaryUuid("019f0000-0000-7200-8000-000000003105"),
-      BinaryUuid("019f0000-0000-7300-8000-000000003106"), "int64");
+      "int64");
   const auto inner_payload = Descriptor(
       BinaryUuid("019f0000-0000-7200-8000-000000003107"),
-      BinaryUuid("019f0000-0000-7300-8000-000000003108"), "text");
+      "text");
 
   exec::CanonicalCorrelatedSubqueryRequest request;
   request.physical_dag.selected_plan_uuid =
@@ -469,12 +470,17 @@ bool ValidateLateralSubquery() {
   passed &= Require(!result.diagnostic.ok,
                     "non-subquery LATERAL input was accepted");
 
-  request = Request();
-  request.correlated_request.inner_batch.rows[2].values[0].encoded_value =
-      "bad";
-  result = exec::ExecuteCanonicalLateralSubquery(request);
-  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
-                    "failed correlation published LATERAL output");
+  for (unsigned mutation = 0; mutation < 4; ++mutation) {
+    request = Request();
+    auto& invalid = request.correlated_request.inner_batch.rows[2].values[0];
+    if (mutation == 0) invalid.encoded_value = "bad";
+    if (mutation == 1) invalid.binary_value.clear();
+    if (mutation == 2) invalid.binary_value.pop_back();
+    if (mutation == 3) invalid.binary_value.push_back(0);
+    result = exec::ExecuteCanonicalLateralSubquery(request);
+    passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                      "failed correlation published LATERAL output");
+  }
 
   request = Request();
   request.physical_dag.local_transaction_id = 0;
