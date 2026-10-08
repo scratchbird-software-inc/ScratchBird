@@ -6479,6 +6479,7 @@ void RouteOwnedCheckpointSource(const std::filesystem::path& root,unsigned p,boo
 #endif
 
 void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_inventory=false,bool history_only=false,unsigned history_shard=0,unsigned history_stride=1,int inventory_allocation_shard=-1,bool directory_staging=false,bool directory_controls=false,bool directory_graph=false){using E=db::NativeCheckpointSelectionError;using S=page::NativeAllocationState;
+  u64 fixture_written_bytes=0,fixture_unchanged_bytes=0;
   for(unsigned p=0;p<5;++p)for(unsigned role=1;role<=4;++role){
     if(inventory_allocation_shard>=0&&(p!=0||role!=1))continue;
     Fixture fixture;disk::FileDevice device,second_device;const unsigned q=(p+1)%5;const auto path=(fixture.root/"bound-selector").string();auto zero=Example(p,role);zero.free_pages=zero.preallocated_pages=0;
@@ -6536,6 +6537,20 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
     std::array<u64,3> inventory_summary{13,13,13}, preceding_summary{13,13,13};
     const auto put=[&](u64 number,const Bytes& b){Check(device.WriteAt(number*sizes[p],b.data(),b.size()).ok()&&device.Sync().ok(),"persist independently authored selector graph");};
     const auto persist=[&](){const bool extended=!directory.creator_operation_uuid.is_nil()||std::any_of(directory.records.begin(),directory.records.end(),[](const auto& r){return r.allocation_root.has_value();});
+      // Author the complete independent fixture before any reader or fault
+      // probe sees it. One synchronization per member preserves that durable
+      // boundary; per-page barriers here tested no intermediate state. Direct
+      // single-page mutations below still use the synchronized outer put().
+      const auto write_fixture=[&](auto& file,u64 offset,const Bytes& bytes){
+        // Compare the actual file, not a cached oracle: earlier negative and
+        // production-operation mutations must never be hidden during reset.
+        Bytes actual(bytes.size());const auto read=file.ReadAt(offset,actual.data(),actual.size());
+        Check(read.ok()&&read.bytes_transferred==actual.size(),"read current selector fixture page");
+        if(actual==bytes){fixture_unchanged_bytes+=bytes.size();return;}
+        const auto io=file.WriteAt(offset,bytes.data(),bytes.size());
+        Check(io.ok()&&io.bytes_transferred==bytes.size(),"write complete selector fixture page");
+        fixture_written_bytes+=bytes.size();};
+      const auto put=[&](u64 number,const Bytes& bytes){write_fixture(device,number*sizes[p],bytes);};
       const auto ib=InventoryOracle(inv,inventory_summary[0],inventory_summary[1],inventory_summary[2]),mb=AllocationOracle(map),dbb=extended?DirectoryAllocationOracle(directory):DirectoryOracle(directory),rb=RetentionOracle(retention),sb=SystemStateOracle(system);horizon.retention_sha256=WholeRootHash(rb);const auto hb=HorizonOracle(horizon);
       for(auto* cp:{&initial,&current}){cp->roots[0]={1,0x301,InventoryRef(inv),inv.object_uuid,WholeRootHash(ib)};
         cp->roots[2]={3,9,{Id(2),15,105,Profile(p)},Id(45),WholeRootHash(dbb)};}
@@ -6553,10 +6568,12 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
       const auto old=CheckpointOracle(initial);current.predecessor_sha256=WholeRootHash(old);selection.previous_checkpoint_sha256=current.predecessor_sha256;
       const auto cp=CheckpointOracle(current);selection.checkpoint_sha256=WholeRootHash(cp);
       auto other=selection;other.header.page_number=32;other.header.page_uuid=Id(156);
-      const auto secondary_bytes=Oracle(second_zero);Check(second_device.WriteAt(0,secondary_bytes.data(),secondary_bytes.size()).ok()&&second_device.Sync().ok(),"persist secondary bootstrap");
+      const auto secondary_bytes=Oracle(second_zero);write_fixture(second_device,0,secondary_bytes);
       if(inventory_tail){const auto tail_bytes=InventoryOracle(*inventory_tail,18,18,18);
-        Check(second_device.WriteAt(inventory_tail->header.page_number*sizes[q],tail_bytes.data(),tail_bytes.size()).ok()&&second_device.Sync().ok(),"persist mixed-profile inventory continuation");}
-      put(0,Oracle(zero));put(14,ib);put(35,mb);put(15,dbb);put(40,rb);put(41,hb);put(11,sb);put(19,old);put(36,cp);put(31,SelectionOracle(selection));put(32,SelectionOracle(other));};
+        write_fixture(second_device,inventory_tail->header.page_number*sizes[q],tail_bytes);}
+      put(0,Oracle(zero));put(14,ib);put(35,mb);put(15,dbb);put(40,rb);put(41,hb);put(11,sb);put(19,old);put(36,cp);put(31,SelectionOracle(selection));put(32,SelectionOracle(other));
+      Check(second_device.Sync().ok(),"persist complete secondary selector fixture");
+      Check(device.Sync().ok(),"persist complete primary selector fixture");};
     const std::vector<disk::NativeFilespaceDevice> devices{{Id(7),Profile(q),&second_device},{Id(2),Profile(p),&device}};const u64 budget=8*sizes[p];
     const auto read=[&](u64 limit){return db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),devices,Id(2),limit);};
     const auto empty=[&](const auto& r){Check(!r.ok()&&!r.selection&&r.slots[0].empty()&&r.slots[1].empty()&&!r.checkpoint_inventory.checkpoint&&!r.predecessor.checkpoint&&r.checkpoint_inventory.inventory_pages.empty()&&r.predecessor.inventory_pages.empty()&&r.allocation.pages.empty()&&!r.retained_image_bytes,"bound selector failure returns no prefix");};
@@ -7321,6 +7338,8 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
     if(child==0){const auto profile=std::to_string(p);::execl("/proc/self/exe","bound-selector-probe","--bound-selector-probe",fixture.root.c_str(),profile.c_str(),nullptr);::_exit(125);}
     int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable binds actual selector and retained targets");
   }
+  std::cout<<"selector fixture written_bytes="<<fixture_written_bytes
+    <<" unchanged_bytes="<<fixture_unchanged_bytes<<'\n';
 }
 int main(int argc,char** argv) {
   if(argc==2&&std::string_view(argv[1])=="--current-source-memory-only"){
