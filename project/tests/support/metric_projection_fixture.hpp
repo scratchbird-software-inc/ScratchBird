@@ -75,7 +75,12 @@ class MetricProjectionFixture {
         result = registry.ObserveHistogram(family, std::move(labels), std::move(value), descriptor.producer_owner); break;
       default: throw std::runtime_error("unsupported projection fixture sample class");
     }
-    Check(result.ok, family + ":" + result.diagnostic_code + ":" + result.detail);
+    Produced(result);
+  }
+  // Account for an independently invoked real producer helper; the queue and
+  // decoded samples must subsequently prove every accepted emission.
+  void Produced(const core::metrics::MetricValidationResult& result) {
+    Check(result.ok, result.diagnostic_code + ":" + result.detail);
     ++emitted_;
   }
   void Seal() {

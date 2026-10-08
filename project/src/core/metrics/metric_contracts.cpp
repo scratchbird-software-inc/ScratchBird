@@ -206,7 +206,7 @@ MetricValidationResult RecordDatatypeOperation(std::string canonical_type,
                                   {"operation", std::move(operation)},
                                   {"result", std::move(result)},
                                   {"reason", reason.empty() ? "none" : std::move(reason)}}),
-                          1.0,
+                          u64{1},
                           "datatype_runtime");
 }
 
@@ -224,7 +224,7 @@ MetricValidationResult RecordDatatypeCast(std::string source_type,
                                   {"target_type", std::move(target_type)},
                                   {"result", std::move(result)},
                                   {"reason", reason.empty() ? "none" : std::move(reason)}}),
-                          1.0,
+                          u64{1},
                           "datatype_runtime");
 }
 
@@ -244,11 +244,11 @@ MetricValidationResult RecordDatatypeNumericBackend(std::string numeric_backend,
                                   {"operation", std::move(operation)},
                                   {"result", std::move(result)},
                                   {"reason", reason.empty() ? "none" : std::move(reason)}}),
-                          1.0,
+                          u64{1},
                           "datatype_runtime");
 }
 
-MetricValidationResult PublishDatatypeCatalogDescriptorCount(double descriptor_count,
+MetricValidationResult PublishDatatypeCatalogDescriptorCount(MetricScalar descriptor_count,
                                                              std::string result) {
   return SetGauge("sb_datatype_catalog_descriptors",
                   Labels({{"component", "datatype.catalog"}, {"result", std::move(result)}}),
@@ -270,7 +270,7 @@ MetricValidationResult RecordDomainMethodInvocation(MetricUuid domain_uuid,
                                   {"method", std::move(method)},
                                   {"result", std::move(result)},
                                   {"reason", reason.empty() ? "none" : std::move(reason)}}),
-                          1.0,
+                          u64{1},
                           "datatype_runtime");
 }
 

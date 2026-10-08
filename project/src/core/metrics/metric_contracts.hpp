@@ -79,7 +79,8 @@ MetricValidationResult RecordDatatypeNumericBackend(std::string numeric_backend,
                                                     std::string operation,
                                                     std::string result,
                                                     std::string reason);
-MetricValidationResult PublishDatatypeCatalogDescriptorCount(double descriptor_count,
+// Exact UINT64 gauge. Other scalar alternatives are refused, never coerced.
+MetricValidationResult PublishDatatypeCatalogDescriptorCount(MetricScalar descriptor_count,
                                                              std::string result);
 MetricValidationResult RecordDomainMethodInvocation(MetricUuid domain_uuid,
                                                     std::string method,

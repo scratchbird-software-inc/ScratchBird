@@ -8,10 +8,12 @@
 
 #include "datatype_metrics_redaction.hpp"
 #include "../support/binary_uuid_fixture.hpp"
-#include "../support/metric_projection_fixture.hpp"
+#include "../support/datatype_metric_fixture.hpp"
+#include "metric_contracts.hpp"
 
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <string_view>
 
@@ -128,9 +130,64 @@ void TestSupportBundleRedactionAndVisibilityRefusal() {
           "MDF-016 unauthorized visibility diagnostic mismatch");
 }
 
+void TestNativeProducerContracts() {
+  const auto request = AuthorizedRequest();
+  scratchbird::tests::MetricProjectionFixture fixture(request.database_uuid, request.node_uuid, 1034);
+  const auto domain = scratchbird::tests::FixtureUuid(1034, 50);
+  scratchbird::tests::AdmitDatatypeMetricFixtureSeries(fixture, domain);
+  fixture.Seal();
+  Require(dt::PublishDatatypeMetricsManagementSurface(request).visible_metrics.empty(),
+          "producer registration fabricated values");
+  fixture.VerifyReadOnly();
+  for (unsigned i = 0; i < 3; ++i) {
+    fixture.Produced(metrics::RecordDatatypeOperation("decimal", "canonicalize", "ok", ""));
+    fixture.Produced(metrics::RecordDatatypeCast("character", "int128", "overflow", "integer_out_of_range"));
+    fixture.Produced(metrics::RecordDatatypeNumericBackend("sbl_numeric", "real128", "add", "ok", "none"));
+    fixture.Produced(metrics::RecordDomainMethodInvocation(domain, "upper", "ok", ""));
+  }
+  const auto check_values = [&](std::uint64_t expected_count) {
+    const auto projected = dt::PublishDatatypeMetricsManagementSurface(request);
+    Require(projected.ok && projected.visible_metrics.size() == 5, "native producer inventory changed");
+    for (const auto& value : projected.visible_metrics) {
+      const auto* count = std::get_if<std::uint64_t>(&value.value);
+      Require(count && *count == (value.family == "sb_datatype_catalog_descriptors" ? expected_count : 3),
+              "native producer count is lossy or mis-typed");
+      for (const auto& label : value.labels)
+        if (label.key == "domain_uuid") {
+          const auto* id = std::get_if<metrics::MetricUuid>(&label.value);
+          Require(id && *id == domain, "domain metric UUID was not binary");
+        }
+    }
+  };
+  for (auto count : {std::uint64_t{0}, (std::uint64_t{1} << 53) + 1,
+                    std::numeric_limits<std::uint64_t>::max()}) {
+    fixture.Produced(metrics::PublishDatatypeCatalogDescriptorCount(count, "ok"));
+    check_values(count);
+  }
+  fixture.Seal();
+  for (const metrics::MetricScalar value : {metrics::MetricScalar{1.0}, metrics::MetricScalar{-0.5},
+       metrics::MetricScalar{std::int64_t{-1}}, metrics::MetricScalar{std::string("1")}})
+    Require(!metrics::PublishDatatypeCatalogDescriptorCount(value, "ok").ok,
+            "native descriptor count accepted a non-UINT64 value");
+  Require(!metrics::RecordDatatypeOperation("", "canonicalize", "ok", "none").ok,
+          "datatype producer accepted absent type");
+  Require(!metrics::RecordDatatypeCast("character", "", "ok", "none").ok,
+          "datatype producer accepted absent cast target");
+  Require(!metrics::RecordDatatypeNumericBackend("", "real128", "add", "ok", "none").ok,
+          "datatype producer accepted absent backend");
+  Require(!metrics::RecordDomainMethodInvocation({}, "upper", "ok", "none").ok,
+          "datatype producer accepted absent domain identity");
+  fixture.VerifyAndDrain();
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc == 2 && std::string_view(argv[1]) == "--producer-contracts-only") {
+    TestNativeProducerContracts();
+    return EXIT_SUCCESS;
+  }
+  Require(argc == 1, "unexpected datatype metric test argument");
   // MDF-016-CURRENT-CORE-DATATYPE-METRICS-REDACTION
   // DEFER-DTM-*
   const auto request = AuthorizedRequest();

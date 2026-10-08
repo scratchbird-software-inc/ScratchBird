@@ -3740,6 +3740,10 @@ set_tests_properties(database_lifecycle_binary_uuid_operations PROPERTIES
     NAME database_lifecycle_current_core_datatype_metrics_redaction_gate
     COMMAND database_lifecycle_current_core_datatype_metrics_redaction_gate
   )
+  add_test(NAME database_lifecycle_datatype_metric_native_producers
+    COMMAND database_lifecycle_current_core_datatype_metrics_redaction_gate --producer-contracts-only)
+  set_tests_properties(database_lifecycle_datatype_metric_native_producers PROPERTIES
+    LABELS "metrics;binary_uuid;component_regression;native_integer;not_runtime_acceptance")
   set_tests_properties(database_lifecycle_current_core_datatype_metrics_redaction_gate PROPERTIES
     LABELS "database_lifecycle_current_core_datatype_metrics_redaction_gate;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-016;MDF-016-CURRENT-CORE-DATATYPE-METRICS-REDACTION;DEFER-DTM-*;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
   )

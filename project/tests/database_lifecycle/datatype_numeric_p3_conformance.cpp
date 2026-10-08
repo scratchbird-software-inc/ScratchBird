@@ -1,5 +1,6 @@
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
+#include "../support/datatype_metric_fixture.hpp"
 #include "database_lifecycle_test_memory.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
@@ -157,13 +158,6 @@ std::string DatatypeDiagnosticDetail(
     }
   }
   return {};
-}
-
-void RequireMetricOk(const metrics::MetricValidationResult& result, std::string_view message) {
-  if (!result.ok) {
-    std::cerr << result.diagnostic_code << ":" << result.detail << '\n';
-  }
-  Require(result.ok, message);
 }
 
 void RequireDiagnosticDetail(const api::EngineApiResult& result,
@@ -627,7 +621,8 @@ api::DomainRecord Domain(std::uint64_t creator_tx,
   return record;
 }
 
-void TestDomainMethodBinding(const api::EngineRequestContext& owner) {
+void TestDomainMethodBinding(const api::EngineRequestContext& owner,
+                            scratchbird::tests::MetricProjectionFixture& fixture) {
   const auto context = BeginDomainContext(owner);
 
   const auto no_method_domain = Domain(context.local_transaction_id, scratchbird::tests::FixtureUuid(1326, 4), scratchbird::tests::FixtureUuid(1326, 5), "no_method_domain", {});
@@ -654,33 +649,31 @@ void TestDomainMethodBinding(const api::EngineRequestContext& owner) {
   Require(invoked.ok, "domain builtin method invocation failed");
   Require(invoked.value.encoded_value == "ALPHA", "domain upper method result mismatch");
 
-  RequireMetricOk(metrics::RecordDomainMethodInvocation(upper_domain.domain_uuid, "upper", "ok", "none"),
-                  "domain method metric failed");
+  fixture.Produced(metrics::RecordDomainMethodInvocation(upper_domain.domain_uuid, "upper", "ok", "none"));
   api::EngineRollbackTransactionRequest rollback;
   rollback.context = context;
   Require(api::EngineRollbackTransaction(rollback).ok, "domain fixture transaction rollback failed");
 }
 
-void TestDatatypeMetrics() {
+void TestDatatypeMetrics(scratchbird::tests::MetricProjectionFixture& fixture) {
   Require(metrics::DefaultMetricRegistry().FindDescriptor("sb_datatype_operation_total") != nullptr,
           "datatype operation metric descriptor missing");
   Require(metrics::DefaultMetricRegistry().FindDescriptor("sb_datatype_catalog_descriptors") != nullptr,
           "datatype catalog metric descriptor missing");
-  RequireMetricOk(metrics::RecordDatatypeOperation("decimal", "canonicalize", "ok", "none"),
-                  "datatype operation metric publish failed");
-  RequireMetricOk(metrics::RecordDatatypeCast("character", "int128", "overflow", "integer_out_of_range"),
-                  "datatype cast metric publish failed");
-  RequireMetricOk(metrics::RecordDatatypeNumericBackend("sbl_numeric", "real128", "add", "ok", "none"),
-                  "datatype numeric backend metric publish failed");
-  RequireMetricOk(metrics::PublishDatatypeCatalogDescriptorCount(
-                      static_cast<double>(dt::BuiltinDatatypeDescriptors().size()), "ok"),
-                  "datatype catalog descriptor metric publish failed");
+  fixture.Produced(metrics::RecordDatatypeOperation("decimal", "canonicalize", "ok", "none"));
+  fixture.Produced(metrics::RecordDatatypeCast("character", "int128", "overflow", "integer_out_of_range"));
+  fixture.Produced(metrics::RecordDatatypeNumericBackend("sbl_numeric", "real128", "add", "ok", "none"));
+  fixture.Produced(metrics::PublishDatatypeCatalogDescriptorCount(
+      static_cast<std::uint64_t>(dt::BuiltinDatatypeDescriptors().size()), "ok"));
 
   bool saw_operation = false;
   bool saw_backend = false;
   bool saw_catalog = false;
   bool saw_domain = false;
   for (const auto& value : metrics::DefaultMetricRegistry().SnapshotCurrent()) {
+    const auto* count = std::get_if<std::uint64_t>(&value.value);
+    Require(count && *count == (value.family == "sb_datatype_catalog_descriptors"
+        ? dt::BuiltinDatatypeDescriptors().size() : 1), "numeric datatype metric count mismatch");
     saw_operation = saw_operation || value.family == "sb_datatype_operation_total";
     saw_backend = saw_backend || value.family == "sb_datatype_numeric_backend_total";
     saw_catalog = saw_catalog || value.family == "sb_datatype_catalog_descriptors";
@@ -705,6 +698,9 @@ int Run() {
   } cleanup{CreateFixtureDirectory()};
   const auto create = CreateDatabase(cleanup.path / "numeric.sbdb");
   const auto owner = BaseDomainContext(create);
+  scratchbird::tests::MetricProjectionFixture metric_fixture(create.database_uuid.value,
+      scratchbird::tests::FixtureUuid(1326, 80), 1326);
+  scratchbird::tests::AdmitDatatypeMetricFixtureSeries(metric_fixture, scratchbird::tests::FixtureUuid(1326, 6));
 
   TestMandatoryDatatypeCapabilities();
   TestNumericBackend();
@@ -717,8 +713,10 @@ int Run() {
   TestDsr023ParameterValueStates();
   TestDsr023RowDescriptionDiscriminators();
   TestDsr023DriverAndSysInformationMetadata();
-  TestDomainMethodBinding(owner);
-  TestDatatypeMetrics();
+  TestDomainMethodBinding(owner, metric_fixture);
+  TestDatatypeMetrics(metric_fixture);
+  metric_fixture.Seal();
+  metric_fixture.VerifyAndDrain();
   return EXIT_SUCCESS;
 }
 
