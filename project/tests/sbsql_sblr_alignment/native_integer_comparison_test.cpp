@@ -198,14 +198,30 @@ int main() {
       }
     }
     const auto present = Value(type, width, 0, 1);
-    if (type == dt::CanonicalTypeId::int64) {
-      auto non_null = present;
-      non_null.descriptor.encoded_descriptor = "nullability=non_null";
+    for (const auto a : numbers) for (const auto b : numbers)
+    for (bool left_nullable : {false,true}) for (bool right_nullable : {false,true}) {
+      auto left = Value(type,width,a,1), right = Value(type,width,b,2);
+      left.descriptor.encoded_descriptor = left_nullable
+          ? "nullability=nullable" : "nullability=non_null";
+      right.descriptor.encoded_descriptor = right_nullable
+          ? "nullability=nullable" : "nullability=non_null";
+      const auto left_before = left, right_before = right;
       int comparison = 42;
       std::string detail;
-      Check(!api::QowCompareCanonicalNonCollatedScalarsV1(present, non_null, &comparison, &detail) &&
-                comparison == 0 && !detail.empty(),
-            "comparison silently normalized distinct Core nullability profiles");
+      Check(api::QowCompareCanonicalNonCollatedScalarsV1(left,right,&comparison,&detail) &&
+                comparison == (a < b ? -1 : a > b ? 1 : 0) && detail.empty(),
+            "present integer order depends on containing slot nullability");
+      Check(left.descriptor == left_before.descriptor && right.descriptor == right_before.descriptor &&
+                left.binary_value == left_before.binary_value && right.binary_value == right_before.binary_value,
+            "comparison rewrote independently admitted source descriptors or bytes");
+      for (bool mutate_left : {false,true}) {
+        auto bad_left = left, bad_right = right;
+        auto& bad = mutate_left ? bad_left : bad_right;
+        ++bad.descriptor.datatype_descriptor_generation;
+        Check(!api::QowCompareCanonicalNonCollatedScalarsV1(bad_left,bad_right,&comparison,&detail) &&
+                  comparison == 0 && !detail.empty(),
+              "mixed-nullability integer comparison skipped independent binding validation");
+      }
     }
     for (unsigned cardinality : {0, 1, 2}) {
       for (unsigned mutation = 0; mutation != 7; ++mutation) {

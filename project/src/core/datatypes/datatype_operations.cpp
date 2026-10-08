@@ -6199,6 +6199,22 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
                                         request.left.type_id) ||
        !ExecutionDescriptorValidForType(request.right.descriptor,
                                         request.right.type_id));
+  // PRESENT base INT64 values have the same signed ordering regardless of
+  // their containing slots' NULL admission. Validate both complete builtin
+  // shapes independently; do not overwrite either supplied descriptor. Typed
+  // NULL and all other datatype/policy distinctions retain their own rules.
+  const bool present_int64_slot_nullability_only =
+      request.left.type_id == CanonicalTypeId::int64 &&
+      request.right.type_id == CanonicalTypeId::int64 &&
+      !request.left.is_null && !request.right.is_null &&
+      request.left.descriptor.nullable_allowed !=
+          request.right.descriptor.nullable_allowed &&
+      ExecutionDescriptorExactlyMatchesCurrentBuiltinIgnoringNullability(
+          request.left.descriptor, CanonicalTypeId::int64) &&
+      ExecutionDescriptorExactlyMatchesCurrentBuiltinIgnoringNullability(
+          request.right.descriptor, CanonicalTypeId::int64) &&
+      ExecutionDescriptorEqualsIgnoringNullability(request.left.descriptor,
+                                                   request.right.descriptor);
   if (((request.left.type_id == CanonicalTypeId::uint32 ||
         request.left.type_id == CanonicalTypeId::int64 ||
         request.left.type_id == CanonicalTypeId::uint64 ||
@@ -6207,7 +6223,8 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
         request.left.type_id == CanonicalTypeId::real128) &&
        request.right.type_id == request.left.type_id &&
        !ExecutionDescriptorEquals(request.left.descriptor,
-                                  request.right.descriptor)) ||
+                                  request.right.descriptor) &&
+       !present_int64_slot_nullability_only) ||
       strict_binary_descriptors_invalid) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(

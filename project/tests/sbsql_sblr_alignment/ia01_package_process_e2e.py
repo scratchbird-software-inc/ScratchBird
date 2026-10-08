@@ -99,6 +99,22 @@ def stop(process: subprocess.Popen[bytes] | None) -> None:
         process.wait(timeout=3)
 
 
+def require_stopped_fixture_group(process: subprocess.Popen[bytes]) -> None:
+    """The caller created this process with start_new_session on POSIX.
+
+    Never delete a database merely because its immediate parent was reaped:
+    forced listener shutdown can leave parser descendants using the workspace.
+    Non-POSIX process-tree qualification needs its own platform implementation.
+    """
+    if os.name != "posix":
+        raise ProofError("fixture process-tree cleanup is not qualified on this platform")
+    try:
+        os.killpg(process.pid, 0)
+    except ProcessLookupError:
+        return
+    raise ProofError(f"fixture process group still exists after shutdown: {process.pid}")
+
+
 def seed_database(
     server: Path, database: Path, extra_args: tuple[str, ...] = ()
 ) -> str:
@@ -226,6 +242,7 @@ def main() -> int:
             stdout=(work / "server.out").open("wb"),
             stderr=(work / "server.err").open("wb"),
             env=server_env,
+            start_new_session=os.name == "posix",
         )
         wait_path(endpoint)
         listener_env = os.environ.copy()
@@ -243,6 +260,7 @@ def main() -> int:
             stdout=(work / "listener.out").open("wb"),
             stderr=(work / "listener.err").open("wb"),
             env=listener_env,
+            start_new_session=os.name == "posix",
         )
         wait_tcp(port)
 
@@ -251,7 +269,15 @@ def main() -> int:
         # A distinct OS process and authenticated session verifies the result;
         # no cursor, receipt, parser-worker request, or client state is reused.
         run_client(args, database, port, evidence, work, "verifier_session")
-        print(f"sbsql_sblr_alignment_ia01_package_process_e2e=passed work={work}")
+        stop(listener)
+        stop(server)
+        cleaned = False
+        if os.name == "posix":
+            require_stopped_fixture_group(listener)
+            require_stopped_fixture_group(server)
+            shutil.rmtree(work)
+            cleaned = True
+        print(f"sbsql_sblr_alignment_ia01_package_process_e2e=passed work={work} cleaned={cleaned}")
         return 0
     except Exception as exc:  # noqa: BLE001 - preserve concrete test evidence.
         print(f"sbsql_sblr_alignment_ia01_package_process_e2e=failed work={work}: {exc}",

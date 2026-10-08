@@ -392,7 +392,6 @@ api::EngineColumnDefinition Column(const api::EngineRequestContext& context,
   column.names.push_back(Name(name, name));
   column.descriptor.descriptor_uuid = api::GenerateCrudEngineUuid("object");
   column.descriptor.descriptor_kind = "scalar";
-  column.descriptor.canonical_type_name = std::move(type);
   column.descriptor.datatype_descriptor_uuid = catalog.descriptor_uuid.value;
   column.descriptor.datatype_descriptor_generation = catalog.descriptor_epoch;
   const auto codec = datatypes::LookupDatatypeTypeCodecIdentityV1(
@@ -400,6 +399,16 @@ api::EngineColumnDefinition Column(const api::EngineRequestContext& context,
       context.datatype_registry_generation, catalog.descriptor_uuid.value,
       catalog.descriptor_epoch);
   if (!codec.ok) Fail("driver fixture datatype codec binding unavailable");
+  // The historical registry retains BIGINT as a presentation label. Its
+  // binary type identity, not that label or the fixture's SQL spelling,
+  // determines the canonical signed-integer execution descriptor. TEXT keeps
+  // its exact registered UTF-8 profile rather than the broad character family.
+  const auto canonical_type = static_cast<datatypes::CanonicalTypeId>(
+      codec.row.canonical_binary_type_code);
+  column.descriptor.canonical_type_name =
+      canonical_type == datatypes::CanonicalTypeId::int32 ||
+              canonical_type == datatypes::CanonicalTypeId::int64
+          ? datatypes::CanonicalTypeName(canonical_type) : codec.row.canonical_name;
   column.descriptor.type_uuid = codec.row.type_uuid;
   column.descriptor.encoded_descriptor =
       "type=" + column.descriptor.canonical_type_name + ";nullable=true";
