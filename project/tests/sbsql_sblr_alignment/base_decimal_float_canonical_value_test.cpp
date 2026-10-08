@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "admitted_datatype_cohort.hpp"
+#include "../support/generic_cast_boundary_expectations.hpp"
 #include "datatype_binary.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_descriptor.hpp"
@@ -672,7 +673,7 @@ void PresentSemanticSurfacesRefuse() {
                   dt::DatatypeCastCategory::forbidden,
           "every registered PRESENT cast classifier pair incident to decimal_float refuses");
 
-    const std::string expected_detail =
+    std::string expected_detail =
         candidate.type_id == dt::CanonicalTypeId::bfloat16
             ? "bfloat16_present_cast_policy_unresolved"
         : candidate.type_id == dt::CanonicalTypeId::real16
@@ -684,6 +685,17 @@ void PresentSemanticSurfacesRefuse() {
         : candidate.type_id == dt::CanonicalTypeId::decimal
             ? "decimal_present_cast_policy_unresolved"
             : "decimal_float_present_cast_policy_unresolved";
+    switch (candidate.type_id) {
+      case dt::CanonicalTypeId::uuid: expected_detail = "uuid_present_cast_policy_unresolved"; break;
+      case dt::CanonicalTypeId::ip_address: expected_detail = "ip_address_present_cast_policy_unresolved"; break;
+      case dt::CanonicalTypeId::network_prefix: expected_detail = "network_prefix_present_cast_policy_unresolved"; break;
+      case dt::CanonicalTypeId::mac_address: expected_detail = "mac_address_present_cast_policy_unresolved"; break;
+      case dt::CanonicalTypeId::binary: expected_detail = "base_binary_ordered_pair_forbidden"; break;
+      default: break;
+    }
+    const auto expected_present = scratchbird::tests::GenericCastProfileBoundary(
+        candidate.type_id).value_or(scratchbird::tests::CastRefusalExpectation{
+            "DATATYPE.CAST_FORBIDDEN", expected_detail});
     for (const auto context : {dt::DatatypeCastContext::implicit,
                                dt::DatatypeCastContext::assignment,
                                dt::DatatypeCastContext::explicit_cast}) {
@@ -697,18 +709,33 @@ void PresentSemanticSurfacesRefuse() {
             context == dt::DatatypeCastContext::explicit_cast;
         outgoing.reference_compatibility_profile = compatibility;
         const auto result = dt::CastDatatypeValue(outgoing);
-        Check(RejectedAs(result, "DATATYPE.CAST_FORBIDDEN",
-                         expected_detail) &&
+        Check(RejectedAs(result, expected_present.code,
+                         expected_present.detail) &&
+                  result.category == dt::DatatypeCastCategory::forbidden &&
                   result.value.type_id == dt::CanonicalTypeId::unknown &&
-                  result.value.encoded_value.empty() &&
+                  result.value.encoded_value.empty() && !result.value.is_null &&
                   present.encoded_value == original,
-              "every registered decimal_float PRESENT outgoing cast refuses atomically in every context and compatibility profile");
+              std::string("decimal_float PRESENT outgoing cast: peer=") +
+                  dt::CanonicalTypeName(candidate.type_id) + " actual=" +
+                  result.diagnostic.diagnostic_code + ":" +
+                  DiagnosticDetail(result.diagnostic));
 
         if (candidate.type_id != dt::CanonicalTypeId::decimal_float) {
-          const std::string null_detail =
+          std::string null_detail =
               candidate.type_id == dt::CanonicalTypeId::decimal
                   ? "decimal_cross_type_typed_null_cast_policy_unresolved"
                   : "decimal_float_cross_type_typed_null_cast_policy_unresolved";
+          switch (candidate.type_id) {
+            case dt::CanonicalTypeId::uuid: null_detail = "uuid_cross_type_typed_null_cast_policy_unresolved"; break;
+            case dt::CanonicalTypeId::ip_address: null_detail = "ip_address_cross_type_typed_null_cast_policy_unresolved"; break;
+            case dt::CanonicalTypeId::network_prefix: null_detail = "network_prefix_cross_type_typed_null_cast_policy_unresolved"; break;
+            case dt::CanonicalTypeId::mac_address: null_detail = "mac_address_cross_type_typed_null_cast_policy_unresolved"; break;
+            case dt::CanonicalTypeId::binary: null_detail = "base_binary_ordered_pair_forbidden"; break;
+            default: break;
+          }
+          const auto expected_null = scratchbird::tests::GenericCastProfileBoundary(
+              candidate.type_id).value_or(scratchbird::tests::CastRefusalExpectation{
+                  "DATATYPE.CAST_FORBIDDEN", null_detail});
           auto candidate_null = dt::DatatypeOperationValue{
               candidate.type_id, {}, true};
           candidate_null.descriptor = DescriptorFor(candidate.type_id);
@@ -735,13 +762,23 @@ void PresentSemanticSurfacesRefuse() {
               dt::CastDatatypeValue(null_outgoing);
           const auto incoming_null_result =
               dt::CastDatatypeValue(null_incoming);
-          Check(RejectedAs(outgoing_null_result, "DATATYPE.CAST_FORBIDDEN",
-                           null_detail) &&
+          Check(RejectedAs(outgoing_null_result, expected_null.code,
+                           expected_null.detail) &&
                     RejectedAs(incoming_null_result,
-                               "DATATYPE.CAST_FORBIDDEN", null_detail) &&
+                               expected_null.code, expected_null.detail) &&
+                    outgoing_null_result.category == dt::DatatypeCastCategory::forbidden &&
+                    incoming_null_result.category == dt::DatatypeCastCategory::forbidden &&
+                    outgoing_null_result.value.type_id == dt::CanonicalTypeId::unknown &&
+                    incoming_null_result.value.type_id == dt::CanonicalTypeId::unknown &&
+                    !outgoing_null_result.value.is_null && !incoming_null_result.value.is_null &&
                     outgoing_null_result.value.encoded_value.empty() &&
                     incoming_null_result.value.encoded_value.empty(),
-                "every registered decimal_float cross-type typed NULL cast refuses in both directions");
+                std::string("decimal_float cross-type NULL cast: peer=") +
+                    dt::CanonicalTypeName(candidate.type_id) + " outgoing=" +
+                    outgoing_null_result.diagnostic.diagnostic_code + ":" +
+                    DiagnosticDetail(outgoing_null_result.diagnostic) + " incoming=" +
+                    incoming_null_result.diagnostic.diagnostic_code + ":" +
+                    DiagnosticDetail(incoming_null_result.diagnostic));
         }
       }
     }

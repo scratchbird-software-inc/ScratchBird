@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "admitted_datatype_cohort.hpp"
+#include "../support/generic_cast_boundary_expectations.hpp"
 #include "datatype_binary.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_descriptor.hpp"
@@ -584,6 +585,28 @@ void PresentSemanticSurfacesRefuse() {
         incoming.reference_compatibility_profile = compatibility_profile;
         const auto incoming_result = dt::CastDatatypeValue(incoming);
 
+        const auto outgoing_expected = scratchbird::tests::GenericCastProfileBoundary(
+            candidate.type_id).value_or(scratchbird::tests::CastRefusalExpectation{
+                "DATATYPE.CAST_FORBIDDEN", "real16_present_cast_policy_unresolved"});
+        auto incoming_expected = outgoing_expected;
+        // Malformed decimal placeholders are rejected before scalar policy.
+        if (candidate.type_id == dt::CanonicalTypeId::decimal)
+          incoming_expected = {"NUMERIC.ENCODING.NONCANONICAL", "decimal_source_value_noncanonical"};
+        if (candidate.type_id == dt::CanonicalTypeId::decimal_float)
+          incoming_expected = {"NUMERIC.ENCODING.NONCANONICAL", "decimal_float_source_value_noncanonical"};
+        if (const auto canonical = scratchbird::tests::CanonicalDecimalPeerOne(candidate.type_id)) {
+          auto valid_incoming = incoming;
+          valid_incoming.value.encoded_value = *canonical;
+          const auto refused = dt::CastDatatypeValue(valid_incoming);
+          Check(!refused.ok() && refused.category == dt::DatatypeCastCategory::forbidden &&
+                    refused.value.type_id == dt::CanonicalTypeId::unknown &&
+                    refused.value.encoded_value.empty() && !refused.value.is_null &&
+                    refused.diagnostic.diagnostic_code == "DATATYPE.CAST_FORBIDDEN" &&
+                    DiagnosticDetail(refused.diagnostic) == "real16_present_cast_policy_unresolved" &&
+                    valid_incoming.value.encoded_value == *canonical,
+                "canonical decimal peer must reach exact approximate numeric policy refusal");
+        }
+
         Check(!outgoing_result.ok() &&
                   outgoing_result.category ==
                       dt::DatatypeCastCategory::forbidden &&
@@ -591,9 +614,9 @@ void PresentSemanticSurfacesRefuse() {
                       dt::CanonicalTypeId::unknown &&
                   outgoing_result.value.encoded_value.empty() &&
                   outgoing_result.diagnostic.diagnostic_code ==
-                      "DATATYPE.CAST_FORBIDDEN" &&
+                      outgoing_expected.code &&
                   DiagnosticDetail(outgoing_result.diagnostic) ==
-                      "real16_present_cast_policy_unresolved" &&
+                      outgoing_expected.detail &&
                   !incoming_result.ok() &&
                   incoming_result.category ==
                       dt::DatatypeCastCategory::forbidden &&
@@ -601,13 +624,18 @@ void PresentSemanticSurfacesRefuse() {
                       dt::CanonicalTypeId::unknown &&
                   incoming_result.value.encoded_value.empty() &&
                   incoming_result.diagnostic.diagnostic_code ==
-                      "DATATYPE.CAST_FORBIDDEN" &&
+                      incoming_expected.code &&
                   DiagnosticDetail(incoming_result.diagnostic) ==
-                      "real16_present_cast_policy_unresolved" &&
+                      incoming_expected.detail &&
                   present.encoded_value == original_payload &&
                   candidate_value.encoded_value ==
                       "test-only-present-placeholder",
-              "runtime PRESENT casts incident to real16 refuse at policy");
+              std::string("runtime PRESENT casts incident to real16: peer=") +
+                  dt::CanonicalTypeName(candidate.type_id) + " outgoing=" +
+                  outgoing_result.diagnostic.diagnostic_code + ":" +
+                  DiagnosticDetail(outgoing_result.diagnostic) + " incoming=" +
+                  incoming_result.diagnostic.diagnostic_code + ":" +
+                  DiagnosticDetail(incoming_result.diagnostic));
       }
     }
   }
