@@ -90,27 +90,37 @@ bool AddWouldExceed(u64 current, u64 add, u64 limit) {
   return current > limit || add > limit - current;
 }
 
-void PublishReclamationMetrics(const BackgroundMemoryReclamationRequest& request,
-                               const BackgroundMemoryReclamationCounters& counters) {
+bool PublishReclamationMetrics(const BackgroundMemoryReclamationRequest& request,
+                               const BackgroundMemoryReclamationCounters& counters,
+                               std::vector<std::string>& evidence) {
   auto labels = scratchbird::core::metrics::Labels(
       {{"component", "core.memory"},
        {"operation", "background_reclamation"},
        {"route_class", request.route_label.empty() ? "unknown" : request.route_label}});
-  (void)scratchbird::core::metrics::IncrementCounter(
+  bool published = true;
+  const auto record = [&](const char* family, const auto& publication) {
+    if (!publication.ok) {
+      published = false;
+      evidence.push_back(std::string("background_reclamation.metric_rejected=") +
+                         family + ":" + publication.diagnostic_code);
+    }
+  };
+  record("sb_memory_background_reclamation_runs_total", scratchbird::core::metrics::IncrementCounter(
       "sb_memory_background_reclamation_runs_total",
       labels,
-      1.0,
-      "core_memory");
-  (void)scratchbird::core::metrics::IncrementCounter(
+      u64{1},
+      "core_memory"));
+  record("sb_memory_background_reclaimed_bytes_total", scratchbird::core::metrics::IncrementCounter(
       "sb_memory_background_reclaimed_bytes_total",
       labels,
-      static_cast<double>(counters.reclaimed_bytes),
-      "core_memory");
-  (void)scratchbird::core::metrics::SetGauge(
+      counters.reclaimed_bytes,
+      "core_memory"));
+  record("sb_memory_background_reclamation_retained_items", scratchbird::core::metrics::SetGauge(
       "sb_memory_background_reclamation_retained_items",
       labels,
-      static_cast<double>(counters.retained_count),
-      "core_memory");
+      counters.retained_count,
+      "core_memory"));
+  return published;
 }
 
 }  // namespace
@@ -236,8 +246,11 @@ BackgroundMemoryReclamationResult RunBackgroundMemoryReclamation(
   result.evidence.push_back("background_reclamation.reclaimed_bytes=" +
                             std::to_string(result.counters.reclaimed_bytes));
 
-  PublishReclamationMetrics(request, result.counters);
-  result.evidence.push_back("background_reclamation.metrics_published=true");
+  // Observation admission is not reclamation authority. Keep partial accepted
+  // observations and physical outcomes; never claim a refused batch succeeded.
+  const bool published = PublishReclamationMetrics(request, result.counters, result.evidence);
+  result.evidence.push_back(std::string("background_reclamation.metrics_published=") +
+                            (published ? "true" : "false"));
   return result;
 }
 

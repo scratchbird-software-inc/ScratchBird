@@ -89,6 +89,8 @@ struct CloudFilespaceResult {
   CloudFilespaceObjectRef object;
   CloudFilespaceSnapshot snapshot;
   std::vector<byte> payload;
+  // Accepted into the bound local observation queue, not durable recording or
+  // storage-success authority. False must not erase completed physical effects.
   bool metric_recorded = false;
 
   bool ok() const { return status.ok(); }

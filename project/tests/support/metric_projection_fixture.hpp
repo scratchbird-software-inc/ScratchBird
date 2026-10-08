@@ -83,6 +83,10 @@ class MetricProjectionFixture {
     Check(result.ok, result.diagnostic_code + ":" + result.detail);
     ++emitted_;
   }
+  // For subsystem APIs that do not expose individual metric return values.
+  // This is an independent expected count, not inferred from the queue;
+  // Seal/VerifyAndDrain must prove it against admitted, decoded observations.
+  void ExpectProduced(std::size_t count) { emitted_ += count; }
   void Seal() {
     before_ = Snapshot();
     Check(queue_->Stats().admitted == emitted_, "fixture admission emitted or lost observations");

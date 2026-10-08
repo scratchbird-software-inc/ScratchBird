@@ -8,6 +8,8 @@
 
 #include "cloud_filespace_provider.hpp"
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/metric_projection_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include <openssl/sha.h>
 #include <algorithm>
 #include <array>
@@ -33,8 +35,7 @@ using scratchbird::core::platform::UuidKind;
 using scratchbird::core::platform::byte;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -54,13 +55,6 @@ TypedUuid MakeUuid(UuidKind kind, std::uint64_t millis) {
   const auto generated = uuid::GenerateEngineIdentityV7(kind, millis);
   Require(generated.ok(), "uuid generation failed");
   return generated.value;
-}
-
-std::filesystem::path TempDir() {
-  const auto path = std::filesystem::temp_directory_path() /
-                    ("sb_p2_cloud_filespace_" + std::to_string(CurrentUnixMillis()));
-  std::filesystem::create_directories(path);
-  return path;
 }
 
 std::string ReadFile(const std::filesystem::path& path) {
@@ -115,15 +109,9 @@ std::string ExpectedFileKey(const scratchbird::core::platform::Uuid& id) {
 
 }  // namespace
 
-int main() {
-  const auto dir = TempDir();
-  struct Cleanup {
-    std::filesystem::path path;
-    ~Cleanup() {
-      std::error_code ignored;
-      std::filesystem::remove_all(path, ignored);
-    }
-  } cleanup{dir};
+int main() try {
+  scratchbird::tests::OwnedTempDirectory temporary;
+  const auto& dir = temporary.path();
 
   const auto now = CurrentUnixMillis();
   const auto database_uuid = MakeUuid(UuidKind::database, now);
@@ -152,8 +140,30 @@ int main() {
   config.filespace_uuid = filespace_uuid;
   config.provider_name = std::string("p2\nprovider\0binary", 18);
   config.emulator_root = dir.string();
+  const auto unobserved = filespace::BindCloudFilespaceProvider(config);
+  Require(unobserved.ok() && !unobserved.metric_recorded &&
+              std::filesystem::exists(unobserved.binding.manifest_path) &&
+              metrics::DefaultMetricRegistry().SnapshotCurrent().empty(),
+          "unbound cloud telemetry fabricated success or erased physical effects");
+  scratchbird::tests::MetricProjectionFixture observations(
+      database_uuid.value, scratchbird::tests::FixtureUuid(6301, 2), 6301);
+  const auto labels = [&](const char* operation, const char* result, const char* reason) {
+    return metrics::MetricLabelSet{{"component", "storage.filespace.cloud"},
+        {"operation", operation}, {"result", result}, {"reason", reason},
+        {"database_uuid", database_uuid.value}, {"filespace_uuid", filespace_uuid.value},
+        {"provider_family", "local_emulator"}};
+  };
+  constexpr auto family = "sb_cloud_filespace_operation_total";
+  for (const auto* operation : {"bind", "put_object", "get_object", "snapshot"})
+    observations.Admit(family, labels(operation, "ok", "ok"));
+  for (const auto* reason : {"SB-CLOUD-FILESPACE-SNAPSHOT-UUID-INVALID",
+                             "SB-CLOUD-FILESPACE-SNAPSHOT-UNCOORDINATED"})
+    observations.Admit(family, labels("cloud_filespace", "error", reason));
+  observations.Seal();
+  observations.VerifyAdmissionRefusals(family, labels("bind", "ok", "ok"), std::uint64_t{1});
   const auto bound = filespace::BindCloudFilespaceProvider(config);
   Require(bound.ok(), "local cloud filespace emulator bind failed");
+  Require(bound.metric_recorded, "admitted bind observation was not accepted");
   Require(bound.binding.local_emulator, "local emulator binding did not identify emulator mode");
   Require(std::filesystem::exists(bound.binding.manifest_path),
           "local emulator manifest was not persisted");
@@ -175,11 +185,13 @@ int main() {
   const auto put =
       filespace::PutCloudFilespaceObject(bound.binding, "pages/00000001.sbp", page_payload);
   Require(put.ok(), "local emulator object put failed");
+  Require(put.metric_recorded, "admitted object write observation missing");
   Require(put.object.bytes == page_payload.size(), "local emulator put byte count mismatch");
 
   const auto get =
       filespace::GetCloudFilespaceObject(bound.binding, "pages/00000001.sbp");
   Require(get.ok(), "local emulator object get failed");
+  Require(get.metric_recorded, "admitted object read observation missing");
   Require(get.payload == page_payload, "local emulator object round trip mismatch");
   Require(get.object.content_checksum == put.object.content_checksum,
           "local emulator object checksum mismatch");
@@ -189,10 +201,12 @@ int main() {
   snapshot.snapshot_uuid = scratchbird::tests::FixtureUuid(6301, 1);
   auto invalid_snapshot = snapshot;
   invalid_snapshot.snapshot_uuid = {};
-  Require(!filespace::CreateCloudFilespaceSnapshot(invalid_snapshot).ok(),
+  const auto invalid = filespace::CreateCloudFilespaceSnapshot(invalid_snapshot);
+  Require(!invalid.ok() && invalid.metric_recorded,
           "nil snapshot identity was admitted");
   const auto uncoordinated = filespace::CreateCloudFilespaceSnapshot(snapshot);
   Require(!uncoordinated.ok(), "uncoordinated provider snapshot was admitted");
+  Require(uncoordinated.metric_recorded, "snapshot refusal observation missing");
   Require(uncoordinated.diagnostic.diagnostic_code ==
               "SB-CLOUD-FILESPACE-SNAPSHOT-UNCOORDINATED",
           "uncoordinated snapshot diagnostic mismatch");
@@ -205,6 +219,7 @@ int main() {
   snapshot.transaction_inventory_generation = 43;
   const auto coordinated = filespace::CreateCloudFilespaceSnapshot(snapshot);
   Require(coordinated.ok(), "coordinated local emulator snapshot failed");
+  Require(coordinated.metric_recorded, "admitted snapshot observation missing");
   Require(coordinated.snapshot.database_consistent,
           "coordinated local emulator snapshot did not mark database consistency");
   Require(!coordinated.snapshot.provider_native_snapshot_database_consistent,
@@ -224,10 +239,19 @@ int main() {
                   ExpectedFileKey(snapshot.snapshot_uuid),
           "snapshot native identity or digest key mismatch");
 
-  bool cloud_metric = false;
-  for (const auto& value : metrics::DefaultMetricRegistry().SnapshotCurrent()) {
-    cloud_metric = cloud_metric || value.family == "sb_cloud_filespace_operation_total";
+  const auto values = metrics::DefaultMetricRegistry().SnapshotCurrent();
+  Require(values.size() == 6, "cloud observation series count mismatch");
+  for (const auto& value : values) {
+    Require(value.family == family && std::get_if<std::uint64_t>(&value.value) &&
+                std::get<std::uint64_t>(value.value) == 1,
+            "cloud observation was not an exact UINT64 event");
   }
-  Require(cloud_metric, "cloud filespace operation metric was not published");
+  observations.ExpectProduced(6);
+  observations.Seal();
+  observations.VerifyAndDrain();
+  temporary.Cleanup();
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

@@ -85,11 +85,11 @@ u64 Checksum(const std::vector<byte>& payload) {
   return hash;
 }
 
-void EmitCloudMetric(const char* operation,
+bool EmitCloudMetric(const char* operation,
                      const char* result,
                      const char* reason,
                      const CloudFilespaceBinding& binding) {
-  (void)scratchbird::core::metrics::IncrementCounter(
+  return scratchbird::core::metrics::IncrementCounter(
       "sb_cloud_filespace_operation_total",
       scratchbird::core::metrics::Labels({
           {"component", "storage.filespace.cloud"},
@@ -100,18 +100,18 @@ void EmitCloudMetric(const char* operation,
           {"filespace_uuid", binding.filespace_uuid.value},
           {"provider_family", CloudFilespaceProviderKindName(binding.kind)},
       }),
-      1.0,
-      "storage_filespace");
+      u64{1},
+      "storage_filespace").ok;
 }
 
 CloudFilespaceResult Error(std::string code,
                            std::string key,
                            std::string detail = {},
                            const CloudFilespaceBinding& binding = {}) {
-  if (binding.database_uuid.valid() && binding.filespace_uuid.valid()) {
-    EmitCloudMetric("cloud_filespace", "error", code.c_str(), binding);
-  }
   CloudFilespaceResult result;
+  if (binding.database_uuid.valid() && binding.filespace_uuid.valid()) {
+    result.metric_recorded = EmitCloudMetric("cloud_filespace", "error", code.c_str(), binding);
+  }
   result.status = CloudErrorStatus();
   result.diagnostic = MakeCloudFilespaceDiagnostic(result.status,
                                                    std::move(code),
@@ -124,7 +124,6 @@ CloudFilespaceResult Ok(CloudFilespaceBinding binding) {
   CloudFilespaceResult result;
   result.status = CloudOkStatus();
   result.binding = std::move(binding);
-  result.metric_recorded = true;
   return result;
 }
 
@@ -297,8 +296,10 @@ CloudFilespaceResult BindCloudFilespaceProvider(const CloudFilespaceProviderConf
                  binding);
   }
 
-  EmitCloudMetric("bind", "ok", "ok", binding);
-  return Ok(std::move(binding));
+  const bool recorded = EmitCloudMetric("bind", "ok", "ok", binding);
+  auto result = Ok(std::move(binding));
+  result.metric_recorded = recorded;
+  return result;
 }
 
 CloudFilespaceResult PutCloudFilespaceObject(const CloudFilespaceBinding& binding,
@@ -344,7 +345,7 @@ CloudFilespaceResult PutCloudFilespaceObject(const CloudFilespaceBinding& bindin
   result.object.bytes = static_cast<u64>(payload.size());
   result.object.content_checksum = Checksum(payload);
   result.object.generation = std::filesystem::file_size(path, ec);
-  EmitCloudMetric("put_object", "ok", "ok", binding);
+  result.metric_recorded = EmitCloudMetric("put_object", "ok", "ok", binding);
   return result;
 }
 
@@ -378,7 +379,7 @@ CloudFilespaceResult GetCloudFilespaceObject(const CloudFilespaceBinding& bindin
   result.object.bytes = static_cast<u64>(payload.size());
   result.object.content_checksum = Checksum(payload);
   result.payload = std::move(payload);
-  EmitCloudMetric("get_object", "ok", "ok", binding);
+  result.metric_recorded = EmitCloudMetric("get_object", "ok", "ok", binding);
   return result;
 }
 
@@ -457,7 +458,7 @@ CloudFilespaceResult CreateCloudFilespaceSnapshot(const CloudFilespaceSnapshotRe
   result.snapshot.provider_native_snapshot_database_consistent = false;
   result.snapshot.checkpoint_generation = request.checkpoint_generation;
   result.snapshot.transaction_inventory_generation = request.transaction_inventory_generation;
-  EmitCloudMetric("snapshot", "ok", "ok", binding);
+  result.metric_recorded = EmitCloudMetric("snapshot", "ok", "ok", binding);
   return result;
 }
 

@@ -1,4 +1,6 @@
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/metric_projection_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -35,8 +37,7 @@ using scratchbird::storage::disk::PageType;
 constexpr std::uint32_t kPageSize = 16384;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -325,11 +326,6 @@ page::PageCacheLifecycleInput LifecycleInput(const TypedUuid& database_uuid,
   return input;
 }
 
-std::filesystem::path TempRoot() {
-  return std::filesystem::temp_directory_path() /
-         ("scratchbird_mmch019_" + std::to_string(CurrentUnixMillis()));
-}
-
 mem::TempWorkspacePolicy TempPolicy(const std::filesystem::path& root) {
   mem::TempWorkspacePolicy policy;
   policy.policy_name = "mmch019_temp";
@@ -382,8 +378,8 @@ void PageCacheAndSpillRecordsUseRealSubsystemPaths() {
   Require(page::AdmitPageCacheEntry(&ledger, admit_policy, Entry(database_uuid, filespace_uuid, 3)).ok(),
           "MMCH-019 page-cache setup 3 failed");
 
-  const auto root = TempRoot();
-  std::filesystem::remove_all(root);
+  scratchbird::tests::OwnedTempDirectory temporary;
+  const auto& root = temporary.path();
   mem::TempWorkspaceLifecycleManager temp(TempPolicy(root));
   auto spill = temp.AllocateSpillFile(SpillRequest());
   Require(spill.ok(), "MMCH-019 spill setup failed");
@@ -441,17 +437,91 @@ void PageCacheAndSpillRecordsUseRealSubsystemPaths() {
   Require(temp.Snapshot().active_bytes == 0,
           "MMCH-019 spill cleanup did not release temp bytes");
   RequireReclamationEvidence(result);
-  std::filesystem::remove_all(root);
+}
+
+std::uint64_t MetricCount(std::string_view family) {
+  for (const auto& value : metrics::DefaultMetricRegistry().SnapshotCurrent()) {
+    if (value.family != family) continue;
+    const auto* count = std::get_if<std::uint64_t>(&value.value);
+    Require(count != nullptr, "reclamation metric lost exact UINT64 carrier");
+    return *count;
+  }
+  Fail("reclamation metric missing");
+}
+
+void LargeEstimatedCountPreservesPrecision() {
+  // Exercise the callback accounting contract without claiming this estimate
+  // represents a multi-petabyte allocation in the component fixture.
+  constexpr std::uint64_t estimate = (std::uint64_t{1} << 53) + 1;
+  const auto before = MetricCount("sb_memory_background_reclaimed_bytes_total");
+  auto request = BaseRequest();
+  mem::BackgroundMemoryReclamationWorkItem item;
+  item.estimated_reclaim_bytes = estimate;
+  item.label = "independent_callback_estimate";
+  unsigned calls = 0;
+  item.reclaim = [&](std::vector<std::string>*) -> Status {
+    ++calls;
+    return {scratchbird::core::platform::StatusCode::ok,
+            scratchbird::core::platform::Severity::info,
+            scratchbird::core::platform::Subsystem::memory};
+  };
+  request.work_items.push_back(std::move(item));
+  mem::BackgroundMemoryReclamationPolicy policy;
+  policy.max_reclaim_bytes_per_run = estimate;
+  const auto result = mem::RunBackgroundMemoryReclamation(policy, request);
+  Require(result.ok() && calls == 1 && result.counters.reclaimed_bytes == estimate &&
+              MetricCount("sb_memory_background_reclaimed_bytes_total") == before + estimate &&
+              EvidenceHas(result.evidence, "background_reclamation.metrics_published=true"),
+          "reclamation metric rounded the callback's exact integer estimate");
 }
 
 }  // namespace
 
-int main() {
+int main() try {
   std::cout << "MMCH-019 authority_note=background_memory_reclamation_evidence_only;"
                "not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"
             << '\n';
+  auto unobserved = mem::RunBackgroundMemoryReclamation({}, BaseRequest());
+  Require(unobserved.ok() &&
+              EvidenceHas(unobserved.evidence, "background_reclamation.metrics_published=false") &&
+              metrics::DefaultMetricRegistry().SnapshotCurrent().empty(),
+          "unbound reclamation telemetry claimed publication or changed operation outcome");
+  scratchbird::tests::MetricProjectionFixture observations(
+      scratchbird::tests::FixtureUuid(1458, 201),
+      scratchbird::tests::FixtureUuid(1458, 202), 1459);
+  const metrics::MetricLabelSet labels{{"component", "core.memory"},
+      {"operation", "background_reclamation"}, {"route_class", BaseRequest().route_label}};
+  observations.Admit("sb_memory_background_reclamation_runs_total", labels);
+  observations.Admit("sb_memory_background_reclaimed_bytes_total", labels);
+  observations.Seal();
+  observations.VerifyAdmissionRefusals("sb_memory_background_reclamation_runs_total", labels, std::uint64_t{1});
+  const auto partial = mem::RunBackgroundMemoryReclamation({}, BaseRequest());
+  Require(partial.ok() &&
+              EvidenceHas(partial.evidence, "background_reclamation.metrics_published=false") &&
+              EvidenceHas(partial.evidence, "metric_rejected=sb_memory_background_reclamation_retained_items:") &&
+              MetricCount("sb_memory_background_reclamation_runs_total") == 1 &&
+              MetricCount("sb_memory_background_reclaimed_bytes_total") == 0,
+          "partial metric admission was hidden or accepted observations discarded");
+  observations.Admit("sb_memory_background_reclamation_retained_items", labels);
   IdleArenaDiagnosticsAndQueryStateAreReclaimed();
+  Require(MetricCount("sb_memory_background_reclaimed_bytes_total") == 33536 &&
+              MetricCount("sb_memory_background_reclamation_retained_items") == 0,
+          "real reclamation metric values mismatch");
   BudgetsCancellationAndAuthorityFailClosed();
   PageCacheAndSpillRecordsUseRealSubsystemPaths();
+  LargeEstimatedCountPreservesPrecision();
+  auto unregistered = BaseRequest();
+  unregistered.route_label = "unregistered_component_route";
+  const auto refused = mem::RunBackgroundMemoryReclamation({}, unregistered);
+  Require(refused.ok() && EvidenceHas(refused.evidence, "background_reclamation.metrics_published=false"),
+          "unregistered route created observations or changed reclamation result");
+  // Two accepted parts of the partial batch, five original runs of three
+  // observations each, and three observations from the exact-count boundary.
+  observations.ExpectProduced(20);
+  observations.Seal();
+  observations.VerifyAndDrain();
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }
