@@ -41,13 +41,17 @@ struct OptimizerMetricSupportBundleAuthority {
 
 struct OptimizerMetricSupportBundleRequest {
   scratchbird::core::metrics::MetricUuid scope_uuid;
-  std::string support_bundle_id;
-  std::string capture_generation;
+  scratchbird::core::metrics::MetricUuid database_uuid;
+  scratchbird::core::metrics::MetricUuid node_uuid;
+  scratchbird::core::metrics::MetricUuid support_bundle_uuid;
+  std::uint64_t capture_generation = 0;
   std::string evidence_digest;
   std::uint64_t min_source_generation = 1;
   std::uint64_t max_metric_values = 4096;
   bool benchmark_clean_export = false;
   bool allow_sensitive_labels = false;
+  // Optional selection from current observations, never caller authority to
+  // synthesize values. Each supplied value must match the retained source.
   std::vector<scratchbird::core::metrics::MetricValue> metric_snapshot;
   OptimizerMetricSupportBundleAuthority authority;
 };

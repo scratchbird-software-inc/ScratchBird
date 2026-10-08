@@ -9,6 +9,7 @@
 #include "metric_registry.hpp"
 #include "optimizer_metric_manifest.hpp"
 #include "optimizer_route_metrics.hpp"
+#include "../support/metric_projection_fixture.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -58,7 +59,9 @@ opt::DriverVisibleExplainRouteEvidence Route(std::string route_kind) {
 
 opt::OptimizerRouteMetricSample GoodSample() {
   opt::OptimizerRouteMetricSample sample;
-  sample.scope_uuid = "database-scope-1";
+  sample.scope_uuid = scratchbird::tests::FixtureUuid(1278, 1);
+  sample.database_uuid = scratchbird::tests::FixtureUuid(1278, 2);
+  sample.node_uuid = scratchbird::tests::FixtureUuid(1278, 3);
   sample.route_kind = "embedded";
   sample.route_label = "sblr/select/customer_lookup";
   sample.plan_node_id = "plan-node-route-1";
@@ -103,10 +106,17 @@ void RequireManifestLive(const std::string& metric_family) {
   Require(false, "manifest metric missing: " + metric_family);
 }
 
-void TestRouteMetricPublication() {
+metrics::MetricLabelSet Labels(const opt::OptimizerRouteMetricSample& sample,
+                               const metrics::MetricDescriptorDefinition& definition) {
+  metrics::MetricLabelSet labels{{"scope_uuid", sample.scope_uuid}, {"route_label", sample.route_label},
+      {"plan_node_id", sample.plan_node_id}, {"metric_family", definition.family.substr(std::string("sb_optimizer_").size())},
+      {"source_generation", std::to_string(sample.source_generation)}, {"evidence_digest", sample.evidence_digest}};
+  if (definition.type == metrics::MetricType::state) labels.push_back({"result", "ok"});
+  return labels;
+}
+
+void TestRouteMetricPublication(scratchbird::tests::MetricProjectionFixture& fixture) {
   // SEARCH_KEY: OEIC_ROUTE_DRIVER_OPTIMIZER_METRICS
-  Require(opt::EnsureOptimizerEnterpriseMetricDescriptors().ok,
-          "optimizer descriptors failed");
   Require(opt::EnsureOptimizerRouteMetricDescriptors().ok,
           "route metric descriptors failed");
 
@@ -131,6 +141,8 @@ void TestRouteMetricPublication() {
     }
   }
   Require(result.ok, "valid route metric sample was refused");
+  Require(result.scope_uuid == GoodSample().scope_uuid && result.metric_results.size() == 5, "invalid native route receipt");
+  fixture.ExpectProduced(5); fixture.Seal();
   Require(result.diagnostic_code == "SB_OPTIMIZER_ROUTE_METRICS.OK",
           "unexpected route metric diagnostic");
 
@@ -145,6 +157,60 @@ void TestRouteMetricPublication() {
     Require(HasMetricValue(snapshot, family),
             "route optimizer metric missing: " + family);
   }
+  for (const auto& value : snapshot) {
+    if (value.family == "sb_optimizer_driver_visible_route_count")
+      Require(std::holds_alternative<std::uint64_t>(value.value) && std::get<std::uint64_t>(value.value) == 5,
+              "route count is not exact native UINT64");
+    else {
+      Require(std::holds_alternative<metrics::MetricEnumValue>(value.value) &&
+                  std::get<metrics::MetricEnumValue>(value.value).code == opt::kOptimizerRouteObservationPresent,
+              "route state is not a declared enum code");
+      const auto expected = value.family == "sb_optimizer_route_plan_hash" ? GoodSample().plan_hash :
+          value.family == "sb_optimizer_route_result_hash" ? GoodSample().result_hash :
+          value.family == "sb_optimizer_explain_digest" ? GoodSample().explain_digest :
+          opt::ValidateDriverVisibleExplainRouteEquivalence(GoodSample().driver_routes, GoodSample().required_driver_routes).diagnostic_code;
+      Require(value.state_text == expected, "route observation lost its evidence text");
+    }
+  }
+}
+
+void TestNativeRefusals(scratchbird::tests::MetricProjectionFixture& fixture) {
+  const auto refuse = [&](const opt::OptimizerRouteMetricSample& sample) {
+    const auto result = opt::PublishOptimizerRouteMetrics(sample);
+    Require(!result.ok && result.metric_results.empty() && result.scope_uuid == sample.scope_uuid,
+            "invalid route did not refuse before effects");
+    fixture.VerifyReadOnly();
+  };
+  for (auto member : {&opt::OptimizerRouteMetricSample::scope_uuid, &opt::OptimizerRouteMetricSample::database_uuid,
+                      &opt::OptimizerRouteMetricSample::node_uuid}) {
+    auto bad = GoodSample(); bad.*member = {}; refuse(bad);
+  }
+  auto bad = GoodSample(); bad.database_uuid = scratchbird::tests::FixtureUuid(1278, 99); refuse(bad);
+  bad = GoodSample(); bad.node_uuid = scratchbird::tests::FixtureUuid(1278, 99); refuse(bad);
+  for (auto member : {&opt::OptimizerRouteMetricSample::route_kind, &opt::OptimizerRouteMetricSample::route_label,
+                      &opt::OptimizerRouteMetricSample::result_hash, &opt::OptimizerRouteMetricSample::explain_digest,
+                      &opt::OptimizerRouteMetricSample::redaction_digest, &opt::OptimizerRouteMetricSample::diagnostic_code}) {
+    bad = GoodSample(); bad.*member = "mismatched-sample"; refuse(bad);
+  }
+  auto& registry = metrics::DefaultMetricRegistry();
+  for (const auto& definition : opt::OptimizerRouteMetricDescriptorDefinitions()) {
+    auto labels = Labels(GoodSample(), definition);
+    if (definition.type == metrics::MetricType::state) {
+      Require(!registry.SetState(definition.family, labels, 1.0, "not-an-enum", definition.producer_owner).ok,
+              "floating state accepted");
+      Require(!registry.SetState(definition.family, labels, metrics::MetricEnumValue{2}, "undeclared", definition.producer_owner).ok,
+              "undeclared enum accepted");
+    } else Require(!registry.SetGauge(definition.family, labels, 5.0, definition.producer_owner).ok, "floating route count accepted");
+    labels[0].value = "019d0000-0000-7000-8000-000000000001";
+    Require(!registry.ValidateLabels(*registry.FindDescriptor(definition.family), labels).ok, "text scope UUID accepted");
+  }
+  fixture.VerifyReadOnly();
+  bad = GoodSample(); bad.scope_uuid = scratchbird::tests::FixtureUuid(1278, 98);
+  const auto result = opt::PublishOptimizerRouteMetrics(bad);
+  Require(!result.ok && result.metric_results.size() == 5 && result.diagnostic_code != "SB_OPTIMIZER_ROUTE_METRICS.OK",
+          "unadmitted route series claimed success");
+  for (const auto& item : result.metric_results) Require(!item.ok, "unadmitted route series accepted");
+  fixture.VerifyReadOnly();
 }
 
 void TestRouteMetricRefusals() {
@@ -176,8 +242,19 @@ void TestRouteMetricRefusals() {
 }  // namespace
 
 int main() {
-  TestRouteMetricPublication();
+  metrics::MetricRegistry empty;
+  Require(!opt::EnsureOptimizerRouteMetricDescriptors(&empty).ok &&
+              !empty.FindDescriptor("sb_optimizer_route_plan_hash"), "verification fabricated route admission");
+  const auto sample = GoodSample();
+  scratchbird::tests::MetricProjectionFixture fixture(sample.database_uuid, sample.node_uuid, 1279);
+  for (const auto& definition : opt::OptimizerRouteMetricDescriptorDefinitions())
+    fixture.AdmitDefinition(definition, Labels(sample, definition));
+  fixture.Seal();
+  TestRouteMetricPublication(fixture);
   TestRouteMetricRefusals();
+  fixture.VerifyReadOnly();
+  TestNativeRefusals(fixture);
+  fixture.VerifyAndDrain();
   std::cout << "optimizer enterprise route metrics gate passed\n";
   return 0;
 }

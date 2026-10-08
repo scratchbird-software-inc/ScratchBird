@@ -42,7 +42,9 @@ struct OptimizerRouteMetricAuthority {
 };
 
 struct OptimizerRouteMetricSample {
-  std::string scope_uuid;
+  scratchbird::core::metrics::MetricUuid scope_uuid;
+  scratchbird::core::metrics::MetricUuid database_uuid;
+  scratchbird::core::metrics::MetricUuid node_uuid;
   std::string route_kind;
   std::string route_label;
   std::string plan_node_id;
@@ -63,12 +65,19 @@ struct OptimizerRouteMetricSample {
 
 struct OptimizerRouteMetricPublishResult {
   bool ok = false;
+  scratchbird::core::metrics::MetricUuid scope_uuid;
   std::string diagnostic_code;
   std::string detail;
   std::vector<std::string> evidence;
   std::vector<scratchbird::core::metrics::MetricValidationResult>
       metric_results;
 };
+
+// A present observation, not operation success or durability. Equivalence uses
+// this code only after the supplied route evidence passes comparison.
+inline constexpr std::uint64_t kOptimizerRouteObservationPresent = 1;
+const std::vector<scratchbird::core::metrics::MetricDescriptorDefinition>&
+OptimizerRouteMetricDescriptorDefinitions();
 
 scratchbird::core::metrics::MetricValidationResult
 EnsureOptimizerRouteMetricDescriptors(

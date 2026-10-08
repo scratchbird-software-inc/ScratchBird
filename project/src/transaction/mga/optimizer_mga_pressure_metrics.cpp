@@ -164,16 +164,16 @@ OptimizerMgaPressureMetricDescriptorDefinitions() {
                  MetricUnit::bytes, "transaction_mga_cleanup",
                  "MGA retained dead bytes visible to optimizer costing."),
       Descriptor("sb_optimizer_mga_chain_depth", MetricType::gauge,
-                 MetricUnit::count, "row_version_runtime",
+                 MetricUnit::none, "row_version_runtime",
                  "MGA row-version chain depth bucket."),
       Descriptor("sb_optimizer_mga_chain_scatter", MetricType::gauge,
-                 MetricUnit::count, "row_version_runtime",
+                 MetricUnit::none, "row_version_runtime",
                  "MGA row-version chain scatter bucket."),
       Descriptor("sb_optimizer_same_page_update_ratio", MetricType::gauge,
                  MetricUnit::ratio, "row_version_runtime",
                  "MGA same-page update ratio."),
       Descriptor("sb_optimizer_commit_fence_pressure", MetricType::gauge,
-                 MetricUnit::count, "transaction_manager",
+                 MetricUnit::none, "transaction_manager",
                  "Commit fence pressure visible to optimizer costing.")};
   return descriptors;
 }

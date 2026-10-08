@@ -44,15 +44,27 @@ int main() {
   decoded = m::DecodeMetricValue(descriptor, row.encoded_redacted_value);
   Check(decoded.ok() && decoded.value->labels.size() == 2 && row.omitted_sensitive_labels.empty());
   o::OptimizerMetricSupportBundleRequest request;
-  request.scope_uuid = Id(5); request.support_bundle_id = "fixture";
+  request.scope_uuid = Id(5); request.support_bundle_uuid = Id(6);
+  request.database_uuid = Id(7); request.node_uuid = Id(8); request.capture_generation = 1;
   o::OptimizerMetricSupportBundleResult result;
   result.rows.push_back(row);
   const auto bundle = o::EncodeBundle(request, result);
   std::vector<std::string> fields;
   Check(a::DecodeMgaMetadataFields(bundle, &fields) && fields[1] == a::MetadataUuidBytes(Id(5)));
   std::vector<std::string> row_fields;
-  Check(a::DecodeMgaMetadataFields(fields[7], &row_fields) && row_fields[7] == a::MetadataUuidBytes(Id(1)));
+  Check(fields[0] == "optimizer.metrics.bundle.v3" && fields[2] == a::MetadataUuidBytes(Id(7)) &&
+        fields[3] == a::MetadataUuidBytes(Id(8)) && fields[4] == a::MetadataUuidBytes(Id(6)));
+  Check(a::DecodeMgaMetadataFields(fields[9], &row_fields) && row_fields[7] == a::MetadataUuidBytes(Id(1)));
   Check(row_fields.back() == std::string(row.encoded_redacted_value.begin(), row.encoded_redacted_value.end()));
   auto corrupt = bundle; corrupt[22] ^= 1;
   Check(!a::DecodeMgaMetadataFields(corrupt, &fields));
+  m::MetricValue generation;
+  for (const auto* invalid : {"", "88junk", "-1", "+88", "088", "18446744073709551616"}) {
+    generation.labels = {{"source_generation", invalid}};
+    Check(!o::SourceGeneration(generation));
+  }
+  generation.labels = {{"source_generation", "0"}};
+  Check(o::SourceGeneration(generation) == 0);
+  generation.labels = {{"source_generation", "18446744073709551615"}};
+  Check(o::SourceGeneration(generation) == UINT64_MAX);
 }

@@ -16,6 +16,9 @@
 #include <openssl/sha.h>
 
 #include <algorithm>
+#include <charconv>
+#include <optional>
+#include <set>
 #include <iomanip>
 #include <map>
 #include <sstream>
@@ -59,16 +62,13 @@ std::string FindLabel(const metrics::MetricValue& value,
   return {};
 }
 
-std::uint64_t SourceGeneration(const metrics::MetricValue& value) {
+std::optional<std::uint64_t> SourceGeneration(const metrics::MetricValue& value) {
   const auto source_generation = FindLabel(value, "source_generation");
-  if (source_generation.empty()) {
-    return 0;
-  }
-  try {
-    return static_cast<std::uint64_t>(std::stoull(source_generation));
-  } catch (...) {
-    return 0;
-  }
+  if (source_generation.empty() || (source_generation.size() > 1 && source_generation.front() == '0')) return {};
+  std::uint64_t generation = 0;
+  const auto parsed = std::from_chars(source_generation.data(), source_generation.data() + source_generation.size(), generation);
+  if (parsed.ec != std::errc{} || parsed.ptr != source_generation.data() + source_generation.size()) return {};
+  return generation;
 }
 
 bool EncodeRedactedMetric(const metrics::MetricDescriptor& descriptor,
@@ -119,20 +119,21 @@ OptimizerMetricSupportBundleResult Refuse(
   return result;
 }
 
-std::map<std::string, const opt::OptimizerEnterpriseMetricEntry*>
+const std::map<std::string, const opt::OptimizerEnterpriseMetricEntry*>&
 ManifestByRegistryFamily() {
-  std::map<std::string, const opt::OptimizerEnterpriseMetricEntry*> entries;
-  for (const auto& entry : opt::OptimizerEnterpriseMetricManifest()) {
-    entries.emplace(entry.registry_family, &entry);
-  }
+  static const auto entries = [] {
+    std::map<std::string, const opt::OptimizerEnterpriseMetricEntry*> result;
+    for (const auto& entry : opt::OptimizerEnterpriseMetricManifest()) result.emplace(entry.registry_family, &entry);
+    return result;
+  }();
   return entries;
 }
 
 std::string EncodeBundle(const OptimizerMetricSupportBundleRequest& request,
                          const OptimizerMetricSupportBundleResult& result) {
-  std::vector<std::string> fields{"optimizer.metrics.bundle.v2",
-      MetadataUuidBytes(request.scope_uuid), request.support_bundle_id,
-      request.capture_generation, request.evidence_digest,
+  std::vector<std::string> fields{"optimizer.metrics.bundle.v3",
+      MetadataUuidBytes(request.scope_uuid), MetadataUuidBytes(request.database_uuid), MetadataUuidBytes(request.node_uuid),
+      MetadataUuidBytes(request.support_bundle_uuid), std::to_string(request.capture_generation), request.evidence_digest,
       result.redaction_applied ? "sensitive_labels_omitted" : "authorized_labels",
       result.tamper_digest};
   for (const auto& row : result.rows) {
@@ -159,8 +160,11 @@ std::string EncodeBundle(const OptimizerMetricSupportBundleRequest& request,
 
 OptimizerMetricSupportBundleResult BuildOptimizerMetricSupportBundle(
     const OptimizerMetricSupportBundleRequest& request) {
-  if (!scratchbird::core::uuid::IsEngineIdentityUuid(request.scope_uuid) || request.support_bundle_id.empty() ||
-      request.capture_generation.empty() || request.evidence_digest.empty()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(request.scope_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(request.database_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(request.node_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(request.support_bundle_uuid) ||
+      request.capture_generation == 0 || request.evidence_digest.empty()) {
     return Refuse(request,
                   "SB_OPTIMIZER_METRIC_BUNDLE.MISSING_SCOPE",
                   "optimizer.metric_bundle.required_field_missing");
@@ -188,11 +192,44 @@ OptimizerMetricSupportBundleResult BuildOptimizerMetricSupportBundle(
                   "optimizer.metric_bundle.unsafe_authority");
   }
 
-  (void)opt::EnsureOptimizerEnterpriseMetricDescriptors();
-  const auto manifest = ManifestByRegistryFamily();
-  const auto snapshot = request.metric_snapshot.empty()
-                            ? metrics::DefaultMetricRegistry().SnapshotCurrent(false)
-                            : request.metric_snapshot;
+  auto& registry = metrics::DefaultMetricRegistry();
+  if (!registry.ObservationOwnerMatches(request.database_uuid, request.node_uuid))
+    return Refuse(request, "METRIC.OBSERVATION_SOURCE_UNAVAILABLE", "bundle owner does not match the observation source");
+  const auto& manifest = ManifestByRegistryFamily();
+  if (request.metric_snapshot.size() > request.max_metric_values)
+    return Refuse(request, "SB_OPTIMIZER_METRIC_BUNDLE.TOO_MANY_METRICS", "explicit selection exceeds the observation limit");
+  const auto current = registry.SnapshotCurrent(false);
+  // An explicit selection may not fabricate or relabel a source observation.
+  // Encode selected families once, avoiding quadratic rescans/re-encoding.
+  struct BytesLess {
+    bool operator()(const std::vector<std::uint8_t>& left, const std::vector<std::uint8_t>& right) const {
+      for (std::size_t i = 0, end = std::min(left.size(), right.size()); i < end; ++i)
+        if (left[i] != right[i]) return left[i] < right[i];
+      return left.size() < right.size();
+    }
+  };
+  using Encodings = std::set<std::vector<std::uint8_t>, BytesLess>;
+  std::map<std::string, Encodings> retained_values;
+  for (const auto& selected : request.metric_snapshot) retained_values.try_emplace(selected.family);
+  for (const auto& value : current) {
+    auto retained = retained_values.find(value.family);
+    if (retained == retained_values.end()) continue;
+    const auto* descriptor = registry.FindDescriptor(value.family);
+    if (!descriptor) continue;
+    auto encoded = metrics::EncodeMetricValue(*descriptor, value);
+    if (encoded.ok()) retained->second.insert(std::move(encoded.bytes));
+  }
+  std::map<std::string, Encodings> selected_values;
+  for (const auto& selected : request.metric_snapshot) {
+    const auto* descriptor = registry.FindDescriptor(selected.family);
+    if (!descriptor) return Refuse(request, "SB_OPTIMIZER_METRIC_BUNDLE.DESCRIPTOR_MISSING", "selection descriptor missing");
+    const auto encoded = metrics::EncodeMetricValue(*descriptor, selected);
+    if (!encoded.ok() || !retained_values.at(selected.family).contains(encoded.bytes))
+      return Refuse(request, "SB_OPTIMIZER_METRIC_BUNDLE.INVALID_VALUE", "selection is not a retained observation");
+    if (!selected_values[selected.family].insert(encoded.bytes).second)
+      return Refuse(request, "SB_OPTIMIZER_METRIC_BUNDLE.INVALID_VALUE", "duplicate observation in explicit selection");
+  }
+  const auto& snapshot = request.metric_snapshot.empty() ? current : request.metric_snapshot;
 
   OptimizerMetricSupportBundleResult result;
   result.ok = true;
@@ -213,6 +250,13 @@ OptimizerMetricSupportBundleResult BuildOptimizerMetricSupportBundle(
     if (!StartsWith(value.family, "sb_optimizer_")) {
       continue;
     }
+    bool selected_scope = false;
+    for (const auto& label : value.labels) if (label.key == "scope_uuid") {
+      const auto* scope = std::get_if<metrics::MetricUuid>(&label.value);
+      if (!scope) return Refuse(request, "SB_OPTIMIZER_METRIC_BUNDLE.INVALID_VALUE", "scope label must be native UUID");
+      selected_scope = *scope == request.scope_uuid;
+    }
+    if (!selected_scope) continue;
     const auto manifest_it = manifest.find(value.family);
     if (manifest_it == manifest.end()) {
       return Refuse(request,
@@ -231,7 +275,9 @@ OptimizerMetricSupportBundleResult BuildOptimizerMetricSupportBundle(
                     "optimizer.metric_bundle.metric_not_benchmark_clean:" +
                         entry.metric_family);
     }
-    if (SourceGeneration(value) < request.min_source_generation) {
+    const auto generation = SourceGeneration(value);
+    if (!generation) return Refuse(request, "SB_OPTIMIZER_METRIC_BUNDLE.INVALID_VALUE", "source generation is not canonical UINT64");
+    if (*generation < request.min_source_generation) {
       return Refuse(request,
                     "SB_OPTIMIZER_METRIC_BUNDLE.STALE_METRIC",
                     "optimizer.metric_bundle.stale_metric:" + value.family);

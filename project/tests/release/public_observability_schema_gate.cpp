@@ -13,6 +13,8 @@
 
 #include "metric_contracts.hpp"
 #include "metric_registry.hpp"
+#include "executor_operator_metrics.hpp"
+#include "../support/metric_projection_fixture.hpp"
 #include "observability/agent_observability_api.hpp"
 #include "observability/cluster_support_bundle_redaction_api.hpp"
 #include "../support/binary_uuid_fixture.hpp"
@@ -701,8 +703,10 @@ bool CheckClusterSupportBundleRedaction() {
 obs::OptimizerMetricSupportBundleRequest OptimizerBundleRequest() {
   obs::OptimizerMetricSupportBundleRequest request;
   request.scope_uuid = scratchbird::tests::FixtureUuid(1485, 201);
-  request.support_bundle_id = "support-bundle:pcr137-optimizer";
-  request.capture_generation = "generation:1";
+  request.database_uuid = scratchbird::tests::FixtureUuid(1485, 202);
+  request.node_uuid = scratchbird::tests::FixtureUuid(1485, 203);
+  request.support_bundle_uuid = scratchbird::tests::FixtureUuid(1485, 204);
+  request.capture_generation = 1;
   request.evidence_digest = "sha256:public-observability-schema-gate";
   request.min_source_generation = 0;
   request.max_metric_values = 16;
@@ -716,21 +720,25 @@ obs::OptimizerMetricSupportBundleRequest OptimizerBundleRequest() {
   request.authority.metrics_trusted = true;
   request.authority.snapshot_fresh = true;
   request.authority.engine_scope_bound = true;
-  metrics::MetricValue value;
-  value.family = "sb_optimizer_operator_actual_rows";
-  value.type = metrics::MetricType::gauge;
-  value.value = 42.0;
-  value.labels = {{"source_generation", "1"},
-                  {"route_label", "public_observability_schema_gate"},
-                  {"plan_node_id", "scan:1"}};
-  request.metric_snapshot.push_back(std::move(value));
   return request;
 }
 
 bool CheckOptimizerSupportBundle() {
   bool ok = true;
+  const auto request = OptimizerBundleRequest();
+  scratchbird::tests::MetricProjectionFixture fixture(request.database_uuid, request.node_uuid, 1281);
+  const metrics::MetricLabelSet labels{{"scope_uuid", request.scope_uuid}, {"source_generation", "1"},
+      {"route_label", "public_observability_schema_gate"}, {"plan_node_id", "scan:1"},
+      {"metric_family", "operator_actual_rows"}, {"evidence_digest", "component-observation"}};
+  for (const auto& definition : scratchbird::engine::executor::ExecutorOperatorActualsMetricDescriptorDefinitions())
+    if (definition.family == "sb_optimizer_operator_actual_rows") fixture.AdmitDefinition(definition, labels);
+  fixture.Emit("sb_optimizer_operator_actual_rows", labels, std::uint64_t{42});
+  fixture.Admit("sb_optimizer_plan_estimate_error_ratio", {{"component", "optimizer.feedback"},
+      {"operator_family", "scan"}, {"plan_shape", "index_lookup"}});
   const auto metric_status =
       metrics::PublishOptimizerPlanEstimateErrorRatio(1.25, "scan", "index_lookup");
+  if (metric_status.ok) fixture.ExpectProduced(1);
+  fixture.Seal();
   ok = Expect(metric_status.ok,
               "optimizer",
               "optimizer_metric_published",
@@ -772,6 +780,7 @@ bool CheckOptimizerSupportBundle() {
               "wal_or_redo_authority_refused",
               refused.detail) &&
        ok;
+  fixture.VerifyAndDrain();
   return ok;
 }
 

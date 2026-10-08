@@ -191,19 +191,19 @@ ExecutorOperatorActualsMetricDescriptorDefinitions() {
   static const std::vector<metrics::MetricDescriptorDefinition> descriptors = {
       Descriptor("sb_optimizer_operator_actual_rows",
                  MetricType::gauge,
-                 MetricUnit::count,
+                 MetricUnit::none,
                  "Executor operator actual output rows."),
       Descriptor("sb_optimizer_operator_rows_examined",
                  MetricType::gauge,
-                 MetricUnit::count,
+                 MetricUnit::none,
                  "Executor operator rows examined."),
       Descriptor("sb_optimizer_operator_rows_filtered",
                  MetricType::gauge,
-                 MetricUnit::count,
+                 MetricUnit::none,
                  "Executor operator rows filtered."),
       Descriptor("sb_optimizer_operator_loop_count",
                  MetricType::gauge,
-                 MetricUnit::count,
+                 MetricUnit::none,
                  "Executor operator loop count."),
       Descriptor("sb_optimizer_operator_cpu_time",
                  MetricType::histogram,
@@ -211,7 +211,7 @@ ExecutorOperatorActualsMetricDescriptorDefinitions() {
                  "Executor operator CPU time in microseconds."),
       Descriptor("sb_optimizer_spill_passes",
                  MetricType::gauge,
-                 MetricUnit::count,
+                 MetricUnit::none,
                  "Executor operator spill passes.")};
   return descriptors;
 }

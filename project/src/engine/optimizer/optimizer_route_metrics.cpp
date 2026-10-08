@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "optimizer_route_metrics.hpp"
+#include "metric_bound_definition.hpp"
+#include "uuid.hpp"
 
 #include <utility>
 
@@ -22,12 +24,12 @@ using metrics::MetricType;
 using metrics::MetricUnit;
 using metrics::MetricValidationResult;
 
-MetricDescriptor Descriptor(std::string family,
+metrics::MetricDescriptorDefinition Descriptor(std::string family,
                             MetricType type,
                             MetricUnit unit,
                             std::string producer_owner,
                             std::string help) {
-  MetricDescriptor descriptor;
+  metrics::MetricDescriptorDefinition descriptor;
   descriptor.family = std::move(family);
   descriptor.type = type;
   descriptor.unit = unit;
@@ -35,8 +37,9 @@ MetricDescriptor Descriptor(std::string family,
   descriptor.help = std::move(help);
   descriptor.producer_owner = std::move(producer_owner);
   descriptor.security_family = "OPTIMIZER_METRICS";
-  descriptor.readiness = MetricReadiness::implemented;
-  descriptor.labels = {MetricLabelDescriptor{"scope_uuid", true, false},
+  descriptor.value_type = type == MetricType::state ? metrics::MetricScalarType::enumeration : metrics::MetricScalarType::uint64;
+  if (type == MetricType::state) descriptor.enum_values = {kOptimizerRouteObservationPresent};
+  descriptor.labels = {MetricLabelDescriptor{"scope_uuid", true, false, metrics::MetricLabelType::system_uuid},
                        MetricLabelDescriptor{"route_label", true, false},
                        MetricLabelDescriptor{"plan_node_id", false, false},
                        MetricLabelDescriptor{"metric_family", true, false},
@@ -44,15 +47,6 @@ MetricDescriptor Descriptor(std::string family,
                        MetricLabelDescriptor{"source_generation", true, false},
                        MetricLabelDescriptor{"evidence_digest", true, true}};
   return descriptor;
-}
-
-MetricValidationResult RegisterIfMissing(metrics::MetricRegistry* registry,
-                                         MetricDescriptor descriptor) {
-  auto& target = registry == nullptr ? metrics::DefaultMetricRegistry() : *registry;
-  if (target.FindDescriptor(descriptor.family) != nullptr) {
-    return metrics::MetricOk();
-  }
-  return target.RegisterDescriptor(std::move(descriptor));
 }
 
 bool UnsafeAuthority(const OptimizerRouteMetricAuthority& authority) {
@@ -77,6 +71,7 @@ OptimizerRouteMetricPublishResult Refuse(const OptimizerRouteMetricSample& sampl
                                          std::string detail) {
   OptimizerRouteMetricPublishResult result;
   result.ok = false;
+  result.scope_uuid = sample.scope_uuid;
   result.diagnostic_code = std::move(code);
   result.detail = std::move(detail);
   AddEvidence(&result, "OEIC_ROUTE_DRIVER_OPTIMIZER_METRICS");
@@ -92,8 +87,13 @@ OptimizerRouteMetricPublishResult Refuse(const OptimizerRouteMetricSample& sampl
 
 bool EmptyRequiredField(const OptimizerRouteMetricSample& sample,
                         std::string* field) {
-  if (sample.scope_uuid.empty()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(sample.scope_uuid)) {
     if (field != nullptr) *field = "scope_uuid";
+    return true;
+  }
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(sample.database_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(sample.node_uuid)) {
+    if (field != nullptr) *field = "observation_owner";
     return true;
   }
   if (sample.route_kind.empty()) {
@@ -177,14 +177,14 @@ void State(OptimizerRouteMetricPublishResult* result,
   Push(result,
        metrics::DefaultMetricRegistry().SetState(
            family, LabelsFor(sample, metric_family, std::move(result_label)),
-           1.0, std::move(state_text), producer_owner));
+           metrics::MetricEnumValue{kOptimizerRouteObservationPresent}, std::move(state_text), producer_owner));
 }
 
 void Gauge(OptimizerRouteMetricPublishResult* result,
            const OptimizerRouteMetricSample& sample,
            const std::string& family,
            const std::string& metric_family,
-           double value,
+           std::uint64_t value,
            const std::string& producer_owner) {
   Push(result,
        metrics::DefaultMetricRegistry().SetGauge(
@@ -193,26 +193,32 @@ void Gauge(OptimizerRouteMetricPublishResult* result,
 
 }  // namespace
 
-metrics::MetricValidationResult EnsureOptimizerRouteMetricDescriptors(
-    metrics::MetricRegistry* registry) {
-  const MetricDescriptor descriptors[] = {
+const std::vector<metrics::MetricDescriptorDefinition>&
+OptimizerRouteMetricDescriptorDefinitions() {
+  static const std::vector<metrics::MetricDescriptorDefinition> descriptors = {
       Descriptor("sb_optimizer_route_plan_hash", MetricType::state,
-                 MetricUnit::state, "optimizer_explain",
+                 MetricUnit::none, "optimizer_explain",
                  "Driver-visible optimizer route plan hash."),
       Descriptor("sb_optimizer_route_result_hash", MetricType::state,
-                 MetricUnit::state, "route_executor",
+                 MetricUnit::none, "route_executor",
                  "Driver-visible optimizer route result hash."),
       Descriptor("sb_optimizer_explain_digest", MetricType::state,
-                 MetricUnit::state, "optimizer_explain",
+                 MetricUnit::none, "optimizer_explain",
                  "Driver-visible optimizer explain digest."),
       Descriptor("sb_optimizer_route_equivalence_status", MetricType::state,
-                 MetricUnit::state, "route_executor",
+                 MetricUnit::none, "route_executor",
                  "Cross-route optimizer equivalence status."),
       Descriptor("sb_optimizer_driver_visible_route_count", MetricType::gauge,
-                 MetricUnit::count, "route_executor",
+                 MetricUnit::none, "route_executor",
                  "Driver-visible route count in optimizer evidence.")};
-  for (const auto& descriptor : descriptors) {
-    const auto result = RegisterIfMissing(registry, descriptor);
+  return descriptors;
+}
+
+metrics::MetricValidationResult EnsureOptimizerRouteMetricDescriptors(
+    metrics::MetricRegistry* registry) {
+  for (const auto& descriptor : OptimizerRouteMetricDescriptorDefinitions()) {
+    const auto result = metrics::ValidateBoundMetricDefinition(
+        registry ? *registry : metrics::DefaultMetricRegistry(), descriptor);
     if (!result.ok) {
       return result;
     }
@@ -269,8 +275,27 @@ OptimizerRouteMetricPublishResult PublishOptimizerRouteMetrics(
                   route_validation.diagnostic_code);
   }
 
+  // The validated routes must describe this sample, not a separate internally
+  // consistent route set. Plan hash and plan-evidence digest are distinct data.
+  bool selected_route = false;
+  for (const auto& route : sample.driver_routes) {
+    if (route.route_kind == sample.route_kind) selected_route = true;
+    if (route.route_label != sample.route_label || route.result_hash != sample.result_hash ||
+        route.explain_digest != sample.explain_digest || route.redaction_digest != sample.redaction_digest ||
+        route.diagnostic_code != sample.diagnostic_code)
+      return Refuse(sample, "SB_OPTIMIZER_ROUTE_METRICS.ROUTE_EQUIVALENCE_FAILED", "route sample differs from supplied route evidence");
+  }
+  if (!selected_route)
+    return Refuse(sample, "SB_OPTIMIZER_ROUTE_METRICS.ROUTE_EQUIVALENCE_FAILED", "selected route is not in the supplied evidence");
+  if (!metrics::DefaultMetricRegistry().ObservationOwnerMatches(sample.database_uuid, sample.node_uuid))
+    return Refuse(sample, "METRIC.OBSERVATION_SOURCE_UNAVAILABLE", "route sample owner does not match the observation source");
+  const auto descriptors = EnsureOptimizerRouteMetricDescriptors();
+  if (!descriptors.ok) return Refuse(sample, descriptors.diagnostic_code, descriptors.detail);
+
   OptimizerRouteMetricPublishResult result;
   result.ok = true;
+  result.scope_uuid = sample.scope_uuid;
+  result.metric_results.reserve(5);
   result.diagnostic_code = "SB_OPTIMIZER_ROUTE_METRICS.OK";
   AddEvidence(&result, "OEIC_ROUTE_DRIVER_OPTIMIZER_METRICS");
   AddEvidence(&result, "optimizer.route_metrics.fail_closed=false");
@@ -282,7 +307,6 @@ OptimizerRouteMetricPublishResult PublishOptimizerRouteMetrics(
   AddEvidence(&result, "optimizer.route_metrics.wal_redo_authority=false");
   AddEvidence(&result, "optimizer.route_metrics.cluster_authority=false");
 
-  Push(&result, EnsureOptimizerRouteMetricDescriptors());
   State(&result, sample, "sb_optimizer_route_plan_hash", "route_plan_hash",
         sample.plan_hash, "optimizer_explain");
   State(&result, sample, "sb_optimizer_route_result_hash",
@@ -294,7 +318,7 @@ OptimizerRouteMetricPublishResult PublishOptimizerRouteMetrics(
         "route_executor");
   Gauge(&result, sample, "sb_optimizer_driver_visible_route_count",
         "driver_visible_route_count",
-        static_cast<double>(sample.driver_routes.size()), "route_executor");
+        sample.driver_routes.size(), "route_executor");
 
   if (!result.ok &&
       result.diagnostic_code == "SB_OPTIMIZER_ROUTE_METRICS.OK") {

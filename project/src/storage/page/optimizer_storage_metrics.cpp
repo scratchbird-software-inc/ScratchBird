@@ -215,13 +215,13 @@ const std::vector<metrics::MetricDescriptorDefinition>&
 OptimizerStorageMetricDescriptorDefinitions() {
   static const std::vector<metrics::MetricDescriptorDefinition> descriptors = {
       Descriptor("sb_optimizer_page_cache_hit_miss", MetricType::counter,
-                 MetricUnit::count, "storage_page",
+                 MetricUnit::none, "storage_page",
                  "Optimizer page cache hit/miss observations."),
       Descriptor("sb_optimizer_prefetch_usefulness", MetricType::gauge,
                  MetricUnit::ratio, "storage_prefetch",
                  "Optimizer prefetch usefulness ratio."),
       Descriptor("sb_optimizer_page_count", MetricType::gauge,
-                 MetricUnit::count, "storage_page",
+                 MetricUnit::none, "storage_page",
                  "Optimizer-visible page count."),
       Descriptor("sb_optimizer_page_cache_dirty_pressure", MetricType::gauge,
                  MetricUnit::ratio, "storage_page",

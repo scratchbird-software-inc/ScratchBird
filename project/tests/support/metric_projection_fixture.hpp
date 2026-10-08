@@ -47,6 +47,8 @@ class MetricProjectionFixture {
     namespace m = core::metrics;
     auto& registry = m::DefaultMetricRegistry();
     const auto& family = definition.family;
+    Check(definition.unit != m::MetricUnit::count && definition.unit != m::MetricUnit::state,
+          "retired metric unit in projection definition");
     if (!descriptors_.contains(family)) {
       m::MetricDescriptor descriptor;
       static_cast<m::MetricDescriptorDefinition&>(descriptor) = definition;
