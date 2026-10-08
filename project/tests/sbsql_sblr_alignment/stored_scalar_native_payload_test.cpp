@@ -1,6 +1,8 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "engine/internal_api/mga_relation_store/stored_scalar_payload.hpp"
+#include "engine/internal_api/mga_relation_store/stored_int64_descriptor.hpp"
+#include "engine/executor/descriptor_value_runtime.hpp"
 #include "engine/public_abi_int64_payload.hpp"
 #include "wire/public_result_packet.hpp"
 #include "engine/sblr/sblr_projection_value_runtime.hpp"
@@ -409,7 +411,164 @@ void PublicInt64Transport() {
     Require(!packet::Valid({"v", static_cast<packet::Kind>(kind), std::string(8, '\0')}),
             "unknown wire kind accepted");
 }
+void StoredInt64Descriptors() {
+  namespace dt = scratchbird::core::datatypes;
+  unsigned rows = 0;
+  for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+    if (row.canonical_binary_type_code != static_cast<std::uint32_t>(dt::CanonicalTypeId::int64)) continue;
+    ++rows;
+    api::EngineRequestContext context;
+    context.datatype_catalog_snapshot_uuid = row.catalog_snapshot_uuid;
+    context.datatype_catalog_generation = row.catalog_generation;
+    context.datatype_registry_generation = row.registry_generation;
+    auto source = Sentinel("int64").descriptor;
+    source.type_uuid = row.type_uuid;
+    source.datatype_descriptor_uuid = row.descriptor_uuid;
+    source.datatype_descriptor_generation = row.descriptor_generation;
+    source.descriptor_kind = "scalar";
+    for (bool nullable : {false, true}) {
+      api::CatalogColumnMetadata metadata;
+      metadata.identities = {{"type_uuid", row.type_uuid},
+          {"datatype_descriptor_uuid", row.descriptor_uuid}};
+      if (!row.codec_uuid.is_nil()) metadata.identities["codec_uuid"] = row.codec_uuid;
+      metadata.text = {{"canonical", "int64"}, {"canonical_type", "int64"}, {"type", "int64"},
+          {"nullable", nullable ? "true" : "false"},
+          {"nullability", nullable ? "nullable" : "non_null"},
+          {"not_null", nullable ? "false" : "true"},
+          {"datatype_descriptor_generation", std::to_string(row.descriptor_generation)},
+          {"type_generation", std::to_string(row.type_generation)},
+          {"codec_id", row.codec_id}, {"codec_version", std::to_string(row.codec_version)},
+          {"codec_generation", std::to_string(row.codec_generation)},
+          {"null_encoding", std::to_string(row.null_encoding_code)}, {"primary_key", "false"}};
+      Require(api::EncodeCatalogColumnMetadata(metadata, &source.encoded_descriptor), "fixture encoding failed");
+      auto output = Sentinel("output").descriptor;
+      std::string detail;
+      const bool projected = api::ProjectStoredInt64DescriptorV1(context, source, nullable, &output, &detail);
+      if (!projected) std::cerr << "cohort=" << row.catalog_generation << " nullable=" << nullable
+                                << " detail=" << detail << '\n';
+      Require(projected, "valid exact catalog INT64 projection refused");
+      auto expected = source;
+      expected.descriptor_kind = "scalar";
+      expected.encoded_descriptor = nullable ? "nullability=nullable" : "nullability=non_null";
+      Require(output == expected && detail.empty(), "INT64 projection lost occurrence/datatype binding");
+      auto aliased = source;
+      Require(api::ProjectStoredInt64DescriptorV1(context, aliased, nullable, &aliased, &detail) &&
+                  aliased == expected, "aliased projection changed source before validation");
+      unsigned faults = 0;
+      bool completed = false;
+      for (long allocation = 0; allocation < 1024; ++allocation) {
+        auto candidate = Sentinel("output").descriptor;
+        const auto original = candidate;
+        const auto original_source = source;
+        fail_after = allocation;
+        try {
+          const bool ok = api::ProjectStoredInt64DescriptorV1(context, source, nullable, &candidate, &detail);
+          fail_after = -1;
+          Require(ok && candidate == expected, "allocation sweep refused valid descriptor");
+          completed = true;
+          break;
+        } catch (const std::bad_alloc&) {
+          fail_after = -1;
+          ++faults;
+          Require(candidate == original && source == original_source, "failed allocation partially published descriptor");
+        }
+      }
+      Require(completed && faults != 0, "descriptor allocation fault path not exercised");
+      api::EngineTypedValue value;
+      value.descriptor = output;
+      Require(api::RestoreStoredScalarPayloadV1(std::string(8, '\xff'), State::value, &value) &&
+                  value.binary_value == std::vector<std::uint8_t>(8, 255), "projected payload changed");
+      std::int64_t decoded = 42;
+      Require(scratchbird::engine::executor::DecodeBoundInt64Value(value, &decoded, &detail) && decoded == -1,
+              "projected stored descriptor rejected by strict scalar decoder");
+      if (nullable) {
+        Require(api::RestoreStoredScalarPayloadV1({}, State::sql_null, &value) && value.is_null,
+                "projected nullable column lost NULL");
+        decoded = 42;
+        Require(!scratchbird::engine::executor::DecodeBoundInt64Value(value, &decoded, &detail) && decoded == 42,
+                "NULL decoded into a PRESENT integer or changed output");
+      }
+      const auto reject = [&](const auto& ctx, const auto& invalid) {
+        auto unchanged = Sentinel("output").descriptor;
+        const auto original = unchanged;
+        Require(!api::ProjectStoredInt64DescriptorV1(ctx, invalid, nullable, &unchanged, &detail) &&
+                    unchanged == original && !detail.empty(), "invalid projection accepted or output changed");
+      };
+      for (unsigned change = 0; change < 8; ++change) {
+        auto invalid = source;
+        if (change == 0) invalid.type_uuid = {};
+        if (change == 1) invalid.datatype_descriptor_uuid = {};
+        if (change == 2) ++invalid.datatype_descriptor_generation;
+        if (change == 3) invalid.descriptor_uuid.bytes[6] = 0x40;
+        if (change == 4) invalid.charset_uuid = source.descriptor_uuid;
+        if (change == 5) invalid.collation_uuid = source.descriptor_uuid;
+        if (change == 6) invalid.canonical_type_name = "text";
+        if (change == 7) invalid.encoded_descriptor.clear();
+        reject(context, invalid);
+      }
+      for (const auto kind : {"", "domain", "rowset", "catalog.column"}) {
+        auto invalid = source;
+        invalid.descriptor_kind = kind;
+        reject(context, invalid);
+      }
+      for (const auto kind : {"executor.scalar", "canonical_type_descriptor"}) {
+        auto alternate = source;
+        alternate.descriptor_kind = kind;
+        Require(api::ProjectStoredInt64DescriptorV1(context, alternate, nullable, &output, &detail) &&
+                    output == expected, "execution scalar kind refused");
+      }
+      {
+        auto changed = metadata;
+        changed.text.erase("nullable");
+        changed.text.erase("nullability");
+        auto invalid = source;
+        Require(api::EncodeCatalogColumnMetadata(changed, &invalid.encoded_descriptor), "missing nullability encoding failed");
+        reject(context, invalid);
+      }
+      for (unsigned change = 0; change < 3; ++change) {
+        auto invalid = context;
+        if (change == 0) invalid.datatype_catalog_snapshot_uuid = {};
+        if (change == 1) invalid.datatype_catalog_generation = UINT64_MAX;
+        if (change == 2) invalid.datatype_registry_generation = UINT64_MAX;
+        reject(invalid, source);
+      }
+      for (const auto& [key, unused] : metadata.text) {
+        if (key == "primary_key") continue;
+        auto changed = metadata;
+        changed.text[key] = "conflicting";
+        auto invalid = source;
+        Require(api::EncodeCatalogColumnMetadata(changed, &invalid.encoded_descriptor), "mutation encoding failed");
+        reject(context, invalid);
+      }
+      for (const auto key : {"width", "precision", "scale", "timezone_profile_id", "unknown_modifier"}) {
+        auto changed = metadata;
+        changed.text[key] = "1";
+        auto invalid = source;
+        Require(api::EncodeCatalogColumnMetadata(changed, &invalid.encoded_descriptor), "modifier encoding failed");
+        reject(context, invalid);
+      }
+      for (const auto key : {"type_uuid", "datatype_descriptor_uuid", "codec_uuid", "domain_uuid"}) {
+        auto changed = metadata;
+        changed.identities[key] = source.descriptor_uuid;
+        auto invalid = source;
+        Require(api::EncodeCatalogColumnMetadata(changed, &invalid.encoded_descriptor), "identity encoding failed");
+        reject(context, invalid);
+      }
+      for (const auto key : {"nullable", "nullability"}) {
+        auto changed = metadata;
+        changed.text.erase(key);
+        auto single = source;
+        Require(api::EncodeCatalogColumnMetadata(changed, &single.encoded_descriptor) &&
+                    api::ProjectStoredInt64DescriptorV1(context, single, nullable, &output, &detail),
+                "single consistent nullability spelling refused");
+      }
+    }
+  }
+  Require(rows != 0, "no INT64 registry cohort exercised");
+}
+
 int main() {
+  StoredInt64Descriptors();
   UuidValues(); Int64Values(); OtherCarriersAndState(); AliasAndAllocation();
   PublicInt64Transport();
   NativeSequenceConsumers();

@@ -8,6 +8,7 @@
 
 #include "canonical_query_current_heap_composition.hpp"
 #include "mga_relation_store/stored_scalar_payload.hpp"
+#include "mga_relation_store/stored_int64_descriptor.hpp"
 #include "canonical_query_aggregate_composition.hpp"
 #include "canonical_query_aggregate_registration.hpp"
 #include "canonical_query_descriptor_support.hpp"
@@ -169,6 +170,7 @@ bool CurrentHeapStreamingCompactRowMemory(
 }
 
 bool PrepareCurrentHeapStreamingScanBinding(
+    const api::EngineRequestContext& context,
     const api::TypedRelationalDag& dag,
     const api::RelationalDagNode& scan,
     api::MgaRelationStorageDescriptor descriptor,
@@ -274,6 +276,10 @@ bool PrepareCurrentHeapStreamingScanBinding(
     }
     prepared.columns.push_back(&*column);
     prepared.descriptors.push_back(column->value_descriptor);
+    if (column->value_descriptor.canonical_type_name == "int64" &&
+        !api::ProjectStoredInt64DescriptorV1(context, column->value_descriptor,
+                                             nullable, &prepared.descriptors.back(), detail))
+      return false;
     prepared.descriptors.back().descriptor_kind = "scalar";
   }
   *binding = std::move(prepared);
@@ -1762,7 +1768,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
       CurrentHeapStreamingScanBinding binding;
       std::string stream_detail;
       if (!loaded.ok || !PrepareCurrentHeapStreamingScanBinding(
-                            dag, *scan_node, std::move(loaded.descriptor),
+                            input.context, dag, *scan_node, std::move(loaded.descriptor),
                             &binding, &stream_detail) ||
           binding.columns.size() != 2 || binding.descriptors.size() != 2) {
         return refuse(
@@ -2227,7 +2233,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
       CurrentHeapStreamingScanBinding binding;
       std::string stream_detail;
       if (!loaded.ok || !PrepareCurrentHeapStreamingScanBinding(
-                            dag, *scan_node, std::move(loaded.descriptor),
+                            input.context, dag, *scan_node, std::move(loaded.descriptor),
                             &binding, &stream_detail)) {
         return refuse(
             "SB_DIAG_MGA_READ_RELATION_DESCRIPTOR_INVALID",

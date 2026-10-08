@@ -9,6 +9,7 @@
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "mga_relation_store/mga_heap_runtime_support.hpp"
 #include "mga_relation_store/stored_scalar_payload.hpp"
+#include "mga_relation_store/stored_int64_descriptor.hpp"
 
 #include "api_diagnostics.hpp"
 #include "catalog/column_metadata_codec.hpp"
@@ -961,6 +962,15 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
     }
     projected_columns.push_back(&column);
     auto output_descriptor = column.value_descriptor;
+    if (output_descriptor.canonical_type_name == "int64") {
+      std::string projection_detail;
+      if (!api::ProjectStoredInt64DescriptorV1(context, column.value_descriptor,
+                                              nullable, &output_descriptor,
+                                              &projection_detail)) {
+        return invalid("SB_DIAG_MGA_READ_RELATION_DESCRIPTOR_INVALID",
+                       projection_detail, true);
+      }
+    }
     if (output_descriptor.canonical_type_name == "text" &&
         !relational_descriptor->datatype_identity_authoritative) {
       // The persisted column carrier includes storage-only datatype evidence

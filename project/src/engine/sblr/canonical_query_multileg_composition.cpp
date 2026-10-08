@@ -56,6 +56,7 @@
 #include "transaction/transaction_api.hpp"
 #include "crud_support/crud_store.hpp"
 #include "mga_relation_store/stored_scalar_payload.hpp"
+#include "mga_relation_store/stored_int64_descriptor.hpp"
 #include "catalog/column_metadata_codec.hpp"
 
 #include <algorithm>
@@ -2351,6 +2352,12 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
           }
         }
         auto engine_descriptor = column.value_descriptor;
+        if (engine_descriptor.canonical_type_name == "int64") {
+          std::string detail;
+          if (!api::ProjectStoredInt64DescriptorV1(input.context, column.value_descriptor,
+                                                 column.nullable, &engine_descriptor, &detail))
+            return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", detail);
+        }
         engine_descriptor.descriptor_uuid = descriptor->descriptor_uuid;
         engine_descriptor.descriptor_kind = "scalar";
         prepared.columns.push_back(

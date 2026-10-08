@@ -26,6 +26,7 @@
 #include "catalog/name_resolution_api.hpp"
 #include "crud_support/crud_store.hpp"
 #include "mga_relation_store/stored_scalar_payload.hpp"
+#include "mga_relation_store/stored_int64_descriptor.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "../internal_api/catalog/datatype_bootstrap_identity.hpp"
@@ -2761,6 +2762,12 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
       }
       type_uuids.insert(descriptor->type_uuid);
       auto engine_descriptor = column.value_descriptor;
+      if (engine_descriptor.canonical_type_name == "int64") {
+        std::string detail;
+        if (!api::ProjectStoredInt64DescriptorV1(input.context, column.value_descriptor,
+                                               column.nullable, &engine_descriptor, &detail))
+          return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", detail);
+      }
       engine_descriptor.descriptor_kind = "scalar";
       prepared.columns.push_back(
           {column.canonical_name_key, std::move(engine_descriptor),
@@ -4175,6 +4182,12 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                       "columnar output differs from persisted type authority");
       }
       engine_descriptor = persisted_column->value_descriptor;
+      if (engine_descriptor.canonical_type_name == "int64") {
+        std::string detail;
+        if (!api::ProjectStoredInt64DescriptorV1(input.context, persisted_column->value_descriptor,
+                                               persisted_column->nullable, &engine_descriptor, &detail))
+          return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", detail);
+      }
       // The persisted relation column keeps its public descriptor handle, but
       // the statement DAG carries the exact live canonical datatype descriptor
       // selected from that handle.  Execution and result publication must use
@@ -5852,6 +5865,12 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                     ? synthetic_descriptor++
                     : identifier->result_descriptor_id;
             auto descriptor = column.value_descriptor;
+            if (descriptor.canonical_type_name == "int64") {
+              std::string detail;
+              if (!api::ProjectStoredInt64DescriptorV1(context, column.value_descriptor,
+                                                     column.nullable, &descriptor, &detail))
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", detail);
+            }
             const auto public_column = std::ranges::find_if(
                 public_columns, [&](const auto& candidate) {
                   return candidate.descriptor_id == descriptor_id &&
