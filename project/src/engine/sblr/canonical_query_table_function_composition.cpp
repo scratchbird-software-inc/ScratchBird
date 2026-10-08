@@ -14,6 +14,7 @@
 #include "canonical_query_runtime_memory_support.hpp"
 #include "canonical_query_scalar_support.hpp"
 #include "canonical_relational_expression.hpp"
+#include "canonical_query_descriptor_support.hpp"
 
 #include "engine/functions/registry/function_seed_registry.hpp"
 #include "query/canonical_heap_optimizer_admission.hpp"
@@ -80,6 +81,24 @@ bool MaterializeCanonicalGenerateSeriesBatch(
     *detail = "generate_series step must not be zero";
     return false;
   }
+  const bool forward = step > 0;
+  std::size_t row_count = 0;
+  if ((forward && start <= stop) || (!forward && start >= stop)) {
+    // Unsigned subtraction represents the full endpoint distance, even when
+    // the range spans INT64_MIN..INT64_MAX.  Do not negate INT64_MIN or add
+    // one to an unbounded quotient before checking the inclusive row limit.
+    const auto distance = forward
+        ? static_cast<std::uint64_t>(stop) - static_cast<std::uint64_t>(start)
+        : static_cast<std::uint64_t>(start) - static_cast<std::uint64_t>(stop);
+    const auto stride = forward ? static_cast<std::uint64_t>(step)
+        : std::uint64_t{0} - static_cast<std::uint64_t>(step);
+    const auto intervals = distance / stride;
+    if (intervals >= kGenerateSeriesMaximumRowCount) {
+      *detail = "generate_series exceeds the bounded 10000-row runtime profile";
+      return false;
+    }
+    row_count = static_cast<std::size_t>(intervals) + 1;
+  }
   const auto output_descriptor = std::ranges::find_if(
       dag.descriptors, [&](const auto& descriptor) {
         return descriptor.descriptor_id ==
@@ -97,16 +116,15 @@ bool MaterializeCanonicalGenerateSeriesBatch(
     return false;
   }
   api::EngineDescriptor engine_descriptor;
-  engine_descriptor.descriptor_uuid =
-      output_descriptor->descriptor_uuid;
-  engine_descriptor.type_uuid = output_descriptor->type_uuid;
-  engine_descriptor.descriptor_kind = "scalar";
-  engine_descriptor.canonical_type_name = "int64";
-  engine_descriptor.encoded_descriptor = "nullability=non_null";
+  if (!BuildExactCanonicalScalarRuntimeDescriptorV1(
+          *output_descriptor, core::datatypes::CanonicalTypeId::int64, &engine_descriptor)) {
+    *detail = "generate_series output datatype authority is invalid";
+    return false;
+  }
   batch->columns.push_back(
       {"generate_series", engine_descriptor, false,
        output_descriptor->descriptor_id});
-  const bool forward = step > 0;
+  batch->rows.reserve(row_count);
   std::int64_t current = start;
   while ((forward && current <= stop) || (!forward && current >= stop)) {
     if (batch->rows.size() >= kGenerateSeriesMaximumRowCount) {
@@ -115,7 +133,12 @@ bool MaterializeCanonicalGenerateSeriesBatch(
     }
     api::EngineTypedValue value;
     value.descriptor = engine_descriptor;
-    value.encoded_value = std::to_string(current);
+    std::string encoded;
+    if (!core::datatypes::EncodeCanonicalInt64Value(current, &encoded)) {
+      *detail = "generate_series native INT64 encoding failed";
+      return false;
+    }
+    value.binary_value.assign(encoded.begin(), encoded.end());
     value.state = api::EngineValueState::value;
     value.is_null = false;
     batch->rows.push_back({{std::move(value)}});

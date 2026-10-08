@@ -52,6 +52,7 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -2485,6 +2486,31 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     if (!join_tail_proof_only && !match_recognize_proof_only &&
         !spatial_columnar_proof_only && !filtered_count_proof_only &&
         !heap_join_proof_only && !heap_single_source_proof_only) {
+      const auto require_native_series = [](std::string_view packet,
+                                            const std::vector<std::int64_t>& expected) {
+        namespace result = scratchbird::wire::public_result;
+        std::vector<result::Field> fields;
+        Require(result::Decode(packet, &fields), "series result framing failed");
+        std::size_t row = 0;
+        for (const auto& field : fields) {
+          if (field.kind != result::Kind::row) continue;
+          std::vector<result::Field> values;
+          Require(result::Decode(field.value, &values) && values.size() == 1 &&
+                      row < expected.size(), "series result row shape changed");
+          const auto& value = values.front();
+          Require(value.name == "generate_series" &&
+                      value.kind == result::Kind::signed_integer &&
+                      value.value.size() == 8,
+                  "series result is not a native signed LE8 value");
+          const auto bits = static_cast<std::uint64_t>(expected[row++]);
+          for (unsigned byte = 0; byte < 8; ++byte) {
+            Require(static_cast<unsigned char>(value.value[byte]) ==
+                        static_cast<unsigned char>(bits >> (byte * 8)),
+                    "series result native bytes differ from the independent oracle");
+          }
+        }
+        Require(row == expected.size(), "series native row count differs");
+      };
       auto generate_series = run_direct_parameterized(
           "SELECT * FROM generate_series(?, ?, ?);",
           {text_parameter("1"), text_parameter("5"), text_parameter("2")});
@@ -2502,6 +2528,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                   "generate_series=5") != std::string::npos,
           "generate_series did not complete the independent SBSQL parser, "
           "bound SBLR, optimizer, physical source, and executor route");
+      require_native_series(generate_series.server_result_payload, {1, 3, 5});
 
       auto generate_series_default_step = run_direct_parameterized(
           "SELECT * FROM generate_series(?, ?);",
@@ -2551,6 +2578,24 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       Require(!generate_series_overflow.accepted,
               "generate_series exceeded its bounded 10000-row profile");
 
+      const auto maximum_series = run_direct_parameterized(
+          "SELECT * FROM generate_series(?, ?, ?);",
+          {text_parameter("1"), text_parameter("10000"), text_parameter("1")});
+      Require(maximum_series.accepted && maximum_series.server_row_count == 10000,
+              "generate_series rejected its inclusive 10000-row boundary");
+      std::vector<std::int64_t> maximum_expected;
+      for (std::int64_t value = 1; value <= 10000; ++value) maximum_expected.push_back(value);
+      require_native_series(maximum_series.server_result_payload, maximum_expected);
+      for (const bool descending : {false, true}) {
+        const auto full_width = run_direct_parameterized(
+            "SELECT * FROM generate_series(?, ?, ?);",
+            {text_parameter(descending ? "9223372036854775807" : "-9223372036854775808"),
+             text_parameter(descending ? "-9223372036854775808" : "9223372036854775807"),
+             text_parameter(descending ? "-1" : "1")});
+        Require(!full_width.accepted,
+                "generate_series wrapped the full-width interval count");
+      }
+
       auto generate_series_literal =
           parser.RunPipeline("SELECT * FROM generate_series(1, 5, 2);", true);
       Require(!generate_series_literal.accepted,
@@ -2582,6 +2627,8 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                   ScalarResultText(minimum_step.server_result_payload).find(
                       "generate_series=-9223372036854775808") != std::string::npos,
               "generate_series lost the inclusive int64-minimum step endpoint");
+      require_native_series(minimum_step.server_result_payload,
+                            {0, std::numeric_limits<std::int64_t>::min()});
     }
 
     if (!join_tail_proof_only && !table_function_proof_only &&

@@ -28996,11 +28996,14 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                     "sbp_sbsql.wire"));
                 break;
               }
-              const bool exact_catalog_comparison_parameter =
+              const bool exact_projected_parameter =
                   exact_native_join_filter_operand_route ||
-                  exact_native_catalog_filter_operand_route;
+                  exact_native_catalog_filter_operand_route ||
+                  exact_native_join_limit_operand_route ||
+                  exact_native_table_function_parameter_route ||
+                  exact_native_match_recognize_parameter_route;
               const auto authoritative_descriptor =
-                  exact_catalog_comparison_parameter
+                  exact_projected_parameter
                       ? std::ranges::find_if(
                             native_binding_context->descriptors,
                             [&](const auto& candidate) {
@@ -29033,7 +29036,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                     // datatype authority must still be copied from the exact
                     // engine-projected relation descriptor used by this
                     // statement, rather than reconstructed from a type name.
-                    if (!exact_catalog_comparison_parameter ||
+                    if (!exact_projected_parameter ||
                         candidate.type_uuid != type_uuid ||
                         candidate.descriptor_generation !=
                             mapping.datatype_descriptor_generation) {
@@ -29073,7 +29076,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                                authoritative_descriptor
                                    ->datatype_registry_generation;
                   };
-              if (exact_catalog_comparison_parameter &&
+              if (exact_projected_parameter &&
                   (authoritative_descriptor ==
                        native_binding_context->descriptors.end() ||
                    !std::ranges::all_of(
