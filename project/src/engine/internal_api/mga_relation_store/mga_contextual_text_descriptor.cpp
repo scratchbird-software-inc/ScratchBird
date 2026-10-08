@@ -333,6 +333,24 @@ bool RewriteLegacyTextDescriptor(const EngineRequestContext& context,
   return true;
 }
 
+bool RewriteLegacyTextStorageDescriptor(
+    const EngineRequestContext& context, EngineDescriptor* descriptor,
+    const EngineUuid& column_uuid) {
+  if (!descriptor || descriptor->descriptor_uuid != column_uuid ||
+      descriptor->datatype_descriptor_uuid != kLegacyTextDescriptorUuid ||
+      descriptor->datatype_descriptor_generation != 1 ||
+      descriptor->type_uuid != kLegacyTextTypeUuid) return false;
+  auto migrated = *descriptor;
+  if (!RewriteLegacyTextDescriptor(context, &migrated.encoded_descriptor,
+                                   column_uuid)) return false;
+  migrated.datatype_descriptor_uuid = kCanonicalTextDescriptorUuid;
+  migrated.datatype_descriptor_generation = 1;
+  migrated.type_uuid = kCanonicalTextTypeUuid;
+  migrated.canonical_type_name = "text";
+  *descriptor = std::move(migrated);
+  return true;
+}
+
 EngineApiDiagnostic ContextualTextMgaDiagnostic(std::string detail) {
   return MakeEngineApiDiagnostic(
       "CTB.TEXT.DESCRIPTOR_INVALID",

@@ -60,6 +60,12 @@ bool RewriteLegacyTextDescriptor(
     const EngineRequestContext& context,
     std::string* descriptor,
     const EngineUuid& column_uuid);
+// Migrate the native binding and its embedded catalog metadata as one unit.
+// A conflicting native source tuple is not repaired by trusting the metadata.
+bool RewriteLegacyTextStorageDescriptor(
+    const EngineRequestContext& context,
+    EngineDescriptor* descriptor,
+    const EngineUuid& column_uuid);
 EngineApiDiagnostic ContextualTextMgaDiagnostic(std::string detail);
 bool CopyContextualUuidV2(const EngineUuid& value,
                           MgaContextualTextUuidV2* output,

@@ -1532,13 +1532,12 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
     for (auto& [column_name, descriptor] : updated->second.columns) {
       if (column_name != storage_column->canonical_name_key) continue;
       ++matched_columns;
-      auto migrated_storage_descriptor =
-          storage_column->value_descriptor.encoded_descriptor;
+      auto migrated_storage_descriptor = storage_column->value_descriptor;
       if (!RewriteLegacyTextDescriptor(context, &descriptor,
                                        requested.column_uuid) ||
-          !RewriteLegacyTextDescriptor(context, &migrated_storage_descriptor,
-                                       requested.column_uuid) ||
-          descriptor != migrated_storage_descriptor) {
+          !RewriteLegacyTextStorageDescriptor(context, &migrated_storage_descriptor,
+                                              requested.column_uuid) ||
+          descriptor != migrated_storage_descriptor.encoded_descriptor) {
         return refuse("DATATYPE.DESCRIPTOR.INVALID",
                       "text_identity_migration_legacy_identity_required",
                       requested.column_uuid);
@@ -1551,10 +1550,7 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
                       "text_identity_migration_nullability_conflict",
                       requested.column_uuid);
       }
-      storage_column->value_descriptor.descriptor_uuid =
-          requested.column_uuid;
-      storage_column->value_descriptor.canonical_type_name = "text";
-      storage_column->value_descriptor.encoded_descriptor = descriptor;
+      storage_column->value_descriptor = std::move(migrated_storage_descriptor);
       changed_columns_by_object[requested.object_uuid].insert(
           requested.column_uuid);
     }
@@ -1618,6 +1614,9 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
     table.event_sequence = reservation.first;
     auto& descriptor = updated_descriptors_by_object.at(object_uuid);
     descriptor.relation_generation = reservation.first;
+    // This sealed historical migration publishes a new relation generation
+    // atomically with the table projection; it is not fresh DDL admission.
+    table.bound_relation_generation = descriptor.relation_generation;
     for (auto& column : descriptor.columns) {
       if (changed_columns_by_object[object_uuid].contains(
               column.column_uuid)) {

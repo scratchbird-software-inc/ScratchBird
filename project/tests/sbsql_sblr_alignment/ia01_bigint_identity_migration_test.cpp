@@ -1,11 +1,16 @@
 #include "../support/diagnostic_value_fixture.hpp"
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include "database_lifecycle.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include "ddl/create_api.hpp"
 #include "hash_digest.hpp"
 #include "local_transaction_store.hpp"
 #include "memory.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include "mga_relation_store/mga_relation_metadata_store.hpp"
+#include "mga_relation_store/mga_contextual_text_descriptor.hpp"
 #include "transaction/transaction_api.hpp"
 #include "transaction_inventory.hpp"
 #include "uuid.hpp"
@@ -17,7 +22,10 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <sstream>
+#include <source_location>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -70,10 +78,12 @@ constexpr std::string_view kContextualTextSetSealKey =
     "contextual_text_descriptor_sidecar_set_v2.seal_sha256";
 
 [[noreturn]] void Fail(const char* message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(message);
 }
-void Require(bool value, const char* message) { if (!value) Fail(message); }
+void Require(bool value, const char* message,
+             std::source_location at = std::source_location::current()) {
+  if (!value) throw std::runtime_error(std::string(message) + " line=" + std::to_string(at.line()));
+}
 
 enum class FixtureMode {
   kNumericIdentityMigration,
@@ -142,8 +152,11 @@ std::string Id(UuidKind kind, std::uint64_t salt) {
 }
 
 struct Fixture {
+  std::unique_ptr<scratchbird::tests::OwnedTempDirectory> directory =
+      std::make_unique<scratchbird::tests::OwnedTempDirectory>();
   std::filesystem::path path;
   std::string database_uuid;
+  api::EngineUuid filespace_uuid;
   std::string table_uuid{Id(UuidKind::object, 20)};
   std::string column_uuid{Id(UuidKind::object, 21)};
   std::string int32_table_uuid{Id(UuidKind::object, 22)};
@@ -183,16 +196,6 @@ struct Fixture {
   std::uint64_t charset_generation = 0;
   std::string collation_uuid;
   std::uint64_t collation_generation = 0;
-  ~Fixture() {
-    std::error_code ignored;
-    std::filesystem::remove(path, ignored);
-    for (const char* suffix : {".sb.transaction_inventory", ".sb.mga_relation_metadata",
-                               ".sb.mga_event_sequences", ".sb.mga_savepoints",
-                               ".sb.mga_relation_descriptors",
-                               ".sb.owner.lock", ".dirty.manifest", ".recovery.evidence"}) {
-      std::filesystem::remove(path.string() + suffix, ignored);
-    }
-  }
 };
 
 std::string ReadFileBytes(const std::filesystem::path& path) {
@@ -203,24 +206,23 @@ std::string ReadFileBytes(const std::filesystem::path& path) {
 
 std::vector<std::string> SplitTabs(const std::string& line) {
   std::vector<std::string> fields;
-  std::size_t start = 0;
-  while (start <= line.size()) {
-    const auto end = line.find('\t', start);
-    fields.push_back(line.substr(
-        start, end == std::string::npos ? line.size() - start : end - start));
-    if (end == std::string::npos) break;
-    start = end + 1;
-  }
+  Require(api::DecodeMgaMetadataFields(line, &fields), "binary metadata record decode failed");
   return fields;
 }
 
 std::string JoinTabs(const std::vector<std::string>& fields) {
-  std::string line;
-  for (const auto& field : fields) {
-    if (!line.empty()) line.push_back('\t');
-    line += field;
-  }
+  auto line = api::EncodeMgaMetadataFields(fields);
+  Require(!line.empty(), "binary metadata record encode failed");
   return line;
+}
+
+std::vector<std::string> ReadMetadataRecords(const std::filesystem::path& path) {
+  const auto bytes = ReadFileBytes(path);
+  std::vector<std::string> records;
+  Require(api::DecodeMgaMetadataStream(
+      {reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()}, &records),
+      "binary metadata stream decode failed");
+  return records;
 }
 
 std::string HexDecode(const std::string_view encoded) {
@@ -262,37 +264,35 @@ std::string HexEncodeLower(const std::string_view raw) {
   }
   return encoded;
 }
-
 std::vector<std::pair<std::string, std::string>>
 DecodeCanonicalPairVector(const std::string_view encoded) {
-  Require(!encoded.empty(), "sealed descriptor vector is empty");
   std::vector<std::pair<std::string, std::string>> pairs;
-  std::size_t start = 0;
-  while (start < encoded.size()) {
-    const auto end = encoded.find('|', start);
-    const auto part = encoded.substr(
-        start, end == std::string_view::npos ? encoded.size() - start
-                                             : end - start);
-    const auto equals = part.find('=');
-    Require(!part.empty() && equals != std::string_view::npos && equals != 0 &&
-                part.find('=', equals + 1) == std::string_view::npos,
-            "sealed descriptor pair framing is noncanonical");
-    const auto key_hex = part.substr(0, equals);
-    const auto value_hex = part.substr(equals + 1);
-    Require((key_hex.size() & 1u) == 0u &&
-                (value_hex.size() & 1u) == 0u && IsLowerHex(key_hex) &&
-                IsLowerHex(value_hex),
-            "sealed descriptor pair hex is noncanonical");
-    pairs.emplace_back(HexDecode(key_hex), HexDecode(value_hex));
-    if (end == std::string_view::npos) break;
-    start = end + 1;
-    Require(start < encoded.size(),
-            "sealed descriptor vector has a trailing separator");
-  }
+  Require(api::DecodeMetadataPairs(encoded, &pairs),
+          "sealed binary descriptor pair framing is invalid");
   return pairs;
 }
 
+std::string IndependentMetadataFrame(const std::vector<std::string>& fields);
+
 std::string EncodeCanonicalPairVector(
+    const std::vector<std::pair<std::string, std::string>>& pairs) {
+  std::vector<std::string> fields{"metadata.pairs.v2"};
+  for (const auto& [key, value] : pairs) {
+    fields.push_back(key);
+    fields.push_back(value);
+  }
+  return IndependentMetadataFrame(fields);
+}
+
+std::string DecodeCanonicalHex(const std::string_view encoded) {
+  Require((encoded.size() & 1u) == 0u && IsLowerHex(encoded),
+          "hex field is noncanonical");
+  return HexDecode(encoded);
+}
+
+// V2 sidecar seals have their own canonical preimage, distinct from the
+// binary record/pair transport. Keep its independent oracle explicit.
+std::string SidecarSealFieldVector(
     const std::vector<std::pair<std::string, std::string>>& pairs) {
   std::string encoded;
   for (const auto& [key, value] : pairs) {
@@ -302,12 +302,6 @@ std::string EncodeCanonicalPairVector(
     encoded += HexEncodeLower(value);
   }
   return encoded;
-}
-
-std::string DecodeCanonicalHex(const std::string_view encoded) {
-  Require((encoded.size() & 1u) == 0u && IsLowerHex(encoded),
-          "hex field is noncanonical");
-  return HexDecode(encoded);
 }
 
 std::uint64_t CanonicalU64(const std::string_view encoded) {
@@ -389,11 +383,12 @@ void AppendCanonicalField(std::string* out,
                           const std::string_view key,
                           const std::string_view value) {
   Require(out != nullptr, "canonical field output missing");
-  out->append(std::to_string(key.size()));
-  out->push_back(':');
+  Require(key.size() <= std::numeric_limits<std::uint32_t>::max() &&
+              value.size() <= std::numeric_limits<std::uint32_t>::max(),
+          "canonical field exceeds its binary length width");
+  AppendU32Le(out, static_cast<std::uint32_t>(key.size()));
   out->append(key);
-  out->append(std::to_string(value.size()));
-  out->push_back(':');
+  AppendU32Le(out, static_cast<std::uint32_t>(value.size()));
   out->append(value);
 }
 
@@ -412,6 +407,22 @@ std::string Sha256Raw(const std::string_view payload) {
   Require(digest.ok(), "test raw SHA-256 failed");
   return std::string(reinterpret_cast<const char*>(digest.digest.data()),
                      digest.digest.size());
+}
+
+std::string IndependentMetadataFrame(const std::vector<std::string>& fields) {
+  Require(!fields.empty() && fields.size() <= 65536, "metadata oracle field count invalid");
+  std::string payload;
+  AppendU32Le(&payload, static_cast<std::uint32_t>(fields.size()));
+  for (const auto& field : fields) {
+    Require(field.size() <= 64u * 1024u * 1024u, "metadata oracle field size invalid");
+    AppendU32Le(&payload, static_cast<std::uint32_t>(field.size()));
+    payload += field;
+  }
+  std::string frame = "SBMGAM02";
+  AppendU64Le(&frame, payload.size());
+  frame += payload;
+  frame += Sha256Raw(frame);
+  return frame;
 }
 
 std::string RecomputeTextBatchHash(
@@ -449,7 +460,7 @@ std::string RecomputeTextBatchHash(
            {"decision_sha256", 12}}) {
     field(key, fields[base + offset]);
   }
-  field("table_default_name", DecodeCanonicalHex(fields[base + 13]));
+  field("table_default_name", fields[base + 13]);
   field("table_columns",
         EncodeCanonicalPairVector(
             DecodeCanonicalPairVector(fields[base + 14])));
@@ -542,7 +553,7 @@ void RequireExactTextMigrationSealedVector(
               fields[kRow + 7] == "datatype.text.utf8.v1" &&
               fields[kRow + 8] == "1" && fields[kRow + 9] == "1" &&
               fields[kRow + 21] == "0" && fields[kRow + 22].empty() &&
-              fields[kRow + 23].empty() && fields[kRow + 24].empty(),
+              fields[kRow + 23] == std::string(16, '\0') && fields[kRow + 24].empty(),
           "sealed TEXT migration row identity or 25-field shape changed");
   Require(CanonicalU64(fields[2]) != 0 && CanonicalU64(fields[3]) != 0 &&
               CanonicalU64(fields[kRow + 10]) != 0 &&
@@ -584,7 +595,7 @@ void RequireExactTextMigrationSealedVector(
                   UniquePairValue(descriptor_fields, "relation_generation") &&
               descriptor_generation != 0 &&
               descriptor_field_count == descriptor_fields.size() &&
-              descriptor_field_bytes == fields[kRow + 15].size() &&
+              descriptor_field_bytes == SidecarSealFieldVector(descriptor_fields).size() &&
               contextual_sidecar_count ==
                   static_cast<std::uint64_t>(expect_contextual_sidecar),
           "sealed descriptor vector header is not exact");
@@ -655,7 +666,7 @@ void RequireExactTextMigrationSealedVector(
   std::vector<std::pair<std::string, std::string>> pre_seal_fields(
       descriptor_fields.begin(), descriptor_fields.begin() + seal_index);
   const auto pre_seal_serialization =
-      EncodeCanonicalPairVector(pre_seal_fields);
+      SidecarSealFieldVector(pre_seal_fields);
   Require(pre_seal_serialization.size() + 172 == descriptor_field_bytes &&
               descriptor_fields[seal_index].second.size() == 32,
           "sealed descriptor count/byte equation changed");
@@ -687,10 +698,8 @@ void RequireExactTextMigrationSealedVector(
 
 Fixture MakeFixture(const std::string_view mode) {
   Fixture fixture;
-  fixture.path = std::filesystem::temp_directory_path() /
-      ("sb_bigint_identity_migration_" + std::string(mode) + "_" +
-       std::to_string(
-          std::chrono::steady_clock::now().time_since_epoch().count()) + ".sbdb");
+  fixture.path = fixture.directory->path() /
+      ("identity_" + std::string(mode) + ".sbdb");
   db::DatabaseCreateConfig config;
   config.path = fixture.path.string();
   config.database_uuid = uuid::GenerateEngineIdentityV7(UuidKind::database, 1786830000001ull).value;
@@ -701,7 +710,7 @@ Fixture MakeFixture(const std::string_view mode) {
   config.resource_seed_pack_root = SB_BOOTSTRAP_SEED_PACK_ROOT;
   config.require_resource_seed_pack = true;
   config.allow_minimal_resource_bootstrap = false;
-  config.allow_overwrite = true;
+  config.allow_overwrite = false;
   const auto created = db::CreateDatabaseFile(config);
   if (!created.ok()) {
     std::cerr << "create_database_diagnostic code="
@@ -746,6 +755,7 @@ Fixture MakeFixture(const std::string_view mode) {
   Require(inventory.ok() && inventory.inventory.publication_base.has_value(),
           "transaction inventory load failed");
   fixture.database_uuid = IdentityBytes(config.database_uuid.value);
+  fixture.filespace_uuid = config.filespace_uuid.value;
   return fixture;
 }
 
@@ -755,6 +765,7 @@ api::EngineRequestContext BaseContext(const Fixture& fixture) {
   context.database_path = fixture.path.string();
   context.database_uuid = FixtureIdentity(fixture.database_uuid);
   context.current_schema_uuid = FixtureIdentity(fixture.baseline_schema_uuid);
+  context.default_root_uuid = fixture.filespace_uuid;
   context.session_uuid = FixtureIdentity(Id(UuidKind::object, 3));
   context.principal_uuid = FixtureIdentity(Id(UuidKind::principal, 4));
   context.security_context_present = true;
@@ -799,12 +810,43 @@ void Rollback(const api::EngineRequestContext& context) {
   Require(api::EngineRollbackTransaction(request).ok, "transaction rollback failed");
 }
 
+std::string ColumnMetadata(
+    std::initializer_list<std::pair<std::string, std::string>> text,
+    std::initializer_list<std::pair<std::string, std::string>> identities = {}) {
+  api::CatalogColumnMetadata fields;
+  for (const auto& [key, value] : text)
+    Require(fields.text.emplace(key, value).second, "duplicate fixture metadata text");
+  for (const auto& [key, value] : identities)
+    Require(fields.identities.emplace(key, FixtureIdentity(value)).second,
+            "duplicate fixture metadata identity");
+  std::string encoded;
+  Require(api::EncodeCatalogColumnMetadata(fields, &encoded), "fixture metadata encoding failed");
+  return encoded;
+}
+
+void SetColumnText(std::string& encoded, const std::string& key,
+                   const std::string& value) {
+  api::CatalogColumnMetadata fields;
+  Require(api::AdmitCatalogColumnMetadata(encoded, &fields), "fixture text mutation source invalid");
+  fields.text[key] = value;
+  Require(api::EncodeCatalogColumnMetadata(fields, &encoded), "fixture text mutation encoding failed");
+}
+
+void SetColumnIdentity(std::string& encoded, const std::string& key,
+                       const std::string& value) {
+  api::CatalogColumnMetadata fields;
+  Require(api::AdmitCatalogColumnMetadata(encoded, &fields), "fixture identity mutation source invalid");
+  fields.identities[key] = FixtureIdentity(value);
+  Require(api::EncodeCatalogColumnMetadata(fields, &encoded), "fixture identity mutation encoding failed");
+}
+
 api::CrudTableRecord LegacyTable(const Fixture& fixture) {
   api::CrudTableRecord table;
   table.table_uuid = FixtureIdentity(fixture.table_uuid);
   table.default_name = "migration_target";
-  table.columns.push_back({"id", "column_uuid=" + fixture.column_uuid +
-      ";canonical=bigint;type_uuid=" + kLegacy + ";nullability=non_null"});
+  table.columns.push_back({"id", ColumnMetadata(
+      {{"canonical", "bigint"}, {"nullability", "non_null"}},
+      {{"column_uuid", fixture.column_uuid}, {"type_uuid", kLegacy}})});
   return table;
 }
 
@@ -825,10 +867,11 @@ api::CrudTableRecord LegacyInt32Table(const Fixture& fixture) {
   table.default_name = "int32_migration_target";
   const auto descriptor = [](const std::string& column_uuid,
                              const char* name) {
-    return "column_uuid=" + column_uuid + ";canonical=" + name +
-        ";datatype_descriptor_uuid=" + kLegacyInt32 +
-        ";type_uuid=" + kLegacyInt32 +
-        ";codec_id=datatype.int32.le.v1;nullability=non_null";
+    return ColumnMetadata({{"canonical", name}, {"codec_id", "datatype.int32.le.v1"},
+                           {"nullability", "non_null"}},
+                          {{"column_uuid", column_uuid},
+                           {"datatype_descriptor_uuid", kLegacyInt32},
+                           {"type_uuid", kLegacyInt32}});
   };
   table.columns.push_back(
       {"a", descriptor(fixture.int32_column_a_uuid, "int")});
@@ -843,10 +886,11 @@ api::CrudTableRecord ContradictoryInt32Table(const Fixture& fixture) {
   table.default_name = "int32_migration_conflict";
   table.columns.push_back({
       "id",
-      "column_uuid=" + fixture.int32_conflict_column_uuid +
-          ";canonical=int;datatype_descriptor_uuid=" +
-          kCanonicalInt32Descriptor + ";type_uuid=" + kLegacyInt32 +
-          ";codec_id=datatype.int32.le.v1;nullability=non_null"});
+      ColumnMetadata({{"canonical", "int"}, {"codec_id", "datatype.int32.le.v1"},
+                      {"nullability", "non_null"}},
+                     {{"column_uuid", fixture.int32_conflict_column_uuid},
+                      {"datatype_descriptor_uuid", kCanonicalInt32Descriptor},
+                      {"type_uuid", kLegacyInt32}})});
   return table;
 }
 
@@ -871,8 +915,8 @@ api::CrudTableRecord LegacyTextTable(const Fixture& fixture) {
   table.default_name = "text_migration_target";
   table.columns.push_back({
       "payload",
-      "type=text;nullable=true;datatype_descriptor_uuid=" +
-          std::string(kLegacyText) + ";type_uuid=" + kLegacyText});
+      ColumnMetadata({{"type", "text"}, {"nullable", "true"}},
+                     {{"datatype_descriptor_uuid", kLegacyText}, {"type_uuid", kLegacyText}})});
   return table;
 }
 
@@ -882,9 +926,9 @@ api::CrudTableRecord ContradictoryTextTable(const Fixture& fixture) {
   table.default_name = "text_migration_conflict";
   table.columns.push_back({
       "payload",
-      "type=text;nullable=true;datatype_descriptor_uuid=" +
-          std::string(kLegacyText) + ";type_uuid=" + kLegacyText +
-          ";codec_id=datatype.text.utf8.v1"});
+      ColumnMetadata({{"type", "text"}, {"nullable", "true"},
+                      {"codec_id", "datatype.text.utf8.v1"}},
+                     {{"datatype_descriptor_uuid", kLegacyText}, {"type_uuid", kLegacyText}})});
   return table;
 }
 
@@ -894,9 +938,8 @@ api::CrudTableRecord SemanticConflictTextTable(const Fixture& fixture) {
   table.default_name = "text_semantic_migration_conflict";
   table.columns.push_back({
       "payload",
-      "type=text;nullable=true;datatype_descriptor_uuid=" +
-          std::string(kLegacyText) + ";type_uuid=" + kLegacyText +
-          ";padding=space"});
+      ColumnMetadata({{"type", "text"}, {"nullable", "true"}, {"padding", "space"}},
+                     {{"datatype_descriptor_uuid", kLegacyText}, {"type_uuid", kLegacyText}})});
   return table;
 }
 
@@ -906,15 +949,12 @@ api::CrudTableRecord ResourceBoundLegacyTextTable(const Fixture& fixture) {
   table.default_name = "text_resource_migration_target";
   table.columns.push_back({
       "payload",
-      "type=text;nullable=true;datatype_descriptor_uuid=" +
-          std::string(kLegacyText) + ";type_uuid=" + kLegacyText +
-          ";character_length=256;charset_uuid=" + fixture.charset_uuid +
-          ";charset_generation=" +
-          std::to_string(fixture.charset_generation) +
-          ";collation_uuid=" + fixture.collation_uuid +
-          ";collation_generation=" +
-          std::to_string(fixture.collation_generation) +
-          ";resource_epoch=" + std::to_string(fixture.resource_epoch)});
+      ColumnMetadata({{"type", "text"}, {"nullable", "true"}, {"character_length", "256"},
+                      {"charset_generation", std::to_string(fixture.charset_generation)},
+                      {"collation_generation", std::to_string(fixture.collation_generation)},
+                      {"resource_epoch", std::to_string(fixture.resource_epoch)}},
+                     {{"datatype_descriptor_uuid", kLegacyText}, {"type_uuid", kLegacyText},
+                      {"charset_uuid", fixture.charset_uuid}, {"collation_uuid", fixture.collation_uuid}})});
   return table;
 }
 
@@ -924,8 +964,8 @@ api::CrudTableRecord StaleColumnLegacyTextTable(const Fixture& fixture) {
   table.default_name = "text_stale_column_migration_target";
   table.columns.push_back({
       "payload",
-      "type=text;nullable=true;datatype_descriptor_uuid=" +
-          std::string(kLegacyText) + ";type_uuid=" + kLegacyText});
+      ColumnMetadata({{"type", "text"}, {"nullable", "true"}},
+                     {{"datatype_descriptor_uuid", kLegacyText}, {"type_uuid", kLegacyText}})});
   return table;
 }
 
@@ -935,10 +975,9 @@ api::CrudTableRecord ResourceConflictLegacyTextTable(const Fixture& fixture) {
   table.default_name = "text_resource_migration_conflict";
   table.columns.push_back({
       "payload",
-      "type=text;nullable=true;datatype_descriptor_uuid=" +
-          std::string(kLegacyText) + ";type_uuid=" + kLegacyText +
-          ";character_length=256;charset_uuid=" + fixture.charset_uuid +
-          ";collation_uuid=" + fixture.collation_uuid});
+      ColumnMetadata({{"type", "text"}, {"nullable", "true"}, {"character_length", "256"}},
+                     {{"datatype_descriptor_uuid", kLegacyText}, {"type_uuid", kLegacyText},
+                      {"charset_uuid", fixture.charset_uuid}, {"collation_uuid", fixture.collation_uuid}})});
   return table;
 }
 
@@ -953,17 +992,12 @@ api::CrudTableRecord StaleResourceGenerationLegacyTextTable(
                            : "text_stale_collation_generation_migration_conflict";
   table.columns.push_back({
       "payload",
-      "type=text;nullable=true;datatype_descriptor_uuid=" +
-          std::string(kLegacyText) + ";type_uuid=" + kLegacyText +
-          ";character_length=256;charset_uuid=" + fixture.charset_uuid +
-          ";charset_generation=" +
-          std::to_string(fixture.charset_generation +
-                         (stale_charset ? 1 : 0)) +
-          ";collation_uuid=" + fixture.collation_uuid +
-          ";collation_generation=" +
-          std::to_string(fixture.collation_generation +
-                         (stale_charset ? 0 : 1)) +
-          ";resource_epoch=" + std::to_string(fixture.resource_epoch)});
+      ColumnMetadata({{"type", "text"}, {"nullable", "true"}, {"character_length", "256"},
+                      {"charset_generation", std::to_string(fixture.charset_generation + (stale_charset ? 1 : 0))},
+                      {"collation_generation", std::to_string(fixture.collation_generation + (stale_charset ? 0 : 1))},
+                      {"resource_epoch", std::to_string(fixture.resource_epoch)}},
+                     {{"datatype_descriptor_uuid", kLegacyText}, {"type_uuid", kLegacyText},
+                      {"charset_uuid", fixture.charset_uuid}, {"collation_uuid", fixture.collation_uuid}})});
   return table;
 }
 
@@ -1072,7 +1106,7 @@ RefusalArtifactSnapshot CaptureRefusalArtifacts(
   Require(loaded.ok, "refusal artifact state load failed");
   return {
       ReadFileBytes(fixture.path.string() + ".sb.mga_relation_metadata"),
-      ReadFileBytes(fixture.path.string() + ".sb.mga_event_sequences"),
+      ReadFileBytes(fixture.path.string() + ".sb.mga_event_sequence_allocator"),
       loaded.state.relation_metadata.max_event_sequence};
 }
 
@@ -1088,22 +1122,50 @@ void RequireRefusalArtifactsUnchanged(
           message);
 }
 
+void RequirePhysicalTailRefused(const api::EngineRequestContext& context,
+                                const Fixture& fixture) {
+  const auto before = CaptureRefusalArtifacts(context, fixture);
+  const auto frame = IndependentMetadataFrame(
+      {"SBMGA1", "TEXT_IDENTITY_MIGRATION_BATCH", "999"});
+  const auto path = fixture.path.string() + ".sb.mga_relation_metadata";
+  // Partial magic, header, payload and digest must not expose prefix state.
+  for (const auto count : {std::size_t{1}, std::size_t{12},
+                           std::size_t{20}, frame.size() - 1}) {
+    {
+      std::ofstream out(path, std::ios::app | std::ios::binary);
+      out.write(frame.data(), static_cast<std::streamsize>(count));
+      Require(out.good(), "physical truncation fixture append failed");
+    }
+    const auto invalid = api::LoadMgaRelationStoreState(context);
+    Require(!invalid.ok && invalid.diagnostic.detail ==
+                "mga.relation_metadata:metadata_store_read_failed",
+            "partial physical metadata frame did not fail closed");
+    Require(ReadFileBytes(path) == before.metadata + frame.substr(0, count) &&
+                ReadFileBytes(fixture.path.string() +
+                              ".sb.mga_event_sequence_allocator") == before.allocator,
+            "physical frame refusal changed storage artifacts");
+    std::filesystem::resize_file(path, before.metadata.size());
+    RequireRefusalArtifactsUnchanged(before, context, fixture,
+                                    "physical frame refusal changed recovered authority");
+  }
+}
+
+bool ExactNativeTextBinding(const api::EngineDescriptor& descriptor,
+                           const std::string& datatype,
+                           const std::string& type) {
+  return descriptor.datatype_descriptor_uuid == FixtureIdentity(datatype) &&
+      descriptor.datatype_descriptor_generation == 1 &&
+      descriptor.type_uuid == FixtureIdentity(type);
+}
+
 std::string DescriptorField(const std::string_view descriptor,
                             const std::string_view key) {
-  std::size_t start = 0;
-  while (start <= descriptor.size()) {
-    const auto end = descriptor.find(';', start);
-    const auto field = descriptor.substr(
-        start, end == std::string_view::npos ? descriptor.size() - start
-                                             : end - start);
-    const auto separator = field.find('=');
-    if (separator != std::string_view::npos &&
-        field.substr(0, separator) == key) {
-      return std::string(field.substr(separator + 1));
-    }
-    if (end == std::string_view::npos) break;
-    start = end + 1;
-  }
+  api::CatalogColumnMetadata fields;
+  Require(api::DecodeCatalogColumnMetadata(descriptor, &fields), "persisted column framing invalid");
+  if (const auto found = fields.text.find(std::string(key)); found != fields.text.end())
+    return found->second;
+  if (const auto found = fields.identities.find(std::string(key)); found != fields.identities.end())
+    return IdentityBytes(found->second);
   return {};
 }
 
@@ -1115,15 +1177,58 @@ std::string EnsureLegacyTextRelationDescriptor(
   const auto table = api::FindVisibleCrudTable(
       loaded.state.relation_metadata, FixtureIdentity(table_uuid), context.local_transaction_id);
   Require(table.has_value(), "legacy text table is not visible");
+  // This is an imported historical storage image, not a fresh catalog
+  // publication. Current construction correctly requires an already-published
+  // column cohort and must not reconstruct it from these legacy attributes.
+  api::CatalogColumnMetadata legacy_fields;
+  Require(api::DecodeCatalogColumnMetadata(table->columns.front().second, &legacy_fields),
+          "legacy fixture metadata framing invalid");
+  api::MgaRelationStorageDescriptor historical;
+  historical.descriptor_uuid = api::GenerateCrudEngineUuid("object");
+  historical.database_uuid = context.database_uuid;
+  historical.schema_uuid = context.current_schema_uuid;
+  historical.relation_uuid = table->table_uuid;
+  historical.relation_generation = table->event_sequence;
+  historical.primary_filespace_uuid = context.default_root_uuid;
+  historical.descriptor_status = "historical_identity_migration_fixture";
+  api::MgaRelationColumnStorageDescriptor legacy_column;
+  legacy_column.column_uuid = api::GenerateCrudEngineUuid("object");
+  legacy_column.column_generation = table->event_sequence;
+  legacy_column.canonical_name_key = table->columns.front().first;
+  legacy_column.value_descriptor.descriptor_uuid = legacy_column.column_uuid;
+  legacy_column.value_descriptor.descriptor_kind = "canonical_type_descriptor";
+  legacy_column.value_descriptor.canonical_type_name = "text";
+  legacy_column.value_descriptor.datatype_descriptor_uuid = FixtureIdentity(kLegacyText);
+  legacy_column.value_descriptor.datatype_descriptor_generation = 1;
+  legacy_column.value_descriptor.type_uuid = FixtureIdentity(kLegacyText);
+  legacy_column.charset_uuid = api::BinaryCatalogUuid(legacy_fields, "charset_uuid");
+  legacy_column.collation_uuid = api::BinaryCatalogUuid(legacy_fields, "collation_uuid");
+  legacy_column.value_descriptor.charset_uuid = legacy_column.charset_uuid;
+  legacy_column.value_descriptor.collation_uuid = legacy_column.collation_uuid;
+  if (legacy_fields.text.contains("character_length"))
+    legacy_column.character_length = std::stoul(legacy_fields.text.at("character_length"));
+  legacy_fields.identities["column_uuid"] = legacy_column.column_uuid;
+  Require(api::EncodeCatalogColumnMetadata(legacy_fields, &legacy_column.value_descriptor.encoded_descriptor),
+          "legacy fixture column encoding failed");
+  historical.columns.push_back(std::move(legacy_column));
+  Require(!api::ValidateMgaRelationStorageDescriptor(historical).error,
+          "historical fixture structural validation failed");
+  Require(!api::PersistDescriptorFields(context, table->table_uuid,
+              api::SerializeMgaRelationStorageDescriptor(historical)).error,
+          "historical fixture descriptor persistence failed");
   api::MgaRelationStorageDescriptor descriptor;
   const auto ensured = api::EnsureMgaRelationStorageDescriptor(
       context, *table, {}, &descriptor);
   Require(!ensured.error && descriptor.columns.size() == 1,
           "legacy text relation descriptor seed failed");
   const auto& column = descriptor.columns.front();
-  const std::string expected_encoded_descriptor =
-      table->columns.front().second + ";column_uuid=" +
-      IdentityBytes(column.column_uuid);
+  api::CatalogColumnMetadata fields;
+  Require(api::DecodeCatalogColumnMetadata(table->columns.front().second, &fields),
+          "legacy text column framing invalid");
+  fields.identities["column_uuid"] = column.column_uuid;
+  std::string expected_encoded_descriptor;
+  Require(api::EncodeCatalogColumnMetadata(fields, &expected_encoded_descriptor),
+          "legacy text column re-encoding failed");
   Require(!CanonicalUuidBytes(column.column_uuid).empty() &&
               column.value_descriptor.descriptor_uuid ==
                   column.column_uuid &&
@@ -1136,7 +1241,7 @@ std::string EnsureLegacyTextRelationDescriptor(
 }
 }  // namespace
 
-int main(const int argc, char* argv[]) {
+int RunConformance(const int argc, char* argv[]) {
   const auto mode = ParseFixtureMode(argc, argv);
   ConfigureMemoryFixture();
   auto fixture = MakeFixture(argv[1]);
@@ -1219,12 +1324,13 @@ int main(const int argc, char* argv[]) {
           "rolled-back migration became visible");
   Rollback(after_rollback);
 
-  // Recovery ignores a torn physical append because it has neither a complete
-  // shape nor a seal/hash with publication authority.
+  // A framed but incomplete migration payload has neither a complete shape
+  // nor a seal/hash with publication authority. Physical frame integrity is
+  // tested separately; arbitrary truncated bytes are not an admitted record.
   {
     std::ofstream out(fixture.path.string() + ".sb.mga_relation_metadata",
                       std::ios::app | std::ios::binary);
-    out << "SBMGA1\tBIGINT_IDENTITY_MIGRATION_BATCH\t999\n";
+    out << JoinTabs({"SBMGA1", "BIGINT_IDENTITY_MIGRATION_BATCH", "999"});
   }
   auto torn_recovery = Begin(BaseContext(fixture));
   Require(VisibleDescriptor(torn_recovery, fixture).find(kLegacy) != std::string::npos,
@@ -1295,11 +1401,11 @@ int main(const int argc, char* argv[]) {
   }
   Rollback(int32_after_rollback);
 
-  // A torn record has no seal/hash authority and is ignored on recovery.
+  // A framed incomplete migration has no seal/hash publication authority.
   {
     std::ofstream out(fixture.path.string() + ".sb.mga_relation_metadata",
                       std::ios::app | std::ios::binary);
-    out << "SBMGA1\tINT32_IDENTITY_MIGRATION_BATCH\t999\n";
+    out << JoinTabs({"SBMGA1", "INT32_IDENTITY_MIGRATION_BATCH", "999"});
   }
   auto int32_commit = Begin(BaseContext(fixture));
   int32_commit.statement_metadata_snapshot_uuid =
@@ -1345,6 +1451,31 @@ int main(const int argc, char* argv[]) {
   // complete relation-descriptor snapshot under one MGA-visible seal.
   if (mode == FixtureMode::kTextIdentityMigration) {
   const auto text_request = TextMigration(fixture, 4);
+  auto physical_tail = BeginTextMigration(fixture, text_request);
+  RequirePhysicalTailRefused(physical_tail, fixture);
+  const auto legacy_storage = api::LoadMgaRelationStorageDescriptor(
+      physical_tail, FixtureIdentity(fixture.text_table_uuid));
+  Require(legacy_storage.ok && legacy_storage.descriptor.columns.size() == 1,
+          "legacy native binding test input is unavailable");
+  const auto legacy_native = legacy_storage.descriptor.columns.front().value_descriptor;
+  for (unsigned variant = 0; variant < 5; ++variant) {
+    auto wrong = legacy_native;
+    if (variant == 0) wrong.datatype_descriptor_uuid = FixtureIdentity(kCanonicalTextDescriptor);
+    if (variant == 1) wrong.type_uuid = FixtureIdentity(kCanonicalTextType);
+    if (variant == 2) wrong.datatype_descriptor_generation = 0;
+    if (variant == 3) wrong.datatype_descriptor_generation = 2;
+    if (variant == 4) wrong.descriptor_uuid = api::GenerateCrudEngineUuid("object");
+    const auto before = wrong;
+    Require(!api::RewriteLegacyTextStorageDescriptor(
+                physical_tail, &wrong, FixtureIdentity(fixture.text_column_uuid)) &&
+                wrong.datatype_descriptor_uuid == before.datatype_descriptor_uuid &&
+                wrong.datatype_descriptor_generation == before.datatype_descriptor_generation &&
+                wrong.type_uuid == before.type_uuid &&
+                wrong.descriptor_uuid == before.descriptor_uuid &&
+                wrong.encoded_descriptor == before.encoded_descriptor,
+            "contradictory native TEXT binding was rewritten or partially mutated");
+  }
+  Rollback(physical_tail);
 
   auto text_wrong_receipt = BeginTextMigration(fixture, text_request);
   text_wrong_receipt.datatype_registry_generation = 2;
@@ -1571,6 +1702,8 @@ int main(const int argc, char* argv[]) {
   const auto creator_relation = api::LoadMgaRelationStorageDescriptor(
       text_rollback, FixtureIdentity(fixture.text_table_uuid));
   Require(creator_relation.ok && creator_relation.descriptor.columns.size() == 1 &&
+              ExactNativeTextBinding(creator_relation.descriptor.columns.front().value_descriptor,
+                                     kCanonicalTextDescriptor, kCanonicalTextType) &&
               creator_relation.descriptor.relation_generation ==
                   expected_first_text_event &&
               creator_relation.descriptor.columns.front()
@@ -1595,6 +1728,8 @@ int main(const int argc, char* argv[]) {
   const auto rolled_back_relation = api::LoadMgaRelationStorageDescriptor(
       text_after_rollback, FixtureIdentity(fixture.text_table_uuid));
   Require(rolled_back_relation.ok &&
+              ExactNativeTextBinding(rolled_back_relation.descriptor.columns.front().value_descriptor,
+                                     kLegacyText, kLegacyText) &&
               rolled_back_relation.descriptor.columns.front()
                       .value_descriptor.descriptor_uuid ==
                   FixtureIdentity(fixture.text_column_uuid) &&
@@ -1610,7 +1745,7 @@ int main(const int argc, char* argv[]) {
   {
     std::ofstream out(fixture.path.string() + ".sb.mga_relation_metadata",
                       std::ios::app | std::ios::binary);
-    out << "SBMGA1\tTEXT_IDENTITY_MIGRATION_BATCH\t999\n";
+    out << JoinTabs({"SBMGA1", "TEXT_IDENTITY_MIGRATION_BATCH", "999"});
   }
   auto text_commit = BeginTextMigration(fixture, text_request);
   Require(api::AppendMgaTextIdentityMigrationBatch(
@@ -1636,6 +1771,8 @@ int main(const int argc, char* argv[]) {
   const auto recovered_relation = api::LoadMgaRelationStorageDescriptor(
       text_recovered, FixtureIdentity(fixture.text_table_uuid));
   Require(recovered_relation.ok &&
+              ExactNativeTextBinding(recovered_relation.descriptor.columns.front().value_descriptor,
+                                     kCanonicalTextDescriptor, kCanonicalTextType) &&
               recovered_relation.descriptor.relation_generation > 4 &&
               recovered_relation.descriptor.columns.front()
                       .value_descriptor.encoded_descriptor == recovered_text,
@@ -1772,13 +1909,21 @@ int main(const int argc, char* argv[]) {
   fresh_table.table_names.push_back(PrimaryName("fresh_text_table"));
   api::EngineColumnDefinition fresh_column;
   fresh_column.ordinal = 0;
+  fresh_column.requested_column_uuid = api::GenerateCrudEngineUuid("object");
   fresh_column.names.push_back(PrimaryName("payload"));
   fresh_column.descriptor.descriptor_kind = "scalar";
+  fresh_column.descriptor.descriptor_uuid = api::GenerateCrudEngineUuid("object");
+  fresh_column.descriptor.datatype_descriptor_uuid = FixtureIdentity(kCanonicalTextDescriptor);
+  fresh_column.descriptor.datatype_descriptor_generation = 1;
+  fresh_column.descriptor.type_uuid = FixtureIdentity(kCanonicalTextType);
   fresh_column.descriptor.canonical_type_name = "text";
   fresh_column.descriptor.encoded_descriptor = "type=text";
   fresh_column.nullable = true;
   fresh_table.table_columns.push_back(fresh_column);
-  Require(api::EngineCreateTable(fresh_table).ok,
+  const auto fresh_created = api::EngineCreateTable(fresh_table);
+  if (!fresh_created.ok) for (const auto& diagnostic : fresh_created.diagnostics)
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  Require(fresh_created.ok,
           "fresh text table creation failed");
   const auto fresh_descriptor = VisibleDescriptor(
       fresh, fixture, fixture.fresh_text_table_uuid);
@@ -1801,14 +1946,16 @@ int main(const int argc, char* argv[]) {
           "fresh DDL did not persist canonical text authority");
 
   auto fresh_resource_table = fresh_table;
+  fresh_resource_table.table_columns.front().requested_column_uuid = api::GenerateCrudEngineUuid("object");
+  fresh_resource_table.table_columns.front().descriptor.descriptor_uuid = api::GenerateCrudEngineUuid("object");
   fresh_resource_table.requested_table_uuid =
       FixtureIdentity(fixture.fresh_resource_text_table_uuid);
   fresh_resource_table.table_names.clear();
   fresh_resource_table.table_names.push_back(
       PrimaryName("fresh_resource_text_table"));
   fresh_resource_table.table_columns.front().descriptor.encoded_descriptor =
-      "type=text;character_length=256;charset_uuid=" +
-      fixture.charset_uuid + ";collation_uuid=" + fixture.collation_uuid;
+      ColumnMetadata({{"type", "text"}, {"character_length", "256"}},
+                     {{"charset_uuid", fixture.charset_uuid}, {"collation_uuid", fixture.collation_uuid}});
   Require(api::EngineCreateTable(fresh_resource_table).ok,
           "fresh resource-bound text table creation failed");
   const auto fresh_resource_descriptor = VisibleDescriptor(
@@ -1833,7 +1980,7 @@ int main(const int argc, char* argv[]) {
   rejected_table.table_names.clear();
   rejected_table.table_names.push_back(PrimaryName("rejected_text_table"));
   rejected_table.table_columns.front().descriptor.encoded_descriptor =
-      "type=text;codec_uuid=" + Id(UuidKind::object, 38);
+      ColumnMetadata({{"type", "text"}}, {{"codec_uuid", Id(UuidKind::object, 38)}});
   const auto rejected_ddl_before = CaptureRefusalArtifacts(fresh, fixture);
   const auto rejected = api::EngineCreateTable(rejected_table);
   Require(!rejected.ok,
@@ -1973,10 +2120,8 @@ int main(const int argc, char* argv[]) {
   stale_charset_generation_table.table_names.clear();
   stale_charset_generation_table.table_names.push_back(
       PrimaryName("stale_charset_generation_rejected_text_table"));
-  stale_charset_generation_table.table_columns.front()
-      .descriptor.encoded_descriptor +=
-      ";charset_generation=" +
-      std::to_string(fixture.charset_generation + 1);
+  SetColumnText(stale_charset_generation_table.table_columns.front().descriptor.encoded_descriptor,
+                "charset_generation", std::to_string(fixture.charset_generation + 1));
   const auto stale_charset_ddl_before = CaptureRefusalArtifacts(fresh, fixture);
   Require(!api::EngineCreateTable(stale_charset_generation_table).ok,
           "fresh DDL accepted stale TEXT charset generation");
@@ -1990,10 +2135,8 @@ int main(const int argc, char* argv[]) {
   stale_collation_generation_table.table_names.clear();
   stale_collation_generation_table.table_names.push_back(
       PrimaryName("stale_collation_generation_rejected_text_table"));
-  stale_collation_generation_table.table_columns.front()
-      .descriptor.encoded_descriptor +=
-      ";collation_generation=" +
-      std::to_string(fixture.collation_generation + 1);
+  SetColumnText(stale_collation_generation_table.table_columns.front().descriptor.encoded_descriptor,
+                "collation_generation", std::to_string(fixture.collation_generation + 1));
   const auto stale_collation_ddl_before =
       CaptureRefusalArtifacts(fresh, fixture);
   Require(!api::EngineCreateTable(stale_collation_generation_table).ok,
@@ -2051,6 +2194,11 @@ int main(const int argc, char* argv[]) {
         static_cast<std::uint32_t>(non_text_table.table_columns.size());
     column.names.push_back(PrimaryName(expected.name));
     column.descriptor.descriptor_kind = "scalar";
+    column.requested_column_uuid = api::GenerateCrudEngineUuid("object");
+    column.descriptor.descriptor_uuid = api::GenerateCrudEngineUuid("object");
+    column.descriptor.datatype_descriptor_uuid = FixtureIdentity(expected.descriptor_uuid);
+    column.descriptor.datatype_descriptor_generation = 1;
+    column.descriptor.type_uuid = FixtureIdentity(expected.type_uuid);
     column.descriptor.canonical_type_name = expected.type;
     column.descriptor.encoded_descriptor = "type=" + expected.type;
     column.nullable = false;
@@ -2093,12 +2241,16 @@ int main(const int argc, char* argv[]) {
     const auto& persisted = non_text_relation.descriptor.columns[index];
     const bool registry_authority_preserved =
         persisted.value_descriptor.descriptor_uuid ==
-            persisted.column_uuid &&
+            non_text_table.table_columns[index].descriptor.descriptor_uuid &&
+        persisted.column_uuid == non_text_table.table_columns[index].requested_column_uuid &&
+        ExactNativeTextBinding(persisted.value_descriptor,
+                               expected_non_text[index].descriptor_uuid,
+                               expected_non_text[index].type_uuid) &&
         DescriptorField(persisted.value_descriptor.encoded_descriptor,
                         "datatype_descriptor_uuid") ==
             expected_non_text[index].descriptor_uuid &&
         persisted.value_descriptor.descriptor_kind ==
-            "canonical_type_descriptor" &&
+            non_text_table.table_columns[index].descriptor.descriptor_kind &&
         persisted.value_descriptor.encoded_descriptor ==
             non_text_descriptors[index];
     if (!registry_authority_preserved) {
@@ -2144,8 +2296,8 @@ int main(const int argc, char* argv[]) {
   contradictory_non_text.table_names.clear();
   contradictory_non_text.table_names.push_back(
       PrimaryName("contradictory_rejected_non_text_table"));
-  contradictory_non_text.table_columns.front().descriptor.encoded_descriptor +=
-      ";type_uuid=" + std::string(kCanonicalInt32Descriptor);
+  SetColumnIdentity(contradictory_non_text.table_columns.front().descriptor.encoded_descriptor,
+                    "type_uuid", kCanonicalInt32Descriptor);
   const auto contradictory_non_text_before =
       CaptureRefusalArtifacts(fresh, fixture);
   Require(!api::EngineCreateTable(contradictory_non_text).ok,
@@ -2165,8 +2317,11 @@ int main(const int argc, char* argv[]) {
   Require(fresh_relation.ok && fresh_relation.descriptor.columns.size() == 1 &&
               fresh_relation.descriptor.columns.front()
                       .value_descriptor.descriptor_uuid ==
-                  fresh_relation.descriptor.columns.front()
-                      .column_uuid &&
+                  fresh_column.descriptor.descriptor_uuid &&
+              fresh_relation.descriptor.columns.front().column_uuid ==
+                  fresh_column.requested_column_uuid &&
+              ExactNativeTextBinding(fresh_relation.descriptor.columns.front().value_descriptor,
+                                     kCanonicalTextDescriptor, kCanonicalTextType) &&
               DescriptorField(
                   fresh_relation.descriptor.columns.front()
                       .value_descriptor.encoded_descriptor,
@@ -2230,8 +2385,7 @@ int main(const int argc, char* argv[]) {
   std::string sealed_text_line;
   std::string sealed_resource_text_line;
   {
-    std::ifstream in(metadata_path, std::ios::binary);
-    for (std::string line; std::getline(in, line);) {
+    for (const auto& line : ReadMetadataRecords(metadata_path)) {
       const auto fields = SplitTabs(line);
       if (fields.size() == kTextMigrationSingleRowFields &&
           fields[1] == "TEXT_IDENTITY_MIGRATION_BATCH") {
@@ -2251,14 +2405,13 @@ int main(const int argc, char* argv[]) {
       SplitTabs(sealed_resource_text_line), fixture,
       fixture.text_resource_table_uuid, fixture.text_resource_column_uuid,
       true);
-  const auto seal = sealed_text_line.find("sha256:");
-  Require(seal != std::string::npos && seal + 7 < sealed_text_line.size(),
+  auto corrupted_fields = SplitTabs(sealed_text_line);
+  Require(corrupted_fields[6].starts_with("sha256:") && corrupted_fields[6].size() == 71,
           "sealed text migration evidence was not found");
-  sealed_text_line[seal + 7] =
-      sealed_text_line[seal + 7] == '0' ? '1' : '0';
+  corrupted_fields[6][7] = corrupted_fields[6][7] == '0' ? '1' : '0';
   {
     std::ofstream out(metadata_path, std::ios::app | std::ios::binary);
-    out << sealed_text_line << '\n';
+    out << JoinTabs(corrupted_fields);
   }
   auto corrupted_context = Begin(BaseContext(fixture));
   const auto corrupted = api::LoadMgaRelationStoreState(corrupted_context);
@@ -2273,8 +2426,7 @@ int main(const int argc, char* argv[]) {
   std::filesystem::resize_file(metadata_path, clean_metadata_size);
   std::string canonical_text_line;
   {
-    std::ifstream in(metadata_path, std::ios::binary);
-    for (std::string line; std::getline(in, line);) {
+    for (const auto& line : ReadMetadataRecords(metadata_path)) {
       const auto fields = SplitTabs(line);
       if (fields.size() == kTextMigrationSingleRowFields &&
           fields[1] == "TEXT_IDENTITY_MIGRATION_BATCH" &&
@@ -2296,7 +2448,7 @@ int main(const int argc, char* argv[]) {
   forged_receipt_fields[6] = RecomputeTextBatchHash(forged_receipt_fields);
   {
     std::ofstream out(metadata_path, std::ios::app | std::ios::binary);
-    out << JoinTabs(forged_receipt_fields) << '\n';
+    out << JoinTabs(forged_receipt_fields);
   }
   auto forged_receipt_context = Begin(BaseContext(fixture));
   const auto forged_receipt =
@@ -2312,13 +2464,13 @@ int main(const int argc, char* argv[]) {
   // is not the exact transform of the visible legacy table+column lineage.
   auto forged_lineage_fields = SplitTabs(canonical_text_line);
   forged_lineage_fields[kTextMigrationHeaderFields + 13] =
-      api::EncodeCrudText("forged_table_name");
+      "forged_table_name";
   forged_lineage_fields[kTextMigrationHeaderFields + 12] =
       RecomputeTextDecisionHash(forged_lineage_fields);
   forged_lineage_fields[6] = RecomputeTextBatchHash(forged_lineage_fields);
   {
     std::ofstream out(metadata_path, std::ios::app | std::ios::binary);
-    out << JoinTabs(forged_lineage_fields) << '\n';
+    out << JoinTabs(forged_lineage_fields);
   }
   auto forged_lineage_context = Begin(BaseContext(fixture));
   const auto forged_lineage =
@@ -2331,4 +2483,12 @@ int main(const int argc, char* argv[]) {
           "rehashed forged TEXT lineage was accepted");
   Rollback(forged_lineage_context);
   return EXIT_SUCCESS;
+}
+
+int main(int argc, char** argv) {
+  try { return RunConformance(argc, argv); }
+  catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }

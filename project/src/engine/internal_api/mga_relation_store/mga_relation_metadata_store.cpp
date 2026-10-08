@@ -1220,6 +1220,9 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
         for (const auto& column : relation_descriptor.columns) {
           if (column.column_uuid != row.column_uuid) continue;
           if (column.canonical_name_key != migrated_column_name ||
+              column.value_descriptor.datatype_descriptor_uuid != kCanonicalTextDescriptorUuid ||
+              column.value_descriptor.datatype_descriptor_generation != 1 ||
+              column.value_descriptor.type_uuid != kCanonicalTextTypeUuid ||
               column.value_descriptor.descriptor_uuid !=
                   row.column_uuid ||
               column.value_descriptor.encoded_descriptor !=
@@ -1442,9 +1445,8 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
               !RewriteLegacyTextDescriptor(
                   context, &migrated_table_descriptor,
                   column.column_uuid) ||
-              !RewriteLegacyTextDescriptor(
-                  context,
-                  &column.value_descriptor.encoded_descriptor,
+              !RewriteLegacyTextStorageDescriptor(
+                  context, &column.value_descriptor,
                   column.column_uuid) ||
               migrated_table_descriptor !=
                   column.value_descriptor.encoded_descriptor ||
