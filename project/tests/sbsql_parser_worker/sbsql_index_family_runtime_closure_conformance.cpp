@@ -1,5 +1,6 @@
 #include "../support/engine_evidence_fixture.hpp"
 #include "../support/ordered_integer_key_oracle.hpp"
+#include "../support/native_int64_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -175,10 +176,24 @@ api::EngineDescriptor Descriptor(std::string type) {
 }
 
 api::EngineTypedValue TypedValue(std::string type, std::string value) {
+  if (type == "int64") {
+    const auto descriptor = scratchbird::tests::ExactScalarDescriptorFixture(
+        scratchbird::core::datatypes::CanonicalTypeId::int64, "int64",
+        GeneratedIdentity(UuidKind::object, CurrentUnixMillis()), "type=int64");
+    return scratchbird::tests::NativeInt64Fixture(descriptor, value);
+  }
   api::EngineTypedValue typed;
   typed.descriptor = Descriptor(std::move(type));
   typed.encoded_value = std::move(value);
   return typed;
+}
+
+std::string ExpectedNativeInt64Tuple(std::int64_t number) {
+  // Independent logical-tuple framing, separate from the ordered-key oracle.
+  std::string tuple("SBCLKEY2\x01\x00\x00\x00\x00\x08\x00\x00\x00", 17);
+  for (unsigned byte = 0; byte < 8; ++byte)
+    tuple.push_back(static_cast<char>(static_cast<std::uint64_t>(number) >> (8 * byte)));
+  return tuple;
 }
 
 api::EngineColumnDefinition Column(std::string name, std::string type, std::uint32_t ordinal) {
@@ -783,17 +798,17 @@ void RequireRuntimeIndexEntriesAndScans(const api::EngineRequestContext& context
           "btree insert maintenance did not persist new key");
   for (const auto& entry : state.index_entries)
     if (entry.index_uuid == BtreeIndexUuid() && entry.key_value == expected_btree_key)
-      Require(entry.payload_value == std::string("SBCLKEY2\x01\x00\x00\x00\x00\x01\x00\x00\x00" "3", 18),
+      Require(entry.payload_value == ExpectedNativeInt64Tuple(3),
               "btree insert maintenance did not preserve the lossless logical tuple");
   Require(CountIndexEntries(state, BitmapIndexUuid(), std::string("SBCLKEY2\x01\x00\x00\x00\x00\x06\x00\x00\x00" "active", 23)) >= 3,
           "bitmap mutation path did not persist active-key entries");
   Require(CountIndexEntries(state, ExpressionIndexUuid(), std::string("SBCLKEY2\x01\x00\x00\x00\x00\x05\x00\x00\x00" "bravo", 22)) == 1,
           "expression update maintenance did not persist lower-case expression key");
-  Require(CountIndexEntries(state, PartialIndexUuid(), std::string("SBCLKEY2\x01\x00\x00\x00\x00\x01\x00\x00\x00" "2", 18)) == 1,
+  Require(CountIndexEntries(state, PartialIndexUuid(), ExpectedNativeInt64Tuple(2)) == 1,
           "partial update maintenance did not add row after predicate became true");
-  Require(CountIndexEntries(state, PartialIndexUuid(), std::string("SBCLKEY2\x01\x00\x00\x00\x00\x01\x00\x00\x00" "1", 18), "exact") == 1,
+  Require(CountIndexEntries(state, PartialIndexUuid(), ExpectedNativeInt64Tuple(1), "exact") == 1,
           "partial create-index maintenance did not capture existing predicate-matching row");
-  Require(CountIndexEntries(state, PartialIndexUuid(), std::string("SBCLKEY2\x01\x00\x00\x00\x00\x01\x00\x00\x00" "1", 18), "retire") == 1,
+  Require(CountIndexEntries(state, PartialIndexUuid(), ExpectedNativeInt64Tuple(1), "retire") == 1,
           "partial delete maintenance did not preserve the MGA retire record");
 
   auto selected = SelectRows(context, Predicate("column_range", "id", {TypedValue("int64", "2"),
