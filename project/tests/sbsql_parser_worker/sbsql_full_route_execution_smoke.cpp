@@ -1131,6 +1131,16 @@ int main(int argc, char** argv) {
     std::cerr << "full route did not emit parser disconnect notice under " << work << '\n';
     return EXIT_FAILURE;
   }
-  std::cout << "sbp_sbsql_full_route_execution_smoke=passed work=" << work << '\n';
+  // Both owned server/listener processes have been joined. Successful runs
+  // must not accumulate another resource-seeded database in /tmp. Failure
+  // paths retain their private directory for bounded diagnostic collection.
+  std::error_code cleanup_error;
+  std::filesystem::remove_all(work, cleanup_error);
+  if (cleanup_error) {
+    std::cerr << "full route fixture cleanup failed under " << work << ": "
+              << cleanup_error.message() << '\n';
+    return EXIT_FAILURE;
+  }
+  std::cout << "sbp_sbsql_full_route_execution_smoke=passed cleaned_work=" << work << '\n';
   return EXIT_SUCCESS;
 }
