@@ -1035,46 +1035,50 @@ BulkSha ExecutorEvidence(const BulkImportStreamAllocation& allocation,
   return Hash("ScratchBird.SblrBulkImportStreamExecutorEvidence.V1", material);
 }
 
-bool ExactRowValues(const CrudRowVersionRecord& actual,
-                    const EngineRowValue& expected) {
+}  // namespace
+
+bool BulkImportHistoricalRowValuesEqualV1(const CrudRowVersionRecord& actual,
+                                        const EngineRowValue& expected) {
   if (actual.deleted) return false;
-  std::map<std::string, CrudStoredValue> actual_values;
+  // Borrow only for this synchronous comparison; large character payloads
+  // need not be copied once per row during publication and recovery.
+  std::map<std::string_view, const CrudStoredValue*, std::less<>> actual_values;
   for (const auto& [name, value] : actual.values) {
-    if (!actual_values.emplace(name, value).second) return false;
+    if (!actual_values.emplace(name, &value).second) return false;
   }
   if (actual_values.size() != expected.fields.size()) return false;
   for (const auto& [name, typed] : expected.fields) {
     const auto found = actual_values.find(name);
-    if (found == actual_values.end() || !found->second.valid()) return false;
+    if (found == actual_values.end() || !found->second->valid()) return false;
+    const auto* stored = found->second;
+    actual_values.erase(found); // Each expected field must match exactly once.
     if (typed.isSqlNull()) {
-      if (!found->second.isSqlNull()) return false;
+      if (!stored->isSqlNull() || !typed.encoded_value.empty() ||
+          !typed.binary_value.empty()) return false;
       continue;
     }
-    if (!found->second.isPresent() || typed.state != EngineValueState::value ||
+    if (!stored->isPresent() || typed.state != EngineValueState::value ||
         !typed.encoded_value.empty()) return false;
-    // The CSV converter produces canonical typed bytes, while the retained
-    // int32 row profile is decimal. Compare in the converter's typed domain;
-    // an absent display cache is not an empty value and not a NULL marker.
+    // Both ingestion and the retained row store own the canonical binary
+    // payload. Recovery must compare those exact bytes, not reinterpret the
+    // stored INT32 as client-side decimal text (including four-byte text
+    // spellings that happen to have the native payload's width).
     const auto type = CanonicalBulkColumnType(typed.descriptor.canonical_type_name);
     if (type == scratchbird::core::datatypes::CanonicalTypeId::int32) {
-      std::int32_t number = 0;
-      if (!ParseCanonicalInt32(found->second.bytes, &number) ||
-          typed.binary_value.size() != 4) return false;
-      const auto bits = static_cast<std::uint32_t>(number);
-      for (unsigned byte = 0; byte != 4; ++byte)
-        if (typed.binary_value[byte] != static_cast<std::uint8_t>(bits >> (byte * 8))) return false;
-    } else if (type == scratchbird::core::datatypes::CanonicalTypeId::character) {
-      if (found->second.bytes.size() != typed.binary_value.size() ||
-          !std::equal(typed.binary_value.begin(), typed.binary_value.end(),
-                      found->second.bytes.begin(), [](std::uint8_t a, char b) {
-                        return a == static_cast<std::uint8_t>(b);
-                      })) return false;
-    } else {
+      if (typed.binary_value.size() != 4) return false;
+    } else if (type != scratchbird::core::datatypes::CanonicalTypeId::character) {
       return false; // Not a type admitted by CanonicalCsvDecoder.
     }
+    if (stored->bytes.size() != typed.binary_value.size() ||
+        !std::equal(typed.binary_value.begin(), typed.binary_value.end(),
+                    stored->bytes.begin(), [](std::uint8_t a, char b) {
+                      return a == static_cast<std::uint8_t>(b);
+                    })) return false;
   }
-  return true;
+  return actual_values.empty();
 }
+
+namespace {
 
 enum class HistoricalRowsState : std::uint8_t {
   all_absent,
@@ -1113,7 +1117,7 @@ HistoricalRowsState ClassifyHistoricalRows(
         });
     if (found == lineage.versions.end() ||
         found->creator_tx != context.local_transaction_id ||
-        !ExactRowValues(*found, parsed.rows[index]) ||
+        !BulkImportHistoricalRowValuesEqualV1(*found, parsed.rows[index]) ||
         event.import_ordinal != index + 1 ||
         event.row_uuid != parsed.rows[index].requested_row_uuid ||
         event.row_image_metadata_generation !=

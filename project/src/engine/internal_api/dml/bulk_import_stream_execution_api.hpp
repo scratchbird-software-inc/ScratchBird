@@ -17,6 +17,14 @@
 
 namespace scratchbird::engine::internal_api {
 
+struct CrudRowVersionRecord;
+
+// Pure payload postcondition used after lineage/descriptor admission. This
+// neither admits a row nor establishes publication: the caller must also
+// validate the historical row/version identities and durable event evidence.
+bool BulkImportHistoricalRowValuesEqualV1(
+    const CrudRowVersionRecord& actual, const EngineRowValue& expected);
+
 // Named publication checkpoints from the Core opcode-775 recovery contract.
 // The observer is an internal conformance/fault-injection seam only: it
 // supplies no authority and cannot authorize, suppress, or replace a normal

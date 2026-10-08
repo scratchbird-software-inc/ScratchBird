@@ -10,12 +10,16 @@ import argparse
 import hashlib
 import struct
 import os
+import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-from ia01_package_process_e2e import ProofError, allocate_work, seed_database, stop, wait_unix
+from ia01_package_process_e2e import (
+    ProofError, allocate_work, require_stopped_fixture_group,
+    seed_database, stop, wait_unix,
+)
 
 
 def wait_service_ready(process: subprocess.Popen, endpoint: Path, timeout: float = 60.0) -> None:
@@ -409,6 +413,15 @@ def main() -> int:
     args = parser.parse_args()
     work = allocate_work(Path(args.work_dir))
     server = None
+    fixture_servers = []
+
+    def start_server(*arguments, **options):
+        process = subprocess.Popen(
+            *arguments, **options, start_new_session=(os.name == "posix")
+        )
+        fixture_servers.append(process)
+        return process
+
     try:
         if args.cluster_provider_proof:
             if not (
@@ -485,7 +498,7 @@ def main() -> int:
         env["SCRATCHBIRD_TEST_DDL_CREATE_PROCEDURE_RESULT_ARTIFACT"] = str(
             work / "ddl-create-procedure-result.pcrs"
         )
-        server = subprocess.Popen(
+        server = start_server(
             [args.server, "--foreground", "--no-listeners", "--control-dir",
              str(work / "sc"), "--runtime-dir", str(work / "sr"),
              "--database", str(database), "--sbps-endpoint", str(endpoint)],
@@ -1841,7 +1854,7 @@ def main() -> int:
             stop(server)
             server = None
             restart_endpoint = work / "sc-restart" / "s.sock"
-            server = subprocess.Popen(
+            server = start_server(
                 [
                     args.server,
                     "--foreground",
@@ -1928,7 +1941,7 @@ def main() -> int:
             server = None
             restart_control = work / "trigger-restart-control"
             restart_endpoint = restart_control / "s.sock"
-            server = subprocess.Popen(
+            server = start_server(
                 [
                     args.server,
                     "--foreground",
@@ -2030,7 +2043,7 @@ def main() -> int:
                 else "drop-trigger-restart-control"
             )
             restart_endpoint = restart_control / "s.sock"
-            server = subprocess.Popen(
+            server = start_server(
                 [
                     args.server,
                     "--foreground",
@@ -2229,7 +2242,7 @@ def main() -> int:
             server = None
             restart_control = work / "create-procedure-restart-control"
             restart_endpoint = restart_control / "s.sock"
-            server = subprocess.Popen(
+            server = start_server(
                 [
                     args.server,
                     "--foreground",
@@ -2428,7 +2441,7 @@ def main() -> int:
             server = None
             restart_control = work / "security-alter-policy-restart-control"
             restart_endpoint = restart_control / "s.sock"
-            server = subprocess.Popen(
+            server = start_server(
                 [
                     args.server,
                     "--foreground",
@@ -2574,7 +2587,7 @@ def main() -> int:
             server = None
             restart_control = work / "procedure-invoke-restart-control"
             restart_endpoint = restart_control / "s.sock"
-            server = subprocess.Popen(
+            server = start_server(
                 [
                     args.server,
                     "--foreground",
@@ -2665,7 +2678,7 @@ def main() -> int:
             server = None
             restart_control = work / "policy-observer-restart-control"
             restart_endpoint = restart_control / "s.sock"
-            server = subprocess.Popen(
+            server = start_server(
                 [
                     args.server,
                     "--foreground",
@@ -2953,14 +2966,25 @@ def main() -> int:
                     "TYPE refusal leaked canonical executor/result/publication "
                     f"evidence: {', '.join(leaked_markers)}"
                 )
-        print(f"sbsql_sblr_alignment_ia01_{args.operation.replace('-', '_')}_process_e2e=passed work={work}")
+        # All result/restart/durability assertions above must finish before
+        # teardown. Track earlier restart processes too: reaping only the last
+        # parent is not proof that the private database has no live users.
+        for process in reversed(fixture_servers):
+            stop(process)
+        cleaned = os.name == "posix"
+        if cleaned:
+            for process in fixture_servers:
+                require_stopped_fixture_group(process)
+            shutil.rmtree(work)
+        print(f"sbsql_sblr_alignment_ia01_{args.operation.replace('-', '_')}_process_e2e=passed work={work} cleaned={cleaned}")
         return 0
     except Exception as exc:  # noqa: BLE001
         print(f"sbsql_sblr_alignment_ia01_{args.operation.replace('-', '_')}_process_e2e=failed work={work}: {exc}",
               file=sys.stderr)
         return 1
     finally:
-        stop(server)
+        for process in reversed(fixture_servers):
+            stop(process)
 
 
 if __name__ == "__main__":

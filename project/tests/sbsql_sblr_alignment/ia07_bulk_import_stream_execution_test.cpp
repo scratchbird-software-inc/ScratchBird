@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -822,6 +823,16 @@ std::map<std::string, api::CrudStoredValue> Values(
   return {row.values.begin(), row.values.end()};
 }
 
+std::int32_t NativeInt32(const api::CrudStoredValue& value) {
+  Require(value.isPresent() && value.bytes.size() == 4,
+          "retained INT32 is not a four-byte PRESENT value");
+  std::uint32_t bits = 0;
+  for (unsigned byte = 0; byte != 4; ++byte)
+    bits |= std::uint32_t(static_cast<unsigned char>(value.bytes[byte]))
+            << (byte * 8);
+  return std::bit_cast<std::int32_t>(bits);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -853,18 +864,75 @@ int main(int argc, char** argv) {
           "strict CSV terminal execution failed");
   auto rows = VisibleRows(fixture);
   Require(rows.size() == 4, "strict CSV did not publish four rows");
-  std::map<std::string, api::CrudStoredValue> payload_by_id;
+  std::map<std::int32_t, api::CrudStoredValue> payload_by_id;
   for (const auto& row : rows) {
     const auto values = Values(row);
     Require(values.contains("id") && values.contains("payload") && values.at("id").isPresent(),
             "published row shape drifted");
-    payload_by_id.emplace(values.at("id").bytes, values.at("payload"));
+    Require(payload_by_id.emplace(NativeInt32(values.at("id")),
+                                  values.at("payload")).second,
+            "duplicate imported integer identity");
   }
-  Require(payload_by_id["1"] == "plain" &&
-              payload_by_id["2"] == "comma,value" &&
-              payload_by_id["3"] == "\\N" &&
-              payload_by_id["4"].isSqlNull() && payload_by_id["4"].bytes.empty(),
+  Require(payload_by_id.at(1) == "plain" &&
+              payload_by_id.at(2) == "comma,value" &&
+              payload_by_id.at(3) == "\\N" &&
+              payload_by_id.at(4).isSqlNull() && payload_by_id.at(4).bytes.empty(),
           "strict CSV quote/null conversion drifted");
+
+  // Exercise the exact production historical payload predicate on a real
+  // published row, including same-width corruptions that no framing check can
+  // detect. Expected bytes are independent of the stored row and converter.
+  const auto original = std::find_if(rows.begin(), rows.end(), [](const auto& row) {
+    return NativeInt32(Values(row).at("id")) == 1;
+  });
+  Require(original != rows.end(), "integer postcondition fixture missing");
+  api::EngineRowValue expected_row;
+  api::EngineTypedValue expected_id;
+  expected_id.descriptor.canonical_type_name = "int32";
+  expected_id.binary_value = {1, 0, 0, 0};
+  api::EngineTypedValue expected_payload;
+  expected_payload.descriptor.canonical_type_name = "character";
+  expected_payload.binary_value = {'p', 'l', 'a', 'i', 'n'};
+  expected_row.fields = {{"id", expected_id}, {"payload", expected_payload}};
+  Require(api::BulkImportHistoricalRowValuesEqualV1(*original, expected_row),
+          "exact native historical row did not match");
+  for (unsigned bit = 0; bit != 32; ++bit) {
+    auto changed = *original;
+    for (auto& [name, value] : changed.values)
+      if (name == "id") value.bytes[bit / 8] ^= char(1U << (bit % 8));
+    Require(!api::BulkImportHistoricalRowValuesEqualV1(changed, expected_row),
+            "changed native integer bit passed recovery postcondition");
+  }
+  for (const auto& text : {std::string{}, std::string("1"), std::string("01"),
+                          std::string("001"), std::string("0001"),
+                          std::string("1234"), std::string("00001")}) {
+    auto changed = *original;
+    for (auto& [name, value] : changed.values)
+      if (name == "id") value.bytes = text;
+    Require(!api::BulkImportHistoricalRowValuesEqualV1(changed, expected_row),
+            "text integer alias passed native recovery postcondition");
+  }
+  auto changed = *original;
+  changed.values.push_back(changed.values.front());
+  Require(!api::BulkImportHistoricalRowValuesEqualV1(changed, expected_row),
+          "duplicate historical field passed postcondition");
+  auto duplicate_expected = expected_row;
+  duplicate_expected.fields.back() = duplicate_expected.fields.front();
+  Require(!api::BulkImportHistoricalRowValuesEqualV1(*original, duplicate_expected),
+          "duplicate expected field hid an unmatched historical field");
+  auto null_row = *original;
+  for (auto& [name, value] : null_row.values)
+    if (name == "payload") value = api::CrudStoredValue::SqlNull();
+  auto null_expected = expected_row;
+  null_expected.fields.back().second.setState(api::EngineValueState::sql_null);
+  null_expected.fields.back().second.binary_value.clear();
+  Require(api::BulkImportHistoricalRowValuesEqualV1(null_row, null_expected),
+          "matching typed NULL failed historical postcondition");
+  null_expected.fields.back().second.binary_value.push_back(0);
+  Require(!api::BulkImportHistoricalRowValuesEqualV1(null_row, null_expected),
+          "dirty expected NULL passed historical postcondition");
+  Require(api::BulkImportHistoricalRowValuesEqualV1(*original, expected_row),
+          "negative postcondition checks changed original row");
 
   const auto malformed = CoordinateAndSeal(
       fixture, *registry, 12, "5,accepted_before_error\n6\n");
@@ -1109,6 +1177,40 @@ int main(int argc, char** argv) {
               fresh_result.canonical_birs != first_birs &&
               VisibleRows(fixture).size() == durable_rows + 1,
           "a fresh descriptor incorrectly recovered an earlier operation");
+
+  // Recovery must preserve signed extrema, embedded zero/high bytes and a
+  // payload whose four native bytes are themselves the ASCII digits "1234".
+  // It must not parse retained binary bytes as CSV text on publication/replay.
+  const auto binary_boundaries = CoordinateAndSeal(
+      fixture, *registry, 37,
+      "-2147483648,min\n2147483647,max\n0,zero\n-1,negative\n"
+      "128,high_byte\n256,zero_byte\n875770417,ascii_bytes\n");
+  execute.canonical_biro = binary_boundaries.biro;
+  const auto boundaries = api::ExecuteBulkImportStreamV1(execute);
+  Require(boundaries.ok && !boundaries.replayed && boundaries.affected_rows == 7 &&
+              boundaries.rejected_rows == 0,
+          "native integer boundary import failed");
+  std::map<std::string, std::int32_t> boundary_values;
+  for (const auto& row : VisibleRows(fixture)) {
+    const auto values = Values(row);
+    if (values.at("payload").isPresent())
+      boundary_values.emplace(values.at("payload").bytes,
+                              NativeInt32(values.at("id")));
+  }
+  for (const auto& [label, expected] :
+       std::map<std::string, std::int32_t>{
+           {"min", std::numeric_limits<std::int32_t>::min()},
+           {"max", std::numeric_limits<std::int32_t>::max()}, {"zero", 0},
+           {"negative", -1}, {"high_byte", 128}, {"zero_byte", 256},
+           {"ascii_bytes", 875770417}})
+    Require(boundary_values.at(label) == expected,
+            "native imported integer bytes changed");
+  reopen_registry();
+  const auto boundaries_replayed = api::ExecuteBulkImportStreamV1(execute);
+  Require(boundaries_replayed.ok && boundaries_replayed.replayed &&
+              boundaries_replayed.canonical_birs == boundaries.canonical_birs &&
+              VisibleRows(fixture).size() == durable_rows + 8,
+          "native integer boundary replay changed rows or result");
 
   Rollback(fixture.context);
   return EXIT_SUCCESS;
