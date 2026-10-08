@@ -519,6 +519,16 @@ sb_add_driver_native_full_surface_artifact_schema_gate(driver_native_full_surfac
 sb_add_driver_native_matrix_plan_gate(driver_native_full_surface_matrix_plan)
 sb_add_driver_native_workplan_coverage_gate(driver_native_workplan_coverage_gate)
 sb_add_driver_native_tool_stage_gate(driver_native_core_tool_binaries)
+add_test(NAME driver_native_build_lifetime_contract
+  COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/scripts/build_native_driver_tools_test.py")
+set_tests_properties(driver_native_build_lifetime_contract PROPERTIES
+  LABELS "driver;driver_native_tool_binaries;process_lifetime" TIMEOUT 30)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_test(NAME linux_owned_command_probe_contract
+    COMMAND "${Python3_EXECUTABLE}" -B "${PROJECT_SOURCE_DIR}/tests/support/linux_owned_command_probe_test.py")
+  set_tests_properties(linux_owned_command_probe_contract PROPERTIES
+    LABELS "test_support;process_lifetime;performance_capture" TIMEOUT 60)
+endif()
 sb_add_driver_script_diff_contract_gate(driver_native_script_diff_contract)
 sb_add_driver_native_full_surface_matrix_runner_gate(driver_native_full_surface_matrix_runner_plan)
 sb_add_driver_native_full_surface_matrix_shard_runner_gate(driver_native_full_surface_matrix_shard_runner_plan)

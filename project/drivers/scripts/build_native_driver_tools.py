@@ -442,6 +442,7 @@ def resolve_argv(argv: list[str], env: dict[str, str]) -> list[str]:
 
 def run_command(command: list[str], cwd: Path, env: dict[str, str] | None = None) -> dict[str, Any]:
     command_env = env or os.environ.copy()
+    started = time.monotonic()
     try:
         result = subprocess.run(
             resolve_argv(command, command_env),
@@ -457,12 +458,14 @@ def run_command(command: list[str], cwd: Path, env: dict[str, str] | None = None
             "command": command,
             "cwd": str(cwd),
             "returncode": 127,
+            "elapsed_seconds": time.monotonic() - started,
             "output_tail": [f"launch_failed:{exc}"],
         }
     return {
         "command": command,
         "cwd": str(cwd),
         "returncode": result.returncode,
+        "elapsed_seconds": time.monotonic() - started,
         "output_tail": result.stdout.splitlines()[-80:],
     }
 
@@ -573,6 +576,11 @@ def build_compiled_tool(repo_root: Path, build_root: Path, driver: str) -> dict[
             [
                 "dotnet",
                 "publish",
+                # Fixture builds must not borrow or leave persistent compiler
+                # processes after the CTest setup has returned.
+                "--disable-build-servers",
+                "/nr:false",
+                "-p:UseSharedCompilation=false",
                 str(stage / "tools" / "SBIsqlDotNet" / "SBIsqlDotNet.csproj"),
                 "-c",
                 "Release",
@@ -637,7 +645,7 @@ def build_compiled_tool(repo_root: Path, build_root: Path, driver: str) -> dict[
         return run_command(["npm", "run", "build"], stage)
     if driver == "jdbc" and (driver_root / "gradlew").exists():
         stage = stage_driver_source(repo_root, build_root, driver)
-        return run_command(["bash", str(stage / "gradlew"), "classes"], stage)
+        return run_command(["bash", str(stage / "gradlew"), "--no-daemon", "classes"], stage)
     return None
 
 
