@@ -29,6 +29,8 @@ OWNED_FILES = [
     "project/src/engine/internal_api/security/audit_api.cpp",
     "project/src/server/diagnostic_rendering/diagnostic_rendering.hpp",
     "project/src/server/diagnostic_rendering/diagnostic_rendering.cpp",
+    "project/src/server_engine_bridge/legacy_diagnostic_projection.cpp",
+    "project/tests/sbsql_sblr_alignment/legacy_rendering_attestation_test.cpp",
     "project/tests/database_lifecycle/observability_conformance.cpp",
     "project/tests/database_lifecycle/observability_static.py",
     "project/tests/database_lifecycle/fixtures/full_database_lifecycle_closure/artifacts/DATABASE_LIFECYCLE_OBSERVABILITY_REPORT.md",
@@ -69,13 +71,35 @@ REQUIRED_TOKENS = {
     "project/src/server/diagnostic_rendering/diagnostic_rendering.cpp": [
         "parser_finality_authority_must_be_false",
         "reference_finality_authority_must_be_false",
-        "diagnostic_public_shape_required",
-        "diagnostic_private_shape_required",
+        # The legacy renderer no longer invents public/private shape IDs.
+        # Its authority is the exact source occurrence and registry metadata;
+        # the owning server vector producers still enforce shape separation.
+        "diagnostic_source_metadata_invalid",
+        "diagnostic.source_metadata->code != diagnostic.code",
+        "diagnostic.source_metadata->is_failure != diagnostic.error",
+        "Identity(RenderUuid{diagnostic.occurrence_uuid})",
+        "successful_envelope_contains_error_diagnostic",
+    ],
+    "project/src/server_engine_bridge/legacy_diagnostic_projection.cpp": [
+        "source.occurrence_uuid",
+        "source.canonical_metadata",
+        "field.binary_value",
+        "State(field.state)",
+    ],
+    "project/tests/sbsql_sblr_alignment/legacy_rendering_attestation_test.cpp": [
+        "renderer invents public diagnostic shape",
+        "renderer invents private diagnostic shape",
+        "registry metadata inferred or changed",
+        "d.canonical_metadata.reset()",
     ],
     "project/tests/database_lifecycle/observability_conformance.cpp": [
         "TestDiagnosticShapes",
         "TestServerLifecycleObservability",
-        "TestEngineMetricsAndAudit",
+        "TestEngineMetrics",
+        "TestEngineAudit",
+        "public diagnostic vector missing public shape",
+        "private diagnostic vector missing private shape",
+        "server private diagnostic converted text UUID",
         "TestParserRendering",
     ],
 }
