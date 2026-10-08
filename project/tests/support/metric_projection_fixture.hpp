@@ -34,14 +34,21 @@ class MetricProjectionFixture {
   }
   void Admit(const std::string& family, Labels labels) {
     namespace m = core::metrics;
-    auto& registry = m::DefaultMetricRegistry();
-    if (!descriptors_.contains(family)) {
-      const auto definitions = m::BuiltinMetricDescriptorDefinitions();
-      const auto found = std::find_if(definitions.begin(), definitions.end(),
+    static const auto definitions = m::BuiltinMetricDescriptorDefinitions();
+    const auto found = std::find_if(definitions.begin(), definitions.end(),
           [&](const auto& row) { return row.family == family; });
-      Check(found != definitions.end(), "projection family definition missing");
+    Check(found != definitions.end(), "projection family definition missing");
+    AdmitDefinition(*found, std::move(labels));
+  }
+  // An owning component can supply its finite definition set explicitly;
+  // fixture UUIDs are not runtime catalog activation or durable evidence.
+  void AdmitDefinition(const core::metrics::MetricDescriptorDefinition& definition, Labels labels) {
+    namespace m = core::metrics;
+    auto& registry = m::DefaultMetricRegistry();
+    const auto& family = definition.family;
+    if (!descriptors_.contains(family)) {
       m::MetricDescriptor descriptor;
-      static_cast<m::MetricDescriptorDefinition&>(descriptor) = *found;
+      static_cast<m::MetricDescriptorDefinition&>(descriptor) = definition;
       descriptor.metric_uuid = Id(); descriptor.descriptor_generation = 1;
       descriptor.label_schema_uuid = Id(); descriptor.label_schema_generation = 1;
       descriptor.retention_policy_uuid = retention_.policy_uuid;

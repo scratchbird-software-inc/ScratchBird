@@ -11,6 +11,7 @@
 #include "metric_registry.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -35,9 +36,11 @@ struct OptimizerMgaPressureAuthority {
 };
 
 struct OptimizerMgaPressureSample {
-  std::string scope_uuid;
+  scratchbird::core::metrics::MetricUuid scope_uuid;
+  scratchbird::core::metrics::MetricUuid database_uuid;
+  scratchbird::core::metrics::MetricUuid node_uuid;
   std::string route_label;
-  std::string relation_uuid;
+  scratchbird::core::metrics::MetricUuid relation_uuid;
   std::string page_class = "data";
   std::string evidence_digest;
   std::uint64_t source_generation = 0;
@@ -47,7 +50,10 @@ struct OptimizerMgaPressureSample {
   std::uint64_t chain_scatter_bucket = 0;
   double same_page_update_ratio = 0.0;
   std::uint64_t commit_fence_backlog = 0;
-  std::uint64_t authoritative_cleanup_horizon_local_transaction_id = 0;
+  // Absence is not zero. Neither measurement can be inferred from a chain
+  // depth bucket or from another advisory metric.
+  std::optional<std::uint64_t> authoritative_cleanup_horizon_local_transaction_id;
+  std::optional<std::uint64_t> retained_row_versions;
   std::uint64_t freshness_microseconds = 0;
   std::uint64_t max_freshness_microseconds = 60000000;
   OptimizerMgaPressureAuthority authority;
@@ -58,10 +64,15 @@ struct OptimizerMgaPressurePublishResult {
   std::string diagnostic_code;
   std::string detail;
   std::vector<std::string> evidence;
+  scratchbird::core::metrics::MetricUuid relation_uuid;
   std::vector<scratchbird::core::metrics::MetricValidationResult>
       metric_results;
 };
 
+const std::vector<scratchbird::core::metrics::MetricDescriptorDefinition>&
+OptimizerMgaPressureMetricDescriptorDefinitions();
+
+// Requires existing owner-bound descriptors; no automatic activation.
 scratchbird::core::metrics::MetricValidationResult
 EnsureOptimizerMgaPressureMetricDescriptors(
     scratchbird::core::metrics::MetricRegistry* registry = nullptr);

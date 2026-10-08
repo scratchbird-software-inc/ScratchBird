@@ -9,8 +9,11 @@
 #include "optimizer_mga_pressure_metrics.hpp"
 
 #include "metric_producer.hpp"
+#include "metric_bound_definition.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <utility>
 
@@ -26,12 +29,12 @@ using metrics::MetricType;
 using metrics::MetricUnit;
 using metrics::MetricValidationResult;
 
-MetricDescriptor Descriptor(std::string family,
+metrics::MetricDescriptorDefinition Descriptor(std::string family,
                             MetricType type,
                             MetricUnit unit,
                             std::string producer_owner,
                             std::string help) {
-  MetricDescriptor descriptor;
+  metrics::MetricDescriptorDefinition descriptor;
   descriptor.family = std::move(family);
   descriptor.type = type;
   descriptor.unit = unit;
@@ -39,8 +42,8 @@ MetricDescriptor Descriptor(std::string family,
   descriptor.help = std::move(help);
   descriptor.producer_owner = std::move(producer_owner);
   descriptor.security_family = "OPTIMIZER_METRICS";
-  descriptor.readiness = MetricReadiness::implemented;
-  descriptor.labels = {MetricLabelDescriptor{"scope_uuid", true, false},
+  descriptor.value_type = unit == MetricUnit::ratio ? metrics::MetricScalarType::float64 : metrics::MetricScalarType::uint64;
+  descriptor.labels = {MetricLabelDescriptor{"scope_uuid", true, false, metrics::MetricLabelType::system_uuid},
                        MetricLabelDescriptor{"route_label", true, false},
                        MetricLabelDescriptor{"plan_node_id", false, false},
                        MetricLabelDescriptor{"metric_family", true, false},
@@ -48,15 +51,6 @@ MetricDescriptor Descriptor(std::string family,
                        MetricLabelDescriptor{"source_generation", true, false},
                        MetricLabelDescriptor{"evidence_digest", true, true}};
   return descriptor;
-}
-
-MetricValidationResult RegisterIfMissing(metrics::MetricRegistry* registry,
-                                         MetricDescriptor descriptor) {
-  auto& target = registry == nullptr ? metrics::DefaultMetricRegistry() : *registry;
-  if (target.FindDescriptor(descriptor.family) != nullptr) {
-    return metrics::MetricOk();
-  }
-  return target.RegisterDescriptor(std::move(descriptor));
 }
 
 bool UnsafeAuthority(const OptimizerMgaPressureAuthority& authority) {
@@ -84,8 +78,7 @@ OptimizerMgaPressurePublishResult Refuse(const OptimizerMgaPressureSample& sampl
   result.detail = std::move(detail);
   AddEvidence(&result, "OEIC_MGA_PRESSURE_OPTIMIZER_METRICS");
   AddEvidence(&result, "optimizer.mga_pressure.fail_closed=true");
-  AddEvidence(&result, "optimizer.mga_pressure.relation_uuid=" +
-                           sample.relation_uuid);
+  result.relation_uuid = sample.relation_uuid;
   AddEvidence(&result, "optimizer.mga_pressure.refused=" +
                            result.diagnostic_code);
   return result;
@@ -93,7 +86,7 @@ OptimizerMgaPressurePublishResult Refuse(const OptimizerMgaPressureSample& sampl
 
 bool EmptyRequiredField(const OptimizerMgaPressureSample& sample,
                         std::string* field) {
-  if (sample.scope_uuid.empty()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(sample.scope_uuid)) {
     if (field != nullptr) *field = "scope_uuid";
     return true;
   }
@@ -101,8 +94,17 @@ bool EmptyRequiredField(const OptimizerMgaPressureSample& sample,
     if (field != nullptr) *field = "route_label";
     return true;
   }
-  if (sample.relation_uuid.empty()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(sample.relation_uuid)) {
     if (field != nullptr) *field = "relation_uuid";
+    return true;
+  }
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(sample.database_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(sample.node_uuid)) {
+    if (field != nullptr) *field = "observation_owner";
+    return true;
+  }
+  if (!sample.retained_row_versions) {
+    if (field != nullptr) *field = "retained_row_versions";
     return true;
   }
   if (sample.page_class.empty()) {
@@ -143,7 +145,7 @@ void Gauge(OptimizerMgaPressurePublishResult* result,
            const OptimizerMgaPressureSample& sample,
            const std::string& family,
            const std::string& metric_family,
-           double value,
+           metrics::MetricScalar value,
            const std::string& producer_owner) {
   Push(result, metrics::DefaultMetricRegistry().SetGauge(
                    family, LabelsFor(sample, metric_family), value,
@@ -152,9 +154,9 @@ void Gauge(OptimizerMgaPressurePublishResult* result,
 
 }  // namespace
 
-metrics::MetricValidationResult EnsureOptimizerMgaPressureMetricDescriptors(
-    metrics::MetricRegistry* registry) {
-  const MetricDescriptor descriptors[] = {
+const std::vector<metrics::MetricDescriptorDefinition>&
+OptimizerMgaPressureMetricDescriptorDefinitions() {
+  static const std::vector<metrics::MetricDescriptorDefinition> descriptors = {
       Descriptor("sb_optimizer_mga_cleanup_debt", MetricType::gauge,
                  MetricUnit::bytes, "transaction_mga_cleanup",
                  "MGA cleanup debt bytes visible to optimizer costing."),
@@ -173,8 +175,14 @@ metrics::MetricValidationResult EnsureOptimizerMgaPressureMetricDescriptors(
       Descriptor("sb_optimizer_commit_fence_pressure", MetricType::gauge,
                  MetricUnit::count, "transaction_manager",
                  "Commit fence pressure visible to optimizer costing.")};
-  for (const auto& descriptor : descriptors) {
-    const auto result = RegisterIfMissing(registry, descriptor);
+  return descriptors;
+}
+
+metrics::MetricValidationResult EnsureOptimizerMgaPressureMetricDescriptors(
+    metrics::MetricRegistry* registry) {
+  for (const auto& descriptor : OptimizerMgaPressureMetricDescriptorDefinitions()) {
+    const auto result = metrics::ValidateBoundMetricDefinition(
+        registry ? *registry : metrics::DefaultMetricRegistry(), descriptor);
     if (!result.ok) {
       return result;
     }
@@ -192,7 +200,7 @@ OptimizerMgaPressurePublishResult PublishOptimizerMgaPressureMetrics(
                       missing_field);
   }
   if (sample.source_generation == 0 ||
-      sample.authoritative_cleanup_horizon_local_transaction_id == 0) {
+      !sample.authoritative_cleanup_horizon_local_transaction_id) {
     return Refuse(sample,
                   "SB_OPTIMIZER_MGA_PRESSURE.GENERATION_REQUIRED",
                   "optimizer.mga_pressure.generation_required");
@@ -215,15 +223,21 @@ OptimizerMgaPressurePublishResult PublishOptimizerMgaPressureMetrics(
                   "SB_OPTIMIZER_MGA_PRESSURE.UNSAFE_AUTHORITY",
                   "optimizer.mga_pressure.unsafe_authority");
   }
-  if (sample.same_page_update_ratio < 0.0 ||
+  if (!std::isfinite(sample.same_page_update_ratio) || sample.same_page_update_ratio < 0.0 ||
       sample.same_page_update_ratio > 1.0) {
     return Refuse(sample,
                   "SB_OPTIMIZER_MGA_PRESSURE.RATIO_INVALID",
                   "optimizer.mga_pressure.same_page_ratio_invalid");
   }
 
+  if (!metrics::DefaultMetricRegistry().ObservationOwnerMatches(sample.database_uuid, sample.node_uuid))
+    return Refuse(sample, "METRIC.OBSERVATION_SOURCE_UNAVAILABLE", "MGA sample does not match the bound observation owner");
+  const auto descriptors = EnsureOptimizerMgaPressureMetricDescriptors();
+  if (!descriptors.ok) return Refuse(sample, descriptors.diagnostic_code, descriptors.detail);
+
   OptimizerMgaPressurePublishResult result;
   result.ok = true;
+  result.relation_uuid = sample.relation_uuid;
   result.diagnostic_code = "SB_OPTIMIZER_MGA_PRESSURE.OK";
   AddEvidence(&result, "OEIC_MGA_PRESSURE_OPTIMIZER_METRICS");
   AddEvidence(&result, "optimizer.mga_pressure.fail_closed=false");
@@ -234,38 +248,36 @@ OptimizerMgaPressurePublishResult PublishOptimizerMgaPressureMetrics(
   AddEvidence(&result, "optimizer.mga_pressure.recovery_authority=false");
   AddEvidence(&result, "optimizer.mga_pressure.external_log_replay_authority=false");
 
-  Push(&result, EnsureOptimizerMgaPressureMetricDescriptors());
   Gauge(&result, sample, "sb_optimizer_mga_cleanup_debt",
-        "mga_cleanup_debt", static_cast<double>(sample.cleanup_debt_bytes),
+        "mga_cleanup_debt", sample.cleanup_debt_bytes,
         "transaction_mga_cleanup");
   Gauge(&result, sample, "sb_optimizer_mga_retained_dead_bytes",
         "mga_retained_dead_bytes",
-        static_cast<double>(sample.retained_dead_bytes),
+        sample.retained_dead_bytes,
         "transaction_mga_cleanup");
   Gauge(&result, sample, "sb_optimizer_mga_chain_depth", "mga_chain_depth",
-        static_cast<double>(sample.chain_depth_bucket), "row_version_runtime");
+        sample.chain_depth_bucket, "row_version_runtime");
   Gauge(&result, sample, "sb_optimizer_mga_chain_scatter", "mga_chain_scatter",
-        static_cast<double>(sample.chain_scatter_bucket), "row_version_runtime");
+        sample.chain_scatter_bucket, "row_version_runtime");
   Gauge(&result, sample, "sb_optimizer_same_page_update_ratio",
         "same_page_update_ratio", sample.same_page_update_ratio,
         "row_version_runtime");
   Gauge(&result, sample, "sb_optimizer_commit_fence_pressure",
         "commit_fence_pressure",
-        static_cast<double>(sample.commit_fence_backlog),
+        sample.commit_fence_backlog,
         "transaction_manager");
 
   Push(&result, metrics::SetGauge(
                     "sb_mga_cleanup_horizon_local_transaction_id",
                     metrics::Labels({{"component", "transaction.mga.cleanup"},
                                      {"authority", "local_inventory"}}),
-                    static_cast<double>(
-                        sample.authoritative_cleanup_horizon_local_transaction_id),
+                    *sample.authoritative_cleanup_horizon_local_transaction_id,
                     "transaction_mga_cleanup"));
   Push(&result, metrics::SetGauge(
                     "sb_mga_cleanup_retained_row_versions",
                     metrics::Labels({{"component", "transaction.mga.cleanup"},
                                      {"authority", "local_inventory"}}),
-                    static_cast<double>(sample.chain_depth_bucket),
+                    *sample.retained_row_versions,
                     "transaction_mga_cleanup"));
 
   if (!result.ok &&

@@ -7,9 +7,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "optimizer_storage_metrics.hpp"
+#include "metric_bound_definition.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <limits>
 #include <utility>
 
@@ -25,12 +27,12 @@ using metrics::MetricType;
 using metrics::MetricUnit;
 using metrics::MetricValidationResult;
 
-MetricDescriptor Descriptor(std::string family,
+metrics::MetricDescriptorDefinition Descriptor(std::string family,
                             MetricType type,
                             MetricUnit unit,
                             std::string producer_owner,
                             std::string help) {
-  MetricDescriptor descriptor;
+  metrics::MetricDescriptorDefinition descriptor;
   descriptor.family = std::move(family);
   descriptor.type = type;
   descriptor.unit = unit;
@@ -38,7 +40,8 @@ MetricDescriptor Descriptor(std::string family,
   descriptor.help = std::move(help);
   descriptor.producer_owner = std::move(producer_owner);
   descriptor.security_family = "OPTIMIZER_METRICS";
-  descriptor.readiness = MetricReadiness::implemented;
+  descriptor.value_type = unit == MetricUnit::ratio || unit == MetricUnit::microseconds
+      ? metrics::MetricScalarType::float64 : metrics::MetricScalarType::uint64;
   descriptor.labels = {MetricLabelDescriptor{"scope_uuid", true, false, metrics::MetricLabelType::system_uuid},
                        MetricLabelDescriptor{"route_label", true, false},
                        MetricLabelDescriptor{"plan_node_id", false, false},
@@ -47,20 +50,12 @@ MetricDescriptor Descriptor(std::string family,
                        MetricLabelDescriptor{"source_generation", true, false},
                        MetricLabelDescriptor{"evidence_digest", true, true}};
   if (type == MetricType::histogram) {
-    descriptor.histogram_buckets = {1, 10, 100, 1000, 10000, 100000,
-                                    1000000, 10000000};
+    descriptor.histogram_buckets = {1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0,
+                                    1000000.0, 10000000.0};
   }
   return descriptor;
 }
 
-MetricValidationResult RegisterIfMissing(metrics::MetricRegistry* registry,
-                                         MetricDescriptor descriptor) {
-  auto& target = registry == nullptr ? metrics::DefaultMetricRegistry() : *registry;
-  if (target.FindDescriptor(descriptor.family) != nullptr) {
-    return metrics::MetricOk();
-  }
-  return target.RegisterDescriptor(std::move(descriptor));
-}
 
 bool UnsafeAuthority(const OptimizerStorageMetricAuthority& authority) {
   return authority.parser_or_reference_authority ||
@@ -106,6 +101,10 @@ bool EmptyRequiredField(const OptimizerStorageMetricSample& sample,
     if (field != nullptr) *field = "filespace_uuid";
     return true;
   }
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(sample.node_uuid)) {
+    if (field != nullptr) *field = "node_uuid";
+    return true;
+  }
   if (sample.route_label.empty()) {
     if (field != nullptr) *field = "route_label";
     return true;
@@ -134,6 +133,11 @@ double Ratio(std::uint64_t numerator, std::uint64_t denominator) {
     return 0.0;
   }
   return static_cast<double>(numerator) / static_cast<double>(denominator);
+}
+
+bool ExactFloat64Duration(std::uint64_t value) noexcept {
+  const auto width = std::bit_width(value);
+  return width <= 53 || (value & ((std::uint64_t{1} << (width - 53)) - 1)) == 0;
 }
 
 metrics::MetricLabelSet LabelsFor(const OptimizerStorageMetricSample& sample,
@@ -169,7 +173,7 @@ void Gauge(OptimizerStorageMetricPublishResult* result,
            const OptimizerStorageMetricSample& sample,
            const std::string& family,
            const std::string& metric_family,
-           double value,
+           metrics::MetricScalar value,
            const std::string& producer_owner) {
   Push(result,
        metrics::DefaultMetricRegistry().SetGauge(
@@ -183,14 +187,11 @@ void Counter(OptimizerStorageMetricPublishResult* result,
              std::string outcome,
              std::uint64_t value,
              const std::string& producer_owner) {
-  if (value == 0) {
-    return;
-  }
   Push(result,
        metrics::DefaultMetricRegistry().IncrementCounter(
            family,
            LabelsFor(sample, metric_family, std::move(outcome)),
-           static_cast<double>(value),
+           value,
            producer_owner));
 }
 
@@ -210,9 +211,9 @@ void Histogram(OptimizerStorageMetricPublishResult* result,
 
 }  // namespace
 
-metrics::MetricValidationResult EnsureOptimizerStorageMetricDescriptors(
-    metrics::MetricRegistry* registry) {
-  const MetricDescriptor descriptors[] = {
+const std::vector<metrics::MetricDescriptorDefinition>&
+OptimizerStorageMetricDescriptorDefinitions() {
+  static const std::vector<metrics::MetricDescriptorDefinition> descriptors = {
       Descriptor("sb_optimizer_page_cache_hit_miss", MetricType::counter,
                  MetricUnit::count, "storage_page",
                  "Optimizer page cache hit/miss observations."),
@@ -240,8 +241,14 @@ metrics::MetricValidationResult EnsureOptimizerStorageMetricDescriptors(
       Descriptor("sb_optimizer_filespace_pressure", MetricType::gauge,
                  MetricUnit::ratio, "storage_filespace",
                  "Optimizer-visible filespace pressure.")};
-  for (const auto& descriptor : descriptors) {
-    const auto result = RegisterIfMissing(registry, descriptor);
+  return descriptors;
+}
+
+metrics::MetricValidationResult EnsureOptimizerStorageMetricDescriptors(
+    metrics::MetricRegistry* registry) {
+  for (const auto& descriptor : OptimizerStorageMetricDescriptorDefinitions()) {
+    const auto result = metrics::ValidateBoundMetricDefinition(
+        registry ? *registry : metrics::DefaultMetricRegistry(), descriptor);
     if (!result.ok) {
       return result;
     }
@@ -284,16 +291,28 @@ OptimizerStorageMetricPublishResult PublishOptimizerStorageMetrics(
       sample.pinned_pages > sample.resident_pages ||
       sample.dirty_pages > sample.resident_pages ||
       sample.writeback_pages > sample.resident_pages ||
-      sample.filespace_free_bytes + sample.filespace_used_bytes >
-          sample.filespace_total_bytes ||
-      sample.filespace_reserved_bytes > sample.filespace_total_bytes) {
+      sample.filespace_used_bytes > sample.filespace_total_bytes ||
+      sample.filespace_free_bytes > sample.filespace_total_bytes - sample.filespace_used_bytes ||
+      sample.filespace_reserved_bytes > sample.filespace_total_bytes - sample.filespace_used_bytes) {
     return Refuse(sample,
                   "SB_OPTIMIZER_STORAGE_METRICS.COUNTERS_INCONSISTENT",
                   "optimizer.storage_metrics.counters_inconsistent");
   }
 
+  const auto& registry = metrics::DefaultMetricRegistry();
+  // Existing duration descriptors are FLOAT64. Preserve integer-microsecond
+  // measurements exactly; never silently round an observation at publication.
+  if (!ExactFloat64Duration(sample.sequential_read_latency_microseconds) ||
+      !ExactFloat64Duration(sample.random_read_latency_microseconds))
+    return Refuse(sample, "METRIC.VALUE_INVALID", "integer microsecond sample is not exactly representable by its FLOAT64 profile");
+  if (!registry.ObservationOwnerMatches(sample.database_uuid, sample.node_uuid))
+    return Refuse(sample, "METRIC.OBSERVATION_SOURCE_UNAVAILABLE", "storage sample does not match the bound observation owner");
+  const auto descriptors = EnsureOptimizerStorageMetricDescriptors();
+  if (!descriptors.ok) return Refuse(sample, descriptors.diagnostic_code, descriptors.detail);
+
   OptimizerStorageMetricPublishResult result;
   result.ok = true;
+  result.filespace_uuid = sample.filespace_uuid;
   result.diagnostic_code = "SB_OPTIMIZER_STORAGE_METRICS.OK";
   AddEvidence(&result, "OEIC_STORAGE_IO_OPTIMIZER_METRICS");
   AddEvidence(&result, "optimizer.storage_metrics.fail_closed=false");
@@ -303,14 +322,12 @@ OptimizerStorageMetricPublishResult PublishOptimizerStorageMetrics(
   AddEvidence(&result, "optimizer.storage_metrics.security_authority=false");
   AddEvidence(&result, "optimizer.storage_metrics.recovery_authority=false");
 
-  Push(&result, EnsureOptimizerStorageMetricDescriptors());
-
   Counter(&result, sample, "sb_optimizer_page_cache_hit_miss",
           "page_cache_hit_miss", "hit", sample.cache_hits, "storage_page");
   Counter(&result, sample, "sb_optimizer_page_cache_hit_miss",
           "page_cache_hit_miss", "miss", sample.cache_misses, "storage_page");
   Gauge(&result, sample, "sb_optimizer_page_count", "page_count",
-        static_cast<double>(sample.page_count), "storage_page");
+        sample.page_count, "storage_page");
   Gauge(&result, sample, "sb_optimizer_page_cache_dirty_pressure",
         "page_cache_dirty_pressure",
         Ratio(sample.dirty_pages, std::max<std::uint64_t>(sample.resident_pages, 1)),

@@ -80,6 +80,12 @@ struct OptimizerStorageMetricPublishResult {
       metric_results;
 };
 
+// Definitions carry no runtime identities or activation authority. The owning
+// catalog must bind them and admit series before producers can emit samples.
+const std::vector<scratchbird::core::metrics::MetricDescriptorDefinition>&
+OptimizerStorageMetricDescriptorDefinitions();
+
+// Verify existing bindings; never synthesize identity or activate a family.
 scratchbird::core::metrics::MetricValidationResult
 EnsureOptimizerStorageMetricDescriptors(
     scratchbird::core::metrics::MetricRegistry* registry = nullptr);
