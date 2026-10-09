@@ -176,6 +176,10 @@ GLOBAL_MUTEX_RULES = (
     re.compile(r"\ballocator[_a-zA-Z0-9]*global[_a-zA-Z0-9]*mutex\b", re.IGNORECASE),
 )
 
+# Only these tokens can enter a comment/string state from ordinary C++ text.
+# Scan whole ordinary spans in C instead of testing every character in Python.
+SANITIZER_TOKEN = re.compile(r'//|/\*|R"|["\']')
+
 
 @dataclass(frozen=True)
 class Violation:
@@ -228,6 +232,14 @@ def sanitize_cpp_lines(lines: list[str]) -> list[str]:
                 i = end + 2
                 in_block_comment = False
                 continue
+
+            token = SANITIZER_TOKEN.search(line, i)
+            if token is None:
+                out.append(line[i:])
+                break
+            if token.start() != i:
+                out.append(line[i:token.start()])
+                i = token.start()
 
             if line.startswith("//", i):
                 out.append(" " * (len(line) - i))

@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -47,6 +48,27 @@ def main() -> int:
 
     repo_root = pathlib.Path(args.repo_root).resolve()
     gate = repo_root / "project/tools/ceic_memory_source_gate.py"
+    sanitize = runpy.run_path(str(gate))["sanitize_cpp_lines"]
+    lines = [
+        "ordinary new Visible;",
+        'auto x = "new Hidden"; new Visible; // delete hidden;',
+        "/* new Hidden;",
+        "free(hidden); */ delete visible;",
+        'auto s = R"tag(new Hidden;',
+        'delete Hidden; )tag"; new Visible;',
+        "auto c = '\\''; new Visible;",
+        'auto broken_raw = R"without_paren"; new Visible;',
+    ]
+    spans = [(0, 0), (9, 21), (0, 14), (0, 16), (9, 26), (0, 20), (9, 13), (19, 34)]
+    expected = []
+    for line, (begin, end) in zip(lines, spans):
+        masked = line[:begin] + " " * (end - begin) + line[end:]
+        if "//" in masked:
+            start = masked.index("//")
+            masked = masked[:start] + " " * (len(masked) - start)
+        expected.append(masked)
+    if sanitize(lines) != expected:
+        raise AssertionError("comment/string scanner changed lexical state or source positions")
 
     with tempfile.TemporaryDirectory(prefix="ceic_021_memory_source_gate_") as temp_text:
         temp_dir = pathlib.Path(temp_text)
