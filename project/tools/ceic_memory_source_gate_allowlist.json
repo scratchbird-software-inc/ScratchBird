@@ -62,8 +62,68 @@
   {
     "category": "direct_new",
     "path": "project/src/core/memory/foreign_memory_reservation.cpp",
-    "pattern": "new ForeignMemoryReservation(this, std::move(request), token, state)",
-    "reason": "Approved RAII foreign-memory reservation handle construction after CEIC-011 reservation admission; no provider allocation is authorized by the handle."
+    "pattern": "new ForeignMemoryReservation(nullptr, std::move(request), token, state)",
+    "reason": "Approved provisional RAII foreign-memory handle after ledger admission. Its manager remains null until all fallible evidence and map publication succeed, preventing cleanup from releasing an unpublished owner. No provider payload allocation is authorized by this one-site exception."
+  },
+  {
+    "category": "direct_new",
+    "path": "project/src/core/memory/memory.cpp",
+    "pattern": "new MemoryCapacityReservation(this, 0, tag)",
+    "reason": "Approved fixed private capacity-lease control constructed before allocator accounting publication. Token zero is inert during failure unwinding; actual capacity remains subject to allocator limits and binary ownership admission."
+  },
+  {
+    "category": "direct_new",
+    "path": "project/src/core/memory/kdf_resource_governor.cpp",
+    "pattern": "new KdfResourceGovernor(std::move(state))",
+    "reason": "Approved fixed private governor control after binary owner and finite policy validation. This is not permission for KDF workspace allocation; per-call memory and work remain subject to the hierarchical ledger and retained grant."
+  },
+  {
+    "category": "direct_new",
+    "path": "project/src/core/memory/kdf_resource_governor.cpp",
+    "pattern": "new KdfResourceReceipt(std::move(receipt_state))",
+    "reason": "Approved fixed private statement receipt control, after active governor and exact binary owner checks. Issuance reuses an existing live statement receipt and prunes expired controls. KDF payload memory still requires Acquire and retained ledger admission."
+  },
+  {
+    "category": "direct_new",
+    "path": "project/src/core/memory/memory_safe_retirement.cpp",
+    "pattern": "::new (objects_ + i) Object",
+    "reason": "Placement construction only, inside object_limit slots already allocated by ReservationBackedMemoryResource with overflow-checked byte count and binary owner admission. This does not allocate a second heap payload."
+  },
+  {
+    "category": "direct_new",
+    "path": "project/src/core/memory/memory_safe_retirement.cpp",
+    "pattern": "::new (readers_ + i) Reader",
+    "reason": "Placement construction only, inside reader_limit slots already allocated by ReservationBackedMemoryResource with overflow-checked byte count and binary owner admission. This does not allocate a second heap payload."
+  },
+  {
+    "category": "direct_new",
+    "path": "project/src/core/memory/memory_safe_retirement.hpp",
+    "pattern": "::new (pointer) T(std::forward<Args>(args)...)",
+    "reason": "Safe-retirement placement construction after BeginCreate acquires exact sizeof(T) aligned storage from the governed resource. Failed construction retains retirement and release responsibility. No general direct heap allocation is approved."
+  },
+  {
+    "category": "direct_new",
+    "path": "project/src/engine/executor/sort_limit_executor.cpp",
+    "pattern": "new CanonicalWindowOrderBindingReceipt",
+    "reason": "Approved private receipt factory after current MGA authority, descriptor, DAG ordering and bounded workspace admission. This exception covers only the fixed receipt allocation, not arbitrary payload growth or additional factories."
+  },
+  {
+    "category": "direct_new",
+    "path": "project/src/engine/optimizer/model_family_profile_factory.cpp",
+    "pattern": "new ModelFamilyProfileIdentityOwnerV1",
+    "reason": "Approved private identity-owner control after canonical binary key validation, duplicate rejection, a 64-key limit and maximum binding-byte admission. This one-site factory exception does not exempt other allocations or growth from the source gate."
+  },
+  {
+    "category": "direct_new",
+    "path": "project/src/engine/optimizer/optimizer_profile_factory.cpp",
+    "pattern": "new CanonicalOptimizerProfileIdentityOwner",
+    "reason": "Approved private identity-owner control after canonical binary key validation, duplicate rejection and explicit maximum key-count and binding-byte admission. This one-site factory exception does not exempt other allocations or growth from the source gate."
+  },
+  {
+    "category": "direct_new",
+    "path": "project/src/server/database_ownership.cpp",
+    "pattern": "new storage::disk::RouteOwnershipLease(lock_path_.string(), owner_pid_)",
+    "reason": "Approved fixed private storage-ownership control allocated before native handle transfer. Allocation failure leaves handles with the existing owner; lease publication still requires checked durable descriptor publication. No page buffer or query allocation is authorized."
   },
   {
     "category": "global_allocator_mutex",

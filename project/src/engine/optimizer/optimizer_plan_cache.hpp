@@ -691,14 +691,16 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
           root->output_descriptor_ids.size()) {
     return refuse("result_descriptor_coverage");
   }
-  std::set<std::array<std::uint8_t, 16>> result_descriptor_uuids;
+  // One bounded contiguous allocation instead of one tree allocation per
+  // result. Preserve canonical binary UUID equality without text rendering.
+  std::vector<std::array<std::uint8_t, 16>> result_descriptor_uuids;
+  result_descriptor_uuids.reserve(request.result_descriptors.size());
   for (std::size_t index = 0; index < request.result_descriptors.size();
        ++index) {
     const auto& descriptor = request.result_descriptors[index];
     if (descriptor.ordinal != index + 1 || descriptor.descriptor_id == 0 ||
         descriptor.descriptor_id != root->output_descriptor_ids[index] ||
         !core::uuid::IsEngineIdentityUuid(descriptor.descriptor_uuid) ||
-        !result_descriptor_uuids.insert(descriptor.descriptor_uuid.bytes).second ||
         !core::uuid::IsEngineIdentityUuid(descriptor.type_uuid) ||
         !optional_binary_uuid(descriptor.domain_uuid) ||
         !optional_binary_uuid(descriptor.collation_uuid) ||
@@ -706,7 +708,11 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
         !digest(descriptor.type_modifier_digest)) {
       return refuse("typed_result_descriptor");
     }
+    result_descriptor_uuids.push_back(descriptor.descriptor_uuid.bytes);
   }
+  std::sort(result_descriptor_uuids.begin(), result_descriptor_uuids.end());
+  if (std::adjacent_find(result_descriptor_uuids.begin(), result_descriptor_uuids.end()) !=
+      result_descriptor_uuids.end()) return refuse("typed_result_descriptor");
 
   if (request.dependencies.empty()) {
     return refuse("generation_qualified_dependencies");

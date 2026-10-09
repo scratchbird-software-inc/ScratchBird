@@ -297,6 +297,18 @@ class ResultCursorPlanMemoryGovernor {
     HierarchicalMemoryReservationLease retained_owner;
   };
   using LeaseMap = std::map<ResultCursorPlanMemoryUuid, OwnedLease>;
+  // Caller holds mutex_; prepare the complete bounded cleanup worklist before
+  // any release. A failed allocation leaves every lease and charge intact.
+  template <typename Predicate>
+  std::vector<LeaseMap::iterator> SelectLeasesLocked(Predicate selected) {
+    std::size_t count = 0;
+    for (const auto& entry : leases_) if (selected(entry.second)) ++count;
+    std::vector<LeaseMap::iterator> result;
+    result.reserve(count);
+    for (auto it = leases_.begin(); it != leases_.end(); ++it)
+      if (selected(it->second)) result.push_back(it);
+    return result;
+  }
   bool PrepareCountersLocked(OwnedLease& record);
   void AddCountersLocked(const OwnedLease& record);
   void RemoveCountersLocked(const OwnedLease& record);

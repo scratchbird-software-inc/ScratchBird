@@ -268,6 +268,36 @@ int RunMetricTests() {
         "changed metric binding aliased its original or policy budget was capped arbitrarily");
   }
 
+  // Result occurrence identities remain unique in binary canonical order,
+  // regardless of presentation order. Exercise nonadjacent duplicates as well
+  // as a sorted-vector validation path containing embedded zero bytes.
+  for (unsigned duplicate = 0; duplicate != 3; ++duplicate) {
+    auto direct = prepared;
+    auto root = std::ranges::find_if(direct.selected_physical_dag.nodes,
+        [&](const auto& node) {
+          return node.physical_node_id == direct.selected_physical_dag.root_physical_node_id;
+        });
+    if (root == direct.selected_physical_dag.nodes.end()) return EXIT_FAILURE;
+    root->output_descriptor_ids = {1, 2, 3};
+    const auto original = direct.result_descriptors.front();
+    direct.result_descriptors.clear();
+    for (unsigned ordinal = 1; ordinal <= 3; ++ordinal) {
+      auto descriptor = original;
+      descriptor.ordinal = descriptor.descriptor_id = ordinal;
+      descriptor.descriptor_uuid = Identity(40 - ordinal);
+      direct.result_descriptors.push_back(descriptor);
+    }
+    if (duplicate) direct.result_descriptors[duplicate].descriptor_uuid =
+        direct.result_descriptors.front().descriptor_uuid;
+    opt::CanonicalPreparedPlanStore store;
+    const auto out = opt::PrepareCanonicalPhysicalPlan(direct, &store);
+    passed &= Require(duplicate ? (!out.accepted && store.Size() == 0 &&
+        out.issues.size() == 1 && out.issues.front().field_id == "typed_result_descriptor") :
+        (out.accepted && store.Size() == 1 && out.prepared_plan &&
+         out.prepared_plan->result_descriptors.size() == 3),
+        "binary result identity uniqueness or declaration order changed");
+  }
+
   // The actual prepared store checks cancellation after all store allocation.
   for (unsigned mode = 0; mode != 2; ++mode) {
     auto direct = prepared;

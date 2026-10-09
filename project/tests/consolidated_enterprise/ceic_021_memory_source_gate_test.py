@@ -165,6 +165,30 @@ def main() -> int:
         if "too broad" not in (broad_result.stdout + broad_result.stderr):
             raise AssertionError("broad allowlist fixture did not report too broad")
 
+        # Every approved constructor is a single-site exception, not a file
+        # exemption. An adjacent raw allocation must still be diagnosed.
+        entries = json.loads((repo_root / "project/tools/ceic_memory_source_gate_allowlist.json").read_text())
+        probe_root = temp_dir / "exact_factory_scope"
+        for ordinal, entry in enumerate(entries):
+            if entry["category"] != "direct_new":
+                continue
+            source = probe_root / entry["path"]
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(
+                entry["pattern"] + ";\nnew UnapprovedAdjacentAllocation;\n",
+                encoding="utf-8",
+            )
+            allow_one = temp_dir / f"factory_{ordinal}.json"
+            allow_one.write_text(json.dumps([entry]), encoding="utf-8")
+            result = run(
+                [sys.executable, str(gate), "--repo-root", str(probe_root),
+                 "--scan-root", entry["path"], "--allowlist", str(allow_one)],
+                expect_success=False,
+            )
+            output = result.stdout + result.stderr
+            if "UnapprovedAdjacentAllocation" not in output or "allowlist_errors=0" not in output:
+                raise AssertionError(f"factory exception escaped its exact site: {entry['path']}")
+
     print("ceic_021_memory_source_gate_test=pass")
     print(repo_result.stdout.strip())
     print(positive_result.stdout.strip())

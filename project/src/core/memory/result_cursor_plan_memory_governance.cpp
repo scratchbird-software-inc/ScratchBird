@@ -910,11 +910,9 @@ ResultCursorPlanMemoryDecision ResultCursorPlanMemoryGovernor::ReleaseByCursor(
     const ResultCursorPlanMemoryUuid& cursor_id, ResultCursorPlanMemoryReleaseReason reason) try {
   if (!uuid::IsEngineIdentityUuid(cursor_id)) return RequestFailure(StatusCode::memory_invalid_request, reason);
   std::lock_guard<std::mutex> lock(mutex_);
-  std::vector<LeaseMap::iterator> selected;
-  for (auto it = leases_.begin(); it != leases_.end(); ++it) {
-    const auto& record = it->second;
-    if (record.scope.cursor_id == cursor_id) selected.push_back(it);
-  }
+  const auto selected = SelectLeasesLocked([&](const auto& record) {
+    return record.scope.cursor_id == cursor_id;
+  });
   return DrainLocked(selected, ReleaseDecision(OkStatus(), reason,
       "SB_CEIC_020_MEMORY_GOVERNANCE.RELEASE_CURSOR_OK", "cursor_release"));
 } catch (const std::bad_alloc&) {
@@ -925,11 +923,10 @@ ResultCursorPlanMemoryDecision ResultCursorPlanMemoryGovernor::ReleaseResultFram
     const ResultCursorPlanMemoryUuid& cursor_id, ResultCursorPlanMemoryReleaseReason reason) try {
   if (!uuid::IsEngineIdentityUuid(cursor_id)) return RequestFailure(StatusCode::memory_invalid_request, reason);
   std::lock_guard<std::mutex> lock(mutex_);
-  std::vector<LeaseMap::iterator> selected;
-  for (auto it = leases_.begin(); it != leases_.end(); ++it) {
-    const auto& record = it->second;
-    if (record.scope.cursor_id == cursor_id && record.surface == ResultCursorPlanMemorySurface::result_frame) selected.push_back(it);
-  }
+  const auto selected = SelectLeasesLocked([&](const auto& record) {
+    return record.scope.cursor_id == cursor_id &&
+        record.surface == ResultCursorPlanMemorySurface::result_frame;
+  });
   return DrainLocked(selected, ReleaseDecision(OkStatus(), reason,
       "SB_CEIC_020_MEMORY_GOVERNANCE.RELEASE_CURSOR_FRAMES_OK", "cursor_result_frame_release"));
 } catch (const std::bad_alloc&) {
@@ -940,11 +937,9 @@ ResultCursorPlanMemoryDecision ResultCursorPlanMemoryGovernor::ReleaseBySession(
     const ResultCursorPlanMemoryUuid& session_id, ResultCursorPlanMemoryReleaseReason reason) try {
   if (!uuid::IsEngineIdentityUuid(session_id)) return RequestFailure(StatusCode::memory_invalid_request, reason);
   std::lock_guard<std::mutex> lock(mutex_);
-  std::vector<LeaseMap::iterator> selected;
-  for (auto it = leases_.begin(); it != leases_.end(); ++it) {
-    const auto& record = it->second;
-    if (record.scope.session_id == session_id) selected.push_back(it);
-  }
+  const auto selected = SelectLeasesLocked([&](const auto& record) {
+    return record.scope.session_id == session_id;
+  });
   return DrainLocked(selected, ReleaseDecision(OkStatus(), reason,
       "SB_CEIC_020_MEMORY_GOVERNANCE.RELEASE_SESSION_OK", "session_release"));
 } catch (const std::bad_alloc&) {
@@ -955,11 +950,9 @@ ResultCursorPlanMemoryDecision ResultCursorPlanMemoryGovernor::ReleaseByConnecti
     const ResultCursorPlanMemoryUuid& connection_id, ResultCursorPlanMemoryReleaseReason reason) try {
   if (!uuid::IsEngineIdentityUuid(connection_id)) return RequestFailure(StatusCode::memory_invalid_request, reason);
   std::lock_guard<std::mutex> lock(mutex_);
-  std::vector<LeaseMap::iterator> selected;
-  for (auto it = leases_.begin(); it != leases_.end(); ++it) {
-    const auto& record = it->second;
-    if (record.scope.connection_id == connection_id) selected.push_back(it);
-  }
+  const auto selected = SelectLeasesLocked([&](const auto& record) {
+    return record.scope.connection_id == connection_id;
+  });
   return DrainLocked(selected, ReleaseDecision(OkStatus(), reason,
       "SB_CEIC_020_MEMORY_GOVERNANCE.RELEASE_CONNECTION_OK", "connection_release"));
 } catch (const std::bad_alloc&) {
@@ -970,11 +963,9 @@ ResultCursorPlanMemoryDecision ResultCursorPlanMemoryGovernor::ReleaseByQuery(
     const ResultCursorPlanMemoryUuid& query_id, ResultCursorPlanMemoryReleaseReason reason) try {
   if (!uuid::IsEngineIdentityUuid(query_id)) return RequestFailure(StatusCode::memory_invalid_request, reason);
   std::lock_guard<std::mutex> lock(mutex_);
-  std::vector<LeaseMap::iterator> selected;
-  for (auto it = leases_.begin(); it != leases_.end(); ++it) {
-    const auto& record = it->second;
-    if (record.scope.query_id == query_id) selected.push_back(it);
-  }
+  const auto selected = SelectLeasesLocked([&](const auto& record) {
+    return record.scope.query_id == query_id;
+  });
   return DrainLocked(selected, ReleaseDecision(OkStatus(), reason,
       "SB_CEIC_020_MEMORY_GOVERNANCE.RELEASE_QUERY_OK", "query_release"));
 } catch (const std::bad_alloc&) {
@@ -985,11 +976,9 @@ ResultCursorPlanMemoryDecision ResultCursorPlanMemoryGovernor::ReleaseByTransact
     const ResultCursorPlanMemoryUuid& transaction_id, ResultCursorPlanMemoryReleaseReason reason) try {
   if (!uuid::IsEngineIdentityUuid(transaction_id)) return RequestFailure(StatusCode::memory_invalid_request, reason);
   std::lock_guard<std::mutex> lock(mutex_);
-  std::vector<LeaseMap::iterator> selected;
-  for (auto it = leases_.begin(); it != leases_.end(); ++it) {
-    const auto& record = it->second;
-    if (record.scope.transaction_id == transaction_id) selected.push_back(it);
-  }
+  const auto selected = SelectLeasesLocked([&](const auto& record) {
+    return record.scope.transaction_id == transaction_id;
+  });
   return DrainLocked(selected, ReleaseDecision(OkStatus(), reason,
       "SB_CEIC_020_MEMORY_GOVERNANCE.RELEASE_TRANSACTION_OK", "transaction_release"));
 } catch (const std::bad_alloc&) {
@@ -999,10 +988,10 @@ ResultCursorPlanMemoryDecision ResultCursorPlanMemoryGovernor::ReleaseByTransact
 ResultCursorPlanMemoryDecision ResultCursorPlanMemoryGovernor::InvalidateByEpoch(
     ResultCursorPlanMemoryEpochs current_epochs) try {
   std::lock_guard<std::mutex> lock(mutex_);
-  std::vector<LeaseMap::iterator> selected;
-  for (auto it = leases_.begin(); it != leases_.end(); ++it)
-    if (IsPlanPreparedOrDescriptor(it->second.surface) &&
-        EpochRecordStale(it->second.epochs, current_epochs)) selected.push_back(it);
+  const auto selected = SelectLeasesLocked([&](const auto& record) {
+    return IsPlanPreparedOrDescriptor(record.surface) &&
+        EpochRecordStale(record.epochs, current_epochs);
+  });
   auto decision = ReleaseDecision(OkStatus(), ResultCursorPlanMemoryReleaseReason::epoch_invalidation,
       "SB_CEIC_020_MEMORY_GOVERNANCE.EPOCH_INVALIDATION_OK", "epoch_invalidation");
   AppendEpochEvidence(&decision.evidence, current_epochs);
