@@ -1,4 +1,5 @@
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/agent_metric_definition_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -340,11 +341,25 @@ void TestMissingMetricAndSuppressionPublishExactEvidence() {
 }  // namespace
 
 int main() {
+  auto& metrics = scratchbird::core::metrics::DefaultMetricRegistry();
+  Require(metrics.Descriptors().empty(), "default registry unexpectedly preactivated");
+  const auto unbound = agents::BuildNonClusterAgentTickHealthSnapshot(ValidRequest());
+  const auto unbound_by_type = RecordMap(unbound);
+  const auto page = unbound_by_type.find("page_allocation_manager");
+  Require(unbound.status.ok && page != unbound_by_type.end() && page->second->failed_closed &&
+              page->second->diagnostic_code == "SB_AGENT_METRICS.REQUIRED_METRIC_MISSING",
+          "unbound health projection invented its metric dependencies");
+  std::vector<agents::AgentTypeDescriptor> local_agents;
+  for (const auto& descriptor : agents::CanonicalAgentRegistry())
+    if (IsNonClusterRuntimeAgent(descriptor)) local_agents.push_back(descriptor);
+  scratchbird::tests::AdmitAgentMetricDefinitionsForProbe(metrics, local_agents, 118);
   TestEveryNonClusterAgentRepresentedExactlyOnce();
   TestDefaultPoliciesPublishExactHealthClasses();
   TestDisabledPoliciesProduceExactRefusalForEveryNonClusterAgent();
   TestLiveActionPolicyPublishesSelectedRunningEvidence();
   TestMissingSecurityAndRightsFailClosedWithoutSilentSkips();
   TestMissingMetricAndSuppressionPublishExactEvidence();
+  Require(metrics.SnapshotCurrent().empty() && metrics.SnapshotHistory().empty(),
+          "policy/health projection fabricated actual metric observations");
   return EXIT_SUCCESS;
 }

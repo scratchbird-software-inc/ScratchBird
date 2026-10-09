@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/agent_metric_definition_fixture.hpp"
 #include "agent_metric_runtime.hpp"
 
 #include <cstdlib>
@@ -190,7 +191,14 @@ void TestRelaxedRegistryOnlyIsProbeOnly() {
 
   agents::AgentMetricSnapshotEvaluationOptions options;
   options.mode = agents::AgentMetricRuntimeMode::test_probe_relaxed_registry_only;
-  options.registry = &metrics::DefaultMetricRegistry();
+  metrics::MetricRegistry registry;
+  options.registry = &registry;
+  const auto unbound = agents::EvaluateAgentObservedMetricSnapshots(descriptor, context, {}, options);
+  RequireMetricRefusal(unbound, "SB_AGENT_METRICS.REQUIRED_METRIC_MISSING");
+  Require(unbound.diagnostics.front().failed_closed &&
+              unbound.diagnostics.front().detail == unbound.status.detail,
+          "failed registry-only probe published a success diagnostic");
+  scratchbird::tests::AdmitAgentMetricDefinitionsForProbe(registry, {descriptor}, 117);
   const auto relaxed = agents::EvaluateAgentObservedMetricSnapshots(
       descriptor, context, {}, options);
   Require(relaxed.accepted, "explicit test/probe registry-only path refused");
@@ -200,6 +208,9 @@ void TestRelaxedRegistryOnlyIsProbeOnly() {
               "SB_AGENT_METRIC_SNAPSHOT.RELAXED_TEST_PROBE_ONLY",
           "relaxed registry diagnostic mismatch: " +
               relaxed.status.diagnostic_code);
+  Require(registry.SnapshotCurrent().empty() && registry.SnapshotHistory().empty() &&
+              metrics::DefaultMetricRegistry().Descriptors().empty(),
+          "probe emitted observations or activated the production default registry");
 }
 
 agents::AgentResourceReservationRequest ReservationRequest(

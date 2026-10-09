@@ -257,15 +257,14 @@ AgentMetricSnapshotEvaluation EvaluateAgentObservedMetricSnapshots(
     evaluation.failed_closed = !status.ok;
     evaluation.relaxed_registry_only = true;
     AgentMetricSnapshotDiagnostic diagnostic;
-    diagnostic.diagnostic_code =
-        "SB_AGENT_METRIC_SNAPSHOT.RELAXED_TEST_PROBE_ONLY";
-    diagnostic.detail = "registry_only_test_probe_mode";
-    diagnostic.failed_closed = false;
     diagnostic.evidence_uuid = scratchbird::core::uuid::IssueRuntimeIdentityV7().value_or(scratchbird::core::platform::Uuid{});
     if (diagnostic.evidence_uuid.is_nil() || evaluation.input_digest.empty()) {
       evaluation.status=AgentError("SB_AGENT_METRIC_SNAPSHOT.EVIDENCE_UNAVAILABLE",descriptor.type_id);
       evaluation.accepted=false; evaluation.failed_closed=true; diagnostic.failed_closed=true;
     }
+    diagnostic.diagnostic_code = evaluation.status.diagnostic_code;
+    diagnostic.detail = evaluation.accepted ? "registry_only_test_probe_mode" : evaluation.status.detail;
+    diagnostic.failed_closed = evaluation.failed_closed;
     evaluation.diagnostics.push_back(std::move(diagnostic));
     return evaluation;
   }
