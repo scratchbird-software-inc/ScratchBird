@@ -5058,6 +5058,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
 		  target_compile_features(ipar_concurrency_insert_proof_gate PRIVATE cxx_std_23)
 		  target_link_libraries(ipar_concurrency_insert_proof_gate
 		    PRIVATE
+		      sb_engine
 		      sb_core_platform
 		      sb_core_uuid
 		      sb_engine_internal_api
@@ -5183,6 +5184,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
 		  target_compile_features(ipar_mixed_reader_writer_workload_gate PRIVATE cxx_std_23)
 		  target_link_libraries(ipar_mixed_reader_writer_workload_gate
 		    PRIVATE
+		      sb_engine
 		      sb_core_platform
 		      sb_core_uuid
 		      sb_engine_internal_api

@@ -1,4 +1,6 @@
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/published_ddl_table_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -9,6 +11,7 @@
 
 #include "catalog/sys_information_projection.hpp"
 #include "database_lifecycle.hpp"
+#include "database_lifecycle_test_memory.hpp"
 #include "dml/insert_api.hpp"
 #include "dml/select_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
@@ -37,8 +40,7 @@ namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -94,9 +96,9 @@ struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
+  api::EngineRequestContext owner_context;
   api::EngineUuid schema_uuid;
   api::EngineUuid table_uuid;
-  api::EngineUuid id_index_uuid;
   api::EngineUuid tag_index_uuid;
   platform::u64 salt = 0;
 
@@ -111,13 +113,10 @@ struct Fixture {
 api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::string request_id,
                                       platform::u64 salt) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+  auto context = fixture.owner_context;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid =
-      NewIdentity(platform::UuidKind::principal, fixture.salt + 100 + salt);
   context.session_uuid =
       NewIdentity(platform::UuidKind::object, fixture.salt + 200 + salt);
   context.current_schema_uuid = fixture.schema_uuid;
@@ -228,8 +227,7 @@ Fixture MakeFixture(platform::u64 salt) {
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = IdentityClockMillis();
   create.page_size = 8192;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -239,19 +237,15 @@ Fixture MakeFixture(platform::u64 salt) {
   Require(created.ok(), "IPAR-P7-10 database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
-  fixture.schema_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
-  fixture.id_index_uuid = NewIdentity(platform::UuidKind::object, salt + 12);
   fixture.tag_index_uuid = NewIdentity(platform::UuidKind::object, salt + 13);
 
   auto metadata = Begin(fixture, "ipar-p7-10-metadata", 1);
-  Require(!api::AppendMgaTableMetadata(metadata, Table(fixture, metadata)).error,
-          "IPAR-P7-10 table metadata append failed");
-  Require(!api::AppendMgaIndexMetadata(
-               metadata,
-               Index(fixture, metadata, fixture.id_index_uuid, "id", true))
-               .error,
-          "IPAR-P7-10 id index metadata append failed");
+  const auto table = scratchbird::tests::PublishDdlTableFixture(
+      metadata, Table(fixture, metadata), {"character", "character", "character"});
+  Require(table.table_uuid == fixture.table_uuid, "IPAR-P7-10 table publication failed");
+  fixture.schema_uuid = metadata.current_schema_uuid;
   Require(!api::AppendMgaIndexMetadata(
                metadata,
                Index(fixture, metadata, fixture.tag_index_uuid, "tag", false))
@@ -271,12 +265,12 @@ std::vector<std::string> DemandOptions() {
           "page_allocation.preallocate_index_pages=32"};
 }
 
-api::EngineInsertRowsRequest InsertRequest(
+scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> InsertRequest(
+    const scratchbird::tests::FixtureEngineSession& session,
     const Fixture& fixture,
     const api::EngineRequestContext& context,
     std::vector<api::EngineRowValue> rows) {
-  api::EngineInsertRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.target_object.uuid = fixture.table_uuid;
@@ -298,9 +292,8 @@ api::EnginePredicateEnvelope TagPredicate(std::string value) {
 void RequireSelectAndIndexLookups(const Fixture& fixture,
                                   platform::u64 salt) {
   auto context = Begin(fixture, "ipar-p7-10-reader", salt);
-
-  api::EngineSelectRowsRequest select;
-  select.context = context;
+  scratchbird::tests::FixtureEngineSession session(context);
+  scratchbird::tests::FixtureEngineRequest<api::EngineSelectRowsRequest> select(session, context);
   select.source_object.uuid = fixture.table_uuid;
   select.source_object.object_kind = "table";
   select.select_projection.canonical_projection_envelopes.push_back("id");
@@ -427,8 +420,8 @@ void RequireNavigatorTreeProjection() {
 
 api::EngineApiU64 SelectCount(const Fixture& fixture) {
   auto context = Begin(fixture, "ipar-p7-10-final-select", 9000);
-  api::EngineSelectRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineSession session(context);
+  scratchbird::tests::FixtureEngineRequest<api::EngineSelectRowsRequest> request(session, context);
   request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   request.select_projection.canonical_projection_envelopes.push_back("id");
@@ -466,7 +459,9 @@ void VerifyMixedReaderWriterWorkload() {
         auto context = Begin(fixture,
                              "ipar-p7-10-writer-" + std::to_string(writer),
                              static_cast<platform::u64>(writer + 10));
+        scratchbird::tests::FixtureEngineSession session(context);
         const auto inserted = api::EngineInsertRows(InsertRequest(
+            session,
             fixture,
             context,
             Rows("mixed", writer, kRowsPerWriter)));
@@ -475,6 +470,10 @@ void VerifyMixedReaderWriterWorkload() {
                 "IPAR-P7-10 writer insert count mismatch");
         Commit(context);
         ++writer_commits;
+      } catch (const std::exception& error) {
+        std::lock_guard<std::mutex> lock(mutex);
+        std::cerr << "IPAR-P7-10 writer " << writer << ": " << error.what() << '\n';
+        ++failures;
       } catch (...) {
         ++failures;
       }
@@ -498,6 +497,10 @@ void VerifyMixedReaderWriterWorkload() {
           ++reader_iterations;
           std::this_thread::yield();
         }
+      } catch (const std::exception& error) {
+        std::lock_guard<std::mutex> lock(mutex);
+        std::cerr << "IPAR-P7-10 reader " << reader << ": " << error.what() << '\n';
+        ++failures;
       } catch (...) {
         ++failures;
       }
@@ -526,7 +529,13 @@ void VerifyMixedReaderWriterWorkload() {
 }  // namespace
 
 int main() {
-  VerifyMixedReaderWriterWorkload();
-  std::cout << "ipar_mixed_reader_writer_workload_gate=passed\n";
-  return EXIT_SUCCESS;
+  try {
+    scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("ipar_mixed_reader_writer_workload_gate");
+    VerifyMixedReaderWriterWorkload();
+    std::cout << "ipar_mixed_reader_writer_workload_gate=passed\n";
+    return EXIT_SUCCESS;
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }

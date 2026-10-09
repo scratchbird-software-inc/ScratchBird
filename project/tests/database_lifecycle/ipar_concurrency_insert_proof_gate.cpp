@@ -1,4 +1,6 @@
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/published_ddl_table_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -8,6 +10,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "database_lifecycle_test_memory.hpp"
+#include "physical_mga_cow_store.hpp"
 #include "dml/import_execution_api.hpp"
 #include "dml/insert_api.hpp"
 #include "dml/select_api.hpp"
@@ -36,8 +40,7 @@ namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -84,9 +87,10 @@ struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
+  api::EngineRequestContext owner_context;
   api::EngineUuid schema_uuid;
   api::EngineUuid table_uuid;
-  api::EngineUuid index_uuid;
+  platform::u32 page_size = 0;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -127,18 +131,14 @@ std::vector<api::EngineRowValue> Rows(std::string prefix, int count) {
 api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::string request_id,
                                       platform::u64 lane) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+  auto context = fixture.owner_context;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid =
-      NewIdentity(platform::UuidKind::principal, fixture.salt + 100 + lane);
   context.session_uuid =
       NewIdentity(platform::UuidKind::object, fixture.salt + 1000 + lane);
   context.current_schema_uuid = fixture.schema_uuid;
   context.security_context_present = true;
-  context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
   context.catalog_generation_id = 1;
@@ -190,22 +190,6 @@ api::CrudTableRecord Table(const Fixture& fixture,
   return table;
 }
 
-api::CrudIndexRecord Index(const Fixture& fixture,
-                           const api::EngineRequestContext& context) {
-  api::CrudIndexRecord index;
-  index.creator_tx = context.local_transaction_id;
-  index.index_uuid = fixture.index_uuid;
-  index.table_uuid = fixture.table_uuid;
-  index.column_name = "id";
-  index.family = api::kCrudIndexFamilyBtree;
-  index.profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
-  index.default_name = "ipar_concurrency_insert_proof_id_pk";
-  index.unique = true;
-  index.key_envelopes.push_back("id");
-  index.key_envelopes.push_back("unique");
-  return index;
-}
-
 Fixture MakeFixture(platform::u64 salt) {
   Fixture fixture;
   fixture.salt = salt;
@@ -220,8 +204,7 @@ Fixture MakeFixture(platform::u64 salt) {
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = IdentityClockMillis();
   create.page_size = 8192;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -229,26 +212,27 @@ Fixture MakeFixture(platform::u64 salt) {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "IPAR-P7-04 database create failed");
+  fixture.page_size = created.state.header.page_size;
 
   fixture.database_uuid = create.database_uuid.value;
-  fixture.schema_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
-  fixture.index_uuid = NewIdentity(platform::UuidKind::object, salt + 12);
 
   auto metadata = Begin(fixture, "ipar-p704-metadata", 0);
-  const auto table = api::AppendMgaTableMetadata(metadata, Table(fixture, metadata));
-  Require(!table.error, "IPAR-P7-04 table metadata append failed");
-  const auto index = api::AppendMgaIndexMetadata(metadata, Index(fixture, metadata));
-  Require(!index.error, "IPAR-P7-04 index metadata append failed");
+  const auto table = scratchbird::tests::PublishDdlTableFixture(
+      metadata, Table(fixture, metadata), {"character", "character"});
+  Require(table.table_uuid == fixture.table_uuid, "IPAR-P7-04 table publication failed");
+  fixture.schema_uuid = metadata.current_schema_uuid;
   Commit(metadata);
   return fixture;
 }
 
-api::EngineInsertRowsRequest InsertRequest(const Fixture& fixture,
+scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> InsertRequest(
+                                           const scratchbird::tests::FixtureEngineSession& session,
+                                           const Fixture& fixture,
                                            const api::EngineRequestContext& context,
                                            std::vector<api::EngineRowValue> rows) {
-  api::EngineInsertRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(session, context);
   request.target_schema.uuid = fixture.schema_uuid;
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
@@ -260,12 +244,13 @@ api::EngineInsertRowsRequest InsertRequest(const Fixture& fixture,
   return request;
 }
 
-api::EngineExecuteImportRowsRequest ImportRequest(
+scratchbird::tests::FixtureEngineRequest<api::EngineExecuteImportRowsRequest> ImportRequest(
+    const scratchbird::tests::FixtureEngineSession& session,
     const Fixture& fixture,
     const api::EngineRequestContext& context,
-    std::vector<api::EngineRowValue> rows) {
-  api::EngineExecuteImportRowsRequest request;
-  request.context = context;
+    std::vector<api::EngineRowValue> rows,
+    platform::u64* physical_page) {
+  scratchbird::tests::FixtureEngineRequest<api::EngineExecuteImportRowsRequest> request(session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.source.source_kind = "csv_stream";
@@ -280,15 +265,22 @@ api::EngineExecuteImportRowsRequest ImportRequest(
   request.option_envelopes.push_back("copy_append_batching=enabled");
   request.option_envelopes.push_back("copy_append_batch_rows=4");
   request.option_envelopes.push_back("physical_mga_cow=required");
-  request.option_envelopes.push_back("physical_mga_cow.page_number=3072");
+  // All writer threads have joined before COPY. Use the actual aligned end
+  // of this fixture-owned file; a fixed page can now be a native catalog page.
+  const auto size = std::filesystem::file_size(fixture.database_path);
+  Require(fixture.page_size && size % fixture.page_size == 0,
+          "IPAR-P7-04 COPY physical extent is not page-aligned");
+  *physical_page = size / fixture.page_size;
+  request.option_envelopes.push_back("physical_mga_cow.page_number=" +
+                                   std::to_string(size / fixture.page_size));
   request.option_envelopes.push_back("physical_mga_cow.rows_per_page=8");
   return request;
 }
 
 api::EngineApiU64 SelectCount(const Fixture& fixture) {
   auto context = Begin(fixture, "ipar-p704-select", 9000);
-  api::EngineSelectRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineSession session(context);
+  scratchbird::tests::FixtureEngineRequest<api::EngineSelectRowsRequest> request(session, context);
   request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   request.select_projection.canonical_projection_envelopes.push_back("id");
@@ -330,7 +322,9 @@ void VerifyConcurrentWriters(const Fixture& fixture) {
         auto context = Begin(fixture,
                              "ipar-p704-worker-" + std::to_string(worker),
                              static_cast<platform::u64>(worker + 1));
+        scratchbird::tests::FixtureEngineSession session(context);
         const auto inserted = api::EngineInsertRows(InsertRequest(
+            session,
             fixture,
             context,
             Rows("worker-" + std::to_string(worker), kRowsPerWorker)));
@@ -338,7 +332,13 @@ void VerifyConcurrentWriters(const Fixture& fixture) {
         Require(inserted.inserted_count == kRowsPerWorker,
                 "IPAR-P7-04 worker insert count mismatch");
         Commit(context);
+      } catch (const std::exception& error) {
+        std::lock_guard<std::mutex> lock(mutex);
+        std::cerr << "IPAR-P7-04 worker " << worker << ": " << error.what() << '\n';
+        ++failures;
       } catch (...) {
+        std::lock_guard<std::mutex> lock(mutex);
+        std::cerr << "IPAR-P7-04 worker " << worker << ": unknown exception\n";
         ++failures;
       }
     });
@@ -360,17 +360,29 @@ void VerifyConcurrentWriters(const Fixture& fixture) {
 
 void VerifyCopyRollbackDuplicateAndRestart(Fixture& fixture) {
   auto copy = Begin(fixture, "ipar-p704-copy", 100);
+  scratchbird::tests::FixtureEngineSession copy_session(copy);
+  platform::u64 physical_page = 0;
   const auto imported = api::EngineExecuteImportRows(
-      ImportRequest(fixture, copy, Rows("copy", 5)));
+      ImportRequest(copy_session, fixture, copy, Rows("copy", 5), &physical_page));
   RequireOk(imported, "IPAR-P7-04 COPY import failed");
   Require(imported.inserted_rows == 5,
           "IPAR-P7-04 COPY import count mismatch");
   Commit(copy);
+  db::PhysicalMgaCowReadRequest read;
+  read.database_path = fixture.database_path.string();
+  read.relation_uuid = {platform::UuidKind::object, fixture.table_uuid};
+  read.page_number = physical_page;
+  read.use_latest_committed_snapshot = true;
+  const auto physical = db::ReadPhysicalMgaCowRows(read);
+  Require(physical.ok() && physical.visible_rows.size() == 5,
+          "IPAR-P7-04 COPY physical page did not retain five committed rows");
   Require(SelectCount(fixture) == 37,
           "IPAR-P7-04 COPY committed row count mismatch");
 
   auto rollback = Begin(fixture, "ipar-p704-rollback", 101);
+  scratchbird::tests::FixtureEngineSession rollback_session(rollback);
   const auto rollback_insert = api::EngineInsertRows(InsertRequest(
+      rollback_session,
       fixture,
       rollback,
       Rows("rollback", 3)));
@@ -380,7 +392,9 @@ void VerifyCopyRollbackDuplicateAndRestart(Fixture& fixture) {
           "IPAR-P7-04 rolled-back rows became visible");
 
   auto duplicate = Begin(fixture, "ipar-p704-duplicate", 102);
+  scratchbird::tests::FixtureEngineSession duplicate_session(duplicate);
   const auto duplicate_insert = api::EngineInsertRows(InsertRequest(
+      duplicate_session,
       fixture,
       duplicate,
       std::vector<api::EngineRowValue>{Row("worker-0-id-0", "duplicate")}));
@@ -396,8 +410,14 @@ void VerifyCopyRollbackDuplicateAndRestart(Fixture& fixture) {
 }  // namespace
 
 int main() {
-  auto fixture = MakeFixture(TimeSeed());
-  VerifyConcurrentWriters(fixture);
-  VerifyCopyRollbackDuplicateAndRestart(fixture);
-  return EXIT_SUCCESS;
+  try {
+    scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("ipar_concurrency_insert_proof_gate");
+    auto fixture = MakeFixture(TimeSeed());
+    VerifyConcurrentWriters(fixture);
+    VerifyCopyRollbackDuplicateAndRestart(fixture);
+    return EXIT_SUCCESS;
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }
