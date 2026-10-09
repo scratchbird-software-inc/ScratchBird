@@ -19,15 +19,15 @@
     "CEIC-061",
     "CEIC-062"
   ],
-  "manifest_uuid": "4a0ed601-49aa-5a7c-a4c9-9fb83659170c",
-  "source_commit": "be20173afae497897a79dac8a7fe33f06dd210b8",
-  "source_branch": "codex/windows-gnu-core-port",
-  "generated_at_utc": "2026-07-08T10:27:03-04:00",
+  "manifest_uuid": "45f378e4-9d83-5a79-920f-7c2a67f00a93",
+  "source_commit": "56f45b58bf7b1b48f1b377c16ebb2e67d7643f29",
+  "source_branch": "main",
+  "generated_at_utc": "2026-10-08T23:48:02-04:00",
   "generated_by": "project/tools/ceic_optimizer_readiness_manifest.py#CEIC_062_OPTIMIZER_READINESS_MANIFEST_TOOL",
-  "source_evidence_digest": "bd569a95a3aca62918061dc67a6694a8967dc549dd8ac13d2549e068c3edf3d6",
+  "source_evidence_digest": "48dd2defdf22aab47455cc987a0feeea73e4e423ff883f3d5a5ca4b81ee2287f",
   "auditor": {
     "slice_id": "CEIC-062",
-    "timestamp_utc": "2026-07-08T10:27:03-04:00",
+    "timestamp_utc": "2026-10-08T23:48:02-04:00",
     "proof_state": "generated_and_validated"
   },
   "authority_boundary": {
@@ -161,7 +161,7 @@
       "path": "project/tests/optimizer/optimizer_enterprise_route_validation_gate.cpp",
       "search_key": "OEIC_LIVE_PARSER_SBLR_OPTIMIZER_EXECUTOR_ROUTE",
       "surface": "live route benchmark artifact harness",
-      "sha256": "a3f01e2f35ec884024b754c3047b4282b366a05e3cd6eb200334de6aed408c6b"
+      "sha256": "d1a07c50c1bad49575679a6172f1ba9fa32412b5ec27454c64c127f97d2eda07"
     },
     {
       "slice_id": "CEIC-050",
@@ -231,14 +231,14 @@
       "path": "project/src/engine/optimizer/optimizer_memory_feedback_bridge.hpp",
       "search_key": "MMCH_OPTIMIZER_MEMORY_FEEDBACK_EVIDENCE_BRIDGE",
       "surface": "governed optimizer memory feedback",
-      "sha256": "2d2baaab8b178a9a9ff5313ca15724ff8c49f10e9770d8652dcfeca27eba7271"
+      "sha256": "4fdd45d8ec72b0627d1ca636b2139439c48733c3a5444d8e990abac2d1670857"
     },
     {
       "slice_id": "CEIC-059",
       "path": "project/src/engine/optimizer/optimizer_memory_spill_feedback_enterprise.hpp",
       "search_key": "OEIC_MEMORY_SPILL_FEEDBACK_ENTERPRISE",
       "surface": "optimizer spill feedback persistence",
-      "sha256": "ff6f840a832c0cfdf1a8de00539f55180ee716765c28c1330e4fde5fd1ad51e5"
+      "sha256": "4ecab9e95a6caa90be792eea38c340a348e58e5046073754fac6a0018e5057fa"
     },
     {
       "slice_id": "CEIC-060",
@@ -259,14 +259,14 @@
       "path": "project/src/core/memory/llvm_memory_accounting.hpp",
       "search_key": "CEIC_061_LLVM_MEMORY_ACCOUNTING",
       "surface": "LLVM dynamic/static memory accounting",
-      "sha256": "cedc11c03b574cbe4c1d6884cf94934a75561a48438c4002a4b932eaee341824"
+      "sha256": "ad2a349ff85f77f3b8c40d29ea1570fc88655c4767af0d7c6bce8a7ebf5d3d99"
     },
     {
       "slice_id": "CEIC-061",
       "path": "project/src/engine/native_compile/native_compile.hpp",
       "search_key": "SB_ENGINE_NATIVE_COMPILE_RUNTIME",
       "surface": "native compile memory accounting",
-      "sha256": "53179081140b40ddff7982d64088b1da73ff3ce4624fa41427dbadfba8cd17a6"
+      "sha256": "ab927b15409f1c6c133804f692152eeeec91378e0c579422f9e7757ff2a9ba72"
     },
     {
       "slice_id": "CEIC-062",
@@ -284,7 +284,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-058",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-050_LIVE_ROUTE_BENCHMARK_ARTIFACT_EVIDENCE.md",
-      "artifact_sha256": "5c44b41ecb808b50cfa325b86771b9afd3951a2f153421a268d1d4f1896d76ef",
+      "artifact_sha256": "f3a98058ed344939efd385e8830a1f3ece42d82a54c922d51c1fe6663907020d",
       "artifact_state": "present",
       "ctest": "ceic_050_live_route_benchmark_artifact_gate",
       "ctest_registered": true,
@@ -292,11 +292,11 @@
       "source_anchor": {
         "path": "project/tests/optimizer/optimizer_enterprise_route_validation_gate.cpp",
         "search_key": "OEIC_LIVE_PARSER_SBLR_OPTIMIZER_EXECUTOR_ROUTE",
-        "sha256": "a3f01e2f35ec884024b754c3047b4282b366a05e3cd6eb200334de6aed408c6b"
+        "sha256": "d1a07c50c1bad49575679a6172f1ba9fa32412b5ec27454c64c127f97d2eda07"
       },
       "proof_kind": "live_route_runtime_evidence",
-      "result_contract_hash": "sha256:042dc98fecdb60a9105c45b05d3906d95405d95a29f73e6e7c02e8f6190fdf9e",
-      "evidence_digest": "sha256:fe60391807cabfcba22a385c558b67a64d0a23065d6943ce7bc0fbeb354492e8",
+      "result_contract_hash": "sha256:a2fe448db263f1c60ff12b8eb0f1dd1f0c62110df3b45e27d13c583160019961",
+      "evidence_digest": "sha256:ffad3f1d3af059ec0f3c7fb2892b2633496f0c64f0405cc7babb37cc623af5d1",
       "catalog_epoch": 62050,
       "security_epoch": 72050,
       "redaction_epoch": 82050,
@@ -346,8 +346,8 @@
         "sha256": "0a97c4ac68de0baaebc188c4f574c38fa026bb24ce45f08b41987b5a66354b22"
       },
       "proof_kind": "benchmark_schema_validation",
-      "result_contract_hash": "sha256:a325a0a00900710bd206fe106c1f17a5ff97fa0e24a4206eac35f3db7dc63d71",
-      "evidence_digest": "sha256:5f68f6e76f829490bb1fe0b0372249242ddcc1c85a545988a0e75f0c47cab3ca",
+      "result_contract_hash": "sha256:4cb075e32af8c15e37d7e07185b60c08ad51ed3f5f06ce1e7be57a3df883f844",
+      "evidence_digest": "sha256:639e5c5f022b03dc755fdf00b94dc200de4af8bc46f4146c728ed032be99bfd6",
       "catalog_epoch": 62051,
       "security_epoch": 72051,
       "redaction_epoch": 82051,
@@ -389,8 +389,8 @@
         "sha256": "a260e4d6ca2bf02c2cd743056058e86fa6a11a3139267b34bfee8abc0c153567"
       },
       "proof_kind": "correctness_oracle_validation",
-      "result_contract_hash": "sha256:ba06253508702f3ba0b1a87a98ee6c1af6170c2645c9bde5b71eebf8a215ac43",
-      "evidence_digest": "sha256:0d74ac29e0cf3fc0557013c21cfeca09815dee3aabae5e473955b24152125c43",
+      "result_contract_hash": "sha256:f5c2f17d73cc0aac2230c9f9592cbfd0aa94e08b3f558c22c211a066d29e1f1e",
+      "evidence_digest": "sha256:4ede6987036dce59a7053aa9c8cd2bd5692102031d2176399db4b604ec9559af",
       "catalog_epoch": 62052,
       "security_epoch": 72052,
       "redaction_epoch": 82052,
@@ -451,8 +451,8 @@
         "sha256": "9b686fceb0df934a4ca5bfe74b4ed0fb3d9a5bc26bb9dbe2fa58596d05894ece"
       },
       "proof_kind": "crash_reopen_matrix_validation",
-      "result_contract_hash": "sha256:7209c78df2d46972992e237a95fbc058f88135819786761fc90981e81f08e9b2",
-      "evidence_digest": "sha256:cf5b6505ed89b197841929b05dddeac56bc78328d81ab65e50c302c3a3adf19a",
+      "result_contract_hash": "sha256:82ae6e115e23db367ad4bad1babd3883e5fce603bfb3beb702b9e62017d355ff",
+      "evidence_digest": "sha256:c8144fa41f9275679f4a91e120d9228df52fb517e66ad68439100420e4610189",
       "catalog_epoch": 62053,
       "security_epoch": 72053,
       "redaction_epoch": 82053,
@@ -510,8 +510,8 @@
         "sha256": "1a820723c4d0270b91a70ffde8c0d210257c2e7fd5ddcdf9b6cbf6a8ee19262d"
       },
       "proof_kind": "metrics_feedback_and_observability",
-      "result_contract_hash": "sha256:88fdc7d202216bb44d136cf9e56607647bbba3555f071522ace7d712f6a53aea",
-      "evidence_digest": "sha256:a560c8f58c1b988cb0cef6b20c076759c2df01e4b416681bfc369ff0571d9f92",
+      "result_contract_hash": "sha256:f9603d61afef6faa92ba04ee1bb3987c0bf44318ce76e52598f8b061b92bbf5b",
+      "evidence_digest": "sha256:b3c5e3ce9bd5303fd8e1b1ea26f601c4b653c205fe0ef43d1abe3bdee8dbfd36",
       "catalog_epoch": 62054,
       "security_epoch": 72054,
       "redaction_epoch": 82054,
@@ -560,8 +560,8 @@
         "sha256": "ae008d4082eadb75ef496fe173e2fac7d042538ad56fcd086a97f72a7da7222f"
       },
       "proof_kind": "transformation_memo_validation",
-      "result_contract_hash": "sha256:4cd2cd67a2c8fd4ceabbc4aed8881bd2857ba6f6f8164cbdc2d49c5ae6bcfe70",
-      "evidence_digest": "sha256:560618bb8d05a5ecd28bb8f0cb2d7ab859ba43195c07471b03f8b8512089cb80",
+      "result_contract_hash": "sha256:62ed2ed1f9e5bae7819a8acffd6df5fcec367d2abc62e199ee4410ff4127e039",
+      "evidence_digest": "sha256:47b24601ee7c65c8eea4ebd90d0a16ec3237072998de6e7dca3b1cdcd835acc7",
       "catalog_epoch": 62055,
       "security_epoch": 72055,
       "redaction_epoch": 82055,
@@ -603,8 +603,8 @@
         "sha256": "5bcb5f5aa4c19db5554473496c741ffa5720c55cafe4ce6dee48bade72e766e4"
       },
       "proof_kind": "workload_budget_validation",
-      "result_contract_hash": "sha256:fac58baff1a429554387a1cc7bd25fefd6e6b5ee7f4dbe0d4db06377fcb756c8",
-      "evidence_digest": "sha256:f3ded75583798c741c9e7466ea9f4264d00cb045cca7940239da0e256da74189",
+      "result_contract_hash": "sha256:c289ef60c7b0837be118739c5675f5918c3bd8c464632d26dbb8f4c5229a8da5",
+      "evidence_digest": "sha256:0060288dbc406389dce84e5cb0993f496a8cea56db510297514905b954998f66",
       "catalog_epoch": 62056,
       "security_epoch": 72056,
       "redaction_epoch": 82056,
@@ -646,8 +646,8 @@
         "sha256": "b955f67c7f230609a438fdb2d055325a16aec7bbf40eae164b11afb608578d70"
       },
       "proof_kind": "driver_visible_explain_validation",
-      "result_contract_hash": "sha256:72e1955d89fbb6465302ef8150b1e1ae5687e77731da6a76a0a4438c69a31637",
-      "evidence_digest": "sha256:3c27daef4f8b79c7af6b44a5ccd70fb117657e16c37e696abe9b6e6bb594cc94",
+      "result_contract_hash": "sha256:65cd3dae8a9909cc113d46e83ff533ff0e89964b43efc59f97f981b1d8606887",
+      "evidence_digest": "sha256:c2d7ebde2226dd46bd7ec9c50fb7a34226a128c1909b34487eb766b817d05818",
       "catalog_epoch": 62057,
       "security_epoch": 72057,
       "redaction_epoch": 82057,
@@ -700,8 +700,8 @@
         "sha256": "32758bf92a2a36cba9d015fd337ebab625b49206d5e770714965c42387a253b1"
       },
       "proof_kind": "reference_comparison_artifact_validation",
-      "result_contract_hash": "sha256:39a191c54bc6d3e8835395bf6e639f1d353eaf1777022c8d305224c256cd2a48",
-      "evidence_digest": "sha256:e9075c81807e1f7882cf07c34a13d2aca33a3f42ce5d18f27196e3b0486f5bd6",
+      "result_contract_hash": "sha256:712ea8a10f6f740ea90b8e9315a09d8c72e97d134e7b18dcb5cf24d20b95791e",
+      "evidence_digest": "sha256:eb193e9a25d48460c3cef4b68b2a95a5e34e315f702a3c84d758f3483110fcec",
       "catalog_epoch": 62058,
       "security_epoch": 72058,
       "redaction_epoch": 82058,
@@ -744,11 +744,11 @@
       "source_anchor": {
         "path": "project/src/engine/optimizer/optimizer_memory_feedback_bridge.hpp",
         "search_key": "MMCH_OPTIMIZER_MEMORY_FEEDBACK_EVIDENCE_BRIDGE",
-        "sha256": "2d2baaab8b178a9a9ff5313ca15724ff8c49f10e9770d8652dcfeca27eba7271"
+        "sha256": "4fdd45d8ec72b0627d1ca636b2139439c48733c3a5444d8e990abac2d1670857"
       },
       "proof_kind": "governed_memory_feedback_validation",
-      "result_contract_hash": "sha256:ec90bff4836193b2158e755dfd96e9aae6445f043e067338984e1080b5c0f7ac",
-      "evidence_digest": "sha256:91b1880d736c0af83465612d34538c283cacfd85ac0b60035a8ebdbd6efc87ae",
+      "result_contract_hash": "sha256:34c7776ad9a1800491fb40a5fa4eede2f6da7cadc66be291c752ec1625797feb",
+      "evidence_digest": "sha256:1d2743485799164d3dce9d006409899a6a148b404c402c57f90d8b02733ce901",
       "catalog_epoch": 62059,
       "security_epoch": 72059,
       "redaction_epoch": 82059,
@@ -797,8 +797,8 @@
         "sha256": "d6dbd93f43b4d4a2f67bf6ef568f2061d5c84a5050b265d6d8ae7e25dce63400"
       },
       "proof_kind": "index_readiness_coupling_validation",
-      "result_contract_hash": "sha256:8e8a056e4a8f4c06896b0a1b331722c7e68aa8813751cc08cad8b77881528045",
-      "evidence_digest": "sha256:90335fb4ee44912f293c93c26a1aaad180e63be79324725e1e43d2f178a6f34d",
+      "result_contract_hash": "sha256:0d238e1a643094e2b8e3cc383f7e2597e0d5fa5b943fc56565fe197f2d27e270",
+      "evidence_digest": "sha256:30904065dda288d44255745a86fb563ccd4cbf2ccd006c34dc3884493dcbe184",
       "catalog_epoch": 62060,
       "security_epoch": 72060,
       "redaction_epoch": 82060,
@@ -846,11 +846,11 @@
       "source_anchor": {
         "path": "project/src/core/memory/llvm_memory_accounting.hpp",
         "search_key": "CEIC_061_LLVM_MEMORY_ACCOUNTING",
-        "sha256": "cedc11c03b574cbe4c1d6884cf94934a75561a48438c4002a4b932eaee341824"
+        "sha256": "ad2a349ff85f77f3b8c40d29ea1570fc88655c4767af0d7c6bce8a7ebf5d3d99"
       },
       "proof_kind": "llvm_foreign_memory_accounting_validation",
-      "result_contract_hash": "sha256:1926e0693bcb798ef2cf9a0e8abc5879400e28be78889fb06d5ceec2a269af63",
-      "evidence_digest": "sha256:0992ecd79e157bc12b21c5e0745a840d95657e9b7b5b2d288c2eb0efd3d2abbe",
+      "result_contract_hash": "sha256:1413f2444abdc725e4ad03747d9da65296264530133c9701d2bb256c2d7191fa",
+      "evidence_digest": "sha256:01728c533b22c4188860dc6f7d26587ae9b8db977b0702c98c0ac54d51d31c99",
       "catalog_epoch": 62061,
       "security_epoch": 72061,
       "redaction_epoch": 82061,
@@ -887,7 +887,7 @@
       "slice_id": "CEIC-050",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-050_LIVE_ROUTE_BENCHMARK_ARTIFACT_EVIDENCE.md",
-      "sha256": "5c44b41ecb808b50cfa325b86771b9afd3951a2f153421a268d1d4f1896d76ef",
+      "sha256": "f3a98058ed344939efd385e8830a1f3ece42d82a54c922d51c1fe6663907020d",
       "status": "present"
     },
     {
@@ -1067,13 +1067,13 @@
     },
     {
       "path": "project/src/core/memory/llvm_memory_accounting.hpp",
-      "sha256": "cedc11c03b574cbe4c1d6884cf94934a75561a48438c4002a4b932eaee341824",
-      "bytes": 4632
+      "sha256": "ad2a349ff85f77f3b8c40d29ea1570fc88655c4767af0d7c6bce8a7ebf5d3d99",
+      "bytes": 5218
     },
     {
       "path": "project/src/engine/native_compile/native_compile.hpp",
-      "sha256": "53179081140b40ddff7982d64088b1da73ff3ce4624fa41427dbadfba8cd17a6",
-      "bytes": 4241
+      "sha256": "ab927b15409f1c6c133804f692152eeeec91378e0c579422f9e7757ff2a9ba72",
+      "bytes": 4725
     },
     {
       "path": "project/src/engine/optimizer/optimizer_benchmark_evidence_schema.hpp",
@@ -1107,13 +1107,13 @@
     },
     {
       "path": "project/src/engine/optimizer/optimizer_memory_feedback_bridge.hpp",
-      "sha256": "2d2baaab8b178a9a9ff5313ca15724ff8c49f10e9770d8652dcfeca27eba7271",
-      "bytes": 3916
+      "sha256": "4fdd45d8ec72b0627d1ca636b2139439c48733c3a5444d8e990abac2d1670857",
+      "bytes": 4136
     },
     {
       "path": "project/src/engine/optimizer/optimizer_memory_spill_feedback_enterprise.hpp",
-      "sha256": "ff6f840a832c0cfdf1a8de00539f55180ee716765c28c1330e4fde5fd1ad51e5",
-      "bytes": 3997
+      "sha256": "4ecab9e95a6caa90be792eea38c340a348e58e5046073754fac6a0018e5057fa",
+      "bytes": 4344
     },
     {
       "path": "project/src/engine/optimizer/optimizer_selectivity_drift_observability.hpp",
@@ -1137,8 +1137,8 @@
     },
     {
       "path": "project/tests/consolidated_enterprise/CMakeLists.txt",
-      "sha256": "d453141a1e46454ec0920351e52ea48466a16de5b94aee8a0d367249d29d1fa4",
-      "bytes": 51048
+      "sha256": "76d3519f85c4de34fda76f21379a1fd64952fb059e68e87b4195b9783f99f43e",
+      "bytes": 52925
     },
     {
       "path": "project/tests/consolidated_enterprise/ceic_062_optimizer_readiness_manifest_gate_test.py",
@@ -1147,8 +1147,8 @@
     },
     {
       "path": "project/tests/optimizer/optimizer_enterprise_route_validation_gate.cpp",
-      "sha256": "a3f01e2f35ec884024b754c3047b4282b366a05e3cd6eb200334de6aed408c6b",
-      "bytes": 17206
+      "sha256": "d1a07c50c1bad49575679a6172f1ba9fa32412b5ec27454c64c127f97d2eda07",
+      "bytes": 17369
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/ARTIFACT_INDEX.csv",
@@ -1207,7 +1207,7 @@
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-050_LIVE_ROUTE_BENCHMARK_ARTIFACT_EVIDENCE.md",
-      "sha256": "5c44b41ecb808b50cfa325b86771b9afd3951a2f153421a268d1d4f1896d76ef",
+      "sha256": "f3a98058ed344939efd385e8830a1f3ece42d82a54c922d51c1fe6663907020d",
       "bytes": 1152
     },
     {

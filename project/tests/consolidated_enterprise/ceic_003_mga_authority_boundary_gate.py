@@ -260,9 +260,10 @@ SOURCE_REQUIREMENTS = (
         "transaction restore refuses WAL authority",
         pathlib.Path("project/src/transaction/mga/transaction_evidence.cpp"),
         (
-            "SB-MGA-WAL-NOT-AUTHORITY",
-            "transaction.evidence.wal_not_authority",
-            "restore classification uses MGA inventory and lineage evidence",
+            "case E::wal_not_authority: return \"MGA.EVIDENCE.WAL_NOT_AUTHORITY\";",
+            "if (caller_requires_wal) return {E::wal_not_authority, {}, false, false};",
+            "ValidateLocalTransactionInventoryStructure(inventory)",
+            "BuildTransactionLineageEvidence(inventory, context)",
         ),
     ),
 )
