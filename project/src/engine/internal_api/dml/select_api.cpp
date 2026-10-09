@@ -148,11 +148,7 @@ EngineDescriptor TextDescriptor() {
 }
 
 EngineDescriptor Int64Descriptor() {
-  EngineDescriptor descriptor;
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = "int64";
-  descriptor.encoded_descriptor = "canonical=int64";
-  return descriptor;
+  return EngineGlobalAggregateCountResultDescriptor();
 }
 
 EngineTypedValue TextValue(std::string value) {
@@ -165,7 +161,9 @@ EngineTypedValue TextValue(std::string value) {
 EngineTypedValue Int64Value(std::int64_t value) {
   EngineTypedValue typed;
   typed.descriptor = Int64Descriptor();
-  typed.encoded_value = std::to_string(value);
+  typed.binary_value.resize(8);
+  for (unsigned i = 0; i < 8; ++i)
+    typed.binary_value[i] = static_cast<std::uint8_t>(static_cast<std::uint64_t>(value) >> (8 * i));
   return typed;
 }
 
@@ -1260,6 +1258,7 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
         {"relation_projection_row_storage", "none"});
   } else if (global_aggregate_projection) {
     auto aggregate = ExecuteGlobalAggregateProjection(
+        request.context,
         global_aggregate_binding.outputs,
         global_aggregate_relation_descriptor,
         rows);

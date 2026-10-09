@@ -12,18 +12,15 @@
 #include "canonical_aggregate_registry.hpp"
 #include "crud_support/crud_store.hpp"
 #include "datatype_operations.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "descriptor_value_runtime.hpp"
 #include "mga_relation_store/mga_relation_descriptor.hpp"
 #include "mga_relation_store/mga_binary_fields.hpp"
 
 #include <algorithm>
-#include <array>
-#include <cerrno>
-#include <cctype>
-#include <charconv>
+#include <bit>
 #include <cmath>
 #include <cstdint>
-#include <cstdlib>
-#include <cstring>
 #include <limits>
 #include <optional>
 #include <string>
@@ -201,32 +198,22 @@ bool CanonicalIntegerValue(const EngineDescriptor& descriptor,
     }
     return false;
   }
-  dt::DatatypeCastRequest cast_request;
-  cast_request.value.type_id = *type_id;
-  cast_request.value.encoded_value = std::string(encoded);
-  cast_request.value.is_null = false;
-  cast_request.target_type_id = *type_id;
-  cast_request.explicit_cast = false;
-  const auto canonical = dt::CastDatatypeValue(cast_request);
-  if (!canonical.ok() || canonical.value.is_null) {
+  const std::size_t width = *type_id == dt::CanonicalTypeId::int32 ? 4 : 8;
+  if (encoded.size() != width) {
     if (error_detail != nullptr) {
       *error_detail = "global_aggregate_integer_value_invalid";
     }
     return false;
   }
-  std::int64_t parsed = 0;
-  const char* begin = canonical.value.encoded_value.data();
-  const char* end = begin + canonical.value.encoded_value.size();
-  const auto [parsed_end, error] = std::from_chars(begin, end, parsed);
-  if (error != std::errc{} || parsed_end != end) {
-    if (error_detail != nullptr) {
-      *error_detail = "global_aggregate_integer_value_invalid";
-    }
-    return false;
-  }
+  std::uint64_t bits = 0;
+  for (std::size_t i = 0; i < width; ++i)
+    bits |= static_cast<std::uint64_t>(static_cast<unsigned char>(encoded[i])) << (8 * i);
+  const std::int64_t parsed = width == 4
+      ? static_cast<std::int64_t>(std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(bits)))
+      : std::bit_cast<std::int64_t>(bits);
   if (value != nullptr) *value = parsed;
   if (canonical_text != nullptr) {
-    *canonical_text = canonical.value.encoded_value;
+    canonical_text->assign(encoded);
   }
   if (error_detail != nullptr) error_detail->clear();
   return true;
@@ -245,8 +232,7 @@ bool CanonicalInt32Literal(
           expression.result_descriptor,
           EngineGlobalAggregateExpressionInt64ResultDescriptor()) ||
       expression.int32_literal.isSqlNull() ||
-      expression.int32_literal.state != EngineValueState::value ||
-      !expression.int32_literal.binary_value.empty()) {
+      expression.int32_literal.state != EngineValueState::value) {
     if (error_detail != nullptr) {
       *error_detail = "global_aggregate_input_expression_descriptor_invalid";
     }
@@ -255,14 +241,16 @@ bool CanonicalInt32Literal(
 
   std::int64_t parsed = 0;
   std::string canonical;
-  if (!CanonicalIntegerValue(expression.int32_literal.descriptor,
-                             expression.int32_literal.encoded_value,
+  if (!expression.int32_literal.encoded_value.empty() ||
+      expression.int32_literal.binary_value.size() != 4 ||
+      !CanonicalIntegerValue(expression.int32_literal.descriptor,
+                             std::string_view(reinterpret_cast<const char*>(
+                                 expression.int32_literal.binary_value.data()), 4),
                              &parsed,
                              &canonical,
                              error_detail) ||
       parsed < std::numeric_limits<std::int32_t>::min() ||
-      parsed > std::numeric_limits<std::int32_t>::max() ||
-      canonical != expression.int32_literal.encoded_value) {
+      parsed > std::numeric_limits<std::int32_t>::max()) {
     if (error_detail != nullptr) {
       *error_detail = "global_aggregate_expression_literal_int32_invalid";
     }
@@ -301,129 +289,47 @@ bool CanonicalIntegerDistinctKey(const EngineDescriptor& descriptor,
   return true;
 }
 
-// This deliberately admits the decimal real64 grammar accepted by the
-// non-Apple from_chars path.  In particular, it excludes locale-sensitive
-// separators, leading whitespace and a leading plus, which strtod otherwise
-// accepts on macOS.
-bool DecimalReal64Text(std::string_view value) {
-  if (value.empty()) return false;
-  std::size_t position = 0;
-  if (value[position] == '-') {
-    ++position;
-    if (position == value.size()) return false;
-  }
-
-  bool significand_digit = false;
-  while (position < value.size() &&
-         std::isdigit(static_cast<unsigned char>(value[position])) != 0) {
-    significand_digit = true;
-    ++position;
-  }
-  if (position < value.size() && value[position] == '.') {
-    ++position;
-    while (position < value.size() &&
-           std::isdigit(static_cast<unsigned char>(value[position])) != 0) {
-      significand_digit = true;
-      ++position;
-    }
-  }
-  if (!significand_digit) return false;
-
-  if (position < value.size() &&
-      (value[position] == 'e' || value[position] == 'E')) {
-    ++position;
-    if (position < value.size() &&
-        (value[position] == '-' || value[position] == '+')) {
-      ++position;
-    }
-    const std::size_t exponent_begin = position;
-    while (position < value.size() &&
-           std::isdigit(static_cast<unsigned char>(value[position])) != 0) {
-      ++position;
-    }
-    if (position == exponent_begin) return false;
-  }
-  return position == value.size();
-}
-
 bool CanonicalReal64Value(const EngineDescriptor& descriptor,
                           std::string_view encoded,
                           double* value,
                           std::string* key,
                           std::string* error_detail) {
-  if (AdmittedAvgInputKind(descriptor) != AvgInputKind::real64) {
-    if (error_detail != nullptr) {
-      *error_detail = "global_aggregate_avg_type_unsupported";
-    }
+  if (AdmittedAvgInputKind(descriptor) != AvgInputKind::real64 ||
+      encoded.size() != 8) {
+    if (error_detail) *error_detail = "global_aggregate_real64_value_invalid";
     return false;
   }
-  dt::DatatypeCastRequest cast_request;
-  cast_request.value.type_id = dt::CanonicalTypeId::real64;
-  cast_request.value.encoded_value = std::string(encoded);
-  cast_request.value.is_null = false;
-  cast_request.target_type_id = dt::CanonicalTypeId::real64;
-  cast_request.explicit_cast = false;
-  const auto canonical = dt::CastDatatypeValue(cast_request);
-  if (!canonical.ok() || canonical.value.is_null) {
-    if (error_detail != nullptr) {
-      *error_detail = "global_aggregate_real64_value_invalid";
-    }
+  std::uint64_t bits = 0;
+  for (unsigned i = 0; i < 8; ++i)
+    bits |= static_cast<std::uint64_t>(static_cast<unsigned char>(encoded[i])) << (8 * i);
+  double parsed = std::bit_cast<double>(bits);
+  if (!std::isfinite(parsed)) {
+    if (error_detail) *error_detail = "global_aggregate_real64_value_invalid";
     return false;
   }
-  if (!DecimalReal64Text(canonical.value.encoded_value)) {
-    if (error_detail != nullptr) {
-      *error_detail = "global_aggregate_real64_value_invalid";
-    }
-    return false;
+  if (value) *value = parsed;
+  // SQL equality identifies both zero signs; all other finite binary64
+  // representations are already canonical. No decimal formatting or parsing.
+  if (key) {
+    const std::string canonical = parsed == 0.0 ? std::string(8, '\0')
+                                               : std::string(encoded);
+    *key = DistinctValueKey(descriptor.descriptor_uuid, "real64", canonical);
   }
-  double parsed = 0.0;
-#if defined(__APPLE__)
-  // Apple libc++ does not provide the C++17 floating-point from_chars
-  // overload. Keep the same full-input, range, and finite-value contract
-  // with the C conversion routine available on both supported macOS runners.
-  std::string parse_text = canonical.value.encoded_value;
-  char* parsed_end = nullptr;
-  errno = 0;
-  parsed = std::strtod(parse_text.c_str(), &parsed_end);
-  const bool parse_failed =
-      errno == ERANGE || parsed_end != parse_text.c_str() + parse_text.size();
-#else
-  const char* begin = canonical.value.encoded_value.data();
-  const char* end = begin + canonical.value.encoded_value.size();
-  const auto [parsed_end, error] =
-      std::from_chars(begin, end, parsed, std::chars_format::general);
-  const bool parse_failed = error != std::errc{} || parsed_end != end;
-#endif
-  if (parse_failed || !std::isfinite(parsed)) {
-    if (error_detail != nullptr) {
-      *error_detail = "global_aggregate_real64_value_invalid";
-    }
-    return false;
-  }
-  if (parsed == 0.0) parsed = 0.0;
-  if (value != nullptr) *value = parsed;
-  if (key != nullptr) {
-    std::uint64_t bits = 0;
-    static_assert(sizeof(bits) == sizeof(parsed));
-    std::memcpy(&bits, &parsed, sizeof(bits));
-    std::array<char, 16> encoded_bits{};
-    static constexpr char kHex[] = "0123456789abcdef";
-    for (std::size_t index = 0; index < encoded_bits.size(); ++index) {
-      const unsigned shift =
-          static_cast<unsigned>((encoded_bits.size() - index - 1u) * 4u);
-      encoded_bits[index] = kHex[(bits >> shift) & 0x0fu];
-    }
-    *key = DistinctValueKey(descriptor.descriptor_uuid, "real64",
-                            std::string_view(encoded_bits.data(), encoded_bits.size()));
-  }
-  if (error_detail != nullptr) error_detail->clear();
+  if (error_detail) error_detail->clear();
   return true;
 }
 
+std::vector<std::uint8_t> NativeIntegerBytes(std::int64_t value) {
+  std::vector<std::uint8_t> bytes(8);
+  const auto bits = std::bit_cast<std::uint64_t>(value);
+  for (unsigned i = 0; i < 8; ++i)
+    bytes[i] = static_cast<std::uint8_t>(bits >> (8 * i));
+  return bytes;
+}
 EngineTypedValue CountValue(std::uint64_t value) {
   EngineTypedValue typed;
   typed.descriptor = EngineGlobalAggregateCountResultDescriptor();
-  typed.encoded_value = std::to_string(static_cast<std::int64_t>(value));
+  typed.binary_value = NativeIntegerBytes(static_cast<std::int64_t>(value));
   typed.is_null = false;
   typed.state = EngineValueState::value;
   return typed;
@@ -440,7 +346,7 @@ EngineTypedValue NullAggregateValue(const EngineDescriptor& descriptor) {
 EngineTypedValue AvgIntegerValue(std::int64_t value) {
   EngineTypedValue typed;
   typed.descriptor = EngineGlobalAggregateAvgIntegerResultDescriptor();
-  typed.encoded_value = std::to_string(value);
+  typed.binary_value = NativeIntegerBytes(value);
   typed.is_null = false;
   typed.state = EngineValueState::value;
   return typed;
@@ -448,14 +354,9 @@ EngineTypedValue AvgIntegerValue(std::int64_t value) {
 
 std::optional<EngineTypedValue> AvgReal64Value(double value) {
   if (!std::isfinite(value)) return std::nullopt;
-  std::array<char, 128> encoded{};
-  const auto [end, error] = std::to_chars(
-      encoded.data(), encoded.data() + encoded.size(), value,
-      std::chars_format::general, std::numeric_limits<double>::max_digits10);
-  if (error != std::errc{}) return std::nullopt;
   EngineTypedValue typed;
   typed.descriptor = EngineGlobalAggregateAvgRealResultDescriptor();
-  typed.encoded_value.assign(encoded.data(), end);
+  typed.binary_value = NativeIntegerBytes(std::bit_cast<std::int64_t>(value));
   typed.is_null = false;
   typed.state = EngineValueState::value;
   return typed;
@@ -507,12 +408,8 @@ struct AggregateState {
 }  // namespace
 
 EngineDescriptor EngineGlobalAggregateCountResultDescriptor() {
-  EngineDescriptor descriptor;
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = "int64";
-  descriptor.encoded_descriptor =
-      "canonical=int64;precision=64;scale=0;nullable=false";
-  return descriptor;
+  return scratchbird::engine::executor::MakeExecutorDescriptor(
+      "int64", "nullability=non_null");
 }
 
 EngineUuid EngineGlobalAggregateCountFunctionUuid() {
@@ -523,39 +420,23 @@ EngineUuid EngineGlobalAggregateCountFunctionUuid() {
 }
 
 EngineDescriptor EngineGlobalAggregateAvgIntegerResultDescriptor() {
-  EngineDescriptor descriptor;
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = "int64";
-  descriptor.encoded_descriptor =
-      "canonical=int64;precision=64;scale=0;nullable=true";
-  return descriptor;
+  return scratchbird::engine::executor::MakeExecutorDescriptor(
+      "int64", "nullability=nullable");
 }
 
 EngineDescriptor EngineGlobalAggregateAvgRealResultDescriptor() {
-  EngineDescriptor descriptor;
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = "real64";
-  descriptor.encoded_descriptor =
-      "canonical=real64;precision=64;nullable=true";
-  return descriptor;
+  return scratchbird::engine::executor::MakeExecutorDescriptor(
+      "real64", "nullability=nullable");
 }
 
 EngineDescriptor EngineGlobalAggregateExpressionInt32LiteralDescriptor() {
-  EngineDescriptor descriptor;
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = "int32";
-  descriptor.encoded_descriptor =
-      "canonical=int32;precision=32;scale=0;nullable=false";
-  return descriptor;
+  return scratchbird::engine::executor::MakeExecutorDescriptor(
+      "int32", "nullability=non_null");
 }
 
 EngineDescriptor EngineGlobalAggregateExpressionInt64ResultDescriptor() {
-  EngineDescriptor descriptor;
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = "int64";
-  descriptor.encoded_descriptor =
-      "canonical=int64;precision=64;scale=0;nullable=true";
-  return descriptor;
+  return scratchbird::engine::executor::MakeExecutorDescriptor(
+      "int64", "nullability=nullable");
 }
 
 EngineUuid EngineGlobalAggregateAvgFunctionUuid() {
@@ -771,6 +652,7 @@ EngineGlobalAggregateBindingResult BindGlobalAggregateProjectionEnvelope(
 }
 
 EngineGlobalAggregateExecutionResult ExecuteGlobalAggregateProjection(
+    const EngineRequestContext& context,
     const std::vector<EngineBoundGlobalAggregateProjection>& outputs,
     const MgaRelationStorageDescriptor& relation_descriptor,
     const std::vector<CrudRowVersionRecord>& visible_rows) {
@@ -808,6 +690,7 @@ EngineGlobalAggregateExecutionResult ExecuteGlobalAggregateProjection(
   }
 
   std::vector<std::string> source_field_name_keys(outputs.size());
+  std::vector<bool> source_nullable(outputs.size());
   std::vector<AvgInputKind> avg_input_kinds(
       outputs.size(), AvgInputKind::unsupported);
   std::vector<std::optional<std::int32_t>> expression_int32_literals(
@@ -884,6 +767,24 @@ EngineGlobalAggregateExecutionResult ExecuteGlobalAggregateProjection(
           "bound_global_aggregate_source_field_name_key_required");
       return result;
     }
+    const auto& source = column->value_descriptor;
+    const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+        context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+        context.datatype_registry_generation, source.datatype_descriptor_uuid,
+        source.datatype_descriptor_generation);
+    const auto source_type = dt::CanonicalTypeIdFromStableName(source.canonical_type_name);
+    if (!binding.ok || binding.row.type_uuid != source.type_uuid ||
+        binding.row.canonical_binary_type_code != static_cast<std::uint32_t>(source_type) ||
+        source.canonical_type_name != dt::CanonicalTypeName(source_type) ||
+        ((source_type == dt::CanonicalTypeId::int32 ||
+          source_type == dt::CanonicalTypeId::int64 ||
+          source_type == dt::CanonicalTypeId::real64) &&
+         binding.row.canonical_value_exact_bytes !=
+             (source_type == dt::CanonicalTypeId::int32 ? 4 : 8))) {
+      result.diagnostic = AggregateDiagnostic("global_aggregate_source_datatype_binding_invalid");
+      return result;
+    }
+    source_nullable[index] = column->nullable;
     if (output.operation ==
             EngineGlobalAggregateOperation::count_distinct_field &&
         !AdmittedIntegerDistinctType(column->value_descriptor)) {
@@ -976,7 +877,8 @@ EngineGlobalAggregateExecutionResult ExecuteGlobalAggregateProjection(
             "global_aggregate_source_field_missing_from_visible_row");
         return result;
       }
-      if (value.state == EngineValueState::sql_null && value.value.empty()) continue;
+      if (value.state == EngineValueState::sql_null && value.value.empty() &&
+          source_nullable[index]) continue;
       if (value.state != EngineValueState::value) {
         result.diagnostic = AggregateDiagnostic("global_aggregate_source_value_state_invalid");
         return result;
@@ -1004,6 +906,7 @@ EngineGlobalAggregateExecutionResult ExecuteGlobalAggregateProjection(
         }
         state.canonical_distinct_keys.emplace(std::move(key));
       } else if (AvgOperation(output.operation)) {
+        const bool needs_distinct = output.operation == EngineGlobalAggregateOperation::avg_distinct_field;
         std::string distinct_key;
         std::string error_detail;
         std::int64_t integer_value = 0;
@@ -1014,7 +917,7 @@ EngineGlobalAggregateExecutionResult ExecuteGlobalAggregateProjection(
                   output.source_field.value_descriptor,
                   value.value,
                   &integer_value,
-                  &canonical_text,
+                  needs_distinct ? &canonical_text : nullptr,
                   &error_detail)) {
             result.diagnostic = AggregateDiagnostic(std::move(error_detail));
             return result;
@@ -1030,18 +933,22 @@ EngineGlobalAggregateExecutionResult ExecuteGlobalAggregateProjection(
               return result;
             }
             integer_value = product;
-            canonical_text = std::to_string(integer_value);
+            if (needs_distinct) {
+              const auto bytes = NativeIntegerBytes(integer_value);
+              canonical_text.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+            }
           }
-          distinct_key = expression_int32_literals[index]
-              ? DistinctValueKey({}, "expression:int64", canonical_text)
-              : DistinctValueKey(output.source_field.value_descriptor.descriptor_uuid,
-                  output.source_field.value_descriptor.canonical_type_name, canonical_text);
+          if (needs_distinct)
+            distinct_key = expression_int32_literals[index]
+                ? DistinctValueKey({}, "expression:int64", canonical_text)
+                : DistinctValueKey(output.source_field.value_descriptor.descriptor_uuid,
+                    output.source_field.value_descriptor.canonical_type_name, canonical_text);
         } else if (avg_input_kinds[index] == AvgInputKind::real64) {
           if (!CanonicalReal64Value(
                   output.source_field.value_descriptor,
                   value.value,
                   &real_value,
-                  &distinct_key,
+                  needs_distinct ? &distinct_key : nullptr,
                   &error_detail)) {
             result.diagnostic = AggregateDiagnostic(std::move(error_detail));
             return result;

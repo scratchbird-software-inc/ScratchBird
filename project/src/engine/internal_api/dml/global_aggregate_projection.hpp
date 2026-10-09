@@ -102,8 +102,8 @@ struct EngineGlobalAggregateExecutionResult {
 
 // Stable output descriptor for every exact count projection in this ABI.
 // COUNT always returns one non-NULL signed int64 value, including on an empty
-// relation.  The descriptor has no catalog-object UUID because this internal
-// ABI does not mint or select a public builtin identity.
+// relation. The result retains the compiled Core INT64 datatype/codec binding;
+// this does not mint a user object or confer source-column authority.
 EngineDescriptor EngineGlobalAggregateCountResultDescriptor();
 
 // Canonical global aggregate-registry identity for COUNT. No independently
@@ -143,6 +143,7 @@ EngineGlobalAggregateBindingResult BindGlobalAggregateProjectionEnvelope(
 // MGA-visible rows. DISTINCT uses descriptor-aware canonical equality and
 // fails closed when the bound type has no admitted canonicalizer.
 EngineGlobalAggregateExecutionResult ExecuteGlobalAggregateProjection(
+    const EngineRequestContext& context,
     const std::vector<EngineBoundGlobalAggregateProjection>& outputs,
     const MgaRelationStorageDescriptor& relation_descriptor,
     const std::vector<CrudRowVersionRecord>& visible_rows);

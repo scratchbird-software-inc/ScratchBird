@@ -18,6 +18,7 @@
 #include "dml/global_aggregate_projection.hpp"
 #include "dml/insert_api.hpp"
 #include "dml/select_api.hpp"
+#include "descriptor_value_runtime.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
@@ -25,6 +26,8 @@
 #include "uuid.hpp"
 
 #include <chrono>
+#include <bit>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -54,6 +57,55 @@ namespace uuid = scratchbird::core::uuid;
 
 void Require(bool condition, std::string_view message) {
   if (!condition) Fail(message);
+}
+
+std::string FixtureIntegerBytes(std::int64_t value, std::size_t width = 8) {
+  std::string bytes(width, '\0');
+  const auto bits = std::bit_cast<std::uint64_t>(value);
+  for (std::size_t i = 0; i < width; ++i) bytes[i] = static_cast<char>(bits >> (8 * i));
+  return bytes;
+}
+
+// Lexical spellings are fixture inputs, never engine integer carriers. Invalid
+// spellings remain raw deliberately for the negative admission assertions.
+api::CrudStoredValue FixtureStoredInteger(api::CrudStoredValue input, std::size_t width = 8) {
+  if (input.state != api::EngineValueState::value) return input;
+  std::string_view text = input.bytes;
+  if (text.starts_with('+')) text.remove_prefix(1);
+  std::int64_t value = 0;
+  const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+  if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() ||
+      (width == 4 && (value < INT32_MIN || value > INT32_MAX))) return input;
+  return FixtureIntegerBytes(value, width);
+}
+
+api::CrudStoredValue FixtureStoredReal(api::CrudStoredValue input) {
+  if (input.state != api::EngineValueState::value) return input;
+  double value = 0;
+  const auto parsed = std::from_chars(input.bytes.data(), input.bytes.data() + input.bytes.size(), value);
+  if (parsed.ec != std::errc{} || parsed.ptr != input.bytes.data() + input.bytes.size()) return input;
+  return FixtureIntegerBytes(std::bit_cast<std::int64_t>(value));
+}
+
+std::string FixtureNumericText(const api::EngineTypedValue& value) {
+  Require(!value.isSqlNull() && value.encoded_value.empty() && value.binary_value.size() == 8,
+          "aggregate result is not exclusively native binary8");
+  std::uint64_t bits = 0;
+  for (unsigned i = 0; i < 8; ++i) bits |= std::uint64_t(value.binary_value[i]) << (8 * i);
+  if (value.descriptor.canonical_type_name == "int64")
+    return std::to_string(std::bit_cast<std::int64_t>(bits));
+  Require(value.descriptor.canonical_type_name == "real64", "unexpected aggregate numeric type");
+  char buffer[128];
+  const auto rendered = std::to_chars(buffer, buffer + sizeof(buffer), std::bit_cast<double>(bits));
+  Require(rendered.ec == std::errc{}, "fixture REAL64 rendering failed");
+  return std::string(buffer, rendered.ptr);
+}
+
+void FixtureColumnType(api::EngineDescriptor* descriptor, std::string type) {
+  const auto occurrence = descriptor->descriptor_uuid;
+  *descriptor = scratchbird::engine::executor::MakeExecutorDescriptor(std::move(type), "nullability=nullable");
+  descriptor->descriptor_kind = "scalar";
+  descriptor->descriptor_uuid = occurrence;
 }
 
 template <typename TResult>
@@ -249,30 +301,28 @@ api::EngineLocalizedName Name(std::string value) {
 
 api::EngineTypedValue Int64Value(std::int64_t value) {
   api::EngineTypedValue typed;
-  typed.descriptor.descriptor_kind = "scalar";
-  typed.descriptor.canonical_type_name = "int64";
-  typed.descriptor.encoded_descriptor =
-      "canonical=int64;precision=64;scale=0;nullable=true";
-  typed.encoded_value = std::to_string(value);
+  typed.descriptor = scratchbird::engine::executor::MakeExecutorDescriptor(
+      "int64", "nullability=nullable");
+  const auto bytes = FixtureIntegerBytes(value, typed.descriptor.canonical_type_name == "int32" ? 4 : 8);
+  typed.binary_value.assign(bytes.begin(), bytes.end());
   return typed;
 }
 
 api::EngineTypedValue Int32Value(std::int32_t value) {
   api::EngineTypedValue typed;
-  typed.descriptor.descriptor_kind = "scalar";
-  typed.descriptor.canonical_type_name = "int32";
-  typed.descriptor.encoded_descriptor =
-      "canonical=int32;precision=32;scale=0;nullable=true";
-  typed.encoded_value = std::to_string(value);
+  typed.descriptor = scratchbird::engine::executor::MakeExecutorDescriptor(
+      "int32", "nullability=nullable");
+  const auto bytes = FixtureIntegerBytes(value, typed.descriptor.canonical_type_name == "int32" ? 4 : 8);
+  typed.binary_value.assign(bytes.begin(), bytes.end());
   return typed;
 }
 
 api::EngineTypedValue NonNullableInt32Value(std::int32_t value) {
   api::EngineTypedValue typed;
-  typed.descriptor.descriptor_kind = "canonical_type_descriptor";
-  typed.descriptor.canonical_type_name = "int32";
-  typed.descriptor.encoded_descriptor = "canonical=int32;nullable=false";
-  typed.encoded_value = std::to_string(value);
+  typed.descriptor = scratchbird::engine::executor::MakeExecutorDescriptor(
+      "int32", "nullability=non_null");
+  const auto bytes = FixtureIntegerBytes(value, typed.descriptor.canonical_type_name == "int32" ? 4 : 8);
+  typed.binary_value.assign(bytes.begin(), bytes.end());
   return typed;
 }
 
@@ -280,13 +330,15 @@ api::EngineTypedValue Int32LiteralValue(std::int32_t value) {
   api::EngineTypedValue typed;
   typed.descriptor =
       api::EngineGlobalAggregateExpressionInt32LiteralDescriptor();
-  typed.encoded_value = std::to_string(value);
+  const auto bytes = FixtureIntegerBytes(value, typed.descriptor.canonical_type_name == "int32" ? 4 : 8);
+  typed.binary_value.assign(bytes.begin(), bytes.end());
   return typed;
 }
 
 api::EngineTypedValue NullInt64Value() {
   auto typed = Int64Value(0);
   typed.encoded_value.clear();
+  typed.binary_value.clear();
   typed.is_null = true;
   typed.state = api::EngineValueState::sql_null;
   return typed;
@@ -493,7 +545,7 @@ void RequireCounts(const api::EngineSelectRowsResult& result,
             "global aggregate count descriptor drifted");
     Require(!value.isSqlNull(),
             "global aggregate count unexpectedly returned SQL NULL");
-    Require(value.encoded_value == std::to_string(expected[index]),
+    Require(FixtureNumericText(value) == std::to_string(expected[index]),
             "global aggregate count value drifted");
   }
   Require(EvidenceValue(result, "global_aggregate_relation_scan") ==
@@ -538,11 +590,11 @@ void RequireAvgs(const api::EngineSelectRowsResult& result,
             "global AVG nullable int64 descriptor drifted");
     if (!expected[index]) {
       Require(fields[index].second.isSqlNull() &&
-                  fields[index].second.encoded_value.empty(),
+                  fields[index].second.encoded_value.empty() && fields[index].second.binary_value.empty(),
               "empty/all-NULL AVG did not return SQL NULL");
     } else {
       Require(!fields[index].second.isSqlNull() &&
-                  fields[index].second.encoded_value ==
+                  FixtureNumericText(fields[index].second) ==
                       std::to_string(*expected[index]),
               "global AVG integer final value drifted");
     }
@@ -584,6 +636,8 @@ void RequireExecutionRejectedBeforeScan(
           message);
   const std::string expected =
       "dml.global_aggregate_projection:" + std::string(detail);
+  if (result.diagnostic.detail != expected)
+    std::cerr << "expected=" << expected << " actual=" << result.diagnostic.detail << '\n';
   Require(result.diagnostic.detail == expected,
           "bound global aggregate refusal detail drifted");
 }
@@ -710,7 +764,7 @@ void RequireGlobalAggregateViewValue(
           "global aggregate view result shape drifted");
   const auto& field = result.result_shape.rows.front().fields.front();
   Require(field.first == "AVG_RESULT" && !field.second.isSqlNull() &&
-              field.second.encoded_value == expected &&
+              FixtureNumericText(field.second) == expected &&
               field.second.descriptor.descriptor_kind ==
                   canonical.descriptor_kind &&
               field.second.descriptor.canonical_type_name ==
@@ -747,8 +801,8 @@ api::EngineGlobalAggregateProjection CheckedInt32MultiplyAvg(
           int32_literal_times_int32_field_to_int64;
   projection.input_expression.int32_literal.descriptor =
       api::EngineGlobalAggregateExpressionInt32LiteralDescriptor();
-  projection.input_expression.int32_literal.encoded_value =
-      std::move(literal);
+  const auto bytes = FixtureStoredInteger(std::move(literal), 4).bytes;
+  projection.input_expression.int32_literal.binary_value.assign(bytes.begin(), bytes.end());
   projection.input_expression.result_descriptor =
       api::EngineGlobalAggregateExpressionInt64ResultDescriptor();
   projection.output_alias = "AVG_RESULT";
@@ -774,9 +828,10 @@ void TestBoundIdentityAndTypedIntegerDistinct(
                   column.value_descriptor.descriptor_uuid,
           "bound aggregate dropped the field UUID or descriptor");
 
-  auto row = [](std::string field_name, api::CrudStoredValue value) {
+  std::size_t width = 8;
+  auto row = [&width](std::string field_name, api::CrudStoredValue value) {
     api::CrudRowVersionRecord record;
-    record.values.push_back({std::move(field_name), std::move(value)});
+    record.values.push_back({std::move(field_name), FixtureStoredInteger(std::move(value), width)});
     return record;
   };
   const std::vector<api::CrudRowVersionRecord> typed_rows{
@@ -787,27 +842,49 @@ void TestBoundIdentityAndTypedIntegerDistinct(
       row("value", "-0"),
       row("value", api::CrudStoredValue::SqlNull())};
   const auto typed = api::ExecuteGlobalAggregateProjection(
+      context,
       bound.outputs, loaded.descriptor, typed_rows);
   Require(typed.ok && typed.scanned_visible_row_count == 6 &&
               typed.result_shape.rows.size() == 1 &&
               typed.result_shape.rows[0].fields.size() == 3 &&
-              typed.result_shape.rows[0].fields[0].second.encoded_value ==
+              FixtureNumericText(typed.result_shape.rows[0].fields[0].second) ==
                   "6" &&
-              typed.result_shape.rows[0].fields[1].second.encoded_value ==
+              FixtureNumericText(typed.result_shape.rows[0].fields[1].second) ==
                   "5" &&
-              typed.result_shape.rows[0].fields[2].second.encoded_value ==
+              FixtureNumericText(typed.result_shape.rows[0].fields[2].second) ==
                   "2",
           "typed int64 DISTINCT did not canonicalize equivalent encodings");
 
+  for (unsigned mutation = 0; mutation < 4; ++mutation) {
+    auto stale_context = context;
+    auto stale_relation = loaded.descriptor;
+    auto stale_outputs = bound.outputs;
+    if (mutation == 0) ++stale_context.datatype_catalog_generation;
+    if (mutation == 1) ++stale_context.datatype_registry_generation;
+    if (mutation == 2) ++stale_relation.columns[0].value_descriptor.datatype_descriptor_generation;
+    if (mutation == 3) stale_relation.columns[0].value_descriptor.type_uuid = table_uuid;
+    for (std::size_t i = 1; i < stale_outputs.size(); ++i)
+      stale_outputs[i].source_field.value_descriptor = stale_relation.columns[0].value_descriptor;
+    const auto refused = api::ExecuteGlobalAggregateProjection(
+        stale_context, stale_outputs, stale_relation, typed_rows);
+    Require(!refused.ok && refused.result_shape.rows.empty() && refused.scanned_visible_row_count == 0,
+            "aggregate accepted stale datatype authority before scan");
+  }
+  for (const auto raw : {std::string("1"), std::string("000000001"), std::string(7, '\0'), std::string(9, '\0')}) {
+    api::CrudRowVersionRecord malformed;
+    malformed.values.push_back({"value", raw});
+    const auto refused = api::ExecuteGlobalAggregateProjection(context, bound.outputs, loaded.descriptor, {malformed});
+    Require(!refused.ok && refused.result_shape.rows.empty(), "aggregate accepted a non-native integer width");
+  }
+
   auto int32_relation = loaded.descriptor;
-  int32_relation.columns[0].value_descriptor.canonical_type_name = "int32";
-  int32_relation.columns[0].value_descriptor.encoded_descriptor =
-      "canonical=int32;precision=32;scale=0;nullable=true";
+  FixtureColumnType(&int32_relation.columns[0].value_descriptor, "int32");
   auto int32_outputs = bound.outputs;
   int32_outputs[1].source_field.value_descriptor =
       int32_relation.columns[0].value_descriptor;
   int32_outputs[2].source_field.value_descriptor =
       int32_relation.columns[0].value_descriptor;
+  width = 4;
   const std::vector<api::CrudRowVersionRecord> int32_rows{
       row("value", "+0001"),
       row("value", "1"),
@@ -818,11 +895,11 @@ void TestBoundIdentityAndTypedIntegerDistinct(
       row("value", "-2147483648"),
       row("value", "-02147483648")};
   const auto typed_int32 = api::ExecuteGlobalAggregateProjection(
+      context,
       int32_outputs, int32_relation, int32_rows);
   Require(typed_int32.ok &&
               typed_int32.result_shape.rows.size() == 1 &&
-              typed_int32.result_shape.rows[0].fields[2]
-                  .second.encoded_value == "4",
+              FixtureNumericText(typed_int32.result_shape.rows[0].fields[2].second) == "4",
           "typed int32 DISTINCT canonicalization or range boundary drifted");
 
   auto firebird_integer_relation = loaded.descriptor;
@@ -836,21 +913,24 @@ void TestBoundIdentityAndTypedIntegerDistinct(
   firebird_integer_outputs[2].source_field.value_descriptor =
       firebird_integer_relation.columns[0].value_descriptor;
   const auto firebird_integer = api::ExecuteGlobalAggregateProjection(
+      context,
       firebird_integer_outputs,
       firebird_integer_relation,
       {row("value", "0"),
        row("value", "00"),
        row("value", "1"),
        row("value", "+01")});
-  Require(firebird_integer.ok &&
-              firebird_integer.result_shape.rows.size() == 1 &&
-              firebird_integer.result_shape.rows[0].fields[2]
-                      .second.encoded_value == "2",
-          "persisted Firebird INTEGER descriptor was not admitted as int32");
+  // A dialect spelling cannot retag an existing INT64 storage binding. The
+  // canonical INT32 route above retains the positive DISTINCT/range coverage.
+  Require(!firebird_integer.ok && firebird_integer.result_shape.rows.empty() &&
+              firebird_integer.scanned_visible_row_count == 0,
+          "engine accepted a dialect alias over a different datatype binding");
 
+  width = 8;
   const std::vector<api::CrudRowVersionRecord> invalid_integer_row{
       row("value", "1x")};
   const auto invalid_integer = api::ExecuteGlobalAggregateProjection(
+      context,
       bound.outputs, loaded.descriptor, invalid_integer_row);
   Require(!invalid_integer.ok && invalid_integer.result_shape.rows.empty() &&
               invalid_integer.scanned_visible_row_count == 1 &&
@@ -862,6 +942,7 @@ void TestBoundIdentityAndTypedIntegerDistinct(
   const std::vector<api::CrudRowVersionRecord> out_of_range_row{
       row("value", "9223372036854775808")};
   const auto out_of_range = api::ExecuteGlobalAggregateProjection(
+      context,
       bound.outputs, loaded.descriptor, out_of_range_row);
   Require(!out_of_range.ok && out_of_range.result_shape.rows.empty() &&
               out_of_range.scanned_visible_row_count == 1 &&
@@ -874,6 +955,7 @@ void TestBoundIdentityAndTypedIntegerDistinct(
   duplicate_key_row.values.push_back({"value", "1"});
   duplicate_key_row.values.push_back({"value", "2"});
   const auto duplicate_key = api::ExecuteGlobalAggregateProjection(
+      context,
       bound.outputs, loaded.descriptor, {duplicate_key_row});
   Require(!duplicate_key.ok && duplicate_key.result_shape.rows.empty() &&
               duplicate_key.scanned_visible_row_count == 1 &&
@@ -887,6 +969,7 @@ void TestBoundIdentityAndTypedIntegerDistinct(
       NewUuid(platform::UuidKind::object, NowMillis());
   RequireExecutionRejectedBeforeScan(
       api::ExecuteGlobalAggregateProjection(
+      context,
           uuid_drift, loaded.descriptor, typed_rows),
       "bound_global_aggregate_source_field_not_found",
       "bound aggregate execution accepted a drifted field UUID");
@@ -896,6 +979,7 @@ void TestBoundIdentityAndTypedIntegerDistinct(
       ";drift=true";
   RequireExecutionRejectedBeforeScan(
       api::ExecuteGlobalAggregateProjection(
+      context,
           descriptor_drift, loaded.descriptor, typed_rows),
       "bound_global_aggregate_source_field_descriptor_mismatch",
       "bound aggregate execution accepted a drifted field descriptor");
@@ -912,13 +996,15 @@ void TestBoundIdentityAndTypedIntegerDistinct(
       unsupported_relation.columns[0].value_descriptor;
   RequireExecutionRejectedBeforeScan(
       api::ExecuteGlobalAggregateProjection(
+      context,
           unsupported_outputs, unsupported_relation, typed_rows),
-      "global_aggregate_distinct_type_unsupported",
-      "bound aggregate execution accepted unsupported DISTINCT typing");
+      "global_aggregate_source_datatype_binding_invalid",
+      "bound aggregate execution accepted a retagged DISTINCT datatype binding");
 
   const std::vector<api::CrudRowVersionRecord> folded_name_row{
       row("VALUE", "1")};
   const auto folded = api::ExecuteGlobalAggregateProjection(
+      context,
       bound.outputs, loaded.descriptor, folded_name_row);
   Require(!folded.ok && folded.result_shape.rows.empty() &&
               folded.scanned_visible_row_count == 1 &&
@@ -948,9 +1034,12 @@ void TestAvgTypedFinalizationAndRefusals(
                       .encoded_descriptor,
           "bound AVG dropped its function, field, or result descriptor");
 
-  auto row = [](api::CrudStoredValue value) {
+  std::size_t width = 8;
+  bool real_input = false;
+  auto row = [&width, &real_input](api::CrudStoredValue value) {
     api::CrudRowVersionRecord record;
-    record.values.push_back({"value", std::move(value)});
+    record.values.push_back({"value", real_input ? FixtureStoredReal(std::move(value))
+        : FixtureStoredInteger(std::move(value), width)});
     return record;
   };
   auto require_integer = [&](std::vector<api::CrudRowVersionRecord> rows,
@@ -958,6 +1047,7 @@ void TestAvgTypedFinalizationAndRefusals(
                              std::optional<std::int64_t> expected_distinct,
                              std::string_view message) {
     const auto executed = api::ExecuteGlobalAggregateProjection(
+      context,
         bound.outputs, loaded.descriptor, rows);
     Require(executed.ok && executed.result_shape.rows.size() == 1 &&
                 executed.result_shape.rows.front().fields.size() == 2 &&
@@ -969,12 +1059,12 @@ void TestAvgTypedFinalizationAndRefusals(
     for (std::size_t index = 0; index < expected.size(); ++index) {
       if (expected[index]) {
         Require(!fields[index].second.isSqlNull() &&
-                    fields[index].second.encoded_value ==
+                    FixtureNumericText(fields[index].second) ==
                         std::to_string(*expected[index]),
                 "typed integer AVG value drifted");
       } else {
         Require(fields[index].second.isSqlNull() &&
-                    fields[index].second.encoded_value.empty(),
+                    fields[index].second.encoded_value.empty() && fields[index].second.binary_value.empty(),
                 "typed integer AVG NULL finality drifted");
       }
     }
@@ -1005,27 +1095,25 @@ void TestAvgTypedFinalizationAndRefusals(
       "integer AVG did not use a widened checked accumulator");
 
   auto int32_relation = loaded.descriptor;
-  int32_relation.columns[0].value_descriptor.canonical_type_name = "int32";
-  int32_relation.columns[0].value_descriptor.encoded_descriptor =
-      "canonical=int32;precision=32;scale=0;nullable=true";
+  FixtureColumnType(&int32_relation.columns[0].value_descriptor, "int32");
   auto int32_outputs = bound.outputs;
   for (auto& output : int32_outputs) {
     output.source_field.value_descriptor =
         int32_relation.columns[0].value_descriptor;
   }
+  width = 4;
   const auto int32 = api::ExecuteGlobalAggregateProjection(
+      context,
       int32_outputs,
       int32_relation,
       {row("2147483647"), row("-2147483648")});
   Require(int32.ok &&
-              int32.result_shape.rows[0].fields[0].second.encoded_value ==
+              FixtureNumericText(int32.result_shape.rows[0].fields[0].second) ==
                   "0",
           "int32 AVG boundary/truncation drifted");
 
   auto real_relation = loaded.descriptor;
-  real_relation.columns[0].value_descriptor.canonical_type_name = "real64";
-  real_relation.columns[0].value_descriptor.encoded_descriptor =
-      "canonical=real64;precision=64;nullable=true";
+  FixtureColumnType(&real_relation.columns[0].value_descriptor, "real64");
   auto real_envelope = request.global_aggregate_projection;
   for (auto& output : real_envelope.outputs) {
     output.source_field.value_descriptor =
@@ -1037,27 +1125,27 @@ void TestAvgTypedFinalizationAndRefusals(
       real_envelope, real_relation);
   Require(real_bound.ok && real_bound.outputs.size() == 2,
           "real64 AVG binding failed");
+  real_input = true;
   const auto qa_real = api::ExecuteGlobalAggregateProjection(
+      context,
       real_bound.outputs, real_relation, {row("5.123456789")});
   Require(qa_real.ok && qa_real.result_shape.rows.size() == 1 &&
               qa_real.result_shape.rows[0].fields.size() == 2 &&
-              std::abs(std::stod(qa_real.result_shape.rows[0]
-                                     .fields[0]
-                                     .second.encoded_value) -
+              std::abs(std::stod(FixtureNumericText(qa_real.result_shape.rows[0].fields[0].second)) -
                        5.123456789) < 1.0e-15,
           "AVG test_09 finite real64 finalization failed");
   const auto rounded_each_step = api::ExecuteGlobalAggregateProjection(
+      context,
       real_bound.outputs,
       real_relation,
       {row("1e16"), row("1"), row("-1e16")});
   Require(rounded_each_step.ok &&
               rounded_each_step.result_shape.rows.size() == 1 &&
               rounded_each_step.result_shape.rows[0].fields.size() == 2 &&
-              rounded_each_step.result_shape.rows[0]
-                      .fields[0]
-                      .second.encoded_value == "0",
+              FixtureNumericText(rounded_each_step.result_shape.rows[0].fields[0].second) == "0",
           "real64 AVG did not round each addition as binary64");
   const auto binary64_overflow = api::ExecuteGlobalAggregateProjection(
+      context,
       real_bound.outputs,
       real_relation,
       {row("1.7976931348623157e+308"),
@@ -1070,16 +1158,16 @@ void TestAvgTypedFinalizationAndRefusals(
                   "global_aggregate_avg_real64_accumulator_nonfinite",
           "real64 AVG did not reject binary64 intermediate overflow");
   const auto zero_distinct = api::ExecuteGlobalAggregateProjection(
+      context,
       {real_bound.outputs[1]},
       real_relation,
       {row("0"), row("-0"), row("2")});
   Require(zero_distinct.ok &&
-              zero_distinct.result_shape.rows[0]
-                      .fields[0]
-                      .second.encoded_value == "1",
+              FixtureNumericText(zero_distinct.result_shape.rows[0].fields[0].second) == "1",
           "real64 AVG DISTINCT did not canonicalize signed zero");
   for (const std::string_view invalid : {"nan", "inf", "-inf", "1x"}) {
     const auto rejected = api::ExecuteGlobalAggregateProjection(
+      context,
         real_bound.outputs, real_relation, {row(std::string(invalid))});
     Require(!rejected.ok && rejected.result_shape.rows.empty() &&
                 rejected.diagnostic.detail ==
@@ -1208,9 +1296,7 @@ void TestLegacyCountProjectionPreserved(
   Require(selected.visible_count == 1 &&
               selected.result_shape.rows.size() == 1 &&
               selected.result_shape.rows.front().fields.size() == 1 &&
-              selected.result_shape.rows.front()
-                      .fields.front()
-                      .second.encoded_value == std::to_string(expected),
+              FixtureNumericText(selected.result_shape.rows.front().fields.front().second) == std::to_string(expected),
           "legacy dml.select_rows COUNT(*) behavior regressed");
 }
 
@@ -1610,6 +1696,7 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
       {source_descriptor.columns.front().canonical_name_key,
        "2147483648"});
   const auto invalid_execution = api::ExecuteGlobalAggregateProjection(
+      fresh_reader,
       bound.outputs, source_descriptor, {invalid_row});
   Require(!invalid_execution.ok && invalid_execution.diagnostic.error &&
               invalid_execution.scanned_visible_row_count == 1 &&

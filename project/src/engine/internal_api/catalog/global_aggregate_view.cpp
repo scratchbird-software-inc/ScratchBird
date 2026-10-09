@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "catalog/global_aggregate_view.hpp"
+#include <bit>
 #include "catalog/binary_view_options.hpp"
 
 #include "api_diagnostics.hpp"
@@ -568,8 +569,16 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
     result.diagnostic = aggregate_validation;
     return result;
   }
-  const auto literal = ParseCanonicalI32(
-      projection.input_expression.int32_literal.encoded_value);
+  // Envelope admission has already checked the exact INT32 descriptor and
+  // exclusive four-byte carrier. Decode without reintroducing text execution.
+  const auto& literal_bytes = projection.input_expression.int32_literal.binary_value;
+  std::optional<std::int32_t> literal;
+  if (literal_bytes.size() == 4) {
+    std::uint32_t bits = 0;
+    for (unsigned i = 0; i < 4; ++i)
+      bits |= static_cast<std::uint32_t>(literal_bytes[i]) << (8 * i);
+    literal = std::bit_cast<std::int32_t>(bits);
+  }
   if (!literal) {
     result.diagnostic = ViewDiagnostic(
         "global_aggregate_view_literal_int32_invalid");
@@ -907,8 +916,11 @@ EngineApiDiagnostic ExpandEngineGlobalAggregateViewSelect(
           int32_literal_times_int32_field_to_int64;
   projection.input_expression.int32_literal.descriptor =
       EngineGlobalAggregateExpressionInt32LiteralDescriptor();
-  projection.input_expression.int32_literal.encoded_value =
-      std::to_string(descriptor.expression_literal_int32);
+  projection.input_expression.int32_literal.binary_value.resize(4);
+  for (unsigned i = 0; i < 4; ++i)
+    projection.input_expression.int32_literal.binary_value[i] =
+        static_cast<std::uint8_t>(
+            static_cast<std::uint32_t>(descriptor.expression_literal_int32) >> (8 * i));
   projection.input_expression.int32_literal.state = EngineValueState::value;
   projection.input_expression.result_descriptor =
       EngineGlobalAggregateExpressionInt64ResultDescriptor();
