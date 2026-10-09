@@ -1604,7 +1604,9 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
       if (!internal_api::ResolveHistoricalTimestampScalarIdentityV1(descriptor, &nullable, &detail) ||
           nullable != bound_column.nullable)
         return ErrorDiagnostic("CTI.TEMPORAL.DESCRIPTOR_INVALID",
-                               "historical timestamp output binding is invalid", 0, column);
+                               "historical timestamp output binding is invalid: " +
+                                   (detail.empty() ? std::string("column nullability mismatch") : detail),
+                               0, column);
     }
     bool duplicate_descriptor_id = false;
     for (std::size_t prior = 0; prior < column; ++prior) {

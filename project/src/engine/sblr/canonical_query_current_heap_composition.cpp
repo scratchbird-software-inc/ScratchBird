@@ -9,7 +9,7 @@
 #include "canonical_query_current_heap_composition.hpp"
 #include "../executor/native_int64_payload.hpp"
 #include "mga_relation_store/stored_scalar_payload.hpp"
-#include "mga_relation_store/stored_integer_descriptor.hpp"
+#include "mga_relation_store/stored_scalar_descriptor.hpp"
 #include "canonical_query_aggregate_composition.hpp"
 #include "canonical_query_aggregate_registration.hpp"
 #include "canonical_query_descriptor_support.hpp"
@@ -277,8 +277,8 @@ bool PrepareCurrentHeapStreamingScanBinding(
     }
     prepared.columns.push_back(&*column);
     prepared.descriptors.push_back(column->value_descriptor);
-    if ((column->value_descriptor.canonical_type_name == "int64" || column->value_descriptor.canonical_type_name == "int32") &&
-        !api::ProjectStoredIntegerDescriptorV1(context, column->value_descriptor,
+    if (api::StoredScalarProjectionRequiredV1(column->value_descriptor) &&
+        !api::ProjectStoredScalarDescriptorV1(context, column->value_descriptor,
                                              nullable, &prepared.descriptors.back(), detail))
       return false;
     prepared.descriptors.back().descriptor_kind = "scalar";
@@ -781,8 +781,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
           admission.current_relation_projection_type_names[ordinal];
       auto engine_descriptor =
           admission.current_relation_projection_descriptors[ordinal];
-      if ((persisted_type_name == "int32" || persisted_type_name == "int64") &&
-          !api::ProjectStoredIntegerDescriptorV1(input.context, engine_descriptor,
+      if (api::StoredScalarProjectionRequiredV1(engine_descriptor) &&
+          !api::ProjectStoredScalarDescriptorV1(input.context, engine_descriptor,
               descriptor->nullability == api::RelationalNullability::kNullable,
               &engine_descriptor, &planning_input.detail))
         return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-AGGREGATE-V1", planning_input.detail);
@@ -897,9 +897,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
           relational_descriptor->nullability ==
               api::RelationalNullability::kNullable,
           relational_descriptor->descriptor_id};
-      if ((persisted_descriptor.canonical_type_name == "int32" ||
-           persisted_descriptor.canonical_type_name == "int64") &&
-          !api::ProjectStoredIntegerDescriptorV1(input.context, persisted_descriptor,
+      if (api::StoredScalarProjectionRequiredV1(persisted_descriptor) &&
+          !api::ProjectStoredScalarDescriptorV1(input.context, persisted_descriptor,
               executor_column.nullable, &executor_column.descriptor, &heap_sort_binding.detail))
         return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-BINDING-V1", heap_sort_binding.detail);
       exec::CanonicalDescriptorOrderTerm descriptor_term;
