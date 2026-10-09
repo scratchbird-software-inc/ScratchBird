@@ -574,6 +574,9 @@ struct EmbeddedEngineClient::Impl {
         found->second.admitted_parser_package_uuid};
     session->admitted_dialect_profile_uuid = scratchbird::core::platform::Uuid{
         found->second.admitted_dialect_profile_uuid};
+    // The fixture attach path can issue its parser identity only here. Publish
+    // the actual admitted dialect after issuance, never the earlier nil value.
+    session->dialect_profile_uuid = session->admitted_dialect_profile_uuid;
     session->admitted_parser_package_version_major =
         found->second.admitted_parser_package_version_major;
     session->admitted_parser_package_version_minor =
@@ -786,7 +789,6 @@ bool EmbeddedEngineClient::AuthenticateAndAttach(
                                descriptor_epoch == 0 ? name_resolution_epoch
                                                      : descriptor_epoch,
                                name_resolution_epoch);
-  session->dialect_profile_uuid = scratchbird::core::platform::Uuid{impl_->dialect_profile_uuid};
   session->search_path = {"sys", "public"};
   session->transaction_context = "always_active";
   session->local_transaction_id = local_transaction_id;
@@ -918,7 +920,6 @@ bool EmbeddedEngineClient::AuthenticateAndAttachSysarch(
                                descriptor_epoch == 0 ? name_resolution_epoch
                                                      : descriptor_epoch,
                                name_resolution_epoch);
-  session->dialect_profile_uuid = scratchbird::core::platform::Uuid{impl_->dialect_profile_uuid};
   session->search_path = {"sys", "public"};
   session->transaction_context = "always_active";
   session->local_transaction_id = local_transaction_id;
@@ -995,12 +996,32 @@ PublicNameResolutionResult EmbeddedEngineClient::ResolveNamePublic(
       frame, impl_->engine_state, &impl_->registry);
   const auto decoded = scratchbird::server::sbps::DecodeFrameBytes(
       encoded, static_cast<std::uint32_t>(64u * 1024u * 1024u));
-  if (!decoded.ok()) {
+  if (!decoded.ok() ||
+      decoded.frame->header.request_uuid != frame.header.request_uuid ||
+      decoded.frame->header.message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::kResolveNameResult)) {
     result.messages.diagnostics.push_back(MakeDiagnostic(
         "PARSER_SERVER_IPC.NAME_RESULT_INVALID",
         "ERROR",
         "The embedded public name response frame is malformed.",
         "sbp_sbsql.embedded"));
+    return result;
+  }
+  if ((decoded.frame->header.flags & scratchbird::server::sbps::kFlagError) != 0) {
+    // An error payload is a message vector, never a successful V3 relation
+    // projection. Preserve the owning server/engine diagnostic and its fields.
+    if (!ipc::DecodeDiagnosticFrame(encoded, &result.messages)) {
+      AddDiagnostic(&result.messages, "PARSER_SERVER_IPC.NAME_RESULT_INVALID",
+                    "The embedded public name diagnostic frame is malformed.");
+    }
+    return result;
+  }
+  const auto expected_schema = require_relation_descriptor
+      ? scratchbird::server::sbps::kSchemaResolveNameResultV3
+      : scratchbird::server::sbps::kSchemaResolveNameResultV1;
+  if (decoded.frame->header.payload_schema_id != expected_schema) {
+    AddDiagnostic(&result.messages, "PARSER_SERVER_IPC.NAME_RESULT_INVALID",
+                  "The embedded public name response schema is invalid.");
     return result;
   }
   if (require_relation_descriptor) {

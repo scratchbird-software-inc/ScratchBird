@@ -5175,7 +5175,7 @@ bool DecodeCanonicalExecuteResultPayload(
   return DecodeExecuteResultPayloadV2(response, result, messages);
 }
 
-bool DecodeDiagnosticFrameForTest(
+bool DecodeDiagnosticFrame(
     const std::vector<std::uint8_t>& encoded_frame,
     MessageVectorSet* messages) {
   if (messages == nullptr) return false;
@@ -5186,6 +5186,12 @@ bool DecodeDiagnosticFrameForTest(
   const std::size_t diagnostic_count = messages->diagnostics.size();
   AddFrameDiagnostics(frame, messages);
   return messages->diagnostics.size() > diagnostic_count;
+}
+
+bool DecodeDiagnosticFrameForTest(
+    const std::vector<std::uint8_t>& encoded_frame,
+    MessageVectorSet* messages) {
+  return DecodeDiagnosticFrame(encoded_frame, messages);
 }
 
 bool DecodeAcquireStatementContextResultPayloadV1ForTest(

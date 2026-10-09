@@ -3271,6 +3271,9 @@ add_executable(
   generated/lowering/sbsql_sblr_lowering_verifier_conformance_probe.cpp
 )
 target_compile_features(sbp_sbsql_sblr_lowering_verifier_conformance_probe PRIVATE cxx_std_23)
+target_compile_definitions(sbp_sbsql_sblr_lowering_verifier_conformance_probe PRIVATE
+  SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
+)
 target_link_libraries(sbp_sbsql_sblr_lowering_verifier_conformance_probe PRIVATE
   sbl_sbsql_embedded_client_bridge
   sb_core_uuid
@@ -3284,6 +3287,10 @@ add_test(
 set_tests_properties(sbp_sbsql_sblr_lowering_verifier_conformance_probe PROPERTIES
   LABELS "sbsql_sblr_lowering_verifier_conformance;sblr_operation_matrix_gate;sblr_lowering_runtime_gate;parser_v3_closure_gate;sbsql_parser_worker"
 )
+add_test(NAME sbsql_lowering_verifier_fixture_attach_identity
+  COMMAND sbp_sbsql_sblr_lowering_verifier_conformance_probe --fixture-attach)
+set_tests_properties(sbsql_lowering_verifier_fixture_attach_identity PROPERTIES
+  LABELS "sbsql_parser_worker;binary_identity;embedded_fixture_admission")
 
 add_executable(
   sbsql_constraint_ddl_lowering_conformance

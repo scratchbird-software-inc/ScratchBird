@@ -295,6 +295,11 @@ std::vector<std::uint8_t> EncodePreparedParameterSchema4015Template(
     const ParserSessionContext& session,
     const ParserStatementContext& statement_context,
     const ParserCanonicalSblrSubmission& submission);
+// Shared production decoder for embedded and socket diagnostic frames.
+// Callers retain request-correlation validation before interpreting payloads.
+bool DecodeDiagnosticFrame(
+    const std::vector<std::uint8_t>& encoded_frame,
+    MessageVectorSet* messages);
 bool DecodeDiagnosticFrameForTest(
     const std::vector<std::uint8_t>& encoded_frame,
     MessageVectorSet* messages);
