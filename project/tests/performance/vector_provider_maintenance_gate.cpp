@@ -8,12 +8,11 @@
 
 #include "runtime_platform.hpp"
 #include "vector_provider_maintenance.hpp"
+#include "../support/binary_index_identity_fixture.hpp"
 
 #include <algorithm>
 #include <cstdlib>
-#include <iomanip>
 #include <iostream>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -54,17 +53,13 @@ void RequireNoRuntimeLeak(const std::vector<std::string>& evidence) {
   }
 }
 
-std::string UuidWithSuffix(std::string prefix, std::uint64_t suffix) {
-  std::ostringstream out;
-  out << prefix << std::setw(12) << std::setfill('0') << suffix;
-  return out.str();
-}
-
 idx::TextInvertedRowLocator Locator(std::uint64_t row) {
   idx::TextInvertedRowLocator locator;
   locator.row_ordinal = row;
-  locator.row_uuid = UuidWithSuffix("77777777-7777-7777-8777-", row);
-  locator.version_uuid = UuidWithSuffix("88888888-8888-7888-8888-", row);
+  locator.row_uuid = scratchbird::tests::IndexFixtureUuidWithDecimalSuffix(
+      scratchbird::tests::FixtureUuidLiteral("77777777-7777-7777-8777-000000000000"), row);
+  locator.version_uuid = scratchbird::tests::IndexFixtureUuidWithDecimalSuffix(
+      scratchbird::tests::FixtureUuidLiteral("88888888-8888-7888-8888-000000000000"), row);
   return locator;
 }
 
@@ -106,7 +101,8 @@ idx::VectorExactDescriptor Descriptor(std::uint64_t epoch) {
 
 idx::VectorExactMetricResource Metric(std::uint64_t epoch) {
   idx::VectorExactMetricResource metric;
-  metric.metric_resource_uuid = "99999999-9999-7999-8999-999999999999";
+  metric.metric_resource_uuid = scratchbird::tests::IndexFixtureUuidBytes(
+      scratchbird::tests::FixtureUuidLiteral("99999999-9999-7999-8999-999999999999"));
   metric.metric_resource_epoch = epoch;
   metric.metric_kind = idx::VectorExactMetricKind::l2;
   metric.deterministic = true;
@@ -116,9 +112,12 @@ idx::VectorExactMetricResource Metric(std::uint64_t epoch) {
 
 idx::VectorExactBuildRequest ExactBuildRequest() {
   idx::VectorExactBuildRequest request;
-  request.relation_uuid = "11111111-1111-7111-8111-111111111111";
-  request.index_uuid = "22222222-2222-7222-8222-222222222222";
-  request.provider_uuid = "33333333-3333-7333-8333-333333333333";
+  request.relation_uuid = scratchbird::tests::IndexFixtureUuidBytes(
+      scratchbird::tests::FixtureUuidLiteral("11111111-1111-7111-8111-111111111111"));
+  request.index_uuid = scratchbird::tests::IndexFixtureUuidBytes(
+      scratchbird::tests::FixtureUuidLiteral("22222222-2222-7222-8222-222222222222"));
+  request.provider_uuid = scratchbird::tests::IndexFixtureUuidBytes(
+      scratchbird::tests::FixtureUuidLiteral("33333333-3333-7333-8333-333333333333"));
   request.base_generation = 7;
   request.provider_generation = 11;
   request.descriptor = Descriptor(31);
@@ -774,6 +773,10 @@ void VerifyStaleAndAuthorityFailClosed() {
 }  // namespace
 
 int main() {
+  auto text_identity = ExactBuildRequest();
+  text_identity.provider_uuid = "33333333-3333-7333-8333-333333333333";
+  Require(!idx::BuildVectorExactPhysicalProvider(text_identity).ok(),
+          "text provider UUID accepted by vector engine boundary");
   VerifyRealProviderValidation();
   VerifyEmptyProviderValidation();
   VerifyHnswCompactionPublishGate();

@@ -9,6 +9,7 @@
 #include "index_key_encoding.hpp"
 #include "physical_zone_summary.hpp"
 #include "runtime_platform.hpp"
+#include "../support/binary_index_identity_fixture.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -153,11 +154,17 @@ std::vector<idx::PhysicalZoneRowEvidence> BaseRows() {
 
 idx::PhysicalZoneSummaryPage BuildPage() {
   idx::PhysicalZoneSummaryBuildRequest request;
-  request.relation_uuid = "11111111-1111-7111-8111-111111111111";
-  request.summary_uuid = "22222222-2222-7222-8222-222222222222";
+  request.relation_uuid = scratchbird::tests::IndexFixtureUuidBytes(
+      scratchbird::tests::FixtureUuidLiteral("11111111-1111-7111-8111-111111111111"));
+  request.summary_uuid = scratchbird::tests::IndexFixtureUuidBytes(
+      scratchbird::tests::FixtureUuidLiteral("22222222-2222-7222-8222-222222222222"));
   request.range_sizing = Sizing();
   request.small_set_limit = 3;
   request.base_page_rows = BaseRows();
+  auto text_identity = request;
+  text_identity.relation_uuid = "11111111-1111-7111-8111-111111111111";
+  Require(!idx::BuildPhysicalZoneSummaryFromBasePageEvidence(text_identity).ok(),
+          "text relation UUID accepted by physical summary engine boundary");
   const auto built = idx::BuildPhysicalZoneSummaryFromBasePageEvidence(request);
   Require(built.ok(), "build from base page evidence failed");
   return built.page;
@@ -375,8 +382,10 @@ void VerifyCorruptStaleRepair(const idx::PhysicalZoneSummaryPage& page) {
 
 void VerifyUnsafeLegacyRefusal() {
   idx::PhysicalZoneSummaryBuildRequest request;
-  request.relation_uuid = "11111111-1111-7111-8111-111111111111";
-  request.summary_uuid = "22222222-2222-7222-8222-222222222222";
+  request.relation_uuid = scratchbird::tests::IndexFixtureUuidBytes(
+      scratchbird::tests::FixtureUuidLiteral("11111111-1111-7111-8111-111111111111"));
+  request.summary_uuid = scratchbird::tests::IndexFixtureUuidBytes(
+      scratchbird::tests::FixtureUuidLiteral("22222222-2222-7222-8222-222222222222"));
   request.range_sizing = Sizing();
   idx::PhysicalZoneColumnValueEvidence unsafe;
   unsafe.column_ordinal = 0;

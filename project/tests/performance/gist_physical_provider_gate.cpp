@@ -8,16 +8,16 @@
 
 #include "gist_physical_provider.hpp"
 #include "runtime_platform.hpp"
+#include "../support/binary_index_identity_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <iomanip>
 #include <iostream>
 #include <limits>
-#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -29,7 +29,7 @@ namespace {
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << "gist_physical_provider_gate: " << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -57,17 +57,13 @@ void RequireNoRuntimeLeak(const std::vector<std::string>& evidence) {
   }
 }
 
-std::string UuidWithSuffix(std::string prefix, std::uint64_t suffix) {
-  std::ostringstream out;
-  out << prefix << std::setw(12) << std::setfill('0') << suffix;
-  return out.str();
-}
-
 idx::TextInvertedRowLocator Locator(std::uint64_t row) {
   idx::TextInvertedRowLocator locator;
   locator.row_ordinal = row;
-  locator.row_uuid = UuidWithSuffix("41414141-4141-7141-8141-", row);
-  locator.version_uuid = UuidWithSuffix("51515151-5151-7151-8151-", row);
+  locator.row_uuid = scratchbird::tests::IndexFixtureUuidWithDecimalSuffix(
+      scratchbird::tests::FixtureUuidLiteral("41414141-4141-7141-8141-000000000000"), row);
+  locator.version_uuid = scratchbird::tests::IndexFixtureUuidWithDecimalSuffix(
+      scratchbird::tests::FixtureUuidLiteral("51515151-5151-7151-8151-000000000000"), row);
   return locator;
 }
 
@@ -108,7 +104,8 @@ idx::SpatialRTreeDescriptor SpatialDescriptor() {
 
 idx::SpatialRTreeSridResource SridResource() {
   idx::SpatialRTreeSridResource resource;
-  resource.resource_uuid = "61616161-6161-7161-8161-616161616161";
+  resource.resource_uuid = scratchbird::tests::IndexFixtureUuidBytes(
+      scratchbird::tests::FixtureUuidLiteral("61616161-6161-7161-8161-616161616161"));
   resource.srid = 4326;
   resource.resource_epoch = 43;
   resource.coordinate_order = "xy";
@@ -135,9 +132,12 @@ idx::GistBuildRequest BuildRequest(
     idx::SpatialRTreeBuildMode mode =
         idx::SpatialRTreeBuildMode::incremental_insert) {
   idx::GistBuildRequest request;
-  request.relation_uuid = "71717171-7171-7171-8171-717171717171";
-  request.index_uuid = "72727272-7272-7272-8272-727272727272";
-  request.provider_uuid = "73737373-7373-7373-8373-737373737373";
+  request.relation_uuid = scratchbird::tests::IndexFixtureUuidBytes(
+      scratchbird::tests::FixtureUuidLiteral("71717171-7171-7171-8171-717171717171"));
+  request.index_uuid = scratchbird::tests::IndexFixtureUuidBytes(
+      scratchbird::tests::FixtureUuidLiteral("72727272-7272-7272-8272-727272727272"));
+  request.provider_uuid = scratchbird::tests::IndexFixtureUuidBytes(
+      scratchbird::tests::FixtureUuidLiteral("73737373-7373-7373-8373-737373737373"));
   request.base_generation = 7;
   request.provider_generation = 11;
   request.spatial_descriptor = SpatialDescriptor();
@@ -292,13 +292,8 @@ void VerifyBuildQueryNearestSerializeAndReopen() {
       idx::SerializeGistPhysicalProvider(built.provider);
   Require(serialized_again.ok() && serialized_again.bytes == serialized.bytes,
           "GiST serialization is not deterministic");
-  const auto path =
-      std::filesystem::temp_directory_path() /
-      ("scratchbird_gist_physical_provider_gate_" +
-       std::to_string(std::chrono::steady_clock::now()
-                          .time_since_epoch()
-                          .count()) +
-       ".sbgist");
+  scratchbird::tests::OwnedTempDirectory workspace;
+  const auto path = workspace.path() / "provider.sbgist";
   WriteFile(path, serialized.bytes);
   const auto persisted = ReadFile(path);
   std::filesystem::remove(path);
@@ -441,6 +436,10 @@ void VerifyEmptyProvider() {
 }
 
 void VerifyFailClosedDiagnostics() {
+  auto text_identity = BuildRequest();
+  text_identity.provider_uuid = "73737373-7373-7373-8373-737373737373";
+  Require(!idx::BuildGistPhysicalProvider(text_identity).ok(),
+          "text provider UUID accepted by GiST engine boundary");
   auto missing_opclass = BuildRequest();
   missing_opclass.opclass.methods.distance = {};
   const auto missing_opclass_result =
@@ -609,11 +608,14 @@ void VerifyFailClosedDiagnostics() {
 
 }  // namespace
 
-int main() {
+int main() try {
   VerifyBuildQueryNearestSerializeAndReopen();
   VerifyMutationMaintenance();
   VerifyEmptyProvider();
   VerifyFailClosedDiagnostics();
   std::cout << "gist_physical_provider_gate=passed\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

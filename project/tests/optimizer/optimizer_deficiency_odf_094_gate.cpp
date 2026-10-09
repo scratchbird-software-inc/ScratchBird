@@ -8,6 +8,7 @@
 
 #include "memory.hpp"
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include "query_memory_arena.hpp"
 #include "query_memory_arena_executor.hpp"
 #include "temp_workspace_lifecycle.hpp"
@@ -16,6 +17,7 @@
 #include <filesystem>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -30,7 +32,7 @@ namespace platform = scratchbird::core::platform;
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -155,9 +157,10 @@ exec::ExecutorQueryMemoryRequest ExecutorRequest(
 }
 
 void SupportedFamiliesAndRelease() {
+  scratchbird::tests::OwnedTempDirectory workspace;
   mem::BoundedAllocator allocator(AllocationPolicy());
   mem::TempWorkspaceLifecycleManager temp(
-      TempPolicy(std::filesystem::temp_directory_path() / "sb_odf_094_families"));
+      TempPolicy(workspace.path() / "families"));
   mem::QueryMemoryArena arena(Context(), Limits(), &allocator, &temp);
 
   const std::vector<exec::ExecutorQueryShape> shapes = {
@@ -214,8 +217,8 @@ void SupportedFamiliesAndRelease() {
 }
 
 void BoundedSpillAndCancel() {
-  const auto root = std::filesystem::temp_directory_path() / "sb_odf_094_spill";
-  std::filesystem::remove_all(root);
+  scratchbird::tests::OwnedTempDirectory workspace;
+  const auto root = workspace.path() / "spill";
   mem::BoundedAllocator allocator(AllocationPolicy());
   mem::TempWorkspaceLifecycleManager temp(TempPolicy(root));
   mem::QueryMemoryArena arena(Context(), Limits(), &allocator, &temp);
@@ -257,9 +260,10 @@ void BoundedSpillAndCancel() {
 }
 
 void FailClosedDiagnostics() {
+  scratchbird::tests::OwnedTempDirectory workspace;
   mem::BoundedAllocator allocator(AllocationPolicy());
   mem::TempWorkspaceLifecycleManager temp(
-      TempPolicy(std::filesystem::temp_directory_path() / "sb_odf_094_refuse"));
+      TempPolicy(workspace.path() / "refuse"));
 
   {
     mem::QueryMemoryArena arena(Context(), Limits(), &allocator, &temp);
@@ -433,7 +437,7 @@ void FailClosedDiagnostics() {
     limits.soft_limit_bytes = 1024;
     limits.spill_limit_bytes = 128 * 1024;
     auto temp_policy =
-        TempPolicy(std::filesystem::temp_directory_path() / "sb_odf_094_temp_quota");
+        TempPolicy(workspace.path() / "temp_quota");
     temp_policy.operation_quota_bytes = 2048;
     mem::TempWorkspaceLifecycleManager quota_temp(temp_policy);
     mem::QueryMemoryArena arena(Context(), limits, &allocator, &quota_temp);
@@ -444,11 +448,15 @@ void FailClosedDiagnostics() {
     auto refused = arena.Grant(request);
     Require(!refused.ok(), "ODF-094 temp workspace spill denial was accepted");
     Require(refused.diagnostic.diagnostic_code ==
-                "SB_QUERY_MEMORY_ARENA.SPILL_QUOTA_DENIED",
+                "TEMP_WORKSPACE.QUOTA_DENIED",
             "ODF-094 temp quota spill diagnostic changed");
-    Require(EvidenceHas(refused.evidence,
-                        "query_memory_arena.spill_workspace_refused="),
-            "ODF-094 temp quota denial evidence missing");
+    Require(!refused.grant && refused.fail_closed &&
+                arena.Snapshot().active_grant_count == 0 &&
+                arena.Snapshot().spilled_bytes == 0 &&
+                quota_temp.Snapshot().active_bytes == 0 &&
+                (!std::filesystem::exists(temp_policy.root_path) ||
+                 std::filesystem::is_empty(temp_policy.root_path)),
+            "ODF-094 temp quota denial retained a grant, charge or file");
   }
 
   {
@@ -463,10 +471,13 @@ void FailClosedDiagnostics() {
 
 }  // namespace
 
-int main() {
+int main() try {
   SupportedFamiliesAndRelease();
   BoundedSpillAndCancel();
   FailClosedDiagnostics();
   std::cout << "optimizer_deficiency_odf_094_gate passed\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }
