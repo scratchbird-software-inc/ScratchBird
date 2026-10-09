@@ -17,6 +17,7 @@
 #include "uuid.hpp"
 #include "streaming_cursor_manager.hpp"
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -26,6 +27,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -161,8 +163,7 @@ struct EvidenceRecord {
 std::vector<EvidenceRecord> g_records;
 
 [[noreturn]] void Fail(const std::string& message) {
-  std::cerr << "ORH-126 gate failure: " << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error("ORH-126 gate failure: " + message);
 }
 
 void Require(bool condition, const std::string& message) {
@@ -802,24 +803,9 @@ void RequireProviderSelectionRefusal(
           selection.evidence});
 }
 
-std::filesystem::path UniqueTempDir() {
-  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-                       std::chrono::system_clock::now().time_since_epoch())
-                       .count();
-  auto dir = std::filesystem::temp_directory_path() /
-             ("scratchbird_orh126_" + std::to_string(now));
-  std::filesystem::create_directories(dir);
-  return dir;
-}
-
 struct TempDatabase {
-  std::filesystem::path dir = UniqueTempDir();
-  std::filesystem::path path = dir / "orh126.sbdb";
-
-  ~TempDatabase() {
-    std::error_code ignored;
-    std::filesystem::remove_all(dir, ignored);
-  }
+  scratchbird::tests::OwnedTempDirectory directory;
+  std::filesystem::path path = directory.path() / "orh126.sbdb";
 };
 
 api::EngineRequestContext NoSqlContext(const std::filesystem::path& path) {
@@ -831,6 +817,7 @@ api::EngineRequestContext NoSqlContext(const std::filesystem::path& path) {
   context.resource_epoch = 127;
   context.security_epoch = 128;
   context.catalog_generation_id = 129;
+  context.name_resolution_epoch = 1;
   return context;
 }
 
@@ -906,7 +893,16 @@ void ProveProviderSelectionAndGenerationSecurityRaceRefusals() {
   begin.isolation_level = "read_committed";
   begin.transaction_policy_profile.encoded_profiles = {
       "fail_closed:true", "transaction_read_only:false", "transaction_read_mode:read_write"};
+  auto missing_generation = begin;
+  missing_generation.context.name_resolution_epoch = 0;
+  const auto refused = api::EngineBeginTransaction(missing_generation);
+  Require(!refused.ok && refused.local_transaction_id == 0 &&
+              std::any_of(refused.diagnostics.begin(), refused.diagnostics.end(),
+                  [](const auto& d) { return d.detail == "authority_generation_required"; }),
+          "missing name-resolution authority generation was not refused");
   const auto begun = api::EngineBeginTransaction(begin);
+  if (!begun.ok) for (const auto& diagnostic : begun.diagnostics)
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   Require(begun.ok && begun.local_transaction_id != 0, "ORH-126 engine begin failed");
   context.transaction_uuid = begun.transaction_uuid;
   context.local_transaction_id = begun.local_transaction_id;
@@ -963,6 +959,7 @@ void ProveProviderSelectionAndGenerationSecurityRaceRefusals() {
   api::EngineRollbackTransactionRequest rollback;
   rollback.context = context;
   Require(api::EngineRollbackTransaction(rollback).ok, "ORH-126 engine rollback failed");
+  database.directory.Cleanup();
 
 }
 
@@ -1008,7 +1005,7 @@ void VerifyCommercialEvidenceCoverage() {
 
 }  // namespace
 
-int main() {
+int main() try {
   ProveParserTemplateSecurityRaceInvalidation();
   ProveOptimizerSecurityRaceInvalidation();
   ProveCursorAndContinuationSecurityRaceRefusals();
@@ -1019,4 +1016,7 @@ int main() {
             << "evidence_records=" << g_records.size()
             << " benchmark_clean=true\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }
