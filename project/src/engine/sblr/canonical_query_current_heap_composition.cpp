@@ -1890,8 +1890,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
             if (payloads[0]->isPresent()) {
               api::EngineTypedValue key_value;
               key_value.descriptor = binding.descriptors[0];
-              key_value.encoded_value = payloads[0]->bytes;
-              key_value.state = api::EngineValueState::value;
+              if (!api::RestoreStoredScalarPayloadV1(payloads[0]->bytes,
+                      api::EngineValueState::value, &key_value)) {
+                stream_descriptor_refusal = true;
+                stream_detail = "grouped SUM key payload is not canonical int64";
+                return false;
+              }
               const auto decoded = exec::DecodeInt64Value(key_value);
               if (!decoded.ok()) {
                 stream_descriptor_refusal = true;
@@ -1924,8 +1928,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
             if (payloads[1]->isSqlNull()) return true;
             api::EngineTypedValue value;
             value.descriptor = binding.descriptors[1];
-            value.encoded_value = payloads[1]->bytes;
-            value.state = api::EngineValueState::value;
+            if (!api::RestoreStoredScalarPayloadV1(payloads[1]->bytes,
+                    api::EngineValueState::value, &value)) {
+              stream_descriptor_refusal = true;
+              stream_detail = "grouped SUM input payload is not canonical int64";
+              return false;
+            }
             const auto decoded = exec::DecodeInt64Value(value);
             if (!decoded.ok()) {
               stream_descriptor_refusal = true;
@@ -2011,12 +2019,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
                       "grouped SUM result descriptor is not exact int128");
       }
       api::EngineDescriptor int128_descriptor;
-      int128_descriptor.descriptor_uuid =
-          result_descriptor->descriptor_uuid;
-      int128_descriptor.descriptor_kind = "scalar";
-      int128_descriptor.canonical_type_name = "int128";
-      int128_descriptor.type_uuid = result_descriptor->type_uuid;
-      int128_descriptor.encoded_descriptor = "nullability=nullable";
+      if (!BuildExactCanonicalScalarRuntimeDescriptorV1(*result_descriptor,
+              dt::CanonicalTypeId::int128, &int128_descriptor)) {
+        return refuse("DATATYPE.DESCRIPTOR.INVALID",
+                      "grouped SUM result datatype cohort is not exact int128");
+      }
       std::vector<exec::CanonicalResultColumnBinding> column_bindings;
       exec::DescriptorBatch pending_page;
       pending_page.columns = {

@@ -11,6 +11,7 @@
 #include "../internal_api/catalog/column_metadata_codec.hpp"
 #include "../internal_api/catalog/datatype_bootstrap_identity.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "sbl_numeric.hpp"
 #include "../../core/uuid/uuid.hpp"
 
 #include <algorithm>
@@ -3018,32 +3019,11 @@ DescriptorRuntimeDiagnostic TransitionCanonicalInt128SumV1(
                            "canonical int128 SUM state is absent");
   }
   if (input_is_null) return OkDiagnostic();
-  unsigned __int128 bits = 0;
-  for (std::size_t byte = 0; byte < state->signed_little_endian.size(); ++byte) {
-    bits |= static_cast<unsigned __int128>(
-                state->signed_little_endian[byte])
-            << (byte * 8U);
-  }
-  const bool negative =
-      (state->signed_little_endian.back() & std::uint8_t{0x80}) != 0;
-  const unsigned __int128 magnitude = negative ? (~bits + 1U) : bits;
-  const __int128 current =
-      negative ? -static_cast<__int128>(magnitude - 1U) - 1
-               : static_cast<__int128>(magnitude);
-  constexpr unsigned __int128 kMaximumBits =
-      (static_cast<unsigned __int128>(1) << 127U) - 1U;
-  constexpr __int128 kMaximum = static_cast<__int128>(kMaximumBits);
-  constexpr __int128 kMinimum = -kMaximum - 1;
-  if ((input_value > 0 && current > kMaximum - input_value) ||
-      (input_value < 0 && current < kMinimum - input_value)) {
+  const auto status = scratchbird::libraries::sbl_numeric::AddInt64ToInt128LittleEndian(
+      state->signed_little_endian, input_value);
+  if (status != scratchbird::libraries::sbl_numeric::NumericStatusCode::ok) {
     return ErrorDiagnostic("NUMERIC.INT128.OVERFLOW",
                            "canonical int128 SUM transition overflow");
-  }
-  const auto next = current + static_cast<__int128>(input_value);
-  const auto encoded = static_cast<unsigned __int128>(next);
-  for (std::size_t byte = 0; byte < state->signed_little_endian.size(); ++byte) {
-    state->signed_little_endian[byte] =
-        static_cast<std::uint8_t>(encoded >> (byte * 8U));
   }
   state->nonnull_value_seen = true;
   return OkDiagnostic();

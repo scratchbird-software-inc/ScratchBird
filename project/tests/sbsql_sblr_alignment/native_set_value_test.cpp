@@ -218,7 +218,7 @@ void NativeSets(const char* type) {
 }
 void NumericResultBindings() {
   namespace dt = scratchbird::core::datatypes;
-  for (const char* name : {"int32", "int64"}) {
+  for (const char* name : {"int32", "int64", "int128"}) {
     const auto builtin = exec::MakeExecutorDescriptor(name);
     const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
         api::kBootstrapDatatypeCatalogUuid, api::kBootstrapDatatypeCatalogGeneration,
