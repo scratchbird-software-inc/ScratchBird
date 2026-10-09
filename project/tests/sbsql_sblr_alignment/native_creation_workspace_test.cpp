@@ -42,10 +42,12 @@ bool tamper_watermark_after_publication=false,tamper_done=false;
 unsigned fault_kind=call_count,fault_at=0,corrupt_at=0;
 unsigned selector_phase=0;
 unsigned watermark_written=0,watermark_synced=0,watermark_compared=0;
+unsigned zero_writes=0,zero_partial_at=0;
+u64 zero_bytes=0,largest_zero_write=0;
 u64 page_bytes=8192,total_pages=21,selector_page=17;
 bool ordered=true;
 bool Hit(Call kind){if(!armed)return false;return ++calls[kind]==fault_at&&kind==fault_kind;}
-void Arm(unsigned kind=call_count,unsigned at=0){calls={};fault_kind=kind;fault_at=at;corrupt_at=0;selector_phase=0;watermark_written=watermark_synced=watermark_compared=0;ordered=true;armed=true;}
+void Arm(unsigned kind=call_count,unsigned at=0){calls={};fault_kind=kind;fault_at=at;corrupt_at=0;selector_phase=0;watermark_written=watermark_synced=watermark_compared=0;zero_writes=0;zero_bytes=largest_zero_write=0;ordered=true;armed=true;}
 void Disarm(){armed=false;}
 Uuid Id(unsigned n){Uuid id;id.bytes[0]=1;id.bytes[6]=0x70;id.bytes[8]=0x80;id.bytes[14]=n>>8;id.bytes[15]=n;return id;}
 db::NativeFilespaceInitializationRequest Request(unsigned profile=0,u64 total=21){
@@ -62,7 +64,7 @@ struct Fixture{
   unsigned serial=0;
   std::unique_ptr<scratchbird::core::uuid::StandaloneUuidV7Issuer> issuer;
   void ResetIssuer(){issuer=std::make_unique<scratchbird::core::uuid::StandaloneUuidV7Issuer>(scratchbird::core::uuid::StandaloneUuidV7Binding{Id(1),Id(10)},scratchbird::core::uuid::StandaloneUuidV7Policy{{},0,1000});}
-  Fixture(){char name[]="/tmp/sb-native-creation-test.XXXXXX";const auto* p=mkdtemp(name);if(!p)throw std::runtime_error("mkdtemp");root=p;}
+  Fixture(){auto name=(fs::temp_directory_path()/"sb-native-creation-test.XXXXXX").string();const auto* p=mkdtemp(name.data());if(!p)throw std::runtime_error("mkdtemp");root=p;}
   ~Fixture(){std::error_code ignored;fs::remove_all(root,ignored);}
   fs::path Next(){ResetIssuer();const auto number=std::to_string(serial++);
     return root/("node-"+std::string(12-number.size(),'0')+number);}
@@ -227,6 +229,14 @@ void operator delete[](void* p,std::size_t) noexcept {std::free(p);}
 extern "C" ssize_t __real_pwrite(int,const void*,size_t,off_t);
 extern "C" ssize_t __wrap_pwrite(int fd,const void* bytes,size_t count,off_t offset){
   if(pause_write.exchange(false)){write_paused=true;while(!resume_write.load())std::this_thread::yield();}
+  if(armed&&count&&std::all_of(static_cast<const byte*>(bytes),static_cast<const byte*>(bytes)+count,[](byte b){return b==0;})){
+    ++zero_writes;zero_bytes+=count;largest_zero_write=std::max<u64>(largest_zero_write,count);
+    if(zero_partial_at==zero_writes){
+      const auto written=__real_pwrite(fd,bytes,count/2,offset);
+      if(written!=static_cast<ssize_t>(count/2))std::abort();
+      errno=EIO;return -1;
+    }
+  }
   if(Hit(write_call)){errno=EIO;return -1;}
   const bool selector=armed&&offset>=static_cast<off_t>(selector_page*page_bytes)&&
     offset<=static_cast<off_t>((selector_page+1)*page_bytes)&&
@@ -293,6 +303,33 @@ extern "C" scratchbird::core::time::ClockSnapshotResult __wrap__ZN11scratchbird4
 #include "native_metric_config_checks.hpp"
 #include "native_catalog_authority_checks.hpp"
 int main(int argc,char** argv){try{
+  if(argc==2&&std::string_view(argv[1])=="--zero-batches"){
+    Fixture fixture;
+    for(unsigned profile=0;profile<5;++profile){
+      const auto request=Request(profile,65);page_bytes=request.bootstrap.page_size_bytes;total_pages=request.total_pages;
+      const u64 maps=profile?1:2;selector_page=maps+16;
+      for(const u64 extra:{u64{0},u64{4},u64{64}}){
+        disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"zero batch device");
+        Arm();const auto result=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,(maps+22+extra)*page_bytes,*fixture.issuer);Disarm();
+        const u64 batch=std::min<u64>(16,extra+1);
+        Check(result.ok()&&ordered&&selector_phase==6&&zero_writes==(total_pages+batch-1)/batch&&
+          zero_bytes==total_pages*page_bytes&&largest_zero_write==batch*page_bytes,
+          "bounded coalescing covers all bytes including final partial batch without changing barriers");
+        Inspect(device,request);
+      }
+      for(unsigned at=1;at<=5;++at){
+        disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"partial zero batch device");
+        Arm();zero_partial_at=at;const auto result=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,256*page_bytes,*fixture.issuer);Disarm();zero_partial_at=0;
+        Check(!result.ok()&&!result.receipt&&result.error==db::NativeCreationWorkspaceError::io_failure&&
+          zero_writes==at&&!selector_phase&&!calls[sync_call],"partial zero batch cannot publish any selector or receipt");
+        const auto length=device.Size();Check(length.ok()&&length.size_bytes==(u64{at-1}*16+(at==5?0:8))*page_bytes+(at==5?page_bytes/2:0),"exact physical prefix retained after failed zero write");
+        const auto retained=Read(device,0,length.size_bytes);
+        const auto retry=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,256*page_bytes,*fixture.issuer);
+        Check(retry.error==db::NativeCreationWorkspaceError::device_not_empty&&!retry.receipt&&Read(device,0,length.size_bytes)==retained,"failed batch cannot be silently retried or truncated");
+      }
+    }
+    std::cout<<"PASS bounded zero initialization checks="<<checks<<'\n';return 0;
+  }
   if(argc==2&&std::string_view(argv[1])=="--catalog-authority") {
     NativeCatalogAuthorityChecks();std::cout<<"native catalog authority checks="<<checks<<'\n';return 0;
   }

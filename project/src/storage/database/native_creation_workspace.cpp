@@ -281,7 +281,12 @@ NativeCreationWorkspaceResult InitializePopulatedNativeCreationWorkspaceOnOpenDe
     images[0].bytes=std::move(*encoded_zero.bytes);
 
     // No writes before the complete graph, identities and receipt are prepared.
-    std::vector<byte> scratch(size,0);
+    // Device writes are ordered/durable. Coalesce zero initialization within
+    // the caller's existing image allowance instead of paying one durable
+    // write per page. Keep one image of headroom and cap the working buffer;
+    // exact-minimum callers still use the original single-page path.
+    const u64 zero_batch_pages=std::min<u64>({16,total,budget/size-images.size()-1});
+    std::vector<byte> scratch(zero_batch_pages*size,0);
     const auto write=[&](u64 n,const auto& bytes) {
       const auto io=device.WriteAt(n*size,bytes.data(),bytes.size());
       return io.ok()&&io.bytes_transferred==bytes.size();
@@ -292,7 +297,13 @@ NativeCreationWorkspaceResult InitializePopulatedNativeCreationWorkspaceOnOpenDe
       if(expected?scratch!=*expected:!std::all_of(scratch.begin(),scratch.end(),[](byte b){return !b;}))return E::readback_mismatch;
       return E::none;
     };
-    for(u64 n=0;n<total;++n)if(!write(n,scratch))return Fail(E::io_failure);
+    for(u64 n=0;n<total;) {
+      const u64 pages=std::min(zero_batch_pages,total-n),bytes=pages*size;
+      const auto io=device.WriteAt(n*size,scratch.data(),bytes);
+      if(!io.ok()||io.bytes_transferred!=bytes)return Fail(E::io_failure);
+      n+=pages;
+    }
+    scratch.resize(size);
     for(u64 n=1;n<maps+selector_first;++n)if(!write(n,images[n].bytes))return Fail(E::io_failure);
     for(u64 n=maps+watermark_first;n<=maps+watermark_second;++n)if(!write(n,images[n].bytes))return Fail(E::io_failure);
     if(!write(0,images[0].bytes)||!device.Sync().ok())return Fail(E::io_failure);

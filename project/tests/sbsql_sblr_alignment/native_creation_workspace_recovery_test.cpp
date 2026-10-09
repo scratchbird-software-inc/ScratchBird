@@ -51,7 +51,7 @@ db::NativeFilespaceInitializationRequest Request(unsigned profile=0,u64 total=21
 }
 struct Fixture {
   fs::path directory;unsigned serial=0;
-  Fixture(){char name[]="/tmp/sb-creation-recovery-test.XXXXXX";const auto* p=mkdtemp(name);Check(p,"mkdtemp");directory=p;}
+  Fixture(){auto name=(fs::temp_directory_path()/"sb-creation-recovery-test.XXXXXX").string();const auto* p=mkdtemp(name.data());Check(p,"mkdtemp");directory=p;}
   ~Fixture(){std::error_code ec;fs::remove_all(directory,ec);}
   fs::path Next(){return directory/("node-"+std::to_string(serial++));}
 };
