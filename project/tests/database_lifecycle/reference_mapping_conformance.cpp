@@ -110,6 +110,13 @@ void CheckSbsqlLifecycleLowering(std::string_view sql,
                                  std::string_view engine_api_function) {
   const auto envelope = LowerSbsql(sql);
   const auto verified = sb::VerifySblrEnvelope(envelope);
+  if (!verified.admitted) {
+    std::cerr << "DBLC-014 refused lifecycle statement: " << sql << '\n';
+    for (const auto& diagnostic : envelope.messages.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+    for (const auto& diagnostic : verified.messages.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+  }
   Require(verified.admitted, "DBLC-014 SBSQL lifecycle envelope was not admitted");
   Require(envelope.lifecycle_mapping, "DBLC-014 SBSQL lifecycle flag missing");
   Require(envelope.operation_id == operation_id, "DBLC-014 SBSQL operation id mismatch");
@@ -147,6 +154,17 @@ void CheckSbsqlLifecycleMappings() {
                               "lifecycle.open_database",
                               "SBLR_LIFECYCLE_OPEN_DATABASE",
                               "EngineOpenLifecycle");
+  CheckSbsqlLifecycleLowering("open database safe",
+                              "lifecycle.open_database",
+                              "SBLR_LIFECYCLE_OPEN_DATABASE",
+                              "EngineOpenLifecycle");
+  for (const auto* cursor : {"OPEN c", "OPEN DATABASE_cursor", "FETCH c", "CLOSE c"}) {
+    const auto envelope = LowerSbsql(cursor);
+    const auto verified = sb::VerifySblrEnvelope(envelope);
+    Require(!verified.admitted && envelope.payload.empty() &&
+        envelope.messages.has_errors(),
+        "DBLC-014 lifecycle disambiguation admitted a standalone cursor fragment");
+  }
   CheckSbsqlLifecycleLowering("ATTACH DATABASE safe",
                               "lifecycle.attach_database",
                               "SBLR_LIFECYCLE_ATTACH_DATABASE",

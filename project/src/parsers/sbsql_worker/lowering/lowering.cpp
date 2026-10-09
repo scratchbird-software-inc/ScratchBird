@@ -42575,6 +42575,9 @@ CentralImportCommandRoute AnalyzeStandaloneProceduralCommandRoute(
     const std::string_view statement_surface_id,
     const std::string_view statement_surface_name) {
   if (cst.messages.has_errors()) return {};
+  // OPEN DATABASE is the node lifecycle root, not a procedure cursor fragment.
+  // Its own lifecycle lowering still validates syntax, binding and authority.
+  if (LifecycleCommandStartsWith(cst.source, "OPEN DATABASE")) return {};
   const auto refuse = [](const std::string_view surface_id,
                          const std::string_view canonical_name) {
     return CentralImportCommandRoute{
