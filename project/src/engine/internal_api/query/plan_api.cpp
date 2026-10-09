@@ -843,7 +843,8 @@ ExactRcp079PairCohortCompatibilityV1(const TypedRelationalDag& dag) {
     if (expression->literal_or_parameter_ref)
       return !expression->literal_or_parameter_ref->empty() &&
              !expression->literal_typed_value_v1;
-    if (kind != RelationalLiteralKind::kNumeric ||
+    if ((kind != RelationalLiteralKind::kNumeric &&
+         kind != RelationalLiteralKind::kTemporal) ||
         !expression->literal_typed_value_v1) return false;
     const auto descriptor = descriptors_by_id.find(expression->result_descriptor_id);
     const auto& literal = *expression->literal_typed_value_v1;
@@ -854,7 +855,11 @@ ExactRcp079PairCohortCompatibilityV1(const TypedRelationalDag& dag) {
            literal.descriptor_uuid == descriptor->second->descriptor_uuid &&
            literal.descriptor_generation != 0 &&
            literal.descriptor_generation == descriptor->second->descriptor_generation &&
-           literal.value_state == "value" && literal.canonical_value_bytes.size() == 8;
+           literal.value_state == "value" &&
+           (kind == RelationalLiteralKind::kTemporal
+                ? (descriptor->second->codec_id == "datatype.timestamp.utc_tuple.le.v1" &&
+                   literal.canonical_value_bytes.size() == 16)
+                : literal.canonical_value_bytes.size() == 8);
   };
   const auto exact_function = [](const RelationalExpressionRecord* expression,
                                  const std::string_view name,
@@ -875,16 +880,20 @@ ExactRcp079PairCohortCompatibilityV1(const TypedRelationalDag& dag) {
     return found != descriptors_by_id.end() &&
            found->second->nullability == RelationalNullability::kNonNull;
   };
-  const auto positive_uint_literal = [&](const RelationalExpressionRecord* e) {
+  const auto positive_uint_literal = [&](const RelationalExpressionRecord* e,
+                                         const bool allow_signed = false) {
     if (!exact_literal(e, RelationalLiteralKind::kNumeric)) return false;
     std::uint64_t value = 0;
     if (e->literal_typed_value_v1) {
       const auto& descriptor = *descriptors_by_id.at(e->result_descriptor_id);
-      if (descriptor.codec_id != "datatype.uint64.le.v1") return false;
+      const bool signed_integer = descriptor.codec_id == "datatype.int64.le.v1";
+      if (descriptor.codec_id != "datatype.uint64.le.v1" &&
+          !(allow_signed && signed_integer)) return false;
       const auto& bytes = e->literal_typed_value_v1->canonical_value_bytes;
       for (unsigned byte = 0; byte < 8; ++byte)
         value |= static_cast<std::uint64_t>(bytes[byte]) << (8 * byte);
-      return value > 0 && non_null_descriptor(e->result_descriptor_id);
+      return value > 0 && (!signed_integer || value <= INT64_MAX) &&
+             non_null_descriptor(e->result_descriptor_id);
     }
     const auto& text = *e->literal_or_parameter_ref;
     const auto parsed =
@@ -965,11 +974,33 @@ ExactRcp079PairCohortCompatibilityV1(const TypedRelationalDag& dag) {
         start->second->result_descriptor_id !=
             end->second->result_descriptor_id ||
         !non_null_descriptor(start->second->result_descriptor_id) ||
-        *start->second->literal_or_parameter_ref >=
-            *end->second->literal_or_parameter_ref ||
         std::unordered_set<std::uint32_t>(range->child_expression_ids.begin(),
                                           range->child_expression_ids.end())
                 .size() != 3) {
+      return false;
+    }
+    if (start->second->literal_typed_value_v1 || end->second->literal_typed_value_v1) {
+      if (!start->second->literal_typed_value_v1 || !end->second->literal_typed_value_v1)
+        return false;
+      // Structural comparison of the frozen UTC tuple, not an execution
+      // admission. The runtime still verifies the full cohort and digest.
+      const auto tuple = [](const auto& bytes) {
+        std::uint64_t seconds = 0;
+        std::uint32_t nanos = 0;
+        for (unsigned i = 0; i < 8; ++i)
+          seconds |= static_cast<std::uint64_t>(bytes[i]) << (8 * i);
+        for (unsigned i = 0; i < 4; ++i)
+          nanos |= static_cast<std::uint32_t>(bytes[8 + i]) << (8 * i);
+        return std::pair{seconds ^ (UINT64_C(1) << 63), nanos};
+      };
+      const auto& first = start->second->literal_typed_value_v1->canonical_value_bytes;
+      const auto& last = end->second->literal_typed_value_v1->canonical_value_bytes;
+      if (tuple(first).second >= 1'000'000'000 || tuple(last).second >= 1'000'000'000 ||
+          std::ranges::any_of(std::span(first).subspan(12), [](auto b) { return b != 0; }) ||
+          std::ranges::any_of(std::span(last).subspan(12), [](auto b) { return b != 0; }) ||
+          tuple(first) >= tuple(last)) return false;
+    } else if (*start->second->literal_or_parameter_ref >=
+               *end->second->literal_or_parameter_ref) {
       return false;
     }
     return true;
@@ -1028,7 +1059,7 @@ ExactRcp079PairCohortCompatibilityV1(const TypedRelationalDag& dag) {
         root.bound_expression_ids ==
             std::vector<std::uint32_t>(exact_keys.begin(), exact_keys.end()) &&
         tolerance != expressions_by_id.end() &&
-        positive_uint_literal(tolerance->second)) {
+        positive_uint_literal(tolerance->second, true)) {
       return Compatibility::kTimeSeriesColumnarAsof;
     }
   }

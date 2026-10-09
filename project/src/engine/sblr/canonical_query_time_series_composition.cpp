@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "canonical_query_time_series_composition.hpp"
+#include "query/historical_timestamp_scalar.hpp"
 
 #include "canonical_query_aggregate_composition.hpp"
 #include "canonical_query_aggregate_registration.hpp"
@@ -406,14 +407,37 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
       return expression.expression_id == expression_id;
     });
   };
+  const auto bound_identity = [&](const api::RelationalTypeDescriptor& descriptor)
+      -> const dt::DatatypeTypeCodecIdentityRowV1* {
+    if (!descriptor.datatype_identity_authoritative ||
+        descriptor.statement_receipt_uuid != input.context.statement_receipt_uuid ||
+        descriptor.datatype_catalog_snapshot_uuid != input.context.datatype_catalog_snapshot_uuid ||
+        descriptor.datatype_catalog_generation != input.context.datatype_catalog_generation ||
+        descriptor.datatype_registry_generation != input.context.datatype_registry_generation) return nullptr;
+    const dt::DatatypeTypeCodecIdentityRowV1* matched = nullptr;
+    for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+      if (row.catalog_snapshot_uuid != descriptor.datatype_catalog_snapshot_uuid ||
+          row.catalog_generation != descriptor.datatype_catalog_generation ||
+          row.registry_generation != descriptor.datatype_registry_generation ||
+          row.type_uuid != descriptor.type_uuid ||
+          row.descriptor_generation != descriptor.descriptor_generation) continue;
+      if (matched || row.type_generation != descriptor.type_generation ||
+          row.codec_id != descriptor.codec_id || row.codec_version != descriptor.codec_version ||
+          row.codec_generation != descriptor.codec_generation) return nullptr;
+      matched = &row;
+    }
+    return matched;
+  };
   const auto start_expression = expression_for(range->child_expression_ids[1]);
   const auto end_expression = expression_for(range->child_expression_ids[2]);
   if (start_expression == dag.expressions.end() ||
       end_expression == dag.expressions.end() ||
-      !start_expression->literal_or_parameter_ref.has_value() ||
-      !end_expression->literal_or_parameter_ref.has_value()) {
-    return refuse("SB_MODEL_TIME_SERIES_RANGE_INVALID_V1",
-                  "time-series range endpoint literal is absent");
+      !start_expression->literal_typed_value_v1 ||
+      !end_expression->literal_typed_value_v1 ||
+      start_expression->literal_or_parameter_ref ||
+      end_expression->literal_or_parameter_ref) {
+    return refuse("SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1",
+                  "time-series range endpoints require exclusive bound native literals");
   }
   const auto start_descriptor =
       std::ranges::find_if(dag.descriptors, [&](const auto& descriptor) {
@@ -426,28 +450,31 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                end_expression->result_descriptor_id;
       });
   if (start_descriptor == dag.descriptors.end() ||
-      end_descriptor == dag.descriptors.end()) {
+      end_descriptor == dag.descriptors.end() ||
+      !bound_identity(*start_descriptor) || !bound_identity(*end_descriptor)) {
     return refuse("SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1",
                   "time-series range descriptor is absent");
   }
+  const auto literal_binding_matches = [](const auto& expression, const auto& descriptor) {
+    const auto& literal = *expression.literal_typed_value_v1;
+    return literal.descriptor_uuid == descriptor.descriptor_uuid &&
+           literal.descriptor_generation == descriptor.descriptor_generation;
+  };
+  if (!literal_binding_matches(*start_expression, *start_descriptor) ||
+      !literal_binding_matches(*end_expression, *end_descriptor)) {
+    return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                  "time-series range literal descriptor binding was substituted");
+  }
   api::EngineTypedValue range_start;
-  range_start.descriptor.descriptor_uuid =
-      start_descriptor->descriptor_uuid;
-  range_start.descriptor.descriptor_kind = "scalar";
-  range_start.descriptor.canonical_type_name = "timestamp_tz";
-  range_start.descriptor.encoded_descriptor = "timezone_profile_id=UTC";
-  range_start.encoded_value = *start_expression->literal_or_parameter_ref;
-  range_start.setState(api::EngineValueState::value);
-  auto range_end = range_start;
-  range_end.descriptor.descriptor_uuid =
-      end_descriptor->descriptor_uuid;
-  range_end.encoded_value = *end_expression->literal_or_parameter_ref;
+  api::EngineTypedValue range_end;
+  CanonicalRelationalExpressionRuntime endpoint_runtime(dag);
+  std::string endpoint_detail;
   std::int64_t canonical_range_start_ns = 0;
   std::int64_t canonical_range_end_ns = 0;
-  if (!canonical_query_execute_detail::ParseTimeSeriesEndpointNsV1(
-          range_start.encoded_value, &canonical_range_start_ns) ||
-      !canonical_query_execute_detail::ParseTimeSeriesEndpointNsV1(
-          range_end.encoded_value, &canonical_range_end_ns)) {
+  if (!endpoint_runtime.Evaluate(start_expression->expression_id, "timestamp", &range_start, &endpoint_detail) ||
+      !endpoint_runtime.Evaluate(end_expression->expression_id, "timestamp", &range_end, &endpoint_detail) ||
+      !api::DecodeHistoricalTimestampNanosecondsV1(range_start, &canonical_range_start_ns, &endpoint_detail) ||
+      !api::DecodeHistoricalTimestampNanosecondsV1(range_end, &canonical_range_end_ns, &endpoint_detail)) {
     return refuse("SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1",
                   "time-series range endpoint is malformed or out of range");
   }
@@ -648,31 +675,35 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                                : kRawTypes[ordinal];
     const auto expected_timezone =
         expected_type == "timestamp_tz"
-            ? std::optional<std::string>("UTC")
+            ? std::optional<std::string>("timestamp_timezone_profile")
             : std::optional<std::string>{};
     if (descriptor == dag.descriptors.end() || !outputs[ordinal]->visible ||
         outputs[ordinal]->ordinal != ordinal ||
         outputs[ordinal]->output_name_utf8 != expected_name ||
         outputs[ordinal]->descriptor_id != source->output_descriptor_ids[ordinal] ||
         descriptor->nullability != api::RelationalNullability::kNonNull ||
-        descriptor->collation_uuid.has_value() ||
+        (expected_type == "text" ? !descriptor->collation_uuid.has_value() : descriptor->collation_uuid.has_value()) ||
+        !bound_identity(*descriptor) ||
         descriptor->timezone_profile_id != expected_timezone ||
-        descriptor->width.has_value() || descriptor->precision.has_value() ||
+        (expected_type == "text" ? !descriptor->width.has_value() || *descriptor->width == 0
+                                 : descriptor->width.has_value()) || descriptor->precision.has_value() ||
         descriptor->scale.has_value()) {
       return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                     "time-series public output descriptor was substituted");
     }
     api::EngineDescriptor engine_descriptor;
-    engine_descriptor.descriptor_uuid = descriptor->descriptor_uuid;
-    engine_descriptor.type_uuid = descriptor->type_uuid;
-    engine_descriptor.descriptor_kind = "scalar";
-    engine_descriptor.canonical_type_name = std::string(expected_type);
-    engine_descriptor.encoded_descriptor =
-        "nullability=non_null";
-    if (descriptor->timezone_profile_id.has_value()) {
-      engine_descriptor.encoded_descriptor +=
-          ";timezone_profile_id=" + *descriptor->timezone_profile_id;
+    std::string detail;
+    if (expected_type == "timestamp_tz") {
+      if (!api::BuildHistoricalTimestampScalarDescriptorV1(*descriptor, &engine_descriptor, &detail))
+        return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "time-series timestamp publication descriptor is not bound");
+    } else if (expected_type != "text") {
+      if (!BuildExactCanonicalScalarRuntimeDescriptorV1(*descriptor,
+              dt::CanonicalTypeIdFromStableName(std::string(expected_type)), &engine_descriptor))
+        return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "time-series numeric/identity publication descriptor is not bound");
     }
+    // TEXT is projected below from the admitted stored descriptor after exact
+    // resource and source-cohort validation; no presentation-only descriptor
+    // is allowed to escape this preparation phase.
     public_columns.push_back(
         {std::string(expected_name), engine_descriptor, false,
          descriptor->descriptor_id});
@@ -725,7 +756,17 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                   "persistent time-series descriptor type binding is not exact");
   }
   const auto core_type_uuid = [&](const std::string_view stable_name) {
-    return ExactCanonicalCoreDatatypeTypeUuidV1(stable_name);
+    api::EngineUuid type;
+    const auto code = dt::CanonicalTypeIdFromStableName(std::string(stable_name));
+    for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+      if (row.catalog_snapshot_uuid != input.context.datatype_catalog_snapshot_uuid ||
+          row.catalog_generation != input.context.datatype_catalog_generation ||
+          row.registry_generation != input.context.datatype_registry_generation ||
+          row.canonical_binary_type_code != static_cast<std::uint32_t>(code)) continue;
+      if (!type.is_nil()) return api::EngineUuid{};
+      type = row.type_uuid;
+    }
+    return type;
   };
   const auto alias_expression = expression_for(range->child_expression_ids[0]);
   const auto exact_range_descriptor = [&](const auto descriptor) {
@@ -734,7 +775,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                persisted.columns[1].value_descriptor.descriptor_uuid &&
            descriptor->type_uuid == core_type_uuid("timestamp") &&
            descriptor->nullability == api::RelationalNullability::kNonNull &&
-           descriptor->timezone_profile_id == std::optional<std::string>("UTC");
+           descriptor->timezone_profile_id == std::optional<std::string>("timestamp_timezone_profile");
   };
   if (alias_expression == dag.expressions.end() ||
       alias_expression->expression_kind !=
@@ -903,7 +944,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         });
     exact_source_descriptor_cohort =
         exact_source_descriptor_cohort && descriptor != dag.descriptors.end() &&
-        expected_identity(*descriptor);
+        expected_identity(*descriptor) && bound_identity(*descriptor);
   }
   for (const auto& expected : expected_source_descriptors) {
     const auto descriptor = std::ranges::find_if(
@@ -970,17 +1011,27 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         descriptor->descriptor_uuid == expected_public_descriptor_uuids[ordinal] &&
         descriptor->type_uuid ==
             core_type_uuid(expected_public_core_types[ordinal]) &&
-        !descriptor->collation_uuid.has_value() &&
+        descriptor->collation_uuid ==
+            (expected_public_core_types[ordinal] == "character"
+                 ? std::optional<api::EngineUuid>(persisted.columns[2].value_descriptor.collation_uuid)
+                 : std::optional<api::EngineUuid>{}) &&
         descriptor->timezone_profile_id ==
             (expected_public_core_types[ordinal] == "timestamp"
-                 ? std::optional<std::string>("UTC")
+                 ? std::optional<std::string>("timestamp_timezone_profile")
                  : std::optional<std::string>{}) &&
-        !descriptor->width.has_value() && !descriptor->precision.has_value() &&
+        descriptor->width == (expected_public_core_types[ordinal] == "character"
+            ? std::optional<std::uint32_t>(persisted.columns[2].character_length)
+            : std::optional<std::uint32_t>{}) && !descriptor->precision.has_value() &&
         !descriptor->scale.has_value();
   }
   if (!exact_public_cohort) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "time-series public descriptor cohort differs from storage");
+  }
+  if (!bucket_operation || downsample_operation) {
+    auto& tags = public_columns[4].descriptor;
+    tags = persisted.columns[2].value_descriptor;
+    tags.descriptor_kind = "scalar";
   }
   if (!downsample_operation && !bucket_operation) {
     const std::array<api::EngineUuid, 6> expected_bound_names{
@@ -1290,8 +1341,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
           ? current_preferred_generations.front()->provider_uuid
           : owned_identities[0];
   const auto capability_uuid =
-      preferred_generation_current
-          ? current_preferred_generations.front()->time_series_rollup_capability_uuid
+      preferred_generation_current && rollup_candidate != nullptr
+          ? rollup_candidate->time_series_rollup_capability_uuid
           : owned_identities[1];
   const auto fallback_provider_uuid =
       owned_identities[2];
@@ -1723,6 +1774,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         CanonicalObjectFreeValuesExecutionRequest{
             input.context, dag, canonical_admission.request,
             canonical_admission.admission});
+    BindCanonicalPersistedRowDescriptorAuthorityForComposition(
+        input.context, &composition_planning_request->expression_services);
     composition_planning_request->expression_services.comparison_evaluator =
         [context = input.context](const api::EngineTypedValue& left,
                                   const api::EngineTypedValue& right,
@@ -1736,20 +1789,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
 
     composition_state.ok = true;
     composition_state.batch.columns = public_columns;
-    // The model exchange preserves the exact public TIMESTAMP_TZ carrier.
-    // Relational expressions consume its canonical core `timestamp` type;
-    // normalize only this copied adapter schema after verifying the retained
-    // timezone carrier. UUID, type UUID, nullability, and timezone metadata
-    // remain unchanged.
-    for (auto& column : composition_state.batch.columns) {
-      if (column.descriptor.canonical_type_name != "timestamp_tz") continue;
-      if (column.descriptor.encoded_descriptor.find(
-              "timezone_profile_id=") == std::string::npos) {
-        return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
-                      "time-series timestamp timezone carrier is absent");
-      }
-      column.descriptor.canonical_type_name = "timestamp";
-    }
+    // Source and downstream execution share the exact bound native scalar
+    // descriptor. No label-only timestamp reinterpretation is permitted.
     for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal) {
       const auto descriptor = std::ranges::find_if(
           dag.descriptors, [&](const auto& candidate_descriptor) {
@@ -1975,12 +2016,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         const auto* output_descriptor = row_number.result_descriptor;
         const auto& window_outputs = row_number.outputs;
         api::EngineDescriptor descriptor;
-        descriptor.descriptor_uuid =
-            output_descriptor->descriptor_uuid;
-        descriptor.type_uuid = output_descriptor->type_uuid;
-        descriptor.descriptor_kind = "scalar";
-        descriptor.canonical_type_name = "int64";
-        descriptor.encoded_descriptor = "nullability=non_null";
+        if (!BuildExactCanonicalScalarRuntimeDescriptorV1(
+                *output_descriptor, dt::CanonicalTypeId::int64, &descriptor)) {
+          return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                        "time-series ROW_NUMBER datatype binding is invalid");
+        }
         exec::ExecutorColumnDescriptor row_number_column{
             window_outputs.back()->output_name_utf8, descriptor, false,
             output_descriptor->descriptor_id};
@@ -3079,17 +3119,6 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
           return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                       "time-series provider execution receipt changed");
         }
-        const auto real_text = [](const double value) {
-          if (value == 0.0) return std::string("0");
-          std::array<char, 64> encoded{};
-          const auto converted = std::to_chars(
-              encoded.data(), encoded.data() + encoded.size(), value,
-              std::chars_format::general,
-              std::numeric_limits<double>::max_digits10);
-          return converted.ec == std::errc{}
-                     ? std::string(encoded.data(), converted.ptr)
-                     : std::string{};
-        };
         std::uint64_t bridge_bytes = 0;
         const auto account_bridge = [&](const std::uint64_t bytes) {
           return bytes <= std::numeric_limits<std::uint64_t>::max() -
@@ -3233,6 +3262,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         batch.base_row_mga_recheck_complete =
             read.base_row_mga_recheck_complete;
         batch.security_recheck_complete = read.security_recheck_complete;
+        using NativeTimeSeriesCell = std::variant<std::string_view, api::EngineUuid, std::int64_t, double>;
         const auto append_tuple = [&](const auto& encoded) {
           exec::DescriptorTuple tuple;
           tuple.values.reserve(encoded.size());
@@ -3241,6 +3271,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
             value.descriptor = public_columns[ordinal].descriptor;
             if (const auto* uuid = std::get_if<api::EngineUuid>(&encoded[ordinal])) {
               value.binary_value.assign(uuid->bytes.begin(), uuid->bytes.end());
+            } else if (const auto* integer = std::get_if<std::int64_t>(&encoded[ordinal])) {
+              if (value.descriptor.canonical_type_name == "timestamp") {
+                std::string detail;
+                if (!api::EncodeHistoricalTimestampNanosecondsV1(value.descriptor, *integer, &value, &detail)) return false;
+              } else {
+                value.binary_value = exec::EncodeInt64Value(*integer).binary_value;
+              }
+            } else if (const auto* real = std::get_if<double>(&encoded[ordinal])) {
+              value.binary_value = exec::EncodeReal64Value(*real).binary_value;
             } else {
               value.encoded_value = std::get<std::string_view>(encoded[ordinal]);
             }
@@ -3248,6 +3287,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
             tuple.values.push_back(std::move(value));
           }
           batch.batch.rows.push_back(std::move(tuple));
+          return true;
         };
         for (const auto& row : read.rows) {
           if (time_series_cancellation_requested()) {
@@ -3255,7 +3295,6 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                         "time-series provider raw-row publication was cancelled");
           }
           api::EngineApiI64 projected_bucket_start_ns = 0;
-          std::string raw_payload;
           if (bucket_operation) {
             std::string bucket_start;
             if (!api::EngineExactTimeSeriesBucketStartV1(
@@ -3267,20 +3306,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                   "TIME_BUCKET exact mathematical floor projection failed";
               return provider;
             }
-            append_tuple(
-                std::array<std::variant<std::string_view, api::EngineUuid>, 1>{std::string_view(bucket_start)});
+            if (!append_tuple(std::array<NativeTimeSeriesCell, 1>{projected_bucket_start_ns}))
+              return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "time-series bucket native publication failed");
           } else {
-            raw_payload = real_text(row.value);
-            if (raw_payload.empty()) {
-              provider.diagnostic_id =
-                  "SB_MODEL_TIME_SERIES_VALUE_INVALID_V1";
-              provider.detail =
-                  "time-series raw REAL64 publication encoding failed";
-              return provider;
-            }
-            append_tuple(std::array<std::variant<std::string_view, api::EngineUuid>, 6>{
+            if (!append_tuple(std::array<NativeTimeSeriesCell, 6>{
                 row.row_uuid, row.series_uuid, row.metric_uuid,
-                row.point_timestamp, row.tags, raw_payload});
+                row.point_timestamp_ns, row.tags, row.value}))
+              return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "time-series raw native publication failed");
           }
           exec::ModelProviderRowIdentityV1 identity;
           identity.row_uuid = row.row_uuid;
@@ -3301,21 +3333,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                 cancellation_diagnostic(),
                 "time-series provider aggregate publication was cancelled");
           }
-          const auto sample_count = std::to_string(row.sample_count);
-          const auto aggregate_value =
+          const NativeTimeSeriesCell aggregate_value =
               aggregate == api::EngineBoundTimeSeriesAggregateV1::kCount
-                  ? std::to_string(row.aggregate_count)
-                  : real_text(row.aggregate_value);
-          if (aggregate_value.empty()) {
-            provider.diagnostic_id =
-                "SB_MODEL_TIME_SERIES_VALUE_INVALID_V1";
-            provider.detail =
-                "time-series aggregate publication encoding failed";
-            return provider;
-          }
-          append_tuple(std::array<std::variant<std::string_view, api::EngineUuid>, 7>{
-              row.series_uuid, row.metric_uuid, row.bucket_start,
-              row.bucket_end, row.tags, sample_count, aggregate_value});
+                  ? NativeTimeSeriesCell{row.aggregate_count}
+                  : NativeTimeSeriesCell{row.aggregate_value};
+          if (!append_tuple(std::array<NativeTimeSeriesCell, 7>{
+              row.series_uuid, row.metric_uuid, row.bucket_start_ns,
+              row.bucket_end_ns, row.tags, row.sample_count, aggregate_value}))
+            return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "time-series aggregate native publication failed");
           exec::ModelProviderRowIdentityV1 identity;
           identity.series_uuid = row.series_uuid;
           identity.metric_uuid = row.metric_uuid;
@@ -3689,20 +3714,6 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
           PublishRuntimeMemoryObservation(
               &step, current_memory_bytes,
               time_series_runtime_memory_receipt->peak_live_memory_bytes);
-          if (!standalone_time_series_source) {
-            for (auto& column : executed.output.batch.columns) {
-              if (column.descriptor.canonical_type_name == "timestamp_tz") {
-                column.descriptor.canonical_type_name = "timestamp";
-              }
-            }
-            for (auto& row : executed.output.batch.rows) {
-              for (auto& value : row.values) {
-                if (value.descriptor.canonical_type_name == "timestamp_tz") {
-                  value.descriptor.canonical_type_name = "timestamp";
-                }
-              }
-            }
-          }
           step.result_handle_id = selected_node.physical_node_id;
           step.output_row_count = executed.output.batch.rows.size();
           step.rows_examined = executed.rows_examined;
@@ -4495,10 +4506,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                       return false;
                     }
                     std::int64_t timestamp = 0;
-                    if (!exec::ParseCanonicalTimeSeriesTimestampNsV1(
-                            row.values[binding.timestamp_column_ordinal]
-                                .encoded_value,
-                            &timestamp)) {
+                    std::string timestamp_detail;
+                    if (!api::DecodeHistoricalTimestampNanosecondsV1(
+                            row.values[binding.timestamp_column_ordinal],
+                            &timestamp, &timestamp_detail)) {
                       return false;
                     }
                     const auto native_cell = [](const api::EngineTypedValue& value,

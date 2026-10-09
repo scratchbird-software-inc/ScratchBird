@@ -5,6 +5,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/canonical_result_replay_fixture.hpp"
+#include "../support/canonical_int64_literal_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_query_execute.hpp"
 #include "canonical_query_descriptor_support.hpp"
@@ -387,7 +389,8 @@ api::EngineColumnDefinition Column(const api::EngineRequestContext& context,
   column.descriptor.datatype_descriptor_generation = binding.row.descriptor_generation;
   column.descriptor.type_uuid = binding.row.type_uuid;
   api::CatalogColumnMetadata metadata;
-  metadata.text = {{"canonical", std::string(type)}, {"nullable", "false"}};
+  metadata.text = {{"canonical", column.descriptor.canonical_type_name},
+                   {"nullable", "false"}};
   if (type == "text") {
     const auto charset = api::LookupEngineResourceDescriptorByName(context, "UTF8", "charset");
     const auto collation = api::LookupEngineResourceDescriptorByName(context, "SB_UTF8_BINARY", "collation");
@@ -1709,6 +1712,15 @@ bool ExchangeMatrix(const Fixture& fixture,
   passed &= Require(api::ExactTimeSeriesStorageDescriptorV1(context, base),
                     "time-series actual storage binding refused");
   for (std::size_t ordinal = 0; ordinal < base.columns.size(); ++ordinal) {
+    for (unsigned mutation = 0; mutation != 3; ++mutation) {
+      auto changed = base;
+      auto& descriptor = changed.columns[ordinal].value_descriptor;
+      if (mutation == 0) descriptor.datatype_descriptor_uuid = {};
+      if (mutation == 1) ++descriptor.datatype_descriptor_generation;
+      if (mutation == 2) descriptor.type_uuid = {};
+      passed &= Require(!api::ExactTimeSeriesStorageDescriptorV1(context, changed),
+                        "time-series substituted stored datatype identity admitted");
+    }
     api::CatalogColumnMetadata original;
     if (!api::DecodeCatalogColumnMetadata(base.columns[ordinal].value_descriptor.encoded_descriptor, &original))
       throw std::runtime_error("time-series mutation metadata decode failed");
@@ -1735,6 +1747,17 @@ bool ExchangeMatrix(const Fixture& fixture,
   ++changed_length.columns[2].character_length;
   passed &= Require(!api::ExactTimeSeriesStorageDescriptorV1(context, changed_length),
                     "time-series mismatched character limit projection admitted");
+  auto presentation_alias = base;
+  api::CatalogColumnMetadata timestamp_metadata;
+  if (!api::DecodeCatalogColumnMetadata(
+          base.columns[1].value_descriptor.encoded_descriptor, &timestamp_metadata))
+    throw std::runtime_error("time-series timestamp metadata decode failed");
+  timestamp_metadata.text["canonical"] = "timestamp_tz";
+  if (!api::EncodeCatalogColumnMetadata(timestamp_metadata,
+          &presentation_alias.columns[1].value_descriptor.encoded_descriptor))
+    throw std::runtime_error("time-series timestamp metadata encode failed");
+  passed &= Require(!api::ExactTimeSeriesStorageDescriptorV1(context, presentation_alias),
+                    "time-series presentation alias was accepted as stored type authority");
   const auto raw_request =
       Request(context, base,
               api::EngineBoundTimeSeriesReadOperationV1::kRangeRead,
@@ -2306,6 +2329,7 @@ api::RelationalTypeDescriptor DagDescriptor(
     if (!collation.ok || !collation.resource_descriptor.present)
       throw std::runtime_error("time-series DAG text collation is absent");
     descriptor.collation_uuid = collation.resource_descriptor.resource_uuid;
+    descriptor.width = identity->canonical_value_maximum_bytes;
   }
   return descriptor;
 }
@@ -2789,7 +2813,7 @@ api::TypedRelationalDag TimeSeriesCteLimitDag(
   limit.expression_kind = api::RelationalExpressionKind::kLiteral;
   limit.result_descriptor_id = 110;
   limit.literal_kind = api::RelationalLiteralKind::kNumeric;
-  limit.literal_or_parameter_ref = "3";
+  scratchbird::tests::SetInt64Literal(limit, dag.descriptors.back(), 3);
   dag.expressions.push_back(std::move(limit));
   api::RelationalDagNode limit_node;
   limit_node.node_id = 5;
@@ -2840,7 +2864,7 @@ api::TypedRelationalDag TimeSeriesRecursiveDag(
   bound.expression_kind = api::RelationalExpressionKind::kLiteral;
   bound.result_descriptor_id = 110;
   bound.literal_kind = api::RelationalLiteralKind::kNumeric;
-  bound.literal_or_parameter_ref = "9";
+  scratchbird::tests::SetInt64Literal(bound, dag.descriptors.back(), 9);
   dag.expressions.push_back(std::move(bound));
   api::RelationalDagNode term;
   term.node_id = 3;
@@ -2914,14 +2938,23 @@ api::TypedRelationalDag TimeSeriesMixedJoinDag(
     const auto descriptor_id = static_cast<std::uint32_t>(201 + ordinal);
     const auto expression_id = static_cast<std::uint32_t>(50 + ordinal);
     const auto& column = heap_storage.columns[ordinal];
-    api::RelationalTypeDescriptor type;
-    type.descriptor_id = descriptor_id;
-    type.descriptor_uuid =
-        column.value_descriptor.descriptor_uuid;
-    type.type_uuid = column.value_descriptor.type_uuid;
+    auto type = DagDescriptor(context, descriptor_id,
+        column.value_descriptor.descriptor_uuid,
+        column.value_descriptor.canonical_type_name == "text" ? "character" :
+            column.value_descriptor.canonical_type_name);
+    if (type.type_uuid != column.value_descriptor.type_uuid)
+      throw std::runtime_error("mixed join heap column datatype differs from statement cohort");
     type.nullability = column.nullable
                            ? api::RelationalNullability::kNullable
                            : api::RelationalNullability::kNonNull;
+    if (!column.collation_uuid.is_nil()) {
+      type.collation_uuid = column.collation_uuid;
+    }
+    const auto timezone_profile = DescriptorField(
+        column.value_descriptor.encoded_descriptor, "timezone_profile_id");
+    if (!timezone_profile.empty()) {
+      type.timezone_profile_id = timezone_profile;
+    }
     dag.descriptors.push_back(std::move(type));
     api::RelationalExpressionRecord expression;
     expression.expression_id = expression_id;
@@ -2996,11 +3029,12 @@ api::TypedRelationalDag TimeSeriesAsofJoinDag(
     const auto descriptor_id = static_cast<std::uint32_t>(301 + ordinal);
     const auto expression_id = static_cast<std::uint32_t>(50 + ordinal);
     const auto& column = heap_storage.columns[ordinal];
-    api::RelationalTypeDescriptor type;
-    type.descriptor_id = descriptor_id;
-    type.descriptor_uuid =
-        column.value_descriptor.descriptor_uuid;
-    type.type_uuid = column.value_descriptor.type_uuid;
+    auto type = DagDescriptor(context, descriptor_id,
+        column.value_descriptor.descriptor_uuid,
+        column.value_descriptor.canonical_type_name == "text" ? "character" :
+            column.value_descriptor.canonical_type_name);
+    if (type.type_uuid != column.value_descriptor.type_uuid)
+      throw std::runtime_error("ASOF heap column datatype differs from statement cohort");
     type.nullability = column.nullable
                            ? api::RelationalNullability::kNullable
                            : api::RelationalNullability::kNonNull;
@@ -3055,7 +3089,12 @@ api::TypedRelationalDag TimeSeriesAsofJoinDag(
   tolerance.expression_kind = api::RelationalExpressionKind::kLiteral;
   tolerance.result_descriptor_id = downsample ? 206 : 306;
   tolerance.literal_kind = api::RelationalLiteralKind::kNumeric;
-  tolerance.literal_or_parameter_ref = "30000000000";
+  const auto tolerance_descriptor = std::ranges::find_if(dag.descriptors, [&](const auto& descriptor) {
+    return descriptor.descriptor_id == tolerance.result_descriptor_id;
+  });
+  if (tolerance_descriptor == dag.descriptors.end())
+    throw std::runtime_error("ASOF tolerance fixture descriptor missing");
+  scratchbird::tests::SetInt64Literal(tolerance, *tolerance_descriptor, INT64_C(30000000000));
   dag.expressions.push_back(std::move(tolerance));
 
   const std::array<std::uint32_t, 3> time_keys =
@@ -3118,6 +3157,35 @@ api::TypedRelationalDag TimeSeriesAsofJoinDag(
                                         : "join.asof.inner.v1";
   dag.nodes.push_back(std::move(join));
   return dag;
+}
+
+bool NativeAsofLiteralAdmissionChecks(const api::TypedRelationalDag& dag) {
+  if (!Require(api::ValidateTypedRelationalDag(dag, {}).accepted,
+               "native ASOF literal plan was refused")) return false;
+  const auto range = std::ranges::find_if(dag.expressions, [](const auto& e) {
+    return e.operator_name == "TIME_RANGE";
+  });
+  if (range == dag.expressions.end()) return false;
+  const auto start_id = range->child_expression_ids.at(1);
+  const auto end_id = range->child_expression_ids.at(2);
+  for (unsigned mutation = 0; mutation < 8; ++mutation) {
+    auto invalid = dag;
+    auto& start = *std::ranges::find_if(invalid.expressions, [&](const auto& e) { return e.expression_id == start_id; });
+    auto& end = *std::ranges::find_if(invalid.expressions, [&](const auto& e) { return e.expression_id == end_id; });
+    auto& tolerance = *std::ranges::find_if(invalid.expressions, [](const auto& e) { return e.expression_id == 60; });
+    auto& literal = *start.literal_typed_value_v1;
+    if (mutation == 0) literal.descriptor_uuid = {};
+    if (mutation == 1) ++literal.descriptor_generation;
+    if (mutation == 2) literal.canonical_value_bytes.pop_back();
+    if (mutation == 3) literal.canonical_value_bytes[12] = 1;
+    if (mutation == 4) literal.canonical_value_bytes[11] = 0xff;
+    if (mutation == 5) literal.canonical_value_bytes = end.literal_typed_value_v1->canonical_value_bytes;
+    if (mutation == 6) tolerance.literal_typed_value_v1->canonical_value_bytes.assign(8, 0);
+    if (mutation == 7) tolerance.literal_typed_value_v1->canonical_value_bytes.assign(8, 0xff);
+    if (!Require(!api::ValidateTypedRelationalDag(invalid, {}).accepted,
+                 "malformed native ASOF literal plan was admitted")) return false;
+  }
+  return true;
 }
 
 std::string ApiRowField(const api::EngineApiResult& result,
@@ -3229,8 +3297,7 @@ std::string ProductionResultProofStream(
                : EvidenceBytes(found->evidence_id);
   };
   std::ostringstream stream;
-  stream << IdentityBytes(execution.selected_plan_uuid) << '\n'
-         << Digest(ProductionDescriptorStream(execution)) << '\n';
+  stream << Digest(ProductionDescriptorStream(execution)) << '\n';
   for (const auto& row : execution.api_result.result_shape.rows) {
     for (const auto& [name, value] : row.fields) {
       stream << name << '=' << value.encoded_value.size() << ':' << value.encoded_value << ':'
@@ -3241,11 +3308,25 @@ std::string ProductionResultProofStream(
     }
     stream << '\n';
   }
+  api::EngineUuid replay_attempt;
   stream << evidence_id("canonical.time_series_root_causal_counter") << '\n'
          << evidence_id("canonical.time_series_cleanup_count") << '\n'
          << evidence_id("canonical.time_series_cleanup_complete") << '\n'
-         << Digest(execution.canonical_result_bytes) << '\n';
+         << Digest(scratchbird::tests::NormalizeCanonicalReplayAttempt(
+                execution.canonical_result_bytes, &replay_attempt)) << '\n';
   return stream.str();
+}
+
+bool SameProductionReplay(
+    const sblr::CanonicalObjectFreeValuesExecutionResult& first,
+    const sblr::CanonicalObjectFreeValuesExecutionResult& second) {
+  // Each call selects a fresh physical plan and execution attempt. All typed
+  // result data and publication/cleanup evidence must nevertheless be exact.
+  return scratchbird::core::uuid::IsEngineIdentityUuid(first.selected_plan_uuid) &&
+         scratchbird::core::uuid::IsEngineIdentityUuid(second.selected_plan_uuid) &&
+         first.selected_plan_uuid != second.selected_plan_uuid &&
+         scratchbird::tests::SameCanonicalResultReplay(first, second) &&
+         ProductionResultProofStream(first) == ProductionResultProofStream(second);
 }
 
 bool ProductionRouteMatrix(const Fixture& fixture,
@@ -3264,6 +3345,11 @@ bool ProductionRouteMatrix(const Fixture& fixture,
     return sblr::ExecuteCanonicalCurrentHeapQuery(request);
   };
   const auto raw = execute(api::EngineBoundTimeSeriesAggregateV1::kNone);
+  if (!raw.api_result.ok || !raw.physical_dag_executed || !raw.canonical_result_published) {
+    for (const auto& diagnostic : raw.api_result.diagnostics)
+      std::cerr << "raw production prerequisite: " << diagnostic.code << ':' << diagnostic.detail << '\n';
+    return Require(false, "raw production prerequisite failed before dependent matrix");
+  }
   const auto sum = execute(api::EngineBoundTimeSeriesAggregateV1::kSum);
   const auto count = execute(api::EngineBoundTimeSeriesAggregateV1::kCount);
   const auto avg = execute(api::EngineBoundTimeSeriesAggregateV1::kAvg);
@@ -3275,6 +3361,25 @@ bool ProductionRouteMatrix(const Fixture& fixture,
       {context, raw_replay_dag});
   const auto raw_replay_second = sblr::ExecuteCanonicalCurrentHeapQuery(
       {context, raw_replay_dag});
+  bool replay_oracle_exact = !SameProductionReplay(raw_replay, raw_replay);
+  if (raw_replay_second.api_result.result_shape.rows.empty()) {
+    replay_oracle_exact = false;
+  } else {
+    const auto& fields = raw_replay_second.api_result.result_shape.rows.front().fields;
+    for (std::size_t column = 0; column < fields.size(); ++column) {
+      auto changed = raw_replay_second;
+      auto& value = changed.api_result.result_shape.rows.front().fields[column].second;
+      if (!value.binary_value.empty()) value.binary_value.front() ^= 1;
+      else value.encoded_value.push_back('!');
+      replay_oracle_exact &= !SameProductionReplay(raw_replay, changed);
+      changed = raw_replay_second;
+      changed.api_result.result_shape.rows.front().fields[column].second.descriptor.type_uuid = {};
+      replay_oracle_exact &= !SameProductionReplay(raw_replay, changed);
+    }
+    auto changed = raw_replay_second;
+    changed.canonical_result_bytes.pop_back();
+    replay_oracle_exact &= !SameProductionReplay(raw_replay, changed);
+  }
   const auto sum_replay_dag = TimeSeriesDag(
       context, storage, api::EngineBoundTimeSeriesAggregateV1::kSum);
   const auto sum_replay = sblr::ExecuteCanonicalCurrentHeapQuery(
@@ -3984,6 +4089,9 @@ bool ProductionRouteMatrix(const Fixture& fixture,
       api::EngineBoundTimeSeriesAggregateV1::kNone, true, true);
   const auto raw_series_left_inner = execute_asof(
       api::EngineBoundTimeSeriesAggregateV1::kNone, true, false);
+  if (!NativeAsofLiteralAdmissionChecks(TimeSeriesAsofJoinDag(
+          context, storage, heap_storage,
+          api::EngineBoundTimeSeriesAggregateV1::kNone, false, true, true))) return false;
   const auto raw_series_left_columnar =
       execute_multileg(
           context,
@@ -4026,6 +4134,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
   const auto stale_catalog = sblr::ExecuteCanonicalCurrentHeapQuery(
       {stale_catalog_context, stale_catalog_dag});
   auto denied_context = context;
+  denied_context.authorization_context.engine_owned_bootstrap_role_uuid = {};
   std::erase_if(denied_context.authorization_context.grants,
                 [](const auto& grant) {
                   return grant.target_uuid == scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000007600");
@@ -4356,6 +4465,22 @@ bool ProductionRouteMatrix(const Fixture& fixture,
           loaded_rewritten_rollup.evidence,
           "provider_generation_mga_authority=engine_transaction_inventory") !=
           loaded_rewritten_rollup.evidence.end();
+  if (!rollup_persistence_exact)
+    std::cerr << "TS-34 persistence known=" << rollup_binding_known_answer
+              << " mismatch-refused=" << !refused_mismatched_rollup_publish.ok
+              << " v7-derivation=" << non_v7_provider_rollup_derivation_empty
+              << " v7-refused=" << !refused_non_v7_provider_rollup_publish.ok
+              << " nil-derivation=" << zero_uuid_rollup_derivation_empty
+              << " nil-refused=" << !refused_zero_uuid_rollup_publish.ok
+              << " publish=" << published_stale_rollup.ok << " clear=" << cleared_rollup_cache.ok
+              << " load=" << loaded_stale_rollup.ok
+              << " metadata=" << exact_rollup_metadata(loaded_stale_rollup.metadata)
+              << " listed=" << (listed_rollup != listed_stale_rollups.end())
+              << " repair=" << repaired_stale_rollup.ok
+              << " repair-metadata=" << exact_rollup_metadata(repaired_stale_rollup.metadata)
+              << " rewrite=" << published_rewrite_probe.ok << '/' << dropped_rewrite_probe.ok
+              << '/' << cleared_rewritten_rollup_cache.ok << '/' << loaded_rewritten_rollup.ok
+              << " rewrite-metadata=" << exact_rollup_metadata(loaded_rewritten_rollup.metadata) << '\n';
   const auto exact_default_rollup_metadata = [](const auto& metadata) {
     return !metadata.time_series_rollup_candidate_present &&
            metadata.time_series_rollup_capability_uuid.is_nil() &&
@@ -4498,13 +4623,17 @@ bool ProductionRouteMatrix(const Fixture& fixture,
     observed_cancellation_checkpoints.insert(
         std::string(expected_checkpoint) + ":probe-count=" +
         std::to_string(probe_count));
+    std::clog << "TS-30 checkpoint=" << expected_checkpoint << " probe-count=" << probe_count
+              << " prerequisite=" << route_diagnostic(probe) << '\n';
     if (!probe.api_result.ok) {
       observed_cancellation_checkpoints.insert(
           std::string(expected_checkpoint) + ":probe-failed=" +
           route_diagnostic(probe));
       return std::nullopt;
     }
-    for (std::size_t threshold = 1; threshold <= probe_count; ++threshold) {
+    std::size_t injected_attempts = 0;
+    const auto inject = [&](const std::size_t threshold) {
+      ++injected_attempts;
       std::size_t observed = 0;
       auto injected_context = context;
       injected_context.query_cancellation_requested =
@@ -4521,16 +4650,103 @@ bool ProductionRouteMatrix(const Fixture& fixture,
           if (const auto* label = std::get_if<std::string>(&evidence.evidence_id)) observed_cancellation_checkpoints.insert(*label);
         }
       }
-      if (atomic_no_root(injected) &&
+      if (injected_attempts == 1 || injected_attempts % 16 == 0) {
+        std::clog << "TS-30 injection=" << injected_attempts
+                  << " threshold=" << threshold
+                  << " diagnostic=" << route_diagnostic(injected)
+                  << " atomic=" << atomic_no_root(injected)
+                  << " cleanup=" << post_access_cleanup_once(injected);
+        for (const auto& evidence : injected.api_result.evidence) {
+          if (evidence.evidence_kind == "canonical.time_series_cancellation_checkpoint")
+            if (const auto* label = std::get_if<std::string>(&evidence.evidence_id))
+              std::clog << " checkpoint=" << *label;
+        }
+        std::clog << '\n';
+      }
+      return injected;
+    };
+    const auto exact = [&](const auto& injected) {
+      const bool matched = atomic_no_root(injected) &&
           !injected.api_result.diagnostics.empty() &&
           injected.api_result.diagnostics.front().code ==
               "SB_MODEL_EXECUTION_CANCELLED_V1" &&
           post_access_cleanup_once(injected) &&
           has_evidence(injected,
                        "canonical.time_series_cancellation_checkpoint",
-                       expected_checkpoint)) {
-        return injected;
+                       expected_checkpoint);
+      if (matched) std::clog << "TS-30 checkpoint-qualified=" << expected_checkpoint
+                             << " attempts=" << injected_attempts << '\n';
+      return matched;
+    };
+    // Use observed phase receipts to locate the requested phase. In particular,
+    // acquisition is far earlier than downsampling; restarting at acquisition
+    // would replay hundreds of row/tag callbacks. The exhaustive fallback
+    // remains required if phase observations are not monotone.
+    const bool downsample_phase =
+        expected_checkpoint == "time-series downsample was cancelled";
+    const bool asof_phase =
+        expected_checkpoint == "time-series ASOF bridge was cancelled before execution";
+    const bool publication_phase =
+        expected_checkpoint == "time-series execution was cancelled at final publication";
+    const bool late_phase =
+        expected_checkpoint != "time-series MGA-visible row read was cancelled" &&
+        expected_checkpoint != "time-series downsample was cancelled";
+    std::size_t first_candidate = 1;
+    if (probe_count != 0) {
+      std::size_t low = 1, high = probe_count;
+      while (low < high) {
+        const auto midpoint = low + (high - low) / 2;
+        auto injected = inject(midpoint);
+        if (exact(injected)) return injected;
+        bool before_target = !post_access_cleanup_once(injected);
+        const bool before_downsample = downsample_phase &&
+            (has_evidence(injected, "canonical.time_series_cancellation_checkpoint",
+                          "time-series MGA-visible row read was cancelled") ||
+             has_evidence(injected, "canonical.time_series_cancellation_checkpoint",
+                          "time-series tag canonicalization was cancelled") ||
+             has_evidence(injected, "canonical.time_series_cancellation_checkpoint",
+                          "time-series visible-row validation was cancelled") ||
+             has_evidence(injected, "canonical.time_series_cancellation_checkpoint",
+                          "time-series row ordering sort was cancelled"));
+        before_target = before_target || before_downsample;
+        if (asof_phase || publication_phase) {
+          // Execution callbacks follow the ASOF bridge admission; provider
+          // exchange callbacks follow the source's final publication. These
+          // receipts only guide search, never satisfy the exact oracle.
+          bool after_target = false;
+          for (const auto& evidence : injected.api_result.evidence) {
+            if (evidence.evidence_kind != "canonical.time_series_cancellation_checkpoint") continue;
+            const auto* label = std::get_if<std::string>(&evidence.evidence_id);
+            if (!label) continue;
+            after_target |= *label == "physical DAG cancellation observed before root publication";
+            if (asof_phase) after_target |= label->starts_with("ASOF ");
+            if (publication_phase)
+              after_target |= label->starts_with("time-series provider ") ||
+                              label->starts_with("time-series exchange ") ||
+                              *label == "model-family exchange identity preflight was cancelled" ||
+                              *label == "model-family exchange descriptor preflight was cancelled" ||
+                              *label == "model-family exchange row preflight was cancelled" ||
+                              *label == "time-series tag exchange validation was cancelled" ||
+                              *label == "model-family row identity validation was cancelled" ||
+                              *label == "model-family descriptor output accounting was cancelled" ||
+                              *label == "descriptor-batch validation was cancelled";
+          }
+          before_target = !after_target;
+        }
+        if (before_target)
+          low = midpoint + 1;
+        else high = midpoint;
       }
+      first_candidate = low;
+    }
+    // Late phases are searched from publication backwards. No checkpoint,
+    // atomic refusal, or cleanup condition in the oracle is relaxed.
+    for (std::size_t attempt = 0; attempt < probe_count; ++attempt) {
+      const auto threshold = late_phase ? probe_count - attempt :
+          (attempt <= probe_count - first_candidate ? first_candidate + attempt :
+           attempt - (probe_count - first_candidate));
+      auto injected = inject(threshold);
+      if (exact(injected)) return injected;
     }
     return std::nullopt;
   };
@@ -4573,10 +4789,10 @@ bool ProductionRouteMatrix(const Fixture& fixture,
       {ordinary_probe_context,
        TimeSeriesFilterProjectDag(ordinary_probe_context, storage)});
   bool ordinary_post_acquisition_failure = false;
-  for (std::size_t threshold = 1;
-       ordinary_probe.api_result.ok && threshold <= ordinary_probe_count &&
+  for (std::size_t threshold = ordinary_probe_count;
+       ordinary_probe.api_result.ok && threshold > 0 &&
        !ordinary_post_acquisition_failure;
-       ++threshold) {
+       --threshold) {
     std::size_t observed = 0;
     auto injected_context = context;
     injected_context.query_cancellation_requested =
@@ -4633,6 +4849,14 @@ bool ProductionRouteMatrix(const Fixture& fixture,
       join_complete(full_join, 8, 8) &&
       join_complete(semi_join, 6, 1) &&
       join_complete(anti_join, 6, 6);
+  if (!mixed_joins_complete) {
+    for (const auto* execution : {&cross_join, &inner_join, &left_join, &right_join,
+                                 &full_join, &semi_join, &anti_join})
+      std::cerr << "TS-37 mixed join ok=" << execution->api_result.ok
+                << " rows=" << execution->canonical_result_row_count
+                << " columns=" << execution->canonical_result_column_count
+                << " diagnostic=" << route_diagnostic(*execution) << '\n';
+  }
   const bool asof_joins_complete =
       join_complete(raw_series_left_outer, 11, 7) &&
       join_complete(raw_series_left_inner, 11, 4) &&
@@ -4933,10 +5157,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                      composition.canonical_result_column_count == 6 &&
                      composition.canonical_result_row_count == 7 &&
                      composition_replay.api_result.ok &&
-                     composition_replay.selected_plan_uuid ==
-                         composition.selected_plan_uuid &&
-                     composition_replay.canonical_result_bytes ==
-                         composition.canonical_result_bytes &&
+                     SameProductionReplay(composition, composition_replay) &&
                      std::ranges::any_of(
                          composition.api_result.evidence,
                          [](const auto& evidence) {
@@ -5024,8 +5245,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                      ApiRowField(recursive.api_result, 2, "point_count") ==
                          "9" &&
                      recursive_replay.api_result.ok &&
-                     recursive_replay.canonical_result_bytes ==
-                         recursive.canonical_result_bytes,
+                     SameProductionReplay(recursive, recursive_replay),
                  "ordinary bounded recursive CTE root was not executed: " +
                      route_diagnostic(recursive)) &&
          Require(set_union.profile_matched &&
@@ -5042,8 +5262,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                      ApiRowField(set_union.api_result, 7, "row_uuid") ==
                          IdentityBytes(scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000099")) &&
                      set_replay.api_result.ok &&
-                     set_replay.canonical_result_bytes ==
-                         set_union.canonical_result_bytes,
+                     SameProductionReplay(set_union, set_replay),
                  "ordinary UNION ALL root was not executed: " +
                      route_diagnostic(set_union)) &&
          Require(mixed_joins_complete,
@@ -5331,6 +5550,12 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                                     "SB_MODEL_TIME_SERIES_RANGE_INVALID_V1"}},
                       [&](const auto& refusal) {
                         const auto& execution = *refusal.first;
+                        if (!(atomic_no_root(execution) && pre_access_cleanup_zero(execution) &&
+                              execution.api_result.diagnostics.size() == 1 &&
+                              execution.api_result.diagnostics.front().code == refusal.second))
+                          std::cerr << "TS-27 expected=" << refusal.second << " actual="
+                                    << route_diagnostic(execution) << " atomic=" << atomic_no_root(execution)
+                                    << " pre-cleanup=" << pre_access_cleanup_zero(execution) << '\n';
                         return atomic_no_root(execution) &&
                                pre_access_cleanup_zero(execution) &&
                                execution.api_result.diagnostics.size() == 1 &&
@@ -5557,7 +5782,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                             return atomic_success_cleanup_once(*execution);
                           }),
          "TS-37 ordinary canonical execution-spine matrix drifted");
-  credit("TS-38", std::ranges::all_of(
+  credit("TS-38", replay_oracle_exact && std::ranges::all_of(
                       std::array{&raw_replay, &raw_replay_second,
                                  &sum_replay, &sum_replay_second,
                                  &count_replay, &count_replay_second,
@@ -5571,27 +5796,17 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                       [&](const auto* execution) {
                         return exact_replay_receipt(*execution);
                       }) &&
-                      ProductionResultProofStream(raw_replay) ==
-                          ProductionResultProofStream(raw_replay_second) &&
-                      ProductionResultProofStream(sum_replay) ==
-                          ProductionResultProofStream(sum_replay_second) &&
-                      ProductionResultProofStream(count_replay) ==
-                          ProductionResultProofStream(count_replay_second) &&
-                      ProductionResultProofStream(fallback_raw) ==
-                          ProductionResultProofStream(fallback_raw_replay) &&
-                      ProductionResultProofStream(fallback_sum) ==
-                          ProductionResultProofStream(fallback_sum_replay) &&
-                      ProductionResultProofStream(fallback_count) ==
-                          ProductionResultProofStream(fallback_count_replay) &&
-                      ProductionResultProofStream(raw_series_right_outer) ==
-                          ProductionResultProofStream(
-                              raw_series_right_replay) &&
-                      ProductionResultProofStream(composition) ==
-                          ProductionResultProofStream(composition_replay) &&
-                      ProductionResultProofStream(set_union) ==
-                          ProductionResultProofStream(set_replay) &&
-                      ProductionResultProofStream(recursive) ==
-                          ProductionResultProofStream(recursive_replay),
+                      SameProductionReplay(raw_replay, raw_replay_second) &&
+                      SameProductionReplay(sum_replay, sum_replay_second) &&
+                      SameProductionReplay(count_replay, count_replay_second) &&
+                      SameProductionReplay(fallback_raw, fallback_raw_replay) &&
+                      SameProductionReplay(fallback_sum, fallback_sum_replay) &&
+                      SameProductionReplay(fallback_count, fallback_count_replay) &&
+                      SameProductionReplay(raw_series_right_outer, raw_series_right_replay) &&
+                      SameProductionReplay(composition, composition_replay) &&
+                      SameProductionReplay(set_union, set_replay) &&
+                      SameProductionReplay(recursive, recursive_replay) &&
+                      !SameProductionReplay(raw_replay, raw_replay),
          "TS-38 ordinary deterministic replay drifted");
   credit("TS-39", invisible.api_result.ok &&
                       invisible.canonical_result_row_count == 0 &&
@@ -7607,8 +7822,10 @@ bool ProviderMatrix(const Fixture& fixture,
 
 int main(int argc, char** argv) try {
   const bool exchange_probe = argc == 2 && std::string_view(argv[1]) == "--exchange-probe";
-  if (argc != 1 && !exchange_probe) {
-    std::cerr << "usage: time-series-test [--exchange-probe]\n";
+  const bool asof_probe = argc == 2 && std::string_view(argv[1]) == "--asof-production-probe";
+  const bool spine_probe = argc == 2 && std::string_view(argv[1]) == "--spine-production-probe";
+  if (argc != 1 && !exchange_probe && !asof_probe && !spine_probe) {
+    std::cerr << "usage: time-series-test [--exchange-probe|--asof-production-probe|--spine-production-probe]\n";
     return 2;
   }
   auto memory_policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
@@ -7624,8 +7841,86 @@ int main(int argc, char** argv) try {
                 InventoryExact(fixture, reader);
 #if defined(SB_CES05_TIME_SERIES_PRODUCTION_QUERY_ROUTE)
   if (exchange_probe) return 2;
+  if (spine_probe) {
+    // Diagnostic isolation only; never the registered forty-outcome receipt.
+    if (passed) {
+      const auto& storage = fixture.descriptors.at(kBaseObjectUuid);
+      for (const auto& [label, dag] : std::vector<std::pair<std::string, api::TypedRelationalDag>>{
+          {"bucket-downsample", TimeSeriesBucketDownsampleDag(reader, storage)},
+          {"filter-project", TimeSeriesFilterProjectDag(reader, storage)},
+          {"unary", TimeSeriesUnaryCompositionDag(reader, storage)},
+          {"cte-limit", TimeSeriesCteLimitDag(reader, storage)},
+          {"count", TimeSeriesCountDag(reader, storage)},
+          {"recursive", TimeSeriesRecursiveDag(reader, storage)},
+          {"set", TimeSeriesSetDag(reader, storage)}}) {
+        const auto execution = sblr::ExecuteCanonicalCurrentHeapQuery({reader, dag});
+        std::clog << "spine probe=" << label << " ok=" << execution.api_result.ok
+                  << " rows=" << execution.canonical_result_row_count << '\n';
+        for (const auto& diagnostic : execution.api_result.diagnostics)
+          std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+        passed &= execution.api_result.ok && execution.physical_dag_executed && execution.canonical_result_published;
+      }
+      for (const auto semantic : {"join.cross.v1", "join.inner.v1", "join.left-outer.v1",
+                                 "join.right-outer.v1", "join.full-outer.v1",
+                                 "join.left-semi.v1", "join.left-anti.v1"}) {
+        const auto profiles = Rcp079DirectProofMultilegProfilesV10();
+        opt::MultilegDescriptorDispatchScopeV1 scope(reader.statement_uuid, profiles);
+        passed &= Require(scope.installed(), "mixed join probe descriptor scope not installed");
+        const auto execution = sblr::ExecuteCanonicalCurrentHeapQuery({reader,
+            TimeSeriesMixedJoinDag(reader, storage, fixture.descriptors.at(kJoinObjectUuid), semantic)});
+        std::clog << "spine probe=" << semantic << " ok=" << execution.api_result.ok
+                  << " rows=" << execution.canonical_result_row_count
+                  << " columns=" << execution.canonical_result_column_count << '\n';
+        for (const auto& diagnostic : execution.api_result.diagnostics)
+          std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+        passed &= execution.api_result.ok && execution.physical_dag_executed && execution.canonical_result_published;
+      }
+    }
+    if (!reader.transaction_uuid.is_nil()) passed &= Rollback(reader);
+    if (!active_other.transaction_uuid.is_nil()) passed &= Rollback(active_other);
+    if (passed) std::cout << "Spine production probe passed; full regression not run\n";
+    return passed ? 0 : 1;
+  }
+  if (asof_probe) {
+    // Developer diagnostic only. The no-argument registered test still requires
+    // the complete forty-outcome production matrix and cancellation evidence.
+    for (const bool columnar : {false, true}) {
+    for (const bool series_left : {false, true}) {
+    for (const bool outer : {false, true}) {
+      if (!passed) break;
+      const auto profiles = Rcp079DirectProofMultilegProfilesV10();
+      opt::MultilegDescriptorDispatchScopeV1 scope(reader.statement_uuid, profiles);
+      Require(scope.installed(), "ASOF probe descriptor scope not installed");
+      if (columnar && !NativeAsofLiteralAdmissionChecks(TimeSeriesAsofJoinDag(
+              reader, fixture.descriptors.at(kBaseObjectUuid),
+              fixture.descriptors.at(series_left ? kAsofRightObjectUuid : kJoinObjectUuid),
+              api::EngineBoundTimeSeriesAggregateV1::kNone, series_left, outer, true))) {
+        passed = false;
+        break;
+      }
+      const auto execution = sblr::ExecuteCanonicalCurrentHeapQuery({reader,
+          TimeSeriesAsofJoinDag(reader, fixture.descriptors.at(kBaseObjectUuid),
+              fixture.descriptors.at(series_left ? kAsofRightObjectUuid : kJoinObjectUuid),
+              api::EngineBoundTimeSeriesAggregateV1::kNone, series_left, outer,
+              columnar)});
+      for (const auto& diagnostic : execution.api_result.diagnostics)
+        std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+      std::clog << "ASOF probe outer=" << outer << " columnar=" << columnar
+                << " series_left=" << series_left << " rows="
+                << execution.api_result.result_shape.rows.size() << '\n';
+      passed &= execution.api_result.ok && execution.physical_dag_executed &&
+                execution.canonical_result_published;
+    }
+    }
+    }
+    if (!reader.transaction_uuid.is_nil()) passed &= Rollback(reader);
+    if (!active_other.transaction_uuid.is_nil()) passed &= Rollback(active_other);
+    if (passed) std::cout << "ASOF production probe passed; full regression not run\n";
+    return passed ? 0 : 1;
+  }
   passed = passed && ProductionRouteMatrix(fixture, reader, &completed);
 #else
+  if (asof_probe || spine_probe) return 2;
   // The registered regression always runs the entire 40-outcome matrix.
   // A developer-only probe isolates exchange failures without rerunning the
   // unrelated provider cancellation sweep; it is never a closure receipt.

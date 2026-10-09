@@ -57,7 +57,7 @@
 #include "transaction/transaction_api.hpp"
 #include "crud_support/crud_store.hpp"
 #include "mga_relation_store/stored_scalar_payload.hpp"
-#include "mga_relation_store/stored_integer_descriptor.hpp"
+#include "mga_relation_store/stored_scalar_descriptor.hpp"
 #include "catalog/column_metadata_codec.hpp"
 
 #include <algorithm>
@@ -569,10 +569,10 @@ exec::CanonicalPhysicalExecutorRegistration MakeRcp079AsofRegistration(
                   return false;
                 }
                 std::int64_t timestamp_ns = 0;
-                if (!exec::ParseCanonicalTimeSeriesTimestampNsV1(
-                        row.values[binding.timestamp_column_ordinal]
-                            .encoded_value,
-                        &timestamp_ns)) {
+                std::string timestamp_detail;
+                if (!api::DecodeHistoricalTimestampNanosecondsV1(
+                        row.values[binding.timestamp_column_ordinal],
+                        &timestamp_ns, &timestamp_detail)) {
                   return false;
                 }
                 const auto metric = Rcp080SystemUuidCell(row.values[binding.metric_column_ordinal]);
@@ -2359,9 +2359,9 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
           }
         }
         auto engine_descriptor = column.value_descriptor;
-        if ((engine_descriptor.canonical_type_name == "int64" || engine_descriptor.canonical_type_name == "int32")) {
+        if (api::StoredScalarProjectionRequiredV1(engine_descriptor)) {
           std::string detail;
-          if (!api::ProjectStoredIntegerDescriptorV1(input.context, column.value_descriptor,
+          if (!api::ProjectStoredScalarDescriptorV1(input.context, column.value_descriptor,
                                                  column.nullable, &engine_descriptor, &detail))
             return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", detail);
         }

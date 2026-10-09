@@ -1221,10 +1221,9 @@ bool ExactTimeSeriesValueDescriptor(
     const EngineUuid& expected_column_uuid,
     const std::uint32_t expected_character_length,
     const scratchbird::core::datatypes::DatatypeStorageIdentityV1& identity) {
-  const auto canonical_type = expected_type == "timestamp_tz" ? "timestamp" : expected_type;
   if (!QowCanonicalDescriptorIdentityV1(descriptor) ||
       (descriptor.descriptor_kind != "canonical_type_descriptor" && descriptor.descriptor_kind != "scalar") ||
-      descriptor.canonical_type_name != canonical_type ||
+      descriptor.canonical_type_name != expected_type ||
       descriptor.datatype_descriptor_uuid != identity.descriptor_uuid ||
       descriptor.datatype_descriptor_generation != identity.descriptor_generation ||
       descriptor.type_uuid != identity.type_uuid) {
@@ -1268,7 +1267,7 @@ bool ExactTimeSeriesValueDescriptor(
   } else if (!descriptor.charset_uuid.is_nil() || !descriptor.collation_uuid.is_nil()) {
     return false;
   }
-  if (expected_type == "timestamp_tz" && metadata.text.contains("timezone_profile_id"))
+  if (expected_type == "timestamp" && metadata.text.contains("timezone_profile_id"))
     expected.text.emplace("timezone_profile_id", "UTC");
   // Column identity and scalar value-descriptor identity have separate roles.
   // The former is bound by column_uuid, never by equating the two UUIDs.
@@ -1281,35 +1280,26 @@ bool ExactTimeSeriesStorageDescriptorImpl(
   static constexpr std::array<std::string_view, 4> kNames{
       "metric_uuid", "point_timestamp", "tags", "value"};
   static constexpr std::array<std::string_view, 4> kTypes{
-      "uuid", "timestamp_tz", "text", "real64"};
+      "uuid", "timestamp", "text", "real64"};
   if (descriptor.columns.size() != kNames.size() ||
       ValidateMgaRelationStorageDescriptor(descriptor).error) return false;
-  const auto manifest =
-      scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
-  if (!manifest.ok()) return false;
   std::set<EngineUuid> column_uuids;
   std::set<EngineUuid> descriptor_uuids;
   for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
     const auto& column = descriptor.columns[ordinal];
     const auto type_id =
-        kTypes[ordinal] == "timestamp_tz"
-            ? scratchbird::core::datatypes::CanonicalTypeId::timestamp
-            : scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
-                  std::string(kTypes[ordinal]));
-    const auto type_row = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
-        manifest.manifest, type_id);
-    if (!type_row.ok() || type_row.manifest.descriptor_rows.size() != 1 ||
-        !type_row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
-      return false;
-    }
-    const auto& descriptor_row =
-        type_row.manifest.descriptor_rows.front();
-    const auto descriptor_uuid = descriptor_row.descriptor_uuid.value;
+        scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
+            std::string(kTypes[ordinal]));
+    // Resolve the stored binary identity in the admitted statement cohort.
+    // Rebuilding and validating the entire current builtin manifest for each
+    // column is neither needed nor authority for a retained historical row.
     scratchbird::core::datatypes::DatatypeStorageIdentityV1 identity;
     if (!scratchbird::core::datatypes::LookupDatatypeStorageIdentityV1(
             context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
-            context.datatype_registry_generation, descriptor_uuid,
-            descriptor_row.descriptor_epoch, &identity)) return false;
+            context.datatype_registry_generation,
+            column.value_descriptor.datatype_descriptor_uuid,
+            column.value_descriptor.datatype_descriptor_generation, &identity) ||
+        identity.type_id != type_id || !identity.codec) return false;
     if (column.ordinal != ordinal ||
         column.canonical_name_key != kNames[ordinal] || column.nullable ||
         column.generated || column.identity_column ||

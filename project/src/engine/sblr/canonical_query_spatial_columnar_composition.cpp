@@ -26,7 +26,7 @@
 #include "catalog/name_resolution_api.hpp"
 #include "crud_support/crud_store.hpp"
 #include "mga_relation_store/stored_scalar_payload.hpp"
-#include "mga_relation_store/stored_integer_descriptor.hpp"
+#include "mga_relation_store/stored_scalar_descriptor.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "../internal_api/catalog/datatype_bootstrap_identity.hpp"
@@ -2740,9 +2740,9 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
       }
       type_uuids.insert(descriptor->type_uuid);
       auto engine_descriptor = column.value_descriptor;
-      if ((engine_descriptor.canonical_type_name == "int64" || engine_descriptor.canonical_type_name == "int32")) {
+      if (api::StoredScalarProjectionRequiredV1(engine_descriptor)) {
         std::string detail;
-        if (!api::ProjectStoredIntegerDescriptorV1(input.context, column.value_descriptor,
+        if (!api::ProjectStoredScalarDescriptorV1(input.context, column.value_descriptor,
                                                column.nullable, &engine_descriptor, &detail))
           return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", detail);
       }
@@ -4162,9 +4162,9 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                       "columnar output differs from persisted type authority");
       }
       engine_descriptor = persisted_column->value_descriptor;
-      if ((engine_descriptor.canonical_type_name == "int64" || engine_descriptor.canonical_type_name == "int32")) {
+      if (api::StoredScalarProjectionRequiredV1(engine_descriptor)) {
         std::string detail;
-        if (!api::ProjectStoredIntegerDescriptorV1(input.context, persisted_column->value_descriptor,
+        if (!api::ProjectStoredScalarDescriptorV1(input.context, persisted_column->value_descriptor,
                                                persisted_column->nullable, &engine_descriptor, &detail))
           return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", detail);
       }
@@ -5847,9 +5847,9 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                     ? synthetic_descriptor++
                     : identifier->result_descriptor_id;
             auto descriptor = column.value_descriptor;
-            if ((descriptor.canonical_type_name == "int64" || descriptor.canonical_type_name == "int32")) {
+            if (api::StoredScalarProjectionRequiredV1(descriptor)) {
               std::string detail;
-              if (!api::ProjectStoredIntegerDescriptorV1(context, column.value_descriptor,
+              if (!api::ProjectStoredScalarDescriptorV1(context, column.value_descriptor,
                                                      column.nullable, &descriptor, &detail))
                 return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", detail);
             }
