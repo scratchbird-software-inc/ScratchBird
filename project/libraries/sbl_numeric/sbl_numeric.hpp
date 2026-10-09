@@ -208,6 +208,13 @@ enum class ExactDecimalError : std::uint8_t {
 };
 const char* ExactDecimalErrorName(ExactDecimalError error) noexcept;
 bool ExactDecimalProfileValid(const ExactDecimalProfile& profile) noexcept;
+// Quantile coordinate consumption, not a general SQL cast. Validate the exact
+// decimal against its declared profile and [0,1] before rounding once to
+// binary64, round-to-nearest ties-to-even. No text or host floating arithmetic;
+// successful conversion uses only fixed stack scratch, with no heap allocation.
+Real64BinaryResult ExactDecimalUnitFractionToReal64(
+    const std::uint8_t* bytes, std::size_t size,
+    const ExactDecimalProfile& profile);
 // Validation and ordering allocate no memory and never render/parse text.
 ExactDecimalError ValidateExactDecimal(
     const std::uint8_t* bytes, std::size_t size,

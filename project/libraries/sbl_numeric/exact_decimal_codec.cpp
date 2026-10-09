@@ -82,6 +82,85 @@ ExactDecimalError ValidateExactDecimal(const std::uint8_t* bytes, std::size_t si
   Parts p;
   return Read(bytes, size, profile, &p);
 }
+Real64BinaryResult ExactDecimalUnitFractionToReal64(
+    const std::uint8_t* bytes, std::size_t size,
+    const ExactDecimalProfile& profile) {
+  Real64BinaryResult result;
+  result.numeric.value.type = NumericType::real64;
+  Parts p;
+  if (Read(bytes, size, profile, &p) != ExactDecimalError::none) {
+    result.numeric.status = NumericStatusCode::invalid_left;
+    result.numeric.invalid = true;
+    result.numeric.diagnostic_code = "NUMERIC.ENCODING.NONCANONICAL";
+    return result;
+  }
+  // 10^76 is less than 2^253. Nine 32-bit words hold both operands
+  // and a doubled remainder without heap allocation or host float state.
+  using Words = std::array<std::uint32_t, 9>;
+  const auto mul_add = [](Words& n, std::uint32_t m, std::uint32_t a) {
+    std::uint64_t carry = a;
+    for (auto& word : n) {
+      const std::uint64_t next = std::uint64_t(word) * m + carry;
+      word = static_cast<std::uint32_t>(next);
+      carry = next >> 32;
+    }
+  };
+  const auto compare = [](const Words& a, const Words& b) {
+    for (std::size_t i = a.size(); i > 0; --i)
+      if (a[i-1] != b[i-1]) return a[i-1] < b[i-1] ? -1 : 1;
+    return 0;
+  };
+  const auto subtract = [](Words& a, const Words& b) {
+    std::uint64_t borrow = 0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+      const std::uint64_t subtrahend = std::uint64_t(b[i]) + borrow;
+      borrow = std::uint64_t(a[i]) < subtrahend;
+      a[i] = static_cast<std::uint32_t>(std::uint64_t(a[i]) - subtrahend);
+    }
+  };
+  Words remainder{}, denominator{};
+  for (unsigned i = 0; i < p.count; ++i) mul_add(remainder, 10, p.digits[i]);
+  denominator[0] = 1;
+  for (unsigned i = 0; i < p.scale; ++i) mul_add(denominator, 10, 0);
+  if (p.negative || compare(remainder, denominator) > 0) {
+    result.numeric.status = NumericStatusCode::invalid_left;
+    result.numeric.invalid = true;
+    result.numeric.diagnostic_code = "NUMERIC.REAL64.INVALID";
+    return result;
+  }
+  Real64Bytes encoded{};
+  if (p.zero) { result.bytes = encoded; return result; }
+  int exponent = 0;
+  while (compare(remainder, denominator) < 0) {
+    mul_add(remainder, 2, 0);
+    --exponent;
+  }
+  std::uint64_t significand = 0;
+  for (unsigned bit = 0; bit < 53; ++bit) {
+    significand <<= 1;
+    if (compare(remainder, denominator) >= 0) {
+      subtract(remainder, denominator);
+      significand |= 1;
+    }
+    if (bit != 52) mul_add(remainder, 2, 0);
+  }
+  result.numeric.inexact = std::any_of(remainder.begin(), remainder.end(),
+                                     [](auto word) { return word != 0; });
+  mul_add(remainder, 2, 0);
+  const int halfway = compare(remainder, denominator);
+  if (halfway > 0 || (halfway == 0 && (significand & 1))) {
+    if (++significand == (std::uint64_t{1} << 53)) {
+      significand >>= 1;
+      ++exponent;
+    }
+  }
+  // The smallest nonzero profile value is 10^-76: no subnormal is possible.
+  const auto bits = (std::uint64_t(exponent + 1023) << 52) |
+                    (significand & ((std::uint64_t{1} << 52) - 1));
+  for (unsigned i = 0; i < 8; ++i) encoded[i] = static_cast<std::uint8_t>(bits >> (8*i));
+  result.bytes = encoded;
+  return result;
+}
 ExactDecimalOrderKeyResult MakeExactDecimalOrderKey(
     const std::uint8_t* bytes, std::size_t size,
     const ExactDecimalProfile& profile) noexcept {

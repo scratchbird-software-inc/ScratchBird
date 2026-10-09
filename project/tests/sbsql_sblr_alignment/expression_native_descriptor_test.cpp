@@ -6,7 +6,7 @@
 #include "canonical_aggregate_registry.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "query/historical_timestamp_scalar.hpp"
-#include "mga_relation_store/stored_timestamp_descriptor.hpp"
+#include "mga_relation_store/stored_scalar_descriptor.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <source_location>
@@ -65,6 +65,10 @@ int main() {
     Check(a::EncodeCatalogColumnMetadata(metadata, &stored.encoded_descriptor));
     a::EngineDescriptor projected;
     Check(a::ProjectStoredHistoricalTimestampDescriptorV1(storage_context, stored, true, &projected, &detail) == historical);
+    Check(a::StoredScalarProjectionRequiredV1(stored));
+    a::EngineDescriptor dispatched;
+    Check(a::ProjectStoredScalarDescriptorV1(storage_context, stored, true, &dispatched, &detail) == historical);
+    if (historical) Check(dispatched == projected);
     if (!historical) {
       std::array<std::uint8_t, 16> epoch{};
       std::int64_t unchanged = 42;
@@ -429,7 +433,11 @@ int main() {
                                  exec::CanonicalAggregateFunction::variance_pop,
                                  exec::CanonicalAggregateFunction::stddev_samp,
                                  exec::CanonicalAggregateFunction::variance_samp,
-                                 exec::CanonicalAggregateFunction::approx_median};
+                                 exec::CanonicalAggregateFunction::approx_median,
+                                 exec::CanonicalAggregateFunction::percentile_cont,
+                                 exec::CanonicalAggregateFunction::percentile_disc,
+                                 exec::CanonicalAggregateFunction::approx_percentile_cont,
+                                 exec::CanonicalAggregateFunction::approx_percentile_disc};
       for (const auto function : functions) {
         auto aggregate_dag = dag;
         const auto* registration = exec::LookupCanonicalAggregateByFunctionV1(function);
@@ -458,6 +466,47 @@ int main() {
         aggregate_expression.result_descriptor_id = 2;
         aggregate_expression.function_uuid = registration->function_uuid;
         aggregate_expression.child_expression_ids = {1};
+        const bool percentile = function == exec::CanonicalAggregateFunction::percentile_cont ||
+            function == exec::CanonicalAggregateFunction::percentile_disc ||
+            function == exec::CanonicalAggregateFunction::approx_percentile_cont ||
+            function == exec::CanonicalAggregateFunction::approx_percentile_disc;
+        if (percentile) {
+          const auto decimal_identity = std::ranges::find_if(rows, [](const auto& item) {
+            return item.canonical_binary_type_code == static_cast<std::uint32_t>(d::CanonicalTypeId::decimal);
+          });
+          Check(decimal_identity != rows.end());
+          auto fraction_descriptor = descriptor;
+          fraction_descriptor.descriptor_id = 3;
+          fraction_descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(1086, 402);
+          fraction_descriptor.descriptor_generation = decimal_identity->descriptor_generation;
+          fraction_descriptor.type_uuid = decimal_identity->type_uuid;
+          fraction_descriptor.type_generation = decimal_identity->type_generation;
+          fraction_descriptor.codec_id = decimal_identity->codec_id;
+          fraction_descriptor.codec_version = decimal_identity->codec_version;
+          fraction_descriptor.codec_generation = decimal_identity->codec_generation;
+          fraction_descriptor.datatype_catalog_snapshot_uuid = decimal_identity->catalog_snapshot_uuid;
+          fraction_descriptor.datatype_catalog_generation = decimal_identity->catalog_generation;
+          fraction_descriptor.datatype_registry_generation = decimal_identity->registry_generation;
+          const auto encoded = s::EncodeSblrLiteralExactDecimalV1("0.25");
+          Check(encoded.ok);
+          fraction_descriptor.precision = encoded.precision;
+          fraction_descriptor.scale = encoded.scale;
+          aggregate_dag.descriptors.push_back(fraction_descriptor);
+          a::RelationalExpressionRecord fraction;
+          fraction.expression_id = 3;
+          fraction.result_descriptor_id = 3;
+          fraction.expression_kind = a::RelationalExpressionKind::kLiteral;
+          fraction.literal_kind = a::RelationalLiteralKind::kNumeric;
+          a::RelationalExpressionRecord::LiteralTypedValueV1 carrier;
+          carrier.descriptor_uuid = fraction_descriptor.descriptor_uuid;
+          carrier.descriptor_generation = fraction_descriptor.descriptor_generation;
+          carrier.value_state = "value";
+          carrier.canonical_value_bytes.assign(encoded.canonical_bytes.begin(), encoded.canonical_bytes.end());
+          carrier.canonical_value_sha256 = scratchbird::core::hash::ComputeSha256Digest(carrier.canonical_value_bytes).digest;
+          fraction.literal_typed_value_v1 = carrier;
+          aggregate_dag.expressions.push_back(fraction);
+          aggregate_expression.child_expression_ids = {3, 1};
+        }
         aggregate_dag.expressions.push_back(aggregate_expression);
         aggregate_dag.outputs = {{1, 2, 2, "aggregate_value", 2, true, 0}};
         auto aggregate_root = root;
@@ -470,8 +519,16 @@ int main() {
         a::EngineDescriptor expected;
         Check(s::BuildExactCanonicalScalarRuntimeDescriptorV1(result_type, result_id, &expected));
         Check(prepared.result_column.descriptor == expected && prepared.result_column.nullable);
+        if (percentile) {
+          Check(prepared.direct_arguments.size() == 1 &&
+                prepared.direct_arguments.front().descriptor.canonical_type_name == "decimal" &&
+                prepared.direct_arguments.front().descriptor.descriptor_uuid ==
+                    scratchbird::tests::FixtureUuid(1086, 402) &&
+                prepared.direct_arguments.front().encoded_value.empty() &&
+                prepared.direct_arguments.front().binary_value.size() == 24);
+        }
         auto stale_dag = aggregate_dag;
-        ++stale_dag.descriptors.back().codec_generation;
+        ++stale_dag.descriptors[1].codec_generation;
         const auto refused = s::PrepareGlobalAggregateRootForComposition(
             stale_dag, aggregate_root, source, input, function, false, false, false);
         Check(!refused.ok && refused.result_bindings.empty());

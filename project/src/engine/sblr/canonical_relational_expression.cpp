@@ -3068,6 +3068,7 @@ bool CanonicalRelationalExpressionRuntime::BuildDescriptor(
       native_type == dt::CanonicalTypeId::int32 ||
       native_type == dt::CanonicalTypeId::int64 ||
       native_type == dt::CanonicalTypeId::uint64 ||
+      native_type == dt::CanonicalTypeId::decimal ||
       native_type == dt::CanonicalTypeId::real64) {
     const auto type = native_type;
     if (BuildExactCanonicalScalarRuntimeDescriptorV1(source, type, descriptor)) return true;
@@ -3469,14 +3470,14 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
            !source_descriptor->second->scale.has_value()||
            *source_descriptor->second->precision!=decimal_value.precision||
            *source_descriptor->second->scale!=decimal_value.scale||
-           !CanonicalizeLiteralPayload(
-               inferred_type,result_descriptor,decimal_value.canonical_lexical,
-               &literal.encoded_value,refusal_detail)){
+           native_literal_type != dt::CanonicalTypeId::decimal ||
+           typed.descriptor_generation != source_descriptor->second->descriptor_generation){
           if(refusal_detail->empty())
             *refusal_detail=
                 "exact decimal typed value differs from its bound descriptor";
           return false;
         }
+        literal.binary_value = typed.canonical_value_bytes;
       }else{
         *refusal_detail="typed_value_v1 canonical literal codec is unsupported";
         return false;

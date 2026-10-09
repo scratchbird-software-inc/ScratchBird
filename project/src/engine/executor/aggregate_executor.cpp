@@ -15,11 +15,13 @@
 #include "../internal_api/catalog/column_metadata_codec.hpp"
 #include "datatype_document.hpp"
 #include "datatype_operations.hpp"
+#include "sbl_numeric.hpp"
 #include "temp_spill_executor.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <charconv>
 #include <cctype>
 #include <cmath>
@@ -200,6 +202,40 @@ bool DecodeAggregateNumeric(const EngineTypedValue& value,
   *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-TYPE-V1",
                         "statistical aggregate requires numeric input");
   return false;
+}
+
+bool DecodeAggregateFraction(const EngineTypedValue& value,
+                             long double* decoded,
+                             DescriptorRuntimeDiagnostic* diagnostic) {
+  if (!decoded || !diagnostic) return false;
+  if (value.descriptor.canonical_type_name != "decimal")
+    return DecodeAggregateNumeric(value, decoded, diagnostic);
+  scratchbird::engine::ExecutionTypeDescriptor bound;
+  std::string detail;
+  if (!BuildBoundExecutionTypeDescriptor(value.descriptor,
+          core::datatypes::CanonicalTypeId::decimal, &bound, &detail)) {
+    *diagnostic = Refusal("DATATYPE.DESCRIPTOR.INVALID", detail);
+    return false;
+  }
+  if (value.state != EngineValueState::value || value.is_null ||
+      !value.encoded_value.empty() || value.binary_value.size() != 24) {
+    *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-DIRECT-V1",
+                         "percentile fraction requires one native non-NULL decimal carrier");
+    return false;
+  }
+  namespace numeric = scratchbird::libraries::sbl_numeric;
+  const auto fraction = numeric::ExactDecimalUnitFractionToReal64(
+      value.binary_value.data(), value.binary_value.size(),
+      {numeric::ExactDecimalCodec::le24_v1, bound.precision, bound.scale});
+  if (!fraction.bytes) {
+    *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-DIRECT-V1",
+                         "percentile fraction must be canonical and between zero and one");
+    return false;
+  }
+  std::uint64_t bits = 0;
+  for (unsigned i = 0; i < 8; ++i) bits |= std::uint64_t((*fraction.bytes)[i]) << (8 * i);
+  *decoded = static_cast<long double>(std::bit_cast<double>(bits));
+  return true;
 }
 
 bool IsType(const EngineTypedValue& value, const std::string_view type_name) {
@@ -2763,7 +2799,7 @@ EngineTypedValue FinalizeCanonicalAggregateCoreUnchecked(
     }
     long double fraction = 0.5L;
     if (function != CanonicalAggregateFunction::approx_median &&
-        !DecodeAggregateNumeric(request.direct_arguments.front(), &fraction,
+        !DecodeAggregateFraction(request.direct_arguments.front(), &fraction,
                                 diagnostic)) {
       return {};
     }
@@ -5196,7 +5232,10 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
     } else {
       long double decoded = 0.0L;
       DescriptorRuntimeDiagnostic direct_diagnostic;
-      if (!DecodeAggregateNumeric(direct, &decoded, &direct_diagnostic)) {
+      const bool direct_valid = IsCanonicalQuantileFunction(request.descriptor.function)
+          ? DecodeAggregateFraction(direct, &decoded, &direct_diagnostic)
+          : DecodeAggregateNumeric(direct, &decoded, &direct_diagnostic);
+      if (!direct_valid) {
         return refuse(std::move(direct_diagnostic));
       }
       if (IsCanonicalQuantileFunction(request.descriptor.function) &&

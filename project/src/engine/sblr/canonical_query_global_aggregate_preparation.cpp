@@ -1010,8 +1010,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         api::EngineTypedValue direct_argument;
         std::string direct_detail;
         const std::string_view direct_type =
-            (is_exact_percentile || is_approx_percentile)
-                ? std::string_view("real64")
+            (is_exact_percentile || is_approx_percentile) && !direct_is_int64
+                ? std::string_view("decimal")
                 : std::string_view("int64");
         if (!expression_runtime.EvaluateForConsumer(
                 child_expression_id, direct_type,
@@ -1022,7 +1022,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
             direct_argument.descriptor.canonical_type_name != direct_type) {
           if (is_exact_percentile || is_approx_percentile) {
             result.detail =
-                "global percentile fraction must be a canonical real64 "
+                "global percentile fraction must retain its canonical numeric "
                 "literal";
           } else if (is_approx_top_k) {
             result.detail =

@@ -32,14 +32,18 @@ bool BuildExactCanonicalScalarRuntimeDescriptorV1(
       expected_type != dt::CanonicalTypeId::int32 &&
       expected_type != dt::CanonicalTypeId::int64 &&
       expected_type != dt::CanonicalTypeId::uint64 &&
+      expected_type != dt::CanonicalTypeId::decimal &&
       expected_type != dt::CanonicalTypeId::real64) return false;
+  const bool decimal = expected_type == dt::CanonicalTypeId::decimal;
   if (!source.datatype_identity_authoritative ||
       !core::uuid::IsEngineIdentityUuid(source.descriptor_uuid) ||
       !core::uuid::IsEngineIdentityUuid(source.statement_receipt_uuid) ||
       (source.nullability != api::RelationalNullability::kNonNull &&
        source.nullability != api::RelationalNullability::kNullable) ||
       source.collation_uuid || source.timezone_profile_id || source.width ||
-      source.precision || source.scale) return false;
+      (decimal ? (!source.precision || !source.scale || *source.precision == 0 ||
+                  *source.precision > 38 || *source.scale > *source.precision)
+               : (source.precision.has_value() || source.scale.has_value()))) return false;
   // descriptor_uuid identifies this admitted statement occurrence (for a
   // literal, its SBLP profile), not the catalog datatype definition. Resolve
   // the latter only within the supplied exact cohort and type identity, as
@@ -71,6 +75,8 @@ bool BuildExactCanonicalScalarRuntimeDescriptorV1(
   descriptor.canonical_type_name = dt::CanonicalTypeName(expected_type);
   descriptor.encoded_descriptor = source.nullability == api::RelationalNullability::kNullable
       ? "nullability=nullable" : "nullability=non_null";
+  if (decimal) descriptor.encoded_descriptor += ";precision=" + std::to_string(*source.precision) +
+                                               ";scale=" + std::to_string(*source.scale);
   *output = std::move(descriptor);
   return true;
 }

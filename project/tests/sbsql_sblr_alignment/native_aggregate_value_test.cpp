@@ -4,6 +4,7 @@
 #include "../sbsql_parser_worker/qow_qry_011_registry.cpp"
 #include "../support/exact_datatype_descriptor_fixture.hpp"
 #include "aggregate_executor_internal.hpp"
+#include "sbl_numeric.hpp"
 #include <bit>
 #include <cstdlib>
 #include <new>
@@ -178,6 +179,107 @@ int main() {
   auto quantile = OrderedNumericRequest(Fn::percentile_cont, "real64");
   quantile.direct_arguments = {Value(quantile.input_batch.columns[1].descriptor, "0.25")};
   CheckRealResult(quantile, 17.5);
+  namespace numeric = scratchbird::libraries::sbl_numeric;
+  for (const auto* text : {"0", "0.5", "1", "0.1", "0.99999999999999999999999999999999999999",
+                           "0.00000000000000000000000000000000000001"}) {
+    const auto decimal = numeric::EncodeExactDecimalLittleEndian(text);
+    Check(decimal.ok, "fraction backend fixture invalid");
+    const auto converted = numeric::ExactDecimalUnitFractionToReal64(
+        decimal.canonical_bytes.data(), decimal.canonical_bytes.size(),
+        {numeric::ExactDecimalCodec::le24_v1, decimal.precision, decimal.scale});
+    const auto expected = numeric::EncodeReal64LittleEndian(text);
+    Check(converted.bytes && converted.bytes == expected.bytes &&
+        converted.numeric.inexact == expected.numeric.inexact,
+        "native decimal fraction differs from independent lexical conversion");
+  }
+  const numeric::ExactDecimalProfile wide_profile{numeric::ExactDecimalCodec::le40_v1, 76, 76};
+  const std::string tiny_fraction = "0." + std::string(75, '0') + "1";
+  const auto wide_fraction = numeric::EncodeBoundExactDecimal(tiny_fraction, wide_profile);
+  Check(wide_fraction.ok(), "wide fraction fixture invalid");
+  const auto wide_converted = numeric::ExactDecimalUnitFractionToReal64(
+      wide_fraction.bytes.data(), wide_fraction.bytes.size(), wide_profile);
+  Check(wide_converted.bytes && wide_converted.bytes == numeric::EncodeReal64LittleEndian(tiny_fraction).bytes,
+        "wide fraction coefficient was narrowed before rounding");
+  std::uint64_t fraction_seed = 0x317897bd15d321ULL;
+  for (unsigned scale = 1; scale <= 76; ++scale) {
+    const numeric::ExactDecimalProfile profile{
+        scale <= 38 ? numeric::ExactDecimalCodec::le24_v1 : numeric::ExactDecimalCodec::le40_v1,
+        scale <= 38 ? 38U : 76U, scale};
+    for (unsigned sample = 0; sample < 16; ++sample) {
+      std::string text = "0.";
+      for (unsigned digit = 0; digit < scale; ++digit) {
+        fraction_seed ^= fraction_seed << 13;
+        fraction_seed ^= fraction_seed >> 7;
+        fraction_seed ^= fraction_seed << 17;
+        text.push_back('0' + fraction_seed % 10);
+      }
+      const auto encoded = numeric::EncodeBoundExactDecimal(text, profile);
+      Check(encoded.ok(), "fraction scale sweep fixture invalid");
+      fail_after = 0;
+      const auto converted = numeric::ExactDecimalUnitFractionToReal64(
+          encoded.bytes.data(), encoded.bytes.size(), profile);
+      const bool allocation_free = fail_after == 0;
+      fail_after = -1;
+      const auto reference = numeric::EncodeReal64LittleEndian(text);
+      Check(allocation_free && converted.bytes && converted.bytes == reference.bytes &&
+            converted.numeric.inexact == reference.numeric.inexact,
+            "bounded fraction conversion disagrees with MPFR or allocates");
+    }
+  }
+  for (const auto* text : {
+      "0.500000000000000055511151231257827021181583404541015625",
+      "0.500000000000000166533453693773481063544750213623046875",
+      "0.999999999999999944488848768742172978818416595458984375"}) {
+    const numeric::ExactDecimalProfile profile{numeric::ExactDecimalCodec::le40_v1, 76, 76};
+    const auto encoded = numeric::EncodeBoundExactDecimal(text, profile);
+    Check(encoded.ok(), "halfway fraction fixture invalid");
+    const auto converted = numeric::ExactDecimalUnitFractionToReal64(
+        encoded.bytes.data(), encoded.bytes.size(), profile);
+    Check(converted.bytes && converted.bytes == numeric::EncodeReal64LittleEndian(text).bytes,
+          "halfway fraction lost ties-to-even rounding");
+  }
+  const auto decimal_fraction = [&](std::string_view text) {
+    const auto encoded = numeric::EncodeExactDecimalLittleEndian(text);
+    Check(encoded.ok, "decimal quantile fixture encoding failed");
+    api::EngineTypedValue value;
+    value.descriptor = scratchbird::tests::ExactScalarDescriptorFixture(
+        dt::CanonicalTypeId::decimal, "decimal",
+        scratchbird::tests::FixtureUuid(1086, 800),
+        "nullability=non_null;precision=" + std::to_string(encoded.precision) +
+        ";scale=" + std::to_string(encoded.scale));
+    value.binary_value.assign(encoded.canonical_bytes.begin(), encoded.canonical_bytes.end());
+    return value;
+  };
+  for (const auto& [text, expected] : std::array<std::pair<std::string_view, double>, 4>{{
+           {"0", 10.0}, {"0.25", 17.5}, {"0.5", 25.0}, {"1", 40.0}}}) {
+    auto decimal_quantile = quantile;
+    decimal_quantile.direct_arguments = {decimal_fraction(text)};
+    CheckRealResult(decimal_quantile, expected);
+  }
+  for (const auto* text : {"-0.1", "1.0000000000000000000000000000000000001"}) {
+    auto invalid = quantile;
+    invalid.direct_arguments = {decimal_fraction(text)};
+    const auto refused = exec::ExecuteCanonicalAggregateRuntime(invalid);
+    Check(!refused.diagnostic.ok && refused.output_batch.rows.empty(),
+          "out-of-range exact fraction admitted after rounding");
+  }
+  for (unsigned mutation = 0; mutation < 7; ++mutation) {
+    auto invalid = quantile;
+    invalid.direct_arguments = {decimal_fraction("0.25")};
+    auto& value = invalid.direct_arguments.front();
+    switch (mutation) {
+      case 0: value.encoded_value = "0.25"; break;
+      case 1: value.binary_value.pop_back(); break;
+      case 2: value.binary_value[3] = 1; break;
+      case 3: ++value.descriptor.datatype_descriptor_generation; break;
+      case 4: value.descriptor.type_uuid = {}; break;
+      case 5: value.descriptor.encoded_descriptor = "nullability=non_null;precision=1;scale=0"; break;
+      case 6: value.setState(api::EngineValueState::sql_null); break;
+    }
+    const auto refused = exec::ExecuteCanonicalAggregateRuntime(invalid);
+    Check(!refused.diagnostic.ok && refused.output_batch.rows.empty(),
+          "malformed native decimal fraction published output");
+  }
   const auto admitted = NativeRequest(Fn::sum).result_column;
   // Warm process-wide immutable registries before sweeping this admission's
   // own allocations; startup initialization has its own fault coverage.
