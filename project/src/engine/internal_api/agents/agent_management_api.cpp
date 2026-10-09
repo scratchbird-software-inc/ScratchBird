@@ -1426,6 +1426,10 @@ void AddAgentProjectionRows(EngineApiResult* result,
   for (const auto& identity : identity_sources) {
     if (!valid_identity(identity.agent_uuid) || !valid_identity(identity.scope_uuid) ||
         !valid_identity(identity.policy_uuid)) {
+      result->ok = false;
+      result->diagnostics.push_back(MakeEngineApiDiagnostic(
+          "AGENT.CATALOG.BINARY_IDENTITY_INVALID", "agent.catalog.binary_identity_invalid",
+          "catalog identity source requires native binary16", true));
       AddApiBehaviorRow(result, {{"result_state", "refused"},
           {"diagnostic_code", "AGENT.CATALOG.BINARY_IDENTITY_INVALID"}});
       return;
@@ -1456,6 +1460,9 @@ void AddAgentProjectionRows(EngineApiResult* result,
                                                         {},
                                                         sources);
   if (!projection.ok) {
+    result->ok = false;
+    result->diagnostics.push_back(MakeEngineApiDiagnostic(projection.diagnostic_code,
+        "agent.catalog.projection_failed", projection.diagnostic_detail, true));
     AddApiBehaviorRow(result,
                       {{"result_state", "refused"},
                        {"diagnostic_code", projection.diagnostic_code},

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/component_authorization_fixture.hpp"
 #include "agents/agent_management_api.hpp"
 #include "catalog/sys_information_projection.hpp"
 #include "uuid.hpp"
@@ -52,13 +53,16 @@ api::EngineRequestContext AgentContext() {
       "security.fixture_trace_authority",
       "agent_show_sys_surface_parity_gate",
   };
+  scratchbird::tests::MaterializeComponentAuthorization(context,
+      {"OBS_AGENT_STATE_READ", "OBS_AGENT_RECOMMENDATION_READ", "OBS_AGENT_EVIDENCE_READ",
+       "OBS_METRICS_READ_FAMILY", "OBS_POLICY_READ"});
   return context;
 }
 
 std::string MakeUuid(platform::UuidKind kind, platform::u64 seed) {
   const auto generated = uuid::GenerateEngineIdentityV7(kind, 1915015000000ull + seed);
   Require(generated.ok(), "PFAR-015C fixture UUID generation failed");
-  return uuid::UuidToString(generated.value.value);
+  return {reinterpret_cast<const char*>(generated.value.value.bytes.data()), 16};
 }
 
 const std::vector<api::EngineAgentCatalogIdentitySource>& FixtureCatalogIdentities() {
@@ -96,7 +100,19 @@ api::EngineAgentCommandSurfaceRequest CommandRequest(std::string operation_id) {
 
 std::string FieldValue(const api::EngineRowValue& row, std::string_view field_name) {
   for (const auto& field : row.fields) {
-    if (field.first == field_name) { return field.second.encoded_value; }
+    if (field.first == field_name) {
+      if (field.second.descriptor.canonical_type_name == "uuid") {
+        if (field.second.isSqlNull()) {
+          Require(field.second.encoded_value.empty() && field.second.binary_value.empty(),
+                  "NULL UUID result carried a payload");
+          return {};
+        }
+        Require(field.second.encoded_value.empty() && field.second.binary_value.size() == 16,
+                "agent UUID result must be native binary16");
+        return {reinterpret_cast<const char*>(field.second.binary_value.data()), 16};
+      }
+      return field.second.encoded_value;
+    }
   }
   return {};
 }
@@ -147,12 +163,18 @@ void RequireNoFakeCatalogIdentity(const api::EngineApiResult& result) {
       Require(value.find("/dev/") == std::string::npos,
               "PFAR-015C physical path leaked in row field");
       if (IsUuidField(field.first)) {
-        Require(value.rfind("agent.", 0) != 0,
-                "PFAR-015C fake agent stable ref leaked in UUID field");
-        Require(value.rfind("policy.", 0) != 0,
-                "PFAR-015C fake policy stable ref leaked in UUID field");
-        Require(value.rfind("scope.", 0) != 0,
-                "PFAR-015C fake scope stable ref leaked in UUID field");
+        if (field.second.isSqlNull()) {
+          Require(field.second.descriptor.canonical_type_name == "uuid" && value.empty() &&
+                      field.second.binary_value.empty(), "NULL UUID projection has a payload or wrong type");
+          continue;
+        }
+        Require(field.second.descriptor.canonical_type_name == "uuid" && value.empty() &&
+                    field.second.binary_value.size() == 16,
+                "PFAR-015C UUID field was rendered or replaced by an annotation");
+        platform::Uuid identity;
+        std::copy_n(field.second.binary_value.begin(), 16, identity.bytes.begin());
+        Require(identity.is_nil() || uuid::IsEngineIdentityUuid(identity),
+                "PFAR-015C invalid native system UUID");
       }
     }
   }
@@ -168,9 +190,7 @@ void RequireSysAgentsColumns(const api::EngineRowValue& row) {
       Require(column.logical_type == "uuid",
               "sys.agents UUID column lost resolver-sourced uuid metadata");
       const auto value = FieldValue(row, column.column_name);
-      Require(value.empty() || value.rfind("<redacted:", 0) == 0 ||
-                  value.find('-') != std::string::npos,
-              "Engine agent row UUID column is not resolver sourced");
+      Require(value.empty() || value.size() == 16, "Engine agent row UUID column is not NULL or binary16");
     }
   }
 }
@@ -342,10 +362,26 @@ void TestCommandSurfaceParityRows() {
   RequireNoFakeCatalogIdentity(redacted);
 }
 
+void TestNativeSourceAndAuthorizationRefusals() {
+  api::EngineSysAgentsRequest request;
+  request.context = AgentContext();
+  request.agent_catalog_identity_sources = FixtureCatalogIdentities();
+  request.context.authorization_context = {};
+  Require(!api::EngineSysAgents(request).ok, "trace tags manufactured agent read authority");
+  request.context = AgentContext();
+  request.agent_catalog_identity_sources.back().policy_uuid = "019f015c-0000-7000-8000-000000000001";
+  const auto invalid = api::EngineSysAgents(request);
+  Require(!invalid.ok && HasDiagnostic(invalid, "AGENT.CATALOG.BINARY_IDENTITY_INVALID"),
+          "text identity source produced successful agent projection");
+  Require(FindRow(invalid, "agent_type_id", "memory_governor") == nullptr,
+          "invalid identity batch published a valid leading agent");
+}
+
 }  // namespace
 
 int main() {
   TestSysListShowAgentsParity();
   TestCommandSurfaceParityRows();
+  TestNativeSourceAndAuthorizationRefusals();
   return EXIT_SUCCESS;
 }
