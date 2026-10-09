@@ -7,8 +7,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // ODF-110 SQL exact-parity benchmark closure gate.
+// This gate compares independently calculated rows against bound VALUES-based
+// canonical SBLR execution. Scenario names/SQL labels are inventory metadata,
+// not proof of SQL parsing, table/index access, or prepared-cache admission.
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "core/datatypes/datatype_catalog_manifest.hpp"
+#include "core/memory/memory.hpp"
+#include "sblr_literal_runtime.hpp"
+#include "hash_digest.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
@@ -23,6 +31,7 @@
 #include "uuid.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -30,9 +39,11 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -52,8 +63,7 @@ namespace uuid = scratchbird::core::uuid;
 #endif
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -143,9 +153,13 @@ api::EngineDescriptor Descriptor(std::string type_name) {
 api::EngineTypedValue IntValue(std::int64_t value) {
   api::EngineTypedValue typed;
   typed.descriptor = Descriptor("int64");
-  typed.encoded_value = std::to_string(value);
+  const auto bits = std::bit_cast<std::uint64_t>(value);
+  for (unsigned byte = 0; byte < 8; ++byte)
+    typed.binary_value.push_back(static_cast<std::uint8_t>(bits >> (8 * byte)));
   return typed;
 }
+
+std::int64_t IntegerValue(const api::EngineTypedValue& value);
 
 api::EngineRowValue Row(std::vector<std::pair<std::string, api::EngineTypedValue>> fields) {
   api::EngineRowValue row;
@@ -189,10 +203,14 @@ std::vector<api::EngineRowValue> OrderRows() {
   return rows;
 }
 
+std::optional<api::EngineRequestContext> g_durable_context;
+
 struct DurableQueryFixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
   platform::Uuid database_uuid;
+  std::unique_ptr<scratchbird::tests::FixtureEngineSession> session;
+  std::unique_ptr<scratchbird::tests::FixtureEngineStatement> statement;
 
   DurableQueryFixture() = default;
   DurableQueryFixture(const DurableQueryFixture&) = delete;
@@ -200,17 +218,19 @@ struct DurableQueryFixture {
   DurableQueryFixture(DurableQueryFixture&& other) noexcept
       : directory(std::move(other.directory)),
         database_path(std::move(other.database_path)),
-        database_uuid(std::move(other.database_uuid)) {
+        database_uuid(std::move(other.database_uuid)),
+        session(std::move(other.session)), statement(std::move(other.statement)) {
     other.directory.clear();
   }
 
   ~DurableQueryFixture() {
+    if (!directory.empty()) g_durable_context.reset();
+    statement.reset();
+    session.reset();
     std::error_code ignored;
     if (!directory.empty()) std::filesystem::remove_all(directory, ignored);
   }
 };
-
-std::optional<api::EngineRequestContext> g_durable_context;
 
 DurableQueryFixture PrepareDurableQueryContext() {
   DurableQueryFixture fixture;
@@ -233,26 +253,20 @@ DurableQueryFixture PrepareDurableQueryContext() {
   create.database_uuid = database_uuid.value;
   create.filespace_uuid = filespace_uuid.value;
   create.creation_unix_epoch_millis = 1779600000000ull;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
+  if (!created.ok())
+    std::cerr << created.diagnostic.diagnostic_code << ':'
+              << created.diagnostic.message_key << '\n';
   Require(created.ok(), "ODF-110 durable fixture database creation failed");
   fixture.database_uuid = Id(platform::UuidKind::database, 110);
 
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
-  context.security_context_present = true;
+  auto context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   context.request_id = "odf110-sql-exact-parity";
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
   context.node_uuid = Id(platform::UuidKind::object, 111);
-  context.principal_uuid = Id(platform::UuidKind::principal, 112);
-  context.session_uuid = Id(platform::UuidKind::session, 113);
-  context.catalog_generation_id = 2110;
-  context.security_epoch = 3110;
-  context.resource_epoch = 4110;
-  context.name_resolution_epoch = 5110;
   context.transaction_isolation_level = "snapshot";
 
   api::EngineBeginTransactionRequest begin;
@@ -265,46 +279,10 @@ DurableQueryFixture PrepareDurableQueryContext() {
   context.snapshot_visible_through_local_transaction_id =
       begun.snapshot_visible_through_local_transaction_id;
   context.transaction_isolation_level = begun.isolation_level;
-  context.statement_uuid = Id(platform::UuidKind::object, 115);
-
-  api::EnginePublishStatementSnapshotRequest publish;
-  publish.context = context;
-  const auto published = api::EnginePublishStatementSnapshot(publish);
-  RequireEngineOk(published, "ODF-110 statement snapshot publication failed");
-  context.statement_snapshot_uuid = published.statement_snapshot_uuid;
-  context.snapshot_visible_through_local_transaction_id =
-      published.snapshot_vector.visible_committed_high_watermark;
-  context.statement_metadata_snapshot_uuid =
-      Id(platform::UuidKind::object, 117);
-  context.catalog_epoch_uuid = Id(platform::UuidKind::object, 118);
-  context.statement_metadata_snapshot_engine_owned = true;
-  context.authorization_context.present = true;
-  context.authorization_context.authority_uuid =
-      Id(platform::UuidKind::object, 119);
-  context.authorization_context.principal_uuid = context.principal_uuid;
-  context.authorization_context.security_epoch = context.security_epoch;
-  context.authorization_context.policy_epoch = context.security_epoch;
-  context.authorization_context.catalog_generation_id =
-      context.catalog_generation_id;
-  api::EngineAuthorizationSubject subject;
-  subject.subject_uuid = context.principal_uuid;
-  subject.subject_kind = "principal";
-  context.authorization_context.effective_subjects.push_back(
-      std::move(subject));
-  context.optimizer_capability_snapshot_uuid =
-      Id(platform::UuidKind::object, 124);
-  context.optimizer_resource_snapshot_uuid =
-      Id(platform::UuidKind::object, 125);
-  context.optimizer_route_snapshot_uuid =
-      Id(platform::UuidKind::object, 126);
-  context.optimizer_route_epoch = 6110;
-  context.optimizer_route_generation = 7110;
-  context.optimizer_memory_budget_bytes = 8 * 1024 * 1024;
-  context.optimizer_maximum_candidate_count = 4096;
-  context.optimizer_maximum_memo_groups = 512;
-  context.optimizer_maximum_search_steps = 16384;
-  context.optimizer_maximum_planning_time_ns = 10'000'000;
-  context.current_monotonic_ns = "11000000";
+  fixture.session = std::make_unique<scratchbird::tests::FixtureEngineSession>(context);
+  fixture.statement = std::make_unique<scratchbird::tests::FixtureEngineStatement>(
+      *fixture.session, context);
+  context = fixture.statement->context;
   context.trace_tags = {"optimizer_deficiency_odf_110_gate",
                         "benchmark_clean",
                         "mga_transaction_regression"};
@@ -459,7 +437,7 @@ std::string CanonicalResultPayload(const api::EngineApiResult& result) {
     for (const auto& field : row.fields) {
       out << '|' << field.first
           << ':' << (field.second.is_null ? "null" : "value")
-          << ':' << field.second.encoded_value;
+          << ':' << IntegerValue(field.second);
     }
   }
   return out.str();
@@ -633,15 +611,39 @@ sblr::SblrOperand IdentityOperand(std::string name, const platform::Uuid& id) {
   return out;
 }
 
-sblr::SblrOperand DescriptorOperand(std::uint32_t id, const platform::Uuid& identity,
+sblr::SblrOperand DescriptorOperand(std::uint32_t id, const platform::Uuid& occurrence,
                                    const platform::Uuid& type) {
+  namespace dt = scratchbird::core::datatypes;
+  const auto context = Context();
+  const dt::DatatypeTypeCodecIdentityRowV1* identity = nullptr;
+  for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+    if (row.catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
+        row.catalog_generation != context.datatype_catalog_generation ||
+        row.registry_generation != context.datatype_registry_generation ||
+        row.descriptor_uuid != type) continue;
+    Require(identity == nullptr, "ODF-110 descriptor identity is ambiguous");
+    identity = &row;
+  }
+  Require(identity != nullptr && !context.statement_receipt_uuid.is_nil(),
+          "ODF-110 descriptor has no current engine-admitted datatype binding");
   api::RelationalTypeDescriptor value;
   value.descriptor_id = id;
-  value.descriptor_uuid = identity;
-  value.type_uuid = type;
+  value.descriptor_uuid = identity->descriptor_uuid == identity->type_uuid
+                              ? identity->descriptor_uuid : occurrence;
+  value.type_uuid = identity->type_uuid;
   value.nullability = api::RelationalNullability::kNonNull;
+  value.datatype_identity_authoritative = true;
+  value.descriptor_generation = identity->descriptor_generation;
+  value.type_generation = identity->type_generation;
+  value.codec_id = identity->codec_id;
+  value.codec_version = identity->codec_version;
+  value.codec_generation = identity->codec_generation;
+  value.statement_receipt_uuid = context.statement_receipt_uuid;
+  value.datatype_catalog_snapshot_uuid = context.datatype_catalog_snapshot_uuid;
+  value.datatype_catalog_generation = context.datatype_catalog_generation;
+  value.datatype_registry_generation = context.datatype_registry_generation;
   sblr::SblrOperand out;
-  out.type = "relational_descriptor_v1";
+  out.type = "relational_descriptor_v3";
   out.name = "slot_" + std::to_string(id);
   out.value_kind = sblr::SblrValueKind::relational_type_descriptor;
   Require(sblr::EncodeRelationalTypeDescriptorV1(value, &out.value_body), "ODF-110 descriptor encoding failed");
@@ -663,7 +665,7 @@ sblr::SblrOperand ExpressionOperand(std::uint32_t id, std::uint32_t descriptor,
   if (kind == api::RelationalExpressionKind::kLiteral)
     value.literal_kind = api::RelationalLiteralKind::kNumeric;
   sblr::SblrOperand out;
-  out.type = "relational_expression_v1";
+  out.type = "relational_expression_v2";
   out.name = "slot_" + std::to_string(id);
   out.value_kind = sblr::SblrValueKind::relational_expression;
   Require(sblr::EncodeRelationalExpressionV1(value, &out.value_body), "ODF-110 expression encoding failed");
@@ -681,7 +683,7 @@ sblr::SblrOperand BindingOperand(std::uint32_t node, std::string variant,
     value.delivered_property_uuids = {*property};
   }
   sblr::SblrOperand out;
-  out.type = "relational_node_binding_v1";
+  out.type = "relational_node_binding_v2";
   out.name = "slot_" + std::to_string(node);
   out.value_kind = sblr::SblrValueKind::relational_node_binding;
   Require(sblr::EncodeRelationalNodeBindingV1(value, &out.value_body), "ODF-110 binding encoding failed");
@@ -699,14 +701,81 @@ sblr::SblrOperand OrderingOperand(const platform::Uuid& id, std::uint32_t node,
                               : api::RelationalPropertySortDirection::kAscending;
   value.ordering_terms.push_back(term);
   sblr::SblrOperand out;
-  out.type = "relational_property_v1";
-  out.name = "property_" + std::to_string(node);
+  out.type = "relational_property_v3";
+  out.name = "property";
   out.value_kind = sblr::SblrValueKind::relational_property;
   Require(sblr::EncodeRelationalPropertyV1(value, &out.value_body), "ODF-110 property encoding failed");
   return out;
 }
 
 void FinalizeProductionOperands(sblr::SblrOperationEnvelope* envelope) {
+  // Convert fixture lexical INT64 inputs at this test's caller boundary.
+  // Engine execution receives only the existing SBXN little-endian literal
+  // nodes and exact references, never numeric text in an expression record.
+  std::map<std::uint32_t, api::RelationalTypeDescriptor> descriptors;
+  for (const auto& operand : envelope->operands) {
+    if (operand.value_kind != sblr::SblrValueKind::relational_type_descriptor) continue;
+    api::RelationalTypeDescriptor descriptor;
+    Require(sblr::DecodeRelationalTypeDescriptorV1(operand.value_body.data(),
+                operand.value_body.size(), &descriptor),
+            "ODF-110 literal descriptor decode failed");
+    Require(descriptors.emplace(descriptor.descriptor_id, descriptor).second,
+            "ODF-110 duplicate descriptor handle");
+  }
+  sblr::SblrExpressionNodeTableV1 literal_table;
+  std::vector<std::size_t> literal_operands;
+  for (std::size_t index = 0; index < envelope->operands.size(); ++index) {
+    const auto& operand = envelope->operands[index];
+    if (operand.value_kind != sblr::SblrValueKind::relational_expression) continue;
+    api::RelationalExpressionRecord expression;
+    Require(sblr::DecodeRelationalExpressionV1(operand.value_body.data(),
+                operand.value_body.size(), &expression),
+            "ODF-110 literal expression decode failed");
+    if (expression.expression_kind != api::RelationalExpressionKind::kLiteral) continue;
+    Require(expression.literal_kind == api::RelationalLiteralKind::kNumeric &&
+                expression.literal_or_parameter_ref.has_value(),
+            "ODF-110 fixture literal is not an INT64 input");
+    const auto& descriptor = descriptors.at(expression.result_descriptor_id);
+    Require(descriptor.codec_id == sblr::kSblrLiteralInt64LeCodecId,
+            "ODF-110 literal requires its INT64 codec");
+    std::size_t consumed = 0;
+    const auto value = std::stoll(*expression.literal_or_parameter_ref, &consumed);
+    Require(consumed == expression.literal_or_parameter_ref->size(),
+            "ODF-110 fixture INT64 input is malformed");
+    sblr::SblrExpressionLiteralNodeV1 node;
+    node.node_id = expression.expression_id;
+    node.parent_operand_ordinal = literal_table.nodes.size() + 1;
+    node.descriptor_uuid = descriptor.descriptor_uuid.bytes;
+    node.descriptor_generation = descriptor.descriptor_generation;
+    const auto bytes = sblr::EncodeSblrLiteralInt64LeV1(value);
+    node.literal_body.assign(bytes.begin(), bytes.end());
+    literal_table.nodes.push_back(std::move(node));
+    literal_operands.push_back(index);
+  }
+  Require(!literal_table.nodes.empty(), "ODF-110 literal table is empty");
+  const auto table_bytes = sblr::EncodeSblrExpressionNodeTableV1(literal_table);
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(table_bytes);
+  Require(!table_bytes.empty() && digest.ok(), "ODF-110 literal table encoding failed");
+  for (std::size_t i = 0; i < literal_operands.size(); ++i) {
+    auto& operand = envelope->operands[literal_operands[i]];
+    const auto& node = literal_table.nodes[i];
+    operand.type = "relational_expression_v1";
+    operand.name = std::to_string(node.node_id);
+    operand.value_kind = sblr::SblrValueKind::expression_node_ref;
+    operand.value_body = {1, 0, 0, 0};
+    for (unsigned byte = 0; byte < 4; ++byte)
+      operand.value_body.push_back(static_cast<std::uint8_t>(node.parent_operand_ordinal >> (8 * byte)));
+    AppendLittleEndianU64(&operand.value_body, node.node_id);
+    operand.value_body.insert(operand.value_body.end(), digest.digest.begin(), digest.digest.end());
+    operand.value_body.insert(operand.value_body.end(), node.descriptor_uuid.begin(), node.descriptor_uuid.end());
+    AppendLittleEndianU64(&operand.value_body, node.descriptor_generation);
+  }
+  sblr::SblrOperand table;
+  table.type = "expression.node_table.v1";
+  table.name = "expression_nodes";
+  table.value_kind = sblr::SblrValueKind::expression_node_table;
+  table.value_body = table_bytes;
+  envelope->operands.push_back(std::move(table));
   std::uint32_t ordinal = 1;
   for (auto& operand : envelope->operands) {
     if (!operand.value_body.empty()) { operand.ordinal = ordinal++; continue; }
@@ -728,8 +797,13 @@ void FinalizeProductionOperands(sblr::SblrOperationEnvelope* envelope) {
     const auto value = std::move(operand.value);
     operand.value.clear();
     operand.value_kind = sblr::SblrValueKind::literal_typed;
-    operand.value_body.assign(16, 0);
-    operand.value_body.front() = 0x73;
+    // SBOP literal framing carries a binary engine descriptor identity, not a
+    // nonzero marker. Keep this fixture's metadata descriptor UUIDv7-shaped;
+    // actual relational value descriptors are encoded separately above.
+    constexpr auto metadata_descriptor =
+        scratchbird::tests::FixtureUuidLiteral("019f0110-0000-7000-8000-000000000073");
+    operand.value_body.assign(metadata_descriptor.bytes.begin(),
+                              metadata_descriptor.bytes.end());
     AppendLittleEndianU64(&operand.value_body, value.size());
     operand.value_body.insert(operand.value_body.end(), value.begin(), value.end());
     operand.ordinal = ordinal++;
@@ -793,7 +867,7 @@ sblr::SblrOperationEnvelope EnvelopeFor(const BenchmarkRow& row) {
         const auto expression_id = next_expression++;
         row_expressions.push_back(expression_id);
         all_cell_expressions.push_back(expression_id);
-        records.push_back(ExpressionOperand(expression_id, source.descriptor_ids[column], api::RelationalExpressionKind::kLiteral, {}, {}, input_row.fields[column].second.encoded_value));
+        records.push_back(ExpressionOperand(expression_id, source.descriptor_ids[column], api::RelationalExpressionKind::kLiteral, {}, {}, std::to_string(IntegerValue(input_row.fields[column].second))));
       }
       if (first_row_expressions.empty()) first_row_expressions = row_expressions;
       const auto row_id = next_values_row++;
@@ -966,11 +1040,14 @@ struct RouteResult {
 };
 
 std::int64_t IntegerValue(const api::EngineTypedValue& value) {
-  std::size_t consumed = 0;
-  const auto parsed = std::stoll(value.encoded_value, &consumed);
-  Require(consumed == value.encoded_value.size(),
-          "ODF-110 independent oracle received a non-integer value");
-  return parsed;
+  Require(value.descriptor.canonical_type_name == "int64" &&
+              !value.is_null && value.state == api::EngineValueState::value &&
+              value.encoded_value.empty() && value.binary_value.size() == 8,
+          "ODF-110 independent oracle requires an exclusive native INT64 value");
+  std::uint64_t bits = 0;
+  for (unsigned byte = 0; byte < 8; ++byte)
+    bits |= static_cast<std::uint64_t>(value.binary_value[byte]) << (8 * byte);
+  return std::bit_cast<std::int64_t>(bits);
 }
 
 api::EngineApiResult IndependentResultFor(const BenchmarkRow& row) {
@@ -1059,7 +1136,9 @@ RouteResult RunRoutes(const BenchmarkRow& row) {
               row.id + ':' + FirstDiagnosticDetail(route.sblr_result.api_result));
   route.independent_hash = ResultHash(route.independent_result);
   route.sblr_hash = ResultHash(route.sblr_result.api_result);
-  Require(route.independent_hash == route.sblr_hash,
+  Require(CanonicalResultPayload(route.independent_result) ==
+              CanonicalResultPayload(route.sblr_result.api_result) &&
+              route.independent_hash == route.sblr_hash,
           "ODF-110 canonical query.execute result differs from the independent oracle: " +
               row.id);
   if (!row.benchmark_refusal_code.empty()) {
@@ -1344,9 +1423,35 @@ void RequireParameterShapePair(const BenchmarkRow& row,
   Require(wide_route.independent_hash != first_route.independent_hash &&
               wide_route.sblr_hash != first_route.sblr_hash,
           "ODF-110 parameter-sensitive prepared row did not produce a distinct shape result");
-  Require(wide_route.sblr_result.selected_plan_uuid ==
-              first_route.sblr_result.selected_plan_uuid,
-          "ODF-110 equivalent prepared descriptor shape selected a different physical plan");
+  // These envelopes bind different native literals and perform independent
+  // planning; a textual optimizer_plan_cache option is not a prepared-cache
+  // admission receipt. Plan UUIDs identify attempts, not structural hashes.
+  const auto check_plan = [](const RouteResult& route) {
+    const auto& dispatched = route.sblr_result;
+    Require(uuid::IsEngineIdentityUuid(dispatched.selected_plan_uuid) &&
+                dispatched.logical_node_count == 2 && dispatched.physical_node_count == 2,
+            "ODF-110 paired VALUES/FILTER route lost its native plan or node shape");
+    unsigned references = 0;
+    for (const auto& evidence : dispatched.api_result.evidence) {
+      if (evidence.evidence_kind != "canonical.selected_plan") continue;
+      const auto* identity = std::get_if<platform::Uuid>(&evidence.evidence_id);
+      Require(identity && *identity == dispatched.selected_plan_uuid,
+              "ODF-110 result does not reference its exact native selected plan");
+      ++references;
+    }
+    Require(references == 1, "ODF-110 result selected-plan binding is absent or ambiguous");
+  };
+  check_plan(first_route);
+  check_plan(wide_route);
+  Require(wide_route.sblr_result.selected_plan_uuid != first_route.sblr_result.selected_plan_uuid,
+          "ODF-110 independent planning attempts reused a selected-plan identity");
+  const auto repeated = RunRoutes(row);
+  check_plan(repeated);
+  Require(repeated.sblr_hash == first_route.sblr_hash &&
+              repeated.independent_hash == first_route.independent_hash &&
+              repeated.sblr_result.selected_plan_uuid != first_route.sblr_result.selected_plan_uuid &&
+              repeated.sblr_result.selected_plan_uuid != wide_route.sblr_result.selected_plan_uuid,
+          "ODF-110 repeat execution reused stale literal results or plan identity");
 }
 
 void RequireDifferentialPair(const BenchmarkRow& row, const std::string& first_hash) {
@@ -1515,7 +1620,10 @@ void RequireJsonHygiene() {
 
 }  // namespace
 
-int main() {
+int RunGate() {
+  const auto memory = scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+      scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(), "odf110-native-query");
+  Require(memory.ok() && memory.fixture_mode, "ODF-110 fixture memory policy failed");
   auto durable_fixture = PrepareDurableQueryContext();
   const auto rows = BuildRows();
   Require(rows.size() == 18, "ODF-110 benchmark matrix row count drifted");
@@ -1546,4 +1654,14 @@ int main() {
   RollbackDurableQueryContext();
   std::cout << "optimizer_deficiency_odf_110_gate=passed\n";
   return EXIT_SUCCESS;
+}
+
+int main() {
+  try {
+    return RunGate();
+  } catch (const std::exception& error) {
+    g_durable_context.reset();
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }

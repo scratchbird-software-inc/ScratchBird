@@ -105,16 +105,64 @@ bool PreserveCanonicalQueryResultMetadataV1(
     const auto* root = root_it->second;
     const auto* schema_owner = root;
     std::vector<const api::RelationalOutputRecord*> outputs;
+    bool joined_schema = false;
     std::size_t forwarded = 0;
     for (;;) {
       for (const auto& output : dag.outputs)
         if (output.relation_node_id == schema_owner->node_id) outputs.push_back(&output);
       if (!outputs.empty()) break;
-      // A nonrecursive CTE or LIMIT carries the producer's schema, not another
+      if (schema_owner->node_kind == api::RelationalDagNodeKind::kJoin) {
+        // The admitted two-VALUES join profiles intentionally carry no output
+        // records on the JOIN. Their publication bindings preserve left then
+        // right input order (left only for semi/anti). Project that same exact
+        // source metadata here, without changing the DAG or issuing identities.
+        const auto& variant = schema_owner->semantic_variant_id;
+        const bool left_only = variant == "join.left-semi.v1" ||
+                               variant == "join.left-anti.v1";
+        if ((!left_only && variant != "join.inner.v1" && variant != "join.cross.v1" &&
+             variant != "join.left-outer.v1" && variant != "join.right-outer.v1" &&
+             variant != "join.full-outer.v1") ||
+            schema_owner->input_node_ids.size() != 2 ||
+            schema_owner->input_node_ids[0] == schema_owner->input_node_ids[1])
+          return refuse("join result has no admitted source-schema projection");
+        for (std::size_t side = 0; side < 2; ++side) {
+          const auto input = nodes.find(schema_owner->input_node_ids[side]);
+          if (input == nodes.end() || input->second->node_kind != api::RelationalDagNodeKind::kValues ||
+              !input->second->input_node_ids.empty())
+            return refuse("join result source is not its exact VALUES producer");
+          std::vector<const api::RelationalOutputRecord*> source_outputs;
+          for (const auto& output : dag.outputs)
+            if (output.relation_node_id == input->first) source_outputs.push_back(&output);
+          std::ranges::sort(source_outputs, {}, &api::RelationalOutputRecord::ordinal);
+          if (source_outputs.size() != input->second->output_descriptor_ids.size())
+            return refuse("join source output coverage is incomplete");
+          for (std::size_t ordinal = 0; ordinal < source_outputs.size(); ++ordinal) {
+            if (cancelled())
+              return refuse("query result metadata publication cancelled", "PROCESS.CANCELLED");
+            const auto& output = *source_outputs[ordinal];
+            if (output.ordinal != ordinal ||
+                output.descriptor_id != input->second->output_descriptor_ids[ordinal])
+              return refuse("join source output order or descriptor binding is contradictory");
+            if (left_only && side == 1) continue;
+            outputs.push_back(&output);
+          }
+        }
+        if (outputs.size() != schema_owner->output_descriptor_ids.size())
+          return refuse("join result output coverage is incomplete");
+        for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal) {
+          if (outputs[ordinal]->descriptor_id != schema_owner->output_descriptor_ids[ordinal])
+            return refuse("join output differs from its admitted source ordering");
+        }
+        joined_schema = true;
+        break;
+      }
+      // Nonrecursive CTE, LIMIT, FILTER and SORT carry the producer's schema, not another
       // set of executable output records. Follow its actual single input and prove
       // exact descriptor order at every edge; never choose the first leaf.
       if ((schema_owner->node_kind != api::RelationalDagNodeKind::kCte &&
-           schema_owner->node_kind != api::RelationalDagNodeKind::kLimit) ||
+           schema_owner->node_kind != api::RelationalDagNodeKind::kLimit &&
+           schema_owner->node_kind != api::RelationalDagNodeKind::kFilter &&
+           schema_owner->node_kind != api::RelationalDagNodeKind::kSort) ||
           schema_owner->input_node_ids.size() != 1 || ++forwarded > nodes.size())
         return refuse("query root has no unambiguous output schema");
       if (cancelled())
@@ -125,7 +173,8 @@ bool PreserveCanonicalQueryResultMetadataV1(
         return refuse("forwarded output schema differs from its bound producer");
       schema_owner = input->second;
     }
-    std::ranges::sort(outputs, {}, &api::RelationalOutputRecord::ordinal);
+    if (!joined_schema)
+      std::ranges::sort(outputs, {}, &api::RelationalOutputRecord::ordinal);
     if (outputs.size() != root->output_descriptor_ids.size())
       return refuse("query root output descriptor coverage is incomplete");
     if (shape->columns.empty())
@@ -170,7 +219,7 @@ bool PreserveCanonicalQueryResultMetadataV1(
       if (cancelled())
         return refuse("query result metadata publication cancelled", "PROCESS.CANCELLED");
       const auto& output = *outputs[ordinal];
-      if (output.ordinal != ordinal ||
+      if ((!joined_schema && output.ordinal != ordinal) ||
           output.descriptor_id != root->output_descriptor_ids[ordinal])
         return refuse("query root output order or descriptor binding is contradictory");
       if (!output.visible) continue;

@@ -2157,7 +2157,7 @@ set_tests_properties(optimizer_deficiency_odf_026_gate PROPERTIES
 )
 
 if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_engine_sblr AND TARGET sb_core_uuid
-   AND TARGET sb_engine_internal_api AND TARGET sb_storage_database)
+   AND TARGET sb_engine_internal_api AND TARGET sb_storage_database AND TARGET sb_engine)
   add_executable(
     optimizer_deficiency_odf_110_gate
     optimizer_deficiency_odf_110_gate.cpp
@@ -2171,6 +2171,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_engine_sblr AND TARGET sb_core
   target_link_libraries(
     optimizer_deficiency_odf_110_gate
     PRIVATE
+      sb_engine
       sbl_sbsql_parser_pipeline
       sb_engine_sblr
       sb_engine_internal_api

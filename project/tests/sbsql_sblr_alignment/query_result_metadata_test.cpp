@@ -142,6 +142,107 @@ void Reject(Mutation mutation, const char* expected = "DATATYPE.DESCRIPTOR.INVAL
   Check(!f.shape.query_metadata, "failure clears stale metadata atomically");
   Check(f.code == expected && !f.detail.empty(), "exact negative diagnostic");
 }
+
+Fixture JoinFixture(std::string variant, std::size_t rows) {
+  const bool left_only = variant == "join.left-semi.v1" || variant == "join.left-anti.v1";
+  Fixture f(identities[2], left_only ? 1 : 2, rows);
+  f.dag.nodes.front().node_kind = api::RelationalDagNodeKind::kValues;
+  f.dag.nodes.front().output_descriptor_ids = {1};
+  f.dag.outputs.resize(1);
+  auto descriptor = f.dag.descriptors.front();
+  descriptor.descriptor_id = 2;
+  descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(0x110, 2);
+  f.dag.descriptors.push_back(descriptor);
+  auto right = f.dag.nodes.front();
+  right.node_id = 10;
+  right.output_descriptor_ids = {2};
+  f.dag.nodes.push_back(right);
+  auto output = f.dag.outputs.front();
+  output.output_id = 2;
+  output.relation_node_id = 10;
+  output.descriptor_id = 2;
+  f.dag.outputs.push_back(output);
+  api::RelationalDagNode join;
+  join.node_id = 11;
+  join.node_kind = api::RelationalDagNodeKind::kJoin;
+  join.semantic_variant_id = variant;
+  join.input_node_ids = {9, 10};
+  join.output_descriptor_ids = left_only ? std::vector<std::uint32_t>{1}
+                                         : std::vector<std::uint32_t>{1, 2};
+  f.dag.nodes.push_back(join);
+  f.dag.root_node_id = 11;
+  f.shape.null_extended_columns.assign(left_only ? 1 : 2, false);
+  if (!left_only) {
+    f.shape.columns[1].descriptor_uuid = descriptor.descriptor_uuid;
+    for (auto& row : f.shape.rows) row.fields[1].second.descriptor = f.shape.columns[1];
+    f.shape.null_extended_columns[0] = variant == "join.right-outer.v1" || variant == "join.full-outer.v1";
+    f.shape.null_extended_columns[1] = variant == "join.left-outer.v1" || variant == "join.full-outer.v1";
+  }
+  return f;
+}
+
+void JoinSchemaConformance() {
+  std::size_t cases = 0;
+  for (const std::string variant : {"join.inner.v1", "join.cross.v1", "join.left-outer.v1",
+       "join.right-outer.v1", "join.full-outer.v1", "join.left-semi.v1", "join.left-anti.v1"}) {
+    for (const std::size_t rows : {0u, 2u}) {
+      auto f = JoinFixture(variant, rows);
+      Check(f.Run(), "admitted VALUES join publishes exact source schema");
+      Check(f.shape.query_metadata->columns.size() == f.shape.columns.size(),
+            "join result preserves left-only or concatenated width");
+      for (std::size_t i = 0; i < f.shape.columns.size(); ++i) {
+        const auto& column = f.shape.query_metadata->columns[i];
+        Check(column.transport.ordinal == i && column.transport.name_occurrence == i &&
+                  column.transport.name == "same;=résumé" &&
+                  column.bound_descriptor_uuid == f.shape.columns[i].descriptor_uuid.bytes &&
+                  column.transport.nullability == (f.shape.null_extended_columns[i]
+                      ? wire::TypedResultNullability::nullable : wire::TypedResultNullability::not_null),
+              "join preserves source occurrences, duplicate names and actual null-extension");
+      }
+      ++cases;
+    }
+    for (unsigned mutation = 0; mutation < 10; ++mutation) {
+      auto f = JoinFixture(variant, 0);
+      Check(f.Run(), "join negative baseline");
+      auto& join = f.dag.nodes.back();
+      if (mutation == 0) join.semantic_variant_id = "join.unsupported.v1";
+      if (mutation == 1) join.input_node_ids.pop_back();
+      if (mutation == 2) join.input_node_ids = {9, 9};
+      if (mutation == 3) join.input_node_ids[1] = 99;
+      if (mutation == 4) f.dag.nodes[1].node_kind = api::RelationalDagNodeKind::kProject;
+      if (mutation == 5) f.dag.nodes[1].input_node_ids = {10};
+      if (mutation == 6) f.dag.outputs.pop_back();
+      if (mutation == 7) f.dag.outputs[1].ordinal = 1;
+      if (mutation == 8) join.output_descriptor_ids[0] = 2;
+      if (mutation == 9) f.dag.outputs[1].descriptor_id = 1;
+      Check(!f.Run() && f.code == "DATATYPE.DESCRIPTOR.INVALID" &&
+                !f.shape.query_metadata && !f.shape.query_values,
+            "malformed join schema refuses without stale publication");
+      ++cases;
+    }
+  }
+  Check(cases == 84, "all seven join profiles and malformed projections covered");
+  auto baseline = JoinFixture("join.inner.v1", 2);
+  metadata_allocations = metadata_allocation_bytes = fail_metadata_allocation = 0;
+  track_metadata_allocations = true;
+  const bool measured = baseline.Run();
+  track_metadata_allocations = false;
+  const auto count = metadata_allocations;
+  Check(measured && count > 0, "join allocation sweep baseline");
+  for (std::size_t site = 1; site <= count; ++site) {
+    auto f = baseline;
+    metadata_allocations = metadata_allocation_bytes = 0;
+    fail_metadata_allocation = site;
+    track_metadata_allocations = true;
+    const bool ok = f.Run();
+    track_metadata_allocations = false;
+    fail_metadata_allocation = 0;
+    Check(!ok && f.code == "RESOURCE.BUDGET_EXCEEDED" &&
+              !f.shape.query_metadata && !f.shape.query_values,
+          "join allocation failure publishes no partial schema");
+    Check(f.Run(), "join allocation failure remains retryable");
+  }
+}
 void AllocationConformance() {
   for (const std::size_t width : {1u, 4u, 1024u}) {
     Fixture f(identities[2], width, 0);
@@ -512,14 +613,16 @@ int main() try {
     f.dag.outputs[0].output_name_utf8 = name;
     Check(!f.Run() && !f.shape.query_metadata, "noncanonical multibyte name");
   }
-  for (const bool mixed_limit_chain : {false, true}) {
+  for (const auto chain_kind : {api::RelationalDagNodeKind::kCte,
+                               api::RelationalDagNodeKind::kLimit,
+                               api::RelationalDagNodeKind::kFilter,
+                               api::RelationalDagNodeKind::kSort}) {
   for (std::uint32_t depth = 1; depth <= 16; ++depth) {
     Fixture f(identities[2], 2, depth % 3);
     for (std::uint32_t n = 0; n < depth; ++n) {
       api::RelationalDagNode cte;
       cte.node_id = 10 + n;
-      cte.node_kind = mixed_limit_chain && n % 2 == 0
-          ? api::RelationalDagNodeKind::kLimit : api::RelationalDagNodeKind::kCte;
+      cte.node_kind = n % 2 == 0 ? chain_kind : api::RelationalDagNodeKind::kCte;
       cte.input_node_ids = {f.dag.root_node_id};
       cte.output_descriptor_ids = {1, 1};
       f.dag.nodes.push_back(cte);
@@ -536,7 +639,7 @@ int main() try {
     Check(f.Run() && f.shape.query_metadata->columns.size() == 2 &&
           f.shape.query_metadata->columns[1].transport.name_occurrence == 1 &&
           f.shape.query_metadata->columns[0].transport.name == "same;=résumé",
-          "nested CTE forwards exact child schema including empty rows");
+          "schema-preserving chain forwards exact child schema including empty rows");
     f.dag.nodes.back().output_descriptor_ids.pop_back();
     Check(!f.Run() && !f.shape.query_metadata, "CTE descriptor mismatch is not a fallback");
   }
@@ -544,8 +647,7 @@ int main() try {
     Fixture f;
     api::RelationalDagNode cte;
     cte.node_id = 10;
-    cte.node_kind = api::RelationalDagNodeKind::kCte;
-    if (mixed_limit_chain) cte.node_kind = api::RelationalDagNodeKind::kLimit;
+    cte.node_kind = chain_kind;
     cte.input_node_ids = {9};
     cte.output_descriptor_ids = {1};
     if (failure == 0) cte.input_node_ids.clear();
@@ -557,7 +659,28 @@ int main() try {
     Check(!f.Run() && !f.shape.query_metadata, "missing ambiguous or cyclic CTE producer refused");
   }
   }
-  Check(checks == 6561 + 8 + 5 + 1 + 2 + 10, "fixed check population including binary/outer-join and text-carrier refusal regressions");
+  for (const auto kind : {api::RelationalDagNodeKind::kFilter,
+                          api::RelationalDagNodeKind::kSort}) {
+    Fixture f(identities[2], 2);
+    auto second = f.dag.descriptors.front();
+    second.descriptor_id = 2;
+    f.dag.descriptors.push_back(second);
+    f.dag.outputs[1].descriptor_id = 2;
+    f.dag.nodes.front().output_descriptor_ids = {1, 2};
+    api::RelationalDagNode root;
+    root.node_id = 10;
+    root.node_kind = kind;
+    root.input_node_ids = {9};
+    root.output_descriptor_ids = {1, 2};
+    f.dag.nodes.push_back(root);
+    f.dag.root_node_id = 10;
+    Check(f.Run(), "distinct ordered descriptor handles forwarded");
+    f.dag.nodes.back().output_descriptor_ids = {2, 1};
+    Check(!f.Run() && !f.shape.query_metadata && !f.shape.query_values,
+          "reordered same-typed descriptors refuse without stale publication");
+  }
+  Check(checks == 6561 + 8 + 5 + 1 + 2 + 10 + 76, "fixed check population including binary/outer-join and forwarding refusal regressions");
+  JoinSchemaConformance();
   AllocationConformance();
   std::cout << "PASS schema_tuples=" << cases << " checks=" << checks << '\n';
   return 0;
