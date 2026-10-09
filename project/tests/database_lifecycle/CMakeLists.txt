@@ -4983,12 +4983,14 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
 		    LABELS "ipar_resource_quota_backpressure_gate;IPAR-P3-07;resource_quota;backpressure;insert_performance;database_lifecycle;mga_transaction_regression"
 		  )
 
+		  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 		  add_executable(ipar_commit_durability_batching_gate
 		    ipar_commit_durability_batching_gate.cpp
 		  )
 		  target_compile_features(ipar_commit_durability_batching_gate PRIVATE cxx_std_23)
 		  target_link_libraries(ipar_commit_durability_batching_gate
 		    PRIVATE
+		      sb_engine
 		      sb_core_platform
 		      sb_core_uuid
 		      sb_engine_internal_api
@@ -4998,6 +5000,8 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
 		      sb_storage_page
 		      sb_transaction_mga
 		  )
+		  target_link_options(ipar_commit_durability_batching_gate PRIVATE
+		    -Wl,--wrap=fsync -Wl,--wrap=pwrite)
 
 		  add_test(
 		    NAME ipar_commit_durability_batching_gate
@@ -5006,6 +5010,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
 		  set_tests_properties(ipar_commit_durability_batching_gate PROPERTIES
 		    LABELS "ipar_commit_durability_batching_gate;IPAR-P3-05;IPAR-P3-08;commit_fence;durability_batching;insert_performance;database_lifecycle;mga_transaction_regression"
 		  )
+		  endif()
 
 		  add_executable(ipar_transaction_mga_support_services_gate
 		    ipar_transaction_mga_support_services_gate.cpp
