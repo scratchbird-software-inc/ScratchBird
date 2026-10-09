@@ -28,6 +28,9 @@ import tempfile
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sbsql_sblr_alignment"))
+from binary_observation_client import read_observation_records
+
 DBBT_KEY_HEX = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
 MANAGER_TOKEN = "manager-route-token-1"
 MANAGER_DB = "linux_gold_route"
@@ -113,6 +116,28 @@ def wait_for_file_contains(path: Path, needle: str, timeout: float = 5.0) -> Non
     raise SmokeError(f"{path} did not contain {needle!r}")
 
 
+def wait_for_server_audit(path: Path, event_type: str, outcome: str,
+                          timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    last_error = "no complete binary audit record"
+    while time.monotonic() < deadline:
+        if path.exists():
+            try:
+                records = [json.loads(record) for record in read_observation_records(path)]
+                for record in records:
+                    event = record.get("audit_event", {})
+                    if (event.get("event_type") == event_type and
+                            event.get("actor_class") == "server" and
+                            event.get("outcome") == outcome):
+                        return
+            except ValueError as error:
+                # A concurrent append may not have finished. Never skip a
+                # corrupt frame to search a later record for a passing event.
+                last_error = str(error)
+        time.sleep(0.05)
+    raise SmokeError(f"{path} lacks {event_type}/{outcome}: {last_error}")
+
+
 def wait_for_json_metric(path: Path, metric_name: str, minimum: int, timeout: float = 5.0) -> int:
     deadline = time.monotonic() + timeout
     last_value = 0
@@ -140,11 +165,12 @@ def wait_for_jsonl_metric(path: Path,
     last_value = 0
     while time.monotonic() < deadline:
         if path.exists():
-            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-                try:
-                    metric = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+            try:
+                records = [json.loads(record) for record in read_observation_records(path)]
+            except ValueError:
+                time.sleep(0.05)
+                continue
+            for metric in records:
                 if metric.get("path") != metric_path or metric.get("labels") != labels:
                     continue
                 try:
@@ -524,8 +550,8 @@ def main() -> int:
 
         audit = manager_control / "sbmn_manager.audit.jsonl"
         metrics = manager_control / "sbmn_manager.metrics.json"
-        server_audit = server_control / "sb_server.audit.jsonl"
-        server_metrics = server_control / "sb_server.metrics.jsonl"
+        server_audit = server_control / "sb_server.audit.sbobs"
+        server_metrics = server_control / "sb_server.metrics.sbobs"
         rejected = run_managed_isql(
             args.sb_isql,
             database,
@@ -536,10 +562,7 @@ def main() -> int:
         )
         if rejected.returncode == 0:
             raise SmokeError("manager route accepted an incorrect canonical database password")
-        wait_for_file_contains(
-            server_audit,
-            '"event_type":"server.auth_handoff","actor_class":"server","outcome":"rejected"',
-        )
+        wait_for_server_audit(server_audit, "server.auth_handoff", "rejected")
         wait_for_listener_pool_ready(management_socket)
 
         completed = run_managed_isql(
@@ -560,14 +583,8 @@ def main() -> int:
         wait_for_file_contains(audit, "MANAGER_PROXY_ADMISSION_DECISION")
         wait_for_file_contains(audit, "MANAGER_AUTH_DECISION")
         wait_for_file_contains(audit, "MANAGER_DB_CONNECT_DECISION")
-        wait_for_file_contains(
-            server_audit,
-            '"event_type":"server.auth_handoff","actor_class":"server","outcome":"accepted"',
-        )
-        wait_for_file_contains(
-            server_audit,
-            '"event_type":"server.attach_database","actor_class":"server","outcome":"accepted"',
-        )
+        wait_for_server_audit(server_audit, "server.auth_handoff", "accepted")
+        wait_for_server_audit(server_audit, "server.attach_database", "accepted")
         server_sblr_execute = wait_for_jsonl_metric(
             server_metrics,
             "sys.metrics.ipc.parser_server.sblr.execute_microseconds",

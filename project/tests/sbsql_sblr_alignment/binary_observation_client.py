@@ -5,7 +5,8 @@ from pathlib import Path
 import uuid
 
 
-def render_observations(path: Path) -> str:
+def read_observation_records(path: Path) -> list[str]:
+    """Decode whole framed records without inventing text record delimiters."""
     data = path.read_bytes()
     cursor = 0
     records = []
@@ -55,7 +56,11 @@ def render_observations(path: Path) -> str:
         records.append("".join(pieces))
     if not records:
         raise ValueError("empty observation evidence")
-    return "".join(records)
+    return records
+
+
+def render_observations(path: Path) -> str:
+    return "".join(read_observation_records(path))
 
 
 def read_trace_evidence(paths: tuple[Path, ...]) -> str:
