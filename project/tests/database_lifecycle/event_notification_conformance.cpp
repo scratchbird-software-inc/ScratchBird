@@ -9,6 +9,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
+#include "memory.hpp"
 #include "database_lifecycle.hpp"
 #include "notification/notification_api.hpp"
 #include "parser_server_event_frame_dispatcher.hpp"
@@ -21,9 +24,9 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <memory>
 #include <string>
 #include <string_view>
-#include <unistd.h>
 #include <vector>
 
 namespace {
@@ -35,14 +38,15 @@ namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
 struct Fixture {
+  std::unique_ptr<scratchbird::tests::OwnedTempDirectory> owned;
   std::filesystem::path temp_dir;
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
+  api::EngineRequestContext owner_context;
 };
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -68,15 +72,6 @@ bool HasVector(const std::vector<server::ParserServerMessageVector>& vectors,
   return false;
 }
 
-std::filesystem::path MakeTempDir() {
-  std::string tmpl = "/tmp/sb_dblc013y_event.XXXXXX";
-  std::vector<char> writable(tmpl.begin(), tmpl.end());
-  writable.push_back('\0');
-  char* made = ::mkdtemp(writable.data());
-  Require(made != nullptr, "mkdtemp failed for DBLC-013Y event notification test");
-  return std::filesystem::path(made);
-}
-
 api::EngineUuid NewUuid(UuidKind kind, std::uint64_t millis) {
   const auto generated = uuid::GenerateEngineIdentityV7(kind, millis);
   Require(generated.ok(), "DBLC-013Y UUID generation failed");
@@ -85,7 +80,8 @@ api::EngineUuid NewUuid(UuidKind kind, std::uint64_t millis) {
 
 Fixture MakeFixture(std::string_view name) {
   Fixture fixture;
-  fixture.temp_dir = MakeTempDir();
+  fixture.owned = std::make_unique<scratchbird::tests::OwnedTempDirectory>();
+  fixture.temp_dir = fixture.owned->path();
   fixture.database_path = fixture.temp_dir / (std::string(name) + ".sbdb");
   db::DatabaseCreateConfig create;
   create.path = fixture.database_path.string();
@@ -93,8 +89,7 @@ Fixture MakeFixture(std::string_view name) {
   create.filespace_uuid = uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1779130901001).value;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = 1779130901002;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "DBLC-013Y database create failed");
@@ -103,30 +98,15 @@ Fixture MakeFixture(std::string_view name) {
   const auto clean = db::MarkDatabaseCleanShutdown(fixture.database_path.string());
   Require(clean.ok(), "DBLC-013Y clean shutdown marker failed");
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   return fixture;
 }
 
 api::EngineRequestContext Context(const Fixture& fixture,
-                                  api::EngineUuid session_uuid,
-                                  api::EngineUuid principal_uuid,
-                                  bool authorized = true) {
-  api::EngineRequestContext context;
+                                  api::EngineUuid session_uuid) {
+  auto context = fixture.owner_context;
   context.request_id = "dblc-013y-event";
-  context.database_path = fixture.database_path.string();
-  context.database_uuid = fixture.database_uuid;
   context.session_uuid = std::move(session_uuid);
-  context.principal_uuid = std::move(principal_uuid);
-  context.security_context_present = true;
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.name_resolution_epoch = 1;
-  if (authorized) {
-    context.trust_mode = api::EngineTrustMode::embedded_in_process;
-    context.trace_tags.push_back("security.fixture_trace_authority");
-    context.trace_tags.push_back("right:EVENT_CREATE");
-    context.trace_tags.push_back("right:EVENT_PUBLISH");
-  }
   return context;
 }
 
@@ -144,6 +124,9 @@ api::EngineRequestContext BeginTx(const api::EngineRequestContext& base) {
   auto tx_context = base;
   tx_context.local_transaction_id = begun.local_transaction_id;
   tx_context.transaction_uuid = begun.transaction_uuid;
+  tx_context.snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  tx_context.transaction_isolation_level = begun.isolation_level;
   return tx_context;
 }
 
@@ -173,6 +156,8 @@ void CreateChannel(const api::EngineRequestContext& base,
   request.option_envelopes.push_back("channel:" + channel_name);
   request.option_envelopes.insert(request.option_envelopes.end(), options.begin(), options.end());
   const auto created = api::EngineCreateEventChannel(request);
+  if (!created.ok) for (const auto& d : created.diagnostics)
+    std::cerr << d.code << ':' << d.detail << '\n';
   Require(created.ok, "DBLC-013Y create event channel failed");
   CommitTx(tx_context);
 }
@@ -226,12 +211,11 @@ server::ParserServerEventSession EventSession(const Fixture& fixture,
   session.engine_context.resource_epoch = 1;
   session.engine_context.name_resolution_epoch = 1;
   if (authorized) {
-    session.engine_context.trust_mode =
-        server::ParserServerEventTrustMode::embedded_in_process;
-    session.engine_context.trace_tags.push_back("security.fixture_trace_authority");
-    session.engine_context.trace_tags.push_back("right:EVENT_SUBSCRIBE");
-    session.engine_context.trace_tags.push_back("right:EVENT_DELIVERY_READ");
-    session.engine_context.trace_tags.push_back("right:EVENT_DELIVERY_ACK");
+    session.engine_context.principal_uuid = fixture.owner_context.principal_uuid;
+    session.engine_context.security_epoch = fixture.owner_context.security_epoch;
+    session.engine_context.authorization_context =
+        std::make_shared<const api::EngineMaterializedAuthorizationContext>(
+            fixture.owner_context.authorization_context);
   }
   session.session_bound = true;
   return session;
@@ -251,19 +235,20 @@ server::PsEventSubscribeResult Subscribe(server::ParserServerEventIpcRuntime* ru
 void TestParserIpcEngineAuthorizedDeliveryAckAndDisconnect() {
   const auto fixture = MakeFixture("delivery");
   const auto admin = Context(fixture,
-                             scratchbird::tests::FixtureUuidLiteral("019e13c0-0000-7000-8000-000000000001"),
-                             scratchbird::tests::FixtureUuidLiteral("019e13c0-0000-7000-8000-000000000002"));
+                             scratchbird::tests::FixtureUuidLiteral("019e13c0-0000-7000-8000-000000000001"));
   const api::EngineUuid channel_uuid = scratchbird::tests::FixtureUuidLiteral("019e13c0-0000-7000-8000-000000000101");
   CreateChannel(admin, channel_uuid, "orders_ready");
 
   server::ParserEventNotificationRouter router;
   server::ParserServerEventIpcRuntime runtime(&router);
 
-  const auto denied_session =
+  auto denied_session =
       EventSession(fixture,
                    scratchbird::tests::FixtureUuidLiteral("019e13c0-0000-7000-8000-000000000201"),
                    scratchbird::tests::FixtureUuidLiteral("019e13c0-0000-7000-8000-000000000301"),
                    false);
+  denied_session.engine_context.trace_tags = {
+      "security.fixture_trace_authority", "right:EVENT_SUBSCRIBE"};
   const auto denied = Subscribe(&runtime, denied_session, channel_uuid);
   Require(denied.outcome == "rejected" &&
               HasVector(denied.message_vector_set, "EVENT.AUTHORIZATION_DENIED"),
@@ -320,13 +305,13 @@ void TestParserIpcEngineAuthorizedDeliveryAckAndDisconnect() {
   const auto cleaned = runtime.HandleDisconnect(disconnect);
   Require(cleaned.outcome == "accepted" && router.ActiveSubscriptionCount() == 0,
           "DBLC-013Y disconnect did not clean engine/router subscription state");
+  fixture.owned->Cleanup();
 }
 
 void TestRollbackSavepointRedactionBackpressureAndClusterRefusal() {
   const auto fixture = MakeFixture("edge");
   const auto admin = Context(fixture,
-                             scratchbird::tests::FixtureUuidLiteral("019e13c0-0000-7000-8000-000000000401"),
-                             scratchbird::tests::FixtureUuidLiteral("019e13c0-0000-7000-8000-000000000402"));
+                             scratchbird::tests::FixtureUuidLiteral("019e13c0-0000-7000-8000-000000000401"));
   const api::EngineUuid channel_uuid = scratchbird::tests::FixtureUuidLiteral("019e13c0-0000-7000-8000-000000000501");
   CreateChannel(admin, channel_uuid, "edge_events");
 
@@ -393,8 +378,7 @@ void TestRollbackSavepointRedactionBackpressureAndClusterRefusal() {
           "DBLC-013Y backpressure diagnostic mismatch");
 
   api::EngineNotifyEventChannelRequest cluster_request;
-  cluster_request.context = admin;
-  cluster_request.context.local_transaction_id = 1;
+  cluster_request.context = BeginTx(admin);
   cluster_request.target_object = {channel_uuid, "event_channel"};
   cluster_request.option_envelopes.push_back(api::BinaryViewUuidOption("channel_uuid:", channel_uuid));
   cluster_request.option_envelopes.push_back("payload:cluster");
@@ -403,6 +387,7 @@ void TestRollbackSavepointRedactionBackpressureAndClusterRefusal() {
   Require(!cluster_refused.ok &&
               HasDiagnostic(cluster_refused, "EVENT.CLUSTER_UNAVAILABLE"),
           "DBLC-013Y standalone cluster event path did not fail closed");
+  RollbackTx(cluster_request.context);
 
   const std::string events_path = fixture.database_path.string() + ".sb.notification_events";
   std::ifstream in(events_path, std::ios::binary);
@@ -411,6 +396,14 @@ void TestRollbackSavepointRedactionBackpressureAndClusterRefusal() {
   Require(!Contains(event_log, "PRAGMA") && !Contains(event_log, "journal_mode") &&
               !Contains(event_log, "WAL"),
           "DBLC-013Y notification lifecycle persisted forbidden WAL/PRAGMA text");
+  in.close();
+  server::PsEventDisconnectRequest disconnect;
+  disconnect.session = session;
+  disconnect.disconnect_reason = "edge_fixture_complete";
+  const auto cleaned = runtime.HandleDisconnect(disconnect);
+  Require(cleaned.outcome == "accepted" && router.ActiveSubscriptionCount() == 0,
+          "DBLC-013Y edge fixture retained subscriptions");
+  fixture.owned->Cleanup();
 }
 
 void TestParserOwnedServerFramesRejected() {
@@ -429,10 +422,17 @@ void TestParserOwnedServerFramesRejected() {
 
 }  // namespace
 
-int main() {
+int main() try {
+  namespace memory = scratchbird::core::memory;
+  Require(memory::ConfigureDefaultMemoryManagerForFixture(
+      memory::DefaultLocalEngineMemoryPolicy(), "event_notification_conformance").ok(),
+      "event fixture memory admission failed");
   TestParserIpcEngineAuthorizedDeliveryAckAndDisconnect();
   TestRollbackSavepointRedactionBackpressureAndClusterRefusal();
   TestParserOwnedServerFramesRejected();
   std::cout << "database_lifecycle_event_notification_conformance=passed\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }
