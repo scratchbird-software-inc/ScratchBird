@@ -65,6 +65,8 @@ inline bool BuildHistoricalTimestampScalarDescriptorV1(
                    {"codec_id", matched->codec_id},
                    {"codec_version", std::to_string(matched->codec_version)},
                    {"codec_generation", std::to_string(matched->codec_generation)}};
+  if (source.timezone_profile_id)
+    metadata.text.emplace("timezone_profile_id", *source.timezone_profile_id);
   EngineDescriptor descriptor;
   descriptor.descriptor_uuid = source.descriptor_uuid;
   descriptor.descriptor_kind = "scalar";
@@ -90,7 +92,11 @@ ResolveHistoricalTimestampScalarIdentityV1(const EngineDescriptor& descriptor,
       !core::uuid::IsEngineIdentityUuid(descriptor.descriptor_uuid) ||
       !descriptor.charset_uuid.is_nil() || !descriptor.collation_uuid.is_nil() ||
       !DecodeCatalogColumnMetadata(descriptor.encoded_descriptor, &fields) ||
-      fields.identities.size() != 3 || fields.text.size() != 7) return nullptr;
+      fields.identities.size() != 3) return nullptr;
+  const auto profile = fields.text.find("timezone_profile_id");
+  if (fields.text.size() != (profile == fields.text.end() ? 7u : 8u) ||
+      (profile != fields.text.end() && profile->second != "timestamp_timezone_profile"))
+    return nullptr;
   const auto id = [&](const char* key) -> EngineUuid {
     const auto found = fields.identities.find(key);
     return found == fields.identities.end() ? EngineUuid{} : found->second;

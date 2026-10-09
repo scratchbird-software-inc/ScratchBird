@@ -70,6 +70,43 @@ int main() {
       continue;
     }
     Check(projected == descriptor);
+    // Preserve an explicitly declared frozen UTC publication profile without
+    // inventing it for unannotated storage or admitting civil/timezone codecs.
+    auto profiled_source = source;
+    profiled_source.timezone_profile_id = "timestamp_timezone_profile";
+    a::EngineDescriptor profiled;
+    Check(a::BuildHistoricalTimestampScalarDescriptorV1(profiled_source, &profiled, &detail));
+    a::CatalogColumnMetadata profile_metadata;
+    Check(a::DecodeCatalogColumnMetadata(profiled.encoded_descriptor, &profile_metadata));
+    Check(profile_metadata.text.at("timezone_profile_id") == "timestamp_timezone_profile");
+    bool nullable = false;
+    a::EngineUuid receipt;
+    Check(a::ResolveHistoricalTimestampScalarIdentityV1(profiled, &nullable, &detail, &receipt) == &identity);
+    Check(nullable && receipt == source.statement_receipt_uuid);
+    a::EngineTypedValue profiled_value;
+    Check(a::EncodeHistoricalTimestampNanosecondsV1(profiled, -1, &profiled_value, &detail));
+    std::int64_t profiled_nanos = 0;
+    Check(a::DecodeHistoricalTimestampNanosecondsV1(profiled_value, &profiled_nanos, &detail) && profiled_nanos == -1);
+    a::CatalogColumnMetadata unprofiled_metadata;
+    Check(a::DecodeCatalogColumnMetadata(descriptor.encoded_descriptor, &unprofiled_metadata));
+    Check(!unprofiled_metadata.text.contains("timezone_profile_id"));
+    for (const auto* invalid_profile : {"", "UTC", "America/Toronto", "timestamp_tz"}) {
+      auto bad_source = source;
+      bad_source.timezone_profile_id = invalid_profile;
+      auto unchanged = descriptor;
+      Check(!a::BuildHistoricalTimestampScalarDescriptorV1(bad_source, &unchanged, &detail));
+      Check(unchanged == descriptor);
+      auto bad_metadata = profile_metadata;
+      bad_metadata.text["timezone_profile_id"] = invalid_profile;
+      auto bad_descriptor = profiled;
+      Check(a::EncodeCatalogColumnMetadata(bad_metadata, &bad_descriptor.encoded_descriptor));
+      Check(!a::ResolveHistoricalTimestampScalarIdentityV1(bad_descriptor, &nullable, &detail));
+    }
+    auto extra_metadata = profile_metadata;
+    extra_metadata.text["unexpected"] = "not authority";
+    auto extra_descriptor = profiled;
+    Check(a::EncodeCatalogColumnMetadata(extra_metadata, &extra_descriptor.encoded_descriptor));
+    Check(!a::ResolveHistoricalTimestampScalarIdentityV1(extra_descriptor, &nullable, &detail));
     for (unsigned size = 0; size <= 32; ++size) {
       if (size == 16) continue;
       std::vector<std::uint8_t> wrong(size);
