@@ -52,6 +52,31 @@ int main() {
     a::HistoricalTimestampScalarPartsV1 parts;
     Check(a::DecodeHistoricalTimestampScalarV1(value, &parts, &detail));
     Check(parts.unix_seconds == 0 && parts.nanoseconds == 0 && !parts.is_null);
+    for (const std::int64_t nanos : {INT64_MIN, INT64_C(-1000000001), INT64_C(-1),
+                                    INT64_C(0), INT64_C(999999999), INT64_MAX}) {
+      a::EngineTypedValue encoded;
+      Check(a::EncodeHistoricalTimestampNanosecondsV1(descriptor, nanos, &encoded, &detail));
+      std::int64_t decoded = 42;
+      Check(a::DecodeHistoricalTimestampNanosecondsV1(encoded, &decoded, &detail) && decoded == nanos);
+      Check(encoded.binary_value.size() == 16 && encoded.encoded_value.empty());
+      if (nanos == INT64_MIN || nanos == INT64_MAX) {
+        auto overflow = encoded;
+        // Change the LE32 fraction by one with explicit carry/borrow.
+        for (unsigned byte = 8; byte < 12; ++byte) {
+          const auto before = overflow.binary_value[byte];
+          if (nanos == INT64_MIN) {
+            --overflow.binary_value[byte];
+            if (before != 0) break;
+          } else {
+            ++overflow.binary_value[byte];
+            if (before != 255) break;
+          }
+        }
+        Check(a::DecodeHistoricalTimestampScalarV1(overflow, &parts, &detail));
+        decoded = 42;
+        Check(!a::DecodeHistoricalTimestampNanosecondsV1(overflow, &decoded, &detail) && decoded == 42);
+      }
+    }
     auto previous = value;
     for (unsigned byte = 0; byte < 8; ++byte) previous.binary_value[byte] = 255;
     int comparison = 9;
@@ -63,6 +88,21 @@ int main() {
     Check(a::QowEvaluateCanonicalComparisonTruthV1(previous, value, comparison,
         a::EngineComparisonPredicateOperator::less_than, &truth, &detail));
     Check(truth == a::EngineSqlTruthValue::true_value);
+    namespace ex = scratchbird::engine::executor;
+    ex::CanonicalDescriptorOrderTerm order;
+    order.expression_descriptor_id = 1;
+    order.direction = ex::CanonicalDescriptorOrderDirection::ascending;
+    order.null_placement = ex::CanonicalDescriptorNullPlacement::last;
+    const auto ordered = ex::CompareCanonicalDescriptorOrderValues(previous, value, order);
+    if (!ordered.diagnostic.ok) std::cerr << ordered.diagnostic.detail << '\n';
+    Check(ordered.diagnostic.ok && ordered.comparison == -1);
+    order.direction = ex::CanonicalDescriptorOrderDirection::descending;
+    Check(ex::CompareCanonicalDescriptorOrderValues(previous, value, order).comparison == 1);
+    const auto first_key = ex::MakeCanonicalDescriptorEqualityKey(previous, order);
+    const auto second_key = ex::MakeCanonicalDescriptorEqualityKey(value, order);
+    Check(first_key.diagnostic.ok && second_key.diagnostic.ok &&
+          first_key.equality_key != second_key.equality_key);
+    Check(ex::MakeCanonicalDescriptorEqualityKey(value, order).equality_key == second_key.equality_key);
     source.descriptor_id = 1;
     auto other_statement = source;
     other_statement.statement_receipt_uuid = scratchbird::tests::FixtureUuid(1086, 902);
@@ -120,6 +160,24 @@ int main() {
     Check(a::QowEvaluateCanonicalComparisonTruthV1(previous, value, 0,
         a::EngineComparisonPredicateOperator::equal, &truth, &detail));
     Check(truth == a::EngineSqlTruthValue::unknown);
+    for (const auto direction : {ex::CanonicalDescriptorOrderDirection::ascending,
+                                  ex::CanonicalDescriptorOrderDirection::descending}) {
+      order.direction = direction;
+      for (const auto placement : {ex::CanonicalDescriptorNullPlacement::first,
+                                    ex::CanonicalDescriptorNullPlacement::last}) {
+        order.null_placement = placement;
+        const auto null_order = ex::CompareCanonicalDescriptorOrderValues(value, previous, order);
+        Check(null_order.diagnostic.ok && null_order.comparison ==
+            (placement == ex::CanonicalDescriptorNullPlacement::first ? -1 : 1));
+        Check(ex::MakeCanonicalDescriptorEqualityKey(value, order).diagnostic.ok);
+      }
+    }
+    auto invalid_order = order;
+    invalid_order.timezone_epoch = 1;
+    Check(!ex::CompareCanonicalDescriptorOrderValues(value, previous, invalid_order).diagnostic.ok);
+    auto stale_null = value;
+    ++stale_null.descriptor.datatype_descriptor_generation;
+    Check(!ex::CompareCanonicalDescriptorOrderValues(stale_null, previous, order).diagnostic.ok);
     Check(!a::QowEvaluateCanonicalComparisonTruthV1(crossed_statement, value, 0,
         a::EngineComparisonPredicateOperator::equal, &truth, &detail));
   }

@@ -4,6 +4,7 @@
 #include "model_family_executor.hpp"
 #include "temp_spill_executor.hpp"
 #include "runtime_identity.hpp"
+#include "query/historical_timestamp_scalar.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -158,40 +159,21 @@ bool AccountAsofValueDynamic(
 
 bool DeriveAsofNullableDescriptorEncoding(
     internal_api::EngineDescriptor* descriptor) {
-  if (descriptor == nullptr || descriptor->encoded_descriptor.empty()) {
-    return false;
-  }
-  std::string derived;
-  derived.reserve(descriptor->encoded_descriptor.size());
-  bool nullability_carrier_seen = false;
-  std::size_t offset = 0;
-  while (offset <= descriptor->encoded_descriptor.size()) {
-    const auto separator = descriptor->encoded_descriptor.find(';', offset);
-    const auto end = separator == std::string::npos
-                         ? descriptor->encoded_descriptor.size()
-                         : separator;
-    const std::string_view field(descriptor->encoded_descriptor.data() + offset,
-                                 end - offset);
-    if (!derived.empty()) derived.push_back(';');
-    if (field.starts_with("nullability=")) {
-      derived.append("nullability=nullable");
-      nullability_carrier_seen = true;
-    } else if (field.starts_with("nullable=")) {
-      derived.append("nullable=true");
-      nullability_carrier_seen = true;
-    } else {
-      derived.append(field);
-    }
-    if (separator == std::string::npos) break;
-    offset = separator + 1;
-  }
-  if (!nullability_carrier_seen) return false;
-  descriptor->encoded_descriptor = std::move(derived);
-  return true;
+  return DeriveCanonicalNullableDescriptorEncoding(descriptor);
 }
 
 bool HasAsofNullableDescriptorCarrier(
     const internal_api::EngineDescriptor& descriptor) {
+  if (descriptor.encoded_descriptor.starts_with("SBMETA")) {
+    internal_api::CatalogColumnMetadata fields;
+    if (!internal_api::DecodeCatalogColumnMetadata(descriptor.encoded_descriptor, &fields)) return false;
+    const auto canonical = fields.text.find("nullability");
+    const auto stored = fields.text.find("nullable");
+    if ((canonical == fields.text.end()) == (stored == fields.text.end())) return false;
+    return canonical != fields.text.end()
+        ? canonical->second == "nullable" || canonical->second == "non_null"
+        : stored->second == "true" || stored->second == "false";
+  }
   std::size_t offset = 0;
   bool carrier = false;
   while (offset <= descriptor.encoded_descriptor.size()) {
@@ -2118,7 +2100,13 @@ CanonicalTimeSeriesAsofJoinResultV1 ExecuteCanonicalTimeSeriesAsofJoinV1(
                   request.maximum_memory_bytes, &key_preflight_memory) &&
               AccountAsofString(
                   row.values[binding.timestamp_column_ordinal].encoded_value,
-                  request.maximum_memory_bytes, &key_preflight_memory);
+                  request.maximum_memory_bytes, &key_preflight_memory) &&
+              AccountAsofBytes(row.values[binding.metric_column_ordinal].binary_value.size(),
+                              request.maximum_memory_bytes, &key_preflight_memory) &&
+              AccountAsofBytes(row.values[binding.tags_column_ordinal].binary_value.size(),
+                              request.maximum_memory_bytes, &key_preflight_memory) &&
+              AccountAsofBytes(row.values[binding.timestamp_column_ordinal].binary_value.size(),
+                              request.maximum_memory_bytes, &key_preflight_memory);
         }
       };
   account_bound_key_cells(request.left_batch, request.left_binding);
@@ -2228,10 +2216,19 @@ CanonicalTimeSeriesAsofJoinResultV1 ExecuteCanonicalTimeSeriesAsofJoinV1(
       }
       const auto metric_identity = CanonicalSystemIdentityValue(
           row.values[binding.metric_column_ordinal]);
+      if (binding.timestamp_column_ordinal >= row.values.size()) return false;
+      const auto& timestamp_value = row.values[binding.timestamp_column_ordinal];
+      std::string timestamp_detail;
+      const bool native_timestamp = timestamp_value.descriptor.canonical_type_name == "timestamp" &&
+          timestamp_value.descriptor.encoded_descriptor.starts_with("SBMETA02");
+      const bool timestamp_valid = native_timestamp
+          ? internal_api::DecodeHistoricalTimestampNanosecondsV1(timestamp_value, &timestamp_ns, &timestamp_detail)
+          : exact_value(binding.timestamp_column_ordinal) &&
+              ParseCanonicalTimeSeriesTimestampNsV1(timestamp_value.encoded_value, &timestamp_ns);
       if (!metric_identity.has_value() ||
           *metric_identity != keys[ordinal].metric_uuid ||
           !exact_value(binding.tags_column_ordinal) ||
-          !exact_value(binding.timestamp_column_ordinal) ||
+          !timestamp_valid ||
           row.values[binding.tags_column_ordinal].encoded_value !=
               keys[ordinal].canonical_tags ||
           !CanonicalUuid(keys[ordinal].metric_uuid) ||
@@ -2239,9 +2236,6 @@ CanonicalTimeSeriesAsofJoinResultV1 ExecuteCanonicalTimeSeriesAsofJoinV1(
               keys[ordinal].canonical_tags, guarded_cancellation_requested,
               &tag_cancellation) ||
           tag_cancellation ||
-          !ParseCanonicalTimeSeriesTimestampNsV1(
-              row.values[binding.timestamp_column_ordinal].encoded_value,
-              &timestamp_ns) ||
           timestamp_ns != keys[ordinal].timestamp_ns) {
         return false;
       }

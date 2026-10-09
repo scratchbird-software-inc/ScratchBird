@@ -1,5 +1,6 @@
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/canonical_int64_literal_fixture.hpp"
+#include "../support/historical_timestamp_fixture.hpp"
 #include <tuple>
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
@@ -57,6 +58,9 @@ api::EngineDescriptor FixtureDescriptor(std::string type, api::EngineUuid occurr
                                        std::string attributes) {
   if (attributes == "canonical=" + type + ";nullable=false") attributes = "nullability=non_null";
   else if (attributes == "canonical=" + type + ";nullable=true") attributes = "nullability=nullable";
+  if (type == "timestamp_tz" || type == "timestamp")
+    return scratchbird::tests::HistoricalTimestampFixtureDescriptor(occurrence_uuid,
+        attributes == "nullability=nullable");
   auto descriptor = executor::MakeExecutorDescriptor(std::move(type), std::move(attributes));
   descriptor.descriptor_uuid = occurrence_uuid;
   return descriptor;
@@ -72,6 +76,8 @@ api::EngineTypedValue FixtureValue(const api::EngineDescriptor& descriptor,
 
 api::EngineTypedValue FixtureValue(const api::EngineDescriptor& descriptor,
                                    std::string text, bool is_null = false) {
+  if (descriptor.canonical_type_name == "timestamp")
+    return scratchbird::tests::HistoricalTimestampFixtureValue(descriptor, text, is_null);
   if (!is_null && (descriptor.canonical_type_name == "int32" ||
                   descriptor.canonical_type_name == "int64" ||
                   descriptor.canonical_type_name == "uint64" ||
@@ -1996,49 +2002,34 @@ std::string ExecutePrejoinSemanticReceipt(const std::string_view scenario) {
   }
   if (scenario == "JOIN-SCENARIO-TIMEZONE-V1") {
     auto descriptor = FixtureDescriptor(
-        "timestamp", Uuid(26'020), "nullability=non_null;timezone_profile_id="
-                         "timestamp_timezone_profile;"
-                         "fractional_second_precision=6");
-    descriptor.descriptor_uuid = Uuid(26'021);
-    descriptor.descriptor_kind = "scalar";
-    datatypes::TimezoneSeedAuthority authority;
-    authority.active = true;
-    authority.seed_pack_name = "qow_core_resource_catalog";
-    authority.seed_pack_version = "2026.07";
-    authority.content_hash = "sha256:qow-timezone-seed";
-    authority.timezone_records = 2;
-    authority.timezone_names = {"America/Toronto", "Etc/UTC"};
-    api::EngineTypedValue utc_output;
-    api::EngineTypedValue offset_output;
-    std::string utc_zone;
-    std::string offset_zone;
-    int utc_minutes = 1;
-    int offset_minutes = 1;
-    bool utc_seed = true;
-    bool offset_seed = true;
-    std::string utc_refusal;
-    std::string offset_refusal;
-    const auto utc_accepted = api::QowNormalizeCanonicalTimezoneScalarV1(
-        FixtureValue(descriptor,
-                                    "2026-08-11T20:00:00Z"),
-        authority, 41, 19, &utc_output, &utc_zone, &utc_minutes, &utc_seed,
-        &utc_refusal);
-    const auto offset_accepted = api::QowNormalizeCanonicalTimezoneScalarV1(
-        FixtureValue(descriptor,
-                                    "2026-08-11T15:00:00-05:00"),
-        authority, 41, 19, &offset_output, &offset_zone, &offset_minutes,
-        &offset_seed, &offset_refusal);
-    // Both normalized receipts describe the same UTC instant: local hour 20
-    // at offset zero and local hour 15 at -300 minutes.
-    return utc_accepted && offset_accepted && utc_refusal.empty() &&
-                   offset_refusal.empty() && utc_zone == "Z" &&
-                   offset_zone == "-05:00" && utc_minutes == 0 &&
-                   offset_minutes == -300 && !utc_seed && !offset_seed &&
-                   utc_output.encoded_value.find("local=2026-08-11T20:00:00") !=
-                       std::string::npos &&
-                   offset_output.encoded_value.find(
-                       "local=2026-08-11T15:00:00") != std::string::npos
-               ? "timezone:same-instant:Z=-05:00:41:19;common-key=1786478400"
+        "timestamp", Uuid(26'020), "nullability=non_null");
+    // Normalize explicit client spellings before execution. Their offsets
+    // require no named-zone seed, fake resource hash or invented generation.
+    const auto parse = [](const char* spelling) {
+      datatypes::ReferenceTemporalWireProfileRequest request;
+      request.wire_profile = "timestamp_timezone_profile";
+      request.encoded_value = spelling;
+      request.fractional_second_precision = 9;
+      request.require_timezone_seed = false;
+      return datatypes::ValidateReferenceTemporalWireProfile(request);
+    };
+    const auto utc = parse("2026-08-11T20:00:00Z");
+    const auto offset = parse("2026-08-11T15:00:00-05:00");
+    const auto utc_value = FixtureValue(descriptor, "2026-08-11T20:00:00Z");
+    const auto offset_value = FixtureValue(descriptor, "2026-08-11T15:00:00-05:00");
+    int comparison = 9;
+    std::string detail;
+    return utc.ok() && offset.ok() && utc.timezone_identifier == "Z" &&
+                   offset.timezone_identifier == "-05:00" && utc.timezone_offset_minutes == 0 &&
+                   offset.timezone_offset_minutes == -300 && !utc.used_timezone_seed && !offset.used_timezone_seed &&
+                   utc.comparable_utc_key_available && offset.comparable_utc_key_available &&
+                   utc.comparable_utc_whole_seconds == 1786478400 &&
+                   offset.comparable_utc_whole_seconds == 1786478400 &&
+                   utc.comparable_fractional_picoseconds == 0 && offset.comparable_fractional_picoseconds == 0 &&
+                   utc_value.binary_value == offset_value.binary_value &&
+                   api::QowCompareCanonicalNonCollatedScalarsV1(utc_value, offset_value, &comparison, &detail) &&
+                   comparison == 0 && detail.empty()
+               ? "timezone:same-instant:Z=-05:00;common-key=1786478400;native-bound"
                : "";
   }
   return "not_applicable";
@@ -2463,6 +2454,7 @@ SemanticJoinReceipt ExecuteAsofSemanticVector(
   request.physical_dag.nodes.back().transformation_rule_id =
       executor::CanonicalTimeSeriesAsofTransformationReceiptV1(request);
   const auto result = executor::ExecuteCanonicalTimeSeriesAsofJoinV1(request);
+  if (!result.diagnostic.ok) std::cerr << "ASOF " << scenario << ':' << result.diagnostic.detail << '\n';
   SemanticJoinReceipt receipt;
   receipt.accepted = result.diagnostic.ok;
   receipt.diagnostic_id = result.diagnostic.diagnostic_code;

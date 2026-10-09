@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "model_family_exchange.hpp"
+#include "query/historical_timestamp_scalar.hpp"
 
 #include <algorithm>
 #include <array>
@@ -38,6 +39,11 @@ bool CanonicalModelScalarCarrier(const internal_api::EngineTypedValue& value) {
     return false;
   if (value.descriptor.canonical_type_name == "uuid") {
     return value.encoded_value.empty() && value.binary_value.size() == 16;
+  }
+  if (value.descriptor.canonical_type_name == "timestamp") {
+    internal_api::HistoricalTimestampScalarPartsV1 checked;
+    std::string detail;
+    return internal_api::DecodeHistoricalTimestampScalarV1(value, &checked, &detail);
   }
   if (value.descriptor.canonical_type_name == "real64") {
     return DecodeReal64Value(value).ok();
@@ -1635,9 +1641,12 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
       const bool aggregate_count_type =
           !raw && !bucket && ordinal == 6 &&
           column.descriptor.canonical_type_name == "int64";
+      const bool historical_timestamp_type = expected_type == "timestamp_tz" &&
+          column.descriptor.canonical_type_name == "timestamp" &&
+          column.descriptor.encoded_descriptor.starts_with("SBMETA02");
       if (column.stable_name != expected_name || column.nullable ||
           (column.descriptor.canonical_type_name != expected_type &&
-           !aggregate_count_type)) {
+           !aggregate_count_type && !historical_timestamp_type)) {
         return Refuse(kModelTypedExchangeInvalid,
                       "time-series public descriptor contract drifted");
       }
@@ -1681,8 +1690,11 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
         }
       } else if (bucket) {
         std::int64_t bucket_start_ns = 0;
-        if (!CanonicalTimestampNs(row.values[0].encoded_value,
-                                  &bucket_start_ns) ||
+        std::string detail;
+        const bool timestamp_valid = row.values[0].descriptor.canonical_type_name == "timestamp"
+            ? internal_api::DecodeHistoricalTimestampNanosecondsV1(row.values[0], &bucket_start_ns, &detail)
+            : CanonicalTimestampNs(row.values[0].encoded_value, &bucket_start_ns);
+        if (!timestamp_valid ||
             bucket_start_ns != identity.bucket_start_ns) {
           return Refuse(
               kModelTypedExchangeInvalid,

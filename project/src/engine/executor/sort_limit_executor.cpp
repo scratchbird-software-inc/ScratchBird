@@ -11,6 +11,7 @@
 #include "sbl_numeric.hpp"
 #include "uuid.hpp"
 #include "catalog/column_metadata_codec.hpp"
+#include "query/historical_timestamp_scalar.hpp"
 
 #include <algorithm>
 #include <array>
@@ -511,6 +512,38 @@ bool CompareOrderValues(
   engine::ExecutionTypeDescriptor left_bound_descriptor;
   engine::ExecutionTypeDescriptor right_bound_descriptor;
   const bool has_null = left.isSqlNull() || right.isSqlNull();
+  if (type_id == dt::CanonicalTypeId::timestamp &&
+      (left.descriptor.encoded_descriptor.starts_with("SBMETA02") ||
+       right.descriptor.encoded_descriptor.starts_with("SBMETA02"))) {
+    internal_api::HistoricalTimestampScalarPartsV1 l, r;
+    const dt::DatatypeTypeCodecIdentityRowV1* left_identity = nullptr;
+    const dt::DatatypeTypeCodecIdentityRowV1* right_identity = nullptr;
+    internal_api::EngineUuid left_receipt, right_receipt;
+    if (!internal_api::DecodeHistoricalTimestampScalarV1(left, &l, refusal_detail, &left_identity, &left_receipt) ||
+        !internal_api::DecodeHistoricalTimestampScalarV1(right, &r, refusal_detail, &right_identity, &right_receipt))
+      return false;
+    if (left_identity != right_identity || left_receipt != right_receipt ||
+        term.expression_descriptor_id == 0 || !term.collation_uuid.is_nil() ||
+        term.resource_epoch != 0 || term.collation_epoch != 0 || term.timezone_epoch != 0 ||
+        !TextSeedAbsent(term.text_seed) || !TimezoneSeedAbsent(term.timezone_seed) ||
+        (term.direction != CanonicalDescriptorOrderDirection::ascending &&
+         term.direction != CanonicalDescriptorOrderDirection::descending) ||
+        (term.null_placement != CanonicalDescriptorNullPlacement::first &&
+         term.null_placement != CanonicalDescriptorNullPlacement::last)) {
+      *refusal_detail = "CTI.TEMPORAL.DESCRIPTOR_INVALID";
+      return false;
+    }
+    if (has_null) {
+      *comparison = l.is_null == r.is_null ? 0 :
+          (l.is_null == (term.null_placement == CanonicalDescriptorNullPlacement::first) ? -1 : 1);
+    } else {
+      *comparison = l.unix_seconds != r.unix_seconds
+          ? (l.unix_seconds < r.unix_seconds ? -1 : 1)
+          : l.nanoseconds < r.nanoseconds ? -1 : l.nanoseconds > r.nanoseconds ? 1 : 0;
+      if (term.direction == CanonicalDescriptorOrderDirection::descending) *comparison = -*comparison;
+    }
+    return true;
+  }
   const bool canonical_binary_order = type_id == dt::CanonicalTypeId::uuid ||
                                       (type_id == dt::CanonicalTypeId::int32 || type_id == dt::CanonicalTypeId::int64 ||
                                        type_id == dt::CanonicalTypeId::uint64 ||
@@ -870,6 +903,13 @@ static DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorOrderTermFields(
   if (type_id == dt::CanonicalTypeId::unknown) {
     return Refusal("QOW-DIAG-QRY-010-ORDER-REFUSAL-V1",
                    "order expression type is unknown");
+  }
+  if (type_id == dt::CanonicalTypeId::timestamp &&
+      descriptor.encoded_descriptor.starts_with("SBMETA02")) {
+    bool nullable = false;
+    std::string detail;
+    if (!internal_api::ResolveHistoricalTimestampScalarIdentityV1(descriptor, &nullable, &detail))
+      return Refusal("CTI.TEMPORAL.DESCRIPTOR_INVALID", std::move(detail));
   }
   if (type_id == dt::CanonicalTypeId::character) {
     const auto descriptor_collation = descriptor.collation_uuid;
@@ -1252,6 +1292,7 @@ CanonicalDescriptorEqualityKeyPlan PlanCanonicalDescriptorEqualityKey(
        type_id == dt::CanonicalTypeId::int32 || type_id == dt::CanonicalTypeId::int64 ||
        type_id == dt::CanonicalTypeId::uint64 ||
        type_id == dt::CanonicalTypeId::real64 ||
+       type_id == dt::CanonicalTypeId::timestamp ||
        type_id == dt::CanonicalTypeId::int128) && !value.binary_value.empty()
           ? value.binary_value.size()
           : value.encoded_value.size();
@@ -1461,6 +1502,20 @@ CanonicalDescriptorEqualityKeyResult MakeCanonicalDescriptorEqualityKey(
       value.descriptor.canonical_type_name);
   const auto timezone_profile = DescriptorField(
       value.descriptor.encoded_descriptor, "timezone_profile_id");
+  if (type_id == dt::CanonicalTypeId::timestamp &&
+      value.descriptor.encoded_descriptor.starts_with("SBMETA02")) {
+    // Self-comparison above validated the exact cohort and canonical tuple.
+    // Equality needs neither decimal rendering nor a timezone resource.
+    AppendEqualityKeyField(&key, std::string_view(
+        reinterpret_cast<const char*>(value.binary_value.data()), value.binary_value.size()));
+    if (key.size() > plan.retained_key_bytes || key.capacity() > plan.retained_key_bytes) {
+      result.diagnostic = Refusal("QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+                                 "historical timestamp equality key exceeded its allocation plan");
+      return result;
+    }
+    result.equality_key = std::move(key);
+    return result;
+  }
   if (!timezone_profile.empty()) {
     dt::ReferenceTemporalWireProfileRequest request;
     request.reference_engine = "scratchbird_native";

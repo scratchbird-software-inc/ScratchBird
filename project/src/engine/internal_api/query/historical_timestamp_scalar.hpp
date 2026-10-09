@@ -3,12 +3,14 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "relational_type_descriptor.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "datatype_binary_view.hpp"
 #include "datatype_catalog_manifest.hpp"
 
 #include <array>
 #include <bit>
+#include <limits>
 #include <string>
 
 namespace scratchbird::engine::internal_api {
@@ -96,14 +98,17 @@ ResolveHistoricalTimestampScalarIdentityV1(const EngineDescriptor& descriptor,
     const auto found = fields.text.find(key);
     return found != fields.text.end() && found->second == expected;
   };
-  if (!core::uuid::IsEngineIdentityUuid(id("statement_receipt_uuid")) ||
+  const auto receipt = id("statement_receipt_uuid");
+  const auto snapshot = id("catalog_snapshot_uuid");
+  const auto codec = id("codec_uuid");
+  if (!core::uuid::IsEngineIdentityUuid(receipt) ||
       (!text("nullability", "nullable") && !text("nullability", "non_null"))) return nullptr;
   const dt::DatatypeTypeCodecIdentityRowV1* matched = nullptr;
   for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
-    if (row.catalog_snapshot_uuid != id("catalog_snapshot_uuid") ||
+    if (row.catalog_snapshot_uuid != snapshot ||
         row.descriptor_uuid != descriptor.datatype_descriptor_uuid ||
         row.descriptor_generation != descriptor.datatype_descriptor_generation ||
-        row.type_uuid != descriptor.type_uuid || row.codec_uuid != id("codec_uuid") ||
+        row.type_uuid != descriptor.type_uuid || row.codec_uuid != codec ||
         !text("catalog_generation", std::to_string(row.catalog_generation)) ||
         !text("registry_generation", std::to_string(row.registry_generation)) ||
         !text("type_generation", std::to_string(row.type_generation)) ||
@@ -118,7 +123,7 @@ ResolveHistoricalTimestampScalarIdentityV1(const EngineDescriptor& descriptor,
   if (!dt::ValidateHistoricalTimestampUtcValueViewV1(*matched,
           {dt::CanonicalTypeId::timestamp, false, false, epoch.data(), epoch.size()}).ok()) return nullptr;
   *nullable = text("nullability", "nullable");
-  if (statement_receipt) *statement_receipt = id("statement_receipt_uuid");
+  if (statement_receipt) *statement_receipt = receipt;
   detail->clear();
   return matched;
 }
@@ -189,6 +194,56 @@ inline bool CompareHistoricalTimestampScalarsV1(const EngineTypedValue& left,
       ? (l.unix_seconds < r.unix_seconds ? -1 : 1)
       : l.nanoseconds < r.nanoseconds ? -1 : l.nanoseconds > r.nanoseconds ? 1 : 0;
   detail->clear();
+  return true;
+}
+
+// Time-series operation coordinates are signed nanoseconds, a narrower domain
+// than the historical tuple. Refuse overflow; never truncate or reinterpret.
+inline bool DecodeHistoricalTimestampNanosecondsV1(const EngineTypedValue& value,
+                                                  std::int64_t* output,
+                                                  std::string* detail) {
+  if (!output || !detail) return false;
+  HistoricalTimestampScalarPartsV1 parts;
+  if (!DecodeHistoricalTimestampScalarV1(value, &parts, detail)) return false;
+  constexpr std::int64_t billion = 1'000'000'000;
+  constexpr auto minimum = std::numeric_limits<std::int64_t>::min();
+  constexpr auto maximum = std::numeric_limits<std::int64_t>::max();
+  constexpr auto min_seconds = minimum / billion - 1;
+  constexpr auto min_nanos = minimum % billion + billion;
+  constexpr auto max_seconds = maximum / billion;
+  constexpr auto max_nanos = maximum % billion;
+  if (parts.is_null || parts.unix_seconds < min_seconds || parts.unix_seconds > max_seconds ||
+      (parts.unix_seconds == min_seconds && parts.nanoseconds < min_nanos) ||
+      (parts.unix_seconds == max_seconds && parts.nanoseconds > max_nanos)) {
+    *detail = "timestamp is outside the admitted signed nanosecond operation range";
+    return false;
+  }
+  *output = parts.unix_seconds == min_seconds
+      ? minimum + (static_cast<std::int64_t>(parts.nanoseconds) - min_nanos)
+      : parts.unix_seconds * billion + parts.nanoseconds;
+  detail->clear();
+  return true;
+}
+
+inline bool EncodeHistoricalTimestampNanosecondsV1(const EngineDescriptor& descriptor,
+                                                  std::int64_t nanoseconds,
+                                                  EngineTypedValue* output,
+                                                  std::string* detail) {
+  if (!output || !detail) return false;
+  constexpr std::int64_t billion = 1'000'000'000;
+  auto seconds = nanoseconds / billion;
+  auto nanos = nanoseconds % billion;
+  if (nanos < 0) { --seconds; nanos += billion; }
+  EngineTypedValue staged;
+  staged.descriptor = descriptor;
+  staged.setState(EngineValueState::value);
+  staged.binary_value.assign(16, 0);
+  const auto bits = static_cast<std::uint64_t>(seconds);
+  for (unsigned i = 0; i < 8; ++i) staged.binary_value[i] = static_cast<std::uint8_t>(bits >> (8*i));
+  for (unsigned i = 0; i < 4; ++i) staged.binary_value[8+i] = static_cast<std::uint8_t>(nanos >> (8*i));
+  HistoricalTimestampScalarPartsV1 checked;
+  if (!DecodeHistoricalTimestampScalarV1(staged, &checked, detail)) return false;
+  *output = std::move(staged);
   return true;
 }
 

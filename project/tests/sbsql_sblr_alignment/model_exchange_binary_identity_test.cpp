@@ -4,6 +4,7 @@
 // and publication only, never real provider/MGA authority or SQL execution.
 #include "../../src/engine/executor/model_family_exchange.hpp"
 #include "../../src/engine/optimizer/model_family_coordinator.hpp"
+#include "../support/historical_timestamp_fixture.hpp"
 
 #include <iostream>
 #include <array>
@@ -369,6 +370,51 @@ int main() {
       }
       Require(RejectedWithoutPublication(publish_spatial(invalid)),
               "spatial exchange published malformed native distance or incorrect tie order");
+    }
+    auto bucket_input = input;
+    bucket_input.family_id = "time_series";
+    bucket_input.operation_id = "TIME_SERIES_BUCKET";
+    bucket_input.output_descriptor_ids = {1};
+    auto bucket_provider = provider;
+    bucket_provider.output_descriptor_ids = {1};
+    bucket_provider.properties.uniqueness_id = "row_uuid";
+    bucket_provider.properties.ordering_id = "series_metric_timestamp_tags_row_ascending_v1";
+    const auto timestamp_descriptor = scratchbird::tests::HistoricalTimestampFixtureDescriptor(FixtureUuid(71));
+    const auto timestamp_value = scratchbird::tests::HistoricalTimestampFixtureValue(
+        timestamp_descriptor, "1970-01-01T00:00:01Z");
+    bucket_provider.batch.columns = {{"bucket_start", timestamp_descriptor, false, 1}};
+    bucket_provider.batch.rows = {{{timestamp_value}}};
+    ex::ModelProviderRowIdentityV1 bucket_identity;
+    bucket_identity.row_uuid = FixtureUuid(72);
+    bucket_identity.series_uuid = bucket_input.object_uuid;
+    bucket_identity.metric_uuid = FixtureUuid(73);
+    bucket_identity.tags = "{}";
+    bucket_identity.point_timestamp_ns = bucket_identity.bucket_start_ns = 1'000'000'000;
+    bucket_provider.ordered_row_identities = {bucket_identity};
+    const auto publish_bucket = [&](const auto& candidate) {
+      return ex::PublishModelFamilyExchangeV1(bucket_input, candidate, {});
+    };
+    const auto bucket_result = publish_bucket(bucket_provider);
+    if (!bucket_result.accepted) throw std::runtime_error(bucket_result.detail);
+    Require(bucket_result.root_publishable &&
+            bucket_result.output.batch.rows[0].values[0].binary_value == timestamp_value.binary_value,
+            "native bucket did not publish exact historical tuple");
+    for (unsigned mutation = 0; mutation < 8; ++mutation) {
+      auto bad = bucket_provider;
+      auto& value = bad.batch.rows[0].values[0];
+      if (mutation == 0) value.encoded_value = "1970-01-01T00:00:01Z";
+      if (mutation == 1) value.binary_value.pop_back();
+      if (mutation == 2) value.binary_value[12] = 1;
+      if (mutation == 3) value.binary_value[0] = 2;
+      if (mutation == 4) ++bad.ordered_row_identities[0].bucket_start_ns;
+      if (mutation == 5) value.setState(api::EngineValueState::sql_null);
+      if (mutation == 6) {
+        ++bad.batch.columns[0].descriptor.datatype_descriptor_generation;
+        value.descriptor = bad.batch.columns[0].descriptor;
+      }
+      if (mutation == 7) value.binary_value[7] = 0x7f;
+      Require(RejectedWithoutPublication(publish_bucket(bad)),
+              "bucket exchange published malformed tuple or substituted receipt");
     }
     std::cout << "PASS actual binary model exchange publication; component only\n";
     return 0;

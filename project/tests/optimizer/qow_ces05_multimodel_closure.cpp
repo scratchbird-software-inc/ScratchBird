@@ -2,6 +2,7 @@
 #include <charconv>
 #include "../support/engine_evidence_fixture.hpp"
 #include "../support/native_int64_fixture.hpp"
+#include "../support/historical_timestamp_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
@@ -215,6 +216,8 @@ executor::DescriptorBatch FamilyBatch(
         schema[column].second, "nullability=non_null");
     descriptor.descriptor_uuid = leg.output_descriptor_uuids[column];
     descriptor.descriptor_kind = "scalar";
+    if (schema[column].second == "timestamp_tz")
+      descriptor = scratchbird::tests::HistoricalTimestampFixtureDescriptor(leg.output_descriptor_uuids[column]);
     batch.columns.push_back({schema[column].first, descriptor, false,
                              leg.output_descriptor_ids[column]});
   }
@@ -238,6 +241,9 @@ executor::DescriptorBatch FamilyBatch(
     auto value = executor::MakeExecutorValue(batch.columns[column].descriptor, "");
     if (const auto* identity = std::get_if<executor::PhysicalUuid>(&values[column]))
       value.binary_value.assign(identity->bytes.begin(), identity->bytes.end());
+    else if (schema[column].second == "timestamp_tz")
+      value = scratchbird::tests::HistoricalTimestampFixtureValue(batch.columns[column].descriptor,
+          std::get<std::string>(values[column]));
     else if (schema[column].second == "int64")
       value = scratchbird::tests::NativeInt64Fixture(batch.columns[column].descriptor,
                                                     std::get<std::string>(values[column]));
@@ -372,9 +378,10 @@ executor::ModelFamilyExecutionRequestV1 FullNineExecution(
       identity.series_uuid = input.object_uuid;
       identity.metric_uuid = Uuid(9204);
       identity.tags = "{}";
-      executor::ParseCanonicalTimeSeriesTimestampNsV1(
-          batch.rows[0].values[0].encoded_value,
-          &identity.bucket_start_ns);
+      std::string detail;
+      if (!scratchbird::engine::internal_api::DecodeHistoricalTimestampNanosecondsV1(
+              batch.rows[0].values[0], &identity.bucket_start_ns, &detail))
+        throw std::runtime_error(detail);
     } else if (input.family_id == "vector") {
       identity.row_uuid = cell_uuid(0);
       const auto distance = executor::DecodeReal64Value(batch.rows[0].values[1]);
