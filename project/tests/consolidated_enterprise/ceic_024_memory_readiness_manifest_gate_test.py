@@ -56,6 +56,20 @@ def main() -> int:
     args = parser.parse_args()
 
     repo_root = pathlib.Path(args.repo_root).resolve()
+    sys.dont_write_bytecode = True
+    sys.path.insert(0, str(repo_root / "project/tools"))
+    import ceic_memory_readiness_manifest as readiness
+    matrix = (repo_root / "project/cmake/CommercialReadinessProductionBuildGateMatrix.cmake").read_text()
+    readiness.validate_production_gate_matrix(matrix)
+    for replacement in ("_sb_crp_gate_case(external_provider_claim TRUE",
+                        "_sb_crp_gate_case(no_external_provider_claim FALSE"):
+        changed = matrix.replace("_sb_crp_gate_case(external_provider_claim FALSE", replacement)
+        try:
+            readiness.validate_production_gate_matrix(changed)
+        except readiness.ManifestError:
+            pass
+        else:
+            raise AssertionError("unqualified or absent external-provider refusal accepted")
     tool = repo_root / "project/tools/ceic_memory_readiness_manifest.py"
     committed_manifest = (
         repo_root

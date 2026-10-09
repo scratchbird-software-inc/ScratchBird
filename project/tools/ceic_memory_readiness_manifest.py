@@ -495,6 +495,20 @@ def validate_integrated_release_proof(
                 raise ManifestError(f"{artifact_id} is present but missing: {row.get('path', '')}")
 
 
+def validate_production_gate_matrix(production_gate: str) -> None:
+    for phrase in (
+        "CRP-PRODUCTION-BUILD-SAFETY-GATE-MATRIX",
+        "_sb_crp_gate_case(clean_release TRUE",
+        "_sb_crp_gate_case(fixture_auth FALSE",
+        "_sb_crp_gate_case(cluster_stub_claim FALSE",
+        # A supplied library path is not provider qualification. Require the
+        # exact case, not a substring of no_external_provider_claim.
+        "_sb_crp_gate_case(external_provider_claim FALSE",
+    ):
+        if phrase not in production_gate:
+            raise ManifestError(f"production gate matrix missing {phrase}")
+
+
 def validate_static_inputs(repo_root: pathlib.Path) -> None:
     for anchor in SOURCE_ANCHORS:
         require_search_key(repo_root, pathlib.Path(anchor.path), anchor.search_key)
@@ -510,15 +524,7 @@ def validate_static_inputs(repo_root: pathlib.Path) -> None:
     production_gate = read_text(
         repo_root, pathlib.Path("project/cmake/CommercialReadinessProductionBuildGateMatrix.cmake")
     )
-    for phrase in (
-        "CRP-PRODUCTION-BUILD-SAFETY-GATE-MATRIX",
-        "clean_release TRUE",
-        "fixture_auth FALSE",
-        "cluster_stub_claim FALSE",
-        "external_provider_claim TRUE",
-    ):
-        if phrase not in production_gate:
-            raise ManifestError(f"production gate matrix missing {phrase}")
+    validate_production_gate_matrix(production_gate)
 
     lane_manifest_path = repo_root / "project/tools/ceic_memory_verification_lanes.json"
     lanes = json.loads(lane_manifest_path.read_text(encoding="utf-8"))

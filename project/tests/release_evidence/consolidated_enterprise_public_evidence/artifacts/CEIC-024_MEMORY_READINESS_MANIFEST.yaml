@@ -3,7 +3,7 @@
   "schema_version": 1,
   "manifest_kind": "memory_readiness_manifest",
   "search_key": "CEIC_024_MEMORY_READINESS_MANIFEST",
-  "manifest_uuid": "aeb8cf0c-3bcc-5f9f-99ac-76735dbe33eb",
+  "manifest_uuid": "d97cf795-b6c4-57ec-83fb-93b1eba67e85",
   "subsystem": "memory",
   "slice_ids": [
     "CEIC-010",
@@ -27,10 +27,10 @@
     "CEIC-028",
     "CEIC-029"
   ],
-  "source_commit": "ed05d82f3469a2f4da69eafafcd22929333f7ed8",
+  "source_commit": "4f49a95282310fda9a9c651b17e8e2edd9161f3a",
   "source_branch": "main",
-  "source_evidence_digest": "ad82f1402b85afe6259180d5dd1bc7330d6dfa8a5dd05381ea15ef2eb61da16c",
-  "generated_at_utc": "2026-08-29T20:17:39-04:00",
+  "source_evidence_digest": "48c8922dc4228a07c336733eb66092b5d16473bc0f7ca946e038c92488cd9fe7",
+  "generated_at_utc": "2026-10-08T23:46:00-04:00",
   "generated_by": "project/tools/ceic_memory_readiness_manifest.py#CEIC_024_MEMORY_READINESS_MANIFEST_TOOL",
   "build_profile": "focused_ceic_memory_manifest",
   "authority_boundary": {
@@ -129,7 +129,7 @@
       "search_key": "CEIC-010",
       "state": "implemented",
       "surface": "sharded accounting ledger",
-      "sha256": "61e5dc449d103d67019cbb37d5c67d4840bad885d275365bcfb2dd48332b6b5b"
+      "sha256": "e8d92b2d7faa0f78ba367882de0da856a2bcb66b8354c217c6f8293ee2670c03"
     },
     {
       "slice_id": "CEIC-011",
@@ -137,7 +137,7 @@
       "search_key": "CEIC-011",
       "state": "implemented",
       "surface": "hierarchical reservation ledger",
-      "sha256": "03fe67f00317211d990c9bb05b00999e2cbe219bec8564c48344bee183359d16"
+      "sha256": "a0f0f482395ce5d1655c420731235c23658e463bc359f2a94b46936f2cf3be90"
     },
     {
       "slice_id": "CEIC-012",
@@ -145,7 +145,7 @@
       "search_key": "CEIC-012_QUERY_OPERATOR_PLANNER_PARSER_ARENAS",
       "state": "implemented",
       "surface": "reservation-backed arenas",
-      "sha256": "f76f793e96571148831aaeaa60a75c8d8e7cf5325249ecf4894618df1c4f7e26"
+      "sha256": "e61e6b553088a1ba32a65b1fb56a7a649937514e537fa766cf9e19ae281c4b11"
     },
     {
       "slice_id": "CEIC-013",
@@ -177,7 +177,7 @@
       "search_key": "CEIC-016_FOREIGN_MEMORY_RESERVATION_COVERAGE",
       "state": "implemented",
       "surface": "foreign/native memory reservation",
-      "sha256": "7c6d0d6d439abbfa2361dcfdc6347db1f287bcf13af33839a9ae4a2d3608e5b2"
+      "sha256": "a7ade31197f6b6e9c6c3b8eb3aa7c7f7bfba9d8f9be45de4bead2f72b91146c8"
     },
     {
       "slice_id": "CEIC-017",
@@ -185,7 +185,7 @@
       "search_key": "CEIC-017_MEMORY_PRESSURE_STATE_MACHINE",
       "state": "implemented",
       "surface": "pressure state machine",
-      "sha256": "97837cfc6c2e2a84792433f218f91b7752bffeb47977aad99aa1b2b06d38d5b3"
+      "sha256": "b778f22a681eaf43a90243b62dcc6b302a7df9f6194ab0405fac8fb66ae5cd43"
     },
     {
       "slice_id": "CEIC-018",
@@ -193,7 +193,7 @@
       "search_key": "TempWorkspaceBudgetReservationEvidence",
       "state": "implemented",
       "surface": "secure temp spill reservation",
-      "sha256": "8bfcdb22bfcba155cbb8fab21cd981921b6da77701bae398eacac3bc5b8f868d"
+      "sha256": "5d2cb9f775ace7db8500b84170a5b6361f3d720877b0b3b2b4d5f3490abed210"
     },
     {
       "slice_id": "CEIC-019",
@@ -201,7 +201,7 @@
       "search_key": "MMCH_PAGE_CACHE_SHARDED_FRAME_TABLE",
       "state": "implemented",
       "surface": "page-cache frame ownership",
-      "sha256": "112c6dc4368c657365917bea691a3bb615c5be0f4048b061de9a170f78b6af0b"
+      "sha256": "e4ba13b750833b2e09c7527ab243cd27ad43ea6c955d5856b1e54a2309b6c2aa"
     },
     {
       "slice_id": "CEIC-020",
@@ -209,7 +209,7 @@
       "search_key": "CEIC-020_RESULT_CURSOR_PLAN_CACHE_PREPARED_MEMORY_GOVERNANCE",
       "state": "implemented",
       "surface": "cursor, plan-cache, prepared memory governance",
-      "sha256": "19fddf12df4dc7e81c88cbd3099c8bb95b6822588b063e10b13d57367145ca7b"
+      "sha256": "18332ba179837a79d57f557391727de232a0d1999f4e74f368fb1702975d9949"
     },
     {
       "slice_id": "CEIC-021",
@@ -233,7 +233,7 @@
       "search_key": "CEIC-023_MEMORY_SUPPORT_BUNDLE_LOW_MEMORY",
       "state": "implemented",
       "surface": "bounded low-memory support bundle",
-      "sha256": "bd371713526fe5ba87f02c4b6d508cca0658a9b1a6b235a590011ae510eddf9c"
+      "sha256": "08f8693c296deb2a16758d199bba598f5c1e061a512e9e7dd6b524d09938fdc3"
     },
     {
       "slice_id": "CEIC-024",
@@ -241,7 +241,7 @@
       "search_key": "CEIC_024_MEMORY_READINESS_MANIFEST_TOOL",
       "state": "generated",
       "surface": "memory readiness manifest producer",
-      "sha256": "e680da21d0e0d627d31b2d9cf4e39523f23b4ee8815e3c586efa2d8e5cb61752"
+      "sha256": "6c6b905af52360df368821211b1b4e7e873f4be07c395953fa7a72869ec7877c"
     },
     {
       "slice_id": "CEIC-025",
@@ -249,7 +249,7 @@
       "search_key": "CEIC-025_MULTI_TENANT_MEMORY_FAIRNESS",
       "state": "implemented",
       "surface": "multi-tenant memory fairness scheduler",
-      "sha256": "53613421a48da0ee5ca8e20954e1038739ebc8e072698e62ec7175fe041a9d7f"
+      "sha256": "9ae6b146c076f64f1c8c86d3d35615a3b6d1d5c0a4276f4aa1a8c7afdaf70252"
     },
     {
       "slice_id": "CEIC-026",
@@ -257,7 +257,7 @@
       "search_key": "CEIC-026_MEMORY_CLASS_POLICY_LEASES",
       "state": "implemented",
       "surface": "memory class policies and budget leases",
-      "sha256": "f4b1df9eb662289d1d61705bf4c8ece0d13b2abea8333fb1584d6dc6bc05624b"
+      "sha256": "b3cb47abbd5ced61348b0a5c9b94a5b2f72c5703d14baf1df1e6bc591dbbbe17"
     },
     {
       "slice_id": "CEIC-027",
@@ -287,18 +287,18 @@
   "input_records": [
     {
       "path": "project/cmake/CommercialReadinessProductionBuildGateMatrix.cmake",
-      "sha256": "1abd1b8fdcfd5ed3f1dab30d71911681aad1a2985b0679a2694f5c2b5cf98a59",
-      "bytes": 9432
+      "sha256": "9d9d3d5b0b6650cdc797805d42d30d02ca1434572d41bc7a98d31c790b712440",
+      "bytes": 9433
     },
     {
       "path": "project/src/core/memory/foreign_memory_reservation.cpp",
-      "sha256": "7c6d0d6d439abbfa2361dcfdc6347db1f287bcf13af33839a9ae4a2d3608e5b2",
-      "bytes": 41831
+      "sha256": "a7ade31197f6b6e9c6c3b8eb3aa7c7f7bfba9d8f9be45de4bead2f72b91146c8",
+      "bytes": 46395
     },
     {
       "path": "project/src/core/memory/hierarchical_memory_budget_ledger.hpp",
-      "sha256": "03fe67f00317211d990c9bb05b00999e2cbe219bec8564c48344bee183359d16",
-      "bytes": 10449
+      "sha256": "a0f0f482395ce5d1655c420731235c23658e463bc359f2a94b46936f2cf3be90",
+      "bytes": 15065
     },
     {
       "path": "project/src/core/memory/memory_adaptive_batch_working_set.hpp",
@@ -307,13 +307,13 @@
     },
     {
       "path": "project/src/core/memory/memory_class_policy_lease.hpp",
-      "sha256": "f4b1df9eb662289d1d61705bf4c8ece0d13b2abea8333fb1584d6dc6bc05624b",
-      "bytes": 13718
+      "sha256": "b3cb47abbd5ced61348b0a5c9b94a5b2f72c5703d14baf1df1e6bc591dbbbe17",
+      "bytes": 14366
     },
     {
       "path": "project/src/core/memory/memory_fairness_scheduler.hpp",
-      "sha256": "53613421a48da0ee5ca8e20954e1038739ebc8e072698e62ec7175fe041a9d7f",
-      "bytes": 8269
+      "sha256": "9ae6b146c076f64f1c8c86d3d35615a3b6d1d5c0a4276f4aa1a8c7afdaf70252",
+      "bytes": 8596
     },
     {
       "path": "project/src/core/memory/memory_fragmentation_profiler.hpp",
@@ -322,13 +322,13 @@
     },
     {
       "path": "project/src/core/memory/memory_pressure_response.cpp",
-      "sha256": "97837cfc6c2e2a84792433f218f91b7752bffeb47977aad99aa1b2b06d38d5b3",
-      "bytes": 52958
+      "sha256": "b778f22a681eaf43a90243b62dcc6b302a7df9f6194ab0405fac8fb66ae5cd43",
+      "bytes": 56053
     },
     {
       "path": "project/src/core/memory/memory_support_bundle.cpp",
-      "sha256": "bd371713526fe5ba87f02c4b6d508cca0658a9b1a6b235a590011ae510eddf9c",
-      "bytes": 33971
+      "sha256": "08f8693c296deb2a16758d199bba598f5c1e061a512e9e7dd6b524d09938fdc3",
+      "bytes": 39403
     },
     {
       "path": "project/src/core/memory/plugin_native_memory_sandbox.hpp",
@@ -337,23 +337,23 @@
     },
     {
       "path": "project/src/core/memory/reservation_backed_memory_resource.cpp",
-      "sha256": "f76f793e96571148831aaeaa60a75c8d8e7cf5325249ecf4894618df1c4f7e26",
-      "bytes": 26411
+      "sha256": "e61e6b553088a1ba32a65b1fb56a7a649937514e537fa766cf9e19ae281c4b11",
+      "bytes": 33348
     },
     {
       "path": "project/src/core/memory/result_cursor_plan_memory_governance.cpp",
-      "sha256": "19fddf12df4dc7e81c88cbd3099c8bb95b6822588b063e10b13d57367145ca7b",
-      "bytes": 51863
+      "sha256": "18332ba179837a79d57f557391727de232a0d1999f4e74f368fb1702975d9949",
+      "bytes": 52785
     },
     {
       "path": "project/src/core/memory/sharded_memory_accounting_ledger.hpp",
-      "sha256": "61e5dc449d103d67019cbb37d5c67d4840bad885d275365bcfb2dd48332b6b5b",
-      "bytes": 6117
+      "sha256": "e8d92b2d7faa0f78ba367882de0da856a2bcb66b8354c217c6f8293ee2670c03",
+      "bytes": 8068
     },
     {
       "path": "project/src/core/memory/temp_workspace_lifecycle.hpp",
-      "sha256": "8bfcdb22bfcba155cbb8fab21cd981921b6da77701bae398eacac3bc5b8f868d",
-      "bytes": 14977
+      "sha256": "5d2cb9f775ace7db8500b84170a5b6361f3d720877b0b3b2b4d5f3490abed210",
+      "bytes": 15640
     },
     {
       "path": "project/src/core/memory/thread_local_memory_cache.cpp",
@@ -367,13 +367,13 @@
     },
     {
       "path": "project/src/storage/page/page_cache.cpp",
-      "sha256": "112c6dc4368c657365917bea691a3bb615c5be0f4048b061de9a170f78b6af0b",
-      "bytes": 67500
+      "sha256": "e4ba13b750833b2e09c7527ab243cd27ad43ea6c955d5856b1e54a2309b6c2aa",
+      "bytes": 69172
     },
     {
       "path": "project/tests/consolidated_enterprise/CMakeLists.txt",
-      "sha256": "d453141a1e46454ec0920351e52ea48466a16de5b94aee8a0d367249d29d1fa4",
-      "bytes": 51048
+      "sha256": "76d3519f85c4de34fda76f21379a1fd64952fb059e68e87b4195b9783f99f43e",
+      "bytes": 52925
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/ARTIFACT_INDEX.csv",
@@ -547,8 +547,8 @@
     },
     {
       "path": "project/tools/ceic_memory_readiness_manifest.py",
-      "sha256": "e680da21d0e0d627d31b2d9cf4e39523f23b4ee8815e3c586efa2d8e5cb61752",
-      "bytes": 38839
+      "sha256": "6c6b905af52360df368821211b1b4e7e873f4be07c395953fa7a72869ec7877c",
+      "bytes": 39180
     },
     {
       "path": "project/tools/ceic_memory_source_gate.py",
@@ -557,8 +557,8 @@
     },
     {
       "path": "project/tools/ceic_memory_source_gate_allowlist.json",
-      "sha256": "c838cc6ba969390cb4f98ff02bab8a28f2f36e9dd92e497c804bd8012a95a118",
-      "bytes": 4330
+      "sha256": "bc8c26effd678eb880242f26c1f39d631cb9236d3d5a4632873f1d4c847ba156",
+      "bytes": 4309
     },
     {
       "path": "project/tools/ceic_memory_verification_lanes.json",
