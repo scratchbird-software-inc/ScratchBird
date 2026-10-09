@@ -9,6 +9,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include "catalog_index_profile.hpp"
 #include "index_statistics_lifecycle.hpp"
 #include "query/optimizer_plan_lifecycle.hpp"
@@ -41,8 +42,8 @@ static_assert(
 static_assert(!std::is_default_constructible_v<
               plan_api::EngineOptimizerPlanStatementUseReceipt>);
 
-inline constexpr auto kIndexUuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-0000-0000-000000000031");
-inline constexpr auto kRelationUuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-0000-0000-000000000032");
+inline constexpr auto kIndexUuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000031");
+inline constexpr auto kRelationUuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000032");
 inline constexpr auto kPlanUuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000101");
 inline constexpr auto kBoundSblrTreeUuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000102");
 inline constexpr auto kCatalogEpochUuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000103");
@@ -55,8 +56,7 @@ inline constexpr std::string_view kQueryFingerprint =
     "query:catalog-index-lookup:v2";
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -73,7 +73,8 @@ std::string DiagnosticCode(const TResult& result) {
 template <typename TResult>
 void RequireOk(const TResult& result, std::string_view message) {
   if (!result.ok) {
-    std::cerr << DiagnosticCode(result) << '\n';
+    for (const auto& diagnostic : result.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   }
   Require(result.ok, message);
 }
@@ -195,17 +196,15 @@ void RequireCoreDiagnostic(const index_api::IndexStatisticsLifecycleResult& resu
   Require(result.diagnostic.diagnostic_code == expected, message);
 }
 
-std::uint64_t CurrentUnixMillis() {
-  return static_cast<std::uint64_t>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::system_clock::now().time_since_epoch())
-          .count());
+scratchbird::tests::OwnedTempDirectory& TestDirectory() {
+  static scratchbird::tests::OwnedTempDirectory directory;
+  return directory;
 }
 
 std::filesystem::path TestPath(std::string_view label) {
-  return std::filesystem::temp_directory_path() /
-         ("sb_dblc_013v_" + std::string(label) + "_" +
-          std::to_string(CurrentUnixMillis()) + ".sbdb");
+  static std::uint64_t sequence = 0;
+  return TestDirectory().path() /
+         (std::string(label) + "_" + std::to_string(++sequence) + ".sbdb");
 }
 
 exec::PhysicalMgaStatementContext StatementContext(
@@ -391,8 +390,8 @@ plan_api::EngineOptimizerCachePlanRequest CacheRequest(
   request.context = EngineContext(path, dag.mga_statement_context, dag);
   request.plan_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000101");
   request.query_fingerprint = std::string(kQueryFingerprint);
-  request.relation_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-0000-0000-000000000032");
-  request.index_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-0000-0000-000000000031");
+  request.relation_uuid = kRelationUuid;
+  request.index_uuid = kIndexUuid;
   request.plan_shape_digest = "shape:index-point-lookup:v2";
   request.mga_authority = authority;
   request.selected_physical_dag = dag;
@@ -413,7 +412,7 @@ plan_api::EngineOptimizerValidateCachedPlanRequest ValidateRequest(
   request.context = EngineContext(path, dag.mga_statement_context, dag);
   request.plan_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000101");
   request.query_fingerprint = std::string(kQueryFingerprint);
-  request.index_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-0000-0000-000000000031");
+  request.index_uuid = kIndexUuid;
   request.mga_authority = authority;
   request.selected_physical_dag = dag;
   request.selected_catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000103");
@@ -481,6 +480,8 @@ platform::TypedUuid MakeTypedUuid(platform::UuidKind kind, platform::byte salt) 
   uuid.kind = kind;
   uuid.value.bytes[0] = 0x01;
   uuid.value.bytes[1] = 0x9e;
+  uuid.value.bytes[6] = 0x70;
+  uuid.value.bytes[8] = 0x80;
   uuid.value.bytes[15] = salt;
   return uuid;
 }
@@ -721,6 +722,18 @@ void TestOptimizerPlanPublicationAndStatementUse() {
   const auto cache_authority = Authority(dag_a, cache_resolver);
   const auto cache =
       CacheRequest(path, descriptor, statistics, dag_a, cache_authority);
+  for (bool relation : {false, true}) for (bool version : {false, true}) {
+    auto invalid = cache;
+    auto& identity = relation ? invalid.relation_uuid : invalid.index_uuid;
+    identity.bytes[version ? 6 : 8] = version ? 0x40 : 0;
+    const auto refused = plan_api::EngineOptimizerCachePlan(invalid);
+    RequireDiagnostic(refused, "OPTIMIZER.PLAN.INVALID_REQUEST",
+                      "DBLC-013V non-system UUID admitted as cache object identity");
+    RequireNoCacheExposure(refused, "DBLC-013V invalid UUID exposed cache authority");
+    Require(!std::filesystem::exists(path.string() + ".sb.optimizer_plan_events"),
+            "DBLC-013V invalid UUID persisted a cache event");
+  }
+  cache_resolver->calls = 0;
   const auto cached = plan_api::EngineOptimizerCachePlan(cache);
   RequireOk(cached, "DBLC-013V corrected plan cache publication failed");
   Require(cache_resolver->calls == 2,
@@ -1337,14 +1350,24 @@ void TestOptimizerPlanPublicationTransitionRefusal() {
                         std::ios::binary);
   const std::string journal_bytes((std::istreambuf_iterator<char>(journal)),
                                   std::istreambuf_iterator<char>());
-  Require(journal.is_open() &&
-              journal_bytes.find("SBPLANL2\t2\tCACHE_PLAN") !=
-                         std::string::npos &&
-              journal_bytes.find("creator_tx") == std::string::npos &&
-              journal_bytes.find("statement_uuid") == std::string::npos &&
-              journal_bytes.find("statement_snapshot") == std::string::npos &&
-              journal_bytes.find("visibility") == std::string::npos &&
-              journal_bytes.find("finality") == std::string::npos,
+  const auto records = ReadJournalRecords(journal_bytes);
+  Require(journal.is_open() && records.size() == 1 &&
+              records.front().text.at("event_kind") == "CACHE_PLAN" &&
+              records.front().text.at("metadata_only") == "1" &&
+              plan_api::BinaryCatalogUuid(records.front(), "index_uuid") == kIndexUuid &&
+              plan_api::BinaryCatalogUuid(records.front(), "relation_uuid") == kRelationUuid,
+          "DBLC-013V refused publication did not retain exact binary metadata");
+  const auto permitted = [](const auto& fields) {
+    return std::none_of(fields.begin(), fields.end(), [](const auto& field) {
+      const auto& key = field.first;
+      return key.find("creator_tx") != std::string::npos ||
+             key.find("statement_uuid") != std::string::npos ||
+             key.find("statement_snapshot") != std::string::npos ||
+             key.find("visibility") != std::string::npos ||
+             key.find("finality") != std::string::npos;
+    });
+  };
+  Require(permitted(records.front().text) && permitted(records.front().identities),
           "DBLC-013V refused publication persisted statement authority");
 
   Cleanup(path);
@@ -1374,7 +1397,7 @@ void TestOptimizerPlanInvalidationAndRecovery() {
 
   plan_api::EngineOptimizerInvalidatePlanCacheRequest incomplete;
   incomplete.context = context;
-  incomplete.index_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-0000-0000-000000000031");
+  incomplete.index_uuid = kIndexUuid;
   incomplete.reason = "incomplete_generation_vector";
   incomplete.new_index_generation = statistics.index_generation + 1;
   incomplete.new_statistics_generation = statistics.statistics_generation;
@@ -1595,7 +1618,7 @@ void TestOptimizerPlanStrictCorruptionRefusal() {
 
 }  // namespace
 
-int main() {
+int main() try {
   TestIndexBuildDropRebuildTransitions();
   TestStatisticsEpochsAndStaleRefusal();
   TestCatalogProfileCoupling();
@@ -1606,5 +1629,9 @@ int main() {
   TestOptimizerPlanPublicationTransitionRefusal();
   TestOptimizerPlanInvalidationAndRecovery();
   TestOptimizerPlanStrictCorruptionRefusal();
+  TestDirectory().Cleanup();
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }
