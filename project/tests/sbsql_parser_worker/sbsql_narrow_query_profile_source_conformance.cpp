@@ -141,6 +141,13 @@ std::string TextDescriptor(bool nullable) {
   return FixtureColumnDescriptor("text",kTextDescriptorUuid,kTextTypeUuid,nullable);
 }
 
+std::string StoredInt32(std::int32_t value) {
+  std::string bytes(4, '\0');
+  for (unsigned i = 0; i < 4; ++i)
+    bytes[i] = static_cast<char>(static_cast<std::uint32_t>(value) >> (8 * i));
+  return bytes;
+}
+
 struct Fixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
@@ -278,12 +285,12 @@ Fixture MakeFixture() {
     row.table_uuid = fixture.relation_uuid;
     row.row_uuid = NewUuid(platform::UuidKind::object);
     row.version_uuid = NewUuid(platform::UuidKind::object);
-    row.values = {{"id", std::to_string(fixture.ids[index])},
+    row.values = {{"id", StoredInt32(fixture.ids[index])},
                   {"k1", k1[index].has_value()
-                             ? api::CrudStoredValue(std::to_string(*k1[index]))
+                             ? api::CrudStoredValue(StoredInt32(*k1[index]))
                              : api::CrudStoredValue::SqlNull()},
                   {"k2", k2[index].has_value()
-                             ? api::CrudStoredValue(std::to_string(*k2[index]))
+                             ? api::CrudStoredValue(StoredInt32(*k2[index]))
                              : api::CrudStoredValue::SqlNull()},
                   {"payload", payload[index].has_value()
                                   ? api::CrudStoredValue(*payload[index])
@@ -881,7 +888,7 @@ void TestIndependentDecodedPassCeiling() {
   row.table_uuid = fixture.relation_uuid;
   row.row_uuid = NewUuid(platform::UuidKind::object);
   row.version_uuid = NewUuid(platform::UuidKind::object);
-  row.values = {{"id", "60"},
+  row.values = {{"id", StoredInt32(60)},
                 {"k1", "3"},
                 {"k2", "11"},
                 {"payload", std::string(80ull * 1024ull, 'x')}};

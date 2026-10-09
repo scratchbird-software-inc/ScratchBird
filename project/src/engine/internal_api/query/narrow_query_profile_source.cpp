@@ -14,6 +14,8 @@
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_operations.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "mga_relation_store/stored_integer_descriptor.hpp"
+#include "engine/executor/descriptor_value_runtime.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -198,7 +200,6 @@ struct CanonicalCell {
   bool sql_null = false;
   datatypes::CanonicalTypeId type_id =
       datatypes::CanonicalTypeId::unknown;
-  std::string canonical_text;
   std::vector<std::uint8_t> canonical_payload;
 };
 
@@ -252,8 +253,7 @@ struct OrderingRuntime {
 };
 
 bool CellMemory(const CanonicalCell& cell, std::uint64_t* total) {
-  return AddStringCapacity(cell.canonical_text, total) &&
-         AddCapacityBytes(cell.canonical_payload, total);
+  return AddCapacityBytes(cell.canonical_payload, total);
 }
 
 bool RowMemory(const SourceRow& row, std::uint64_t* total) {
@@ -370,19 +370,6 @@ std::optional<std::size_t> FindColumnIndex(
   return std::nullopt;
 }
 
-bool EncodeSignedLittleEndian(std::int64_t value,
-                             std::size_t width,
-                             std::vector<std::uint8_t>* encoded) {
-  if (encoded == nullptr || (width != 4 && width != 8)) return false;
-  encoded->assign(width, 0);
-  const auto bits = static_cast<std::uint64_t>(value);
-  for (std::size_t index = 0; index < width; ++index) {
-    (*encoded)[index] =
-        static_cast<std::uint8_t>((bits >> (index * 8u)) & 0xffu);
-  }
-  return true;
-}
-
 bool CanonicalizeStoredCell(const BoundColumn& column,
                             const CrudRowVersionRecord& row,
                             CanonicalCell* cell,
@@ -442,7 +429,6 @@ bool CanonicalizeStoredCell(const BoundColumn& column,
           column.column_uuid);
       return false;
     }
-    cell->canonical_text.assign(stored.value);
     cell->canonical_payload.assign(stored.value.begin(), stored.value.end());
     return true;
   }
@@ -455,36 +441,18 @@ bool CanonicalizeStoredCell(const BoundColumn& column,
     return false;
   }
 
-  datatypes::DatatypeCastRequest cast;
-  cast.value.type_id = type_id;
-  cast.value.encoded_value.assign(stored.value);
-  cast.value.is_null = false;
-  cast.target_type_id = type_id;
-  cast.explicit_cast = false;
-  const auto canonical = datatypes::CastDatatypeValue(cast);
-  if (!canonical.ok() || canonical.value.is_null) {
+  // Descriptor admission already bound the exact integer codec to this
+  // statement's catalog. Every fixed-width bit pattern is a valid signed
+  // value; no enum-only identity cast or decimal round trip is involved.
+  const auto width = type_id == datatypes::CanonicalTypeId::int32 ? 4u : 8u;
+  if (stored.value.size() != width || column.datatype.canonical_value_exact_bytes != width) {
     *diagnostic = Diagnostic(
         "DATATYPE.DESCRIPTOR.INVALID",
         "sblr.query_execute.numeric_value_invalid",
         column.column_uuid);
     return false;
   }
-  std::int64_t parsed = 0;
-  const auto* begin = canonical.value.encoded_value.data();
-  const auto* end = begin + canonical.value.encoded_value.size();
-  const auto converted = std::from_chars(begin, end, parsed);
-  if (converted.ec != std::errc{} || converted.ptr != end ||
-      !EncodeSignedLittleEndian(
-          parsed,
-          type_id == datatypes::CanonicalTypeId::int32 ? 4u : 8u,
-          &cell->canonical_payload)) {
-    *diagnostic = Diagnostic(
-        "DATATYPE.DESCRIPTOR.INVALID",
-        "sblr.query_execute.numeric_value_invalid",
-        column.column_uuid);
-    return false;
-  }
-  cell->canonical_text = canonical.value.encoded_value;
+  cell->canonical_payload.assign(stored.value.begin(), stored.value.end());
   return true;
 }
 
@@ -1011,7 +979,8 @@ class NarrowQueryProfileOccurrenceSource final
           context_.datatype_catalog_snapshot_uuid,
           context_.datatype_catalog_generation,
           context_.datatype_registry_generation,
-          canonical_datatype_descriptor_uuid, 1);
+          canonical_datatype_descriptor_uuid,
+          found->value_descriptor.datatype_descriptor_generation);
       const auto metadata_descriptor = metadata.identities.find("datatype_descriptor_uuid");
       if ((metadata_descriptor != metadata.identities.end() &&
            metadata_descriptor->second != canonical_datatype_descriptor_uuid) ||
@@ -1032,6 +1001,16 @@ class NarrowQueryProfileOccurrenceSource final
       bound.ordinal = found->ordinal;
       bound.storage_key = found->canonical_name_key;
       bound.descriptor = found->value_descriptor;
+      if (datatype.row.canonical_binary_type_code !=
+          static_cast<std::uint32_t>(datatypes::CanonicalTypeId::character)) {
+        std::string detail;
+        if (!ProjectStoredIntegerDescriptorV1(context_, found->value_descriptor,
+                found->nullable, &bound.descriptor, &detail)) {
+          preparation_diagnostic_ = Diagnostic("DATATYPE.DESCRIPTOR.INVALID",
+              "sblr.query_execute.source_datatype_unavailable", detail);
+          return false;
+        }
+      }
       bound.nullable = found->nullable;
       bound.charset_uuid = found->charset_uuid;
       bound.collation_uuid = found->collation_uuid;
@@ -1151,8 +1130,18 @@ class NarrowQueryProfileOccurrenceSource final
       }
       datatypes::DatatypeSortKeyRequest request;
       request.value.type_id = cell.type_id;
-      request.value.encoded_value = cell.canonical_text;
+      request.value.encoded_value.assign(cell.canonical_payload.begin(), cell.canonical_payload.end());
       request.value.is_null = false;
+      if (cell.type_id != datatypes::CanonicalTypeId::character) {
+        std::string detail;
+        if (!scratchbird::engine::executor::BuildBoundExecutionTypeDescriptor(
+                sources_[runtime.source_index].columns[runtime.cell_index].descriptor,
+                cell.type_id, &request.value.descriptor, &detail)) {
+          preparation_diagnostic_ = Diagnostic("DATATYPE.DESCRIPTOR.INVALID",
+              "sblr.query_execute.order_descriptor_refused", detail);
+          return false;
+        }
+      }
       request.null_ordering =
           runtime.term->null_placement == wire::NarrowQueryNullPlacement::first
               ? datatypes::DatatypeNullOrdering::nulls_first
