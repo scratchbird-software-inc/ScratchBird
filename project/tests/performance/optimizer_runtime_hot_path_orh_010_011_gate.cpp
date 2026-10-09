@@ -85,11 +85,12 @@ opt::TableCardinalityStats TableStats(const plan::CanonicalPlannerUuid& relation
 opt::IndexStats BtreeIndex(const plan::CanonicalPlannerUuid& relation_uuid,
                            const plan::CanonicalPlannerUuid& index_uuid) {
   opt::IndexStats stats;
-  stats.identity = FreshIdentity(index_uuid, scratchbird::tests::FixtureUuid(1529, 102));
+  stats.identity = FreshIdentity(relation_uuid, scratchbird::tests::FixtureUuid(1529, 102));
   stats.index_uuid = index_uuid;
   stats.relation_uuid = relation_uuid;
   stats.index_family = "btree";
   stats.unique = true;
+  stats.equality_lookup_supported = true;
   stats.covering = true;
   stats.height = 3;
   stats.leaf_pages = 64;
@@ -107,14 +108,14 @@ opt::OptimizerStatisticsCatalog ExactStatisticsCatalog(
     const plan::CanonicalPlannerUuid& relation_uuid) {
   opt::OptimizerStatisticsCatalog catalog;
   const auto add_relation = [&](const std::string& name, double value) {
-    catalog.Add(opt::MakeStatistic(name,
+    Require(catalog.Add(opt::MakeStatistic(name,
                                    "relation",
                                    opt::OptimizerStatisticTarget::Object(relation_uuid),
                                    value,
                                    opt::StatisticSource::kCatalogExact,
                                    17,
                                    0,
-                                   opt::CostConfidence::kHigh));
+                                   opt::CostConfidence::kHigh)), "fixture statistic admission failed: " + name);
   };
   add_relation("row_count", 20000.0);
   add_relation("visible_row_count", 19500.0);
@@ -218,8 +219,23 @@ void CatalogBackedPublicSqlRouteIsBenchmarkCleanEligible() {
   Require(optimized.ok, "catalog-backed optimized plan was not ok");
   Require(optimized.optimizer_profile == kCatalogBackedProfile,
           "optimized plan did not preserve catalog-backed profile");
+  if (!HasSelectedKind(optimized, plan::PhysicalAccessKind::kScalarBtreeLookup))
+    std::cerr << opt::SerializeOptimizedPlanToJson(optimized) << '\n';
   Require(HasSelectedKind(optimized, plan::PhysicalAccessKind::kScalarBtreeLookup),
           "catalog-backed optimized plan did not select btree lookup");
+  auto wrong_owner = *request.catalog_access_path_request;
+  wrong_owner.candidate_indexes.front().identity.object_uuid =
+      wrong_owner.candidate_indexes.front().index_uuid;
+  const auto rejected_owner = opt::OptimizeLogicalPlanWithAccessPathRequest(
+      request.logical_plan, wrong_owner);
+  Require(!HasSelectedKind(rejected_owner, plan::PhysicalAccessKind::kScalarBtreeLookup),
+          "index statistic owned by another object selected a lookup");
+  auto no_equality = *request.catalog_access_path_request;
+  no_equality.candidate_indexes.front().equality_lookup_supported = false;
+  const auto rejected_equality = opt::OptimizeLogicalPlanWithAccessPathRequest(
+      request.logical_plan, no_equality);
+  Require(!HasSelectedKind(rejected_equality, plan::PhysicalAccessKind::kScalarBtreeLookup),
+          "index without equality capability selected a lookup");
   Require(benchmark_clean.ok,
           "catalog-backed optimized plan was not benchmark-clean eligible: " +
               benchmark_clean.diagnostic_code);

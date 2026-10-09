@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/exact_datatype_descriptor_fixture.hpp"
 #include "sblr_hot_path_execution.hpp"
 
 #include "resource_governance_admission.hpp"
@@ -129,12 +130,10 @@ exec::CanonicalExecutionMgaAuthority Authority(
 }
 
 api::EngineDescriptor Descriptor() {
-  api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000280100");
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = "int64";
-  descriptor.encoded_descriptor = "type=int64";
-  return descriptor;
+  return scratchbird::tests::ExactScalarDescriptorFixture(
+      scratchbird::core::datatypes::CanonicalTypeId::int64, "int64",
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000280100"),
+      "nullability=non_null");
 }
 
 sblr::SblrOperationEnvelope Envelope() {
@@ -162,7 +161,7 @@ api::EngineApiRequest ApiRequest(const api::EngineRequestContext& context) {
   request.descriptors.push_back(Descriptor());
   api::EngineTypedValue parameter;
   parameter.descriptor = Descriptor();
-  parameter.encoded_value = "7";
+  parameter.binary_value = {7, 0, 0, 0, 0, 0, 0, 0};
   request.predicate.predicate_kind = "eq";
   request.predicate.canonical_predicate_envelope = "tenant";
   request.predicate.bound_values.push_back(parameter);
@@ -309,7 +308,7 @@ sblr::SblrHotPathExecutionRequest Request(
 
 void RequireAccepted(const sblr::SblrHotPathExecutionResult& result) {
   Require(result.ok && result.benchmark_clean,
-          "SBLR hot path was not benchmark-clean");
+          "SBLR hot path was not benchmark-clean: " + result.diagnostic_code + ":" + result.detail);
   Require(!result.fallback_used && !result.fail_closed,
           "SBLR hot path unexpectedly fell back/refused");
   Require(result.first_prepare.ok && result.reused_prepare.ok &&
@@ -401,6 +400,13 @@ void TestPositiveHotPath() {
 
 void TestNegativeAuthorityAndEnvelopeCases() {
   scratchbird::engine::executor::PreparedTemplateCache cache;
+
+  scratchbird::engine::executor::PreparedTemplateCache unbound_cache;
+  auto unbound = Request(&unbound_cache);
+  unbound.api_request.descriptors.front().type_uuid = {};
+  RequireRejected(sblr::ExecuteSblrHotPath(unbound),
+                  "SB_PREPARED_TEMPLATE_DESCRIPTOR_MISMATCH",
+                  "unbound descriptor type identity");
 
   auto raw_sql = Request(&cache);
   raw_sql.envelope.contains_sql_text = true;

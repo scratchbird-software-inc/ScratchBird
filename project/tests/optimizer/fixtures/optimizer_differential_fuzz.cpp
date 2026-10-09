@@ -180,7 +180,7 @@ OptimizerStatsIdentity FreshIdentity(const Uuid& object_uuid,
 IndexStats BaseIndex(const Uuid& relation_uuid,
                      const Uuid& index_uuid) {
   IndexStats stats;
-  stats.identity = FreshIdentity(index_uuid, kFixture11);
+  stats.identity = FreshIdentity(relation_uuid, kFixture11);
   stats.index_uuid = index_uuid;
   stats.relation_uuid = relation_uuid;
   stats.index_family = "btree";
