@@ -19,6 +19,7 @@
 #include "engine/statement_management_ack_codec.hpp"
 #include "engine/statement_context_receipt_retention.hpp"
 #include "engine/statement_identity_binding.hpp"
+#include "session/scoped_value_store.hpp"
 #include "engine/authority_hash_material.hpp"
 #include "dml/bulk_import_column_digest.hpp"
 #include "engine/statement_snapshot_acquisition_guard.hpp"
@@ -629,6 +630,7 @@ struct sb_engine_session_s {
   sb_engine_trust_mode_t trust_mode = SB_ENGINE_TRUST_SERVER_ISOLATED;
   std::uint32_t active_transactions = 0;
   std::vector<sb_engine_transaction_t> published_transactions;
+  scratchbird::engine::internal_api::session::ScopedValueStore::Owner scoped_values;
   std::uint32_t open_streams = 0;
   std::unique_ptr<scratchbird::core::agents::
                       ResourceGovernanceReservationLedger>
@@ -5021,6 +5023,20 @@ sb_engine_status_t sb_engine_session_begin(sb_engine_handle_t engine,
   session->public_session_uuid = params->session_uuid;
   session->trust_mode = params->trust_mode;
   if (!engine->database_path.empty() && !engine->database_uuid.is_nil()) {
+    std::array<std::uint8_t, 16> session_identity{};
+    std::copy_n(params->session_uuid.bytes, session_identity.size(), session_identity.begin());
+    auto state = scratchbird::engine::internal_api::session::ScopedValueStore::Create(
+        *scratchbird::core::memory::DefaultMemoryManager().allocator(),
+        engine->database_uuid.bytes, session_identity);
+    if (state.status != scratchbird::engine::internal_api::session::StoreStatus::ok) {
+      delete session;
+      if (state.status == scratchbird::engine::internal_api::session::StoreStatus::invalid_argument)
+        return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 3003,
+                           "SECURITY.IDENTITY.MISSING", "engine.session.binary_owner_invalid");
+      return fail_result(SB_ENGINE_STATUS_RESOURCE_EXHAUSTED, out_result, 3003,
+                         "RESOURCE.BUDGET_EXCEEDED", "engine.session.scoped_state_admission_failed");
+    }
+    session->scoped_values = std::move(state.owner);
     const auto recovered = scratchbird::engine::internal_api::
         LoadSblrPreparedStatementRegistryV1(
             prepared_statement_registry_context(session, true));
@@ -30116,6 +30132,7 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
     // cannot pass the next statement receipt's inventory revalidation.
     scratchbird::engine::internal_api::EngineBeginTransactionRequest begin;
     begin.context=receipt->engine_context;
+    begin.session_state = receipt->session->scoped_values.get();
     begin.context.local_transaction_id=0;
     begin.context.transaction_uuid = {};
     begin.context.snapshot_visible_through_local_transaction_id=0;
@@ -30255,9 +30272,19 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
     }
     // closed=true is the private-ABI durable-decision reservation.  It keeps
     // a concurrent receipt from reusing this handle while the engine decides.
+    if (owning_session->scoped_values) {
+      const auto owner = receipt->engine_context.session_uuid.bytes;
+      const auto enrolled = owning_session->scoped_values->BeginTransaction(owner,
+          commit_options.transaction_uuid, owning_session->scoped_values->Snapshot(owner).generation);
+      if (!enrolled.ok() && enrolled.status !=
+          scratchbird::engine::internal_api::session::StoreStatus::transaction_exists)
+        return fail_result(SB_ENGINE_STATUS_RESOURCE_EXHAUSTED, out_result, 4065,
+                           "RESOURCE.BUDGET_EXCEEDED", "sblr.txn_commit.session_state_admission_failed");
+    }
     commit_private_handle->closed = true;
     scratchbird::engine::internal_api::EngineCommitTransactionRequest commit;
     commit.context = receipt->engine_context;
+    commit.session_state = receipt->session->scoped_values.get();
     const auto committed =
         scratchbird::engine::internal_api::EngineCommitTransaction(commit);
     const bool commit_finality_applied =
@@ -30378,10 +30405,20 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
                          "MGA.TRANSACTION.STALE",
                          "sblr.txn_rollback.handle_replayed_before_finality");
     }
+    if (owning_session->scoped_values) {
+      const auto owner = receipt->engine_context.session_uuid.bytes;
+      const auto enrolled = owning_session->scoped_values->BeginTransaction(owner,
+          rollback_options.transaction_uuid, owning_session->scoped_values->Snapshot(owner).generation);
+      if (!enrolled.ok() && enrolled.status !=
+          scratchbird::engine::internal_api::session::StoreStatus::transaction_exists)
+        return fail_result(SB_ENGINE_STATUS_RESOURCE_EXHAUSTED, out_result, 4065,
+                           "RESOURCE.BUDGET_EXCEEDED", "sblr.txn_rollback.session_state_admission_failed");
+    }
     rollback_private_handle->closed = true;
     scratchbird::engine::internal_api::EngineRollbackTransactionRequest
         rollback;
     rollback.context = receipt->engine_context;
+    rollback.session_state = receipt->session->scoped_values.get();
     const auto rolled_back =
         scratchbird::engine::internal_api::EngineRollbackTransaction(rollback);
     const bool rollback_finality_applied =

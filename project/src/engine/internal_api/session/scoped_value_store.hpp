@@ -74,6 +74,26 @@ struct StoreLimits {
 // its session lifetime lease until calls complete before destroying the store.
 class ScopedValueStore final {
  public:
+  // Internal lifecycle participant. Retains the state lock across the owning
+  // MGA decision; destruction alone preserves all overrides. Only a confirmed
+  // native terminal publication may call ApplyKnownTerminal(). The enclosing
+  // session lifetime lease must outlive this guard. Never transport this guard.
+  class TerminalGuard {
+   public:
+    TerminalGuard(TerminalGuard&&) = default;
+    TerminalGuard& operator=(TerminalGuard&&) = delete;
+    TerminalGuard(const TerminalGuard&) = delete;
+    StoreResult admission() const { return admission_; }
+    void ApplyKnownTerminal() noexcept;
+   private:
+    friend class ScopedValueStore;
+    TerminalGuard(ScopedValueStore&, const Identity&, const Identity&);
+    ScopedValueStore* store_;
+    std::unique_lock<std::mutex> lock_;
+    Identity transaction_;
+    StoreResult admission_;
+    bool applied_ = false;
+  };
   struct Deleter { void operator()(ScopedValueStore*) const noexcept; };
   using Owner = std::unique_ptr<ScopedValueStore, Deleter>;
   struct Creation { Owner owner; StoreStatus status = StoreStatus::invalid_argument; };
@@ -81,6 +101,9 @@ class ScopedValueStore final {
                          const Identity& session, StoreLimits = {});
   ScopedValueStore(const ScopedValueStore&) = delete;
   ScopedValueStore& operator=(const ScopedValueStore&) = delete;
+  bool BoundTo(const Identity& database, const Identity& session) const noexcept {
+    return database_ == database && session_ == session;
+  }
 
   StoreSnapshot Snapshot(const Identity& session) const;
   StoreResult BeginTransaction(const Identity& session, const Identity& transaction,
@@ -89,6 +112,7 @@ class ScopedValueStore final {
   // An uncertain commit/rollback is not permission to expire an override.
   StoreResult EndTransaction(const Identity& session, const Identity& transaction,
                              std::uint64_t expected_generation);
+  TerminalGuard PrepareTerminal(const Identity& session, const Identity& transaction);
   StoreResult Savepoint(const Identity& session, const Identity& transaction,
                         const Identity& savepoint, std::uint64_t expected_generation);
   StoreResult RollbackTo(const Identity& session, const Identity& transaction,
@@ -131,6 +155,7 @@ class ScopedValueStore final {
   void Compact(const Identity&) noexcept;
   void CompactKey(const ValueKey&, const Identity&) noexcept;
   void Clear() noexcept;
+  void ExpireTransaction(Transaction*) noexcept;
   StoreResult Mutate(const Identity&, const ValueKey&, ValueScope, const Identity&,
                      std::uint64_t expected, const AdmittedValueView*, bool erase);
 

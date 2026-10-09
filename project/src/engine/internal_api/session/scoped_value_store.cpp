@@ -254,6 +254,11 @@ StoreResult ScopedValueStore::EndTransaction(const Identity& session, const Iden
   if (status != StoreStatus::ok) return Result(status);
   auto* tx = FindTransaction(transaction);
   if (!tx) return Result(StoreStatus::transaction_missing);
+  ExpireTransaction(tx);
+  return Result(StoreStatus::ok);
+}
+void ScopedValueStore::ExpireTransaction(Transaction* tx) noexcept {
+  const auto transaction = tx->identity;
   for (auto* node = versions_; node;) {
     auto* next = node->next;
     if (node->transaction == transaction) Remove(node);
@@ -271,7 +276,23 @@ StoreResult ScopedValueStore::EndTransaction(const Identity& session, const Iden
   Free(tx, sizeof(Transaction));
   --transaction_count_;
   ++generation_;
-  return Result(StoreStatus::ok);
+}
+ScopedValueStore::TerminalGuard::TerminalGuard(ScopedValueStore& store, const Identity& session,
+                                             const Identity& transaction)
+    : store_(&store), lock_(store.mutex_), transaction_(transaction) {
+  auto status = store.Check(session, store.generation_, true);
+  if (status == StoreStatus::ok && !store.FindTransaction(transaction))
+    status = StoreStatus::transaction_missing;
+  admission_ = store.Result(status);
+}
+ScopedValueStore::TerminalGuard ScopedValueStore::PrepareTerminal(
+    const Identity& session, const Identity& transaction) {
+  return TerminalGuard(*this, session, transaction);
+}
+void ScopedValueStore::TerminalGuard::ApplyKnownTerminal() noexcept {
+  if (!lock_.owns_lock() || !admission_.ok() || applied_) return;
+  store_->ExpireTransaction(store_->FindTransaction(transaction_));
+  applied_ = true;
 }
 StoreResult ScopedValueStore::Savepoint(const Identity& session, const Identity& transaction,
                                        const Identity& savepoint, std::uint64_t expected) {

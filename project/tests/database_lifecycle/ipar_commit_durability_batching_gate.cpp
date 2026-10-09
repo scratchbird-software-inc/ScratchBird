@@ -5,6 +5,7 @@
 #include "local_transaction_store.hpp"
 #include "memory.hpp"
 #include "transaction/transaction_api.hpp"
+#include "session/scoped_value_store.hpp"
 #include "transaction_inventory_page.hpp"
 #include "transaction_state.hpp"
 #include "uuid.hpp"
@@ -13,7 +14,10 @@
 #include <array>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <sys/stat.h>
@@ -24,6 +28,7 @@ namespace db = scratchbird::storage::database;
 namespace txn = scratchbird::transaction::mga;
 namespace uuid = scratchbird::core::uuid;
 namespace mem = scratchbird::core::memory;
+namespace scoped = scratchbird::engine::internal_api::session;
 using scratchbird::core::platform::UuidKind;
 using Policy = db::InventoryPageSyncPolicy;
 constexpr unsigned kPageSize = 8192;
@@ -102,9 +107,24 @@ struct Directory {
     std::filesystem::remove_all(path, ignored);
   }
 };
-api::EngineRequestContext Begin(const api::EngineRequestContext& owner) {
+struct PhaseTraceScope {
+  static constexpr const char* key = "SCRATCHBIRD_TRANSACTION_API_PHASE_TRACE_FILE";
+  std::optional<std::string> original;
+  explicit PhaseTraceScope(const std::string& path) {
+    if (const char* old = std::getenv(key)) original = old;
+    Check(path.empty() ? ::unsetenv(key) == 0 : ::setenv(key, path.c_str(), 1) == 0,
+          "set test-local phase trace");
+  }
+  ~PhaseTraceScope() {
+    if (original) (void)::setenv(key, original->c_str(), 1);
+    else (void)::unsetenv(key);
+  }
+};
+api::EngineRequestContext Begin(const api::EngineRequestContext& owner,
+                               scoped::ScopedValueStore* state = nullptr) {
   api::EngineBeginTransactionRequest request;
   request.context = owner;
+  request.session_state = state;
   request.isolation_level = "read_committed";
   const auto begun = api::EngineBeginTransaction(request);
   CheckApi(begun, "actual engine BEGIN");
@@ -137,7 +157,57 @@ bool HasDetail(const api::EngineApiResult& result, const std::string& detail) {
 }
 void Exercise(const db::DatabaseCreateConfig& create, const api::EngineRequestContext& owner,
               const scratchbird::tests::FixtureEngineSession& session, Policy policy) {
-  auto base = Begin(owner);
+  const std::string trace_path = create.path + ".commit-phases";
+  PhaseTraceScope trace(policy == Policy::batched ? trace_path : "");
+  auto retained = scoped::ScopedValueStore::Create(*mem::DefaultMemoryManager().allocator(),
+      owner.database_uuid.bytes, owner.session_uuid.bytes);
+  Check(retained.status == scoped::StoreStatus::ok, "admit binary-bound session state");
+  auto* state = retained.owner.get();
+  const auto key = scoped::ValueKey{scoped::ValueFamily::setting, Identity(UuidKind::object).value.bytes};
+  const auto datatype = Identity(UuidKind::object).value.bytes;
+  const auto label = Identity(UuidKind::object).value.bytes;
+  const auto write = [&](std::uint8_t value, const api::EngineUuid& transaction) {
+    const std::array<std::uint8_t, 1> payload{value};
+    const auto scope = transaction.is_nil() ? scoped::ValueScope::session : scoped::ValueScope::transaction;
+    Check(state->WriteAdmitted(owner.session_uuid.bytes, key, scope, transaction.bytes,
+        state->Snapshot(owner.session_uuid.bytes).generation,
+        {datatype, 1, label, false, payload}).ok(), "retain already-admitted scalar bytes");
+  };
+  const auto expect = [&](std::uint8_t value, const api::EngineUuid& transaction) {
+    std::array<std::uint8_t, 1> bytes{};
+    const auto result = state->ReadAdmitted(owner.session_uuid.bytes, key, transaction.bytes,
+        state->Snapshot(owner.session_uuid.bytes).generation, bytes);
+    Check(result.ok() && bytes[0] == value && result.datatype_uuid == datatype &&
+          result.security_label_uuid == label, "exact scope value survives actual MGA decision");
+  };
+  auto base = Begin(owner, state);
+  write(7, {}); write(9, base.transaction_uuid); write(11, {});
+  // Binding a store from another database is not permission to retain this
+  // owner's transaction, even when its session UUID happens to be identical.
+  auto foreign = scoped::ScopedValueStore::Create(*mem::DefaultMemoryManager().allocator(),
+      Identity(UuidKind::database).value.bytes, owner.session_uuid.bytes);
+  Check(foreign.status == scoped::StoreStatus::ok, "foreign owner fixture");
+  api::EngineBeginTransactionRequest wrong_owner;
+  wrong_owner.context = owner; wrong_owner.isolation_level = "read_committed";
+  wrong_owner.session_state = foreign.owner.get();
+  Watch(create.path);
+  const auto refused_owner = api::EngineBeginTransaction(wrong_owner);
+  Check(!refused_owner.ok && !refused_owner.diagnostics.empty() &&
+        refused_owner.diagnostics.front().code == "SECURITY.ACCESS_DENIED" &&
+        observed.writes == 0 && observed.syncs == 0, "wrong state owner refuses before publication");
+  scoped::StoreLimits limits; limits.active_transactions = 1;
+  auto full = scoped::ScopedValueStore::Create(*mem::DefaultMemoryManager().allocator(),
+      owner.database_uuid.bytes, owner.session_uuid.bytes, limits);
+  Check(full.status == scoped::StoreStatus::ok, "bounded participant fixture");
+  const auto occupied = Begin(owner, full.owner.get());
+  wrong_owner.session_state = full.owner.get();
+  Watch(create.path);
+  const auto quota = api::EngineBeginTransaction(wrong_owner);
+  Check(!quota.ok && !quota.diagnostics.empty() && quota.diagnostics.front().code == "RESOURCE.BUDGET_EXCEEDED" &&
+        observed.writes == 0 && observed.syncs == 0, "state capacity refuses BEGIN before physical effects");
+  api::EngineRollbackTransactionRequest close_occupied;
+  close_occupied.context = occupied; close_occupied.session_state = full.owner.get();
+  CheckApi(api::EngineRollbackTransaction(close_occupied), "settle bounded participant fixture");
   scratchbird::tests::FixtureEngineStatement statement(session, base);
   const auto& context = statement.context;
   // Benchmark counts and textual authority assertions cannot replace typed
@@ -154,6 +224,7 @@ void Exercise(const db::DatabaseCreateConfig& create, const api::EngineRequestCo
             "commit.durability_write_batching.parser_authority:true"}}) {
     api::EngineCommitTransactionRequest request;
     request.context = context;
+    request.session_state = state;
     request.option_envelopes = options;
     Watch(create.path);
     const auto refused = api::EngineCommitTransaction(request);
@@ -163,11 +234,13 @@ void Exercise(const db::DatabaseCreateConfig& create, const api::EngineRequestCo
           !refused.post_inventory_secondary_failure, "pre-effect refusal classification");
     Check(observed.writes == 0 && observed.syncs == 0, "refusal precedes physical database effects");
     CheckState(context, txn::TransactionState::active);
+    expect(9, context.transaction_uuid); expect(11, {});
     Check(Inventory(create.path).publication_base->generation == before.publication_base->generation,
           "refusal preserves publication generation");
   }
   api::EngineCommitTransactionRequest request;
   request.context = context;
+  request.session_state = state;
   request.inventory_page_sync_policy = static_cast<Policy>(0);
   Watch(create.path);
   const auto invalid = api::EngineCommitTransaction(request);
@@ -180,6 +253,7 @@ void Exercise(const db::DatabaseCreateConfig& create, const api::EngineRequestCo
         "actual sync failure cannot assert durable completion or known finality");
   Check(observed.bodies != 0 && !observed.fail_body_sync, "failure reached real inventory body sync");
   CheckState(context, txn::TransactionState::active);
+  expect(9, context.transaction_uuid); expect(11, {});
   // Recover before retrying; never mint a replacement transaction identity.
   Watch(create.path);
   const auto committed = api::EngineCommitTransaction(request);
@@ -211,6 +285,38 @@ void Exercise(const db::DatabaseCreateConfig& create, const api::EngineRequestCo
   Check(io.inventory_generation == inventory.publication_base->generation,
         "receipt matches reopened authoritative generation");
   CheckState(context, txn::TransactionState::committed);
+  Check(state->Snapshot(owner.session_uuid.bytes).active_transactions == 0,
+        "confirmed commit expires override");
+  expect(11, {});
+  // A separate real rollback expires its override without restoring an older
+  // session value. This directly exercises the internal lifecycle participant;
+  // these writes do not claim parser/datatype/authorization admission coverage.
+  const auto rolling = Begin(owner, state);
+  write(13, rolling.transaction_uuid); write(17, {});
+  api::EngineRollbackTransactionRequest rollback;
+  rollback.context = rolling; rollback.session_state = state;
+  Watch(create.path, true);
+  const auto uncertain = api::EngineRollbackTransaction(rollback);
+  Check(!uncertain.ok && !uncertain.engine_finality_known && !observed.fail_body_sync,
+        "actual rollback sync failure remains uncertain");
+  expect(13, rolling.transaction_uuid); expect(17, {});
+  CheckState(rolling, txn::TransactionState::active);
+  const auto rolled = api::EngineRollbackTransaction(rollback);
+  CheckApi(rolled, "actual MGA rollback after recovery");
+  Check(rolled.engine_finality_known && state->Snapshot(owner.session_uuid.bytes).active_transactions == 0,
+        "confirmed rollback expires override");
+  CheckState(rolling, txn::TransactionState::rolled_back);
+  expect(17, {});
+  if (policy == Policy::batched) {
+    std::ifstream input(trace_path);
+    const std::string text{std::istreambuf_iterator<char>(input), {}};
+    Check(text.find("operation_id=transaction.commit\tok=true") != std::string::npos &&
+          text.find("operation_id=transaction.commit\tok=false") != std::string::npos &&
+          text.find("persist_transaction_inventory_us=") != std::string::npos &&
+          text.find("shape_commit_result_us=") != std::string::npos &&
+          text.find("total_us=") != std::string::npos,
+          "enabled phase tracing preserves successful/failed timing evidence");
+  }
   std::cout << "publication policy=" << static_cast<unsigned>(policy)
             << " pages=" << io.page_body_writes << " bytes=" << io.body_bytes_written
             << " syncs=" << io.page_sync_calls << '\n';

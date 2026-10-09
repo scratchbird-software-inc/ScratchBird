@@ -419,6 +419,45 @@ void SavepointReferenceModel() {
   f.Expect(Key(100), 1, tx.id, s::ValueScope::transaction);
 }
 
+void KnownTerminalBoundary() {
+  Fixture f;
+  const auto key = Key(1);
+  const auto tx = Id(200);
+  Check(f.store->BoundTo(f.database, f.session));
+  Check(!f.store->BoundTo(Id(999), f.session) && !f.store->BoundTo(f.database, Id(999)));
+  Check(f.store->BeginTransaction(f.session, tx, f.Gen()).ok());
+  f.Write(key, 7); f.Write(key, 9, tx); f.Write(key, 11);
+  const auto before = f.Gen();
+  {
+    auto guard = f.store->PrepareTerminal(f.session, tx);
+    Check(guard.admission().ok());
+    // Destructor on refusal/exception/unknown outcome cannot expire values.
+  }
+  Check(f.Gen() == before); f.Expect(key, 9, tx, s::ValueScope::transaction); f.Expect(key, 11);
+  {
+    auto guard = f.store->PrepareTerminal(Id(999), tx);
+    Check(guard.admission().status == Status::owner_mismatch);
+    guard.ApplyKnownTerminal();
+  }
+  {
+    auto guard = f.store->PrepareTerminal(f.session, Id(999));
+    Check(guard.admission().status == Status::transaction_missing);
+    guard.ApplyKnownTerminal();
+  }
+  Inject(f.allocator);
+  try {
+    auto guard = f.store->PrepareTerminal(f.session, tx);
+    Check(guard.admission().ok());
+    auto moved = std::move(guard);
+    guard.ApplyKnownTerminal(); // Moved-from guard holds no lock or permission.
+    moved.ApplyKnownTerminal(); moved.ApplyKnownTerminal();
+    throw std::bad_alloc();  // Result/diagnostic failure cannot restore values.
+  } catch (const std::bad_alloc&) {}
+  Check(f.Gen() == before + 1 && f.store->Snapshot(f.session).active_transactions == 0);
+  f.Expect(key, 11);
+  Check(f.allocator.FailureInjectionSnapshot().rules.front().matched_sequence == 0);
+}
+
 void CollisionAndSessionIsolation() {
   Fixture f;
   auto second = s::ScopedValueStore::Create(f.allocator, f.database, Id(102));
@@ -438,7 +477,7 @@ void CollisionAndSessionIsolation() {
 int main() {
   try {
     LifetimeRules(); EraseAndCompaction(); ExactBytesAndAdmission();
-    AllocationAndQuotaFailures(); ConcurrentWriters(); CollisionAndSessionIsolation(); SavepointReferenceModel();
+    AllocationAndQuotaFailures(); ConcurrentWriters(); CollisionAndSessionIsolation(); SavepointReferenceModel(); KnownTerminalBoundary();
     std::cout << "scoped session retention: lifecycle, binary values, quotas, allocation failures, concurrency passed\n";
     return 0;
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

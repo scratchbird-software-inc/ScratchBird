@@ -19,6 +19,8 @@
 
 namespace scratchbird::engine::internal_api {
 
+namespace session { class ScopedValueStore; }
+
 // Engine-internal publication ordering for one routed database. Transaction
 // finality paths hold this guard across durable inventory replacement; private
 // server-to-engine metadata dispatch holds the same guard from current-version
@@ -50,6 +52,9 @@ struct EngineTransactionInventoryObservation {
 };
 
 struct EngineBeginTransactionRequest : EngineApiRequest {
+  // Private, lifetime-leased participant; never parser/IPC authority. Native
+  // session dispatch supplies its own store, not a pointer from request data.
+  session::ScopedValueStore* session_state = nullptr;
   std::string isolation_level;
   EngineProfileSet transaction_policy_profile;
 };
@@ -88,6 +93,7 @@ EngineSetTransactionCharacteristicsResult EngineSetTransactionCharacteristics(
     const EngineSetTransactionCharacteristicsRequest& request);
 
 struct EngineCommitTransactionRequest : EngineApiRequest {
+  session::ScopedValueStore* session_state = nullptr;
   scratchbird::storage::database::InventoryPageSyncPolicy inventory_page_sync_policy =
       scratchbird::storage::database::InventoryPageSyncPolicy::batched;
 };
@@ -118,7 +124,9 @@ struct EngineAutocommitBoundaryResult : EngineCommitTransactionResult {
 EngineAutocommitBoundaryResult EngineAutocommitBoundary(
     const EngineAutocommitBoundaryRequest& request);
 
-struct EngineRollbackTransactionRequest : EngineApiRequest {};
+struct EngineRollbackTransactionRequest : EngineApiRequest {
+  session::ScopedValueStore* session_state = nullptr;
+};
 struct EngineRollbackTransactionResult : EngineApiResult {
   std::string rollback_finality_state = "not_final";
   bool engine_finality_known = false;

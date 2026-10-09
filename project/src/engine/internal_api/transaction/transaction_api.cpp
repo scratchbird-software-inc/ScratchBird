@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "transaction/transaction_api.hpp"
+#include "session/scoped_value_store.hpp"
 #include "transaction/named_lock_key.hpp"
 #include "../../statement_snapshot_acquisition_guard.hpp"
 #include "whole_store_crash_injection.hpp"
@@ -84,6 +85,16 @@ using scratchbird::transaction::mga::TransactionLockDecisionName;
 using scratchbird::transaction::mga::TransactionLockMode;
 using scratchbird::transaction::mga::TransactionLockRequest;
 using scratchbird::transaction::mga::TransactionWaitPolicy;
+
+EngineApiDiagnostic SessionStateAdmissionDiagnostic(session::StoreStatus status) {
+  const auto resource = status == session::StoreStatus::quota_exceeded ||
+                        status == session::StoreStatus::memory_refused;
+  const auto owner = status == session::StoreStatus::owner_mismatch;
+  return MakeEngineApiDiagnostic(resource ? "RESOURCE.BUDGET_EXCEEDED" :
+      owner ? "SECURITY.ACCESS_DENIED" : "MGA.TRANSACTION.STALE",
+      "mga.session_state.admission_failed",
+      "session_state_status=" + std::to_string(static_cast<unsigned>(status)));
+}
 
 std::uint64_t CurrentUnixMillis() {
   const auto now = std::chrono::system_clock::now().time_since_epoch();
@@ -1330,6 +1341,21 @@ EngineBeginTransactionResult EngineBeginTransaction(const EngineBeginTransaction
   }
   // No allocating result/evidence work may follow the successful MGA barrier.
   static_assert(std::is_nothrow_move_constructible_v<EngineBeginTransactionResult>);
+  if (request.session_state) {
+    const auto owner = request.context.session_uuid.bytes;
+    if (!request.session_state->BoundTo(request.context.database_uuid.bytes, owner)) {
+      return MakeTxnError<EngineBeginTransactionResult>(request.context, operation_id,
+          SessionStateAdmissionDiagnostic(session::StoreStatus::owner_mismatch));
+    }
+    const auto retained = request.session_state->BeginTransaction(
+        owner, result.transaction_uuid.bytes, request.session_state->Snapshot(owner).generation);
+    if (!retained.ok()) {
+      return MakeTxnError<EngineBeginTransactionResult>(request.context, operation_id,
+          SessionStateAdmissionDiagnostic(retained.status));
+    }
+  }
+  // An uncertain native publication retains the empty participant until
+  // recovery/session teardown; it is not evidence of an active transaction.
   const auto persisted = PersistLocalTransactionInventoryToDatabase(request.context.database_path, begun.inventory);
   if (!persisted.ok()) {
     auto failure = MakeTxnError<EngineBeginTransactionResult>(
@@ -1599,17 +1625,22 @@ EngineResolveStatementSnapshotResult EngineResolveStatementSnapshot(
 
 EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransactionRequest& request) {
   const std::string operation_id = "transaction.commit";
+  const char* trace_path = std::getenv("SCRATCHBIRD_TRANSACTION_API_PHASE_TRACE_FILE");
+  const bool trace_enabled = trace_path != nullptr && *trace_path != '\0';
   const auto trace_start = TransactionApiSteadyClock::now();
   auto phase_start = trace_start;
   std::map<std::string, std::uint64_t> trace_phases;
-  auto mark_phase = [&](std::string name) {
+  auto mark_phase = [&](std::string_view name) {
+    if (!trace_enabled) return;
     const auto now = TransactionApiSteadyClock::now();
-    trace_phases[std::move(name)] += TransactionApiElapsedMicros(phase_start, now);
+    trace_phases[std::string(name)] += TransactionApiElapsedMicros(phase_start, now);
     phase_start = now;
   };
   auto trace_and_return = [&](EngineCommitTransactionResult result) {
-    trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
-    WriteTransactionApiPhaseTrace(operation_id, result.ok, trace_phases);
+    if (trace_enabled) {
+      trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
+      WriteTransactionApiPhaseTrace(operation_id, result.ok, trace_phases);
+    }
     return result;
   };
   const auto path_status = ValidateDatabasePath(request.context, operation_id);
@@ -1676,6 +1707,19 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
     return trace_and_return(std::move(result));
   }
   const bool read_only_commit = committing_entry->state == TransactionState::read_only_active;
+  if (request.session_state) {
+    if (!request.session_state->BoundTo(request.context.database_uuid.bytes,
+                                        request.context.session_uuid.bytes)) {
+      return trace_and_return(RefuseCommitBeforeInventoryMutation(
+          request.context, operation_id, "session_state_owner_mismatch"));
+    }
+    const auto checked = request.session_state->PrepareTerminal(
+        request.context.session_uuid.bytes, request.context.transaction_uuid.bytes);
+    if (!checked.admission().ok()) {
+      return trace_and_return(RefuseCommitBeforeInventoryMutation(
+          request.context, operation_id, "session_state_terminal_admission_failed"));
+    }
+  }
   const bool prepared_commit =
       committing_entry->state == TransactionState::prepared;
   std::uint64_t temporary_deleted_rows = 0;
@@ -1766,6 +1810,17 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
       return trace_and_return(std::move(result));
     }
   }
+  // Do not hold the session-value lock while evaluating deferred constraints
+  // or flushing pages. Revalidate and retain it only across the MGA inventory
+  // decision, so future admitted evaluators may read session state safely.
+  std::optional<session::ScopedValueStore::TerminalGuard> session_terminal;
+  if (request.session_state) {
+    session_terminal.emplace(request.session_state->PrepareTerminal(
+        request.context.session_uuid.bytes, request.context.transaction_uuid.bytes));
+    if (!session_terminal->admission().ok())
+      return trace_and_return(RefuseCommitBeforeInventoryMutation(
+          request.context, operation_id, "session_state_terminal_admission_changed"));
+  }
   const auto committed = CommitLocalTransaction(loaded.inventory, MakeLocalTransactionId(request.context.local_transaction_id), CurrentUnixMillis());
   mark_phase("commit_local_transaction");
   if (!committed.ok()) {
@@ -1785,6 +1840,12 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
                               request.context.local_transaction_id);
   const auto persisted = PersistLocalTransactionInventoryToDatabase(request.context.database_path, committed.inventory,
                                                                    request.inventory_page_sync_policy);
+  // This no-allocation state transition must precede even optional tracing:
+  // result/telemetry allocation failure cannot retain a committed override.
+  if (persisted.ok() && session_terminal) {
+    session_terminal->ApplyKnownTerminal();
+    session_terminal.reset();
+  }
   mark_phase("persist_transaction_inventory");
   if (!persisted.ok()) {
     auto result = MakeTxnError<EngineCommitTransactionResult>(
@@ -2324,6 +2385,20 @@ EngineRollbackTransactionResult EngineRollbackTransaction(const EngineRollbackTr
     return result;
   }
   const bool read_only_rollback = rollback_entry->state == TransactionState::read_only_active;
+  std::optional<session::ScopedValueStore::TerminalGuard> session_terminal;
+  if (request.session_state) {
+    if (!request.session_state->BoundTo(request.context.database_uuid.bytes,
+                                        request.context.session_uuid.bytes)) {
+      return RefuseRollbackBeforeInventoryMutation(
+          request.context, operation_id, "session_state_owner_mismatch");
+    }
+    session_terminal.emplace(request.session_state->PrepareTerminal(
+        request.context.session_uuid.bytes, request.context.transaction_uuid.bytes));
+    if (!session_terminal->admission().ok()) {
+      return RefuseRollbackBeforeInventoryMutation(
+          request.context, operation_id, "session_state_terminal_admission_failed");
+    }
+  }
   if (IparFaultPointRequested(request.option_envelopes, "rollback_fence")) {
     auto result = MakeTxnError<EngineRollbackTransactionResult>(
         request.context,
@@ -2374,6 +2449,10 @@ EngineRollbackTransactionResult EngineRollbackTransaction(const EngineRollbackTr
     ClassifyRollbackInventoryPersistenceOutcomeUnknown(
         &result, rolled_back.entry);
     return result;
+  }
+  if (session_terminal) {
+    session_terminal->ApplyKnownTerminal();
+    session_terminal.reset();
   }
   RevokePublishedSnapshotVectorsForTransaction(
       rolled_back.entry.identity.transaction_uuid,
