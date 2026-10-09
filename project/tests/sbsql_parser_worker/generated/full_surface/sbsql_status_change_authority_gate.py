@@ -23,7 +23,8 @@ Cross-checks performed:
      canonical status. A native_now exact refusal is accepted only when an
      owning authority module proves the pre-SBLR no-mutation boundary and
      retains the functionality as implementation debt; it is never treated as
-     terminal implementation completion.
+     terminal implementation completion. A registered diagnostic identity is
+     separately non-callable by contract, not an unimplemented SQL function.
   4. FUNCTION_SEMANTIC_ORACLE_MATRIX.csv status == canonical status
      (for expression-runtime surfaces).
   5. AUTHENTICATED_FULL_ROUTE_MATRIX.csv status == canonical status.
@@ -61,6 +62,45 @@ PER_ROW_MANIFEST_NAME = "PER_ROW_EVIDENCE_MANIFEST.csv"
 PROMOTION_MATRIX_NAME = "NATIVE_FUTURE_PROMOTION_MATRIX.csv"
 GENERATED_MANIFEST = "project/src/parsers/sbsql_worker/registry/generated/sbsql_generated_registry.manifest"
 EXPRESSION_RUNTIME_KINDS = {"function", "operator", "variable"}
+POLICY_DIAGNOSTIC_SURFACE = "SBSQL-CE3790BA0486"
+POLICY_DIAGNOSTIC_PROOFS = {
+    "diagnostic_identity=SBSQL.POLICY_BLOCKED",
+    "callable_function=false",
+    "SBSQL.SURFACE.NOT_ADMITTED",
+    "canonical_message_vector_set",
+    "executable_sblr_emitted=false",
+    "exact_refusal=true",
+    "engine_dispatch_not_reached=true",
+    "result_published=false",
+    "catalog_mutation=false",
+    "observer_builtin=sb.scalar.policy_blocked_diagnostic",
+}
+
+
+def diagnostic_identity_refusal_errors(row: dict[str, str], authority: dict[str, str]) -> list[str]:
+    """Only the exact Core diagnostic classification can authorize this refusal.
+
+    Do not include this identity in the implementation-debt refusal whitelist,
+    and do not extend this exception to the separately callable observer.
+    """
+    errors = []
+    if (row.get("surface_id") != POLICY_DIAGNOSTIC_SURFACE or
+            row.get("canonical_name") != "SBSQL.POLICY_BLOCKED" or
+            row.get("status") != "native_now" or
+            row.get("cluster_scope") != "noncluster_or_profile_scoped" or
+            row.get("current_state") != "exact_refusal_passed" or
+            authority.get("surface_id") != POLICY_DIAGNOSTIC_SURFACE or
+            authority.get("surface_name") != "SBSQL.POLICY_BLOCKED" or
+            authority.get("classification") != "diagnostic_identity" or
+            authority.get("parent_kind") != "diagnostic" or
+            authority.get("parent_key") != "SBSQL.POLICY_BLOCKED"):
+        errors.append("diagnostic identity refusal authority drift")
+    tokens = {token for value in row.values() for token in value.split(";")}
+    for token in sorted(POLICY_DIAGNOSTIC_PROOFS - tokens):
+        errors.append(f"diagnostic identity refusal missing proof token {token}")
+    return errors
+
+
 CANONICAL_PRE_SBLR_REFUSAL_SURFACES = {
     "SBSQL-28F16A4C7DD0",  # table_constraint
     "SBSQL-5CC9FDFFE6F7",  # constraint_body
@@ -184,6 +224,10 @@ def main() -> int:
     per_row = read_csv(artifact_root / PER_ROW_MANIFEST_NAME)
     promotion = read_csv(artifact_root / PROMOTION_MATRIX_NAME)
     manifest_counts = parse_manifest(root / GENERATED_MANIFEST)
+    diagnostic_authority = {
+        row["surface_id"]: row for row in read_csv(
+            root.parent / "Specifications/Core/registries/normalized-builtin-surface-classification.csv")
+    }
     try:
         load_central_import_command_rows(root.parent / "Specifications/Core")
         validate_core_root_refusals(root)
@@ -278,6 +322,10 @@ def main() -> int:
                     f"refusal authority drift: canonical={canonical} "
                     f"cluster_scope={cluster_scope}"
                 )
+        elif sid == POLICY_DIAGNOSTIC_SURFACE:
+            allowed = {"exact_refusal_passed"}
+            for detail in diagnostic_identity_refusal_errors(row, diagnostic_authority.get(sid, {})):
+                errors.append(f"STRICT_ROW_COVERAGE_LEDGER row {sid} {detail}")
         elif sid in CANONICAL_PRE_SBLR_REFUSAL_SURFACES:
             if (
                 canonical == "native_now"

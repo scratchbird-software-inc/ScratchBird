@@ -20165,12 +20165,12 @@ def classify(
             "implementation_refs": (
                 f"diagnostic_identity=SBSQL.POLICY_BLOCKED;"
                 f"diagnostic_uuid={SBSFC016_POLICY_DIAGNOSTIC_UUID};"
-                "callable_function=false;pre_sblr_refusal=true;executable_sblr=false;"
+                "callable_function=false;pre_sblr_refusal=true;executable_sblr_emitted=false;"
                 "observer_builtin=sb.scalar.policy_blocked_diagnostic;"
                 "observer_engine_entrypoint=policy_blocked_diagnostic"
             ),
             "diagnostic_proof": (
-                "SBSQL.SURFACE.NOT_ADMITTED;SB_DIAG_FUNCTION_NOT_REGISTERED_internal_registry_check;"
+                "SBSQL.SURFACE.NOT_ADMITTED;canonical_message_vector_set;SB_DIAG_FUNCTION_NOT_REGISTERED_internal_registry_check;"
                 "SBSQL.POLICY_BLOCKED_registered_diagnostic_identity;"
                 "raw_diagnostic_spelling_not_callable"
             ),
@@ -20180,7 +20180,8 @@ def classify(
                 f"ctest:{SECURITY_POLICY_EVALUATION_COMPONENT_CTEST};"
                 f"ctest:{SECURITY_POLICY_EVALUATION_PROCESS_CTEST};"
                 "surface_id=SBSQL-CE3790BA0486;public_diagnostic=SBSQL.SURFACE.NOT_ADMITTED;pre_sblr_refusal=true;"
-                "server_dispatch=false;engine_mutation=false;"
+                "exact_refusal=true;executable_sblr_emitted=false;engine_dispatch_not_reached=true;"
+                "result_published=false;catalog_mutation=false;server_dispatch=false;engine_mutation=false;"
                 "separate_policy_blocked_diagnostic_observer_boolean=true"
             ),
             "evidence_collected_utc": "static_existing_ctest_evidence",

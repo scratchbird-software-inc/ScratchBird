@@ -1825,6 +1825,12 @@ set_tests_properties(sbsql_route_round_trip_fixture_promotion_gate PROPERTIES
 )
 
 add_test(
+  NAME sbsql_diagnostic_identity_authority_test
+  COMMAND "${SBSQL_PYTHON3}" -B
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/full_surface/sbsql_diagnostic_identity_authority_test.py"
+)
+
+add_test(
   NAME sbsql_status_change_authority_gate
   COMMAND "${SBSQL_PYTHON3}"
           "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/full_surface/sbsql_status_change_authority_gate.py"

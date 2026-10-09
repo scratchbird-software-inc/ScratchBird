@@ -228,6 +228,10 @@ int main(int argc, char** argv) {
         !diagnostic_identity_call.accepted &&
         !diagnostic_identity_call.outcome_unknown &&
         diagnostic_identity_call.sblr_payload.empty() &&
+        diagnostic_identity_call.server_operation_id.empty() &&
+        diagnostic_identity_call.server_result_payload.empty() &&
+        diagnostic_identity_call.server_row_count == 0 &&
+        diagnostic_identity_call.server_cursor_uuid.is_nil() &&
         diagnostic_identity_call.messages.has_errors() &&
         std::ranges::any_of(
             diagnostic_identity_call.messages.diagnostics,
