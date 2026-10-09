@@ -95,6 +95,10 @@ struct UuidFactory {
   std::string Text(platform::UuidKind kind, platform::u64 salt) const {
     return uuid::UuidToString(Typed(kind, salt).value);
   }
+  std::string Binary(platform::UuidKind kind, platform::u64 salt) const {
+    const auto identity = Typed(kind, salt).value;
+    return {reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size()};
+  }
 };
 
 const std::vector<StructureContract>& Structures() {
@@ -480,8 +484,8 @@ idx::PageExtentSummaryMetadata MissingPageSummary(const UuidFactory& uuids,
                                                   platform::u64 salt) {
   const auto contract = idx::PageExtentSummaryPersistedFormatContract();
   idx::PageExtentSummaryMetadata metadata;
-  metadata.relation_uuid = uuids.Text(platform::UuidKind::object, salt + 1);
-  metadata.summary_uuid = uuids.Text(platform::UuidKind::object, salt + 2);
+  metadata.relation_uuid = uuids.Binary(platform::UuidKind::object, salt + 1);
+  metadata.summary_uuid = uuids.Binary(platform::UuidKind::object, salt + 2);
   metadata.range.kind = idx::PageExtentSummaryRangeKind::page_range;
   metadata.range.first_page_id = 10;
   metadata.range.page_count = 4;

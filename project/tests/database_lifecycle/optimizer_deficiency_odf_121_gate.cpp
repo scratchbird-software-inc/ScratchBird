@@ -17,6 +17,7 @@
 #include "optimizer_statistics_lifecycle.hpp"
 #include "sorted_bulk_index_build.hpp"
 #include "uuid.hpp"
+#include "../support/transaction_inventory_model_fixture.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -196,7 +197,7 @@ mga::AuthoritativeCleanupHorizonRequest HorizonRequest(
   inventory.next_local_transaction_id = next_local_transaction_id;
 
   mga::AuthoritativeCleanupHorizonRequest request;
-  request.inventory = std::move(inventory);
+  request.inventory = scratchbird::tests::CommitInventoryModelFixture(std::move(inventory));
   request.inventory_authoritative = true;
   request.inventory_complete = true;
   request.active_snapshot_inventory_authoritative = true;

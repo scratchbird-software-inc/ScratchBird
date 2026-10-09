@@ -19,12 +19,14 @@
 #include "startup_state.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
+#include "../support/owned_temp_directory.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <set>
 #include <string>
 #include <string_view>
@@ -65,7 +67,7 @@ struct OptimizedStructureContract {
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -134,12 +136,14 @@ struct UuidFactory {
     return Typed(kind, salt).value;
   }
 
-  std::string Text(platform::UuidKind kind, platform::u64 salt) const {
-    return uuid::UuidToString(Typed(kind, salt).value);
+  std::string Binary(platform::UuidKind kind, platform::u64 salt) const {
+    const auto identity = Typed(kind, salt).value;
+    return {reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size()};
   }
 };
 
 struct TempDatabase {
+  std::unique_ptr<scratchbird::tests::OwnedTempDirectory> workspace;
   std::filesystem::path dir;
   std::filesystem::path path;
   UuidFactory uuids;
@@ -150,11 +154,9 @@ struct TempDatabase {
   platform::Uuid principal_identity;
 
   explicit TempDatabase(std::string_view label) {
-    dir = std::filesystem::temp_directory_path() /
-          ("scratchbird_odf118_" + std::string(label) + "_" +
-           std::to_string(NowMillis()));
-    std::filesystem::create_directories(dir);
-    path = dir / "odf118.sbdb";
+    workspace = std::make_unique<scratchbird::tests::OwnedTempDirectory>();
+    dir = workspace->path();
+    path = dir / (std::string(label) + ".sbdb");
     database_uuid = uuids.Typed(platform::UuidKind::database, 10);
     filespace_uuid = uuids.Typed(platform::UuidKind::filespace, 11);
     database_identity = database_uuid.value;
@@ -165,7 +167,8 @@ struct TempDatabase {
   TempDatabase(const TempDatabase&) = delete;
   TempDatabase& operator=(const TempDatabase&) = delete;
   TempDatabase(TempDatabase&& other) noexcept
-      : dir(std::move(other.dir)),
+      : workspace(std::move(other.workspace)),
+        dir(std::move(other.dir)),
         path(std::move(other.path)),
         uuids(other.uuids),
         database_uuid(other.database_uuid),
@@ -179,10 +182,7 @@ struct TempDatabase {
 
   TempDatabase& operator=(TempDatabase&& other) noexcept {
     if (this != &other) {
-      std::error_code ignored;
-      if (!dir.empty()) {
-        std::filesystem::remove_all(dir, ignored);
-      }
+      workspace = std::move(other.workspace);
       dir = std::move(other.dir);
       path = std::move(other.path);
       uuids = other.uuids;
@@ -197,10 +197,7 @@ struct TempDatabase {
     return *this;
   }
 
-  ~TempDatabase() {
-    std::error_code ignored;
-    std::filesystem::remove_all(dir, ignored);
-  }
+  ~TempDatabase() = default;
 };
 
 api::EngineLocalizedName Name(std::string value) {
@@ -719,8 +716,8 @@ idx::PageExtentSummaryMetadata MissingPageSummary(const UuidFactory& uuids,
                                                   platform::u64 salt) {
   const auto contract = idx::PageExtentSummaryPersistedFormatContract();
   idx::PageExtentSummaryMetadata metadata;
-  metadata.relation_uuid = uuids.Text(platform::UuidKind::object, salt + 1);
-  metadata.summary_uuid = uuids.Text(platform::UuidKind::object, salt + 2);
+  metadata.relation_uuid = uuids.Binary(platform::UuidKind::object, salt + 1);
+  metadata.summary_uuid = uuids.Binary(platform::UuidKind::object, salt + 2);
   metadata.range.kind = idx::PageExtentSummaryRangeKind::page_range;
   metadata.range.first_page_id = 10;
   metadata.range.page_count = 4;
@@ -1143,7 +1140,7 @@ void ProveSupportBundleEvidence() {
 
 }  // namespace
 
-int main() {
+int main() try {
   std::cout << kGateSearchKey << '\n';
   ProveCompatibilityAndBackfillContracts();
   (void)CreateAndOpenFreshDatabase("fresh");
@@ -1151,4 +1148,7 @@ int main() {
   ProveExistingAndPartialStructureRepairBehavior();
   ProveSupportBundleEvidence();
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

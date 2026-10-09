@@ -9,6 +9,7 @@
 // ODF-117 concurrency/stale-epoch closure gate.
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/transaction_inventory_model_fixture.hpp"
 #include "catalog/pinned_descriptor_cache.hpp"
 #include "hot_point_lookup_cache.hpp"
 #include "nosql/nosql_family_maintenance_api.hpp"
@@ -125,6 +126,7 @@ mga::AuthoritativeCleanupHorizonRequest HorizonRequest() {
         InventoryEntry(local_id, mga::TransactionState::committed));
   }
   request.inventory.next_local_transaction_id = 70;
+  request.inventory = scratchbird::tests::CommitInventoryModelFixture(std::move(request.inventory));
   request.inventory_authoritative = true;
   request.inventory_complete = true;
   request.active_snapshot_inventory_authoritative = true;

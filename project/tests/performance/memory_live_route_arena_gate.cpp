@@ -1,4 +1,5 @@
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -46,7 +47,7 @@ struct RouteEvidence {
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -109,6 +110,9 @@ mem::QueryMemoryContext Context(const RouteCase& route) {
   context.database_id = scratchbird::tests::FixtureUuid(1534, 4);
   context.engine_id = scratchbird::tests::FixtureUuid(1534, 5);
   context.operation_id = scratchbird::tests::FixtureUuid(1534, 6);
+  context.snapshot_boundary = scratchbird::tests::FixtureUuid(1534, 7);
+  context.metadata_boundary = scratchbird::tests::FixtureUuid(1534, 8);
+  context.resource_budget_reference = scratchbird::tests::FixtureUuid(1534, 9);
   context.engine_mga_authoritative = true;
   return context;
 }
@@ -128,6 +132,8 @@ mem::TempWorkspacePolicy TempPolicy(const std::filesystem::path& root) {
   mem::TempWorkspacePolicy policy;
   policy.policy_name = "mmch021_temp";
   policy.root_path = root;
+  policy.database_uuid = scratchbird::tests::FixtureUuid(1534, 4);
+  policy.engine_uuid = scratchbird::tests::FixtureUuid(1534, 5);
   policy.filespace_quota_bytes = 512 * 1024;
   policy.session_quota_bytes = 512 * 1024;
   policy.transaction_quota_bytes = 512 * 1024;
@@ -170,12 +176,19 @@ exec::ExecutorOperatorMemoryAuthority Authority() {
 }
 
 RouteEvidence ExecuteRoute(const RouteCase& route) {
-  const auto root = std::filesystem::temp_directory_path() /
-                    ("sb_mmch021_" + route.route_kind);
-  std::filesystem::remove_all(root);
+  scratchbird::tests::OwnedTempDirectory workspace;
+  const auto root = workspace.path() / route.route_kind;
   mem::BoundedAllocator allocator(AllocationPolicy());
   mem::TempWorkspaceLifecycleManager temp(TempPolicy(root));
   mem::QueryMemoryArena arena(Context(route), Limits(), &allocator, &temp);
+
+  auto missing_boundary = Context(route);
+  missing_boundary.snapshot_boundary = {};
+  mem::QueryMemoryArena invalid_arena(missing_boundary, Limits(), &allocator, &temp);
+  const auto invalid_grant = invalid_arena.Grant({mem::QueryMemoryFamily::relational, 2048});
+  Require(!invalid_grant.ok() && !invalid_grant.grant &&
+              invalid_arena.Snapshot().current_bytes == 0,
+          "MMCH-021 missing snapshot boundary admitted an allocation");
 
   RouteEvidence evidence;
   evidence.route_kind = route.route_kind;
@@ -220,6 +233,11 @@ RouteEvidence ExecuteRoute(const RouteCase& route) {
     grant_ids.push_back({kind, granted.grant_id});
   }
 
+  Require(arena.Snapshot().current_bytes == operators.size() * 2048 &&
+              arena.Snapshot().retained_heap_bytes >= operators.size() * 2048 &&
+              arena.Snapshot().active_grant_count == operators.size(),
+          "MMCH-021 operator grants have no physical heap backing");
+  // This is a component grant test for route labels, not a parser or transport run.
   evidence.result_hash = HashRows({11, 17, 19, 23, 29, 31});
   evidence.evidence.push_back("live_route.result_hash=" +
                               std::to_string(evidence.result_hash));
@@ -249,13 +267,12 @@ RouteEvidence ExecuteRoute(const RouteCase& route) {
   evidence.evidence.push_back(
       "live_route.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
   RequireEvidenceHygiene(evidence.evidence);
-  std::filesystem::remove_all(root);
   return evidence;
 }
 
 }  // namespace
 
-int main() {
+int main() try {
   std::cout << "MMCH-021 authority_note=live_route_memory_arena_evidence_only;"
                "not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"
             << '\n';
@@ -283,4 +300,7 @@ int main() {
             "MMCH-021 route security recheck evidence missing");
   }
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

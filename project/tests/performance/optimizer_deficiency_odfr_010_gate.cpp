@@ -81,7 +81,8 @@ opt::ExtendedStatsSelectivityRequest BaseRequest(const scratchbird::core::platfo
 bool JointMcvAndNdvImproveCorrelatedEquality() {
   auto joint = BaseExtended(scratchbird::tests::FixtureUuid(1528, 7), opt::ExtendedOptimizerStatisticKind::kJointMcv);
   joint.multi_column_distinct_count = 20;
-  joint.joint_mcv.push_back({{"CA", "94105"}, 0.075});
+  // Values follow the statistic's column order (3,2), not the request (2,3).
+  joint.joint_mcv.push_back({{"94105", "CA"}, 0.075});
 
   opt::OptimizerStatisticsStore store;
   store.UpsertExtendedStatistic(joint);
@@ -89,6 +90,17 @@ bool JointMcvAndNdvImproveCorrelatedEquality() {
   const auto result = opt::EstimateCorrelatedConjunctionSelectivity(
       BaseRequest(scratchbird::tests::FixtureUuid(1528, 7)),
       stats);
+
+  auto reordered = BaseRequest(scratchbird::tests::FixtureUuid(1528, 7));
+  std::swap(reordered.column_uuids[0], reordered.column_uuids[1]);
+  std::swap(reordered.value_encodings[0], reordered.value_encodings[1]);
+  const auto permuted = opt::EstimateCorrelatedConjunctionSelectivity(reordered, stats);
+  std::swap(reordered.value_encodings[0], reordered.value_encodings[1]);
+  const auto mismatched = opt::EstimateCorrelatedConjunctionSelectivity(reordered, stats);
+  if (!Require(permuted.used_extended_stats && Near(permuted.estimate.selectivity, 0.075),
+               "permuting columns with their values changed joint MCV frequency") ||
+      !Require(mismatched.used_extended_stats && Near(mismatched.estimate.selectivity, 0.05),
+               "values bound to the wrong columns matched a joint MCV tuple")) return false;
 
   return Require(result.used_extended_stats, "joint MCV extended stats were not used") &&
          Require(result.diagnostic_code == "SB_OPTIMIZER_EXTENDED_STATS.USED",

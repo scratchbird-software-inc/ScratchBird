@@ -8,6 +8,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/transaction_inventory_model_fixture.hpp"
 #include "nosql/nosql_family_maintenance_api.hpp"
 #include "uuid.hpp"
 
@@ -73,6 +74,7 @@ mga::AuthoritativeCleanupHorizonRequest HorizonRequest(
         Entry(local_id, mga::TransactionState::committed));
   }
   request.inventory.next_local_transaction_id = next_local_transaction_id;
+  request.inventory = scratchbird::tests::CommitInventoryModelFixture(std::move(request.inventory));
   request.inventory_authoritative = true;
   request.inventory_complete = inventory_complete;
   request.active_snapshot_inventory_authoritative = true;
@@ -221,6 +223,12 @@ void RequireEvidenceHygiene(const api::EngineApiResult& result) {
 }
 
 void SchedulesFamilySpecificNoSqlMaintenanceThroughDebtScheduler() {
+  auto unissued_order = BaseRequest();
+  unissued_order.horizon_request.inventory.entries.front().commit_sequence = 0;
+  const auto refused = api::EnginePlanNoSqlFamilyMaintenance(unissued_order);
+  Require(!refused.ok && refused.agent_result.actions.empty() &&
+              DiagnosticContains(refused, "SB-MGA-CLEANUP-HORIZON-INVENTORY-INVALID"),
+          "ODF-077 committed state without issued commit order admitted cleanup");
   const auto result = api::EnginePlanNoSqlFamilyMaintenance(BaseRequest());
   Require(result.ok, "ODF-077 authoritative NoSQL maintenance plan failed");
   Require(result.agent_result.scheduler_result.ok(),
