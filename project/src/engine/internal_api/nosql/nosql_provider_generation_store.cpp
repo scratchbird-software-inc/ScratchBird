@@ -2219,6 +2219,14 @@ EngineNoSqlProviderGenerationResult PublishNoSqlProviderGeneration(
     const EngineRequestContext& context,
     const EngineNoSqlProviderGenerationMetadata& metadata) {
   std::lock_guard<std::mutex> guard(StoreMutex());
+  // Sealed capabilities bind their original identities, locator and epochs.
+  // Context defaults may complete an unsealed ordinary generation, but must
+  // never repair a mutilated sealed request into one whose digest now matches.
+  if (!HasValidTimeSeriesRollupCarrier(metadata) ||
+      !HasValidVectorAnnCarrier(metadata) || !HasValidSearchSegmentCarrier(metadata)) {
+    return Failure(context, "nosql.provider_generation.publish",
+                   kNoSqlProviderGenerationMetadataMissing);
+  }
   auto writable = metadata;
   writable.database_identity = EngineNoSqlProviderDatabaseIdentity(context);
   if (writable.database_uuid.is_nil() || !IsValidUuid(writable.database_uuid)) {

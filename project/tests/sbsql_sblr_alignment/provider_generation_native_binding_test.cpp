@@ -16,8 +16,8 @@ int main() {
   identity.bytes[9] = 0; identity.bytes[15] = 0xff;
   a::EngineRequestContext context;
   context.database_uuid = identity;
-  char path[] = "/tmp/sb_provider_native_XXXXXX";
-  const auto directory = ::mkdtemp(path); Check(directory != nullptr);
+  auto path = (std::filesystem::temp_directory_path() / "sb_provider_native_XXXXXX").string();
+  const auto directory = ::mkdtemp(path.data()); Check(directory != nullptr);
   context.database_path = std::string(directory) + "/database";
   a::EngineNoSqlProviderGenerationMetadata metadata;
   metadata.family = a::EngineNoSqlProviderFamily::kTimeSeries;
@@ -28,6 +28,10 @@ int main() {
   metadata.collection_uuid = FixtureUuid(1134, 3);
   metadata.generation_uuid = FixtureUuid(1134, 4);
   metadata.generation_id = 1;
+  metadata.backup_metadata_ref = "backup.provider_generation";
+  metadata.restore_metadata_ref = "restore.provider_generation";
+  metadata.repair_metadata_ref = "repair.provider_generation";
+  metadata.support_bundle_evidence_id = "support.provider_generation";
   metadata.descriptor_epoch = metadata.security_epoch = metadata.redaction_epoch = metadata.catalog_epoch = 1;
   metadata.time_series_rollup_candidate_present = true;
   metadata.time_series_rollup_generation = 1;
@@ -49,6 +53,27 @@ int main() {
   Check(metadata.time_series_rollup_binding_digest.size() == 32);
   Check(a::ValidateTimeSeriesRollupCapabilityBindingV1(metadata));
   const auto original = metadata;
+  // Context defaults must not resurrect stripped identity/epoch/locator
+  // fields under an otherwise unchanged capability seal. No file or cached
+  // record may be published for any such request.
+  for (unsigned mutation = 0; mutation < 9; ++mutation) {
+    auto altered = metadata;
+    if (mutation == 0) altered.database_uuid = {};
+    if (mutation == 1) altered.database_uuid.bytes[6] = 0x40;
+    if (mutation == 2) altered.descriptor_epoch = 0;
+    if (mutation == 3) altered.security_epoch = 0;
+    if (mutation == 4) altered.redaction_epoch = 0;
+    if (mutation == 5) altered.catalog_epoch = 0;
+    if (mutation == 6) altered.database_identity.clear();
+    if (mutation == 7) altered.database_identity += ".other";
+    if (mutation == 8) altered.time_series_rollup_capability_uuid = {};
+    Check(!a::PublishNoSqlProviderGeneration(context, altered).ok);
+    Check(!std::filesystem::exists(a::GenerationPath(context)));
+    Check(a::GenerationCache().empty());
+  }
+  Check(a::PublishNoSqlProviderGeneration(context, metadata).ok);
+  Check(std::filesystem::exists(a::GenerationPath(context)));
+  a::GenerationCache().clear();
   metadata.collection_uuid.bytes[15] ^= 1;
   Check(!a::ValidateTimeSeriesRollupCapabilityBindingV1(metadata)); metadata = original;
   metadata.time_series_rollup_capability_uuid.bytes[15] ^= 1;
