@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "listener_socket_identity.hpp"
+#include "../support/owned_temp_directory.hpp"
 
 #include <arpa/inet.h>
 #include <csignal>
@@ -102,27 +103,23 @@ bool WriteAll(int fd, const std::string& text) {
   return true;
 }
 
-std::filesystem::path MakeTempDir() {
-  std::string tmpl = "/tmp/sb_lost.XXXXXX";
-  std::vector<char> writable(tmpl.begin(), tmpl.end());
-  writable.push_back('\0');
-  char* made = ::mkdtemp(writable.data());
-  return made == nullptr ? std::filesystem::path{} : std::filesystem::path(made);
-}
-
-std::filesystem::path FindOwnerToken(const std::filesystem::path& control_dir) {
-  std::error_code ec;
-  if (!std::filesystem::exists(control_dir, ec)) return {};
-  for (const auto& entry : std::filesystem::directory_iterator(control_dir, ec)) {
-    if (ec) return {};
-    const auto path = entry.path();
-    const auto name = path.filename().string();
-    if (name.size() >= std::string(".owner").size() && name.ends_with(".owner")) {
-      return path;
+struct ChildOwner {
+  pid_t pid = -1;
+  ~ChildOwner() { Stop(); }
+  void Stop() noexcept {
+    if (pid <= 0) return;
+    ::kill(pid, SIGTERM);
+    int status = 0;
+    for (int i = 0; i < 100; ++i) {
+      const auto rc = ::waitpid(pid, &status, WNOHANG);
+      if (rc == pid || (rc < 0 && errno == ECHILD)) { pid = -1; return; }
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
+    ::kill(pid, SIGKILL);
+    while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    pid = -1;
   }
-  return {};
-}
+};
 
 std::string ReadFile(const std::filesystem::path& path) {
   std::ifstream in(path);
@@ -133,22 +130,21 @@ std::string ReadFile(const std::filesystem::path& path) {
 
 void Require(bool condition, const std::string& message) {
   if (!condition) {
-    std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(message);
   }
 }
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int Run(int argc, char** argv) {
   if (argc != 3) {
     std::cerr << "usage: sb_listener_owner_token_stale_corrupt_smoke <sb_listener> <sb_parser_dummy>\n";
     return EXIT_FAILURE;
   }
   const std::filesystem::path listener = argv[1];
   const std::filesystem::path parser = argv[2];
-  const auto work = MakeTempDir();
-  Require(!work.empty(), "could not create temp dir");
+  scratchbird::tests::OwnedTempDirectory temporary;
+  const auto work = temporary.path();
   const int port = FindFreePort();
   Require(port > 0, "could not allocate test port");
 
@@ -161,7 +157,12 @@ int main(int argc, char** argv) {
   identity_config.server_endpoint = "unix:/tmp/sb_lost.sbps.sock";
   identity_config.control_dir = control_dir.string();
   identity_config.runtime_dir = runtime_dir.string();
-  const auto corrupt_owner = scratchbird::listener::BuildSocketIdentity(identity_config).owner_file;
+  identity_config.bind_address = "127.0.0.1";
+  identity_config.port = static_cast<std::uint16_t>(port);
+  // Exactly the same endpoint identity as the child: the old fixture omitted
+  // its port/address and planted corruption in an unrelated owner's file.
+  const auto identity = scratchbird::listener::BuildSocketIdentity(identity_config);
+  const auto corrupt_owner = identity.owner_file;
   {
     std::ofstream out(corrupt_owner, std::ios::trunc);
     out << "this is not a valid live owner token\n";
@@ -202,18 +203,8 @@ int main(int argc, char** argv) {
     _exit(127);
   }
   Require(pid > 0, "could not fork listener");
-
-  auto cleanup = [&] {
-    ::kill(pid, SIGTERM);
-    int status = 0;
-    for (int i = 0; i < 100; ++i) {
-      const auto rc = ::waitpid(pid, &status, WNOHANG);
-      if (rc == pid) return;
-      std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
-    ::kill(pid, SIGKILL);
-    ::waitpid(pid, &status, 0);
-  };
+  ChildOwner child{pid};
+  const auto cleanup = [&] { child.Stop(); };
 
   int fd = -1;
   for (int i = 0; i < 100; ++i) {
@@ -221,6 +212,7 @@ int main(int argc, char** argv) {
     if (fd >= 0) break;
     int status = 0;
     if (::waitpid(pid, &status, WNOHANG) == pid) {
+      child.pid = -1;
       std::cerr << "listener exited before accepting after stale/corrupt owner token\n";
       return EXIT_FAILURE;
     }
@@ -248,13 +240,31 @@ int main(int argc, char** argv) {
   }
   ::close(fd);
 
-  const auto owner = FindOwnerToken(control_dir);
-  const auto owner_text = owner.empty() ? std::string{} : ReadFile(owner);
-  cleanup();
-  Require(!owner.empty(), "listener did not write an owner token");
-  Require(owner_text.find("listener_uuid=") != std::string::npos &&
+  const auto owner_text = ReadFile(corrupt_owner);
+  Require(owner_text.find("listener_uuid=" + identity.listener_uuid + "\n") != std::string::npos &&
+              owner_text.find("pid=" + std::to_string(pid) + "\n") != std::string::npos &&
               owner_text.find("signature_sha256_128=") != std::string::npos,
           "listener did not replace stale/corrupt owner token with signed owner evidence");
-  std::cout << "owner_token_stale_corrupt_smoke=passed work=" << work << '\n';
+  // The production validator checks the digest, endpoint and live process.
+  // It must refuse to replace this exact owner, retaining the bytes verbatim.
+  std::string error;
+  Require(!scratchbird::listener::WriteOwnerToken(identity, &error) &&
+              error == "live owner token exists for pid " + std::to_string(pid) &&
+              ReadFile(corrupt_owner) == owner_text,
+          "live signed owner was not protected from replacement");
+  cleanup();
+  Require(scratchbird::listener::WriteOwnerToken(identity, &error) &&
+              ReadFile(corrupt_owner).find("pid=" + std::to_string(::getpid()) + "\n") != std::string::npos,
+          "exited listener owner was not replaceable after join");
+  temporary.Cleanup();
+  std::cout << "owner_token_stale_corrupt_smoke=passed\n";
   return EXIT_SUCCESS;
+}
+
+int main(int argc, char** argv) {
+  try { return Run(argc, argv); }
+  catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }
