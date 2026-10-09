@@ -216,6 +216,8 @@ api::EngineTypedValue Value(const api::EngineDescriptor& descriptor,
   value.descriptor = descriptor;
   if (descriptor.canonical_type_name == "int64")
     return scratchbird::tests::NativeInt64Fixture(descriptor, encoded);
+  if (descriptor.canonical_type_name == "real64")
+    return scratchbird::tests::NativeReal64Fixture(descriptor, encoded);
   value.encoded_value = encoded;
   value.state = api::EngineValueState::value;
   return value;
@@ -325,6 +327,10 @@ exec::CanonicalAggregateRuntimeRequest Request(
 }
 
 bool ScalarMatches(const api::EngineTypedValue& value, const std::string& expected) {
+  if (value.descriptor.canonical_type_name == "real64") {
+    const auto decoded = exec::DecodeReal64Value(value);
+    return decoded.ok() && std::abs(decoded.value - std::stod(expected)) < 1e-12;
+  }
   return value.descriptor.canonical_type_name == "int64"
       ? scratchbird::tests::NativeInt64Equals(value, std::stoll(expected))
       : value.encoded_value == expected;
@@ -491,12 +497,10 @@ bool NearScalar(const exec::CanonicalAggregateRuntimeResult& result,
       result.output_batch.rows[0].values[0].descriptor.canonical_type_name == "int64")
     return scratchbird::tests::NativeInt64Equals(result.output_batch.rows[0].values[0],
                                                 static_cast<std::int64_t>(expected));
-  return result.diagnostic.ok && result.output_batch.rows.size() == 1 &&
-         result.output_batch.rows[0].values[0].state ==
-             api::EngineValueState::value &&
-         std::abs(std::stod(
-                      result.output_batch.rows[0].values[0].encoded_value) -
-                  expected) < 1e-12;
+  if (!result.diagnostic.ok || result.output_batch.rows.size() != 1 ||
+      result.output_batch.rows[0].values.size() != 1) return false;
+  const auto decoded = exec::DecodeReal64Value(result.output_batch.rows[0].values[0]);
+  return decoded.ok() && std::abs(decoded.value - expected) < 1e-12;
 }
 
 // QOW-TEST-QRY-011-REGISTRY-V1
@@ -608,11 +612,7 @@ bool ValidateCanonicalAggregateRegistry() {
   auto avg_request = Request(exec::CanonicalAggregateFunction::avg, 1, 2102,
                              "real64");
   auto avg = exec::ExecuteCanonicalAggregateRuntime(avg_request);
-  passed &= Require(avg.diagnostic.ok &&
-                        std::abs(std::stod(
-                                     avg.output_batch.rows[0].values[0]
-                                         .encoded_value) -
-                                 (8.0 / 3.0)) < 1e-12,
+  passed &= Require(NearScalar(avg, 8.0 / 3.0),
                     "AVG did not preserve numeric state semantics");
 
   struct StatisticalCase {

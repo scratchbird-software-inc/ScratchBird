@@ -18,6 +18,8 @@ namespace scratchbird::engine::executor::detail {
 
 DescriptorRuntimeDiagnostic ValidateAggregateInt64ResultDescriptor(
     const ExecutorColumnDescriptor& column);
+DescriptorRuntimeDiagnostic ValidateAggregateReal64ResultDescriptor(
+    const ExecutorColumnDescriptor& column);
 
 enum class CanonicalAggregateRuntimeExecutionContext : std::uint8_t {
   ordinary_non_window = 0,

@@ -1039,6 +1039,15 @@ EngineTypedValue AggregateNull(const ExecutorColumnDescriptor& column) {
   return value;
 }
 
+EngineTypedValue AggregateReal64Value(const ExecutorColumnDescriptor& column,
+                                     long double result) {
+  // The result descriptor is admitted before aggregation. Preserve it while
+  // publishing native IEEE binary64; decimal formatting is presentation only.
+  auto value = EncodeReal64Value(static_cast<double>(result));
+  value.descriptor = column.descriptor;
+  return value;
+}
+
 std::string FormatAggregateReal(const long double value) {
   if (value == 0.0L) return "0";
   std::array<char, 128> buffer{};
@@ -1765,6 +1774,13 @@ bool ValidateCanonicalAggregateResultType(
       return false;
     }
   }
+  if (request.result_column.descriptor.canonical_type_name == "real64") {
+    const auto admission = detail::ValidateAggregateReal64ResultDescriptor(request.result_column);
+    if (!admission.ok) {
+      *diagnostic = admission;
+      return false;
+    }
+  }
   const auto function = request.descriptor.function;
   const bool fixed_int64_result =
       function == CanonicalAggregateFunction::count ||
@@ -2215,8 +2231,7 @@ bool PlanCanonicalAggregateFinalization(
   }
   if (IsCanonicalHypotheticalSetFunction(function) &&
       state.ordered_numeric_values.empty()) {
-    plan->output_bytes = function == CanonicalAggregateFunction::rank ||
-                         function == CanonicalAggregateFunction::dense_rank ? 8 : 1;
+    plan->output_bytes = 8;
     return true;
   }
   if (function == CanonicalAggregateFunction::array_agg &&
@@ -2323,9 +2338,10 @@ bool PlanCanonicalAggregateFinalization(
   }
   if (IsCanonicalHypotheticalSetFunction(function) ||
       IsCanonicalQuantileFunction(function)) {
-    plan->output_bytes = function == CanonicalAggregateFunction::rank ||
-                         function == CanonicalAggregateFunction::dense_rank ? 8 : 64;
-    if (!CheckedAggregateFinalizationMultiply(
+    plan->output_bytes = 8;
+    if ((function == CanonicalAggregateFunction::dense_rank ||
+         IsCanonicalQuantileFunction(function)) &&
+        !CheckedAggregateFinalizationMultiply(
             state.ordered_numeric_values.size(), sizeof(long double),
             &plan->peak_workspace_bytes)) {
       return refuse_overflow();
@@ -2432,6 +2448,7 @@ bool PlanCanonicalAggregateFinalization(
     return true;
   }
   plan->output_bytes =
+      IsType(request.result_column, "real64") ? 8 :
       function == CanonicalAggregateFunction::sum && IsType(request.result_column, "int64") ? 8 :
       function == CanonicalAggregateFunction::bool_and ||
               function == CanonicalAggregateFunction::bool_or ||
@@ -2694,14 +2711,15 @@ EngineTypedValue FinalizeCanonicalAggregateCoreUnchecked(
                                 &hypothetical, diagnostic)) {
       return {};
     }
-    std::vector<long double> values = state.ordered_numeric_values;
-    std::sort(values.begin(), values.end());
-    const auto less = static_cast<std::size_t>(std::count_if(
-        values.begin(), values.end(),
-        [&](const auto value) { return value < hypothetical; }));
-    const auto less_equal = static_cast<std::size_t>(std::count_if(
-        values.begin(), values.end(),
-        [&](const auto value) { return value <= hypothetical; }));
+    const auto& values = state.ordered_numeric_values;
+    std::size_t less = 0;
+    std::size_t less_equal = 0;
+    // Rank and distribution depend on counts, not a sorted copy. Retained
+    // values are finite and descriptor-admitted; one read-only pass suffices.
+    for (const auto value : values) {
+      less += value < hypothetical;
+      less_equal += value <= hypothetical;
+    }
     if (function == CanonicalAggregateFunction::rank) {
       if (less >= static_cast<std::size_t>(
                       std::numeric_limits<std::int64_t>::max())) {
@@ -2712,9 +2730,11 @@ EngineTypedValue FinalizeCanonicalAggregateCoreUnchecked(
       return EncodeInt64Value(static_cast<std::int64_t>(less + 1), request.result_column.descriptor);
     }
     if (function == CanonicalAggregateFunction::dense_rank) {
-      values.erase(std::unique(values.begin(), values.end()), values.end());
+      auto distinct = values;
+      std::sort(distinct.begin(), distinct.end());
+      distinct.erase(std::unique(distinct.begin(), distinct.end()), distinct.end());
       const auto distinct_less = static_cast<std::size_t>(std::count_if(
-          values.begin(), values.end(),
+          distinct.begin(), distinct.end(),
           [&](const auto value) { return value < hypothetical; }));
       if (distinct_less >= static_cast<std::size_t>(
                                std::numeric_limits<std::int64_t>::max())) {
@@ -2735,8 +2755,7 @@ EngineTypedValue FinalizeCanonicalAggregateCoreUnchecked(
       result_value = static_cast<long double>(less_equal + 1) /
                      static_cast<long double>(values.size() + 1);
     }
-    return AggregateValue(request.result_column,
-                          FormatAggregateReal(result_value));
+    return AggregateReal64Value(request.result_column, result_value);
   }
   if (IsCanonicalQuantileFunction(function)) {
     if (state.ordered_numeric_values.empty()) {
@@ -2772,8 +2791,7 @@ EngineTypedValue FinalizeCanonicalAggregateCoreUnchecked(
                             "quantile result exceeds real64");
       return {};
     }
-    return AggregateValue(request.result_column,
-                          FormatAggregateReal(quantile));
+    return AggregateReal64Value(request.result_column, quantile);
   }
   if (function == CanonicalAggregateFunction::approx_count_distinct) {
     if (state.approximate_distinct_entries.size() >
@@ -2865,8 +2883,7 @@ EngineTypedValue FinalizeCanonicalAggregateCoreUnchecked(
                             "SUM exceeds real64 result width");
       return {};
     }
-    return AggregateValue(request.result_column,
-                          FormatAggregateReal(state.real_sum));
+    return AggregateReal64Value(request.result_column, state.real_sum);
   }
   if (function == CanonicalAggregateFunction::avg) {
     const auto average = state.real_sum /
@@ -2876,8 +2893,7 @@ EngineTypedValue FinalizeCanonicalAggregateCoreUnchecked(
                             "AVG exceeds real64 result width");
       return {};
     }
-    return AggregateValue(request.result_column,
-                          FormatAggregateReal(average));
+    return AggregateReal64Value(request.result_column, average);
   }
   if (IsCanonicalUnivariateStatisticalFunction(function)) {
     const bool population =
@@ -2900,8 +2916,7 @@ EngineTypedValue FinalizeCanonicalAggregateCoreUnchecked(
                             "statistical result exceeds real64 width");
       return {};
     }
-    return AggregateValue(request.result_column,
-                          FormatAggregateReal(statistic));
+    return AggregateReal64Value(request.result_column, statistic);
   }
   if (IsCanonicalPairStatisticalFunction(function)) {
     if (state.non_null_count == 0) return AggregateNull(request.result_column);
@@ -2975,8 +2990,7 @@ EngineTypedValue FinalizeCanonicalAggregateCoreUnchecked(
                             "pair statistical result exceeds real64 width");
       return {};
     }
-    return AggregateValue(request.result_column,
-                          FormatAggregateReal(statistic));
+    return AggregateReal64Value(request.result_column, statistic);
   }
   if (function == CanonicalAggregateFunction::min ||
       function == CanonicalAggregateFunction::max) {
@@ -4695,16 +4709,23 @@ bool IsCanonicalAggregateStateSpillUuid(const internal_api::EngineUuid& value) {
 
 }  // namespace
 
-DescriptorRuntimeDiagnostic detail::ValidateAggregateInt64ResultDescriptor(
-    const ExecutorColumnDescriptor& column) {
+static DescriptorRuntimeDiagnostic ValidateAggregateNumericResultDescriptor(
+    const ExecutorColumnDescriptor& column, bool real64) {
   try {
     // Validate the supplied binding independently of cardinality, including NULL
     // results. This probe is never published and confers no execution authority.
-    const auto probe = EncodeInt64Value(0, column.descriptor);
-    std::int64_t decoded = 0;
-    std::string reason;
-    if (!DecodeBoundInt64Value(probe, &decoded, &reason))
-      return Refusal("DATATYPE.DESCRIPTOR.INVALID", reason);
+    if (real64) {
+      auto probe = EncodeReal64Value(0.0);
+      probe.descriptor = column.descriptor;
+      const auto admitted = DecodeReal64Value(probe);
+      if (!admitted.ok()) return admitted.diagnostic;
+    } else {
+      const auto probe = EncodeInt64Value(0, column.descriptor);
+      std::int64_t decoded = 0;
+      std::string reason;
+      if (!DecodeBoundInt64Value(probe, &decoded, &reason))
+        return Refusal("DATATYPE.DESCRIPTOR.INVALID", reason);
+    }
     internal_api::CatalogColumnMetadata fields;
     if (!internal_api::AdmitCatalogColumnMetadata(
             column.descriptor.encoded_descriptor, &fields)) {
@@ -4725,6 +4746,16 @@ DescriptorRuntimeDiagnostic detail::ValidateAggregateInt64ResultDescriptor(
     return Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                    "aggregate result admission allocation failed");
   }
+}
+
+DescriptorRuntimeDiagnostic detail::ValidateAggregateInt64ResultDescriptor(
+    const ExecutorColumnDescriptor& column) {
+  return ValidateAggregateNumericResultDescriptor(column, false);
+}
+
+DescriptorRuntimeDiagnostic detail::ValidateAggregateReal64ResultDescriptor(
+    const ExecutorColumnDescriptor& column) {
+  return ValidateAggregateNumericResultDescriptor(column, true);
 }
 
 DescriptorRuntimeDiagnostic BindCanonicalAggregateEqualityAuthorityProfile(

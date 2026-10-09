@@ -499,7 +499,9 @@ scratchbird::engine::sblr::SblrResult CanonicalNumericScalar(
       return CanonicalScalar(Int64Value(decoded.value));
     }
     if (value.descriptor.canonical_type_name == "real64") {
-      return CanonicalScalar(Real64Value(std::stod(value.encoded_value)));
+      const auto decoded = exec::DecodeReal64Value(value);
+      if (!decoded.diagnostic.ok) return CanonicalDiagnosticFailure(decoded.diagnostic);
+      return CanonicalScalar(Real64Value(decoded.value));
     }
   } catch (const std::exception&) {
     return CanonicalFailure("QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
@@ -1911,6 +1913,24 @@ int main() {
                                   &top_zero),
                      "SB_DIAG_AGGREGATE_TOP_K_LIMIT_INVALID") && ok;
 
+  const auto native_real = exec::EncodeReal64Value(0.5);
+  ok = ExpectReal64("window_native_real64_binary", CanonicalNumericScalar(native_real), 0.5) && ok;
+  auto invalid_real = native_real;
+  invalid_real.encoded_value = "0.5";
+  ok = ExpectFailure("window_native_real64_dual_carrier",
+                     CanonicalNumericScalar(invalid_real),
+                     "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1") && ok;
+  invalid_real.binary_value.clear();
+  ok = ExpectFailure("window_native_real64_text_carrier",
+                     CanonicalNumericScalar(invalid_real),
+                     "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1") && ok;
+  for (const auto width : {0u, 1u, 7u, 9u, 16u}) {
+    invalid_real = native_real;
+    invalid_real.binary_value.resize(width);
+    ok = ExpectFailure("window_native_real64_wrong_width",
+                       CanonicalNumericScalar(invalid_real),
+                       "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1") && ok;
+  }
   if (!ok) return 1;
   std::cout << "sbsql_sbsfc_015_aggregate_window_runtime_conformance=passed\n";
   return 0;

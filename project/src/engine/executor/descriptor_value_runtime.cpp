@@ -3168,6 +3168,21 @@ Real64DecodeResult DecodeReal64Value(const EngineTypedValue& value) {
     result.diagnostic = ErrorDiagnostic("SB_EXECUTOR_VALUE_DESCRIPTOR_MISMATCH", value.descriptor.canonical_type_name);
     return result;
   }
+  internal_api::CatalogColumnMetadata fields;
+  if (!internal_api::AdmitCatalogColumnMetadata(value.descriptor.encoded_descriptor, &fields) ||
+      !fields.identities.empty() || !value.descriptor.charset_uuid.is_nil() ||
+      !value.descriptor.collation_uuid.is_nil()) {
+    result.diagnostic = ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID",
+                                        "REAL64 metadata carries unsupported identities");
+    return result;
+  }
+  for (const auto& [name, field] : fields.text) {
+    if (name != "nullability" && name != "nullable") {
+      result.diagnostic = ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID",
+                                          "REAL64 metadata carries unsupported modifiers");
+      return result;
+    }
+  }
   scratchbird::engine::ExecutionTypeDescriptor bound;
   std::string detail;
   if (!BoundExecutionTypeDescriptor(value.descriptor,CanonicalTypeId::real64,&bound,&detail)) {

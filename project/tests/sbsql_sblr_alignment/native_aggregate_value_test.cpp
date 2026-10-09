@@ -98,8 +98,86 @@ void CheckResult(const exec::CanonicalAggregateRuntimeRequest& request,
   Check(result.final_output_bytes == 8 && result.planned_final_output_bytes == 8,
         "aggregate finalization still budgets decimal width");
 }
+void CheckRealResult(exec::CanonicalAggregateRuntimeRequest request, double expected) {
+  const bool count_only = request.descriptor.function == exec::CanonicalAggregateFunction::percent_rank ||
+                          request.descriptor.function == exec::CanonicalAggregateFunction::cume_dist;
+  if (count_only) request.maximum_finalization_workspace_bytes = 1;
+  request.maximum_final_output_bytes = 8;
+  const auto result = exec::ExecuteCanonicalAggregateRuntime(request);
+  if (!result.diagnostic.ok) std::cerr << result.diagnostic.diagnostic_code << ':' << result.diagnostic.detail << '\n';
+  Check(NearScalar(result, expected), "native REAL64 aggregate numerical result differs");
+  const auto& value = result.output_batch.rows[0].values[0];
+  Check(value.descriptor == request.result_column.descriptor && value.encoded_value.empty() &&
+        value.binary_value.size() == 8 && result.final_output_bytes == 8 &&
+        result.planned_final_output_bytes == 8,
+        "REAL64 aggregate lost native carrier, descriptor or exact output accounting");
+  if (count_only)
+    Check(result.peak_finalization_workspace_bytes == 0,
+          "hypothetical distribution still allocates a sorted copy");
+  const auto expected_bits = std::bit_cast<std::uint64_t>(expected);
+  for (unsigned byte = 0; byte < 8; ++byte)
+    Check(value.binary_value[byte] == static_cast<std::uint8_t>(expected_bits >> (8 * byte)),
+          "REAL64 aggregate canonical bytes differ from independent IEEE oracle");
+  request.maximum_final_output_bytes = 7;
+  const auto short_grant = exec::ExecuteCanonicalAggregateRuntime(request);
+  Check(!short_grant.diagnostic.ok && short_grant.output_batch.rows.empty(),
+        "REAL64 aggregate bypassed short output grant");
+  request.maximum_final_output_bytes = 8;
+  for (const bool empty : {false, true}) {
+    auto candidate = request;
+    if (empty) candidate.input_batch.rows.clear();
+    const auto baseline = exec::ExecuteCanonicalAggregateRuntime(candidate);
+    Check(baseline.diagnostic.ok, "valid REAL64 empty/nonempty admission failed");
+    for (unsigned mutation = 0; mutation < 8; ++mutation) {
+      auto invalid = candidate;
+      auto& descriptor = invalid.result_column.descriptor;
+      switch (mutation) {
+        case 0: descriptor.datatype_descriptor_uuid = {}; break;
+        case 1: ++descriptor.datatype_descriptor_generation; break;
+        case 2: descriptor.type_uuid = {}; break;
+        case 3: descriptor.descriptor_uuid = {}; break;
+        case 4: descriptor.charset_uuid = descriptor.type_uuid; break;
+        case 5: descriptor.collation_uuid = descriptor.type_uuid; break;
+        case 6: descriptor.encoded_descriptor += ";precision=10"; break;
+        case 7: invalid.result_column.nullable = !invalid.result_column.nullable; break;
+      }
+      const auto refused = exec::ExecuteCanonicalAggregateRuntime(invalid);
+      Check(!refused.diagnostic.ok && refused.output_batch.rows.empty(),
+            "invalid REAL64 result binding published output");
+    }
+  }
+}
+
 int main() {
   using Fn = exec::CanonicalAggregateFunction;
+  const auto real_admitted = Request(Fn::avg, 1, 2102, "real64").result_column;
+  Check(exec::detail::ValidateAggregateReal64ResultDescriptor(real_admitted).ok,
+        "valid REAL64 admission failed before allocation sweep");
+  bool real_exhausted_allocations = false;
+  for (long allocation = 0; allocation < 1000; ++allocation) {
+    fail_after = allocation;
+    const auto result = exec::detail::ValidateAggregateReal64ResultDescriptor(real_admitted);
+    const bool injected = fail_after == -1;
+    fail_after = -1;
+    if (!injected) {
+      Check(result.ok, "valid REAL64 descriptor refused");
+      real_exhausted_allocations = true;
+      break;
+    }
+    Check(!result.ok && result.diagnostic_code == "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+          "REAL64 admission allocation failure lost typed resource diagnostic");
+  }
+  Check(real_exhausted_allocations, "REAL64 admission allocation sweep did not finish");
+  CheckRealResult(Request(Fn::sum, 1, 2102, "real64"), 8.0);
+  CheckRealResult(Request(Fn::avg, 1, 2102, "real64"), 8.0 / 3.0);
+  CheckRealResult(StatisticalRequest(Fn::variance_pop), 2.0 / 3.0);
+  CheckRealResult(StatisticalRequest(Fn::stddev_samp), 1.0);
+  CheckRealResult(PairStatisticalRequest(Fn::regr_slope), 2.0);
+  CheckRealResult(HypotheticalRequest(Fn::percent_rank), 0.6);
+  CheckRealResult(HypotheticalRequest(Fn::cume_dist), 2.0 / 3.0);
+  auto quantile = OrderedNumericRequest(Fn::percentile_cont, "real64");
+  quantile.direct_arguments = {Value(quantile.input_batch.columns[1].descriptor, "0.25")};
+  CheckRealResult(quantile, 17.5);
   const auto admitted = NativeRequest(Fn::sum).result_column;
   // Warm process-wide immutable registries before sweeping this admission's
   // own allocations; startup initialization has its own fault coverage.
@@ -141,6 +219,7 @@ int main() {
                                    {Fn::rank, 2}, {Fn::dense_rank, 2}, {Fn::approx_count_distinct, 2},
                                    {Fn::min, 1}, {Fn::max, 2}, {Fn::mode, 2}}) {
     auto request = NativeRequest(fn);
+    if (fn == Fn::rank) request.maximum_finalization_workspace_bytes = 1;
     for (const bool empty : {false, true}) {
       for (unsigned mutation = 0; mutation < 9; ++mutation) {
         auto invalid = NativeRequest(fn);
