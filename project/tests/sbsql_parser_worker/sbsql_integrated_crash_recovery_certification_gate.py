@@ -82,12 +82,19 @@ REQUIRED_SOURCE_TOKENS = {
         "catalog_object_fallback",
         "EngineGetDescriptorUncachedImpl",
     ),
-    Path("project/src/engine/internal_api/dml/insert_physical_integration.cpp"): (
+    Path("project/src/engine/internal_api/dml/direct_bulk_append_cache.cpp"): (
         "metadata_event_sequence",
         "CurrentMgaRelationMetadataEventSequence(context)",
+        "found->second.metadata_event_sequence != metadata_event_sequence",
         "DirectLookupBulkAppendContextCache",
         "DirectStoreBulkAppendContextCache",
         "DirectStoreAppendIndexEntryCache",
+    ),
+    Path("project/src/engine/internal_api/dml/direct_physical_bulk_append.cpp"): (
+        "use_append_caches && DirectLookupBulkAppendContextCache(",
+        "DirectStoreBulkAppendContextCache(request.context,",
+        "DirectStoreAppendIndexEntryCache(",
+        "bulk_context_cache_hit = false;",
     ),
     Path("project/src/engine/internal_api/mga_relation_store/mga_relation_store.cpp"): (
         "CurrentMgaRelationMetadataEventSequence",

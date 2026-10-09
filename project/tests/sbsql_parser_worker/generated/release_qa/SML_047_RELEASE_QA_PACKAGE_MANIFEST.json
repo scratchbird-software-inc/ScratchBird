@@ -11,9 +11,9 @@
       ],
       "evidence_files": [
         {
-          "bytes": 242990,
+          "bytes": 243999,
           "path": "project/tests/sbsql_parser_worker/generated/product_regression/sml_041_046/SML_041_046_PRODUCT_QA_MANIFEST.json",
-          "sha256": "9c641c8d245d572f2571bf53189b625d83889d1366bf2cec60398781f1e92c3a"
+          "sha256": "b260ff305769978e368d9a2555ed29c6f13d2e001bcae0d85643063948a53abe"
         },
         {
           "bytes": 18611,
@@ -23,7 +23,7 @@
         {
           "bytes": 12621,
           "path": "project/tests/sbsql_parser_worker/generated/hardening/sml_041_046/SML_044_046_HARDENING_ORACLE.json",
-          "sha256": "42f8fdaa63eb41f226c70eec9bc0d8ae569bb1b02d6d444a1f708d005a9506a3"
+          "sha256": "364f382b0ca06aab49eeb593837c3df4cc4a7c75035b1783a474c81d0d98a6ea"
         },
         {
           "bytes": 10971,
@@ -36,18 +36,18 @@
           "sha256": "024b56a4ea516e2b9d395df5681c745d37f688f33746f3f54aab029107e23260"
         },
         {
-          "bytes": 20447,
+          "bytes": 20664,
           "path": "project/tests/sbsql_parser_worker/generated/hardening/sbsql_fuzz_malicious_input_gate.cpp",
-          "sha256": "34e6026ffbbf811fc986b8d2eb7f928d9657d29a4a6453d588733dba83dc5274"
+          "sha256": "4bbcb21326f0bf7b6195a5e1cbdd01658870edee930bccfac41790eb6897c5d5"
         },
         {
-          "bytes": 13606,
+          "bytes": 13667,
           "path": "project/tests/sbsql_parser_worker/generated/hardening/sbsql_no_spin_no_wal_no_direct_db_gate.cpp",
-          "sha256": "e79de03d2fd38e01296971f4d70df5e138f8aca9a65627737b173022986a1fbd"
+          "sha256": "1c72466ab12209f61432c52480804dbdad0fc9acf59634e1c28a0c7b4e4ae3ad"
         }
       ],
       "group_id": "SML-041-046",
-      "group_sha256": "a422f4821e351ddece76fa8aee3d85640e31130a652503d671010b5d52ab7c1b",
+      "group_sha256": "a04c35129b5bba9ea45b81cf766cb6e9fe0af6a7f13d0bb62f541ce83837d899",
       "parser_executes_sql": false,
       "parser_owns_finality": false,
       "private_workplan_dependency": false,
@@ -203,7 +203,7 @@
   ],
   "gate_id": "SML-GATE-047",
   "generated_from_tracked_project_files": true,
-  "manifest_sha256": "ff0a3b1d61f0495656b0dbde334b98d97455788d5d8f8d2b32fa22ac096cb400",
+  "manifest_sha256": "8d3d3f531625de845528267281914ad07ffa2fd8699e50dd9aa6bfefefb961f3",
   "network_dependency": false,
   "private_workplan_dependency": false,
   "reference_tree_dependency": false,

@@ -232,7 +232,7 @@
       "sml_id": "SML-046"
     }
   ],
-  "manifest_sha256": "f94e31619a27d3d75fa0ca7c392a47a663efe4674bcb02d2b55ca77f9166488e",
+  "manifest_sha256": "92be2414672fd645f7ddd8c1a2240bf8a57db6bc6bc7cfae2cdb92d5125a4015",
   "network_dependency": false,
   "schema_version": "sbsql.sml_044_046.hardening_oracle.v1",
   "sml_ids": [
@@ -249,9 +249,9 @@
     },
     {
       "path": "project/tests/sbsql_parser_worker/generated/hardening/sbsql_fuzz_malicious_input_gate.cpp",
-      "row_sha256": "95467e7e02d66d51829036df074e036b04c113fb097842f032b4cccb5e5f14d1",
-      "sha256": "34e6026ffbbf811fc986b8d2eb7f928d9657d29a4a6453d588733dba83dc5274",
-      "size_bytes": 20447
+      "row_sha256": "e638994ef49a022d7879fce7b4ec4a9c43760fd60c54b446e86069c500aa00af",
+      "sha256": "4bbcb21326f0bf7b6195a5e1cbdd01658870edee930bccfac41790eb6897c5d5",
+      "size_bytes": 20664
     },
     {
       "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/SBLR_BINARY_ROUND_TRIP_MATRIX.csv",
