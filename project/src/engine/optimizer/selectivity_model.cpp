@@ -34,6 +34,22 @@ double OneRowSelectivity(std::uint64_t rows) {
   return rows == 0 ? 0.0 : 1.0 / static_cast<double>(rows);
 }
 
+// Selectivities are binary64 estimates, not exact rational measurements.
+// Multiplication in wider precision must not turn their representation error
+// into an extra whole row (for example 10000 * (1 / 2500)). Snap only within
+// two binary64 epsilons of a positive integer, and only while that uncertainty
+// is less than a quarter row. Otherwise retain the conservative ceiling.
+// Never round a positive estimate to zero or convert large row counts to double.
+long double CeilEstimatedRows(long double rows) {
+  const long double uncertainty =
+      2 * std::numeric_limits<double>::epsilon() * rows;
+  if (uncertainty < 0.25L) {
+    const auto nearest = std::round(rows);
+    if (nearest >= 1 && std::abs(rows - nearest) <= uncertainty) return nearest;
+  }
+  return std::ceil(rows);
+}
+
 int ConfidenceRank(CostConfidence confidence) {
   switch (confidence) {
     case CostConfidence::kExact: return 5;
@@ -571,7 +587,7 @@ std::uint64_t EstimateRowsAfterSelectivity(std::uint64_t input_rows, const Selec
   if (estimate.exact_rows_known) return std::min(input_rows, estimate.exact_rows);
   if (!UnitFraction(estimate.selectivity)) return input_rows;
   if (input_rows == 0 || estimate.selectivity <= 0.0) return 0;
-  const long double rows = std::ceil(static_cast<long double>(input_rows) * estimate.selectivity);
+  const long double rows = CeilEstimatedRows(static_cast<long double>(input_rows) * estimate.selectivity);
   if (rows >= static_cast<long double>(input_rows)) return input_rows;
   return std::max<std::uint64_t>(1, static_cast<std::uint64_t>(rows));
 }
@@ -769,7 +785,7 @@ std::uint64_t EstimateJoinRowsAfterSelectivity(std::uint64_t left_rows,
   if (estimate.exact_rows_known) return std::min(SaturatingMultiply(left_rows, right_rows), estimate.exact_rows);
   if (!UnitFraction(estimate.selectivity)) return SaturatingMultiply(left_rows, right_rows);
   if (estimate.selectivity == 0) return 0;
-  const long double rows = std::ceil(static_cast<long double>(left_rows) *
+  const long double rows = CeilEstimatedRows(static_cast<long double>(left_rows) *
                                       static_cast<long double>(right_rows) * estimate.selectivity);
   if (rows >= static_cast<long double>(UINT64_MAX)) return UINT64_MAX;
   return std::max<std::uint64_t>(1, static_cast<std::uint64_t>(rows));

@@ -252,6 +252,30 @@ void ExtendedSelectivity() {
   }
   estimate.selectivity = 0.5;
   Check(o::EstimateRowsAfterSelectivity(5, estimate) == 3, "cardinality rounds upward");
+  estimate.selectivity = 1.0 / 2500;
+  Check(o::EstimateRowsAfterSelectivity(10000, estimate) == 4,
+        "NDV representation error does not add a whole row");
+  Check(o::EstimateJoinRowsAfterSelectivity(100, 100, estimate) == 4,
+        "join NDV representation error does not add a whole row");
+  estimate.selectivity = 0.07;
+  Check(o::EstimateRowsAfterSelectivity(10000, estimate) == 700,
+        "MCV representation error does not add a whole row");
+  estimate.selectivity = 0.500001;
+  Check(o::EstimateRowsAfterSelectivity(2, estimate) == 2 &&
+            o::EstimateJoinRowsAfterSelectivity(1, 2, estimate) == 2,
+        "a genuine fractional row still rounds upward");
+  estimate.selectivity = 0.5 + 8 * std::numeric_limits<double>::epsilon();
+  Check(o::EstimateRowsAfterSelectivity(2, estimate) == 2,
+        "fraction outside the roundoff envelope retains ceiling");
+  estimate.selectivity = std::nextafter(0.5, 1.0);
+  Check(o::EstimateRowsAfterSelectivity(UINT64_C(3000000000000000), estimate) ==
+            UINT64_C(1500000000000001),
+        "large uncertainty disables near-integer snapping");
+  estimate.selectivity = 1e-100;
+  Check(o::EstimateRowsAfterSelectivity(1, estimate) == 1 &&
+            o::EstimateJoinRowsAfterSelectivity(1, 1, estimate) == 1,
+        "positive estimates never snap to zero");
+  estimate.selectivity = 0.5;
   Check(o::EstimateJoinRowsAfterSelectivity(UINT64_MAX, 2, estimate) == UINT64_MAX,
         "join multiplication saturates after applying selectivity");
   estimate.selectivity = std::numeric_limits<double>::quiet_NaN();
