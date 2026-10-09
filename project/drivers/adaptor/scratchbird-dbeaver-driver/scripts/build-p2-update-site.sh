@@ -175,12 +175,25 @@ if [[ -z "${MAVEN}" ]]; then
   exit 1
 fi
 
+# Tycho 4.0.8 requires Maven 3.9.0 or newer. Check before copying the source
+# tree or building JDBC, so an incompatible launcher causes no build effects.
+MAVEN_VERSION_OUTPUT="$("${MAVEN}" -version 2>&1)" || {
+  printf 'Cannot run Maven launcher %s:\n%s\n' "${MAVEN}" "${MAVEN_VERSION_OUTPUT}" >&2
+  exit 1
+}
+if [[ ! "${MAVEN_VERSION_OUTPUT}" =~ Apache\ Maven\ ([0-9]+)\.([0-9]+)\.([0-9]+) ]] ||
+   (( BASH_REMATCH[1] < 3 || (BASH_REMATCH[1] == 3 && BASH_REMATCH[2] < 9) )); then
+  printf 'Maven 3.9.0 or newer is required by Tycho 4.0.8. Set MAVEN_CMD to its launcher path.\n%s\n' \
+    "${MAVEN_VERSION_OUTPUT}" >&2
+  exit 1
+fi
+
 copy_tree_for_build "${INTEGRATION_DIR}" "${BUILD_INTEGRATION_DIR}"
 
 stage_jdbc_driver
 stage_language_resource_pack
 
-${MAVEN} -f "${BUILD_INTEGRATION_DIR}/pom.xml" \
+"${MAVEN}" -f "${BUILD_INTEGRATION_DIR}/pom.xml" \
   -Dmaven.repo.local="${MAVEN_REPO_LOCAL}" \
   clean verify
 

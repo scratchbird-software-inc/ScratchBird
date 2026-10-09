@@ -3,6 +3,11 @@
 This folder stores ScratchBird-specific DBeaver integration assets so the
 DBeaver plugin and JDBC compatibility behavior are versioned together.
 
+The p2 build requires Maven 3.9.0 or newer for Tycho 4.0.8. Select a launcher
+with `MAVEN_CMD=/path/to/mvn` when the system Maven is older. The build checks
+the version before staging files or building JDBC; launcher paths may contain
+spaces, but `MAVEN_CMD` must name one executable, not a command with arguments.
+
 Canonical findings, contract, and public proof artifacts for this adapter live in:
 
 - `../../../../public_contract_snapshot`
