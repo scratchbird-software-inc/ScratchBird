@@ -694,8 +694,8 @@ api::EngineRowValue TypedScalarRow(int index) {
       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 192, 0, 2,
       static_cast<std::uint8_t>(index)})});
   row.fields.push_back({"prefix_value", BinaryScalarValue("network_prefix", std::vector<std::uint8_t>{
-      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 198, 51, 100,
-      static_cast<std::uint8_t>(index), 24, 4})});
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 198, 51,
+      static_cast<std::uint8_t>(100 + index), 0, 24, 4})});
   row.fields.push_back({"mac_value", BinaryScalarValue("mac_address", std::vector<std::uint8_t>{
       0, 0, 2, 0, 0, 0, 0, static_cast<std::uint8_t>(index)})});
   row.fields.push_back({"enum_value", IdentityScalarValue("enum_value", NewIdentity(platform::UuidKind::object, 1400 + index))});
@@ -1995,6 +1995,91 @@ void TestNativeNarrowRealIndexReopen() {
       Require(SelectCount(fixture, transaction) == values.size(),
               type + " nonfinite index refusal changed visible rows");
       Rollback(transaction);
+    }
+  }
+}
+
+void TestNativeNetworkIndexReopen() {
+  using Bytes = std::vector<std::uint8_t>;
+  for (const std::string type : {"ip_address", "network_prefix", "mac_address"}) {
+    auto fixture = MakeInt64IndexFixture(type + "_binary_reopen", 1497, type);
+    const bool prefix = type == "network_prefix";
+    const unsigned width = prefix ? 18 : type == "ip_address" ? 16 : 8;
+    std::vector<Bytes> values;
+    if (prefix) {
+      values = {
+          {0,0,0,0,0,0,0,0,0,0,255,255,0,0,0,0,0,4},
+          {0,0,0,0,0,0,0,0,0,0,255,255,0,0,0,0,8,4},
+          {0,0,0,0,0,0,0,0,0,0,255,255,10,0,0,0,8,4},
+          {0,0,0,0,0,0,0,0,0,0,255,255,10,1,0,0,16,4},
+          {0,0,0,0,0,0,0,0,0,0,255,255,255,255,255,255,32,4},
+          {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6},
+          {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,128,6},
+          {0x20,1,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,0,32,6},
+          {0x20,1,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,0,64,6}};
+    } else {
+      values = {Bytes(width, 0), Bytes(width, 255)};
+      for (unsigned i = 0; i < width; ++i) {
+        auto bytes = Bytes(width, 0); bytes[i] = 0x80; values.push_back(bytes);
+      }
+      if (width == 16) values.push_back({0,0,0,0,0,0,0,0,0,0,255,255,192,0,2,1});
+      else values.push_back({0,0,8,0,43,1,2,3});
+    }
+    const auto material = [&](const Bytes& bytes) {
+      if (!prefix) return bytes;
+      Bytes ordered{bytes[17]}; ordered.insert(ordered.end(), bytes.begin(), bytes.begin() + 16);
+      ordered.push_back(bytes[16]); return ordered;
+    };
+    std::sort(values.begin(), values.end(), [&](const auto& a, const auto& b) { return material(a) < material(b); });
+    const auto row_for = [&](const Bytes& bytes) {
+      api::EngineRowValue row;
+      row.fields = {{"id", BinaryScalarValue(type, bytes)}, {"payload", TextValue("native-network-index")}};
+      return row;
+    };
+    std::vector<api::EngineRowValue> rows;
+    for (const auto& value : values) rows.push_back(row_for(value));
+    auto writer = Begin(fixture, "network-binary-insert");
+    const auto inserted = api::EngineExecuteNativeBulkIngest(NativeRequest(fixture, writer, rows));
+    RequireOk(inserted, type + " indexed native insert failed");
+    Require(inserted.inserted_rows == values.size() &&
+                EvidenceU64(inserted.evidence, "direct_index_key_typed_fallback") == 0 &&
+                EvidenceU64(inserted.evidence, "direct_index_key_sbkobin_keys") == values.size(),
+            type + " indexed insert lost rows or used display-text fallback");
+    Commit(writer);
+    fixture.session.reset();
+    fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(BaseContext(fixture, "network-reopen"));
+    auto reader = Begin(fixture, "network-read");
+    const auto stored = api::LoadMgaRelationStoreState(reader);
+    Require(stored.ok, type + " committed index replay failed");
+    std::map<Bytes, std::string> keys;
+    for (const auto& entry : stored.state.index_entries) {
+      if (entry.index_uuid != fixture.index_uuid) continue;
+      const auto payload = ScalarLogicalPayload(entry.payload_value);
+      Require(payload.isPresent() && payload.bytes.size() == width && entry.key_value.starts_with("SBKOBIN:"),
+              type + " lost native payload framing");
+      Require(keys.emplace(Bytes(payload.bytes.begin(), payload.bytes.end()), entry.key_value).second,
+              type + " replay duplicated carrier bytes");
+    }
+    Require(keys.size() == values.size() && SelectCount(fixture, reader) == values.size(),
+            type + " reopened row/index count changed");
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      Require(keys.contains(values[i]), type + " reopen altered stored bytes");
+      if (i) Require(keys.at(values[i - 1]) < keys.at(values[i]), type + " persisted key ordering is wrong");
+    }
+    Rollback(reader);
+    if (prefix) {
+      for (unsigned mutation = 0; mutation < 4; ++mutation) {
+        auto invalid = values.front();
+        if (mutation == 0) invalid[17] = 9;
+        if (mutation == 1) invalid[16] = 33;
+        if (mutation == 2) invalid[15] = 1;
+        if (mutation == 3) invalid[10] = 0;
+        auto transaction = Begin(fixture, "network-prefix-refusal");
+        const auto refused = api::EngineExecuteNativeBulkIngest(NativeRequest(fixture, transaction, {row_for(invalid)}));
+        Require(!refused.ok && !refused.diagnostics.empty(), "invalid network prefix reached index publication");
+        Require(SelectCount(fixture, transaction) == values.size(), "invalid prefix refusal changed visible rows");
+        Rollback(transaction);
+      }
     }
   }
 }
@@ -3319,10 +3404,16 @@ int main(int argc, char** argv) try {
   const bool integer_only = argc == 2 && std::string_view(argv[1]) == "--native-int64-index";
   const bool uint16_only = argc == 2 && std::string_view(argv[1]) == "--native-uint16-index";
   const bool narrow_real_only = argc == 2 && std::string_view(argv[1]) == "--native-narrow-real-index";
+  const bool network_only = argc == 2 && std::string_view(argv[1]) == "--native-network-index";
   const bool ordered_only = argc == 2 && std::string_view(argv[1]) == "--native-ordered-index";
-  Require(argc == 1 || fixed_scalar_only || typed_null_only || integer_only || ordered_only || uint16_only || narrow_real_only,
+  Require(argc == 1 || fixed_scalar_only || typed_null_only || integer_only || ordered_only || uint16_only || narrow_real_only || network_only,
           "unknown native bulk gate arguments");
   ConfigureMemoryFixture();
+  if (network_only) {
+    TestNativeNetworkIndexReopen();
+    std::cout << "native_network_index=passed canonical_order_commit_reopen_invalid_prefix_refusal\n";
+    return EXIT_SUCCESS;
+  }
   if (narrow_real_only) {
     TestNativeNarrowRealIndexReopen();
     std::cout << "native_narrow_real_index=passed finite_bounds_signed_zero_commit_reopen_nonfinite_refusal\n";
@@ -3336,6 +3427,7 @@ int main(int argc, char** argv) try {
   if (ordered_only) {
     TestNativeUint16IndexReopen();
     TestNativeNarrowRealIndexReopen();
+    TestNativeNetworkIndexReopen();
     TestTypedInt64IndexKeysUseBinaryOrder();
     TestTypedInt64IndexKeysUseFullSignedSortOrder();
     TestTypedNullIndexKeyUsesNullOrder();
@@ -3364,6 +3456,7 @@ int main(int argc, char** argv) try {
   TestTypedNullIndexKeyUsesNullOrder();
   TestNativeUint16IndexReopen();
   TestNativeNarrowRealIndexReopen();
+  TestNativeNetworkIndexReopen();
   TestTypedScalarIndexKeysUseBinaryPayloads();
   TestTypedScalarRowPageStorage();
   TestMalformedInlineFixedTypedValueRefuses();

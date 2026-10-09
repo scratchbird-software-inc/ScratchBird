@@ -460,6 +460,65 @@ bool IsMacAddress(CanonicalTypeId type_id) noexcept {
   return type_id == CanonicalTypeId::mac_address;
 }
 
+bool IsOrdinaryNetworkOrder(CanonicalTypeId type) noexcept {
+  return IsIpAddress(type) || IsNetworkPrefix(type) || IsMacAddress(type);
+}
+
+struct NetworkOrderMaterial {
+  std::array<unsigned char, 18> bytes{};
+  unsigned width = 0;
+  const char* code = nullptr;
+  const char* detail = nullptr;
+};
+
+NetworkOrderMaterial AdmitNetworkOrder(const DatatypeOperationValue& value) {
+  NetworkOrderMaterial out;
+  const auto refuse = [&](const char* code, const char* detail) {
+    out.code = code; out.detail = detail; return out;
+  };
+  if (!IsOrdinaryNetworkOrder(value.type_id) ||
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltinIgnoringNullability(value.descriptor, value.type_id))
+    return refuse("DATATYPE.DESCRIPTOR.INVALID", "network_order_descriptor_invalid");
+  out.width = IsIpAddress(value.type_id) ? 16 : IsMacAddress(value.type_id) ? 8 : 18;
+  if (value.is_null) {
+    if (!value.encoded_value.empty())
+      return refuse("DATATYPE.NULL_STATE.INVALID", "network_null_has_payload");
+    if (!value.descriptor.nullable_allowed)
+      return refuse("DATATYPE.NULL_NOT_ADMITTED", "network_null_not_admitted");
+    return out;
+  }
+  if (value.encoded_value.size() != out.width)
+    return refuse(nullptr, "network_native_carrier_width_invalid");
+  if (IsNetworkPrefix(value.type_id)) {
+    const auto octet = [&](unsigned i) { return static_cast<unsigned char>(value.encoded_value[i]); };
+    const unsigned family = octet(17), prefix = octet(16);
+    if ((family != 4 && family != 6) || prefix > (family == 4 ? 32u : 128u))
+      return refuse(nullptr, "network_prefix_family_or_length_invalid");
+    if (family == 4) {
+      for (unsigned i = 0; i < 10; ++i)
+        if (octet(i) != 0) return refuse(nullptr, "network_prefix_ipv4_mapping_invalid");
+      if (octet(10) != 0xff || octet(11) != 0xff)
+        return refuse(nullptr, "network_prefix_ipv4_mapping_invalid");
+    }
+    const unsigned host_start = (family == 4 ? 96u : 0u) + prefix;
+    unsigned host_octet = host_start / 8;
+    if (host_start % 8) {
+      if (octet(host_octet) & (0xffu >> (host_start % 8)))
+        return refuse(nullptr, "network_prefix_host_bits_nonzero");
+      ++host_octet;
+    }
+    for (; host_octet < 16; ++host_octet)
+      if (octet(host_octet))
+        return refuse(nullptr, "network_prefix_host_bits_nonzero");
+    out.bytes[0] = family;
+    for (unsigned i = 0; i < 16; ++i) out.bytes[i + 1] = octet(i);
+    out.bytes[17] = prefix;
+  } else {
+    std::copy(value.encoded_value.begin(), value.encoded_value.end(), out.bytes.begin());
+  }
+  return out;
+}
+
 bool IsCharacter(CanonicalTypeId type_id) noexcept {
   return type_id == CanonicalTypeId::character;
 }
@@ -5974,6 +6033,29 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
   DatatypeComparisonResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (IsOrdinaryNetworkOrder(request.left.type_id) || IsOrdinaryNetworkOrder(request.right.type_id)) {
+    const auto refuse = [&](const char* code, const char* detail) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
+          code ? code : "SB_DATATYPE_COMPARISON_REJECTED", "datatype.comparison.rejected", detail);
+      return result;
+    };
+    if (request.left.type_id != request.right.type_id) return refuse(nullptr, "type_mismatch");
+    const auto left = AdmitNetworkOrder(request.left), right = AdmitNetworkOrder(request.right);
+    if (left.detail) return refuse(left.code, left.detail);
+    if (right.detail) return refuse(right.code, right.detail);
+    if ((request.null_ordering != DatatypeNullOrdering::nulls_first &&
+         request.null_ordering != DatatypeNullOrdering::nulls_last) ||
+        request.case_insensitive_character_compare)
+      return refuse(nullptr, "network_ordering_settings_invalid");
+    if (request.left.is_null || request.right.is_null) {
+      result.comparison = request.left.is_null == request.right.is_null ? 0
+          : (request.left.is_null == (request.null_ordering == DatatypeNullOrdering::nulls_first) ? -1 : 1);
+    } else {
+      result.comparison = left.bytes < right.bytes ? -1 : left.bytes > right.bytes ? 1 : 0;
+    }
+    return result;
+  }
   if (IsUnresolvedRealSemantics(request.left.type_id) ||
       IsUnresolvedRealSemantics(request.right.type_id)) {
     const auto refuse = [&](const char* code, const char* detail) {
@@ -7022,6 +7104,12 @@ std::string OrderedFiniteDecimalKey(const std::string& value) {
 bool CanonicalHashPayload(const DatatypeOperationValue& value,
                           std::string* payload,
                           std::string* failure_detail) {
+  if (IsOrdinaryNetworkOrder(value.type_id)) {
+    const auto material = AdmitNetworkOrder(value);
+    if (material.detail) { *failure_detail = material.detail; return false; }
+    payload->assign(reinterpret_cast<const char*>(material.bytes.data()), value.is_null ? 0 : material.width);
+    return true;
+  }
   if (IsUnresolvedRealSemantics(value.type_id)) {
     const auto material = AdmitNarrowRealOrder(value);
     if (material.detail) { *failure_detail = material.detail; return false; }
@@ -7235,6 +7323,24 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
   DatatypeSortKeyResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (IsOrdinaryNetworkOrder(request.value.type_id)) {
+    const auto material = AdmitNetworkOrder(request.value);
+    const auto refuse = [&](const char* code, const char* detail) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
+          code ? code : "SB_DATATYPE_SORT_KEY_REJECTED", "datatype.sort_key.rejected", detail);
+      return result;
+    };
+    if (material.detail) return refuse(material.code, material.detail);
+    if ((request.null_ordering != DatatypeNullOrdering::nulls_first &&
+         request.null_ordering != DatatypeNullOrdering::nulls_last) || request.case_insensitive_character_compare)
+      return refuse(nullptr, "network_ordering_settings_invalid");
+    result.sort_key.assign(1, request.value.is_null
+        ? (request.null_ordering == DatatypeNullOrdering::nulls_first ? '\0' : '\2') : '\1');
+    if (!request.value.is_null)
+      result.sort_key.append(reinterpret_cast<const char*>(material.bytes.data()), material.width);
+    return result;
+  }
   if (IsUnresolvedRealSemantics(request.value.type_id)) {
     const auto material = AdmitNarrowRealOrder(request.value);
     const auto refuse = [&](const char* code, const char* detail) {
@@ -7809,6 +7915,15 @@ DatatypeHashResult HashDatatypeValue(const DatatypeHashRequest& request) {
   DatatypeHashResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (IsOrdinaryNetworkOrder(request.value.type_id)) {
+    const auto material = AdmitNetworkOrder(request.value);
+    if (material.detail) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
+          material.code ? material.code : "SB_DATATYPE_HASH_REJECTED", "datatype.hash.rejected", material.detail);
+      return result;
+    }
+  }
   if (IsUnresolvedRealSemantics(request.value.type_id)) {
     const auto material = AdmitNarrowRealOrder(request.value);
     if (material.detail) {

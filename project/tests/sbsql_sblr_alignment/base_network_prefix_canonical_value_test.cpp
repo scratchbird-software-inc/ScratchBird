@@ -3,6 +3,7 @@
 
 #include "admitted_datatype_cohort.hpp"
 #include "datatype_binary.hpp"
+#include "../support/network_ordering_checks.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_descriptor.hpp"
 #include "datatype_layout.hpp"
@@ -749,18 +750,10 @@ void PresentSemanticsRefuse() {
   extract.field = "version";
   extract.result_descriptor = DescriptorFor(dt::CanonicalTypeId::uint8);
   const auto extracted = dt::ExtractDatatypeField(extract);
-  Check(RejectedAs(compared, "SB_DATATYPE_COMPARISON_REJECTED",
-                   "network_prefix_comparison_policy_unresolved") &&
-            RejectedAs(null_compared, "SB_DATATYPE_COMPARISON_REJECTED",
-                       "network_prefix_comparison_policy_unresolved") &&
-            RejectedAs(key, "SB_DATATYPE_SORT_KEY_REJECTED",
-                       "network_prefix_sort_key_policy_unresolved") &&
-            RejectedAs(null_key, "SB_DATATYPE_SORT_KEY_REJECTED",
-                       "network_prefix_sort_key_policy_unresolved") &&
-            RejectedAs(hash, "SB_DATATYPE_HASH_REJECTED",
-                       "network_prefix_hash_policy_unresolved") &&
-            RejectedAs(null_hash, "SB_DATATYPE_HASH_REJECTED",
-                       "network_prefix_hash_policy_unresolved") &&
+  Check(RejectedAs(compared, "SB_DATATYPE_COMPARISON_REJECTED", "network_prefix_family_or_length_invalid") &&
+            RejectedAs(key, "SB_DATATYPE_SORT_KEY_REJECTED", "network_prefix_family_or_length_invalid") &&
+            RejectedAs(hash, "SB_DATATYPE_HASH_REJECTED", "network_prefix_family_or_length_invalid") &&
+            null_compared.ok() && null_key.ok() && null_hash.ok() &&
             RejectedAs(display, "SB_DATATYPE_DISPLAY_RENDER_REJECTED",
                        "network_prefix_display_policy_unresolved") &&
             RejectedAs(null_display, "SB_DATATYPE_DISPLAY_RENDER_REJECTED",
@@ -772,13 +765,13 @@ void PresentSemanticsRefuse() {
             RejectedAs(extracted, "SB_DATATYPE_EXTRACT_REJECTED",
                        "network_prefix_extract_policy_unresolved") &&
             compared.comparison == 0 && null_compared.comparison == 0 &&
-            key.sort_key.empty() && null_key.sort_key.empty() &&
-            hash.stable_hash_hex.empty() && null_hash.stable_hash_hex.empty() &&
+            key.sort_key.empty() && null_key.sort_key == std::string(1, '\0') &&
+            hash.stable_hash_hex.empty() && null_hash.stable_hash_hex.size() == 16 &&
             display.display_value.empty() && null_display.display_value.empty() &&
             serialized.serialized_value.empty() &&
             null_serialized.serialized_value.empty() &&
             extracted.value.encoded_value.empty(),
-        "all network prefix semantic and generic serialization surfaces refuse atomically");
+        "network prefix ordering contract does not grant unrelated generic operations");
 }
 
 void DescriptorCarrierAndFramePrecedence() {
@@ -870,11 +863,11 @@ void DescriptorCarrierAndFramePrecedence() {
             serialized.serialized_value.empty() &&
             extracted.value.encoded_value.empty() &&
             DiagnosticDetail(compare.diagnostic) ==
-                "network_prefix_comparison_value_invalid" &&
+                "network_native_carrier_width_invalid" &&
             DiagnosticDetail(key.diagnostic) ==
-                "network_prefix_sort_key_value_invalid" &&
+                "network_native_carrier_width_invalid" &&
             DiagnosticDetail(hash.diagnostic) ==
-                "network_prefix_hash_value_invalid" &&
+                "network_native_carrier_width_invalid" &&
             DiagnosticDetail(display.diagnostic) ==
                 "network_prefix_display_value_invalid" &&
             DiagnosticDetail(serialized.diagnostic) ==
@@ -1132,6 +1125,8 @@ void FileDevicePersistence() {
 }  // namespace
 
 int main() {
+  scratchbird::tests::CheckNetworkOrdering(dt::CanonicalTypeId::network_prefix,
+      DescriptorFor(dt::CanonicalTypeId::network_prefix), Check);
   ExactIdentityAndCohorts();
   Raw18AndLowerCodecs();
   NullAndDescriptorRules();
