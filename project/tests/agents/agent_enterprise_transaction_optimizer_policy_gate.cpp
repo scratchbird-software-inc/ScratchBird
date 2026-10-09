@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "agent_binary_identity_fixture.hpp"
+#include "../support/transaction_inventory_model_fixture.hpp"
 using scratchbird::tests::BinaryFixtureIdentity;
 using scratchbird::tests::NativeFixtureIdentity;
 using scratchbird::tests::FixtureIdentityForLabel;
@@ -85,6 +86,9 @@ mga::AuthoritativeCleanupHorizonRequest StandardHorizonRequest() {
       Entry(2, mga::TransactionState::active),
       Entry(3, mga::TransactionState::committed)};
   inventory.next_local_transaction_id = 4;
+  // Component inventory only: issue actual model commit order, not durable
+  // transaction/publication authority inferred from the entry's state flag.
+  inventory = scratchbird::tests::CommitInventoryModelFixture(std::move(inventory));
 
   mga::AuthoritativeCleanupHorizonRequest request;
   request.inventory = std::move(inventory);
@@ -362,12 +366,20 @@ agents::AgentOptimizerReadinessEvidence OptimizerReadiness() {
 }
 
 void TestTransactionPressureManager(agents::DurableAgentCatalogImage* catalog) {
+  const auto source = StandardHorizonRequest();
+  Require(source.inventory.entries[0].commit_sequence == 1 &&
+              source.inventory.entries[1].commit_sequence == 0 &&
+              source.inventory.entries[2].commit_sequence == 2 &&
+              source.inventory.next_commit_sequence == 3,
+          "AEIC-025 fixture did not issue commit order through the inventory API");
   const auto warn = impl::EvaluateTransactionPressureManagerTick(
-      StandardHorizonRequest(),
+      source,
       {Session(2, 150, false)},
       TransactionPressurePolicy());
   Require(warn.ok() && warn.notification_required,
-          "AEIC-025 transaction pressure did not warn");
+          "AEIC-025 transaction pressure did not warn: " + warn.horizon.diagnostic.message_key);
+  Require(warn.horizon.cleanup_horizon.value == 2 && warn.selected_local_transaction_id.value == 2,
+          "AEIC-025 pressure selected a committed transaction or wrong cleanup boundary");
   PersistDecision(catalog,
                   "transaction_pressure_manager",
                   "transaction_pressure.evaluate_long_idle",
@@ -403,6 +415,14 @@ void TestTransactionPressureManager(agents::DurableAgentCatalogImage* catalog) {
       TransactionPressurePolicy());
   Require(!refused.ok() && refused.denied_non_authoritative,
           "AEIC-025 transaction pressure accepted client authority");
+  auto malformed = source;
+  malformed.inventory.entries[0].commit_sequence = 0;
+  const auto invalid = impl::EvaluateTransactionPressureManagerTick(
+      malformed, {Session(2, 150, false)}, TransactionPressurePolicy());
+  Require(!invalid.ok() && invalid.denied_non_authoritative && !invalid.notification_required &&
+              !invalid.action_mutates_transaction_if_accepted_by_server &&
+              invalid.horizon.diagnostic.message_key == "transaction.cleanup_horizon.commit_sequence_invalid",
+          "AEIC-025 malformed committed inventory acquired pressure authority");
 }
 
 void TestRuntimeLearningOptimizerConsumption(

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "agent_binary_identity_fixture.hpp"
+#include "../support/transaction_inventory_model_fixture.hpp"
 using scratchbird::tests::BinaryFixtureIdentity;
 using scratchbird::tests::NativeFixtureIdentity;
 using scratchbird::tests::FixtureIdentityForLabel;
@@ -83,7 +84,7 @@ mga::LocalTransactionInventory Inventory(
   mga::LocalTransactionInventory inventory;
   inventory.entries = std::move(entries);
   inventory.next_local_transaction_id = next_local_transaction_id;
-  return inventory;
+  return scratchbird::tests::CommitInventoryModelFixture(std::move(inventory));
 }
 
 mga::AuthoritativeCleanupHorizonRequest HorizonRequest(
@@ -274,6 +275,10 @@ impl::IndexGarbageCleanupAgentRequest IndexCleanupRequest(
                                                        table_uuid,
                                                        ledger_local_transaction_id,
                                                        "alpha"));
+  const auto entry = mga::LookupLocalTransaction(
+      request.horizon_request.inventory, mga::MakeLocalTransactionId(ledger_local_transaction_id));
+  Require(entry.ok(), "AEIC-024 delta transaction missing from model inventory");
+  request.ledger.records.back().delta.transaction_uuid = entry.entry.identity.transaction_uuid;
   request.index_kind = idx::SecondaryIndexKind::non_unique;
   request.max_records_to_scan = 32;
   request.max_records_to_clean = 32;
@@ -350,13 +355,16 @@ void TestIndexGarbageCleanupAgent(agents::DurableAgentCatalogImage* catalog) {
                             Entry(1, mga::TransactionState::committed),
                           }, 2)),
                           1));
-  Require(cleanup.ok(), "AEIC-024 index garbage cleanup refused success path");
+  Require(cleanup.ok(), "AEIC-024 index garbage cleanup refused success path: " +
+                           cleanup.horizon.diagnostic.message_key);
   Require(cleanup.decision == idx::SecondaryIndexGarbageCleanupDecisionKind::success,
           "AEIC-024 index garbage cleanup decision was not success");
   Require(cleanup.validation_before_ok && cleanup.validation_after_ok,
           "AEIC-024 index garbage cleanup validation proof missing");
   Require(cleanup.after.cleaned_garbage_records == 1,
           "AEIC-024 index garbage cleanup cleaned count mismatch");
+  Require(cleanup.cleaned_ledger.records.empty() && cleanup.horizon.cleanup_horizon.value == 2,
+          "AEIC-024 successful cleanup did not remove the eligible ledger record");
   auto cleanup_evidence = EvidencePairs(cleanup.evidence);
   cleanup_evidence.emplace_back("helper_agent_type_id",
                                 "index_garbage_cleanup_agent");
@@ -376,6 +384,8 @@ void TestIndexGarbageCleanupAgent(agents::DurableAgentCatalogImage* catalog) {
                           3));
   Require(blocked.ok() && blocked.horizon_blocked,
           "AEIC-024 index garbage cleanup did not preserve horizon block");
+  Require(blocked.cleaned_ledger.records.size() == 1 && blocked.after.cleaned_garbage_records == 0,
+          "AEIC-024 blocked cleanup removed a retained record");
 
   auto non_authoritative = IndexCleanupRequest(
       HorizonRequest(Inventory({Entry(1, mga::TransactionState::committed)}, 2)),
@@ -387,6 +397,15 @@ void TestIndexGarbageCleanupAgent(agents::DurableAgentCatalogImage* catalog) {
                   idx::SecondaryIndexGarbageCleanupDecisionKind::
                       refused_non_authoritative,
           "AEIC-024 index garbage cleanup accepted non-authoritative horizon");
+  auto malformed = IndexCleanupRequest(
+      HorizonRequest(Inventory({Entry(1, mga::TransactionState::committed)}, 2)), 1);
+  malformed.horizon_request.inventory.entries.front().commit_sequence = 0;
+  const auto invalid = impl::RunIndexGarbageCleanupAgentBatch(malformed);
+  Require(!invalid.ok() && invalid.fail_closed && invalid.cleaned_ledger.records.size() == 1 &&
+              invalid.cleaned_ledger.records.front().delta.transaction_uuid.value ==
+                  malformed.ledger.records.front().delta.transaction_uuid.value &&
+              invalid.horizon.diagnostic.message_key == "transaction.cleanup_horizon.commit_sequence_invalid",
+          "AEIC-024 malformed committed inventory authorized garbage removal");
 }
 
 void TestShadowIndexBuildAgent(agents::DurableAgentCatalogImage* catalog) {
