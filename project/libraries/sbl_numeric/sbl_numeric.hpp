@@ -291,6 +291,15 @@ NumericBinaryResult EncodeInt128LittleEndian(std::string_view canonical);
 NumericBinaryResult EncodeUint128LittleEndian(std::string_view canonical);
 NumericResult DecodeUint128LittleEndian(
     const std::vector<std::uint8_t>& payload);
+// Converts exact signed two's-complement LE16 to sign-bit-transformed BE16.
+// Every 16-byte pattern is valid; malformed widths return no key. State
+// framing and descriptor admission remain the caller's responsibility.
+NumericBinaryResult MakeInt128OrderKeyLittleEndian(
+    const std::vector<std::uint8_t>& payload);
+// Checked, allocation-free binary SUM transition. On overflow the accumulator
+// remains byte-for-byte unchanged. No compiler-specific wide integer required.
+NumericStatusCode AddInt64ToInt128LittleEndian(
+    std::array<std::uint8_t, 16>& accumulator, std::int64_t value) noexcept;
 // Converts an exact canonical LE16 payload to the unsigned BE16 ordered-key
 // payload. Datatype state framing remains the caller's responsibility.
 NumericBinaryResult MakeUint128OrderKeyLittleEndian(

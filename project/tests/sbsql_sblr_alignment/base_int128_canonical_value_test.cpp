@@ -9,12 +9,14 @@
 #include "datatype_physical_encoding.hpp"
 #include "datatype_storage_identity.hpp"
 #include "disk_device.hpp"
+#include "sbl_numeric.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -238,9 +240,14 @@ void RepresentationAndCodecs() {
               binary_back.value.payload == Payload(expected) && physical.ok() &&
               physical_back.ok() && physical_back.value.payload == Payload(expected) &&
               equal.ok() && equal.comparison == 0 && display.ok() &&
-              display.display_value == vector.decimal && !key.ok() &&
-              key.diagnostic.diagnostic_code == "SB_DATATYPE_SORT_KEY_REJECTED",
-          "int128 exact LE16, production codecs, compare, display, and key refusal vector");
+              display.display_value == vector.decimal && key.ok() &&
+              key.sort_key == std::string(1, '\1') + OracleSignedKeyPayload(expected),
+          "int128 exact LE16, production codecs, compare, display, and signed key vector");
+    const auto backend = scratchbird::libraries::sbl_numeric::MakeInt128OrderKeyLittleEndian(
+        Payload(expected));
+    Check(backend.status == scratchbird::libraries::sbl_numeric::NumericStatusCode::ok &&
+              backend.payload == Payload(OracleSignedKeyPayload(expected)),
+          "int128 numeric backend emits the exact signed BE16 key");
   }
 
   for (std::size_t left = 0; left < kVectors.size(); ++left) {
@@ -280,11 +287,13 @@ void RepresentationAndCodecs() {
     const int expected = previous_key < current_key ? -1
         : previous_key > current_key ? 1 : 0;
     const auto compared = dt::CompareDatatypeValues({previous, current});
+    const auto sorted = dt::MakeDatatypeSortKey({current});
     Check(dt::DecodeCanonicalInt128Value(bytes, &decimal) &&
               dt::EncodeCanonicalInt128Value(decimal, &reencoded) &&
               reencoded == bytes && compared.ok() &&
-              compared.comparison == expected,
-          "deterministic int128 sample preserves all bits and signed order");
+              compared.comparison == expected && sorted.ok() &&
+              sorted.sort_key == std::string(1, '\1') + current_key,
+          "deterministic int128 sample preserves all bits and signed comparison/key order");
     previous = std::move(current);
     previous_key = current_key;
   }
@@ -311,6 +320,8 @@ void RepresentationAndCodecs() {
     const auto comparison =
         dt::CompareDatatypeValues({operation, Int128("0")});
     const auto sort_key = dt::MakeDatatypeSortKey({operation});
+    const auto backend_key = scratchbird::libraries::sbl_numeric::MakeInt128OrderKeyLittleEndian(
+        Payload(malformed));
     const auto serialized = dt::SerializeDatatypeValue({operation});
     const auto hashed = dt::HashDatatypeValue({operation});
     const auto displayed = dt::RenderDatatypeValueForDisplay({operation});
@@ -323,6 +334,9 @@ void RepresentationAndCodecs() {
               decoded == before &&
               !comparison.ok() && comparison.comparison == 0 &&
               !sort_key.ok() && sort_key.sort_key.empty() &&
+              backend_key.status != scratchbird::libraries::sbl_numeric::NumericStatusCode::ok &&
+              backend_key.payload.empty() &&
+              backend_key.diagnostic_code == "NUMERIC.ENCODING.NONCANONICAL" &&
               !serialized.ok() && serialized.serialized_value.empty() &&
               !hashed.ok() && hashed.stable_hash_hex.empty() &&
               !displayed.ok() && displayed.display_value.empty() &&
@@ -981,11 +995,53 @@ void Persistence() {
   }
 }
 
+void BinarySumTransitions() {
+  namespace numeric = scratchbird::libraries::sbl_numeric;
+  const auto check_sum = [](const std::array<std::uint8_t, 16>& bytes,
+                            std::int64_t operand) {
+    std::string text;
+    Check(dt::DecodeCanonicalInt128Value(Bytes(bytes), &text), "decode SUM oracle input");
+    numeric::NumericRequest request;
+    request.type = numeric::NumericType::int128;
+    request.operation = numeric::NumericOperation::add;
+    request.left = {request.type, text, false};
+    request.right = {request.type, std::to_string(operand), false};
+    const auto oracle = numeric::ApplyNumericOperation(request);
+    auto actual = bytes;
+    const auto status = numeric::AddInt64ToInt128LittleEndian(actual, operand);
+    Check(status == oracle.status, "binary SUM status agrees with reference arithmetic");
+    if (oracle.status == numeric::NumericStatusCode::ok) {
+      std::string expected;
+      Check(dt::EncodeCanonicalInt128Value(oracle.value.encoded, &expected) &&
+                Bytes(actual) == expected, "binary SUM preserves exact reference result");
+    } else {
+      Check(actual == bytes, "overflowing binary SUM leaves accumulator unchanged");
+    }
+  };
+  for (const auto& vector : kVectors) {
+    for (const auto operand : {std::numeric_limits<std::int64_t>::min(),
+                              std::int64_t{-1}, std::int64_t{0}, std::int64_t{1},
+                              std::numeric_limits<std::int64_t>::max()})
+      check_sum(vector.bytes, operand);
+  }
+  std::uint64_t state = 0x7942d6ebac163e05ULL;
+  for (unsigned sample = 0; sample < 10000; ++sample) {
+    std::array<std::uint8_t, 16> bytes;
+    for (auto& byte : bytes) {
+      state ^= state << 13; state ^= state >> 7; state ^= state << 17;
+      byte = static_cast<std::uint8_t>(state);
+    }
+    const auto magnitude = static_cast<std::int64_t>(state >> 1);
+    check_sum(bytes, state & 1u ? -magnitude : magnitude);
+  }
+}
+
 }  // namespace
 
 int main() {
   ExactIdentity();
   RepresentationAndCodecs();
+  BinarySumTransitions();
   NumericAndCastAdapter();
   DescriptorAndNullState();
   Persistence();

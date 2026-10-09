@@ -847,6 +847,35 @@ NumericResult DecodeUint128LittleEndian(
   return result;
 }
 
+NumericBinaryResult MakeInt128OrderKeyLittleEndian(
+    const std::vector<std::uint8_t>& payload) {
+  auto result = MakeUint128OrderKeyLittleEndian(payload);
+  if (result.status == NumericStatusCode::ok) {
+    result.payload.front() ^= 0x80u;
+  }
+  return result;
+}
+
+NumericStatusCode AddInt64ToInt128LittleEndian(
+    std::array<std::uint8_t, 16>& accumulator, std::int64_t value) noexcept {
+  const auto bits = static_cast<std::uint64_t>(value);
+  std::array<std::uint8_t, 16> staged{};
+  unsigned carry = 0;
+  for (std::size_t byte = 0; byte < staged.size(); ++byte) {
+    const unsigned operand = byte < 8
+        ? static_cast<std::uint8_t>(bits >> (byte * 8u))
+        : (value < 0 ? 255u : 0u);
+    const unsigned sum = accumulator[byte] + operand + carry;
+    staged[byte] = static_cast<std::uint8_t>(sum);
+    carry = sum >> 8u;
+  }
+  const bool negative = (accumulator.back() & 0x80u) != 0;
+  if (negative == (value < 0) && negative != ((staged.back() & 0x80u) != 0))
+    return NumericStatusCode::overflow;
+  accumulator = staged;
+  return NumericStatusCode::ok;
+}
+
 NumericBinaryResult MakeUint128OrderKeyLittleEndian(
     const std::vector<std::uint8_t>& payload) {
   NumericBinaryResult result;

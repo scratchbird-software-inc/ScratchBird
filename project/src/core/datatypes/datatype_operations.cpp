@@ -7593,24 +7593,14 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
         for (int byte = 7; byte >= 0; --byte) {
           result.sort_key.push_back(request.value.encoded_value[byte]);
         }
-      } else if (request.value.type_id == CanonicalTypeId::int128) {
-        // Core requires comparison-key behavior for mandatory 128-bit values
-        // to cross the sbl_numeric boundary. That backend does not yet expose
-        // an INT128 binary-key API, so the adapter cannot independently
-        // implement the otherwise specified sign-transformed BE16 key.
-        result.status = ErrorStatus();
-        result.sort_key.clear();
-        result.diagnostic = MakeDatatypeOperationDiagnostic(
-            result.status, "SB_DATATYPE_SORT_KEY_REJECTED",
-            "datatype.sort_key.rejected",
-            "int128_sort_key_backend_api_unavailable");
-        return result;
-      } else if (request.value.type_id == CanonicalTypeId::uint128) {
+      } else if (request.value.type_id == CanonicalTypeId::int128 ||
+                 request.value.type_id == CanonicalTypeId::uint128) {
         const std::vector<std::uint8_t> payload(
             request.value.encoded_value.begin(),
             request.value.encoded_value.end());
-        const auto key =
-            libraries::sbl_numeric::MakeUint128OrderKeyLittleEndian(payload);
+        const auto key = request.value.type_id == CanonicalTypeId::int128
+            ? libraries::sbl_numeric::MakeInt128OrderKeyLittleEndian(payload)
+            : libraries::sbl_numeric::MakeUint128OrderKeyLittleEndian(payload);
         if (key.status != libraries::sbl_numeric::NumericStatusCode::ok ||
             key.payload.size() != 16) {
           result.status = ErrorStatus();
@@ -7619,7 +7609,7 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
               result.status, "SB_DATATYPE_SORT_KEY_REJECTED",
               "datatype.sort_key.rejected",
               key.diagnostic_code.empty()
-                  ? "uint128_sort_key_backend_failed"
+                  ? "integer128_sort_key_backend_failed"
                   : key.diagnostic_code);
           return result;
         }
