@@ -190,7 +190,7 @@ api::EngineTypedValue UuidValue(const api::EngineUuid& uuid) {
 }
 
 api::EngineTypedValue IntValue(std::int64_t value) {
-  return TypedValue("int64", std::to_string(value));
+  return exec::EncodeInt64Value(value);
 }
 
 api::EngineTypedValue TextValue(std::string value) {
@@ -225,12 +225,21 @@ std::string FirstDetail(const api::EngineApiResult& result) {
   return result.diagnostics.empty() ? std::string{} : result.diagnostics.front().detail;
 }
 
+std::string DisplayValue(const api::EngineTypedValue& value) {
+  if (value.descriptor.canonical_type_name == "int64") {
+    const auto decoded = exec::DecodeInt64Value(value);
+    Require(decoded.ok(), "result INT64 has invalid native authority or bytes");
+    return std::to_string(decoded.value);
+  }
+  return value.encoded_value;
+}
+
 std::string FieldValue(const api::EngineApiResult& result,
                        std::string_view field,
                        std::size_t row_index = 0) {
   if (row_index >= result.result_shape.rows.size()) { return {}; }
   for (const auto& [name, value] : result.result_shape.rows[row_index].fields) {
-    if (name == field) { return value.encoded_value; }
+    if (name == field) { return DisplayValue(value); }
   }
   return {};
 }
@@ -240,7 +249,7 @@ std::string ResultValueAt(const api::EngineResultShape& shape,
                           std::size_t column_index) {
   Require(row_index < shape.rows.size(), "result row index out of range");
   Require(column_index < shape.rows[row_index].fields.size(), "result column index out of range");
-  return shape.rows[row_index].fields[column_index].second.encoded_value;
+  return DisplayValue(shape.rows[row_index].fields[column_index].second);
 }
 
 api::EngineQueryRelation SalesRelation() {
@@ -343,6 +352,53 @@ api::EngineQueryRelation HavingRelation() {
       Row({{"grp", IntValue(3)}, {"amount", IntValue(1)}}),
   };
   return relation;
+}
+
+void RequireNativeAggregateCarriers() {
+  for (const bool real : {false, true}) {
+    api::EnginePlanOperationRequest request;
+    request.context.security_context_present = true;
+    request.execute = true;
+    request.query_operation = "aggregate";
+    request.aggregate_function = "count_distinct";
+    request.group_key_column = 0;
+    request.aggregate_value_column = 1;
+    api::EngineQueryRelation relation;
+    relation.relation_name = "native_distinct";
+    relation.descriptor_digest = "native_distinct_descriptor";
+    for (const auto n : {0, 0, 1, 2})
+      relation.rows.push_back(Row({{"grp", IntValue(1)}, {"value",
+          real ? exec::EncodeReal64Value(n) : IntValue(n)}}));
+    if (real) relation.rows.front().fields[1].second = exec::EncodeReal64Value(-0.0);
+    request.relations.push_back(std::move(relation));
+    const auto result = api::EnginePlanOperation(request);
+    Require(result.ok && result.result_shape.rows.size() == 1 &&
+                ResultValueAt(result.result_shape, 0, 1) == "3",
+            "native aggregate distinct key lost payload bytes or signed-zero equality");
+    for (const auto& row : result.result_shape.rows)
+      for (std::size_t column = 0; column < row.fields.size(); ++column)
+        Require(row.fields[column].second.descriptor == result.result_shape.columns[column],
+                "native aggregate published contradictory column and cell descriptors");
+    for (unsigned mutation = 0; mutation < 4; ++mutation) {
+      auto bad = request;
+      auto& value = bad.relations.front().rows.front().fields[1].second;
+      if (mutation == 0) value.encoded_value = "0";
+      if (mutation == 1) value.binary_value.pop_back();
+      if (mutation == 2) ++value.descriptor.datatype_descriptor_generation;
+      if (mutation == 3) { value.binary_value.clear(); value.encoded_value = "0"; }
+      for (const auto* function : {"count", "count_distinct", "sum", "avg", "min", "max"}) {
+        auto operation = bad;
+        operation.aggregate_function = function;
+        // This component's COUNT is grouped COUNT(*), so its consumed scalar
+        // is the group key, not the otherwise-unused value column.
+        if (std::string_view(function) == "count")
+          operation.relations.front().rows.front().fields[0].second = value;
+        const auto refused = api::EnginePlanOperation(operation);
+        Require(!refused.ok && !refused.diagnostics.empty() && refused.result_shape.rows.empty(),
+                "native aggregate admitted a mixed, textual, short or stale scalar");
+      }
+    }
+  }
 }
 
 void RequireHavingPredicates() {
@@ -621,10 +677,13 @@ void RequireDmlRowScanAndConflict(const api::EngineRequestContext& context) {
 }
 
 exec::ExecutorColumnDescriptor ExecColumn(std::string name, std::string type) {
-  return {std::move(name), exec::MakeExecutorDescriptor(std::move(type)), true};
+  return {std::move(name), exec::MakeExecutorDescriptor(std::move(type), "nullability=nullable"), true};
 }
 
 exec::DescriptorTuple ExecTuple(std::vector<api::EngineTypedValue> values) {
+  for (auto& value : values)
+    value.descriptor = exec::MakeExecutorDescriptor(value.descriptor.canonical_type_name,
+                                                   "nullability=nullable");
   return {std::move(values)};
 }
 
@@ -646,7 +705,8 @@ void RequireDescriptorQueryRuntime() {
                                                           exec::EncodeReal64Value(2.0),
                                                           &diagnostic);
   Require(diagnostic.ok && filtered.rows.size() == 2,
-          "descriptor real64 greater-than filter failed");
+          "descriptor real64 greater-than filter failed: " + diagnostic.diagnostic_code +
+              ":" + diagnostic.detail);
 
   filtered = exec::FilterDescriptorBatchByComparison(batch,
                                                      1,
@@ -880,6 +940,7 @@ int main() {
   scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("CBQ-009");
   RequireOpaqueMetadataGuard();
   RequirePivotAggregates();
+  RequireNativeAggregateCarriers();
   RequireHavingPredicates();
   RequireRetiredSblrQueryPlanRefusal();
   RequireDescriptorQueryRuntime();

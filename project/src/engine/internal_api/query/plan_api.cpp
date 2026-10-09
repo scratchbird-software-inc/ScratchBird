@@ -30,6 +30,7 @@
 #include "crud_support/crud_store.hpp"
 #include "domain_support/domain_store.hpp"
 #include "executor_foundation.hpp"
+#include "descriptor_value_runtime.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "optimizer_contract.hpp"
 #include "physical_plan.hpp"
@@ -7945,19 +7946,11 @@ plan::PhysicalAccessKind PlannedAccessKindForRequest(const EnginePlanOperationRe
 }
 
 EngineDescriptor Int64Descriptor() {
-  EngineDescriptor descriptor;
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = "int64";
-  descriptor.encoded_descriptor = "canonical=int64";
-  return descriptor;
+  return executor::MakeExecutorDescriptor("int64", "nullability=non_null");
 }
 
 EngineDescriptor Real64Descriptor() {
-  EngineDescriptor descriptor;
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = "real64";
-  descriptor.encoded_descriptor = "canonical=real64";
-  return descriptor;
+  return executor::MakeExecutorDescriptor("real64", "nullability=non_null");
 }
 
 EngineDescriptor BoolDescriptor() {
@@ -8056,10 +8049,7 @@ EngineTypedValue CrudRelationTypedValue(const CrudStoredValue& value,
 }
 
 EngineTypedValue Int64Value(std::int64_t value) {
-  EngineTypedValue typed;
-  typed.descriptor = Int64Descriptor();
-  typed.encoded_value = std::to_string(value);
-  return typed;
+  return executor::EncodeInt64Value(value);
 }
 
 std::string FormatReal64(double value) {
@@ -8069,11 +8059,31 @@ std::string FormatReal64(double value) {
 }
 
 EngineTypedValue Real64Value(double value) {
-  EngineTypedValue typed;
-  typed.descriptor = Real64Descriptor();
-  typed.encoded_value = FormatReal64(value);
-  return typed;
+  return executor::EncodeReal64Value(value);
 }
+
+bool ReadPlanInt64(const EngineTypedValue& value, std::int64_t* output) {
+  const auto decoded = executor::DecodeInt64Value(value);
+  if (!decoded.ok()) return false;
+  if (output) *output = decoded.value;
+  return true;
+}
+
+bool ReadPlanNumeric(const EngineTypedValue& value, double* output) {
+  if (value.descriptor.canonical_type_name == "int64" ||
+      value.descriptor.canonical_type_name == "int32") {
+    std::int64_t decoded = 0;
+    if (!ReadPlanInt64(value, &decoded)) return false;
+    if (output) *output = static_cast<double>(decoded);
+    return true;
+  }
+  const auto decoded = executor::DecodeReal64Value(value);
+  if (!decoded.ok()) return false;
+  if (output) *output = decoded.value;
+  return true;
+}
+
+std::optional<std::string> EqualityKeyForTypedValue(const EngineTypedValue& value);
 
 EngineTypedValue BoolValue(bool value) {
   EngineTypedValue typed;
@@ -8129,7 +8139,7 @@ exec::Batch RelationToBatch(const EngineQueryRelation& relation,
     for (const auto& field : row.fields) {
       std::int64_t value = 0;
       if (field.second.is_null ||
-          !TryParseI64Value(field.second.encoded_value, &value)) {
+          !ReadPlanInt64(field.second, &value)) {
         if (error_detail != nullptr) {
           *error_detail =
               "query_plan_integer_executor_requires_integer_row_values";
@@ -8237,7 +8247,7 @@ std::optional<std::int64_t> RowInt64ValueAt(const EngineRowValue& row,
     return std::nullopt;
   }
   std::int64_t parsed = 0;
-  if (!TryParseI64Value(typed.encoded_value, &parsed)) {
+  if (!ReadPlanInt64(typed, &parsed)) {
     if (error_detail != nullptr) *error_detail = "query_plan_window_order_requires_int64";
     return std::nullopt;
   }
@@ -8257,7 +8267,7 @@ std::optional<std::int64_t> RowAggregateGroupKeyInt64ValueAt(const EngineRowValu
     return std::nullopt;
   }
   std::int64_t parsed = 0;
-  if (!TryParseI64Value(typed.encoded_value, &parsed)) {
+  if (!ReadPlanInt64(typed, &parsed)) {
     if (error_detail != nullptr) *error_detail = "query_plan_aggregate_group_key_requires_int64";
     return std::nullopt;
   }
@@ -8416,7 +8426,7 @@ EngineResultShape StatisticalAggregateResultShape(const EngineQueryRelation& rel
     const auto typed = NormalizeTypedValue(row.fields[value_column].second);
     if (typed.is_null) continue;
     double parsed = 0.0;
-    if (!TryParseReal64Value(typed.encoded_value, &parsed)) {
+    if (!ReadPlanNumeric(typed, &parsed)) {
       if (error_detail != nullptr) *error_detail = "query_plan_aggregate_numeric_input_required";
       return {};
     }
@@ -8482,12 +8492,23 @@ EngineResultShape CoreAggregateResultShape(const EngineQueryRelation& relation,
     ++stats.input_count;
     const auto typed = NormalizeTypedValue(row.fields[value_column].second);
     if (typed.is_null) continue;
+    const auto& scalar_type = typed.descriptor.canonical_type_name;
+    if ((scalar_type == "int64" || scalar_type == "int32" || scalar_type == "real64") &&
+        !ReadPlanNumeric(typed, nullptr)) {
+      if (error_detail) *error_detail = "query_plan_aggregate_value_encoding_invalid";
+      return {};
+    }
     ++stats.non_null_count;
     if (leaf == "count_distinct") {
-      stats.distinct_values.insert(typed.descriptor.canonical_type_name + ":" + typed.encoded_value);
+      const auto key = EqualityKeyForTypedValue(typed);
+      if (!key) {
+        if (error_detail) *error_detail = "query_plan_aggregate_value_encoding_invalid";
+        return {};
+      }
+      stats.distinct_values.insert(*key);
     } else if (leaf == "sum" || leaf == "avg") {
       double parsed = 0.0;
-      if (!TryParseReal64Value(typed.encoded_value, &parsed)) {
+      if (!ReadPlanNumeric(typed, &parsed)) {
         if (error_detail != nullptr) *error_detail = "query_plan_aggregate_numeric_input_required";
         return {};
       }
@@ -8498,13 +8519,14 @@ EngineResultShape CoreAggregateResultShape(const EngineQueryRelation& relation,
         stats.max_value = typed;
       } else {
         const bool numeric_candidate =
-            TryParseReal64Value(typed.encoded_value, nullptr) &&
-            TryParseReal64Value(stats.min_value.encoded_value, nullptr) &&
-            TryParseReal64Value(stats.max_value.encoded_value, nullptr);
+            ReadPlanNumeric(typed, nullptr) &&
+            ReadPlanNumeric(stats.min_value, nullptr) &&
+            ReadPlanNumeric(stats.max_value, nullptr);
         if (numeric_candidate) {
-          const double candidate = ParseReal64Value(typed.encoded_value, 0.0);
-          const double current_min = ParseReal64Value(stats.min_value.encoded_value, 0.0);
-          const double current_max = ParseReal64Value(stats.max_value.encoded_value, 0.0);
+          double candidate = 0, current_min = 0, current_max = 0;
+          ReadPlanNumeric(typed, &candidate);
+          ReadPlanNumeric(stats.min_value, &current_min);
+          ReadPlanNumeric(stats.max_value, &current_max);
           if (candidate < current_min) stats.min_value = typed;
           if (candidate > current_max) stats.max_value = typed;
         } else {
@@ -8544,7 +8566,7 @@ EngineResultShape CoreAggregateResultShape(const EngineQueryRelation& relation,
     } else {
       const auto selected = leaf == "min" ? stats.min_value : stats.max_value;
       double parsed = 0.0;
-      if (TryParseReal64Value(selected.encoded_value, &parsed)) {
+      if (ReadPlanNumeric(selected, &parsed)) {
         out.fields.push_back({"c1", Real64Value(parsed)});
       } else {
         out.fields.push_back({"c1", selected});
@@ -8626,7 +8648,12 @@ EngineResultShape ApproxCountDistinctAggregateResultShape(const EngineQueryRelat
     auto& values = groups[*key];
     const auto typed = NormalizeTypedValue(row.fields[value_column].second);
     if (typed.is_null) continue;
-    values.insert(typed.descriptor.canonical_type_name + ":" + typed.encoded_value);
+    const auto distinct_key = EqualityKeyForTypedValue(typed);
+    if (!distinct_key) {
+      if (error_detail) *error_detail = "query_plan_aggregate_value_encoding_invalid";
+      return {};
+    }
+    values.insert(*distinct_key);
   }
 
   EngineResultShape shape;
@@ -8658,7 +8685,7 @@ EngineResultShape ApproxMedianAggregateResultShape(const EngineQueryRelation& re
     const auto typed = NormalizeTypedValue(row.fields[value_column].second);
     if (typed.is_null) continue;
     double parsed = 0.0;
-    if (!TryParseReal64Value(typed.encoded_value, &parsed)) {
+    if (!ReadPlanNumeric(typed, &parsed)) {
       if (error_detail != nullptr) *error_detail = "query_plan_aggregate_numeric_input_required";
       return {};
     }
@@ -8716,8 +8743,8 @@ EngineResultShape PairAggregateResultShape(const EngineQueryRelation& relation,
     if (y_typed.is_null || x_typed.is_null) continue;
     double y = 0.0;
     double x = 0.0;
-    if (!TryParseReal64Value(y_typed.encoded_value, &y) ||
-        !TryParseReal64Value(x_typed.encoded_value, &x)) {
+    if (!ReadPlanNumeric(y_typed, &y) ||
+        !ReadPlanNumeric(x_typed, &x)) {
       if (error_detail != nullptr) *error_detail = "query_plan_aggregate_numeric_input_required";
       return {};
     }
@@ -8871,7 +8898,7 @@ EngineResultShape DistributionAggregateResultShape(const EngineQueryRelation& re
       continue;
     }
     double parsed = 0.0;
-    if (!TryParseReal64Value(typed.encoded_value, &parsed)) {
+    if (!ReadPlanNumeric(typed, &parsed)) {
       if (error_detail != nullptr) *error_detail = "query_plan_aggregate_numeric_input_required";
       return {};
     }
@@ -9369,7 +9396,7 @@ std::optional<std::int64_t> RowFieldValueByName(const EngineRowValue& row,
     if (LowerAscii(name) != wanted) continue;
     if (typed.is_null) return std::nullopt;
     std::int64_t parsed = 0;
-    if (!TryParseI64Value(typed.encoded_value, &parsed)) return std::nullopt;
+    if (!ReadPlanInt64(typed, &parsed)) return std::nullopt;
     return parsed;
   }
   return std::nullopt;
@@ -9779,6 +9806,19 @@ std::string EqualityKeyDescriptorFamily(std::string type_name) {
 std::optional<std::string> EqualityKeyForTypedValue(const EngineTypedValue& value) {
   const auto typed = NormalizeTypedValue(value);
   if (typed.is_null) return std::nullopt;
+  const auto& type = typed.descriptor.canonical_type_name;
+  if (type == "int64" || type == "int32") {
+    std::int64_t decoded = 0;
+    if (!ReadPlanInt64(typed, &decoded)) return std::nullopt;
+    const auto native = executor::EncodeInt64Value(decoded);
+    return type + ":" + std::string(native.binary_value.begin(), native.binary_value.end());
+  }
+  if (type == "real64") {
+    const auto decoded = executor::DecodeReal64Value(typed);
+    if (!decoded.ok()) return std::nullopt;
+    return "real64:" + (decoded.value == 0 ? std::string(8, '\0') :
+        std::string(typed.binary_value.begin(), typed.binary_value.end()));
+  }
   return EqualityKeyDescriptorFamily(typed.descriptor.canonical_type_name) + ":" +
          typed.encoded_value;
 }
@@ -9795,7 +9835,7 @@ std::optional<std::string> JoinKeyForRow(const EngineRowValue& row,
     const auto typed = NormalizeTypedValue(row.fields[column].second);
     if (typed.is_null) return std::nullopt;
     std::int64_t parsed = 0;
-    if (!TryParseI64Value(typed.encoded_value, &parsed)) {
+    if (!ReadPlanInt64(typed, &parsed)) {
       if (error_detail != nullptr) *error_detail = "query_plan_join_key_offset_requires_int64";
       return std::nullopt;
     }
@@ -9808,8 +9848,7 @@ std::optional<std::string> JoinKeyForRow(const EngineRowValue& row,
       }
       return std::nullopt;
     }
-    return EqualityKeyDescriptorFamily(typed.descriptor.canonical_type_name) + ":" +
-           std::to_string(parsed + offset);
+    return EqualityKeyForTypedValue(Int64Value(parsed + offset));
   }
   return EqualityKeyForTypedValue(row.fields[column].second);
 }
@@ -10493,7 +10532,7 @@ std::uint64_t TypedLateralSumRowCount(const EngineQueryRelation& left,
     const auto typed = NormalizeTypedValue(row.fields[aggregate_column].second);
     if (typed.is_null) continue;
     double parsed = 0.0;
-    if (!TryParseReal64Value(typed.encoded_value, &parsed)) {
+    if (!ReadPlanNumeric(typed, &parsed)) {
       if (error_detail != nullptr) *error_detail = "query_plan_lateral_aggregate_value_invalid";
       return 0;
     }
@@ -10590,7 +10629,7 @@ double TypedJoinedAggregateSum(const EngineQueryRelation& left,
     const auto typed = NormalizeTypedValue(row.fields[aggregate_column].second);
     if (typed.is_null) continue;
     double parsed = 0.0;
-    if (!TryParseReal64Value(typed.encoded_value, &parsed)) {
+    if (!ReadPlanNumeric(typed, &parsed)) {
       if (error_detail != nullptr) *error_detail = "query_plan_grouping_aggregate_value_invalid";
       return 0.0;
     }
@@ -10948,7 +10987,7 @@ std::optional<std::int64_t> RowInt64ValueForRoute(const EngineRowValue& row,
     return std::nullopt;
   }
   std::int64_t parsed = 0;
-  if (!TryParseI64Value(typed->encoded_value, &parsed)) {
+  if (!ReadPlanInt64(*typed, &parsed)) {
     if (error_detail != nullptr) *error_detail = std::string(error_code);
     return std::nullopt;
   }
@@ -12364,7 +12403,7 @@ bool RelationsAreIntegerCompatible(const std::vector<EngineQueryRelation>& relat
   for (const auto& relation : relations) {
     for (const auto& row : relation.rows) {
       for (const auto& [field, typed] : row.fields) {
-        if (typed.is_null || !TryParseI64Value(typed.encoded_value, nullptr)) {
+        if (typed.is_null || !ReadPlanInt64(typed, nullptr)) {
           if (error_detail != nullptr) {
             *error_detail = "query_plan_integer_executor_requires_integer_row_values";
           }
@@ -12569,7 +12608,7 @@ bool ApplyTypedAggregateHavingFilter(const EnginePlanOperationRequest& request,
     const auto typed = NormalizeTypedValue(row.fields[value_column].second);
     if (typed.is_null) continue;
     double parsed = 0.0;
-    if (!TryParseReal64Value(typed.encoded_value, &parsed)) {
+    if (!ReadPlanNumeric(typed, &parsed)) {
       if (error_detail != nullptr) *error_detail = "query_plan_aggregate_having_numeric_input_required";
       return false;
     }
