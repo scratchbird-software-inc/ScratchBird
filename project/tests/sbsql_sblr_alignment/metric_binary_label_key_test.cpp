@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <map>
+#include <set>
 #include <limits>
 #include <type_traits>
 #include <atomic>
@@ -127,7 +128,7 @@ struct ObservationFixture {
     Require(made.ok(),"construct exact retained series");series=std::move(*made.record);
   }
   void Register(m::MetricRegistry& registry){Require(registry.RegisterDescriptor(descriptor).ok&&registry.RegisterSeries(series,policy).ok,"register retained observation bindings");}
-  auto Increment(m::MetricRegistry& registry,m::MetricScalar value=m::MetricScalar{m::u64{1}}){return registry.IncrementCounter(descriptor.family,labels,std::move(value),descriptor.producer_owner);}
+  auto Increment(m::MetricRegistry& registry,m::MetricScalar value=m::MetricScalar{m::u64{1}},m::MetricValue* receipt=nullptr){return registry.IncrementCounter(descriptor.family,labels,std::move(value),descriptor.producer_owner,receipt);}
   m::MetricRawSampleRecord Read(m::MetricObservationLease& lease){
     auto head=queue->TryAcquire();Require(head.ok(),"acquire actual registry observation");lease=head.lease;
     auto sample=m::DecodeMetricRawSample(descriptor,series,lease.observation->bytes);
@@ -166,11 +167,16 @@ void QueuePublication(){
     if(kind==1)other.descriptor.histogram_buckets={m::u64{5},m::u64{10}};
     if(kind==2){other.descriptor.value_type=m::MetricScalarType::enumeration;other.descriptor.enum_values={2,7};}
     other.Bind(other.series.series_uuid);m::MetricRegistry owned(other.queue);other.Register(owned);
-    const auto result=kind==0?owned.SetGauge(other.descriptor.family,{},m::u64{7},other.descriptor.producer_owner):
-      kind==1?owned.ObserveHistogram(other.descriptor.family,{},m::u64{7},other.descriptor.producer_owner):
-      owned.SetState(other.descriptor.family,{},m::MetricEnumValue{7},"ready",other.descriptor.producer_owner);
+    m::MetricValue receipt;
+    const auto result=kind==0?owned.SetGauge(other.descriptor.family,{},m::u64{7},other.descriptor.producer_owner,&receipt):
+      kind==1?owned.ObserveHistogram(other.descriptor.family,{},m::u64{7},other.descriptor.producer_owner,&receipt):
+      owned.SetState(other.descriptor.family,{},m::MetricEnumValue{7},"ready",other.descriptor.producer_owner,&receipt);
     Require(result.ok,"typed update did not use actual registry queue path");m::MetricObservationLease lease;const auto stored=other.Read(lease);
     Require(stored.value.type==other.descriptor.type&&stored.series_uuid==other.series.series_uuid,"typed handoff changed class or series");
+    const auto encoded_receipt=m::EncodeMetricValue(other.descriptor,receipt);
+    const auto encoded_queued=m::EncodeMetricValue(other.descriptor,stored.value);
+    Require(encoded_receipt.ok()&&encoded_queued.ok()&&encoded_receipt.bytes==encoded_queued.bytes,
+            "typed receipt differs from the actually admitted observation");
     if(kind==1)Require(stored.value.count==1&&std::get<m::u64>(stored.value.sum)==7&&stored.value.buckets==std::vector<m::u64>{0,1,1},"histogram queue lost exact aggregates");
     if(kind==2)Require(std::get<m::MetricEnumValue>(stored.value.value).code==7&&stored.value.state_text=="ready","state queue lost enum or text");
   }
@@ -396,20 +402,24 @@ void OneNodeQueueBinding() {
           "concurrent binding admitted multiple owners or lost the winner");
 }
 void QueuePublicationFaults(){
-  for(bool existing:{false,true}){unsigned faults=0;bool complete=false;
+  for(bool with_receipt:{false,true}) for(bool existing:{false,true}){unsigned faults=0;bool complete=false;
     for(long budget=0;budget<1000;++budget){ObservationFixture f;m::MetricRegistry registry(f.queue);f.Register(registry);
       if(existing)Require(f.Increment(registry).ok,"initial observation for fault baseline");
       const auto baseline=registry.SnapshotHistory().size(),queued=f.queue->Stats().queued;
+      m::MetricValue receipt;receipt.value=m::u64{999};
       bool ok=false;allocation_failed=false;allocation_budget=budget;
-      try{ok=f.Increment(registry).ok;}catch(const std::bad_alloc&){}
+      try{ok=f.Increment(registry,m::u64{1},with_receipt?&receipt:nullptr).ok;}catch(const std::bad_alloc&){}
       const bool failed=allocation_failed;allocation_budget=-1;
-      if(!failed){Require(ok,"observation refused without allocation fault");complete=true;break;}
+      if(!failed){Require(ok,"observation refused without allocation fault");
+        if(with_receipt)Require(std::get<m::u64>(receipt.value)==(existing?2u:1u),"receipt lost exact published successor");
+        complete=true;break;}
       ++faults;Require(!ok&&registry.SnapshotHistory().size()==baseline&&f.queue->Stats().queued==queued,"allocation failure published current/history or queue prefix");
+      Require(std::get<m::u64>(receipt.value)==999,"allocation failure modified publication receipt");
       const auto current=registry.SnapshotCurrent();Require(existing?(current.size()==1&&std::get<m::u64>(current[0].value)==1):current.empty(),"allocation fault changed current value");
       Require(f.Increment(registry).ok,"observation retry after allocation failure refused");
       Require(std::get<m::u64>(registry.SnapshotCurrent()[0].value)==(existing?2u:1u)&&f.queue->Stats().queued==queued+1,"retry committed failed observation twice");
     }
-    Require(complete&&faults>0,"observation fault sweep incomplete");std::cout<<"registry observation existing="<<existing<<" allocation sites="<<faults<<'\n';
+    Require(complete&&faults>0,"observation fault sweep incomplete");std::cout<<"registry observation existing="<<existing<<" receipt="<<with_receipt<<" allocation sites="<<faults<<'\n';
   }
 }
 void SeriesBindingAndConcurrency(){
@@ -424,10 +434,17 @@ void SeriesBindingAndConcurrency(){
   const auto other=m::MakeMetricSeriesIdentity(typed.descriptor,other_labels,typed.policy,typed.series,typed.series.series_uuid,1);
   Require(other.ok()&&!registry.RegisterSeries(*other.record,typed.policy).ok,"same series UUID bound two typed keys");
   std::atomic<bool> start=false,good=true;std::vector<std::thread> producers;
-  for(unsigned t=0;t<4;++t)producers.emplace_back([&]{while(!start.load(std::memory_order_acquire))std::this_thread::yield();
-    for(unsigned n=0;n<32;++n)if(!typed.Increment(registry).ok)good=false;});
+  std::array<std::array<m::u64,32>,4> receipts{};
+  for(unsigned t=0;t<4;++t)producers.emplace_back([&,t]{while(!start.load(std::memory_order_acquire))std::this_thread::yield();
+    for(unsigned n=0;n<32;++n){m::MetricValue receipt;
+      if(!typed.Increment(registry,m::u64{1},&receipt).ok)good=false;
+      else receipts[t][n]=std::get<m::u64>(receipt.value);}});
   start.store(true,std::memory_order_release);for(auto& thread:producers)thread.join();
   Require(good&&typed.queue->Stats().queued==128&&registry.SnapshotHistory().size()==128&&std::get<m::u64>(registry.SnapshotCurrent()[0].value)==128,"concurrent actual updates lost queue/current/history effects");
+  std::set<m::u64> successors;
+  for(const auto& thread:receipts){m::u64 previous=0;for(const auto value:thread){
+    Require(value>previous&&successors.insert(value).second,"concurrent receipts returned later snapshots or duplicates");previous=value;}}
+  Require(successors.size()==128&&*successors.begin()==1&&*successors.rbegin()==128,"concurrent receipt coverage lost an admitted update");
   m::MetricUuid previous;
   for(m::u64 n=1;n<=128;++n){m::MetricObservationLease lease;const auto sample=typed.Read(lease);
     Require(sample.source_sequence==n&&std::get<m::u64>(sample.value.value)==n&&sample.sample_uuid!=previous&&

@@ -27,6 +27,7 @@ AGENT_RUNTIME_MANIFEST_DEF_REL = Path("project/src/core/agents/agent_runtime_man
 AGENT_LIFECYCLE_CPP_REL = Path("project/src/core/agents/agent_engine_lifecycle.cpp")
 AGENT_IMPL_DIR_REL = Path("project/src/core/agents/agents")
 METRIC_REGISTRY_CPP_REL = Path("project/src/core/metrics/metric_registry.cpp")
+METRIC_DEFINITIONS_CPP_REL = Path("project/src/core/metrics/metric_builtin_definitions.cpp")
 MANAGEMENT_API_HPP_REL = Path("project/src/engine/internal_api/agents/agent_management_api.hpp")
 MANAGEMENT_API_CPP_REL = Path("project/src/engine/internal_api/agents/agent_management_api.cpp")
 AGENT_AUTHORIZATION_REL = Path("project/src/engine/internal_api/agents/agent_authorization_context.hpp")
@@ -312,7 +313,7 @@ def metric_tokens_from_docs(repo_root: Path) -> set[str]:
 
 
 def load_metric_descriptors(repo_root: Path) -> dict[str, str]:
-    text = read_text(repo_root, METRIC_REGISTRY_CPP_REL)
+    text = read_text(repo_root, METRIC_DEFINITIONS_CPP_REL)
     descriptors: dict[str, str] = {}
     pattern = re.compile(
         r'Descriptor\(\s*"(?P<family>sb_[A-Za-z0-9_]+)"\s*,\s*'
@@ -533,6 +534,7 @@ def gate_no_implicit_defaults(repo_root: Path) -> list[str]:
         AGENT_RUNTIME_MANIFEST_CPP_REL,
         AGENT_RUNTIME_HPP_REL,
         METRIC_REGISTRY_CPP_REL,
+        METRIC_DEFINITIONS_CPP_REL,
         MANAGEMENT_API_CPP_REL,
     )
     errors: list[str] = []
@@ -550,6 +552,8 @@ def gate_no_implicit_defaults(repo_root: Path) -> list[str]:
     metric_doc_tokens = metric_tokens_from_docs(repo_root)
     metric_descriptors = load_metric_descriptors(repo_root)
     metric_tokens = metric_doc_tokens | set(metric_descriptors)
+    if not metric_descriptors:
+        errors.append("compiled metric definition discovery produced no rows")
 
     if not spec_registry:
         errors.append("canonical agent registry table produced no rows")
@@ -1207,6 +1211,7 @@ def gate_enterprise_node_metrics_audit(repo_root: Path) -> list[str]:
         Path("project/src/core/agents/agents/metrics_registry_manager.cpp"),
         Path("project/src/core/agents/agents/metrics_registry_manager.hpp"),
         METRIC_REGISTRY_CPP_REL,
+        METRIC_DEFINITIONS_CPP_REL,
         Path("project/tests/agents/agent_enterprise_local_resource_agents_gate.cpp"),
         AGENT_TESTS_CMAKE_REL,
     )
@@ -1217,7 +1222,7 @@ def gate_enterprise_node_metrics_audit(repo_root: Path) -> list[str]:
 
     metrics_manager_cpp = read_text(repo_root, Path("project/src/core/agents/agents/metrics_registry_manager.cpp"))
     metrics_manager_hpp = read_text(repo_root, Path("project/src/core/agents/agents/metrics_registry_manager.hpp"))
-    metric_registry_cpp = read_text(repo_root, METRIC_REGISTRY_CPP_REL)
+    metric_definitions_cpp = read_text(repo_root, METRIC_DEFINITIONS_CPP_REL)
     local_resource_gate = read_text(repo_root, Path("project/tests/agents/agent_enterprise_local_resource_agents_gate.cpp"))
 
     required_tokens = (
@@ -1228,7 +1233,9 @@ def gate_enterprise_node_metrics_audit(repo_root: Path) -> list[str]:
         (metrics_manager_cpp, "sb_export_adapter_queue_depth", "export queue shed gauge mutation"),
         (metrics_manager_cpp, "sb_metric_export_shed_total", "export shed counter mutation"),
         (metrics_manager_cpp, "SB_AGENT_CLUSTER_PROVIDER_REQUIRED", "cluster metric external-provider refusal"),
-        (metric_registry_cpp, "sb_metric_export_shed_total", "metric export shed descriptor"),
+        (metric_definitions_cpp, "sb_metric_export_shed_total", "metric export shed descriptor"),
+        (metrics_manager_cpp, "request.export_buffer->ShedTo", "actual bounded optional export removal"),
+        (local_resource_gate, "export_samples_removed.size() == 4000", "actual export effect receipt check"),
         (local_resource_gate, "ApplyMetricsRegistryManagerAction", "local resource gate action handler"),
         (local_resource_gate, "rollup_rows_created > 0", "rollup creation assertion"),
         (local_resource_gate, "export_shed_written", "export shed assertion"),

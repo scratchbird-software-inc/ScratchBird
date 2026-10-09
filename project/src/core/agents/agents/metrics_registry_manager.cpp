@@ -12,9 +12,12 @@
 // this file provides the local metrics-registry integrity handler.
 
 #include "metric_history.hpp"
+#include "metric_label_key.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <utility>
+#include <stdexcept>
 
 namespace scratchbird::core::agents::implemented_agents {
 namespace {
@@ -82,73 +85,48 @@ MetricsRegistryManagerResult Refuse(std::string code,
 
 MetricsRegistryManagerResult FailMutation(
     const metrics::MetricValidationResult& validation,
-    const std::string& operation) {
-  return Refuse("SB_AGENT_METRICS_REGISTRY_MUTATION_FAILED",
+    const std::string& operation, MetricsRegistryManagerResult result) {
+  auto failure = Refuse("SB_AGENT_METRICS_REGISTRY_MUTATION_FAILED",
                 "agents.metrics_registry.mutation_failed",
                 operation + ":" + validation.diagnostic_code + ":" +
                     validation.detail);
-}
-
-metrics::MetricValue ValueForSample(const metrics::MetricDescriptor& descriptor,
-                                    const MetricsRegistryManagerSample& sample,
-                                    metrics::MetricLabelSet labels) {
-  metrics::MetricValue value;
-  value.family = descriptor.family;
-  value.labels = std::move(labels);
-  value.type = descriptor.type;
-  switch (descriptor.type) {
-    case metrics::MetricType::counter:
-      value.value = sample.sample_count == 0
-                        ? sample.numeric_value
-                        : static_cast<double>(sample.sample_count);
-      break;
-    case metrics::MetricType::gauge:
-    case metrics::MetricType::derived:
-      value.value = sample.numeric_value;
-      break;
-    case metrics::MetricType::histogram:
-      value.value = sample.numeric_value;
-      value.count = 1;
-      value.sum = sample.numeric_value;
-      break;
-    case metrics::MetricType::state:
-      value.value = sample.numeric_value;
-      value.state_text = sample.state_text;
-      break;
-  }
-  return value;
+  result.status = failure.status;
+  result.diagnostic = std::move(failure.diagnostic);
+  result.fail_closed = true;
+  for (auto& field : result.evidence)
+    if (field.key == "failed_closed") field.value = "true";
+  AddEvidence(&result, "failure_operation", operation);
+  return result;
 }
 
 metrics::MetricValidationResult PublishSampleToRegistry(
     metrics::MetricRegistry* registry,
     const metrics::MetricDescriptor& descriptor,
     const MetricsRegistryManagerSample& sample,
-    metrics::MetricLabelSet labels) {
-  const double numeric = sample.sample_count == 0
-                             ? sample.numeric_value
-                             : static_cast<double>(sample.sample_count);
+    metrics::MetricLabelSet labels,
+    metrics::MetricValue* published_value) {
   switch (descriptor.type) {
     case metrics::MetricType::counter:
       return registry->IncrementCounter(descriptor.family,
                                         std::move(labels),
-                                        numeric,
-                                        descriptor.producer_owner);
+                                        sample.sample_count,
+                                        descriptor.producer_owner, published_value);
     case metrics::MetricType::gauge:
       return registry->SetGauge(descriptor.family,
                                 std::move(labels),
                                 sample.numeric_value,
-                                descriptor.producer_owner);
+                                descriptor.producer_owner, published_value);
     case metrics::MetricType::histogram:
       return registry->ObserveHistogram(descriptor.family,
                                         std::move(labels),
                                         sample.numeric_value,
-                                        descriptor.producer_owner);
+                                        descriptor.producer_owner, published_value);
     case metrics::MetricType::state:
       return registry->SetState(descriptor.family,
                                 std::move(labels),
                                 sample.numeric_value,
                                 sample.state_text,
-                                descriptor.producer_owner);
+                                descriptor.producer_owner, published_value);
     case metrics::MetricType::derived:
       return metrics::MetricError("SB-METRICS-DERIVED-SAMPLE-READONLY",
                                   descriptor.family);
@@ -156,11 +134,63 @@ metrics::MetricValidationResult PublishSampleToRegistry(
   return metrics::MetricError("SB-METRICS-TYPE-UNKNOWN", descriptor.family);
 }
 
-u64 CountRollups(const std::string& path) {
-  return static_cast<u64>(metrics::LoadMetricHistoryStore(path).rollups.size());
-}
-
 }  // namespace
+
+MetricExportBuffer::MetricExportBuffer(Uuid database, Uuid node, std::size_t maximum_samples,
+                                       std::size_t maximum_bytes)
+    : database_(database), node_(node), maximum_samples_(maximum_samples), maximum_bytes_(maximum_bytes) {
+  if (!core::uuid::IsEngineIdentityUuid(database) || !core::uuid::IsEngineIdentityUuid(node) ||
+      !maximum_samples || maximum_samples > 65536 || !maximum_bytes || maximum_bytes > 64 * 1024 * 1024)
+    throw std::invalid_argument("export buffer owner or bounds invalid");
+}
+bool MetricExportBuffer::OwnerMatches(Uuid database, Uuid node) const noexcept {
+  return database_ == database && node_ == node;
+}
+bool MetricExportBuffer::Enqueue(const metrics::MetricDescriptor& descriptor,
+                                 const metrics::MetricSeriesIdentity& series,
+                                 const metrics::MetricRawSampleRecord& sample) {
+  if (!OwnerMatches(sample.database_uuid, sample.node_uuid) || !sample.cluster_uuid.is_nil()) return false;
+  auto encoded = metrics::EncodeMetricRawSample(descriptor, series, sample);
+  if (!encoded.ok() || encoded.bytes.size() > maximum_bytes_) return false;
+  std::lock_guard lock(mutex_);
+  if (entries_.size() >= maximum_samples_ || encoded.bytes.size() > maximum_bytes_ - bytes_ ||
+      identities_.contains(sample.sample_uuid)) return false;
+  const auto size = encoded.bytes.size();
+  entries_.push_back({sample.sample_uuid, std::move(encoded.bytes)});
+  try { identities_.insert(sample.sample_uuid); }
+  catch (...) { entries_.pop_back(); throw; }
+  bytes_ += size;
+  return true;
+}
+std::optional<MetricExportBuffer::Entry> MetricExportBuffer::Take() {
+  std::lock_guard lock(mutex_);
+  if (entries_.empty()) return std::nullopt;
+  auto entry = std::move(entries_.front());
+  entries_.pop_front();
+  identities_.erase(entry.sample_uuid);
+  bytes_ -= entry.bytes.size();
+  return entry;
+}
+MetricExportBuffer::ShedResult MetricExportBuffer::ShedTo(u64 threshold, u64 maximum_to_shed) {
+  std::lock_guard lock(mutex_);
+  ShedResult result;
+  const auto excess = entries_.size() > threshold ? entries_.size() - threshold : 0;
+  const auto count = maximum_to_shed ? std::min<u64>(excess, maximum_to_shed) : excess;
+  result.removed.reserve(count);
+  // All allocating receipt work precedes removal. Container erasure cannot
+  // lose the identities of effects already performed.
+  for (u64 index = 0; index < count; ++index) result.removed.push_back(entries_[index].sample_uuid);
+  for (const auto& id : result.removed) {
+    bytes_ -= entries_.front().bytes.size();
+    entries_.pop_front();
+    identities_.erase(id);
+  }
+  result.remaining = entries_.size();
+  result.ok = true;
+  return result;
+}
+u64 MetricExportBuffer::Depth() const { std::lock_guard lock(mutex_); return entries_.size(); }
+u64 MetricExportBuffer::Bytes() const { std::lock_guard lock(mutex_); return bytes_; }
 
 const char* MetricsRegistryManagerDecisionKindName(
     MetricsRegistryManagerDecisionKind decision) {
@@ -282,7 +312,9 @@ MetricsRegistryManagerResult EvaluateMetricsRegistryManagerSample(
 
 MetricsRegistryManagerResult ApplyMetricsRegistryManagerAction(
     const MetricsRegistryManagerActionRequest& request) {
-  auto result = EvaluateMetricsRegistryManagerSample(request.sample,
+  auto observed = request.sample;
+  if (request.export_buffer) observed.export_queue_depth = request.export_buffer->Depth();
+  auto result = EvaluateMetricsRegistryManagerSample(observed,
                                                      request.policy);
   if (!result.ok()) {
     return result;
@@ -292,6 +324,10 @@ MetricsRegistryManagerResult ApplyMetricsRegistryManagerAction(
                   "agents.metrics_registry.registry_required",
                   "metric registry mutation requires a registry handle");
   }
+  if (!request.registry->ObservationOwnerMatches(request.database_uuid, request.node_uuid) ||
+      (request.export_buffer && !request.export_buffer->OwnerMatches(request.database_uuid, request.node_uuid)))
+    return Refuse("SB_AGENT_METRICS_REGISTRY_OWNER_MISMATCH",
+                  "agents.metrics_registry.owner_mismatch", "native node owner binding required");
   const auto* descriptor_ptr =
       request.registry->FindDescriptorOrAlias(request.sample.metric_family);
   if (descriptor_ptr == nullptr) {
@@ -300,6 +336,9 @@ MetricsRegistryManagerResult ApplyMetricsRegistryManagerAction(
                   request.sample.metric_family);
   }
   const auto descriptor = *descriptor_ptr;
+  if (descriptor.namespace_path != request.sample.namespace_path)
+    return Refuse("SB_AGENT_METRICS_REGISTRY_NAMESPACE_MISMATCH",
+                  "agents.metrics_registry.namespace_mismatch", descriptor.family);
   if (descriptor.cluster_only ||
       StartsWith(descriptor.namespace_path, "cluster.sys.metrics")) {
     return Refuse("SB_AGENT_CLUSTER_PROVIDER_REQUIRED",
@@ -312,10 +351,10 @@ MetricsRegistryManagerResult ApplyMetricsRegistryManagerAction(
         "sb_metric_samples_rejected_total",
         {{"metric_family", request.sample.metric_family},
          {"reason", result.diagnostic.diagnostic_code}},
-        1.0,
+        u64{1},
         "metrics_registry_manager");
     if (!rejected.ok) {
-      return FailMutation(rejected, "reject_sample_counter");
+      return FailMutation(rejected, "reject_sample_counter", std::move(result));
     }
     result.registry_mutation_written = true;
     AddEvidence(&result, "registry_mutation", "sample_rejection_counter");
@@ -328,16 +367,24 @@ MetricsRegistryManagerResult ApplyMetricsRegistryManagerAction(
                     "agents.metrics_registry.history_required",
                     "metric rollup requires persistent metric history path");
     }
-    const u64 before = CountRollups(request.history_path);
+    const auto before = metrics::LoadMetricHistoryStore(request.history_path);
+    if (!before.load_status.ok) return FailMutation(before.load_status, "load_rollups", std::move(result));
+    for (const auto& series : before.series)
+      if (series.database_uuid != request.database_uuid || series.node_uuid != request.node_uuid ||
+          !series.cluster_uuid.is_nil())
+        return Refuse("SB_AGENT_METRICS_REGISTRY_OWNER_MISMATCH",
+                      "agents.metrics_registry.owner_mismatch", "foreign history series");
     const auto generated =
         metrics::GenerateMetricRollups(request.history_path,
                                        request.rollup_grain, request.actor_uuid, request.transaction_uuid);
     if (!generated.ok) {
-      return FailMutation(generated, "generate_rollups");
+      return FailMutation(generated, "generate_rollups", std::move(result));
     }
-    const u64 after = CountRollups(request.history_path);
     result.rollup_written = true;
-    result.rollup_rows_created = after > before ? after - before : 0;
+    const auto after = metrics::LoadMetricHistoryStore(request.history_path);
+    if (!after.load_status.ok) return FailMutation(after.load_status, "reopen_rollups", std::move(result));
+    result.rollup_rows_created = after.rollups.size() > before.rollups.size()
+        ? after.rollups.size() - before.rollups.size() : 0;
     AddEvidence(&result, "rollup_grain",
                 metrics::MetricRollupGrainName(request.rollup_grain));
     AddEvidence(&result, "rollup_rows_created",
@@ -346,34 +393,35 @@ MetricsRegistryManagerResult ApplyMetricsRegistryManagerAction(
   }
 
   if (result.export_shed_requested) {
-    const u64 threshold = request.policy.export_queue_depth_threshold;
-    const u64 excess = request.sample.export_queue_depth > threshold
-                           ? request.sample.export_queue_depth - threshold
-                           : 0;
-    const u64 shed = request.export_shed_count == 0
-                         ? excess
-                         : std::min(request.export_shed_count, request.sample.export_queue_depth);
-    const u64 remaining = request.sample.export_queue_depth > shed
-                              ? request.sample.export_queue_depth - shed
-                              : 0;
+    if (!request.export_buffer)
+      return Refuse("SB_AGENT_METRICS_REGISTRY_EXPORT_BUFFER_REQUIRED",
+                    "agents.metrics_registry.export_buffer_required", "actual optional export copies required");
+    auto removed = request.export_buffer->ShedTo(request.policy.export_queue_depth_threshold,
+                                               request.export_shed_count);
+    result.export_samples_removed = std::move(removed.removed);
+    const auto shed = static_cast<u64>(result.export_samples_removed.size());
+    const auto remaining = removed.remaining;
+    result.export_shed_written = removed.ok;
+    result.export_queue_depth_after_shed = remaining;
     const auto queue = request.registry->SetGauge(
         "sb_export_adapter_queue_depth",
         {{"component", "core.metrics.export"},
          {"operation", "shed_export"},
          {"metric_family", request.sample.metric_family}},
-        static_cast<double>(remaining),
+        remaining,
         "metrics_exporter");
     if (!queue.ok) {
-      return FailMutation(queue, "export_queue_depth");
+      return FailMutation(queue, "export_queue_depth", std::move(result));
     }
+    result.registry_mutation_written = true;
     const auto shed_counter = request.registry->IncrementCounter(
         "sb_metric_export_shed_total",
         {{"metric_family", request.sample.metric_family},
          {"reason", "queue_pressure"}},
-        static_cast<double>(shed == 0 ? 1 : shed),
+        shed,
         "metrics_registry_manager");
     if (!shed_counter.ok) {
-      return FailMutation(shed_counter, "export_shed_counter");
+      return FailMutation(shed_counter, "export_shed_counter", std::move(result));
     }
     result.registry_mutation_written = true;
     result.export_shed_written = true;
@@ -384,31 +432,61 @@ MetricsRegistryManagerResult ApplyMetricsRegistryManagerAction(
     return result;
   }
 
+  if (request.history_path.empty() && request.durable_history_required)
+    return Refuse("SB_AGENT_METRICS_REGISTRY_HISTORY_REQUIRED",
+                  "agents.metrics_registry.history_required", "accepted production samples require persistent metric history");
+  std::optional<metrics::MetricSeriesIdentity> history_series;
+  if (!request.history_path.empty()) {
+    const auto store = metrics::LoadMetricHistoryStore(request.history_path);
+    if (!store.load_status.ok) return FailMutation(store.load_status, "history_preflight", std::move(result));
+    const auto key = metrics::MakeMetricSeriesKey(descriptor.family, request.labels);
+    const auto selected = std::find_if(store.series.begin(), store.series.end(), [&](const auto& series) {
+      return metrics::MakeMetricSeriesKey(series.metric_family, series.labels) == key &&
+          static_cast<const metrics::MetricDescriptorBinding&>(series) ==
+          static_cast<const metrics::MetricDescriptorBinding&>(descriptor);
+    });
+    if (selected == store.series.end() || selected->database_uuid != request.database_uuid ||
+        selected->node_uuid != request.node_uuid || !selected->cluster_uuid.is_nil())
+      return Refuse("SB_AGENT_METRICS_REGISTRY_HISTORY_BINDING_REQUIRED",
+                    "agents.metrics_registry.history_binding_required", descriptor.family);
+    const auto policy = std::find_if(store.policies.begin(), store.policies.end(), [&](const auto& candidate) {
+      return candidate.policy_uuid == descriptor.retention_policy_uuid &&
+          candidate.generation == descriptor.retention_policy_generation;
+    });
+    if (policy == store.policies.end() || policy->mode != metrics::MetricRetentionMode::raw_and_rollup)
+      return Refuse("SB_AGENT_METRICS_REGISTRY_RAW_HISTORY_POLICY_REQUIRED",
+                    "agents.metrics_registry.raw_history_policy_required", descriptor.family);
+    history_series = *selected;
+  }
+  metrics::MetricValue published_value;
   const auto published = PublishSampleToRegistry(request.registry,
                                                 descriptor,
                                                 request.sample,
-                                                request.labels);
+                                                request.labels,
+                                                history_series ? &published_value : nullptr);
   if (!published.ok) {
-    return FailMutation(published, "publish_sample");
+    return FailMutation(published, "publish_sample", std::move(result));
   }
   result.registry_mutation_written = true;
   AddEvidence(&result, "registry_mutation", "current_value_written");
 
   if (!request.history_path.empty()) {
+    // Exact successor from this call, not a later concurrent snapshot or a
+    // fabricated delta/histogram. No full-registry scan or floating conversion.
+    bool written = false;
     const auto history = metrics::AppendMetricRawSample(
         request.history_path,
         descriptor,
-        ValueForSample(descriptor, request.sample, request.labels),
-        request.observation_time_microseconds);
+        published_value,
+        request.observation_time_microseconds, &written, &*history_series);
     if (!history.ok) {
-      return FailMutation(history, "append_raw_sample");
+      return FailMutation(history, "append_raw_sample", std::move(result));
     }
+    if (!written)
+      return FailMutation(metrics::MetricError("SB_AGENT_METRICS_REGISTRY_RAW_HISTORY_POLICY_REQUIRED",
+                                               descriptor.family), "append_raw_sample_no_effect", std::move(result));
     result.history_sample_written = true;
     AddEvidence(&result, "history_sample", "raw_sample_written");
-  } else if (request.durable_history_required) {
-    return Refuse("SB_AGENT_METRICS_REGISTRY_HISTORY_REQUIRED",
-                  "agents.metrics_registry.history_required",
-                  "accepted production samples require persistent metric history");
   }
   return result;
 }

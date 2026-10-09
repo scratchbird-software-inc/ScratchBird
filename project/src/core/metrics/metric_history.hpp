@@ -134,10 +134,15 @@ void DisableMetricHistoryPersistence();
 bool MetricHistoryPersistenceEnabled();
 std::string ConfiguredMetricHistoryPath();
 MetricValidationResult PersistMetricValueForHistory(const MetricDescriptor& descriptor, const MetricValue& value);
+// File-codec support path, not a native recorder/MGA or fsync receipt. Optional
+// written is false on no-op retention modes and on failure. expected_series is
+// revalidated under the same lock as append; preflight alone is not authority.
 MetricValidationResult AppendMetricRawSample(const std::string& path,
                                              const MetricDescriptor& descriptor,
                                              const MetricValue& value,
-                                             u64 observation_time_microseconds = 0);
+                                             u64 observation_time_microseconds = 0,
+                                             bool* raw_sample_written = nullptr,
+                                             const MetricSeriesIdentity* expected_series = nullptr);
 MetricHistoryStore LoadMetricHistoryStore(const std::string& path);
 MetricValidationResult WriteMetricHistoryStore(const std::string& path, const MetricHistoryStore& store);
 MetricValidationResult RegisterMetricHistorySeries(const std::string& path,

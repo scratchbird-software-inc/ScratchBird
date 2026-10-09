@@ -204,23 +204,30 @@ class MetricRegistry {
   MetricValidationResult ValidateDescriptor(const MetricDescriptor& descriptor) const;
   MetricValidationResult ValidateLabels(const MetricDescriptor& descriptor, const MetricLabelSet& labels) const;
 
+  // Optional receipt is the exact successor admitted by this call, copied
+  // before effects and moved out under the registry lock. It is unchanged on
+  // refusal and proves volatile publication, never durable recorder completion.
   MetricValidationResult IncrementCounter(const std::string& family,
                                           MetricLabelSet labels,
                                           MetricScalar delta,
-                                          const std::string& producer_owner);
+                                          const std::string& producer_owner,
+                                          MetricValue* published_value = nullptr);
   MetricValidationResult SetGauge(const std::string& family,
                                   MetricLabelSet labels,
                                   MetricScalar value,
-                                  const std::string& producer_owner);
+                                  const std::string& producer_owner,
+                                  MetricValue* published_value = nullptr);
   MetricValidationResult ObserveHistogram(const std::string& family,
                                           MetricLabelSet labels,
                                           MetricScalar value,
-                                          const std::string& producer_owner);
+                                          const std::string& producer_owner,
+                                          MetricValue* published_value = nullptr);
   MetricValidationResult SetState(const std::string& family,
                                   MetricLabelSet labels,
                                   MetricScalar value,
                                   std::string state_text,
-                                  const std::string& producer_owner);
+                                  const std::string& producer_owner,
+                                  MetricValue* published_value = nullptr);
 
   std::vector<MetricValue> SnapshotCurrent(bool include_cluster = true) const;
   std::vector<MetricValue> SnapshotHistory(bool include_cluster = true, u64 max_rows = 1024) const;
@@ -231,7 +238,8 @@ class MetricRegistry {
                                      MetricScalar value,
                                      std::string state_text,
                                      const std::string& producer_owner,
-                                     MetricType operation_type);
+                                     MetricType operation_type,
+                                     MetricValue* published_value);
   using CurrentKey = std::pair<MetricUuid, std::vector<std::pair<std::string, MetricLabelValue>>>;
   CurrentKey NormalizeKey(const MetricUuid& metric_uuid, const MetricLabelSet& labels) const;
 

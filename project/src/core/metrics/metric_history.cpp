@@ -189,7 +189,9 @@ MetricValidationResult RegisterMetricHistorySeries(const std::string& path,
 
 MetricValidationResult AppendMetricRawSample(const std::string& path,
     const MetricDescriptor& descriptor, const MetricValue& value,
-    u64 observation_time_microseconds) {
+    u64 observation_time_microseconds, bool* raw_sample_written,
+    const MetricSeriesIdentity* expected_series) {
+  if (raw_sample_written) *raw_sample_written = false;
   if (descriptor.readiness != MetricReadiness::implemented && descriptor.readiness != MetricReadiness::derived)
     return MetricError("SB-METRICS-HISTORY-NO-FAKE-SAMPLES", descriptor.family);
   if (path.empty()) return MetricError("SB-METRICS-HISTORY-PERSISTENCE-DISABLED", descriptor.family);
@@ -208,6 +210,10 @@ MetricValidationResult AppendMetricRawSample(const std::string& path,
     selected = &series;
   }
   if (!selected) return MetricError("SB-METRICS-HISTORY-SERIES-BINDING-REQUIRED", descriptor.family);
+  if (expected_series && (selected->series_uuid != expected_series->series_uuid ||
+      selected->series_definition_generation != expected_series->series_definition_generation ||
+      static_cast<const MetricHistoryBinding&>(*selected) != static_cast<const MetricHistoryBinding&>(*expected_series)))
+    return MetricError("SB-METRICS-HISTORY-SERIES-BINDING-CONFLICT", descriptor.family);
   u64 sequence = 0;
   for (const auto& sample : store.raw_samples) sequence = std::max(sequence, sample.source_sequence);
   if (sequence == UINT64_MAX) return MetricError("SB-METRICS-HISTORY-SEQUENCE-EXHAUSTED", descriptor.family);
@@ -219,7 +225,9 @@ MetricValidationResult AppendMetricRawSample(const std::string& path,
       observed * 1000, collected * 1000, sequence + 1);
   if (!sample.ok()) return MetricError("SB-METRICS-HISTORY-OBSERVATION-INVALID", descriptor.family);
   store.raw_samples.push_back(std::move(*sample.record));
-  return WriteMetricHistoryStore(path, store);
+  const auto written = WriteMetricHistoryStore(path, store);
+  if (raw_sample_written) *raw_sample_written = written.ok;
+  return written;
 }
 
 MetricHistoryStore LoadMetricHistoryStore(const std::string& path) {

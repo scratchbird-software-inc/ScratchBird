@@ -48,7 +48,15 @@ void StorageChecks() {
   Check(!m::AppendMetricRawSample(path, descriptor, value, 1000000).ok);
   Check(m::RegisterMetricHistorySeries(path, descriptor, *series.record, policy).ok);
   Check(m::RegisterMetricHistorySeries(path, descriptor, *series.record, policy).ok);
-  Check(m::AppendMetricRawSample(path, descriptor, value, 1000000).ok);
+  bool written = false;
+  auto stale = *series.record;
+  ++stale.series_definition_generation;
+  Check(!m::AppendMetricRawSample(path, descriptor, value, 1000000, &written, &stale).ok && !written);
+  auto foreign = *series.record;
+  foreign.node_uuid = Id(511);
+  Check(!m::AppendMetricRawSample(path, descriptor, value, 1000000, &written, &foreign).ok && !written);
+  Check(m::LoadMetricHistoryStore(path).raw_samples.empty());
+  Check(m::AppendMetricRawSample(path, descriptor, value, 1000000, &written, &*series.record).ok && written);
   value.value = 3.0;
   Check(m::AppendMetricRawSample(path, descriptor, value, 2000000).ok);
   auto loaded = m::LoadMetricHistoryStore(path);
@@ -67,6 +75,15 @@ void StorageChecks() {
   Check(m::ApplyMetricRetentionCleanup(path, 4000000, Id(509), Id(510)).ok);
   loaded = m::LoadMetricHistoryStore(path);
   Check(loaded.raw_samples.empty() && loaded.evidence.size() == 2 && loaded.evidence.back().rows_affected == 2);
+  const auto retained = loaded;
+  loaded.policies.front().mode = m::MetricRetentionMode::current_only;
+  loaded.policies.front().raw_retention_seconds = loaded.policies.front().rollup_retention_seconds = 0;
+  loaded.policies.front().rollup_grains.clear();
+  Check(m::WriteMetricHistoryStore(path, loaded).ok);
+  written = true;
+  Check(m::AppendMetricRawSample(path, descriptor, value, 1000000, &written, &*series.record).ok && !written);
+  Check(m::LoadMetricHistoryStore(path).raw_samples.empty());
+  Check(m::WriteMetricHistoryStore(path, retained).ok);
   auto bad_policy = policy; bad_policy.policy_uuid = {};
   Check(!m::UpsertMetricRetentionPolicy(path, bad_policy, Id(509), Id(510)).ok);
   // Explicit corruption is never mistaken for a missing file and reseeded.

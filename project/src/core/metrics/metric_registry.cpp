@@ -273,46 +273,50 @@ MetricValidationResult MetricRegistry::ValidateLabels(const MetricDescriptor& de
 MetricValidationResult MetricRegistry::IncrementCounter(const std::string& family,
                                                         MetricLabelSet labels,
                                                         MetricScalar delta,
-                                                        const std::string& producer_owner) {
+                                                        const std::string& producer_owner,
+                                                        MetricValue* published_value) {
   const auto* descriptor = FindDescriptorOrAlias(family);
   if (descriptor == nullptr) {
     return MetricError("SB-METRICS-FAMILY-UNKNOWN", family);
   }
-  return UpdateValue(*descriptor, std::move(labels), delta, {}, producer_owner, MetricType::counter);
+  return UpdateValue(*descriptor, std::move(labels), delta, {}, producer_owner, MetricType::counter, published_value);
 }
 
 MetricValidationResult MetricRegistry::SetGauge(const std::string& family,
                                                 MetricLabelSet labels,
                                                 MetricScalar value,
-                                                const std::string& producer_owner) {
+                                                const std::string& producer_owner,
+                                                MetricValue* published_value) {
   const auto* descriptor = FindDescriptorOrAlias(family);
   if (descriptor == nullptr) {
     return MetricError("SB-METRICS-FAMILY-UNKNOWN", family);
   }
-  return UpdateValue(*descriptor, std::move(labels), value, {}, producer_owner, MetricType::gauge);
+  return UpdateValue(*descriptor, std::move(labels), value, {}, producer_owner, MetricType::gauge, published_value);
 }
 
 MetricValidationResult MetricRegistry::ObserveHistogram(const std::string& family,
                                                         MetricLabelSet labels,
                                                         MetricScalar value,
-                                                        const std::string& producer_owner) {
+                                                        const std::string& producer_owner,
+                                                        MetricValue* published_value) {
   const auto* descriptor = FindDescriptorOrAlias(family);
   if (descriptor == nullptr) {
     return MetricError("SB-METRICS-FAMILY-UNKNOWN", family);
   }
-  return UpdateValue(*descriptor, std::move(labels), value, {}, producer_owner, MetricType::histogram);
+  return UpdateValue(*descriptor, std::move(labels), value, {}, producer_owner, MetricType::histogram, published_value);
 }
 
 MetricValidationResult MetricRegistry::SetState(const std::string& family,
                                                 MetricLabelSet labels,
                                                 MetricScalar value,
                                                 std::string state_text,
-                                                const std::string& producer_owner) {
+                                                const std::string& producer_owner,
+                                                MetricValue* published_value) {
   const auto* descriptor = FindDescriptorOrAlias(family);
   if (descriptor == nullptr) {
     return MetricError("SB-METRICS-FAMILY-UNKNOWN", family);
   }
-  return UpdateValue(*descriptor, std::move(labels), value, std::move(state_text), producer_owner, MetricType::state);
+  return UpdateValue(*descriptor, std::move(labels), value, std::move(state_text), producer_owner, MetricType::state, published_value);
 }
 
 MetricValidationResult MetricRegistry::UpdateValue(const MetricDescriptor& descriptor,
@@ -320,7 +324,8 @@ MetricValidationResult MetricRegistry::UpdateValue(const MetricDescriptor& descr
                                                    MetricScalar value,
                                                    std::string state_text,
                                                    const std::string& producer_owner,
-                                                   MetricType operation_type) {
+                                                   MetricType operation_type,
+                                                   MetricValue* published_value) {
   if (descriptor.readiness == MetricReadiness::contract_ready_unwired) {
     return MetricError("SB-METRICS-PRODUCER-UNWIRED", descriptor.family);
   }
@@ -386,7 +391,7 @@ MetricValidationResult MetricRegistry::UpdateValue(const MetricDescriptor& descr
   observation_->clock=admitted.state;
   const u64 sequence=observation_->next_sequence;
   observation_->next_sequence=sequence==std::numeric_limits<u64>::max()?0:sequence+1;
-  const auto sample=MakeMetricRawSampleRecord(descriptor,*retained_series->second,current,observed,observed,sequence);
+  auto sample=MakeMetricRawSampleRecord(descriptor,*retained_series->second,current,observed,observed,sequence);
   if(!sample.ok())return MetricError(sample.error==MetricHistoryRecordError::identity_issuance_failed?
       "METRIC.OBSERVATION_SOURCE_UNAVAILABLE":"METRIC.VALUE_INVALID", "sample construction refused");
   auto success=MetricOk();
@@ -409,6 +414,9 @@ MetricValidationResult MetricRegistry::UpdateValue(const MetricDescriptor& descr
   if (history_values_.size() > 4096) {
     history_values_.erase(history_values_.begin(), history_values_.begin() + static_cast<std::ptrdiff_t>(history_values_.size() - 4096));
   }
+  // The enqueued envelope already owns the exact successor; reuse its staged
+  // value rather than allocating another copy or scanning current state.
+  if (published_value) *published_value = std::move(sample.record->value);
   return success;
 }
 

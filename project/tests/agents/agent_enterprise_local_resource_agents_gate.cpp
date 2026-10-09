@@ -20,11 +20,17 @@ using scratchbird::tests::FixtureIdentityForLabel;
 #include "agent_production_classification.hpp"
 #include "metric_history.hpp"
 #include "metric_registry.hpp"
+#include "../support/metric_projection_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <map>
+#include <limits>
+#include <stdexcept>
+#include <thread>
+#include <set>
 #include <string>
 
 namespace {
@@ -34,8 +40,7 @@ namespace impl = scratchbird::core::agents::implemented_agents;
 namespace metrics = scratchbird::core::metrics;
 
 [[noreturn]] void Fail(const std::string& message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(message);
 }
 
 void Require(bool condition, const std::string& message) {
@@ -222,11 +227,19 @@ void TestNodeResourceAgent(agents::DurableAgentCatalogImage* catalog) {
 }
 
 void TestMetricsRegistryManager(agents::DurableAgentCatalogImage* catalog) {
-  const std::filesystem::path history_path =
-      std::filesystem::temp_directory_path() /
-      "scratchbird_agent_enterprise_metrics_registry.history";
-  std::filesystem::remove(history_path);
-  metrics::MetricRegistry registry;
+  scratchbird::tests::OwnedTempDirectory directory;
+  const auto history_path = directory.path() / "metrics.history";
+  const auto database = scratchbird::tests::FixtureUuid(233, 1);
+  const auto node = scratchbird::tests::FixtureUuid(233, 2);
+  scratchbird::tests::MetricProjectionFixture fixture(database, node, 233);
+  metrics::MetricRetentionPolicyDefinition retention;
+  retention.policy_name = "manager component history";
+  retention.mode = metrics::MetricRetentionMode::raw_and_rollup;
+  retention.raw_retention_seconds = 86400;
+  retention.rollup_retention_seconds = 604800;
+  retention.rollup_grains = {metrics::MetricRollupGrain::one_minute};
+  fixture.ConfigureRetention(retention);
+  auto& registry = metrics::DefaultMetricRegistry();
   impl::MetricsRegistryManagerSample sample;
   sample.metric_family = "sb_metric_samples_rejected_total";
   sample.namespace_path = "sys.metrics.registry";
@@ -234,18 +247,46 @@ void TestMetricsRegistryManager(agents::DurableAgentCatalogImage* catalog) {
   impl::MetricsRegistryManagerActionRequest action;
   action.sample = sample;
   action.registry = &registry;
+  action.database_uuid = database;
+  action.node_uuid = node;
+  action.actor_uuid = scratchbird::tests::FixtureUuid(233, 3);
+  action.transaction_uuid = scratchbird::tests::FixtureUuid(233, 4);
   action.history_path = history_path.string();
   action.observation_time_microseconds = 120000000;
   action.labels = {{"metric_family", "sb_memory_allocated_bytes"},
                    {"reason", "aeic020_accept"}};
+  fixture.Admit(sample.metric_family, action.labels);
+  fixture.Admit("sb_metric_samples_rejected_total",
+                {{"metric_family", sample.metric_family},
+                 {"reason", "SB_AGENT_METRICS_REGISTRY_SAMPLE_REJECTED"}});
+  const metrics::MetricLabelSet shed_gauge_labels = {
+      {"component", "core.metrics.export"}, {"operation", "shed_export"},
+      {"metric_family", "sb_export_adapter_queue_depth"}};
+  const metrics::MetricLabelSet shed_counter_labels = {
+      {"metric_family", "sb_export_adapter_queue_depth"}, {"reason", "queue_pressure"}};
+  fixture.Admit("sb_export_adapter_queue_depth", shed_gauge_labels);
+  fixture.Admit("sb_metric_export_shed_total", shed_counter_labels);
+  const auto descriptor = *registry.FindDescriptor(sample.metric_family);
+  const auto& series = fixture.RetainedSeries(sample.metric_family, action.labels);
+  metrics::MetricRetentionPolicy policy;
+  static_cast<metrics::MetricRetentionPolicyDefinition&>(policy) = retention;
+  policy.policy_uuid = series.retention_policy_uuid;
+  policy.generation = series.retention_policy_generation;
+  metrics::MetricHistoryStore seed;
+  seed.policies.push_back(policy);
+  Require(metrics::WriteMetricHistoryStore(history_path.string(), seed).ok, "history policy seed failed");
+  Require(metrics::RegisterMetricHistorySeries(history_path.string(), descriptor, series, policy).ok,
+          "history series admission failed");
   auto accepted = impl::ApplyMetricsRegistryManagerAction(action);
   Require(accepted.ok() && accepted.sample_accepted &&
               accepted.registry_mutation_written &&
               accepted.history_sample_written,
-          "metrics registry did not accept and persist trusted sample");
+          "metrics registry did not accept and persist trusted sample: " + accepted.diagnostic.diagnostic_code);
+  fixture.ExpectProduced(1);
   const auto history_after_accept =
       metrics::LoadMetricHistoryStore(history_path.string());
-  Require(!history_after_accept.raw_samples.empty(),
+  Require(history_after_accept.load_status.ok && history_after_accept.raw_samples.size() == 1 &&
+              std::get<agents::u64>(history_after_accept.raw_samples.front().value.value) == 10,
           "metrics registry accept handler did not write raw history");
   PersistDecision(catalog,
                   "metrics_registry_manager",
@@ -260,6 +301,7 @@ void TestMetricsRegistryManager(agents::DurableAgentCatalogImage* catalog) {
   Require(rejected.ok() && rejected.sample_rejected &&
               rejected.registry_mutation_written,
           "metrics registry did not reject and record bad sample");
+  fixture.ExpectProduced(1);
 
   sample.schema_compatible = true;
   sample.sidecar_authority = true;
@@ -277,7 +319,11 @@ void TestMetricsRegistryManager(agents::DurableAgentCatalogImage* catalog) {
   auto rollup = impl::ApplyMetricsRegistryManagerAction(action);
   Require(rollup.ok() && rollup.rollup_requested && rollup.rollup_written &&
               rollup.rollup_rows_created > 0,
-          "metrics registry did not generate persistent rollup rows");
+          "metrics registry did not generate persistent rollup rows: " + rollup.diagnostic.diagnostic_code);
+  const auto reopened = metrics::LoadMetricHistoryStore(history_path.string());
+  Require(reopened.load_status.ok && reopened.rollups.size() == 1 &&
+              reopened.rollups.front().sum_value == 10,
+          "rollup did not preserve the stored measurement");
 
   sample.rollup_backlog = 0;
   sample.metric_family = "sb_export_adapter_queue_depth";
@@ -286,12 +332,40 @@ void TestMetricsRegistryManager(agents::DurableAgentCatalogImage* catalog) {
   action.sample = sample;
   action.labels = {{"component", "core.metrics.export"},
                    {"operation", "shed_export"}};
+  const auto no_buffer = impl::ApplyMetricsRegistryManagerAction(action);
+  Require(!no_buffer.ok() && !no_buffer.export_shed_written && !no_buffer.registry_mutation_written &&
+              no_buffer.diagnostic.diagnostic_code == "SB_AGENT_METRICS_REGISTRY_EXPORT_BUFFER_REQUIRED",
+          "export counters substituted for a real buffer");
+  impl::MetricExportBuffer buffer(database, node, 9000, 16 * 1024 * 1024);
+  const auto original = history_after_accept.raw_samples.front();
+  for (agents::u64 index = 0; index < 9000; ++index) {
+    auto copy = original;
+    copy.sample_uuid = scratchbird::tests::FixtureUuid(234, index + 1);
+    copy.source_sequence = index + 1;
+    Require(buffer.Enqueue(descriptor, series, copy), "export copy admission failed");
+  }
+  const auto bytes_per_sample = buffer.Bytes() / 9000;
+  Require(bytes_per_sample > 0 && buffer.Depth() == 9000, "export buffer accounting invalid");
+  action.export_buffer = &buffer;
   auto shed = impl::ApplyMetricsRegistryManagerAction(action);
   Require(shed.ok() && shed.export_shed_requested &&
               shed.export_shed_written &&
               shed.export_queue_depth_after_shed <=
                   action.policy.export_queue_depth_threshold,
           "metrics registry did not execute export shed handler");
+  fixture.ExpectProduced(2);
+  Require(shed.export_samples_removed.size() == 4000 && buffer.Depth() == 5000 &&
+              buffer.Bytes() == 5000 * bytes_per_sample &&
+              shed.export_samples_removed.front() == scratchbird::tests::FixtureUuid(234, 1) &&
+              shed.export_samples_removed.back() == scratchbird::tests::FixtureUuid(234, 4000),
+          "export shedding did not remove and receipt exactly the excess copies");
+  const auto taken = buffer.Take();
+  Require(taken && taken->sample_uuid == scratchbird::tests::FixtureUuid(234, 4001) &&
+              metrics::DecodeMetricRawSample(descriptor, series, taken->bytes).ok() &&
+              buffer.Bytes() == 4999 * bytes_per_sample,
+          "export take lost native framing or byte accounting");
+  Require(metrics::LoadMetricHistoryStore(history_path.string()).raw_samples.size() == 1,
+          "optional export shedding removed retained raw observations");
 
   sample.export_queue_depth = 0;
   sample.metric_family = "sb_cluster_node_role_state";
@@ -303,7 +377,159 @@ void TestMetricsRegistryManager(agents::DurableAgentCatalogImage* catalog) {
               cluster.diagnostic.diagnostic_code ==
                   "SB_AGENT_CLUSTER_PROVIDER_REQUIRED",
           "metrics registry manager accepted core cluster metric mutation");
-  std::filesystem::remove(history_path);
+
+  // Independent optional copies are bounded by both bytes and rows. Neither
+  // duplicate identities nor a foreign owner's sample can consume capacity.
+  impl::MetricExportBuffer one(database, node, 1, bytes_per_sample);
+  Require(one.Enqueue(descriptor, series, original) &&
+              !one.Enqueue(descriptor, series, original), "duplicate export copy accepted");
+  auto another = original;
+  another.sample_uuid = scratchbird::tests::FixtureUuid(234, 10000);
+  Require(!one.Enqueue(descriptor, series, another), "full export buffer accepted a copy");
+  impl::MetricExportBuffer too_small(database, node, 2, bytes_per_sample - 1);
+  Require(!too_small.Enqueue(descriptor, series, original) && too_small.Bytes() == 0,
+          "export buffer exceeded byte bound");
+  impl::MetricExportBuffer foreign(database, scratchbird::tests::FixtureUuid(233, 99), 2, 4096);
+  Require(!foreign.Enqueue(descriptor, series, original) && foreign.Depth() == 0,
+          "foreign owner accepted into export buffer");
+  Require(one.Take().has_value() && !one.Take().has_value() && one.Bytes() == 0,
+          "draining export buffer leaked bytes");
+  Require(one.ShedTo(0, 0).removed.empty(), "empty buffer manufactured removed identities");
+  impl::MetricExportBuffer concurrent(database, node, 128, 128 * bytes_per_sample);
+  for (unsigned index = 0; index < 128; ++index) {
+    auto copy = original;
+    copy.sample_uuid = scratchbird::tests::FixtureUuid(235, index + 1);
+    Require(concurrent.Enqueue(descriptor, series, copy), "concurrent shed setup failed");
+  }
+  std::array<impl::MetricExportBuffer::ShedResult, 4> partitions;
+  std::vector<std::jthread> workers;
+  for (unsigned index = 0; index < 4; ++index)
+    workers.emplace_back([&, index] { partitions[index] = concurrent.ShedTo(0, 32); });
+  workers.clear();  // All bounded operations finish before receipts are read.
+  std::set<metrics::MetricUuid> removed_ids;
+  for (const auto& partition : partitions) {
+    Require(partition.ok && partition.removed.size() == 32, "concurrent shed ignored action cap");
+    for (const auto& identity : partition.removed)
+      Require(removed_ids.insert(identity).second, "concurrent shed receipted a duplicate removal");
+  }
+  Require(removed_ids.size() == 128 && concurrent.Depth() == 0 && concurrent.Bytes() == 0,
+          "concurrent shed leaked copies or accounting");
+
+  // The gauge is admitted but its corresponding shed counter intentionally
+  // is not: a telemetry refusal must retain the already performed removals.
+  action.sample = {};
+  action.sample.metric_family = descriptor.family;
+  action.sample.namespace_path = descriptor.namespace_path;
+  action.policy.export_queue_depth_threshold = 4998;
+  const metrics::MetricLabelSet partial_gauge_labels = {
+      {"component", "core.metrics.export"}, {"operation", "shed_export"},
+      {"metric_family", descriptor.family}};
+  fixture.Admit("sb_export_adapter_queue_depth", partial_gauge_labels);
+  const auto partial = impl::ApplyMetricsRegistryManagerAction(action);
+  Require(!partial.ok() && partial.export_shed_written && partial.registry_mutation_written &&
+              partial.export_samples_removed.size() == 1 && buffer.Depth() == 4998 &&
+              partial.export_queue_depth_after_shed == 4998,
+          "failed telemetry erased physical shed or preceding gauge effects");
+  fixture.ExpectProduced(1);
+  Require(std::any_of(partial.evidence.begin(), partial.evidence.end(), [](const auto& field) {
+    return field.key == "failed_closed" && field.value == "true";
+  }), "partial failure receipt contradicted its failure status");
+
+  action.export_buffer = nullptr;
+  action.policy = {};
+  action.labels = series.labels;
+  action.sample.sample_count = 0;
+  // Zero is a real counter delta, never a sentinel selecting numeric_value.
+  action.sample.numeric_value = agents::u64{123};
+  auto zero = impl::ApplyMetricsRegistryManagerAction(action);
+  Require(zero.ok() && zero.history_sample_written, "zero counter delta rejected");
+  fixture.ExpectProduced(1);
+  auto exact_history = metrics::LoadMetricHistoryStore(history_path.string());
+  Require(std::get<agents::u64>(exact_history.raw_samples.back().value.value) == 10,
+          "zero counter delta substituted a different value");
+  action.sample.sample_count = (agents::u64{1} << 53) + 1;
+  const auto exact = impl::ApplyMetricsRegistryManagerAction(action);
+  Require(exact.ok() && exact.history_sample_written, "native counter delta above 2^53 rejected");
+  fixture.ExpectProduced(1);
+  exact_history = metrics::LoadMetricHistoryStore(history_path.string());
+  Require(std::get<agents::u64>(exact_history.raw_samples.back().value.value) ==
+              (agents::u64{1} << 53) + 11, "native cumulative counter rounded through double");
+  const auto current_value = [&]() -> agents::u64 {
+    const auto key = metrics::MakeMetricSeriesKey(descriptor.family, action.labels);
+    for (const auto& value : registry.SnapshotCurrent(false))
+      if (metrics::MakeMetricSeriesKey(value.family, value.labels) == key)
+        return std::get<agents::u64>(value.value);
+    Fail("current native sample missing");
+  };
+  const auto before = current_value();
+  action.sample.sample_count = 1;
+  action.history_path.clear();
+  auto missing = impl::ApplyMetricsRegistryManagerAction(action);
+  Require(!missing.ok() && !missing.registry_mutation_written && current_value() == before,
+          "missing required history mutated current state");
+  action.history_path = history_path.string();
+  action.node_uuid = scratchbird::tests::FixtureUuid(233, 99);
+  auto owner = impl::ApplyMetricsRegistryManagerAction(action);
+  Require(!owner.ok() && !owner.registry_mutation_written && current_value() == before,
+          "foreign owner mutated current state");
+  action.node_uuid = node;
+  action.sample.namespace_path = "sys.metrics.invalid";
+  auto wrong_namespace = impl::ApplyMetricsRegistryManagerAction(action);
+  Require(!wrong_namespace.ok() && !wrong_namespace.registry_mutation_written,
+          "mismatched descriptor namespace accepted");
+  action.sample.namespace_path = descriptor.namespace_path;
+
+  // A valid current-only store must not be reported as a raw history write.
+  auto current_only = exact_history;
+  current_only.policies.front().mode = metrics::MetricRetentionMode::current_only;
+  current_only.policies.front().raw_retention_seconds = 0;
+  current_only.policies.front().rollup_retention_seconds = 0;
+  current_only.policies.front().rollup_grains.clear();
+  const auto no_raw_path = (directory.path() / "current-only.history").string();
+  Require(metrics::WriteMetricHistoryStore(no_raw_path, current_only).ok, "current-only seed failed");
+  action.history_path = no_raw_path;
+  auto no_raw = impl::ApplyMetricsRegistryManagerAction(action);
+  Require(!no_raw.ok() && !no_raw.registry_mutation_written && !no_raw.history_sample_written &&
+              no_raw.diagnostic.diagnostic_code == "SB_AGENT_METRICS_REGISTRY_RAW_HISTORY_POLICY_REQUIRED" &&
+              current_value() == before, "no-op history append misreported success");
+  action.history_path = history_path.string();
+  action.observation_time_microseconds = std::numeric_limits<agents::u64>::max();
+  const auto late_failure = impl::ApplyMetricsRegistryManagerAction(action);
+  Require(!late_failure.ok() && late_failure.registry_mutation_written && !late_failure.history_sample_written &&
+              current_value() == before + 1 &&
+              metrics::LoadMetricHistoryStore(history_path.string()).raw_samples.size() == 3,
+          "history failure erased the preceding actual registry effect");
+  fixture.ExpectProduced(1);
+  action.observation_time_microseconds = 240000000;
+
+  action.labels = {{"metric_family", "sb_memory_allocated_bytes"}, {"reason", "native_max"}};
+  fixture.Admit(descriptor.family, action.labels);
+  Require(metrics::RegisterMetricHistorySeries(history_path.string(), descriptor,
+              fixture.RetainedSeries(descriptor.family, action.labels), policy).ok,
+          "maximum counter series admission failed");
+  action.sample.sample_count = std::numeric_limits<agents::u64>::max();
+  const auto maximum = impl::ApplyMetricsRegistryManagerAction(action);
+  Require(maximum.ok() && maximum.history_sample_written && current_value() == action.sample.sample_count &&
+              std::get<agents::u64>(metrics::LoadMetricHistoryStore(history_path.string()).raw_samples.back().value.value)
+                  == action.sample.sample_count,
+          "UINT64_MAX did not survive publication and native history reopen");
+  fixture.ExpectProduced(1);
+  action.sample.sample_count = 1;
+  const auto overflow = impl::ApplyMetricsRegistryManagerAction(action);
+  Require(!overflow.ok() && !overflow.registry_mutation_written && !overflow.history_sample_written &&
+              current_value() == std::numeric_limits<agents::u64>::max(), "overflow changed the exact counter");
+
+  action.sample.metric_family = "sb_export_adapter_queue_depth";
+  action.sample.namespace_path = "sys.metrics.export";
+  action.labels = shed_gauge_labels;
+  action.history_path.clear();
+  action.durable_history_required = false;
+  action.sample.numeric_value = 1.0;
+  const auto wrong_type = impl::ApplyMetricsRegistryManagerAction(action);
+  Require(!wrong_type.ok() && !wrong_type.registry_mutation_written, "wrong native gauge scalar accepted");
+  fixture.Seal();
+  fixture.VerifyAndDrain();
+  directory.Cleanup();
 }
 
 void TestMemoryGovernor(agents::DurableAgentCatalogImage* catalog) {
@@ -413,7 +639,7 @@ void TestProductionClassificationNoLongerAnchorOnly() {
 
 }  // namespace
 
-int main() {
+int main() try {
   auto catalog = DurableCatalog();
   TestNodeResourceAgent(&catalog);
   TestMetricsRegistryManager(&catalog);
@@ -429,4 +655,7 @@ int main() {
           "local resource durable catalog invalid after evidence writes");
   TestProductionClassificationNoLongerAnchorOnly();
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }
