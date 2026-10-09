@@ -67,6 +67,12 @@ api::EngineColumnDefinition Column(const api::EngineUuid& column_uuid,
   if (!Require(binding.ok, "canonical fixture datatype binding unavailable")) std::abort();
   api::EngineColumnDefinition column;
   column.requested_column_uuid = column_uuid;
+  api::EngineLocalizedName name;
+  name.language_tag = "en";
+  name.name_class = "primary";
+  name.name = ordinal == 0 ? "customer_id" : "customer_name";
+  name.normalized_lookup_key = name.name;
+  column.names.push_back(std::move(name));
   column.descriptor.descriptor_uuid = binding.row.descriptor_uuid;
   column.descriptor.datatype_descriptor_uuid = binding.row.descriptor_uuid;
   column.descriptor.datatype_descriptor_generation = binding.row.descriptor_generation;
@@ -176,11 +182,13 @@ api::EngineApiRequest BaseRequest(const api::EngineRequestContext& context) {
   request.bound_object_identity.resource_epoch = context.resource_epoch;
   request.predicate.predicate_kind = "scalar_eq";
   request.predicate.canonical_predicate_envelope = "sblr.predicate.uuid_bound.v1";
-  request.predicate.bound_values.push_back(exec::MakeExecutorValue(request.columns[0].descriptor, "42", false));
+  auto parameter = exec::EncodeInt64Value(42);
+  parameter.descriptor = request.columns[0].descriptor;
+  request.predicate.bound_values.push_back(std::move(parameter));
   api::EngineIndexDefinition index;
   index.requested_index_uuid = scratchbird::tests::FixtureUuid(1267, 8);
   index.index_kind = "btree";
-  index.key_envelopes = {"col.customer_id"};
+  index.key_envelopes = {"customer_id"};
   index.physical_profile = "mga_visible_index";
   request.indexes.push_back(index);
   request.policy_profile.names = {"tenant_visibility", "role_authorization"};
@@ -220,7 +228,7 @@ bool FirstPreparePopulatesTemplateAndSecondReusesIt() {
   const auto envelope = BaseEnvelope();
   auto build = sblr::BuildPreparedTemplateFromSblr(
       envelope, context, request, Authority(context));
-  if (!Require(build.ok, "SBLR prepared template build failed: " + build.diagnostic_code) ||
+  if (!Require(build.ok, "SBLR prepared template build failed: " + build.diagnostic_code + ":" + build.detail) ||
       !Require(Has(build.evidence, "parser_sql_text_authority=false"),
                "SBLR builder did not reject parser SQL text authority") ||
       !Require(Has(build.evidence, "uuid_bound_descriptors_authority=true"),
@@ -248,6 +256,9 @@ bool FirstPreparePopulatesTemplateAndSecondReusesIt() {
          Require(StableNamesAreUnique(prepared.predicate_slots), "predicate slot stable names were duplicated") &&
          Require(StableNamesAreUnique(prepared.parameter_slots), "parameter slot stable names were duplicated") &&
          Require(prepared.index_descriptors.size() == 1, "index descriptor was not populated") &&
+         Require(prepared.index_descriptors.front().key_column_uuids ==
+                     std::vector<api::EngineUuid>{request.columns[0].requested_column_uuid},
+                 "prepared index key did not retain its exact binary column binding") &&
          Require(prepared.key.epochs.catalog_epoch == context.catalog_generation_id,
                  "catalog epoch was not cached in the template key") &&
          Require(prepared.key.epochs.security_epoch == context.security_epoch,
@@ -459,6 +470,25 @@ bool SuccessfulBindPreservesMGAAndSecurityRechecks() {
                  "prepared template cached finality authority");
 }
 
+bool IndexBindingRequiresExactColumnNames() {
+  const auto context = BaseContext();
+  auto request = BaseRequest(context);
+  const auto envelope = BaseEnvelope();
+  request.indexes.front().key_envelopes = {"missing_customer_id"};
+  const auto missing = sblr::BuildPreparedTemplateFromSblr(
+      envelope, context, request, Authority(context));
+  if (!Require(!missing.ok && missing.diagnostic_code ==
+                   "SB_PREPARED_TEMPLATE_DESCRIPTOR_MISMATCH",
+               "missing index column binding was admitted")) return false;
+  request = BaseRequest(context);
+  request.columns[1].names = request.columns[0].names;
+  const auto ambiguous = sblr::BuildPreparedTemplateFromSblr(
+      envelope, context, request, Authority(context));
+  return Require(!ambiguous.ok && ambiguous.diagnostic_code ==
+                     "SB_PREPARED_TEMPLATE_DESCRIPTOR_MISMATCH",
+                 "one column name bound to distinct UUIDs was admitted");
+}
+
 bool SharedMetadataReusesAcrossStatementsButReceiptsDoNot() {
   exec::PreparedTemplateCache cache;
   const auto first_context = BaseContext();
@@ -513,6 +543,7 @@ bool SharedMetadataReusesAcrossStatementsButReceiptsDoNot() {
 }  // namespace
 
 int main() {
+  if (!IndexBindingRequiresExactColumnNames()) return 1;
   if (!FirstPreparePopulatesTemplateAndSecondReusesIt()) return 1;
   if (!BindRefusesWithExactDiagnostics()) return 1;
   if (!SuccessfulBindPreservesMGAAndSecurityRechecks()) return 1;
