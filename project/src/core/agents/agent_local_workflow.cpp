@@ -9,6 +9,7 @@
 #include "agent_local_workflow.hpp"
 
 #include "agent_commercial_evidence.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -22,6 +23,13 @@ namespace {
 
 constexpr u64 kDayMicros = 86400000000ull;
 constexpr u64 kYearMicros = 365ull * kDayMicros;
+
+bool BinarySystemIdentity(const std::string& bytes) {
+  if (bytes.size() != 16) return false;
+  core::platform::Uuid identity;
+  std::copy_n(reinterpret_cast<const unsigned char*>(bytes.data()), 16, identity.bytes.begin());
+  return core::uuid::IsEngineIdentityUuid(identity);
+}
 
 std::string HexBytes(const unsigned char* bytes, std::size_t size) {
   std::ostringstream out;
@@ -179,6 +187,13 @@ AgentRuntimeStatus ValidateAgentLocalWorkflowAuthority(
       authority.subject_uuid.empty()) {
     return AgentError("SB_AGENT_LOCAL_WORKFLOW.IDENTITY_REQUIRED",
                       AgentLocalWorkflowDomainName(request.domain));
+  }
+  for (const auto* identity : {&authority.database_uuid, &authority.principal_uuid,
+                              &authority.subject_uuid, &authority.mga_transaction_uuid,
+                              &authority.evidence_uuid}) {
+    if (!identity->empty() && !BinarySystemIdentity(*identity))
+      return AgentError("SB_AGENT_LOCAL_WORKFLOW.IDENTITY_INVALID",
+                        AgentLocalWorkflowDomainName(request.domain));
   }
   if (authority.parser_authority || authority.client_authority ||
       authority.reference_authority || authority.recovery_authority ||

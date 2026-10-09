@@ -15,6 +15,8 @@
 #include "agents/restore_drill_manager.hpp"
 #include "agents/session_control_manager.hpp"
 #include "agent_production_classification.hpp"
+#include "agent_binary_identity_fixture.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -25,6 +27,10 @@ namespace {
 
 namespace agents = scratchbird::core::agents;
 namespace impl = scratchbird::core::agents::implemented_agents;
+
+std::string Identity(unsigned ordinal) {
+  return scratchbird::tests::BinaryFixtureIdentity(scratchbird::tests::FixtureUuid(2400, ordinal));
+}
 
 [[noreturn]] void Fail(const std::string& message) {
   std::cerr << message << '\n';
@@ -49,11 +55,11 @@ agents::DurableAgentCatalogImage DurableWorkflowCatalog() {
   image.schema_version = 1;
   image.authority.durable_catalog_authority = true;
   image.authority.mga_transaction_evidence = true;
-  image.authority.mga_transaction_uuid = "019f0900-0000-7000-8000-000000000003";
+  image.authority.mga_transaction_uuid = Identity(3);
   image.authority.transaction_generation = 9;
-  image.authority.evidence_uuid = "019f0900-0000-7000-8000-000000000004";
-  image.authority.database_uuid = "019f0900-0000-7000-8000-000000000001";
-  image.authority.catalog_storage_uuid = "019f0900-0000-7000-8000-000000000011";
+  image.authority.evidence_uuid = Identity(4);
+  image.authority.database_uuid = Identity(1);
+  image.authority.catalog_storage_uuid = Identity(11);
   image.authority.storage_commit_evidence_uuid = image.authority.evidence_uuid;
   image.authority.catalog_generation = 9;
   image.authority.local_transaction_id = 9001;
@@ -69,10 +75,10 @@ agents::DurableAgentCatalogImage DurableWorkflowCatalog() {
 
 void SetStorageWorkflowAuthority(impl::BackupManagerRequest* request,
                                  std::string subject) {
-  request->database_uuid = "019f0900-0000-7000-8000-000000000001";
-  request->principal_uuid = "019f0900-0000-7000-8000-000000000002";
-  request->mga_transaction_uuid = "019f0900-0000-7000-8000-000000000003";
-  request->evidence_uuid = "019f0900-0000-7000-8000-000000000004";
+  request->database_uuid = Identity(1);
+  request->principal_uuid = Identity(2);
+  request->mga_transaction_uuid = Identity(3);
+  request->evidence_uuid = Identity(4);
   request->idempotency_key = "idem:" + std::move(subject);
   request->local_transaction_id = 9001;
   request->catalog_generation = 9;
@@ -86,10 +92,10 @@ void SetStorageWorkflowAuthority(impl::BackupManagerRequest* request,
 
 template <typename TRequest>
 void SetGenericWorkflowAuthority(TRequest* request, std::string subject) {
-  request->database_uuid = "019f0900-0000-7000-8000-000000000001";
-  request->principal_uuid = "019f0900-0000-7000-8000-000000000002";
-  request->mga_transaction_uuid = "019f0900-0000-7000-8000-000000000003";
-  request->evidence_uuid = "019f0900-0000-7000-8000-000000000004";
+  request->database_uuid = Identity(1);
+  request->principal_uuid = Identity(2);
+  request->mga_transaction_uuid = Identity(3);
+  request->evidence_uuid = Identity(4);
   request->idempotency_key = "idem:" + std::move(subject);
   request->local_transaction_id = 9001;
   request->catalog_generation = 9;
@@ -103,8 +109,8 @@ void TestBackupArchiveRestorePitrExport() {
   const auto initial_root = catalog.authority.catalog_root_digest;
   agents::AgentLocalWorkflowLedger ledger(&catalog);
   impl::BackupManagerRequest backup;
-  backup.backup_uuid = "backup-1";
-  SetStorageWorkflowAuthority(&backup, backup.backup_uuid);
+  backup.backup_uuid = Identity(20);
+  SetStorageWorkflowAuthority(&backup, "backup-1");
   backup.start_requested = true;
   backup.blockers_clear = true;
   const auto backup_result = impl::EvaluateBackupManagerRequest(&ledger, backup);
@@ -118,8 +124,8 @@ void TestBackupArchiveRestorePitrExport() {
           "backup manager accepted cluster route in core");
 
   impl::ArchiveManagerRequest archive;
-  archive.slice_uuid = "archive-slice-1";
-  SetGenericWorkflowAuthority(&archive, archive.slice_uuid);
+  archive.slice_uuid = Identity(21);
+  SetGenericWorkflowAuthority(&archive, "archive-slice-1");
   archive.seal_requested = true;
   archive.slice_complete = true;
   archive.metadata_authoritative = true;
@@ -131,8 +137,8 @@ void TestBackupArchiveRestorePitrExport() {
           "archive manager did not write verified workflow record");
 
   impl::RestoreDrillManagerRequest drill;
-  drill.drill_uuid = "drill-1";
-  SetGenericWorkflowAuthority(&drill, drill.drill_uuid);
+  drill.drill_uuid = Identity(22);
+  SetGenericWorkflowAuthority(&drill, "drill-1");
   drill.run_requested = true;
   drill.target_isolated = true;
   drill.resources_available = true;
@@ -149,8 +155,8 @@ void TestBackupArchiveRestorePitrExport() {
           "restore drill manager did not write verified workflow record");
 
   impl::PitrManagerRequest pitr;
-  pitr.target_uuid = "pitr-target-1";
-  SetGenericWorkflowAuthority(&pitr, pitr.target_uuid);
+  pitr.target_uuid = Identity(23);
+  SetGenericWorkflowAuthority(&pitr, "pitr-target-1");
   pitr.restore_plan_requested = true;
   pitr.target_reachable = true;
   pitr.archive_window_authoritative = true;
@@ -164,8 +170,8 @@ void TestBackupArchiveRestorePitrExport() {
           "PITR manager did not write verified workflow record");
 
   impl::ExportAdapterManagerRequest export_request;
-  export_request.adapter_uuid = "export-1";
-  SetGenericWorkflowAuthority(&export_request, export_request.adapter_uuid);
+  export_request.adapter_uuid = Identity(24);
+  SetGenericWorkflowAuthority(&export_request, "export-1");
   export_request.enable_requested = true;
   export_request.adapter_visible = true;
   export_request.config_valid = true;
@@ -181,6 +187,11 @@ void TestBackupArchiveRestorePitrExport() {
           "export manager did not write verified workflow record");
   Require(ledger.records().size() == 5,
           "operational storage workflow ledger did not retain all records");
+  for (unsigned index = 0; index < 5; ++index)
+    Require(ledger.records()[index].subject_uuid == Identity(20 + index) &&
+                ledger.records()[index].workflow_uuid.size() == 16 &&
+                ledger.records()[index].verification_evidence_uuid.size() == 16,
+            "operational workflow changed binary subject or generated text identities");
   Require(catalog.evidence.size() == 5 && catalog.actions.size() == 5 &&
               catalog.retained_history.size() == 5,
           "operational storage workflow did not write durable catalog records");
@@ -195,9 +206,9 @@ void TestIdentitySessionJob() {
   const auto initial_root = catalog.authority.catalog_root_digest;
   agents::AgentLocalWorkflowLedger ledger(&catalog);
   impl::IdentityManagerRequest identity;
-  identity.principal_uuid = "principal-1";
-  SetGenericWorkflowAuthority(&identity, identity.principal_uuid);
-  identity.operator_principal_uuid = "operator-1";
+  SetGenericWorkflowAuthority(&identity, "principal-1");
+  identity.principal_uuid = Identity(30);
+  identity.operator_principal_uuid = Identity(31);
   identity.lock_requested = true;
   identity.identity_metrics_authoritative = true;
   identity.explicit_admin_request = true;
@@ -211,8 +222,8 @@ void TestIdentitySessionJob() {
           "identity manager did not write verified workflow record");
 
   impl::SessionControlManagerRequest session;
-  session.session_uuid = "session-1";
-  SetGenericWorkflowAuthority(&session, session.session_uuid);
+  session.session_uuid = Identity(32);
+  SetGenericWorkflowAuthority(&session, "session-1");
   session.disconnect_requested = true;
   session.session_visible = true;
   session.disconnect_allowed = true;
@@ -226,8 +237,8 @@ void TestIdentitySessionJob() {
           "session control manager did not write verified workflow record");
 
   impl::JobControlManagerRequest job;
-  job.job_uuid = "job-1";
-  SetGenericWorkflowAuthority(&job, job.job_uuid);
+  job.job_uuid = Identity(33);
+  SetGenericWorkflowAuthority(&job, "job-1");
   job.retry_requested = true;
   job.job_visible = true;
   job.retry_policy_valid = true;
@@ -240,6 +251,11 @@ void TestIdentitySessionJob() {
           "job control manager did not write verified workflow record");
   Require(ledger.records().size() == 3,
           "identity/session/job workflow ledger did not retain all records");
+  Require(ledger.records()[0].subject_uuid == Identity(30) &&
+              catalog.actions[0].owner_uuid == Identity(31) &&
+              ledger.records()[1].subject_uuid == Identity(32) &&
+              ledger.records()[2].subject_uuid == Identity(33),
+          "workflow confused a subject identity with the acting principal");
   Require(catalog.evidence.size() == 3 && catalog.actions.size() == 3 &&
               catalog.retained_history.size() == 3,
           "identity/session/job workflow did not write durable catalog records");
@@ -247,6 +263,61 @@ void TestIdentitySessionJob() {
           "identity/session/job workflow did not advance durable root digest");
   Require(agents::ValidateDurableAgentCatalogForProduction(catalog).ok,
           "identity/session/job workflow catalog failed production validation");
+}
+
+void TestBinaryWorkflowAdmission() {
+  auto catalog = DurableWorkflowCatalog();
+  const auto root = catalog.authority.catalog_root_digest;
+  const auto generation = catalog.authority.catalog_generation;
+  agents::AgentLocalWorkflowRequest request;
+  request.operation_id = "binary_identity_admission";
+  request.idempotency_key = "binary_identity_admission";
+  request.subsystem_precondition_satisfied = true;
+  request.intended_state_observed = true;
+  auto& authority = request.authority;
+  authority.database_uuid = Identity(1);
+  authority.principal_uuid = Identity(2);
+  authority.subject_uuid = Identity(20);
+  authority.mga_transaction_uuid = Identity(3);
+  authority.evidence_uuid = Identity(4);
+  authority.local_transaction_id = 9001;
+  authority.catalog_generation = generation;
+  authority.durable_catalog_bound = authority.transaction_inventory_bound = true;
+  authority.storage_snapshot_authoritative = authority.metadata_authoritative = true;
+  Require(agents::ValidateAgentLocalWorkflowAuthority(request).ok,
+          "valid native workflow identities refused");
+  auto user_version = Identity(1);
+  user_version[6] = 0x10; // A user UUID version is not a system identity.
+  for (const auto field : {&agents::AgentLocalWorkflowAuthority::database_uuid,
+                          &agents::AgentLocalWorkflowAuthority::principal_uuid,
+                          &agents::AgentLocalWorkflowAuthority::subject_uuid,
+                          &agents::AgentLocalWorkflowAuthority::mga_transaction_uuid,
+                          &agents::AgentLocalWorkflowAuthority::evidence_uuid}) {
+    for (const auto& invalid : {std::string("019f0900-0000-7000-8000-000000000001"),
+                               std::string(16, '\0'), std::string(15, 'a'),
+                               std::string(17, 'a'), user_version}) {
+      auto candidate = request;
+      candidate.authority.*field = invalid;
+      const auto validation = agents::ValidateAgentLocalWorkflowAuthority(candidate);
+      Require(!validation.ok && validation.diagnostic_code == "SB_AGENT_LOCAL_WORKFLOW.IDENTITY_INVALID",
+              "workflow authority accepted a text/malformed/non-system identity");
+      for (auto* target : {&catalog, static_cast<agents::DurableAgentCatalogImage*>(nullptr)}) {
+        agents::AgentLocalWorkflowLedger ledger(target);
+        const auto refused = ledger.Apply(candidate);
+        Require(!refused.ok && refused.failed_closed && ledger.records().empty(),
+                "invalid identity entered a durable or component workflow ledger");
+      }
+    }
+  }
+  Require(catalog.authority.catalog_root_digest == root && catalog.authority.catalog_generation == generation &&
+              catalog.actions.empty() && catalog.evidence.empty() && catalog.retained_history.empty(),
+          "invalid workflow identity partially mutated the catalog");
+  auto textual_catalog = catalog;
+  textual_catalog.authority.database_uuid = "019f0900-0000-7000-8000-000000000001";
+  Require(!agents::RefreshDurableAgentCatalogAuthorityDigest(
+              &textual_catalog, textual_catalog.authority.evidence_uuid).ok &&
+              textual_catalog.authority.catalog_root_digest == root,
+          "text catalog identity acquired a refreshed authority root");
 }
 
 void TestProductionClassificationNoLongerAnchorOnly() {
@@ -279,6 +350,7 @@ void TestProductionClassificationNoLongerAnchorOnly() {
 }  // namespace
 
 int main() {
+  TestBinaryWorkflowAdmission();
   TestBackupArchiveRestorePitrExport();
   TestIdentitySessionJob();
   TestProductionClassificationNoLongerAnchorOnly();
