@@ -7,6 +7,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "../support/published_mga_table_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
+#include "../../src/core/memory/memory.hpp"
 #include "database_lifecycle.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
@@ -31,8 +35,7 @@ namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -115,20 +118,17 @@ struct AllocationRecord {
 };
 
 struct Fixture {
+  scratchbird::tests::OwnedTempDirectory temporary;
+  api::EngineRequestContext owner_context;
   std::filesystem::path dir;
   std::filesystem::path database_path;
   platform::Uuid database_uuid;
+  platform::Uuid filespace_uuid;
   platform::Uuid table_uuid;
   platform::Uuid name_index_uuid;
   platform::Uuid city_index_uuid;
   platform::u64 salt = 0;
 
-  ~Fixture() {
-    std::error_code ignored;
-    if (!dir.empty()) {
-      std::filesystem::remove_all(dir, ignored);
-    }
-  }
 };
 
 std::filesystem::path AllocatorPath(const Fixture& fixture) {
@@ -189,23 +189,15 @@ void AssertNoDocumentationRuntimeTokens(const Fixture& fixture) {
 
 api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::string request_id) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+  auto context = fixture.owner_context;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid =
-      NewNativeUuid(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid =
-      NewNativeUuid(platform::UuidKind::object, fixture.salt + 101);
+  context.default_root_uuid = fixture.filespace_uuid;
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
-  context.catalog_generation_id = 10;
-  context.security_epoch = 20;
-  context.resource_epoch = 30;
-  context.name_resolution_epoch = 40;
   return context;
 }
 
@@ -224,12 +216,9 @@ api::EngineRequestContext Begin(const Fixture& fixture, std::string request_id) 
   return context;
 }
 
-Fixture MakeFixture() {
-  Fixture fixture;
+void MakeFixture(Fixture& fixture) {
   fixture.salt = 35000;
-  fixture.dir = std::filesystem::temp_directory_path() /
-                ("scratchbird_odf035_" + std::to_string(NowMillis()));
-  std::filesystem::create_directories(fixture.dir);
+  fixture.dir = fixture.temporary.path();
   fixture.database_path = fixture.dir / "odf035.sbdb";
 
   db::DatabaseCreateConfig create;
@@ -237,17 +226,18 @@ Fixture MakeFixture() {
   create.database_uuid = NewUuid(platform::UuidKind::database, fixture.salt + 1);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, fixture.salt + 2);
   create.creation_unix_epoch_millis = NowMillis() + fixture.salt + 3;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
-  create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   const auto created = db::CreateDatabaseFile(create);
+  if (!created.ok()) std::cerr << created.diagnostic.diagnostic_code << ':'
+                               << created.diagnostic.message_key << '\n';
   Require(created.ok(), "ODF-035 database create failed");
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.filespace_uuid = create.filespace_uuid.value;
   fixture.table_uuid = NewNativeUuid(platform::UuidKind::object, fixture.salt + 10);
   fixture.name_index_uuid = NewNativeUuid(platform::UuidKind::object, fixture.salt + 11);
   fixture.city_index_uuid = NewNativeUuid(platform::UuidKind::object, fixture.salt + 12);
-  return fixture;
 }
 
 api::CrudIndexRecord NonUniqueIndex(const Fixture& fixture,
@@ -384,8 +374,32 @@ void HotAppendContextUsesOneStreamLifecyclePerStore(
 }  // namespace
 
 int main() {
-  auto fixture = MakeFixture();
-  const auto context = Begin(fixture, "odf035");
-  HotAppendContextUsesOneStreamLifecyclePerStore(fixture, context);
-  return EXIT_SUCCESS;
+  try {
+    namespace memory = scratchbird::core::memory;
+    Require(memory::ConfigureDefaultMemoryManagerForFixture(
+        memory::DefaultLocalEngineMemoryPolicy(), "odf035").ok(),
+        "ODF-035 memory policy admission failed");
+    Fixture fixture;
+    MakeFixture(fixture);
+    auto context = Begin(fixture, "odf035");
+    api::CrudTableRecord table;
+    table.table_uuid = fixture.table_uuid;
+    table.creator_tx = context.local_transaction_id;
+    table.default_name = "odf035";
+    table.columns = {{"id", "type=text"}, {"name", "type=text"}, {"city", "type=text"}};
+    RequireDiagnosticOk(scratchbird::tests::PublishMgaTableFixture(
+        context, table, {"text", "text", "text"},
+        {NonUniqueIndex(fixture, context, fixture.name_index_uuid, "name"),
+         NonUniqueIndex(fixture, context, fixture.city_index_uuid, "city")}),
+        "ODF-035 table/column authority publication failed");
+    HotAppendContextUsesOneStreamLifecyclePerStore(fixture, context);
+    api::EngineRollbackTransactionRequest rollback;
+    rollback.context = context;
+    RequireOk(api::EngineRollbackTransaction(rollback), "ODF-035 rollback failed");
+    fixture.temporary.Cleanup();
+    return EXIT_SUCCESS;
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }
