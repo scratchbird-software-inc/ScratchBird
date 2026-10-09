@@ -29696,63 +29696,67 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         admitted_transaction_handle_ =
             native_statement_context->preliminary_active_transaction_handle;
       }
-      if (canonical_parameter_projection_route &&
-          !parameter_prebind_state.has_value()) {
-        NativeRelationalAstDocument structural_parameter_ast;
-        NativeExpressionAstNode structural_parameter;
-        structural_parameter.expression_id = 1;
-        structural_parameter.expression_kind =
-            NativeExpressionAstKind::kParameter;
-        structural_parameter.structural_parameter_occurrence_id = 1;
-        structural_parameter_ast.expressions.push_back(
-            std::move(structural_parameter));
-        const auto prebind = EncodeParameterPrebindRequest(
-            structural_parameter_ast, *native_statement_context);
-        if (!prebind.has_value()) {
+    }
+    mark_phase("acquire_canonical_statement_context");
+  }
+  // Scalar projection may already have acquired its statement above. Its
+  // parameter negotiation is an independent phase, not an acquisition side effect.
+  if (compile_or_submit && result.accepted && native_statement_context.has_value() &&
+      canonical_parameter_projection_route && !parameter_prebind_state.has_value()) {
+    const bool embedded_native_route =
+        config_.embedded_engine_direct && embedded_client_ != nullptr;
+    NativeRelationalAstDocument structural_parameter_ast;
+    NativeExpressionAstNode structural_parameter;
+    structural_parameter.expression_id = 1;
+    structural_parameter.expression_kind =
+        NativeExpressionAstKind::kParameter;
+    structural_parameter.structural_parameter_occurrence_id = 1;
+    structural_parameter_ast.expressions.push_back(
+        std::move(structural_parameter));
+    const auto prebind = EncodeParameterPrebindRequest(
+        structural_parameter_ast, *native_statement_context);
+    if (!prebind.has_value()) {
+      result.accepted = false;
+      result.messages.diagnostics.push_back(MakeDiagnostic(
+          "SBLR.OPERAND_INVALID", "ERROR",
+          "The exact scalar parameter demand could not be encoded.",
+          "sbp_sbsql.wire"));
+    } else {
+      auto negotiated = embedded_native_route
+          ? embedded_client_->NegotiateParameterDescriptors(
+                session_, prebind->first)
+          : server_client_->NegotiateParameterDescriptors(
+                session_, prebind->first);
+      if (!negotiated.accepted) {
+        result.accepted = false;
+        result.messages = std::move(negotiated.messages);
+      } else {
+        parameter_prebind_state = prebind->second;
+        if (!ConsumeParameterPrebindResult(
+                negotiated.canonical_payload,
+                &*parameter_prebind_state)) {
           result.accepted = false;
           result.messages.diagnostics.push_back(MakeDiagnostic(
               "SBLR.OPERAND_INVALID", "ERROR",
-              "The exact scalar parameter demand could not be encoded.",
+              "The exact scalar parameter descriptor mapping was malformed.",
+              "sbp_sbsql.wire"));
+        } else if (!bound.native_relational.expressions.empty()) {
+          result.accepted = false;
+          result.messages.diagnostics.push_back(MakeDiagnostic(
+              "SBLR.OPERAND_INVALID", "ERROR",
+              "The scalar parameter route contains conflicting native expression authority.",
               "sbp_sbsql.wire"));
         } else {
-          auto negotiated = embedded_native_route
-              ? embedded_client_->NegotiateParameterDescriptors(
-                    session_, prebind->first)
-              : server_client_->NegotiateParameterDescriptors(
-                    session_, prebind->first);
-          if (!negotiated.accepted) {
-            result.accepted = false;
-            result.messages = std::move(negotiated.messages);
-          } else {
-            parameter_prebind_state = prebind->second;
-            if (!ConsumeParameterPrebindResult(
-                    negotiated.canonical_payload,
-                    &*parameter_prebind_state)) {
-              result.accepted = false;
-              result.messages.diagnostics.push_back(MakeDiagnostic(
-                  "SBLR.OPERAND_INVALID", "ERROR",
-                  "The exact scalar parameter descriptor mapping was malformed.",
-                  "sbp_sbsql.wire"));
-            } else if (!bound.native_relational.expressions.empty()) {
-              result.accepted = false;
-              result.messages.diagnostics.push_back(MakeDiagnostic(
-                  "SBLR.OPERAND_INVALID", "ERROR",
-                  "The scalar parameter route contains conflicting native expression authority.",
-                  "sbp_sbsql.wire"));
-            } else {
-              BoundExpressionAstRecord bound_parameter;
-              bound_parameter.expression_id = 1;
-              bound_parameter.expression_kind =
-                  NativeExpressionAstKind::kParameter;
-              bound_parameter.structural_parameter_occurrence_id = 1;
-              bound.native_relational.expressions.push_back(
-                  std::move(bound_parameter));
-            }
-          }
+          BoundExpressionAstRecord bound_parameter;
+          bound_parameter.expression_id = 1;
+          bound_parameter.expression_kind =
+              NativeExpressionAstKind::kParameter;
+          bound_parameter.structural_parameter_occurrence_id = 1;
+          bound.native_relational.expressions.push_back(
+              std::move(bound_parameter));
         }
       }
     }
-    mark_phase("acquire_canonical_statement_context");
   }
   std::optional<ParserCanonicalSblrSubmission> native_submission;
   if (compile_or_submit && result.accepted && native_statement_context.has_value()) {
@@ -29888,11 +29892,13 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             *envelope, *native_statement_context, session_);
       }
     } else if (canonical_parameter_projection_route) {
-      const auto route = BuildCanonicalParameterProjectionRouteTextEnvelope(
-          lowered, *parameter_prebind_state);
-      if (route) {
-        native_submission = BuildCanonicalRouteTextSubmission(
-            *route, *native_statement_context, session_);
+      if (parameter_prebind_state.has_value()) {
+        const auto route = BuildCanonicalParameterProjectionRouteTextEnvelope(
+            lowered, *parameter_prebind_state);
+        if (route) {
+          native_submission = BuildCanonicalRouteTextSubmission(
+              *route, *native_statement_context, session_);
+        }
       }
     } else if (scalar_projection_demand && lowered.operation_id == "query.evaluate_projection") {
       native_submission = BuildCanonicalScalarProjectionSubmission(

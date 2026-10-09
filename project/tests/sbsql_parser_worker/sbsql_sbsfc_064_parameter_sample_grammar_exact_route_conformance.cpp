@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -99,21 +100,14 @@ struct PipelineArtifacts {
   SblrVerifierResult verifier;
 };
 
-std::filesystem::path MakePipelineFixtureDatabase() {
+std::filesystem::path MakePipelineFixtureDatabase(const std::filesystem::path& directory) {
   static std::atomic<std::uint64_t> identity_time{1788204000000ULL};
-  std::string template_path = "/tmp/sbsql_sbsfc_064_parameter_sample.XXXXXX";
-  std::vector<char> writable(template_path.begin(), template_path.end());
-  writable.push_back('\0');
-  char* directory = ::mkdtemp(writable.data());
-  if (directory == nullptr) return {};
 
   const auto database_uuid = uuid::GenerateEngineIdentityV7(
       UuidKind::database, identity_time.fetch_add(2));
   const auto filespace_uuid = uuid::GenerateEngineIdentityV7(
       UuidKind::filespace, identity_time.fetch_add(2));
   if (!database_uuid.ok() || !filespace_uuid.ok()) {
-    std::error_code ignored;
-    std::filesystem::remove_all(directory, ignored);
     return {};
   }
 
@@ -138,8 +132,6 @@ std::filesystem::path MakePipelineFixtureDatabase() {
       created.create_finality != db::DatabaseCreateFinalityClass::committed) {
     std::cerr << created.diagnostic.diagnostic_code << ':'
               << created.diagnostic.message_key << '\n';
-    std::error_code ignored;
-    std::filesystem::remove_all(directory, ignored);
     return {};
   }
   return path;
@@ -148,7 +140,7 @@ std::filesystem::path MakePipelineFixtureDatabase() {
 void Require(bool condition, std::string_view message) {
   if (!condition) {
     std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -351,7 +343,9 @@ void RequireExactRefusal(
               summary.resource_contract_key ==
                   "sbsql.command.no_execution.v1",
           "SBSFC-064 refusal tuple drifted");
-  Require(summary.has_syntax_authority && summary.has_descriptor_refs &&
+  // Registry requirement names are not bound descriptor identities. An exact
+  // no-execution refusal must not acquire a placeholder UUID reference.
+  Require(summary.has_syntax_authority && !summary.has_descriptor_refs &&
               summary.resolved_object_uuids.empty() &&
               !result.parser_executes_sql && result.server_operation_id.empty(),
           "SBSFC-064 refusal retained execution or resolver authority");
@@ -656,7 +650,7 @@ void RequireSamplePlanDispatch() {
 
 }  // namespace
 
-int main() {
+int main() try {
   RequireRegistryEvidence();
   const RouteCase parameter_case =
       {"SELECT ? AS marker_value",
@@ -677,14 +671,6 @@ int main() {
         "sys.query.parameter_descriptor"},
        {"?"}};
   const std::vector<RefusalCase> refusal_cases = {
-      {"CREATE PROCEDURE process_order(customer_id BIGINT)",
-       "sblr.catalog.mutation.v3",
-       "ddl_catalog",
-       "trace.sbsql.create_procedure_exact_refusal",
-       "engine.op.ddl_create_procedure",
-       "SBLR_DDL_CREATE_PROCEDURE",
-       {"SBSQL-13F5A8364A50", "SBSQL-0B00DEA678E2",
-        "SBSQL-C5D151D17944"}},
       {"SELECT * FROM customer TABLESAMPLE BERNOULLI (50)",
        "sblr.query.relational.v3",
        "query",
@@ -701,7 +687,8 @@ int main() {
   Require(memory_configured.ok(),
           "SBSFC-064 memory manager configuration failed");
 
-  const auto fixture_database = MakePipelineFixtureDatabase();
+  scratchbird::tests::OwnedTempDirectory fixture_directory;
+  const auto fixture_database = MakePipelineFixtureDatabase(fixture_directory.path());
   Require(!fixture_database.empty(), "SBSFC-064 fixture database creation failed");
   ParserConfig config;
   config.probe_mode = true;
@@ -735,6 +722,71 @@ int main() {
     RequireExactLowering(parameter_case, parameter_result, parameter_summary);
     Require(parameter_result.server_row_count == 1,
             "SBSFC-064 bound parameter projection did not execute one row");
+    const auto require_parameter_value = [](const PipelineResult& result,
+                                            std::string_view expected) {
+      std::vector<std::uint32_t> types;
+      std::vector<std::vector<std::optional<std::string>>> rows;
+      if (!result.accepted || result.messages.has_errors()) PrintMessages(result.messages);
+      Require(result.accepted && !result.messages.has_errors() &&
+                  DecodePublicResultRowsForTest(result.server_result_payload, &types, &rows) &&
+                  types == std::vector<std::uint32_t>{20} && rows.size() == 1 &&
+                  rows.front().size() == 1 && rows.front().front().has_value() &&
+                  *rows.front().front() == expected,
+              "SBSFC-064 bound parameter value or datatype was not returned");
+    };
+    require_parameter_value(parameter_result, "7");
+    PreparedParameterWireValue next_value;
+    next_value.encoding = PreparedParameterPayloadEncoding::utf8_text;
+    next_value.raw_bytes = {'1', '1'};
+    const auto next_result = session.RunPipeline(parameter_case.sql, true, false, 0, false,
+                                                 {next_value});
+    require_parameter_value(next_result, "11");
+    for (const std::string_view input : {"0", "-1", "-9223372036854775808",
+                                         "9223372036854775807"}) {
+      PreparedParameterWireValue boundary_value;
+      boundary_value.encoding = PreparedParameterPayloadEncoding::utf8_text;
+      boundary_value.raw_bytes.assign(input.begin(), input.end());
+      require_parameter_value(session.RunPipeline(parameter_case.sql, true, false, 0, false,
+                                                   {boundary_value}), input);
+    }
+    for (const auto& values : {std::vector<PreparedParameterWireValue>{},
+                               std::vector<PreparedParameterWireValue>{next_value, next_value}}) {
+      const auto rejected = session.RunPipeline(parameter_case.sql, true, false, 0, false, values);
+      Require(!rejected.accepted && rejected.messages.has_errors() &&
+                  rejected.server_row_count == 0 && rejected.server_result_payload.empty() &&
+                  std::any_of(rejected.messages.diagnostics.begin(), rejected.messages.diagnostics.end(),
+                              [](const auto& diagnostic) { return diagnostic.code == "SBLR.PARAMETER.UNBOUND"; }),
+              "SBSFC-064 wrong parameter count executed or lost its exact diagnostic");
+    }
+    require_parameter_value(session.RunPipeline(parameter_case.sql, true, false, 0, false,
+                                                 {next_value}), "11");
+
+    // CREATE PROCEDURE now has a native lifecycle route. A bare signature
+    // is malformed, not an unavailable feature; the complete form must work.
+    const auto incomplete = session.RunPipeline(
+        "CREATE PROCEDURE process_order(customer_id BIGINT)", true);
+    Require(!incomplete.accepted && incomplete.messages.has_errors() &&
+                incomplete.sblr_payload.empty() && incomplete.server_result_payload.empty() &&
+                incomplete.server_row_count == 0 && !incomplete.parser_executes_sql &&
+                std::any_of(incomplete.messages.diagnostics.begin(), incomplete.messages.diagnostics.end(),
+                    [](const auto& diagnostic) {
+                      return diagnostic.code == "SBLR.OPERAND.INVALID" &&
+                          DiagnosticField(diagnostic, "detail") == "ddl_create_procedure_null_body_required";
+                    }),
+            "SBSFC-064 incomplete procedure signature lost its exact no-execution refusal");
+    const auto procedure = session.RunPipeline(
+        "CREATE PROCEDURE users.public.process_order(customer_id BIGINT) AS BEGIN NULL; END;", true);
+    if (!procedure.accepted) PrintMessages(procedure.messages);
+    Require(procedure.accepted && !procedure.messages.has_errors() &&
+                procedure.server_operation_id == "engine.op.ddl_create_procedure" &&
+                !procedure.parser_executes_sql,
+            "SBSFC-064 complete procedure parameter definition failed");
+    const auto invocation = session.RunPipeline("CALL users.public.process_order(7)", true);
+    if (!invocation.accepted) PrintMessages(invocation.messages);
+    Require(invocation.accepted && !invocation.messages.has_errors() &&
+                invocation.server_operation_id == "engine.op.procedure_invoke" &&
+                !invocation.parser_executes_sql,
+            "SBSFC-064 stored procedure parameter could not be invoked");
 
     for (const auto& test_case : refusal_cases) {
       SbsqlPipelineConformanceSummary refusal_summary;
@@ -744,8 +796,10 @@ int main() {
       RequireExactRefusal(test_case, refusal_result, refusal_summary);
     }
   }
-  std::error_code cleanup_error;
-  std::filesystem::remove_all(fixture_database.parent_path(), cleanup_error);
+  fixture_directory.Cleanup();
   std::cout << "sbsql_sbsfc_064_parameter_sample_grammar_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

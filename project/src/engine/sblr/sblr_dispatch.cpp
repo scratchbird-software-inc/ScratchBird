@@ -9224,24 +9224,19 @@ api::EngineEvaluateProjectionRequest TypedEvaluateProjectionRequest(
             api::EngineUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x12}} &&
         identity.row.canonical_value_exact_bytes == 8 &&
         identity.row.codec_id == "datatype.int64.le.v1") {
-      std::uint64_t bits = 0;
-      for (std::size_t index = 0; index < 8; ++index) {
-        bits |= static_cast<std::uint64_t>(
-                    value_record.canonical_value_bytes[index])
-                << (index * 8u);
-      }
-      const std::int64_t numeric =
-          (bits & (std::uint64_t{1} << 63u)) == 0
-              ? static_cast<std::int64_t>(bits)
-              : -1 - static_cast<std::int64_t>(~bits);
+      // Preserve the admitted registry binding and its sole native payload;
+      // no display spelling is an additional executable value carrier.
       api::EngineDescriptor descriptor;
       descriptor.descriptor_uuid = descriptor_uuid;
+      descriptor.type_uuid = identity.row.type_uuid;
+      descriptor.datatype_descriptor_uuid = identity.row.descriptor_uuid;
+      descriptor.datatype_descriptor_generation =
+          identity.row.descriptor_generation;
       descriptor.descriptor_kind = "scalar";
       descriptor.canonical_type_name = "int64";
-      descriptor.encoded_descriptor = "type=int64;nullability=non_null";
+      descriptor.encoded_descriptor = "nullability=non_null";
       api::EngineTypedValue value;
       value.descriptor = descriptor;
-      value.encoded_value = std::to_string(numeric);
       value.binary_value = value_record.canonical_value_bytes;
       value.is_null = false;
       value.setState(api::EngineValueState::value);
