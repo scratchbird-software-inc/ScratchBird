@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "../../src/engine/sblr/canonical_relational_expression.cpp"
+#include "canonical_query_object_free_composition_support.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include <cstdlib>
 #include <iostream>
@@ -70,4 +71,69 @@ int main() {
   canonical = "unchanged";
   Check(!s::CanonicalizeLiteralPayload("boolean", stale, "true", &canonical, &detail));
   Check(canonical == "unchanged" && !detail.empty());
+  // Planning with no rows and planning from real values must retain exactly
+  // the same native descriptor, including datatype UUID and generation.
+  for (const auto type : {d::CanonicalTypeId::uuid, d::CanonicalTypeId::binary,
+                          d::CanonicalTypeId::boolean, d::CanonicalTypeId::int32,
+                          d::CanonicalTypeId::int64}) {
+    const auto identity = std::ranges::find_if(rows, [&](const auto& item) {
+      return item.canonical_binary_type_code == static_cast<std::uint32_t>(type);
+    });
+    Check(identity != rows.end());
+    auto descriptor = bound;
+    descriptor.descriptor_id = 1;
+    descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(1086, 2);
+    descriptor.descriptor_generation = identity->descriptor_generation;
+    descriptor.type_uuid = identity->type_uuid;
+    descriptor.type_generation = identity->type_generation;
+    descriptor.codec_id = identity->codec_id;
+    descriptor.codec_version = identity->codec_version;
+    descriptor.codec_generation = identity->codec_generation;
+    descriptor.datatype_catalog_snapshot_uuid = identity->catalog_snapshot_uuid;
+    descriptor.datatype_catalog_generation = identity->catalog_generation;
+    descriptor.datatype_registry_generation = identity->registry_generation;
+    a::EngineDescriptor runtime_descriptor;
+    Check(s::BuildExactCanonicalScalarRuntimeDescriptorV1(descriptor, type, &runtime_descriptor));
+    a::TypedRelationalDag dag;
+    dag.descriptors = {descriptor};
+    a::RelationalExpressionRecord expression;
+    expression.expression_id = 1;
+    expression.expression_kind = a::RelationalExpressionKind::kIdentifier;
+    expression.result_descriptor_id = 1;
+    expression.bound_name_uuid = scratchbird::tests::FixtureUuid(1086, 3);
+    dag.expressions = {expression};
+    dag.outputs = {{1, 2, 1, "native_value", 1, true, 0}};
+    scratchbird::engine::planner::CanonicalLogicalRelationalNode root, source;
+    root.logical_node_id = 2;
+    root.output_descriptor_ids = {1};
+    root.bound_expression_ids = {1};
+    source.logical_node_id = 1;
+    source.output_descriptor_ids = {1};
+    s::MaterializedValues input;
+    input.ok = true;
+    input.batch.columns.push_back({"native_value", runtime_descriptor, false, 1});
+    input.result_bindings.resize(1);
+    const auto empty = s::PrepareExpressionProjectRootForComposition(dag, root, source, input, {});
+    if (!empty.ok) std::cerr << empty.detail << '\n';
+    Check(empty.ok && empty.expression_output_batch.rows.empty());
+    Check(empty.expression_output_batch.columns.front().descriptor == runtime_descriptor);
+    a::EngineTypedValue value;
+    value.descriptor = runtime_descriptor;
+    if (type == d::CanonicalTypeId::boolean) value.encoded_value = "true";
+    else value.binary_value.resize(type == d::CanonicalTypeId::uuid ? 16 :
+        type == d::CanonicalTypeId::int32 ? 4 : type == d::CanonicalTypeId::int64 ? 8 : 2, 0);
+    input.batch.rows.push_back({{value}});
+    const auto populated = s::PrepareExpressionProjectRootForComposition(dag, root, source, input, {});
+    if (!populated.ok) std::cerr << populated.detail << '\n';
+    Check(populated.ok && populated.expression_output_batch.rows.size() == 1);
+    Check(populated.expression_output_batch.columns.front().descriptor == runtime_descriptor);
+    const auto& actual = populated.expression_output_batch.rows.front().values.front();
+    Check(actual.descriptor == value.descriptor && actual.encoded_value == value.encoded_value &&
+          actual.binary_value == value.binary_value && actual.state == value.state &&
+          actual.is_null == value.is_null);
+    ++dag.descriptors.front().codec_generation;
+    Check(!s::PrepareExpressionProjectRootForComposition(dag, root, source, input, {}).ok);
+    input.batch.rows.clear();
+    Check(!s::PrepareExpressionProjectRootForComposition(dag, root, source, input, {}).ok);
+  }
 }

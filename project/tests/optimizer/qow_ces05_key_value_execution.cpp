@@ -4,6 +4,8 @@
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/catalog_column_binding_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
+#include "../support/canonical_int64_literal_fixture.hpp"
+#include "descriptor_value_runtime.hpp"
 #include "canonical_query_execute.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "ast/ast.hpp"
@@ -1523,7 +1525,34 @@ platform::Uuid CoreTypeUuid(const std::string_view stable_name) {
       api::kBootstrapDatatypeCatalogUuid,
       api::kBootstrapDatatypeCatalogGeneration, api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
       descriptor->descriptor_epoch);
-  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
+  return identity.ok ? identity.row.type_uuid : platform::Uuid{};
+}
+
+api::RelationalTypeDescriptor BindProductionDescriptor(
+    const api::EngineRequestContext& context,
+    api::RelationalTypeDescriptor descriptor) {
+  const dt::DatatypeTypeCodecIdentityRowV1* identity = nullptr;
+  for (const auto& candidate : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+    if (candidate.catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
+        candidate.catalog_generation != context.datatype_catalog_generation ||
+        candidate.registry_generation != context.datatype_registry_generation ||
+        candidate.type_uuid != descriptor.type_uuid) continue;
+    if (identity) throw std::invalid_argument("ambiguous fixture descriptor codec");
+    identity = &candidate;
+  }
+  if (!identity || context.statement_receipt_uuid.is_nil())
+    throw std::invalid_argument("fixture descriptor has no admitted codec or receipt");
+  descriptor.datatype_identity_authoritative = true;
+  descriptor.descriptor_generation = identity->descriptor_generation;
+  descriptor.type_generation = identity->type_generation;
+  descriptor.codec_id = identity->codec_id;
+  descriptor.codec_version = identity->codec_version;
+  descriptor.codec_generation = identity->codec_generation;
+  descriptor.statement_receipt_uuid = context.statement_receipt_uuid;
+  descriptor.datatype_catalog_snapshot_uuid = context.datatype_catalog_snapshot_uuid;
+  descriptor.datatype_catalog_generation = context.datatype_catalog_generation;
+  descriptor.datatype_registry_generation = context.datatype_registry_generation;
+  return descriptor;
 }
 
 api::TypedRelationalDag KeyValueDag(
@@ -1553,7 +1582,7 @@ api::TypedRelationalDag KeyValueDag(
   row_uuid.descriptor_uuid = descriptor.descriptor_uuid;
   row_uuid.type_uuid = CoreTypeUuid("uuid");
   row_uuid.nullability = api::RelationalNullability::kNonNull;
-  dag.descriptors.push_back(std::move(row_uuid));
+  dag.descriptors.push_back(BindProductionDescriptor(context, std::move(row_uuid)));
   for (std::size_t ordinal = 0; ordinal < 2; ++ordinal) {
     api::RelationalTypeDescriptor type;
     type.descriptor_id = static_cast<std::uint32_t>(102 + ordinal);
@@ -1561,14 +1590,14 @@ api::TypedRelationalDag KeyValueDag(
         descriptor.columns[ordinal].value_descriptor.descriptor_uuid;
     type.type_uuid = descriptor.columns[ordinal].value_descriptor.type_uuid;
     type.nullability = api::RelationalNullability::kNonNull;
-    dag.descriptors.push_back(std::move(type));
+    dag.descriptors.push_back(BindProductionDescriptor(context, std::move(type)));
   }
   api::RelationalTypeDescriptor boolean;
   boolean.descriptor_id = 104;
   boolean.descriptor_uuid = NewNativeUuid(platform::UuidKind::object);
   boolean.type_uuid = CoreTypeUuid("boolean");
   boolean.nullability = api::RelationalNullability::kNonNull;
-  dag.descriptors.push_back(std::move(boolean));
+  dag.descriptors.push_back(BindProductionDescriptor(context, std::move(boolean)));
 
   static constexpr std::array<std::string_view, 3> names{
       "row_uuid", "key", "value"};
@@ -1711,7 +1740,7 @@ api::TypedRelationalDag KeyValueUnaryCompositionDag(
       NewNativeUuid(platform::UuidKind::object);
   row_number_descriptor.type_uuid = CoreTypeUuid("int64");
   row_number_descriptor.nullability = api::RelationalNullability::kNonNull;
-  dag.descriptors.push_back(std::move(row_number_descriptor));
+  dag.descriptors.push_back(BindProductionDescriptor(context, std::move(row_number_descriptor)));
   constexpr auto kRowNumberFunctionUuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-7539-bcce-00eef3ae7220");
   api::RelationalExpressionRecord row_number;
   row_number.expression_id = 41;
@@ -1820,13 +1849,13 @@ api::TypedRelationalDag KeyValueCteLimitDag(
   limit_descriptor.descriptor_uuid = NewNativeUuid(platform::UuidKind::object);
   limit_descriptor.type_uuid = CoreTypeUuid("int64");
   limit_descriptor.nullability = api::RelationalNullability::kNonNull;
-  dag.descriptors.push_back(std::move(limit_descriptor));
+  dag.descriptors.push_back(BindProductionDescriptor(context, std::move(limit_descriptor)));
   api::RelationalExpressionRecord limit;
   limit.expression_id = 41;
   limit.expression_kind = api::RelationalExpressionKind::kLiteral;
   limit.result_descriptor_id = 105;
   limit.literal_kind = api::RelationalLiteralKind::kNumeric;
-  limit.literal_or_parameter_ref = "4";
+  scratchbird::tests::SetInt64Literal(limit, dag.descriptors.back(), 4);
   dag.expressions.push_back(std::move(limit));
   api::RelationalDagNode limit_node;
   limit_node.node_id = 5;
@@ -1851,7 +1880,7 @@ api::TypedRelationalDag KeyValueCountDag(
   count_descriptor.descriptor_uuid = NewNativeUuid(platform::UuidKind::object);
   count_descriptor.type_uuid = CoreTypeUuid("int64");
   count_descriptor.nullability = api::RelationalNullability::kNonNull;
-  dag.descriptors.push_back(std::move(count_descriptor));
+  dag.descriptors.push_back(BindProductionDescriptor(context, std::move(count_descriptor)));
   const auto count = exec::LookupCanonicalAggregateByFunctionV1(
       exec::CanonicalAggregateFunction::count);
   api::RelationalExpressionRecord aggregate;
@@ -1882,7 +1911,7 @@ api::TypedRelationalDag KeyValueRecursiveDag(
   bound.expression_kind = api::RelationalExpressionKind::kLiteral;
   bound.result_descriptor_id = 105;
   bound.literal_kind = api::RelationalLiteralKind::kNumeric;
-  bound.literal_or_parameter_ref = "8";
+  scratchbird::tests::SetInt64Literal(bound, dag.descriptors.back(), 8);
   dag.expressions.push_back(std::move(bound));
   api::RelationalDagNode term;
   term.node_id = 3;
@@ -2052,8 +2081,15 @@ std::string ApiRowField(const api::EngineApiResult& result,
   const auto field = std::ranges::find_if(row.fields, [&](const auto& item) {
     return item.first == field_name;
   });
-  return field == row.fields.end() ? std::string{}
-                                   : field->second.encoded_value;
+  if (field == row.fields.end()) return {};
+  if (field_name == "row_number" || field_name == "key_count") {
+    std::int64_t decoded = 0;
+    std::string detail;
+    if (!exec::DecodeBoundInt64Value(field->second, &decoded, &detail))
+      throw std::runtime_error("invalid native INT64 result: " + detail);
+    return std::to_string(decoded);
+  }
+  return field->second.encoded_value;
 }
 
 platform::Uuid ApiRowUuid(const api::EngineApiResult& result, std::size_t ordinal,
@@ -2365,10 +2401,24 @@ bool ProductionCanonicalRoute(
               << " set_tail="
               << ApiRowField(set_union.api_result, 6, "row_uuid") << '\n';
   }
+  bool malformed_literals_refused = true;
+  for (unsigned mutation = 0;
+       mutation < std::size(scratchbird::tests::kInvalidInt64LiteralCases); ++mutation) {
+    auto malformed = KeyValueCteLimitDag(context, descriptor);
+    auto& expression = malformed.expressions.back();
+    scratchbird::tests::InvalidateInt64Literal(mutation, malformed.descriptors.back(), expression);
+    const auto result = sblr::ExecuteCanonicalCurrentHeapQuery({context, malformed});
+    malformed_literals_refused &= Require(
+        !result.api_result.ok && !result.physical_dag_executed &&
+            !result.canonical_result_published && result.canonical_result_bytes.empty(),
+        std::string("key/value admitted malformed INT64: ") +
+            scratchbird::tests::kInvalidInt64LiteralCases[mutation]);
+  }
   return Require(
       complete(exact, 1) && complete(multi, 3) && complete(prefix, 6) &&
           composition_complete && cte_limit_complete && aggregate_complete &&
-          recursive_complete && set_complete && mixed_joins_complete && replay_mutations_refused,
+          recursive_complete && set_complete && mixed_joins_complete && replay_mutations_refused &&
+          malformed_literals_refused,
       "production key/value source/composition route did not complete");
 }
 
@@ -2481,7 +2531,7 @@ bool CaseInventory(const std::set<std::string>& completed) {
 
 }  // namespace
 
-int main() {
+int main() try {
   auto memory_policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
   memory_policy.policy_name = "key_value_fixture";
   if (!Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
@@ -2515,4 +2565,7 @@ int main() {
   std::cout << "QOW CES-05 RCP-075 key/value execution: PASS\n";
 #endif
   return 0;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return 1;
 }

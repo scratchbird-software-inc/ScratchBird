@@ -10,6 +10,7 @@
 
 #if defined(SB_CES05_GRAPH_PRODUCTION_QUERY_ROUTE)
 #include "../support/engine_statement_fixture.hpp"
+#include "../support/canonical_int64_literal_fixture.hpp"
 #include "../support/catalog_column_binding_fixture.hpp"
 #include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 #include "canonical_aggregate_registry.hpp"
@@ -1077,6 +1078,19 @@ void BindProductionGraphDescriptor(const api::EngineRequestContext& context,
   descriptor->datatype_registry_generation = context.datatype_registry_generation;
 }
 
+api::EngineUuid ProductionCoreTypeUuid(std::string_view stable_name);
+
+void AddGraphInt64ArgumentDescriptor(const api::EngineRequestContext& context,
+                                     api::TypedRelationalDag* dag) {
+  api::RelationalTypeDescriptor descriptor;
+  descriptor.descriptor_id = 11;
+  descriptor.descriptor_uuid = ProductionNativeUuid(platform::UuidKind::object);
+  descriptor.type_uuid = ProductionCoreTypeUuid("int64");
+  descriptor.nullability = api::RelationalNullability::kNonNull;
+  BindProductionGraphDescriptor(context, &descriptor);
+  dag->descriptors.push_back(std::move(descriptor));
+}
+
 api::TypedRelationalDag ProductionGraphDag(
     const api::EngineRequestContext& context,
     const api::MgaRelationStorageDescriptor& graph,
@@ -1142,7 +1156,19 @@ api::TypedRelationalDag ProductionGraphDag(
     literal.expression_kind = api::RelationalExpressionKind::kLiteral;
     literal.result_descriptor_id = descriptor_id;
     literal.literal_kind = kind;
-    literal.literal_or_parameter_ref = std::move(value);
+    if (kind == api::RelationalLiteralKind::kNumeric) {
+      std::int64_t number = 0;
+      const auto parsed = std::from_chars(value.data(), value.data() + value.size(), number);
+      if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size())
+        throw std::invalid_argument("invalid graph INT64 fixture");
+      const auto descriptor = std::ranges::find_if(dag.descriptors, [&](const auto& item) {
+        return item.descriptor_id == descriptor_id;
+      });
+      if (descriptor == dag.descriptors.end()) throw std::invalid_argument("missing graph argument descriptor");
+      scratchbird::tests::SetInt64Literal(literal, *descriptor, number);
+    } else {
+      literal.literal_or_parameter_ref = std::move(value);
+    }
     dag.expressions.push_back(std::move(literal));
   };
   api::RelationalExpressionRecord operation;
@@ -1150,10 +1176,11 @@ api::TypedRelationalDag ProductionGraphDag(
   operation.expression_kind = api::RelationalExpressionKind::kFunctionCall;
   operation.result_descriptor_id = 1;
   if (expand) {
+    AddGraphInt64ArgumentDescriptor(context, &dag);
     add_literal(11, 7, api::RelationalLiteralKind::kString, "OUTGOING");
-    add_literal(12, 8, api::RelationalLiteralKind::kNumeric,
+    add_literal(12, 11, api::RelationalLiteralKind::kNumeric,
                 std::to_string(minimum_depth));
-    add_literal(13, 8, api::RelationalLiteralKind::kNumeric, "1");
+    add_literal(13, 11, api::RelationalLiteralKind::kNumeric, "1");
     add_literal(14, 9, api::RelationalLiteralKind::kString, "visited_set");
     operation.operator_name = "GRAPH_EXPAND";
     operation.child_expression_ids = {10, 11, 12, 13, 14};
@@ -1224,7 +1251,7 @@ api::EngineUuid ProductionCoreTypeUuid(const std::string_view stable_name) {
       api::kBootstrapDatatypeCatalogGeneration,
       api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
       descriptor->descriptor_epoch);
-  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
+  return identity.ok ? identity.row.type_uuid : platform::Uuid{};
 }
 
 api::TypedRelationalDag ProductionGraphCountDag(
@@ -1281,7 +1308,11 @@ api::TypedRelationalDag ProductionGraphRecursiveCteDag(
   bound.expression_kind = api::RelationalExpressionKind::kLiteral;
   bound.result_descriptor_id = 10;
   bound.literal_kind = api::RelationalLiteralKind::kNumeric;
-  bound.literal_or_parameter_ref = std::string(upper_bound);
+  std::int64_t number = 0;
+  const auto parsed = std::from_chars(upper_bound.data(), upper_bound.data() + upper_bound.size(), number);
+  if (parsed.ec != std::errc{} || parsed.ptr != upper_bound.data() + upper_bound.size())
+    throw std::invalid_argument("invalid recursive graph bound fixture");
+  scratchbird::tests::SetInt64Literal(bound, dag.descriptors.back(), number);
   dag.expressions.push_back(std::move(bound));
 
   api::RelationalDagNode term;
@@ -1477,11 +1508,12 @@ api::TypedRelationalDag ProductionGraphProjectLimitDag(
   project.semantic_variant_id = "project.select-list.v1";
   dag.nodes.push_back(std::move(project));
   api::RelationalExpressionRecord limit;
+  AddGraphInt64ArgumentDescriptor(context, &dag);
   limit.expression_id = 30;
   limit.expression_kind = api::RelationalExpressionKind::kLiteral;
-  limit.result_descriptor_id = 8;
+  limit.result_descriptor_id = 11;
   limit.literal_kind = api::RelationalLiteralKind::kNumeric;
-  limit.literal_or_parameter_ref = "2";
+  scratchbird::tests::SetInt64Literal(limit, dag.descriptors.back(), 2);
   dag.expressions.push_back(std::move(limit));
   api::RelationalDagNode limit_node;
   limit_node.node_id = 3;
@@ -1664,8 +1696,15 @@ std::string ApiRowField(const api::EngineApiResult& result,
   const auto field = std::ranges::find_if(row.fields, [&](const auto& item) {
     return item.first == field_name;
   });
-  return field == row.fields.end() ? std::string{}
-                                   : field->second.encoded_value;
+  if (field == row.fields.end()) return {};
+  if (field_name == "row_number" || field_name == "graph_count") {
+    std::int64_t decoded = 0;
+    std::string detail;
+    if (!exec::DecodeBoundInt64Value(field->second, &decoded, &detail))
+      throw std::runtime_error("invalid native INT64 result: " + detail);
+    return std::to_string(decoded);
+  }
+  return field->second.encoded_value;
 }
 
 std::optional<api::EngineUuid> ApiRowIdentity(const api::EngineApiResult& result,
@@ -2140,6 +2179,20 @@ bool ProductionCanonicalGraphQueryRoute() {
     return false;
   }
   if (!DirectGraphSafetyBoundaries(context)) return false;
+  for (unsigned mutation = 0;
+       mutation < std::size(scratchbird::tests::kInvalidInt64LiteralCases); ++mutation) {
+    auto malformed = ProductionGraphDag(context, current_graph.descriptor, true);
+    auto expression = std::ranges::find_if(malformed.expressions, [](const auto& item) {
+      return item.expression_id == 12;
+    });
+    if (expression == malformed.expressions.end()) return Require(false, "missing graph bound fixture");
+    scratchbird::tests::InvalidateInt64Literal(mutation, malformed.descriptors.back(), *expression);
+    const auto result = sblr::ExecuteCanonicalCurrentHeapQuery({context, malformed});
+    if (!Require(!result.api_result.ok && !result.physical_dag_executed &&
+            !result.canonical_result_published && result.canonical_result_bytes.empty(),
+            std::string("graph admitted malformed INT64: ") +
+                scratchbird::tests::kInvalidInt64LiteralCases[mutation])) return false;
+  }
   const auto match = sblr::ExecuteCanonicalCurrentHeapQuery(
       {context, ProductionGraphDag(context, current_graph.descriptor, false)});
   const auto expand = sblr::ExecuteCanonicalCurrentHeapQuery(
@@ -2179,6 +2232,12 @@ bool ProductionCanonicalGraphQueryRoute() {
   const auto row_number = sblr::ExecuteCanonicalCurrentHeapQuery(
       {context,
        ProductionGraphRowNumberDag(context, current_graph.descriptor)});
+  for (const auto* execution : {&projected_limited, &filtered_projected_limited, &row_number}) {
+    if (execution->api_result.ok) continue;
+    for (const auto& diagnostic : execution->api_result.diagnostics)
+      std::cerr << "QOW-CES05-GRAPH unary route: " << diagnostic.code << ' '
+                << diagnostic.detail << '\n';
+  }
   if ((!match.api_result.ok && !match.api_result.diagnostics.empty()) ||
       (!expand.api_result.ok && !expand.api_result.diagnostics.empty()) ||
       (!expand_with_seeds.api_result.ok &&
@@ -2560,7 +2619,7 @@ bool ProductionCanonicalGraphQueryRoute() {
           return expression.expression_id == 30;
         });
     if (limit_expression != malformed.expressions.end()) {
-      limit_expression->literal_or_parameter_ref = "-1";
+      scratchbird::tests::SetInt64Literal(*limit_expression, malformed.descriptors.back(), -1);
     }
     malformed_unary_dags.push_back(std::move(malformed));
   }
@@ -2659,7 +2718,7 @@ bool ProductionCanonicalGraphQueryRoute() {
 #endif
 }  // namespace
 
-int main() {
+int main() try {
 #if defined(SB_CES05_GRAPH_PRODUCTION_QUERY_ROUTE)
   scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
       "graph-native-query-fixture");
@@ -2680,4 +2739,7 @@ int main() {
                  "GRAPH_ADJACENCY_SCAN_TO_TYPED_BATCH_V1\n";
   }
   return passed ? 0 : 1;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return 1;
 }

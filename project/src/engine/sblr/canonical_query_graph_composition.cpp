@@ -374,20 +374,25 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
     const auto cycle = expression_for(graph_operation->child_expression_ids[4]);
     std::uint64_t minimum_depth = 0;
     std::uint64_t maximum_depth = 0;
-    const auto parse_depth = [](const auto& expression, std::uint64_t* value) {
-      if (expression.literal_or_parameter_ref == std::nullopt) return false;
-      const auto& text = *expression.literal_or_parameter_ref;
-      const auto parsed =
-          std::from_chars(text.data(), text.data() + text.size(), *value);
-      return parsed.ec == std::errc{} &&
-             parsed.ptr == text.data() + text.size();
+    CanonicalRelationalExpressionRuntime depth_runtime(dag, {});
+    const auto parse_depth = [&](const auto& expression, std::uint64_t* value) {
+      if (expression.expression_kind != api::RelationalExpressionKind::kLiteral ||
+          expression.literal_kind != api::RelationalLiteralKind::kNumeric ||
+          !expression.child_expression_ids.empty() || expression.function_uuid ||
+          expression.bound_name_uuid || expression.operator_name) return false;
+      api::EngineTypedValue typed;
+      std::int64_t decoded = 0;
+      std::string detail;
+      if (!depth_runtime.EvaluateForConsumer(expression.expression_id, "int64",
+              api::EngineCanonicalExpressionConsumer::projection, &typed, &detail) ||
+          !DecodeCanonicalInt64Scalar(typed, &decoded, &detail) || decoded < 0) return false;
+      *value = static_cast<std::uint64_t>(decoded);
+      return true;
     };
     if (direction == dag.expressions.end() ||
         minimum == dag.expressions.end() || maximum == dag.expressions.end() ||
         cycle == dag.expressions.end() ||
         !exact_literal(*direction, api::RelationalLiteralKind::kString) ||
-        !exact_literal(*minimum, api::RelationalLiteralKind::kNumeric) ||
-        !exact_literal(*maximum, api::RelationalLiteralKind::kNumeric) ||
         !exact_literal(*cycle, api::RelationalLiteralKind::kString) ||
         !parse_depth(*minimum, &minimum_depth) ||
         !parse_depth(*maximum, &maximum_depth) ||
@@ -774,6 +779,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
         (descriptor->nullability == api::RelationalNullability::kNullable
              ? "nullable"
              : "non_null");
+    if (runtime_descriptor.canonical_type_name == "uuid" &&
+        !BuildExactCanonicalUuidRuntimeDescriptorV1(*descriptor, &runtime_descriptor)) {
+      return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                    "graph producer UUID datatype binding is invalid");
+    }
     composition_state.batch.columns.push_back(
         {output.output_name_utf8, std::move(runtime_descriptor),
          descriptor->nullability == api::RelationalNullability::kNullable,
@@ -1219,12 +1229,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
             "graph ROW_NUMBER result descriptor identity is not independent");
       }
       api::EngineDescriptor row_number_runtime;
-      row_number_runtime.descriptor_uuid =
-          row_number_descriptor->descriptor_uuid;
-      row_number_runtime.type_uuid = row_number_descriptor->type_uuid;
-      row_number_runtime.descriptor_kind = "scalar";
-      row_number_runtime.canonical_type_name = "int64";
-      row_number_runtime.encoded_descriptor = "nullability=non_null";
+      if (!BuildExactCanonicalScalarRuntimeDescriptorV1(
+              *row_number_descriptor, dt::CanonicalTypeId::int64, &row_number_runtime)) {
+        return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                      "graph ROW_NUMBER datatype binding is invalid");
+      }
       exec::ExecutorColumnDescriptor row_number_column{
           window_outputs.back()->output_name_utf8,
           std::move(row_number_runtime), false,
@@ -1658,6 +1667,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
   const auto runtime_descriptor = [](const auto& source,
                                      const std::string& type_name) {
     api::EngineDescriptor descriptor;
+    if (type_name == "uuid") {
+      if (!BuildExactCanonicalUuidRuntimeDescriptorV1(source, &descriptor))
+        return api::EngineDescriptor{};
+      return descriptor;
+    }
     descriptor.descriptor_uuid = source.descriptor_uuid;
     descriptor.type_uuid = source.type_uuid;
     descriptor.descriptor_kind = "scalar";

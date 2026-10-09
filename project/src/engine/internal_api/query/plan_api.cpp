@@ -3629,13 +3629,21 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
       };
       std::uint64_t minimum_depth = 0;
       std::uint64_t maximum_depth = 0;
-      const auto parse_unsigned = [](const std::string& value,
-                                     std::uint64_t* parsed) {
-        if (value.empty()) return false;
-        const auto result = std::from_chars(
-            value.data(), value.data() + value.size(), *parsed);
-        return result.ec == std::errc{} &&
-               result.ptr == value.data() + value.size();
+      const auto parse_bound = [&](const RelationalExpressionRecord* expression,
+                                   std::uint64_t* parsed) {
+        if (!expression ||
+            !exact_values_literal_descriptor(*expression, expression->result_descriptor_id)) return false;
+        const auto& literal = *expression->literal_typed_value_v1;
+        const auto& descriptor = *descriptors_by_id.at(expression->result_descriptor_id);
+        // Structural validation only; execution resolves the exact admitted
+        // datatype/codec cohort and authenticates the canonical payload digest.
+        if (literal.descriptor_generation != descriptor.descriptor_generation ||
+            literal.canonical_value_bytes.size() != 8 ||
+            (literal.canonical_value_bytes[7] & 0x80u) != 0) return false;
+        *parsed = 0;
+        for (unsigned byte = 0; byte < 8; ++byte)
+          *parsed |= std::uint64_t(literal.canonical_value_bytes[byte]) << (8 * byte);
+        return true;
       };
       const bool direction_exact =
           exact_literal(direction, RelationalLiteralKind::kString) &&
@@ -3643,11 +3651,9 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
            uppercase(*direction->literal_or_parameter_ref) == "INCOMING" ||
            uppercase(*direction->literal_or_parameter_ref) == "BOTH");
       const bool minimum_exact =
-          exact_literal(minimum, RelationalLiteralKind::kNumeric) &&
-          parse_unsigned(*minimum->literal_or_parameter_ref, &minimum_depth);
+          parse_bound(minimum, &minimum_depth);
       const bool maximum_exact =
-          exact_literal(maximum, RelationalLiteralKind::kNumeric) &&
-          parse_unsigned(*maximum->literal_or_parameter_ref, &maximum_depth);
+          parse_bound(maximum, &maximum_depth);
       exact_operation =
           exact_operation && root.child_expression_ids.size() == 5 &&
           direction_exact && minimum_exact && maximum_exact &&

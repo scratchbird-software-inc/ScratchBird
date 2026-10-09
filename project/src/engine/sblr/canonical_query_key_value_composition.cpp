@@ -839,6 +839,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
       engine_descriptor.encoded_descriptor +=
           ";timezone_profile_id=" + *descriptor->timezone_profile_id;
     }
+    if (ordinal == 0 &&
+        !BuildExactCanonicalUuidRuntimeDescriptorV1(*descriptor, &engine_descriptor)) {
+      return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                    "key/value row UUID datatype binding is invalid");
+    }
     public_columns.push_back(
         {std::string(kOutputNames[ordinal]), engine_descriptor, false,
          descriptor->descriptor_id});
@@ -1070,12 +1075,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
       const auto* output_descriptor = row_number.result_descriptor;
       const auto& window_outputs = row_number.outputs;
       api::EngineDescriptor descriptor;
-      descriptor.descriptor_uuid =
-          output_descriptor->descriptor_uuid;
-      descriptor.descriptor_kind = "scalar";
-      descriptor.canonical_type_name = "int64";
-      descriptor.type_uuid = output_descriptor->type_uuid;
-      descriptor.encoded_descriptor = "nullability=non_null";
+      if (!BuildExactCanonicalScalarRuntimeDescriptorV1(
+              *output_descriptor, dt::CanonicalTypeId::int64, &descriptor)) {
+        return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                      "key/value ROW_NUMBER datatype binding is invalid");
+      }
       exec::ExecutorColumnDescriptor row_number_column{
           window_outputs.back()->output_name_utf8, descriptor, false,
           output_descriptor->descriptor_id};

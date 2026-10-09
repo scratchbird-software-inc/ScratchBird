@@ -891,6 +891,17 @@ PreparedProjectRoot PrepareExpressionProjectRoot(
         output_descriptor.encoded_descriptor +=
             ";scale=" + std::to_string(*source.scale);
       }
+      // Empty planning batches must produce the same bound descriptor as
+      // row evaluation. Occurrence/type UUIDs alone are not datatype authority.
+      if ((type_id == dt::CanonicalTypeId::uuid ||
+           type_id == dt::CanonicalTypeId::binary ||
+           type_id == dt::CanonicalTypeId::boolean ||
+           type_id == dt::CanonicalTypeId::int32 ||
+           type_id == dt::CanonicalTypeId::int64) &&
+          !BuildExactCanonicalScalarRuntimeDescriptorV1(source, type_id, &output_descriptor)) {
+        result.detail = "empty PROJECT native datatype binding is invalid";
+        return result;
+      }
     }
     output_columns.push_back(
         {output->output_name_utf8, std::move(output_descriptor),
