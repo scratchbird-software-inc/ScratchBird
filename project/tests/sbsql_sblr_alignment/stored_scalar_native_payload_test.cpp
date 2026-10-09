@@ -101,18 +101,57 @@ void UuidValues() {
                 Equal(value, sentinel), "display UUID text was parsed inside the engine");
   }
 }
+void TimestampOctets() {
+  // Projection does not choose between historical UTC and civil timestamps;
+  // the admitted descriptor owns that distinction. Preserve every stored bit.
+  for (const char* type : {"timestamp", "TIMESTAMP", "TimeStamp"}) {
+    const auto sentinel = Sentinel(type);
+    for (unsigned length = 0; length < 129; ++length) {
+      std::string bytes(length, '\0');
+      for (unsigned i = 0; i < length; ++i) bytes[i] = static_cast<char>(i * 37 + 129);
+      auto value = sentinel;
+      if (length != 16) {
+        Require(!api::RestoreStoredScalarPayloadV1(bytes, State::value, &value) && Equal(value, sentinel),
+                "timestamp width refusal mutated the destination");
+        value.binary_value.assign(bytes.begin(), bytes.end());
+        value.encoded_value.clear();
+        value.setState(State::value);
+        Require(!api::StoredScalarPayloadMatchesV1(value, bytes, State::value),
+                "timestamp receipt accepted a non-native width");
+        continue;
+      }
+      Require(api::RestoreStoredScalarPayloadV1(bytes, State::value, &value) &&
+                  value.descriptor == sentinel.descriptor && value.encoded_value.empty() &&
+                  value.binary_value == std::vector<std::uint8_t>(bytes.begin(), bytes.end()) &&
+                  api::StoredScalarPayloadMatchesV1(value, bytes, State::value),
+              "timestamp projection altered the descriptor or native octets");
+      value.encoded_value = bytes;
+      Require(!api::StoredScalarPayloadMatchesV1(value, bytes, State::value),
+              "timestamp receipt accepted mixed payload arms");
+      value.encoded_value.clear();
+      for (std::size_t i = 0; i < 16; ++i) {
+        value.binary_value[i] ^= 1;
+        Require(!api::StoredScalarPayloadMatchesV1(value, bytes, State::value),
+                "timestamp receipt lost an octet");
+        value.binary_value[i] ^= 1;
+      }
+    }
+  }
+}
+
 void OtherCarriersAndState() {
   const std::array<std::string, 5> payloads{
       "", "<NULL>", std::string("\0\xff\r\n|", 5), std::string(16, '\0'), std::string(257, 'x')};
-  for (const char* type : {"binary", "bytes", "blob", "BINARY", "ByTeS", "BLOB", "text", "int64"}) {
+  for (const char* type : {"binary", "bytes", "blob", "BINARY", "ByTeS", "BLOB", "text", "int64", "timestamp", "TIMESTAMP"}) {
     const bool integer = std::string_view(type) == "int64";
+    const bool timestamp = std::string_view(type) == "timestamp" || std::string_view(type) == "TIMESTAMP";
     const bool binary = std::string_view(type) != "text";
     const auto sentinel = Sentinel(type);
     for (const auto& bytes : payloads) {
       auto value = sentinel;
-      if (integer) {
+      if (integer || (timestamp && bytes.size() != 16)) {
         Require(!api::RestoreStoredScalarPayloadV1(bytes, State::value, &value) && Equal(value, sentinel),
-                "INT64 accepted an invalid width or changed its output");
+                "fixed-width scalar accepted an invalid width or changed its output");
         continue;
       }
       Require(api::RestoreStoredScalarPayloadV1(bytes, State::value, &value), "scalar projection failed");
@@ -577,7 +616,7 @@ void StoredIntegerDescriptors() {
 
 int main() {
   StoredIntegerDescriptors();
-  UuidValues(); Int64Values(); OtherCarriersAndState(); AliasAndAllocation();
+  UuidValues(); Int64Values(); TimestampOctets(); OtherCarriersAndState(); AliasAndAllocation();
   PublicInt64Transport();
   NativeSequenceConsumers();
   NativeRegisteredAggregate();
