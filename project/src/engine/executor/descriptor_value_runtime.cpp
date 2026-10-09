@@ -664,14 +664,21 @@ std::optional<std::string> EqualityKeyForValue(const EngineTypedValue& value,
     return std::nullopt;
   }
   if (IsInt64Type(descriptor)) {
-    std::int64_t parsed = 0;
-    if (!ParseBoundedSignedIntegerStrict(descriptor,
-                                         value.encoded_value,
-                                         &parsed)) {
-      SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_INT64_DECODE_FAILED", value.encoded_value, row, column));
+    const auto decoded = DecodeInt64Value(value);
+    if (!decoded.ok()) {
+      auto failure = decoded.diagnostic;
+      failure.row_index = row;
+      failure.column_index = column;
+      SetDiagnostic(diagnostic, std::move(failure));
       return std::nullopt;
     }
-    return "i:" + std::to_string(parsed);
+    // Fixed-width signed-order key; no decimal allocation or lexical-number
+    // ambiguity, and INT32/INT64 values share the exact widened value domain.
+    const auto bits = static_cast<std::uint64_t>(decoded.value) ^ (UINT64_C(1) << 63);
+    std::string key = "i:";
+    for (int byte = 7; byte >= 0; --byte)
+      key.push_back(static_cast<char>(bits >> (8 * byte)));
+    return key;
   }
   if (IsReal64Type(descriptor)) {
     const auto decoded=DecodeReal64Value(value);
@@ -731,18 +738,16 @@ bool DescriptorValueGreaterThan(const EngineTypedValue& value,
     return false;
   }
   if (IsInt64Type(descriptor)) {
-    std::int64_t lhs = 0;
-    std::int64_t rhs = 0;
-    if (!ParseBoundedSignedIntegerStrict(descriptor,
-                                         value.encoded_value,
-                                         &lhs) ||
-        !ParseBoundedSignedIntegerStrict(descriptor,
-                                         bound.encoded_value,
-                                         &rhs)) {
-      SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_INT64_DECODE_FAILED", value.encoded_value, row, column));
+    const auto lhs = DecodeInt64Value(value);
+    const auto rhs = DecodeInt64Value(bound);
+    if (!lhs.ok() || !rhs.ok()) {
+      auto failure = !lhs.ok() ? lhs.diagnostic : rhs.diagnostic;
+      failure.row_index = row;
+      failure.column_index = column;
+      SetDiagnostic(diagnostic, std::move(failure));
       return false;
     }
-    *out = lhs > rhs;
+    *out = lhs.value > rhs.value;
     return true;
   }
   if (IsReal64Type(descriptor)) {
@@ -1821,6 +1826,17 @@ DescriptorBatch FilterDescriptorBatchByComparison(
   }
   DescriptorBatch bound_batch;
   bound_batch.columns = {{"comparison_bound", bound_value.descriptor, true}};
+  const auto bound_type = CanonicalDescriptorTypeId(bound_value.descriptor);
+  if (bound_type == CanonicalTypeId::int32 || bound_type == CanonicalTypeId::int64 ||
+      bound_type == CanonicalTypeId::uint64) {
+    engine::ExecutionTypeDescriptor admitted;
+    std::string detail;
+    if (!BoundExecutionTypeDescriptor(bound_value.descriptor, bound_type, &admitted, &detail)) {
+      SetDiagnostic(diagnostic, ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID", std::move(detail)));
+      return {};
+    }
+    bound_batch.columns.front().nullable = admitted.nullable_allowed;
+  }
   bound_batch.rows = {{{bound_value}}};
   const auto bound_validation = ValidateDescriptorBatch(bound_batch);
   if (!bound_validation.ok) {
@@ -2167,7 +2183,11 @@ DescriptorBatch AggregateDescriptorCountByInt64(const DescriptorBatch& input,
     return {};
   }
 
-  std::map<std::int64_t, std::int64_t> counts;
+  struct CountState {
+    const EngineTypedValue* representative = nullptr;
+    std::int64_t count = 0;
+  };
+  std::map<std::int64_t, CountState> counts;
   for (std::size_t row = 0; row < input.rows.size(); ++row) {
     if (input.rows[row].values[group_column].is_null) { continue; }
     const auto decoded = DecodeInt64Value(input.rows[row].values[group_column]);
@@ -2178,20 +2198,21 @@ DescriptorBatch AggregateDescriptorCountByInt64(const DescriptorBatch& input,
       SetDiagnostic(diagnostic, std::move(diag));
       return {};
     }
-    auto& count = counts[decoded.value];
-    if (count == std::numeric_limits<std::int64_t>::max()) {
+    auto& state = counts[decoded.value];
+    if (state.count == std::numeric_limits<std::int64_t>::max()) {
       SetDiagnostic(diagnostic, ErrorDiagnostic(
           "SB_EXECUTOR_NUMERIC_OVERFLOW", "aggregate count exceeds int64"));
       return {};
     }
-    ++count;
+    if (!state.representative) state.representative = &input.rows[row].values[group_column];
+    ++state.count;
   }
 
   DescriptorBatch output;
-  output.columns = {input.columns[group_column], {std::move(count_stable_name), MakeExecutorDescriptor("int64"), false}};
+  output.columns = {input.columns[group_column], {std::move(count_stable_name), MakeExecutorDescriptor("int64", "nullability=non_null"), false}};
   output.rows.reserve(counts.size());
-  for (const auto& [group_value, count] : counts) {
-    output.rows.push_back({{EncodeInt64Value(group_value), EncodeInt64Value(count)}});
+  for (const auto& [group_value, state] : counts) {
+    output.rows.push_back({{*state.representative, EncodeInt64Value(state.count)}});
   }
   SetDiagnostic(diagnostic, OkDiagnostic());
   return output;
@@ -2242,7 +2263,7 @@ DescriptorBatch AggregateDescriptorCountByKey(const DescriptorBatch& input,
   }
 
   DescriptorBatch output;
-  output.columns = {input.columns[group_column], {std::move(count_stable_name), MakeExecutorDescriptor("int64"), false}};
+  output.columns = {input.columns[group_column], {std::move(count_stable_name), MakeExecutorDescriptor("int64", "nullability=non_null"), false}};
   output.rows.reserve(counts.size());
   for (const auto& [key, state] : counts) {
     (void)key;
@@ -2265,7 +2286,7 @@ DescriptorBatch WindowDescriptorRowNumberByInt64(const DescriptorBatch& input,
         "SB_EXECUTOR_NUMERIC_OVERFLOW", "row number exceeds int64"));
     return {};
   }
-  sorted.columns.push_back({std::move(row_number_stable_name), MakeExecutorDescriptor("int64"), false});
+  sorted.columns.push_back({std::move(row_number_stable_name), MakeExecutorDescriptor("int64", "nullability=non_null"), false});
   for (std::size_t row = 0; row < sorted.rows.size(); ++row) {
     sorted.rows[row].values.push_back(EncodeInt64Value(static_cast<std::int64_t>(row + 1)));
   }

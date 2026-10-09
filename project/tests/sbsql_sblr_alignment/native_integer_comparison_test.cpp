@@ -38,6 +38,76 @@ api::EngineTypedValue Value(dt::CanonicalTypeId type, unsigned width,
   return value;
 }
 int main() {
+  for (const unsigned width : {4u, 8u}) {
+    const auto type = width == 4 ? dt::CanonicalTypeId::int32 : dt::CanonicalTypeId::int64;
+    for (const bool nullable : {false, true}) {
+      auto low = Value(type, width, -9, 901);
+      low.descriptor.encoded_descriptor = nullable ? "nullability=nullable" : "nullability=non_null";
+      auto high = Value(type, width, 12, 901);
+      high.descriptor = low.descriptor;
+      const auto batch = ex::MakeDescriptorBatch({{"key", low.descriptor, nullable}},
+                                                 {{{high}}, {{low}}, {{high}}});
+      ex::DescriptorRuntimeDiagnostic diagnostic;
+      const auto filtered = ex::FilterDescriptorBatchByComparison(batch, 0,
+          ex::DescriptorComparisonOperator::kGreaterThan, low, &diagnostic);
+      Check(diagnostic.ok && filtered.rows.size() == 2 && ex::ValidateDescriptorBatch(filtered).ok,
+            "integer comparison bound invented nullable authority");
+      for (const bool specialized : {false, true}) {
+        const auto counted = specialized
+            ? ex::AggregateDescriptorCountByInt64(batch, 0, "count", &diagnostic)
+            : ex::AggregateDescriptorCountByKey(batch, 0, "count", &diagnostic);
+        Check(diagnostic.ok && counted.rows.size() == 2 && ex::ValidateDescriptorBatch(counted).ok,
+              "integer grouping lost native width, occurrence or count nullability");
+        std::int64_t total = 0;
+        for (const auto& row : counted.rows) {
+          Check(row.values[0].descriptor == low.descriptor && row.values[0].binary_value.size() == width,
+                "integer grouping rebound the representative descriptor");
+          total += ex::DecodeInt64Value(row.values[1]).value;
+        }
+        Check(total == 3, "integer grouping changed cardinality");
+      }
+      const auto numbered = ex::WindowDescriptorRowNumberByInt64(batch, 0, "position", true, &diagnostic);
+      Check(diagnostic.ok && numbered.rows.size() == 3 && ex::ValidateDescriptorBatch(numbered).ok,
+            "row numbering published invalid native count descriptors");
+      for (std::size_t i = 0; i < numbered.rows.size(); ++i)
+        Check(ex::DecodeInt64Value(numbered.rows[i].values[1]).value == static_cast<std::int64_t>(i + 1),
+              "row numbering changed ordinal");
+      auto stale = low;
+      ++stale.descriptor.datatype_descriptor_generation;
+      ex::FilterDescriptorBatchByComparison(batch, 0,
+          ex::DescriptorComparisonOperator::kGreaterThan, stale, &diagnostic);
+      Check(!diagnostic.ok, "integer bound bypassed stale generation admission");
+      auto empty = batch;
+      empty.rows.clear();
+      for (const bool specialized : {false, true}) {
+        const auto counted = specialized
+            ? ex::AggregateDescriptorCountByInt64(empty, 0, "count", &diagnostic)
+            : ex::AggregateDescriptorCountByKey(empty, 0, "count", &diagnostic);
+        Check(diagnostic.ok && counted.rows.empty() && ex::ValidateDescriptorBatch(counted).ok,
+              "empty integer grouping published an invalid descriptor");
+      }
+      const auto no_numbers = ex::WindowDescriptorRowNumberByInt64(empty, 0, "position", true, &diagnostic);
+      Check(diagnostic.ok && no_numbers.rows.empty() && ex::ValidateDescriptorBatch(no_numbers).ok,
+            "empty row numbering bypassed native descriptor admission");
+      for (unsigned mutation = 0; mutation < 3; ++mutation) {
+        auto invalid = low;
+        if (mutation == 0) invalid.encoded_value = "-9";
+        if (mutation == 1) invalid.binary_value.pop_back();
+        if (mutation == 2) invalid.is_null = true;
+        ex::FilterDescriptorBatchByComparison(batch, 0,
+            ex::DescriptorComparisonOperator::kGreaterThan, invalid, &diagnostic);
+        Check(!diagnostic.ok, "integer filter accepted malformed native bound");
+      }
+      if (nullable) {
+        auto null = low;
+        null.setState(api::EngineValueState::sql_null);
+        null.binary_value.clear();
+        const auto filtered_null = ex::FilterDescriptorBatchByComparison(batch, 0,
+            ex::DescriptorComparisonOperator::kGreaterThan, null, &diagnostic);
+        Check(diagnostic.ok && filtered_null.rows.empty(), "NULL integer bound lost UNKNOWN filtering");
+      }
+    }
+  }
   namespace bulk = api::dml::detail;
   const std::array<std::uint64_t, 8> unsigned_values{
       0, 1, 255, 256, 65536, std::uint64_t{1} << 63,
