@@ -196,7 +196,9 @@ bool AppendLine(const std::string& path, const std::string& frame) {
 
 EngineApiDiagnostic AppendMgaTableMetadata(const EngineRequestContext& context,
                                            const CrudTableRecord& table) {
-  const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::catalog_mutation);
+  // Only sequenced relation-storage metadata is appended here. Catalog/name
+  // mutations remain guarded at their owning API boundary.
+  const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::relation_descriptor);
   if (savepoint.error) return savepoint;
   if (context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.relation_metadata", "database_path_required");
@@ -1852,7 +1854,7 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
 
 EngineApiDiagnostic AppendMgaIndexMetadata(const EngineRequestContext& context,
                                            const CrudIndexRecord& index) {
-  const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::catalog_mutation);
+  const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::relation_descriptor);
   if (savepoint.error) return savepoint;
   if (context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.relation_metadata", "database_path_required");

@@ -13,6 +13,7 @@
 #include "crud_support/retained_row_value_codec.hpp"
 
 #include "api_unsupported.hpp"
+#include "dml/mutation_savepoint_capability.hpp"
 #include "catalog/catalog_object_lifecycle.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "catalog/global_aggregate_view.hpp"

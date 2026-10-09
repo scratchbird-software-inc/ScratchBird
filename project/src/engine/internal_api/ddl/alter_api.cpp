@@ -20,6 +20,7 @@
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "security/security_model.hpp"
 #include "sblr_sequence_runtime.hpp"
+#include "dml/mutation_savepoint_capability.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -375,6 +376,9 @@ EngineApiDiagnostic SequenceRuntimeDiagnostic(const std::string& operation_id,
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_DDL_ALTER_API_BEHAVIOR
 EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& request) {
+  const auto savepoint = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::catalog_mutation);
+  if (savepoint.error) return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(
+      request.context, "ddl.alter_object", savepoint);
   if (request.target_object.object_kind == "schema") {
     const auto context_status = ValidateApiBehaviorContext(request.context, "ddl.alter_object", true, true);
     if (context_status.error) {

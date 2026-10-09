@@ -15,11 +15,13 @@ namespace scratchbird::tests {
 // Low-level storage fixtures still publish their object/column cohort through
 // the catalog in the caller's real MGA transaction. No generation or datatype
 // identity is reconstructed from the compatibility metadata strings.
-inline engine::internal_api::EngineApiDiagnostic PublishMgaTableFixture(
+// Catalog/column binding only. A storage-boundary test may publish these
+// prerequisites before a savepoint, then append the sequenced storage metadata
+// after it. This helper makes no table-storage or savepoint-rewind claim.
+inline engine::internal_api::CrudTableRecord PublishMgaTableCatalogFixture(
     engine::internal_api::EngineRequestContext& context,
     engine::internal_api::CrudTableRecord table,
-    const std::vector<std::string>& canonical_types,
-    const std::vector<engine::internal_api::CrudIndexRecord>& indexes = {}) {
+    const std::vector<std::string>& canonical_types) {
   namespace api = engine::internal_api;
   namespace dt = core::datatypes;
   if (canonical_types.size() != table.columns.size() || !context.local_transaction_id)
@@ -143,6 +145,16 @@ inline engine::internal_api::EngineApiDiagnostic PublishMgaTableFixture(
   checked(published);
   table.bound_relation_generation = published.bound_object_identity.object_descriptor_generation;
   table.bound_column_generation = published.metadata_cache_epoch;
+  return table;
+}
+
+inline engine::internal_api::EngineApiDiagnostic PublishMgaTableFixture(
+    engine::internal_api::EngineRequestContext& context,
+    engine::internal_api::CrudTableRecord table,
+    const std::vector<std::string>& canonical_types,
+    const std::vector<engine::internal_api::CrudIndexRecord>& indexes = {}) {
+  namespace api = engine::internal_api;
+  table = PublishMgaTableCatalogFixture(context, std::move(table), canonical_types);
   const auto appended = api::AppendMgaTableMetadata(context, table);
   if (appended.error) return appended;
   api::MgaRelationStorageDescriptor descriptor;

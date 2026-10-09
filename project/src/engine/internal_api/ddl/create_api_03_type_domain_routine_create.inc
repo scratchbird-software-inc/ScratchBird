@@ -49,6 +49,9 @@
 }
 
 EngineCreateIndexResult EngineCreateIndex(const EngineCreateIndexRequest& request) {
+  const auto savepoint = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::catalog_mutation);
+  if (savepoint.error) return MakeCrudDiagnosticResult<EngineCreateIndexResult>(
+      request.context, "ddl.create_index", savepoint);
   if (request.context.local_transaction_id == 0) {
     return MakeCrudDiagnosticResult<EngineCreateIndexResult>(
         request.context,

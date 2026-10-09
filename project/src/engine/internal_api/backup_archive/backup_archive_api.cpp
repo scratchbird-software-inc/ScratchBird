@@ -17,6 +17,7 @@
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "security/security_model.hpp"
 #include "uuid.hpp"
+#include "dml/mutation_savepoint_capability.hpp"
 #include "wire/public_result_packet.hpp"
 #include <stdexcept>
 
@@ -2664,6 +2665,9 @@ EngineStartLogicalBackupResult EngineStartLogicalBackup(const EngineStartLogical
 }
 
 EngineRestoreLogicalBackupResult EngineRestoreLogicalBackup(const EngineRestoreLogicalBackupRequest& request) {
+  const auto savepoint = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::catalog_mutation);
+  if (savepoint.error) return MakeApiBehaviorDiagnostic<EngineRestoreLogicalBackupResult>(
+      request.context, "backup_archive.restore_logical_backup", savepoint);
   constexpr const char* kOperation = "backup_archive.restore_logical_backup";
   if (!HasBackupRestoreRight(request.context)) {
     return MakeApiBehaviorDiagnostic<EngineRestoreLogicalBackupResult>(request.context,
@@ -3349,6 +3353,9 @@ EnginePackageDeltaStreamResult EnginePackageDeltaStream(const EnginePackageDelta
 }
 
 EngineApplyDeltaStreamResult EngineApplyDeltaStream(const EngineApplyDeltaStreamRequest& request) {
+  const auto savepoint = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::catalog_mutation);
+  if (savepoint.error) return MakeApiBehaviorDiagnostic<EngineApplyDeltaStreamResult>(
+      request.context, "backup_archive.apply_delta_stream", savepoint);
   constexpr const char* kOperation = "backup_archive.apply_delta_stream";
   if (!HasBackupRestoreRight(request.context)) {
     return MakeApiBehaviorDiagnostic<EngineApplyDeltaStreamResult>(request.context,

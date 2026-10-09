@@ -187,6 +187,9 @@ EngineCreateSynonymResult EngineCreateSynonym(const EngineCreateSynonymRequest& 
 }
 
 EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& request) {
+  const auto savepoint = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::catalog_mutation);
+  if (savepoint.error) return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+      request.context, "ddl.create_table", savepoint);
   if (request.context.local_transaction_id == 0) {
     return MakeCrudDiagnosticResult<EngineCreateTableResult>(
         request.context,

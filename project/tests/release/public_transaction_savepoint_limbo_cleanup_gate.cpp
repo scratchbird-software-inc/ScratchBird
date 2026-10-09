@@ -19,10 +19,16 @@
 #include "transaction_prepare.hpp"
 #include "transaction_recovery.hpp"
 #include "uuid.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "ddl/create_api.hpp"
+#include "ddl/alter_api.hpp"
+#include "backup_archive/backup_archive_api.hpp"
 
 #include <cstdlib>
+#include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <map>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -117,14 +123,14 @@ struct Fixture {
   api::EngineUuid table_before_uuid;
   api::EngineUuid table_after_uuid;
   api::EngineUuid index_after_uuid;
+  api::EngineRequestContext owner;
 };
 
 Fixture MakeFixture(const std::filesystem::path& work_dir) {
   Fixture fixture;
   fixture.dir = work_dir / "pcr072_savepoint_marker";
-  std::error_code ignored;
-  std::filesystem::remove_all(fixture.dir, ignored);
-  std::filesystem::create_directories(fixture.dir);
+  if (!std::filesystem::create_directory(fixture.dir))
+    throw std::runtime_error("private savepoint database directory already exists");
   fixture.database_path = fixture.dir / "pcr072.sbdb";
 
   db::DatabaseCreateConfig create;
@@ -133,17 +139,17 @@ Fixture MakeFixture(const std::filesystem::path& work_dir) {
   create.filespace_uuid = MakeUuid(UuidKind::filespace, 101);
   create.page_size = kPageSize;
   create.creation_unix_epoch_millis = kBaseMillis + 100;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
-  create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  create.allow_overwrite = false;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ':'
               << created.diagnostic.message_key << '\n';
   }
-  Expect(created.ok(), "PCR-072 fixture database should be created");
+  if (!created.ok()) throw std::runtime_error("PCR-072 fixture database creation failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   fixture.table_before_uuid = MakeIdentity(UuidKind::object, 110);
   fixture.table_after_uuid = MakeIdentity(UuidKind::object, 111);
   fixture.index_after_uuid = MakeIdentity(UuidKind::object, 112);
@@ -152,13 +158,10 @@ Fixture MakeFixture(const std::filesystem::path& work_dir) {
 
 api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::string request_id) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+  auto context = fixture.owner;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid = MakeIdentity(UuidKind::principal, 120);
-  context.session_uuid = MakeIdentity(UuidKind::object, 121);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -175,7 +178,8 @@ api::EngineRequestContext Begin(const Fixture& fixture, std::string request_id) 
   request.context = BaseContext(fixture, std::move(request_id));
   request.isolation_level = "read_committed";
   const auto begun = api::EngineBeginTransaction(request);
-  ExpectApiOk(begun, "PCR-072 begin transaction should succeed");
+  if (!ExpectApiOk(begun, "PCR-072 begin transaction should succeed"))
+    throw std::runtime_error("PCR-072 fixture transaction begin failed");
 
   api::EngineRequestContext context = request.context;
   context.local_transaction_id = begun.local_transaction_id;
@@ -191,7 +195,7 @@ api::CrudTableRecord Table(api::EngineUuid table_uuid,
   api::CrudTableRecord table;
   table.table_uuid = std::move(table_uuid);
   table.default_name = std::move(default_name);
-  table.columns.push_back({"id", "canonical=integer"});
+  table.columns.push_back({"id", "canonical=int32"});
   table.columns.push_back({"name", "canonical=character"});
   return table;
 }
@@ -218,7 +222,7 @@ api::CrudRowVersionRecord Row(const Fixture& fixture,
   row.table_uuid = fixture.table_after_uuid;
   row.row_uuid = MakeIdentity(UuidKind::row, 130);
   row.version_uuid = MakeIdentity(UuidKind::row, 131);
-  row.values = {{"id", "1"}, {"name", "after-savepoint"}};
+  row.values = {{"id", std::string("\1\0\0\0", 4)}, {"name", "after-savepoint"}};
   return row;
 }
 
@@ -242,33 +246,70 @@ bool HasIndex(const api::MgaRelationStoreState& state,
   return false;
 }
 
+bool RefuseUnrewindableOwners(const Fixture& fixture, const api::EngineRequestContext& context) {
+  const auto extents = [&] {
+    std::map<std::filesystem::path, std::uintmax_t> result;
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(fixture.dir))
+      if (entry.is_regular_file()) result.emplace(entry.path(), entry.file_size());
+    return result;
+  };
+  const auto before = extents();
+  const auto refused = [](const api::EngineApiResult& result) {
+    return Expect(!result.ok && !result.diagnostics.empty() &&
+        result.diagnostics.front().code == "SBLR.OPERATION_UNSUPPORTED" &&
+        result.diagnostics.front().detail ==
+            "catalog_mutation:catalog_provider_specific_rewind_proof_required",
+        "PCR-072 direct owner must refuse before unrewindable catalog effects");
+  };
+  api::EngineCreateTableRequest table; table.context = context;
+  api::EngineCreateIndexRequest index; index.context = context;
+  api::EngineAlterObjectRequest alter; alter.context = context;
+  api::EngineRestoreLogicalBackupRequest restore; restore.context = context;
+  api::EngineApplyDeltaStreamRequest delta; delta.context = context;
+  bool ok = refused(api::EngineCreateTable(table));
+  ok = refused(api::EngineCreateIndex(index)) && ok;
+  ok = refused(api::EngineAlterObject(alter)) && ok;
+  ok = refused(api::EngineRestoreLogicalBackup(restore)) && ok;
+  ok = refused(api::EngineApplyDeltaStream(delta)) && ok;
+  return Expect(extents() == before, "PCR-072 refused owner must not append or allocate storage") && ok;
+}
+
 bool DurableSavepointMarkerProof(const std::filesystem::path& work_dir) {
   bool ok = true;
   const Fixture fixture = MakeFixture(work_dir);
-  const auto context = Begin(fixture, "pcr072-savepoint");
+  auto context = Begin(fixture, "pcr072-savepoint");
 
   ok = Expect(context.local_transaction_id != 0,
               "PCR-072 transaction context should have local transaction id") && ok;
   ok = ExpectDiagnosticOk(
-           api::AppendMgaTableMetadata(
+           scratchbird::tests::PublishMgaTableFixture(
                context,
-               Table(fixture.table_before_uuid, "pcr072_before_savepoint")),
+               Table(fixture.table_before_uuid, "pcr072_before_savepoint"),
+               {"int32", "character"}),
            "PCR-072 pre-savepoint table metadata should append") && ok;
+
+  // This is the low-level sequenced storage-metadata boundary, not DDL
+  // rollback. Admit catalog/column identities before the storage savepoint.
+  // The table's storage metadata, descriptor, row and index are appended below.
+  const auto after_table = scratchbird::tests::PublishMgaTableCatalogFixture(context,
+      Table(fixture.table_after_uuid, "pcr072_after_savepoint"), {"int32", "character"});
 
   api::EngineCreateSavepointRequest create_savepoint;
   create_savepoint.context = context;
   create_savepoint.option_envelopes.push_back("savepoint_name:pcr072_sp");
   ok = ExpectApiOk(api::EngineCreateSavepoint(create_savepoint),
                    "PCR-072 engine savepoint create should succeed") && ok;
+  ok = RefuseUnrewindableOwners(fixture, context) && ok;
 
   const api::CrudIndexRecord index = Index(fixture, context);
   api::CrudRowVersionRecord row = Row(fixture, context);
   std::uint64_t row_event_sequence = 0;
   ok = ExpectDiagnosticOk(
-           api::AppendMgaTableMetadata(
-               context,
-               Table(fixture.table_after_uuid, "pcr072_after_savepoint")),
+           api::AppendMgaTableMetadata(context, after_table),
            "PCR-072 post-savepoint table metadata should append") && ok;
+  api::MgaRelationStorageDescriptor after_descriptor;
+  ok = ExpectDiagnosticOk(api::EnsureMgaRelationStorageDescriptor(context, after_table,
+      {index}, &after_descriptor), "PCR-072 post-savepoint descriptor should append") && ok;
   ok = ExpectDiagnosticOk(api::AppendMgaIndexMetadata(context, index),
                           "PCR-072 post-savepoint index metadata should append") && ok;
   ok = ExpectDiagnosticOk(api::AppendMgaRowVersion(context, row, &row_event_sequence),
@@ -328,6 +369,41 @@ bool DurableSavepointMarkerProof(const std::filesystem::path& work_dir) {
   const auto active_savepoints = api::ActiveMgaSavepointNames(context);
   ok = Expect(!active_savepoints.diagnostic.error && active_savepoints.names.empty(),
               "PCR-072 released savepoint should not remain active") && ok;
+  api::EngineCommitTransactionRequest commit;
+  commit.context = context;
+  ok = ExpectApiOk(api::EngineCommitTransaction(commit),
+                   "PCR-072 rewound transaction should commit") && ok;
+  const auto reader = Begin(fixture, "pcr072-reopened-reader");
+  const auto reopened = api::LoadMgaRelationStoreState(reader);
+  ok = Expect(reopened.ok, "PCR-072 committed metadata should reopen") && ok;
+  if (reopened.ok) {
+    ok = Expect(HasTable(reopened.state, fixture.table_before_uuid) &&
+                !HasTable(reopened.state, fixture.table_after_uuid) &&
+                !HasIndex(reopened.state, fixture.index_after_uuid) &&
+                reopened.state.row_versions.empty() && reopened.state.index_entries.empty(),
+                "PCR-072 committed marker must preserve only pre-boundary storage") && ok;
+  }
+  api::EngineCatalogLookupObjectRequest catalog;
+  catalog.context = reader;
+  catalog.target_object.uuid = fixture.table_after_uuid;
+  catalog.target_object.object_kind = "table";
+  ok = ExpectApiOk(api::EngineCatalogLookupObjectByUuid(catalog),
+      "PCR-072 pre-marker catalog identity remains independent of rewound storage metadata") && ok;
+  auto fresh_row = Row(fixture, reader);
+  fresh_row.table_uuid = fixture.table_before_uuid;
+  std::uint64_t fresh_sequence = 0;
+  ok = ExpectDiagnosticOk(api::AppendMgaRowVersion(reader, fresh_row, &fresh_sequence),
+      "PCR-072 later transaction row should append after replay") && ok;
+  ok = Expect(fresh_sequence > row_event_sequence,
+      "PCR-072 rolled-back event reservation must never be reused") && ok;
+  const auto later = api::LoadMgaRelationStoreState(reader);
+  ok = Expect(later.ok && later.state.row_versions.size() == 1 &&
+      later.state.row_versions.front().values == fresh_row.values,
+      "PCR-072 later native value must not inherit a previous rollback range") && ok;
+  api::EngineRollbackTransactionRequest finish;
+  finish.context = reader;
+  ok = ExpectApiOk(api::EngineRollbackTransaction(finish),
+                   "PCR-072 reader cleanup should complete") && ok;
   return ok;
 }
 
@@ -359,6 +435,11 @@ txn::LocalTransactionInventory Inventory(
   txn::LocalTransactionInventory inventory;
   inventory.entries = std::move(entries);
   inventory.next_local_transaction_id = next_local_transaction_id;
+  // Component-only inventory: retain the current native commit-sequence
+  // invariant. Real-file transactions above are allocated/finalized by MGA.
+  for (auto& entry : inventory.entries)
+    if (txn::HasCommittedInventoryOutcome(entry))
+      entry.commit_sequence = inventory.next_commit_sequence++;
   return inventory;
 }
 
@@ -638,6 +719,8 @@ bool CleanupReclaimEvidenceProof() {
 
   const auto cleanup =
       txn::ApplyLocalCleanupWithAuthoritativeInventory(workset);
+  if (!cleanup.ok()) std::cerr << cleanup.diagnostic.diagnostic_code << ':'
+                              << cleanup.diagnostic.message_key << '\n';
   ok = Expect(cleanup.ok(),
               "PCR-072 authoritative cleanup workset should succeed") && ok;
   ok = Expect(cleanup.reclaimed_row_version_count == 2,
@@ -699,12 +782,22 @@ bool CleanupReclaimEvidenceProof() {
 }  // namespace
 
 int main(int argc, char** argv) {
-  const std::filesystem::path work_dir =
+  try {
+  const std::filesystem::path work_root =
       argc > 1 ? std::filesystem::path(argv[1])
                : std::filesystem::path("public_transaction_savepoint_limbo_cleanup_gate_tmp");
-  std::error_code ignored;
-  std::filesystem::remove_all(work_dir, ignored);
-  std::filesystem::create_directories(work_dir);
+  std::filesystem::create_directories(work_root);
+  const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+  std::filesystem::path work_dir;
+  for (unsigned i = 0; i < 256; ++i) {
+    const auto candidate = work_root / ("run-" + std::to_string(stamp) + "-" + std::to_string(i));
+    if (std::filesystem::create_directory(candidate)) { work_dir = candidate; break; }
+  }
+  if (work_dir.empty()) throw std::runtime_error("private savepoint fixture directory unavailable");
+  struct Cleanup {
+    std::filesystem::path path;
+    ~Cleanup() { std::error_code ignored; std::filesystem::remove_all(path, ignored); }
+  } cleanup{work_dir};
 
   bool ok = ConfigureMemoryFixture();
   ok = DurableSavepointMarkerProof(work_dir) && ok;
@@ -712,4 +805,8 @@ int main(int argc, char** argv) {
   ok = PreparedAndLimboResolutionProof() && ok;
   ok = CleanupReclaimEvidenceProof() && ok;
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }
