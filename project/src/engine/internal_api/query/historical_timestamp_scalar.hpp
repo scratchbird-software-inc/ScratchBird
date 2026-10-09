@@ -11,6 +11,7 @@
 #include <array>
 #include <bit>
 #include <limits>
+#include <span>
 #include <string>
 
 namespace scratchbird::engine::internal_api {
@@ -199,12 +200,10 @@ inline bool CompareHistoricalTimestampScalarsV1(const EngineTypedValue& left,
 
 // Time-series operation coordinates are signed nanoseconds, a narrower domain
 // than the historical tuple. Refuse overflow; never truncate or reinterpret.
-inline bool DecodeHistoricalTimestampNanosecondsV1(const EngineTypedValue& value,
-                                                  std::int64_t* output,
-                                                  std::string* detail) {
+inline bool HistoricalTimestampPartsToNanosecondsV1(const HistoricalTimestampScalarPartsV1& parts,
+                                                    std::int64_t* output,
+                                                    std::string* detail) {
   if (!output || !detail) return false;
-  HistoricalTimestampScalarPartsV1 parts;
-  if (!DecodeHistoricalTimestampScalarV1(value, &parts, detail)) return false;
   constexpr std::int64_t billion = 1'000'000'000;
   constexpr auto minimum = std::numeric_limits<std::int64_t>::min();
   constexpr auto maximum = std::numeric_limits<std::int64_t>::max();
@@ -212,7 +211,8 @@ inline bool DecodeHistoricalTimestampNanosecondsV1(const EngineTypedValue& value
   constexpr auto min_nanos = minimum % billion + billion;
   constexpr auto max_seconds = maximum / billion;
   constexpr auto max_nanos = maximum % billion;
-  if (parts.is_null || parts.unix_seconds < min_seconds || parts.unix_seconds > max_seconds ||
+  if (parts.is_null || parts.nanoseconds >= billion ||
+      parts.unix_seconds < min_seconds || parts.unix_seconds > max_seconds ||
       (parts.unix_seconds == min_seconds && parts.nanoseconds < min_nanos) ||
       (parts.unix_seconds == max_seconds && parts.nanoseconds > max_nanos)) {
     *detail = "timestamp is outside the admitted signed nanosecond operation range";
@@ -223,6 +223,32 @@ inline bool DecodeHistoricalTimestampNanosecondsV1(const EngineTypedValue& value
       : parts.unix_seconds * billion + parts.nanoseconds;
   detail->clear();
   return true;
+}
+
+inline bool DecodeHistoricalTimestampNanosecondsV1(const EngineTypedValue& value,
+                                                  std::int64_t* output,
+                                                  std::string* detail) {
+  HistoricalTimestampScalarPartsV1 parts;
+  return DecodeHistoricalTimestampScalarV1(value, &parts, detail) &&
+      HistoricalTimestampPartsToNanosecondsV1(parts, output, detail);
+}
+
+// Borrowed stored component after exact column/cohort admission. This avoids
+// descriptor decoding and payload allocation for every row in a bounded scan.
+inline bool DecodeHistoricalTimestampStoredNanosecondsV1(
+    const core::datatypes::DatatypeTypeCodecIdentityRowV1& identity,
+    std::span<const std::uint8_t> bytes, std::int64_t* output, std::string* detail) {
+  if (!output || !detail) return false;
+  namespace dt = core::datatypes;
+  const auto validated = dt::ValidateHistoricalTimestampUtcValueViewV1(identity,
+      {dt::CanonicalTypeId::timestamp, false, false, bytes.data(), bytes.size()});
+  if (!validated.ok()) { *detail = validated.diagnostic.diagnostic_code; return false; }
+  HistoricalTimestampScalarPartsV1 parts;
+  std::uint64_t seconds = 0;
+  for (unsigned i = 0; i < 8; ++i) seconds |= static_cast<std::uint64_t>(bytes[i]) << (8*i);
+  parts.unix_seconds = std::bit_cast<std::int64_t>(seconds);
+  for (unsigned i = 0; i < 4; ++i) parts.nanoseconds |= static_cast<std::uint32_t>(bytes[8+i]) << (8*i);
+  return HistoricalTimestampPartsToNanosecondsV1(parts, output, detail);
 }
 
 inline bool EncodeHistoricalTimestampNanosecondsV1(const EngineDescriptor& descriptor,

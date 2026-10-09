@@ -4,6 +4,7 @@
 #include "canonical_query_object_free_composition_support.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "query/historical_timestamp_scalar.hpp"
+#include "mga_relation_store/stored_timestamp_descriptor.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <source_location>
@@ -37,7 +38,77 @@ int main() {
     std::string detail;
     const bool historical = identity.codec_id == "datatype.timestamp.utc_tuple.le.v1";
     Check(a::BuildHistoricalTimestampScalarDescriptorV1(source, &descriptor, &detail) == historical);
-    if (!historical) continue;
+    a::EngineRequestContext storage_context;
+    storage_context.datatype_catalog_snapshot_uuid = identity.catalog_snapshot_uuid;
+    storage_context.datatype_catalog_generation = identity.catalog_generation;
+    storage_context.datatype_registry_generation = identity.registry_generation;
+    storage_context.statement_receipt_uuid = source.statement_receipt_uuid;
+    a::EngineDescriptor stored;
+    stored.descriptor_uuid = source.descriptor_uuid;
+    stored.descriptor_kind = "canonical_type_descriptor";
+    stored.canonical_type_name = "timestamp";
+    stored.datatype_descriptor_uuid = identity.descriptor_uuid;
+    stored.datatype_descriptor_generation = identity.descriptor_generation;
+    stored.type_uuid = identity.type_uuid;
+    a::CatalogColumnMetadata metadata;
+    metadata.identities = {{"type_uuid", identity.type_uuid},
+                           {"datatype_descriptor_uuid", identity.descriptor_uuid},
+                           {"codec_uuid", identity.codec_uuid}};
+    metadata.text = {{"canonical", "timestamp"}, {"nullable", "true"},
+                     {"datatype_descriptor_generation", std::to_string(identity.descriptor_generation)},
+                     {"type_generation", std::to_string(identity.type_generation)},
+                     {"codec_id", identity.codec_id}, {"codec_version", std::to_string(identity.codec_version)},
+                     {"codec_generation", std::to_string(identity.codec_generation)},
+                     {"null_encoding", std::to_string(identity.null_encoding_code)}};
+    Check(a::EncodeCatalogColumnMetadata(metadata, &stored.encoded_descriptor));
+    a::EngineDescriptor projected;
+    Check(a::ProjectStoredHistoricalTimestampDescriptorV1(storage_context, stored, true, &projected, &detail) == historical);
+    if (!historical) {
+      std::array<std::uint8_t, 16> epoch{};
+      std::int64_t unchanged = 42;
+      Check(!a::DecodeHistoricalTimestampStoredNanosecondsV1(identity, epoch, &unchanged, &detail) && unchanged == 42);
+      continue;
+    }
+    Check(projected == descriptor);
+    for (unsigned size = 0; size <= 32; ++size) {
+      if (size == 16) continue;
+      std::vector<std::uint8_t> wrong(size);
+      std::int64_t unchanged = 42;
+      Check(!a::DecodeHistoricalTimestampStoredNanosecondsV1(identity, wrong, &unchanged, &detail) && unchanged == 42);
+    }
+    for (unsigned bit = 0; bit < 32; ++bit) {
+      std::array<std::uint8_t, 16> wrong{};
+      wrong[12 + bit / 8] = 1u << (bit % 8);
+      std::int64_t unchanged = 42;
+      Check(!a::DecodeHistoricalTimestampStoredNanosecondsV1(identity, wrong, &unchanged, &detail) && unchanged == 42);
+    }
+    const auto reject_storage = [&](const auto& context, const auto& candidate) {
+      auto unchanged = descriptor;
+      Check(!a::ProjectStoredHistoricalTimestampDescriptorV1(context, candidate, true, &unchanged, &detail));
+      Check(unchanged == descriptor);
+    };
+    for (const auto& [name, value] : metadata.text) {
+      auto bad = metadata;
+      bad.text[name] = "invalid";
+      auto candidate = stored;
+      Check(a::EncodeCatalogColumnMetadata(bad, &candidate.encoded_descriptor));
+      reject_storage(storage_context, candidate);
+    }
+    for (const auto& [name, value] : metadata.identities) {
+      auto bad = metadata;
+      bad.identities.erase(name);
+      auto candidate = stored;
+      Check(a::EncodeCatalogColumnMetadata(bad, &candidate.encoded_descriptor));
+      reject_storage(storage_context, candidate);
+    }
+    for (unsigned mutation = 0; mutation < 4; ++mutation) {
+      auto bad = storage_context;
+      if (mutation == 0) bad.datatype_catalog_snapshot_uuid = {};
+      if (mutation == 1) ++bad.datatype_catalog_generation;
+      if (mutation == 2) ++bad.datatype_registry_generation;
+      if (mutation == 3) bad.statement_receipt_uuid = {};
+      reject_storage(bad, stored);
+    }
     ++historical_cohorts;
     auto stale = source;
     ++stale.codec_generation;
@@ -58,6 +129,9 @@ int main() {
       Check(a::EncodeHistoricalTimestampNanosecondsV1(descriptor, nanos, &encoded, &detail));
       std::int64_t decoded = 42;
       Check(a::DecodeHistoricalTimestampNanosecondsV1(encoded, &decoded, &detail) && decoded == nanos);
+      decoded = 42;
+      Check(a::DecodeHistoricalTimestampStoredNanosecondsV1(identity, encoded.binary_value,
+                                                           &decoded, &detail) && decoded == nanos);
       Check(encoded.binary_value.size() == 16 && encoded.encoded_value.empty());
       if (nanos == INT64_MIN || nanos == INT64_MAX) {
         auto overflow = encoded;
@@ -75,6 +149,8 @@ int main() {
         Check(a::DecodeHistoricalTimestampScalarV1(overflow, &parts, &detail));
         decoded = 42;
         Check(!a::DecodeHistoricalTimestampNanosecondsV1(overflow, &decoded, &detail) && decoded == 42);
+        Check(!a::DecodeHistoricalTimestampStoredNanosecondsV1(identity, overflow.binary_value,
+                                                              &decoded, &detail) && decoded == 42);
       }
     }
     auto previous = value;
