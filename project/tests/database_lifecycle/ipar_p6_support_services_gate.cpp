@@ -225,6 +225,11 @@ void ProveStatementPools() {
   request.context.database_id = scratchbird::tests::FixtureUuid(6018, 5);
   request.context.engine_id = scratchbird::tests::FixtureUuid(6018, 6);
   request.context.operation_id = scratchbird::tests::FixtureUuid(6018, 7);
+  request.context.snapshot_boundary = scratchbird::tests::FixtureUuid(6018, 8);
+  request.context.metadata_boundary = scratchbird::tests::FixtureUuid(6018, 9);
+  request.context.resource_budget_reference = scratchbird::tests::FixtureUuid(6018, 10);
+  request.context.policy_generation = 1;
+  request.context.security_generation = 1;
   request.statement_limit_bytes = 65536;
   request.batch_limit_bytes = 32768;
   request.row_version_bytes = 96;
@@ -236,6 +241,16 @@ void ProveStatementPools() {
   auto plan = PlanIparStatementMemoryPools(request);
   Require(plan.ok(), "statement pool plan should pass");
   Require(!plan.slab_size_classes.empty(), "statement pool should produce slab classes");
+  for (const auto member : {&QueryMemoryContext::snapshot_boundary,
+                            &QueryMemoryContext::metadata_boundary,
+                            &QueryMemoryContext::resource_budget_reference}) {
+    auto missing = request;
+    missing.context.*member = {};
+    const auto refused = PlanIparStatementMemoryPools(missing);
+    Require(!refused.ok() && refused.fail_closed &&
+                refused.diagnostic.diagnostic_code == "SB_IPAR_STATEMENT_POOL.REQUEST_INVALID",
+            "statement pool admitted a missing binary owner boundary");
+  }
 
   auto policy = DefaultLocalEngineMemoryPolicy();
   policy.byte_limit = 131072;
