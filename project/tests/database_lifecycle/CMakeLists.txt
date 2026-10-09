@@ -1049,6 +1049,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   )
   target_link_libraries(database_lifecycle_relation_projection_view_conformance
     PRIVATE
+      sb_engine
       sb_core_platform
       sb_core_uuid
       sb_engine_internal_api
