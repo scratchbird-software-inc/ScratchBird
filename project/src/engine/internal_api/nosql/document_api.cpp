@@ -759,8 +759,19 @@ DocumentMatchResult CompareDocumentValue(
   if (operation == EngineComparisonPredicateOperator::unspecified) {
     return {false, false, "document comparison operator is not bound"};
   }
+  // The document boundary accepts the authoritative SQL NULL state without
+  // its legacy boolean mirror. Canonical expression evaluation requires both
+  // fields to agree. Normalize only that mirror; retain any payload so the
+  // canonical validator still rejects malformed NULL operands.
+  const EngineTypedValue* right = &request.comparison_value;
+  EngineTypedValue normalized_null;
+  if (right->state == EngineValueState::sql_null && !right->is_null) {
+    normalized_null = *right;
+    normalized_null.setState(EngineValueState::sql_null);
+    right = &normalized_null;
+  }
   if (!QowEvaluateCanonicalComparisonTruthV1(
-          left, request.comparison_value, ordering, operation, &truth,
+          left, *right, ordering, operation, &truth,
           &refusal_detail)) {
     return {false, false, refusal_detail};
   }

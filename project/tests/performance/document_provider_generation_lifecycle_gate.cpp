@@ -677,7 +677,7 @@ void ProveNativeUuidDataPublicationAndReplay() {
   api::EngineColumnDefinition column;
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "uuid";
-  column.descriptor.encoded_descriptor = "canonical=uuid;nullable=true";
+  column.descriptor.encoded_descriptor = "nullability=nullable";
   scratchbird::tests::BindFixtureColumnDatatype(writer,
       scratchbird::core::datatypes::CanonicalTypeId::uuid, column);
   std::array<std::vector<std::uint8_t>, 4> values;
@@ -774,6 +774,12 @@ void ProveNativeUuidDataPublicationAndReplay() {
     find.comparison_value.binary_value = bytes;
     find.physical_proof = Proof(reader, CurrentGeneration(reader));
     find.require_benchmark_clean_index_runtime = true;
+    auto wrong_profile = find;
+    wrong_profile.comparison_value.descriptor.encoded_descriptor += ";ordering=guid";
+    const auto refused_profile = api::EngineDocumentFind(wrong_profile);
+    Require(!refused_profile.ok && refused_profile.typed_rows.empty() &&
+                refused_profile.result_shape.rows.empty(),
+            "document comparison silently admitted an unbound UUID ordering profile");
     const auto found = api::EngineDocumentFind(find);
     if (!found.ok) for (const auto& diagnostic : found.diagnostics)
       std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
@@ -795,8 +801,18 @@ void ProveNativeUuidDataPublicationAndReplay() {
                 field->second.descriptor.canonical_type_name == "uuid",
             "generic document result converted UUID data into untyped TEXT");
     find.comparison_value = null;
-    const auto unknown = api::EngineDocumentFind(find);
-    Require(unknown.ok && unknown.typed_rows.empty(), "UUID NULL comparison was not unknown");
+    for (const auto* operation : {"=", "<>", "<", "<=", ">", ">="}) {
+      find.comparison_operator = operation;
+      const auto unknown = api::EngineDocumentFind(find);
+      Require(unknown.ok && unknown.typed_rows.empty() &&
+                  unknown.result_shape.rows.empty(),
+              "UUID NULL comparison was not unknown");
+    }
+    find.comparison_value.binary_value = bytes;
+    const auto malformed_null = api::EngineDocumentFind(find);
+    Require(!malformed_null.ok && malformed_null.typed_rows.empty() &&
+                malformed_null.result_shape.rows.empty(),
+            "UUID NULL comparison admitted substitute payload");
   }
   InsertDocument(reader, {{"note", "rebuild after replay"}});
   CommitTransaction(reader);
@@ -808,13 +824,17 @@ void ProveNativeUuidDataPublicationAndReplay() {
           "provider rebuild after replay lost retained UUID scalar datatypes");
 }
 
-int main() {
+int main(int argc, char** argv) {
+  const bool uuid_only = argc == 2 && std::string_view(argv[1]) == "--uuid-data-only";
+  if (argc != 1 && !uuid_only) return 2;
   scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("document-provider-generation-native-fixture");
   try {
-    ProveCloseReopenBackupRestoreAndProofRefusals();
-    ProveProviderAndGenerationRepairLifecycle();
-    ProveDropCleanupAndConcurrentLifecycle();
-    ProveNoProviderIndexParserOrLogFinalityAuthority();
+    if (!uuid_only) {
+      ProveCloseReopenBackupRestoreAndProofRefusals();
+      ProveProviderAndGenerationRepairLifecycle();
+      ProveDropCleanupAndConcurrentLifecycle();
+      ProveNoProviderIndexParserOrLogFinalityAuthority();
+    }
     ProveNativeUuidDataPublicationAndReplay();
   } catch (const std::exception& ex) {
     std::cerr << "document_provider_generation_lifecycle_gate failed: "
