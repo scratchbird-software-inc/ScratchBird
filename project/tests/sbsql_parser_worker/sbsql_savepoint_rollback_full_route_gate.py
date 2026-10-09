@@ -206,6 +206,59 @@ def run_omitted_columns_case(args: argparse.Namespace, root: Path) -> None:
         stop_route(route)
 
 
+def run_native_integer_delete_case(args: argparse.Namespace, root: Path) -> None:
+    """DELETE compares native INT32/INT64, including digit-looking octets."""
+    database = root / "sp.sbdb"
+    route = None
+    profiles = (("integer", -(1 << 31), (1 << 31) - 1, 0x34333231),
+                ("bigint", -(1 << 63), (1 << 63) - 1, 0x3837363534333231))
+    try:
+        route = start_route(args, root / "r", database, tls_required=False)
+        for type_name, minimum, maximum, digit_octets in profiles:
+            table = "savepoint_native_delete_" + type_name
+            values = [minimum, -1, 0, maximum, digit_octets]
+            seed = [f"CREATE TABLE {table} (ordinal BIGINT, id {type_name});"]
+            seed += [f"INSERT INTO {table} (ordinal, id) VALUES ({n + 1}, {value});"
+                     for n, value in enumerate(values)]
+            seed += [f"INSERT INTO {table} (ordinal, id) VALUES (6, NULL);", "COMMIT;"]
+            require_isql_success(run_isql(args, route, type_name + "_create",
+                                         "\n".join(seed), timeout=120))
+            for ordinal, value in enumerate(values):
+                # Identify the affected row through an independent positive
+                # ordinal, not by reusing the DELETE predicate as its oracle.
+                result = run_isql(args, route, type_name + f"_value_{ordinal}", "\n".join([
+                    "SAVEPOINT native_delete;",
+                    f"DELETE FROM {table} WHERE id = {value};",
+                    f"SELECT COUNT(*) FROM {table};",
+                    f"SELECT COUNT(*) FROM {table} WHERE ordinal = {ordinal + 1};",
+                    f"DELETE FROM {table} WHERE id = {value};",
+                    f"SELECT COUNT(*) FROM {table};",
+                    "ROLLBACK TO SAVEPOINT native_delete;",
+                    f"SELECT COUNT(*) FROM {table};",
+                    f"SELECT COUNT(*) FROM {table} WHERE ordinal = {ordinal + 1};",
+                    "RELEASE SAVEPOINT native_delete;", "COMMIT;", "",
+                ]), timeout=120)
+                require_isql_success(result)
+                probes = [line for line in isql_data_lines(result)
+                          if not line.startswith("Rows affected: ")]
+                if probes != ["5", "0", "5", "6", "1"]:
+                    raise RuntimeError(f"{type_name}/{value}: {probes!r}")
+        stop_route(route)
+        route = None
+        route = start_route(args, root / "r2", database, tls_required=False)
+        for type_name, minimum, maximum, digit_octets in profiles:
+            table = "savepoint_native_delete_" + type_name
+            result = run_isql(args, route, type_name + "_reopened", "\n".join([
+                f"SELECT COUNT(*) FROM {table};",
+                *[f"SELECT id FROM {table} WHERE ordinal = {n};" for n in range(1, 7)], "",
+            ]), timeout=120)
+            require_isql_success(result)
+            if isql_data_lines(result) != ["6", str(minimum), "-1", "0", str(maximum), str(digit_octets), "(null)"]:
+                raise RuntimeError(type_name + ": native DELETE rollback changed reopened rows")
+    finally:
+        stop_route(route)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     for flag in ("server", "listener", "parser-worker", "sb-isql", "example-db-seeder", "work-dir"):
@@ -332,7 +385,8 @@ def main() -> int:
         f"SELECT payload FROM {TABLE} WHERE id = 1;",
         "ROLLBACK TO SAVEPOINT outer_sp;"], ["0", "1", "x" * 12000])
     dedicated = {"all_rows_update": run_all_rows_case,
-                 "omitted_columns": run_omitted_columns_case}
+                 "omitted_columns": run_omitted_columns_case,
+                 "native_integer_delete": run_native_integer_delete_case}
     selected = set(args.case) if args.case else set(cases) | set(dedicated)
     if selected - (set(cases) | set(dedicated)):
         parser.error("unknown savepoint case")

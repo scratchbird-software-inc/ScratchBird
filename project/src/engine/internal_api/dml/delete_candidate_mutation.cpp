@@ -14,8 +14,7 @@
 #include "mga_relation_store/mga_row_codec.hpp"
 #include "hash_digest.hpp"
 #include "core/platform/savepoint_crash_injection.hpp"
-#include <bit>
-#include <charconv>
+#include <algorithm>
 #include <limits>
 
 namespace scratchbird::engine::internal_api {
@@ -56,7 +55,6 @@ EngineDmlDeleteCandidateMutationV1 ExecuteDmlDeleteCandidateMutationV1(
   std::vector<CrudRowVersionRecord> candidates;
   std::string predicate_column;
   bool predicate_nullable = false;
-  std::int64_t predicate_literal = 0;
   EngineApiDiagnostic callback_failure;
   const bool all_rows = b.predicate.records.size() == 1;
   MgaVisibleHeapRelationStreamRequest stream;
@@ -85,10 +83,6 @@ EngineDmlDeleteCandidateMutationV1 ExecuteDmlDeleteCandidateMutationV1(
       if (predicate_column.empty() || (literal.canonical_value.size() != 4 && literal.canonical_value.size() != 8)) {
         callback_failure = Error("predicate_column_or_fixed_width_literal", "DATATYPE.DESCRIPTOR.INVALID"); return false;
       }
-      std::uint64_t bits = 0;
-      for (std::size_t n = 0; n < literal.canonical_value.size(); ++n) bits |= std::uint64_t(literal.canonical_value[n]) << (8 * n);
-      predicate_literal = literal.canonical_value.size() == 4
-          ? std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(bits)) : std::bit_cast<std::int64_t>(bits);
     }
     candidates.reserve(count); *growth = budget / 8; return true;
   };
@@ -110,15 +104,18 @@ EngineDmlDeleteCandidateMutationV1 ExecuteDmlDeleteCandidateMutationV1(
       if (!value->isPresent()) {
         callback_failure = Error("invalid_predicate_value_state", "DATATYPE.DESCRIPTOR.INVALID"); return false;
       }
-      std::int64_t parsed = 0;
-      const auto converted = std::from_chars(value->bytes.data(), value->bytes.data() + value->bytes.size(), parsed);
-      if (converted.ec != std::errc{} || converted.ptr != value->bytes.data() + value->bytes.size() ||
-          (b.predicate.records[1].canonical_value.size() == 4 &&
-           (parsed < std::numeric_limits<std::int32_t>::min() ||
-            parsed > std::numeric_limits<std::int32_t>::max()))) {
+      // The admitted column and literal share an exact fixed-width integer
+      // codec. Retained row strings are native octets, never decimal text.
+      // Equality therefore needs neither parsing nor an intermediate signed
+      // integer; unsigned octet equality handles all extrema and zero bytes.
+      const auto& literal = b.predicate.records[1].canonical_value;
+      if (value->bytes.size() != literal.size()) {
         callback_failure = Error("noncanonical_integer_source", "DATATYPE.DESCRIPTOR.INVALID"); return false;
       }
-      if (parsed != predicate_literal) return true;
+      if (!std::equal(literal.begin(), literal.end(), value->bytes.begin(),
+          [](std::uint8_t expected, char actual) {
+            return expected == static_cast<unsigned char>(actual);
+          })) return true;
     }
     std::uint64_t dynamic = 0;
     const auto retained = HeapReadRowVectorMemoryBytes(candidates);

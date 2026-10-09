@@ -208,7 +208,6 @@ EngineDmlDeletePredicateBindingResultV1 BindDmlDeletePredicateV1(
     root.operator_generation = equality.row.operator_generation;
     EngineTypedValue bound;
     bound.descriptor = selected->value_descriptor;
-    bound.encoded_value = std::to_string(value);
     bound.binary_value = literal.canonical_value;
     bound.setState(EngineValueState::value);
     result.execution_predicate.predicate_kind = "column_equals";

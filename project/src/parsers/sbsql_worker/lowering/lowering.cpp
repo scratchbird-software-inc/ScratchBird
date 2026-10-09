@@ -7601,13 +7601,13 @@ bool ConsumeSelectColumnEqualityConjunction(const std::vector<const Token*>& tok
       return false;
     }
     ++cursor;
-    if (cursor >= tokens.size() || !IsBoundedWhereEqualityLiteral(*tokens[cursor])) {
+    std::string literal_value, literal_type;
+    if (!ConsumeBoundedWhereEqualityLiteral(tokens, &cursor, &literal_value, &literal_type)) {
       return false;
     }
     columns.push_back(std::move(predicate_leaf));
-    values.push_back(DmlLiteralPayload(*tokens[cursor]));
-    types.push_back(BoundedWhereEqualityLiteralType(*tokens[cursor]));
-    ++cursor;
+    values.push_back(std::move(literal_value));
+    types.push_back(std::move(literal_type));
     if (cursor >= tokens.size() || ToUpperAscii(tokens[cursor]->text) != "AND") break;
     ++cursor;
   }
