@@ -98,6 +98,9 @@ OptimizerEnterpriseMetricManifest();
 
 OptimizerMetricManifestValidation ValidateOptimizerEnterpriseMetricManifest();
 
+// Read-only verification of manifest-owned obligations on already admitted
+// descriptors. Never generates identity, activates a family or emits a sample.
+// Producer-specific schemas and runtime wiring require independent validation.
 scratchbird::core::metrics::MetricValidationResult
 EnsureOptimizerEnterpriseMetricDescriptors(
     scratchbird::core::metrics::MetricRegistry* registry = nullptr);

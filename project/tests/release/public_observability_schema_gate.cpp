@@ -13,6 +13,9 @@
 
 #include "metric_contracts.hpp"
 #include "metric_registry.hpp"
+#include "metric_support_projection.hpp"
+#include "../support/component_authorization_fixture.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "executor_operator_metrics.hpp"
 #include "../support/metric_projection_fixture.hpp"
 #include "observability/agent_observability_api.hpp"
@@ -134,7 +137,7 @@ bool HasEvidence(const api::EngineApiResult& result,
   return false;
 }
 
-api::EngineRequestContext Context(std::vector<std::string> rights,
+api::EngineRequestContext Context(std::initializer_list<std::string_view> rights,
                                   bool cluster_authority = false) {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
@@ -149,35 +152,12 @@ api::EngineRequestContext Context(std::vector<std::string> rights,
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.trace_tags.push_back("public_observability_schema_gate");
-  api::EngineMaterializedAuthorizationContext authz;
-  authz.present = true;
-  authz.authority_uuid = scratchbird::tests::FixtureUuid(107, 5);
-  authz.principal_uuid = context.principal_uuid;
-  authz.security_epoch = context.security_epoch;
-  authz.policy_epoch = 1;
-  authz.catalog_generation_id = context.catalog_generation_id;
-  authz.effective_subjects.push_back({context.principal_uuid, "principal"});
-  for (const auto& right : rights) {
-    context.trace_tags.push_back("right:" + right);
-    authz.grants.push_back({scratchbird::tests::FixtureUuid(107, 100 + static_cast<unsigned>(authz.grants.size())),
-                            context.principal_uuid,
-                            "principal",
-                            {},
-                            right,
-                            false,
-                            context.security_epoch});
-  }
-  context.authorization_context = std::move(authz);
+  scratchbird::tests::MaterializeComponentAuthorization(context, rights);
   return context;
 }
 
-std::string DurableUuid(UuidKind kind, u64 offset) {
-  const auto generated =
-      uuid::GenerateEngineIdentityV7(kind, 1770900000000ull + offset);
-  if (!generated.ok()) {
-    return {};
-  }
-  return uuid::UuidToString(generated.value.value);
+std::string EvidenceUuidBytes(std::uint32_t ordinal) {
+  return api::MetadataUuidBytes(scratchbird::tests::FixtureUuid(107, ordinal));
 }
 
 bool WriteEvidenceCsv(const std::filesystem::path& output) {
@@ -207,9 +187,16 @@ bool WriteEvidenceCsv(const std::filesystem::path& output) {
   return true;
 }
 
-bool CheckMetricRegistrySurface() {
+bool CheckMetricRegistrySurface(scratchbird::tests::MetricProjectionFixture& fixture) {
   bool ok = true;
-  const auto descriptors = metrics::DefaultMetricRegistry().Descriptors(true);
+  // Schema discovery is separate from runtime activation. Observation tests
+  // below admit finite native bindings and decode their actual queued samples.
+  const auto before = metrics::DefaultMetricRegistry().Descriptors(true).size();
+  const auto descriptors = metrics::BuiltinMetricDescriptorDefinitions();
+  ok = Expect(metrics::DefaultMetricRegistry().Descriptors(true).size() == before &&
+                  metrics::DefaultMetricRegistry().SnapshotCurrent(false).empty(),
+              "metrics", "definition_discovery_read_only", "SB_METRICS_DESCRIPTOR_REGISTRY",
+              "not_sensitive_schema_metadata", "no_runtime_activation", "definitions_only") && ok;
   std::map<std::string, std::string> required = {
       {"memory", "sys.metrics.memory"},
       {"storage", "sys.metrics.storage"},
@@ -237,9 +224,9 @@ bool CheckMetricRegistrySurface() {
                 surface,
                 "ENTERPRISE_METRIC_SCHEMA",
                 "descriptor_redaction_policy_present",
-                prefix == "cluster.sys.metrics" ? "cluster_only_contract_ready"
-                                                 : "local_metric_descriptor",
-                "descriptor_count=" + std::to_string(count)) &&
+                prefix == "cluster.sys.metrics" ? "cluster_schema_only"
+                                                 : "local_metric_definition",
+                "definition_count=" + std::to_string(count)) &&
          ok;
   }
 
@@ -277,7 +264,7 @@ bool CheckMetricRegistrySurface() {
               "metrics",
               "sensitive_label_inventory",
               "SB_METRICS_DESCRIPTOR_REGISTRY",
-              "sensitive_labels_registered",
+              "sensitive_labels_defined",
               "observability_only",
               "sensitive_label_count=" + std::to_string(sensitive_labels)) &&
        ok;
@@ -290,35 +277,31 @@ bool CheckMetricRegistrySurface() {
               "cluster_descriptor_count=" + std::to_string(cluster_descriptors)) &&
        ok;
 
-  const auto* event_descriptor =
-      metrics::DefaultMetricRegistry().FindDescriptor("sb_event_delivered_total");
+  const metrics::MetricLabelSet labels{{"session_uuid", scratchbird::tests::FixtureUuid(107, 201)},
+      {"principal_uuid", scratchbird::tests::FixtureUuid(107, 202)},
+      {"machine_id", "host-secret"}, {"source_address", "10.0.0.1"}, {"result", "delivered"}};
+  fixture.Admit("sb_event_delivered_total", labels);
+  fixture.Emit("sb_event_delivered_total", labels, std::uint64_t{1});
+  fixture.Seal();
+  const auto* event_descriptor = metrics::DefaultMetricRegistry().FindDescriptor("sb_event_delivered_total");
   bool redacted = false;
-  if (event_descriptor != nullptr) {
-    metrics::MetricValue value;
-    value.family = event_descriptor->family;
-    value.type = event_descriptor->type;
-    value.value = 1.0;
-    value.labels = {{"session_uuid", "session-secret"},
-                    {"principal_uuid", "principal-secret"},
-                    {"machine_id", "host-secret"},
-                    {"source_address", "10.0.0.1"},
-                    {"result", "delivered"}};
-    const auto safe = metrics::RedactSensitiveMetricValue(
-        *event_descriptor, value, false);
-    std::map<std::string, std::string> labels;
-    for (const auto& label : safe.labels) {
-      if (const auto* text = std::get_if<std::string>(&label.value)) {
-        labels[label.key] = *text;
-      } else {
-        return Expect(false, "metrics", "redaction", "text_label_required");
-      }
-    }
-    redacted = labels["session_uuid"] == "<redacted>" &&
-               labels["principal_uuid"] == "<redacted>" &&
-               labels["machine_id"] == "<redacted>" &&
-               labels["source_address"] == "<redacted>" &&
-               labels["result"] == "delivered";
+  for (const auto& value : metrics::DefaultMetricRegistry().SnapshotCurrent(false)) {
+    if (value.family != "sb_event_delivered_total") continue;
+    metrics::MetricSupportProjection projection;
+    metrics::MetricValue visible;
+    if (!event_descriptor || !metrics::ProjectMetricForSupport(*event_descriptor, value, false, &projection, &visible)) continue;
+    redacted = visible.labels.size() == 1 && visible.labels[0].key == "result" &&
+        std::get<std::string>(visible.labels[0].value) == "delivered" &&
+        std::holds_alternative<std::uint64_t>(visible.value) && std::get<std::uint64_t>(visible.value) == 1;
+    for (const auto* key : {"session_uuid", "principal_uuid", "machine_id", "source_address"})
+      redacted = redacted && std::find(projection.omitted_sensitive_labels.begin(), projection.omitted_sensitive_labels.end(), key)
+          != projection.omitted_sensitive_labels.end();
+    metrics::MetricSupportProjection authorized;
+    metrics::MetricValue full;
+    redacted = redacted && metrics::ProjectMetricForSupport(*event_descriptor, value, true, &authorized, &full) &&
+        authorized.omitted_sensitive_labels.empty() && full.labels.size() == 5;
   }
+  fixture.VerifyReadOnly();
   ok = Expect(redacted,
               "metrics",
               "sensitive_label_redaction",
@@ -532,7 +515,7 @@ bool CheckOptimizationSurface() {
   return ok;
 }
 
-bool CheckAgentObservability() {
+bool CheckAgentObservability(scratchbird::tests::MetricProjectionFixture& fixture) {
   bool ok = true;
   api::EngineCollectAgentRuntimeObservabilityRequest request;
   request.context = Context({"OBS_RUNTIME_ALL"});
@@ -540,10 +523,10 @@ bool CheckAgentObservability() {
   api::EngineAgentRuntimeEvidenceRecord record;
   record.source_surface = "public_release_gate";
   record.agent_type_id = "filespace_capacity_manager";
-  record.agent_uuid = DurableUuid(UuidKind::object, 101);
-  record.filespace_uuid = DurableUuid(UuidKind::filespace, 102);
-  record.policy_uuid = DurableUuid(UuidKind::object, 103);
-  record.evidence_uuid = DurableUuid(UuidKind::object, 104);
+  record.agent_uuid = EvidenceUuidBytes(101);
+  record.filespace_uuid = EvidenceUuidBytes(102);
+  record.policy_uuid = EvidenceUuidBytes(103);
+  record.evidence_uuid = EvidenceUuidBytes(104);
   record.action_id = "observe_capacity";
   record.evidence_kind = "agent_runtime_evidence";
   record.result_state = "success";
@@ -554,7 +537,14 @@ bool CheckAgentObservability() {
   record.unsafe_payload = "secret=agent-token";
   request.records.push_back(record);
 
+  fixture.Admit("sb_agent_actions_total", {{"component", "agent.runtime"}, {"agent_type", record.agent_type_id},
+      {"action_class", "observe_capacity"}, {"result", "success"}});
+  fixture.Admit("sb_agent_filespace_capacity_requests_total", {{"component", "agent.filespace_capacity"},
+      {"agent_type", record.agent_type_id}, {"filespace_uuid", scratchbird::tests::FixtureUuid(107, 102)},
+      {"request_class", "observe_capacity"}, {"result", "success"}});
   const auto result = api::EngineCollectAgentRuntimeObservability(request);
+  if (result.ok) fixture.ExpectProduced(2);
+  fixture.Seal();
   bool row_redacted = false;
   if (!result.result_shape.rows.empty()) {
     const auto& row = result.result_shape.rows.front();
@@ -703,8 +693,8 @@ bool CheckClusterSupportBundleRedaction() {
 obs::OptimizerMetricSupportBundleRequest OptimizerBundleRequest() {
   obs::OptimizerMetricSupportBundleRequest request;
   request.scope_uuid = scratchbird::tests::FixtureUuid(1485, 201);
-  request.database_uuid = scratchbird::tests::FixtureUuid(1485, 202);
-  request.node_uuid = scratchbird::tests::FixtureUuid(1485, 203);
+  request.database_uuid = scratchbird::tests::FixtureUuid(107, 1);
+  request.node_uuid = scratchbird::tests::FixtureUuid(107, 3);
   request.support_bundle_uuid = scratchbird::tests::FixtureUuid(1485, 204);
   request.capture_generation = 1;
   request.evidence_digest = "sha256:public-observability-schema-gate";
@@ -723,10 +713,9 @@ obs::OptimizerMetricSupportBundleRequest OptimizerBundleRequest() {
   return request;
 }
 
-bool CheckOptimizerSupportBundle() {
+bool CheckOptimizerSupportBundle(scratchbird::tests::MetricProjectionFixture& fixture) {
   bool ok = true;
   const auto request = OptimizerBundleRequest();
-  scratchbird::tests::MetricProjectionFixture fixture(request.database_uuid, request.node_uuid, 1281);
   const metrics::MetricLabelSet labels{{"scope_uuid", request.scope_uuid}, {"source_generation", "1"},
       {"route_label", "public_observability_schema_gate"}, {"plan_node_id", "scan:1"},
       {"metric_family", "operator_actual_rows"}, {"evidence_digest", "component-observation"}};
@@ -780,7 +769,7 @@ bool CheckOptimizerSupportBundle() {
               "wal_or_redo_authority_refused",
               refused.detail) &&
        ok;
-  fixture.VerifyAndDrain();
+  fixture.VerifyReadOnly();
   return ok;
 }
 
@@ -791,13 +780,16 @@ int main(int argc, char** argv) {
       argc >= 2 ? std::filesystem::path(argv[1]) : std::filesystem::path{};
 
   bool ok = true;
-  ok = CheckMetricRegistrySurface() && ok;
+  scratchbird::tests::MetricProjectionFixture fixture(scratchbird::tests::FixtureUuid(107, 1),
+      scratchbird::tests::FixtureUuid(107, 3), 1281);
+  ok = CheckMetricRegistrySurface(fixture) && ok;
   ok = CheckPerformanceEventSchema() && ok;
   ok = CheckOptimizationSurface() && ok;
-  ok = CheckAgentObservability() && ok;
+  ok = CheckAgentObservability(fixture) && ok;
   ok = CheckRepairHistory() && ok;
   ok = CheckClusterSupportBundleRedaction() && ok;
-  ok = CheckOptimizerSupportBundle() && ok;
+  ok = CheckOptimizerSupportBundle(fixture) && ok;
+  fixture.VerifyAndDrain();
 
   const bool wrote_csv = WriteEvidenceCsv(output);
   const u64 pass_count = static_cast<u64>(std::count_if(

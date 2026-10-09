@@ -77,33 +77,6 @@ MetricReadiness DescriptorReadiness(OptimizerMetricProducerState state) {
   return MetricReadiness::contract_ready_unwired;
 }
 
-MetricDescriptor DescriptorForEntry(const OptimizerEnterpriseMetricEntry& entry) {
-  MetricDescriptor descriptor;
-  descriptor.family = entry.registry_family;
-  descriptor.type = entry.metric_type;
-  descriptor.unit = entry.metric_unit;
-  descriptor.namespace_path = "sys.metrics.optimizer.enterprise";
-  descriptor.help = "Optimizer enterprise metric family " + entry.metric_family + ".";
-  descriptor.producer_owner = entry.producer_owner;
-  descriptor.security_family = "OPTIMIZER_METRICS";
-  descriptor.visibility = metrics::MetricVisibilityScope::family;
-  descriptor.readiness = DescriptorReadiness(entry.producer_state);
-  descriptor.cluster_only =
-      entry.producer_state == OptimizerMetricProducerState::cluster_external;
-  descriptor.labels = {MetricLabelDescriptor{"scope_uuid", true, false},
-                       MetricLabelDescriptor{"route_label", true, false},
-                       MetricLabelDescriptor{"plan_node_id", false, false},
-                       MetricLabelDescriptor{"metric_family", true, false},
-                       MetricLabelDescriptor{"result", false, false},
-                       MetricLabelDescriptor{"source_generation", true, false},
-                       MetricLabelDescriptor{"evidence_digest", true, true}};
-  descriptor.aliases = {entry.metric_family};
-  if (entry.metric_type == MetricType::histogram) {
-    descriptor.histogram_buckets = {1, 10, 100, 1000, 10000, 100000,
-                                    1000000, 10000000};
-  }
-  return descriptor;
-}
 
 }  // namespace
 
@@ -760,13 +733,36 @@ OptimizerMetricManifestValidation ValidateOptimizerEnterpriseMetricManifest() {
 metrics::MetricValidationResult EnsureOptimizerEnterpriseMetricDescriptors(
     metrics::MetricRegistry* registry) {
   auto& target = registry == nullptr ? metrics::DefaultMetricRegistry() : *registry;
+  static const MetricLabelDescriptor required_labels[] = {
+      {"scope_uuid", true, false, metrics::MetricLabelType::system_uuid},
+      {"route_label", true, false}, {"metric_family", true, false},
+      {"source_generation", true, false}, {"evidence_digest", true, true}};
   for (const auto& entry : OptimizerEnterpriseMetricManifest()) {
-    if (target.FindDescriptor(entry.registry_family) != nullptr) {
-      continue;
-    }
-    const auto result = target.RegisterDescriptor(DescriptorForEntry(entry));
-    if (!result.ok) {
-      return result;
+    const auto* descriptor = target.FindDescriptor(entry.registry_family);
+    if (!descriptor)
+      return metrics::MetricError("METRIC.VALUE_INVALID", "optimizer manifest binding missing: " + entry.registry_family);
+    const auto scalar = entry.metric_type == MetricType::state ? metrics::MetricScalarType::enumeration :
+        (entry.metric_unit == MetricUnit::ratio || entry.metric_unit == MetricUnit::microseconds ||
+         entry.metric_unit == MetricUnit::seconds || entry.metric_unit == MetricUnit::percent)
+            ? metrics::MetricScalarType::float64 : metrics::MetricScalarType::uint64;
+    if (descriptor->type != entry.metric_type || descriptor->unit != entry.metric_unit ||
+        descriptor->producer_owner != entry.producer_owner || descriptor->value_type != scalar ||
+        descriptor->namespace_path != "sys.metrics.optimizer.enterprise" ||
+        descriptor->security_family != "OPTIMIZER_METRICS" ||
+        descriptor->visibility != metrics::MetricVisibilityScope::family ||
+        descriptor->cluster_only != (entry.producer_state == OptimizerMetricProducerState::cluster_external) ||
+        descriptor->readiness != DescriptorReadiness(entry.producer_state))
+      return metrics::MetricError("METRIC.VALUE_INVALID", "optimizer manifest binding differs: " + entry.registry_family);
+    // Registration has validated the immutable native descriptor binding.
+    // Here verify only manifest-owned obligations, not a fabricated common
+    // producer schema. Individual producers validate their full definitions.
+    for (const auto& expected : required_labels) {
+      bool found = false;
+      for (const auto& label : descriptor->labels)
+        if (label.key == expected.key && label.required == expected.required &&
+            label.sensitive == expected.sensitive && label.value_type == expected.value_type) { found = true; break; }
+      if (!found)
+        return metrics::MetricError("METRIC.VALUE_INVALID", "optimizer manifest label differs: " + expected.key);
     }
   }
   return metrics::MetricOk();
