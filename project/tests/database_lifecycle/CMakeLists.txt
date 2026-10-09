@@ -4800,12 +4800,21 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
 		    LABELS "ipar_insert_runtime_security_recheck_gate;IPAR-P1-04;security_fast_path;prepared_cache;database_lifecycle;mga_transaction_regression"
 		  )
 
+          add_executable(database_lifecycle_mga_relation_metric_precision_conformance
+            mga_relation_metric_precision_conformance.cpp)
+          target_compile_features(database_lifecycle_mga_relation_metric_precision_conformance PRIVATE cxx_std_23)
+          target_link_libraries(database_lifecycle_mga_relation_metric_precision_conformance PRIVATE sb_core_metrics)
+          add_test(NAME database_lifecycle_mga_relation_metric_precision_conformance
+            COMMAND database_lifecycle_mga_relation_metric_precision_conformance)
+          set_tests_properties(database_lifecycle_mga_relation_metric_precision_conformance PROPERTIES
+            LABELS "database_lifecycle;native_metric_precision;binary_uuid;mga_relation_state" TIMEOUT 60)
 		  add_executable(ipar_relation_state_load_route_gate
 		    ipar_relation_state_load_route_gate.cpp
 		  )
 		  target_compile_features(ipar_relation_state_load_route_gate PRIVATE cxx_std_23)
 		  target_link_libraries(ipar_relation_state_load_route_gate
 		    PRIVATE
+		      sb_engine
 		      sb_core_platform
 		      sb_core_metrics
 		      sb_core_uuid

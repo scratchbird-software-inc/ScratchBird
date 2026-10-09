@@ -73,9 +73,8 @@ MgaRelationStoreResult WithRouteEvidence(
   result.evidence.push_back({"mga_relation_state_load_reason", reason});
   (void)scratchbird::core::metrics::RecordMgaRelationStateLoad(
       target_relation_uuid, operation_family, load_scope, reason,
-      static_cast<double>(result.rows_materialized),
-      static_cast<double>(result.bytes_materialized),
-      static_cast<double>(result.allocation_units_materialized));
+      result.rows_materialized, result.bytes_materialized,
+      result.allocation_units_materialized);
   return result;
 }
 

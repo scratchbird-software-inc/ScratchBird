@@ -411,9 +411,9 @@ MetricValidationResult RecordMgaRelationStateLoad(
     std::string operation_family,
     std::string load_scope,
     std::string reason,
-    double rows_materialized,
-    double bytes_materialized,
-    double allocation_units_materialized) {
+    u64 rows_materialized,
+    u64 bytes_materialized,
+    u64 allocation_units_materialized) {
   auto labels = Labels(
       {{"component", "engine.mga_relation_store"},
        {"operation", operation_family.empty() ? "unspecified" : operation_family},
@@ -421,7 +421,7 @@ MetricValidationResult RecordMgaRelationStateLoad(
        {"reason", reason.empty() ? "unspecified" : reason}});
   if (!object_uuid.is_nil()) labels.push_back({"object_uuid", object_uuid});
   auto status = IncrementCounter("sb_mga_relation_state_load_total", labels,
-                                 1.0, "mga_relation_store");
+                                 u64{1}, "mga_relation_store");
   if (!status.ok) { return status; }
   status = IncrementCounter("sb_mga_relation_state_rows_materialized_total",
                             labels, rows_materialized,
