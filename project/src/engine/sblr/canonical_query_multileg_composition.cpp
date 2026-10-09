@@ -248,30 +248,36 @@ MakeRcp079CapturedModelLegRegistration(
         request.input.physical_node_id = selected_node.physical_node_id;
         request.input.selected_alternative_uuid =
             selected_node.selected_alternative_uuid;
-        request.input.capability_uuid =
-            selected_node.executor_capability_uuid;
         request.input.causal_counter_id = selected_node.causal_counter_id;
-        request.capability.capability_uuid =
-            selected_node.executor_capability_uuid;
+        // The physical dispatcher capability identifies the implementation;
+        // the retained provider capability identifies this admitted source.
+        // Repeated scans share the former, never overwrite the latter.
         request.current_mga_statement_context =
             selected_dag.mga_statement_context;
         const auto provider = request.execute_provider;
         const auto runtime_input = request.input;
+        const auto admitted_input = captured->execution_request.input;
         request.execute_provider =
-            [provider, runtime_input](
-                const exec::ModelSourceInputDescriptorV1& input) mutable {
-              auto produced = provider(input);
+            [provider, runtime_input, admitted_input](
+                const exec::ModelSourceInputDescriptorV1&) mutable {
+              auto produced = provider(admitted_input);
               if (produced.ok) {
+                const auto& batch = produced.provider_batch;
+                if (batch.selected_alternative_uuid != admitted_input.selected_alternative_uuid ||
+                    batch.capability_uuid != admitted_input.capability_uuid ||
+                    batch.causal_counter_id != admitted_input.causal_counter_id ||
+                    batch.output_descriptor_ids != admitted_input.output_descriptor_ids ||
+                    !exec::PhysicalMgaStatementContextEqual(
+                        batch.mga_statement_context, admitted_input.mga_statement_context)) {
+                  produced.ok = false;
+                  produced.diagnostic_id = "SB_MODEL_TYPED_EXCHANGE_INVALID_V1";
+                  produced.detail = "captured provider publication identity was substituted";
+                  return produced;
+                }
                 produced.provider_batch.selected_alternative_uuid =
                     runtime_input.selected_alternative_uuid;
-                produced.provider_batch.capability_uuid =
-                    runtime_input.capability_uuid;
                 produced.provider_batch.causal_counter_id =
                     runtime_input.causal_counter_id;
-                produced.provider_batch.output_descriptor_ids =
-                    runtime_input.output_descriptor_ids;
-                produced.provider_batch.mga_statement_context =
-                    runtime_input.mga_statement_context;
               }
               return produced;
             };
@@ -3991,6 +3997,26 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
                               ? "model-family source adapter was not captured"
                               : attempted.api_result.diagnostics.front().detail;
       return refuse(diagnostic, detail);
+    }
+  }
+  // One physical implementation is registered once per dispatch. Independently
+  // captured scans keep their distinct provider admission receipts in their
+  // execution requests; they share only this newly issued dispatcher identity.
+  for (std::size_t ordinal = 0; ordinal < captured.size(); ++ordinal) {
+    auto& leg = captured[ordinal];
+    if (leg.family_id == "relational") continue;
+    const auto previous = std::find_if(captured.begin(), captured.begin() + ordinal,
+        [&](const auto& candidate) { return candidate.implementation_id == leg.implementation_id; });
+    if (previous == captured.begin() + ordinal) {
+      leg.capability_uuid = api::GenerateCrudEngineUuid("object");
+    } else {
+      if (previous->family_id != leg.family_id ||
+          previous->logical_node_kind != leg.logical_node_kind ||
+          previous->physical_node_kind != leg.physical_node_kind) {
+        return refuse("SB_MODEL_COORDINATOR_LEG_FAILED_V1",
+                      "captured implementation has conflicting physical contracts");
+      }
+      leg.capability_uuid = previous->capability_uuid;
     }
   }
   const bool exact_columnar_pair =

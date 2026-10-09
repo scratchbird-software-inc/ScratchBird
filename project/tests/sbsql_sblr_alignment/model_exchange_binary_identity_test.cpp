@@ -292,6 +292,84 @@ int main() {
       Require(RejectedWithoutPublication(publish_search(invalid)),
               "search exchange published a malformed or substituted score");
     }
+    auto spatial_input = input;
+    spatial_input.family_id = "spatial";
+    spatial_input.operation_ids = {"SPATIAL_SOURCE", "SPATIAL_NEAREST"};
+    spatial_input.operation_id = "SPATIAL_NEAREST";
+    spatial_input.output_descriptor_ids = {1, 2, 3, 4};
+    spatial_input.maximum_rows = 3;
+    spatial_input.maximum_cells = 12;
+    spatial_input.spatial_geometry_descriptor_uuid = FixtureUuid(70);
+    spatial_input.spatial_geometry_type_uuid = FixtureUuid(71);
+    spatial_input.spatial_crs_uuid = FixtureUuid(72);
+    spatial_input.spatial_crs_generation = 1;
+    auto spatial = provider;
+    spatial.output_descriptor_ids = spatial_input.output_descriptor_ids;
+    spatial.properties.ordering_id = "spatial_distance_row_uuid_ascending_v1";
+    spatial.properties.uniqueness_id = "row_uuid";
+    spatial.batch = {};
+    spatial.ordered_row_identities = {};
+    const std::array<const char*, 4> spatial_names{"row_uuid", "spatial_value", "crs_uuid", "distance"};
+    const std::array<const char*, 4> spatial_types{"uuid", "geometry", "uuid", "real64"};
+    for (unsigned column = 0; column < 4; ++column) {
+      auto descriptor = ex::MakeExecutorDescriptor(spatial_types[column], "nullability=non_null");
+      descriptor.descriptor_kind = "scalar";
+      descriptor.descriptor_uuid = FixtureUuid(75 + column);
+      spatial.batch.columns.push_back({spatial_names[column], descriptor, false, column + 1});
+    }
+    for (unsigned ordinal = 0; ordinal < 3; ++ordinal) {
+      ex::ModelProviderRowIdentityV1 row_identity;
+      row_identity.row_uuid = FixtureUuid(80 + ordinal);
+      spatial.ordered_row_identities.push_back(row_identity);
+      ex::DescriptorTuple tuple;
+      for (unsigned column = 0; column < 4; ++column) {
+        api::EngineTypedValue value;
+        if (column == 0 || column == 2) {
+          const auto& id = column == 0 ? row_identity.row_uuid : spatial_input.spatial_crs_uuid;
+          value.binary_value.assign(id.bytes.begin(), id.bytes.end());
+        } else if (column == 1) {
+          // Independent wire oracle for POINT(0,0): SBP1, version1, 2 axes,
+          // zero reserved bytes and two big-endian binary64 zero coordinates.
+          value.binary_value = {'S','B','P','1',1,2,0,0};
+          value.binary_value.resize(24, 0);
+        } else value = ex::EncodeReal64Value(ordinal == 2 ? 5.0 : 0.0);
+        value.descriptor = spatial.batch.columns[column].descriptor;
+        tuple.values.push_back(std::move(value));
+      }
+      spatial.batch.rows.push_back(std::move(tuple));
+    }
+    const auto publish_spatial = [&](const auto& batch) {
+      return ex::PublishModelFamilyExchangeV1(spatial_input, batch, {});
+    };
+    const auto spatial_result = publish_spatial(spatial);
+    if (!spatial_result.accepted) throw std::runtime_error(spatial_result.detail);
+    Require(spatial_result.root_publishable && spatial_result.output.batch.rows.size() == 3 &&
+                spatial_result.output.batch.rows[2].values[3].binary_value == ex::EncodeReal64Value(5.0).binary_value,
+            "spatial exchange lost native distance or ordered rows");
+    for (unsigned mutation = 0; mutation < 10; ++mutation) {
+      auto invalid = spatial;
+      auto& distance = invalid.batch.rows[0].values[3];
+      switch (mutation) {
+        case 0: distance.encoded_value = "0"; break;
+        case 1: distance.binary_value.clear(); distance.encoded_value = "0"; break;
+        case 2: distance.binary_value.pop_back(); break;
+        case 3: distance.binary_value = ex::EncodeReal64Value(-1.0).binary_value; break;
+        case 4: distance.binary_value = {0,0,0,0,0,0,0,0x80}; break;
+        case 5: distance.binary_value = {0,0,0,0,0,0,0xf0,0x7f}; break;
+        case 6: distance.binary_value = {1,0,0,0,0,0,0xf8,0x7f}; break;
+        case 7: distance.is_null = true; break;
+        case 8:
+          ++invalid.batch.columns[3].descriptor.datatype_descriptor_generation;
+          for (auto& tuple : invalid.batch.rows) tuple.values[3].descriptor = invalid.batch.columns[3].descriptor;
+          break;
+        case 9:
+          std::swap(invalid.batch.rows[0], invalid.batch.rows[1]);
+          std::swap(invalid.ordered_row_identities[0], invalid.ordered_row_identities[1]);
+          break;
+      }
+      Require(RejectedWithoutPublication(publish_spatial(invalid)),
+              "spatial exchange published malformed native distance or incorrect tie order");
+    }
     std::cout << "PASS actual binary model exchange publication; component only\n";
     return 0;
   } catch (const std::exception& error) {

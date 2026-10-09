@@ -16,6 +16,7 @@
 #include "../internal_api/catalog/datatype_bootstrap_identity.hpp"
 #include "datatype_operations.hpp"
 #include "query/expression_api.hpp"
+#include "query/historical_timestamp_scalar.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include <map>
 
@@ -100,6 +101,11 @@ bool IsNumericType(const dt::CanonicalTypeId type_id) {
     case dt::CanonicalTypeId::int32:
     case dt::CanonicalTypeId::int64:
     case dt::CanonicalTypeId::int128:
+    case dt::CanonicalTypeId::uint8:
+    case dt::CanonicalTypeId::uint16:
+    case dt::CanonicalTypeId::uint32:
+    case dt::CanonicalTypeId::uint64:
+    case dt::CanonicalTypeId::uint128:
     case dt::CanonicalTypeId::real32:
     case dt::CanonicalTypeId::real64:
     case dt::CanonicalTypeId::real128:
@@ -3052,6 +3058,10 @@ bool CanonicalRelationalExpressionRuntime::BuildDescriptor(
   }
   const auto& source = *found->second;
   const auto native_type = dt::CanonicalTypeIdFromStableName(std::string(type_name));
+  if (native_type == dt::CanonicalTypeId::timestamp &&
+      source.codec_id == "datatype.timestamp.utc_tuple.le.v1") {
+    return api::BuildHistoricalTimestampScalarDescriptorV1(source, descriptor, refusal_detail);
+  }
   if (native_type == dt::CanonicalTypeId::uuid ||
       native_type == dt::CanonicalTypeId::binary ||
       native_type == dt::CanonicalTypeId::boolean ||
@@ -3352,6 +3362,13 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
   }
   const auto finish = [&](api::EngineTypedValue computed) {
     computed.descriptor = result_descriptor;
+    if (inferred_type == "timestamp" &&
+        descriptors_.at(expression.result_descriptor_id)->codec_id ==
+            "datatype.timestamp.utc_tuple.le.v1") {
+      api::HistoricalTimestampScalarPartsV1 checked;
+      if (!api::DecodeHistoricalTimestampScalarV1(computed, &checked, refusal_detail))
+        return false;
+    }
     return FinishValue(expression.result_descriptor_id, std::move(computed),
                        value, refusal_detail);
   };
@@ -3411,12 +3428,28 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
         literal.binary_value = typed.canonical_value_bytes;
         return finish(std::move(literal));
       }
-      if (dt::CanonicalTypeIdFromStableName(inferred_type) == dt::CanonicalTypeId::int64) {
+      const auto native_literal_type = dt::CanonicalTypeIdFromStableName(inferred_type);
+      if (native_literal_type == dt::CanonicalTypeId::timestamp) {
+        if (*expression.literal_kind != api::RelationalLiteralKind::kTemporal ||
+            typed.descriptor_generation !=
+                descriptors_.at(expression.result_descriptor_id)->descriptor_generation) {
+          *refusal_detail = "CTI.TEMPORAL.DESCRIPTOR_INVALID";
+          return false;
+        }
+        literal.binary_value = typed.canonical_value_bytes;
+        api::HistoricalTimestampScalarPartsV1 checked;
+        if (!api::DecodeHistoricalTimestampScalarV1(literal, &checked, refusal_detail))
+          return false;
+        return finish(std::move(literal));
+      }
+      if (native_literal_type == dt::CanonicalTypeId::int64 ||
+          native_literal_type == dt::CanonicalTypeId::uint64 ||
+          native_literal_type == dt::CanonicalTypeId::real64) {
         if (*expression.literal_kind != api::RelationalLiteralKind::kNumeric ||
             typed.descriptor_generation !=
                 descriptors_.at(expression.result_descriptor_id)->descriptor_generation ||
             typed.canonical_value_bytes.size() != 8) {
-          *refusal_detail = "typed INT64 literal requires its numeric kind, exact generation and 8 bytes";
+          *refusal_detail = "typed native 64-bit literal requires its numeric kind, exact generation and 8 bytes";
           return false;
         }
         literal.binary_value = typed.canonical_value_bytes;

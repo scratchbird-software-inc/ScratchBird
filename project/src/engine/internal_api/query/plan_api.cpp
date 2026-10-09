@@ -828,17 +828,32 @@ ExactRcp079PairCohortCompatibilityV1(const TypedRelationalDag& dag) {
            !expression->literal_or_parameter_ref.has_value() &&
            !expression->operator_name.has_value();
   };
-  const auto exact_literal = [](const RelationalExpressionRecord* expression,
+  const auto exact_literal = [&](const RelationalExpressionRecord* expression,
                                 const RelationalLiteralKind kind) {
-    return expression != nullptr &&
+    const bool shape = expression != nullptr &&
            expression->expression_kind == RelationalExpressionKind::kLiteral &&
            expression->child_expression_ids.empty() &&
            !expression->function_uuid.has_value() &&
            !expression->bound_name_uuid.has_value() &&
            expression->literal_kind == kind &&
-           expression->literal_or_parameter_ref.has_value() &&
-           !expression->literal_or_parameter_ref->empty() &&
            !expression->operator_name.has_value();
+    if (!shape || expression->parameter_typed_value_v1 ||
+        expression->contextual_text_literal_v2) return false;
+    if (expression->literal_or_parameter_ref)
+      return !expression->literal_or_parameter_ref->empty() &&
+             !expression->literal_typed_value_v1;
+    if (kind != RelationalLiteralKind::kNumeric ||
+        !expression->literal_typed_value_v1) return false;
+    const auto descriptor = descriptors_by_id.find(expression->result_descriptor_id);
+    const auto& literal = *expression->literal_typed_value_v1;
+    // Structural recognition only. The expression runtime must still validate
+    // the exact catalog/codec/receipt and payload digest before execution.
+    return descriptor != descriptors_by_id.end() &&
+           descriptor->second->datatype_identity_authoritative &&
+           literal.descriptor_uuid == descriptor->second->descriptor_uuid &&
+           literal.descriptor_generation != 0 &&
+           literal.descriptor_generation == descriptor->second->descriptor_generation &&
+           literal.value_state == "value" && literal.canonical_value_bytes.size() == 8;
   };
   const auto exact_function = [](const RelationalExpressionRecord* expression,
                                  const std::string_view name,
@@ -862,6 +877,14 @@ ExactRcp079PairCohortCompatibilityV1(const TypedRelationalDag& dag) {
   const auto positive_uint_literal = [&](const RelationalExpressionRecord* e) {
     if (!exact_literal(e, RelationalLiteralKind::kNumeric)) return false;
     std::uint64_t value = 0;
+    if (e->literal_typed_value_v1) {
+      const auto& descriptor = *descriptors_by_id.at(e->result_descriptor_id);
+      if (descriptor.codec_id != "datatype.uint64.le.v1") return false;
+      const auto& bytes = e->literal_typed_value_v1->canonical_value_bytes;
+      for (unsigned byte = 0; byte < 8; ++byte)
+        value |= static_cast<std::uint64_t>(bytes[byte]) << (8 * byte);
+      return value > 0 && non_null_descriptor(e->result_descriptor_id);
+    }
     const auto& text = *e->literal_or_parameter_ref;
     const auto parsed =
         std::from_chars(text.data(), text.data() + text.size(), value);

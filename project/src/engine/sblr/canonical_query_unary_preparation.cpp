@@ -22,6 +22,7 @@
 #include "catalog/name_resolution_api.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_operations.hpp"
+#include "query/historical_timestamp_scalar.hpp"
 
 #include <algorithm>
 #include <array>
@@ -891,6 +892,10 @@ PreparedProjectRoot PrepareExpressionProjectRoot(
         output_descriptor.encoded_descriptor +=
             ";scale=" + std::to_string(*source.scale);
       }
+      if (type_id == dt::CanonicalTypeId::timestamp &&
+          source.codec_id == "datatype.timestamp.utc_tuple.le.v1" &&
+          !api::BuildHistoricalTimestampScalarDescriptorV1(source, &output_descriptor, &result.detail))
+        return result;
       // Empty planning batches must produce the same bound descriptor as
       // row evaluation. Occurrence/type UUIDs alone are not datatype authority.
       if ((type_id == dt::CanonicalTypeId::uuid ||

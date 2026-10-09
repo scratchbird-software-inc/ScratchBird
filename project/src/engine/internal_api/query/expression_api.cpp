@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "query/expression_api.hpp"
+#include "query/historical_timestamp_scalar.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "catalog/datatype_bootstrap_identity.hpp"
 
@@ -1476,7 +1477,27 @@ bool QowEvaluateCanonicalComparisonTruthV1(
   engine::ExecutionTypeDescriptor left_descriptor;
   engine::ExecutionTypeDescriptor right_descriptor;
   std::string descriptor_refusal;
-  if (!QowBoundExecutionTypeDescriptorV1(
+  bool left_nullable = false, right_nullable = false;
+  const bool historical_timestamp = comparison_type == core::datatypes::CanonicalTypeId::timestamp &&
+      (left_value.descriptor.encoded_descriptor.starts_with("SBMETA02") ||
+       right_value.descriptor.encoded_descriptor.starts_with("SBMETA02"));
+  if (historical_timestamp) {
+    HistoricalTimestampScalarPartsV1 left_parts, right_parts;
+    const core::datatypes::DatatypeTypeCodecIdentityRowV1* left_identity = nullptr;
+    const core::datatypes::DatatypeTypeCodecIdentityRowV1* right_identity = nullptr;
+    EngineUuid left_receipt, right_receipt;
+    if (!DecodeHistoricalTimestampScalarV1(left_value, &left_parts, refusal_detail,
+                                           &left_identity, &left_receipt) ||
+        !DecodeHistoricalTimestampScalarV1(right_value, &right_parts, refusal_detail,
+                                           &right_identity, &right_receipt)) return false;
+    if (left_identity != right_identity || left_receipt != right_receipt) {
+      *refusal_detail = "CTI.TEMPORAL.DESCRIPTOR_INVALID";
+      return false;
+    }
+    // Decode already proved NULL admission against each exact descriptor.
+    left_nullable = left_parts.is_null;
+    right_nullable = right_parts.is_null;
+  } else if (!QowBoundExecutionTypeDescriptorV1(
           left_value.descriptor, comparison_type, &left_descriptor,
           &descriptor_refusal) ||
       !QowBoundExecutionTypeDescriptorV1(
@@ -1484,6 +1505,9 @@ bool QowEvaluateCanonicalComparisonTruthV1(
           &descriptor_refusal)) {
     *refusal_detail = "DATATYPE.DESCRIPTOR.INVALID:" + descriptor_refusal;
     return false;
+  } else {
+    left_nullable = left_descriptor.nullable_allowed;
+    right_nullable = right_descriptor.nullable_allowed;
   }
   if (comparison_type ==
       scratchbird::core::datatypes::CanonicalTypeId::character) {
@@ -1516,8 +1540,8 @@ bool QowEvaluateCanonicalComparisonTruthV1(
       return false;
   }
   if (left_value.isSqlNull() || right_value.isSqlNull()) {
-    if ((left_value.isSqlNull() && !left_descriptor.nullable_allowed) ||
-        (right_value.isSqlNull() && !right_descriptor.nullable_allowed)) {
+    if ((left_value.isSqlNull() && !left_nullable) ||
+        (right_value.isSqlNull() && !right_nullable)) {
       *refusal_detail =
           "DATATYPE.NULL_NOT_ADMITTED:comparison SQL NULL contradicts a bound descriptor";
       return false;
@@ -1635,6 +1659,11 @@ bool QowCompareCanonicalNonCollatedScalarsV1(
   }
   const auto type_id = dt::CanonicalTypeIdFromStableName(
       left_value.descriptor.canonical_type_name);
+  if (type_id == dt::CanonicalTypeId::timestamp &&
+      left_value.descriptor.encoded_descriptor.starts_with("SBMETA02")) {
+    return CompareHistoricalTimestampScalarsV1(left_value, right_value,
+                                               comparison, refusal_detail);
+  }
   const bool supported =
       type_id == dt::CanonicalTypeId::boolean ||
       (type_id >= dt::CanonicalTypeId::int8 &&

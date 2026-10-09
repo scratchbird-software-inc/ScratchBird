@@ -9,6 +9,8 @@
 #include "nosql/spatial_api.hpp"
 
 #if defined(SB_CES05_SPATIAL_COLUMNAR_PRODUCTION_QUERY_ROUTE)
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/published_ddl_table_fixture.hpp"
 #include "canonical_query_execute.hpp"
 #include "crud_support/crud_store.hpp"
 #include "database_lifecycle.hpp"
@@ -21,6 +23,7 @@
 #include "sblr_dispatch.hpp"
 #include "sblr_opcode_registry.hpp"
 #include "relational_descriptor_codec.hpp"
+#include "hash_digest.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 #endif
@@ -590,14 +593,15 @@ api::EngineUuid ProductionUuid(const platform::UuidKind kind,
 }
 
 api::EngineUuid ProductionCoreTypeUuid(const std::string_view stable_name) {
+  const auto catalog_name = stable_name == "text" ? "character" : stable_name;
   static const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
   const auto count = std::ranges::count_if(
       manifest.manifest.descriptor_rows,
-      [&](const auto& row) { return row.stable_name == stable_name; });
+      [&](const auto& row) { return row.stable_name == catalog_name; });
   const auto descriptor = std::ranges::find_if(
       manifest.manifest.descriptor_rows,
-      [&](const auto& row) { return row.stable_name == stable_name; });
+      [&](const auto& row) { return row.stable_name == catalog_name; });
   if (count != 1 || descriptor == manifest.manifest.descriptor_rows.end() ||
       !descriptor->descriptor_uuid.valid()) {
     return {};
@@ -605,10 +609,10 @@ api::EngineUuid ProductionCoreTypeUuid(const std::string_view stable_name) {
   const auto descriptor_uuid =
       descriptor->descriptor_uuid.value;
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"),
-      manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+      api::kBootstrapDatatypeCatalogUuid,
+      api::kBootstrapDatatypeCatalogGeneration, api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
       descriptor->descriptor_epoch);
-  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
+  return identity.ok ? identity.row.type_uuid : api::EngineUuid{};
 }
 
 api::EngineUuid ProductionCoreDescriptorUuid(const std::string_view stable_name) {
@@ -643,8 +647,10 @@ void AddProductionDecoderOperand(sblr::SblrOperationEnvelope* envelope,
   operand.ordinal =
       static_cast<std::uint32_t>(envelope->operands.size() + 1);
   operand.value_kind = sblr::SblrValueKind::literal_typed;
-  operand.value_body.assign(16, 0);
-  operand.value_body.front() = 0x73;
+  const auto type_uuid = ProductionCoreTypeUuid(
+      operand.type == "relational_node_v1" ? "text" : operand.type);
+  if (type_uuid.is_nil()) throw std::runtime_error("unresolved operand datatype: " + operand.type);
+  operand.value_body.assign(type_uuid.bytes.begin(), type_uuid.bytes.end());
   AppendProductionLittleEndianU64(&operand.value_body, value.size());
   operand.value_body.insert(operand.value_body.end(), value.begin(), value.end());
   envelope->operands.push_back(std::move(operand));
@@ -672,7 +678,7 @@ void AddProductionExpression(sblr::SblrOperationEnvelope* envelope,
   value.operator_name = std::string(name);
   if (!bound_object.is_nil()) value.bound_name_uuid = bound_object;
   sblr::SblrOperand operand;
-  operand.type = "relational_expression_v1";
+  operand.type = "relational_expression_v2";
   operand.name = "slot_" + std::to_string(id);
   operand.ordinal = static_cast<std::uint32_t>(envelope->operands.size() + 1);
   operand.value_kind = sblr::SblrValueKind::relational_expression;
@@ -694,8 +700,10 @@ void SetProductionDecoderOperandValue(sblr::SblrOperand* operand,
   if (operand == nullptr) return;
   operand->value.clear();
   operand->value_kind = sblr::SblrValueKind::literal_typed;
-  operand->value_body.assign(16, 0);
-  operand->value_body.front() = 0x73;
+  const auto type_uuid = ProductionCoreTypeUuid(
+      operand->type == "relational_node_v1" ? "text" : operand->type);
+  if (type_uuid.is_nil()) throw std::runtime_error("unresolved operand datatype: " + operand->type);
+  operand->value_body.assign(type_uuid.bytes.begin(), type_uuid.bytes.end());
   AppendProductionLittleEndianU64(&operand->value_body, value.size());
   operand->value_body.insert(operand->value_body.end(), value.begin(), value.end());
 }
@@ -802,7 +810,7 @@ sblr::SblrOperationEnvelope ProductionTimestampDecoderEnvelope(
     }
     if (!object.is_nil()) value.required_object_uuids = {object};
     sblr::SblrOperand operand;
-    operand.type = "relational_node_binding_v1";
+    operand.type = "relational_node_binding_v2";
     operand.name = "slot_" + std::to_string(id);
     operand.ordinal = static_cast<std::uint32_t>(envelope.operands.size() + 1);
     operand.value_kind = sblr::SblrValueKind::relational_node_binding;
@@ -933,7 +941,7 @@ bool ProductionTimestampDecoderReconciliation(
   const auto binding_operand = [](sblr::SblrOperationEnvelope* envelope,
                                   const std::string_view slot) {
     return std::ranges::find_if(envelope->operands, [&](const auto& operand) {
-      return operand.type == "relational_node_binding_v1" &&
+      return operand.type == "relational_node_binding_v2" &&
              operand.name == slot;
     });
   };
@@ -1107,6 +1115,9 @@ bool ProductionDescriptorScopeLifecycle() {
 }
 
 struct ProductionFixture {
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
+  std::shared_ptr<scratchbird::tests::FixtureEngineStatement> statement;
   std::filesystem::path directory;
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
@@ -1123,6 +1134,8 @@ struct ProductionFixture {
   std::uint64_t salt{0};
 
   ~ProductionFixture() {
+    statement.reset();
+    session.reset();
     std::error_code ignored;
     if (!directory.empty()) std::filesystem::remove_all(directory, ignored);
   }
@@ -1180,7 +1193,7 @@ std::string ProductionCanonicalTextDescriptor(
 
 api::EngineRequestContext ProductionBaseContext(
     const ProductionFixture& fixture, std::string request_id) {
-  api::EngineRequestContext context;
+  api::EngineRequestContext context = fixture.owner_context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
@@ -1194,9 +1207,6 @@ api::EngineRequestContext ProductionBaseContext(
   context.security_epoch = 1;
   context.resource_epoch = fixture.resource_epoch;
   context.name_resolution_epoch = 1;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
@@ -1232,45 +1242,13 @@ bool ProductionRollback(const api::EngineRequestContext& context) {
   return api::EngineRollbackTransaction(request).ok;
 }
 
-bool ProductionPublishSnapshot(api::EngineRequestContext* context,
-                               const std::uint64_t salt) {
+bool ProductionPublishSnapshot(ProductionFixture& fixture,
+                               api::EngineRequestContext* context) {
   if (context == nullptr) return false;
-  context->statement_uuid =
-      ProductionUuid(platform::UuidKind::object, salt);
-  context->statement_receipt_uuid =
-      ProductionUuid(platform::UuidKind::object, salt + 1);
-  api::EnginePublishStatementSnapshotRequest request;
-  request.context = *context;
-  const auto published = api::EnginePublishStatementSnapshot(request);
-  if (!published.ok) return false;
-  context->statement_snapshot_uuid = published.statement_snapshot_uuid;
-  context->snapshot_visible_through_local_transaction_id =
-      published.snapshot_vector.visible_committed_high_watermark;
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(fixture.owner_context);
+  fixture.statement = std::make_shared<scratchbird::tests::FixtureEngineStatement>(*fixture.session, *context);
+  *context = fixture.statement->context;
   return true;
-}
-
-void AddProductionAuthorization(api::EngineRequestContext* context,
-                                const api::EngineUuid& object_uuid) {
-  auto& authorization = context->authorization_context;
-  authorization.present = true;
-  authorization.authority_uuid =
-      ProductionUuid(platform::UuidKind::object, 9001);
-  authorization.principal_uuid = context->principal_uuid;
-  authorization.security_epoch = context->security_epoch;
-  authorization.policy_epoch = 1;
-  authorization.catalog_generation_id = context->catalog_generation_id;
-  authorization.effective_subjects.push_back(
-      {context->principal_uuid, "principal"});
-  api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid =
-      ProductionUuid(platform::UuidKind::object,
-                     9002 + authorization.grants.size());
-  grant.subject_uuid = context->principal_uuid;
-  grant.subject_kind = "principal";
-  grant.target_uuid = object_uuid;
-  grant.right = "SELECT";
-  grant.security_epoch = context->security_epoch;
-  authorization.grants.push_back(std::move(grant));
 }
 
 api::EngineUuid DescriptorTypeUuid(const api::EngineDescriptor& descriptor) {
@@ -1279,21 +1257,10 @@ api::EngineUuid DescriptorTypeUuid(const api::EngineDescriptor& descriptor) {
 
 std::string ProductionDescriptorField(
     const api::EngineDescriptor& descriptor, const std::string_view key) {
-  const std::string prefix = std::string(key) + "=";
-  const auto begin = descriptor.encoded_descriptor.find(prefix);
-  if (begin == std::string::npos ||
-      (begin != 0 && descriptor.encoded_descriptor[begin - 1] != ';')) {
-    return {};
-  }
-  const auto value_begin = begin + prefix.size();
-  const auto end = descriptor.encoded_descriptor.find(';', value_begin);
-  if (descriptor.encoded_descriptor.find(prefix, value_begin) !=
-      std::string::npos) {
-    return {};
-  }
-  return descriptor.encoded_descriptor.substr(
-      value_begin, end == std::string::npos ? std::string::npos
-                                            : end - value_begin);
+  api::CatalogColumnMetadata fields;
+  if (!api::AdmitCatalogColumnMetadata(descriptor.encoded_descriptor, &fields)) return {};
+  const auto found = fields.text.find(std::string(key));
+  return found == fields.text.end() ? std::string{} : found->second;
 }
 
 std::uint64_t ProductionDescriptorU64(
@@ -1350,6 +1317,13 @@ api::RelationalTypeDescriptor ProductionDescriptor(
   }
   return descriptor;
 }
+
+api::RelationalTypeDescriptor ProductionDerivedDescriptor(
+    const api::EngineRequestContext& context, std::uint32_t descriptor_id,
+    const api::EngineUuid& type_uuid, std::uint64_t salt);
+void ProductionNativeLiteral(api::RelationalExpressionRecord*,
+                             const api::RelationalTypeDescriptor&,
+                             std::vector<std::uint8_t>);
 
 api::TypedRelationalDag ProductionColumnarDag(
     const api::EngineRequestContext& context,
@@ -1487,13 +1461,7 @@ api::TypedRelationalDag ProductionColumnarJoinDag(
   append_source(right, 2, 201, 11, 200, right_is_model);
 
   const auto boolean_type = ProductionCoreTypeUuid("boolean");
-  api::RelationalTypeDescriptor boolean_descriptor;
-  boolean_descriptor.descriptor_id = 301;
-  boolean_descriptor.descriptor_uuid =
-      ProductionUuid(platform::UuidKind::object, salt + 1);
-  boolean_descriptor.type_uuid = boolean_type;
-  boolean_descriptor.nullability =
-      api::RelationalNullability::kNonNull;
+  auto boolean_descriptor = ProductionDerivedDescriptor(context, 301, boolean_type, salt + 1);
   dag.descriptors.push_back(std::move(boolean_descriptor));
   api::RelationalExpressionRecord predicate;
   predicate.expression_id = 300;
@@ -1543,28 +1511,45 @@ api::TypedRelationalDag ProductionTimezoneEquivalentColumnarJoinDag(
   auto dag = ProductionColumnarJoinDag(context, left, right, salt);
   const auto timestamp_type = ProductionCoreTypeUuid("timestamp");
   for (const auto descriptor_id : {302U, 303U}) {
-    api::RelationalTypeDescriptor descriptor;
-    descriptor.descriptor_id = descriptor_id;
-    descriptor.descriptor_uuid = ProductionUuid(
-        platform::UuidKind::object, salt + descriptor_id);
-    descriptor.type_uuid = timestamp_type;
-    descriptor.nullability = api::RelationalNullability::kNonNull;
-    descriptor.timezone_profile_id = "timestamp_timezone_profile";
+    auto descriptor = ProductionDerivedDescriptor(context, descriptor_id,
+        timestamp_type, salt + descriptor_id);
     dag.descriptors.push_back(std::move(descriptor));
   }
+  // SQL offset spelling belongs to the parser boundary. This typed-DAG
+  // fixture uses that same normalizer before passing exclusive native UTC
+  // tuples to the engine; no SQL timestamp spelling is an execution carrier.
+  const auto bytes = [](const char* spelling) {
+    dt::ReferenceTemporalWireProfileRequest request;
+    request.wire_profile = "timestamp_timezone_profile";
+    request.encoded_value = spelling;
+    request.fractional_second_precision = 9;
+    request.require_timezone_seed = false;
+    const auto parsed = dt::ValidateReferenceTemporalWireProfile(request);
+    if (!parsed.ok() || !parsed.comparable_utc_key_available || parsed.used_timezone_seed ||
+        parsed.comparable_fractional_picoseconds % 1000 != 0)
+      throw std::runtime_error("timestamp fixture boundary normalization failed");
+    std::vector<std::uint8_t> result(16, 0);
+    const auto seconds = static_cast<std::uint64_t>(parsed.comparable_utc_whole_seconds);
+    const auto nanos = static_cast<std::uint32_t>(parsed.comparable_fractional_picoseconds / 1000);
+    for (unsigned i = 0; i < 8; ++i) result[i] = static_cast<std::uint8_t>(seconds >> (8*i));
+    for (unsigned i = 0; i < 4; ++i) result[8+i] = static_cast<std::uint8_t>(nanos >> (8*i));
+    return result;
+  };
   api::RelationalExpressionRecord utc;
   utc.expression_id = 301;
   utc.expression_kind = api::RelationalExpressionKind::kLiteral;
   utc.result_descriptor_id = 302;
   utc.literal_kind = api::RelationalLiteralKind::kTemporal;
-  utc.literal_or_parameter_ref = "2026-08-11T20:00:00Z";
+  ProductionNativeLiteral(&utc, dag.descriptors[dag.descriptors.size()-2],
+                          bytes("2026-08-11T20:00:00Z"));
   dag.expressions.push_back(std::move(utc));
   api::RelationalExpressionRecord offset;
   offset.expression_id = 302;
   offset.expression_kind = api::RelationalExpressionKind::kLiteral;
   offset.result_descriptor_id = 303;
   offset.literal_kind = api::RelationalLiteralKind::kTemporal;
-  offset.literal_or_parameter_ref = "2026-08-11T15:00:00-05:00";
+  ProductionNativeLiteral(&offset, dag.descriptors.back(),
+                          bytes("2026-08-11T15:00:00-05:00"));
   dag.expressions.push_back(std::move(offset));
   const auto predicate = std::ranges::find_if(
       dag.expressions, [](const auto& expression) {
@@ -1577,6 +1562,7 @@ api::TypedRelationalDag ProductionTimezoneEquivalentColumnarJoinDag(
 }
 
 api::RelationalTypeDescriptor ProductionDerivedDescriptor(
+    const api::EngineRequestContext& context,
     const std::uint32_t descriptor_id, const api::EngineUuid& type_uuid,
     const std::uint64_t salt) {
   api::RelationalTypeDescriptor descriptor;
@@ -1585,7 +1571,42 @@ api::RelationalTypeDescriptor ProductionDerivedDescriptor(
       ProductionUuid(platform::UuidKind::object, salt);
   descriptor.type_uuid = type_uuid;
   descriptor.nullability = api::RelationalNullability::kNonNull;
+  const dt::DatatypeTypeCodecIdentityRowV1* selected = nullptr;
+  for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+    if (row.catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
+        row.catalog_generation != context.datatype_catalog_generation ||
+        row.registry_generation != context.datatype_registry_generation ||
+        row.type_uuid != type_uuid) continue;
+    if (selected) throw std::runtime_error("ambiguous derived spatial datatype");
+    selected = &row;
+  }
+  if (!selected) throw std::runtime_error("missing derived spatial datatype");
+  descriptor.datatype_identity_authoritative = true;
+  descriptor.descriptor_generation = selected->descriptor_generation;
+  descriptor.type_generation = selected->type_generation;
+  descriptor.codec_id = selected->codec_id;
+  descriptor.codec_version = selected->codec_version;
+  descriptor.codec_generation = selected->codec_generation;
+  descriptor.datatype_catalog_snapshot_uuid = selected->catalog_snapshot_uuid;
+  descriptor.datatype_catalog_generation = selected->catalog_generation;
+  descriptor.datatype_registry_generation = selected->registry_generation;
+  descriptor.statement_receipt_uuid = context.statement_receipt_uuid;
   return descriptor;
+}
+
+void ProductionNativeLiteral(api::RelationalExpressionRecord* expression,
+                             const api::RelationalTypeDescriptor& descriptor,
+                             std::vector<std::uint8_t> bytes) {
+  api::RelationalExpressionRecord::LiteralTypedValueV1 literal;
+  literal.descriptor_uuid = descriptor.descriptor_uuid;
+  literal.descriptor_generation = descriptor.descriptor_generation;
+  literal.value_state = "value";
+  literal.canonical_value_bytes = std::move(bytes);
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(literal.canonical_value_bytes);
+  if (!digest.ok()) throw std::runtime_error("native spatial fixture digest failed");
+  literal.canonical_value_sha256 = digest.digest;
+  expression->literal_or_parameter_ref.reset();
+  expression->literal_typed_value_v1 = std::move(literal);
 }
 
 api::TypedRelationalDag ProductionSpatialDag(
@@ -1598,7 +1619,7 @@ api::TypedRelationalDag ProductionSpatialDag(
   const auto boolean_type = ProductionCoreTypeUuid("boolean");
   const auto real64_type = ProductionCoreTypeUuid("real64");
   const auto uint64_type = ProductionCoreTypeUuid("uint64");
-  const auto text_type = ProductionCoreDescriptorUuid("character");
+  const auto text_type = ProductionCoreTypeUuid("character");
   api::TypedRelationalDag dag;
   dag.wire_version = 2;
   dag.bound_sblr_tree_uuid =
@@ -1622,13 +1643,13 @@ api::TypedRelationalDag ProductionSpatialDag(
         storage.columns[ordinal]));
   }
   dag.descriptors.push_back(
-      ProductionDerivedDescriptor(104, boolean_type, salt + 2));
+      ProductionDerivedDescriptor(context, 104, boolean_type, salt + 2));
   dag.descriptors.push_back(
-      ProductionDerivedDescriptor(105, real64_type, salt + 3));
+      ProductionDerivedDescriptor(context, 105, real64_type, salt + 3));
   dag.descriptors.push_back(
-      ProductionDerivedDescriptor(106, text_type, salt + 4));
+      ProductionDerivedDescriptor(context, 106, text_type, salt + 4));
   dag.descriptors.push_back(
-      ProductionDerivedDescriptor(107, uint64_type, salt + 5));
+      ProductionDerivedDescriptor(context, 107, uint64_type, salt + 5));
 
   if (multileg_profiles != nullptr) {
     const auto profile = [&](const std::uint8_t kind,
@@ -1704,7 +1725,7 @@ api::TypedRelationalDag ProductionSpatialDag(
   x.expression_kind = api::RelationalExpressionKind::kLiteral;
   x.result_descriptor_id = 105;
   x.literal_kind = api::RelationalLiteralKind::kNumeric;
-  x.literal_or_parameter_ref = "0";
+  ProductionNativeLiteral(&x, dag.descriptors[4], exec::EncodeReal64Value(0.0).binary_value);
   dag.expressions.push_back(x);
   auto y = x;
   y.expression_id = 104;
@@ -1734,7 +1755,7 @@ api::TypedRelationalDag ProductionSpatialDag(
   top_k.expression_kind = api::RelationalExpressionKind::kLiteral;
   top_k.result_descriptor_id = 107;
   top_k.literal_kind = api::RelationalLiteralKind::kNumeric;
-  top_k.literal_or_parameter_ref = "3";
+  ProductionNativeLiteral(&top_k, dag.descriptors[6], exec::EncodeUint64Value(3).binary_value);
   dag.expressions.push_back(std::move(top_k));
   api::RelationalExpressionRecord nearest;
   nearest.expression_id = 109;
@@ -1806,12 +1827,8 @@ api::TypedRelationalDag ProductionSpatialJoinDag(
   }
   dag.nodes.push_back(std::move(right_source));
 
-  api::RelationalTypeDescriptor predicate_descriptor;
-  predicate_descriptor.descriptor_id = 3001;
-  predicate_descriptor.descriptor_uuid =
-      ProductionUuid(platform::UuidKind::object, salt + 3);
-  predicate_descriptor.type_uuid = ProductionCoreTypeUuid("boolean");
-  predicate_descriptor.nullability = api::RelationalNullability::kNonNull;
+  auto predicate_descriptor = ProductionDerivedDescriptor(
+      context, 3001, ProductionCoreTypeUuid("boolean"), salt + 3);
   dag.descriptors.push_back(std::move(predicate_descriptor));
   api::RelationalExpressionRecord predicate;
   predicate.expression_id = 3000;
@@ -1880,11 +1897,9 @@ api::TypedRelationalDag ProductionSearchDag(
   for (std::size_t ordinal = 0; ordinal < kKinds.size(); ++ordinal) {
     const auto* exact = profile(kKinds[ordinal], kSlots[ordinal]);
     if (exact == nullptr) continue;
-    api::RelationalTypeDescriptor descriptor;
-    descriptor.descriptor_id = static_cast<std::uint32_t>(101 + ordinal);
+    auto descriptor = ProductionDerivedDescriptor(
+        context, static_cast<std::uint32_t>(101 + ordinal), exact->type_uuid, salt + ordinal + 100);
     descriptor.descriptor_uuid = exact->descriptor_uuid;
-    descriptor.type_uuid = exact->type_uuid;
-    descriptor.nullability = api::RelationalNullability::kNonNull;
     dag.descriptors.push_back(std::move(descriptor));
   }
   dag.descriptors.push_back(
@@ -2031,12 +2046,8 @@ api::TypedRelationalDag ProductionSpatialSearchJoinDag(
   }
   dag.nodes.push_back(std::move(search_source));
 
-  api::RelationalTypeDescriptor predicate_descriptor;
-  predicate_descriptor.descriptor_id = 3001;
-  predicate_descriptor.descriptor_uuid =
-      ProductionUuid(platform::UuidKind::object, salt + 3);
-  predicate_descriptor.type_uuid = ProductionCoreTypeUuid("boolean");
-  predicate_descriptor.nullability = api::RelationalNullability::kNonNull;
+  auto predicate_descriptor = ProductionDerivedDescriptor(
+      context, 3001, ProductionCoreTypeUuid("boolean"), salt + 3);
   dag.descriptors.push_back(std::move(predicate_descriptor));
   api::RelationalExpressionRecord predicate;
   predicate.expression_id = 3000;
@@ -2093,8 +2104,7 @@ bool ProductionSpatialRoute() {
   create.database_uuid = database_uuid.value;
   create.filespace_uuid = filespace_uuid.value;
   create.creation_unix_epoch_millis = ProductionNowMillis();
-  create.resource_seed_pack_root = SB_BOOTSTRAP_SEED_PACK_ROOT;
-  create.require_resource_seed_pack = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!Require(created.ok(),
@@ -2109,12 +2119,10 @@ bool ProductionSpatialRoute() {
                "production spatial UTF8 resource authority is unavailable")) {
     return false;
   }
-  fixture.schema_uuid =
-      ProductionUuid(platform::UuidKind::object, fixture.salt + 10);
-  fixture.principal_uuid =
-      ProductionUuid(platform::UuidKind::principal, fixture.salt + 11);
-  fixture.session_uuid =
-      ProductionUuid(platform::UuidKind::object, fixture.salt + 12);
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.schema_uuid = fixture.owner_context.current_schema_uuid;
+  fixture.principal_uuid = fixture.owner_context.principal_uuid;
+  fixture.session_uuid = fixture.owner_context.session_uuid;
   fixture.relation_uuid =
       ProductionUuid(platform::UuidKind::object, fixture.salt + 13);
   const auto crs_uuid =
@@ -2127,7 +2135,7 @@ bool ProductionSpatialRoute() {
       ProductionUuid(platform::UuidKind::object, fixture.salt + 17);
   const auto uuid_type = ProductionCoreTypeUuid("uuid");
   const auto geometry_type = ProductionCoreTypeUuid("geometry");
-  const auto text_type = ProductionCoreDescriptorUuid("character");
+  const auto text_type = ProductionCoreTypeUuid("character");
   if (!Require(!uuid_type.is_nil() && !geometry_type.is_nil() &&
                    !text_type.is_nil(),
                "production spatial core type UUIDs are unavailable")) {
@@ -2163,15 +2171,16 @@ bool ProductionSpatialRoute() {
        scratchbird::tests::NativeCatalogColumnFixture({{{"canonical", "text"}, {"nullable", "false"}}, {{"type_uuid", text_type}}})},
   };
   api::MgaRelationStorageDescriptor search_storage;
-  if (!Require(!api::AppendMgaTableMetadata(metadata, table).error &&
-                   !api::EnsureMgaRelationStorageDescriptor(metadata, table, {},
+  table = scratchbird::tests::PublishDdlTableFixture(metadata, table, {"uuid", "geometry", "uuid"});
+  right_table = scratchbird::tests::PublishDdlTableFixture(metadata, right_table, {"uuid", "geometry", "uuid"});
+  search_table = scratchbird::tests::PublishDdlTableFixture(metadata, search_table, {"text", "text"});
+  fixture.schema_uuid = metadata.current_schema_uuid;
+  if (!Require(!api::EnsureMgaRelationStorageDescriptor(metadata, table, {},
                                                             &storage)
                         .error &&
-                   !api::AppendMgaTableMetadata(metadata, right_table).error &&
                    !api::EnsureMgaRelationStorageDescriptor(
                         metadata, right_table, {}, &right_storage)
                         .error &&
-                   !api::AppendMgaTableMetadata(metadata, search_table).error &&
                    !api::EnsureMgaRelationStorageDescriptor(
                         metadata, search_table, {}, &search_storage)
                         .error &&
@@ -2270,26 +2279,10 @@ bool ProductionSpatialRoute() {
 
   api::EngineRequestContext reader;
   if (!Require(ProductionBegin(fixture, "rcp079-spatial-reader", &reader) &&
-                   ProductionPublishSnapshot(&reader, fixture.salt + 40),
+                   ProductionPublishSnapshot(fixture, &reader),
                "production spatial reader snapshot failed")) {
     return false;
   }
-  reader.statement_timestamp = "2026-08-11T20:00:00Z";
-  reader.statement_metadata_snapshot_engine_owned = true;
-  reader.statement_metadata_snapshot_uuid =
-      ProductionUuid(platform::UuidKind::object, fixture.salt + 41);
-  reader.statement_metadata_snapshot_visible_through_local_transaction_id =
-      reader.snapshot_visible_through_local_transaction_id;
-  reader.catalog_epoch_uuid =
-      ProductionUuid(platform::UuidKind::object, fixture.salt + 42);
-  reader.optimizer_capability_snapshot_uuid =
-      ProductionUuid(platform::UuidKind::object, fixture.salt + 43);
-  reader.optimizer_resource_snapshot_uuid =
-      ProductionUuid(platform::UuidKind::object, fixture.salt + 44);
-  reader.optimizer_route_snapshot_uuid =
-      ProductionUuid(platform::UuidKind::object, fixture.salt + 45);
-  reader.optimizer_route_epoch = 1;
-  reader.optimizer_route_generation = 1;
   reader.optimizer_memory_budget_bytes = 16 * 1024 * 1024;
   reader.optimizer_maximum_candidate_count = 4096;
   reader.optimizer_maximum_memo_groups = 4096;
@@ -2297,9 +2290,6 @@ bool ProductionSpatialRoute() {
   reader.optimizer_maximum_planning_time_ns = 1'000'000'000;
   reader.current_monotonic_ns = std::to_string(ProductionNowMillis());
   reader.query_cancellation_requested = [] { return false; };
-  AddProductionAuthorization(&reader, fixture.relation_uuid);
-  AddProductionAuthorization(&reader, right_relation_uuid);
-  AddProductionAuthorization(&reader, search_relation_uuid);
   const auto execution = sblr::ExecuteCanonicalCurrentHeapQuery(
       {reader,
        ProductionSpatialDag(reader, storage, crs_uuid, fixture.salt + 100)});
@@ -2319,10 +2309,10 @@ bool ProductionSpatialRoute() {
       execution.api_result.result_shape.rows[0].fields.size() == 5 &&
       execution.api_result.result_shape.rows[0].fields[3].second.encoded_value ==
           "true" &&
-      execution.api_result.result_shape.rows[0].fields[4].second.encoded_value ==
-          "0" &&
-      execution.api_result.result_shape.rows[1].fields[4].second.encoded_value ==
-          "0";
+      execution.api_result.result_shape.rows[0].fields[4].second.encoded_value.empty() &&
+      execution.api_result.result_shape.rows[0].fields[4].second.binary_value == std::vector<std::uint8_t>(8, 0) &&
+      execution.api_result.result_shape.rows[1].fields[4].second.encoded_value.empty() &&
+      execution.api_result.result_shape.rows[1].fields[4].second.binary_value == std::vector<std::uint8_t>(8, 0);
   auto profiles = ProductionMultilegProfiles(fixture.salt + 80'000);
   const auto bind_persisted_profile =
       [&](const std::uint8_t kind, const std::uint16_t slot,
@@ -2654,29 +2644,34 @@ bool ProductionSpatialRoute() {
   }
   const bool rolled_back = ProductionRollback(reader);
   return Require(exact,
-                 "production canonical spatial route drifted: " + diagnostic) &&
+                 "production canonical spatial route drifted: " + diagnostic) &
          Require(left_outer_exact,
                  "supplementary spatial/spatial LEFT descriptor route "
-                 "drifted: " + outer_diagnostic) &&
+                 "drifted: " + outer_diagnostic) &
          Require(right_outer_exact,
                  "supplementary spatial/spatial RIGHT descriptor route "
-                 "drifted: " + outer_diagnostic) &&
+                 "drifted: " + outer_diagnostic) &
          Require(full_outer_exact,
                  "supplementary spatial/spatial FULL descriptor route "
-                 "drifted: " + outer_diagnostic) &&
+                 "drifted: " + outer_diagnostic) &
          Require(mixed_left_exact,
                  "SPATIAL-DV006 spatial/search LEFT descriptor route "
-                 "drifted: " + mixed_diagnostic) &&
+                 "drifted: " + mixed_diagnostic) &
          Require(mixed_right_exact,
                  "SPATIAL-DV006 spatial/search RIGHT descriptor route "
-                 "drifted: " + mixed_diagnostic) &&
+                 "drifted: " + mixed_diagnostic) &
          Require(mixed_full_exact,
                  "SPATIAL-DV006 spatial/search FULL descriptor route "
-                 "drifted: " + mixed_diagnostic) &&
+                 "drifted: " + mixed_diagnostic) &
          Require(rolled_back, "production spatial reader rollback failed");
 }
 
 bool ProductionColumnarRoute() {
+  const auto native_integer_bytes = [](const api::EngineDescriptor& descriptor,
+                                       const std::string& text) {
+    const auto value = scratchbird::tests::NativeInt64Fixture(descriptor, text);
+    return std::string(reinterpret_cast<const char*>(value.binary_value.data()), value.binary_value.size());
+  };
   ProductionFixture fixture;
   fixture.salt = ProductionNowMillis() % 1'000'000;
   fixture.directory = std::filesystem::temp_directory_path() /
@@ -2702,8 +2697,7 @@ bool ProductionColumnarRoute() {
   create.database_uuid = database_uuid.value;
   create.filespace_uuid = filespace_uuid.value;
   create.creation_unix_epoch_millis = ProductionNowMillis();
-  create.resource_seed_pack_root = SB_BOOTSTRAP_SEED_PACK_ROOT;
-  create.require_resource_seed_pack = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!Require(created.ok(),
@@ -2718,12 +2712,10 @@ bool ProductionColumnarRoute() {
                "production columnar UTF8 resource authority is unavailable")) {
     return false;
   }
-  fixture.schema_uuid =
-      ProductionUuid(platform::UuidKind::object, fixture.salt + 10);
-  fixture.principal_uuid =
-      ProductionUuid(platform::UuidKind::principal, fixture.salt + 11);
-  fixture.session_uuid =
-      ProductionUuid(platform::UuidKind::object, fixture.salt + 12);
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.schema_uuid = fixture.owner_context.current_schema_uuid;
+  fixture.principal_uuid = fixture.owner_context.principal_uuid;
+  fixture.session_uuid = fixture.owner_context.session_uuid;
   fixture.relation_uuid =
       ProductionUuid(platform::UuidKind::object, fixture.salt + 13);
   const auto right_relation_uuid =
@@ -2764,11 +2756,14 @@ bool ProductionColumnarRoute() {
   }
 
   api::MgaRelationStorageDescriptor right_storage;
+  table = scratchbird::tests::PublishDdlTableFixture(metadata, table, {"uuid", "int64", "text"});
+  right_table = scratchbird::tests::PublishDdlTableFixture(metadata, right_table, {"uuid", "int64", "text"});
+  fixture.schema_uuid = metadata.current_schema_uuid;
   if (!Require(
-                   !api::AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
+                   !api::EnsureMgaRelationStorageDescriptor(
                         metadata, table, {}, &storage)
                         .error &&
-                   !api::AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
+                   !api::EnsureMgaRelationStorageDescriptor(
                         metadata, right_table, {}, &right_storage)
                         .error &&
                    ProductionCommit(metadata),
@@ -2784,13 +2779,13 @@ bool ProductionColumnarRoute() {
   struct Seed {
     api::EngineUuid row_uuid;
     std::string join_key;
-    std::string payload;
+    api::CrudStoredValue payload;
   };
   const std::array<Seed, 3> seeds{{
       {ProductionUuid(platform::UuidKind::row, fixture.salt + 20), "1",
        "alpha"},
       {ProductionUuid(platform::UuidKind::row, fixture.salt + 21), "2",
-       "<NULL>"},
+       api::CrudStoredValue::SqlNull()},
       {ProductionUuid(platform::UuidKind::row, fixture.salt + 22), "3",
        "beta"},
   }};
@@ -2802,7 +2797,7 @@ bool ProductionColumnarRoute() {
     row.version_uuid =
         ProductionUuid(platform::UuidKind::object, fixture.salt + 30 + ordinal);
     row.values = {{"row_uuid", IdentityBytes(seeds[ordinal].row_uuid)},
-                  {"join_key", seeds[ordinal].join_key},
+                  {"join_key", native_integer_bytes(storage.columns[1].value_descriptor, seeds[ordinal].join_key)},
                   {"payload", seeds[ordinal].payload}};
     std::uint64_t sequence = 0;
     if (!Require(!api::AppendMgaRowVersion(writer, row, &sequence).error &&
@@ -2827,7 +2822,7 @@ bool ProductionColumnarRoute() {
     row.version_uuid =
         ProductionUuid(platform::UuidKind::object, fixture.salt + 60 + ordinal);
     row.values = {{"row_uuid", IdentityBytes(right_seeds[ordinal].row_uuid)},
-                  {"join_key", right_seeds[ordinal].join_key},
+                  {"join_key", native_integer_bytes(right_storage.columns[1].value_descriptor, right_seeds[ordinal].join_key)},
                   {"payload", right_seeds[ordinal].payload}};
     std::uint64_t sequence = 0;
     if (!Require(!api::AppendMgaRowVersion(writer, row, &sequence).error &&
@@ -2843,26 +2838,10 @@ bool ProductionColumnarRoute() {
 
   api::EngineRequestContext reader;
   if (!Require(ProductionBegin(fixture, "rcp079-columnar-reader", &reader) &&
-                   ProductionPublishSnapshot(&reader, fixture.salt + 40),
+                   ProductionPublishSnapshot(fixture, &reader),
                "production columnar reader snapshot failed")) {
     return false;
   }
-  reader.statement_timestamp = "2026-08-11T20:00:00Z";
-  reader.statement_metadata_snapshot_engine_owned = true;
-  reader.statement_metadata_snapshot_uuid =
-      ProductionUuid(platform::UuidKind::object, fixture.salt + 41);
-  reader.statement_metadata_snapshot_visible_through_local_transaction_id =
-      reader.snapshot_visible_through_local_transaction_id;
-  reader.catalog_epoch_uuid =
-      ProductionUuid(platform::UuidKind::object, fixture.salt + 42);
-  reader.optimizer_capability_snapshot_uuid =
-      ProductionUuid(platform::UuidKind::object, fixture.salt + 43);
-  reader.optimizer_resource_snapshot_uuid =
-      ProductionUuid(platform::UuidKind::object, fixture.salt + 44);
-  reader.optimizer_route_snapshot_uuid =
-      ProductionUuid(platform::UuidKind::object, fixture.salt + 45);
-  reader.optimizer_route_epoch = 1;
-  reader.optimizer_route_generation = 1;
   reader.optimizer_memory_budget_bytes = 16 * 1024 * 1024;
   reader.optimizer_maximum_candidate_count = 4096;
   reader.optimizer_maximum_memo_groups = 4096;
@@ -2870,8 +2849,6 @@ bool ProductionColumnarRoute() {
   reader.optimizer_maximum_planning_time_ns = 1'000'000'000;
   reader.current_monotonic_ns = std::to_string(ProductionNowMillis());
   reader.query_cancellation_requested = [] { return false; };
-  AddProductionAuthorization(&reader, fixture.relation_uuid);
-  AddProductionAuthorization(&reader, right_relation_uuid);
   const bool timestamp_decoder_exact =
       ProductionTimestampDecoderReconciliation(reader);
   const auto execution = sblr::ExecuteCanonicalCurrentHeapQuery(
@@ -2951,12 +2928,9 @@ bool ProductionColumnarRoute() {
       joined.canonical_result_row_count == 2 &&
       joined.api_result.result_shape.rows.size() == 2 &&
       joined.api_result.result_shape.rows[0].fields.size() == 6 &&
-      joined.api_result.result_shape.rows[0].fields[1].second.encoded_value ==
-          "2" &&
-      joined.api_result.result_shape.rows[0].fields[4].second.encoded_value ==
-          "2" &&
-      joined.api_result.result_shape.rows[1].fields[1].second.encoded_value ==
-          "3" &&
+      scratchbird::tests::NativeInt64Equals(joined.api_result.result_shape.rows[0].fields[1].second, 2) &&
+      scratchbird::tests::NativeInt64Equals(joined.api_result.result_shape.rows[0].fields[4].second, 2) &&
+      scratchbird::tests::NativeInt64Equals(joined.api_result.result_shape.rows[1].fields[1].second, 3) &&
       joined.api_result.result_shape.rows[1].fields[5].second.encoded_value ==
           "right-three" &&
       HasEvidence(joined, "canonical.model_join_left_provider_route",
@@ -3106,12 +3080,9 @@ bool ProductionColumnarRoute() {
       relational_joined.canonical_result_row_count == 2 &&
       relational_joined.api_result.result_shape.rows.size() == 2 &&
       relational_joined.api_result.result_shape.rows[0].fields.size() == 6 &&
-      relational_joined.api_result.result_shape.rows[0]
-              .fields[1].second.encoded_value == "2" &&
-      relational_joined.api_result.result_shape.rows[0]
-              .fields[4].second.encoded_value == "2" &&
-      relational_joined.api_result.result_shape.rows[1]
-              .fields[1].second.encoded_value == "3" &&
+      scratchbird::tests::NativeInt64Equals(relational_joined.api_result.result_shape.rows[0].fields[1].second, 2) &&
+      scratchbird::tests::NativeInt64Equals(relational_joined.api_result.result_shape.rows[0].fields[4].second, 2) &&
+      scratchbird::tests::NativeInt64Equals(relational_joined.api_result.result_shape.rows[1].fields[1].second, 3) &&
       relational_joined.api_result.result_shape.rows[1]
               .fields[5].second.encoded_value == "right-three" &&
       HasEvidence(relational_joined,
@@ -3177,32 +3148,32 @@ bool ProductionColumnarRoute() {
                   "canonical.relational.lateral-correlated.v1");
   const bool rolled_back = ProductionRollback(reader);
   return Require(timestamp_decoder_exact,
-                 "timestamp model-graph decoder reconciliation drifted") &&
+                 "timestamp model-graph decoder reconciliation drifted") &
          Require(exact,
-                 "production canonical columnar route drifted: " + diagnostic) &&
+                 "production canonical columnar route drifted: " + diagnostic) &
          Require(absent_scope_exact,
-                 "missing V10 descriptor scope crossed pre-access") &&
+                 "missing V10 descriptor scope crossed pre-access") &
          Require(mismatched_scope_exact,
-                 "mismatched V10 descriptor scope crossed pre-access") &&
+                 "mismatched V10 descriptor scope crossed pre-access") &
          Require(descriptor_scope.installed(),
-                 "production V10 descriptor scope was not installed") &&
+                 "production V10 descriptor scope was not installed") &
          Require(joined_exact,
                  "production canonical columnar join route drifted: " +
-                     join_diagnostic) &&
+                     join_diagnostic) &
          Require(timezone_join_exact,
                  "production captured model-family timezone-equivalent join "
-                 "drifted: " + timezone_join_diagnostic) &&
+                 "drifted: " + timezone_join_diagnostic) &
          Require(all_regular_common_forms,
-                 "production canonical regular-form/condition routes drifted") &&
+                 "production canonical regular-form/condition routes drifted") &
          Require(relational_joined_exact,
                  "production canonical columnar-to-relational join route "
-                 "drifted: " + relational_join_diagnostic) &&
+                 "drifted: " + relational_join_diagnostic) &
          Require(lateral_inner_exact,
                  "production canonical LATERAL INNER route drifted: " +
-                     lateral_inner_diagnostic) &&
+                     lateral_inner_diagnostic) &
          Require(lateral_left_exact,
                  "production canonical LATERAL LEFT route drifted: " +
-                     lateral_left_diagnostic) &&
+                     lateral_left_diagnostic) &
          Require(rolled_back,
                  "production columnar reader rollback failed");
 }
@@ -3210,7 +3181,7 @@ bool ProductionColumnarRoute() {
 
 }  // namespace
 
-int main() try {
+int main(int argc, char** argv) try {
 #if defined(SB_CES05_SPATIAL_COLUMNAR_PRODUCTION_QUERY_ROUTE)
   auto memory_policy = memory::DefaultLocalEngineMemoryPolicy();
   memory_policy.policy_name = "qow_ces05_spatial_columnar";
@@ -3221,14 +3192,23 @@ int main() try {
     return EXIT_FAILURE;
   }
 #endif
-  if (!SpatialVectors() || !ColumnarVectors()
+  bool passed = true;
 #if defined(SB_CES05_SPATIAL_COLUMNAR_PRODUCTION_QUERY_ROUTE)
-      || !ProductionDescriptorScopeLifecycle() ||
-      !ProductionColumnarRoute() || !ProductionSpatialRoute()
-#endif
-  ) {
-    return EXIT_FAILURE;
+  const std::string_view selection = argc == 2 ? argv[1] : "";
+  if (argc > 2 || (!selection.empty() && selection != "--spatial-only" && selection != "--columnar-only"))
+    throw std::runtime_error("invalid spatial/columnar test selection");
+  if (selection.empty()) {
+    passed &= SpatialVectors();
+    passed &= ColumnarVectors();
+    passed &= ProductionDescriptorScopeLifecycle();
   }
+  if (selection != "--spatial-only") passed &= ProductionColumnarRoute();
+  if (selection != "--columnar-only") passed &= ProductionSpatialRoute();
+#else
+  passed &= SpatialVectors();
+  passed &= ColumnarVectors();
+#endif
+  if (!passed) return EXIT_FAILURE;
   std::cout << "qow_ces05_spatial_columnar=passed\n";
   return EXIT_SUCCESS;
 } catch (const std::exception& error) {

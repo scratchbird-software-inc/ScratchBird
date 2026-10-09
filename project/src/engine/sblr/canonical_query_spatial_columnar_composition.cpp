@@ -1210,8 +1210,9 @@ bool Rcp079ExactPersistedColumnDescriptorV1(
   if (!fields.has_value() || persisted.canonical_name_key.empty() ||
       !core::uuid::IsEngineIdentityUuid(persisted.column_uuid) ||
       !api::QowCanonicalDescriptorIdentityV1(persisted.value_descriptor) ||
-      persisted.value_descriptor.descriptor_kind !=
-          "canonical_type_descriptor" ||
+      (persisted.value_descriptor.descriptor_kind != "scalar" &&
+       persisted.value_descriptor.descriptor_kind !=
+           "canonical_type_descriptor") ||
       !core::uuid::IsEngineIdentityUuid(
           persisted.value_descriptor.descriptor_uuid) ||
       persisted.storage_class != "inline_row_value" ||
@@ -2489,24 +2490,7 @@ std::optional<std::uint64_t> Rcp079SpatialProviderBuildAdditionalBytesV1(
       return std::nullopt;
     }
     if (has_nearest) {
-      std::array<char, 64> distance_buffer{};
-      std::size_t distance_size = 1;
-      if (row.distance == 0.0) {
-        distance_buffer[0] = '0';
-      } else {
-        const auto distance = std::to_chars(
-            distance_buffer.data(),
-            distance_buffer.data() + distance_buffer.size(), row.distance,
-            std::chars_format::general,
-            std::numeric_limits<double>::max_digits10);
-        if (distance.ec != std::errc{}) return std::nullopt;
-        distance_size = static_cast<std::size_t>(
-            distance.ptr - distance_buffer.data());
-      }
-      if (!add_string(std::string_view(distance_buffer.data(),
-                                       distance_size))) {
-        return std::nullopt;
-      }
+      if (!CheckedAdd(bytes, 8, &bytes)) return std::nullopt;
     }
   }
   return bytes;
@@ -3987,8 +3971,9 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
       const bool descriptor_identity_exact =
           api::QowCanonicalDescriptorIdentityV1(column.value_descriptor);
       const bool descriptor_kind_exact =
+          column.value_descriptor.descriptor_kind == "scalar" ||
           column.value_descriptor.descriptor_kind ==
-          "canonical_type_descriptor";
+              "canonical_type_descriptor";
       const bool persisted_shape_exact =
           Rcp079ExactPersistedColumnDescriptorV1(input.context, column);
       const bool descriptor_carrier_unique =
@@ -4046,8 +4031,8 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                << ";charset_uuid=" << "<binary16 UUID>"
                << ";collation_uuid=" << "<binary16 UUID>"
                << ";character_length=" << column.character_length
-               << ";encoded_descriptor="
-               << column.value_descriptor.encoded_descriptor;
+               << ";encoded_descriptor_bytes="
+               << column.value_descriptor.encoded_descriptor.size();
         return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
                       detail.str());
       }
@@ -4079,8 +4064,9 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
       const auto& column = persisted.columns[ordinal];
       if (column.ordinal != ordinal ||
           !core::uuid::IsEngineIdentityUuid(column.column_uuid) ||
-          column.value_descriptor.descriptor_kind !=
-              "canonical_type_descriptor" ||
+          (column.value_descriptor.descriptor_kind != "scalar" &&
+           column.value_descriptor.descriptor_kind !=
+               "canonical_type_descriptor") ||
           !api::QowCanonicalDescriptorIdentityV1(column.value_descriptor) ||
           (!Rcp079ExactDescriptorFieldsV1(column.value_descriptor) ||
            Rcp079ExactDescriptorFieldsV1(column.value_descriptor)->identity("type_uuid") !=
@@ -4207,12 +4193,13 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
         return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
                       "derived spatial output type identity is invalid");
       }
-      engine_descriptor.descriptor_uuid = descriptor->descriptor_uuid;
-      engine_descriptor.descriptor_kind = "scalar";
-      engine_descriptor.canonical_type_name = std::string(expected_type);
-      engine_descriptor.encoded_descriptor =
-          "nullability=non_null";
-      engine_descriptor.type_uuid = descriptor->type_uuid;
+      if (!BuildExactCanonicalScalarRuntimeDescriptorV1(
+              *descriptor, dt::CanonicalTypeIdFromStableName(
+                               std::string(expected_type)),
+              &engine_descriptor)) {
+        return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                      "derived spatial datatype receipt binding is invalid");
+      }
     }
     public_columns.push_back(
         {outputs[ordinal]->output_name_utf8, engine_descriptor,
@@ -5351,26 +5338,27 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                     nearest,
                     api::EngineCanonicalExpressionConsumer::projection,
                     &nearest_request->encoded_query_point) ||
-                top_k == dag.expressions.end() ||
-                !top_k->literal_or_parameter_ref.has_value()) {
+                top_k == dag.expressions.end()) {
               return fail(spatial_evaluation_resource_refused
                               ? "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1"
                               : "SB_MODEL_SPATIAL_COORDINATE_INVALID_V1",
                           "SPATIAL_NEAREST binding is incomplete");
             }
-            const auto parsed = std::from_chars(
-                top_k->literal_or_parameter_ref->data(),
-                top_k->literal_or_parameter_ref->data() +
-                    top_k->literal_or_parameter_ref->size(),
-                nearest_request->top_k);
-            if (parsed.ec != std::errc{} ||
-                parsed.ptr != top_k->literal_or_parameter_ref->data() +
-                                  top_k->literal_or_parameter_ref->size() ||
-                nearest_request->top_k == 0 ||
-                nearest_request->top_k > 4096) {
+            CanonicalRelationalExpressionRuntime top_k_runtime(dag);
+            api::EngineTypedValue top_k_value;
+            std::string top_k_detail;
+            std::uint64_t top_k_count = 0;
+            if (!top_k_runtime.EvaluateForConsumer(
+                    top_k->expression_id, "uint64",
+                    api::EngineCanonicalExpressionConsumer::projection,
+                    &top_k_value, &top_k_detail) ||
+                !exec::DecodeBoundUint64Value(top_k_value, &top_k_count,
+                                             &top_k_detail) ||
+                top_k_count == 0 || top_k_count > 4096) {
               return fail("SB_MODEL_SPATIAL_TOP_K_REFUSED_V1",
-                          "SPATIAL_NEAREST top-k is invalid");
+                          "SPATIAL_NEAREST top-k is invalid:" + top_k_detail);
             }
+            nearest_request->top_k = static_cast<std::uint32_t>(top_k_count);
             std::array<char, 24> retained_nearest_query_bytes{};
             const bool nearest_query_bytes_retained =
                 nearest_request->encoded_query_point.size() ==
@@ -5819,7 +5807,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                 if (ordinal == 3 && has_match) value.encoded_value = "true";
                 if ((ordinal == 3 && !has_match && has_nearest) ||
                     ordinal == 4) {
-                  value.encoded_value = Rcp079CanonicalReal64(row.distance);
+                  value.binary_value = exec::EncodeReal64Value(row.distance).binary_value;
                 }
                 tuple.values.push_back(std::move(value));
               }

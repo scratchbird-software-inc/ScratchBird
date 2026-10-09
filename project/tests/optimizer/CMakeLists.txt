@@ -694,6 +694,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
     SB_CES05_SPATIAL_COLUMNAR_PRODUCTION_QUERY_ROUTE=1
     SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack")
   target_link_libraries(qow_ces05_spatial_columnar_production_route_test_v1 PRIVATE
+    sb_engine
     sb_engine_sblr
     sb_core_hash
     sb_core_memory
@@ -1181,6 +1182,7 @@ target_compile_definitions(
   SB_CES05_SPATIAL_COLUMNAR_PRODUCTION_QUERY_ROUTE=1
   SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack")
 target_link_libraries(qow_ces05_spatial_columnar_production_route_test_v1 PRIVATE
+  sb_engine
   sb_engine_sblr
   sb_core_hash
   sb_core_memory

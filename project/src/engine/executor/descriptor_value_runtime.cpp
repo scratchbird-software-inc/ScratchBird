@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "descriptor_value_runtime.hpp"
+#include "../internal_api/query/historical_timestamp_scalar.hpp"
 #include "../internal_api/catalog/column_metadata_codec.hpp"
 #include "../internal_api/catalog/datatype_bootstrap_identity.hpp"
 #include "datatype_catalog_manifest.hpp"
@@ -141,6 +142,10 @@ bool IsReal64Type(const EngineDescriptor& descriptor) {
 }
 
 bool IsTextType(const EngineDescriptor& descriptor) {
+  // A bound historical timestamp is not a lexical scalar. In particular it
+  // must never fall through text equality, concatenation or text-domain masks.
+  if (descriptor.canonical_type_name == "timestamp" &&
+      descriptor.encoded_descriptor.starts_with("SBMETA02")) return false;
   const auto type = std::string_view(descriptor.canonical_type_name);
   return AsciiEqualFold(type, "text") || AsciiEqualFold(type, "varchar") ||
          AsciiEqualFold(type, "string") || AsciiEqualFold(type, "sb.text") ||
@@ -416,6 +421,11 @@ bool ValidateExpandedScalarEncoding(const EngineTypedValue& value,
   detail->clear();
   const auto& descriptor = value.descriptor;
   const auto type_id = CanonicalDescriptorTypeId(descriptor);
+  if (type_id == CanonicalTypeId::timestamp &&
+      descriptor.encoded_descriptor.starts_with("SBMETA02")) {
+    internal_api::HistoricalTimestampScalarPartsV1 checked;
+    return internal_api::DecodeHistoricalTimestampScalarV1(value, &checked, detail);
+  }
   if (type_id == CanonicalTypeId::uint8) {
     EngineTypedValue normalized;
     std::string cast_category;
@@ -1121,6 +1131,15 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
       return ErrorDiagnostic("SB_EXECUTOR_DESCRIPTOR_TYPE_UNSUPPORTED", descriptor.canonical_type_name, 0, column);
     }
     const auto type = CanonicalDescriptorTypeId(descriptor);
+    if (type == CanonicalTypeId::timestamp &&
+        descriptor.encoded_descriptor.starts_with("SBMETA02")) {
+      bool nullable = false;
+      std::string detail;
+      if (!internal_api::ResolveHistoricalTimestampScalarIdentityV1(descriptor, &nullable, &detail) ||
+          nullable != batch.columns[column].nullable)
+        return ErrorDiagnostic("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+                               "historical timestamp column binding is invalid", 0, column);
+    }
     if (type == CanonicalTypeId::int32 || type == CanonicalTypeId::int64 ||
         type == CanonicalTypeId::uint64) {
       try {
@@ -1573,6 +1592,15 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
     }
     const auto& bound_column = batch.columns[column];
     const auto& descriptor = bound_column.descriptor;
+    if (descriptor.canonical_type_name == "timestamp" &&
+        descriptor.encoded_descriptor.starts_with("SBMETA02")) {
+      bool nullable = false;
+      std::string detail;
+      if (!internal_api::ResolveHistoricalTimestampScalarIdentityV1(descriptor, &nullable, &detail) ||
+          nullable != bound_column.nullable)
+        return ErrorDiagnostic("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+                               "historical timestamp output binding is invalid", 0, column);
+    }
     bool duplicate_descriptor_id = false;
     for (std::size_t prior = 0; prior < column; ++prior) {
       if (batch.columns[prior].descriptor_id ==
@@ -1621,6 +1649,14 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
       }
       const auto& value = batch.rows[row].values[column];
       const auto& bound_column = batch.columns[column];
+      if (bound_column.descriptor.canonical_type_name == "timestamp" &&
+          bound_column.descriptor.encoded_descriptor.starts_with("SBMETA02")) {
+        internal_api::HistoricalTimestampScalarPartsV1 checked;
+        std::string detail;
+        if (!internal_api::DecodeHistoricalTimestampScalarV1(value, &checked, &detail))
+          return ErrorDiagnostic("QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
+                                 std::move(detail), row, column);
+      }
       if (!SameCanonicalDescriptor(value.descriptor,
                                    bound_column.descriptor)) {
         return ErrorDiagnostic("SBLR.PLAN_TREE.INVALID_HANDLE",

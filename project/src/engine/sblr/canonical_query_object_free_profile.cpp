@@ -193,6 +193,11 @@ LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
                                : planning.diagnostics.front();
     result.detail = std::string(operation_name) +
                     " canonical relational-DAG planning refused the live implementation catalog";
+    if (!planning.publication.issues.empty()) {
+      const auto& issue = planning.publication.issues.front();
+      result.detail += ";field=" + issue.field_id +
+                       ";logical_node=" + std::to_string(issue.logical_node_id);
+    }
     return result;
   }
   result.ok = true;

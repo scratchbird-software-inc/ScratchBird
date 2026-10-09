@@ -1453,17 +1453,10 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
       }
       if (!has_nearest) continue;
       const auto& distance = row.values[distance_ordinal];
-      double decoded_distance = 0.0;
-      const auto parsed = std::from_chars(
-          distance.encoded_value.data(),
-          distance.encoded_value.data() + distance.encoded_value.size(),
-          decoded_distance, std::chars_format::general);
-      if (distance.state != internal_api::EngineValueState::value ||
-          distance.is_null || !distance.binary_value.empty() ||
-          !CanonicalNonnegativeFiniteReal64(distance.encoded_value) ||
-          parsed.ec != std::errc{} ||
-          parsed.ptr != distance.encoded_value.data() +
-                            distance.encoded_value.size() ||
+      const auto decoded = DecodeReal64Value(distance);
+      const auto decoded_distance = decoded.value;
+      if (!decoded.ok() || !std::isfinite(decoded_distance) ||
+          decoded_distance < 0.0 || std::signbit(decoded_distance) ||
           (previous_distance.has_value() &&
            (decoded_distance < *previous_distance ||
             (decoded_distance == *previous_distance &&
