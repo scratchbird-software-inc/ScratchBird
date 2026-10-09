@@ -328,7 +328,8 @@ ManagedPageHeaderResult ValidateManagedPageHeader(const PageManagerContext& cont
 
 ManagedPageBufferResult AllocateManagedPageBuffer(const PageManagerContext& context,
                                                   PageType page_type,
-                                                  std::string purpose) {
+                                                  std::string purpose,
+                                                  std::size_t page_count) {
   const auto metric_start = Clock::now();
   const auto context_result = ValidateContext(context);
   if (!context_result.ok()) {
@@ -349,7 +350,7 @@ ManagedPageBufferResult AllocateManagedPageBuffer(const PageManagerContext& cont
 
   PageBufferRequest request;
   request.page_size = context.page_size;
-  request.page_count = 1;
+  request.page_count = page_count;
   request.tag = MemoryTag{Subsystem::storage_page,
                           std::move(purpose),
                           MemoryCategory::page_buffer,

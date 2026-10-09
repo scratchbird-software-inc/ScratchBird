@@ -33,6 +33,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -49,8 +50,7 @@ constexpr std::string_view kMergeSearchKey =
     "DPC_SECONDARY_INDEX_DELTA_MERGE_AGENT_GATE";
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -1041,7 +1041,7 @@ void RunRestartPhase(std::string_view phase, const std::filesystem::path& root) 
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
   auto policy=scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
   policy.policy_name="secondary_index_merge_admission_fixture";
   Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
@@ -1053,14 +1053,32 @@ int main(int argc, char** argv) {
     RunRestartPhase(argv[2], argv[3]);
     return EXIT_SUCCESS;
   }
-  Require(argc == 1, "unexpected index merge gate arguments");
-  ValidateAuthoritativeMergeDrainsIntoBase();
-  ValidateHorizonRetainsFutureAndResourceRefuses();
-  ValidateRefusalDiagnostics();
-  for (bool deferred : {false, true}) {
-    ValidateEmptyKeyMutationAndMerge("", deferred);
-    ValidateEmptyKeyMutationAndMerge(std::string("k\0x", 3), deferred);
+  struct Case { const char* name; void (*run)(); };
+  const std::array cases{
+      Case{"authoritative_merge", ValidateAuthoritativeMergeDrainsIntoBase},
+      Case{"horizon_resource", ValidateHorizonRetainsFutureAndResourceRefuses},
+      Case{"refusal_diagnostics", ValidateRefusalDiagnostics},
+      Case{"empty_synchronous", [] { ValidateEmptyKeyMutationAndMerge("", false); }},
+      Case{"nul_synchronous", [] { ValidateEmptyKeyMutationAndMerge(std::string("k\0x", 3), false); }},
+      Case{"empty_deferred", [] { ValidateEmptyKeyMutationAndMerge("", true); }},
+      Case{"nul_deferred", [] { ValidateEmptyKeyMutationAndMerge(std::string("k\0x", 3), true); }},
+      Case{"malformed_payloads", ValidateMalformedKeyPayloadRefusals}};
+  if (argc == 2 && std::string_view(argv[1]) == "--list-cases") {
+    for (const auto& item : cases) std::cout << item.name << '\n';
+    return EXIT_SUCCESS;
   }
-  ValidateMalformedKeyPayloadRefusals();
+  Require(argc == 1 || (argc == 3 && std::string_view(argv[1]) == "--case"),
+          "unexpected index merge gate arguments");
+  bool executed = false;
+  for (const auto& item : cases) {
+    if (argc == 3 && std::string_view(argv[2]) != item.name) continue;
+    item.run();
+    std::cout << "secondary_merge_case=" << item.name << " passed\n";
+    executed = true;
+  }
+  Require(executed, "unknown index merge gate case");
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

@@ -1255,12 +1255,23 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_catalog_initial_page_write catalog_initial_page_write_test.cpp)
   target_compile_features(sbsql_sblr_alignment_catalog_initial_page_write PRIVATE cxx_std_23)
   target_compile_definitions(sbsql_sblr_alignment_catalog_initial_page_write PRIVATE
+    SCRATCHBIRD_MEMORY_FAILURE_INJECTION_TEST_GUARD=1
     SB_CATALOG_TEST_SEED_ROOT="${PROJECT_SOURCE_DIR}/resources/seed-packs/initial-resource-pack")
   target_link_libraries(sbsql_sblr_alignment_catalog_initial_page_write PRIVATE sb_storage_database)
   target_link_options(sbsql_sblr_alignment_catalog_initial_page_write PRIVATE "-Wl,--wrap=pwrite")
   add_test(NAME sbsql_sblr_alignment_catalog_initial_page_write COMMAND sbsql_sblr_alignment_catalog_initial_page_write)
   set_tests_properties(sbsql_sblr_alignment_catalog_initial_page_write PROPERTIES
     TIMEOUT 240 LABELS "sbsql_sblr_alignment;component_regression;catalog_bootstrap;physical_IO;crash_recovery;not_SQL_E2E")
+  foreach(catalog_batch_bound one five)
+    add_test(NAME sbsql_sblr_alignment_catalog_initial_${catalog_batch_bound}_page_budget
+      COMMAND sbsql_sblr_alignment_catalog_initial_page_write --${catalog_batch_bound}-pages)
+    set_tests_properties(sbsql_sblr_alignment_catalog_initial_${catalog_batch_bound}_page_budget PROPERTIES
+      TIMEOUT 180 LABELS "sbsql_sblr_alignment;catalog_bootstrap;physical_IO;bounded_memory;crash_recovery")
+  endforeach()
+  add_test(NAME sbsql_sblr_alignment_catalog_initial_allocation_failures
+    COMMAND sbsql_sblr_alignment_catalog_initial_page_write --allocation-failures)
+  set_tests_properties(sbsql_sblr_alignment_catalog_initial_allocation_failures PROPERTIES
+    TIMEOUT 120 LABELS "sbsql_sblr_alignment;catalog_bootstrap;bounded_memory;allocation_failure")
   target_compile_features(sbsql_sblr_alignment_physical_mga_owned_device PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_physical_mga_owned_device PRIVATE
     sb_transaction_mga sb_storage_database sb_core_uuid)
@@ -1807,10 +1818,16 @@ target_link_libraries(sbsql_sblr_alignment_secondary_index_merge_admission PRIVA
   sb_engine
   sb_core_index sb_core_uuid sb_core_memory sb_engine_internal_api sb_storage_database)
 add_test(NAME sbsql_sblr_alignment_secondary_index_merge_admission
-  COMMAND sbsql_sblr_alignment_secondary_index_merge_admission)
+  COMMAND "${Python3_EXECUTABLE}" -B
+    "${PROJECT_SOURCE_DIR}/tests/database_lifecycle/secondary_index_merge_isolated_gate.py"
+    --probe $<TARGET_FILE:sbsql_sblr_alignment_secondary_index_merge_admission>)
 set_tests_properties(sbsql_sblr_alignment_secondary_index_merge_admission PROPERTIES
   LABELS "sbsql_sblr_alignment;IA-10;component_regression;real_storage;index_read_admission"
   TIMEOUT 120)
+add_test(NAME sbsql_sblr_alignment_secondary_index_merge_runner
+  COMMAND "${Python3_EXECUTABLE}" -B
+    "${PROJECT_SOURCE_DIR}/tests/database_lifecycle/secondary_index_merge_isolated_runner_test.py")
+set_tests_properties(sbsql_sblr_alignment_secondary_index_merge_runner PROPERTIES TIMEOUT 30)
 add_executable(sbsql_sblr_alignment_secondary_index_ledger_read secondary_index_ledger_read_test.cpp)
 target_compile_features(sbsql_sblr_alignment_secondary_index_ledger_read PRIVATE cxx_std_23)
 target_link_libraries(sbsql_sblr_alignment_secondary_index_ledger_read PRIVATE sb_engine_internal_api sb_core_index sb_core_uuid)

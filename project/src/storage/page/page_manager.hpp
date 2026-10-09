@@ -127,9 +127,12 @@ PageOffsetResult CheckedPageBodyOffset(u32 page_size,
 ManagedPageHeaderResult BuildManagedPageHeader(const ManagedPageHeaderRequest& request);
 ManagedPageHeaderResult ValidateManagedPageHeader(const PageManagerContext& context,
                                                   const SerializedPageHeader& serialized);
+// The caller bounds its batch; allocation admits and accounts for the entire
+// page_count * page_size span, with zero/overflow counts refused by the manager.
 ManagedPageBufferResult AllocateManagedPageBuffer(const PageManagerContext& context,
                                                   PageType page_type,
-                                                  std::string purpose);
+                                                  std::string purpose,
+                                                  std::size_t page_count = 1);
 const char* ManagedPageQuarantineReasonName(ManagedPageQuarantineReason reason);
 ManagedPageQuarantineResult QuarantineManagedPageIfUnsafe(ManagedPageQuarantineLedger* ledger,
                                                           const PageManagerContext& context,

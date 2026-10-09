@@ -4492,37 +4492,59 @@ DatabaseLifecycleResult WriteCatalogPageBodies(FileDevice* device,
     return PropagateDiagnostic(page_set.status, page_set.diagnostic);
   }
 
-  for (const auto& page : page_set.pages) {
+  for (std::size_t first = 0; first < page_set.pages.size();) {
+    const auto& page = page_set.pages[first];
+    std::size_t count = 1;
+    if (page.page_number != kCatalogPageNumber) {
+      const MemoryTag tag{Subsystem::storage_page, "catalog_page_body_write",
+          MemoryCategory::page_buffer, MemoryLifetime::page_buffer,
+          "storage.page.manager", "page_buffer"};
+      const auto available = DefaultMemoryManager().allocator()->AvailableCapacity(tag);
+      // A headroom observation only bounds the proposal. The managed allocation
+      // below still admits every byte atomically and may refuse a concurrent
+      // change. Never retry an allocation failure or hide an injected refusal.
+      const auto limit = available.ok()
+          ? std::max<std::size_t>(1, std::min<std::size_t>(16,
+                available.available_bytes / page_context.page_size)) : 1;
+      while (count < limit && first + count < page_set.pages.size() &&
+             page_set.pages[first + count].page_number == page.page_number + count &&
+             page_set.pages[first + count].page_number != kCatalogPageNumber) ++count;
+    }
     auto page_buffer = AllocateManagedPageBuffer(page_context,
                                                  PageType::catalog,
-                                                 "catalog_page_body_write");
+                                                 "catalog_page_body_write", count);
     if (!page_buffer.ok()) {
       return PropagateDiagnostic(page_buffer.status, page_buffer.diagnostic);
     }
     auto* buffer_bytes = static_cast<scratchbird::core::platform::byte*>(page_buffer.buffer.data());
-    std::memcpy(buffer_bytes + kPageHeaderSerializedBytes, page.body.data(), page.body.size());
-
     if (page.page_number != kCatalogPageNumber) {
       // This is a fresh create image or an unpublished sealed migration copy,
       // never a live catalog update. Assemble the already bounded body and its
-      // native header in the existing managed page buffer. One ordered full-
-      // page write replaces header/zero-page then body writes. This does not
-      // assert atomic page I/O or change Sync/MGA publication ordering.
-      const auto page_header = BuildInitialPageHeader(page_context,
-                                                      PageType::catalog,
-                                                      page.page_number,
-                                                      creation_unix_epoch_millis);
-      if (!page_header.ok()) {
-        return PropagateDiagnostic(page_header.status, page_header.diagnostic);
+      // native header in admitted memory. Coalesce only physically contiguous
+      // overflow pages, at most sixteen. This does not assert atomic page I/O
+      // or change Sync/MGA publication ordering, including partial-write errors.
+      for (std::size_t i = 0; i < count; ++i) {
+        const auto& current = page_set.pages[first + i];
+        const auto page_header = BuildInitialPageHeader(page_context,
+                                                        PageType::catalog,
+                                                        current.page_number,
+                                                        creation_unix_epoch_millis);
+        if (!page_header.ok()) {
+          return PropagateDiagnostic(page_header.status, page_header.diagnostic);
+        }
+        auto* image = buffer_bytes + i * page_context.page_size;
+        std::memcpy(image, page_header.serialized.data(), page_header.serialized.size());
+        std::memcpy(image + kPageHeaderSerializedBytes, current.body.data(), current.body.size());
       }
-      std::memcpy(buffer_bytes, page_header.serialized.data(), page_header.serialized.size());
       const auto page_offset = CheckedPageOffset(page_context.page_size, page.page_number);
       if (!page_offset.ok()) return PropagateDiagnostic(page_offset.status, page_offset.diagnostic);
       const auto written = device->WriteAt(page_offset.offset, buffer_bytes, page_buffer.buffer.size());
       if (!written.ok()) return PropagateDiagnostic(written.status, written.diagnostic);
+      first += count;
       continue;
     }
 
+    std::memcpy(buffer_bytes + kPageHeaderSerializedBytes, page.body.data(), page.body.size());
     const auto body_offset = CheckedPageBodyOffset(page_context.page_size,
                                                    page.page_number,
                                                    kPageHeaderSerializedBytes);
@@ -4535,6 +4557,7 @@ DatabaseLifecycleResult WriteCatalogPageBodies(FileDevice* device,
     if (!write.ok()) {
       return PropagateDiagnostic(write.status, write.diagnostic);
     }
+    ++first;
   }
 
   DatabaseLifecycleResult result;
