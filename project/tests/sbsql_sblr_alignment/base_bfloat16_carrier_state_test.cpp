@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "admitted_datatype_cohort.hpp"
+#include "../support/narrow_real_ordering_checks.hpp"
 #include "datatype_binary.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_descriptor.hpp"
@@ -662,12 +663,8 @@ void PresentSemanticSurfacesRefuse() {
   alias_left.descriptor.stable_name = "opaque-half-carrier";
   alias_right.descriptor.stable_name = "transport-bits-16";
   auto compared = dt::CompareDatatypeValues({alias_left, alias_right});
-  Check(!compared.ok() && compared.comparison == 0 &&
-            compared.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_COMPARISON_REJECTED" &&
-            DiagnosticDetail(compared.diagnostic) ==
-                "bfloat16_comparison_policy_unresolved",
-        "bfloat16 aliases do not enable PRESENT comparison semantics");
+  Check(compared.ok() && compared.comparison == 0,
+        "bfloat16 ordering uses descriptor identity, not display aliases");
 
   auto mismatched = present;
   mismatched.descriptor.security_policy_uuid = FixtureV7Uuid(0xd0);
@@ -691,10 +688,10 @@ void PresentSemanticSurfacesRefuse() {
             !mismatch_right.ok() && mismatch_right.comparison == 0 &&
             mismatch_right.diagnostic.diagnostic_code ==
                 "DATATYPE.DESCRIPTOR.INVALID" &&
-            !present_null.ok() && present_null.comparison == 0 &&
-            !null_present.ok() && null_present.comparison == 0 &&
-            !null_null.ok() && null_null.comparison == 0,
-        "bfloat16 comparison refuses descriptor mismatch and NULL cases");
+            present_null.ok() && present_null.comparison == 1 &&
+            null_present.ok() && null_present.comparison == -1 &&
+            null_null.ok() && null_null.comparison == 0,
+        "bfloat16 comparison refuses descriptor mismatch and orders typed NULL");
 
   auto descriptorless_present = present;
   descriptorless_present.descriptor = {};
@@ -792,15 +789,15 @@ void PresentSemanticSurfacesRefuse() {
   const auto null_hash = dt::HashDatatypeValue({null_value});
   const auto display = dt::RenderDatatypeValueForDisplay({present});
   const auto serialized = dt::SerializeDatatypeValue({present});
-  Check(!key.ok() && key.sort_key.empty() &&
-            !null_key.ok() && null_key.sort_key.empty() &&
-            !hash.ok() && hash.stable_hash_hex.empty() &&
-            !null_hash.ok() && null_hash.stable_hash_hex.empty() &&
+  Check(key.ok() && key.sort_key.size() == 3 &&
+            null_key.ok() && null_key.sort_key == std::string(1, '\0') &&
+            hash.ok() && hash.stable_hash_hex.size() == 16 &&
+            null_hash.ok() && null_hash.stable_hash_hex.size() == 16 &&
             !display.ok() && display.canonical_type_name.empty() &&
             display.display_value.empty() &&
             !serialized.ok() && serialized.serialized_value.empty() &&
             serialized.descriptor.canonical_type_id == 0,
-        "bfloat16 key, hash, display, and PRESENT serialization fail closed");
+        "bfloat16 ordering is admitted without granting unrelated display or serialization policies");
 
   dt::DatatypeDeserializationRequest restore;
   restore.expected_type_id = dt::CanonicalTypeId::bfloat16;
@@ -1197,6 +1194,8 @@ void Persistence() {
 }  // namespace
 
 int main() {
+  scratchbird::tests::CheckNarrowRealOrdering(dt::CanonicalTypeId::bfloat16,
+      DescriptorFor(dt::CanonicalTypeId::bfloat16), Check);
   ExactIdentity();
   CarrierAndLowerCodecs();
   DescriptorEnvelope();

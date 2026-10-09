@@ -374,6 +374,49 @@ bool IsUnresolvedRealSemantics(CanonicalTypeId type_id) noexcept {
       type_id == CanonicalTypeId::real32;
 }
 
+// Ordinary ordering is defined even where arithmetic/conversion policies are
+// separate. Decode the native carrier directly: no host floating environment,
+// decimal round trip, or loss of subnormal precision participates in ordering.
+struct NarrowRealOrderMaterial {
+  std::uint32_t bits = 0;
+  std::uint32_t key = 0;
+  unsigned width = 0;
+  const char* code = nullptr;
+  const char* detail = nullptr;
+};
+
+NarrowRealOrderMaterial AdmitNarrowRealOrder(const DatatypeOperationValue& value) {
+  NarrowRealOrderMaterial out;
+  const auto refuse = [&](const char* code, const char* detail) {
+    out.code = code; out.detail = detail; return out;
+  };
+  if (!IsUnresolvedRealSemantics(value.type_id) ||
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltinIgnoringNullability(
+          value.descriptor, value.type_id))
+    return refuse("DATATYPE.DESCRIPTOR.INVALID", "narrow_real_order_descriptor_invalid");
+  out.width = value.type_id == CanonicalTypeId::real32 ? 4u : 2u;
+  if (value.is_null) {
+    if (!value.encoded_value.empty())
+      return refuse("DATATYPE.NULL_STATE.INVALID", "narrow_real_null_has_payload");
+    if (!value.descriptor.nullable_allowed)
+      return refuse("DATATYPE.NULL_NOT_ADMITTED", "narrow_real_null_not_admitted");
+    return out;
+  }
+  if (value.encoded_value.size() != out.width)
+    return refuse("NUMERIC.ENCODING.NONCANONICAL", "narrow_real_carrier_width_invalid");
+  for (unsigned i = 0; i < out.width; ++i)
+    out.bits |= std::uint32_t(static_cast<unsigned char>(value.encoded_value[i])) << (8 * i);
+  const std::uint32_t exponent = value.type_id == CanonicalTypeId::bfloat16 ? 0x7f80u
+      : value.type_id == CanonicalTypeId::real16 ? 0x7c00u : 0x7f800000u;
+  if ((out.bits & exponent) == exponent)
+    return refuse(nullptr, "nonfinite_requires_explicit_ordering_profile");
+  const std::uint32_t sign = std::uint32_t{1} << (8 * out.width - 1);
+  if ((out.bits & ~sign) == 0) out.bits = 0; // Both zeros have numeric identity zero.
+  const std::uint32_t mask = out.width == 2 ? 0xffffu : 0xffffffffu;
+  out.key = (out.bits & sign) ? (~out.bits & mask) : (out.bits ^ sign);
+  return out;
+}
+
 bool IsReal128(CanonicalTypeId type_id) noexcept {
   return type_id == CanonicalTypeId::real128;
 }
@@ -5931,6 +5974,32 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
   DatatypeComparisonResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (IsUnresolvedRealSemantics(request.left.type_id) ||
+      IsUnresolvedRealSemantics(request.right.type_id)) {
+    const auto refuse = [&](const char* code, const char* detail) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
+          code ? code : "SB_DATATYPE_COMPARISON_REJECTED", "datatype.comparison.rejected", detail);
+      return result;
+    };
+    if (request.left.type_id != request.right.type_id)
+      return refuse(nullptr, "type_mismatch");
+    const auto left = AdmitNarrowRealOrder(request.left);
+    const auto right = AdmitNarrowRealOrder(request.right);
+    if (left.detail) return refuse(left.code, left.detail);
+    if (right.detail) return refuse(right.code, right.detail);
+    if ((request.null_ordering != DatatypeNullOrdering::nulls_first &&
+         request.null_ordering != DatatypeNullOrdering::nulls_last) ||
+        request.case_insensitive_character_compare)
+      return refuse(nullptr, "narrow_real_ordering_settings_invalid");
+    if (request.left.is_null || request.right.is_null) {
+      result.comparison = request.left.is_null == request.right.is_null ? 0
+          : (request.left.is_null == (request.null_ordering == DatatypeNullOrdering::nulls_first) ? -1 : 1);
+    } else {
+      result.comparison = left.key < right.key ? -1 : left.key > right.key ? 1 : 0;
+    }
+    return result;
+  }
   if (request.left.type_id == CanonicalTypeId::interval ||
       request.right.type_id == CanonicalTypeId::interval) {
     const char* left_code =
@@ -6953,6 +7022,16 @@ std::string OrderedFiniteDecimalKey(const std::string& value) {
 bool CanonicalHashPayload(const DatatypeOperationValue& value,
                           std::string* payload,
                           std::string* failure_detail) {
+  if (IsUnresolvedRealSemantics(value.type_id)) {
+    const auto material = AdmitNarrowRealOrder(value);
+    if (material.detail) { *failure_detail = material.detail; return false; }
+    payload->clear();
+    if (!value.is_null) {
+      for (unsigned i = 0; i < material.width; ++i)
+        payload->push_back(static_cast<char>(material.bits >> (8 * i)));
+    }
+    return true;
+  }
   if (IsUuid(value.type_id) &&
       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(value.descriptor,
                                                        value.type_id)) {
@@ -7156,6 +7235,27 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
   DatatypeSortKeyResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (IsUnresolvedRealSemantics(request.value.type_id)) {
+    const auto material = AdmitNarrowRealOrder(request.value);
+    const auto refuse = [&](const char* code, const char* detail) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
+          code ? code : "SB_DATATYPE_SORT_KEY_REJECTED", "datatype.sort_key.rejected", detail);
+      return result;
+    };
+    if (material.detail) return refuse(material.code, material.detail);
+    if ((request.null_ordering != DatatypeNullOrdering::nulls_first &&
+         request.null_ordering != DatatypeNullOrdering::nulls_last) ||
+        request.case_insensitive_character_compare)
+      return refuse(nullptr, "narrow_real_ordering_settings_invalid");
+    result.sort_key.assign(1, request.value.is_null
+        ? (request.null_ordering == DatatypeNullOrdering::nulls_first ? '\0' : '\2') : '\1');
+    if (!request.value.is_null) {
+      for (unsigned i = material.width; i; --i)
+        result.sort_key.push_back(static_cast<char>(material.key >> (8 * (i - 1))));
+    }
+    return result;
+  }
   if (IsDecimal(request.value.type_id) &&
       (!request.decimal_ordering_uuid.is_nil() || request.decimal_ordering_generation ||
        !request.decimal_codec_uuid.is_nil() || request.decimal_codec_generation)) {
@@ -7709,6 +7809,16 @@ DatatypeHashResult HashDatatypeValue(const DatatypeHashRequest& request) {
   DatatypeHashResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (IsUnresolvedRealSemantics(request.value.type_id)) {
+    const auto material = AdmitNarrowRealOrder(request.value);
+    if (material.detail) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
+          material.code ? material.code : "SB_DATATYPE_HASH_REJECTED",
+          "datatype.hash.rejected", material.detail);
+      return result;
+    }
+  }
   if (request.value.type_id == CanonicalTypeId::interval) {
     const char* interval_code =
         GenericIntervalStructuralDiagnosticCode(request.value);

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "admitted_datatype_cohort.hpp"
+#include "../support/narrow_real_ordering_checks.hpp"
 #include "../support/generic_cast_boundary_expectations.hpp"
 #include "datatype_binary.hpp"
 #include "datatype_catalog_manifest.hpp"
@@ -771,12 +772,8 @@ void PresentSemanticSurfacesRefuse() {
   alias_left.descriptor.stable_name = "opaque-carrier";
   alias_right.descriptor.stable_name = "transport-bits-32";
   auto compared = dt::CompareDatatypeValues({alias_left, alias_right});
-  Check(!compared.ok() && compared.comparison == 0 &&
-            compared.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_COMPARISON_REJECTED" &&
-            DiagnosticDetail(compared.diagnostic) ==
-                "real32_comparison_policy_unresolved",
-        "real32 aliases do not enable PRESENT comparison semantics");
+  Check(compared.ok() && compared.comparison == 0,
+        "real32 ordering uses descriptor identity, not display aliases");
 
   auto mismatched = present;
   mismatched.descriptor.security_policy_uuid = FixtureV7Uuid(0xd0);
@@ -800,22 +797,10 @@ void PresentSemanticSurfacesRefuse() {
             !mismatch_right.ok() && mismatch_right.comparison == 0 &&
             mismatch_right.diagnostic.diagnostic_code ==
                 "DATATYPE.DESCRIPTOR.INVALID" &&
-            !present_null.ok() && present_null.comparison == 0 &&
-            present_null.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_COMPARISON_REJECTED" &&
-            DiagnosticDetail(present_null.diagnostic) ==
-                "real32_comparison_policy_unresolved" &&
-            !null_present.ok() && null_present.comparison == 0 &&
-            null_present.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_COMPARISON_REJECTED" &&
-            DiagnosticDetail(null_present.diagnostic) ==
-                "real32_comparison_policy_unresolved" &&
-            !null_null.ok() && null_null.comparison == 0 &&
-            null_null.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_COMPARISON_REJECTED" &&
-            DiagnosticDetail(null_null.diagnostic) ==
-                "real32_comparison_policy_unresolved",
-        "real32 comparison refuses descriptor mismatch and NULL cases");
+            present_null.ok() && present_null.comparison == 1 &&
+            null_present.ok() && null_present.comparison == -1 &&
+            null_null.ok() && null_null.comparison == 0,
+        "real32 comparison refuses descriptor mismatch and orders typed NULL");
 
   auto descriptorless_present = present;
   descriptorless_present.descriptor = {};
@@ -949,26 +934,10 @@ void PresentSemanticSurfacesRefuse() {
   const auto display = dt::RenderDatatypeValueForDisplay({present});
   const auto null_display = dt::RenderDatatypeValueForDisplay({null_value});
   const auto serialized = dt::SerializeDatatypeValue({present});
-  Check(!key.ok() && key.sort_key.empty() &&
-            key.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_SORT_KEY_REJECTED" &&
-            DiagnosticDetail(key.diagnostic) ==
-                "real32_sort_key_policy_unresolved" &&
-            !null_key.ok() && null_key.sort_key.empty() &&
-            null_key.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_SORT_KEY_REJECTED" &&
-            DiagnosticDetail(null_key.diagnostic) ==
-                "real32_sort_key_policy_unresolved" &&
-            !hash.ok() && hash.stable_hash_hex.empty() &&
-            hash.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_HASH_REJECTED" &&
-            DiagnosticDetail(hash.diagnostic) ==
-                "real32_hash_policy_unresolved" &&
-            !null_hash.ok() && null_hash.stable_hash_hex.empty() &&
-            null_hash.diagnostic.diagnostic_code ==
-                "SB_DATATYPE_HASH_REJECTED" &&
-            DiagnosticDetail(null_hash.diagnostic) ==
-                "real32_hash_policy_unresolved" &&
+  Check(key.ok() && key.sort_key.size() == 5 &&
+            null_key.ok() && null_key.sort_key == std::string(1, '\0') &&
+            hash.ok() && hash.stable_hash_hex.size() == 16 &&
+            null_hash.ok() && null_hash.stable_hash_hex.size() == 16 &&
             !display.ok() && display.canonical_type_name.empty() &&
             display.display_value.empty() &&
             display.diagnostic.diagnostic_code ==
@@ -988,7 +957,7 @@ void PresentSemanticSurfacesRefuse() {
                 "SB_DATATYPE_SERIALIZATION_REJECTED" &&
             DiagnosticDetail(serialized.diagnostic) ==
                 "real32_present_value_policy_unresolved",
-        "real32 key, hash, display, and PRESENT serialization fail closed");
+        "real32 ordering is admitted without granting unrelated display or serialization policies");
 
   dt::DatatypeDeserializationRequest restore;
   restore.expected_type_id = dt::CanonicalTypeId::real32;
@@ -1550,6 +1519,8 @@ void Persistence() {
 }  // namespace
 
 int main() {
+  scratchbird::tests::CheckNarrowRealOrdering(dt::CanonicalTypeId::real32,
+      DescriptorFor(dt::CanonicalTypeId::real32), Check);
   ExactIdentity();
   CarrierAndLowerCodecs();
   DescriptorEnvelope();
