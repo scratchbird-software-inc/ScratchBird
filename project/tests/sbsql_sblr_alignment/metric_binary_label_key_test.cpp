@@ -470,13 +470,20 @@ int main() {
   Require(invalid_produced.size() == 2 && !m::ValidateMetricLabelSet(descriptor, invalid_produced).ok,
           "producer silently discarded invalid labels");
   auto confidential = labels; confidential.push_back({"secret", Id()});
-  const auto redacted = m::RedactSensitiveLabels(descriptor, confidential, false);
+  std::vector<std::string> omitted;
+  const auto redacted = m::RedactSensitiveLabels(descriptor, confidential, false, &omitted);
   Require(std::get<m::MetricUuid>(redacted[0].value) == Id(), "redaction changed public binary identity");
-  Require(std::get<std::string>(redacted.back().value) == "<redacted>", "redaction leaked sensitive identity");
+  Require(std::equal(redacted.begin(), redacted.end(), labels.begin(), labels.end(),
+              [](const auto& a, const auto& b) { return a.key == b.key && a.value == b.value; }) &&
+          omitted == std::vector<std::string>{"secret"},
+          "redaction did not omit sensitive identity with explicit metadata");
   Require(std::get<m::MetricUuid>(m::RedactSensitiveLabels(descriptor, confidential, true).back().value) == Id(),
           "authorized binary label lost");
   Require(std::get<m::MetricUuid>(confidential.back().value) == Id(), "redaction mutated source identity");
-  Require(!m::ValidateMetricLabelSet(descriptor, redacted).ok, "presentation redaction became identity authority");
+  Require(m::MakeMetricSeriesKey(descriptor.family, redacted) !=
+          m::MakeMetricSeriesKey(descriptor.family, confidential), "projection retained confidential series key");
+  m::RedactSensitiveLabels(descriptor, confidential, true, &omitted);
+  Require(omitted.empty(), "authorized projection retained stale omission metadata");
   Require(m::ValidateMetricLabelSet(descriptor, labels).ok, "valid typed labels refused");
   const auto original = m::MakeMetricSeriesKey(descriptor.family, labels);
   Require(original.first == descriptor.family && original.second.size() == 2, "series key shape");

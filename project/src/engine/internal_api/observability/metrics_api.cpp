@@ -7,21 +7,22 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "observability/metrics_api.hpp"
+#include "observability/lifecycle_metric_definitions.hpp"
 
 #include "behavior_support/api_behavior_store.hpp"
 #include "crud_support/crud_store.hpp"
 #include "metric_history.hpp"
 #include "metric_history_store_codec.hpp"
-#include <iomanip>
-#include <limits>
+#include <bit>
 #include <type_traits>
 #include "metric_registry.hpp"
+#include "metric_support_projection.hpp"
+#include "metric_bound_definition.hpp"
 #include "metric_retention_policy.hpp"
 #include "security/security_model.hpp"
 
 #include <map>
 #include <set>
-#include <sstream>
 
 namespace scratchbird::engine::internal_api {
 namespace {
@@ -32,7 +33,6 @@ using scratchbird::core::metrics::MetricReadinessName;
 using scratchbird::core::metrics::MetricType;
 using scratchbird::core::metrics::MetricRetentionPolicy;
 using scratchbird::core::metrics::MetricTypeName;
-using scratchbird::core::metrics::MetricUnit;
 using scratchbird::core::metrics::MetricUnitName;
 using scratchbird::core::metrics::MetricValue;
 
@@ -106,6 +106,31 @@ EngineTypedValue LabelsNativeValue(const MetricLabelSet& labels) {
   writer.One(labels);
   return MetricBinaryValue(std::move(writer.bytes), "SBMLB001");
 }
+EngineTypedValue OmittedLabelsValue(const std::vector<std::string>& labels) {
+  scratchbird::core::metrics::history_codec::Writer writer;
+  writer.Raw("SBMLO001", 8);
+  writer.One(labels);
+  return MetricBinaryValue(std::move(writer.bytes), "SBMLO001");
+}
+
+bool ProjectionFailure(EngineApiResult* result) {
+  result->ok = false;
+  result->result_shape.rows.clear();
+  result->diagnostics.push_back(MakeInvalidRequestDiagnostic(
+      result->operation_id, "METRIC.VALUE_INVALID:invalid_metric_projection_source"));
+  return false;
+}
+
+bool ProjectValue(EngineApiResult* result, const MetricDescriptor& descriptor,
+                  MetricValue* value, bool allow_sensitive,
+                  EngineTypedValue* omitted) {
+  scratchbird::core::metrics::MetricSupportProjection projection;
+  if (!scratchbird::core::metrics::ProjectMetricForSupport(
+          descriptor, *value, allow_sensitive, &projection, value))
+    return ProjectionFailure(result);
+  *omitted = OmittedLabelsValue(projection.omitted_sensitive_labels);
+  return true;
+}
 EngineTypedValue SeriesKeyNativeValue(
     const scratchbird::core::metrics::MetricSeriesIdentity& series, bool redacted) {
   if (redacted) {
@@ -135,11 +160,11 @@ EngineTypedValue MetricScalarValue(const scratchbird::core::metrics::MetricScala
     else if constexpr (std::is_same_v<T, std::uint64_t>) return ApiBehaviorUnsignedValue(item);
     else if constexpr (std::is_same_v<T, metrics::MetricEnumValue>) return ApiBehaviorUnsignedValue(item.code);
     else if constexpr (std::is_same_v<T, std::int64_t>) {
-      auto value = ApiBehaviorValue(std::to_string(item));
+      auto value = ApiBehaviorUnsignedValue(std::bit_cast<std::uint64_t>(item));
       value.descriptor.canonical_type_name = "int64"; return value;
     } else if constexpr (std::is_same_v<T, double>) {
-      std::ostringstream text; text << std::setprecision(std::numeric_limits<double>::max_digits10) << item;
-      auto value = ApiBehaviorValue(text.str()); value.descriptor.canonical_type_name = "real64"; return value;
+      auto value = ApiBehaviorUnsignedValue(std::bit_cast<std::uint64_t>(item));
+      value.descriptor.canonical_type_name = "real64"; return value;
     } else if constexpr (std::is_same_v<T, std::monostate>) {
       EngineTypedValue value; value.is_null = true; value.state = EngineValueState::sql_null; return value;
     } else {
@@ -208,28 +233,37 @@ void AddDescriptorRow(EngineApiResult* result, const MetricDescriptor& descripto
                      {"cluster_only", descriptor.cluster_only ? "true" : "false"}});
 }
 
-void AddValueRow(EngineApiResult* result,
+bool AddValueRow(EngineApiResult* result,
                  const MetricDescriptor& descriptor,
                  MetricValue value,
                  bool allow_sensitive_labels) {
-  value = scratchbird::core::metrics::RedactSensitiveMetricValue(descriptor, std::move(value), allow_sensitive_labels);
+  EngineTypedValue omitted;
+  if (!ProjectValue(result, descriptor, &value, allow_sensitive_labels, &omitted)) return false;
   AddApiBehaviorRow(result,
                     {{"metric", value.family},
                      {"namespace", descriptor.namespace_path},
                      {"type", MetricTypeName(value.type)},
                      {"value", MetricScalarValue(value.value)},
-                     {"count", std::to_string(value.count)},
+                     {"count", ApiBehaviorUnsignedValue(value.count)},
                      {"sum", MetricScalarValue(value.sum)},
                      {"state_text", value.state_text},
-                     {"labels", LabelsNativeValue(value.labels)}});
+                     {"labels", LabelsNativeValue(value.labels)},
+                     {"omitted_sensitive_labels", std::move(omitted)}});
+  return true;
 }
 
-void AddSeriesRow(EngineApiResult* result,
+bool AddSeriesRow(EngineApiResult* result,
                   const MetricDescriptor& descriptor,
                   const scratchbird::core::metrics::MetricSeriesIdentity& series,
                   bool allow_sensitive_labels) {
-  const auto labels = scratchbird::core::metrics::RedactSensitiveLabels(descriptor, series.labels, allow_sensitive_labels);
-  const bool redact_series_identity = !allow_sensitive_labels && series.redaction_class != "none";
+  if (!scratchbird::core::metrics::ValidateMetricLabelSet(descriptor, series.labels).ok)
+    return ProjectionFailure(result);
+  std::vector<std::string> omitted;
+  const auto labels = scratchbird::core::metrics::RedactSensitiveLabels(
+      descriptor, series.labels, allow_sensitive_labels, &omitted);
+  // The authoritative schema, not stored presentation metadata, controls secrecy.
+  const bool redact_series_identity = !omitted.empty() ||
+      (!allow_sensitive_labels && series.redaction_class != "none");
   AddApiBehaviorRow(result,
                     {{"series_uuid", series.series_uuid},
                      {"series_key", SeriesKeyNativeValue(series, redact_series_identity)},
@@ -242,37 +276,41 @@ void AddSeriesRow(EngineApiResult* result,
                      {"cluster_uuid", series.cluster_uuid},
                      {"label_hash", redact_series_identity ? "<redacted>" : LabelsDigest(labels)},
                      {"labels", LabelsNativeValue(labels)},
+                     {"omitted_sensitive_labels", OmittedLabelsValue(omitted)},
                      {"redaction_class", series.redaction_class},
                      {"retention_policy_uuid", series.retention_policy_uuid}});
+  return true;
 }
 
-void AddRawHistoryRow(EngineApiResult* result,
+bool AddRawHistoryRow(EngineApiResult* result,
                       const MetricDescriptor& descriptor,
                       scratchbird::core::metrics::MetricRawSampleRecord sample,
                       bool allow_sensitive_labels) {
-  sample.value.labels = sample.labels;
-  sample.value = scratchbird::core::metrics::RedactSensitiveMetricValue(
-      descriptor,
-      std::move(sample.value),
-      allow_sensitive_labels);
+  if (scratchbird::core::metrics::MakeMetricSeriesKey(sample.metric_family, sample.labels) !=
+      scratchbird::core::metrics::MakeMetricSeriesKey(sample.value.family, sample.value.labels))
+    return ProjectionFailure(result);
+  EngineTypedValue omitted;
+  if (!ProjectValue(result, descriptor, &sample.value, allow_sensitive_labels, &omitted)) return false;
   AddApiBehaviorRow(result,
                     {{"sample_uuid", sample.sample_uuid},
                      {"series_uuid", sample.series_uuid},
                      {"metric", sample.metric_family},
                      {"namespace", descriptor.namespace_path},
                      {"type", MetricTypeName(sample.value.type)},
-                     {"sample_time_utc_ns", std::to_string(sample.sample_time_utc_ns)},
-                     {"collection_time_utc_ns", std::to_string(sample.collection_time_utc_ns)},
-                     {"publication_time_utc_ns", std::to_string(sample.publication_time_utc_ns)},
-                     {"source_sequence", std::to_string(sample.source_sequence)},
+                     {"sample_time_utc_ns", ApiBehaviorUnsignedValue(sample.sample_time_utc_ns)},
+                     {"collection_time_utc_ns", ApiBehaviorUnsignedValue(sample.collection_time_utc_ns)},
+                     {"publication_time_utc_ns", ApiBehaviorUnsignedValue(sample.publication_time_utc_ns)},
+                     {"source_sequence", ApiBehaviorUnsignedValue(sample.source_sequence)},
                      {"clock_quality", sample.clock_quality},
                      {"freshness_class", sample.freshness_class},
                      {"value", MetricScalarValue(sample.value.value)},
-                     {"count", std::to_string(sample.value.count)},
+                     {"count", ApiBehaviorUnsignedValue(sample.value.count)},
                      {"sum", MetricScalarValue(sample.value.sum)},
                      {"state_text", sample.value.state_text},
                      {"labels", LabelsNativeValue(sample.value.labels)},
+                     {"omitted_sensitive_labels", std::move(omitted)},
                      {"evidence_uuid", sample.evidence_uuid}});
+  return true;
 }
 
 void AddRollupRow(EngineApiResult* result, const scratchbird::core::metrics::MetricRollupRecord& rollup) {
@@ -310,58 +348,6 @@ void AddRetentionPolicyRow(EngineApiResult* result, const MetricRetentionPolicy&
                      {"default_admin_group", policy.default_admin_group},
                      {"evidence_required", policy.evidence_required ? "true" : "false"},
                      {"editable", editable ? "true" : "false"}});
-}
-
-void EnsureLifecycleMetricDescriptor(const std::string& family,
-                                     MetricType type,
-                                     MetricUnit unit,
-                                     const std::string& namespace_path,
-                                     const std::string& help) {
-  auto& registry = scratchbird::core::metrics::DefaultMetricRegistry();
-  if (registry.FindDescriptor(family) != nullptr) return;
-  MetricDescriptor descriptor;
-  descriptor.family = family;
-  descriptor.type = type;
-  descriptor.unit = unit;
-  descriptor.namespace_path = namespace_path;
-  descriptor.help = help;
-  descriptor.producer_owner = "database_lifecycle_observability";
-  descriptor.security_family = "OBS_METRICS_READ_FAMILY";
-  descriptor.labels = {
-      {"operation", false, false},
-      {"result", false, false},
-      {"reason", false, false},
-      {"component", false, false},
-      {"database_uuid", false, false},
-      {"session_uuid", false, true},
-      {"principal_uuid", false, true},
-      {"diagnostic_code", false, false},
-      {"cache_family", false, false},
-      {"route_class", false, false}};
-  (void)registry.RegisterDescriptor(std::move(descriptor));
-}
-
-void EnsureLifecycleMetricDescriptors() {
-  EnsureLifecycleMetricDescriptor("sb_lifecycle_operation_total",
-                                  MetricType::counter,
-                                  MetricUnit::count,
-                                  "sys.metrics.lifecycle",
-                                  "Lifecycle operations by route and result.");
-  EnsureLifecycleMetricDescriptor("sb_lifecycle_diagnostic_total",
-                                  MetricType::counter,
-                                  MetricUnit::count,
-                                  "sys.metrics.lifecycle.diagnostics",
-                                  "Lifecycle diagnostics emitted by canonical message vector code.");
-  EnsureLifecycleMetricDescriptor("sb_lifecycle_cache_invalidation_total",
-                                  MetricType::counter,
-                                  MetricUnit::count,
-                                  "sys.metrics.lifecycle.cache",
-                                  "Lifecycle cache invalidation markers by family and reason.");
-  EnsureLifecycleMetricDescriptor("sb_lifecycle_audit_event_total",
-                                  MetricType::counter,
-                                  MetricUnit::count,
-                                  "sys.metrics.lifecycle.audit",
-                                  "Lifecycle audit evidence emitted before visible route completion.");
 }
 
 template <typename TResult>
@@ -404,7 +390,7 @@ TResult CurrentSurface(const EngineApiRequest& request, const std::string& opera
       continue;
     }
     if (DescriptorMatches(request, descriptor->second, cluster_surface)) {
-      AddValueRow(&result, descriptor->second, value, allow_sensitive);
+      if (!AddValueRow(&result, descriptor->second, value, allow_sensitive)) return result;
     }
   }
   AddApiBehaviorEvidence(&result, "metrics_surface", cluster_surface ? "cluster.sys.metrics.current" : "sys.metrics.current");
@@ -435,19 +421,20 @@ EngineShowMetricsResult EngineShowMetrics(const EngineShowMetricsRequest& reques
   auto result = MakeApiBehaviorSuccess<EngineShowMetricsResult>(request.context, "observability.show_metrics");
   const auto descriptors = scratchbird::core::metrics::DefaultMetricRegistry().Descriptors(include_cluster);
   const auto current = scratchbird::core::metrics::DefaultMetricRegistry().SnapshotCurrent(include_cluster);
+  std::map<std::string, std::vector<const MetricValue*>> samples_by_family;
+  for (const auto& sample : current) samples_by_family[sample.family].push_back(&sample);
   const bool allow_sensitive = HasSensitiveMetricRight(request.context);
   for (const auto& descriptor : descriptors) {
     if (!DescriptorMatches(request, descriptor, descriptor.cluster_only)) {
       continue;
     }
     bool emitted_sample = false;
-    for (const auto& sample : current) {
-      if (sample.family == descriptor.family) {
-        MetricValue value =
-            scratchbird::core::metrics::RedactSensitiveMetricValue(
-                descriptor,
-                sample,
-                allow_sensitive);
+    const auto samples = samples_by_family.find(descriptor.family);
+    if (samples != samples_by_family.end()) {
+      for (const auto* sample : samples->second) {
+        MetricValue value = *sample;
+        EngineTypedValue omitted;
+        if (!ProjectValue(&result, descriptor, &value, allow_sensitive, &omitted)) return result;
         AddApiBehaviorRow(&result,
                           {{"metric", descriptor.family},
                            {"namespace", descriptor.namespace_path},
@@ -456,10 +443,11 @@ EngineShowMetricsResult EngineShowMetrics(const EngineShowMetricsRequest& reques
                            {"producer_owner", descriptor.producer_owner},
                            {"readiness", scratchbird::core::metrics::MetricReadinessName(descriptor.readiness)},
                            {"value", MetricScalarValue(value.value)},
-                           {"count", std::to_string(value.count)},
+                           {"count", ApiBehaviorUnsignedValue(value.count)},
                            {"sum", MetricScalarValue(value.sum)},
                            {"state_text", value.state_text},
-                           {"labels", LabelsNativeValue(value.labels)}});
+                           {"labels", LabelsNativeValue(value.labels)},
+                           {"omitted_sensitive_labels", std::move(omitted)}});
         emitted_sample = true;
       }
     }
@@ -471,11 +459,12 @@ EngineShowMetricsResult EngineShowMetrics(const EngineShowMetricsRequest& reques
                          {"unit", scratchbird::core::metrics::MetricUnitName(descriptor.unit)},
                          {"producer_owner", descriptor.producer_owner},
                          {"readiness", scratchbird::core::metrics::MetricReadinessName(descriptor.readiness)},
-                         {"value", ""},
-                         {"count", ""},
-                         {"sum", ""},
+                         {"value", MetricScalarValue({})},
+                         {"count", MetricScalarValue({})},
+                         {"sum", MetricScalarValue({})},
                          {"state_text", ""},
-                         {"labels", ""}});
+                         {"labels", LabelsNativeValue({})},
+                         {"omitted_sensitive_labels", OmittedLabelsValue({})}});
     }
   }
   AddApiBehaviorEvidence(&result, "metrics_registry", "local_node");
@@ -516,7 +505,7 @@ EngineSysMetricsHistoryResult EngineSysMetricsHistory(const EngineSysMetricsHist
     for (auto sample : store.raw_samples) {
       const auto descriptor = by_family.find(sample.metric_family);
       if (descriptor != by_family.end() && DescriptorMatches(request, descriptor->second, false)) {
-        AddRawHistoryRow(&result, descriptor->second, std::move(sample), allow_sensitive);
+        if (!AddRawHistoryRow(&result, descriptor->second, std::move(sample), allow_sensitive)) return result;
       }
     }
     AddApiBehaviorEvidence(&result, "metrics_surface", "sys.metrics.history");
@@ -527,7 +516,7 @@ EngineSysMetricsHistoryResult EngineSysMetricsHistory(const EngineSysMetricsHist
   for (const auto& value : values) {
     const auto descriptor = by_family.find(value.family);
     if (descriptor != by_family.end() && DescriptorMatches(request, descriptor->second, false)) {
-      AddValueRow(&result, descriptor->second, value, allow_sensitive);
+      if (!AddValueRow(&result, descriptor->second, value, allow_sensitive)) return result;
     }
   }
   AddApiBehaviorEvidence(&result, "metrics_surface", "sys.metrics.history");
@@ -612,7 +601,7 @@ EngineSysMetricsSeriesResult EngineSysMetricsSeries(const EngineSysMetricsSeries
   for (const auto& series : store.series) {
     const auto descriptor = by_family.find(series.metric_family);
     if (descriptor != by_family.end() && DescriptorMatches(request, descriptor->second, false)) {
-      AddSeriesRow(&result, descriptor->second, series, allow_sensitive);
+      if (!AddSeriesRow(&result, descriptor->second, series, allow_sensitive)) return result;
     }
   }
   AddApiBehaviorEvidence(&result, "metrics_surface", "sys.metrics.series");
@@ -862,7 +851,6 @@ EngineRecordLifecycleMetricResult EngineRecordLifecycleMetric(
         request,
         "observability.lifecycle.record_metric");
   }
-  EnsureLifecycleMetricDescriptors();
   const std::string operation = request.operation_key.empty()
       ? SecurityOptionValue(request, "operation_key:")
       : request.operation_key;
@@ -881,45 +869,70 @@ EngineRecordLifecycleMetricResult EngineRecordLifecycleMetric(
       ? SecurityOptionValue(request, "route_family:")
       : request.route_family;
   auto& registry = scratchbird::core::metrics::DefaultMetricRegistry();
-  (void)registry.IncrementCounter(
+  EngineRecordLifecycleMetricResult result =
+      MakeApiBehaviorSuccess<EngineRecordLifecycleMetricResult>(
+          request.context, "observability.lifecycle.record_metric");
+  const bool invalidate = request.cache_invalidation_required ||
+                          SecurityOptionBool(request, "cache_invalidation_required:", false);
+  const auto node = registry.ObservationNodeForDatabase(request.context.database_uuid);
+  if (!node || (!request.context.node_uuid.is_nil() && request.context.node_uuid != *node)) {
+    result.ok = false;
+    result.diagnostics.push_back(MakeInvalidRequestDiagnostic(result.operation_id,
+        "METRIC.VALUE_INVALID:lifecycle_observation_owner_mismatch"));
+    return result;
+  }
+  for (const auto& definition : LifecycleMetricDefinitions()) {
+    if (definition.family == "sb_lifecycle_diagnostic_total" && request.diagnostic_code.empty()) continue;
+    if (definition.family == "sb_lifecycle_cache_invalidation_total" && !invalidate) continue;
+    const auto checked = scratchbird::core::metrics::ValidateBoundMetricDefinition(registry, definition);
+    if (!checked.ok) {
+      result.ok = false;
+      result.diagnostics.push_back(MakeInvalidRequestDiagnostic(result.operation_id,
+          checked.diagnostic_code + ":" + checked.detail));
+      return result;
+    }
+  }
+  const auto emit = [&](const std::string& family, MetricLabelSet labels) {
+    const auto admitted = registry.IncrementCounter(family, std::move(labels), std::uint64_t{1},
+        "database_lifecycle_observability");
+    if (!admitted.ok) {
+      result.ok = false;
+      result.diagnostics.push_back(MakeInvalidRequestDiagnostic(result.operation_id,
+          admitted.diagnostic_code + ":" + admitted.detail));
+      return false;
+    }
+    // Admission is a real retained observation, not durable recorder/audit completion.
+    AddApiBehaviorEvidence(&result, "metric_observation_admitted", family);
+    return true;
+  };
+  AddApiBehaviorEvidence(&result, "lifecycle_metric_completion", "observation_queue_admission_only");
+  if (!emit(
       "sb_lifecycle_operation_total",
       {{"operation", operation},
        {"result", result_class},
        {"route_class", route.empty() ? "engine_internal" : route},
        {"database_uuid", request.context.database_uuid},
-       {"session_uuid", request.context.session_uuid}},
-      1,
-      "database_lifecycle_observability");
+       {"session_uuid", request.context.session_uuid}})) return result;
+  result.metric_recorded = true;
   if (!request.diagnostic_code.empty()) {
-    (void)registry.IncrementCounter(
+    if (!emit(
         "sb_lifecycle_diagnostic_total",
         {{"operation", operation},
          {"diagnostic_code", request.diagnostic_code},
-         {"result", result_class}},
-        1,
-        "database_lifecycle_observability");
+         {"result", result_class}})) return result;
   }
-  (void)registry.IncrementCounter(
+  if (!emit(
       "sb_lifecycle_audit_event_total",
       {{"operation", operation},
        {"result", result_class},
        {"route_class", route.empty() ? "engine_internal" : route},
        {"database_uuid", request.context.database_uuid},
        {"session_uuid", request.context.session_uuid},
-       {"diagnostic_code", request.diagnostic_code.empty() ? "none" : request.diagnostic_code}},
-      1,
-      "database_lifecycle_observability");
-  EngineRecordLifecycleMetricResult result =
-      MakeApiBehaviorSuccess<EngineRecordLifecycleMetricResult>(
-          request.context,
-          "observability.lifecycle.record_metric");
-  result.metric_recorded = true;
+       {"diagnostic_code", request.diagnostic_code.empty() ? "none" : request.diagnostic_code}})) return result;
   AddApiBehaviorEvidence(&result, "lifecycle_metric", operation + ":" + result_class);
   AddApiBehaviorEvidence(&result,
                          "lifecycle_audit_event",
                          operation + ":" + result_class);
-  const bool invalidate = request.cache_invalidation_required ||
-                          SecurityOptionBool(request, "cache_invalidation_required:", false);
   if (invalidate) {
     const std::string family = request.cache_family.empty()
         ? SecurityOptionValue(request, "cache_family:")
@@ -927,13 +940,11 @@ EngineRecordLifecycleMetricResult EngineRecordLifecycleMetric(
     const std::string reason = request.cache_reason.empty()
         ? SecurityOptionValue(request, "cache_reason:")
         : request.cache_reason;
-    (void)registry.IncrementCounter(
+    if (!emit(
         "sb_lifecycle_cache_invalidation_total",
         {{"operation", operation},
          {"cache_family", family.empty() ? "lifecycle_metadata" : family},
-         {"reason", reason.empty() ? operation : reason}},
-        1,
-        "database_lifecycle_observability");
+         {"reason", reason.empty() ? operation : reason}})) return result;
     result.cache_invalidation_recorded = true;
     AddApiBehaviorEvidence(&result,
                            "lifecycle_cache_invalidation",

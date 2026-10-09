@@ -16,6 +16,9 @@ using scratchbird::tests::BinaryFixtureIdentity;
 #include "api_diagnostics.hpp"
 #include "database_lifecycle_test_memory.hpp"
 #include "observability/metrics_api.hpp"
+#include "observability/lifecycle_metric_definitions.hpp"
+#include "../support/metric_projection_fixture.hpp"
+#include "../support/component_authorization_fixture.hpp"
 #include "security/audit_api.hpp"
 #include "behavior_support/api_behavior_record_codec.hpp"
 #include "server_agent_runtime.hpp"
@@ -126,9 +129,8 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& temp_dir) {
   context.request_id = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000018"));
   context.local_transaction_id = 15;
   context.trace_tags = {"group:OPS", "right:AUDIT_READ"};
-  scratchbird::tests::database_lifecycle::MaterializeAuthorizationRights(
-      &context,
-      "database_lifecycle_observability_conformance",
+  scratchbird::tests::MaterializeComponentAuthorization(
+      context,
       {"OBS_METRICS_READ_FAMILY", "OBS_METRICS_READ_ALL", "AUDIT_READ"});
   return context;
 }
@@ -289,11 +291,29 @@ void TestEngineMetrics(const std::filesystem::path& temp_dir) {
   metric.cache_invalidation_required = true;
   metric.cache_family = "lifecycle_metadata";
   metric.cache_reason = "repair_database:repaired";
+  metric.context.node_uuid = scratchbird::tests::FixtureUuid(2292, 1);
+  scratchbird::tests::MetricProjectionFixture fixture(
+      metric.context.database_uuid, metric.context.node_uuid, 2293);
+  namespace m = scratchbird::core::metrics;
+  const m::MetricLabelSet operation_labels{{"operation", "repair_database"},
+      {"result", "success"}, {"route_class", "engine_internal"},
+      {"database_uuid", metric.context.database_uuid}, {"session_uuid", metric.context.session_uuid}};
+  auto audit_labels = operation_labels;
+  audit_labels.push_back({"diagnostic_code", "none"});
+  for (const auto& definition : api::LifecycleMetricDefinitions()) {
+    if (definition.family == "sb_lifecycle_operation_total") fixture.AdmitDefinition(definition, operation_labels);
+    else if (definition.family == "sb_lifecycle_audit_event_total") fixture.AdmitDefinition(definition, audit_labels);
+    else if (definition.family == "sb_lifecycle_cache_invalidation_total") fixture.AdmitDefinition(definition,
+        {{"operation", "repair_database"}, {"cache_family", "lifecycle_metadata"},
+         {"reason", "repair_database:repaired"}});
+  }
   const auto metric_result = api::EngineRecordLifecycleMetric(metric);
   Require(metric_result.ok, "engine lifecycle metric recording failed");
   Require(metric_result.metric_recorded, "engine lifecycle metric flag missing");
   Require(metric_result.cache_invalidation_recorded,
           "engine lifecycle cache invalidation metric flag missing");
+  fixture.ExpectProduced(3);
+  fixture.Seal();
 
   api::EngineSysMetricsCurrentRequest current;
   current.context = EngineContext(temp_dir);
@@ -310,6 +330,7 @@ void TestEngineMetrics(const std::filesystem::path& temp_dir) {
     }
   }
   Require(found, "engine lifecycle metric not exposed through sys.metrics.current");
+  fixture.VerifyAndDrain();
 }
 
 void TestIparProjectionSourceAdapters(const std::filesystem::path& temp_dir) {

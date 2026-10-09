@@ -10,6 +10,10 @@
 #include "database_lifecycle_test_memory.hpp"
 #include "management/support_bundle_api.hpp"
 #include "observability/metrics_api.hpp"
+#include "observability/lifecycle_metric_definitions.hpp"
+#include "metric_history_store_codec.hpp"
+#include "../support/metric_projection_fixture.hpp"
+#include "../support/component_authorization_fixture.hpp"
 #include "observability/performance_optimization_surface.hpp"
 #include "observability/show_api.hpp"
 #include "uuid.hpp"
@@ -94,9 +98,8 @@ api::EngineRequestContext Context() {
       "right:OBS_CONFIG_INSPECT",
       "right:OBS_AGENT_STATE_READ",
       "dpc_management_observability_support_bundle_gate"};
-  scratchbird::tests::database_lifecycle::MaterializeAuthorizationRights(
-      &context,
-      "dpc_management_observability_support_bundle_gate",
+  scratchbird::tests::MaterializeComponentAuthorization(
+      context,
       {"OBS_METRICS_READ_FAMILY",
        "OBS_METRICS_READ_ALL",
        "OBS_MANAGEMENT_INSPECT",
@@ -222,17 +225,6 @@ bool HasRowField(const api::EngineApiResult& result,
                  std::string_view value) {
   for (const auto& row : result.result_shape.rows) {
     if (Field(row, field_name) == value) {
-      return true;
-    }
-  }
-  return false;
-}
-
-bool HasRowFieldContaining(const api::EngineApiResult& result,
-                           std::string_view field_name,
-                           std::string_view value) {
-  for (const auto& row : result.result_shape.rows) {
-    if (Contains(Field(row, field_name), value)) {
       return true;
     }
   }
@@ -570,10 +562,43 @@ void TestMetricsAuditAndMessageVectorEvidence() {
   record.cache_family = "performance_optimization_surface";
   record.cache_reason = "catalog_epoch_changed";
 
+  namespace m = scratchbird::core::metrics;
+  scratchbird::tests::MetricProjectionFixture fixture(record.context.database_uuid,
+      record.context.node_uuid, 2294);
+  const m::MetricLabelSet operation{{"operation", record.operation_key}, {"result", "failure"},
+      {"route_class", record.route_family}, {"database_uuid", record.context.database_uuid},
+      {"session_uuid", record.context.session_uuid}};
+  auto audit_labels = operation;
+  audit_labels.push_back({"diagnostic_code", record.diagnostic_code});
+  for (const auto& definition : api::LifecycleMetricDefinitions()) {
+    if (definition.family == "sb_lifecycle_operation_total") fixture.AdmitDefinition(definition, operation);
+    else if (definition.family == "sb_lifecycle_audit_event_total") fixture.AdmitDefinition(definition, audit_labels);
+    else if (definition.family == "sb_lifecycle_diagnostic_total") fixture.AdmitDefinition(definition,
+        {{"operation", record.operation_key}, {"result", "failure"}, {"diagnostic_code", record.diagnostic_code}});
+    else fixture.AdmitDefinition(definition,
+        {{"operation", record.operation_key}, {"cache_family", record.cache_family}, {"reason", record.cache_reason}});
+  }
+
   const auto recorded = api::EngineRecordLifecycleMetric(record);
   Require(recorded.ok, "DPC-061 lifecycle metric record failed");
   Require(recorded.metric_recorded && recorded.cache_invalidation_recorded,
           "DPC-061 lifecycle metric flags incomplete");
+  fixture.ExpectProduced(4); fixture.Seal();
+  const auto has_label = [](const api::EngineApiResult& result, const std::string& key,
+                            const std::string& value) {
+    for (const auto& row : result.result_shape.rows) for (const auto& field : row.fields) {
+      if (field.first != "labels") continue;
+      Require(field.second.encoded_value.empty() && field.second.binary_value.size() >= 8 &&
+          std::string(field.second.binary_value.begin(), field.second.binary_value.begin() + 8) == "SBMLB001",
+          "DPC-061 metric labels not native framed data");
+      m::history_codec::Reader reader{field.second.binary_value, 8};
+      m::MetricLabelSet labels; reader.One(labels);
+      Require(reader.offset == reader.bytes.size(), "DPC-061 trailing metric label bytes");
+      for (const auto& label : labels) if (label.key == key)
+        return std::holds_alternative<std::string>(label.value) && std::get<std::string>(label.value) == value;
+    }
+    return false;
+  };
   Require(HasEvidence(recorded,
                       "lifecycle_audit_event",
                       "dpc061.performance_optimization_surface:failure"),
@@ -595,8 +620,8 @@ void TestMetricsAuditAndMessageVectorEvidence() {
   Require(HasRowField(diagnostic_metrics, "metric",
                       "sb_lifecycle_diagnostic_total"),
           "DPC-061 diagnostic metric family missing");
-  Require(HasRowFieldContaining(diagnostic_metrics,
-                                "labels",
+  Require(has_label(diagnostic_metrics,
+                                "diagnostic_code",
                                 snapshot.exact_refusal_diagnostic_code),
           "DPC-061 diagnostic metric labels missing exact message code");
 
@@ -608,10 +633,11 @@ void TestMetricsAuditAndMessageVectorEvidence() {
   Require(HasRowField(audit_metrics, "metric",
                       "sb_lifecycle_audit_event_total"),
           "DPC-061 audit metric family missing");
-  Require(HasRowFieldContaining(audit_metrics,
-                                "labels",
+  Require(has_label(audit_metrics,
+                                "route_class",
                                 "management_observability"),
           "DPC-061 audit metric labels missing route family");
+  fixture.VerifyAndDrain();
 }
 
 }  // namespace

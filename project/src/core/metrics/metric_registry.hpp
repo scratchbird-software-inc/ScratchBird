@@ -256,9 +256,13 @@ const char* MetricReadinessName(MetricReadiness readiness);
 
 MetricValidationResult MetricOk();
 MetricValidationResult MetricError(std::string code, std::string detail);
+// Presentation-only omission; callers validate the original source first.
+// Never replace a UUID value with a TEXT marker or reuse projected labels as
+// the original series identity. Metadata names come from the source schema.
 MetricLabelSet RedactSensitiveLabels(const MetricDescriptor& descriptor,
                                       const MetricLabelSet& labels,
-                                      bool allow_sensitive_labels);
+                                      bool allow_sensitive_labels,
+                                      std::vector<std::string>* omitted_sensitive_labels = nullptr);
 MetricValue RedactSensitiveMetricValue(const MetricDescriptor& descriptor,
                                        MetricValue value,
                                        bool allow_sensitive_labels);

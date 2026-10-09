@@ -33,6 +33,20 @@ class MetricProjectionFixture {
     retention_.policy_uuid = Id(); retention_.generation = 1;
     retention_.policy_name = "component projection retention";
   }
+  void ConfigureRetention(core::metrics::MetricRetentionPolicyDefinition definition) {
+    Check(descriptors_.empty(), "projection retention changed after descriptor admission");
+    auto candidate = retention_;
+    static_cast<core::metrics::MetricRetentionPolicyDefinition&>(candidate) = std::move(definition);
+    Check(core::metrics::ValidateMetricRetentionPolicy(candidate).ok, "invalid projection retention definition");
+    retention_ = std::move(candidate);
+  }
+  const core::metrics::MetricSeriesIdentity& RetainedSeries(const std::string& family,
+                                                           const Labels& labels) const {
+    const auto key = core::metrics::MakeMetricSeriesKey(family, labels);
+    for (const auto& [id, series] : series_)
+      if (core::metrics::MakeMetricSeriesKey(series.metric_family, series.labels) == key) return series;
+    throw std::runtime_error("projection series not admitted");
+  }
   void Admit(const std::string& family, Labels labels) {
     namespace m = core::metrics;
     static const auto definitions = m::BuiltinMetricDescriptorDefinitions();
@@ -58,7 +72,8 @@ class MetricProjectionFixture {
       descriptor.retention_policy_generation = retention_.generation;
       descriptor.visibility_policy_uuid = Id(); descriptor.visibility_policy_generation = 1;
       descriptor.readiness = m::MetricReadiness::implemented;
-      Check(registry.RegisterDescriptor(descriptor).ok, "projection descriptor refused");
+      const auto registered = registry.RegisterDescriptor(descriptor);
+      Check(registered.ok, "projection descriptor refused: " + registered.diagnostic_code + ":" + registered.detail);
       descriptors_.emplace(family, std::move(descriptor));
     }
     const auto& descriptor = descriptors_.at(family);

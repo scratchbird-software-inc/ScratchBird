@@ -8,6 +8,13 @@
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+add_executable(metric_api_native_projection_conformance metric_api_native_projection_conformance.cpp)
+target_compile_features(metric_api_native_projection_conformance PRIVATE cxx_std_23)
+target_link_libraries(metric_api_native_projection_conformance PRIVATE sb_engine_internal_api sb_core_metrics)
+add_test(NAME metric_api_native_projection_conformance COMMAND metric_api_native_projection_conformance)
+set_tests_properties(metric_api_native_projection_conformance PROPERTIES
+  LABELS "metrics;binary_uuid;component_regression;not_runtime_acceptance")
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME owned_test_runtime_cleanup
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../support/owned_test_runtime_test.py")

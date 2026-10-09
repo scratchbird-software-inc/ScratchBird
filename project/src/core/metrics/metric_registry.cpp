@@ -458,7 +458,9 @@ MetricRegistry& DefaultMetricRegistry() {
 
 MetricLabelSet RedactSensitiveLabels(const MetricDescriptor& descriptor,
                                       const MetricLabelSet& labels,
-                                      bool allow_sensitive_labels) {
+                                      bool allow_sensitive_labels,
+                                      std::vector<std::string>* omitted_sensitive_labels) {
+  if (omitted_sensitive_labels) omitted_sensitive_labels->clear();
   if (allow_sensitive_labels) {
     return labels;
   }
@@ -471,8 +473,10 @@ MetricLabelSet RedactSensitiveLabels(const MetricDescriptor& descriptor,
   MetricLabelSet redacted;
   redacted.reserve(labels.size());
   for (const auto& label : labels) {
-    redacted.push_back({label.key, sensitive.count(label.key) == 0 ? label.value : MetricLabelValue{std::string("<redacted>")}});
+    if (!sensitive.contains(label.key)) redacted.push_back(label);
   }
+  if (omitted_sensitive_labels)
+    omitted_sensitive_labels->assign(sensitive.begin(), sensitive.end());
   return redacted;
 }
 
