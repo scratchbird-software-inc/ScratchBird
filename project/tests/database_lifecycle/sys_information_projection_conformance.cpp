@@ -7,8 +7,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include "catalog/sys_information_projection.hpp"
 #include "observability/show_api.hpp"
+#include "transaction/transaction_api.hpp"
+#include "memory.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -22,8 +26,7 @@ namespace {
 namespace info = scratchbird::engine::internal_api;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -149,27 +152,6 @@ info::SysInformationProjectionContext Context() {
   context.visible_catalog_generation_id = 4;
   context.strict_mode = false;
   context.cluster_authority_available = false;
-  return context;
-}
-
-info::EngineRequestContext EngineContext() {
-  info::EngineRequestContext context;
-  context.database_path = "/tmp/scratchbird_sys_information_projection_conformance.sbdb";
-  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000001");
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000002");
-  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000003");
-  context.current_role_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000004");
-  context.local_transaction_id = 4;
-  context.catalog_generation_id = 4;
-  context.security_epoch = 1;
-  context.security_context_present = true;
-  context.language_context.language_tag = "en";
-  context.language_context.default_language_tag = "en";
-  context.trace_tags.push_back("right:VISIBLE");
-  context.trace_tags.push_back("right:DISCOVER");
-  context.trace_tags.push_back("right:LIST_CHILD");
-  context.trace_tags.push_back("right:SELECT");
-  context.trace_tags.push_back("right:OBS_MANAGEMENT_INSPECT");
   return context;
 }
 
@@ -1297,7 +1279,28 @@ void TestReadableCatalogProjectionRows() {
   RequireNoUuidColumnsOrValues(columns);
 
   info::EngineShowCatalogRequest show_columns;
-  show_columns.context = EngineContext();
+  scratchbird::tests::OwnedTempDirectory live_directory;
+  scratchbird::storage::database::DatabaseCreateConfig create;
+  create.path = (live_directory.path() / "projection.sbdb").string();
+  create.database_uuid = {scratchbird::core::platform::UuidKind::database,
+                         scratchbird::tests::FixtureUuid(1325, 9001)};
+  create.filespace_uuid = {scratchbird::core::platform::UuidKind::filespace,
+                          scratchbird::tests::FixtureUuid(1325, 9002)};
+  create.creation_unix_epoch_millis = 1790000000100ull;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  const auto created = scratchbird::storage::database::CreateDatabaseFile(create);
+  Require(created.ok(), "live projection catalog creation failed");
+  show_columns.context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  info::EngineBeginTransactionRequest begin;
+  begin.context = show_columns.context;
+  begin.isolation_level = "read_committed";
+  const auto begun = info::EngineBeginTransaction(begin);
+  Require(begun.ok, "live projection transaction admission failed");
+  show_columns.context.transaction_uuid = begun.transaction_uuid;
+  show_columns.context.local_transaction_id = begun.local_transaction_id;
+  show_columns.context.snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  show_columns.context.transaction_isolation_level = begun.isolation_level;
   show_columns.option_envelopes.push_back("catalog_projection:sys.catalog_readable.columns");
   const auto show_columns_result = info::EngineShowCatalog(show_columns);
   Require(show_columns_result.ok,
@@ -1314,6 +1317,16 @@ void TestReadableCatalogProjectionRows() {
                                      "column_name",
                                      "node_path"),
           "EngineShowCatalog omitted builtin navigator_tree metadata");
+  auto unavailable = show_columns;
+  unavailable.context.database_path += ".missing";
+  const auto refused = info::EngineShowCatalog(unavailable);
+  Require(!refused.ok && refused.result_shape.rows.empty(),
+          "missing catalog source produced a successful synthetic projection");
+  info::EngineRollbackTransactionRequest rollback;
+  rollback.context = show_columns.context;
+  Require(info::EngineRollbackTransaction(rollback).ok,
+          "live projection transaction rollback failed");
+  live_directory.Cleanup();
 
   const auto datatypes = info::BuildSysInformationProjection(
       "sys.catalog_readable.datatypes", Context(), {}, {});
@@ -1565,7 +1578,11 @@ void TestClusterAndUnsupportedPathsFailClosed() {
 
 }  // namespace
 
-int main() {
+int main() try {
+  namespace memory = scratchbird::core::memory;
+  Require(memory::ConfigureDefaultMemoryManagerForFixture(
+      memory::DefaultLocalEngineMemoryPolicy(), "sys_information_projection_conformance").ok(),
+      "projection fixture memory admission failed");
   TestBuiltinProjectionDefinitionsValidate();
   TestAllLocalPacketViewsAreQueryable();
   TestClusterPacketViewsFailClosed();
@@ -1581,4 +1598,7 @@ int main() {
   TestMissingNameStrictModeFailsClosed();
   TestClusterAndUnsupportedPathsFailClosed();
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }
