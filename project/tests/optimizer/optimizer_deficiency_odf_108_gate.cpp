@@ -1,4 +1,5 @@
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/component_authorization_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -94,30 +95,10 @@ api::EngineRequestContext Context() {
       "right:OBS_INDEX_PROFILE_READ",
       "right:MGA_CLEANUP_INSPECT",
       "optimizer_deficiency_odf_108_gate"};
-  context.authorization_context.present = true;
-  context.authorization_context.authority_uuid =
-      Id(platform::UuidKind::object, 7);
-  context.authorization_context.principal_uuid = context.principal_uuid;
-  context.authorization_context.security_epoch = context.security_epoch;
-  context.authorization_context.policy_epoch = context.security_epoch;
-  context.authorization_context.catalog_generation_id =
-      context.catalog_generation_id;
-  context.authorization_context.effective_subjects.push_back(
-      {context.principal_uuid, "principal"});
-  const std::vector<std::string> rights = {
+  scratchbird::tests::MaterializeComponentAuthorization(context, {
       "OBS_MANAGEMENT_INSPECT",
       "OBS_INDEX_PROFILE_READ",
-      "MGA_CLEANUP_INSPECT"};
-  for (std::size_t index = 0; index < rights.size(); ++index) {
-    api::EngineMaterializedAuthorizationGrant grant;
-    grant.grant_uuid =
-        Id(platform::UuidKind::object, 8 + index);
-    grant.subject_uuid = context.principal_uuid;
-    grant.subject_kind = "principal";
-    grant.right = rights[index];
-    grant.security_epoch = context.security_epoch;
-    context.authorization_context.grants.push_back(std::move(grant));
-  }
+      "MGA_CLEANUP_INSPECT"});
   return context;
 }
 
@@ -426,6 +407,27 @@ void TestManagementRowsAndJson() {
   request.context = Context();
   request.snapshot = RichSnapshot();
   request.snapshot_present = true;
+
+  auto denied = request;
+  denied.context.authorization_context = {};
+  const auto trace_only = api::EngineInspectPerformanceOptimizationSurface(denied);
+  Require(!trace_only.ok && HasDiagnostic(trace_only, "SECURITY.AUTHORIZATION.DENIED") &&
+              trace_only.management_api_json.empty() && !trace_only.management_api_ready,
+          "ODF-108 trace rights bypassed materialized authorization");
+  denied.context = request.context;
+  scratchbird::tests::MaterializeComponentAuthorization(denied.context,
+      {"OBS_MANAGEMENT_INSPECT", "OBS_INDEX_PROFILE_READ", "MGA_CLEANUP_INSPECT"},
+      {"OBS_MANAGEMENT_INSPECT", "OBS_INDEX_PROFILE_READ", "MGA_CLEANUP_INSPECT"});
+  const auto explicit_deny = api::EngineInspectPerformanceOptimizationSurface(denied);
+  Require(!explicit_deny.ok && HasDiagnostic(explicit_deny, "SECURITY.AUTHORIZATION.DENIED") &&
+              explicit_deny.management_api_json.empty() && !explicit_deny.management_api_ready,
+          "ODF-108 explicit denial published a management snapshot");
+  denied.context = request.context;
+  ++denied.context.security_epoch;
+  const auto stale = api::EngineInspectPerformanceOptimizationSurface(denied);
+  Require(!stale.ok && HasDiagnostic(stale, "SECURITY.CONTEXT.EXPIRED") &&
+              stale.management_api_json.empty() && !stale.management_api_ready,
+          "ODF-108 stale authorization published a management snapshot");
 
   const auto result = api::EngineInspectPerformanceOptimizationSurface(request);
   Require(result.ok,
