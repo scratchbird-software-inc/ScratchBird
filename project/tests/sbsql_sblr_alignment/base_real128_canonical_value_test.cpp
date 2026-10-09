@@ -786,7 +786,6 @@ dt::DatatypeOperationValue FixedZero(dt::CanonicalTypeId type) {
 
 void PresentCastAndExchangeRefusal() {
   std::vector<dt::DatatypeOperationValue> incident{
-      {dt::CanonicalTypeId::character, "1.25", false},
       FixedZero(dt::CanonicalTypeId::int8),
       FixedZero(dt::CanonicalTypeId::int16),
       FixedZero(dt::CanonicalTypeId::int32),
@@ -797,7 +796,6 @@ void PresentCastAndExchangeRefusal() {
       FixedZero(dt::CanonicalTypeId::uint32),
       FixedZero(dt::CanonicalTypeId::uint64),
       FixedZero(dt::CanonicalTypeId::uint128)};
-  incident.front().descriptor = DescriptorFor(dt::CanonicalTypeId::character);
   for (const auto& candidate : incident) {
     for (const auto context : {dt::DatatypeCastContext::implicit,
                                dt::DatatypeCastContext::assignment,
@@ -829,7 +827,7 @@ void PresentCastAndExchangeRefusal() {
                   outgoing_result.value.type_id ==
                       dt::CanonicalTypeId::unknown &&
                   outgoing_result.value.encoded_value.empty(),
-              "every PRESENT real128 character/int/uint incident cast refuses atomically");
+              "unadmitted PRESENT real128 integer incident casts refuse atomically");
       }
     }
   }
@@ -841,6 +839,84 @@ void PresentCastAndExchangeRefusal() {
             decfloat.diagnostic.diagnostic_code ==
                 "SB-DATATYPE-REFERENCE-LABEL-UNMAPPED",
         "Firebird DECFLOAT is not substituted with binary real128");
+}
+
+void CharacterCasts() {
+  dt::DatatypeCastRequest parse;
+  parse.value = {dt::CanonicalTypeId::character, "1.25", false};
+  parse.value.descriptor = DescriptorFor(dt::CanonicalTypeId::character);
+  parse.target_type_id = dt::CanonicalTypeId::real128;
+  parse.target_descriptor = RealDescriptor();
+  for (const auto context : {dt::DatatypeCastContext::implicit,
+                             dt::DatatypeCastContext::assignment,
+                             dt::DatatypeCastContext::explicit_cast}) {
+    parse.context = context;
+    parse.explicit_cast = context == dt::DatatypeCastContext::explicit_cast;
+    const auto parsed = dt::CastDatatypeValue(parse);
+    Check(dt::ClassifyDatatypeCast(parse.value.type_id, parse.target_type_id) ==
+              dt::DatatypeCastCategory::lossy_explicit,
+          "character REAL128 conversion has checked potentially inexact policy");
+    if (context == dt::DatatypeCastContext::implicit) {
+      Check(!parsed.ok() && parsed.value.encoded_value.empty(),
+            "implicit character REAL128 conversion refuses without a value");
+    } else {
+      const auto expected = numeric::EncodeReal128LittleEndian("1.25");
+      Check(parsed.ok() && expected.bytes &&
+                parsed.value.encoded_value == Bytes(*expected.bytes) &&
+                !parsed.numeric_facts.inexact,
+            "checked character REAL128 conversion publishes exact native bytes");
+    }
+    dt::DatatypeCastRequest render;
+    render.value = PresentBytes(Bytes(kOnePointFive));
+    render.target_type_id = dt::CanonicalTypeId::character;
+    render.target_descriptor = parse.value.descriptor;
+    render.context = context;
+    render.explicit_cast = parse.explicit_cast;
+    const auto rendered = dt::CastDatatypeValue(render);
+    Check(context == dt::DatatypeCastContext::implicit
+              ? !rendered.ok() && rendered.value.encoded_value.empty()
+              : rendered.ok() && rendered.value.encoded_value == "1.5",
+          "REAL128 character rendering observes cast context and canonical text");
+  }
+  parse.context = dt::DatatypeCastContext::explicit_cast;
+  parse.explicit_cast = true;
+  for (const auto invalid : {"", "1 trailing", "1e", "0x", "nan(payload)", "1e99999"}) {
+    parse.value.encoded_value = invalid;
+    const auto refused = dt::CastDatatypeValue(parse);
+    Check(!refused.ok() && refused.value.encoded_value.empty() &&
+              refused.diagnostic.diagnostic_code ==
+                  (std::string_view(invalid) == "1e99999"
+                       ? "NUMERIC.REAL128.OVERFLOW" : "NUMERIC.REAL128.INVALID"),
+          "invalid or overflowing character REAL128 input preserves reference refusal");
+  }
+  parse.value.encoded_value = "1.1";
+  const auto rounded = dt::CastDatatypeValue(parse);
+  Check(rounded.ok() && rounded.value.encoded_value.size() == 16 &&
+            rounded.numeric_facts.inexact,
+        "character REAL128 conversion retains inexact fact");
+  parse.value.encoded_value = "Infinity";
+  Check(!dt::CastDatatypeValue(parse).ok(), "special input requires explicit numeric policy");
+  parse.numeric_context.allow_special_values = true;
+  const auto infinity = dt::CastDatatypeValue(parse);
+  Check(infinity.ok() && infinity.value.encoded_value == Bytes(kPositiveInfinity),
+        "admitted special character conversion keeps exact binary128 class");
+  parse.value.is_null = true;
+  parse.value.encoded_value.clear();
+  const auto null_value = dt::CastDatatypeValue(parse);
+  Check(null_value.ok() && null_value.value.is_null &&
+            null_value.value.encoded_value.empty() &&
+            null_value.value.type_id == dt::CanonicalTypeId::real128,
+        "bound NULL character REAL128 conversion publishes target NULL only");
+  parse.numeric_context.rounding = static_cast<dt::DatatypeRoundingMode>(99);
+  Check(!dt::CastDatatypeValue(parse).ok(), "NULL conversion still validates numeric context");
+  parse.numeric_context.rounding = dt::DatatypeRoundingMode::half_even;
+  parse.value.is_null = false;
+  parse.value.encoded_value = "1";
+  parse.value.descriptor = {};
+  const auto unbound = dt::CastDatatypeValue(parse);
+  Check(!unbound.ok() && unbound.value.encoded_value.empty() &&
+            unbound.diagnostic.diagnostic_code == "DATATYPE.DESCRIPTOR.INVALID",
+        "character REAL128 conversion cannot infer missing source descriptor");
 }
 
 void AppendSetU16(std::string* bytes, std::uint16_t value) {
@@ -1347,6 +1423,7 @@ int main() {
   IdentityAndNulls();
   NumericOperationsAndComparison();
   PresentCastAndExchangeRefusal();
+  CharacterCasts();
   PolicyAndSerializationSurfaces();
   DescriptorAndWidthPrecedence();
   Persistence();

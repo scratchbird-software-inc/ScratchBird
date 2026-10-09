@@ -4,6 +4,7 @@
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_operations.hpp"
 #include "sbl_numeric.hpp"
+#include "scratchbird/engine/value.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -327,9 +328,21 @@ void CastAndPolicyRefusal() {
     incoming.context = dt::DatatypeCastContext::explicit_cast;
     incoming.explicit_cast = true;
     const auto result = dt::CastDatatypeValue(incoming);
+    if (source.type_id == dt::CanonicalTypeId::character) {
+      Check(result.ok() && result.value.encoded_value == Real("1.25").encoded_value &&
+                scratchbird::engine::ExecutionTypeDescriptorIdentityEquals(
+                    result.value.descriptor, exact.descriptor),
+            "checked character cast agrees with binary128 reference");
+      incoming.context = dt::DatatypeCastContext::implicit;
+      incoming.explicit_cast = false;
+      const auto implicit = dt::CastDatatypeValue(incoming);
+      Check(!implicit.ok() && implicit.value.encoded_value.empty(),
+            "character to real128 still requires checked conversion");
+      continue;
+    }
     Check(!result.ok() && result.value.type_id == dt::CanonicalTypeId::unknown &&
               result.value.encoded_value.empty(),
-          "unregistered PRESENT character/int/uint cast refuses");
+          "unregistered PRESENT int/uint cast refuses");
   }
 
   const auto hash = dt::HashDatatypeValue({exact});

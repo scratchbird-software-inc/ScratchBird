@@ -3183,8 +3183,10 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
       return DatatypeCastCategory::lossy_explicit;
     return DatatypeCastCategory::forbidden;
   }
-  // REAL128 has an exact descriptor-bound LE16 identity operation, but Core
-  // has not registered any cross-type PRESENT cast UUID involving it.
+  if ((IsReal128(source_type_id) && IsCharacter(target_type_id)) ||
+      (IsCharacter(source_type_id) && IsReal128(target_type_id)))
+    return DatatypeCastCategory::lossy_explicit;
+  // Other REAL128 pairs still require their own admitted conversion policy.
   if (IsReal128(source_type_id) || IsReal128(target_type_id)) {
     return source_type_id == target_type_id
         ? DatatypeCastCategory::identity
@@ -4105,6 +4107,51 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
   }
   if (IsReal128(request.value.type_id) ||
       IsReal128(request.target_type_id)) {
+    const bool parse_text = IsCharacter(request.value.type_id);
+    const bool render_text = IsCharacter(request.target_type_id);
+    if (parse_text || render_text) {
+      namespace n = scratchbird::libraries::sbl_numeric;
+      constexpr auto category = DatatypeCastCategory::lossy_explicit;
+      if (!request.explicit_cast && request.context == DatatypeCastContext::implicit)
+        return CastFailure("explicit_cast_required", category);
+      const auto& text_descriptor = parse_text ? request.value.descriptor : request.target_descriptor;
+      if (!ExecutionDescriptorValidForType(text_descriptor, CanonicalTypeId::character))
+        return CastFailure("real128_character_descriptor_required", category,
+                           "DATATYPE.DESCRIPTOR.INVALID");
+      auto checked = validate_real128_cast_context(
+          render_text && !result_is_null ? &request.value : nullptr, category);
+      if (!checked.ok()) return checked;
+      checked.value = {request.target_type_id, {}, result_is_null};
+      checked.value.descriptor = request.target_descriptor;
+      if (result_is_null) return checked;
+      n::NumericContext context;
+      context.precision = request.numeric_context.precision;
+      context.scale = request.numeric_context.scale;
+      context.allow_special_values = request.numeric_context.allow_special_values;
+      switch (request.numeric_context.rounding) {
+        case DatatypeRoundingMode::half_even: context.rounding = n::RoundingMode::half_even; break;
+        case DatatypeRoundingMode::half_up: context.rounding = n::RoundingMode::half_up; break;
+        case DatatypeRoundingMode::truncate: context.rounding = n::RoundingMode::truncate; break;
+        default: return CastFailure("real128_cast_rounding_invalid", category, "NUMERIC.REAL128.INVALID");
+      }
+      const auto converted = parse_text
+          ? n::EncodeReal128LittleEndian(request.value.encoded_value, context)
+          : n::DecodeReal128LittleEndian(
+                reinterpret_cast<const std::uint8_t*>(request.value.encoded_value.data()),
+                request.value.encoded_value.size(), context, true);
+      if (converted.numeric.status != n::NumericStatusCode::ok || !converted.bytes) {
+        auto refused = CastFailure("real128_character_conversion_failed", category,
+            converted.numeric.diagnostic_code.empty() ? "NUMERIC.REAL128.INVALID"
+                                                     : converted.numeric.diagnostic_code);
+        refused.numeric_facts = NumericFacts(converted.numeric);
+        return refused;
+      }
+      checked.numeric_facts = NumericFacts(converted.numeric);
+      checked.value.encoded_value = parse_text
+          ? std::string(converted.bytes->begin(), converted.bytes->end())
+          : converted.numeric.value.encoded;
+      return checked;
+    }
     return CastFailure(
         result_is_null
             ? "real128_cross_type_typed_null_cast_policy_unresolved"

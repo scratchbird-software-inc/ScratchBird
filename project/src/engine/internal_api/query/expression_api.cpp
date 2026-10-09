@@ -75,6 +75,8 @@ void PublishScalarCastValue(const core::datatypes::DatatypeOperationValue& cast,
   } else if (cast.type_id == core::datatypes::CanonicalTypeId::uuid ||
       cast.type_id == core::datatypes::CanonicalTypeId::int32 ||
       cast.type_id == core::datatypes::CanonicalTypeId::int64 ||
+      cast.type_id == core::datatypes::CanonicalTypeId::int128 ||
+      cast.type_id == core::datatypes::CanonicalTypeId::uint128 ||
       cast.type_id == core::datatypes::CanonicalTypeId::real64 ||
       cast.type_id == core::datatypes::CanonicalTypeId::real128 ||
       cast.type_id == core::datatypes::CanonicalTypeId::binary) {
@@ -126,10 +128,14 @@ bool ScalarCastInputEncoding(const EngineTypedValue& input,
   const bool binary = type == core::datatypes::CanonicalTypeId::uuid ||
                       type == core::datatypes::CanonicalTypeId::int32 ||
                       type == core::datatypes::CanonicalTypeId::int64 ||
+                      type == core::datatypes::CanonicalTypeId::int128 ||
+                      type == core::datatypes::CanonicalTypeId::uint128 ||
                       type == core::datatypes::CanonicalTypeId::real64 ||
                       type == core::datatypes::CanonicalTypeId::real128 ||
                       type == core::datatypes::CanonicalTypeId::binary;
   if (binary && (!input.encoded_value.empty() ||
+      ((type == core::datatypes::CanonicalTypeId::int128 ||
+        type == core::datatypes::CanonicalTypeId::uint128) && input.binary_value.size() != 16) ||
       (type == core::datatypes::CanonicalTypeId::uuid && input.binary_value.size() != 16) ||
       (type == core::datatypes::CanonicalTypeId::int32 && input.binary_value.size() != 4) ||
       (type == core::datatypes::CanonicalTypeId::real64 && input.binary_value.size() != 8) ||
@@ -1042,6 +1048,15 @@ bool QowApplyCanonicalNumericScalarV1(
       if(std::uncaught_exceptions()>exceptions) { *output={}; output->state=EngineValueState::error; }
     }
   } unwind_publication{output_value};
+  // Output may be an operand (including its result descriptor). Preserve the
+  // admitted input before any refusal/reset can invalidate those references.
+  if (output_value == &left_value || output_value == &right_value) {
+    const auto left = left_value;
+    const auto right = right_value;
+    const auto descriptor = result_descriptor;
+    return QowApplyCanonicalNumericScalarV1(left, right, descriptor, operation,
+        context, output_value, refusal_detail, numeric_facts);
+  }
   const bool binary_operation =
       operation != dt::DatatypeNumericOperationKind::canonicalize;
   refusal_detail->clear();
@@ -1056,10 +1071,7 @@ bool QowApplyCanonicalNumericScalarV1(
   engine::ExecutionTypeDescriptor left_descriptor;
   engine::ExecutionTypeDescriptor right_descriptor;
   engine::ExecutionTypeDescriptor output_descriptor;
-  const bool has_sql_null_state = left_value.isSqlNull() ||
-      (binary_operation && right_value.isSqlNull());
-  if ((has_sql_null_state || result_type == dt::CanonicalTypeId::real64) &&
-      (!QowBoundExecutionTypeDescriptorV1(
+  if (!QowBoundExecutionTypeDescriptorV1(
            left_value.descriptor, left_type, &left_descriptor,
            refusal_detail) ||
        (binary_operation &&
@@ -1068,7 +1080,7 @@ bool QowApplyCanonicalNumericScalarV1(
             refusal_detail)) ||
        !QowBoundExecutionTypeDescriptorV1(
            result_descriptor, result_type, &output_descriptor,
-           refusal_detail))) {
+           refusal_detail)) {
     *output_value = {};
     output_value->state = EngineValueState::error;
     *refusal_detail = "DATATYPE.DESCRIPTOR.INVALID:" + *refusal_detail;
@@ -1331,20 +1343,30 @@ bool QowApplyCanonicalNumericScalarV1(
   numeric_request.operation = operation;
   numeric_request.type_id = result_type;
   numeric_request.left.type_id = left_type;
-  numeric_request.left.encoded_value = left_value.encoded_value;
   numeric_request.left.is_null = left_value.isSqlNull();
   numeric_request.right.type_id = right_type;
-  numeric_request.right.encoded_value = right_value.encoded_value;
   numeric_request.right.is_null = right_value.isSqlNull();
   numeric_request.context = context;
-  if (has_sql_null_state) {
-    numeric_request.left.descriptor = left_descriptor;
-    if (binary_operation) numeric_request.right.descriptor = right_descriptor;
-    numeric_request.result_descriptor = output_descriptor;
+  numeric_request.left.descriptor = left_descriptor;
+  if (binary_operation) numeric_request.right.descriptor = right_descriptor;
+  numeric_request.result_descriptor = output_descriptor;
+  if (!ScalarCastInputEncoding(left_value, left_type,
+                               &numeric_request.left.encoded_value) ||
+      (binary_operation &&
+       !ScalarCastInputEncoding(right_value, right_type,
+                                &numeric_request.right.encoded_value))) {
+    *refusal_detail = "NUMERIC.ENCODING.NONCANONICAL";
+    if (numeric_facts) numeric_facts->invalid = true;
+    return false;
   }
   const auto numeric_result = dt::ApplyNumericOperation(numeric_request);
   if (numeric_facts) *numeric_facts = numeric_result.numeric_facts;
   if (!numeric_result.ok()) {
+    if (numeric_result.diagnostic.diagnostic_code.starts_with("NUMERIC.") ||
+        numeric_result.diagnostic.diagnostic_code.starts_with("DATATYPE.")) {
+      *refusal_detail = numeric_result.diagnostic.diagnostic_code;
+      return false;
+    }
     for (const auto& argument : numeric_result.diagnostic.arguments) {
       if (!argument.text()) continue; // Only explicit text contributes to this summary.
       if (argument.key == "detail" && !(*argument.text()).empty()) {
@@ -1359,13 +1381,7 @@ bool QowApplyCanonicalNumericScalarV1(
     }
     return false;
   }
-  output_value->descriptor = result_descriptor;
-  output_value->encoded_value = numeric_result.value.encoded_value;
-  output_value->binary_value.clear();
-  output_value->is_null = numeric_result.value.is_null;
-  output_value->state = numeric_result.value.is_null
-                            ? EngineValueState::sql_null
-                            : EngineValueState::value;
+  PublishScalarCastValue(numeric_result.value, result_descriptor, output_value);
   *output_value = QowPropagateSqlNullAfterScalarV1(
       result_descriptor, std::move(*output_value));
   return true;
@@ -1664,6 +1680,27 @@ bool QowCompareCanonicalNonCollatedScalarsV1(
             "128-bit comparison descriptor width is invalid";
         return false;
       }
+    }
+    if (type_id == dt::CanonicalTypeId::int128 ||
+        type_id == dt::CanonicalTypeId::uint128) {
+      dt::DatatypeComparisonRequest request;
+      request.left.type_id = request.right.type_id = type_id;
+      if (!QowBoundExecutionTypeDescriptorV1(left_value.descriptor, type_id,
+              &request.left.descriptor, refusal_detail) ||
+          !QowBoundExecutionTypeDescriptorV1(right_value.descriptor, type_id,
+              &request.right.descriptor, refusal_detail)) return false;
+      if (!ScalarCastInputEncoding(left_value, type_id, &request.left.encoded_value) ||
+          !ScalarCastInputEncoding(right_value, type_id, &request.right.encoded_value)) {
+        *refusal_detail = "NUMERIC.ENCODING.NONCANONICAL";
+        return false;
+      }
+      const auto compared = dt::CompareDatatypeValues(request);
+      if (!compared.ok()) {
+        *refusal_detail = compared.diagnostic.diagnostic_code;
+        return false;
+      }
+      *comparison = compared.comparison;
+      return true;
     }
     dt::DatatypeNumericOperationRequest request;
     request.operation = dt::DatatypeNumericOperationKind::compare;
