@@ -1,5 +1,6 @@
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/engine_evidence_fixture.hpp"
+#include "database_lifecycle_test_memory.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -60,6 +61,13 @@ api::EngineRequestContext Context(
   context.session_uuid = std::move(session);
   context.current_role_uuid = std::move(role);
   context.transaction_uuid = scratchbird::tests::FixtureUuid(1208, 1802);
+  // Component-only prepared-plan/memory coordinates. These identify the real
+  // arena grant below; they are not an authenticated statement receipt and
+  // must never be used as authority for a storage mutation.
+  context.statement_uuid = scratchbird::tests::FixtureUuid(1489, 31);
+  context.statement_snapshot_uuid = scratchbird::tests::FixtureUuid(1489, 32);
+  context.statement_metadata_snapshot_uuid = scratchbird::tests::FixtureUuid(1489, 33);
+  context.optimizer_resource_snapshot_uuid = scratchbird::tests::FixtureUuid(1489, 34);
   context.local_transaction_id = kLocalTransactionId;
   context.snapshot_visible_through_local_transaction_id = kLocalTransactionId;
   context.catalog_generation_id = catalog_epoch;
@@ -407,9 +415,41 @@ void ValidateMemoryPressureTrimAndAuthority() {
   RequireRefusal(cross_session, "cross_session");
 }
 
+void ValidateMemoryOwnershipAndRelease() {
+  const auto table = Table(scratchbird::tests::FixtureUuid(1489, 9));
+  const auto request = InsertRequest(table, Context("memory-owner", table.table_uuid));
+  const auto admitted = Begin(table, request);
+  Require(admitted.accepted && admitted.memory_arena_granted &&
+              admitted.memory_arena_granted_bytes > 0 &&
+              admitted.memory_arena_released && admitted.memory_arena_reset &&
+              admitted.memory_arena_leak_count == 0,
+          "IPAR-P6-02 admitted arena did not allocate and release real scratch");
+  constexpr api::EngineUuid api::EngineRequestContext::* owners[] = {
+      &api::EngineRequestContext::database_uuid,
+      &api::EngineRequestContext::transaction_uuid,
+      &api::EngineRequestContext::session_uuid,
+      &api::EngineRequestContext::statement_uuid,
+      &api::EngineRequestContext::statement_snapshot_uuid,
+      &api::EngineRequestContext::statement_metadata_snapshot_uuid,
+      &api::EngineRequestContext::optimizer_resource_snapshot_uuid};
+  for (const auto owner : owners) {
+    auto missing = request;
+    missing.context.*owner = {};
+    const auto refused = Begin(table, missing);
+    Require(!refused.accepted && refused.memory_arena_fail_closed &&
+                !refused.memory_arena_granted &&
+                refused.memory_arena_granted_bytes == 0 &&
+                refused.fallback_reason == "insert_memory_arena_refused",
+            "IPAR-P6-02 missing binary memory ownership was accepted");
+  }
+}
+
 }  // namespace
 
 int main() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
+      "ipar-memory-pressure-component");
   ValidateMemoryPressureTrimAndAuthority();
+  ValidateMemoryOwnershipAndRelease();
   return EXIT_SUCCESS;
 }
