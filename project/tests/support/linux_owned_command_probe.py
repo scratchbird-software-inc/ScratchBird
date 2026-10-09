@@ -13,7 +13,7 @@ import ctypes
 import json
 import os
 from pathlib import Path
-import resource
+import select
 import signal
 import subprocess
 import sys
@@ -59,26 +59,80 @@ def snapshot(pid):
         return None
 
 
-def reap():
+class ProfiledCommand:
+    """Wait only for this command, retaining the kernel's per-child usage.
+
+    RUSAGE_CHILDREN belongs to the controller process lifetime and survives
+    exec. A shell that builds first and execs this probe can therefore carry
+    unrelated compiler CPU and RSS into it. wait4 excludes that history.
+    """
+    def __init__(self, command, **kwargs):
+        self.process = subprocess.Popen(command, **kwargs)
+        self.usage = None
+        try:
+            self.pidfd = os.pidfd_open(self.process.pid)
+        except BaseException:
+            self.process.kill()
+            self.process.wait()
+            raise
+
+    def poll(self):
+        if self.process.returncode is None:
+            pid, status, usage = os.wait4(self.process.pid, os.WNOHANG)
+            if pid:
+                self.process.returncode = os.waitstatus_to_exitcode(status)
+                self.usage = usage
+                os.close(self.pidfd)
+                self.pidfd = None
+        return self.process.returncode
+
+    def wait(self, timeout=None):
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while self.poll() is None:
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                raise subprocess.TimeoutExpired(self.process.args, timeout)
+            poller = select.poll()
+            poller.register(self.pidfd, select.POLLIN)
+            poller.poll(None if remaining is None else max(1, int(remaining * 1000)))
+        return self.process.returncode
+
+    def terminate(self):
+        if self.poll() is None:
+            try:
+                signal.pidfd_send_signal(self.pidfd, signal.SIGTERM)
+            except ProcessLookupError:
+                pass  # It exited between the nonblocking wait and signal.
+
+    def kill(self):
+        if self.poll() is None:
+            try:
+                signal.pidfd_send_signal(self.pidfd, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def reap(usages):
     while True:
         try:
-            pid, _ = os.waitpid(-1, os.WNOHANG)
+            pid, _, usage = os.wait4(-1, os.WNOHANG)
         except ChildProcessError:
             return
         if pid == 0:
             return
+        usages.append(usage)
 
 
-def drain():
+def drain(usages):
     # The command controller has already been waited. All remaining direct
     # children are kernel-adopted descendants, not other users' daemons.
-    reap()
+    reap(usages)
     leaked = [value for pid in sorted(children(os.getpid()))
               if (value := snapshot(pid)) is not None]
     for sig in (signal.SIGTERM, signal.SIGKILL):
         deadline = time.monotonic() + 5
         while True:
-            reap()
+            reap(usages)
             owned = children(os.getpid())
             if not owned:
                 return leaked
@@ -124,10 +178,12 @@ def main():
                "sampling_limits": "Short-lived children may fall between samples; no stack or syscall trace."}
     path = args.evidence / "receipt.json"
     path.write_text(json.dumps(receipt, indent=2) + "\n")
+    usages = []
     with (args.evidence / "command.log").open("wb") as output, \
             (args.evidence / "process-samples.jsonl").open("w") as samples:
-        process = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT)
+        process = None
         try:
+            process = ProfiledCommand(command, stdout=output, stderr=subprocess.STDOUT)
             while process.poll() is None:
                 pending = list(children(os.getpid()))
                 seen = set()
@@ -162,11 +218,11 @@ def main():
             # Finish cleanup even if the user repeats an interrupt.
             for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
                 signal.signal(number, signal.SIG_IGN)
-            if process.poll() is None:
+            if process is not None and process.poll() is None:
                 process.kill()
                 process.wait()
             try:
-                receipt["leaked_descendants"] = drain()
+                receipt["leaked_descendants"] = drain(usages)
             except BaseException as cleanup_error:
                 receipt["cleanup_error"] = repr(cleanup_error)
                 error = cleanup_error
@@ -176,13 +232,15 @@ def main():
                     receipt.update(status="FAILED", probe_error=repr(error),
                                    elapsed_seconds=time.monotonic() - started)
                     path.write_text(json.dumps(receipt, indent=2) + "\n")
-    usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+    usages.append(process.usage)
+    total = lambda field: sum(getattr(usage, field) for usage in usages)
     receipt.update(elapsed_seconds=time.monotonic() - started,
-                   user_cpu_seconds=usage.ru_utime, system_cpu_seconds=usage.ru_stime,
-                   peak_child_rss_kib=usage.ru_maxrss, input_blocks=usage.ru_inblock,
-                   output_blocks=usage.ru_oublock,
-                   voluntary_context_switches=usage.ru_nvcsw,
-                   involuntary_context_switches=usage.ru_nivcsw)
+                   resource_accounting="wait4_command_and_adopted_descendants",
+                   user_cpu_seconds=total("ru_utime"), system_cpu_seconds=total("ru_stime"),
+                   peak_child_rss_kib=max(usage.ru_maxrss for usage in usages),
+                   input_blocks=total("ru_inblock"), output_blocks=total("ru_oublock"),
+                   voluntary_context_switches=total("ru_nvcsw"),
+                   involuntary_context_switches=total("ru_nivcsw"))
     passed = receipt["exit_code"] == 0 and not receipt.get("timed_out") and not receipt["leaked_descendants"]
     receipt["status"] = "PASS" if passed else "FAILED"
     path.write_text(json.dumps(receipt, indent=2) + "\n")

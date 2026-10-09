@@ -55,10 +55,50 @@ class OwnedCommandProbeTest(unittest.TestCase):
         self.assertEqual(receipt["status"], "FAILED")
         self.assertEqual(receipt["exit_code"], 29)
 
+    def test_prior_reaped_children_do_not_pollute_command_resources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory) / "evidence"
+            warmup = "import time; memory=bytearray(96*1024*1024); end=time.process_time()+0.5\nwhile time.process_time()<end: pass"
+            launcher = ("import os,subprocess,sys; "
+                        "subprocess.run([sys.executable,'-c',sys.argv[1]],check=True); "
+                        "os.execv(sys.executable,[sys.executable,'-B',*sys.argv[2:]])")
+            result = subprocess.run([sys.executable, "-B", "-c", launcher, warmup,
+                str(PROBE), "--evidence", str(evidence), "--timeout", "10",
+                "--", sys.executable, "-B", "-c", "print('measured only')"],
+                capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            receipt = json.loads((evidence / "receipt.json").read_text())
+            self.assertEqual(receipt["status"], "PASS")
+            self.assertEqual(receipt["resource_accounting"], "wait4_command_and_adopted_descendants")
+            self.assertLess(receipt["peak_child_rss_kib"], 64*1024)
+            self.assertLess(receipt["user_cpu_seconds"] + receipt["system_cpu_seconds"], 0.5)
+
+    def test_launch_failure_cannot_leave_a_running_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory) / "evidence"
+            result = subprocess.run([sys.executable, "-B", str(PROBE),
+                "--evidence", str(evidence), "--", str(Path(directory) / "missing-command")],
+                capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            receipt = json.loads((evidence / "receipt.json").read_text())
+            self.assertEqual(receipt["status"], "FAILED")
+            self.assertIn("FileNotFoundError", receipt["probe_error"])
+            self.assertEqual(receipt["leaked_descendants"], [])
+
     def test_timeout_stops_owned_command(self):
         result, receipt, _, _ = self.run_probe("import time; time.sleep(60)", timeout=0.1)
         self.assertEqual(result.returncode, 1)
         self.assertTrue(receipt["timed_out"])
+        self.assertLess(receipt["elapsed_seconds"], 10)
+
+    def test_timeout_kills_command_that_ignores_termination(self):
+        result, receipt, _, _ = self.run_probe(
+            "import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(60)", timeout=0.5)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertTrue(receipt["timed_out"])
+        self.assertEqual(receipt["exit_code"], -9)
+        self.assertEqual(receipt["leaked_descendants"], [])
+        self.assertGreater(receipt["peak_child_rss_kib"], 0)
         self.assertLess(receipt["elapsed_seconds"], 10)
 
     def test_detached_descendant_fails_and_unrelated_process_survives(self):
