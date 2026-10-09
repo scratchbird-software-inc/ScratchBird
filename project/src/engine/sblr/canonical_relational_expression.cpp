@@ -742,6 +742,22 @@ bool SamePersistedRowDescriptor(
 
   const auto expected_nullability =
       effective_nullability.value_or(bound.nullability);
+  if (bound.codec_id == "datatype.timestamp.utc_tuple.le.v1") {
+    // A frozen UTC tuple retains its statement/cohort receipt in the scalar
+    // descriptor. Generic storage metadata comparison cannot replace that
+    // binding or compare against the current civil timestamp codec.
+    auto effective = bound;
+    effective.nullability = expected_nullability;
+    api::EngineDescriptor expected;
+    std::string detail;
+    const bool matches = api::BuildHistoricalTimestampScalarDescriptorV1(
+        effective, &expected, &detail) && SameDescriptor(expected, actual);
+    if (!matches && authority_refusal_detail)
+      *authority_refusal_detail = detail.empty()
+          ? "historical timestamp row descriptor differs from its exact statement binding"
+          : detail;
+    return matches;
+  }
   if (services != nullptr &&
       services->prevalidated_persisted_row_descriptor_authority) {
     const auto prevalidated =

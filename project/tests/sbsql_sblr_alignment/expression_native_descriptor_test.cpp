@@ -249,6 +249,36 @@ int main() {
         a::EngineCanonicalExpressionConsumer::projection, &evaluated, &detail));
     Check(evaluated.binary_value == previous.binary_value && evaluated.encoded_value.empty() &&
           evaluated.descriptor == descriptor);
+    auto identifier_dag = timestamp_dag;
+    auto& identifier = identifier_dag.expressions.front();
+    identifier.expression_kind = a::RelationalExpressionKind::kIdentifier;
+    identifier.literal_kind.reset();
+    identifier.literal_typed_value_v1.reset();
+    identifier.bound_name_uuid = scratchbird::tests::FixtureUuid(1086, 903);
+    s::CanonicalRelationalExpressionRuntime identifier_runtime(identifier_dag);
+    s::CanonicalRelationalExpressionRowBinding binding;
+    binding.row_descriptor_ids = {1};
+    binding.slots.push_back({1, 1, 0, s::CanonicalRelationalExpressionRowSlotKind::input_identifier});
+    a::EngineTypedValue selected;
+    Check(identifier_runtime.EvaluateForConsumer(1, "timestamp", binding,
+        std::vector<a::EngineTypedValue>{evaluated},
+        a::EngineCanonicalExpressionConsumer::projection, &selected, &detail));
+    Check(selected.descriptor == evaluated.descriptor && selected.binary_value == evaluated.binary_value &&
+          selected.encoded_value == evaluated.encoded_value && selected.state == evaluated.state &&
+          selected.is_null == evaluated.is_null);
+    Check(!identifier_runtime.EvaluateForConsumer(1, "timestamp", binding,
+        std::vector<a::EngineTypedValue>{crossed_statement},
+        a::EngineCanonicalExpressionConsumer::projection, &selected, &detail));
+    for (unsigned mutation = 0; mutation < 4; ++mutation) {
+      auto stale = evaluated;
+      if (mutation == 0) ++stale.descriptor.datatype_descriptor_generation;
+      if (mutation == 1) stale.descriptor.type_uuid = identifier.bound_name_uuid.value();
+      if (mutation == 2) stale.descriptor.encoded_descriptor += ";unbound=true";
+      if (mutation == 3) stale.descriptor.descriptor_uuid = identifier.bound_name_uuid.value();
+      Check(!identifier_runtime.EvaluateForConsumer(1, "timestamp", binding,
+          std::vector<a::EngineTypedValue>{stale},
+          a::EngineCanonicalExpressionConsumer::projection, &selected, &detail));
+    }
     scratchbird::engine::executor::DescriptorBatch batch;
     batch.columns.push_back({"historical", descriptor, true, 1});
     Check(scratchbird::engine::executor::ValidateDescriptorBatch(batch).ok);
@@ -272,6 +302,9 @@ int main() {
       parts.unix_seconds = 42;
       Check(!a::DecodeHistoricalTimestampScalarV1(bad, &parts, &detail));
       Check(parts.unix_seconds == 42 && !detail.empty());
+      Check(!identifier_runtime.EvaluateForConsumer(1, "timestamp", binding,
+          std::vector<a::EngineTypedValue>{bad},
+          a::EngineCanonicalExpressionConsumer::projection, &selected, &detail));
     }
     value.setState(a::EngineValueState::sql_null);
     value.binary_value.clear();
