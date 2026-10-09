@@ -25,6 +25,68 @@ COMMANDS, OPCODES, ENVELOPES = language.validate_sblr_authority(CORE)
 
 
 class InventoryOracles(unittest.TestCase):
+    def test_blob_consumer_handoff_cannot_drop_typed_authority(self):
+        original_read = language.read_csv
+        mappings_path = CORE / language.CORE_REGISTRY_FILES['surface_to_sblr']
+        for field in ('sblr_operation_family', 'required_context', 'binding_steps', 'result_shape', 'diagnostics'):
+            with self.subTest(field=field):
+                def read(path, columns, label):
+                    rows = original_read(path, columns, label)
+                    if path == mappings_path:
+                        next(row for row in rows if row['surface_id'] == 'SBSQL-5E47A8E53DE3')[field] = 'invented'
+                    return rows
+                with patch.object(language, 'read_csv', side_effect=read):
+                    self.rejected('BLOB receiving-owner handoff drift',
+                                  lambda: language.validate_surface_registries(CORE))
+
+    def test_nonstandalone_surface_boundaries_are_exact(self):
+        surfaces, mappings = language.validate_surface_registries(CORE)
+        by_id = {row['surface_id']: row for row in surfaces}
+        profiles = {}
+        for mapping in mappings:
+            if mapping['ingress_envelope'] in {'SBLRExecutionEnvelope.v3', 'sbsql_domain_ddl_or_typed_value'}:
+                continue
+            surface = by_id[mapping['surface_id']]
+            profiles.setdefault((surface['status'], mapping['binding_steps']), (surface, mapping))
+        self.assertEqual(len(profiles), 11)
+        for surface, mapping in profiles.values():
+            for field in ('sblr_operation_family', 'ingress_envelope', 'required_context',
+                          'binding_steps', 'result_shape', 'diagnostics'):
+                with self.subTest(surface=surface['canonical_name'], field=field):
+                    mutated = dict(mapping, **{field: 'invented_execution_authority'})
+                    self.rejected('nonstandalone surface boundary drift',
+                                  lambda: language.validate_nonstandalone_surface(surface, mutated))
+            with self.subTest(surface=surface['canonical_name'], field='status'):
+                self.rejected('nonstandalone surface boundary drift',
+                              lambda: language.validate_nonstandalone_surface(
+                                  dict(surface, status='invented_completion'), mapping))
+
+    def test_pre_sblr_refusal_cannot_claim_execution_or_lose_reason(self):
+        original_read = language.read_csv
+        commands_path = CORE / language.CORE_REGISTRY_FILES['command_closure']
+        for field, value in (
+            ('root_route', 'SBLR_DIAGNOSTIC_REFUSAL'),
+            ('executor_operation_id', 'execute_statement_timestamp'),
+            ('bound_ast_node_kind', 'bound_timestamp'),
+            ('descriptor_contract', 'timestamp'),
+            ('transaction_effect', 'commit'),
+            ('result_shape', 'scalar'),
+            ('required_right', 'SELECT'),
+            ('resource_contract', 'timezone_seed'),
+            ('cluster_contract', 'cluster_provider'),
+            ('diagnostic_key', 'generic_refusal'),
+        ):
+            with self.subTest(field=field):
+                def read(path, columns, label):
+                    rows = original_read(path, columns, label)
+                    if path == commands_path:
+                        target = next(row for row in rows if row['root_route_kind'] == 'pre_sblr_admission_refusal')
+                        target[field] = value
+                    return rows
+                with patch.object(language, 'read_csv', side_effect=read):
+                    self.rejected('pre-SBLR refusal claims downstream authority',
+                                  lambda: language.validate_sblr_authority(CORE))
+
     def setUp(self):
         self.original = language.read_csv
         self.rows = {}

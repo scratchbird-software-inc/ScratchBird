@@ -467,6 +467,80 @@ def manifest_authority_paths(core_root: Path) -> set[str]:
     return admitted
 
 
+def validate_nonstandalone_surface(surface: dict[str, str], mapping: dict[str, str]) -> bool:
+    """Inventory non-executable surfaces without manufacturing execution authority.
+
+    These are admission/parent contracts, not implementation-completion evidence.
+    Each profile checks the complete boundary, including context and diagnostics.
+    Ordinary executable rows still require the full lowering contract below.
+    """
+    envelope = mapping["ingress_envelope"]
+    if envelope in {"SBLRExecutionEnvelope.v3", "sbsql_domain_ddl_or_typed_value"}:
+        return False
+    profile = None
+    family = surface["sblr_operation_family"]
+    if surface["status"] == "refused":
+        if family == "sblr.expression.runtime.v3":
+            if mapping["required_context"] == "none_refusal_before_context_access":
+                profile = (
+                    "no_envelope_built", "none_refusal_before_context_access",
+                    "parse_to_ast; refuse_zoned_identity_unavailable_before_descriptor_binding_provider_resource_access_envelope_build_or_engine_dispatch",
+                    "no_result", "CTI.TEMPORAL.DESCRIPTOR_INVALID reason=zoned_identity_unavailable")
+            else:
+                profile = (
+                    "no_envelope_built", "none_temporal; authenticated_connection_already_established_by_universal_ingress",
+                    "universal_execution_ingress_refuse_SBSQL.NOT_CONNECTED_if_unauthenticated_before_expression_parse; authenticated_parse_to_ast; refuse_CTI.TEMPORAL.TIMEZONE_RESOURCE_MISSING_before_configuration_temporal_context_clock_provider_resource_value_envelope_or_dispatch",
+                    "no_result", "SBSQL.NOT_CONNECTED at universal execution ingress when unauthenticated; CTI.TEMPORAL.TIMEZONE_RESOURCE_MISSING at parser/binder when authenticated")
+        elif family == "admission_refusal_before_sblr_lowering":
+            profile = (
+                "no_envelope_built", "none_refusal_precedes_context_access",
+                "parse_to_ast; refuse_SBSQL.IMPL.NOT_AVAILABLE_before_argument_payload_envelope_or_dispatch",
+                "no_result", "SBSQL.IMPL.NOT_AVAILABLE")
+        elif family == "none_on_current_admission_refusal":
+            profile = ("no_envelope_built", "",
+                       "recognize_syntax; refuse_before_argument_or_NULL_evaluation",
+                       "no_result", "SBSQL.IMPL.NOT_AVAILABLE")
+        elif family == "sblr.refusal.v3":
+            profile = ("not_applicable", "none",
+                       "recognize_internal_inventory_label; emit_SBSQL.SURFACE.NOT_ADMITTED; no_sblr_dispatch",
+                       "diagnostic_vector.v1", "SBSQL.SURFACE.NOT_ADMITTED")
+    elif surface["status"] == "parent_production_only" and family == "parent_production_only":
+        profile = ("parent_production_only_no_standalone_envelope", "",
+                   "recognize_contextual_token; bind_through_enclosing_parent_production",
+                   "parent_production_owned", "diag.parser.syntax.v1; SBSQL.IMPL.NOT_AVAILABLE")
+    elif surface["status"] == "descriptor_family_gated" and family == "conditional_by_descriptor_family":
+        branches = "base.timestamp:none; statically_zoned_or_timezone:none; independently_qualified_other_family:parent_authority_only"
+        profile = (branches, branches,
+                   "parse_to_ast; classify_static_descriptor_family_and_timezone_arity_without_payload_access; zoned_refuse_zoned_identity_unavailable; base.timestamp_refuse_SBSQL.IMPL.NOT_AVAILABLE; other_family_inherit_only_independently_qualified_parent_route",
+                   "base.timestamp:no_result; zoned:no_result; independently_qualified_other_family:parent_result",
+                   "statically zoned family or syntax-visible timezone argument: CTI.TEMPORAL.DESCRIPTOR_INVALID reason=zoned_identity_unavailable before descriptor/context/resource/value access; base.timestamp branch: SBSQL.IMPL.NOT_AVAILABLE before payload/envelope/dispatch because no exact public V3 receiving-owner binding exists; non-base.timestamp branch: retain only independently qualified parent authority")
+    elif surface["status"] == "constant_classification_with_dynamic_gate" and family == "conditional_by_binder_constant_classification":
+        branches = "binder_known_timezone:none;nonconstant_or_dynamic:none;binder_known_unrelated_constant:parent_authority"
+        profile = (branches, branches,
+                   "binder_known_timezone:refuse_CTI.TEMPORAL.TIMEZONE_RESOURCE_MISSING_before_envelope;nonconstant_or_dynamic:refuse_SBSQL.IMPL.NOT_AVAILABLE_before_argument_or_name_evaluation_or_envelope;binder_known_unrelated_constant:parent_authority",
+                   "binder_known_timezone:no_result;nonconstant_or_dynamic:no_result;binder_known_unrelated_constant:parent_authority",
+                   "binder_known_timezone:CTI.TEMPORAL.TIMEZONE_RESOURCE_MISSING;nonconstant_or_dynamic:SBSQL.IMPL.NOT_AVAILABLE;binder_known_unrelated_constant:parent_authority")
+    elif surface["status"] == "refusal_only_pending_exact_statement_temporal_context_carrier" and family == "admission_refusal_before_sblr_lowering":
+        profile = ("no_envelope_built", "none_temporal; authenticated_connection_already_established_by_universal_ingress",
+                   "universal_connection_admission;parse_to_ast_if_authenticated;refuse_CTI.TEMPORAL.TIMEZONE_RESOURCE_MISSING_before_configuration_context_provider_resource_value_envelope_or_dispatch",
+                   "no_result", "unauthenticated:SBSQL.NOT_CONNECTED;authenticated:CTI.TEMPORAL.TIMEZONE_RESOURCE_MISSING")
+    elif surface["status"] == "native_now" and family == "sblr.expression.runtime.v3":
+        diagnostics = "DATATYPE.CONTEXT_REQUIRED; DATATYPE.DESCRIPTOR.INVALID; DATATYPE.NULL_NOT_ADMITTED"
+        if surface["canonical_name"] == "null_literal":
+            profile = ("parent_expression_only", "exact_concrete_target_descriptor; enclosing_expression_or_target_context",
+                       "parse_to_ast; resolve_unique_concrete_descriptor; reject_DATATYPE.CONTEXT_REQUIRED_if_unbound; emit_concrete_descriptor_SQL_NULL_zero_payload_into_parent_expression; no_independent_dispatch",
+                       "rs.sbsql.scalar_value.v1", diagnostics)
+        elif surface["canonical_name"] == "NULL":
+            profile = ("parent_expression_only", "SBSQL-CAEF92407B2D; exact_concrete_target_descriptor",
+                       "parse_contextual_token; attach_to_SBSQL-CAEF92407B2D; bind_exact_concrete_descriptor; reject_DATATYPE.CONTEXT_REQUIRED_if_unbound; no_independent_dispatch",
+                       "parent_expression_only", diagnostics)
+    fields = ("ingress_envelope", "required_context", "binding_steps", "result_shape", "diagnostics")
+    require(profile is not None and mapping["sblr_operation_family"] == family and
+            tuple(mapping[field] for field in fields) == profile,
+            f"nonstandalone surface boundary drift for {surface['surface_id']}")
+    return True
+
+
 def validate_surface_registries(
     core_root: Path,
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
@@ -479,7 +553,8 @@ def validate_surface_registries(
         "SBsql surface-to-SBLR registry",
     )
     require_nonempty(surfaces, SURFACE_COLUMNS, "SBsql surface registry")
-    require_nonempty(mappings, SURFACE_TO_SBLR_COLUMNS, "SBsql surface-to-SBLR registry")
+    # Context may be empty only for an exact no-context parent/refusal profile.
+    require_nonempty(mappings, SURFACE_TO_SBLR_COLUMNS - {"required_context"}, "SBsql surface-to-SBLR registry")
 
     surface_by_id = unique_index(surfaces, "surface_id", "SBsql surface registry")
     mapping_by_id = unique_index(mappings, "surface_id", "SBsql surface-to-SBLR registry")
@@ -507,6 +582,19 @@ def validate_surface_registries(
             mapping["canonical_name"] == surface["canonical_name"],
             f"surface name drift for {surface_id}",
         )
+        if validate_nonstandalone_surface(surface, mapping):
+            continue
+        if surface["status"] == "specified_consumer_handoff":
+            require(surface["canonical_name"] == "BLOB" and
+                    surface["sblr_operation_family"] == "sblr.datatype.descriptor.reference.v3" and
+                    mapping["sblr_operation_family"] == surface["sblr_operation_family"] and
+                    mapping["ingress_envelope"] == "SBLRExecutionEnvelope.v3" and
+                    mapping["required_context"] == "exact V11 receipt descriptor type codec profile and VALUE/SQL_NULL state" and
+                    mapping["binding_steps"] == "resolve exact descriptor UUID; validate receipt/profile; lower typed descriptor reference; require successor SBLR envelope" and
+                    mapping["result_shape"] == "typed base.blob descriptor reference" and
+                    mapping["diagnostics"] == "CINL.LOB.DESCRIPTOR_INVALID; CINL.TRANSPORT.UNSUPPORTED",
+                    f"BLOB receiving-owner handoff drift for {surface_id}")
+            continue
         if surface["status"] != "refused":
             require(
                 mapping["sblr_operation_family"] == surface["sblr_operation_family"],
@@ -589,6 +677,7 @@ def validate_sblr_authority(
     seen_command_rows: set[tuple[str, str]] = set()
     allowed_route_kinds = {
         "diagnostic_refusal",
+        "pre_sblr_admission_refusal",
         "sblr_opcode",
         "sblr_procedural_node",
         "syntax_dispatch",
@@ -619,6 +708,28 @@ def validate_sblr_authority(
                 command["executor_operation_id"] == "not_admitted",
                 f"SBsql refusal exposes executor operation for {row_key}",
             )
+        elif command["root_route_kind"] == "pre_sblr_admission_refusal":
+            # This is a syntax-boundary refusal, not an executable refusal
+            # opcode or proof that the missing zoned datatype is implemented.
+            expected = {
+                "canonical_name": "statement_timestamp",
+                "language_intent_status": "syntax_recognized_fail_closed",
+                "specification_state": "specified_gated",
+                "ast_node_kind": "syntax_token_only",
+                "bound_ast_node_kind": "not_applicable",
+                "root_route": "no_sblr_envelope_built",
+                "descriptor_contract": "not_applicable",
+                "executor_operation_id": "none",
+                "result_shape": "no_result",
+                "required_right": "none_refusal_precedes_security_context",
+                "mga_profile": "none",
+                "transaction_effect": "none",
+                "resource_contract": "none_refusal_precedes_resource_access",
+                "cluster_contract": "none_refusal_precedes_route_access",
+                "diagnostic_key": "CTI.TEMPORAL.DESCRIPTOR_INVALID reason=zoned_identity_unavailable",
+            }
+            require(all(command[field] == value for field, value in expected.items()),
+                    f"pre-SBLR refusal claims downstream authority or loses its exact reason: {row_key}")
         elif command["root_route_kind"] == "syntax_dispatch":
             require(
                 command["root_route"] == "child_surface_id_exact_dispatch",
