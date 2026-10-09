@@ -7,6 +7,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "memory.hpp"
+#include "transaction/transaction_api.hpp"
+#include "catalog/binary_view_options.hpp"
 #include "cloud/cloud_deployment_profile.hpp"
 #include "cloud/cloud_identity_kms.hpp"
 #include "cloud/cloud_provider_capability.hpp"
@@ -20,6 +24,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 
 namespace {
 
@@ -27,8 +32,7 @@ namespace api = scratchbird::engine::internal_api;
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
-    std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -244,12 +248,12 @@ void RequireCloudIdentityKmsGates() {
       "identity_emulator_evidence:verified",
       "kms_mode:local_kms_emulator",
       "kms_emulator_evidence:verified",
-      "kms_profile_uuid:019f0000-0000-7000-8000-000000120201",
-      "rotation_policy_uuid:019f0000-0000-7000-8000-000000120202",
-      "audit_policy_uuid:019f0000-0000-7000-8000-000000120203",
+      api::BinaryViewUuidOption("kms_profile_uuid:", scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000120201")),
+      api::BinaryViewUuidOption("rotation_policy_uuid:", scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000120202")),
+      api::BinaryViewUuidOption("audit_policy_uuid:", scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000120203")),
       "emulator_key_ref:local-emulator-key-v1",
-      "protected_material_uuid:019f0000-0000-7000-8000-000000120204",
-      "protected_material_version_uuid:019f0000-0000-7000-8000-000000120205",
+      api::BinaryViewUuidOption("protected_material_uuid:", scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000120204")),
+      api::BinaryViewUuidOption("protected_material_version_uuid:", scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000120205")),
   };
   const auto local_result = api::ValidateCloudIdentityKmsPolicyApi(local);
   Require(local_result.ok, "cloud identity/KMS refused local emulator policy");
@@ -264,6 +268,21 @@ void RequireCloudIdentityKmsGates() {
                               "transaction_finality_authority",
                               "scratchbird_mga_not_kms"),
           "cloud identity/KMS result claimed finality authority outside MGA");
+  for (const auto prefix : {"kms_profile_uuid:", "rotation_policy_uuid:", "audit_policy_uuid:"}) {
+    for (unsigned mutation = 0; mutation < 4; ++mutation) {
+      auto malformed = local;
+      auto option = std::find_if(malformed.option_envelopes.begin(), malformed.option_envelopes.end(),
+          [&](const auto& candidate) { return candidate.starts_with(prefix); });
+      Require(option != malformed.option_envelopes.end(), "mandatory KMS identity fixture absent");
+      if (mutation == 0) *option = std::string(prefix) + "019f0000-0000-7000-8000-000000120201";
+      if (mutation == 1) option->pop_back();
+      if (mutation == 2) *option = std::string(prefix) + std::string(16, '\0');
+      if (mutation == 3) (*option)[std::string_view(prefix).size() + 6] = '\x40';
+      const auto refused = api::ValidateCloudIdentityKmsPolicyApi(malformed);
+      Require(!refused.ok && HasEvidenceKind(refused, "cloud_identity_kms_denial_audit"),
+              "cloud identity/KMS accepted text, truncated, nil or non-v7 identity");
+    }
+  }
 }
 
 void RequireEdgeCacheCdnGates() {
@@ -381,8 +400,6 @@ void RequireGpuOptionalProviderGates() {
 }
 
 void RequireLlvmOptionalProviderGates() {
-  std::remove("/tmp/sbsql_non_core_optional_provider_classification.sbdb.sb.api_events");
-
   api::EngineCompileLlvmModuleRequest raw_sql;
   raw_sql.context = SecurityContext();
   raw_sql.option_envelopes = {
@@ -412,9 +429,44 @@ void RequireLlvmOptionalProviderGates() {
           "LLVM authority-bypass diagnostic drifted");
 
   api::EngineCompileLlvmModuleRequest fallback;
-  fallback.context = SecurityContext();
-  fallback.context.local_transaction_id = 0;
-  fallback.context.transaction_uuid = {};
+  namespace db = scratchbird::storage::database;
+  namespace uuid = scratchbird::core::uuid;
+  namespace platform = scratchbird::core::platform;
+  struct OwnedDirectory {
+    std::filesystem::path path;
+    ~OwnedDirectory() {
+      if (!path.empty()) { std::error_code ignored; std::filesystem::remove_all(path, ignored); }
+    }
+  } owned;
+  const auto database = uuid::IssueRuntimeIdentityV7();
+  const auto filespace = uuid::IssueRuntimeIdentityV7();
+  Require(database && filespace, "LLVM fixture identity allocation failed");
+  const auto directory = std::filesystem::temp_directory_path() /
+      ("sb_optional_provider_" + uuid::UuidToString(*database));
+  Require(std::filesystem::create_directory(directory), "LLVM fixture directory already exists");
+  owned.path = directory;
+  db::DatabaseCreateConfig create;
+  create.path = (directory / "provider.sbdb").string();
+  create.database_uuid = uuid::MakeTypedUuid(platform::UuidKind::database, *database).value;
+  create.filespace_uuid = uuid::MakeTypedUuid(platform::UuidKind::filespace, *filespace).value;
+  create.creation_unix_epoch_millis = 1791500000000;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  const auto created = db::CreateDatabaseFile(create);
+  Require(created.ok(), "LLVM fixture durable database creation failed");
+  auto context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  context.resource_epoch = created.state.resource_seed_catalog.resource_epoch;
+  api::EngineBeginTransactionRequest begin;
+  begin.context = context;
+  begin.isolation_level = "read_committed";
+  const auto begun = api::EngineBeginTransaction(begin);
+  Require(begun.ok, "LLVM fixture transaction admission failed");
+  context.transaction_uuid = begun.transaction_uuid;
+  context.local_transaction_id = begun.local_transaction_id;
+  context.snapshot_visible_through_local_transaction_id = begun.snapshot_visible_through_local_transaction_id;
+  context.transaction_isolation_level = begun.isolation_level;
+  scratchbird::tests::FixtureEngineSession session(context);
+  scratchbird::tests::FixtureEngineStatement statement(session, context);
+  fallback.context = statement.context;
   fallback.option_envelopes = {
       "compile:jit",
       "module:sblr_projection_unit",
@@ -432,12 +484,17 @@ void RequireLlvmOptionalProviderGates() {
   Require(HasEvidence(fallback_result, "execution_boundary", "sblr_only_engine_authority"),
           "LLVM fallback route did not preserve SBLR-only authority evidence");
 
-  std::remove("/tmp/sbsql_non_core_optional_provider_classification.sbdb.sb.api_events");
+  api::EngineCommitTransactionRequest commit;
+  commit.context = context;
+  Require(api::EngineCommitTransaction(commit).ok, "LLVM artifact commit failed");
 }
 
 }  // namespace
 
-int main() {
+int main() try {
+  const auto memory = scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+      scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(), "non_core_optional_provider_classification");
+  Require(memory.ok() && memory.fixture_mode, "optional provider fixture memory admission failed");
   RequireCloudProviderCapabilityGates();
   RequireCloudDeploymentGates();
   RequireCloudIdentityKmsGates();
@@ -446,4 +503,7 @@ int main() {
   RequireLlvmOptionalProviderGates();
   std::cout << "sbsql_non_core_optional_provider_classification_conformance=passed\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

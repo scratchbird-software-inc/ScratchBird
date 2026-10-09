@@ -4547,6 +4547,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
       sbsql_non_core_optional_provider_classification_conformance
       PRIVATE
         sb_engine_internal_api
+        sb_engine
     )
     add_test(
       NAME sbsql_non_core_optional_provider_classification_conformance
