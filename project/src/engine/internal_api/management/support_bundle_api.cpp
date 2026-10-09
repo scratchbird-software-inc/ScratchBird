@@ -112,6 +112,7 @@ EngineApiDiagnostic ValidateOptionalEngineUuid(const EngineUuid& value,
 
 EngineApiDiagnostic ValidateEvidenceUuids(
     const EngineSupportBundleAgentEvidenceSource& evidence) {
+  if (evidence.agent_uuid.is_nil()) return InvalidCatalogUuidDiagnostic("agent_uuid");
   auto diagnostic = ValidateOptionalEngineUuid(evidence.agent_uuid,
                                                platform::UuidKind::object,
                                                "agent_uuid");
@@ -193,8 +194,48 @@ struct TransactionBundleInventoryStats {
   bool evidence_complete = true;
 };
 
-std::string RedactedUuidIfPresent(const std::string& value) {
-  return value.empty() ? "" : "<redacted>";
+EngineTypedValue CatalogIdentityProjection(std::string_view bytes, bool redacted = false) {
+  EngineTypedValue value;
+  value.descriptor.descriptor_kind = "scalar";
+  value.descriptor.canonical_type_name = "uuid";
+  if (bytes.empty() || redacted) value.state = EngineValueState::sql_null;
+  else value.binary_value.assign(bytes.begin(), bytes.end());
+  return value;
+}
+
+EngineTypedValue CatalogIdentityProjection(const EngineUuid& identity) {
+  auto value = ApiBehaviorValue(identity);
+  if (identity.is_nil()) {
+    value.state = EngineValueState::sql_null;
+    value.binary_value.clear();
+  }
+  return value;
+}
+
+bool ValidProjectedCatalogIdentities(const agents::DurableAgentCatalogImage& image) {
+  const auto valid = [](std::initializer_list<std::string_view> identities) {
+    for (auto bytes : identities) {
+      if (bytes.empty()) continue;
+      if (bytes.size() != 16) return false;
+      EngineUuid id;
+      std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes.data()), 16, id.bytes.begin());
+      if (!uuid::IsEngineIdentityUuid(id)) return false;
+    }
+    return true;
+  };
+  if (!valid({image.authority.mga_transaction_uuid, image.authority.database_uuid,
+              image.authority.catalog_storage_uuid})) return false;
+  for (const auto& row : image.evidence)
+    if (row.instance_uuid.empty() || !valid({row.instance_uuid, row.evidence_uuid,
+        row.outcome_verification_evidence_uuid})) return false;
+  for (const auto& row : image.actions)
+    if (!valid({row.action_uuid, row.instance_uuid, row.evidence_uuid,
+                row.verification_evidence_uuid})) return false;
+  for (const auto& row : image.leases)
+    if (!valid({row.lease_uuid, row.instance_uuid, row.owner_uuid, row.evidence_uuid})) return false;
+  for (const auto& row : image.resource_reservations)
+    if (!valid({row.reservation_uuid, row.evidence_uuid, row.release_evidence_uuid})) return false;
+  return true;
 }
 
 std::string JsonEscape(std::string_view value) {
@@ -603,10 +644,10 @@ void AddDurableCatalogSummaryRows(EnginePrepareSupportBundleResult* result,
        {"previous_catalog_root_digest",
         image.authority.previous_catalog_root_digest},
        {"storage_linkage_digest", storage_linkage_digest},
-       {"mga_transaction_uuid", RedactedUuidIfPresent(
-                                    image.authority.mga_transaction_uuid)},
-       {"database_uuid", RedactedUuidIfPresent(image.authority.database_uuid)},
-       {"catalog_storage_uuid", image.authority.catalog_storage_uuid},
+       {"mga_transaction_uuid", CatalogIdentityProjection(image.authority.mga_transaction_uuid, true)},
+       {"database_uuid", CatalogIdentityProjection(image.authority.database_uuid, true)},
+       {"owner_identities_redacted", "true"},
+       {"catalog_storage_uuid", CatalogIdentityProjection(image.authority.catalog_storage_uuid)},
        {"storage_record_evidence",
         image.authority.storage_catalog_record_evidence ? "true" : "false"},
        {"transaction_inventory_bound",
@@ -629,8 +670,8 @@ void AddDurableCatalogEvidenceRows(EnginePrepareSupportBundleResult* result,
         result,
         {{"bundle_record_kind", "agent_durable_evidence"},
          {"agent_type_id", evidence.agent_type_id},
-         {"agent_uuid", evidence.instance_uuid},
-         {"evidence_uuid", evidence.evidence_uuid},
+         {"agent_uuid", CatalogIdentityProjection(evidence.instance_uuid)},
+         {"evidence_uuid", CatalogIdentityProjection(evidence.evidence_uuid)},
          {"evidence_kind", evidence.evidence_kind.empty()
                                ? "agent_runtime_evidence"
                                : evidence.evidence_kind},
@@ -651,7 +692,7 @@ void AddDurableCatalogEvidenceRows(EnginePrepareSupportBundleResult* result,
          {"redaction_class", evidence.redaction_class},
          {"retention_class", evidence.retention_class},
          {"outcome_verification_evidence_uuid",
-          evidence.outcome_verification_evidence_uuid},
+          CatalogIdentityProjection(evidence.outcome_verification_evidence_uuid)},
          {"protected_material_suppressed",
           evidence.protected_material_suppressed ? "true" : "false"},
          {"tamper_valid", validation.tamper_valid ? "true" : "false"},
@@ -680,13 +721,13 @@ void AddDurableCatalogActionRows(EnginePrepareSupportBundleResult* result,
     AddApiBehaviorRow(
         result,
         {{"bundle_record_kind", "agent_durable_action"},
-         {"action_uuid", action.action_uuid},
-         {"agent_uuid", action.instance_uuid},
+         {"action_uuid", CatalogIdentityProjection(action.action_uuid)},
+         {"agent_uuid", CatalogIdentityProjection(action.instance_uuid)},
          {"operation_id", action.operation_id},
          {"actuator_provider_id", action.actuator_provider_id},
          {"action_state", agents::DurableAgentActionStateName(action.state)},
-         {"evidence_uuid", action.evidence_uuid},
-         {"verification_evidence_uuid", action.verification_evidence_uuid},
+         {"evidence_uuid", CatalogIdentityProjection(action.evidence_uuid)},
+         {"verification_evidence_uuid", CatalogIdentityProjection(action.verification_evidence_uuid)},
          {"diagnostic_code",
           action.diagnostic_code.empty() ? "AGENT.NONE" : action.diagnostic_code},
          {"generation", std::to_string(action.generation)},
@@ -709,14 +750,15 @@ void AddDurableCatalogLeaseRows(EnginePrepareSupportBundleResult* result,
     AddApiBehaviorRow(
         result,
         {{"bundle_record_kind", "agent_durable_lease"},
-         {"lease_uuid", lease.lease_uuid},
-         {"agent_uuid", lease.instance_uuid},
-         {"owner_uuid", RedactedUuidIfPresent(lease.owner_uuid)},
+         {"lease_uuid", CatalogIdentityProjection(lease.lease_uuid)},
+         {"agent_uuid", CatalogIdentityProjection(lease.instance_uuid)},
+         {"owner_uuid", CatalogIdentityProjection(lease.owner_uuid, true)},
+         {"owner_redacted", lease.owner_uuid.empty() ? "false" : "true"},
          {"lease_state", agents::DurableAgentLeaseStateName(lease.state)},
          {"heartbeat_generation",
           std::to_string(lease.heartbeat_generation)},
          {"replay_generation", std::to_string(lease.replay_generation)},
-         {"evidence_uuid", lease.evidence_uuid}});
+         {"evidence_uuid", CatalogIdentityProjection(lease.evidence_uuid)}});
   }
 }
 
@@ -727,7 +769,7 @@ void AddDurableCatalogResourceReservationRows(
     AddApiBehaviorRow(
         result,
         {{"bundle_record_kind", "agent_durable_resource_reservation"},
-         {"reservation_uuid", reservation.reservation_uuid},
+         {"reservation_uuid", CatalogIdentityProjection(reservation.reservation_uuid)},
          {"reservation_key", RedactedPayloadValue(reservation.reservation_key)},
          {"owner_scope", RedactedPayloadValue(reservation.owner_scope)},
          {"agent_type_id", reservation.agent_type_id},
@@ -738,8 +780,8 @@ void AddDurableCatalogResourceReservationRows(
          {"worker_slots", std::to_string(reservation.worker_slots)},
          {"overhead_microseconds",
           std::to_string(reservation.overhead_microseconds)},
-         {"evidence_uuid", reservation.evidence_uuid},
-         {"release_evidence_uuid", reservation.release_evidence_uuid},
+         {"evidence_uuid", CatalogIdentityProjection(reservation.evidence_uuid)},
+         {"release_evidence_uuid", CatalogIdentityProjection(reservation.release_evidence_uuid)},
          {"release_reason", reservation.release_reason},
          {"parser_authority", "false"},
          {"client_authority", "false"},
@@ -840,6 +882,10 @@ EnginePrepareSupportBundleResult EnginePrepareSupportBundle(const EnginePrepareS
           kOperation,
           std::move(transaction_snapshot_diagnostic));
     }
+  }
+  if (loaded_catalog.ok && !ValidProjectedCatalogIdentities(loaded_catalog.image)) {
+    return MakeApiBehaviorDiagnostic<EnginePrepareSupportBundleResult>(
+        request.context, kOperation, InvalidCatalogUuidDiagnostic("durable_catalog"));
   }
   auto result = MakeApiBehaviorSuccess<EnginePrepareSupportBundleResult>(request.context, kOperation);
   result.redaction_applied = true;
@@ -1043,9 +1089,9 @@ EnginePrepareSupportBundleResult EnginePrepareSupportBundle(const EnginePrepareS
                       {{"bundle_record_kind", "agent_runtime_evidence"},
                        {"agent_type_id", evidence.agent_type_id},
                        {"agent_uuid", evidence.agent_uuid},
-                       {"filespace_uuid", evidence.filespace_uuid},
-                       {"policy_uuid", evidence.policy_uuid},
-                       {"evidence_uuid", evidence.evidence_uuid},
+                       {"filespace_uuid", CatalogIdentityProjection(evidence.filespace_uuid)},
+                       {"policy_uuid", CatalogIdentityProjection(evidence.policy_uuid)},
+                       {"evidence_uuid", CatalogIdentityProjection(evidence.evidence_uuid)},
                        {"evidence_kind", RedactedPayloadValue(
                                              evidence.evidence_kind.empty()
                                                  ? "agent_runtime_evidence"

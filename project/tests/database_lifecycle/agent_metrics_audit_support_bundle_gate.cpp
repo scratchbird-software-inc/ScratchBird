@@ -1,6 +1,11 @@
 #include "database_lifecycle_test_memory.hpp"
 #include "../support/database_fixture_cleanup.hpp"
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/component_authorization_fixture.hpp"
+#include "../support/durable_authorization_fixture.hpp"
+#include "../support/metric_projection_fixture.hpp"
+#include "behavior_support/api_behavior_record_codec.hpp"
+#include "../../src/wire/public_result_packet.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -56,6 +61,7 @@ struct TestDatabase {
   std::string database_uuid;
   std::string transaction_uuid;
   platform::u64 local_transaction_id = 0;
+  platform::u64 resource_epoch = 0;
 };
 
 [[noreturn]] void Fail(std::string_view message) {
@@ -146,11 +152,22 @@ TestDatabase CreateActiveDatabase(const std::filesystem::path& temp_dir) {
   create.filespace_uuid = filespace_uuid.value;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = 1915017000103ull;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
+  // Canonical TEXT catalog columns require the real resource catalog, not the
+  // deliberately epoch-free minimal-bootstrap fixture.
+  create.resource_seed_pack_root = (std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() /
+      "resources/seed-packs/initial-resource-pack").string();
+  create.require_resource_seed_pack = true;
   create.allow_overwrite = true;
-  Require(db::CreateDatabaseFile(create).ok(),
-          "durable support-bundle database creation failed");
+  create.bootstrap_principal_name = "agent_observability_owner";
+  create.bootstrap_credential_fingerprint =
+      "local-password-pbkdf2-sha256:v1:iterations=600000:"
+      "salt=0123456789abcdef0123456789abcdef:"
+      "verifier=0358b60b6875c81e17d3e0ab67f8b785f49d4146547c79da401f21dc641c2c16";
+  create.require_bootstrap_principal = true;
+  create.allow_uncredentialed_bootstrap = false;
+  const auto created = db::CreateDatabaseFile(create);
+  Require(created.ok(), "durable support-bundle database creation failed: " +
+      created.diagnostic.diagnostic_code + ":" + created.diagnostic.message_key);
 
   auto initial_inventory = db::LoadLocalTransactionInventoryFromDatabase(path.string());
   Require(initial_inventory.ok() && initial_inventory.inventory.publication_base.has_value(),
@@ -173,6 +190,8 @@ TestDatabase CreateActiveDatabase(const std::filesystem::path& temp_dir) {
   database.database_uuid = IdentityBytes(database_uuid.value.value);
   database.transaction_uuid = IdentityBytes(transaction_uuid.value.value);
   database.local_transaction_id = begun.entry.identity.local_id.value;
+  database.resource_epoch = created.state.resource_seed_catalog.resource_epoch;
+  Require(database.resource_epoch != 0, "created resource catalog epoch unavailable");
   return database;
 }
 
@@ -180,6 +199,34 @@ std::string ReadFile(const std::filesystem::path& path) {
   std::ifstream in(path, std::ios::binary);
   std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   return text;
+}
+
+void VerifyAudit(const api::EngineRequestContext& context,
+                 const std::vector<api::EngineAgentRuntimeEvidenceRecord>& expected) {
+  namespace packet = scratchbird::wire::public_result;
+  std::ifstream in(context.database_path + ".sb.api_events.v2", std::ios::binary);
+  Require(in.good(), "agent audit was not actually written");
+  for (const auto& source : expected) {
+    api::ApiBehaviorRecord stored;
+    Require(api::ReadApiBehaviorRecord(in, &stored), "agent audit cannot be reopened/decoded");
+    Require(stored.operation_id == "observability.agent_runtime.collect" &&
+                stored.target_database_uuid == context.database_uuid,
+            "agent audit operation/owner mismatch");
+    for (const auto& [name, value] :
+         {std::pair{"agent_uuid", &source.agent_uuid}, {"filespace_uuid", &source.filespace_uuid},
+          {"policy_uuid", &source.policy_uuid}, {"evidence_uuid", &source.evidence_uuid}}) {
+      const auto field = packet::Find(stored.payload, name);
+      Require(value->empty() ? !field : (field && field->kind == packet::Kind::uuid && field->value == *value),
+              "audit identity lost native framing or was fabricated");
+    }
+    Require(!packet::Find(stored.payload, "physical_path") &&
+                !packet::Find(stored.payload, "raw_principal") &&
+                !packet::Find(stored.payload, "unsafe_payload"),
+            "audit retained protected raw fields");
+    const auto outcome = packet::Find(stored.payload, "result_state");
+    Require(outcome && outcome->value == source.result_state, "audit changed the source outcome");
+  }
+  Require(in.peek() == std::char_traits<char>::eof(), "unexpected trailing audit records");
 }
 
 bool Contains(std::string_view haystack, std::string_view needle) {
@@ -200,6 +247,11 @@ std::string Field(const api::EngineRowValue& row, std::string_view name) {
   for (const auto& field : row.fields) {
     if (field.first == name) {
       if (field.second.descriptor.canonical_type_name == "uuid") {
+        if (field.second.state == api::EngineValueState::sql_null) {
+          Require(field.second.encoded_value.empty() && field.second.binary_value.empty(),
+                  "NULL UUID must not contain a payload");
+          return {};
+        }
         Require(field.second.encoded_value.empty() && field.second.binary_value.size() == 16,
                 "UUID result must use binary16 only");
         return {reinterpret_cast<const char*>(field.second.binary_value.data()), 16};
@@ -241,8 +293,10 @@ void RequireNoUnsafeResultPayload(const api::EngineApiResult& result) {
   for (const auto& row : result.result_shape.rows) {
     for (const auto& field : row.fields) {
       if (field.first.ends_with("_uuid")) {
+        Require(field.second.descriptor.canonical_type_name == "uuid",
+                "support/collector UUID field is not natively typed: " + field.first);
         const auto value = Field(row, field.first);
-        if (!value.empty() && !value.starts_with("<redacted")) (void)NativeIdentity(value);
+        if (!value.empty()) (void)NativeIdentity(value);
       }
       Require(!UnsafeValue(field.second.encoded_value),
               "unsafe value leaked in engine result payload");
@@ -263,8 +317,8 @@ api::EngineRequestContext Context(const std::filesystem::path& temp_dir) {
   context.session_uuid = NativeIdentity(Id(platform::UuidKind::object, 3));
   context.principal_uuid = NativeIdentity(Id(platform::UuidKind::principal, 4));
   context.transaction_uuid = NativeIdentity(Id(platform::UuidKind::transaction, 5));
-  scratchbird::tests::database_lifecycle::MaterializeAuthorizationRights(
-      &context, "agent-metrics-audit-support-fixture",
+  scratchbird::tests::MaterializeComponentAuthorization(
+      context,
       {"OBS_METRICS_READ_FAMILY", "OBS_AGENT_EVIDENCE_READ",
        "OBS_AGENT_STATE_READ", "OBS_CONFIG_INSPECT"});
   return context;
@@ -276,6 +330,7 @@ api::EngineRequestContext DurableContext(const TestDatabase& database) {
   context.security_context_present = true;
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.database_path = database.path.string();
+  context.resource_epoch = database.resource_epoch;
   context.database_uuid = NativeIdentity(database.database_uuid);
   context.transaction_uuid = NativeIdentity(database.transaction_uuid);
   context.local_transaction_id = database.local_transaction_id;
@@ -283,11 +338,11 @@ api::EngineRequestContext DurableContext(const TestDatabase& database) {
       database.local_transaction_id;
   context.node_uuid = NativeIdentity(Id(platform::UuidKind::object, 102));
   context.session_uuid = NativeIdentity(Id(platform::UuidKind::object, 103));
-  context.principal_uuid = NativeIdentity(Id(platform::UuidKind::principal, 104));
-  scratchbird::tests::database_lifecycle::MaterializeAuthorizationRights(
-      &context, "agent-metrics-audit-support-fixture",
-      {"OBS_METRICS_READ_FAMILY", "OBS_AGENT_EVIDENCE_READ",
-       "OBS_AGENT_STATE_READ", "OBS_CONFIG_INSPECT"});
+  const auto bootstrap = db::ReadDatabaseBootstrapSecurityCatalog(context.database_path);
+  Require(bootstrap.ok() && bootstrap.state.present, "durable bootstrap owner unavailable");
+  context.principal_uuid = bootstrap.state.principal_uuid.value;
+  context.catalog_generation_id = 1;
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
   return context;
 }
 
@@ -424,12 +479,23 @@ void TestEngineCollectorAndMetrics(const std::filesystem::path& temp_dir) {
   api::EngineCollectAgentRuntimeObservabilityRequest request;
   request.context = Context(temp_dir);
   request.records.push_back(EvidenceRecord());
+  scratchbird::tests::MetricProjectionFixture fixture(
+      request.context.database_uuid, request.context.node_uuid, 114);
+  fixture.Admit("sb_agent_actions_total", {{"component", "agent.runtime"},
+      {"agent_type", "page_allocation_manager"}, {"action_class", "request_page_preallocation"},
+      {"result", "success"}});
+  fixture.Admit("sb_agent_page_allocation_requests_total", {{"component", "agent.page_allocation"},
+      {"agent_type", "page_allocation_manager"}, {"filespace_uuid", NativeIdentity(Id(platform::UuidKind::filespace, 11))},
+      {"page_family", "data"}, {"request_class", "request_page_preallocation"}, {"result", "success"}});
 
   const auto result = api::EngineCollectAgentRuntimeObservability(request);
   for (const auto& diagnostic : result.diagnostics) {
     if (diagnostic.error) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   }
   Require(result.ok, "agent observability collector refused valid evidence");
+  VerifyAudit(request.context, request.records);
+  fixture.ExpectProduced(2);
+  fixture.Seal();
   Require(result.metrics_recorded && result.audit_recorded &&
               result.diagnostics_rendered && result.support_bundle_ready &&
               result.redaction_applied,
@@ -473,6 +539,55 @@ void TestEngineCollectorAndMetrics(const std::filesystem::path& temp_dir) {
       Require(!UnsafeValue(field.encoded_value), "parser/client envelope leaked unsafe value");
     }
   }
+  const auto audit_before = ReadFile(request.context.database_path + ".sb.api_events.v2");
+  auto malformed_batch = request;
+  malformed_batch.records.push_back(EvidenceRecord());
+  malformed_batch.records.back().policy_uuid = uuid::UuidToString(NativeIdentity(Id(platform::UuidKind::object, 12)));
+  const auto malformed_result = api::EngineCollectAgentRuntimeObservability(malformed_batch);
+  Require(!malformed_result.ok && !malformed_result.audit_recorded &&
+              !malformed_result.metrics_recorded && malformed_result.result_shape.rows.empty() &&
+              HasDiagnostic(malformed_result, "AGENT.OBSERVABILITY.INVALID_CATALOG_UUID") &&
+              ReadFile(request.context.database_path + ".sb.api_events.v2") == audit_before,
+          "malformed trailing record allowed leading metric/audit effects");
+  auto no_audit_sink = request;
+  no_audit_sink.context.database_path = (temp_dir / "missing-parent" / "runtime.sbdb").string();
+  const auto audit_refused = api::EngineCollectAgentRuntimeObservability(no_audit_sink);
+  Require(!audit_refused.ok && !audit_refused.audit_recorded && !audit_refused.metrics_recorded &&
+              !audit_refused.support_bundle_ready && audit_refused.result_shape.rows.empty() &&
+              HasDiagnostic(audit_refused, "database_path_unwritable"),
+          "unwritable audit sink returned success or emitted metrics");
+  auto foreign_node = request;
+  foreign_node.context.node_uuid = NativeIdentity(Id(platform::UuidKind::object, 900));
+  const auto foreign_result = api::EngineCollectAgentRuntimeObservability(foreign_node);
+  Require(!foreign_result.ok && HasDiagnostic(foreign_result, "METRIC.OBSERVATION_SOURCE_UNAVAILABLE") &&
+              ReadFile(request.context.database_path + ".sb.api_events.v2") == audit_before,
+          "foreign node admitted observations or audit");
+  fixture.VerifyReadOnly();
+  fixture.VerifyAndDrain();
+}
+
+void TestPartialMetricReceipt(const std::filesystem::path& temp_dir) {
+  api::EngineCollectAgentRuntimeObservabilityRequest request;
+  request.context = Context(temp_dir);
+  request.records.push_back(EvidenceRecord());
+  scratchbird::tests::MetricProjectionFixture fixture(
+      request.context.database_uuid, request.context.node_uuid, 116);
+  fixture.Admit("sb_agent_actions_total", {{"component", "agent.runtime"},
+      {"agent_type", "page_allocation_manager"}, {"action_class", "request_page_preallocation"},
+      {"result", "success"}});
+  // The second descriptor is intentionally not admitted. The first accepted
+  // counter and actual audit append must survive the refusal in the receipt.
+  const auto result = api::EngineCollectAgentRuntimeObservability(request);
+  Require(!result.ok && result.audit_recorded && !result.metrics_recorded &&
+              !result.support_bundle_ready && result.result_shape.rows.empty() &&
+              HasEvidence(result, "agent_metric_observation_admitted", "sb_agent_actions_total") &&
+              !HasEvidence(result, "agent_metric_observation_admitted", "sb_agent_page_allocation_requests_total") &&
+              HasEvidence(result, "agent_audit_completion", "appended_not_durable_finality"),
+          "partial collector failure lost admitted effects or claimed complete success");
+  VerifyAudit(request.context, request.records);
+  fixture.ExpectProduced(1);
+  fixture.Seal();
+  fixture.VerifyAndDrain();
 }
 
 void TestSupportBundleAndManagerCollectors(const std::filesystem::path& temp_dir) {
@@ -504,6 +619,14 @@ void TestSupportBundleAndManagerCollectors(const std::filesystem::path& temp_dir
   Require(HasRowField(prepared, "bundle_record_kind", "agent_runtime_evidence"),
           "support bundle API missing agent runtime row");
   RequireNoUnsafeResultPayload(prepared);
+
+  auto optional_references = request;
+  optional_references.agent_runtime_evidence.front().filespace_uuid = {};
+  optional_references.agent_runtime_evidence.front().policy_uuid = {};
+  optional_references.agent_runtime_evidence.front().evidence_uuid = {};
+  const auto absent_references = api::EnginePrepareSupportBundle(optional_references);
+  Require(absent_references.ok, "support bundle rejected absent optional identity references");
+  RequireNoUnsafeResultPayload(absent_references);
 
   api::EnginePrepareSupportBundleRequest invalid = request;
   invalid.agent_runtime_evidence.front().agent_uuid = {};
@@ -546,11 +669,28 @@ void TestSupportBundleAndManagerCollectors(const std::filesystem::path& temp_dir
           "manager support bundle did not declare path redaction");
 }
 
+void TestProductionSupportBundleRequiresDurableCatalog(const api::EngineRequestContext& context);
+
 void TestProductionSupportBundleReadsDurableAgentCatalog(
     const std::filesystem::path& temp_dir) {
   const auto database = CreateActiveDatabase(temp_dir);
   const auto context = DurableContext(database);
+  // Prove absence before publication on the same actual node, then prove
+  // presence after publication. No second expensive seed bootstrap or queue
+  // owner reset is needed, and the missing-catalog assertions are retained.
+  TestProductionSupportBundleRequiresDurableCatalog(context);
   SeedDurableCatalog(context);
+  scratchbird::tests::MetricProjectionFixture fixture(context.database_uuid, context.node_uuid, 115);
+  const auto reopened = api::LoadAgentDurableCatalogImage(context, true);
+  Require(reopened.ok, "seeded agent catalog could not be reopened");
+  const auto& image = reopened.image;
+  for (const auto& record : image.evidence)
+    fixture.Admit("sb_agent_actions_total", {{"component", "agent.runtime"},
+        {"agent_type", record.agent_type_id}, {"action_class", record.evidence_kind},
+        {"result", record.result_state}});
+  for (const auto& action : image.actions)
+    fixture.Admit("sb_agent_actions_total", {{"component", "agent.runtime"},
+        {"agent_type", "page_allocation_manager"}, {"action_class", action.operation_id}, {"result", "success"}});
 
   api::EnginePrepareSupportBundleRequest request;
   request.context = context;
@@ -593,6 +733,9 @@ void TestProductionSupportBundleReadsDurableAgentCatalog(
           "durable catalog support-bundle evidence marker missing");
   Require(HasEvidence(prepared, "support_bundle_agent_evidence_tamper_chain"),
           "tamper-chain support-bundle evidence marker missing");
+  Require(HasRowField(prepared, "owner_identities_redacted", "true") &&
+              HasRowField(prepared, "owner_redacted", "true"),
+          "durable bundle did not identify its typed UUID redaction");
   RequireNoUnsafeResultPayload(prepared);
 
   api::EngineCollectAgentRuntimeObservabilityRequest observability;
@@ -601,8 +744,28 @@ void TestProductionSupportBundleReadsDurableAgentCatalog(
   observability.option_envelopes.push_back("agent_durable_catalog_store_required:true");
   observability.option_envelopes.push_back("allow_caller_agent_runtime_evidence:false");
   const auto collected = api::EngineCollectAgentRuntimeObservability(observability);
+  for (const auto& diagnostic : collected.diagnostics)
+    if (diagnostic.error) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   Require(collected.ok,
           "production agent observability refused durable catalog records");
+  std::vector<api::EngineAgentRuntimeEvidenceRecord> audited;
+  for (const auto& source : image.evidence) {
+    api::EngineAgentRuntimeEvidenceRecord record;
+    record.agent_uuid = source.instance_uuid;
+    record.evidence_uuid = source.evidence_uuid;
+    record.result_state = source.result_state;
+    audited.push_back(std::move(record));
+  }
+  for (const auto& source : image.actions) {
+    api::EngineAgentRuntimeEvidenceRecord record;
+    record.agent_uuid = source.instance_uuid;
+    record.evidence_uuid = source.evidence_uuid;
+    record.result_state = "success";
+    audited.push_back(std::move(record));
+  }
+  VerifyAudit(context, audited);
+  fixture.ExpectProduced(image.evidence.size() + image.actions.size());
+  fixture.Seal();
   Require(HasEvidence(collected, "agent_observability_durable_catalog"),
           "durable catalog observability evidence marker missing");
   Require(HasEvidence(collected, "agent_observability_tamper_chain"),
@@ -645,14 +808,13 @@ void TestProductionSupportBundleReadsDurableAgentCatalog(
                         "agent_observability_caller_records_forbidden"),
           "caller-supplied observability refusal diagnostic drifted");
 
+  fixture.VerifyReadOnly();
+  fixture.VerifyAndDrain();
   CleanupDatabase(database.path);
 }
 
 void TestProductionSupportBundleRequiresDurableCatalog(
-    const std::filesystem::path& temp_dir) {
-  const auto database = CreateActiveDatabase(temp_dir);
-  const auto context = DurableContext(database);
-
+    const api::EngineRequestContext& context) {
   api::EnginePrepareSupportBundleRequest request;
   request.context = context;
   request.option_envelopes.push_back("engine_authorized_support_export:true");
@@ -666,7 +828,6 @@ void TestProductionSupportBundleRequiresDurableCatalog(
                         "OPS.SUPPORT_BUNDLE.DURABLE_AGENT_CATALOG_REQUIRED"),
           "missing durable catalog diagnostic drifted");
 
-  CleanupDatabase(database.path);
 }
 
 void TestListenerCollectors() {
@@ -720,21 +881,29 @@ void TestNegativeSecurityAndUuid(const std::filesystem::path& temp_dir) {
 
 }  // namespace
 
-static int Run() {
+static int Run(std::string_view scenario) {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("agent-observability-conformance");
   OwnedTempDir owned;
   const auto& temp_dir = owned.path;
-  TestEngineCollectorAndMetrics(temp_dir);
-  TestSupportBundleAndManagerCollectors(temp_dir);
-  TestProductionSupportBundleReadsDurableAgentCatalog(temp_dir);
-  TestProductionSupportBundleRequiresDurableCatalog(temp_dir);
-  TestListenerCollectors();
-  TestNegativeSecurityAndUuid(temp_dir);
+  if (scenario == "component") {
+    TestEngineCollectorAndMetrics(temp_dir);
+    TestSupportBundleAndManagerCollectors(temp_dir);
+    TestListenerCollectors();
+    TestNegativeSecurityAndUuid(temp_dir);
+  } else if (scenario == "durable") {
+    TestProductionSupportBundleReadsDurableAgentCatalog(temp_dir);
+  } else if (scenario == "partial") {
+    TestPartialMetricReceipt(temp_dir);
+  } else Fail("expected component, durable or partial scenario");
   owned.Cleanup();
   return EXIT_SUCCESS;
 }
 
-int main() {
-  try { return Run(); }
+int main(int argc, char** argv) {
+  try {
+    Require(argc == 2, "one explicit scenario is required; CTest runs all scenarios");
+    return Run(argv[1]);
+  }
   catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
     return EXIT_FAILURE;

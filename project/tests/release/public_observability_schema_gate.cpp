@@ -15,6 +15,7 @@
 #include "metric_registry.hpp"
 #include "metric_support_projection.hpp"
 #include "../support/component_authorization_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "executor_operator_metrics.hpp"
 #include "../support/metric_projection_fixture.hpp"
@@ -517,8 +518,10 @@ bool CheckOptimizationSurface() {
 
 bool CheckAgentObservability(scratchbird::tests::MetricProjectionFixture& fixture) {
   bool ok = true;
+  scratchbird::tests::OwnedTempDirectory audit_directory;
   api::EngineCollectAgentRuntimeObservabilityRequest request;
   request.context = Context({"OBS_RUNTIME_ALL"});
+  request.context.database_path = (audit_directory.path() / "observation").string();
   request.operation_id = "public_observability_schema_gate.agent";
   api::EngineAgentRuntimeEvidenceRecord record;
   record.source_surface = "public_release_gate";

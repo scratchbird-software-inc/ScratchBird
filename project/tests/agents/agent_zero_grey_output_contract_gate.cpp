@@ -14,6 +14,7 @@
 #include "observability/agent_observability_api.hpp"
 #include "uuid.hpp"
 #include "../support/component_authorization_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include "metric_observation_queue.hpp"
 
 #include <chrono>
@@ -35,8 +36,7 @@ namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 
 [[noreturn]] void Fail(const std::string& message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(message);
 }
 
 void Require(bool condition, const std::string& message) {
@@ -378,8 +378,10 @@ api::EngineAgentRuntimeEvidenceRecord RuntimeEvidence(std::string result_state) 
 
 void TestObservabilityZeroGreyValidation() {
   namespace metrics = scratchbird::core::metrics;
+  scratchbird::tests::OwnedTempDirectory audit_directory;
   api::EngineCollectAgentRuntimeObservabilityRequest request;
   request.context = Context({"OBS_METRICS_READ_FAMILY", "OBS_AGENT_EVIDENCE_READ"});
+  request.context.database_path = (audit_directory.path() / "observation").string();
   request.records.push_back(RuntimeEvidence("success"));
   auto& registry = metrics::DefaultMetricRegistry();
   const auto unbound = api::EngineCollectAgentRuntimeObservability(request);
@@ -650,6 +652,7 @@ void TestClusterUnsupportedDiagnosticIsExact() {
 }  // namespace
 
 int main() {
+  try {
   TestContractAllowlistAndTemplates();
   TestCommandSurfaceStates();
   TestThirdPartyStates();
@@ -659,4 +662,8 @@ int main() {
   TestSysAuditProjection();
   TestClusterUnsupportedDiagnosticIsExact();
   return EXIT_SUCCESS;
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }

@@ -13,6 +13,8 @@
 #include "agent_commercial_evidence.hpp"
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
+#include "security/security_model.hpp"
+#include "../../../wire/public_result_packet.hpp"
 #include "metric_contracts.hpp"
 #include "uuid.hpp"
 
@@ -208,14 +210,17 @@ EngineApiDiagnostic ValidateRecord(const EngineAgentRuntimeEvidenceRecord& recor
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
 
-metrics::MetricValidationResult RecordMetrics(const EngineAgentRuntimeEvidenceRecord& record) {
+metrics::MetricValidationResult RecordMetrics(const EngineAgentRuntimeEvidenceRecord& record,
+                                              EngineCollectAgentRuntimeObservabilityResult* receipt) {
   const auto result = ResultStateOrDefault(record);
   const auto action = ActionOrDefault(record);
   auto status = metrics::RecordAgentAction(record.agent_type_id, action, result);
   if (!status.ok) { return status; }
+  AddApiBehaviorEvidence(receipt, "agent_metric_observation_admitted", "sb_agent_actions_total");
   if (IsFilespaceCapacityAgent(record.agent_type_id) && !record.filespace_uuid.empty()) {
     status = metrics::RecordFilespaceAgentCapacityRequest(ValidatedEvidenceIdentity(record.filespace_uuid), action, result);
     if (!status.ok) { return status; }
+    AddApiBehaviorEvidence(receipt, "agent_metric_observation_admitted", "sb_agent_filespace_capacity_requests_total");
   }
   if (IsPageAllocationAgent(record.agent_type_id) && !record.filespace_uuid.empty()) {
     status = metrics::RecordPageAllocationAgentRequest(
@@ -224,19 +229,53 @@ metrics::MetricValidationResult RecordMetrics(const EngineAgentRuntimeEvidenceRe
         action,
         result);
     if (!status.ok) { return status; }
+    AddApiBehaviorEvidence(receipt, "agent_metric_observation_admitted", "sb_agent_page_allocation_requests_total");
   }
   return metrics::MetricOk();
 }
 
+EngineApiDiagnostic RecordAudit(const EngineRequestContext& context,
+                               const EngineAgentRuntimeEvidenceRecord& record) {
+  namespace packet = scratchbird::wire::public_result;
+  std::vector<packet::Field> fields{
+      {"contract", packet::Kind::text, "agent.observability.audit.v1"},
+      {"agent_type_id", packet::Kind::text, SafeOrRedacted(record.agent_type_id)},
+      {"action_id", packet::Kind::text, SafeOrRedacted(ActionOrDefault(record))},
+      {"evidence_kind", packet::Kind::text, SafeOrRedacted(EvidenceKindOrDefault(record))},
+      {"result_state", packet::Kind::text, ResultStateOrDefault(record)},
+      {"diagnostic_code", packet::Kind::text, SafeOrRedacted(DiagnosticOrDefault(record))},
+      {"payload_digest", packet::Kind::text, SafeOrRedacted(record.payload_digest)}};
+  // Optional references stay absent, never textual NULL or redaction markers.
+  for (const auto& [name, value] :
+       {std::pair{"agent_uuid", &record.agent_uuid}, {"filespace_uuid", &record.filespace_uuid},
+        {"policy_uuid", &record.policy_uuid}, {"evidence_uuid", &record.evidence_uuid}}) {
+    if (!value->empty()) fields.push_back({name, packet::Kind::uuid, *value});
+  }
+  std::string payload;
+  if (!packet::Encode(fields, &payload))
+    return MakeInvalidRequestDiagnostic(kOperation, "agent_audit_payload_invalid");
+  // Append/flush is observation evidence, not fsync or MGA finality. The caller
+  // receipt distinguishes it from durable storage and retains partial effects.
+  return AppendSecurityEvidenceEvent(context, kOperation, "agent_runtime_observation", payload);
+}
+
 void AddCollectedRow(EngineCollectAgentRuntimeObservabilityResult* result,
                      const EngineAgentRuntimeEvidenceRecord& record) {
+  const auto optional_identity = [](std::string_view bytes) {
+    auto value = ApiBehaviorValue(ValidatedEvidenceIdentity(bytes));
+    if (bytes.empty()) {
+      value.state = EngineValueState::sql_null;
+      value.binary_value.clear();
+    }
+    return value;
+  };
   AddApiBehaviorRow(result,
                     {{"source_surface", record.source_surface.empty() ? "engine_api" : record.source_surface},
                      {"agent_type_id", record.agent_type_id},
                      {"agent_uuid", ValidatedEvidenceIdentity(record.agent_uuid)},
-                     {"filespace_uuid", ValidatedEvidenceIdentity(record.filespace_uuid)},
-                     {"policy_uuid", ValidatedEvidenceIdentity(record.policy_uuid)},
-                     {"evidence_uuid", ValidatedEvidenceIdentity(record.evidence_uuid)},
+                     {"filespace_uuid", optional_identity(record.filespace_uuid)},
+                     {"policy_uuid", optional_identity(record.policy_uuid)},
+                     {"evidence_uuid", optional_identity(record.evidence_uuid)},
                      {"evidence_kind", EvidenceKindOrDefault(record)},
                      {"action_id", ActionOrDefault(record)},
                      {"result_state", ResultStateOrDefault(record)},
@@ -294,14 +333,7 @@ std::vector<EngineAgentRuntimeEvidenceRecord> DurableCatalogRecords(
   std::vector<EngineAgentRuntimeEvidenceRecord> records;
   records.reserve(image.evidence.size() + image.actions.size());
   for (const auto& evidence : image.evidence) {
-    const auto validation = agents::ValidateCommercialAgentEvidence(evidence);
-    if (!validation.status.ok || !validation.tamper_valid) {
-      EngineAgentRuntimeEvidenceRecord refused = RecordFromDurableEvidence(evidence);
-      refused.result_state = "refused";
-      refused.diagnostic_code = "AGENT.OBSERVABILITY.TAMPER_INVALID";
-      records.push_back(std::move(refused));
-      continue;
-    }
+    // The complete source has already passed commercial evidence validation.
     records.push_back(RecordFromDurableEvidence(evidence));
   }
   for (const auto& action : image.actions) {
@@ -361,6 +393,16 @@ EngineCollectAgentRuntimeObservabilityResult EngineCollectAgentRuntimeObservabil
       }
     } else {
       loaded_catalog = std::move(loaded);
+      // A refused projection is not proof of a validated tamper chain. Check
+      // the whole source before any metric/audit effect or valid prefix escapes.
+      for (const auto& evidence : loaded_catalog->image.evidence) {
+        const auto validation = agents::ValidateCommercialAgentEvidence(evidence);
+        if (!validation.status.ok || !validation.tamper_valid)
+          return MakeApiBehaviorDiagnostic<EngineCollectAgentRuntimeObservabilityResult>(
+              request.context, kOperation,
+              MakeEngineApiDiagnostic("AGENT.OBSERVABILITY.TAMPER_INVALID",
+                  "agent.observability.tamper_invalid", "durable evidence validation failed", true));
+      }
       records = DurableCatalogRecords(loaded_catalog->image);
     }
   }
@@ -394,26 +436,30 @@ EngineCollectAgentRuntimeObservabilityResult EngineCollectAgentRuntimeObservabil
       request.context,
       kOperation);
   result.result_shape.result_kind = "agent.observability.v1";
-  result.metrics_recorded = true;
-  result.audit_recorded = true;
-  result.diagnostics_rendered = true;
-  result.support_bundle_ready = true;
-  result.redaction_applied = true;
-
   for (const auto& record : records) {
-    const auto metric_status = RecordMetrics(record);
+    const auto audit_status = RecordAudit(request.context, record);
+    if (audit_status.error) {
+      result.ok = false;
+      result.diagnostics.push_back(audit_status);
+      AddApiBehaviorEvidence(&result, "agent_audit_append_failure", "partial_write_possible");
+      return result;
+    }
+    AddApiBehaviorEvidence(&result, "agent_observability_audit", EvidenceKindOrDefault(record));
+    AddApiBehaviorEvidence(&result, "agent_audit_completion", "appended_not_durable_finality");
+  }
+  result.audit_recorded = true;
+  for (const auto& record : records) {
+    const auto metric_status = RecordMetrics(record, &result);
     if (!metric_status.ok) {
-      return MakeApiBehaviorDiagnostic<EngineCollectAgentRuntimeObservabilityResult>(
-          request.context,
-          kOperation,
-          MakeEngineApiDiagnostic(metric_status.diagnostic_code,
+      result.ok = false;
+      result.diagnostics.push_back(MakeEngineApiDiagnostic(metric_status.diagnostic_code,
                                   "agent.observability.metric_recording",
                                   metric_status.detail,
                                   true));
+      return result;
     }
     AddCollectedRow(&result, record);
     AddApiBehaviorEvidence(&result, "agent_observability_metric", record.agent_type_id);
-    AddApiBehaviorEvidence(&result, "agent_observability_audit", EvidenceKindOrDefault(record));
     AddApiBehaviorEvidence(&result, "agent_observability_support_bundle", "redacted");
     if (!record.evidence_uuid.empty()) {
       AddApiBehaviorEvidence(&result, "agent_evidence_uuid", ValidatedEvidenceIdentity(record.evidence_uuid));
@@ -423,6 +469,12 @@ EngineCollectAgentRuntimeObservabilityResult EngineCollectAgentRuntimeObservabil
                                                         ResultStateOrDefault(record),
                                                         false));
   }
+
+  result.metrics_recorded = true;
+  // The vector is prepared; the parser still owns human-language rendering.
+  result.diagnostics_rendered = true;
+  result.support_bundle_ready = true;
+  result.redaction_applied = true;
 
   AddApiBehaviorEvidence(&result, "parser_client_surface", "diagnostic_rendering_required");
   AddApiBehaviorEvidence(&result, "listener_surface", "agent_runtime_evidence_counter");

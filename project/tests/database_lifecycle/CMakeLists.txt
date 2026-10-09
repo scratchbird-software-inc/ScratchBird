@@ -2652,7 +2652,9 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
 
   add_test(
     NAME agent_metrics_audit_support_bundle_gate
-    COMMAND agent_metrics_audit_support_bundle_gate
+    COMMAND "${CMAKE_COMMAND}"
+      "-DTEST_EXECUTABLE=$<TARGET_FILE:agent_metrics_audit_support_bundle_gate>"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/agent_observability_scenarios.cmake"
   )
   set_tests_properties(agent_metrics_audit_support_bundle_gate PROPERTIES
     LABELS "PFAR-016;AEIC-042;agent_metrics_audit_support_bundle_gate;database_lifecycle_observability;database_lifecycle_supportability_evidence;support_bundle_redaction;security_negative;management_ui_docs;mga_transaction_regression"
