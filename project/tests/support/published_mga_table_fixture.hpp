@@ -8,6 +8,7 @@
 #include "../../src/engine/internal_api/mga_relation_store/mga_relation_store.hpp"
 #include "../../src/core/datatypes/datatype_catalog_manifest.hpp"
 #include "../../src/core/datatypes/datatype_operations.hpp"
+#include <optional>
 #include <stdexcept>
 
 namespace scratchbird::tests {
@@ -44,6 +45,10 @@ inline engine::internal_api::EngineApiDiagnostic PublishMgaTableFixture(
   const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) throw std::runtime_error("fixture datatype catalog unavailable");
   table.bound_columns.clear();
+  // One publication uses one immutable request/cohort. Resolve the explicitly
+  // selected text profile once, not two full catalog reads for every column.
+  // The publication API still revalidates the supplied descriptor authority.
+  std::optional<std::pair<api::EngineUuid, api::EngineUuid>> binary_utf8_resources;
   for (std::size_t i = 0; i < canonical_types.size(); ++i) {
     const auto canonical_type = dt::CanonicalTypeIdFromStableName(canonical_types[i]);
     const auto row = dt::LookupDatatypeCatalogRow(manifest.manifest,
@@ -76,14 +81,18 @@ inline engine::internal_api::EngineApiDiagnostic PublishMgaTableFixture(
     if (canonical_type == dt::CanonicalTypeId::character &&
         attributes.identities.find("charset_uuid") == attributes.identities.end() &&
         attributes.identities.find("collation_uuid") == attributes.identities.end()) {
-      const auto charset = api::LookupEngineResourceDescriptorByName(context, "UTF8", "charset");
-      const auto collation = api::LookupEngineResourceDescriptorByName(context, "SB_UTF8_BINARY", "collation");
-      if (!charset.ok || !charset.resource_descriptor.present ||
-          !collation.ok || !collation.resource_descriptor.present ||
-          collation.resource_descriptor.parent_resource_uuid != charset.resource_descriptor.resource_uuid)
-        throw std::invalid_argument("fixture requires real UTF8 binary collation resources");
-      attributes.identities["charset_uuid"] = charset.resource_descriptor.resource_uuid;
-      attributes.identities["collation_uuid"] = collation.resource_descriptor.resource_uuid;
+      if (!binary_utf8_resources) {
+        const auto charset = api::LookupEngineResourceDescriptorByName(context, "UTF8", "charset");
+        const auto collation = api::LookupEngineResourceDescriptorByName(context, "SB_UTF8_BINARY", "collation");
+        if (!charset.ok || !charset.resource_descriptor.present ||
+            !collation.ok || !collation.resource_descriptor.present ||
+            collation.resource_descriptor.parent_resource_uuid != charset.resource_descriptor.resource_uuid)
+          throw std::invalid_argument("fixture requires real UTF8 binary collation resources");
+        binary_utf8_resources.emplace(charset.resource_descriptor.resource_uuid,
+                                      collation.resource_descriptor.resource_uuid);
+      }
+      attributes.identities["charset_uuid"] = binary_utf8_resources->first;
+      attributes.identities["collation_uuid"] = binary_utf8_resources->second;
       // Preserve explicit test bounds. Previously unbounded fixture columns
       // use the admitted codec capacity, not a guessed SQL default or the
       // wider integer field used to carry descriptor limits.
