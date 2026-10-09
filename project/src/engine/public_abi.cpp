@@ -15,6 +15,7 @@
 #include "engine/public_abi_diagnostic_severity.hpp"
 #include "engine/public_abi_uuid_payload.hpp"
 #include "engine/public_abi_int64_payload.hpp"
+#include "engine/public_abi_real64_payload.hpp"
 #include "engine/statement_management_ack_codec.hpp"
 #include "engine/statement_context_receipt_retention.hpp"
 #include "engine/statement_identity_binding.hpp"
@@ -3827,6 +3828,13 @@ std::string api_row_value(const scratchbird::engine::internal_api::EngineApiResu
         throw std::invalid_argument("public_result_signed_integer_carrier_invalid");
       bytes.assign(payload);
       if (!value.is_null) kind = public_result::Kind::signed_integer;
+    }
+    else if (scratchbird::engine::PublicReal64ScalarTypeV1(type)) {
+      std::string_view payload;
+      if (!scratchbird::engine::PublicReal64ScalarPayloadV1(value, &payload))
+        throw std::invalid_argument("public_result_real64_carrier_invalid");
+      bytes.assign(payload);
+      if (!value.is_null) kind = public_result::Kind::real64;
     }
     else if (scratchbird::engine::PublicUuidScalarTypeV1(type)) {
       std::string_view payload;

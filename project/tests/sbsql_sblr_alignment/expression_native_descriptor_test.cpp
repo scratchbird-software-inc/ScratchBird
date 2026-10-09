@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "../../src/engine/sblr/canonical_relational_expression.cpp"
 #include "canonical_query_object_free_composition_support.hpp"
+#include "canonical_query_aggregate_registration.hpp"
+#include "canonical_aggregate_registry.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "query/historical_timestamp_scalar.hpp"
 #include "mga_relation_store/stored_timestamp_descriptor.hpp"
@@ -413,6 +415,68 @@ int main() {
     input.ok = true;
     input.batch.columns.push_back({"native_value", runtime_descriptor, false, 1});
     input.result_bindings.resize(1);
+    if (type == d::CanonicalTypeId::int64 || type == d::CanonicalTypeId::boolean) {
+      namespace exec = scratchbird::engine::executor;
+      const bool boolean = type == d::CanonicalTypeId::boolean;
+      const auto result_name = boolean ? "boolean" : "real64";
+      const auto result_id = boolean ? d::CanonicalTypeId::boolean : d::CanonicalTypeId::real64;
+      const auto functions = boolean
+          ? std::vector{exec::CanonicalAggregateFunction::bool_and,
+                        exec::CanonicalAggregateFunction::bool_or,
+                        exec::CanonicalAggregateFunction::every}
+          : std::vector{exec::CanonicalAggregateFunction::avg,
+                                 exec::CanonicalAggregateFunction::stddev_pop,
+                                 exec::CanonicalAggregateFunction::variance_pop,
+                                 exec::CanonicalAggregateFunction::stddev_samp,
+                                 exec::CanonicalAggregateFunction::variance_samp,
+                                 exec::CanonicalAggregateFunction::approx_median};
+      for (const auto function : functions) {
+        auto aggregate_dag = dag;
+        const auto* registration = exec::LookupCanonicalAggregateByFunctionV1(function);
+        Check(registration != nullptr);
+        const auto real_identity = std::ranges::find_if(rows, [&](const auto& item) {
+          return item.type_uuid == s::ExactCanonicalCoreDatatypeTypeUuidV1(result_name);
+        });
+        Check(real_identity != rows.end());
+        auto result_type = descriptor;
+        result_type.descriptor_id = 2;
+        result_type.descriptor_uuid = scratchbird::tests::FixtureUuid(1086, 401);
+        result_type.descriptor_generation = real_identity->descriptor_generation;
+        result_type.type_uuid = real_identity->type_uuid;
+        result_type.type_generation = real_identity->type_generation;
+        result_type.codec_id = real_identity->codec_id;
+        result_type.codec_version = real_identity->codec_version;
+        result_type.codec_generation = real_identity->codec_generation;
+        result_type.datatype_catalog_snapshot_uuid = real_identity->catalog_snapshot_uuid;
+        result_type.datatype_catalog_generation = real_identity->catalog_generation;
+        result_type.datatype_registry_generation = real_identity->registry_generation;
+        result_type.nullability = a::RelationalNullability::kNullable;
+        aggregate_dag.descriptors.push_back(result_type);
+        a::RelationalExpressionRecord aggregate_expression;
+        aggregate_expression.expression_id = 2;
+        aggregate_expression.expression_kind = a::RelationalExpressionKind::kFunctionCall;
+        aggregate_expression.result_descriptor_id = 2;
+        aggregate_expression.function_uuid = registration->function_uuid;
+        aggregate_expression.child_expression_ids = {1};
+        aggregate_dag.expressions.push_back(aggregate_expression);
+        aggregate_dag.outputs = {{1, 2, 2, "aggregate_value", 2, true, 0}};
+        auto aggregate_root = root;
+        aggregate_root.output_descriptor_ids = {2};
+        aggregate_root.bound_expression_ids = {2};
+        const auto prepared = s::PrepareGlobalAggregateRootForComposition(
+            aggregate_dag, aggregate_root, source, input, function, false, false, false);
+        if (!prepared.ok) std::cerr << prepared.detail << '\n';
+        Check(prepared.ok);
+        a::EngineDescriptor expected;
+        Check(s::BuildExactCanonicalScalarRuntimeDescriptorV1(result_type, result_id, &expected));
+        Check(prepared.result_column.descriptor == expected && prepared.result_column.nullable);
+        auto stale_dag = aggregate_dag;
+        ++stale_dag.descriptors.back().codec_generation;
+        const auto refused = s::PrepareGlobalAggregateRootForComposition(
+            stale_dag, aggregate_root, source, input, function, false, false, false);
+        Check(!refused.ok && refused.result_bindings.empty());
+      }
+    }
     const auto empty = s::PrepareExpressionProjectRootForComposition(dag, root, source, input, {});
     if (!empty.ok) std::cerr << empty.detail << '\n';
     Check(empty.ok && empty.expression_output_batch.rows.empty());

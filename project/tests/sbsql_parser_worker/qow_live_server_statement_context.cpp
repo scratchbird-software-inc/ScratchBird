@@ -1990,6 +1990,16 @@ std::string ScalarResultText(std::string_view packet) {
           scalar += value.name + "=" + std::to_string(*number) + ";";
           continue;
         }
+        if (value.kind == result::Kind::real64) {
+          const auto number = result::AsReal64(value);
+          Require(number.has_value(), "REAL64 result field has invalid width");
+          std::array<char, 128> rendered;
+          const auto formatted = std::to_chars(rendered.data(), rendered.data() + rendered.size(),
+                                               *number, std::chars_format::general);
+          Require(formatted.ec == std::errc{}, "REAL64 result could not be rendered");
+          scalar += value.name + "=" + std::string(rendered.data(), formatted.ptr) + ";";
+          continue;
+        }
         if (value.kind == result::Kind::bytes && value.value.starts_with("SBTL0001")) {
           const auto& bytes = value.value;
           Require(bytes.size() >= 12, "list result header truncated");

@@ -1,5 +1,6 @@
 #include "wire/public_result_packet.hpp"
 #include "engine/public_abi_int64_payload.hpp"
+#include "engine/public_abi_real64_payload.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -5777,6 +5778,13 @@ std::string ServerApiRowValue(const engine_api::EngineApiResult& api_result,
         throw std::invalid_argument("public_result_signed_integer_carrier_invalid");
       bytes.assign(payload);
       if (!value.is_null) kind = public_result::Kind::signed_integer;
+    }
+    else if (scratchbird::engine::PublicReal64ScalarTypeV1(type)) {
+      std::string_view payload;
+      if (!scratchbird::engine::PublicReal64ScalarPayloadV1(value, &payload))
+        throw std::invalid_argument("public_result_real64_carrier_invalid");
+      bytes.assign(payload);
+      if (!value.is_null) kind = public_result::Kind::real64;
     }
     else if (!value.is_null && (type == "uuid" || type == "uuid16")) {
       if (value.binary_value.empty()) {

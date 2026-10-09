@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "wire/public_result_packet.hpp"
 #include "engine/public_abi_uuid_payload.hpp"
+#include "engine/public_abi_real64_payload.hpp"
 #include "../support/client_public_result_display.hpp"
 #include <cstdlib>
 #include <iostream>
@@ -99,8 +100,52 @@ void CheckNativeUuidPublication() {
   std::cout << "native UUID publication octet cases=" << cases << '\n';
 }
 
+void CheckNativeReal64Publication() {
+  namespace engine = scratchbird::engine;
+  using State = engine::internal_api::EngineValueState;
+  engine::internal_api::EngineTypedValue value;
+  value.descriptor.canonical_type_name = "ReAl64";
+  // Exercise every octet in every position, preserving payload bits, not just
+  // numeric equality (NaN payloads and signed zero must survive unchanged).
+  for (unsigned at = 0; at < 8; ++at) for (unsigned byte = 0; byte < 256; ++byte) {
+    value.binary_value.assign(8, 0);
+    value.binary_value[at] = byte;
+    std::string_view payload;
+    CHECK(engine::PublicReal64ScalarPayloadV1(value, &payload));
+    std::string encoded;
+    CHECK(packet::Encode(std::vector<packet::Field>{{"v", packet::Kind::real64, std::string(payload)}}, &encoded));
+    const auto field = packet::Find(encoded, "v");
+    CHECK(field && field->value == payload);
+    const auto decoded = packet::AsReal64(*field);
+    CHECK(decoded && std::bit_cast<std::uint64_t>(*decoded) == (std::uint64_t(byte) << (8 * at)));
+  }
+  const auto refused = [&](const auto& invalid) {
+    std::string_view unchanged = "unchanged";
+    CHECK(!engine::PublicReal64ScalarPayloadV1(invalid, &unchanged) && unchanged == "unchanged");
+  };
+  value.binary_value.assign(8, 0);
+  for (unsigned width = 0; width < 20; ++width) if (width != 8) {
+    auto invalid = value; invalid.binary_value.resize(width); refused(invalid);
+    std::string unchanged = "unchanged";
+    CHECK(!packet::Encode(std::vector<packet::Field>{{"v", packet::Kind::real64, std::string(width, 'x')}}, &unchanged));
+    CHECK(unchanged == "unchanged");
+  }
+  auto invalid = value; invalid.encoded_value = "0"; refused(invalid);
+  invalid = value; invalid.is_null = true; refused(invalid);
+  invalid = value; invalid.descriptor.canonical_type_name = "text"; refused(invalid);
+  for (unsigned state = 0; state < 256; ++state) {
+    if (state == static_cast<unsigned>(State::value)) continue;
+    invalid = value; invalid.setState(static_cast<State>(state)); refused(invalid);
+  }
+  value.setState(State::sql_null); value.binary_value.clear();
+  std::string_view payload = "unchanged";
+  CHECK(engine::PublicReal64ScalarPayloadV1(value, &payload) && payload.empty());
+  CHECK(!engine::PublicReal64ScalarPayloadV1(value, nullptr));
+}
+
 int main() {
   CheckNativeUuidPublication();
+  CheckNativeReal64Publication();
   std::string signed_packet;
   CHECK(packet::Encode(std::vector<packet::Field>{
       {"negative", packet::Kind::signed_integer, std::string(8, '\xff')},

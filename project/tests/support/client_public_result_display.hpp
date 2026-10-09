@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "../../src/wire/public_result_packet.hpp"
+#include <charconv>
 #include <stdexcept>
 namespace scratchbird::tests {
 // Test CLIENT display boundary. Decode framing before formatting UUID atoms;
@@ -30,6 +31,14 @@ inline std::string DisplayPublicResultPacket(std::string_view packet,
       const auto number = result::AsSigned(field);
       if (!number) throw std::invalid_argument("client result signed integer invalid");
       text += std::to_string(*number);
+    } else if (field.kind == result::Kind::real64) {
+      const auto number = result::AsReal64(field);
+      if (!number) throw std::invalid_argument("client result REAL64 invalid");
+      std::array<char, 128> rendered;
+      const auto formatted = std::to_chars(rendered.data(), rendered.data() + rendered.size(),
+                                           *number, std::chars_format::general);
+      if (formatted.ec != std::errc{}) throw std::invalid_argument("client REAL64 rendering failed");
+      text.append(rendered.data(), formatted.ptr);
     } else if (field.kind == result::Kind::uuid || field.kind == result::Kind::bytes) {
       if (field.kind == result::Kind::bytes) text += "hex:";
       for (std::size_t i = 0; i < field.value.size(); ++i) {

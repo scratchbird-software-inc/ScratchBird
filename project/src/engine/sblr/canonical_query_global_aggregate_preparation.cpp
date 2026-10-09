@@ -709,7 +709,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
           "global aggregate boolean-input core datatype cohort is incomplete";
       return result;
     }
-    core_boolean_type_uuid = boolean_type->descriptor_uuid.value;
+    core_boolean_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1("boolean");
     if (core_boolean_type_uuid.is_nil()) {
       result.detail =
           "global aggregate boolean-input core datatype identity is unavailable";
@@ -1500,10 +1500,15 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   engine_descriptor.encoded_descriptor =
       std::string("nullability=") +
       (result_nullable ? "nullable" : "non_null");
-  if (engine_descriptor.canonical_type_name == "int64" &&
-      !BuildExactCanonicalScalarRuntimeDescriptorV1(*descriptor,
-          core::datatypes::CanonicalTypeId::int64, &engine_descriptor)) {
-    result.detail = "aggregate INT64 result lacks exact admitted datatype authority";
+  if ((engine_descriptor.canonical_type_name == "int64" ||
+       engine_descriptor.canonical_type_name == "real64" ||
+       engine_descriptor.canonical_type_name == "boolean") &&
+      !BuildExactCanonicalScalarRuntimeDescriptorV1(
+          *descriptor,
+          dt::CanonicalTypeIdFromStableName(engine_descriptor.canonical_type_name),
+          &engine_descriptor)) {
+    result.detail =
+        "aggregate scalar result lacks exact admitted datatype authority";
     return result;
   }
   result.result_column = {output->output_name_utf8, engine_descriptor,

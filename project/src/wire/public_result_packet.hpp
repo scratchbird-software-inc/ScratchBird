@@ -17,15 +17,15 @@ namespace scratchbird::wire::public_result {
 // UUID atoms are exactly 16 bytes; the client owns any display rendering.
 inline constexpr std::string_view kMagic = "SBRES002";
 inline constexpr std::size_t kMaximumFields = std::numeric_limits<std::uint32_t>::max();
-enum class Kind : std::uint8_t { text = 0, bytes = 1, uuid = 2, unsigned_integer = 3, row = 4, evidence = 5, signed_integer = 6 };
+enum class Kind : std::uint8_t { text = 0, bytes = 1, uuid = 2, unsigned_integer = 3, row = 4, evidence = 5, signed_integer = 6, real64 = 7 };
 struct FieldView { std::string_view name; Kind kind; std::string_view value; };
 struct Field { std::string name; Kind kind; std::string value; };
 inline bool Valid(FieldView field) {
   const auto kind = static_cast<std::uint8_t>(field.kind);
   return !field.name.empty() && field.name.size() <= std::numeric_limits<std::uint32_t>::max() &&
-         kind <= static_cast<std::uint8_t>(Kind::signed_integer) &&
+         kind <= static_cast<std::uint8_t>(Kind::real64) &&
          (field.kind != Kind::uuid || field.value.size() == 16) &&
-         ((field.kind != Kind::unsigned_integer && field.kind != Kind::signed_integer) || field.value.size() == 8);
+         ((field.kind != Kind::unsigned_integer && field.kind != Kind::signed_integer && field.kind != Kind::real64) || field.value.size() == 8);
 }
 template<class Emit>
 bool Visit(const std::vector<FieldView>& fields, Emit&& emit) {
@@ -139,5 +139,12 @@ inline std::optional<std::int64_t> AsSigned(const Field& field) {
   for (unsigned i = 0; i < 8; ++i)
     bits |= static_cast<std::uint64_t>(static_cast<unsigned char>(field.value[i])) << (8 * i);
   return std::bit_cast<std::int64_t>(bits);
+}
+inline std::optional<double> AsReal64(const Field& field) {
+  if (field.kind != Kind::real64 || field.value.size() != 8) return std::nullopt;
+  std::uint64_t bits = 0;
+  for (unsigned i = 0; i < 8; ++i)
+    bits |= static_cast<std::uint64_t>(static_cast<unsigned char>(field.value[i])) << (8 * i);
+  return std::bit_cast<double>(bits);
 }
 } // namespace scratchbird::wire::public_result

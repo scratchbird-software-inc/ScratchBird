@@ -24,12 +24,15 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cerrno>
+#include <charconv>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -1078,8 +1081,66 @@ void CheckSignedPublicResultRows() {
   std::cout << "signed public result renderer conformance passed\n";
 }
 
-int main() {
+void CheckReal64PublicResultRows() {
+  namespace packet = scratchbird::wire::public_result;
+  namespace parser = scratchbird::parser::sbsql;
+  const auto frame = [](packet::Kind kind, std::string bytes, std::string metadata) {
+    std::string row, result;
+    Require(packet::Encode(std::vector<packet::Field>{{"v", kind, std::move(bytes)}}, &row), "REAL64 row encode failed");
+    Require(packet::Encode(std::vector<packet::Field>{
+        {"row[0]", packet::Kind::row, row},
+        {"row_meta[0]", packet::Kind::text, std::move(metadata)}}, &result), "REAL64 result encode failed");
+    return result;
+  };
+  std::vector<std::uint32_t> types;
+  std::vector<std::vector<std::optional<std::string>>> rows;
+  for (const auto number : {0.0, -0.0, 2.0, -1.25, std::numeric_limits<double>::max(),
+                            std::numeric_limits<double>::min(), std::numeric_limits<double>::denorm_min()}) {
+    const auto payload = frame(packet::Kind::real64, packet::Unsigned(std::bit_cast<std::uint64_t>(number)), "v:ReAl64:not_null");
+    Require(parser::DecodePublicResultRowsForTest(payload, &types, &rows) &&
+        types == std::vector<std::uint32_t>{701} && rows.size() == 1 && rows[0][0], "REAL64 result lost type/value");
+    double restored = 0;
+    const auto& text = *rows[0][0];
+    const auto parsed = std::from_chars(text.data(), text.data()+text.size(), restored);
+    Require(parsed.ec == std::errc{} && parsed.ptr == text.data()+text.size() &&
+        std::bit_cast<std::uint64_t>(number) == std::bit_cast<std::uint64_t>(restored), "REAL64 parser rendering lost bits");
+  }
+  Require(parser::DecodePublicResultRowsForTest(frame(packet::Kind::text, {}, "v:real64:null"), &types, &rows) &&
+      types == std::vector<std::uint32_t>{701} && !rows[0][0], "NULL REAL64 schema lost");
+  const auto refuse = [&](std::string payload) {
+    const auto old_types = types; const auto old_rows = rows;
+    Require(!parser::DecodePublicResultRowsForTest(payload, &types, &rows) &&
+        types == old_types && rows == old_rows, "invalid REAL64 result accepted or output changed");
+  };
+  for (const auto metadata : {"v:text:not_null", "v:int64:not_null", "v:real64:null", ""})
+    refuse(frame(packet::Kind::real64, std::string(8, '\0'), metadata));
+  refuse(frame(packet::Kind::text, "2", "v:real64:not_null"));
+  refuse(frame(packet::Kind::text, "2", "v:real64:null"));
+  refuse(frame(packet::Kind::signed_integer, std::string(8, '\0'), "v:real64:not_null"));
+  const std::array<std::string, 5> profiles{
+      frame(packet::Kind::real64, std::string(8, '\0'), "v:real64:not_null"),
+      frame(packet::Kind::text, {}, "v:real64:null"),
+      frame(packet::Kind::signed_integer, std::string(8, '\0'), "v:int64:not_null"),
+      frame(packet::Kind::text, {}, "v:int64:null"),
+      frame(packet::Kind::text, "x", "v:text:not_null")};
+  for (unsigned first = 0; first < profiles.size(); ++first)
+    for (unsigned second = 0; second < profiles.size(); ++second) {
+      std::vector<packet::Field> fields, tail;
+      Require(packet::Decode(profiles[first], &fields) && packet::Decode(profiles[second], &tail), "REAL64 fixture decode failed");
+      tail[0].name = "row[1]"; tail[1].name = "row_meta[1]";
+      fields.insert(fields.end(), tail.begin(), tail.end());
+      std::string payload;
+      Require(packet::Encode(fields, &payload), "REAL64 fixture encode failed");
+      const bool same_type = (first < 2 && second < 2) || (first >= 2 && first < 4 && second >= 2 && second < 4) || (first == 4 && second == 4);
+      Require(parser::DecodePublicResultRowsForTest(payload, &types, &rows) == same_type, "cross-row scalar schema conflict missed");
+    }
+  std::cout << "REAL64 public result renderer conformance passed\n";
+}
+
+int main(int argc, char** argv) {
   CheckSignedPublicResultRows();
+  CheckReal64PublicResultRows();
+  if (argc == 2 && std::string_view(argv[1]) == "--result-renderer-only") return EXIT_SUCCESS;
   ::signal(SIGPIPE, SIG_IGN);
   // Hosted engines bind one database per process for its lifetime. Each
   // independent scenario must start with its own process, not reset that
