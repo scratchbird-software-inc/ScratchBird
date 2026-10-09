@@ -4,6 +4,8 @@
 #include "query/expression_api.hpp"
 #include "engine/sblr/relational_descriptor_codec.hpp"
 #include "canonical_utf8.hpp"
+#include "datatype_binary.hpp"
+#include "datatype_physical_encoding.hpp"
 #include "resource_seed_pack.hpp"
 #include <algorithm>
 #include <cstdlib>
@@ -313,6 +315,17 @@ void TestUtf8Admission() {
       "\xf8\x88\x80\x80\x80", "\xff", "\xc2", "\xe1\x80", "\xf1\x80\x80",
       "\xc2z", "\xe1z\x80", "\xf1\x80z\x80"};
   const auto invalid_operations = [&](const std::string& bytes) {
+    dt::DatatypeBinaryValue native;
+    native.type_id = dt::CanonicalTypeId::character;
+    native.payload.assign(bytes.begin(), bytes.end());
+    const auto binary = dt::EncodeDatatypeBinaryValue(native);
+    Require(!binary.ok() && binary.encoded.empty(), "invalid UTF8 reached native binary envelope");
+    dt::DatatypePhysicalValue physical;
+    physical.type_id = dt::CanonicalTypeId::character;
+    physical.state = dt::DatatypePhysicalValueState::value;
+    physical.payload = native.payload;
+    const auto persisted = dt::EncodeDatatypePhysicalValue(physical);
+    Require(!persisted.ok() && persisted.bytes.empty(), "invalid UTF8 reached native physical envelope");
     dt::DatatypeOperationValue value{dt::CanonicalTypeId::character, bytes, false};
     dt::DatatypeComparisonRequest compare; compare.left = value;
     compare.right = {dt::CanonicalTypeId::character, "valid", false}; compare.text_seed = Seed();
@@ -358,12 +371,26 @@ void TestUtf8Admission() {
     }
   }
   for (const auto& bytes : {std::string{},std::string("a\0b",3),Utf8Scalar(0xffff),Utf8Scalar(0x10ffff)}) {
-    dt::DatatypeOperationValue value{dt::CanonicalTypeId::character, bytes, false};
-    dt::DatatypeSerializationRequest serialize; serialize.value = value;
-    const auto encoded = dt::SerializeDatatypeValue(serialize); Require(encoded.ok(), "valid TEXT serialization refused");
-    dt::DatatypeDeserializationRequest deserialize; deserialize.serialized_value = encoded.serialized_value;
-    const auto decoded = dt::DeserializeDatatypeValue(deserialize);
-    Require(decoded.ok() && decoded.value.encoded_value == bytes, "valid TEXT round trip failed");
+    // Use the native codecs, not the retired name-framed SBDV1 text envelope.
+    // This is a UTF8 carrier test, not catalog/SQL or presentation-policy admission.
+    dt::DatatypeBinaryValue value;
+    value.type_id = dt::CanonicalTypeId::character;
+    value.payload.assign(bytes.begin(), bytes.end());
+    const auto encoded = dt::EncodeDatatypeBinaryValue(value);
+    Require(encoded.ok(), "valid UTF8 binary encoding refused");
+    const auto decoded = dt::DecodeDatatypeBinaryValue(encoded.encoded);
+    Require(decoded.ok() && decoded.value.type_id == value.type_id && !decoded.value.is_null &&
+        decoded.value.payload == value.payload, "valid UTF8 binary round trip failed");
+    dt::DatatypePhysicalValue physical;
+    physical.type_id = value.type_id;
+    physical.state = dt::DatatypePhysicalValueState::value;
+    physical.payload = value.payload;
+    const auto persisted = dt::EncodeDatatypePhysicalValue(physical);
+    Require(persisted.ok(), "valid UTF8 physical encoding refused");
+    const auto restored = dt::DecodeDatatypePhysicalValue(persisted.bytes.data(), persisted.bytes.size());
+    Require(restored.ok() && restored.value.type_id == value.type_id &&
+        restored.value.state == dt::DatatypePhysicalValueState::value &&
+        restored.value.payload == value.payload, "valid UTF8 physical round trip failed");
     Compare(bytes, bytes, Seed(), 0);
   }
   std::size_t offset = 1; std::uint32_t scalar = 99;

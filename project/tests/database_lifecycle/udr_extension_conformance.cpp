@@ -7,8 +7,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/metric_projection_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include "extensibility/udr_api.hpp"
 #include "behavior_support/api_behavior_store.hpp"
+#include "behavior_support/api_behavior_record_codec.hpp"
 #include "database_lifecycle.hpp"
 #include "metric_registry.hpp"
 #include "parser_package_registry.hpp"
@@ -50,8 +53,7 @@ std::string g_lifecycle_isolation_level;
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
-    std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -63,15 +65,6 @@ void RequireOk(const TResult& result, std::string_view message) {
     }
     Require(false, message);
   }
-}
-
-std::filesystem::path MakeTempDir() {
-  std::string tmpl = "/tmp/sb_dblc013l_udr.XXXXXX";
-  std::vector<char> writable(tmpl.begin(), tmpl.end());
-  writable.push_back('\0');
-  char* made = ::mkdtemp(writable.data());
-  Require(made != nullptr, "mkdtemp failed for DBLC-013L UDR test");
-  return std::filesystem::path(made);
 }
 
 bool HasDiagnostic(const api::EngineApiResult& result, std::string_view code) {
@@ -152,7 +145,8 @@ bool HasMetricValue(std::string_view family,
                     std::string_view expected) {
   for (const auto& value : metrics::DefaultMetricRegistry().SnapshotCurrent()) {
     if (value.family == family && MetricHasLabel(value, key, expected)) {
-      return true;
+      const auto* count = std::get_if<std::uint64_t>(&value.value);
+      return count != nullptr && *count == 1 && !value.arithmetic_inexact;
     }
   }
   return false;
@@ -329,30 +323,8 @@ void AddInvokeUdrOptions(api::EngineApiRequest* request) {
   request->option_envelopes.push_back("cpu_budget_microseconds:1000");
 }
 
-std::string ReadFile(const std::filesystem::path& path) {
-  std::ifstream in(path);
-  std::string out;
-  std::string line;
-  while (std::getline(in, line)) {
-    out += line;
-    out.push_back('\n');
-  }
-  return out;
-}
-
-void SeedActiveTransaction(const std::filesystem::path& database_path, std::uint64_t tx) {
-  std::ofstream out(database_path.string() + ".sb.crud_events", std::ios::binary | std::ios::app);
-  const std::uint64_t effective_tx =
-      tx == kDefaultLifecycleTransactionMarker && g_lifecycle_local_transaction_id != 0
-          ? g_lifecycle_local_transaction_id
-          : tx;
-  out << "SBCRUD1\tTX_BEGIN\t" << effective_tx << "\tudr_lifecycle_test\n";
-  Require(static_cast<bool>(out), "failed to seed MGA transaction evidence for UDR test");
-}
-
 void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
   const auto sbsql_descriptor = sbsql_udr::sbu_sbsql_package_descriptor();
-  SeedActiveTransaction(database_path, 10);
 
   auto register_request = UdrRequest<api::EngineRegisterUdrPackageRequest>(database_path);
   AddManageUdrOptions(&register_request, sbsql_descriptor);
@@ -373,6 +345,9 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
 
   const auto registered = api::EngineRegisterUdrPackage(register_request);
   Require(registered.ok, "trusted C++ UDR registration was refused");
+  Require(HasEvidence(registered, "udr_metrics", "observation_refused") &&
+          !HasEvidence(registered, "udr_metrics", "lifecycle_event_emitted"),
+          "unbound UDR counter claimed an emitted observation");
   Require(HasEvidence(registered, "extension_behavior", "registered"),
           "UDR registration did not emit lifecycle evidence");
   Require(HasEvidence(registered, "authority_boundary",
@@ -423,6 +398,11 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
       database_path, scratchbird::tests::FixtureUuidLiteral("019e13b0-0000-7000-8000-000000000109"));
   AddManageUdrOptions(&non_cpp_request, sbsql_descriptor);
   non_cpp_request.option_envelopes.push_back("runtime_language:python");
+  scratchbird::tests::MetricProjectionFixture metric_fixture(g_lifecycle_database_uuid,
+      scratchbird::tests::FixtureUuid(1498, 2), 1499);
+  metric_fixture.Admit("sb_udr_non_cpp_refusal_total",
+      {{"object_uuid", non_cpp_request.target_object.uuid}, {"action", "register"},
+       {"result", "refused"}, {"reason", "python"}});
   const auto non_cpp_request_result =
       api::EngineRegisterUdrPackage(non_cpp_request);
   Require(!non_cpp_request_result.ok &&
@@ -431,6 +411,9 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
           "engine registration admitted a non-C++ UDR runtime target");
   Require(HasMetricValue("sb_udr_non_cpp_refusal_total", "reason", "python"),
           "non-C++ UDR refusal metric was not emitted");
+  metric_fixture.ExpectProduced(1);
+  metric_fixture.Seal();
+  metric_fixture.VerifyReadOnly();
 
   auto missing_tx = UdrRequest<api::EngineRegisterUdrPackageRequest>(
       database_path, scratchbird::tests::FixtureUuidLiteral("019e13b0-0000-7000-8000-000000000104"), 0);
@@ -469,8 +452,17 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
 
   auto load_request = UdrRequest<api::EngineLoadUdrPackageRequest>(database_path);
   AddManageUdrOptions(&load_request, sbsql_descriptor);
+  metric_fixture.Admit("sb_udr_load_total",
+      {{"object_uuid", load_request.target_object.uuid}, {"action", "load"},
+       {"result", "ok"}, {"reason", "none"}});
   const auto loaded = api::EngineLoadUdrPackage(load_request);
   Require(loaded.ok, "registered UDR load was refused");
+  Require(HasEvidence(loaded, "udr_metrics", "lifecycle_event_emitted") &&
+          !HasEvidence(loaded, "udr_metrics", "observation_refused"),
+          "admitted load observation receipt did not match publication");
+  Require(HasMetricValue("sb_udr_load_total", "action", "load"),
+          "UDR load observation did not preserve an exact UINT64 count");
+  metric_fixture.ExpectProduced(1);
   Require(HasEvidence(loaded, "extension_behavior", "loaded"),
           "UDR load did not emit lifecycle evidence");
   Require(HasEvidence(loaded, "udr_entrypoints", "dispatch_table_published"),
@@ -601,6 +593,9 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
   inspect.option_envelopes.push_back("permission:inspect_udr");
   const auto inspected = api::EngineInspectUdrPackages(inspect);
   Require(inspected.ok, "UDR inspect was refused");
+  Require(HasEvidence(inspected, "udr_metrics", "observation_refused") &&
+          !HasEvidence(inspected, "udr_metrics", "inspect_event_emitted"),
+          "unbound UDR inspect counter claimed an emitted observation");
   Require(!inspected.result_shape.rows.empty(), "UDR inspect did not return lifecycle rows");
   Require(RowFieldContains(inspected, "entrypoints", "sbu_sbsql_parse_to_sblr"),
           "UDR inspect did not expose sanitized runtime entrypoint inventory");
@@ -615,12 +610,30 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
   Require(!restart_catalog.empty(),
           "restart catalog reload did not reconstruct UDR package rows");
 
-  const auto event_text = ReadFile(database_path.string() + ".sb.api_events");
-  Require(Contains(event_text, "registered") && Contains(event_text, "loaded") &&
-              Contains(event_text, "unloaded"),
-          "UDR durable lifecycle event evidence was not persisted");
-  Require(!Contains(event_text, "PRAGMA") && !Contains(event_text, "journal_mode"),
-          "UDR lifecycle evidence introduced non-MGA journal authority text");
+  // Reopen and decode the native binary journal, not the retired text sidecar.
+  std::ifstream journal(database_path.string() + ".sb.api_events.v2", std::ios::binary);
+  Require(journal.is_open(), "UDR native event journal is missing");
+  bool registered_event=false, loaded_event=false, unloaded_event=false;
+  while (journal.peek() != std::char_traits<char>::eof()) {
+    api::ApiBehaviorRecord record;
+    Require(api::ReadApiBehaviorRecord(journal, &record), "UDR native event record did not decode");
+    Require(record.object_uuid == sbsql_descriptor.package_uuid &&
+            record.target_database_uuid == g_lifecycle_database_uuid &&
+            record.creator_tx == g_lifecycle_local_transaction_id,
+            "UDR native event lost binary object/database or MGA origin identity");
+    registered_event |= record.state == "registered";
+    loaded_event |= record.state == "loaded";
+    unloaded_event |= record.state == "unloaded";
+    Require(!Contains(record.payload, "PRAGMA") && !Contains(record.payload, "journal_mode"),
+            "UDR lifecycle evidence introduced non-MGA journal authority text");
+  }
+  Require(!journal.bad() && registered_event && loaded_event && unloaded_event,
+          "UDR native lifecycle journal lost registration/load/unload effects");
+  Require(!std::filesystem::exists(database_path.string() + ".sb.api_events") &&
+          !std::filesystem::exists(database_path.string() + ".sb.crud_events"),
+          "UDR lifecycle regenerated retired textual event files");
+  metric_fixture.Seal();
+  metric_fixture.VerifyAndDrain();
 }
 
 void TestServerSblrUdrAdmission() {
@@ -647,18 +660,20 @@ void TestServerSblrUdrAdmission() {
 
 }  // namespace
 
-int main() {
+int main() try {
   udr_runtime::ResetRuntimeForTest();
   const auto sbsql_registered =
       udr_runtime::RegisterPackage(sbsql_udr::sbu_sbsql_package_descriptor());
   Require(sbsql_registered.ok, "failed to register SBSQL parser-support runtime descriptor");
 
-  const auto temp_dir = MakeTempDir();
-  const auto database_path = temp_dir / "udr_lifecycle.sbdb";
+  scratchbird::tests::OwnedTempDirectory temporary;
+  const auto database_path = temporary.path() / "udr_lifecycle.sbdb";
   CreateLifecycleDatabase(database_path);
   BeginLifecycleTransaction(database_path);
   TestEngineOwnedUdrLifecycle(database_path);
   TestServerSblrUdrAdmission();
-  std::filesystem::remove_all(temp_dir);
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

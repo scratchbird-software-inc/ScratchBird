@@ -489,7 +489,6 @@ void AddUdrLifecycleEvidence(EngineApiResult* result,
   AddApiBehaviorEvidence(result, "udr_abi", abi_state);
   AddApiBehaviorEvidence(result, "udr_permission", "manage_udr_checked");
   AddApiBehaviorEvidence(result, "udr_audit", audit_state);
-  AddApiBehaviorEvidence(result, "udr_metrics", "lifecycle_event_emitted");
   AddApiBehaviorEvidence(result, "execution_boundary", "engine_owned_no_bypass");
   AddApiBehaviorEvidence(result, "authority_boundary", "mga_sblr_uuid_security_transaction_preserved");
 }
@@ -498,15 +497,25 @@ void EmitUdrMetric(const std::string& family,
                    const EngineApiRequest& request,
                    const std::string& result,
                    const std::string& action,
-                   const std::string& reason = {}) {
+                   const std::string& reason = {},
+                   EngineApiResult* observation_receipt = nullptr) {
   auto& registry = scratchbird::core::metrics::DefaultMetricRegistry();
-  (void)registry.IncrementCounter(family,
+  const auto observed = registry.IncrementCounter(family,
                                   {{"object_uuid", request.target_object.uuid},
                                    {"action", action},
                                    {"result", result},
                                    {"reason", reason.empty() ? "none" : reason}},
-                                  1.0,
+                                  std::uint64_t{1},
                                   kMetricProducer);
+  if (observation_receipt != nullptr) {
+    AddApiBehaviorEvidence(observation_receipt, "udr_metrics", observed.ok
+        ? (action == "invoke" ? "invocation_event_emitted" :
+           action == "inspect" ? "inspect_event_emitted" : "lifecycle_event_emitted")
+        : "observation_refused");
+    if (!observed.ok)
+      observation_receipt->diagnostics.push_back(MakeEngineApiDiagnostic(
+          observed.diagnostic_code, "udr.metric_observation", observed.detail, false));
+  }
 }
 
 }  // namespace
@@ -616,7 +625,7 @@ EngineRegisterUdrPackageResult EngineRegisterUdrPackage(const EngineRegisterUdrP
                                 {"capability_role", descriptor->capability_role},
                                 {"runtime_language", descriptor->runtime_language},
                                 {"entrypoint_count", std::to_string(descriptor->entrypoints.size())}});
-    EmitUdrMetric("sb_udr_registration_total", request, "ok", "register");
+    EmitUdrMetric("sb_udr_registration_total", request, "ok", "register", {}, &result);
   }
   return result;
 }
@@ -677,7 +686,7 @@ EngineAlterUdrPackageResult EngineAlterUdrPackage(const EngineAlterUdrPackageReq
                                                                  : "metadata_only_alter");
     AddApiBehaviorEvidence(&result, "udr_cache", "udr_package_generation_invalidated");
     AddApiBehaviorEvidence(&result, "udr_catalog", "uuid_identity_preserved");
-    EmitUdrMetric("sb_udr_alter_total", request, "ok", "alter");
+    EmitUdrMetric("sb_udr_alter_total", request, "ok", "alter", {}, &result);
   }
   return result;
 }
@@ -721,7 +730,7 @@ EngineLoadUdrPackageResult EngineLoadUdrPackage(const EngineLoadUdrPackageReques
     AddApiBehaviorEvidence(&result, "udr_loader", "init_callback_completed");
     AddApiBehaviorEvidence(&result, "udr_entrypoints", "dispatch_table_published");
     AddApiBehaviorEvidence(&result, "udr_cache", "udr_package_generation_invalidated");
-    EmitUdrMetric("sb_udr_load_total", request, "ok", "load");
+    EmitUdrMetric("sb_udr_load_total", request, "ok", "load", {}, &result);
   }
   return result;
 }
@@ -758,7 +767,7 @@ EngineUnloadUdrPackageResult EngineUnloadUdrPackage(const EngineUnloadUdrPackage
     AddApiBehaviorEvidence(&result, "udr_loader", "shutdown_callback_completed");
     AddApiBehaviorEvidence(&result, "udr_entrypoints", "dispatch_table_removed");
     AddApiBehaviorEvidence(&result, "udr_cache", "udr_package_generation_invalidated");
-    EmitUdrMetric("sb_udr_unload_total", request, "ok", "unload");
+    EmitUdrMetric("sb_udr_unload_total", request, "ok", "unload", {}, &result);
   }
   return result;
 }
@@ -798,7 +807,7 @@ EngineDropUdrPackageResult EngineDropUdrPackage(const EngineDropUdrPackageReques
     AddApiBehaviorEvidence(&result, "udr_loader", "runtime_descriptor_unregistered");
     AddApiBehaviorEvidence(&result, "udr_entrypoints", "dispatch_table_removed");
     AddApiBehaviorEvidence(&result, "udr_cache", "udr_package_generation_invalidated");
-    EmitUdrMetric("sb_udr_drop_total", request, "ok", "drop");
+    EmitUdrMetric("sb_udr_drop_total", request, "ok", "drop", {}, &result);
   }
   return result;
 }
@@ -836,9 +845,8 @@ EngineInspectUdrPackageResult EngineInspectUdrPackages(const EngineInspectUdrPac
   AddEngineExtensionEvidence(&result, "udr", "inspected");
   AddApiBehaviorEvidence(&result, "udr_permission", "inspect_udr_checked");
   AddApiBehaviorEvidence(&result, "udr_runtime", "inspected");
-  AddApiBehaviorEvidence(&result, "udr_metrics", "inspect_event_emitted");
   AddApiBehaviorEvidence(&result, "authority_boundary", "mga_sblr_uuid_security_transaction_preserved");
-  EmitUdrMetric("sb_udr_inspect_total", request, "ok", "inspect");
+  EmitUdrMetric("sb_udr_inspect_total", request, "ok", "inspect", {}, &result);
   return result;
 }
 
@@ -917,7 +925,6 @@ EngineInvokeUdrPackageResult EngineInvokeUdrPackage(const EngineInvokeUdrPackage
   AddApiBehaviorEvidence(&result, "udr_dispatch", "entrypoint_callback_invoked");
   AddApiBehaviorEvidence(&result, "udr_resource", "budget_checked");
   AddApiBehaviorEvidence(&result, "udr_audit", "invocation_evidence_recorded");
-  AddApiBehaviorEvidence(&result, "udr_metrics", "invocation_event_emitted");
   AddApiBehaviorEvidence(&result, "sblr_authority", "SBLR_UDR_INVOKE");
   const std::string surface_id = OptionValue(request, "sbsfc077_surface_id:");
   if (!surface_id.empty()) {
@@ -935,7 +942,7 @@ EngineInvokeUdrPackageResult EngineInvokeUdrPackage(const EngineInvokeUdrPackage
     AddApiBehaviorEvidence(&result, "engine_accepts_revalidated_sblr_uuid_only", "true");
   }
   AddApiBehaviorEvidence(&result, "authority_boundary", "mga_sblr_uuid_security_transaction_preserved");
-  EmitUdrMetric("sb_udr_invocation_total", request, "ok", "invoke");
+  EmitUdrMetric("sb_udr_invocation_total", request, "ok", "invoke", {}, &result);
   return result;
 }
 
