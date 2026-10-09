@@ -26,6 +26,8 @@ using scratchbird::core::platform::u64;
 
 // Definitions only; catalog admission supplies binary bindings and series.
 const std::vector<scratchbird::core::metrics::MetricDescriptorDefinition>&
+IndexMetricDescriptorDefinitions();
+const std::vector<scratchbird::core::metrics::MetricDescriptorDefinition>&
 IndexOperationMetricDescriptorDefinitions();
 
 struct IndexMetricIdentity {
@@ -50,62 +52,62 @@ struct IndexMetricIdentity {
 };
 
 struct IndexLogicalMetricDelta {
-  double candidates = 0;
-  double visible = 0;
-  double rechecks = 0;
-  double fallback_sorts = 0;
+  u64 candidates = 0;
+  u64 visible = 0;
+  u64 rechecks = 0;
+  u64 fallback_sorts = 0;
 };
 
 struct IndexPhysicalMetricDelta {
-  double pages_read = 0;
-  double pages_written = 0;
-  double splits = 0;
-  double merges = 0;
-  double depth = 0;
+  u64 pages_read = 0;
+  u64 pages_written = 0;
+  u64 splits = 0;
+  u64 merges = 0;
+  u64 depth = 0;
   double density_ratio = 0;
   double fragmentation_ratio = 0;
 };
 
 struct IndexMaintenanceMetricDelta {
-  double operations = 0;
-  double verify_failures = 0;
-  double repair_actions = 0;
-  double stale_resources = 0;
-  double quarantine_events = 0;
+  u64 operations = 0;
+  u64 verify_failures = 0;
+  u64 repair_actions = 0;
+  u64 stale_resources = 0;
+  u64 quarantine_events = 0;
   double progress_percent = 0;
 };
 
 struct IndexOptimizerMetricDelta {
   double estimate_error_ratio = 0;
-  double stale_stats = 0;
-  double invalidations = 0;
-  double fallback_refusals = 0;
+  u64 stale_stats = 0;
+  u64 invalidations = 0;
+  u64 fallback_refusals = 0;
 };
 
 struct IndexReferenceProfileMetricDelta {
-  double profile_hits = 0;
-  double profile_refusals = 0;
-  double rechecks = 0;
-  double fallback_sorts = 0;
-  double order_proofs = 0;
-  double catalog_projections = 0;
-  double compatibility_diagnostics = 0;
+  u64 profile_hits = 0;
+  u64 profile_refusals = 0;
+  u64 rechecks = 0;
+  u64 fallback_sorts = 0;
+  u64 order_proofs = 0;
+  u64 catalog_projections = 0;
+  u64 compatibility_diagnostics = 0;
 };
 
 struct IndexResidencyMetricDelta {
-  double resident_bytes = 0;
-  double hits = 0;
-  double misses = 0;
-  double evictions = 0;
+  u64 resident_bytes = 0;
+  u64 hits = 0;
+  u64 misses = 0;
+  u64 evictions = 0;
   double pressure_score = 0;
-  double degraded = 0;
-  double refused = 0;
+  u64 degraded = 0;
+  u64 refused = 0;
 };
 
 struct IndexPageFilespaceMetricDelta {
-  double allocation_requests = 0;
-  double relocation_requests = 0;
-  double shrink_ready_bytes = 0;
+  u64 allocation_requests = 0;
+  u64 relocation_requests = 0;
+  u64 shrink_ready_bytes = 0;
 };
 
 struct IndexMetricPublishResult {

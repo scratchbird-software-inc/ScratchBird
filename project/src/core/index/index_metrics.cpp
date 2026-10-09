@@ -46,8 +46,9 @@ MetricLabelSet Labels(const IndexMetricIdentity& identity) {
   return labels;
 }
 
-MetricDescriptor Descriptor(std::string family, MetricType type, MetricUnit unit, std::string help) {
-  MetricDescriptor descriptor;
+scratchbird::core::metrics::MetricDescriptorDefinition Descriptor(
+    std::string family, MetricType type, MetricUnit unit, std::string help) {
+  scratchbird::core::metrics::MetricDescriptorDefinition descriptor;
   descriptor.family = std::move(family);
   descriptor.type = type;
   descriptor.unit = unit;
@@ -55,7 +56,10 @@ MetricDescriptor Descriptor(std::string family, MetricType type, MetricUnit unit
   descriptor.help = std::move(help);
   descriptor.producer_owner = "index_runtime";
   descriptor.security_family = "INDEX_METRICS";
-  descriptor.readiness = MetricReadiness::implemented;
+  descriptor.value_type = (unit == MetricUnit::ratio || unit == MetricUnit::percent ||
+                           descriptor.family == "sb_index_residency_pressure_score")
+      ? scratchbird::core::metrics::MetricScalarType::float64
+      : scratchbird::core::metrics::MetricScalarType::uint64;
   descriptor.labels = {MetricLabelDescriptor{"index_uuid", true, false, MetricLabelType::system_uuid},
                        MetricLabelDescriptor{"index_family", true, false},
                        MetricLabelDescriptor{"semantic_profile", true, false},
@@ -71,14 +75,6 @@ MetricDescriptor Descriptor(std::string family, MetricType type, MetricUnit unit
   return descriptor;
 }
 
-MetricValidationResult RegisterIfMissing(MetricDescriptor descriptor) {
-  auto& registry = DefaultMetricRegistry();
-  if (registry.FindDescriptor(descriptor.family) != nullptr) {
-    return scratchbird::core::metrics::MetricOk();
-  }
-  return registry.RegisterDescriptor(std::move(descriptor));
-}
-
 void Push(IndexMetricPublishResult* out, MetricValidationResult result) {
   if (!result.ok) {
     out->ok = false;
@@ -86,14 +82,15 @@ void Push(IndexMetricPublishResult* out, MetricValidationResult result) {
   out->results.push_back(std::move(result));
 }
 
-void Counter(IndexMetricPublishResult* out, const std::string& family, const IndexMetricIdentity& id, double value) {
+void Counter(IndexMetricPublishResult* out, const std::string& family, const IndexMetricIdentity& id, u64 value) {
   if (value != 0) {
     Push(out, DefaultMetricRegistry().IncrementCounter(family, Labels(id), value, "index_runtime"));
   }
 }
 
-void Gauge(IndexMetricPublishResult* out, const std::string& family, const IndexMetricIdentity& id, double value) {
-  Push(out, DefaultMetricRegistry().SetGauge(family, Labels(id), value, "index_runtime"));
+void Gauge(IndexMetricPublishResult* out, const std::string& family, const IndexMetricIdentity& id,
+           scratchbird::core::metrics::MetricScalar value) {
+  Push(out, DefaultMetricRegistry().SetGauge(family, Labels(id), std::move(value), "index_runtime"));
 }
 
 constexpr const char* kCEIC040SearchKey =
@@ -430,48 +427,54 @@ IndexOperationMetricSupportBundleResult RefuseSupportBundle(
 }
 }  // namespace
 
-MetricValidationResult EnsureIndexMetricDescriptors() {
-  const MetricDescriptor descriptors[] = {
-      Descriptor("sb_index_candidates_total", MetricType::counter, MetricUnit::count, "Index candidates emitted."),
-      Descriptor("sb_index_visible_candidates_total", MetricType::counter, MetricUnit::count, "Index candidates accepted after authority recheck."),
-      Descriptor("sb_index_rechecks_total", MetricType::counter, MetricUnit::count, "Index candidate rechecks."),
-      Descriptor("sb_index_fallback_sorts_total", MetricType::counter, MetricUnit::count, "Fallback sorts required after index access."),
-      Descriptor("sb_index_pages_read_total", MetricType::counter, MetricUnit::count, "Index pages read."),
-      Descriptor("sb_index_pages_written_total", MetricType::counter, MetricUnit::count, "Index pages written."),
-      Descriptor("sb_index_splits_observed_total", MetricType::counter, MetricUnit::count, "Index split events observed by family runtime."),
-      Descriptor("sb_index_merges_observed_total", MetricType::counter, MetricUnit::count, "Index merge events observed by family runtime."),
-      Descriptor("sb_index_depth", MetricType::gauge, MetricUnit::count, "Index depth."),
+const std::vector<scratchbird::core::metrics::MetricDescriptorDefinition>&
+IndexMetricDescriptorDefinitions() {
+  static const std::vector<scratchbird::core::metrics::MetricDescriptorDefinition> descriptors = {
+      Descriptor("sb_index_candidates_total", MetricType::counter, MetricUnit::records, "Index candidates emitted."),
+      Descriptor("sb_index_visible_candidates_total", MetricType::counter, MetricUnit::records, "Index candidates accepted after authority recheck."),
+      Descriptor("sb_index_rechecks_total", MetricType::counter, MetricUnit::operations, "Index candidate rechecks."),
+      Descriptor("sb_index_fallback_sorts_total", MetricType::counter, MetricUnit::operations, "Fallback sorts required after index access."),
+      Descriptor("sb_index_pages_read_total", MetricType::counter, MetricUnit::pages, "Index pages read."),
+      Descriptor("sb_index_pages_written_total", MetricType::counter, MetricUnit::pages, "Index pages written."),
+      Descriptor("sb_index_splits_observed_total", MetricType::counter, MetricUnit::events, "Index split events observed by family runtime."),
+      Descriptor("sb_index_merges_observed_total", MetricType::counter, MetricUnit::events, "Index merge events observed by family runtime."),
+      Descriptor("sb_index_depth", MetricType::gauge, MetricUnit::none, "Index depth."),
       Descriptor("sb_index_density_ratio", MetricType::gauge, MetricUnit::ratio, "Index density ratio."),
       Descriptor("sb_index_fragmentation_ratio", MetricType::gauge, MetricUnit::ratio, "Index fragmentation ratio."),
-      Descriptor("sb_index_maintenance_operations_total", MetricType::counter, MetricUnit::count, "Index maintenance operations."),
-      Descriptor("sb_index_verify_failures_total", MetricType::counter, MetricUnit::count, "Index verification failures."),
-      Descriptor("sb_index_repair_actions_total", MetricType::counter, MetricUnit::count, "Index repair actions."),
-      Descriptor("sb_index_stale_resources_total", MetricType::counter, MetricUnit::count, "Index stale resource detections."),
-      Descriptor("sb_index_quarantine_events_total", MetricType::counter, MetricUnit::count, "Index quarantine events."),
+      Descriptor("sb_index_maintenance_operations_total", MetricType::counter, MetricUnit::operations, "Index maintenance operations."),
+      Descriptor("sb_index_verify_failures_total", MetricType::counter, MetricUnit::errors, "Index verification failures."),
+      Descriptor("sb_index_repair_actions_total", MetricType::counter, MetricUnit::operations, "Index repair actions."),
+      Descriptor("sb_index_stale_resources_total", MetricType::counter, MetricUnit::none, "Index stale resource detections."),
+      Descriptor("sb_index_quarantine_events_total", MetricType::counter, MetricUnit::events, "Index quarantine events."),
       Descriptor("sb_index_maintenance_progress_percent", MetricType::gauge, MetricUnit::percent, "Index maintenance progress percent."),
       Descriptor("sb_index_optimizer_estimate_error_ratio", MetricType::gauge, MetricUnit::ratio, "Index optimizer estimate error ratio."),
-      Descriptor("sb_index_optimizer_stale_stats_total", MetricType::counter, MetricUnit::count, "Index optimizer stale-stat detections."),
-      Descriptor("sb_index_optimizer_invalidations_total", MetricType::counter, MetricUnit::count, "Index optimizer invalidations."),
-      Descriptor("sb_index_optimizer_fallback_refusals_total", MetricType::counter, MetricUnit::count, "Index optimizer fallback/refusal events."),
-      Descriptor("sb_index_reference_profile_hits_total", MetricType::counter, MetricUnit::count, "Reference semantic profile hits."),
-      Descriptor("sb_index_reference_profile_refusals_total", MetricType::counter, MetricUnit::count, "Reference semantic profile refusals."),
-      Descriptor("sb_index_reference_rechecks_total", MetricType::counter, MetricUnit::count, "Reference semantic profile rechecks."),
-      Descriptor("sb_index_reference_fallback_sorts_total", MetricType::counter, MetricUnit::count, "Reference semantic profile fallback sorts."),
-      Descriptor("sb_index_reference_order_proofs_total", MetricType::counter, MetricUnit::count, "Reference semantic order proofs."),
-      Descriptor("sb_index_reference_catalog_projections_total", MetricType::counter, MetricUnit::count, "Reference catalog projection events."),
-      Descriptor("sb_index_reference_compatibility_diagnostics_total", MetricType::counter, MetricUnit::count, "Reference compatibility diagnostics."),
+      Descriptor("sb_index_optimizer_stale_stats_total", MetricType::counter, MetricUnit::none, "Index optimizer stale-stat detections."),
+      Descriptor("sb_index_optimizer_invalidations_total", MetricType::counter, MetricUnit::none, "Index optimizer invalidations."),
+      Descriptor("sb_index_optimizer_fallback_refusals_total", MetricType::counter, MetricUnit::none, "Index optimizer fallback/refusal events."),
+      Descriptor("sb_index_reference_profile_hits_total", MetricType::counter, MetricUnit::none, "Reference semantic profile hits."),
+      Descriptor("sb_index_reference_profile_refusals_total", MetricType::counter, MetricUnit::none, "Reference semantic profile refusals."),
+      Descriptor("sb_index_reference_rechecks_total", MetricType::counter, MetricUnit::none, "Reference semantic profile rechecks."),
+      Descriptor("sb_index_reference_fallback_sorts_total", MetricType::counter, MetricUnit::none, "Reference semantic profile fallback sorts."),
+      Descriptor("sb_index_reference_order_proofs_total", MetricType::counter, MetricUnit::none, "Reference semantic order proofs."),
+      Descriptor("sb_index_reference_catalog_projections_total", MetricType::counter, MetricUnit::none, "Reference catalog projection events."),
+      Descriptor("sb_index_reference_compatibility_diagnostics_total", MetricType::counter, MetricUnit::none, "Reference compatibility diagnostics."),
       Descriptor("sb_index_resident_bytes", MetricType::gauge, MetricUnit::bytes, "Index resident bytes."),
-      Descriptor("sb_index_residency_hits_total", MetricType::counter, MetricUnit::count, "Index residency hits."),
-      Descriptor("sb_index_residency_misses_total", MetricType::counter, MetricUnit::count, "Index residency misses."),
-      Descriptor("sb_index_residency_evictions_total", MetricType::counter, MetricUnit::count, "Index residency evictions."),
-      Descriptor("sb_index_residency_pressure_score", MetricType::gauge, MetricUnit::count, "Index residency pressure score."),
-      Descriptor("sb_index_residency_degraded_total", MetricType::counter, MetricUnit::count, "Index residency degraded decisions."),
-      Descriptor("sb_index_residency_refused_total", MetricType::counter, MetricUnit::count, "Index residency refused decisions."),
-      Descriptor("sb_index_page_allocation_requests_total", MetricType::counter, MetricUnit::count, "Index page allocation requests."),
-      Descriptor("sb_index_page_relocation_requests_total", MetricType::counter, MetricUnit::count, "Index page relocation requests."),
+      Descriptor("sb_index_residency_hits_total", MetricType::counter, MetricUnit::none, "Index residency hits."),
+      Descriptor("sb_index_residency_misses_total", MetricType::counter, MetricUnit::none, "Index residency misses."),
+      Descriptor("sb_index_residency_evictions_total", MetricType::counter, MetricUnit::none, "Index residency evictions."),
+      Descriptor("sb_index_residency_pressure_score", MetricType::gauge, MetricUnit::none, "Index residency pressure score."),
+      Descriptor("sb_index_residency_degraded_total", MetricType::counter, MetricUnit::none, "Index residency degraded decisions."),
+      Descriptor("sb_index_residency_refused_total", MetricType::counter, MetricUnit::none, "Index residency refused decisions."),
+      Descriptor("sb_index_page_allocation_requests_total", MetricType::counter, MetricUnit::operations, "Index page allocation requests."),
+      Descriptor("sb_index_page_relocation_requests_total", MetricType::counter, MetricUnit::operations, "Index page relocation requests."),
       Descriptor("sb_index_filespace_shrink_ready_bytes", MetricType::gauge, MetricUnit::bytes, "Index bytes ready for filespace shrink.")};
-  for (const auto& descriptor : descriptors) {
-    const auto result = RegisterIfMissing(descriptor);
+  return descriptors;
+}
+
+MetricValidationResult EnsureIndexMetricDescriptors() {
+  for (const auto& descriptor : IndexMetricDescriptorDefinitions()) {
+    const auto result = scratchbird::core::metrics::ValidateBoundMetricDefinition(
+        DefaultMetricRegistry(), descriptor);
     if (!result.ok) {
       return result;
     }
@@ -483,6 +486,7 @@ IndexMetricPublishResult PublishIndexLogicalMetrics(const IndexMetricIdentity& i
                                                     const IndexLogicalMetricDelta& delta) {
   IndexMetricPublishResult out;
   Push(&out, EnsureIndexMetricDescriptors());
+  if (!out.ok) return out;
   Counter(&out, "sb_index_candidates_total", identity, delta.candidates);
   Counter(&out, "sb_index_visible_candidates_total", identity, delta.visible);
   Counter(&out, "sb_index_rechecks_total", identity, delta.rechecks);
@@ -494,6 +498,7 @@ IndexMetricPublishResult PublishIndexPhysicalMetrics(const IndexMetricIdentity& 
                                                      const IndexPhysicalMetricDelta& delta) {
   IndexMetricPublishResult out;
   Push(&out, EnsureIndexMetricDescriptors());
+  if (!out.ok) return out;
   Counter(&out, "sb_index_pages_read_total", identity, delta.pages_read);
   Counter(&out, "sb_index_pages_written_total", identity, delta.pages_written);
   Counter(&out, "sb_index_splits_observed_total", identity, delta.splits);
@@ -508,6 +513,7 @@ IndexMetricPublishResult PublishIndexMaintenanceMetrics(const IndexMetricIdentit
                                                         const IndexMaintenanceMetricDelta& delta) {
   IndexMetricPublishResult out;
   Push(&out, EnsureIndexMetricDescriptors());
+  if (!out.ok) return out;
   Counter(&out, "sb_index_maintenance_operations_total", identity, delta.operations);
   Counter(&out, "sb_index_verify_failures_total", identity, delta.verify_failures);
   Counter(&out, "sb_index_repair_actions_total", identity, delta.repair_actions);
@@ -521,6 +527,7 @@ IndexMetricPublishResult PublishIndexOptimizerMetrics(const IndexMetricIdentity&
                                                       const IndexOptimizerMetricDelta& delta) {
   IndexMetricPublishResult out;
   Push(&out, EnsureIndexMetricDescriptors());
+  if (!out.ok) return out;
   Gauge(&out, "sb_index_optimizer_estimate_error_ratio", identity, delta.estimate_error_ratio);
   Counter(&out, "sb_index_optimizer_stale_stats_total", identity, delta.stale_stats);
   Counter(&out, "sb_index_optimizer_invalidations_total", identity, delta.invalidations);
@@ -532,6 +539,7 @@ IndexMetricPublishResult PublishIndexReferenceProfileMetrics(const IndexMetricId
                                                          const IndexReferenceProfileMetricDelta& delta) {
   IndexMetricPublishResult out;
   Push(&out, EnsureIndexMetricDescriptors());
+  if (!out.ok) return out;
   Counter(&out, "sb_index_reference_profile_hits_total", identity, delta.profile_hits);
   Counter(&out, "sb_index_reference_profile_refusals_total", identity, delta.profile_refusals);
   Counter(&out, "sb_index_reference_rechecks_total", identity, delta.rechecks);
@@ -546,6 +554,7 @@ IndexMetricPublishResult PublishIndexResidencyMetrics(const IndexMetricIdentity&
                                                       const IndexResidencyMetricDelta& delta) {
   IndexMetricPublishResult out;
   Push(&out, EnsureIndexMetricDescriptors());
+  if (!out.ok) return out;
   Gauge(&out, "sb_index_resident_bytes", identity, delta.resident_bytes);
   Counter(&out, "sb_index_residency_hits_total", identity, delta.hits);
   Counter(&out, "sb_index_residency_misses_total", identity, delta.misses);
@@ -560,6 +569,7 @@ IndexMetricPublishResult PublishIndexPageFilespaceMetrics(const IndexMetricIdent
                                                           const IndexPageFilespaceMetricDelta& delta) {
   IndexMetricPublishResult out;
   Push(&out, EnsureIndexMetricDescriptors());
+  if (!out.ok) return out;
   Counter(&out, "sb_index_page_allocation_requests_total", identity, delta.allocation_requests);
   Counter(&out, "sb_index_page_relocation_requests_total", identity, delta.relocation_requests);
   Gauge(&out, "sb_index_filespace_shrink_ready_bytes", identity, delta.shrink_ready_bytes);

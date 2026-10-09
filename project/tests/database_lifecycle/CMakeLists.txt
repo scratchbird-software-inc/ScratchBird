@@ -3823,6 +3823,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_core_datatypes AND TARGET sb_core
   target_compile_features(database_lifecycle_index_write_profile_p3_conformance PRIVATE cxx_std_20)
   target_link_libraries(database_lifecycle_index_write_profile_p3_conformance
     PRIVATE
+      sb_engine
       sb_core_index
       sb_core_metrics
       sb_core_platform

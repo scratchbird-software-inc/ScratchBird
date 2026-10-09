@@ -1,6 +1,14 @@
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "dml/mga_relation_read_view.hpp"
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
+#include "../support/metric_projection_fixture.hpp"
+#include "metric_bound_definition.hpp"
+#include "database_lifecycle.hpp"
+#include "database_lifecycle_test_memory.hpp"
+#include "transaction/transaction_api.hpp"
+#include "uuid.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -19,8 +27,10 @@
 #include "runtime_platform.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <set>
 #include <string>
 #include <string_view>
@@ -34,8 +44,7 @@ namespace metrics = scratchbird::core::metrics;
 namespace platform = scratchbird::core::platform;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -53,21 +62,9 @@ platform::TypedUuid TypedUuid(platform::UuidKind kind, unsigned char salt) {
   return uuid;
 }
 
-api::EngineRequestContext Context() {
-  api::EngineRequestContext context;
-  context.request_id = "p3-write-profile";
-  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 1701);
-  context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 1702);
-  context.transaction_uuid = scratchbird::tests::FixtureUuid(1208, 1703);
-  context.local_transaction_id = 42;
-  context.snapshot_visible_through_local_transaction_id = 42;
-  context.security_context_present = true;
-  return context;
-}
-
-api::CrudTableRecord Table() {
+api::CrudTableRecord Table(const api::EngineRequestContext& context) {
   api::CrudTableRecord table;
-  table.creator_tx = 42;
+  table.creator_tx = context.local_transaction_id;
   table.table_uuid = scratchbird::tests::FixtureUuid(1486, 205);
   table.default_name = "profile_table";
   table.columns.push_back({"id", "canonical=int64"});
@@ -76,12 +73,13 @@ api::CrudTableRecord Table() {
   return table;
 }
 
-api::CrudIndexRecord Index(scratchbird::core::platform::Uuid uuid,
+api::CrudIndexRecord Index(const api::EngineRequestContext& context,
+                           scratchbird::core::platform::Uuid uuid,
                            std::string column,
                            std::string family,
                            bool unique) {
   api::CrudIndexRecord index;
-  index.creator_tx = 42;
+  index.creator_tx = context.local_transaction_id;
   index.index_uuid = std::move(uuid);
   index.table_uuid = scratchbird::tests::FixtureUuid(1486, 205);
   index.column_name = std::move(column);
@@ -92,55 +90,111 @@ api::CrudIndexRecord Index(scratchbird::core::platform::Uuid uuid,
   return index;
 }
 
-api::MgaRelationReadView State() {
+struct Fixture {
+  scratchbird::tests::OwnedTempDirectory temporary;
+  api::EngineRequestContext context;
+  std::unique_ptr<scratchbird::tests::FixtureEngineSession> session;
+  api::CrudTableRecord table;
+  api::MgaRelationStorageDescriptor descriptor;
   api::MgaRelationReadView state;
-  state.transactions[42] = "active";
-  state.tables.push_back(Table());
-  api::CrudRowVersionRecord row;
-  row.creator_tx = 42;
-  row.table_uuid = scratchbird::tests::FixtureUuid(1486, 205);
-  row.row_uuid = scratchbird::tests::FixtureUuid(1486, 203);
-  row.version_uuid = scratchbird::tests::FixtureUuid(1486, 206);
-  row.values.push_back({"id", "1"});
-  row.values.push_back({"name", "alpha"});
-  row.deleted = false;
-  state.row_versions.push_back(std::move(row));
-  return state;
-}
 
-api::EngineRowValue InputRow(std::string id, std::string name) {
+  Fixture() {
+    namespace db = scratchbird::storage::database;
+    namespace uuid = scratchbird::core::uuid;
+    db::DatabaseCreateConfig create;
+    create.path = (temporary.path() / "write_profiles.sbdb").string();
+    const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
+    create.database_uuid = uuid::GenerateEngineIdentityV7(platform::UuidKind::database, now).value;
+    create.filespace_uuid = uuid::GenerateEngineIdentityV7(platform::UuidKind::filespace, now).value;
+    create.creation_unix_epoch_millis = now;
+    create.page_size = 8192;
+    scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+    const auto created = db::CreateDatabaseFile(create);
+    if (!created.ok()) std::cerr << created.diagnostic.diagnostic_code << ':'
+                                << created.diagnostic.message_key << '\n';
+    Require(created.ok(), "write-profile database creation failed");
+    context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+    api::EngineBeginTransactionRequest begin;
+    begin.context = context;
+    begin.isolation_level = "read_committed";
+    const auto begun = api::EngineBeginTransaction(begin);
+    Require(begun.ok, "write-profile transaction begin failed");
+    context.local_transaction_id = begun.local_transaction_id;
+    context.transaction_uuid = begun.transaction_uuid;
+    context.snapshot_visible_through_local_transaction_id = begun.snapshot_visible_through_local_transaction_id;
+    context.transaction_isolation_level = begun.isolation_level;
+    table = Table(context);
+    Require(!scratchbird::tests::PublishMgaTableFixture(
+                context, table, {"int64", "character", "character"}).error,
+            "write-profile catalog publication failed");
+    const auto loaded = api::LoadMgaRelationStorageDescriptor(context, table.table_uuid);
+    Require(loaded.ok, "write-profile native descriptor read failed");
+    descriptor = loaded.descriptor;
+    session = std::make_unique<scratchbird::tests::FixtureEngineSession>(context);
+  }
+
+  void LoadState() {
+    const auto loaded = api::LoadMgaRelationStoreState(context);
+    Require(loaded.ok, "write-profile native relation read failed");
+    state = api::BuildMgaRelationReadView(loaded.state);
+    const auto visible = api::FindVisibleMgaTable(state, table.table_uuid, context.local_transaction_id);
+    Require(visible.has_value(), "write-profile published table is not visible");
+    table = *visible;
+    const auto rows = api::VisibleMgaRowsForContext(state, table.table_uuid, context);
+    Require(rows.size() == 1 && rows.front().values.size() == 3,
+            "write-profile planning changed the retained seed rows");
+    const auto id = std::find_if(rows.front().values.begin(), rows.front().values.end(),
+                                 [](const auto& field) { return field.first == "id"; });
+    Require(id != rows.front().values.end() && id->second == std::string("\1\0\0\0\0\0\0\0", 8),
+            "write-profile fixture did not retain exact native INT64");
+  }
+
+  void Rollback() {
+    api::EngineRollbackTransactionRequest rollback;
+    rollback.context = context;
+    Require(api::EngineRollbackTransaction(rollback).ok, "write-profile rollback failed");
+  }
+};
+
+api::EngineRowValue InputRow(const Fixture& fixture, std::int64_t id, std::string name) {
   api::EngineRowValue row;
   api::EngineTypedValue id_value;
-  id_value.descriptor.canonical_type_name = "int64";
-  id_value.encoded_value = std::move(id);
+  id_value.descriptor = fixture.descriptor.columns.at(0).value_descriptor;
+  id_value.binary_value.resize(8);
+  for (unsigned i = 0; i < 8; ++i)
+    id_value.binary_value[i] = static_cast<std::uint8_t>(static_cast<std::uint64_t>(id) >> (i * 8));
+  id_value.setState(api::EngineValueState::value);
   row.fields.push_back({"id", id_value});
   api::EngineTypedValue name_value;
-  name_value.descriptor.canonical_type_name = "character";
+  name_value.descriptor = fixture.descriptor.columns.at(1).value_descriptor;
   name_value.encoded_value = std::move(name);
+  name_value.setState(api::EngineValueState::value);
   row.fields.push_back({"name", name_value});
   return row;
 }
 
-api::EngineInsertRowsRequest InsertRequest() {
-  api::EngineInsertRowsRequest request;
-  request.context = Context();
+auto InsertRequest(const Fixture& fixture) {
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(
+      *fixture.session, fixture.context);
   request.target_table.uuid = scratchbird::tests::FixtureUuid(1486, 205);
-  request.target_schema.uuid = scratchbird::tests::FixtureUuid(1486, 204);
+  request.target_schema.uuid = fixture.context.current_schema_uuid;
   request.estimated_row_count = 2;
-  request.input_rows.push_back(InputRow("1", "alpha"));
-  request.input_rows.push_back(InputRow("2", "beta"));
+  request.input_rows.push_back(InputRow(fixture, 1, "alpha"));
+  request.input_rows.push_back(InputRow(fixture, 2, "beta"));
   return request;
 }
 
-api::EngineUpdateRowsRequest UpdateRequest() {
-  api::EngineUpdateRowsRequest request;
-  request.context = Context();
+auto UpdateRequest(const Fixture& fixture) {
+  scratchbird::tests::FixtureEngineRequest<api::EngineUpdateRowsRequest> request(
+      *fixture.session, fixture.context);
   request.target_table.uuid = scratchbird::tests::FixtureUuid(1486, 205);
   request.update_predicate.predicate_kind = "column_eq";
   request.update_predicate.canonical_predicate_envelope = "name";
   api::EngineTypedValue value;
-  value.descriptor.canonical_type_name = "character";
+  value.descriptor = fixture.descriptor.columns.at(1).value_descriptor;
   value.encoded_value = "bravo";
+  value.setState(api::EngineValueState::value);
   request.assignments.push_back({"name", value});
   return request;
 }
@@ -215,16 +269,20 @@ void TestIndexFamilyAndManagementMatrix() {
           "index create omitted resource epoch publication step");
 }
 
-void TestInsertWriteProfiles() {
-  const auto table = Table();
-  const auto state = State();
+void TestInsertWriteProfiles(const Fixture& fixture) {
+  const auto& table = fixture.table;
+  const auto& state = fixture.state;
   const std::vector<api::CrudIndexRecord> indexes = {
-      Index(scratchbird::tests::FixtureUuid(1486, 202), "name", api::kCrudIndexFamilyBtree, false),
-      Index(scratchbird::tests::FixtureUuid(1486, 201), "id", api::kCrudIndexFamilyBtree, true)};
+      Index(fixture.context, scratchbird::tests::FixtureUuid(1486, 202), "name", api::kCrudIndexFamilyBtree, false),
+      Index(fixture.context, scratchbird::tests::FixtureUuid(1486, 201), "id", api::kCrudIndexFamilyBtree, true)};
 
-  auto unsafe_request = InsertRequest();
+  auto unsafe_request = InsertRequest(fixture);
   unsafe_request.option_envelopes.push_back("feature.secondary_index_delta_ledger=enabled");
   auto unsafe_context = api::BeginInsertBatchContext(unsafe_request, state, table, indexes);
+  if (!unsafe_context.accepted) {
+    for (const auto& d : unsafe_context.diagnostics) std::cerr << d.code << ':' << d.detail << '\n';
+    std::cerr << unsafe_context.fallback_reason << '\n';
+  }
   Require(unsafe_context.accepted, "insert context with unsafe delta option should still use exact path");
   Require(!unsafe_context.delta_ledger_policy.enabled,
           "insert delta ledger became enabled without MGA safety proofs");
@@ -234,7 +292,7 @@ void TestInsertWriteProfiles() {
                           api::InsertIndexMaintenanceAction::synchronous_exact_probe_then_insert),
           "insert unique index preflight was not selected");
 
-  auto safe_request = InsertRequest();
+  auto safe_request = InsertRequest(fixture);
   safe_request.option_envelopes.push_back("runtime.deferred_secondary_index=enabled");
   safe_request.option_envelopes.push_back("feature.secondary_index_delta_ledger=enabled");
   safe_request.option_envelopes.push_back("delta_ledger.reader_overlay=enabled");
@@ -249,7 +307,7 @@ void TestInsertWriteProfiles() {
           "insert did not select committed delta ledger after proofs");
   Require(safe_context.policy_snapshot_uuid == scratchbird::tests::FixtureUuid(1486, 302), "insert policy snapshot was not bound");
 
-  auto bulk_request = InsertRequest();
+  auto bulk_request = InsertRequest(fixture);
   bulk_request.strict_bulk_load_requested = true;
   auto bulk_context = api::BeginInsertBatchContext(bulk_request, state, table, indexes);
   Require(!bulk_context.accepted, "strict bulk load was admitted without policy");
@@ -263,14 +321,14 @@ void TestInsertWriteProfiles() {
           "insert memory budget diagnostic mismatch");
 }
 
-void TestUpdateWriteProfiles() {
-  const auto table = Table();
-  const auto state = State();
+void TestUpdateWriteProfiles(const Fixture& fixture) {
+  const auto& table = fixture.table;
+  const auto& state = fixture.state;
   const std::vector<api::CrudIndexRecord> indexes = {
-      Index(scratchbird::tests::FixtureUuid(1486, 202), "name", api::kCrudIndexFamilyBtree, false),
-      Index(scratchbird::tests::FixtureUuid(1486, 201), "id", api::kCrudIndexFamilyBtree, true)};
+      Index(fixture.context, scratchbird::tests::FixtureUuid(1486, 202), "name", api::kCrudIndexFamilyBtree, false),
+      Index(fixture.context, scratchbird::tests::FixtureUuid(1486, 201), "id", api::kCrudIndexFamilyBtree, true)};
 
-  auto unsafe_request = UpdateRequest();
+  auto unsafe_request = UpdateRequest(fixture);
   unsafe_request.option_envelopes.push_back("feature.secondary_index_delta_ledger=enabled");
   auto unsafe_context = api::BuildUpdateBatchContext(unsafe_request, state, table, indexes);
   Require(unsafe_context.accepted, "update context with unsafe delta option should still use exact path");
@@ -285,7 +343,7 @@ void TestUpdateWriteProfiles() {
                           api::UpdateIndexMaintenanceAction::unaffected),
           "update did not leave unaffected unique index alone");
 
-  auto safe_request = UpdateRequest();
+  auto safe_request = UpdateRequest(fixture);
   safe_request.option_envelopes.push_back("runtime.deferred_secondary_index=enabled");
   safe_request.option_envelopes.push_back("feature.secondary_index_delta_ledger=enabled");
   safe_request.option_envelopes.push_back("delta_ledger.reader_overlay=enabled");
@@ -299,14 +357,14 @@ void TestUpdateWriteProfiles() {
           "update did not select committed delta ledger after proofs");
   Require(safe_context.policy_snapshot_uuid == scratchbird::tests::FixtureUuid(1486, 303), "update policy snapshot was not bound");
 
-  auto disabled_page_request = UpdateRequest();
+  auto disabled_page_request = UpdateRequest(fixture);
   disabled_page_request.option_envelopes.push_back("feature.page_reservation=disabled");
   const auto disabled_page_context = api::BuildUpdateBatchContext(disabled_page_request, state, table, indexes);
   Require(!disabled_page_context.accepted, "update admitted with disabled page reservation");
   Require(disabled_page_context.fallback_reason == "page_reservation_disabled",
           "update page reservation fallback reason mismatch");
 
-  auto tiny_memory_request = UpdateRequest();
+  auto tiny_memory_request = UpdateRequest(fixture);
   tiny_memory_request.option_envelopes.push_back("memory.context_budget_bytes=1");
   auto tiny_memory_context = api::BuildUpdateBatchContext(tiny_memory_request, state, table, indexes);
   const auto memory = api::ValidateUpdateBatchMemoryBudget(tiny_memory_context, 1024);
@@ -316,9 +374,6 @@ void TestUpdateWriteProfiles() {
 }
 
 void TestIndexMetrics() {
-  const auto descriptors = index_api::EnsureIndexMetricDescriptors();
-  Require(descriptors.ok, "index metric descriptors did not register");
-
   index_api::IndexMetricIdentity identity;
   identity.index_uuid = scratchbird::tests::FixtureUuid(1274, 301);
   identity.index_family = "btree";
@@ -327,26 +382,96 @@ void TestIndexMetrics() {
   identity.result = "ok";
   identity.filespace_uuid = scratchbird::tests::FixtureUuid(1486, 301);
 
+  Require(!index_api::EnsureIndexMetricDescriptors().ok,
+          "index publisher invented unbound metric descriptors");
+  index_api::IndexLogicalMetricDelta unbound;
+  unbound.candidates = 1;
+  const auto unbound_result = index_api::PublishIndexLogicalMetrics(identity, unbound);
+  Require(!unbound_result.ok && unbound_result.results.size() == 1 &&
+              metrics::DefaultMetricRegistry().SnapshotCurrent().empty(),
+          "index publisher emitted through a missing descriptor binding");
+  const auto definitions = index_api::IndexMetricDescriptorDefinitions();
+  Require(definitions.size() == 38 && metrics::DefaultMetricRegistry().SnapshotCurrent().empty(),
+          "index schema discovery is incomplete or emitted observations");
+  scratchbird::tests::MetricProjectionFixture fixture(
+      scratchbird::tests::FixtureUuid(1486, 401), scratchbird::tests::FixtureUuid(1486, 402), 1487);
+  const metrics::MetricLabelSet labels = {
+      {"index_uuid", identity.index_uuid}, {"index_family", identity.index_family},
+      {"semantic_profile", identity.semantic_profile_id}, {"operation", identity.operation},
+      {"result", identity.result}, {"reason", identity.reason}, {"page_family", identity.page_family},
+      {"filespace_uuid", identity.filespace_uuid}, {"agent_class", identity.agent_class}};
+  for (const auto& definition : definitions) fixture.AdmitDefinition(definition, labels);
+  Require(index_api::EnsureIndexMetricDescriptors().ok, "bound index metric schema was refused");
+  for (const auto& definition : definitions) {
+    auto changed = definition;
+    changed.producer_owner = "foreign_producer";
+    Require(!metrics::ValidateBoundMetricDefinition(metrics::DefaultMetricRegistry(), changed).ok,
+            "index metric definition accepted a different producer");
+    changed = definition;
+    changed.value_type = definition.value_type == metrics::MetricScalarType::uint64
+        ? metrics::MetricScalarType::float64 : metrics::MetricScalarType::uint64;
+    Require(!metrics::ValidateBoundMetricDefinition(metrics::DefaultMetricRegistry(), changed).ok,
+            "index metric definition accepted a different scalar type");
+    changed = definition;
+    changed.labels.front().value_type = metrics::MetricLabelType::text;
+    Require(!metrics::ValidateBoundMetricDefinition(metrics::DefaultMetricRegistry(), changed).ok,
+            "index metric definition accepted a textual UUID label");
+  }
+  const auto account = [&](const index_api::IndexMetricPublishResult& result) {
+    Require(result.ok && !result.results.empty(), "index metric publication failed");
+    // The first result is schema validation, not an observation.
+    for (std::size_t i = 1; i < result.results.size(); ++i) fixture.Produced(result.results[i]);
+  };
+
   index_api::IndexLogicalMetricDelta logical;
   logical.candidates = 10;
   logical.visible = 9;
   logical.rechecks = 10;
+  logical.fallback_sorts = 2;
   auto published = index_api::PublishIndexLogicalMetrics(identity, logical);
   Require(published.ok, "index logical metrics publish failed");
+  account(published);
 
   index_api::IndexPhysicalMetricDelta physical;
   physical.pages_read = 2;
   physical.pages_written = 1;
+  physical.splits = 4;
+  physical.merges = 5;
   physical.depth = 3;
   physical.density_ratio = 0.75;
   published = index_api::PublishIndexPhysicalMetrics(identity, physical);
   Require(published.ok, "index physical metrics publish failed");
+  account(published);
 
   index_api::IndexMaintenanceMetricDelta maintenance;
   maintenance.operations = 1;
+  maintenance.verify_failures = 2;
+  maintenance.repair_actions = 3;
+  maintenance.stale_resources = 4;
+  maintenance.quarantine_events = 5;
   maintenance.progress_percent = 100;
   published = index_api::PublishIndexMaintenanceMetrics(identity, maintenance);
   Require(published.ok, "index maintenance metrics publish failed");
+  account(published);
+
+  index_api::IndexOptimizerMetricDelta optimizer;
+  optimizer.estimate_error_ratio = 1.25;
+  optimizer.stale_stats = 2; optimizer.invalidations = 3; optimizer.fallback_refusals = 4;
+  account(index_api::PublishIndexOptimizerMetrics(identity, optimizer));
+  index_api::IndexReferenceProfileMetricDelta reference;
+  reference.profile_hits = 1; reference.profile_refusals = 2; reference.rechecks = 3;
+  reference.fallback_sorts = 4; reference.order_proofs = 5;
+  reference.catalog_projections = 6; reference.compatibility_diagnostics = 7;
+  account(index_api::PublishIndexReferenceProfileMetrics(identity, reference));
+  index_api::IndexResidencyMetricDelta residency;
+  residency.resident_bytes = (std::uint64_t{1} << 53) + 1;
+  residency.hits = 2; residency.misses = 3; residency.evictions = 4;
+  residency.pressure_score = 0.25; residency.degraded = 5; residency.refused = 6;
+  account(index_api::PublishIndexResidencyMetrics(identity, residency));
+  index_api::IndexPageFilespaceMetricDelta pages;
+  pages.allocation_requests = std::numeric_limits<std::uint64_t>::max();
+  pages.relocation_requests = 2; pages.shrink_ready_bytes = residency.resident_bytes;
+  account(index_api::PublishIndexPageFilespaceMetrics(identity, pages));
 
   bool saw_candidates = false;
   bool saw_depth = false;
@@ -359,14 +484,106 @@ void TestIndexMetrics() {
   Require(saw_candidates, "index candidates metric snapshot missing");
   Require(saw_depth, "index depth metric snapshot missing");
   Require(saw_maintenance, "index maintenance metric snapshot missing");
+  const auto current = metrics::DefaultMetricRegistry().SnapshotCurrent();
+  Require(current.size() == 38, "index metric families did not all emit");
+  const auto exact = [&](const char* family, metrics::MetricScalar expected) {
+    const auto found = std::find_if(current.begin(), current.end(),
+                                   [&](const auto& value) { return value.family == family; });
+    Require(found != current.end() && found->value == expected,
+            "index metric changed its native scalar type or exact value");
+  };
+  exact("sb_index_candidates_total", std::uint64_t{10});
+  exact("sb_index_visible_candidates_total", std::uint64_t{9});
+  exact("sb_index_rechecks_total", std::uint64_t{10});
+  exact("sb_index_fallback_sorts_total", std::uint64_t{2});
+  exact("sb_index_pages_read_total", std::uint64_t{2});
+  exact("sb_index_pages_written_total", std::uint64_t{1});
+  exact("sb_index_splits_observed_total", std::uint64_t{4});
+  exact("sb_index_merges_observed_total", std::uint64_t{5});
+  exact("sb_index_depth", std::uint64_t{3});
+  exact("sb_index_density_ratio", 0.75);
+  exact("sb_index_fragmentation_ratio", 0.0);
+  exact("sb_index_maintenance_operations_total", std::uint64_t{1});
+  exact("sb_index_verify_failures_total", std::uint64_t{2});
+  exact("sb_index_repair_actions_total", std::uint64_t{3});
+  exact("sb_index_stale_resources_total", std::uint64_t{4});
+  exact("sb_index_quarantine_events_total", std::uint64_t{5});
+  exact("sb_index_maintenance_progress_percent", 100.0);
+  exact("sb_index_optimizer_estimate_error_ratio", 1.25);
+  exact("sb_index_optimizer_stale_stats_total", std::uint64_t{2});
+  exact("sb_index_optimizer_invalidations_total", std::uint64_t{3});
+  exact("sb_index_optimizer_fallback_refusals_total", std::uint64_t{4});
+  exact("sb_index_reference_profile_hits_total", std::uint64_t{1});
+  exact("sb_index_reference_profile_refusals_total", std::uint64_t{2});
+  exact("sb_index_reference_rechecks_total", std::uint64_t{3});
+  exact("sb_index_reference_fallback_sorts_total", std::uint64_t{4});
+  exact("sb_index_reference_order_proofs_total", std::uint64_t{5});
+  exact("sb_index_reference_catalog_projections_total", std::uint64_t{6});
+  exact("sb_index_reference_compatibility_diagnostics_total", std::uint64_t{7});
+  exact("sb_index_residency_pressure_score", 0.25);
+  exact("sb_index_resident_bytes", residency.resident_bytes);
+  exact("sb_index_residency_hits_total", std::uint64_t{2});
+  exact("sb_index_residency_misses_total", std::uint64_t{3});
+  exact("sb_index_residency_evictions_total", std::uint64_t{4});
+  exact("sb_index_residency_degraded_total", std::uint64_t{5});
+  exact("sb_index_residency_refused_total", std::uint64_t{6});
+  exact("sb_index_filespace_shrink_ready_bytes", residency.resident_bytes);
+  exact("sb_index_page_allocation_requests_total", std::numeric_limits<std::uint64_t>::max());
+  exact("sb_index_page_relocation_requests_total", std::uint64_t{2});
+  fixture.Seal();
+  fixture.VerifyAdmissionRefusals("sb_index_candidates_total", labels, std::uint64_t{1});
+  auto zero = index_api::IndexLogicalMetricDelta{};
+  const auto no_events = index_api::PublishIndexLogicalMetrics(identity, zero);
+  Require(no_events.ok && no_events.results.size() == 1, "zero delta invented an event sample");
+  // Overflow may not replace the existing sample. A later successful gauge
+  // emission is reported separately; this API is not an atomic sample batch.
+  pages.allocation_requests = 1;
+  pages.relocation_requests = 0;
+  const auto overflow = index_api::PublishIndexPageFilespaceMetrics(identity, pages);
+  Require(!overflow.ok && overflow.results.size() == 3 && !overflow.results[1].ok && overflow.results[2].ok,
+          "overflow counter or subsequent gauge result was misreported");
+  const auto after_overflow = metrics::DefaultMetricRegistry().SnapshotCurrent();
+  const auto retained = std::find_if(after_overflow.begin(), after_overflow.end(), [](const auto& value) {
+    return value.family == "sb_index_page_allocation_requests_total";
+  });
+  Require(retained != after_overflow.end() &&
+              retained->value == metrics::MetricScalar{std::numeric_limits<std::uint64_t>::max()},
+          "overflow changed the existing native index counter");
+  fixture.Produced(overflow.results[2]);
+  fixture.Seal();
+  optimizer.estimate_error_ratio = std::numeric_limits<double>::infinity();
+  optimizer.stale_stats = optimizer.invalidations = optimizer.fallback_refusals = 0;
+  const auto nonfinite = index_api::PublishIndexOptimizerMetrics(identity, optimizer);
+  Require(!nonfinite.ok && nonfinite.results.size() == 2 && !nonfinite.results[1].ok,
+          "nonfinite index metric was accepted");
+  fixture.VerifyReadOnly();
+  fixture.VerifyAndDrain();
 }
 
 }  // namespace
 
 int main() {
-  TestIndexFamilyAndManagementMatrix();
-  TestInsertWriteProfiles();
-  TestUpdateWriteProfiles();
-  TestIndexMetrics();
-  return EXIT_SUCCESS;
+  try {
+    scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("p3-native-write-profiles");
+    TestIndexFamilyAndManagementMatrix();
+    Fixture fixture;
+    {
+      auto seed = InsertRequest(fixture);
+      seed.input_rows.resize(1);
+      seed.estimated_row_count = 1;
+      const auto inserted = api::EngineInsertRows(seed);
+      for (const auto& d : inserted.diagnostics) if (d.error) std::cerr << d.code << ':' << d.detail << '\n';
+      Require(inserted.ok && inserted.inserted_count == 1, "write-profile native seed insert failed");
+    }
+    fixture.LoadState();
+    TestInsertWriteProfiles(fixture);
+    TestUpdateWriteProfiles(fixture);
+    fixture.LoadState();
+    TestIndexMetrics();
+    fixture.Rollback();
+    return EXIT_SUCCESS;
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }
