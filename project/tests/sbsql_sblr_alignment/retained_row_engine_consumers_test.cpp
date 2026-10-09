@@ -139,6 +139,76 @@ void PreparedInsertStorageAdmission() {
   Check(!admits(), "prepared insert admitted extra column");
 }
 
+void NativeScalarStorageRoundTrips() {
+  api::CrudRowVersionRecord identity;
+  identity.creator_tx = 7;
+  identity.table_uuid.bytes = {1, 144, 10, 9, 0, 124, 112, 0, 128, 0, 0, 0, 0, 0, 0, 1};
+  identity.row_uuid = identity.table_uuid; identity.row_uuid.bytes[15] = 2;
+  identity.version_uuid = identity.table_uuid; identity.version_uuid.bytes[15] = 3;
+  const std::vector<std::string> order{"v"};
+  struct Scalar { const char* name; std::uint8_t tag; std::size_t width; };
+  for (const auto scalar : {Scalar{"boolean", 3, 1}, Scalar{"int32", 4, 4},
+                           Scalar{"int64", 2, 8}, Scalar{"uint64", 5, 8},
+                           Scalar{"real64", 6, 8}, Scalar{"binary", 7, 16},
+                           Scalar{"uuid", 0, 16}, Scalar{"text", 1, 4}}) {
+    for (unsigned pattern = 0; pattern < 5; ++pattern) {
+      std::string bytes(scalar.width, '\0');
+      if (pattern == 1) bytes.back() = static_cast<char>(0x80); // minimum / negative zero
+      if (pattern == 2) { bytes.assign(scalar.width, static_cast<char>(0xff)); bytes.back() = 0x7f; }
+      if (pattern == 3) bytes.assign(scalar.width, static_cast<char>(0xff));
+      if (pattern == 4) bytes.assign(scalar.width, '3'); // digits are still native bits
+      if (scalar.tag == 3) bytes[0] = static_cast<char>(pattern % 2);
+      api::EngineTypedValue value;
+      value.descriptor.canonical_type_name = scalar.name;
+      value.binary_value.assign(bytes.begin(), bytes.end());
+      for (bool null : {false, true}) {
+        auto cell = value;
+        if (null) { cell.binary_value.clear(); cell.setState(api::EngineValueState::sql_null); }
+        const api::EngineRowValue typed{ {}, {{"v", cell}} };
+        for (unsigned version : {6u, 7u, 8u}) {
+          if (version == 7 && scalar.tag == 0) continue; // native packet has no UUID tag
+          auto row = identity;
+          std::string output;
+          if (version == 6) {
+            Check(api::AppendScopedRowIdentityBinaryBatch(&output, {row}, row.table_uuid, {},
+                      std::span<const api::EngineRowValue>(&typed, 1), order, 7, 11),
+                  "compact scalar append failed");
+          } else if (version == 7) {
+            api::EngineNativeRowPacketFrame frame;
+            frame.present = true; frame.version = 2; frame.row_count = 1; frame.column_count = 1;
+            frame.field_order = order; frame.column_type_tags = {scalar.tag}; frame.row_offsets = {0};
+            frame.packet_bytes.push_back(null ? 1 : 0);
+            if (!null) {
+              if (scalar.tag == 1 || scalar.tag == 7) {
+                for (unsigned byte = 0; byte < 4; ++byte)
+                  frame.packet_bytes.push_back(static_cast<std::uint8_t>(bytes.size() >> (8 * byte)));
+              }
+              frame.packet_bytes.insert(frame.packet_bytes.end(), bytes.begin(), bytes.end());
+            }
+            frame.row_sizes = {static_cast<std::uint32_t>(frame.packet_bytes.size())};
+            Check(api::AppendScopedRowIdentityNativePacketBatch(&output, {row}, row.table_uuid, {}, frame, 7, 11),
+                  "native packet scalar append failed");
+          } else {
+            row.previous_version_uuid = identity.version_uuid;
+            row.previous_sequence = 10; // force full version framing
+            Check(api::AppendScopedRowBinaryBatch(&output, {row},
+                      std::span<const api::EngineRowValue>(&typed, 1), order, 11),
+                  "general scalar append failed");
+          }
+          Check(static_cast<unsigned char>(output[8]) == version, "wrong storage fixture version");
+          std::vector<api::CrudRowVersionRecord> decoded;
+          api::ScopedRelationSummary summary;
+          Check(api::DecodeScopedRowBinaryBytes({output.begin(), output.end()}, &decoded, &summary) &&
+                    decoded.size() == 1 && decoded[0].values.size() == 1 &&
+                    decoded[0].values[0].second.state == cell.state &&
+                    decoded[0].values[0].second.bytes == (null ? std::string{} : bytes),
+                "scoped row codec changed native scalar bytes/state into display text");
+        }
+      }
+    }
+  }
+}
+
 void FramedVectorScoring() {
   api::EngineUuid table;
   table.bytes = {1, 144, 10, 9, 0, 124, 112, 0, 128, 0, 0, 0, 0, 0, 0, 1};
@@ -187,6 +257,7 @@ int main() {
     RetainedStateConsumers();
     RowCodecStateAdmission();
     PreparedInsertStorageAdmission();
+    NativeScalarStorageRoundTrips();
     FramedVectorScoring();
     std::cout << "PASS retained engine index, predicate and result-state consumers\n";
   } catch (const std::exception& error) {

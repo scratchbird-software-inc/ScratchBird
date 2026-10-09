@@ -98,81 +98,11 @@ bool ReadCompleteMgaBinaryFile(const std::string& path,
 
 void ReserveAmortizedAppendCapacity(std::string* out, std::size_t extra);
 
-std::uint64_t ReadLittleEndianU64(std::string_view payload) {
-  std::uint64_t value = 0;
-  const std::size_t bytes = std::min<std::size_t>(payload.size(), 8);
-  for (std::size_t index = 0; index < bytes; ++index) {
-    value |= static_cast<std::uint64_t>(
-                 static_cast<unsigned char>(payload[index]))
-             << (index * 8u);
-  }
-  return value;
-}
-
-std::uint32_t ReadLittleEndianU32(std::string_view payload) {
-  std::uint32_t value = 0;
-  const std::size_t bytes = std::min<std::size_t>(payload.size(), 4);
-  for (std::size_t index = 0; index < bytes; ++index) {
-    value |= static_cast<std::uint32_t>(
-                 static_cast<unsigned char>(payload[index]))
-             << (index * 8u);
-  }
-  return value;
-}
-
-std::string Int64ToStringFast(std::int64_t value) {
-  char buffer[32] = {};
-  const auto [ptr, ec] = std::to_chars(std::begin(buffer),
-                                       std::end(buffer),
-                                       value);
-  if (ec != std::errc()) { return std::to_string(value); }
-  return std::string(buffer, ptr);
-}
-
-std::string UInt64ToStringFast(std::uint64_t value) {
-  char buffer[32] = {};
-  const auto [ptr, ec] = std::to_chars(std::begin(buffer),
-                                       std::end(buffer),
-                                       value);
-  if (ec != std::errc()) { return std::to_string(value); }
-  return std::string(buffer, ptr);
-}
-
-std::string Real64ToStringFast(double value) {
-  char buffer[64] = {};
-  const auto [ptr, ec] = std::to_chars(std::begin(buffer),
-                                       std::end(buffer),
-                                       value);
-  if (ec != std::errc()) { return std::to_string(value); }
-  return std::string(buffer, ptr);
-}
-
-std::string ScopedRowBinaryMaterializeValue(std::string_view type_name,
+std::string ScopedRowBinaryMaterializeValue(std::string_view /*type_name*/,
                                             std::string_view payload) {
-  if (type_name == "boolean" && payload.size() == 1) {
-    return payload[0] == 0 ? "false" : "true";
-  }
-  if (type_name == "int32" && payload.size() == 4) {
-    const std::uint32_t bits = ReadLittleEndianU32(payload);
-    std::int32_t value = 0;
-    std::memcpy(&value, &bits, sizeof(value));
-    return Int64ToStringFast(value);
-  }
-  if (type_name == "int64" && payload.size() == 8) {
-    const std::uint64_t bits = ReadLittleEndianU64(payload);
-    std::int64_t value = 0;
-    std::memcpy(&value, &bits, sizeof(value));
-    return Int64ToStringFast(value);
-  }
-  if (type_name == "uint64" && payload.size() == 8) {
-    return UInt64ToStringFast(ReadLittleEndianU64(payload));
-  }
-  if (type_name == "real64" && payload.size() == 8) {
-    const std::uint64_t bits = ReadLittleEndianU64(payload);
-    double value = 0.0;
-    std::memcpy(&value, &bits, sizeof(value));
-    return Real64ToStringFast(value);
-  }
+  // A retained value is storage octets, not a client display string. The
+  // admitted column codec owns interpretation; both full and streaming reads
+  // must preserve the payload, including integer width and floating-point bits.
   return std::string(payload);
 }
 

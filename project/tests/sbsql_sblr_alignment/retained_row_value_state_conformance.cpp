@@ -63,10 +63,17 @@ int main() {
              {"datatype.text.utf8.v1", {'<', 'N', 'U', 'L', 'L', '>'}, "<NULL>"}}) {
       api::EngineTypedValue native, retained;
       native.binary_value = bytes;
+      const bool text = codec == "datatype.text.utf8.v1";
       Require(api::ProjectBoundUpdateValueToRetained(native, codec, &retained) &&
-                  retained.encoded_value == expected && retained.binary_value.empty() &&
+                  retained.encoded_value == (text ? expected : std::string{}) &&
+                  retained.binary_value == (text ? std::vector<std::uint8_t>{} : bytes) &&
                   !retained.isSqlNull() && native.binary_value == bytes && native.encoded_value.empty(),
               "bound UPDATE projection changed canonical bytes, scalar value or state");
+      auto in_place = native;
+      Require(api::ProjectBoundUpdateValueToRetained(in_place, codec, &in_place) &&
+                  in_place.binary_value == retained.binary_value &&
+                  in_place.encoded_value == retained.encoded_value,
+              "in-place UPDATE projection differs from separate destination");
       native.encoded_value = "second payload";
       retained.encoded_value = "unchanged";
       Require(!api::ProjectBoundUpdateValueToRetained(native, codec, &retained) &&
@@ -85,6 +92,24 @@ int main() {
     Require(!api::ProjectBoundUpdateValueToRetained(malformed_projection, "datatype.int32.le.v1", &projection_output) &&
                 !api::ProjectBoundUpdateValueToRetained(malformed_projection, "unknown", &projection_output),
             "UPDATE projection guessed a malformed or unknown codec");
+    for (const auto codec : {"datatype.int32.le.v1", "datatype.int64.le.v1"}) {
+      const std::size_t width = std::string_view(codec) == "datatype.int32.le.v1" ? 4 : 8;
+      for (std::size_t n = 0; n < 10; ++n) {
+        api::EngineTypedValue candidate, output;
+        candidate.binary_value.assign(n, '3');
+        output.encoded_value = "unchanged";
+        const bool accepted = api::ProjectBoundUpdateValueToRetained(candidate, codec, &output);
+        Require(accepted == (n == width) &&
+                    (accepted ? output.binary_value == candidate.binary_value && output.encoded_value.empty()
+                              : output.encoded_value == "unchanged"),
+                "UPDATE projection inferred numeric text or accepted wrong native width");
+      }
+      api::EngineTypedValue candidate, output;
+      candidate.setState(api::EngineValueState::sql_null);
+      Require(api::ProjectBoundUpdateValueToRetained(candidate, codec, &output) &&
+                  output.isSqlNull() && output.binary_value.empty() && output.encoded_value.empty(),
+              "native UPDATE projection lost payload-free NULL");
+    }
     std::string all_bytes;
     for (unsigned byte = 0; byte < 256; ++byte) all_bytes.push_back(static_cast<char>(byte));
     const api::CrudValueFields fields = {
