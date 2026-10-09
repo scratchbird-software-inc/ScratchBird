@@ -134,6 +134,27 @@ bool ParseSpatialPointCoordinate(const std::string_view payload,
   return true;
 }
 
+bool DecodeSpatialPointCoordinate(const api::EngineTypedValue& value,
+                                  double* coordinate) {
+  if (!coordinate || value.state != api::EngineValueState::value || value.is_null)
+    return false;
+  const auto type = dt::CanonicalTypeIdFromStableName(value.descriptor.canonical_type_name);
+  if (type == dt::CanonicalTypeId::int32 || type == dt::CanonicalTypeId::int64) {
+    const auto decoded = executor::DecodeInt64Value(value);
+    if (!decoded.ok()) return false;
+    *coordinate = static_cast<double>(decoded.value);
+    return true;
+  }
+  if (type == dt::CanonicalTypeId::real64) {
+    const auto decoded = executor::DecodeReal64Value(value);
+    if (!decoded.ok()) return false;
+    *coordinate = decoded.value == 0.0 ? 0.0 : decoded.value;
+    return true;
+  }
+  return value.binary_value.empty() &&
+         ParseSpatialPointCoordinate(value.encoded_value, coordinate);
+}
+
 std::vector<std::uint8_t> EncodeSpatialPoint2d(const double x,
                                                const double y) {
   std::vector<std::uint8_t> encoded(24, 0);
@@ -3035,7 +3056,9 @@ bool CanonicalRelationalExpressionRuntime::BuildDescriptor(
       native_type == dt::CanonicalTypeId::binary ||
       native_type == dt::CanonicalTypeId::boolean ||
       native_type == dt::CanonicalTypeId::int32 ||
-      native_type == dt::CanonicalTypeId::int64) {
+      native_type == dt::CanonicalTypeId::int64 ||
+      native_type == dt::CanonicalTypeId::uint64 ||
+      native_type == dt::CanonicalTypeId::real64) {
     const auto type = native_type;
     if (BuildExactCanonicalScalarRuntimeDescriptorV1(source, type, descriptor)) return true;
     *refusal_detail = "canonical native binary datatype receipt binding is invalid";
@@ -3560,9 +3583,7 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
                 dt::CanonicalTypeIdFromStableName(child_type)) ||
             !EvaluateInternal(child_expression_id, child_type, &child,
                               refusal_detail) ||
-            child.isSqlNull() || !child.binary_value.empty() ||
-            !ParseSpatialPointCoordinate(child.encoded_value,
-                                         &coordinates[index])) {
+            !DecodeSpatialPointCoordinate(child, &coordinates[index])) {
           if (refusal_detail->empty()) {
             *refusal_detail =
                 "SB_MODEL_SPATIAL_COORDINATE_INVALID_V1:POINT coordinate "

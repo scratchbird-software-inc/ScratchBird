@@ -505,30 +505,6 @@ bool CanonicalBoundVectorUuid(const EngineUuid& value) {
 
 EngineUuid BoundVectorTypeUuid(const EngineDescriptor& descriptor) { return descriptor.type_uuid; }
 
-EngineUuid ExactBoundVectorCoreTypeUuid(const std::string_view stable_name) {
-  static const auto manifest =
-      scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
-  if (!manifest.ok()) return {};
-  const auto count = std::ranges::count_if(
-      manifest.manifest.descriptor_rows,
-      [&](const auto& row) { return row.stable_name == stable_name; });
-  const auto found = std::ranges::find_if(
-      manifest.manifest.descriptor_rows,
-      [&](const auto& row) { return row.stable_name == stable_name; });
-  if (count != 1 || found == manifest.manifest.descriptor_rows.end() ||
-      !found->descriptor_uuid.valid()) {
-    return {};
-  }
-  const auto descriptor_uuid = found->descriptor_uuid.value;
-  const auto identity =
-      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-          scratchbird::engine::internal_api::kBootstrapDatatypeCatalogUuid,
-          scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
-          scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
-          found->descriptor_epoch);
-  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
-}
-
 
 bool ExactBoundVectorStorageDescriptorImpl(
     const EngineRequestContext& context,
@@ -601,6 +577,7 @@ bool ExactBoundVectorStorageDescriptorImpl(
 }
 
 bool ExactBoundVectorOutputDescriptors(
+    const EngineRequestContext& context,
     const std::vector<EngineDescriptor>& descriptors) {
   if (descriptors.size() != 3) return false;
   static constexpr std::array<std::string_view, 3> kTypes{
@@ -608,7 +585,15 @@ bool ExactBoundVectorOutputDescriptors(
   std::set<EngineUuid> descriptor_uuids;
   for (std::size_t index = 0; index < descriptors.size(); ++index) {
     const auto& descriptor = descriptors[index];
-    const auto type_uuid = ExactBoundVectorCoreTypeUuid(kTypes[index]);
+    namespace dt = scratchbird::core::datatypes;
+    const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+        context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+        context.datatype_registry_generation, descriptor.datatype_descriptor_uuid,
+        descriptor.datatype_descriptor_generation);
+    if (!binding.ok || binding.row.canonical_binary_type_code !=
+            static_cast<std::uint32_t>(dt::CanonicalTypeIdFromStableName(std::string(kTypes[index]))))
+      return false;
+    const auto type_uuid = binding.row.type_uuid;
     if (!CanonicalBoundVectorUuid(descriptor.descriptor_uuid) ||
         !descriptor_uuids.insert(descriptor.descriptor_uuid).second ||
         descriptor.descriptor_kind != "scalar" || type_uuid.is_nil() ||
@@ -731,17 +716,6 @@ class BoundVectorFloatingEnvironment final {
   bool active_ = false;
 };
 
-std::string CanonicalBoundVectorReal64(double value) {
-  if (!std::isfinite(value)) return {};
-  if (value == 0.0) value = 0.0;
-  std::array<char, 128> encoded{};
-  const auto rendered = std::to_chars(encoded.data(),
-                                      encoded.data() + encoded.size(), value,
-                                      std::chars_format::general);
-  if (rendered.ec != std::errc{}) return {};
-  return std::string(encoded.data(), rendered.ptr);
-}
-
 const char* BoundVectorMetricName(const EngineBoundVectorMetricV1 metric) {
   switch (metric) {
     case EngineBoundVectorMetricV1::kL2Squared: return "L2_SQUARED";
@@ -756,8 +730,6 @@ struct BoundVectorScoredRow {
   EngineUuid row_uuid;
   double distance = 0.0;
   double score = 0.0;
-  std::string encoded_distance;
-  std::string encoded_score;
 };
 
 bool ScoreBoundVectorRow(const std::array<float, 3>& query,
@@ -808,10 +780,9 @@ bool ScoreBoundVectorRow(const std::array<float, 3>& query,
     }
     case EngineBoundVectorMetricV1::kUnknown: return false;
   }
-  row->encoded_distance = CanonicalBoundVectorReal64(row->distance);
-  row->encoded_score = CanonicalBoundVectorReal64(row->score);
-  return !row->encoded_distance.empty() && !row->encoded_score.empty() &&
-         std::isfinite(row->distance) && std::isfinite(row->score);
+  if (row->distance == 0.0) row->distance = 0.0;
+  if (row->score == 0.0) row->score = 0.0;
+  return std::isfinite(row->distance) && std::isfinite(row->score);
 }
 
 bool BoundVectorCarrierContextMatches(
@@ -997,7 +968,7 @@ EngineBoundVectorReadResultV1 EngineBoundVectorReadV1(
     return refuse("SB_MODEL_VECTOR_FILTER_REFUSED_V1",
                   "bound vector filter value is not canonical JSON object text");
   }
-  if (!ExactBoundVectorOutputDescriptors(request.output_descriptors)) {
+  if (!ExactBoundVectorOutputDescriptors(request.context, request.output_descriptors)) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "bound vector public descriptor cohort is invalid");
   }
@@ -1223,13 +1194,7 @@ EngineBoundVectorReadResultV1 EngineBoundVectorReadV1(
           "current MGA-visible vector failed exact metric validation");
     }
     std::uint64_t row_memory = sizeof(BoundVectorScoredRow);
-    if (!CheckedBoundVectorAdd(row_memory, scored.row_uuid.bytes.size(),
-                               &row_memory) ||
-        !CheckedBoundVectorAdd(row_memory, scored.encoded_distance.size(),
-                               &row_memory) ||
-        !CheckedBoundVectorAdd(row_memory, scored.encoded_score.size(),
-                               &row_memory) ||
-        !CheckedBoundVectorAdd(accounted_memory, row_memory,
+    if (!CheckedBoundVectorAdd(accounted_memory, row_memory,
                                &accounted_memory) ||
         accounted_memory > request.maximum_memory_bytes) {
       return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
@@ -1278,9 +1243,7 @@ EngineBoundVectorReadResultV1 EngineBoundVectorReadV1(
                     "vector execution cancelled during result materialization");
     }
     std::uint64_t row_bytes = scored.row_uuid.bytes.size();
-    if (!CheckedBoundVectorAdd(row_bytes, scored.encoded_distance.size(),
-                               &row_bytes) ||
-        !CheckedBoundVectorAdd(row_bytes, scored.encoded_score.size(),
+    if (!CheckedBoundVectorAdd(row_bytes, 2 * sizeof(double),
                                &row_bytes) ||
         !CheckedBoundVectorAdd(row_bytes, 3, &row_bytes) ||
         !CheckedBoundVectorAdd(result.result_byte_count, row_bytes,
@@ -1289,8 +1252,7 @@ EngineBoundVectorReadResultV1 EngineBoundVectorReadV1(
       return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                     "vector result byte contract is exceeded");
     }
-    result.rows.push_back({scored.row_uuid, scored.distance, scored.score,
-                           scored.encoded_distance, scored.encoded_score});
+    result.rows.push_back({scored.row_uuid, scored.distance, scored.score});
   }
   if (cancelled()) {
     return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",

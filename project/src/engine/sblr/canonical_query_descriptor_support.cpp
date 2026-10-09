@@ -30,7 +30,9 @@ bool BuildExactCanonicalScalarRuntimeDescriptorV1(
       expected_type != dt::CanonicalTypeId::binary &&
       expected_type != dt::CanonicalTypeId::boolean &&
       expected_type != dt::CanonicalTypeId::int32 &&
-      expected_type != dt::CanonicalTypeId::int64) return false;
+      expected_type != dt::CanonicalTypeId::int64 &&
+      expected_type != dt::CanonicalTypeId::uint64 &&
+      expected_type != dt::CanonicalTypeId::real64) return false;
   if (!source.datatype_identity_authoritative ||
       !core::uuid::IsEngineIdentityUuid(source.descriptor_uuid) ||
       !core::uuid::IsEngineIdentityUuid(source.statement_receipt_uuid) ||

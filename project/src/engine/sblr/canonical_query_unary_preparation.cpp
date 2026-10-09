@@ -897,7 +897,9 @@ PreparedProjectRoot PrepareExpressionProjectRoot(
            type_id == dt::CanonicalTypeId::binary ||
            type_id == dt::CanonicalTypeId::boolean ||
            type_id == dt::CanonicalTypeId::int32 ||
-           type_id == dt::CanonicalTypeId::int64) &&
+           type_id == dt::CanonicalTypeId::int64 ||
+           type_id == dt::CanonicalTypeId::uint64 ||
+           type_id == dt::CanonicalTypeId::real64) &&
           !BuildExactCanonicalScalarRuntimeDescriptorV1(source, type_id, &output_descriptor)) {
         result.detail = "empty PROJECT native datatype binding is invalid";
         return result;

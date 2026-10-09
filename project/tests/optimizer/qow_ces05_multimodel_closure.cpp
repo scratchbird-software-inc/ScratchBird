@@ -1,5 +1,7 @@
 #include "../support/binary_uuid_fixture.hpp"
+#include <charconv>
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/native_int64_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
@@ -62,8 +64,6 @@ const std::array<std::string, 9> kOperations = {
     "TIME_SERIES_BUCKET", "VECTOR_EXACT_SEARCH", "SEARCH_RANKED_QUERY",
     "SPATIAL_SOURCE", "COLUMNAR_SOURCE"};
 const std::array<std::size_t, 9> kWidths = {1, 1, 1, 3, 1, 3, 5, 3, 1};
-constexpr auto kCanonicalInt64TypeUuid =
-    scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712");
 
 optimizer::ModelFamilyDependencyCoordinatorRequestV1 FullNineAdmission() {
   optimizer::ModelFamilyDependencyCoordinatorRequestV1 request;
@@ -212,9 +212,7 @@ executor::DescriptorBatch FamilyBatch(
   executor::DescriptorBatch batch;
   for (std::size_t column = 0; column < schema.size(); ++column) {
     auto descriptor = executor::MakeExecutorDescriptor(
-        schema[column].second,
-        "canonical=" + schema[column].second + ";nullable=false");
-    descriptor.type_uuid = Uuid(8000 + column);
+        schema[column].second, "nullability=non_null");
     descriptor.descriptor_uuid = leg.output_descriptor_uuids[column];
     descriptor.descriptor_kind = "scalar";
     batch.columns.push_back({schema[column].first, descriptor, false,
@@ -240,6 +238,21 @@ executor::DescriptorBatch FamilyBatch(
     auto value = executor::MakeExecutorValue(batch.columns[column].descriptor, "");
     if (const auto* identity = std::get_if<executor::PhysicalUuid>(&values[column]))
       value.binary_value.assign(identity->bytes.begin(), identity->bytes.end());
+    else if (schema[column].second == "int64")
+      value = scratchbird::tests::NativeInt64Fixture(batch.columns[column].descriptor,
+                                                    std::get<std::string>(values[column]));
+    else if (schema[column].second == "real64")
+      value = scratchbird::tests::NativeReal64Fixture(batch.columns[column].descriptor,
+                                                     std::get<std::string>(values[column]));
+    else if (schema[column].second == "uint64") {
+      const auto& text = std::get<std::string>(values[column]);
+      std::uint64_t number = 0;
+      const auto parsed = std::from_chars(text.data(), text.data() + text.size(), number);
+      if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
+        throw std::runtime_error("invalid UINT64 fixture");
+      value = executor::EncodeUint64Value(number);
+      value.descriptor = batch.columns[column].descriptor;
+    }
     else value.encoded_value = std::get<std::string>(values[column]);
     row.values.push_back(std::move(value));
   }
@@ -293,7 +306,8 @@ executor::ModelFamilyExecutionRequestV1 FullNineExecution(
   if (leg.family_id == "spatial") {
     request.input.spatial_geometry_descriptor_uuid =
         leg.output_descriptor_uuids[1];
-    request.input.spatial_geometry_type_uuid = Uuid(8001);
+    request.input.spatial_geometry_type_uuid =
+        executor::MakeExecutorDescriptor("geometry", "nullability=non_null").type_uuid;
     request.input.spatial_crs_uuid = Uuid(8202);
     request.input.spatial_crs_generation = 1;
   }
@@ -363,13 +377,18 @@ executor::ModelFamilyExecutionRequestV1 FullNineExecution(
           &identity.bucket_start_ns);
     } else if (input.family_id == "vector") {
       identity.row_uuid = cell_uuid(0);
-      identity.vector_distance = batch.rows[0].values[1].encoded_value;
-      identity.vector_score = batch.rows[0].values[2].encoded_value;
+      const auto distance = executor::DecodeReal64Value(batch.rows[0].values[1]);
+      const auto score = executor::DecodeReal64Value(batch.rows[0].values[2]);
+      if (!distance.ok() || !score.ok()) throw std::runtime_error("bound_native_vector_scores_required");
+      identity.vector_distance = distance.value;
+      identity.vector_score = score.value;
     } else if (input.family_id == "search") {
       identity.document_uuid = cell_uuid(0);
       identity.search_analyzer_uuid = cell_uuid(1);
       identity.search_analyzer_generation = 1;
-      identity.search_score = batch.rows[0].values[3].encoded_value;
+      const auto score = executor::DecodeReal64Value(batch.rows[0].values[3]);
+      if (!score.ok()) throw std::runtime_error("bound_native_search_score_required");
+      identity.search_score = score.value;
       identity.search_rank = 1;
     } else {
       identity.row_uuid = cell_uuid(0);
@@ -580,6 +599,9 @@ bool ExecuteRcp080RelationalContinuationV1(
       executor::ValidateDescriptorBatch(multimodel_root);
   if (!root_validation.ok || multimodel_root.columns.size() != 19 ||
       multimodel_root.rows.size() != 1) {
+    std::cerr << root_validation.diagnostic_code << ':' << root_validation.detail
+              << ";row=" << root_validation.row_index << ";column="
+              << root_validation.column_index << '\n';
     return fail("coordinator-root");
   }
   std::vector<std::uint32_t> descriptor_ids;
@@ -754,8 +776,7 @@ bool ExecuteRcp080RelationalContinuationV1(
        count_entry->builtin_id, count_entry->function_uuid, true};
   aggregate_request.input_batch = recursive.output_batch;
   auto count_descriptor = executor::MakeExecutorDescriptor(
-      "int64", "canonical=int64;nullable=false");
-  count_descriptor.type_uuid = kCanonicalInt64TypeUuid;
+      "int64", "nullability=non_null");
   count_descriptor.descriptor_uuid = Uuid(10'301);
   count_descriptor.descriptor_kind = "scalar";
   aggregate_request.result_column =
@@ -767,8 +788,8 @@ bool ExecuteRcp080RelationalContinuationV1(
       executor::ExecuteCanonicalAggregateRuntime(aggregate_request);
   if (!aggregate.diagnostic.ok || aggregate.output_batch.rows.size() != 1 ||
       aggregate.output_batch.columns.size() != 1 ||
-      aggregate.output_batch.rows.front().values.front().encoded_value !=
-          "1") {
+      !executor::DecodeInt64Value(aggregate.output_batch.rows.front().values.front()).ok() ||
+      executor::DecodeInt64Value(aggregate.output_batch.rows.front().values.front()).value != 1) {
     std::cerr << "QOW-CES05 aggregate diagnostic="
               << aggregate.diagnostic.diagnostic_code << ':'
               << aggregate.diagnostic.detail
@@ -887,7 +908,8 @@ bool ExecuteRcp080RelationalContinuationV1(
   const auto fetched =
       executor::ExecuteCanonicalDescriptorLimit(fetch_request);
   if (!fetched.diagnostic.ok || fetched.output_batch.rows.size() != 1 ||
-      fetched.output_batch.rows.front().values.front().encoded_value != "1") {
+      !executor::DecodeInt64Value(fetched.output_batch.rows.front().values.front()).ok() ||
+      executor::DecodeInt64Value(fetched.output_batch.rows.front().values.front()).value != 1) {
     return fail("limit-offset-fetch");
   }
 

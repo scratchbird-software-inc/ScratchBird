@@ -504,8 +504,6 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
   static constexpr std::array<std::string_view, 5> kOutputNames{
       "document_uuid", "analyzer_uuid", "analyzer_generation", "score",
       "rank"};
-  static constexpr std::array<std::string_view, 5> kOutputTypes{
-      "uuid", "uuid", "uint64", "real64", "uint64"};
   if (outputs.size() != 5) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "search public output coverage is not exact");
@@ -546,12 +544,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
                     "search public type identity was substituted");
     }
     api::EngineDescriptor engine_descriptor;
-    engine_descriptor.descriptor_uuid = descriptor->descriptor_uuid;
-    engine_descriptor.type_uuid = descriptor->type_uuid;
-    engine_descriptor.descriptor_kind = "scalar";
-    engine_descriptor.canonical_type_name = std::string(kOutputTypes[ordinal]);
-    engine_descriptor.encoded_descriptor =
-        "nullability=non_null";
+    if (!BuildExactCanonicalScalarRuntimeDescriptorV1(
+            *descriptor, ordinal < 2 ? core::datatypes::CanonicalTypeId::uuid
+                         : ordinal == 3 ? core::datatypes::CanonicalTypeId::real64
+                                        : core::datatypes::CanonicalTypeId::uint64,
+            &engine_descriptor)) {
+      return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                    "search public native datatype binding is invalid");
+    }
     output_descriptors.push_back(engine_descriptor);
     public_columns.push_back(
         {std::string(kOutputNames[ordinal]), engine_descriptor, false,
@@ -1252,12 +1252,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
       const auto* output_descriptor = row_number.result_descriptor;
       const auto& window_outputs = row_number.outputs;
       api::EngineDescriptor descriptor;
-      descriptor.descriptor_uuid =
-          output_descriptor->descriptor_uuid;
-      descriptor.type_uuid = output_descriptor->type_uuid;
-      descriptor.descriptor_kind = "scalar";
-      descriptor.canonical_type_name = "int64";
-      descriptor.encoded_descriptor = "nullability=non_null";
+      if (!BuildExactCanonicalScalarRuntimeDescriptorV1(
+              *output_descriptor, dt::CanonicalTypeId::int64, &descriptor)) {
+        return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                      "search ROW_NUMBER datatype binding is invalid");
+      }
       exec::ExecutorColumnDescriptor row_number_column{
           window_outputs.back()->output_name_utf8, descriptor, false,
           output_descriptor->descriptor_id};
@@ -2012,17 +2011,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
         batch.security_recheck_complete = true;
         for (const auto& row : read.rows) {
           exec::DescriptorTuple tuple;
-          const std::array<std::string, 5> encoded{
-              std::string{}, std::string{},
-              std::to_string(row.analyzer_generation), row.encoded_score,
-              std::to_string(row.rank)};
-          for (std::size_t ordinal = 0; ordinal < encoded.size(); ++ordinal) {
+          for (std::size_t ordinal = 0; ordinal < public_columns.size(); ++ordinal) {
             api::EngineTypedValue value;
-            value.descriptor = public_columns[ordinal].descriptor;
             if (ordinal < 2) {
               const auto& identity = ordinal == 0 ? row.document_uuid : row.analyzer_uuid;
               value.binary_value.assign(identity.bytes.begin(), identity.bytes.end());
-            } else value.encoded_value = encoded[ordinal];
+            } else if (ordinal == 3) {
+              value = exec::EncodeReal64Value(row.score);
+            } else value = exec::EncodeUint64Value(ordinal == 2 ? row.analyzer_generation : row.rank);
+            value.descriptor = public_columns[ordinal].descriptor;
             value.setState(api::EngineValueState::value);
             tuple.values.push_back(std::move(value));
           }
@@ -2031,7 +2028,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
           identity.document_uuid = row.document_uuid;
           identity.search_analyzer_uuid = row.analyzer_uuid;
           identity.search_analyzer_generation = row.analyzer_generation;
-          identity.search_score = row.encoded_score;
+          identity.search_score = row.score;
           identity.search_rank = row.rank;
           batch.ordered_row_identities.push_back(std::move(identity));
         }

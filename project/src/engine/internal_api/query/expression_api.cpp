@@ -128,6 +128,7 @@ bool ScalarCastInputEncoding(const EngineTypedValue& input,
   const bool binary = type == core::datatypes::CanonicalTypeId::uuid ||
                       type == core::datatypes::CanonicalTypeId::int32 ||
                       type == core::datatypes::CanonicalTypeId::int64 ||
+                      type == core::datatypes::CanonicalTypeId::uint64 ||
                       type == core::datatypes::CanonicalTypeId::int128 ||
                       type == core::datatypes::CanonicalTypeId::uint128 ||
                       type == core::datatypes::CanonicalTypeId::real64 ||
@@ -139,6 +140,7 @@ bool ScalarCastInputEncoding(const EngineTypedValue& input,
       (type == core::datatypes::CanonicalTypeId::uuid && input.binary_value.size() != 16) ||
       (type == core::datatypes::CanonicalTypeId::int32 && input.binary_value.size() != 4) ||
       (type == core::datatypes::CanonicalTypeId::real64 && input.binary_value.size() != 8) ||
+      (type == core::datatypes::CanonicalTypeId::uint64 && input.binary_value.size() != 8) ||
       (type == core::datatypes::CanonicalTypeId::real128 && input.binary_value.size() != 16) ||
       (type == core::datatypes::CanonicalTypeId::int64 && input.binary_value.size() != 8)))
     return false;
@@ -321,7 +323,8 @@ bool QowCanonicalComparableEncodingV1(
   if (type_id == dt::CanonicalTypeId::int8 ||
       type_id == dt::CanonicalTypeId::uint8 ||
       type_id == dt::CanonicalTypeId::int32 ||
-      type_id == dt::CanonicalTypeId::int64) {
+      type_id == dt::CanonicalTypeId::int64 ||
+      type_id == dt::CanonicalTypeId::uint64) {
     return ScalarCastInputEncoding(value, type_id, encoded_value);
   }
   if (type_id == dt::CanonicalTypeId::real64) {
@@ -1757,6 +1760,7 @@ bool QowCompareCanonicalNonCollatedScalarsV1(
   if (type_id == dt::CanonicalTypeId::uuid ||
       type_id == dt::CanonicalTypeId::int32 ||
       type_id == dt::CanonicalTypeId::int64 ||
+      type_id == dt::CanonicalTypeId::uint64 ||
       type_id == dt::CanonicalTypeId::real64) {
     // This seam selects only the canonical base profile. Do not silently drop
     // a caller's donor/time ordering or any unprojected descriptor modifier.

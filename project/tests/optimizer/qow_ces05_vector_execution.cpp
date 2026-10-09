@@ -25,10 +25,12 @@
 #include <array>
 #include <cstdint>
 #include <chrono>
+#include <charconv>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -89,7 +91,7 @@ api::EngineUuid ProductionCoreTypeUuid(std::string_view stable_name);
 
 api::EngineDescriptor VectorDescriptor(const std::uint64_t identity,
                                        const std::string_view type) {
-  api::EngineDescriptor descriptor;
+  auto descriptor = exec::MakeExecutorDescriptor(std::string(type), "nullability=non_null");
   descriptor.descriptor_uuid = TestUuid(identity);
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = type;
@@ -105,6 +107,15 @@ bool NativeIdentityEquals(const api::EngineTypedValue& value, const api::EngineU
 
 api::EngineTypedValue VectorValue(const api::EngineDescriptor& descriptor,
                                   std::string value) {
+  if (descriptor.canonical_type_name == "real64") {
+    double native = 0;
+    const auto parsed = std::from_chars(value.data(), value.data() + value.size(), native);
+    if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size())
+      throw std::runtime_error("invalid vector REAL64 fixture");
+    auto result = exec::EncodeReal64Value(native);
+    result.descriptor = descriptor;
+    return result;
+  }
   return {descriptor, std::move(value), false};
 }
 
@@ -299,12 +310,12 @@ VectorExecutionFixture VectorExecutionRequest() {
     };
     exec::ModelProviderRowIdentityV1 first;
     first.row_uuid = TestUuid(40);
-    first.vector_distance = "0.25";
-    first.vector_score = "1";
+    first.vector_distance = 0.25;
+    first.vector_score = 1.0;
     exec::ModelProviderRowIdentityV1 second;
     second.row_uuid = TestUuid(41);
-    second.vector_distance = "0.5";
-    second.vector_score = "0.5";
+    second.vector_distance = 0.5;
+    second.vector_score = 0.5;
     batch.ordered_row_identities = {std::move(first), std::move(second)};
     batch.properties.property_uuid = TestUuid(26);
     batch.properties.ordering_id =
@@ -366,6 +377,49 @@ bool CanonicalVectorSpine() {
           executed.output.ordered_row_identities.size() == 2,
       "canonical vector provider/exchange/executor leg did not publish: " +
           executed.diagnostic_id + " " + executed.detail);
+
+  // Inner-product ordering uses negative dot product as distance; the exchange
+  // validates finite native values and exact receipts, not a nonnegative domain.
+  auto native = fixture.request.execute_provider(fixture.request.input).provider_batch;
+  const auto set_native = [](auto& value, double number) {
+    const auto descriptor = value.descriptor;
+    value = exec::EncodeReal64Value(number);
+    value.descriptor = descriptor;
+  };
+  for (std::size_t row = 0; row < 2; ++row) {
+    const double distance = row == 0 ? -2.0 : -1.0;
+    set_native(native.batch.rows[row].values[1], distance);
+    set_native(native.batch.rows[row].values[2], -distance);
+    native.ordered_row_identities[row].vector_distance = distance;
+    native.ordered_row_identities[row].vector_score = -distance;
+  }
+  const auto negative = exec::PublishModelFamilyExchangeV1(fixture.request.input, native);
+  passed &= Require(negative.accepted && negative.root_publishable &&
+      negative.output.batch.rows.size() == 2,
+      "finite negative inner-product distance was refused");
+  for (std::size_t column = 1; column < 3; ++column) {
+    for (unsigned mutation = 0; mutation < 10; ++mutation) {
+      auto invalid = native;
+      auto& cell = invalid.batch.rows.front().values[column];
+      auto& identity = invalid.ordered_row_identities.front();
+      auto& receipt = column == 1 ? identity.vector_distance : identity.vector_score;
+      switch (mutation) {
+        case 0: cell.encoded_value = "2"; break;
+        case 1: cell.binary_value.clear(); cell.encoded_value = "2"; break;
+        case 2: cell.binary_value.pop_back(); break;
+        case 3: ++cell.descriptor.datatype_descriptor_generation; break;
+        case 4: receipt.reset(); break;
+        case 5: receipt = *receipt + 0.5; break;
+        case 6: receipt = std::numeric_limits<double>::infinity(); break;
+        case 7: set_native(cell, std::numeric_limits<double>::quiet_NaN()); break;
+        case 8: cell.is_null = true; break;
+        case 9: invalid.batch.columns[column].descriptor.datatype_descriptor_uuid = {}; break;
+      }
+      const auto rejected = exec::PublishModelFamilyExchangeV1(fixture.request.input, invalid);
+      passed &= Require(!rejected.accepted && !rejected.root_publishable &&
+          rejected.output.batch.rows.empty(), "malformed vector scalar was published");
+    }
+  }
 
   auto duplicate_output = VectorExecutionRequest();
   duplicate_output.request.input.output_descriptor_ids = {101, 102, 102};
@@ -942,6 +996,33 @@ api::TypedRelationalDag ProductionVectorDag(
       ProductionDagDescriptor(106, uint64_type, uint64_type),
       ProductionDagDescriptor(107, boolean_type, boolean_type),
   };
+  for (auto& descriptor : dag.descriptors) {
+    // The three public scalar outputs need exact codec authority. The vector
+    // operand and metadata descriptors are separately bound to persisted columns.
+    if (descriptor.descriptor_id > 103) continue;
+    const dt::DatatypeTypeCodecIdentityRowV1* binding = nullptr;
+    for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+      if (row.type_uuid != descriptor.type_uuid ||
+          row.catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
+          row.catalog_generation != context.datatype_catalog_generation ||
+          row.registry_generation != context.datatype_registry_generation) continue;
+      if (binding) throw std::runtime_error("ambiguous vector fixture codec");
+      binding = &row;
+    }
+    if (!binding || context.statement_receipt_uuid.is_nil())
+      throw std::runtime_error("vector fixture requires admitted datatype codec for output " +
+                               std::to_string(descriptor.descriptor_id));
+    descriptor.datatype_identity_authoritative = true;
+    descriptor.descriptor_generation = binding->descriptor_generation;
+    descriptor.type_generation = binding->type_generation;
+    descriptor.codec_id = binding->codec_id;
+    descriptor.codec_version = binding->codec_version;
+    descriptor.codec_generation = binding->codec_generation;
+    descriptor.statement_receipt_uuid = context.statement_receipt_uuid;
+    descriptor.datatype_catalog_snapshot_uuid = context.datatype_catalog_snapshot_uuid;
+    descriptor.datatype_catalog_generation = context.datatype_catalog_generation;
+    descriptor.datatype_registry_generation = context.datatype_registry_generation;
+  }
   static constexpr std::array<std::string_view, 3> kNames{
       "row_uuid", "distance", "score"};
   for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
@@ -1230,11 +1311,11 @@ bool ProductionVectorRoute() {
       execution.api_result.result_shape.rows[0].fields.size() == 3 &&
       execution.api_result.result_shape.rows[1].fields.size() == 3 &&
       NativeIdentityEquals(execution.api_result.result_shape.rows[0].fields[0].second, seeds[0].row_uuid) &&
-      execution.api_result.result_shape.rows[0].fields[1].second.encoded_value ==
-          "0" &&
+      exec::DecodeReal64Value(execution.api_result.result_shape.rows[0].fields[1].second).ok() &&
+      exec::DecodeReal64Value(execution.api_result.result_shape.rows[0].fields[1].second).value == 0.0 &&
       NativeIdentityEquals(execution.api_result.result_shape.rows[1].fields[0].second, seeds[2].row_uuid) &&
-      execution.api_result.result_shape.rows[1].fields[1].second.encoded_value ==
-          "0.25";
+      exec::DecodeReal64Value(execution.api_result.result_shape.rows[1].fields[1].second).ok() &&
+      exec::DecodeReal64Value(execution.api_result.result_shape.rows[1].fields[1].second).value == 0.25;
   const auto diagnostic = execution.api_result.diagnostics.empty()
                               ? std::string{}
                               : execution.api_result.diagnostics.front().code +
@@ -1955,9 +2036,16 @@ bool RawPersistenceMutationMatrix() {
 }
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  try {
   scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
       "native-vector-query-authority");
+  if (argc == 2 && std::string_view(argv[1]) == "--spine-only")
+    return CanonicalVectorSpine() ? 0 : 1;
+#if defined(SB_CES05_VECTOR_PRODUCTION_QUERY_ROUTE)
+  if (argc == 2 && std::string_view(argv[1]) == "--production-only")
+    return ProductionVectorRoute() ? 0 : 1;
+#endif
   if (!CarrierKat() || !CanonicalVectorSpine() ||
       !RelationBaseGenerationProjection() ||
       !RawPersistenceMutationMatrix()
@@ -1970,4 +2058,8 @@ int main() {
   std::cout << "RCP-077 vector carrier, MGA base generation, canonical spine, "
                "and 143 raw mutations: PASS\n";
   return 0;
+  } catch (const std::exception& error) {
+    std::cerr << "RCP-077 exception: " << error.what() << '\n';
+    return 1;
+  }
 }

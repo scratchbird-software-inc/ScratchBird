@@ -3300,12 +3300,15 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
               }
             } else if (source_input.family_id == "vector") {
               identity.row_uuid = row.row_uuid;
-              const auto* distance = value_for(row, "distance");
-              const auto* score = value_for(row, "score");
-              identity.vector_distance =
-                  distance == nullptr ? std::string{} : *distance;
-              identity.vector_score =
-                  score == nullptr ? std::string{} : *score;
+              const auto& values = output.batch.rows.back().values;
+              if (values.size() != 3)
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "stored vector row does not have three columns");
+              const auto distance = exec::DecodeReal64Value(values[1]);
+              const auto score = exec::DecodeReal64Value(values[2]);
+              if (!distance.ok() || !score.ok())
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "stored vector scores are not bound native REAL64");
+              identity.vector_distance = distance.value;
+              identity.vector_score = score.value;
             } else if (source_input.family_id == "search") {
               const auto* document_uuid = value_for(row, "document_uuid");
               const auto native_document_uuid = Rcp080SystemUuidCell(document_uuid);
@@ -3313,25 +3316,24 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
               const auto* analyzer_uuid = value_for(row, "analyzer_uuid");
               const auto native_analyzer_uuid = Rcp080SystemUuidCell(analyzer_uuid);
               if (analyzer_uuid && !native_analyzer_uuid) return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "stored UUID cell is not binary16");
-              const auto* analyzer_generation =
-                  value_for(row, "analyzer_generation");
-              const auto* score = value_for(row, "score");
-              const auto* rank = value_for(row, "rank");
               identity.document_uuid =
                   native_document_uuid.value_or(api::EngineUuid{});
               identity.search_analyzer_uuid =
                   native_analyzer_uuid.value_or(api::EngineUuid{});
-              if (analyzer_generation != nullptr) {
-                std::from_chars(analyzer_generation->data(),
-                                analyzer_generation->data() +
-                                    analyzer_generation->size(),
-                                identity.search_analyzer_generation);
-              }
-              identity.search_score = score == nullptr ? std::string{} : *score;
-              if (rank != nullptr) {
-                std::from_chars(rank->data(), rank->data() + rank->size(),
-                                identity.search_rank);
-              }
+              const auto& search_values = output.batch.rows.back().values;
+              if (search_values.size() != 5)
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                            "stored search row does not have five columns");
+              const auto score = exec::DecodeReal64Value(search_values[3]);
+              if (!score.ok())
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                            "stored search score has no bound native REAL64 payload");
+              identity.search_score = score.value;
+              std::string detail;
+              if (!exec::DecodeBoundUint64Value(search_values[2], &identity.search_analyzer_generation, &detail) ||
+                  !exec::DecodeBoundUint64Value(search_values[4], &identity.search_rank, &detail))
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                            "stored search generation or rank is not bound native UINT64: " + detail);
             } else {
               identity.row_uuid = row.row_uuid;
             }

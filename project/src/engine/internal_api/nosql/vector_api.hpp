@@ -179,8 +179,6 @@ struct EngineBoundVectorRowV1 {
   EngineUuid row_uuid;
   double distance = 0.0;
   double score = 0.0;
-  std::string encoded_distance;
-  std::string encoded_score;
 };
 
 struct EngineBoundVectorReadResultV1 {

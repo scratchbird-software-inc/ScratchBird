@@ -3662,11 +3662,14 @@ Int64DecodeResult DecodeInt64Value(const scratchbird::engine::internal_api::Engi
 // legacy decimal-text admission or reconstruction of missing datatype identity.
 bool DecodeBoundInt64Value(const scratchbird::engine::internal_api::EngineTypedValue& value,
                           std::int64_t* decoded, std::string* refusal_detail);
+bool DecodeBoundUint64Value(const scratchbird::engine::internal_api::EngineTypedValue& value,
+                           std::uint64_t* decoded, std::string* refusal_detail);
 bool IsCanonicalBoundedSignedIntegerDescriptor(
     const scratchbird::engine::internal_api::EngineDescriptor& descriptor);
 BoolDecodeResult DecodeBoolValue(const scratchbird::engine::internal_api::EngineTypedValue& value);
 Real64DecodeResult DecodeReal64Value(const scratchbird::engine::internal_api::EngineTypedValue& value);
 scratchbird::engine::internal_api::EngineTypedValue EncodeInt64Value(std::int64_t value);
+scratchbird::engine::internal_api::EngineTypedValue EncodeUint64Value(std::uint64_t value);
 scratchbird::engine::internal_api::EngineTypedValue EncodeBoolValue(bool value);
 scratchbird::engine::internal_api::EngineTypedValue EncodeReal64Value(double value);
 scratchbird::engine::internal_api::EngineTypedValue EncodeTextValue(std::string value);

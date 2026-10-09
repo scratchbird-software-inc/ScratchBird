@@ -39,6 +39,92 @@ api::EngineTypedValue Value(dt::CanonicalTypeId type, unsigned width,
 }
 int main() {
   namespace bulk = api::dml::detail;
+  const std::array<std::uint64_t, 8> unsigned_values{
+      0, 1, 255, 256, 65536, std::uint64_t{1} << 63,
+      UINT64_MAX - 1, UINT64_MAX};
+  for (const auto number : unsigned_values) {
+    auto value = ex::EncodeUint64Value(number);
+    value.descriptor.descriptor_kind = "scalar";
+    value.descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(32, 90);
+    std::uint64_t decoded = 0;
+    std::string detail;
+    Check(ex::DecodeBoundUint64Value(value, &decoded, &detail) && decoded == number,
+          "native UINT64 round trip failed");
+    const std::string stored(value.binary_value.begin(), value.binary_value.end());
+    auto restored = value;
+    restored.binary_value.clear();
+    Check(api::RestoreStoredScalarPayloadV1(stored, api::EngineValueState::value, &restored) &&
+              api::StoredScalarPayloadMatchesV1(restored, stored, api::EngineValueState::value) &&
+              restored.binary_value == value.binary_value && restored.encoded_value.empty(),
+          "stored UINT64 was rendered as text");
+    auto nullable = value;
+    nullable.descriptor.encoded_descriptor = "nullability=nullable";
+    auto null = nullable;
+    null.binary_value.clear();
+    null.setState(api::EngineValueState::sql_null);
+    auto batch = ex::MakeDescriptorBatch({{"u", nullable.descriptor, true, 1}},
+                                        {{{nullable}}, {{null}}});
+    Check(ex::ValidateDescriptorBatch(batch).ok, "native UINT64 batch was refused");
+    batch.rows.clear();
+    Check(ex::ValidateDescriptorBatch(batch).ok, "empty native UINT64 batch was refused");
+    ++batch.columns[0].descriptor.datatype_descriptor_generation;
+    Check(!ex::ValidateDescriptorBatch(batch).ok, "empty UINT64 batch bypassed binding admission");
+    for (const auto placement : {ex::CanonicalDescriptorNullPlacement::first,
+                                 ex::CanonicalDescriptorNullPlacement::last}) {
+      for (const auto direction : {ex::CanonicalDescriptorOrderDirection::ascending,
+                                   ex::CanonicalDescriptorOrderDirection::descending}) {
+        ex::CanonicalDescriptorOrderTerm term;
+        term.expression_descriptor_id = 1;
+        term.null_placement = placement;
+        term.direction = direction;
+        const auto left = ex::CompareCanonicalDescriptorOrderValues(null, nullable, term);
+        const auto right = ex::CompareCanonicalDescriptorOrderValues(nullable, null, term);
+        const int expected = placement == ex::CanonicalDescriptorNullPlacement::first ? -1 : 1;
+        Check(left.diagnostic.ok && right.diagnostic.ok && left.comparison == expected &&
+                  right.comparison == -expected, "UINT64 NULL placement changed with direction");
+      }
+    }
+    for (const auto other : unsigned_values) {
+      auto right = ex::EncodeUint64Value(other);
+      right.descriptor = value.descriptor;
+      int comparison = 0;
+      const int expected = number < other ? -1 : number > other ? 1 : 0;
+      const bool compared = api::QowCompareCanonicalNonCollatedScalarsV1(value, right, &comparison, &detail);
+      if (!compared || comparison != expected)
+        std::cerr << "UINT64 " << number << " vs " << other << ": " << detail << '\n';
+      Check(compared && comparison == expected, "UINT64 comparison used signed or textual order");
+      for (const bool descending : {false, true}) {
+        ex::CanonicalDescriptorOrderTerm term;
+        term.expression_descriptor_id = 1;
+        term.direction = descending ? ex::CanonicalDescriptorOrderDirection::descending
+                                    : ex::CanonicalDescriptorOrderDirection::ascending;
+        const auto order = ex::CompareCanonicalDescriptorOrderValues(value, right, term);
+        Check(order.diagnostic.ok && order.comparison == (descending ? -expected : expected),
+              "UINT64 physical order differs from unsigned oracle");
+        const auto left_key = ex::MakeCanonicalDescriptorEqualityKey(value, term);
+        const auto right_key = ex::MakeCanonicalDescriptorEqualityKey(right, term);
+        Check(left_key.diagnostic.ok && right_key.diagnostic.ok &&
+                  (left_key.equality_key == right_key.equality_key) == (number == other),
+              "UINT64 equality key differs from exact native value");
+      }
+    }
+    for (unsigned mutation = 0; mutation < 5; ++mutation) {
+      auto invalid = value;
+      switch (mutation) {
+        case 0: invalid.encoded_value = "1"; break;
+        case 1: invalid.binary_value.pop_back(); break;
+        case 2: ++invalid.descriptor.datatype_descriptor_generation; break;
+        case 3: invalid.is_null = true; break;
+        case 4: invalid.binary_value.clear(); invalid.encoded_value = "1"; break;
+      }
+      Check(!ex::DecodeBoundUint64Value(invalid, &decoded, &detail),
+            "malformed UINT64 carrier or descriptor was admitted");
+      ex::CanonicalDescriptorOrderTerm term;
+      term.expression_descriptor_id = 1;
+      Check(!ex::CompareCanonicalDescriptorOrderValues(invalid, value, term).diagnostic.ok,
+            "malformed UINT64 was admitted to ordering");
+    }
+  }
   for (const auto width : {4u, 8u}) {
     namespace sblr = scratchbird::engine::sblr;
     for (unsigned bytes = 0; bytes <= 16; ++bytes) {

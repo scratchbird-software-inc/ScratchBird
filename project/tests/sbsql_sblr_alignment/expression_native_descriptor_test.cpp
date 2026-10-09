@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <source_location>
+#include <bit>
 namespace s = scratchbird::engine::sblr;
 namespace a = scratchbird::engine::internal_api;
 namespace d = scratchbird::core::datatypes;
@@ -13,6 +14,23 @@ void Check(bool ok, std::source_location at = std::source_location::current()) {
   if (!ok) { std::cerr << "failure at " << at.line() << '\n'; std::abort(); }
 }
 int main() {
+  // Native POINT coordinates retain numeric semantics and normalize signed
+  // floating zero, without parsing execution payloads as decimal text.
+  for (const double number : {0.0, -0.0, -1.5, 255.0}) {
+    auto value = scratchbird::engine::executor::EncodeReal64Value(number);
+    double coordinate = 42;
+    Check(s::DecodeSpatialPointCoordinate(value, &coordinate) && coordinate == number);
+    if (number == 0.0) Check(std::bit_cast<std::uint64_t>(coordinate) == 0);
+    value.encoded_value = "0";
+    Check(!s::DecodeSpatialPointCoordinate(value, &coordinate));
+  }
+  for (const std::int64_t number : {INT64_C(-65536), INT64_C(0), INT64_C(65536)}) {
+    auto value = scratchbird::engine::executor::EncodeInt64Value(number);
+    double coordinate = 42;
+    Check(s::DecodeSpatialPointCoordinate(value, &coordinate) && coordinate == number);
+    value.binary_value.pop_back();
+    Check(!s::DecodeSpatialPointCoordinate(value, &coordinate));
+  }
   const auto rows = d::CurrentDatatypeTypeCodecIdentityRowsV1();
   const auto row = std::ranges::find_if(rows, [](const auto& r) {
     return r.canonical_name == "boolean";
@@ -75,7 +93,8 @@ int main() {
   // the same native descriptor, including datatype UUID and generation.
   for (const auto type : {d::CanonicalTypeId::uuid, d::CanonicalTypeId::binary,
                           d::CanonicalTypeId::boolean, d::CanonicalTypeId::int32,
-                          d::CanonicalTypeId::int64}) {
+                          d::CanonicalTypeId::int64, d::CanonicalTypeId::uint64,
+                          d::CanonicalTypeId::real64}) {
     const auto identity = std::ranges::find_if(rows, [&](const auto& item) {
       return item.canonical_binary_type_code == static_cast<std::uint32_t>(type);
     });
@@ -121,7 +140,9 @@ int main() {
     value.descriptor = runtime_descriptor;
     if (type == d::CanonicalTypeId::boolean) value.encoded_value = "true";
     else value.binary_value.resize(type == d::CanonicalTypeId::uuid ? 16 :
-        type == d::CanonicalTypeId::int32 ? 4 : type == d::CanonicalTypeId::int64 ? 8 : 2, 0);
+        type == d::CanonicalTypeId::int32 ? 4 :
+        type == d::CanonicalTypeId::int64 || type == d::CanonicalTypeId::uint64 ||
+        type == d::CanonicalTypeId::real64 ? 8 : 2, 0);
     input.batch.rows.push_back({{value}});
     const auto populated = s::PrepareExpressionProjectRootForComposition(dag, root, source, input, {});
     if (!populated.ok) std::cerr << populated.detail << '\n';

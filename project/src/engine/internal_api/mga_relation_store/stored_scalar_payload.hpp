@@ -9,7 +9,7 @@
 
 namespace scratchbird::engine::internal_api {
 
-enum class StoredScalarPayloadKindV1 { encoded, uuid16, binary, int32_le4, int64_le8 };
+enum class StoredScalarPayloadKindV1 { encoded, uuid16, binary, int32_le4, scalar_le8 };
 
 inline StoredScalarPayloadKindV1 StoredScalarPayloadKindForV1(
     std::string_view type) noexcept {
@@ -23,7 +23,8 @@ inline StoredScalarPayloadKindV1 StoredScalarPayloadKindForV1(
     return true;
   };
   if (matches("uuid") || matches("uuidv7")) return StoredScalarPayloadKindV1::uuid16;
-  if (matches("int64")) return StoredScalarPayloadKindV1::int64_le8;
+  if (matches("int64") || matches("uint64") || matches("real64"))
+    return StoredScalarPayloadKindV1::scalar_le8;
   if (matches("int32")) return StoredScalarPayloadKindV1::int32_le4;
   if (matches("binary") || matches("bytes") || matches("blob"))
     return StoredScalarPayloadKindV1::binary;
@@ -43,7 +44,7 @@ inline bool RestoreStoredScalarPayloadV1(std::string_view bytes,
   const auto kind = StoredScalarPayloadKindForV1(value->descriptor.canonical_type_name);
   if (state == EngineValueState::value && kind == StoredScalarPayloadKindV1::uuid16 &&
       bytes.size() != 16) return false;
-  if (state == EngineValueState::value && kind == StoredScalarPayloadKindV1::int64_le8 &&
+  if (state == EngineValueState::value && kind == StoredScalarPayloadKindV1::scalar_le8 &&
       bytes.size() != 8) return false;
   if (state == EngineValueState::value && kind == StoredScalarPayloadKindV1::int32_le4 &&
       bytes.size() != 4) return false;
@@ -77,7 +78,7 @@ inline bool StoredScalarPayloadMatchesV1(const EngineTypedValue& value,
   if (!value.encoded_value.empty() || value.binary_value.size() != bytes.size() ||
       (kind == StoredScalarPayloadKindV1::uuid16 && bytes.size() != 16) ||
       (kind == StoredScalarPayloadKindV1::int32_le4 && bytes.size() != 4) ||
-      (kind == StoredScalarPayloadKindV1::int64_le8 && bytes.size() != 8)) return false;
+      (kind == StoredScalarPayloadKindV1::scalar_le8 && bytes.size() != 8)) return false;
   return std::equal(value.binary_value.begin(), value.binary_value.end(), bytes.begin(),
                     [](std::uint8_t left, char right) {
                       return left == static_cast<std::uint8_t>(right);

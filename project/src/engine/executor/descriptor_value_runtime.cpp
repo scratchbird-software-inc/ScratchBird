@@ -1121,7 +1121,8 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
       return ErrorDiagnostic("SB_EXECUTOR_DESCRIPTOR_TYPE_UNSUPPORTED", descriptor.canonical_type_name, 0, column);
     }
     const auto type = CanonicalDescriptorTypeId(descriptor);
-    if (type == CanonicalTypeId::int32 || type == CanonicalTypeId::int64) {
+    if (type == CanonicalTypeId::int32 || type == CanonicalTypeId::int64 ||
+        type == CanonicalTypeId::uint64) {
       try {
         // Descriptor admission cannot depend on whether a row is present or
         // NULL. The private probe carries no execution or storage authority.
@@ -1130,8 +1131,11 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
         probe.setState(internal_api::EngineValueState::value);
         probe.binary_value.assign(type == CanonicalTypeId::int32 ? 4 : 8, 0);
         std::int64_t ignored = 0;
+        std::uint64_t unsigned_ignored = 0;
         std::string reason;
-        if (!DecodeBoundSignedIntegerValue(probe, type, &ignored, &reason))
+        if (!(type == CanonicalTypeId::uint64
+                ? DecodeBoundUint64Value(probe, &unsigned_ignored, &reason)
+                : DecodeBoundSignedIntegerValue(probe, type, &ignored, &reason)))
           return ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID", std::move(reason) +
               " column=" + batch.columns[column].stable_name +
               " type=" + descriptor.canonical_type_name, 0, column);
@@ -1189,6 +1193,14 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
             "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
             "non-value sentinel or legacy NULL flag reached operator", row,
             column);
+      }
+      if (CanonicalDescriptorTypeId(expected.descriptor) == CanonicalTypeId::uint64) {
+        std::uint64_t decoded = 0;
+        std::string detail;
+        if (!DecodeBoundUint64Value(value, &decoded, &detail))
+          return ErrorDiagnostic("QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
+                                 std::move(detail), row, column);
+        continue;
       }
       if (CanonicalDescriptorTypeId(expected.descriptor) == CanonicalTypeId::int64) {
         std::int64_t decoded = 0;
@@ -3049,6 +3061,41 @@ bool DecodeBoundInt64Value(const EngineTypedValue& value,
   return DecodeBoundSignedIntegerValue(value, CanonicalTypeId::int64, decoded, refusal_detail);
 }
 
+bool DecodeBoundUint64Value(const EngineTypedValue& value,
+                           std::uint64_t* decoded, std::string* refusal_detail) {
+  namespace dt = scratchbird::core::datatypes;
+  if (!decoded || !refusal_detail) return false;
+  refusal_detail->clear();
+  if (value.state != EngineValueState::value || value.is_null ||
+      value.descriptor.canonical_type_name != "uint64" ||
+      !value.encoded_value.empty() || value.binary_value.size() != 8) {
+    *refusal_detail = "scalar is not a non-NULL canonical UINT64 value";
+    return false;
+  }
+  internal_api::CatalogColumnMetadata fields;
+  if (!internal_api::AdmitCatalogColumnMetadata(value.descriptor.encoded_descriptor, &fields) ||
+      !fields.identities.empty() || !value.descriptor.charset_uuid.is_nil() ||
+      !value.descriptor.collation_uuid.is_nil()) {
+    *refusal_detail = "scalar UINT64 metadata is invalid";
+    return false;
+  }
+  for (const auto& [name, field] : fields.text) {
+    if (name != "nullability" && name != "nullable") {
+      *refusal_detail = "scalar UINT64 has an unsupported modifier";
+      return false;
+    }
+  }
+  engine::ExecutionTypeDescriptor descriptor;
+  if (!BoundExecutionTypeDescriptor(value.descriptor, CanonicalTypeId::uint64,
+                                    &descriptor, refusal_detail)) return false;
+  // Decoding an admitted UINT64 is a codec operation, not a cast. Every
+  // eight-byte pattern is an unsigned value; the exact binding and exclusive
+  // carrier were checked above. Do not route this through cast-pair policy.
+  return dt::DecodeCanonicalUint64Value(
+      std::string_view(reinterpret_cast<const char*>(value.binary_value.data()),
+                       value.binary_value.size()), decoded);
+}
+
 Int64DecodeResult DecodeInt64Value(const EngineTypedValue& value) {
   Int64DecodeResult result;
   if (value.state ==
@@ -3215,6 +3262,16 @@ EngineTypedValue EncodeInt64Value(std::int64_t value) {
 
 EngineTypedValue EncodeBoolValue(bool value) {
   return MakeExecutorValue(MakeExecutorDescriptor("boolean"), value ? "true" : "false", false);
+}
+
+EngineTypedValue EncodeUint64Value(std::uint64_t value) {
+  EngineTypedValue encoded;
+  encoded.descriptor = MakeExecutorDescriptor("uint64", "nullability=non_null");
+  encoded.setState(EngineValueState::value);
+  encoded.binary_value.resize(8);
+  for (unsigned byte = 0; byte < 8; ++byte)
+    encoded.binary_value[byte] = static_cast<std::uint8_t>(value >> (byte * 8));
+  return encoded;
 }
 
 EngineTypedValue EncodeReal64Value(double value) {

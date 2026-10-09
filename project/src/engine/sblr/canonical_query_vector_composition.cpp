@@ -246,8 +246,6 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
   std::ranges::sort(outputs, {}, &api::RelationalOutputRecord::ordinal);
   static constexpr std::array<std::string_view, 3> kOutputNames{
       "row_uuid", "distance", "score"};
-  static constexpr std::array<std::string_view, 3> kOutputTypes{
-      "uuid", "real64", "real64"};
   if (outputs.size() != 3) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "vector public output coverage is not exact");
@@ -287,12 +285,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
                     "vector public type identity was substituted");
     }
     api::EngineDescriptor engine_descriptor;
-    engine_descriptor.descriptor_uuid = descriptor->descriptor_uuid;
-    engine_descriptor.type_uuid = descriptor->type_uuid;
-    engine_descriptor.descriptor_kind = "scalar";
-    engine_descriptor.canonical_type_name = std::string(kOutputTypes[ordinal]);
-    engine_descriptor.encoded_descriptor =
-        "nullability=non_null";
+    if (!BuildExactCanonicalScalarRuntimeDescriptorV1(
+            *descriptor, ordinal == 0 ? core::datatypes::CanonicalTypeId::uuid
+                                      : core::datatypes::CanonicalTypeId::real64,
+            &engine_descriptor)) {
+      return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                    "vector public native datatype binding is invalid");
+    }
     output_descriptors.push_back(engine_descriptor);
     public_columns.push_back(
         {std::string(kOutputNames[ordinal]), engine_descriptor, false,
@@ -906,22 +905,20 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
         batch.security_recheck_complete = true;
         for (const auto& row : read.rows) {
           exec::DescriptorTuple tuple;
-          const std::array<std::string, 3> encoded{
-              std::string{}, row.encoded_distance, row.encoded_score};
-          for (std::size_t ordinal = 0; ordinal < encoded.size(); ++ordinal) {
+          for (std::size_t ordinal = 0; ordinal < 3; ++ordinal) {
             api::EngineTypedValue value;
-            value.descriptor = public_columns[ordinal].descriptor;
             if (ordinal == 0) {
               value.binary_value.assign(row.row_uuid.bytes.begin(), row.row_uuid.bytes.end());
-            } else value.encoded_value = encoded[ordinal];
+            } else value = exec::EncodeReal64Value(ordinal == 1 ? row.distance : row.score);
+            value.descriptor = public_columns[ordinal].descriptor;
             value.setState(api::EngineValueState::value);
             tuple.values.push_back(std::move(value));
           }
           batch.batch.rows.push_back(std::move(tuple));
           exec::ModelProviderRowIdentityV1 identity;
           identity.row_uuid = row.row_uuid;
-          identity.vector_distance = row.encoded_distance;
-          identity.vector_score = row.encoded_score;
+          identity.vector_distance = row.distance;
+          identity.vector_score = row.score;
           batch.ordered_row_identities.push_back(std::move(identity));
         }
         provider.ok = true;

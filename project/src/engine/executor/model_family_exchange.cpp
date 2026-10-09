@@ -39,6 +39,17 @@ bool CanonicalModelScalarCarrier(const internal_api::EngineTypedValue& value) {
   if (value.descriptor.canonical_type_name == "uuid") {
     return value.encoded_value.empty() && value.binary_value.size() == 16;
   }
+  if (value.descriptor.canonical_type_name == "real64") {
+    return DecodeReal64Value(value).ok();
+  }
+  if (value.descriptor.canonical_type_name == "int64") {
+    return DecodeInt64Value(value).ok();
+  }
+  if (value.descriptor.canonical_type_name == "uint64") {
+    std::uint64_t number;
+    std::string detail;
+    return DecodeBoundUint64Value(value, &number, &detail);
+  }
   return value.binary_value.empty();
 }
 
@@ -759,10 +770,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
           !preflight_string(identity.time_series_payload_kind) ||
           !preflight_string(identity.time_series_raw_value) ||
           !preflight_string(identity.time_series_sample_count) ||
-          !preflight_string(identity.time_series_aggregate_value) ||
-          !preflight_string(identity.vector_distance) ||
-          !preflight_string(identity.vector_score) ||
-            !preflight_string(identity.search_score)) {
+          !preflight_string(identity.time_series_aggregate_value)) {
         return Refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                       "graph exchange identity preflight exceeded its resource contract");
       }
@@ -823,8 +831,6 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     for (std::size_t identity_ordinal = 0;
          identity_ordinal < provider_batch.ordered_row_identities.size();
          ++identity_ordinal) {
-      const auto& identity =
-          provider_batch.ordered_row_identities[identity_ordinal];
       if (ExchangeCancellationRequested(cancellation_requested)) {
         return Refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
                       "model-family uniqueness preflight was cancelled");
@@ -832,21 +838,16 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
       constexpr std::uint64_t kSetNodeOverhead =
           std::max(sizeof(internal_api::EngineUuid), sizeof(std::string)) +
           4 * sizeof(void*) + 64;
-      const auto dynamic = static_cast<std::uint64_t>(
-          identity.vector_distance.size() +
-          identity.vector_score.size() + identity.search_score.size());
       const std::uint64_t node_count =
           graph_family
               ? 2
               : input.operation_id == "TIME_SERIES_DOWNSAMPLE" ? 0 : 1;
       if (node_count * kSetNodeOverhead >
-              std::numeric_limits<std::uint64_t>::max() - uniqueness_peak ||
-          dynamic > std::numeric_limits<std::uint64_t>::max() -
-                        uniqueness_peak - node_count * kSetNodeOverhead) {
+              std::numeric_limits<std::uint64_t>::max() - uniqueness_peak) {
         return Refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                       "graph uniqueness preflight overflowed");
       }
-      uniqueness_peak += node_count * kSetNodeOverhead + dynamic;
+      uniqueness_peak += node_count * kSetNodeOverhead;
     }
     if (uniqueness_peak > input.maximum_memory_bytes) {
       return Refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
@@ -913,11 +914,11 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
           identity.time_series_sample_count.empty() &&
           identity.time_series_aggregate_value.empty();
       const bool empty_vector_payload =
-          identity.vector_distance.empty() && identity.vector_score.empty();
+          !identity.vector_distance && !identity.vector_score;
       const bool empty_search_payload =
           identity.search_analyzer_uuid.is_nil() &&
           identity.search_analyzer_generation == 0 &&
-          identity.search_score.empty() && identity.search_rank == 0;
+          !identity.search_score.has_value() && identity.search_rank == 0;
       const bool document_identity = document_family &&
           CanonicalUuid(identity.document_uuid) &&
           CanonicalUuid(identity.row_uuid) &&
@@ -1017,15 +1018,11 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
           identity.series_uuid.is_nil() && identity.metric_uuid.is_nil() &&
           identity.tags.empty() && identity.point_timestamp_ns == 0 &&
           identity.bucket_start_ns == 0 && empty_time_series_payload &&
-          CanonicalNonnegativeFiniteReal64(identity.vector_distance) &&
-          CanonicalFiniteReal64(identity.vector_score) &&
+          identity.vector_distance && std::isfinite(*identity.vector_distance) &&
+          identity.vector_score && std::isfinite(*identity.vector_score) &&
           empty_search_payload &&
           row_uuids.insert(identity.row_uuid).second;
-      double search_score = 0.0;
-      const auto search_score_parse = std::from_chars(
-          identity.search_score.data(),
-          identity.search_score.data() + identity.search_score.size(),
-          search_score, std::chars_format::general);
+      const double search_score = identity.search_score.value_or(0.0);
       const bool search_identity =
           search_family && CanonicalUuid(identity.document_uuid) &&
           identity.row_uuid.is_nil() && identity.vertex_uuid.is_nil() &&
@@ -1037,10 +1034,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
           empty_vector_payload &&
           CanonicalUuid(identity.search_analyzer_uuid) &&
           identity.search_analyzer_generation != 0 &&
-          CanonicalFiniteReal64(identity.search_score) &&
-          search_score_parse.ec == std::errc{} &&
-          search_score_parse.ptr ==
-              identity.search_score.data() + identity.search_score.size() &&
+          identity.search_score.has_value() && std::isfinite(search_score) &&
           search_score > 0.0 &&
           identity.search_rank == identity_ordinal + 1 &&
           document_uuids.insert(identity.document_uuid).second;
@@ -1128,19 +1122,9 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
       if (vector_family && identity_ordinal != 0) {
         const auto& previous =
             provider_batch.ordered_row_identities[identity_ordinal - 1];
-        double previous_distance = 0.0;
-        double current_distance = 0.0;
-        const auto previous_parse = std::from_chars(
-            previous.vector_distance.data(),
-            previous.vector_distance.data() + previous.vector_distance.size(),
-            previous_distance, std::chars_format::general);
-        const auto current_parse = std::from_chars(
-            identity.vector_distance.data(),
-            identity.vector_distance.data() + identity.vector_distance.size(),
-            current_distance, std::chars_format::general);
-        if (previous_parse.ec != std::errc{} || current_parse.ec != std::errc{} ||
-            current_distance < previous_distance ||
-            (current_distance == previous_distance &&
+        if (!previous.vector_distance ||
+            *identity.vector_distance < *previous.vector_distance ||
+            (*identity.vector_distance == *previous.vector_distance &&
              !(previous.row_uuid < identity.row_uuid))) {
           return Refuse(
               kModelTypedExchangeInvalid,
@@ -1150,14 +1134,8 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
       if (search_family && identity_ordinal != 0) {
         const auto& previous =
             provider_batch.ordered_row_identities[identity_ordinal - 1];
-        double previous_score = 0.0;
-        const auto previous_parse = std::from_chars(
-            previous.search_score.data(),
-            previous.search_score.data() + previous.search_score.size(),
-            previous_score, std::chars_format::general);
-        if (previous_parse.ec != std::errc{} ||
-            previous_parse.ptr !=
-                previous.search_score.data() + previous.search_score.size() ||
+        const double previous_score = previous.search_score.value_or(0.0);
+        if (!previous.search_score || !std::isfinite(previous_score) ||
             search_score > previous_score ||
             (search_score == previous_score &&
              !(previous.document_uuid < identity.document_uuid))) {
@@ -1539,15 +1517,19 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
       }
       const auto& row = provider_batch.batch.rows[ordinal];
       const auto& identity = provider_batch.ordered_row_identities[ordinal];
+      const auto distance = row.values.size() == 3
+          ? DecodeReal64Value(row.values[1]) : Real64DecodeResult{};
+      const auto score = row.values.size() == 3
+          ? DecodeReal64Value(row.values[2]) : Real64DecodeResult{};
       if (row.values.size() != 3 ||
           std::ranges::any_of(row.values, [](const auto& value) {
             return !CanonicalModelScalarCarrier(value);
           }) ||
           !ExactSystemIdentityValue(row.values[0], identity.row_uuid) ||
-          row.values[1].encoded_value != identity.vector_distance ||
-          !CanonicalNonnegativeFiniteReal64(row.values[1].encoded_value) ||
-          row.values[2].encoded_value != identity.vector_score ||
-          !CanonicalFiniteReal64(row.values[2].encoded_value)) {
+          !distance.ok() || !std::isfinite(distance.value) ||
+          !score.ok() || !std::isfinite(score.value) ||
+          distance.value != identity.vector_distance ||
+          score.value != identity.vector_score) {
         return Refuse(kModelTypedExchangeInvalid,
                       "vector row differs from its ordered exact identity");
       }
@@ -1594,25 +1576,19 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
         return Refuse(kModelTypedExchangeInvalid,
                       "search row width differs from its exact descriptor");
       }
-      double score = 0.0;
-      const auto score_parse = std::from_chars(
-          row.values[3].encoded_value.data(),
-          row.values[3].encoded_value.data() +
-              row.values[3].encoded_value.size(),
-          score, std::chars_format::general);
-      if (std::ranges::any_of(row.values, [](const auto& value) {
-            return !CanonicalModelScalarCarrier(value);
-          }) ||
+      const auto score = DecodeReal64Value(row.values[3]);
+      std::uint64_t generation = 0, rank = 0;
+      std::string detail;
+      if (!CanonicalModelScalarCarrier(row.values[0]) ||
+          !CanonicalModelScalarCarrier(row.values[1]) ||
+          !DecodeBoundUint64Value(row.values[2], &generation, &detail) ||
+          !DecodeBoundUint64Value(row.values[4], &rank, &detail) ||
           !ExactSystemIdentityValue(row.values[0], identity.document_uuid) ||
           !ExactSystemIdentityValue(row.values[1], identity.search_analyzer_uuid) ||
-          row.values[2].encoded_value !=
-              std::to_string(identity.search_analyzer_generation) ||
-          !CanonicalUint64(row.values[2].encoded_value, true) ||
-          row.values[3].encoded_value != identity.search_score ||
-          !CanonicalFiniteReal64(row.values[3].encoded_value) ||
-          score_parse.ec != std::errc{} || score <= 0.0 ||
-          row.values[4].encoded_value != std::to_string(identity.search_rank) ||
-          !CanonicalUint64(row.values[4].encoded_value, true) ||
+          generation != identity.search_analyzer_generation || generation == 0 ||
+          !score.ok() || !identity.search_score ||
+          score.value != *identity.search_score || score.value <= 0.0 ||
+          rank != identity.search_rank || rank == 0 ||
           identity.search_rank != ordinal + 1) {
         return Refuse(kModelTypedExchangeInvalid,
                       "search row differs from its ordered exact identity");
@@ -1793,10 +1769,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
         !account_bytes(identity.time_series_payload_kind.size()) ||
         !account_bytes(identity.time_series_raw_value.size()) ||
         !account_bytes(identity.time_series_sample_count.size()) ||
-        !account_bytes(identity.time_series_aggregate_value.size()) ||
-        !account_bytes(identity.vector_distance.size()) ||
-        !account_bytes(identity.vector_score.size()) ||
-        !account_bytes(identity.search_score.size())) {
+        !account_bytes(identity.time_series_aggregate_value.size())) {
       return Refuse(kModelTypedExchangeInvalid,
                     "document exchange identity memory counter overflowed");
     }

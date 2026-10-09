@@ -634,31 +634,6 @@ bool BoundSearchPhraseMatch(const std::vector<std::string>& document,
 
 EngineUuid BoundSearchTypeUuid(const EngineDescriptor& descriptor) { return descriptor.type_uuid; }
 
-EngineUuid ExactBoundSearchCoreTypeUuid(const EngineRequestContext& context,
-                                       const std::string_view stable_name) {
-  static const auto manifest =
-      scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
-  if (!manifest.ok()) return {};
-  const auto count = std::ranges::count_if(
-      manifest.manifest.descriptor_rows,
-      [&](const auto& row) { return row.stable_name == stable_name; });
-  const auto found = std::ranges::find_if(
-      manifest.manifest.descriptor_rows,
-      [&](const auto& row) { return row.stable_name == stable_name; });
-  if (count != 1 || found == manifest.manifest.descriptor_rows.end() ||
-      !found->descriptor_uuid.valid()) {
-    return {};
-  }
-  const auto descriptor_uuid = found->descriptor_uuid.value;
-  const auto identity =
-      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-          context.datatype_catalog_snapshot_uuid,
-          context.datatype_catalog_generation, context.datatype_registry_generation, descriptor_uuid,
-          found->descriptor_epoch);
-  return identity.ok ? identity.row.type_uuid : EngineUuid{};
-}
-
-
 bool ExactBoundSearchStorageDescriptorImpl(
     const EngineRequestContext& context,
     const MgaRelationStorageDescriptor& descriptor,
@@ -729,7 +704,15 @@ bool ExactBoundSearchOutputDescriptors(
   std::set<EngineUuid> descriptor_uuids;
   for (std::size_t index = 0; index < descriptors.size(); ++index) {
     const auto& descriptor = descriptors[index];
-    const auto type_uuid = ExactBoundSearchCoreTypeUuid(context, kTypes[index]);
+    namespace dt = scratchbird::core::datatypes;
+    const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+        context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+        context.datatype_registry_generation, descriptor.datatype_descriptor_uuid,
+        descriptor.datatype_descriptor_generation);
+    if (!binding.ok || binding.row.canonical_binary_type_code !=
+            static_cast<std::uint32_t>(dt::CanonicalTypeIdFromStableName(std::string(kTypes[index]))))
+      return false;
+    const auto type_uuid = binding.row.type_uuid;
     if (!CanonicalBoundSearchUuid(descriptor.descriptor_uuid) ||
         !descriptor_uuids.insert(descriptor.descriptor_uuid).second ||
         descriptor.descriptor_kind != "scalar" || type_uuid.is_nil() ||

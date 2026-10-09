@@ -1778,7 +1778,7 @@ bool Rcp079AccountModelRowIdentityLogicalMemoryV1(
     const exec::ModelProviderRowIdentityV1& identity,
     std::uint64_t* bytes) {
   if (!Rcp079AccountLogicalArrayV1(1, sizeof(identity), bytes)) return false;
-  const std::array<std::variant<std::string_view, api::EngineUuid>, 17> strings{
+  const std::array<std::variant<std::string_view, api::EngineUuid>, 14> strings{
       identity.document_uuid,
       identity.row_uuid,
       identity.vertex_uuid,
@@ -1792,10 +1792,7 @@ bool Rcp079AccountModelRowIdentityLogicalMemoryV1(
       identity.time_series_raw_value,
       identity.time_series_sample_count,
       identity.time_series_aggregate_value,
-      identity.vector_distance,
-      identity.vector_score,
-      identity.search_analyzer_uuid,
-      identity.search_score};
+      identity.search_analyzer_uuid};
   return std::ranges::all_of(strings, [&](const auto value) {
     return std::visit([&](const auto& field) { return Rcp079AccountLogicalStringV1(field, bytes); }, value);
   });

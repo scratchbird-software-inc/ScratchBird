@@ -376,9 +376,7 @@ executor::DescriptorBatch Batch(
                    {"r" + std::to_string(leg.lexical_source_ordinal), "uuid"}};
   for (std::size_t column = 0; column < schema.size(); ++column) {
     auto descriptor = executor::MakeExecutorDescriptor(
-        schema[column].second,
-        "canonical=" + schema[column].second + ";nullable=false");
-    descriptor.type_uuid = Uuid(1800 + leg.lexical_source_ordinal * 10 + column);
+        schema[column].second, "nullability=non_null");
     descriptor.descriptor_uuid = leg.output_descriptor_uuids[column];
     descriptor.descriptor_kind = "scalar";
     batch.columns.push_back({schema[column].first, descriptor, false,
@@ -391,11 +389,12 @@ executor::DescriptorBatch Batch(
     identity_value.binary_value.assign(identity.bytes.begin(), identity.bytes.end());
     tuple.values.push_back(std::move(identity_value));
     if (vector) {
-      tuple.values.push_back(executor::MakeExecutorValue(
-          batch.columns[1].descriptor, std::to_string(row + 1)));
-      tuple.values.push_back(executor::MakeExecutorValue(
-          batch.columns[2].descriptor,
-          std::array<std::string, 3>{"0.1", "0.2", "0.3"}[row]));
+      auto distance = executor::EncodeReal64Value(static_cast<double>(row + 1));
+      distance.descriptor = batch.columns[1].descriptor;
+      tuple.values.push_back(std::move(distance));
+      auto score = executor::EncodeReal64Value(std::array<double, 3>{0.1, 0.2, 0.3}[row]);
+      score.descriptor = batch.columns[2].descriptor;
+      tuple.values.push_back(std::move(score));
     }
     batch.rows.push_back(std::move(tuple));
   }
@@ -495,8 +494,11 @@ executor::ModelFamilyExecutionRequestV1 LegExecution(
         if (bytes.size() != identity.row_uuid.bytes.size())
           throw std::runtime_error("vector fixture row identity must be binary16");
         std::copy(bytes.begin(), bytes.end(), identity.row_uuid.bytes.begin());
-        identity.vector_distance = batch.rows[row].values[1].encoded_value;
-        identity.vector_score = batch.rows[row].values[2].encoded_value;
+        const auto distance = executor::DecodeReal64Value(batch.rows[row].values[1]);
+        const auto score = executor::DecodeReal64Value(batch.rows[row].values[2]);
+        if (!distance.ok() || !score.ok()) throw std::runtime_error("bound native vector scores required");
+        identity.vector_distance = distance.value;
+        identity.vector_score = score.value;
       }
       output.ordered_row_identities.push_back(std::move(identity));
     }

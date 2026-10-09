@@ -1,4 +1,5 @@
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/canonical_int64_literal_fixture.hpp"
 #include <tuple>
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
@@ -11,10 +12,14 @@
 #include "datatype_temporal_wire.hpp"
 #include "query/canonical_relational_bridge.hpp"
 #include "query/expression_api.hpp"
+#include "../../src/core/resources/resource_seed_pack.hpp"
 
 #include <array>
+#include <charconv>
+#include <limits>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <map>
 #include <optional>
@@ -25,6 +30,7 @@
 #include <string_view>
 #include <unordered_map>
 #include "engine/sblr/relational_descriptor_codec.hpp"
+#include "engine/sblr/contextual_text_literal_v2_codec.hpp"
 #include <stdexcept>
 #include <unordered_set>
 #include <vector>
@@ -47,10 +53,12 @@ api::EngineUuid Uuid(const std::uint64_t value) {
   return uuid;
 }
 
-api::EngineDescriptor FixtureDescriptor(std::string type, api::EngineUuid type_uuid,
+api::EngineDescriptor FixtureDescriptor(std::string type, api::EngineUuid occurrence_uuid,
                                        std::string attributes) {
+  if (attributes == "canonical=" + type + ";nullable=false") attributes = "nullability=non_null";
+  else if (attributes == "canonical=" + type + ";nullable=true") attributes = "nullability=nullable";
   auto descriptor = executor::MakeExecutorDescriptor(std::move(type), std::move(attributes));
-  descriptor.type_uuid = type_uuid;
+  descriptor.descriptor_uuid = occurrence_uuid;
   return descriptor;
 }
 
@@ -64,6 +72,31 @@ api::EngineTypedValue FixtureValue(const api::EngineDescriptor& descriptor,
 
 api::EngineTypedValue FixtureValue(const api::EngineDescriptor& descriptor,
                                    std::string text, bool is_null = false) {
+  if (!is_null && (descriptor.canonical_type_name == "int32" ||
+                  descriptor.canonical_type_name == "int64" ||
+                  descriptor.canonical_type_name == "uint64" ||
+                  descriptor.canonical_type_name == "real64")) {
+    const auto parse = [&]<typename T>(T* number) {
+      const auto result = std::from_chars(text.data(), text.data() + text.size(), *number);
+      if (result.ec != std::errc{} || result.ptr != text.data() + text.size())
+        throw std::runtime_error("invalid native numeric fixture");
+    };
+    api::EngineTypedValue value;
+    if (descriptor.canonical_type_name == "real64") {
+      double number{}; parse(&number); value = executor::EncodeReal64Value(number);
+    } else if (descriptor.canonical_type_name == "uint64") {
+      std::uint64_t number{}; parse(&number); value = executor::EncodeUint64Value(number);
+    } else {
+      std::int64_t number{}; parse(&number); value = executor::EncodeInt64Value(number);
+      if (descriptor.canonical_type_name == "int32") {
+        if (number < std::numeric_limits<std::int32_t>::min() || number > std::numeric_limits<std::int32_t>::max())
+          throw std::runtime_error("INT32 fixture overflow");
+        value.binary_value.resize(4);
+      }
+    }
+    value.descriptor = descriptor;
+    return value;
+  }
   return executor::MakeExecutorValue(descriptor, std::move(text), is_null);
 }
 
@@ -376,7 +409,7 @@ DirectLegExecution ExecuteDirectLeg(const std::size_t ordinal,
   if (family == "spatial") {
     request.input.spatial_geometry_descriptor_uuid =
         batch.columns[1].descriptor.descriptor_uuid;
-    request.input.spatial_geometry_type_uuid = Uuid(12'500 + ordinal);
+    request.input.spatial_geometry_type_uuid = batch.columns[1].descriptor.type_uuid;
     request.input.spatial_crs_uuid = Uuid(12'000 + ordinal);
     request.input.spatial_crs_generation = 1;
   }
@@ -483,14 +516,14 @@ DirectLegExecution ExecuteDirectLeg(const std::size_t ordinal,
         identity.bucket_start_ns = 1'000'000'000;
       } else if (family == "vector") {
         identity.row_uuid = row_uuid;
-        identity.vector_distance = "1";
-        identity.vector_score = "1";
+        identity.vector_distance = 1.0;
+        identity.vector_score = 1.0;
       } else if (family == "search") {
         identity.document_uuid = row_uuid;
         identity.search_analyzer_uuid = Uuid(12'000 +
                                              (input.physical_node_id - 1));
         identity.search_analyzer_generation = 1;
-        identity.search_score = "1";
+        identity.search_score = 1.0;
         identity.search_rank = 1;
       } else {
         identity.row_uuid = row_uuid;
@@ -774,8 +807,9 @@ bool DirectConsumerSpine(const executor::DescriptorBatch& root,
   const auto aggregate =
       executor::ExecuteCanonicalAggregateRuntime(aggregate_request);
   if (!aggregate.diagnostic.ok || aggregate.output_batch.rows.size() != 1 ||
-      aggregate.output_batch.rows.front().values.front().encoded_value !=
-          std::to_string(root.rows.size())) {
+      !executor::DecodeInt64Value(aggregate.output_batch.rows.front().values.front()).ok() ||
+      executor::DecodeInt64Value(aggregate.output_batch.rows.front().values.front()).value !=
+          static_cast<std::int64_t>(root.rows.size())) {
     if (!aggregate.diagnostic.ok) {
       std::cerr << aggregate.diagnostic.diagnostic_code << ':'
                 << aggregate.diagnostic.detail << '\n';
@@ -1066,18 +1100,19 @@ bool TypedDagAndCanonicalPopulation() {
 bool CanonicalSpatialPointExpression() {
   api::TypedRelationalDag dag;
   dag.descriptors = {
-      {1, Uuid(51), Uuid(61), api::RelationalNullability::kNonNull},
-      {2, Uuid(52), Uuid(62), api::RelationalNullability::kNonNull},
+      scratchbird::tests::Int64LiteralDescriptor(1),
+      {2, Uuid(52), executor::MakeExecutorDescriptor("geometry").type_uuid,
+       api::RelationalNullability::kNonNull},
   };
   api::RelationalExpressionRecord x;
   x.expression_id = 1;
   x.expression_kind = api::RelationalExpressionKind::kLiteral;
   x.result_descriptor_id = 1;
   x.literal_kind = api::RelationalLiteralKind::kNumeric;
-  x.literal_or_parameter_ref = "0";
+  scratchbird::tests::SetInt64Literal(x, dag.descriptors[0], 0);
   api::RelationalExpressionRecord y = x;
   y.expression_id = 2;
-  y.literal_or_parameter_ref = "-0";
+  scratchbird::tests::SetInt64Literal(y, dag.descriptors[0], 0);
   api::RelationalExpressionRecord point;
   point.expression_id = 3;
   point.expression_kind = api::RelationalExpressionKind::kFunctionCall;
@@ -1089,11 +1124,11 @@ bool CanonicalSpatialPointExpression() {
   services.descriptor_type_resolver =
       [&](const api::EngineUuid& type_uuid, std::string* type_name,
           std::string*, std::string*) {
-        if (type_uuid == Uuid(61)) {
+        if (type_uuid == dag.descriptors[0].type_uuid) {
           *type_name = "int64";
           return true;
         }
-        if (type_uuid == Uuid(62)) {
+        if (type_uuid == dag.descriptors[1].type_uuid) {
           *type_name = "geometry";
           return true;
         }
@@ -1369,8 +1404,9 @@ bool CompositionProfiles() {
         first.diagnostic_id == replay.diagnostic_id &&
         first.lifecycle_contract_id == replay.lifecycle_contract_id &&
         (first.accepted
-             ? (!first.composition_receipt_uuid.is_nil() &&
-                first.composition_receipt_uuid ==
+             ? (scratchbird::core::uuid::IsEngineIdentityUuid(first.composition_receipt_uuid) &&
+                scratchbird::core::uuid::IsEngineIdentityUuid(replay.composition_receipt_uuid) &&
+                first.composition_receipt_uuid !=
                     replay.composition_receipt_uuid &&
                 first.lexical_legs.size() == expected.arity)
              : (first.composition_receipt_uuid.is_nil() &&
@@ -1789,8 +1825,10 @@ std::string SemanticBatchSignature(const executor::DescriptorBatch& batch) {
   stream << '|';
   for (const auto& row : batch.rows) {
     for (const auto& cell : row.values) {
-      stream << static_cast<unsigned>(cell.state) << ':' << cell.encoded_value
-             << ';';
+      stream << static_cast<unsigned>(cell.state) << ':' << cell.encoded_value.size() << ':' << cell.encoded_value
+             << ':' << cell.binary_value.size() << ':';
+      for (const auto byte : cell.binary_value) stream << static_cast<unsigned>(byte) << ',';
+      stream << ';';
     }
     stream << '|';
   }
@@ -1803,9 +1841,12 @@ std::string SemanticValueBag(const executor::DescriptorBatch& batch,
   for (const auto& row : batch.rows) {
     std::string encoded;
     for (const auto& value : row.values) {
-      encoded += value.state == api::EngineValueState::sql_null
-                     ? "N"
-                     : "V" + value.encoded_value;
+      if (value.state == api::EngineValueState::sql_null) encoded += "N";
+      else {
+        const auto number = executor::DecodeInt64Value(value);
+        if (!number.ok()) throw std::runtime_error("semantic INT64 result did not decode");
+        encoded += "V" + std::to_string(number.value);
+      }
       encoded += ',';
     }
     rows.push_back(std::move(encoded));
@@ -1883,12 +1924,23 @@ std::string ExecutePrejoinSemanticReceipt(const std::string_view scenario) {
     std::string refusal;
     const bool accepted = api::QowApplyCanonicalDescriptorCoercionV1(
         input, target_descriptor, false, &output, &category, &refusal);
-    return accepted && output.encoded_value == "2" && refusal.empty() &&
+    const auto decoded = executor::DecodeInt64Value(output);
+    return accepted && decoded.ok() && decoded.value == 2 && refusal.empty() &&
                    category == "lossless_implicit"
                ? "coercion:lossless_implicit:int32:int64:2"
                : "";
   }
   if (scenario == "JOIN-SCENARIO-COLLATION-V1") {
+    namespace resources = scratchbird::core::resources;
+    static const auto image = [] {
+      resources::ResourceSeedLoadConfig config;
+      config.seed_pack_root = (std::filesystem::path(__FILE__).lexically_normal().parent_path().parent_path().parent_path() /
+          "resources/seed-packs/initial-resource-pack").string();
+      const auto loaded = resources::LoadResourceSeedPack(config);
+      if (!loaded.ok() || !loaded.image.unicode_collation)
+        throw std::runtime_error("cross-family fixture collation resource failed admission");
+      return loaded.image;
+    }();
     const api::EngineUuid collation_uuid{{0x01,0x9f,0,0,0,0,0x74,0,0x80,0,0,0,0,0,8,0x41}};
     const auto identity = [](std::uint64_t id) {
       api::EngineUuid result{{0x01,0x9f,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0,0}};
@@ -1904,7 +1956,7 @@ std::string ExecutePrejoinSemanticReceipt(const std::string_view scenario) {
       bound.datatype_identity_authoritative = true;
       bound.descriptor_generation = bound.type_generation = bound.codec_generation = 1;
       bound.datatype_catalog_generation = bound.datatype_registry_generation = 1;
-      bound.codec_id = "datatype.text.utf8.v1"; bound.codec_version = 1;
+      bound.codec_id = sblr::kContextualTextCodecIdentifierV2; bound.codec_version = 1;
       bound.statement_receipt_uuid = identity(26'013);
       bound.datatype_catalog_snapshot_uuid = identity(26'014);
       std::vector<std::uint8_t> bytes;
@@ -1923,6 +1975,13 @@ std::string ExecutePrejoinSemanticReceipt(const std::string_view scenario) {
     authority.charset_name = "UTF-8";
     authority.collation_name = "unicode_ci";
     authority.collation_case_insensitive = true;
+    authority.collation_uuid = collation_uuid;
+    authority.database_uuid = Uuid(26'015);
+    authority.charset_uuid = Uuid(26'016);
+    authority.resource_epoch = 31;
+    authority.collation_epoch = 17;
+    authority.comparison_profile = resources::CollationProfile::uca17_root_secondary;
+    authority.unicode_collation = image.unicode_collation;
     int comparison = 1;
     std::string refusal;
     const bool accepted = api::QowCompareCanonicalCollatedScalarsV1(
@@ -1930,6 +1989,7 @@ std::string ExecutePrejoinSemanticReceipt(const std::string_view scenario) {
         FixtureValue(descriptor(26'012), "a"),
         collation_uuid, 31, 17, authority, &comparison,
         &refusal);
+    if (!accepted) std::cerr << "collation prejoin refusal: " << refusal << '\n';
     return accepted && comparison == 0 && refusal.empty()
                ? "collation:unicode_ci:A=a:31:17"
                : "";
@@ -2847,11 +2907,12 @@ bool ExhaustiveJoinAdmissionMatrix() {
 }  // namespace
 
 int main() {
-  if (!TypedDagAndCanonicalPopulation() || !CanonicalSpatialPointExpression() ||
-      !DescriptorAllocation() ||
-      !CompositionProfiles() || !ExhaustiveJoinAdmissionMatrix()) {
-    return EXIT_FAILURE;
-  }
+  bool passed = TypedDagAndCanonicalPopulation();
+  passed &= CanonicalSpatialPointExpression();
+  passed &= DescriptorAllocation();
+  passed &= CompositionProfiles();
+  passed &= ExhaustiveJoinAdmissionMatrix();
+  if (!passed) return EXIT_FAILURE;
   std::cout << "qow_ces05_cross_family_join=passed\n";
   return EXIT_SUCCESS;
 }

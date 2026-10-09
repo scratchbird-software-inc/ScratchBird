@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -55,16 +56,17 @@ struct ModelProviderRowIdentityV1 {
   std::string time_series_raw_value;
   std::string time_series_sample_count;
   std::string time_series_aggregate_value;
-  // RCP-077 exact public vector result identity. These canonical REAL64
-  // strings are rechecked against the typed batch before publication.
-  std::string vector_distance;
-  std::string vector_score;
+  // RCP-077 exact native REAL64 receipt; absent on non-vector families.
+  std::optional<double> vector_distance;
+  std::optional<double> vector_score;
   // RCP-078 exact public search result identity. The relation UUID lives in
   // document_uuid; analyzer identity, score, and gap-free rank are carried
   // independently so the typed exchange can reject cell substitution.
   internal_api::EngineUuid search_analyzer_uuid;
   std::uint64_t search_analyzer_generation{0};
-  std::string search_score;
+  // Absent for other families. Keep the exact finite native value, not a
+  // formatted decimal copy; its storage is included in identity_inline_bytes.
+  std::optional<double> search_score;
   std::uint64_t search_rank{0};
 };
 

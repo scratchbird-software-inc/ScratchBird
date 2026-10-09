@@ -6,6 +6,8 @@
 #include "../../src/engine/optimizer/model_family_coordinator.hpp"
 
 #include <iostream>
+#include <array>
+#include <limits>
 #include <stdexcept>
 
 namespace ex = scratchbird::engine::executor;
@@ -204,6 +206,92 @@ int main() {
     limited.maximum_memory_bytes = 1;
     Require(RejectedWithoutPublication(ex::PublishModelFamilyExchangeV1(limited, provider, {})),
             "model exchange published beyond its memory grant");
+    auto search_input = input;
+    search_input.family_id = "search";
+    search_input.operation_id = "SEARCH_RANKED_QUERY";
+    search_input.output_descriptor_ids = {1, 2, 3, 4, 5};
+    search_input.maximum_cells = 5;
+    auto search = provider;
+    search.output_descriptor_ids = search_input.output_descriptor_ids;
+    search.properties.ordering_id = "search_score_desc_document_uuid_asc_v1";
+    search.properties.uniqueness_id = "document_uuid";
+    auto& search_identity = search.ordered_row_identities.front();
+    search_identity = {};
+    search_identity.document_uuid = FixtureUuid(60);
+    search_identity.search_analyzer_uuid = FixtureUuid(61);
+    search_identity.search_analyzer_generation = 7;
+    search_identity.search_score = 0.75;
+    search_identity.search_rank = 1;
+    search.batch = {};
+    ex::DescriptorTuple search_row;
+    const std::array names{"document_uuid", "analyzer_uuid", "analyzer_generation", "score", "rank"};
+    const std::array types{"uuid", "uuid", "uint64", "real64", "uint64"};
+    for (unsigned i = 0; i < 5; ++i) {
+      auto descriptor = ex::MakeExecutorDescriptor(types[i], "nullability=non_null");
+      descriptor.descriptor_uuid = FixtureUuid(62 + i);
+      descriptor.descriptor_kind = "scalar";
+      search.batch.columns.push_back({names[i], descriptor, false, i + 1});
+      api::EngineTypedValue value;
+      if (i < 2) {
+        const auto uuid = i == 0 ? search_identity.document_uuid : search_identity.search_analyzer_uuid;
+        value.binary_value.assign(uuid.bytes.begin(), uuid.bytes.end());
+      } else if (i == 3) value = ex::EncodeReal64Value(0.75);
+      else value = ex::EncodeUint64Value(i == 2 ? 7 : 1);
+      value.descriptor = descriptor;
+      search_row.values.push_back(std::move(value));
+    }
+    search.batch.rows.push_back(search_row);
+    const auto publish_search = [&](const auto& batch) {
+      return ex::PublishModelFamilyExchangeV1(search_input, batch, {});
+    };
+    const auto search_result = publish_search(search);
+    if (!search_result.accepted) throw std::runtime_error(search_result.detail);
+    Require(search_result.root_publishable && search_result.output.exact_exchange_validated &&
+                search_result.output.batch.rows[0].values[3].binary_value == search_row.values[3].binary_value &&
+                search_result.output.ordered_row_identities[0].search_score == 0.75,
+            "search exchange lost its native score or receipt");
+    for (const unsigned column : {2u, 4u}) {
+      for (unsigned mutation = 0; mutation < 5; ++mutation) {
+        auto invalid = search;
+        auto& value = invalid.batch.rows.front().values[column];
+        switch (mutation) {
+          case 0: value.encoded_value = "1"; break;
+          case 1: value.binary_value.clear(); value.encoded_value = "1"; break;
+          case 2: value.binary_value.pop_back(); break;
+          case 3: value.binary_value[0] ^= 2; break;
+          case 4:
+            ++invalid.batch.columns[column].descriptor.datatype_descriptor_generation;
+            value.descriptor = invalid.batch.columns[column].descriptor;
+            break;
+        }
+        Require(RejectedWithoutPublication(publish_search(invalid)),
+                "search exchange published malformed or substituted UINT64");
+      }
+    }
+    for (unsigned mutation = 0; mutation < 12; ++mutation) {
+      auto invalid = search;
+      auto& score = invalid.batch.rows.front().values[3];
+      auto& receipt = invalid.ordered_row_identities.front().search_score;
+      switch (mutation) {
+        case 0: score.encoded_value = "0.75"; break;
+        case 1: score.binary_value.clear(); score.encoded_value = "0.75"; break;
+        case 2: score.binary_value.pop_back(); break;
+        case 3: ++score.descriptor.datatype_descriptor_generation; break;
+        case 4: receipt.reset(); break;
+        case 5: receipt = -1.0; break;
+        case 6: receipt = 0.5; break;
+        case 7: receipt = std::numeric_limits<double>::infinity(); break;
+        case 8: receipt = std::numeric_limits<double>::quiet_NaN(); break;
+        case 9: score.is_null = true; break;
+        case 10: score.binary_value = {0,0,0,0,0,0,0xf0,0x7f}; break;
+        case 11:
+          ++invalid.batch.columns[3].descriptor.datatype_descriptor_generation;
+          score.descriptor = invalid.batch.columns[3].descriptor;
+          break;
+      }
+      Require(RejectedWithoutPublication(publish_search(invalid)),
+              "search exchange published a malformed or substituted score");
+    }
     std::cout << "PASS actual binary model exchange publication; component only\n";
     return 0;
   } catch (const std::exception& error) {

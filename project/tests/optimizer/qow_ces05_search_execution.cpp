@@ -2,12 +2,14 @@
 #include "../support/native_catalog_column_fixture.hpp"
 #include "../support/published_ddl_table_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
+#include "../support/canonical_int64_literal_fixture.hpp"
 #include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 #include "hash_digest.hpp"
 #include "canonical_query_execute.hpp"
+#include "canonical_query_search_composition.hpp"
 #include "crud_support/crud_store.hpp"
 #include "database_lifecycle.hpp"
 #include "datatype_catalog_manifest.hpp"
@@ -25,6 +27,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <iterator>
@@ -411,7 +414,7 @@ bool EngineUuidExecutionCohortAuthority() {
                  "approved engine-issued UUIDv7 execution cohort drifted");
 }
 
-std::vector<api::EngineDescriptor> OutputDescriptors() {
+std::vector<api::EngineDescriptor> OutputDescriptors(const api::EngineRequestContext& context) {
   const auto uuid_type = CoreTypeUuid("uuid");
   const auto uint64_type = CoreTypeUuid("uint64");
   const auto real64_type = CoreTypeUuid("real64");
@@ -427,6 +430,18 @@ std::vector<api::EngineDescriptor> OutputDescriptors() {
     descriptor.canonical_type_name = std::string(names[index]);
     descriptor.type_uuid = types[index];
     descriptor.encoded_descriptor = "nullability=non_null";
+    const dt::DatatypeTypeCodecIdentityRowV1* binding = nullptr;
+    for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+      if (row.catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
+          row.catalog_generation != context.datatype_catalog_generation ||
+          row.registry_generation != context.datatype_registry_generation ||
+          row.type_uuid != types[index]) continue;
+      if (binding) throw std::runtime_error("ambiguous search output datatype binding");
+      binding = &row;
+    }
+    if (!binding) throw std::runtime_error("missing search output datatype binding");
+    descriptor.datatype_descriptor_uuid = binding->descriptor_uuid;
+    descriptor.datatype_descriptor_generation = binding->descriptor_generation;
     descriptors.push_back(std::move(descriptor));
   }
   return descriptors;
@@ -455,7 +470,7 @@ api::EngineBoundSearchReadRequestV1 SearchRequest(
   request.analyzer_uuid = scratchbird::tests::FixtureUuidLiteral("70000000-0000-7000-8000-000000000110");
   request.analyzer_generation = 7;
   request.analyzer_pipeline_sha256 = std::string(kAnalyzerDigest);
-  request.output_descriptors = OutputDescriptors();
+  request.output_descriptors = OutputDescriptors(fixture.reader);
   request.maximum_scanned_row_versions = 64;
   request.maximum_decoded_bytes = 1U << 20U;
   request.maximum_tokens = 1024;
@@ -727,6 +742,17 @@ bool DirectOutcomeMatrix() {
       ExactRefusal(api::EngineBoundSearchReadV1(typed),
                    "SB_MODEL_TYPED_EXCHANGE_INVALID_V1", false),
       "SX-25 typed output substitution was accepted");
+  for (std::size_t column = 0; column < 5; ++column) {
+    auto stale = SearchRequest(base, api::EngineBoundSearchOperationV1::kTerms, "alpha", 2);
+    ++stale.output_descriptors[column].datatype_descriptor_generation;
+    passed &= Require(ExactRefusal(api::EngineBoundSearchReadV1(stale),
+          "SB_MODEL_TYPED_EXCHANGE_INVALID_V1", false),
+          "stale search output datatype generation reached storage");
+    stale.output_descriptors[column].datatype_descriptor_uuid = {};
+    passed &= Require(ExactRefusal(api::EngineBoundSearchReadV1(stale),
+          "SB_MODEL_TYPED_EXCHANGE_INVALID_V1", false),
+          "unbound search output datatype reached storage");
+  }
   auto overflow = SearchRequest(
       base, api::EngineBoundSearchOperationV1::kTerms, "alpha", 2);
   overflow.maximum_memory_bytes = 1;
@@ -1935,14 +1961,14 @@ api::TypedRelationalDag ProductionSearchCteFetchDag(
   count.expression_kind = api::RelationalExpressionKind::kLiteral;
   count.result_descriptor_id = 108;
   count.literal_kind = api::RelationalLiteralKind::kNumeric;
-  count.literal_or_parameter_ref = "2";
+  scratchbird::tests::SetInt64Literal(count, dag.descriptors.back(), 2);
   dag.expressions.push_back(std::move(count));
   api::RelationalExpressionRecord offset;
   offset.expression_id = 41;
   offset.expression_kind = api::RelationalExpressionKind::kLiteral;
   offset.result_descriptor_id = 108;
   offset.literal_kind = api::RelationalLiteralKind::kNumeric;
-  offset.literal_or_parameter_ref = "0";
+  scratchbird::tests::SetInt64Literal(offset, dag.descriptors.back(), 0);
   dag.expressions.push_back(std::move(offset));
   api::RelationalDagNode fetch;
   fetch.node_id = 3;
@@ -2005,14 +2031,14 @@ api::TypedRelationalDag ProductionSearchGroupedAggregateDag(
   group_literal.expression_kind = api::RelationalExpressionKind::kLiteral;
   group_literal.result_descriptor_id = 108;
   group_literal.literal_kind = api::RelationalLiteralKind::kNumeric;
-  group_literal.literal_or_parameter_ref = "1";
+  scratchbird::tests::SetInt64Literal(group_literal, dag.descriptors.at(7), 1);
   dag.expressions.push_back(std::move(group_literal));
   api::RelationalExpressionRecord sum_literal;
   sum_literal.expression_id = 41;
   sum_literal.expression_kind = api::RelationalExpressionKind::kLiteral;
   sum_literal.result_descriptor_id = 109;
   sum_literal.literal_kind = api::RelationalLiteralKind::kNumeric;
-  sum_literal.literal_or_parameter_ref = "2";
+  scratchbird::tests::SetInt64Literal(sum_literal, dag.descriptors.at(8), 2);
   dag.expressions.push_back(std::move(sum_literal));
   dag.outputs.push_back({20, 2, 40, "group_key", 108, true, 0});
   dag.outputs.push_back({21, 2, 41, "sum_value", 109, true, 1});
@@ -2080,7 +2106,7 @@ api::TypedRelationalDag ProductionSearchRecursiveDag(
   bound.expression_kind = api::RelationalExpressionKind::kLiteral;
   bound.result_descriptor_id = 108;
   bound.literal_kind = api::RelationalLiteralKind::kNumeric;
-  bound.literal_or_parameter_ref = "5";
+  scratchbird::tests::SetInt64Literal(bound, dag.descriptors.back(), 5);
   dag.expressions.push_back(std::move(bound));
   api::RelationalDagNode term;
   term.node_id = 3;
@@ -2281,7 +2307,22 @@ std::string ApiResultBytes(const api::EngineApiResult& result) {
       if (ordinal < 2) {
         if (!value.encoded_value.empty() || value.binary_value.size() != 16) return {};
         AppendResultField(&bytes, {reinterpret_cast<const char*>(value.binary_value.data()), 16});
-      } else AppendResultField(&bytes, value.encoded_value);
+      } else if (ordinal == 3) {
+        // The fixed KAT is a test-only semantic serialization, not an engine
+        // carrier. Decode the bound native cell before rendering its value.
+        const auto decoded = exec::DecodeReal64Value(value);
+        if (!decoded.ok()) return {};
+        std::array<char, 128> rendered{};
+        const auto text = std::to_chars(rendered.data(), rendered.data() + rendered.size(),
+                                        decoded.value, std::chars_format::general);
+        if (text.ec != std::errc{}) return {};
+        AppendResultField(&bytes, std::string_view(rendered.data(), text.ptr - rendered.data()));
+      } else {
+        std::uint64_t decoded = 0;
+        std::string detail;
+        if (!exec::DecodeBoundUint64Value(value, &decoded, &detail)) return {};
+        AppendResultField(&bytes, std::to_string(decoded));
+      }
     }
   }
   return bytes;
@@ -2306,7 +2347,23 @@ std::string ApiRowField(const api::EngineApiResult& result,
   const auto found = std::ranges::find_if(fields, [&](const auto& field) {
     return field.first == name;
   });
-  return found == fields.end() ? std::string{} : found->second.encoded_value;
+  if (found == fields.end()) return {};
+  if (name == "rank" || name == "analyzer_generation") {
+    std::uint64_t decoded = 0;
+    std::string detail;
+    if (!exec::DecodeBoundUint64Value(found->second, &decoded, &detail))
+      throw std::runtime_error("invalid native UINT64 result: " + detail);
+    return std::to_string(decoded);
+  }
+  if (name == "row_number" || name == "search_count" || name == "group_key" ||
+      name == "group_count" || name == "rank_sum") {
+    std::int64_t decoded = 0;
+    std::string detail;
+    if (!exec::DecodeBoundInt64Value(found->second, &decoded, &detail))
+      throw std::runtime_error("invalid native INT64 result: " + detail);
+    return std::to_string(decoded);
+  }
+  return found->second.encoded_value;
 }
 
 // Independently issued execution handles differ. All other envelope bytes,
@@ -2366,10 +2423,69 @@ bool ProductionCanonicalRoute() {
     return false;
   }
   const auto dag = ProductionSearchDag(fixture, "SEARCH_TERMS", "alpha beta", 3);
+  // Exercise exchange admission with the real storage provider's batch, not
+  // fabricated trust flags. Reuse that immutable batch for mutation checks.
+  sblr::Rcp079CapturedModelLegV1 captured;
+  sblr::ExecuteCanonicalSearchFamilyQuery({fixture.reader, dag}, &captured);
+  if (!Require(captured.captured, "search storage leg capture failed")) return false;
+  auto& request = captured.execution_request;
+  struct Cleanup {
+    std::function<void()> callback;
+    ~Cleanup() { if (callback) callback(); }
+  } cleanup{request.cleanup_provider};
+  const auto provided = request.execute_provider(request.input);
+  const auto& batch = provided.provider_batch;
+  if (!Require(provided.ok && !batch.batch.rows.empty() &&
+          exec::PublishModelFamilyExchangeV1(request.input, batch, {}).accepted,
+          "native search provider batch did not pass exchange admission")) return false;
+  for (unsigned mutation = 0; mutation < 9; ++mutation) {
+    auto invalid = batch;
+    auto& score = invalid.batch.rows.front().values[3];
+    auto& identity = invalid.ordered_row_identities.front();
+    switch (mutation) {
+      case 0: score.encoded_value = "1"; break;
+      case 1: score.binary_value.clear(); score.encoded_value = "1"; break;
+      case 2: score.binary_value.pop_back(); break;
+      case 3: ++score.descriptor.datatype_descriptor_generation; break;
+      case 4: identity.search_score.reset(); break;
+      case 5: identity.search_score = -1.0; break;
+      case 6: identity.search_score = *identity.search_score + 1.0; break;
+      case 7: score.binary_value = {0, 0, 0, 0, 0, 0, 0xf0, 0x7f}; break;
+      case 8: score.is_null = true; break;
+    }
+    const auto refused = exec::PublishModelFamilyExchangeV1(request.input, invalid, {});
+    if (!Require(!refused.accepted, "search exchange accepted a substituted native score"))
+      return false;
+  }
   const auto execution =
       sblr::ExecuteCanonicalCurrentHeapQuery({fixture.reader, dag});
   const auto replay =
       sblr::ExecuteCanonicalCurrentHeapQuery({fixture.reader, dag});
+  bool native_scores_exact = !execution.api_result.result_shape.rows.empty();
+  for (const auto& row : execution.api_result.result_shape.rows) {
+    const auto field = std::ranges::find_if(row.fields, [](const auto& item) {
+      return item.first == "score";
+    });
+    if (field == row.fields.end()) { native_scores_exact = false; continue; }
+    const auto& value = field->second;
+    const auto decoded = exec::DecodeReal64Value(value);
+    native_scores_exact &= decoded.ok() && decoded.value > 0.0 &&
+        value.encoded_value.empty() && value.binary_value.size() == 8;
+    for (unsigned mutation = 0; mutation < 6; ++mutation) {
+      auto invalid = value;
+      switch (mutation) {
+        case 0: invalid.encoded_value = "1"; break;
+        case 1: invalid.binary_value.clear(); invalid.encoded_value = "1"; break;
+        case 2: invalid.binary_value.pop_back(); break;
+        case 3: ++invalid.descriptor.datatype_descriptor_generation; break;
+        case 4: invalid.is_null = true; break;
+        case 5: invalid.binary_value = {0, 0, 0, 0, 0, 0, 0xf0, 0x7f}; break;
+      }
+      native_scores_exact &= !exec::DecodeReal64Value(invalid).ok();
+    }
+  }
+  if (!Require(native_scores_exact, "search score native carrier or rejection contract drifted"))
+    return false;
   const auto unary = sblr::ExecuteCanonicalCurrentHeapQuery(
       {fixture.reader, ProductionSearchUnaryCompositionDag(fixture)});
   const auto cte_fetch = sblr::ExecuteCanonicalCurrentHeapQuery(
@@ -2416,6 +2532,15 @@ bool ProductionCanonicalRoute() {
     substituted.api_result.result_shape.rows.front().fields.front().second.descriptor.type_uuid = TestUuid(0xdd01);
     replay_checks_exact &= Require(!SameProductionReplay(execution, substituted),
         "search replay oracle accepted a substituted descriptor");
+    for (std::size_t column = 2; column < 5; ++column) {
+      substituted = replay;
+      auto& cell = substituted.api_result.result_shape.rows.front().fields[column].second;
+      if (cell.binary_value.size() != 8) throw std::runtime_error("missing native search scalar");
+      cell.binary_value[0] ^= 1;
+      replay_checks_exact &= Require(!SameProductionReplay(execution, substituted) &&
+          ApiResultBytes(execution.api_result) != ApiResultBytes(substituted.api_result),
+          "search replay oracle accepted a substituted native scalar");
+    }
   }
   const auto joined_dag = ProductionSearchMixedJoinDag(fixture);
   const auto direct_multileg_profiles =
@@ -2553,9 +2678,34 @@ bool ProductionCanonicalRoute() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) try {
   scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
       "native-search-query-authority");
+#if defined(SB_CES05_SEARCH_PRODUCTION_QUERY_ROUTE)
+  // Diagnostic subset only; the registered regression always runs all cases.
+  if (argc == 2 && std::string_view(argv[1]) == "--production-only")
+    return ProductionCanonicalRoute() ? 0 : 1;
+  if (argc == 2 && std::string_view(argv[1]) == "--unary-only") {
+    SearchFixture fixture;
+    if (!BuildFixture(FixtureKind::kBase, &fixture)) return 1;
+    const auto result = sblr::ExecuteCanonicalCurrentHeapQuery(
+        {fixture.reader, ProductionSearchUnaryCompositionDag(fixture)});
+    for (const auto& diagnostic : result.api_result.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+    return Require(result.profile_matched && result.optimizer_admitted &&
+        result.optimizer_selected && result.physical_dag_published &&
+        result.physical_dag_executed && result.runtime_actuals_attached &&
+        result.canonical_result_published && result.api_result.ok &&
+        result.physical_node_count == 5 && result.canonical_result_column_count == 6 &&
+        result.canonical_result_row_count == 3 &&
+        ApiRowField(result.api_result, 0, "rank") == "1" &&
+        ApiRowField(result.api_result, 2, "rank") == "3" &&
+        ApiRowField(result.api_result, 0, "row_number") == "1" &&
+        ApiRowField(result.api_result, 2, "row_number") == "3",
+        "search unary reproduction failed") ? 0 : 1;
+  }
+#endif
+  if (argc != 1) return 2;
   if (!EngineUuidExecutionCohortAuthority() || !CarrierKat() ||
       !RawPersistenceMutationMatrix() ||
       !DirectOutcomeMatrix() || !SegmentAndFallbackMatrix()
@@ -2568,4 +2718,7 @@ int main() {
   std::cout << "RCP-078 search KAT, 179 raw mutations, and direct semantic "
                "outcome matrix: PASS\n";
   return 0;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return 1;
 }
