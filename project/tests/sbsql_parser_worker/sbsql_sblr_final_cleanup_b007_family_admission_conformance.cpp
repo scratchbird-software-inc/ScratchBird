@@ -148,8 +148,8 @@ sblr::SblrOperationEnvelope BuildFamilyAdmissionOperation(
     operand.type = "diagnostic.refusal";
     operand.name = "refusal";
     operand.value_kind = sblr::SblrValueKind::descriptor_ref;
-    operand.value_body.assign(16, 0);
-    operand.value_body[0] = 1;
+    const auto descriptor_uuid = scratchbird::tests::FixtureUuid(1208, 4711);
+    operand.value_body.assign(descriptor_uuid.bytes.begin(), descriptor_uuid.bytes.end());
     operation.result_shape = "diagnostic_refusal_result";
     operation.diagnostic_shape = "diagnostic_vector";
     operation.operands.push_back(std::move(operand));

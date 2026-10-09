@@ -161,8 +161,8 @@ sblr::SblrOperationEnvelope EnvelopeFor(const OpcodeRow& row) {
                        : (reset ? "diagnostic.reset" : "descriptor.transform");
     operand.name = refusal ? "refusal" : (reset ? "reset" : "transform");
     operand.value_kind = sblr::SblrValueKind::descriptor_ref;
-    operand.value_body.assign(16, 0);
-    operand.value_body.front() = 1;
+    const auto descriptor_uuid = scratchbird::tests::FixtureUuid(1208, 4710);
+    operand.value_body.assign(descriptor_uuid.bytes.begin(), descriptor_uuid.bytes.end());
     envelope.operands.push_back(std::move(operand));
   }
   return envelope;
@@ -215,6 +215,20 @@ void RequireCanonicalEnvelopeValidation(const OpcodeRow& row) {
   const auto envelope_validation = sblr::ValidateSblrEnvelope(envelope);
   Require(envelope_validation.ok,
           EvidenceMessage(row, "envelope", "base engine envelope rejected valid canonical opcode"));
+  if (row.operation_id == "engine.op.diagnostic_refusal" ||
+      row.operation_id == "engine.op.diagnostic_reset" ||
+      row.operation_id == "engine.op.descriptor_transform") {
+    for (unsigned mutation = 0; mutation < 4; ++mutation) {
+      auto malformed = envelope;
+      auto& bytes = malformed.operands.front().value_body;
+      if (mutation == 0) bytes.assign(16, 0);
+      if (mutation == 1) bytes[6] = (bytes[6] & 0x0f) | 0x40;
+      if (mutation == 2) bytes.pop_back();
+      if (mutation == 3) bytes.assign(36, '0');
+      Require(!sblr::ValidateSblrEnvelope(malformed).ok,
+              EvidenceMessage(row, "identity_refusal", "invalid native descriptor identity was admitted"));
+    }
+  }
 
   const auto* entry = sblr::LookupSblrOperation(row.operation_id);
   Require(entry != nullptr,
