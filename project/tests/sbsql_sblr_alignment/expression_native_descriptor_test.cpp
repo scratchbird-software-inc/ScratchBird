@@ -53,4 +53,21 @@ int main() {
   crossed = bound; crossed.statement_receipt_uuid.bytes[6] = 0x40;
   Check(!s::BuildExactCanonicalBooleanRuntimeDescriptorV1(
       crossed, a::RelationalNullability::kNullable, &output));
+  Check(s::BuildExactCanonicalBooleanRuntimeDescriptorV1(
+      bound, a::RelationalNullability::kNonNull, &output));
+  std::string canonical, detail;
+  for (const auto* text : {"true", "false"}) {
+    Check(s::CanonicalizeLiteralPayload("boolean", output, text, &canonical, &detail));
+    Check(canonical == text);
+  }
+  for (const auto* invalid : {"", "TRUE", "False", "1", "0", "truth"}) {
+    canonical = "unchanged";
+    Check(!s::CanonicalizeLiteralPayload("boolean", output, invalid, &canonical, &detail));
+    Check(canonical == "unchanged" && !detail.empty());
+  }
+  auto stale = output;
+  ++stale.datatype_descriptor_generation;
+  canonical = "unchanged";
+  Check(!s::CanonicalizeLiteralPayload("boolean", stale, "true", &canonical, &detail));
+  Check(canonical == "unchanged" && !detail.empty());
 }

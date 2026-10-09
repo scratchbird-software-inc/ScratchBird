@@ -10,6 +10,7 @@
 #include "hash_digest.hpp"
 #include "sblr_literal_runtime.hpp"
 #include "canonical_query_descriptor_support.hpp"
+#include "descriptor_value_runtime.hpp"
 
 #include "datatype_catalog_manifest.hpp"
 #include "../internal_api/catalog/datatype_bootstrap_identity.hpp"
@@ -395,6 +396,18 @@ bool CanonicalizeLiteralPayload(const std::string_view type_name,
   request.value.encoded_value = payload;
   request.target_type_id = type_id;
   request.explicit_cast = true;
+  if (type_id == dt::CanonicalTypeId::boolean) {
+    // Core BOOLEAN is one canonical byte. The expression truth adapter owns
+    // its logical true/false carrier; do not submit that carrier as Core bytes.
+    if (payload != "true" && payload != "false") {
+      *refusal_detail = "boolean literal payload is invalid";
+      return false;
+    }
+    if (!executor::BuildBoundExecutionTypeDescriptor(descriptor, type_id,
+            &request.value.descriptor, refusal_detail)) return false;
+    request.target_descriptor = request.value.descriptor;
+    request.value.encoded_value.assign(1, payload == "true" ? '\1' : '\0');
+  }
   const auto canonical = dt::CastDatatypeValue(request);
   if (!canonical.ok()) {
     *refusal_detail = canonical.diagnostic.diagnostic_code.empty()
@@ -406,7 +419,16 @@ bool CanonicalizeLiteralPayload(const std::string_view type_name,
     }
     return false;
   }
-  *canonical_payload = canonical.value.encoded_value;
+  if (type_id == dt::CanonicalTypeId::boolean) {
+    if (canonical.value.encoded_value.size() != 1 ||
+        (canonical.value.encoded_value[0] != '\0' && canonical.value.encoded_value[0] != '\1')) {
+      *refusal_detail = "Core BOOLEAN literal result is not canonical";
+      return false;
+    }
+    *canonical_payload = canonical.value.encoded_value[0] == '\1' ? "true" : "false";
+  } else {
+    *canonical_payload = canonical.value.encoded_value;
+  }
   return true;
 }
 

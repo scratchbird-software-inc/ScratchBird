@@ -470,6 +470,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
     const auto build_descriptor = [](const api::RelationalTypeDescriptor& source,
                                      const std::string& type_name) {
       api::EngineDescriptor descriptor;
+      if (type_name == "int64") {
+        if (!BuildExactCanonicalScalarRuntimeDescriptorV1(
+                source, dt::CanonicalTypeId::int64, &descriptor)) return api::EngineDescriptor{};
+        return descriptor;
+      }
       descriptor.descriptor_uuid = source.descriptor_uuid;
       descriptor.type_uuid = source.type_uuid;
       descriptor.descriptor_kind = "scalar";
@@ -2601,6 +2606,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
   const auto build_descriptor = [](const api::RelationalTypeDescriptor& source,
                                    const std::string& type_name) {
     api::EngineDescriptor descriptor;
+    if (type_name == "int64") {
+      if (!BuildExactCanonicalScalarRuntimeDescriptorV1(
+              source, dt::CanonicalTypeId::int64, &descriptor)) return api::EngineDescriptor{};
+      return descriptor;
+    }
     descriptor.descriptor_uuid = source.descriptor_uuid;
     descriptor.type_uuid = source.type_uuid;
     descriptor.descriptor_kind = "scalar";

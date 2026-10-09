@@ -850,14 +850,12 @@ LiveRecursiveCteTermExecution ExecutePreparedRecursiveCteTerm(
           decoded.value >= prepared.upper_bound) {
         continue;
       }
-      api::EngineTypedValue next;
-      next.descriptor = value.descriptor;
-      next.encoded_value = std::to_string(
+      auto next = exec::EncodeInt64Value(
           prepared.mode == LiveRecursiveCteTermMode::kIncrementWrapToOne &&
                   decoded.value >= prepared.upper_bound
               ? 1
               : decoded.value + 1);
-      next.state = api::EngineValueState::value;
+      next.descriptor = value.descriptor;
       if (!append({{std::move(next)}}, row)) return result;
     }
     if (poll_cancellation()) {

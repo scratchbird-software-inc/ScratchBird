@@ -10282,6 +10282,8 @@ foreach(native_component IN ITEMS udr_registry_binary_file udr_native_registry c
     TIMEOUT 60 LABELS "sbsql_sblr_alignment;binary_uuid;native_binding;not_runtime_acceptance")
 endforeach()
 
+target_link_libraries(sbsql_sblr_alignment_expression_native_descriptor PRIVATE sb_engine_sblr)
+
 add_executable(sbsql_sblr_alignment_auth_provider_native_policy
   auth_provider_native_policy_test.cpp)
 target_compile_features(sbsql_sblr_alignment_auth_provider_native_policy PRIVATE cxx_std_23)

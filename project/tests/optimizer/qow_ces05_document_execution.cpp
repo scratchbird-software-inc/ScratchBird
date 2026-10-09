@@ -10,6 +10,8 @@
 #include "uuid.hpp"
 
 #if defined(SB_CES05_PRODUCTION_QUERY_ROUTE)
+#include "../support/native_int64_fixture.hpp"
+#include "../support/canonical_int64_literal_fixture.hpp"
 #include "../support/catalog_column_binding_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
 #include "../database_lifecycle/database_lifecycle_test_memory.hpp"
@@ -25,6 +27,7 @@
 #include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
 #include "relational_descriptor_codec.hpp"
+#include "sblr_literal_runtime.hpp"
 #include <stdexcept>
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
@@ -1828,7 +1831,7 @@ void AddProductionOperand(sblr::SblrOperationEnvelope* envelope,
   envelope->operands.push_back(std::move(operand));
 }
 
-void AddProductionDescriptor(sblr::SblrOperationEnvelope* envelope,
+api::RelationalTypeDescriptor BindProductionDescriptor(
                              const api::EngineRequestContext& context,
                              api::RelationalTypeDescriptor descriptor,
                              api::EngineUuid bound_datatype_uuid = {}) {
@@ -1854,6 +1857,14 @@ void AddProductionDescriptor(sblr::SblrOperationEnvelope* envelope,
   descriptor.datatype_catalog_snapshot_uuid = context.datatype_catalog_snapshot_uuid;
   descriptor.datatype_catalog_generation = context.datatype_catalog_generation;
   descriptor.datatype_registry_generation = context.datatype_registry_generation;
+  return descriptor;
+}
+
+void AddProductionDescriptor(sblr::SblrOperationEnvelope* envelope,
+                             const api::EngineRequestContext& context,
+                             api::RelationalTypeDescriptor descriptor,
+                             api::EngineUuid bound_datatype_uuid = {}) {
+  descriptor = BindProductionDescriptor(context, std::move(descriptor), bound_datatype_uuid);
   sblr::SblrOperand operand;
   operand.type = "relational_descriptor_v3";
   operand.name = "slot_" + std::to_string(descriptor.descriptor_id);
@@ -1865,7 +1876,60 @@ void AddProductionDescriptor(sblr::SblrOperationEnvelope* envelope,
 }
 
 void AddProductionExpression(sblr::SblrOperationEnvelope* envelope,
-                             const api::RelationalExpressionRecord& expression) {
+                             api::RelationalExpressionRecord expression) {
+  if (expression.literal_kind == api::RelationalLiteralKind::kNumeric) {
+    api::RelationalTypeDescriptor descriptor;
+    bool found = false;
+    for (const auto& source : envelope->operands) {
+      if (source.value_kind != sblr::SblrValueKind::relational_type_descriptor) continue;
+      if (!sblr::DecodeRelationalTypeDescriptorV1(source.value_body.data(),
+              source.value_body.size(), &descriptor))
+        throw std::invalid_argument("numeric fixture descriptor decode failed");
+      if (descriptor.descriptor_id == expression.result_descriptor_id) { found = true; break; }
+    }
+    if (!found) throw std::invalid_argument("numeric fixture has no descriptor");
+    if (descriptor.type_uuid == exec::MakeExecutorDescriptor("int64").type_uuid) {
+    const auto encoded = scratchbird::tests::NativeInt64Fixture(
+        exec::MakeExecutorDescriptor("int64", "nullability=non_null"),
+        expression.literal_or_parameter_ref.value());
+    const auto decoded = exec::DecodeInt64Value(encoded);
+    if (!decoded.ok()) throw std::invalid_argument("numeric fixture decode failed");
+    // The wire carries scalar literals in SBXN, never inside the ordinary
+    // expression record. This bounded composition has exactly one literal.
+    if (std::ranges::any_of(envelope->operands, [](const auto& operand) {
+          return operand.value_kind == sblr::SblrValueKind::expression_node_table;
+        })) throw std::invalid_argument("composition fixture has multiple literal tables");
+    sblr::SblrExpressionLiteralNodeV1 node;
+    node.node_id = expression.expression_id;
+    node.parent_operand_ordinal = 1;
+    node.descriptor_uuid = descriptor.descriptor_uuid.bytes;
+    node.descriptor_generation = descriptor.descriptor_generation;
+    const auto body = sblr::EncodeSblrLiteralInt64LeV1(decoded.value);
+    node.literal_body.assign(body.begin(), body.end());
+    auto table = sblr::EncodeSblrExpressionNodeTableV1({{node}});
+    const auto digest = scratchbird::core::hash::ComputeSha256Digest(table);
+    if (table.empty() || !digest.ok()) throw std::invalid_argument("literal node encoding failed");
+    sblr::SblrOperand reference;
+    reference.type = "relational_expression_v1";
+    reference.name = std::to_string(expression.expression_id);
+    reference.ordinal = static_cast<std::uint32_t>(envelope->operands.size() + 1);
+    reference.value_kind = sblr::SblrValueKind::expression_node_ref;
+    reference.value_body = {1, 0, 0, 0, 1, 0, 0, 0};
+    AppendLittleEndianU64(&reference.value_body, node.node_id);
+    reference.value_body.insert(reference.value_body.end(), digest.digest.begin(), digest.digest.end());
+    reference.value_body.insert(reference.value_body.end(), node.descriptor_uuid.begin(), node.descriptor_uuid.end());
+    AppendLittleEndianU64(&reference.value_body, node.descriptor_generation);
+    envelope->operands.push_back(std::move(reference));
+    sblr::SblrOperand nodes;
+    nodes.type = "expression.node_table.v1";
+    nodes.name = "expression_nodes";
+    nodes.ordinal = static_cast<std::uint32_t>(envelope->operands.size() + 1);
+    nodes.value_kind = sblr::SblrValueKind::expression_node_table;
+    nodes.value_body = std::move(table);
+    envelope->operands.push_back(std::move(nodes));
+    return;
+    }
+  }
   sblr::SblrOperand operand;
   operand.type = "relational_expression_v2";
   operand.name = "slot_" + std::to_string(expression.expression_id);
@@ -2261,6 +2325,8 @@ api::TypedRelationalDag ProductionDocumentUnnestSortLimitDag(
       {4, ProductionNativeUuid(platform::UuidKind::object), int64_type_uuid,
        api::RelationalNullability::kNonNull},
   };
+  for (auto& descriptor : dag.descriptors)
+    descriptor = BindProductionDescriptor(context, std::move(descriptor));
   api::RelationalExpressionRecord document;
   document.expression_id = 1;
   document.expression_kind = api::RelationalExpressionKind::kLiteral;
@@ -2284,13 +2350,13 @@ api::TypedRelationalDag ProductionDocumentUnnestSortLimitDag(
   sort_key.expression_kind = api::RelationalExpressionKind::kLiteral;
   sort_key.result_descriptor_id = 4;
   sort_key.literal_kind = api::RelationalLiteralKind::kNumeric;
-  sort_key.literal_or_parameter_ref = "0";
+  scratchbird::tests::SetInt64Literal(sort_key, dag.descriptors[3], 0);
   api::RelationalExpressionRecord limit;
   limit.expression_id = 5;
   limit.expression_kind = api::RelationalExpressionKind::kLiteral;
   limit.result_descriptor_id = 4;
   limit.literal_kind = api::RelationalLiteralKind::kNumeric;
-  limit.literal_or_parameter_ref = "2";
+  scratchbird::tests::SetInt64Literal(limit, dag.descriptors[3], 2);
   dag.expressions = {std::move(document), std::move(path), std::move(unnest),
                      std::move(sort_key), std::move(limit)};
   dag.outputs = {{1, 1, 3, "item", 2, true, 0}};
@@ -2412,7 +2478,12 @@ api::TypedRelationalDag ProductionDocumentUnnestRecursiveCteDag(
   bound.expression_kind = api::RelationalExpressionKind::kLiteral;
   bound.result_descriptor_id = 4;
   bound.literal_kind = api::RelationalLiteralKind::kNumeric;
-  bound.literal_or_parameter_ref = std::string(upper_bound);
+  const auto bound_value = scratchbird::tests::NativeInt64Fixture(
+      exec::MakeExecutorDescriptor("int64", "nullability=non_null"), upper_bound);
+  const auto decoded_bound = exec::DecodeInt64Value(bound_value);
+  if (!decoded_bound.ok()) throw std::invalid_argument("recursive bound fixture decode failed");
+  scratchbird::tests::SetInt64Literal(bound, dag.descriptors[3],
+      decoded_bound.value);
   dag.expressions.push_back(std::move(bound));
 
   api::RelationalDagNode term;
@@ -2651,16 +2722,10 @@ api::TypedRelationalDag ProductionDocumentUnnestRowNumberDag(
 
 exec::CanonicalRecursiveCteWorkingRequest
 ProductionRecursiveAggregateAnchorRequest() {
-  api::EngineDescriptor descriptor;
+  auto descriptor = exec::MakeExecutorDescriptor("int64", "nullability=non_null");
   descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711");
   descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = "int64";
-  descriptor.type_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712");
-  descriptor.encoded_descriptor = "nullability=non_null";
-  api::EngineTypedValue anchor_value;
-  anchor_value.descriptor = descriptor;
-  anchor_value.encoded_value = "3";
-  anchor_value.setState(api::EngineValueState::value);
+  auto anchor_value = scratchbird::tests::NativeInt64Fixture(descriptor, "3");
 
   exec::CanonicalRecursiveCteWorkingRequest request;
   auto& dag = request.physical_dag;
@@ -2785,12 +2850,11 @@ ProductionRecursiveAggregateAnchorRequest() {
     exec::DescriptorBatch next;
     next.columns = working.columns;
     for (const auto& row : working.rows) {
-      const auto value = std::stoll(row.values.front().encoded_value);
+      const auto decoded = exec::DecodeInt64Value(row.values.front());
+      if (!decoded.ok()) throw std::invalid_argument("recursive fixture input is not native INT64");
+      const auto value = decoded.value;
       if (value >= 5) continue;
-      api::EngineTypedValue incremented;
-      incremented.descriptor = descriptor;
-      incremented.encoded_value = std::to_string(value + 1);
-      incremented.setState(api::EngineValueState::value);
+      auto incremented = scratchbird::tests::NativeInt64Fixture(descriptor, std::to_string(value + 1));
       next.rows.push_back({{std::move(incremented)}});
     }
     return next;
@@ -2826,8 +2890,8 @@ bool ValidateProductionRecursiveAggregateAnchorAdmission() {
   passed &= Require(
       positive.diagnostic.ok && positive.converged &&
           positive.output_batch.rows.size() == 3 &&
-          positive.output_batch.rows[0].values[0].encoded_value == "3" &&
-          positive.output_batch.rows[2].values[0].encoded_value == "5" &&
+          scratchbird::tests::NativeInt64Equals(positive.output_batch.rows[0].values[0], 3) &&
+          scratchbird::tests::NativeInt64Equals(positive.output_batch.rows[2].values[0], 5) &&
           positive.executed_physical_node_id == 303,
       "direct materialized COUNT(*) recursive anchor was not admitted exactly: " +
           positive.diagnostic.diagnostic_code + ":" +
@@ -2879,6 +2943,26 @@ bool ValidateProductionRecursiveAggregateAnchorAdmission() {
             api::EngineValueState::sql_null);
       },
       "NULL recursive COUNT(*) anchor was admitted");
+  passed &= refused(
+      [](auto& request) {
+        auto& value = request.anchor_batch.rows[0].values[0];
+        value.binary_value.clear();
+        value.encoded_value = "3";
+      }, "text-only INT64 recursive anchor was admitted");
+  passed &= refused(
+      [](auto& request) {
+        request.anchor_batch.rows[0].values[0].encoded_value = "3";
+      }, "mixed binary/text INT64 recursive anchor was admitted");
+  passed &= refused(
+      [](auto& request) {
+        request.anchor_batch.rows[0].values[0].binary_value.pop_back();
+      }, "truncated native INT64 recursive anchor was admitted");
+  passed &= refused(
+      [](auto& request) {
+        ++request.anchor_batch.columns[0].descriptor.datatype_descriptor_generation;
+        request.anchor_batch.rows[0].values[0].descriptor =
+            request.anchor_batch.columns[0].descriptor;
+      }, "stale datatype generation in recursive anchor was admitted");
   passed &= refused(
       [](auto& request) {
         std::ranges::reverse(
@@ -2980,6 +3064,14 @@ bool SameProductionReplay(const Result& first, const Result& second) {
     }
   }
   return true;
+}
+
+std::int64_t AssertedNativeInt64(const api::EngineTypedValue& value) {
+  std::int64_t decoded = 0;
+  std::string detail;
+  if (!exec::DecodeBoundInt64Value(value, &decoded, &detail))
+    throw std::runtime_error("document result is not bound native INT64: " + detail);
+  return decoded;
 }
 
 bool ProductionCanonicalQueryExecuteRoute() {
@@ -3293,7 +3385,7 @@ bool ProductionCanonicalQueryExecuteRoute() {
       {context, count_dag});
   const auto replayed_count = sblr::ExecuteCanonicalCurrentHeapQuery(
       {context, count_dag});
-  std::string count_value;
+  bool count_value_is_three = false;
   if (counted_unnest.api_result.result_shape.rows.size() == 1) {
     const auto field = std::ranges::find_if(
         counted_unnest.api_result.result_shape.rows.front().fields,
@@ -3301,7 +3393,7 @@ bool ProductionCanonicalQueryExecuteRoute() {
           return candidate.first == "item_count";
         });
     if (field != counted_unnest.api_result.result_shape.rows.front().fields.end()) {
-      count_value = field->second.encoded_value;
+      count_value_is_three = scratchbird::tests::NativeInt64Equals(field->second, 3);
     }
   }
   passed &= Require(
@@ -3315,7 +3407,7 @@ bool ProductionCanonicalQueryExecuteRoute() {
           counted_unnest.physical_node_count == 2 &&
           counted_unnest.canonical_result_column_count == 1 &&
           counted_unnest.canonical_result_row_count == 1 &&
-          count_value == "3" && replayed_count.api_result.ok &&
+          count_value_is_three && replayed_count.api_result.ok &&
           SameProductionReplay(counted_unnest, replayed_count),
       "DOCUMENT_UNNEST global COUNT(*) did not publish one deterministic aggregate-root result");
 
@@ -3496,19 +3588,19 @@ bool ProductionCanonicalQueryExecuteRoute() {
   const auto replayed_recursive_cte =
       sblr::ExecuteCanonicalCurrentHeapQuery(
           {context, recursive_cte_dag});
-  std::vector<std::string> recursive_values;
+  std::vector<std::int64_t> recursive_values;
   for (const auto& row : recursive_cte.api_result.result_shape.rows) {
     const auto value = std::ranges::find_if(
         row.fields, [](const auto& field) {
           return field.first == "item_count";
         });
     if (value != row.fields.end()) {
-      recursive_values.push_back(value->second.encoded_value);
+      recursive_values.push_back(AssertedNativeInt64(value->second));
     }
   }
   if (!recursive_cte.api_result.ok ||
       recursive_cte.physical_node_count != 4 ||
-      recursive_values != std::vector<std::string>{"3", "4", "5"}) {
+      recursive_values != std::vector<std::int64_t>{3, 4, 5}) {
     std::cerr << "QOW-CES05-DOCUMENT recursive CTE ok="
               << recursive_cte.api_result.ok
               << " admitted=" << recursive_cte.optimizer_admitted
@@ -3539,7 +3631,7 @@ bool ProductionCanonicalQueryExecuteRoute() {
           recursive_cte.physical_node_count == 4 &&
           recursive_cte.canonical_result_column_count == 1 &&
           recursive_cte.canonical_result_row_count == 3 &&
-          recursive_values == std::vector<std::string>{"3", "4", "5"} &&
+          recursive_values == std::vector<std::int64_t>{3, 4, 5} &&
           replayed_recursive_cte.api_result.ok &&
           SameProductionReplay(recursive_cte, replayed_recursive_cte) &&
           HasProductionEvidence(
@@ -3699,20 +3791,20 @@ bool ProductionCanonicalQueryExecuteRoute() {
   const auto replayed_row_number_window =
       sblr::ExecuteCanonicalCurrentHeapQuery({context, row_number_dag});
   std::vector<std::string> window_items;
-  std::vector<std::string> row_numbers;
+  std::vector<std::int64_t> row_numbers;
   for (const auto& row : row_number_window.api_result.result_shape.rows) {
     for (const auto& field : row.fields) {
       if (field.first == "item") {
         window_items.push_back(field.second.encoded_value);
       } else if (field.first == "row_number") {
-        row_numbers.push_back(field.second.encoded_value);
+        row_numbers.push_back(AssertedNativeInt64(field.second));
       }
     }
   }
   if (!row_number_window.api_result.ok ||
       row_number_window.physical_node_count != 3 ||
       window_items != std::vector<std::string>{"3", "1", "2"} ||
-      row_numbers != std::vector<std::string>{"1", "2", "3"}) {
+      row_numbers != std::vector<std::int64_t>{1, 2, 3}) {
     std::cerr << "QOW-CES05-DOCUMENT ROW_NUMBER ok="
               << row_number_window.api_result.ok
               << " admitted=" << row_number_window.optimizer_admitted
@@ -3743,7 +3835,7 @@ bool ProductionCanonicalQueryExecuteRoute() {
           row_number_window.canonical_result_column_count == 2 &&
           row_number_window.canonical_result_row_count == 3 &&
           window_items == std::vector<std::string>{"3", "1", "2"} &&
-          row_numbers == std::vector<std::string>{"1", "2", "3"} &&
+          row_numbers == std::vector<std::int64_t>{1, 2, 3} &&
           replayed_row_number_window.api_result.ok &&
           SameProductionReplay(row_number_window, replayed_row_number_window) &&
           HasProductionEvidence(
@@ -4256,7 +4348,7 @@ bool CatalogIdentity() {
 
 }  // namespace
 
-int main() {
+int main() try {
 #if defined(SB_CES05_PRODUCTION_QUERY_ROUTE)
   scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("document-canonical-native-uuid");
 #endif
@@ -4273,4 +4365,7 @@ int main() {
   passed &= ProductionCanonicalQueryExecuteRoute();
 #endif
   return passed ? 0 : 1;
+} catch (const std::exception& error) {
+  std::cerr << "QOW-CES05-DOCUMENT fixture failure: " << error.what() << '\n';
+  return 1;
 }
