@@ -1,4 +1,5 @@
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/physical_plan_visibility_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -259,8 +260,8 @@ bool FullPhysicalPlanTreeIsSelected() {
          Require(customer.storage_backed && !customer.materializes && customer.preserves_visibility,
                  "customer leaf flags did not preserve storage visibility") &&
          Require(customer.relation_uuid == scratchbird::tests::FixtureUuid(1535, 1), "customer relation evidence missing") &&
-         Require(TreeContainsEvidence(limit, "mga_visibility_authority=engine_transaction_inventory"),
-                 "runtime payload did not retain MGA visibility authority evidence") &&
+         Require(scratchbird::tests::PhysicalPlanRequiresVisibilityAtEveryNode(limit),
+                 "plan must require visibility preservation without claiming executed MGA authority") &&
          Require(TreeContainsEvidence(limit, "selected_candidate_id=CAND-OPT-HASH"),
                  "physical tree did not retain primary flat candidate evidence") &&
          Require(opt::ValidatePhysicalPlanNode(limit).ok, "physical tree validation failed") &&

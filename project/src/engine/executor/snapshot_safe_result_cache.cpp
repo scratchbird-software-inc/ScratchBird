@@ -90,9 +90,10 @@ bool HardRefusal(const SnapshotSafeCacheStoreRequest& request,
     *detail = "uncommitted own-transaction visibility dependency is not snapshot-safe";
     return true;
   }
-  if (request.negative_cache_entry && !request.negative_cache_snapshot_safe_proven) {
+  if (request.negative_cache_entry &&
+      (!request.negative_cache_snapshot_safe_proven || request.entry.row_count != 0)) {
     *code = "EXECUTOR.SNAPSHOT_RESULT_CACHE.NEGATIVE_CACHE_REFUSED";
-    *detail = "negative entry requires explicit snapshot-safe admission";
+    *detail = "negative entry requires explicit snapshot-safe admission and an empty typed payload";
     return true;
   }
   return false;
@@ -126,9 +127,10 @@ bool HardRefusal(const SnapshotSafeCacheLookupRequest& request,
     *detail = "uncommitted own-transaction visibility dependency is not snapshot-safe";
     return true;
   }
-  if (request.negative_cache_entry && !request.negative_cache_snapshot_safe_proven) {
+  if (request.negative_cache_entry &&
+      (!request.negative_cache_snapshot_safe_proven || request.row_count != 0)) {
     *code = "EXECUTOR.SNAPSHOT_RESULT_CACHE.NEGATIVE_CACHE_REFUSED";
-    *detail = "negative entry requires explicit snapshot-safe admission";
+    *detail = "negative entry requires explicit snapshot-safe admission and an empty typed payload";
     return true;
   }
   return false;

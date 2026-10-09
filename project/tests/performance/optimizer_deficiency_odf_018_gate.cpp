@@ -1,4 +1,5 @@
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/physical_plan_visibility_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -367,9 +368,9 @@ bool OptimizerIntegrationUsesDpPhysicalOrder() {
          Require(TreeContainsEvidence(optimized.physical_root,
                                       "join_diagnostic=SB_OPT_JOIN_DP_BOUNDED_ENUMERATION_APPLIED"),
                  "physical root tree did not expose bounded DP diagnostic") &&
-         Require(TreeContainsEvidence(optimized.physical_root,
-                                      "mga_visibility_authority=engine_transaction_inventory"),
-                 "MGA visibility authority evidence was not preserved") &&
+         Require(scratchbird::tests::PhysicalPlanRequiresVisibilityAtEveryNode(
+                     optimized.physical_root),
+                 "join plan must require visibility preservation without claiming executed MGA authority") &&
          Require(opt::ValidatePhysicalPlanNode(optimized.physical_root).ok,
                  "DP physical tree failed validation");
 }

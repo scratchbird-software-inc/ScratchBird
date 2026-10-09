@@ -501,9 +501,11 @@ void ProveSnapshotCacheResultContractHardening() {
           "snapshot cache hit was not accepted after recompute proof");
   Require(Contains(hit.evidence, "snapshot_cache_recompute_result_match=true"),
           "result recompute proof missing");
-  Require(Contains(hit.evidence,
-                   "snapshot_cache_recompute_mga_security_match=true"),
-          "MGA/security recompute proof missing");
+  Require(hit.retained_entry && hit.retained_entry->payload &&
+              hit.retained_entry->cached_result_digest ==
+                  exec::SnapshotSafeCachePayloadDigest(
+                      *hit.retained_entry->payload, hit.retained_entry->payload_kind),
+          "cache hit did not retain the actual typed payload matching recomputation");
   Require(Contains(hit.evidence, "snapshot_cache_statement_context_match=true") &&
               Contains(hit.evidence,
                        "snapshot_cache_catalog_epoch_uuid_match=true"),
@@ -578,6 +580,66 @@ void ProveSnapshotCacheVolatilityAuthorityAndNegativeRefusals() {
   Require(negative_decision.diagnostic_code ==
               "EXECUTOR.SNAPSHOT_RESULT_CACHE.NEGATIVE_CACHE_REFUSED",
           "negative-cache diagnostic mismatch");
+  Require(!negative_decision.cache_hit && !negative_decision.retained_entry,
+          "nonempty negative-cache claim exposed a retained payload");
+
+  auto negative_store = StoreRequest();
+  negative_store.negative_cache_entry = true;
+  negative_store.negative_cache_snapshot_safe_proven = true;
+  Require(cache.Store(negative_store).diagnostic_code ==
+              "EXECUTOR.SNAPSHOT_RESULT_CACHE.NEGATIVE_CACHE_REFUSED",
+          "store accepted a negative-cache flag on nonempty results");
+
+  // Empty results remain supported under the same typed payload, statement,
+  // scope, and actual recomputation checks as nonempty results.
+  exec::SnapshotSafeResultCache empty_cache;
+  negative_store.entry.row_count = 0;
+  negative_store.entry.payload->final_result.rows.clear();
+  negative_store.entry.cached_result_digest = exec::SnapshotSafeCachePayloadDigest(
+      *negative_store.entry.payload, negative_store.entry.payload_kind);
+  auto forged_store = negative_store;
+  forged_store.entry.payload = SmallPayload();
+  forged_store.entry.cached_result_digest = exec::SnapshotSafeCachePayloadDigest(
+      *forged_store.entry.payload, forged_store.entry.payload_kind);
+  const auto forged_store_result = empty_cache.Store(forged_store);
+  Require(!forged_store_result.accepted && empty_cache.Size() == 0,
+          "store accepted a zero count with a nonempty typed negative payload");
+  negative_store.negative_cache_snapshot_safe_proven = false;
+  Require(empty_cache.Store(negative_store).diagnostic_code ==
+              "EXECUTOR.SNAPSHOT_RESULT_CACHE.NEGATIVE_CACHE_REFUSED",
+          "empty result bypassed explicit negative-cache admission");
+  negative_store.negative_cache_snapshot_safe_proven = true;
+  Require(empty_cache.Store(negative_store).action == exec::SnapshotSafeCacheAction::kStore,
+          "fully bound empty result could not be stored");
+  negative.row_count = 0;
+  negative.recomputed_payload->final_result.rows.clear();
+  negative.recomputed_result_digest = exec::SnapshotSafeCachePayloadDigest(
+      *negative.recomputed_payload, negative.payload_kind);
+  const auto empty_hit = empty_cache.Lookup(negative);
+  Require(empty_hit.cache_hit && empty_hit.retained_entry &&
+              empty_hit.retained_entry->row_count == 0 &&
+              empty_hit.retained_entry->payload->final_result.rows.empty(),
+          "fully recomputed empty result did not produce an empty cache hit");
+  negative.recomputed_payload = SmallPayload();
+  negative.recomputed_result_digest.clear();
+  const auto forged_empty = empty_cache.Lookup(negative);
+  Require(!forged_empty.cache_hit && !forged_empty.retained_entry &&
+              forged_empty.diagnostic_code ==
+                  "EXECUTOR.SNAPSHOT_RESULT_CACHE.RECOMPUTE_PROOF_REQUIRED",
+          "negative-cache boolean admitted a nonempty recomputation with forged zero row count");
+
+  auto expired = LookupRequest();
+  std::size_t resolutions = 0;
+  expired.mga_authority.resolve_current = [&resolutions] {
+    exec::CanonicalMgaCurrentResolution current;
+    current.statement_context = CacheMgaContext();
+    if (++resolutions == 2) ++current.statement_context.visible_committed_high_watermark;
+    return current;
+  };
+  const auto expired_hit = cache.Lookup(expired);
+  Require(resolutions == 2 && !expired_hit.cache_hit && !expired_hit.retained_entry &&
+              expired_hit.diagnostic_code == "QOW-DIAG-MGA-RUNTIME-CURRENT-V1",
+          "cache exposed a retained result after final MGA revalidation changed");
 
   auto authority = LookupRequest();
   authority.mga_authority.origin =
