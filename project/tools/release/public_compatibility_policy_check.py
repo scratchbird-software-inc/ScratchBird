@@ -41,6 +41,7 @@ FORBIDDEN_REFERENCE_FRAGMENTS = (
 )
 
 REQUIRED_SURFACE_IDS = {
+    "blob_lifetime_authority_c_abi_v3",
     "embedded_engine_c_abi_v1",
     "embedded_engine_cpp_wrappers_v1",
     "driver_package_manifest_v1",
@@ -61,6 +62,17 @@ POLICY_DOC_TOKENS = (
 )
 
 EVIDENCE_CHECKS: tuple[dict[str, Any], ...] = (
+    {
+        "surface": "blob_lifetime_authority_c_abi_v3",
+        "path": "project/include/scratchbird/engine/blob_lifetime_abi.h",
+        "tokens": (
+            "SB_BLOB_LIFETIME_ABI_MAJOR_V3 UINT16_C(3)",
+            "SB_BLOB_LIFETIME_ABI_GENERATION_V3 UINT32_C(1)",
+            "BlobUuid16V3",
+            "BlobLifetimeAuthorityV3",
+            "SB_BLOB_LIFETIME_STATIC_ASSERT",
+        ),
+    },
     {
         "surface": "public_header_and_c_abi_freeze",
         "path": "project/tests/engine_public_abi/CMakeLists.txt",

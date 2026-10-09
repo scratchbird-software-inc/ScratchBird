@@ -224,7 +224,6 @@ BUILTIN_PACKAGE_TOKENS = {
     "canonical function dispatch": "function_dispatch_catalog",
     "deployment manifest": "package_deployment_manifest",
     "deployment manifest API": "BuiltinUdrPackageDeploymentManifest",
-    "deployment manifest JSON": "BuiltinUdrPackageDeploymentManifestJson",
     "public ABI freeze": "frozen_builtin_udr_sb_udr_v1",
     "install component": "lib/scratchbird/udr",
     "trusted cpp descriptor": "descriptor.trusted_cpp = true",
@@ -394,16 +393,17 @@ def validate_compatibility_manifest(repo_root: Path, parser_families: set[str], 
 def validate_builtin_package_catalog(repo_root: Path, errors: list[str]) -> None:
     header = repo_root / "project/src/udr/packages/builtin/sb_udr_builtin_packages.hpp"
     impl = repo_root / "project/src/udr/packages/builtin/sb_udr_builtin_packages.cpp"
+    display = repo_root / "project/tools/udr_manifest/udr_manifest_display.hpp"
     cmake = repo_root / "project/src/udr/packages/builtin/CMakeLists.txt"
     test = repo_root / "project/tests/sbsql_parser_worker/udr_builtin_package_catalog_conformance.cpp"
     root_cmake = repo_root / "project/CMakeLists.txt"
     test_cmake = repo_root / "project/tests/sbsql_parser_worker/CMakeLists.txt"
 
-    for path in (header, impl, cmake, test):
+    for path in (header, impl, cmake, test, display):
         if not path.exists():
             fail(errors, f"{path}: missing builtin UDR package catalog artifact")
 
-    if not impl.exists() or not test.exists():
+    if not impl.exists() or not test.exists() or not display.exists():
         return
 
     impl_text = read(impl)
@@ -412,6 +412,11 @@ def validate_builtin_package_catalog(repo_root: Path, errors: list[str]) -> None
     test_cmake_text = read(test_cmake)
     for label, token in BUILTIN_PACKAGE_TOKENS.items():
         require_contains(errors, impl, label, impl_text, token)
+    for token in ("BuiltinUdrPackageDeploymentManifestJson",
+                  "BuiltinUdrPackageDeploymentManifest()", "UuidToString"):
+        require_contains(errors, display, "client deployment display", read(display), token)
+    if "BuiltinUdrPackageDeploymentManifestJson" in impl_text:
+        fail(errors, f"{impl}: client JSON UUID rendering returned to engine package catalog")
     for label, token in BUILTIN_PACKAGE_TEST_TOKENS.items():
         require_contains(errors, test, label, test_text, token)
     if "SB_BUILD_UDR_BUILTIN_PACKAGES" not in root_cmake_text:

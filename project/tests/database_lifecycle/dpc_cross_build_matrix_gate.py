@@ -333,8 +333,8 @@ def validate_source_surfaces(repo_root: Path, errors: list[str]) -> None:
         "SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY",
         "SB_CLUSTER_PROVIDER_EXTERNAL_INCLUDE_DIR",
         "SB_CLUSTER_PROVIDER_STUB AND NOT SB_ENABLE_CLUSTER_PROVIDER",
-        "SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY AND NOT SB_ENABLE_CLUSTER_PROVIDER",
-        "SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY AND SB_CLUSTER_PROVIDER_STUB",
+        "SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY OR SB_CLUSTER_PROVIDER_EXTERNAL_INCLUDE_DIR",
+        "Direct private-provider linking is forbidden; use only the signed gateway proxy and supervised provider runner contract",
         "SCRATCHBIRD_ENABLE_DEBUG_LOGS",
         "SCRATCHBIRD_ENABLE_HOTPATH_TRACE",
         "SCRATCHBIRD_ENABLE_EXEC_PROFILE_TRACE",
@@ -346,13 +346,15 @@ def validate_source_surfaces(repo_root: Path, errors: list[str]) -> None:
         require_contains(project_cmake, token, "project/CMakeLists.txt", errors)
 
     for token in (
-        "SCRATCHBIRD_CLUSTER_PROVIDER_EXTERNAL=1",
         "src/cluster_provider_stub",
         "src/cluster_provider",
-        "requires SB_CLUSTER_PROVIDER_STUB=ON or SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY",
+        "requires SB_CLUSTER_PROVIDER_STUB=ON; private implementations are never linked into the engine",
     ):
         if token not in internal_api_cmake and token not in sblr_cmake:
             errors.append(f"cluster provider target selection missing {token}")
+    for label, source in (("internal API", internal_api_cmake), ("SBLR", sblr_cmake)):
+        if "SCRATCHBIRD_CLUSTER_PROVIDER_EXTERNAL=1" in source:
+            errors.append(f"{label} reintroduces forbidden direct external-provider linkage")
 
     require_contains(no_cluster_cmake, "SCRATCHBIRD_CLUSTER_PROVIDER_NO_CLUSTER=1",
                      "no-cluster provider CMake", errors)
@@ -470,12 +472,9 @@ def validate_current_build(values: dict[str, str], cache_values: dict[str, str],
     if values.get("SB_CLUSTER_PROVIDER_STUB") == "ON" and (
             values.get("SB_ENABLE_CLUSTER_PROVIDER") != "ON"):
         errors.append("current cache enables cluster stub without cluster provider")
-    if values.get("SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY") and (
-            values.get("SB_ENABLE_CLUSTER_PROVIDER") != "ON"):
-        errors.append("current cache configures external provider without cluster provider")
-    if values.get("SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY") and (
-            values.get("SB_CLUSTER_PROVIDER_STUB") == "ON"):
-        errors.append("current cache configures both external provider and stub")
+    if (values.get("SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY") or
+            values.get("SB_CLUSTER_PROVIDER_EXTERNAL_INCLUDE_DIR")):
+        errors.append("current cache configures forbidden direct private-provider linkage")
 
     cluster_mode = current_cluster_mode(values)
     build_type = values.get("CMAKE_BUILD_TYPE", "")

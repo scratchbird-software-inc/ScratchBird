@@ -47,6 +47,7 @@ EXPECTED_ARCHITECTURAL_BOUNDARIES = {
 }
 
 EXPECTED_SURFACE_IDS = {
+    "blob_lifetime_authority_c_abi_v3",
     "embedded_engine_c_abi_v1",
     "embedded_engine_cpp_wrappers_v1",
     "driver_package_manifest_v1",

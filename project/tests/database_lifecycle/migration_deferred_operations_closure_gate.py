@@ -279,7 +279,7 @@ GROUPS = (
         ("DEFER-SPM-",),
         (
             SourceEvidence(
-                "project/src/core/metrics/metric_registry.cpp",
+                "project/src/core/metrics/metric_builtin_definitions.cpp",
                 (
                     "sys.metrics.storage.disk",
                     "sys.metrics.storage.filespaces",

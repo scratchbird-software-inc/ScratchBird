@@ -1095,7 +1095,7 @@ ROWS = (
                 ),
             ),
             SourceEvidence(
-                "project/src/core/metrics/metric_registry.cpp",
+                "project/src/core/metrics/metric_builtin_definitions.cpp",
                 ("sb_udr_non_cpp_refusal_total", "sys.metrics.udr"),
             ),
             SourceEvidence(

@@ -186,7 +186,7 @@ def check_build_requirement_docs(repo_root: Path) -> list[dict[str, str]]:
         "linux": (
             "clang-tidy-18 cppcheck",
             "ASan and UBSan",
-            "TSan where",
+            "TSan with a working runtime for the required hardening gate",
             "SB_PUBLIC_RELEASE_WARNINGS_AS_ERRORS=ON",
             "SB_PUBLIC_RELEASE_SANITIZER_PROFILE=asan-ubsan",
         ),
