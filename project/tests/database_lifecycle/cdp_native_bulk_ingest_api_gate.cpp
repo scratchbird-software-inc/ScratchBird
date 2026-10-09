@@ -270,6 +270,12 @@ api::EngineTypedValue IdentityScalarValue(std::string type, const platform::Uuid
   return BinaryScalarValue(std::move(type), {value.bytes.begin(), value.bytes.end()});
 }
 
+api::EngineTypedValue NativeRealFixtureValue(std::string type, std::uint64_t bits, unsigned width) {
+  std::vector<std::uint8_t> bytes;
+  for (unsigned i = 0; i < width; ++i) bytes.push_back(bits >> (8 * i));
+  return BinaryScalarValue(std::move(type), std::move(bytes));
+}
+
 api::EngineTypedValue NullValue(std::string canonical_type_name) {
   api::EngineTypedValue typed;
   typed.descriptor.descriptor_kind = "scalar";
@@ -676,10 +682,10 @@ api::EngineRowValue TypedScalarRow(int index) {
   row.fields.push_back({"int_u", ScalarValue("uint32", "4000000000")});
   row.fields.push_back({"big_u", ScalarValue("uint64", "18446744073709551615")});
   row.fields.push_back({"huge_u", ScalarValue("uint128", "340282366920938463463374607431768211455")});
-  row.fields.push_back({"bfloat_16", ScalarValue("bfloat16", index % 2 == 0 ? "3.5" : "-3.5")});
-  row.fields.push_back({"real_16", ScalarValue("real16", index % 2 == 0 ? "4.5" : "-4.5")});
-  row.fields.push_back({"real_32", ScalarValue("real32", index % 2 == 0 ? "1.25" : "-1.25")});
-  row.fields.push_back({"real_64", ScalarValue("real64", index % 2 == 0 ? "2.5" : "-2.5")});
+  row.fields.push_back({"bfloat_16", NativeRealFixtureValue("bfloat16", index % 2 == 0 ? 0x4060u : 0xc060u, 2)});
+  row.fields.push_back({"real_16", NativeRealFixtureValue("real16", index % 2 == 0 ? 0x4480u : 0xc480u, 2)});
+  row.fields.push_back({"real_32", NativeRealFixtureValue("real32", index % 2 == 0 ? 0x3fa00000u : 0xbfa00000u, 4)});
+  row.fields.push_back({"real_64", NativeRealFixtureValue("real64", index % 2 == 0 ? 0x4004000000000000ull : 0xc004000000000000ull, 8)});
   row.fields.push_back({"real_128", BinaryScalarValue("real128", std::vector<std::uint8_t>{
       static_cast<std::uint8_t>(index), 1, 2, 3, 4, 5, 6, 7,
       8, 9, 10, 11, 12, 13, 14, 15})});
@@ -1917,6 +1923,80 @@ void TestNativeUint16IndexReopen() {
                          "uint16 persisted index order is not unsigned numeric");
   }
   Rollback(reader);
+}
+
+void TestNativeNarrowRealIndexReopen() {
+  for (const std::string type : {"bfloat16", "real16", "real32"}) {
+    auto fixture = MakeInt64IndexFixture(type + "_binary_reopen", 1495, type);
+    const unsigned width = type == "real32" ? 4 : 2;
+    const std::uint32_t sign = std::uint32_t{1} << (width * 8 - 1);
+    const std::uint32_t exponent = type == "bfloat16" ? 0x7f80u
+        : type == "real16" ? 0x7c00u : 0x7f800000u;
+    const std::uint32_t one = type == "bfloat16" ? 0x3f80u
+        : type == "real16" ? 0x3c00u : 0x3f800000u;
+    const std::uint32_t minimum_normal = type == "bfloat16" ? 0x80u
+        : type == "real16" ? 0x400u : 0x800000u;
+    // Independently ordered finite bounds, both zeros, and both sides of the
+    // gradual-underflow boundary. Input is exclusively the native LE carrier.
+    const std::vector<std::uint32_t> values{
+        sign | (exponent - 1), sign | one, sign | minimum_normal,
+        sign | (minimum_normal - 1), sign | 1u, sign, 0u,
+        1u, minimum_normal - 1, minimum_normal, one, exponent - 1};
+    const auto row_for = [&](std::uint32_t bits) {
+      std::vector<std::uint8_t> bytes;
+      for (unsigned i = 0; i < width; ++i) bytes.push_back(bits >> (8 * i));
+      api::EngineRowValue row;
+      row.fields = {{"id", BinaryScalarValue(type, std::move(bytes))},
+                    {"payload", TextValue("native-finite-real-index")}};
+      return row;
+    };
+    std::vector<api::EngineRowValue> rows;
+    for (const auto bits : values) rows.push_back(row_for(bits));
+    auto writer = Begin(fixture, "narrow-real-binary-insert");
+    const auto inserted = api::EngineExecuteNativeBulkIngest(NativeRequest(fixture, writer, rows));
+    RequireOk(inserted, type + " indexed native insert failed");
+    Require(inserted.inserted_rows == values.size() &&
+                EvidenceU64(inserted.evidence, "direct_index_key_typed_fallback") == 0 &&
+                EvidenceU64(inserted.evidence, "direct_index_key_sbkobin_keys") == values.size(),
+            type + " indexed insert lost rows or used display-text fallback");
+    Commit(writer);
+    fixture.session.reset();
+    fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(
+        BaseContext(fixture, "narrow-real-reopen"));
+    auto reader = Begin(fixture, "narrow-real-read");
+    const auto stored = api::LoadMgaRelationStoreState(reader);
+    Require(stored.ok, type + " committed index replay failed");
+    std::map<std::uint32_t, std::string> keys;
+    for (const auto& entry : stored.state.index_entries) {
+      if (entry.index_uuid != fixture.index_uuid) continue;
+      const auto payload = ScalarLogicalPayload(entry.payload_value);
+      Require(payload.isPresent() && payload.bytes.size() == width &&
+                  entry.key_value.starts_with("SBKOBIN:"), type + " lost native payload framing");
+      std::uint32_t bits = 0;
+      for (unsigned i = 0; i < width; ++i)
+        bits |= std::uint32_t(static_cast<unsigned char>(payload.bytes[i])) << (8 * i);
+      Require(keys.emplace(bits, entry.key_value).second, type + " replay duplicated carrier bits");
+    }
+    Require(keys.size() == values.size() && SelectCount(fixture, reader) == values.size(),
+            type + " reopened row/index count changed");
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      Require(keys.contains(values[i]), type + " reopen altered stored bits");
+      if (i) Require(i == 6 ? keys.at(values[i - 1]) == keys.at(values[i])
+                           : keys.at(values[i - 1]) < keys.at(values[i]),
+                     type + " persisted order differs from numeric finite order");
+    }
+    Rollback(reader);
+    for (const auto special : {exponent, exponent | 1u, exponent | sign}) {
+      auto transaction = Begin(fixture, "narrow-real-special-refusal");
+      const auto refused = api::EngineExecuteNativeBulkIngest(
+          NativeRequest(fixture, transaction, {row_for(special)}));
+      Require(!refused.ok && !refused.diagnostics.empty(),
+              type + " ordinary index admitted a nonfinite value");
+      Require(SelectCount(fixture, transaction) == values.size(),
+              type + " nonfinite index refusal changed visible rows");
+      Rollback(transaction);
+    }
+  }
 }
 
 void TestTypedScalarIndexKeysUseBinaryPayloads() {
@@ -3238,10 +3318,16 @@ int main(int argc, char** argv) try {
   const bool typed_null_only = argc == 2 && std::string_view(argv[1]) == "--native-typed-null";
   const bool integer_only = argc == 2 && std::string_view(argv[1]) == "--native-int64-index";
   const bool uint16_only = argc == 2 && std::string_view(argv[1]) == "--native-uint16-index";
+  const bool narrow_real_only = argc == 2 && std::string_view(argv[1]) == "--native-narrow-real-index";
   const bool ordered_only = argc == 2 && std::string_view(argv[1]) == "--native-ordered-index";
-  Require(argc == 1 || fixed_scalar_only || typed_null_only || integer_only || ordered_only || uint16_only,
+  Require(argc == 1 || fixed_scalar_only || typed_null_only || integer_only || ordered_only || uint16_only || narrow_real_only,
           "unknown native bulk gate arguments");
   ConfigureMemoryFixture();
+  if (narrow_real_only) {
+    TestNativeNarrowRealIndexReopen();
+    std::cout << "native_narrow_real_index=passed finite_bounds_signed_zero_commit_reopen_nonfinite_refusal\n";
+    return EXIT_SUCCESS;
+  }
   if (uint16_only) {
     TestNativeUint16IndexReopen();
     std::cout << "native_uint16_index=passed unsigned_bounds_digit_bytes_commit_reopen\n";
@@ -3249,6 +3335,7 @@ int main(int argc, char** argv) try {
   }
   if (ordered_only) {
     TestNativeUint16IndexReopen();
+    TestNativeNarrowRealIndexReopen();
     TestTypedInt64IndexKeysUseBinaryOrder();
     TestTypedInt64IndexKeysUseFullSignedSortOrder();
     TestTypedNullIndexKeyUsesNullOrder();
@@ -3276,6 +3363,7 @@ int main(int argc, char** argv) try {
   TestTypedInt64IndexKeysUseFullSignedSortOrder();
   TestTypedNullIndexKeyUsesNullOrder();
   TestNativeUint16IndexReopen();
+  TestNativeNarrowRealIndexReopen();
   TestTypedScalarIndexKeysUseBinaryPayloads();
   TestTypedScalarRowPageStorage();
   TestMalformedInlineFixedTypedValueRefuses();
