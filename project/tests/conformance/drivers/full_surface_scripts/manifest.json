@@ -2,9 +2,33 @@
   "builtin_fixture_minimums": {
     "diagnostic_rows": 163,
     "fixture_files": 37,
-    "fixture_rows": 1713,
-    "fixture_surface_ids": 1214,
+    "fixture_rows": 1712,
+    "fixture_surface_ids": 1213,
     "release_function_operator_fixture_surface_ids": 1101
+  },
+  "scalar_and_query_coverage_minimums": {
+    "fixture_rows": 1713,
+    "fixture_surface_ids": 1214
+  },
+  "required_query_fixture_contracts": [
+    {
+      "surface_id": "SBSQL-14EDC2636B45",
+      "fixture_path": "project/tests/sbsql_parser_worker/sbsql_match_recognize_full_route_gate.py",
+      "required_implementation_refs": [
+        "operation_id=query.execute",
+        "nested_opcode=SBLR_MATCH_RECOGNIZE",
+        "no_scalar_match_recognize_route=true",
+        "process_restart_recovery=true"
+      ]
+    }
+  ],
+  "replay_source_contract": {
+    "surface_identity_sha256": "8d20c5d06e430813793f6a46b508f4d3b04a16a0aa8741000c557122ee42ee37",
+    "disposition_counts": {
+      "e2e_passed": 2481,
+      "exact_refusal_passed": 82,
+      "cluster_provider_route_passed": 56
+    }
   },
   "compile_placeholders": [
     "__SB_NAMESPACE__",
@@ -29,11 +53,10 @@
     "SBDFS-180"
   ],
   "exhaustive_source_minimums": {
-    "authenticated_route_files": 2617,
-    "builtin_fixture_rows": 1713,
+    "authenticated_route_files": 2619,
+    "builtin_fixture_rows": 1712,
     "datatype_count": 86,
     "e2e_scopes": 10,
-    "full_route_replay_rows": 2547,
     "generated_case_count": 63000,
     "generated_cast_cases": 7396,
     "generated_datatype_rows": 5504,
@@ -41,8 +64,8 @@
     "generated_script_count": 10,
     "index_family_count": 28,
     "page_size_count": 11,
-    "replay_rows": 2617,
-    "sblr_round_trip_files": 2617
+    "replay_rows": 2619,
+    "sblr_round_trip_files": 2619
   },
   "minimum_language_catalog_counts": {
     "surface_function": 1317,

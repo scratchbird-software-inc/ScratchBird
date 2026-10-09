@@ -21,6 +21,7 @@ from typing import Any
 
 from compile_full_surface_script_suite import compile_suite
 from exhaustive_generators import GENERATED_SCRIPT_SPECS, source_summary
+from source_coverage_contract import validate_source_coverage
 from ipar_performance_proof_gate import SCHEMA_NAME as IPAR_SCHEMA_NAME
 from ipar_performance_proof_gate import collect_artifact_records
 from ipar_performance_proof_gate import load_artifact_payloads
@@ -332,6 +333,11 @@ def validate_builtin_fixture_sources(
                         errors.append(f"builtin_fixtures:{path.name}:unknown_surface_id:{surface_id}")
                 if row.get("expected_diagnostic_code"):
                     diagnostic_rows += 1
+    try:
+        errors.extend(validate_source_coverage(repo_root, suite_manifest,
+                                               fixture_surface_ids, fixture_rows))
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        errors.append(f"source_coverage:invalid_contract:{exc}")
     release_covered = fixture_surface_ids & release_function_operator_ids
     observed = {
         "fixture_files": fixture_files,
