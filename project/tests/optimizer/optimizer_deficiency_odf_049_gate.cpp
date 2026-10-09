@@ -10,6 +10,7 @@
 #include "metric_registry.hpp"
 #include "page_cache.hpp"
 #include "uuid.hpp"
+#include "../support/page_cache_metric_fixture.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -57,9 +58,19 @@ TypedUuid MakeUuid(UuidKind kind, u64 salt) {
   return generated.value;
 }
 
+const auto kMetricDatabase = scratchbird::tests::FixtureUuid(1494, 1);
+scratchbird::tests::MetricProjectionFixture& MetricFixture() {
+  static scratchbird::tests::MetricProjectionFixture fixture(kMetricDatabase,
+      scratchbird::tests::FixtureUuid(1494, 2), 1495, 4096);
+  return fixture;
+}
+
 struct Ids {
-  TypedUuid database_uuid = MakeUuid(UuidKind::database, 49);
+  TypedUuid database_uuid{UuidKind::database, kMetricDatabase};
   TypedUuid filespace_uuid = MakeUuid(UuidKind::filespace, 50);
+  Ids() {
+    scratchbird::tests::AdmitPageCacheContextFixture(MetricFixture(), database_uuid.value, filespace_uuid.value);
+  }
 };
 
 page::PageCachePolicy Policy(u64 max_pages = 64) {
@@ -141,6 +152,10 @@ double MetricValueFor(std::string_view family,
                       std::string_view context,
                       std::string_view result,
                       std::string_view reason) {
+  // Each real filespace has a separate admitted series, including zero-valued
+  // context snapshots. Aggregate the requested test-wide context explicitly.
+  double total = 0;
+  bool found = false;
   for (const auto& value : metrics::DefaultMetricRegistry().SnapshotCurrent(true)) {
     if (value.family == family &&
         MetricHasLabel(value, "context", context) &&
@@ -149,10 +164,11 @@ double MetricValueFor(std::string_view family,
       const auto* counter = std::get_if<std::uint64_t>(&value.value);
       Require(counter != nullptr && *counter <= (std::uint64_t{1} << 53),
               "metric counter must retain exact uint64 representation");
-      return static_cast<double>(*counter);
+      total += static_cast<double>(*counter);
+      found = true;
     }
   }
-  return -1.0;
+  return found ? total : -1.0;
 }
 
 void TestContextNames() {
@@ -354,5 +370,12 @@ int main() {
   TestNormalHotProtection();
   TestPinnedAndDirtyRefusals();
   TestMetrics();
+  // Seven contexts, four native gauges on every snapshot. These expected
+  // emissions follow the test operations, not the producer queue's count.
+  MetricFixture().ExpectProduced(3 * (4 * 28 + 4 + 2 + 2) +
+      (4 * 28 + 4 + 1 + 1) + (3 * 28 + 1 + 1) + (2 * 28 + 1 + 1) +
+      (2 * 28 + 2 + 1 + 1));
+  MetricFixture().Seal();
+  MetricFixture().VerifyAndDrain();
   return EXIT_SUCCESS;
 }

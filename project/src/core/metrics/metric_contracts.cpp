@@ -1118,15 +1118,17 @@ MetricValidationResult RecordLockLatchContentionWait(
   if (!status.ok) { return status; }
   status = RequireNonEmpty(sample.evidence_surface, "evidence_surface");
   if (!status.ok) { return status; }
-  status = RequireRange("sb_lock_latch_contention_wait_total", sample.wait_count, 0.0, 1.0e18);
-  if (!status.ok) { return status; }
+  // Count is native UINT64; the registry checks cumulative overflow. Validate
+  // timing before publishing either observation, including NaN timing.
+  if (!std::isfinite(sample.wait_microseconds))
+    return MetricError("SB-METRICS-CONTRACT-VALUE-RANGE", "sb_lock_latch_contention_wait_microseconds");
   status = RequireRange("sb_lock_latch_contention_wait_microseconds",
                         sample.wait_microseconds,
                         0.0,
                         1.0e18);
   if (!status.ok) { return status; }
 
-  const auto required = LockLatchContentionRequiredWaitClasses();
+  static const auto required = LockLatchContentionRequiredWaitClasses();
   if (std::find(required.begin(), required.end(), sample.wait_class) == required.end()) {
     return MetricError("SB-METRICS-CONTRACT-WAIT-CLASS-UNKNOWN", sample.wait_class);
   }

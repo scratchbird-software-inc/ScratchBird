@@ -27,10 +27,10 @@
     "CEIC-028",
     "CEIC-029"
   ],
-  "source_commit": "4f49a95282310fda9a9c651b17e8e2edd9161f3a",
+  "source_commit": "3b3a82f953f69e50f25f4016187187e414bd77ec",
   "source_branch": "main",
   "source_evidence_digest": "48c8922dc4228a07c336733eb66092b5d16473bc0f7ca946e038c92488cd9fe7",
-  "generated_at_utc": "2026-10-08T23:46:00-04:00",
+  "generated_at_utc": "2026-10-08T23:52:56-04:00",
   "generated_by": "project/tools/ceic_memory_readiness_manifest.py#CEIC_024_MEMORY_READINESS_MANIFEST_TOOL",
   "build_profile": "focused_ceic_memory_manifest",
   "authority_boundary": {

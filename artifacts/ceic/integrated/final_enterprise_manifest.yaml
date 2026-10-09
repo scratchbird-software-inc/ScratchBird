@@ -53,7 +53,7 @@
         "artifact_id": "CEIC-ART-011",
         "exists": true,
         "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-024_MEMORY_READINESS_MANIFEST.yaml",
-        "sha256": "sha256:6ae1a59a93a58e8195e97a3bf132257d47a3c42744e749943da94824d00b6242",
+        "sha256": "sha256:90e0fbc623ae7470ddf113ce6504c88524a023ef83708cc674b2c4161a127388",
         "slice_id": "CEIC-024",
         "status": "present"
       },
@@ -61,7 +61,7 @@
         "artifact_id": "CEIC-ART-012",
         "exists": true,
         "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-030_INDEX_READINESS_MANIFEST.yaml",
-        "sha256": "sha256:a5c418b6e2ad53f6a7caada83c2c9fecf9e0cecdd222ec6d1e069c24faa0e718",
+        "sha256": "sha256:26a4487e13280608320484c398e00aa98028fc753d712ce79b6876f13b4baf6f",
         "slice_id": "CEIC-030",
         "status": "present"
       },
@@ -69,7 +69,7 @@
         "artifact_id": "CEIC-ART-013",
         "exists": true,
         "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-062_OPTIMIZER_READINESS_MANIFEST.yaml",
-        "sha256": "sha256:79863ada3e36d0fc9d7fc6896aadcc80f068f1e7f659bd60a6afb467e5ec0fb8",
+        "sha256": "sha256:701b8fb440846d351959daaeb94dbd7b0c9cae9547b2751271709041cc879b37",
         "slice_id": "CEIC-062",
         "status": "present"
       },
@@ -77,7 +77,7 @@
         "artifact_id": "CEIC-ART-014",
         "exists": true,
         "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-085_AGENT_READINESS_MANIFEST.yaml",
-        "sha256": "sha256:ab86f5886299f27a8223f88df403baa0ea7d7455c1ff566eadb5ce9236c0e71a",
+        "sha256": "sha256:b40269991b42a76d22854e96ec8334a15ab84ea4e2b638dac6d5b10ed6413049",
         "slice_id": "CEIC-085",
         "status": "present"
       },
@@ -258,27 +258,27 @@
   "search_key": "CEIC_095_FINAL_ENTERPRISE_MANIFEST",
   "slice_id": "CEIC-095",
   "source_branch": "main",
-  "source_commit": "56f45b58bf7b1b48f1b377c16ebb2e67d7643f29",
+  "source_commit": "3b3a82f953f69e50f25f4016187187e414bd77ec",
   "source_evidence": [
     {
       "label": "artifact:CEIC-ART-011",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-024_MEMORY_READINESS_MANIFEST.yaml",
-      "sha256": "sha256:6ae1a59a93a58e8195e97a3bf132257d47a3c42744e749943da94824d00b6242"
+      "sha256": "sha256:90e0fbc623ae7470ddf113ce6504c88524a023ef83708cc674b2c4161a127388"
     },
     {
       "label": "artifact:CEIC-ART-012",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-030_INDEX_READINESS_MANIFEST.yaml",
-      "sha256": "sha256:a5c418b6e2ad53f6a7caada83c2c9fecf9e0cecdd222ec6d1e069c24faa0e718"
+      "sha256": "sha256:26a4487e13280608320484c398e00aa98028fc753d712ce79b6876f13b4baf6f"
     },
     {
       "label": "artifact:CEIC-ART-013",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-062_OPTIMIZER_READINESS_MANIFEST.yaml",
-      "sha256": "sha256:79863ada3e36d0fc9d7fc6896aadcc80f068f1e7f659bd60a6afb467e5ec0fb8"
+      "sha256": "sha256:701b8fb440846d351959daaeb94dbd7b0c9cae9547b2751271709041cc879b37"
     },
     {
       "label": "artifact:CEIC-ART-014",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-085_AGENT_READINESS_MANIFEST.yaml",
-      "sha256": "sha256:ab86f5886299f27a8223f88df403baa0ea7d7455c1ff566eadb5ce9236c0e71a"
+      "sha256": "sha256:b40269991b42a76d22854e96ec8334a15ab84ea4e2b638dac6d5b10ed6413049"
     },
     {
       "label": "artifact:CEIC-ART-020",
@@ -736,7 +736,7 @@
       "sha256": "sha256:d5dd7076a64471359c786ce613b6fb4bef4fa3ba4fabedb06eaedce8f4ab92e2"
     }
   ],
-  "source_evidence_digest": "sha256:91367b847a4a6857c0e542fb9ada8a7fced48149b60f8d58acb4ea0bcb1cc01d",
+  "source_evidence_digest": "sha256:ef279b44eac94fe042e9932a494d81bc386d486dab5f21c90ad010376896eaf1",
   "static_claim_boundary": {
     "anchor_only_claims_allowed": false,
     "descriptor_only_claims_allowed": false,

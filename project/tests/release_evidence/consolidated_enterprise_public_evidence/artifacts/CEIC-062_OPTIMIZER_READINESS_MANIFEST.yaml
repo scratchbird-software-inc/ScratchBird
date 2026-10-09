@@ -20,14 +20,14 @@
     "CEIC-062"
   ],
   "manifest_uuid": "45f378e4-9d83-5a79-920f-7c2a67f00a93",
-  "source_commit": "56f45b58bf7b1b48f1b377c16ebb2e67d7643f29",
+  "source_commit": "3b3a82f953f69e50f25f4016187187e414bd77ec",
   "source_branch": "main",
-  "generated_at_utc": "2026-10-08T23:48:02-04:00",
+  "generated_at_utc": "2026-10-08T23:52:56-04:00",
   "generated_by": "project/tools/ceic_optimizer_readiness_manifest.py#CEIC_062_OPTIMIZER_READINESS_MANIFEST_TOOL",
   "source_evidence_digest": "48dd2defdf22aab47455cc987a0feeea73e4e423ff883f3d5a5ca4b81ee2287f",
   "auditor": {
     "slice_id": "CEIC-062",
-    "timestamp_utc": "2026-10-08T23:48:02-04:00",
+    "timestamp_utc": "2026-10-08T23:52:56-04:00",
     "proof_state": "generated_and_validated"
   },
   "authority_boundary": {

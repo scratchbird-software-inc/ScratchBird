@@ -9,9 +9,11 @@
 #include "metric_contracts.hpp"
 #include "metric_export.hpp"
 #include "metric_registry.hpp"
+#include "../support/contention_metric_fixture.hpp"
 
 #include <algorithm>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -72,7 +74,7 @@ bool RequiredWaitClassesAreStable() {
   return Require(required.size() == expected.size(), "unexpected contention wait class added");
 }
 
-bool RecordsBenchmarkAndSupportBundleSurfaces() {
+bool RecordsBenchmarkAndSupportBundleSurfaces(scratchbird::tests::MetricProjectionFixture& fixture) {
   const std::vector<metrics::LockLatchContentionSample> samples = {
       {3, 30, "storage.page", "page_latch", "benchmark"},
       {2, 25, "index.btree", "index_leaf_split", "benchmark"},
@@ -84,11 +86,13 @@ bool RecordsBenchmarkAndSupportBundleSurfaces() {
       {7, 77, "ipc.queue", "ipc_queue", "support_bundle"}};
 
   for (const auto& sample : samples) {
+    scratchbird::tests::AdmitContentionMetricFixture(fixture, sample);
     const auto status = metrics::RecordLockLatchContentionWait(sample);
     if (!Require(status.ok, "contention sample rejected: " + status.diagnostic_code + ":" +
                                 status.detail)) {
       return false;
     }
+    fixture.ExpectProduced(2);
   }
 
   const auto current = metrics::DefaultMetricRegistry().SnapshotCurrent();
@@ -154,11 +158,59 @@ bool RejectsInvalidContentionLabels() {
                  "unknown wait class diagnostic mismatch");
 }
 
+bool ExactCountsAndInvalidTiming(scratchbird::tests::MetricProjectionFixture& fixture) {
+  metrics::LockLatchContentionSample sample{
+      (std::uint64_t{1} << 53) + 1, 1.0, "exact.count", "ipc_queue", "benchmark"};
+  scratchbird::tests::AdmitContentionMetricFixture(fixture, sample);
+  if (!Require(metrics::RecordLockLatchContentionWait(sample).ok, "exact count rejected")) return false;
+  fixture.ExpectProduced(2);
+  bool found = false;
+  for (const auto& value : metrics::DefaultMetricRegistry().SnapshotCurrent()) {
+    if (value.family != "sb_lock_latch_contention_wait_total" ||
+        !HasLabel(value.labels, "subsystem", sample.subsystem)) continue;
+    const auto* count = std::get_if<std::uint64_t>(&value.value);
+    if (!Require(count && *count == sample.wait_count, "contention count lost integer precision")) return false;
+    found = true;
+  }
+  if (!Require(found, "exact native count missing")) return false;
+  sample.subsystem = "exact.upper.bound";
+  sample.wait_count = std::numeric_limits<std::uint64_t>::max();
+  scratchbird::tests::AdmitContentionMetricFixture(fixture, sample);
+  if (!Require(metrics::RecordLockLatchContentionWait(sample).ok, "exact upper count bound rejected")) return false;
+  fixture.ExpectProduced(2);
+  found = false;
+  for (const auto& value : metrics::DefaultMetricRegistry().SnapshotCurrent()) {
+    if (value.family != "sb_lock_latch_contention_wait_total" ||
+        !HasLabel(value.labels, "subsystem", sample.subsystem)) continue;
+    const auto* count = std::get_if<std::uint64_t>(&value.value);
+    if (!Require(count && *count == sample.wait_count, "upper bound count changed")) return false;
+    found = true;
+  }
+  if (!Require(found, "upper bound native count missing")) return false;
+  fixture.Seal();
+  sample.wait_count = 1;
+  if (!Require(!metrics::RecordLockLatchContentionWait(sample).ok, "cumulative count overflow accepted")) return false;
+  fixture.VerifyReadOnly();
+  for (double invalid : {-1.0, 1.0e19, std::numeric_limits<double>::infinity(),
+                         std::numeric_limits<double>::quiet_NaN()}) {
+    sample.wait_microseconds = invalid;
+    const auto result = metrics::RecordLockLatchContentionWait(sample);
+    if (!Require(!result.ok && result.diagnostic_code == "SB-METRICS-CONTRACT-VALUE-RANGE",
+                 "invalid timing must refuse before count publication")) return false;
+    fixture.VerifyReadOnly();
+  }
+  return true;
+}
+
 }  // namespace
 
 int main() {
+  scratchbird::tests::MetricProjectionFixture fixture(scratchbird::tests::FixtureUuid(1490, 1),
+      scratchbird::tests::FixtureUuid(1490, 2), 1491);
   if (!RequiredWaitClassesAreStable()) return 1;
-  if (!RecordsBenchmarkAndSupportBundleSurfaces()) return 1;
+  if (!RecordsBenchmarkAndSupportBundleSurfaces(fixture)) return 1;
+  if (!ExactCountsAndInvalidTiming(fixture)) return 1;
   if (!RejectsInvalidContentionLabels()) return 1;
+  fixture.VerifyAndDrain();
   return 0;
 }

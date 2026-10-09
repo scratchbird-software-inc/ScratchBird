@@ -265,9 +265,28 @@ int main() {
         f.queue->Stats().queued==0,"missing measured bytes became a fabricated zero or fixed-page-size observation");
     storage.resident_bytes=114688; // 16KiB + 32KiB + 64KiB, not three 4KiB pages.
     published=scratchbird::storage::page::PublishOptimizerStorageMetrics(storage);
-    // Other optimizer families are deliberately not bound in this component;
-    // the overall publication must not claim their success.
-    Require(!published.ok,"unbound optimizer families claimed successful publication");
+    Require(!published.ok && published.metric_results.empty() && f.queue->Stats().queued==0,
+            "missing optimizer definitions did not refuse before observations");
+    // Admit the exact definitions, but deliberately omit optimizer series.
+    // Definition admission is distinct from individual observation admission:
+    // the real aggregate-cache samples must survive those later series errors.
+    unsigned definition_ordinal=0;
+    for(const auto& definition:scratchbird::storage::page::OptimizerStorageMetricDescriptorDefinitions()) {
+      m::MetricDescriptor descriptor;
+      static_cast<m::MetricDescriptorDefinition&>(descriptor)=definition;
+      descriptor.metric_uuid=Id(700+definition_ordinal);
+      descriptor.descriptor_generation=1;
+      descriptor.label_schema_uuid=Id(800+definition_ordinal++);
+      descriptor.label_schema_generation=1;
+      descriptor.retention_policy_uuid=Id(4);descriptor.retention_policy_generation=2;
+      descriptor.visibility_policy_uuid=Id(5);descriptor.visibility_policy_generation=9;
+      descriptor.readiness=m::MetricReadiness::implemented;
+      Require(f.registry.RegisterDescriptor(descriptor).ok,"optimizer component definition admission");
+    }
+    published=scratchbird::storage::page::PublishOptimizerStorageMetrics(storage);
+    Require(!published.ok && published.metric_results.size()==14 &&
+        published.metric_results[10].ok && f.queue->Stats().queued==4,
+        "partial publication lost accepted cache observations or hid absent optimizer series");
     f.Read(9,3);f.Read(10,114688);f.Read(11,1);f.Read(12,2);
     for(unsigned i=0;i<counters.size();++i) {
       auto counter=counters[i];

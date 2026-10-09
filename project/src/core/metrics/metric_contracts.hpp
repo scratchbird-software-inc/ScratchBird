@@ -369,7 +369,7 @@ MetricValidationResult PublishOptimizerRuntimeFeedbackSample(
 
 // SEARCH_KEY: ODFR_CONTENTION_TELEMETRY_CONTRACT
 struct LockLatchContentionSample {
-  double wait_count = 0.0;
+  u64 wait_count = 0;
   double wait_microseconds = 0.0;
   std::string subsystem;
   std::string wait_class;

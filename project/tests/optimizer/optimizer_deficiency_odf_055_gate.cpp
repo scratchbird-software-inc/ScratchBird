@@ -12,6 +12,7 @@
 #include "metric_registry.hpp"
 #include "page_cache.hpp"
 #include "uuid.hpp"
+#include "../support/page_cache_metric_fixture.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -60,9 +61,19 @@ TypedUuid MakeUuid(UuidKind kind, u64 salt) {
   return generated.value;
 }
 
+const auto kMetricDatabase = scratchbird::tests::FixtureUuid(1496, 1);
+scratchbird::tests::MetricProjectionFixture& MetricFixture() {
+  static scratchbird::tests::MetricProjectionFixture fixture(kMetricDatabase,
+      scratchbird::tests::FixtureUuid(1496, 2), 1497, 4096);
+  return fixture;
+}
+
 struct Ids {
-  TypedUuid database_uuid = MakeUuid(UuidKind::database, 55);
+  TypedUuid database_uuid{UuidKind::database, kMetricDatabase};
   TypedUuid filespace_uuid = MakeUuid(UuidKind::filespace, 56);
+  Ids() {
+    scratchbird::tests::AdmitPageCacheContextFixture(MetricFixture(), database_uuid.value, filespace_uuid.value);
+  }
 };
 
 page::PageCachePolicy Policy(u64 max_pages = 64) {
@@ -150,6 +161,10 @@ double MetricValueFor(std::string_view family,
                       std::string_view context,
                       std::string_view result,
                       std::string_view reason) {
+  // Distinct filespace series must not collapse into one identity, nor may a
+  // zero snapshot from another filespace hide this aggregate observation.
+  double total = 0;
+  bool found = false;
   for (const auto& value : metrics::DefaultMetricRegistry().SnapshotCurrent(true)) {
     if (value.family == family &&
         MetricHasLabel(value, "context", context) &&
@@ -158,10 +173,11 @@ double MetricValueFor(std::string_view family,
       const auto* counter = std::get_if<std::uint64_t>(&value.value);
       Require(counter != nullptr && *counter <= (std::uint64_t{1} << 53),
               "metric counter must retain exact uint64 representation");
-      return static_cast<double>(*counter);
+      total += static_cast<double>(*counter);
+      found = true;
     }
   }
-  return -1.0;
+  return found ? total : -1.0;
 }
 
 bool ContainsForbiddenRuntimeToken(std::string_view value) {
@@ -432,5 +448,12 @@ int main() {
   TestNormalContextStillUsesOrdinaryAdmission();
   TestPinnedAndDirtyRefusalsRemainClosed();
   TestMetricsAndNoRuntimeDocTokenLeak();
+  // Explicit operation-derived count: churn, protected refusal, four scan
+  // lanes, normal pin/unpin/reuse, then pinned and dirty refusals.
+  MetricFixture().ExpectProduced((12 * 28 + 12 + 8 + 8) + (3 * 28 + 2 + 1 + 1) +
+      4 * (5 * 28 + 5 + 3 + 3) + (7 * 28 + 5 + 1 + 2) +
+      (3 * 28 + 1 + 1) + (2 * 28 + 1 + 1));
+  MetricFixture().Seal();
+  MetricFixture().VerifyAndDrain();
   return EXIT_SUCCESS;
 }

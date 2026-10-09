@@ -122,10 +122,10 @@
       "acceptance": "final enterprise manifest is generated from public release evidence"
     }
   ],
-  "source_commit": "4f49a95282310fda9a9c651b17e8e2edd9161f3a",
+  "source_commit": "3b3a82f953f69e50f25f4016187187e414bd77ec",
   "source_branch": "main",
   "source_evidence_digest": "5e407fcc4a8714efbbc29e71938978486f7008a7fd6e78e5fd42843a9c1187ba",
-  "generated_at_utc": "2026-10-08T23:46:00-04:00",
+  "generated_at_utc": "2026-10-08T23:52:56-04:00",
   "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
   "build_profile": "focused_ceic_index_manifest",
   "authority_boundary": {
@@ -1176,7 +1176,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -1705,7 +1705,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -2234,7 +2234,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -2763,7 +2763,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -3292,7 +3292,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -3821,7 +3821,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -4350,7 +4350,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -4879,7 +4879,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -5408,7 +5408,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -5937,7 +5937,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -6466,7 +6466,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -6995,7 +6995,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -7524,7 +7524,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -8053,7 +8053,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -8582,7 +8582,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -9111,7 +9111,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -9640,7 +9640,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -10169,7 +10169,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -10698,7 +10698,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -11227,7 +11227,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -11756,7 +11756,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -12285,7 +12285,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -12814,7 +12814,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -13343,7 +13343,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -13872,7 +13872,7 @@
       "enterprise_ready_blockers": [
         "temporary_memory_only_not_enterprise_persistent_ready"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -14401,7 +14401,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -14927,7 +14927,7 @@
       "enterprise_ready_blockers": [
         "family_is_non_runtime_non_authority"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -15453,7 +15453,7 @@
       "enterprise_ready_blockers": [
         "family_is_non_runtime_non_authority"
       ],
-      "auditor_timestamp_utc": "2026-10-08T23:46:00-04:00",
+      "auditor_timestamp_utc": "2026-10-08T23:52:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -15500,7 +15500,7 @@
     ]
   },
   "auditor": {
-    "timestamp_utc": "2026-10-08T23:46:00-04:00",
+    "timestamp_utc": "2026-10-08T23:52:56-04:00",
     "generator": "project/tools/ceic_index_readiness_manifest.py",
     "gate": "project/tests/consolidated_enterprise/ceic_030_index_readiness_manifest_gate_test.py",
     "evidence": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-030_INDEX_READINESS_MANIFEST_EVIDENCE.md"

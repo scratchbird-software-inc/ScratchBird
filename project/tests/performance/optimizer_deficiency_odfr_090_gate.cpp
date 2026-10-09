@@ -9,6 +9,7 @@
 
 #include "compression_policy.hpp"
 #include "metric_contracts.hpp"
+#include "../support/contention_metric_fixture.hpp"
 #include "observability/performance_metric_event.hpp"
 #include "selectivity_model.hpp"
 #include "snapshot_safe_result_cache.hpp"
@@ -310,8 +311,14 @@ void ProveProfilerAndContentionClosure(std::vector<std::string>* evidence) {
   sample.subsystem = "odfr090.closure";
   sample.wait_class = "ipc_queue";
   sample.evidence_surface = "support_bundle";
+  scratchbird::tests::MetricProjectionFixture fixture(scratchbird::tests::FixtureUuid(1492, 1),
+      scratchbird::tests::FixtureUuid(1492, 2), 1493);
+  scratchbird::tests::AdmitContentionMetricFixture(fixture, sample);
   Require(metrics::RecordLockLatchContentionWait(sample).ok,
           "ODFR-002 contention sample was rejected");
+  fixture.ExpectProduced(2);
+  fixture.Seal();
+  fixture.VerifyAndDrain();
   Add(evidence, "support_bundle.group=contention_telemetry");
   Add(evidence, "disable.observability.contention_telemetry=off");
   Add(evidence, "disable.contention.behavior=resource_governor_preserved");
