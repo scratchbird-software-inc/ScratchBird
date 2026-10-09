@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <charconv>
 #include <cctype>
 #include <cmath>
@@ -773,10 +774,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
       if (!preflight_account(identity_inline_bytes) ||
               !preflight_string(identity.key) ||
                     !preflight_string(identity.tags) ||
-          !preflight_string(identity.time_series_payload_kind) ||
-          !preflight_string(identity.time_series_raw_value) ||
-          !preflight_string(identity.time_series_sample_count) ||
-          !preflight_string(identity.time_series_aggregate_value)) {
+          !preflight_string(identity.time_series_payload_kind)) {
         return Refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                       "graph exchange identity preflight exceeded its resource contract");
       }
@@ -916,9 +914,9 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
       }
       const bool empty_time_series_payload =
           identity.time_series_payload_kind.empty() &&
-          identity.time_series_raw_value.empty() &&
-          identity.time_series_sample_count.empty() &&
-          identity.time_series_aggregate_value.empty();
+          !identity.time_series_raw_value &&
+          !identity.time_series_sample_count &&
+          std::holds_alternative<std::monostate>(identity.time_series_aggregate_value);
       const bool empty_vector_payload =
           !identity.vector_distance && !identity.vector_score;
       const bool empty_search_payload =
@@ -986,9 +984,9 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
           CanonicalUuid(identity.metric_uuid) && canonical_time_series_tags &&
           identity.bucket_start_ns == 0 &&
           identity.time_series_payload_kind == "raw.real64.v1" &&
-          !identity.time_series_raw_value.empty() &&
-          identity.time_series_sample_count.empty() &&
-          identity.time_series_aggregate_value.empty() &&
+          identity.time_series_raw_value && std::isfinite(*identity.time_series_raw_value) &&
+          !identity.time_series_sample_count &&
+          std::holds_alternative<std::monostate>(identity.time_series_aggregate_value) &&
           empty_vector_payload && empty_search_payload &&
           row_uuids.insert(identity.row_uuid).second;
       const bool time_series_bucket =
@@ -1011,10 +1009,10 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
           identity.key.empty() && identity.series_uuid == input.object_uuid &&
           CanonicalUuid(identity.metric_uuid) && canonical_time_series_tags &&
           identity.point_timestamp_ns == 0 &&
-          identity.time_series_raw_value.empty() &&
+          !identity.time_series_raw_value &&
           !identity.time_series_payload_kind.empty() &&
-          !identity.time_series_sample_count.empty() &&
-          !identity.time_series_aggregate_value.empty() &&
+          identity.time_series_sample_count &&
+          !std::holds_alternative<std::monostate>(identity.time_series_aggregate_value) &&
           empty_vector_payload && empty_search_payload;
       const bool vector_identity =
           vector_family && identity.document_uuid.is_nil() &&
@@ -1659,12 +1657,14 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
       }
       const auto& row = provider_batch.batch.rows[ordinal];
       const auto& identity = provider_batch.ordered_row_identities[ordinal];
-      if (row.values.size() != expected_width ||
-          std::ranges::any_of(row.values, [](const auto& value) {
-            return !CanonicalModelScalarCarrier(value);
-          })) {
+      if (row.values.size() != expected_width) {
         return Refuse(kModelTypedExchangeInvalid,
-                      "time-series returned a null, missing, or malformed scalar carrier");
+                      "time-series returned an incorrect scalar row width");
+      }
+      for (std::size_t cell = 0; cell < row.values.size(); ++cell) {
+        if (!CanonicalModelScalarCarrier(row.values[cell]))
+          return Refuse(kModelTypedExchangeInvalid,
+                        "time-series returned a null, missing, or malformed scalar carrier at column " + std::to_string(cell));
       }
       const auto exact_utf8 = [&](const std::size_t cell,
                                   const std::string& expected) {
@@ -1673,27 +1673,28 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
       };
       if (raw) {
         std::int64_t timestamp_ns = 0;
+        std::string detail;
+        const auto payload = DecodeReal64Value(row.values[5]);
         if (!ExactSystemIdentityValue(row.values[0], identity.row_uuid) ||
             !ExactSystemIdentityValue(row.values[1], identity.series_uuid) ||
             !ExactSystemIdentityValue(row.values[2], identity.metric_uuid) ||
-            !CanonicalTimestampNs(row.values[3].encoded_value, &timestamp_ns) ||
+            !internal_api::DecodeHistoricalTimestampNanosecondsV1(row.values[3], &timestamp_ns, &detail) ||
             timestamp_ns != identity.point_timestamp_ns ||
             !exact_utf8(4, identity.tags) ||
-            !CanonicalFiniteReal64(row.values[5].encoded_value) ||
+            !payload.ok() || !identity.time_series_raw_value ||
             identity.time_series_payload_kind != "raw.real64.v1" ||
-            row.values[5].encoded_value !=
-                identity.time_series_raw_value ||
-            !identity.time_series_sample_count.empty() ||
-            !identity.time_series_aggregate_value.empty()) {
+            std::bit_cast<std::uint64_t>(payload.value) !=
+                std::bit_cast<std::uint64_t>(*identity.time_series_raw_value) ||
+            identity.time_series_sample_count ||
+            !std::holds_alternative<std::monostate>(identity.time_series_aggregate_value)) {
           return Refuse(kModelTypedExchangeInvalid,
                         "time-series raw row differs from ordered identity");
         }
       } else if (bucket) {
         std::int64_t bucket_start_ns = 0;
         std::string detail;
-        const bool timestamp_valid = row.values[0].descriptor.canonical_type_name == "timestamp"
-            ? internal_api::DecodeHistoricalTimestampNanosecondsV1(row.values[0], &bucket_start_ns, &detail)
-            : CanonicalTimestampNs(row.values[0].encoded_value, &bucket_start_ns);
+        const bool timestamp_valid = internal_api::DecodeHistoricalTimestampNanosecondsV1(
+            row.values[0], &bucket_start_ns, &detail);
         if (!timestamp_valid ||
             bucket_start_ns != identity.bucket_start_ns) {
           return Refuse(
@@ -1704,14 +1705,18 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
         std::int64_t bucket_start_ns = 0;
         std::int64_t bucket_end_ns = 0;
         std::int64_t sample_count = 0;
-        const auto converted = std::from_chars(
-            row.values[5].encoded_value.data(),
-            row.values[5].encoded_value.data() +
-                row.values[5].encoded_value.size(),
-            sample_count);
+        std::string detail;
         const bool count_payload =
             provider_batch.batch.columns[6].descriptor.canonical_type_name ==
             "int64";
+        std::int64_t aggregate_count = 0;
+        const auto* expected_count = std::get_if<std::int64_t>(&identity.time_series_aggregate_value);
+        const auto* expected_real = std::get_if<double>(&identity.time_series_aggregate_value);
+        const auto aggregate_real = count_payload ? Real64DecodeResult{} : DecodeReal64Value(row.values[6]);
+        const bool exact_payload = count_payload
+            ? expected_count && DecodeBoundInt64Value(row.values[6], &aggregate_count, &detail) && aggregate_count == *expected_count
+            : expected_real && aggregate_real.ok() &&
+                std::bit_cast<std::uint64_t>(aggregate_real.value) == std::bit_cast<std::uint64_t>(*expected_real);
         const bool exact_payload_kind =
             count_payload
                 ? identity.time_series_payload_kind ==
@@ -1726,27 +1731,16 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
                           "downsample.avg.real64.v1";
         if (!ExactSystemIdentityValue(row.values[0], identity.series_uuid) ||
             !ExactSystemIdentityValue(row.values[1], identity.metric_uuid) ||
-            !CanonicalTimestampNs(row.values[2].encoded_value,
-                                  &bucket_start_ns) ||
+            !internal_api::DecodeHistoricalTimestampNanosecondsV1(row.values[2], &bucket_start_ns, &detail) ||
             bucket_start_ns != identity.bucket_start_ns ||
-            !CanonicalTimestampNs(row.values[3].encoded_value,
-                                  &bucket_end_ns) ||
+            !internal_api::DecodeHistoricalTimestampNanosecondsV1(row.values[3], &bucket_end_ns, &detail) ||
             bucket_end_ns <= bucket_start_ns || !exact_utf8(4, identity.tags) ||
-            row.values[5].encoded_value.empty() ||
-            converted.ec != std::errc{} ||
-            converted.ptr != row.values[5].encoded_value.data() +
-                                 row.values[5].encoded_value.size() ||
+            !DecodeBoundInt64Value(row.values[5], &sample_count, &detail) ||
             sample_count <= 0 ||
-            !CanonicalInt64(row.values[5].encoded_value, true) ||
-            !identity.time_series_raw_value.empty() ||
-            row.values[5].encoded_value !=
-                identity.time_series_sample_count ||
-            row.values[6].encoded_value !=
-                identity.time_series_aggregate_value ||
-            !exact_payload_kind ||
-            (count_payload
-                 ? !CanonicalInt64(row.values[6].encoded_value)
-                 : !CanonicalFiniteReal64(row.values[6].encoded_value))) {
+            identity.time_series_raw_value ||
+            !identity.time_series_sample_count ||
+            sample_count != *identity.time_series_sample_count ||
+            !exact_payload_kind || !exact_payload) {
           return Refuse(kModelTypedExchangeInvalid,
                         "time-series downsample row differs from ordered identity");
         }
@@ -1771,10 +1765,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     if (!account_bytes(identity_inline_bytes) ||
         !account_bytes(identity.key.size()) ||
         !account_bytes(identity.tags.size()) ||
-        !account_bytes(identity.time_series_payload_kind.size()) ||
-        !account_bytes(identity.time_series_raw_value.size()) ||
-        !account_bytes(identity.time_series_sample_count.size()) ||
-        !account_bytes(identity.time_series_aggregate_value.size())) {
+        !account_bytes(identity.time_series_payload_kind.size())) {
       return Refuse(kModelTypedExchangeInvalid,
                     "document exchange identity memory counter overflowed");
     }

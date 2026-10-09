@@ -416,6 +416,144 @@ int main() {
       Require(RejectedWithoutPublication(publish_bucket(bad)),
               "bucket exchange published malformed tuple or substituted receipt");
     }
+    // Native raw and aggregate receipts must agree bit-for-bit with the
+    // published cells. These exercise the actual exchange without a database
+    // fixture, including valid-but-substituted cells and mixed legacy arms.
+    auto raw_input = bucket_input;
+    raw_input.operation_id = "TIME_SERIES_RANGE_READ";
+    raw_input.output_descriptor_ids = {1,2,3,4,5,6};
+    raw_input.maximum_cells = 6;
+    auto raw_provider = bucket_provider;
+    raw_provider.output_descriptor_ids = raw_input.output_descriptor_ids;
+    auto real = ex::EncodeReal64Value(1.25);
+    real.descriptor.descriptor_kind = "scalar";
+    real.descriptor.descriptor_uuid = FixtureUuid(90);
+    raw_provider.batch.columns = {
+        {"row_uuid", provider.batch.columns[0].descriptor, false, 1},
+        {"series_uuid", provider.batch.columns[0].descriptor, false, 2},
+        {"metric_uuid", provider.batch.columns[0].descriptor, false, 3},
+        {"point_timestamp", timestamp_descriptor, false, 4},
+        {"tags", provider.batch.columns[1].descriptor, false, 5},
+        {"value", real.descriptor, false, 6}};
+    ex::DescriptorTuple raw_tuple;
+    for (const auto& id : {bucket_identity.row_uuid, bucket_identity.series_uuid, bucket_identity.metric_uuid}) {
+      api::EngineTypedValue value;
+      value.descriptor = provider.batch.columns[0].descriptor;
+      value.binary_value.assign(id.bytes.begin(), id.bytes.end());
+      raw_tuple.values.push_back(std::move(value));
+    }
+    raw_tuple.values.push_back(timestamp_value);
+    auto tags = provider.batch.rows[0].values[1];
+    tags.encoded_value = "{}";
+    raw_tuple.values.push_back(tags);
+    raw_tuple.values.push_back(real);
+    raw_provider.batch.rows = {raw_tuple};
+    auto& raw_identity = raw_provider.ordered_row_identities[0];
+    raw_identity.bucket_start_ns = 0;
+    raw_identity.time_series_payload_kind = "raw.real64.v1";
+    raw_identity.time_series_raw_value = 1.25;
+    const auto publish_raw = [&](const auto& candidate) {
+      return ex::PublishModelFamilyExchangeV1(raw_input, candidate, {});
+    };
+    const auto raw_result = publish_raw(raw_provider);
+    if (!raw_result.accepted) throw std::runtime_error("raw: " + raw_result.detail);
+    Require(raw_result.root_publishable && raw_result.output.batch.rows[0].values[5].binary_value == real.binary_value,
+            "native raw exchange changed the REAL64 payload");
+    for (unsigned bit = 0; bit < 64; ++bit) {
+      auto bad = raw_provider;
+      bad.batch.rows[0].values[5].binary_value[bit / 8] ^= static_cast<std::uint8_t>(1u << (bit % 8));
+      Require(RejectedWithoutPublication(publish_raw(bad)), "raw exchange admitted a REAL64 payload bit substitution");
+    }
+    for (const double zero : {0.0, -0.0}) {
+      auto exact = raw_provider;
+      exact.batch.rows[0].values[5].binary_value = ex::EncodeReal64Value(zero).binary_value;
+      exact.ordered_row_identities[0].time_series_raw_value = zero;
+      Require(publish_raw(exact).accepted, "raw exchange did not preserve exact signed-zero receipt");
+      exact.ordered_row_identities[0].time_series_raw_value = -zero;
+      Require(RejectedWithoutPublication(publish_raw(exact)), "raw exchange admitted a signed-zero receipt substitution");
+    }
+    for (unsigned mutation = 0; mutation < 10; ++mutation) {
+      auto bad = raw_provider;
+      auto& value = bad.batch.rows[0].values[5];
+      auto& receipt = bad.ordered_row_identities[0];
+      if (mutation == 0) value.encoded_value = "1.25";
+      if (mutation == 1) value.binary_value.pop_back();
+      if (mutation == 2) value.binary_value = ex::EncodeReal64Value(2.0).binary_value;
+      if (mutation == 3) receipt.time_series_raw_value = 2.0;
+      if (mutation == 4) receipt.time_series_raw_value.reset();
+      if (mutation == 5) receipt.time_series_raw_value = std::numeric_limits<double>::infinity();
+      if (mutation == 6) receipt.time_series_sample_count = 1;
+      if (mutation == 7) receipt.time_series_aggregate_value = 1.25;
+      if (mutation == 8) bad.batch.rows[0].values[3].encoded_value = "1970-01-01T00:00:01Z";
+      if (mutation == 9) ++receipt.point_timestamp_ns;
+      Require(RejectedWithoutPublication(publish_raw(bad)), "raw exchange admitted malformed native value or substituted receipt");
+    }
+    for (const bool count : {false, true}) {
+      auto aggregate_input = raw_input;
+      aggregate_input.operation_id = "TIME_SERIES_DOWNSAMPLE";
+      aggregate_input.output_descriptor_ids = {1,2,3,4,5,6,7};
+      aggregate_input.maximum_cells = 7;
+      auto aggregate_provider = raw_provider;
+      aggregate_provider.output_descriptor_ids = aggregate_input.output_descriptor_ids;
+      aggregate_provider.properties.uniqueness_id = "series_metric_tags_bucket_v1";
+      aggregate_provider.properties.ordering_id = "series_metric_tags_bucket_start_ascending_v1";
+      auto samples = ex::EncodeInt64Value(2);
+      samples.descriptor.descriptor_kind = "scalar";
+      samples.descriptor.descriptor_uuid = FixtureUuid(91);
+      auto aggregate = count ? ex::EncodeInt64Value(2) : ex::EncodeReal64Value(2.5);
+      aggregate.descriptor.descriptor_kind = "scalar";
+      aggregate.descriptor.descriptor_uuid = FixtureUuid(92);
+      const auto end = scratchbird::tests::HistoricalTimestampFixtureValue(timestamp_descriptor, "1970-01-01T00:00:02Z");
+      aggregate_provider.batch.columns = {
+          {"series_uuid", raw_tuple.values[1].descriptor, false, 1},
+          {"metric_uuid", raw_tuple.values[2].descriptor, false, 2},
+          {"bucket_start", timestamp_descriptor, false, 3},
+          {"bucket_end", timestamp_descriptor, false, 4},
+          {"tags", tags.descriptor, false, 5},
+          {"sample_count", samples.descriptor, false, 6},
+          {"aggregate_value", aggregate.descriptor, false, 7}};
+      aggregate_provider.batch.rows = {{{raw_tuple.values[1], raw_tuple.values[2], timestamp_value, end, tags, samples, aggregate}}};
+      auto& receipt = aggregate_provider.ordered_row_identities[0];
+      receipt.row_uuid = {};
+      receipt.point_timestamp_ns = 0;
+      receipt.bucket_start_ns = 1'000'000'000;
+      receipt.time_series_raw_value.reset();
+      receipt.time_series_sample_count = 2;
+      receipt.time_series_payload_kind = count ? "downsample.count.int64.v1" : "downsample.sum.real64.v1";
+      if (count) receipt.time_series_aggregate_value = std::int64_t{2};
+      else receipt.time_series_aggregate_value = 2.5;
+      const auto publish_aggregate = [&](const auto& candidate) {
+        return ex::PublishModelFamilyExchangeV1(aggregate_input, candidate, {});
+      };
+      const auto accepted = publish_aggregate(aggregate_provider);
+      if (!accepted.accepted) throw std::runtime_error("aggregate: " + accepted.detail);
+      Require(accepted.root_publishable && accepted.output.batch.rows[0].values[6].binary_value == aggregate.binary_value,
+              "aggregate exchange changed native payload");
+      for (unsigned mutation = 0; mutation < 12; ++mutation) {
+        auto bad = aggregate_provider;
+        auto& row = bad.batch.rows[0].values;
+        auto& identity = bad.ordered_row_identities[0];
+        if (mutation == 0) row[5].encoded_value = "2";
+        if (mutation == 1) row[5].binary_value = ex::EncodeInt64Value(3).binary_value;
+        if (mutation == 2) identity.time_series_sample_count = 3;
+        if (mutation == 3) identity.time_series_sample_count.reset();
+        if (mutation == 4) row[6].encoded_value = "2";
+        if (mutation == 5) row[6].binary_value.pop_back();
+        if (mutation == 6) identity.time_series_aggregate_value = std::monostate{};
+        if (mutation == 7) {
+          if (count) identity.time_series_aggregate_value = 2.0;
+          else identity.time_series_aggregate_value = std::int64_t{2};
+        }
+        if (mutation == 8) {
+          if (count) row[6].binary_value = ex::EncodeInt64Value(3).binary_value;
+          else row[6].binary_value = ex::EncodeReal64Value(3.0).binary_value;
+        }
+        if (mutation == 9) row[3].binary_value = row[2].binary_value;
+        if (mutation == 10) identity.time_series_raw_value = 0.0;
+        if (mutation == 11) row[2].encoded_value = "1970-01-01T00:00:01Z";
+        Require(RejectedWithoutPublication(publish_aggregate(bad)), "aggregate exchange admitted malformed native value or substituted receipt");
+      }
+    }
     std::cout << "PASS actual binary model exchange publication; component only\n";
     return 0;
   } catch (const std::exception& error) {

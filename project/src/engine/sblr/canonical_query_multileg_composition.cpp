@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "canonical_query_multileg_composition.hpp"
+#include "query/historical_timestamp_scalar.hpp"
 #include "canonical_query_multileg_descriptor_rebinding.hpp"
 #include "canonical_query_aggregate_registration.hpp"
 #include "canonical_query_correlated_registration.hpp"
@@ -3291,19 +3292,20 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
               const auto* metric_uuid = value_for(row, "metric_uuid");
               const auto native_metric_uuid = Rcp080SystemUuidCell(metric_uuid);
               if (metric_uuid && !native_metric_uuid) return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "stored UUID cell is not binary16");
-              const auto* timestamp = value_for(row, "point_timestamp");
               const auto* tags = value_for(row, "tags");
-              const auto* value = value_for(row, "value");
               identity.metric_uuid =
                   native_metric_uuid.value_or(api::EngineUuid{});
               identity.tags = tags == nullptr ? std::string{} : *tags;
               identity.time_series_payload_kind = "raw.real64.v1";
-              identity.time_series_raw_value =
-                  value == nullptr ? std::string{} : *value;
-              if (timestamp != nullptr) {
-                exec::ParseCanonicalTimeSeriesTimestampNsV1(
-                    *timestamp, &identity.point_timestamp_ns);
-              }
+              const auto& values = output.batch.rows.back().values;
+              std::string detail;
+              if (values.size() != 6 || !api::DecodeHistoricalTimestampNanosecondsV1(
+                      values[3], &identity.point_timestamp_ns, &detail))
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "stored time-series timestamp is not bound native UTC");
+              const auto value = exec::DecodeReal64Value(values[5]);
+              if (!value.ok())
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "stored time-series value is not bound native REAL64");
+              identity.time_series_raw_value = value.value;
             } else if (source_input.family_id == "vector") {
               identity.row_uuid = row.row_uuid;
               const auto& values = output.batch.rows.back().values;

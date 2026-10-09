@@ -3291,7 +3291,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
           identity.bucket_start_ns = projected_bucket_start_ns;
           if (!bucket_operation) {
             identity.time_series_payload_kind = "raw.real64.v1";
-            identity.time_series_raw_value = std::move(raw_payload);
+            identity.time_series_raw_value = row.value;
           }
           batch.ordered_row_identities.push_back(std::move(identity));
         }
@@ -3345,8 +3345,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
             case api::EngineBoundTimeSeriesAggregateV1::kNone:
               break;
           }
-          identity.time_series_sample_count = sample_count;
-          identity.time_series_aggregate_value = aggregate_value;
+          identity.time_series_sample_count = row.sample_count;
+          if (aggregate == api::EngineBoundTimeSeriesAggregateV1::kCount)
+            identity.time_series_aggregate_value = row.aggregate_count;
+          else
+            identity.time_series_aggregate_value = row.aggregate_value;
           batch.ordered_row_identities.push_back(std::move(identity));
         }
         if (time_series_cancellation_requested()) {

@@ -19,9 +19,12 @@
 #include "security/security_model.hpp"
 #include "uuid.hpp"
 #include "catalog/column_metadata_codec.hpp"
+#include "catalog/name_resolution_api.hpp"
+#include "mga_relation_store/stored_timestamp_descriptor.hpp"
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <charconv>
 #include <cfenv>
 #include <cmath>
@@ -855,24 +858,6 @@ bool WellFormedTimeSeriesUtf8(const std::string_view value) {
   return true;
 }
 
-constexpr std::int64_t DaysFromCivil(const int year,
-                                     const unsigned month,
-                                     const unsigned day) {
-  const int adjusted_year = year - (month <= 2 ? 1 : 0);
-  const int era = (adjusted_year >= 0 ? adjusted_year
-                                      : adjusted_year - 399) /
-                  400;
-  const unsigned year_of_era =
-      static_cast<unsigned>(adjusted_year - era * 400);
-  const unsigned adjusted_month = month > 2 ? month - 3 : month + 9;
-  const unsigned day_of_year =
-      (153 * adjusted_month + 2) / 5 + day - 1;
-  const unsigned day_of_era =
-      year_of_era * 365 + year_of_era / 4 - year_of_era / 100 +
-      day_of_year;
-  return static_cast<std::int64_t>(era) * 146097 +
-         static_cast<std::int64_t>(day_of_era) - 719468;
-}
 
 struct CivilDate {
   int year{1970};
@@ -901,110 +886,6 @@ CivilDate CivilFromDays(std::int64_t days) {
   return {year, month, day};
 }
 
-bool LeapYear(const unsigned year) {
-  return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
-}
-
-bool ParseUnsignedField(const std::string_view value,
-                        const std::size_t offset,
-                        const std::size_t count,
-                        unsigned* out) {
-  if (out == nullptr || offset + count > value.size()) return false;
-  unsigned parsed = 0;
-  for (std::size_t index = 0; index < count; ++index) {
-    const char ch = value[offset + index];
-    if (ch < '0' || ch > '9') return false;
-    parsed = parsed * 10 + static_cast<unsigned>(ch - '0');
-  }
-  *out = parsed;
-  return true;
-}
-
-bool ParseTimeSeriesTimestamp(const std::string_view value,
-                              EngineApiI64* timestamp_ns) {
-  if (timestamp_ns == nullptr || value.size() < 20 || value[4] != '-' ||
-      value[7] != '-' || value[10] != 'T' || value[13] != ':' ||
-      value[16] != ':') {
-    return false;
-  }
-  unsigned year = 0;
-  unsigned month = 0;
-  unsigned day = 0;
-  unsigned hour = 0;
-  unsigned minute = 0;
-  unsigned second = 0;
-  if (!ParseUnsignedField(value, 0, 4, &year) ||
-      !ParseUnsignedField(value, 5, 2, &month) ||
-      !ParseUnsignedField(value, 8, 2, &day) ||
-      !ParseUnsignedField(value, 11, 2, &hour) ||
-      !ParseUnsignedField(value, 14, 2, &minute) ||
-      !ParseUnsignedField(value, 17, 2, &second) || year == 0 ||
-      month == 0 || month > 12 || hour > 23 || minute > 59 ||
-      second > 59) {
-    return false;
-  }
-  constexpr std::array<unsigned, 12> kMonthDays{
-      31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-  unsigned maximum_day = kMonthDays[month - 1];
-  if (month == 2 && LeapYear(year)) ++maximum_day;
-  if (day == 0 || day > maximum_day) return false;
-
-  std::size_t offset = 19;
-  std::uint64_t fraction_ns = 0;
-  if (offset < value.size() && value[offset] == '.') {
-    ++offset;
-    const auto fraction_begin = offset;
-    while (offset < value.size() && value[offset] >= '0' &&
-           value[offset] <= '9') {
-      if (offset - fraction_begin >= 9) return false;
-      fraction_ns = fraction_ns * 10 +
-                    static_cast<std::uint64_t>(value[offset] - '0');
-      ++offset;
-    }
-    if (offset == fraction_begin) return false;
-    for (std::size_t index = offset - fraction_begin; index < 9; ++index) {
-      fraction_ns *= 10;
-    }
-  }
-
-  int offset_sign = 0;
-  unsigned offset_hour = 0;
-  unsigned offset_minute = 0;
-  if (offset < value.size() && value[offset] == 'Z') {
-    ++offset;
-  } else if (offset + 6 == value.size() &&
-             (value[offset] == '+' || value[offset] == '-') &&
-             value[offset + 3] == ':' &&
-             ParseUnsignedField(value, offset + 1, 2, &offset_hour) &&
-             ParseUnsignedField(value, offset + 4, 2, &offset_minute)) {
-    offset_sign = value[offset] == '+' ? 1 : -1;
-    offset += 6;
-    if (offset_hour > 14 || offset_minute > 59 ||
-        (offset_hour == 14 && offset_minute != 0)) {
-      return false;
-    }
-  } else {
-    return false;
-  }
-  if (offset != value.size()) return false;
-
-  constexpr __int128 kNsPerSecond = 1'000'000'000;
-  constexpr __int128 kSecondsPerDay = 86'400;
-  const auto days = DaysFromCivil(static_cast<int>(year), month, day);
-  __int128 seconds = static_cast<__int128>(days) * kSecondsPerDay +
-                     static_cast<__int128>(hour) * 3600 +
-                     static_cast<__int128>(minute) * 60 + second;
-  seconds -= static_cast<__int128>(offset_sign) *
-             (static_cast<__int128>(offset_hour) * 3600 +
-              static_cast<__int128>(offset_minute) * 60);
-  const __int128 encoded = seconds * kNsPerSecond + fraction_ns;
-  if (encoded < std::numeric_limits<EngineApiI64>::min() ||
-      encoded > std::numeric_limits<EngineApiI64>::max()) {
-    return false;
-  }
-  *timestamp_ns = static_cast<EngineApiI64>(encoded);
-  return true;
-}
 
 std::string FormatTimeSeriesTimestamp(const EngineApiI64 timestamp_ns) {
   constexpr EngineApiI64 kNsPerSecond = 1'000'000'000;
@@ -1335,12 +1216,14 @@ TagParseStatus CanonicalizeTimeSeriesTags(const std::string_view input,
 }
 
 bool ExactTimeSeriesValueDescriptor(
+    const EngineRequestContext& context,
     const EngineDescriptor& descriptor, const std::string_view expected_type,
     const EngineUuid& expected_column_uuid,
+    const std::uint32_t expected_character_length,
     const scratchbird::core::datatypes::DatatypeStorageIdentityV1& identity) {
   const auto canonical_type = expected_type == "timestamp_tz" ? "timestamp" : expected_type;
   if (!QowCanonicalDescriptorIdentityV1(descriptor) ||
-      descriptor.descriptor_kind != "canonical_type_descriptor" ||
+      (descriptor.descriptor_kind != "canonical_type_descriptor" && descriptor.descriptor_kind != "scalar") ||
       descriptor.canonical_type_name != canonical_type ||
       descriptor.datatype_descriptor_uuid != identity.descriptor_uuid ||
       descriptor.datatype_descriptor_generation != identity.descriptor_generation ||
@@ -1366,6 +1249,24 @@ bool ExactTimeSeriesValueDescriptor(
   if (expected_type == "text") {
     if (!identity.codec) return false;
     expected.identities.emplace("column_uuid", expected_column_uuid);
+    const auto charset = LookupEngineResourceDescriptorByUuid(context, descriptor.charset_uuid, "charset");
+    const auto collation = LookupEngineResourceDescriptorByUuid(context, descriptor.collation_uuid, "collation");
+    if (!charset.ok || !charset.resource_descriptor.present || !collation.ok ||
+        !collation.resource_descriptor.present ||
+        charset.resource_descriptor.resource_epoch != context.resource_epoch ||
+        collation.resource_descriptor.resource_epoch != context.resource_epoch ||
+        collation.resource_descriptor.comparison_profile != core::resources::CollationProfile::utf8_binary ||
+        collation.resource_descriptor.parent_resource_uuid != descriptor.charset_uuid) return false;
+    expected.identities.emplace("charset_uuid", descriptor.charset_uuid);
+    expected.identities.emplace("collation_uuid", descriptor.collation_uuid);
+    expected.text.emplace("charset_generation", std::to_string(charset.resource_descriptor.family_epoch));
+    expected.text.emplace("collation_generation", std::to_string(collation.resource_descriptor.family_epoch));
+    expected.text.emplace("resource_epoch", std::to_string(context.resource_epoch));
+    if (!expected_character_length ||
+        expected_character_length > identity.codec->canonical_value_maximum_bytes) return false;
+    expected.text.emplace("character_length", std::to_string(expected_character_length));
+  } else if (!descriptor.charset_uuid.is_nil() || !descriptor.collation_uuid.is_nil()) {
+    return false;
   }
   if (expected_type == "timestamp_tz" && metadata.text.contains("timezone_profile_id"))
     expected.text.emplace("timezone_profile_id", "UTC");
@@ -1422,11 +1323,16 @@ bool ExactTimeSeriesStorageDescriptorImpl(
         !descriptor_uuids
              .insert(column.value_descriptor.descriptor_uuid)
              .second ||
-        !column.charset_uuid.is_nil() || !column.collation_uuid.is_nil() ||
-        column.character_length != 0 ||
-        !ExactTimeSeriesValueDescriptor(column.value_descriptor,
+        (kTypes[ordinal] == "text"
+             ? column.charset_uuid != column.value_descriptor.charset_uuid ||
+                   column.collation_uuid != column.value_descriptor.collation_uuid ||
+                   column.character_length == 0
+             : !column.charset_uuid.is_nil() || !column.collation_uuid.is_nil() ||
+                   column.character_length != 0) ||
+        !ExactTimeSeriesValueDescriptor(context, column.value_descriptor,
                                         kTypes[ordinal],
                                         column.column_uuid,
+                                        column.character_length,
                                         identity)) {
       return false;
     }
@@ -1434,16 +1340,13 @@ bool ExactTimeSeriesStorageDescriptorImpl(
   return true;
 }
 
-bool ParseFiniteReal64(const std::string_view encoded, double* out) {
-  if (out == nullptr || encoded.empty()) return false;
-  double value = 0.0;
-  const auto parsed = std::from_chars(encoded.data(),
-                                      encoded.data() + encoded.size(), value,
-                                      std::chars_format::general);
-  if (parsed.ec != std::errc{} ||
-      parsed.ptr != encoded.data() + encoded.size() || !std::isfinite(value)) {
-    return false;
-  }
+bool DecodeFiniteReal64(const std::string_view encoded, double* out) {
+  if (out == nullptr || encoded.size() != 8) return false;
+  std::uint64_t bits = 0;
+  for (unsigned i = 0; i < 8; ++i)
+    bits |= static_cast<std::uint64_t>(static_cast<unsigned char>(encoded[i])) << (8*i);
+  const double value = std::bit_cast<double>(bits);
+  if (!std::isfinite(value)) return false;
   *out = value == 0.0 ? 0.0 : value;
   return true;
 }
@@ -1647,19 +1550,22 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
     return refuse("SB_MODEL_TIME_SERIES_RANGE_INVALID_V1",
                   "time-series range endpoints are absent or null");
   }
-  if (!request.range_start.binary_value.empty() ||
-      request.range_start.descriptor.canonical_type_name != "timestamp_tz" ||
-      !request.range_end.binary_value.empty() ||
-      request.range_end.descriptor.canonical_type_name != "timestamp_tz") {
-    return refuse("SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1",
-                  "time-series range endpoints are not non-null TIMESTAMP_TZ");
-  }
   EngineApiI64 range_start_ns = 0;
   EngineApiI64 range_end_ns = 0;
-  if (!ParseTimeSeriesTimestamp(request.range_start.encoded_value,
-                                &range_start_ns) ||
-      !ParseTimeSeriesTimestamp(request.range_end.encoded_value,
-                                &range_end_ns)) {
+  std::string temporal_detail;
+  const auto bound_endpoint = [&](const EngineTypedValue& value, EngineApiI64* nanos) {
+    bool nullable = false;
+    EngineUuid receipt;
+    const auto* identity = ResolveHistoricalTimestampScalarIdentityV1(
+        value.descriptor, &nullable, &temporal_detail, &receipt);
+    return identity && receipt == request.context.statement_receipt_uuid &&
+        identity->catalog_snapshot_uuid == request.context.datatype_catalog_snapshot_uuid &&
+        identity->catalog_generation == request.context.datatype_catalog_generation &&
+        identity->registry_generation == request.context.datatype_registry_generation &&
+        DecodeHistoricalTimestampNanosecondsV1(value, nanos, &temporal_detail);
+  };
+  if (!bound_endpoint(request.range_start, &range_start_ns) ||
+      !bound_endpoint(request.range_end, &range_end_ns)) {
     return refuse("SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1",
                   "time-series range endpoint is malformed or out of range");
   }
@@ -1874,6 +1780,21 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
                   "time-series selected-row vector exceeded its memory bound");
   }
   selected.reserve(selected_capacity);
+  const core::datatypes::DatatypeTypeCodecIdentityRowV1* timestamp_identity = nullptr;
+  const auto& timestamp_column = read.descriptor.columns[1].value_descriptor;
+  for (const auto& identity : core::datatypes::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+    if (identity.catalog_snapshot_uuid != request.context.datatype_catalog_snapshot_uuid ||
+        identity.catalog_generation != request.context.datatype_catalog_generation ||
+        identity.registry_generation != request.context.datatype_registry_generation ||
+        identity.descriptor_uuid != timestamp_column.datatype_descriptor_uuid ||
+        identity.descriptor_generation != timestamp_column.datatype_descriptor_generation ||
+        identity.type_uuid != timestamp_column.type_uuid) continue;
+    if (timestamp_identity)
+      return refuse("SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1", "stored timestamp identity is ambiguous");
+    timestamp_identity = &identity;
+  }
+  if (!timestamp_identity)
+    return refuse("SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1", "stored timestamp identity is invalid");
   std::uint64_t tag_bytes = 0;
   for (const auto& row : read.visible_rows) {
     if (cancelled()) {
@@ -1916,7 +1837,9 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
                     "time-series metric identity is not a native engine UUID");
     }
     EngineApiI64 point_ns = 0;
-    if (!ParseTimeSeriesTimestamp(*timestamp, &point_ns)) {
+    if (!DecodeHistoricalTimestampStoredNanosecondsV1(*timestamp_identity,
+            {reinterpret_cast<const std::uint8_t*>(timestamp->data()), timestamp->size()},
+            &point_ns, &temporal_detail)) {
       return refuse("SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1",
                     "time-series selected point timestamp is invalid");
     }
@@ -1960,7 +1883,7 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
     api_peak_live_memory_bytes =
         std::max(api_peak_live_memory_bytes, tag_phase_memory_bytes);
     double numeric_value = 0.0;
-    if (!ParseFiniteReal64(*stored_value, &numeric_value)) {
+    if (!DecodeFiniteReal64(*stored_value, &numeric_value)) {
       return refuse("SB_MODEL_TIME_SERIES_VALUE_INVALID_V1",
                     "time-series selected point value is not finite REAL64");
     }

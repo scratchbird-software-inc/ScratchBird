@@ -1,10 +1,13 @@
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/historical_timestamp_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_query_execute.hpp"
+#include "canonical_query_descriptor_support.hpp"
 #include "cst/cst.hpp"
 #include "crud_support/crud_store.hpp"
 #include "database_lifecycle.hpp"
@@ -16,6 +19,7 @@
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "model_family_coordinator.hpp"
 #include "model_family_executor.hpp"
+#include "memory.hpp"
 #include "nosql/nosql_provider_generation_store.hpp"
 #include "nosql/time_series_api.hpp"
 #include "logical_plan.hpp"
@@ -44,6 +48,9 @@
 #include <string_view>
 #include <vector>
 #include "catalog/binary_catalog_metadata.hpp"
+#include "catalog/column_metadata_codec.hpp"
+#include "catalog/name_resolution_api.hpp"
+#include "mga_relation_store/stored_timestamp_descriptor.hpp"
 #include <tuple>
 #include <type_traits>
 
@@ -275,6 +282,9 @@ bool ExactTimeSeriesRollupCapabilityKnownAnswer() {
 }
 
 struct Fixture {
+  api::EngineRequestContext owner_context;
+  mutable std::vector<std::shared_ptr<scratchbird::tests::FixtureEngineSession>> sessions;
+  mutable std::vector<std::shared_ptr<scratchbird::tests::FixtureEngineStatement>> statements;
   std::filesystem::path directory;
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
@@ -282,6 +292,8 @@ struct Fixture {
   std::map<api::EngineUuid, api::MgaRelationStorageDescriptor> descriptors;
 
   ~Fixture() {
+    statements.clear();
+    sessions.clear();
     std::error_code ignored;
     std::filesystem::remove_all(directory, ignored);
   }
@@ -289,24 +301,15 @@ struct Fixture {
 
 api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::string request_id) {
-  api::EngineRequestContext context;
+  api::EngineRequestContext context = fixture.owner_context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid = NewIdentity(platform::UuidKind::principal);
-  context.session_uuid = NewIdentity(platform::UuidKind::object);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
-  context.catalog_generation_id = 76;
-  context.security_epoch = 77;
-  context.resource_epoch = 78;
-  context.name_resolution_epoch = 79;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
   return context;
 }
 
@@ -316,7 +319,8 @@ bool Begin(const Fixture& fixture, std::string request_id,
   request.context = BaseContext(fixture, std::move(request_id));
   request.isolation_level = "read_committed";
   const auto result = api::EngineBeginTransaction(request);
-  if (!result.ok) return Require(false, "transaction begin failed");
+  if (!result.ok) return Require(false, "transaction begin failed:" +
+      (result.diagnostics.empty() ? std::string{} : result.diagnostics.front().code + ":" + result.diagnostics.front().detail));
   *context = request.context;
   context->transaction_uuid = result.transaction_uuid;
   context->local_transaction_id = result.local_transaction_id;
@@ -356,41 +360,94 @@ api::EngineLocalizedName Name(std::string name) {
   return {"en", "primary", "", std::move(name), true};
 }
 
-api::EngineColumnDefinition Column(const std::uint32_t ordinal,
+api::EngineColumnDefinition Column(const api::EngineRequestContext& context,
+                                   const std::uint32_t ordinal,
                                    std::string name,
                                    const std::string_view type) {
   api::EngineColumnDefinition column;
   column.requested_column_uuid = NewIdentity(platform::UuidKind::object);
   column.names.push_back(Name(std::move(name)));
   column.descriptor.descriptor_kind = "scalar";
+  column.descriptor.descriptor_uuid = NewIdentity(platform::UuidKind::object);
   column.descriptor.canonical_type_name =
       type == "timestamp_tz" ? "timestamp" : std::string(type);
-  column.descriptor.encoded_descriptor = "canonical=" + std::string(type);
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) throw std::runtime_error("time-series datatype manifest unavailable");
+  const auto datatype = dt::LookupDatatypeCatalogRow(manifest.manifest,
+      dt::CanonicalTypeIdFromStableName(column.descriptor.canonical_type_name));
+  if (!datatype.ok() || datatype.manifest.descriptor_rows.size() != 1)
+    throw std::runtime_error("time-series datatype catalog row unavailable");
+  const auto& catalog_row = datatype.manifest.descriptor_rows.front();
+  const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+      context.datatype_registry_generation, catalog_row.descriptor_uuid.value,
+      catalog_row.descriptor_epoch);
+  if (!binding.ok) throw std::runtime_error("time-series datatype codec unavailable");
+  column.descriptor.datatype_descriptor_uuid = binding.row.descriptor_uuid;
+  column.descriptor.datatype_descriptor_generation = binding.row.descriptor_generation;
+  column.descriptor.type_uuid = binding.row.type_uuid;
+  api::CatalogColumnMetadata metadata;
+  metadata.text = {{"canonical", std::string(type)}, {"nullable", "false"}};
+  if (type == "text") {
+    const auto charset = api::LookupEngineResourceDescriptorByName(context, "UTF8", "charset");
+    const auto collation = api::LookupEngineResourceDescriptorByName(context, "SB_UTF8_BINARY", "collation");
+    if (!charset.ok || !charset.resource_descriptor.present || !collation.ok ||
+        !collation.resource_descriptor.present ||
+        collation.resource_descriptor.parent_resource_uuid != charset.resource_descriptor.resource_uuid)
+      throw std::runtime_error("time-series text resources unavailable");
+    column.descriptor.charset_uuid = charset.resource_descriptor.resource_uuid;
+    column.descriptor.collation_uuid = collation.resource_descriptor.resource_uuid;
+    metadata.identities = {{"charset_uuid", column.descriptor.charset_uuid},
+                           {"collation_uuid", column.descriptor.collation_uuid}};
+    metadata.text["character_length"] = std::to_string(binding.row.canonical_value_maximum_bytes);
+  }
+  if (!api::EncodeCatalogColumnMetadata(metadata, &column.descriptor.encoded_descriptor))
+    throw std::runtime_error("time-series column metadata encoding failed");
   column.ordinal = ordinal;
   column.nullable = false;
   return column;
 }
 
-void AddAuthorization(api::EngineRequestContext* context,
-                      const api::EngineUuid& object_uuid) {
-  if (!context->authorization_context.present) {
-    auto& auth = context->authorization_context;
-    auth.present = true;
-    auth.authority_uuid = NewIdentity(platform::UuidKind::object);
-    auth.principal_uuid = context->principal_uuid;
-    auth.security_epoch = context->security_epoch;
-    auth.policy_epoch = 80;
-    auth.catalog_generation_id = context->catalog_generation_id;
-    auth.effective_subjects.push_back({context->principal_uuid, "principal"});
+api::EngineTypedValue TypedValue(const api::EngineDescriptor& descriptor,
+                                 std::string encoded) {
+  api::EngineTypedValue value;
+  value.descriptor = descriptor;
+  value.setState(api::EngineValueState::value);
+  // Fixture input is presentation text; storage receives native bytes, just
+  // as it does after the parser/client boundary has resolved a typed value.
+  if (descriptor.canonical_type_name == "timestamp") {
+    dt::ReferenceTemporalWireProfileRequest request;
+    request.wire_profile = "timestamp_timezone_profile";
+    request.encoded_value = encoded;
+    request.fractional_second_precision = 9;
+    request.require_timezone_seed = false;
+    const auto parsed = dt::ValidateReferenceTemporalWireProfile(request);
+    if (!parsed.ok() || !parsed.comparable_utc_key_available || parsed.used_timezone_seed ||
+        parsed.comparable_fractional_picoseconds % 1000)
+      throw std::runtime_error("invalid time-series timestamp fixture input");
+    const auto seconds = static_cast<std::uint64_t>(parsed.comparable_utc_whole_seconds);
+    const auto nanos = static_cast<std::uint32_t>(parsed.comparable_fractional_picoseconds / 1000);
+    value.binary_value.assign(16, 0);
+    for (unsigned i = 0; i < 8; ++i) value.binary_value[i] = seconds >> (8 * i);
+    for (unsigned i = 0; i < 4; ++i) value.binary_value[8 + i] = nanos >> (8 * i);
+  } else if (descriptor.canonical_type_name == "real64") {
+    double number = 0;
+    const auto parsed = std::from_chars(encoded.data(), encoded.data() + encoded.size(), number);
+    if (parsed.ec != std::errc{} || parsed.ptr != encoded.data() + encoded.size())
+      throw std::runtime_error("invalid time-series REAL64 fixture input");
+    const auto bits = std::bit_cast<std::uint64_t>(number);
+    for (unsigned i = 0; i < 8; ++i) value.binary_value.push_back(bits >> (8 * i));
+  } else if (descriptor.canonical_type_name == "int64") {
+    std::int64_t number = 0;
+    const auto parsed = std::from_chars(encoded.data(), encoded.data() + encoded.size(), number);
+    if (parsed.ec != std::errc{} || parsed.ptr != encoded.data() + encoded.size())
+      throw std::runtime_error("invalid time-series INT64 fixture input");
+    const auto bits = std::bit_cast<std::uint64_t>(number);
+    for (unsigned i = 0; i < 8; ++i) value.binary_value.push_back(bits >> (8 * i));
+  } else {
+    value.encoded_value = std::move(encoded);
   }
-  api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid = NewIdentity(platform::UuidKind::object);
-  grant.subject_uuid = context->principal_uuid;
-  grant.subject_kind = "principal";
-  grant.target_uuid = object_uuid;
-  grant.right = "SELECT";
-  grant.security_epoch = context->security_epoch;
-  context->authorization_context.grants.push_back(std::move(grant));
+  return value;
 }
 
 bool MakeFixture(Fixture* fixture) {
@@ -407,13 +464,14 @@ bool MakeFixture(Fixture* fixture) {
   create.database_uuid = NewUuid(platform::UuidKind::database);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace);
   create.creation_unix_epoch_millis = Seed();
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
-  if (!db::CreateDatabaseFile(create).ok()) {
-    return Require(false, "fixture database creation failed");
+  const auto created_database = db::CreateDatabaseFile(create);
+  if (!created_database.ok()) {
+    return Require(false, "fixture database creation failed:" + created_database.diagnostic.diagnostic_code);
   }
   fixture->database_uuid = create.database_uuid.value;
+  fixture->owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   fixture->schema_uuid = NewIdentity(platform::UuidKind::schema);
 
   api::EngineRequestContext context;
@@ -450,17 +508,17 @@ bool MakeFixture(Fixture* fixture) {
     table.table_names.push_back(Name(std::string(name)));
     if (object_uuid == kJoinObjectUuid ||
         object_uuid == kAsofRightObjectUuid) {
-      table.table_columns = {Column(0, "join_uuid", "uuid"),
-                             Column(1, "payload", "text"),
-                             Column(2, "event_timestamp", "timestamp_tz"),
-                             Column(3, "metric_uuid", "uuid"),
-                             Column(4, "tags", "text")};
+      table.table_columns = {Column(context, 0, "join_uuid", "uuid"),
+                             Column(context, 1, "payload", "text"),
+                             Column(context, 2, "event_timestamp", "timestamp_tz"),
+                             Column(context, 3, "metric_uuid", "uuid"),
+                             Column(context, 4, "tags", "text")};
     } else {
       table.table_columns = {
-          Column(0, "metric_uuid", "uuid"),
-          Column(1, "point_timestamp", "timestamp_tz"),
-          Column(2, "tags", "text"),
-          Column(3, "value", "real64"),
+          Column(context, 0, "metric_uuid", "uuid"),
+          Column(context, 1, "point_timestamp", "timestamp_tz"),
+          Column(context, 2, "tags", "text"),
+          Column(context, 3, "value", "real64"),
       };
     }
     const auto created = api::EngineCreateTable(table);
@@ -509,13 +567,15 @@ bool MakeFixture(Fixture* fixture) {
     value.descriptor = descriptor;
     if constexpr (std::is_same_v<decltype(encoded), api::EngineUuid>)
       value.binary_value.assign(encoded.bytes.begin(), encoded.bytes.end());
-    else value.encoded_value = std::move(encoded);
+    else return TypedValue(descriptor, encoded);
     value.setState(api::EngineValueState::value);
     return value;
   };
   struct JoinSeed { api::EngineUuid row_uuid; api::EngineUuid join_uuid; const char* payload; const char* timestamp; };
+  scratchbird::tests::FixtureEngineSession writer_session(fixture->owner_context);
+  scratchbird::tests::FixtureEngineStatement writer_statement(writer_session, context);
   api::EngineInsertRowsRequest join_rows;
-  join_rows.context = context;
+  join_rows.context = writer_statement.context;
   join_rows.target_table.uuid = scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000007614");
   join_rows.target_table.object_kind = "table";
   join_rows.require_generated_row_uuid = false;
@@ -550,13 +610,15 @@ bool MakeFixture(Fixture* fixture) {
   }
   const auto inserted_join_rows = api::EngineInsertRows(join_rows);
   if (!inserted_join_rows.ok || inserted_join_rows.inserted_count != 2) {
+    for (const auto& diagnostic : inserted_join_rows.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
     Rollback(context);
     return Require(false, "supplemental relational join rows failed");
   }
   const auto& asof_right_descriptor =
       fixture->descriptors.at(kAsofRightObjectUuid);
   api::EngineInsertRowsRequest asof_right_rows;
-  asof_right_rows.context = context;
+  asof_right_rows.context = writer_statement.context;
   asof_right_rows.target_table.uuid =
       kAsofRightObjectUuid;
   asof_right_rows.target_table.object_kind = "table";
@@ -594,19 +656,12 @@ bool MakeFixture(Fixture* fixture) {
   const auto inserted_asof_right_rows = api::EngineInsertRows(asof_right_rows);
   if (!inserted_asof_right_rows.ok ||
       inserted_asof_right_rows.inserted_count != 2) {
+    for (const auto& diagnostic : inserted_asof_right_rows.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
     Rollback(context);
     return Require(false, "supplemental ASOF-right rows failed");
   }
   return Commit(context) && SetNextTransactionId(*fixture, 800);
-}
-
-api::EngineTypedValue TypedValue(const api::EngineDescriptor& descriptor,
-                                 std::string encoded) {
-  api::EngineTypedValue value;
-  value.descriptor = descriptor;
-  value.encoded_value = std::move(encoded);
-  value.setState(api::EngineValueState::value);
-  return value;
 }
 
 std::string IdentityBytes(const api::EngineUuid& identity) {
@@ -648,8 +703,10 @@ bool Insert(const Fixture& fixture, const api::EngineUuid& object_uuid,
   if (!Begin(fixture, "rcp076-insert", &context)) {
     return false;
   }
+  scratchbird::tests::FixtureEngineSession session(fixture.owner_context);
+  scratchbird::tests::FixtureEngineStatement statement(session, context);
   api::EngineInsertRowsRequest request;
-  request.context = context;
+  request.context = statement.context;
   request.target_table.uuid = object_uuid;
   request.target_table.object_kind = "table";
   request.require_generated_row_uuid = false;
@@ -657,6 +714,8 @@ bool Insert(const Fixture& fixture, const api::EngineUuid& object_uuid,
   request.input_rows.push_back(Row(fixture.descriptors.at(object_uuid), point));
   const auto inserted = api::EngineInsertRows(request);
   if (!inserted.ok || inserted.inserted_count != 1) {
+    for (const auto& diagnostic : inserted.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
     Rollback(context);
     return Require(false, "time-series fixture insert failed");
   }
@@ -678,10 +737,19 @@ bool AppendInvalid(const Fixture& fixture, const api::EngineUuid& object_uuid,
   row.table_uuid = object_uuid;
   row.row_uuid = point.row_uuid;
   row.version_uuid = NewIdentity(platform::UuidKind::object);
+  const auto& descriptor = fixture.descriptors.at(object_uuid);
+  const auto numeric = TypedValue(descriptor.columns[3].value_descriptor, point.value);
+  std::string timestamp_bytes = point.timestamp;
+  if (timestamp_bytes != "malformed") {
+    const auto timestamp = TypedValue(descriptor.columns[1].value_descriptor, point.timestamp);
+    timestamp_bytes.assign(reinterpret_cast<const char*>(timestamp.binary_value.data()),
+                           timestamp.binary_value.size());
+  }
   row.values = {{"metric_uuid", IdentityBytes(point.metric_uuid)},
-                {"point_timestamp", point.timestamp},
+                {"point_timestamp", timestamp_bytes},
                 {"tags", point.tags},
-                {"value", point.value}};
+                {"value", std::string(reinterpret_cast<const char*>(numeric.binary_value.data()),
+                                       numeric.binary_value.size())}};
   std::uint64_t sequence = 0;
   const auto appended = api::AppendMgaRowVersion(context, row, &sequence);
   if (appended.error || sequence == 0) {
@@ -790,29 +858,11 @@ bool SeedFixture(Fixture* fixture, api::EngineRequestContext* active_other) {
 bool PublishReaderContext(const Fixture& fixture,
                           api::EngineRequestContext* context) {
   if (!Begin(fixture, "rcp076-reader", context)) return false;
-  context->statement_uuid = NewIdentity(platform::UuidKind::object);
-  context->statement_timestamp = std::string(kRangeStart);
-  api::EnginePublishStatementSnapshotRequest publish;
-  publish.context = *context;
-  const auto snapshot = api::EnginePublishStatementSnapshot(publish);
-  if (!snapshot.ok) return Require(false, "statement snapshot publish failed");
-  context->statement_snapshot_uuid = snapshot.statement_snapshot_uuid;
-  context->snapshot_visible_through_local_transaction_id =
-      snapshot.snapshot_vector.visible_committed_high_watermark;
-  context->statement_metadata_snapshot_engine_owned = true;
-  context->statement_metadata_snapshot_uuid =
-      NewIdentity(platform::UuidKind::object);
-  context->statement_metadata_snapshot_visible_through_local_transaction_id =
-      context->snapshot_visible_through_local_transaction_id;
-  context->catalog_epoch_uuid = NewIdentity(platform::UuidKind::object);
-  context->optimizer_capability_snapshot_uuid =
-      NewIdentity(platform::UuidKind::object);
-  context->optimizer_resource_snapshot_uuid =
-      NewIdentity(platform::UuidKind::object);
-  context->optimizer_route_snapshot_uuid =
-      NewIdentity(platform::UuidKind::object);
-  context->optimizer_route_epoch = 80;
-  context->optimizer_route_generation = 81;
+  auto session = std::make_shared<scratchbird::tests::FixtureEngineSession>(fixture.owner_context);
+  auto statement = std::make_shared<scratchbird::tests::FixtureEngineStatement>(*session, *context);
+  *context = statement->context;
+  fixture.sessions.push_back(std::move(session));
+  fixture.statements.push_back(std::move(statement));
   context->optimizer_memory_budget_bytes = 16 * 1024 * 1024;
   context->optimizer_maximum_candidate_count = 4096;
   context->optimizer_maximum_memo_groups = 4096;
@@ -822,18 +872,10 @@ bool PublishReaderContext(const Fixture& fixture,
   context->query_cancellation_requested = [] { return false; };
   if (context->snapshot_visible_through_local_transaction_id != 900 ||
       std::ranges::find(
-          snapshot.snapshot_vector.active_excluded_local_transaction_ids,
+          context->statement_metadata_snapshot_active_excluded_local_transaction_ids,
           std::uint64_t{850}) ==
-          snapshot.snapshot_vector.active_excluded_local_transaction_ids.end()) {
+          context->statement_metadata_snapshot_active_excluded_local_transaction_ids.end()) {
     return Require(false, "signed high-water 900 / active-other [850] drifted");
-  }
-  for (const auto object_uuid :
-       {kBaseObjectUuid, kPreEpochObjectUuid, kDuplicateTagObjectUuid,
-        kNonfiniteObjectUuid, kInvisibleInvalidObjectUuid,
-        kJoinObjectUuid, kUnicodeOrderObjectUuid,
-        kLoneSurrogateObjectUuid, kReversedSurrogateObjectUuid,
-        kOutputBoundObjectUuid, kAsofRightObjectUuid}) {
-    AddAuthorization(context, object_uuid);
   }
   return true;
 }
@@ -850,9 +892,14 @@ api::EngineBoundTimeSeriesReadRequestV1 Request(
   request.operation = operation;
   request.aggregate = aggregate;
   request.object_uuid = descriptor.relation_uuid;
-  request.range_start = TypedValue(descriptor.columns[1].value_descriptor,
+  api::EngineDescriptor endpoint_descriptor;
+  std::string endpoint_detail;
+  if (!api::ProjectStoredHistoricalTimestampDescriptorV1(context,
+          descriptor.columns[1].value_descriptor, false, &endpoint_descriptor, &endpoint_detail))
+    throw std::runtime_error("endpoint descriptor projection failed:" + endpoint_detail);
+  request.range_start = TypedValue(endpoint_descriptor,
                                    std::move(start));
-  request.range_end = TypedValue(descriptor.columns[1].value_descriptor,
+  request.range_end = TypedValue(endpoint_descriptor,
                                  std::move(end));
   request.bucket_interval_ns =
       operation == api::EngineBoundTimeSeriesReadOperationV1::kBucketDownsample
@@ -1090,18 +1137,44 @@ std::string DescriptorField(const std::string& encoded,
   return {};
 }
 
-api::EngineDescriptor DerivedDescriptor(const api::EngineUuid& instance_uuid,
+api::EngineDescriptor DerivedDescriptor(const api::EngineRequestContext& context,
+                                        const api::EngineUuid& instance_uuid,
                                         const std::string_view public_type,
                                         const std::string_view core_type) {
-  api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid = instance_uuid;
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = std::string(public_type);
-  descriptor.encoded_descriptor =
-      "canonical=" + std::string(public_type) +
-      ";nullable=false";
-  descriptor.type_uuid = CoreTypeUuid(core_type);
-  return descriptor;
+  if (public_type == "text") {
+    auto descriptor = Column(context, 0, "derived_text", "text").descriptor;
+    descriptor.descriptor_uuid = instance_uuid;
+    return descriptor;
+  }
+  for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+    if (row.catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
+        row.catalog_generation != context.datatype_catalog_generation ||
+        row.registry_generation != context.datatype_registry_generation ||
+        row.canonical_binary_type_code != static_cast<std::uint32_t>(
+            dt::CanonicalTypeIdFromStableName(std::string(core_type)))) continue;
+    api::RelationalTypeDescriptor source;
+    source.descriptor_uuid = instance_uuid;
+    source.descriptor_generation = row.descriptor_generation;
+    source.type_uuid = row.type_uuid;
+    source.type_generation = row.type_generation;
+    source.codec_id = row.codec_id;
+    source.codec_version = row.codec_version;
+    source.codec_generation = row.codec_generation;
+    source.datatype_catalog_snapshot_uuid = row.catalog_snapshot_uuid;
+    source.datatype_catalog_generation = row.catalog_generation;
+    source.datatype_registry_generation = row.registry_generation;
+    source.statement_receipt_uuid = context.statement_receipt_uuid;
+    source.datatype_identity_authoritative = true;
+    source.nullability = api::RelationalNullability::kNonNull;
+    api::EngineDescriptor descriptor;
+    std::string detail;
+    if (core_type == "timestamp"
+            ? api::BuildHistoricalTimestampScalarDescriptorV1(source, &descriptor, &detail)
+            : sblr::BuildExactCanonicalScalarRuntimeDescriptorV1(source,
+                  dt::CanonicalTypeIdFromStableName(std::string(core_type)), &descriptor)) return descriptor;
+    throw std::runtime_error("derived time-series descriptor rejected: " + detail);
+  }
+  throw std::runtime_error("derived time-series datatype cohort is absent");
 }
 
 std::string Number(const double value) {
@@ -1162,10 +1235,15 @@ std::string ExactExchangeStream(
         << IdentityBytes(identity.metric_uuid) << '|' << identity.tags << '|'
         << identity.point_timestamp_ns << '|' << identity.bucket_start_ns
         << '|' << identity.time_series_payload_kind << '|'
-        << identity.time_series_raw_value << '|'
-        << identity.time_series_sample_count << '|'
-        << identity.time_series_aggregate_value
-        << '\n';
+        << (identity.time_series_raw_value ? RealBits(*identity.time_series_raw_value) : "absent") << '|'
+        << (identity.time_series_sample_count ? std::to_string(*identity.time_series_sample_count) : "absent") << '|'
+        << identity.time_series_aggregate_value.index() << ':';
+    std::visit([&](const auto& value) {
+      using T = std::decay_t<decltype(value)>;
+      if constexpr (std::is_same_v<T, double>) out << RealBits(value);
+      else if constexpr (std::is_same_v<T, std::int64_t>) out << value;
+    }, identity.time_series_aggregate_value);
+    out << '\n';
   }
   for (const auto& row : output.batch.rows) {
     for (const auto& value : row.values) {
@@ -1311,10 +1389,10 @@ ExchangeRun ExecuteThroughCommonSpine(
   if (raw) {
     columns = {
         {"row_uuid",
-         DerivedDescriptor(descriptor.descriptor_uuid, "uuid", "uuid"),
+         DerivedDescriptor(provider_request.context, descriptor.descriptor_uuid, "uuid", "uuid"),
          false, 101},
         {"series_uuid",
-         DerivedDescriptor(descriptor.schema_uuid, "uuid", "uuid"),
+         DerivedDescriptor(provider_request.context, descriptor.schema_uuid, "uuid", "uuid"),
          false, 102},
         {"metric_uuid", descriptor.columns[0].value_descriptor, false, 103},
         {"point_timestamp", descriptor.columns[1].value_descriptor, false, 104},
@@ -1326,20 +1404,20 @@ ExchangeRun ExecuteThroughCommonSpine(
                        api::EngineBoundTimeSeriesAggregateV1::kCount;
     columns = {
         {"series_uuid",
-         DerivedDescriptor(descriptor.schema_uuid, "uuid", "uuid"),
+         DerivedDescriptor(provider_request.context, descriptor.schema_uuid, "uuid", "uuid"),
          false, 201},
         {"metric_uuid", descriptor.columns[0].value_descriptor, false, 202},
         {"bucket_start", descriptor.columns[1].value_descriptor, false, 203},
         {"bucket_end",
-         DerivedDescriptor(descriptor.columns[1].column_uuid,
+         DerivedDescriptor(provider_request.context, descriptor.columns[1].column_uuid,
                            "timestamp_tz", "timestamp"),
          false, 204},
         {"tags", descriptor.columns[2].value_descriptor, false, 205},
         {"sample_count",
-         DerivedDescriptor(CoreTypeUuid("int64"), "int64", "int64"),
+         DerivedDescriptor(provider_request.context, descriptor.columns[0].column_uuid, "int64", "int64"),
          false, 206},
         {"aggregate_value",
-         count ? DerivedDescriptor(descriptor.columns[3].column_uuid,
+         count ? DerivedDescriptor(provider_request.context, descriptor.columns[3].column_uuid,
                                    "int64", "int64")
                : descriptor.columns[3].value_descriptor,
          false, 207},
@@ -1347,6 +1425,15 @@ ExchangeRun ExecuteThroughCommonSpine(
   }
   for (std::size_t index = 0; index < columns.size(); ++index) {
     columns[index].descriptor_id = input.output_descriptor_ids[index];
+    if (columns[index].descriptor.canonical_type_name == "real64")
+      columns[index].descriptor = DerivedDescriptor(provider_request.context,
+          columns[index].descriptor.descriptor_uuid, "real64", "real64");
+    if (columns[index].descriptor == descriptor.columns[1].value_descriptor) {
+      std::string detail;
+      if (!api::ProjectStoredHistoricalTimestampDescriptorV1(provider_request.context,
+              descriptor.columns[1].value_descriptor, false, &columns[index].descriptor, &detail))
+        throw std::runtime_error(detail);
+    }
     columns[index].descriptor.descriptor_kind = "scalar";
   }
 
@@ -1432,7 +1519,7 @@ ExchangeRun ExecuteThroughCommonSpine(
           identity.tags = row.tags;
           identity.point_timestamp_ns = row.point_timestamp_ns;
           identity.time_series_payload_kind = "raw.real64.v1";
-          identity.time_series_raw_value = raw_value;
+          identity.time_series_raw_value = row.value;
           batch.ordered_row_identities.push_back(std::move(identity));
         }
         for (const auto& row : read.downsample_rows) {
@@ -1486,8 +1573,9 @@ ExchangeRun ExecuteThroughCommonSpine(
             case api::EngineBoundTimeSeriesAggregateV1::kNone:
               break;
           }
-          identity.time_series_sample_count = sample_count;
-          identity.time_series_aggregate_value = aggregate_value;
+          identity.time_series_sample_count = row.sample_count;
+          if (count) identity.time_series_aggregate_value = row.aggregate_count;
+          else identity.time_series_aggregate_value = row.aggregate_value;
           batch.ordered_row_identities.push_back(std::move(identity));
         }
         if (mutation == TimeSeriesExchangeMutation::kOrder &&
@@ -1500,8 +1588,8 @@ ExchangeRun ExecuteThroughCommonSpine(
                    raw && batch.batch.rows.size() > 1) {
           batch.ordered_row_identities.back().row_uuid =
               batch.ordered_row_identities.front().row_uuid;
-          batch.batch.rows.back().values[0].encoded_value =
-              batch.batch.rows.front().values[0].encoded_value;
+          batch.batch.rows.back().values[0].binary_value =
+              batch.batch.rows.front().values[0].binary_value;
         } else if (mutation ==
                        TimeSeriesExchangeMutation::kNoncanonicalTags &&
                    !batch.batch.rows.empty()) {
@@ -1520,15 +1608,18 @@ ExchangeRun ExecuteThroughCommonSpine(
         } else if (mutation ==
                        TimeSeriesExchangeMutation::kSubstituteRawValue &&
                    raw && !batch.batch.rows.empty()) {
-          batch.batch.rows.front().values[5].encoded_value = "2";
+          auto& cell = batch.batch.rows.front().values[5];
+          cell = TypedValue(cell.descriptor, "2");
         } else if (mutation == TimeSeriesExchangeMutation::
                                    kSubstituteSampleCount &&
                    !raw && !batch.batch.rows.empty()) {
-          batch.batch.rows.front().values[5].encoded_value = "2";
+          auto& cell = batch.batch.rows.front().values[5];
+          cell = TypedValue(cell.descriptor, "2");
         } else if (mutation == TimeSeriesExchangeMutation::
                                    kSubstituteAggregateValue &&
                    !raw && !batch.batch.rows.empty()) {
-          batch.batch.rows.front().values[6].encoded_value = "2";
+          auto& cell = batch.batch.rows.front().values[6];
+          cell = TypedValue(cell.descriptor, "2");
         }
         return provider;
       };
@@ -1615,6 +1706,35 @@ bool ExchangeMatrix(const Fixture& fixture,
                     std::set<std::string>* completed) {
   bool passed = true;
   const auto& base = fixture.descriptors.at(kBaseObjectUuid);
+  passed &= Require(api::ExactTimeSeriesStorageDescriptorV1(context, base),
+                    "time-series actual storage binding refused");
+  for (std::size_t ordinal = 0; ordinal < base.columns.size(); ++ordinal) {
+    api::CatalogColumnMetadata original;
+    if (!api::DecodeCatalogColumnMetadata(base.columns[ordinal].value_descriptor.encoded_descriptor, &original))
+      throw std::runtime_error("time-series mutation metadata decode failed");
+    for (const auto& [key, value] : original.text) {
+      auto changed = base;
+      auto metadata = original;
+      metadata.text[key] = "invalid";
+      if (!api::EncodeCatalogColumnMetadata(metadata, &changed.columns[ordinal].value_descriptor.encoded_descriptor))
+        throw std::runtime_error("time-series mutation metadata encode failed");
+      passed &= Require(!api::ExactTimeSeriesStorageDescriptorV1(context, changed),
+                        "time-series conflicting storage metadata admitted:" + key);
+    }
+    for (const auto& [key, value] : original.identities) {
+      auto changed = base;
+      auto metadata = original;
+      metadata.identities.erase(key);
+      if (!api::EncodeCatalogColumnMetadata(metadata, &changed.columns[ordinal].value_descriptor.encoded_descriptor))
+        throw std::runtime_error("time-series mutation identity encode failed");
+      passed &= Require(!api::ExactTimeSeriesStorageDescriptorV1(context, changed),
+                        "time-series missing storage identity admitted:" + key);
+    }
+  }
+  auto changed_length = base;
+  ++changed_length.columns[2].character_length;
+  passed &= Require(!api::ExactTimeSeriesStorageDescriptorV1(context, changed_length),
+                    "time-series mismatched character limit projection admitted");
   const auto raw_request =
       Request(context, base,
               api::EngineBoundTimeSeriesReadOperationV1::kRangeRead,
@@ -1676,6 +1796,8 @@ bool ExchangeMatrix(const Fixture& fixture,
     return opt::CoordinateModelFamilySourceV1(request);
   };
   const auto success = ExecuteThroughCommonSpine(raw_request, base);
+  if (!success.result.accepted)
+    std::cerr << "time-series exchange admission: " << success.result.diagnostic_id << ':' << success.result.detail << '\n';
   passed &= Require(success.result.accepted && success.result.root_published &&
                         success.result.cleanup_complete &&
                         success.result.cleanup_count == 1 &&
@@ -2148,15 +2270,74 @@ bool FrontdoorMatrix(const api::EngineRequestContext& context,
 }
 
 api::RelationalTypeDescriptor DagDescriptor(
+    const api::EngineRequestContext& context,
     const std::uint32_t descriptor_id, const api::EngineUuid& descriptor_uuid,
     const std::string_view core_type, const bool timestamp = false) {
   api::RelationalTypeDescriptor descriptor;
   descriptor.descriptor_id = descriptor_id;
   descriptor.descriptor_uuid = descriptor_uuid;
-  descriptor.type_uuid = CoreTypeUuid(core_type);
   descriptor.nullability = api::RelationalNullability::kNonNull;
-  if (timestamp) descriptor.timezone_profile_id = "UTC";
+  const auto type = dt::CanonicalTypeIdFromStableName(std::string(core_type));
+  const dt::DatatypeTypeCodecIdentityRowV1* identity = nullptr;
+  for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+    if (row.catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
+        row.catalog_generation != context.datatype_catalog_generation ||
+        row.registry_generation != context.datatype_registry_generation ||
+        row.canonical_binary_type_code != static_cast<std::uint32_t>(type)) continue;
+    if (identity) throw std::runtime_error("ambiguous time-series DAG datatype binding");
+    identity = &row;
+  }
+  if (!identity || context.statement_receipt_uuid.is_nil())
+    throw std::runtime_error("missing time-series DAG datatype binding");
+  descriptor.type_uuid = identity->type_uuid;
+  descriptor.descriptor_generation = identity->descriptor_generation;
+  descriptor.type_generation = identity->type_generation;
+  descriptor.codec_id = identity->codec_id;
+  descriptor.codec_version = identity->codec_version;
+  descriptor.codec_generation = identity->codec_generation;
+  descriptor.datatype_catalog_snapshot_uuid = identity->catalog_snapshot_uuid;
+  descriptor.datatype_catalog_generation = identity->catalog_generation;
+  descriptor.datatype_registry_generation = identity->registry_generation;
+  descriptor.statement_receipt_uuid = context.statement_receipt_uuid;
+  descriptor.datatype_identity_authoritative = true;
+  if (timestamp) descriptor.timezone_profile_id = "timestamp_timezone_profile";
+  if (core_type == "character") {
+    const auto collation = api::LookupEngineResourceDescriptorByName(context, "SB_UTF8_BINARY", "collation");
+    if (!collation.ok || !collation.resource_descriptor.present)
+      throw std::runtime_error("time-series DAG text collation is absent");
+    descriptor.collation_uuid = collation.resource_descriptor.resource_uuid;
+  }
   return descriptor;
+}
+
+void SetTimeSeriesEndpoint(api::TypedRelationalDag& dag, std::uint32_t id,
+                           std::string_view text) {
+  auto expression = std::ranges::find_if(dag.expressions, [&](const auto& item) { return item.expression_id == id; });
+  if (expression == dag.expressions.end()) throw std::runtime_error("timestamp endpoint is absent");
+  const auto descriptor = std::ranges::find_if(dag.descriptors, [&](const auto& item) {
+    return item.descriptor_id == expression->result_descriptor_id;
+  });
+  if (descriptor == dag.descriptors.end()) throw std::runtime_error("timestamp endpoint descriptor is absent");
+  api::EngineDescriptor scalar;
+  std::string detail;
+  if (!api::BuildHistoricalTimestampScalarDescriptorV1(*descriptor, &scalar, &detail))
+    throw std::runtime_error(detail);
+  api::RelationalExpressionRecord::LiteralTypedValueV1 literal;
+  literal.descriptor_uuid = descriptor->descriptor_uuid;
+  literal.descriptor_generation = descriptor->descriptor_generation;
+  literal.value_state = "value";
+  try {
+    literal.canonical_value_bytes = TypedValue(scalar, std::string(text)).binary_value;
+  } catch (const std::runtime_error&) {
+    // Invalid client spellings in negative vectors cannot become execution
+    // text. Carry an explicitly malformed native tuple to test its refusal.
+    literal.canonical_value_bytes = {0xff};
+  }
+  const auto digest = hash::ComputeSha256Digest(literal.canonical_value_bytes);
+  if (!digest.ok()) throw std::runtime_error("timestamp literal digest failed");
+  literal.canonical_value_sha256 = digest.digest;
+  expression->literal_or_parameter_ref.reset();
+  expression->literal_typed_value_v1 = std::move(literal);
 }
 
 api::TypedRelationalDag TimeSeriesDag(
@@ -2184,55 +2365,55 @@ api::TypedRelationalDag TimeSeriesDag(
 
   if (!downsample) {
     dag.descriptors = {
-        DagDescriptor(101, storage.descriptor_uuid, "uuid"),
-        DagDescriptor(102, storage.schema_uuid, "uuid"),
-        DagDescriptor(103,
+        DagDescriptor(context, 101, storage.descriptor_uuid, "uuid"),
+        DagDescriptor(context, 102, storage.schema_uuid, "uuid"),
+        DagDescriptor(context, 103,
                       storage.columns[0].value_descriptor.descriptor_uuid,
                       "uuid"),
-        DagDescriptor(104,
+        DagDescriptor(context, 104,
                       storage.columns[1].value_descriptor.descriptor_uuid,
                       "timestamp", true),
-        DagDescriptor(105,
+        DagDescriptor(context, 105,
                       storage.columns[2].value_descriptor.descriptor_uuid,
                       "character"),
-        DagDescriptor(106,
+        DagDescriptor(context, 106,
                       storage.columns[3].value_descriptor.descriptor_uuid,
                       "real64"),
-        DagDescriptor(107,
+        DagDescriptor(context, 107,
                       StatementDescriptorUuid(context, "raw.range.truth"),
                       "boolean"),
     };
   } else {
     dag.descriptors = {
-        DagDescriptor(200, storage.descriptor_uuid, "uuid"),
-        DagDescriptor(201, storage.schema_uuid, "uuid"),
-        DagDescriptor(202,
+        DagDescriptor(context, 200, storage.descriptor_uuid, "uuid"),
+        DagDescriptor(context, 201, storage.schema_uuid, "uuid"),
+        DagDescriptor(context, 202,
                       storage.columns[0].value_descriptor.descriptor_uuid,
                       "uuid"),
-        DagDescriptor(203,
+        DagDescriptor(context, 203,
                       storage.columns[1].value_descriptor.descriptor_uuid,
                       "timestamp", true),
-        DagDescriptor(204, storage.columns[1].column_uuid,
+        DagDescriptor(context, 204, storage.columns[1].column_uuid,
                       "timestamp", true),
-        DagDescriptor(205,
+        DagDescriptor(context, 205,
                       storage.columns[2].value_descriptor.descriptor_uuid,
                       "character"),
-        DagDescriptor(
+        DagDescriptor(context,
             206, StatementDescriptorUuid(context, "downsample.sample-count"),
             "int64"),
-        DagDescriptor(
+        DagDescriptor(context,
             208, StatementDescriptorUuid(context, "downsample.interval"),
             "interval"),
-        DagDescriptor(
+        DagDescriptor(context,
             209, StatementDescriptorUuid(context, "downsample.range.truth"),
             "boolean"),
-        DagDescriptor(212,
+        DagDescriptor(context, 212,
                       storage.columns[3].value_descriptor.descriptor_uuid,
                       "real64"),
     };
     if (aggregate == api::EngineBoundTimeSeriesAggregateV1::kCount) {
       dag.descriptors.push_back(
-          DagDescriptor(207, storage.columns[3].column_uuid,
+          DagDescriptor(context, 207, storage.columns[3].column_uuid,
                         "int64"));
     }
   }
@@ -2303,8 +2484,8 @@ api::TypedRelationalDag TimeSeriesDag(
     endpoint.expression_kind = api::RelationalExpressionKind::kLiteral;
     endpoint.result_descriptor_id = downsample ? 203 : 104;
     endpoint.literal_kind = api::RelationalLiteralKind::kTemporal;
-    endpoint.literal_or_parameter_ref = std::string(encoded);
     dag.expressions.push_back(std::move(endpoint));
+    SetTimeSeriesEndpoint(dag, id, encoded);
   }
   api::RelationalExpressionRecord range;
   range.expression_id = 23;
@@ -2399,12 +2580,12 @@ api::TypedRelationalDag TimeSeriesBucketDag(
     return item.expression_id == 22;
   });
   if (start != dag.expressions.end()) {
-    start->literal_or_parameter_ref = std::string(range_start);
+    SetTimeSeriesEndpoint(dag, 21, range_start);
   }
   if (end != dag.expressions.end()) {
-    end->literal_or_parameter_ref = std::string(range_end);
+    SetTimeSeriesEndpoint(dag, 22, range_end);
   }
-  dag.descriptors.push_back(DagDescriptor(
+  dag.descriptors.push_back(DagDescriptor(context,
       110, StatementDescriptorUuid(context, "bucket.interval"), "interval"));
   api::RelationalExpressionRecord interval;
   interval.expression_id = 29;
@@ -2526,7 +2707,7 @@ api::TypedRelationalDag TimeSeriesUnaryCompositionDag(
   sort.delivered_property_uuids = {ordering_uuid};
   dag.nodes.push_back(std::move(sort));
 
-  dag.descriptors.push_back(DagDescriptor(
+  dag.descriptors.push_back(DagDescriptor(context,
       110, StatementDescriptorUuid(context, "window.row-number"), "int64"));
   constexpr auto kRowNumberFunctionUuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-7539-bcce-00eef3ae7220");
   api::RelationalExpressionRecord row_number;
@@ -2601,7 +2782,7 @@ api::TypedRelationalDag TimeSeriesCteLimitDag(
   cte.shareable = true;
   cte.semantic_variant_id = "cte.bound.v1";
   dag.nodes.push_back(std::move(cte));
-  dag.descriptors.push_back(DagDescriptor(
+  dag.descriptors.push_back(DagDescriptor(context,
       110, NewIdentity(platform::UuidKind::object), "int64"));
   api::RelationalExpressionRecord limit;
   limit.expression_id = 41;
@@ -2627,7 +2808,7 @@ api::TypedRelationalDag TimeSeriesCountDag(
   auto dag = TimeSeriesDag(
       context, storage, api::EngineBoundTimeSeriesAggregateV1::kNone);
   dag.root_node_id = 2;
-  dag.descriptors.push_back(DagDescriptor(
+  dag.descriptors.push_back(DagDescriptor(context,
       110, NewIdentity(platform::UuidKind::object), "int64"));
   const auto count = exec::LookupCanonicalAggregateByFunctionV1(
       exec::CanonicalAggregateFunction::count);
@@ -2866,7 +3047,7 @@ api::TypedRelationalDag TimeSeriesAsofJoinDag(
   dag.nodes.push_back(std::move(heap));
 
   if (!downsample) {
-    dag.descriptors.push_back(DagDescriptor(
+    dag.descriptors.push_back(DagDescriptor(context,
         306, StatementDescriptorUuid(context, "asof.tolerance"), "int64"));
   }
   api::RelationalExpressionRecord tolerance;
@@ -2953,6 +3134,24 @@ std::string ApiRowField(const api::EngineApiResult& result,
     if (value.is_null || !value.encoded_value.empty() || value.binary_value.size() != 16) return {};
     return {reinterpret_cast<const char*>(value.binary_value.data()), value.binary_value.size()};
   }
+  // Presentation belongs to this result-boundary oracle, not the engine's
+  // scalar carriers. Reject mixed/native-invalid values before rendering.
+  if (value.descriptor.canonical_type_name == "real64") {
+    const auto decoded = exec::DecodeReal64Value(value);
+    return decoded.ok() ? Number(decoded.value) : std::string{};
+  }
+  if (value.descriptor.canonical_type_name == "int64") {
+    std::int64_t decoded = 0;
+    std::string detail;
+    return exec::DecodeBoundInt64Value(value, &decoded, &detail) ? std::to_string(decoded) : std::string{};
+  }
+  if (value.descriptor.canonical_type_name == "timestamp") {
+    std::int64_t ns = 0, unchanged = 0;
+    std::string detail, formatted;
+    if (!api::DecodeHistoricalTimestampNanosecondsV1(value, &ns, &detail) ||
+        !api::EngineExactTimeSeriesBucketStartV1(ns, 1, &unchanged, &formatted) || unchanged != ns) return {};
+    return formatted;
+  }
   return value.encoded_value;
 }
 
@@ -3034,8 +3233,11 @@ std::string ProductionResultProofStream(
          << Digest(ProductionDescriptorStream(execution)) << '\n';
   for (const auto& row : execution.api_result.result_shape.rows) {
     for (const auto& [name, value] : row.fields) {
-      stream << name << '=' << value.encoded_value << ':'
-             << static_cast<unsigned>(value.state) << '\t';
+      stream << name << '=' << value.encoded_value.size() << ':' << value.encoded_value << ':'
+             << static_cast<unsigned>(value.state) << ':' << value.binary_value.size() << ':';
+      for (const auto byte : value.binary_value)
+        stream << std::hex << std::setw(2) << std::setfill('0') << static_cast<unsigned>(byte);
+      stream << std::dec << '\t';
     }
     stream << '\n';
   }
@@ -3095,10 +3297,10 @@ bool ProductionRouteMatrix(const Fixture& fixture,
         range_dag.expressions,
         [](const auto& expression) { return expression.expression_id == 22; });
     if (start_expression != range_dag.expressions.end()) {
-      start_expression->literal_or_parameter_ref = std::move(start);
+      SetTimeSeriesEndpoint(range_dag, 21, start);
     }
     if (end_expression != range_dag.expressions.end()) {
-      end_expression->literal_or_parameter_ref = std::move(end);
+      SetTimeSeriesEndpoint(range_dag, 22, end);
     }
     return sblr::ExecuteCanonicalCurrentHeapQuery(
         {context, std::move(range_dag)});
@@ -3129,10 +3331,8 @@ bool ProductionRouteMatrix(const Fixture& fixture,
       [](const auto& expression) { return expression.expression_id == 22; });
   if (empty_bucket_start != empty_bucket_dag.expressions.end() &&
       empty_bucket_end != empty_bucket_dag.expressions.end()) {
-    empty_bucket_start->literal_or_parameter_ref =
-        "2026-08-10T12:03:00.000000000Z";
-    empty_bucket_end->literal_or_parameter_ref =
-        "2026-08-10T12:04:00.000000000Z";
+    SetTimeSeriesEndpoint(empty_bucket_dag, 21, "2026-08-10T12:03:00.000000000Z");
+    SetTimeSeriesEndpoint(empty_bucket_dag, 22, "2026-08-10T12:04:00.000000000Z");
   }
   const auto empty_bucket = sblr::ExecuteCanonicalCurrentHeapQuery(
       {context, std::move(empty_bucket_dag)});
@@ -3142,7 +3342,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
       missing_range_dag.expressions,
       [](const auto& expression) { return expression.expression_id == 21; });
   if (missing_start != missing_range_dag.expressions.end()) {
-    missing_start->literal_or_parameter_ref.reset();
+    missing_start->literal_typed_value_v1.reset();
   }
   const auto missing_range = sblr::ExecuteCanonicalCurrentHeapQuery(
       {context, std::move(missing_range_dag)});
@@ -3683,7 +3883,6 @@ bool ProductionRouteMatrix(const Fixture& fixture,
   unavailable_storage.relation_uuid =
       kUnavailableObjectUuid;
   auto unavailable_context = context;
-  AddAuthorization(&unavailable_context, kUnavailableObjectUuid);
   const auto unavailable = sblr::ExecuteCanonicalCurrentHeapQuery(
       {unavailable_context,
        TimeSeriesDag(unavailable_context, unavailable_storage,
@@ -5522,27 +5721,26 @@ exec::CanonicalExecutionMgaAuthority AsofAuthority(
 }
 
 exec::DescriptorBatch RelationalTimestampBatch(
-    const api::EngineDescriptor& timestamp_descriptor,
+    const api::EngineRequestContext& context,
+    const api::MgaRelationStorageDescriptor& storage,
     const std::uint32_t descriptor_id,
     const bool nullable,
     const std::vector<std::string>& timestamps) {
   exec::DescriptorBatch batch;
-  auto descriptor = timestamp_descriptor;
+  api::EngineDescriptor descriptor;
+  std::string detail;
+  if (!api::ProjectStoredHistoricalTimestampDescriptorV1(context,
+          storage.columns[1].value_descriptor, nullable, &descriptor, &detail))
+    throw std::runtime_error(detail);
   descriptor.descriptor_uuid = NewIdentity(platform::UuidKind::object);
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = "timestamp_tz";
-  descriptor.encoded_descriptor =
-      "canonical=timestamp_tz;nullable=" + (nullable ? std::string("true") : std::string("false"));
-  descriptor.type_uuid = CoreTypeUuid("timestamp");
   batch.columns.push_back({"event_timestamp", descriptor, nullable,
                            descriptor_id});
   auto metric_descriptor =
-      DerivedDescriptor(NewIdentity(platform::UuidKind::object), "uuid",
+      DerivedDescriptor(context, NewIdentity(platform::UuidKind::object), "uuid",
                         "uuid");
   metric_descriptor.descriptor_kind = "scalar";
-  auto tags_descriptor =
-      DerivedDescriptor(NewIdentity(platform::UuidKind::object), "text",
-                        "character");
+  auto tags_descriptor = storage.columns[2].value_descriptor;
+  tags_descriptor.descriptor_uuid = NewIdentity(platform::UuidKind::object);
   tags_descriptor.descriptor_kind = "scalar";
   batch.columns.push_back(
       {"metric_uuid", metric_descriptor, false, descriptor_id + 1});
@@ -5622,7 +5820,11 @@ bool AsofMatrix(const Fixture& fixture,
       for (const auto& value : row.values) {
         out << static_cast<unsigned>(value.state) << ':'
             << IdentityBytes(value.descriptor.descriptor_uuid) << IdentityBytes(value.descriptor.type_uuid) << ':'
-            << value.encoded_value << ';';
+            << value.encoded_value.size() << ':' << value.encoded_value << ':'
+            << value.binary_value.size() << ':';
+        for (const auto byte : value.binary_value)
+          out << std::hex << std::setw(2) << std::setfill('0') << static_cast<unsigned>(byte);
+        out << std::dec << ';';
       }
       out << '\n';
     }
@@ -5647,7 +5849,7 @@ bool AsofMatrix(const Fixture& fixture,
   };
 
   auto relational_left = RelationalTimestampBatch(
-      base.columns[1].value_descriptor, 301, false,
+      context, base, 301, false,
       {"2026-08-10T11:59:00.000000000Z",
        "2026-08-10T12:00:20.000000000Z",
        "2026-08-10T12:00:46.000000000Z"});
@@ -5694,9 +5896,9 @@ bool AsofMatrix(const Fixture& fixture,
   const auto asof_probe_result =
       exec::ExecuteCanonicalTimeSeriesAsofJoinV1(asof_probe);
   bool final_publication_cancelled = false;
-  for (std::size_t threshold = 1;
-       threshold <= asof_checkpoint_count && !final_publication_cancelled;
-       ++threshold) {
+  for (std::size_t threshold = asof_checkpoint_count;
+       threshold > 0 && !final_publication_cancelled;
+       --threshold) {
     std::size_t observed = 0;
     auto final_cancel = request35;
     final_cancel.cancellation_requested = [&observed, threshold] {
@@ -5755,8 +5957,8 @@ bool AsofMatrix(const Fixture& fixture,
   const auto tie_substitution_refused =
       exec::ExecuteCanonicalTimeSeriesAsofJoinV1(tie_substitution);
   auto duplicate_raw_identity = request35;
-  duplicate_raw_identity.right_batch.rows[1].values[0].encoded_value =
-      duplicate_raw_identity.right_batch.rows[0].values[0].encoded_value;
+  duplicate_raw_identity.right_batch.rows[1].values[0].binary_value =
+      duplicate_raw_identity.right_batch.rows[0].values[0].binary_value;
   duplicate_raw_identity.right_tie_break_row_uuids[1] =
       duplicate_raw_identity.right_tie_break_row_uuids[0];
   const auto duplicate_raw_identity_refused =
@@ -5838,11 +6040,10 @@ bool AsofMatrix(const Fixture& fixture,
               result35.output_batch.columns |
                   std::views::drop(request35.left_batch.columns.size()),
               [](const auto& column) {
+                api::CatalogColumnMetadata metadata;
+                if (!api::AdmitCatalogColumnMetadata(column.descriptor.encoded_descriptor, &metadata)) return false;
                 return column.nullable &&
-                       (column.descriptor.encoded_descriptor.find(
-                            "nullable=true") != std::string::npos ||
-                        column.descriptor.encoded_descriptor.find(
-                            "nullability=nullable") != std::string::npos);
+                       (metadata.text["nullable"] == "true" || metadata.text["nullability"] == "nullable");
               }) &&
           std::ranges::all_of(result35.output_batch.rows,
                               [&](const auto& row) {
@@ -5959,7 +6160,7 @@ bool AsofMatrix(const Fixture& fixture,
               api::EngineBoundTimeSeriesAggregateV1::kSum),
       base);
   auto downsample_relational_left = RelationalTimestampBatch(
-      base.columns[1].value_descriptor, 501, false,
+      context, base, 501, false,
       {"2026-08-10T12:00:30.000000000Z",
        "2026-08-10T12:01:30.000000000Z"});
   const auto relational_501_binding = RelationalAsofBinding(501);
@@ -6034,7 +6235,7 @@ bool AsofMatrix(const Fixture& fixture,
     }
   }
   auto relational_right = RelationalTimestampBatch(
-      base.columns[1].value_descriptor, 401, false,
+      context, base, 401, false,
       {"2026-08-10T12:00:10.000000000Z",
        "2026-08-10T12:00:40.000000000Z"});
   const auto relational_401_binding = RelationalAsofBinding(401);
@@ -6072,10 +6273,14 @@ bool AsofMatrix(const Fixture& fixture,
               std::vector<std::int64_t>{-1, 0, 1} &&
           result36.output_batch.rows[0].values[6].state ==
               api::EngineValueState::sql_null &&
-          result36.output_batch.rows[1].values[6].encoded_value ==
-              "2026-08-10T12:00:10.000000000Z" &&
-          result36.output_batch.rows[2].values[6].encoded_value ==
-              "2026-08-10T12:00:40.000000000Z" &&
+          result36.output_batch.rows[1].values[6].encoded_value.empty() &&
+          result36.output_batch.rows[1].values[6].binary_value ==
+              TypedValue(result36.output_batch.columns[6].descriptor,
+                         "2026-08-10T12:00:10.000000000Z").binary_value &&
+          result36.output_batch.rows[2].values[6].encoded_value.empty() &&
+          result36.output_batch.rows[2].values[6].binary_value ==
+              TypedValue(result36.output_batch.columns[6].descriptor,
+                         "2026-08-10T12:00:40.000000000Z").binary_value &&
           replay36.diagnostic.ok &&
           replay36.selected_plan_uuid == result36.selected_plan_uuid &&
           replay36.executed_physical_node_id ==
@@ -6522,7 +6727,7 @@ bool DirectCompositionMatrix(const Fixture& fixture,
   }
   aggregate_request.result_column = {
       "point_count",
-      DerivedDescriptor(NewIdentity(platform::UuidKind::object), "int64",
+      DerivedDescriptor(context, NewIdentity(platform::UuidKind::object), "int64",
                         "int64"),
       false, 110};
   aggregate_request.mga_authority = AsofAuthority(aggregate_dag);
@@ -6694,8 +6899,8 @@ bool DirectCompositionMatrix(const Fixture& fixture,
       projected.diagnostic.ok && projected.output_batch.rows.size() == 7 &&
       joined.diagnostic.ok && joined.output_batch.rows.size() == 7 &&
       aggregated.diagnostic.ok && aggregated.output_batch.rows.size() == 1 &&
-      aggregated.output_batch.rows.front().values.front().encoded_value ==
-          "7" &&
+      exec::DecodeInt64Value(aggregated.output_batch.rows.front().values.front()).ok() &&
+      exec::DecodeInt64Value(aggregated.output_batch.rows.front().values.front()).value == 7 &&
       sorted.diagnostic.ok && sorted.output_batch.rows.size() == 7 &&
       window_ordered.diagnostic.ok &&
       window_ordered.ordered_batch.rows.size() == 7 && framed.diagnostic.ok &&
@@ -6987,8 +7192,12 @@ bool ProviderMatrix(const Fixture& fixture,
                                "2026-08-10T12:00:60Z",
                                "9999-99-99T99:99:99Z",
                                "2262-04-11T23:47:16.854775808Z"}) {
-    const auto invalid = api::EngineBoundTimeSeriesReadV1(
-        Request(context, base, range, none, malformed, std::string(kRangeEnd)));
+    auto invalid_request = Request(context, base, range, none);
+    // Deliberately send the obsolete lexical carrier. Even a spelling that
+    // could be normalized at a client boundary is not a native engine value.
+    invalid_request.range_start.binary_value.clear();
+    invalid_request.range_start.encoded_value = malformed;
+    const auto invalid = api::EngineBoundTimeSeriesReadV1(invalid_request);
     passed &= Require(!invalid.ok && !invalid.data_access_observed &&
                           Diagnostic(invalid) ==
                               "SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1",
@@ -7048,6 +7257,7 @@ bool ProviderMatrix(const Fixture& fixture,
                     "TS-25 descriptor generation refusal drifted");
   completed->insert("TS-25");
   auto denied_context = context;
+  denied_context.authorization_context.engine_owned_bootstrap_role_uuid = {};
   denied_context.authorization_context.grants.clear();
   const auto denied = api::EngineBoundTimeSeriesReadV1(
       Request(denied_context, base, range, none));
@@ -7089,8 +7299,8 @@ bool ProviderMatrix(const Fixture& fixture,
       return false;
     };
     (void)api::EngineBoundTimeSeriesReadV1(probe);
-    for (std::size_t threshold = 1; threshold <= checkpoint_count;
-         ++threshold) {
+    for (std::size_t threshold = checkpoint_count; threshold > 0;
+         --threshold) {
       std::size_t observed = 0;
       auto cancel = Request(context, descriptor, range, none);
       cancel.cancellation_requested = [&observed, threshold] {
@@ -7123,9 +7333,9 @@ bool ProviderMatrix(const Fixture& fixture,
   const auto downsample_probe_result =
       api::EngineBoundTimeSeriesReadV1(downsample_probe);
   bool group_search_cancelled = false;
-  for (std::size_t threshold = 1;
-       threshold <= downsample_checkpoint_count && !group_search_cancelled;
-       ++threshold) {
+  for (std::size_t threshold = downsample_checkpoint_count;
+       threshold > 0 && !group_search_cancelled;
+       --threshold) {
     std::size_t observed = 0;
     auto cancel = Request(context, base, downsample,
                           api::EngineBoundTimeSeriesAggregateV1::kSum);
@@ -7144,9 +7354,12 @@ bool ProviderMatrix(const Fixture& fixture,
   }
   bool during_sort_refused = false;
   bool during_sort_atomic = false;
-  for (std::size_t threshold = 1;
-       threshold <= sort_checkpoint_count && !during_sort_refused;
-       ++threshold) {
+  // These are phase-specific atomicity probes, not an exhaustive sweep. Start
+  // at the final checkpoint so late phases do not replay every earlier phase.
+  // The exact diagnostic and empty-publication assertions remain unchanged.
+  for (std::size_t threshold = sort_checkpoint_count;
+       threshold > 0 && !during_sort_refused;
+       --threshold) {
     std::size_t observed = 0;
     auto sort_cancel = Request(context, base, range, none);
     sort_cancel.cancellation_requested = [&observed, threshold] {
@@ -7164,9 +7377,9 @@ bool ProviderMatrix(const Fixture& fixture,
         refusal.result_shape.rows.empty();
   }
   bool final_publication_cancelled = false;
-  for (std::size_t threshold = 1;
-       threshold <= sort_checkpoint_count && !final_publication_cancelled;
-       ++threshold) {
+  for (std::size_t threshold = sort_checkpoint_count;
+       threshold > 0 && !final_publication_cancelled;
+       --threshold) {
     std::size_t observed = 0;
     auto final_cancel = Request(context, base, range, none);
     final_cancel.cancellation_requested = [&observed, threshold] {
@@ -7392,7 +7605,16 @@ bool ProviderMatrix(const Fixture& fixture,
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) try {
+  const bool exchange_probe = argc == 2 && std::string_view(argv[1]) == "--exchange-probe";
+  if (argc != 1 && !exchange_probe) {
+    std::cerr << "usage: time-series-test [--exchange-probe]\n";
+    return 2;
+  }
+  auto memory_policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
+  memory_policy.policy_name = "qow_ces05_time_series";
+  if (!Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+          memory_policy, "qow_ces05_time_series").ok(), "memory fixture configuration failed")) return 1;
   Fixture fixture;
   api::EngineRequestContext active_other;
   api::EngineRequestContext reader;
@@ -7401,9 +7623,16 @@ int main() {
                 PublishReaderContext(fixture, &reader) &&
                 InventoryExact(fixture, reader);
 #if defined(SB_CES05_TIME_SERIES_PRODUCTION_QUERY_ROUTE)
+  if (exchange_probe) return 2;
   passed = passed && ProductionRouteMatrix(fixture, reader, &completed);
 #else
-  passed = passed && ProviderMatrix(fixture, reader, &completed) &&
+  // The registered regression always runs the entire 40-outcome matrix.
+  // A developer-only probe isolates exchange failures without rerunning the
+  // unrelated provider cancellation sweep; it is never a closure receipt.
+  if (exchange_probe) {
+    passed = passed && ExchangeMatrix(fixture, reader, &completed);
+  } else {
+    passed = passed && ProviderMatrix(fixture, reader, &completed) &&
            CoordinatorMatrix(
                reader,
                fixture.descriptors.at(kBaseObjectUuid),
@@ -7412,6 +7641,7 @@ int main() {
            FrontdoorMatrix(reader, &completed) &&
            AsofMatrix(fixture, reader, &completed) &&
            DirectCompositionMatrix(fixture, reader, &completed);
+  }
 #endif
   std::set<std::string> expected_outcomes;
   for (std::size_t ordinal = 1; ordinal <= 40; ++ordinal) {
@@ -7419,14 +7649,18 @@ int main() {
     outcome << "TS-" << std::setfill('0') << std::setw(2) << ordinal;
     expected_outcomes.insert(outcome.str());
   }
-  if (passed) {
+  if (passed && !exchange_probe) {
     passed &= Require(completed == expected_outcomes,
                       "time-series outcome accounting is not the exact "
                       "signed TS-01..TS-40 set");
   }
-  passed &= Rollback(reader);
-  passed &= Rollback(active_other);
+  if (!reader.transaction_uuid.is_nil()) passed &= Rollback(reader);
+  if (!active_other.transaction_uuid.is_nil()) passed &= Rollback(active_other);
   if (!passed) return 1;
+  if (exchange_probe) {
+    std::cout << "Time-series exchange probe passed; full regression not run\n";
+    return 0;
+  }
 #if defined(SB_CES05_TIME_SERIES_PRODUCTION_QUERY_ROUTE)
   std::cout << "QOW-CES05-TIME-SERIES: ordinary production canonical route "
                "matrix passed (40/40 outcomes covered)\n";
@@ -7435,4 +7669,7 @@ int main() {
             << completed.size() << "/40 outcomes covered)\n";
 #endif
   return 0;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return 1;
 }

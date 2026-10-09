@@ -12,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <variant>
 
 namespace scratchbird::engine::executor {
 
@@ -53,9 +54,9 @@ struct ModelProviderRowIdentityV1 {
   // INT64 so a valid-but-different typed cell cannot be substituted after
   // the engine provider produced its result.
   std::string time_series_payload_kind;
-  std::string time_series_raw_value;
-  std::string time_series_sample_count;
-  std::string time_series_aggregate_value;
+  std::optional<double> time_series_raw_value;
+  std::optional<std::int64_t> time_series_sample_count;
+  std::variant<std::monostate, std::int64_t, double> time_series_aggregate_value;
   // RCP-077 exact native REAL64 receipt; absent on non-vector families.
   std::optional<double> vector_distance;
   std::optional<double> vector_score;
