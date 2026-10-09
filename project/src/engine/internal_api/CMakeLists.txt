@@ -363,6 +363,7 @@ if(NOT TARGET sb_engine_api_diagnostics)
 endif()
 
 add_library(sb_engine_internal_api
+  session/scoped_value_store.cpp
   artifacts/artifact_api.cpp
   behavior_support/api_behavior_store.cpp
   behavior_support/api_behavior_rows.cpp

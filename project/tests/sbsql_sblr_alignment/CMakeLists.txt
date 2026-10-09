@@ -45,6 +45,18 @@ set_tests_properties(sbsql_sblr_alignment_large_payload_binary PROPERTIES TIMEOU
 # Copyright (c) 2026 ScratchBird Software Inc.
 # SPDX-License-Identifier: MPL-2.0
 
+add_executable(sbsql_sblr_alignment_scoped_session_value_store
+  scoped_session_value_store_test.cpp
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api/session/scoped_value_store.cpp)
+target_compile_features(sbsql_sblr_alignment_scoped_session_value_store PRIVATE cxx_std_23)
+target_compile_definitions(sbsql_sblr_alignment_scoped_session_value_store PRIVATE
+  SCRATCHBIRD_MEMORY_FAILURE_INJECTION_TEST_GUARD=1)
+target_include_directories(sbsql_sblr_alignment_scoped_session_value_store PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(sbsql_sblr_alignment_scoped_session_value_store PRIVATE sb_core_memory)
+add_test(NAME sbsql_sblr_alignment_scoped_session_value_store COMMAND sbsql_sblr_alignment_scoped_session_value_store)
+set_tests_properties(sbsql_sblr_alignment_scoped_session_value_store PROPERTIES
+  TIMEOUT 60 LABELS "sbsql_sblr_alignment;session_state;binary_uuid;accounted_memory;savepoint;component_regression;not_SQL_E2E")
+
 add_executable(sbsql_sblr_alignment_retained_row_value_state retained_row_value_state_conformance.cpp
   ${CMAKE_SOURCE_DIR}/src/engine/optimizer/bulk_placement_order.cpp)
 target_compile_features(sbsql_sblr_alignment_retained_row_value_state PRIVATE cxx_std_23)
