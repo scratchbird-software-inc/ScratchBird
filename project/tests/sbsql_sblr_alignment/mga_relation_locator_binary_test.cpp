@@ -6,6 +6,7 @@
 #include <iostream>
 #include <source_location>
 #include <thread>
+#include <atomic>
 #include <unistd.h>
 namespace a=scratchbird::engine::internal_api;
 void Check(bool ok,std::source_location at=std::source_location::current()) {
@@ -28,10 +29,35 @@ int main(){
   for(auto& t:threads)t.join();
   auto locators=a::LoadMgaRelationLocators(root);
   Check(locators.size()==3&&locators.at(Id(1))==1&&locators.at(Id(2))==2&&locators.at(Id(3))==3);
+  // Readers must see one complete published inode while another thread grows
+  // the directory by atomic replacement. Path stat followed by open races
+  // across two different committed extents, even though neither is corrupt.
+  std::atomic<bool> started{false}, finished{false}, read_failed{false};
+  std::atomic<unsigned> read_count{0};
+  threads.clear();
+  for (unsigned n = 0; n < 4; ++n) threads.emplace_back([&] {
+    while (!started.load()) std::this_thread::yield();
+    do {
+      try {
+        const auto snapshot = a::LoadMgaRelationLocators(root);
+        Check(snapshot.size() >= 3 && snapshot.size() <= 200);
+        Check(snapshot.at(Id(1)) == 1 && snapshot.at(Id(3)) == 3);
+        ++read_count;
+      } catch (const std::exception&) { read_failed = true; }
+    } while (!finished.load());
+  });
+  started = true;
+  for (unsigned n = 4; n <= 200; ++n)
+    Check(a::MgaScopedRelationPath(context, Id(n), ".rows", true) ==
+          root + "/relation-" + std::to_string(n) + ".rows");
+  finished = true;
+  for (auto& t : threads) t.join();
+  Check(!read_failed && read_count >= 4);
+  Check(a::LoadMgaRelationLocators(root).size() == 200);
   std::ifstream in(root+"/locators.v2",std::ios::binary);
   std::string bytes((std::istreambuf_iterator<char>(in)),{});
   std::vector<std::string> fields;Check(a::DecodeMgaMetadataFields(bytes,&fields));
-  Check(fields.size()==7&&fields[1]==a::MetadataUuidBytes(Id(1))&&fields[2].size()==8);
+  Check(fields.size()==401&&fields[1]==a::MetadataUuidBytes(Id(1))&&fields[2].size()==8);
   auto bad=bytes;bad[20]^=1;
   {std::ofstream out(root+"/locators.v2",std::ios::binary|std::ios::trunc);out.write(bad.data(),bad.size());}
   bool refused=false;try{a::MgaScopedRelationPath(context,Id(1),".rows");}catch(const std::runtime_error&){refused=true;}

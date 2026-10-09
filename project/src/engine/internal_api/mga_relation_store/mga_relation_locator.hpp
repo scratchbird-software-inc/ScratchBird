@@ -27,9 +27,17 @@ inline MgaRelationLocators LoadMgaRelationLocators(const std::string& root) {
     }
     return result;
   }
-  const auto size = std::filesystem::file_size(path);
-  if (size > kMgaMetadataMaximumBytes + 48) throw std::runtime_error("mga_relation_locator_extent_invalid");
-  std::ifstream file(path, std::ios::binary);
+  // Publication atomically replaces this pathname. Measure the opened file,
+  // not a pathname that may identify a different generation before open.
+  // Readers need no writer lock: their stream retains one committed inode.
+  std::ifstream file(path, std::ios::binary | std::ios::ate);
+  if (!file) throw std::runtime_error("mga_relation_locator_read_failed");
+  const auto end = file.tellg();
+  if (end < std::streampos(0) ||
+      static_cast<std::uint64_t>(end) > kMgaMetadataMaximumBytes + 48)
+    throw std::runtime_error("mga_relation_locator_extent_invalid");
+  const auto size = static_cast<std::size_t>(end);
+  file.seekg(0);
   std::string bytes(static_cast<std::size_t>(size), '\0');
   if (!file || !file.read(bytes.data(), static_cast<std::streamsize>(size)) ||
       file.peek() != std::char_traits<char>::eof()) throw std::runtime_error("mga_relation_locator_read_failed");
