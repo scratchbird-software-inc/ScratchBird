@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/native_int64_fixture.hpp"
 #include "../support/native_catalog_column_fixture.hpp"
 #include "../support/engine_evidence_fixture.hpp"
 #include "nosql/columnar_api.hpp"
@@ -287,18 +288,18 @@ bool SpatialVectors() {
 
 api::EngineDescriptor Descriptor(const std::string& name,
                                  const std::string& type) {
-  api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid = Uuid(200 + name.size() + type.size());
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = type;
-  descriptor.encoded_descriptor = "canonical=" + type;
-  return descriptor;
+  return scratchbird::tests::ExactScalarDescriptorFixture(
+      scratchbird::core::datatypes::CanonicalTypeIdFromStableName(type), type,
+      Uuid(200 + name.size() + type.size()),
+      type == "uuid" ? "nullability=non_null" : "nullability=nullable");
 }
 
 api::EngineTypedValue Value(const api::EngineDescriptor& descriptor,
                             std::string encoded, const bool nullable = false,
                             const bool missing = false) {
   api::EngineTypedValue value;
+  if (descriptor.canonical_type_name == "int64" && !nullable && !missing)
+    return scratchbird::tests::NativeInt64Fixture(descriptor, encoded);
   value.descriptor = descriptor;
   value.encoded_value = std::move(encoded);
   value.setState(missing ? api::EngineValueState::missing
@@ -365,12 +366,37 @@ bool ColumnarVectors() {
   };
   const auto source = nosql::ExecuteColumnarLogicalV1(
       ColumnarRequest("COLUMNAR_SOURCE"));
+  if (!source.accepted)
+    std::cerr << "columnar source: " << source.diagnostic_id << ' ' << source.detail << '\n';
   credit("RCP079-CV-001",
          source.accepted && source.batch.rows.size() == 3 &&
              source.batch.columns.size() == 3 &&
              source.row_uuids ==
                  std::vector<api::EngineUuid>{Uuid(211), Uuid(212), Uuid(213)},
          "CV-001 source reconstruction drifted");
+  passed &= Require(source.accepted && source.batch.rows.size() == 3 &&
+          scratchbird::tests::NativeInt64Equals(source.batch.rows[0].values[1], 1) &&
+          scratchbird::tests::NativeInt64Equals(source.batch.rows[1].values[1], 2) &&
+          source.batch.rows[2].values[1].state == api::EngineValueState::sql_null &&
+          source.batch.rows[2].values[1].encoded_value.empty() &&
+          source.batch.rows[2].values[1].binary_value.empty(),
+      "columnar reconstruction lost native INT64 or SQL NULL state");
+  for (unsigned mutation = 0; mutation < 5; ++mutation) {
+    auto malformed = ColumnarRequest("COLUMNAR_SOURCE");
+    auto& value = malformed.logical_rows.rows[0].values[1];
+    if (mutation == 0) { value.binary_value.clear(); value.encoded_value = "1"; }
+    if (mutation == 1) value.encoded_value = "1";
+    if (mutation == 2) value.binary_value.pop_back();
+    if (mutation == 3) {
+      ++malformed.logical_rows.columns[1].descriptor.datatype_descriptor_generation;
+      for (auto& row : malformed.logical_rows.rows)
+        ++row.values[1].descriptor.datatype_descriptor_generation;
+    }
+    if (mutation == 4) value.is_null = true;
+    const auto refused = nosql::ExecuteColumnarLogicalV1(malformed);
+    passed &= Require(!refused.accepted && refused.batch.rows.empty(),
+                      "columnar admitted malformed native INT64 or published partial rows");
+  }
   auto project = ColumnarRequest("COLUMNAR_PROJECT");
   project.projected_columns = {2, 0};
   const auto projected = nosql::ExecuteColumnarLogicalV1(project);
@@ -3184,7 +3210,7 @@ bool ProductionColumnarRoute() {
 
 }  // namespace
 
-int main() {
+int main() try {
 #if defined(SB_CES05_SPATIAL_COLUMNAR_PRODUCTION_QUERY_ROUTE)
   auto memory_policy = memory::DefaultLocalEngineMemoryPolicy();
   memory_policy.policy_name = "qow_ces05_spatial_columnar";
@@ -3205,4 +3231,7 @@ int main() {
   }
   std::cout << "qow_ces05_spatial_columnar=passed\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }
