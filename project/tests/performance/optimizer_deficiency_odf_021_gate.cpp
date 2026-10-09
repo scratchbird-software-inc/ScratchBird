@@ -44,6 +44,12 @@ api::EngineDescriptor Descriptor(const api::EngineUuid& uuid, const std::string&
   return descriptor;
 }
 
+api::EngineDescriptor PreparedColumnDescriptor() {
+  auto descriptor = exec::EncodeInt64Value(0).descriptor;
+  descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(1548, 1);
+  return descriptor;
+}
+
 constexpr auto kCatalogEpochUuid =
     scratchbird::tests::FixtureUuidLiteral("019f0210-0000-7000-8000-000000000001");
 
@@ -235,10 +241,11 @@ opt::OptimizerPinnedStatsDescriptorKey BaseStatsKey() {
   return key;
 }
 
-opt::OptimizerPinnedStatsDescriptorSnapshot BaseStatsSnapshot() {
+opt::OptimizerPinnedStatsDescriptorSnapshot BaseStatsSnapshot(std::uint64_t stats_epoch = 505) {
   opt::OptimizerStatisticsStore store;
   opt::TableCardinalityStats table;
   table.identity = StatsIdentity(scratchbird::tests::FixtureUuid(1548, 1), scratchbird::tests::FixtureUuid(1548, 4));
+  table.identity.stats_epoch = stats_epoch;
   table.row_count = 100;
   table.visible_row_count = 99;
   table.page_count = 7;
@@ -247,6 +254,7 @@ opt::OptimizerPinnedStatsDescriptorSnapshot BaseStatsSnapshot() {
 
   opt::IndexStats index;
   index.identity = StatsIdentity(scratchbird::tests::FixtureUuid(1548, 1), scratchbird::tests::FixtureUuid(1548, 5));
+  index.identity.stats_epoch = stats_epoch;
   index.index_uuid = scratchbird::tests::FixtureUuid(1548, 3);
   index.relation_uuid = scratchbird::tests::FixtureUuid(1548, 1);
   index.key_column_uuids = {scratchbird::tests::FixtureUuid(1548, 6)};
@@ -257,6 +265,7 @@ opt::OptimizerPinnedStatsDescriptorSnapshot BaseStatsSnapshot() {
 
   opt::OptimizerPinnedStatsDescriptorSnapshot snapshot;
   snapshot.key = BaseStatsKey();
+  snapshot.key.stats_epoch = stats_epoch;
   snapshot.stats_snapshot = store.Snapshot(scratchbird::tests::FixtureUuid(1548, 7));
   return snapshot;
 }
@@ -301,7 +310,10 @@ bool OptimizerStatsPinnedCacheHitRefusalAndInvalidation() {
     return false;
   }
 
-  if (!Require(cache.Put(BaseStatsSnapshot()).ok, "stats put before policy invalidation failed")) return false;
+  if (!Require(!cache.Put(BaseStatsSnapshot()).ok,
+               "statistics invalidation permitted stale snapshot resurrection") ||
+      !Require(cache.Put(BaseStatsSnapshot(506)).ok,
+               "refreshed stats put before policy invalidation failed")) return false;
   opt::StatsInvalidationEvent policy_change;
   policy_change.event_kind = "redaction_policy_change";
   policy_change.redaction_policy_identity = scratchbird::tests::FixtureUuid(1548, 9);
@@ -313,8 +325,13 @@ bool OptimizerStatsPinnedCacheHitRefusalAndInvalidation() {
 bool OptimizerStatisticsStoreInvalidatesGlobalPinnedStatsCache() {
   auto& cache = opt::GlobalOptimizerPinnedStatsDescriptorCache();
   cache.Clear();
-  const auto key = BaseStatsKey();
-  if (!Require(cache.Put(BaseStatsSnapshot()).ok, "global stats cache put before refresh failed") ||
+  // Clear evicts entries, not published generation floors. The preceding
+  // fixture already published generation 506 through the real stats store.
+  auto key = BaseStatsKey();
+  key.stats_epoch = 506;
+  if (!Require(!cache.Put(BaseStatsSnapshot()).ok,
+               "cache clear erased the published generation floor") ||
+      !Require(cache.Put(BaseStatsSnapshot(506)).ok, "global stats cache put before refresh failed") ||
       !Require(cache.Lookup(key).ok, "global stats cache did not hit before refresh")) {
     return false;
   }
@@ -322,24 +339,29 @@ bool OptimizerStatisticsStoreInvalidatesGlobalPinnedStatsCache() {
   opt::OptimizerStatisticsStore store;
   opt::TableCardinalityStats refreshed;
   refreshed.identity = StatsIdentity(scratchbird::tests::FixtureUuid(1548, 1), scratchbird::tests::FixtureUuid(1548, 4));
-  refreshed.identity.stats_epoch = 506;
+  refreshed.identity.stats_epoch = 507;
   refreshed.row_count = 101;
   store.UpsertTable(refreshed);
   if (!Require(!cache.Lookup(key).ok, "stats refresh did not invalidate global pinned stats cache")) {
     return false;
   }
 
-  if (!Require(cache.Put(BaseStatsSnapshot()).ok, "global stats cache put before stale mark failed") ||
-      !Require(cache.Lookup(key).ok, "global stats cache did not hit before stale mark")) {
+  auto refreshed_key = key;
+  refreshed_key.stats_epoch = 507;
+  if (!Require(!cache.Put(BaseStatsSnapshot(506)).ok,
+               "global statistics refresh permitted stale snapshot resurrection") ||
+      !Require(cache.Put(BaseStatsSnapshot(507)).ok, "global stats cache put before stale mark failed") ||
+      !Require(cache.Lookup(refreshed_key).ok, "global stats cache did not hit before stale mark")) {
     return false;
   }
   store.MarkStaleByObject(scratchbird::tests::FixtureUuid(1548, 1), 102);
-  return Require(!cache.Lookup(key).ok, "stats stale mark did not invalidate global pinned stats cache");
+  return Require(!cache.Lookup(refreshed_key).ok, "stats stale mark did not invalidate global pinned stats cache");
 }
 
 bool PreparedTemplateConsumesPinnedDescriptorsWithRecheckEvidence() {
   exec::PreparedTemplateCache cache;
-  api::EngineDescriptor descriptor = Descriptor(scratchbird::tests::FixtureUuid(1548, 1), "version=1;columns=id,name");
+  const auto descriptor = PreparedColumnDescriptor();
+  const auto descriptor_digest = exec::PreparedDescriptorSetDigest({descriptor}, {});
 
   exec::PreparedDescriptorSlot slot;
   slot.stable_name = "col.customer.id";
@@ -356,7 +378,7 @@ bool PreparedTemplateConsumesPinnedDescriptorsWithRecheckEvidence() {
   admission.key.operation_id = "dml.select.odf021";
   admission.key.sblr_digest_or_trace_key = "trace.odf021";
   admission.key.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0210-0000-7000-8000-000000000001");
-  admission.key.descriptor_set_digest = "descset.customer.v1";
+  admission.key.descriptor_set_digest = descriptor_digest;
   admission.key.result_shape_digest = result_shape.digest;
   admission.key.epochs.catalog_epoch = 101;
   admission.key.epochs.security_epoch = 202;
@@ -370,7 +392,7 @@ bool PreparedTemplateConsumesPinnedDescriptorsWithRecheckEvidence() {
   pinned.descriptor_uuid = scratchbird::tests::FixtureUuid(1548, 1);
   pinned.object_uuid = scratchbird::tests::FixtureUuid(1548, 1);
   pinned.index_uuid = scratchbird::tests::FixtureUuid(1548, 3);
-  pinned.descriptor_set_digest = "descset.customer.v1";
+  pinned.descriptor_set_digest = descriptor_digest;
   pinned.catalog_epoch = 101;
   pinned.security_epoch = 202;
   pinned.resource_policy_epoch = 303;
@@ -403,7 +425,8 @@ bool PreparedTemplateConsumesPinnedDescriptorsWithRecheckEvidence() {
   bind_context.engine_context.resource_epoch = 303;
   bind_context.engine_context.name_resolution_epoch = 404;
   bind_context.engine_context.security_context_present = true;
-  bind_context.descriptor_set_digest = "descset.customer.v1";
+  bind_context.request.descriptors = {descriptor};
+  bind_context.descriptor_set_digest = descriptor_digest;
   bind_context.result_shape_digest = result_shape.digest;
   bind_context.dependency_uuids = admission.key.dependency_uuids;
   bind_context.mga_authority = Authority(bind_context.engine_context);
@@ -446,7 +469,7 @@ bool PreparedTemplateConsumesPinnedDescriptorsWithRecheckEvidence() {
 
 bool PreparedPinnedDescriptorsSeparateTemplateCacheIdentity() {
   exec::PreparedTemplateCache cache;
-  api::EngineDescriptor descriptor = Descriptor(scratchbird::tests::FixtureUuid(1548, 1), "version=1;columns=id,name");
+  const auto descriptor = PreparedColumnDescriptor();
 
   exec::PreparedDescriptorSlot slot;
   slot.stable_name = "col.customer.id";
@@ -524,7 +547,7 @@ bool UnsafeSnapshotsFailClosed() {
   admission.key.sblr_digest_or_trace_key = "trace.unsafe";
   admission.key.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0210-0000-7000-8000-000000000001");
   admission.key.descriptor_set_digest = "descset.customer.v1";
-  api::EngineDescriptor descriptor = Descriptor(scratchbird::tests::FixtureUuid(1548, 1), "version=1");
+  const auto descriptor = PreparedColumnDescriptor();
   exec::PreparedDescriptorSlot slot;
   slot.stable_name = "rel.customer";
   slot.descriptor = descriptor;
