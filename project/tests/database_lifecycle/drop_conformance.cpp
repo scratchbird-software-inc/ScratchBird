@@ -8,12 +8,15 @@
 
 #include "../agents/agent_binary_identity_fixture.hpp"
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
+#include "memory.hpp"
 using scratchbird::tests::BinaryFixtureIdentity;
 using scratchbird::tests::NativeFixtureIdentity;
-#include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "disk_device.hpp"
 #include "lifecycle/engine_lifecycle_api.hpp"
+#include "transaction/transaction_api.hpp"
 #include "manager_control.hpp"
 #include "sbps.hpp"
 #include "startup_state.hpp"
@@ -25,7 +28,6 @@ using scratchbird::tests::NativeFixtureIdentity;
 #include <iostream>
 #include <string>
 #include <string_view>
-#include <unistd.h>
 #include <vector>
 
 namespace {
@@ -52,8 +54,7 @@ using scratchbird::server::ServerSessionRegistry;
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
-    std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -72,26 +73,24 @@ bool HasDiagnostic(const ServerManagementResponse& result, std::string_view code
   for (const auto& diagnostic : result.diagnostics) {
     if (diagnostic.code == code) return true;
   }
+  for (const auto& diagnostic : result.diagnostics) {
+    std::cerr << "management diagnostic: " << diagnostic.code << ' '
+              << diagnostic.safe_message << '\n';
+  }
   return false;
-}
-
-std::filesystem::path MakeTempDir() {
-  std::string tmpl = "/tmp/sb_dblc012_drop.XXXXXX";
-  std::vector<char> writable(tmpl.begin(), tmpl.end());
-  writable.push_back('\0');
-  char* made = ::mkdtemp(writable.data());
-  Require(made != nullptr, "mkdtemp failed for DBLC-012 drop test");
-  return std::filesystem::path(made);
 }
 
 struct Fixture {
   std::filesystem::path path;
   std::string database_uuid;
   std::string filespace_uuid;
+  api::EngineUuid owner_uuid;
+  api::EngineRequestContext owner_context;
   scratchbird::core::platform::u32 page_size = 0;
 };
 
-Fixture CreateDatabase(const std::filesystem::path& path, std::uint64_t now_millis) {
+Fixture CreateDatabase(const std::filesystem::path& path, std::uint64_t now_millis,
+                       bool credentialed = false) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid = uuid::GenerateEngineIdentityV7(UuidKind::database, now_millis).value;
@@ -101,6 +100,7 @@ Fixture CreateDatabase(const std::filesystem::path& path, std::uint64_t now_mill
   create.allow_minimal_resource_bootstrap = true;
   create.require_resource_seed_pack = false;
   create.allow_overwrite = true;
+  if (credentialed) scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "DBLC-012 database create failed");
   const auto opened = db::OpenDatabaseFile({path.string(), false, false, false});
@@ -111,11 +111,19 @@ Fixture CreateDatabase(const std::filesystem::path& path, std::uint64_t now_mill
   fixture.database_uuid = BinaryFixtureIdentity(create.database_uuid.value);
   fixture.filespace_uuid = BinaryFixtureIdentity(create.filespace_uuid.value);
   fixture.page_size = created.state.header.page_size;
+  if (credentialed) {
+    const auto bootstrap = db::ReadDatabaseBootstrapSecurityCatalog(path.string());
+    Require(bootstrap.ok() && bootstrap.state.present && bootstrap.state.committed_by_inventory,
+            "management fixture has no committed bootstrap owner");
+    fixture.owner_uuid = bootstrap.state.principal_uuid.value;
+    fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  }
   return fixture;
 }
 
-Fixture CreateCleanDatabase(const std::filesystem::path& path, std::uint64_t now_millis) {
-  auto fixture = CreateDatabase(path, now_millis);
+Fixture CreateCleanDatabase(const std::filesystem::path& path, std::uint64_t now_millis,
+                            bool credentialed = false) {
+  auto fixture = CreateDatabase(path, now_millis, credentialed);
   const auto clean = db::MarkDatabaseCleanShutdown(path.string());
   Require(clean.ok(), "DBLC-012 clean shutdown failed");
   return fixture;
@@ -287,7 +295,7 @@ ServerLifecycleArtifacts Artifacts() {
 std::array<std::uint8_t, 16> AddSession(ServerSessionRegistry* registry,
                                         const Fixture& fixture,
                                         std::string_view principal,
-                                        std::uint64_t local_transaction_id = 0) {
+                                        const api::EngineRequestContext* transaction = nullptr) {
   ServerSessionRecord session;
   session.connection_uuid = sbps::MakeUuidV7Bytes();
   session.session_uuid = sbps::MakeUuidV7Bytes();
@@ -297,11 +305,15 @@ std::array<std::uint8_t, 16> AddSession(ServerSessionRegistry* registry,
   session.database_path = fixture.path.string();
   session.database_uuid = NativeFixtureIdentity(fixture.database_uuid);
   session.effective_user_uuid = sbps::MakeUuidV7Bytes();
-  session.local_transaction_id = local_transaction_id;
+  if (transaction) {
+    session.local_transaction_id = transaction->local_transaction_id;
+    session.transaction_uuid = transaction->transaction_uuid;
+    session.snapshot_visible_through_local_transaction_id =
+        transaction->snapshot_visible_through_local_transaction_id;
+  }
   if (principal == "admin") {
-    session.engine_authorization_trace_tags = {
-        "security.fixture_trace_authority",
-        "right:OBS_MANAGEMENT_CONTROL"};
+    Require(!fixture.owner_uuid.is_nil(), "management fixture owner identity missing");
+    session.effective_user_uuid = fixture.owner_uuid.bytes;
   }
   registry->sessions_by_uuid[scratchbird::core::platform::Uuid{session.session_uuid}] = session;
   registry->auth_contexts_by_uuid[scratchbird::core::platform::Uuid{session.auth_context_uuid}] = session;
@@ -342,14 +354,24 @@ ServerManagementContext Context(ServerBootstrapConfig* config,
 }
 
 void TestManagementDropRoute(const std::filesystem::path& dir) {
-  const auto active_fixture = CreateCleanDatabase(dir / "drop_route_active.sbdb", 1779500006000);
+  const auto active_fixture = CreateCleanDatabase(dir / "drop_route_active.sbdb", 1779500006000, true);
   auto active_config = Config(active_fixture);
   auto active_artifacts = Artifacts();
   auto active_engine_state = EngineState(active_fixture);
   ParserPackageRegistry parser_registry;
   ServerListenerOrchestrator listeners;
   ServerSessionRegistry active_registry;
-  const auto active_admin = AddSession(&active_registry, active_fixture, "admin", 44);
+  api::EngineBeginTransactionRequest begin;
+  begin.context = active_fixture.owner_context;
+  begin.isolation_level = "read_committed";
+  const auto begun = api::EngineBeginTransaction(begin);
+  Require(begun.ok, "management fixture active transaction begin failed");
+  auto transaction = begin.context;
+  transaction.local_transaction_id = begun.local_transaction_id;
+  transaction.transaction_uuid = begun.transaction_uuid;
+  transaction.snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  const auto active_admin = AddSession(&active_registry, active_fixture, "admin", &transaction);
   auto active_coordinator =
       scratchbird::server::BuildMaintenanceCoordinator(active_config, active_artifacts);
   auto active_context = Context(&active_config,
@@ -367,14 +389,22 @@ void TestManagementDropRoute(const std::filesystem::path& dir) {
   Require(active_refused.error, "management drop admitted active transaction");
   Require(HasDiagnostic(active_refused, "ENGINE.DBLC_DROP_UNSAFE"),
           "management active drop diagnostic mismatch");
+  Require(std::filesystem::exists(active_fixture.path) &&
+              !HasDropEvidenceFlag(ReadStartup(active_fixture)) &&
+              active_registry.sessions_by_uuid.size() == 1,
+          "refused active drop changed durable drop state or closed the session");
+  api::EngineRollbackTransactionRequest rollback;
+  rollback.context = transaction;
+  Require(api::EngineRollbackTransaction(rollback).ok,
+          "management fixture transaction rollback failed");
 
-  const auto fixture = CreateCleanDatabase(dir / "drop_route.sbdb", 1779500007000);
+  const auto fixture = CreateCleanDatabase(dir / "drop_route.sbdb", 1779500007000, true);
   auto config = Config(fixture);
   auto artifacts = Artifacts();
   auto engine_state = EngineState(fixture);
   ServerSessionRegistry registry;
   const auto admin_uuid = AddSession(&registry, fixture, "admin");
-  (void)AddSession(&registry, fixture, "alice");
+  const auto alice_uuid = AddSession(&registry, fixture, "alice");
   auto coordinator = scratchbird::server::BuildMaintenanceCoordinator(config, artifacts);
   auto context = Context(&config,
                          &artifacts,
@@ -386,6 +416,19 @@ void TestManagementDropRoute(const std::filesystem::path& dir) {
   const std::string mode =
       "retention_policy_satisfied:true;backup_coverage_verified:true;legal_hold_clear:true;"
       "expected_filespace_uuid:" + fixture.filespace_uuid;
+  // A trace string is not a grant. Keep this unknown subject separate from
+  // the committed owner used by the positive management route.
+  registry.sessions_by_uuid.at(scratchbird::core::platform::Uuid{alice_uuid})
+      .engine_authorization_trace_tags = {
+          "security.fixture_trace_authority", "right:OBS_MANAGEMENT_CONTROL"};
+  const auto unauthorized = scratchbird::server::HandleServerManagementRequest(
+      context, ManagementFrame(alice_uuid, "drop_database", mode));
+  Require(unauthorized.error && HasDiagnostic(unauthorized, "SECURITY.ACCESS_DENIED"),
+          "management drop accepted trace-only authorization");
+  Require(std::filesystem::exists(fixture.path) &&
+              !HasDropEvidenceFlag(ReadStartup(fixture)) &&
+              registry.sessions_by_uuid.size() == 2,
+          "unauthorized drop changed durable drop state or closed sessions");
   const auto response = scratchbird::server::HandleServerManagementRequest(
       context,
       ManagementFrame(admin_uuid, "drop_database", mode));
@@ -401,12 +444,20 @@ void TestManagementDropRoute(const std::filesystem::path& dir) {
 
 }  // namespace
 
-int main() {
-  const auto temp_dir = MakeTempDir();
+int main() try {
+  namespace memory = scratchbird::core::memory;
+  Require(memory::ConfigureDefaultMemoryManagerForFixture(
+              memory::DefaultLocalEngineMemoryPolicy(), "drop_conformance").ok(),
+          "drop fixture memory manager configuration failed");
+  scratchbird::tests::OwnedTempDirectory owned;
+  const auto& temp_dir = owned.path();
   TestStorageDropRefusalsAndLogicalEvidence(temp_dir);
   TestStorageQuarantineAndPhysicalDeletePolicies(temp_dir);
   TestEngineDropLifecycle(temp_dir);
   TestManagementDropRoute(temp_dir);
-  std::filesystem::remove_all(temp_dir);
+  owned.Cleanup();
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }
