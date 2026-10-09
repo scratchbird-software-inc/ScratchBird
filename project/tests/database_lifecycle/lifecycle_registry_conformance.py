@@ -234,6 +234,73 @@ def validate_static_sblr_registry(paths: dict[str, Path]) -> None:
         fail("DROP DATABASE must remain admitted but fail closed without executor evidence")
 
 
+ADMITTED_DISPATCH_ROUTE = "DispatchStatementContextReceipt->DispatchSblrOperation"
+ADMITTED_DISPATCH_ENTRY = "server_engine_bridge::DispatchStatementContextReceipt"
+
+
+def validate_admitted_dispatch(public_abi: str, server_dispatch: str) -> None:
+    """Structural wiring proof only, not execution or durable-effect evidence.
+
+    Raw-byte public dispatch was deliberately retired. Checking for its old
+    decoder credits dead code and misses the current receipt admission route.
+    """
+    def body(name: str) -> str:
+        match = re.search(
+            rf"sb_engine_status_t\s+{name}\([^;]*?\)\s*\{{(.*?)^\}}",
+            public_abi, re.DOTALL | re.MULTILINE)
+        if match is None:
+            raise ValueError(f"missing dispatch definition {name}")
+        return match.group(1)
+
+    admitted = body("DispatchStatementContextReceipt")
+    required = (
+        "g_live_statement_context_receipts.find(request->receipt.opaque_id)",
+        "ENGINE.STATEMENT_CONTEXT.RECEIPT_NOT_LIVE",
+        "!hash_matches(request->canonical_operation_bytes,",
+        "request->operation_sha256",
+        "DecodeSblrEnvelope(operation_bytes)",
+        "DispatchSblrOperation(",
+    )
+    for token in required:
+        if token not in admitted:
+            raise ValueError(f"admitted dispatch missing {token}")
+    dispatch_at = admitted.index("DispatchSblrOperation(")
+    if any(admitted.index(token) >= dispatch_at for token in required[:-1]):
+        raise ValueError("receipt/decode admission does not precede dispatch")
+    if "engine_bridge::DispatchStatementContextReceipt(" not in server_dispatch:
+        raise ValueError("server does not invoke admitted receipt dispatch")
+    legacy = body("sb_engine_dispatch_sblr")
+    refusal = re.search(
+        r"if \(params->envelope_size_bytes != 0\)\s*\{\s*return fail_result\("
+        r"\s*SB_ENGINE_STATUS_UNSUPPORTED,.*?immutable server admission token.*?\);\s*\}",
+        legacy, re.DOTALL)
+    if refusal is None or refusal.start() >= legacy.index("DecodeSblrEnvelopeBytes("):
+        raise ValueError("raw-byte public dispatch is not refused before decoding")
+
+
+def check_dispatch_validator_mutations(public_abi: str, server_dispatch: str) -> None:
+    # Missing live authority, payload binding, decoder, executor or server call
+    # must all fail the source gate, even if unrelated old symbols remain.
+    for token in (
+        "g_live_statement_context_receipts.find(request->receipt.opaque_id)",
+        "!hash_matches(request->canonical_operation_bytes,",
+        "DecodeSblrEnvelope(operation_bytes)",
+        "DispatchSblrOperation(",
+        "immutable server admission token",
+    ):
+        try:
+            validate_admitted_dispatch(public_abi.replace(token, "REMOVED"), server_dispatch)
+        except ValueError:
+            continue
+        fail(f"dispatch source validator missed mutation {token}")
+    try:
+        validate_admitted_dispatch(public_abi, server_dispatch.replace(
+            "engine_bridge::DispatchStatementContextReceipt(", "REMOVED"))
+    except ValueError:
+        return
+    fail("dispatch source validator missed removed server receipt call")
+
+
 def validate_code_mappings(paths: dict[str, Path]) -> None:
     header = paths["lifecycle_header"].read_text(encoding="utf-8")
     impl = paths["lifecycle_impl"].read_text(encoding="utf-8")
@@ -244,8 +311,11 @@ def validate_code_mappings(paths: dict[str, Path]) -> None:
     public_abi = paths["public_abi"].read_text(encoding="utf-8")
     ddl_create_header = paths["ddl_create_header"].read_text(encoding="utf-8")
     ddl_create_impl = paths["ddl_create_impl"].read_text(encoding="utf-8")
-    if "DecodeAndDispatchSblrOperation" not in public_abi or "sb_engine_dispatch_sblr" not in public_abi:
-        fail("public ABI does not route SBLR envelopes through engine dispatch")
+    try:
+        validate_admitted_dispatch(public_abi, server_dispatch)
+    except ValueError as error:
+        fail(str(error))
+    check_dispatch_validator_mutations(public_abi, server_dispatch)
     for operation_id, opcode, function in REQUIRED_LIFECYCLE_OPERATIONS:
         for source_name, source_text in (
             ("header", header),
@@ -307,9 +377,9 @@ def validate_public_abi_map(paths: dict[str, Path]) -> None:
         row = indexed[operation_id]
         if row["sblr_opcode"] != opcode:
             fail(f"public ABI map opcode mismatch for {operation_id}")
-        if row["public_abi_entry"] != "sb_engine_dispatch_sblr":
+        if row["public_abi_entry"] != ADMITTED_DISPATCH_ENTRY:
             fail(f"public ABI map entry mismatch for {operation_id}")
-        if row["dispatch_route"] != "DecodeAndDispatchSblrOperation->DispatchSblrOperation":
+        if row["dispatch_route"] != ADMITTED_DISPATCH_ROUTE:
             fail(f"public ABI map dispatch route mismatch for {operation_id}")
         if row["engine_entrypoint"] != function:
             fail(f"public ABI map engine entrypoint mismatch for {operation_id}")
