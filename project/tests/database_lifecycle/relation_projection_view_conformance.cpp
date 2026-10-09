@@ -7,6 +7,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "../support/published_mga_table_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
+#include "../../src/core/memory/memory.hpp"
+#include "engine/executor/descriptor_value_runtime.hpp"
 #include "wire/projection_fields.hpp"
 #include "catalog/binary_view_options.hpp"
 #include "behavior_support/api_behavior_store.hpp"
@@ -121,32 +127,27 @@ bool CanonicalObjectUuid(const api::EngineUuid& value) {
 }
 
 struct Fixture {
+  scratchbird::tests::OwnedTempDirectory temporary;
   std::filesystem::path directory;
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
+  api::EngineUuid filespace_uuid;
   api::EngineUuid principal_uuid;
   api::EngineUuid schema_uuid;
   api::EngineUuid singleton_table_uuid;
   api::EngineUuid multi_table_uuid;
   api::EngineUuid updatable_table_uuid;
+  api::EngineRequestContext owner_context;
   api::MgaRelationStorageDescriptor singleton_descriptor;
   api::MgaRelationStorageDescriptor multi_descriptor;
   api::MgaRelationStorageDescriptor updatable_descriptor;
   std::uint64_t salt = 0;
 
-  ~Fixture() {
-    std::error_code ignored;
-    if (!directory.empty()) std::filesystem::remove_all(directory, ignored);
-  }
 };
 
-Fixture CreateFixture() {
-  Fixture fixture;
+void CreateFixture(Fixture& fixture) {
   fixture.salt = NowMillis();
-  fixture.directory = std::filesystem::temp_directory_path() /
-                      ("scratchbird_relation_projection_view_" +
-                       std::to_string(fixture.salt));
-  std::filesystem::create_directories(fixture.directory);
+  fixture.directory = fixture.temporary.path();
   fixture.database_path = fixture.directory / "relation_projection.sbdb";
 
   db::DatabaseCreateConfig create;
@@ -157,9 +158,7 @@ Fixture CreateFixture() {
       NewTypedUuid(platform::UuidKind::filespace, fixture.salt + 2);
   create.creation_unix_epoch_millis = fixture.salt + 3;
   create.page_size = 8192;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
-  create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ':'
@@ -168,8 +167,9 @@ Fixture CreateFixture() {
   Require(created.ok(), "relation projection database creation failed");
 
   fixture.database_uuid = create.database_uuid.value;
-  fixture.principal_uuid =
-      NewUuid(platform::UuidKind::principal, fixture.salt + 4);
+  fixture.filespace_uuid = create.filespace_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.principal_uuid = fixture.owner_context.principal_uuid;
   fixture.schema_uuid =
       NewUuid(platform::UuidKind::schema, fixture.salt + 5);
   fixture.singleton_table_uuid =
@@ -178,18 +178,24 @@ Fixture CreateFixture() {
       NewUuid(platform::UuidKind::object, fixture.salt + 7);
   fixture.updatable_table_uuid =
       NewUuid(platform::UuidKind::object, fixture.salt + 8);
-  return fixture;
 }
 
-api::EngineRequestContext Begin(const Fixture& fixture,
+struct FixtureContext : api::EngineRequestContext {
+  // A real engine session must outlive every statement and its transaction.
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
+};
+
+FixtureContext Begin(const Fixture& fixture,
                                 std::uint64_t ordinal,
                                 std::string isolation = "read_committed") {
   api::EngineBeginTransactionRequest begin;
+  begin.context = fixture.owner_context;
   begin.context.trust_mode = api::EngineTrustMode::server_isolated;
   begin.context.request_id =
       "relation-projection-begin-" + std::to_string(ordinal);
   begin.context.database_path = fixture.database_path.string();
   begin.context.database_uuid = fixture.database_uuid;
+  begin.context.default_root_uuid = fixture.filespace_uuid;
   begin.context.principal_uuid = fixture.principal_uuid;
   begin.context.session_uuid =
       NewUuid(platform::UuidKind::object, fixture.salt + 100 + ordinal);
@@ -202,13 +208,16 @@ api::EngineRequestContext Begin(const Fixture& fixture,
   const auto begun = api::EngineBeginTransaction(begin);
   RequireOk(begun, "relation projection transaction begin failed");
 
-  auto context = begin.context;
+  FixtureContext context;
+  static_cast<api::EngineRequestContext&>(context) = begin.context;
   context.local_transaction_id = begun.local_transaction_id;
   context.transaction_uuid = begun.transaction_uuid;
   context.snapshot_visible_through_local_transaction_id =
       begun.snapshot_visible_through_local_transaction_id;
   context.transaction_isolation_level = begun.isolation_level;
   context.current_schema_uuid = fixture.schema_uuid;
+  scratchbird::tests::UseBootstrapDatatypeCohort(context);
+  context.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(context);
   return context;
 }
 
@@ -253,15 +262,15 @@ api::CrudTableRecord Int32Table(const api::EngineRequestContext& context,
   return table;
 }
 
-void PersistTable(const api::EngineRequestContext& context,
+void PersistTable(api::EngineRequestContext& context,
                   const api::CrudTableRecord& table,
                   api::MgaRelationStorageDescriptor* descriptor) {
-  Require(!api::AppendMgaTableMetadata(context, table).error,
-          "relation projection table metadata append failed");
-  Require(!api::EnsureMgaRelationStorageDescriptor(
-               context, table, {}, descriptor)
-               .error,
-          "relation projection descriptor persistence failed");
+  Require(!scratchbird::tests::PublishMgaTableFixture(context, table, {"int32"}).error,
+          "relation projection bound table publication failed");
+  const auto loaded = api::LoadMgaRelationStorageDescriptor(context, table.table_uuid);
+  Require(loaded.ok && descriptor != nullptr,
+          "relation projection published descriptor read failed");
+  *descriptor = loaded.descriptor;
   Require(descriptor != nullptr && descriptor->columns.size() == 1 &&
               descriptor->columns[0].canonical_name_key == "ID" &&
               !descriptor->columns[0]
@@ -301,7 +310,8 @@ void RewriteDescriptorStoreBytes(const std::filesystem::path& path,
 }
 
 void TestExactDescriptorCacheFalseNegativeRecovery() {
-  auto fixture = CreateFixture();
+  Fixture fixture;
+  CreateFixture(fixture);
   auto metadata = Begin(fixture, 1000);
   api::MgaRelationStorageDescriptor expected;
   PersistTable(metadata,
@@ -353,9 +363,10 @@ void TestExactDescriptorCacheFalseNegativeRecovery() {
   const auto negative = api::LoadMgaRelationStorageDescriptor(
       reader, fixture.singleton_table_uuid);
   Require(!negative.ok &&
-              negative.diagnostic.detail.find("persisted_descriptor_required") !=
-                  std::string::npos,
-          "invalid descriptor magic did not prime an exact negative cache");
+              negative.diagnostic.code == "SB_ENGINE_API_INVALID_REQUEST" &&
+              negative.diagnostic.detail ==
+                  "mga.relation_metadata:descriptor_store_decode_failed",
+          "invalid descriptor magic was not refused before cache publication");
 
   RewriteDescriptorStoreBytes(descriptor_path, valid_bytes);
   time_error.clear();
@@ -387,9 +398,16 @@ api::EngineTypedValue Int32Value(
     std::int32_t value) {
   api::EngineTypedValue typed;
   typed.descriptor = descriptor;
-  typed.encoded_value = std::to_string(value);
+  typed.binary_value.resize(4);
+  for (unsigned i = 0; i < 4; ++i)
+    typed.binary_value[i] = static_cast<std::uint8_t>(static_cast<std::uint32_t>(value) >> (8 * i));
   typed.setState(api::EngineValueState::value);
   return typed;
+}
+
+bool NativeInt32Equals(const api::EngineTypedValue& value, std::int32_t expected) {
+  return value.state == api::EngineValueState::value && !value.is_null &&
+      value.encoded_value.empty() && value.binary_value == Int32Value({}, expected).binary_value;
 }
 
 api::EngineRowValue Row(const api::EngineDescriptor& descriptor,
@@ -414,12 +432,12 @@ api::EngineRowValue NullRow(const api::EngineDescriptor& descriptor,
   return row;
 }
 
-void Insert(const api::EngineRequestContext& context,
+void Insert(const FixtureContext& context,
             const api::EngineUuid& table_uuid,
             const api::EngineDescriptor& descriptor,
             std::vector<std::int32_t> values) {
-  api::EngineInsertRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(
+      *context.session, context);
   request.context.request_id = "relation-projection-insert";
   request.target_table.uuid = table_uuid;
   request.target_table.object_kind = "table";
@@ -434,11 +452,11 @@ void Insert(const api::EngineRequestContext& context,
           "relation projection insert count drifted");
 }
 
-void InsertDelete03Rows(const api::EngineRequestContext& context,
+void InsertDelete03Rows(const FixtureContext& context,
                         const api::EngineUuid& table_uuid,
                         const api::EngineDescriptor& descriptor) {
-  api::EngineInsertRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(
+      *context.session, context);
   request.context.request_id = "relation-projection-v2-insert";
   request.target_table.uuid = table_uuid;
   request.target_table.object_kind = "table";
@@ -475,9 +493,10 @@ Delete03VisibleRows ReadDelete03VisibleRows(
     for (const auto& [name, value] : row.values) {
       if (name != "ID") continue;
       found = true;
-      if (value == "10") {
+      const auto ten = Int32Value({}, 10).binary_value;
+      if (value.isPresent() && value.bytes == std::string(ten.begin(), ten.end())) {
         ++counts.ten_count;
-      } else if (value == "<NULL>") {
+      } else if (value.isSqlNull() && value.bytes.empty()) {
         ++counts.null_count;
       } else {
         ++counts.other_count;
@@ -843,8 +862,8 @@ std::string PackedUpdatableRelationProjectionViewDelete(
       output.nullable ? "1" : "0"});
 }
 
-api::EngineDeleteRowsRequest UpdatableDeleteRequest(
-    const api::EngineRequestContext& context,
+scratchbird::tests::FixtureEngineRequest<api::EngineDeleteRowsRequest> UpdatableDeleteRequest(
+    const FixtureContext& context,
     const api::EngineRelationProjectionViewDescriptor& descriptor,
     std::int32_t predicate_value = 10) {
   Require(descriptor.present &&
@@ -853,8 +872,8 @@ api::EngineDeleteRowsRequest UpdatableDeleteRequest(
               descriptor.outputs.size() == 1,
           "updatable view delete descriptor required");
   const auto& output = descriptor.outputs.front();
-  api::EngineDeleteRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineDeleteRowsRequest> request(
+      *context.session, context);
   request.context.request_id = "relation-projection-v2-delete";
   request.target_table.uuid = descriptor.view_uuid;
   request.target_table.object_kind = "view";
@@ -1019,9 +1038,8 @@ void RequireRows(const api::EngineSelectRowsResult& result,
     const auto& fields = result.result_shape.rows[i].fields;
     Require(fields.size() == 2 && fields[0].first == "ID" &&
                 fields[1].first == second_name &&
-                fields[0].second.encoded_value ==
-                    std::to_string(ids[i]) &&
-                fields[1].second.encoded_value == "5" &&
+                NativeInt32Equals(fields[0].second, ids[i]) &&
+                NativeInt32Equals(fields[1].second, 5) &&
                 !fields[0].second.isSqlNull() &&
                 !fields[1].second.isSqlNull(),
             message);
@@ -1179,6 +1197,95 @@ void SetOption(api::EngineApiRequest* request,
   Fail("relation projection option prefix not found");
 }
 
+// Component boundary checks use bindings from an actually published view and
+// source table. The surrounding test separately proves durable MGA behavior.
+void TestNativeProjectionBoundaries(const api::EngineRequestContext& context,
+    const api::MgaRelationStorageDescriptor& source,
+    const api::EngineRelationProjectionViewDescriptor& view) {
+  api::EngineRelationProjectionEnvelope envelope;
+  envelope.marker = view.marker;
+  envelope.relation_uuid = source.relation_uuid;
+  envelope.relation_descriptor_uuid = source.descriptor_uuid;
+  envelope.relation_descriptor_generation = source.descriptor_generation;
+  envelope.source_resource_epoch = view.source_resource_epoch;
+  envelope.outputs = view.outputs;
+  const auto binding = api::BindEngineRelationProjectionEnvelope(context, envelope, source);
+  Require(binding.ok, "native projection fixture did not bind its actual source");
+  namespace executor = scratchbird::engine::executor;
+  for (const auto number : {INT32_MIN, -1, 0, 1, INT32_MAX, 0x34333231}) {
+    const auto bytes = Int32Value({}, number).binary_value;
+    api::CrudRowVersionRecord row;
+    row.row_uuid = NewUuid(platform::UuidKind::row, NowMillis());
+    row.values.emplace_back("ID", api::CrudStoredValue(std::string(bytes.begin(), bytes.end())));
+    const auto result = api::ExecuteEngineRelationProjection(context, binding.outputs,
+        source, view.source_resource_epoch, {row});
+    Require(result.ok && result.result_shape.rows.size() == 1 &&
+        NativeInt32Equals(result.result_shape.rows[0].fields[0].second, number) &&
+        NativeInt32Equals(result.result_shape.rows[0].fields[1].second, 5),
+        "native projection changed an INT32 boundary or digit-like byte pattern");
+    const auto& values = result.result_shape.rows[0].fields;
+    for (const auto& [name, value] : values)
+      Require(value.descriptor.datatype_descriptor_uuid ==
+                  source.columns[0].value_descriptor.datatype_descriptor_uuid &&
+              value.descriptor.type_uuid == source.columns[0].value_descriptor.type_uuid &&
+              value.descriptor.datatype_descriptor_generation ==
+                  source.columns[0].value_descriptor.datatype_descriptor_generation,
+              "projection output lost its datatype binding");
+    const auto batch = executor::MakeDescriptorBatch(
+        {{"ID", values[0].second.descriptor, true}, {"L", values[1].second.descriptor, false}},
+        {{{values[0].second, values[1].second}}});
+    const auto admitted = executor::ValidateDescriptorBatch(batch);
+    if (!admitted.ok)
+      std::cerr << admitted.diagnostic_code << ':' << admitted.detail
+                << " row=" << admitted.row_index << " column=" << admitted.column_index << '\n';
+    Require(admitted.ok,
+            "projection returned values that fail executor descriptor admission");
+    const auto valid_row = row;
+    for (const unsigned width : {0u, 1u, 3u, 5u, 8u}) {
+      row.values[0].second.bytes.assign(width, '1');
+      const auto malformed = api::ExecuteEngineRelationProjection(context, binding.outputs,
+          source, view.source_resource_epoch, {valid_row, row});
+      Require(!malformed.ok && malformed.result_shape.rows.empty() &&
+          malformed.scanned_visible_row_count == 0,
+          "malformed native INT32 width published a row or success count");
+    }
+    row.values[0].second = api::CrudStoredValue::SqlNull();
+    const auto null = api::ExecuteEngineRelationProjection(context, binding.outputs,
+        source, view.source_resource_epoch, {row});
+    Require(null.ok && null.result_shape.rows[0].fields[0].second.isSqlNull() &&
+        null.result_shape.rows[0].fields[0].second.binary_value.empty() &&
+        null.result_shape.rows[0].fields[0].second.encoded_value.empty(),
+        "projection did not preserve payload-free typed NULL");
+    row.values[0].second.bytes = "dirty";
+    const auto dirty = api::ExecuteEngineRelationProjection(context, binding.outputs,
+        source, view.source_resource_epoch, {row});
+    Require(!dirty.ok && dirty.result_shape.rows.empty(), "dirty projection NULL was accepted");
+    row = valid_row;
+    row.values.push_back(row.values.front());
+    Require(!api::ExecuteEngineRelationProjection(context, binding.outputs,
+        source, view.source_resource_epoch, {row}).ok,
+        "duplicate source field was accepted by native projection");
+    row.values.clear();
+    Require(!api::ExecuteEngineRelationProjection(context, binding.outputs,
+        source, view.source_resource_epoch, {row}).ok,
+        "missing source field was accepted by native projection");
+  }
+  auto stale_context = context;
+  ++stale_context.datatype_registry_generation;
+  Require(!api::ExecuteEngineRelationProjection(stale_context, binding.outputs,
+      source, view.source_resource_epoch, {}).ok,
+      "empty projection bypassed exact cohort admission");
+  for (unsigned mutation = 0; mutation < 3; ++mutation) {
+    auto stale = source;
+    auto& type = stale.columns[0].value_descriptor;
+    if (mutation == 0) ++type.datatype_descriptor_generation;
+    if (mutation == 1) type.datatype_descriptor_uuid = {};
+    if (mutation == 2) type.type_uuid = {};
+    Require(!api::BindEngineRelationProjectionEnvelope(context, envelope, stale).ok,
+            "native projection accepted a missing or stale datatype binding");
+  }
+}
+
 void TestRelationProjectionView(Fixture& fixture) {
   auto metadata = Begin(fixture, 1);
   api::EngineCreateSchemaRequest schema;
@@ -1251,6 +1358,7 @@ void TestRelationProjectionView(Fixture& fixture) {
           "creating transaction could not describe its views");
   RequireIdentityAuthority(singleton_own_descriptor);
   RequireIdentityAuthority(multi_own_descriptor);
+  TestNativeProjectionBoundaries(create, fixture.singleton_descriptor, singleton_own_descriptor);
 
   const auto singleton_own = api::EngineResolveName(
       ResolveRequest(fixture, create, "V_TEST"));
@@ -1473,9 +1581,8 @@ void TestRelationProjectionView(Fixture& fixture) {
     const auto& fields = sblr_selected.result_shape.rows[i].fields;
     Require(fields.size() == 2 && fields[0].first == "ID" &&
                 fields[1].first == "NUM" &&
-                fields[0].second.encoded_value ==
-                    std::to_string(i == 0 ? 3 : 10) &&
-                fields[1].second.encoded_value == "5",
+                NativeInt32Equals(fields[0].second, i == 0 ? 3 : 10) &&
+                NativeInt32Equals(fields[1].second, 5),
             "rpvs1 result row contract drifted");
   }
 
@@ -1700,14 +1807,40 @@ void TestRelationProjectionView(Fixture& fixture) {
   Require(!behavior_read_diagnostic_3.error, "behavior catalog read failed");
   Require(persisted_record.has_value(),
           "persisted relation projection behavior record required");
+  std::vector<std::string> persisted_fields;
+  const auto literal_bytes = Int32Value({}, 5).binary_value;
+  const std::string native_literal_field = "output_1_literal_le4:" +
+      std::string(literal_bytes.begin(), literal_bytes.end());
+  Require(api::DecodeBinaryViewOptions(persisted_record->payload, &persisted_fields) &&
+              std::count(persisted_fields.begin(), persisted_fields.end(),
+                         native_literal_field) == 1,
+          "persisted view literal lost its exact native INT32 encoding");
+  // Old lexical payloads must not be sniffed as native bytes, even when the
+  // decimal spelling happens to occupy exactly four bytes.
+  for (const std::string replacement : {"output_1_literal_value:5",
+                                        "output_1_literal_value:1234",
+                                        "output_1_literal_le4:5"}) {
+    auto record = *persisted_record;
+    record.creator_tx = final_reader.local_transaction_id;
+    record.object_uuid = NewUuid(platform::UuidKind::object, NowMillis());
+    record.target_object_uuid = record.object_uuid;
+    ReplaceOnce(&record.payload, native_literal_field, replacement);
+    Require(!api::AppendApiBehaviorEvent(
+                 final_reader, api::MakeApiBehaviorRecordEvent(record)).error,
+            "malformed native literal fixture append failed");
+    const auto described = api::DescribeEngineRelationProjectionView(
+        final_reader, record.object_uuid);
+    Require(described.diagnostic.error && !described.present,
+            "persisted lexical or malformed-width literal was accepted");
+  }
   const auto persist_stale_variant =
       [&](std::string_view suffix,
           const std::string& expected_field,
           const std::string& replacement_field) {
         auto record = *persisted_record;
-        const api::EngineUuid original_uuid = record.object_uuid;
         record.creator_tx = final_reader.local_transaction_id;
         record.object_uuid = NewUuid(platform::UuidKind::object, NowMillis());
+        record.target_object_uuid = record.object_uuid;
         record.default_name = "V_STALE_" + std::string(suffix);
         ReplaceOnce(&record.payload, expected_field, replacement_field);
         Require(!api::AppendApiBehaviorEvent(
@@ -1717,6 +1850,10 @@ void TestRelationProjectionView(Fixture& fixture) {
                 "stale persisted descriptor variant append failed");
         const auto described = api::DescribeEngineRelationProjectionView(
             final_reader, record.object_uuid);
+        if (described.diagnostic.error || !described.present)
+          std::cerr << "stale variant=" << suffix << " present=" << described.present
+                    << ' ' << described.diagnostic.code << ':'
+                    << described.diagnostic.detail << '\n';
         Require(!described.diagnostic.error && described.present,
                 "stale persisted descriptor variant did not decode");
         return described;
@@ -1808,6 +1945,8 @@ void TestRelationProjectionView(Fixture& fixture) {
   malformed_record.creator_tx = final_reader.local_transaction_id;
   malformed_record.operation_id = "ddl.create_view";
   malformed_record.object_uuid = malformed_view_uuid;
+  malformed_record.target_object_uuid = malformed_view_uuid;
+  malformed_record.target_schema_uuid = fixture.schema_uuid;
   malformed_record.object_kind = "view";
   malformed_record.default_name = "V_MALFORMED";
   malformed_record.state = "created";
@@ -2273,6 +2412,7 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
   stale_source_record.creator_tx = refusal_writer.local_transaction_id;
   stale_source_record.object_uuid =
       NewUuid(platform::UuidKind::object, NowMillis());
+  stale_source_record.target_object_uuid = stale_source_record.object_uuid;
   stale_source_record.default_name = "V2_STALE_SOURCE";
   ReplaceOnce(
       &stale_source_record.payload,
@@ -2302,6 +2442,7 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
   malformed_record.creator_tx = refusal_writer.local_transaction_id;
   malformed_record.object_uuid =
       NewUuid(platform::UuidKind::object, NowMillis());
+  malformed_record.target_object_uuid = malformed_record.object_uuid;
   malformed_record.default_name = "V2_MALFORMED";
   ReplaceOnce(&malformed_record.payload,
               "output_count:1",
@@ -2486,10 +2627,16 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
 
 int main() {
   try {
+    namespace memory = scratchbird::core::memory;
+    Require(memory::ConfigureDefaultMemoryManagerForFixture(
+        memory::DefaultLocalEngineMemoryPolicy(), "relation_projection").ok(),
+        "relation projection memory policy admission failed");
     TestExactDescriptorCacheFalseNegativeRecovery();
-    auto fixture = CreateFixture();
+    Fixture fixture;
+    CreateFixture(fixture);
     TestRelationProjectionView(fixture);
     TestUpdatableRelationProjectionView(fixture);
+    fixture.temporary.Cleanup();
     std::cout << "relation projection view conformance passed\n";
     return EXIT_SUCCESS;
   } catch (const std::exception& exception) {

@@ -200,10 +200,12 @@ EngineApiDiagnostic ValidateEngineRelationProjectionEnvelope(
     const EngineRelationProjectionEnvelope& envelope);
 
 EngineRelationProjectionBindingResult BindEngineRelationProjectionEnvelope(
+    const EngineRequestContext& context,
     const EngineRelationProjectionEnvelope& envelope,
     const MgaRelationStorageDescriptor& relation_descriptor);
 
 EngineRelationProjectionExecutionResult ExecuteEngineRelationProjection(
+    const EngineRequestContext& context,
     const std::vector<EngineBoundRelationProjectionOutput>& outputs,
     const MgaRelationStorageDescriptor& relation_descriptor,
     std::uint64_t source_resource_epoch,

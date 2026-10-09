@@ -8,6 +8,8 @@
 
 #include "catalog/relation_projection_view.hpp"
 #include "catalog/binary_view_options.hpp"
+#include "catalog/column_metadata_codec.hpp"
+#include "datatype_storage_identity.hpp"
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
@@ -24,6 +26,7 @@
 #include "uuid.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <charconv>
 #include <cctype>
 #include <cstdint>
@@ -59,12 +62,77 @@ bool DescriptorExactlyMatches(const EngineDescriptor& left,
   return left == right;
 }
 
+bool BoundInt32Cohort(const EngineRequestContext& context, const EngineDescriptor& source) {
+  dt::DatatypeStorageIdentityV1 identity;
+  return dt::LookupDatatypeStorageIdentityV1(
+      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+      context.datatype_registry_generation, source.datatype_descriptor_uuid,
+      source.datatype_descriptor_generation, &identity) &&
+      identity.type_id == dt::CanonicalTypeId::int32 && identity.type_uuid == source.type_uuid &&
+      identity.codec && identity.codec->canonical_value_exact_bytes == 4;
+}
+
+// The packed projection descriptor has one opaque, binary metadata field.
+// Retain datatype identity there as binary UUIDs, separately from the newly
+// allocated output occurrence identity. Names are never binding authority.
+std::optional<std::string> BoundOutputMetadata(const EngineDescriptor& source) {
+  if (!core::uuid::IsEngineIdentityUuid(source.datatype_descriptor_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(source.type_uuid) ||
+      !source.datatype_descriptor_generation || !source.charset_uuid.is_nil() ||
+      !source.collation_uuid.is_nil()) return std::nullopt;
+  CatalogColumnMetadata fields;
+  if (!AdmitCatalogColumnMetadata(source.encoded_descriptor, &fields)) return std::nullopt;
+  if (source.canonical_type_name != "int32" || source.descriptor_kind != "scalar")
+    return std::nullopt;
+  std::optional<bool> nullable;
+  for (const auto& [name, value] : fields.text) {
+    if (name == "nullable" || name == "nullability" || name == "not_null") {
+      const bool is_boolean = name != "nullability";
+      if (is_boolean ? value != "true" && value != "false"
+                     : value != "nullable" && value != "non_null") return std::nullopt;
+      const bool selected = name == "not_null" ? value == "false"
+          : name == "nullable" ? value == "true" : value == "nullable";
+      if (nullable && *nullable != selected) return std::nullopt;
+      nullable = selected;
+    } else if (name == "canonical" || name == "canonical_type" || name == "type") {
+      // Retained declaration aliases are data, not the datatype selector.
+      if (value != "int32" && value != "int") return std::nullopt;
+    } else if (name == "precision") {
+      if (value != "32") return std::nullopt;
+    } else if (name == "scale") {
+      if (value != "0") return std::nullopt;
+    } else if (name != "datatype_descriptor_generation") {
+      return std::nullopt;
+    }
+  }
+  if (!nullable) return std::nullopt;
+  for (const auto& [name, value] : fields.identities)
+    if (name != "datatype_descriptor_uuid" && name != "type_uuid") return std::nullopt;
+  for (const auto& entry : {std::pair{"datatype_descriptor_uuid", source.datatype_descriptor_uuid},
+                             std::pair{"type_uuid", source.type_uuid}}) {
+    const auto existing = fields.identities.find(entry.first);
+    if (existing != fields.identities.end() && existing->second != entry.second)
+      return std::nullopt;
+    fields.identities[entry.first] = entry.second;
+  }
+  const auto generation = std::to_string(source.datatype_descriptor_generation);
+  const auto existing = fields.text.find("datatype_descriptor_generation");
+  if (existing != fields.text.end() && existing->second != generation) return std::nullopt;
+  fields.text["datatype_descriptor_generation"] = generation;
+  fields.text = {{"nullability", *nullable ? "nullable" : "non_null"},
+                 {"datatype_descriptor_generation", generation}};
+  std::string encoded;
+  if (!EncodeCatalogColumnMetadata(fields, &encoded)) return std::nullopt;
+  return encoded;
+}
+
 bool DescriptorTypeShapeMatches(
     const EngineRelationProjectionTypeDescriptor& left,
     const EngineDescriptor& right) {
-  return left.descriptor_kind == right.descriptor_kind &&
+  const auto metadata = BoundOutputMetadata(right);
+  return metadata && left.descriptor_kind == right.descriptor_kind &&
          left.canonical_type_name == right.canonical_type_name &&
-         left.encoded_descriptor == right.encoded_descriptor;
+         left.encoded_descriptor == *metadata;
 }
 
 bool TypeDescriptorExactlyMatches(
@@ -107,19 +175,19 @@ std::optional<std::uint64_t> ParseCanonicalU64(std::string_view value) {
   return parsed;
 }
 
-std::optional<std::int32_t> ParseCanonicalI32(std::string_view value) {
-  if (value.empty() || value == "-0" || value.front() == '+' ||
-      (value.size() > 1 && value.front() == '0') ||
-      (value.size() > 2 && value[0] == '-' && value[1] == '0')) {
-    return std::nullopt;
-  }
-  std::int32_t parsed = 0;
-  const auto [end, error] =
-      std::from_chars(value.data(), value.data() + value.size(), parsed);
-  if (error != std::errc{} || end != value.data() + value.size()) {
-    return std::nullopt;
-  }
-  return parsed;
+std::optional<std::int32_t> DecodeNativeI32(std::string_view value) {
+  if (value.size() != 4) return std::nullopt;
+  std::uint32_t bits = 0;
+  for (unsigned i = 0; i < 4; ++i)
+    bits |= std::uint32_t(static_cast<unsigned char>(value[i])) << (8 * i);
+  return std::bit_cast<std::int32_t>(bits);
+}
+
+std::string EncodeNativeI32(std::int32_t value) {
+  std::string bytes(4, '\0');
+  for (unsigned i = 0; i < 4; ++i)
+    bytes[i] = static_cast<char>(static_cast<std::uint32_t>(value) >> (8 * i));
+  return bytes;
 }
 
 bool SafeUnquotedIdentifier(std::string_view identifier) {
@@ -420,8 +488,8 @@ ParsePersistedDescriptor(const ApiBehaviorRecord& record) {
       return std::nullopt;
     }
     const auto literal = OptionSuffix(
-        options[29], "output_1_literal_value:");
-    const auto parsed_literal = literal ? ParseCanonicalI32(*literal)
+        options[29], "output_1_literal_le4:");
+    const auto parsed_literal = literal ? DecodeNativeI32(*literal)
                                         : std::nullopt;
     if (!parsed_literal) return std::nullopt;
     literal_output->literal_int32 = *parsed_literal;
@@ -698,13 +766,15 @@ EngineRelationProjectionTypeDescriptor AllocateOutputType(
     const VisibleIdentityInventory& visible_inventory,
     std::set<EngineUuid>* identities) {
   EngineRelationProjectionTypeDescriptor type;
+  const auto metadata = BoundOutputMetadata(source);
+  if (!metadata) return type;
   const auto uuid =
       AllocateDistinctObjectUuid(visible_inventory, identities);
   if (!uuid) return type;
   type.type_descriptor_uuid = *uuid;
   type.descriptor_kind = source.descriptor_kind;
   type.canonical_type_name = source.canonical_type_name;
-  type.encoded_descriptor = source.encoded_descriptor;
+  type.encoded_descriptor = *metadata;
   return type;
 }
 
@@ -762,8 +832,8 @@ std::vector<std::string> PersistedOptions(
   auto literal = common(descriptor.outputs[1]);
   options.insert(options.end(), literal.begin(), literal.end());
   options.push_back("output_1_literal_type:int32");
-  options.push_back("output_1_literal_value:" +
-                    std::to_string(descriptor.outputs[1].literal_int32));
+  options.push_back("output_1_literal_le4:" +
+                    EncodeNativeI32(descriptor.outputs[1].literal_int32));
   return options;
 }
 
@@ -804,26 +874,13 @@ StoredFieldValueLookup StoredFieldValueExact(
 }
 
 bool CanonicalInt32Value(const EngineDescriptor& descriptor,
-                         std::string_view encoded,
-                         std::string* canonical) {
+                         std::string_view encoded) {
   const auto type_id = dt::CanonicalTypeIdFromStableName(
       descriptor.canonical_type_name);
   if (type_id != dt::CanonicalTypeId::int32) return false;
-  dt::DatatypeCastRequest cast;
-  cast.value.type_id = type_id;
-  cast.value.encoded_value = std::string(encoded);
-  cast.value.is_null = false;
-  cast.target_type_id = type_id;
-  cast.explicit_cast = false;
-  const auto result = dt::CastDatatypeValue(cast);
-  if (!result.ok() || result.value.is_null) return false;
-  std::int32_t parsed = 0;
-  const char* begin = result.value.encoded_value.data();
-  const char* end = begin + result.value.encoded_value.size();
-  const auto [parsed_end, error] = std::from_chars(begin, end, parsed);
-  if (error != std::errc{} || parsed_end != end) return false;
-  if (canonical != nullptr) *canonical = result.value.encoded_value;
-  return true;
+  // Called only after binding to the freshly loaded source column. Every
+  // native LE4 bit pattern is an INT32; no lexical cast is involved.
+  return encoded.size() == 4;
 }
 
 }  // namespace
@@ -844,6 +901,29 @@ EngineDescriptor EngineRelationProjectionOutputTypeDescriptor(
   result.descriptor_kind = descriptor.descriptor_kind;
   result.canonical_type_name = descriptor.canonical_type_name;
   result.encoded_descriptor = descriptor.encoded_descriptor;
+  CatalogColumnMetadata metadata;
+  if (DecodeCatalogColumnMetadata(descriptor.encoded_descriptor, &metadata)) {
+    const auto datatype = metadata.identities.find("datatype_descriptor_uuid");
+    const auto type = metadata.identities.find("type_uuid");
+    const auto generation = metadata.text.find("datatype_descriptor_generation");
+    if (datatype != metadata.identities.end() && type != metadata.identities.end() &&
+        generation != metadata.text.end()) {
+      const auto parsed = ParseCanonicalU64(generation->second);
+      if (parsed && *parsed) {
+        result.datatype_descriptor_uuid = datatype->second;
+        result.datatype_descriptor_generation = *parsed;
+        result.type_uuid = type->second;
+        // The retained projection packet carries the datatype binding inside
+        // its opaque metadata. The execution descriptor has dedicated binary
+        // identity fields; its scalar modifiers must not duplicate that arm.
+        metadata.identities.erase("datatype_descriptor_uuid");
+        metadata.identities.erase("type_uuid");
+        metadata.text.erase("datatype_descriptor_generation");
+        if (!EncodeCatalogColumnMetadata(metadata, &result.encoded_descriptor))
+          return {};
+      }
+    }
+  }
   return result;
 }
 
@@ -956,12 +1036,14 @@ PrepareEngineRelationProjectionViewCreate(const EngineApiRequest& request) {
                                   literal_request.descriptor) ||
         literal_value.isSqlNull() ||
         literal_value.state != EngineValueState::value ||
-        !literal_value.binary_value.empty()) {
+        !literal_value.encoded_value.empty()) {
       result.diagnostic =
           ViewDiagnostic("relation_projection_view_output_contract_invalid");
       return result;
     }
-    parsed_literal = ParseCanonicalI32(literal_value.encoded_value);
+    parsed_literal = DecodeNativeI32(std::string_view(
+        reinterpret_cast<const char*>(literal_value.binary_value.data()),
+        literal_value.binary_value.size()));
     if (!parsed_literal) {
       result.diagnostic =
           ViewDiagnostic("relation_projection_view_literal_int32_invalid");
@@ -1014,6 +1096,12 @@ PrepareEngineRelationProjectionViewCreate(const EngineApiRequest& request) {
         duplicate_column
             ? "relation_projection_view_source_column_ambiguous"
             : "relation_projection_view_source_column_descriptor_stale");
+    return result;
+  }
+
+  const auto& source_type = source_column->value_descriptor;
+  if (!BoundInt32Cohort(request.context, source_type)) {
+    result.diagnostic = ViewDiagnostic("relation_projection_view_source_datatype_unbound");
     return result;
   }
 
@@ -1102,8 +1190,12 @@ PrepareEngineRelationProjectionViewCreate(const EngineApiRequest& request) {
         AllocateDistinctObjectUuid(visible_inventory, &identities);
     const auto literal_expression_uuid =
         AllocateDistinctObjectUuid(visible_inventory, &identities);
+    auto literal_type = EngineRelationProjectionInt32LiteralInputDescriptor();
+    literal_type.datatype_descriptor_uuid = source_type.datatype_descriptor_uuid;
+    literal_type.datatype_descriptor_generation = source_type.datatype_descriptor_generation;
+    literal_type.type_uuid = source_type.type_uuid;
     literal_output.output_type = AllocateOutputType(
-        EngineRelationProjectionInt32LiteralInputDescriptor(),
+        literal_type,
         visible_inventory,
         &identities);
     if (!literal_output_uuid || !literal_expression_uuid ||
@@ -1139,7 +1231,7 @@ PrepareEngineRelationProjectionViewCreate(const EngineApiRequest& request) {
     return result;
   }
   const auto binding =
-      BindEngineRelationProjectionEnvelope(envelope, relation);
+      BindEngineRelationProjectionEnvelope(request.context, envelope, relation);
   if (!binding.ok) {
     result.diagnostic = binding.diagnostic;
     return result;
@@ -1340,7 +1432,7 @@ EngineApiDiagnostic ExpandEngineRelationProjectionViewSelect(
   projection.source_resource_epoch = descriptor.source_resource_epoch;
   projection.outputs = descriptor.outputs;
   const auto binding =
-      BindEngineRelationProjectionEnvelope(projection, relation);
+      BindEngineRelationProjectionEnvelope(request.context, projection, relation);
   if (!binding.ok) return binding.diagnostic;
 
   EngineSelectRowsRequest next;
@@ -1458,7 +1550,9 @@ EngineApiDiagnostic ExpandEngineRelationProjectionViewDelete(
   const auto& predicate_value = request.delete_predicate.bound_values.front();
   std::int32_t canonical_predicate = 0;
   const auto parsed_predicate =
-      ParseCanonicalI32(predicate_value.encoded_value);
+      DecodeNativeI32(std::string_view(
+          reinterpret_cast<const char*>(predicate_value.binary_value.data()),
+          predicate_value.binary_value.size()));
   if (!predicate_value.descriptor.descriptor_uuid.is_nil() ||
       predicate_value.descriptor.descriptor_kind != "scalar" ||
       dt::CanonicalTypeIdFromStableName(
@@ -1466,7 +1560,7 @@ EngineApiDiagnostic ExpandEngineRelationProjectionViewDelete(
           dt::CanonicalTypeId::int32 ||
       predicate_value.descriptor.encoded_descriptor != "type=int32" ||
       predicate_value.state != EngineValueState::value ||
-      predicate_value.isSqlNull() || !predicate_value.binary_value.empty() ||
+      predicate_value.isSqlNull() || !predicate_value.encoded_value.empty() ||
       !parsed_predicate) {
     return ViewDiagnostic(
         "relation_projection_view_delete_predicate_invalid");
@@ -1519,7 +1613,7 @@ EngineApiDiagnostic ExpandEngineRelationProjectionViewDelete(
   projection.source_resource_epoch = descriptor.source_resource_epoch;
   projection.outputs = descriptor.outputs;
   const auto binding =
-      BindEngineRelationProjectionEnvelope(projection, relation);
+      BindEngineRelationProjectionEnvelope(request.context, projection, relation);
   if (!binding.ok || binding.outputs.size() != 1 ||
       binding.outputs.front().source_column_name_key.empty()) {
     return binding.diagnostic.error
@@ -1547,8 +1641,9 @@ EngineApiDiagnostic ExpandEngineRelationProjectionViewDelete(
       binding.outputs.front().source_column_name_key;
   next.delete_predicate.bound_values.front().descriptor =
       source_column->value_descriptor;
-  next.delete_predicate.bound_values.front().encoded_value =
-      std::to_string(canonical_predicate);
+  const auto predicate_bytes = EncodeNativeI32(canonical_predicate);
+  next.delete_predicate.bound_values.front().binary_value.assign(
+      predicate_bytes.begin(), predicate_bytes.end());
   next.delete_predicate.bound_values.front().setState(EngineValueState::value);
   next.delete_surface_variant = "delete";
   next.tombstone_only = true;
@@ -1577,6 +1672,13 @@ EngineApiDiagnostic ValidateEngineRelationProjectionEnvelope(
   const auto& source = envelope.outputs[0];
   const auto valid_common = [](const EngineRelationProjectionViewOutput& output,
                                std::uint32_t ordinal) {
+    const auto bound = EngineRelationProjectionOutputTypeDescriptor(output.output_type);
+    const auto canonical = BoundOutputMetadata(bound);
+    CatalogColumnMetadata metadata;
+    if (!canonical || *canonical != output.output_type.encoded_descriptor ||
+        !DecodeCatalogColumnMetadata(*canonical, &metadata) ||
+        metadata.text.at("nullability") != (output.nullable ? "nullable" : "non_null"))
+      return false;
     return output.ordinal == ordinal &&
            CanonicalTypedUuid(
                scratchbird::core::platform::UuidKind::object,
@@ -1608,6 +1710,11 @@ EngineApiDiagnostic ValidateEngineRelationProjectionEnvelope(
   }
   if (v1) {
     const auto& literal = envelope.outputs[1];
+    auto expected_literal = EngineRelationProjectionInt32LiteralInputDescriptor();
+    const auto source_binding = EngineRelationProjectionOutputTypeDescriptor(source.output_type);
+    expected_literal.datatype_descriptor_uuid = source_binding.datatype_descriptor_uuid;
+    expected_literal.datatype_descriptor_generation = source_binding.datatype_descriptor_generation;
+    expected_literal.type_uuid = source_binding.type_uuid;
     if (!valid_common(literal, 1) ||
         LowerAscii(source.output_name) == LowerAscii(literal.output_name) ||
         literal.expression_kind !=
@@ -1617,7 +1724,7 @@ EngineApiDiagnostic ValidateEngineRelationProjectionEnvelope(
         literal.nullable ||
         !DescriptorTypeShapeMatches(
             literal.output_type,
-            EngineRelationProjectionInt32LiteralInputDescriptor())) {
+            expected_literal)) {
       return ViewDiagnostic(
           "relation_projection_output_contract_invalid");
     }
@@ -1650,6 +1757,7 @@ EngineApiDiagnostic ValidateEngineRelationProjectionEnvelope(
 }
 
 EngineRelationProjectionBindingResult BindEngineRelationProjectionEnvelope(
+    const EngineRequestContext& context,
     const EngineRelationProjectionEnvelope& envelope,
     const MgaRelationStorageDescriptor& relation_descriptor) {
   EngineRelationProjectionBindingResult result;
@@ -1678,6 +1786,7 @@ EngineRelationProjectionBindingResult BindEngineRelationProjectionEnvelope(
       &duplicate_column);
   if (duplicate_column || source_column == nullptr ||
       source_column->canonical_name_key.empty() ||
+      !BoundInt32Cohort(context, source_column->value_descriptor) ||
       dt::CanonicalTypeIdFromStableName(
           source_column->value_descriptor.canonical_type_name) !=
           dt::CanonicalTypeId::int32 ||
@@ -1709,6 +1818,7 @@ EngineRelationProjectionBindingResult BindEngineRelationProjectionEnvelope(
 }
 
 EngineRelationProjectionExecutionResult ExecuteEngineRelationProjection(
+    const EngineRequestContext& context,
     const std::vector<EngineBoundRelationProjectionOutput>& outputs,
     const MgaRelationStorageDescriptor& relation_descriptor,
     std::uint64_t source_resource_epoch,
@@ -1729,7 +1839,7 @@ EngineRelationProjectionExecutionResult ExecuteEngineRelationProjection(
   envelope.source_resource_epoch = source_resource_epoch;
   envelope.outputs = {outputs[0].output, outputs[1].output};
   const auto rebound =
-      BindEngineRelationProjectionEnvelope(envelope, relation_descriptor);
+      BindEngineRelationProjectionEnvelope(context, envelope, relation_descriptor);
   if (!rebound.ok) {
     result.diagnostic = rebound.diagnostic;
     return result;
@@ -1756,6 +1866,7 @@ EngineRelationProjectionExecutionResult ExecuteEngineRelationProjection(
   const EngineDescriptor literal_type =
       EngineRelationProjectionOutputTypeDescriptor(
           outputs[1].output.output_type);
+  const auto literal_bytes = EncodeNativeI32(outputs[1].output.literal_int32);
   for (const auto& row : visible_rows) {
     const auto stored = StoredFieldValueExact(
         row, outputs[0].source_column_name_key);
@@ -1770,22 +1881,23 @@ EngineRelationProjectionExecutionResult ExecuteEngineRelationProjection(
     }
 
     EngineRowValue projected;
+    projected.fields.reserve(2);
     projected.requested_row_uuid = row.row_uuid;
     EngineTypedValue source_value;
     source_value.descriptor = source_type;
-    if (stored.state == EngineValueState::sql_null && stored.value.empty()) {
+    if (stored.state == EngineValueState::sql_null && stored.value.empty() &&
+        outputs[0].output.nullable) {
       source_value.setState(EngineValueState::sql_null);
     } else {
-      std::string canonical;
       if (stored.state != EngineValueState::value ||
-          !CanonicalInt32Value(source_type, stored.value, &canonical)) {
+          !CanonicalInt32Value(source_type, stored.value)) {
         result.result_shape.rows.clear();
         result.scanned_visible_row_count = 0;
         result.diagnostic = ViewDiagnostic(
             "relation_projection_source_value_invalid");
         return result;
       }
-      source_value.encoded_value = std::move(canonical);
+      source_value.binary_value.assign(stored.value.begin(), stored.value.end());
       source_value.setState(EngineValueState::value);
     }
     projected.fields.push_back(
@@ -1793,8 +1905,7 @@ EngineRelationProjectionExecutionResult ExecuteEngineRelationProjection(
 
     EngineTypedValue literal_value;
     literal_value.descriptor = literal_type;
-    literal_value.encoded_value =
-        std::to_string(outputs[1].output.literal_int32);
+    literal_value.binary_value.assign(literal_bytes.begin(), literal_bytes.end());
     literal_value.setState(EngineValueState::value);
     projected.fields.push_back(
         {outputs[1].output.output_name, std::move(literal_value)});

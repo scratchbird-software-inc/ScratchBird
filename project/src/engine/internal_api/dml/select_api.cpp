@@ -971,7 +971,7 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
           request.context, "dml.select_rows", descriptor.diagnostic);
     }
     relation_projection_binding = BindEngineRelationProjectionEnvelope(
-        request.relation_projection, descriptor.descriptor);
+        request.context, request.relation_projection, descriptor.descriptor);
     mark_select_phase("bind_relation_projection_fields");
     if (!relation_projection_binding.ok) {
       return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
@@ -1234,6 +1234,7 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
   const std::string result_projection = OptionValue(request, "result_projection:");
   if (relation_projection) {
     auto projected = ExecuteEngineRelationProjection(
+        request.context,
         relation_projection_binding.outputs,
         relation_projection_relation_descriptor,
         request.relation_projection.source_resource_epoch,
