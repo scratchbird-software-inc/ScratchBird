@@ -295,9 +295,27 @@ inline bool EncodeOrderedIndexKey(std::string_view logical_key,
     const auto& value = (*values)[ordinal];
     if (binding.datatype.type_id ==
         core::datatypes::CanonicalTypeId::uint16) {
-      *diagnostic = MakeInvalidRequestDiagnostic(
-          "mga.index_store", "sorted_index_uint16_carrier_provenance_unbound");
-      return false;
+      // This pure encoding seam is not publication authority. Production
+      // callers rebind through PublicationBindingScope on every operation.
+      // Admit native LE2 only with the complete exact retained codec row,
+      // never infer its representation from digit-like bytes or a name.
+      const auto& codec = binding.datatype.codec;
+      const auto resolved = codec
+          ? core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+                codec->catalog_snapshot_uuid, codec->catalog_generation,
+                codec->registry_generation, binding.datatype.descriptor_uuid,
+                binding.datatype.descriptor_generation)
+          : core::datatypes::DatatypeTypeCodecIdentityLookupV1{};
+      if (!codec || !resolved.ok || resolved.row != *codec ||
+          codec->type_uuid != binding.datatype.type_uuid ||
+          codec->canonical_binary_type_code != static_cast<std::uint32_t>(
+              core::datatypes::CanonicalTypeId::uint16) ||
+          codec->codec_id != "datatype.uint16.le.v1" ||
+          codec->canonical_value_exact_bytes != 2) {
+        *diagnostic = MakeInvalidRequestDiagnostic(
+            "mga.index_store", "sorted_index_uint16_carrier_provenance_unbound");
+        return false;
+      }
     }
     core::datatypes::DatatypeSortKeyRequest request;
     request.value = {binding.datatype.type_id, value.bytes, value.isSqlNull()};

@@ -551,6 +551,69 @@ void ConsumerCarrierBoundaries() {
           "ordered-index adapter refuses every untagged uint16 retained state");
   }
 
+  // Pure key encoding can use an exact codec binding. Effectful publication
+  // still acquires its own fresh catalog scope; this fixture grants no lease.
+  const auto execution_descriptor = Uint16Descriptor();
+  platform::Uuid descriptor_uuid;
+  std::copy(std::begin(execution_descriptor.descriptor_uuid.bytes),
+            std::end(execution_descriptor.descriptor_uuid.bytes), descriptor_uuid.bytes.begin());
+  Check(dt::LookupDatatypeStorageIdentityV1(dt::kDatatypeCohortV5, 5, 5,
+            descriptor_uuid, execution_descriptor.descriptor_epoch, &index_column.datatype),
+        "bind exact uint16 retained codec for ordered key encoding");
+  index_column.descriptor = scratchbird::core::uuid::MakeTypedUuid(
+      platform::UuidKind::object, descriptor_uuid).value;
+  index_column.execution_descriptor = execution_descriptor;
+  std::string previous;
+  for (const unsigned number : {0u, 1u, 42u, 255u, 256u, 0x3234u, 32768u, 65535u}) {
+    const std::string bytes{static_cast<char>(number), static_cast<char>(number >> 8)};
+    std::string output;
+    bool null_key = true;
+    api::EngineApiDiagnostic diagnostic;
+    Check(api::bound_index_key::EncodeOrderedIndexKey(
+              api::EncodeStoredLogicalKey({api::CrudStoredValue{bytes}}),
+              {index_column}, &output, &null_key, &diagnostic) && !null_key &&
+              !output.empty(), "exact uint16 binding accepts native LE2 including digit bytes");
+    if (!previous.empty()) {
+      const auto ordered = scratchbird::core::index::CompareEncodedIndexKeyBytes(previous, output);
+      Check(ordered.ok() && ordered.comparison < 0, "bound uint16 keys follow unsigned value order");
+    }
+    previous = output;
+  }
+  for (unsigned mutation = 0; mutation < 12; ++mutation) {
+    auto invalid = index_column;
+    auto& codec = *invalid.datatype.codec;
+    switch (mutation) {
+      case 0: codec.catalog_snapshot_uuid = {}; break;
+      case 1: ++codec.catalog_generation; break;
+      case 2: ++codec.registry_generation; break;
+      case 3: ++codec.descriptor_generation; break;
+      case 4: codec.type_uuid = {}; break;
+      case 5: ++codec.type_generation; break;
+      case 6: ++codec.codec_generation; break;
+      case 7: codec.codec_id += "stale"; break;
+      case 8: codec.canonical_value_exact_bytes = 1; break;
+      case 9: codec.canonical_representation = "text"; break;
+      case 10: invalid.datatype.type_uuid = {}; break;
+      case 11: invalid.execution_descriptor.descriptor_epoch++; break;
+    }
+    std::string output = "unchanged";
+    bool null_key = true;
+    api::EngineApiDiagnostic diagnostic;
+    Check(!api::bound_index_key::EncodeOrderedIndexKey(
+              api::EncodeStoredLogicalKey({api::CrudStoredValue{std::string("42")}}),
+              {invalid}, &output, &null_key, &diagnostic) && output == "unchanged" && null_key,
+          "uint16 key encoder rejects codec or descriptor drift without replacing output");
+  }
+  for (unsigned width : {0u, 1u, 3u, 8u}) {
+    std::string output = "unchanged";
+    bool null_key = true;
+    api::EngineApiDiagnostic diagnostic;
+    Check(!api::bound_index_key::EncodeOrderedIndexKey(
+              api::EncodeStoredLogicalKey({api::CrudStoredValue{std::string(width, '\0')}}),
+              {index_column}, &output, &null_key, &diagnostic) && output == "unchanged" && null_key,
+          "uint16 native index payload width is exact even with a bound codec");
+  }
+
   const auto expect_sblr_refusal = [](sblr::SblrValue value,
                                       const std::string& diagnostic_id,
                                       const std::string& label) {

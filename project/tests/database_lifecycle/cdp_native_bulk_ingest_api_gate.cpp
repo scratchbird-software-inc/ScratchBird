@@ -238,6 +238,9 @@ api::EngineTypedValue ScalarValue(std::string canonical_type_name,
         carry = next >> 8;
       }
     }
+  } else if (canonical_type_name == "boolean") {
+    Require(value == "true" || value == "false", "invalid boolean fixture value");
+    typed.binary_value = {static_cast<std::uint8_t>(value == "true")};
   } else {
     typed.encoded_value = std::move(value);
   }
@@ -543,7 +546,8 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   return fixture;
 }
 
-Fixture MakeInt64IndexFixture(std::string name, platform::u64 salt) {
+Fixture MakeInt64IndexFixture(std::string name, platform::u64 salt,
+                              std::string_view integer_type = "int64") {
   Fixture fixture;
   fixture.salt = salt;
   InitializeOwnedFixtureDirectory(fixture, name);
@@ -564,7 +568,9 @@ Fixture MakeInt64IndexFixture(std::string name, platform::u64 salt) {
   fixture.index_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
 
   auto metadata = Begin(fixture, "cdp040-int64-index-metadata");
-  const auto table = PublishFixtureTable(metadata, Table(fixture, metadata));
+  auto definition = Table(fixture, metadata);
+  definition.columns.front().second = "canonical=" + std::string(integer_type);
+  const auto table = PublishFixtureTable(metadata, definition);
   Require(!table.error, "CDP-040 int64 index table metadata append failed");
   const auto index = api::AppendMgaIndexMetadata(metadata, IdIndex(fixture, metadata));
   Require(!index.error, "CDP-040 int64 index metadata append failed");
@@ -1869,6 +1875,50 @@ void TestTypedNullIndexKeyUsesNullOrder() {
   Rollback(null_context);
 }
 
+void TestNativeUint16IndexReopen() {
+  auto fixture = MakeInt64IndexFixture("uint16_binary_reopen", 1490, "uint16");
+  const std::vector<unsigned> values{0, 1, 42, 255, 256, 0x3234, 32768, 65535};
+  std::vector<api::EngineRowValue> rows;
+  for (auto value : values) {
+    api::EngineRowValue row;
+    row.fields = {{"id", ScalarValue("uint16", std::to_string(value))},
+                  {"payload", TextValue("uint16-index")}};
+    rows.push_back(std::move(row));
+  }
+  auto writer = Begin(fixture, "uint16-binary-insert");
+  const auto inserted = api::EngineExecuteNativeBulkIngest(NativeRequest(fixture, writer, rows));
+  RequireOk(inserted, "uint16 binary indexed insert failed");
+  Require(inserted.inserted_rows == values.size() &&
+              EvidenceU64(inserted.evidence, "direct_index_key_typed_fallback") == 0 &&
+              EvidenceU64(inserted.evidence, "direct_index_key_sbkobin_keys") == values.size(),
+          "uint16 binary indexed insert lost rows or used text fallback");
+  Commit(writer);
+  fixture.session.reset();
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(
+      BaseContext(fixture, "uint16-binary-reopen"));
+  auto reader = Begin(fixture, "uint16-binary-read");
+  const auto stored = api::LoadMgaRelationStoreState(reader);
+  Require(stored.ok, "uint16 committed index replay failed");
+  std::map<unsigned, std::string> keys;
+  for (const auto& entry : stored.state.index_entries) {
+    if (entry.index_uuid != fixture.index_uuid) continue;
+    const auto payload = ScalarLogicalPayload(entry.payload_value);
+    Require(payload.isPresent() && payload.bytes.size() == 2 &&
+                entry.key_value.starts_with("SBKOBIN:"), "uint16 index lost native LE2 framing");
+    const auto value = static_cast<unsigned char>(payload.bytes[0]) |
+        (static_cast<unsigned>(static_cast<unsigned char>(payload.bytes[1])) << 8);
+    Require(keys.emplace(value, entry.key_value).second, "uint16 replay duplicated a key");
+  }
+  Require(keys.size() == values.size() && SelectCount(fixture, reader) == values.size(),
+          "uint16 reopened row or index count changed");
+  for (std::size_t ordinal = 0; ordinal < values.size(); ++ordinal) {
+    Require(keys.contains(values[ordinal]), "uint16 reopen changed stored value bits");
+    if (ordinal) Require(keys.at(values[ordinal-1]) < keys.at(values[ordinal]),
+                         "uint16 persisted index order is not unsigned numeric");
+  }
+  Rollback(reader);
+}
+
 void TestTypedScalarIndexKeysUseBinaryPayloads() {
   auto fixture =
       MakeTypedScalarFixture("typed_scalar_index_keys", 1575, true);
@@ -2017,12 +2067,14 @@ void TestTypedScalarRowPageStorage() {
     if (row.table_uuid != fixture.table_uuid || row.deleted) continue;
     for (const auto& [name, value] : row.values) {
       if (name != "int_i") continue;
-      saw_int32_1973 = saw_int32_1973 || value == "1973";
-      saw_int32_2428 = saw_int32_2428 || value == "2428";
+      Require(value.isPresent() && value.bytes.size() == 4,
+              "CDP-040 scoped INT32 lost its native four-byte carrier");
+      saw_int32_1973 = saw_int32_1973 || value.bytes == std::string("\xb5\x07\x00\x00", 4);
+      saw_int32_2428 = saw_int32_2428 || value.bytes == std::string("\x7c\x09\x00\x00", 4);
     }
   }
   Require(saw_int32_1973 && saw_int32_2428,
-          "CDP-040 scoped typed-row persistence reinterpreted lexical int32 bytes");
+          "CDP-040 scoped typed-row persistence changed native INT32 bytes");
   Commit(context);
 
   const auto page = ReadPhysicalPage(fixture, fixture.physical_page);
@@ -3185,11 +3237,18 @@ int main(int argc, char** argv) try {
   const bool fixed_scalar_only = argc == 2 && std::string_view(argv[1]) == "--native-fixed-scalars";
   const bool typed_null_only = argc == 2 && std::string_view(argv[1]) == "--native-typed-null";
   const bool integer_only = argc == 2 && std::string_view(argv[1]) == "--native-int64-index";
+  const bool uint16_only = argc == 2 && std::string_view(argv[1]) == "--native-uint16-index";
   const bool ordered_only = argc == 2 && std::string_view(argv[1]) == "--native-ordered-index";
-  Require(argc == 1 || fixed_scalar_only || typed_null_only || integer_only || ordered_only,
+  Require(argc == 1 || fixed_scalar_only || typed_null_only || integer_only || ordered_only || uint16_only,
           "unknown native bulk gate arguments");
   ConfigureMemoryFixture();
+  if (uint16_only) {
+    TestNativeUint16IndexReopen();
+    std::cout << "native_uint16_index=passed unsigned_bounds_digit_bytes_commit_reopen\n";
+    return EXIT_SUCCESS;
+  }
   if (ordered_only) {
+    TestNativeUint16IndexReopen();
     TestTypedInt64IndexKeysUseBinaryOrder();
     TestTypedInt64IndexKeysUseFullSignedSortOrder();
     TestTypedNullIndexKeyUsesNullOrder();
@@ -3216,6 +3275,7 @@ int main(int argc, char** argv) try {
   TestTypedInt64IndexKeysUseBinaryOrder();
   TestTypedInt64IndexKeysUseFullSignedSortOrder();
   TestTypedNullIndexKeyUsesNullOrder();
+  TestNativeUint16IndexReopen();
   TestTypedScalarIndexKeysUseBinaryPayloads();
   TestTypedScalarRowPageStorage();
   TestMalformedInlineFixedTypedValueRefuses();
