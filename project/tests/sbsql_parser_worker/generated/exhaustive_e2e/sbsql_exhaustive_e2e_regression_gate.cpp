@@ -390,19 +390,19 @@ SurfaceCoverageSummary CheckSurfaceReplayCoverage(
                   "expected_message_vector", "expected_payload_json", "status"},
                  harness);
 
-  harness->Check(surfaces.rows.size() == 2617,
+  harness->Check(surfaces.rows.size() == 2619,
                  "surface registry row count changed from corrected authority baseline");
-  harness->Check(surface_backlog.rows.size() == 2617,
+  harness->Check(surface_backlog.rows.size() == 2619,
                  "surface backlog row count changed from corrected authority baseline");
-  harness->Check(batch_membership.rows.size() == 2617,
+  harness->Check(batch_membership.rows.size() == 2619,
                  "batch membership row count changed from corrected authority baseline");
-  harness->Check(semantic_oracle.rows.size() == 2617,
+  harness->Check(semantic_oracle.rows.size() == 2619,
                  "semantic oracle row count changed from corrected authority baseline");
-  harness->Check(release_declaration.rows.size() == 2617,
+  harness->Check(release_declaration.rows.size() == 2619,
                  "release declaration row count changed from canonical surface total");
-  harness->Check(fixture_index.rows.size() == 2617,
+  harness->Check(fixture_index.rows.size() == 2619,
                  "differential replay fixture count changed from corrected authority baseline");
-  harness->Check(payload_lines.size() == 2617,
+  harness->Check(payload_lines.size() == 2619,
                  "expected payload JSONL count changed from corrected authority baseline");
 
   const auto backlog_by_surface = IndexUnique(surface_backlog, "surface_id", harness);
@@ -539,8 +539,8 @@ SurfaceCoverageSummary CheckSurfaceReplayCoverage(
                  "release declaration contains an unsupported final status");
   harness->Check(summary.expression_rows == 1534,
                  "expression runtime surface count changed from corrected authority baseline");
-  harness->Check(summary.statement_rows == 1083,
-                 "statement/command surface count changed from 1083");
+  harness->Check(summary.statement_rows == 1085,
+                 "statement/command surface count changed from 1085");
   harness->Check(summary.functions == 1515,
                  "function surface count changed from corrected authority baseline");
   harness->Check(summary.operators == 18,
@@ -552,7 +552,7 @@ SurfaceCoverageSummary CheckSurfaceReplayCoverage(
   CheckFamilyCount(harness, family_counts, "archive_replication", 10);
   CheckFamilyCount(harness, family_counts, "bridge", 34);
   CheckFamilyCount(harness, family_counts, "cluster_private", 24);
-  CheckFamilyCount(harness, family_counts, "ddl_catalog", 175);
+  CheckFamilyCount(harness, family_counts, "ddl_catalog", 177);
   CheckFamilyCount(harness, family_counts, "dml", 36);
   CheckFamilyCount(harness, family_counts, "expression_runtime", 1534);
   CheckFamilyCount(harness, family_counts, "general", 554);

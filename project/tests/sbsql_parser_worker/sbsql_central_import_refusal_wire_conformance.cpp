@@ -9,6 +9,9 @@
 #include "database_lifecycle.hpp"
 #include "uuid.hpp"
 #include "wire/sbsql_test_wire.hpp"
+#include "ast/ast.hpp"
+#include "cst/cst.hpp"
+#include "lowering/lowering.hpp"
 
 #include <array>
 #include <atomic>
@@ -20,6 +23,7 @@
 #include <map>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <system_error>
 #include <unistd.h>
 #include <utility>
@@ -32,22 +36,32 @@ namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
 [[noreturn]] void Fail(const std::string& message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(message);
 }
 
 void Require(bool condition, const std::string& message) {
   if (!condition) Fail(message);
 }
 
-std::filesystem::path MakeFixtureDatabase() {
-  static std::atomic<std::uint64_t> identity_time{1788300000000ULL};
+struct OwnedDirectory {
+  std::filesystem::path root;
+  OwnedDirectory() {
   std::string template_path = "/tmp/sbsql_central_import_refusal.XXXXXX";
   std::vector<char> writable(template_path.begin(), template_path.end());
   writable.push_back('\0');
   char* directory = ::mkdtemp(writable.data());
   Require(directory != nullptr,
           "central-import fixture directory was not created");
+  root = directory;
+  }
+  ~OwnedDirectory() {
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+  }
+};
+
+std::filesystem::path MakeFixtureDatabase(const std::filesystem::path& root) {
+  static std::atomic<std::uint64_t> identity_time{1788300000000ULL};
 
   const auto database_uuid = uuid::GenerateEngineIdentityV7(
       UuidKind::database, identity_time.fetch_add(2));
@@ -57,7 +71,7 @@ std::filesystem::path MakeFixtureDatabase() {
           "central-import fixture identities were not issued");
 
   const std::filesystem::path path =
-      std::filesystem::path(directory) / "central_import_refusal.sbdb";
+      root / "central_import_refusal.sbdb";
   database::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid = database_uuid.value;
@@ -211,10 +225,11 @@ constexpr std::array<RefusalCase, 2> kPreparedRefusalCases{{
 
 }  // namespace
 
-int main() {
+int main() try {
   using namespace scratchbird::parser::sbsql;
 
-  const auto fixture_database = MakeFixtureDatabase();
+  OwnedDirectory owned;
+  const auto fixture_database = MakeFixtureDatabase(owned.root);
   ParserConfig config;
   config.probe_mode = true;
   config.embedded_engine_direct = true;
@@ -273,6 +288,18 @@ int main() {
     for (const auto& row : kPreparedRefusalCases) {
       require_refusal(row);
     }
+    require_refusal({"call target list helper;", "SBSQL-3EDACF124EA2", "call_target_list"});
+    require_refusal({"call arg list a b;", "SBSQL-62256BEF9F1B", "call_arg_list"});
+    for (const auto sql : {"CALL helper();", "CALL target();", "CALL arg();",
+                           "EXECUTE PROCEDURE helper();"}) {
+      const auto cst = BuildCst(sql);
+      const auto ast = BuildAst(cst);
+      const auto route = AnalyzeStandaloneProceduralCommandRoute(
+          cst, ast.statement_surface_id, ast.statement_surface_name);
+      Require(!cst.messages.has_errors() && !ast.messages.has_errors() &&
+                  route.disposition != CentralImportCommandDisposition::kExactRefusal,
+              "ordinary procedure invocation was classified as a grammar fragment");
+    }
   }
 
   std::error_code cleanup_error;
@@ -280,4 +307,7 @@ int main() {
   Require(!cleanup_error, "central-import fixture cleanup failed");
   std::cout << "sbsql_central_import_refusal_wire_conformance=passed\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

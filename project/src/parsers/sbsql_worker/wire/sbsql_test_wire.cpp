@@ -27110,6 +27110,32 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         starts_with_command("CREATE PROCEDURE")) {
       return RunDdlCreateProcedureForWire(sql, autocommit_emulation);
     }
+    // Classify procedural grammar fragments before the generic CALL route.
+    // CALL TARGET LIST / CALL ARG LIST are not procedure names and must retain
+    // their exact surface-bearing diagnostics without requesting invocation.
+    if (starts_with_command("CALL") ||
+        starts_with_command("POST EVENT") ||
+        starts_with_command("OPEN") ||
+        starts_with_command("FETCH") ||
+        starts_with_command("CLOSE") ||
+        starts_with_command("PSQL") ||
+        starts_with_command("RESIGNAL")) {
+      const auto procedural_cst = BuildCst(sql);
+      const auto procedural_ast = BuildAst(procedural_cst);
+      const auto procedural_route = AnalyzeStandaloneProceduralCommandRoute(
+          procedural_cst, procedural_ast.statement_surface_id,
+          procedural_ast.statement_surface_name);
+      if (!procedural_cst.messages.has_errors() &&
+          !procedural_ast.messages.has_errors() &&
+          procedural_route.disposition ==
+              CentralImportCommandDisposition::kExactRefusal) {
+        auto result = central_import_refusal_result(
+            procedural_cst, procedural_ast, procedural_route);
+        mark_phase("procedural_standalone_exact_refusal");
+        WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+        return result;
+      }
+    }
     if (canonical_compile_output == nullptr &&
         (starts_with_command("CALL") ||
          starts_with_command("EXECUTE PROCEDURE"))) {
@@ -27146,28 +27172,6 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     if (canonical_compile_output == nullptr &&
         starts_with_command("PARSE TEXT")) {
       return RunParseTextForWire(sql, autocommit_emulation);
-    }
-    if (starts_with_command("POST EVENT") ||
-        starts_with_command("OPEN") ||
-        starts_with_command("FETCH") ||
-        starts_with_command("CLOSE") ||
-        starts_with_command("PSQL") ||
-        starts_with_command("RESIGNAL")) {
-      const auto procedural_cst = BuildCst(sql);
-      const auto procedural_ast = BuildAst(procedural_cst);
-      const auto procedural_route = AnalyzeStandaloneProceduralCommandRoute(
-          procedural_cst, procedural_ast.statement_surface_id,
-          procedural_ast.statement_surface_name);
-      if (!procedural_cst.messages.has_errors() &&
-          !procedural_ast.messages.has_errors() &&
-          procedural_route.disposition ==
-              CentralImportCommandDisposition::kExactRefusal) {
-        auto result = central_import_refusal_result(
-            procedural_cst, procedural_ast, procedural_route);
-        mark_phase("procedural_standalone_exact_refusal");
-        WriteParserPipelinePhaseTrace(sql, result, phase_micros);
-        return result;
-      }
     }
     if (starts_with_command("PREPARE") ||
         starts_with_command("EXECUTE") ||

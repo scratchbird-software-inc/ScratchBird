@@ -155,21 +155,23 @@ bool ValidateStatementDescriptorCoverage() {
 
   ok &= Require(BuiltinStatementSurfaceDescriptors().size() == registry_count,
                 "statement descriptor count does not match generated non-expression rows");
-  ok &= Require(registry_count == 1083, "expected 1083 non-expression statement/grammar rows");
-  ok &= Require(grammar_count == 1044, "expected 1044 grammar-production statement rows");
+  // ALTER/DROP TRIGGER have distinct grammar identities (377c822a8), not
+  // aliases of generic ALTER/DROP OBJECT. Retain exact inventory assertions.
+  ok &= Require(registry_count == 1085, "expected 1085 non-expression statement/grammar rows");
+  ok &= Require(grammar_count == 1046, "expected 1046 grammar-production statement rows");
   ok &= Require(canonical_count == 39, "expected 39 canonical statement rows");
-  ok &= Require(native_now_count == 1048, "expected 1048 native_now statement rows");
+  ok &= Require(native_now_count == 1050, "expected 1050 native_now statement rows");
   ok &= Require(cluster_private_status_count == 35, "expected 35 cluster_private status rows");
   ok &= Require(cluster_private_scope_count == 47, "expected 47 cluster_private scope rows");
   ok &= Require(exact_refusal_count >= cluster_private_scope_count,
                 "exact refusal count must cover cluster-private scope rows");
 
-  ok &= Require(active_statement_worker_count == 453, "expected 453 FSPE-005 active rows");
-  ok &= Require(active_statement_worker_grammar_count == 429,
-                "expected 429 FSPE-005 grammar-production rows");
+  ok &= Require(active_statement_worker_count == 455, "expected 455 FSPE-005 active rows");
+  ok &= Require(active_statement_worker_grammar_count == 431,
+                "expected 431 FSPE-005 grammar-production rows");
   ok &= Require(active_statement_worker_canonical_count == 24,
                 "expected 24 FSPE-005 canonical-surface rows");
-  ok &= Require(active_family_counts["ddl_catalog"] == 171, "ddl_catalog active count mismatch");
+  ok &= Require(active_family_counts["ddl_catalog"] == 173, "ddl_catalog active count mismatch");
   ok &= Require(active_family_counts["multi_model"] == 70, "multi_model active count mismatch");
   ok &= Require(active_family_counts["query"] == 43, "query active count mismatch");
   ok &= Require(active_family_counts["observability"] == 36, "observability active count mismatch");
@@ -181,6 +183,18 @@ bool ValidateStatementDescriptorCoverage() {
 
 bool ValidateLookupDescriptors() {
   bool ok = true;
+  for (const auto& [name, identity] :
+       std::vector<std::pair<std::string_view, std::string_view>>{
+           {"alter_trigger_statement", "SBSQL-AA3896D3895F"},
+           {"drop_trigger_statement", "SBSQL-E64AF6FD5CD3"}}) {
+    const auto* trigger = FindStatementSurfaceByName(name);
+    ok &= Require(trigger != nullptr && trigger->surface_id == identity &&
+                      FindStatementSurfaceById(identity) == trigger &&
+                      trigger->kind == StatementSurfaceKind::kGrammarProduction &&
+                      trigger->category == StatementParserCategory::kDdlCatalog &&
+                      trigger->sblr_operation_family == "sblr.catalog.mutation.v3",
+                  std::string(name) + " lost its independent grammar identity");
+  }
   const auto* select = FindStatementSurfaceByName("select");
   ok &= Require(select != nullptr, "missing select descriptor");
   if (select != nullptr) {
@@ -241,6 +255,8 @@ bool ValidateAstStatementDescriptorBridge() {
       {"CREATE TABLE t (id int)", StatementFamily::kCatalog, "catalog", "ddl_catalog", "create_object"},
       {"ALTER TABLE t", StatementFamily::kCatalog, "catalog", "ddl_catalog", "alter_object"},
       {"DROP TABLE t", StatementFamily::kCatalog, "catalog", "ddl_catalog", "drop_object"},
+      {"ALTER TRIGGER t ACTIVE", StatementFamily::kCatalog, "catalog", "ddl_catalog", "alter_trigger_statement"},
+      {"DROP TRIGGER t", StatementFamily::kCatalog, "catalog", "ddl_catalog", "drop_trigger_statement"},
       {"SHOW METRICS", StatementFamily::kShow, "show", "observability", "show"},
       {"DESCRIBE t", StatementFamily::kObservability, "observability", "observability", "describe"},
       {"EXPLAIN SELECT 1", StatementFamily::kObservability, "observability", "observability", "explain"},
