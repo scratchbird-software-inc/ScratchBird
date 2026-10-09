@@ -1,4 +1,5 @@
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -13,6 +14,8 @@
 #include "sblr_dispatch_server.hpp"
 #include "server_observability.hpp"
 #include "session_registry.hpp"
+#include "database_lifecycle.hpp"
+#include "local_transaction_store.hpp"
 
 #include <array>
 #include <cstdlib>
@@ -29,8 +32,7 @@ namespace server = scratchbird::server;
 namespace sbps = scratchbird::server::sbps;
 
 [[noreturn]] void Fail(const std::string& message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(message);
 }
 
 void Require(bool condition, const std::string& message) {
@@ -320,12 +322,36 @@ std::string SelectTelemetryControlsEnvelope() {
 }
 
 void TestCatalogUsesLiveIparProjectionSources() {
+  // The engine catalog API reads a real owned database; a plausible pathname
+  // and caller-populated session fields are not an admitted catalog source.
+  scratchbird::tests::OwnedTempDirectory temporary;
+  scratchbird::storage::database::DatabaseCreateConfig create;
+  create.path = (temporary.path() / "ipar-observability.sbdb").string();
+  create.database_uuid = {scratchbird::core::platform::UuidKind::database,
+                         scratchbird::tests::FixtureUuid(1208, 2301)};
+  create.filespace_uuid = {scratchbird::core::platform::UuidKind::filespace,
+                          scratchbird::tests::FixtureUuid(1208, 2302)};
+  create.creation_unix_epoch_millis = 1800000002003ULL;
+  create.resource_seed_pack_root = (std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() /
+      "resources/seed-packs/initial-resource-pack").string();
+  const auto created = scratchbird::storage::database::CreateDatabaseFile(create);
+  Require(created.ok(), "observability database create failed: " + created.diagnostic.diagnostic_code);
+  auto inventory = scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(create.path);
+  Require(inventory.ok(), "observability inventory load failed");
+  const scratchbird::core::platform::TypedUuid transaction{
+      scratchbird::core::platform::UuidKind::transaction, scratchbird::tests::FixtureUuid(1208, 2303)};
+  auto begun = scratchbird::transaction::mga::BeginLocalTransaction(
+      std::move(inventory.inventory), transaction, create.creation_unix_epoch_millis + 1);
+  Require(begun.ok() && scratchbird::storage::database::PersistLocalTransactionInventoryToDatabase(
+      create.path, begun.inventory).ok(), "observability transaction publication failed");
   server::ServerObservabilityState observability;
   observability.metrics_enabled = true;
   observability.metric_persist_stride = 16;
   observability.audit_persist_stride = 16;
 
-  const auto session = MakeSession();
+  auto session = MakeSession();
+  session.database_path = create.path;
+  session.local_transaction_id = begun.entry.identity.local_id.value;
 
   server::ServerIparProjectionSourceFactory factory;
   factory.context = &observability;
@@ -350,6 +376,7 @@ void TestCatalogUsesLiveIparProjectionSources() {
   request.context.session_uuid =
       scratchbird::core::platform::Uuid{session.session_uuid};
   request.context.local_transaction_id = session.local_transaction_id;
+  request.context.transaction_uuid = transaction.value;
   request.context.catalog_generation_id = session.catalog_generation;
   request.context.security_epoch = session.security_epoch;
   request.context.resource_epoch = session.grant_epoch;
@@ -361,7 +388,15 @@ void TestCatalogUsesLiveIparProjectionSources() {
   request.ipar_metric_counters = sources.metric_counters;
   request.ipar_telemetry_controls = sources.telemetry_controls;
   request.ipar_slow_path_reasons = sources.slow_path_reasons;
+  auto missing_source = request;
+  missing_source.context.database_path = (temporary.path() / "missing.sbdb").string();
+  const auto missing = info::EngineShowCatalog(missing_source);
+  Require(!missing.ok && missing.result_shape.rows.empty(),
+          "caller telemetry manufactured a readable missing database");
   const auto projected = info::EngineShowCatalog(request);
+  if (!projected.ok)
+    for (const auto& diagnostic : projected.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   Require(projected.ok,
           "live sys.ipar telemetry projection was rejected");
   Require(HasApiRowValue(projected,
@@ -372,15 +407,28 @@ void TestCatalogUsesLiveIparProjectionSources() {
                          "control_name",
                          "metric_persist_stride"),
           "sys.ipar projection did not include live telemetry control row");
+  inventory = scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(create.path);
+  Require(inventory.ok(), "observability completion inventory load failed");
+  auto rolled_back = scratchbird::transaction::mga::RollbackLocalTransaction(
+      std::move(inventory.inventory), begun.entry.identity.local_id,
+      create.creation_unix_epoch_millis + 2);
+  Require(rolled_back.ok() && scratchbird::storage::database::PersistLocalTransactionInventoryToDatabase(
+      create.path, rolled_back.inventory).ok(), "observability transaction cleanup failed");
 }
 
 }  // namespace
 
-int main() {
+int main() try {
+  const auto memory = scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+      scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(), "ipar-observability-catalog");
+  Require(memory.ok() && memory.fixture_mode, "observability memory fixture admission failed");
   TestSlowPathRowsAreMetricBacked();
   TestEmptyMetricsDoNotFabricateRows();
   TestTelemetryControlsExposeBoundedBudget();
   TestSlowPathSeriesLimitBoundsHotPathCardinality();
   TestCatalogUsesLiveIparProjectionSources();
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }
