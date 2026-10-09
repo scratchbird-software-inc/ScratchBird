@@ -15,6 +15,7 @@
 #include "mga_relation_store/mga_large_value_codec.hpp"
 #include <type_traits>
 #include "database_lifecycle.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include "dml/delete_api.hpp"
 #include "dml/insert_api.hpp"
 #include "descriptor_value_runtime.hpp"
@@ -700,7 +701,7 @@ std::string EncodedInt64Descriptor() {
 }
 
 api::EngineDescriptor InputDescriptor() {
-  api::EngineDescriptor descriptor;
+  auto descriptor = exec::MakeExecutorDescriptor("int64", EncodedInt64Descriptor());
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = "int64";
   descriptor.type_uuid = Int64TypeUuid();
@@ -708,10 +709,23 @@ api::EngineDescriptor InputDescriptor() {
   return descriptor;
 }
 
+std::vector<std::uint8_t> NativeInt64Bytes(std::int64_t value) {
+  std::vector<std::uint8_t> bytes(8);
+  const auto bits = static_cast<std::uint64_t>(value);
+  for (unsigned byte = 0; byte < 8; ++byte)
+    bytes[byte] = static_cast<std::uint8_t>(bits >> (byte * 8));
+  return bytes;
+}
+
+bool ExactNativeInt64(const api::EngineTypedValue& actual, std::int64_t expected) {
+  return actual.state == api::EngineValueState::value && !actual.is_null &&
+         actual.encoded_value.empty() && actual.binary_value == NativeInt64Bytes(expected);
+}
+
 api::EngineRowValue Int64Row(const std::int64_t value) {
   api::EngineTypedValue typed;
   typed.descriptor = InputDescriptor();
-  typed.encoded_value = std::to_string(value);
+  typed.binary_value = NativeInt64Bytes(value);
   api::EngineRowValue row;
   row.fields.push_back({"value", std::move(typed)});
   return row;
@@ -733,11 +747,11 @@ api::EngineRowValue FullWidthRow(const std::int64_t first,
   first_value.descriptor = InputDescriptor();
   first_value.descriptor.encoded_descriptor =
       "canonical=int64;nullable=false";
-  first_value.encoded_value = std::to_string(first);
+  first_value.binary_value = NativeInt64Bytes(first);
   api::EngineTypedValue second_value;
   second_value.descriptor = InputDescriptor();
   if (second.has_value()) {
-    second_value.encoded_value = std::to_string(*second);
+    second_value.binary_value = NativeInt64Bytes(*second);
   } else {
     second_value.is_null = true;
     second_value.state = api::EngineValueState::sql_null;
@@ -1565,7 +1579,7 @@ void ValidateDurableCapturedBoundaryHeapGate(Fixture& fixture) {
           "captured boundary heap request lost its full runtime carrier");
   const auto result = exec::ExecuteCanonicalHeapRelationAcquisition(request);
   Require(result.diagnostic.ok && result.output_batch.rows.size() == 1 &&
-              result.output_batch.rows.front().values.front().encoded_value == "701" &&
+              ExactNativeInt64(result.output_batch.rows.front().values.front(), 701) &&
               result.counters.invisible_row_version_count >= 1 &&
               peer.local_transaction_id > owner.local_transaction_id &&
               result.mga_statement_context.visible_committed_high_watermark == boundary &&
@@ -1590,7 +1604,7 @@ void ValidateDurableCapturedBoundaryHeapGate(Fixture& fixture) {
   auto fresh_request = RequestFor(fresh, relation_uuid, fixture.salt + 7040);
   const auto current = exec::ExecuteCanonicalHeapRelationAcquisition(fresh_request);
   Require(current.diagnostic.ok && current.output_batch.rows.size() == 1 &&
-              current.output_batch.rows.front().values.front().encoded_value == "702",
+              ExactNativeInt64(current.output_batch.rows.front().values.front(), 702),
           "new durable reader did not observe only the committed peer");
   ReleaseRequest(&fresh_request);
   Rollback(fresh);
@@ -1656,8 +1670,7 @@ void ValidateDurableCapturedExclusionHeapGate(Fixture& fixture) {
   }
   const auto result = exec::ExecuteCanonicalHeapRelationAcquisition(request);
   Require(result.diagnostic.ok && result.output_batch.rows.size() == 1 &&
-              result.output_batch.rows.front().values.front().encoded_value ==
-                  "800" &&
+              ExactNativeInt64(result.output_batch.rows.front().values.front(), 800) &&
               result.counters.invisible_row_version_count >= 2 &&
               exec::PhysicalMgaStatementContextEqual(
                   result.mga_statement_context, captured),
@@ -1827,20 +1840,30 @@ void ValidatePhysicalV2StatementContextRefusalMatrix(Fixture& fixture) {
 
 bool SameDescriptor(const api::EngineDescriptor& left,
                     const api::EngineDescriptor& right) {
-  return left.descriptor_uuid == right.descriptor_uuid &&
-         left.descriptor_kind == right.descriptor_kind &&
-         left.canonical_type_name == right.canonical_type_name &&
-         left.encoded_descriptor == right.encoded_descriptor;
+  return left == right;
 }
 
 bool PreservesPersistedDescriptorFields(
     const api::EngineDescriptor& runtime,
     const api::EngineDescriptor& persisted) {
-  return runtime.descriptor_kind == "scalar" &&
-         runtime.descriptor_uuid ==
-             persisted.descriptor_uuid &&
-         runtime.canonical_type_name == persisted.canonical_type_name &&
-         runtime.encoded_descriptor == persisted.encoded_descriptor;
+  api::CatalogColumnMetadata fields;
+  if (!api::AdmitCatalogColumnMetadata(persisted.encoded_descriptor, &fields)) return false;
+  std::optional<bool> nullable;
+  for (const auto key : {"nullable", "nullability"}) {
+    const auto field = fields.text.find(key);
+    if (field == fields.text.end()) continue;
+    const bool truth = field->second == (std::string_view(key) == "nullable" ? "true" : "nullable");
+    const bool falsehood = field->second == (std::string_view(key) == "nullable" ? "false" : "non_null");
+    if ((!truth && !falsehood) || (nullable && *nullable != truth)) return false;
+    nullable = truth;
+  }
+  if (!nullable) return false;
+  auto expected = persisted;
+  expected.descriptor_kind = "scalar";
+  expected.encoded_descriptor = *nullable ? "nullability=nullable" : "nullability=non_null";
+  // Compare every binary occurrence/datatype/resource identity and generation;
+  // only storage declaration syntax is projected to execution nullability.
+  return runtime == expected;
 }
 
 void ValidatePositiveAndVisibilityMatrix(Fixture& fixture) {
@@ -2142,7 +2165,11 @@ void ValidateStreamingCountStarMatrix(Fixture& fixture) {
                   streamed.memory_grant_bytes &&
               streamed.memory_receipt_complete &&
               streamed_values ==
-                  std::vector<api::CrudStoredValue>{"1", "2", "4", api::CrudStoredValue::SqlNull()},
+                  std::vector<api::CrudStoredValue>{
+                      std::string("\1\0\0\0\0\0\0\0", 8),
+                      std::string("\2\0\0\0\0\0\0\0", 8),
+                      std::string("\4\0\0\0\0\0\0\0", 8),
+                      api::CrudStoredValue::SqlNull()},
           "two-pass visible-row stream lost MGA, extent, row, or memory authority");
 
   auto stream_delivery_bounded = stream;
@@ -2764,12 +2791,8 @@ void ValidateOptimizerSelectedHeapResultMatrix(Fixture& fixture) {
               publication.row_stream.columns.front().descriptor,
               persisted.descriptor.columns.front().value_descriptor) &&
               publication.row_stream.columns.front().descriptor
-                      .encoded_descriptor.find("nullable=true") !=
-                  std::string::npos &&
-              publication.row_stream.columns.front().descriptor
-                      .encoded_descriptor.find("nullability=") ==
-                  std::string::npos,
-          "selected result rewrote the persisted boolean nullability carrier");
+                      .encoded_descriptor == "nullability=nullable",
+          "selected result lost the exact execution nullability projection");
   std::size_t null_count = 0;
   for (const auto& row : publication.row_stream.rows) {
     if (row.values.front().state == api::EngineValueState::sql_null) {
@@ -2871,7 +2894,9 @@ void ValidateOptimizerSelectedHeapTableSampleMatrix(Fixture& fixture) {
           matches &= actual_row.values[column].state ==
                          source_row.values[column].state &&
                      actual_row.values[column].encoded_value ==
-                         source_row.values[column].encoded_value;
+                         source_row.values[column].encoded_value &&
+                     actual_row.values[column].binary_value ==
+                         source_row.values[column].binary_value;
         }
       }
     }
