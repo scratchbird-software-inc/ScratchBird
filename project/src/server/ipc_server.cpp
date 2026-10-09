@@ -4832,15 +4832,16 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
       InitializeServerObservability(config, artifacts, engine_state, parser_registry, listener_orchestrator);
   FairClientDispatchGate client_dispatch_gate;
   std::vector<std::thread> client_threads;
-  std::atomic_flag client_failure_selected{};
+  std::atomic<bool> client_failure_selected{false};
   std::exception_ptr client_failure;
   const auto record_client_failure = [&]() noexcept {
     // One writer claims the retained failure without a fallible native lock.
-    // This flag is arbitration, not publication of exception_ptr: no caller
-    // reads the pointer until EVERY client has joined below. Thread completion
+    // This one-way state transition is not a lock or publication of
+    // exception_ptr: no caller reads the pointer until EVERY client has joined
+    // below. Thread completion
     // supplies the happens-before edge even if another reporter requests stop
     // before the selected writer has assigned its exception. No spin or retry.
-    if (!client_failure_selected.test_and_set(std::memory_order_relaxed)) {
+    if (!client_failure_selected.exchange(true, std::memory_order_relaxed)) {
       client_failure = std::current_exception();
     }
     RequestParserServerStop();
