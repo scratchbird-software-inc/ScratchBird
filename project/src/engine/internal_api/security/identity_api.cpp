@@ -13,10 +13,12 @@
 #include "catalog/name_registry.hpp"
 #include "catalog/schema_tree_api.hpp"
 #include "security/security_model.hpp"
+#include "security/security_principal_lifecycle.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 
 #include <cctype>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
@@ -276,6 +278,40 @@ EngineAlterIdentityResult EngineAlterIdentity(const EngineAlterIdentityRequest& 
         request.context,
         "security.alter_identity",
         MakeSecurityDiagnostic("SECURITY.AUTHORIZATION.DENIED", "SEC_IDENTITY_ADMIN"));
+  }
+  // Agent decisions are requests, not observed effects. A lock must update the
+  // authentication owner's principal catalog, never a generic behavior record.
+  const std::string* agent_action = nullptr;
+  for (const auto& option : request.option_envelopes) {
+    if (StartsWith(option, "identity_uuid:")) {
+      return SecurityFailure<EngineAlterIdentityResult>(request.context,
+          "security.alter_identity", MakeSecurityDiagnostic(
+              "SECURITY.IDENTITY.TARGET_INVALID", "use_native_target_object_identity"));
+    }
+    if (!StartsWith(option, "agent_decision:")) continue;
+    if (agent_action != nullptr || option != "agent_decision:lock_user") {
+      return SecurityFailure<EngineAlterIdentityResult>(request.context,
+          "security.alter_identity", MakeSecurityDiagnostic(
+              "SECURITY.IDENTITY.ACTION_INVALID", "exact_single_lock_user_action_required"));
+    }
+    agent_action = &option;
+  }
+  if (agent_action != nullptr) {
+    if (!core::uuid::IsEngineIdentityUuid(request.target_object.uuid)) {
+      return SecurityFailure<EngineAlterIdentityResult>(request.context,
+          "security.alter_identity", MakeSecurityDiagnostic(
+              "SECURITY.IDENTITY.TARGET_INVALID", "native_system_principal_identity_required"));
+    }
+    EngineSecurityAlterPrincipalRequest principal;
+    // Do not forward unrelated rename/credential options on a lock-only route.
+    principal.context = request.context;
+    principal.principal_uuid = request.target_object.uuid;
+    principal.lifecycle_state = "disabled";
+    auto altered = EngineSecurityAlterPrincipal(principal);
+    EngineAlterIdentityResult result;
+    static_cast<EngineApiResult&>(result) = std::move(altered);
+    result.operation_id = "security.alter_identity";
+    return result;
   }
   auto result = PersistedRecordResult<EngineAlterIdentityResult>(request, "security.alter_identity", "security_identity", true, "altered");
   if (result.ok) {

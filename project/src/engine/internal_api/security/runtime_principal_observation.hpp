@@ -44,8 +44,9 @@ struct RuntimePrincipalObservationResult {
 
 // Uses only current MGA-committed native security state. No caller context,
 // supplied lifecycle state, transaction, trace tag or authority flag is accepted.
-// The owning loader projects active principals only: absence, disable and
-// deletion intentionally share no_active_principal; this is not an audit reader.
+// The owning loader retains disabled principal records for lifecycle work;
+// this active-only observation maps absence, disable and deletion to
+// no_active_principal. This is not an audit reader.
 // The caller must configure the owning default memory manager first. This read
 // neither provisions a memory budget nor bypasses native allocation admission.
 inline RuntimePrincipalObservationResult InspectRuntimePrincipal(
@@ -72,7 +73,9 @@ inline RuntimePrincipalObservationResult InspectRuntimePrincipal(
     selected = &principal;
   }
   if (selected == nullptr) return {Outcome::no_active_principal, {}, {}};
-  if (selected->deleted || selected->lifecycle_state != "active")
+  if (selected->deleted || selected->lifecycle_state == "disabled")
+    return {Outcome::no_active_principal, {}, {}};
+  if (selected->lifecycle_state != "active")
     return {Outcome::invalid_source, {}, {}};
   return {Outcome::observed,
       RuntimePrincipalObservation{request.database_uuid, selected->principal_uuid,

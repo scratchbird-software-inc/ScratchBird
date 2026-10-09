@@ -489,6 +489,13 @@ inline void Run(const std::filesystem::path& root, std::uint32_t page_size) {
   const auto disabled = api::InspectRuntimePrincipal(request);
   Check(disabled.outcome == O::no_active_principal && !disabled.observation && !disabled.source_diagnostic,
         "committed disable removes active principal without cached authority");
+  const auto lifecycle = api::LoadSecurityPrincipalLifecycleState(admin);
+  Check(lifecycle.ok, "disabled lifecycle remains readable");
+  bool retained_disabled = false;
+  for (const auto& principal : lifecycle.state.principals)
+    if (principal.principal_uuid == request.principal_uuid)
+      retained_disabled = !principal.deleted && principal.lifecycle_state == "disabled";
+  Check(retained_disabled, "disable retains principal identity for lifecycle and unlock");
   const auto disabled_authentication = api::EngineAuthenticate(AuthenticationRequest(request));
   Check(!disabled_authentication.ok && !disabled_authentication.authenticated &&
         !disabled_authentication.durable_security_state,

@@ -1185,7 +1185,10 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
           std::max(result.state.security_generation, record.security_generation);
       result.state.policy_generation =
           std::max(result.state.policy_generation, record.security_generation);
-      if (record.deleted || record.lifecycle_state != "active") {
+      // Disabled principals still exist: retaining them prevents UUID reuse,
+      // permits an authorized unlock and preserves the authentication reason.
+      // Authorization projections independently require an active principal.
+      if (record.deleted) {
         principals.erase(record.principal_uuid);
       } else {
         principals[record.principal_uuid] = std::move(record);
@@ -1557,11 +1560,16 @@ bool ExactPrivilegeTemplateReplay(
 std::set<EngineUuid> EffectiveGranteeSet(const EngineSecurityPrincipalLifecycleState& state,
                                           const EngineUuid& principal_uuid) {
   std::set<EngineUuid> grantees;
+  const auto* principal = FindPrincipal(state, principal_uuid);
+  if (principal == nullptr || principal->deleted || principal->lifecycle_state != "active")
+    return grantees;
   std::vector<EngineUuid> pending;
   pending.push_back(principal_uuid);
   while (!pending.empty()) {
     const EngineUuid current = pending.back();
     pending.pop_back();
+    const auto* member = FindPrincipal(state, current);
+    if (member != nullptr && (member->deleted || member->lifecycle_state != "active")) continue;
     if (!grantees.insert(current).second) { continue; }
     for (const auto& membership : state.memberships) {
       if (membership.revoked || membership.member_principal_uuid != current ||
