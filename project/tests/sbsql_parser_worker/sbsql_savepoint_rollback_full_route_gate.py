@@ -135,7 +135,11 @@ def run_all_rows_case(args: argparse.Namespace, root: Path) -> None:
             f"SELECT account_balance FROM {table} ORDER BY id;",
             "ROLLBACK TO SAVEPOINT outer_sp;",
             "RELEASE SAVEPOINT outer_sp;", "COMMIT;", "",
-        ]))
+        ]), timeout=120)
+        # This is a multi-statement mutation/rewind sequence, as in run_case,
+        # not a single probe. Keep the same bounded sequence allowance and
+        # require successful completion as well as every intermediate value.
+        require_isql_success(result)
         probes = [line for line in isql_data_lines(result)
                   if not line.startswith("Rows affected: ")]
         if probes != ["0", "2", "7", "7", "1", "3", "9", "9"]:
@@ -154,6 +158,7 @@ def run_all_rows_case(args: argparse.Namespace, root: Path) -> None:
                 f"SELECT id FROM {table} ORDER BY id;",
                 f"SELECT account_balance FROM {table} ORDER BY id;", "",
             ]))
+            require_isql_success(rows)
             if isql_data_lines(rows) != ["11", "12", "1", "3"]:
                 raise RuntimeError(f"all_rows_update/{phase}: baseline not restored")
     finally:
@@ -182,7 +187,8 @@ def run_omitted_columns_case(args: argparse.Namespace, root: Path) -> None:
             "ROLLBACK TO SAVEPOINT outer_sp;", "ROLLBACK TO SAVEPOINT outer_sp;",
             f"SELECT id FROM {table} ORDER BY id;",
             "RELEASE SAVEPOINT outer_sp;", "COMMIT;", "",
-        ]))
+        ]), timeout=120)
+        require_isql_success(result)
         probes = [line for line in isql_data_lines(result) if not line.startswith("Rows affected: ")]
         if probes != ["(null)", "(null)", "(null)", "(null)", "11"]:
             raise RuntimeError(f"omitted columns/defaults/rewind: {probes!r}")
@@ -193,6 +199,7 @@ def run_omitted_columns_case(args: argparse.Namespace, root: Path) -> None:
             f"SELECT id FROM {table};", f"SELECT payload FROM {table};",
             f"SELECT balance FROM {table};", "",
         ]))
+        require_isql_success(result)
         if isql_data_lines(result) != ["11", "(null)", "(null)"]:
             raise RuntimeError("omitted-column storage shape changed on restart")
     finally:
