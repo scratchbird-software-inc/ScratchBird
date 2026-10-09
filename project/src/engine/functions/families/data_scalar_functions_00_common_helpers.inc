@@ -15,6 +15,7 @@
 #include "catalog/catalog_object_lifecycle.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "datatype_operations.hpp"
+#include "sbl_numeric.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "security/security_model.hpp"
 #include "security/policy_api.hpp"

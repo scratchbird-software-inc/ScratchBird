@@ -316,5 +316,46 @@ int main() {
                          {Real64Value(5.0), Real64Value(1.0), Real64Value(1.0), Int64Value(5)}),
                      "SB_DIAG_FUNCTION_NUMERIC_DOMAIN") && ok;
 
+  // The bounded numeric.fixed scalar profile is not a name-only DECIMAL
+  // datatype occurrence. Exercise its arithmetic through the real dispatcher.
+  const auto fixed = [](std::string text) {
+    auto value = TextValue(std::move(text));
+    value.descriptor_id = "numeric.fixed";
+    value.payload_kind = SblrValuePayloadKind::high_precision_numeric_text;
+    return value;
+  };
+  const auto check_round = [&](std::string input, std::int64_t scale,
+                               std::string expected) {
+    const auto result = Run(registry, "sb.scalar.round", {fixed(input), Int64Value(scale)});
+    if (!ExpectOkScalar(result, "bounded-fixed-round")) return false;
+    const auto& value = result.scalar_values.front();
+    const bool exact = !value.is_null && value.descriptor_id == "numeric.fixed" &&
+        value.payload_kind == SblrValuePayloadKind::high_precision_numeric_text &&
+        value.encoded_value == expected && value.text_value == expected;
+    if (!exact) std::cerr << "bounded-fixed-round input=" << input << " expected=" << expected
+                          << " actual=" << value.encoded_value << '\n';
+    return exact;
+  };
+  ok = check_round("5.7778", 3, "5.7780") && ok;
+  ok = check_round("5.7778", 18, "5.7778") && ok;
+  ok = check_round("1.25", 1, "1.30") && ok;
+  ok = check_round("-1.25", 1, "-1.30") && ok;
+  ok = check_round("0.4999", 0, "0.0000") && ok;
+  ok = check_round("99999999999999999.9", 0, "100000000000000000.0") && ok;
+  for (std::int64_t scale = 0; scale <= 16; ++scale) {
+    const std::string input = "0." + std::string(scale, '0') + "5";
+    const std::string expected = scale == 0 ? "1.0"
+        : "0." + std::string(scale - 1, '0') + "10";
+    ok = check_round(input, scale, expected) && ok;
+    ok = check_round("-" + input, scale, "-" + expected) && ok;
+  }
+  for (const auto input : {"", "1e2", " 1", "1.", "1x", "1234567890123456789"})
+    ok = ExpectFailure("bounded-fixed-invalid", Run(registry, "sb.scalar.round",
+         {fixed(input), Int64Value(0)}), "SB_DIAG_FUNCTION_INVALID_INPUT") && ok;
+  for (const auto scale : {-1, 19})
+    ok = ExpectFailure("bounded-fixed-scale", Run(registry, "sb.scalar.round",
+         {fixed("1.25"), Int64Value(scale)}), "SB_DIAG_FUNCTION_INVALID_INPUT") && ok;
+  ok = ExpectNull("bounded-fixed-null", Run(registry, "sb.scalar.round",
+      {NullValue("numeric.fixed"), Int64Value(1)}), "numeric.fixed") && ok;
   return ok ? 0 : 1;
 }

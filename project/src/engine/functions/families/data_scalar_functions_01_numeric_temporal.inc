@@ -234,25 +234,29 @@ std::optional<std::string> RoundExactFixedDecimal(
       encoded.size() - sign_digits - (input_scale == 0 ? 0 : 1);
   if (total_digits == 0 || total_digits > 18) return std::nullopt;
 
-  namespace dt = scratchbird::core::datatypes;
-  dt::DatatypeNumericOperationRequest numeric_request;
-  numeric_request.operation = dt::DatatypeNumericOperationKind::canonicalize;
-  numeric_request.type_id = dt::CanonicalTypeId::decimal;
-  numeric_request.left.type_id = dt::CanonicalTypeId::decimal;
-  numeric_request.left.encoded_value = std::string(encoded);
+  // numeric.fixed is this bounded scalar profile, not an admitted DECIMAL
+  // datatype occurrence. Use the arithmetic backend explicitly: fabricating a
+  // name-only datatype request must not bypass DECIMAL descriptor admission.
+  namespace numeric = scratchbird::libraries::sbl_numeric;
+  numeric::NumericRequest numeric_request;
+  numeric_request.operation = numeric::NumericOperation::canonicalize;
+  numeric_request.type = numeric::NumericType::decimal;
+  numeric_request.left.type = numeric::NumericType::decimal;
+  numeric_request.left.encoded = std::string(encoded);
   numeric_request.context.precision = 18;
   numeric_request.context.scale = static_cast<std::uint32_t>(
       std::min<std::int64_t>(requested_scale,
                              static_cast<std::int64_t>(input_scale)));
   // SQL ROUND uses magnitude half-up semantics: exact ties move away from
   // zero.  The neutral numeric backend owns that arithmetic decision.
-  numeric_request.context.rounding = dt::DatatypeRoundingMode::half_up;
-  const auto numeric_result = dt::ApplyNumericOperation(numeric_request);
-  if (!numeric_result.ok() || numeric_result.value.is_null) {
+  numeric_request.context.rounding = numeric::RoundingMode::half_up;
+  const auto numeric_result = numeric::ApplyNumericOperation(numeric_request);
+  if (numeric_result.status != numeric::NumericStatusCode::ok ||
+      numeric_result.value.is_null) {
     return std::nullopt;
   }
 
-  std::string rounded = numeric_result.value.encoded_value;
+  std::string rounded = numeric_result.value.encoded;
   if (rounded.empty() || rounded.find_first_of("eE") != std::string::npos) {
     return std::nullopt;
   }
