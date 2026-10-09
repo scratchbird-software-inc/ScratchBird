@@ -8,10 +8,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include "database_lifecycle.hpp"
 #include "local_transaction_store.hpp"
 #include "nosql/document_api.hpp"
 #include "transaction_inventory.hpp"
+#include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
 #include <cstdio>
@@ -21,6 +23,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -33,32 +36,11 @@ namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
   if (!condition) { Fail(message); }
-}
-
-platform::TypedUuid TransactionUuid(std::uint64_t local_id) {
-  Require(local_id == 77 || local_id == 90, "ODF-072 unexpected transaction identity");
-  return {platform::UuidKind::transaction,
-          local_id == 77
-              ? scratchbird::tests::FixtureUuidLiteral("019df072-0000-7000-8000-00000000004d")
-              : scratchbird::tests::FixtureUuidLiteral("019df072-0000-7000-8000-00000000005a")};
-}
-
-api::EngineRequestContext Context(const std::string& database_path,
-                                  api::EngineApiU64 tx) {
-  api::EngineRequestContext context;
-  context.database_path = database_path;
-  context.local_transaction_id = tx;
-  context.snapshot_visible_through_local_transaction_id = tx;
-  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019df072-0000-7000-8000-000000000001");
-  context.transaction_uuid = TransactionUuid(tx).value;
-  context.security_context_present = true;
-  return context;
 }
 
 platform::TypedUuid NewUuid(platform::UuidKind kind, std::uint64_t salt) {
@@ -68,62 +50,78 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, std::uint64_t salt) {
   return generated.value;
 }
 
-mga::TransactionInventoryEntry InventoryEntry(std::uint64_t local_id,
-                                              mga::TransactionState state) {
-  auto identity = mga::MakeTransactionIdentity(
-      mga::MakeLocalTransactionId(local_id),
-      TransactionUuid(local_id),
-      mga::TransactionScope::local_node);
-  Require(identity.ok(), "ODF-072 could not create transaction identity");
-
-  mga::TransactionInventoryEntry entry;
-  entry.identity = identity.identity;
-  entry.state = state;
-  entry.begin_unix_epoch_millis = 1779520000000ull + local_id;
-  if (state == mga::TransactionState::committed ||
-      state == mga::TransactionState::archived ||
-      state == mga::TransactionState::rolled_back ||
-      state == mga::TransactionState::failed_terminal) {
-    entry.final_unix_epoch_millis = entry.begin_unix_epoch_millis + 1;
-    entry.evidence_record_written = true;
+class DocumentDatabase {
+ public:
+  DocumentDatabase() {
+    db::DatabaseCreateConfig create;
+    create.path = (temporary_.path() / "documents.sbdb").string();
+    create.database_uuid = NewUuid(platform::UuidKind::database, 1);
+    create.filespace_uuid = NewUuid(platform::UuidKind::filespace, 2);
+    create.creation_unix_epoch_millis = 1779520000000ull;
+    create.require_resource_seed_pack = false;
+    create.allow_minimal_resource_bootstrap = true;
+    const auto created = db::CreateDatabaseFile(create);
+    Require(created.ok(), "ODF-072 could not create native test database");
+    base_.database_path = create.path;
+    base_.database_uuid = create.database_uuid.value;
+    base_.default_root_uuid = create.filespace_uuid.value;
+    base_.principal_uuid = scratchbird::tests::FixtureUuid(72, 901);
+    base_.session_uuid = scratchbird::tests::FixtureUuid(72, 902);
+    base_.security_context_present = true;
+    base_.catalog_generation_id = base_.security_epoch = base_.resource_epoch =
+        base_.name_resolution_epoch = 1;
+    writer = Begin();
   }
-  return entry;
-}
-
-void CreateDatabaseFixture(const std::string& database_path) {
-  db::DatabaseCreateConfig create;
-  create.path = database_path;
-  create.database_uuid = NewUuid(platform::UuidKind::database, 1);
-  create.filespace_uuid = NewUuid(platform::UuidKind::filespace, 2);
-  create.creation_unix_epoch_millis = 1779520000000ull;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
-  create.allow_overwrite = true;
-  const auto created = db::CreateDatabaseFile(create);
-  Require(created.ok(), "ODF-072 could not create native test database");
-}
-
-void PersistTransactionInventory(const std::string& database_path,
-                                 mga::TransactionState writer_state) {
-  auto inventory = mga::MakeEmptyLocalTransactionInventory();
-  inventory.entries.push_back(InventoryEntry(77, writer_state));
-  inventory.entries.push_back(InventoryEntry(90, mga::TransactionState::active));
-  inventory.next_local_transaction_id = 91;
-  const auto persisted =
-      db::PersistLocalTransactionInventoryToDatabase(database_path, inventory);
-  Require(persisted.ok(), "ODF-072 could not persist native transaction inventory");
-}
-
-void SeedCrudTransaction(const std::string& database_path) {
-  std::remove(database_path.c_str());
-  std::remove((database_path + ".sb.api_events").c_str());
-  CreateDatabaseFixture(database_path);
-  PersistTransactionInventory(database_path, mga::TransactionState::active);
-}
-
-void CommitCrudTransaction(const std::string& database_path) {
-  PersistTransactionInventory(database_path, mga::TransactionState::committed);
-}
+  void Commit() {
+    api::EngineCommitTransactionRequest request;
+    request.context = writer;
+    Check(api::EngineCommitTransaction(request), "writer commit");
+    writer_committed_ = true;
+    reader = Begin();
+    Require(reader.local_transaction_id > writer.local_transaction_id &&
+                reader.snapshot_visible_through_local_transaction_id >= writer.local_transaction_id,
+            "ODF-072 reader lacks committed writer visibility");
+  }
+  void Finish() {
+    api::EngineRollbackTransactionRequest request;
+    request.context = reader;
+    Check(api::EngineRollbackTransaction(request), "reader rollback");
+    reader = {};
+    temporary_.Cleanup();
+  }
+  ~DocumentDatabase() {
+    for (const auto* context : {writer_committed_ ? nullptr : &writer, &reader}) {
+      if (!context || context->local_transaction_id == 0) continue;
+      api::EngineRollbackTransactionRequest request;
+      request.context = *context;
+      (void)api::EngineRollbackTransaction(request);
+    }
+  }
+  api::EngineRequestContext writer, reader;
+ private:
+  static void Check(const api::EngineApiResult& result, const char* phase) {
+    if (!result.ok) {
+      for (const auto& d : result.diagnostics) std::cerr << d.code << ':' << d.detail << '\n';
+      Fail(std::string("ODF-072 ") + phase + " failed");
+    }
+  }
+  api::EngineRequestContext Begin() {
+    api::EngineBeginTransactionRequest request;
+    request.context = base_;
+    request.isolation_level = "read_committed";
+    const auto result = api::EngineBeginTransaction(request);
+    Check(result, "transaction begin");
+    auto context = base_;
+    context.transaction_uuid = result.transaction_uuid;
+    context.local_transaction_id = result.local_transaction_id;
+    context.snapshot_visible_through_local_transaction_id = result.snapshot_visible_through_local_transaction_id;
+    context.transaction_isolation_level = result.isolation_level;
+    return context;
+  }
+  scratchbird::tests::OwnedTempDirectory temporary_;
+  api::EngineRequestContext base_;
+  bool writer_committed_ = false;
+};
 
 api::EngineTypedValue Value(std::string value) {
   api::EngineTypedValue typed;
@@ -231,12 +229,12 @@ void RequireEvidenceHygiene(const api::EngineApiResult& result) {
   }
 }
 
-void InsertDocument(const std::string& database_path,
+void InsertDocument(const DocumentDatabase& database,
                     const api::EngineUuid& uuid,
                     const std::string& name,
                     const std::vector<std::pair<std::string, std::string>>& fragments) {
   api::EngineDocumentInsertRequest insert;
-  insert.context = Context(database_path, 77);
+  insert.context = database.writer;
   insert.target_object.uuid = uuid;
   insert.localized_names.push_back({"en", "primary", "", name, true});
   for (const auto& [path, value] : fragments) {
@@ -250,9 +248,8 @@ void InsertDocument(const std::string& database_path,
 }
 
 void ExactWildcardProjectionAndShapeEvidence() {
-  const std::string database_path = "/tmp/sb_odf_072_gate_api.sbdb";
-  SeedCrudTransaction(database_path);
-  InsertDocument(database_path,
+  DocumentDatabase database;
+  InsertDocument(database,
                  scratchbird::tests::FixtureUuid(72, 2),
                  "customer-a",
                  {{"customer.id", "A1"},
@@ -260,7 +257,7 @@ void ExactWildcardProjectionAndShapeEvidence() {
                   {"line_items.0.sku", "SKU-1"},
                   {"line_items.1.sku", "SKU-2"},
                   {"private.ssn", "redacted"}});
-  InsertDocument(database_path,
+  InsertDocument(database,
                  scratchbird::tests::FixtureUuid(72, 3),
                  "customer-b",
                  {{"customer.id", "B1"},
@@ -268,10 +265,10 @@ void ExactWildcardProjectionAndShapeEvidence() {
                   {"line_items.0.sku", "SKU-3"},
                   {"line_items.1.sku", "SKU-4"},
                   {"private.ssn", "redacted"}});
-  CommitCrudTransaction(database_path);
+  database.Commit();
 
   api::EngineDocumentFindRequest exact;
-  exact.context = Context(database_path, 90);
+  exact.context = database.reader;
   exact.path = "customer.id";
   exact.equals_value = "A1";
   exact.projected_paths = {"customer.id", "customer.tier"};
@@ -301,7 +298,7 @@ void ExactWildcardProjectionAndShapeEvidence() {
   RequireEvidenceHygiene(result);
 
   api::EngineDocumentFindRequest wildcard;
-  wildcard.context = Context(database_path, 90);
+  wildcard.context = database.reader;
   wildcard.path = "line_items.*.sku";
   wildcard.equals_value = "SKU-2";
   wildcard.wildcard_path = true;
@@ -329,21 +326,19 @@ void ExactWildcardProjectionAndShapeEvidence() {
           "ODF-072 structural sharing evidence was missing");
   RequireEvidenceHygiene(result);
 
-  std::remove(database_path.c_str());
-  std::remove((database_path + ".sb.api_events").c_str());
+  database.Finish();
 }
 
 void FailClosedCasesPreserveAuthority() {
-  const std::string database_path = "/tmp/sb_odf_072_fail_closed.sbdb";
-  SeedCrudTransaction(database_path);
-  InsertDocument(database_path,
+  DocumentDatabase database;
+  InsertDocument(database,
                  scratchbird::tests::FixtureUuid(72, 4),
                  "closed",
                  {{"customer.id", "C1"}, {"line_items.0.sku", "SKU-C"}});
-  CommitCrudTransaction(database_path);
+  database.Commit();
 
   api::EngineDocumentFindRequest request;
-  request.context = Context(database_path, 90);
+  request.context = database.reader;
   request.path = "customer.id";
   auto result = api::EngineDocumentFind(request);
   Require(!result.ok,
@@ -352,7 +347,7 @@ void FailClosedCasesPreserveAuthority() {
           "ODF-072 exact proof refusal diagnostic changed");
 
   request = api::EngineDocumentFindRequest{};
-  request.context = Context(database_path, 90);
+  request.context = database.reader;
   request.wildcard_path = true;
   result = api::EngineDocumentFind(request);
   Require(!result.ok,
@@ -361,7 +356,7 @@ void FailClosedCasesPreserveAuthority() {
           "ODF-072 wildcard intent refusal diagnostic changed");
 
   request = api::EngineDocumentFindRequest{};
-  request.context = Context(database_path, 90);
+  request.context = database.reader;
   request.projected_paths = {"customer.id"};
   result = api::EngineDocumentFind(request);
   Require(!result.ok,
@@ -370,7 +365,7 @@ void FailClosedCasesPreserveAuthority() {
           "ODF-072 projection-only proof refusal diagnostic changed");
 
   request = api::EngineDocumentFindRequest{};
-  request.context = Context(database_path, 90);
+  request.context = database.reader;
   request.path = "line_items.*.sku";
   request.wildcard_path = true;
   request.physical_proof = DocumentProof();
@@ -382,7 +377,7 @@ void FailClosedCasesPreserveAuthority() {
           "ODF-072 wildcard shape refusal diagnostic changed");
 
   request = api::EngineDocumentFindRequest{};
-  request.context = Context(database_path, 90);
+  request.context = database.reader;
   request.path = "customer.id";
   request.projected_paths = {"customer.id"};
   request.physical_proof = DocumentProof();
@@ -430,14 +425,18 @@ void FailClosedCasesPreserveAuthority() {
   Require(!result.ok && result.cluster_authority_required,
           "ODF-072 cluster option did not retain fail-closed authority behavior");
 
-  std::remove(database_path.c_str());
-  std::remove((database_path + ".sb.api_events").c_str());
+  database.Finish();
 }
 
 }  // namespace
 
 int main() {
+  try {
   ExactWildcardProjectionAndShapeEvidence();
   FailClosedCasesPreserveAuthority();
   return EXIT_SUCCESS;
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }
