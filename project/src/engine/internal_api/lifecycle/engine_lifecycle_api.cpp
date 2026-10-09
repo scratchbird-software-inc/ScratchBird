@@ -12,6 +12,7 @@
 #include "behavior_support/api_behavior_store.hpp"
 #include "database_lifecycle.hpp"
 #include "extensibility/extensibility_support.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "uuid.hpp"
 
 #include <chrono>
@@ -641,15 +642,32 @@ EngineAcknowledgeShutdownLifecycleResult EngineAcknowledgeShutdownLifecycle(
   auto authority = ValidateLifecycleAuthority<EngineAcknowledgeShutdownLifecycleResult>(request, operation, true);
   if (!authority.ok) { return authority; }
   const std::string acknowledger_kind = OptionValue(request, "acknowledger_kind:");
-  std::string acknowledger_uuid = OptionValue(request, "acknowledger_uuid:");
-  if (acknowledger_uuid.empty()) { acknowledger_uuid = OptionValue(request, "process_uuid:"); }
+  EngineUuid acknowledger_uuid, process_uuid, route_uuid;
+  bool has_acknowledger = false, has_process = false, has_route = false;
+  const auto read_identity = [&](std::string_view prefix, EngineUuid* identity, bool* present) {
+    for (const auto& option : request.option_envelopes) {
+      if (!option.starts_with(prefix)) continue;
+      if (*present || !ReadMetadataUuid(std::string_view(option).substr(prefix.size()), identity))
+        return false;
+      *present = true;
+    }
+    return true;
+  };
+  if (!read_identity("acknowledger_uuid:", &acknowledger_uuid, &has_acknowledger) ||
+      !read_identity("process_uuid:", &process_uuid, &has_process) ||
+      !read_identity("route_uuid:", &route_uuid, &has_route)) {
+    return LifecycleFailure<EngineAcknowledgeShutdownLifecycleResult>(
+        request.context, operation, "ENGINE.SHUTDOWN_ACK_INVALID",
+        "shutdown_acknowledge_requires_unique_binary_v7_identities");
+  }
+  if (!has_acknowledger && has_process) acknowledger_uuid = process_uuid;
   const std::string acknowledgement_generation = OptionValue(request, "acknowledgement_generation:");
   std::string acknowledgement_state = OptionValue(request, "acknowledgement_state:");
   if (acknowledgement_state.empty()) { acknowledgement_state = "acknowledged"; }
   const bool valid_state = acknowledgement_state == "acknowledged" ||
                            acknowledgement_state == "draining" ||
                            acknowledgement_state == "clean_stop_complete";
-  if (acknowledger_kind.empty() || acknowledger_uuid.empty() || acknowledgement_generation.empty() || !valid_state) {
+  if (acknowledger_kind.empty() || acknowledger_uuid.is_nil() || acknowledgement_generation.empty() || !valid_state) {
     return LifecycleFailure<EngineAcknowledgeShutdownLifecycleResult>(
         request.context,
         operation,
@@ -663,15 +681,16 @@ EngineAcknowledgeShutdownLifecycleResult EngineAcknowledgeShutdownLifecycle(
       false,
       "shutdown_acknowledged");
   if (result.ok) {
-    AddApiBehaviorRow(&result, {{"lifecycle_state", "shutdown_acknowledged"},
+    ApiBehaviorFields fields{{"lifecycle_state", "shutdown_acknowledged"},
                                 {"acknowledger_kind", acknowledger_kind},
                                 {"acknowledger_uuid", acknowledger_uuid},
                                 {"acknowledgement_generation", acknowledgement_generation},
                                 {"acknowledgement_state", acknowledgement_state},
-                                {"route_uuid", OptionValue(request, "route_uuid:")},
-                                {"process_uuid", OptionValue(request, "process_uuid:")},
                                 {"outstanding_session_count", OptionValue(request, "outstanding_session_count:")},
-                                {"deadline_epoch", OptionValue(request, "deadline_epoch:")}});
+                                {"deadline_epoch", OptionValue(request, "deadline_epoch:")}};
+    if (has_route) fields.emplace_back("route_uuid", route_uuid);
+    if (has_process) fields.emplace_back("process_uuid", process_uuid);
+    AddApiBehaviorRow(&result, std::move(fields));
     AddApiBehaviorEvidence(&result, "engine_lifecycle", "shutdown_acknowledged");
     AddApiBehaviorEvidence(&result, "shutdown_acknowledgement", acknowledger_uuid);
   }

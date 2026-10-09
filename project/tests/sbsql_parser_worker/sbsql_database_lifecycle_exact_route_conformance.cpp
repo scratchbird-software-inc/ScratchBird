@@ -135,6 +135,17 @@ bool ApiResultHasEvidence(const api::EngineApiResult& result,
   return false;
 }
 
+bool ApiResultHasUuidEvidence(const api::EngineApiResult& result,
+                             std::string_view kind, const api::EngineUuid& identity) {
+  for (const auto& evidence : result.evidence) {
+    if (evidence.evidence_kind == kind) {
+      const auto* actual = std::get_if<api::EngineUuid>(&evidence.evidence_id);
+      if (actual && *actual == identity) return true;
+    }
+  }
+  return false;
+}
+
 bool ApiResultHasDiagnostic(const api::EngineApiResult& result,
                             std::string_view code) {
   for (const auto& diagnostic : result.diagnostics) {
@@ -972,9 +983,50 @@ void RequireEngineDispatch() {
   Require(ApiResultHasEvidence(acknowledged.api_result, "engine_lifecycle",
                                "shutdown_acknowledged"),
           "lifecycle.shutdown_acknowledge missing engine lifecycle evidence");
-  Require(ApiResultHasEvidence(acknowledged.api_result, "shutdown_acknowledgement",
-                               "019f0000-0000-7000-8000-000000ef20a1"),
+  const auto acknowledger_identity =
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000ef20a1");
+  Require(ApiResultHasUuidEvidence(acknowledged.api_result, "shutdown_acknowledgement",
+                                  acknowledger_identity),
           "lifecycle.shutdown_acknowledge missing acknowledgement evidence");
+  bool native_acknowledger_field = false;
+  for (const auto& row : acknowledged.api_result.result_shape.rows)
+    for (const auto& [name, value] : row.fields)
+      if (name == "acknowledger_uuid")
+        native_acknowledger_field = value.descriptor.canonical_type_name == "uuid" &&
+            value.encoded_value.empty() && value.binary_value ==
+                std::vector<std::uint8_t>(acknowledger_identity.bytes.begin(), acknowledger_identity.bytes.end());
+  Require(native_acknowledger_field, "acknowledger UUID escaped through a TEXT result carrier");
+  for (const auto& malformed : std::vector<std::string>{
+      "019f0000-0000-7000-8000-000000ef20a1", std::string(16, '\0'),
+      api::MetadataUuidBytes(acknowledger_identity).substr(1)}) {
+    auto invalid = acknowledge_request;
+    invalid.api_request.option_envelopes[1] = "acknowledger_uuid:" + malformed;
+    const auto refused = sblr::DispatchSblrOperation(invalid);
+    Require(!refused.api_result.ok &&
+        ApiResultHasDiagnostic(refused.api_result, "ENGINE.SHUTDOWN_ACK_INVALID") &&
+        !ApiResultHasUuidEvidence(refused.api_result, "shutdown_acknowledgement", acknowledger_identity),
+        "malformed shutdown acknowledgement identity was admitted");
+  }
+  for (const auto* key : {"acknowledger_uuid:", "process_uuid:", "route_uuid:"}) {
+    auto version_four = acknowledger_identity;
+    version_four.bytes[6] = (version_four.bytes[6] & 0x0f) | 0x40;
+    for (unsigned mutation = 0; mutation < 3; ++mutation) {
+      auto invalid = acknowledge_request;
+      if (std::string_view(key) == "acknowledger_uuid:")
+        invalid.api_request.option_envelopes.erase(invalid.api_request.option_envelopes.begin() + 1);
+      invalid.api_request.option_envelopes.push_back(std::string(key) +
+          (mutation == 0 ? api::MetadataUuidBytes(version_four) :
+           mutation == 1 ? std::string("019f0000-0000-7000-8000-000000ef20a1") :
+                           api::MetadataUuidBytes(acknowledger_identity)));
+      if (mutation == 2)
+        invalid.api_request.option_envelopes.push_back(std::string(key) + api::MetadataUuidBytes(acknowledger_identity));
+      const auto refused = sblr::DispatchSblrOperation(invalid);
+      Require(!refused.api_result.ok &&
+          ApiResultHasDiagnostic(refused.api_result, "ENGINE.SHUTDOWN_ACK_INVALID") &&
+          !ApiResultHasEvidence(refused.api_result, "engine_lifecycle", "shutdown_acknowledged"),
+          "non-v7, textual or repeated shutdown identity reached acknowledgement effects");
+    }
+  }
 
   auto shutdown_context = BaseEngineContext("sbsql-database-lifecycle-shutdown-route");
   shutdown_context.database_uuid = database_uuid;
