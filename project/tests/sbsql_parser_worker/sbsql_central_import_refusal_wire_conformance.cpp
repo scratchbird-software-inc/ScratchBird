@@ -259,7 +259,7 @@ int main() try {
                   DiagnosticField(diagnostic, "executable_sblr_emitted") ==
                       "false",
               std::string("central-import wire diagnostic identity or fields drifted for ") +
-                  std::string(row.surface_id) + " observed=" + diagnostic.code +
+                  std::string(row.surface_id) + " sql=" + std::string(row.sql) + " observed=" + diagnostic.code +
                   " surface=" + DiagnosticField(diagnostic, "surface_id") +
                   " name=" + DiagnosticField(diagnostic, "canonical_name"));
       Require(result.sblr_payload.empty() &&
@@ -291,14 +291,28 @@ int main() try {
     require_refusal({"call target list helper;", "SBSQL-3EDACF124EA2", "call_target_list"});
     require_refusal({"call arg list a b;", "SBSQL-62256BEF9F1B", "call_arg_list"});
     for (const auto sql : {"CALL helper();", "CALL target();", "CALL arg();",
-                           "EXECUTE PROCEDURE helper();"}) {
+                           "EXECUTE PROCEDURE helper();",
+                           "OPEN BRIDGE;", "CLOSE BRIDGE;",
+                           "OPEN BRIDGE SESSION;", "CLOSE BRIDGE SESSION;",
+                           "open bridge session;", "close bridge session;",
+                           "OPEN ENCRYPTED FILESPACE;", "open encrypted filespace;"}) {
       const auto cst = BuildCst(sql);
       const auto ast = BuildAst(cst);
       const auto route = AnalyzeStandaloneProceduralCommandRoute(
           cst, ast.statement_surface_id, ast.statement_surface_name);
       Require(!cst.messages.has_errors() && !ast.messages.has_errors() &&
                   route.disposition != CentralImportCommandDisposition::kExactRefusal,
-              "ordinary procedure invocation was classified as a grammar fragment");
+              std::string("owned command was classified as a grammar fragment: ") + sql);
+    }
+    for (const auto sql : {"OPEN cursor_name;", "OPEN \"bridge\";",
+                           "OPEN \"database\";", "OPEN \"encrypted\";",
+                           "OPEN ENCRYPTED;", "OPEN ENCRYPTED FILESPACEX;",
+                           "OPEN BRIDGEX;"}) {
+      require_refusal({sql, "SBSQL-4A41A00C4F5C", "psql_open_cursor_stmt"});
+    }
+    for (const auto sql : {"CLOSE cursor_name;", "CLOSE \"bridge\";",
+                           "CLOSE BRIDGEX;"}) {
+      require_refusal({sql, "SBSQL-A4F34F00C071", "psql_close_cursor_stmt"});
     }
   }
 

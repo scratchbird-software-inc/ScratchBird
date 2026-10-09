@@ -42578,6 +42578,26 @@ CentralImportCommandRoute AnalyzeStandaloneProceduralCommandRoute(
   // OPEN DATABASE is the node lifecycle root, not a procedure cursor fragment.
   // Its own lifecycle lowering still validates syntax, binding and authority.
   if (LifecycleCommandStartsWith(cst.source, "OPEN DATABASE")) return {};
+  const auto tokens = MeaningfulTokens(cst);
+  if (tokens.size() >= 2 && !tokens[0]->quoted && !tokens[1]->quoted &&
+      (PublicExactTokenEquals(tokens, 0, "OPEN") ||
+       PublicExactTokenEquals(tokens, 0, "CLOSE")) &&
+      PublicExactTokenEquals(tokens, 1, "BRIDGE") &&
+      AnalyzeBridgeRoute(cst).active) {
+    // Bridge channel/session commands have their own binding and admission.
+    // A quoted cursor named "bridge" is not this command keyword.
+    return {};
+  }
+  if (tokens.size() == 3 &&
+      std::none_of(tokens.begin(), tokens.end(), [](const Token* token) {
+        return token->quoted;
+      }) && PublicExactTokenEquals(tokens, 0, "OPEN")) {
+    const auto encryption = AnalyzePublicExactEncryptionMaintenanceRoute(tokens);
+    if (encryption.active && encryption.valid && encryption.spec != nullptr &&
+        encryption.spec->operation_id == "security.encrypted_filespace.open") {
+      return {};
+    }
+  }
   const auto refuse = [](const std::string_view surface_id,
                          const std::string_view canonical_name) {
     return CentralImportCommandRoute{
