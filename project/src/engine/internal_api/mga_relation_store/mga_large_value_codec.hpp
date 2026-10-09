@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include "storage/page/row_external_value_locator.hpp"
 #include <charconv>
 namespace scratchbird::engine::internal_api {
 inline constexpr std::string_view kMgaLargeValueLocatorMagic = "SBMGLV02";
@@ -11,22 +12,16 @@ inline bool IsMgaLargeValueLocator(std::string_view bytes) {
 inline std::string MakeMgaLargeValueLocator(const EngineUuid& id,
                                            std::uint64_t checksum,
                                            std::uint64_t size) {
-  std::string bytes(kMgaLargeValueLocatorMagic);
-  if (!AppendBinaryEngineUuid(&bytes, id)) return {};
-  AppendBinaryU64(&bytes, checksum);
-  AppendBinaryU64(&bytes, size);
-  return bytes;
+  const auto bytes = scratchbird::storage::page::EncodeRowExternalValueLocator({id, checksum, size});
+  return bytes ? std::string(bytes->begin(), bytes->end()) : std::string{};
 }
 inline bool ReadMgaLargeValueLocator(std::string_view bytes, EngineUuid* id,
                                     std::uint64_t* checksum, std::uint64_t* size) {
-  if (!id || !checksum || !size || bytes.size() != 40 || !IsMgaLargeValueLocator(bytes)) return false;
+  if (!id || !checksum || !size) return false;
   const std::span<const std::uint8_t> input(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size());
-  std::size_t cursor = 8;
-  EngineUuid native;
-  std::uint64_t hash = 0, length = 0;
-  if (!ReadBinaryEngineUuid(input, &cursor, &native) ||
-      !ReadBinaryU64(input, &cursor, &hash) || !ReadBinaryU64(input, &cursor, &length)) return false;
-  *id = native; *checksum = hash; *size = length;
+  const auto locator = scratchbird::storage::page::DecodeRowExternalValueLocator(input);
+  if (!locator) return false;
+  *id = locator->object_uuid; *checksum = locator->content_checksum; *size = locator->logical_bytes;
   return true;
 }
 inline bool LargeValueNumber(std::string_view text, std::uint64_t* value) {

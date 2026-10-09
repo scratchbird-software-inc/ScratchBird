@@ -1118,7 +1118,12 @@ std::vector<scratchbird::storage::page::RowDataCell> DirectPhysicalCells(
     // labelling arbitrary UUID/BINARY octets as character would impose UTF-8
     // validation on user data and cannot preserve the retained carrier.
     cell.value.type_id = dt::CanonicalTypeId::binary;
-    cell.value.payload_is_toast_reference = lob;
+    if (lob) {
+      cell.external_value = scratchbird::storage::page::DecodeRowExternalValueLocator(
+          std::span(reinterpret_cast<const std::uint8_t*>(value.second.bytes.data()), value.second.bytes.size()));
+      if (!cell.external_value) throw std::invalid_argument("invalid physical row external value");
+      cell.value = {};
+    }
     if (value.second.isSqlNull()) {
       if (row_encoder_plan == nullptr)
         throw std::invalid_argument("physical NULL requires a bound column descriptor");

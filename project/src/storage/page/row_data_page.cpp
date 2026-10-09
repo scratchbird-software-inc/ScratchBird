@@ -42,6 +42,7 @@ using scratchbird::core::uuid::IsEngineIdentityUuid;
 using scratchbird::storage::disk::kPageHeaderSerializedBytes;
 
 inline constexpr byte kRowDataMagic[8] = {'S', 'B', 'R', 'O', 'W', '0', '0', '4'};
+inline constexpr byte kExternalRowDataMagic[8] = {'S', 'B', 'R', 'O', 'W', '0', '0', '5'};
 inline constexpr byte kRowDataMagicPrefix[5] = {'S', 'B', 'R', 'O', 'W'};
 inline constexpr u32 kOffsetMagic = 0;
 inline constexpr u32 kOffsetHeaderBytes = 8;
@@ -338,6 +339,7 @@ RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size)
   }
 
   std::vector<std::vector<byte>> encoded_cells;
+  bool external_cells = false;
   u64 body_bytes = kRowDataPageBodyHeaderBytes;
   std::set<scratchbird::core::platform::Uuid> version_ids;
   std::set<std::pair<scratchbird::core::platform::Uuid, u64>> row_sequences;
@@ -365,7 +367,18 @@ RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size)
     }
     body_bytes += kRowHeaderBytes;
     for (const RowDataCell& cell : row.cells) {
-      const auto encoded = EncodeDatatypeBinaryValue(cell.value);
+      scratchbird::core::datatypes::DatatypeBinaryResult encoded;
+      if (cell.external_value) {
+        const auto locator = EncodeRowExternalValueLocator(*cell.external_value);
+        if (!locator || cell.value.type_id != scratchbird::core::datatypes::CanonicalTypeId::unknown ||
+            cell.value.is_null || cell.value.payload_is_toast_reference || !cell.value.payload.empty())
+          return RowPageError("CATALOG.INVALID_INPUT", "storage.row_data_page.external_value_invalid");
+        external_cells = true;
+        encoded.status = RowPageOkStatus();
+        encoded.encoded.assign(locator->begin(), locator->end());
+      } else {
+        encoded = EncodeDatatypeBinaryValue(cell.value);
+      }
       if (!encoded.ok()) {
         RowDataPageResult result;
         result.status = encoded.status;
@@ -399,7 +412,8 @@ RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size)
   result.status = RowPageOkStatus();
   result.body = body_with_ordinals;
   result.serialized.assign(page_size - kPageHeaderSerializedBytes, 0);
-  std::memcpy(result.serialized.data() + kOffsetMagic, kRowDataMagic, sizeof(kRowDataMagic));
+  std::memcpy(result.serialized.data() + kOffsetMagic,
+              external_cells ? kExternalRowDataMagic : kRowDataMagic, sizeof(kRowDataMagic));
   StoreLittle32(result.serialized.data() + kOffsetHeaderBytes, kRowDataPageBodyHeaderBytes);
   StoreLittle32(result.serialized.data() + kOffsetRowCount, static_cast<u32>(body_with_ordinals.rows.size()));
   StoreLittle64(result.serialized.data() + kOffsetNextPageNumber, body_with_ordinals.next_page_number);
@@ -452,7 +466,7 @@ RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size)
     for (const RowDataCell& cell : row.cells) {
       const std::vector<byte>& encoded = encoded_cells[cell_index++];
       StoreLittle16(result.serialized.data() + offset, cell.column_ordinal);
-      StoreLittle16(result.serialized.data() + offset + 2, 0);
+      StoreLittle16(result.serialized.data() + offset + 2, cell.external_value ? 1 : 0);
       StoreLittle32(result.serialized.data() + offset + 4, static_cast<u32>(encoded.size()));
       StoreLittle64(result.serialized.data() + offset + 8, Fnv1a64(encoded.data(), encoded.size()));
       offset += kCellHeaderBytes;
@@ -630,7 +644,10 @@ ReadResult<Borrowed> ParseRowDataPageBodyImpl(
                         "storage.row_data_page.body_short",
                         page_number);
   }
-  if (std::memcmp(serialized.data() + kOffsetMagic, kRowDataMagic, sizeof(kRowDataMagic)) != 0) {
+  const bool external_format =
+      std::memcmp(serialized.data() + kOffsetMagic, kExternalRowDataMagic, sizeof(kExternalRowDataMagic)) == 0;
+  if ((external_format && binary_context != nullptr) ||
+      (!external_format && std::memcmp(serialized.data() + kOffsetMagic, kRowDataMagic, sizeof(kRowDataMagic)) != 0)) {
     if (HasRowDataMagicPrefix(serialized)) {
       return RowReadError<Borrowed>("SB-ROW-DATA-PAGE-FORMAT-UNSUPPORTED",
                           "storage.row_data_page.format_unsupported");
@@ -664,6 +681,7 @@ ReadResult<Borrowed> ParseRowDataPageBodyImpl(
                         "storage.row_data_page.checksum_mismatch");
   }
 
+  bool external_seen = false;
   ReadResult<Borrowed> result;
   result.status = RowPageOkStatus();
   result.body.page_number = page_number;
@@ -753,7 +771,8 @@ ReadResult<Borrowed> ParseRowDataPageBodyImpl(
       }
       typename RowReadState<Borrowed>::Cell cell;
       cell.column_ordinal = LoadLittle16(serialized.data() + offset);
-      if (LoadLittle16(serialized.data() + offset + 2) != 0) {
+      const auto cell_kind = LoadLittle16(serialized.data() + offset + 2);
+      if (cell_kind > 1 || (cell_kind == 1 && !external_format)) {
         return RowReadError<Borrowed>("CATALOG.INVALID_INPUT", "storage.row_data_page.cell_reserved_invalid");
       }
       const u32 payload_bytes = LoadLittle32(serialized.data() + offset + 4);
@@ -769,7 +788,15 @@ ReadResult<Borrowed> ParseRowDataPageBodyImpl(
                             "storage.row_data_page.cell_checksum_mismatch",
                             cell_index);
       }
-      if (binary_context != nullptr) {
+      if (cell_kind == 1) {
+        if (binary_context != nullptr)
+          return RowReadError<Borrowed>("CATALOG.INVALID_INPUT", "storage.row_data_page.external_value_not_admitted");
+        const auto locator = DecodeRowExternalValueLocator(serialized.subspan(offset, payload_bytes));
+        if (!locator)
+          return RowReadError<Borrowed>("CATALOG.INVALID_INPUT", "storage.row_data_page.external_value_invalid");
+        external_seen = true;
+        if constexpr (!Borrowed) cell.external_value = *locator;
+      } else if (binary_context != nullptr) {
         const auto decoded = scratchbird::core::datatypes::DecodeCanonicalBinaryValueViewNoAlloc(
             serialized.data() + offset, payload_bytes, *binary_context);
         if (!decoded.ok()) {
@@ -854,6 +881,8 @@ ReadResult<Borrowed> ParseRowDataPageBodyImpl(
     state.Slot(result.body,slot);
     offset += kSlotEntryBytes;
   }
+  if (external_format != external_seen)
+    return RowReadError<Borrowed>("CATALOG.INVALID_INPUT", "storage.row_data_page.external_format_noncanonical");
   if (!state.Links(result.body)) {
     return RowReadError<Borrowed>("CATALOG.INVALID_INPUT", "storage.row_data_page.previous_identity_mismatch");
   }

@@ -17,7 +17,9 @@ u64 BodyFnv(const byte* b,std::size_t n){u64 h=1469598103934665603ull;for(std::s
 void RowSeal(Bytes& b){std::fill(b.end()-32,b.end(),0);std::array<byte,32> h{};SHA256(b.data(),b.size(),h.data());std::copy(h.begin(),h.end(),b.end()-32);}
 Bytes RowOracle(const page::NativeRowDataPage& leaf) {
   const auto& h=leaf.header; const auto& body=leaf.body; Bytes b(h.page_size_bytes,0);
-  const std::string_view cm="SBPGV002",rm="SBROW004",vm="SBDVAL01";
+  const bool external=std::any_of(body.rows.begin(),body.rows.end(),[](const auto& row){
+    return std::any_of(row.cells.begin(),row.cells.end(),[](const auto& cell){return cell.external_value.has_value();});});
+  const std::string_view cm="SBPGV002",rm=external?"SBROW005":"SBROW004",vm="SBDVAL01";
   std::copy(cm.begin(),cm.end(),b.begin()); Number(b,8,4,128); Number(b,12,4,h.page_size_bytes);
   Number(b,16,4,h.page_type); Number(b,20,2,1); Number(b,22,2,1);
   PutUuid(b,24,h.database_uuid); PutUuid(b,40,h.filespace_uuid); PutUuid(b,56,h.page_uuid);
@@ -40,6 +42,14 @@ Bytes RowOracle(const page::NativeRowDataPage& leaf) {
     PutUuid(b,at+104,row.previous_version_uuid); PutUuid(b,at+120,row.next_version_uuid);
     Number(b,at+136,8,row.storage_generation); at+=144;
     for(const auto& cell:row.cells) {
+      if(cell.external_value){
+        const auto& locator=*cell.external_value;const unsigned value=at+16;
+        Number(b,at,2,cell.column_ordinal);Number(b,at+2,2,1);Number(b,at+4,4,40);
+        const std::string_view magic="SBMGLV02";
+        std::copy(magic.begin(),magic.end(),b.begin()+value);PutUuid(b,value+8,locator.object_uuid);
+        Number(b,value+24,8,locator.content_checksum);Number(b,value+32,8,locator.logical_bytes);
+        Number(b,at+8,8,BodyFnv(b.data()+value,40));at+=56;continue;
+      }
       const auto& payload=cell.value.payload; const unsigned value=at+16;
       Number(b,at,2,cell.column_ordinal); Number(b,at+4,4,32+payload.size());
       std::copy(vm.begin(),vm.end(),b.begin()+value); Number(b,value+8,4,static_cast<unsigned>(cell.value.type_id));
@@ -147,7 +157,12 @@ void Images(){
   }
 }
 void PageFaults(){
-  const auto f=Sample();const auto p=RowExample(0,f);const auto bytes=RowOracle(p);
+  const auto f=Sample();
+  for(unsigned variant=0;variant<2;++variant){
+  auto p=RowExample(0,f);
+  if(variant){page::RowDataCell cell;cell.column_ordinal=2;
+    cell.external_value=page::RowExternalValueLocator{Id(80),123,12000};p.body.rows[0].cells.push_back(cell);}
+  const auto bytes=RowOracle(p);
   for(unsigned op=0;op<2;++op){unsigned faults=0;bool finished=false;
     for(long point=0;point<1000;++point){codec_fault::remaining=point;codec_fault::fired=false;
       auto r=op? page::DecodeNativeRowDataPage(bytes):page::EncodeNativeRowDataPage(p);
@@ -159,7 +174,30 @@ void PageFaults(){
     Check(finished&&faults,"native row allocation sweep incomplete");
     std::cout<<"native row allocation operation="<<op<<" injected="<<faults<<'\n';
   }
+  }
+}
+void ExternalImages(){
+  const auto f=Sample();
+  for(unsigned profile=0;profile<5;++profile){
+    for(const u64 length:{u64{0},u64{12000},std::numeric_limits<u64>::max()}){
+      auto p=RowExample(profile,f);
+      page::RowDataCell external;external.column_ordinal=2;
+      external.external_value=page::RowExternalValueLocator{Id(80),0xff00112233445566ull,length};
+      p.body.rows[0].cells.push_back(external);
+      const auto expected=RowOracle(p);
+      const auto encoded=page::EncodeNativeRowDataPage(p);
+      const auto decoded=page::DecodeNativeRowDataPage(expected);
+      Check(encoded.ok()&&encoded.bytes==expected&&decoded.ok(),"external native image disagrees with independent byte oracle");
+      if(decoded.ok())Check(decoded.page->body.rows[0].cells[1].external_value==external.external_value&&
+          decoded.page->body.rows[0].cells[0].value.payload==p.body.rows[0].cells[0].value.payload,
+          "external native image lost locator or adjacent logical value");
+      for(unsigned version=0;version<16;++version)if(version!=7){
+        auto invalid=p;invalid.body.rows[0].cells[1].external_value->object_uuid.bytes[6]=version<<4;
+        PageEncodeRefused(invalid);PageRefused(RowOracle(invalid));
+      }
+    }
+  }
 }
 }
-int main(){MetricSamplePageBaseMain();auto before=checks;Images();SemanticImages();PageFaults();
+int main(){MetricSamplePageBaseMain();auto before=checks;Images();SemanticImages();PageFaults();ExternalImages();
   std::cout<<"native row image checks="<<checks-before<<" combined="<<checks<<" failures="<<failures<<'\n';return failures?1:0;}

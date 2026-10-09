@@ -10,6 +10,7 @@
 #include "mga_relation_store/mga_row_codec.hpp"
 #include "mga_relation_store/mga_heap_runtime_support.hpp"
 #include "dml/direct_bulk_typed_row_codec.hpp"
+#include "row_page_compact_encoding.hpp"
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -88,9 +89,10 @@ int main() try {
   }
   const auto physical = api::dml::detail::DirectPhysicalCells(mixed.values, &plan);
   expect(physical.size() == mixed.values.size() &&
-         physical[0].value.payload_is_toast_reference &&
-         !physical[1].value.payload_is_toast_reference &&
-         !physical[2].value.payload_is_toast_reference &&
+         physical[0].external_value.has_value() &&
+         physical[0].value.payload.empty() &&
+         !physical[0].value.payload_is_toast_reference &&
+         !physical[1].external_value && !physical[2].external_value &&
          physical[3].value.is_null &&
          physical[3].value.type_id == scratchbird::core::datatypes::CanonicalTypeId::binary &&
          physical[3].value.payload.empty() && !physical[4].value.is_null,
@@ -101,17 +103,125 @@ int main() try {
   } catch (const std::invalid_argument&) { unbound_null_refused = true; }
   expect(unbound_null_refused, "physical NULL admitted without a bound column type");
   for (std::size_t i = 0; i < physical.size(); ++i) {
+    if (physical[i].external_value) {
+      const auto encoded = scratchbird::storage::page::EncodeRowExternalValueLocator(*physical[i].external_value);
+      expect(encoded && std::string(encoded->begin(), encoded->end()) == mixed.values[i].second.bytes,
+             "physical locator differs from the retained storage-owned locator");
+      continue;
+    }
     const auto encoded = scratchbird::core::datatypes::EncodeDatatypeBinaryValue(physical[i].value);
     const auto decoded = scratchbird::core::datatypes::DecodeDatatypeBinaryValue(encoded.encoded);
     if (!encoded.ok() || !decoded.ok())
       std::cerr << "physical_cell=" << i << " encode=" << encoded.diagnostic.message_key
                 << " decode=" << decoded.diagnostic.message_key << '\n';
     expect(encoded.ok() && decoded.ok() &&
-           decoded.value.payload_is_toast_reference == (i == 0) &&
+           !decoded.value.payload_is_toast_reference &&
            decoded.value.is_null == (i == 3) &&
            decoded.value.payload == physical[i].value.payload,
            "physical binary cell lost exact locator/value/null state");
   }
+  namespace page = scratchbird::storage::page;
+  namespace platform = scratchbird::core::platform;
+  page::RowDataPageBody body;
+  body.relation_uuid = {platform::UuidKind::object, row.table_uuid};
+  body.segment_id = body.segment_generation = body.page_generation = 1;
+  body.page_number = 7;
+  page::RowDataRecord physical_row;
+  physical_row.row_uuid = {platform::UuidKind::row, row.row_uuid};
+  physical_row.version_uuid = row.version_uuid;
+  physical_row.transaction_uuid = {platform::UuidKind::transaction,
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-0000000002e4")};
+  physical_row.local_transaction_id = physical_row.storage_generation = 1;
+  physical_row.cells = physical; body.rows.push_back(physical_row);
+  for (const unsigned page_size : {8192, 16384, 32768, 65536, 131072}) {
+    const auto encoded = page::BuildRowDataPageBody(body, page_size);
+    expect(encoded.ok() && std::string(encoded.serialized.begin(), encoded.serialized.begin() + 8) == "SBROW005",
+           "external row page failed its explicit storage format");
+    if (!encoded.ok()) continue;
+    const auto image_path = root / "external-row.sbrow";
+    {
+      std::ofstream image(image_path, std::ios::binary | std::ios::trunc);
+      image.write(reinterpret_cast<const char*>(encoded.serialized.data()), encoded.serialized.size());
+      image.close(); expect(bool(image), "external row page write failed");
+    }
+    std::ifstream image(image_path, std::ios::binary);
+    const std::vector<platform::byte> reopened{std::istreambuf_iterator<char>(image), {}};
+    image.close();
+    expect(reopened == encoded.serialized, "external row file reopen changed bytes");
+    const auto decoded = page::ParseRowDataPageBody(reopened, body.page_number);
+    const auto rows = page::ParseRowDataPageRows(encoded.serialized, body.page_number);
+    for (const auto* result : {&decoded, &rows}) {
+      expect(result->ok() && result->body.rows.size() == 1 && result->body.rows[0].cells.size() == physical.size(),
+             "physical page did not return every stored cell");
+      if (!result->ok() || result->body.rows.empty()) continue;
+      for (std::size_t i = 0; i < physical.size(); ++i) {
+        const auto& cell = result->body.rows[0].cells[i];
+        expect(cell.external_value == physical[i].external_value &&
+               cell.value.type_id == physical[i].value.type_id &&
+               cell.value.payload == physical[i].value.payload &&
+               cell.value.is_null == physical[i].value.is_null,
+               "row page substituted external/PRESENT/NULL/empty cell identity");
+      }
+    }
+    expect(!page::ParseRowDataPageBodyWithCanonicalBinaryCells(encoded.serialized, body.page_number, {}).ok(),
+           "catalog binary-cell reader admitted a storage locator as binary data");
+    const auto required = page::RowDataPageViewBackingRequirements(encoded.serialized.size());
+    std::vector<page::RowDataRecordView> row_backing(required.rows);
+    std::vector<page::RowDataCellView> cell_backing(required.cells);
+    std::vector<page::RowDataSlot> slot_backing(required.rows);
+    std::vector<platform::u32> version_index(required.index_slots), sequence_index(required.index_slots);
+    const auto borrowed = page::ParseRowDataPageWithCanonicalBinaryCellsInto(
+        encoded.serialized, body.page_number,
+        {row_backing, cell_backing, slot_backing, version_index, sequence_index}, {});
+    expect(!borrowed.ok() && borrowed.body.rows.empty(),
+           "borrowed catalog reader admitted or partially exposed external cells");
+    scratchbird::core::index::RowPageCompactRequest compact;
+    compact.body = body; compact.page_size = page_size;
+    const auto packed = scratchbird::core::index::BuildRowPageCompactEncoding(compact);
+    expect(packed.ok() && packed.exact_round_trip &&
+           packed.body.rows.size() == 1 && packed.body.rows[0].cells[0].external_value == physical[0].external_value,
+           "row packing lost the storage-owned external locator");
+    if (packed.ok()) {
+      const auto unpacked = scratchbird::core::index::DecodeRowPageCompactEncoding(packed.serialized, compact.authority);
+      expect(unpacked.ok() && unpacked.body.rows.size() == 1 &&
+             unpacked.body.rows[0].cells[0].external_value == physical[0].external_value,
+             "row unpacking changed physical external identity");
+    }
+    // Independent offset/checksum oracle bypasses checksum-only rejection.
+    const auto hash = [](const auto* data, std::size_t count) {
+      std::uint64_t result = 1469598103934665603ull;
+      for (std::size_t i = 0; i < count; ++i) { result ^= data[i]; result *= 1099511628211ull; }
+      return result;
+    };
+    for (unsigned mutation = 0; mutation < 5; ++mutation) {
+      auto bytes = encoded.serialized;
+      constexpr unsigned cell = 96 + 144, payload_offset = cell + 16;
+      if (mutation == 0) platform::StoreLittle16(bytes.data() + cell + 2, 2);
+      if (mutation == 1) bytes[7] = '4';
+      if (mutation == 2) bytes[payload_offset] ^= 1;
+      if (mutation == 3) bytes[payload_offset + 8 + 6] = 0x40; // user UUID cannot own storage.
+      if (mutation == 4) platform::StoreLittle32(bytes.data() + cell + 4, 39);
+      const auto payload_size = platform::LoadLittle32(bytes.data() + cell + 4);
+      platform::StoreLittle64(bytes.data() + cell + 8, hash(bytes.data() + payload_offset, payload_size));
+      platform::StoreLittle64(bytes.data() + 96 + 64, 0);
+      const auto row_hash = hash(bytes.data() + 96, platform::LoadLittle32(bytes.data() + 96 + 56));
+      platform::StoreLittle64(bytes.data() + 96 + 64, row_hash);
+      platform::StoreLittle64(bytes.data() + platform::LoadLittle32(bytes.data() + 88) + 16, row_hash);
+      platform::StoreLittle64(bytes.data() + 32, 0);
+      platform::StoreLittle64(bytes.data() + 32, hash(bytes.data(), bytes.size()));
+      const auto refused = page::ParseRowDataPageBody(bytes, body.page_number);
+      expect(!refused.ok() && refused.body.rows.empty() && refused.serialized.empty(),
+             "checksummed malformed external cell published partial rows or bytes");
+    }
+  }
+  auto ambiguous = body;
+  ambiguous.rows[0].cells[0].value = physical[1].value;
+  expect(!page::BuildRowDataPageBody(ambiguous, 8192).ok(),
+         "physical cell admitted both a logical value and an external locator");
+  auto invalid_identity = body;
+  invalid_identity.rows[0].cells[0].external_value->object_uuid = {};
+  expect(!page::BuildRowDataPageBody(invalid_identity, 8192).ok(),
+         "physical external locator admitted a missing binary identity");
   for (const auto malformed : {std::string("SBMGLV02"), std::string(40, '\0')}) {
     bool refused = false;
     try {

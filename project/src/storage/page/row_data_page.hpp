@@ -13,6 +13,7 @@
 #include "datatype_binary_view.hpp"
 #include "runtime_platform.hpp"
 #include "uuid.hpp"
+#include "row_external_value_locator.hpp"
 
 #include <string>
 #include <optional>
@@ -35,6 +36,8 @@ inline constexpr u32 kRowDataPageBodyHeaderBytes = 96;
 struct RowDataCell {
   u16 column_ordinal = 0;
   DatatypeBinaryValue value;
+  // Exactly one representation: a locator requires an empty default value.
+  std::optional<RowExternalValueLocator> external_value;
 };
 
 template<class Cells>

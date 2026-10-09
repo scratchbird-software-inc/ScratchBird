@@ -166,6 +166,7 @@ bool BodiesEqual(const page::RowDataPageBody& left,
       const auto& left_cell = left_row.cells[cell_index];
       const auto& right_cell = right_row.cells[cell_index];
       if (left_cell.column_ordinal != right_cell.column_ordinal ||
+          left_cell.external_value != right_cell.external_value ||
           left_cell.value.type_id != right_cell.value.type_id ||
           left_cell.value.is_null != right_cell.value.is_null ||
           left_cell.value.payload_is_toast_reference !=
