@@ -65,9 +65,8 @@ if(TARGET sb_engine_api_transaction_semantics_probe)
     NAME mga_transaction_regression_engine_api_e2e
     COMMAND
       $<TARGET_FILE:sb_engine_api_transaction_semantics_probe>
-      --path "${CMAKE_CURRENT_BINARY_DIR}/mga_transaction_regression_engine_api.sbdb"
+      --isolated-run
       --creation-ms 1779000000100
-      --overwrite
   )
   set_tests_properties(mga_transaction_regression_engine_api_e2e PROPERTIES
     LABELS "mga;transaction;regression;engine_api"
