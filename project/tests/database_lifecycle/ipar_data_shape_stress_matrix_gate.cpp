@@ -1,4 +1,5 @@
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/published_ddl_table_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -15,6 +16,7 @@
 #include "catalog/column_metadata_codec.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_operations.hpp"
+#include "sbl_numeric.hpp"
 #include "ddl/create_api.hpp"
 #include "security/security_principal_lifecycle.hpp"
 #include "security/security_model.hpp"
@@ -52,8 +54,7 @@ namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -103,6 +104,28 @@ api::EngineTypedValue Value(std::string canonical_type, std::string encoded) {
       "canonical=" + typed.descriptor.canonical_type_name;
   typed.encoded_value = std::move(encoded);
   typed.state = api::EngineValueState::value;
+  namespace dt = scratchbird::core::datatypes;
+  if (typed.descriptor.canonical_type_name == "int64" ||
+      typed.descriptor.canonical_type_name == "uint64") {
+    std::string bytes;
+    const bool ok = typed.descriptor.canonical_type_name == "int64"
+        ? dt::EncodeCanonicalInt64Value(std::stoll(typed.encoded_value), &bytes)
+        : dt::EncodeCanonicalUint64Value(std::stoull(typed.encoded_value), &bytes);
+    Require(ok, "IPAR-P7-09 integer fixture encoding failed");
+    typed.binary_value.assign(bytes.begin(), bytes.end());
+    typed.encoded_value.clear();
+  } else if (typed.descriptor.canonical_type_name == "boolean") {
+    Require(typed.encoded_value == "true" || typed.encoded_value == "false",
+            "IPAR-P7-09 boolean fixture encoding failed");
+    typed.binary_value = {static_cast<std::uint8_t>(typed.encoded_value == "true")};
+    typed.encoded_value.clear();
+  } else if (typed.descriptor.canonical_type_name == "decimal") {
+    const auto encoded_decimal = scratchbird::libraries::sbl_numeric::EncodeExactDecimalLittleEndian(
+        typed.encoded_value);
+    Require(encoded_decimal.ok, "IPAR-P7-09 decimal fixture encoding failed");
+    typed.binary_value.assign(encoded_decimal.canonical_bytes.begin(), encoded_decimal.canonical_bytes.end());
+    typed.encoded_value.clear();
+  }
   return typed;
 }
 
@@ -239,7 +262,7 @@ struct Fixture {
   api::EngineUuid table_uuid;
   api::EngineUuid primary_constraint_uuid;
   api::EngineUuid primary_support_uuid;
-  std::vector<api::EngineColumnDefinition> published_columns;
+  std::vector<api::MgaRelationColumnStorageDescriptor> published_columns;
   api::EngineUuid id_index_uuid;
   api::EngineUuid sort_index_uuid;
   api::EngineUuid tag_index_uuid;
@@ -322,56 +345,41 @@ void CreateTable(Fixture& fixture, const api::EngineRequestContext& context) {
   schema.localized_names.push_back(Name("ipar_stress"));
   RequireOk(api::EngineCreateSchema(schema), "IPAR-P7-09 schema publication failed");
 
-  namespace datatypes = scratchbird::core::datatypes;
-  const auto manifest = datatypes::LoadCurrentCoreDatatypeCatalogManifest();
-  Require(manifest.ok(), "IPAR-P7-09 datatype catalog unavailable");
   const std::vector<std::pair<std::string, std::string>> definitions{
       {"id", "text"}, {"shape", "text"}, {"seq_i64", "int64"},
       {"unsigned_u64", "uint64"}, {"decimal_text", "decimal"},
       {"bool_flag", "boolean"}, {"sort_key", "text"}, {"tag", "text"},
       {"payload", "text"}, {"nullable_note", "text"}};
-  api::EngineCreateTableRequest request;
-  request.context = context;
-  request.target_schema.uuid = fixture.schema_uuid;
-  request.target_schema.object_kind = "schema";
-  request.requested_table_uuid = fixture.table_uuid;
-  request.table_names.push_back(Name("ipar_data_shape_stress"));
+  api::CrudTableRecord definition;
+  definition.creator_tx = context.local_transaction_id;
+  definition.table_uuid = fixture.table_uuid;
+  definition.default_name = "ipar_data_shape_stress";
+  std::vector<std::string> types;
   for (const auto& [name, type] : definitions) {
-    const auto catalog = datatypes::LookupDatatypeCatalogRow(
-        manifest.manifest, datatypes::CanonicalTypeIdFromStableName(type));
-    Require(catalog.ok() && catalog.manifest.descriptor_rows.size() == 1,
-            "IPAR-P7-09 datatype binding unavailable");
-    const auto& row = catalog.manifest.descriptor_rows.front();
-    const auto codec = datatypes::LookupDatatypeTypeCodecIdentityV1(
-        context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
-        context.datatype_registry_generation, row.descriptor_uuid.value,
-        row.descriptor_epoch);
-    // uint64 uses the engine's existing canonical catalog projection; it is
-    // not one of the six admitted scalar codec registry rows.
-    Require(type == "uint64" || codec.ok,
-            "IPAR-P7-09 datatype codec binding unavailable");
-    api::EngineColumnDefinition column;
-    column.ordinal = request.table_columns.size();
-    column.requested_column_uuid = NewIdentity(platform::UuidKind::object, 0);
-    column.names.push_back(Name(name));
-    column.nullable = name != "id" && name != "shape";
-    column.descriptor.descriptor_uuid = NewIdentity(platform::UuidKind::object, 0);
-    column.descriptor.descriptor_kind = "scalar";
-    column.descriptor.canonical_type_name = type;
-    column.descriptor.datatype_descriptor_uuid = row.descriptor_uuid.value;
-    column.descriptor.datatype_descriptor_generation = row.descriptor_epoch;
-    column.descriptor.type_uuid = type == "uint64"
-        ? row.descriptor_uuid.value : codec.row.type_uuid;
-    column.descriptor.encoded_descriptor = "canonical=" + type +
-        (column.nullable ? ";nullable=true" : ";nullable=false");
-    if (name == "id") column.descriptor.encoded_descriptor += ";primary_key=true";
-    request.table_columns.push_back(std::move(column));
+    std::string attributes = "canonical=" + type +
+        ((name == "id" || name == "shape") ? ";nullable=false" : ";nullable=true");
+    if (name == "id") attributes += ";primary_key=true";
+    definition.columns.push_back({name, std::move(attributes)});
+    types.push_back(type == "text" ? "character" : type);
   }
-  const auto created = api::EngineCreateTable(request);
-  RequireOk(created, "IPAR-P7-09 table publication failed");
-  Require(created.table_object.uuid == fixture.table_uuid,
+  auto publication_context = context;
+  const auto created = scratchbird::tests::PublishDdlTableFixture(
+      publication_context, definition, types);
+  Require(created.table_uuid == fixture.table_uuid,
           "IPAR-P7-09 table publication changed native identity");
-  fixture.published_columns = request.table_columns;
+  // The compatibility table row does not retain the construction-only
+  // bound_columns vector. Capture the actually published storage cohort now,
+  // and compare its complete identities/profiles after commit and reopen.
+  const auto published = api::LoadMgaRelationStorageDescriptor(context, fixture.table_uuid);
+  Require(published.ok && published.descriptor.columns.size() == definitions.size(),
+          "IPAR-P7-09 initial published storage cohort missing");
+  for (const auto& column : published.descriptor.columns)
+    Require(column.column_generation && uuid::IsEngineIdentityUuid(column.column_uuid) &&
+                uuid::IsEngineIdentityUuid(column.value_descriptor.descriptor_uuid) &&
+                uuid::IsEngineIdentityUuid(column.value_descriptor.datatype_descriptor_uuid) &&
+                uuid::IsEngineIdentityUuid(column.value_descriptor.type_uuid),
+            "IPAR-P7-09 initial published storage identity invalid");
+  fixture.published_columns = published.descriptor.columns;
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "IPAR-P7-09 published table metadata unavailable");
   const auto found = std::find_if(loaded.state.relation_metadata.tables.begin(),
@@ -895,11 +903,7 @@ void VerifyCommittedRowsAfterReopen(const Fixture& fixture,
   for (std::size_t i = 0; i < fixture.published_columns.size(); ++i) {
     const auto& expected = fixture.published_columns[i];
     const auto& actual = persisted.descriptor.columns[i];
-    Require(actual.column_generation != 0 &&
-                actual.column_uuid == expected.requested_column_uuid &&
-                actual.value_descriptor.descriptor_uuid == expected.descriptor.descriptor_uuid &&
-                actual.value_descriptor.datatype_descriptor_uuid == expected.descriptor.datatype_descriptor_uuid &&
-                actual.value_descriptor.type_uuid == expected.descriptor.type_uuid,
+    Require(actual == expected,
             "IPAR-P7-09 reopen changed a native column or datatype identity");
   }
   api::EngineApiU64 visible_rows = 0;
@@ -1074,6 +1078,7 @@ void VerifyDataShapeStressMatrix() {
 }  // namespace
 
 int main() {
+  try {
   const auto memory = scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
       scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(), "ipar_data_shape_stress");
   Require(memory.ok() && memory.fixture_mode,
@@ -1081,4 +1086,8 @@ int main() {
   VerifyDataShapeStressMatrix();
   std::cout << "ipar_data_shape_stress_matrix_gate=passed\n";
   return EXIT_SUCCESS;
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }
