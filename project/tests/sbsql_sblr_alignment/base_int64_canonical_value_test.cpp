@@ -370,6 +370,91 @@ void RepresentationAndCodecs() {
   }
 }
 
+void CheckedScalarCasts() {
+  const auto character = DescriptorFor(dt::CanonicalTypeId::character);
+  const auto boolean = DescriptorFor(dt::CanonicalTypeId::boolean);
+  const auto integer = Int64Descriptor();
+  const auto cast = [](dt::DatatypeOperationValue source,
+                       const scratchbird::engine::ExecutionTypeDescriptor& target) {
+    dt::DatatypeCastRequest request;
+    request.value = std::move(source);
+    request.target_type_id = static_cast<dt::CanonicalTypeId>(target.canonical_type_id);
+    request.target_descriptor = target;
+    request.context = dt::DatatypeCastContext::explicit_cast;
+    return dt::CastDatatypeValue(request);
+  };
+  const auto text = [&](std::string value) {
+    dt::DatatypeOperationValue source{dt::CanonicalTypeId::character, std::move(value), false};
+    source.descriptor = character;
+    return source;
+  };
+  for (const auto number : {INT64_MIN, std::int64_t{-1}, std::int64_t{0},
+                            std::int64_t{1}, INT64_MAX}) {
+    const auto rendered = cast(Int64(number), character);
+    const auto parsed = cast(text(std::to_string(number)), integer);
+    Check(rendered.ok() && rendered.value.encoded_value == std::to_string(number) &&
+              parsed.ok() && parsed.value.encoded_value == Int64(number).encoded_value &&
+              parsed.value.encoded_value.size() == 8,
+          "checked text/INT64 extrema roundtrip uses native LE8");
+  }
+  for (const auto literal : {"+00042", "00042", "42"}) {
+    const auto result = cast(text(literal), integer);
+    Check(result.ok() && result.value.encoded_value == Int64(42).encoded_value,
+          "explicit decimal sign and leading zero grammar");
+  }
+  for (const auto literal : {"9223372036854775808", "-9223372036854775809"})
+    CheckCastRefused(cast(text(literal), integer), "NUMERIC.CAST.OUT_OF_RANGE",
+                     "integer range failure has no result");
+  for (const std::string literal : {std::string{}, std::string{" 1"}, std::string{"1 "},
+         std::string{"1.0"}, std::string{"1e0"}, std::string{"+-1"}, std::string{"+"},
+         std::string{"--1"}, std::string{"1x"}, std::string{"1\0", 2}})
+    CheckCastRefused(cast(text(literal), integer), "DATATYPE.CAST_FORBIDDEN",
+                     "integer grammar failure has no result");
+  for (const auto number : {0, 1}) {
+    const auto result = cast(Int64(number), boolean);
+    Check(result.ok() && result.value.encoded_value == std::string(1, char(number)),
+          "INT64 boolean cast preserves canonical one byte");
+    const auto restored = cast(result.value, integer);
+    Check(restored.ok() && restored.value.encoded_value == Int64(number).encoded_value,
+          "boolean INT64 cast preserves canonical eight bytes");
+  }
+  for (const auto number : {-1, 2})
+    CheckCastRefused(cast(Int64(number), boolean), "NUMERIC.CAST.OUT_OF_RANGE",
+                     "non-boolean integers cannot become truthiness");
+  for (const auto context : {dt::DatatypeCastContext::implicit, dt::DatatypeCastContext::assignment}) {
+    dt::DatatypeCastRequest request;
+    request.value = text("42"); request.target_type_id = dt::CanonicalTypeId::int64;
+    request.target_descriptor = integer; request.context = context;
+    CheckCastRefused(dt::CastDatatypeValue(request), "DATATYPE.CAST_FORBIDDEN",
+                     "explicit cross-type cast cannot become implicit or assignment");
+  }
+  for (bool source_side : {false, true}) {
+    for (unsigned mutation = 0; mutation < 5; ++mutation) {
+      auto source = text("42"); auto target = integer;
+      auto& descriptor = source_side ? source.descriptor : target;
+      if (mutation == 0) ++descriptor.descriptor_epoch;
+      if (mutation == 1) descriptor.descriptor_uuid = {};
+      if (mutation == 2) descriptor.domain_uuid = FixtureV7Uuid(3);
+      if (mutation == 3) descriptor.security_policy_uuid = FixtureV7Uuid(4);
+      if (mutation == 4) descriptor.bit_width = 7;
+      CheckCastRefused(cast(source, target), "DATATYPE.DESCRIPTOR.INVALID",
+                       "cast requires exact source and target UUID and policy shape");
+    }
+  }
+  auto null_source = text({}); null_source.is_null = true;
+  null_source.descriptor.nullable_allowed = true;
+  auto nullable_integer = integer; nullable_integer.nullable_allowed = true;
+  const auto null_result = cast(null_source, nullable_integer);
+  Check(null_result.ok() && null_result.value.is_null && null_result.value.encoded_value.empty(),
+        "explicit typed NULL binds nullable INT64 without payload");
+  auto nonnullable_integer = integer; nonnullable_integer.nullable_allowed = false;
+  CheckCastRefused(cast(null_source, nonnullable_integer), "DATATYPE.NULL_NOT_ADMITTED",
+                   "NULL cast cannot target a required slot");
+  null_source.encoded_value = "0";
+  CheckCastRefused(cast(null_source, nullable_integer), "DATATYPE.NULL_STATE.INVALID",
+                   "dirty NULL cast cannot suppress payload validation");
+}
+
 void StructuredPropertyPartitions() {
   const auto verify = [](std::uint64_t raw, bool have_previous,
                          std::int64_t previous_value,
@@ -663,6 +748,8 @@ void NullAndAbsentPolicies() {
   for (const auto& candidate : dt::BuiltinDatatypeDescriptors()) {
     const auto outgoing = candidate.type_id == dt::CanonicalTypeId::int64 ? dt::DatatypeCastCategory::identity :
         candidate.type_id == dt::CanonicalTypeId::real64 ? dt::DatatypeCastCategory::lossy_explicit :
+        (candidate.type_id == dt::CanonicalTypeId::character || candidate.type_id == dt::CanonicalTypeId::boolean)
+            ? dt::DatatypeCastCategory::lossless_explicit :
         dt::DatatypeCastCategory::forbidden;
     const auto incoming = candidate.type_id == dt::CanonicalTypeId::int32
         ? dt::DatatypeCastCategory::lossless_implicit : outgoing;
@@ -948,6 +1035,7 @@ void Persistence() {
 int main() {
   ExactIdentity();
   RepresentationAndCodecs();
+  CheckedScalarCasts();
   StructuredPropertyPartitions();
   NullAndAbsentPolicies();
   Persistence();

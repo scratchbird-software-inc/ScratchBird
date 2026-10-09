@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/native_int64_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -333,12 +334,18 @@ api::EngineTypedValue Value(std::string_view type, std::string_view encoded) {
   return value;
 }
 
+api::EngineDescriptor BoundDescriptor(std::string_view type);
+
 void RequireDirectRuntimeValues() {
   for (const auto& item : kRuntimeCases) {
     api::EngineCastValueRequest request;
     request.context = EngineContext();
     request.input_value = Value(item.source_type, item.source_value);
-    request.target_descriptor = Descriptor(item.target_type);
+    request.input_value.descriptor = BoundDescriptor(item.source_type);
+    if (item.source_type == "int64")
+      request.input_value = scratchbird::tests::NativeInt64Fixture(
+          request.input_value.descriptor, item.source_value);
+    request.target_descriptor = BoundDescriptor(item.target_type);
     request.explicit_cast = true;
     const auto result = api::EngineCastValue(request);
     for (const auto& diagnostic : result.diagnostics) {
@@ -349,10 +356,47 @@ void RequireDirectRuntimeValues() {
             "direct EngineCastValue operation id mismatch");
     Require(result.value.descriptor.canonical_type_name == item.target_type,
             "direct EngineCastValue target descriptor mismatch");
-    Require(result.value.encoded_value == item.expected_value,
-            "direct EngineCastValue encoded value mismatch");
+    if (item.target_type == "int64") {
+      Require(scratchbird::tests::NativeInt64Equals(
+                  result.value, std::stoll(std::string(item.expected_value))),
+              "direct EngineCastValue native integer value mismatch");
+    } else {
+      Require(result.value.encoded_value == item.expected_value &&
+                  result.value.binary_value.empty(),
+              "direct EngineCastValue encoded value mismatch");
+    }
+    Require(result.value.descriptor.descriptor_uuid == request.target_descriptor.descriptor_uuid &&
+                result.value.descriptor.type_uuid == request.target_descriptor.type_uuid &&
+                !result.value.isSqlNull(),
+            "direct cast lost exact target identity or value state");
     Require(HasEvidence(result, "datatype_cast", result.cast_category),
             "direct EngineCastValue missing cast category evidence");
+  }
+  for (const auto text : {"-9223372036854775808", "9223372036854775807"}) {
+    api::EngineCastValueRequest request;
+    request.context = EngineContext();
+    request.input_value = Value("character", text);
+    request.input_value.descriptor = BoundDescriptor("character");
+    request.target_descriptor = BoundDescriptor("int64");
+    request.explicit_cast = true;
+    const auto result = api::EngineCastValue(request);
+    Require(result.ok && scratchbird::tests::NativeInt64Equals(result.value, std::stoll(text)),
+            "engine cast did not preserve native INT64 extrema");
+  }
+  for (const auto text : {"-9223372036854775809", "9223372036854775808", "1e0", "42x"}) {
+    api::EngineCastValueRequest request;
+    request.context = EngineContext();
+    request.input_value = Value("character", text);
+    request.input_value.descriptor = BoundDescriptor("character");
+    request.target_descriptor = BoundDescriptor("int64");
+    request.explicit_cast = true;
+    const auto result = api::EngineCastValue(request);
+    const std::string_view expected = std::string_view(text).size() > 10
+        ? "NUMERIC.CAST.OUT_OF_RANGE" : "DATATYPE.CAST_FORBIDDEN";
+    Require(!result.ok && result.value.binary_value.empty() && result.value.encoded_value.empty() &&
+                std::any_of(result.diagnostics.begin(), result.diagnostics.end(),
+                            [&](const auto& diagnostic) { return diagnostic.code == expected; }),
+            "engine cast lost typed range/grammar diagnostic or published partial output");
   }
 }
 
@@ -373,7 +417,7 @@ api::EngineDescriptor BoundDescriptor(std::string_view type) {
       datatype.descriptor_uuid.value, datatype.descriptor_epoch);
   Require(identity.ok, "cast fixture datatype identity is not admitted");
   descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(
-      2053, type == "uuid" ? 1 : 2);
+      2053, static_cast<unsigned>(dt::CanonicalTypeIdFromStableName(std::string(type))));
   descriptor.type_uuid = identity.row.type_uuid;
   descriptor.datatype_descriptor_uuid = datatype.descriptor_uuid.value;
   descriptor.datatype_descriptor_generation = datatype.descriptor_epoch;
@@ -422,6 +466,13 @@ void RequireUuidBinaryCasts() {
           api::EngineTypedValue input;
           input.descriptor = descriptor(source);
           input.binary_value = bytes;
+          if (!bound) {
+            // Native bytes are necessary but not descriptor authority. Keep
+            // every version/data vector on both paths: refusal without the
+            // catalog binding, exact roundtrip with it.
+            require_refused(input, target);
+            continue;
+          }
           const auto result = cast(input, target);
           Require(result.ok && result.value.binary_value == bytes &&
                       result.value.encoded_value.empty() &&

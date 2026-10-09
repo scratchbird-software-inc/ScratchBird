@@ -3200,8 +3200,14 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
       target_type_id == CanonicalTypeId::int64) {
     return DatatypeCastCategory::lossless_implicit;
   }
+  if ((source_type_id == CanonicalTypeId::int64 &&
+       (IsCharacter(target_type_id) || target_type_id == CanonicalTypeId::boolean)) ||
+      (target_type_id == CanonicalTypeId::int64 &&
+       (IsCharacter(source_type_id) || source_type_id == CanonicalTypeId::boolean))) {
+    return DatatypeCastCategory::lossless_explicit;
+  }
   // INT64 has an exact canonical LE8 identity operation. Apart from the
-  // exact INT32 widening above, Core has not admitted
+  // exact INT32 widening and checked text/boolean rules above, Core has not admitted
   // any cross-type PRESENT pair involving INT64, or any complete PRESENT cast
   // pair involving the other fixed-width types below. Contextual base.null
   // binding was admitted above.
@@ -3653,6 +3659,78 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
     return CastFailure("cast_context_not_admitted",
                        DatatypeCastCategory::forbidden,
                        "DATATYPE.CAST_FORBIDDEN");
+  }
+  const bool int64_scalar_pair =
+      (request.value.type_id == CanonicalTypeId::int64 &&
+       (IsCharacter(request.target_type_id) || request.target_type_id == CanonicalTypeId::boolean)) ||
+      (request.target_type_id == CanonicalTypeId::int64 &&
+       (IsCharacter(request.value.type_id) || request.value.type_id == CanonicalTypeId::boolean));
+  if (int64_scalar_pair) {
+    constexpr auto category = DatatypeCastCategory::lossless_explicit;
+    // This is a compiled current-builtin rule, not authority inferred from a
+    // type name. Modified/domain descriptors require their own cast policy.
+    if (!ExecutionDescriptorExactlyMatchesCurrentBuiltinIgnoringNullability(
+            request.value.descriptor, request.value.type_id) ||
+        !ExecutionDescriptorExactlyMatchesCurrentBuiltinIgnoringNullability(
+            request.target_descriptor, request.target_type_id))
+      return CastFailure("int64_scalar_cast_descriptor_invalid", category,
+                         "DATATYPE.DESCRIPTOR.INVALID");
+    if (!request.explicit_cast && request.context != DatatypeCastContext::explicit_cast)
+      return CastFailure("explicit_cast_required", category);
+    DatatypeCastResult converted;
+    converted.status = OkStatus();
+    converted.category = category;
+    converted.value = {request.target_type_id, {}, result_is_null};
+    converted.value.descriptor = request.target_descriptor;
+    if (!result_is_null) {
+      std::int64_t integer = 0;
+      if (request.value.type_id == CanonicalTypeId::int64) {
+        if (!DecodeCanonicalInt64Value(request.value.encoded_value, &integer))
+          return CastFailure("int64_source_noncanonical", category,
+                             "NUMERIC.ENCODING.NONCANONICAL");
+      } else if (request.value.type_id == CanonicalTypeId::boolean) {
+        integer = static_cast<unsigned char>(request.value.encoded_value[0]);
+      } else {
+        std::string_view text = request.value.encoded_value;
+        if (!text.empty() && text.front() == '+') text.remove_prefix(1);
+        // Grammar: [+-]?[0-9]+, no whitespace, fractional/exponent syntax,
+        // embedded NUL, locale digits or partial parses. No float intermediate.
+        std::string_view digits = text;
+        if (!digits.empty() && digits.front() == '-') digits.remove_prefix(1);
+        if (digits.empty() || !std::all_of(digits.begin(), digits.end(),
+                                         [](char ch) { return ch >= '0' && ch <= '9'; }) ||
+            (request.value.encoded_value.starts_with("+-")))
+          return CastFailure("int64_decimal_text_invalid", category);
+        const auto parsed = std::from_chars(text.data(), text.data() + text.size(), integer);
+        if (parsed.ec == std::errc::result_out_of_range)
+          return CastFailure("int64_decimal_text_out_of_range", category,
+                             "NUMERIC.CAST.OUT_OF_RANGE");
+        if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
+          return CastFailure("int64_decimal_text_invalid", category);
+      }
+      if (request.target_type_id == CanonicalTypeId::int64) {
+        if (!EncodeCanonicalInt64Value(integer, &converted.value.encoded_value))
+          return CastFailure("int64_target_noncanonical", category,
+                             "NUMERIC.ENCODING.NONCANONICAL");
+      } else if (request.target_type_id == CanonicalTypeId::boolean) {
+        if (integer != 0 && integer != 1)
+          return CastFailure("boolean_integer_requires_zero_or_one", category,
+                             "NUMERIC.CAST.OUT_OF_RANGE");
+        converted.value.encoded_value.assign(1, static_cast<char>(integer));
+      } else {
+        std::array<char, 20> buffer{};  // including sign for INT64_MIN
+        const auto rendered = std::to_chars(buffer.data(), buffer.data() + buffer.size(), integer);
+        if (rendered.ec != std::errc{})
+          return CastFailure("int64_decimal_render_failed", category);
+        converted.value.encoded_value.assign(buffer.data(), rendered.ptr);
+      }
+    }
+    if (!CanonicalOperationValueValid(converted.value))
+      return CastFailure("int64_scalar_cast_target_invalid", category,
+                         "DATATYPE.DESCRIPTOR.INVALID");
+    converted.diagnostic = MakeDatatypeOperationDiagnostic(
+        converted.status, "SB_DATATYPE_OK", "datatype.ok");
+    return converted;
   }
   if (request.value.type_id == CanonicalTypeId::real64 ||
       request.target_type_id == CanonicalTypeId::real64) {

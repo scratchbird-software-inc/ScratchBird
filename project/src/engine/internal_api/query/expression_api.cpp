@@ -3077,8 +3077,10 @@ EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request) {
             input, target, request.explicit_cast, &coerced, &category,
             &refusal_detail)) {
       const auto separator = refusal_detail.find(':');
+      const bool datatype_diagnostic = refusal_detail.rfind("DATATYPE.", 0) == 0 ||
+          refusal_detail.rfind("NUMERIC.", 0) == 0;
       const std::string diagnostic_code =
-          refusal_detail.rfind("DATATYPE.", 0) == 0
+          datatype_diagnostic
               ? refusal_detail.substr(0, separator)
               : "QOW-DIAG-QRY-008-COERCE-REFUSAL-V1";
       return ApiFailure<EngineCastValueResult>(
@@ -3086,7 +3088,7 @@ EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request) {
           "query.cast_value",
           MakeEngineApiDiagnostic(
               diagnostic_code,
-              diagnostic_code.rfind("DATATYPE.", 0) == 0
+              datatype_diagnostic
                   ? "datatype.cast.rejected"
                   : "engine.query.typed_scalar_coercion_refused",
               std::move(refusal_detail)));
