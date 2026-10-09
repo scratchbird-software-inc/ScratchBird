@@ -1,4 +1,5 @@
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -53,22 +54,12 @@ constexpr std::string_view kStaticLabel = "DBLC_STATIC_RUNTIME_CLEANUP";
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
-    std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
 bool Contains(std::string_view haystack, std::string_view needle) {
   return haystack.find(needle) != std::string_view::npos;
-}
-
-std::filesystem::path MakeTempDir() {
-  std::string tmpl = "/tmp/sb_dblc013q_packaging.XXXXXX";
-  std::vector<char> writable(tmpl.begin(), tmpl.end());
-  writable.push_back('\0');
-  char* made = ::mkdtemp(writable.data());
-  Require(made != nullptr, "mkdtemp failed for DBLC-013Q packaging service test");
-  return std::filesystem::absolute(std::filesystem::path(made)).lexically_normal();
 }
 
 std::string ReadFile(const std::filesystem::path& path) {
@@ -170,10 +161,19 @@ void TestDedicatedConfigDerivesDatabaseScopedRuntime(const std::filesystem::path
   const auto scope = ServerDatabaseRuntimeScopeId(loaded.config.database_default_path);
   Require(loaded.config.database_runtime_scope_id == scope,
           "DBLC-013Q database runtime scope id not derived");
-  Require(Contains(loaded.config.control_dir.string(), (std::filesystem::path("databases") / scope).string()),
-          "DBLC-013Q control directory is not database scoped");
-  Require(Contains(loaded.config.pid_file.string(), scope),
-          "DBLC-013Q PID file is not database scoped");
+  Require(loaded.config.control_dir == control && loaded.config.data_dir == data,
+          "DBLC-013Q explicitly configured instance roots were rewritten");
+  Require(loaded.config.pid_file == control / "sb_server.pid" &&
+              loaded.config.sbps_endpoint == control / "sb_server.sbps.sock",
+          "DBLC-013Q derived artifacts escaped explicit instance roots");
+  cli.control_dir = (root / "cli-run").string();
+  cli.runtime_dir = (root / "cli-data").string();
+  const auto overridden = ResolveServerBootstrapConfig(cli);
+  Require(overridden.ok() && overridden.config.control_dir == cli.control_dir &&
+              overridden.config.data_dir == cli.runtime_dir &&
+              overridden.config.database_runtime_scope_id == scope &&
+              overridden.config.pid_file == std::filesystem::path(cli.control_dir) / "sb_server.pid",
+          "DBLC-013Q explicit CLI instance roots did not override configured roots");
 }
 
 void TestPackagedServiceDefaultsDeriveRuntimeAndLogPaths(const std::filesystem::path& root) {
@@ -192,9 +192,11 @@ void TestPackagedServiceDefaultsDeriveRuntimeAndLogPaths(const std::filesystem::
   Require(loaded.ok(), "DBLC-013Q packaged service defaults failed to resolve");
   Require(!loaded.config.allow_current_directory,
           "DBLC-013Q service mode did not disable current-directory authority");
-  Require(loaded.config.control_dir == std::filesystem::path("/run/scratchbird"),
+  const auto scope = std::filesystem::path("databases") /
+                     ServerDatabaseRuntimeScopeId(cli.database_ref);
+  Require(loaded.config.control_dir == std::filesystem::path("/run/scratchbird") / scope,
           "DBLC-013Q service control directory default mismatch");
-  Require(loaded.config.data_dir == std::filesystem::path("/var/lib/scratchbird"),
+  Require(loaded.config.data_dir == std::filesystem::path("/var/lib/scratchbird") / scope,
           "DBLC-013Q service data directory default mismatch");
   Require(loaded.config.pid_file == loaded.config.control_dir / "sb_server.pid",
           "DBLC-013Q service PID file default mismatch");
@@ -216,6 +218,16 @@ void TestPackagedServiceDefaultsDeriveRuntimeAndLogPaths(const std::filesystem::
           "DBLC-013Q service log file default mismatch");
   Require(!loaded.config.database_runtime_scope_id.empty(),
           "DBLC-013Q service database runtime scope id was not derived");
+  cli.database_ref = (root / "second_packaged_default.sbdb").string();
+  const auto second = ResolveServerBootstrapConfig(cli);
+  Require(second.ok() && second.config.database_runtime_scope_id != loaded.config.database_runtime_scope_id &&
+              second.config.control_dir != loaded.config.control_dir &&
+              second.config.data_dir != loaded.config.data_dir &&
+              second.config.pid_file != loaded.config.pid_file &&
+              second.config.sbps_endpoint != loaded.config.sbps_endpoint &&
+              second.config.listener_control_dir != loaded.config.listener_control_dir &&
+              second.config.listener_runtime_dir != loaded.config.listener_runtime_dir,
+          "DBLC-013Q distinct database processes share default runtime artifacts");
 }
 
 void TestStartupArtifactsAreScopedPrivateAndServiceReady(const std::filesystem::path& root) {
@@ -344,10 +356,11 @@ void TestManagerRuntimeOwnerScopeAndCleanup(const std::filesystem::path& root) {
 
 }  // namespace
 
-int main() {
+int main() try {
   Require(!kGate.empty() && !kLabel.empty() && !kStaticLabel.empty(),
           "DBLC-013Q labels missing");
-  const auto root = MakeTempDir();
+  scratchbird::tests::OwnedTempDirectory owned;
+  const auto& root = owned.path();
   TestDedicatedConfigDerivesDatabaseScopedRuntime(root);
   TestPackagedServiceDefaultsDeriveRuntimeAndLogPaths(root);
   TestStartupArtifactsAreScopedPrivateAndServiceReady(root);
@@ -355,5 +368,9 @@ int main() {
   TestClusterPrivateStandalonePathFailsClosed(root);
   TestCleanupPreservesUnrelatedRuntimeArtifacts(root);
   TestManagerRuntimeOwnerScopeAndCleanup(root);
+  owned.Cleanup();
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }
