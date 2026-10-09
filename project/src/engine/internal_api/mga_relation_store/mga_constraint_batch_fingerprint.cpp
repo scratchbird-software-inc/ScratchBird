@@ -79,6 +79,12 @@ std::string CanonicalConstraintMutationBatchPayload(
   field("updated_table_temporary_session_uuid",
         batch.updated_table.temporary_session_uuid);
   field("updated_table_on_commit_action", batch.updated_table.on_commit_action);
+  if (batch.format_version == "neutral_fk_mutation_batch_v2") {
+    field("descriptor_field_count", std::to_string(batch.descriptor_field_count));
+    field("descriptor_field_bytes", std::to_string(batch.descriptor_field_bytes));
+    field("contextual_sidecar_count", std::to_string(batch.contextual_sidecar_count));
+    field("sealed_descriptor_fields", EncodeMetadataPairs(batch.sealed_descriptor_fields));
+  }
   return payload;
 }
 

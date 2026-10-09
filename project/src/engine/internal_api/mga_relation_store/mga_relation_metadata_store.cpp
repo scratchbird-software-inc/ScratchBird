@@ -31,6 +31,7 @@
 #include <optional>
 #include <ranges>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -95,6 +96,20 @@ std::string SavepointStorePath(const EngineRequestContext& context) {
 
 EngineApiDiagnostic OkDiagnostic() {
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+}
+
+// Persisted descriptors are untrusted input. The serializer's stronger
+// generation/column-cohort preconditions must remain typed replay refusals.
+bool ValidatedDescriptorBase(
+    const MgaRelationStorageDescriptor& descriptor,
+    std::vector<std::pair<std::string, std::string>>* base) {
+  if (ValidateMgaRelationStorageDescriptor(descriptor).error) return false;
+  try {
+    *base = SerializeMgaRelationStorageDescriptor(descriptor);
+  } catch (const std::invalid_argument&) {
+    return false;
+  }
+  return !base->empty();
 }
 
 std::vector<std::string> SplitTabs(const std::string& record) {
@@ -281,11 +296,20 @@ inline constexpr std::size_t kTableTemporary = 39;
 inline constexpr std::size_t kTableTemporaryScope = 40;
 inline constexpr std::size_t kTableTemporarySessionUuid = 41;
 inline constexpr std::size_t kTableOnCommitAction = 42;
-inline constexpr std::size_t kFieldCount = 43;
+inline constexpr std::size_t kLegacyFieldCount = 43;
+inline constexpr std::size_t kDescriptorFieldCount = 43;
+inline constexpr std::size_t kDescriptorFieldBytes = 44;
+inline constexpr std::size_t kContextualSidecarCount = 45;
+inline constexpr std::size_t kDescriptorFields = 46;
+inline constexpr std::size_t kFieldCount = 47;
 }  // namespace constraint_batch_field
 
-std::size_t ConstraintMutationBatchFieldCount() {
-  return constraint_batch_field::kFieldCount;
+std::size_t ConstraintMutationBatchFieldCount(std::string_view format_version) {
+  if (format_version == "neutral_fk_mutation_batch_v1")
+    return constraint_batch_field::kLegacyFieldCount;
+  if (format_version == "neutral_fk_mutation_batch_v2")
+    return constraint_batch_field::kFieldCount;
+  return 0;
 }
 
 std::vector<std::string> ConstraintMutationBatchLineFields(
@@ -337,6 +361,12 @@ std::vector<std::string> ConstraintMutationBatchLineFields(
       table.temporary_scope,
       MetadataUuidBytes(table.temporary_session_uuid),
       table.on_commit_action};
+  if (batch.format_version == "neutral_fk_mutation_batch_v2") {
+    fields.push_back(std::to_string(batch.descriptor_field_count));
+    fields.push_back(std::to_string(batch.descriptor_field_bytes));
+    fields.push_back(std::to_string(batch.contextual_sidecar_count));
+    fields.push_back(EncodeMetadataPairs(batch.sealed_descriptor_fields));
+  }
   return fields;
 }
 
@@ -638,11 +668,8 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
       }
       const auto descriptor =
           DeserializeMgaRelationStorageDescriptor(complete_fields);
-      const auto descriptor_validation =
-          ValidateMgaRelationStorageDescriptor(descriptor);
-      const auto base_fields =
-          SerializeMgaRelationStorageDescriptor(descriptor);
-      if (descriptor_validation.error || base_fields.empty() ||
+      std::vector<std::pair<std::string, std::string>> base_fields;
+      if (!ValidatedDescriptorBase(descriptor, &base_fields) ||
           complete_fields.size() < base_fields.size() + 1 ||
           !std::equal(base_fields.begin(), base_fields.end(),
                       complete_fields.begin()) ||
@@ -705,15 +732,18 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
     } else if (fields[1] == "CONSTRAINT_MUTATION_BATCH") {
       // The constraint metadata and its table-column projection are sealed in
       // this one physical record.  The immutable relation-storage descriptor
-      // UUID/generation remains the exact base binding and is not updated by
-      // this bounded D1 bridge.
+      // UUID/generation remains the exact base binding. V2 also reseals its
+      // complete descriptor/sidecar vector to this table event atomically.
       namespace cbf = constraint_batch_field;
-      if (fields.size() != cbf::kFieldCount ||
+      const bool sealed_descriptor_v2 = fields.size() == cbf::kFieldCount &&
+          fields[cbf::kFormatVersion] == "neutral_fk_mutation_batch_v2";
+      const bool legacy_v1 = fields.size() == cbf::kLegacyFieldCount &&
+          fields[cbf::kFormatVersion] == "neutral_fk_mutation_batch_v1";
+      if ((!sealed_descriptor_v2 && !legacy_v1) ||
           fields[cbf::kMagic] != kRowStoreMagic ||
           fields[cbf::kRecordKind] != "CONSTRAINT_MUTATION_BATCH" ||
           ParseU64(fields[cbf::kCreatorTx]) == 0 ||
           ParseU64(fields[cbf::kEventSequence]) == 0 ||
-          fields[cbf::kFormatVersion] != "neutral_fk_mutation_batch_v1" ||
           fields[cbf::kSealState] != "sealed" ||
           fields[cbf::kBatchHash].size() != 71 ||
           !fields[cbf::kBatchHash].starts_with("sha256:") ||
@@ -826,6 +856,16 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
             "temporary_constraint_mutation_batch_unsupported");
       }
       batch.updated_table = table;
+      if (sealed_descriptor_v2) {
+        batch.descriptor_field_count = ParseU64(fields[cbf::kDescriptorFieldCount]);
+        batch.descriptor_field_bytes = ParseU64(fields[cbf::kDescriptorFieldBytes]);
+        const auto sidecars = ParseU64(fields[cbf::kContextualSidecarCount]);
+        if (sidecars > std::numeric_limits<std::uint32_t>::max())
+          return MakeInvalidRequestDiagnostic("mga.relation_metadata",
+              "constraint_descriptor_sidecar_count_invalid");
+        batch.contextual_sidecar_count = static_cast<std::uint32_t>(sidecars);
+        batch.sealed_descriptor_fields = decode_pairs(fields[cbf::kDescriptorFields]);
+      }
       const auto canonical_fields = ConstraintMutationBatchLineFields(
           batch, table.creator_tx, table.event_sequence);
       if (canonical_fields != fields) {
@@ -847,6 +887,100 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
                                              table.creator_tx,
                                              table.event_sequence)) {
         continue;
+      }
+      if (sealed_descriptor_v2) {
+        const auto& complete = batch.sealed_descriptor_fields;
+        const auto descriptor = DeserializeMgaRelationStorageDescriptor(complete);
+        std::vector<std::pair<std::string, std::string>> base;
+        std::vector<MgaContextualTextDescriptorFieldPairV2> raw;
+        for (const auto& [key, value] : complete)
+          raw.push_back({{key.begin(), key.end()}, {value.begin(), value.end()}});
+        MgaContextualTextRawBytesV2 canonical;
+        std::uint64_t byte_count = 0;
+        MgaContextualTextSidecarSetDiagnosticV2 diagnostic;
+        if (complete.empty() || complete.size() != batch.descriptor_field_count ||
+            !ValidatedDescriptorBase(descriptor, &base) ||
+            complete.size() < base.size() + 1 ||
+            !std::equal(base.begin(), base.end(), complete.begin()) ||
+            descriptor.database_uuid != batch.database_uuid ||
+            descriptor.relation_uuid != table.table_uuid ||
+            descriptor.descriptor_uuid != batch.child_relation_descriptor_uuid ||
+            descriptor.descriptor_generation != batch.child_relation_descriptor_generation ||
+            complete.back().first != kMgaContextualTextSidecarSetSealKeyV2 ||
+            complete.back().second.size() != MgaContextualTextSha256V2{}.size() ||
+            !SerializeMgaContextualTextDescriptorFieldVectorV2(raw, &canonical, &byte_count, &diagnostic) ||
+            byte_count != batch.descriptor_field_bytes) {
+          return MakeInvalidRequestDiagnostic("mga.relation_metadata",
+              "constraint_sealed_descriptor_invalid");
+        }
+        // An FK changes catalog semantics, never the physical descriptor.
+        // Bind to the exact preceding table event, not merely matching UUIDs.
+        const CrudTableRecord* predecessor = nullptr;
+        for (const auto& prior : decoded.tables) {
+          if (prior.table_uuid != table.table_uuid ||
+              prior.event_sequence != batch.base_table_event_sequence) continue;
+          if (predecessor != nullptr || prior.event_sequence >= table.event_sequence)
+            return MakeInvalidRequestDiagnostic("mga.relation_metadata",
+                "constraint_descriptor_predecessor_ambiguous");
+          predecessor = &prior;
+        }
+        if (predecessor == nullptr)
+          return MakeInvalidRequestDiagnostic("mga.relation_metadata",
+              "constraint_descriptor_predecessor_missing");
+        const std::vector<std::pair<std::string, std::string>>* prior_fields = nullptr;
+        for (const auto& prior : decoded.sealed_relation_descriptor_snapshots) {
+          if (prior.relation_uuid != table.table_uuid ||
+              prior.event_sequence != predecessor->event_sequence ||
+              prior.creator_tx != predecessor->creator_tx) continue;
+          if (prior_fields != nullptr)
+            return MakeInvalidRequestDiagnostic("mga.relation_metadata",
+                "constraint_descriptor_predecessor_ambiguous");
+          prior_fields = &prior.descriptor_fields;
+        }
+        const auto persisted = LoadAdmittedDescriptorFieldsSnapshot(
+            descriptor_path, descriptor_lines, table.table_uuid);
+        if (!prior_fields && persisted) {
+          const auto prior = persisted->find(table.table_uuid);
+          if (prior != persisted->end()) prior_fields = &prior->second;
+        }
+        std::vector<std::pair<std::string, std::string>> prior_base;
+        if (!prior_fields || !ValidatedDescriptorBase(
+                DeserializeMgaRelationStorageDescriptor(*prior_fields), &prior_base) ||
+            prior_base != base)
+          return MakeInvalidRequestDiagnostic("mga.relation_metadata",
+              "constraint_physical_descriptor_changed");
+
+        EngineContextualTextPolicyRowSetV2 policy_rows;
+        if (batch.contextual_sidecar_count != 0) {
+          const auto policy = LoadCurrentEngineContextualTextPolicyRowSetForPublicationV2();
+          if (!policy.ok) return policy.diagnostic;
+          policy_rows = policy.rows;
+        }
+        table.bound_relation_generation = descriptor.relation_generation;
+        MgaSealedContextualTextDescriptorMaterialV2 expected;
+        EngineApiDiagnostic seal_diagnostic;
+        if (!BuildMgaSealedContextualTextDescriptorMaterialV2(
+                context, table, descriptor, policy_rows, &expected, &seal_diagnostic))
+          return seal_diagnostic;
+        // Reconstructing the canonical set also validates owner/event, column
+        // projections, ordinal ordering and the complete cryptographic seal.
+        if (expected.sealed_set.descriptor_field_count != batch.descriptor_field_count ||
+            expected.sealed_set.descriptor_field_bytes != batch.descriptor_field_bytes ||
+            expected.sealed_set.contextual_sidecar_count != batch.contextual_sidecar_count ||
+            expected.sealed_set.descriptor_fields != raw)
+          return MakeInvalidRequestDiagnostic("mga.relation_metadata",
+              "constraint_contextual_descriptor_seal_invalid");
+        CrudSealedRelationDescriptorSnapshot snapshot;
+        snapshot.creator_tx = table.creator_tx;
+        snapshot.event_sequence = table.event_sequence;
+        snapshot.relation_uuid = table.table_uuid;
+        snapshot.relation_descriptor_uuid = descriptor.descriptor_uuid;
+        snapshot.relation_descriptor_generation = descriptor.descriptor_generation;
+        snapshot.descriptor_field_count = batch.descriptor_field_count;
+        snapshot.descriptor_field_bytes = batch.descriptor_field_bytes;
+        snapshot.contextual_sidecar_count = batch.contextual_sidecar_count;
+        snapshot.descriptor_fields = complete;
+        decoded.sealed_relation_descriptor_snapshots.push_back(std::move(snapshot));
       }
       decoded.max_event_sequence =
           std::max(decoded.max_event_sequence, table.event_sequence);

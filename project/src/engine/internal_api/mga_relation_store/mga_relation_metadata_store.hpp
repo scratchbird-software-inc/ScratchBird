@@ -166,6 +166,7 @@ std::vector<std::string> ConstraintMutationBatchLineFields(
     const MgaConstraintMutationBatch& batch,
     std::uint64_t creator_tx,
     std::uint64_t event_sequence);
-std::size_t ConstraintMutationBatchFieldCount();
+std::size_t ConstraintMutationBatchFieldCount(
+    std::string_view format_version = "neutral_fk_mutation_batch_v1");
 
 }  // namespace scratchbird::engine::internal_api

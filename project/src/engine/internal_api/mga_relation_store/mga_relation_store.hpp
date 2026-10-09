@@ -82,6 +82,13 @@ struct MgaConstraintMutationBatch {
   std::string constraint_kind;
   std::string canonical_constraint_envelope;
   CrudTableRecord updated_table;
+  // Storage-produced v2 publication material, never caller authority. The
+  // physical descriptor identity is unchanged, but its complete contextual
+  // sidecar set is resealed for the new table metadata event in the same record.
+  std::uint64_t descriptor_field_count{0};
+  std::uint64_t descriptor_field_bytes{0};
+  std::uint32_t contextual_sidecar_count{0};
+  std::vector<std::pair<std::string, std::string>> sealed_descriptor_fields;
 };
 
 std::string ComputeMgaConstraintMutationBatchHash(

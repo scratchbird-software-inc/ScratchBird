@@ -23,6 +23,7 @@
 #include "catalog/constraint_metadata_codec.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "descriptor_value_runtime.hpp"
+#include "disk_device.hpp"
 #include "dml/mutation_savepoint_capability.hpp"
 #include "ipar_fault_injection.hpp"
 #include "local_transaction_store.hpp"
@@ -404,6 +405,8 @@ EngineApiDiagnostic AppendMgaConstraintMutationBatch(
           batch.batch_uuid,
           scratchbird::core::platform::UuidKind::row) ||
       !batch.batch_hash.empty() || batch.mutation_count != 1 ||
+      batch.descriptor_field_count != 0 || batch.descriptor_field_bytes != 0 ||
+      batch.contextual_sidecar_count != 0 || !batch.sealed_descriptor_fields.empty() ||
       !ValidConstraintBatchUuid(
           batch.database_uuid,
           scratchbird::core::platform::UuidKind::database) ||
@@ -854,28 +857,54 @@ EngineApiDiagnostic AppendMgaConstraintMutationBatch(
   }
   for (const auto& [column_name, descriptor] : current_owner->columns) {
     (void)column_name;
-    if (descriptor.find("constraint_mutation_batch_state=sealed") !=
-        std::string::npos) {
+    const auto fields = StrictMetadataFields(descriptor);
+    if (!fields || MetadataTextField(*fields, {"constraint_mutation_batch_state"}) == "sealed") {
       return MakeInvalidRequestDiagnostic(
           kOperation, "bounded_d1_prior_constraint_batch_unsupported");
     }
   }
+  const auto policy = LoadCurrentEngineContextualTextPolicyRowSetForPublicationV2();
+  if (!policy.ok) return policy.diagnostic;
+  std::vector<std::string> allocator_lines;
   const auto reservation = ReserveEventSequenceRange(
-      context,
-      "relation_metadata",
-      MetadataStorePath(context),
-      1,
-      [&context]() { return ScanNextMetadataEventSequence(context); });
+      context, "relation_metadata", MetadataStorePath(context), 1,
+      [&context]() { return ScanNextMetadataEventSequence(context); },
+      &allocator_lines);
   if (!reservation.ok) return reservation.diagnostic;
+  const auto abandon_reservation = [&]() {
+    AbandonDeferredEventSequenceReservation(reservation);
+    allocator_lines.clear();
+  };
 
   CrudTableRecord table = batch.updated_table;
   table.creator_tx = context.local_transaction_id;
   table.event_sequence = reservation.first;
+  // Constraint metadata is a new table event, even though D1 does not change
+  // the physical descriptor identity/generation. Publish a complete sidecar
+  // set sealed to that event atomically with the constraint/table record.
+  // A second append would expose an unpaired table event after a partial write.
+  table.bound_relation_generation = child_relation.relation_generation;
+  MgaSealedContextualTextDescriptorMaterialV2 material;
+  EngineApiDiagnostic material_diagnostic;
+  if (!BuildMgaSealedContextualTextDescriptorMaterialV2(
+          context, table, child_relation, policy.rows, &material, &material_diagnostic)) {
+    abandon_reservation();
+    return material_diagnostic;
+  }
   MgaConstraintMutationBatch sealed_batch = batch;
+  sealed_batch.format_version = "neutral_fk_mutation_batch_v2";
   sealed_batch.updated_table = table;
+  sealed_batch.descriptor_field_count = material.sealed_set.descriptor_field_count;
+  sealed_batch.descriptor_field_bytes = material.sealed_set.descriptor_field_bytes;
+  sealed_batch.contextual_sidecar_count = material.sealed_set.contextual_sidecar_count;
+  for (const auto& field : material.sealed_set.descriptor_fields)
+    sealed_batch.sealed_descriptor_fields.emplace_back(
+        std::string(field.key_raw_bytes.begin(), field.key_raw_bytes.end()),
+        std::string(field.value_raw_bytes.begin(), field.value_raw_bytes.end()));
   sealed_batch.batch_hash = ComputeMgaConstraintMutationBatchHash(
       sealed_batch, table.creator_tx, table.event_sequence);
   if (sealed_batch.batch_hash.empty()) {
+    abandon_reservation();
     return MakeInvalidRequestDiagnostic(kOperation,
                                         "batch_hash_generation_failed");
   }
@@ -883,11 +912,31 @@ EngineApiDiagnostic AppendMgaConstraintMutationBatch(
   // have passed validation, and is never copied from an SBLR operand.
   const auto line_fields = ConstraintMutationBatchLineFields(
       sealed_batch, table.creator_tx, table.event_sequence);
-  if (line_fields.size() != ConstraintMutationBatchFieldCount()) {
+  if (line_fields.size() != ConstraintMutationBatchFieldCount(sealed_batch.format_version)) {
+    abandon_reservation();
     return MakeInvalidRequestDiagnostic(kOperation,
                                         "batch_codec_field_count_invalid");
   }
   const std::string line = JoinLine(line_fields);
+  // All fallible materialization has finished. Persist the reservation before
+  // its metadata event: restart uses the durable allocator high-water mark.
+  // An append failure may retain a consumed event, but never reuse it.
+  if (!AppendDeferredEventSequenceAllocatorLines(context, &allocator_lines, nullptr)) {
+    // A failed write/flush is not proof of zero effects. Retain the in-process
+    // reservation and let durable framing/high-water recovery reconcile it.
+    return MakeInvalidRequestDiagnostic(kOperation,
+                                        "sealed_batch_allocator_append_failed");
+  }
+  const auto allocator_sync = scratchbird::storage::disk::SyncFilesystemPath(
+      reservation.allocator_path, true);
+  if (!allocator_sync.ok())
+    return MakeInvalidRequestDiagnostic(kOperation,
+        "sealed_batch_allocator_sync_failed:" + allocator_sync.diagnostic.diagnostic_code);
+  const auto directory_sync = scratchbird::storage::disk::SyncParentDirectoryPath(
+      reservation.allocator_path);
+  if (!directory_sync.ok())
+    return MakeInvalidRequestDiagnostic(kOperation,
+        "sealed_batch_allocator_directory_sync_failed:" + directory_sync.diagnostic.diagnostic_code);
   if (!AppendLine(MetadataStorePath(context), line)) {
     return MakeInvalidRequestDiagnostic(kOperation,
                                         "sealed_batch_append_failed");

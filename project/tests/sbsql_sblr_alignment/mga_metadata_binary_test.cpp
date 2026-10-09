@@ -1,14 +1,15 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "../../src/engine/internal_api/mga_relation_store/mga_relation_metadata_store.cpp"
+#include "../support/owned_temp_directory.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <source_location>
 namespace a = scratchbird::engine::internal_api;
 void Check(bool ok, std::source_location at = std::source_location::current()) {
-  if (!ok) { std::cerr << "failure at " << at.line() << '\n'; std::abort(); }
+  if (!ok) throw std::runtime_error("failure at " + std::to_string(at.line()));
 }
-int main() {
+int main() try {
   a::EngineUuid id{{1,144,0,0,0,0,112,0,128,0,0,0,0,0,0,9}}, decoded_id;
   const auto binary = a::MetadataUuidBytes(id);
   Check(binary.size() == 16 && a::ReadMetadataUuid(binary, &decoded_id) && decoded_id == id);
@@ -58,5 +59,90 @@ int main() {
   Check(!hash.empty() && hash != a::ConstraintMutationBatchSha256(batch,7,10));
   batch.constraint_uuid.bytes[15] ^= 1;
   Check(hash != a::ConstraintMutationBatchSha256(batch,7,9));
-
+  // Serialization/fingerprint only: this arbitrary vector is not claimed as
+  // an admitted descriptor. Live publication/reopen checks the actual seal.
+  batch.format_version = "neutral_fk_mutation_batch_v2";
+  batch.descriptor_field_count = pairs.size();
+  batch.descriptor_field_bytes = 123;
+  batch.contextual_sidecar_count = 1;
+  batch.sealed_descriptor_fields = pairs;
+  const auto sealed_fields = a::ConstraintMutationBatchLineFields(batch, 7, 9);
+  Check(sealed_fields.size() == 47 && sealed_fields.size() ==
+      a::ConstraintMutationBatchFieldCount(batch.format_version));
+  Check(a::ConstraintMutationBatchFieldCount("unrecognized") == 0);
+  Check(sealed_fields[43] == "2" && sealed_fields[44] == "123" && sealed_fields[45] == "1");
+  Check(a::DecodeMetadataPairs(sealed_fields[46], &decoded) && decoded == pairs);
+  const auto sealed_hash = a::ConstraintMutationBatchSha256(batch, 7, 9);
+  Check(sealed_hash != hash);
+  for (unsigned dimension = 0; dimension < 4; ++dimension) {
+    auto changed = batch;
+    if (dimension == 0) ++changed.descriptor_field_count;
+    if (dimension == 1) ++changed.descriptor_field_bytes;
+    if (dimension == 2) ++changed.contextual_sidecar_count;
+    if (dimension == 3) changed.sealed_descriptor_fields.front().second[0] ^= 1;
+    Check(sealed_hash != a::ConstraintMutationBatchSha256(changed, 7, 9));
+  }
+  Check(sealed_hash != a::ConstraintMutationBatchSha256(batch, 8, 9));
+  Check(sealed_hash != a::ConstraintMutationBatchSha256(batch, 7, 10));
+  const auto sealed_frame = a::EncodeMgaMetadataFields(sealed_fields);
+  Check(a::DecodeMgaMetadataFields(sealed_frame, &read) && read == sealed_fields);
+  for (std::size_t size = 0; size < sealed_frame.size(); ++size) {
+    read = {"unchanged"};
+    Check(!a::DecodeMgaMetadataFields(sealed_frame.substr(0, size), &read) &&
+          read == std::vector<std::string>{"unchanged"});
+  }
+  // These frames and outer hashes are complete and valid. Refusal must arise
+  // from descriptor semantics, not checksum damage, framing or an exception.
+  scratchbird::tests::OwnedTempDirectory temporary;
+  a::EngineRequestContext context;
+  context.database_uuid = id;
+  context.database_path = (temporary.path() / "malformed-metadata").string();
+  batch.mutation_count = 1;
+  batch.child_relation_descriptor_generation = 1;
+  batch.parent_relation_descriptor_generation = 1;
+  batch.constraint_metadata_generation = 1;
+  batch.base_table_event_sequence = 1;
+  batch.parent_base_table_event_sequence = 1;
+  batch.support_family = "btree";
+  batch.support_policy = "required_exact_unique_index";
+  batch.match_policy = "simple";
+  batch.on_update_action = batch.on_delete_action = "no_action";
+  batch.enforcement_timing = "immediate";
+  batch.constraint_kind = "foreign_key";
+  for (const auto& malformed : std::vector<std::vector<std::pair<std::string,std::string>>>{
+           {}, pairs, {{"relation_generation", "0"}, {"descriptor_generation", "0"}}}) {
+    batch.sealed_descriptor_fields = malformed;
+    batch.descriptor_field_count = malformed.size();
+    batch.batch_hash = a::ConstraintMutationBatchSha256(batch, 7, 9);
+    const auto record = a::EncodeMgaMetadataFields(a::ConstraintMutationBatchLineFields(batch, 7, 9));
+    {
+      std::ofstream out(context.database_path + ".sb.mga_relation_metadata", std::ios::binary | std::ios::trunc);
+      out.write(record.data(), record.size());
+      Check(out.good());
+    }
+    a::RelationReadSnapshot state;
+    const auto result = a::LoadMgaMetadata(&state, context);
+    Check(result.error && result.detail.find("constraint_sealed_descriptor_invalid") != std::string::npos);
+    Check(state.tables.empty() && state.sealed_relation_descriptor_snapshots.empty());
+    if (!malformed.empty()) {
+      const auto table_frame = a::EncodeMgaMetadataFields({
+          "SBMGA1", "TABLE_METADATA_SEALED_DESCRIPTOR_V2", "7", "9",
+          "mga_sealed_contextual_text_sidecar_set_v2", "sealed", binary,
+          "malformed", a::EncodeMetadataPairs(pairs), "0", "", std::string(16,'\0'), "",
+          binary, "1", std::to_string(malformed.size()), "123", "1", a::EncodeMetadataPairs(malformed)});
+      {
+        std::ofstream out(context.database_path + ".sb.mga_relation_metadata", std::ios::binary | std::ios::trunc);
+        out.write(table_frame.data(), table_frame.size());
+        Check(out.good());
+      }
+      const auto table_result = a::LoadMgaMetadata(&state, context);
+      Check(table_result.error && table_result.detail.find("sealed_table_metadata_v2_descriptor_invalid") != std::string::npos);
+      Check(state.tables.empty() && state.sealed_relation_descriptor_snapshots.empty());
+    }
+  }
+  temporary.Cleanup();
+  return 0;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return 1;
 }
