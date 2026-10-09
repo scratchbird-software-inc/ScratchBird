@@ -26,7 +26,8 @@ int main() {
   Check(i::ParseU64("18446744073709551615", &ok) == UINT64_MAX && ok);
   Check(i::ParseU64("18446744073709551616", &ok) == 0 && !ok);
   Check(i::ParseU64("-1", &ok) == 0 && !ok);
-  auto descriptor = i::OperationDescriptor("fixture", "fixture");
+  m::MetricDescriptor descriptor;
+  static_cast<m::MetricDescriptorDefinition&>(descriptor) = i::OperationDescriptor("fixture", "fixture");
   m::MetricValue metric; metric.family = descriptor.family;
   metric.type = m::MetricType::counter; metric.value = UINT64_MAX;
   i::IndexOperationMetricSample sample; sample.identity = id;

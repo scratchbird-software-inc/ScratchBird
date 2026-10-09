@@ -24,6 +24,10 @@ using scratchbird::core::metrics::MetricValidationResult;
 using scratchbird::core::metrics::MetricValue;
 using scratchbird::core::platform::u64;
 
+// Definitions only; catalog admission supplies binary bindings and series.
+const std::vector<scratchbird::core::metrics::MetricDescriptorDefinition>&
+IndexOperationMetricDescriptorDefinitions();
+
 struct IndexMetricIdentity {
   scratchbird::core::metrics::MetricUuid index_uuid;
   std::string index_family;
@@ -198,7 +202,7 @@ struct IndexOperationMetricSupportBundleLimits {
   u64 max_rows = 128;
   u64 max_output_bytes = 32ull * 1024ull;
   u64 max_key_bytes = 128;
-  u64 max_value_bytes = 512;
+  u64 max_value_bytes = 512;  // Native scalar payload; frame counts in max_output_bytes.
   u64 max_label_bytes = 512;
 };
 

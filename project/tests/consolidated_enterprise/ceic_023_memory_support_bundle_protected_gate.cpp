@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/diagnostic_value_fixture.hpp"
+#include "../support/metric_projection_fixture.hpp"
 
 // CEIC-023 focused validation for bounded low-memory memory support bundles
 // and protected-memory security review evidence.
@@ -134,8 +135,7 @@ memory::MemorySupportBundleRequest BaseRequest(
   request.mode = memory::MemorySupportBundleMode::low_memory;
   request.snapshot = Snapshot();
   request.diagnostics.push_back(SecretDiagnostic());
-  request.metrics.push_back({"sb_memory_allocated_bytes", {}, metrics::MetricType::gauge, 8192.0});
-  request.metrics.push_back({"sb_memory_secret_token_bytes", {}, metrics::MetricType::gauge, 7.0});
+  request.metrics = metrics::DefaultMetricRegistry().SnapshotCurrent(false);
   request.pressure_transitions.push_back(
       {"NORMAL", "HIGH_PRESSURE", "high_threshold", 8192, 10000, false});
   request.pressure_transitions.push_back(
@@ -175,6 +175,19 @@ void LowMemoryBundleIsBoundedRedactedAndNonAuthoritative() {
   auto request = BaseRequest(protected_result.evidence);
   const auto bundle = memory::BuildMemorySupportBundleEvidence(std::move(request));
   Require(bundle.ok(), "CEIC-023 low-memory support bundle failed");
+  Require(bundle.metric_records.size() == 2, "CEIC-023 admitted metric records missing");
+  bool native_value = false, excluded = false;
+  for (const auto& record : bundle.metric_records) {
+    if (record.family == "sb_memory_allocated_bytes") {
+      const auto* descriptor = metrics::DefaultMetricRegistry().FindDescriptor(record.family);
+      const auto decoded = metrics::DecodeMetricValue(*descriptor, record.metric.encoded_value);
+      Require(decoded.ok(), "CEIC-023 native metric decode failed");
+      native_value = std::get<std::uint64_t>(decoded.value->value) == 8192;
+    } else if (record.family == "<redacted>") {
+      excluded = record.value_redacted && record.metric.encoded_value.empty();
+    }
+  }
+  Require(native_value && excluded, "CEIC-023 metric value or protected exclusion changed");
   Require(bundle.low_memory_mode, "CEIC-023 low-memory mode flag missing");
   Require(bundle.redaction_before_buffering,
           "CEIC-023 redaction-before-buffering flag missing");
@@ -293,11 +306,29 @@ void RedactionHelperExcludesProtectedValues() {
 }  // namespace
 
 int main() {
+  scratchbird::tests::MetricProjectionFixture fixture(
+      scratchbird::tests::FixtureUuid(1540, 1), scratchbird::tests::FixtureUuid(1540, 2), 1541);
+  // Explicit component observations, not production activation or allocator
+  // measurements. The protected-name sample exercises pre-buffer redaction.
+  for (const auto& family : {"sb_memory_allocated_bytes", "sb_memory_secret_token_bytes"}) {
+    metrics::MetricDescriptorDefinition definition;
+    definition.family = family;
+    definition.type = metrics::MetricType::gauge;
+    definition.unit = metrics::MetricUnit::bytes;
+    definition.value_type = metrics::MetricScalarType::uint64;
+    definition.namespace_path = "sys.metrics.memory";
+    definition.producer_owner = "core_memory";
+    definition.help = "CEIC-023 component support projection";
+    fixture.AdmitDefinition(definition, {});
+    fixture.Emit(family, {}, std::uint64_t{std::string_view(family) == "sb_memory_allocated_bytes" ? 8192u : 7u});
+  }
+  fixture.Seal();
   LowMemoryBundleIsBoundedRedactedAndNonAuthoritative();
   EmergencySummaryUsesFixedBoundedRows();
   UnsafeProtectedReviewFailsClosed();
   ZeroLimitsDoNotBecomeUnboundedOutput();
   RedactionHelperExcludesProtectedValues();
+  fixture.VerifyAndDrain();
   std::cout << "CEIC-023 memory support bundle protected gate passed\n";
   return EXIT_SUCCESS;
 }

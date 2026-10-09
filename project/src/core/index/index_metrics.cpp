@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "index_metrics.hpp"
+#include "metric_bound_definition.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -220,17 +221,16 @@ std::string EvidenceDigest(std::string_view key,
   return out.str();
 }
 
-MetricDescriptor OperationDescriptor(std::string family, std::string help) {
-  MetricDescriptor descriptor;
+scratchbird::core::metrics::MetricDescriptorDefinition OperationDescriptor(std::string family, std::string help) {
+  scratchbird::core::metrics::MetricDescriptorDefinition descriptor;
   descriptor.family = std::move(family);
   descriptor.type = MetricType::counter;
   descriptor.value_type = scratchbird::core::metrics::MetricScalarType::uint64;
-  descriptor.unit = MetricUnit::count;
+  descriptor.unit = MetricUnit::none;
   descriptor.namespace_path = "sys.metrics.indexes.operations";
   descriptor.help = std::move(help);
   descriptor.producer_owner = "index_operation_runtime";
   descriptor.security_family = "INDEX_OPERATION_METRICS";
-  descriptor.readiness = MetricReadiness::implemented;
   descriptor.labels = {
       MetricLabelDescriptor{"index_uuid", true, false, MetricLabelType::system_uuid},
       MetricLabelDescriptor{"index_family", true, false},
@@ -644,21 +644,24 @@ RequiredIndexOperationCounterKinds() {
   return kinds;
 }
 
+const std::vector<scratchbird::core::metrics::MetricDescriptorDefinition>&
+IndexOperationMetricDescriptorDefinitions() {
+  static const auto definitions = [] {
+    std::vector<scratchbird::core::metrics::MetricDescriptorDefinition> rows;
+    for (const auto kind : RequiredIndexOperationCounterKinds())
+      rows.push_back(OperationDescriptor(IndexOperationCounterFamily(kind),
+          std::string("Evidence-only index operation counter for ") + IndexOperationCounterName(kind)));
+    return rows;
+  }();
+  return definitions;
+}
+
 MetricValidationResult EnsureIndexOperationMetricDescriptors(
     scratchbird::core::metrics::MetricRegistry* registry) {
   auto& target = registry == nullptr ? DefaultMetricRegistry() : *registry;
-  for (const auto kind : RequiredIndexOperationCounterKinds()) {
-    if (target.FindDescriptor(IndexOperationCounterFamily(kind)) != nullptr) {
-      continue;
-    }
-    const std::string operation = IndexOperationCounterName(kind);
-    const auto result = target.RegisterDescriptor(OperationDescriptor(
-        IndexOperationCounterFamily(kind),
-        "CEIC-040 evidence-only index operation counter for " + operation +
-            " operations."));
-    if (!result.ok) {
-      return result;
-    }
+  for (const auto& definition : IndexOperationMetricDescriptorDefinitions()) {
+    const auto result = scratchbird::core::metrics::ValidateBoundMetricDefinition(target, definition);
+    if (!result.ok) return result;
   }
   return scratchbird::core::metrics::MetricOk();
 }
@@ -747,6 +750,9 @@ IndexOperationMetricPublishResult PublishIndexOperationMetrics(
   result.metric_results.push_back(EnsureIndexOperationMetricDescriptors());
   if (!result.metric_results.back().ok) {
     result.ok = false;
+    result.diagnostic_code = "SB_INDEX_OPERATION_METRICS.METRIC_PUBLISH_FAILED";
+    result.detail = result.metric_results.back().detail;
+    return result;
   }
   for (const auto kind : RequiredIndexOperationCounterKinds()) {
     const u64 value = CounterValue(sample.counters, kind);
@@ -902,7 +908,12 @@ IndexOperationMetricSupportBundleResult BuildIndexOperationMetricSupportBundle(
     const auto* descriptor = DefaultMetricRegistry().FindDescriptor(metric.family);
     scratchbird::core::metrics::MetricSupportProjection projection;
     MetricValue visible;
-    if (!descriptor || !scratchbird::core::metrics::ProjectMetricForSupport(
+    const auto& definitions = IndexOperationMetricDescriptorDefinitions();
+    const auto definition_at = std::find_if(definitions.begin(), definitions.end(),
+        [&](const auto& definition) { return definition.family == metric.family; });
+    if (!descriptor || definition_at == definitions.end() ||
+        !scratchbird::core::metrics::ValidateBoundMetricDefinition(DefaultMetricRegistry(), *definition_at).ok ||
+        !scratchbird::core::metrics::ProjectMetricForSupport(
           *descriptor, metric, false, &projection, &visible))
       return RefuseSupportBundle("SB_INDEX_OPERATION_SUPPORT_BUNDLE.INVALID_METRIC",
                                 "index.operation_support_bundle.invalid_metric");
@@ -921,8 +932,10 @@ IndexOperationMetricSupportBundleResult BuildIndexOperationMetricSupportBundle(
     if (!encoded.ok())
       return RefuseSupportBundle("SB_INDEX_OPERATION_SUPPORT_BUNDLE.INVALID_METRIC",
                                 "index.operation_support_bundle.invalid_redacted_metric");
+    // The value bound covers the native UINT64 counter. Labels have their own
+    // bound; the full framed metric and duplicated fields count toward output.
     if (label_bytes > request.limits.max_label_bytes ||
-        encoded.bytes.size() > request.limits.max_value_bytes) {
+        sizeof(u64) > request.limits.max_value_bytes) {
       ++result.dropped_row_count;
       continue;
     }
@@ -946,7 +959,9 @@ IndexOperationMetricSupportBundleResult BuildIndexOperationMetricSupportBundle(
     row.source_generation = source_generation;
     row.source_kind = RedactForBundle(source_kind, &redacted);
     row.provenance = RedactForBundle(provenance, &redacted);
-    row.evidence_digest = RedactForBundle(evidence_digest, &redacted);
+    // This field aliases the schema-sensitive label omitted above. Keyword
+    // matching must not expose an innocently named protected digest here.
+    row.evidence_digest = kProtectedExcluded;
     row.freshness_microseconds = freshness_value;
     row.redacted = redacted;
     row.redaction_class = redacted ? "protected_material" : "public";

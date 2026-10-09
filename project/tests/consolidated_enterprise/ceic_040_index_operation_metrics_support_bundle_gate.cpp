@@ -9,12 +9,14 @@
 
 // CEIC-040 focused validation for index operation metrics and support bundles.
 #include "index_metrics.hpp"
+#include "../support/metric_projection_fixture.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <iostream>
 #include <map>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -69,7 +71,7 @@ bool EvidenceHas(const std::vector<std::string>& evidence,
 index::IndexOperationMetricSample GoodSample(std::string suffix = "positive") {
   index::IndexOperationMetricSample sample;
   const std::vector<std::string> cases = {"positive", "descriptor-only", "authority",
-      "missing-generation", "freshness", "cluster", "successor", "bundle-negative"};
+      "missing-generation", "freshness", "cluster", "successor", "bundle-negative", "extrema"};
   const auto found = std::find(cases.begin(), cases.end(), suffix);
   Require(found != cases.end(), "unknown metric identity fixture");
   sample.identity.index_uuid = scratchbird::tests::FixtureUuid(
@@ -101,6 +103,26 @@ index::IndexOperationMetricSample GoodSample(std::string suffix = "positive") {
   sample.counters.recovery = 11;
   sample.counters.benchmark = 12;
   return sample;
+}
+
+void AdmitOperationSeries(scratchbird::tests::MetricProjectionFixture& fixture,
+                          const index::IndexOperationMetricSample& sample) {
+  const auto& id = sample.identity;
+  for (const auto kind : index::RequiredIndexOperationCounterKinds()) {
+    const auto& definitions = index::IndexOperationMetricDescriptorDefinitions();
+    const auto definition = std::find_if(definitions.begin(), definitions.end(),
+        [&](const auto& row) { return row.family == index::IndexOperationCounterFamily(kind); });
+    Require(definition != definitions.end(), "operation definition missing");
+    fixture.AdmitDefinition(*definition, {{"index_uuid", id.index_uuid},
+        {"index_family", id.index_family}, {"route_kind", id.route_kind},
+        {"operation", index::IndexOperationCounterName(kind)}, {"result", id.result},
+        {"reason", id.reason}, {"index_generation", id.index_generation},
+        {"route_generation", std::to_string(id.route_generation)},
+        {"source_generation", std::to_string(id.source_generation)},
+        {"freshness_microseconds", std::to_string(id.freshness_microseconds)},
+        {"source_kind", id.source_kind}, {"provenance", id.provenance},
+        {"evidence_digest", id.evidence_digest}, {"authority_scope", "evidence_only"}});
+  }
 }
 
 std::vector<metrics::MetricValue> SnapshotFor(const metrics::MetricUuid& index_uuid) {
@@ -172,8 +194,14 @@ void ValidatePositivePath() {
   request.metrics = SnapshotFor(sample.identity.index_uuid);
   request.filter_index_uuid = sample.identity.index_uuid;
   request.require_all_operation_counters = true;
+  // Typed metric frames plus the independent structured projection own more
+  // bytes than the retired textual values. Request an explicit bounded budget
+  // for all twelve rows; separately prove refusal at the default 32 KiB cap.
+  request.limits.max_output_bytes = 64ull * 1024ull;
   const auto bundle = index::BuildIndexOperationMetricSupportBundle(request);
-  Require(bundle.ok, "CEIC-040 positive support bundle failed");
+  Require(bundle.ok, "CEIC-040 positive support bundle failed: " + bundle.diagnostic_code +
+      ":" + bundle.detail + ";rows=" + std::to_string(bundle.rows.size()) +
+      ";dropped=" + std::to_string(bundle.dropped_row_count) + ";bytes=" + std::to_string(bundle.output_bytes));
   Require(bundle.all_required_counters_present,
           "CEIC-040 support bundle missed required counters");
   Require(bundle.rows.size() == index::RequiredIndexOperationCounterKinds().size(),
@@ -216,6 +244,8 @@ void ValidatePositivePath() {
     Require(row.source_kind == "index_operation_runtime",
             "CEIC-040 row source field missing");
     Require(!row.provenance.empty(), "CEIC-040 row provenance missing");
+    Require(row.evidence_digest == "<protected-material-excluded>",
+            "CEIC-040 duplicated field exposed schema-sensitive digest");
   }
   for (const auto& [family, has_row] : seen) {
     Require(has_row, std::string("CEIC-040 missing bundle row for ") + family);
@@ -287,6 +317,26 @@ void ValidateSupportBundleRefusalsAndBounds() {
   Require(published.ok, "CEIC-040 setup publish failed");
   auto metrics = SnapshotFor(sample.identity.index_uuid);
   Require(!metrics.empty(), "CEIC-040 setup metrics missing");
+
+  {
+    index::IndexOperationMetricSupportBundleRequest request;
+    request.metrics = metrics;
+    const auto limited = index::BuildIndexOperationMetricSupportBundle(request);
+    Require(!limited.ok && !limited.all_required_counters_present &&
+                limited.dropped_row_count > 0 && limited.output_bytes <= request.limits.max_output_bytes,
+            "insufficient default budget falsely claimed complete counter export");
+  }
+
+  for (const auto limit : {std::uint64_t{7}, std::uint64_t{8}}) {
+    index::IndexOperationMetricSupportBundleRequest request;
+    request.metrics = metrics;
+    request.limits.max_value_bytes = limit;
+    request.limits.max_output_bytes = 64ull * 1024ull;
+    const auto bounded = index::BuildIndexOperationMetricSupportBundle(request);
+    Require(limit == 7 ? (!bounded.ok && bounded.rows.empty()) :
+                (bounded.ok && bounded.rows.size() == index::RequiredIndexOperationCounterKinds().size()),
+            "native UINT64 scalar bounds must not count labels twice");
+  }
 
   {
     index::IndexOperationMetricSupportBundleRequest request;
@@ -393,14 +443,59 @@ void ValidateSupportBundleRefusalsAndBounds() {
   }
 }
 
+void ValidateNativeLimits() {
+  auto sample = GoodSample("extrema");
+  sample.counters = {};
+  sample.counters.probe = std::numeric_limits<std::uint64_t>::max();
+  sample.counters.insert = (std::uint64_t{1} << 53) + 1;
+  const auto published = index::PublishIndexOperationMetrics(sample);
+  Require(published.ok && published.emitted_counter_families.size() == 2,
+          "native unsigned limits failed publication");
+  const auto values = SnapshotFor(sample.identity.index_uuid);
+  Require(values.size() == 2, "native limit observation count changed");
+  for (const auto& value : values) {
+    const auto expected = value.family == index::IndexOperationCounterFamily(index::IndexOperationCounterKind::probe)
+        ? sample.counters.probe : sample.counters.insert;
+    Require(std::holds_alternative<std::uint64_t>(value.value) &&
+                std::get<std::uint64_t>(value.value) == expected, "counter precision lost");
+  }
+  sample.counters = {};
+  sample.counters.probe = 1;
+  const auto overflow = index::PublishIndexOperationMetrics(sample);
+  Require(!overflow.ok && overflow.emitted_counter_families.empty(), "counter overflow accepted");
+  for (const auto& value : SnapshotFor(sample.identity.index_uuid))
+    if (value.family == index::IndexOperationCounterFamily(index::IndexOperationCounterKind::probe))
+      Require(std::get<std::uint64_t>(value.value) == std::numeric_limits<std::uint64_t>::max(),
+              "refused overflow changed counter");
+}
+
 }  // namespace
 
 int main() {
+  scratchbird::tests::MetricProjectionFixture fixture(
+      scratchbird::tests::FixtureUuid(1538, 500), scratchbird::tests::FixtureUuid(1538, 501), 1539);
+  Require(!index::EnsureIndexOperationMetricDescriptors().ok,
+          "unbound descriptors were implicitly activated");
+  const auto unbound = index::PublishIndexOperationMetrics(GoodSample());
+  Require(!unbound.ok && unbound.emitted_counter_families.empty(), "unbound producer emitted samples");
+  AdmitOperationSeries(fixture, GoodSample());
+  AdmitOperationSeries(fixture, GoodSample("bundle-negative"));
+  AdmitOperationSeries(fixture, GoodSample("extrema"));
   const auto descriptors = index::EnsureIndexOperationMetricDescriptors();
   Require(descriptors.ok, "CEIC-040 operation descriptors failed to register");
   ValidatePositivePath();
   ValidatePublishRefusals();
   ValidateSupportBundleRefusalsAndBounds();
+  ValidateNativeLimits();
+  metrics::MetricRegistry wrong_registry;
+  auto wrong = *metrics::DefaultMetricRegistry().FindDescriptor(index::IndexOperationMetricDescriptorDefinitions().front().family);
+  wrong.unit = metrics::MetricUnit::bytes;
+  Require(wrong_registry.RegisterDescriptor(wrong).ok, "mismatch fixture registration failed");
+  Require(!index::EnsureIndexOperationMetricDescriptors(&wrong_registry).ok,
+          "same-name incompatible operation descriptor accepted");
+  fixture.ExpectProduced(2 * index::RequiredIndexOperationCounterKinds().size() + 2);
+  fixture.Seal();
+  fixture.VerifyAndDrain();
   std::cout << "ceic_040_index_operation_metrics_support_bundle_gate=pass\n";
   return EXIT_SUCCESS;
 }
