@@ -162,6 +162,7 @@ bool ExpectInvalidInput(std::string_view case_id, const SblrResult& result) {
   if (result.ok() || result.status != SblrStatusCode::execution_failed ||
       result.diagnostics.empty() ||
       result.diagnostics.front().diagnostic_id != "SB_DIAG_FUNCTION_INVALID_INPUT" ||
+      !result.scalar_values.empty() ||
       result.mutation_attempted || result.mutation_committed) {
     std::cerr << case_id << ": expected SB_DIAG_FUNCTION_INVALID_INPUT refusal\n";
     return false;
@@ -212,10 +213,27 @@ int main() {
                    Run(registry, "sb.scalar.safe_cast",
                        {TextValue("character", "123"), TextValue("character", "int64")}),
                    123) && ok;
-  ok = ExpectNull("SBSFC032-safe-cast-failure-null",
+  // Core distinguishes SAFE_CAST (conversion diagnostic) from TRY_CAST
+  // (conversion-failure NULL); they are not interchangeable aliases.
+  ok = ExpectInvalidInput("SBSFC032-safe-cast-failure-diagnostic",
                   Run(registry, "sb.scalar.safe_cast",
-                      {TextValue("character", "bad"), TextValue("character", "int64")}),
-                  "int64") && ok;
+                      {TextValue("character", "bad"), TextValue("character", "int64")})) && ok;
+  for (const auto& text : {"9223372036854775808", "-9223372036854775809", "1tail"}) {
+    ok = ExpectInvalidInput("SBSFC032-safe-cast-range-or-format",
+        Run(registry, "sb.scalar.safe_cast",
+            {TextValue("character", text), TextValue("character", "int64")})) && ok;
+    ok = ExpectNull("SBSFC032-try-cast-range-or-format",
+        Run(registry, "sb.scalar.try_cast",
+            {TextValue("character", text), TextValue("character", "int64")}), "int64") && ok;
+  }
+  for (const auto* function : {"sb.scalar.safe_cast", "sb.scalar.try_cast"}) {
+    ok = ExpectInt64("SBSFC032-cast-int64-min",
+        Run(registry, function, {TextValue("character", "-9223372036854775808"),
+             TextValue("character", "int64")}), INT64_MIN) && ok;
+    ok = ExpectInt64("SBSFC032-cast-int64-max",
+        Run(registry, function, {TextValue("character", "9223372036854775807"),
+             TextValue("character", "int64")}), INT64_MAX) && ok;
+  }
 
   ok = ExpectInvalidInput("SBSFC032-try-cast-bare-invalid",
                           Run(registry, "sb.scalar.try_cast", {})) && ok;
