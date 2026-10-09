@@ -9,10 +9,12 @@
 #include "descriptor_value_runtime.hpp"
 
 #include "datatype_operations.hpp"
+#include "query/historical_timestamp_scalar.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -379,13 +381,31 @@ bool ParseTimePart(const std::string_view text,
 bool ParseTemporalPoint(const api::EngineTypedValue& value,
                         TemporalPoint* point) {
   if (point == nullptr || value.isSqlNull() ||
-      value.state != api::EngineValueState::value || !value.binary_value.empty()) {
+      value.state != api::EngineValueState::value) {
     return false;
   }
   const auto type = dt::CanonicalTypeIdFromStableName(
       value.descriptor.canonical_type_name);
   const auto& text = value.encoded_value;
   *point = {};
+  if (type == dt::CanonicalTypeId::timestamp) {
+    api::HistoricalTimestampScalarPartsV1 decoded;
+    std::string detail;
+    if (!api::DecodeHistoricalTimestampScalarV1(value, &decoded, &detail)) return false;
+    auto days = decoded.unix_seconds / 86400;
+    auto seconds = decoded.unix_seconds % 86400;
+    if (seconds < 0) { --days; seconds += 86400; }
+    if (days < DaysFromCivil(1, 1, 1) || days > DaysFromCivil(9999, 12, 31)) return false;
+    const std::chrono::year_month_day civil{
+        std::chrono::sys_days{std::chrono::days{days}}};
+    point->year = static_cast<int>(civil.year());
+    point->month = static_cast<unsigned>(civil.month());
+    point->day = static_cast<unsigned>(civil.day());
+    point->time_picoseconds = static_cast<__int128>(seconds) * kPicosecondsPerSecond +
+                              static_cast<__int128>(decoded.nanoseconds) * 1000;
+    return true;
+  }
+  if (!value.binary_value.empty()) return false;
   if (type == dt::CanonicalTypeId::date) {
     return text.size() == 10 && ParseDatePart(text, point);
   }
@@ -396,11 +416,7 @@ bool ParseTemporalPoint(const api::EngineTypedValue& value,
     point->is_time_only = true;
     return ParseTimePart(text, 0, point);
   }
-  if (type != dt::CanonicalTypeId::timestamp || text.size() < 19 ||
-      (text[10] != 'T' && text[10] != ' ')) {
-    return false;
-  }
-  return ParseDatePart(text, point) && ParseTimePart(text, 11, point);
+  return false;
 }
 
 __int128 TemporalOrdinal(const TemporalPoint& point) {

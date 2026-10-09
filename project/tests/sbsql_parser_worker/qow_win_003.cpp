@@ -8,6 +8,7 @@
 
 #define QOW_WIN_004_FIXTURE_ONLY
 #include "qow_win_004.cpp"
+#include "../support/historical_timestamp_fixture.hpp"
 
 #include <optional>
 
@@ -362,12 +363,11 @@ bool ValidateRowsGroupsRangeAndDefaults() {
 bool ValidateTemporalRangeAndCausalCarryThrough() {
   auto temporal = Window401Request();
   temporal.order_terms.pop_back();
-  const auto descriptor = WindowDescriptor(
-      4920, "timestamp",
-      WindowUuid(4921), "nullability=non_null");
+  const auto descriptor = scratchbird::tests::HistoricalTimestampFixtureDescriptor(
+      WindowUuid(4920));
   for (std::size_t row = 0; row < temporal.input_batch.rows.size(); ++row) {
     const auto day = static_cast<unsigned>((row % 4) + 1);
-    temporal.input_batch.rows[row].values[2] = WindowValue(
+    temporal.input_batch.rows[row].values[2] = scratchbird::tests::HistoricalTimestampFixtureValue(
         descriptor, "2026-07-0" + std::to_string(day) + "T12:00:00Z");
   }
   temporal.input_batch.columns[2].descriptor = descriptor;
@@ -403,6 +403,46 @@ bool ValidateTemporalRangeAndCausalCarryThrough() {
       wider.diagnostic.ok &&
           EffectiveReferenceCount(wider) > EffectiveReferenceCount(result),
       "temporal RANGE offset mutation did not change effective frames");
+
+  for (const auto* month : {"1969-12-0", "1970-01-0", "2000-03-0"}) {
+    auto shifted = temporal;
+    for (std::size_t row = 0; row < shifted.input_batch.rows.size(); ++row) {
+      shifted.input_batch.rows[row].values[2] =
+          scratchbird::tests::HistoricalTimestampFixtureValue(descriptor,
+              std::string(month) + std::to_string(row % 4 + 1) + "T12:00:00.000000001Z");
+    }
+    const auto translated = ExecuteFrame(shifted,
+        ExplicitFrame(exec::CanonicalWindowFrameUnit::range,
+            FrameBound(exec::CanonicalWindowFrameBoundKind::offset_preceding, interval),
+            FrameBound(exec::CanonicalWindowFrameBoundKind::current_row)));
+    passed &= Require401(translated.diagnostic.ok &&
+        translated.effective_frames.size() == result.effective_frames.size(),
+        "native temporal RANGE failed across epoch/calendar boundaries");
+    if (translated.effective_frames.size() == result.effective_frames.size()) {
+      for (std::size_t row = 0; row < result.effective_frames.size(); ++row)
+        passed &= Require401(translated.effective_frames[row].effective_row_indices ==
+            result.effective_frames[row].effective_row_indices,
+            "native temporal RANGE changed under uniform calendar translation");
+    }
+  }
+  for (unsigned mutation = 0; mutation < 5; ++mutation) {
+    auto malformed = temporal;
+    auto& value = malformed.input_batch.rows.front().values[2];
+    switch (mutation) {
+      case 0: value.encoded_value = "2026-07-01T12:00:00Z"; break;
+      case 1: value.binary_value.pop_back(); break;
+      case 2: value.binary_value[15] = 1; break;
+      case 3: ++value.descriptor.datatype_descriptor_generation; break;
+      case 4: value.descriptor.type_uuid = {}; break;
+    }
+    const auto refused = ExecuteFrame(malformed,
+        ExplicitFrame(exec::CanonicalWindowFrameUnit::range,
+            FrameBound(exec::CanonicalWindowFrameBoundKind::offset_preceding, interval),
+            FrameBound(exec::CanonicalWindowFrameBoundKind::current_row)));
+    passed &= Require401(!refused.diagnostic.ok && refused.effective_frames.empty() &&
+        refused.ordered_batch.rows.empty(),
+        "malformed native temporal RANGE carrier published frames");
+  }
 
   auto invalid = temporal;
   invalid.mga_authority.resolve_current = {};
