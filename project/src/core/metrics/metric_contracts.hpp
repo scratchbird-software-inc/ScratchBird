@@ -15,6 +15,7 @@
 
 #include "metric_registry.hpp"
 
+#include <concepts>
 #include <string>
 #include <vector>
 
@@ -94,10 +95,10 @@ MetricValidationResult RecordInsertBatchStarted(MetricUuid object_uuid,
 MetricValidationResult RecordInsertBatchFallback(MetricUuid object_uuid,
                                                  std::string insert_mode,
                                                  std::string reason);
-MetricValidationResult RecordInsertRowsInserted(double rows,
+MetricValidationResult RecordInsertRowsInserted(u64 rows,
                                                 MetricUuid object_uuid,
                                                 std::string insert_mode);
-MetricValidationResult ObserveInsertRowsPerBatch(double rows,
+MetricValidationResult ObserveInsertRowsPerBatch(u64 rows,
                                                  MetricUuid object_uuid,
                                                  std::string insert_mode);
 MetricValidationResult RecordInsertTraceEvent(MetricUuid object_uuid,
@@ -124,11 +125,11 @@ MetricValidationResult RecordMgaRelationStateLoad(
     u64 allocation_units_materialized);
 MetricValidationResult PublishInsertAdaptiveBatchPlan(MetricUuid object_uuid,
                                                       std::string insert_mode,
-                                                      double requested_rows,
-                                                      double admitted_rows,
-                                                      double admitted_bytes,
+                                                      u64 requested_rows,
+                                                      u64 admitted_rows,
+                                                      u64 admitted_bytes,
                                                       std::string reason);
-MetricValidationResult RecordInsertPreallocatedPages(double pages,
+MetricValidationResult RecordInsertPreallocatedPages(u64 pages,
                                                      MetricUuid object_uuid,
                                                      std::string insert_mode,
                                                      std::string page_family,
@@ -146,7 +147,26 @@ MetricValidationResult RecordInsertUniquePhysicalProbe(MetricUuid object_uuid,
 MetricValidationResult RecordInsertSlowPath(MetricUuid object_uuid,
                                             std::string insert_mode,
                                             std::string chosen_path,
-                                            std::string reason);
+                                            std::string reason,
+                                            u64 events = 1);
+
+// No implicit floating-to-integer conversion at the producer boundary: it
+// could lose precision, truncate fractions, or overflow before validation.
+template <std::floating_point T>
+MetricValidationResult RecordInsertRowsInserted(T, MetricUuid, std::string) = delete;
+template <std::floating_point T>
+MetricValidationResult ObserveInsertRowsPerBatch(T, MetricUuid, std::string) = delete;
+template <std::floating_point T>
+MetricValidationResult RecordInsertPreallocatedPages(T, MetricUuid, std::string,
+    std::string, std::string, std::string) = delete;
+template <typename Requested, typename Admitted, typename Bytes>
+  requires (std::floating_point<Requested> || std::floating_point<Admitted> ||
+            std::floating_point<Bytes>)
+MetricValidationResult PublishInsertAdaptiveBatchPlan(MetricUuid, std::string,
+    Requested, Admitted, Bytes, std::string) = delete;
+template <std::floating_point T>
+MetricValidationResult RecordInsertSlowPath(MetricUuid, std::string,
+    std::string, std::string, T) = delete;
 
 // SEARCH_KEY: SB_CLUSTER_INSERT_METRIC_CONTRACTS
 MetricValidationResult RecordClusterInsertRouteCheck(MetricUuid database_uuid,

@@ -2447,7 +2447,7 @@ void RecordDmlAllocationResourceMetrics(
   const std::string outcome = PreallocationOutcome(allocation);
   if (allocation.active && allocation.granted_preallocation_pages != 0) {
     (void)scratchbird::core::metrics::RecordInsertPreallocatedPages(
-        static_cast<double>(allocation.granted_preallocation_pages),
+        allocation.granted_preallocation_pages,
         batch_context.target_object_uuid,
         InsertBatchModeName(batch_context.insert_mode),
         family,
@@ -2456,7 +2456,7 @@ void RecordDmlAllocationResourceMetrics(
             ? "none"
             : PreallocationFallbackReason(allocation, family));
   }
-  RecordInsertBatchMetric(batch_context,
+  RecordInsertBatchDurationMetric(batch_context,
                           "sb_dml_insert_allocation_stall_microseconds",
                           static_cast<double>(elapsed_microseconds),
                           allocation.active ? "ok" : "inactive",
@@ -2465,10 +2465,10 @@ void RecordDmlAllocationResourceMetrics(
   if (growth_pages != 0) {
     RecordInsertBatchMetric(batch_context,
                             "sb_filespace_insert_growth_request_total",
-                            static_cast<double>(growth_pages),
+                            EngineApiU64{1},
                             "capacity_window_materialized",
                             family + "_filespace_growth");
-    RecordInsertBatchMetric(batch_context,
+    RecordInsertBatchDurationMetric(batch_context,
                             "sb_filespace_insert_growth_wait_microseconds",
                             static_cast<double>(elapsed_microseconds),
                             "ok",
@@ -2478,7 +2478,7 @@ void RecordDmlAllocationResourceMetrics(
   if (!fallback.empty() && allocation.preallocation_requested) {
     RecordInsertBatchMetric(batch_context,
                             "sb_dml_insert_slow_path_total",
-                            1.0,
+                            EngineApiU64{1},
                             "resource_degraded",
                             fallback);
   }
@@ -3661,7 +3661,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
         batch_context.fallback_reason.empty() ? "insert_batch_refused" : batch_context.fallback_reason;
     RecordInsertBatchMetric(batch_context,
                             "sb_dml_insert_batch_fallback_total",
-                            1.0,
+                            EngineApiU64{1},
                             "fallback",
                             fallback_reason);
     auto failure = MakeCrudDiagnosticResult<EngineInsertRowsResult>(
@@ -4890,34 +4890,34 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
   result.dml_summary.rows_changed = result.inserted_count + result.updated_count;
   AddDmlSummaryEvidence(&result);
   ApplyInsertWriteResultPolicy(write_result_policy, &result);
-  RecordInsertBatchMetric(batch_context, "sb_dml_insert_batch_started_total", 1.0, "ok");
+  RecordInsertBatchMetric(batch_context, "sb_dml_insert_batch_started_total", EngineApiU64{1}, "ok");
   if (physical_probe_cache.physical_probe_attempts != 0) {
     RecordInsertBatchMetric(batch_context,
                             "sb_index_insert_unique_physical_probe_total",
-                            static_cast<double>(physical_probe_cache.physical_probe_attempts),
+                            physical_probe_cache.physical_probe_attempts,
                             "physical_probe",
                             "mga_visibility_rechecked");
   }
   if (physical_probe_cache.scan_fallback_attempts != 0) {
     RecordInsertBatchMetric(batch_context,
                             "sb_index_insert_unique_physical_probe_total",
-                            static_cast<double>(physical_probe_cache.scan_fallback_attempts),
+                            physical_probe_cache.scan_fallback_attempts,
                             "scan_fallback",
                             "physical_probe_cache_miss");
     RecordInsertBatchMetric(batch_context,
                             "sb_dml_insert_slow_path_total",
-                            static_cast<double>(physical_probe_cache.scan_fallback_attempts),
+                            physical_probe_cache.scan_fallback_attempts,
                             "scan_fallback",
                             "unique_physical_probe_cache_miss");
   }
   if (batch_context.adaptive_batch_plan.reduced) {
     RecordInsertBatchMetric(batch_context,
                             "sb_dml_insert_slow_path_total",
-                            1.0,
+                            EngineApiU64{1},
                             "adaptive_batch_reduced",
                             batch_context.adaptive_batch_plan.reason);
   }
-  RecordInsertBatchMetric(batch_context, "sb_dml_insert_rows_inserted_total", static_cast<double>(result.inserted_count), "ok");
+  RecordInsertBatchMetric(batch_context, "sb_dml_insert_rows_inserted_total", result.inserted_count, "ok");
   if (result.ok) {
     dml::RecordTestInsertRouteExecution(dml::TestInsertRoute::staged,
                                        result.inserted_count,

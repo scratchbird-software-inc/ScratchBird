@@ -283,7 +283,7 @@ MetricValidationResult RecordInsertBatchStarted(MetricUuid object_uuid,
                                   {"object_uuid", std::move(object_uuid)},
                                   {"operation", std::move(insert_mode)},
                                   {"result", std::move(result)}}),
-                          1.0,
+                          u64{1},
                           "engine_insert");
 }
 
@@ -296,7 +296,7 @@ MetricValidationResult RecordInsertBatchFallback(MetricUuid object_uuid,
                                          {"operation", insert_mode},
                                          {"result", "fallback"},
                                          {"reason", reason}}),
-                                 1.0,
+                                 u64{1},
                                  "engine_insert");
   if (!status.ok) {
     return status;
@@ -307,11 +307,11 @@ MetricValidationResult RecordInsertBatchFallback(MetricUuid object_uuid,
                                   {"operation", std::move(insert_mode)},
                                   {"result", "fallback"},
                                   {"reason", std::move(reason)}}),
-                          1.0,
+                          u64{1},
                           "engine_insert");
 }
 
-MetricValidationResult RecordInsertRowsInserted(double rows,
+MetricValidationResult RecordInsertRowsInserted(u64 rows,
                                                 MetricUuid object_uuid,
                                                 std::string insert_mode) {
   return IncrementCounter("sb_dml_insert_rows_inserted_total",
@@ -323,7 +323,7 @@ MetricValidationResult RecordInsertRowsInserted(double rows,
                           "engine_insert");
 }
 
-MetricValidationResult ObserveInsertRowsPerBatch(double rows,
+MetricValidationResult ObserveInsertRowsPerBatch(u64 rows,
                                                  MetricUuid object_uuid,
                                                  std::string insert_mode) {
   return ObserveHistogram("sb_dml_insert_rows_per_batch",
@@ -344,7 +344,7 @@ MetricValidationResult RecordInsertTraceEvent(MetricUuid object_uuid,
                                   {"operation", std::move(insert_mode)},
                                   {"result", "trace"},
                                   {"reason", std::move(phase)}}),
-                          1.0,
+                          u64{1},
                           "engine_insert");
 }
 
@@ -357,7 +357,7 @@ MetricValidationResult RecordInsertCancel(MetricUuid object_uuid,
                                   {"operation", std::move(insert_mode)},
                                   {"result", "cancelled"},
                                   {"reason", std::move(reason)}}),
-                          1.0,
+                          u64{1},
                           "engine_insert");
 }
 
@@ -370,7 +370,7 @@ MetricValidationResult RecordInsertPreparedDescriptorCache(MetricUuid object_uui
                                   {"operation", std::move(insert_mode)},
                                   {"result", cache_hit ? "hit" : "miss"},
                                   {"reason", "epoch_key_match"}}),
-                          1.0,
+                          u64{1},
                           "engine_insert");
 }
 
@@ -387,7 +387,7 @@ MetricValidationResult RecordInsertRelationStateLoad(MetricUuid object_uuid,
                                       {"operation", insert_mode},
                                       {"result", "full"},
                                       {"reason", reason.empty() ? "unspecified" : reason}}),
-                              1.0,
+                              u64{1},
                               "engine_insert");
     if (!status.ok) {
       return status;
@@ -400,7 +400,7 @@ MetricValidationResult RecordInsertRelationStateLoad(MetricUuid object_uuid,
                                     {"operation", std::move(insert_mode)},
                                     {"result", "scoped"},
                                     {"reason", reason.empty() ? "unspecified" : std::move(reason)}}),
-                            1.0,
+                            u64{1},
                             "engine_insert");
   }
   return status;
@@ -438,9 +438,9 @@ MetricValidationResult RecordMgaRelationStateLoad(
 
 MetricValidationResult PublishInsertAdaptiveBatchPlan(MetricUuid object_uuid,
                                                       std::string insert_mode,
-                                                      double requested_rows,
-                                                      double admitted_rows,
-                                                      double admitted_bytes,
+                                                      u64 requested_rows,
+                                                      u64 admitted_rows,
+                                                      u64 admitted_bytes,
                                                       std::string reason) {
   const MetricLabelSet labels =
       Labels({{"component", "engine.insert"},
@@ -472,13 +472,13 @@ MetricValidationResult PublishInsertAdaptiveBatchPlan(MetricUuid object_uuid,
   if (admitted_rows < requested_rows) {
     return IncrementCounter("sb_dml_insert_adaptive_batch_resize_total",
                             labels,
-                            1.0,
+                            u64{1},
                             "engine_insert");
   }
   return status;
 }
 
-MetricValidationResult RecordInsertPreallocatedPages(double pages,
+MetricValidationResult RecordInsertPreallocatedPages(u64 pages,
                                                      MetricUuid object_uuid,
                                                      std::string insert_mode,
                                                      std::string page_family,
@@ -520,21 +520,22 @@ MetricValidationResult RecordInsertUniquePhysicalProbe(MetricUuid object_uuid,
                                   {"operation", std::move(insert_mode)},
                                   {"result", std::move(result)},
                                   {"reason", reason.empty() ? "none" : std::move(reason)}}),
-                          1.0,
+                          u64{1},
                           "engine_insert");
 }
 
 MetricValidationResult RecordInsertSlowPath(MetricUuid object_uuid,
                                             std::string insert_mode,
                                             std::string chosen_path,
-                                            std::string reason) {
+                                            std::string reason,
+                                            u64 events) {
   return IncrementCounter("sb_dml_insert_slow_path_total",
                           Labels({{"component", "engine.insert"},
                                   {"object_uuid", std::move(object_uuid)},
                                   {"operation", std::move(insert_mode)},
                                   {"result", std::move(chosen_path)},
                                   {"reason", reason.empty() ? "unspecified" : std::move(reason)}}),
-                          1.0,
+                          events,
                           "engine_insert");
 }
 

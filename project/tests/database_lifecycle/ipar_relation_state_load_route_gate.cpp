@@ -937,12 +937,12 @@ void VerifyScopedMaterializationAndCursorParity() {
   Commit(seed);
 
   auto verify = Begin(fixture, "ipar-relation-state-shape-verify");
-  {
-  scratchbird::tests::FixtureEngineStatement statement(*fixture.session, verify);
   // Admit telemetry explicitly at its producer boundary. These are real scan
   // observations, not descriptor-registration side effects or synthetic zeros.
   scratchbird::tests::MetricProjectionFixture observations(
       fixture.database_uuid, scratchbird::tests::FixtureUuid(1490, 1), 1491);
+  {
+  scratchbird::tests::FixtureEngineStatement statement(*fixture.session, verify);
   const metrics::MetricLabelSet labels = {
       {"component", "engine.mga_relation_store"}, {"operation", "select"},
       {"result", "scoped"}, {"reason", "transaction_visible_relation_scan"},
@@ -1104,9 +1104,37 @@ void VerifyScopedMaterializationAndCursorParity() {
             "IPAR native telemetry differs from its actual storage receipt");
   }
   observations.ExpectProduced(4);
+  }
+  const metrics::MetricLabelSet insert_labels = {
+      {"component", "engine.insert"}, {"operation", "multi_values"},
+      {"result", "ok"}, {"object_uuid", fixture.target_table_uuid}};
+  for (const auto* family : {"sb_dml_insert_batch_started_total",
+                            "sb_dml_insert_rows_inserted_total",
+                            "sb_dml_insert_rows_per_batch"})
+    observations.Admit(family, insert_labels);
+  const auto measured_insert = InsertRows(fixture, verify, fixture.target_table_uuid,
+      {Row("target-shape-metric-1"), Row("target-shape-metric-2")});
+  RequireInsertOk(measured_insert, "IPAR measured INSERT failed");
+  Require(measured_insert.inserted_count == 2,
+          "IPAR measured INSERT did not publish exactly two rows");
+  const auto inserted_metrics = metrics::DefaultMetricRegistry().SnapshotCurrent(false);
+  for (const auto* family : {"sb_dml_insert_batch_started_total",
+                            "sb_dml_insert_rows_inserted_total",
+                            "sb_dml_insert_rows_per_batch"}) {
+    const auto key = metrics::MakeMetricSeriesKey(family, insert_labels);
+    const auto value = std::find_if(inserted_metrics.begin(), inserted_metrics.end(),
+        [&](const auto& row) { return metrics::MakeMetricSeriesKey(row.family, row.labels) == key; });
+    Require(value != inserted_metrics.end() &&
+                value->value == metrics::MetricScalar{std::uint64_t{
+                    std::string_view(family) == "sb_dml_insert_batch_started_total" ? 1u : 2u}},
+            "IPAR actual INSERT count was not published as exact UINT64");
+    if (value->type == metrics::MetricType::histogram)
+      Require(value->count == 1 && value->sum == metrics::MetricScalar{std::uint64_t{2}},
+              "IPAR actual INSERT histogram differs from its row receipt");
+  }
+  observations.ExpectProduced(3);
   observations.Seal();
   observations.VerifyAndDrain();
-  }
   Commit(verify);
 }
 

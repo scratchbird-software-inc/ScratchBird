@@ -4829,14 +4829,14 @@ void AddDirectAllocationResourceSummary(
                               std::to_string(elapsed_microseconds)});
   if (allocation.active && allocation.granted_preallocation_pages != 0) {
     (void)scratchbird::core::metrics::RecordInsertPreallocatedPages(
-        static_cast<double>(allocation.granted_preallocation_pages),
+        allocation.granted_preallocation_pages,
         batch_context.target_object_uuid,
         InsertBatchModeName(batch_context.insert_mode),
         family,
         DirectPreallocationOutcome(allocation),
         fallback.empty() ? "none" : fallback);
   }
-  RecordInsertBatchMetric(batch_context,
+  RecordInsertBatchDurationMetric(batch_context,
                           "sb_dml_insert_allocation_stall_microseconds",
                           static_cast<double>(elapsed_microseconds),
                           allocation.active ? "ok" : "inactive",
@@ -4844,10 +4844,10 @@ void AddDirectAllocationResourceSummary(
   if (growth_pages != 0) {
     RecordInsertBatchMetric(batch_context,
                             "sb_filespace_insert_growth_request_total",
-                            static_cast<double>(growth_pages),
+                            EngineApiU64{1},
                             "capacity_window_materialized",
                             family + "_filespace_growth");
-    RecordInsertBatchMetric(batch_context,
+    RecordInsertBatchDurationMetric(batch_context,
                             "sb_filespace_insert_growth_wait_microseconds",
                             static_cast<double>(elapsed_microseconds),
                             "ok",
@@ -4856,7 +4856,7 @@ void AddDirectAllocationResourceSummary(
   if (!fallback.empty() && allocation.preallocation_requested) {
     RecordInsertBatchMetric(batch_context,
                             "sb_dml_insert_slow_path_total",
-                            1.0,
+                            EngineApiU64{1},
                             "resource_degraded",
                             fallback);
   }
@@ -5656,7 +5656,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                    : batch_context.fallback_reason;
     RecordInsertBatchMetric(batch_context,
                             "sb_dml_insert_batch_fallback_total",
-                            1.0,
+                            EngineApiU64{1},
                             "fallback",
                             reason);
     EngineDmlSummaryCounters summary;
@@ -8817,18 +8817,18 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   mark_phase("write_result_policy");
   RecordInsertBatchMetric(batch_context,
                           "sb_dml_insert_batch_started_total",
-                          1.0,
+                          EngineApiU64{1},
                           "ok");
   if (result.dml_summary.index_probes != 0) {
     RecordInsertBatchMetric(batch_context,
                             "sb_index_insert_unique_physical_probe_total",
-                            static_cast<double>(result.dml_summary.index_probes),
+                            result.dml_summary.index_probes,
                             "bulk_unique_proof",
                             "direct_copy_bulk_unique_proof");
   }
   RecordInsertBatchMetric(batch_context,
                           "sb_dml_insert_rows_inserted_total",
-                          static_cast<double>(result.inserted_rows),
+                          result.inserted_rows,
                           "ok");
   mark_phase("record_insert_metrics");
   AddDirectBulkPhaseEvidence(phase_micros, &result);

@@ -12,6 +12,7 @@
 #include "dml/insert_api.hpp"
 
 #include <cstddef>
+#include <concepts>
 #include <cstdint>
 #include <set>
 #include <string>
@@ -346,7 +347,11 @@ EngineApiDiagnostic AppendSecondaryIndexDeltaLedgerEntries(const EngineRequestCo
                                                            const EngineUuid& version_uuid);
 void AddInsertTrace(InsertBatchContext* context, std::string event_name, std::string phase, EngineEvidenceValue detail = {});
 void AddInsertBatchEvidenceToResult(const InsertBatchContext& context, EngineApiResult* result);
-void RecordInsertBatchMetric(const InsertBatchContext& context, std::string metric, double value, std::string result, std::string reason = {});
+// Counts remain exact UINT64; durations use their distinct REAL64 entrypoint.
+void RecordInsertBatchMetric(const InsertBatchContext& context, std::string metric, EngineApiU64 value, std::string result, std::string reason = {});
+template <std::floating_point T>
+void RecordInsertBatchMetric(const InsertBatchContext&, std::string, T, std::string, std::string = {}) = delete;
+void RecordInsertBatchDurationMetric(const InsertBatchContext& context, std::string metric, double microseconds, std::string result, std::string reason = {});
 bool InsertBatchOptionEnabled(const EngineInsertRowsRequest& request, const std::string& option);
 std::string InsertBatchOptionValue(const EngineInsertRowsRequest& request, const std::string& prefix);
 

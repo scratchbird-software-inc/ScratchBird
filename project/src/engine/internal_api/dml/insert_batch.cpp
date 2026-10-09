@@ -1761,7 +1761,7 @@ void AddInsertBatchEvidenceToResult(const InsertBatchContext& context, EngineApi
   }
 }
 
-void RecordInsertBatchMetric(const InsertBatchContext& context, std::string metric, double value, std::string result, std::string reason) {
+void RecordInsertBatchMetric(const InsertBatchContext& context, std::string metric, EngineApiU64 value, std::string result, std::string reason) {
   if (metric == "sb_dml_insert_batch_started_total") {
     (void)scratchbird::core::metrics::RecordInsertBatchStarted(context.target_object_uuid,
                                                                InsertBatchModeName(context.insert_mode),
@@ -1773,9 +1773,9 @@ void RecordInsertBatchMetric(const InsertBatchContext& context, std::string metr
     (void)scratchbird::core::metrics::PublishInsertAdaptiveBatchPlan(
         context.target_object_uuid,
         InsertBatchModeName(context.insert_mode),
-        static_cast<double>(context.adaptive_batch_plan.requested_rows),
-        static_cast<double>(context.adaptive_batch_plan.admitted_rows),
-        static_cast<double>(context.adaptive_batch_plan.admitted_bytes),
+        context.adaptive_batch_plan.requested_rows,
+        context.adaptive_batch_plan.admitted_rows,
+        context.adaptive_batch_plan.admitted_bytes,
         context.adaptive_batch_plan.reason);
     return;
   }
@@ -1808,21 +1808,13 @@ void RecordInsertBatchMetric(const InsertBatchContext& context, std::string metr
         reason.empty() ? "target_scoped_relation_state" : reason);
     return;
   }
-  if (metric == "sb_dml_insert_allocation_stall_microseconds") {
-    (void)scratchbird::core::metrics::ObserveInsertAllocationStall(
-        value,
-        context.target_object_uuid,
-        InsertBatchModeName(context.insert_mode),
-        reason.empty() ? "allocation" : reason,
-        result.empty() ? "ok" : result);
-    return;
-  }
   if (metric == "sb_dml_insert_slow_path_total") {
     (void)scratchbird::core::metrics::RecordInsertSlowPath(
         context.target_object_uuid,
         InsertBatchModeName(context.insert_mode),
         result.empty() ? "degraded" : result,
-        reason.empty() ? "unspecified" : reason);
+        reason.empty() ? "unspecified" : reason,
+        value);
     return;
   }
   if (metric == "sb_filespace_insert_growth_request_total") {
@@ -1838,24 +1830,11 @@ void RecordInsertBatchMetric(const InsertBatchContext& context, std::string metr
         kInsertMetricsProducer);
     return;
   }
-  if (metric == "sb_filespace_insert_growth_wait_microseconds") {
-    (void)scratchbird::core::metrics::ObserveHistogram(
-        "sb_filespace_insert_growth_wait_microseconds",
-        scratchbird::core::metrics::Labels(
-            {{"component", "engine.insert"},
-             {"object_uuid", context.target_object_uuid},
-             {"operation", InsertBatchModeName(context.insert_mode)},
-             {"result", result.empty() ? "ok" : result},
-             {"reason", reason.empty() ? "filespace_growth" : reason}}),
-        value,
-        kInsertMetricsProducer);
-    return;
-  }
   if (metric == "sb_dml_insert_rows_inserted_total") {
     (void)scratchbird::core::metrics::RecordInsertRowsInserted(value,
                                                                context.target_object_uuid,
                                                                InsertBatchModeName(context.insert_mode));
-    (void)scratchbird::core::metrics::ObserveInsertRowsPerBatch(static_cast<double>(context.actual_row_count),
+    (void)scratchbird::core::metrics::ObserveInsertRowsPerBatch(context.actual_row_count,
                                                                 context.target_object_uuid,
                                                                 InsertBatchModeName(context.insert_mode));
     return;
@@ -1882,6 +1861,32 @@ void RecordInsertBatchMetric(const InsertBatchContext& context, std::string metr
                                           {"reason", reason.empty() ? "none" : std::move(reason)}}),
       value,
       kInsertMetricsProducer);
+}
+
+void RecordInsertBatchDurationMetric(const InsertBatchContext& context,
+                                     std::string metric,
+                                     double microseconds,
+                                     std::string result,
+                                     std::string reason) {
+  if (metric == "sb_dml_insert_allocation_stall_microseconds") {
+    (void)scratchbird::core::metrics::ObserveInsertAllocationStall(
+        microseconds, context.target_object_uuid,
+        InsertBatchModeName(context.insert_mode),
+        reason.empty() ? "allocation" : reason,
+        result.empty() ? "ok" : result);
+    return;
+  }
+  if (metric == "sb_filespace_insert_growth_wait_microseconds") {
+    (void)scratchbird::core::metrics::ObserveHistogram(
+        metric,
+        scratchbird::core::metrics::Labels(
+            {{"component", "engine.insert"},
+             {"object_uuid", context.target_object_uuid},
+             {"operation", InsertBatchModeName(context.insert_mode)},
+             {"result", result.empty() ? "ok" : result},
+             {"reason", reason.empty() ? "filespace_growth" : reason}}),
+        microseconds, kInsertMetricsProducer);
+  }
 }
 
 }  // namespace scratchbird::engine::internal_api

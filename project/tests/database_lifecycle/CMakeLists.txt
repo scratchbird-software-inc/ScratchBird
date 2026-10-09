@@ -4808,6 +4808,14 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
             COMMAND database_lifecycle_mga_relation_metric_precision_conformance)
           set_tests_properties(database_lifecycle_mga_relation_metric_precision_conformance PROPERTIES
             LABELS "database_lifecycle;native_metric_precision;binary_uuid;mga_relation_state" TIMEOUT 60)
+          add_executable(database_lifecycle_insert_metric_precision_conformance
+            insert_metric_precision_conformance.cpp)
+          target_compile_features(database_lifecycle_insert_metric_precision_conformance PRIVATE cxx_std_23)
+          target_link_libraries(database_lifecycle_insert_metric_precision_conformance PRIVATE sb_engine_internal_api sb_core_metrics)
+          add_test(NAME database_lifecycle_insert_metric_precision_conformance
+            COMMAND database_lifecycle_insert_metric_precision_conformance)
+          set_tests_properties(database_lifecycle_insert_metric_precision_conformance PROPERTIES
+            LABELS "database_lifecycle;native_metric_precision;binary_uuid;insert;component_regression;not_runtime_acceptance" TIMEOUT 60)
 		  add_executable(ipar_relation_state_load_route_gate
 		    ipar_relation_state_load_route_gate.cpp
 		  )
