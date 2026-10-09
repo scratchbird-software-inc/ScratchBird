@@ -90,7 +90,7 @@ inline constexpr std::string_view kDatatypeCohortV9IdentityDigestSha256 =
 inline constexpr std::string_view kDatatypeCohortV10IdentityDigestSha256 =
     "90d4e17c5e98a684422399b16d73b38d3391905ebb775241426755a7323249a3";
 inline constexpr std::string_view kDatatypeCohortV11IdentityDigestSha256 =
-    "8d6cb5b855450a355f05863bc2b0c3652d7b694a1e6ebd6758f1a41408840327";
+    "6dc18fd301d17fb6a54ebb3663223cdda2f4b46fb61232026b42a91b35454fae";
 
 // These predicates authenticate exact d710 or inherited d711 profile rows;
 // they never rebind a row to a different receipt. The owning profile must also

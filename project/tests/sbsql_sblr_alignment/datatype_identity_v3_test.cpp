@@ -507,15 +507,32 @@ void TestPopulationAndAuthoritativeRows() {
             "90d4e17c5e98a684422399b16d73b38d3391905ebb775241426755a7323249a3",
         "d710 Core cohort digest binding changed");
   Check(dt::kDatatypeCohortV11IdentityDigestSha256 ==
-            "8d6cb5b855450a355f05863bc2b0c3652d7b694a1e6ebd6758f1a41408840327",
+            "6dc18fd301d17fb6a54ebb3663223cdda2f4b46fb61232026b42a91b35454fae",
         "d711 Core cohort digest binding changed");
 
   const auto registry_digest = InternalCompiledMaterialDigest(v3);
   if (registry_digest !=
-      "ca07250c01e11301b2bbdb2a26ab8bea68eed7a5910907a5bec56889898dbafc") {
+      "4ecbc26b3a1a7e41445ca03fe816e030181e891bd55f0996b65eb1c9bcba947b") {
     std::cerr << "observed_internal_compiled_material_digest=" << registry_digest << '\n';
     Fail("internal compiled V3 material changed");
   }
+
+  // Independently bound the erratum: restoring only the corrected descriptor
+  // must reproduce the previously sealed legacy material, including all ten
+  // historical cohorts. Native profile fields have their own exact checks.
+  std::vector<dt::DatatypeTypeCodecIdentityRowV3> before_erratum(v3.begin(), v3.end());
+  std::size_t corrected_rows = 0;
+  for (auto& row : before_erratum) {
+    if (row.legacy_fields.catalog_generation == 11 &&
+        dt::IsExactCanonicalBlobTypeCodecIdentityV3(row)) {
+      row.legacy_fields.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral(
+          "016fd1d3-0daf-5967-b4d7-07fe859a418e");
+      ++corrected_rows;
+    }
+  }
+  Check(corrected_rows == 1 && InternalCompiledMaterialDigest(before_erratum) ==
+            "ca07250c01e11301b2bbdb2a26ab8bea68eed7a5910907a5bec56889898dbafc",
+        "BLOB UUID erratum changed unrelated compiled identity material");
 
   constexpr std::array<std::string_view, 11> expected_cohort_digests{{
       "c3f32a278b09243fe3556ba9520c6ad95fb0995035813f92244c775b1bc4e3e2",
@@ -528,7 +545,7 @@ void TestPopulationAndAuthoritativeRows() {
       "2ba35727670308890132276ed9a64fffffe72046690e4a7adf962d2fe02132c2",
       "aaac0121339b61d74613dc9a95b35c7f61a3a32fc780a02f5db2286e9bebaa4d",
       "d70417ccc10c2dd672416901be8cfea511cca6f8f78cc85a0cda0f198d8638ed",
-      "1cdd4807c44eb728c367a0bfe652cf84add696ef1a58a7a4e5981fcbafe787ad",
+      "a3409f26bea7e455487f0567d47a7378bb9f3c9d38766f19a3f525aae7b4614e",
   }};
   for (std::uint64_t generation = 1; generation <= 11; ++generation) {
     std::vector<dt::DatatypeTypeCodecIdentityRowV3> cohort;
@@ -558,7 +575,7 @@ void TestPopulationAndAuthoritativeRows() {
   const auto interval_descriptor =
       FixtureUuidLiteral("93010000-696e-7465-b276-616c00000000");
   const auto blob_descriptor =
-      FixtureUuidLiteral("016fd1d3-0daf-5967-b4d7-07fe859a418e");
+      FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d830");
   std::size_t binary_policy_rows = 0;
   std::size_t bit_policy_rows = 0;
   std::size_t date_policy_rows = 0;
@@ -1609,7 +1626,7 @@ void TestExactIntervalIdentity() {
 void TestExactBlobIdentity() {
   using scratchbird::tests::FixtureUuidLiteral;
   const auto descriptor =
-      FixtureUuidLiteral("016fd1d3-0daf-5967-b4d7-07fe859a418e");
+      FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d830");
   const auto type =
       FixtureUuidLiteral("01a1095f-f205-7b29-b679-2ab3755b37d2");
   const auto codec =
@@ -1620,6 +1637,18 @@ void TestExactBlobIdentity() {
       dt::kDatatypeCohortV11, 11, 11, descriptor, 1);
   Check(lookup.ok && dt::IsExactCanonicalBlobTypeCodecIdentityV3(lookup.row),
         "exact d711 base.blob identity is absent");
+  Check((descriptor.bytes[6] >> 4) == 7 &&
+            (descriptor.bytes[8] & 0xc0) == 0x80,
+        "BLOB catalog descriptor is not a binary UUIDv7 system identity");
+  const auto invalid_v5 =
+      FixtureUuidLiteral("016fd1d3-0daf-5967-b4d7-07fe859a418e");
+  Check(!dt::LookupDatatypeTypeCodecIdentityV3(
+            dt::kDatatypeCohortV11, 11, 11, invalid_v5, 1).ok,
+        "superseded UUIDv5 BLOB descriptor was admitted as an alias");
+  auto invalid_row = lookup.row;
+  invalid_row.legacy_fields.descriptor_uuid = invalid_v5;
+  Check(!dt::IsExactCanonicalBlobTypeCodecIdentityV3(invalid_row),
+        "UUIDv5 descriptor mutation retained current BLOB profile authority");
   const auto descriptor_identity =
       dt::LookupDatatypeDescriptorIdentityV3(dt::CanonicalTypeId::blob);
   Check(descriptor_identity.ok && descriptor_identity.diagnostic_id.empty() &&
@@ -1656,10 +1685,10 @@ void TestExactBlobIdentity() {
             legacy.variable_width_storage_without_truncation,
         "base.blob legacy projection surface differs from Core");
   constexpr std::array<Byte, 32> fingerprint{{
-      0x5f,0x6d,0xe3,0x00,0x9a,0xce,0x30,0xc9,
-      0x70,0x93,0x0b,0x0b,0x26,0x95,0xf4,0x20,
-      0x1e,0x78,0x69,0x91,0xfb,0x7b,0x9e,0xf5,
-      0xb4,0x95,0x5b,0x04,0x01,0x43,0x5b,0xc8}};
+      0x62,0xf2,0x2d,0x99,0x1a,0x4f,0xce,0x05,
+      0xd7,0x90,0x58,0x4e,0xdd,0xe0,0xc0,0x5c,
+      0x66,0x98,0x3d,0x50,0x6a,0xe2,0xa9,0xec,
+      0x61,0x66,0xad,0x5c,0x08,0x99,0x3c,0x83}};
   Check(row.native_fields.present &&
             row.native_fields.canonical_value_minimum_bytes == 0 &&
             row.native_fields.canonical_value_maximum_bytes ==
@@ -1735,7 +1764,7 @@ void TestExactBlobIdentity() {
 void TestBlobLegacyRouteIsolation() {
   using scratchbird::tests::FixtureUuidLiteral;
   const auto descriptor_uuid =
-      FixtureUuidLiteral("016fd1d3-0daf-5967-b4d7-07fe859a418e");
+      FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d830");
 
   const auto layout = dt::LookupDatatypeStorageLayout(
       dt::CanonicalTypeId::blob);

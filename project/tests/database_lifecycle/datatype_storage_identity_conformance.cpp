@@ -99,8 +99,8 @@ int main() try {
   dt::DatatypeStorageIdentityV3 out_v3;
   // Every predecessor retains its exact storage-only BLOB identity. No row
   // acquires the D711 codec merely because the current catalog advanced.
-  const p::Uuid current_blob_descriptor{{0x01,0x6f,0xd1,0xd3,0x0d,0xaf,0x59,0x67,
-                                        0xb4,0xd7,0x07,0xfe,0x85,0x9a,0x41,0x8e}};
+  const p::Uuid current_blob_descriptor{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,
+                                        0x80,0x00,0x00,0x00,0x00,0x00,0xd8,0x30}};
   for (unsigned generation = 4; generation <= 10; ++generation) {
     const p::Uuid snapshots[] = {dt::kDatatypeCohortV4, dt::kDatatypeCohortV5,
         dt::kDatatypeCohortV6, dt::kDatatypeCohortV7, dt::kDatatypeCohortV8,

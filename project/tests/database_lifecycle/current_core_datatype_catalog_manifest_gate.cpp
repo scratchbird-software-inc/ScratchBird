@@ -557,7 +557,7 @@ void TestCurrentD710IdentitiesAndLayout() {
               std::array<std::size_t, 11>{6, 12, 13, 31, 32, 33, 33, 33, 33, 33, 34},
           "V3 immutable predecessors/current D711 cohort counts drifted");
   const auto blob = dt::LookupDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV11, 11, 11,
-      FixtureUuidLiteral("016fd1d3-0daf-5967-b4d7-07fe859a418e"), 1);
+      FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d830"), 1);
   Require(blob.ok && dt::IsExactCanonicalBlobTypeCodecIdentityV3(blob.row) &&
               blob.row.legacy_fields.type_uuid == FixtureUuidLiteral("01a1095f-f205-7b29-b679-2ab3755b37d2"),
           "D711 current BLOB row absent or different");
