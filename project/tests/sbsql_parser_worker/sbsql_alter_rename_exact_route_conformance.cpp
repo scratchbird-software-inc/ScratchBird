@@ -100,15 +100,17 @@ ParserConfig ParserConfigForTest() {
   return config;
 }
 
-PipelineArtifacts RunPipeline(std::string_view sql) {
+PipelineArtifacts RunPipeline(std::string_view sql, bool ambiguous_target = false) {
   PipelineArtifacts artifacts;
   const auto session = ParserSession();
   artifacts.cst = BuildCst(std::string(sql));
   artifacts.ast = BuildAst(artifacts.cst);
+  std::vector<scratchbird::core::platform::Uuid> resolved{
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000a17e01")};
+  if (ambiguous_target)
+    resolved.push_back(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000a17e02"));
   artifacts.bound = BindAst(artifacts.ast, artifacts.cst,
-                            ParserConfigForTest(), session,
-                            {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000a17e01"),
-                             scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000a17e02")});
+                            ParserConfigForTest(), session, resolved);
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
@@ -223,7 +225,18 @@ const RouteCase kRoutes[] = {
 
 int main() {
   RequireRegistryEvidence();
-  for (const auto& route : kRoutes) RequireExactRefusal(route);
+  for (const auto& route : kRoutes) {
+    RequireExactRefusal(route);
+    const auto ambiguous = RunPipeline(route.sql, true);
+    Require(!ambiguous.verifier.admitted && ambiguous.envelope.messages.has_errors(),
+            "ALTER/RENAME accepted ambiguous bound target identities");
+    bool exact_target_refusal = false;
+    for (const auto& diagnostic : ambiguous.envelope.messages.diagnostics)
+      if (diagnostic.code == "SBSQL.ALTER_RENAME_DDL.UNSUPPORTED_SHAPE" &&
+          DiagnosticField(diagnostic, "feature") == "rename_target_uuid_required")
+        exact_target_refusal = true;
+    Require(exact_target_refusal, "ALTER/RENAME lost its ambiguous-target diagnostic");
+  }
   std::cout << "sbsql_alter_rename_exact_refusal_conformance=passed\n";
   return EXIT_SUCCESS;
 }
