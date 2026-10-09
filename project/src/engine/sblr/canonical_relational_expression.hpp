@@ -348,6 +348,7 @@ class CanonicalRelationalExpressionRuntime {
       const CanonicalRelationalExpressionRowBinding& row_binding,
       CanonicalRelationalExpressionRowView row_values,
       internal_api::EngineCanonicalExpressionConsumer consumer,
+      bool validate_present_payloads,
       ActiveRowBinding* prepared,
       std::string* refusal_detail) const;
   const internal_api::EngineTypedValue* ActiveRowValue(

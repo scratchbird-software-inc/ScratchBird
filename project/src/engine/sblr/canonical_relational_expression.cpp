@@ -18,6 +18,7 @@
 #include "query/expression_api.hpp"
 #include "query/historical_timestamp_scalar.hpp"
 #include "catalog/column_metadata_codec.hpp"
+#include "mga_relation_store/stored_scalar_payload.hpp"
 #include <map>
 
 #include <algorithm>
@@ -2140,6 +2141,7 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
     const CanonicalRelationalExpressionRowBinding& row_binding,
     const CanonicalRelationalExpressionRowView row_values,
     const api::EngineCanonicalExpressionConsumer consumer,
+    const bool validate_present_payloads,
     ActiveRowBinding* prepared,
     std::string* refusal_detail) const {
   if (prepared == nullptr || refusal_detail == nullptr) return false;
@@ -2279,6 +2281,26 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
       *refusal_detail =
           "materialized row contains a non-value runtime sentinel";
       return false;
+    } else if (validate_present_payloads) {
+      // Admission covers the whole supplied row, not only slots reached by
+      // this expression (which may short-circuit). Descriptor authority was
+      // checked above; fixed native carriers need no parse or allocation.
+      const auto kind = api::StoredScalarPayloadKindForV1(
+          value->descriptor.canonical_type_name);
+      using Kind = api::StoredScalarPayloadKindV1;
+      const std::size_t width = kind == Kind::int32_le4 ? 4 :
+          kind == Kind::scalar_le8 ? 8 :
+          (kind == Kind::uuid16 || kind == Kind::timestamp16) ? 16 : 0;
+      if ((kind != Kind::encoded && !value->encoded_value.empty()) ||
+          (width != 0 && value->binary_value.size() != width)) {
+        *refusal_detail = "materialized row payload differs from its admitted native carrier";
+        return false;
+      }
+      if (descriptor->second->codec_id == "datatype.timestamp.utc_tuple.le.v1") {
+        api::HistoricalTimestampScalarPartsV1 checked;
+        if (!api::DecodeHistoricalTimestampScalarV1(*value, &checked, refusal_detail))
+          return false;
+      }
     }
   }
   for (std::size_t slot_ordinal = 0;
@@ -3244,6 +3266,7 @@ bool CanonicalRelationalExpressionRuntime::InferTypeForConsumer(
   if (!PrepareRowBinding(expression_id, row_binding,
                          CanonicalRelationalExpressionRowView{row_values, {}},
                          consumer,
+                         false,  // Empty-batch type inference supplies descriptors, not values.
                          &prepared, refusal_detail)) {
     return false;
   }
@@ -3287,6 +3310,7 @@ bool CanonicalRelationalExpressionRuntime::EvaluateForConsumer(
   ActiveRowBinding prepared;
   refusal_detail->clear();
   if (!PrepareRowBinding(expression_id, row_binding, row_values, consumer,
+                         true,
                          &prepared, refusal_detail)) {
     return false;
   }

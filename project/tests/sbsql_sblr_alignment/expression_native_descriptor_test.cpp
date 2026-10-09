@@ -587,6 +587,18 @@ int main() {
     Check(actual.descriptor == value.descriptor && actual.encoded_value == value.encoded_value &&
           actual.binary_value == value.binary_value && actual.state == value.state &&
           actual.is_null == value.is_null);
+    if (type != d::CanonicalTypeId::boolean) {
+      auto malformed = input;
+      malformed.batch.rows.front().values.front().encoded_value = "0";
+      Check(!s::PrepareExpressionProjectRootForComposition(dag, root, source, malformed, {}).ok);
+      if (type != d::CanonicalTypeId::binary) {
+        malformed = input;
+        malformed.batch.rows.front().values.front().binary_value.pop_back();
+        Check(!s::PrepareExpressionProjectRootForComposition(dag, root, source, malformed, {}).ok);
+        malformed.batch.rows.front().values.front().binary_value.clear();
+        Check(!s::PrepareExpressionProjectRootForComposition(dag, root, source, malformed, {}).ok);
+      }
+    }
     if (type == d::CanonicalTypeId::uint64 || type == d::CanonicalTypeId::real64) {
       auto literal_dag = dag;
       auto& literal = literal_dag.expressions.front();

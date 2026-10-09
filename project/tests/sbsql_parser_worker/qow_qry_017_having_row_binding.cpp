@@ -7,6 +7,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/canonical_int64_literal_fixture.hpp"
+#include "../support/native_int64_fixture.hpp"
+#include "canonical_query_descriptor_support.hpp"
 #include "canonical_relational_expression.hpp"
 
 #include <cstdlib>
@@ -38,10 +41,23 @@ bool Require(const bool condition, const std::string_view detail) {
 api::RelationalTypeDescriptor Descriptor(
     const std::uint32_t id, const api::EngineUuid& uuid,
     const api::EngineUuid& type_uuid, const api::RelationalNullability nullable) {
-  api::RelationalTypeDescriptor descriptor;
+  auto descriptor = scratchbird::tests::Int64LiteralDescriptor(id);
+  if (type_uuid == kBooleanTypeUuid) {
+    const auto identity = scratchbird::core::datatypes::LookupCanonicalBooleanTypeCodecIdentityV1(
+        descriptor.datatype_catalog_snapshot_uuid, descriptor.datatype_catalog_generation,
+        descriptor.datatype_registry_generation);
+    if (!identity.ok) throw std::runtime_error("HAVING boolean fixture binding unavailable");
+    descriptor.descriptor_uuid = identity.row.descriptor_uuid;
+    descriptor.type_uuid = identity.row.type_uuid;
+    descriptor.descriptor_generation = identity.row.descriptor_generation;
+    descriptor.type_generation = identity.row.type_generation;
+    descriptor.codec_id = identity.row.codec_id;
+    descriptor.codec_version = identity.row.codec_version;
+    descriptor.codec_generation = identity.row.codec_generation;
+  } else {
+    descriptor.descriptor_uuid = uuid;
+  }
   descriptor.descriptor_id = id;
-  descriptor.descriptor_uuid = uuid;
-  descriptor.type_uuid = type_uuid;
   descriptor.nullability = nullable;
   return descriptor;
 }
@@ -119,12 +135,8 @@ api::TypedRelationalDag Dag(const std::string& count_threshold = "1",
                  kInt64TypeUuid,
                  api::RelationalNullability::kNullable),
   };
-  auto& decorated = dag.descriptors[4];
-  decorated.collation_uuid = scratchbird::tests::FixtureUuidLiteral("019f3300-0000-7300-8000-000000000301");
-  decorated.timezone_profile_id = "tz-profile-qow-017";
-  decorated.width = 64;
-  decorated.precision = 19;
-  decorated.scale = 3;
+  // INT64 has no collation/timezone/width/scale modifiers. Start with a valid
+  // native descriptor and test attempted decoration as explicit refusals.
 
   api::RelationalExpressionRecord identifier;
   identifier.expression_id = 11;
@@ -151,6 +163,16 @@ api::TypedRelationalDag Dag(const std::string& count_threshold = "1",
       Binary(17, 4, "AND", 16, 6),
       Literal(18, 6, "1"),
   };
+  for (auto& expression : dag.expressions) {
+    if (expression.expression_kind != api::RelationalExpressionKind::kLiteral) continue;
+    const auto& descriptor = dag.descriptors.at(expression.result_descriptor_id - 1);
+    std::int64_t value = 0;
+    const auto& text = *expression.literal_or_parameter_ref;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
+      throw std::runtime_error("HAVING fixture integer literal invalid");
+    scratchbird::tests::SetInt64Literal(expression, descriptor, value);
+  }
   api::RelationalExpressionRecord sum_argument;
   sum_argument.expression_id = 14;
   sum_argument.expression_kind = api::RelationalExpressionKind::kIdentifier;
@@ -188,32 +210,9 @@ api::EngineDescriptor EngineDescriptor(const api::TypedRelationalDag& dag,
                                        const std::string_view type_name) {
   const auto& source = FindDescriptor(dag, id);
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid = source.descriptor_uuid;
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = type_name;
-  const char* nullability = "unknown";
-  if (source.nullability == api::RelationalNullability::kNonNull) {
-    nullability = "non_null";
-  } else if (source.nullability == api::RelationalNullability::kNullable) {
-    nullability = "nullable";
-  }
-  descriptor.type_uuid = source.type_uuid;
-  descriptor.encoded_descriptor = std::string("nullability=") + nullability;
-  if (source.collation_uuid.has_value()) descriptor.collation_uuid = *source.collation_uuid;
-  if (source.timezone_profile_id.has_value()) {
-    descriptor.encoded_descriptor +=
-        ";timezone_profile_id=" + *source.timezone_profile_id;
-  }
-  if (source.width.has_value()) {
-    descriptor.encoded_descriptor += ";width=" + std::to_string(*source.width);
-  }
-  if (source.precision.has_value()) {
-    descriptor.encoded_descriptor +=
-        ";precision=" + std::to_string(*source.precision);
-  }
-  if (source.scale.has_value()) {
-    descriptor.encoded_descriptor += ";scale=" + std::to_string(*source.scale);
-  }
+  if (!sblr::BuildExactCanonicalScalarRuntimeDescriptorV1(source,
+          scratchbird::core::datatypes::CanonicalTypeIdFromStableName(std::string(type_name)), &descriptor))
+    throw std::runtime_error("HAVING fixture native scalar descriptor invalid");
   return descriptor;
 }
 
@@ -221,11 +220,7 @@ api::EngineTypedValue Value(const api::TypedRelationalDag& dag,
                             const std::uint32_t descriptor_id,
                             const std::string_view type_name,
                             const std::string& encoded) {
-  api::EngineTypedValue value;
-  value.descriptor = EngineDescriptor(dag, descriptor_id, type_name);
-  value.encoded_value = encoded;
-  value.setState(api::EngineValueState::value);
-  return value;
+  return scratchbird::tests::NativeInt64Fixture(EngineDescriptor(dag, descriptor_id, type_name), encoded);
 }
 
 std::vector<api::EngineTypedValue> Row(const api::TypedRelationalDag& dag,
@@ -239,7 +234,7 @@ std::vector<api::EngineTypedValue> Row(const api::TypedRelationalDag& dag,
 
 std::vector<api::EngineTypedValue> NullSumRow(
     const api::TypedRelationalDag& dag, const std::int64_t count) {
-  auto row = Row(dag, count, {});
+  auto row = Row(dag, count, "0");
   row[1].encoded_value.clear();
   row[1].binary_value.clear();
   row[1].setState(api::EngineValueState::sql_null);
@@ -350,7 +345,7 @@ bool ValidateFiveProfilesAndThreeValuedLogic() {
   passed &= Evaluate(dag, 16, GroupingKeyBinding(), Row(dag, 2, "7"),
                      Truth::true_value);
   auto false_key = Row(dag, 2, "7");
-  false_key[3].encoded_value = "0";
+  false_key[3] = Value(dag, 6, "int64", "0");
   passed &= Evaluate(dag, 16, GroupingKeyBinding(), false_key,
                      Truth::false_value);
   passed &= Evaluate(dag, 16, GroupingKeyBinding(),
@@ -359,6 +354,13 @@ bool ValidateFiveProfilesAndThreeValuedLogic() {
                      Truth::true_value);
   passed &= Evaluate(dag, 17, GroupedHavingBinding(),
                      NullGroupKeyRow(dag, 2, "7"), Truth::unknown);
+  passed &= Evaluate(dag, 7, BooleanBinding(),
+                     Row(dag, INT64_MAX, "9223372036854775807"), Truth::true_value);
+  passed &= Evaluate(dag, 8, BooleanBinding(),
+                     Row(dag, INT64_MIN, "-9223372036854775808"), Truth::false_value);
+  const auto limits = Dag("9223372036854775807", "-9223372036854775808");
+  passed &= Evaluate(limits, 7, BooleanBinding(),
+                     Row(limits, INT64_MAX, "-9223372036854775808"), Truth::false_value);
   return passed;
 }
 
@@ -477,6 +479,14 @@ bool ValidateBindingRefusals() {
   wrong_type[0].descriptor.canonical_type_name = "boolean";
   passed &= Refuses(dag, 7, binding, wrong_type,
                     "wrong aggregate slot type was admitted");
+  for (std::size_t ordinal = 0; ordinal < row.size(); ++ordinal) {
+    auto malformed = row;
+    malformed[ordinal].binary_value.pop_back();
+    passed &= Refuses(dag, 7, binding, malformed, "truncated native row value was admitted");
+    malformed = row;
+    malformed[ordinal].encoded_value = "7";
+    passed &= Refuses(dag, 7, binding, malformed, "mixed native/text row carrier was admitted");
+  }
   return passed;
 }
 
@@ -514,13 +524,11 @@ bool ValidateFullDescriptorIdentity() {
   changed[2].descriptor.collation_uuid = scratchbird::tests::FixtureUuid(2011, 2);
   passed &= Refuses(dag, 7, binding, changed,
                     "binary collation UUID drift was admitted");
-  passed &= mutate("timezone_profile_id=tz-profile-qow-017",
-                   "timezone_profile_id=tz-profile-drift",
-                   "encoded timezone profile drift was admitted");
-  passed &= mutate("width=64", "width=63", "encoded width drift was admitted");
-  passed &= mutate("precision=19", "precision=18",
-                   "encoded precision drift was admitted");
-  passed &= mutate("scale=3", "scale=2", "encoded scale drift was admitted");
+  for (const auto modifier : {"timezone_profile_id=tz-profile-drift", "width=63", "precision=18", "scale=2"}) {
+    changed = row;
+    changed[2].descriptor.encoded_descriptor += std::string(";") + modifier;
+    passed &= Refuses(dag, 7, binding, changed, "unsupported integer descriptor modifier was admitted");
+  }
   for (const auto source : {"BIGINT", "int64"}) {
     changed = row;
     changed[0].descriptor.encoded_descriptor += std::string(";source_type=") + source;
@@ -573,9 +581,17 @@ bool ValidateMalformedGraphRefusals() {
   passed &= Refuses(malformed, 7, binding, Row(malformed, 2, "7"),
                     "literal carrying a child was admitted");
   malformed = Dag();
-  FindExpression(malformed, 3).literal_or_parameter_ref.reset();
+  FindExpression(malformed, 3).literal_typed_value_v1.reset();
   passed &= Refuses(malformed, 7, binding, Row(malformed, 2, "7"),
                     "literal missing its payload was admitted");
+  for (unsigned mutation = 0;
+       mutation < std::size(scratchbird::tests::kInvalidInt64LiteralCases); ++mutation) {
+    malformed = Dag();
+    scratchbird::tests::InvalidateInt64Literal(mutation, malformed.descriptors[2],
+                                              FindExpression(malformed, 3));
+    passed &= Refuses(malformed, 7, binding, Row(malformed, 2, "7"),
+                      scratchbird::tests::kInvalidInt64LiteralCases[mutation]);
+  }
   return passed;
 }
 
