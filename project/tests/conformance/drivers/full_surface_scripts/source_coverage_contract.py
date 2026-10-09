@@ -36,6 +36,12 @@ def index_rows(rows: list[dict[str, str]], name: str) -> dict[str, dict[str, str
     return result
 
 
+def disposition_digest(release: dict[str, dict[str, str]]) -> str:
+    material = "".join(f"{identity}\t{release[identity]['final_status']}\n"
+                       for identity in sorted(release))
+    return hashlib.sha256(material.encode()).hexdigest()
+
+
 def validate_replay_rows(release_rows, replay_rows, contract) -> list[str]:
     release = index_rows(release_rows, "release")
     replay = index_rows(replay_rows, "replay")
@@ -44,6 +50,8 @@ def validate_replay_rows(release_rows, replay_rows, contract) -> list[str]:
         errors.append("replay:identity_set_mismatch")
     if identity_digest(set(release)) != contract.get("surface_identity_sha256"):
         errors.append("release:identity_digest_mismatch")
+    if disposition_digest(release) != contract.get("surface_disposition_sha256"):
+        errors.append("release:disposition_digest_mismatch")
     counts = Counter(row["final_status"] for row in release.values())
     if set(counts) - DISPOSITIONS or dict(counts) != contract.get("disposition_counts"):
         errors.append("release:disposition_counts_mismatch")

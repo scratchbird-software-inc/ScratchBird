@@ -24,6 +24,7 @@
   ],
   "replay_source_contract": {
     "surface_identity_sha256": "8d20c5d06e430813793f6a46b508f4d3b04a16a0aa8741000c557122ee42ee37",
+    "surface_disposition_sha256": "32063856ef3afcd8bf00e1e931e45940c741bfee62cc42f303685ea3acae248d",
     "disposition_counts": {
       "e2e_passed": 2481,
       "exact_refusal_passed": 82,

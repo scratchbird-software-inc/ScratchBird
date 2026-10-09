@@ -13,7 +13,7 @@ import unittest
 
 from source_coverage_contract import (
     AUTH_ROUTE_ROOT_REL, RELEASE_REL, REPLAY_INDEX_REL, SBLR_ROUND_TRIP_ROOT_REL,
-    identity_digest, quoted_field, validate_replay_rows, validate_source_coverage,
+    disposition_digest, identity_digest, quoted_field, validate_replay_rows, validate_source_coverage,
 )
 
 
@@ -26,6 +26,7 @@ class SourceCoverageTest(unittest.TestCase):
                         "route_set": "full_route" if row["final_status"] == "e2e_passed" else "diagnostic"}
                        for row in self.release]
         self.contract = {"surface_identity_sha256": identity_digest({"0", "1", "2"}),
+                         "surface_disposition_sha256": disposition_digest({row["surface_id"]: row for row in self.release}),
                          "disposition_counts": {row["final_status"]: 1 for row in self.release}}
 
     def test_partition(self):
@@ -59,6 +60,15 @@ class SourceCoverageTest(unittest.TestCase):
         self.release[0]["final_status"] = "exact_refusal_passed"
         self.assertIn("release:disposition_counts_mismatch",
                       validate_replay_rows(self.release, self.replay, self.contract))
+
+    def test_balanced_reclassification_cannot_preserve_partition(self):
+        self.release[0]["final_status"], self.release[1]["final_status"] = (
+            self.release[1]["final_status"], self.release[0]["final_status"])
+        for release, replay in zip(self.release, self.replay):
+            replay["expected_server_result"] = "release-evidence=" + release["final_status"]
+            replay["route_set"] = "full_route" if release["final_status"] == "e2e_passed" else "diagnostic"
+        self.assertEqual(validate_replay_rows(self.release, self.replay, self.contract),
+                         ["release:disposition_digest_mismatch"])
 
     def test_conflicting_evidence_is_not_accepted(self):
         self.replay[0]["expected_server_result"] += ";release-evidence=exact_refusal_passed"
