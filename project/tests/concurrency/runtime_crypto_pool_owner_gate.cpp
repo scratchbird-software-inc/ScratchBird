@@ -53,7 +53,9 @@ struct Fixture {
   m::HierarchicalMemoryBudgetLedger ledger;
   h::CryptoMemoryBinding binding = Binding(20);
   std::unique_ptr<m::ReservationBackedMemoryResource> grant;
-  explicit Fixture(unsigned binding_seed=20):binding(Binding(binding_seed)) {
+  explicit Fixture(unsigned binding_seed=20, bool process_scope=false,
+                   unsigned charged_process=90):binding(Binding(binding_seed)) {
+    if (process_scope) {binding.database={}; binding.process=Id(90);}
     m::ReservationBackedMemoryResourceRequest q;
     q.memory_manager=&manager; q.reservation_ledger=&ledger; q.requested_bytes=bytes;
     q.category=m::MemoryCategory::core_runtime; q.memory_class="crypto_provider";
@@ -61,10 +63,12 @@ struct Fixture {
     q.route_label="runtime crypto component"; q.purpose="actual runtime custody fixture";
     q.binary_operation_uuid=binding.operation.bytes;
     q.binary_ownership[m::MemoryBinaryScopeKind::database]=binding.database.bytes;
+    q.binary_ownership[m::MemoryBinaryScopeKind::process]=binding.process.bytes;
     q.binary_ownership[m::MemoryBinaryScopeKind::owner]=binding.owner.bytes;
     q.binary_ownership[m::MemoryBinaryScopeKind::context]=binding.context.bytes;
-    q.scope_chain={{m::HierarchicalMemoryScopeKind::process,{},Id(90).bytes},
-                   {m::HierarchicalMemoryScopeKind::database,{},binding.database.bytes}};
+    q.scope_chain={{m::HierarchicalMemoryScopeKind::process,{},Id(charged_process).bytes}};
+    if (!process_scope) q.scope_chain.push_back(
+        {m::HierarchicalMemoryScopeKind::database,{},binding.database.bytes});
     q.provenance.source=m::HierarchicalMemoryBudgetProvenanceSource::server_runtime_api;
     q.provenance.source_label="runtime crypto owner conformance";
     for (const auto& scope:q.scope_chain) { m::HierarchicalMemoryBudget budget;
@@ -88,6 +92,9 @@ void CustodyFailures() {
   }
   Check(!owner.Adopt(f.binding,f.grant,f.bytes+1).ok() && f.grant,"oversized backing preserves grant");
   Check(owner.Adopt(f.binding,f.grant,f.bytes).ok() && !f.grant,"exact custody transferred");
+  Check(owner.InstallProcessAdapter().error==r::RuntimeCryptoPoolError::invalid_binding &&
+        !h::SnapshotCryptoMemoryAdapter().installed,
+        "database owner cannot impersonate process bootstrap");
   Check(f.manager.Snapshot().current_bytes==f.bytes,"actual backing charged");
   bool entered=false;
   Check(owner.WithMemoryScope(f.binding,[&] {entered=true;}).adapter_error==
@@ -139,9 +146,9 @@ void CustomFree(void* p,const char*,int) { std::free(p); }
 void ScopedProviderOperations(r::RuntimeCryptoPoolOwner& owner,
                               const h::CryptoMemoryBinding& binding) {
   bool entered = false;
-  for (unsigned dim=0;dim<4;++dim) {
+  for (unsigned dim=0;dim<5;++dim) {
     auto wrong=binding;
-    std::array<Uuid*,4> ids{&wrong.database,&wrong.operation,&wrong.owner,&wrong.context};
+    std::array<Uuid*,5> ids{&wrong.database,&wrong.operation,&wrong.owner,&wrong.context,&wrong.process};
     *ids[dim]=Id(99);
     Check(owner.WithMemoryScope(wrong,[&] { entered=true; }).error ==
               r::RuntimeCryptoPoolError::invalid_binding && !entered,
@@ -206,8 +213,25 @@ int main(int argc,char** argv) {
   const std::string_view mode=argc>1?argv[1]:"lifecycle";
   CustodyFailures();
   if (mode=="cleanup_fault") { CleanupLockFailures(); return 0; }
-  Fixture process; r::RuntimeCryptoPoolOwner owner;
+  {
+    Fixture mislabeled(20,true,91); r::RuntimeCryptoPoolOwner rejected;
+    Check(rejected.Adopt(mislabeled.binding,mislabeled.grant,mislabeled.bytes).error==
+              r::RuntimeCryptoPoolError::invalid_binding && mislabeled.grant &&
+              !rejected.has_custody(),"process tag cannot relabel another charged root");
+    Check(mislabeled.grant->ReleaseNoAlloc().ok(),"mislabeled grant cleanup");
+    mislabeled.grant.reset(); mislabeled.Empty();
+  }
+  Fixture process(20,true); r::RuntimeCryptoPoolOwner owner;
+  for (unsigned dimension=0;dimension<5;++dimension) {
+    auto wrong=process.binding;
+    std::array<Uuid*,5> ids{&wrong.database,&wrong.operation,&wrong.owner,&wrong.context,&wrong.process};
+    *ids[dimension]=Id(99);
+    Check(owner.Adopt(wrong,process.grant,process.bytes).error==r::RuntimeCryptoPoolError::invalid_binding &&
+          process.grant && !owner.has_custody(),"process binding refusal preserves real grant");
+  }
   Check(owner.Adopt(process.binding,process.grant,process.bytes).ok(),"process backing owner");
+  Check(owner.CheckProcessAdapter(process.binding).adapter_error==h::CryptoMemoryError::not_installed,
+        "process backing is not installed provider authority");
   if (mode=="late" || mode=="custom") {
     if (mode=="late") { auto* p=OPENSSL_malloc(32); Check(p,"early crypto"); OPENSSL_free(p); }
     else Check(CRYPTO_set_mem_functions(CustomMalloc,CustomRealloc,CustomFree)==1,"custom hook fixture");
@@ -217,6 +241,38 @@ int main(int argc,char** argv) {
     Check(owner.Close().ok(),"failed installation permits safe backing release"); process.Empty();
   } else {
     Check(owner.InstallProcessAdapter().ok(),"explicit early installation");
+    Check(owner.CheckProcessAdapter(process.binding).ok(),"exact installed process binding");
+    Check(h::SnapshotCryptoMemoryAdapter().process_binding.database==Uuid{} &&
+          h::SnapshotCryptoMemoryAdapter().process_binding.process==process.binding.process,
+          "bootstrap records genuine process identity without database");
+    for (unsigned dimension=0;dimension<5;++dimension) {
+      auto wrong=process.binding;
+      std::array<Uuid*,5> ids{&wrong.database,&wrong.operation,&wrong.owner,&wrong.context,&wrong.process};
+      *ids[dimension]=Id(99);
+      Check(owner.CheckProcessAdapter(wrong).error==r::RuntimeCryptoPoolError::invalid_binding,
+            "ready observation requires all exact identities");
+    }
+    lock_calls=0;
+    const auto baseline=owner.CheckProcessAdapter(process.binding);
+    const auto observation_locks=lock_calls;
+    Check(baseline.ok() && observation_locks>=3,"measure full startup observation lock path");
+    for (unsigned at=0;at<observation_locks;++at) {
+      lock_injected=false; fail_lock=at;
+      const auto observation=owner.CheckProcessAdapter(process.binding);
+      fail_lock=-1;
+      Check(lock_injected && !observation.ok() && owner.has_custody() &&
+            (observation.error==r::RuntimeCryptoPoolError::synchronization_failure ||
+             observation.adapter_error==h::CryptoMemoryError::busy),
+            "every failed startup observation preserves custody and refuses readiness");
+      Check(owner.CheckProcessAdapter(process.binding).ok(),"startup observation retry");
+    }
+    {
+      Fixture duplicate(20,true); r::RuntimeCryptoPoolOwner other;
+      Check(other.Adopt(duplicate.binding,duplicate.grant,duplicate.bytes).ok(),"separate real grant with same tuple");
+      Check(other.CheckProcessAdapter(duplicate.binding).adapter_error==h::CryptoMemoryError::invalid_binding,
+            "duplicate tuple cannot impersonate installed backing owner");
+      Check(other.Close().ok(),"uninstalled duplicate backing can close"); duplicate.Empty();
+    }
     Check(owner.Close().adapter_error==h::CryptoMemoryError::busy && owner.has_custody(),
           "installed pool cannot free backing");
     // Admit the selected provider profiles under the process owner before
@@ -301,6 +357,9 @@ int main(int argc,char** argv) {
     Check(operation_owner.Close().ok(),"joined operation pool closes"); operation.Empty();
     OPENSSL_thread_stop(); OPENSSL_cleanup();
     Check(h::StopCryptoMemoryAdapter()==h::CryptoMemoryError::none,"explicit process cleanup before stop");
+    Check(owner.CheckProcessAdapter(process.binding).adapter_error==h::CryptoMemoryError::closed &&
+          owner.InstallProcessAdapter().adapter_error==h::CryptoMemoryError::already_installed,
+          "terminal process provider cannot become ready or restart");
     fail_allocation=0; const auto closed=owner.Close(); fail_allocation=-1;
     Check(closed.ok(),"process backing released only after terminal stop"); process.Empty();
     Check(!OPENSSL_malloc(1),"terminal hook refuses late allocation");

@@ -4,6 +4,7 @@
 #include "hash_digest_parts.hpp"
 #include <atomic>
 #include <cstddef>
+#include <initializer_list>
 
 namespace scratchbird::core::hash {
 
@@ -11,7 +12,19 @@ namespace scratchbird::core::hash {
 // owner retains the actual grant, pool object and bytes until Close succeeds.
 struct CryptoMemoryBinding {
   platform::Uuid database, operation, owner, context;
+  // Exactly one scope: an actual database, or a process before database open.
+  // Never put a process identity into the database carrier.
+  platform::Uuid process{};
+  bool operator==(const CryptoMemoryBinding&) const = default;
 };
+inline bool ValidCryptoMemoryBinding(const CryptoMemoryBinding& binding) noexcept {
+  const platform::Uuid absent{};
+  if ((binding.database == absent) == (binding.process == absent)) return false;
+  const auto& scope = binding.database == absent ? binding.process : binding.database;
+  for (const auto* id : {&scope, &binding.operation, &binding.owner, &binding.context})
+    if ((id->bytes[6] >> 4) != 7 || (id->bytes[8] & 0xc0) != 0x80) return false;
+  return true;
+}
 enum class CryptoMemoryError : unsigned char {
   none, invalid_binding, invalid_backing, not_installed, already_installed,
   custom_allocator, late_installation, closed, revoked, busy, provider_failure
@@ -50,11 +63,17 @@ class CryptoMemoryPool {
   friend class CryptoMemoryScope;
   friend class PreparedSha256;
   friend CryptoMemoryError InstallCryptoMemoryAdapter(CryptoMemoryPool&) noexcept;
+  friend CryptoMemoryError CheckCryptoMemoryAdapter(const CryptoMemoryPool&,
+                                                   const CryptoMemoryBinding&) noexcept;
 };
 
 // Explicit bootstrap only; call before any OpenSSL allocation or crypto thread.
 // No provider/configuration change, heap fallback or automatic runtime wiring.
 CryptoMemoryError InstallCryptoMemoryAdapter(CryptoMemoryPool&) noexcept;
+// Observe the exact live installation under the adapter lock. This is not a
+// worker admission lease; callers serialize process shutdown against admission.
+CryptoMemoryError CheckCryptoMemoryAdapter(const CryptoMemoryPool&,
+                                           const CryptoMemoryBinding&) noexcept;
 // Call AFTER worker joins, thread cleanup and OPENSSL_cleanup. Busy retains
 // every pointer/charge. Hooks remain installed in a terminal refusing state.
 CryptoMemoryError StopCryptoMemoryAdapter() noexcept;

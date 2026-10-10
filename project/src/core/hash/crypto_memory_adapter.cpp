@@ -26,12 +26,7 @@ thread_local PreparedSha256* prepared=nullptr;
 constexpr auto alignment=alignof(std::max_align_t);
 void Increment(u64& value){if(value!=std::numeric_limits<u64>::max())++value;}
 bool Same(const CryptoMemoryBinding& a,const CryptoMemoryBinding& b){
-  return a.database==b.database&&a.operation==b.operation&&a.owner==b.owner&&a.context==b.context;
-}
-bool Valid(const CryptoMemoryBinding& b){
-  for(const auto* id:{&b.database,&b.operation,&b.owner,&b.context})
-    if((id->bytes[6]>>4)!=7||(id->bytes[8]&0xc0)!=0x80)return false;
-  return true;
+  return a==b;
 }
 void Wipe(void* p,std::size_t n){volatile auto* bytes=static_cast<volatile unsigned char*>(p);while(n--)*bytes++=0;}
 struct BusyRelease{std::atomic_flag& flag;~BusyRelease(){flag.clear(std::memory_order_release);}};
@@ -120,7 +115,7 @@ CryptoMemoryError CryptoMemoryPool::Open(const CryptoMemoryBinding& binding,void
   try{
     std::lock_guard lock(State().mutex);
     if(state_.open)return CryptoMemoryError::busy;
-    if(!Valid(binding))return CryptoMemoryError::invalid_binding;
+    if(!ValidCryptoMemoryBinding(binding))return CryptoMemoryError::invalid_binding;
     const auto begin=reinterpret_cast<std::uintptr_t>(backing),self=reinterpret_cast<std::uintptr_t>(this);
     if(!backing||begin%alignment||bytes<sizeof(Block)+alignment||bytes>UINTPTR_MAX-begin||
         (begin<self+sizeof(*this)&&self<begin+bytes))return CryptoMemoryError::invalid_backing;
@@ -176,6 +171,22 @@ CryptoMemoryError StopCryptoMemoryAdapter() noexcept {
     if(s.blocks||s.scopes)return CryptoMemoryError::busy;
     s.process=nullptr;s.stopped=true;return CryptoMemoryError::none;
   }catch(...){return CryptoMemoryError::busy;}
+}
+CryptoMemoryError CheckCryptoMemoryAdapter(const CryptoMemoryPool& owner,
+                                           const CryptoMemoryBinding& expected) noexcept {
+  try {
+    std::lock_guard lock(State().mutex);
+    const auto& state=State();
+    if(!ValidCryptoMemoryBinding(expected))return CryptoMemoryError::invalid_binding;
+    if(!state.installed)return CryptoMemoryError::not_installed;
+    if(!Same(state.process_binding,expected))return CryptoMemoryError::invalid_binding;
+    if(state.stopped||!state.process)return CryptoMemoryError::closed;
+    if(state.process!=&owner)return CryptoMemoryError::invalid_binding;
+    const auto& pool=state.process->state_;
+    if(!pool.open)return CryptoMemoryError::closed;
+    if(pool.revoked)return CryptoMemoryError::revoked;
+    return CryptoMemoryError::none;
+  } catch(...) {return CryptoMemoryError::busy;}
 }
 CryptoMemoryAdapterSnapshot SnapshotCryptoMemoryAdapter() noexcept {
   try{std::lock_guard lock(State().mutex);const auto& s=State();

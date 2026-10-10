@@ -39,16 +39,25 @@ class RuntimeCryptoPoolOwner {
       std::unique_ptr<memory::ReservationBackedMemoryResource>& grant,
       platform::usize bytes) noexcept {
     if (grant_) return {RuntimeCryptoPoolError::already_owned};
-    for (const auto& id : {binding.database, binding.operation, binding.owner, binding.context})
-      if (!memory::MemorySystemUuidValid(id.bytes)) return {RuntimeCryptoPoolError::invalid_binding};
+    if (!hash::ValidCryptoMemoryBinding(binding)) return {RuntimeCryptoPoolError::invalid_binding};
     try {
       if (!grant || !grant->active() || !bytes) return {RuntimeCryptoPoolError::invalid_grant};
       const auto& request = grant->request();
       if (request.binary_operation_uuid != binding.operation.bytes ||
           request.binary_ownership[memory::MemoryBinaryScopeKind::database] != binding.database.bytes ||
+          request.binary_ownership[memory::MemoryBinaryScopeKind::process] != binding.process.bytes ||
           request.binary_ownership[memory::MemoryBinaryScopeKind::owner] != binding.owner.bytes ||
           request.binary_ownership[memory::MemoryBinaryScopeKind::context] != binding.context.bytes ||
           !request.operation_id.empty() || !request.owner_id.empty())
+        return {RuntimeCryptoPoolError::invalid_binding};
+      // The older resource admission validates database-through-query scopes,
+      // not the later process carrier. Check the actual charged root here;
+      // matching a tag alone must not relabel another process's reservation.
+      if (binding.process != platform::Uuid{} &&
+          (request.scope_chain.size() != 1 ||
+           request.scope_chain.front().kind != memory::HierarchicalMemoryScopeKind::process ||
+           !request.scope_chain.front().scope_id.empty() ||
+           request.scope_chain.front().binary_scope_uuid != binding.process.bytes))
         return {RuntimeCryptoPoolError::invalid_binding};
       const auto snapshot = grant->Snapshot();
       if (bytes > snapshot.reserved_bytes || snapshot.allocation_count != 0)
@@ -68,9 +77,17 @@ class RuntimeCryptoPoolOwner {
   }
 
   RuntimeCryptoPoolResult InstallProcessAdapter() noexcept {
+    if (binding_.process == platform::Uuid{}) return {RuntimeCryptoPoolError::invalid_binding};
     const auto checked = Check(binding_);
     if (!checked.ok()) return checked;
     return Adapter(hash::InstallCryptoMemoryAdapter(pool_));
+  }
+  RuntimeCryptoPoolResult CheckProcessAdapter(
+      const hash::CryptoMemoryBinding& expected) const noexcept {
+    if (expected.process == platform::Uuid{}) return {RuntimeCryptoPoolError::invalid_binding};
+    const auto checked = Check(expected);
+    if (!checked.ok()) return checked;
+    return Adapter(hash::CheckCryptoMemoryAdapter(pool_, expected));
   }
   RuntimeCryptoPoolResult Prepare(hash::PreparedSha256& session,
       const hash::CryptoMemoryBinding& expected) noexcept {
@@ -97,8 +114,7 @@ class RuntimeCryptoPoolOwner {
     return {};
   }
   RuntimeCryptoPoolResult Check(const hash::CryptoMemoryBinding& expected) const noexcept {
-    if (expected.database != binding_.database || expected.operation != binding_.operation ||
-        expected.owner != binding_.owner || expected.context != binding_.context)
+    if (expected != binding_)
       return {RuntimeCryptoPoolError::invalid_binding};
     try {
       if (!grant_ || !open_ || !grant_->active()) return {RuntimeCryptoPoolError::invalid_grant};
