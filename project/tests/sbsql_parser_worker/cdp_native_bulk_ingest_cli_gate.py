@@ -179,6 +179,53 @@ def round_trip_script() -> str:
     )
 
 
+def verify_destination_carriers(route: Route, work: Path) -> None:
+    """Source packet widths must not become retained destination row widths."""
+    target = "cdp_native_bulk_destination_carriers"
+    rows = work / "destination-carriers.rows"
+    rows.write_text(
+        "id=1;amount=7\n"
+        "id=1;amount=-3\n"
+        "id=2;amount=9223372036854775807\n"
+        "id=2;amount=-9223372036854775808\n"
+        "id=3;amount=NULL\n"
+        "id=NULL;amount=19\n",
+        encoding="utf-8",
+    )
+    setup = run_sb_isql(
+        route, "destination_carriers_setup",
+        f"CREATE TABLE {target} (id BIGINT, amount BIGINT);\n"
+        f"\\native_bulk_ingest {target} FROM '{rows}'\n", work, timeout=120,
+    )
+    verify_accepted([setup])
+    if "rows_affected=6" not in setup.stdout:
+        raise NativeBulkIngestGateError(f"{route.name} destination row count: {setup.stdout!r}")
+    # A separate client reloads committed rows. Embedded mode also reopens the
+    # node; IPC/INET exercise parser, canonical transport and live row readers.
+    queries = (
+        ("top_k", f"SELECT * FROM {target} WHERE id = 2 ORDER BY amount DESC LIMIT 1;\n",
+         ["2|9223372036854775807"]),
+        ("grouped_sum", f"SELECT id,SUM(amount) FROM {target} GROUP BY id;\n",
+         ["(null)|19", "1|4", "2|-1", "3|(null)"]),
+        ("join", f"SELECT * FROM {target} AS l INNER JOIN {target} AS r ON l.id = r.id;\n",
+         ["1|7|1|7", "1|-3|1|7", "1|7|1|-3", "1|-3|1|-3",
+          "2|9223372036854775807|2|9223372036854775807",
+          "2|-9223372036854775808|2|9223372036854775807",
+          "2|9223372036854775807|2|-9223372036854775808",
+          "2|-9223372036854775808|2|-9223372036854775808", "3|(null)|3|(null)"]),
+    )
+    for name, query, expected in queries:
+        result = run_sb_isql(route, "destination_carriers_" + name, query, work, timeout=120)
+        # These queries do not prescribe inter-group/join order. Compare the
+        # exact multiset (including duplicates and SQL NULL), not just a count.
+        if (result.returncode != 0 or result.stderr or
+                sorted(result.stdout.splitlines()) != sorted(expected)):
+            raise NativeBulkIngestGateError(
+                f"{route.name} destination {name} mismatch: rc={result.returncode} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r} expected={expected!r}"
+            )
+
+
 def run_embedded(args: argparse.Namespace, work: Path) -> Route:
     database = work / "embedded" / "e.sbdb"
     seed_database(
@@ -448,6 +495,9 @@ def run_gate(args: argparse.Namespace, work: Path) -> None:
             for route in routes
         ]
         verify_disabled(disabled)
+
+        for route in routes:
+            verify_destination_carriers(route, work)
     finally:
         errors = []
         for proc in reversed(processes):

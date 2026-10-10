@@ -58,6 +58,49 @@ class RoundTripOracleTests(unittest.TestCase):
                 self.check(self.rows(), stderr, code)
 
 
+class DestinationCarrierOracleTests(unittest.TestCase):
+    def responses(self):
+        return [
+            "NATIVE_BULK_INGEST operation_id=dml.execute_native_bulk_ingest accepted=true rows_affected=6",
+            "2|9223372036854775807",
+            "(null)|19\n1|4\n2|-1\n3|(null)",
+            "1|7|1|7\n1|-3|1|7\n1|7|1|-3\n1|-3|1|-3\n"
+            "2|9223372036854775807|2|9223372036854775807\n"
+            "2|-9223372036854775808|2|9223372036854775807\n"
+            "2|9223372036854775807|2|-9223372036854775808\n"
+            "2|-9223372036854775808|2|-9223372036854775808\n3|(null)|3|(null)",
+        ]
+
+    def check(self, responses):
+        results = [gate.RunResult("control", "destination", 0, text, "") for text in responses]
+        with patch.object(Path, "write_text"), \
+                patch.object(gate, "run_sb_isql", side_effect=results):
+            gate.verify_destination_carriers(gate.Route("control", Path("unused"), []), Path("unused"))
+
+    def test_exact_values_with_unordered_group_and_join_rows(self):
+        responses = self.responses()
+        responses[2] = "\n".join(reversed(responses[2].splitlines()))
+        responses[3] = "\n".join(reversed(responses[3].splitlines()))
+        self.check(responses)
+
+    def test_wrong_width_extrema_sum_or_null_refused(self):
+        for index, old, new in ((1, "9223372036854775807", "2147483647"),
+                                (2, "2|-1", "2|0"), (2, "3|(null)", "3|0"),
+                                (3, "-9223372036854775808", "0")):
+            responses = self.responses()
+            responses[index] = responses[index].replace(old, new)
+            with self.subTest(index=index, old=old), self.assertRaises(gate.NativeBulkIngestGateError):
+                self.check(responses)
+
+    def test_duplicate_missing_or_null_equal_join_rows_refused(self):
+        responses = self.responses()
+        rows = responses[3].splitlines()
+        for candidate in (rows[:-1], rows + [rows[0]],
+                          rows + ["(null)|19|(null)|19"]):
+            with self.subTest(rows=candidate), self.assertRaises(gate.NativeBulkIngestGateError):
+                self.check(responses[:3] + ["\n".join(candidate)])
+
+
 class RouteOwnershipTests(unittest.TestCase):
     def test_partial_startup_is_owned_before_readiness(self):
         args = SimpleNamespace(database_seed="seed", resource_seed_pack_root="pack",

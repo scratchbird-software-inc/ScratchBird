@@ -2643,19 +2643,21 @@ std::string DirectNativePacketPayloadText(
 CrudStoredValue DirectNativePacketStoredValue(const EngineNativeRowPacketFrame& frame,
                                               const DirectNativePacketValueRef& ref,
                                               dt::CanonicalTypeId target_type) {
-  if (!ref.is_null && (target_type == dt::CanonicalTypeId::int32 ||
-                       target_type == dt::CanonicalTypeId::int64)) {
-    EngineTypedValue value;
-    value.descriptor.canonical_type_name = DirectNativePacketTypeName(ref.tag);
-    const auto payload = DirectNativePacketPayloadSpan(frame, ref);
-    if (ref.tag == 1)
-      value.encoded_value.assign(reinterpret_cast<const char*>(payload.data()), payload.size());
-    else
-      value.binary_value.assign(payload.begin(), payload.end());
-    return detail::DirectStoredValueForColumn(value, target_type);
-  }
-  return ref.is_null ? CrudStoredValue::SqlNull()
-                     : CrudStoredValue(DirectNativePacketPayloadText(frame, ref));
+  if (ref.is_null) return CrudStoredValue::SqlNull();
+  EngineTypedValue value;
+  value.descriptor.canonical_type_name = DirectNativePacketTypeName(ref.tag);
+  const auto source = DirectNativePacketPayloadSpan(frame, ref);
+  if (ref.tag == 1)
+    value.encoded_value.assign(reinterpret_cast<const char*>(source.data()), source.size());
+  else
+    value.binary_value.assign(source.begin(), source.end());
+  std::vector<scratchbird::core::platform::byte> payload;
+  if (!detail::DirectPackTypedPayload(target_type, value, &payload))
+    throw std::invalid_argument("native packet destination payload invalid or out of range");
+  // Use exactly the physical encoder's destination bytes. A mixed packet can
+  // require conversion for one column while retaining native UINT64/REAL64 in
+  // another; none of those values may pass through display formatting here.
+  return CrudStoredValue(std::string(payload.begin(), payload.end()));
 }
 
 void DirectStoreBigEndianU32(
@@ -4081,6 +4083,34 @@ dt::CanonicalTypeId DirectColumnTypeForField(
   }
   if (selected == nullptr) throw std::invalid_argument("destination column missing");
   return dt::CanonicalTypeIdFromStableName(selected->canonical_type_name);
+}
+
+bool DirectBulkSourceCarriersMatchDestination(
+    const DirectPhysicalBulkAppendRequest& request,
+    const InsertRowEncoderPlan& encoder) {
+  if (request.lane_operation != "native_bulk" || encoder.columns.empty()) return false;
+  const auto matches = [&](std::size_t ordinal, std::string_view name) {
+    const auto source = dt::CanonicalTypeIdFromStableName(std::string(name));
+    const auto target = dt::CanonicalTypeIdFromStableName(
+        encoder.columns[ordinal].canonical_type_name);
+    return source != dt::CanonicalTypeId::unknown && source == target;
+  };
+  if (request.native_row_packet != nullptr && request.native_row_packet->present) {
+    const auto& frame = *request.native_row_packet;
+    if (!DirectSharedFieldOrderMatchesEncoderOrder(frame.field_order, encoder) ||
+        frame.column_type_tags.size() != encoder.columns.size()) return false;
+    for (std::size_t ordinal = 0; ordinal < encoder.columns.size(); ++ordinal)
+      if (!matches(ordinal, DirectNativePacketTypeName(frame.column_type_tags[ordinal]))) return false;
+    return true;
+  }
+  if (request.borrowed_input_rows.empty()) return false;
+  for (const auto& row : request.borrowed_input_rows) {
+    if (!DirectInputMatchesEncoderOrder(request, row, encoder) ||
+        row.fields.size() != encoder.columns.size()) return false;
+    for (std::size_t ordinal = 0; ordinal < encoder.columns.size(); ++ordinal)
+      if (!matches(ordinal, row.fields[ordinal].second.descriptor.canonical_type_name)) return false;
+  }
+  return true;
 }
 
 PreparedInsertRow PrepareDirectBulkOrderedRowFast(
@@ -5736,9 +5766,9 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                  : "direct_physical_bulk_insert_target_scoped"});
   result.evidence.push_back({"relation_descriptor",
                              relation_descriptor.descriptor_uuid});
-  // Validate every supplied signed-integer destination before row identities,
-  // preallocation workers or staging. This also covers reordered/subset input
-  // and packet routes that cannot use the exact-order bulk validator.
+  // Validate supplied signed-integer destinations and every packet conversion
+  // before row identities, preallocation workers or staging. This also covers
+  // reordered/subset input outside the exact-order bulk validator.
   try {
     for (const auto& row : request.borrowed_input_rows) {
       for (std::size_t ordinal = 0; ordinal < row.fields.size(); ++ordinal) {
@@ -5755,7 +5785,6 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       for (std::size_t ordinal = 0; ordinal < frame.field_order.size(); ++ordinal) {
         const auto type = DirectColumnTypeForField(batch_context.row_encoder_plan,
                                                    frame.field_order[ordinal], ordinal);
-        if (type != dt::CanonicalTypeId::int32 && type != dt::CanonicalTypeId::int64) continue;
         for (std::size_t row = 0; row < frame.row_count; ++row) {
           DirectNativePacketValueRef ref;
           if (!DirectNativePacketValueRefAt(frame, row, ordinal, &ref))
@@ -5767,7 +5796,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   } catch (const std::invalid_argument& failure) {
     return DirectBulkFailureWithEvidence(request,
         MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append", failure.what()),
-        "integer_destination_payload_refused", result.evidence, result.dml_summary);
+        "destination_payload_refused", result.evidence, result.dml_summary);
   }
   DirectBulkUuidBatch uuid_batch;
   try {
@@ -6026,9 +6055,16 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     }
     return true;
   };
+  // A packet describes the source carrier, not the admitted destination.
+  // Retaining it verbatim is safe only when no column conversion is needed.
+  // Otherwise stage destination-encoded logical values just as the physical
+  // page writer does (notably CSV text and INT32 inputs for INT64 columns).
+  const bool native_bulk_source_carriers_match_destination =
+      DirectBulkSourceCarriersMatchDestination(request, batch_context.row_encoder_plan);
   bool native_bulk_typed_logical_batch_bypass =
       request.lane_operation == "native_bulk" &&
       can_use_shared_row_stage_fast_path &&
+      native_bulk_source_carriers_match_destination &&
       suppress_payload_rows &&
       rowset_default_markers_absent &&
       compact_typed_null_state_authoritative &&
@@ -6462,25 +6498,6 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       }
 
       std::uint64_t encoded_bytes = 0;
-      if (row_stage_needs_encoded_bytes) {
-        encoded_bytes = native_packet_field_name_bytes +
-                        native_frame.row_sizes[native_row_index];
-        const bool toast_required =
-            encoded_bytes > batch_context.row_template.max_inline_encoded_bytes ||
-            force_large_values_for_insert;
-        const std::uint64_t projected_memory_bytes =
-            toast_required ? batch_context.row_template.max_inline_encoded_bytes
-                           : encoded_bytes;
-        if (!batch_context.memory_policy.spill_allowed &&
-            projected_memory_bytes > batch_context.memory_policy.context_budget_bytes) {
-          const auto memory_validation = ValidateInsertBatchMemoryBudget(
-              batch_context,
-              projected_memory_bytes);
-          return DirectBulkFailure(request,
-                                   memory_validation,
-                                   "insert_batch_memory_budget_refused");
-        }
-      }
 
       if (store_row_trace) {
         AddInsertTrace(&batch_context,
@@ -6499,8 +6516,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
             &direct_precomputed_index_entries,
             &direct_precomputed_index_order_states);
       }
+      CrudValueFields row_values;
       if (!native_bulk_typed_logical_batch_bypass) {
-        CrudValueFields row_values;
         row_values.reserve(native_frame.field_order.size());
         for (std::size_t field_index = 0;
              field_index < native_frame.field_order.size();
@@ -6520,7 +6537,42 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                   DirectNativePacketStoredValue(native_frame, value_ref,
                                       DirectColumnTypeForField(batch_context.row_encoder_plan,
                                           native_frame.field_order[field_index], field_index)));
+          // Charge the converted destination, not the shorter source packet.
+          for (const auto bytes : {row_values.back().first.size(),
+                                   row_values.back().second.bytes.size()}) {
+            if (bytes > std::numeric_limits<std::uint64_t>::max() - encoded_bytes)
+              return DirectBulkFailure(request,
+                  MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append",
+                                               "native_row_destination_size_overflow"),
+                  "native_row_destination_size_overflow");
+            encoded_bytes += bytes;
+          }
         }
+      } else if (row_stage_needs_encoded_bytes) {
+        if (native_frame.row_sizes[native_row_index] >
+            std::numeric_limits<std::uint64_t>::max() - native_packet_field_name_bytes)
+          return DirectBulkFailure(request,
+              MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append",
+                                           "native_row_destination_size_overflow"),
+              "native_row_destination_size_overflow");
+        encoded_bytes = native_packet_field_name_bytes + native_frame.row_sizes[native_row_index];
+      }
+      if (row_stage_needs_encoded_bytes) {
+        const bool toast_required =
+            encoded_bytes > batch_context.row_template.max_inline_encoded_bytes ||
+            force_large_values_for_insert;
+        const std::uint64_t projected_memory_bytes =
+            toast_required ? batch_context.row_template.max_inline_encoded_bytes
+                           : encoded_bytes;
+        if (!batch_context.memory_policy.spill_allowed &&
+            projected_memory_bytes > batch_context.memory_policy.context_budget_bytes) {
+          const auto memory_validation = ValidateInsertBatchMemoryBudget(
+              batch_context, projected_memory_bytes);
+          return DirectBulkFailure(request, memory_validation,
+                                   "insert_batch_memory_budget_refused");
+        }
+      }
+      if (!native_bulk_typed_logical_batch_bypass) {
         logical_value_batch.push_back(std::move(row_values));
       }
       DmlIngestionPreallocationItem preallocation_item;
@@ -8138,6 +8190,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   const bool native_bulk_typed_scoped_row_stream =
       native_bulk_scoped_only_row_stream &&
       can_stage_shared_values_externally &&
+      native_bulk_source_carriers_match_destination &&
       !large_value_persistence_required &&
       ((!request.borrowed_input_rows.empty() &&
         request.borrowed_input_rows.size() == staged_rows.size()) ||
