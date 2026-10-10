@@ -376,6 +376,17 @@ api::EngineRequestContext EngineContext(bool security_context_present = true) {
   return context;
 }
 
+void AddIdentity(sblr::SblrOperationEnvelope* envelope, std::string role,
+                 api::EngineUuid identity) {
+  sblr::SblrOperand operand;
+  operand.ordinal = static_cast<std::uint32_t>(envelope->operands.size() + 1);
+  operand.name = std::move(role);
+  operand.type = "uuid";
+  operand.value_kind = sblr::SblrValueKind::uuid_ref;
+  operand.value_body.assign(identity.bytes.begin(), identity.bytes.end());
+  envelope->operands.push_back(std::move(operand));
+}
+
 sblr::SblrOperationEnvelope EngineEnvelope(const B003Row& row) {
   const auto wire = WireIdentityFor(row);
   const auto* entry = sblr::LookupSblrOperation(wire.operation_id);
@@ -400,8 +411,20 @@ sblr::SblrOperationEnvelope EngineEnvelope(const B003Row& row) {
     selector.value = row.operation_id;
     envelope.operands.push_back(std::move(selector));
   }
-  return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+  envelope = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
       std::move(envelope));
+  if (StartsWith(row.operation_id, "dml.")) {
+    AddIdentity(&envelope, "source_uuid",
+                scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e906"));
+  } else if (StartsWith(row.operation_id, "security.")) {
+    AddIdentity(&envelope, "target_object_uuid",
+                scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e90a"));
+    AddIdentity(&envelope, "grantee_uuid",
+                scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e909"));
+    AddIdentity(&envelope, "policy_uuid",
+                scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e90b"));
+  }
+  return envelope;
 }
 
 void AddObject(api::EngineApiRequest* request,
@@ -462,7 +485,6 @@ api::EngineApiRequest ApiRequestForRow(const B003Row& row) {
                                      "format_family:csv",
                                      "reject_mode:fail_fast",
                                      "checkpoint_mode:disabled",
-                                     "source_uuid:019f0000-0000-7000-8000-00000000e906",
                                      "source_fingerprint:b003-import",
                                      "source_position:0",
                                      "estimated_row_count:1"});
@@ -482,11 +504,8 @@ api::EngineApiRequest ApiRequestForRow(const B003Row& row) {
                                      "principal_name:b003_user",
                                      "create_home_schema:false",
                                      "right:CONNECT",
-                                     "grantee_uuid:019f0000-0000-7000-8000-00000000e909",
-                                     "target_object_uuid:019f0000-0000-7000-8000-00000000e90a",
                                      "target_object_kind:table",
                                      "visibility_right:READ",
-                                     "policy_uuid:019f0000-0000-7000-8000-00000000e90b",
                                      "required_right:READ"});
     AddObject(&request, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e90a"), "table");
   } else if (StartsWith(row.operation_id, "management.")) {
@@ -726,6 +745,43 @@ void RequireDispatch(const B003Row& row) {
           EvidenceMessage(row, "engine_dispatch", "cluster authority was required"));
 }
 
+// These are route tests, not storage/authorization completion tests. The API
+// remains responsible for refusing these deliberately unbound requests. Identity
+// corruption must instead be rejected by SBLR before reaching any API.
+void RequireBinaryIdentityAdmission(const B003Row& row) {
+  if (!StartsWith(row.operation_id, "dml.") &&
+      !StartsWith(row.operation_id, "security.")) return;
+  auto envelope = EngineEnvelope(row);
+  const auto identity = std::find_if(envelope.operands.begin(), envelope.operands.end(),
+      [](const auto& operand) { return operand.value_kind == sblr::SblrValueKind::uuid_ref; });
+  Require(identity != envelope.operands.end(), "binary route fixture omitted identity");
+  const auto index = static_cast<std::size_t>(identity - envelope.operands.begin());
+  auto refuse = [&](std::string_view case_name, sblr::SblrOperationEnvelope candidate,
+                    api::EngineApiRequest api_request, std::string_view expected_code) {
+    const auto result = sblr::DispatchSblrOperation(
+        {EngineContext(), std::move(candidate), std::move(api_request)});
+    for (const auto& diagnostic : result.diagnostics)
+      std::cerr << case_name << ':' << diagnostic.code << ':' << diagnostic.message << '\n';
+    Require(!result.accepted && !result.dispatched_to_api &&
+                std::any_of(result.diagnostics.begin(), result.diagnostics.end(),
+                    [&](const auto& diagnostic) { return diagnostic.code == expected_code; }),
+            EvidenceMessage(row, "binary_identity", "malformed or mixed identity reached API"));
+  };
+  auto mixed = ApiRequestForRow(row);
+  mixed.option_envelopes.push_back(identity->name + ":019f0000-0000-7000-8000-00000000e906");
+  refuse("mixed", envelope, std::move(mixed), "SBLR.OPERAND_INVALID");
+  auto truncated = envelope;
+  truncated.operands[index].value_body.pop_back();
+  refuse("truncated", std::move(truncated), ApiRequestForRow(row), "SBLR.OPERATION.OPERAND_INVALID");
+  auto duplicate = envelope;
+  duplicate.operands.push_back(*identity);
+  duplicate.operands.back().ordinal = static_cast<std::uint32_t>(duplicate.operands.size());
+  refuse("duplicate", std::move(duplicate), ApiRequestForRow(row), "SBLR.OPERAND_INVALID");
+  auto text = envelope;
+  text.operands[index].value = "019f0000-0000-7000-8000-00000000e906";
+  refuse("text", std::move(text), ApiRequestForRow(row), "SBLR.OPERATION.OPERAND_INVALID");
+}
+
 void RequireEngineBoundDescriptorRefusal(const B003Row& row) {
   const auto canonical_operation_id = EngineBoundDescriptorOperationId(row);
   Require(!canonical_operation_id.empty(),
@@ -797,7 +853,7 @@ void RequireSecurityRefusalRedaction() {
   Require(security_row != nullptr, "security refusal row missing from B003 route table");
   const auto& row = *security_row;
   auto request = ApiRequestForRow(row);
-  request.option_envelopes.push_back("target_object_uuid:secret_customer_table");
+  request.localized_names.push_back({"en", "primary", "", "secret_customer_table", true});
   auto context = EngineContext();
   context.trace_tags = {"right:CONNECT", "deny:SEC_GRANT_ADMIN"};
   const sblr::SblrDispatchRequest dispatch{context,
@@ -892,6 +948,7 @@ int main() {
     }
     RequireLowering(row);
     RequireDispatch(row);
+    RequireBinaryIdentityAdmission(row);
   }
   RequireInvalidSyntaxDiagnostics();
   RequireSecurityRefusalRedaction();
