@@ -732,7 +732,7 @@ void CryptoFixedDigests() {
     const auto null=f::DispatchCryptoHashFunction(request);digest_armed=false;
     Check(null.result.ok()&&null.result.scalar_values.size()==1&&null.result.scalar_values[0].is_null&&
           null.result.scalar_values[0].descriptor_id=="binary"&&digest_interceptions==0,"strict typed NULL avoids provider evaluation");
-    for(unsigned fault=0;fault<13;++fault) {
+    for(unsigned fault=0;fault<15;++fault) {
       auto bad=input;
       if(fault==0)bad.descriptor_id="character";
       if(fault==1)bad.payload_kind=s::SblrValuePayloadKind::text;
@@ -747,6 +747,8 @@ void CryptoFixedDigests() {
       if(fault==10)bad.is_null=true;
       if(fault==11){bad=f::MakeNullValue("binary");bad.binary_value={1};}
       if(fault==12)bad.binary_value.resize(1048577);
+      if(fault==13)bad.uuid_array_value={Base()};
+      if(fault==14){bad=f::MakeNullValue("binary");bad.uuid_array_value={Base()};}
       request.arguments[0].value=std::move(bad);
       digest_armed=true;digest_interceptions=0;
       const auto invalid=f::DispatchCryptoHashFunction(request);digest_armed=false;
@@ -921,7 +923,7 @@ void CryptoHmac() {
         Check(refusal(f::DispatchCryptoHashFunction(request),"CRYPTO.PROFILE.UNAVAILABLE"),"HMAC partial failure or foreign result pointer never publishes bytes");
         Check(hmac_cleanses==1&&hmac_cleared,"HMAC failed provider clears scratch");hmac_armed=false;hmac_watch=false;
       }
-      for(unsigned slot=0;slot<3;++slot)for(unsigned fault=0;fault<10;++fault) {
+      for(unsigned slot=0;slot<3;++slot)for(unsigned fault=0;fault<12;++fault) {
         request.arguments=original;auto& bad=request.arguments[slot].value;
         if(fault==0)bad.descriptor_id="int64";
         if(fault==1)bad.payload_kind=s::SblrValuePayloadKind::uuid_binary;
@@ -933,6 +935,8 @@ void CryptoHmac() {
         if(fault==7)bad.encoded_value="secret-conflicting-mirror";
         if(fault==8){if(slot==2)bad.binary_value={1};else bad.charset_name="UTF8";}
         if(fault==9){if(slot==2)bad.descriptor_id="binary";else bad=f::MakeTextValue("character","secret-key");}
+        if(fault==10)bad.uuid_array_value={Base()};
+        if(fault==11){bad=f::MakeNullValue(slot==2?"character":"binary");bad.uuid_array_value={Base()};}
         hmac_armed=true;hmac_interceptions=0;
         const auto result=f::DispatchCryptoHashFunction(request);hmac_armed=false;
         Check(refusal(result,"CRYPTO.HMAC.INVALID_INPUT")&&hmac_interceptions==0,"invalid HMAC representations never reach provider");
@@ -1032,7 +1036,7 @@ void CryptoRandomBytes() {
       request.arguments={{"count",f::MakeUint64Value("uint32",length)}};arm(1,1024);
       Check(refuse(f::DispatchCryptoHashFunction(request),"CRYPTO.RNG.INVALID_LENGTH")&&diagnostic_entropy_only(),"random-byte invalid lengths never generate result entropy or narrow uint64");disarm();
     }
-    for(unsigned fault=0;fault<15;++fault) {
+    for(unsigned fault=0;fault<17;++fault) {
       auto count=f::MakeUint64Value("uint32",32);
       if(fault==0)count.descriptor_id="uint64";
       if(fault==1)count=f::MakeInt64Value("int32",16);
@@ -1049,6 +1053,8 @@ void CryptoRandomBytes() {
       if(fault==12)count.encoded_value="016";
       if(fault==13)count.is_null=true;
       if(fault==14){count=f::MakeNullValue("uint32");count.text_value="secret-count";}
+      if(fault==15)count.uuid_array_value={Base()};
+      if(fault==16){count=f::MakeNullValue("uint32");count.uuid_array_value={Base()};}
       request.arguments={{"count",count}};arm(1,16);
       Check(refuse(f::DispatchCryptoHashFunction(request),"CRYPTO.RNG.INVALID_LENGTH")&&diagnostic_entropy_only(),"malformed random-byte count carrier is never parsed/coerced");disarm();
     }

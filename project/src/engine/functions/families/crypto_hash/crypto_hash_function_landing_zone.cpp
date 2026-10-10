@@ -286,7 +286,7 @@ FunctionCallResult DigestFunction(const FunctionCallRequest& request, DigestProv
   if (value.descriptor_id != "binary" || !value.text_value.empty() ||
       !value.encoded_value.empty() || !value.charset_name.empty() || !value.collation_name.empty() ||
       value.has_int64_value || value.has_uint64_value || value.has_real64_value ||
-      !value.uuid_value.is_nil()) return invalid();
+      !value.uuid_value.is_nil() || !value.uuid_array_value.empty()) return invalid();
   if (value.is_null) {
     if (value.payload_kind != scratchbird::engine::sblr::SblrValuePayloadKind::none || !value.binary_value.empty()) return invalid();
     return MakeFunctionSuccess(request, {MakeNullValue("binary")});
@@ -312,7 +312,7 @@ FunctionCallResult HmacFunction(const FunctionCallRequest& request) {
     using Kind=scratchbird::engine::sblr::SblrValuePayloadKind;
     const bool binary=value.descriptor_id=="binary";
     if(!binary&&value.descriptor_id!="character")return false;
-    if(value.has_int64_value||value.has_uint64_value||value.has_real64_value||!value.uuid_value.is_nil())return false;
+    if(value.has_int64_value||value.has_uint64_value||value.has_real64_value||!value.uuid_value.is_nil()||!value.uuid_array_value.empty())return false;
     if(binary&&(!value.charset_name.empty()||!value.collation_name.empty()))return false;
     if(value.is_null)return value.payload_kind==Kind::none&&value.binary_value.empty()&&value.text_value.empty()&&value.encoded_value.empty();
     if(binary)return value.payload_kind==Kind::binary&&value.text_value.empty()&&value.encoded_value.empty();
@@ -354,7 +354,7 @@ FunctionCallResult RandomBytesFunction(const FunctionCallRequest& request) {
   if(request.arguments.size()!=1)return invalid();
   const auto& count=request.arguments[0].value;
   using Kind=scratchbird::engine::sblr::SblrValuePayloadKind;
-  if(count.descriptor_id!="uint32"||!count.binary_value.empty()||!count.uuid_value.is_nil()||
+  if(count.descriptor_id!="uint32"||!count.binary_value.empty()||!count.uuid_value.is_nil()||!count.uuid_array_value.empty()||
      !count.charset_name.empty()||!count.collation_name.empty()||count.has_int64_value||count.has_real64_value)return invalid();
   if(count.is_null) {
     if(count.payload_kind!=Kind::none||count.has_uint64_value||!count.text_value.empty()||!count.encoded_value.empty())return invalid();
