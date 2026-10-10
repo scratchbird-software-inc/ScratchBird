@@ -1295,6 +1295,8 @@ struct ScalarProjectionItem {
 struct ScalarProjectionInfo {
   bool active{false};
   bool valid{false};
+  std::string null_context_occurrence;
+  std::string null_context_reason;
   std::vector<std::string> syntax_surface_ids;
   std::vector<ScalarProjectionItem> items;
 };
@@ -12828,6 +12830,7 @@ bool ParseScalarLiteralProjectionItem(const std::vector<const Token*>& tokens,
                     : token.text;
   if (negative) item->value = "-" + item->value;
   item->is_null = token.kind == TokenKind::kNullLiteral;
+  if (item->is_null) item->value.clear();
   if (token.kind == TokenKind::kBooleanLiteral) {
     item->value = ToUpperAscii(token.text) == "TRUE" ? "true" : "false";
   }
@@ -17072,6 +17075,97 @@ bool ParseUserFunctionProjectionArgument(const std::vector<const Token*>& tokens
   return ParseScalarFunctionArgumentProjectionItem(tokens, cursor, argument);
 }
 
+// This is parser-local contextual binding, not engine type inference. The
+// bounded literal projection route has no domain/column descriptor to supply
+// a context: only an explicit cast or an unambiguous peer profile may do so.
+bool IsScalarResultSelector(const ScalarProjectionItem& item) {
+  return item.function_id == "sb.scalar.nvl" ||
+         item.function_id == "sb.scalar.ifnull" ||
+         item.function_id == "sb.scalar.coalesce" ||
+         item.function_id == "sb.scalar.coalesce_strict" ||
+         item.function_id == "sb.scalar.nullif" ||
+         item.function_id == "sb.scalar.iif" ||
+         item.function_id == "sb.scalar.nvl2";
+}
+
+std::size_t ScalarResultArgumentBegin(const ScalarProjectionItem& item) {
+  return item.function_id == "sb.scalar.iif" || item.function_id == "sb.scalar.nvl2"
+             ? 1 : 0;
+}
+
+struct ScalarNullContext {
+  std::string type;
+  bool conflicting{false};
+};
+
+ScalarNullContext ScalarResultNullContext(const ScalarProjectionItem& item) {
+  if (!IsScalarResultSelector(item)) {
+    if (item.type_name == "null" || item.type_name == "unknown") return {};
+    return {item.type_name, false};
+  }
+  ScalarNullContext result;
+  for (std::size_t at = ScalarResultArgumentBegin(item); at < item.arguments.size(); ++at) {
+    auto peer = ScalarResultNullContext(item.arguments[at]);
+    if (peer.conflicting || (!result.type.empty() && !peer.type.empty() &&
+                            result.type != peer.type)) return {{}, true};
+    if (!peer.type.empty()) result.type = std::move(peer.type);
+  }
+  return result;
+}
+
+bool BindScalarNullContexts(ScalarProjectionItem* item, std::string_view inherited,
+                            const std::string& occurrence, std::string* unresolved,
+                            std::string* reason) {
+  if (item->expression_kind == "literal" && item->type_name == "null") {
+    if (!item->is_null || !item->value.empty() || inherited.empty() ||
+        inherited == "null" || inherited == "unknown") {
+      *unresolved = occurrence;
+      *reason = "no_unique_concrete_context";
+      return false;
+    }
+    item->type_name = inherited;
+    return true;
+  }
+  std::string result_context;
+  if (IsScalarResultSelector(*item)) {
+    const auto inferred = ScalarResultNullContext(*item);
+    if (inferred.conflicting) {
+      *unresolved = occurrence;
+      *reason = "conflicting_concrete_profiles";
+      return false;
+    }
+    result_context = inferred.type.empty() ? std::string(inherited) : inferred.type;
+    // Do not use the registry's generic result-family label as a default
+    // datatype for an all-NULL selector or as authority to coerce mixed peers.
+    if (!result_context.empty()) item->type_name = result_context;
+  }
+  std::string comparison_context;
+  if (item->expression_kind == "operator" &&
+      item->operator_id == "op_is_distinct") {
+    for (const auto& argument : item->arguments) {
+      const auto peer = ScalarResultNullContext(argument);
+      if (peer.conflicting || (!comparison_context.empty() && !peer.type.empty() &&
+                               comparison_context != peer.type)) {
+        comparison_context.clear();
+        break;
+      }
+      if (!peer.type.empty()) comparison_context = peer.type;
+    }
+  }
+  for (std::size_t at = 0; at < item->arguments.size(); ++at) {
+    std::string_view context;
+    if (IsScalarResultSelector(*item) && at >= ScalarResultArgumentBegin(*item))
+      context = result_context;
+    if (item->function_id == "sb.scalar.iif" && at == 0) context = "boolean";
+    if (item->function_id == "data.scalar.cast" && at == 0) context = item->type_name;
+    if (item->operator_id == "op_is_distinct") context = comparison_context;
+    if (!BindScalarNullContexts(&item->arguments[at], context,
+                                occurrence + ".arg" + std::to_string(at), unresolved, reason))
+      return false;
+  }
+  return true;
+}
+
 ScalarProjectionInfo AnalyzeScalarProjection(const CstDocument& cst,
                                              const std::vector<core::platform::Uuid>& resolved_object_uuids = {}) {
   ScalarProjectionInfo info;
@@ -17165,6 +17259,15 @@ ScalarProjectionInfo AnalyzeScalarProjection(const CstDocument& cst,
     ++index;
   }
   info.valid = !info.items.empty() && routine_uuid_cursor == resolved_object_uuids.size();
+  if (info.valid) {
+    for (std::size_t at = 0; at < info.items.size(); ++at) {
+      if (!BindScalarNullContexts(&info.items[at], {}, "projection" + std::to_string(at),
+                                  &info.null_context_occurrence, &info.null_context_reason)) {
+        info.valid = false;
+        break;
+      }
+    }
+  }
   return info;
 }
 
@@ -31568,7 +31671,7 @@ void AppendScalarProjectionExpressionJson(std::ostream& out,
   out << "\"" << prefix << "expr_kind\":\"" << EscapeJson(item.expression_kind) << "\","
       << "\"" << prefix << "type\":\"" << EscapeJson(item.type_name) << "\","
       << "\"" << prefix << "value\":\""
-      << EscapeJson(item.is_null ? std::string{} : item.value) << "\","
+      << EscapeJson(item.value) << "\","
       << "\"" << prefix << "is_null\":\"" << (item.is_null ? "true" : "false") << "\",";
   if (!item.literal_family.empty()) {
     out << "\"" << prefix << "literal_family\":\"" << EscapeJson(item.literal_family)
@@ -44615,8 +44718,16 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
          {"diagnostic_identity", "SBSQL.POLICY_BLOCKED"},
          {"observer_builtin", "sb.scalar.policy_blocked_diagnostic"}});
   } else if (scalar_projection.active && !scalar_projection.valid) {
-    AddVerifierError(&envelope.messages, "SBSQL.QUERY.PROJECTION_INVALID",
-                     "constant SELECT projection requires one or more literal projection operands");
+    if (!scalar_projection.null_context_occurrence.empty()) {
+      AddVerifierError(&envelope.messages, "DATATYPE.CONTEXT_REQUIRED",
+                       "SQL NULL requires a unique concrete datatype context before SBLR",
+                       {{"source_occurrence", scalar_projection.null_context_occurrence},
+                        {"owning_expression_kind", "scalar_projection"},
+                        {"reason", scalar_projection.null_context_reason}});
+    } else {
+      AddVerifierError(&envelope.messages, "SBSQL.QUERY.PROJECTION_INVALID",
+                       "constant SELECT projection requires one or more literal projection operands");
+    }
   }
   if (values_rowset.active && !values_rowset.valid) {
     AddVerifierError(&envelope.messages, "SBSQL.QUERY.VALUES_INVALID",

@@ -5527,6 +5527,10 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
   )
   add_test(NAME sbsql_builtin_function_binary_binding_conformance
     COMMAND sbsql_query_scalar_projection_conformance --binary-function-binding-only)
+  add_test(NAME sbsql_scalar_null_context_binding_conformance
+    COMMAND sbsql_query_scalar_projection_conformance --null-context-binding-only)
+  set_tests_properties(sbsql_scalar_null_context_binding_conformance PROPERTIES
+    LABELS "datatype_null;sbsql_parser_worker;contextual_binding")
   set_tests_properties(sbsql_builtin_function_binary_binding_conformance PROPERTIES
     LABELS "binary_uuid;sbsql_parser_worker;function_binding")
   if(TARGET sbl_sbsql_parser_worker_core AND TARGET sb_server AND TARGET public_driver_test_database_seed AND CMAKE_SYSTEM_NAME STREQUAL "Linux")

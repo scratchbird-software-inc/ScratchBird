@@ -311,6 +311,8 @@ bool QowReadProjectionExpressionV1(
   expression->encoded_value = QowProjectionOptionValueV1(request, prefix + "value:");
   const auto is_null = QowProjectionOptionValueV1(request, prefix + "is_null:");
   expression->is_null = is_null == "true" || is_null == "1";
+  if (expression->is_null && !expression->encoded_value.empty())
+    return refuse("null_payload", "SQL NULL projection cannot carry a value payload");
   const EngineUuid* uuid_literal = nullptr;
   for (const auto& binding : request.projection.uuid_literals) {
     if (binding.first != prefix) continue;
@@ -673,6 +675,13 @@ EngineProjectionFunctionResult EvaluateProjectionExpressionTree(
     const EngineProjectionExpression& expression) {
   if (expression.expression_kind == "literal") {
     EngineProjectionFunctionResult out;
+    if (expression.is_null &&
+        (!expression.encoded_value.empty() || !expression.binary_value.empty())) {
+      out.diagnostics.push_back(MakeEngineApiDiagnostic(
+          "DATATYPE.NULL_STATE.INVALID", "datatype.null_state.invalid",
+          "SQL NULL projection cannot carry a value payload"));
+      return out;
+    }
     out.ok = true;
     out.value.descriptor = ProjectionDescriptor(expression.type_name);
     out.value.encoded_value = expression.encoded_value;

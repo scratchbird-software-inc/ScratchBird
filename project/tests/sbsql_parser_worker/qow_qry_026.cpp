@@ -296,6 +296,35 @@ bool ValidateProjectionFunctionIdentities() {
   return passed;
 }
 
+bool ValidateProjectionNullCarriers() {
+  bool passed = true;
+  for (const auto* type : {"character", "int64", "real64", "uuid", "binary"}) {
+    api::EngineApiRequest request;
+    request.option_envelopes = {"projection_0_expr_kind:literal",
+        std::string("projection_0_type:") + type, "projection_0_is_null:true",
+        "projection_0_value:"};
+    std::vector<api::EngineProjectionExpression> expressions;
+    std::size_t nodes = 0, depth = 0;
+    std::string reason, detail;
+    const auto bind = [&](const auto& input) {
+      return api::QowReadCanonicalProjectionExpressionsV1(input, 1, &expressions,
+                                                         &nodes, &depth, &reason, &detail);
+    };
+    passed &= Require(bind(request) && expressions.size() == 1 &&
+        expressions[0].type_name == type && expressions[0].is_null &&
+        expressions[0].encoded_value.empty() && expressions[0].binary_value.empty(),
+        "concrete NULL literal must retain its profile and empty payload");
+    for (const auto& payload : {std::string("NULL"), std::string("0"), std::string(1, '\0')}) {
+      auto dirty = request;
+      dirty.option_envelopes.back() += payload;
+      expressions.resize(1); nodes = depth = 99;
+      passed &= Require(!bind(dirty) && reason == "null_payload" && expressions.empty() &&
+          nodes == 0 && depth == 0, "nonempty NULL must atomically reject the complete graph");
+    }
+  }
+  return passed;
+}
+
 }  // namespace
 
 // QOW-TEST-QRY-026-V1
@@ -306,6 +335,7 @@ int main() {
   passed &= ValidateBinaryIdentity();
   passed &= ValidateCompleteDescriptor();
   passed &= ValidateProjectionFunctionIdentities();
+  passed &= ValidateProjectionNullCarriers();
   std::cout << checks << " typed parameter binding checks: " << (passed ? "passed" : "failed") << '\n';
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

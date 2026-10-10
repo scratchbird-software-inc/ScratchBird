@@ -519,9 +519,17 @@ void ExactDescriptorFidelityAndRefusal() {
   cross_type.target_type_id = dt::CanonicalTypeId::real64;
   cross_type.context = dt::DatatypeCastContext::explicit_cast;
   cross_type.target_descriptor = real64_descriptor;
-  CheckRejectedAs(dt::CastDatatypeValue(cross_type),
-                  "DATATYPE.CAST_FORBIDDEN",
-                  "unresolved int64-to-real64 typed NULL cast");
+  const auto numeric_null = dt::CastDatatypeValue(cross_type);
+  Check(numeric_null.ok(), "admitted int64-to-real64 typed NULL cast failed");
+  Check(numeric_null.value.type_id == dt::CanonicalTypeId::real64 &&
+            numeric_null.value.is_null && numeric_null.value.encoded_value.empty() &&
+            DescriptorEquals(numeric_null.value.descriptor, real64_descriptor),
+        "numeric typed NULL cast lost target descriptor or acquired a payload");
+  auto dirty_numeric_null = cross_type;
+  dirty_numeric_null.value.encoded_value = "0";
+  CheckRejectedAs(dt::CastDatatypeValue(dirty_numeric_null),
+                  "DATATYPE.NULL_STATE.INVALID",
+                  "numeric typed NULL cast with a payload");
 
   cross_type.value =
       TypedNull(dt::CanonicalTypeId::decimal, full_descriptor);

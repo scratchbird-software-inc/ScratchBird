@@ -1577,7 +1577,7 @@ sblr::SblrOperationEnvelope EngineEnvelope() {
   envelope.operands.push_back({"text", "projection_1_is_null", "false"});
   envelope.operands.push_back({"text", "projection_2_name", "empty_value"});
   envelope.operands.push_back({"text", "projection_2_expr_kind", "literal"});
-  envelope.operands.push_back({"text", "projection_2_type", "null"});
+  envelope.operands.push_back({"text", "projection_2_type", "text"});
   envelope.operands.push_back({"text", "projection_2_value", ""});
   envelope.operands.push_back({"text", "projection_2_is_null", "true"});
   envelope.operands.push_back({"text", "projection_3_name", "truth"});
@@ -2185,7 +2185,7 @@ sblr::SblrOperationEnvelope ExtendedOperatorProjectionEngineEnvelope() {
   envelope.operands.push_back({"text", "projection_3_name", "distinct_null"});
   AppendOperatorProjectionExpression(envelope, "projection_3_", "boolean",
                                      "op_is_distinct", "sb.operator.is_distinct_from",
-                                     {{"bigint", "1"}, {"null", "", true}});
+                                     {{"bigint", "1"}, {"bigint", "", true}});
   envelope.operands.push_back({"text", "projection_4_name", "regex_true"});
   AppendOperatorProjectionExpression(envelope, "projection_4_", "boolean",
                                      "op_regex_match", "sb.operator.regex_match",
@@ -2380,7 +2380,7 @@ sblr::SblrOperationEnvelope TextJsonFuzzyFunctionProjectionEngineEnvelope() {
   AppendFunctionProjectionOperand(envelope, 10, "json_inserted", "json_document", "sb.json.insert",
                                   {{"text", R"({"a":1})"}, {"text", "$.b"}, {"int64", "2"}});
   AppendFunctionProjectionOperand(envelope, 11, "json_array", "json_document", "sb.json.build_array",
-                                  {{"int64", "1"}, {"text", "bird"}, {"null", "", true}});
+                                  {{"int64", "1"}, {"text", "bird"}, {"text", "", true}});
   AppendFunctionProjectionOperand(envelope, 12, "json_object", "json_document", "sb.json.build_object",
                                   {{"text", "a"}, {"int64", "1"}, {"text", "b"}, {"text", "bird"}});
   AppendFunctionProjectionOperand(envelope, 13, "json_text", "json_document", "sb.json.to_json",
@@ -2403,7 +2403,7 @@ sblr::SblrOperationEnvelope TextJsonFuzzyFunctionProjectionEngineEnvelope() {
                                   {{"text", R"({"a":1})"}, {"text", "$.a"}, {"int64", "5"}});
   AppendFunctionProjectionOperand(envelope, 22, "jsonb_array", "json_document",
                                   "sb.json.jsonb_build_array",
-                                  {{"int64", "1"}, {"text", "bird"}, {"null", "", true}});
+                                  {{"int64", "1"}, {"text", "bird"}, {"text", "", true}});
   AppendFunctionProjectionOperand(envelope, 23, "jsonb_object", "json_document",
                                   "sb.json.jsonb_build_object",
                                   {{"text", "a"}, {"int64", "1"}});
@@ -2527,7 +2527,7 @@ sblr::SblrOperationEnvelope Sbsfc013DocumentCollectionProjectionEngineEnvelope()
                                   "sb.json.jsonb_array_length", {{"json_document", "[]"}});
   AppendFunctionProjectionOperand(envelope, 26, "SBSQL-7B99FF977C66", "json_document",
                                   "sb.json.build_array",
-                                  {{"int64", "1"}, {"text", "bird"}, {"null", "", true}});
+                                  {{"int64", "1"}, {"text", "bird"}, {"text", "", true}});
   AppendFunctionProjectionOperand(envelope, 27, "SBSQL-4640811DBAC8", "json_document",
                                   "sb.json.build_array", {});
   AppendFunctionProjectionOperand(envelope, 28, "SBSQL-E2DFF93CA59C", "json_document",
@@ -2536,14 +2536,14 @@ sblr::SblrOperationEnvelope Sbsfc013DocumentCollectionProjectionEngineEnvelope()
                                    {"text", "bird"}});
   AppendFunctionProjectionOperand(envelope, 29, "SBSQL-36FBFED38C80", "json_document",
                                   "sb.json.jsonb_build_array",
-                                  {{"int64", "1"}, {"text", "bird"}, {"null", "", true}});
+                                  {{"int64", "1"}, {"text", "bird"}, {"text", "", true}});
   AppendFunctionProjectionOperand(envelope, 30, "SBSQL-34E68EB56EDC", "json_document",
                                   "sb.json.jsonb_build_object",
                                   {{"text", "a"}, {"int64", "1"}});
   AppendFunctionProjectionOperand(envelope, 31, "SBSQL-CB837AAEBEAD", "json_document",
                                   "sb.json.to_json", {{"text", "bird"}});
   AppendFunctionProjectionOperand(envelope, 32, "SBSQL-F0AB18F7417B", "json_document",
-                                  "sb.json.to_json", {{"null", "", true}});
+                                  "sb.json.to_json", {{"text", "", true}});
   AppendFunctionProjectionOperand(envelope, 33, "SBSQL-4119D041403C", "json_document",
                                   "sb.json.to_jsonb",
                                   {{"json_document", R"({"a":1})"}});
@@ -3428,7 +3428,7 @@ void RequireScalarLowering() {
   }
 
   const auto artifacts =
-      RunPipeline("SELECT 1 AS one, 'two' AS two, NULL AS empty_value, TRUE AS truth");
+      RunPipeline("SELECT 1 AS one, 'two' AS two, CAST(NULL AS TEXT) AS empty_value, TRUE AS truth");
   Require(artifacts.bound.bound, "scalar SELECT did not bind");
   Require(artifacts.verifier.admitted, "scalar SELECT SBLR verifier rejected exact route");
   Require(artifacts.envelope.operation_family == "sblr.query.relational.v3",
@@ -3478,11 +3478,12 @@ void RequireScalarLowering() {
           "scalar projection second type missing");
   Require(Contains(artifacts.envelope.payload, "\"projection_1_value\":\"two\""),
           "scalar projection second value missing");
-  Require(Contains(artifacts.envelope.payload, "\"projection_2_expr_kind\":\"literal\""),
+  Require(Contains(artifacts.envelope.payload, "\"projection_2_expr_kind\":\"function\""),
           "scalar projection NULL expression kind missing");
-  Require(Contains(artifacts.envelope.payload, "\"projection_2_type\":\"null\""),
+  Require(Contains(artifacts.envelope.payload, "\"projection_2_type\":\"character\""),
           "scalar projection NULL type missing");
-  Require(Contains(artifacts.envelope.payload, "\"projection_2_is_null\":\"true\""),
+  Require(Contains(artifacts.envelope.payload, "\"projection_2_arg_0_is_null\":\"true\"") &&
+              Contains(artifacts.envelope.payload, "\"projection_2_arg_0_type\":\"character\""),
           "scalar projection NULL marker missing");
   Require(Contains(artifacts.envelope.payload, "\"projection_3_name\":\"truth\""),
           "scalar projection boolean alias missing");
@@ -4845,7 +4846,7 @@ void RequireExtendedNumericFunctionProjectionLowering() {
 
 void RequireTextJsonFuzzyFunctionProjectionLowering() {
   const auto artifacts = RunPipeline(
-      R"SQL(SELECT char_length('surface') AS char_len, left('abcdef', 2) AS left_value, right('abcdef', 2) AS right_value, uuid_from_string('550E8400-E29B-41D4-A716-446655440000') AS uuid_value, uuid_to_string('550E8400-E29B-41D4-A716-446655440000') AS uuid_text, digest('hello', 'fnv64') AS digest_value, jsonb_array_length('[1,2,3]') AS jsonb_len, json_set('{"a":1}', '$.b', 2) AS json_set_value, json_remove('{"a":1,"b":2}', '$.a') AS json_removed, json_replace('{"a":1}', '$.a', 4) AS json_replaced, json_insert('{"a":1}', '$.b', 2) AS json_inserted, json_build_array(1, 'bird', NULL) AS json_array, json_build_object('a', 1, 'b', 'bird') AS json_object, to_json('bird') AS json_text, to_jsonb(7) AS jsonb_text, jsonb_typeof('{"a":1}') AS jsonb_type, json_typeof('[1,2]') AS json_type, json_extract('{"a":42}', '$.a') AS json_extracted, json_exists('{"a":1}', '$.a') AS json_exists_value, json_value('{"a":"bird"}', '$.a') AS json_value_value, json_query('{"a":[1,2]}', '$.a') AS json_query_value, jsonb_set('{"a":1}', '$.a', 5) AS jsonb_set_value, jsonb_build_array(1, 'bird', NULL) AS jsonb_array, jsonb_build_object('a', 1) AS jsonb_object, metaphone('Smith') AS metaphone_value, dmetaphone('gumbo') AS dmetaphone_value, dmetaphone_alt('Smith') AS dmetaphone_alt_value, levenshtein_le('kitten', 'sitten', 1) AS levenshtein_le_value, damerau_levenshtein('CA', 'AC') AS damerau_value, jaro_similarity('MARTHA', 'MARHTA') AS jaro_value, jaro_winkler_similarity('MARTHA', 'MARHTA') AS jaro_winkler_value, similarity('hello', 'hello') AS similarity_value, word_similarity('hello', 'say hello today') AS word_similarity_value)SQL");
+      R"SQL(SELECT char_length('surface') AS char_len, left('abcdef', 2) AS left_value, right('abcdef', 2) AS right_value, uuid_from_string('550E8400-E29B-41D4-A716-446655440000') AS uuid_value, uuid_to_string('550E8400-E29B-41D4-A716-446655440000') AS uuid_text, digest('hello', 'fnv64') AS digest_value, jsonb_array_length('[1,2,3]') AS jsonb_len, json_set('{"a":1}', '$.b', 2) AS json_set_value, json_remove('{"a":1,"b":2}', '$.a') AS json_removed, json_replace('{"a":1}', '$.a', 4) AS json_replaced, json_insert('{"a":1}', '$.b', 2) AS json_inserted, json_build_array(1, 'bird', CAST(NULL AS TEXT)) AS json_array, json_build_object('a', 1, 'b', 'bird') AS json_object, to_json('bird') AS json_text, to_jsonb(7) AS jsonb_text, jsonb_typeof('{"a":1}') AS jsonb_type, json_typeof('[1,2]') AS json_type, json_extract('{"a":42}', '$.a') AS json_extracted, json_exists('{"a":1}', '$.a') AS json_exists_value, json_value('{"a":"bird"}', '$.a') AS json_value_value, json_query('{"a":[1,2]}', '$.a') AS json_query_value, jsonb_set('{"a":1}', '$.a', 5) AS jsonb_set_value, jsonb_build_array(1, 'bird', CAST(NULL AS TEXT)) AS jsonb_array, jsonb_build_object('a', 1) AS jsonb_object, metaphone('Smith') AS metaphone_value, dmetaphone('gumbo') AS dmetaphone_value, dmetaphone_alt('Smith') AS dmetaphone_alt_value, levenshtein_le('kitten', 'sitten', 1) AS levenshtein_le_value, damerau_levenshtein('CA', 'AC') AS damerau_value, jaro_similarity('MARTHA', 'MARHTA') AS jaro_value, jaro_winkler_similarity('MARTHA', 'MARHTA') AS jaro_winkler_value, similarity('hello', 'hello') AS similarity_value, word_similarity('hello', 'say hello today') AS word_similarity_value)SQL");
   Require(artifacts.bound.bound, "text/json/fuzzy function scalar SELECT did not bind");
   for (const auto& diagnostic : artifacts.envelope.messages.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
@@ -4901,7 +4902,8 @@ void RequireTextJsonFuzzyFunctionProjectionLowering() {
           "left(text,n) signature-backed route missing");
   Require(Contains(artifacts.envelope.payload, "\"projection_2_function_id\":\"sb.scalar.right\""),
           "right(text,n) signature-backed route missing");
-  Require(Contains(artifacts.envelope.payload, "\"projection_11_arg_2_is_null\":\"true\""),
+  Require(Contains(artifacts.envelope.payload, "\"projection_11_arg_2_arg_0_is_null\":\"true\"") &&
+              Contains(artifacts.envelope.payload, "\"projection_11_arg_2_arg_0_type\":\"character\""),
           "json_build_array NULL argument marker missing");
   Require(!Contains(artifacts.envelope.payload, "SELECT char_length"),
           "text/json/fuzzy function projection payload embedded source SQL text");
@@ -5851,7 +5853,7 @@ void RequireSbsfc032ScalarUtilityConversionProjectionLowering() {
       "SELECT atan2d(1, 0) AS atan2d_value, "
       "collation_for AS collation_for_bare, collation_for('abc') AS collation_for_text, "
       "descriptor_of AS descriptor_of_bare, descriptor_of(42) AS descriptor_of_value, "
-      "pg_typeof AS pg_typeof_bare, pg_typeof(NULL) AS pg_typeof_null, "
+      "pg_typeof AS pg_typeof_bare, pg_typeof(CAST(NULL AS TEXT)) AS pg_typeof_null, "
       "safe_cast AS safe_cast_bare, safe_cast('123', 'int64') AS safe_cast_value, "
       "try_cast AS try_cast_bare, try_cast('bad', 'int64') AS try_cast_value, "
       "similar_to_escape AS similar_to_escape_bare, "
@@ -7252,7 +7254,7 @@ void RequireTextFunctionProjectionLowering() {
       "is_digit('12345') AS is_digit_value, "
       "quote_ident('needs quote') AS quote_ident_value, "
       "quote_literal('O''Reilly') AS quote_literal_value, "
-      "quote_nullable(NULL) AS quote_nullable_value, "
+      "quote_nullable(CAST(NULL AS TEXT)) AS quote_nullable_value, "
       "bit_set(8, 1) AS bit_set_value, "
       "bit_test(8, 3) AS bit_test_value, "
       "bit_clear(10, 1) AS bit_clear_value, "
@@ -8826,7 +8828,7 @@ void RequireEngineDispatch() {
               row.fields[1].second.encoded_value == "two",
           "engine scalar projection second field mismatch");
   Require(row.fields[2].first == "empty_value" &&
-              row.fields[2].second.descriptor.canonical_type_name == "null" &&
+              row.fields[2].second.descriptor.canonical_type_name == "text" &&
               row.fields[2].second.is_null,
           "engine scalar projection NULL field mismatch");
   Require(row.fields[3].first == "truth" &&
@@ -11319,11 +11321,85 @@ void RequireNativeReal64ScalarLiteralBinding() {
   }
 }
 
+void RequireScalarNullContextBinding() {
+  struct Case { const char* sql; const char* type; const char* value; bool null; };
+  for (const auto& test : {
+      Case{"SELECT NVL(NULL, 'fallback') AS value", "text", "fallback", false},
+      Case{"SELECT NVL('first', NULL) AS value", "text", "first", false},
+      Case{"SELECT IFNULL(NULL, 7) AS value", "bigint", "7", false},
+      Case{"SELECT COALESCE(NULL, NULL, 8) AS value", "bigint", "8", false},
+      Case{"SELECT COALESCE(COALESCE(NULL, NULL), 9) AS value", "bigint", "9", false},
+      Case{"SELECT IIF(TRUE, NULL, 'other') AS value", "text", "", true},
+      Case{"SELECT IIF(FALSE, NULL, 'other') AS value", "text", "other", false},
+      Case{"SELECT IIF(NULL, 'first', 'second') AS value", "text", "second", false},
+      Case{"SELECT NULLIF(NULL, 'other') AS value", "text", "", true},
+      Case{"SELECT 1 IS DISTINCT FROM NULL AS value", "boolean", "1", false},
+      Case{"SELECT COALESCE(NULL, UUID '550e8400-e29b-41d4-a716-446655440000') AS value",
+           "uuid", "550e8400-e29b-41d4-a716-446655440000", false}}) {
+    const auto artifacts = RunPipeline(test.sql);
+    for (const auto& diagnostic : artifacts.envelope.messages.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+    Require(artifacts.bound.bound && artifacts.verifier.admitted,
+            std::string("contextual NULL did not lower: ") + test.sql);
+    Require(!Contains(artifacts.envelope.payload, "_type\":\"null\"") &&
+                !Contains(artifacts.envelope.payload, "_value\":\"NULL\""),
+            "unbound NULL or NULL payload escaped parser binding");
+    Require(Contains(artifacts.envelope.payload,
+                std::string("\"projection_0_type\":\"") + test.type + "\""),
+            "selector must publish its concrete result profile, not a generic text default");
+    const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
+        scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
+    Require(admission.admitted, "bound NULL projection was not admitted");
+    const auto result = sblr::DispatchSblrOperation({EngineContext(),
+        EngineEnvelopeFromParserEnvelope(artifacts.envelope), api::EngineApiRequest{}});
+    for (const auto& diagnostic : result.api_result.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+    Require(result.api_result.ok && result.api_result.result_shape.rows.size() == 1 &&
+            result.api_result.result_shape.rows[0].fields.size() == 1,
+            std::string("bound NULL projection failed execution: ") + test.sql);
+    const auto& value = result.api_result.result_shape.rows[0].fields[0].second;
+    Require(value.descriptor.canonical_type_name == test.type && value.is_null == test.null &&
+            ScalarFixtureValueEquals(value, test.value), "bound NULL projection result mismatch");
+    if (test.null) Require(value.encoded_value.empty() && value.binary_value.empty(),
+                           "typed NULL must not acquire any payload");
+  }
+  for (const auto* sql : {"SELECT NULL", "SELECT COALESCE(NULL, NULL)",
+                         "SELECT IIF(TRUE, NULL, NULL)",
+                         "SELECT COALESCE(NULL, 7, 'text')",
+                         "SELECT COALESCE(COALESCE(NULL, 7), 'text')",
+                         "SELECT IIF(NULL, 7, 'text')",
+                         "SELECT COALESCE(7, 'text')",
+                         "SELECT NVL(NULL, NULL)", "SELECT NULLIF(NULL, NULL)"}) {
+    const auto artifacts = RunPipeline(sql);
+    Require(!artifacts.verifier.admitted &&
+        std::any_of(artifacts.envelope.messages.diagnostics.begin(),
+                    artifacts.envelope.messages.diagnostics.end(), [](const auto& diagnostic) {
+                      return diagnostic.code == "DATATYPE.CONTEXT_REQUIRED";
+                    }), std::string("contextless NULL must fail before dispatch: ") + sql);
+    Require(!Contains(artifacts.envelope.payload, "\"projection_count\""),
+            "unresolved NULL must not publish a partial executable projection");
+  }
+  for (const auto* payload : {"NULL", "payload", "0"}) {
+    auto envelope = EngineEnvelope();
+    for (auto& operand : envelope.operands)
+      if (operand.name == "projection_2_value") operand.value = payload;
+    const auto refused = sblr::DispatchSblrOperation({EngineContext(), std::move(envelope),
+                                                    api::EngineApiRequest{}});
+    Require(!refused.api_result.ok && refused.api_result.result_shape.rows.empty(),
+            "SQL NULL payload must be refused, not silently discarded");
+  }
+}
+
 int main(int argc, char** argv) {
+  if (argc == 2 && std::string_view(argv[1]) == "--null-context-binding-only") {
+    RequireScalarNullContextBinding();
+    return 0;
+  }
   RequireBinaryBuiltinBinding();
   RequireBinaryScalarLiteralBinding();
   RequireNativeReal64ScalarLiteralBinding();
   if (argc == 2 && std::string_view(argv[1]) == "--binary-function-binding-only") return 0;
+  RequireScalarNullContextBinding();
   RequireScalarLowering();
   RequireFunctionProjectionLowering();
   RequireNumericFunctionProjectionLowering();
