@@ -3817,6 +3817,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     sbsql_sbsfc_063_window_grammar_exact_route_conformance
     PRIVATE
       sbl_sbsql_embedded_client_bridge
+      sb_engine_functions
       sb_core_memory
       sb_core_uuid
       sb_storage_database

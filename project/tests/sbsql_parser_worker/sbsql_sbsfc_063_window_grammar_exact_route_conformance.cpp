@@ -9,6 +9,8 @@
 #include "../support/diagnostic_value_fixture.hpp"
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -17,6 +19,9 @@
 #include "lowering/lowering.hpp"
 #include "memory.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
+#include "registry/function_seed_registry.hpp"
+#include "behavior_support/api_behavior_store.hpp"
+#include "transaction/transaction_api.hpp"
 #include "rendering/rendering.hpp"
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
@@ -33,6 +38,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <stdexcept>
 #include <unistd.h>
 #include <vector>
 
@@ -47,7 +53,7 @@ namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
 constexpr std::string_view kTableUuid = "019f0000-0000-7000-8000-000000063001";
-constexpr std::string_view kTimeSeriesUuid = "019f0000-0000-7000-8000-000000063002";
+constexpr auto kTimeSeriesUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000063002");
 constexpr std::string_view kFixturePrincipal = "qow_packet7_user";
 constexpr std::string_view kFixturePassword =
     "QOW-Packet7-live-route-password";
@@ -84,8 +90,7 @@ struct WindowCase {
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
-    std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -122,21 +127,16 @@ std::string FieldValue(const api::EngineApiResult& result,
   return {};
 }
 
-std::filesystem::path MakeFixtureDatabase() {
+api::EngineRequestContext owner_context;
+
+std::filesystem::path MakeFixtureDatabase(const std::filesystem::path& directory) {
   static std::atomic<std::uint64_t> identity_time{1788203000000ULL};
-  std::string template_path = "/tmp/sbsql_sbsfc_063_window.XXXXXX";
-  std::vector<char> writable(template_path.begin(), template_path.end());
-  writable.push_back('\0');
-  char* directory = ::mkdtemp(writable.data());
-  if (directory == nullptr) return {};
 
   const auto database_uuid = uuid::GenerateEngineIdentityV7(
       UuidKind::database, identity_time.fetch_add(2));
   const auto filespace_uuid = uuid::GenerateEngineIdentityV7(
       UuidKind::filespace, identity_time.fetch_add(2));
   if (!database_uuid.ok() || !filespace_uuid.ok()) {
-    std::error_code ignored;
-    std::filesystem::remove_all(directory, ignored);
     return {};
   }
 
@@ -165,10 +165,9 @@ std::filesystem::path MakeFixtureDatabase() {
       std::cerr << ':' << argument.key << '=' << scratchbird::tests::DiagnosticArgumentDisplay(argument);
     }
     std::cerr << '\n';
-    std::error_code ignored;
-    std::filesystem::remove_all(directory, ignored);
     return {};
   }
+  owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   return path;
 }
 
@@ -201,7 +200,16 @@ void RequireStaticScalarProjectionLowering(const WindowCase& test_case) {
 
   const auto cst = BuildCst(std::string(test_case.sql));
   const auto ast = BuildAst(cst);
-  const auto bound = BindAst(ast, cst, config, session, {});
+  const auto unbound = BindAst(ast, cst, config, session, {});
+  const auto missing_identity = LowerToSblr(unbound, cst, session);
+  Require(!VerifySblrEnvelope(missing_identity).admitted &&
+              Contains(RenderMessageVectorSet(missing_identity.messages), "SBLR.OPERAND_INVALID"),
+          "SBSFC-063 scalar call without binary function authority did not refuse");
+  std::vector<scratchbird::wire::BuiltinFunctionIdentity> functions;
+  const auto package = scratchbird::engine::functions::BuildStandardFunctionSeedPackage();
+  for (const auto& entry : package.registry.Entries())
+    if (entry.catalog_visible) functions.push_back({entry.function_id, entry.function_uuid});
+  const auto bound = BindAst(ast, cst, config, session, {}, nullptr, functions);
   const auto envelope = LowerToSblr(bound, cst, session);
   const auto verifier = VerifySblrEnvelope(envelope);
   if (cst.messages.has_errors()) {
@@ -308,39 +316,13 @@ void RequireExactLowering(
 }
 
 api::EngineRequestContext EngineContext() {
-  api::EngineRequestContext context;
+  auto context = owner_context;
   context.request_id = "sbsql-sbsfc-063-window-grammar-exact-route";
-  context.database_path =
-      (std::filesystem::temp_directory_path() /
-       "sbsql_sbsfc_063_window_grammar_exact_route.sbdb").string();
-  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000063201");
-  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000063202");
-  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000063203");
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000063204");
-  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000063205");
-  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000063206");
-  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000063207");
-  context.current_role_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000063208");
-  context.local_transaction_id = 63;
-  context.security_context_present = true;
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.name_resolution_epoch = 1;
-  context.trace_tags.push_back("right:WINDOW_SURFACE_TEST");
   for (const auto& row : kRows) {
     context.trace_tags.push_back(std::string("sbsql_surface_id:") +
                                  std::string(row.surface_id));
   }
   return context;
-}
-
-void RemoveTimeSeriesApiArtifacts() {
-  std::error_code ignored;
-  const auto path = std::filesystem::temp_directory_path() /
-                    "sbsql_sbsfc_063_window_grammar_exact_route.sbdb";
-  std::filesystem::remove(path, ignored);
-  std::filesystem::remove(path.string() + ".sb.api_events", ignored);
 }
 
 api::EngineTypedValue Int64Value(std::string value) {
@@ -424,6 +406,16 @@ void RequireTimeSeriesProjectionDispatch() {
   envelope.operands.push_back({"text", "projection_0_value", ""});
   envelope.operands.push_back({"text", "projection_0_is_null", "false"});
   envelope.operands.push_back({"text", "projection_0_function_id", "timeseries.aggregate"});
+  const auto functions = scratchbird::engine::functions::BuildStandardFunctionSeedPackage();
+  const auto* function = functions.registry.Lookup("timeseries.aggregate");
+  Require(function != nullptr, "native timeseries aggregate binding is unavailable");
+  sblr::SblrOperand identity;
+  identity.ordinal = static_cast<std::uint32_t>(envelope.operands.size() + 1);
+  identity.type = "uuid";
+  identity.name = "projection_0_function_uuid";
+  identity.value_kind = sblr::SblrValueKind::uuid_ref;
+  identity.value_body.assign(function->function_uuid.bytes.begin(), function->function_uuid.bytes.end());
+  envelope.operands.push_back(std::move(identity));
   envelope.operands.push_back({"text", "projection_0_function_arg_count", "2"});
   envelope.operands.push_back({"text", "projection_0_arg_0_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_0_arg_0_type", "text"});
@@ -445,18 +437,42 @@ void RequireTimeSeriesProjectionDispatch() {
   Require(result.dispatched_to_api, "SBSFC-063 time-series projection did not dispatch");
   if (!result.api_result.ok) PrintApiDiagnostics(result.api_result);
   Require(result.api_result.ok, "EngineEvaluateProjection time-series route failed");
-  Require(HasEvidence(result.api_result, "function_runtime", "timeseries.aggregate"),
+  Require(std::any_of(result.api_result.evidence.begin(), result.api_result.evidence.end(),
+              [&](const auto& evidence) {
+                const auto* id = std::get_if<api::EngineUuid>(&evidence.evidence_id);
+                return evidence.evidence_kind == "function_runtime" && id && *id == function->function_uuid;
+              }),
           "SBSFC-063 time-series function runtime evidence missing");
   Require(result.api_result.result_shape.rows.size() == 1,
           "SBSFC-063 time-series projection row count mismatch");
+  const auto& fields = result.api_result.result_shape.rows.front().fields;
+  Require(fields.size() == 1 && fields[0].first == "ts_window" &&
+              fields[0].second.descriptor.canonical_type_name == "real64" &&
+              !fields[0].second.isSqlNull() && fields[0].second.encoded_value.empty() &&
+              fields[0].second.binary_value == std::vector<std::uint8_t>({0,0,0,0,0,0,0x18,0x40}),
+          "SBSFC-063 time-series aggregate must produce exact native binary64 six");
 }
 
-void RequireTimeSeriesAppendDispatch() {
-  RemoveTimeSeriesApiArtifacts();
+// Existing generic route coverage: this appends a behavior-journal record, not
+// a physical time-series point batch. Check that actual bounded effect without
+// mistaking its receipt for native bucket/columnar storage qualification.
+api::ApiBehaviorRecord RequireTimeSeriesAppendDispatch() {
   auto envelope = EngineEnvelope("nosql.time_series_append",
                                  "SBLR_NOSQL_TIME_SERIES_APPEND",
                                  "trace.sbsfc063.timeseries.append");
-  envelope.operands.push_back({"text", "target_object_uuid", std::string(kTimeSeriesUuid)});
+  const auto target = kTimeSeriesUuid;
+  api::EngineApiDiagnostic diagnostic;
+  const auto before = api::FindVisibleApiBehaviorRecord(EngineContext(), target,
+      owner_context.local_transaction_id, diagnostic);
+  Require(!diagnostic.error && !before.has_value(),
+          "SBSFC-063 append fixture target already exists");
+  sblr::SblrOperand identity;
+  identity.ordinal = 1;
+  identity.type = "uuid";
+  identity.name = "target_object_uuid";
+  identity.value_kind = sblr::SblrValueKind::uuid_ref;
+  identity.value_body.assign(target.bytes.begin(), target.bytes.end());
+  envelope.operands.push_back(std::move(identity));
   envelope.operands.push_back({"text", "target_object_kind", "time_series"});
   envelope = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
       std::move(envelope));
@@ -472,12 +488,19 @@ void RequireTimeSeriesAppendDispatch() {
           "SBSFC-063 time-series surface evidence missing");
   Require(HasEvidence(result.api_result, "nosql_behavior", "persisted_time_series_append"),
           "SBSFC-063 time-series append behavior evidence missing");
-  RemoveTimeSeriesApiArtifacts();
+  const auto persisted = api::FindVisibleApiBehaviorRecord(EngineContext(), target,
+      owner_context.local_transaction_id, diagnostic);
+  Require(!diagnostic.error && persisted.has_value() && !persisted->deleted &&
+              persisted->operation_id == "nosql.time_series_append" &&
+              persisted->object_kind == "time_series_point" &&
+              persisted->creator_tx == owner_context.local_transaction_id,
+          "SBSFC-063 append did not publish its exact transaction-owned record");
+  return *persisted;
 }
 
 }  // namespace
 
-int main() {
+int main() try {
   RequireRegistryEvidence();
   const std::vector<WindowCase> cases = {
       {"SELECT row_number() OVER win FROM customer WINDOW win AS (ORDER BY id)",
@@ -524,7 +547,8 @@ int main() {
   Require(memory_configured.ok(),
           "SBSFC-063 memory manager configuration failed");
 
-  const auto fixture_database = MakeFixtureDatabase();
+  scratchbird::tests::OwnedTempDirectory owned;
+  const auto fixture_database = MakeFixtureDatabase(owned.path());
   Require(!fixture_database.empty(), "SBSFC-063 fixture database creation failed");
   ParserConfig config;
   config.probe_mode = true;
@@ -562,11 +586,66 @@ int main() {
       RequireExactLowering(test_case, result, summary);
     }
   }
-  std::error_code cleanup_error;
-  std::filesystem::remove_all(fixture_database.parent_path(), cleanup_error);
+  api::EngineBeginTransactionRequest begin;
+  begin.context = owner_context;
+  begin.isolation_level = "read_committed";
+  const auto started = api::EngineBeginTransaction(begin);
+  if (!started.ok) PrintApiDiagnostics(started);
+  Require(started.ok && started.inventory_observation.state == api::EngineTransactionInventoryState::active,
+          "SBSFC-063 direct component transaction failed to begin");
+  owner_context.transaction_uuid = started.transaction_uuid;
+  owner_context.local_transaction_id = started.local_transaction_id;
+  owner_context.snapshot_visible_through_local_transaction_id = started.snapshot_visible_through_local_transaction_id;
+  owner_context.transaction_timestamp = started.inventory_observation.transaction_timestamp;
   RequireStaticScalarProjectionLowering(cases.back());
   RequireTimeSeriesProjectionDispatch();
-  RequireTimeSeriesAppendDispatch();
+  const auto staged_record = RequireTimeSeriesAppendDispatch();
+  api::EngineCommitTransactionRequest commit;
+  commit.context = owner_context;
+  const auto committed = api::EngineCommitTransaction(commit);
+  if (!committed.ok) PrintApiDiagnostics(committed);
+  Require(committed.ok && committed.engine_finality_known &&
+              committed.commit_finality_state == "committed_by_engine_inventory",
+          "SBSFC-063 append transaction did not commit");
+  owner_context.transaction_uuid = {};
+  owner_context.local_transaction_id = 0;
+  owner_context.snapshot_visible_through_local_transaction_id = 0;
+  owner_context.transaction_timestamp.clear();
+  begin.context = owner_context;
+  const auto observer = api::EngineBeginTransaction(begin);
+  Require(observer.ok && observer.inventory_observation.state == api::EngineTransactionInventoryState::active,
+          "SBSFC-063 fresh record observer did not begin");
+  owner_context.transaction_uuid = observer.transaction_uuid;
+  owner_context.local_transaction_id = observer.local_transaction_id;
+  owner_context.snapshot_visible_through_local_transaction_id = observer.snapshot_visible_through_local_transaction_id;
+  owner_context.transaction_timestamp = observer.inventory_observation.transaction_timestamp;
+  api::EngineApiDiagnostic diagnostic;
+  const auto visible = api::FindVisibleApiBehaviorRecord(EngineContext(), kTimeSeriesUuid,
+      owner_context.local_transaction_id, diagnostic);
+  Require(!diagnostic.error && visible.has_value() &&
+              visible->creator_tx == staged_record.creator_tx &&
+              visible->event_sequence == staged_record.event_sequence &&
+              visible->operation_id == staged_record.operation_id &&
+              visible->object_uuid == staged_record.object_uuid &&
+              visible->object_kind == staged_record.object_kind &&
+              visible->default_name == staged_record.default_name &&
+              visible->payload == staged_record.payload &&
+              visible->state == staged_record.state &&
+              visible->deleted == staged_record.deleted &&
+              visible->target_database_uuid == staged_record.target_database_uuid &&
+              visible->target_schema_uuid == staged_record.target_schema_uuid &&
+              visible->target_object_uuid == staged_record.target_object_uuid,
+          "SBSFC-063 fresh observer did not reload the exact committed journal record");
+  api::EngineRollbackTransactionRequest rollback;
+  rollback.context = owner_context;
+  const auto ended = api::EngineRollbackTransaction(rollback);
+  Require(ended.ok && ended.engine_finality_known &&
+              ended.rollback_finality_state == "rolled_back_by_engine_inventory",
+          "SBSFC-063 observer cleanup did not finish");
+  owned.Cleanup();
   std::cout << "sbsql_sbsfc_063_window_grammar_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }
