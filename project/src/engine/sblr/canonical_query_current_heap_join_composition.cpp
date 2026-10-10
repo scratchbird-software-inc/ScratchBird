@@ -2262,6 +2262,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
             if (binding == nullptr || rows == nullptr ||
                 stored.values.size() != binding->persisted.columns.size() ||
                 key_ordinal >= binding->columns.size()) {
+              stream_preparation_descriptor_refusal = true;
+              stream_detail = "streaming hash row width or key binding differs from admission";
               return false;
             }
             StreamingCompactRow row;
@@ -2274,13 +2276,25 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
               const api::CrudStoredValue* payload = nullptr;
               for (const auto& [name, value] : stored.values) {
                 if (name != column->canonical_name_key) continue;
-                if (payload != nullptr) return false;
+                if (payload != nullptr) {
+                  stream_preparation_descriptor_refusal = true;
+                  stream_detail = "streaming hash row repeats a projected column";
+                  return false;
+                }
                 payload = &value;
               }
               if (payload == nullptr || !payload->valid() ||
-                  (!payload->isPresent() && !payload->isSqlNull())) return false;
+                  (!payload->isPresent() && !payload->isSqlNull())) {
+                stream_preparation_descriptor_refusal = true;
+                stream_detail = "streaming hash row omits a valid projected scalar state";
+                return false;
+              }
               if (payload->isSqlNull()) {
-                if (!column->nullable) return false;
+                if (!column->nullable) {
+                  stream_preparation_descriptor_refusal = true;
+                  stream_detail = "streaming hash row violates projected column nullability";
+                  return false;
+                }
                 row.nulls[ordinal] = true;
               } else {
                 row.values[ordinal] = payload->bytes;
@@ -2290,9 +2304,18 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
               api::EngineTypedValue key;
               key.descriptor = binding->descriptors[key_ordinal];
               if (!api::RestoreStoredScalarPayloadV1(row.values[key_ordinal],
-                      api::EngineValueState::value, &key)) return false;
+                      api::EngineValueState::value, &key)) {
+                stream_preparation_descriptor_refusal = true;
+                stream_detail = "streaming hash key has an invalid stored scalar payload";
+                return false;
+              }
               const auto decoded = exec::DecodeInt64Value(key);
-              if (!decoded.ok()) return false;
+              if (!decoded.ok()) {
+                stream_preparation_descriptor_refusal = true;
+                stream_detail = "streaming hash key admission failed: " +
+                    decoded.diagnostic.diagnostic_code + ":" + decoded.diagnostic.detail;
+                return false;
+              }
               row.key = decoded.value;
               row.key_present = true;
             }

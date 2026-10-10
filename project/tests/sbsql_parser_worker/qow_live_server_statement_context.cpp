@@ -2770,6 +2770,16 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
         (!join_tail_proof_only && !table_function_proof_only &&
         !match_recognize_proof_only && !spatial_columnar_proof_only &&
         !filtered_count_proof_only && !heap_single_source_proof_only)) {
+    const auto int64_self_join = parser.RunPipeline(
+        "SELECT * FROM qow_packet7.qow_packet7_relation AS l INNER JOIN "
+        "qow_packet7.qow_packet7_relation AS r ON "
+        "l.nullable_order_value = r.nullable_order_value;", true);
+    if (!int64_self_join.accepted) PrintMessages(int64_self_join.messages);
+    Require(int64_self_join.accepted &&
+                int64_self_join.server_operation_id == "query.execute" &&
+                int64_self_join.server_cursor_uuid.is_nil() &&
+                int64_self_join.server_row_count == 2,
+            "native INT64 self join lost its two equal non-NULL keys or joined NULL");
     auto three_way_join_limit = parser.RunPipeline(
         "SELECT * FROM qow_packet7.qow_packet7_relation AS l CROSS JOIN "
         "qow_packet7.qow_packet7_join_relation AS r CROSS JOIN "
