@@ -257,4 +257,50 @@ void BatchCallerPublication(){unsigned cases=0;auto mutable_profile=Profile();st
 void BatchMaterialization(){auto profile=Profile();auto max=dt::ComputeDateBatchExtentsV3(std::numeric_limits<uint32_t>::max(),std::numeric_limits<uint64_t>::max());const bool host_admits=17179869180ULL<=uint64_t(std::numeric_limits<std::size_t>::max())&&uint64_t(std::numeric_limits<uint32_t>::max())<=uint64_t(std::vector<int32_t>{}.max_size())&&536870912ULL<=uint64_t(std::vector<p::byte>{}.max_size());Check((host_admits&&max.ok()&&max.days_bytes==17179869180ULL&&max.bitmap_bytes==536870912ULL&&max.combined_bytes==17716740092ULL)||(!host_admits&&!max.ok()&&max.diagnostic.diagnostic_code=="RESOURCE.BUDGET_EXCEEDED"),"u32 max checked u64/size_t/vector extents");Check(!dt::ComputeDateBatchExtentsV3(std::numeric_limits<uint32_t>::max(),std::numeric_limits<uint32_t>::max()).ok(),"u32 size_t simulation");Check(!dt::ComputeDateBatchExtentsV3(uint64_t(std::numeric_limits<uint32_t>::max())+1,std::numeric_limits<uint64_t>::max()).ok(),"row count bound");constexpr std::array<int32_t,9> days{{0,0,1,2,3,4,5,6,0}};constexpr std::array<p::byte,2> bits{{0x01,0x01}};auto n9=dt::MaterializeDateBatchV3(profile,days,bits);Check(n9.ok()&&n9.batch.days.size()==9&&n9.batch.null_bitmap_lsb0==std::vector<p::byte>(bits.begin(),bits.end()),"N9 materialization");std::array<int32_t,1> n1day{{0}};std::array<p::byte,1> n1bits{{0}};Check(dt::MaterializeDateBatchV3(profile,n1day,n1bits).ok(),"N1 materialization");Check(dt::MaterializeDateBatchV3(profile,{},{}).ok(),"N0 materialization");Check(!dt::MaterializeDateBatchV3(profile,days,bits,{37}).ok(),"batch resource grant short");auto dirty=days;dirty[0]=7;Check(!dt::MaterializeDateBatchV3(profile,dirty,bits).ok(),"dirty NULL materialization");for(unsigned at:{1u,2u,3u}){const auto pins=profile.use_count();Cancel c{0,at};auto r=dt::MaterializeDateBatchV3(profile,days,bits,Control(c));Check(!r.ok()&&r.batch.days.empty()&&r.batch.null_bitmap_lsb0.empty()&&r.diagnostic.diagnostic_code=="PROCESS.CANCELLED"&&profile.use_count()==pins,"batch cancellation atomicity/clear/pin release");}const long observable_pins=profile.use_count();PinProbe probe{0,2,profile,observable_pins,0};auto observed=dt::MaterializeDateBatchV3(profile,days,bits,PinControl(probe));Check(!observed.ok()&&observed.diagnostic.diagnostic_code=="PROCESS.CANCELLED"&&probe.calls==2&&probe.observed==observable_pins+1&&profile.use_count()==observable_pins,"owning batch operation pin active at row0 cancellation then released");std::vector<int32_t> many(8193);std::vector<p::byte> manybits((8193+7)/8);const auto pins=profile.use_count();Cancel c{0,3};auto stopped=dt::MaterializeDateBatchV3(profile,many,manybits,Control(c));Check(!stopped.ok()&&stopped.batch.days.empty()&&stopped.diagnostic.diagnostic_code=="PROCESS.CANCELLED"&&profile.use_count()==pins,"batch row4096 cancellation/clear/pin release");}
 void BatchAndLifetime(){auto shared=Profile();dt::DateOwnedValueV3 owned{shared,dt::DateValueStateV3::value,77};auto view=owned.view();shared.reset();Check(dt::ValidateDateValueViewV3(view).ok()&&view.day==77,"owned profile lifetime");constexpr std::array<int32_t,9> days{{0,1,2,3,4,5,6,7,0}};constexpr std::array<p::byte,2> bits{{0x01,0x01}};Check(dt::ValidateDateBatchViewV3({view.profile,days,bits}).ok(),"N9 batch");auto dirty=days;dirty[8]=9;Check(!dt::ValidateDateBatchViewV3({view.profile,dirty,bits}).ok(),"dirty null batch");constexpr std::array<p::byte,2> tail{{0x01,0x81}};Check(!dt::ValidateDateBatchViewV3({view.profile,days,tail}).ok(),"dirty bitmap tail");Check(dt::ValidateDateBatchViewV3({view.profile,{},{}}).ok(),"N0 batch");std::array<p::byte,8> raw{};const auto* misaligned=reinterpret_cast<const int32_t*>(raw.data()+1);std::span<const int32_t> malformed(misaligned,1);constexpr std::array<p::byte,1> one_bit{{0}};auto alignment=dt::ValidateDateBatchViewV3({view.profile,malformed,one_bit});Check(!alignment.ok()&&alignment.diagnostic.diagnostic_code=="CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","misaligned input days refused before read");}
 }
-int main(){FixedOutputGuardContract();ScrubCoverage();HeapFailureAndRetry();BoundedNoAllocPublication();OverlapAndExpandedPublication();StructuralManifestClosure();SealedComposedVectors();ResourceCancellation();PinObservability();Composed();BatchCallerPublication();BatchMaterialization();BatchAndLifetime();std::cout<<"PASS base.date V3 publication/atomicity checks="<<checks<<'\n';}
+void BorrowedSortKeyPublication() {
+  auto profile = Profile();
+  for (const auto day : {INT32_MIN, -1, 0, 1, INT32_MAX}) {
+    for (const auto state : {dt::DateValueStateV3::value, dt::DateValueStateV3::sql_null}) {
+      dt::DateOwnedValueV3 owned{profile, state, state == dt::DateValueStateV3::value ? day : 0};
+      const auto borrowed = owned.view();
+      for (const auto direction : {dt::DateSortDirectionV3::ascending, dt::DateSortDirectionV3::descending}) {
+        for (const auto nulls : {dt::DateNullModeV3::nulls_first, dt::DateNullModeV3::nulls_last}) {
+          std::array<p::byte, dt::kDateValueSortKeyBytesV3> expected{}, output{};
+          const auto reference = dt::MakeDateSortKeyIntoNoAllocV3(owned, direction, nulls,
+              expected.data(), expected.size());
+          allocation_probe::allocations = 0;
+          allocation_probe::count = true;
+          const auto result = dt::MakeDateSortKeyViewIntoNoAllocV3(borrowed, direction, nulls,
+              output.data(), output.size());
+          allocation_probe::count = false;
+          Check(reference.ok() && result.ok() && result.bytes_written == reference.bytes_written &&
+                output == expected && allocation_probe::allocations == 0,
+                "borrowed DATE key must match owned key without heap allocation");
+          output.fill(0xa5);
+          const auto before = output;
+          Cancel cancel{0, 1};
+          const auto cancelled = dt::MakeDateSortKeyViewIntoNoAllocV3(borrowed, direction, nulls,
+              output.data(), output.size(), Control(cancel));
+          Check(!cancelled.ok() && cancelled.diagnostic.diagnostic_code == "PROCESS.CANCELLED" &&
+                output == before, "borrowed DATE key cancellation must preserve output");
+          const auto short_output = dt::MakeDateSortKeyViewIntoNoAllocV3(borrowed, direction, nulls,
+              output.data(), reference.bytes_written - 1);
+          Check(!short_output.ok() && short_output.diagnostic.diagnostic_code == "RESOURCE.BUDGET_EXCEEDED" &&
+                short_output.bytes_required == reference.bytes_written && output == before,
+                "borrowed DATE key capacity refusal must preserve output");
+        }
+      }
+    }
+  }
+  auto view = dt::DateValueViewV3{profile.get(), dt::DateValueStateV3::value, 0};
+  const auto fingerprint = profile->profile_material;
+  const auto overlap = dt::MakeDateSortKeyViewIntoNoAllocV3(view, dt::DateSortDirectionV3::ascending,
+      dt::DateNullModeV3::nulls_first, profile->profile_material.data(), profile->profile_material.size());
+  Check(!overlap.ok() && overlap.diagnostic.detail == "sort_key_output_aliases_input_or_profile" &&
+        profile->profile_material == fingerprint, "borrowed DATE key profile overlap must refuse");
+  const auto view_overlap = dt::MakeDateSortKeyViewIntoNoAllocV3(view, dt::DateSortDirectionV3::ascending,
+      dt::DateNullModeV3::nulls_first, reinterpret_cast<p::byte*>(&view), sizeof(view));
+  Check(!view_overlap.ok() && view_overlap.diagnostic.detail == "sort_key_output_aliases_input_or_profile" &&
+        view.profile == profile.get() && view.day == 0, "borrowed DATE key view overlap must refuse");
+}
+int main(){BorrowedSortKeyPublication();FixedOutputGuardContract();ScrubCoverage();HeapFailureAndRetry();BoundedNoAllocPublication();OverlapAndExpandedPublication();StructuralManifestClosure();SealedComposedVectors();ResourceCancellation();PinObservability();Composed();BatchCallerPublication();BatchMaterialization();BatchAndLifetime();std::cout<<"PASS base.date V3 publication/atomicity checks="<<checks<<'\n';}

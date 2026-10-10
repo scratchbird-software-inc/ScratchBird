@@ -7,6 +7,7 @@
 #include "crud_support/composite_logical_key.hpp"
 #include "crud_support/crud_store.hpp"
 #include "datatype_storage_identity.hpp"
+#include "datatype_date.hpp"
 #include "engine/executor/descriptor_value_runtime.hpp"
 #include "index_key_encoding.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
@@ -33,12 +34,30 @@ inline bool UsesBoundOrderedProfile(const CrudIndexRecord& index) {
 }
 
 struct OrderedIndexColumn {
-  core::datatypes::DatatypeStorageIdentityV1 datatype;
+  core::datatypes::DatatypeStorageIdentityV3 datatype;
   core::datatypes::DatatypeTextSeedAuthority text_seed;
   core::platform::TypedUuid descriptor;
   core::platform::TypedUuid collation;
   engine::ExecutionTypeDescriptor execution_descriptor;
+  std::optional<core::datatypes::DateValidatedProfileHandleV3> date_profile;
 };
+
+// A datatype profile is representation authority only. Production callers
+// obtain the containing column through the fresh publication scope below.
+inline bool BindOrderedDateProfile(OrderedIndexColumn* column) {
+  if (!column || column->datatype.type_id != core::datatypes::CanonicalTypeId::date ||
+      !column->datatype.codec) return false;
+  const auto& row = *column->datatype.codec;
+  if (!core::datatypes::ValidateDateExecutionDescriptorV3(
+          column->execution_descriptor, row).ok()) return false;
+  const auto& identity = row.legacy_fields;
+  auto profile = core::datatypes::BuildDateValidatedProfileHandleV3(
+      {identity.catalog_snapshot_uuid, identity.catalog_snapshot_uuid,
+       identity.catalog_generation, identity.registry_generation}, row);
+  if (!profile.ok()) return false;
+  column->date_profile = std::move(profile.profile);
+  return true;
+}
 
 struct PublicationBindingStatistics {
   std::uint64_t resource_lookups = 0;
@@ -48,7 +67,7 @@ struct PublicationBindingStatistics {
 // Pure projection of a supplied column, not catalog admission. Effectful
 // callers must first load it through their fresh PublicationBindingScope.
 inline bool BuildOrderedColumnExecutionDescriptor(
-    const EngineDescriptor& source, const core::datatypes::DatatypeStorageIdentityV1& datatype,
+    const EngineDescriptor& source, const core::datatypes::DatatypeStorageIdentityV3& datatype,
     bool nullable, engine::ExecutionTypeDescriptor* output, std::string* detail) {
   if (!output || !detail) return false;
   const auto type = datatype.type_id;
@@ -79,6 +98,7 @@ inline bool BuildOrderedColumnExecutionDescriptor(
   }
   if (type == core::datatypes::CanonicalTypeId::int64 ||
       type == core::datatypes::CanonicalTypeId::uuid ||
+      type == core::datatypes::CanonicalTypeId::date ||
       type == core::datatypes::CanonicalTypeId::decimal) {
     if (!source.charset_uuid.is_nil() ||
         !source.collation_uuid.is_nil()) {
@@ -90,7 +110,7 @@ inline bool BuildOrderedColumnExecutionDescriptor(
           (name == "decimal_codec_uuid" || name == "codec_uuid")) continue;
       if ((name == "type_uuid" && identity == datatype.type_uuid) ||
           (name == "datatype_descriptor_uuid" && identity == datatype.descriptor_uuid) ||
-          (name == "codec_uuid" && datatype.codec && identity == datatype.codec->codec_uuid)) continue;
+          (name == "codec_uuid" && datatype.codec && identity == datatype.codec->legacy_fields.codec_uuid)) continue;
       *detail = "base index column identity metadata disagrees with its binding";
       return false;
     }
@@ -110,7 +130,7 @@ inline bool BuildOrderedColumnExecutionDescriptor(
           (name == "precision" || name == "scale" || name == "decimal_codec_generation" ||
            name == "codec_generation" || name == "codec_version" || name == "codec_id")) continue;
       if (datatype.codec) {
-        const auto& codec = *datatype.codec;
+        const auto& codec = datatype.codec->legacy_fields;
         if ((name == "datatype_descriptor_generation" && value == std::to_string(codec.descriptor_generation)) ||
             (name == "type_generation" && value == std::to_string(codec.type_generation)) ||
             (name == "codec_id" && value == codec.codec_id) ||
@@ -222,7 +242,7 @@ class PublicationBindingScope {
       return refuse("sorted_index_bound_column_missing");
     const auto& value = found->value_descriptor;
     OrderedIndexColumn column;
-    if (!core::datatypes::LookupDatatypeStorageIdentityV1(
+    if (!core::datatypes::LookupDatatypeStorageIdentityV3(
             context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
             context.datatype_registry_generation, value.datatype_descriptor_uuid,
             value.datatype_descriptor_generation, &column.datatype) ||
@@ -237,6 +257,9 @@ class PublicationBindingScope {
             &column.execution_descriptor, &descriptor_detail)) {
       return refuse("sorted_index_execution_descriptor_invalid:" + descriptor_detail);
     }
+    if (column.datatype.type_id == core::datatypes::CanonicalTypeId::date &&
+        !BindOrderedDateProfile(&column))
+      return refuse("sorted_index_date_profile_unbound");
     if (column.datatype.type_id == core::datatypes::CanonicalTypeId::character) {
       EngineResourceDescriptorLookupResult resource;
       const auto cached = collations_.find(found->collation_uuid);
@@ -293,6 +316,30 @@ inline bool EncodeOrderedIndexKey(std::string_view logical_key,
   for (std::size_t ordinal = 0; ordinal < columns.size(); ++ordinal) {
     const auto& binding = columns[ordinal];
     const auto& value = (*values)[ordinal];
+    // Storage-only identity cannot authorize semantic comparison, including
+    // a NULL key. Absence is not a fallback to an execution descriptor.
+    if (!binding.datatype.codec) {
+      *diagnostic = MakeInvalidRequestDiagnostic(
+          "mga.index_store", "sorted_index_codec_provenance_unbound");
+      return false;
+    }
+    if (binding.datatype.codec) {
+      // Retain and check the full policy-bearing row. Comparing only the
+      // legacy projection would silently discard V3 policy and width facts.
+      // This is representation validation, not permission to publish: the
+      // effectful path still obtains a fresh PublicationBindingScope.
+      const auto& codec = *binding.datatype.codec;
+      const auto& legacy = codec.legacy_fields;
+      if (!core::datatypes::IsExactRegisteredDatatypeTypeCodecIdentityV3(codec) ||
+          legacy.descriptor_uuid != binding.datatype.descriptor_uuid ||
+          legacy.descriptor_generation != binding.datatype.descriptor_generation ||
+          legacy.type_uuid != binding.datatype.type_uuid ||
+          legacy.canonical_binary_type_code != static_cast<std::uint32_t>(binding.datatype.type_id)) {
+        *diagnostic = MakeInvalidRequestDiagnostic(
+            "mga.index_store", "sorted_index_codec_provenance_unbound");
+        return false;
+      }
+    }
     if (binding.datatype.type_id ==
         core::datatypes::CanonicalTypeId::uint16) {
       // This pure encoding seam is not publication authority. Production
@@ -300,18 +347,7 @@ inline bool EncodeOrderedIndexKey(std::string_view logical_key,
       // Admit native LE2 only with the complete exact retained codec row,
       // never infer its representation from digit-like bytes or a name.
       const auto& codec = binding.datatype.codec;
-      const auto resolved = codec
-          ? core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-                codec->catalog_snapshot_uuid, codec->catalog_generation,
-                codec->registry_generation, binding.datatype.descriptor_uuid,
-                binding.datatype.descriptor_generation)
-          : core::datatypes::DatatypeTypeCodecIdentityLookupV1{};
-      if (!codec || !resolved.ok || resolved.row != *codec ||
-          codec->type_uuid != binding.datatype.type_uuid ||
-          codec->canonical_binary_type_code != static_cast<std::uint32_t>(
-              core::datatypes::CanonicalTypeId::uint16) ||
-          codec->codec_id != "datatype.uint16.le.v1" ||
-          codec->canonical_value_exact_bytes != 2) {
+      if (!codec || codec->legacy_fields.canonical_value_exact_bytes != 2) {
         *diagnostic = MakeInvalidRequestDiagnostic(
             "mga.index_store", "sorted_index_uint16_carrier_provenance_unbound");
         return false;
@@ -341,9 +377,37 @@ inline bool EncodeOrderedIndexKey(std::string_view logical_key,
       return false;
     }
     std::string sort_key;
-    if (binding.datatype.type_id == core::datatypes::CanonicalTypeId::decimal_float) {
+    if (binding.datatype.type_id == core::datatypes::CanonicalTypeId::date) {
+      namespace dt = core::datatypes;
+      if (!binding.datatype.codec || !binding.date_profile ||
+          !dt::SameDatatypeTypeCodecIdentityV3(binding.date_profile->identity, *binding.datatype.codec) ||
+          !dt::ValidateDateExecutionDescriptorV3(
+              binding.execution_descriptor, *binding.datatype.codec).ok()) {
+        *diagnostic = MakeInvalidRequestDiagnostic("mga.index_store", "sorted_index_date_profile_unbound");
+        return false;
+      }
+      const auto decoded = dt::DecodeCanonicalDateComponentNoAllocV3(*binding.date_profile,
+          value.isSqlNull() ? dt::DateValueStateV3::sql_null : dt::DateValueStateV3::value,
+          binding.execution_descriptor.nullable_allowed,
+          {reinterpret_cast<const core::platform::byte*>(value.bytes.data()), value.bytes.size()});
+      if (!decoded.ok()) {
+        *diagnostic = MakeEngineApiDiagnostic(std::string(decoded.diagnostic.diagnostic_code),
+            "datatype.sort_key.rejected", std::string(decoded.diagnostic.detail), true);
+        return false;
+      }
+      std::array<core::platform::byte, dt::kDateValueSortKeyBytesV3> bytes{};
+      const auto encoded = dt::MakeDateSortKeyViewIntoNoAllocV3(decoded.value,
+          dt::DateSortDirectionV3::ascending, dt::DateNullModeV3::nulls_first,
+          bytes.data(), bytes.size(), {bytes.size()});
+      if (!encoded.ok()) {
+        *diagnostic = MakeEngineApiDiagnostic(std::string(encoded.diagnostic.diagnostic_code),
+            "datatype.sort_key.rejected", std::string(encoded.diagnostic.detail), true);
+        return false;
+      }
+      sort_key.assign(reinterpret_cast<const char*>(bytes.data()), encoded.bytes_written);
+    } else if (binding.datatype.type_id == core::datatypes::CanonicalTypeId::decimal_float) {
       if (!binding.datatype.codec ||
-          !core::datatypes::IsExactCanonicalDecimal128TypeCodecIdentityV1(*binding.datatype.codec)) {
+          !core::datatypes::IsExactCanonicalDecimal128TypeCodecIdentityV1(binding.datatype.codec->legacy_fields)) {
         *diagnostic = MakeInvalidRequestDiagnostic("mga.index_store", "sorted_index_decimal128_policy_unbound");
         return false;
       }
@@ -351,7 +415,7 @@ inline bool EncodeOrderedIndexKey(std::string_view logical_key,
         const auto sorted = libraries::sbl_numeric::MakeDecimal128OrderKey(
             reinterpret_cast<const std::uint8_t*>(value.bytes.data()), value.bytes.size(),
             libraries::sbl_numeric::Decimal128OrderProfile::numeric_total_nan_last,
-            binding.datatype.codec->allow_special_values);
+            binding.datatype.codec->legacy_fields.allow_special_values);
         if (!sorted.key) {
           *diagnostic = MakeInvalidRequestDiagnostic("mga.index_store", "sorted_index_decimal128_value_invalid");
           return false;

@@ -25,6 +25,7 @@ struct DatatypePolicyIdentityV1 {
 struct DatatypePolicyIdentityV3 {
   platform::Uuid uuid;
   u64 generation = 0;
+  bool operator==(const DatatypePolicyIdentityV3&) const = default;
 };
 
 // Native V3 width and profile facts. These fields are authoritative when
@@ -40,6 +41,7 @@ struct DatatypeNativeIdentityFieldsV3 {
   platform::Uuid policy_profile_uuid;
   u64 policy_profile_generation = 0;
   std::array<platform::byte, 32> profile_fingerprint_sha256{};
+  bool operator==(const DatatypeNativeIdentityFieldsV3&) const = default;
 };
 
 // V3 is the current policy-bearing carrier. The nested V1 row is an exact,
@@ -52,6 +54,7 @@ struct DatatypeTypeCodecIdentityRowV3 {
   DatatypePolicyIdentityV3 hash_policy;
   DatatypePolicyIdentityV3 operation_policy;
   DatatypeNativeIdentityFieldsV3 native_fields;
+  bool operator==(const DatatypeTypeCodecIdentityRowV3&) const = default;
 };
 
 struct DatatypeTypeCodecIdentityLookupV3 {
@@ -79,6 +82,14 @@ DatatypeTypeCodecIdentityLookupV3 LookupDatatypeTypeCodecIdentityV3(
     u64 registry_generation,
     const platform::Uuid& descriptor_uuid,
     u64 descriptor_generation) noexcept;
+
+// Allocation-free authentication against the exact registered receipt. Names
+// and codec labels are display data; all policy and physical facts are checked.
+// This does not admit a historical row to current semantic or runtime services.
+bool IsExactRegisteredDatatypeTypeCodecIdentityV3(
+    const DatatypeTypeCodecIdentityRowV3& row) noexcept;
+bool SameDatatypeTypeCodecIdentityV3(const DatatypeTypeCodecIdentityRowV3& left,
+                                    const DatatypeTypeCodecIdentityRowV3& right) noexcept;
 
 // Core's canonical JSON digests of the exact 33-row d707-d710 cohorts.
 inline constexpr std::string_view kDatatypeCohortV7IdentityDigestSha256 =

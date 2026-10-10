@@ -269,6 +269,9 @@ DateProfileResultV3 BuildDateValidatedProfileHandleV3(
 DateValidationResultV3 ValidateDateProfileHandleV3(
     const DateValidatedProfileHandleV3& profile,
     const DateExecutionControlV3& control = {}) noexcept;
+DateValidationResultV3 ValidateDateExecutionDescriptorV3(
+    const scratchbird::engine::ExecutionTypeDescriptor& descriptor,
+    const DatatypeTypeCodecIdentityRowV3& identity) noexcept;
 DateViewResultV3 ValidateDateValueViewV3(const DateValueViewV3& value,
                                         bool null_allowed = true) noexcept;
 DateViewResultV3 AdmitDateOperandV3(const DateOperandV3& operand,
@@ -477,6 +480,13 @@ DateBytesResultV3 MakeDateSortKeyV3(
     const DateExecutionControlV3& control = {}) noexcept;
 DateNoAllocWriteResultV3 MakeDateSortKeyIntoNoAllocV3(
     const DateOwnedValueV3& value, DateSortDirectionV3 direction,
+    DateNullModeV3 null_mode, byte* output, u64 output_capacity,
+    const DateExecutionControlV3& control = {}) noexcept;
+// Synchronous borrowed variant: the caller retains the immutable profile
+// through return, including cancellation and scrub callbacks. No ownership
+// control block or per-value allocation is manufactured for a borrowed view.
+DateNoAllocWriteResultV3 MakeDateSortKeyViewIntoNoAllocV3(
+    const DateValueViewV3& value, DateSortDirectionV3 direction,
     DateNullModeV3 null_mode, byte* output, u64 output_capacity,
     const DateExecutionControlV3& control = {}) noexcept;
 DateSortKeyViewResultV3 DecodeDateSortKeyNoAllocV3(

@@ -2036,6 +2036,29 @@ void TestLookupAllocationFailureIsContained() {
 }  // namespace
 
 int main() {
+  for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    allocation_probe::fail_next = true;
+    const bool exact = dt::IsExactRegisteredDatatypeTypeCodecIdentityV3(row);
+    const bool did_not_allocate = allocation_probe::fail_next;
+    allocation_probe::fail_next = false;
+    Check(exact && did_not_allocate, "exact registered identity authentication allocated or refused");
+    auto relabeled = row;
+    relabeled.legacy_fields.canonical_name = "localized display name";
+    relabeled.legacy_fields.codec_id = "localized codec label";
+    Check(dt::SameDatatypeTypeCodecIdentityV3(row, relabeled) &&
+          dt::IsExactRegisteredDatatypeTypeCodecIdentityV3(relabeled),
+          "identity authentication used display labels as authority");
+    auto changed = row;
+    ++changed.operation_policy.generation;
+    Check(!dt::SameDatatypeTypeCodecIdentityV3(row, changed) &&
+          !dt::IsExactRegisteredDatatypeTypeCodecIdentityV3(changed),
+          "identity authentication discarded operation policy generation");
+    changed = row;
+    changed.native_fields.profile_fingerprint_sha256[0] ^= 1;
+    Check(!dt::SameDatatypeTypeCodecIdentityV3(row, changed) &&
+          !dt::IsExactRegisteredDatatypeTypeCodecIdentityV3(changed),
+          "identity authentication discarded native profile fingerprint");
+  }
   TestCoreD708CanonicalJsonAndCompiledRows();
   TestPopulationAndAuthoritativeRows();
   TestExactBitStringIdentity();

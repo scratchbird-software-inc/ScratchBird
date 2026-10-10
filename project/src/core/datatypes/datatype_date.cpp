@@ -835,7 +835,7 @@ bool DatePeerDescriptorShapeFor(CanonicalTypeId type,
 bool DescriptorBindsIdentityNoAlloc(
     const scratchbird::engine::ExecutionTypeDescriptor& descriptor,
     const DatatypeTypeCodecIdentityRowV3& identity,
-    CanonicalTypeId expected_type) noexcept {
+    CanonicalTypeId expected_type, bool require_nullable = true) noexcept {
   DatePeerDescriptorShape shape{};
   const auto* current = CurrentIdentityFor(expected_type);
   if (current == nullptr || !EqualV3IdentityIgnoringName(identity, *current) ||
@@ -867,7 +867,7 @@ bool DescriptorBindsIdentityNoAlloc(
       descriptor.domain_stack.empty() && EngineUuidNil(descriptor.charset_uuid) &&
       EngineUuidNil(descriptor.collation_uuid) && EngineUuidNil(descriptor.timezone_uuid) &&
       EngineUuidNil(descriptor.element_descriptor_uuid) &&
-      EngineUuidNil(descriptor.security_policy_uuid) && descriptor.nullable_allowed &&
+      EngineUuidNil(descriptor.security_policy_uuid) && (!require_nullable || descriptor.nullable_allowed) &&
       descriptor.descriptor_authoritative && descriptor.parser_independent;
 }
 
@@ -1100,6 +1100,16 @@ DateProfileResultV3 BuildDateValidatedProfileHandleV3(
     return Failure<DateProfileResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                         "profile_allocation", ResourceStatus());
   }
+}
+
+DateValidationResultV3 ValidateDateExecutionDescriptorV3(
+    const scratchbird::engine::ExecutionTypeDescriptor& descriptor,
+    const DatatypeTypeCodecIdentityRowV3& identity) noexcept {
+  if (!IsExactCanonicalDateTypeCodecIdentityV3(identity) ||
+      !DescriptorBindsIdentityNoAlloc(descriptor, identity, CanonicalTypeId::date, false))
+    return Failure<DateValidationResultV3>(
+        "CTI.TEMPORAL.DESCRIPTOR_INVALID", "date_execution_descriptor_invalid");
+  return Success<DateValidationResultV3>();
 }
 
 DateValidationResultV3 ValidateDateProfileHandleV3(
@@ -2059,11 +2069,11 @@ DateBytesResultV3 HashDateValueV3(
   return result;
 }
 
-DateNoAllocWriteResultV3 MakeDateSortKeyIntoNoAllocV3(
-    const DateOwnedValueV3& owned_value, DateSortDirectionV3 direction,
+static DateNoAllocWriteResultV3 MakeDateSortKeyIntoNoAllocImplV3(
+    const DateValueViewV3& value, const DateOwnedValueV3* owned_value,
+    DateSortDirectionV3 direction,
     DateNullModeV3 null_mode, byte* output, u64 output_capacity,
     const DateExecutionControlV3& control) noexcept {
-  const auto value = owned_value.view();
   if (value.profile == nullptr || !ProfileValidNoAlloc(*value.profile))
     return Failure<DateNoAllocWriteResultV3>(
         "CTI.TEMPORAL.DESCRIPTOR_INVALID", "key_profile_invalid");
@@ -2078,9 +2088,9 @@ DateNoAllocWriteResultV3 MakeDateSortKeyIntoNoAllocV3(
                                              checked.status);
   const std::size_t extent = value.state == DateValueStateV3::sql_null
       ? kDateNullSortKeyBytesV3 : kDateValueSortKeyBytesV3;
-  auto profile_pin = owned_value.profile;
   if (output != nullptr &&
-      (OutputOverlapsOwnedDateInput(owned_value, output, extent) ||
+      (OutputOverlapsDateInput(value, output, extent) ||
+       (owned_value && OutputOverlapsOwnedDateInput(*owned_value, output, extent)) ||
        RangesOverlap(output, extent, &control, sizeof(control))))
     return Failure<DateNoAllocWriteResultV3>(
         "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
@@ -2125,6 +2135,23 @@ DateNoAllocWriteResultV3 MakeDateSortKeyIntoNoAllocV3(
   result.bytes_required = extent;
   result.bytes_written = extent;
   return result;
+}
+
+DateNoAllocWriteResultV3 MakeDateSortKeyIntoNoAllocV3(
+    const DateOwnedValueV3& owned_value, DateSortDirectionV3 direction,
+    DateNullModeV3 null_mode, byte* output, u64 output_capacity,
+    const DateExecutionControlV3& control) noexcept {
+  auto profile_pin = owned_value.profile;
+  return MakeDateSortKeyIntoNoAllocImplV3(owned_value.view(), &owned_value,
+      direction, null_mode, output, output_capacity, control);
+}
+
+DateNoAllocWriteResultV3 MakeDateSortKeyViewIntoNoAllocV3(
+    const DateValueViewV3& value, DateSortDirectionV3 direction,
+    DateNullModeV3 null_mode, byte* output, u64 output_capacity,
+    const DateExecutionControlV3& control) noexcept {
+  return MakeDateSortKeyIntoNoAllocImplV3(value, nullptr,
+      direction, null_mode, output, output_capacity, control);
 }
 
 DateBytesResultV3 MakeDateSortKeyV3(

@@ -1658,6 +1658,39 @@ CurrentDatatypeTypeCodecIdentityRowsV3() noexcept {
   return kIdentityRowsV3;
 }
 
+bool SameDatatypeTypeCodecIdentityV3(const DatatypeTypeCodecIdentityRowV3& left,
+                                    const DatatypeTypeCodecIdentityRowV3& right) noexcept {
+  return EqualLegacyFields(left.legacy_fields, right.legacy_fields) &&
+      left.descriptor_policy == right.descriptor_policy &&
+      left.canonicalization_policy == right.canonicalization_policy &&
+      left.ordering_policy == right.ordering_policy &&
+      left.hash_policy == right.hash_policy &&
+      left.operation_policy == right.operation_policy &&
+      left.native_fields == right.native_fields;
+}
+
+bool IsExactRegisteredDatatypeTypeCodecIdentityV3(
+    const DatatypeTypeCodecIdentityRowV3& supplied) noexcept {
+  const auto& identity = supplied.legacy_fields;
+  if (!IsAdmittedDatatypeCohort(identity.catalog_snapshot_uuid,
+          identity.catalog_generation, identity.registry_generation) ||
+      identity.descriptor_uuid.is_nil() || identity.descriptor_generation == 0)
+    return false;
+  const DatatypeTypeCodecIdentityRowV3* match = nullptr;
+  for (const auto& row : kIdentityRowsV3) {
+    const auto& registered = row.legacy_fields;
+    if (registered.catalog_snapshot_uuid != identity.catalog_snapshot_uuid ||
+        registered.catalog_generation != identity.catalog_generation ||
+        registered.registry_generation != identity.registry_generation ||
+        registered.descriptor_uuid != identity.descriptor_uuid ||
+        registered.descriptor_generation != identity.descriptor_generation)
+      continue;
+    if (match) return false;
+    match = &row;
+  }
+  return match && SameDatatypeTypeCodecIdentityV3(supplied, *match);
+}
+
 DatatypeTypeCodecIdentityLookupV3 LookupDatatypeTypeCodecIdentityV3(
     const platform::Uuid& catalog_snapshot_uuid,
     u64 catalog_generation,

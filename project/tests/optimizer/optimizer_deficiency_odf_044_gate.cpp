@@ -624,7 +624,7 @@ void OrderedKeyAuthorityAndValueStates() {
     });
     Require(row != registry.end(), "ODF-044 canonical datatype fixture missing");
     api::bound_index_key::OrderedIndexColumn binding;
-    Require(dt::LookupDatatypeStorageIdentityV1(context.datatype_catalog_snapshot_uuid,
+    Require(dt::LookupDatatypeStorageIdentityV3(context.datatype_catalog_snapshot_uuid,
                 context.datatype_catalog_generation, context.datatype_registry_generation,
                 row->descriptor_uuid, row->descriptor_generation, &binding.datatype),
             "ODF-044 native datatype fixture authority missing");
@@ -667,10 +667,10 @@ void OrderedKeyAuthorityAndValueStates() {
       for (const auto invalid : {0,1,2,3,4}) {
         auto changed=binding;
         if (invalid==0) changed.datatype.codec.reset();
-        if (invalid==1) changed.datatype.codec->comparison_policy_uuid.bytes[0]^=1;
-        if (invalid==2) ++changed.datatype.codec->numeric_context_generation;
-        if (invalid==3) changed.datatype.codec->allow_special_values=false;
-        if (invalid==4) changed.datatype.codec->comparison_profile="decimal128_ieee_total_order_v1";
+        if (invalid==1) changed.datatype.codec->legacy_fields.comparison_policy_uuid.bytes[0]^=1;
+        if (invalid==2) ++changed.datatype.codec->legacy_fields.numeric_context_generation;
+        if (invalid==3) changed.datatype.codec->legacy_fields.allow_special_values=false;
+        if (invalid==4) changed.datatype.codec->legacy_fields.comparison_profile="decimal128_ieee_total_order_v1";
         Require(!api::bound_index_key::EncodeOrderedIndexKey(api::EncodeStoredLogicalKey({one}),
                     {changed}, &output, &null_key, &diagnostic) && output=="unchanged",
                 "ODF-044 substituted decimal128 policy admitted or wrote output");

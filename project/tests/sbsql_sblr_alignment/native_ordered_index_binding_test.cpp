@@ -22,7 +22,7 @@ void Check(bool ok, const char* reason) {
 key::OrderedIndexColumn Binding(const char* name) {
   const auto source = exec::MakeExecutorDescriptor(name, "nullability=nullable");
   key::OrderedIndexColumn binding;
-  Check(dt::LookupDatatypeStorageIdentityV1(api::kBootstrapDatatypeCatalogUuid,
+  Check(dt::LookupDatatypeStorageIdentityV3(api::kBootstrapDatatypeCatalogUuid,
       api::kBootstrapDatatypeCatalogGeneration, api::kBootstrapDatatypeRegistryGeneration,
       source.datatype_descriptor_uuid, source.datatype_descriptor_generation, &binding.datatype),
       "exact index fixture storage identity unavailable");
@@ -123,7 +123,7 @@ void Refusals(const char* name, std::string bytes) {
           projected.nullable_allowed == expected.nullable_allowed,
           "contradictory declaration label was accepted or changed output");
   }
-  const auto& codec = *bound.datatype.codec;
+  const auto& codec = bound.datatype.codec->legacy_fields;
   api::CatalogColumnMetadata fields;
   fields.identities = {{"type_uuid", bound.datatype.type_uuid},
       {"datatype_descriptor_uuid", bound.datatype.descriptor_uuid}, {"codec_uuid", codec.codec_uuid}};
@@ -149,7 +149,141 @@ void Refusals(const char* name, std::string bytes) {
           "substituted DDL codec metadata was accepted");
   }
 }
+void PolicyBearingBinding() {
+  auto binding = Binding("int64");
+  Check(dt::LookupDatatypeStorageIdentityV3(dt::kDatatypeCohortV10, 10, 10,
+        binding.datatype.descriptor_uuid, binding.datatype.descriptor_generation,
+        &binding.datatype), "current V3 storage identity unavailable");
+  const auto row = dt::LookupDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV10,
+      10, 10, binding.datatype.descriptor_uuid, binding.datatype.descriptor_generation);
+  Check(row.ok && binding.datatype.codec && *binding.datatype.codec == row.row,
+        "current storage binding discarded V3 authority fields");
+  Check(Encode(binding, Integer(-1)) < Encode(binding, Integer(1)),
+        "current policy-bearing binding lost native integer ordering");
+  auto relabeled = binding;
+  relabeled.datatype.codec->legacy_fields.canonical_name = "localized name";
+  relabeled.datatype.codec->legacy_fields.codec_id = "localized codec label";
+  Check(Encode(relabeled, Integer(1)) == Encode(binding, Integer(1)),
+        "presentation labels changed native identity or ordering");
+  for (unsigned mutation = 0; mutation < 19; ++mutation) {
+    auto changed = binding;
+    auto& codec = *changed.datatype.codec;
+    switch (mutation) {
+      case 0: codec.descriptor_policy.uuid.bytes[0] ^= 1; break;
+      case 1: ++codec.descriptor_policy.generation; break;
+      case 2: codec.canonicalization_policy.uuid.bytes[0] ^= 1; break;
+      case 3: ++codec.canonicalization_policy.generation; break;
+      case 4: codec.ordering_policy.uuid.bytes[0] ^= 1; break;
+      case 5: ++codec.ordering_policy.generation; break;
+      case 6: codec.hash_policy.uuid.bytes[0] ^= 1; break;
+      case 7: ++codec.hash_policy.generation; break;
+      case 8: codec.operation_policy.uuid.bytes[0] ^= 1; break;
+      case 9: ++codec.operation_policy.generation; break;
+      case 10: codec.native_fields.present = !codec.native_fields.present; break;
+      case 11: ++codec.native_fields.canonical_value_minimum_bytes; break;
+      case 12: ++codec.native_fields.canonical_value_maximum_bytes; break;
+      case 13: ++codec.native_fields.canonical_value_transport_width; break;
+      case 14: codec.native_fields.canonical_value_variable_width =
+          !codec.native_fields.canonical_value_variable_width; break;
+      case 15: codec.native_fields.policy_profile_uuid.bytes[0] ^= 1; break;
+      case 16: ++codec.native_fields.policy_profile_generation; break;
+      case 17: codec.native_fields.profile_fingerprint_sha256[0] ^= 1; break;
+      case 18: changed.datatype.codec.reset(); break;
+    }
+    for (const auto& value : {api::CrudStoredValue{Integer(1)}, api::CrudStoredValue::SqlNull()}) {
+      std::string output = "unchanged";
+      bool is_null = false;
+      api::EngineApiDiagnostic diagnostic;
+      Check(!key::EncodeOrderedIndexKey(api::EncodeStoredLogicalKey({value}), {changed},
+            &output, &is_null, &diagnostic) && output == "unchanged" && !is_null && diagnostic.error,
+            "altered V3 authority published a key or changed outputs");
+    }
+  }
+}
+void DateBoundKeys() {
+  auto date = Binding("date");
+  Check(!key::BindOrderedDateProfile(&date) && !date.date_profile,
+        "historical storage-only DATE acquired current semantic authority");
+  Check(dt::LookupDatatypeStorageIdentityV3(dt::kDatatypeCohortV10, 10, 10,
+        date.datatype.descriptor_uuid, date.datatype.descriptor_generation, &date.datatype) &&
+        key::BindOrderedDateProfile(&date), "current DATE index profile did not bind");
+  const auto component = [](std::int32_t day) { return Integer(day).substr(0, 4); };
+  const std::int32_t days[] = {INT32_MIN, -65536, -1, 0, 1, 255, 256, INT32_MAX};
+  for (const auto day : days) {
+    // Independent Core SBDATK01 oracle, not another call to the DATE encoder.
+    std::string raw = "SBDATK01";
+    raw.append(reinterpret_cast<const char*>(dt::kDatatypeCohortV10.bytes.data()), 16);
+    raw += Integer(10);
+    raw += Integer(10);
+    constexpr unsigned char fingerprint[] = {
+        0xad,0x45,0x6d,0xaf,0xc3,0x67,0x1a,0x8f,0x31,0x22,0x35,0x2c,0x4d,0xa9,0x85,0x86,
+        0xf6,0xb7,0x68,0x4c,0xe2,0x64,0x41,0xff,0xc5,0xc6,0xcc,0x10,0x80,0x9a,0x42,0x37};
+    constexpr unsigned char ordering_policy[] = {
+        0x01,0xa1,0x00,0x8e,0xb7,0xf2,0x7f,0xeb,0x85,0xa8,0x2d,0x74,0xfe,0x2f,0xde,0x38};
+    raw.append(reinterpret_cast<const char*>(fingerprint), sizeof(fingerprint));
+    raw.append(reinterpret_cast<const char*>(ordering_policy), sizeof(ordering_policy));
+    raw += Integer(1);
+    raw.append("\0\0\1\4", 4);
+    const auto biased = static_cast<std::uint32_t>(day) ^ 0x80000000u;
+    for (int shift = 24; shift >= 0; shift -= 8) raw.push_back(static_cast<char>(biased >> shift));
+    scratchbird::core::index::IndexKeyEncodingComponent expected;
+    expected.type_descriptor_uuid = date.descriptor;
+    expected.type_descriptor_epoch = date.datatype.descriptor_generation;
+    expected.null_placement = scratchbird::core::index::IndexKeyNullPlacement::nulls_first;
+    expected.payload.assign(raw.begin(), raw.end());
+    const auto encoded = scratchbird::core::index::EncodeIndexKey({expected}, {});
+    Check(encoded.ok() && raw.size() == 104 &&
+          Encode(date, component(day)) == std::string(encoded.encoded.begin(), encoded.encoded.end()),
+          "DATE index did not retain the complete Core profile-bound key");
+  }
+  for (unsigned i = 1; i < std::size(days); ++i)
+    Check(Encode(date, component(days[i-1])) < Encode(date, component(days[i])),
+          "DATE ordered key differs from signed day ordering");
+  Check(Encode(date, api::CrudStoredValue::SqlNull()) < Encode(date, component(INT32_MIN)),
+        "DATE NULL does not precede minimum day");
+  auto relabeled = date;
+  relabeled.datatype.codec->legacy_fields.canonical_name = "localized DATE";
+  relabeled.datatype.codec->legacy_fields.codec_id = "localized codec";
+  Check(Encode(relabeled, component(1)) == Encode(date, component(1)),
+        "DATE presentation labels changed canonical key");
+  auto required = date;
+  required.execution_descriptor.nullable_allowed = false;
+  Check(Encode(required, component(1)) == Encode(date, component(1)),
+        "DATE containing nullability changed a PRESENT key");
+  auto refuses = [](const key::OrderedIndexColumn& binding, const api::CrudStoredValue& value) {
+    std::string output = "unchanged";
+    bool null_key = false;
+    api::EngineApiDiagnostic diagnostic;
+    Check(!key::EncodeOrderedIndexKey(api::EncodeStoredLogicalKey({value}), {binding},
+          &output, &null_key, &diagnostic) && output == "unchanged" && !null_key && diagnostic.error,
+          "invalid DATE index input changed output");
+  };
+  refuses(required, api::CrudStoredValue::SqlNull());
+  refuses(date, {api::EngineValueState::sql_null, component(0)});
+  refuses(date, api::CrudStoredValue::Missing());
+  refuses(date, api::CrudStoredValue::DefaultRequested());
+  for (const auto& invalid : {std::string{}, std::string(3, '\0'), std::string(5, '\0'),
+                             std::string{"1970-01-01"}}) refuses(date, invalid);
+  for (unsigned mutation = 0; mutation < 9; ++mutation) {
+    auto changed = date;
+    switch (mutation) {
+      case 0: changed.date_profile.reset(); break;
+      case 1: ++changed.date_profile->receipt.catalog_generation; break;
+      case 2: changed.date_profile->comparison_fingerprint[0] ^= 1; break;
+      case 3: ++changed.datatype.codec->ordering_policy.generation; break;
+      case 4: changed.execution_descriptor.canonical_type_id = 0; break;
+      case 5: changed.execution_descriptor.bit_width = 64; break;
+      case 6: changed.execution_descriptor.precision = 1; break;
+      case 7: changed.execution_descriptor.domain_stack.push_back(changed.execution_descriptor.descriptor_uuid); break;
+      case 8: changed.execution_descriptor.modifier_flags = 1; break;
+    }
+    refuses(changed, component(1));
+    refuses(changed, api::CrudStoredValue::SqlNull());
+  }
+}
 int main() {
+  DateBoundKeys();
+  PolicyBearingBinding();
   const auto integer = Binding("int64");
   const std::int64_t ordered[] = {std::numeric_limits<std::int64_t>::min(), -257, -1,
       0, 2, 256, std::numeric_limits<std::int64_t>::max()};
