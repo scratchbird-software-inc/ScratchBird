@@ -1049,7 +1049,7 @@ SecondaryIndexDeltaLedgerPolicy ResolveSecondaryIndexDeltaLedgerPolicy(const Eng
   return policy;
 }
 
-void CaptureInsertMemoryArenaProof(const EngineInsertRowsRequest& request,
+void CaptureInsertAllocationProbe(const EngineInsertRowsRequest& request,
                                    InsertBatchContext* context) {
   if (context == nullptr || context->memory_arena_granted) {
     return;
@@ -1107,7 +1107,7 @@ void CaptureInsertMemoryArenaProof(const EngineInsertRowsRequest& request,
   grant_request.family = mem::QueryMemoryFamily::dml;
   grant_request.bytes = grant_bytes;
   grant_request.spillable = false;
-  grant_request.purpose = "insert_batch_canonical_row_scratch";
+  grant_request.purpose = "insert_batch_request_local_allocation_probe";
 
   auto grant = arena.Grant(grant_request);
   if (!grant.ok() || !grant.grant.has_value()) {
@@ -1287,7 +1287,7 @@ InsertBatchContext BeginInsertBatchContext(const EngineInsertRowsRequest& reques
   context.accepted = !context.prepared_descriptor_authority_refused &&
                      !context.index_plan.rejected &&
                      context.page_reservation.reservation_available;
-  CaptureInsertMemoryArenaProof(request, &context);
+  CaptureInsertAllocationProbe(request, &context);
   if (!context.accepted && context.fallback_reason.empty()) {
     if (context.prepared_descriptor_authority_refused) {
       context.fallback_reason =
@@ -1739,7 +1739,13 @@ void AddInsertBatchEvidenceToResult(const InsertBatchContext& context, EngineApi
                                   ? "prepared_descriptor_cache_reuse"
                                   : "request_local_vectors"});
   result->evidence.push_back({"insert_memory_arena_reuse_physical_arena_claimed",
-                              context.memory_arena_granted ? "true" : "false"});
+                              "false"});
+  // This local grant was released/reset before row execution. Descriptor
+  // cache reuse cannot turn it into retained execution scratch or admission.
+  result->evidence.push_back({"insert_memory_arena_measurement_scope",
+                              "request_local_allocation_lifecycle_probe"});
+  result->evidence.push_back({"insert_memory_arena_execution_workspace_covered",
+                              "false"});
   result->evidence.push_back({"insert_memory_arena_grant_state",
                               context.memory_arena_granted ? "granted" : "not_granted"});
   result->evidence.push_back({"insert_memory_arena_release_state",

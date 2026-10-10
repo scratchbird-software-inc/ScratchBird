@@ -423,7 +423,13 @@ void ValidateMemoryOwnershipAndRelease() {
               admitted.memory_arena_granted_bytes > 0 &&
               admitted.memory_arena_released && admitted.memory_arena_reset &&
               admitted.memory_arena_leak_count == 0,
-          "IPAR-P6-02 admitted arena did not allocate and release real scratch");
+          "IPAR-P6-02 allocation probe did not allocate and release its backing");
+  const auto observed = EvidenceResult(admitted);
+  Require(HasEvidence(observed.evidence, "insert_memory_arena_reuse_physical_arena_claimed", "false") &&
+              HasEvidence(observed.evidence, "insert_memory_arena_measurement_scope",
+                          "request_local_allocation_lifecycle_probe") &&
+              HasEvidence(observed.evidence, "insert_memory_arena_execution_workspace_covered", "false"),
+          "IPAR-P6-02 allocation probe must not claim physical reuse or execution coverage");
   constexpr api::EngineUuid api::EngineRequestContext::* owners[] = {
       &api::EngineRequestContext::database_uuid,
       &api::EngineRequestContext::transaction_uuid,
