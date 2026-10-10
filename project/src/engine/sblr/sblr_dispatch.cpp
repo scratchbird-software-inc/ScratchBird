@@ -8115,6 +8115,7 @@ api::EngineProjectionFunctionResult OperatorResultToProjectionResult(
     const std::string& operator_id,
     const SblrResult& result) {
   api::EngineProjectionFunctionResult out;
+  out.numeric_facts = result.numeric_facts;
   out.ok = result.ok() && result.scalar_values.size() == 1 &&
            ProjectionSblrValueResolved(result.scalar_values.front());
   out.evidence.push_back({"operator_runtime", operator_id});
@@ -9090,6 +9091,7 @@ api::EngineProjectionFunctionResult EvaluateProjectionFunction(
   api::EngineProjectionFunctionResult out;
   const auto function_result =
       functions::DispatchFunctionCall(package.registry, std::move(function_request)).result;
+  out.numeric_facts = function_result.numeric_facts;
   out.ok = function_result.ok() && function_result.scalar_values.size() == 1 &&
            ProjectionSblrValueResolved(function_result.scalar_values.front());
   if (out.ok) {

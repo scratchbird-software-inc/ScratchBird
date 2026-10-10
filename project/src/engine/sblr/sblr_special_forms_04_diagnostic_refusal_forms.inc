@@ -58,7 +58,6 @@ SblrResult EvaluateSblrCastForm(std::string_view operation_id,
 
   datatypes::DatatypeCastRequest request;
   request.value.type_id = InferSblrSourceType(value);
-  request.value.encoded_value = EncodedCastInput(value);
   request.value.is_null = value.is_null;
   request.target_type_id = target_type;
   request.explicit_cast = explicit_cast;
@@ -66,12 +65,41 @@ SblrResult EvaluateSblrCastForm(std::string_view operation_id,
                                   : datatypes::DatatypeCastContext::implicit;
   request.reference_compatibility_profile = reference_compatibility_profile;
 
-  if (value.projection_descriptor || target_binding) {
+  const auto native_numeric_type = [](auto type) {
+    return type == datatypes::CanonicalTypeId::int64 ||
+           type == datatypes::CanonicalTypeId::real64;
+  };
+  const bool native_numeric_pair = native_numeric_type(request.value.type_id) &&
+                                   native_numeric_type(target_type);
+  if (native_numeric_pair) {
+    // Fixed-width execution values are not decimal display strings. Retain all
+    // 64 bits (including signed zero) across the datatype-owner boundary.
+    if (!value.is_null &&
+        !(request.value.type_id == datatypes::CanonicalTypeId::int64
+              ? SblrInt64PayloadValid(value) : SblrReal64PayloadValid(value))) {
+      return SpecialFormFailure(operation_id, context, "NUMERIC.ENCODING.NONCANONICAL",
+                                "native numeric cast has conflicting value carriers");
+    }
+    request.value.encoded_value.clear();
+    if (!value.is_null) {
+      const auto bits = request.value.type_id == datatypes::CanonicalTypeId::int64
+          ? std::bit_cast<std::uint64_t>(value.int64_value)
+          : std::bit_cast<std::uint64_t>(value.real64_value);
+      request.value.encoded_value.resize(8);
+      for (unsigned byte = 0; byte < 8; ++byte)
+        request.value.encoded_value[byte] = static_cast<char>(bits >> (byte * 8));
+    }
+  } else {
+    request.value.encoded_value = EncodedCastInput(value);
+  }
+
+  if (native_numeric_pair || value.projection_descriptor || target_binding) {
     // This native adapter consumes supplied bindings; target spelling is only
     // checked for agreement and cannot supply missing descriptor authority.
-    const auto native_type = [](auto type) {
+    const auto native_type = [&](auto type) {
       return type == datatypes::CanonicalTypeId::uuid ||
-             type == datatypes::CanonicalTypeId::binary;
+             type == datatypes::CanonicalTypeId::binary ||
+             (native_numeric_pair && native_numeric_type(type));
     };
     const auto bind = [&](const auto& binding, auto type, auto* descriptor) {
       if (!binding || !native_type(type) ||
@@ -110,6 +138,7 @@ SblrResult EvaluateSblrCastForm(std::string_view operation_id,
     }
     auto failure = SpecialFormFailure(
         operation_id, context, std::move(diagnostic_id), std::move(detail));
+    failure.numeric_facts = result.numeric_facts;
     if (!failure.diagnostics.empty()) {
       for (const auto& argument : result.diagnostic.arguments) {
         if (const auto* text = argument.text()) {
@@ -121,9 +150,35 @@ SblrResult EvaluateSblrCastForm(std::string_view operation_id,
     return failure;
   }
 
-  auto published = SblrValueFromDatatypeValue(result.value);
+  SblrValue published;
+  if (native_numeric_pair) {
+    published.descriptor_id = datatypes::CanonicalTypeName(target_type);
+    published.is_null = result.value.is_null;
+    if (!published.is_null) {
+      if (result.value.encoded_value.size() != 8)
+        return SpecialFormFailure(operation_id, context, "NUMERIC.ENCODING.NONCANONICAL",
+                                  "datatype owner returned a non-native numeric cast result");
+      std::uint64_t bits = 0;
+      for (unsigned byte = 0; byte < 8; ++byte)
+        bits |= static_cast<std::uint64_t>(
+            static_cast<unsigned char>(result.value.encoded_value[byte])) << (byte * 8);
+      if (target_type == datatypes::CanonicalTypeId::int64) {
+        published.payload_kind = SblrValuePayloadKind::signed_integer;
+        published.int64_value = std::bit_cast<std::int64_t>(bits);
+        published.has_int64_value = true;
+      } else {
+        published.payload_kind = SblrValuePayloadKind::real64;
+        published.real64_value = std::bit_cast<double>(bits);
+        published.has_real64_value = true;
+      }
+    }
+  } else {
+    published = SblrValueFromDatatypeValue(result.value);
+  }
   published.projection_descriptor = std::move(target_binding);
-  return ScalarResult(operation_id, std::move(published));
+  auto output = ScalarResult(operation_id, std::move(published));
+  output.numeric_facts = result.numeric_facts;
+  return output;
 }
 
 SblrResult EvaluateSblrExtractForm(std::string_view operation_id,

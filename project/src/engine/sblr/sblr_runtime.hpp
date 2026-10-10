@@ -9,6 +9,7 @@
 #pragma once
 
 #include "../../core/platform/runtime_platform.hpp"
+#include "../../core/datatypes/datatype_numeric_facts.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -132,6 +133,7 @@ struct SblrResult {
   std::vector<SblrResultRow> rows;
   bool mutation_attempted = false;
   bool mutation_committed = false;
+  core::datatypes::DatatypeNumericFacts numeric_facts;
 
   [[nodiscard]] bool ok() const { return status == SblrStatusCode::ok && diagnostics.empty(); }
 };

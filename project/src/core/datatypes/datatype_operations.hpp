@@ -11,6 +11,7 @@
 // SB-DATATYPE-OPERATIONS-ANCHOR
 #include "datatype_binary.hpp"
 #include "datatype_descriptor.hpp"
+#include "datatype_numeric_facts.hpp"
 #include "../resources/collation_profile.hpp"
 #include "../resources/unicode_collation.hpp"
 
@@ -100,16 +101,6 @@ struct DatatypeNumericContext {
   u32 scale = 0;
   DatatypeRoundingMode rounding = DatatypeRoundingMode::half_even;
   bool allow_special_values = false;
-};
-
-struct DatatypeNumericFacts {
-  bool inexact = false;
-  bool underflow = false;
-  bool overflow = false;
-  bool invalid = false;
-  bool divide_by_zero = false;
-  bool subnormal = false;
-  bool unordered = false;
 };
 
 struct DatatypeCastRequest {

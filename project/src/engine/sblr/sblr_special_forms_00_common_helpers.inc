@@ -17,6 +17,7 @@
 #include "sblr_operator_runtime.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cctype>
 #include <cstdint>
 #include <functional>

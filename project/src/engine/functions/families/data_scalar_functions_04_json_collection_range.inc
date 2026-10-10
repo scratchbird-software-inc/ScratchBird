@@ -1021,9 +1021,10 @@
     const auto target_descriptor =
         LowerAscii(TrimAscii(ValueAsText(target_value)));
     if (target_descriptor.empty()) return RefuseFunctionInvalidInput(request, "cast target descriptor id is required");
-    if (NativeBinaryCast(request.arguments[0].value, target_descriptor)) {
+    if (NativeBinaryCast(request.arguments[0].value, target_descriptor) ||
+        NativeFixedNumericCast(request.arguments[0].value, target_descriptor)) {
       if (request.arguments.size() != 2)
-        return RefuseFunctionInvalidInput(request, "native UUID/binary cast does not accept a rounding or compatibility profile");
+        return RefuseFunctionInvalidInput(request, "native scalar cast does not accept a rounding or compatibility profile");
       return CastNativeBinaryValue(request, target_descriptor, false);
     }
 

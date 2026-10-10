@@ -86,6 +86,14 @@ add_test(NAME sbsql_sblr_alignment_native_column_binding COMMAND sbsql_sblr_alig
 set_tests_properties(sbsql_sblr_alignment_native_column_binding PROPERTIES
   TIMEOUT 30 LABELS "sbsql_sblr_alignment;binary_uuid;column_binding;component_regression;not_runtime_acceptance")
 
+add_executable(sbsql_sblr_alignment_native_numeric_cast native_numeric_cast_test.cpp)
+target_compile_features(sbsql_sblr_alignment_native_numeric_cast PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_numeric_cast PRIVATE ../../src/engine/functions ../../src/engine)
+target_link_libraries(sbsql_sblr_alignment_native_numeric_cast PRIVATE sb_engine_functions sb_engine_sblr)
+add_test(NAME sbsql_sblr_alignment_native_numeric_cast COMMAND sbsql_sblr_alignment_native_numeric_cast)
+set_tests_properties(sbsql_sblr_alignment_native_numeric_cast PROPERTIES
+  TIMEOUT 60 LABELS "sbsql_sblr_alignment;native_numeric;scalar_cast;component_regression;not_SQL_E2E")
+
 add_executable(sbsql_sblr_alignment_native_uuid_cast native_uuid_cast_test.cpp)
 target_compile_features(sbsql_sblr_alignment_native_uuid_cast PRIVATE cxx_std_23)
 target_include_directories(sbsql_sblr_alignment_native_uuid_cast PRIVATE ../../src/engine/functions ../../src/engine)

@@ -67,6 +67,12 @@ bool NativeBinaryCast(const scratchbird::engine::sblr::SblrValue& value,
       value.payload_kind == K::uuid_text || value.payload_kind == K::binary;
 }
 
+bool NativeFixedNumericCast(const scratchbird::engine::sblr::SblrValue& value,
+                           std::string_view target) {
+  return (value.descriptor_id == "int64" || value.descriptor_id == "real64") &&
+         (target == "int64" || target == "real64");
+}
+
 FunctionCallResult CastNativeBinaryValue(const FunctionCallRequest& request,
                                          const std::string& target,
                                          bool try_conversion) {
@@ -107,7 +113,7 @@ FunctionCallResult CastNativeBinaryValue(const FunctionCallRequest& request,
   // Preserve the requested scalar alias; the canonical datatype owns the
   // conversion and its permission checks, never UUID text normalization.
   result.scalar_values.front().descriptor_id = target;
-  return MakeFunctionSuccess(request, std::move(result.scalar_values));
+  return FunctionCallResult{std::move(result)};
 }
 
 std::string LowerAscii(std::string value) {

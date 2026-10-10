@@ -9,6 +9,7 @@
 #pragma once
 
 #include "../api_types.hpp"
+#include "../../../core/datatypes/datatype_numeric_facts.hpp"
 
 #include <cstddef>
 #include <functional>
@@ -101,6 +102,7 @@ struct EngineProjectionFunctionResult {
   EngineTypedValue value;
   std::vector<EngineApiDiagnostic> diagnostics;
   std::vector<EngineEvidenceReference> evidence;
+  core::datatypes::DatatypeNumericFacts numeric_facts;
 };
 
 using EngineProjectionFunctionEvaluator =
