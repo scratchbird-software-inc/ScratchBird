@@ -15,14 +15,15 @@ import argparse
 import os
 import hashlib
 import re
-import shutil
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "support"))
+from owned_test_runtime import CleanupRefused, OwnedTestRuntime
 
 from cdp_database_lifecycle_support import PUBLIC_TEST_PASSWORD, seed_database
 
@@ -34,6 +35,10 @@ ROUND_TRIP_ROW_COUNT = 1600
 
 
 class NativeBulkIngestGateError(RuntimeError):
+    pass
+
+
+class RouteShutdownError(NativeBulkIngestGateError):
     pass
 
 
@@ -60,22 +65,6 @@ class RunResult:
             return match.group(1)
         match = re.search(r"Error:\s*(.*)", text)
         return match.group(1).strip() if match else text.strip()
-
-
-def make_work_dir(preferred_root: Path) -> Path:
-    roots = (preferred_root, Path(tempfile.gettempdir()) / "cdp041")
-    roots += (Path(tempfile.gettempdir()),)
-    if os.name == "posix":
-        roots += (Path("/tmp"),)
-    for root in roots:
-        root.mkdir(parents=True, exist_ok=True)
-        candidate = Path(tempfile.mkdtemp(prefix="c_", dir=root))
-        endpoint_probe = candidate / "ipc" / "sc" / "s.sock"
-        listener_probe = candidate / "inet" / "lc" / ("sbsql_" + ("0" * 32) + ".management.sock")
-        if max(len(os.fsencode(endpoint_probe)), len(os.fsencode(listener_probe)), len(os.fsencode(candidate / "e.sbdb"))) < 100:
-            return candidate
-        shutil.rmtree(candidate, ignore_errors=True)
-    raise NativeBulkIngestGateError("unable to allocate a short-enough CDP-041 workspace")
 
 
 def find_free_port() -> int:
@@ -124,13 +113,14 @@ def run_sb_isql(route: Route, case: str, script_text: str, work: Path, timeout: 
     script.write_text(script_text, encoding="utf-8")
     out_path = case_dir / "sb_isql.out"
     err_path = case_dir / "sb_isql.err"
-    completed = subprocess.run(
-        route.args + ["-q", "-A", "-t", "-b", "-f", str(script)],
-        stdout=out_path.open("wb"),
-        stderr=err_path.open("wb"),
-        check=False,
-        timeout=timeout,
-    )
+    with out_path.open("wb") as stdout, err_path.open("wb") as stderr:
+        completed = subprocess.run(
+            route.args + ["-q", "-A", "-t", "-b", "-f", str(script)],
+            stdout=stdout,
+            stderr=stderr,
+            check=False,
+            timeout=timeout,
+        )
     return RunResult(
         route=route.name,
         case=case,
@@ -214,7 +204,8 @@ def run_embedded(args: argparse.Namespace, work: Path) -> Route:
     )
 
 
-def start_local_ipc(args: argparse.Namespace, work: Path) -> tuple[Route, subprocess.Popen[bytes]]:
+def start_local_ipc(args: argparse.Namespace, work: Path,
+                    processes: list[subprocess.Popen[bytes]]) -> Route:
     root = work / "ipc"
     database = root / "l.sbdb"
     control = root / "sc"
@@ -245,9 +236,11 @@ def start_local_ipc(args: argparse.Namespace, work: Path) -> tuple[Route, subpro
         stdout=(root / "server.out").open("wb"),
         stderr=(root / "server.err").open("wb"),
     )
+    # Retain ownership before readiness can fail, not only after this function
+    # returns. The outer finally must join partially started routes as well.
+    processes.append(server)
     wait_for_path(endpoint)
-    return (
-        Route(
+    return Route(
             name="local-ipc",
             database=database,
             args=[
@@ -262,12 +255,11 @@ def start_local_ipc(args: argparse.Namespace, work: Path) -> tuple[Route, subpro
                 "-P",
                 PUBLIC_TEST_PASSWORD,
             ],
-        ),
-        server,
     )
 
 
-def start_inet(args: argparse.Namespace, work: Path) -> tuple[Route, subprocess.Popen[bytes], subprocess.Popen[bytes]]:
+def start_inet(args: argparse.Namespace, work: Path,
+               processes: list[subprocess.Popen[bytes]]) -> Route:
     root = work / "inet"
     database = root / "i.sbdb"
     server_control = root / "sc"
@@ -301,6 +293,7 @@ def start_inet(args: argparse.Namespace, work: Path) -> tuple[Route, subprocess.
         stdout=(root / "server.out").open("wb"),
         stderr=(root / "server.err").open("wb"),
     )
+    processes.append(server)
     wait_for_path(endpoint)
     listener = subprocess.Popen(
         [
@@ -322,9 +315,9 @@ def start_inet(args: argparse.Namespace, work: Path) -> tuple[Route, subprocess.
         stdout=(root / "listener.out").open("wb"),
         stderr=(root / "listener.err").open("wb"),
     )
+    processes.append(listener)
     wait_for_tcp(port)
-    return (
-        Route(
+    return Route(
             name="inet",
             database=database,
             args=[
@@ -338,9 +331,6 @@ def start_inet(args: argparse.Namespace, work: Path) -> tuple[Route, subprocess.
                 "-P",
                 PUBLIC_TEST_PASSWORD,
             ],
-        ),
-        server,
-        listener,
     )
 
 
@@ -390,7 +380,9 @@ def verify_round_trip(results: list[RunResult]) -> None:
             row_id,
             customer_id,
             discount_amount,
-            "" if nullable_value is None else nullable_value,
+            # Match the CLI's SQL-NULL rendering, not an empty value. Keep the
+            # exact row digest/order check; do not normalize either spelling.
+            "(null)" if nullable_value is None else nullable_value,
         )
         for row_id, customer_id, discount_amount, nullable_value in expected_native_rows()
     ]
@@ -428,12 +420,8 @@ def run_gate(args: argparse.Namespace, work: Path) -> None:
     processes: list[subprocess.Popen[bytes]] = []
     try:
         routes.append(run_embedded(args, work))
-        local_route, local_server = start_local_ipc(args, work)
-        routes.append(local_route)
-        processes.append(local_server)
-        inet_route, inet_server, inet_listener = start_inet(args, work)
-        routes.append(inet_route)
-        processes.extend([inet_listener, inet_server])
+        routes.append(start_local_ipc(args, work, processes))
+        routes.append(start_inet(args, work, processes))
 
         ddl_results = [run_sb_isql(route, "create_target", create_target_script(), work) for route in routes]
         for result in ddl_results:
@@ -461,8 +449,14 @@ def run_gate(args: argparse.Namespace, work: Path) -> None:
         ]
         verify_disabled(disabled)
     finally:
-        for proc in processes:
-            stop_process(proc)
+        errors = []
+        for proc in reversed(processes):
+            try:
+                stop_process(proc)
+            except Exception as exc:
+                errors.append(str(exc))
+        if errors:
+            raise RouteShutdownError("route shutdown unresolved: " + "; ".join(errors))
 
 
 def main(argv: list[str]) -> int:
@@ -476,15 +470,30 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--work-dir", required=True)
     args = parser.parse_args(argv[1:])
 
-    work = make_work_dir(Path(args.work_dir))
+    # A short private root keeps Unix-domain endpoints within their limit.
+    # The existing owned-runtime utility retains bounded diagnostics and
+    # refuses cleanup if any descendant still references this workspace.
+    runtime = OwnedTestRuntime(parent="/tmp" if os.name == "posix" else None)
+    work = runtime.path
+    status = 0
+    shutdown_confirmed = True
     try:
         run_gate(args, work)
-        print(f"cdp_native_bulk_ingest_cli_gate=passed work={work}")
-        return 0
     except Exception as exc:  # noqa: BLE001 - CTest should receive the concrete failure.
+        status = 1
+        shutdown_confirmed = not isinstance(exc, RouteShutdownError)
         print(f"cdp_native_bulk_ingest_cli_gate=failed work={work}: {exc}", file=sys.stderr)
         dump_logs(work)
-        return 1
+    finally:
+        if shutdown_confirmed:
+            try:
+                runtime.cleanup(Path(args.work_dir) / work.name, controller_finished=True)
+            except (CleanupRefused, OSError) as exc:
+                status = 1
+                print(f"cdp_native_bulk_ingest_cli_gate=cleanup_failed work={work}: {exc}", file=sys.stderr)
+    if status == 0:
+        print(f"cdp_native_bulk_ingest_cli_gate=passed work={work}")
+    return status
 
 
 if __name__ == "__main__":

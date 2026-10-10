@@ -6646,6 +6646,12 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
     set_tests_properties(sbsql_acceleration_readiness_controls PROPERTIES
       LABELS "sbsql_parser_worker;nonmutating_observability;startup_readiness;negative_controls"
       TIMEOUT 30)
+    add_test(NAME cdp_native_bulk_ingest_oracle_controls
+      COMMAND "${SBSQL_PYTHON3}" -B
+        "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/cdp_native_bulk_ingest_oracle_test.py")
+    set_tests_properties(cdp_native_bulk_ingest_oracle_controls PROPERTIES
+      LABELS "sbsql_parser_worker;native_bulk_ingest;negative_controls"
+      TIMEOUT 30)
     add_test(
       NAME sbsql_acceleration_full_route_gate
       COMMAND "${SBSQL_PYTHON3}"
