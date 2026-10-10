@@ -443,8 +443,8 @@ struct DateComparisonResultV3 {
 
 DateComparisonResultV3 CompareDateValuesV3(const DateValueViewV3& left,
                                            const DateValueViewV3& right) noexcept;
-// Conformance-only seam for exercising a separately validated comparison
-// cohort that cannot otherwise coexist with the sole admitted d710 profile.
+// Conformance-only seam for exercising an explicitly different comparison
+// fingerprint after profile validation. Ordinary callers use CompareDateValuesV3.
 DateComparisonResultV3 CompareDateValuesWithValidatedCohortForConformanceV3(
     const DateValueViewV3& left, const DateValueViewV3& right,
     const std::array<byte, 32>& validated_right_comparison_fingerprint) noexcept;

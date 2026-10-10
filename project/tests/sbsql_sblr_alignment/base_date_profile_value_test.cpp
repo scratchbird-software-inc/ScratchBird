@@ -9,6 +9,7 @@
 #include <iostream>
 #include <limits>
 #include <string_view>
+#include <vector>
 
 namespace {
 namespace dt = scratchbird::core::datatypes;
@@ -91,6 +92,107 @@ void ProfileAuthority() {
   changed_policy.calendar_policy.generation = 2;
   Check(!dt::ValidateDateProfileHandleV3(changed_policy).ok(),
         "mutated transitive policy admitted");
+}
+
+void RetainedReceiptAuthority() {
+  std::vector<std::shared_ptr<const dt::DateValidatedProfileHandleV3>> profiles;
+  unsigned storage_only = 0;
+  for (const auto& identity : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row = identity.legacy_fields;
+    if (row.canonical_binary_type_code != static_cast<std::uint32_t>(dt::CanonicalTypeId::date))
+      continue;
+    const dt::DateAuthorityReceiptV3 receipt{row.catalog_snapshot_uuid,
+        row.catalog_snapshot_uuid, row.catalog_generation, row.registry_generation};
+    const auto built = dt::BuildDateValidatedProfileHandleV3(receipt, identity);
+    if (row.catalog_generation < 7) {
+      Check(!built.ok() && built.diagnostic.diagnostic_code == "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+            "storage-only DATE acquired a semantic profile");
+      ++storage_only;
+      continue;
+    }
+    Check(built.ok(), "exact completed DATE receipt refused");
+    Check(dt::SameDatatypeTypeCodecIdentityV3(built.profile.identity, identity) &&
+              built.profile.receipt.catalog_snapshot_uuid == receipt.catalog_snapshot_uuid &&
+              built.profile.receipt.catalog_generation == receipt.catalog_generation,
+          "retained DATE authority was rebound to another receipt");
+    auto profile = std::make_shared<const dt::DateValidatedProfileHandleV3>(built.profile);
+    profiles.push_back(profile);
+    for (const auto& vector : kVectors) {
+      const auto parsed = dt::ParseCanonicalDateV3(profile, vector.text);
+      Check(parsed.ok() && parsed.value.profile == profile && parsed.value.day == vector.day,
+            "retained receipt parse or pin mismatch");
+      const auto encoded = dt::EncodeCanonicalDateComponentV3(parsed.value);
+      Check(encoded.ok() && encoded.bytes.size() == 4 &&
+                std::equal(encoded.bytes.begin(), encoded.bytes.end(), vector.component.begin()),
+            "retained receipt changed canonical component");
+      const auto rendered = dt::RenderCanonicalDateV3(parsed.value);
+      Check(rendered.ok() && rendered.text == vector.text, "retained receipt render mismatch");
+      const auto key = dt::MakeDateSortKeyV3(parsed.value, dt::DateSortDirectionV3::ascending,
+                                            dt::DateNullModeV3::nulls_first);
+      Check(key.ok() && key.bytes.size() == 104, "retained receipt key failed");
+      const auto decoded = dt::DecodeDateSortKeyNoAllocV3(*profile, key.bytes);
+      Check(decoded.ok() && decoded.value.day == vector.day, "retained receipt key round trip");
+    }
+    for (unsigned mutation = 0; mutation < 8; ++mutation) {
+      auto invalid = identity;
+      auto& native = invalid.native_fields;
+      if (mutation == 0) native.present = !native.present;
+      if (mutation == 1) ++native.canonical_value_minimum_bytes;
+      if (mutation == 2) ++native.canonical_value_maximum_bytes;
+      if (mutation == 3) ++native.canonical_value_transport_width;
+      if (mutation == 4) native.canonical_value_variable_width = !native.canonical_value_variable_width;
+      if (mutation == 5) native.policy_profile_uuid.bytes[15] ^= 1;
+      if (mutation == 6) ++native.policy_profile_generation;
+      if (mutation == 7) native.profile_fingerprint_sha256[31] ^= 1;
+      Check(!dt::BuildDateValidatedProfileHandleV3(receipt, invalid).ok(),
+            "mutated V3 native fields admitted at DATE profile construction");
+      auto changed = *profile;
+      changed.identity = std::move(invalid);
+      Check(!dt::ValidateDateProfileHandleV3(changed).ok(),
+            "mutated V3 native fields admitted with copied DATE seals");
+    }
+    for (unsigned mutation = 0; mutation < 4; ++mutation) {
+      auto invalid = receipt;
+      if (mutation == 0) invalid.statement_receipt_uuid.bytes[15] ^= 1;
+      if (mutation == 1) invalid.catalog_snapshot_uuid.bytes[15] ^= 1;
+      if (mutation == 2) ++invalid.catalog_generation;
+      if (mutation == 3) ++invalid.registry_generation;
+      Check(!dt::BuildDateValidatedProfileHandleV3(invalid, identity).ok(),
+            "inconsistent DATE receipt admitted");
+    }
+  }
+  Check(storage_only != 0 && profiles.size() == 5, "DATE receipt coverage drifted");
+  for (const auto& left : profiles) {
+    const dt::DateOwnedValueV3 value{left, dt::DateValueStateV3::value, 0};
+    const auto key = dt::MakeDateSortKeyV3(value, dt::DateSortDirectionV3::ascending,
+                                         dt::DateNullModeV3::nulls_first);
+    const auto hash = dt::HashDateValueV3(value);
+    Check(key.ok() && hash.ok(), "DATE receipt key/hash failed");
+    for (const auto& right : profiles) {
+      const bool same = left == right;
+      const dt::DateOwnedValueV3 peer{right, dt::DateValueStateV3::value, 0};
+      Check(dt::CompareDateValuesV3(value.view(), peer.view()).ok() == same,
+            "DATE comparison crossed an exact receipt");
+      Check(dt::DecodeDateSortKeyNoAllocV3(*right, key.bytes).ok() == same,
+            "DATE key decoded under a different receipt");
+      const auto peer_hash = dt::HashDateValueV3(peer);
+      Check(peer_hash.ok() && (hash.bytes == peer_hash.bytes) == same,
+            "DATE hash lost its receipt framing");
+      dt::DateCastRequestV3 cast;
+      cast.one_based_policy_row = 53;
+      cast.date_source = &value;
+      cast.date_target = &right;
+      Check(dt::CastDateValueV3(cast).ok() == same, "DATE identity cast relabelled a receipt");
+      if (!same) {
+        auto copied_seals = *right;
+        copied_seals.profile_material = left->profile_material;
+        copied_seals.profile_fingerprint = left->profile_fingerprint;
+        copied_seals.comparison_material = left->comparison_material;
+        copied_seals.comparison_fingerprint = left->comparison_fingerprint;
+        Check(!dt::ValidateDateProfileHandleV3(copied_seals).ok(), "cross-receipt copied seals admitted");
+      }
+    }
+  }
 }
 
 void CanonicalValues() {
@@ -242,6 +344,7 @@ void BatchMemoryRules() {
 
 int main() {
   ProfileAuthority();
+  RetainedReceiptAuthority();
   CanonicalValues();
   DynamicOperandAdmission();
   BatchMemoryRules();

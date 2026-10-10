@@ -201,26 +201,37 @@ void PolicyBearingBinding() {
   }
 }
 void DateBoundKeys() {
+  struct Cohort {
+    scratchbird::core::platform::Uuid snapshot;
+    std::uint64_t generation;
+    std::string_view fingerprint;
+  };
+  const Cohort cohorts[] = {
+      {dt::kDatatypeCohortV7, 7, "a87f551f3a950b377a854d3405bdc3b177c5187f944b4f9d6671f2ce02a4e6f8"},
+      {dt::kDatatypeCohortV8, 8, "7d9471b28457df475b5aa182f5a17ed7a53e3a52f79953c51a9d969bdfd41d11"},
+      {dt::kDatatypeCohortV9, 9, "da43f74cbf040c5cc734f83d1fa460886c14e5ab0eaf9888698d185d4e6ffac9"},
+      {dt::kDatatypeCohortV10, 10, "ad456dafc3671a8f3122352c4da98586f6b7684ce26441ffc5c6cc10809a4237"},
+      {dt::kDatatypeCohortV11, 11, "0d747769d2324170e000cb1973f8b1f0282990343cd308da83804a641b9c5796"}};
+  for (const auto& cohort : cohorts) {
   auto date = Binding("date");
   Check(!key::BindOrderedDateProfile(&date) && !date.date_profile,
         "historical storage-only DATE acquired current semantic authority");
-  Check(dt::LookupDatatypeStorageIdentityV3(dt::kDatatypeCohortV10, 10, 10,
+  Check(dt::LookupDatatypeStorageIdentityV3(cohort.snapshot, cohort.generation, cohort.generation,
         date.datatype.descriptor_uuid, date.datatype.descriptor_generation, &date.datatype) &&
-        key::BindOrderedDateProfile(&date), "current DATE index profile did not bind");
+        key::BindOrderedDateProfile(&date), "exact retained DATE index profile did not bind");
   const auto component = [](std::int32_t day) { return Integer(day).substr(0, 4); };
   const std::int32_t days[] = {INT32_MIN, -65536, -1, 0, 1, 255, 256, INT32_MAX};
   for (const auto day : days) {
     // Independent Core SBDATK01 oracle, not another call to the DATE encoder.
     std::string raw = "SBDATK01";
-    raw.append(reinterpret_cast<const char*>(dt::kDatatypeCohortV10.bytes.data()), 16);
-    raw += Integer(10);
-    raw += Integer(10);
-    constexpr unsigned char fingerprint[] = {
-        0xad,0x45,0x6d,0xaf,0xc3,0x67,0x1a,0x8f,0x31,0x22,0x35,0x2c,0x4d,0xa9,0x85,0x86,
-        0xf6,0xb7,0x68,0x4c,0xe2,0x64,0x41,0xff,0xc5,0xc6,0xcc,0x10,0x80,0x9a,0x42,0x37};
+    raw.append(reinterpret_cast<const char*>(cohort.snapshot.bytes.data()), 16);
+    raw += Integer(cohort.generation);
+    raw += Integer(cohort.generation);
     constexpr unsigned char ordering_policy[] = {
         0x01,0xa1,0x00,0x8e,0xb7,0xf2,0x7f,0xeb,0x85,0xa8,0x2d,0x74,0xfe,0x2f,0xde,0x38};
-    raw.append(reinterpret_cast<const char*>(fingerprint), sizeof(fingerprint));
+    const auto digit = [](char ch) { return ch <= '9' ? ch - '0' : ch - 'a' + 10; };
+    for (std::size_t i = 0; i < cohort.fingerprint.size(); i += 2)
+      raw.push_back(static_cast<char>(digit(cohort.fingerprint[i]) * 16 + digit(cohort.fingerprint[i+1])));
     raw.append(reinterpret_cast<const char*>(ordering_policy), sizeof(ordering_policy));
     raw += Integer(1);
     raw.append("\0\0\1\4", 4);
@@ -251,10 +262,28 @@ void DateBoundKeys() {
   Check(Encode(required, component(1)) == Encode(date, component(1)),
         "DATE containing nullability changed a PRESENT key");
   auto refuses = [](const key::OrderedIndexColumn& binding, const api::CrudStoredValue& value) {
+    std::string logical;
+    bool framing_refused = false;
+    try {
+      logical = api::EncodeStoredLogicalKey({value});
+    } catch (const std::invalid_argument&) {
+      framing_refused = true;
+    }
+    const bool invalid_state = !value.valid() || (!value.isPresent() && !value.isSqlNull());
+    Check(framing_refused == invalid_state, "logical key encoder changed state admission");
+    if (framing_refused) {
+      // Independently construct the malformed wire frame that the safe
+      // encoder correctly refused, then also exercise the receiving gate.
+      logical = "SBCLKEY2";
+      api::AppendBinaryU32(&logical, 1);
+      api::AppendBinaryU8(&logical, static_cast<std::uint8_t>(value.state));
+      Check(api::AppendBinaryString(&logical, value.bytes), "malformed key fixture extent");
+      Check(!api::DecodeStoredLogicalKey(logical, 1), "logical key decoder admitted invalid state");
+    }
     std::string output = "unchanged";
     bool null_key = false;
     api::EngineApiDiagnostic diagnostic;
-    Check(!key::EncodeOrderedIndexKey(api::EncodeStoredLogicalKey({value}), {binding},
+    Check(!key::EncodeOrderedIndexKey(logical, {binding},
           &output, &null_key, &diagnostic) && output == "unchanged" && !null_key && diagnostic.error,
           "invalid DATE index input changed output");
   };
@@ -279,6 +308,7 @@ void DateBoundKeys() {
     }
     refuses(changed, component(1));
     refuses(changed, api::CrudStoredValue::SqlNull());
+  }
   }
 }
 int main() {

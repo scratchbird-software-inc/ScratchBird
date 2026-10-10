@@ -464,6 +464,81 @@ constexpr std::array<KeyMutationFixture,16> key_mutations{{
   {"short_plus_rank_contradiction","53424441544b3031019d000000007000800000000000d7100a000000000000000a00000000000000ad456dafc3671a8f3122352c4da98586f6b7684ce26441ffc5c6cc10809a423701a1008eb7f27feb85a82d74fe2fde38010000000000000000010204800000","CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","K01"},
 }};
 void CastPolicy(){
+  // Peers must come from the DATE endpoint's exact receipt, even where the
+  // descriptor/type/codec UUIDs are shared by immutable successor rows.
+  unsigned cohorts = 0;
+  for (const auto& date_identity : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row = date_identity.legacy_fields;
+    if (row.canonical_binary_type_code != static_cast<std::uint32_t>(dt::CanonicalTypeId::date) ||
+        row.catalog_generation < 7) continue;
+    const auto built = dt::BuildDateValidatedProfileHandleV3(
+        {row.catalog_snapshot_uuid, row.catalog_snapshot_uuid, row.catalog_generation,
+         row.registry_generation}, date_identity);
+    Check(built.ok(), "retained cast DATE profile");
+    const std::shared_ptr<const dt::DateValidatedProfileHandleV3> profile =
+        std::make_shared<dt::DateValidatedProfileHandleV3>(built.profile);
+    const dt::DateOwnedValueV3 date{profile, dt::DateValueStateV3::value, 0};
+    const auto date_descriptor = PeerDescriptor(dt::CanonicalTypeId::date, &date_identity);
+    unsigned matching_peers = 0;
+    for (const auto& peer : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+      const auto& fields = peer.legacy_fields;
+      if (fields.canonical_binary_type_code !=
+              static_cast<std::uint32_t>(dt::CanonicalTypeId::character) ||
+          fields.catalog_generation < 7) continue;
+      const bool same = fields.catalog_snapshot_uuid == row.catalog_snapshot_uuid &&
+          fields.catalog_generation == row.catalog_generation &&
+          fields.registry_generation == row.registry_generation;
+      matching_peers += same;
+      dt::DatatypeOperationValue text;
+      text.type_id = dt::CanonicalTypeId::character;
+      text.descriptor = PeerDescriptor(dt::CanonicalTypeId::character, &peer);
+      text.encoded_value = "1970-01-01";
+      dt::DateTextOperandV3 operand;
+      operand.identity = &peer;
+      operand.descriptor = &text.descriptor;
+      operand.bytes = text.encoded_value;
+      operand.extent = operand.bytes.size();
+      Check(dt::ParseCanonicalDateOperandV3(profile, operand).ok() == same,
+            "dynamic character parse crossed DATE receipt");
+      dt::DateCastRequestV3 incoming;
+      incoming.one_based_policy_row = 24;
+      incoming.context = dt::DatatypeCastContext::explicit_cast;
+      incoming.scalar_source = &text;
+      incoming.scalar_source_identity = &peer;
+      incoming.date_target = &profile;
+      incoming.date_target_descriptor = &date_descriptor;
+      const auto parsed = dt::CastDateValueV3(incoming);
+      Check(parsed.ok() == same, "incoming character cast crossed DATE receipt");
+      if (same) Check(parsed.date_value.profile == profile && parsed.date_value.day == 0,
+                      "incoming character cast lost retained DATE endpoint");
+      else Check(parsed.diagnostic.diagnostic_code == "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+                 "incoming crossed receipt diagnostic");
+      dt::DateCastRequestV3 outgoing;
+      outgoing.one_based_policy_row = 50;
+      outgoing.context = dt::DatatypeCastContext::explicit_cast;
+      outgoing.date_source = &date;
+      outgoing.scalar_target = dt::CanonicalTypeId::character;
+      outgoing.scalar_target_descriptor = text.descriptor;
+      outgoing.scalar_target_identity = &peer;
+      std::array<char, 10> output;
+      output.fill('x');
+      const auto before = output;
+      outgoing.use_character_output_buffer = true;
+      outgoing.character_output = output.data();
+      outgoing.character_output_capacity = output.size();
+      const auto rendered = dt::CastDateValueV3(outgoing);
+      Check(rendered.ok() == same, "outgoing character cast crossed DATE receipt");
+      if (same) Check(rendered.bytes_written == 10 &&
+                          std::string_view(output.data(), output.size()) == "1970-01-01",
+                      "outgoing retained receipt canonical text");
+      else Check(output == before && rendered.bytes_written == 0 &&
+                     rendered.diagnostic.diagnostic_code == "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+                 "outgoing crossed receipt published bytes or lost diagnostic");
+    }
+    Check(matching_peers == 1, "retained DATE exact character peer coverage");
+    ++cohorts;
+  }
+  Check(cohorts == 5, "retained DATE cast receipt coverage");
   unsigned admitted=0, runtime=0, exact_rows=0, placeholder_rows=0, contextual_rows=0;
   auto profile=Profile();auto date_descriptor=CatalogDescriptor(dt::CanonicalTypeId::date);
   dt::DateOwnedValueV3 date{profile,dt::DateValueStateV3::value,42};

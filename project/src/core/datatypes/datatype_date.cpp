@@ -3,6 +3,7 @@
 
 #include "datatype_date.hpp"
 
+#include "admitted_datatype_cohort.hpp"
 #include "datatype_binary_view.hpp"
 #include "datatype_physical_encoding.hpp"
 
@@ -79,12 +80,33 @@ inline constexpr DatatypePolicyIdentityV3 kDiagnosticPolicy{U(
 inline constexpr DatatypePolicyIdentityV3 kMetricPolicy{U(
     {0x01,0xa1,0x00,0x8e,0xb8,0x04,0x74,0x9f,0xab,0x09,0xbd,0xde,0xe3,0x6e,0xe5,0xef}),1};
 
-inline constexpr std::array<byte, 32> kProfileFingerprint{{
-    0x57,0x75,0x95,0x92,0x31,0x69,0xd5,0x77,0xe4,0xce,0xe1,0x8e,0x11,0x4d,0x9a,0x09,
-    0xe3,0x16,0x09,0x82,0x3c,0x53,0xcb,0xd1,0xd6,0x08,0xfa,0x50,0x64,0x1a,0xae,0x55}};
-inline constexpr std::array<byte, 32> kComparisonFingerprint{{
-    0xad,0x45,0x6d,0xaf,0xc3,0x67,0x1a,0x8f,0x31,0x22,0x35,0x2c,0x4d,0xa9,0x85,0x86,
-    0xf6,0xb7,0x68,0x4c,0xe2,0x64,0x41,0xff,0xc5,0xc6,0xcc,0x10,0x80,0x9a,0x42,0x37}};
+consteval std::array<byte, 32> Fingerprint(std::string_view hex) {
+  if (hex.size() != 64) throw "invalid fingerprint length";
+  const auto nibble = [](char c) -> byte {
+    if (c >= '0' && c <= '9') return static_cast<byte>(c - '0');
+    if (c >= 'a' && c <= 'f') return static_cast<byte>(c - 'a' + 10);
+    throw "invalid fingerprint digit";
+  };
+  std::array<byte, 32> bytes{};
+  for (std::size_t i = 0; i < bytes.size(); ++i)
+    bytes[i] = static_cast<byte>((nibble(hex[i * 2]) << 4) | nibble(hex[i * 2 + 1]));
+  return bytes;
+}
+
+// Exact independently sealed materials from base-date-policy-registry,
+// ordered D707..D711. Runtime storage is binary; no digest parsing occurs.
+inline constexpr std::array kProfileFingerprints{
+    Fingerprint("9ea10cf4602ccf1fb57e5bdb4d8caf00bc93afed86494f21316e54a00da0826f"),
+    Fingerprint("dd7d309f895a6b5b96850a5388e27296db731f24b7b203413067c1272c445a05"),
+    Fingerprint("fc6e4bb3a6ccdb34767ab6c803a8838169b8d6402c33e2cacce7db5f1561d6c7"),
+    Fingerprint("577595923169d577e4cee18e114d9a09e31609823c53cbd1d608fa50641aae55"),
+    Fingerprint("1f2886db581146fc27408d3fc9c2914b348a6fd957891925a0ef245b858a8a77")};
+inline constexpr std::array kComparisonFingerprints{
+    Fingerprint("a87f551f3a950b377a854d3405bdc3b177c5187f944b4f9d6671f2ce02a4e6f8"),
+    Fingerprint("7d9471b28457df475b5aa182f5a17ed7a53e3a52f79953c51a9d969bdfd41d11"),
+    Fingerprint("da43f74cbf040c5cc734f83d1fa460886c14e5ab0eaf9888698d185d4e6ffac9"),
+    Fingerprint("ad456dafc3671a8f3122352c4da98586f6b7684ce26441ffc5c6cc10809a4237"),
+    Fingerprint("0d747769d2324170e000cb1973f8b1f0282990343cd308da83804a641b9c5796")};
 
 constexpr bool Same(const DatatypePolicyIdentityV3& left,
                     const DatatypePolicyIdentityV3& right) noexcept {
@@ -119,72 +141,18 @@ Result Failure(std::string_view code, std::string_view detail,
   return result;
 }
 
-bool EqualLegacyIdentityIgnoringName(
-    const DatatypeTypeCodecIdentityRowV1& left,
-    const DatatypeTypeCodecIdentityRowV1& right) noexcept {
-  return left.catalog_snapshot_uuid == right.catalog_snapshot_uuid &&
-      left.catalog_generation == right.catalog_generation &&
-      left.registry_generation == right.registry_generation &&
-      left.descriptor_uuid == right.descriptor_uuid &&
-      left.descriptor_generation == right.descriptor_generation &&
-      left.type_uuid == right.type_uuid &&
-      left.type_generation == right.type_generation &&
-      left.codec_version == right.codec_version &&
-      left.codec_generation == right.codec_generation &&
-      left.canonical_value_bytes == right.canonical_value_bytes &&
-      left.null_supported == right.null_supported &&
-      left.datatype_identity_code == right.datatype_identity_code &&
-      left.null_encoding_code == right.null_encoding_code &&
-      left.byte_order_code == right.byte_order_code &&
-      left.signed_code == right.signed_code &&
-      left.representation_code == right.representation_code &&
-      left.canonical_value_minimum_bytes == right.canonical_value_minimum_bytes &&
-      left.canonical_value_maximum_bytes == right.canonical_value_maximum_bytes &&
-      left.canonical_value_exact_bytes == right.canonical_value_exact_bytes &&
-      left.canonical_binary_type_code == right.canonical_binary_type_code &&
-      left.codec_uuid == right.codec_uuid &&
-      left.canonical_value_variable_width == right.canonical_value_variable_width &&
-      left.canonical_value_exact_zero_is_width_marker ==
-          right.canonical_value_exact_zero_is_width_marker &&
-      left.canonical_byte_order == right.canonical_byte_order &&
-      left.canonical_representation == right.canonical_representation &&
-      left.canonical_charset == right.canonical_charset &&
-      left.shortest_form_utf8_required == right.shortest_form_utf8_required &&
-      left.implicit_normalization_allowed == right.implicit_normalization_allowed &&
-      left.descriptor_bound_collation_required == right.descriptor_bound_collation_required &&
-      left.empty_value_distinct_from_sql_null == right.empty_value_distinct_from_sql_null &&
-      left.sql_null_requires_zero_payload == right.sql_null_requires_zero_payload &&
-      left.variable_width_storage_without_truncation ==
-          right.variable_width_storage_without_truncation &&
-      left.invalid_encoding_diagnostic_id == right.invalid_encoding_diagnostic_id &&
-      left.numeric_context_uuid == right.numeric_context_uuid &&
-      left.numeric_context_generation == right.numeric_context_generation &&
-      left.special_value_policy_uuid == right.special_value_policy_uuid &&
-      left.special_value_policy_generation == right.special_value_policy_generation &&
-      left.comparison_policy_uuid == right.comparison_policy_uuid &&
-      left.comparison_policy_generation == right.comparison_policy_generation &&
-      left.comparison_profile == right.comparison_profile &&
-      left.allow_special_values == right.allow_special_values;
-}
+bool ExactReceipt(const DateAuthorityReceiptV3& receipt) noexcept;
 
-bool EqualV3IdentityIgnoringName(const DatatypeTypeCodecIdentityRowV3& left,
-                                 const DatatypeTypeCodecIdentityRowV3& right) noexcept {
-  return EqualLegacyIdentityIgnoringName(left.legacy_fields, right.legacy_fields) &&
-      Same(left.descriptor_policy, right.descriptor_policy) &&
-      Same(left.canonicalization_policy, right.canonicalization_policy) &&
-      Same(left.ordering_policy, right.ordering_policy) &&
-      Same(left.hash_policy, right.hash_policy) &&
-      Same(left.operation_policy, right.operation_policy);
-}
-
-const DatatypeTypeCodecIdentityRowV3* CurrentIdentityFor(
-    CanonicalTypeId type_id) noexcept {
+const DatatypeTypeCodecIdentityRowV3* IdentityForReceipt(
+    CanonicalTypeId type_id, const DateAuthorityReceiptV3& receipt) noexcept {
+  if (!ExactReceipt(receipt)) return nullptr;
   const auto code = static_cast<u32>(type_id);
   const DatatypeTypeCodecIdentityRowV3* match = nullptr;
   for (const auto& row : CurrentDatatypeTypeCodecIdentityRowsV3()) {
     const auto& legacy = row.legacy_fields;
-    if (legacy.catalog_snapshot_uuid != kSnapshot ||
-        legacy.catalog_generation != 10 || legacy.registry_generation != 10 ||
+    if (legacy.catalog_snapshot_uuid != receipt.catalog_snapshot_uuid ||
+        legacy.catalog_generation != receipt.catalog_generation ||
+        legacy.registry_generation != receipt.registry_generation ||
         legacy.canonical_binary_type_code != code) continue;
     if (match != nullptr) return nullptr;
     match = &row;
@@ -533,14 +501,21 @@ DatatypeTypeCodecIdentityRowV3 ExpectedDateIdentity() {
 }
 
 bool ExactDateIdentity(const DatatypeTypeCodecIdentityRowV3& row) noexcept {
-  const auto* expected = CurrentIdentityFor(CanonicalTypeId::date);
-  return expected != nullptr && EqualV3IdentityIgnoringName(row, *expected);
+  const auto& legacy = row.legacy_fields;
+  const auto* expected = IdentityForReceipt(CanonicalTypeId::date,
+      {legacy.catalog_snapshot_uuid, legacy.catalog_snapshot_uuid,
+       legacy.catalog_generation, legacy.registry_generation});
+  return expected != nullptr && SameDatatypeTypeCodecIdentityV3(row, *expected);
 }
 
 bool ExactReceipt(const DateAuthorityReceiptV3& receipt) noexcept {
-  return receipt.statement_receipt_uuid == kSnapshot &&
-      receipt.catalog_snapshot_uuid == kSnapshot &&
-      receipt.catalog_generation == 10 && receipt.registry_generation == 10;
+  // Completed DATE profiles start at D707. Each immutable predecessor and
+  // explicitly registered successor retains its own receipt and seals. This
+  // does not migrate stored bytes or issue live statement authority.
+  return receipt.statement_receipt_uuid == receipt.catalog_snapshot_uuid &&
+      receipt.catalog_generation >= 7 && receipt.catalog_generation <= 11 &&
+      IsAdmittedDatatypeCohort(receipt.catalog_snapshot_uuid,
+          receipt.catalog_generation, receipt.registry_generation);
 }
 
 std::array<byte, kDateProfileMaterialBytesV3> BuildProfileMaterial(
@@ -666,8 +641,8 @@ bool ProfileValidNoAlloc(const DateValidatedProfileHandleV3& profile,
       profile.comparison_material == comparison_material &&
       Digest(profile_material, &profile_digest, control) &&
       Digest(comparison_material, &comparison_digest, control) &&
-      profile_digest == kProfileFingerprint &&
-      comparison_digest == kComparisonFingerprint &&
+      profile_digest == kProfileFingerprints[profile.receipt.catalog_generation - 7] &&
+      comparison_digest == kComparisonFingerprints[profile.receipt.catalog_generation - 7] &&
       profile.profile_fingerprint == profile_digest &&
       profile.comparison_fingerprint == comparison_digest;
 }
@@ -777,9 +752,6 @@ bool EngineUuidNil(const scratchbird::engine::Uuid& value) noexcept {
                      [](byte octet) { return octet == 0; });
 }
 
-const DatatypeTypeCodecIdentityRowV3* CurrentIdentityFor(
-    CanonicalTypeId type_id) noexcept;
-
 struct DatePeerDescriptorShape {
   scratchbird::engine::ExecutionTypeFamily family;
   scratchbird::engine::ExecutionTypeWidthClass width;
@@ -837,8 +809,11 @@ bool DescriptorBindsIdentityNoAlloc(
     const DatatypeTypeCodecIdentityRowV3& identity,
     CanonicalTypeId expected_type, bool require_nullable = true) noexcept {
   DatePeerDescriptorShape shape{};
-  const auto* current = CurrentIdentityFor(expected_type);
-  if (current == nullptr || !EqualV3IdentityIgnoringName(identity, *current) ||
+  const auto& legacy = identity.legacy_fields;
+  const auto* current = IdentityForReceipt(expected_type,
+      {legacy.catalog_snapshot_uuid, legacy.catalog_snapshot_uuid,
+       legacy.catalog_generation, legacy.registry_generation});
+  if (current == nullptr || !SameDatatypeTypeCodecIdentityV3(identity, *current) ||
       !DatePeerDescriptorShapeFor(expected_type, &shape) ||
       !EngineUuidEqual(descriptor.descriptor_uuid,
                        identity.legacy_fields.descriptor_uuid) ||
@@ -896,7 +871,7 @@ bool ExecutionDescriptorPresentNoAlloc(
 bool ExactCharacterDescriptor(
     const scratchbird::engine::ExecutionTypeDescriptor& descriptor,
     const DateAuthorityReceiptV3& receipt) noexcept {
-  const auto* identity = CurrentIdentityFor(CanonicalTypeId::character);
+  const auto* identity = IdentityForReceipt(CanonicalTypeId::character, receipt);
   return ExactReceipt(receipt) && identity != nullptr &&
       descriptor.length <= 16'777'216 &&
       DescriptorBindsIdentityNoAlloc(descriptor, *identity,
@@ -987,10 +962,11 @@ bool ResolveDateCastRowShape(u32 row, DateCastRowShape* output) noexcept {
 }
 
 bool ExactPeerIdentity(const DatatypeTypeCodecIdentityRowV3* supplied,
-                       CanonicalTypeId expected_type) noexcept {
-  const auto* expected = CurrentIdentityFor(expected_type);
+                       CanonicalTypeId expected_type,
+                       const DateAuthorityReceiptV3& receipt) noexcept {
+  const auto* expected = IdentityForReceipt(expected_type, receipt);
   return supplied != nullptr && expected != nullptr &&
-      EqualV3IdentityIgnoringName(*supplied, *expected);
+      SameDatatypeTypeCodecIdentityV3(*supplied, *expected);
 }
 
 bool DescriptorBindsIdentity(
@@ -1105,7 +1081,7 @@ DateProfileResultV3 BuildDateValidatedProfileHandleV3(
 DateValidationResultV3 ValidateDateExecutionDescriptorV3(
     const scratchbird::engine::ExecutionTypeDescriptor& descriptor,
     const DatatypeTypeCodecIdentityRowV3& identity) noexcept {
-  if (!IsExactCanonicalDateTypeCodecIdentityV3(identity) ||
+  if (!ExactDateIdentity(identity) ||
       !DescriptorBindsIdentityNoAlloc(descriptor, identity, CanonicalTypeId::date, false))
     return Failure<DateValidationResultV3>(
         "CTI.TEMPORAL.DESCRIPTOR_INVALID", "date_execution_descriptor_invalid");
@@ -1415,7 +1391,7 @@ DateValueResultV3 ParseCanonicalDateOperandV3(
   if (profile == nullptr || !ProfileValidNoAlloc(*profile))
     return Failure<DateValueResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                       "parse_profile_invalid");
-  if (!ExactPeerIdentity(operand.identity, CanonicalTypeId::character) ||
+  if (!ExactPeerIdentity(operand.identity, CanonicalTypeId::character, profile->receipt) ||
       operand.descriptor == nullptr ||
       !DescriptorBindsIdentity(*operand.descriptor, *operand.identity,
                                CanonicalTypeId::character) ||
@@ -2482,7 +2458,8 @@ DateCastResultV3 CastDateValueV3(const DateCastRequestV3& request) noexcept {
       return Failure<DateCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                        "incoming_peer_type_mismatch");
     if (shape.exact_peer_identity) {
-      if (!ExactPeerIdentity(request.scalar_source_identity, shape.peer_type) ||
+      if (!ExactPeerIdentity(request.scalar_source_identity, shape.peer_type,
+                             (*request.date_target)->receipt) ||
           !DescriptorBindsIdentity(request.scalar_source->descriptor,
                                    *request.scalar_source_identity,
                                    shape.peer_type))
@@ -2588,7 +2565,8 @@ DateCastResultV3 CastDateValueV3(const DateCastRequestV3& request) noexcept {
     return Failure<DateCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                      "outgoing_source_profile_invalid");
   if (shape.exact_peer_identity) {
-    if (!ExactPeerIdentity(request.scalar_target_identity, shape.peer_type) ||
+    if (!ExactPeerIdentity(request.scalar_target_identity, shape.peer_type,
+                           source_profile->receipt) ||
         !DescriptorBindsIdentity(request.scalar_target_descriptor,
                                  *request.scalar_target_identity,
                                  shape.peer_type))
