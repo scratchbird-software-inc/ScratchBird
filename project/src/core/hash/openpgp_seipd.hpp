@@ -56,4 +56,29 @@ PgpCode EncryptIteratedSkeskV6(std::uint8_t cipher, std::uint8_t aead,
     PgpInput session_key, PgpOutput body, PgpCancellation = {});
 PgpCode DecryptIteratedSkeskV6(PgpInput password, PgpInput body,
     PgpOutput session_key, PgpCancellation = {});
+
+struct Argon2S2kProfile {
+  std::uint8_t passes = 3, lanes = 4, memory_exponent = 16;
+};
+struct Argon2SkeskDescription {
+  PgpCode code = PgpCode::invalid_packet;
+  std::uint8_t cipher = 0, aead = 0;
+  Argon2S2kProfile s2k{};
+  std::size_t session_key_bytes = 0;
+  std::uint64_t workspace_bytes = 0;
+};
+// RFC9580 type4/Argon2id v0x13. Native approved defaults are64MiB/3passes/4lanes;
+// no automatic work-factor reduction or type3 fallback. Inspection describes
+// untrusted work, NEVER grants resources. Admit work/memory policy before calling.
+// Workspace is exclusive, 8-byte aligned, of exactly the inspected/query size,
+// disjoint from every input/output, and erased after every accepted invocation.
+// Salt is16 Core-RNG bytes. Caller owns provider allocation and publication.
+PgpSize Argon2SkeskV6Size(std::uint8_t cipher, std::uint8_t aead, std::size_t session_key_bytes) noexcept;
+Argon2SkeskDescription InspectArgon2SkeskV6(PgpInput body) noexcept;
+PgpSize Argon2S2kWorkspaceSize(Argon2S2kProfile) noexcept;
+PgpCode EncryptArgon2SkeskV6(std::uint8_t cipher, std::uint8_t aead, Argon2S2kProfile,
+    PgpInput password, PgpInput salt, PgpInput nonce, PgpInput session_key,
+    PgpOutput workspace, PgpOutput body, PgpCancellation = {});
+PgpCode DecryptArgon2SkeskV6(PgpInput password, PgpInput body,
+    PgpOutput workspace, PgpOutput session_key, PgpCancellation = {});
 }  // namespace scratchbird::core::crypto

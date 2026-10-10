@@ -1,12 +1,14 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "openpgp_seipd.hpp"
+#include "argon2_kdf.hpp"
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/kdf.h>
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <memory>
 
@@ -206,16 +208,16 @@ PgpCode IteratedKey(PgpInput password, PgpInput salt, std::uint8_t encoded,
       PgpCode::ok : PgpCode::provider_failure;
 }
 
-PgpCode SessionKey(bool encrypt, SeipdProfile p, std::uint8_t count, PgpInput password,
-    PgpInput salt, PgpInput nonce, PgpInput input, PgpOutput output, PgpCancellation cancellation) {
+template<class KeyDeriver>
+PgpCode SessionKey(bool encrypt, SeipdProfile p, PgpInput specifier,
+    PgpInput nonce, PgpInput input, PgpOutput output, PgpCancellation cancellation,KeyDeriver derive_key) {
   OutputOwner pending{output};
-  if (Cancelled(cancellation)) return PgpCode::cancelled;
   {
     Secret<32> s2k, kek;
-    const auto derived = IteratedKey(password, salt, count, s2k.bytes.data(), cancellation);
+    const auto derived = derive_key(s2k.bytes.data());
     if (derived != PgpCode::ok) return derived;
     const std::array<unsigned char,4> info{0xc3,6,p.cipher,p.aead};
-    const auto key_size = KeySize(p), start = 16 + nonce.size;
+    const auto key_size = KeySize(p), start = 5 + specifier.size + nonce.size;
     const auto wrapped_size = encrypt ? input.size : output.size;
     if (!Derive({s2k.bytes.data(),key_size},{},{info.data(),info.size()},kek.bytes.data(),key_size))
       return PgpCode::provider_failure;
@@ -223,11 +225,10 @@ PgpCode SessionKey(bool encrypt, SeipdProfile p, std::uint8_t count, PgpInput pa
     std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)> ctx(EVP_CIPHER_CTX_new(),EVP_CIPHER_CTX_free);
     if (!cipher || !ctx) return PgpCode::provider_failure;
     if (encrypt) {
-      const std::array<unsigned char,7> header{6,static_cast<unsigned char>(14+nonce.size),p.cipher,p.aead,11,3,8};
+      const std::array<unsigned char,5> header{6,static_cast<unsigned char>(3+specifier.size+nonce.size),p.cipher,p.aead,static_cast<unsigned char>(specifier.size)};
       std::memcpy(output.data,header.data(),header.size());
-      std::memcpy(output.data+7,salt.data,8);
-      output.data[15]=count;
-      std::memcpy(output.data+16,nonce.data,nonce.size);
+      std::memcpy(output.data+5,specifier.data,specifier.size);
+      std::memcpy(output.data+5+specifier.size,nonce.data,nonce.size);
     }
     const auto result = Chunk(ctx.get(),cipher,encrypt,{kek.bytes.data(),key_size},nonce,
         {info.data(),info.size()}, {encrypt?input.data:input.data+start,wrapped_size},
@@ -238,6 +239,21 @@ PgpCode SessionKey(bool encrypt, SeipdProfile p, std::uint8_t count, PgpInput pa
   if (Cancelled(cancellation)) return PgpCode::cancelled;
   pending.accepted=true;
   return PgpCode::ok;
+}
+PgpCode Argon2Key(Argon2S2kProfile profile,PgpInput password,PgpInput salt,PgpOutput workspace,
+    std::uint8_t* key,std::size_t key_size,PgpCancellation cancellation) {
+  const auto code=DeriveArgon2idKey({std::uint32_t{1}<<profile.memory_exponent,profile.passes,profile.lanes},
+      {password.data,password.size},{salt.data,salt.size},{workspace.data,workspace.size},
+      {key,key_size},{cancellation.requested,cancellation.context});
+  if(code==Argon2Code::ok)return PgpCode::ok;
+  if(code==Argon2Code::cancelled)return PgpCode::cancelled;
+  return PgpCode::provider_failure; // All structural admission was already checked.
+}
+bool WorkspaceValid(PgpOutput work,PgpOutput output,std::initializer_list<PgpInput> inputs) noexcept {
+  const PgpInput w{work.data,work.size},o{output.data,output.size};
+  if(!Extent(w)||!Extent(o)||reinterpret_cast<std::uintptr_t>(work.data)%alignof(std::uint64_t)||Overlaps(w,o))return false;
+  for(auto in:inputs)if(!Extent(in)||Overlaps(in,w)||Overlaps(in,o))return false;
+  return true;
 }
 }  // namespace
 
@@ -307,7 +323,11 @@ PgpCode EncryptIteratedSkeskV6(std::uint8_t cipher,std::uint8_t aead,std::uint8_
       body.size!=expected.bytes ||
       password.size>std::numeric_limits<std::size_t>::max()-8 ||
       password.size>std::numeric_limits<std::uint64_t>::max()/8-8) return PgpCode::invalid_extent;
-  return SessionKey(true,p,encoded_count,password,salt,nonce,session_key,body,cancellation);
+  std::array<unsigned char,11> spec{3,8};std::memcpy(spec.data()+2,salt.data,8);spec[10]=encoded_count;
+  return SessionKey(true,p,{spec.data(),spec.size()},nonce,session_key,body,cancellation,[&](auto* key){
+    if(Cancelled(cancellation))return PgpCode::cancelled;
+    return IteratedKey(password,salt,encoded_count,key,cancellation);
+  });
 }
 PgpCode DecryptIteratedSkeskV6(PgpInput password,PgpInput body,PgpOutput session_key,PgpCancellation cancellation) {
   if (!Buffers(session_key,password,body) || password.size>std::numeric_limits<std::size_t>::max()-8 ||
@@ -317,6 +337,57 @@ PgpCode DecryptIteratedSkeskV6(PgpInput password,PgpInput body,PgpOutput session
   if (expected.code!=PgpCode::ok) return expected.code;
   if (session_key.size!=expected.bytes) return PgpCode::invalid_extent;
   const SeipdProfile p{body.data[2],body.data[3],0};
-  return SessionKey(false,p,body.data[15],password,{body.data+7,8},{body.data+16,NonceSize(p)},body,session_key,cancellation);
+  return SessionKey(false,p,{body.data+5,11},{body.data+16,NonceSize(p)},body,session_key,cancellation,[&](auto* key){
+    if(Cancelled(cancellation))return PgpCode::cancelled;
+    return IteratedKey(password,{body.data+7,8},body.data[15],key,cancellation);
+  });
+}
+PgpSize Argon2S2kWorkspaceSize(Argon2S2kProfile p) noexcept {
+  if(!p.passes||!p.lanes||p.memory_exponent<3||p.memory_exponent>31)return {PgpCode::invalid_profile,0};
+  const auto size=Argon2idWorkspaceBytes({std::uint32_t{1}<<p.memory_exponent,p.passes,p.lanes});
+  if(size.code==Argon2Code::size_overflow)return {PgpCode::size_overflow,0};
+  if(size.code!=Argon2Code::ok)return {PgpCode::invalid_profile,0};
+  return {PgpCode::ok,static_cast<std::size_t>(size.bytes)};
+}
+PgpSize Argon2SkeskV6Size(std::uint8_t cipher,std::uint8_t aead,std::size_t key_size) noexcept {
+  auto size=IteratedSkeskV6Size(cipher,aead,key_size);
+  if(size.code==PgpCode::ok)size.bytes+=9;return size;
+}
+Argon2SkeskDescription InspectArgon2SkeskV6(PgpInput body) noexcept {
+  Argon2SkeskDescription out;
+  if(!Extent(body)){out.code=PgpCode::invalid_extent;return out;}
+  if(body.size<25||body.data[0]!=6||body.data[4]!=20||body.data[5]!=4)return out;
+  out.cipher=body.data[2];out.aead=body.data[3];out.s2k={body.data[22],body.data[23],body.data[24]};
+  const SeipdProfile p{out.cipher,out.aead,0};
+  if(!ProfileValid(p)){out.code=PgpCode::invalid_profile;return out;}
+  const auto overhead=25+NonceSize(p)+16;
+  if(body.size<overhead||body.data[1]!=23+NonceSize(p))return out;
+  const auto key_size=body.size-overhead;
+  if(key_size!=16&&key_size!=24&&key_size!=32)return out;
+  const auto workspace=Argon2S2kWorkspaceSize(out.s2k);out.code=workspace.code;
+  if(out.code==PgpCode::ok){out.session_key_bytes=key_size;out.workspace_bytes=workspace.bytes;}
+  return out;
+}
+PgpCode EncryptArgon2SkeskV6(std::uint8_t cipher,std::uint8_t aead,Argon2S2kProfile profile,
+    PgpInput password,PgpInput salt,PgpInput nonce,PgpInput session_key,PgpOutput workspace,PgpOutput body,PgpCancellation cancellation) {
+  const auto size=Argon2SkeskV6Size(cipher,aead,session_key.size),work=Argon2S2kWorkspaceSize(profile);
+  if(size.code!=PgpCode::ok)return size.code;if(work.code!=PgpCode::ok)return work.code;
+  const SeipdProfile p{cipher,aead,0};
+  if(password.size>UINT32_MAX||salt.size!=16||nonce.size!=NonceSize(p)||body.size!=size.bytes||workspace.size!=work.bytes||
+     !WorkspaceValid(workspace,body,{password,salt,nonce,session_key}))return PgpCode::invalid_extent;
+  std::array<unsigned char,20> spec{4};std::memcpy(spec.data()+1,salt.data,16);
+  spec[17]=profile.passes;spec[18]=profile.lanes;spec[19]=profile.memory_exponent;
+  return SessionKey(true,p,{spec.data(),spec.size()},nonce,session_key,body,cancellation,[&](auto* key){
+    return Argon2Key(profile,password,salt,workspace,key,KeySize(p),cancellation);
+  });
+}
+PgpCode DecryptArgon2SkeskV6(PgpInput password,PgpInput body,PgpOutput workspace,PgpOutput session_key,PgpCancellation cancellation) {
+  if(!WorkspaceValid(workspace,session_key,{password,body})||password.size>UINT32_MAX)return PgpCode::invalid_extent;
+  const auto description=InspectArgon2SkeskV6(body);if(description.code!=PgpCode::ok)return description.code;
+  if(session_key.size!=description.session_key_bytes||workspace.size!=description.workspace_bytes)return PgpCode::invalid_extent;
+  const SeipdProfile p{description.cipher,description.aead,0};
+  return SessionKey(false,p,{body.data+5,20},{body.data+25,NonceSize(p)},body,session_key,cancellation,[&](auto* key){
+    return Argon2Key(description.s2k,password,{body.data+6,16},workspace,key,KeySize(p),cancellation);
+  });
 }
 }  // namespace scratchbird::core::crypto

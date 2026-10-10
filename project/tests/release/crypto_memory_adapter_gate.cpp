@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "crypto_memory_adapter.hpp"
 #include "openpgp_seipd.hpp"
+#include "argon2_kdf.hpp"
 #include "reservation_backed_memory_resource.hpp"
 #include <openssl/crypto.h>
 #include <openssl/err.h>
@@ -71,8 +72,8 @@ struct Grant {
   std::unique_ptr<m::ReservationBackedMemoryResource> resource;
   void* pointer=nullptr;
   std::size_t bytes=8*1024*1024;
-  static auto Policy(){auto p=m::DefaultLocalEngineMemoryPolicy();p.hard_limit_bytes=16*1024*1024;p.per_context_limit_bytes=16*1024*1024;return p;}
-  Grant():manager(Policy()){
+  static auto Policy(std::size_t bytes){auto p=m::DefaultLocalEngineMemoryPolicy();p.hard_limit_bytes=2*bytes;p.per_context_limit_bytes=2*bytes;return p;}
+  explicit Grant(std::size_t admitted_bytes=8*1024*1024):manager(Policy(admitted_bytes)),bytes(admitted_bytes){
     m::ReservationBackedMemoryResourceRequest r;r.memory_manager=&manager;r.reservation_ledger=&ledger;
     r.consumer_kind=m::ReservationBackedMemoryConsumerKind::background_maintenance;
     r.category=m::MemoryCategory::core_runtime;r.requested_bytes=bytes;r.memory_class="crypto_provider";
@@ -328,6 +329,65 @@ void OpenPgpChecks(Grant& grant,h::CryptoMemoryPool& process,h::CryptoMemoryPool
     "PGP backing remains fully charged through provider effects and cleanup");
 }
 
+void ArgonOpenPgpChecks(Grant& provider,h::CryptoMemoryPool& operation){
+  namespace pgp=scratchbird::core::crypto;
+  using Code=pgp::PgpCode;
+  const auto work_size=pgp::Argon2S2kWorkspaceSize({}).bytes;
+  // Real physical backing for workspace, input, output and conservative scratch
+  // charge. Provider backing has its own existing actual grant. No claim here
+  // that this fixture selects or admits a production statement's CPU policy.
+  Grant native(work_size+pgp::Argon2idFixedScratchBytes()+1024);
+  auto* base=static_cast<unsigned char*>(native.pointer);
+  const pgp::PgpOutput work{base,work_size};
+  auto* tail=base+work_size;
+  pgp::PgpInput password{tail,8},salt{tail+16,16},nonce{tail+32,15},key{tail+48,32};
+  pgp::PgpOutput body{tail+80,pgp::Argon2SkeskV6Size(9,2,32).bytes},decoded{tail+192,32};
+  std::memset(tail,0x61,256);
+  const auto zero=[](pgp::PgpOutput bytes){return std::all_of(bytes.data,bytes.data+bytes.size,[](auto v){return !v;});};
+  const auto charge=[&]{return native.resource->Snapshot().allocated_bytes==native.bytes&&
+    native.manager.Snapshot().current_bytes==native.bytes&&native.ledger.Snapshot().current_bytes==native.bytes;};
+  {
+    h::CryptoMemoryScope active(operation,provider.binding);Check(active.ok(),"Argon provider admission");
+    const auto before=operation.Snapshot();deny_cpp=true;
+    const auto encrypted=pgp::EncryptArgon2SkeskV6(9,2,{},password,salt,nonce,key,work,body);
+    const auto decrypted=pgp::DecryptArgon2SkeskV6(password,{body.data,body.size},work,decoded);deny_cpp=false;
+    Check(encrypted==Code::ok&&decrypted==Code::ok&&!std::memcmp(key.data,decoded.data,32)&&zero(work),"approved default Argon packet uses actual backing without C++ fallback");
+    Check(operation.Snapshot().allocations>before.allocations&&charge(),"actual Argon and provider memory remain charged");
+    OPENSSL_thread_stop();
+  }
+  Check(!operation.Snapshot().live_blocks,"Argon provider temporaries drain");
+  {
+    h::CryptoMemoryScope sealed(operation,provider.binding,true);Check(sealed.ok(),"Argon sealed provider scope");
+    std::memset(decoded.data,0xa5,decoded.size);deny_cpp=true;
+    const auto code=pgp::DecryptArgon2SkeskV6(password,{body.data,body.size},work,decoded);deny_cpp=false;
+    Check(code==Code::provider_failure&&zero(decoded)&&zero(work)&&charge(),"Argon provider refusal after real KDF clears outputs without downgrade");
+    OPENSSL_thread_stop();
+  }
+  // Revocation of the actual provider owner is observed during native filling,
+  // before any HKDF work. Cleanup capacity remains owned until quiescence.
+  struct Revocation {
+    h::CryptoMemoryPool* pool;unsigned polls=0;
+    static bool Poll(void* raw){auto& self=*static_cast<Revocation*>(raw);
+      if(++self.polls==20)Check(self.pool->Revoke()==E::none,"Argon operation revocation");
+      return self.pool->Snapshot().revoked;
+    }
+  } cancellation{&operation};
+  {
+    h::CryptoMemoryScope active(operation,provider.binding);Check(active.ok(),"Argon revocable operation");
+    std::memset(decoded.data,0xa5,decoded.size);deny_cpp=true;
+    const auto code=pgp::DecryptArgon2SkeskV6(password,{body.data,body.size},work,decoded,{Revocation::Poll,&cancellation});deny_cpp=false;
+    Check(code==Code::cancelled&&cancellation.polls==20&&zero(decoded)&&zero(work)&&charge(),"live revocation cancels filling while retaining cleanup grant");
+    OPENSSL_thread_stop();
+  }
+  Check(operation.Close()==E::none,"revoked Argon provider drains");
+  Check(operation.Open(provider.binding,static_cast<unsigned char*>(provider.pointer)+provider.bytes/2,provider.bytes/2)==E::none,"fresh provider owner for subsequent operations");
+  // Capacity exhaustion is a real allocator refusal, not a smaller-workspace
+  // fallback. The original grant and defaults remain unchanged.
+  auto refused=native.resource->Allocate({work_size,8,"second Argon workspace exceeds grant"});
+  Check(!refused.ok()&&charge()&&pgp::Argon2S2kWorkspaceSize({}).bytes==work_size,"insufficient physical grant never weakens Argon default");
+  OPENSSL_cleanse(tail,native.bytes-work_size);native.Release();
+}
+
 int main(int argc,char** argv){
   const char* mode=argc>1?argv[1]:"bounded";
   if(!std::strcmp(mode,"late")||!std::strcmp(mode,"custom")){
@@ -355,6 +415,7 @@ int main(int argc,char** argv){
   Check(h::InstallCryptoMemoryAdapter(process)==E::none,"early explicit adapter install");
   Check(h::InstallCryptoMemoryAdapter(process)==E::already_installed,"idempotent install does not replace hooks");
   AllocatorChecks(process);DigestChecks(operation,op_binding);ProviderCapacityChecks();OpenPgpChecks(grant,process,operation);
+  ArgonOpenPgpChecks(grant,operation);
   Check(grant.resource->Snapshot().allocated_bytes==grant.bytes&&grant.manager.Snapshot().current_bytes==grant.bytes,"provider work preserves actual backing charge");
   Check(h::StopCryptoMemoryAdapter()==E::busy,"provider caches prevent false drain");
   OPENSSL_thread_stop();OPENSSL_cleanup();

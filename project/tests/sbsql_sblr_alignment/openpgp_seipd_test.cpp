@@ -406,9 +406,144 @@ void SessionExtentsAndKeySizes() {
     }
   }
 }
+Bytes ReferenceArgonSession(unsigned cipher,unsigned aead,const Bytes& salt,const Bytes& nonce,const Bytes& key) {
+  // Frozen libargon2 Argon2id-v0x13 answers, independent of our pinned provider:
+  // m=64KiB, t=2, p=3; password[i]=19*i (8 bytes); salt[i]=i (16 bytes).
+  // The requested output length participates in H0: do NOT truncate a32-byte KDF.
+  const char* answers[]{"260b8859c233d0e9d1c361a411196e15",
+    "3f253c42f21cce5c1354ded8571f8993067a6923559b5055",
+    "a4326a9dc5f0f1b2dc23b92ca68d1d0c369fa1f7220c3095b00f57cc9aad67c1"};
+  const auto s2k=Hex(answers[cipher-7]);
+  std::array<unsigned char,32> zeros{},prk{},kek{};unsigned length=0;
+  Check(HMAC(EVP_sha256(),zeros.data(),32,s2k.data(),s2k.size(),prk.data(),&length)&&length==32,"reference Argon SKESK extract");
+  const std::array<unsigned char,5> info{0xc3,6,static_cast<unsigned char>(cipher),static_cast<unsigned char>(aead),1};
+  Check(HMAC(EVP_sha256(),prk.data(),32,info.data(),info.size(),kek.data(),&length)&&length==32,"reference Argon SKESK expand");
+  const EVP_CIPHER* selected=aead==2?(cipher==7?EVP_aes_128_ocb():cipher==8?EVP_aes_192_ocb():EVP_aes_256_ocb()):
+      (cipher==7?EVP_aes_128_gcm():cipher==8?EVP_aes_192_gcm():EVP_aes_256_gcm());
+  Bytes out{6,static_cast<unsigned char>(23+nonce.size()),static_cast<unsigned char>(cipher),static_cast<unsigned char>(aead),20,4};
+  out.insert(out.end(),salt.begin(),salt.end());out.insert(out.end(),{2,3,6});out.insert(out.end(),nonce.begin(),nonce.end());
+  const auto start=out.size();out.resize(start+key.size()+16);
+  auto* ctx=EVP_CIPHER_CTX_new();Check(ctx!=nullptr,"reference Argon SKESK context");
+  int n=0,final=0;
+  const bool ok=EVP_EncryptInit_ex(ctx,selected,nullptr,nullptr,nullptr)==1 &&
+      EVP_CIPHER_CTX_ctrl(ctx,EVP_CTRL_AEAD_SET_IVLEN,nonce.size(),nullptr)==1 &&
+      EVP_EncryptInit_ex(ctx,nullptr,nullptr,kek.data(),nonce.data())==1 &&
+      EVP_EncryptUpdate(ctx,nullptr,&n,info.data(),4)==1 &&
+      EVP_EncryptUpdate(ctx,out.data()+start,&n,key.data(),key.size())==1 &&
+      EVP_EncryptFinal_ex(ctx,out.data()+start+n,&final)==1 && std::size_t(n+final)==key.size() &&
+      EVP_CIPHER_CTX_ctrl(ctx,EVP_CTRL_AEAD_GET_TAG,16,out.data()+start+key.size())==1;
+  EVP_CIPHER_CTX_free(ctx);Check(ok,"reference Argon SKESK encryption");return out;
+}
+struct ArgonWorkspace {
+  // uint64_t storage enforces the primitive's alignment on every platform.
+  std::vector<std::uint64_t> words;
+  explicit ArgonWorkspace(c::Argon2S2kProfile p) {
+    const auto size=c::Argon2S2kWorkspaceSize(p);Check(size.code==Code::ok,"Argon workspace size");
+    words.resize(size.bytes/8+2,UINT64_MAX);
+  }
+  c::PgpOutput out(){return {reinterpret_cast<std::uint8_t*>(words.data()+1),(words.size()-2)*8};}
+  void dirty(){std::fill(words.begin(),words.end(),UINT64_MAX);}
+  bool erased()const{return words.front()==UINT64_MAX&&words.back()==UINT64_MAX&&
+      std::all_of(words.begin()+1,words.end()-1,[](auto v){return v==0;});}
+  bool untouched()const{return std::all_of(words.begin(),words.end(),[](auto v){return v==UINT64_MAX;});}
+};
+void ArgonSessions() {
+  const c::Argon2S2kProfile profile{2,3,6};
+  const c::Argon2S2kProfile defaults;
+  Check(defaults.passes==3&&defaults.lanes==4&&defaults.memory_exponent==16&&
+      c::Argon2S2kWorkspaceSize(defaults).bytes==64*1024*1024,"approved native defaults");
+  Bytes password(8),salt(16);for(unsigned i=0;i<8;++i)password[i]=19*i;
+  for(unsigned i=0;i<16;++i)salt[i]=i;
+  for(unsigned cipher=7;cipher<=9;++cipher)for(unsigned aead:{2u,3u})for(unsigned key_size:{16u,24u,32u}) {
+    const Bytes nonce(aead==2?15:12,0x73),key(key_size,0x61);
+    const auto expected=ReferenceArgonSession(cipher,aead,salt,nonce,key);
+    const auto size=c::Argon2SkeskV6Size(cipher,aead,key_size);
+    Check(size.code==Code::ok&&size.bytes==expected.size(),"Argon packet size");
+    ArgonWorkspace work(profile);Bytes body(size.bytes,0xa5);
+    Check(c::EncryptArgon2SkeskV6(cipher,aead,profile,In(password),In(salt),In(nonce),In(key),work.out(),Out(body))==Code::ok&&
+      body==expected&&work.erased(),"independent Argon SKESK ciphertext and erased rounded workspace");
+    const auto description=c::InspectArgon2SkeskV6(In(expected));
+    Check(description.code==Code::ok&&description.cipher==cipher&&description.aead==aead&&
+      description.s2k.passes==2&&description.s2k.lanes==3&&description.s2k.memory_exponent==6&&
+      description.workspace_bytes==60*1024&&description.session_key_bytes==key_size,"untrusted work inspection");
+    Bytes output(key_size,0xa5);work.dirty();
+    Check(c::DecryptArgon2SkeskV6(In(password),In(expected),work.out(),Out(output))==Code::ok&&output==key&&work.erased(),"independent Argon SKESK receive");
+    for(unsigned at=6;at<body.size();++at) {
+      auto bad=body;bad[at]^=1;
+      const auto info=c::InspectArgon2SkeskV6(In(bad));
+      Check(info.code==Code::ok,"mutated Argon profile structurally valid");
+      ArgonWorkspace altered(info.s2k);output.assign(key_size,0xa5);
+      Check(c::DecryptArgon2SkeskV6(In(password),In(bad),altered.out(),Out(output))==Code::authentication_failed&&
+        Zero(output)&&altered.erased(),"Argon salt/work/nonce/ciphertext/tag authenticated");
+    }
+    auto wrong=password;wrong.back()^=1;work.dirty();output.assign(key_size,0xa5);
+    Check(c::DecryptArgon2SkeskV6(In(wrong),In(body),work.out(),Out(output))==Code::authentication_failed&&Zero(output)&&work.erased(),"Argon wrong password");
+    for(bool decrypt:{false,true}) {
+      output.assign(decrypt?key_size:body.size(),0xa5);
+      const auto run=[&](c::PgpCancellation probe={}) {work.dirty();return decrypt?
+        c::DecryptArgon2SkeskV6(In(password),In(body),work.out(),Out(output),probe):
+        c::EncryptArgon2SkeskV6(cipher,aead,profile,In(password),In(salt),In(nonce),In(key),work.out(),Out(output),probe);};
+      Probe baseline;Check(run(baseline.callback())==Code::ok&&baseline.calls>10&&work.erased(),"Argon SKESK probe baseline");
+      for(bool throwing:{false,true})for(unsigned at=1;at<=baseline.calls;++at) {
+        Probe probe{0,at,throwing};std::fill(output.begin(),output.end(),0xa5);bool threw=false;
+        try{Check(run(probe.callback())==Code::cancelled,"Argon SKESK cancellation");}catch(const ProbeException&){threw=true;}
+        Check(threw==throwing&&probe.calls==at&&Zero(output)&&work.erased(),"all Argon SKESK cancellation/throw points erase work/output");
+      }
+#ifdef SB_PGP_PROVIDER_FAULTS
+      for(unsigned kind=1;kind<=7;++kind) {
+        failure_kind=kind;failure_at=0;provider_calls=0;const auto initial=run();const auto count=provider_calls;failure_kind=0;
+        Check(initial==Code::ok&&count>0&&work.erased(),"Argon provider baseline");
+        for(unsigned at=1;at<=count;++at) {
+          std::fill(output.begin(),output.end(),0xa5);failure_kind=kind;failure_at=at;provider_calls=0;
+          const auto result=run();const auto calls=provider_calls;failure_kind=0;
+          Check(result!=Code::ok&&calls==at&&Zero(output)&&work.erased(),"Argon provider failure after KDF erases work/output");
+          Check(run()==Code::ok&&work.erased(),"Argon independent retry");
+        }
+      }
+#endif
+    }
+  }
+  // Structural rejection must occur before dereferencing or clearing buffers.
+  ArgonWorkspace work(profile);const Bytes nonce(15,0x73),key(32,0x61);
+  const auto body=ReferenceArgonSession(9,2,salt,nonce,key);Bytes output(body.size(),0xa5);const auto saved=output;
+  const auto run=[&](c::PgpInput pass,c::PgpInput s,c::PgpInput n,c::PgpInput k,c::PgpOutput w,c::PgpOutput o){
+    Probe probe;const auto result=c::EncryptArgon2SkeskV6(9,2,profile,pass,s,n,k,w,o,probe.callback());
+    Check(result==Code::invalid_extent&&probe.calls==0&&work.untouched()&&output==saved,"Argon extent rejection has no effects");};
+  run({nullptr,1},In(salt),In(nonce),In(key),work.out(),Out(output));
+  run(In(password),{salt.data(),15},In(nonce),In(key),work.out(),Out(output));
+  run(In(password),In(salt),{nonce.data(),14},In(key),work.out(),Out(output));
+  run(In(password),In(salt),In(nonce),In(key),{work.out().data,work.out().size-8},Out(output));
+  run(In(password),In(salt),In(nonce),In(key),{work.out().data+1,work.out().size},Out(output));
+  run(In(password),In(salt),In(nonce),In(key),work.out(),{output.data(),output.size()-1});
+  for(unsigned which=0;which<4;++which)for(bool in_workspace:{false,true}) {
+    auto pass=In(password),s=In(salt),n=In(nonce),k=In(key);
+    auto* alias=in_workspace?work.out().data:output.data();
+    if(which==0)pass.data=alias;if(which==1)s.data=alias;if(which==2)n.data=alias;if(which==3)k.data=alias;
+    run(pass,s,n,k,work.out(),Out(output));
+  }
+  run(In(password),In(salt),In(nonce),In(key),work.out(),{work.out().data,output.size()});
+  for(c::Argon2S2kProfile invalid:{c::Argon2S2kProfile{0,3,6},{2,0,6},{2,3,2},{2,3,32},{2,255,3}})
+    Check(c::Argon2S2kWorkspaceSize(invalid).code==Code::invalid_profile,"invalid Argon profile no fallback");
+  for(unsigned field:{0u,1u,2u,3u,4u,5u,22u,23u,24u}) {
+    auto bad=body;bad[field]=0;Probe probe;
+    Check(c::DecryptArgon2SkeskV6(In(password),In(bad),work.out(),{output.data(),key.size()},probe.callback())!=Code::ok&&
+      probe.calls==0&&work.untouched()&&output==saved,"invalid Argon packet before work");
+  }
+  for(std::size_t n=0;n<body.size();++n) {
+    const auto info=c::InspectArgon2SkeskV6({body.data(),n});if(info.code!=Code::ok)continue;
+    Bytes partial(info.session_key_bytes,0xa5);work.dirty();
+    Check(c::DecryptArgon2SkeskV6(In(password),{body.data(),n},work.out(),Out(partial))==Code::authentication_failed&&
+      Zero(partial)&&work.erased(),"truncated Argon packet never authenticates");
+  }
+  // Empty passwords are byte strings, not an implicit rejection/substitution.
+  Bytes recovered(key.size(),0xa5);work.dirty();
+  Check(c::EncryptArgon2SkeskV6(9,2,profile,{},In(salt),In(nonce),In(key),work.out(),Out(output))==Code::ok&&work.erased(),"empty Argon password encrypt");
+  Check(c::DecryptArgon2SkeskV6({},In(output),work.out(),Out(recovered))==Code::ok&&recovered==key&&work.erased(),"empty Argon password receive");
+}
 int main() try {
   RfcVectors(); Boundaries(); Cancellation(); InvalidExtents(); ProviderFailures(); ReceiveShapeAndChunkIntegrity();
   SessionRfcVectors();SessionBoundariesAndFailures();SessionExtentsAndKeySizes();
+  ArgonSessions();
   std::cout << checks << " authenticated OpenPGP container checks passed\n";
   return 0;
 } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
