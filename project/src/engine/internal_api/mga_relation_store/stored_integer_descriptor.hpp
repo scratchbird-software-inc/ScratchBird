@@ -28,16 +28,16 @@ inline bool ProjectStoredIntegerDescriptorV1(
       type == dt::CanonicalTypeId::unknown ||
       !source.charset_uuid.is_nil() || !source.collation_uuid.is_nil())
     return refuse("stored signed integer occurrence identity or resources are invalid");
-  const auto lookup = dt::LookupDatatypeTypeCodecIdentityV1(
+  const auto lookup = dt::LookupDatatypeTypeCodecIdentityV3(
       context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
       context.datatype_registry_generation, source.datatype_descriptor_uuid,
       source.datatype_descriptor_generation);
-  if (!lookup.ok || lookup.row.type_uuid != source.type_uuid ||
-      lookup.row.canonical_binary_type_code !=
+  const auto& row = lookup.row.legacy_fields;
+  if (!lookup.ok || row.type_uuid != source.type_uuid ||
+      row.canonical_binary_type_code !=
           static_cast<std::uint32_t>(type) ||
-      lookup.row.canonical_value_exact_bytes != (type == dt::CanonicalTypeId::int32 ? 4 : 8))
+      row.canonical_value_exact_bytes != (type == dt::CanonicalTypeId::int32 ? 4 : 8))
     return refuse("stored signed integer datatype is not bound to the supplied catalog cohort");
-  const auto& row = lookup.row;
   // Slot NULL is an external containing state with no payload. The codec's
   // null_supported flag describes its own value carrier, not column nullability.
   CatalogColumnMetadata fields;

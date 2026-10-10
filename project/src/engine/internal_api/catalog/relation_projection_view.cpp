@@ -63,13 +63,13 @@ bool DescriptorExactlyMatches(const EngineDescriptor& left,
 }
 
 bool BoundInt32Cohort(const EngineRequestContext& context, const EngineDescriptor& source) {
-  dt::DatatypeStorageIdentityV1 identity;
-  return dt::LookupDatatypeStorageIdentityV1(
+  dt::DatatypeStorageIdentityV3 identity;
+  return dt::LookupDatatypeStorageIdentityV3(
       context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
       context.datatype_registry_generation, source.datatype_descriptor_uuid,
       source.datatype_descriptor_generation, &identity) &&
       identity.type_id == dt::CanonicalTypeId::int32 && identity.type_uuid == source.type_uuid &&
-      identity.codec && identity.codec->canonical_value_exact_bytes == 4;
+      identity.codec && identity.codec->legacy_fields.canonical_value_exact_bytes == 4;
 }
 
 // The packed projection descriptor has one opaque, binary metadata field.

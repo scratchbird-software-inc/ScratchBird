@@ -1023,11 +1023,7 @@ struct DirectTypedIndexKeyStats {
 
 // Storage/index binding is not a typed-literal codec capability. Keep the
 // catalog-owned descriptor identity separate from optional codec activation.
-struct DirectIndexDatatypeBinding {
-  EngineUuid descriptor_uuid;
-  std::uint64_t descriptor_generation = 0;
-  std::uint32_t canonical_binary_type_code = 0;
-};
+using DirectIndexDatatypeBinding = dt::DatatypeStorageIdentityV3;
 using DirectIndexDatatypeBindings =
     std::map<std::string, DirectIndexDatatypeBinding>;
 
@@ -1045,15 +1041,13 @@ bool DirectBindIndexDatatypes(const EngineRequestContext& context,
         !core::uuid::IsEngineIdentityUuid(value.descriptor_uuid) ||
         !columns.insert(column.column_uuid).second || !values.insert(value.descriptor_uuid).second)
       return false;
-    dt::DatatypeStorageIdentityV1 row;
-    if (!dt::LookupDatatypeStorageIdentityV1(
+    dt::DatatypeStorageIdentityV3 row;
+    if (!dt::LookupDatatypeStorageIdentityV3(
         context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
         context.datatype_registry_generation, value.datatype_descriptor_uuid,
         value.datatype_descriptor_generation, &row) || row.type_uuid != value.type_uuid)
       return false;
-    DirectIndexDatatypeBinding binding{row.descriptor_uuid, row.descriptor_generation,
-                                       static_cast<std::uint32_t>(row.type_id)};
-    if (!bound.emplace(column.canonical_name_key, binding).second) return false;
+    if (!bound.emplace(column.canonical_name_key, std::move(row)).second) return false;
   }
   *output = std::move(bound);
   return true;
@@ -2037,7 +2031,7 @@ bool DirectBuildTypedSimpleIndexKey(
   const auto binding = datatypes.find(column_name);
   if (binding == datatypes.end()) return false;
   return DirectBuildTypedSimpleIndexKeyFromTyped(
-      static_cast<dt::CanonicalTypeId>(binding->second.canonical_binary_type_code),
+      binding->second.type_id,
       {UuidKind::object, binding->second.descriptor_uuid},
       *typed, encoded_key, stats);
 }
@@ -2061,7 +2055,7 @@ bool DirectBuildTypedCompoundIndexKey(
     const auto* typed = DirectTypedValueForColumn(input_row, row_encoder_plan, column, &target_type_name);
     const auto binding = datatypes.find(column);
     if (!typed || binding == datatypes.end()) return false;
-    const auto type = static_cast<dt::CanonicalTypeId>(binding->second.canonical_binary_type_code);
+    const auto type = binding->second.type_id;
     idx::IndexKeyEncodingComponent component;
     component.ordinal = static_cast<std::uint32_t>(components.size());
     component.type_descriptor_uuid = {UuidKind::object, binding->second.descriptor_uuid};
@@ -2206,7 +2200,7 @@ DirectBuildStageSimpleIndexPrecomputePlan(
     const auto binding = datatypes.find(column_name);
     if (binding == datatypes.end()) return {};
     const auto target_type =
-        static_cast<dt::CanonicalTypeId>(binding->second.canonical_binary_type_code);
+        binding->second.type_id;
     const TypedUuid type_descriptor_uuid{UuidKind::object, binding->second.descriptor_uuid};
     const auto component_kind =
         target_type == dt::CanonicalTypeId::character
@@ -5709,7 +5703,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
           "row_encoder_column_binding_missing");
     }
     column.canonical_type_name = dt::CanonicalTypeName(
-        static_cast<dt::CanonicalTypeId>(binding->second.canonical_binary_type_code));
+        binding->second.type_id);
   }
   const auto strict_eligibility_start = DirectSteadyClock::now();
   const auto bulk_validation = ValidateStrictBulkLoadEligibility(batch_context, *table);

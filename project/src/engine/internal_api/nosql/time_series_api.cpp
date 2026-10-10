@@ -1220,7 +1220,7 @@ bool ExactTimeSeriesValueDescriptor(
     const EngineDescriptor& descriptor, const std::string_view expected_type,
     const EngineUuid& expected_column_uuid,
     const std::uint32_t expected_character_length,
-    const scratchbird::core::datatypes::DatatypeStorageIdentityV1& identity) {
+    const scratchbird::core::datatypes::DatatypeStorageIdentityV3& identity) {
   if (!QowCanonicalDescriptorIdentityV1(descriptor) ||
       (descriptor.descriptor_kind != "canonical_type_descriptor" && descriptor.descriptor_kind != "scalar") ||
       descriptor.canonical_type_name != expected_type ||
@@ -1235,7 +1235,7 @@ bool ExactTimeSeriesValueDescriptor(
   expected.text = {{"canonical", std::string(expected_type)}, {"nullable", "false"}};
   expected.identities = {{"type_uuid", identity.type_uuid}};
   if (identity.codec) {
-    const auto& codec = *identity.codec;
+    const auto& codec = identity.codec->legacy_fields;
     expected.identities.emplace("datatype_descriptor_uuid", codec.descriptor_uuid);
     expected.identities.emplace("codec_uuid", codec.codec_uuid);
     expected.text.emplace("datatype_descriptor_generation", std::to_string(codec.descriptor_generation));
@@ -1262,7 +1262,7 @@ bool ExactTimeSeriesValueDescriptor(
     expected.text.emplace("collation_generation", std::to_string(collation.resource_descriptor.family_epoch));
     expected.text.emplace("resource_epoch", std::to_string(context.resource_epoch));
     if (!expected_character_length ||
-        expected_character_length > identity.codec->canonical_value_maximum_bytes) return false;
+        expected_character_length > identity.codec->legacy_fields.canonical_value_maximum_bytes) return false;
     expected.text.emplace("character_length", std::to_string(expected_character_length));
   } else if (!descriptor.charset_uuid.is_nil() || !descriptor.collation_uuid.is_nil()) {
     return false;
@@ -1293,8 +1293,8 @@ bool ExactTimeSeriesStorageDescriptorImpl(
     // Resolve the stored binary identity in the admitted statement cohort.
     // Rebuilding and validating the entire current builtin manifest for each
     // column is neither needed nor authority for a retained historical row.
-    scratchbird::core::datatypes::DatatypeStorageIdentityV1 identity;
-    if (!scratchbird::core::datatypes::LookupDatatypeStorageIdentityV1(
+    scratchbird::core::datatypes::DatatypeStorageIdentityV3 identity;
+    if (!scratchbird::core::datatypes::LookupDatatypeStorageIdentityV3(
             context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
             context.datatype_registry_generation,
             column.value_descriptor.datatype_descriptor_uuid,

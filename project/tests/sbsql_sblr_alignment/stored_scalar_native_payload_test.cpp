@@ -666,12 +666,16 @@ void PublicInt64Transport() {
 void StoredIntegerDescriptors() {
   namespace dt = scratchbird::core::datatypes;
   unsigned int32_rows = 0, int64_rows = 0;
-  for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+  std::array<unsigned, 3> current_cohort_rows{};
+  for (const auto& identity : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row = identity.legacy_fields;
     const bool int32 = row.canonical_binary_type_code == static_cast<std::uint32_t>(dt::CanonicalTypeId::int32);
     if (!int32 && row.canonical_binary_type_code != static_cast<std::uint32_t>(dt::CanonicalTypeId::int64)) continue;
     const char* type = int32 ? "int32" : "int64";
     const unsigned width = int32 ? 4 : 8;
     if (int32) ++int32_rows; else ++int64_rows;
+    if (row.catalog_generation >= 9 && row.catalog_generation <= 11)
+      ++current_cohort_rows[row.catalog_generation - 9];
     api::EngineRequestContext context;
     context.datatype_catalog_snapshot_uuid = row.catalog_snapshot_uuid;
     context.datatype_catalog_generation = row.catalog_generation;
@@ -825,6 +829,8 @@ void StoredIntegerDescriptors() {
     }
   }
   Require(int32_rows != 0 && int64_rows != 0, "both signed integer registry cohorts were not exercised");
+  for (const auto count : current_cohort_rows)
+    Require(count == 2, "current V3 cohort did not exercise both signed integer bindings");
 }
 
 int main() {

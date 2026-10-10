@@ -520,8 +520,8 @@ bool ExactBoundVectorStorageDescriptorImpl(
   const auto exact_column = [&](const auto& column, std::uint32_t ordinal,
                                 std::string_view name, dt::CanonicalTypeId kind) {
     const auto& value = column.value_descriptor;
-    dt::DatatypeStorageIdentityV1 storage;
-    if (!dt::LookupDatatypeStorageIdentityV1(
+    dt::DatatypeStorageIdentityV3 storage;
+    if (!dt::LookupDatatypeStorageIdentityV3(
             context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
             context.datatype_registry_generation, value.datatype_descriptor_uuid,
             value.datatype_descriptor_generation, &storage) ||
@@ -536,11 +536,10 @@ bool ExactBoundVectorStorageDescriptorImpl(
       expected.text.emplace("dimension", "3");
       expected.text.emplace("element_type", "real32");
     }
-    const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
-        context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
-        context.datatype_registry_generation, storage.descriptor_uuid, storage.descriptor_generation);
-    if (binding.ok) {
-      const auto& codec = binding.row;
+    // The retained V3 lookup already resolved this exact row. A second V1
+    // lookup both allocates unnecessarily and drops current policy fields.
+    if (storage.codec) {
+      const auto& codec = storage.codec->legacy_fields;
       expected.identities.emplace("column_uuid", column.column_uuid);
       expected.identities.emplace("datatype_descriptor_uuid", codec.descriptor_uuid);
       expected.identities.emplace("codec_uuid", codec.codec_uuid);
@@ -557,7 +556,7 @@ bool ExactBoundVectorStorageDescriptorImpl(
       if (!column.charset_uuid.is_nil() || !column.collation_uuid.is_nil() || column.character_length != 0)
         return false;
     } else if (!BindExactModelTextResourceFields(context, column,
-                   binding.row.canonical_value_maximum_bytes, &expected)) {
+                   storage.codec->legacy_fields.canonical_value_maximum_bytes, &expected)) {
       return false;
     }
     return column.ordinal == ordinal && column.canonical_name_key == name &&
