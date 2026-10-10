@@ -7,6 +7,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "../support/owned_temp_directory.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
 #include "domain_support/domain_store.hpp"
 #include "query/expression_api.hpp"
 #include "datatype_catalog_manifest.hpp"
@@ -43,20 +46,12 @@ struct DatabaseFixture {
   std::filesystem::path path;
   TypedUuid database_uuid;
   TypedUuid filespace_uuid;
-};
-
-struct CleanupDir {
-  std::filesystem::path root;
-  ~CleanupDir() {
-    std::error_code ignored;
-    std::filesystem::remove_all(root, ignored);
-  }
+  api::EngineRequestContext owner;
 };
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
-    std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -73,8 +68,7 @@ std::string DiagnosticText(const api::DomainStoreResult& result) {
 
 void RequireApiOk(const api::EngineApiResult& result, std::string_view message) {
   if (result.ok) { return; }
-  std::cerr << message << ": " << DiagnosticText(result) << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message)+": "+DiagnosticText(result));
 }
 
 void RequireDiagnosticContains(const api::EngineApiDiagnostic& diagnostic,
@@ -83,8 +77,7 @@ void RequireDiagnosticContains(const api::EngineApiDiagnostic& diagnostic,
   const std::string text =
       diagnostic.code + ":" + diagnostic.message_key + ":" + diagnostic.detail;
   if (text.find(needle) != std::string::npos) { return; }
-  std::cerr << message << ": " << text << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message)+": "+text);
 }
 
 TypedUuid MakeUuid(UuidKind kind, u64 offset) {
@@ -133,27 +126,25 @@ DatabaseFixture CreateDatabaseFixture(const std::filesystem::path& root) {
   create.filespace_uuid = fixture.filespace_uuid;
   create.page_size = kPageSize;
   create.creation_unix_epoch_millis = kBaseMillis;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
-  create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ':'
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "database fixture creation failed");
+  fixture.owner=scratchbird::tests::BootstrapFixtureOwnerContext(create);
   return fixture;
 }
 
 api::EngineRequestContext Context(const DatabaseFixture& fixture,
                                   std::string request_id) {
-  api::EngineRequestContext context;
+  auto context=fixture.owner;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.path.string();
   context.database_uuid = NativeIdentity(fixture.database_uuid);
   context.node_uuid = NativeIdentity(UuidKind::object, 312);
-  context.principal_uuid = NativeIdentity(UuidKind::principal, 313);
   context.session_uuid = NativeIdentity(UuidKind::object, 314);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
@@ -163,6 +154,7 @@ api::EngineRequestContext Context(const DatabaseFixture& fixture,
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
   return context;
 }
 
@@ -277,10 +269,8 @@ void RequireSameDomainMetadata(const api::DomainRecord& expected,
 
 void DomainBinaryCatalogProof() {
   ConfigureMemoryFixture();
-  const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
-  CleanupDir cleanup{std::filesystem::temp_directory_path() /
-                     ("sb_eler031_" + std::to_string(unique))};
-  const auto fixture = CreateDatabaseFixture(cleanup.root);
+  scratchbird::tests::OwnedTempDirectory cleanup;
+  const auto fixture = CreateDatabaseFixture(cleanup.path());
 
   auto writer = Context(fixture, "eler031-domain-writer");
   Begin(&writer);
@@ -378,10 +368,8 @@ void DomainBinaryCatalogProof() {
 }
 
 void DomainBinaryScalarProof() {
-  const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
-  CleanupDir cleanup{std::filesystem::temp_directory_path() /
-                     ("sb_domain_scalar_" + std::to_string(unique))};
-  const auto fixture = CreateDatabaseFixture(cleanup.root);
+  scratchbird::tests::OwnedTempDirectory cleanup;
+  const auto fixture = CreateDatabaseFixture(cleanup.path());
   auto writer = Context(fixture, "domain-scalar-writer");
   Begin(&writer);
   namespace dt = scratchbird::core::datatypes;
@@ -399,10 +387,11 @@ void DomainBinaryScalarProof() {
     domain.catalog_row_uuid = NativeIdentity(UuidKind::object, 410 + domains.size());
     domain.schema_uuid = NativeIdentity(UuidKind::schema, 420);
     domain.default_name = std::string("binary_carrier_") + type;
-    domain.base_descriptor_uuid = row.manifest.descriptor_rows.front().descriptor_uuid.value;
-    domain.base_descriptor_kind = "scalar";
-    domain.base_canonical_type_name = type;
-    domain.base_encoded_descriptor = std::string("type=") + type;
+    api::EngineColumnDefinition base;
+    scratchbird::tests::BindFixtureColumnDatatype(writer,dt::CanonicalTypeIdFromStableName(type),base);
+    base.descriptor.descriptor_kind="scalar";base.descriptor.canonical_type_name=type;
+    base.descriptor.encoded_descriptor="nullable=true";
+    Require(!api::BindDomainScalarBaseDescriptor(writer,base.descriptor,&domain).error,"bind actual domain native base");
     domain.nullable = true;
     domain.check_constraint_envelope = "sblr_predicate:not_empty";
     const auto appended = api::AppendDomainEvent(writer, api::MakeDomainCreateEvent(domain));
@@ -421,13 +410,17 @@ void DomainBinaryScalarProof() {
     Require(visible.has_value(), "binary scalar domain unavailable after commit/reload");
     const auto descriptor = api::DomainDescriptor(*visible);
     api::EngineTypedValue input;
-    input.descriptor.descriptor_kind = "scalar";
-    input.descriptor.canonical_type_name = "uuid";
+    api::EngineColumnDefinition source;
+    scratchbird::tests::BindFixtureColumnDatatype(reader,dt::CanonicalTypeId::uuid,source);
+    source.descriptor.descriptor_kind="scalar";source.descriptor.canonical_type_name="uuid";
+    source.descriptor.encoded_descriptor="nullable=true";
+    input.descriptor = source.descriptor;
     input.binary_value = bytes;
     const auto validate = [&](const api::EngineTypedValue& value) {
       return api::ValidateDomainTypedValue(reader, descriptor, value, reader.local_transaction_id);
     };
     const auto valid = validate(input);
+    if(!valid.ok)std::cerr<<valid.diagnostic.code<<':'<<valid.diagnostic.detail<<'\n';
     Require(valid.ok && valid.value.binary_value == bytes && valid.value.encoded_value.empty() &&
                 valid.value.descriptor.descriptor_uuid == domain.domain_uuid,
             "persisted domain validation lost binary UUID bytes or descriptor");
@@ -444,6 +437,33 @@ void DomainBinaryScalarProof() {
     Require(cast.value.binary_value == bytes && cast.value.encoded_value.empty() &&
                 cast.value.descriptor.descriptor_uuid == domain.domain_uuid,
             "UUID-to-domain cast lost binary payload");
+    auto malformed_target=request;
+    ++malformed_target.target_descriptor.datatype_descriptor_generation;
+    Require(!api::EngineCastValue(malformed_target).ok,"public domain cast refuses forged target generation");
+    malformed_target=request;malformed_target.target_descriptor.encoded_descriptor+=";forged=true";
+    Require(!api::EngineCastValue(malformed_target).ok,"public domain cast refuses forged target metadata");
+    auto reentrant=request;
+    bool changed=false;
+    reentrant.context.query_cancellation_requested=[&] {
+      if(!changed) {
+        changed=true;
+        auto replacement=*visible;replacement.creator_tx=reader.local_transaction_id;
+        replacement.comment_envelope="replacement-during-admission";
+        Require(!api::AppendDomainEvent(reader,api::MakeDomainAlterEvent(replacement)).error,
+                "publish reentrant domain replacement");
+      }
+      return false;
+    };
+    Require(!api::EngineCastValue(reentrant).ok&&changed,"public cast refuses replacement during cancellation observation");
+    auto restored=*visible;restored.creator_tx=reader.local_transaction_id;
+    Require(!api::AppendDomainEvent(reader,api::MakeDomainAlterEvent(restored)).error,
+            "restore original domain after reentrant refusal");
+    auto to_base=request;to_base.input_value=cast.value;to_base.target_descriptor=input.descriptor;
+    const auto unwrapped=api::EngineCastValue(to_base);
+    RequireApiOk(unwrapped,"validated domain-to-base cast failed");
+    Require(unwrapped.value.binary_value==bytes&&unwrapped.value.encoded_value.empty()&&
+            unwrapped.value.descriptor==input.descriptor&&unwrapped.cast_category=="domain_to_base",
+            "domain-to-base cast preserves binary value and classifies the boundary");
     const auto column = api::DomainColumnDescriptor(domain.domain_uuid);
     api::ConstraintDmlValidationCache cache;
     const auto row = api::ApplyDomainRulesToCrudValues(reader, {{"v", column}},
@@ -472,14 +492,14 @@ void DomainBinaryScalarProof() {
               "binary domain confused marker-shaped data with SQL NULL");
     }
     input.binary_value.clear();
-    input.state = api::EngineValueState::sql_null;
+    input.setState(api::EngineValueState::sql_null);
     const auto null_value = validate(input);
     Require(null_value.ok && null_value.value.state == api::EngineValueState::sql_null &&
                 null_value.value.is_null && null_value.value.binary_value.empty() &&
                 null_value.value.encoded_value.empty(), "domain NULL retained data");
     input.binary_value = bytes;
     Require(!validate(input).ok, "domain accepted NULL with binary payload");
-    input.state = api::EngineValueState::value;
+    input.setState(api::EngineValueState::value);
     input.encoded_value = "550e8400-e29b-41d4-a716-446655440000";
     Require(!validate(input).ok, "domain accepted ambiguous UUID carriers");
     input.binary_value.clear();
@@ -487,7 +507,9 @@ void DomainBinaryScalarProof() {
     input.encoded_value.clear();
     input.binary_value.assign(15, 0);
     Require(!validate(input).ok, "domain accepted short UUID input");
-    input.descriptor.canonical_type_name = "binary";
+    scratchbird::tests::BindFixtureColumnDatatype(reader,dt::CanonicalTypeId::binary,source);
+    source.descriptor.canonical_type_name = "binary";
+    input.descriptor = source.descriptor;
     input.binary_value.clear();
     Require(!validate(input).ok, "domain bypassed base cast or not-empty constraint");
   }
@@ -497,8 +519,10 @@ void DomainBinaryScalarProof() {
 }  // namespace
 
 int main() {
+  try {
   DomainBinaryCatalogProof();
   DomainBinaryScalarProof();
   std::cout << "engine_listener_domain_binary_catalog_conformance=passed\n";
   return EXIT_SUCCESS;
+  } catch(const std::exception& error) { std::cerr<<error.what()<<'\n';return EXIT_FAILURE; }
 }

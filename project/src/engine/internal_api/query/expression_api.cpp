@@ -39,6 +39,7 @@
 #include "datatype_advanced_family.hpp"
 #include "datatype_document.hpp"
 #include "domain_support/domain_store.hpp"
+#include "transaction/transaction_api.hpp"
 #include "security/security_model.hpp"
 
 #include <sstream>
@@ -3064,6 +3065,61 @@ EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request) {
   const bool domain_descriptor_route =
       !DomainUuidFromDescriptor(input.descriptor).is_nil() ||
       !DomainUuidFromDescriptor(target).is_nil();
+  if (domain_descriptor_route) {
+    const auto guard = AcquireTransactionInventoryGuard(request.context.database_path);
+    if (!DomainUuidFromDescriptor(target).is_nil()) {
+      const auto definition = FindVisibleDomain(request.context, DomainUuidFromDescriptor(target),
+                                                request.context.local_transaction_id);
+      if (!definition || target != DomainDescriptor(*definition))
+        return ApiFailure<EngineCastValueResult>(request.context, "query.cast_value",
+            MakeEngineApiDiagnostic("DATATYPE.DESCRIPTOR.INVALID", "domain.cast.rejected",
+                                    "target domain descriptor is not the visible binding"));
+      const auto validation = ValidateDomainTypedValue(request.context, target, input,
+          request.context.local_transaction_id, request.explicit_cast);
+      if (!validation.ok)
+        return ApiFailure<EngineCastValueResult>(request.context, "query.cast_value", validation.diagnostic);
+      const auto current = FindVisibleDomain(request.context, DomainUuidFromDescriptor(target),
+                                             request.context.local_transaction_id);
+      if (!current || target != DomainDescriptor(*current) ||
+          MakeDomainCreateEvent(*current) != MakeDomainCreateEvent(*definition))
+        return ApiFailure<EngineCastValueResult>(request.context, "query.cast_value",
+            MakeEngineApiDiagnostic("DATATYPE.DESCRIPTOR.INVALID", "domain.cast.rejected",
+                                    "target domain changed during validation"));
+      auto result = ApiSuccess<EngineCastValueResult>(request.context, "query.cast_value");
+      result.value = validation.value;
+      result.cast_category = dt::DatatypeCastCategoryName(dt::DatatypeCastCategory::base_to_domain);
+      result.result_shape.result_kind = "typed_value";
+      result.result_shape.columns.push_back(result.value.descriptor);
+      result.evidence = validation.evidence;
+      result.evidence.push_back({"datatype_cast", result.cast_category});
+      return result;
+    }
+    // A source domain tag is a claim, not proof of its constraints or rights.
+    const auto validated = ValidateDomainTypedValue(request.context, input.descriptor, input,
+        request.context.local_transaction_id);
+    if (!validated.ok)
+      return ApiFailure<EngineCastValueResult>(request.context, "query.cast_value", validated.diagnostic);
+    const auto profile = ResolveDomainInheritedProfile(request.context,
+        DomainUuidFromDescriptor(input.descriptor), request.context.local_transaction_id);
+    if (!profile.ok)
+      return ApiFailure<EngineCastValueResult>(request.context, "query.cast_value", profile.diagnostic);
+    auto native = validated.value;
+    native.descriptor = profile.base_descriptor;
+    EngineTypedValue converted;
+    std::string category, detail;
+    if (!QowApplyCanonicalDescriptorCoercionV1(native, target, request.explicit_cast,
+                                              &converted, &category, &detail))
+      return ApiFailure<EngineCastValueResult>(request.context, "query.cast_value",
+          MakeEngineApiDiagnostic("SBSQL_DOMAIN_VALIDATION_FAILED", "domain.cast.rejected", detail));
+    auto result = ApiSuccess<EngineCastValueResult>(request.context, "query.cast_value");
+    result.value = std::move(converted);
+    result.cast_category = dt::DatatypeCastCategoryName(dt::DatatypeCastCategory::domain_to_base);
+    result.result_shape.result_kind = "typed_value";
+    result.result_shape.columns.push_back(result.value.descriptor);
+    result.evidence = validated.evidence;
+    result.evidence.push_back({"datatype_cast", result.cast_category});
+    return result;
+  }
   const bool canonical_descriptor_route =
       !domain_descriptor_route &&
       (!input.descriptor.descriptor_uuid.is_nil() ||
@@ -3164,31 +3220,6 @@ EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request) {
         request.context,
         "query.cast_value",
         DatatypeDiagnosticToApi("query.cast_value", cast.diagnostic));
-  }
-  if (!DomainUuidFromDescriptor(target).is_nil()) {
-    EngineTypedValue candidate;
-    candidate.descriptor.descriptor_kind = "scalar";
-    candidate.descriptor.canonical_type_name = dt::CanonicalTypeName(cast.value.type_id);
-    const auto base_descriptor = candidate.descriptor;
-    PublishScalarCastValue(cast.value, base_descriptor, &candidate);
-    const auto validation = ValidateDomainTypedValue(request.context,
-                                                    target,
-                                                    candidate,
-                                                    request.context.local_transaction_id);
-    if (!validation.ok) {
-      return ApiFailure<EngineCastValueResult>(
-          request.context,
-          "query.cast_value",
-          validation.diagnostic);
-    }
-    auto result = ApiSuccess<EngineCastValueResult>(request.context, "query.cast_value");
-    result.value = validation.value;
-    result.cast_category = dt::DatatypeCastCategoryName(dt::DatatypeCastCategory::base_to_domain);
-    result.result_shape.result_kind = "typed_value";
-    result.result_shape.columns.push_back(result.value.descriptor);
-    result.evidence.push_back({"datatype_cast", result.cast_category});
-    for (const auto& evidence : validation.evidence) { result.evidence.push_back(evidence); }
-    return result;
   }
   auto result = ApiSuccess<EngineCastValueResult>(request.context, "query.cast_value");
   PublishScalarCastValue(cast.value, target, &result.value);

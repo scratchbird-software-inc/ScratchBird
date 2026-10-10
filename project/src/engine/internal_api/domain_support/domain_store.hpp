@@ -125,7 +125,8 @@ bool IsSupportedDomainCheckEnvelope(const std::string& envelope);
 DomainValueValidationResult ValidateDomainTypedValue(const EngineRequestContext& context,
                                                      const EngineDescriptor& domain_descriptor,
                                                      const EngineTypedValue& input_value,
-                                                     std::uint64_t observer_tx);
+                                                     std::uint64_t observer_tx,
+                                                     bool explicit_cast = true);
 DomainRowValidationResult ApplyDomainRulesToCrudValues(
     const EngineRequestContext& context,
     const std::vector<std::pair<std::string, std::string>>& table_columns,

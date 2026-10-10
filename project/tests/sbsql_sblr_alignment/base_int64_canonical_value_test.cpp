@@ -584,6 +584,21 @@ void NullAndAbsentPolicies() {
     identity.target_descriptor = descriptor;
     identity.context = context;
     identity.explicit_cast = context == dt::DatatypeCastContext::explicit_cast;
+    for (const bool source_nullable : {false, true}) {
+      auto present = identity;
+      present.value.is_null = false;
+      present.value.encoded_value.assign(8, '\xff');
+      present.value.descriptor.nullable_allowed = source_nullable;
+      present.target_descriptor.nullable_allowed = !source_nullable;
+      const auto rebound = dt::CastDatatypeValue(present);
+      Check(rebound.ok() && rebound.value.encoded_value == present.value.encoded_value &&
+                !rebound.value.is_null &&
+                rebound.value.descriptor.nullable_allowed == !source_nullable,
+            "present INT64 retains exact bytes across nullability-only cast");
+      ++present.target_descriptor.descriptor_epoch;
+      CheckCastRefused(dt::CastDatatypeValue(present), "DATATYPE.DESCRIPTOR.INVALID",
+                      "nullability adjustment cannot authorize a stale descriptor");
+    }
     const auto result = dt::CastDatatypeValue(identity);
     Check(result.ok() && result.category == dt::DatatypeCastCategory::identity &&
               result.value.is_null && result.value.encoded_value.empty(),
@@ -835,8 +850,10 @@ void NullAndAbsentPolicies() {
         "int64 identity accepts label aliases for one UUID-bound descriptor");
 
   auto mismatched_identity = labeled_identity;
-  mismatched_identity.target_descriptor.nullable_allowed =
-      !mismatched_identity.value.descriptor.nullable_allowed;
+  mismatched_identity.target_descriptor.security_policy_uuid = FixtureV7Uuid(0x91u);
+  mismatched_identity.target_descriptor.modifier_flags |=
+      scratchbird::engine::ExecutionTypeModifierFlagBit(
+          scratchbird::engine::ExecutionTypeModifierFlag::security_policy_uuid);
   CheckCastRefused(dt::CastDatatypeValue(mismatched_identity),
                    "DATATYPE.DESCRIPTOR.INVALID",
                    "int64 identity rejects unequal UUID-bound descriptor metadata");

@@ -563,6 +563,59 @@ void SeedLiveValidatorMetadata(api::EngineRequestContext& context) {
   const auto chain=api::ResolveDomainInheritedProfile(context,outer.domain_uuid,context.local_transaction_id);
   Require(chain.ok&&chain.domain_chain==std::vector<api::EngineUuid>{outer.domain_uuid,inner.domain_uuid},
           "complete binary inheritance chain");
+  auto permissive=domain;
+  permissive.domain_uuid=scratchbird::tests::FixtureUuid(1558,3120);
+  permissive.catalog_row_uuid=scratchbird::tests::FixtureUuid(1558,3121);
+  permissive.check_constraint_envelope.clear();permissive.nullable=true;
+  auto nullable_base=column.descriptor;nullable_base.encoded_descriptor="nullable=true";
+  Require(!api::BindDomainScalarBaseDescriptor(context,nullable_base,&permissive).error&&
+          !api::AppendDomainEvent(context,api::MakeDomainCreateEvent(permissive)).error,
+          "publish permissive target for source-domain admission tests");
+  auto tagged=native;tagged.descriptor=api::DomainDescriptor(outer);
+  Require(api::ValidateDomainTypedValue(context,api::DomainDescriptor(outer),tagged,context.local_transaction_id).ok,
+          "valid self-domain cast");
+  Require(api::ValidateDomainTypedValue(context,api::DomainDescriptor(inner),tagged,context.local_transaction_id).ok,
+          "valid cast into overlapping ancestor");
+  tagged.binary_value.assign(8,0xff);
+  Require(!api::ValidateDomainTypedValue(context,api::DomainDescriptor(permissive),tagged,context.local_transaction_id).ok,
+          "invalid claimed source domain must not enter permissive target");
+  tagged.descriptor=column.descriptor;
+  const auto native_negative=api::ValidateDomainTypedValue(context,api::DomainDescriptor(permissive),tagged,context.local_transaction_id);
+  if(!native_negative.ok)std::cerr<<native_negative.diagnostic.code<<':'<<native_negative.diagnostic.detail<<'\n';
+  Require(native_negative.ok,
+          "negative native value is valid for the permissive target");
+  tagged=native;tagged.binary_value[0]=200;tagged.descriptor=api::DomainDescriptor(outer);
+  Require(!api::ValidateDomainTypedValue(context,api::DomainDescriptor(permissive),tagged,context.local_transaction_id).ok,
+          "source ancestor constraint is enforced before target cast");
+  tagged.binary_value.clear();tagged.setState(api::EngineValueState::sql_null);
+  Require(!api::ValidateDomainTypedValue(context,api::DomainDescriptor(permissive),tagged,context.local_transaction_id).ok,
+          "forged NULL source domain cannot bypass source nullability");
+  tagged.descriptor=nullable_base;
+  Require(api::ValidateDomainTypedValue(context,api::DomainDescriptor(permissive),tagged,context.local_transaction_id).ok,
+          "native NULL positive control for nullable target");
+  auto restricted_source=inner;restricted_source.cast_policy_envelope="require_right:DOMAIN_TEST_UNGRANTED";
+  Require(!api::AppendDomainEvent(context,api::MakeDomainAlterEvent(restricted_source)).error,"publish source cast restriction");
+  tagged=native;tagged.descriptor=api::DomainDescriptor(outer);auto denied=context;denied.security_context_present=false;
+  Require(!api::ValidateDomainTypedValue(denied,api::DomainDescriptor(permissive),tagged,context.local_transaction_id).ok,
+          "source ancestor cast rights cannot be bypassed through permissive target");
+  Require(!api::AppendDomainEvent(context,api::MakeDomainAlterEvent(inner)).error,"restore source cast restriction");
+  auto deep=inner;
+  for(unsigned depth=0;depth<64;++depth) {
+    auto next=domain;next.domain_uuid=scratchbird::tests::FixtureUuid(1558,3200+depth*2);
+    next.catalog_row_uuid=scratchbird::tests::FixtureUuid(1558,3201+depth*2);
+    Require(!api::BindDomainInnerBaseDescriptor(context,deep,&next).error&&
+            !api::AppendDomainEvent(context,api::MakeDomainCreateEvent(next)).error,"publish deep chain layer");
+    deep=std::move(next);
+  }
+  Require(api::ValidateDomainTypedValue(context,api::DomainDescriptor(deep),native,context.local_transaction_id).ok,
+          "iterative validation covers a chain beyond the former cycle-search cutoff");
+  Require(api::DomainChainContainsUuid(context,deep.domain_uuid,inner.domain_uuid,context.local_transaction_id),
+          "DDL cycle search traverses every ancestor beyond the former cutoff");
+  auto deep_cycle=inner;deep_cycle.base_descriptor_kind="domain";deep_cycle.base_descriptor_uuid=deep.domain_uuid;
+  Require(!api::AppendDomainEvent(context,api::MakeDomainAlterEvent(deep_cycle)).error,"publish deep cycle fixture");
+  Require(!api::ValidateDomainTypedValue(context,api::DomainDescriptor(deep),native,context.local_transaction_id).ok,
+          "deep cycle cannot escape complete chain validation");
+  Require(!api::AppendDomainEvent(context,api::MakeDomainAlterEvent(inner)).error,"restore deep chain anchor");
   admitted_key(positive,true);
   admitted_key(api::CrudStoredValue(std::string("\xc8\0\0\0\0\0\0\0",8)),false);
   {
@@ -617,6 +670,11 @@ void SeedLiveValidatorMetadata(api::EngineRequestContext& context) {
       auto overridden=ancestor?inner:outer;overridden.*member="unresolved_override";
       Require(!api::AppendDomainEvent(context,api::MakeDomainAlterEvent(overridden)).error,"publish override fixture");
       admitted_key(positive,false);
+      Require(!api::ValidateDomainTypedValue(context,api::DomainDescriptor(outer),native,context.local_transaction_id).ok,
+              "target native validation cannot discard an explicit ancestor override");
+      auto source=native;source.descriptor=api::DomainDescriptor(ancestor?outer:overridden);
+      Require(!api::ValidateDomainTypedValue(context,api::DomainDescriptor(permissive),source,context.local_transaction_id).ok,
+              "source native validation cannot discard an explicit ancestor override");
       Require(!api::AppendDomainEvent(context,api::MakeDomainAlterEvent(ancestor?inner:outer)).error,"restore inherited profile");
     }
   }

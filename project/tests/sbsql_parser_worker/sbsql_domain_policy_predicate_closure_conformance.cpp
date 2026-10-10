@@ -7,14 +7,19 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/alter_api.hpp"
 #include "ddl/create_api.hpp"
 #include "domain_support/domain_store.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
+#include "memory.hpp"
 
 #include <chrono>
+#include <charconv>
 #include <cstdlib>
 #include <filesystem>
 #include <iomanip>
@@ -33,44 +38,15 @@ namespace db = scratchbird::storage::database;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
-constexpr std::string_view kSchemaUuid = "019f0000-0000-7000-8000-000000420001";
+constexpr char kSchemaUuid[] = "019f0000-0000-7000-8000-000000420001";
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
-    std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
-std::uint64_t CurrentUnixMillis() {
-  return static_cast<std::uint64_t>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::system_clock::now().time_since_epoch())
-          .count());
-}
-
-std::filesystem::path TestDatabasePath() {
-  return std::filesystem::temp_directory_path() /
-         ("sbsql_domain_policy_predicate_closure_" +
-          std::to_string(CurrentUnixMillis()) + ".sbdb");
-}
-
-void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-  for (const auto suffix : {".sb.api_events",
-                            ".sb.crud_events",
-                            ".sb.domain_events",
-                            ".sb.name_events",
-                            ".sb.transaction_inventory",
-                            ".dirty.manifest",
-                            ".recovery.evidence",
-                            ".sb.owner.lock"}) {
-    std::filesystem::remove(path.string() + suffix, ignored);
-  }
-}
-
-api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
+api::EngineRequestContext CreateDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -79,16 +55,16 @@ api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
       uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1779810590001).value;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = 1779810590002;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
-  create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ':'
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "domain policy predicate test database create failed");
-  return create.database_uuid.value;
+  auto context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral(kSchemaUuid);
+  return context;
 }
 
 api::EngineUuid DomainUuid(unsigned ordinal) {
@@ -99,31 +75,9 @@ api::EngineUuid DomainUuid(unsigned ordinal) {
   return identity;
 }
 
-api::EngineRequestContext EngineContext(const std::filesystem::path& path,
-                                        const api::EngineUuid& database_uuid) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::embedded_in_process;
-  context.request_id = "sbsql-domain-policy-predicate-closure";
-  context.database_path = path.string();
-  context.database_uuid = database_uuid;
-  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000420101");
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000420102");
-  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000420001");
-  context.security_context_present = true;
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.name_resolution_epoch = 1;
-  context.trace_tags.push_back("right:CATALOG_MUTATE");
-  context.trace_tags.push_back("security.fixture_trace_authority");
-  context.trace_tags.push_back("domain_policy_predicate_closure");
-  return context;
-}
-
-api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& path,
-                                                 const api::EngineUuid& database_uuid) {
+api::EngineRequestContext BeginEngineTransaction(const api::EngineRequestContext& owner) {
   api::EngineBeginTransactionRequest begin;
-  begin.context = EngineContext(path, database_uuid);
+  begin.context = owner;
   begin.isolation_level = "read_committed";
   const auto result = api::EngineBeginTransaction(begin);
   for (const auto& diagnostic : result.diagnostics) {
@@ -138,11 +92,18 @@ api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& pa
   return context;
 }
 
-api::EngineDescriptor ScalarDescriptor(std::string canonical_type_name) {
-  api::EngineDescriptor descriptor;
+api::EngineDescriptor ScalarDescriptor(const api::EngineRequestContext& context,
+                                       std::string canonical_type_name) {
+  // Aliases are fixture input only; native APIs receive canonical type bindings.
+  if (canonical_type_name == "text") canonical_type_name = "character";
+  if (canonical_type_name == "bigint") canonical_type_name = "int64";
+  api::EngineColumnDefinition column;
+  scratchbird::tests::BindFixtureColumnDatatype(context,
+      scratchbird::core::datatypes::CanonicalTypeIdFromStableName(canonical_type_name), column);
+  auto descriptor = column.descriptor;
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = std::move(canonical_type_name);
-  descriptor.encoded_descriptor = "type=" + descriptor.canonical_type_name;
+  descriptor.encoded_descriptor = "nullable=true";
   return descriptor;
 }
 
@@ -157,7 +118,7 @@ api::EngineCreateDomainRequest DomainCreateRequest(const api::EngineRequestConte
   request.target_object.uuid = domain_uuid;
   request.target_object.object_kind = "domain";
   request.localized_names.push_back({"en", "primary", "", name, true});
-  request.descriptors.push_back(ScalarDescriptor(base_type));
+  request.descriptors.push_back(ScalarDescriptor(context, base_type));
   return request;
 }
 
@@ -226,10 +187,17 @@ api::EngineDescriptor CreateDomain(const api::EngineRequestContext& context,
   return api::DomainDescriptor(*domain);
 }
 
-api::EngineTypedValue TypedValue(std::string type, std::string value) {
+api::EngineTypedValue TypedValue(const api::EngineRequestContext& context,
+                                std::string type, std::string value) {
   api::EngineTypedValue typed;
-  typed.descriptor = ScalarDescriptor(std::move(type));
-  typed.encoded_value = std::move(value);
+  typed.descriptor = ScalarDescriptor(context, std::move(type));
+  if (typed.descriptor.canonical_type_name == "int64") {
+    std::int64_t integer = 0;
+    const auto parsed = std::from_chars(value.data(), value.data()+value.size(), integer);
+    Require(parsed.ec == std::errc{} && parsed.ptr == value.data()+value.size(), "invalid fixture integer");
+    const auto bits = static_cast<std::uint64_t>(integer);
+    for (unsigned byte=0;byte<8;++byte) typed.binary_value.push_back(static_cast<std::uint8_t>(bits>>(8*byte)));
+  } else typed.encoded_value = std::move(value);
   typed.is_null = false;
   return typed;
 }
@@ -294,12 +262,12 @@ void RequirePredicateSurface(const api::EngineRequestContext& context) {
                                              test_case.envelope);
     ExpectDomainValidation(context,
                            raw_descriptor,
-                           TypedValue(test_case.base_type, test_case.ok_value),
+                           TypedValue(context, test_case.base_type, test_case.ok_value),
                            true,
                            {});
     ExpectDomainValidation(context,
                            raw_descriptor,
-                           TypedValue(test_case.base_type, test_case.fail_value),
+                           TypedValue(context, test_case.base_type, test_case.fail_value),
                            false,
                            test_case.fail_detail);
 
@@ -311,7 +279,7 @@ void RequirePredicateSurface(const api::EngineRequestContext& context) {
                                                  "sblr_predicate:" + test_case.envelope);
     ExpectDomainValidation(context,
                            wrapped_descriptor,
-                           TypedValue(test_case.base_type, test_case.ok_value),
+                           TypedValue(context, test_case.base_type, test_case.ok_value),
                            true,
                            {});
     std::string wrapped_detail = test_case.fail_detail;
@@ -325,7 +293,7 @@ void RequirePredicateSurface(const api::EngineRequestContext& context) {
     }
     ExpectDomainValidation(context,
                            wrapped_descriptor,
-                           TypedValue(test_case.base_type, test_case.fail_value),
+                           TypedValue(context, test_case.base_type, test_case.fail_value),
                            false,
                            wrapped_detail);
   }
@@ -460,13 +428,31 @@ void RequireVisibilityPolicies(const api::EngineRequestContext& context) {
                "visibility_require_right",
                "text",
                {},
-               "require_right:DOMAIN_READ");
+               "require_right:SELECT");
   auto right_context = context;
-  right_context.trace_tags.push_back("right:DOMAIN_READ");
+  api::EngineSecurityGrantPrivilegeRequest grant;
+  grant.context = context;
+  grant.grantee_uuid = context.principal_uuid;
+  grant.target_object_uuid = DomainUuid(204);
+  grant.target_object_kind = "domain";
+  grant.privilege = "SELECT";
+  const auto granted=api::EngineSecurityGrantPrivilege(grant);
+  if(!granted.ok) for(const auto& diagnostic:granted.diagnostics)
+    std::cerr<<diagnostic.code<<':'<<diagnostic.detail<<'\n';
+  Require(granted.ok&&granted.privilege_granted,"persist actual domain read grant");
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(right_context);
   ExpectReadPolicy(right_context, DomainUuid(204), true, {});
-  ExpectReadPolicy(context,
+  auto ungranted = context;
+  ungranted.authorization_context = {};
+  ungranted.trace_tags.push_back("right:SELECT");
+  ExpectReadPolicy(ungranted,
                    DomainUuid(204),
                    false,
+                   "domain.validate_value:domain_visibility_right_denied:domain_col:SELECT");
+
+  CreateDomain(context, DomainUuid(206), "visibility_unknown_right", "text", {},
+               "require_right:DOMAIN_READ");
+  ExpectReadPolicy(context, DomainUuid(206), false,
                    "domain.validate_value:domain_visibility_right_denied:domain_col:DOMAIN_READ");
 
   CreateDomain(context,
@@ -484,16 +470,23 @@ void RequireVisibilityPolicies(const api::EngineRequestContext& context) {
 }  // namespace
 
 int main() {
-  const auto path = TestDatabasePath();
-  RemoveDatabaseArtifacts(path);
-  const auto database_uuid = CreateMinimalDatabase(path);
-  const auto context = BeginEngineTransaction(path, database_uuid);
+  try {
+  namespace mem = scratchbird::core::memory;
+  Require(mem::ConfigureDefaultMemoryManagerForFixture(mem::DefaultLocalEngineMemoryPolicy(),
+      "sbsql_domain_policy_predicate_closure_conformance").ok(), "configure domain fixture memory");
+  scratchbird::tests::OwnedTempDirectory cleanup;
+  const auto owner = CreateDatabase(cleanup.path()/"domain.sbdb");
+  const auto context = BeginEngineTransaction(owner);
 
   RequirePredicateSurface(context);
   RequireCreateAndAlterRefusals(context);
   RequireVisibilityPolicies(context);
 
-  RemoveDatabaseArtifacts(path);
+  api::EngineCommitTransactionRequest commit;
+  commit.context = context;
+  Require(api::EngineCommitTransaction(commit).ok, "domain predicate fixture commit failed");
+  cleanup.Cleanup();
   std::cout << "sbsql_domain_policy_predicate_closure_conformance=passed\n";
   return EXIT_SUCCESS;
+  } catch (const std::exception& error) { std::cerr<<error.what()<<'\n'; return EXIT_FAILURE; }
 }

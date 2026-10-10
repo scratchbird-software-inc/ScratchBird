@@ -428,26 +428,51 @@ bool ResolveDomainScalarBaseDescriptor(const EngineRequestContext& context,
                                        std::uint64_t observer_tx,
                                        EngineDescriptor* descriptor,
                                        std::string* detail,
-                                       std::string* proof_material = nullptr) {
-  const DomainRecord* cursor = &domain;
-  std::optional<DomainRecord> loaded;
+                                       std::string* proof_material = nullptr,
+                                       std::vector<DomainRecord>* resolved_chain = nullptr) {
+  // The caller holds the inventory guard. Resolve one catalog image and one
+  // visibility image, not a fresh full catalog read for every ancestor.
+  const auto catalog = LoadDomainState(context);
+  const auto crud = LoadCrudState(context);
+  if (!catalog.ok || !crud.ok) { *detail = "domain_catalog_read_failed"; return false; }
+  std::map<EngineUuid, const DomainRecord*> visible;
+  for (const auto& record : catalog.domains) {
+    if (!TxVisible(crud.state, record.creator_tx, observer_tx)) continue;
+    if (record.dropped) visible.erase(record.domain_uuid);
+    else visible[record.domain_uuid] = &record;
+  }
+  const auto root = visible.find(domain.domain_uuid);
+  if (root == visible.end() || MakeDomainCreateEvent(*root->second) != MakeDomainCreateEvent(domain)) {
+    *detail = "domain_root_binding_not_current";
+    return false;
+  }
+  const DomainRecord* cursor = root->second;
   std::set<EngineUuid> visited;
-  std::vector<std::string> inherited_ancestors;
-  while (cursor->base_descriptor_kind == "domain") {
+  std::vector<const DomainRecord*> chain;
+  std::string material;
+  std::size_t chain_bytes = 0;
+  while (true) {
     if (!visited.insert(cursor->domain_uuid).second) {
       *detail = "domain_chain_cycle_detected";
       return false;
     }
-    if (proof_material) AppendBinaryString(proof_material, MakeDomainCreateEvent(*cursor));
-    inherited_ancestors.push_back(cursor->base_encoded_descriptor);
-    loaded = FindVisibleDomain(context, cursor->base_descriptor_uuid, observer_tx);
-    if (!loaded) {
+    const auto encoded = MakeDomainCreateEvent(*cursor);
+    if (encoded.empty() || chain_bytes > kApiBehaviorRecordMaximumBytes - sizeof(std::uint32_t) ||
+        encoded.size() > kApiBehaviorRecordMaximumBytes - sizeof(std::uint32_t) - chain_bytes) {
+      *detail = "domain_chain_size_limit";
+      return false;
+    }
+    chain_bytes += sizeof(std::uint32_t) + encoded.size();
+    if (proof_material) AppendBinaryString(&material, encoded);
+    chain.push_back(cursor);
+    if (cursor->base_descriptor_kind != "domain") break;
+    const auto next = visible.find(cursor->base_descriptor_uuid);
+    if (next == visible.end()) {
       *detail = "domain_base_not_visible";
       return false;
     }
-    cursor = &*loaded;
+    cursor = next->second;
   }
-  if (proof_material) AppendBinaryString(proof_material, MakeDomainCreateEvent(*cursor));
   DomainInheritedBaseBindingV1 inherited;
   if (!DecodeDomainInheritedBaseBindingV1(cursor->base_encoded_descriptor, &inherited)) {
     *detail = "domain_base_profile_binding_invalid";
@@ -462,9 +487,10 @@ bool ResolveDomainScalarBaseDescriptor(const EngineRequestContext& context,
     *detail = "domain_inherited_profile_stale";
     return false;
   }
-  for (const auto& ancestor : inherited_ancestors) {
+  for (const auto* ancestor : chain) {
     DomainInheritedBaseBindingV1 parent_binding;
-    if (!DecodeDomainInheritedBaseBindingV1(ancestor, &parent_binding) || parent_binding != inherited) {
+    if (!DecodeDomainInheritedBaseBindingV1(ancestor->base_encoded_descriptor, &parent_binding) ||
+        parent_binding != inherited || ancestor->base_canonical_type_name != staged.canonical_type_name) {
       *detail = "domain_inherited_ancestor_profile_stale";
       return false;
     }
@@ -477,6 +503,13 @@ bool ResolveDomainScalarBaseDescriptor(const EngineRequestContext& context,
     return false;
   }
   if (!AdmitDomainScalarBaseDescriptor(context, staged, detail)) return false;
+  if (resolved_chain) {
+    std::vector<DomainRecord> records;
+    records.reserve(chain.size());
+    for (const auto* record : chain) records.push_back(*record);
+    *resolved_chain = std::move(records);
+  }
+  if (proof_material) *proof_material = std::move(material);
   *descriptor = std::move(staged);
   return true;
 }
@@ -1371,14 +1404,15 @@ DomainInheritedProfileResolution ResolveDomainInheritedProfile(
   DomainInheritedProfileResolution result;
   const auto domain = FindVisibleDomain(context, domain_uuid, observer_tx);
   std::string detail;
+  std::vector<DomainRecord> chain;
   if (!domain || !ResolveDomainScalarBaseDescriptor(context, *domain, observer_tx,
-          &result.base_descriptor, &detail, &result.binary_chain_snapshot)) {
+          &result.base_descriptor, &detail, &result.binary_chain_snapshot, &chain)) {
     result.diagnostic = DomainValidationDiagnostic(domain ? detail : "domain_not_visible");
     return result;
   }
-  auto current = domain;
   result.nullable_allowed = true;
-  while (current) {
+  for (const auto& record : chain) {
+    const auto* current = &record;
     // These legacy metadata carriers cannot authorize a custom semantic
     // profile. Their presence is not permission to discard an override.
     if (!current->method_binding_envelope.empty() || !current->numeric_metadata.empty() ||
@@ -1391,16 +1425,6 @@ DomainInheritedProfileResolution ResolveDomainInheritedProfile(
     result.nullable_allowed = result.nullable_allowed && current->nullable;
     if (current->base_descriptor_kind != "domain") {
       result.binary_profile_binding = current->base_encoded_descriptor;
-      break;
-    }
-    current = FindVisibleDomain(context, current->base_descriptor_uuid, observer_tx);
-    if (!current) {
-      result.diagnostic = DomainValidationDiagnostic("domain_base_not_visible");
-      return result;
-    }
-    if (std::find(result.domain_chain.begin(), result.domain_chain.end(), current->domain_uuid) != result.domain_chain.end()) {
-      result.diagnostic = DomainValidationDiagnostic("domain_chain_cycle_detected");
-      return result;
     }
   }
   result.ok = true;
@@ -1411,23 +1435,22 @@ DomainInheritedProfileResolution ResolveDomainInheritedProfile(
 EngineApiDiagnostic AdmitDomainMutationChain(const EngineRequestContext& context,
     const EngineUuid& domain_uuid, std::uint64_t observer_tx) {
   const auto inventory_guard = AcquireTransactionInventoryGuard(context.database_path);
-  auto current = FindVisibleDomain(context, domain_uuid, observer_tx);
-  std::set<EngineUuid> visited;
-  while (current) {
-    if (!visited.insert(current->domain_uuid).second)
-      return DomainValidationDiagnostic("domain_chain_cycle_detected");
-    for (const auto* policy : {&current->mutation_policy_envelope, &current->cast_policy_envelope}) {
+  const auto domain = FindVisibleDomain(context, domain_uuid, observer_tx);
+  EngineDescriptor base;
+  std::string detail;
+  std::vector<DomainRecord> chain;
+  if (!domain || !ResolveDomainScalarBaseDescriptor(context, *domain, observer_tx, &base, &detail, nullptr, &chain))
+    return DomainValidationDiagnostic(domain ? detail : "domain_not_visible");
+  for (const auto& current : chain) {
+    for (const auto* policy : {&current.mutation_policy_envelope, &current.cast_policy_envelope}) {
       if (policy->empty()) continue;
       const auto required = RequiredRightFromPolicy(*policy);
       if (required.empty()) return DomainValidationDiagnostic("domain_restriction_policy_invalid");
-      if (!HasDomainRight(context, current->domain_uuid, required))
+      if (!HasDomainRight(context, current.domain_uuid, required))
         return DomainValidationDiagnostic("domain_use_right_denied:" + required);
     }
-    if (current->base_descriptor_kind != "domain")
-      return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
-    current = FindVisibleDomain(context, current->base_descriptor_uuid, observer_tx);
   }
-  return DomainValidationDiagnostic("domain_base_not_visible");
+  return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
 
 EngineDescriptor DomainDescriptor(const DomainRecord& record) {
@@ -1488,20 +1511,26 @@ bool DomainChainContainsUuid(const EngineRequestContext& context,
                              const EngineUuid& searched_domain_uuid,
                              std::uint64_t observer_tx) {
   if (start_domain_uuid.is_nil() || searched_domain_uuid.is_nil()) { return false; }
+  const auto guard = AcquireTransactionInventoryGuard(context.database_path);
+  const auto catalog = LoadDomainState(context);
+  const auto crud = LoadCrudState(context);
+  // This admission predicate must not permit a dependency on unreadable state.
+  if (!catalog.ok || !crud.ok) return true;
+  std::map<EngineUuid, const DomainRecord*> visible;
+  for (const auto& record : catalog.domains) {
+    if (!TxVisible(crud.state, record.creator_tx, observer_tx)) continue;
+    if (record.dropped) visible.erase(record.domain_uuid);
+    else visible[record.domain_uuid] = &record;
+  }
   EngineUuid current = start_domain_uuid;
   std::set<EngineUuid> seen;
-  for (std::uint32_t depth = 0; depth < 32 && !current.is_nil(); ++depth) {
+  while (!current.is_nil()) {
     if (current == searched_domain_uuid) { return true; }
-    if (!seen.insert(current).second) { return false; }
-    const auto domain = FindVisibleDomain(context, current, observer_tx);
-    if (!domain) { return false; }
-    EngineUuid next;
-    if (domain->base_descriptor_kind == "domain" && !domain->base_descriptor_uuid.is_nil()) {
-      next = domain->base_descriptor_uuid;
-    } else {
-      next = DomainUuidFromColumnDescriptor(domain->base_encoded_descriptor);
-    }
-    current = next;
+    if (!seen.insert(current).second) return true;
+    const auto found = visible.find(current);
+    if (found == visible.end()) return true;
+    const auto& domain = *found->second;
+    current = domain.base_descriptor_kind == "domain" ? domain.base_descriptor_uuid : EngineUuid{};
   }
   return false;
 }
@@ -1509,7 +1538,8 @@ bool DomainChainContainsUuid(const EngineRequestContext& context,
 DomainValueValidationResult ValidateDomainTypedValue(const EngineRequestContext& context,
                                                      const EngineDescriptor& domain_descriptor,
                                                      const EngineTypedValue& input_value,
-                                                     std::uint64_t observer_tx) {
+                                                     std::uint64_t observer_tx,
+                                                     bool explicit_cast) {
   const auto inventory_guard = AcquireTransactionInventoryGuard(context.database_path);
   DomainValueValidationResult result;
   if (context.query_cancellation_requested && context.query_cancellation_requested()) {
@@ -1526,29 +1556,17 @@ DomainValueValidationResult ValidateDomainTypedValue(const EngineRequestContext&
     result.diagnostic = DomainValidationDiagnostic("domain_not_visible");
     return result;
   }
-  const std::string cast_right = RequiredRightFromPolicy(domain->cast_policy_envelope);
-  if (!domain->cast_policy_envelope.empty() && cast_right.empty()) {
-    result.diagnostic = DomainValidationDiagnostic("domain_restriction_policy_invalid");
-    return result;
-  }
-  if (!cast_right.empty() && !HasDomainRight(context, domain_uuid, cast_right)) {
-    result.diagnostic = DomainValidationDiagnostic("domain_cast_right_denied:" + cast_right);
-    return result;
-  }
   EngineDescriptor native_base;
   std::string binding_detail;
+  std::vector<DomainRecord> target_chain;
   if (!ResolveDomainScalarBaseDescriptor(context, *domain, observer_tx,
-                                         &native_base, &binding_detail)) {
+                                         &native_base, &binding_detail, nullptr, &target_chain)) {
     result.diagnostic = DomainValidationDiagnostic(binding_detail);
     return result;
   }
   if (input_value.isSqlNull()) {
     if (!QowCanonicalSqlNullStateV1(input_value)) {
       result.diagnostic = DomainValidationDiagnostic("domain_null_payload_invalid");
-      return result;
-    }
-    if (!domain->nullable) {
-      result.diagnostic = DomainValidationDiagnostic("domain_null_forbidden");
       return result;
     }
   }
@@ -1558,40 +1576,69 @@ DomainValueValidationResult ValidateDomainTypedValue(const EngineRequestContext&
     result.diagnostic = DomainValidationDiagnostic("domain_value_encoding_invalid");
     return result;
   }
+  const auto admit_restrictions = [&](const std::vector<DomainRecord>& chain) {
+    for (const auto& item : chain) {
+      if (!item.method_binding_envelope.empty() || !item.numeric_metadata.empty() ||
+          !item.charset_or_collation_ref.empty()) {
+        result.diagnostic = MakeEngineApiDiagnostic("DOMAIN.PROFILE_INCOMPLETE",
+            "domain.profile.incomplete", "domain explicit semantic binding must be resolved before native validation", true);
+        return false;
+      }
+      const auto required = RequiredRightFromPolicy(item.cast_policy_envelope);
+      if (!item.cast_policy_envelope.empty() && required.empty()) {
+        result.diagnostic = DomainValidationDiagnostic("domain_restriction_policy_invalid");return false;
+      }
+      if (!required.empty() && !HasDomainRight(context,item.domain_uuid,required)) {
+        result.diagnostic = DomainValidationDiagnostic("domain_cast_right_denied:" + required);return false;
+      }
+      if (input_value.isSqlNull() && !item.nullable) {
+        result.diagnostic = DomainValidationDiagnostic("domain_null_forbidden");return false;
+      }
+    }
+    return true;
+  };
+  const auto check_chain = [&](const std::vector<DomainRecord>& chain, const EngineDescriptor& base,
+                               const EngineTypedValue& value, bool source) {
+    const auto payload=CrudTypedValuePayload(value);
+    for (auto item=chain.rbegin(); item!=chain.rend(); ++item) {
+      std::string detail;
+      if (!value.isSqlNull() && !CheckConstraintPasses(item->check_constraint_envelope,base,payload.bytes,&detail)) {
+        result.diagnostic=DomainValidationDiagnostic(detail);return false;
+      }
+      result.evidence.push_back({source?"source_domain_validation":"domain_validation",item->domain_uuid});
+      if (!value.isSqlNull() && !item->check_constraint_envelope.empty())
+        result.evidence.push_back({source?"source_domain_check":"domain_check",item->domain_uuid});
+      if (!source && item->domain_uuid!=domain_uuid)
+        result.evidence.push_back({"domain_base_validation",item->domain_uuid});
+    }
+    return true;
+  };
+  if (!admit_restrictions(target_chain)) return result;
   EngineTypedValue value_for_base_cast = input_value;
   if (input_value.descriptor.descriptor_kind == "domain") {
     const auto source_domain = FindVisibleDomain(context,
         DomainUuidFromDescriptor(input_value.descriptor), observer_tx);
+    std::vector<DomainRecord> source_chain;
     if (!source_domain || input_value.descriptor != DomainDescriptor(*source_domain) ||
         !ResolveDomainScalarBaseDescriptor(context, *source_domain, observer_tx,
-                                            &value_for_base_cast.descriptor, &binding_detail)) {
+                                            &value_for_base_cast.descriptor, &binding_detail, nullptr, &source_chain)) {
       result.diagnostic = DomainValidationDiagnostic("domain_source_binding_invalid:" + binding_detail);
       return result;
     }
-  }
-  if (domain->base_descriptor_kind == "domain" && !domain->base_descriptor_uuid.is_nil()) {
-    if (domain->base_descriptor_uuid == domain_uuid ||
-        DomainChainContainsUuid(context, domain->base_descriptor_uuid, domain_uuid, observer_tx)) {
-      result.diagnostic = DomainValidationDiagnostic("domain_chain_cycle_detected");
+    if (!admit_restrictions(source_chain)) return result;
+    EngineTypedValue source_checked;
+    std::string category;
+    if (!QowApplyCanonicalDescriptorCoercionV1(value_for_base_cast, value_for_base_cast.descriptor,
+          true, &source_checked, &category, &binding_detail)) {
+      result.diagnostic=DomainValidationDiagnostic("domain_source_value_invalid:"+binding_detail);
       return result;
     }
-    const auto base_domain = FindVisibleDomain(context, domain->base_descriptor_uuid, observer_tx);
-    if (!base_domain) {
-      result.diagnostic = DomainValidationDiagnostic("domain_base_not_visible");
-      return result;
+    if (source_checked.state!=input_value.state || source_checked.binary_value!=input_value.binary_value ||
+        source_checked.encoded_value!=input_value.encoded_value) {
+      result.diagnostic=DomainValidationDiagnostic("domain_source_validation_changed_payload");return result;
     }
-    const auto base_validation = ValidateDomainTypedValue(context,
-                                                          DomainDescriptor(*base_domain),
-                                                          input_value,
-                                                          observer_tx);
-    if (!base_validation.ok) {
-      result.diagnostic = base_validation.diagnostic;
-      return result;
-    }
-    value_for_base_cast = base_validation.value;
-    value_for_base_cast.descriptor = native_base;
-    result.evidence.push_back({"domain_base_validation", domain->base_descriptor_uuid});
-    for (const auto& evidence : base_validation.evidence) { result.evidence.push_back(evidence); }
+    if (!check_chain(source_chain, value_for_base_cast.descriptor,source_checked,true)) return result;
+    value_for_base_cast=std::move(source_checked);
   }
   if (!AdmitDomainScalarBaseDescriptor(context, value_for_base_cast.descriptor,
                                        &binding_detail)) {
@@ -1600,24 +1647,15 @@ DomainValueValidationResult ValidateDomainTypedValue(const EngineRequestContext&
   }
   EngineTypedValue cast;
   std::string category;
-  if (!QowApplyCanonicalDescriptorCoercionV1(value_for_base_cast, native_base, true,
+  if (!QowApplyCanonicalDescriptorCoercionV1(value_for_base_cast, native_base, explicit_cast,
                                             &cast, &category, &binding_detail)) {
     result.diagnostic = DomainValidationDiagnostic("domain_base_cast_failed:" + binding_detail);
     return result;
   }
-  std::string check_detail;
-  if (!cast.isSqlNull() && !CheckConstraintPasses(domain->check_constraint_envelope, native_base,
-                             CrudTypedValuePayload(cast).bytes, &check_detail)) {
-    result.diagnostic = DomainValidationDiagnostic(check_detail);
-    return result;
-  }
+  if (!check_chain(target_chain,native_base,cast,false)) return result;
   result.ok = true;
   result.value = std::move(cast);
   result.value.descriptor = DomainDescriptor(*domain);
-  result.evidence.push_back({"domain_validation", domain_uuid});
-  if (!result.value.isSqlNull() && !domain->check_constraint_envelope.empty()) {
-    result.evidence.push_back({"domain_check", domain_uuid});
-  }
   return result;
 }
 

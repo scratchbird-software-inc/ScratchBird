@@ -4235,9 +4235,14 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
         ExecutionDescriptorPresent(request.value.descriptor);
     const bool target_descriptor_present =
         ExecutionDescriptorPresent(request.target_descriptor);
+    const bool descriptor_matches =
+        !DescriptorHasDomainBinding(request.value.descriptor) &&
+        !DescriptorHasDomainBinding(request.target_descriptor)
+            ? ExecutionDescriptorEqualsIgnoringNullability(request.value.descriptor,
+                                                           request.target_descriptor)
+            : ExecutionDescriptorEquals(request.value.descriptor, request.target_descriptor);
     if ((source_descriptor_present && target_descriptor_present &&
-         !ExecutionDescriptorEquals(request.value.descriptor,
-                                    request.target_descriptor)) ||
+         !descriptor_matches) ||
         (source_descriptor_present != target_descriptor_present &&
          (DescriptorHasDomainBinding(request.value.descriptor) ||
           DescriptorHasDomainBinding(request.target_descriptor)))) {
