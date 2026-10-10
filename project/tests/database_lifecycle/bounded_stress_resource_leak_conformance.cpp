@@ -1,4 +1,3 @@
-#include "../sbsql_parser_worker/canonical_sblr_admission_test_helper.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -8,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "database_lifecycle_test_memory.hpp"
 #include "ddl/create_api.hpp"
@@ -30,6 +31,7 @@
 #include <iostream>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unistd.h>
@@ -85,7 +87,10 @@ struct Fixture {
   std::filesystem::path root;
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
+  api::EngineUuid filespace_uuid;
 };
+
+std::vector<std::filesystem::path> generated_directories;
 
 struct ResourceSnapshot {
   std::uint64_t fd_count = 0;
@@ -95,7 +100,7 @@ struct ResourceSnapshot {
 void Require(bool condition, std::string_view message) {
   if (!condition) {
     std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -181,6 +186,7 @@ std::filesystem::path MakeTempDir() {
   writable.push_back('\0');
   char* made = ::mkdtemp(writable.data());
   Require(made != nullptr, "mkdtemp failed for Phase 7H stress resource test");
+  generated_directories.emplace_back(made);
   return std::filesystem::path(made);
 }
 
@@ -237,6 +243,7 @@ Fixture CreateFixture() {
   const auto clean = db::MarkDatabaseCleanShutdown(fixture.database_path.string());
   Require(clean.ok(), "Phase 7H clean shutdown marker failed");
   fixture.database_uuid = create.database_uuid.value;
+  fixture.filespace_uuid = create.filespace_uuid.value;
 
   const auto bootstrap =
       scratchbird::tests::database_lifecycle::BeginDurableBootstrapTransaction(
@@ -374,17 +381,10 @@ sbps::Frame DisconnectFrame(const std::array<std::uint8_t, 16>& session_uuid) {
   return Frame(sbps::MessageType::kDisconnectNotice, std::move(payload), {}, session_uuid);
 }
 
-std::string TransactionEnvelope(std::string_view operation_id,
-                                bool requires_transaction_context) {
-  namespace sblr = scratchbird::engine::sblr;
-  const auto* entry = sblr::LookupSblrOperation(operation_id);
-  Require(entry != nullptr, "stress transaction operation must be registered");
-  auto envelope = sblr::MakeSblrEnvelope(std::string(operation_id), entry->opcode,
-                                       "CBQ_GATE_STRESS_SOAK_RESOURCE_LEAK");
-  envelope.requires_security_context = true;
-  envelope.requires_transaction_context = requires_transaction_context;
-  return sblr::EncodeSblrEnvelope(
-      scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(std::move(envelope)));
+std::string RetiredTransactionText(std::string_view operation_id) {
+  // Deliberately exercise the retired textual route, like the existing
+  // EncodeBeginTransactionSblrForTest helper. Never canonicalize a refusal.
+  return "sblr." + std::string(operation_id);
 }
 
 ExecuteDecoded DecodeExecute(const SessionOperationResult& result) {
@@ -483,19 +483,22 @@ api::EngineTypedValue TextValue(std::string value) {
   return typed;
 }
 
-api::EngineColumnDefinition TextColumn(std::uint32_t ordinal,
+api::EngineColumnDefinition TextColumn(const api::EngineRequestContext& context,
+                                       std::uint32_t ordinal,
                                        std::string name,
                                        api::EngineUuid column_uuid,
                                        api::EngineUuid descriptor_uuid) {
   api::EngineColumnDefinition column;
-  (void)descriptor_uuid;
   column.ordinal = ordinal;
   column.requested_column_uuid = std::move(column_uuid);
+  column.descriptor.descriptor_uuid = descriptor_uuid;
   column.names.push_back(Name(std::move(name)));
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "text";
   column.descriptor.encoded_descriptor = "type=text";
   column.nullable = true;
+  scratchbird::tests::BindFixtureColumnDatatype(
+      context, scratchbird::core::datatypes::CanonicalTypeId::character, column);
   return column;
 }
 
@@ -515,6 +518,7 @@ api::EngineRequestContext EngineApiContext(const Fixture& fixture,
   context.request_id = "phase7h-stress-resource-leak";
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
+  context.default_root_uuid = fixture.filespace_uuid;
   context.principal_uuid = api::EngineUuid{session.principal_uuid};
   context.session_uuid = api::EngineUuid{session.session_uuid};
   context.transaction_uuid = session.transaction_uuid;
@@ -525,9 +529,7 @@ api::EngineRequestContext EngineApiContext(const Fixture& fixture,
   context.catalog_generation_id = session.catalog_generation;
   context.security_epoch = session.security_epoch;
   context.resource_epoch = session.resource_epoch;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
+  scratchbird::tests::UseBootstrapDatatypeCohort(context);
   context.name_resolution_epoch = session.name_resolution_epoch;
   context.trace_tags.push_back("CBQ_GATE_STRESS_SOAK_RESOURCE_LEAK");
   context.trace_tags.push_back("right:CATALOG_MUTATE");
@@ -538,26 +540,10 @@ api::EngineRequestContext EngineApiContext(const Fixture& fixture,
   return context;
 }
 
-std::string ServerCreateSequenceEnvelope(std::uint64_t index) {
-  namespace sblr = scratchbird::engine::sblr;
-  const std::uint64_t base = 1782800500000 + index * 10;
-  auto envelope = sblr::MakeSblrEnvelope("ddl.create_sequence", "SBLR_DDL_CREATE_SEQUENCE",
-                                       "CBQ_GATE_STRESS_SOAK_RESOURCE_LEAK");
-  envelope.requires_security_context = true;
-  envelope.requires_transaction_context = true;
-  const auto add_identity = [&](std::string name, const api::EngineUuid& identity) {
-    sblr::SblrOperand operand;
-    operand.type = "uuid";
-    operand.name = std::move(name);
-    operand.value_kind = sblr::SblrValueKind::uuid_ref;
-    operand.value_body.assign(identity.bytes.begin(), identity.bytes.end());
-    envelope.operands.push_back(std::move(operand));
-  };
-  add_identity("sequence_object_uuid", NativeIdentity(UuidKind::object, base));
-  add_identity("target_schema_uuid", NativeIdentity(UuidKind::schema, base + 1));
-  envelope.operands.push_back({"text", "sequence_name", "phase7h_sequence_" + std::to_string(index)});
-  return sblr::EncodeSblrEnvelope(
-      scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(std::move(envelope)));
+std::string RetiredCreateSequenceText(std::uint64_t index) {
+  // EncodeSblrEnvelope correctly returns empty for removed aliases, which
+  // tests empty-payload rejection, not the intended retired-text admission.
+  return "sblr.ddl.create_sequence phase7h_sequence_" + std::to_string(index);
 }
 
 void RunExactDdlDmlApiRoutes(const Fixture& fixture,
@@ -569,6 +555,12 @@ void RunExactDdlDmlApiRoutes(const Fixture& fixture,
   const api::EngineUuid table_uuid = NativeIdentity(UuidKind::object, base + 1);
   const api::EngineUuid row_uuid = NativeIdentity(UuidKind::object, base + 6);
   const auto context = EngineApiContext(fixture, session, local_transaction_id);
+  scratchbird::tests::FixtureEngineSession engine_session(context);
+  const auto execute_statement = [&](auto& request, auto execute) {
+    scratchbird::tests::FixtureEngineStatement statement(engine_session, context);
+    request.context = statement.context;
+    return execute(request);
+  };
 
   api::EngineCreateSchemaRequest schema;
   schema.operation_id = "ddl.create_schema";
@@ -576,7 +568,7 @@ void RunExactDdlDmlApiRoutes(const Fixture& fixture,
   schema.target_object.uuid = schema_uuid;
   schema.target_object.object_kind = "schema";
   schema.localized_names.push_back(Name("phase7h_schema_" + std::to_string(index)));
-  const auto created_schema = api::EngineCreateSchema(schema);
+  const auto created_schema = execute_statement(schema, api::EngineCreateSchema);
   Require(created_schema.ok &&
               created_schema.primary_object.uuid == schema_uuid,
           "Phase 7H exact schema create did not preserve UUID");
@@ -590,12 +582,12 @@ void RunExactDdlDmlApiRoutes(const Fixture& fixture,
   table.table_names.push_back(
       Name("phase7h_table_" + std::to_string(index)));
   table.table_columns.push_back(TextColumn(
-      0, "id", NativeIdentity(UuidKind::object, base + 2),
+      context, 0, "id", NativeIdentity(UuidKind::object, base + 2),
       NativeIdentity(UuidKind::object, base + 3)));
   table.table_columns.push_back(TextColumn(
-      1, "note", NativeIdentity(UuidKind::object, base + 4),
+      context, 1, "note", NativeIdentity(UuidKind::object, base + 4),
       NativeIdentity(UuidKind::object, base + 5)));
-  const auto created_table = api::EngineCreateTable(table);
+  const auto created_table = execute_statement(table, api::EngineCreateTable);
   if (!created_table.ok) {
     for (const auto& diagnostic : created_table.diagnostics) {
       std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
@@ -613,7 +605,7 @@ void RunExactDdlDmlApiRoutes(const Fixture& fixture,
   insert.input_rows.push_back(Row(
       row_uuid, std::to_string(index),
       "phase7h-exact-dml-" + std::to_string(index)));
-  const auto inserted = api::EngineInsertRows(insert);
+  const auto inserted = execute_statement(insert, api::EngineInsertRows);
   Require(inserted.ok && inserted.inserted_count == 1,
           "Phase 7H exact dml.insert_rows did not report one row");
 
@@ -622,7 +614,7 @@ void RunExactDdlDmlApiRoutes(const Fixture& fixture,
   select.context = context;
   select.source_object.uuid = table_uuid;
   select.source_object.object_kind = "table";
-  const auto selected = api::EngineSelectRows(select);
+  const auto selected = execute_statement(select, api::EngineSelectRows);
   Require(selected.ok && !selected.result_shape.rows.empty(),
           "Phase 7H exact dml.select_rows did not return visible rows");
 }
@@ -687,7 +679,12 @@ void RunStressIteration(const Fixture& fixture, std::uint64_t index) {
   const auto sequence = Execute(&registry,
                                 engine_state,
                                 attached.session_uuid,
-                                ServerCreateSequenceEnvelope(index));
+                                RetiredCreateSequenceText(index));
+  if (sequence.accepted || !HasDiagnostic(sequence, "SBLR.OPERATION.NONCANONICAL")) {
+    for (const auto& diagnostic : sequence.diagnostics) {
+      std::cerr << diagnostic.code << '\n';
+    }
+  }
   Require(!sequence.accepted &&
               HasDiagnostic(sequence, "SBLR.OPERATION.NONCANONICAL"),
           "Phase 7H retired DDL text bypassed canonical admission");
@@ -696,8 +693,9 @@ void RunStressIteration(const Fixture& fixture, std::uint64_t index) {
 
   // The server helper aliases below remain in the loop for route resource
   // stability. The exact public DML operation ids dml.insert_rows and
-  // dml.select_rows are exercised above through SBLR dispatch because this
-  // server text-envelope fixture does not carry typed table column vectors.
+  // dml.select_rows are exercised above through typed engine APIs with live
+  // statement receipts; retired text carries no typed
+  // table column vectors and cannot be a successful engine dispatch.
   const auto insert = Execute(&registry,
                               engine_state,
                               attached.session_uuid,
@@ -717,7 +715,7 @@ void RunStressIteration(const Fixture& fixture, std::uint64_t index) {
   const auto commit = Execute(&registry,
                               engine_state,
                               attached.session_uuid,
-                              TransactionEnvelope("transaction.commit", true));
+                              RetiredTransactionText("transaction.commit"));
   Require(!commit.accepted &&
               HasDiagnostic(commit, "SBLR.OPERATION.NONCANONICAL") &&
               TransactionHasState(fixture, local_id, tx::TransactionState::active),
@@ -767,6 +765,8 @@ void AssertNoRuntimeOrphans(const Fixture& fixture) {
 }  // namespace
 
 int main() {
+  int result = EXIT_SUCCESS;
+  try {
   scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
       "database_lifecycle_bounded_stress_resource_leak_conformance");
   auto fixture = CreateFixture();
@@ -788,6 +788,18 @@ int main() {
             << " fd_delta=" << fd_delta << " rss_kib_before=" << before.rss_kib
             << " rss_kib_after=" << after.rss_kib << " rss_kib_delta=" << rss_delta << '\n';
 
-  std::filesystem::remove_all(fixture.root);
-  return EXIT_SUCCESS;
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    result = EXIT_FAILURE;
+  }
+  // Runtime/session locals have unwound before removing their owned files.
+  for (const auto& root : generated_directories) {
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+    if (error) {
+      std::cerr << "fixture cleanup failed: " << root << ':' << error.message() << '\n';
+      result = EXIT_FAILURE;
+    }
+  }
+  return result;
 }

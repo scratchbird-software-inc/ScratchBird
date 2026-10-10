@@ -5916,6 +5916,7 @@ if(TARGET sb_server_core AND TARGET sb_storage_database AND TARGET sb_storage_di
   )
   target_link_libraries(database_lifecycle_bounded_stress_resource_leak_conformance
     PRIVATE
+      sb_engine
       sb_core_platform
       sb_core_uuid
       sb_engine_internal_api
