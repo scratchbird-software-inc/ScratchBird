@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -339,12 +340,17 @@ api::EngineRowValue Row(api::EngineUuid uuid,
   return row;
 }
 
+scratchbird::tests::OwnedTempDirectory& FixtureDirectory() {
+  static scratchbird::tests::OwnedTempDirectory directory;
+  return directory;
+}
+
 api::EngineRequestContext EngineContext(bool security_context_present = true) {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.request_id = "sbsql-sblr-final-cleanup-b003";
   context.security_context_present = security_context_present;
-  context.database_path = "/tmp/sbsql_sblr_final_cleanup_b003.sbdb";
+  context.database_path = (FixtureDirectory().path() / "route.sbdb").string();
   context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e801");
   context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e802");
   context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e803");
@@ -953,6 +959,7 @@ int main() {
   RequireInvalidSyntaxDiagnostics();
   RequireSecurityRefusalRedaction();
   RequireOverlapRoutesPreserved();
+  FixtureDirectory().Cleanup();
   std::cout << "sbsql_sblr_final_cleanup_b003_engine_api_route_conformance=passed\n";
   return EXIT_SUCCESS;
 }
