@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "crypto_memory_adapter.hpp"
+#include "openpgp_seipd.hpp"
 #include "reservation_backed_memory_resource.hpp"
 #include <openssl/crypto.h>
 #include <openssl/err.h>
@@ -232,6 +233,90 @@ void ProviderCapacityChecks(){
   Check(zero_allocation_failure&&private_state_failure&&success,"actual EVP context/private-state capacity failures and successful admission");
 }
 
+void OpenPgpChecks(Grant& grant,h::CryptoMemoryPool& process,h::CryptoMemoryPool& operation){
+  namespace pgp=scratchbird::core::crypto;
+  using Code=pgp::PgpCode;
+  const auto binding=grant.binding;
+  const auto half=grant.bytes/2;
+  auto* backing=static_cast<unsigned char*>(grant.pointer)+half;
+  std::array<unsigned char,32> key{},salt{};
+  std::array<unsigned char,129> plaintext{},recovered{};
+  plaintext.fill(0x73);key.fill(0x19);salt.fill(0x37);
+  const auto zero=[](const auto& bytes){for(auto b:bytes)if(b)return false;return true;};
+  // Process-owned provider caches must not pin operation backing. Warm every
+  // selected cipher and HKDF in an explicit process scope, not an operation.
+  {
+    h::CryptoMemoryScope warm(process,binding);Check(warm.ok(),"PGP process cache scope");
+    for(unsigned cipher=7;cipher<=9;++cipher)for(unsigned aead:{2u,3u}){
+      pgp::SeipdProfile profile{static_cast<unsigned char>(cipher),static_cast<unsigned char>(aead),0};
+      std::vector<unsigned char> body(pgp::SeipdEncryptedSize(profile,plaintext.size()).bytes);
+      Check(pgp::EncryptSeipdV2(profile,{key.data(),16+(cipher-7)*8},{salt.data(),salt.size()},
+        {plaintext.data(),plaintext.size()},{body.data(),body.size()})==Code::ok,"PGP process cache warmup");
+      Check(pgp::DecryptSeipdV2({key.data(),16+(cipher-7)*8},{body.data(),body.size()},
+        {recovered.data(),recovered.size()})==Code::ok&&recovered==plaintext,"PGP receive cache warmup");
+    }
+    OPENSSL_thread_stop();
+  }
+  for(unsigned cipher=7;cipher<=9;++cipher)for(unsigned aead:{2u,3u}){
+    const pgp::SeipdProfile profile{static_cast<unsigned char>(cipher),static_cast<unsigned char>(aead),0};
+    std::vector<unsigned char> body(pgp::SeipdEncryptedSize(profile,plaintext.size()).bytes);
+    {
+      h::CryptoMemoryScope active(operation,binding);Check(active.ok(),"PGP admitted binary operation scope");
+      const auto before=operation.Snapshot();deny_cpp=true;
+      const auto encrypted=pgp::EncryptSeipdV2(profile,{key.data(),16+(cipher-7)*8},{salt.data(),salt.size()},
+        {plaintext.data(),plaintext.size()},{body.data(),body.size()});
+      const auto decrypted=pgp::DecryptSeipdV2({key.data(),16+(cipher-7)*8},{body.data(),body.size()},
+        {recovered.data(),recovered.size()});deny_cpp=false;
+      Check(encrypted==Code::ok&&decrypted==Code::ok&&recovered==plaintext,"PGP executes without C++ heap fallback");
+      const auto after=operation.Snapshot();
+      Check(after.observation_error==E::none&&after.allocations>before.allocations,"PGP actual provider allocations charged to binary operation");
+      body.back()^=1;recovered.fill(0xa5);deny_cpp=true;
+      const auto corrupted=pgp::DecryptSeipdV2({key.data(),16+(cipher-7)*8},{body.data(),body.size()},
+        {recovered.data(),recovered.size()});deny_cpp=false;body.back()^=1;
+      Check(corrupted==Code::authentication_failed&&zero(recovered),"accounted PGP authentication failure erases staging");
+      OPENSSL_thread_stop();
+    }
+    Check(!operation.Snapshot().live_blocks,"PGP actual operation allocation drain after thread cleanup");
+    Check(operation.Close()==E::none,"PGP operation backing release only after drain");
+    bool refused_before_allocation=false,refused_partial=false,success=false;
+    Check(operation.Open(binding,backing,half)==E::none,"PGP sealed grant fixture");
+    {
+      h::CryptoMemoryScope sealed(operation,binding,true);Check(sealed.ok(),"PGP no-allocation admission");
+      recovered.fill(0xa5);
+      Check(pgp::DecryptSeipdV2({key.data(),16+(cipher-7)*8},{body.data(),body.size()},
+        {recovered.data(),recovered.size()})==Code::provider_failure&&zero(recovered),"PGP refuses sealed provider allocation");
+      const auto snapshot=operation.Snapshot();
+      refused_before_allocation=snapshot.observation_error==E::none&&!snapshot.allocations&&snapshot.refusals>0;
+      OPENSSL_thread_stop();
+    }
+    Check(operation.Close()==E::none,"PGP sealed operation drains");
+    for(std::size_t size=64;size<=32768;size+=128){
+      Check(operation.Open(binding,backing,size)==E::none,"PGP bounded actual-grant partition");
+      {
+        h::CryptoMemoryScope active(operation,binding);Check(active.ok(),"PGP bounded operation scope");
+        recovered.fill(0xa5);deny_cpp=true;
+        const auto result=pgp::DecryptSeipdV2({key.data(),16+(cipher-7)*8},{body.data(),body.size()},
+          {recovered.data(),recovered.size()});deny_cpp=false;
+        const auto snapshot=operation.Snapshot();Check(snapshot.observation_error==E::none,"PGP capacity observation authoritative");
+        if(result==Code::ok){success=true;Check(recovered==plaintext,"PGP capacity success exact bytes");}
+        else{
+          Check(result==Code::provider_failure&&zero(recovered)&&snapshot.refusals>0,"PGP actual capacity refusal clears private output");
+          if(snapshot.allocations)refused_partial=true;
+        }
+        OPENSSL_thread_stop();
+      }
+      Check(!operation.Snapshot().live_blocks&&operation.Close()==E::none,"PGP partial provider state and errors actually drain");
+    }
+    if(!(refused_before_allocation&&refused_partial&&success))
+      std::cerr<<"PGP capacity cipher="<<cipher<<" aead="<<aead<<" first="<<refused_before_allocation
+               <<" partial="<<refused_partial<<" success="<<success<<'\n';
+    Check(refused_before_allocation&&refused_partial&&success,"PGP actual allocation-boundary refusal, partial unwind and success");
+    Check(operation.Open(binding,backing,half)==E::none,"restore actual operation grant partition");
+  }
+  Check(grant.resource->Snapshot().allocated_bytes==grant.bytes&&grant.manager.Snapshot().current_bytes==grant.bytes,
+    "PGP backing remains fully charged through provider effects and cleanup");
+}
+
 int main(int argc,char** argv){
   const char* mode=argc>1?argv[1]:"bounded";
   if(!std::strcmp(mode,"late")||!std::strcmp(mode,"custom")){
@@ -258,7 +343,7 @@ int main(int argc,char** argv){
   Check(!h::SnapshotCryptoMemoryAdapter().installed,"failed installation has no effects");
   Check(h::InstallCryptoMemoryAdapter(process)==E::none,"early explicit adapter install");
   Check(h::InstallCryptoMemoryAdapter(process)==E::already_installed,"idempotent install does not replace hooks");
-  AllocatorChecks(process);DigestChecks(operation,op_binding);ProviderCapacityChecks();
+  AllocatorChecks(process);DigestChecks(operation,op_binding);ProviderCapacityChecks();OpenPgpChecks(grant,process,operation);
   Check(grant.resource->Snapshot().allocated_bytes==grant.bytes&&grant.manager.Snapshot().current_bytes==grant.bytes,"provider work preserves actual backing charge");
   Check(h::StopCryptoMemoryAdapter()==E::busy,"provider caches prevent false drain");
   OPENSSL_thread_stop();OPENSSL_cleanup();

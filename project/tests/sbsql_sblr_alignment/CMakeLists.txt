@@ -86,6 +86,20 @@ add_test(NAME sbsql_sblr_alignment_native_column_binding COMMAND sbsql_sblr_alig
 set_tests_properties(sbsql_sblr_alignment_native_column_binding PROPERTIES
   TIMEOUT 30 LABELS "sbsql_sblr_alignment;binary_uuid;column_binding;component_regression;not_runtime_acceptance")
 
+add_executable(sbsql_sblr_alignment_openpgp_seipd openpgp_seipd_test.cpp)
+target_compile_features(sbsql_sblr_alignment_openpgp_seipd PRIVATE cxx_std_17)
+target_link_libraries(sbsql_sblr_alignment_openpgp_seipd PRIVATE sb_core_hash)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_compile_definitions(sbsql_sblr_alignment_openpgp_seipd PRIVATE SB_PGP_PROVIDER_FAULTS=1)
+  target_link_options(sbsql_sblr_alignment_openpgp_seipd PRIVATE
+    "-Wl,--wrap=EVP_PKEY_CTX_new_id" "-Wl,--wrap=EVP_PKEY_derive"
+    "-Wl,--wrap=EVP_CIPHER_CTX_new" "-Wl,--wrap=EVP_CipherInit_ex"
+    "-Wl,--wrap=EVP_CipherUpdate" "-Wl,--wrap=EVP_CipherFinal_ex" "-Wl,--wrap=EVP_CIPHER_CTX_ctrl")
+endif()
+add_test(NAME sbsql_sblr_alignment_openpgp_seipd COMMAND sbsql_sblr_alignment_openpgp_seipd)
+set_tests_properties(sbsql_sblr_alignment_openpgp_seipd PROPERTIES
+  TIMEOUT 180 LABELS "sbsql_sblr_alignment;crypto;openpgp;component_regression;not_SQL_E2E")
+
 add_executable(sbsql_sblr_alignment_native_numeric_cast native_numeric_cast_test.cpp)
 target_compile_features(sbsql_sblr_alignment_native_numeric_cast PRIVATE cxx_std_23)
 target_include_directories(sbsql_sblr_alignment_native_numeric_cast PRIVATE ../../src/engine/functions ../../src/engine)

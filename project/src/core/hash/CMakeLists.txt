@@ -14,6 +14,7 @@ add_library(sb_core_hash
   hash_digest.cpp
   crypto_memory_adapter.cpp
   scrypt_kdf.cpp
+  openpgp_seipd.cpp
 )
 
 target_compile_features(sb_core_hash PUBLIC cxx_std_17)
