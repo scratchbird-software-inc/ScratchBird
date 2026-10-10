@@ -33,6 +33,7 @@ add_library(sb_core_hash
   crypto_memory_adapter.cpp
   scrypt_kdf.cpp
   openpgp_seipd.cpp
+  openpgp_armor.cpp
   argon2_kdf.cpp
 )
 

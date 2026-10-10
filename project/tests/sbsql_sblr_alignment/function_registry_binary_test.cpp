@@ -13,6 +13,7 @@
 #include "internal_api/api_types.hpp"
 #include "blake3_digest.hpp"
 #include "scrypt_kdf.hpp"
+#include "openpgp_armor.hpp"
 #include "../../src/core/common/crypto_random.hpp"
 
 #include <algorithm>
@@ -58,10 +59,11 @@ thread_local bool prepared_while_workspace_live=false;
 struct SecretAllocation {void* address=nullptr;std::size_t size=0;};
 thread_local std::array<SecretAllocation,128> secret_allocations{};
 thread_local bool secret_deallocation_watch=false,secret_tracking_overflow=false;
+thread_local bool armor_secret_watch=false;
 thread_local unsigned uncleared_secret_frees=0;
 void ObserveSecretAllocation(void* address,std::size_t size) noexcept {
   if(scrypt_watch&&scrypt_expected_workspace&&size==scrypt_expected_workspace){scrypt_scratch=address;scrypt_scratch_size=size;scrypt_workspace_allocation=address;}
-  if(!secret_deallocation_watch||size!=64)return;
+  if(!secret_deallocation_watch||(size!=64&&!(armor_secret_watch&&size==65)))return;
   if(++secret_allocation_count==2&&scrypt_workspace_allocation)prepared_while_workspace_live=true;
   for(auto& slot:secret_allocations)if(!slot.address){slot={address,size};return;}
   secret_tracking_overflow=true;
@@ -72,7 +74,7 @@ void ReleaseObservedAllocation(void* address) noexcept {
   for(auto& slot:secret_allocations)if(slot.address==address&&address) {
     if(secret_deallocation_watch) {
       bool secret=true;
-      for(std::size_t i=0;i<slot.size;++i)secret=secret&&static_cast<unsigned char*>(address)[i]==secret_expected[i];
+      for(std::size_t i=0;i<64;++i)secret=secret&&static_cast<unsigned char*>(address)[i]==secret_expected[i];
       if(secret)++uncleared_secret_frees;
     }
     slot={};break;
@@ -1682,6 +1684,145 @@ void ProjectionUint16Values() {
   }
 }
 
+void CryptoArmor() {
+  namespace c=scratchbird::core::crypto;
+  const auto package=f::BuildStandardFunctionSeedPackage();
+  const auto call=[&](const char* name,s::SblrValue input,auto* context) {
+    f::FunctionCallRequest request;const auto* entry=package.registry.Lookup(std::string("sb.crypto.")+name);
+    Check(entry!=nullptr,"armor binary builtin identity exists");
+    request.context.function_uuid=entry->function_uuid;
+    Check(package.registry.BindCallContext(request.context)!=nullptr,"armor call binds its binary identity");
+    request.context.engine_request_context=context;request.arguments={{"value",std::move(input)}};
+    return f::DispatchCryptoHashFunction(request);
+  };
+  scratchbird::engine::internal_api::EngineRequestContext* no_context=nullptr;
+  const auto wrap=[](std::string data){return "-----BEGIN PGP MESSAGE-----\n\n"+data+"-----END PGP MESSAGE-----\n";};
+  const auto refusal=[](const auto& result,const char* code){return !result.result.ok()&&result.result.scalar_values.empty()&&
+    !result.result.diagnostics.empty()&&result.result.diagnostics.front().diagnostic_id==code;};
+  const auto output=[](const auto& result,bool binary,const std::vector<std::uint8_t>& bytes,bool null=false){
+    if(!result.result.ok()||result.result.scalar_values.size()!=1)return false;
+    const auto& v=result.result.scalar_values.front();
+    if(v.is_null!=null||v.descriptor_id!=(binary?"binary":"character")||!v.collation_name.empty()||
+       v.payload_kind!=(null?s::SblrValuePayloadKind::none:binary?s::SblrValuePayloadKind::binary:s::SblrValuePayloadKind::text))return false;
+    if(binary)return v.binary_value==bytes&&v.text_value.empty()&&v.encoded_value.empty()&&v.charset_name.empty();
+    return v.text_value==std::string(bytes.begin(),bytes.end())&&v.encoded_value==v.text_value&&v.binary_value.empty()&&v.charset_name=="UTF-8";
+  };
+  const auto bytes=[](const std::string& text){return std::vector<std::uint8_t>(text.begin(),text.end());};
+  // RFC4648 independent base64 answers, wrapped according to native profile.
+  for(auto pair:{std::pair{"",""},{"f","Zg==\n"},{"fo","Zm8=\n"},{"foo","Zm9v\n"},{"foob","Zm9vYg==\n"},
+                {"fooba","Zm9vYmE=\n"},{"foobar","Zm9vYmFy\n"}}) {
+    const auto raw=bytes(pair.first),armored=bytes(wrap(pair.second));
+    for(const char* name:{"armor","armor_binary"})Check(output(call(name,f::MakeBinaryValue("binary",raw),no_context),
+      std::string_view(name)=="armor_binary",armored),"armor known answer and exact charset-free binary/text result");
+    for(const char* name:{"dearmor","dearmor_text"})Check(output(call(name,f::MakeTextValue("character",wrap(pair.second)),no_context),
+      std::string_view(name)=="dearmor",raw),"dearmor known answer and exact result type");
+  }
+  for(unsigned n:{1u,2u,3u,47u,48u,49u,56u,57u,58u,4095u,4096u,4097u,1048576u}) {
+    std::vector<std::uint8_t> raw(n);for(unsigned i=0;i<n;++i)raw[i]=i%256;
+    // Independent OpenSSL base64 oracle with explicit64-column native framing.
+    std::string b64(4*((n+2)/3)+1,'\0');const auto count=EVP_EncodeBlock(reinterpret_cast<unsigned char*>(b64.data()),raw.data(),n);
+    b64.resize(count);std::string body;for(std::size_t at=0;at<b64.size();at+=64)body+=b64.substr(at,64)+"\n";
+    const auto expected=wrap(body);
+    const auto a=call("armor",f::MakeBinaryValue("binary",raw),no_context);
+    const auto b=call("armor_binary",f::MakeBinaryValue("binary",raw),no_context);
+    Check(output(a,false,bytes(expected))&&output(b,true,bytes(expected)),"all-byte opaque payload and independent line/padding boundaries");
+    Check(output(call("dearmor",f::MakeTextValue("character",expected),no_context),true,raw),"full binary round trip including maximum raw capacity");
+  }
+  for(const char* label:{"MESSAGE","PUBLIC KEY BLOCK","PRIVATE KEY BLOCK","SIGNATURE"}) {
+    const std::string text=" \t\r\n-----BEGIN PGP "+std::string(label)+"----- \t\r\nComment: \r\nX-Custom: ignored\r\nCharset: ISO-8859-1\r\n\r\n Z m\t9\rv\v\f\n=bad checksum ignored\r\n-----END PGP "+label+"----- \r\n\t\r\n";
+    Check(output(call("dearmor",f::MakeTextValue("character",text),no_context),true,bytes("foo")),"RFC whitespace/headers/labels and nonauthoritative malformed checksum");
+  }
+  const std::vector<std::string> invalid{
+    "Zm9v","SBSFC-057 armor for secret","-----BEGIN SCRATCHBIRD PGCRYPTO ARMOR-----\n\nZm9v\n-----END SCRATCHBIRD PGCRYPTO ARMOR-----",
+    wrap("Zg=\n"),wrap("Zh==\n"),wrap("Zm9=\n"),wrap("=AAA\nZm9v\n"),wrap("Zm9v!\n"),wrap("Zg==AAAA\n"),
+    wrap("Zg==\nAAAA\n"),wrap("=AAAA\n=BBBB\n"),wrap("Zg==\n")+"junk",wrap("Zg==\n")+wrap("Zm9v\n"),
+    "-----BEGIN PGP MESSAGE-----\nZm9v\n-----END PGP MESSAGE-----\n",
+    "-----BEGIN PGP MESSAGE-----\n\nZm9v\n-----END PGP SIGNATURE-----\n",
+    " -----BEGIN PGP MESSAGE-----\n\nZm9v\n-----END PGP MESSAGE-----\n",
+    "-----BEGIN PGP MESSAGE-----\nBad Header\n\nZm9v\n-----END PGP MESSAGE-----\n",
+    "-----BEGIN PGP SIGNED MESSAGE-----\n\nZm9v\n-----END PGP SIGNED MESSAGE-----\n"};
+  for(const auto& text:invalid)for(const char* name:{"dearmor","dearmor_text"})
+    Check(refusal(call(name,f::MakeTextValue("character",text),no_context),"CRYPTO.ARMOR.INVALID_INPUT"),"malformed/legacy/fixture input never yields decoded bytes");
+  // Valid Unicode scalar boundaries and binary-only invalid UTF-8, no normalization.
+  for(const std::vector<std::uint8_t> raw:{std::vector<std::uint8_t>{0,0x7f,0xc2,0x80,0xe0,0xa0,0x80,0xef,0xbf,0xbf,0xf0,0x90,0x80,0x80,0xf4,0x8f,0xbf,0xbf},
+      {0xc0,0x80},{0xc1,0xbf},{0xed,0xa0,0x80},{0xf4,0x90,0x80,0x80},{0x80},{0xc2},{0xe2,0x82},{0xff}}) {
+    const auto armored=call("armor",f::MakeBinaryValue("binary",raw),no_context);
+    const auto text=armored.result.scalar_values.front().text_value;
+    Check(output(call("dearmor",f::MakeTextValue("character",text),no_context),true,raw),"dearmor never translates binary input");
+    const auto decoded=call("dearmor_text",f::MakeTextValue("character",text),no_context);
+    Check(raw.front()==0?output(decoded,false,raw):refusal(decoded,"CRYPTO.ARMOR.INVALID_INPUT"),"dearmor_text validates full shortest-form UTF8 with embedded NUL");
+  }
+  for(const char* name:{"armor","armor_binary","dearmor","dearmor_text"}) {
+    const bool decode=std::string_view(name).find("dearmor")==0,binary=std::string_view(name)=="armor_binary"||std::string_view(name)=="dearmor";
+    auto value=decode?f::MakeTextValue("character",wrap("Zm9v\n")):f::MakeBinaryValue("binary",bytes("foo"));
+    Check(output(call(name,f::MakeNullValue(decode?"character":"binary"),no_context),binary,{},true),"strict NULL preserves each armor result type");
+    for(bool null:{false,true})for(unsigned fault=0;fault<10;++fault) {
+      auto bad=null?f::MakeNullValue(decode?"character":"binary"):value;
+      if(fault==0)bad.descriptor_id="uuid";if(fault==1)bad.has_int64_value=true;if(fault==2)bad.has_uint64_value=true;
+      if(fault==3)bad.has_real64_value=true;if(fault==4)bad.uuid_value=Base();if(fault==5)bad.uuid_array_value.push_back(Base());
+      if(fault==6)bad.payload_kind=s::SblrValuePayloadKind::uuid_binary;
+      if(fault==7){if(decode)bad.binary_value={1};else bad.text_value="hidden";}
+      if(fault==8)bad.encoded_value="hidden";
+      if(fault==9){if(decode)bad.descriptor_id="binary";else bad.charset_name="UTF-8";}
+      Check(refusal(call(name,std::move(bad),no_context),"CRYPTO.ARMOR.INVALID_INPUT"),"all malformed armor carriers reject before NULL");
+    }
+    // Request construction and binding are outside fault/cancellation testing.
+    f::FunctionCallRequest request;request.context.function_uuid=package.registry.Lookup(std::string("sb.crypto.")+name)->function_uuid;
+    Check(package.registry.BindCallContext(request.context)!=nullptr,"armor fault fixture binding");request.arguments={{"value",value}};
+    scratchbird::engine::internal_api::EngineRequestContext context;request.context.engine_request_context=&context;
+    unsigned polls=0;context.query_cancellation_requested=[&]{++polls;return false;};
+    Check(f::DispatchCryptoHashFunction(request).result.ok(),"armor cancellation baseline");const auto points=polls;
+    for(bool throwing:{false,true})for(unsigned stop=1;stop<=points;++stop){
+      polls=0;context.query_cancellation_requested=[&]{if(++polls!=stop)return false;if(throwing)throw stop;return true;};
+      bool caught=false;try{Check(refusal(f::DispatchCryptoHashFunction(request),"PROCESS.CANCELLED"),"armor cancellation publishes no scalar");}
+      catch(unsigned where){caught=where==stop;}Check(caught==throwing&&polls==stop,"armor cancellation exceptions do not approve publication");
+    }
+    request.context.engine_request_context=nullptr;bool success=false;
+    for(long fail=0;fail<200&&!success;++fail){fail_after=fail;try{const auto r=f::DispatchCryptoHashFunction(request);fail_after=-1;
+      success=r.result.ok();Check(success,"allocation sweep never reports partial armor success");}catch(const std::bad_alloc&){fail_after=-1;++allocation_faults;}}
+    Check(success,"armor allocation-fault sweep reaches complete result");
+  }
+  // Exact-sized caller-owned codec uses no C++ heap at all, even on failure.
+  for(const char* name:{"armor","armor_binary","dearmor","dearmor_text"}) {
+    const bool decode=std::string_view(name).find("dearmor")==0;
+    const auto secret=decode?std::string(64,'Q'):wrap("c2VjcmV0\n");Check(secret.size()==64,"armor cleanup oracle width");
+    std::copy(secret.begin(),secret.end(),secret_expected.begin());
+    const auto encoded=call("armor",f::MakeBinaryValue("binary",bytes(std::string(64,'Q'))),no_context).result.scalar_values.front().text_value;
+    f::FunctionCallRequest request;request.context.function_uuid=package.registry.Lookup(std::string("sb.crypto.")+name)->function_uuid;
+    Check(package.registry.BindCallContext(request.context)!=nullptr,"armor erasure binding");
+    request.arguments={{"value",decode?f::MakeTextValue("character",encoded):f::MakeBinaryValue("binary",bytes("secret"))}};
+    scratchbird::engine::internal_api::EngineRequestContext context;request.context.engine_request_context=&context;
+    unsigned polls=0;context.query_cancellation_requested=[&]{++polls;return false;};
+    Check(f::DispatchCryptoHashFunction(request).result.ok(),"armor erasure baseline");const auto last_poll=polls;
+    const auto arm=[&]{secret_allocations={};uncleared_secret_frees=0;secret_tracking_overflow=false;secret_allocation_count=0;
+      armor_secret_watch=true;secret_deallocation_watch=true;};
+    const auto finish=[&]{secret_deallocation_watch=false;armor_secret_watch=false;
+      Check(!uncleared_secret_frees&&!secret_tracking_overflow,"all actual unpublished armor result allocations erased before free");};
+    // Negative control proves the allocator observer detects an actual leak.
+    arm();auto* leaked=::operator new(64);std::memcpy(leaked,secret_expected.data(),64);::operator delete(leaked);
+    secret_deallocation_watch=false;armor_secret_watch=false;Check(uncleared_secret_frees==1,"armor cleanup oracle negative control");
+    for(bool throwing:{false,true})for(unsigned stop=1;stop<=last_poll;++stop){
+      polls=0;context.query_cancellation_requested=[&]{if(++polls!=stop)return false;if(throwing)throw stop;return true;};
+      arm();bool caught=false;try{Check(refusal(f::DispatchCryptoHashFunction(request),"PROCESS.CANCELLED"),"actual armor storage cancellation");}
+      catch(unsigned n){caught=n==stop;}finish();Check(caught==throwing&&polls==stop,"actual armor exception erasure");
+    }
+    bool completed=false;
+    for(long budget=0;budget<200&&!completed;++budget){
+      polls=0;context.query_cancellation_requested=[&]{return ++polls==last_poll;};arm();fail_after=budget;
+      try{const auto result=f::DispatchCryptoHashFunction(request);fail_after=-1;completed=refusal(result,"PROCESS.CANCELLED");
+        Check(completed,"armor allocation sweep reaches final cancellation diagnostic");}
+      catch(const std::bad_alloc&){fail_after=-1;++allocation_faults;}finish();
+    }
+    Check(completed,"armor allocation unwind checked through final diagnostic creation");
+  }
+  const auto text=wrap("Zm9v\n");std::vector<std::uint8_t> raw(3,0xa5),encoded(text.size(),0xa5);
+  fail_after=0;auto code=c::DecodeArmor({reinterpret_cast<const std::uint8_t*>(text.data()),text.size()},{raw.data(),raw.size()});
+  auto encoded_code=c::EncodeArmor({raw.data(),raw.size()},{encoded.data(),encoded.size()});const bool untouched_budget=fail_after==0;fail_after=-1;
+  Check(code==c::PgpCode::ok&&encoded_code==c::PgpCode::ok&&untouched_budget&&encoded==bytes(text),"native armor codec allocation-free encode/decode");
+  Check(c::ArmorEncodedSize(std::numeric_limits<std::size_t>::max()).code==c::PgpCode::size_overflow,"armor encoded-size overflow detected");
+  const auto saved=encoded;Check(c::DecodeArmor({encoded.data(),encoded.size()},{encoded.data()+1,3})==c::PgpCode::invalid_extent&&encoded==saved,"overlap rejection untouched");
+}
+
 int main() {
   static_assert(sizeof(f::FunctionUuid) == 16);
   static_assert(std::is_same_v<decltype(f::FunctionRegistryEntry{}.function_uuid), f::FunctionUuid>);
@@ -1706,6 +1847,7 @@ int main() {
   CryptoRandomBytes();
   CryptoScrypt();
   ScryptCancellation();
+  CryptoArmor();
   std::cout << checks << " checks, " << allocation_faults << " allocation faults, " << failures << " failures\n";
   return failures ? 1 : 0;
 }

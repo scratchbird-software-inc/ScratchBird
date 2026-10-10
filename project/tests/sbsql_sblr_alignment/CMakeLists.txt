@@ -87,6 +87,12 @@ set_tests_properties(sbsql_sblr_alignment_native_column_binding PROPERTIES
   TIMEOUT 30 LABELS "sbsql_sblr_alignment;binary_uuid;column_binding;component_regression;not_runtime_acceptance")
 
 add_executable(sbsql_sblr_alignment_openpgp_seipd openpgp_seipd_test.cpp)
+add_executable(sbsql_sblr_alignment_openpgp_armor openpgp_armor_test.cpp)
+target_compile_features(sbsql_sblr_alignment_openpgp_armor PRIVATE cxx_std_17)
+target_link_libraries(sbsql_sblr_alignment_openpgp_armor PRIVATE sb_core_hash)
+add_test(NAME sbsql_sblr_alignment_openpgp_armor COMMAND sbsql_sblr_alignment_openpgp_armor)
+set_tests_properties(sbsql_sblr_alignment_openpgp_armor PROPERTIES
+  TIMEOUT 60 LABELS "sbsql_sblr_alignment;crypto;armor;component_regression;not_SQL_E2E")
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_argon2_native_execution argon2_native_execution_test.cpp)
   target_compile_features(sbsql_sblr_alignment_argon2_native_execution PRIVATE cxx_std_17)

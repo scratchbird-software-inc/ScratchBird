@@ -1706,12 +1706,11 @@ constexpr auto kSeedDefs = std::to_array<SeedDef>({
      FunctionImplementationState::implemented_behavior, FunctionPackageState::core},
     {"sb.scalar.void", FunctionUuid{{0x01, 0x9d, 0xff, 0xbb, 0xf0, 0x00, 0x78, 0xa2, 0xa2, 0x8f, 0x14, 0x19, 0x89, 0x30, 0xcb, 0xdd}}, "surface.scalar", "void",
      FunctionImplementationState::implemented_behavior, FunctionPackageState::core},
-    // SBSFC-057 crypto/hash and pgcrypto scalar promotion. OpenSSL EVP/RAND/HMAC
-    // covers SHA3, BLAKE2b, HMAC, random bytes/UUID, and bounded scrypt;
-    // xxhash64 is in-core; armor/dearmor and PGP helpers use deterministic
-    // ScratchBird envelopes. Argon2, bcrypt, blake3, and crypt are promoted as
-    // exact dependency-unavailable fail-closed runtime behavior until pinned
-    // providers are part of the local core build.
+    // Stable SBSFC-057 identities, not semantic-completion evidence. Core has
+    // native BLAKE3/scrypt and RFC9580 armor; OpenSSL supplies selected hashes,
+    // HMAC and entropy. Argon2 has a native primitive but still needs scalar
+    // integration. The remaining password/public-key adapters and historical
+    // PGP envelope path require repair; registry state cannot qualify them.
     {"sb.crypto.argon2", FunctionUuid{{0x01, 0x9d, 0xff, 0xbb, 0xf0, 0x00, 0x7e, 0xfc, 0xb3, 0x82, 0xc6, 0x06, 0x3e, 0xa9, 0xc7, 0x9e}}, "crypto.hash", "argon2",
      FunctionImplementationState::implemented_policy_security_or_dependency_runtime_refusal, FunctionPackageState::core},
     {"sb.crypto.armor", FunctionUuid{{0x01, 0x9d, 0xff, 0xbb, 0xf0, 0x00, 0x74, 0xec, 0xbb, 0xd9, 0x4a, 0xe6, 0xd3, 0x55, 0xfd, 0x05}}, "crypto.hash", "armor",

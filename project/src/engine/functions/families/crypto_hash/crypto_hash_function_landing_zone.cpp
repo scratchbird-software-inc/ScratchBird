@@ -13,6 +13,8 @@
 #include "uuid.hpp"
 #include "blake3_digest.hpp"
 #include "scrypt_kdf.hpp"
+#include "openpgp_armor.hpp"
+#include "../../../../core/datatypes/canonical_utf8.hpp"
 #include "sblr/sblr_uint16_projection_profile.hpp"
 #include "../../../../core/common/crypto_random.hpp"
 
@@ -171,46 +173,6 @@ bool Base64Decode(const std::string& text, std::vector<std::uint8_t>* out) {
     if (c3 != '=') out->push_back(static_cast<std::uint8_t>(triple & 0xff));
   }
   return true;
-}
-
-std::string ArmorBytes(const std::vector<std::uint8_t>& bytes) {
-  const std::string encoded = Base64Encode(bytes);
-  std::string out =
-      "-----BEGIN SCRATCHBIRD PGCRYPTO ARMOR-----\n"
-      "Version: ScratchBird-SBSFC-057\n"
-      "Encoding: base64\n"
-      "\n";
-  for (std::size_t i = 0; i < encoded.size(); i += 64) {
-    out += encoded.substr(i, 64);
-    out.push_back('\n');
-  }
-  out += "-----END SCRATCHBIRD PGCRYPTO ARMOR-----";
-  return out;
-}
-
-bool DearmorText(const std::string& text, std::vector<std::uint8_t>* out) {
-  const std::string trimmed = Trim(text);
-  static constexpr std::string_view kFixturePrefix = "SBSFC-057 armor for ";
-  if (trimmed.rfind(std::string(kFixturePrefix), 0) == 0) {
-    const std::string payload = trimmed.substr(kFixturePrefix.size());
-    out->assign(payload.begin(), payload.end());
-    return true;
-  }
-  const std::string begin = "-----BEGIN SCRATCHBIRD PGCRYPTO ARMOR-----";
-  const std::string end = "-----END SCRATCHBIRD PGCRYPTO ARMOR-----";
-  if (trimmed.rfind(begin, 0) != 0) return Base64Decode(trimmed, out);
-  const auto end_pos = trimmed.find(end);
-  if (end_pos == std::string::npos) return false;
-  const std::string body = trimmed.substr(begin.size(), end_pos - begin.size());
-  std::istringstream lines(body);
-  std::string line;
-  std::string encoded;
-  while (std::getline(lines, line)) {
-    line = Trim(line);
-    if (line.empty() || line.rfind("Version:", 0) == 0 || line.rfind("Encoding:", 0) == 0) continue;
-    encoded += line;
-  }
-  return Base64Decode(encoded, out);
 }
 
 struct HmacProfile {
@@ -639,20 +601,73 @@ FunctionCallResult Xxh64Function(const FunctionCallRequest& request) {
   return MakeFunctionSuccess(request, {MakeUint64Value("uint64", Xxh64(bytes, seed))});
 }
 
-FunctionCallResult ArmorFunction(const FunctionCallRequest& request) {
-  if (request.arguments.size() != 1) return RefuseFunctionInvalidInput(request, "armor expects exactly one text or binary argument");
-  if (IsSqlNull(request.arguments[0].value)) return MakeFunctionSuccess(request, {MakeNullValue("character")});
-  return MakeFunctionSuccess(request, {MakeTextValue("character", ArmorBytes(RawBytesFromValue(request.arguments[0].value)))});
-}
-
-FunctionCallResult DearmorFunction(const FunctionCallRequest& request) {
-  if (request.arguments.size() != 1) return RefuseFunctionInvalidInput(request, "dearmor expects exactly one armor text argument");
-  if (IsSqlNull(request.arguments[0].value)) return MakeFunctionSuccess(request, {MakeNullValue("binary")});
-  std::vector<std::uint8_t> bytes;
-  if (!DearmorText(ValueAsText(request.arguments[0].value), &bytes)) {
-    return RefuseFunctionInvalidInput(request, "dearmor expects SBSFC-057 armor or base64 text");
+FunctionCallResult ArmorFunction(const FunctionCallRequest& request,bool decode,bool binary_result) {
+  namespace c=scratchbird::core::crypto;
+  using Kind=scratchbird::engine::sblr::SblrValuePayloadKind;
+  const auto error=[&](const char* code,const char* detail){return RefuseFunctionWithDiagnostic(request,
+      scratchbird::engine::sblr::SblrStatusCode::execution_failed,code,detail);};
+  const auto invalid=[&]{return error("CRYPTO.ARMOR.INVALID_INPUT","armor requires its exact typed input and a complete valid encoding");};
+  if(request.arguments.size()!=1)return invalid();
+  const auto& value=request.arguments[0].value;
+  if(value.descriptor_id!=(decode?"character":"binary")||value.has_int64_value||value.has_uint64_value||value.has_real64_value||
+     !value.uuid_value.is_nil()||!value.uuid_array_value.empty())return invalid();
+  if(decode) {
+    if(!value.binary_value.empty()||(!value.encoded_value.empty()&&value.encoded_value!=value.text_value))return invalid();
+  } else if(!value.text_value.empty()||!value.encoded_value.empty()||!value.charset_name.empty()||!value.collation_name.empty())return invalid();
+  if(value.is_null) {
+    if(value.payload_kind!=Kind::none||!value.binary_value.empty()||!value.text_value.empty()||!value.encoded_value.empty())return invalid();
+  } else if(value.payload_kind!=(decode?Kind::text:Kind::binary))return invalid();
+  auto cancelled=[&]{const auto* context=request.context.engine_request_context;
+    return context&&context->query_cancellation_requested&&context->query_cancellation_requested();};
+  const c::PgpCancellation probe{[](void* raw){return (*static_cast<decltype(cancelled)*>(raw))();},&cancelled};
+  const auto cancelled_result=[&]{return error("PROCESS.CANCELLED","armor processing was cancelled");};
+  if(cancelled())return cancelled_result();
+  c::PgpInput input=decode?c::PgpInput{reinterpret_cast<const std::uint8_t*>(value.text_value.data()),value.text_value.size()}:
+    c::PgpInput{value.binary_value.data(),value.binary_value.size()};
+  // This legacy family capacity guard is NOT an engine-issued memory grant.
+  // The extra encoded extent allows round trips at the raw input bound.
+  const auto capacity=decode?c::ArmorEncodedSize(kMaxCryptoInputBytes).bytes:kMaxCryptoInputBytes;
+  if(input.size>capacity)return error("RESOURCE.BUDGET_EXCEEDED","armor working capacity exceeded");
+  c::PgpSize size{c::PgpCode::ok,0};
+  if(!value.is_null)size=decode?c::ArmorDecodedSize(input,probe):c::ArmorEncodedSize(input.size);
+  if(size.code==c::PgpCode::cancelled)return cancelled_result();
+  if(size.code==c::PgpCode::size_overflow)return error("RESOURCE.BUDGET_EXCEEDED","armor size overflow");
+  if(size.code!=c::PgpCode::ok)return invalid();
+  auto result=MakeFunctionSuccess(request,{});result.result.scalar_values.resize(1);
+  auto& output=result.result.scalar_values[0];output.descriptor_id=binary_result?"binary":"character";
+  output.is_null=value.is_null;output.payload_kind=value.is_null?Kind::none:binary_result?Kind::binary:Kind::text;
+  if(!binary_result)output.charset_name="UTF-8";
+  struct Pending {
+    scratchbird::engine::sblr::SblrValue& value;bool accepted=false;
+    ~Pending(){if(!accepted){
+      if(!value.binary_value.empty())OPENSSL_cleanse(value.binary_value.data(),value.binary_value.size());
+      if(!value.text_value.empty())OPENSSL_cleanse(value.text_value.data(),value.text_value.size());
+      if(!value.encoded_value.empty())OPENSSL_cleanse(value.encoded_value.data(),value.encoded_value.size());
+    }}
+  } pending{output};
+  if(!value.is_null) {
+    // Allocate all fallible carriers before populating secret bytes. No growing
+    // base64 scratch or initializer-list copy can release an uncleared prefix.
+    c::PgpOutput target;
+    if(binary_result){output.binary_value.resize(size.bytes);target={output.binary_value.data(),size.bytes};}
+    else {output.text_value.resize(size.bytes);output.encoded_value.resize(size.bytes);
+      target={reinterpret_cast<std::uint8_t*>(output.text_value.data()),size.bytes};}
+    const auto code=decode?c::DecodeArmor(input,target,probe):c::EncodeArmor(input,target,probe);
+    if(code==c::PgpCode::cancelled)return cancelled_result();
+    if(code!=c::PgpCode::ok)return invalid();
+    if(decode&&!binary_result){
+      std::size_t at=0,last_probe=0;std::uint32_t scalar=0;
+      while(at<target.size){
+        if(at-last_probe>=4096){if(cancelled())return cancelled_result();last_probe=at;}
+        if(!scratchbird::core::datatypes::DecodeCanonicalUtf8Scalar(target.data,target.size,&at,&scalar))return invalid();
+      }
+    }
+    if(!binary_result)for(std::size_t at=0;at<size.bytes;) {
+      if(cancelled())return cancelled_result();const auto n=std::min(std::size_t{4096},size.bytes-at);
+      std::memcpy(output.encoded_value.data()+at,output.text_value.data()+at,n);at+=n;
+    }
   }
-  return MakeFunctionSuccess(request, {MakeBinaryValue("binary", std::move(bytes))});
+  if(cancelled())return cancelled_result();pending.accepted=true;return result;
 }
 
 std::string Envelope(std::string_view kind, const std::vector<std::uint8_t>& key, const std::vector<std::uint8_t>& data) {
@@ -735,8 +750,8 @@ FunctionCallResult DispatchCryptoHashFunction(const FunctionCallRequest& request
   if (IdIs(id, {"gen_salt", "gen_salt_algo"})) return GenSaltFunction(request);
   if (IdIs(id, {"scrypt"})) return ScryptFunction(request);
   if (IdIs(id, {"xxhash64", "xxhash64_value_seed"})) return Xxh64Function(request);
-  if (IdIs(id, {"armor", "armor_binary"})) return ArmorFunction(request);
-  if (IdIs(id, {"dearmor", "dearmor_text"})) return DearmorFunction(request);
+  if (IdIs(id, {"armor", "armor_binary"})) return ArmorFunction(request,false,IdIs(id,{"armor_binary"}));
+  if (IdIs(id, {"dearmor", "dearmor_text"})) return ArmorFunction(request,true,IdIs(id,{"dearmor"}));
   if (IdIs(id, {"pgp_sym_encrypt"})) return PgpEnvelopeFunction(request, "sym", false);
   if (IdIs(id, {"pgp_sym_decrypt"})) return PgpEnvelopeFunction(request, "sym", true);
   if (IdIs(id, {"pgp_pub_encrypt"})) return PgpEnvelopeFunction(request, "pub", false);
