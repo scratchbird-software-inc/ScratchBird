@@ -8,9 +8,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "catalog/catalog_object_lifecycle.hpp"
+#include "catalog/catalog_object_lifecycle_codec.hpp"
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
 #include "lowering/lowering.hpp"
@@ -18,14 +22,15 @@
 #include "ddl/create_api.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
+#include "memory.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 
 namespace {
 
@@ -52,9 +57,15 @@ constexpr std::string_view kFamily = "sblr.catalog.mutation.v3";
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
-    std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
+}
+
+template<class Result>
+void RequireOk(const Result& result, std::string_view message) {
+  if (!result.ok) for (const auto& diagnostic : result.diagnostics)
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  Require(result.ok, message);
 }
 
 bool Contains(std::string_view haystack, std::string_view needle) {
@@ -238,33 +249,7 @@ void RequireParserLowering(const PipelineArtifacts& artifacts,
   Require(!std::string(label).empty(), "constraint route label missing");
 }
 
-std::uint64_t CurrentUnixMillis() {
-  return static_cast<std::uint64_t>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::system_clock::now().time_since_epoch())
-          .count());
-}
-
-std::filesystem::path TestDatabasePath() {
-  return std::filesystem::temp_directory_path() /
-         ("sbsql_column_constraint_exact_route_" + std::to_string(CurrentUnixMillis()) + ".sbdb");
-}
-
-void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-  for (const auto suffix : {".sb.catalog_object_events",
-                            ".sb.name_events",
-                            ".sb.crud_events",
-                            ".sb.transaction_inventory",
-                            ".dirty.manifest",
-                            ".recovery.evidence",
-                            ".sb.owner.lock"}) {
-    std::filesystem::remove(path.string() + suffix, ignored);
-  }
-}
-
-api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
+api::EngineRequestContext CreateDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -273,42 +258,21 @@ api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
       uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1779810211001).value;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = 1779810211002;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
-  create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ':' << created.diagnostic.message_key
               << '\n';
   }
   Require(created.ok(), "column_constraint test database create failed");
-  return create.database_uuid.value;
+  return scratchbird::tests::BootstrapFixtureOwnerContext(create);
 }
 
-api::EngineRequestContext BaseContext(const std::filesystem::path& path,
-                                      const api::EngineUuid& database_uuid) {
-  api::EngineRequestContext context;
-  context.request_id = "sbsql-column-constraint-exact-route";
-  context.database_path = path.string();
-  context.database_uuid = database_uuid;
-  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000021202");
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000021203");
-  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000021205");
-  context.security_context_present = true;
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.name_resolution_epoch = 1;
-  context.trace_tags.push_back("right:CATALOG_MUTATE");
-  context.trace_tags.push_back("sbsql_surface_id:SBSQL-A57CFDE0BBA9");
-  context.trace_tags.push_back("sbsql_surface_id:SBSQL-28F16A4C7DD0");
-  return context;
-}
-
-api::EngineRequestContext BeginTransaction(const std::filesystem::path& path,
-                                           const api::EngineUuid& database_uuid) {
+api::EngineRequestContext BeginTransaction(api::EngineRequestContext owner) {
   api::EngineBeginTransactionRequest begin;
-  begin.context = BaseContext(path, database_uuid);
+  owner.session_uuid = api::GenerateCrudEngineUuid("object");
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(owner);
+  begin.context = owner;
   begin.isolation_level = "read_committed";
   const auto begun = api::EngineBeginTransaction(begin);
   if (!begun.ok) {
@@ -324,6 +288,18 @@ api::EngineRequestContext BeginTransaction(const std::filesystem::path& path,
       begun.snapshot_visible_through_local_transaction_id;
   context.transaction_isolation_level = begun.isolation_level;
   return context;
+}
+
+void Commit(const api::EngineRequestContext& context) {
+  api::EngineCommitTransactionRequest request;
+  request.context = context;
+  RequireOk(api::EngineCommitTransaction(request), "constraint transaction commit failed");
+}
+
+void Rollback(const api::EngineRequestContext& context) {
+  api::EngineRollbackTransactionRequest request;
+  request.context = context;
+  RequireOk(api::EngineRollbackTransaction(request), "constraint transaction rollback failed");
 }
 
 api::EngineLocalizedName Name(std::string value) {
@@ -393,10 +369,12 @@ void SeedCatalogTarget(const api::EngineRequestContext& context) {
   id_column.requested_column_uuid = kColumnCustomerIdIdentity;
   id_column.names.push_back(Name("id"));
   id_column.descriptor.descriptor_kind = "scalar";
-  id_column.descriptor.canonical_type_name = "int";
-  id_column.descriptor.encoded_descriptor = "type=int";
+  id_column.descriptor.canonical_type_name = "int64";
+  id_column.descriptor.encoded_descriptor = "type=int64";
   id_column.ordinal = 0;
   id_column.nullable = true;
+  scratchbird::tests::BindFixtureColumnDatatype(
+      context, scratchbird::core::datatypes::CanonicalTypeId::int64, id_column);
   table.columns.push_back(std::move(id_column));
   const auto created_table = api::EngineCatalogCreateObject(table);
   for (const auto& diagnostic : created_table.diagnostics) {
@@ -435,18 +413,81 @@ api::EngineApiRequest EngineTableConstraintRequest() {
   return request;
 }
 
+std::vector<std::string> CatalogImages(const api::EngineRequestContext& context) {
+  const auto loaded = api::LoadCatalogObjectLifecycleState(context);
+  Require(loaded.ok, "constraint catalog snapshot failed");
+  std::vector<std::string> images;
+  const auto append = [&](const auto& records) {
+    for (const auto& record : records) {
+      std::string bytes;
+      Require(api::EncodeCatalogLifecycleRecord(record, &bytes),
+              "constraint snapshot record encoding failed");
+      images.push_back(std::move(bytes));
+    }
+  };
+  append(loaded.state.objects);
+  append(loaded.state.names);
+  append(loaded.state.dependencies);
+  append(loaded.state.columns);
+  append(loaded.state.constraints);
+  append(loaded.state.key_descriptors);
+  append(loaded.state.constraint_subjects);
+  append(loaded.state.constraint_dependencies);
+  append(loaded.state.constraint_support_structures);
+  std::sort(images.begin(), images.end());
+  return images;
+}
+
+void RequireOwnerIdentity(const api::EngineApiResult& result,
+                          const api::EngineCatalogObjectLifecycleState& state) {
+  Require(result.primary_object.uuid == kTableCustomerIdentity &&
+              result.primary_object.object_kind == "table" &&
+              !result.catalog_row_uuid.is_nil() &&
+              result.catalog_row_uuid != result.primary_object.uuid,
+          "constraint mutation confused owner, constraint or catalog row identity");
+  const auto owner = std::find_if(state.objects.begin(), state.objects.end(),
+      [&](const auto& object) {return object.object_uuid == result.primary_object.uuid;});
+  Require(owner != state.objects.end() &&
+              owner->catalog_row_uuid == result.catalog_row_uuid &&
+              owner->object_kind == result.primary_object.object_kind,
+          "constraint result identity was not read from the stored owner");
+}
+
+void RequireRollbackIsolation(const api::EngineRequestContext& owner,
+                              bool table_constraint = false) {
+  const auto observer = BeginTransaction(owner);
+  const auto before = CatalogImages(observer);
+  auto writer = BeginTransaction(owner);
+  api::EngineCreateConstraintRequest request;
+  static_cast<api::EngineApiRequest&>(request) = table_constraint
+      ? EngineTableConstraintRequest() : EngineConstraintRequest();
+  request.context = writer;
+  RequireOk(api::EngineCreateConstraint(request), "rollback constraint staging failed");
+  Require(CatalogImages(writer) != before, "writer cannot read its staged constraint");
+  Require(CatalogImages(observer) == before, "uncommitted constraint graph leaked");
+  Rollback(writer);
+  Require(CatalogImages(observer) == before, "rollback changed another transaction's graph");
+  Commit(observer);
+  const auto reopened = BeginTransaction(owner);
+  Require(CatalogImages(reopened) == before, "rolled back catalog records survived fresh read");
+  Commit(reopened);
+}
+
 void RequireEngineDispatch() {
-  const auto path = TestDatabasePath();
-  RemoveDatabaseArtifacts(path);
-  const auto database_uuid = CreateMinimalDatabase(path);
-  auto context = BeginTransaction(path, database_uuid);
+  scratchbird::tests::OwnedTempDirectory artifacts;
+  const auto owner = CreateDatabase(artifacts.path() / "database.sbdb");
+  auto context = BeginTransaction(owner);
   SeedCatalogTarget(context);
+  Commit(context);
+  context = BeginTransaction(owner);
+  const auto external = BeginTransaction(owner);
+  const auto before = CatalogImages(external);
 
   api::EngineCreateConstraintRequest request;
   static_cast<api::EngineApiRequest&>(request) = EngineConstraintRequest();
   request.context = context;
   const auto result = api::EngineCreateConstraint(request);
-  Require(result.ok, "EngineCreateConstraint component did not return success");
+  RequireOk(result, "EngineCreateConstraint component did not return success");
   Require(result.operation_id == kInternalConstraintOperationId,
           "EngineCreateConstraint operation id mismatch");
   Require(result.primary_object.uuid == kTableCustomerIdentity,
@@ -456,8 +497,14 @@ void RequireEngineDispatch() {
   Require(HasEvidence(result, "ddl_catalog_route", "sys.constraint_descriptor"),
           "EngineCreateConstraint missing DDL catalog route evidence");
 
-  const auto loaded = api::LoadCatalogObjectLifecycleState(context);
+  Require(CatalogImages(external) == before, "uncommitted column constraint graph leaked");
+  Commit(external);
+
+  Commit(context);
+  const auto observer = BeginTransaction(owner);
+  const auto loaded = api::LoadCatalogObjectLifecycleState(observer);
   Require(loaded.ok, "column_constraint catalog state load failed");
+  RequireOwnerIdentity(result, loaded.state);
   bool saw_constraint = false;
   bool saw_subject = false;
   for (const auto& constraint : loaded.state.constraints) {
@@ -479,29 +526,40 @@ void RequireEngineDispatch() {
   }
   Require(saw_constraint, "column_constraint descriptor was not persisted");
   Require(saw_subject, "column_constraint subject was not persisted");
-  RemoveDatabaseArtifacts(path);
+  Commit(observer);
+  artifacts.Cleanup();
 }
 
 void RequireTableConstraintEngineDispatch() {
-  const auto path = TestDatabasePath();
-  RemoveDatabaseArtifacts(path);
-  const auto database_uuid = CreateMinimalDatabase(path);
-  auto context = BeginTransaction(path, database_uuid);
+  scratchbird::tests::OwnedTempDirectory artifacts;
+  const auto owner = CreateDatabase(artifacts.path() / "database.sbdb");
+  auto context = BeginTransaction(owner);
   SeedCatalogTarget(context);
+  Commit(context);
+  RequireRollbackIsolation(owner, true);
+  context = BeginTransaction(owner);
+  const auto external = BeginTransaction(owner);
+  const auto before = CatalogImages(external);
 
   api::EngineCreateConstraintRequest request;
   static_cast<api::EngineApiRequest&>(request) = EngineTableConstraintRequest();
   request.context = context;
   const auto result = api::EngineCreateConstraint(request);
-  Require(result.ok,
+  RequireOk(result,
           "EngineCreateConstraint table component did not return success");
   Require(result.operation_id == kInternalConstraintOperationId,
           "EngineCreateConstraint table operation id mismatch");
   Require(HasEvidence(result, "constraint_catalog_route", "sys.constraint_descriptor"),
           "EngineCreateConstraint table missing constraint catalog evidence");
 
-  const auto loaded = api::LoadCatalogObjectLifecycleState(context);
+  Require(CatalogImages(external) == before, "uncommitted table constraint graph leaked");
+  Commit(external);
+
+  Commit(context);
+  const auto observer = BeginTransaction(owner);
+  const auto loaded = api::LoadCatalogObjectLifecycleState(observer);
   Require(loaded.ok, "table_constraint catalog state load failed");
+  RequireOwnerIdentity(result, loaded.state);
   bool saw_constraint = false;
   bool saw_subject = false;
   bool saw_key = false;
@@ -553,12 +611,18 @@ void RequireTableConstraintEngineDispatch() {
   Require(saw_key, "table_constraint key descriptor was not persisted");
   Require(saw_support, "table_constraint support binding was not persisted");
   Require(saw_name, "table_constraint name was not persisted");
-  RemoveDatabaseArtifacts(path);
+  Commit(observer);
+  RequireRollbackIsolation(owner);
+  artifacts.Cleanup();
 }
 
 }  // namespace
 
-int main() {
+int main() try {
+  namespace memory = scratchbird::core::memory;
+  Require(memory::ConfigureDefaultMemoryManagerForFixture(
+              memory::DefaultLocalEngineMemoryPolicy(), "constraint persistence fixture").ok(),
+          "constraint fixture memory policy admission failed");
   RequireRegistryEvidence();
   const auto column_artifacts = RunPipeline(kColumnConstraintSql);
   RequireParserLowering(column_artifacts,
@@ -576,4 +640,7 @@ int main() {
   RequireTableConstraintEngineDispatch();
   std::cout << "sbsql_create_table_constraint_child_refusal_and_internal_api_component=passed\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

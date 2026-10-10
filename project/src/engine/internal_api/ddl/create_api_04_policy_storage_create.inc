@@ -551,7 +551,7 @@ EngineCreateConstraintResult EngineCreateConstraint(const EngineCreateConstraint
     result.evidence.push_back({"ddl_catalog_route", "sys.constraint_descriptor"});
     AddDdlPublicationResult(&result,
                             kOperation,
-                            "constraint",
+                            result.primary_object.object_kind,
                             result.primary_object.uuid,
                             result.catalog_row_uuid,
                             "constraint_descriptor");

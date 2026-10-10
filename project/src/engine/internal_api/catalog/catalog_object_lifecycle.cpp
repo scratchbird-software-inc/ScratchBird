@@ -1808,7 +1808,7 @@ EngineCatalogApplyConstraintsResult EngineCatalogApplyConstraintsToObject(
   AddEvidence(&result, "constraint_apply_count", std::to_string(request.constraints.size()));
   AddDdlPublicationResult(&result,
                           operation_id,
-                          "constraint",
+                          existing->object_kind,
                           owner_object_uuid,
                           result.catalog_row_uuid,
                           "constraint_descriptor");
