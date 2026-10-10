@@ -6932,7 +6932,16 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
     )
     set_tests_properties(cdp_final_regression_benchmark_gate PROPERTIES
       LABELS "cdp_final_regression_benchmark_gate;CDP-050;CDP_P5_REGRESSION_READY;benchmark;performance;release_gate;sbsql_parser_worker;sb_isql;local_ipc_gate;sbwp_wire_gate;mga_transaction_regression"
+      # Six complete serial component gates, including the full three-cycle
+      # soak, exceed CTest's implicit 1500s default on a clean Linux build.
+      # Keep every workload/assertion and per-command deadline unchanged.
+      RUN_SERIAL TRUE TIMEOUT 3600
     )
+    add_test(NAME cdp_final_regression_oracle_controls
+      COMMAND "${SBSQL_PYTHON3}" -B
+        "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/cdp_final_regression_oracle_test.py")
+    set_tests_properties(cdp_final_regression_oracle_controls PROPERTIES
+      LABELS "test_harness;cdp050;negative_controls" TIMEOUT 30)
     add_test(
       NAME cdp_security_api_abi_gate
       COMMAND "${SBSQL_PYTHON3}"

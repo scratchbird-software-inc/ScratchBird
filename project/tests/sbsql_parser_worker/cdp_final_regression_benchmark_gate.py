@@ -248,12 +248,23 @@ def run_component(args: argparse.Namespace, work_root: Path, component: Componen
     stdout_path = component_work / "component.stdout"
     stderr_path = component_work / "component.stderr"
     command = component_command(args, component, component_work)
+    print(f"cdp050_component={component.key} status=running logs={component_work}", flush=True)
     start = time.monotonic()
-    completed = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    # Retain diagnostics as they arrive. PIPE buffering hid the active
+    # component's output when the enclosing CTest deadline terminated the run,
+    # and scaled controller memory with the entire output of each workload.
+    with stdout_path.open("w", encoding="utf-8") as stdout, \
+            stderr_path.open("w", encoding="utf-8") as stderr:
+        completed = subprocess.run(command, stdout=stdout, stderr=stderr, check=False)
     elapsed = time.monotonic() - start
-    stdout_path.write_text(completed.stdout, encoding="utf-8")
-    stderr_path.write_text(completed.stderr, encoding="utf-8")
-    artifact = extract_output_json(completed.stdout)
+    artifact = None
+    with stdout_path.open(encoding="utf-8", errors="replace") as stdout:
+        # Evidence announcements are short lines; bound scanning scratch even
+        # if a failing child emits one very large diagnostic line.
+        while chunk := stdout.readline(8192):
+            artifact = extract_output_json(chunk)
+            if artifact is not None:
+                break
     record: dict[str, Any] = {
         "component": component.key,
         "script": component.script,
@@ -265,14 +276,24 @@ def run_component(args: argparse.Namespace, work_root: Path, component: Componen
         "json_artifact_path": str(artifact) if artifact else None,
     }
     if completed.returncode != 0:
-        record["stderr_tail"] = completed.stderr[-4000:]
-    if component.key != "no_execution_plan_dependency":
-        require(artifact is not None, f"{component.key} did not report a JSON artifact path")
-        require(artifact.exists(), f"{component.key} JSON artifact is missing: {artifact}")
-        payload = read_json(artifact)
-        validate_component_payload(component.key, payload)
-        forbid_execution_plan_paths(payload, component.key)
-        record["artifact_schema_version"] = payload.get("schema_version")
+        with stderr_path.open("rb") as stderr:
+            stderr.seek(max(0, stderr_path.stat().st_size - 4000))
+            record["stderr_tail"] = stderr.read(4000).decode("utf-8", errors="replace")
+    try:
+        if component.key != "no_execution_plan_dependency":
+            require(artifact is not None, f"{component.key} did not report a JSON artifact path")
+            require(artifact.exists(), f"{component.key} JSON artifact is missing: {artifact}")
+            payload = read_json(artifact)
+            validate_component_payload(component.key, payload)
+            forbid_execution_plan_paths(payload, component.key)
+            record["artifact_schema_version"] = payload.get("schema_version")
+    except FinalGateError as exc:
+        # Keep the failed component's return code, timing and log locations in
+        # the final receipt as well as the validation failure. A zero exit code
+        # with malformed/missing evidence is still a failed component.
+        record["status"] = "failed"
+        record["validation_failure"] = str(exc)
+    print(f"cdp050_component={component.key} status={record['status']} elapsed_seconds={record['elapsed_seconds']}", flush=True)
     return record
 
 
@@ -431,8 +452,12 @@ def main(argv: list[str]) -> int:
         require_file(Path(args.listener), "sb_listener")
         require_file(Path(args.parser_worker), "sbp_sbsql")
         for component in COMPONENTS:
+            progress = build_payload(args, work_root, records, "running")
+            progress["active_component"] = component.key
+            write_json(evidence_path, progress)
             record = run_component(args, work_root, component)
             records.append(record)
+            write_json(evidence_path, build_payload(args, work_root, records, "running"))
             if record["status"] != "passed":
                 raise FinalGateError(f"{component.key} failed")
         status = "passed"
