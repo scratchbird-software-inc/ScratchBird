@@ -9,6 +9,7 @@
 #include <array>
 #include <limits>
 #include <new>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 
@@ -1610,6 +1611,56 @@ const std::array<DatatypeTypeCodecIdentityRowV3, 293> kIdentityRowsV3 = [] {
   return rows;
 }();
 
+auto IdentityKey(const platform::Uuid& snapshot, u64 catalog_generation,
+                 u64 registry_generation, const platform::Uuid& descriptor,
+                 u64 descriptor_generation) noexcept {
+  // All identities remain binary. Generations participate in equality, not
+  // just in admission of the containing cohort.
+  return std::tuple{snapshot.bytes, catalog_generation, registry_generation,
+                    descriptor.bytes, descriptor_generation};
+}
+
+auto IdentityKey(const DatatypeTypeCodecIdentityRowV1& row) noexcept {
+  return IdentityKey(row.catalog_snapshot_uuid, row.catalog_generation,
+                     row.registry_generation, row.descriptor_uuid,
+                     row.descriptor_generation);
+}
+
+const DatatypeTypeCodecIdentityRowV3* FindExactIdentityRow(
+    const platform::Uuid& snapshot, u64 catalog_generation,
+    u64 registry_generation, const platform::Uuid& descriptor,
+    u64 descriptor_generation) noexcept {
+  // This immutable index is bounded by the compiled registry: no heap, cache
+  // eviction, row copies, or caller-supplied authority. C++ static initialization
+  // serializes the first construction. Preserve registry order for consumers
+  // of CurrentDatatypeTypeCodecIdentityRowsV3().
+  static_assert(kIdentityRowsV3.size() <= std::numeric_limits<u16>::max());
+  static const auto index = [] {
+    std::array<u16, kIdentityRowsV3.size()> result{};
+    for (std::size_t i = 0; i < result.size(); ++i)
+      result[i] = static_cast<u16>(i);
+    std::sort(result.begin(), result.end(), [](u16 left, u16 right) {
+      return IdentityKey(kIdentityRowsV3[left].legacy_fields) <
+             IdentityKey(kIdentityRowsV3[right].legacy_fields);
+    });
+    return result;
+  }();
+  const auto key = IdentityKey(snapshot, catalog_generation, registry_generation,
+                               descriptor, descriptor_generation);
+  const auto found = std::lower_bound(index.begin(), index.end(), key,
+      [](u16 position, const auto& requested) {
+        return IdentityKey(kIdentityRowsV3[position].legacy_fields) < requested;
+      });
+  if (found == index.end() ||
+      IdentityKey(kIdentityRowsV3[*found].legacy_fields) != key)
+    return nullptr;
+  // An ambiguous registry key is an error, never first-row-wins authority.
+  if (found + 1 != index.end() &&
+      IdentityKey(kIdentityRowsV3[*(found + 1)].legacy_fields) == key)
+    return nullptr;
+  return &kIdentityRowsV3[*found];
+}
+
 const DatatypeTypeCodecIdentityRowV3* CanonicalProfileRow(
     const DatatypeTypeCodecIdentityRowV3& supplied,
     const platform::Uuid& descriptor) noexcept {
@@ -1623,18 +1674,8 @@ const DatatypeTypeCodecIdentityRowV3* CanonicalProfileRow(
          receipt.catalog_generation == 11 && receipt.registry_generation == 11))) {
     return nullptr;
   }
-  const DatatypeTypeCodecIdentityRowV3* found = nullptr;
-  for (const auto& row : kIdentityRowsV3) {
-    if (row.legacy_fields.catalog_snapshot_uuid == receipt.catalog_snapshot_uuid &&
-        row.legacy_fields.catalog_generation == receipt.catalog_generation &&
-        row.legacy_fields.registry_generation == receipt.registry_generation &&
-        row.legacy_fields.descriptor_uuid == descriptor &&
-        row.legacy_fields.descriptor_generation == 1) {
-      if (found != nullptr) return nullptr;
-      found = &row;
-    }
-  }
-  return found;
+  return FindExactIdentityRow(receipt.catalog_snapshot_uuid,
+      receipt.catalog_generation, receipt.registry_generation, descriptor, 1);
 }
 
 bool IsExactCurrentRow(const DatatypeTypeCodecIdentityRowV3& row,
@@ -1676,18 +1717,9 @@ bool IsExactRegisteredDatatypeTypeCodecIdentityV3(
           identity.catalog_generation, identity.registry_generation) ||
       identity.descriptor_uuid.is_nil() || identity.descriptor_generation == 0)
     return false;
-  const DatatypeTypeCodecIdentityRowV3* match = nullptr;
-  for (const auto& row : kIdentityRowsV3) {
-    const auto& registered = row.legacy_fields;
-    if (registered.catalog_snapshot_uuid != identity.catalog_snapshot_uuid ||
-        registered.catalog_generation != identity.catalog_generation ||
-        registered.registry_generation != identity.registry_generation ||
-        registered.descriptor_uuid != identity.descriptor_uuid ||
-        registered.descriptor_generation != identity.descriptor_generation)
-      continue;
-    if (match) return false;
-    match = &row;
-  }
+  const auto* match = FindExactIdentityRow(identity.catalog_snapshot_uuid,
+      identity.catalog_generation, identity.registry_generation,
+      identity.descriptor_uuid, identity.descriptor_generation);
   return match && SameDatatypeTypeCodecIdentityV3(supplied, *match);
 }
 
@@ -1705,22 +1737,9 @@ DatatypeTypeCodecIdentityLookupV3 LookupDatatypeTypeCodecIdentityV3(
     return result;
   }
 
-  const DatatypeTypeCodecIdentityRowV3* match = nullptr;
-  for (const auto& row : CurrentDatatypeTypeCodecIdentityRowsV3()) {
-    const auto& legacy = row.legacy_fields;
-    if (legacy.catalog_snapshot_uuid != catalog_snapshot_uuid ||
-        legacy.catalog_generation != catalog_generation ||
-        legacy.registry_generation != registry_generation ||
-        legacy.descriptor_uuid != descriptor_uuid ||
-        legacy.descriptor_generation != descriptor_generation) {
-      continue;
-    }
-    if (match != nullptr) {
-      result.diagnostic_id = "DATATYPE.DESCRIPTOR.INVALID";
-      return result;
-    }
-    match = &row;
-  }
+  const auto* match = FindExactIdentityRow(catalog_snapshot_uuid,
+      catalog_generation, registry_generation, descriptor_uuid,
+      descriptor_generation);
   if (match == nullptr) {
     result.diagnostic_id = "DATATYPE.DESCRIPTOR.INVALID";
     return result;

@@ -14,6 +14,7 @@
 #include "../support/binary_uuid_fixture.hpp"
 
 #include <array>
+#include <chrono>
 #include <cstdlib>
 #include <iostream>
 #include <new>
@@ -2033,9 +2034,90 @@ void TestLookupAllocationFailureIsContained() {
         "V3-to-V1 projection did not recover with exact legacy fields");
 }
 
+const dt::DatatypeTypeCodecIdentityRowV3* LinearIdentityOracle(
+    const dt::DatatypeTypeCodecIdentityRowV3& supplied) {
+  const auto& key = supplied.legacy_fields;
+  const dt::DatatypeTypeCodecIdentityRowV3* found = nullptr;
+  for (const auto& candidate : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row = candidate.legacy_fields;
+    if (row.catalog_snapshot_uuid != key.catalog_snapshot_uuid ||
+        row.catalog_generation != key.catalog_generation ||
+        row.registry_generation != key.registry_generation ||
+        row.descriptor_uuid != key.descriptor_uuid ||
+        row.descriptor_generation != key.descriptor_generation) continue;
+    Check(!found, "compiled datatype registry contains duplicate lookup keys");
+    found = &candidate;
+  }
+  return found;
+}
+
+void TestIndexedLookupMatchesIndependentScan() {
+  for (const auto& original : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    // Every byte of both binary identities and each generation remains part
+    // of the exact key. The oracle does not share the production comparator.
+    for (unsigned mutation = 0; mutation < 37; ++mutation) {
+      auto supplied = original;
+      auto& key = supplied.legacy_fields;
+      if (mutation < 16) key.catalog_snapshot_uuid.bytes[mutation] ^= 0x80;
+      else if (mutation < 32) key.descriptor_uuid.bytes[mutation - 16] ^= 0x80;
+      else if (mutation == 32) ++key.catalog_generation;
+      else if (mutation == 33) ++key.registry_generation;
+      else if (mutation == 34) ++key.descriptor_generation;
+      else if (mutation == 35) key.descriptor_uuid = {};
+      // The last case is the untouched positive row.
+      const auto* expected = LinearIdentityOracle(supplied);
+      allocation_probe::fail_next = true;
+      const bool exact = dt::IsExactRegisteredDatatypeTypeCodecIdentityV3(supplied);
+      const bool no_allocation = allocation_probe::fail_next;
+      allocation_probe::fail_next = false;
+      Check(no_allocation && exact ==
+                (expected && dt::SameDatatypeTypeCodecIdentityV3(supplied, *expected)),
+            "indexed authentication disagrees with independent exact-row scan");
+      const auto found = dt::LookupDatatypeTypeCodecIdentityV3(
+          key.catalog_snapshot_uuid, key.catalog_generation, key.registry_generation,
+          key.descriptor_uuid, key.descriptor_generation);
+      Check(found.ok == (expected != nullptr),
+            "indexed lookup disagrees with independent exact-key scan");
+      if (expected)
+        Check(SameV3Identity(found.row, *expected) && found.diagnostic_id.empty(),
+              "indexed lookup changed a full V3 identity");
+      else
+        Check(found.diagnostic_id == "DATATYPE.DESCRIPTOR.INVALID" &&
+                  SameV3Identity(found.row, {}),
+              "missing indexed identity returned partial authority or wrong diagnostic");
+    }
+  }
+}
+
+void MeasureExactIdentityLookup() {
+  constexpr std::size_t repetitions = 2000;
+  const auto rows = dt::CurrentDatatypeTypeCodecIdentityRowsV3();
+  const auto measure = [&](bool indexed) {
+    std::size_t accepted = 0;
+    const auto start = std::chrono::steady_clock::now();
+    for (std::size_t iteration = 0; iteration < repetitions; ++iteration) {
+      for (const auto& row : rows) {
+        if (indexed) accepted += dt::IsExactRegisteredDatatypeTypeCodecIdentityV3(row);
+        else {
+          const auto* found = LinearIdentityOracle(row);
+          accepted += found && dt::SameDatatypeTypeCodecIdentityV3(row, *found);
+        }
+      }
+    }
+    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    Check(accepted == repetitions * rows.size(), "lookup measurement lost an identity");
+    std::cout << "identity_lookup_" << (indexed ? "indexed" : "linear")
+              << "_ns=" << elapsed << " calls=" << accepted << '\n';
+  };
+  // Measurements are evidence, never a scheduler-dependent pass threshold.
+  measure(false);
+  measure(true);
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
   for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
     allocation_probe::fail_next = true;
     const bool exact = dt::IsExactRegisteredDatatypeTypeCodecIdentityV3(row);
@@ -2069,6 +2151,9 @@ int main() {
   TestExactProfileCohortsRemainIndependent();
   TestConformanceExamplesBindExactReceipts();
   TestLookupAllocationFailureIsContained();
+  TestIndexedLookupMatchesIndependentScan();
+  if (argc == 2 && std::string_view(argv[1]) == "--benchmark-lookup")
+    MeasureExactIdentityLookup();
   std::cout << "datatype_identity_v3_test=passed\n";
   return EXIT_SUCCESS;
 }
