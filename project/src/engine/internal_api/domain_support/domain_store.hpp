@@ -95,6 +95,29 @@ std::optional<DomainRecord> FindVisibleDomain(const EngineRequestContext& contex
                                               const EngineUuid& domain_uuid,
                                               std::uint64_t observer_tx);
 EngineDescriptor DomainDescriptor(const DomainRecord& record);
+EngineApiDiagnostic BindDomainScalarBaseDescriptor(
+    const EngineRequestContext& context, const EngineDescriptor& descriptor,
+    DomainRecord* record);
+EngineApiDiagnostic BindDomainInnerBaseDescriptor(
+    const EngineRequestContext& context, const DomainRecord& inner,
+    DomainRecord* record);
+
+struct DomainInheritedProfileResolution {
+  bool ok = false;
+  EngineApiDiagnostic diagnostic;
+  EngineDescriptor base_descriptor;
+  std::string binary_profile_binding;
+  // Complete visible definitions, binary framed. Observation only, never a
+  // reusable publication capability; the effect owner resolves afresh.
+  std::string binary_chain_snapshot;
+  std::vector<EngineUuid> domain_chain;
+  bool nullable_allowed = false;
+};
+DomainInheritedProfileResolution ResolveDomainInheritedProfile(
+    const EngineRequestContext& context, const EngineUuid& domain_uuid,
+    std::uint64_t observer_tx);
+EngineApiDiagnostic AdmitDomainMutationChain(const EngineRequestContext& context,
+    const EngineUuid& domain_uuid, std::uint64_t observer_tx);
 EngineUuid DomainUuidFromDescriptor(const EngineDescriptor& descriptor);
 std::string DomainColumnDescriptor(const EngineUuid& domain_uuid);
 EngineUuid DomainUuidFromColumnDescriptor(const std::string& column_descriptor);

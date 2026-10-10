@@ -9,6 +9,10 @@
 #include "dml/constraint_enforcement.hpp"
 #include "crud_support/retained_row_value_codec.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include "domain_support/domain_base_descriptor_codec.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "datatype_operations.hpp"
+#include "sbl_numeric.hpp"
 #include <stdexcept>
 
 #include "api_diagnostics.hpp"
@@ -358,11 +362,14 @@ bool NumberCompare(const std::string& left, const std::string& op, const std::st
   return false;
 }
 
-CheckResult EvaluateCheckEnvelope(const std::string& envelope, const CrudStoredValue& value) {
+CheckResult EvaluateCheckEnvelope(const EngineRequestContext& context,
+                                   const EngineDescriptor* descriptor,
+                                   const std::string& encoded, const CrudStoredValue& value) {
+  if (encoded.size() > kApiBehaviorRecordMaximumBytes)
+    return {false, true, "check_envelope_size_limit"};
+  std::string_view envelope = encoded;
+  while (envelope.starts_with("sblr_predicate:")) envelope.remove_prefix(15);
   if (envelope.empty()) { return {true, false, {}}; }
-  if (StartsWith(envelope, "sblr_predicate:")) {
-    return EvaluateCheckEnvelope(envelope.substr(15), value);
-  }
   if (envelope == "not_null") {
     return {value.isPresent(), false, "check_not_null_failed"};
   }
@@ -374,8 +381,39 @@ CheckResult EvaluateCheckEnvelope(const std::string& envelope, const CrudStoredV
   if (pos == std::string::npos) {
     return {false, true, "check_constraint_requires_sblr_executor"};
   }
-  const std::string op = envelope.substr(0, pos);
-  const std::string rhs = envelope.substr(pos + 1);
+  const std::string op(envelope.substr(0, pos));
+  const std::string rhs(envelope.substr(pos + 1));
+  if (descriptor && (op == "eq" || op == "ne" || op == "gt" || op == "gte" || op == "lt" || op == "lte")) {
+    namespace dt = scratchbird::core::datatypes;
+    namespace numeric = scratchbird::libraries::sbl_numeric;
+    const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+        context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+        context.datatype_registry_generation, descriptor->datatype_descriptor_uuid,
+        descriptor->datatype_descriptor_generation);
+    if (!binding.ok || binding.row.type_uuid != descriptor->type_uuid ||
+        descriptor->descriptor_kind != "scalar" ||
+        !core::uuid::IsEngineIdentityUuid(descriptor->descriptor_uuid) ||
+        binding.row.canonical_binary_type_code != static_cast<std::uint32_t>(
+            dt::CanonicalTypeIdFromStableName(descriptor->canonical_type_name)))
+      return {false, true, "check_datatype_binding_invalid"};
+    const auto type = static_cast<dt::CanonicalTypeId>(binding.row.canonical_binary_type_code);
+    const bool signed_integer = type == dt::CanonicalTypeId::int8 || type == dt::CanonicalTypeId::int16 ||
+        type == dt::CanonicalTypeId::int32 || type == dt::CanonicalTypeId::int64 || type == dt::CanonicalTypeId::int128;
+    const bool unsigned_integer = type == dt::CanonicalTypeId::uint8 || type == dt::CanonicalTypeId::uint16 ||
+        type == dt::CanonicalTypeId::uint32 || type == dt::CanonicalTypeId::uint64 || type == dt::CanonicalTypeId::uint128;
+    if (signed_integer || unsigned_integer) {
+      if (value.bytes.size() != binding.row.canonical_value_bytes)
+        return {false, false, "check_integer_encoding_invalid"};
+      const auto compared = numeric::CompareIntegerLittleEndianToDecimalLiteral(
+          reinterpret_cast<const std::uint8_t*>(value.bytes.data()), value.bytes.size(), signed_integer, rhs);
+      if (compared.status != numeric::NumericStatusCode::ok)
+        return {false, false, "check_numeric_literal_invalid"};
+      const int c = compared.comparison;
+      const bool passes = op == "eq" ? c == 0 : op == "ne" ? c != 0 : op == "gt" ? c > 0
+          : op == "gte" ? c >= 0 : op == "lt" ? c < 0 : c <= 0;
+      return {passes, false, "check_" + op + "_failed"};
+    }
+  }
   if (op == "eq") { return {value == rhs, false, "check_eq_failed"}; }
   if (op == "ne") { return {value != rhs, false, "check_ne_failed"}; }
   if (op == "gt" || op == "gte" || op == "lt" || op == "lte") {
@@ -1291,6 +1329,7 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraintsWithOptions(
     ConstraintDmlValidationCache* cache) {
   ConstraintDmlValidationResult result;
   result.values = values;
+  std::optional<MgaRelationStorageDescriptorLoadResult> stored_descriptor;
   for (const auto& [column_name, fields] : CachedConstraintColumns(cache, table)) {
     (void)mutation_kind;
     const bool not_null = BoolField(fields, {"not_null", "required"}) ||
@@ -1345,13 +1384,50 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraintsWithOptions(
 
     const std::string check_envelope = FieldOrEmpty(fields, {"check_constraint", "check", "predicate_sblr_ref"});
     if (!check_envelope.empty()) {
+      const EngineDescriptor* value_descriptor = nullptr;
+      for (std::size_t ordinal = 0; ordinal < table.columns.size(); ++ordinal) {
+        if (table.columns[ordinal].first != column_name) continue;
+        for (const auto& column : table.bound_columns) {
+          if (column.ordinal != ordinal) continue;
+          if (value_descriptor || !core::uuid::IsEngineIdentityUuid(column.requested_column_uuid)) {
+            result.diagnostic = MakeInvalidRequestDiagnostic("constraint.validate_row", "ambiguous_bound_column:" + column_name);
+            return result;
+          }
+          value_descriptor = &column.descriptor;
+        }
+      }
+      if (!value_descriptor) {
+        if (!stored_descriptor) stored_descriptor = LoadMgaRelationStorageDescriptor(context, table.table_uuid);
+        if (!stored_descriptor->ok) {
+          result.diagnostic = stored_descriptor->diagnostic;
+          return result;
+        }
+        for (const auto& column : stored_descriptor->descriptor.columns) {
+          if (column.canonical_name_key != column_name) continue;
+          if (value_descriptor || !column.column_generation ||
+              !core::uuid::IsEngineIdentityUuid(column.column_uuid)) {
+            result.diagnostic = MakeInvalidRequestDiagnostic("constraint.validate_row", "ambiguous_bound_column:" + column_name);
+            return result;
+          }
+          value_descriptor = &column.value_descriptor;
+        }
+        if (!value_descriptor) {
+          result.diagnostic = MakeInvalidRequestDiagnostic("constraint.validate_row", "bound_column_not_visible:" + column_name);
+          return result;
+        }
+      }
+      std::string bound_descriptor_material;
+      if (value_descriptor && !EncodeDomainBaseDescriptorV1(*value_descriptor, &bound_descriptor_material)) {
+        result.diagnostic = MakeInvalidRequestDiagnostic("constraint.validate_row", "invalid_bound_column:" + column_name);
+        return result;
+      }
       if (deferred_timing) {
         record_deferred("check_constraint");
       } else {
         const std::string unknown_policy = LowerAscii(FieldOrEmpty(fields, {"check_unknown_policy", "unknown_policy"}));
         if (IsNullValue(value) && unknown_policy != "fail") {
           const std::string proof_identity =
-              EncodeMgaMetadataFields({"constraint.check.proof.v2",
+              EncodeMgaMetadataFields({"constraint.check.proof.v3",bound_descriptor_material,
                   MetadataUuidBytes(ConstraintUuid(fields, table, column_name, "check_constraint")),
                   MetadataUuidBytes(table.table_uuid),column_name,check_envelope,unknown_policy,EncodeCrudValues({{"value", value}})});
           if (!FindConstraintDmlProofPayload(cache,
@@ -1370,7 +1446,7 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraintsWithOptions(
           result.evidence.push_back({"constraint_check_unknown_passed", column_name});
         } else {
           const std::string proof_identity =
-              EncodeMgaMetadataFields({"constraint.check.proof.v2",
+              EncodeMgaMetadataFields({"constraint.check.proof.v3",bound_descriptor_material,
                   MetadataUuidBytes(ConstraintUuid(fields, table, column_name, "check_constraint")),
                   MetadataUuidBytes(table.table_uuid),column_name,check_envelope,unknown_policy,EncodeCrudValues({{"value", value}})});
           if (FindConstraintDmlProofPayload(cache,
@@ -1381,7 +1457,7 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraintsWithOptions(
                   .has_value()) {
             result.evidence.push_back({"constraint_check", column_name});
           } else {
-            const auto check = EvaluateCheckEnvelope(check_envelope, value);
+            const auto check = EvaluateCheckEnvelope(context, value_descriptor, check_envelope, value);
             if (check.unsupported) {
               result.diagnostic = ConstraintDiagnostic("CLI.NO_ENFORCEMENT_PATH",
                                                        "constraint.no_enforcement_path",

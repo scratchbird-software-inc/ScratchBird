@@ -592,6 +592,15 @@ bool QowCanonicalDescriptorU32FieldV1(const std::string& descriptor,
 }
 
 // QOW-SOURCE-QRY-008-DESC-V1
+bool QowResolveBoundExecutionDescriptorV1(
+    const EngineDescriptor& descriptor,
+    scratchbird::engine::ExecutionTypeDescriptor* execution_descriptor,
+    std::string* refusal_detail) {
+  return QowBoundExecutionTypeDescriptorV1(descriptor,
+      core::datatypes::CanonicalTypeIdFromStableName(descriptor.canonical_type_name),
+      execution_descriptor, refusal_detail);
+}
+
 bool QowCanonicalDescriptorIdentityV1(const EngineDescriptor& descriptor) {
   // These identities have dedicated binary slots. A second textual carrier
   // is ambiguous even when both values appear to agree; never parse it back.

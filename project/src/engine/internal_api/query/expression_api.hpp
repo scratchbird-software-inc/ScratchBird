@@ -138,6 +138,10 @@ struct EngineCanonicalExpressionEvaluationResult {
 // Descriptor/scalar primitives are implemented by the lower expression
 // contract target so both the internal API and physical executor consume the
 // same runtime without a static-library dependency cycle.
+bool QowResolveBoundExecutionDescriptorV1(
+    const EngineDescriptor& descriptor,
+    scratchbird::engine::ExecutionTypeDescriptor* execution_descriptor,
+    std::string* refusal_detail);
 bool QowCanonicalDescriptorIdentityV1(
     const EngineDescriptor& descriptor);
 scratchbird::core::datatypes::CanonicalTypeId

@@ -14,6 +14,16 @@ static void Check(bool value,std::source_location at=std::source_location::curre
 }
 static a::EngineUuid Id(unsigned n){a::EngineUuid id;id.bytes={1,144,10,9,0,0,112,0,128,0,0,0,0,0,0,static_cast<std::uint8_t>(n)};return id;}
 int main(){
+  Check(a::IsSupportedDomainCheckEnvelope("all:gte:0;all:lt:12.5"));
+  Check(!a::IsSupportedDomainCheckEnvelope("all:gte:0;"));
+  Check(!a::IsSupportedDomainCheckEnvelope("all:;gte:0"));
+  std::string nested;
+  for(unsigned i=0;i<32768;++i)nested.append("all:");
+  nested.append("gte:0");
+  Check(a::IsSupportedDomainCheckEnvelope(nested));
+  a::EngineDescriptor integer;integer.canonical_type_name="int64";
+  std::string predicate_detail;
+  Check(a::EvaluateDomainCheckPredicate(nested, integer, std::string("\1\0\0\0\0\0\0\0",8), &predicate_detail));
   a::EngineDescriptor base;
   base.descriptor_uuid=Id(20);base.type_uuid=Id(21);
   base.datatype_descriptor_uuid=Id(22);base.datatype_descriptor_generation=42;
@@ -49,6 +59,37 @@ int main(){
   auto plain=base;plain.charset_uuid={};plain.collation_uuid={};
   Check(a::EncodeDomainBaseDescriptorV1(plain,&bound));
   Check(a::DecodeDomainBaseDescriptorV1(bound,&restored)&&restored==plain);
+  a::DomainInheritedBaseBindingV1 profile;
+  profile.base=plain;profile.catalog_snapshot_uuid=Id(30);profile.catalog_generation=7;
+  profile.registry_generation=8;profile.codec_uuid=Id(31);profile.codec_version=1;profile.codec_generation=9;
+  profile.native_profile_fingerprint.assign(32,'\0');
+  for(std::size_t i=0;i<8;++i){profile.policy_uuids[i]=Id(40+i);profile.policy_generations[i]=i+1;}
+  std::string inherited;Check(a::EncodeDomainInheritedBaseBindingV1(profile,&inherited));
+  Check(inherited.substr(0,8)=="SBDPFB01");
+  Check(static_cast<unsigned char>(inherited[24])==7 && static_cast<unsigned char>(inherited[32])==8);
+  Check(static_cast<unsigned char>(inherited[56])==1 && static_cast<unsigned char>(inherited[60])==9);
+  for(std::size_t i=0;i<9;++i){
+    for(unsigned j=0;j<16;++j)Check(static_cast<unsigned char>(inherited[68+24*i+j])==profile.policy_uuids[i].bytes[j]);
+    Check(static_cast<unsigned char>(inherited[84+24*i])==profile.policy_generations[i]);
+  }
+  a::DomainInheritedBaseBindingV1 profile_read;
+  Check(a::DecodeDomainInheritedBaseBindingV1(inherited,&profile_read)&&profile_read==profile);
+  const auto reject_profile=[&](const std::string& damaged){
+    auto retained=profile;Check(!a::DecodeDomainInheritedBaseBindingV1(damaged,&retained));Check(retained==profile);
+  };
+  for(std::size_t n=0;n<inherited.size();++n)reject_profile(inherited.substr(0,n));
+  reject_profile(inherited+"x");reject_profile(bound);
+  for(const auto offset:{8U,40U,68U}){auto damaged=inherited;damaged[offset+6]=0x40;reject_profile(damaged);}
+  for(const auto offset:{24U,32U,56U,60U,84U}){auto damaged=inherited;damaged[offset]=0;reject_profile(damaged);}
+  auto damaged=inherited;damaged[284]=1;reject_profile(damaged);
+  auto missing=profile;missing.policy_uuids[0]={};
+  std::string retained="unchanged";Check(!a::EncodeDomainInheritedBaseBindingV1(missing,&retained)&&retained=="unchanged");
+  auto builtin=profile;builtin.policy_uuids={};builtin.policy_generations={};
+  Check(a::EncodeDomainInheritedBaseBindingV1(builtin,&inherited));
+  Check(a::DecodeDomainInheritedBaseBindingV1(inherited,&profile_read)&&profile_read==builtin);
+  builtin.codec_uuid={};
+  Check(a::EncodeDomainInheritedBaseBindingV1(builtin,&inherited));
+  Check(a::DecodeDomainInheritedBaseBindingV1(inherited,&profile_read)&&profile_read==builtin);
   a::DomainRecord r;r.creator_tx=23;r.domain_uuid=Id(1);r.catalog_row_uuid=Id(2);r.schema_uuid=Id(3);r.base_descriptor_uuid=Id(4);r.default_name=std::string("name\0\t\n",7);r.base_descriptor_kind="scalar";r.base_canonical_type_name="int64";r.default_expression_envelope=std::string("\xff\0\n;=",5);
   r.base_descriptor_uuid=plain.datatype_descriptor_uuid;
   r.base_canonical_type_name=plain.canonical_type_name;

@@ -580,6 +580,18 @@ struct MgaRelationHotAppendContext::Impl {
   explicit Impl(const EngineRequestContext& source_context) : context(source_context) {}
 
   EngineRequestContext context;
+  bound_index_key::DomainPublicationDependencies domain_dependencies;
+  EngineApiDiagnostic ValidateDomainDependencies() const {
+    for (const auto& [domain, snapshot] : domain_dependencies) {
+      const auto current = ResolveDomainInheritedProfile(context, domain, context.local_transaction_id);
+      if (!current.ok) return current.diagnostic;
+      if (current.binary_chain_snapshot != snapshot)
+        return MakeInvalidRequestDiagnostic("mga.index_store", "sorted_index_domain_binding_changed_before_flush");
+      const auto mutation = AdmitDomainMutationChain(context, domain, context.local_transaction_id);
+      if (mutation.error) return mutation;
+    }
+    return OkDiagnostic();
+  }
   std::ofstream row_out;
   std::ofstream index_out;
   std::vector<std::string> allocator_lines;
@@ -1603,6 +1615,9 @@ MgaRelationHotAppendContext::AppendRowVersionIdentitiesReadOnlyScopedOnlyNativeP
 }
 
 EngineApiDiagnostic MgaRelationHotAppendContext::FlushRowVersions() {
+  const auto inventory_guard = AcquireTransactionInventoryGuard(impl_->context.database_path);
+  const auto domains = impl_->ValidateDomainDependencies();
+  if (domains.error) return domains;
   if (!AppendDeferredEventSequenceAllocatorLines(impl_->context,
                                                  &impl_->allocator_lines,
                                                  &impl_->counters)) {
@@ -1768,6 +1783,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendIndexEntryBatches(
 
 EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
     const std::vector<MgaExactIndexEntryAppendBatch>& input_batches) {
+  const auto inventory_guard = AcquireTransactionInventoryGuard(impl_->context.database_path);
   if (impl_->context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.index_store", "database_path_required");
   }
@@ -1785,8 +1801,15 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
       })) {
     canonical_batches = input_batches;
     EngineApiDiagnostic diagnostic;
+    bound_index_key::DomainPublicationDependencies domains;
     if (!bound_index_key::CanonicalizePublicationBatches(
-            impl_->context, &canonical_batches, &diagnostic)) return diagnostic;
+            impl_->context, &canonical_batches, &diagnostic, nullptr, &domains)) return diagnostic;
+    for (const auto& [domain, snapshot] : domains) {
+      const auto prior = impl_->domain_dependencies.find(domain);
+      if (prior != impl_->domain_dependencies.end() && prior->second != snapshot)
+        return MakeInvalidRequestDiagnostic("mga.index_store", "sorted_index_domain_binding_changed_before_flush");
+    }
+    for (auto& [domain, snapshot] : domains) impl_->domain_dependencies.emplace(domain, std::move(snapshot));
     admitted_batches = &canonical_batches;
   }
   const auto& batches = *admitted_batches;
@@ -1885,6 +1908,9 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
 }
 
 EngineApiDiagnostic MgaRelationHotAppendContext::FlushIndexEntries() {
+  const auto inventory_guard = AcquireTransactionInventoryGuard(impl_->context.database_path);
+  const auto domains = impl_->ValidateDomainDependencies();
+  if (domains.error) return domains;
   if (!impl_->pending_prepared_index_jobs.empty() ||
       !impl_->pending_index_materialization_jobs.empty()) {
     std::vector<PreparedIndexAppendJob> prepared_jobs;
@@ -2075,6 +2101,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::FlushIndexEntries() {
 }
 
 EngineApiDiagnostic MgaRelationHotAppendContext::Flush() {
+  const auto inventory_guard = AcquireTransactionInventoryGuard(impl_->context.database_path);
   const auto rows = FlushRowVersions();
   if (rows.error) { return rows; }
   return FlushIndexEntries();

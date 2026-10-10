@@ -780,10 +780,9 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
               "ddl.alter_object",
               MakeInvalidRequestDiagnostic("ddl.alter_object", "domain_chain_cannot_widen_nullability"));
         }
-        updated.base_descriptor_uuid = base_domain_uuid;
-        updated.base_descriptor_kind = "domain";
-        updated.base_canonical_type_name = base_domain->base_canonical_type_name;
-        updated.base_encoded_descriptor = DomainDescriptor(*base_domain).encoded_descriptor;
+        const auto bound = BindDomainInnerBaseDescriptor(request.context, *base_domain, &updated);
+        if (bound.error) return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+            request.context, "ddl.alter_object", bound);
       } else {
         if (descriptor.canonical_type_name.empty()) {
           return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
@@ -791,12 +790,11 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
               "ddl.alter_object",
               MakeInvalidRequestDiagnostic("ddl.alter_object", "base_canonical_type_name_required"));
         }
-        updated.base_descriptor_uuid = descriptor.descriptor_uuid.is_nil()
-                                           ? GenerateCrudEngineUuid("object")
-                                           : descriptor.descriptor_uuid;
-        updated.base_descriptor_kind = descriptor.descriptor_kind.empty() ? "scalar" : descriptor.descriptor_kind;
-        updated.base_canonical_type_name = descriptor.canonical_type_name;
-        updated.base_encoded_descriptor = descriptor.encoded_descriptor;
+        const auto bound = BindDomainScalarBaseDescriptor(request.context, descriptor, &updated);
+        if (bound.error) {
+          return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+              request.context, "ddl.alter_object", bound);
+        }
       }
     }
     SetDomainValidationHookStatus(&updated);

@@ -403,4 +403,4 @@ EngineCreateDomainResult EngineCreateDomain(const EngineCreateDomainRequest& req
   record.default_name = DefaultLocalizedName(request.localized_names, "unnamed_domain");
   record.localized_names_envelope = LocalizedNamesEnvelope(request.localized_names);
   const auto& descriptor = request.descriptors.front();
-  record.base_descriptor_uuid = descriptor.descriptor_uuid.is_nil() ? GenerateCrudEngineUuid("object") : descriptor.descriptor_uuid;
+  record.base_descriptor_uuid = descriptor.datatype_descriptor_uuid;

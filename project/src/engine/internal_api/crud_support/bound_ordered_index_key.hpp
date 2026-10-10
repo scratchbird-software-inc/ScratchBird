@@ -8,10 +8,13 @@
 #include "crud_support/crud_store.hpp"
 #include "datatype_storage_identity.hpp"
 #include "datatype_date.hpp"
+#include "domain_support/domain_store.hpp"
+#include "mga_relation_store/stored_scalar_payload.hpp"
 #include "engine/executor/descriptor_value_runtime.hpp"
 #include "index_key_encoding.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "sbl_numeric.hpp"
+#include "transaction/transaction_api.hpp"
 #include <algorithm>
 #include <cstdint>
 #include <map>
@@ -40,6 +43,7 @@ struct OrderedIndexColumn {
   core::platform::TypedUuid collation;
   engine::ExecutionTypeDescriptor execution_descriptor;
   std::optional<core::datatypes::DateValidatedProfileHandleV3> date_profile;
+  std::optional<DomainInheritedProfileResolution> inherited_domain;
 };
 
 // A datatype profile is representation authority only. Production callers
@@ -63,6 +67,7 @@ struct PublicationBindingStatistics {
   std::uint64_t resource_lookups = 0;
   std::uint64_t resource_reuses = 0;
 };
+using DomainPublicationDependencies = std::map<EngineUuid, std::string>;
 
 // Pure projection of a supplied column, not catalog admission. Effectful
 // callers must first load it through their fresh PublicationBindingScope.
@@ -143,7 +148,7 @@ inline bool BuildOrderedColumnExecutionDescriptor(
       if (name != "nullable" &&
           name != "nullability" && name != "not_null" && name != "primary_key" && name != "pk" &&
           name != "unique" && name != "generated" && name != "identity" &&
-          name != "default" && name != "default_value") {
+          name != "default" && name != "default_value" && name != "check") {
         *detail = "base index column has an unsupported modifier";
         return false;
       }
@@ -214,7 +219,7 @@ class PublicationBindingScope {
       MgaExactIndexEntryAppendBatch*, EngineApiDiagnostic*);
   friend bool CanonicalizePublicationBatches(const EngineRequestContext&,
       std::vector<MgaExactIndexEntryAppendBatch>*, EngineApiDiagnostic*,
-      PublicationBindingStatistics*);
+      PublicationBindingStatistics*, DomainPublicationDependencies*);
 
   bool CanonicalizeBatch(MgaExactIndexEntryAppendBatch*, EngineApiDiagnostic*);
   bool BindColumns(
@@ -253,7 +258,48 @@ class PublicationBindingScope {
     if (!descriptor.ok()) return refuse("sorted_index_datatype_identity_invalid");
     column.descriptor = descriptor.value;
     std::string descriptor_detail;
-    if (!BuildOrderedColumnExecutionDescriptor(value, column.datatype, found->nullable,
+    auto projection = value;
+    CatalogColumnMetadata metadata;
+    if (!AdmitCatalogColumnMetadata(value.encoded_descriptor, &metadata))
+      return refuse("sorted_index_column_metadata_invalid");
+    if (const auto domain = metadata.identities.find("domain_uuid"); domain != metadata.identities.end()) {
+      auto inherited = ResolveDomainInheritedProfile(context, domain->second, context.local_transaction_id);
+      if (!inherited.ok) { *diagnostic = inherited.diagnostic; return false; }
+      const auto& base = inherited.base_descriptor;
+      if (base.type_uuid != value.type_uuid ||
+          base.datatype_descriptor_uuid != value.datatype_descriptor_uuid ||
+          base.datatype_descriptor_generation != value.datatype_descriptor_generation ||
+          base.charset_uuid != value.charset_uuid || base.collation_uuid != value.collation_uuid ||
+          (found->nullable && !inherited.nullable_allowed))
+        return refuse("sorted_index_domain_base_binding_mismatch");
+      metadata.identities.erase("domain_uuid");
+      if (!EncodeCatalogColumnMetadata(metadata, &projection.encoded_descriptor))
+        return refuse("sorted_index_domain_projection_invalid");
+      CatalogColumnMetadata base_metadata;
+      engine::ExecutionTypeDescriptor base_execution;
+      if (!AdmitCatalogColumnMetadata(base.encoded_descriptor, &base_metadata) ||
+          !QowResolveBoundExecutionDescriptorV1(base, &base_execution, &descriptor_detail) ||
+          (found->nullable && !base_execution.nullable_allowed))
+        return refuse("sorted_index_domain_base_descriptor_invalid:" + descriptor_detail);
+      // Compare all semantic metadata, not just type names. Declaration-only
+      // fields are validated by their owners and do not select key semantics.
+      // The full definitions and native bindings remain attached below; each
+      // actual key still undergoes domain validation before publication.
+      const auto semantic_fields = [](CatalogColumnMetadata fields) {
+        for (const auto name : {"canonical", "canonical_type", "type", "nullable", "nullability",
+             "not_null", "primary_key", "pk", "unique", "generated", "identity", "default",
+             "default_value", "check"}) fields.text.erase(name);
+        return fields;
+      };
+      const auto left = semantic_fields(metadata), right = semantic_fields(base_metadata);
+      if (left.text != right.text || left.identities != right.identities)
+        return refuse("sorted_index_domain_modifiers_mismatch");
+      const auto [prior, inserted] = domains_.emplace(inherited.domain_chain.front(), inherited.binary_chain_snapshot);
+      if (!inserted && prior->second != inherited.binary_chain_snapshot)
+        return refuse("sorted_index_domain_binding_changed");
+      column.inherited_domain = std::move(inherited);
+    }
+    if (!BuildOrderedColumnExecutionDescriptor(projection, column.datatype, found->nullable,
             &column.execution_descriptor, &descriptor_detail)) {
       return refuse("sorted_index_execution_descriptor_invalid:" + descriptor_detail);
     }
@@ -294,12 +340,14 @@ class PublicationBindingScope {
   const EngineRequestContext& context_;
   std::map<EngineUuid, EngineResourceDescriptorLookupResult> collations_;
   PublicationBindingStatistics statistics_;
+  DomainPublicationDependencies domains_;
 };
 
 inline bool BindOrderedIndexColumns(const EngineRequestContext& context,
     const CrudIndexRecord& index, const EngineUuid& table,
     std::vector<OrderedIndexColumn>* output, EngineApiDiagnostic* diagnostic) {
   PublicationBindingScope scope(context);
+  const auto inventory_guard = AcquireTransactionInventoryGuard(context.database_path);
   return scope.BindColumns(index, table, output, diagnostic);
 }
 
@@ -489,6 +537,47 @@ inline bool PublicationBindingScope::CanonicalizeBatch(
         ? entry.payload_value : entry.encoded_key;
     std::string physical;
     bool null_key = false;
+    const auto values = DecodeStoredLogicalKey(logical, columns.size());
+    if (!values) {
+      *diagnostic = MakeInvalidRequestDiagnostic("mga.index_store", "sorted_index_logical_key_invalid");
+      return false;
+    }
+    for (std::size_t ordinal = 0; ordinal < columns.size(); ++ordinal) {
+      if (!columns[ordinal].inherited_domain) continue;
+      const auto& inherited = *columns[ordinal].inherited_domain;
+      const auto mutation = AdmitDomainMutationChain(context_, inherited.domain_chain.front(),
+                                                     context_.local_transaction_id);
+      if (mutation.error) { *diagnostic = mutation; return false; }
+      EngineTypedValue native;
+      native.descriptor = inherited.base_descriptor;
+      const auto& value = (*values)[ordinal];
+      if (!RestoreStoredScalarPayloadV1(value.bytes, value.state, &native)) {
+        *diagnostic = MakeInvalidRequestDiagnostic("mga.index_store", "sorted_index_domain_payload_invalid");
+        return false;
+      }
+      EngineDescriptor domain;
+      domain.descriptor_kind = "domain";
+      domain.descriptor_uuid = inherited.domain_chain.front();
+      const auto checked = ValidateDomainTypedValue(context_, domain, native, context_.local_transaction_id);
+      if (!checked.ok) { *diagnostic = checked.diagnostic; return false; }
+      // The inventory guard excludes concurrent publishers. A cancellation
+      // callback may reenter this thread, so also reject a changed observation.
+      const auto current = ResolveDomainInheritedProfile(context_, domain.descriptor_uuid,
+                                                         context_.local_transaction_id);
+      if (!current.ok) { *diagnostic = current.diagnostic; return false; }
+      if (current.binary_chain_snapshot != inherited.binary_chain_snapshot ||
+          current.binary_profile_binding != inherited.binary_profile_binding) {
+        *diagnostic = MakeInvalidRequestDiagnostic("mga.index_store", "sorted_index_domain_binding_changed");
+        return false;
+      }
+      // A cast/default hook cannot silently change a stored logical index key.
+      auto validated = checked.value;
+      validated.descriptor = inherited.base_descriptor;
+      if (!StoredScalarPayloadMatchesV1(validated, value.bytes, value.state)) {
+        *diagnostic = MakeInvalidRequestDiagnostic("mga.index_store", "sorted_index_domain_key_changed");
+        return false;
+      }
+    }
     if (!EncodeOrderedIndexKey(logical, columns, &physical, &null_key, diagnostic)) return false;
     entry.encoded_key = "SBKOBIN:" + physical;
     entry.payload_value = logical;
@@ -499,6 +588,7 @@ inline bool PublicationBindingScope::CanonicalizeBatch(
 inline bool CanonicalizePublicationBatch(const EngineRequestContext& context,
     MgaExactIndexEntryAppendBatch* batch, EngineApiDiagnostic* diagnostic) {
   PublicationBindingScope scope(context);
+  const auto inventory_guard = AcquireTransactionInventoryGuard(context.database_path);
   auto staged = *batch;
   if (!scope.CanonicalizeBatch(&staged, diagnostic)) return false;
   *batch = std::move(staged);
@@ -507,8 +597,10 @@ inline bool CanonicalizePublicationBatch(const EngineRequestContext& context,
 
 inline bool CanonicalizePublicationBatches(const EngineRequestContext& context,
     std::vector<MgaExactIndexEntryAppendBatch>* batches, EngineApiDiagnostic* diagnostic,
-    PublicationBindingStatistics* statistics = nullptr) {
+    PublicationBindingStatistics* statistics = nullptr,
+    DomainPublicationDependencies* domains = nullptr) {
   PublicationBindingScope scope(context);
+  const auto inventory_guard = AcquireTransactionInventoryGuard(context.database_path);
   // Preserve input as well as durable state if any later batch is invalid.
   auto staged = *batches;
   for (auto& batch : staged) {
@@ -518,6 +610,7 @@ inline bool CanonicalizePublicationBatches(const EngineRequestContext& context,
     }
   }
   *batches = std::move(staged);
+  if (domains) *domains = std::move(scope.domains_);
   if (statistics) *statistics = scope.statistics_;
   return true;
 }

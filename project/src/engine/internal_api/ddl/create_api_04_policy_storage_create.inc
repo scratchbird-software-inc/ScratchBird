@@ -127,10 +127,15 @@
           "ddl.create_domain",
           MakeInvalidRequestDiagnostic("ddl.create_domain", "domain_chain_cannot_widen_nullability"));
     }
-    record.base_descriptor_uuid = base_domain_uuid;
-    record.base_descriptor_kind = "domain";
-    record.base_canonical_type_name = base_domain->base_canonical_type_name;
-    record.base_encoded_descriptor = DomainDescriptor(*base_domain).encoded_descriptor;
+    const auto bound = BindDomainInnerBaseDescriptor(request.context, *base_domain, &record);
+    if (bound.error) return MakeCrudDiagnosticResult<EngineCreateDomainResult>(
+        request.context, "ddl.create_domain", bound);
+  } else {
+    const auto bound = BindDomainScalarBaseDescriptor(request.context, descriptor, &record);
+    if (bound.error) {
+      return MakeCrudDiagnosticResult<EngineCreateDomainResult>(
+          request.context, "ddl.create_domain", bound);
+    }
   }
   SetDomainValidationHookStatus(&record);
   const auto appended = AppendDomainEvent(request.context, MakeDomainCreateEvent(record));
