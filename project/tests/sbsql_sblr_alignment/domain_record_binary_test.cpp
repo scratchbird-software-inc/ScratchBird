@@ -4,6 +4,7 @@
 // decoder without replacing transaction or persistence dependencies.
 #include "../../src/engine/internal_api/domain_support/domain_store.cpp"
 #include "catalog/name_registry_codec.hpp"
+#include "domain_support/domain_base_descriptor_codec.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <source_location>
@@ -13,10 +14,50 @@ static void Check(bool value,std::source_location at=std::source_location::curre
 }
 static a::EngineUuid Id(unsigned n){a::EngineUuid id;id.bytes={1,144,10,9,0,0,112,0,128,0,0,0,0,0,0,static_cast<std::uint8_t>(n)};return id;}
 int main(){
+  a::EngineDescriptor base;
+  base.descriptor_uuid=Id(20);base.type_uuid=Id(21);
+  base.datatype_descriptor_uuid=Id(22);base.datatype_descriptor_generation=42;
+  base.charset_uuid=Id(23);base.collation_uuid=Id(24);
+  base.descriptor_kind="scalar";base.canonical_type_name="character";
+  base.encoded_descriptor=std::string("metadata\0;=",11);
+  std::string bound;Check(a::EncodeDomainBaseDescriptorV1(base,&bound));
+  Check(bound.substr(0,8)=="SBDTDS01");
+  std::size_t bound_offset=8;
+  for(const auto id:{base.descriptor_uuid,base.type_uuid,base.datatype_descriptor_uuid}) {
+    for(unsigned n=0;n<16;++n)Check(static_cast<std::uint8_t>(bound[bound_offset+n])==id.bytes[n]);
+    bound_offset+=16;
+  }
+  Check(static_cast<unsigned char>(bound[56])==42);
+  for(unsigned n=57;n<64;++n)Check(bound[n]==0);
+  a::EngineDescriptor restored;Check(a::DecodeDomainBaseDescriptorV1(bound,&restored)&&restored==base);
+  const auto reject_base=[&](const std::string& damaged) {
+    auto retained=base;Check(!a::DecodeDomainBaseDescriptorV1(damaged,&retained));Check(retained==base);
+  };
+  for(std::size_t n=0;n<bound.size();++n)reject_base(bound.substr(0,n));
+  reject_base(bound+"x");reject_base("canonical=character");
+  for(const auto offset:{8U,24U,40U,64U,80U}) {
+    auto damaged=bound;damaged[offset+6]=0x40;reject_base(damaged);
+  }
+  for(const auto member:{&a::EngineDescriptor::descriptor_uuid,&a::EngineDescriptor::type_uuid,
+                         &a::EngineDescriptor::datatype_descriptor_uuid}) {
+    auto missing=base;missing.*member={};auto kept=std::string("unchanged");
+    Check(!a::EncodeDomainBaseDescriptorV1(missing,&kept)&&kept=="unchanged");
+  }
+  auto unbound=base;unbound.datatype_descriptor_generation=0;
+  Check(!a::EncodeDomainBaseDescriptorV1(unbound,&bound));
+  Check(a::DecodeDomainBaseDescriptorV1(bound,&restored)&&restored==base);
+  auto plain=base;plain.charset_uuid={};plain.collation_uuid={};
+  Check(a::EncodeDomainBaseDescriptorV1(plain,&bound));
+  Check(a::DecodeDomainBaseDescriptorV1(bound,&restored)&&restored==plain);
   a::DomainRecord r;r.creator_tx=23;r.domain_uuid=Id(1);r.catalog_row_uuid=Id(2);r.schema_uuid=Id(3);r.base_descriptor_uuid=Id(4);r.default_name=std::string("name\0\t\n",7);r.base_descriptor_kind="scalar";r.base_canonical_type_name="int64";r.default_expression_envelope=std::string("\xff\0\n;=",5);
+  r.base_descriptor_uuid=plain.datatype_descriptor_uuid;
+  r.base_canonical_type_name=plain.canonical_type_name;
+  r.base_encoded_descriptor=bound;
   const auto bytes=a::MakeDomainCreateEvent(r);Check(bytes.size()>152&&bytes.substr(0,8)=="SBDOMR02");
   std::size_t offset=88;for(auto id:{r.domain_uuid,r.catalog_row_uuid,r.schema_uuid,r.base_descriptor_uuid}){for(unsigned n=0;n<16;++n)Check(static_cast<std::uint8_t>(bytes[offset+n])==id.bytes[n]);offset+=16;}
   a::DomainBinaryAction action;a::DomainRecord decoded;Check(a::DecodeDomainEvent(bytes,&action,&decoded));Check(action==a::DomainBinaryAction::create&&decoded.domain_uuid==r.domain_uuid&&decoded.schema_uuid==r.schema_uuid&&decoded.default_name==r.default_name&&decoded.default_expression_envelope==r.default_expression_envelope);
+  Check(decoded.base_encoded_descriptor==bound);
+  Check(a::DecodeDomainBaseDescriptorV1(decoded.base_encoded_descriptor,&restored)&&restored==plain);
   Check(a::DecodeDomainEvent(a::MakeDomainAlterEvent(r),&action,&decoded)&&action==a::DomainBinaryAction::alter);
   Check(a::DecodeDomainEvent(a::MakeDomainDropEvent(24,r.domain_uuid),&action,&decoded)&&action==a::DomainBinaryAction::drop&&decoded.dropped&&decoded.creator_tx==24&&decoded.domain_uuid==r.domain_uuid);
   auto reject=[&](const std::string& value){a::DomainRecord out;out.domain_uuid=Id(77);auto op=a::DomainBinaryAction::alter;Check(!a::DecodeDomainEvent(value,&op,&out));Check(out.domain_uuid==Id(77)&&op==a::DomainBinaryAction::alter);};
