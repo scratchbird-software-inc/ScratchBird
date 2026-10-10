@@ -72,13 +72,14 @@ PgpPacketDescription Scan(PgpInput in, PgpOutput* output, PgpCancellation probe)
   if (in.size < 2 || (in.data[0] & 0xc0) != 0xc0 || !(in.data[0] & 63)) return {};
   const auto type = static_cast<std::uint8_t>(in.data[0] & 63);
   const bool allow_partial = type == 8 || type == 9 || type == 11 || type == 18;
-  std::size_t at = 1, total = 0;
+  std::size_t at = 1, total = 0, first_body_offset = 0;
   bool partial = false, first = true;
   for (;;) {
     if (Cancelled(probe)) return {PgpCode::cancelled};
     Segment segment;
     if (!ReadLength(in, at, segment) || segment.size > in.size - at ||
         (segment.partial && (!allow_partial || (first && segment.size < 512)))) return {};
+    if (first) first_body_offset = at;
     // Each segment occupies distinct input, so total cannot exceed in.size;
     // retain an explicit addition guard as part of the extent contract.
     if (segment.size > std::numeric_limits<std::size_t>::max() - total)
@@ -97,7 +98,7 @@ PgpPacketDescription Scan(PgpInput in, PgpOutput* output, PgpCancellation probe)
     if (!segment.partial) break;
   }
   if (Cancelled(probe)) return {PgpCode::cancelled};
-  return {PgpCode::ok, type, total, at, partial};
+  return {PgpCode::ok, type, total, at, partial, first_body_offset};
 }
 PgpCode Copy(PgpInput in, std::uint8_t* out, PgpCancellation probe) {
   for (std::size_t at = 0; at < in.size;) {
@@ -118,6 +119,12 @@ PgpSize PacketEncodedSize(std::uint8_t type, std::size_t bytes) noexcept {
 }
 PgpPacketDescription InspectPacket(PgpInput input, PgpCancellation probe) {
   return Scan(input, nullptr, probe);
+}
+PgpPacketPrefix PacketPrefix(std::uint8_t type, std::size_t bytes) noexcept {
+  PgpPacketPrefix prefix;
+  prefix.code = PacketEncodedSize(type, bytes).code;
+  if (prefix.code == PgpCode::ok) prefix.size = Header(type, bytes, prefix.bytes.data());
+  return prefix;
 }
 PgpCode EncodePacket(std::uint8_t type, PgpInput input, PgpOutput output,
                      PgpCancellation probe) {

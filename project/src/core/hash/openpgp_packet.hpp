@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "openpgp_seipd.hpp"
+#include <array>
 
 namespace scratchbird::core::crypto {
 // Allocation-free RFC9580 packet framing. This is structural parsing, never
@@ -13,7 +14,16 @@ struct PgpPacketDescription {
   std::uint8_t type = 0;
   std::size_t body_bytes = 0, packet_bytes = 0;
   bool partial = false;
+  std::size_t first_body_offset = 0;
 };
+struct PgpPacketPrefix {
+  PgpCode code = PgpCode::invalid_packet;
+  std::array<std::uint8_t, 6> bytes{};
+  std::size_t size = 0;
+};
+// Header only, for an owning encoder writing directly into a private body
+// slice. Does not make a complete packet or certify that any body exists.
+PgpPacketPrefix PacketPrefix(std::uint8_t type, std::size_t body_bytes) noexcept;
 PgpSize PacketEncodedSize(std::uint8_t type, std::size_t body_bytes) noexcept;
 PgpPacketDescription InspectPacket(PgpInput, PgpCancellation = {});
 // Encode one shortest definite-length packet. Decode one packet at the front

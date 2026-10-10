@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "crypto_memory_adapter.hpp"
 #include "openpgp_seipd.hpp"
+#include "openpgp_password_message.hpp"
 #include "argon2_kdf.hpp"
 #include "reservation_backed_memory_resource.hpp"
 #include <openssl/crypto.h>
@@ -388,6 +389,68 @@ void ArgonOpenPgpChecks(Grant& provider,h::CryptoMemoryPool& operation){
   OPENSSL_cleanse(tail,native.bytes-work_size);native.Release();
 }
 
+void PasswordMessageMemoryChecks(Grant& provider,h::CryptoMemoryPool& operation){
+  namespace pgp=scratchbird::core::crypto;
+  using Code=pgp::PgpCode;
+  const auto size=pgp::PasswordMessageEncodedSize({},37);
+  Check(size.code==Code::ok&&size.workspace_bytes==64*1024*1024,"full password message approved workspace");
+  Grant native(size.workspace_bytes+pgp::Argon2idFixedScratchBytes()+4096);
+  auto* base=static_cast<unsigned char*>(native.pointer);
+  auto* tail=base+size.workspace_bytes;
+  std::memset(tail,0x63,4096);
+  pgp::PgpOutput work{base,size.workspace_bytes},literal{tail+256,size.literal_bytes},message{tail+512,size.message_bytes};
+  pgp::PgpInput password{tail,8},data{tail+128,37};
+  pgp::PasswordMessageEntropy entropy{{tail+16,32},{tail+48,16},{tail+64,15},{tail+80,32}};
+  const auto zero=[](pgp::PgpOutput v){return std::all_of(v.data,v.data+v.size,[](auto b){return !b;});};
+  const auto charged=[&]{return native.resource->Snapshot().allocated_bytes==native.bytes&&
+    native.manager.Snapshot().current_bytes==native.bytes&&native.ledger.Snapshot().current_bytes==native.bytes;};
+  pgp::PasswordMessageDescription description;
+  {
+    h::CryptoMemoryScope active(operation,provider.binding);Check(active.ok(),"full message provider scope");
+    const auto before=operation.Snapshot();deny_cpp=true;
+    const auto code=pgp::EncryptPasswordMessage({},password,data,entropy,work,literal,message);
+    description=pgp::InspectPasswordMessage({message.data,message.size});deny_cpp=false;
+    Check(code==Code::ok&&description.code==Code::ok&&zero(work)&&zero(literal),"full encryption uses admitted backing, no C++ fallback");
+    Check(operation.Snapshot().allocations>before.allocations&&charged(),"full message allocations physically charged");
+    OPENSSL_thread_stop();
+  }
+  pgp::PgpOutput body{tail+1024,description.data_body_bytes},plain{tail+2048,description.data_body_bytes};
+  Check(description.data_body_bytes<1024,"fixture stage capacity");
+  {
+    h::CryptoMemoryScope active(operation,provider.binding);Check(active.ok(),"message receiver provider scope");
+    deny_cpp=true;
+    const auto result=pgp::DecryptPasswordMessage(password,{message.data,message.size},work,body,plain);deny_cpp=false;
+    Check(result.code==Code::ok&&result.data.size==data.size&&!std::memcmp(data.data,result.data.data,data.size)&&
+      zero(work)&&zero(body)&&charged(),"full authenticated decrypt retains private result backing charge");
+    OPENSSL_thread_stop();
+  }
+  {
+    h::CryptoMemoryScope sealed(operation,provider.binding,true);Check(sealed.ok(),"full message provider denied");
+    deny_cpp=true;const auto result=pgp::DecryptPasswordMessage(password,{message.data,message.size},work,body,plain);deny_cpp=false;
+    Check(result.code==Code::provider_failure&&!result.data.data&&zero(work)&&zero(body)&&zero(plain)&&charged(),
+      "full message provider refusal erases plaintext while cleanup remains charged");
+    OPENSSL_thread_stop();
+  }
+  struct Revocation{
+    h::CryptoMemoryPool* pool;unsigned polls=0;
+    static bool Poll(void* raw){auto& p=*static_cast<Revocation*>(raw);
+      if(++p.polls==20)Check(p.pool->Revoke()==E::none,"message live grant revocation");
+      return p.pool->Snapshot().revoked;}
+  } cancellation{&operation};
+  {
+    h::CryptoMemoryScope active(operation,provider.binding);Check(active.ok(),"full message revocable scope");
+    deny_cpp=true;const auto result=pgp::DecryptPasswordMessage(password,{message.data,message.size},work,body,plain,
+      {Revocation::Poll,&cancellation});deny_cpp=false;
+    Check(result.code==Code::cancelled&&!result.data.data&&zero(work)&&zero(body)&&zero(plain)&&charged(),
+      "message revocation has no result or uncharged cleanup");
+    OPENSSL_thread_stop();
+  }
+  Check(operation.Close()==E::none,"full message revoked provider drains");
+  Check(operation.Open(provider.binding,static_cast<unsigned char*>(provider.pointer)+provider.bytes/2,provider.bytes/2)==E::none,
+    "fresh provider owner after complete message drain");
+  OPENSSL_cleanse(tail,native.bytes-size.workspace_bytes);native.Release();
+}
+
 int main(int argc,char** argv){
   const char* mode=argc>1?argv[1]:"bounded";
   if(!std::strcmp(mode,"late")||!std::strcmp(mode,"custom")){
@@ -416,6 +479,7 @@ int main(int argc,char** argv){
   Check(h::InstallCryptoMemoryAdapter(process)==E::already_installed,"idempotent install does not replace hooks");
   AllocatorChecks(process);DigestChecks(operation,op_binding);ProviderCapacityChecks();OpenPgpChecks(grant,process,operation);
   ArgonOpenPgpChecks(grant,operation);
+  PasswordMessageMemoryChecks(grant,operation);
   Check(grant.resource->Snapshot().allocated_bytes==grant.bytes&&grant.manager.Snapshot().current_bytes==grant.bytes,"provider work preserves actual backing charge");
   Check(h::StopCryptoMemoryAdapter()==E::busy,"provider caches prevent false drain");
   OPENSSL_thread_stop();OPENSSL_cleanup();

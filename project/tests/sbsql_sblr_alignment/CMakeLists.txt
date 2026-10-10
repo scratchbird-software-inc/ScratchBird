@@ -88,6 +88,17 @@ set_tests_properties(sbsql_sblr_alignment_native_column_binding PROPERTIES
 
 add_executable(sbsql_sblr_alignment_openpgp_seipd openpgp_seipd_test.cpp)
 add_executable(sbsql_sblr_alignment_openpgp_packet openpgp_packet_test.cpp)
+add_executable(sbsql_sblr_alignment_openpgp_password_message openpgp_password_message_test.cpp)
+target_compile_features(sbsql_sblr_alignment_openpgp_password_message PRIVATE cxx_std_17)
+target_link_libraries(sbsql_sblr_alignment_openpgp_password_message PRIVATE sb_core_hash)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_compile_definitions(sbsql_sblr_alignment_openpgp_password_message PRIVATE SB_MESSAGE_PROVIDER_FAULTS=1)
+  target_link_options(sbsql_sblr_alignment_openpgp_password_message PRIVATE
+    "-Wl,--wrap=EVP_CIPHER_CTX_new" "-Wl,--wrap=EVP_PKEY_CTX_new_id" "-Wl,--wrap=EVP_CipherFinal_ex")
+endif()
+add_test(NAME sbsql_sblr_alignment_openpgp_password_message COMMAND sbsql_sblr_alignment_openpgp_password_message)
+set_tests_properties(sbsql_sblr_alignment_openpgp_password_message PROPERTIES
+  TIMEOUT 180 LABELS "sbsql_sblr_alignment;crypto;openpgp;component_regression;not_SQL_E2E")
 target_compile_features(sbsql_sblr_alignment_openpgp_packet PRIVATE cxx_std_17)
 target_link_libraries(sbsql_sblr_alignment_openpgp_packet PRIVATE sb_core_hash)
 add_test(NAME sbsql_sblr_alignment_openpgp_packet COMMAND sbsql_sblr_alignment_openpgp_packet)
