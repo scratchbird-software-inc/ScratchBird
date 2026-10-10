@@ -79,6 +79,12 @@ struct Fixture {
       budget.scope=scope; budget.hard_limit_bytes=bytes; budget.provenance=q.provenance;
       Check(ledger.SetBudget(budget).ok(),"set admitted budget"); }
     auto acquired=m::AcquireReservationBackedMemoryResource(q);
+    if (process_scope && !issued && charged_process!=90) {
+      Check(!acquired.ok() && !acquired.resource &&
+            acquired.diagnostic.diagnostic_code=="SB_CEIC_012_MEMORY_RESOURCE.IDENTITY_REQUIRED",
+            "shared issuer refuses mismatched process root before reservation");
+      return;
+    }
     Check(acquired.ok(),"actual grant"); grant=std::move(acquired.resource);
   }
   void Empty() { Check(manager.Snapshot().current_bytes==0 &&
@@ -219,11 +225,11 @@ int main(int argc,char** argv) {
   if (mode=="cleanup_fault") { CleanupLockFailures(); return 0; }
   {
     Fixture mislabeled(20,true,91); r::RuntimeCryptoPoolOwner rejected;
-    Check(rejected.Adopt(mislabeled.binding,mislabeled.grant,mislabeled.bytes).error==
-              r::RuntimeCryptoPoolError::invalid_binding && mislabeled.grant &&
+    Check(!mislabeled.grant &&
+          rejected.Adopt(mislabeled.binding,mislabeled.grant,mislabeled.bytes).error==
+              r::RuntimeCryptoPoolError::invalid_grant &&
               !rejected.has_custody(),"process tag cannot relabel another charged root");
-    Check(mislabeled.grant->ReleaseNoAlloc().ok(),"mislabeled grant cleanup");
-    mislabeled.grant.reset(); mislabeled.Empty();
+    mislabeled.Empty();
   }
   const auto issued=scratchbird::core::uuid::IssueCryptoBootstrapIdentitiesV7();
   Check(bool(issued),"real OS bootstrap UUIDs before provider use");

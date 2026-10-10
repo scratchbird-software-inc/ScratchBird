@@ -222,6 +222,73 @@ void ForcedCleanup() {
 }
 #endif
 
+void BinaryScopeAdmission() {
+  const auto id=[](unsigned n) {
+    mem::MemoryBinaryUuid value{}; value[6]=0x70; value[8]=0x80; value[15]=n; return value;
+  };
+  // Every declared hierarchical kind, including the newer optional tags that
+  // previously escaped the hard-coded seven-slot identity check.
+  for (unsigned ordinal=0;ordinal<=static_cast<unsigned>(mem::HierarchicalMemoryScopeKind::descriptor_snapshot);++ordinal) {
+    mem::HierarchicalMemoryBudgetLedger ledger;
+    mem::MemoryManager manager(Policy());
+    const auto hierarchy_kind=static_cast<mem::HierarchicalMemoryScopeKind>(ordinal);
+    const auto kind=mem::HierarchicalMemoryBinaryScopeKind(hierarchy_kind);
+    const auto target=id(20+ordinal);
+    mem::ReservationBackedMemoryResourceRequest request;
+    request.memory_manager=&manager; request.reservation_ledger=&ledger;
+    request.requested_bytes=4096; request.route_label="binary-scope-contract";
+    request.purpose="actual scoped allocation"; request.provenance=Provenance();
+    request.binary_operation_uuid=id(3);
+    request.binary_ownership[mem::MemoryBinaryScopeKind::owner]=id(1);
+    request.binary_ownership[mem::MemoryBinaryScopeKind::context]=id(2);
+    if(hierarchy_kind!=mem::HierarchicalMemoryScopeKind::process)
+      request.scope_chain.push_back({mem::HierarchicalMemoryScopeKind::process,{},id(4)});
+    request.scope_chain.push_back({hierarchy_kind,{},target});
+    request.binary_ownership[kind]=target;
+    for(const auto& scope:request.scope_chain) {
+      mem::HierarchicalMemoryBudget budget;
+      budget.scope=scope; budget.hard_limit_bytes=8192; budget.provenance=Provenance();
+      Check(ledger.SetBudget(budget).ok(),"binary parent budget");
+    }
+    for(unsigned defect=0;defect<(static_cast<unsigned>(kind)<7?5u:4u);++defect) {
+      auto wrong=request;
+      if(defect==0) wrong.binary_ownership[kind]=id(99);
+      if(defect==1) {
+        const auto other=hierarchy_kind==mem::HierarchicalMemoryScopeKind::background?
+            mem::HierarchicalMemoryScopeKind::process:mem::HierarchicalMemoryScopeKind::background;
+        wrong.scope_chain={{other,{},id(100)}};
+      }
+      if(defect==2) wrong.binary_ownership[kind][6]=0x40;
+      if(defect==3) wrong.scope_chain.back().kind=static_cast<mem::HierarchicalMemoryScopeKind>(999);
+      if(defect==4) wrong.binary_ownership[kind]={};
+      const auto refused=mem::AcquireReservationBackedMemoryResource(std::move(wrong));
+      Check(!refused.ok() && !refused.resource && refused.diagnostic.diagnostic_code==
+            "SB_CEIC_012_MEMORY_RESOURCE.IDENTITY_REQUIRED","all scope identity defects refuse before charging");
+      Charges(ledger,manager,0,0,0);
+      Check(manager.Snapshot().reserved_capacity_bytes==0,"refused scope leaves no physical reservation");
+    }
+    auto acquired=mem::AcquireReservationBackedMemoryResource(request);
+    Check(acquired.ok(),"every exact binary scope admitted");
+    if(!acquired.ok()) continue;
+    const auto allocated=acquired.resource->Allocate({17,64,{}});
+    Check(allocated.ok(),"every admitted scope allocates real bytes");
+    bool matched=false;
+    for(const auto& context:manager.Snapshot().contexts)
+      matched |= context.binary_scope && context.binary_scope->kind==kind &&
+          context.binary_scope->uuid==target && context.scope_id.empty() && context.current_bytes==17;
+    Check(matched,"physical accounting retains exact native scope without text UUID");
+    Check(acquired.resource->ReleaseNoAlloc().ok(),"binary scoped release");
+    acquired.resource.reset(); Charges(ledger,manager,0,0,0);
+    if(static_cast<unsigned>(kind)>=7) {
+      request.binary_ownership[kind]={};
+      auto optional=mem::AcquireReservationBackedMemoryResource(std::move(request));
+      Check(optional.ok(),"absent optional tag preserves existing chain admission");
+      if(optional.ok()) Check(optional.resource->ReleaseNoAlloc().ok(),"optional tag grant cleanup");
+      optional.resource.reset(); Charges(ledger,manager,0,0,0);
+    }
+  }
+}
+
 void ProfilesAndOwnership() {
   for (unsigned kind = 0; kind != 8; ++kind) {
     mem::HierarchicalMemoryBudgetLedger ledger(3, 5);
@@ -449,7 +516,7 @@ int main(int argc, char** argv) {
 #else
   (void)argc; (void)argv;
 #endif
-  ProfilesAndOwnership(); SharedResourceConcurrency();
+  BinaryScopeAdmission(); ProfilesAndOwnership(); SharedResourceConcurrency();
   ParentRevocation(); RetainedLeaseOwnership(); RevocationPublicationRace();
   std::cout << checks << " checks; " << injected << " allocation faults; " << failures << " failures\n";
   return failures ? 1 : 0;

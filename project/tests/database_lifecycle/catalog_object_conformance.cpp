@@ -10,16 +10,17 @@
 #include "catalog/catalog_object_lifecycle.hpp"
 #include "catalog/constraint_metadata_codec.hpp"
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
 #include "ddl/drop_api.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
-#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -31,8 +32,7 @@ namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -60,18 +60,6 @@ void RequireDiagnostic(const TResult& result,
     std::cerr << "expected=" << expected << " actual=" << DiagnosticCode(result) << '\n';
   }
   Require(DiagnosticCode(result) == expected, message);
-}
-
-std::uint64_t CurrentUnixMillis() {
-  return static_cast<std::uint64_t>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::system_clock::now().time_since_epoch())
-          .count());
-}
-
-std::filesystem::path TestPath() {
-  return std::filesystem::temp_directory_path() /
-         ("sb_dblc_013u_catalog_object_" + std::to_string(CurrentUnixMillis()) + ".sbdb");
 }
 
 catalog_api::EngineUuid CreateDatabase(const std::filesystem::path& path) {
@@ -536,17 +524,31 @@ void TestDdlSynonymCreateDropRoute(const std::filesystem::path& path,
 
 }  // namespace
 
-int main() {
-  const auto path = TestPath();
+int main() try {
+  // Exercise the same assertion-failure path with a real database, not just
+  // an empty-directory helper test. No device handle escapes CreateDatabase.
+  std::filesystem::path failed_directory;
+  try {
+    scratchbird::tests::OwnedTempDirectory failed_artifacts;
+    failed_directory=failed_artifacts.path();
+    (void)CreateDatabase(failed_directory / "failure.sbdb");
+    Fail("intentional catalog fixture unwind");
+  } catch (const std::runtime_error& error) {
+    Require(std::string_view(error.what())=="intentional catalog fixture unwind",
+            "unexpected catalog fixture setup failure");
+  }
+  Require(!failed_directory.empty() && !std::filesystem::exists(failed_directory),
+          "assertion failure left catalog fixture artifacts");
+  scratchbird::tests::OwnedTempDirectory artifacts;
+  const auto path = artifacts.path() / "catalog.sbdb";
   const auto database_uuid = CreateDatabase(path);
   TestCreateAlterRenameDropAndDependencies(path, database_uuid);
   TestMissingUuidOwnershipCacheAndMga(path, database_uuid);
   TestDdlSynonymCreateDropRoute(path, database_uuid);
 
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-  std::filesystem::remove(path.string() + ".sb.catalog_object_events", ignored);
-  std::filesystem::remove(path.string() + ".sb.name_events", ignored);
-  std::filesystem::remove(path.string() + ".sb.crud_events", ignored);
+  artifacts.Cleanup();
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

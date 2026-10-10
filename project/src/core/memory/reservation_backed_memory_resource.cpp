@@ -654,18 +654,22 @@ AcquireReservationBackedMemoryResource(
     tag.owner = request.owner_id;
     tag.binary_ownership = request.binary_ownership;
     bool valid = MemoryBinaryOwnershipValid(tag);
-    std::array<bool, 7> seen{};
+    std::array<bool, MemoryBinaryOwnership::scope_count> seen{};
     for (const auto& scope : request.scope_chain) {
       if (!scope.scope_id.empty() || !MemorySystemUuidValid(scope.binary_scope_uuid)) valid = false;
       const auto kind = HierarchicalMemoryBinaryScopeKind(scope.kind);
       const auto index = static_cast<usize>(kind);
-      if (index >= 2 && index < seen.size()) {
-        if (request.binary_ownership[kind] != scope.binary_scope_uuid) valid = false;
-        seen[index] = true;
-      }
+      if (index < 2 || index >= seen.size()) {valid = false; continue;}
+      // Database through query are mandatory exact mirrors of the chain.
+      // Later scope tags are optional for existing consumers, but a supplied
+      // tag can never name a different owner than the actually charged scope.
+      if ((index < 7 || MemoryUuidPresent(request.binary_ownership[kind])) &&
+          request.binary_ownership[kind] != scope.binary_scope_uuid) valid = false;
+      seen[index] = true;
     }
     for (usize index = 2; index < seen.size(); ++index)
-      if (MemoryUuidPresent(request.binary_ownership.scopes[index]) != seen[index]) valid = false;
+      if (MemoryUuidPresent(request.binary_ownership.scopes[index]) ? !seen[index] :
+          (index < 7 && seen[index])) valid = false;
     if (!valid)
       return RefuseAcquire(std::move(request), "SB_CEIC_012_MEMORY_RESOURCE.IDENTITY_REQUIRED",
           "memory.ceic_012.resource.identity_required", "binary_owner_scope_tuple_invalid");
