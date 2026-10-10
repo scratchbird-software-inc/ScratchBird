@@ -4,13 +4,19 @@
 #include "time.hpp"
 
 #include <chrono>
+#include <atomic>
+#include <cerrno>
 #include <limits>
 #include <mutex>
 #include <thread>
 #if defined(_WIN32)
 #include <windows.h>
+#include <bcrypt.h>
 #else
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/random.h>
+#endif
 #endif
 
 namespace scratchbird::core::uuid {
@@ -47,14 +53,48 @@ bool IncrementAllocation(Uuid& value) noexcept {
   if ((value.bytes[6] & 15) != 15) { ++value.bytes[6]; return true; }
   return false;
 }
-} // namespace
+// OS entropy is deliberately private to the single bootstrap batch below.
+// It is never consulted by ordinary generation, even after RAND failure.
+std::optional<Uuid> BootstrapSeed(u64 millis) noexcept {
+  Uuid candidate{};
+  struct Erase {
+    Uuid& value;
+    ~Erase() {volatile auto* p=value.bytes.data(); for (unsigned i=0;i<16;++i) p[i]=0;}
+  } erase{candidate};
+  if (millis>0xffffffffffffULL) return std::nullopt;
+#if defined(__linux__)
+  std::size_t offset=0;
+  for (unsigned attempts=0;offset<16 && attempts<32;++attempts) {
+    const auto count=::getrandom(candidate.bytes.data()+offset,16-offset,GRND_NONBLOCK);
+    if (count<0 && errno==EINTR) continue;
+    if (count<=0 || static_cast<std::size_t>(count)>16-offset) return std::nullopt;
+    offset+=static_cast<std::size_t>(count);
+  }
+  if (offset!=16) return std::nullopt;
+#elif defined(_WIN32)
+  if (::BCryptGenRandom(nullptr,candidate.bytes.data(),16,BCRYPT_USE_SYSTEM_PREFERRED_RNG)!=0)
+    return std::nullopt;
+#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
+  bool complete=false;
+  for (unsigned attempts=0;attempts<32;++attempts) {
+    if (::getentropy(candidate.bytes.data(),16)==0) {complete=true; break;}
+    if (errno!=EINTR) return std::nullopt;
+  }
+  if (!complete) return std::nullopt;
+#else
+  return std::nullopt;
+#endif
+  for (unsigned i=0;i<6;++i) candidate.bytes[i]=static_cast<byte>(millis>>(40-8*i));
+  candidate.bytes[6]=static_cast<byte>((candidate.bytes[6]&15)|0x70);
+  candidate.bytes[8]=static_cast<byte>((candidate.bytes[8]&63)|0x80);
+  return candidate;
+}
 
-std::optional<Uuid> IssueRuntimeIdentityV7() noexcept {
+std::optional<Uuid> IssueIdentity(RuntimeGenerator& generator, bool bootstrap) noexcept {
   try {
-    // Each thread owns one generator instance. No mutex owned by a different
-    // thread is inherited as this thread's generator when the process forks.
-    // This bounded process-runtime state is not database/cluster time authority.
-    thread_local RuntimeGenerator generator;
+    // Ordinary issuance retains one instance per thread; bootstrap retains one
+    // for its complete batch. Neither inherits another thread's held mutex.
+    // This bounded runtime state is not database/cluster time authority.
     const auto process = ProcessIdentity();
     if (generator.process != process) {
       // A child must not continue its parent's allocation suffix or clock
@@ -88,9 +128,15 @@ std::optional<Uuid> IssueRuntimeIdentityV7() noexcept {
         Uuid candidate;
         bool available = true;
         if (!generator.last_millis || millis > *generator.last_millis) {
-          const auto generated = GenerateCompatibilityUnixTimeV7(millis);
-          if (!generated.ok()) return std::nullopt;
-          candidate = generated.value;
+          if (bootstrap) {
+            const auto generated=BootstrapSeed(millis);
+            if (!generated) return std::nullopt;
+            candidate=*generated;
+          } else {
+            const auto generated = GenerateCompatibilityUnixTimeV7(millis);
+            if (!generated.ok()) return std::nullopt;
+            candidate = generated.value;
+          }
         } else {
           candidate = generator.last_value;
           available = IncrementAllocation(candidate);
@@ -118,5 +164,34 @@ std::optional<Uuid> IssueRuntimeIdentityV7() noexcept {
     // and mutex failures. There is no diagnostic-UUID recursion or nil success.
     return std::nullopt;
   }
+}
+} // namespace
+
+std::optional<Uuid> IssueRuntimeIdentityV7() noexcept {
+  try {
+    thread_local RuntimeGenerator generator;
+    return IssueIdentity(generator,false);
+  } catch (...) {return std::nullopt;}
+}
+
+std::optional<CryptoBootstrapIdentities> IssueCryptoBootstrapIdentitiesV7() noexcept {
+  static std::atomic_flag claimed=ATOMIC_FLAG_INIT;
+  if (claimed.test_and_set(std::memory_order_acquire)) return std::nullopt;
+  bool published=false;
+  struct ReleaseClaim {
+    std::atomic_flag& flag; bool& published;
+    ~ReleaseClaim() {if (!published) flag.clear(std::memory_order_release);}
+  } release{claimed,published};
+  try {
+    RuntimeGenerator generator;
+    CryptoBootstrapIdentities batch{};
+    for (auto* id : {&batch.process,&batch.operation,&batch.owner,&batch.context}) {
+      const auto next=IssueIdentity(generator,true);
+      if (!next) return std::nullopt;
+      *id=*next;
+    }
+    published=true;
+    return batch;
+  } catch (...) {return std::nullopt;}
 }
 } // namespace scratchbird::core::uuid

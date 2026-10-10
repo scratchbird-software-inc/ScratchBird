@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "runtime_crypto_pool_owner.hpp"
+#include "uuid.hpp"
 #include "openpgp_seipd.hpp"
 #include <openssl/crypto.h>
 #include <algorithm>
@@ -54,8 +55,10 @@ struct Fixture {
   h::CryptoMemoryBinding binding = Binding(20);
   std::unique_ptr<m::ReservationBackedMemoryResource> grant;
   explicit Fixture(unsigned binding_seed=20, bool process_scope=false,
-                   unsigned charged_process=90):binding(Binding(binding_seed)) {
+                   unsigned charged_process=90,
+                   const h::CryptoMemoryBinding* issued=nullptr):binding(Binding(binding_seed)) {
     if (process_scope) {binding.database={}; binding.process=Id(90);}
+    if (issued) binding=*issued;
     m::ReservationBackedMemoryResourceRequest q;
     q.memory_manager=&manager; q.reservation_ledger=&ledger; q.requested_bytes=bytes;
     q.category=m::MemoryCategory::core_runtime; q.memory_class="crypto_provider";
@@ -66,7 +69,8 @@ struct Fixture {
     q.binary_ownership[m::MemoryBinaryScopeKind::process]=binding.process.bytes;
     q.binary_ownership[m::MemoryBinaryScopeKind::owner]=binding.owner.bytes;
     q.binary_ownership[m::MemoryBinaryScopeKind::context]=binding.context.bytes;
-    q.scope_chain={{m::HierarchicalMemoryScopeKind::process,{},Id(charged_process).bytes}};
+    q.scope_chain={{m::HierarchicalMemoryScopeKind::process,{},
+                   issued?binding.process.bytes:Id(charged_process).bytes}};
     if (!process_scope) q.scope_chain.push_back(
         {m::HierarchicalMemoryScopeKind::database,{},binding.database.bytes});
     q.provenance.source=m::HierarchicalMemoryBudgetProvenanceSource::server_runtime_api;
@@ -221,7 +225,10 @@ int main(int argc,char** argv) {
     Check(mislabeled.grant->ReleaseNoAlloc().ok(),"mislabeled grant cleanup");
     mislabeled.grant.reset(); mislabeled.Empty();
   }
-  Fixture process(20,true); r::RuntimeCryptoPoolOwner owner;
+  const auto issued=scratchbird::core::uuid::IssueCryptoBootstrapIdentitiesV7();
+  Check(bool(issued),"real OS bootstrap UUIDs before provider use");
+  const h::CryptoMemoryBinding process_binding{{},issued->operation,issued->owner,issued->context,issued->process};
+  Fixture process(20,true,90,&process_binding); r::RuntimeCryptoPoolOwner owner;
   for (unsigned dimension=0;dimension<5;++dimension) {
     auto wrong=process.binding;
     std::array<Uuid*,5> ids{&wrong.database,&wrong.operation,&wrong.owner,&wrong.context,&wrong.process};
@@ -242,6 +249,13 @@ int main(int argc,char** argv) {
   } else {
     Check(owner.InstallProcessAdapter().ok(),"explicit early installation");
     Check(owner.CheckProcessAdapter(process.binding).ok(),"exact installed process binding");
+    std::optional<Uuid> ordinary;
+    Check(owner.WithMemoryScope(process.binding,[&] {
+      ordinary=scratchbird::core::uuid::IssueRuntimeIdentityV7();
+    }).ok() && ordinary && scratchbird::core::uuid::IsEngineIdentityUuid(*ordinary),
+          "ordinary OpenSSL UUID generation works after OS-only bootstrap and actual hook installation");
+    Check(owner.Snapshot().live_blocks>0 && process.manager.Snapshot().current_bytes==process.bytes,
+          "real RNG provider allocations remain physically charged to process");
     Check(h::SnapshotCryptoMemoryAdapter().process_binding.database==Uuid{} &&
           h::SnapshotCryptoMemoryAdapter().process_binding.process==process.binding.process,
           "bootstrap records genuine process identity without database");
@@ -267,7 +281,7 @@ int main(int argc,char** argv) {
       Check(owner.CheckProcessAdapter(process.binding).ok(),"startup observation retry");
     }
     {
-      Fixture duplicate(20,true); r::RuntimeCryptoPoolOwner other;
+      Fixture duplicate(20,true,90,&process_binding); r::RuntimeCryptoPoolOwner other;
       Check(other.Adopt(duplicate.binding,duplicate.grant,duplicate.bytes).ok(),"separate real grant with same tuple");
       Check(other.CheckProcessAdapter(duplicate.binding).adapter_error==h::CryptoMemoryError::invalid_binding,
             "duplicate tuple cannot impersonate installed backing owner");

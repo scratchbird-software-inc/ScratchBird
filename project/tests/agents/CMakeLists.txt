@@ -9,10 +9,21 @@
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(crypto_bootstrap_identity_gate "${PROJECT_SOURCE_DIR}/tests/concurrency/crypto_bootstrap_identity_gate.cpp")
+  target_compile_features(crypto_bootstrap_identity_gate PRIVATE cxx_std_20)
+  target_link_libraries(crypto_bootstrap_identity_gate PRIVATE sb_core_uuid Threads::Threads)
+  target_link_options(crypto_bootstrap_identity_gate PRIVATE
+    "LINKER:--wrap=getrandom" "LINKER:--wrap=RAND_bytes"
+    "LINKER:--wrap=_ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv")
+  foreach(mode layout real short unavailable zero interrupted partial_failure batch_failure clock_failure range regression exhaustion concurrent fork fork_inflight)
+    add_test(NAME crypto_bootstrap_identity_${mode}_gate COMMAND crypto_bootstrap_identity_gate ${mode})
+    set_tests_properties(crypto_bootstrap_identity_${mode}_gate PROPERTIES
+      TIMEOUT 15 LABELS "runtime;crypto;binary_uuid;bootstrap;fault_injection;component")
+  endforeach()
   add_executable(runtime_crypto_pool_owner_gate "${PROJECT_SOURCE_DIR}/tests/concurrency/runtime_crypto_pool_owner_gate.cpp")
   target_compile_features(runtime_crypto_pool_owner_gate PRIVATE cxx_std_20)
   target_include_directories(runtime_crypto_pool_owner_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/core/runtime")
-  target_link_libraries(runtime_crypto_pool_owner_gate PRIVATE sb_core_hash sb_core_memory)
+  target_link_libraries(runtime_crypto_pool_owner_gate PRIVATE sb_core_hash sb_core_memory sb_core_uuid)
   target_link_options(runtime_crypto_pool_owner_gate PRIVATE "LINKER:--wrap=pthread_mutex_lock")
   foreach(mode lifecycle late custom cleanup_fault)
     add_test(NAME runtime_crypto_pool_owner_${mode}_gate COMMAND runtime_crypto_pool_owner_gate ${mode})

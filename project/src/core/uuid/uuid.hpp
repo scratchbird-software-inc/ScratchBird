@@ -122,6 +122,18 @@ TypedUuidResult GenerateDurableEngineIdentityV7(UuidKind kind, u64 unix_epoch_mi
 // apply. This context-free helper does not supply database/cluster time policy.
 std::optional<Uuid> IssueRuntimeIdentityV7() noexcept;
 
+struct CryptoBootstrapIdentities {
+  Uuid process, operation, owner, context;
+};
+// Explicit pre-provider bootstrap only. Publishes one complete batch per
+// process lifetime using native OS entropy, with normal strict local clock and
+// UUIDv7 allocation rules. Failure publishes nothing and permits retry; success
+// is irreversible. Fork during issuance or after success requires exec before
+// a fresh bootstrap; parent failure cannot reset the child's inherited claim.
+// Not a RAND failure fallback or a
+// memory grant. The host serializes bootstrap against every OpenSSL user.
+std::optional<CryptoBootstrapIdentities> IssueCryptoBootstrapIdentitiesV7() noexcept;
+
 UuidResult GenerateCompatibilityTimeNodeV1(u64 gregorian_100ns_timestamp,
                                            u16 clock_sequence,
                                            std::array<byte, 6> node);
