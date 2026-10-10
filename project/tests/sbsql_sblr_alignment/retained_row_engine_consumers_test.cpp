@@ -106,6 +106,111 @@ void RowCodecStateAdmission() {
   }
 }
 
+void CanonicalDestinationBatchFraming() {
+  api::CrudRowVersionRecord row;
+  row.creator_tx = 7;
+  row.table_uuid.bytes = {1, 144, 10, 9, 0, 124, 112, 0, 128, 0, 0, 0, 0, 0, 0, 1};
+  row.row_uuid = row.table_uuid; row.row_uuid.bytes[15] = 2;
+  row.version_uuid = row.table_uuid; row.version_uuid.bytes[15] = 3;
+  const std::vector<std::string> order{"signed", "unsigned", "real", "uuid", "empty", "null"};
+  const std::vector<std::string> types{"int64", "uint64", "real64", "uuid", "binary", "int64"};
+  std::vector<api::CrudValueFields> values(2);
+  for (auto& fields : values) {
+    fields = {{"signed", std::string("\0\0\0\0\0\0\0\x80", 8)},
+              {"unsigned", std::string(8, '\xff')},
+              {"real", std::string("\0\0\0\0\0\0\0\x80", 8)},
+              {"uuid", std::string("\0\n|\t\xff\0\x40\0\x80\0\1\2\3\4\5\6", 16)},
+              {"empty", std::string{}}, {"null", api::CrudStoredValue::SqlNull()}};
+  }
+  auto second = row;
+  second.row_uuid.bytes[15] = 4; second.version_uuid.bytes[15] = 5;
+  second.creator_tx = 8;
+  second.previous_sequence = 9; second.previous_version_uuid = row.version_uuid;
+  const std::vector<api::CrudRowVersionRecord> rows{row, second};
+  std::vector<api::EngineRowValue> typed(2);
+  for (std::size_t r = 0; r < values.size(); ++r) {
+    for (std::size_t c = 0; c < order.size(); ++c) {
+      api::EngineTypedValue value;
+      value.descriptor.canonical_type_name = types[c];
+      value.setState(values[r][c].second.state);
+      const auto& bytes = values[r][c].second.bytes;
+      value.binary_value.assign(bytes.begin(), bytes.end());
+      typed[r].fields.emplace_back(order[c], std::move(value));
+    }
+  }
+  std::string expected, actual;
+  Check(api::AppendScopedRowBinaryBatch(&expected, rows, typed, order, 10), "typed framing oracle failed");
+  Check(api::AppendScopedCanonicalRowBinaryBatch(&actual, rows, values, order, types, 10) && actual == expected,
+        "canonical batch differs from existing binary general-row format");
+  const std::vector<scratchbird::core::index::byte> bytes(actual.begin(), actual.end());
+  std::vector<api::CrudRowVersionRecord> decoded;
+  api::ScopedRelationSummary summary;
+  Check(api::DecodeScopedRowBinaryBytes(bytes, &decoded, &summary, nullptr) && decoded.size() == 2,
+        "canonical batch did not decode");
+  for (std::size_t r = 0; r < decoded.size(); ++r) {
+    Check(decoded[r].values == values[r] && decoded[r].creator_tx == rows[r].creator_tx &&
+              decoded[r].previous_version_uuid == rows[r].previous_version_uuid &&
+              decoded[r].previous_sequence == rows[r].previous_sequence,
+          "canonical batch changed payload/state or MGA identities");
+  }
+  // Historical stores contain separate frames for each row. Check allocation
+  // growth rather than a machine-dependent wall-clock threshold.
+  std::string single;
+  Check(api::AppendScopedRowBinaryBatch(&single, {row},
+            std::span<const api::EngineRowValue>(typed.data(), 1), order, 1),
+        "single-row growth fixture failed");
+  const std::vector<scratchbird::core::index::byte> single_bytes(single.begin(), single.end());
+  std::vector<api::CrudRowVersionRecord> accumulated;
+  std::size_t growths = 0, capacity = 0;
+  api::ScopedRelationSummary accumulated_summary;
+  for (std::size_t index = 0; index < 1024; ++index) {
+    Check(api::DecodeScopedRowBinaryBytes(single_bytes, &accumulated, &accumulated_summary, nullptr),
+          "repeated single-row frame refused");
+    if (accumulated.capacity() != capacity) { ++growths; capacity = accumulated.capacity(); }
+  }
+  Check(accumulated.size() == 1024 && growths < 64,
+        "unbounded row decoder reallocates once per frame");
+  const auto refused = [&](const auto& candidate_rows, const auto& candidate_values,
+                           const auto& candidate_types, std::uint64_t first = 10) {
+    std::string output = "unchanged";
+    Check(!api::AppendScopedCanonicalRowBinaryBatch(&output, candidate_rows, candidate_values,
+              order, candidate_types, first) && output == "unchanged", "malformed canonical batch changed output");
+  };
+  auto bad = values;
+  bad.back()[0].first = "wrong";
+  refused(rows, bad, types);
+  bad = values; bad.back().pop_back(); refused(rows, bad, types);
+  bad = values; bad.back().back().second.bytes = "payload"; refused(rows, bad, types);
+  bad = values; bad.back()[0].second.state = api::EngineValueState::missing; refused(rows, bad, types);
+  auto bad_rows = rows; bad_rows.back().version_uuid = {}; refused(bad_rows, values, types);
+  auto bad_types = types; bad_types.back().clear(); refused(rows, values, bad_types);
+  refused(rows, values, types, 0);
+  refused(rows, values, types, std::numeric_limits<std::uint64_t>::max());
+  for (const auto length : {15u, 17u}) {
+    bad = values; bad.back()[3].second.bytes.resize(length);
+    refused(rows, bad, types);
+  }
+  for (const std::size_t count : {4096u, 4097u}) {
+    std::vector<std::string> wide_order, wide_types(count, "binary");
+    std::vector<api::CrudValueFields> wide_values(1);
+    for (std::size_t c = 0; c < count; ++c) {
+      wide_order.push_back("c" + std::to_string(c));
+      wide_values.front().emplace_back(wide_order.back(), std::string{});
+    }
+    std::string output;
+    const bool encoded = api::AppendScopedCanonicalRowBinaryBatch(
+        &output, {row}, wide_values, wide_order, wide_types, 1);
+    Check(encoded == (count == 4096), "canonical batch column bound differs from decoder");
+    if (encoded) {
+      decoded.clear(); summary = {};
+      const std::vector<scratchbird::core::index::byte> wide_bytes(output.begin(), output.end());
+      Check(api::DecodeScopedRowBinaryBytes(wide_bytes, &decoded, &summary, nullptr) &&
+                decoded.size() == 1 && decoded.front().values == wide_values.front(),
+            "maximum-width canonical batch failed round trip");
+    } else Check(output.empty(), "oversized column batch changed output");
+  }
+}
+
 void PreparedInsertStorageAdmission() {
   api::InsertBatchContext context;
   api::InsertRowEncoderColumnPlan first, second;
@@ -256,6 +361,7 @@ int main() {
   try {
     RetainedStateConsumers();
     RowCodecStateAdmission();
+    CanonicalDestinationBatchFraming();
     PreparedInsertStorageAdmission();
     NativeScalarStorageRoundTrips();
     FramedVectorScoring();

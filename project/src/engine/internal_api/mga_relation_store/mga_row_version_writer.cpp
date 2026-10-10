@@ -1309,6 +1309,28 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnlyTyped(
     const std::vector<CrudRowVersionRecord>& rows,
     std::span<const EngineRowValue> typed_rows,
     std::span<const std::string> shared_field_order) {
+  return AppendRowVersionsReadOnlyScopedOnlyBinary(rows, typed_rows, {}, shared_field_order, {});
+}
+
+EngineApiDiagnostic
+MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnlyCanonical(
+    const std::vector<CrudRowVersionRecord>& rows,
+    std::span<const CrudValueFields> values,
+    std::span<const std::string> shared_field_order,
+    std::span<const std::string> field_types) {
+  if (field_types.size() != shared_field_order.size() || field_types.empty())
+    return MakeInvalidRequestDiagnostic("mga.row_store", "canonical_row_types_required");
+  return AppendRowVersionsReadOnlyScopedOnlyBinary(rows, {}, values, shared_field_order, field_types);
+}
+
+EngineApiDiagnostic
+MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnlyBinary(
+    const std::vector<CrudRowVersionRecord>& rows,
+    std::span<const EngineRowValue> typed_rows,
+    std::span<const CrudValueFields> canonical_values,
+    std::span<const std::string> shared_field_order,
+    std::span<const std::string> field_types) {
+  const bool canonical = !field_types.empty();
   if (!impl_->prepared_row_sequences.empty()) {
     return MakeInvalidRequestDiagnostic("mga.row_store", "prepared_rows_require_mutable_append");
   }
@@ -1318,7 +1340,7 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnlyTyped(
   if (rows.empty()) {
     return MakeInvalidRequestDiagnostic("mga.row_store", "row_versions_required");
   }
-  if (typed_rows.size() != rows.size()) {
+  if ((canonical ? canonical_values.size() : typed_rows.size()) != rows.size()) {
     return MakeInvalidRequestDiagnostic("mga.row_store",
                                         "typed_row_value_batch_shape_invalid");
   }
@@ -1373,11 +1395,15 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnlyTyped(
   }
 
   const std::size_t binary_buffer_start = scoped_buffer.size();
-  if (!AppendScopedRowBinaryBatch(&scoped_buffer,
+  const bool encoded = canonical
+      ? AppendScopedCanonicalRowBinaryBatch(&scoped_buffer, rows, canonical_values,
+                                             shared_field_order, field_types, reservation.first)
+      : AppendScopedRowBinaryBatch(&scoped_buffer,
                                   rows,
                                   typed_rows,
                                   shared_field_order,
-                                  reservation.first)) {
+                                  reservation.first);
+  if (!encoded) {
     return MakeInvalidRequestDiagnostic("mga.row_store",
                                         "typed_row_binary_batch_encode_failed");
   }

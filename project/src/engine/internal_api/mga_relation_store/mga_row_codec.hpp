@@ -104,6 +104,14 @@ bool AppendScopedRowBinaryBatch(
     std::span<const EngineRowValue> typed_rows,
     std::span<const std::string> field_order,
     std::uint64_t first_event_sequence);
+// Values have already been converted by the admitted destination encoder.
+// Preserve those bytes without display conversion or per-cell typed copies.
+bool AppendScopedCanonicalRowBinaryBatch(
+    std::string* out, const std::vector<CrudRowVersionRecord>& rows,
+    std::span<const CrudValueFields> values,
+    std::span<const std::string> field_order,
+    std::span<const std::string> field_types,
+    std::uint64_t first_event_sequence);
 bool AppendScopedRowIdentityBinaryBatch(
     std::string* out,
     const std::vector<CrudRowVersionRecord>& row_identities,

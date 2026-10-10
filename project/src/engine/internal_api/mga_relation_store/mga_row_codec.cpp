@@ -422,6 +422,80 @@ bool AppendScopedRowBinaryBatch(std::string* out,
   return true;
 }
 
+bool AppendScopedCanonicalRowBinaryBatch(
+    std::string* out, const std::vector<CrudRowVersionRecord>& rows,
+    std::span<const CrudValueFields> values,
+    std::span<const std::string> field_order,
+    std::span<const std::string> field_types,
+    std::uint64_t first_event_sequence) {
+  if (!out || rows.empty() || values.size() != rows.size() || field_order.empty() ||
+      field_types.size() != field_order.size() ||
+      field_order.size() > 4096 ||
+      first_event_sequence == 0 ||
+      rows.size() - 1 > std::numeric_limits<std::uint64_t>::max() - first_event_sequence)
+    return false;
+  std::size_t bytes = kScopedRowBinaryBatchMagic.size() + 2 + 2 + 4 + 8;
+  const auto add = [&](std::size_t count) {
+    if (count > std::numeric_limits<std::size_t>::max() - bytes) return false;
+    bytes += count;
+    return true;
+  };
+  for (std::size_t column = 0; column < field_order.size(); ++column) {
+    for (const auto& text : {std::string_view(field_order[column]), std::string_view(field_types[column])})
+      if (text.empty() || text.size() > std::numeric_limits<std::uint32_t>::max() ||
+          !add(4) || !add(text.size())) return false;
+  }
+  // Preflight the complete batch before appending any framing bytes. This is
+  // a codec boundary, not permission to skip destination datatype admission.
+  for (std::size_t index = 0; index < rows.size(); ++index) {
+    const auto& row = rows[index];
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(row.table_uuid) ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(row.row_uuid) ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(row.version_uuid) ||
+        (!row.previous_version_uuid.is_nil() &&
+         !scratchbird::core::uuid::IsEngineIdentityUuid(row.previous_version_uuid)) ||
+        (!row.temporary_session_uuid.is_nil() &&
+         !scratchbird::core::uuid::IsEngineIdentityUuid(row.temporary_session_uuid)) ||
+        values[index].size() != field_order.size() || !add(8 * 3 + 1 + 16 * 5) ||
+        !add(field_order.size())) return false;
+    for (std::size_t column = 0; column < field_order.size(); ++column) {
+      const auto& [name, value] = values[index][column];
+      if (name != field_order[column] ||
+          (value.state != EngineValueState::value && value.state != EngineValueState::sql_null) ||
+          (value.isSqlNull() && !value.bytes.empty()) ||
+          (!value.isSqlNull() && field_types[column] == "uuid" && value.bytes.size() != 16) ||
+          value.bytes.size() > std::numeric_limits<std::uint32_t>::max()) return false;
+      if (!value.isSqlNull() && (!add(4) || !add(value.bytes.size()))) return false;
+    }
+  }
+  if (bytes > out->max_size() - out->size()) return false;
+  ReserveAmortizedAppendCapacity(out, bytes);
+  out->append(kScopedRowBinaryBatchMagic);
+  AppendBinaryU16(out, kScopedRowBinaryGeneralVersion);
+  AppendBinaryU16(out, 0);
+  AppendBinaryU32(out, static_cast<std::uint32_t>(field_order.size()));
+  AppendBinaryU64(out, rows.size());
+  for (const auto& field : field_order) AppendBinaryString(out, field);
+  for (const auto& type : field_types) AppendBinaryString(out, type);
+  for (std::size_t index = 0; index < rows.size(); ++index) {
+    const auto& row = rows[index];
+    AppendBinaryU64(out, row.creator_tx);
+    AppendBinaryU64(out, first_event_sequence + index);
+    AppendBinaryU64(out, row.previous_sequence);
+    AppendBinaryU8(out, row.deleted ? 1 : 0);
+    AppendBinaryEngineUuid(out, row.table_uuid);
+    AppendBinaryEngineUuid(out, row.row_uuid);
+    AppendBinaryEngineUuid(out, row.version_uuid);
+    AppendBinaryEngineUuid(out, row.previous_version_uuid, true);
+    AppendBinaryEngineUuid(out, row.temporary_session_uuid, true);
+    for (const auto& [name, value] : values[index])
+      AppendBinaryU8(out, static_cast<std::uint8_t>(value.state));
+    for (const auto& [name, value] : values[index])
+      if (!value.isSqlNull()) AppendBinaryString(out, value.bytes);
+  }
+  return true;
+}
+
 std::size_t ScopedRowBinaryIdentityBatchEstimateBytes(
     const std::vector<CrudRowVersionRecord>& rows,
     std::span<const EngineRowValue> typed_rows,
@@ -1191,7 +1265,12 @@ bool DecodeScopedRowBinaryBytes(
         return false;
       }
     }
-    rows->reserve(rows->size() + static_cast<std::size_t>(row_count));
+    // Unbounded recovery/sequence scans can encounter one batch per row.
+    // Exact reserve on each batch defeats vector's amortized growth and makes
+    // those scans quadratic. Bounded readers retain their preflighted exact
+    // capacity request; do not silently charge them for geometric slack.
+    if (control != nullptr)
+      rows->reserve(rows->size() + static_cast<std::size_t>(row_count));
     for (std::uint64_t row_index = 0; row_index < row_count; ++row_index) {
       if (BoundedScopedReadCancelled(control)) { return false; }
       CrudRowVersionRecord row;

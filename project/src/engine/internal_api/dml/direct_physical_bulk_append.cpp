@@ -8196,6 +8196,24 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         request.borrowed_input_rows.size() == staged_rows.size()) ||
        native_bulk_native_packet_scoped_row_stream) &&
       !request.shared_row_field_order.empty();
+  // Batch converted packets instead of emitting one binary batch per row.
+  // Retain the already validated destination values in the existing binary
+  // general-row format; do not restore the source-packet bypass or copy a
+  // second EngineTypedValue matrix merely to reach the binary writer.
+  const bool native_bulk_destination_binary_row_stream =
+      native_bulk_scoped_only_row_stream && can_stage_shared_values_externally &&
+      native_bulk_native_packet_row_stage && !native_bulk_typed_logical_batch_bypass &&
+      !large_value_persistence_required && external_write_value_batch != nullptr &&
+      logical_value_batch.size() == staged_rows.size() &&
+      DirectSharedFieldOrderMatchesEncoderOrder(request.shared_row_field_order,
+                                               batch_context.row_encoder_plan);
+  std::vector<std::string> destination_field_types;
+  if (native_bulk_destination_binary_row_stream) {
+    destination_field_types.reserve(batch_context.row_encoder_plan.columns.size());
+    for (const auto& column : batch_context.row_encoder_plan.columns)
+      destination_field_types.push_back(column.canonical_type_name);
+    result.evidence.push_back({"mga_row_append_destination_binary_batch", "enabled"});
+  }
   EngineUuid native_bulk_typed_scoped_table_uuid =
       request.target_table.uuid;
   if (native_bulk_typed_scoped_table_uuid.is_nil() &&
@@ -8252,7 +8270,11 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
            }
 	           const auto append_start = DirectSteadyClock::now();
 	           const auto appended =
-	               native_bulk_typed_scoped_row_stream
+	               native_bulk_destination_binary_row_stream
+                       ? hot_append.AppendRowVersionsReadOnlyScopedOnlyCanonical(
+                             staged_rows, logical_value_batch,
+                             request.shared_row_field_order, destination_field_types)
+                       : native_bulk_typed_scoped_row_stream
 	                   ? (native_bulk_native_packet_scoped_row_stream
 	                          ? hot_append
 	                                .AppendRowVersionIdentitiesReadOnlyScopedOnlyNativePacket(

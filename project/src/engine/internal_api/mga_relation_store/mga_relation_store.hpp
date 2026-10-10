@@ -676,6 +676,11 @@ class MgaRelationHotAppendContext {
       const std::vector<CrudRowVersionRecord>& rows,
       std::span<const EngineRowValue> typed_rows,
       std::span<const std::string> shared_field_order);
+  EngineApiDiagnostic AppendRowVersionsReadOnlyScopedOnlyCanonical(
+      const std::vector<CrudRowVersionRecord>& rows,
+      std::span<const CrudValueFields> values,
+      std::span<const std::string> shared_field_order,
+      std::span<const std::string> field_types);
   EngineApiDiagnostic AppendRowVersionIdentitiesReadOnlyScopedOnlyTyped(
       const std::vector<CrudRowVersionRecord>& row_identities,
       const EngineUuid& table_uuid,
@@ -700,6 +705,12 @@ class MgaRelationHotAppendContext {
   const MgaRelationHotAppendCounters& counters() const;
 
  private:
+  EngineApiDiagnostic AppendRowVersionsReadOnlyScopedOnlyBinary(
+      const std::vector<CrudRowVersionRecord>& rows,
+      std::span<const EngineRowValue> typed_rows,
+      std::span<const CrudValueFields> canonical_values,
+      std::span<const std::string> shared_field_order,
+      std::span<const std::string> field_types);
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
