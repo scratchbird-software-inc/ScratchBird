@@ -7109,6 +7109,29 @@ std::string OrderedFiniteDecimalKey(const std::string& value) {
 bool CanonicalHashPayload(const DatatypeOperationValue& value,
                           std::string* payload,
                           std::string* failure_detail) {
+  if (IsCanonical128Integer(value.type_id)) {
+    // Native profile v1: equality is exact LE16 equality within one current
+    // builtin descriptor generation. Never erase a domain/security modifier.
+    if (!ExecutionDescriptorExactlyMatchesCurrentBuiltinIgnoringNullability(value.descriptor, value.type_id)) {
+      *failure_detail = "integer128_hash_descriptor_invalid";
+      return false;
+    }
+    if (!CanonicalOperationValueValid(value)) {
+      *failure_detail = "integer128_hash_value_invalid";
+      return false;
+    }
+    std::array<std::uint8_t,16> normalized{};
+    if (!value.is_null && !scratchbird::libraries::sbl_numeric::NormalizeInteger128HashPayload(
+          reinterpret_cast<const std::uint8_t*>(value.encoded_value.data()), value.encoded_value.size(), &normalized)) {
+      *failure_detail = "integer128_hash_value_invalid";
+      return false;
+    }
+    payload->assign("SBINT128H1",10);
+    payload->append(reinterpret_cast<const char*>(value.descriptor.descriptor_uuid.bytes),16);
+    AppendLittleU64(payload,value.descriptor.descriptor_epoch);
+    if (!value.is_null) payload->append(reinterpret_cast<const char*>(normalized.data()),normalized.size());
+    return true;
+  }
   if (IsOrdinaryNetworkOrder(value.type_id)) {
     const auto material = AdmitNetworkOrder(value);
     if (material.detail) { *failure_detail = material.detail; return false; }
@@ -7917,6 +7940,34 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
 }
 
 DatatypeHashResult HashDatatypeValue(const DatatypeHashRequest& request) {
+  if (IsCanonical128Integer(request.value.type_id)) {
+    DatatypeHashResult result;
+    try {
+      std::string payload, detail;
+      if (!CanonicalHashPayload(request.value,&payload,&detail)) {
+        result.status=ErrorStatus();
+        result.diagnostic=MakeDatatypeOperationDiagnostic(result.status,
+            CanonicalOperationValueDiagnosticCode(request.value,"SB_DATATYPE_HASH_REJECTED"),
+            "datatype.hash.rejected",detail);
+        return result;
+      }
+      std::uint64_t hash=1469598103934665603ULL;
+      const auto mix=[&](std::uint64_t item){hash=(hash^item)*1099511628211ULL;};
+      mix(static_cast<std::uint64_t>(request.value.type_id));mix(request.value.is_null?1:0);
+      for(const unsigned char octet:payload)mix(octet);
+      std::string encoded(16,'0');
+      for(int i=15;i>=0;--i){encoded[i]="0123456789abcdef"[hash&15];hash>>=4;}
+      result.status=OkStatus();
+      result.diagnostic=MakeDatatypeOperationDiagnostic(result.status,"SB_DATATYPE_OK","datatype.ok");
+      result.stable_hash_hex=std::move(encoded);
+      return result;
+    } catch(const std::bad_alloc&) {
+      result.stable_hash_hex.clear();result.status=ResourceErrorStatus();
+      result.diagnostic=MakeDatatypeOperationDiagnostic(result.status,"DATATYPE.RESOURCE_EXHAUSTED",
+          "datatype.hash.rejected","integer128_hash_allocation_failed");
+      return result;
+    }
+  }
   DatatypeHashResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");

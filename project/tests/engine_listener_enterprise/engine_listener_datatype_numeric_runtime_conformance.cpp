@@ -1,4 +1,7 @@
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -46,20 +49,12 @@ struct DatabaseFixture {
   std::filesystem::path path;
   TypedUuid database_uuid;
   TypedUuid filespace_uuid;
-};
-
-struct CleanupDir {
-  std::filesystem::path root;
-  ~CleanupDir() {
-    std::error_code ignored;
-    std::filesystem::remove_all(root, ignored);
-  }
+  api::EngineRequestContext owner;
 };
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
-    std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -71,8 +66,7 @@ std::string DiagnosticText(const api::EngineApiResult& result) {
 
 void RequireApiOk(const api::EngineApiResult& result, std::string_view message) {
   if (result.ok) { return; }
-  std::cerr << message << ": " << DiagnosticText(result) << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message)+": "+DiagnosticText(result));
 }
 
 bool HasEvidence(const api::EngineApiResult& result,
@@ -107,10 +101,6 @@ api::EngineUuid NativeIdentity(UuidKind kind, u64 offset) {
   return NativeIdentity(MakeUuid(kind, offset));
 }
 
-dt::DatatypeOperationValue Value(dt::CanonicalTypeId type_id, std::string value) {
-  return {type_id, std::move(value), false};
-}
-
 scratchbird::engine::ExecutionTypeDescriptor Descriptor(
     dt::CanonicalTypeId type_id) {
   const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
@@ -126,6 +116,28 @@ scratchbird::engine::ExecutionTypeDescriptor Descriptor(
       dt::LookupExecutionTypeDescriptorFromCatalog(type_id, metadata);
   Require(built.ok(), "listener execution descriptor build failed");
   return built.descriptor;
+}
+
+dt::DatatypeOperationValue Value(dt::CanonicalTypeId type_id, std::string value) {
+  // Lexical fixture input is converted here, never passed as native numeric data.
+  if(type_id==dt::CanonicalTypeId::int128||type_id==dt::CanonicalTypeId::uint128) {
+    numeric::NumericRequest request;
+    request.type=type_id==dt::CanonicalTypeId::int128?numeric::NumericType::int128:numeric::NumericType::uint128;
+    request.left={request.type,std::move(value),false};
+    const auto canonical=numeric::ApplyNumericOperation(request);
+    Require(canonical.status==numeric::NumericStatusCode::ok,"canonicalize numeric fixture literal");
+    const bool encoded=type_id==dt::CanonicalTypeId::int128
+        ?dt::EncodeCanonicalInt128Value(canonical.value.encoded,&value)
+        :dt::EncodeCanonicalUint128Value(canonical.value.encoded,&value);
+    Require(encoded,"encode native 128-bit fixture bytes");
+  } else if(type_id==dt::CanonicalTypeId::real128) {
+    const auto encoded=numeric::EncodeReal128LittleEndian(value);
+    Require(encoded.numeric.status==numeric::NumericStatusCode::ok&&encoded.bytes.has_value(),"encode real128 fixture");
+    value.assign(reinterpret_cast<const char*>(encoded.bytes->data()),encoded.bytes->size());
+  }
+  dt::DatatypeOperationValue result{type_id,std::move(value),false};
+  result.descriptor=Descriptor(type_id);
+  return result;
 }
 
 dt::DatatypeOperationValue DecimalValue(std::string_view lexical) {
@@ -195,6 +207,12 @@ void RequireCompare(dt::CanonicalTypeId type_id,
 }
 
 void RuntimeNumericProof() {
+  for(const auto type:{dt::CanonicalTypeId::int128,dt::CanonicalTypeId::uint128,dt::CanonicalTypeId::real128}) {
+    auto value=Value(type,"42");
+    Require(value.encoded_value.size()==16,"native numeric runtime uses 16-byte carrier");
+    value.encoded_value="42";
+    Require(!dt::CompareDatatypeValues({value,value}).ok(),"numeric comparison must not reinterpret text as native bytes");
+  }
   RequireCompare(dt::CanonicalTypeId::int128,
                  "170141183460469231731687303715884105727",
                  "170141183460469231731687303715884105726",
@@ -324,27 +342,25 @@ DatabaseFixture CreateDatabaseFixture(const std::filesystem::path& root) {
   create.filespace_uuid = fixture.filespace_uuid;
   create.page_size = kPageSize;
   create.creation_unix_epoch_millis = kBaseMillis;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
-  create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ':'
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "database fixture creation failed");
+  fixture.owner=scratchbird::tests::BootstrapFixtureOwnerContext(create);
   return fixture;
 }
 
 api::EngineRequestContext Context(const DatabaseFixture& fixture,
                                   std::string request_id) {
-  api::EngineRequestContext context;
+  auto context=fixture.owner;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.path.string();
   context.database_uuid = NativeIdentity(fixture.database_uuid);
   context.node_uuid = NativeIdentity(UuidKind::object, 32);
-  context.principal_uuid = NativeIdentity(UuidKind::principal, 33);
   context.session_uuid = NativeIdentity(UuidKind::object, 34);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
@@ -379,49 +395,54 @@ void Commit(api::EngineRequestContext* context) {
   context->transaction_uuid = {};
 }
 
-api::DomainRecord Domain(std::uint64_t creator_tx,
+api::DomainRecord Domain(const api::EngineRequestContext& context,
                          api::EngineUuid domain_uuid,
                          std::string base_type,
                          std::string check_envelope) {
   api::DomainRecord record;
+  const auto creator_tx=context.local_transaction_id;
   record.creator_tx = creator_tx;
   record.domain_uuid = std::move(domain_uuid);
   record.catalog_row_uuid = NativeIdentity(UuidKind::object, 40 + creator_tx);
   record.schema_uuid = NativeIdentity(UuidKind::schema, 50 + creator_tx);
   record.default_name = "eler030_numeric_domain";
-  record.base_descriptor_uuid = NativeIdentity(UuidKind::object, 60 + creator_tx);
-  record.base_descriptor_kind = "scalar";
-  record.base_canonical_type_name = std::move(base_type);
-  record.base_encoded_descriptor = "canonical=" + record.base_canonical_type_name;
+  api::EngineColumnDefinition base;
+  scratchbird::tests::BindFixtureColumnDatatype(context,dt::CanonicalTypeIdFromStableName(base_type),base);
+  base.descriptor.descriptor_kind="scalar";base.descriptor.canonical_type_name=base_type;
+  base.descriptor.encoded_descriptor="nullable=false";
+  Require(!api::BindDomainScalarBaseDescriptor(context,base.descriptor,&record).error,"bind native numeric domain base");
   record.nullable = false;
   record.check_constraint_envelope = std::move(check_envelope);
   record.validation_hook_status = "sblr_builtin";
   return record;
 }
 
-api::EngineTypedValue TypedValue(std::string canonical_type_name,
+api::EngineTypedValue TypedValue(const api::EngineRequestContext& context,std::string canonical_type_name,
                                  std::string encoded_value) {
   api::EngineTypedValue value;
+  api::EngineColumnDefinition column;
+  const auto type=dt::CanonicalTypeIdFromStableName(canonical_type_name);
+  scratchbird::tests::BindFixtureColumnDatatype(context,type,column);
+  value.descriptor=column.descriptor;
   value.descriptor.descriptor_kind = "scalar";
   value.descriptor.canonical_type_name = std::move(canonical_type_name);
   value.descriptor.encoded_descriptor =
-      "canonical=" + value.descriptor.canonical_type_name;
-  value.encoded_value = std::move(encoded_value);
+      "nullable=false";
+  const auto native=Value(type,std::move(encoded_value));
+  value.binary_value.assign(native.encoded_value.begin(),native.encoded_value.end());
   value.is_null = false;
   return value;
 }
 
 void DomainPredicateProof() {
   ConfigureMemoryFixture();
-  const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
-  CleanupDir cleanup{std::filesystem::temp_directory_path() /
-                     ("sb_eler030_" + std::to_string(unique))};
-  const auto fixture = CreateDatabaseFixture(cleanup.root);
+  scratchbird::tests::OwnedTempDirectory cleanup;
+  const auto fixture = CreateDatabaseFixture(cleanup.path());
 
   auto writer = Context(fixture, "eler030-domain-writer");
   Begin(&writer);
   const auto domain_uuid = NativeIdentity(UuidKind::object, 70);
-  const auto domain = Domain(writer.local_transaction_id,
+  const auto domain = Domain(writer,
                              domain_uuid,
                              "int128",
                              "sblr_predicate:eq:170141183460469231731687303715884105727");
@@ -436,25 +457,32 @@ void DomainPredicateProof() {
   validate.context = reader;
   validate.domain_descriptor = api::DomainDescriptor(domain);
   validate.input_value =
-      TypedValue("int128", "+170141183460469231731687303715884105727");
+      TypedValue(reader,"int128", "+170141183460469231731687303715884105727");
   const auto accepted = api::EngineValidateDomainValue(validate);
   RequireApiOk(accepted, "int128 exact numeric domain predicate failed");
+  Require(accepted.value.binary_value==validate.input_value.binary_value&&
+          accepted.value.binary_value.size()==16&&accepted.value.encoded_value.empty(),
+          "domain validation preserves all native int128 bytes");
   Require(HasEvidence(accepted, "domain_validation", domain_uuid),
           "domain validation evidence missing");
 
   validate.input_value =
-      TypedValue("int128", "170141183460469231731687303715884105726");
+      TypedValue(reader,"int128", "170141183460469231731687303715884105726");
   const auto refused = api::EngineValidateDomainValue(validate);
   Require(!refused.ok, "int128 exact numeric domain predicate accepted bad value");
   Require(DiagnosticText(refused).find("domain_check_eq_failed") != std::string::npos,
           "domain numeric predicate diagnostic drifted");
+  Commit(&reader);
+  cleanup.Cleanup();
 }
 
 }  // namespace
 
 int main() {
+  try {
   RuntimeNumericProof();
   DomainPredicateProof();
   std::cout << "engine_listener_datatype_numeric_runtime_conformance=passed\n";
   return EXIT_SUCCESS;
+  } catch(const std::exception& error) { std::cerr<<error.what()<<'\n';return EXIT_FAILURE; }
 }

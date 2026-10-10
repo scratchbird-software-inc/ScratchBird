@@ -726,7 +726,8 @@ void NumericAndCastAdapter() {
       }
     }
   }
-  Check(!dt::HashDatatypeValue({Int128("0")}).ok(),
+  auto unbound_hash=Int128("0");unbound_hash.descriptor={};
+  Check(!dt::HashDatatypeValue({unbound_hash}).ok(),
         "int128 hash refuses without a descriptor-versioned profile");
 }
 
@@ -806,8 +807,9 @@ void DescriptorAndNullState() {
   Check(null_first.ok() && null_first.sort_key == std::string(1, '\0') &&
             null_last.ok() && null_last.sort_key == std::string(1, '\2') &&
             !dt::CompareDatatypeValues({null_value, Int128("0")}).ok() &&
-            !dt::HashDatatypeValue({null_value}).ok(),
-        "int128 NULL keys are state-only while compare/hash policy refuses");
+            dt::HashDatatypeValue({null_value}).ok() &&
+            dt::HashDatatypeValue({null_value}).stable_hash_hex != dt::HashDatatypeValue({Int128("0")}).stable_hash_hex,
+        "int128 NULL keys and hashes distinguish state while scalar comparison refuses NULL");
 
   dt::DatatypeNumericOperationRequest numeric_compare;
   numeric_compare.operation = dt::DatatypeNumericOperationKind::compare;

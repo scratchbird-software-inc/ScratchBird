@@ -301,6 +301,11 @@ NumericBinaryResult EncodeInt128LittleEndian(std::string_view canonical);
 NumericBinaryResult EncodeUint128LittleEndian(std::string_view canonical);
 NumericResult DecodeUint128LittleEndian(
     const std::vector<std::uint8_t>& payload);
+// Hash normalization for exact signed/unsigned LE16 integers. Every bit pattern
+// is canonical; descriptor/type/state framing belongs to the admitting caller.
+// No allocation, text conversion, or output mutation on malformed input.
+bool NormalizeInteger128HashPayload(const std::uint8_t* bytes, std::size_t size,
+                                   std::array<std::uint8_t, 16>* normalized) noexcept;
 // Converts exact signed two's-complement LE16 to sign-bit-transformed BE16.
 // Every 16-byte pattern is valid; malformed widths return no key. State
 // framing and descriptor admission remain the caller's responsibility.

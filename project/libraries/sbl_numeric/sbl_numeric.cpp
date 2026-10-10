@@ -960,6 +960,15 @@ NumericResult DecodeUint128LittleEndian(
   return result;
 }
 
+bool NormalizeInteger128HashPayload(const std::uint8_t* bytes, std::size_t size,
+                                   std::array<std::uint8_t, 16>* normalized) noexcept {
+  if (!bytes || size != 16 || !normalized) return false;
+  std::array<std::uint8_t, 16> staged;
+  std::copy_n(bytes, staged.size(), staged.begin());
+  *normalized = staged;
+  return true;
+}
+
 NumericBinaryResult MakeInt128OrderKeyLittleEndian(
     const std::vector<std::uint8_t>& payload) {
   auto result = MakeUint128OrderKeyLittleEndian(payload);

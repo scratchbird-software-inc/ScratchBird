@@ -16,6 +16,7 @@
 
 namespace {
 long allocation_budget = -1;
+bool allocation_fail_once = false;
 unsigned checks = 0, failures = 0;
 void Check(bool good, const std::string& message) {
   ++checks;
@@ -23,7 +24,10 @@ void Check(bool good, const std::string& message) {
 }
 }
 void* operator new(std::size_t n) {
-  if (allocation_budget == 0) throw std::bad_alloc();
+  if (allocation_budget == 0) {
+    if(allocation_fail_once)allocation_budget=-1;
+    throw std::bad_alloc();
+  }
   if (allocation_budget > 0) --allocation_budget;
   if (void* p = std::malloc(n ? n : 1)) return p;
   throw std::bad_alloc();
@@ -421,6 +425,81 @@ void StructuralValidation() {
         "invalid NULL placement rejects");
 }
 
+void Integer128HashProfile() {
+  for(const auto type:{dt::CanonicalTypeId::int128,dt::CanonicalTypeId::uint128}) {
+    const auto descriptor=Descriptor(type);
+    const auto oracle=[&](const dt::DatatypeOperationValue& value) {
+      std::uint64_t hash=1469598103934665603ULL;
+      auto mix=[&](std::uint64_t octet){hash=(hash^octet)*1099511628211ULL;};
+      mix(static_cast<std::uint64_t>(type));mix(value.is_null?1:0);
+      for(const unsigned char octet:std::string_view("SBINT128H1"))mix(octet);
+      for(const auto octet:descriptor.descriptor_uuid.bytes)mix(octet);
+      for(unsigned i=0;i<8;++i)mix((descriptor.descriptor_epoch>>(8*i))&255);
+      if(!value.is_null)for(const unsigned char octet:value.encoded_value)mix(octet);
+      std::string text(16,'0');
+      for(int i=15;i>=0;--i){text[i]="0123456789abcdef"[hash&15];hash>>=4;}
+      return text;
+    };
+    for(unsigned pattern=0;pattern<260;++pattern) {
+      dt::DatatypeOperationValue value{type,std::string(16,'\0'),false};value.descriptor=descriptor;
+      if(pattern<256)std::fill(value.encoded_value.begin(),value.encoded_value.end(),static_cast<char>(pattern));
+      else value.encoded_value[(pattern-256)*4]=static_cast<char>(0x80);
+      const auto hashed=dt::HashDatatypeValue({value});
+      Check(hashed.ok()&&hashed.stable_hash_hex==oracle(value),"128-bit hash exact native profile oracle");
+      auto alias=value;alias.descriptor.stable_name="localized-name";
+      alias.descriptor.nullable_allowed=!alias.descriptor.nullable_allowed;
+      Check(dt::HashDatatypeValue({alias}).stable_hash_hex==hashed.stable_hash_hex,"labels/nullability do not change present numeric hash");
+      auto stale=value;++stale.descriptor.descriptor_epoch;
+      const auto refused=dt::HashDatatypeValue({stale});
+      Check(!refused.ok()&&refused.stable_hash_hex.empty(),"stale numeric hash descriptor publishes no hash");
+    }
+    dt::DatatypeOperationValue null{type,{},true};null.descriptor=descriptor;null.descriptor.nullable_allowed=true;
+    const auto hashed_null=dt::HashDatatypeValue({null});
+    Check(hashed_null.ok()&&hashed_null.stable_hash_hex==oracle(null),"NULL numeric hash has exact descriptor and state framing");
+    null.encoded_value="payload";
+    Check(!dt::HashDatatypeValue({null}).ok(),"NULL numeric hash refuses payload");
+    null.encoded_value.clear();null.descriptor.nullable_allowed=false;
+    Check(!dt::HashDatatypeValue({null}).ok(),"NULL numeric hash requires nullable occurrence");
+    dt::DatatypeOperationValue good{type,std::string(16,'\xff'),false};good.descriptor=descriptor;
+    for(unsigned mutation=0;mutation<8;++mutation) {
+      auto wrong=good;auto& changed=wrong.descriptor;
+      switch(mutation) {
+        case 0:changed.descriptor_uuid.bytes[15]^=1;break;
+        case 1:changed.bit_width=64;break;
+        case 2:changed.precision=1;break;
+        case 3:changed.domain_uuid=changed.descriptor_uuid;changed.domain_stack.push_back(changed.domain_uuid);break;
+        case 4:changed.security_policy_uuid=changed.descriptor_uuid;break;
+        case 5:changed.length=16;break;
+        case 6:changed.vector_dimensions=1;break;
+        case 7:changed.charset_uuid=changed.descriptor_uuid;break;
+      }
+      const auto rejected=dt::HashDatatypeValue({wrong});
+      Check(!rejected.ok()&&rejected.stable_hash_hex.empty(),"hash refuses altered identity/domain/modifiers without output");
+    }
+    unsigned faults=0;bool succeeded=false;
+    const dt::DatatypeHashRequest request{good};
+    for(long budget=0;budget<100&&!succeeded;++budget) {
+      allocation_fail_once=true;allocation_budget=budget;
+      const auto hashed=dt::HashDatatypeValue(request);
+      allocation_budget=-1;allocation_fail_once=false;
+      if(hashed.ok()) {succeeded=true;Check(hashed.stable_hash_hex==oracle(good),"hash after allocation sweep matches oracle");}
+      else {++faults;Check(hashed.stable_hash_hex.empty()&&hashed.diagnostic.diagnostic_code=="DATATYPE.RESOURCE_EXHAUSTED",
+                          "hash allocation failure publishes resource diagnostic and no digest");}
+      Check(request.value.encoded_value==good.encoded_value,"allocation failure leaves hash input unchanged");
+    }
+    Check(succeeded&&faults>1,"hash allocation sweep reaches all allocations and eventual success");
+  }
+  std::array<std::uint8_t,16> input{};input.fill(0xff);
+  std::array<std::uint8_t,16> output{};
+  allocation_budget=0;
+  const bool normalized=numeric::NormalizeInteger128HashPayload(input.data(),input.size(),&output);
+  const bool malformed=numeric::NormalizeInteger128HashPayload(input.data(),15,&output);
+  allocation_budget=-1;
+  Check(normalized&&!malformed&&output==input,"hash normalization is allocation-free and malformed output is unchanged");
+  Check(!numeric::NormalizeInteger128HashPayload(nullptr,16,&output)&&
+        !numeric::NormalizeInteger128HashPayload(input.data(),16,nullptr),"hash normalization requires both buffers");
+}
+
 void AllocationFailure() {
   const auto request = Request(dt::DatatypeNumericOperationKind::divide,
                                "1.23456789012345678901234567890123456", "3");
@@ -508,6 +587,7 @@ int main() {
     Check(allocation_free, "large fractional predicate has fixed scratch and no allocations");
   }
   PublicOwners();
+  Integer128HashProfile();
   LexicalBoundaryAndPrecision();
   BinaryAdapterFacts();
   CastAndPolicyRefusal();
