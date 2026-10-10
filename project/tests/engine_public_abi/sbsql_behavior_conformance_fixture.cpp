@@ -7,12 +7,17 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include "api_types.hpp"
+#include "memory.hpp"
+#include "transaction/transaction_api.hpp"
+#include "../../src/storage/database/local_transaction_store.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
 
-#include <cstdio>
+#include <chrono>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -101,29 +106,68 @@ std::vector<MatrixRow> LoadMatrix(const std::string& path) {
 }
 
 scratchbird::engine::internal_api::EngineRequestContext ContextFor(const MatrixRow& row,
-                                                                   const std::string& database_path) {
-  scratchbird::engine::internal_api::EngineRequestContext context;
-  context.trust_mode = scratchbird::engine::internal_api::EngineTrustMode::embedded_in_process;
+    const scratchbird::engine::internal_api::EngineRequestContext& owner) {
+  namespace api = scratchbird::engine::internal_api;
+  auto context = owner;
   context.request_id = "fspe009-sbsql-behavior";
-  context.database_path = database_path;
-  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e05b1-f009-7000-8000-000000000001");
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e05b1-f009-7000-8000-000000000002");
-  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019e05b1-f009-7000-8000-000000000003");
-  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019e05b1-f009-7000-8000-000000000004");
-  context.local_transaction_id = row.required_transaction_context ? 7009 : 7009;
-  context.snapshot_visible_through_local_transaction_id = context.local_transaction_id;
-  context.security_context_present = row.required_security_context;
   context.cluster_authority_available = false;
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.name_resolution_epoch = 1;
   context.trace_tags.push_back("FSPE-009");
-  context.trace_tags.push_back("security.fixture_trace_authority");
-  context.trace_tags.push_back("right:OBS_AGENT_STATE_READ");
-  context.trace_tags.push_back("right:OBS_AGENT_CONTROL");
-  context.trace_tags.push_back("right:OBS_CLUSTER_HEALTH_INSPECT");
+  const auto* registered = scratchbird::engine::sblr::LookupSblrOperation(row.api_operation_id);
+  if (registered && (row.required_transaction_context || registered->requires_transaction_context) &&
+      registered->opcode == row.sblr_operation && registered->code != 0) {
+    api::EngineBeginTransactionRequest begin;
+    begin.context = context;
+    begin.isolation_level = "read_committed";
+    const auto started = api::EngineBeginTransaction(begin);
+    if (!started.ok || started.inventory_observation.state !=
+                           api::EngineTransactionInventoryState::active)
+      throw std::runtime_error("matrix fixture could not begin an actual transaction");
+    context.transaction_uuid = started.transaction_uuid;
+    context.local_transaction_id = started.local_transaction_id;
+    context.snapshot_visible_through_local_transaction_id =
+        started.snapshot_visible_through_local_transaction_id;
+    context.transaction_timestamp = started.inventory_observation.transaction_timestamp;
+  }
   return context;
+}
+
+// This database is private to this fixture. Reconcile actual durable inventory
+// after each dispatch, including a BEGIN dispatched by the matrix itself. Do
+// not rollback already-final transactions or reuse invented/stale identities.
+void CleanupTransactions(const scratchbird::engine::internal_api::EngineRequestContext& owner) {
+  namespace api = scratchbird::engine::internal_api;
+  namespace db = scratchbird::storage::database;
+  namespace mga = scratchbird::transaction::mga;
+  const auto guard = api::AcquireTransactionInventoryGuard(owner.database_path);
+  const auto loaded = db::LoadLocalTransactionInventoryFromDatabase(owner.database_path);
+  if (!loaded.ok()) throw std::runtime_error("matrix fixture inventory read failed");
+  for (const auto& entry : loaded.inventory.entries) {
+    const auto state = mga::InventoryVisibilityState(entry);
+    if (state != mga::TransactionState::active &&
+        state != mga::TransactionState::read_only_active &&
+        state != mga::TransactionState::prepared) continue;
+    api::EngineRollbackTransactionRequest rollback;
+    rollback.context = owner;
+    rollback.context.transaction_uuid = entry.identity.transaction_uuid.value;
+    rollback.context.local_transaction_id = entry.identity.local_id.value;
+    rollback.context.snapshot_visible_through_local_transaction_id =
+        entry.begin_visible_through_local_transaction_id;
+    const auto result = api::EngineRollbackTransaction(rollback);
+    if (!result.ok || !result.engine_finality_known ||
+        result.rollback_finality_state != "rolled_back_by_engine_inventory")
+      throw std::runtime_error("matrix fixture transaction cleanup failed");
+  }
+  const auto after = db::LoadLocalTransactionInventoryFromDatabase(owner.database_path);
+  if (!after.ok()) throw std::runtime_error("matrix fixture final inventory read failed");
+  for (const auto& entry : after.inventory.entries) {
+    const auto state = mga::InventoryVisibilityState(entry);
+    if (state != mga::TransactionState::committed &&
+        state != mga::TransactionState::rolled_back) {
+      std::cerr << "unresolved transaction local_id=" << entry.identity.local_id.value
+                << " state=" << static_cast<unsigned>(state) << '\n';
+      throw std::runtime_error("matrix fixture retained an unresolved transaction");
+    }
+  }
 }
 
 scratchbird::engine::internal_api::EngineApiRequest ApiRequestFor(
@@ -140,9 +184,6 @@ scratchbird::engine::internal_api::EngineApiRequest ApiRequestFor(
   request.target_object.object_kind = "object";
   request.localized_names.push_back({"en", "default", "schema", "fspe009_object", true});
   request.option_envelopes.push_back("name:fspe009_object");
-  request.option_envelopes.push_back("policy_authorized:true");
-  request.option_envelopes.push_back("evidence_sink_available:true");
-  request.option_envelopes.push_back("metrics_fresh:true");
   request.option_envelopes.push_back("requested_pages:1");
   request.option_envelopes.push_back("requested_bytes:4096");
   request.option_envelopes.push_back("agent_type:conformance_agent");
@@ -172,6 +213,8 @@ scratchbird::engine::sblr::SblrOperationEnvelope EnvelopeFor(const MatrixRow& ro
   envelope.parser_resolved_names_to_uuids = true;
   envelope.requires_security_context = row.required_security_context;
   envelope.requires_transaction_context = row.required_transaction_context;
+  if (registry != nullptr && registry->opcode == row.sblr_operation)
+    envelope.requires_transaction_context |= registry->requires_transaction_context;
   envelope.requires_cluster_authority = row.requires_cluster_authority || StartsWith(row.scope_status, "cluster_only");
   return envelope;
 }
@@ -222,7 +265,7 @@ bool IsClusterProviderExecutionResult(const scratchbird::engine::sblr::SblrDispa
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
   if (argc != 2) {
     std::cerr << "usage: sbsql_behavior_conformance_fixture <SBLR_API_OPERATION_MATRIX.yaml>\n";
     return 1;
@@ -234,9 +277,29 @@ int main(int argc, char** argv) {
     return 2;
   }
 
-  const std::string database_path = "/tmp/sb_fspe009_sbsql_behavior_conformance.db";
-  std::remove(database_path.c_str());
-  std::remove((database_path + ".sb.api_events").c_str());
+  namespace api = scratchbird::engine::internal_api;
+  namespace db = scratchbird::storage::database;
+  const auto memory = scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+      scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(), "sbsql-behavior-matrix");
+  if (!memory.ok() || !memory.fixture_mode)
+    throw std::runtime_error("matrix fixture memory admission failed");
+  scratchbird::tests::OwnedTempDirectory owned;
+  db::DatabaseCreateConfig create;
+  create.path = (owned.path() / "behavior.db").string();
+  create.database_uuid.kind = scratchbird::core::platform::UuidKind::database;
+  create.database_uuid.value = api::GenerateCrudEngineUuid("database");
+  create.filespace_uuid.kind = scratchbird::core::platform::UuidKind::filespace;
+  create.filespace_uuid.value = api::GenerateCrudEngineUuid("filespace");
+  create.creation_unix_epoch_millis = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  const auto created = db::CreateDatabaseFile(create);
+  if (!created.ok()) {
+    std::cerr << created.diagnostic.diagnostic_code << ':'
+              << created.diagnostic.message_key << '\n';
+    throw std::runtime_error("matrix fixture credentialed database bootstrap failed");
+  }
+  const auto owner = scratchbird::tests::BootstrapFixtureOwnerContext(create);
 
   std::size_t callable_rows = 0;
   std::size_t unallocated_carrier_rows = 0;
@@ -244,6 +307,7 @@ int main(int argc, char** argv) {
   std::size_t descriptor_authority_gated_rows = 0;
   std::size_t cluster_boundary_rows = 0;
   std::size_t skipped_rows = 0;
+  std::size_t trace_authority_refusals = 0;
 
   for (const auto& row : rows) {
     if (row.sblr_operation.empty() || row.api_operation_id.empty()) {
@@ -251,7 +315,8 @@ int main(int argc, char** argv) {
       return 3;
     }
 
-    const auto context = ContextFor(row, database_path);
+    const auto context = ContextFor(row, owner);
+    const auto check_row = [&]() -> int {
     const auto request = ApiRequestFor(row, context);
     const auto* registry =
         scratchbird::engine::sblr::LookupSblrOperation(row.api_operation_id);
@@ -274,7 +339,25 @@ int main(int argc, char** argv) {
                   << scratchbird::engine::sblr::SerializeSblrDispatchResultToJson(refused);
         return 5;
       }
-      continue;
+      return 0;
+    }
+    if (row.api_operation_id == "cluster.sys.agents") {
+      auto untrusted = context;
+      untrusted.authorization_context = {};
+      untrusted.trace_tags.insert(untrusted.trace_tags.end(), {
+          "security.fixture_trace_authority", "right:OBS_AGENT_STATE_READ",
+          "right:OBS_AGENT_CONTROL", "right:OBS_CLUSTER_HEALTH_INSPECT"});
+      const auto denied = scratchbird::engine::sblr::DispatchSblrOperation(
+          {untrusted, EnvelopeFor(row), ApiRequestFor(row, untrusted)});
+      if (!denied.envelope_validated || !denied.dispatched_to_api ||
+          denied.api_result.ok ||
+          !HasApiDiagnostic(denied.api_result, "SB_AGENT_SECURITY.RIGHT_REQUIRED") ||
+          HasApiDiagnostic(denied.api_result, "PROCESS.CLUSTER_PATH_ABSENT")) {
+        std::cerr << "trace tags substituted for durable cluster observation authority\n"
+                  << scratchbird::engine::sblr::SerializeSblrDispatchResultToJson(denied);
+        return 14;
+      }
+      ++trace_authority_refusals;
     }
     const auto result = scratchbird::engine::sblr::DispatchSblrOperation(
         {context, EnvelopeFor(row), request});
@@ -292,7 +375,7 @@ int main(int argc, char** argv) {
                     << scratchbird::engine::sblr::SerializeSblrDispatchResultToJson(result);
           return 6;
         }
-        continue;
+        return 0;
       }
       if (!result.envelope_validated &&
           HasDispatchDiagnostic(result, "SBLR.OPERAND_INVALID")) {
@@ -304,7 +387,7 @@ int main(int argc, char** argv) {
                     << scratchbird::engine::sblr::SerializeSblrDispatchResultToJson(result);
           return 7;
         }
-        continue;
+        return 0;
       }
       if (RequiresExactDescriptorAuthority(row) &&
           result.envelope_validated && !result.dispatched_to_api) {
@@ -319,7 +402,7 @@ int main(int argc, char** argv) {
                     << scratchbird::engine::sblr::SerializeSblrDispatchResultToJson(result);
           return 8;
         }
-        continue;
+        return 0;
       }
       if (!result.envelope_validated || !result.accepted || !result.dispatched_to_api) {
         std::cerr << "callable row did not dispatch: " << row.api_operation_id << "\n"
@@ -332,7 +415,7 @@ int main(int argc, char** argv) {
                   << scratchbird::engine::sblr::SerializeSblrDispatchResultToJson(result);
         return 10;
       }
-      continue;
+      return 0;
     }
 
     if (IsClusterFailClosedStatus(row)) {
@@ -350,26 +433,42 @@ int main(int argc, char** argv) {
                   << scratchbird::engine::sblr::SerializeSblrDispatchResultToJson(result);
         return 11;
       }
-      continue;
+      return 0;
     }
 
     ++skipped_rows;
+    return 0;
+    };
+    const auto checked = check_row();
+    try { CleanupTransactions(owner); }
+    catch (...) { std::cerr << "cleanup after " << row.api_operation_id << '\n'; throw; }
+    if (checked != 0) return checked;
   }
 
   if (callable_rows < 80 || unallocated_carrier_rows == 0 ||
       executor_evidence_gated_rows == 0 ||
       descriptor_authority_gated_rows == 0 ||
-      cluster_boundary_rows < 5 || skipped_rows == 0) {
+      cluster_boundary_rows < 5 || skipped_rows == 0 || trace_authority_refusals != 1) {
     std::cerr << "unexpected matrix coverage callable=" << callable_rows
               << " unallocated_carrier=" << unallocated_carrier_rows
               << " executor_evidence_gated=" << executor_evidence_gated_rows
               << " descriptor_authority_gated=" << descriptor_authority_gated_rows
               << " cluster_boundary=" << cluster_boundary_rows
+              << " trace_authority_refusals=" << trace_authority_refusals
               << " skipped=" << skipped_rows << "\n";
     return 12;
   }
 
-  std::remove(database_path.c_str());
-  std::remove((database_path + ".sb.api_events").c_str());
+  owned.Cleanup();
+  std::cout << "callable=" << callable_rows
+            << " unallocated_carrier=" << unallocated_carrier_rows
+            << " executor_evidence_gated=" << executor_evidence_gated_rows
+            << " descriptor_authority_gated=" << descriptor_authority_gated_rows
+            << " cluster_boundary=" << cluster_boundary_rows
+            << " trace_authority_refusals=" << trace_authority_refusals
+            << " skipped=" << skipped_rows << '\n';
   return 0;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return 13;
 }
