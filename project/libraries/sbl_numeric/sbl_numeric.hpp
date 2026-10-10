@@ -105,6 +105,16 @@ bool Real128BackendAvailable() noexcept;
 // REAL64 shares this backend and thread cache; the legacy API name is retained.
 void ReleaseReal128ThreadCache() noexcept;
 NumericResult ApplyNumericOperation(const NumericRequest& request);
+// Exact predicate-literal boundary. The stored integer stays canonical binary;
+// fractional RHS values are compared, never truncated to the integer type.
+// Decimal syntax permits an optional sign and decimal point (at least one
+// digit overall), followed by an optional [eE][+-]?digits exponent,
+// with optional surrounding ASCII whitespace. Work is linear in literal bytes,
+// with fixed-size scratch even for very large exponents or mantissas.
+bool ValidateExactDecimalLiteral(std::string_view literal) noexcept;
+NumericResult CompareIntegerLittleEndianToDecimalLiteral(
+    const std::uint8_t* bytes, std::size_t size, bool is_signed,
+    std::string_view literal);
 using Real128Bytes = std::array<std::uint8_t, 16>;
 struct Real128BinaryResult {
   NumericResult numeric;

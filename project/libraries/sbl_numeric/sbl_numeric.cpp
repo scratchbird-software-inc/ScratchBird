@@ -39,6 +39,91 @@ struct ParsedDecimal {
   std::uint32_t scale = 0;
 };
 
+struct IntegerPredicateLiteral {
+  bool negative = false;
+  bool fractional = false;
+  boost::multiprecision::uint256_t integer = 0;
+};
+
+bool ScanIntegerPredicateLiteral(std::string_view text,
+                                  IntegerPredicateLiteral* result) noexcept {
+  using boost::multiprecision::uint256_t;
+  const auto space = [](char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
+  };
+  while (!text.empty() && space(text.front())) text.remove_prefix(1);
+  while (!text.empty() && space(text.back())) text.remove_suffix(1);
+  if (text.empty() || text.size() > static_cast<std::size_t>(
+          std::numeric_limits<std::int64_t>::max() / 4)) return false;
+  std::size_t position = 0;
+  IntegerPredicateLiteral parsed;
+  if (text[position] == '+' || text[position] == '-') {
+    parsed.negative = text[position++] == '-';
+    if (position == text.size()) return false;
+  }
+  const auto mantissa_begin = position;
+  std::int64_t digits = 0, before_point = 0;
+  bool point = false, nonzero = false;
+  for (; position < text.size(); ++position) {
+    const char c = text[position];
+    if (c >= '0' && c <= '9') {
+      ++digits;
+      if (!point) ++before_point;
+      nonzero = nonzero || c != '0';
+    } else if (c == '.' && !point) {
+      point = true;
+    } else break;
+  }
+  if (digits == 0) return false;
+  const auto mantissa_end = position;
+  std::int64_t exponent = 0;
+  if (position < text.size()) {
+    if (text[position] != 'e' && text[position] != 'E') return false;
+    ++position;
+    bool negative_exponent = false;
+    if (position < text.size() && (text[position] == '+' || text[position] == '-'))
+      negative_exponent = text[position++] == '-';
+    if (position == text.size()) return false;
+    // Beyond this bound all nonzero values are respectively larger than any
+    // 128-bit integer, or below one. Continue scanning to reject bad suffixes.
+    const auto bound = static_cast<std::int64_t>(text.size()) + 128;
+    for (; position < text.size(); ++position) {
+      const char c = text[position];
+      if (c < '0' || c > '9') return false;
+      exponent = exponent > (bound - (c - '0')) / 10
+          ? bound : exponent * 10 + (c - '0');
+    }
+    if (negative_exponent) exponent = -exponent;
+  }
+  if (!nonzero) {
+    parsed.negative = false;
+    *result = parsed;
+    return true;
+  }
+  const auto integer_digits = before_point + exponent;
+  const uint256_t cap = uint256_t(1) << 128;
+  std::int64_t ordinal = 0;
+  for (auto i = mantissa_begin; i < mantissa_end; ++i) {
+    const auto c = text[i];
+    if (c == '.') continue;
+    if (ordinal < integer_digits) {
+      if (parsed.integer < cap) {
+        parsed.integer = parsed.integer * 10 + (c - '0');
+        if (parsed.integer > cap) parsed.integer = cap;
+      }
+    } else {
+      parsed.fractional = parsed.fractional || c != '0';
+    }
+    ++ordinal;
+  }
+  for (auto i = digits; i < integer_digits && parsed.integer != 0 && parsed.integer < cap; ++i) {
+    parsed.integer *= 10;
+    if (parsed.integer > cap) parsed.integer = cap;
+  }
+  *result = parsed;
+  return true;
+}
+
 enum class SpecialKind {
   finite,
   quiet_nan,
@@ -555,6 +640,34 @@ const char* NumericOperationName(NumericOperation operation) {
     case NumericOperation::compare: return "compare";
   }
   return "unknown";
+}
+
+bool ValidateExactDecimalLiteral(std::string_view literal) noexcept {
+  IntegerPredicateLiteral parsed;
+  return ScanIntegerPredicateLiteral(literal, &parsed);
+}
+
+NumericResult CompareIntegerLittleEndianToDecimalLiteral(
+    const std::uint8_t* bytes, std::size_t size, bool is_signed,
+    std::string_view literal) {
+  using boost::multiprecision::uint256_t;
+  if (!bytes || (size != 1 && size != 2 && size != 4 && size != 8 && size != 16))
+    return Failure(NumericStatusCode::invalid_left, "NUMERIC.INTEGER.ENCODING_INVALID");
+  IntegerPredicateLiteral right;
+  if (!ScanIntegerPredicateLiteral(literal, &right))
+    return Failure(NumericStatusCode::invalid_right, "NUMERIC.DECIMAL_LITERAL.INVALID");
+  uint256_t left = 0;
+  for (std::size_t i = size; i != 0; --i) left = (left << 8) | bytes[i - 1];
+  const bool negative = is_signed && (bytes[size - 1] & 0x80) != 0;
+  if (negative) left = (uint256_t(1) << (size * 8)) - left;
+  NumericResult result;
+  if (negative != right.negative) result.comparison = negative ? -1 : 1;
+  else {
+    result.comparison = left < right.integer ? -1 : left > right.integer ? 1
+        : right.fractional ? -1 : 0;
+    if (negative) result.comparison = -result.comparison;
+  }
+  return result;
 }
 
 

@@ -452,6 +452,61 @@ void AllocationFailure() {
 
 }  // namespace
 int main() {
+  {
+    const auto compare = [](std::int64_t left, std::string_view right, int expected) {
+      std::array<std::uint8_t, 8> bytes{};
+      for (unsigned i = 0; i != 8; ++i) bytes[i] = static_cast<std::uint64_t>(left) >> (i * 8);
+      const auto result = numeric::CompareIntegerLittleEndianToDecimalLiteral(
+          bytes.data(), bytes.size(), true, right);
+      Check(result.status == numeric::NumericStatusCode::ok && result.comparison == expected,
+            "exact native integer predicate comparison");
+    };
+    compare(0, "-0e99999999999999999999999999999999999", 0);
+    compare(0, "-0.00001", 1); compare(0, "0.00001", -1);
+    compare(1, "1.00000000000000000000000000000000000000000000001", -1);
+    compare(-1, "-1.00000000000000000000000000000000000000000000001", 1);
+    compare(10, "  +.1e+2\t", 0); compare(-2, "-2.1", 1);
+    compare(INT64_MIN, "-9223372036854775808", 0);
+    compare(INT64_MAX, "9223372036854775807.1", -1);
+    compare(INT64_MAX, "9223372036854775806.9", 1);
+    compare(INT64_MIN, "-9223372036854775808.1", 1);
+    compare(1, std::string(300, '9') + "e-300", 1);
+    compare(1, std::string(300, '9') + "e-299", -1);
+    compare(0, "1e-99999999999999999999999999999999999", -1);
+    compare(INT64_MAX, "1e99999999999999999999999999999999999", -1);
+    for (const auto right : {"", " ", ".", "+", "--1", "1e", "1e+", "1x", "NaN", "1..1", "1e999999x"})
+      Check(!numeric::ValidateExactDecimalLiteral(right), "reject malformed predicate literal");
+    Check(!numeric::ValidateExactDecimalLiteral(std::string("1\0", 2)), "reject literal NUL suffix");
+    for (const auto width : {1U, 2U, 4U, 8U, 16U}) {
+      std::array<std::uint8_t, 16> bytes{};
+      std::fill_n(bytes.begin(), width, 0xff);
+      auto r = numeric::CompareIntegerLittleEndianToDecimalLiteral(bytes.data(), width, true, "-1");
+      Check(r.status == numeric::NumericStatusCode::ok && r.comparison == 0, "signed widths");
+      r = numeric::CompareIntegerLittleEndianToDecimalLiteral(bytes.data(), width, false, "-1");
+      Check(r.status == numeric::NumericStatusCode::ok && r.comparison == 1, "unsigned widths");
+    }
+    std::array<std::uint8_t, 16> widest{}; widest.fill(0xff);
+    auto r = numeric::CompareIntegerLittleEndianToDecimalLiteral(widest.data(), 16, false,
+        "340282366920938463463374607431768211455");
+    Check(r.status == numeric::NumericStatusCode::ok && r.comparison == 0, "UINT128 maximum literal");
+    widest.fill(0); widest.back() = 0x80;
+    r = numeric::CompareIntegerLittleEndianToDecimalLiteral(widest.data(), 16, true,
+        "-170141183460469231731687303715884105728");
+    Check(r.status == numeric::NumericStatusCode::ok && r.comparison == 0, "INT128 minimum literal");
+    Check(numeric::CompareIntegerLittleEndianToDecimalLiteral(nullptr, 8, true, "1").status ==
+          numeric::NumericStatusCode::invalid_left, "missing native payload");
+    Check(numeric::CompareIntegerLittleEndianToDecimalLiteral(widest.data(), 3, true, "1").status ==
+          numeric::NumericStatusCode::invalid_left, "invalid native width");
+    const std::string large = std::string(100000, '9') + "e-100000";
+    allocation_budget = 0;
+    bool allocation_free = false;
+    try {
+      const auto exact = numeric::CompareIntegerLittleEndianToDecimalLiteral(widest.data(), 16, false, large);
+      allocation_free = exact.status == numeric::NumericStatusCode::ok && exact.comparison == 1;
+    } catch (const std::bad_alloc&) {}
+    allocation_budget = -1;
+    Check(allocation_free, "large fractional predicate has fixed scratch and no allocations");
+  }
   PublicOwners();
   LexicalBoundaryAndPrecision();
   BinaryAdapterFacts();
