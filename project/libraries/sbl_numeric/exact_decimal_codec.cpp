@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "sbl_numeric.hpp"
 #include <algorithm>
+#include <boost/multiprecision/cpp_int.hpp>
 
 namespace scratchbird::libraries::sbl_numeric {
 namespace {
@@ -81,6 +82,105 @@ ExactDecimalError ValidateExactDecimal(const std::uint8_t* bytes, std::size_t si
                                        const ExactDecimalProfile& profile) noexcept {
   Parts p;
   return Read(bytes, size, profile, &p);
+}
+ExactDecimalArithmeticResult ApplyExactDecimalArithmetic(
+    NumericOperation operation, ExactDecimalOperand left,
+    ExactDecimalOperand right, ExactDecimalProfile result_profile,
+    RoundingMode rounding) noexcept {
+  ExactDecimalArithmeticResult result;
+  if (!ExactDecimalProfileValid(result_profile) ||
+      (rounding != RoundingMode::half_even && rounding != RoundingMode::half_up &&
+       rounding != RoundingMode::truncate)) return result;
+  switch (operation) {
+    case NumericOperation::canonicalize: case NumericOperation::add:
+    case NumericOperation::subtract: case NumericOperation::multiply:
+    case NumericOperation::divide: case NumericOperation::compare: break;
+    default: result.status = NumericStatusCode::invalid_operation; return result;
+  }
+  Parts l, r;
+  if (Read(left.bytes, left.size, left.profile, &l) != ExactDecimalError::none) {
+    result.status = NumericStatusCode::invalid_left; return result;
+  }
+  if (operation != NumericOperation::canonicalize &&
+      Read(right.bytes, right.size, right.profile, &r) != ExactDecimalError::none) {
+    result.status = NumericStatusCode::invalid_right; return result;
+  }
+  // The largest numerator is coefficient * 10^(right_scale + result_scale),
+  // strictly below 10^228 < 2^758. Fixed 1024-bit storage covers every profile,
+  // including doubled remainders. Allocator void prohibits heap-backed limbs.
+  using Integer = boost::multiprecision::number<boost::multiprecision::cpp_int_backend<
+      1024, 1024, boost::multiprecision::signed_magnitude,
+      boost::multiprecision::unchecked, void>>;
+  const auto coefficient = [](const Parts& p) {
+    Integer value = 0;
+    for (unsigned i = 0; i < p.count; ++i) { value *= 10; value += p.digits[i]; }
+    if (p.negative) value = -value;
+    return value;
+  };
+  const auto power = [](unsigned exponent) {
+    Integer value = 1;
+    for (unsigned i = 0; i < exponent; ++i) value *= 10;
+    return value;
+  };
+  Integer numerator = coefficient(l), denominator = 1;
+  const Integer rhs = coefficient(r);
+  unsigned scale = l.scale;
+  if (operation == NumericOperation::add || operation == NumericOperation::subtract ||
+      operation == NumericOperation::compare) {
+    scale = std::max(l.scale, r.scale);
+    numerator *= power(scale - l.scale);
+    const Integer aligned_right = rhs * power(scale - r.scale);
+    if (operation == NumericOperation::compare) {
+      result.status = NumericStatusCode::ok;
+      result.comparison = numerator < aligned_right ? -1 : numerator > aligned_right ? 1 : 0;
+      return result;
+    }
+    if (operation == NumericOperation::add) numerator += aligned_right;
+    else numerator -= aligned_right;
+  } else if (operation == NumericOperation::multiply) {
+    numerator *= rhs; scale += r.scale;
+  } else if (operation == NumericOperation::divide) {
+    if (rhs == 0) { result.status = NumericStatusCode::divide_by_zero; return result; }
+    numerator *= power(r.scale + result_profile.scale);
+    denominator = rhs * power(l.scale);
+    scale = result_profile.scale;
+  }
+  if (scale < result_profile.scale) numerator *= power(result_profile.scale - scale);
+  else if (scale > result_profile.scale) denominator *= power(scale - result_profile.scale);
+  const bool negative = (numerator < 0) != (denominator < 0);
+  if (numerator < 0) numerator = -numerator;
+  if (denominator < 0) denominator = -denominator;
+  Integer quantized = numerator / denominator;
+  const Integer remainder = numerator % denominator;
+  result.inexact = remainder != 0;
+  // Retain the entire remainder, not just one guard digit: 0.2501 is not a
+  // half-even tie at scale 1, and recurring quotients must not become ties.
+  if (rounding != RoundingMode::truncate &&
+      (2 * remainder > denominator || (2 * remainder == denominator &&
+       (rounding == RoundingMode::half_up || (quantized & 1) != 0)))) ++quantized;
+  if (quantized >= power(result_profile.precision)) {
+    result.status = NumericStatusCode::overflow; return result;
+  }
+  scale = result_profile.scale;
+  if (quantized == 0) scale = 0;
+  else while (scale && quantized % 10 == 0) { quantized /= 10; --scale; }
+  auto digits_value = quantized;
+  unsigned digits = 1;
+  while (digits_value >= 10) { digits_value /= 10; ++digits; }
+  result.bytes[0] = static_cast<std::uint8_t>(scale | (negative && quantized != 0 ? 128 : 0));
+  result.bytes[1] = static_cast<std::uint8_t>(std::max(digits, scale));
+  unsigned groups = 0;
+  do {
+    const auto group = (quantized % 1000000000).convert_to<std::uint32_t>();
+    quantized /= 1000000000;
+    for (unsigned b = 0; b < 4; ++b)
+      result.bytes[4 + 4 * groups + b] = static_cast<std::uint8_t>(group >> (8*b));
+    ++groups;
+  } while (quantized != 0);
+  result.bytes[2] = static_cast<std::uint8_t>(groups);
+  result.size = result_profile.codec == ExactDecimalCodec::le24_v1 ? 24 : 40;
+  result.status = NumericStatusCode::ok;
+  return result;
 }
 Real64BinaryResult ExactDecimalUnitFractionToReal64(
     const std::uint8_t* bytes, std::size_t size,

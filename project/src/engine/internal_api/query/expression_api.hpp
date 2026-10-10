@@ -256,7 +256,8 @@ bool QowApplyCanonicalNumericScalarV1(
     const scratchbird::core::datatypes::DatatypeNumericContext& context,
     EngineTypedValue* output_value,
     std::string* refusal_detail,
-    scratchbird::core::datatypes::DatatypeNumericFacts* numeric_facts = nullptr);
+    scratchbird::core::datatypes::DatatypeNumericFacts* numeric_facts = nullptr,
+    int* comparison = nullptr);
 inline bool QowPredicateConsumerPassesV1(
     const EngineSqlTruthValue truth_value,
     const EnginePredicateConsumer consumer,

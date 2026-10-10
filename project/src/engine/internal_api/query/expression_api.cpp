@@ -307,6 +307,61 @@ bool QowBoundExecutionTypeDescriptorV1(
   return true;
 }
 
+bool AdmitDecimalArithmeticCodec(const EngineDescriptor& descriptor,
+                                const core::datatypes::DatatypeDecimalCodecBindingV1& binding,
+                                const engine::ExecutionTypeDescriptor& execution) {
+  CatalogColumnMetadata fields;
+  if (!DecodeCatalogColumnMetadata(descriptor.encoded_descriptor, &fields) ||
+      (!fields.identities.contains("decimal_codec_uuid") && !fields.identities.contains("codec_uuid")) ||
+      !fields.text.contains("precision") || !fields.text.contains("scale")) return false;
+  for (const auto& [name, identity] : fields.identities) {
+    if (name == "type_uuid" && identity == descriptor.type_uuid) continue;
+    if (name == "datatype_descriptor_uuid" && identity == descriptor.datatype_descriptor_uuid) continue;
+    if (name != "decimal_codec_uuid" && name != "codec_uuid") return false;
+    const auto key = name == "codec_uuid" ? "codec_generation" : "decimal_codec_generation";
+    if (identity != binding.codec_uuid || !fields.text.contains(key) ||
+        fields.text.at(key) != std::to_string(binding.generation)) return false;
+  }
+  for (const auto& [name, value] : fields.text) {
+    if (name == "precision" && value == std::to_string(execution.precision)) continue;
+    if (name == "scale" && value == std::to_string(execution.scale)) continue;
+    if (name == "nullability" && value == (execution.nullable_allowed ? "nullable" : "non_null")) continue;
+    if (name == "nullable" && value == (execution.nullable_allowed ? "true" : "false")) continue;
+    if ((name == "type" || name == "canonical" || name == "canonical_type") &&
+        value == descriptor.canonical_type_name) continue;
+    if (name == "datatype_descriptor_generation" &&
+        value == std::to_string(descriptor.datatype_descriptor_generation)) continue;
+    if ((name == "decimal_codec_generation" || name == "codec_generation") &&
+        value == "1" && fields.identities.contains(name == "codec_generation" ? "codec_uuid" : "decimal_codec_uuid")) continue;
+    if (name == "codec_version" && value == "1") continue;
+    if (name == "codec_id" && value == (execution.precision <= 38
+        ? "datatype.decimal.base1e9.le.v1" : "datatype.decimal.base1e9.le40.v1")) continue;
+    return false; // Never discard an unhandled semantic modifier or override.
+  }
+  return true;
+}
+
+bool AdmitDecimalComparisonResult(const EngineDescriptor& descriptor,
+                                  const engine::ExecutionTypeDescriptor& execution) {
+  CatalogColumnMetadata fields;
+  if (descriptor.canonical_type_name != "boolean" ||
+      !AdmitCatalogColumnMetadata(descriptor.encoded_descriptor, &fields)) return false;
+  for (const auto& [name, identity] : fields.identities) {
+    if (name == "type_uuid" && identity == descriptor.type_uuid) continue;
+    if (name == "datatype_descriptor_uuid" && identity == descriptor.datatype_descriptor_uuid) continue;
+    return false;
+  }
+  for (const auto& [name, value] : fields.text) {
+    if (name == "nullability" && value == (execution.nullable_allowed ? "nullable" : "non_null")) continue;
+    if (name == "nullable" && value == (execution.nullable_allowed ? "true" : "false")) continue;
+    if ((name == "type" || name == "canonical" || name == "canonical_type") && value == "boolean") continue;
+    if (name == "datatype_descriptor_generation" &&
+        value == std::to_string(descriptor.datatype_descriptor_generation)) continue;
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 }  // namespace scratchbird::engine::internal_api
 
@@ -1052,9 +1107,11 @@ bool QowApplyCanonicalNumericScalarV1(
     const scratchbird::core::datatypes::DatatypeNumericContext& context,
     EngineTypedValue* output_value,
     std::string* refusal_detail,
-    scratchbird::core::datatypes::DatatypeNumericFacts* numeric_facts) {
+    scratchbird::core::datatypes::DatatypeNumericFacts* numeric_facts,
+    int* comparison) {
   namespace dt = scratchbird::core::datatypes;
   if (output_value == nullptr || refusal_detail == nullptr) return false;
+  if (comparison) *comparison = 0;
   struct UnwindPublication {
     EngineTypedValue* output;
     int exceptions=std::uncaught_exceptions();
@@ -1069,7 +1126,7 @@ bool QowApplyCanonicalNumericScalarV1(
     const auto right = right_value;
     const auto descriptor = result_descriptor;
     return QowApplyCanonicalNumericScalarV1(left, right, descriptor, operation,
-        context, output_value, refusal_detail, numeric_facts);
+        context, output_value, refusal_detail, numeric_facts, comparison);
   }
   const bool binary_operation =
       operation != dt::DatatypeNumericOperationKind::canonicalize;
@@ -1122,6 +1179,57 @@ bool QowApplyCanonicalNumericScalarV1(
   }
   const bool left_is_null = left_value.isSqlNull();
   const bool right_is_null = binary_operation && right_value.isSqlNull();
+  if (left_type == dt::CanonicalTypeId::decimal) {
+    dt::DatatypeNumericOperationRequest request;
+    request.operation = operation;
+    request.type_id = dt::CanonicalTypeId::decimal;
+    request.left = {left_type, {}, left_is_null, left_descriptor};
+    request.right = {right_type, {}, right_is_null, right_descriptor};
+    request.result_descriptor = output_descriptor;
+    request.context = context;
+    const auto retained_descriptor = result_descriptor;
+    const bool encoded = ScalarCastInputEncoding(left_value, left_type, &request.left.encoded_value) &&
+        (!binary_operation || ScalarCastInputEncoding(right_value, right_type, &request.right.encoded_value));
+    *output_value = {};
+    output_value->state = EngineValueState::error;
+    if (numeric_facts) *numeric_facts = {};
+    if (!encoded) {
+      *refusal_detail = "NUMERIC.ENCODING.NONCANONICAL";
+      if (numeric_facts) numeric_facts->invalid = true;
+      return false;
+    }
+    if (!dt::ResolveExactDecimalArithmeticBindingV1(request, &request.decimal_arithmetic)) {
+      *refusal_detail = "DATATYPE.DESCRIPTOR.INVALID";
+      if (numeric_facts) numeric_facts->invalid = true;
+      return false;
+    }
+    if (!AdmitDecimalArithmeticCodec(left_value.descriptor, request.decimal_arithmetic.left, left_descriptor) ||
+        (binary_operation && !AdmitDecimalArithmeticCodec(right_value.descriptor,
+            request.decimal_arithmetic.right, right_descriptor)) ||
+        (operation == dt::DatatypeNumericOperationKind::compare
+         ? !AdmitDecimalComparisonResult(retained_descriptor, output_descriptor)
+         : !AdmitDecimalArithmeticCodec(retained_descriptor, request.decimal_arithmetic.result, output_descriptor))) {
+      *refusal_detail = "DATATYPE.DESCRIPTOR.INVALID:decimal_codec_binding_invalid";
+      if (numeric_facts) numeric_facts->invalid = true;
+      return false;
+    }
+    const auto result = dt::ApplyNumericOperation(request);
+    if (numeric_facts) *numeric_facts = result.numeric_facts;
+    if (!result.ok()) {
+      *refusal_detail = result.diagnostic.diagnostic_code;
+      for (const auto& argument : result.diagnostic.arguments) {
+        if (argument.key == "detail" && argument.text() && !argument.text()->empty()) {
+          refusal_detail->append(":").append(*argument.text());
+          break;
+        }
+      }
+      return false;
+    }
+    PublishScalarCastValue(result.value, retained_descriptor, output_value);
+    if (comparison) *comparison = result.comparison;
+    refusal_detail->clear();
+    return true;
+  }
   if (left_is_null || right_is_null) {
     *output_value = {};
     output_value->state = EngineValueState::error;
@@ -4027,6 +4135,14 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
               &bound_precision) &&
           QowCanonicalDescriptorU32FieldV1(
               result_descriptor.encoded_descriptor, "scale", &bound_scale)) {
+        if (canonical_result_type == dt::CanonicalTypeId::decimal &&
+            (numeric_request.context.precision != bound_precision ||
+             numeric_request.context.scale != bound_scale)) {
+          return ApiFailure<EngineApplyNumericOperationResult>(request.context,
+              "query.apply_numeric_operation", MakeEngineApiDiagnostic(
+                  "SB_DATATYPE_NUMERIC_OPERATION_REJECTED",
+                  "engine.query.typed_scalar_numeric_refused", "decimal_result_context_invalid"));
+        }
         numeric_request.context.precision = bound_precision;
         numeric_request.context.scale = bound_scale;
       }
@@ -4050,7 +4166,8 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
                 "SQL NULL contradicts a bound numeric descriptor"));
       }
     }
-    if (operation == dt::DatatypeNumericOperationKind::compare) {
+    if (operation == dt::DatatypeNumericOperationKind::compare &&
+        numeric_request.type_id != dt::CanonicalTypeId::decimal) {
       int comparison = 0;
       std::string refusal_detail;
       const auto left_comparison_type = dt::CanonicalTypeIdFromStableName(
@@ -4117,9 +4234,10 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
     EngineTypedValue output;
     std::string refusal_detail;
     dt::DatatypeNumericFacts numeric_facts;
+    int comparison = 0;
     if (!QowApplyCanonicalNumericScalarV1(
             left, right, result_descriptor, operation, numeric_request.context,
-            &output, &refusal_detail, &numeric_facts)) {
+            &output, &refusal_detail, &numeric_facts, &comparison)) {
       const bool overflow_refusal =
           refusal_detail.find("overflow") != std::string::npos ||
           refusal_detail.find("out_of_range") != std::string::npos;
@@ -4127,8 +4245,10 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
       const std::string diagnostic_code =
           refusal_detail.rfind("DATATYPE.", 0) == 0
               ? refusal_detail.substr(0, separator)
+              : refusal_detail.starts_with("SB_DATATYPE_NUMERIC_OPERATION_REJECTED")
+                    ? refusal_detail.substr(0, separator)
               : refusal_detail.rfind("NUMERIC.", 0) == 0
-                    ? refusal_detail
+                    ? refusal_detail.substr(0, separator)
                     : overflow_refusal
                           ? "QOW-DIAG-QRY-008-OVERFLOW-REFUSAL-V1"
                           : "QOW-DIAG-QRY-008-NUMERIC-REFUSAL-V1";
@@ -4138,7 +4258,7 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
           MakeEngineApiDiagnostic(
               diagnostic_code,
               "engine.query.typed_scalar_numeric_refused",
-              refusal_detail));
+              separator == std::string::npos ? refusal_detail : refusal_detail.substr(separator + 1)));
       failure.numeric_facts = numeric_facts;
       failure.value.setState(EngineValueState::error);
       return failure;
@@ -4146,6 +4266,7 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
     auto result = ApiSuccess<EngineApplyNumericOperationResult>(
         request.context, "query.apply_numeric_operation");
     result.numeric_facts = numeric_facts;
+    result.comparison = comparison;
     result.value = std::move(output);
     result.result_shape.result_kind = "typed_value";
     result.result_shape.columns.push_back(result.value.descriptor);

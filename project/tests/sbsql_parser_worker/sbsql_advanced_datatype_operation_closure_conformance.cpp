@@ -9,6 +9,8 @@
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/catalog_column_binding_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
+#include "sbl_numeric.hpp"
 #include "crud_support/crud_store.hpp"
 #include "catalog/datatype_bootstrap_identity.hpp"
 #include "datatype_catalog_manifest.hpp"
@@ -25,7 +27,6 @@
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
-#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -54,46 +55,7 @@ constexpr std::string_view kSblrRegistryUuid = "019f0000-0000-7000-8000-00000008
 void Require(bool condition, std::string_view message) {
   if (!condition) {
     std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
-  }
-}
-
-std::uint64_t CurrentUnixMillis() {
-  return static_cast<std::uint64_t>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::system_clock::now().time_since_epoch())
-          .count());
-}
-
-std::filesystem::path TestDatabasePath() {
-  return std::filesystem::temp_directory_path() /
-         ("sbsql_advanced_datatype_operation_closure_" +
-          std::to_string(CurrentUnixMillis()) + ".sbdb");
-}
-
-void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-  for (const auto suffix : {".sb.api_events",
-                            ".sb.api_events.v2",
-                            ".sb.catalog_object_events",
-                            ".sb.crud_events",
-                            ".sb.domain_events",
-                            ".sb.name_events",
-                            ".sb.name_events.v2",
-                            ".sb.txn_publish",
-                            ".sb.mga_event_sequence_allocator",
-                            ".sb.transaction_inventory",
-                            ".sb.mga_row_versions",
-                            ".sb.mga_relation_metadata",
-                            ".sb.mga_index_entries",
-                            ".sb.mga_relation_descriptors",
-                            ".sb.mga_large_values",
-                            ".sb.mga_savepoints",
-                            ".dirty.manifest",
-                            ".recovery.evidence",
-                            ".sb.owner.lock"}) {
-    std::filesystem::remove(path.string() + suffix, ignored);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -184,6 +146,16 @@ api::EngineDescriptor BoundScalarDescriptor(
   descriptor.datatype_descriptor_uuid = datatype.descriptor_uuid.value;
   descriptor.datatype_descriptor_generation = datatype.descriptor_epoch;
   descriptor.encoded_descriptor = std::move(encoded_descriptor);
+  if (type == "decimal") {
+    api::CatalogColumnMetadata fields;
+    Require(api::AdmitCatalogColumnMetadata(descriptor.encoded_descriptor, &fields),
+            "decimal fixture metadata invalid");
+    fields.identities["decimal_codec_uuid"] = {{0x01,0xa1,0x18,0x6b,0xdf,0x04,0x76,0x0a,
+        0xa3,0xd5,0xd0,0x2d,0x2e,0xe3,0x01,0x54}};
+    fields.text["decimal_codec_generation"] = "1";
+    Require(api::EncodeCatalogColumnMetadata(fields, &descriptor.encoded_descriptor),
+            "decimal fixture binary codec binding failed");
+  }
   return descriptor;
 }
 
@@ -208,6 +180,14 @@ scratchbird::engine::ExecutionTypeDescriptor CoreExecutionDescriptor(
 
 api::EngineTypedValue TypedValue(std::string type, std::string encoded) {
   api::EngineTypedValue value;
+  if (type == "decimal") {
+    const auto native = scratchbird::libraries::sbl_numeric::EncodeBoundExactDecimal(encoded,
+        {scratchbird::libraries::sbl_numeric::ExactDecimalCodec::le24_v1,38,2});
+    Require(native.ok(), "decimal fixture literal invalid");
+    value.descriptor = BoundScalarDescriptor("decimal",10,"precision=38;scale=2;nullability=nullable");
+    value.encoded_value.assign(native.bytes.begin(),native.bytes.end());
+    return value;
+  }
   value.descriptor = Descriptor(std::move(type));
   value.encoded_value = std::move(encoded);
   value.is_null = false;
@@ -321,10 +301,17 @@ void RequireNumericOperations(const api::EngineRequestContext& context) {
       request.left_value = TypedValue("decimal", "10");
       request.right_value = TypedValue("decimal", "2");
       request.descriptors.push_back(
-          Descriptor(operation == "cmp" ? "boolean" : "decimal"));
+          operation == "cmp" ? BoundScalarDescriptor("boolean",11) :
+          BoundScalarDescriptor("decimal",12,"precision=38;scale=2;nullability=nullable"));
       const auto result = api::EngineApplyNumericOperation(request);
       if (!result.ok) { std::cerr << operation << '/' << rounding << ':' << FirstDetail(result) << '\n'; }
       Require(result.ok, "supported numeric operation or rounding mode refused");
+      const auto expected = operation == "cmp" ? std::string("false") :
+          TypedValue("decimal", operation == "add" ? "12" : operation == "sub" ? "8" :
+              operation == "mul" ? "20" : operation == "div" ? "5" : "10").encoded_value;
+      Require(result.value.encoded_value == expected && !result.value.isSqlNull() &&
+                  !result.numeric_facts.inexact && (operation != "cmp" || result.comparison == 1),
+              "native decimal operation did not publish its exact result");
       Require(HasEvidence(result, "datatype_numeric_operation",
                           operation == "sub" ? "subtract" :
                           operation == "mul" ? "multiply" :
@@ -363,7 +350,7 @@ void RequireNullConsumerContracts(const api::EngineRequestContext& context) {
   null_decimal.setState(api::EngineValueState::sql_null);
   api::EngineTypedValue decimal_one;
   decimal_one.descriptor = decimal;
-  decimal_one.encoded_value = "1.00";
+  decimal_one.encoded_value = TypedValue("decimal","1.00").encoded_value;
 
   api::EngineApplyNumericOperationRequest numeric;
   numeric.context = context;
@@ -1262,7 +1249,7 @@ void RequireDescriptorRuntimeDatatypeSlice() {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
   auto memory_policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
   memory_policy.policy_name = "advanced_datatype_fixture";
   Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
@@ -1286,11 +1273,14 @@ int main(int argc, char** argv) {
   RequireSblrCollectionVectorSpecializedOperators();
   RequireDescriptorRuntimeDatatypeSlice();
 
-  const auto path = TestDatabasePath();
-  RemoveDatabaseArtifacts(path);
+  scratchbird::tests::OwnedTempDirectory temporary;
+  const auto path = temporary.path() / "advanced.sbdb";
   const auto context = BeginTransaction(EngineContext(path, CreateFixtureDatabase(path)));
   CreateSchema(context);
   RequireAdvancedIndexDDL(context);
-  RemoveDatabaseArtifacts(path);
+  temporary.Cleanup();
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

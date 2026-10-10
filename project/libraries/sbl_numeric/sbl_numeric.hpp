@@ -218,6 +218,26 @@ enum class ExactDecimalError : std::uint8_t {
 };
 const char* ExactDecimalErrorName(ExactDecimalError error) noexcept;
 bool ExactDecimalProfileValid(const ExactDecimalProfile& profile) noexcept;
+struct ExactDecimalOperand {
+  const std::uint8_t* bytes = nullptr;
+  std::size_t size = 0;
+  ExactDecimalProfile profile;
+};
+struct ExactDecimalArithmeticResult {
+  NumericStatusCode status = NumericStatusCode::invalid_context;
+  std::array<std::uint8_t, 40> bytes{};
+  std::size_t size = 0;
+  int comparison = 0;
+  bool inexact = false;
+};
+// Finite exact arithmetic, with one rounding to the declared result quantum.
+// Fixed stack scratch; no text, heap, host floating point or ABI-wide integer.
+// Failure returns zero size/bytes. NULL and catalog/profile authority belong
+// to the admitting owner. Comparison validates but does not round its inputs.
+ExactDecimalArithmeticResult ApplyExactDecimalArithmetic(
+    NumericOperation operation, ExactDecimalOperand left,
+    ExactDecimalOperand right, ExactDecimalProfile result,
+    RoundingMode rounding = RoundingMode::half_even) noexcept;
 // Quantile coordinate consumption, not a general SQL cast. Validate the exact
 // decimal against its declared profile and [0,1] before rounding once to
 // binary64, round-to-nearest ties-to-even. No text or host floating arithmetic;

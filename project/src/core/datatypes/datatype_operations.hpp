@@ -173,6 +173,17 @@ struct DatatypeSetOperationResult {
   }
 };
 
+struct DatatypeDecimalCodecBindingV1 {
+  platform::Uuid codec_uuid{};
+  u64 generation = 0;
+  bool operator==(const DatatypeDecimalCodecBindingV1&) const = default;
+};
+struct DatatypeDecimalArithmeticBindingV1 {
+  platform::Uuid policy_uuid{};
+  u64 generation = 0;
+  DatatypeDecimalCodecBindingV1 left, right, result;
+  bool operator==(const DatatypeDecimalArithmeticBindingV1&) const = default;
+};
 struct DatatypeNumericOperationRequest {
   DatatypeNumericOperationKind operation = DatatypeNumericOperationKind::canonicalize;
   CanonicalTypeId type_id = CanonicalTypeId::decimal;
@@ -180,7 +191,13 @@ struct DatatypeNumericOperationRequest {
   DatatypeOperationValue right;
   DatatypeNumericContext context;
   scratchbird::engine::ExecutionTypeDescriptor result_descriptor;
+  DatatypeDecimalArithmeticBindingV1 decimal_arithmetic;
 };
+
+// Resolve the exact current base descriptors and explicit codec/policy tuple.
+// Revalidated at execution; not owning catalog/security/domain admission.
+bool ResolveExactDecimalArithmeticBindingV1(const DatatypeNumericOperationRequest& request,
+                                          DatatypeDecimalArithmeticBindingV1* binding);
 
 struct DatatypeNumericOperationResult {
   Status status;

@@ -5277,8 +5277,151 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
   return SetFailure("unknown_set_operation");
 }
 
+bool ResolveExactDecimalArithmeticBindingV1(const DatatypeNumericOperationRequest& request,
+                                           DatatypeDecimalArithmeticBindingV1* binding) {
+  if (!binding) return false;
+  *binding = {};
+  const auto bind = [](const ExecutionTypeDescriptor& descriptor,
+                       DatatypeDecimalCodecBindingV1* output) {
+    DatatypeSortKeyRequest resolved;
+    if (!BindExactDecimalSortKeyProfile(descriptor, &resolved)) return false;
+    *output = {resolved.decimal_codec_uuid, resolved.decimal_codec_generation};
+    return true;
+  };
+  DatatypeDecimalArithmeticBindingV1 resolved;
+  if (request.type_id != CanonicalTypeId::decimal ||
+      request.left.type_id != CanonicalTypeId::decimal ||
+      !bind(request.left.descriptor, &resolved.left)) return false;
+  switch (request.operation) {
+    case DatatypeNumericOperationKind::canonicalize: break;
+    case DatatypeNumericOperationKind::add: case DatatypeNumericOperationKind::subtract:
+    case DatatypeNumericOperationKind::multiply: case DatatypeNumericOperationKind::divide:
+    case DatatypeNumericOperationKind::compare:
+      if (request.right.type_id != CanonicalTypeId::decimal ||
+          !bind(request.right.descriptor, &resolved.right)) return false;
+      break;
+    default: return false;
+  }
+  if (request.operation == DatatypeNumericOperationKind::compare) {
+    if (!ExecutionDescriptorExactlyMatchesCurrentBuiltinIgnoringNullability(
+            request.result_descriptor, CanonicalTypeId::boolean)) return false;
+  } else if (!bind(request.result_descriptor, &resolved.result)) return false;
+  resolved.policy_uuid = {{0x01,0xa1,0x27,0x6e,0x99,0x1f,0x72,0xd8,
+                           0xab,0x94,0x49,0x7a,0xba,0x86,0x5d,0xd1}};
+  resolved.generation = 1;
+  *binding = resolved;
+  return true;
+}
+
+namespace {
+DatatypeNumericOperationResult ApplyBoundExactDecimalNumeric(
+    const DatatypeNumericOperationRequest& request) try {
+  namespace numeric = scratchbird::libraries::sbl_numeric;
+  const auto invalid = [](const char* code, const char* detail) {
+    auto result = NumericFailure(detail, code);
+    result.numeric_facts.invalid = true;
+    return result;
+  };
+  DatatypeDecimalArithmeticBindingV1 expected;
+  switch (request.operation) {
+    case DatatypeNumericOperationKind::canonicalize: case DatatypeNumericOperationKind::add:
+    case DatatypeNumericOperationKind::subtract: case DatatypeNumericOperationKind::multiply:
+    case DatatypeNumericOperationKind::divide: case DatatypeNumericOperationKind::compare: break;
+    default: return invalid("SB_DATATYPE_NUMERIC_OPERATION_REJECTED", "decimal_operation_invalid");
+  }
+  if (!ResolveExactDecimalArithmeticBindingV1(request, &expected) ||
+      expected != request.decimal_arithmetic)
+    return invalid("DATATYPE.DESCRIPTOR.INVALID", "decimal_arithmetic_binding_invalid");
+  const bool binary = request.operation != DatatypeNumericOperationKind::canonicalize;
+  const bool compare = request.operation == DatatypeNumericOperationKind::compare;
+  const auto profile = [](const ExecutionTypeDescriptor& d) {
+    return numeric::ExactDecimalProfile{d.precision <= 38
+        ? numeric::ExactDecimalCodec::le24_v1 : numeric::ExactDecimalCodec::le40_v1,
+        d.precision, d.scale};
+  };
+  const auto payload_valid = [&](const DatatypeOperationValue& value) {
+    return numeric::ValidateExactDecimal(
+        reinterpret_cast<const std::uint8_t*>(value.encoded_value.data()),
+        value.encoded_value.size(), profile(value.descriptor)) == numeric::ExactDecimalError::none;
+  };
+  if ((request.left.is_null && !request.left.encoded_value.empty()) ||
+      (binary && request.right.is_null && !request.right.encoded_value.empty()))
+    return invalid("DATATYPE.NULL_STATE.INVALID", "decimal_null_payload_invalid");
+  if ((request.left.is_null && !request.left.descriptor.nullable_allowed) ||
+      (binary && request.right.is_null && !request.right.descriptor.nullable_allowed) ||
+      ((request.left.is_null || (binary && request.right.is_null)) &&
+       !request.result_descriptor.nullable_allowed))
+    return invalid("DATATYPE.NULL_NOT_ADMITTED", "decimal_null_not_admitted");
+  if ((!request.left.is_null && !payload_valid(request.left)) ||
+      (binary && !request.right.is_null && !payload_valid(request.right)))
+    return invalid("NUMERIC.ENCODING.NONCANONICAL", "decimal_operand_encoding_invalid");
+  numeric::RoundingMode rounding;
+  switch (request.context.rounding) {
+    case DatatypeRoundingMode::half_even: rounding = numeric::RoundingMode::half_even; break;
+    case DatatypeRoundingMode::half_up: rounding = numeric::RoundingMode::half_up; break;
+    case DatatypeRoundingMode::truncate: rounding = numeric::RoundingMode::truncate; break;
+    default: return invalid("SB_DATATYPE_NUMERIC_OPERATION_REJECTED", "decimal_rounding_invalid");
+  }
+  if (request.context.allow_special_values || (!compare &&
+      (request.context.precision != request.result_descriptor.precision ||
+       request.context.scale != request.result_descriptor.scale)))
+    return invalid("SB_DATATYPE_NUMERIC_OPERATION_REJECTED", "decimal_result_context_invalid");
+  DatatypeNumericOperationResult result;
+  result.status = OkStatus();
+  result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  result.value.type_id = compare ? CanonicalTypeId::boolean : CanonicalTypeId::decimal;
+  result.value.descriptor = request.result_descriptor;
+  if (request.left.is_null || (binary && request.right.is_null)) {
+    result.value.is_null = true;
+    return result;
+  }
+  numeric::NumericOperation operation;
+  switch (request.operation) {
+    case DatatypeNumericOperationKind::canonicalize: operation = numeric::NumericOperation::canonicalize; break;
+    case DatatypeNumericOperationKind::add: operation = numeric::NumericOperation::add; break;
+    case DatatypeNumericOperationKind::subtract: operation = numeric::NumericOperation::subtract; break;
+    case DatatypeNumericOperationKind::multiply: operation = numeric::NumericOperation::multiply; break;
+    case DatatypeNumericOperationKind::divide: operation = numeric::NumericOperation::divide; break;
+    case DatatypeNumericOperationKind::compare: operation = numeric::NumericOperation::compare; break;
+    default: return invalid("SB_DATATYPE_NUMERIC_OPERATION_REJECTED", "decimal_operation_invalid");
+  }
+  const auto operand = [&](const DatatypeOperationValue& value) {
+    return numeric::ExactDecimalOperand{
+        reinterpret_cast<const std::uint8_t*>(value.encoded_value.data()),
+        value.encoded_value.size(), profile(value.descriptor)};
+  };
+  const auto computed = numeric::ApplyExactDecimalArithmetic(operation, operand(request.left),
+      binary ? operand(request.right) : numeric::ExactDecimalOperand{},
+      profile(compare ? request.left.descriptor : request.result_descriptor), rounding);
+  if (computed.status != numeric::NumericStatusCode::ok) {
+    auto failure = NumericFailure(computed.status == numeric::NumericStatusCode::overflow
+        ? "decimal_result_overflow" : computed.status == numeric::NumericStatusCode::divide_by_zero
+        ? "decimal_divide_by_zero" : "decimal_arithmetic_invalid");
+    failure.numeric_facts.inexact = computed.inexact;
+    failure.numeric_facts.overflow = computed.status == numeric::NumericStatusCode::overflow;
+    failure.numeric_facts.divide_by_zero = computed.status == numeric::NumericStatusCode::divide_by_zero;
+    failure.numeric_facts.invalid = !failure.numeric_facts.overflow && !failure.numeric_facts.divide_by_zero;
+    return failure;
+  }
+  result.numeric_facts.inexact = computed.inexact;
+  result.comparison = computed.comparison;
+  result.value.encoded_value = compare ? std::string(1, computed.comparison == 0 ? '\1' : '\0')
+      : std::string(reinterpret_cast<const char*>(computed.bytes.data()), computed.size);
+  return result;
+} catch (const std::bad_alloc&) {
+  DatatypeNumericOperationResult result;
+  result.status = ResourceErrorStatus();
+  result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
+      "DATATYPE.RESOURCE_EXHAUSTED", "datatype.numeric_operation.rejected", "decimal_result_allocation_failed");
+  return result;
+}
+}  // namespace
+
 DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperationRequest& request) {
   namespace numeric = scratchbird::libraries::sbl_numeric;
+
+  if (request.decimal_arithmetic != DatatypeDecimalArithmeticBindingV1{})
+    return ApplyBoundExactDecimalNumeric(request);
 
   const auto invalid_request = [&](std::string detail,
                                    const char* diagnostic_code = nullptr) {
