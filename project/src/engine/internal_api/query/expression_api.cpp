@@ -37,6 +37,7 @@
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "datatype_advanced_family.hpp"
+#include "datatype_date.hpp"
 #include "datatype_document.hpp"
 #include "domain_support/domain_store.hpp"
 #include "transaction/transaction_api.hpp"
@@ -3677,7 +3678,144 @@ EngineCompareCanonicalScalarValuesResult EngineCompareCanonicalScalarValues(
   return result;
 }
 
-EngineExtractValueResult EngineExtractValue(const EngineExtractValueRequest& request) {
+namespace {
+EngineExtractValueResult ExtractNativeDate(const EngineExtractValueRequest& request,
+                                         const EngineTypedValue& input,
+                                         const std::string& field) try {
+  const auto refuse = [&](const std::string& code, const std::string& detail) {
+    auto result = ApiFailure<EngineExtractValueResult>(request.context, "query.extract_value",
+        MakeEngineApiDiagnostic(code, "engine.query.date_extract_refused", detail));
+    result.value.setState(EngineValueState::error);
+    return result;
+  };
+  if (request.descriptors.size() != 1)
+    return refuse("DATATYPE.DESCRIPTOR.INVALID", "date_extract_result_binding_required");
+  const auto output = request.descriptors.front();
+  const auto identity = dt::LookupDatatypeTypeCodecIdentityV3(
+      request.context.datatype_catalog_snapshot_uuid, request.context.datatype_catalog_generation,
+      request.context.datatype_registry_generation, input.descriptor.datatype_descriptor_uuid,
+      input.descriptor.datatype_descriptor_generation);
+  if (!identity.ok && identity.diagnostic_id == "RESOURCE.BUDGET_EXCEEDED")
+    return refuse("RESOURCE.BUDGET_EXCEEDED", "date_extract_identity_allocation_failed");
+  if (!identity.ok ||
+      identity.row.legacy_fields.type_uuid != input.descriptor.type_uuid)
+    return refuse("CTI.TEMPORAL.DESCRIPTOR_INVALID", "date_extract_exact_cohort_required");
+  const auto result_identity = dt::LookupDatatypeTypeCodecIdentityV3(
+      request.context.datatype_catalog_snapshot_uuid, request.context.datatype_catalog_generation,
+      request.context.datatype_registry_generation, output.datatype_descriptor_uuid,
+      output.datatype_descriptor_generation);
+  if (!result_identity.ok && result_identity.diagnostic_id == "RESOURCE.BUDGET_EXCEEDED")
+    return refuse("RESOURCE.BUDGET_EXCEEDED", "date_extract_result_identity_allocation_failed");
+  if (!result_identity.ok || result_identity.row.legacy_fields.type_uuid != output.type_uuid ||
+      result_identity.row.legacy_fields.canonical_binary_type_code !=
+          static_cast<std::uint32_t>(dt::CanonicalTypeId::int32))
+    return refuse("DATATYPE.DESCRIPTOR.INVALID", "date_extract_result_cohort_invalid");
+  engine::ExecutionTypeDescriptor source_execution, result_execution;
+  std::string detail;
+  if (!QowBoundExecutionTypeDescriptorV1(input.descriptor, dt::CanonicalTypeId::date,
+          &source_execution, &detail) ||
+      !dt::ValidateDateExecutionDescriptorV3(source_execution, identity.row).ok())
+    return refuse("CTI.TEMPORAL.DESCRIPTOR_INVALID", "date_extract_descriptor_invalid");
+  if (output.canonical_type_name != "int32" || !output.charset_uuid.is_nil() ||
+      !output.collation_uuid.is_nil() ||
+      !QowBoundExecutionTypeDescriptorV1(output, dt::CanonicalTypeId::int32,
+          &result_execution, &detail))
+    return refuse("DATATYPE.DESCRIPTOR.INVALID", "date_extract_result_descriptor_invalid");
+  // Do not let the generic descriptor projection discard codec, domain or
+  // other semantic modifiers. Names remain labels, never codec authority.
+  const auto metadata_valid = [&](const EngineDescriptor& descriptor, bool date,
+                                   const engine::ExecutionTypeDescriptor& execution) {
+    CatalogColumnMetadata fields;
+    if (!(date ? DecodeCatalogColumnMetadata(descriptor.encoded_descriptor, &fields)
+               : AdmitCatalogColumnMetadata(descriptor.encoded_descriptor, &fields))) return false;
+    if (date && (!fields.identities.contains("codec_uuid") ||
+                 !fields.text.contains("codec_generation"))) return false;
+    for (const auto& [name, uuid] : fields.identities) {
+      if (name == "type_uuid" && uuid == descriptor.type_uuid) continue;
+      if (name == "datatype_descriptor_uuid" && uuid == descriptor.datatype_descriptor_uuid) continue;
+      if (date && name == "codec_uuid" && uuid == identity.row.legacy_fields.codec_uuid) continue;
+      return false;
+    }
+    for (const auto& [name, value] : fields.text) {
+      if (name == "nullability" && value == (execution.nullable_allowed ? "nullable" : "non_null")) continue;
+      if (name == "nullable" && value == (execution.nullable_allowed ? "true" : "false")) continue;
+      if ((name == "canonical_type" || name == "type" || name == "canonical") &&
+          value == descriptor.canonical_type_name) continue;
+      if (name == "datatype_descriptor_generation" &&
+          value == std::to_string(descriptor.datatype_descriptor_generation)) continue;
+      if (date && name == "codec_generation" &&
+          value == std::to_string(identity.row.legacy_fields.codec_generation)) continue;
+      if (date && name == "codec_version" &&
+          value == std::to_string(identity.row.legacy_fields.codec_version)) continue;
+      if (date && name == "codec_id" && value == identity.row.legacy_fields.codec_id) continue;
+      return false;
+    }
+    return true;
+  };
+  if (!metadata_valid(input.descriptor, true, source_execution))
+    return refuse("CTI.TEMPORAL.DESCRIPTOR_INVALID", "date_extract_metadata_invalid");
+  if (!metadata_valid(output, false, result_execution))
+    return refuse("DATATYPE.DESCRIPTOR.INVALID", "date_extract_result_metadata_invalid");
+  const auto& row = identity.row.legacy_fields;
+  // The datatype receipt pins representation only; it is not an engine
+  // statement receipt and must never grant catalog or transaction authority.
+  const auto profile = dt::BuildDateValidatedProfileHandleV3(
+      {row.catalog_snapshot_uuid, row.catalog_snapshot_uuid,
+       row.catalog_generation, row.registry_generation}, identity.row);
+  if (!profile.ok()) return refuse(std::string(profile.diagnostic.diagnostic_code),
+                                   std::string(profile.diagnostic.detail));
+  if (!((input.state == EngineValueState::value && !input.is_null) ||
+        (input.state == EngineValueState::sql_null && input.is_null &&
+         input.encoded_value.empty() && input.binary_value.empty())))
+    return refuse("DATATYPE.NULL_STATE.INVALID", "date_extract_operand_state_invalid");
+  if (!input.encoded_value.empty())
+    return refuse("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID", "date_extract_requires_native_component");
+  const auto value = dt::DecodeCanonicalDateComponentNoAllocV3(profile.profile,
+      input.isSqlNull() ? dt::DateValueStateV3::sql_null : dt::DateValueStateV3::value,
+      source_execution.nullable_allowed, input.binary_value);
+  if (!value.ok()) return refuse(std::string(value.diagnostic.diagnostic_code),
+                                 std::string(value.diagnostic.detail));
+  const auto key = LowerValue(field);
+  if (key != "year" && key != "yyyy" && key != "month" && key != "mm" &&
+      key != "day" && key != "dd")
+    return refuse("CTI.TEMPORAL.OPERATION_REFUSED", "date_extract_field_unsupported");
+  if (input.isSqlNull() && !result_execution.nullable_allowed)
+    return refuse("DATATYPE.NULL_NOT_ADMITTED", "date_extract_result_nonnullable");
+  const auto cancellation = request.context.query_cancellation_requested;
+  const auto cancelled = [&]() {
+    try { return cancellation && cancellation(); }
+    catch (...) { return true; }
+  };
+  const auto civil = dt::DecomposeDateCivilV3(value.value, source_execution.nullable_allowed);
+  if (!civil.ok()) return refuse(std::string(civil.diagnostic.diagnostic_code),
+                                 std::string(civil.diagnostic.detail));
+  dt::DatatypeOperationValue result_value;
+  result_value.type_id = dt::CanonicalTypeId::int32;
+  result_value.descriptor = result_execution;
+  result_value.is_null = civil.is_null;
+  if (!civil.is_null) {
+    const std::int64_t fact = (key == "year" || key == "yyyy") ? civil.civil.year
+        : (key == "month" || key == "mm") ? civil.civil.month : civil.civil.day;
+    if (!dt::EncodeCanonicalInt32Value(fact, &result_value.encoded_value))
+      return refuse("CTI.TEMPORAL.RANGE_EXCEEDED", "date_extract_result_range_invalid");
+  }
+  auto result = ApiSuccess<EngineExtractValueResult>(request.context, "query.extract_value");
+  PublishScalarCastValue(result_value, output, &result.value);
+  result.result_shape.result_kind = "typed_value";
+  result.result_shape.columns.push_back(output);
+  result.evidence.push_back({"datatype_extract", field});
+  if (cancelled()) return refuse("PROCESS.CANCELLED", "date_extract_before_publication");
+  return result;
+} catch (const std::bad_alloc&) {
+  auto result = ApiFailure<EngineExtractValueResult>(request.context, "query.extract_value",
+      MakeEngineApiDiagnostic("DATATYPE.RESOURCE_EXHAUSTED",
+          "engine.query.date_extract_refused", "date_extract_result_allocation_failed"));
+  result.value.setState(EngineValueState::error);
+  return result;
+}
+}  // namespace
+
+EngineExtractValueResult EngineExtractValue(const EngineExtractValueRequest& request) try {
   const EngineTypedValue input = RequestInputValue(request, request.input_value);
   const std::string field = !request.field.empty() ? request.field : OptionValue(request, "field:");
   if (field.empty()) {
@@ -3686,6 +3824,8 @@ EngineExtractValueResult EngineExtractValue(const EngineExtractValueRequest& req
         "query.extract_value",
         MakeInvalidRequestDiagnostic("query.extract_value", "extract_field_required"));
   }
+  if (TypeFromDescriptor(input.descriptor) == dt::CanonicalTypeId::date)
+    return ExtractNativeDate(request, input, field);
   dt::DatatypeExtractRequest extract_request;
   extract_request.value.type_id = TypeFromDescriptor(input.descriptor);
   extract_request.value.encoded_value = input.encoded_value;
@@ -3773,6 +3913,12 @@ EngineExtractValueResult EngineExtractValue(const EngineExtractValueRequest& req
   result.result_shape.result_kind = "typed_value";
   result.result_shape.columns.push_back(result.value.descriptor);
   result.evidence.push_back({"datatype_extract", field});
+  return result;
+} catch (const std::bad_alloc&) {
+  auto result = ApiFailure<EngineExtractValueResult>(request.context, "query.extract_value",
+      MakeEngineApiDiagnostic("DATATYPE.RESOURCE_EXHAUSTED",
+          "engine.query.extract_refused", "extract_result_allocation_failed"));
+  result.value.setState(EngineValueState::error);
   return result;
 }
 

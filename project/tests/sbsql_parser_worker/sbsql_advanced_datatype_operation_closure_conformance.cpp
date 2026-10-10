@@ -28,6 +28,7 @@
 #include "uuid.hpp"
 
 #include <cmath>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -380,20 +381,34 @@ void RequireNullConsumerContracts(const api::EngineRequestContext& context) {
                   "DATATYPE.NULL_STATE.INVALID",
           "numeric comparison lost the canonical malformed NULL diagnostic");
 
-  const auto date = BoundScalarDescriptor("date", 3);
+  auto date = BoundScalarDescriptor("date", 3);
+  api::CatalogColumnMetadata date_fields;
+  date_fields.text = {{"nullability", "nullable"}, {"codec_generation", "1"}};
+  date_fields.identities["codec_uuid"] =
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d81d");
+  Require(api::EncodeCatalogColumnMetadata(date_fields, &date.encoded_descriptor),
+          "date fixture codec binding failed");
   const auto int32 = BoundScalarDescriptor("int32", 4);
   api::EngineExtractValueRequest extract;
   extract.context = context;
+  extract.context.datatype_catalog_snapshot_uuid =
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d710");
+  extract.context.datatype_catalog_generation = 10;
+  extract.context.datatype_registry_generation = 10;
   extract.field = "year";
   extract.input_value.descriptor = date;
-  extract.input_value.encoded_value = "2026-09-30";
+  const auto day = static_cast<std::uint32_t>((std::chrono::sys_days(
+      std::chrono::year(2026)/9/30)).time_since_epoch().count());
+  for (unsigned byte = 0; byte < 4; ++byte)
+    extract.input_value.binary_value.push_back(static_cast<std::uint8_t>(day >> (8*byte)));
   extract.descriptors.push_back(int32);
   const auto present_extract = api::EngineExtractValue(extract);
   Require(present_extract.ok && present_extract.value.descriptor == int32 &&
               present_extract.value.state == api::EngineValueState::value &&
-              present_extract.value.encoded_value == "2026",
+              present_extract.value.encoded_value.empty() &&
+              present_extract.value.binary_value == std::vector<std::uint8_t>({0xea,0x07,0,0}),
           "present extraction did not preserve its bound result descriptor");
-  extract.input_value.encoded_value.clear();
+  extract.input_value.binary_value.clear();
   extract.input_value.setState(api::EngineValueState::sql_null);
   const auto null_extract = api::EngineExtractValue(extract);
   Require(null_extract.ok && null_extract.value.descriptor == int32 &&
