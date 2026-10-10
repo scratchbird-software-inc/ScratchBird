@@ -11271,7 +11271,10 @@ void RequireBinaryScalarLiteralBinding() {
 }
 
 void RequireNativeReal64ScalarLiteralBinding() {
-  const auto parsed = RunPipeline("SELECT ROUND(1.25F, 1) AS rounded, -0.0F AS negative_zero, 1e0 AS exponent_value");
+  const auto parsed = RunPipeline(
+      "SELECT ROUND(1.25F, 1) AS rounded, -0.0F AS negative_zero, 1e0 AS exponent_value, "
+      "1.5FLOAT AS float_suffix, 1.5DOUBLE AS double_suffix, "
+      "4.9406564584124654e-324 AS subnormal_value, 1.7976931348623157e308 AS maximum_value");
   for (const auto& diagnostic : parsed.envelope.messages.diagnostics)
     std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
   Require(parsed.verifier.admitted, "REAL64 scalar SQL did not lower to canonical SBLR");
@@ -11285,23 +11288,34 @@ void RequireNativeReal64ScalarLiteralBinding() {
             "parser retained a REAL64 textual literal instead of native bytes");
     ++native_literals;
   }
-  Require(native_literals == 3, "parser omitted a native REAL64 literal");
+  Require(native_literals == 7, "parser omitted a native REAL64 literal");
   const auto result = sblr::DispatchSblrOperation({EngineContext(), canonical, {}});
   for (const auto& diagnostic : result.api_result.diagnostics)
     std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   Require(result.api_result.ok && result.api_result.result_shape.rows.size() == 1 &&
-              result.api_result.result_shape.rows.front().fields.size() == 3,
+              result.api_result.result_shape.rows.front().fields.size() == 7,
           "REAL64 parser-to-engine projection did not execute");
   const auto& fields = result.api_result.result_shape.rows.front().fields;
   const std::array<std::uint8_t, 8> rounded{0xcd, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xf4, 0x3f};
   const std::array<std::uint8_t, 8> negative_zero{0, 0, 0, 0, 0, 0, 0, 0x80};
   const std::array<std::uint8_t, 8> one{0, 0, 0, 0, 0, 0, 0xf0, 0x3f};
-  const std::array expected_values{rounded, negative_zero, one};
+  const std::array<std::uint8_t, 8> one_and_half{0, 0, 0, 0, 0, 0, 0xf8, 0x3f};
+  const std::array<std::uint8_t, 8> subnormal{1, 0, 0, 0, 0, 0, 0, 0};
+  const std::array<std::uint8_t, 8> maximum{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xef, 0x7f};
+  const std::array expected_values{rounded, negative_zero, one, one_and_half, one_and_half, subnormal, maximum};
   for (unsigned i = 0; i < expected_values.size(); ++i) {
     const auto& expected = expected_values[i];
     Require(fields[i].second.encoded_value.empty() && !fields[i].second.isSqlNull() &&
                 fields[i].second.binary_value == std::vector<std::uint8_t>(expected.begin(), expected.end()),
             "REAL64 parser-to-engine result lost native bits or signed zero");
+  }
+  for (const auto sql : {"SELECT 1e309 AS overflow_value", "SELECT -1e309 AS overflow_value"}) {
+    const auto overflow = RunPipeline(sql);
+    Require(!overflow.verifier.admitted &&
+                std::any_of(overflow.envelope.messages.diagnostics.begin(),
+                            overflow.envelope.messages.diagnostics.end(),
+                            [](const auto& diagnostic) { return diagnostic.code == "SBLR.OPERAND_INVALID"; }),
+            "REAL64 literal overflow crossed the parser boundary as a successful value");
   }
 }
 

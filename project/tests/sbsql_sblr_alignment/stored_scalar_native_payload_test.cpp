@@ -375,6 +375,12 @@ void NativeReal64Projection() {
               restored_null.descriptor == descriptor && restored_null.state == State::sql_null &&
               restored_null.is_null && restored_null.binary_value.empty() && restored_null.encoded_value.empty(),
           "REAL64 typed NULL lost its binding or gained payload");
+  const auto null_negation = sblr::EvaluateSblrUnaryArithmetic("op_unary_minus", null_value, {});
+  Require(null_negation.ok() && null_negation.scalar_values.size() == 1 &&
+              null_negation.scalar_values.front().is_null &&
+              sblr::SblrNullPayloadEmpty(null_negation.scalar_values.front()) &&
+              null_negation.scalar_values.front().projection_descriptor == null_value.projection_descriptor,
+          "REAL64 unary minus lost typed NULL binding or introduced payload");
   for (unsigned change = 0; change < 12; ++change) {
     auto value = sblr::SblrValueFromProjectionArgument(argument_for(0x3ff4000000000000ull));
     if (change == 0) value.text_value = "1.25";
