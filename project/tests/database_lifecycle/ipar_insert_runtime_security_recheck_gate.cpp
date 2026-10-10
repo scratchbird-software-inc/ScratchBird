@@ -1,4 +1,3 @@
-#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -8,19 +7,26 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_evidence_fixture.hpp"
+#include "../support/published_mga_table_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
+#include "ddl/create_api.hpp"
+#include "security/security_principal_lifecycle.hpp"
 #include "database_lifecycle.hpp"
+#include "memory.hpp"
 #include "dml/insert_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
-#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <string>
 #include <string_view>
-#include <unistd.h>
+#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -37,8 +43,7 @@ constexpr auto kGroupUuid = scratchbird::tests::FixtureUuidLiteral("019f2000-000
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
-    std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -67,16 +72,7 @@ bool HasEvidence(const api::EngineApiResult& result,
   return false;
 }
 
-std::filesystem::path MakeTempPath() {
-  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-                       std::chrono::system_clock::now().time_since_epoch())
-                       .count();
-  return std::filesystem::temp_directory_path() /
-         ("sb_ipar_runtime_security_" + std::to_string(now) + "_" +
-          std::to_string(static_cast<long long>(getpid())) + ".sbdb");
-}
-
-api::EngineUuid CreateDatabase(const std::filesystem::path& path) {
+api::EngineRequestContext CreateDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -85,81 +81,26 @@ api::EngineUuid CreateDatabase(const std::filesystem::path& path) {
       uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1779800200001).value;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = 1779800200002;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
-  create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ":"
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "IPAR runtime security database create failed");
-  return create.database_uuid.value;
+  auto owner = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  owner.current_schema_uuid = kSchemaUuid;
+  return owner;
 }
 
-api::EngineAuthorizationSubject Subject(api::EngineUuid uuid, std::string kind) {
-  api::EngineAuthorizationSubject subject;
-  subject.subject_uuid = std::move(uuid);
-  subject.subject_kind = std::move(kind);
-  return subject;
+void RefreshOwner(api::EngineRequestContext& context) {
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
+  context.resource_epoch = context.authorization_context.policy_epoch;
 }
 
-api::EngineRequestContext BaseContext(const std::filesystem::path& path,
-                                      const api::EngineUuid& database_uuid,
-                                      api::EngineUuid session_uuid) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
-  context.request_id = "ipar-runtime-security";
-  context.database_path = path.string();
-  context.database_uuid = database_uuid;
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000201");
-  context.session_uuid = session_uuid;
-  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000001");
-  context.default_root_uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000203");
-  context.security_context_present = true;
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.name_resolution_epoch = 1;
-  context.authorization_context.present = true;
-  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000204");
-  context.authorization_context.principal_uuid = context.principal_uuid;
-  context.authorization_context.security_epoch = context.security_epoch;
-  context.authorization_context.policy_epoch = context.resource_epoch;
-  context.authorization_context.catalog_generation_id = context.catalog_generation_id;
-  context.authorization_context.effective_subjects.push_back(
-      Subject(kPrincipalUuid, "principal"));
-  context.authorization_context.effective_subjects.push_back(
-      Subject(kGroupUuid, "group"));
-
-  api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000301");
-  grant.subject_uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000202");
-  grant.subject_kind = "group";
-  grant.target_uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000101");
-  grant.right = "INSERT";
-  grant.security_epoch = context.security_epoch;
-  context.authorization_context.grants.push_back(std::move(grant));
-
-  api::EngineMaterializedAuthorizationPolicy policy;
-  policy.policy_uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000302");
-  policy.subject_uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000202");
-  policy.subject_kind = "group";
-  policy.target_uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000101");
-  policy.right = "INSERT";
-  policy.policy_kind = "rls_filter";
-  policy.requires_runtime_recheck = true;
-  policy.policy_epoch = context.resource_epoch;
-  policy.canonical_policy_envelope = "sblr_predicate:column_equals:tenant:tenant_a";
-  context.authorization_context.policies.push_back(std::move(policy));
-  return context;
-}
-
-api::EngineRequestContext Begin(const std::filesystem::path& path,
-                                const api::EngineUuid& database_uuid,
-                                api::EngineUuid session_uuid) {
+api::EngineRequestContext Begin(api::EngineRequestContext context) {
   api::EngineBeginTransactionRequest request;
-  request.context = BaseContext(path, database_uuid, session_uuid);
+  request.context = context;
   request.isolation_level = "read_committed";
   const auto begun = api::EngineBeginTransaction(request);
   if (!begun.ok) {
@@ -168,7 +109,6 @@ api::EngineRequestContext Begin(const std::filesystem::path& path,
     }
   }
   Require(begun.ok, "IPAR runtime security begin failed");
-  auto context = request.context;
   context.local_transaction_id = begun.local_transaction_id;
   context.transaction_uuid = begun.transaction_uuid;
   context.snapshot_visible_through_local_transaction_id =
@@ -202,39 +142,167 @@ api::EngineRowValue Row(api::EngineUuid row_uuid, std::string tenant) {
   return row;
 }
 
-void SeedMetadata(const api::EngineRequestContext& context) {
+void SeedMetadata(api::EngineRequestContext& context) {
+  api::EngineCatalogCreateObjectRequest schema;
+  schema.context = context;
+  schema.target_object.uuid = kSchemaUuid;
+  schema.target_object.object_kind = "schema";
+  schema.localized_names.push_back({"en", "primary", "", "runtime_security", true});
+  Require(api::EngineCatalogCreateObject(schema).ok, "fixture schema publication failed");
   api::CrudTableRecord table;
   table.table_uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000101");
   table.default_name = "ipar_runtime_security";
   table.columns.push_back({"tenant", "type=text;nullable=false"});
   table.columns.push_back({"payload", "type=text"});
-  Require(!api::AppendMgaTableMetadata(context, table).error,
-          "IPAR runtime security table metadata append failed");
+  table.creator_tx = context.local_transaction_id;
+  Require(!scratchbird::tests::PublishMgaTableFixture(
+              context, table, {"text", "text"}).error,
+          "IPAR runtime security bound table publication failed");
 }
 
-api::EngineInsertRowsResult Insert(const api::EngineRequestContext& context,
+template<class Result>
+void RequireOk(const Result& result, std::string_view message) {
+  if (!result.ok) for (const auto& d : result.diagnostics)
+    std::cerr << d.code << ':' << d.detail << '\n';
+  Require(result.ok, message);
+}
+
+void SeedSecurity(api::EngineRequestContext& owner) {
+  api::EngineSecurityCreatePrincipalRequest principal;
+  principal.context = owner;
+  principal.principal_uuid = kPrincipalUuid;
+  principal.principal_name = "tenant_writer";
+  principal.credential_protected_material_ref = "fixture:tenant_writer:credential";
+  RequireOk(api::EngineSecurityCreatePrincipal(principal), "durable writer publication failed");
+  RefreshOwner(owner);
+  api::EngineSecurityCreateGroupRequest group;
+  group.context = owner;
+  group.group_uuid = kGroupUuid;
+  group.group_name = "tenant_writers";
+  RequireOk(api::EngineSecurityCreateGroup(group), "durable group publication failed");
+  RefreshOwner(owner);
+  api::EngineSecurityGrantMembershipRequest membership;
+  membership.context = owner;
+  membership.membership_uuid = scratchbird::tests::FixtureUuid(1559, 1);
+  membership.member_principal_uuid = kPrincipalUuid;
+  membership.container_uuid = kGroupUuid;
+  membership.container_kind = "group";
+  RequireOk(api::EngineSecurityGrantMembership(membership), "durable membership publication failed");
+  RefreshOwner(owner);
+  api::EngineSecurityGrantPrivilegeRequest grant;
+  grant.context = owner;
+  grant.grant_uuid = scratchbird::tests::FixtureUuid(1559, 2);
+  grant.grantee_uuid = kGroupUuid;
+  grant.grantee_kind = "group";
+  grant.target_object_uuid = kTableUuid;
+  grant.target_object_kind = "table";
+  grant.privilege = "INSERT";
+  RequireOk(api::EngineSecurityGrantPrivilege(grant), "durable group INSERT grant failed");
+  RefreshOwner(owner);
+  api::EngineSecurityPutRowPolicyRequest policy;
+  policy.context = owner;
+  policy.policy_uuid = scratchbird::tests::FixtureUuid(1559, 3);
+  policy.target_object_uuid = kTableUuid;
+  policy.target_object_kind = "table";
+  policy.policy_effect = "row_filter";
+  policy.predicate_envelope = "sblr_predicate:column_equals:tenant:tenant_a";
+  policy.definer_principal_uuid = owner.principal_uuid;
+  const auto published = api::EngineSecurityPutRowPolicy(policy);
+  RequireOk(published, "durable row policy publication failed");
+  Require(published.policy_persisted, "row policy must be persisted");
+  RefreshOwner(owner);
+}
+
+api::EngineRequestContext WriterContext(const api::EngineRequestContext& owner,
+                                       bool member = true) {
+  auto context = owner;
+  context.principal_uuid = kPrincipalUuid;
+  context.session_uuid = api::GenerateCrudEngineUuid("object");
+  context.request_id = "ipar-runtime-security-writer";
+  // Construct the fixture's server-side authorization observation solely from
+  // committed durable rows. The writer has no SYSARCH or direct INSERT grant.
+  const auto loaded = api::LoadSecurityPrincipalLifecycleState(context);
+  Require(loaded.ok, "committed security read failed");
+  const auto& state = loaded.state;
+  api::DurableAuthorizationState authority;
+  authority.authority_uuid = context.database_uuid;
+  authority.security_context_generation = state.security_context_generation;
+  authority.security_epoch = state.security_generation;
+  authority.policy_epoch = state.policy_generation;
+  authority.catalog_generation_id = context.catalog_generation_id;
+  for (const auto& p : state.principals) if (!p.deleted && p.lifecycle_state == "active")
+    authority.principals.push_back({p.principal_uuid, "principal", true, state.security_generation});
+  for (const auto& r : state.roles) if (!r.deleted && r.lifecycle_state == "active")
+    authority.roles.push_back({r.role_uuid, true, state.security_generation});
+  for (const auto& g : state.groups) if (!g.deleted && g.lifecycle_state == "active")
+    authority.groups.push_back({g.group_uuid, true, state.security_generation});
+  for (const auto& m : state.memberships) if (!m.revoked)
+    authority.memberships.push_back({m.member_principal_uuid, "principal", m.container_uuid,
+                                    m.container_kind, true, state.security_generation});
+  for (const auto& g : state.grants) if (!g.revoked)
+    authority.grants.push_back({g.grant_uuid, g.grantee_uuid, g.grantee_kind, g.target_object_uuid,
+                               g.privilege, g.grant_effect == "deny", true, state.security_generation});
+  for (const auto& p : state.row_policies) if (!p.deleted && p.target_object_uuid == kTableUuid) {
+    api::DurableAuthorizationPolicyRecord policy;
+    policy.policy_uuid = p.policy_uuid;
+    policy.subject_uuid = context.principal_uuid;
+    policy.subject_kind = "principal";
+    policy.target_uuid = p.target_object_uuid;
+    policy.right = "INSERT";
+    policy.policy_kind = "rls_filter";
+    policy.requires_runtime_recheck = true;
+    policy.source_policy_generation = p.policy_generation;
+    policy.policy_epoch = state.policy_generation;
+    policy.canonical_policy_envelope = p.predicate_envelope;
+    authority.policies.push_back(std::move(policy));
+  }
+  const auto materialized = api::MaterializeDurableAuthorizationContext(authority,
+      {context.principal_uuid, authority.security_epoch, authority.policy_epoch,
+       authority.catalog_generation_id});
+  RequireOk(materialized, "durable writer authorization failed");
+  context.authorization_context = materialized.context;
+  context.security_epoch = authority.security_epoch;
+  context.resource_epoch = authority.policy_epoch;
+  Require((member ? (context.authorization_context.grants.size() == 1 &&
+          context.authorization_context.grants.front().subject_uuid == kGroupUuid &&
+          context.authorization_context.grants.front().subject_kind == "group" &&
+          context.authorization_context.grants.front().right == "INSERT") :
+          context.authorization_context.grants.empty()) &&
+          context.authorization_context.policies.size() == 1,
+          "writer must obtain INSERT only through its persisted group membership");
+  return context;
+}
+
+api::EngineInsertRowsResult Insert(const scratchbird::tests::FixtureEngineSession& session,
+                                   const api::EngineRequestContext& context,
                                    api::EngineRowValue row) {
-  api::EngineInsertRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(session, context);
+  request.target_schema.uuid = kSchemaUuid;
   request.target_table.uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000101");
   request.target_table.object_kind = "table";
   request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000101");
   request.target_object.object_kind = "table";
+  request.bound_object_identity.object_uuid = kTableUuid;
+  request.bound_object_identity.catalog_generation_id = context.catalog_generation_id;
+  request.bound_object_identity.security_epoch = context.security_epoch;
+  request.bound_object_identity.resource_epoch = context.resource_epoch;
   request.input_rows.push_back(std::move(row));
   return api::EngineInsertRows(request);
 }
 
 void VerifyRuntimeSecurityRecheck() {
-  const auto path = MakeTempPath();
-  const auto database_uuid = CreateDatabase(path);
-
-  auto setup = Begin(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000401"));
+  scratchbird::tests::OwnedTempDirectory directory;
+  const auto owner = CreateDatabase(directory.path() / "runtime_security.sbdb");
+  auto setup = Begin(owner);
   SeedMetadata(setup);
+  SeedSecurity(setup);
   Commit(setup);
 
-  auto allowed_context = Begin(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000402"));
+  auto allowed_context = Begin(WriterContext(owner));
+  {
+  scratchbird::tests::FixtureEngineSession session(allowed_context);
   const auto allowed = Insert(
-      allowed_context,
+      session, allowed_context,
       Row(scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000501"), "tenant_a"));
   if (!allowed.ok) {
     for (const auto& diagnostic : allowed.diagnostics) {
@@ -247,10 +315,13 @@ void VerifyRuntimeSecurityRecheck() {
   Require(HasEvidence(allowed, "insert_runtime_security_recheck", "rls=filter"),
           "IPAR runtime security filter recheck evidence missing");
   Commit(allowed_context);
+  }
 
-  auto denied_context = Begin(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000403"));
+  auto denied_context = Begin(WriterContext(owner));
+  {
+  scratchbird::tests::FixtureEngineSession session(denied_context);
   const auto denied = Insert(
-      denied_context,
+      session, denied_context,
       Row(scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000502"), "tenant_b"));
   Require(!denied.ok, "IPAR runtime security denied insert was admitted");
   Require(HasDiagnostic(denied, "SECURITY.RLS.DENIED"),
@@ -261,16 +332,76 @@ void VerifyRuntimeSecurityRecheck() {
   Require(HasEvidence(denied, "security_deep_enforcement_refusal",
                       "rls_policy=deny"),
           "IPAR runtime security deep refusal evidence missing");
-
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-  std::filesystem::remove(path.string() + ".sb.mga", ignored);
-  std::filesystem::remove(path.string() + ".sb.behavior", ignored);
+  api::EngineRollbackTransactionRequest rollback;
+  rollback.context = denied_context;
+  RequireOk(api::EngineRollbackTransaction(rollback), "denied transaction rollback failed");
+  }
+  // A matching tenant value is not sufficient: remove the durable membership,
+  // acquire a new statement, and require authorization failure before effects.
+  auto admin = owner;
+  admin.session_uuid = api::GenerateCrudEngineUuid("object");
+  RefreshOwner(admin);
+  admin = Begin(admin);
+  api::EngineSecurityRevokeMembershipRequest revoke;
+  revoke.context = admin;
+  revoke.member_principal_uuid = kPrincipalUuid;
+  revoke.container_uuid = kGroupUuid;
+  revoke.container_kind = "group";
+  RequireOk(api::EngineSecurityRevokeMembership(revoke), "durable membership revocation failed");
+  Commit(admin);
+  auto revoked_context = Begin(WriterContext(owner, false));
+  {
+    scratchbird::tests::FixtureEngineSession session(revoked_context);
+    const auto refused = Insert(session, revoked_context,
+        Row(scratchbird::tests::FixtureUuid(1559, 4), "tenant_a"));
+    Require(!refused.ok && HasDiagnostic(refused, "SECURITY.AUTHORIZATION.DENIED"),
+            "revoked group membership still authorizes INSERT");
+    Require(HasEvidence(refused, "security_deep_enforcement_refusal", "INSERT"),
+            "revoked membership must fail at the deep INSERT authorization boundary");
+    api::EngineRollbackTransactionRequest rollback;
+    rollback.context = revoked_context;
+    RequireOk(api::EngineRollbackTransaction(rollback), "revoked transaction rollback failed");
+  }
+  auto observer = owner;
+  observer.session_uuid = api::GenerateCrudEngineUuid("object");
+  RefreshOwner(observer);
+  observer = Begin(observer);
+  const auto stored = api::LoadMgaRelationStoreStateForRelationScans(observer, {kTableUuid});
+  Require(stored.ok, "fresh committed row readback failed");
+  std::size_t rows = 0;
+  for (const auto& row : stored.state.row_versions) if (row.table_uuid == kTableUuid) {
+    ++rows;
+    Require(!row.deleted && row.creator_tx == allowed_context.local_transaction_id &&
+            row.row_uuid == scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000501"),
+            "only the allowed row may be persisted");
+    Require(row.values.size() == 2, "committed row lost fields");
+    unsigned tenant_fields = 0, payload_fields = 0;
+    for (const auto& [name, value] : row.values) {
+      if (name == "tenant") ++tenant_fields;
+      else if (name == "payload") ++payload_fields;
+      else Require(false, "committed row contains an unexpected field");
+      Require(value.isPresent() && value.bytes == (name == "tenant" ? "tenant_a" : "payload"),
+              "committed row payload changed");
+    }
+    Require(tenant_fields == 1 && payload_fields == 1, "committed row field names are not exact");
+  }
+  Require(rows == 1, "denied INSERT published a row or allowed INSERT was lost");
+  Commit(observer);
+  directory.Cleanup();
 }
 
 }  // namespace
 
-int main() {
+int main() try {
+  namespace memory = scratchbird::core::memory;
+  auto policy = memory::DefaultLocalEngineMemoryPolicy();
+  policy.policy_name = "ipar_insert_runtime_security_recheck_gate";
+  const auto configured = memory::ConfigureDefaultMemoryManagerForFixture(
+      policy, "ipar_insert_runtime_security_recheck_gate");
+  Require(configured.ok(), "IPAR runtime security memory policy admission failed");
   VerifyRuntimeSecurityRecheck();
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

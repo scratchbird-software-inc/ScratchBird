@@ -29,6 +29,9 @@ inline void MaterializeBootstrapFixtureAuthorization(
   for (const auto& role : lifecycle.roles)
     if (!role.deleted && role.lifecycle_state == "active")
       authority.roles.push_back({role.role_uuid, true, authority.security_epoch});
+  for (const auto& group : lifecycle.groups)
+    if (!group.deleted && group.lifecycle_state == "active")
+      authority.groups.push_back({group.group_uuid, true, authority.security_epoch});
   for (const auto& member : lifecycle.memberships)
     if (!member.revoked)
       authority.memberships.push_back({member.member_principal_uuid, "principal",
