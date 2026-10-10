@@ -4219,6 +4219,17 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     LABELS "sbsql_drop_object_exact_route_conformance;SBSFC-020R-QT;sbsql_parser_worker;sbsql_component_conformance;sbsql_exact_refusal_passed"
   )
 
+  add_executable(sbsql_filespace_target_binding_conformance
+    sbsql_filespace_target_binding_conformance.cpp)
+  target_compile_features(sbsql_filespace_target_binding_conformance PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_filespace_target_binding_conformance PRIVATE
+    sbl_sbsql_parser_pipeline sb_server_core sb_engine_sblr)
+  add_test(NAME sbsql_filespace_target_binding_conformance
+    COMMAND sbsql_filespace_target_binding_conformance)
+  set_tests_properties(sbsql_filespace_target_binding_conformance PROPERTIES
+    LABELS "sbsql_component_conformance;binary_uuid;filespace;not_runtime_acceptance"
+    TIMEOUT 30)
+
   add_executable(
     sbsql_create_sequence_exact_route_conformance
     sbsql_create_sequence_exact_route_conformance.cpp

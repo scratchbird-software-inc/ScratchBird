@@ -2985,7 +2985,7 @@ AstDocument BuildAst(const CstDocument& cst) {
              keyword == "SESSION" ||
              keyword == "EVENT" ||
              keyword == "MASKING" ||
-             keyword == "DISCONNECT" ||
+             (keyword == "DISCONNECT" && !filespace_lifecycle_target_surface) ||
              keyword == "CONNECT" ||
              keyword == "SNAPSHOT" ||
              keyword == "ATOMICITY" ||
