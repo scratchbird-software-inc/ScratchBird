@@ -458,6 +458,140 @@ void KnownTerminalBoundary() {
   Check(f.allocator.FailureInjectionSnapshot().rules.front().matched_sequence == 0);
 }
 
+void PreparedMutationBoundary() {
+  Fixture f;
+  const auto key = Key(1);
+  const auto tx = Id(200), mark = Id(210);
+  f.Write(key, 1);
+  auto before = f.store->Snapshot(f.session);
+  std::array<std::uint8_t, 4> bytes{2, 0, 0, 0};
+  {
+    auto prepared = f.store->PrepareWriteAdmitted(f.session, key, s::ValueScope::session,
+                                                 {}, before.generation, f.Value(bytes));
+    Check(prepared.admission().ok() && prepared.admission().generation == before.generation);
+    Check(f.allocator.Snapshot().current_bytes > before.resident_bytes);
+    auto moved = std::move(prepared);
+    Check(!prepared.admission().ok() && !prepared.PublishAdmitted().ok());
+    Check(moved.admission().ok());
+    // Audit refusal/exception: dropping the prepared owner must not publish.
+  }
+  Check(f.Gen() == before.generation &&
+        f.allocator.Snapshot().current_bytes == before.resident_bytes);
+  f.Expect(key, 1);
+  {
+    auto prepared = f.store->PrepareWriteAdmitted(f.session, key, s::ValueScope::session,
+                                                 {}, before.generation, f.Value(bytes));
+    Check(prepared.admission().ok());
+    bytes[0] = 99; // Prepared value owns a copy before audit/caller-buffer reuse.
+    Inject(f.allocator);
+    const auto first = prepared.PublishAdmitted();
+    Check(first.ok() && first.generation == before.generation + 1);
+    auto moved = std::move(prepared);
+    Check(!prepared.PublishAdmitted().ok());
+    Check(moved.PublishAdmitted().generation == first.generation);
+  }
+  Check(f.allocator.FailureInjectionSnapshot().rules.front().matched_sequence == 0);
+  Check(f.allocator.DisableAllocationFailureInjection().ok());
+  Check(f.Gen() == before.generation + 1);
+  f.Expect(key, 2);
+  before = f.store->Snapshot(f.session);
+  Inject(f.allocator);
+  {
+    auto refused = f.store->PrepareWriteAdmitted(f.session, key, s::ValueScope::session,
+                                                {}, before.generation, f.Value(bytes));
+    Check(refused.admission().status == Status::memory_refused);
+    Check(refused.PublishAdmitted().status == Status::memory_refused);
+  }
+  Check(f.Gen() == before.generation &&
+        f.allocator.Snapshot().current_bytes == before.resident_bytes);
+  Check(f.allocator.DisableAllocationFailureInjection().ok());
+  f.Expect(key, 2);
+  for (bool publish : {false, true}) {
+    const auto generation = f.Gen();
+    {
+      auto prepared = f.store->PrepareEraseAdmitted(f.session, key, s::ValueScope::session,
+                                                   {}, generation);
+      Check(prepared.admission().ok());
+      if (publish) {
+        Check(prepared.PublishAdmitted().generation == generation + 1);
+        Check(prepared.PublishAdmitted().generation == generation + 1);
+      }
+    }
+    if (publish) f.Missing(key); else f.Expect(key, 2);
+    Check(f.Gen() == generation + (publish ? 1 : 0));
+  }
+  const auto missing_generation = f.Gen();
+  {
+    auto noop = f.store->PrepareEraseAdmitted(f.session, key, s::ValueScope::session,
+                                             {}, missing_generation);
+    Check(noop.PublishAdmitted().generation == missing_generation + 1);
+    Check(noop.PublishAdmitted().generation == missing_generation + 1);
+  }
+  Check(f.Gen() == missing_generation + 1);
+  Check(f.store->BeginTransaction(f.session, tx, f.Gen()).ok());
+  f.Write(key, 3); f.Write(key, 4, tx);
+  Check(f.store->Savepoint(f.session, tx, mark, f.Gen()).ok());
+  for (bool publish : {false, true}) {
+    before = f.store->Snapshot(f.session);
+    {
+      auto erased = f.store->PrepareEraseAdmitted(f.session, key, s::ValueScope::transaction,
+                                                 tx, before.generation);
+      Check(erased.admission().ok());
+      Check(f.allocator.Snapshot().current_bytes > before.resident_bytes);
+      if (publish) Check(erased.PublishAdmitted().ok());
+    }
+    if (!publish) {
+      Check(f.Gen() == before.generation &&
+            f.allocator.Snapshot().current_bytes == before.resident_bytes);
+      f.Expect(key, 4, tx, s::ValueScope::transaction);
+    } else f.Expect(key, 3, tx);
+  }
+  Check(f.store->RollbackTo(f.session, tx, mark, f.Gen()).ok());
+  f.Expect(key, 4, tx, s::ValueScope::transaction);
+  Check(f.store->ReleaseSavepoint(f.session, tx, mark, f.Gen()).ok());
+  const auto generation = f.Gen();
+  Inject(f.allocator);
+  {
+    auto erased = f.store->PrepareEraseAdmitted(f.session, key, s::ValueScope::transaction,
+                                               tx, generation);
+    Check(erased.admission().ok() && erased.PublishAdmitted().ok());
+  }
+  Check(f.allocator.FailureInjectionSnapshot().rules.front().matched_sequence == 0);
+  f.Expect(key, 3, tx);
+}
+
+void PreparedMutationSerialization() {
+  for (bool publish : {false, true}) {
+    Fixture f;
+    const auto key = Key(1);
+    f.Write(key, 1);
+    const auto generation = f.Gen();
+    const std::array<std::uint8_t, 4> prepared_bytes{2, 0, 0, 0}, competing_bytes{3, 0, 0, 0};
+    std::atomic<bool> entered = false, finished = false;
+    s::StoreResult competing;
+    std::thread writer;
+    {
+      auto prepared = f.store->PrepareWriteAdmitted(f.session, key, s::ValueScope::session,
+                                                   {}, generation, f.Value(prepared_bytes));
+      Check(prepared.admission().ok());
+      writer = std::thread([&] {
+        entered = true;
+        competing = f.store->WriteAdmitted(f.session, key, s::ValueScope::session,
+                                           {}, generation, f.Value(competing_bytes));
+        finished = true;
+      });
+      while (!entered.load()) std::this_thread::yield();
+      // No store operation or inventory acquisition may reenter on this thread.
+      // Hold the guard through publication/abandonment, then join after unlock.
+      if (publish) (void)prepared.PublishAdmitted();
+    }
+    writer.join();
+    Check(finished && f.Gen() == generation + 1);
+    Check(competing.status == (publish ? Status::stale_generation : Status::ok));
+    f.Expect(key, publish ? 2 : 3);
+  }
+}
+
 void CollisionAndSessionIsolation() {
   Fixture f;
   auto second = s::ScopedValueStore::Create(f.allocator, f.database, Id(102));
@@ -478,6 +612,7 @@ int main() {
   try {
     LifetimeRules(); EraseAndCompaction(); ExactBytesAndAdmission();
     AllocationAndQuotaFailures(); ConcurrentWriters(); CollisionAndSessionIsolation(); SavepointReferenceModel(); KnownTerminalBoundary();
+    PreparedMutationBoundary(); PreparedMutationSerialization();
     std::cout << "scoped session retention: lifecycle, binary values, quotas, allocation failures, concurrency passed\n";
     return 0;
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

@@ -73,7 +73,40 @@ struct StoreLimits {
 // All operations serialize on this store's mutex. Owner teardown must retain
 // its session lifetime lease until calls complete before destroying the store.
 class ScopedValueStore final {
+  struct Version;
  public:
+  // Internal preparation, not authorization or audit authority. Holds store
+  // serialization until destruction. Acquire inventory/other outer locks
+  // BEFORE preparation; an audit under this guard must not acquire those locks
+  // or reenter this store. The session lifetime lease must outlive the guard.
+  // Moves and destruction must remain on the acquiring thread: moving a guard
+  // does not transfer std::mutex ownership to another thread.
+  // All allocation/copying occurs during prepare; publication is no-allocation.
+  class MutationGuard {
+   public:
+    MutationGuard(MutationGuard&&) noexcept;
+    MutationGuard& operator=(MutationGuard&&) = delete;
+    MutationGuard(const MutationGuard&) = delete;
+    ~MutationGuard();
+    StoreResult admission() const { return admission_; }
+    // Caller completes required authorization/audit before this call. Abandon
+    // on failure. Repetition returns the original publication result.
+    StoreResult PublishAdmitted() noexcept;
+   private:
+    friend class ScopedValueStore;
+    MutationGuard(ScopedValueStore&, const Identity&, const ValueKey&, ValueScope,
+                  const Identity&, std::uint64_t, const AdmittedValueView*, bool erase);
+    ScopedValueStore* store_;
+    std::unique_lock<std::mutex> lock_;
+    StoreResult admission_;
+    StoreResult publication_;
+    Version* staged_ = nullptr;
+    Version* previous_ = nullptr;
+    ValueScope scope_;
+    bool remove_previous_ = false;
+    bool published_ = false;
+  };
+
   // Internal lifecycle participant. Retains the state lock across the owning
   // MGA decision; destruction alone preserves all overrides. Only a confirmed
   // native terminal publication may call ApplyKnownTerminal(). The enclosing
@@ -123,6 +156,11 @@ class ScopedValueStore final {
   StoreResult WriteAdmitted(const Identity& session, const ValueKey&, ValueScope,
                             const Identity& transaction, std::uint64_t expected_generation,
                             const AdmittedValueView&);
+  MutationGuard PrepareWriteAdmitted(const Identity& session, const ValueKey&, ValueScope,
+                                    const Identity& transaction, std::uint64_t expected_generation,
+                                    const AdmittedValueView&);
+  MutationGuard PrepareEraseAdmitted(const Identity& session, const ValueKey&, ValueScope,
+                                    const Identity& transaction, std::uint64_t expected_generation);
   // Removing a transaction override reveals the session value, but preserves
   // its prior override in rollback history while a savepoint can require it.
   StoreResult EraseAdmitted(const Identity& session, const ValueKey&, ValueScope,
@@ -136,7 +174,6 @@ class ScopedValueStore final {
   StoreResult Close(const Identity& session);
 
  private:
-  struct Version;
   struct Transaction;
   struct Mark;
   ScopedValueStore(core::memory::BoundedAllocator&, Identity, Identity, StoreLimits);

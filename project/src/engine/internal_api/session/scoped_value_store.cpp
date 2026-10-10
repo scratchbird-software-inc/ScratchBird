@@ -5,6 +5,7 @@
 #include <cstring>
 #include <limits>
 #include <new>
+#include <utility>
 
 namespace scratchbird::engine::internal_api::session {
 namespace {
@@ -350,72 +351,105 @@ StoreResult ScopedValueStore::ReleaseSavepoint(const Identity& session, const Id
 }
 StoreResult ScopedValueStore::Mutate(const Identity& session, const ValueKey& key, ValueScope scope,
     const Identity& transaction, std::uint64_t expected, const AdmittedValueView* value, bool erase) {
-  std::lock_guard lock(mutex_);
-  auto status = Check(session, expected, true);
-  if (status != StoreStatus::ok) return Result(status);
-  if (!Valid(key)) return Result(StoreStatus::invalid_argument);
-  status = CheckScope(scope, transaction);
-  if (status != StoreStatus::ok) return Result(status);
-  if (!erase && (!value || !Valid(value->datatype_uuid) || !value->datatype_generation ||
-      !Valid(value->security_label_uuid) || value->bytes.size() > kMaximumValueBytes ||
-      (value->is_null && !value->bytes.empty()))) return Result(StoreStatus::invalid_argument);
-  auto* previous = FindVersion(key, transaction);
-  if (erase && (!previous || previous->inherit)) {
-    ++generation_;
-    return Result(StoreStatus::ok);
-  }
-  if (erase && scope == ValueScope::session) {
-    Remove(previous);
-    ++generation_;
-    return Result(StoreStatus::ok);
-  }
-  bool has_marks = false;
-  bool previous_needed = false;
-  if (scope == ValueScope::transaction) {
-    for (auto* mark = marks_; mark; mark = mark->next) {
-      if (mark->transaction != transaction) continue;
-      has_marks = true;
-      if (previous && mark->sequence >= previous->sequence) previous_needed = true;
+  MutationGuard prepared(*this, session, key, scope, transaction, expected, value, erase);
+  return prepared.PublishAdmitted();
+}
+ScopedValueStore::MutationGuard::MutationGuard(ScopedValueStore& store,
+    const Identity& session, const ValueKey& key, ValueScope scope,
+    const Identity& transaction, std::uint64_t expected, const AdmittedValueView* value, bool erase)
+    : store_(&store), lock_(store.mutex_), scope_(scope) {
+  const auto prepare = [&]() -> StoreStatus {
+    auto status = store.Check(session, expected, true);
+    if (status != StoreStatus::ok) return status;
+    if (!Valid(key)) return StoreStatus::invalid_argument;
+    status = store.CheckScope(scope, transaction);
+    if (status != StoreStatus::ok) return status;
+    if (!erase && (!value || !Valid(value->datatype_uuid) || !value->datatype_generation ||
+        !Valid(value->security_label_uuid) || value->bytes.size() > kMaximumValueBytes ||
+        (value->is_null && !value->bytes.empty()))) return StoreStatus::invalid_argument;
+    previous_ = store.FindVersion(key, transaction);
+    if (erase && (!previous_ || previous_->inherit)) return StoreStatus::ok;
+    bool has_marks = false;
+    bool previous_needed = false;
+    if (scope == ValueScope::transaction) {
+      for (auto* mark = store.marks_; mark; mark = mark->next) {
+        if (mark->transaction != transaction) continue;
+        has_marks = true;
+        if (previous_ && mark->sequence >= previous_->sequence) previous_needed = true;
+      }
     }
-  }
-  if (erase && !has_marks) {
-    Remove(previous);
-    ++generation_;
-    return Result(StoreStatus::ok);
-  }
-  const auto size = erase ? 0 : value->bytes.size();
-  // A superseded current version is released after replacement allocation.
-  // Count retained versions, while admitting ALL transient bytes separately.
-  if ((version_count_ >= limits_.retained_versions && (!previous || previous_needed)) ||
-      sizeof(Version) + size > limits_.resident_bytes - resident_bytes_)
-    return Result(StoreStatus::quota_exceeded);
-  auto* memory = Allocate(sizeof(Version) + size, transaction);
-  if (!memory) return Result(StoreStatus::memory_refused);
-  auto* node = new (memory) Version;
-  node->key = key;
-  node->transaction = transaction;
-  node->sequence = generation_ + 1;
-  node->size = size;
-  node->inherit = erase;
-  if (!erase) {
-    node->datatype = value->datatype_uuid;
-    node->datatype_generation = value->datatype_generation;
-    node->security_label = value->security_label_uuid;
-    node->is_null = value->is_null;
-    if (size) std::memcpy(node->Data(), value->bytes.data(), size);
-  }
-  auto& bucket = buckets_[Bucket(key)];
-  node->bucket_next = bucket;
-  bucket = node;
-  node->next = versions_;
-  if (versions_) versions_->previous = node;
-  versions_ = node;
-  ++version_count_;
-  if (scope == ValueScope::session) {
-    if (previous) Remove(previous);
-  } else CompactKey(key, transaction);
-  ++generation_;
-  return Result(StoreStatus::ok);
+    if (erase && !has_marks) {
+      remove_previous_ = true;
+      return StoreStatus::ok;
+    }
+    const auto size = erase ? 0 : value->bytes.size();
+    // Charge ALL transient bytes, but count only published retained versions.
+    if ((store.version_count_ >= store.limits_.retained_versions && (!previous_ || previous_needed)) ||
+        sizeof(Version) + size > store.limits_.resident_bytes - store.resident_bytes_)
+      return StoreStatus::quota_exceeded;
+    auto* memory = store.Allocate(sizeof(Version) + size, transaction);
+    if (!memory) return StoreStatus::memory_refused;
+    staged_ = new (memory) Version;
+    staged_->key = key;
+    staged_->transaction = transaction;
+    staged_->sequence = store.generation_ + 1;
+    staged_->size = size;
+    staged_->inherit = erase;
+    if (!erase) {
+      staged_->datatype = value->datatype_uuid;
+      staged_->datatype_generation = value->datatype_generation;
+      staged_->security_label = value->security_label_uuid;
+      staged_->is_null = value->is_null;
+      if (size) std::memcpy(staged_->Data(), value->bytes.data(), size);
+    }
+    return StoreStatus::ok;
+  };
+  admission_ = store.Result(prepare());
+}
+ScopedValueStore::MutationGuard::MutationGuard(MutationGuard&& other) noexcept
+    : store_(std::exchange(other.store_, nullptr)), lock_(std::move(other.lock_)),
+      admission_(std::exchange(other.admission_, StoreResult{})), publication_(other.publication_),
+      staged_(std::exchange(other.staged_, nullptr)),
+      previous_(std::exchange(other.previous_, nullptr)), scope_(other.scope_),
+      remove_previous_(other.remove_previous_), published_(other.published_) {}
+ScopedValueStore::MutationGuard::~MutationGuard() {
+  if (!staged_) return;
+  const auto bytes = sizeof(Version) + staged_->size;
+  staged_->~Version();
+  store_->Free(staged_, bytes);
+}
+StoreResult ScopedValueStore::MutationGuard::PublishAdmitted() noexcept {
+  if (!store_ || !lock_.owns_lock()) return {};
+  if (!admission_.ok()) return admission_;
+  if (published_) return publication_;
+  if (staged_) {
+    auto* node = std::exchange(staged_, nullptr);
+    auto& bucket = store_->buckets_[Bucket(node->key)];
+    node->bucket_next = bucket;
+    bucket = node;
+    node->next = store_->versions_;
+    if (store_->versions_) store_->versions_->previous = node;
+    store_->versions_ = node;
+    ++store_->version_count_;
+    if (scope_ == ValueScope::session) {
+      if (previous_) store_->Remove(previous_);
+    } else store_->CompactKey(node->key, node->transaction);
+  } else if (remove_previous_) store_->Remove(previous_);
+  previous_ = nullptr;
+  ++store_->generation_;
+  published_ = true;
+  publication_ = store_->Result(StoreStatus::ok);
+  return publication_;
+}
+ScopedValueStore::MutationGuard ScopedValueStore::PrepareWriteAdmitted(
+    const Identity& session, const ValueKey& key, ValueScope scope,
+    const Identity& transaction, std::uint64_t expected, const AdmittedValueView& value) {
+  return MutationGuard(*this, session, key, scope, transaction, expected, &value, false);
+}
+ScopedValueStore::MutationGuard ScopedValueStore::PrepareEraseAdmitted(
+    const Identity& session, const ValueKey& key, ValueScope scope,
+    const Identity& transaction, std::uint64_t expected) {
+  return MutationGuard(*this, session, key, scope, transaction, expected, nullptr, true);
 }
 StoreResult ScopedValueStore::WriteAdmitted(const Identity& session, const ValueKey& key,
     ValueScope scope, const Identity& transaction, std::uint64_t expected, const AdmittedValueView& value) {
