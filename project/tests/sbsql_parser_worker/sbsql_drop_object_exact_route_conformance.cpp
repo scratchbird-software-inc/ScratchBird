@@ -24,8 +24,6 @@ namespace {
 using namespace scratchbird::parser::sbsql;
 
 constexpr std::string_view kFamily = "sblr.catalog.mutation.v3";
-constexpr std::string_view kSchemaUuid =
-    "019f0000-0000-7000-8000-000000d200ff";
 
 struct DropCase {
   std::string_view sql;
@@ -121,15 +119,16 @@ ParserConfig ParserConfigForTest() {
   return config;
 }
 
-PipelineArtifacts RunPipeline(const DropCase& drop_case) {
+PipelineArtifacts RunPipeline(
+    const DropCase& drop_case,
+    const std::vector<scratchbird::core::platform::Uuid>& resolved) {
   PipelineArtifacts artifacts;
   const auto session = ParserSession();
   artifacts.cst = BuildCst(std::string(drop_case.sql));
   artifacts.ast = BuildAst(artifacts.cst);
   artifacts.bound = BindAst(artifacts.ast, artifacts.cst,
                             ParserConfigForTest(), session,
-                            {drop_case.uuid,
-                             scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000d200ff")});
+                            resolved);
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
@@ -168,7 +167,9 @@ void RequireRegistryEvidence() {
 }
 
 void RequireExactRefusal(const DropCase& drop_case) {
-  const auto artifacts = RunPipeline(drop_case);
+  // A DROP target is one resolved object, not the target plus an untyped
+  // positional schema UUID. Keep every original exact-refusal assertion.
+  const auto artifacts = RunPipeline(drop_case, {drop_case.uuid});
   PrintMessages(artifacts.cst.messages);
   PrintMessages(artifacts.ast.messages);
   PrintMessages(artifacts.bound.messages);
@@ -224,11 +225,37 @@ void RequireExactRefusal(const DropCase& drop_case) {
           "DROP object exact refusal diagnostic drifted");
 }
 
+void RequireMalformedTargetBindingRefused() {
+  const auto& drop_case = kDropCases[0];
+  using Uuid = scratchbird::core::platform::Uuid;
+  const auto extra = scratchbird::tests::FixtureUuidLiteral(
+      "019f0000-0000-7000-8000-000000d200ff");
+  for (const auto& resolved : std::vector<std::vector<Uuid>>{
+           {}, {Uuid{}}, {drop_case.uuid, extra},
+           {drop_case.uuid, drop_case.uuid}}) {
+    const auto artifacts = RunPipeline(drop_case, resolved);
+    Require(!artifacts.verifier.admitted &&
+                artifacts.verifier.messages.has_errors(),
+            "DROP accepted a missing, nil, duplicate or ambiguous target");
+    bool exact_reason = false;
+    for (const auto& diagnostic : artifacts.envelope.messages.diagnostics) {
+      exact_reason = exact_reason ||
+          (diagnostic.code == "SBSQL.DROP_OBJECT_DDL.UNSUPPORTED_SHAPE" &&
+           DiagnosticField(diagnostic, "feature") == "drop_target_uuid_required");
+    }
+    Require(exact_reason, "DROP malformed binding lost its exact target diagnostic");
+    Require(!artifacts.envelope.parser_executes_sql &&
+                !artifacts.envelope.real_file_effects,
+            "DROP malformed binding claimed parser effects");
+  }
+}
+
 }  // namespace
 
 int main() {
   RequireRegistryEvidence();
   for (const auto& drop_case : kDropCases) RequireExactRefusal(drop_case);
+  RequireMalformedTargetBindingRefused();
   std::cout << "sbsql_drop_object_exact_refusal_conformance=passed\n";
   return EXIT_SUCCESS;
 }
