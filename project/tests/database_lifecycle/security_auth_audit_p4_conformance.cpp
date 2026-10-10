@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "security/audit_api.hpp"
 #include "security/auth_provider_plugin_api.hpp"
 #include "security/auth_provider_policy_api.hpp"
@@ -29,6 +31,7 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unistd.h>
@@ -47,7 +50,7 @@ constexpr std::string_view kAdminPrincipalUuid =
     "019e1d7e-7002-7000-8000-0000000000a4";
 constexpr std::string_view kSessionUuid =
     "019e1d7e-7004-7000-8000-0000000000a4";
-constexpr std::string_view kAlicePrincipalUuid =
+constexpr char kAlicePrincipalUuid[] =
     "019e1d7e-7003-7000-8000-0000000000a4";
 constexpr std::string_view kVerifier =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -61,21 +64,11 @@ constexpr std::string_view kFutureExpiryMs = "4102444800000";
 api::EngineRequestContext g_transaction_context;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
   if (!condition) { Fail(message); }
-}
-
-std::filesystem::path MakeTempDir() {
-  std::string tmpl = "/tmp/sb_p4_security_auth_audit.XXXXXX";
-  std::vector<char> writable(tmpl.begin(), tmpl.end());
-  writable.push_back('\0');
-  char* made = ::mkdtemp(writable.data());
-  Require(made != nullptr, "P4 security temp directory create failed");
-  return std::filesystem::path(made);
 }
 
 void CreateDatabaseFixture(const std::filesystem::path& database_path) {
@@ -351,8 +344,8 @@ api::EngineAuthenticateRequest AuthRequest(const std::filesystem::path& database
   request.option_envelopes.push_back("provider_generation_observed:2");
   request.option_envelopes.push_back("provider_lifecycle_state:healthy");
   request.option_envelopes.push_back("default_policy_installed:true");
-  request.option_envelopes.push_back("durable_principal_uuid:" +
-                                     std::string(kAlicePrincipalUuid));
+  request.durable_principal_uuid = scratchbird::tests::FixtureUuidLiteral(
+      "019e1d7e-7003-7000-8000-0000000000a4");
   return request;
 }
 
@@ -367,8 +360,7 @@ api::EngineAuthenticateRequest TemporaryTokenAuthRequest(
   const std::string token_digest = api::SecuritySha256Hex(token);
   request.credential_evidence =
       std::string("scheme=security_database_temporary_token_v1;principal=") +
-      std::string(principal) + ";principal_uuid=" +
-      std::string(kAlicePrincipalUuid) +
+      std::string(principal) +
       ";storage_authority=durable_security_catalog;token_handle=" +
       std::string(token) + ";token_digest=" + token_digest + ";state=active" +
       ";expires_at_ms=0;token=" + std::string(token) + ";issuer=manager";
@@ -383,8 +375,8 @@ api::EngineAuthenticateRequest TemporaryTokenAuthRequest(
   request.option_envelopes.push_back("provider_generation_observed:2");
   request.option_envelopes.push_back("provider_lifecycle_state:healthy");
   request.option_envelopes.push_back("default_policy_installed:true");
-  request.option_envelopes.push_back("durable_principal_uuid:" +
-                                     std::string(kAlicePrincipalUuid));
+  request.durable_principal_uuid = scratchbird::tests::FixtureUuidLiteral(
+      "019e1d7e-7003-7000-8000-0000000000a4");
   request.option_envelopes.push_back("durable_token_handle:" + std::string(token));
   return request;
 }
@@ -445,12 +437,16 @@ void TestAuthProviderManifestAndPolicy(const std::filesystem::path& database_pat
   policy_request.context = Context(database_path);
   policy_request.target_object.uuid = scratchbird::tests::FixtureUuid(1573, 1);
   policy_request.option_envelopes.push_back("provider:local_password");
-  policy_request.option_envelopes.push_back("policy_uuid:auth-provider-policy-p4");
+  const auto policy_uuid = scratchbird::tests::FixtureUuid(1573, 5);
+  policy_request.option_envelopes.push_back(
+      "policy_uuid:" + api::MetadataUuidBytes(policy_uuid));
   policy_request.option_envelopes.push_back("provider_enabled:true");
   policy_request.option_envelopes.push_back("auth_authority:engine");
   policy_request.option_envelopes.push_back("default_policy_installed:true");
   const auto policy = api::EngineReloadAuthProviderPolicy(policy_request);
   Require(policy.ok && policy.reloaded, "P4 auth provider policy reload failed");
+  Require(policy.policy.policy_uuid == policy_uuid,
+          "P4 auth provider policy changed the supplied binary identity");
   Require(policy.policy.enabled && policy.policy.stale_behavior == "deny",
           "P4 auth provider default policy did not fail closed");
 
@@ -477,8 +473,19 @@ void TestEngineAuthenticationAndPolicy(const std::filesystem::path& database_pat
     }
   }
   Require(good.ok && good.authenticated, "P4 engine authentication rejected valid verifier");
+  Require(good.connection_security_context.effective_user_uuid ==
+              scratchbird::tests::FixtureUuidLiteral(kAlicePrincipalUuid),
+          "P4 authentication changed the native principal identity");
   Require(HasEvidence(good, "authentication_provider"),
           "P4 engine authentication evidence missing");
+
+  auto text_shadow = AuthRequest(database_path);
+  text_shadow.option_envelopes.push_back(
+      "durable_principal_uuid:" + std::string(kAlicePrincipalUuid));
+  const auto text_shadow_result = api::EngineAuthenticate(text_shadow);
+  Require(!text_shadow_result.ok && !text_shadow_result.authenticated &&
+              HasDiagnostic(text_shadow_result, "SECURITY.AUTHENTICATION.REQUEST_INVALID"),
+          "P4 text identity shadow bypassed binary-only authentication");
 
   const auto wrong = api::EngineAuthenticate(AuthRequest(database_path, kWrongVerifier));
   Require(!wrong.ok && HasDiagnostic(wrong, "SECURITY.AUTHENTICATION.FAILED"),
@@ -510,6 +517,9 @@ void TestEngineAuthenticationAndPolicy(const std::filesystem::path& database_pat
       TemporaryTokenAuthRequest(database_path, temporary_token));
   Require(token_ok.ok && token_ok.authenticated,
           "P4 engine rejected valid security database temporary token");
+  Require(token_ok.connection_security_context.effective_user_uuid ==
+              scratchbird::tests::FixtureUuidLiteral(kAlicePrincipalUuid),
+          "P4 temporary token changed the native principal identity");
   Require(HasEvidence(token_ok, "authentication_provider"),
           "P4 temporary token authentication evidence missing");
 
@@ -919,11 +929,25 @@ void TestAuditAndProtectedMaterial(const std::filesystem::path& database_path) {
   lifecycle.context = Context(database_path);
   lifecycle.operation_key = "security.policy.reload";
   lifecycle.outcome = "accepted";
-  lifecycle.cache_marker_uuid = "cache-marker-p4";
+  const auto marker_uuid = scratchbird::tests::FixtureUuid(1573, 6);
+  lifecycle.cache_marker_uuid = api::MetadataUuidBytes(marker_uuid);
   lifecycle.cache_invalidation_recorded = true;
   const auto lifecycle_emitted = api::EngineEmitLifecycleAuditEvent(lifecycle);
-  Require(lifecycle_emitted.ok && lifecycle_emitted.cache_marker_linked,
+  Require(lifecycle_emitted.ok && lifecycle_emitted.emitted &&
+              lifecycle_emitted.cache_marker_linked,
           "P4 lifecycle audit did not link cache invalidation evidence");
+  bool exact_marker = false;
+  for (const auto& evidence : lifecycle_emitted.evidence) {
+    if (evidence.evidence_kind != "lifecycle_cache_invalidation") continue;
+    const auto* identity = std::get_if<platform::Uuid>(&evidence.evidence_id);
+    exact_marker = identity != nullptr && *identity == marker_uuid;
+  }
+  Require(exact_marker, "P4 lifecycle audit changed or textualized its marker identity");
+  lifecycle.cache_marker_uuid = std::string(kAlicePrincipalUuid);
+  const auto text_marker = api::EngineEmitLifecycleAuditEvent(lifecycle);
+  Require(!text_marker.ok && !text_marker.emitted && !text_marker.cache_marker_linked &&
+              HasDiagnostic(text_marker, "SECURITY.AUDIT.EVIDENCE_REQUIRED"),
+          "P4 lifecycle audit accepted a text UUID marker");
 
   api::EnginePurgeProtectedMaterialRequest purge;
   purge.context = Context(database_path);
@@ -963,17 +987,22 @@ void TestAuditAndProtectedMaterial(const std::filesystem::path& database_path) {
 }  // namespace
 
 int main() {
-  const auto temp_dir = MakeTempDir();
-  const auto database_path = temp_dir / "p4_security_auth_audit.sbdb";
-  CreateDatabaseFixture(database_path);
-  BeginFixtureTransaction(database_path);
-  TestAuthProviderManifestAndPolicy(database_path);
-  TestEngineAuthenticationAndPolicy(database_path);
-  TestAuthRegistryMethodPosture(database_path);
-  TestFederatedDirectoryAndMfaProviders(database_path);
-  TestWorkloadProxyTokenAndRefreshProviders(database_path);
-  TestAuditAndProtectedMaterial(database_path);
-  CommitFixtureTransaction(database_path);
-  std::filesystem::remove_all(temp_dir);
-  return EXIT_SUCCESS;
+  try {
+    scratchbird::tests::OwnedTempDirectory temp_dir;
+    const auto database_path = temp_dir.path() / "p4_security_auth_audit.sbdb";
+    CreateDatabaseFixture(database_path);
+    BeginFixtureTransaction(database_path);
+    TestAuthProviderManifestAndPolicy(database_path);
+    TestEngineAuthenticationAndPolicy(database_path);
+    TestAuthRegistryMethodPosture(database_path);
+    TestFederatedDirectoryAndMfaProviders(database_path);
+    TestWorkloadProxyTokenAndRefreshProviders(database_path);
+    TestAuditAndProtectedMaterial(database_path);
+    CommitFixtureTransaction(database_path);
+    temp_dir.Cleanup();
+    return EXIT_SUCCESS;
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }
