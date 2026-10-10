@@ -9,9 +9,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
+#include "transaction/transaction_api.hpp"
+#include "core/memory/memory.hpp"
 #include "catalog/catalog_object_lifecycle.hpp"
 #include "catalog/ddl_support_service.hpp"
 #include "catalog/pinned_descriptor_cache.hpp"
+#include "catalog/schema_tree_api.hpp"
+#include "catalog/name_registry.hpp"
 #include "ddl/create_api.hpp"
 
 #include <algorithm>
@@ -20,6 +27,7 @@
 #include <filesystem>
 #include <iostream>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unistd.h>
@@ -39,8 +47,7 @@ constexpr auto kPolicyUuid = scratchbird::tests::FixtureUuidLiteral("019f4000-00
 constexpr auto kUnrelatedUuid = scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-000000000301");
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -58,7 +65,7 @@ void RequireOk(const TResult& result, std::string_view message) {
   for (const auto& diagnostic : result.diagnostics) {
     std::cerr << "  " << diagnostic.code << ':' << diagnostic.detail << '\n';
   }
-  std::exit(EXIT_FAILURE);
+  Fail(message);
 }
 
 std::uint64_t NowMillis() {
@@ -68,40 +75,36 @@ std::uint64_t NowMillis() {
           .count());
 }
 
-std::filesystem::path TempPath() {
-  return std::filesystem::temp_directory_path() /
-         ("sb_ipar_catalog_ddl_support_" + std::to_string(NowMillis()) + "_" +
-          std::to_string(static_cast<long long>(getpid())) + ".sbdb");
-}
-
-void RemoveSidecars(const std::filesystem::path& path) {
-  std::filesystem::remove(path);
-  std::filesystem::remove(path.string() + ".sb.catalog_object_events");
-  std::filesystem::remove(path.string() + ".sb.api_events");
-  std::filesystem::remove(path.string() + ".sb.schema_tree");
-  std::filesystem::remove(path.string() + ".sb.schema_tree_events");
-  std::filesystem::remove(path.string() + ".sb.name_registry_events");
-}
-
 api::EngineRequestContext Context(const std::filesystem::path& path) {
-  api::EngineRequestContext context;
+  namespace db = scratchbird::storage::database;
+  namespace uuid = scratchbird::core::uuid;
+  using scratchbird::core::platform::UuidKind;
+  db::DatabaseCreateConfig create;
+  create.path = path.string();
+  const auto database = uuid::GenerateEngineIdentityV7(UuidKind::database, NowMillis());
+  const auto filespace = uuid::GenerateEngineIdentityV7(UuidKind::filespace, NowMillis());
+  Require(database.ok() && filespace.ok(), "catalog fixture identity generation");
+  create.database_uuid = database.value;
+  create.filespace_uuid = filespace.value;
+  create.creation_unix_epoch_millis = NowMillis();
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  const auto created = db::CreateDatabaseFile(create);
+  Require(created.ok(), "catalog fixture native database creation");
+  auto context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   context.request_id = "ipar-catalog-ddl-support-service-gate";
-  context.database_path = path.string();
-  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-00000000db01");
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-00000000aa01");
-  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-00000000bb01");
-  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-00000000cc01");
   context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-000000000001");
-  context.local_transaction_id = 42;
-  context.snapshot_visible_through_local_transaction_id = 42;
-  context.catalog_generation_id = 7;
-  context.security_epoch = 11;
-  context.resource_epoch = 13;
-  context.name_resolution_epoch = 17;
-  context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
+  api::EngineBeginTransactionRequest begin;
+  begin.context = context;
+  begin.isolation_level = "read_committed";
+  const auto begun = api::EngineBeginTransaction(begin);
+  RequireOk(begun, "catalog fixture real MGA begin");
+  context.local_transaction_id = begun.local_transaction_id;
+  context.transaction_uuid = begun.transaction_uuid;
+  context.snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
   return context;
 }
 
@@ -282,15 +285,6 @@ std::set<std::string> StagedKinds(
   return kinds;
 }
 
-std::string FieldValue(const api::EngineRowValue& row, std::string_view field_name) {
-  for (const auto& field : row.fields) {
-    if (field.first == field_name) {
-      return field.second.encoded_value;
-    }
-  }
-  return {};
-}
-
 bool IdentityFieldEquals(const api::EngineRowValue& row, std::string_view name,
                          const api::EngineUuid& identity) {
   for (const auto& [field, value] : row.fields) {
@@ -302,55 +296,161 @@ bool IdentityFieldEquals(const api::EngineRowValue& row, std::string_view name,
   return false;
 }
 
-bool HasEvidence(const api::EngineApiResult& result,
-                 std::string_view kind,
-                 std::string_view value) {
-  for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, value)) {
-      return true;
-    }
-  }
-  return false;
+api::EngineRequestContext BeginFresh(const api::EngineRequestContext& base) {
+  api::EngineBeginTransactionRequest begin;
+  begin.context = base;
+  begin.context.local_transaction_id = 0;
+  begin.context.transaction_uuid = {};
+  begin.context.snapshot_visible_through_local_transaction_id = 0;
+  begin.isolation_level = "read_committed";
+  const auto result = api::EngineBeginTransaction(begin);
+  RequireOk(result, "catalog observer MGA begin");
+  auto context = begin.context;
+  context.local_transaction_id = result.local_transaction_id;
+  context.transaction_uuid = result.transaction_uuid;
+  context.snapshot_visible_through_local_transaction_id =
+      result.snapshot_visible_through_local_transaction_id;
+  return context;
 }
 
-void ValidateDdlPublicationOptimizationEvidence(const api::EngineRequestContext& context) {
+void Rollback(const api::EngineRequestContext& context) {
+  api::EngineRollbackTransactionRequest rollback;
+  rollback.context = context;
+  RequireOk(api::EngineRollbackTransaction(rollback), "catalog fixture durable rollback");
+}
+
+void CheckSchemaVisibility(const api::EngineRequestContext& context,
+                           const api::EngineUuid& schema,
+                           const api::EngineUuid& row,
+                           std::string_view name, bool visible) {
+  api::EngineApiDiagnostic diagnostic;
+  const auto record = api::FindVisibleSchemaTreeRecord(
+      context, schema, context.local_transaction_id, diagnostic);
+  Require(!diagnostic.error, "schema readback refused");
+  Require(record.has_value() == visible, "schema transaction visibility mismatch");
+  if (record) {
+    Require(record->state == "active" && record->default_name == name,
+            "schema stored definition mismatch");
+    api::BinaryCatalogMetadata metadata;
+    std::vector<api::EngineLocalizedName> names;
+    std::vector<std::pair<std::string, std::string>> comments;
+    Require(api::DecodeSchemaTreeMetadata(record->payload, &names, &comments, &metadata),
+            "schema persisted metadata decode");
+    Require(api::BinaryCatalogUuid(metadata, "catalog_ddl_result_row_uuid") == row,
+            "returned schema catalog row identity was not persisted");
+  }
+  const auto names = api::LoadNameRegistryState(context, context.local_transaction_id);
+  Require(names.ok, "schema name readback refused");
+  std::size_t count = 0;
+  for (const auto& entry : names.state.entries) {
+    if (entry.object_uuid != schema || entry.deleted) continue;
+    ++count;
+    Require(!entry.derived_from_legacy_name && entry.object_class == "schema" &&
+                entry.raw_name_text == name &&
+                scratchbird::core::uuid::IsEngineIdentityUuid(entry.name_entry_uuid),
+            "schema must have actual binary-bound authoritative name record");
+  }
+  Require(count == (visible ? 1U : 0U), "schema name visibility/duplicate mismatch");
+}
+
+void ValidateDdlPublicationEffects(const api::EngineRequestContext& context) {
+  // A result identity is not an executed publication receipt. Assert real
+  // catalog/name reads and MGA finality instead of historical constant flags.
+  const auto observer = BeginFresh(context);
   api::EngineCreateSchemaRequest request;
   request.context = context;
   request.target_object = Object(scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-000000000777"), "schema");
   request.localized_names.push_back(Name("ipar_support_publication_schema"));
   const auto result = api::EngineCreateSchema(request);
   RequireOk(result, "IPAR DDL support create schema failed");
-  Require(HasEvidence(result, "ddl_validation_before_publish", "true"),
-          "IPAR DDL validation-before-publish evidence missing");
-  Require(HasEvidence(result, "ddl_prebuild_before_final_lock", "true"),
-          "IPAR DDL prebuild-before-lock evidence missing");
-  Require(HasEvidence(result, "ddl_epoch_invalidation", "catalog:schema_tree"),
-          "IPAR DDL epoch invalidation evidence missing");
-  Require(HasEvidence(result, "ddl_rollback_recovery_authority", "durable_transaction_inventory"),
-          "IPAR DDL rollback recovery authority evidence missing");
-  Require(HasEvidence(result, "ddl_uuid_result_shape", "uuid_first"),
-          "IPAR DDL UUID result shape evidence missing");
-  for (const auto& row : result.result_shape.rows) {
-    if (!IdentityFieldEquals(row, "ddl_result_object_uuid", request.target_object.uuid)) {
-      continue;
+  Require(result.primary_object.uuid == request.target_object.uuid &&
+              result.primary_object.object_kind == "schema" &&
+              scratchbird::core::uuid::IsEngineIdentityUuid(result.catalog_row_uuid) &&
+              result.catalog_row_uuid != request.target_object.uuid,
+          "schema result identity binding");
+  Require(std::any_of(result.result_shape.rows.begin(), result.result_shape.rows.end(),
+      [&](const auto& row) { return IdentityFieldEquals(row, "object_uuid", request.target_object.uuid); }),
+      "schema result object identity is not binary16");
+  CheckSchemaVisibility(context, request.target_object.uuid, result.catalog_row_uuid,
+                        request.localized_names.front().name, true);
+  CheckSchemaVisibility(observer, request.target_object.uuid, result.catalog_row_uuid,
+                        request.localized_names.front().name, false);
+  const auto journal_sizes = [&] {
+    return std::pair{
+      std::filesystem::file_size(context.database_path + ".sb.api_events.v2"),
+      std::filesystem::file_size(context.database_path + ".sb.name_events.v2")};
+  };
+  const auto before_refusals = journal_sizes();
+  const auto duplicate = api::EngineCreateSchema(request);
+  Require(!duplicate.ok && !duplicate.diagnostics.empty(), "duplicate schema must refuse");
+  auto conflict = request;
+  conflict.target_object.uuid = scratchbird::tests::FixtureUuid(910, 1);
+  const auto name_conflict = api::EngineCreateSchema(conflict);
+  Require(!name_conflict.ok && !name_conflict.diagnostics.empty(),
+          "duplicate schema name must refuse before publication");
+  auto recovery = request;
+  recovery.target_object.uuid = scratchbird::tests::FixtureUuid(910, 2);
+  recovery.localized_names = {Name("ipar_support_recovery_schema")};
+  recovery.recovery_operation_uuid = scratchbird::tests::FixtureUuid(910, 3);
+  recovery.requested_catalog_row_uuid = scratchbird::tests::FixtureUuid(910, 4);
+  recovery.mutation_uuid = scratchbird::tests::FixtureUuid(910, 5);
+  recovery.statement_publication_barrier_uuid = scratchbird::tests::FixtureUuid(910, 6);
+  recovery.option_envelopes.push_back(std::string("catalog_ddl_mutation_audit:") +
+      std::string(reinterpret_cast<const char*>(recovery.recovery_operation_uuid.bytes.data()), 16));
+  for (int member = 0; member != 4; ++member) {
+    for (const bool missing : {false, true}) {
+      auto bad = recovery;
+      auto* identity = member == 0 ? &bad.recovery_operation_uuid :
+          member == 1 ? &bad.requested_catalog_row_uuid :
+          member == 2 ? &bad.mutation_uuid : &bad.statement_publication_barrier_uuid;
+      if (missing) *identity = {};
+      else identity->bytes[6] = 0x40;  // UUIDv4 is valid data, not system authority.
+      const auto refused = api::EngineCreateSchema(bad);
+      Require(!refused.ok && !refused.diagnostics.empty(),
+              "malformed or partial recovery tuple must refuse");
     }
-    Require(FieldValue(row, "ddl_validation_before_publish") == "true",
-            "IPAR DDL publication row validation-before-publish mismatch");
-    Require(FieldValue(row, "ddl_prebuild_before_final_lock") == "true",
-            "IPAR DDL publication row prebuild-before-lock mismatch");
-    Require(FieldValue(row, "ddl_final_publish_lock_scope") ==
-                "catalog_epoch_publish_only",
-            "IPAR DDL publication row final lock scope mismatch");
-    Require(FieldValue(row, "ddl_epoch_invalidation") == "catalog:schema_tree",
-            "IPAR DDL publication row epoch invalidation mismatch");
-    Require(FieldValue(row, "ddl_dependency_proof") == "schema_tree",
-            "IPAR DDL publication row dependency proof mismatch");
-    Require(FieldValue(row, "ddl_rollback_recovery_authority") ==
-                "durable_transaction_inventory",
-            "IPAR DDL publication row rollback authority mismatch");
-    return;
   }
-  Fail("IPAR DDL publication optimization row missing");
+  Require(journal_sizes() == before_refusals, "refused schema request wrote catalog effects");
+  CheckSchemaVisibility(context, request.target_object.uuid, result.catalog_row_uuid,
+                        request.localized_names.front().name, true);
+  const auto recovered = api::EngineCreateSchema(recovery);
+  RequireOk(recovered, "exact schema recovery identity create");
+  Require(recovered.catalog_row_uuid == recovery.requested_catalog_row_uuid,
+          "schema recovery changed the requested binary row identity");
+  const auto before_replay = journal_sizes();
+  const auto replay = api::EngineCreateSchema(recovery);
+  RequireOk(replay, "exact schema recovery replay");
+  Require(replay.catalog_row_uuid == recovered.catalog_row_uuid &&
+              journal_sizes() == before_replay, "schema recovery replay duplicated effects");
+  CheckSchemaVisibility(context, recovery.target_object.uuid, recovered.catalog_row_uuid,
+                        recovery.localized_names.front().name, true);
+  auto conflicting_replay = recovery;
+  conflicting_replay.requested_catalog_row_uuid = scratchbird::tests::FixtureUuid(910, 7);
+  Require(!api::EngineCreateSchema(conflicting_replay).ok && journal_sizes() == before_replay,
+          "conflicting schema replay changed durable identity");
+  Rollback(context);
+  Rollback(observer);
+  const auto reopened = BeginFresh(context);
+  CheckSchemaVisibility(reopened, request.target_object.uuid, result.catalog_row_uuid,
+                        request.localized_names.front().name, false);
+  CheckSchemaVisibility(reopened, recovery.target_object.uuid, recovered.catalog_row_uuid,
+                        recovery.localized_names.front().name, false);
+  request.context = reopened;
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral(
+      "019f4000-0000-7000-8000-000000000778");
+  const auto committed_schema = api::EngineCreateSchema(request);
+  RequireOk(committed_schema, "schema create after rollback");
+  Require(committed_schema.catalog_row_uuid != result.catalog_row_uuid,
+          "a rolled-back catalog row identity must not be reused");
+  api::EngineCommitTransactionRequest commit;
+  commit.context = reopened;
+  const auto committed = api::EngineCommitTransaction(commit);
+  RequireOk(committed, "schema durable commit");
+  Require(committed.engine_finality_known, "schema commit finality unknown");
+  const auto reader = BeginFresh(context);
+  CheckSchemaVisibility(reader, request.target_object.uuid, committed_schema.catalog_row_uuid,
+                        request.localized_names.front().name, true);
+  Rollback(reader);
 }
 
 void ValidateRcuPublisher() {
@@ -408,6 +508,8 @@ api::EngineCatalogDdlSupportRequest SupportRequest(
       Object(scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-000000000408"), "policy"),
   };
   request.columns.push_back(Column("id", 0));
+  scratchbird::tests::BindFixtureColumnDatatype(context,
+      scratchbird::core::datatypes::CanonicalTypeId::int64, request.columns.back());
   request.indexes.push_back(IndexDefinition());
   request.constraints.push_back(ConstraintDefinition());
 
@@ -542,16 +644,22 @@ void ValidateSupportService(const api::EngineRequestContext& context) {
 }  // namespace
 
 int main() {
-  const auto path = TempPath();
-  RemoveSidecars(path);
-  const auto context = Context(path);
+  try {
+  namespace mem = scratchbird::core::memory;
+  Require(mem::ConfigureDefaultMemoryManagerForFixture(mem::DefaultLocalEngineMemoryPolicy(),
+      "ipar_catalog_ddl_support_service_gate").ok(), "catalog fixture memory policy");
+  scratchbird::tests::OwnedTempDirectory cleanup;
+  const auto context = Context(cleanup.path() / "catalog.sbdb");
 
   CreateDependencyFixture(context);
   ValidateSupportService(context);
   ValidateRcuPublisher();
-  ValidateDdlPublicationOptimizationEvidence(context);
-
-  RemoveSidecars(path);
+  ValidateDdlPublicationEffects(context);
+  cleanup.Cleanup();
   std::cout << "ipar_catalog_ddl_support_service_gate=passed\n";
   return EXIT_SUCCESS;
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }

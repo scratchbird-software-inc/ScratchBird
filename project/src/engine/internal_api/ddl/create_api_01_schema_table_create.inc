@@ -247,6 +247,16 @@ EngineCreateSchemaResult EngineCreateSchema(const EngineCreateSchemaRequest& req
         "ddl.create_schema",
         MakeInvalidRequestDiagnostic("ddl.create_schema", "recovery_identity_tuple_incomplete"));
   }
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(schema_uuid) ||
+      (exact_recovery_identity &&
+       (!scratchbird::core::uuid::IsEngineIdentityUuid(request.recovery_operation_uuid) ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(request.requested_catalog_row_uuid) ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(request.mutation_uuid) ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(request.statement_publication_barrier_uuid)))) {
+    return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
+        request.context, "ddl.create_schema",
+        MakeInvalidRequestDiagnostic("ddl.create_schema", "schema_identity_tuple_invalid"));
+  }
   const EngineUuid parent_schema_uuid = request.target_schema.uuid;
   EngineApiDiagnostic schema_diagnostic;
   const auto parent_schema = FindVisibleSchemaTreeRecord(request.context, parent_schema_uuid,

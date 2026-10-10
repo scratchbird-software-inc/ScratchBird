@@ -12,6 +12,16 @@
           UnsupportedCrudFeatureDiagnostic("ddl.create_schema", "unsupported_schema_option"));
     }
   }
+  // Bind the result row before persisting it. Generating a row UUID only in
+  // the response invents an identity that catalog readback cannot establish.
+  const EngineUuid catalog_row_uuid = exact_recovery_identity
+      ? request.requested_catalog_row_uuid : GenerateCrudEngineUuid("row");
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(catalog_row_uuid)) {
+    return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
+        request.context, "ddl.create_schema",
+        MakeInvalidRequestDiagnostic("ddl.create_schema", "catalog_row_identity_unavailable"));
+  }
+  schema_extensions.identities["catalog_ddl_result_row_uuid"] = catalog_row_uuid;
   if (exact_recovery_identity) {
     if (BinaryCatalogUuid(schema_extensions,"catalog_ddl_mutation_audit") !=
         request.recovery_operation_uuid) {
@@ -23,7 +33,6 @@
               "recovery_operation_does_not_match_mutation_audit"));
     }
     schema_extensions.identities["catalog_ddl_recovery_operation"]=request.recovery_operation_uuid;
-    schema_extensions.identities["catalog_ddl_result_row_uuid"]=request.requested_catalog_row_uuid;
     schema_extensions.identities["catalog_ddl_mutation_uuid"]=request.mutation_uuid;
     schema_extensions.identities["catalog_ddl_statement_publication_barrier"]=request.statement_publication_barrier_uuid;
   }
@@ -129,10 +138,7 @@
   auto result = MakeApiBehaviorSuccess<EngineCreateSchemaResult>(request.context, "ddl.create_schema");
   result.primary_object.uuid = record.schema_uuid;
   result.primary_object.object_kind = "schema";
-  result.catalog_row_uuid =
-      exact_recovery_identity
-          ? request.requested_catalog_row_uuid
-          : GenerateCrudEngineUuid("row");
+  result.catalog_row_uuid = catalog_row_uuid;
   AddApiBehaviorEvidence(&result, "api_behavior_event", "ddl.create_schema");
   AddApiBehaviorEvidence(&result, "schema", record.schema_uuid);
   for (const auto& [key,value]:schema_extensions.text) AddApiBehaviorEvidence(&result,key,value);
