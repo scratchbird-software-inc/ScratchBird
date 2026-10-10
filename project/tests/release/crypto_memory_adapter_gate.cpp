@@ -6,6 +6,7 @@
 #include <openssl/crypto.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cerrno>
@@ -254,26 +255,38 @@ void OpenPgpChecks(Grant& grant,h::CryptoMemoryPool& process,h::CryptoMemoryPool
         {plaintext.data(),plaintext.size()},{body.data(),body.size()})==Code::ok,"PGP process cache warmup");
       Check(pgp::DecryptSeipdV2({key.data(),16+(cipher-7)*8},{body.data(),body.size()},
         {recovered.data(),recovered.size()})==Code::ok&&recovered==plaintext,"PGP receive cache warmup");
+      std::vector<unsigned char> session_body(pgp::IteratedSkeskV6Size(cipher,aead,16+(cipher-7)*8).bytes);
+      std::array<unsigned char,32> session_key{};
+      Check(pgp::EncryptIteratedSkeskV6(cipher,aead,0,{plaintext.data(),plaintext.size()},{salt.data(),8},
+        {salt.data(),aead==2?15u:12u},{key.data(),16+(cipher-7)*8},{session_body.data(),session_body.size()})==Code::ok,"SKESK process cache warmup");
+      Check(pgp::DecryptIteratedSkeskV6({plaintext.data(),plaintext.size()},{session_body.data(),session_body.size()},
+        {session_key.data(),16+(cipher-7)*8})==Code::ok&&!std::memcmp(session_key.data(),key.data(),16+(cipher-7)*8),"SKESK receive cache warmup");
     }
     OPENSSL_thread_stop();
   }
-  for(unsigned cipher=7;cipher<=9;++cipher)for(unsigned aead:{2u,3u}){
+  for(unsigned cipher=7;cipher<=9;++cipher)for(unsigned aead:{2u,3u})for(bool session:{false,true}){
     const pgp::SeipdProfile profile{static_cast<unsigned char>(cipher),static_cast<unsigned char>(aead),0};
-    std::vector<unsigned char> body(pgp::SeipdEncryptedSize(profile,plaintext.size()).bytes);
+    const std::size_t key_size=16+(cipher-7)*8;
+    std::vector<unsigned char> body(session?pgp::IteratedSkeskV6Size(cipher,aead,key_size).bytes:pgp::SeipdEncryptedSize(profile,plaintext.size()).bytes);
+    std::vector<unsigned char> decoded(session?key_size:plaintext.size(),0xa5);
+    const auto encrypt=[&]{return session?pgp::EncryptIteratedSkeskV6(cipher,aead,0,{plaintext.data(),plaintext.size()},
+      {salt.data(),8},{salt.data(),aead==2?15u:12u},{key.data(),key_size},{body.data(),body.size()}):
+      pgp::EncryptSeipdV2(profile,{key.data(),key_size},{salt.data(),salt.size()},{plaintext.data(),plaintext.size()},{body.data(),body.size()});};
+    const auto decrypt=[&]{return session?pgp::DecryptIteratedSkeskV6({plaintext.data(),plaintext.size()},
+      {body.data(),body.size()},{decoded.data(),decoded.size()}):pgp::DecryptSeipdV2({key.data(),key_size},
+      {body.data(),body.size()},{decoded.data(),decoded.size()});};
+    const auto exact=[&]{return !std::memcmp(decoded.data(),session?key.data():plaintext.data(),decoded.size());};
     {
       h::CryptoMemoryScope active(operation,binding);Check(active.ok(),"PGP admitted binary operation scope");
       const auto before=operation.Snapshot();deny_cpp=true;
-      const auto encrypted=pgp::EncryptSeipdV2(profile,{key.data(),16+(cipher-7)*8},{salt.data(),salt.size()},
-        {plaintext.data(),plaintext.size()},{body.data(),body.size()});
-      const auto decrypted=pgp::DecryptSeipdV2({key.data(),16+(cipher-7)*8},{body.data(),body.size()},
-        {recovered.data(),recovered.size()});deny_cpp=false;
-      Check(encrypted==Code::ok&&decrypted==Code::ok&&recovered==plaintext,"PGP executes without C++ heap fallback");
+      const auto encrypted=encrypt();
+      const auto decrypted=decrypt();deny_cpp=false;
+      Check(encrypted==Code::ok&&decrypted==Code::ok&&exact(),"PGP executes without C++ heap fallback");
       const auto after=operation.Snapshot();
       Check(after.observation_error==E::none&&after.allocations>before.allocations,"PGP actual provider allocations charged to binary operation");
-      body.back()^=1;recovered.fill(0xa5);deny_cpp=true;
-      const auto corrupted=pgp::DecryptSeipdV2({key.data(),16+(cipher-7)*8},{body.data(),body.size()},
-        {recovered.data(),recovered.size()});deny_cpp=false;body.back()^=1;
-      Check(corrupted==Code::authentication_failed&&zero(recovered),"accounted PGP authentication failure erases staging");
+      body.back()^=1;std::fill(decoded.begin(),decoded.end(),0xa5);deny_cpp=true;
+      const auto corrupted=decrypt();deny_cpp=false;body.back()^=1;
+      Check(corrupted==Code::authentication_failed&&zero(decoded),"accounted PGP authentication failure erases staging");
       OPENSSL_thread_stop();
     }
     Check(!operation.Snapshot().live_blocks,"PGP actual operation allocation drain after thread cleanup");
@@ -282,9 +295,8 @@ void OpenPgpChecks(Grant& grant,h::CryptoMemoryPool& process,h::CryptoMemoryPool
     Check(operation.Open(binding,backing,half)==E::none,"PGP sealed grant fixture");
     {
       h::CryptoMemoryScope sealed(operation,binding,true);Check(sealed.ok(),"PGP no-allocation admission");
-      recovered.fill(0xa5);
-      Check(pgp::DecryptSeipdV2({key.data(),16+(cipher-7)*8},{body.data(),body.size()},
-        {recovered.data(),recovered.size()})==Code::provider_failure&&zero(recovered),"PGP refuses sealed provider allocation");
+      std::fill(decoded.begin(),decoded.end(),0xa5);
+      Check(decrypt()==Code::provider_failure&&zero(decoded),"PGP refuses sealed provider allocation");
       const auto snapshot=operation.Snapshot();
       refused_before_allocation=snapshot.observation_error==E::none&&!snapshot.allocations&&snapshot.refusals>0;
       OPENSSL_thread_stop();
@@ -294,13 +306,12 @@ void OpenPgpChecks(Grant& grant,h::CryptoMemoryPool& process,h::CryptoMemoryPool
       Check(operation.Open(binding,backing,size)==E::none,"PGP bounded actual-grant partition");
       {
         h::CryptoMemoryScope active(operation,binding);Check(active.ok(),"PGP bounded operation scope");
-        recovered.fill(0xa5);deny_cpp=true;
-        const auto result=pgp::DecryptSeipdV2({key.data(),16+(cipher-7)*8},{body.data(),body.size()},
-          {recovered.data(),recovered.size()});deny_cpp=false;
+        std::fill(decoded.begin(),decoded.end(),0xa5);deny_cpp=true;
+        const auto result=decrypt();deny_cpp=false;
         const auto snapshot=operation.Snapshot();Check(snapshot.observation_error==E::none,"PGP capacity observation authoritative");
-        if(result==Code::ok){success=true;Check(recovered==plaintext,"PGP capacity success exact bytes");}
+        if(result==Code::ok){success=true;Check(exact(),"PGP capacity success exact bytes");}
         else{
-          Check(result==Code::provider_failure&&zero(recovered)&&snapshot.refusals>0,"PGP actual capacity refusal clears private output");
+          Check(result==Code::provider_failure&&zero(decoded)&&snapshot.refusals>0,"PGP actual capacity refusal clears private output");
           if(snapshot.allocations)refused_partial=true;
         }
         OPENSSL_thread_stop();

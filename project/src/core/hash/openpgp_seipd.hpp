@@ -38,4 +38,22 @@ PgpCode EncryptSeipdV2(SeipdProfile, PgpInput key, PgpInput salt,
                       PgpInput plaintext, PgpOutput body, PgpCancellation = {});
 PgpCode DecryptSeipdV2(PgpInput key, PgpInput body,
                       PgpOutput plaintext, PgpCancellation = {});
+
+// Explicit RFC9580 type-3 (iterated/salted SHA256) S2K profile; this is NOT an
+// Argon2 implementation or an automatic password-policy/default selection.
+// Counts encode HASHED OCTETS, not iteration counts. Each call hashes at least
+// one entire salt+password. Caller must admit that CPU work before entry.
+// Body includes v6 SKESK header, S2K specifier, nonce, wrapped key and tag, but
+// excludes the outer packet header. The packet's cipher determines the wrapping
+// key size; the wrapped AES session key independently has 16, 24 or 32 bytes.
+// All private-staging, cleanup and caller-admission rules above still apply.
+// Salt is exactly 8 fresh Core-RNG bytes; nonce is 15 OCB or 12 GCM bytes.
+// Structural inspection is not password verification or authentication.
+PgpSize IteratedSkeskV6Size(std::uint8_t cipher, std::uint8_t aead, std::size_t session_key_bytes) noexcept;
+PgpSize IteratedSkeskV6KeySize(PgpInput body) noexcept;
+PgpCode EncryptIteratedSkeskV6(std::uint8_t cipher, std::uint8_t aead,
+    std::uint8_t encoded_count, PgpInput password, PgpInput salt, PgpInput nonce,
+    PgpInput session_key, PgpOutput body, PgpCancellation = {});
+PgpCode DecryptIteratedSkeskV6(PgpInput password, PgpInput body,
+    PgpOutput session_key, PgpCancellation = {});
 }  // namespace scratchbird::core::crypto

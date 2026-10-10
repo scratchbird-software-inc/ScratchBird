@@ -60,7 +60,7 @@ const EVP_CIPHER* Cipher(SeipdProfile p) {
   if (p.cipher == 8) return EVP_aes_192_gcm();
   return EVP_aes_256_gcm();
 }
-bool Derive(PgpInput key, PgpInput salt, const std::array<unsigned char, 13>& aad,
+bool Derive(PgpInput key, PgpInput salt, PgpInput info,
             std::uint8_t* output, std::size_t size) {
   std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)> ctx(
       EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, nullptr), EVP_PKEY_CTX_free);
@@ -68,7 +68,7 @@ bool Derive(PgpInput key, PgpInput salt, const std::array<unsigned char, 13>& aa
       EVP_PKEY_CTX_set_hkdf_md(ctx.get(), EVP_sha256()) <= 0 ||
       EVP_PKEY_CTX_set1_hkdf_salt(ctx.get(), salt.data, static_cast<int>(salt.size)) <= 0 ||
       EVP_PKEY_CTX_set1_hkdf_key(ctx.get(), key.data, static_cast<int>(key.size)) <= 0 ||
-      EVP_PKEY_CTX_add1_hkdf_info(ctx.get(), aad.data(), 5) <= 0) return false;
+      EVP_PKEY_CTX_add1_hkdf_info(ctx.get(), info.data, static_cast<int>(info.size)) <= 0) return false;
   auto actual = size;
   return EVP_PKEY_derive(ctx.get(), output, &actual) > 0 && actual == size;
 }
@@ -122,7 +122,7 @@ PgpCode Process(bool encrypt, SeipdProfile profile, PgpInput key, PgpInput salt,
     Secret<15> nonce;
     std::array<unsigned char, 13> aad{0xd2, 2, profile.cipher, profile.aead, profile.chunk};
     const auto nonce_size = NonceSize(profile), key_size = KeySize(profile);
-    if (!Derive(key, salt, aad, material.bytes.data(), key_size + nonce_size - 8))
+    if (!Derive(key, salt, {aad.data(), 5}, material.bytes.data(), key_size + nonce_size - 8))
       return PgpCode::provider_failure;
     std::memcpy(nonce.bytes.data(), material.bytes.data() + key_size, nonce_size - 8);
     const auto* cipher = Cipher(profile);
@@ -160,6 +160,83 @@ PgpCode Process(bool encrypt, SeipdProfile profile, PgpInput key, PgpInput salt,
   if (result != PgpCode::ok) return result;
   if (Cancelled(cancellation)) return PgpCode::cancelled;
   pending.accepted = true;
+  return PgpCode::ok;
+}
+
+PgpCode IteratedKey(PgpInput password, PgpInput salt, std::uint8_t encoded,
+    std::uint8_t* key, PgpCancellation cancellation) {
+  // Avoid millions of provider calls for short passwords: fill a bounded
+  // whole-period buffer once, then reuse it. Long passwords remain borrowed.
+  Secret<4096> repeated;
+  const auto period = password.size + salt.size; // Checked by public entry.
+  const std::size_t count = (std::size_t{16} + (encoded & 15)) << ((encoded >> 4) + 6);
+  auto remaining = std::max(count, period);
+  std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
+  if (!ctx || EVP_DigestInit_ex(ctx.get(), EVP_sha256(), nullptr) != 1)
+    return PgpCode::provider_failure;
+  std::size_t batch = 0;
+  if (period <= repeated.bytes.size()) {
+    batch = repeated.bytes.size() / period * period;
+    std::memcpy(repeated.bytes.data(), salt.data, salt.size);
+    if (password.size) std::memcpy(repeated.bytes.data() + salt.size, password.data, password.size);
+    for (std::size_t filled = period; filled < batch;) {
+      const auto n = std::min(filled, batch - filled);
+      std::memcpy(repeated.bytes.data() + filled, repeated.bytes.data(), n);
+      filled += n;
+    }
+  }
+  std::size_t offset = 0;
+  while (remaining) {
+    if (Cancelled(cancellation)) return PgpCode::cancelled;
+    const auto* source = repeated.bytes.data();
+    std::size_t n;
+    if (batch) n = std::min(remaining, batch);
+    else {
+      const bool in_salt = offset < salt.size;
+      source = in_salt ? salt.data + offset : password.data + offset - salt.size;
+      n = std::min({remaining, std::size_t{4096}, (in_salt ? salt.size : period) - offset});
+      offset += n;
+      if (offset == period) offset = 0;
+    }
+    if (EVP_DigestUpdate(ctx.get(), source, n) != 1) return PgpCode::provider_failure;
+    remaining -= n;
+  }
+  unsigned actual = 0;
+  return EVP_DigestFinal_ex(ctx.get(), key, &actual) == 1 && actual == 32 ?
+      PgpCode::ok : PgpCode::provider_failure;
+}
+
+PgpCode SessionKey(bool encrypt, SeipdProfile p, std::uint8_t count, PgpInput password,
+    PgpInput salt, PgpInput nonce, PgpInput input, PgpOutput output, PgpCancellation cancellation) {
+  OutputOwner pending{output};
+  if (Cancelled(cancellation)) return PgpCode::cancelled;
+  {
+    Secret<32> s2k, kek;
+    const auto derived = IteratedKey(password, salt, count, s2k.bytes.data(), cancellation);
+    if (derived != PgpCode::ok) return derived;
+    const std::array<unsigned char,4> info{0xc3,6,p.cipher,p.aead};
+    const auto key_size = KeySize(p), start = 16 + nonce.size;
+    const auto wrapped_size = encrypt ? input.size : output.size;
+    if (!Derive({s2k.bytes.data(),key_size},{},{info.data(),info.size()},kek.bytes.data(),key_size))
+      return PgpCode::provider_failure;
+    const auto* cipher = Cipher(p);
+    std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)> ctx(EVP_CIPHER_CTX_new(),EVP_CIPHER_CTX_free);
+    if (!cipher || !ctx) return PgpCode::provider_failure;
+    if (encrypt) {
+      const std::array<unsigned char,7> header{6,static_cast<unsigned char>(14+nonce.size),p.cipher,p.aead,11,3,8};
+      std::memcpy(output.data,header.data(),header.size());
+      std::memcpy(output.data+7,salt.data,8);
+      output.data[15]=count;
+      std::memcpy(output.data+16,nonce.data,nonce.size);
+    }
+    const auto result = Chunk(ctx.get(),cipher,encrypt,{kek.bytes.data(),key_size},nonce,
+        {info.data(),info.size()}, {encrypt?input.data:input.data+start,wrapped_size},
+        {encrypt?output.data+start:output.data,wrapped_size},
+        encrypt?nullptr:input.data+start+wrapped_size,encrypt?output.data+start+wrapped_size:nullptr,cancellation);
+    if (result != PgpCode::ok) return result;
+  }
+  if (Cancelled(cancellation)) return PgpCode::cancelled;
+  pending.accepted=true;
   return PgpCode::ok;
 }
 }  // namespace
@@ -200,5 +277,46 @@ PgpCode DecryptSeipdV2(PgpInput key, PgpInput body, PgpOutput plaintext, PgpCanc
   SeipdProfile p{body.data[1], body.data[2], body.data[3]};
   if (key.size != KeySize(p) || plaintext.size != size.bytes) return PgpCode::invalid_extent;
   return Process(false, p, key, {body.data + 4, 32}, body, plaintext, size.bytes, cancellation);
+}
+PgpSize IteratedSkeskV6Size(std::uint8_t cipher,std::uint8_t aead,std::size_t session_key_bytes) noexcept {
+  const SeipdProfile p{cipher,aead,0};
+  if (!ProfileValid(p)) return {PgpCode::invalid_profile,0};
+  if (session_key_bytes!=16 && session_key_bytes!=24 && session_key_bytes!=32)
+    return {PgpCode::invalid_extent,0};
+  return {PgpCode::ok,16+NonceSize(p)+session_key_bytes+kTag};
+}
+PgpSize IteratedSkeskV6KeySize(PgpInput body) noexcept {
+  if (!Extent(body)) return {PgpCode::invalid_extent,0};
+  if (body.size<16 || body.data[0]!=6) return {PgpCode::invalid_packet,0};
+  const SeipdProfile p{body.data[2],body.data[3],0};
+  if (!ProfileValid(p)) return {PgpCode::invalid_profile,0};
+  const auto overhead=16+NonceSize(p)+kTag;
+  if (body.size<overhead || body.data[1]!=14+NonceSize(p) || body.data[4]!=11 ||
+      body.data[5]!=3 || body.data[6]!=8) return {PgpCode::invalid_packet,0};
+  const auto size=body.size-overhead;
+  if (size!=16 && size!=24 && size!=32) return {PgpCode::invalid_packet,0};
+  return {PgpCode::ok,size};
+}
+PgpCode EncryptIteratedSkeskV6(std::uint8_t cipher,std::uint8_t aead,std::uint8_t encoded_count,
+    PgpInput password,PgpInput salt,PgpInput nonce,PgpInput session_key,PgpOutput body,PgpCancellation cancellation) {
+  const auto expected=IteratedSkeskV6Size(cipher,aead,session_key.size);
+  if (expected.code!=PgpCode::ok) return expected.code;
+  const SeipdProfile p{cipher,aead,0};
+  if (!Buffers(body,password,salt,nonce) || !Extent(session_key) ||
+      Overlaps({body.data,body.size},session_key) || salt.size!=8 || nonce.size!=NonceSize(p) ||
+      body.size!=expected.bytes ||
+      password.size>std::numeric_limits<std::size_t>::max()-8 ||
+      password.size>std::numeric_limits<std::uint64_t>::max()/8-8) return PgpCode::invalid_extent;
+  return SessionKey(true,p,encoded_count,password,salt,nonce,session_key,body,cancellation);
+}
+PgpCode DecryptIteratedSkeskV6(PgpInput password,PgpInput body,PgpOutput session_key,PgpCancellation cancellation) {
+  if (!Buffers(session_key,password,body) || password.size>std::numeric_limits<std::size_t>::max()-8 ||
+      password.size>std::numeric_limits<std::uint64_t>::max()/8-8)
+    return PgpCode::invalid_extent;
+  const auto expected=IteratedSkeskV6KeySize(body);
+  if (expected.code!=PgpCode::ok) return expected.code;
+  if (session_key.size!=expected.bytes) return PgpCode::invalid_extent;
+  const SeipdProfile p{body.data[2],body.data[3],0};
+  return SessionKey(false,p,body.data[15],password,{body.data+7,8},{body.data+16,NonceSize(p)},body,session_key,cancellation);
 }
 }  // namespace scratchbird::core::crypto

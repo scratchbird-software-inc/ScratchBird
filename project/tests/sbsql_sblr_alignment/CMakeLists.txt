@@ -94,7 +94,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_options(sbsql_sblr_alignment_openpgp_seipd PRIVATE
     "-Wl,--wrap=EVP_PKEY_CTX_new_id" "-Wl,--wrap=EVP_PKEY_derive"
     "-Wl,--wrap=EVP_CIPHER_CTX_new" "-Wl,--wrap=EVP_CipherInit_ex"
-    "-Wl,--wrap=EVP_CipherUpdate" "-Wl,--wrap=EVP_CipherFinal_ex" "-Wl,--wrap=EVP_CIPHER_CTX_ctrl")
+    "-Wl,--wrap=EVP_CipherUpdate" "-Wl,--wrap=EVP_CipherFinal_ex" "-Wl,--wrap=EVP_CIPHER_CTX_ctrl"
+    "-Wl,--wrap=EVP_MD_CTX_new" "-Wl,--wrap=EVP_DigestInit_ex"
+    "-Wl,--wrap=EVP_DigestUpdate" "-Wl,--wrap=EVP_DigestFinal_ex")
 endif()
 add_test(NAME sbsql_sblr_alignment_openpgp_seipd COMMAND sbsql_sblr_alignment_openpgp_seipd)
 set_tests_properties(sbsql_sblr_alignment_openpgp_seipd PROPERTIES
