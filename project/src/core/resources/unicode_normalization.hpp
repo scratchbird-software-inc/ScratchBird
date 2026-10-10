@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <memory_resource>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -33,6 +34,10 @@ class UnicodeNormalizationData final {
   // All failures preserve output, including allocation failure and aliasing.
   UnicodeNormalizationStatus NormalizeNfd(std::string_view input,
       std::size_t byte_limit, std::string* output) const noexcept;
+  // Every dynamic scratch allocation uses output's memory resource, including
+  // stable canonical ordering. The caller retains that resource through output.
+  UnicodeNormalizationStatus NormalizeNfdWithMemory(std::string_view input,
+      std::size_t byte_limit, std::pmr::string* output) const noexcept;
   std::uint8_t CombiningClass(std::uint32_t scalar) const noexcept;
   bool IsAssigned(std::uint32_t scalar) const noexcept;
 
@@ -46,7 +51,9 @@ class UnicodeNormalizationData final {
   UnicodeNormalizationData() = default;
   const Entry* Find(std::uint32_t scalar) const noexcept;
   bool Decompose(std::uint32_t scalar, std::size_t byte_limit,
-      std::size_t& bytes, std::vector<std::uint32_t>& output, unsigned depth) const;
+      std::size_t& bytes, std::pmr::vector<std::uint32_t>& output, unsigned depth) const;
+  template<class String> UnicodeNormalizationStatus NormalizeNfdImpl(
+      std::string_view, std::size_t, String*, std::pmr::memory_resource*) const noexcept;
   std::vector<Entry> entries_;
   std::vector<std::array<std::uint32_t, 2>> assigned_ranges_;
 };

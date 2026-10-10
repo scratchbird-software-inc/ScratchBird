@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "unicode_collation.hpp"
 #include "hash_digest.hpp"
+#include "../support/bounded_memory_resource_probe.hpp"
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -28,6 +29,7 @@ void operator delete[](void* p) noexcept { std::free(p); }
 void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 void operator delete(void* p, const std::nothrow_t&) noexcept { std::free(p); }
 void operator delete[](void* p, const std::nothrow_t&) noexcept { std::free(p); }
+#include "../support/aligned_allocation_fault_bridge.hpp"
 namespace {
 unsigned checks = 0, failures = 0;
 void Check(bool valid, const char* label) {
@@ -149,6 +151,14 @@ void Cases(const r::UnicodeCollationData& data, const r::UnicodeNormalizationDat
     else Check(result == S::allocation_failure && key == "sentinel", "key OOM not atomic");
   }
   Check(completed, "key OOM sweep incomplete");
+  std::string disorder;
+  for(unsigned i=0;i<128;++i)disorder+=Sequence("0315 0323 0301");
+  disorder+="abc";
+  Check(data.MakeSortKey(disorder,Level::identical,{4096,8192},&expected)==S::ok,"bounded UCA baseline");
+  scratchbird::test_support::QualifyBoundedUnicodeMemory(
+      [&](std::pmr::string* result){return data.MakeSortKeyWithMemory(disorder,Level::identical,{4096,8192},result);},
+      Check,expected,S::ok,S::allocation_failure);
+  Check(data.MakeSortKeyWithMemory("a",Level::primary,{1,2},nullptr)==S::invalid_argument,"null bounded UCA output");
   std::string tibetan;
   for (unsigned i = 0; i < 20000; ++i) tibetan += Utf8(0xf71);
   Check(data.MakeSortKey(tibetan, Level::tertiary, {100000, 200000}, &key) == S::ok,

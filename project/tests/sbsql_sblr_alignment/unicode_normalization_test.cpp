@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "unicode_normalization.hpp"
 #include "hash_digest.hpp"
+#include "../support/bounded_memory_resource_probe.hpp"
 
 #include <array>
 #include <cstdlib>
@@ -33,6 +34,7 @@ void operator delete(void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 void operator delete[](void* p) noexcept { std::free(p); }
 void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+#include "../support/aligned_allocation_fault_bridge.hpp"
 namespace {
 unsigned checks = 0, failures = 0;
 void Check(bool value, const char* message) {
@@ -151,11 +153,18 @@ void Negatives(const std::string& bytes, const std::shared_ptr<const r::UnicodeN
     const bool exhausted = fail_after == 0; fail_after = -1;
     if (result == Status::ok) {
       Check(output == expected, "OOM fallback changed normalization");
-      // stable_sort may use an allocation-free fallback after nothrow failure.
+      // A successful call must reach its full allocation path without failure.
       if (!exhausted) { completed = true; break; }
     } else Check(result == Status::allocation_failure && output == "sentinel", "NFD OOM not atomic");
   }
   Check(completed && faults > 10, "normalization allocation sweep incomplete");
+  std::string disorder;
+  for(unsigned i=0;i<128;++i)disorder+=Sequence("0315 0323 0301");
+  Check(data->NormalizeNfd(disorder,4096,&expected)==Status::ok,"bounded NFD baseline");
+  scratchbird::test_support::QualifyBoundedUnicodeMemory(
+      [&](std::pmr::string* result){return data->NormalizeNfdWithMemory(disorder,4096,result);},
+      Check,expected,Status::ok,Status::allocation_failure);
+  Check(data->NormalizeNfdWithMemory("a",1,nullptr)==Status::invalid_argument,"null bounded NFD output");
 }
 } // namespace
 int main() {

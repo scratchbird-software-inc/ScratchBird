@@ -28,7 +28,7 @@ bool Scalar(std::uint32_t value) {
 unsigned Width(std::uint32_t value) {
   return value <= 0x7f ? 1 : value <= 0x7ff ? 2 : value <= 0xffff ? 3 : 4;
 }
-void Append(std::uint32_t scalar, std::string& out) {
+template<class String> void Append(std::uint32_t scalar, String& out) {
   const auto width = Width(scalar);
   if (width == 1) { out.push_back(static_cast<char>(scalar)); return; }
   out.push_back(static_cast<char>((width == 2 ? 0xc0 : width == 3 ? 0xe0 : 0xf0) |
@@ -115,7 +115,7 @@ UnicodeNormalizationStatus UnicodeNormalizationData::Load17(
     if (in_range) return Status::invalid_resource;
     // Check graph termination and the full expansion budget before publication.
     // This is defense in depth; a modified/truncated artifact fails its digest.
-    std::vector<std::uint32_t> expanded;
+    std::pmr::vector<std::uint32_t> expanded;
     for (const auto& entry : staged->entries_) {
       std::size_t bytes = 0;
       expanded.clear();
@@ -146,7 +146,7 @@ bool UnicodeNormalizationData::IsAssigned(std::uint32_t scalar) const noexcept {
 }
 
 bool UnicodeNormalizationData::Decompose(std::uint32_t scalar, std::size_t limit,
-    std::size_t& bytes, std::vector<std::uint32_t>& out, unsigned depth) const {
+    std::size_t& bytes, std::pmr::vector<std::uint32_t>& out, unsigned depth) const {
   if (depth >= 32) return false;
   // Unicode Hangul syllable decomposition: 19 leading, 21 vowel, 28 trailing
   // choices. A zero trailing index contributes no trailing Jamo.
@@ -170,9 +170,20 @@ bool UnicodeNormalizationData::Decompose(std::uint32_t scalar, std::size_t limit
 
 UnicodeNormalizationStatus UnicodeNormalizationData::NormalizeNfd(
     std::string_view input, std::size_t limit, std::string* output) const noexcept {
+  return NormalizeNfdImpl(input, limit, output, std::pmr::get_default_resource());
+}
+UnicodeNormalizationStatus UnicodeNormalizationData::NormalizeNfdWithMemory(
+    std::string_view input, std::size_t limit, std::pmr::string* output) const noexcept {
+  if (!output) return Status::invalid_argument;
+  return NormalizeNfdImpl(input, limit, output, output->get_allocator().resource());
+}
+template<class String>
+UnicodeNormalizationStatus UnicodeNormalizationData::NormalizeNfdImpl(
+    std::string_view input, std::size_t limit, String* output,
+    std::pmr::memory_resource* memory) const noexcept {
   if (!output) return Status::invalid_argument;
   try {
-    std::vector<std::uint32_t> scalars;
+    std::pmr::vector<std::uint32_t> scalars(memory), scratch(memory);
     std::size_t offset = 0, bytes = 0;
     while (offset < input.size()) {
       std::uint32_t scalar = 0;
@@ -186,12 +197,24 @@ UnicodeNormalizationStatus UnicodeNormalizationData::NormalizeNfd(
     std::size_t begin = 0;
     for (std::size_t i = 0; i <= scalars.size(); ++i) {
       if (i == scalars.size() || CombiningClass(scalars[i]) == 0) {
-        std::stable_sort(scalars.begin() + begin, scalars.begin() + i,
-            [this](auto lhs, auto rhs) { return CombiningClass(lhs) < CombiningClass(rhs); });
+        // Stable counting sort avoids std::stable_sort's hidden unadmitted
+        // temporary buffer. Already ordered runs allocate nothing; only the
+        // longest disordered run needs retained scratch. CCC is exactly u8.
+        const auto first = scalars.begin() + begin, last = scalars.begin() + i;
+        if (!std::is_sorted(first, last,
+            [this](auto l, auto r) { return CombiningClass(l) < CombiningClass(r); })) {
+          std::array<std::size_t, 256> positions{};
+          for (auto p = first; p != last; ++p) ++positions[CombiningClass(*p)];
+          std::size_t total = 0;
+          for (auto& count : positions) { const auto n = count; count = total; total += n; }
+          scratch.resize(i - begin);
+          for (auto p = first; p != last; ++p) scratch[positions[CombiningClass(*p)]++] = *p;
+          std::copy(scratch.begin(), scratch.end(), first);
+        }
         begin = i + 1;
       }
     }
-    std::string staged; staged.reserve(bytes);
+    String staged(output->get_allocator()); staged.reserve(bytes);
     for (const auto scalar : scalars) Append(scalar, staged);
     *output = std::move(staged);
     return Status::ok;

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "datatype_operations.hpp"
+#include "datatype_text_set.hpp"
 #include "canonical_utf8.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_type_codec_identity_v3.hpp"
@@ -68,8 +69,8 @@ bool EngineIdentityUuidValid(const scratchbird::engine::Uuid& uuid) noexcept {
       (uuid.bytes[8] & 0xc0u) == 0x80u;
 }
 
-bool EngineUuidEquals(const scratchbird::engine::Uuid& left,
-                      const scratchbird::engine::Uuid& right) noexcept {
+template<class LeftUuid, class RightUuid>
+bool EngineUuidEquals(const LeftUuid& left, const RightUuid& right) noexcept {
   for (std::size_t index = 0; index < 16; ++index) {
     if (left.bytes[index] != right.bytes[index]) return false;
   }
@@ -696,7 +697,7 @@ bool DecodeStrictBinaryHex(std::string_view text, std::string* bytes) {
 inline constexpr std::size_t kCanonicalCharacterMaximumBytes =
     16u * 1024u * 1024u;
 
-bool CanonicalCharacterPayloadValid(const std::string& value,
+bool CanonicalCharacterPayloadValid(std::string_view value,
                                     std::uint64_t* scalar_count = nullptr) {
   if (scalar_count != nullptr) *scalar_count = 0;
   if (value.size() > kCanonicalCharacterMaximumBytes) return false;
@@ -2409,43 +2410,43 @@ struct EncodedSetFrame {
   std::vector<std::string> items;
 };
 
-void AppendSetU16(std::string* bytes, std::uint16_t value) {
+template<class String> void AppendSetU16(String* bytes, std::uint16_t value) {
   bytes->push_back(static_cast<char>((value >> 8) & 0xffu));
   bytes->push_back(static_cast<char>(value & 0xffu));
 }
 
-void AppendSetU32(std::string* bytes, std::uint32_t value) {
+template<class String> void AppendSetU32(String* bytes, std::uint32_t value) {
   for (int shift = 24; shift >= 0; shift -= 8) {
     bytes->push_back(static_cast<char>((value >> shift) & 0xffu));
   }
 }
 
-void AppendSetU64(std::string* bytes, std::uint64_t value) {
+template<class String> void AppendSetU64(String* bytes, std::uint64_t value) {
   for (int shift = 56; shift >= 0; shift -= 8) {
     bytes->push_back(static_cast<char>((value >> shift) & 0xffu));
   }
 }
 
-void AppendSetUuid(std::string* bytes, const scratchbird::engine::Uuid& uuid) {
+template<class String, class Uuid> void AppendSetUuid(String* bytes, const Uuid& uuid) {
   for (const auto byte : uuid.bytes) {
     bytes->push_back(static_cast<char>(byte));
   }
 }
 
-void AppendSetString(std::string* bytes, std::string_view value) {
+template<class String> void AppendSetString(String* bytes, std::string_view value) {
   AppendSetU32(bytes, static_cast<std::uint32_t>(value.size()));
   bytes->append(value);
 }
 
-std::string ExecutionDescriptorFingerprint(
-    const ExecutionTypeDescriptor& descriptor) {
-  std::string bytes = "SBTD1";
+template<class String> void AppendExecutionDescriptorMaterial(
+    const ExecutionTypeDescriptor& descriptor, bool include_label, String& bytes) {
+  bytes.append("SBTD1");
   AppendSetUuid(&bytes, descriptor.descriptor_uuid);
   AppendSetU64(&bytes, descriptor.descriptor_epoch);
   AppendSetU32(&bytes, descriptor.canonical_type_id);
   AppendSetU16(&bytes, static_cast<std::uint16_t>(descriptor.family));
   AppendSetU16(&bytes, static_cast<std::uint16_t>(descriptor.width_class));
-  AppendSetString(&bytes, descriptor.stable_name);
+  AppendSetString(&bytes, include_label ? descriptor.stable_name : std::string_view{});
   AppendSetU32(&bytes, descriptor.bit_width);
   AppendSetU32(&bytes, descriptor.precision);
   AppendSetU32(&bytes, descriptor.scale);
@@ -2467,6 +2468,11 @@ std::string ExecutionDescriptorFingerprint(
   bytes.push_back(descriptor.nullable_allowed ? '\x01' : '\x00');
   bytes.push_back(descriptor.descriptor_authoritative ? '\x01' : '\x00');
   bytes.push_back(descriptor.parser_independent ? '\x01' : '\x00');
+}
+
+std::string ExecutionDescriptorFingerprint(const ExecutionTypeDescriptor& descriptor) {
+  std::string bytes;
+  AppendExecutionDescriptorMaterial(descriptor, true, bytes);
   return HexEncode(bytes);
 }
 
@@ -5276,6 +5282,308 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
   }
   return SetFailure("unknown_set_operation");
 }
+
+namespace {
+struct TextSetFailure { const char* code; const char* detail; };
+struct TextSetBudgetExceeded : std::bad_alloc {};
+[[noreturn]] void TextSetRefuse(const char* code, const char* detail) { throw TextSetFailure{code, detail}; }
+struct TextSetWork : std::pmr::memory_resource {
+  const NativeTextSetControlV1& control;
+  u64 remaining;
+  bool exhausted = false;
+  explicit TextSetWork(const NativeTextSetControlV1& c) : control(c), remaining(c.maximum_work_bytes) {
+    if (!c.maximum_elements || !c.maximum_value_bytes || !c.maximum_key_bytes ||
+        !c.maximum_work_bytes || !c.maximum_output_bytes || !c.memory)
+      TextSetRefuse("RESOURCE.BUDGET_EXCEEDED", "text_set_limits_unbound");
+  }
+  void Charge(u64 bytes) {
+    if (bytes > remaining) TextSetRefuse("RESOURCE.BUDGET_EXCEEDED", "text_set_work_budget_exceeded");
+    remaining -= bytes;
+  }
+  void Poll() const {
+    if (control.cancelled && control.cancelled(control.cancellation_context))
+      TextSetRefuse("PROCESS.CANCELLED", "text_set_cancelled");
+  }
+  void* do_allocate(std::size_t bytes, std::size_t alignment) override {
+    if (bytes > remaining) { exhausted = true; throw TextSetBudgetExceeded(); }
+    auto* pointer = control.memory->allocate(bytes, alignment);
+    remaining -= bytes;
+    return pointer;
+  }
+  void do_deallocate(void* pointer, std::size_t bytes, std::size_t alignment) override {
+    control.memory->deallocate(pointer, bytes, alignment);
+    remaining += bytes;
+  }
+  bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {
+    return this == &other;
+  }
+};
+bool UnsignedBytesLess(std::string_view a, std::string_view b) {
+  return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(),
+      [](char l, char r) { return static_cast<unsigned char>(l) < static_cast<unsigned char>(r); });
+}
+NativeTextSetBindingV1 ValidateTextSetBinding(const NativeTextSetBindingV1& b) {
+  const auto duplicate = b.duplicates;
+  if (b.policy_uuid != kNativeTextSetPolicyV1 || b.policy_generation != 1 ||
+      !TextSeedReady(b.text_seed) ||
+      !EngineUuidEquals(b.element.charset_uuid, b.text_seed.charset_uuid) ||
+      !EngineUuidEquals(b.element.collation_uuid, b.text_seed.collation_uuid) ||
+      (duplicate != TextSetDuplicatePolicyV1::collapse_minimum_bytes &&
+       duplicate != TextSetDuplicatePolicyV1::collapse_first &&
+       duplicate != TextSetDuplicatePolicyV1::reject && duplicate != TextSetDuplicatePolicyV1::preserve) ||
+      (b.ordered && duplicate == TextSetDuplicatePolicyV1::collapse_minimum_bytes) ||
+      (!b.ordered && duplicate == TextSetDuplicatePolicyV1::collapse_first))
+    TextSetRefuse("CSCR.DESCRIPTOR.INVALID", "text_set_binding_invalid");
+  CatalogExecutionTypeMetadata md;
+  const auto* row=CurrentValidatedBuiltinRow(CanonicalTypeId::character);
+  if (!row) TextSetRefuse("DATATYPE.DESCRIPTOR.INVALID", "text_set_catalog_unavailable");
+  md.descriptor_uuid = row->descriptor_uuid;
+  md.descriptor_epoch = row->descriptor_epoch;
+  md.length = b.element.length;
+  md.charset_uuid = {platform::UuidKind::object, b.text_seed.charset_uuid};
+  md.collation_uuid = {platform::UuidKind::object, b.text_seed.collation_uuid};
+  auto expected = LookupExecutionTypeDescriptorFromCatalog(CanonicalTypeId::character, md);
+  if (!expected.ok() || !ExecutionDescriptorEqualsIgnoringNullability(b.element, expected.descriptor))
+    TextSetRefuse("DATATYPE.DESCRIPTOR.INVALID", "text_set_element_descriptor_invalid");
+  if (b.allow_null_elements && !b.element.nullable_allowed)
+    TextSetRefuse("DATATYPE.NULL_NOT_ADMITTED", "text_set_element_nonnullable");
+  // Snapshot only verified semantic fields. User-facing labels (arbitrarily
+  // large) and rejected domain stacks are never copied into execution state.
+  NativeTextSetBindingV1 result;
+  result.policy_uuid=b.policy_uuid;result.policy_generation=b.policy_generation;
+  result.element=std::move(expected.descriptor);
+  result.element.nullable_allowed=b.element.nullable_allowed;
+  result.element.stable_name.clear();
+  result.ordered=b.ordered;result.allow_null_elements=b.allow_null_elements;result.duplicates=b.duplicates;
+  auto& seed=result.text_seed;const auto& source=b.text_seed;
+  seed.active=source.active;seed.database_uuid=source.database_uuid;seed.charset_uuid=source.charset_uuid;
+  seed.collation_uuid=source.collation_uuid;seed.resource_epoch=source.resource_epoch;
+  seed.collation_epoch=source.collation_epoch;seed.comparison_profile=source.comparison_profile;
+  seed.unicode_collation=source.unicode_collation;
+  seed.collation_case_insensitive=source.collation_case_insensitive;
+  seed.collation_accent_insensitive=source.collation_accent_insensitive;
+  return result;
+}
+std::pmr::string TextSetHeader(const NativeTextSetBindingV1& b, TextSetWork& work) {
+  std::pmr::string bytes("SBTSET01", &work), material(&work);
+  AppendSetUuid(&bytes, b.policy_uuid); AppendSetU64(&bytes, b.policy_generation);
+  AppendExecutionDescriptorMaterial(b.element, false, material);
+  AppendSetString(&bytes, material);
+  AppendSetUuid(&bytes, b.text_seed.database_uuid);
+  AppendSetUuid(&bytes, b.text_seed.charset_uuid); AppendSetUuid(&bytes, b.text_seed.collation_uuid);
+  AppendSetU64(&bytes, b.text_seed.resource_epoch); AppendSetU64(&bytes, b.text_seed.collation_epoch);
+  AppendSetU64(&bytes, static_cast<u64>(b.text_seed.comparison_profile));
+  bytes.push_back(b.ordered); bytes.push_back(b.allow_null_elements);
+  bytes.push_back(static_cast<char>(b.duplicates));
+  return bytes;
+}
+struct TextSetEntry {
+  // Inputs remain borrowed and immutable for this call. Sorting moves small
+  // records/keys, not complete payload copies; retained bytes are copied only
+  // when staging the owning result.
+  struct Element { bool is_null; std::string_view bytes; } element;
+  std::pmr::string key;
+  std::size_t ordinal = 0;
+  bool keep = true;
+};
+template<class Element>
+std::pmr::string TextSetKey(const NativeTextSetBindingV1& b, const Element& value,
+                       TextSetWork& work) {
+  if (value.is_null) {
+    if (!value.bytes.empty()) TextSetRefuse("DATATYPE.NULL_STATE.INVALID", "text_set_null_payload");
+    if (!b.allow_null_elements || !b.element.nullable_allowed)
+      TextSetRefuse("DATATYPE.NULL_NOT_ADMITTED", "text_set_null_forbidden");
+    return std::pmr::string(1, '\0', &work);
+  }
+  if (value.bytes.size() > work.control.maximum_value_bytes)
+    TextSetRefuse("RESOURCE.BUDGET_EXCEEDED", "text_set_value_limit");
+  if (value.bytes.size() > kCanonicalCharacterMaximumBytes)
+    TextSetRefuse("CTB.TEXT.LENGTH_EXCEEDED", "text_set_element_byte_length");
+  u64 scalars = 0;
+  if (!CanonicalCharacterPayloadValid(value.bytes, &scalars))
+    TextSetRefuse("CTB.TEXT.INVALID_ENCODING", "text_set_invalid_utf8");
+  if (b.element.length && scalars > b.element.length)
+    TextSetRefuse("CTB.TEXT.LENGTH_EXCEEDED", "text_set_element_length");
+  std::pmr::string key(&work);
+  const auto maximum = std::min<u64>(key.max_size(), work.control.maximum_key_bytes);
+  if (!maximum) TextSetRefuse("RESOURCE.BUDGET_EXCEEDED", "text_set_key_limit");
+  if (b.text_seed.comparison_profile == resources::CollationProfile::utf8_binary) {
+    if (value.bytes.size() >= maximum) TextSetRefuse("RESOURCE.BUDGET_EXCEEDED", "text_set_key_limit");
+    key.assign(value.bytes.data(), value.bytes.size());
+  } else {
+    const auto status = b.text_seed.unicode_collation->MakeSortKeyWithMemory(value.bytes,
+        static_cast<resources::UnicodeCollationStrength>(static_cast<u64>(b.text_seed.comparison_profile)-1),
+        {static_cast<std::size_t>(std::min<u64>(key.max_size(),work.control.maximum_work_bytes)),
+         static_cast<std::size_t>(maximum-1)}, &key);
+    if (status == resources::UnicodeNormalizationStatus::allocation_failure && !work.exhausted)
+      TextSetRefuse("DATATYPE.RESOURCE_EXHAUSTED", "text_set_allocation_failed");
+    if (status != resources::UnicodeNormalizationStatus::ok)
+      TextSetRefuse("RESOURCE.BUDGET_EXCEEDED", "text_set_collation_key_failed");
+  }
+  key.insert(key.begin(), '\1'); return key;
+}
+template<class Values> std::pmr::vector<TextSetEntry> TextSetEntries(const NativeTextSetBindingV1& b,
+    const Values& values, TextSetWork& work) {
+  if (values.size() > work.control.maximum_elements || values.size() > work.remaining/sizeof(TextSetEntry))
+    TextSetRefuse("RESOURCE.BUDGET_EXCEEDED", "text_set_element_limit");
+  std::pmr::vector<TextSetEntry> entries(&work); entries.reserve(values.size());
+  for (const auto& value : values) {
+    auto key = TextSetKey(b, value, work);
+    entries.push_back({{value.is_null,value.bytes}, std::move(key), entries.size(), true});
+    work.Poll();
+  }
+  return entries;
+}
+void NormalizeTextSet(const NativeTextSetBindingV1& b, std::pmr::vector<TextSetEntry>& entries, TextSetWork& work) {
+  if (entries.size() > work.remaining/sizeof(std::size_t))
+    TextSetRefuse("RESOURCE.BUDGET_EXCEEDED", "text_set_sort_budget");
+  std::pmr::vector<std::size_t> order(&work); order.reserve(entries.size());
+  for (std::size_t i=0;i<entries.size();++i) order.push_back(i);
+  std::sort(order.begin(), order.end(), [&](auto l, auto r) {
+    work.Poll();
+    const auto& a=entries[l]; const auto& c=entries[r];
+    if (a.key != c.key) return UnsignedBytesLess(a.key,c.key);
+    return b.ordered ? a.ordinal<c.ordinal : UnsignedBytesLess(a.element.bytes,c.element.bytes);
+  });
+  for (std::size_t i=1;i<order.size();++i) {
+    if (entries[order[i-1]].key == entries[order[i]].key) {
+      if (b.duplicates == TextSetDuplicatePolicyV1::reject)
+        TextSetRefuse("CSCR.SET.DUPLICATE_REFUSED", "text_set_collation_duplicate");
+      if (b.duplicates != TextSetDuplicatePolicyV1::preserve) entries[order[i]].keep=false;
+    }
+    work.Poll();
+  }
+  if (!b.ordered) std::sort(entries.begin(), entries.end(), [&](const auto& a,const auto& c) {
+    work.Poll();
+    if (a.key != c.key) return UnsignedBytesLess(a.key,c.key);
+    return UnsignedBytesLess(a.element.bytes,c.element.bytes);
+  });
+  entries.erase(std::remove_if(entries.begin(),entries.end(),[](const auto& e){return !e.keep;}),entries.end());
+  work.Poll();
+}
+std::pmr::string EmitTextSet(const NativeTextSetBindingV1& b, const std::pmr::vector<TextSetEntry>& entries,
+                       TextSetWork& work) {
+  auto header = TextSetHeader(b,work);
+  u64 size = header.size()+8;
+  for (const auto& e:entries) {
+    if (size > work.control.maximum_output_bytes ||
+        work.control.maximum_output_bytes-size < 9 ||
+        e.element.bytes.size() > work.control.maximum_output_bytes-size-9)
+      TextSetRefuse("RESOURCE.BUDGET_EXCEEDED", "text_set_output_limit");
+    size += 9+e.element.bytes.size();
+  }
+  if (size > work.control.maximum_output_bytes || size > header.max_size())
+    TextSetRefuse("RESOURCE.BUDGET_EXCEEDED", "text_set_output_limit");
+  header.reserve(size); AppendSetU64(&header, entries.size());
+  for (const auto& e:entries) {
+    header.push_back(e.element.is_null ? 0 : 1); AppendSetU64(&header, e.element.bytes.size());
+    header.append(e.element.bytes); work.Poll();
+  }
+  return header;
+}
+std::pmr::vector<TextSetEntry> ReadTextSet(const NativeTextSetBindingV1& b, std::string_view bytes, TextSetWork& work) {
+  const auto header = TextSetHeader(b,work);
+  if (!bytes.starts_with(header)) TextSetRefuse("CSCR.DESCRIPTOR.INVALID", "text_set_frame_binding_invalid");
+  SetDescriptorReader reader{bytes}; reader.offset=header.size();
+  u64 count=0;
+  if (!reader.U64(&count) || count > (bytes.size()-reader.offset)/9)
+    TextSetRefuse("CSCR.DESCRIPTOR.INVALID", "text_set_frame_extent_invalid");
+  if (bytes.size() > work.control.maximum_output_bytes || count > work.control.maximum_elements ||
+      count > work.remaining/sizeof(TextSetEntry::Element))
+    TextSetRefuse("RESOURCE.BUDGET_EXCEEDED", "text_set_frame_limit");
+  std::pmr::vector<TextSetEntry::Element> values(&work); values.reserve(count);
+  for (u64 i=0;i<count;++i) {
+    std::string_view state,payload; u64 size=0;
+    if (!reader.Take(1,&state) || (state[0]!=0 && state[0]!=1) || !reader.U64(&size) ||
+        size > bytes.size()-reader.offset || !reader.Take(size,&payload))
+      TextSetRefuse("CSCR.DESCRIPTOR.INVALID", "text_set_element_extent_invalid");
+    if (state[0]==0 && size) TextSetRefuse("DATATYPE.NULL_STATE.INVALID", "text_set_null_payload");
+    if (size > work.control.maximum_value_bytes)
+      TextSetRefuse("RESOURCE.BUDGET_EXCEEDED", "text_set_value_limit");
+    values.push_back({state[0]==0,payload}); work.Poll();
+  }
+  if (reader.offset != bytes.size()) TextSetRefuse("CSCR.DESCRIPTOR.INVALID", "text_set_trailing_bytes");
+  auto entries = TextSetEntries(b,values,work);
+  NormalizeTextSet(b,entries,work);
+  if (entries.size()!=values.size()) TextSetRefuse("CSCR.DESCRIPTOR.INVALID", "text_set_noncanonical_duplicates");
+  for (std::size_t i=0;i<values.size();++i) if (entries[i].element.is_null!=values[i].is_null ||
+      entries[i].element.bytes!=values[i].bytes)
+    TextSetRefuse("CSCR.DESCRIPTOR.INVALID", "text_set_noncanonical_order");
+  return entries;
+}
+DatatypeSetOperationResult TextSetError(const char* code,const char* detail) {
+  auto result=SetFailure(detail,code);
+  if (std::string_view(code)=="RESOURCE.BUDGET_EXCEEDED" || std::string_view(code)=="DATATYPE.RESOURCE_EXHAUSTED")
+    result.status=ResourceErrorStatus();
+  return result;
+}
+} // namespace
+
+DatatypeSetOperationResult EncodeNativeTextSetV1(const NativeTextSetBindingV1& supplied_binding,
+    std::span<const NativeTextSetElementV1> values, const NativeTextSetControlV1& supplied_control) try {
+  const auto control=supplied_control;TextSetWork work(control);
+  const auto binding=ValidateTextSetBinding(supplied_binding);
+  auto entries=TextSetEntries(binding,values,work); NormalizeTextSet(binding,entries,work);
+  auto encoded=EmitTextSet(binding,entries,work);
+  DatatypeSetOperationResult result;result.status=OkStatus();
+  result.diagnostic=MakeDatatypeOperationDiagnostic(result.status,"SB_DATATYPE_OK","datatype.ok");
+  work.Charge(encoded.size()+1); result.value={CanonicalTypeId::set_value,std::string(encoded),false};
+  work.Charge(encoded.size()+1); result.encoded_set.assign(encoded); work.Poll();return result;
+} catch(const TextSetFailure& e){return TextSetError(e.code,e.detail);}
+  catch(const TextSetBudgetExceeded&){return TextSetError("RESOURCE.BUDGET_EXCEEDED","text_set_work_budget_exceeded");}
+  catch(const std::bad_alloc&){return TextSetError("DATATYPE.RESOURCE_EXHAUSTED","text_set_allocation_failed");}
+  catch(const std::length_error&){return TextSetError("RESOURCE.BUDGET_EXCEEDED","text_set_size_unrepresentable");}
+
+NativeTextSetDecodeResultV1 DecodeNativeTextSetV1(const NativeTextSetBindingV1& supplied_binding,
+    std::string_view bytes,const NativeTextSetControlV1& supplied_control) {
+  NativeTextSetDecodeResultV1 result;
+  try {
+    const auto control=supplied_control;TextSetWork work(control);
+    const auto binding=ValidateTextSetBinding(supplied_binding);auto entries=ReadTextSet(binding,bytes,work);
+    work.Charge(entries.size()*sizeof(NativeTextSetElementV1));
+    std::vector<NativeTextSetElementV1> output;output.reserve(entries.size());
+    for(auto& e:entries){work.Charge(e.element.bytes.size()+1);
+      output.push_back({e.element.is_null,std::string(e.element.bytes)});work.Poll();}
+    result.status=OkStatus();result.diagnostic=MakeDatatypeOperationDiagnostic(result.status,"SB_DATATYPE_OK","datatype.ok");
+    work.Poll();result.elements=std::move(output);return result;
+  } catch(const TextSetFailure& e){auto f=TextSetError(e.code,e.detail);result.status=f.status;result.diagnostic=std::move(f.diagnostic);}
+    catch(const TextSetBudgetExceeded&){auto f=TextSetError("RESOURCE.BUDGET_EXCEEDED","text_set_work_budget_exceeded");result.status=f.status;result.diagnostic=std::move(f.diagnostic);}
+    catch(const std::bad_alloc&){auto f=TextSetError("DATATYPE.RESOURCE_EXHAUSTED","text_set_allocation_failed");result.status=f.status;result.diagnostic=std::move(f.diagnostic);}
+    catch(const std::length_error&){auto f=TextSetError("RESOURCE.BUDGET_EXCEEDED","text_set_size_unrepresentable");result.status=f.status;result.diagnostic=std::move(f.diagnostic);}
+  return result;
+}
+
+DatatypeSetOperationResult ApplyNativeTextSetOperationV1(const NativeTextSetBindingV1& supplied_binding,
+    DatatypeSetOperationKind operation,std::string_view left,std::string_view right,
+    const NativeTextSetElementV1& member,const NativeTextSetControlV1& supplied_control) try {
+  const auto control=supplied_control;TextSetWork work(control);
+  const auto binding=ValidateTextSetBinding(supplied_binding);
+  if(operation!=DatatypeSetOperationKind::membership && operation!=DatatypeSetOperationKind::cardinality &&
+     operation!=DatatypeSetOperationKind::equals && operation!=DatatypeSetOperationKind::subset &&
+     operation!=DatatypeSetOperationKind::superset)
+    TextSetRefuse("SB_DATATYPE_SET_OPERATION_REJECTED","text_set_operation_invalid");
+  auto a=ReadTextSet(binding,left,work);DatatypeOperationValue value;
+  if(operation==DatatypeSetOperationKind::cardinality)value=UInt64Value(a.size());
+  else if(operation==DatatypeSetOperationKind::membership) {
+    auto key=TextSetKey(binding,member,work);
+    value=BoolValue(std::any_of(a.begin(),a.end(),[&](const auto& e){work.Poll();return e.key==key;}));
+  } else {
+    auto b=ReadTextSet(binding,right,work);
+    const auto less=[&](const auto& x,const auto& y){work.Poll();return UnsignedBytesLess(x.key,y.key);};
+    if(binding.ordered){std::sort(a.begin(),a.end(),less);std::sort(b.begin(),b.end(),less);}
+    const bool result=operation==DatatypeSetOperationKind::equals
+        ? a.size()==b.size() && std::equal(a.begin(),a.end(),b.begin(),[&](const auto& x,const auto& y){work.Poll();return x.key==y.key;})
+        : operation==DatatypeSetOperationKind::subset ? std::includes(b.begin(),b.end(),a.begin(),a.end(),less)
+        : std::includes(a.begin(),a.end(),b.begin(),b.end(),less);
+    value=BoolValue(result);
+  }
+  DatatypeSetOperationResult result;result.status=OkStatus();
+  result.diagnostic=MakeDatatypeOperationDiagnostic(result.status,"SB_DATATYPE_OK","datatype.ok");
+  result.value=std::move(value);work.Poll();return result;
+} catch(const TextSetFailure& e){return TextSetError(e.code,e.detail);}
+  catch(const TextSetBudgetExceeded&){return TextSetError("RESOURCE.BUDGET_EXCEEDED","text_set_work_budget_exceeded");}
+  catch(const std::bad_alloc&){return TextSetError("DATATYPE.RESOURCE_EXHAUSTED","text_set_allocation_failed");}
+  catch(const std::length_error&){return TextSetError("RESOURCE.BUDGET_EXCEEDED","text_set_size_unrepresentable");}
 
 bool ResolveExactDecimalArithmeticBindingV1(const DatatypeNumericOperationRequest& request,
                                            DatatypeDecimalArithmeticBindingV1* binding) {

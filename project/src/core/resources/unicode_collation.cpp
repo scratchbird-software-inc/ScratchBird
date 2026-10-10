@@ -47,7 +47,7 @@ std::string_view Line(std::string_view& input) {
   input.remove_prefix(end == std::string_view::npos ? input.size() : end + 1);
   return Trim(line.substr(0, line.find('#')));
 }
-void Word(std::uint16_t value, std::string& output) {
+template<class String> void Word(std::uint16_t value, String& output) {
   output.push_back(static_cast<char>(value >> 8)); output.push_back(static_cast<char>(value & 255));
 }
 } // namespace
@@ -165,13 +165,24 @@ std::array<UnicodeCollationData::Element, 2> UnicodeCollationData::Implicit(std:
 
 UnicodeNormalizationStatus UnicodeCollationData::MakeSortKey(std::string_view input,
     UnicodeCollationStrength strength, UnicodeCollationLimits limits, std::string* output) const noexcept {
+  return MakeSortKeyImpl(input, strength, limits, output, std::pmr::get_default_resource());
+}
+UnicodeNormalizationStatus UnicodeCollationData::MakeSortKeyWithMemory(std::string_view input,
+    UnicodeCollationStrength strength, UnicodeCollationLimits limits, std::pmr::string* output) const noexcept {
+  if (!output) return Status::invalid_argument;
+  return MakeSortKeyImpl(input, strength, limits, output, output->get_allocator().resource());
+}
+template<class String>
+UnicodeNormalizationStatus UnicodeCollationData::MakeSortKeyImpl(std::string_view input,
+    UnicodeCollationStrength strength, UnicodeCollationLimits limits, String* output,
+    std::pmr::memory_resource* memory) const noexcept {
   const unsigned levels = std::min(3u, static_cast<unsigned>(strength));
   if (!output || !levels || static_cast<unsigned>(strength) > 4) return Status::invalid_argument;
   try {
-    std::string normalized;
-    const auto status = normalization_->NormalizeNfd(input, limits.normalized_bytes, &normalized);
+    std::pmr::string normalized(memory);
+    const auto status = normalization_->NormalizeNfdWithMemory(input, limits.normalized_bytes, &normalized);
     if (status != Status::ok) return status;
-    std::vector<std::uint32_t> scalars;
+    std::pmr::vector<std::uint32_t> scalars(memory);
     for (std::size_t offset = 0; offset < normalized.size();) {
       std::uint32_t scalar;
       if (!datatypes::DecodeCanonicalUtf8Scalar(reinterpret_cast<const std::uint8_t*>(normalized.data()),
@@ -179,9 +190,12 @@ UnicodeNormalizationStatus UnicodeCollationData::MakeSortKey(std::string_view in
       scalars.push_back(scalar);
     }
     // Linked positions permit S2.1.3 removal without quadratic string erases.
-    std::vector<std::size_t> next(scalars.size());
-    std::vector<std::size_t> previous(scalars.size()), next_class(scalars.size());
-    std::vector<bool> removed(scalars.size());
+    std::pmr::vector<std::size_t> next(scalars.size(), memory);
+    std::pmr::vector<std::size_t> previous(scalars.size(), memory), next_class(scalars.size(), memory);
+    // Spell the false value explicitly: (count, memory) can select the bool
+    // value overload through pointer-to-bool and silently use the default
+    // allocator while marking every position removed.
+    std::pmr::vector<bool> removed(scalars.size(), false, memory);
     for (std::size_t i = 0; i < next.size(); ++i) {
       next[i] = i + 1; previous[i] = i ? i - 1 : scalars.size();
     }
@@ -191,7 +205,8 @@ UnicodeNormalizationStatus UnicodeCollationData::MakeSortKey(std::string_view in
       if (ccc && i + 1 < scalars.size() && ccc == normalization_->CombiningClass(scalars[i + 1]))
         next_class[i] = next_class[i + 1];
     }
-    std::array<std::string, 3> weights;
+    std::array<std::pmr::string, 3> weights{
+        std::pmr::string(memory), std::pmr::string(memory), std::pmr::string(memory)};
     std::size_t used = 2 * (levels - 1);
     if (strength == UnicodeCollationStrength::identical) {
       if (normalized.size() > limits.sort_key_bytes || limits.sort_key_bytes - normalized.size() < used + 2)
@@ -245,7 +260,7 @@ UnicodeNormalizationStatus UnicodeCollationData::MakeSortKey(std::string_view in
       }
       position = tail;
     }
-    std::string staged; staged.reserve(used);
+    String staged(output->get_allocator()); staged.reserve(used);
     for (unsigned level = 0; level < levels; ++level) {
       if (level) Word(0, staged);
       staged += weights[level];

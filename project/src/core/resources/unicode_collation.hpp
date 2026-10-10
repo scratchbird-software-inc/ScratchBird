@@ -21,6 +21,10 @@ class UnicodeCollationData final {
       std::shared_ptr<const UnicodeCollationData>* output) noexcept;
   UnicodeNormalizationStatus MakeSortKey(std::string_view input,
       UnicodeCollationStrength strength, UnicodeCollationLimits limits, std::string* output) const noexcept;
+  // Scratch, normalization, weight buffers and staged output all use output's
+  // resource. No process-global allocator is used for per-call payloads.
+  UnicodeNormalizationStatus MakeSortKeyWithMemory(std::string_view input,
+      UnicodeCollationStrength strength, UnicodeCollationLimits limits, std::pmr::string* output) const noexcept;
   UnicodeNormalizationStatus Compare(std::string_view left, std::string_view right,
       UnicodeCollationStrength strength, UnicodeCollationLimits limits, int* output) const noexcept;
 
@@ -34,6 +38,8 @@ class UnicodeCollationData final {
   struct Mapping { Key key; std::uint32_t offset, count; std::uint8_t extension_class{0}; };
   struct ImplicitRange { std::uint32_t first, last, origin; std::uint16_t base; };
   UnicodeCollationData() = default;
+  template<class String> UnicodeNormalizationStatus MakeSortKeyImpl(std::string_view,
+      UnicodeCollationStrength, UnicodeCollationLimits, String*, std::pmr::memory_resource*) const noexcept;
   const Mapping* Find(const Key& key) const noexcept;
   std::array<Element, 2> Implicit(std::uint32_t scalar) const noexcept;
   std::shared_ptr<const UnicodeNormalizationData> normalization_;
