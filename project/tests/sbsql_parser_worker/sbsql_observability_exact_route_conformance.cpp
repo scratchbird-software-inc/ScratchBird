@@ -7,6 +7,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../release/public_release_authz_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
+#include "database_lifecycle.hpp"
 #include "uuid.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
@@ -14,17 +17,24 @@
 #include "lowering/lowering.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
 #include "engine/internal_api/observability/show_api.hpp"
+#include "engine/internal_api/observability/metrics_api.hpp"
+#include "transaction/transaction_api.hpp"
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "server/sblr_local_gateway.hpp"
 #include "engine/sblr/sblr_opcode_stream.hpp"
 #include "engine/sblr/sblr_opcode_registry.hpp"
+#include "metric_builtin_definitions.hpp"
+#include "metric_observation_queue.hpp"
+#include "metric_value_codec.hpp"
+#include "page_cache.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -34,6 +44,12 @@ namespace {
 using namespace scratchbird::parser::sbsql;
 namespace api = scratchbird::engine::internal_api;
 namespace sblr = scratchbird::engine::sblr;
+namespace metrics = scratchbird::core::metrics;
+namespace page = scratchbird::storage::page;
+namespace memory = scratchbird::core::memory;
+namespace platform = scratchbird::core::platform;
+std::filesystem::path fixture_database_path;
+api::EngineBeginTransactionResult fixture_transaction;
 
 struct ObservabilityRowEvidence {
   std::string_view surface_id;
@@ -361,10 +377,7 @@ std::string_view ExpectedServerAdmissionFamily(
 }
 
 void Require(bool condition, std::string_view message) {
-  if (!condition) {
-    std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
-  }
+  if (!condition) throw std::runtime_error(std::string(message));
 }
 
 bool HasValue(const std::vector<std::string>& values, std::string_view expected) {
@@ -775,7 +788,7 @@ api::EngineRequestContext EngineContext(const ObservabilityRowEvidence& row) {
   context.trace_tags.push_back("security.fixture_trace_authority");
   context.trace_tags.push_back("right:OBS_METRICS_READ_ALL");
   context.trace_tags.push_back(std::string("sbsql_surface_id:") + std::string(row.surface_id));
-  context.database_path = "/tmp/sbsql_observability_exact_route_conformance.sbdb";
+  context.database_path = fixture_database_path.string();
   context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000801");
   context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000802");
   context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000803");
@@ -787,8 +800,137 @@ api::EngineRequestContext EngineContext(const ObservabilityRowEvidence& row) {
   context.catalog_generation_id = 7;
   context.security_epoch = 11;
   context.resource_epoch = 13;
+  context.name_resolution_epoch = 1;
+  context.local_transaction_id = fixture_transaction.local_transaction_id;
+  context.transaction_uuid = fixture_transaction.transaction_uuid;
+  context.snapshot_visible_through_local_transaction_id =
+      fixture_transaction.snapshot_visible_through_local_transaction_id;
+  context.transaction_isolation_level = fixture_transaction.isolation_level;
+  scratchbird::tests::release::GrantMaterializedRights(&context, {"OBS_METRICS_READ_ALL"});
   return context;
 }
+
+// This component owns an actual page-cache frame and volatile metric source.
+// Explicit retained bindings are fixture inputs, not native catalog activation
+// or durable history evidence. SHOW must not manufacture these on first read.
+struct ObservedPageCacheFixture {
+  static memory::AllocationPolicy MemoryPolicy() {
+    auto policy = memory::DefaultLocalEngineMemoryPolicy();
+    policy.policy_name = "observability_component_page_cache";
+    policy.hard_limit_bytes = policy.soft_limit_bytes = 1024 * 1024;
+    policy.per_context_limit_bytes = policy.page_buffer_pool_limit_bytes = 1024 * 1024;
+    return policy;
+  }
+  metrics::MetricRegistry& registry = metrics::DefaultMetricRegistry();
+  std::shared_ptr<metrics::MetricObservationQueue> queue;
+  std::vector<metrics::MetricDescriptor> descriptors;
+  std::vector<metrics::MetricSeriesIdentity> series;
+  metrics::MetricRetentionPolicy retention;
+  memory::MemoryManager manager{MemoryPolicy()};
+  page::PageCacheLedger ledger;
+  page::PageCachePolicy cache_policy;
+
+  ObservedPageCacheFixture() {
+    const auto context = EngineContext(kObservabilityRows.front());
+    const auto filespace = scratchbird::tests::FixtureUuid(1024, 50);
+    api::EngineShowMetricsRequest before;
+    before.context = context;
+    auto trace_only = before;
+    trace_only.context.authorization_context = {};
+    const auto denied = api::EngineShowMetrics(trace_only);
+    Require(!denied.ok && denied.result_shape.rows.empty() &&
+                std::ranges::any_of(denied.diagnostics, [](const auto& diagnostic) {
+                  return diagnostic.code == "SB_ENGINE_API_SECURITY_CONTEXT_REQUIRED";
+                }),
+            "SHOW METRICS accepted trace tags as authorization");
+    const auto absent = api::EngineShowMetrics(before);
+    Require(absent.ok, "authorized component SHOW METRICS refused");
+    Require(absent.result_shape.rows.empty() &&
+                registry.Descriptors().empty() && registry.SnapshotCurrent().empty(),
+            "SHOW METRICS manufactured unbound observations");
+    auto created = metrics::MetricObservationQueue::Create(
+        {context.database_uuid, context.node_uuid, {}}, {32, 1024 * 1024});
+    Require(created.ok(), "component metric queue creation failed");
+    queue = std::move(created.queue);
+    Require(registry.BindObservationQueue(queue).ok, "component metric owner binding failed");
+    retention.policy_name = "observability component retained policy";
+    retention.policy_uuid = scratchbird::tests::FixtureUuid(1024, 51);
+    retention.generation = 1;
+    const auto definitions = metrics::BuiltinMetricDescriptorDefinitions();
+    for (const auto family : {"sb_page_cache_resident_pages", "sb_page_cache_resident_bytes",
+                              "sb_page_cache_pinned_pages", "sb_page_cache_dirty_pages"}) {
+      const auto found = std::ranges::find(definitions, family,
+          &metrics::MetricDescriptorDefinition::family);
+      Require(found != definitions.end(), "compiled page-cache metric definition absent");
+      metrics::MetricDescriptor descriptor;
+      static_cast<metrics::MetricDescriptorDefinition&>(descriptor) = *found;
+      const auto ordinal = static_cast<unsigned>(descriptors.size());
+      descriptor.metric_uuid = scratchbird::tests::FixtureUuid(1024, 100 + ordinal);
+      descriptor.descriptor_generation = 1;
+      descriptor.label_schema_uuid = scratchbird::tests::FixtureUuid(1024, 110 + ordinal);
+      descriptor.label_schema_generation = 1;
+      descriptor.retention_policy_uuid = retention.policy_uuid;
+      descriptor.retention_policy_generation = retention.generation;
+      descriptor.visibility_policy_uuid = scratchbird::tests::FixtureUuid(1024, 52);
+      descriptor.visibility_policy_generation = 1;
+      descriptor.readiness = metrics::MetricReadiness::implemented;
+      metrics::MetricHistoryBinding binding;
+      static_cast<metrics::MetricDescriptorBinding&>(binding) = descriptor;
+      binding.database_uuid = context.database_uuid;
+      binding.node_uuid = context.node_uuid;
+      auto bound = metrics::MakeMetricSeriesIdentity(descriptor,
+          {{"component", "storage.page_cache"}, {"database_uuid", context.database_uuid},
+           {"filespace_uuid", filespace}, {"page_family", "all"}}, retention, binding,
+          scratchbird::tests::FixtureUuid(1024, 120 + ordinal), 1);
+      Require(bound.ok() && registry.RegisterDescriptor(descriptor).ok &&
+                  registry.RegisterSeries(*bound.record, retention).ok,
+              "component page-cache series admission failed");
+      descriptors.push_back(std::move(descriptor));
+      series.push_back(std::move(*bound.record));
+    }
+    page::BindPageCacheMemoryManager(&ledger, &manager);
+    cache_policy.max_resident_pages = 2;
+    cache_policy.max_resident_bytes = 32768;
+    page::PageCacheEntry entry;
+    entry.database_uuid = {platform::UuidKind::database, context.database_uuid};
+    entry.filespace_uuid = {platform::UuidKind::filespace, filespace};
+    entry.page_uuid = {platform::UuidKind::page, scratchbird::tests::FixtureUuid(1024, 53)};
+    entry.page_type = scratchbird::storage::disk::PageType::row_data;
+    entry.page_number = entry.page_generation = 1;
+    entry.page_size = 16384;
+    const auto admitted = page::AdmitPageCacheEntry(&ledger, cache_policy, entry);
+    Require(admitted.ok() && admitted.snapshot.memory_manager_frame_count == 1 &&
+                admitted.snapshot.resident_pages == 1 &&
+                manager.Snapshot().page_buffer_current_bytes == 16384,
+            "component cache did not own a charged resident frame");
+    Require(queue->Stats().admitted == 4 && queue->Stats().queued == 4,
+            "actual cache producer did not publish four aggregate observations");
+  }
+
+  void Finish() {
+    Require(queue->Stats().admitted == 4 && queue->Stats().queued == 4,
+            "SHOW projection changed the producer queue");
+    const auto verify_and_remove = [&](unsigned ordinal, std::uint64_t expected) {
+      const auto acquired = queue->TryAcquire();
+      Require(acquired.ok(), "actual page-cache observation absent");
+      const auto decoded = metrics::DecodeMetricRawSample(
+          descriptors[ordinal], series[ordinal], acquired.lease.observation->bytes);
+      Require(decoded.ok() && std::holds_alternative<std::uint64_t>(decoded.record->value.value) &&
+                  std::get<std::uint64_t>(decoded.record->value.value) == expected,
+              "page-cache queue changed measured unsigned value");
+      // Component consumer discards its verified sample; not a durable recorder.
+      Require(queue->TryRemove(acquired.lease) == metrics::MetricQueueError::none,
+              "component metric queue cleanup failed");
+    };
+    for (unsigned i = 0; i < 4; ++i) verify_and_remove(i, i == 0 ? 1 : i == 1 ? 16384 : 0);
+    const auto evicted = page::EvictOnePageCacheEntry(&ledger, cache_policy);
+    Require(evicted.ok() && evicted.snapshot.resident_pages == 0 &&
+                manager.Snapshot().page_buffer_current_bytes == 0,
+            "component page-cache cleanup retained a frame");
+    for (unsigned i = 0; i < 4; ++i) verify_and_remove(i, 0);
+    Require(queue->Stats().queued == 0, "component cleanup retained metric queue bytes");
+  }
+};
 
 sblr::SblrOperationEnvelope EngineEnvelope(const ObservabilityRowEvidence& row) {
   auto envelope = sblr::MakeSblrEnvelope(std::string(row.operation_id),
@@ -987,6 +1129,8 @@ void RequireEngineDispatch(const ObservabilityRowEvidence& row) {
                             "EngineShowAccelerationExtended returned the wrong result contract"));
   }
   if (row.operation_id == "observability.show_metrics") {
+    Require(result.api_result.ok,
+            EvidenceMessage(row, "engine_dispatch", "EngineShowMetrics returned an error"));
     Require(!result.api_result.result_shape.rows.empty(),
             EvidenceMessage(row, "engine_dispatch",
                             "EngineShowMetrics did not return bounded metric rows"));
@@ -996,6 +1140,22 @@ void RequireEngineDispatch(const ObservabilityRowEvidence& row) {
     Require(ApiResultHasField(result.api_result, "namespace", "sys.metrics.storage.pages.cache"),
             EvidenceMessage(row, "engine_dispatch",
                             "EngineShowMetrics did not return local sys.metrics evidence"));
+    bool observed = false;
+    for (const auto& metric_row : result.api_result.result_shape.rows) {
+      const auto field = [&](std::string_view name) -> const api::EngineTypedValue* {
+        for (const auto& [key, value] : metric_row.fields) if (key == name) return &value;
+        return nullptr;
+      };
+      const auto* family = field("metric");
+      if (!family || family->encoded_value != "sb_page_cache_resident_pages") continue;
+      const auto* value = field("value");
+      Require(value && !value->isSqlNull() && value->descriptor.canonical_type_name == "uint64" &&
+                  value->encoded_value.empty() && value->binary_value.size() == 8 &&
+                  platform::LoadLittle64(value->binary_value.data()) == 1,
+              "SHOW METRICS did not preserve the actually resident page count as binary UINT64");
+      observed = true;
+    }
+    Require(observed, "SHOW METRICS omitted the actual page-cache observation");
   }
 }
 
@@ -1086,7 +1246,32 @@ void RequireClusterObservabilityRefusal() {
 
 }  // namespace
 
-int main() {
+int main() try {
+  scratchbird::tests::OwnedTempDirectory directory;
+  fixture_database_path = directory.path() / "observability.sbdb";
+  scratchbird::storage::database::DatabaseCreateConfig create;
+  create.path = fixture_database_path.string();
+  create.database_uuid = {platform::UuidKind::database,
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000801")};
+  create.filespace_uuid = {platform::UuidKind::filespace, scratchbird::tests::FixtureUuid(1024, 50)};
+  create.page_size = 16384;
+  create.creation_unix_epoch_millis = 1790000000000ULL;
+  create.require_resource_seed_pack = false;
+  create.allow_minimal_resource_bootstrap = true;
+  Require(scratchbird::storage::database::CreateDatabaseFile(create).ok(),
+          "component observability database creation failed");
+  // EXPLAIN's registered query contract needs a real snapshot even though the
+  // inspect envelope itself requests no transaction-control/finality powers.
+  api::EngineBeginTransactionRequest begin;
+  begin.context = EngineContext(kObservabilityRows.front());
+  begin.isolation_level = "read_committed";
+  fixture_transaction = api::EngineBeginTransaction(begin);
+  if (!fixture_transaction.ok) {
+    for (const auto& diagnostic : fixture_transaction.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
+  Require(fixture_transaction.ok, "component observability transaction begin failed");
+  ObservedPageCacheFixture metric_fixture;
   for (const auto& row : kObservabilityRows) {
     RequireRegistryEvidence(row);
     RequireExactLowering(row);
@@ -1097,6 +1282,15 @@ int main() {
   }
   RequireAccelerationAuthorityFences();
   RequireClusterObservabilityRefusal();
+  metric_fixture.Finish();
+  api::EngineCommitTransactionRequest commit;
+  commit.context = EngineContext(kObservabilityRows.front());
+  Require(api::EngineCommitTransaction(commit).ok,
+          "component observability transaction commit failed");
+  directory.Cleanup();
   std::cout << "sbsql_observability_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }
