@@ -319,6 +319,9 @@ FunctionCallResult GenSaltFunction(const FunctionCallRequest& request) {
   const auto error=[&](const char* code,const char* detail) {return RefuseFunctionWithDiagnostic(request,
       scratchbird::engine::sblr::SblrStatusCode::execution_failed,code,detail);};
   const auto invalid=[&] {return error("CRYPTO.PASSWORD.INVALID_PARAMETER","salt generation requires exact text and optional uint32 operands");};
+  const auto cancelled=[&] {const auto* owner=request.context.engine_request_context;
+    return owner&&owner->query_cancellation_requested&&owner->query_cancellation_requested();};
+  const auto cancel_result=[&] {return error("PROCESS.CANCELLED","salt generation was cancelled");};
   const bool explicit_cost=IdIs(request.context.function_id,{"gen_salt_algo"});
   if(request.arguments.empty()||request.arguments.size()>2||(explicit_cost&&request.arguments.size()!=2))return invalid();
   using Kind=scratchbird::engine::sblr::SblrValuePayloadKind;
@@ -332,17 +335,22 @@ FunctionCallResult GenSaltFunction(const FunctionCallRequest& request) {
       if(v.payload_kind!=Kind::none||v.has_uint64_value||v.uint64_value!=0||
          !v.text_value.empty()||!v.encoded_value.empty())return invalid();
     } else if(i==0) {
-      if(v.payload_kind!=Kind::text||v.has_uint64_value||v.uint64_value!=0||
-         (!v.encoded_value.empty()&&v.encoded_value!=v.text_value))return invalid();
+      if(v.payload_kind!=Kind::text||v.has_uint64_value||v.uint64_value!=0)return invalid();
+      if(!v.encoded_value.empty()) {
+        if(v.encoded_value.size()!=v.text_value.size())return invalid();
+        for(std::size_t at=0;at<v.text_value.size();) {
+          if(cancelled())return cancel_result();
+          const auto count=std::min(std::size_t{4096},v.text_value.size()-at);
+          if(std::memcmp(v.encoded_value.data()+at,v.text_value.data()+at,count)!=0)return invalid();
+          at+=count;
+        }
+      }
     } else {
       if(v.payload_kind!=Kind::unsigned_integer||!v.has_uint64_value||v.uint64_value>0xffffffffULL)return invalid();
       const auto decimal=std::to_string(v.uint64_value);
       if((!v.text_value.empty()&&v.text_value!=decimal)||(!v.encoded_value.empty()&&v.encoded_value!=decimal))return invalid();
     }
   }
-  const auto cancelled=[&] {const auto* owner=request.context.engine_request_context;
-    return owner&&owner->query_cancellation_requested&&owner->query_cancellation_requested();};
-  const auto cancel_result=[&] {return error("PROCESS.CANCELLED","salt generation was cancelled");};
   if(cancelled())return cancel_result();
   if(AnyNull(request)) {
     auto result=MakeFunctionSuccess(request,{MakeNullValue("character")});

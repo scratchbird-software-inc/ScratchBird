@@ -1940,6 +1940,16 @@ void CryptoSalt() {
         "partial entropy failure yields no salt/fallback and erases supplied prefix");
     }
     scratchbird::engine::internal_api::EngineRequestContext owner;request.context.engine_request_context=&owner;
+    request.arguments[0].value=f::MakeTextValue("character",std::string(1024*1024,'a'));
+    for(bool unequal:{false,true}) {
+      if(unequal)request.arguments[0].value.encoded_value.back()='b';
+      unsigned polls=0;owner.query_cancellation_requested=[&]{return ++polls==2;};
+      Check(refuses(f::DispatchCryptoHashFunction(request),"PROCESS.CANCELLED")&&polls==2,
+        "long equal/equal-prefix salt mirrors have bounded validation cancellation");
+      owner.query_cancellation_requested={};
+      Check(refuses(f::DispatchCryptoHashFunction(request),unequal?"CRYPTO.PASSWORD.INVALID_PARAMETER":"CRYPTO.PASSWORD.UNSUPPORTED_ALGORITHM"),
+        "uncancelled long salt mirrors retain exact validation before token matching");
+    }
     for(bool bcrypt:{false,true}) {
       request.arguments={{"algorithm",f::MakeTextValue("character",bcrypt?"bf":"md5")},{"cost",f::MakeUint64Value("uint32",bcrypt?6:1000)}};
       const auto valid=request.arguments;const auto expected=oracle(bcrypt,bcrypt?6:1000);
