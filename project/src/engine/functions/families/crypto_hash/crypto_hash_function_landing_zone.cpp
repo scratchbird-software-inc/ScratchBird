@@ -51,13 +51,6 @@ bool IdIs(const std::string& id, std::initializer_list<std::string_view> names) 
   return false;
 }
 
-std::string LowerAscii(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
-    return static_cast<char>(std::tolower(ch));
-  });
-  return value;
-}
-
 std::string Trim(std::string_view input) {
   std::size_t first = 0;
   while (first < input.size() && std::isspace(static_cast<unsigned char>(input[first]))) ++first;
@@ -83,13 +76,6 @@ std::vector<std::uint8_t> RawBytesFromValue(const scratchbird::engine::sblr::Sbl
   return std::vector<std::uint8_t>(text.begin(), text.end());
 }
 
-int HexValue(char ch) {
-  if (ch >= '0' && ch <= '9') return ch - '0';
-  if (ch >= 'a' && ch <= 'f') return 10 + (ch - 'a');
-  if (ch >= 'A' && ch <= 'F') return 10 + (ch - 'A');
-  return -1;
-}
-
 std::string HexEncode(const std::vector<std::uint8_t>& bytes) {
   static constexpr char kHex[] = "0123456789abcdef";
   std::string out;
@@ -98,28 +84,6 @@ std::string HexEncode(const std::vector<std::uint8_t>& bytes) {
     out.push_back(kHex[(byte >> 4) & 0x0f]);
     out.push_back(kHex[byte & 0x0f]);
   }
-  return out;
-}
-
-bool HexDecode(std::string_view hex, std::vector<std::uint8_t>* out) {
-  if ((hex.size() % 2) != 0) return false;
-  out->clear();
-  out->reserve(hex.size() / 2);
-  for (std::size_t i = 0; i < hex.size(); i += 2) {
-    const int high = HexValue(hex[i]);
-    const int low = HexValue(hex[i + 1]);
-    if (high < 0 || low < 0) return false;
-    out->push_back(static_cast<std::uint8_t>((high << 4) | low));
-  }
-  return true;
-}
-
-std::vector<std::uint8_t> HexPrefixBytes(std::string_view hex, std::size_t count, bool* ok) {
-  *ok = false;
-  if (hex.size() < count * 2) return {};
-  std::vector<std::uint8_t> out;
-  if (!HexDecode(hex.substr(0, count * 2), &out)) return {};
-  *ok = true;
   return out;
 }
 
@@ -351,52 +315,93 @@ FunctionCallResult RandomUuidFunction(const FunctionCallRequest& request) {
   return MakeFunctionSuccess(request, {scratchbird::engine::sblr::MakeSblrUuidValue(generated.value)});
 }
 
-std::string CryptSaltChars(const std::vector<std::uint8_t>& bytes, std::size_t count) {
-  static constexpr char kAlphabet[] = "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-  std::string out;
-  out.reserve(count);
-  for (std::size_t i = 0; i < count; ++i) {
-    out.push_back(kAlphabet[bytes[i % bytes.size()] & 0x3f]);
-  }
-  return out;
-}
-
 FunctionCallResult GenSaltFunction(const FunctionCallRequest& request) {
-  if (request.arguments.size() > 2) return RefuseFunctionInvalidInput(request, "gen_salt expects algorithm and optional rounds");
-  std::string algorithm = "bf";
-  std::uint64_t rounds = 6;
-  if (!request.arguments.empty()) {
-    if (IsSqlNull(request.arguments[0].value)) return MakeFunctionSuccess(request, {MakeNullValue("character")});
-    algorithm = LowerAscii(Trim(ValueAsText(request.arguments[0].value)));
-  }
-  if (request.arguments.size() == 2) {
-    if (IsSqlNull(request.arguments[1].value)) return MakeFunctionSuccess(request, {MakeNullValue("character")});
-    if (!ParseUint64(request.arguments[1].value, &rounds)) return RefuseFunctionInvalidInput(request, "gen_salt rounds must be uint64");
-  }
-  bool ok = false;
-  std::vector<std::uint8_t> entropy;
-  if (!request.context.sblr_context.deterministic_random_bytes_hex.empty()) {
-    entropy = HexPrefixBytes(request.context.sblr_context.deterministic_random_bytes_hex, 16, &ok);
-    if (!ok) return RefuseFunctionInvalidInput(request, "deterministic random byte override is missing salt entropy");
-  } else {
-    entropy.resize(16);
-    if (RAND_bytes(reinterpret_cast<unsigned char*>(entropy.data()), static_cast<int>(entropy.size())) != 1) {
-      return DependencyUnavailable(request, "OpenSSL RAND_bytes did not provide salt entropy");
+  const auto error=[&](const char* code,const char* detail) {return RefuseFunctionWithDiagnostic(request,
+      scratchbird::engine::sblr::SblrStatusCode::execution_failed,code,detail);};
+  const auto invalid=[&] {return error("CRYPTO.PASSWORD.INVALID_PARAMETER","salt generation requires exact text and optional uint32 operands");};
+  const bool explicit_cost=IdIs(request.context.function_id,{"gen_salt_algo"});
+  if(request.arguments.empty()||request.arguments.size()>2||(explicit_cost&&request.arguments.size()!=2))return invalid();
+  using Kind=scratchbird::engine::sblr::SblrValuePayloadKind;
+  for(std::size_t i=0;i<request.arguments.size();++i) {
+    const auto& v=request.arguments[i].value;
+    if(v.descriptor_id!=(i==0?"character":"uint32")||!v.binary_value.empty()||
+       !v.uuid_value.is_nil()||!v.uuid_array_value.empty()||v.has_int64_value||v.has_real64_value||
+       v.int64_value!=0||v.real64_value!=0.0)return invalid();
+    if(i!=0&&(!v.charset_name.empty()||!v.collation_name.empty()))return invalid();
+    if(v.is_null) {
+      if(v.payload_kind!=Kind::none||v.has_uint64_value||v.uint64_value!=0||
+         !v.text_value.empty()||!v.encoded_value.empty())return invalid();
+    } else if(i==0) {
+      if(v.payload_kind!=Kind::text||v.has_uint64_value||v.uint64_value!=0||
+         (!v.encoded_value.empty()&&v.encoded_value!=v.text_value))return invalid();
+    } else {
+      if(v.payload_kind!=Kind::unsigned_integer||!v.has_uint64_value||v.uint64_value>0xffffffffULL)return invalid();
+      const auto decimal=std::to_string(v.uint64_value);
+      if((!v.text_value.empty()&&v.text_value!=decimal)||(!v.encoded_value.empty()&&v.encoded_value!=decimal))return invalid();
     }
   }
-  if (algorithm == "bf" || algorithm == "bcrypt") {
-    if (rounds < 4 || rounds > 31) return RefuseFunctionInvalidInput(request, "bcrypt salt rounds must be in [4,31]");
-    std::string out = "$2b$";
-    if (rounds < 10) out.push_back('0');
-    out += std::to_string(rounds);
-    out.push_back('$');
-    out += CryptSaltChars(entropy, 22);
-    return MakeFunctionSuccess(request, {MakeTextValue("character", std::move(out))});
+  const auto cancelled=[&] {const auto* owner=request.context.engine_request_context;
+    return owner&&owner->query_cancellation_requested&&owner->query_cancellation_requested();};
+  const auto cancel_result=[&] {return error("PROCESS.CANCELLED","salt generation was cancelled");};
+  if(cancelled())return cancel_result();
+  if(AnyNull(request)) {
+    auto result=MakeFunctionSuccess(request,{MakeNullValue("character")});
+    if(cancelled())return cancel_result();
+    return result;
   }
-  if (algorithm == "md5") {
-    return MakeFunctionSuccess(request, {MakeTextValue("character", "$1$" + CryptSaltChars(entropy, 8))});
+  const auto& algorithm=request.arguments[0].value.text_value;
+  const auto matches=[&](std::string_view token) {
+    if(algorithm.size()!=token.size())return false;
+    for(std::size_t i=0;i<token.size();++i) {
+      const auto c=static_cast<unsigned char>(algorithm[i]);
+      if((c>='A'&&c<='Z'?c+('a'-'A'):c)!=token[i])return false;
+    }
+    return true;
+  };
+  const bool bcrypt=matches("bf")||matches("bcrypt");
+  if(!bcrypt&&!matches("md5"))return error("CRYPTO.PASSWORD.UNSUPPORTED_ALGORITHM","salt algorithm is not a registered Core profile");
+  // These are format defaults, not permission to use a password-hashing
+  // profile. Owning security policy can prohibit a weak/legacy profile.
+  const auto cost=request.arguments.size()==2?request.arguments[1].value.uint64_value:(bcrypt?6u:1000u);
+  if((bcrypt&&(cost<4||cost>31))||(!bcrypt&&cost!=1000))
+    return error("CRYPTO.PASSWORD.INVALID_COST","salt cost is outside the selected algorithm profile");
+  auto result=MakeFunctionSuccess(request,{});
+  result.result.scalar_values.resize(1);
+  auto& out=result.result.scalar_values[0];out=MakeTextValue("character",{});out.charset_name="utf8";
+  struct Pending {
+    scratchbird::engine::sblr::SblrValue& value;bool published=false;
+    ~Pending(){if(!published){OPENSSL_cleanse(value.text_value.data(),value.text_value.size());
+      OPENSSL_cleanse(value.encoded_value.data(),value.encoded_value.size());}}
+  } pending{out};
+  out.text_value.resize(bcrypt?29:12);out.encoded_value.resize(out.text_value.size());
+  struct Entropy {std::array<unsigned char,16> bytes{};~Entropy(){OPENSSL_cleanse(bytes.data(),bytes.size());}} entropy;
+  if(cancelled())return cancel_result();
+  const auto count=bcrypt?16u:6u;
+  if(!scratchbird::core::FillCryptographicRandomBytes(entropy.bytes.data(),count))
+    return error("CRYPTO.RNG.UNAVAILABLE","Core cryptographic RNG did not provide salt entropy");
+  if(cancelled())return cancel_result();
+  const char* alphabet=bcrypt?"./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789":
+                               "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+  auto* destination=out.text_value.data();
+  std::size_t at;
+  if(bcrypt) {
+    std::memcpy(destination,"$2b$",4);destination[4]=static_cast<char>('0'+cost/10);
+    destination[5]=static_cast<char>('0'+cost%10);destination[6]='$';at=7;
+  } else {std::memcpy(destination,"$1$",3);at=3;}
+  // MSB-first radix64. Bcrypt's final character has four zero pad bits;
+  // all128 entropy bits participate. The MD5 setting uses all48 bits once.
+  for(std::size_t i=0;i<count;i+=3) {
+    const auto left=count-i;
+    const std::uint32_t bits=(std::uint32_t{entropy.bytes[i]}<<16)|
+      (left>1?std::uint32_t{entropy.bytes[i+1]}<<8:0)|(left>2?entropy.bytes[i+2]:0);
+    destination[at++]=alphabet[bits>>18];destination[at++]=alphabet[(bits>>12)&63];
+    if(left>1)destination[at++]=alphabet[(bits>>6)&63];
+    if(left>2)destination[at++]=alphabet[bits&63];
   }
-  return RefuseFunctionInvalidInput(request, "gen_salt supports bf/bcrypt and md5 salt descriptors");
+  if(!bcrypt)destination[at++]='$';
+  std::memcpy(out.encoded_value.data(),destination,out.text_value.size());
+  if(cancelled())return cancel_result();
+  pending.published=true;return result;
 }
 
 FunctionCallResult ScryptFunction(const FunctionCallRequest& request) {

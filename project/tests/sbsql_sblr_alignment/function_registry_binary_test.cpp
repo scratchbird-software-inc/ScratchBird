@@ -38,6 +38,11 @@ thread_local bool rng_watch=false, rng_cleared=false;
 thread_local void* rng_scratch=nullptr;
 thread_local std::size_t rng_cleansed_bytes=0;
 thread_local int rng_requested=0;
+thread_local bool rng_supplied=false;
+thread_local std::array<unsigned char,1024> rng_bytes{};
+thread_local bool salt_cleanup_watch=false;
+thread_local std::string_view expected_salt{};
+thread_local unsigned salt_result_cleanses=0;
 thread_local bool digest_armed=false;
 thread_local int digest_result=1, digest_interceptions=0;
 thread_local unsigned digest_length=32;
@@ -92,6 +97,8 @@ extern "C" int __wrap_EVP_PBE_scrypt(const char* password,std::size_t password_s
 }
 extern "C" void __real_OPENSSL_cleanse(void*,std::size_t);
 extern "C" void __wrap_OPENSSL_cleanse(void* bytes,std::size_t count) {
+  if(salt_cleanup_watch&&count==expected_salt.size()&&
+     std::memcmp(bytes,expected_salt.data(),count)==0)++salt_result_cleanses;
   __real_OPENSSL_cleanse(bytes,count);
   if(bytes==scrypt_scratch) {
     ++scrypt_cleanses;scrypt_cleared=count==scrypt_scratch_size;
@@ -132,7 +139,7 @@ extern "C" int __wrap_RAND_bytes(unsigned char* out,int count) {
   if(rng_watch)rng_scratch=out;
   rng_requested=count;
   rng_armed=false;++rng_interceptions;
-  for(int i=0;i<count&&i<rng_prefix;++i)out[i]=static_cast<unsigned char>(0xa0+i);
+  for(int i=0;i<count&&i<rng_prefix;++i)out[i]=rng_supplied?rng_bytes[i]:static_cast<unsigned char>(0xa0+i);
   return rng_result;
 }
 void* operator new(std::size_t n) {
@@ -1823,6 +1830,153 @@ void CryptoArmor() {
   const auto saved=encoded;Check(c::DecodeArmor({encoded.data(),encoded.size()},{encoded.data()+1,3})==c::PgpCode::invalid_extent&&encoded==saved,"overlap rejection untouched");
 }
 
+void CryptoSalt() {
+  const auto package=f::BuildStandardFunctionSeedPackage();
+  const auto refuses=[](const f::FunctionCallResult& r,const char* code) {
+    return !r.result.ok()&&r.result.scalar_values.empty()&&!r.result.diagnostics.empty()&&r.result.diagnostics[0].diagnostic_id==code;
+  };
+  const auto arm=[](int result=1,int prefix=16) {
+    rng_armed=true;rng_result=result;rng_prefix=prefix;rng_interceptions=0;rng_requested=0;
+    rng_watch=true;rng_scratch=nullptr;rng_cleared=false;rng_cleansed_bytes=0;
+  };
+  const auto disarm=[] {rng_armed=false;rng_watch=false;};
+  // Independent EVP radix64 oracle with alphabet substitution; no production
+  // salt encoder or bit extraction is used to construct the expected result.
+  const auto oracle=[](bool bcrypt,unsigned cost) {
+    unsigned char encoded[25]{};
+    const auto size=EVP_EncodeBlock(encoded,rng_bytes.data(),bcrypt?16:6);
+    const std::string standard="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const std::string alphabet=bcrypt?"./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789":
+                                      "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    std::string out=bcrypt?"$2b$"+(cost<10?std::string("0"):std::string())+std::to_string(cost)+"$":"$1$";
+    for(int i=0;i<size&&encoded[i]!='=';++i)out.push_back(alphabet[standard.find(static_cast<char>(encoded[i]))]);
+    if(!bcrypt)out.push_back('$');return out;
+  };
+  const auto correct=[](const f::FunctionCallResult& r,const std::string& expected) {
+    if(!r.result.ok()||r.result.scalar_values.size()!=1)return false;
+    const auto& v=r.result.scalar_values[0];return !v.is_null&&v.descriptor_id=="character"&&
+      v.payload_kind==s::SblrValuePayloadKind::text&&v.text_value==expected&&v.encoded_value==expected&&
+      v.charset_name=="utf8"&&v.collation_name.empty()&&v.binary_value.empty()&&v.uuid_value.is_nil()&&v.uuid_array_value.empty();
+  };
+  rng_supplied=true;
+  for(const char* name:{"sb.crypto.gen_salt","sb.crypto.gen_salt_algo"}) {
+    const bool explicit_cost=std::string_view(name)=="sb.crypto.gen_salt_algo";
+    f::FunctionCallRequest request;const auto* entry=package.registry.Lookup(name);
+    Check(entry!=nullptr,"salt builtin has registered binary identity");if(!entry)continue;
+    request.context.function_uuid=entry->function_uuid;
+    Check(package.registry.BindCallContext(request.context)!=nullptr,"salt builtin binds through UUID");
+    request.context.sblr_context.deterministic_random_bytes_hex="deliberately-invalid override ignored";
+    for(const char* algorithm:{"bf","BF","bcrypt","BcRyPt","md5","MD5"}) {
+      const bool bcrypt=algorithm[0]!='m'&&algorithm[0]!='M';
+      const unsigned first=bcrypt?4:1000,last=bcrypt?31:1000;
+      for(unsigned cost=first;cost<=last;++cost) {
+        for(unsigned i=0;i<16;++i)rng_bytes[i]=static_cast<unsigned char>(i*17+cost);
+        request.arguments={{"algorithm",f::MakeTextValue("character",algorithm)},{"cost",f::MakeUint64Value("uint32",cost)}};
+        if(cost%2==0){request.arguments[1].value.text_value.clear();request.arguments[1].value.encoded_value.clear();}
+        const auto expected=oracle(bcrypt,cost);arm();const auto r=f::DispatchCryptoHashFunction(request);disarm();
+        Check(correct(r,expected)&&rng_interceptions==1&&rng_requested==(bcrypt?16:6),"all costs/algorithm aliases consume fresh entropy and match independent salt encoding");
+        Check(rng_scratch==nullptr&&rng_cleared&&rng_cleansed_bytes==16,"salt success erases full fixed entropy scratch");
+      }
+    }
+    // Every entropy bit matters, including bits the old mask/repetition lost.
+    request.arguments={{"algorithm",f::MakeTextValue("character","bf")},{"cost",f::MakeUint64Value("uint32",6)}};
+    for(unsigned bit=0;bit<128;++bit) {
+      rng_bytes.fill(0);rng_bytes[bit/8]=static_cast<unsigned char>(1u<<(bit%8));
+      const auto expected=oracle(true,6);arm();const auto r=f::DispatchCryptoHashFunction(request);disarm();
+      Check(correct(r,expected),"each of128 salt bits survives canonical bcrypt encoding");
+    }
+    if(!explicit_cost)for(const auto* algorithm:{"bf","md5"}) {
+      request.arguments={{"algorithm",f::MakeTextValue("character",algorithm)}};
+      const bool bcrypt=algorithm[0]=='b';const auto expected=oracle(bcrypt,bcrypt?6:1000);
+      arm();const auto r=f::DispatchCryptoHashFunction(request);disarm();Check(correct(r,expected),"only optional cost selects registered format default");
+    }
+    const std::vector<std::string> bad_algorithms{""," BF","bf ","bf()","des","xdes","sha512","bcrypt\n",std::string("bf\0",3),"b\xc3\xa9"};
+    for(const auto& algorithm:bad_algorithms) {
+      request.arguments={{"algorithm",f::MakeTextValue("character",algorithm)},{"cost",f::MakeUint64Value("uint32",6)}};
+      Check(refuses(f::DispatchCryptoHashFunction(request),"CRYPTO.PASSWORD.UNSUPPORTED_ALGORITHM"),"algorithm matching has no trim, Unicode, NUL truncation or unknown profile fallback");
+    }
+    for(const char* algorithm:{"bf","md5"})for(auto cost:{0ULL,1ULL,3ULL,32ULL,999ULL,1001ULL,0xffffffffULL}) {
+      request.arguments={{"algorithm",f::MakeTextValue("character",algorithm)},{"cost",f::MakeUint64Value("uint32",cost)}};
+      Check(refuses(f::DispatchCryptoHashFunction(request),"CRYPTO.PASSWORD.INVALID_COST"),"invalid profile costs have exact diagnostic before result entropy");
+    }
+    request.arguments={{"algorithm",f::MakeTextValue("character","bf")},{"cost",f::MakeUint64Value("uint32",6)}};
+    const auto good=request.arguments;
+    for(std::size_t arg=0;arg<2;++arg)for(unsigned fault=0;fault<15;++fault) {
+      request.arguments=good;auto& v=request.arguments[arg].value;
+      if(fault==0)v.descriptor_id="int64";
+      if(fault==1)v.binary_value={0};
+      if(fault==2)v.uuid_value=Base();
+      if(fault==3)v.uuid_array_value={Base()};
+      if(fault==4)v.has_int64_value=true;
+      if(fault==5)v.has_real64_value=true;
+      if(fault==6)v.int64_value=7;
+      if(fault==7)v.real64_value=7;
+      if(fault==8)v.payload_kind=s::SblrValuePayloadKind::binary;
+      if(fault==9)v.encoded_value="secret wrong mirror";
+      if(fault==10)v.is_null=true;
+      if(fault==11){v=f::MakeNullValue(arg?"uint32":"character");v.uuid_array_value={Base()};}
+      if(fault==12){if(arg)v.uint64_value=0x100000000ULL;else v.has_uint64_value=true;}
+      if(fault==13){if(arg)v.charset_name="utf8";else v.uint64_value=5;}
+      if(fault==14){if(arg)v.has_uint64_value=false;else v.text_value="mismatch";}
+      const auto r=f::DispatchCryptoHashFunction(request);
+      Check(refuses(r,"CRYPTO.PASSWORD.INVALID_PARAMETER"),"salt rejects conflicting carriers and widths including NULL before computation");
+      if(!r.result.diagnostics.empty())Check(r.result.diagnostics[0].detail.find("secret")==std::string::npos,"salt diagnostic redacts malformed input");
+    }
+    for(unsigned count:{0u,1u,3u}) {
+      if(!explicit_cost&&count==1)continue;
+      request.arguments=good;request.arguments.resize(count);
+      Check(refuses(f::DispatchCryptoHashFunction(request),"CRYPTO.PASSWORD.INVALID_PARAMETER"),"exact registered salt arity enforced");
+    }
+    for(std::size_t arg=0;arg<2;++arg) {
+      request.arguments=good;request.arguments[arg].value=f::MakeNullValue(arg?"uint32":"character");
+      arm();const auto r=f::DispatchCryptoHashFunction(request);disarm();
+      Check(r.result.ok()&&r.result.scalar_values.size()==1&&r.result.scalar_values[0].is_null&&
+        r.result.scalar_values[0].descriptor_id=="character"&&rng_interceptions==0,"typed salt NULL returns NULL with no entropy use");
+    }
+    request.arguments=good;
+    for(int code:{0,-1})for(int prefix:{0,1,8,16}) {
+      arm(code,prefix);const auto r=f::DispatchCryptoHashFunction(request);disarm();
+      Check(refuses(r,"CRYPTO.RNG.UNAVAILABLE")&&rng_interceptions==1&&rng_cleared&&rng_scratch==nullptr,
+        "partial entropy failure yields no salt/fallback and erases supplied prefix");
+    }
+    scratchbird::engine::internal_api::EngineRequestContext owner;request.context.engine_request_context=&owner;
+    for(bool bcrypt:{false,true}) {
+      request.arguments={{"algorithm",f::MakeTextValue("character",bcrypt?"bf":"md5")},{"cost",f::MakeUint64Value("uint32",bcrypt?6:1000)}};
+      const auto valid=request.arguments;const auto expected=oracle(bcrypt,bcrypt?6:1000);
+      unsigned total=0;owner.query_cancellation_requested=[&]{++total;return false;};arm();
+      const auto r=f::DispatchCryptoHashFunction(request);disarm();Check(correct(r,expected)&&total>=4,"salt lifecycle polls prework, entropy and publication");
+      struct ProbeFailure{};
+      for(bool null_value:{false,true})for(bool throws:{false,true})for(unsigned stop=1;stop<=(null_value?2:total);++stop) {
+        request.arguments=valid;if(null_value)request.arguments[0].value=f::MakeNullValue("character");
+        unsigned polls=0;owner.query_cancellation_requested=[&]{if(++polls!=stop)return false;if(throws)throw ProbeFailure{};return true;};
+        expected_salt=expected;salt_cleanup_watch=true;salt_result_cleanses=0;arm();bool threw=false;
+        try {const auto failed=f::DispatchCryptoHashFunction(request);Check(!throws&&refuses(failed,"PROCESS.CANCELLED"),"every salt cancellation fence returns no value");}
+        catch(const ProbeFailure&){threw=true;}
+        disarm();salt_cleanup_watch=false;
+        Check(threw==throws&&polls==stop,"salt throwing probes unwind at exact fence");
+        if(!null_value&&stop==total)Check(salt_result_cleanses==2,"both unpublished salt result mirrors erased at final cancellation/throw");
+        if(rng_requested)Check(rng_cleared&&rng_scratch==nullptr,"salt entropy cleared during cancellation/unwind");
+      }
+      request.arguments=valid;
+      for(bool cancel_final:{false,true}) {
+        bool complete=false;unsigned faults=0;
+        for(long budget=0;budget<150&&!complete;++budget) {
+          unsigned polls=0;owner.query_cancellation_requested=[&]{return ++polls==total&&cancel_final;};
+          expected_salt=expected;salt_cleanup_watch=true;salt_result_cleanses=0;arm();fail_after=budget;
+          try {const auto result=f::DispatchCryptoHashFunction(request);fail_after=-1;
+            Check(cancel_final?refuses(result,"PROCESS.CANCELLED"):correct(result,expected),"salt allocation-failure sweep reaches exact outcome");complete=true;}
+          catch(const std::bad_alloc&){fail_after=-1;++faults;}
+          disarm();salt_cleanup_watch=false;
+          if(polls==total&&cancel_final)Check(salt_result_cleanses==2,"even diagnostic allocation failure erases both unpublished salt mirrors");
+          if(rng_requested)Check(rng_cleared&&rng_scratch==nullptr,"salt entropy retained under cleanup during allocation failure");
+        }
+        allocation_faults+=faults;Check(complete&&faults>0,"salt allocation sweep covers metadata, both result carriers and diagnostics");
+      }
+    }
+  }
+  rng_supplied=false;salt_cleanup_watch=false;expected_salt={};
+}
+
 int main() {
   static_assert(sizeof(f::FunctionUuid) == 16);
   static_assert(std::is_same_v<decltype(f::FunctionRegistryEntry{}.function_uuid), f::FunctionUuid>);
@@ -1848,6 +2002,7 @@ int main() {
   CryptoScrypt();
   ScryptCancellation();
   CryptoArmor();
+  CryptoSalt();
   std::cout << checks << " checks, " << allocation_faults << " allocation faults, " << failures << " failures\n";
   return failures ? 1 : 0;
 }
