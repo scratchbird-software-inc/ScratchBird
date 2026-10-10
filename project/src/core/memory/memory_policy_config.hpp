@@ -17,6 +17,9 @@
 namespace scratchbird::core::memory {
 
 inline constexpr u64 kMinimumProductionMemoryHardLimitBytes = 16ull * 1024ull * 1024ull;
+// Process-provider backing is a sub-budget of the shared hard cap, never an
+// additional allowance. Configuration alone is not a physical memory grant.
+inline constexpr u64 kDefaultOpenSslMemoryBudgetBytes = 4ull * 1024ull * 1024ull;
 
 enum class MemoryCeilingSignalKind {
   cgroup_v2_memory_max,

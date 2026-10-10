@@ -9,8 +9,10 @@
 #include "config.hpp"
 #include "memory_policy_config.hpp"
 #include "startup.hpp"
+#include "../support/owned_temp_directory.hpp"
 
 #include <cstdlib>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -43,10 +45,13 @@ void SetPolicyRootEnv() {
 #endif
 }
 
+scratchbird::tests::OwnedTempDirectory& TestArtifacts() {
+  static scratchbird::tests::OwnedTempDirectory artifacts;
+  return artifacts;
+}
+
 std::filesystem::path TempRoot() {
-  auto root = std::filesystem::temp_directory_path() / "scratchbird_memory_policy_config_gate";
-  std::filesystem::create_directories(root);
-  return root;
+  return TestArtifacts().path();
 }
 
 std::string ConfigText(std::string_view memory_body) {
@@ -154,6 +159,8 @@ bool DefaultPolicyPackMemoryPolicyLoads() {
                 "default policy-pack per-context limit mismatch") &&
          Expect(loaded.config.memory_page_buffer_pool_limit_bytes == 512ull * kMiB,
                 "default policy-pack page-buffer pool mismatch") &&
+         Expect(loaded.config.memory_openssl_budget_bytes == 4ull * kMiB,
+                "default OpenSSL backing budget mismatch") &&
          Expect(loaded.config.memory_min_startup_available_bytes == 1024ull * kMiB,
                 "default policy-pack startup floor mismatch") &&
          Expect(loaded.config.memory_adaptive_page_cache_enabled,
@@ -1084,8 +1091,119 @@ bool PackagedResourceRootsResolveBesideExecutable() {
 
 }  // namespace
 
-int main() {
+namespace {
+bool OpenSslBudgetConfiguration() {
+  SetPolicyRootEnv();
+  bool ok = Expect(server::ServerBootstrapConfig{}.memory_openssl_budget_bytes == 4*kMiB,
+                   "compiled OpenSSL default must equal packaged default");
+  for (const auto bytes : std::array<std::uint64_t,3>{1, 4*kMiB, 8*kMiB}) {
+    const auto loaded = Load("crypto-override.conf", "openssl_budget_bytes = " +
+        std::to_string(bytes) + "\nenable_platform_memory_probe = false\n");
+    ok = Expect(loaded.ok() && loaded.config.memory_openssl_budget_bytes == bytes,
+                "explicit OpenSSL override must survive packaged defaults") && ok;
+  }
+  for (const auto* value : {"-1", "+1", "1.5", "4MiB", "1e6", "18446744073709551616"}) {
+    const auto loaded = Load("crypto-invalid.conf", std::string("openssl_budget_bytes = ") + value + "\n");
+    ok = Expect(!loaded.ok() && HasDiagnostic(loaded,"CONFIG.VALUE_INVALID_UINT"),
+                "malformed OpenSSL byte count must refuse") && ok;
+  }
+  for (const auto* value : {"0", "1073741824", "18446744073709551615"}) {
+    const auto loaded = Load("crypto-size.conf", std::string("openssl_budget_bytes = ") + value +
+                            "\nenable_platform_memory_probe = false\n");
+    ok = Expect(!loaded.ok() && HasDiagnostic(loaded,"CONFIG.VALUE_INVALID_SIZE"),
+                "invalid OpenSSL envelope must refuse without wrapping") && ok;
+  }
+  server::ServerBootstrapConfig config;
+  config.memory_enable_platform_memory_probe = false;
+  config.memory_min_startup_available_bytes = 0;
+  const auto hard = config.memory_hard_limit_bytes;
+  const auto reserve = memory::DefaultBootstrapEmergencyReserveBytes(hard);
+  config.memory_openssl_budget_bytes = hard-reserve-1;
+  ok = Expect(server::ResolveServerMemoryAllocationPolicy(config).ok(),
+              "budget may leave exactly one ordinary byte (not physical grant proof)") && ok;
+  config.memory_openssl_budget_bytes++;
+  const auto full = server::ResolveServerMemoryAllocationPolicy(config);
+  ok = Expect(!full.ok() && HasDiagnostic(full,"CONFIG.VALUE_INVALID_SIZE"),
+              "budget must leave ordinary capacity after emergency reserve") && ok;
+  bool key = false, reason = false, budget = false, emergency = false, cap = false;
+  for (const auto& diagnostic : full.diagnostics) {
+    if (diagnostic.diagnostic_code != "CONFIG.VALUE_INVALID_SIZE") continue;
+    for (const auto& argument : diagnostic.arguments) {
+      const auto* text = argument.text();
+      if (!text) continue;
+      key |= argument.key == "canonical_key" && *text == "server.memory.openssl_budget_bytes";
+      reason |= argument.key == "reason" && *text == "openssl_budget_leaves_no_ordinary_capacity";
+      budget |= argument.key == "openssl_budget_bytes" && *text == std::to_string(hard-reserve);
+      emergency |= argument.key == "emergency_reserve_bytes" && *text == std::to_string(reserve);
+      cap |= argument.key == "effective_hard_limit_bytes" && *text == std::to_string(hard);
+    }
+  }
+  ok = Expect(key && reason && budget && emergency && cap,
+              "crypto budget refusal must retain the complete policy-bound vector") && ok;
+  // Re-observation of a changed platform cap must invalidate the same budget.
+  const auto probe = TempRoot()/"crypto-ceiling";
+  std::filesystem::create_directories(probe);
+  { std::ofstream(probe/"memory.max") << hard; std::ofstream(probe/"memory.high") << "max"; }
+  { std::ofstream(probe/"meminfo") << "MemTotal: 1048576 kB\n"; }
+  config.memory_enable_platform_memory_probe = true;
+  config.memory_probe_paths.cgroup_v2_root = probe.string();
+  config.memory_probe_paths.proc_meminfo = (probe/"meminfo").string();
+  config.memory_soft_limit_bytes = config.memory_per_context_limit_bytes =
+      config.memory_page_buffer_pool_limit_bytes = 0;
+  config.memory_openssl_budget_bytes = 192*kMiB;
+  ok = Expect(server::ResolveServerMemoryAllocationPolicy(config).ok(),
+              "crypto budget fits initial observed cap") && ok;
+  { std::ofstream(probe/"memory.max") << 256*kMiB; }
+  const auto clamped = server::ResolveServerMemoryAllocationPolicy(config);
+  ok = Expect(!clamped.ok() && HasDiagnostic(clamped,"CONFIG.VALUE_INVALID_SIZE"),
+              "changed effective cap must refuse existing crypto budget") && ok;
+  return ok;
+}
+
+bool OpenSslPackagedBudgetValidation() {
+  const auto root = TempRoot()/"crypto-policy-pack";
+  std::filesystem::create_directories(root/"policies");
+  const auto filename = "server_memory_cache_policy.json";
+  std::ifstream source(std::filesystem::path(SB_DEFAULT_POLICY_PACK_ROOT)/"policies"/filename);
+  std::ostringstream buffer;
+  buffer << source.rdbuf();
+  const auto original = buffer.str();
+  const std::string field = "\"openssl_budget_bytes\": 4194304";
+  const auto offset = original.find(field);
+  if (!Expect(source.good() && offset != std::string::npos, "read canonical crypto budget resource"))
+    return false;
   bool ok = true;
+  for (const auto* value : {"8388608", "0", "1073741824", "-1", "1.5", "4e6",
+                             "4194304bytes", "04194304", "18446744073709551616", "\"4194304\""}) {
+    auto text = original;
+    text.replace(offset, field.size(), std::string("\"openssl_budget_bytes\": ")+value);
+    { std::ofstream output(root/"policies"/filename); output << text; }
+    const auto loaded = Load("crypto-pack.conf", std::string("enable_platform_memory_probe = false\n")+
+        "[server.database]\npolicy_seed_pack_root = "+root.string()+"\n");
+    if (std::string_view(value)=="8388608") {
+      ok = Expect(loaded.ok() && loaded.config.memory_openssl_budget_bytes == 8*kMiB,
+                  "selected pack supplies actual crypto backing value") && ok;
+    } else {
+      const bool invalid_size = std::string_view(value)=="0" || std::string_view(value)=="1073741824";
+      ok = Expect(!loaded.ok() && HasDiagnostic(loaded, invalid_size ?
+          "CONFIG.DEFAULT_MEMORY_POLICY_INVALID" : "CONFIG.DEFAULT_MEMORY_POLICY_MALFORMED"),
+          "invalid packaged crypto value cannot parse a numeric prefix or use compiled fallback") && ok;
+    }
+  }
+  auto missing = original;
+  missing.erase(offset, field.size()+1); // Remove the field and comma, leave valid JSON.
+  { std::ofstream output(root/"policies"/filename); output << missing; }
+  const auto absent = Load("crypto-pack-missing.conf", std::string("enable_platform_memory_probe = false\n")+
+      "[server.database]\npolicy_seed_pack_root = "+root.string()+"\n");
+  return Expect(!absent.ok() && HasDiagnostic(absent,"CONFIG.DEFAULT_MEMORY_POLICY_MALFORMED"),
+                "missing packaged crypto budget cannot silently fall back") && ok;
+}
+} // namespace
+
+int main() try {
+  bool ok = true;
+  ok = OpenSslBudgetConfiguration() && ok;
+  ok = OpenSslPackagedBudgetValidation() && ok;
   ok = ValidConfigBuildsAllocationPolicy() && ok;
   ok = DefaultPolicyPackMemoryPolicyLoads() && ok;
   ok = ExplicitConfigOverridesPolicyPackMemoryFields() && ok;
@@ -1128,5 +1246,9 @@ int main() {
   ok = InvalidConfigFailsClosed("hard_too_small.conf",
                                 "hard_limit_bytes = 4096\n",
                                 "MEMORY.POLICY_HARD_LIMIT_TOO_SMALL") && ok;
+  TestArtifacts().Cleanup();
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

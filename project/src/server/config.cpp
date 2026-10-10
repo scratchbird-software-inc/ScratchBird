@@ -196,6 +196,7 @@ const std::set<std::string>& KnownKeys() {
       "server.memory.soft_limit_bytes",
       "server.memory.per_context_limit_bytes",
       "server.memory.page_buffer_pool_limit_bytes",
+      "server.memory.openssl_budget_bytes",
       "server.memory.min_startup_available_bytes",
       "server.memory.failure_mode",
       "server.memory.track_allocations",
@@ -835,9 +836,14 @@ bool ExtractJsonUint64Field(const std::string& text,
   while (end < text.size() && text[end] >= '0' && text[end] <= '9') {
     ++end;
   }
-  if (end == *value_pos) {
+  if (end == *value_pos || (end - *value_pos > 1 && text[*value_pos] == '0')) {
     return false;
   }
+  auto delimiter = end;
+  while (delimiter < text.size() && std::isspace(static_cast<unsigned char>(text[delimiter])))
+    ++delimiter;
+  if (delimiter == text.size() || (text[delimiter] != ',' && text[delimiter] != '}'))
+    return false; // Reject fractional/exponent/suffixed prefixes, not just overflow.
   return ParseUint64(text.substr(*value_pos, end - *value_pos), out);
 }
 
@@ -912,6 +918,7 @@ bool ApplyDefaultMemoryPolicyFromPolicyPack(
   std::uint64_t soft_limit_bytes = 0;
   std::uint64_t per_context_limit_bytes = 0;
   std::uint64_t page_buffer_pool_limit_bytes = 0;
+  std::uint64_t openssl_budget_bytes = 0;
   std::uint64_t min_startup_available_bytes = 0;
   bool track_allocations = false;
   bool zero_memory_on_allocate = false;
@@ -940,6 +947,7 @@ bool ApplyDefaultMemoryPolicyFromPolicyPack(
       !ExtractJsonUint64Field(text, "per_context_limit_bytes", &per_context_limit_bytes) ||
       !ExtractJsonUint64Field(text, "page_buffer_pool_limit_bytes",
                               &page_buffer_pool_limit_bytes) ||
+      !ExtractJsonUint64Field(text, "openssl_budget_bytes", &openssl_budget_bytes) ||
       !ExtractJsonUint64Field(text, "min_startup_available_bytes",
                               &min_startup_available_bytes) ||
       !ExtractJsonStringField(text, "failure_mode", &failure_mode) ||
@@ -973,6 +981,8 @@ bool ApplyDefaultMemoryPolicyFromPolicyPack(
       soft_limit_bytes > hard_limit_bytes ||
       per_context_limit_bytes > hard_limit_bytes ||
       page_buffer_pool_limit_bytes > hard_limit_bytes ||
+      openssl_budget_bytes == 0 ||
+      openssl_budget_bytes >= hard_limit_bytes ||
       !dirty_writeback_required ||
       cache_finality_authority ||
       cache_visibility_authority ||
@@ -1012,6 +1022,8 @@ bool ApplyDefaultMemoryPolicyFromPolicyPack(
             &config->memory_per_context_limit_bytes);
   apply_u64("server.memory.page_buffer_pool_limit_bytes", page_buffer_pool_limit_bytes,
             &config->memory_page_buffer_pool_limit_bytes);
+  apply_u64("server.memory.openssl_budget_bytes", openssl_budget_bytes,
+            &config->memory_openssl_budget_bytes);
   apply_u64("server.memory.min_startup_available_bytes", min_startup_available_bytes,
             &config->memory_min_startup_available_bytes);
   if (!ExplicitlyConfigured(explicit_memory_keys, "server.memory.failure_mode")) {
@@ -1327,6 +1339,10 @@ bool ApplyParsedConfig(const ParsedConfig& parsed,
       }
     } else if (key == "server.memory.page_buffer_pool_limit_bytes") {
       if (!ParseUint64(value, &config->memory_page_buffer_pool_limit_bytes)) {
+        return invalid("CONFIG.VALUE_INVALID_UINT", key, value);
+      }
+    } else if (key == "server.memory.openssl_budget_bytes") {
+      if (!ParseUint64(value, &config->memory_openssl_budget_bytes)) {
         return invalid("CONFIG.VALUE_INVALID_UINT", key, value);
       }
     } else if (key == "server.memory.min_startup_available_bytes") {
@@ -1683,6 +1699,42 @@ memory::MemoryPolicyConfigResolveResult ResolveServerMemoryAllocationPolicy(
          {"provenance", config.memory_policy_provenance}},
         {}, "server.config.memory_policy",
         "Provide sufficient admitted memory for the configured startup floor."));
+    resolved.warnings.clear();
+    resolved.degraded_container_limit = false;
+  }
+  // Preserve the owning startup-floor/emergency refusal before checking a
+  // child provider sub-budget. Never mislabel a missing reserve as crypto.
+  const auto reserve = memory::DefaultBootstrapEmergencyReserveBytes(
+      resolved.effective_hard_limit_bytes);
+  if (resolved.ok() && reserve >= resolved.effective_hard_limit_bytes) {
+    using namespace scratchbird::core::platform;
+    resolved.diagnostics.push_back(MakeDiagnostic(
+        StatusCode::memory_invalid_request, Severity::error, Subsystem::memory,
+        "MEMORY.EMERGENCY_RESERVE_INVALID", "memory.emergency_reserve_invalid",
+        {{"reason", "emergency_reserve_leaves_no_ordinary_capacity"},
+         {"emergency_reserve_bytes", std::to_string(reserve)},
+         {"effective_hard_limit_bytes", std::to_string(resolved.effective_hard_limit_bytes)},
+         {"hard_limit_bytes", std::to_string(config.memory_hard_limit_bytes)},
+         {"min_startup_available_bytes", std::to_string(config.memory_min_startup_available_bytes)}},
+        {}, "server.config.memory_policy", "Provide sufficient capacity for the emergency reserve."));
+    resolved.warnings.clear();
+    resolved.degraded_container_limit = false;
+  }
+  if (resolved.ok() &&
+      (config.memory_openssl_budget_bytes == 0 ||
+       config.memory_openssl_budget_bytes >= resolved.effective_hard_limit_bytes - reserve)) {
+    using namespace scratchbird::core::platform;
+    resolved.diagnostics.push_back(MakeDiagnostic(
+        StatusCode::memory_invalid_request, Severity::error, Subsystem::memory,
+        "CONFIG.VALUE_INVALID_SIZE", "config.value_invalid_size",
+        {{"canonical_key", "server.memory.openssl_budget_bytes"},
+         {"reason", config.memory_openssl_budget_bytes == 0 ?
+             "openssl_budget_must_be_positive" : "openssl_budget_leaves_no_ordinary_capacity"},
+         {"openssl_budget_bytes", std::to_string(config.memory_openssl_budget_bytes)},
+         {"emergency_reserve_bytes", std::to_string(reserve)},
+         {"effective_hard_limit_bytes", std::to_string(resolved.effective_hard_limit_bytes)}},
+        {}, "server.config.memory_policy",
+        "Configure a positive OpenSSL budget within the shared cap, leaving emergency and ordinary capacity."));
     resolved.warnings.clear();
     resolved.degraded_container_limit = false;
   }

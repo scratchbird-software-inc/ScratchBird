@@ -67,6 +67,7 @@ REQUIRED_CATALOG_ROW_FAMILIES = {
 REQUIRED_DEFAULT_POLICY_COUNT = 58
 REQUIRED_MEMORY_HARD_LIMIT_BYTES = 1024 * 1024 * 1024
 REQUIRED_MEMORY_PAGE_BUFFER_POOL_BYTES = 512 * 1024 * 1024
+REQUIRED_OPENSSL_BUDGET_BYTES = 4 * 1024 * 1024
 
 REQUIRED_DEFAULT_POLICY_KEYS = {
     "admin.management_command_authorization",
@@ -384,12 +385,15 @@ def validate_server_memory_cache_policy(pack_root: Path) -> None:
         "soft_limit_bytes",
         "per_context_limit_bytes",
         "page_buffer_pool_limit_bytes",
+        "openssl_budget_bytes",
         "min_startup_available_bytes",
     ):
         require(isinstance(limits.get(field), int),
                 f"server memory/cache {field} must be an integer")
     require(limits.get("hard_limit_bytes") >= REQUIRED_MEMORY_HARD_LIMIT_BYTES,
             "server memory/cache hard limit must be at least 1 GiB")
+    require(limits.get("openssl_budget_bytes") == REQUIRED_OPENSSL_BUDGET_BYTES,
+            "packaged OpenSSL process backing default must be exactly 4 MiB")
     require(limits.get("min_startup_available_bytes") >= REQUIRED_MEMORY_HARD_LIMIT_BYTES,
             "server memory/cache startup floor must be at least 1 GiB")
     require(limits.get("page_buffer_pool_limit_bytes") >=

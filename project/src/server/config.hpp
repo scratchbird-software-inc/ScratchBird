@@ -123,6 +123,8 @@ struct ServerBootstrapConfig {
   std::uint64_t memory_soft_limit_bytes = 768ull * 1024ull * 1024ull;
   std::uint64_t memory_per_context_limit_bytes = 256ull * 1024ull * 1024ull;
   std::uint64_t memory_page_buffer_pool_limit_bytes = 512ull * 1024ull * 1024ull;
+  std::uint64_t memory_openssl_budget_bytes =
+      scratchbird::core::memory::kDefaultOpenSslMemoryBudgetBytes;
   std::uint64_t memory_min_startup_available_bytes = 1024ull * 1024ull * 1024ull;
   scratchbird::core::memory::AllocationFailureMode memory_failure_mode =
       scratchbird::core::memory::AllocationFailureMode::return_error;
