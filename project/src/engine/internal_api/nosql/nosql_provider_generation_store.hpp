@@ -181,12 +181,34 @@ struct EngineNoSqlProviderGenerationMetadata {
   bool search_segment_wal_claims_transaction_finality_authority = false;
 };
 
+// Observations of physical publication, not authorization or MGA finality.
+// A failed directory sync can coexist with a replaced file: callers must
+// reconcile that outcome rather than infer that a failure had no effects.
+enum class EngineNoSqlProviderPublicationPhase {
+  not_started, open_staging, write_staging, sync_staging, close_staging,
+  replace_published, sync_parent, complete
+};
+struct EngineNoSqlProviderPublicationEffects {
+  // Last attempted phase. False observation flags do not prove no effects:
+  // even a failed open may have created a file before its cleanup failed.
+  EngineNoSqlProviderPublicationPhase attempted_phase =
+      EngineNoSqlProviderPublicationPhase::not_started;
+  bool exception_observed = false;
+  bool staging_created = false;
+  bool staging_written = false;
+  bool file_synchronized = false;
+  bool published_file_replaced = false;
+  bool parent_synchronized = false;
+  bool completed = false;
+};
+
 struct EngineNoSqlProviderGenerationResult {
   bool ok = false;
   EngineApiDiagnostic diagnostic;
   EngineNoSqlProviderGenerationMetadata metadata;
   std::vector<std::string> evidence;
   std::vector<EngineEvidenceReference> identity_evidence;
+  EngineNoSqlProviderPublicationEffects publication_effects;
 };
 
 struct EngineNoSqlProviderGenerationRepairRequest {

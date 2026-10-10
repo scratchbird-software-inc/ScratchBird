@@ -30,6 +30,12 @@
 #include <sstream>
 #include <string_view>
 #include <utility>
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace scratchbird::engine::internal_api {
 namespace {
@@ -2003,7 +2009,8 @@ bool MetadataRefMismatch(
           proof.support_bundle_evidence_id != metadata.support_bundle_evidence_id);
 }
 
-bool WriteGenerationRecord(std::ostream& out, const EngineNoSqlProviderGenerationMetadata& metadata) {
+bool WriteGenerationRecord(storage::disk::FileDevice& out, std::uint64_t* offset,
+                           const EngineNoSqlProviderGenerationMetadata& metadata) {
   BinaryCatalogMetadata fields;
   for (const auto& [key, value] : MetadataPairs(metadata)) {
     if (const auto* uuid = std::get_if<EngineUuid>(&value)) fields.identities.emplace(key, *uuid);
@@ -2013,23 +2020,67 @@ bool WriteGenerationRecord(std::ostream& out, const EngineNoSqlProviderGeneratio
   if (!EncodeBinaryCatalogMetadata(fields, "nosql.provider_generation.v2", &bytes)) return false;
   std::string frame;
   AppendBinaryU32(&frame, static_cast<std::uint32_t>(bytes.size()));
-  out.write(frame.data(), frame.size());
-  out.write(bytes.data(), bytes.size());
-  return static_cast<bool>(out);
+  if (!out.WriteAt(*offset, frame.data(), frame.size()).ok()) return false;
+  *offset += frame.size();
+  if (!out.WriteAt(*offset, bytes.data(), bytes.size()).ok()) return false;
+  *offset += bytes.size();
+  return true;
 }
 
-bool RewriteLocked(const EngineRequestContext& context,
-                   const std::vector<EngineNoSqlProviderGenerationMetadata>& generations) {
+EngineNoSqlProviderPublicationEffects RewriteLocked(
+    const EngineRequestContext& context,
+    const std::vector<EngineNoSqlProviderGenerationMetadata>& generations) {
+  EngineNoSqlProviderPublicationEffects effects;
+  using Phase = EngineNoSqlProviderPublicationPhase;
   const auto path = GenerationPath(context);
-  if (path.empty()) return true;
-  std::ofstream out(path, std::ios::binary | std::ios::trunc);
-  if (!out) return false;
-  out.write(kGenerationMagic.data(), kGenerationMagic.size());
+  if (path.empty()) return effects; // no durable destination, no publication
+  // One process owns the node, and StoreMutex serializes its publishers. An
+  // existing staging file is unresolved work, never permission to truncate it.
+  // Readers use only the published path and ignore uncommitted staging bytes.
+  const auto staging = path + ".pending";
+  const auto cache_key = StoreKey(context);
+  storage::disk::FileDevice out;
+  try {
+  effects.attempted_phase = Phase::open_staging;
+  if (!out.Open(staging, storage::disk::FileOpenMode::create_new).ok()) return effects;
+  effects.staging_created = true;
+  // Invalidate even on failure: after replacement but before directory sync,
+  // a previously cached generation is no longer an accurate disk observation.
+  GenerationCache().erase(cache_key);
+  effects.attempted_phase = Phase::write_staging;
+  if (!out.WriteAt(0, kGenerationMagic.data(), kGenerationMagic.size()).ok()) return effects;
+  std::uint64_t offset = kGenerationMagic.size();
   for (const auto& metadata : generations) {
-    if (!metadata.persistence_valid || !WriteGenerationRecord(out, metadata)) return false;
+    if (!metadata.persistence_valid || !WriteGenerationRecord(out, &offset, metadata)) return effects;
   }
-  out.flush();
-  return static_cast<bool>(out);
+  effects.staging_written = true;
+  effects.attempted_phase = Phase::sync_staging;
+  if (!out.Sync().ok()) return effects;
+  effects.file_synchronized = true;
+  effects.attempted_phase = Phase::close_staging;
+  if (!out.Close().ok()) return effects;
+  effects.attempted_phase = Phase::replace_published;
+#if defined(_WIN32)
+  if (!::MoveFileExW(std::filesystem::path(staging).wstring().c_str(),
+                    std::filesystem::path(path).wstring().c_str(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return effects;
+#else
+  std::error_code rename_error;
+  std::filesystem::rename(staging, path, rename_error);
+  if (rename_error) return effects;
+#endif
+  effects.published_file_replaced = true;
+  effects.attempted_phase = Phase::sync_parent;
+  if (!storage::disk::SyncParentDirectoryPath(path).ok()) return effects;
+  effects.parent_synchronized = true;
+  effects.completed = true;
+  effects.attempted_phase = Phase::complete;
+  } catch (...) {
+    // Keep the last attempted phase and every confirmed effect, including
+    // when encoding or low-level diagnostic allocation fails after I/O.
+    effects.exception_observed = true;
+  }
+  return effects;
 }
 
 EngineNoSqlProviderGenerationMetadata CorruptGenerationRecord() {
@@ -2297,11 +2348,10 @@ EngineNoSqlProviderGenerationResult PublishNoSqlProviderGeneration(
                      }),
       generations.end());
   generations.push_back(writable);
-  if (!RewriteLocked(context, generations)) {
-    return Failure(context, "nosql.provider_generation.publish", kNoSqlProviderGenerationUnavailable);
-  }
-  GenerationCache()[StoreKey(context)] = generations;
-
+  // Prepare both responses before physical effects. No allocation after a
+  // committed replacement may hide its receipt behind an exception.
+  const auto cache_key = StoreKey(context);
+  auto failure = Failure(context, "nosql.provider_generation.publish", kNoSqlProviderGenerationUnavailable);
   EngineNoSqlProviderGenerationResult result;
   result.ok = true;
   result.diagnostic = OkDiagnostic();
@@ -2310,6 +2360,19 @@ EngineNoSqlProviderGenerationResult PublishNoSqlProviderGeneration(
   result.evidence.push_back("provider_generation_persisted=true");
   result.evidence.push_back("provider_generation_concurrency_guard=mutex");
   result.evidence.push_back("provider_generation_support_bundle_ready=true");
+  const auto publication = RewriteLocked(context, generations);
+  if (!publication.completed) {
+    failure.publication_effects = publication;
+    return failure;
+  }
+  result.publication_effects = publication;
+  try {
+    GenerationCache().insert_or_assign(cache_key, std::move(generations));
+  } catch (...) {
+    // A cache miss is safe; an empty/stale cache entry after allocation failure
+    // is not. Durable publication does not depend on a successful cache fill.
+    GenerationCache().erase(cache_key);
+  }
   return result;
 }
 
@@ -2599,13 +2662,10 @@ EngineNoSqlProviderGenerationResult DropNoSqlProviderGeneration(
                    "nosql.provider_generation.drop",
                    kNoSqlProviderGenerationUnavailable);
   }
-  if (!RewriteLocked(context, generations)) {
-    return Failure(context,
+  const auto cache_key = StoreKey(context);
+  auto failure = Failure(context,
                    "nosql.provider_generation.drop",
                    kNoSqlProviderGenerationUnavailable);
-  }
-  GenerationCache()[StoreKey(context)] = generations;
-
   EngineNoSqlProviderGenerationResult result;
   result.ok = true;
   result.diagnostic = OkDiagnostic();
@@ -2615,6 +2675,17 @@ EngineNoSqlProviderGenerationResult DropNoSqlProviderGeneration(
   result.evidence.push_back("provider_generation_concurrency_guard=mutex");
   result.evidence.push_back("provider_generation_finality_authority=false");
   result.evidence.push_back("provider_generation_visibility_authority=false");
+  const auto publication = RewriteLocked(context, generations);
+  if (!publication.completed) {
+    failure.publication_effects = publication;
+    return failure;
+  }
+  result.publication_effects = publication;
+  try {
+    GenerationCache().insert_or_assign(cache_key, std::move(generations));
+  } catch (...) {
+    GenerationCache().erase(cache_key);
+  }
   return result;
 }
 

@@ -20,6 +20,8 @@
 #include "snapshot_safe_result_cache.hpp"
 #include "streaming_cursor_manager.hpp"
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
 #include "transaction/transaction_api.hpp"
 #include "vector_maintenance_jobs.hpp"
 #include "vector_training_recall_lifecycle.hpp"
@@ -32,10 +34,15 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unistd.h>
 #include <vector>
+#if defined(__linux__)
+#include <csignal>
+#include <sys/resource.h>
+#endif
 
 namespace {
 
@@ -165,8 +172,7 @@ constexpr auto kSeedRowUuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0
 constexpr auto kInsertedRowUuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000121202");
 
 [[noreturn]] void Fail(const std::string& message) {
-  std::cerr << "ORH-121 gate failure: " << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error("ORH-121 gate failure: " + message);
 }
 
 void Require(bool condition, const std::string& message) {
@@ -209,12 +215,16 @@ bool HasDiagnostic(const api::EngineApiResult& result,
   return false;
 }
 
+std::vector<std::filesystem::path> generated_directories;
+
 std::filesystem::path MakeTempDir(std::string_view label) {
   std::string tmpl = "/tmp/sb_orh121_" + std::string(label) + ".XXXXXX";
   std::vector<char> writable(tmpl.begin(), tmpl.end());
   writable.push_back('\0');
   char* made = ::mkdtemp(writable.data());
-  return made == nullptr ? std::filesystem::path{} : std::filesystem::path(made);
+  if (!made) return {};
+  generated_directories.emplace_back(made);
+  return generated_directories.back();
 }
 
 std::string ObjectUuid(const std::string& key) {
@@ -238,7 +248,8 @@ api::EngineTypedValue TextValue(std::string value) {
   return typed;
 }
 
-api::EngineColumnDefinition Column(std::uint32_t ordinal, std::string name) {
+api::EngineColumnDefinition Column(const api::EngineRequestContext& context,
+                                  std::uint32_t ordinal, std::string name) {
   api::EngineColumnDefinition column;
   column.ordinal = ordinal;
   column.requested_column_uuid =
@@ -249,6 +260,8 @@ api::EngineColumnDefinition Column(std::uint32_t ordinal, std::string name) {
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "text";
   column.descriptor.encoded_descriptor = "type=text";
+  scratchbird::tests::BindFixtureColumnDatatype(
+      context, scratchbird::core::datatypes::CanonicalTypeId::character, column);
   return column;
 }
 
@@ -291,36 +304,24 @@ std::uint64_t EvidenceU64(const api::EngineApiResult& result,
   return 0;
 }
 
-api::EngineRequestContext BaseContext(const std::filesystem::path& database_path,
+api::EngineRequestContext BaseContext(const api::EngineRequestContext& owner,
                                       std::string_view session_suffix = "001") {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+  auto context = owner;
   context.request_id = "orh121-fault-injection";
-  context.database_path = database_path.string();
-  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000121001");
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000121002");
   context.session_uuid =
       scratchbird::tests::FixtureUuid(1571, 1000 + std::stoull(std::string(session_suffix)));
-  context.security_context_present = true;
-  context.catalog_generation_id = 121;
-  context.security_epoch = 121;
-  context.resource_epoch = 121;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
-  context.name_resolution_epoch = 121;
   context.trace_tags.push_back("ORH-121");
   return context;
 }
 
 api::EngineRequestContext BeginTransaction(
-    const std::filesystem::path& database_path,
+    const api::EngineRequestContext& owner,
     std::string_view session_suffix) {
   api::EngineBeginTransactionRequest request;
-  request.context = BaseContext(database_path, session_suffix);
+  request.context = BaseContext(owner, session_suffix);
   const auto begin = api::EngineBeginTransaction(request);
   Require(begin.ok, "transaction begin failed");
-  auto context = BaseContext(database_path, session_suffix);
+  auto context = BaseContext(owner, session_suffix);
   context.local_transaction_id = begin.local_transaction_id;
   context.transaction_uuid = begin.transaction_uuid;
   context.snapshot_visible_through_local_transaction_id =
@@ -344,18 +345,28 @@ void Rollback(const api::EngineRequestContext& context) {
   Require(rollback.ok, "rollback failed");
 }
 
-void CreateLifecycleSchemaAndTable(const std::filesystem::path& database_path) {
+api::EngineRequestContext CreateLifecycleSchemaAndTable(const std::filesystem::path& database_path) {
   const auto created = scratchbird::tests::database_lifecycle::CreateCredentialedDatabaseFixture(
       database_path, SB_ORH121_SEED_PACK_ROOT);
   Require(created.ok(), "credentialed lifecycle fixture create failed");
 
-  auto context = BeginTransaction(database_path, "101");
+  scratchbird::storage::database::DatabaseCreateConfig identity;
+  identity.path = database_path.string();
+  identity.database_uuid = created.state.database_uuid;
+  identity.filespace_uuid = created.state.filespace_uuid;
+  auto owner = scratchbird::tests::BootstrapFixtureOwnerContext(identity);
+  auto context = BeginTransaction(owner, "101");
+  scratchbird::tests::FixtureEngineSession session(context);
   api::EngineCreateSchemaRequest schema_request;
   schema_request.context = context;
   schema_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000121101");
   schema_request.target_object.object_kind = "schema";
   schema_request.localized_names.push_back(Name("orh121_schema"));
-  const auto schema = api::EngineCreateSchema(schema_request);
+  const auto schema = [&] {
+    scratchbird::tests::FixtureEngineStatement statement(session, context);
+    schema_request.context = statement.context;
+    return api::EngineCreateSchema(schema_request);
+  }();
   Require(schema.ok, "schema create failed");
 
   api::EngineCreateTableRequest table_request;
@@ -366,34 +377,46 @@ void CreateLifecycleSchemaAndTable(const std::filesystem::path& database_path) {
   table_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000121102");
   table_request.target_object.object_kind = "table";
   table_request.table_names.push_back(Name("orh121_merge_target"));
-  table_request.table_columns.push_back(Column(0, "id"));
-  table_request.table_columns.push_back(Column(1, "note"));
-  const auto table = api::EngineCreateTable(table_request);
+  table_request.table_columns.push_back(Column(context, 0, "id"));
+  table_request.table_columns.push_back(Column(context, 1, "note"));
+  const auto table = [&] {
+    scratchbird::tests::FixtureEngineStatement statement(session, context);
+    table_request.context = statement.context;
+    return api::EngineCreateTable(table_request);
+  }();
   std::string table_failure = "table create failed";
   for (const auto& diagnostic : table.diagnostics) {
     table_failure += " [" + diagnostic.code + ":" + diagnostic.detail + "]";
   }
   Require(table.ok, table_failure);
   Commit(context);
+  owner.current_schema_uuid = schema_request.target_object.uuid;
+  return owner;
 }
 
 void ProvePartialMergeBatchRollbackReopenRecovery() {
   const auto work = MakeTempDir("merge");
   Require(!work.empty(), "failed to create MERGE temp directory");
   const auto database_path = work / "orh121_merge.sbdb";
-  CreateLifecycleSchemaAndTable(database_path);
+  const auto owner = CreateLifecycleSchemaAndTable(database_path);
 
-  auto seed_tx = BeginTransaction(database_path, "201");
+  auto seed_tx = BeginTransaction(owner, "201");
+  scratchbird::tests::FixtureEngineSession seed_session(seed_tx);
   api::EngineInsertRowsRequest insert;
   insert.context = seed_tx;
   insert.target_table.uuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000121102");
   insert.target_table.object_kind = "table";
   insert.input_rows.push_back(Row(kSeedRowUuid, "1", "seed"));
-  const auto inserted = api::EngineInsertRows(insert);
+  const auto inserted = [&] {
+    scratchbird::tests::FixtureEngineStatement statement(seed_session, seed_tx);
+    insert.context = statement.context;
+    return api::EngineInsertRows(insert);
+  }();
   Require(inserted.ok, "seed insert failed");
   Commit(seed_tx);
 
-  auto interrupted_tx = BeginTransaction(database_path, "202");
+  auto interrupted_tx = BeginTransaction(owner, "202");
+  scratchbird::tests::FixtureEngineSession interrupted_session(interrupted_tx);
   api::EngineMergeRowsRequest merge;
   merge.context = interrupted_tx;
   merge.target_table.uuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000121102");
@@ -404,7 +427,11 @@ void ProvePartialMergeBatchRollbackReopenRecovery() {
   merge.update_assignments.push_back({"note", TextValue("interrupted-update")});
   merge.diagnostic_options.push_back(
       "orh121.fault_injection.partial_merge_batch.after_update_batch");
-  const auto interrupted = api::EngineMergeRows(merge);
+  const auto interrupted = [&] {
+    scratchbird::tests::FixtureEngineStatement statement(interrupted_session, interrupted_tx);
+    merge.context = statement.context;
+    return api::EngineMergeRows(merge);
+  }();
   Require(!interrupted.ok, "partial MERGE batch fault was not injected");
   Require(HasDiagnostic(
               interrupted,
@@ -423,11 +450,12 @@ void ProvePartialMergeBatchRollbackReopenRecovery() {
   Rollback(interrupted_tx);
 
   api::EngineOpenLifecycleRequest reopen;
-  reopen.context = BaseContext(database_path, "203");
+  reopen.context = BaseContext(owner, "203");
   const auto reopened = api::EngineOpenLifecycle(reopen);
   Require(reopened.ok, "database did not reopen after partial MERGE rollback");
 
-  auto reader = BeginTransaction(database_path, "204");
+  auto reader = BeginTransaction(owner, "204");
+  scratchbird::tests::FixtureEngineSession reader_session(reader);
   api::EngineSelectRowsRequest verify_rollback;
   verify_rollback.context = reader;
   verify_rollback.source_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000121102");
@@ -435,7 +463,11 @@ void ProvePartialMergeBatchRollbackReopenRecovery() {
   verify_rollback.select_predicate.predicate_kind = "row_uuid_match";
   verify_rollback.select_predicate.row_uuid = kSeedRowUuid;
   verify_rollback.select_projection.canonical_projection_envelopes = {"note"};
-  const auto before_recovery_update = api::EngineSelectRows(verify_rollback);
+  const auto before_recovery_update = [&] {
+    scratchbird::tests::FixtureEngineStatement statement(reader_session, reader);
+    verify_rollback.context = statement.context;
+    return api::EngineSelectRows(verify_rollback);
+  }();
   Require(before_recovery_update.ok,
           "post-reopen SELECT after partial MERGE rollback failed");
   Require(before_recovery_update.visible_count == 1,
@@ -451,7 +483,11 @@ void ProvePartialMergeBatchRollbackReopenRecovery() {
   probe.insert_when_not_matched = false;
   probe.input_rows.push_back(Row(kSeedRowUuid, "1", "after-reopen"));
   probe.update_assignments.push_back({"note", TextValue("after-reopen")});
-  const auto visibility = api::EngineMergeRows(probe);
+  const auto visibility = [&] {
+    scratchbird::tests::FixtureEngineStatement statement(reader_session, reader);
+    probe.context = statement.context;
+    return api::EngineMergeRows(probe);
+  }();
   Require(visibility.ok, "post-reopen MERGE visibility probe failed");
   Require(visibility.matched_count == 1,
           "rolled-back partial MERGE hid the committed seed row");
@@ -698,7 +734,16 @@ void ProveNoSqlProviderPublishRecovery() {
   const auto work = MakeTempDir("nosql");
   Require(!work.empty(), "failed to create NoSQL temp directory");
   const auto db_path = work / "orh121_nosql.sbdb";
-  auto context = BaseContext(db_path, "501");
+  // This subcase exercises the provider generation journal, not a database
+  // login or table publication. Keep its isolated binary owner explicit.
+  api::EngineRequestContext context;
+  context.database_path = db_path.string();
+  context.database_uuid = scratchbird::tests::FixtureUuid(1571, 1501);
+  context.session_uuid = scratchbird::tests::FixtureUuid(1571, 1502);
+  context.principal_uuid = scratchbird::tests::FixtureUuid(1571, 1503);
+  context.catalog_generation_id = 121;
+  context.security_epoch = 121;
+  context.resource_epoch = 121;
   const std::string provider_id = "orh121.document_path_provider";
   const auto collection_uuid = scratchbird::tests::FixtureUuid(1571, 500);
   api::CleanupNoSqlProviderGenerations(context, true);
@@ -707,21 +752,87 @@ void ProveNoSqlProviderPublishRecovery() {
   const auto published1 =
       api::PublishNoSqlProviderGeneration(context, gen1);
   Require(published1.ok, "NoSQL provider generation 1 publish failed");
+  Require(published1.publication_effects.completed &&
+              published1.publication_effects.file_synchronized &&
+              published1.publication_effects.published_file_replaced &&
+              published1.publication_effects.parent_synchronized,
+          "NoSQL generation success lacks durable publication effects");
 
   const auto generation_file =
       std::filesystem::path(context.database_path + ".sb.nosql_provider_generations");
-  {
-    std::ofstream out(generation_file, std::ios::binary | std::ios::app);
-    out << "SBNOSQLPG1\tGENERATION\tfamily=document|provider_id="
-        << provider_id << "|generation_id=2";
+  const auto pending_file = std::filesystem::path(generation_file.string() + ".pending");
+  auto gen2 = api::MakeDocumentProviderGenerationMetadata(
+      context, provider_id, collection_uuid, 2);
+#if defined(__linux__)
+  // Cause an actual short write/EFBIG in the storage adapter. The cap admits
+  // its small owner-lock record but not a complete generation snapshot.
+  struct rlimit old_limit{};
+  Require(::getrlimit(RLIMIT_FSIZE, &old_limit) == 0 && old_limit.rlim_cur >= 1024,
+          "cannot establish bounded publication write fault");
+  struct sigaction ignore_signal{}, old_signal{};
+  ignore_signal.sa_handler = SIG_IGN;
+  ::sigemptyset(&ignore_signal.sa_mask);
+  Require(::sigaction(SIGXFSZ, &ignore_signal, &old_signal) == 0,
+          "cannot install file-size fault signal handler");
+  auto limited = old_limit;
+  limited.rlim_cur = 1024;
+  if (::setrlimit(RLIMIT_FSIZE, &limited) != 0) {
+    (void)::sigaction(SIGXFSZ, &old_signal, nullptr);
+    Fail("cannot set publication write limit");
   }
+  api::EngineNoSqlProviderGenerationResult short_write;
+  try {
+    short_write = api::PublishNoSqlProviderGeneration(context, gen2);
+  } catch (...) {
+    (void)::setrlimit(RLIMIT_FSIZE, &old_limit);
+    (void)::sigaction(SIGXFSZ, &old_signal, nullptr);
+    throw;
+  }
+  const bool limit_restored = ::setrlimit(RLIMIT_FSIZE, &old_limit) == 0;
+  const bool signal_restored = ::sigaction(SIGXFSZ, &old_signal, nullptr) == 0;
+  Require(limit_restored && signal_restored, "publication write fault limits not restored");
+  Require(!short_write.ok && short_write.publication_effects.staging_created &&
+              short_write.publication_effects.attempted_phase ==
+                  api::EngineNoSqlProviderPublicationPhase::write_staging &&
+              !short_write.publication_effects.staging_written &&
+              !short_write.publication_effects.published_file_replaced &&
+              !short_write.publication_effects.completed,
+          "short write lost its physical-effect receipt or published a partial snapshot");
+  Require(std::filesystem::file_size(pending_file) == 1024,
+          "short write did not retain the expected partial staging bytes");
+  api::CleanupNoSqlProviderGenerations(context, false);
+  const auto after_short_write = api::LoadNoSqlProviderGeneration(
+      context, api::EngineNoSqlProviderFamily::kDocument, provider_id, collection_uuid);
+  Require(after_short_write.ok && after_short_write.metadata.generation_id == 1,
+          "failed physical write destroyed the published generation");
+  Require(std::filesystem::remove(pending_file), "injected short-write cleanup failed");
+#endif
+  // The current binary format publishes complete snapshots, not legacy text
+  // append records. Model interruption after writing only a new snapshot's
+  // header/length. The published snapshot must remain untouched and readable.
+  {
+    std::ofstream out(pending_file, std::ios::binary);
+    out << "SBNOSQLPG2";
+    const std::array<char, 4> incomplete_length{0, 16, 0, 0};
+    out.write(incomplete_length.data(), incomplete_length.size());
+    out.close();
+    Require(static_cast<bool>(out), "partial binary staging write failed");
+  }
+  const auto conflicting_publish = api::PublishNoSqlProviderGeneration(context, gen2);
+  Require(!conflicting_publish.ok &&
+              conflicting_publish.publication_effects.attempted_phase ==
+                  api::EngineNoSqlProviderPublicationPhase::open_staging &&
+              !conflicting_publish.publication_effects.staging_created &&
+              !conflicting_publish.publication_effects.published_file_replaced &&
+              !conflicting_publish.publication_effects.completed,
+          "unresolved staging publication was overwritten or reported successful");
   api::CleanupNoSqlProviderGenerations(context, false);
   const auto loaded = api::LoadNoSqlProviderGeneration(
       context,
       api::EngineNoSqlProviderFamily::kDocument,
       provider_id,
       collection_uuid);
-  Require(loaded.ok, "NoSQL provider generation did not reopen after partial append");
+  Require(loaded.ok, "NoSQL provider generation did not reopen after interrupted staging write");
   Require(loaded.metadata.generation_id == 1,
           "partial NoSQL provider publish became visible");
 
@@ -735,8 +846,9 @@ void ProveNoSqlProviderPublishRecovery() {
   Require(Has(stale.evidence, "provider_generation_fail_closed=true"),
           "stale NoSQL provider validation did not fail closed");
 
-  auto gen2 = api::MakeDocumentProviderGenerationMetadata(
-      context, provider_id, collection_uuid, 2);
+  // Test owner disposes only its explicitly injected, unpublished bytes after
+  // confirming the durable generation. Production never auto-discards them.
+  Require(std::filesystem::remove(pending_file), "injected staging cleanup failed");
   api::EngineNoSqlProviderGenerationRepairRequest repair;
   repair.family = api::EngineNoSqlProviderFamily::kDocument;
   repair.provider_id = provider_id;
@@ -756,6 +868,18 @@ void ProveNoSqlProviderPublishRecovery() {
       collection_uuid);
   Require(loaded_repaired.ok && loaded_repaired.metadata.generation_id == 2,
           "NoSQL provider repaired generation did not reopen");
+  // A torn *published* snapshot remains corruption, not an excuse to return
+  // cached or fabricated previous metadata. Exercise the real reader cold.
+  {
+    std::ofstream out(generation_file, std::ios::binary | std::ios::app);
+    out.put('\0');
+    out.close();
+    Require(static_cast<bool>(out), "published corruption injection failed");
+  }
+  api::CleanupNoSqlProviderGenerations(context, false);
+  const auto corrupt = api::LoadNoSqlProviderGeneration(
+      context, api::EngineNoSqlProviderFamily::kDocument, provider_id, collection_uuid);
+  Require(!corrupt.ok, "torn published snapshot was silently accepted");
 }
 
 idx::VectorTrainingRecallLifecycleDecision VectorLifecycleDecision() {
@@ -941,6 +1065,8 @@ void ProveCacheInvalidationAfterReopenRecovery() {
 }  // namespace
 
 int main() {
+  int status = EXIT_SUCCESS;
+  try {
   scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
       "optimizer_runtime_hot_path_orh_121_gate");
   ProvePartialMergeBatchRollbackReopenRecovery();
@@ -949,6 +1075,20 @@ int main() {
   ProveNoSqlProviderPublishRecovery();
   ProveVectorJobPublishRecovery();
   ProveCacheInvalidationAfterReopenRecovery();
-  std::cout << "optimizer_runtime_hot_path_orh_121_gate=passed\n";
-  return EXIT_SUCCESS;
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    status = EXIT_FAILURE;
+  }
+  // All native sessions/statements have unwound before removing only the
+  // unique directories this process created. Fail cleanup visibly as well.
+  for (const auto& path : generated_directories) {
+    std::error_code error;
+    std::filesystem::remove_all(path, error);
+    if (error) {
+      std::cerr << "ORH-121 fixture cleanup failed: " << path << ':' << error.message() << '\n';
+      status = EXIT_FAILURE;
+    }
+  }
+  if (status == EXIT_SUCCESS) std::cout << "optimizer_runtime_hot_path_orh_121_gate=passed\n";
+  return status;
 }

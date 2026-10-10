@@ -1336,6 +1336,7 @@ target_compile_definitions(
 target_link_libraries(
   optimizer_runtime_hot_path_orh_121_gate
   PRIVATE
+    sb_engine
     sb_engine_internal_api
     sb_engine_executor
     sb_core_index
