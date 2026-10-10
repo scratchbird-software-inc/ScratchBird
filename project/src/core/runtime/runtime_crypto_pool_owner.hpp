@@ -6,6 +6,8 @@
 #include <exception>
 #include <new>
 #include <system_error>
+#include <type_traits>
+#include <utility>
 
 namespace scratchbird::core::runtime {
 enum class RuntimeCryptoPoolError {
@@ -75,6 +77,24 @@ class RuntimeCryptoPoolOwner {
     const auto checked = Check(expected);
     if (!checked.ok()) return checked;
     return Adapter(session.Prepare(pool_, expected));
+  }
+  // Execute a bounded provider operation under this owner's actual grant.
+  // The callback handles its own algorithm result; successful scope admission
+  // is not cryptographic success or result publication. No pool pointer or
+  // scope escapes this call. Callback exceptions propagate after unpinning.
+  // As with Prepare, callers serialize owner lifecycle calls against entry.
+  // Provider allocations retained by the callback still prevent Close even
+  // after the scope ends; the owner must drain them before releasing custody.
+  template <typename Work>
+    requires std::is_same_v<std::invoke_result_t<Work>, void>
+  RuntimeCryptoPoolResult WithMemoryScope(
+      const hash::CryptoMemoryBinding& expected, Work&& work) {
+    const auto checked = Check(expected);
+    if (!checked.ok()) return checked;
+    hash::CryptoMemoryScope scope(pool_, expected);
+    if (!scope.ok()) return Adapter(scope.error());
+    std::forward<Work>(work)();
+    return {};
   }
   RuntimeCryptoPoolResult Check(const hash::CryptoMemoryBinding& expected) const noexcept {
     if (expected.database != binding_.database || expected.operation != binding_.operation ||

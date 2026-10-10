@@ -1,7 +1,9 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "runtime_crypto_pool_owner.hpp"
+#include "openpgp_seipd.hpp"
 #include <openssl/crypto.h>
+#include <algorithm>
 #include <array>
 #include <barrier>
 #include <cerrno>
@@ -13,6 +15,7 @@
 namespace h = scratchbird::core::hash;
 namespace m = scratchbird::core::memory;
 namespace r = scratchbird::core::runtime;
+namespace crypto = scratchbird::core::crypto;
 using scratchbird::core::platform::Uuid;
 thread_local long fail_allocation = -1, fail_lock = -1;
 thread_local unsigned lock_calls = 0;
@@ -50,7 +53,7 @@ struct Fixture {
   m::HierarchicalMemoryBudgetLedger ledger;
   h::CryptoMemoryBinding binding = Binding(20);
   std::unique_ptr<m::ReservationBackedMemoryResource> grant;
-  Fixture() {
+  explicit Fixture(unsigned binding_seed=20):binding(Binding(binding_seed)) {
     m::ReservationBackedMemoryResourceRequest q;
     q.memory_manager=&manager; q.reservation_ledger=&ledger; q.requested_bytes=bytes;
     q.category=m::MemoryCategory::core_runtime; q.memory_class="crypto_provider";
@@ -86,6 +89,10 @@ void CustodyFailures() {
   Check(!owner.Adopt(f.binding,f.grant,f.bytes+1).ok() && f.grant,"oversized backing preserves grant");
   Check(owner.Adopt(f.binding,f.grant,f.bytes).ok() && !f.grant,"exact custody transferred");
   Check(f.manager.Snapshot().current_bytes==f.bytes,"actual backing charged");
+  bool entered=false;
+  Check(owner.WithMemoryScope(f.binding,[&] {entered=true;}).adapter_error==
+            h::CryptoMemoryError::not_installed && !entered,
+        "uninstalled process adapter refuses callback");
   fail_allocation=0; const auto closed=owner.Close(); fail_allocation=-1;
   Check(closed.ok() && !owner.has_custody(),"allocation-free close"); f.Empty();
   bool passed=false;
@@ -129,6 +136,72 @@ void CleanupLockFailures() {
 void* CustomMalloc(std::size_t n,const char*,int) { return std::malloc(n); }
 void* CustomRealloc(void* p,std::size_t n,const char*,int) { return std::realloc(p,n); }
 void CustomFree(void* p,const char*,int) { std::free(p); }
+void ScopedProviderOperations(r::RuntimeCryptoPoolOwner& owner,
+                              const h::CryptoMemoryBinding& binding) {
+  bool entered = false;
+  for (unsigned dim=0;dim<4;++dim) {
+    auto wrong=binding;
+    std::array<Uuid*,4> ids{&wrong.database,&wrong.operation,&wrong.owner,&wrong.context};
+    *ids[dim]=Id(99);
+    Check(owner.WithMemoryScope(wrong,[&] { entered=true; }).error ==
+              r::RuntimeCryptoPoolError::invalid_binding && !entered,
+          "scope mismatch never executes callback");
+  }
+  constexpr std::array<unsigned char,5> plaintext{0,0xff,1,2,3};
+  const std::array<unsigned char,32> key{}, salt{};
+  const auto size=crypto::SeipdEncryptedSize({},plaintext.size());
+  Check(size.code==crypto::PgpCode::ok,"authenticated message extent");
+  struct PrivateBuffer {
+    unsigned char* data; std::size_t bytes;
+    explicit PrivateBuffer(std::size_t n)
+        :data(static_cast<unsigned char*>(OPENSSL_zalloc(n))),bytes(n) {}
+    ~PrivateBuffer() { OPENSSL_clear_free(data,bytes); }
+  };
+  bool verified=false, tampering_refused=false;
+  const auto admitted=owner.WithMemoryScope(binding,[&] {
+    PrivateBuffer body(size.bytes), recovered(plaintext.size());
+    Check(body.data && recovered.data,"private stages use admitted pool");
+    Check(owner.Snapshot().scopes==1 && owner.Snapshot().live_blocks>=2,
+          "scope and actual stage allocations remain charged");
+    const auto encrypted=crypto::EncryptSeipdV2({}, {key.data(),key.size()},
+        {salt.data(),salt.size()}, {plaintext.data(),plaintext.size()},
+        {body.data,body.bytes});
+    Check(encrypted==crypto::PgpCode::ok,"real provider authenticated encryption");
+    const auto decrypted=crypto::DecryptSeipdV2({key.data(),key.size()},
+        {body.data,body.bytes},{recovered.data,recovered.bytes});
+    verified=decrypted==crypto::PgpCode::ok &&
+        std::equal(plaintext.begin(),plaintext.end(),recovered.data);
+    body.data[body.bytes-1]^=1;
+    const auto invalid=crypto::DecryptSeipdV2({key.data(),key.size()},
+        {body.data,body.bytes},{recovered.data,recovered.bytes});
+    tampering_refused=invalid==crypto::PgpCode::authentication_failed &&
+        std::all_of(recovered.data,recovered.data+recovered.bytes,
+                    [](unsigned char byte) {return byte==0;});
+  });
+  Check(admitted.ok() && verified && tampering_refused,
+        "memory admission does not conceal authentication failure");
+  Check(owner.Snapshot().scopes==0,"normal provider operation unpins");
+  const auto before=owner.Snapshot();
+  bool caught=false;
+  try {
+    owner.WithMemoryScope(binding,[&] {
+      PrivateBuffer scratch(97);
+      Check(scratch.data,"throwing callback uses actual backing");
+      throw 42;
+    });
+  } catch (int value) {caught=value==42;}
+  Check(caught && owner.Snapshot().scopes==before.scopes &&
+        owner.Snapshot().live_blocks==before.live_blocks &&
+        owner.Snapshot().live_bytes==before.live_bytes,
+        "callback exception propagates after private cleanup and unpin");
+  fail_allocation=0;
+  const auto no_heap=owner.WithMemoryScope(binding,[&] {
+    PrivateBuffer scratch(37);
+    entered=scratch.data!=nullptr;
+  });
+  fail_allocation=-1;
+  Check(no_heap.ok() && entered,"scope entry and provider allocation need no C++ heap");
+}
 int main(int argc,char** argv) {
   const std::string_view mode=argc>1?argv[1]:"lifecycle";
   CustodyFailures();
@@ -146,8 +219,61 @@ int main(int argc,char** argv) {
     Check(owner.InstallProcessAdapter().ok(),"explicit early installation");
     Check(owner.Close().adapter_error==h::CryptoMemoryError::busy && owner.has_custody(),
           "installed pool cannot free backing");
-    Fixture operation; r::RuntimeCryptoPoolOwner operation_owner;
+    // Admit the selected provider profiles under the process owner before
+    // worker scopes; cached provider objects have process, not statement, life.
+    ScopedProviderOperations(owner,process.binding);
+    OPENSSL_thread_stop();
+    Fixture operation(40); r::RuntimeCryptoPoolOwner operation_owner;
     Check(operation_owner.Adopt(operation.binding,operation.grant,operation.bytes).ok(),"operation backing");
+    ScopedProviderOperations(operation_owner,operation.binding);
+    OPENSSL_thread_stop();
+    void* retained=nullptr;
+    const auto before_retained=operation_owner.Snapshot();
+    Check(operation_owner.WithMemoryScope(operation.binding,[&] {
+      retained=OPENSSL_malloc(83);
+    }).ok() && retained && operation_owner.Snapshot().scopes==0 &&
+        operation_owner.Snapshot().live_blocks==before_retained.live_blocks+1,
+        "provider allocation outlives scope without losing charge");
+    Check(operation_owner.Close().adapter_error==h::CryptoMemoryError::busy &&
+              operation.manager.Snapshot().current_bytes==operation.bytes,
+          "ended scope does not authorize retained provider backing release");
+    OPENSSL_clear_free(retained,83);
+    Check(operation_owner.Snapshot().live_blocks==before_retained.live_blocks &&
+              operation_owner.Snapshot().live_bytes==before_retained.live_bytes,
+          "retained provider allocation drains exactly once");
+    const auto process_before=owner.Snapshot();
+    Check(operation_owner.WithMemoryScope(operation.binding,[&] {
+      Check(owner.WithMemoryScope(process.binding,[&] {
+        retained=OPENSSL_malloc(53);
+      }).ok() && retained && owner.Snapshot().live_blocks==process_before.live_blocks+1,
+          "nested process scope assigns allocation to process backing");
+      auto* restored=OPENSSL_malloc(61);
+      Check(restored && operation_owner.Snapshot().live_blocks==before_retained.live_blocks+1,
+            "nested scope restores outer operation binding");
+      OPENSSL_clear_free(restored,61);
+      OPENSSL_clear_free(retained,53);
+    }).ok(),"nested owners execute under distinct binary bindings");
+    {
+      std::barrier entered(2), leave(2);
+      bool callback_ok=false;
+      std::thread callback_worker([&] {
+        const auto admitted=operation_owner.WithMemoryScope(operation.binding,[&] {
+          auto* allocation=OPENSSL_malloc(193);
+          callback_ok=allocation!=nullptr;
+          entered.arrive_and_wait(); leave.arrive_and_wait();
+          OPENSSL_clear_free(allocation,193);
+        });
+        callback_ok=callback_ok && admitted.ok();
+        OPENSSL_thread_stop();
+      });
+      entered.arrive_and_wait();
+      Check(operation_owner.Close().adapter_error==h::CryptoMemoryError::busy &&
+                operation.manager.Snapshot().current_bytes==operation.bytes,
+            "active callback prevents backing release");
+      leave.arrive_and_wait(); callback_worker.join();
+      Check(callback_ok && operation_owner.Snapshot().scopes==0,
+            "joined callback drains scope and provider data");
+    }
     std::barrier ready(2), finish(2);
     bool worker_ok=false;
     std::thread worker([&] {
@@ -165,6 +291,10 @@ int main(int argc,char** argv) {
           operation.manager.Snapshot().current_bytes==operation.bytes,"live worker retains actual backing");
     finish.arrive_and_wait(); worker.join(); Check(worker_ok,"real SHA256 and worker cleanup");
     Check(operation_owner.Revoke().ok(),"explicit admission revocation");
+    bool entered=false;
+    Check(operation_owner.WithMemoryScope(operation.binding,[&] {entered=true;}).adapter_error==
+              h::CryptoMemoryError::revoked && !entered,
+          "revoked owner does not enter provider callback");
     h::PreparedSha256 rejected;
     Check(operation_owner.Prepare(rejected,operation.binding).adapter_error==h::CryptoMemoryError::revoked,
           "revoked pool refuses new preparation");
