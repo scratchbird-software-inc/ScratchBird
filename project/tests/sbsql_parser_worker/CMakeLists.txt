@@ -6640,6 +6640,12 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
       LABELS "sbsql_match_recognize_full_route_gate;sbsql_sblr_alignment;IA-EXT-OPT;SBSQL-14EDC2636B45;SBLR_MATCH_RECOGNIZE;SBLR_QUERY_EXECUTE;CSC-TEST-005814;CSC-TEST-005815;CSC-TEST-005816;CSC-TEST-005817;CSC-TEST-005818;CSC-TEST-005819;CSC-TEST-005820;sbsql_surface_to_sblr_full_implementation_closure;sblr_operation_matrix_gate;sbsql_e2e_passed;authenticated_full_route;independent_post_state;restart_recovery;malformed_operand;security_auth_gate;public_single_node_full_route_gate;public_release_foundation_full_route_gate;sbsql_parser_worker;database_lifecycle;database_lifecycle_server_route;database_lifecycle_parser_route;sbwp_tls_server_listener_gate;tls_regression_gate;local_ipc_gate;sbwp_wire_gate;routing_reconnect_finality_gate;mga_transaction_regression"
       TIMEOUT 300
     )
+    add_test(NAME sbsql_acceleration_readiness_controls
+      COMMAND "${SBSQL_PYTHON3}" -B
+        "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_acceleration_readiness_test.py")
+    set_tests_properties(sbsql_acceleration_readiness_controls PROPERTIES
+      LABELS "sbsql_parser_worker;nonmutating_observability;startup_readiness;negative_controls"
+      TIMEOUT 30)
     add_test(
       NAME sbsql_acceleration_full_route_gate
       COMMAND "${SBSQL_PYTHON3}"

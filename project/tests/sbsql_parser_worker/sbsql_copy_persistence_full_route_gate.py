@@ -760,11 +760,15 @@ def require_bulk_route_traces(route: StartedRoute) -> None:
 
 def authenticate_tls(port: int) -> tuple[ssl.SSLSocket, bytes, int, int]:
     sock = connect_tls(port)
-    attachment, sequence, txn_id = authenticate(
-        sock,
-        tls_password_evidence(),
-        p1_features=FEATURE_STREAMING | FEATURE_BULK_REJECTS,
-    )
+    try:
+        attachment, sequence, txn_id = authenticate(
+            sock,
+            tls_password_evidence(),
+            p1_features=FEATURE_STREAMING | FEATURE_BULK_REJECTS,
+        )
+    except BaseException:
+        sock.close()
+        raise
     return sock, attachment, sequence, txn_id
 
 

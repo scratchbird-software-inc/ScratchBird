@@ -17,6 +17,10 @@ import shutil
 import sys
 from pathlib import Path
 
+from acceleration_journal_oracle import (
+    JournalError, agent_table_identity, require_agent_row_appends,
+)
+
 from sbsql_copy_persistence_full_route_gate import (
     StartedRoute,
     authenticate_tls,
@@ -186,6 +190,18 @@ def execute_show(port: int) -> tuple[tuple[str, ...], ...]:
     return tuple(rows)
 
 
+def require_authenticated_readiness(port: int) -> None:
+    # Socket publication precedes synchronous server-owned agent catalog
+    # initialization. A successful authentication acknowledges the actual
+    # serving loop, after that initialization has committed. Do not run a
+    # warm-up query: it could hide a first-SHOW mutation from the oracle.
+    sock, attachment, sequence, _ = authenticate_tls(port)
+    try:
+        send_frame(sock, MSG_TERMINATE, sequence, attachment=attachment)
+    finally:
+        sock.close()
+
+
 def require_authentication_refusal(port: int) -> None:
     sock = connect_tls(port)
     try:
@@ -227,7 +243,7 @@ def durable_mutation_fingerprint(database: Path) -> dict[str, str]:
 def operational_journal_snapshot(database: Path) -> dict[str, bytes]:
     return {
         suffix: path.read_bytes() if path.exists() else b""
-        for suffix in (".sb.api_events", ".sb.mga_row_versions")
+        for suffix in (".sb.api_events", ".sb.mga_row_versions", ".sb.mga_relation_metadata")
         for path in (Path(f"{database}{suffix}"),)
     }
 
@@ -235,10 +251,6 @@ def operational_journal_snapshot(database: Path) -> dict[str, bytes]:
 def require_no_application_journal_mutation(
     before: dict[str, bytes], after: dict[str, bytes]
 ) -> None:
-    allowed_prefixes = {
-        ".sb.api_events": b"SBAGENTHOOK1\t",
-        ".sb.mga_row_versions": b"SBMGA1\tROW_VERSION\t",
-    }
     for suffix, prior in before.items():
         current = after[suffix]
         if current == prior:
@@ -247,24 +259,29 @@ def require_no_application_journal_mutation(
             raise AccelerationGateError(
                 f"SHOW ACCELERATION rewrote operational journal {suffix}"
             )
+        if suffix == ".sb.mga_relation_metadata":
+            raise AccelerationGateError("SHOW ACCELERATION changed relation metadata")
+        if suffix == ".sb.mga_row_versions":
+            try:
+                identity = agent_table_identity(before[".sb.mga_relation_metadata"])
+                require_agent_row_appends(current[len(prior):], identity)
+            except (JournalError, KeyError) as exc:
+                raise AccelerationGateError(
+                    f"SHOW ACCELERATION published invalid or application MGA rows: {exc}"
+                ) from exc
+            continue
+        if suffix != ".sb.api_events" or not current.endswith(b"\n"):
+            raise AccelerationGateError("unexpected or incomplete operational journal")
         appended = current[len(prior):].splitlines()
         if not appended:
             raise AccelerationGateError(
                 f"SHOW ACCELERATION changed operational journal {suffix} without records"
             )
         for record in appended:
-            if not record.startswith(allowed_prefixes[suffix]):
+            if not record.startswith(b"SBAGENTHOOK1\t"):
                 raise AccelerationGateError(
                     "SHOW ACCELERATION published a non-agent operational record: "
                     f"journal={suffix} record={record[:120]!r}"
-                )
-            if (
-                suffix == ".sb.mga_row_versions"
-                and b"\tagent-catalog-runtime-root\t" not in record
-            ):
-                raise AccelerationGateError(
-                    "SHOW ACCELERATION published an application MGA row version: "
-                    f"record={record[:120]!r}"
                 )
 
 
@@ -312,6 +329,7 @@ def run_gate(args: argparse.Namespace, work: Path) -> None:
         route = start_route(
             args, root, database, tls_required=True, cert=cert, key=key
         )
+        require_authenticated_readiness(route.port)
         before = durable_mutation_fingerprint(database)
         operational_before = operational_journal_snapshot(database)
         first_rows = execute_show(route.port)
