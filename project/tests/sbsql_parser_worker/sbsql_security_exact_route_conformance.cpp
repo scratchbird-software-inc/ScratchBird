@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "binary_identity_operand_oracle.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
@@ -28,13 +29,13 @@ namespace {
 using namespace scratchbird::parser::sbsql;
 namespace sblr = scratchbird::engine::sblr;
 
-constexpr std::string_view kTargetUuid = "019f0000-0000-7000-8000-000000002301";
-constexpr std::string_view kGranteeUuid = "019f0000-0000-7000-8000-000000002302";
-constexpr std::string_view kPolicyUuid = "019f0000-0000-7000-8000-000000002303";
-constexpr std::string_view kPolicyTargetUuid = "019f0000-0000-7000-8000-000000002304";
-constexpr std::string_view kRoleUuid = "019f0000-0000-7000-8000-000000002305";
-constexpr std::string_view kUserUuid = "019f0000-0000-7000-8000-000000002306";
-constexpr std::string_view kEventTriggerUuid = "019f0000-0000-7000-8000-000000002307";
+constexpr char kTargetUuid[] = "019f0000-0000-7000-8000-000000002301";
+constexpr char kGranteeUuid[] = "019f0000-0000-7000-8000-000000002302";
+constexpr char kPolicyUuid[] = "019f0000-0000-7000-8000-000000002303";
+constexpr char kPolicyTargetUuid[] = "019f0000-0000-7000-8000-000000002304";
+constexpr char kRoleUuid[] = "019f0000-0000-7000-8000-000000002305";
+constexpr char kUserUuid[] = "019f0000-0000-7000-8000-000000002306";
+constexpr char kEventTriggerUuid[] = "019f0000-0000-7000-8000-000000002307";
 
 struct SecurityRowEvidence {
   std::string_view surface_id;
@@ -526,10 +527,12 @@ void RequireExactLowering(const SecurityRowEvidence& row) {
                             "engine security privilege authority step missing"));
     Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.security.privilege_grant"),
             EvidenceMessage(row, "parser_bind_lower", "security privilege descriptor ref missing"));
-    Require(Contains(artifacts.envelope.payload, std::string("\"target_object_uuid\":\"") + std::string(kTargetUuid) + "\""),
-            EvidenceMessage(row, "parser_bind_lower", "target UUID missing from security payload"));
-    Require(Contains(artifacts.envelope.payload, std::string("\"grantee_uuid\":\"") + std::string(kGranteeUuid) + "\""),
-            EvidenceMessage(row, "parser_bind_lower", "grantee UUID missing from security payload"));
+    Require(scratchbird::test::sbsql::HasExactBinaryIdentityOperand(
+                artifacts.envelope, "target_object_uuid", scratchbird::tests::FixtureUuidLiteral(kTargetUuid)),
+            EvidenceMessage(row, "parser_bind_lower", "exact binary target UUID missing"));
+    Require(scratchbird::test::sbsql::HasExactBinaryIdentityOperand(
+                artifacts.envelope, "grantee_uuid", scratchbird::tests::FixtureUuidLiteral(kGranteeUuid)),
+            EvidenceMessage(row, "parser_bind_lower", "exact binary grantee UUID missing"));
   } else if (row.operation_id == "security.session.set_role") {
     Require(HasValue(artifacts.envelope.required_authority_steps,
                      "authority.engine.security_session_role_api_required"),
@@ -537,8 +540,9 @@ void RequireExactLowering(const SecurityRowEvidence& row) {
                             "engine security session role authority step missing"));
     Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.security.role"),
             EvidenceMessage(row, "parser_bind_lower", "security role descriptor ref missing"));
-    Require(Contains(artifacts.envelope.payload, std::string("\"role_uuid\":\"") + std::string(kRoleUuid) + "\""),
-            EvidenceMessage(row, "parser_bind_lower", "role UUID missing from security payload"));
+    Require(scratchbird::test::sbsql::HasExactBinaryIdentityOperand(
+                artifacts.envelope, "role_uuid", scratchbird::tests::FixtureUuidLiteral(kRoleUuid)),
+            EvidenceMessage(row, "parser_bind_lower", "exact binary role UUID missing"));
   } else if (StartsWith(row.operation_id, "security.principal.")) {
     Require(HasValue(artifacts.envelope.required_authority_steps,
                      "authority.engine.security_principal_api_required"),
@@ -546,8 +550,9 @@ void RequireExactLowering(const SecurityRowEvidence& row) {
                             "engine security principal authority step missing"));
     Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.security.principal"),
             EvidenceMessage(row, "parser_bind_lower", "security principal descriptor ref missing"));
-    Require(Contains(artifacts.envelope.payload, std::string("\"principal_uuid\":\"") + std::string(kUserUuid) + "\""),
-            EvidenceMessage(row, "parser_bind_lower", "principal UUID missing from security payload"));
+    Require(scratchbird::test::sbsql::HasExactBinaryIdentityOperand(
+                artifacts.envelope, "principal_uuid", scratchbird::tests::FixtureUuidLiteral(kUserUuid)),
+            EvidenceMessage(row, "parser_bind_lower", "exact binary principal UUID missing"));
     if (row.operation_id == "security.principal.create") {
       Require(Contains(artifacts.envelope.payload, "\"principal_name\":\"app_user\""),
               EvidenceMessage(row, "parser_bind_lower", "principal name payload missing from create route"));
@@ -568,13 +573,14 @@ void RequireExactLowering(const SecurityRowEvidence& row) {
                             "engine security policy authority step missing"));
     Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.security.policy"),
             EvidenceMessage(row, "parser_bind_lower", "security policy descriptor ref missing"));
-    Require(Contains(artifacts.envelope.payload, std::string("\"policy_uuid\":\"") + std::string(kPolicyUuid) + "\""),
-            EvidenceMessage(row, "parser_bind_lower", "policy UUID missing from security payload"));
+    Require(scratchbird::test::sbsql::HasExactBinaryIdentityOperand(
+                artifacts.envelope, "policy_uuid", scratchbird::tests::FixtureUuidLiteral(kPolicyUuid)),
+            EvidenceMessage(row, "parser_bind_lower", "exact binary policy UUID missing"));
     if (row.operation_id == "security.policy.create") {
-      Require(Contains(artifacts.envelope.payload,
-                       std::string("\"target_object_uuid\":\"") + std::string(kTargetUuid) + "\""),
+      Require(scratchbird::test::sbsql::HasExactBinaryIdentityOperand(
+                  artifacts.envelope, "target_object_uuid", scratchbird::tests::FixtureUuidLiteral(kTargetUuid)),
               EvidenceMessage(row, "parser_bind_lower",
-                              "policy create target UUID missing from security payload"));
+                              "exact binary policy create target UUID missing"));
       Require(Contains(artifacts.envelope.payload, "\"policy_name\":\"app_policy\""),
               EvidenceMessage(row, "parser_bind_lower",
                               "policy name payload missing from create route"));
@@ -584,15 +590,23 @@ void RequireExactLowering(const SecurityRowEvidence& row) {
       Require(Contains(artifacts.envelope.payload, "\"lifecycle_state\":\"inactive\""),
               EvidenceMessage(row, "parser_bind_lower", "policy lifecycle payload missing from alter route"));
     } else if (row.operation_id == "security.policy.attach") {
-      const std::string expected_target = Contains(row.sql, "TO USER")
-          ? std::string(kUserUuid)
-          : Contains(row.sql, "EVENT TRIGGER") ? std::string(kEventTriggerUuid)
-                                               : std::string(kPolicyTargetUuid);
-      Require(Contains(artifacts.envelope.payload,
-                       std::string("\"target_object_uuid\":\"") + expected_target + "\""),
+      const auto expected_target = Contains(row.sql, "TO USER")
+          ? scratchbird::tests::FixtureUuidLiteral(kUserUuid)
+          : Contains(row.sql, "EVENT TRIGGER") ? scratchbird::tests::FixtureUuidLiteral(kEventTriggerUuid)
+                                               : scratchbird::tests::FixtureUuidLiteral(kPolicyTargetUuid);
+      Require(scratchbird::test::sbsql::HasExactBinaryIdentityOperand(
+                  artifacts.envelope, "target_object_uuid", expected_target),
               EvidenceMessage(row, "parser_bind_lower",
-                              "policy target UUID missing from security payload"));
+                              "exact binary policy target UUID missing"));
     }
+  }
+  for (const auto uuid : {kTargetUuid, kGranteeUuid, kPolicyUuid, kPolicyTargetUuid,
+                          kRoleUuid, kUserUuid, kEventTriggerUuid}) {
+    Require(!Contains(artifacts.envelope.payload, uuid),
+            EvidenceMessage(row, "binary_identity", "text UUID shadow in security payload"));
+    for (const auto& operand : artifacts.envelope.operands)
+      Require(!Contains(operand.value, uuid),
+              EvidenceMessage(row, "binary_identity", "text UUID shadow in operand"));
   }
   Require(!Contains(artifacts.envelope.payload, row.sql),
           EvidenceMessage(row, "no_sql_text_authority",
@@ -668,6 +682,33 @@ void RequireUnresolvedNamesFailClosed() {
           "security DCL without UUID resolution did not fail closed");
 }
 
+void RequireBinaryIdentityOracleControls() {
+  const auto valid = RunPipeline(kSecurityRows.front().sql, ResolvedUuidsFor(kSecurityRows.front())).envelope;
+  const auto expected = scratchbird::tests::FixtureUuidLiteral(kTargetUuid);
+  const auto accepted = [&](const SblrEnvelope& envelope) {
+    return scratchbird::test::sbsql::HasExactBinaryIdentityOperand(envelope, "target_object_uuid", expected);
+  };
+  Require(accepted(valid), "binary identity oracle rejected valid target");
+  for (unsigned mutation = 0; mutation != 8; ++mutation) {
+    auto altered = valid;
+    auto it = std::find_if(altered.operands.begin(), altered.operands.end(), [](const auto& operand) {
+      return operand.name == "target_object_uuid";
+    });
+    Require(it != altered.operands.end(), "binary identity control fixture has no target");
+    switch (mutation) {
+      case 0: it->canonical_value_body.front() ^= 1; break;
+      case 1: it->canonical_value_body.pop_back(); break;
+      case 2: it->value = kTargetUuid; break;
+      case 3: it->type = "text"; break;
+      case 4: it->canonical_value_kind = 0; break;
+      case 5: { const auto duplicate = *it; altered.operands.push_back(duplicate); break; }
+      case 6: altered.operands.erase(it); break;
+      case 7: altered.resolved_object_uuids.clear(); break;
+    }
+    Require(!accepted(altered), "binary identity oracle accepted a malformed carrier");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -678,6 +719,7 @@ int main() {
   RequireUnresolvedNamesFailClosed();
   RequireCanonicalSecurityRootRegistry();
   RequireLegacyParserRootsRemainNonExecutable();
+  RequireBinaryIdentityOracleControls();
   std::cout << "sbsql_security_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
 }
