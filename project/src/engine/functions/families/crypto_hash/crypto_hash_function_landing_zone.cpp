@@ -51,14 +51,6 @@ bool IdIs(const std::string& id, std::initializer_list<std::string_view> names) 
   return false;
 }
 
-std::string Trim(std::string_view input) {
-  std::size_t first = 0;
-  while (first < input.size() && std::isspace(static_cast<unsigned char>(input[first]))) ++first;
-  std::size_t last = input.size();
-  while (last > first && std::isspace(static_cast<unsigned char>(input[last - 1]))) --last;
-  return std::string(input.substr(first, last - first));
-}
-
 bool AnyNull(const FunctionCallRequest& request) {
   for (const auto& argument : request.arguments) {
     if (IsSqlNull(argument.value)) return true;
@@ -170,29 +162,6 @@ std::optional<std::vector<std::uint8_t>> DigestBytes(
   if (EVP_Digest(BytesPtr(bytes), bytes.size(), digest.data(), &digest_len, md, nullptr) != 1) return std::nullopt;
   if (digest_len != expected_size || digest_len > digest.size()) return std::nullopt;
   return std::vector<std::uint8_t>(digest.begin(), digest.begin() + digest_len);
-}
-
-bool ParseUint64(const scratchbird::engine::sblr::SblrValue& value, std::uint64_t* out) {
-  if (value.has_uint64_value) {
-    *out = value.uint64_value;
-    return true;
-  }
-  if (value.has_int64_value) {
-    if (value.int64_value < 0) return false;
-    *out = static_cast<std::uint64_t>(value.int64_value);
-    return true;
-  }
-  const std::string text = Trim(ValueAsText(value));
-  if (text.empty()) return false;
-  std::size_t used = 0;
-  try {
-    const auto parsed = std::stoull(text, &used, 10);
-    if (used != text.size()) return false;
-    *out = static_cast<std::uint64_t>(parsed);
-    return true;
-  } catch (...) {
-    return false;
-  }
 }
 
 FunctionCallResult DependencyUnavailable(const FunctionCallRequest& request, std::string detail) {
@@ -545,28 +514,31 @@ std::uint64_t Xxh64MergeRound(std::uint64_t acc, std::uint64_t val) {
   return acc;
 }
 
-std::uint64_t Xxh64(const std::vector<std::uint8_t>& input, std::uint64_t seed) {
+template<class Probe>
+std::optional<std::uint64_t> Xxh64(const std::uint8_t* input,std::size_t size,
+                                 std::uint64_t seed,const Probe& cancelled) {
   constexpr std::uint64_t prime1 = 11400714785074694791ULL;
   constexpr std::uint64_t prime2 = 14029467366897019727ULL;
   constexpr std::uint64_t prime3 = 1609587929392839161ULL;
   constexpr std::uint64_t prime4 = 9650029242287828579ULL;
   constexpr std::uint64_t prime5 = 2870177450012600261ULL;
 
-  const std::uint8_t* p = input.data();
-  const std::uint8_t* const end = p + input.size();
+  // Bounds use remaining lengths, not potentially out-of-range pointer
+  // expressions (including null+0 for an empty borrowed binary value).
+  std::size_t at=0;
   std::uint64_t h64 = 0;
-  if (input.size() >= 32) {
-    const std::uint8_t* const limit = end - 32;
+  if (size >= 32) {
     std::uint64_t v1 = seed + prime1 + prime2;
     std::uint64_t v2 = seed + prime2;
     std::uint64_t v3 = seed + 0;
     std::uint64_t v4 = seed - prime1;
     do {
-      v1 = Xxh64Round(v1, Read64LE(p)); p += 8;
-      v2 = Xxh64Round(v2, Read64LE(p)); p += 8;
-      v3 = Xxh64Round(v3, Read64LE(p)); p += 8;
-      v4 = Xxh64Round(v4, Read64LE(p)); p += 8;
-    } while (p <= limit);
+      if((at&65535)==0&&cancelled())return std::nullopt;
+      v1 = Xxh64Round(v1, Read64LE(input+at)); at += 8;
+      v2 = Xxh64Round(v2, Read64LE(input+at)); at += 8;
+      v3 = Xxh64Round(v3, Read64LE(input+at)); at += 8;
+      v4 = Xxh64Round(v4, Read64LE(input+at)); at += 8;
+    } while (size-at >= 32);
     h64 = Rotl64(v1, 1) + Rotl64(v2, 7) + Rotl64(v3, 12) + Rotl64(v4, 18);
     h64 = Xxh64MergeRound(h64, v1);
     h64 = Xxh64MergeRound(h64, v2);
@@ -575,22 +547,23 @@ std::uint64_t Xxh64(const std::vector<std::uint8_t>& input, std::uint64_t seed) 
   } else {
     h64 = seed + prime5;
   }
-  h64 += input.size();
-  while (p + 8 <= end) {
-    const std::uint64_t k1 = Xxh64Round(0, Read64LE(p));
+  if(cancelled())return std::nullopt;
+  h64 += size;
+  while (size-at >= 8) {
+    const std::uint64_t k1 = Xxh64Round(0, Read64LE(input+at));
     h64 ^= k1;
     h64 = Rotl64(h64, 27) * prime1 + prime4;
-    p += 8;
+    at += 8;
   }
-  if (p + 4 <= end) {
-    h64 ^= Read32LE(p) * prime1;
+  if (size-at >= 4) {
+    h64 ^= Read32LE(input+at) * prime1;
     h64 = Rotl64(h64, 23) * prime2 + prime3;
-    p += 4;
+    at += 4;
   }
-  while (p < end) {
-    h64 ^= (*p) * prime5;
+  while (at < size) {
+    h64 ^= input[at] * prime5;
     h64 = Rotl64(h64, 11) * prime1;
-    ++p;
+    ++at;
   }
   h64 ^= h64 >> 33;
   h64 *= prime2;
@@ -601,17 +574,62 @@ std::uint64_t Xxh64(const std::vector<std::uint8_t>& input, std::uint64_t seed) 
 }
 
 FunctionCallResult Xxh64Function(const FunctionCallRequest& request) {
-  if (request.arguments.empty() || request.arguments.size() > 2) return RefuseFunctionInvalidInput(request, "xxhash64 expects value and optional seed");
-  if (IsSqlNull(request.arguments[0].value) || (request.arguments.size() == 2 && IsSqlNull(request.arguments[1].value))) {
-    return MakeFunctionSuccess(request, {MakeNullValue("uint64")});
+  const auto error=[&](const char* code,const char* detail){return RefuseFunctionWithDiagnostic(request,
+    scratchbird::engine::sblr::SblrStatusCode::execution_failed,code,detail);};
+  const auto invalid=[&]{return error("CRYPTO.HASH.INVALID_INPUT","xxhash64 requires its exact text/bytea and uint64 operands");};
+  const auto cancelled=[&]{const auto* owner=request.context.engine_request_context;
+    return owner&&owner->query_cancellation_requested&&owner->query_cancellation_requested();};
+  const auto cancel_result=[&]{return error("PROCESS.CANCELLED","xxhash64 execution was cancelled");};
+  const bool seeded=IdIs(request.context.function_id,{"xxhash64_value_seed"});
+  if(request.arguments.size()!=(seeded?2u:1u))return invalid();
+  using Kind=scratchbird::engine::sblr::SblrValuePayloadKind;
+  for(std::size_t i=0;i<request.arguments.size();++i) {
+    const auto& v=request.arguments[i].value;
+    if(!v.uuid_value.is_nil()||!v.uuid_array_value.empty()||v.has_int64_value||v.has_real64_value||
+       v.int64_value!=0||v.real64_value!=0.0)return invalid();
+    if(i==0) {
+      const bool binary=v.descriptor_id=="binary";
+      if(!binary&&v.descriptor_id!="character")return invalid();
+      if(v.has_uint64_value||v.uint64_value!=0)return invalid();
+      if(binary) {
+        if(!v.text_value.empty()||!v.encoded_value.empty()||!v.charset_name.empty()||!v.collation_name.empty())return invalid();
+      } else {
+        if(!v.binary_value.empty())return invalid();
+        if(!v.encoded_value.empty()) {
+          if(v.encoded_value.size()!=v.text_value.size())return invalid();
+          for(std::size_t at=0;at<v.text_value.size();) {
+            if(cancelled())return cancel_result();
+            const auto n=std::min(std::size_t{4096},v.text_value.size()-at);
+            if(std::memcmp(v.text_value.data()+at,v.encoded_value.data()+at,n)!=0)return invalid();
+            at+=n;
+          }
+        }
+      }
+      if(!v.is_null&&v.payload_kind!=(binary?Kind::binary:Kind::text))return invalid();
+    } else {
+      if(v.descriptor_id!="uint64"||!v.binary_value.empty()||!v.charset_name.empty()||!v.collation_name.empty())return invalid();
+      if(!v.is_null) {
+        if(v.payload_kind!=Kind::unsigned_integer||!v.has_uint64_value)return invalid();
+        const auto decimal=std::to_string(v.uint64_value);
+        if((!v.text_value.empty()&&v.text_value!=decimal)||(!v.encoded_value.empty()&&v.encoded_value!=decimal))return invalid();
+      }
+    }
+    if(v.is_null&&(v.payload_kind!=Kind::none||!v.binary_value.empty()||!v.text_value.empty()||
+       !v.encoded_value.empty()||v.has_uint64_value||v.uint64_value!=0))return invalid();
   }
-  auto bytes = RawBytesFromValue(request.arguments[0].value);
-  if (bytes.size() > kMaxCryptoInputBytes) return RefuseFunctionInvalidInput(request, "xxhash64 input exceeds scalar budget");
-  std::uint64_t seed = 0;
-  if (request.arguments.size() == 2 && !ParseUint64(request.arguments[1].value, &seed)) {
-    return RefuseFunctionInvalidInput(request, "xxhash64 seed must be uint64");
+  if(cancelled())return cancel_result();
+  if(AnyNull(request)) {
+    auto result=MakeFunctionSuccess(request,{MakeNullValue("uint64")});
+    if(cancelled())return cancel_result();return result;
   }
-  return MakeFunctionSuccess(request, {MakeUint64Value("uint64", Xxh64(bytes, seed))});
+  const auto& v=request.arguments[0].value;const bool binary=v.descriptor_id=="binary";
+  const auto size=binary?v.binary_value.size():v.text_value.size();
+  if(size>kMaxCryptoInputBytes)return error("RESOURCE.BUDGET_EXCEEDED","xxhash64 working capacity exceeded");
+  const auto* bytes=binary?v.binary_value.data():reinterpret_cast<const std::uint8_t*>(v.text_value.data());
+  const auto hash=Xxh64(bytes,size,seeded?request.arguments[1].value.uint64_value:0,cancelled);
+  if(!hash)return cancel_result();
+  auto result=MakeFunctionSuccess(request,{MakeUint64Value("uint64",*hash)});
+  if(cancelled())return cancel_result();return result;
 }
 
 FunctionCallResult ArmorFunction(const FunctionCallRequest& request,bool decode,bool binary_result) {

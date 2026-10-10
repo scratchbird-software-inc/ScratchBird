@@ -43,6 +43,8 @@ thread_local std::array<unsigned char,1024> rng_bytes{};
 thread_local bool salt_cleanup_watch=false;
 thread_local std::string_view expected_salt{};
 thread_local unsigned salt_result_cleanses=0;
+thread_local std::size_t hash_copy_extent=0;
+thread_local unsigned hash_input_copies=0;
 thread_local bool digest_armed=false;
 thread_local int digest_result=1, digest_interceptions=0;
 thread_local unsigned digest_length=32;
@@ -67,6 +69,7 @@ thread_local bool secret_deallocation_watch=false,secret_tracking_overflow=false
 thread_local bool armor_secret_watch=false;
 thread_local unsigned uncleared_secret_frees=0;
 void ObserveSecretAllocation(void* address,std::size_t size) noexcept {
+  if(hash_copy_extent&&size==hash_copy_extent)++hash_input_copies;
   if(scrypt_watch&&scrypt_expected_workspace&&size==scrypt_expected_workspace){scrypt_scratch=address;scrypt_scratch_size=size;scrypt_workspace_allocation=address;}
   if(!secret_deallocation_watch||(size!=64&&!(armor_secret_watch&&size==65)))return;
   if(++secret_allocation_count==2&&scrypt_workspace_allocation)prepared_while_workspace_live=true;
@@ -1965,7 +1968,12 @@ void CryptoSalt() {
         disarm();salt_cleanup_watch=false;
         Check(threw==throws&&polls==stop,"salt throwing probes unwind at exact fence");
         if(!null_value&&stop==total)Check(salt_result_cleanses==2,"both unpublished salt result mirrors erased at final cancellation/throw");
-        if(rng_requested)Check(rng_cleared&&rng_scratch==nullptr,"salt entropy cleared during cancellation/unwind");
+        // An early refusal may generate a diagnostic UUID using16 entropy
+        // bytes. It is not salt scratch. Salt entropy has run only before
+        // the last two non-NULL probes (post-RNG and publication).
+        if(!null_value&&stop>=total-1)Check(rng_requested==(bcrypt?16:6)&&rng_cleared&&rng_scratch==nullptr,
+          "actual salt entropy cleared during cancellation/unwind");
+        else Check(rng_interceptions==0||rng_requested==16,"early cancellation obtains at most diagnostic UUID entropy");
       }
       request.arguments=valid;
       for(bool cancel_final:{false,true}) {
@@ -1978,13 +1986,131 @@ void CryptoSalt() {
           catch(const std::bad_alloc&){fail_after=-1;++faults;}
           disarm();salt_cleanup_watch=false;
           if(polls==total&&cancel_final)Check(salt_result_cleanses==2,"even diagnostic allocation failure erases both unpublished salt mirrors");
-          if(rng_requested)Check(rng_cleared&&rng_scratch==nullptr,"salt entropy retained under cleanup during allocation failure");
+          if(polls>=total-1)Check(rng_requested==(bcrypt?16:6)&&rng_cleared&&rng_scratch==nullptr,
+            "actual salt entropy retained under cleanup during allocation failure");
         }
         allocation_faults+=faults;Check(complete&&faults>0,"salt allocation sweep covers metadata, both result carriers and diagnostics");
       }
     }
   }
   rng_supplied=false;salt_cleanup_watch=false;expected_salt={};
+}
+
+void CryptoXxhash() {
+  const auto package=f::BuildStandardFunctionSeedPackage();
+  const auto refuse=[](const f::FunctionCallResult& r,const char* code) {
+    return !r.result.ok()&&r.result.scalar_values.empty()&&!r.result.diagnostics.empty()&&r.result.diagnostics[0].diagnostic_id==code;
+  };
+  const auto scalar=[](const f::FunctionCallResult& r) {
+    if(!r.result.ok()||r.result.scalar_values.size()!=1)return false;
+    const auto& v=r.result.scalar_values[0];return v.descriptor_id=="uint64"&&!v.is_null&&v.has_uint64_value&&
+      v.payload_kind==s::SblrValuePayloadKind::unsigned_integer&&v.binary_value.empty()&&v.uuid_value.is_nil()&&
+      v.uuid_array_value.empty()&&!v.has_int64_value&&!v.has_real64_value;
+  };
+  struct Vector {std::uint64_t seed;const char* digest;};
+  // SHA256 of concatenated LE8 XXH64 outputs from independent libxxhash.so.0
+  // over lengths0..65,127,128,129,4095..4097,65535..65537,1048576.
+  // Input byte[i]=(i*37+11) mod256. Not generated with this implementation.
+  const Vector known[]{
+    {0,"b7a2fe6a8fb7e80c23a0c53e7bee6baaf25242f95eff4b48aaf5144617841c62"},
+    {1,"54a9d56bbf9d9ab4a76731446579432764f74f852c3d59d55c91329cf81a89e9"},
+    {UINT64_MAX,"19aab48ba59bcd8f5f780786c32281f271b83d1188ad6e206f1a46c00f44deea"},
+    {0x0123456789abcdefULL,"c316ebf80a4e8978cad0e89e6dc4d949f642a06b3607d07129d256f4be120461"}};
+  for(bool seeded:{false,true}) {
+    f::FunctionCallRequest request;const auto* entry=package.registry.Lookup(seeded?"sb.crypto.xxhash64_value_seed":"sb.crypto.xxhash64");
+    Check(entry!=nullptr,"xxhash actual binary seed exists");if(!entry)continue;
+    request.context.function_uuid=entry->function_uuid;Check(package.registry.BindCallContext(request.context)!=nullptr,"xxhash UUID binds through actual registry");
+    for(const auto& v:known) {
+      if(!seeded&&v.seed)continue;
+      for(bool text:{false,true}) {
+        std::vector<std::uint8_t> results;
+        std::vector<std::size_t> lengths;for(std::size_t n=0;n<=65;++n)lengths.push_back(n);
+        for(auto n:{127u,128u,129u,4095u,4096u,4097u,65535u,65536u,65537u,1048576u})lengths.push_back(n);
+        for(auto n:lengths) {
+          std::vector<std::uint8_t> bytes(n);for(std::size_t i=0;i<n;++i)bytes[i]=static_cast<std::uint8_t>(i*37+11);
+          const std::string lexical(bytes.begin(),bytes.end());
+          request.arguments={{"value",text?f::MakeTextValue("character",lexical):f::MakeBinaryValue("binary",bytes)}};
+          if(text){request.arguments[0].value.charset_name="ISO-8859-1";request.arguments[0].value.collation_name="binary";}
+          if(seeded){request.arguments.push_back({"seed",f::MakeUint64Value("uint64",v.seed)});
+            if(n%2==0){request.arguments[1].value.text_value.clear();request.arguments[1].value.encoded_value.clear();}}
+          hash_copy_extent=n>=65536?n:0;hash_input_copies=0;
+          const auto r=f::DispatchCryptoHashFunction(request);hash_copy_extent=0;
+          Check(scalar(r)&&hash_input_copies==0,"xxhash borrows full declared-encoding/opaque input without a payload heap copy");
+          if(scalar(r))for(unsigned byte=0;byte<8;++byte)results.push_back(static_cast<std::uint8_t>(r.result.scalar_values[0].uint64_value>>(byte*8)));
+        }
+        std::array<unsigned char,32> digest{};unsigned length=0;
+        Check(EVP_Digest(results.data(),results.size(),digest.data(),&length,EVP_sha256(),nullptr)==1&&length==32,"independent aggregate SHA256 computed");
+        std::string hex;constexpr char digits[]="0123456789abcdef";for(auto c:digest){hex.push_back(digits[c>>4]);hex.push_back(digits[c&15]);}
+        Check(hex==v.digest,"every strip/tail/empty/large input and complete64-bit seed agrees with independent xxHash oracle");
+      }
+    }
+    request.arguments={{"value",f::MakeBinaryValue("binary",{})}};
+    if(seeded)request.arguments.push_back({"seed",f::MakeUint64Value("uint64",0)});
+    const auto good=request.arguments;
+    for(std::size_t arg=0;arg<good.size();++arg)for(unsigned fault=0;fault<15;++fault) {
+      request.arguments=good;auto& v=request.arguments[arg].value;
+      if(fault==0)v.descriptor_id="int64";
+      if(fault==1)v.uuid_value=Base();
+      if(fault==2)v.uuid_array_value={Base()};
+      if(fault==3)v.has_int64_value=true;
+      if(fault==4)v.has_real64_value=true;
+      if(fault==5)v.int64_value=1;
+      if(fault==6)v.real64_value=1;
+      if(fault==7)v.payload_kind=s::SblrValuePayloadKind::text;
+      if(fault==8)v.text_value="secret";
+      if(fault==9)v.encoded_value="secret";
+      if(fault==10)v.charset_name="utf8";
+      if(fault==11)v.collation_name="binary";
+      if(fault==12){if(arg)v.has_uint64_value=false;else v.has_uint64_value=true;}
+      if(fault==13){v=f::MakeNullValue(arg?"uint64":"binary");v.uuid_array_value={Base()};}
+      if(fault==14){v=f::MakeNullValue(arg?"uint64":"binary");v.uint64_value=1;}
+      Check(refuse(f::DispatchCryptoHashFunction(request),"CRYPTO.HASH.INVALID_INPUT"),"xxhash rejects mixed UUID/text/numeric/NULL carriers and no implicit seed cast");
+    }
+    for(unsigned count:{0u,1u,2u,3u}) {
+      if(count==(seeded?2u:1u))continue;
+      request.arguments=good;request.arguments.resize(count);
+      Check(refuse(f::DispatchCryptoHashFunction(request),"CRYPTO.HASH.INVALID_INPUT"),"unseeded and seeded builtin identities enforce exact arity");
+    }
+    request.arguments=good;request.arguments[0].value=f::MakeBinaryValue("binary",std::vector<std::uint8_t>(1048577));
+    Check(refuse(f::DispatchCryptoHashFunction(request),"RESOURCE.BUDGET_EXCEEDED"),"xxhash working-capacity refusal is not malformed input");
+    for(std::size_t arg=0;arg<good.size();++arg) {
+      request.arguments=good;request.arguments[arg].value=f::MakeNullValue(arg?"uint64":"binary");
+      const auto r=f::DispatchCryptoHashFunction(request);
+      Check(r.result.ok()&&r.result.scalar_values.size()==1&&r.result.scalar_values[0].is_null&&r.result.scalar_values[0].descriptor_id=="uint64","xxhash strict NULL differs from hash of empty input");
+    }
+    scratchbird::engine::internal_api::EngineRequestContext owner;request.context.engine_request_context=&owner;
+    for(bool text:{false,true}) {
+      request.arguments=good;request.arguments[0].value=text?f::MakeTextValue("character",std::string(131073,'a')):
+        f::MakeBinaryValue("binary",std::vector<std::uint8_t>(131073,'a'));
+      const auto valid=request.arguments;unsigned total=0;
+      owner.query_cancellation_requested=[&]{++total;return false;};
+      Check(scalar(f::DispatchCryptoHashFunction(request))&&total>=5,"xxhash polls input work and final result preparation");
+      struct ProbeFailure{};
+      for(bool null_value:{false,true})for(bool throws:{false,true})for(unsigned stop=1;stop<=(null_value?2:total);++stop) {
+        request.arguments=valid;if(null_value)request.arguments[0].value=f::MakeNullValue(text?"character":"binary");
+        unsigned polls=0;owner.query_cancellation_requested=[&]{if(++polls!=stop)return false;if(throws)throw ProbeFailure{};return true;};bool caught=false;
+        try {const auto r=f::DispatchCryptoHashFunction(request);Check(!throws&&refuse(r,"PROCESS.CANCELLED"),"xxhash cancellation at every validation/work/publication fence yields no digest");}
+        catch(const ProbeFailure&){caught=true;}
+        Check(polls==stop&&caught==throws,"xxhash cancellation exceptions cannot approve publication");
+      }
+      request.arguments=valid;
+      if(text) {
+        request.arguments[0].value.encoded_value.back()='b';
+        unsigned polls=0;owner.query_cancellation_requested=[&]{return ++polls==2;};
+        Check(refuse(f::DispatchCryptoHashFunction(request),"PROCESS.CANCELLED")&&polls==2,"equal-prefix hash mirror validation has bounded cancellation");
+        owner.query_cancellation_requested={};
+        Check(refuse(f::DispatchCryptoHashFunction(request),"CRYPTO.HASH.INVALID_INPUT"),"hash mirror mismatch is not silently hashed");
+      }
+    }
+    owner.query_cancellation_requested={};request.arguments=good;
+    bool complete=false;unsigned faults=0;
+    for(long budget=0;budget<100&&!complete;++budget) {
+      fail_after=budget;try {const auto r=f::DispatchCryptoHashFunction(request);fail_after=-1;
+        Check(scalar(r)&&r.result.scalar_values[0].uint64_value==0xef46db3751d8e999ULL,"xxhash allocation sweep preserves independent empty known answer");complete=true;}
+      catch(const std::bad_alloc&){fail_after=-1;++faults;}
+    }
+    allocation_faults+=faults;Check(complete&&faults>0,"xxhash result allocation faults are exercised");
+  }
 }
 
 int main() {
@@ -2013,6 +2139,7 @@ int main() {
   ScryptCancellation();
   CryptoArmor();
   CryptoSalt();
+  CryptoXxhash();
   std::cout << checks << " checks, " << allocation_faults << " allocation faults, " << failures << " failures\n";
   return failures ? 1 : 0;
 }
