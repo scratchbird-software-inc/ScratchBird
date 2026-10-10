@@ -5271,7 +5271,8 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
         IsColumnIdentityRole(operand.name) ||
         (IsProjectionFunctionIdentityRole(operand.name) ||
          (request.envelope.operation_id == "query.evaluate_projection" &&
-          (IsProjectionUuidLiteral(operand) || IsProjectionBinaryLiteral(operand))))) continue;
+          (IsProjectionUuidLiteral(operand) || IsProjectionBinaryLiteral(operand) ||
+           IsProjectionReal64Literal(operand))))) continue;
     auto operand_value = OperandExecutionValue(operand);
     const bool binary_row = IsNativeRowFieldType(operand.type);
     const bool row_field = operand.type == "row_field" ||
@@ -8994,13 +8995,23 @@ api::EngineProjectionFunctionResult EvaluateProjectionFunction(
                                request.function_id);
   }
   for (const auto& argument : request.arguments) {
-    if (!ProjectionArgumentEncodingValid(argument)) {
+    const bool valid_encoding = ProjectionArgumentEncodingValid(argument);
+    // This existing scalar function projection profile admits finite numeric
+    // arguments only. Payload transfer preserves special bits, but does not
+    // grant a special-value execution policy. Inspect exponent bits without
+    // evaluating a signaling NaN in the host floating environment.
+    const bool special_real64 = valid_encoding &&
+        projection_value_detail::LowerAscii(argument.type_name) == "real64" &&
+        !argument.is_null && (argument.binary_value[7] & 0x7fu) == 0x7fu &&
+        (argument.binary_value[6] & 0xf0u) == 0xf0u;
+    if (!valid_encoding || special_real64) {
       api::EngineProjectionFunctionResult out;
       out.ok = false;
       out.diagnostics.push_back(api::MakeEngineApiDiagnostic(
           "SB_DIAG_FUNCTION_ARGUMENT_INVALID",
           "engine.function.argument_encoding_invalid",
-          "function argument encoding does not match its bound type",
+          special_real64 ? "scalar function projection requires finite REAL64 arguments"
+                         : "function argument encoding does not match its bound type",
           true));
       out.evidence.push_back({"function_runtime", request.function_uuid});
       return out;
@@ -10836,12 +10847,13 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   }
   if (request.envelope.operation_id == "query.evaluate_projection" &&
       (!ProjectSblrUuidLiterals(request.envelope, &request.api_request, &identity_failure) ||
-       !ProjectSblrBinaryLiterals(request.envelope, &request.api_request, &identity_failure))) {
+       !ProjectSblrBinaryLiterals(request.envelope, &request.api_request, &identity_failure) ||
+       !ProjectSblrReal64Literals(request.envelope, &request.api_request, &identity_failure))) {
     if (identity_failure == SblrIdentityProjectionFailure::allocation_failed) {
       result.resource_exhausted = true;
       return result;
     }
-    constexpr const char* detail = "Projection UUID/binary literals require a unique Core-typed native byte body";
+    constexpr const char* detail = "Projection UUID/binary/REAL64 literals require a unique Core-typed native byte body";
     result.diagnostics.push_back(DispatchDiagnostic("SBLR.OPERAND_INVALID", detail));
     result.api_result = FailureResult(request.context, request.envelope.operation_id,
         "SBLR.OPERAND_INVALID", "engine.sblr.dispatch.uuid_literal_invalid", detail);
@@ -11152,7 +11164,8 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
       if (request.envelope.operation_id == "query.evaluate_projection" &&
           (IsProjectionFunctionIdentityRole(operand.name) ||
          (request.envelope.operation_id == "query.evaluate_projection" &&
-          (IsProjectionUuidLiteral(operand) || IsProjectionBinaryLiteral(operand))))) continue;
+          (IsProjectionUuidLiteral(operand) || IsProjectionBinaryLiteral(operand) ||
+           IsProjectionReal64Literal(operand))))) continue;
       if (operand.value_kind != SblrValueKind::literal_typed ||
           operand.value_body.size() < 24) {
         const std::string detail =

@@ -6,6 +6,8 @@
 #include "engine/public_abi_int64_payload.hpp"
 #include "wire/public_result_packet.hpp"
 #include "engine/sblr/sblr_projection_value_runtime.hpp"
+#include "engine/sblr/sblr_projection_binary_literals.hpp"
+#include "engine/sblr/sblr_operator_runtime.hpp"
 #include "engine/sblr/sblr_sequence_runtime.hpp"
 #include "engine/internal_api/dml/constraint_enforcement.hpp"
 #include "engine/internal_api/dml/dml_executable_trigger_runtime.hpp"
@@ -305,6 +307,208 @@ void NativeRegisteredAggregate() {
   }
 }
 
+void NativeReal64Projection() {
+  namespace sblr = scratchbird::engine::sblr;
+  namespace functions = scratchbird::engine::functions;
+  const auto descriptor = Sentinel("real64").descriptor;
+  const auto argument_for = [&](std::uint64_t bits) {
+    api::EngineProjectionFunctionArgument argument;
+    argument.type_name = "real64";
+    argument.descriptor = descriptor;
+    argument.binary_value.resize(8);
+    for (unsigned i = 0; i < 8; ++i)
+      argument.binary_value[i] = static_cast<std::uint8_t>(bits >> (8 * i));
+    return argument;
+  };
+  // This adapter transfers payloads, not datatype authority or special-value
+  // admission. Even NaN payloads and signed zero must survive without arithmetic.
+  const auto roundtrip = [&](std::uint64_t bits) {
+    const auto argument = argument_for(bits);
+    fail_after = 0;
+    const bool encoding_valid = sblr::ProjectionArgumentEncodingValid(argument);
+    fail_after = -1;
+    Require(encoding_valid, "REAL64 payload validation copied/allocated binding metadata");
+    const auto value = sblr::SblrValueFromProjectionArgument(argument);
+    Require(sblr::ProjectionArgumentEncodingValid(argument) &&
+                sblr::ProjectionSblrValueResolved(value) &&
+                sblr::SblrReal64PayloadValid(value) &&
+                std::bit_cast<std::uint64_t>(value.real64_value) == bits,
+            "REAL64 projection changed native bits or retained text");
+    const auto restored = sblr::EngineTypedValueFromSblrValue(value);
+    Require(restored.descriptor == descriptor && restored.binary_value == argument.binary_value &&
+                restored.encoded_value.empty() && restored.state == State::value && !restored.is_null,
+            "REAL64 publication lost binding, state or exact binary64 bits");
+    const auto negated = sblr::EvaluateSblrUnaryArithmetic("op_unary_minus", value, {});
+    Require(negated.ok() && negated.scalar_values.size() == 1 &&
+                sblr::ProjectionSblrValueResolved(negated.scalar_values.front()) &&
+                negated.scalar_values.front().projection_descriptor == value.projection_descriptor &&
+                std::bit_cast<std::uint64_t>(negated.scalar_values.front().real64_value) ==
+                    (bits ^ (std::uint64_t{1} << 63)),
+            "REAL64 unary minus lost native bits or retained descriptor binding");
+  };
+  for (const std::uint64_t bits : {0ull, 0x8000000000000000ull, 1ull,
+       0x000fffffffffffffull, 0x0010000000000000ull, 0x3ff4000000000000ull,
+       0x7fefffffffffffffull, 0x7ff0000000000000ull, 0xfff0000000000000ull,
+       0x7ff8000000000001ull, 0x7ff0000000000001ull}) roundtrip(bits);
+  for (unsigned bit = 0; bit < 64; ++bit) roundtrip(std::uint64_t{1} << bit);
+  for (unsigned change = 0; change < 9; ++change) {
+    auto argument = argument_for(0x3ff4000000000000ull);
+    if (change == 0) argument.encoded_value = "1.25";
+    if (change == 1) argument.binary_value.pop_back();
+    if (change == 2) argument.binary_value.push_back(0);
+    if (change == 3) argument.state = State::error;
+    if (change == 4) argument.is_null = true;
+    if (change == 5) argument.state = State::sql_null;
+    if (change == 6) { argument.state = State::sql_null; argument.is_null = true; }
+    if (change == 7) argument.descriptor.canonical_type_name = "real128";
+    if (change == 8) { argument.binary_value.clear(); argument.encoded_value = "1.25"; }
+    Require(!sblr::ProjectionArgumentEncodingValid(argument) &&
+                !sblr::ProjectionSblrValueResolved(sblr::SblrValueFromProjectionArgument(argument)),
+            "REAL64 projection accepted conflicting, lexical or malformed input");
+  }
+  auto null = argument_for(0);
+  null.binary_value.clear(); null.is_null = true; null.state = State::sql_null;
+  const auto null_value = sblr::SblrValueFromProjectionArgument(null);
+  const auto restored_null = sblr::EngineTypedValueFromSblrValue(null_value);
+  Require(sblr::ProjectionArgumentEncodingValid(null) &&
+              sblr::ProjectionSblrValueResolved(null_value) &&
+              restored_null.descriptor == descriptor && restored_null.state == State::sql_null &&
+              restored_null.is_null && restored_null.binary_value.empty() && restored_null.encoded_value.empty(),
+          "REAL64 typed NULL lost its binding or gained payload");
+  for (unsigned change = 0; change < 12; ++change) {
+    auto value = sblr::SblrValueFromProjectionArgument(argument_for(0x3ff4000000000000ull));
+    if (change == 0) value.text_value = "1.25";
+    if (change == 1) value.encoded_value = "1.25";
+    if (change == 2) value.binary_value.assign(8, 0);
+    if (change == 3) value.has_int64_value = true;
+    if (change == 4) value.has_uint64_value = true;
+    if (change == 5) value.has_real64_value = false;
+    if (change == 6) value.payload_kind = sblr::SblrValuePayloadKind::text;
+    if (change == 7) value.uuid_value = descriptor.descriptor_uuid;
+    if (change == 8) value.uuid_array_value.push_back(descriptor.descriptor_uuid);
+    if (change == 9) value.charset_name = "UTF8";
+    if (change == 10) value.collation_name = "binary";
+    if (change == 11) value.is_null = true;
+    Require(!sblr::ProjectionSblrValueResolved(value), "REAL64 result accepted conflicting payload");
+    const auto negated = sblr::EvaluateSblrUnaryArithmetic("op_unary_minus", value, {});
+    Require(!negated.ok() && negated.scalar_values.empty(),
+            "REAL64 unary minus accepted conflicting payload");
+    bool refused = false;
+    try { (void)sblr::EngineTypedValueFromSblrValue(value); }
+    catch (const std::invalid_argument&) { refused = true; }
+    Require(refused, "REAL64 result publication did not refuse malformed carrier");
+  }
+  const auto package = functions::BuildStandardFunctionSeedPackage();
+  const auto* entry = package.registry.Lookup("sb.scalar.round");
+  Require(entry != nullptr, "registered ROUND function missing");
+  functions::FunctionCallRequest request;
+  request.context.function_uuid = entry->function_uuid;
+  request.context.security_allowed = request.context.policy_allowed = true;
+  request.arguments.push_back({"value", sblr::SblrValueFromProjectionArgument(argument_for(0x3ff4000000000000ull))});
+  api::EngineProjectionFunctionArgument scale;
+  scale.type_name = "int64";
+  scale.binary_value.assign(8, 0); scale.binary_value[0] = 1;
+  request.arguments.push_back({"scale", sblr::SblrValueFromProjectionArgument(scale)});
+  const auto rounded = functions::DispatchFunctionCall(package.registry, std::move(request)).result;
+  Require(rounded.ok() && rounded.scalar_values.size() == 1 &&
+              sblr::ProjectionSblrValueResolved(rounded.scalar_values.front()) &&
+              rounded.scalar_values.front().real64_value == 1.3,
+          "registered ROUND failed to consume and publish native REAL64");
+  const auto output = sblr::EngineTypedValueFromSblrValue(rounded.scalar_values.front());
+  Require(output.binary_value == argument_for(std::bit_cast<std::uint64_t>(1.3)).binary_value &&
+              output.encoded_value.empty(), "registered ROUND published REAL64 text");
+  const auto* average = package.registry.Lookup("sb.aggregate.regr_avgx");
+  Require(average != nullptr, "registered REGR_AVGX function missing");
+  functions::FunctionCallRequest aggregate;
+  aggregate.context.function_uuid = average->function_uuid;
+  aggregate.context.security_allowed = aggregate.context.policy_allowed = true;
+  aggregate.arguments.push_back({"y", sblr::SblrValueFromProjectionArgument(argument_for(0x3ff4000000000000ull))});
+  aggregate.arguments.push_back({"x", sblr::SblrValueFromProjectionArgument(argument_for(0x3ff4000000000000ull))});
+  const auto averaged = functions::DispatchFunctionCall(package.registry, aggregate).result;
+  Require(averaged.ok() && averaged.scalar_values.size() == 1 &&
+              sblr::ProjectionSblrValueResolved(averaged.scalar_values.front()) &&
+              sblr::EngineTypedValueFromSblrValue(averaged.scalar_values.front()).binary_value ==
+                  argument_for(0x3ff4000000000000ull).binary_value,
+          "registered REGR_AVGX failed native REAL64 publication");
+  aggregate.arguments.front().value.encoded_value = "1.25";
+  const auto conflicting = functions::DispatchFunctionCall(package.registry, aggregate).result;
+  Require(!conflicting.ok() && conflicting.scalar_values.empty() &&
+              !conflicting.diagnostics.empty() &&
+              conflicting.diagnostics.front().diagnostic_id == "SB_DIAG_FUNCTION_INVALID_INPUT",
+          "direct registered function accepted conflicting REAL64 carriers");
+  sblr::SblrValue left, right;
+  left.descriptor_id = right.descriptor_id = "vector";
+  left.is_null = right.is_null = false;
+  left.payload_kind = right.payload_kind = sblr::SblrValuePayloadKind::descriptor_payload;
+  left.encoded_value = "[1,2]"; right.encoded_value = "[3,4]";
+  const auto dot = sblr::EvaluateSblrVectorOperator("operator.vector.dot", left, right, {});
+  Require(dot.ok() && dot.scalar_values.size() == 1 &&
+              sblr::ProjectionSblrValueResolved(dot.scalar_values.front()) &&
+              sblr::EngineTypedValueFromSblrValue(dot.scalar_values.front()).binary_value ==
+                  argument_for(std::bit_cast<std::uint64_t>(11.0)).binary_value,
+          "vector operator published a REAL64 text shadow");
+  functions::FunctionCallRequest nested;
+  nested.context.function_uuid = entry->function_uuid;
+  nested.context.security_allowed = nested.context.policy_allowed = true;
+  nested.arguments.push_back({"value", dot.scalar_values.front()});
+  const auto rounded_dot = functions::DispatchFunctionCall(package.registry, std::move(nested)).result;
+  Require(rounded_dot.ok() && rounded_dot.scalar_values.size() == 1 &&
+              sblr::ProjectionSblrValueResolved(rounded_dot.scalar_values.front()) &&
+              rounded_dot.scalar_values.front().real64_value == 11.0,
+          "nested registered function rejected native REAL64 operator output");
+}
+
+void NativeReal64LiteralBinding() {
+  namespace sblr = scratchbird::engine::sblr;
+  namespace dt = scratchbird::core::datatypes;
+  const auto catalog = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  const auto row = dt::LookupDatatypeCatalogRow(catalog.manifest, dt::CanonicalTypeId::real64);
+  Require(catalog.ok() && row.ok() && row.manifest.descriptor_rows.size() == 1,
+          "REAL64 literal fixture requires the current Core descriptor");
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "real64";
+  operand.name = "projection_0_value";
+  operand.value_kind = sblr::SblrValueKind::literal_typed;
+  const auto& uuid = row.manifest.descriptor_rows.front().descriptor_uuid.value;
+  operand.value_body.assign(uuid.bytes.begin(), uuid.bytes.end());
+  operand.value_body.resize(32, 0);
+  operand.value_body[16] = 8;
+  operand.value_body[30] = 0xf4; operand.value_body[31] = 0x3f; // 1.25 LE8
+  sblr::SblrOperationEnvelope envelope;
+  envelope.operands.push_back(operand);
+  api::EngineApiRequest request;
+  Require(sblr::ProjectSblrReal64Literals(envelope, &request) &&
+              request.projection.real64_literals.size() == 1 &&
+              request.projection.real64_literals.front().first == "projection_0_" &&
+              request.projection.real64_literals.front().second[6] == 0xf4 &&
+              request.projection.real64_literals.front().second[7] == 0x3f,
+          "REAL64 literal projection lost the Core-typed payload");
+  const auto retained = request.projection.real64_literals;
+  Require(sblr::ProjectSblrReal64Literals(envelope, &request) &&
+              request.projection.real64_literals == retained,
+          "REAL64 literal reconciliation changed an identical binding");
+  for (unsigned change = 0; change < 12; ++change) {
+    auto malformed = envelope;
+    auto& item = malformed.operands.front();
+    if (change == 0) item.ordinal = 2;
+    if (change == 1) item.value = "1.25";
+    if (change == 2) item.value_kind = sblr::SblrValueKind::uuid_ref;
+    if (change == 3) item.value_flags = 1;
+    if (change == 4) item.value_body.pop_back();
+    if (change == 5) item.value_body.push_back(0);
+    if (change == 6) item.value_body[0] ^= 1;
+    if (change == 7) item.value_body[16] = 7;
+    if (change == 8) item.value_body[23] = 1;
+    if (change == 9) item.value_body[24] ^= 1;
+    if (change == 10) item.name = "projection__value";
+    if (change == 11) { malformed.operands.push_back(item); malformed.operands.back().ordinal = 2; }
+    Require(!sblr::ProjectSblrReal64Literals(malformed, &request) &&
+                request.projection.real64_literals == retained,
+            "malformed/conflicting REAL64 literal partially replaced the retained binding");
+  }
+}
+
 void NativeSequenceConsumers() {
   namespace sblr = scratchbird::engine::sblr;
   auto identity = Sentinel("int64").descriptor.descriptor_uuid;
@@ -446,7 +650,10 @@ void PublicInt64Transport() {
           "NULL manufactured an integer payload");
   null.binary_value.assign(8, 0);
   Require(!PublicInt64ScalarPayloadV1(null, &payload), "NULL retained native payload");
-  for (unsigned kind = 7; kind < 256; ++kind)
+  for (unsigned length = 0; length != 17; ++length)
+    Require(packet::Valid({"v", packet::Kind::real64, std::string(length, '\0')}) == (length == 8),
+            "REAL64 wire kind did not enforce its exact native width");
+  for (unsigned kind = 8; kind < 256; ++kind)
     Require(!packet::Valid({"v", static_cast<packet::Kind>(kind), std::string(8, '\0')}),
             "unknown wire kind accepted");
 }
@@ -620,5 +827,7 @@ int main() {
   PublicInt64Transport();
   NativeSequenceConsumers();
   NativeRegisteredAggregate();
+  NativeReal64Projection();
+  NativeReal64LiteralBinding();
   std::cout << "stored scalar native payload checks=" << checks << '\n';
 }

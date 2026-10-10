@@ -83,10 +83,6 @@ SblrValue Real64Value(double value) {
   out.has_real64_value = true;
   out.real64_value = value;
   out.payload_kind = SblrValuePayloadKind::real64;
-  std::ostringstream stream;
-  stream << std::setprecision(17) << value;
-  out.encoded_value = stream.str();
-  out.text_value = out.encoded_value;
   return out;
 }
 

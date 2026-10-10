@@ -13,6 +13,7 @@
 #include "datatype_catalog_manifest.hpp"
 
 #include <charconv>
+#include <bit>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -134,15 +135,28 @@ void AppendExpression(sblr::SblrOperationEnvelope* envelope,
   AppendTextOperand(envelope, prefix + "expr_kind",
                     is_function ? "function" : "literal");
   AppendTextOperand(envelope, prefix + "type", expression.type);
-  if (!is_function && expression.type == "binary" && !expression.is_null) {
-    const auto bytes = FixtureBinary(expression.value);
+  if (!is_function && (expression.type == "binary" || expression.type == "real64") && !expression.is_null) {
+    std::vector<std::uint8_t> bytes;
+    if (expression.type == "binary") bytes = FixtureBinary(expression.value);
+    else {
+      // Fixture/parser boundary conversion, never a textual engine REAL64.
+      double number = 0;
+      const auto parsed = std::from_chars(expression.value.data(),
+          expression.value.data() + expression.value.size(), number);
+      Require(parsed.ec == std::errc{} && parsed.ptr == expression.value.data() + expression.value.size(),
+              "REAL64 fixture is not an exact lexical value");
+      const auto bits = std::bit_cast<std::uint64_t>(number);
+      bytes.resize(8);
+      for (unsigned n = 0; n < 8; ++n) bytes[n] = static_cast<std::uint8_t>(bits >> (8 * n));
+    }
     namespace dt = scratchbird::core::datatypes;
     const auto catalog = dt::LoadCurrentCoreDatatypeCatalogManifest();
-    const auto descriptor = dt::LookupDatatypeCatalogRow(catalog.manifest, dt::CanonicalTypeId::binary);
+    const auto descriptor = dt::LookupDatatypeCatalogRow(catalog.manifest,
+        expression.type == "binary" ? dt::CanonicalTypeId::binary : dt::CanonicalTypeId::real64);
     Require(catalog.ok() && descriptor.ok(), "binary fixture datatype is unavailable");
     sblr::SblrOperand operand;
     operand.ordinal = static_cast<std::uint32_t>(envelope->operands.size() + 1);
-    operand.type = "binary"; operand.name = prefix + "value";
+    operand.type = expression.type; operand.name = prefix + "value";
     operand.value_kind = sblr::SblrValueKind::literal_typed;
     const auto& id = descriptor.manifest.descriptor_rows.front().descriptor_uuid.value;
     operand.value_body.assign(id.bytes.begin(), id.bytes.end());
@@ -399,6 +413,27 @@ Expression ProfiledDatePart(std::string temporal_type,
 }  // namespace
 
 int main() {
+  {
+    const auto native = Dispatch({
+        {"native_round", Function("real64", std::string(kRound),
+             {Literal("real64", "1.25"), Literal("int64", "1")})},
+        {"negative_zero", Literal("real64", "-0")},
+        {"native_null", Literal("real64", "", true)}});
+    RequireSuccessfulProjection(native, 3);
+    const auto& fields = native.api_result.result_shape.rows.front().fields;
+    for (unsigned i = 0; i < 2; ++i) {
+      const auto& value = fields[i].second;
+      const auto expected = std::bit_cast<std::uint64_t>(i == 0 ? 1.3 : -0.0);
+      Require(value.encoded_value.empty() && value.binary_value.size() == 8 && !value.isSqlNull(),
+              "REAL64 SBLR result is not a native binary64 payload");
+      for (unsigned byte = 0; byte < 8; ++byte)
+        Require(value.binary_value[byte] == static_cast<std::uint8_t>(expected >> (8 * byte)),
+                "REAL64 SBLR result changed a native payload bit");
+    }
+    Require(fields[2].second.isSqlNull() && fields[2].second.binary_value.empty() &&
+                fields[2].second.encoded_value.empty(), "REAL64 SBLR NULL gained payload");
+    std::cout << "native REAL64 SBLR literal/function/NULL route: ok\n";
+  }
   const auto valid = Dispatch({
       {"octet_a",
        Function("binary", std::string(kOctetFromInt64),

@@ -51,6 +51,21 @@ inline bool Int64CarrierValid(const SblrValue& value) noexcept {
   if (value.is_null) return EmptyNullCarrier(value);
   return SblrInt64PayloadValid(value);
 }
+inline bool Real64CarrierValid(const SblrValue& value) noexcept {
+  if (value.descriptor_id != "real64" || (value.projection_descriptor &&
+      value.projection_descriptor->canonical_type_name != "real64")) return false;
+  return value.is_null ? EmptyNullCarrier(value) : SblrReal64PayloadValid(value);
+}
+inline bool Real64ArgumentCarrierValid(
+    const internal_api::EngineProjectionFunctionArgument& argument) noexcept {
+  return (argument.descriptor.canonical_type_name.empty() ||
+          argument.descriptor.canonical_type_name == "real64") &&
+      (argument.state == internal_api::EngineValueState::value ||
+       argument.state == internal_api::EngineValueState::sql_null) &&
+      argument.is_null == (argument.state == internal_api::EngineValueState::sql_null) &&
+      argument.encoded_value.empty() &&
+      argument.binary_value.size() == (argument.is_null ? 0u : 8u);
+}
 }  // namespace projection_value_detail
 
 inline SblrValue SblrValueFromProjectionArgument(
@@ -60,6 +75,23 @@ inline SblrValue SblrValueFromProjectionArgument(
   value.descriptor_id = type_name;
   // Invalid carriers are unresolved non-NULL values, never manufactured NULLs.
   value.is_null = false;
+  if (type_name == "real64") {
+    static_assert(sizeof(double) == 8 && std::numeric_limits<double>::is_iec559);
+    if (!projection_value_detail::Real64ArgumentCarrierValid(argument)) return value;
+    if (!argument.descriptor.canonical_type_name.empty())
+      value.projection_descriptor =
+          std::make_shared<const internal_api::EngineDescriptor>(argument.descriptor);
+    value.is_null = argument.is_null;
+    if (!value.is_null) {
+      std::uint64_t bits = 0;
+      for (unsigned i = 0; i < 8; ++i)
+        bits |= static_cast<std::uint64_t>(argument.binary_value[i]) << (8 * i);
+      value.real64_value = std::bit_cast<double>(bits);
+      value.has_real64_value = true;
+      value.payload_kind = SblrValuePayloadKind::real64;
+    }
+    return value;
+  }
   if (type_name == "int64" && (argument.is_null ||
       argument.state == internal_api::EngineValueState::sql_null)) {
     if (!argument.is_null || argument.state != internal_api::EngineValueState::sql_null ||
@@ -240,6 +272,7 @@ inline bool ProjectionArgumentEncodingValid(
     const internal_api::EngineProjectionFunctionArgument& argument) {
   if (argument.type_name.empty()) return false;
   const auto type = projection_value_detail::LowerAscii(argument.type_name);
+  if (type == "real64") return projection_value_detail::Real64ArgumentCarrierValid(argument);
   if (type == "uint16" || ReferencesUint16Projection(argument.descriptor))
     return Uint16ProjectionArgumentValid(argument);
   if (type == "binary" || type == "varbinary" || type == "uuid" || type == "uuid_array") {
@@ -259,6 +292,7 @@ inline bool ProjectionArgumentEncodingValid(
 inline bool ProjectionSblrValueResolved(const SblrValue& value) {
   if (value.descriptor_id.empty()) return false;
   if (value.descriptor_id == "int64") return projection_value_detail::Int64CarrierValid(value);
+  if (value.descriptor_id == "real64") return projection_value_detail::Real64CarrierValid(value);
   if (value.descriptor_id == "uint16" ||
       (value.projection_descriptor && ReferencesUint16Projection(*value.projection_descriptor)))
     return SblrUint16ProjectionResolved(value);
@@ -284,6 +318,8 @@ inline bool ProjectionSblrValueResolved(const SblrValue& value) {
 inline internal_api::EngineTypedValue EngineTypedValueFromSblrValue(const SblrValue& value) {
   if (value.descriptor_id == "int64" && !projection_value_detail::Int64CarrierValid(value))
     throw std::invalid_argument("conflicting SBLR INT64 payload representations");
+  if (value.descriptor_id == "real64" && !projection_value_detail::Real64CarrierValid(value))
+    throw std::invalid_argument("conflicting SBLR REAL64 payload representations");
   if (value.descriptor_id == "uint16" ||
       (value.projection_descriptor && ReferencesUint16Projection(*value.projection_descriptor))) {
     if (!SblrUint16ProjectionResolved(value))
@@ -297,7 +333,7 @@ inline internal_api::EngineTypedValue EngineTypedValueFromSblrValue(const SblrVa
                           static_cast<std::uint8_t>(value.uint64_value >> 8u)};
     return out;
   }
-  if (value.descriptor_id != "int64" && value.projection_descriptor &&
+  if (value.descriptor_id != "int64" && value.descriptor_id != "real64" && value.projection_descriptor &&
       (!projection_value_detail::NativeBinaryType(value.descriptor_id) ||
        !projection_value_detail::NativeBinaryBindingAgrees(value)))
     throw std::invalid_argument("conflicting SBLR native projection binding");
@@ -330,6 +366,13 @@ inline internal_api::EngineTypedValue EngineTypedValueFromSblrValue(const SblrVa
     return out;
   }
   out.setState(internal_api::EngineValueState::value);
+  if (value.descriptor_id == "real64") {
+    const auto bits = std::bit_cast<std::uint64_t>(value.real64_value);
+    out.binary_value.resize(8);
+    for (unsigned i = 0; i < 8; ++i)
+      out.binary_value[i] = static_cast<std::uint8_t>(bits >> (8 * i));
+    return out;
+  }
   if (value.descriptor_id == "int64") {
     const auto bits = static_cast<std::uint64_t>(value.int64_value);
     out.binary_value.resize(8);

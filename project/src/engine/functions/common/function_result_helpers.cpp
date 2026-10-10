@@ -85,8 +85,10 @@ scratchbird::engine::sblr::SblrValue MakeReal64Value(std::string descriptor_id, 
   value.real64_value = real_value;
   value.has_real64_value = true;
   value.payload_kind = scratchbird::engine::sblr::SblrValuePayloadKind::real64;
-  value.encoded_value = FormatReal64(real_value);
-  value.text_value = value.encoded_value;
+  if (value.descriptor_id != "real64") {
+    value.encoded_value = FormatReal64(real_value);
+    value.text_value = value.encoded_value;
+  }
   value.is_null = false;
   return value;
 }

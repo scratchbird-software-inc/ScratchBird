@@ -14,6 +14,7 @@
 #include "engine/sblr/relational_descriptor_codec.hpp"
 #include "engine/sblr/sblr_engine_envelope.hpp"
 #include "core/datatypes/datatype_catalog_manifest.hpp"
+#include "sbl_numeric.hpp"
 
 #include "expression/expression_catalog.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
@@ -10753,8 +10754,8 @@ std::string ScalarProjectionTypeForToken(const Token& token) {
     if (token.literal_family == "int128") return "int128";
     if (token.literal_family == "uint128") return "uint128";
     if (token.literal_family == "real128") return "real128";
-    return token.literal_family == "decimal" || token.literal_family == "float" ? "numeric"
-                                                                                 : "bigint";
+    if (token.literal_family == "float") return "real64";
+    return token.literal_family == "decimal" ? "numeric" : "bigint";
   }
   if (token.kind == TokenKind::kBooleanLiteral) return "boolean";
   if (token.kind == TokenKind::kBinaryLiteral) {
@@ -28797,6 +28798,22 @@ void PopulateScalarProjectionAuthority(SblrEnvelope* envelope, const ScalarProje
       value.canonical_value_body.insert(value.canonical_value_body.end(), 7, 0);
       value.canonical_value_body.insert(value.canonical_value_body.end(), uuid.bytes.begin(), uuid.bytes.end());
       envelope->operands.push_back(std::move(value));
+    } else if (item.expression_kind == "literal" && item.type_name == "real64" && !item.is_null) {
+      const auto encoded = libraries::sbl_numeric::EncodeReal64LittleEndian(item.value);
+      const auto catalog = core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+      const auto row = core::datatypes::LookupDatatypeCatalogRow(
+          catalog.manifest, core::datatypes::CanonicalTypeId::real64);
+      if (!encoded.bytes || !catalog.ok() || !row.ok() || row.manifest.descriptor_rows.size() != 1) {
+        complete = false; return;
+      }
+      SblrOperand value{"real64", prefix + "value", {}};
+      value.canonical_value_kind = static_cast<std::uint16_t>(engine::sblr::SblrValueKind::literal_typed);
+      const auto& descriptor = row.manifest.descriptor_rows.front().descriptor_uuid.value;
+      value.canonical_value_body.assign(descriptor.bytes.begin(), descriptor.bytes.end());
+      value.canonical_value_body.push_back(8);
+      value.canonical_value_body.insert(value.canonical_value_body.end(), 7, 0);
+      value.canonical_value_body.insert(value.canonical_value_body.end(), encoded.bytes->begin(), encoded.bytes->end());
+      envelope->operands.push_back(std::move(value));
     } else if (item.expression_kind == "literal" && item.type_name == "binary" && !item.is_null) {
       const auto catalog = core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
       const auto row = core::datatypes::LookupDatatypeCatalogRow(
@@ -28859,7 +28876,7 @@ void PopulateScalarProjectionAuthority(SblrEnvelope* envelope, const ScalarProje
     emit(emit, info.items[i], "projection_" + std::to_string(i) + "_");
   if (!complete) {
     envelope->messages.diagnostics.push_back(MakeDiagnostic(
-        "SBLR.OPERAND_INVALID", "ERROR", "Scalar UUID/binary literals require a canonical datatype and exact native value bytes",
+        "SBLR.OPERAND_INVALID", "ERROR", "Scalar UUID/binary/REAL64 literals require a canonical datatype and exact native value bytes",
         "sbp_sbsql.scalar_lowering"));
     return;
   }

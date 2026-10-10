@@ -10,6 +10,7 @@
 
 #include "common/function_gate.hpp"
 #include "common/function_result_helpers.hpp"
+#include "sblr/sblr_binary_value_carrier.hpp"
 #include "families/crypto_hash/crypto_hash_function_landing_zone.hpp"
 #include "families/data_aggregate_functions.hpp"
 #include "families/data_scalar_functions.hpp"
@@ -52,6 +53,16 @@ FunctionCallResult DispatchFunctionCall(const FunctionRegistry& registry,
 
   if (!FunctionMayExecute(request.context)) {
     return RefuseFunctionCall(request, "function is not executable after gate evaluation");
+  }
+
+  for (const auto& argument : request.arguments) {
+    const auto& value = argument.value;
+    if (value.descriptor_id == "real64" &&
+        !(value.is_null ? sblr::SblrNullPayloadEmpty(value)
+                       : sblr::SblrReal64PayloadValid(value))) {
+      return RefuseFunctionInvalidInput(request,
+          "REAL64 argument has conflicting or non-native value carriers");
+    }
   }
 
   if (IsNativeSurfaceFunction(request)) return DispatchNativeSurfaceFunction(request);

@@ -299,6 +299,8 @@ struct EngineProjectionEnvelope {
   // Paths identify expression occurrences; these values confer no authority.
   std::vector<std::pair<std::string, EngineUuid>> uuid_literals;
   std::vector<std::pair<std::string, std::vector<std::uint8_t>>> binary_literals;
+  // REAL64 interchange payloads; never decimal strings or a binary-type alias.
+  std::vector<std::pair<std::string, std::array<std::uint8_t, 8>>> real64_literals;
 };
 
 struct EngineOrderingEnvelope {

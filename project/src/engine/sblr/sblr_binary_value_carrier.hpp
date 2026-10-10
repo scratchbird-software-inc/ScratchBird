@@ -5,6 +5,14 @@
 
 namespace scratchbird::engine::sblr {
 // Native scalar payload validation only; binding admission is separate.
+inline bool SblrReal64PayloadValid(const SblrValue& value) noexcept {
+  return !value.is_null && value.descriptor_id == "real64" &&
+      value.payload_kind == SblrValuePayloadKind::real64 &&
+      value.has_real64_value && !value.has_int64_value && !value.has_uint64_value &&
+      value.encoded_value.empty() && value.text_value.empty() && value.binary_value.empty() &&
+      value.uuid_value.is_nil() && value.uuid_array_value.empty() &&
+      value.charset_name.empty() && value.collation_name.empty();
+}
 inline bool SblrInt64PayloadValid(const SblrValue& value) noexcept {
   return !value.is_null && value.descriptor_id == "int64" &&
       value.payload_kind == SblrValuePayloadKind::signed_integer &&

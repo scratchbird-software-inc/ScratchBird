@@ -249,6 +249,7 @@ struct QowProjectionExpressionBuildStateV1 {
   std::size_t function_identity_count = 0;
   std::size_t uuid_literal_count = 0;
   std::size_t binary_literal_count = 0;
+  std::size_t real64_literal_count = 0;
 };
 
 bool QowReadProjectionExpressionV1(
@@ -304,7 +305,8 @@ bool QowReadProjectionExpressionV1(
   if (QowProjectionCanonicalTypeIdV1(expression->type_name) ==
           scratchbird::core::datatypes::CanonicalTypeId::unknown) {
     return refuse("descriptor_unsupported",
-                  "projection expression type descriptor is unsupported");
+                  "projection expression type descriptor is unsupported: " +
+                      expression->type_name.substr(0, 128));
   }
   expression->encoded_value = QowProjectionOptionValueV1(request, prefix + "value:");
   const auto is_null = QowProjectionOptionValueV1(request, prefix + "is_null:");
@@ -349,6 +351,28 @@ bool QowReadProjectionExpressionV1(
   }
   expression->function_id =
       QowProjectionOptionValueV1(request, prefix + "function_id:");
+  const std::array<std::uint8_t, 8>* real64_literal = nullptr;
+  if (expression->type_name == "real64" && expression->expression_kind == "literal" &&
+      expression->is_null && !expression->encoded_value.empty())
+    return refuse("real64_literal", "NULL REAL64 literal cannot carry a payload");
+  for (const auto& binding : request.projection.real64_literals) {
+    if (binding.first != prefix) continue;
+    if (real64_literal) return refuse("real64_literal", "duplicate REAL64 literal");
+    real64_literal = &binding.second;
+  }
+  if (real64_literal) {
+    if (expression->expression_kind != "literal" || expression->type_name != "real64" ||
+        expression->is_null || !expression->encoded_value.empty() || !expression->binary_value.empty())
+      return refuse("real64_literal", "REAL64 literal conflicts with its expression descriptor");
+    for (const auto& option : request.option_envelopes)
+      if (std::string_view(option).starts_with(prefix + "value:"))
+        return refuse("real64_literal", "REAL64 literal cannot also have a text value carrier");
+    expression->binary_value.assign(real64_literal->begin(), real64_literal->end());
+    ++graph->real64_literal_count;
+  } else if (expression->expression_kind == "literal" && expression->type_name == "real64" &&
+             !expression->is_null) {
+    return refuse("real64_literal", "REAL64 scalar literal requires eight native bytes");
+  }
   expression->operator_id =
       QowProjectionOptionValueV1(request, prefix + "operator_id:");
   expression->canonical_operator_id =
@@ -502,6 +526,8 @@ bool QowReadCanonicalProjectionExpressionsV1(
     return refuse("uuid_literal", "projection contains an unused UUID literal binding");
   if (graph.binary_literal_count != request.projection.binary_literals.size())
     return refuse("binary_literal", "projection contains an unused binary literal binding");
+  if (graph.real64_literal_count != request.projection.real64_literals.size())
+    return refuse("real64_literal", "projection contains an unused REAL64 literal binding");
   if (graph.function_identity_count != request.projection.function_identities.size())
     return refuse("function_uuid", "projection contains an unused function identity binding");
   if (!QowValidateCanonicalExpressionGraphV1(

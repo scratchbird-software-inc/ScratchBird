@@ -16,6 +16,7 @@
 #include "datatype_operations.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cctype>
 #include <cstdint>

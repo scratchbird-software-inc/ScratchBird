@@ -156,6 +156,20 @@ SblrResult EvaluateSblrUnaryArithmetic(std::string_view operator_id,
                      "operator.arithmetic.unary_minus")) {
     return OperatorFailure(operator_id, context, "unary numeric operator is not registered");
   }
+  if (operand.descriptor_id == "real64") {
+    if (!(operand.is_null ? SblrNullPayloadEmpty(operand) : SblrReal64PayloadValid(operand))) {
+      return OperatorDiagnosticFailure(operator_id, context, "SBLR.OPERAND_INVALID",
+                                       "REAL64 unary minus requires a native unambiguous carrier");
+    }
+    auto result = operand;
+    if (!result.is_null) {
+      // Negation is an exact sign operation. Do not format/reparse the number,
+      // lose signed zero or perform host arithmetic on a signaling NaN.
+      result.real64_value = std::bit_cast<double>(
+          std::bit_cast<std::uint64_t>(operand.real64_value) ^ (std::uint64_t{1} << 63));
+    }
+    return ScalarResult(operator_id, std::move(result));
+  }
   if (operand.is_null) {
     return ScalarResult(operator_id,
                         NullValue(!operand.descriptor_id.empty() ? operand.descriptor_id : "int64"));

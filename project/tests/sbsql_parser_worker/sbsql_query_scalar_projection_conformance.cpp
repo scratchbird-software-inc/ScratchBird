@@ -126,7 +126,7 @@ constexpr ScalarLiteralGrammarRowEvidence kScalarLiteralGrammarRows[] = {
     {"SBSQL-4F7D60F01353", "decimal_literal",
      "SELECT 12.34 AS decimal_value", "decimal_value", "numeric", "12.34", false},
     {"SBSQL-ACF69057CA9A", "float_literal",
-     "SELECT 1e2 AS float_value", "float_value", "numeric", "1e2", false},
+     "SELECT 1e2 AS float_value", "float_value", "real64", "1e2", false},
     {"SBSQL-E94BF9993D60", "binary_literal",
      "SELECT X'00ff10' AS binary_value", "binary_value", "binary", "00ff10", false},
     {"SBSQL-252811043F4E", "uuid_literal",
@@ -201,7 +201,7 @@ constexpr ScalarLiteralGrammarRowEvidence kScalarLiteralFunctionRows[] = {
     {"SBSQL-8E719BFB5277", "real128_literal",
      "SELECT 1.25R128 AS real128_value", "real128_value", "real128", "1.25", false},
     {"SBSQL-FD2E26018B58", "float_literal",
-     "SELECT 1e2 AS float_value", "float_value", "numeric", "1e2", false},
+     "SELECT 1e2 AS float_value", "float_value", "real64", "1e2", false},
     {"SBSQL-3BDB82ED4BDB", "binary_literal",
      "SELECT X'00ff10' AS binary_value", "binary_value", "binary", "00ff10", false},
     {"SBSQL-6D258F5FD8E5", "uuid_literal",
@@ -1697,21 +1697,8 @@ sblr::SblrOperationEnvelope Real128LiteralEngineEnvelope() {
 }
 
 sblr::SblrOperationEnvelope FloatLiteralEngineEnvelope() {
-  auto envelope = sblr::MakeSblrEnvelope("query.evaluate_projection",
-                                         "SBLR_QUERY_EVALUATE_PROJECTION",
-                                         "trace.query.scalar_projection.float_literal");
-  envelope.requires_security_context = true;
-  envelope.requires_transaction_context = true;
-  envelope.requires_cluster_authority = false;
-  envelope.contains_sql_text = false;
-  envelope.parser_resolved_names_to_uuids = true;
-  envelope.operands.push_back({"text", "projection_count", "1"});
-  envelope.operands.push_back({"text", "projection_0_name", "float_value"});
-  envelope.operands.push_back({"text", "projection_0_expr_kind", "literal"});
-  envelope.operands.push_back({"text", "projection_0_type", "numeric"});
-  envelope.operands.push_back({"text", "projection_0_value", "1e2"});
-  envelope.operands.push_back({"text", "projection_0_is_null", "false"});
-  return envelope;
+  return EngineEnvelopeFromParserEnvelope(RunPipeline(
+      "SELECT 1e2 AS float_value").envelope);
 }
 
 sblr::SblrOperationEnvelope BinaryLiteralEngineEnvelope() {
@@ -3800,8 +3787,8 @@ void RequireScalarLowering() {
           "SELECT float scalar projection alias missing");
   Require(Contains(float_artifacts.envelope.payload, "\"projection_0_expr_kind\":\"literal\""),
           "SELECT float scalar projection expression kind missing");
-  Require(Contains(float_artifacts.envelope.payload, "\"projection_0_type\":\"numeric\""),
-          "SELECT float scalar projection numeric type missing");
+  Require(Contains(float_artifacts.envelope.payload, "\"projection_0_type\":\"real64\""),
+          "SELECT float scalar projection REAL64 type missing");
   Require(Contains(float_artifacts.envelope.payload, "\"projection_0_value\":\"1e2\""),
           "SELECT float scalar projection value missing");
   Require(Contains(float_artifacts.envelope.payload, "\"projection_0_is_null\":\"false\""),
@@ -9065,8 +9052,10 @@ void RequireEngineDispatch() {
   Require(float_literal_row.fields.size() == 1,
           "engine float literal scalar projection column count mismatch");
   Require(float_literal_row.fields[0].first == "float_value" &&
-              float_literal_row.fields[0].second.descriptor.canonical_type_name == "numeric" &&
-              float_literal_row.fields[0].second.encoded_value == "1e2" &&
+              float_literal_row.fields[0].second.descriptor.canonical_type_name == "real64" &&
+              float_literal_row.fields[0].second.encoded_value.empty() &&
+              float_literal_row.fields[0].second.binary_value ==
+                  std::vector<std::uint8_t>({0, 0, 0, 0, 0, 0, 0x59, 0x40}) &&
               !float_literal_row.fields[0].second.is_null,
           "engine float literal scalar projection field mismatch");
 
@@ -11281,9 +11270,45 @@ void RequireBinaryScalarLiteralBinding() {
   }
 }
 
+void RequireNativeReal64ScalarLiteralBinding() {
+  const auto parsed = RunPipeline("SELECT ROUND(1.25F, 1) AS rounded, -0.0F AS negative_zero, 1e0 AS exponent_value");
+  for (const auto& diagnostic : parsed.envelope.messages.diagnostics)
+    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+  Require(parsed.verifier.admitted, "REAL64 scalar SQL did not lower to canonical SBLR");
+  const auto canonical = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      EngineEnvelopeFromParserEnvelope(parsed.envelope));
+  unsigned native_literals = 0;
+  for (const auto& operand : canonical.operands) {
+    if (operand.type != "real64") continue;
+    Require(operand.value.empty() && operand.value_body.size() == 32 &&
+                operand.value_body[16] == 8,
+            "parser retained a REAL64 textual literal instead of native bytes");
+    ++native_literals;
+  }
+  Require(native_literals == 3, "parser omitted a native REAL64 literal");
+  const auto result = sblr::DispatchSblrOperation({EngineContext(), canonical, {}});
+  for (const auto& diagnostic : result.api_result.diagnostics)
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  Require(result.api_result.ok && result.api_result.result_shape.rows.size() == 1 &&
+              result.api_result.result_shape.rows.front().fields.size() == 3,
+          "REAL64 parser-to-engine projection did not execute");
+  const auto& fields = result.api_result.result_shape.rows.front().fields;
+  const std::array<std::uint8_t, 8> rounded{0xcd, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xf4, 0x3f};
+  const std::array<std::uint8_t, 8> negative_zero{0, 0, 0, 0, 0, 0, 0, 0x80};
+  const std::array<std::uint8_t, 8> one{0, 0, 0, 0, 0, 0, 0xf0, 0x3f};
+  const std::array expected_values{rounded, negative_zero, one};
+  for (unsigned i = 0; i < expected_values.size(); ++i) {
+    const auto& expected = expected_values[i];
+    Require(fields[i].second.encoded_value.empty() && !fields[i].second.isSqlNull() &&
+                fields[i].second.binary_value == std::vector<std::uint8_t>(expected.begin(), expected.end()),
+            "REAL64 parser-to-engine result lost native bits or signed zero");
+  }
+}
+
 int main(int argc, char** argv) {
   RequireBinaryBuiltinBinding();
   RequireBinaryScalarLiteralBinding();
+  RequireNativeReal64ScalarLiteralBinding();
   if (argc == 2 && std::string_view(argv[1]) == "--binary-function-binding-only") return 0;
   RequireScalarLowering();
   RequireFunctionProjectionLowering();
