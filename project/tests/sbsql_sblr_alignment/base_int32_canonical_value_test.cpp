@@ -657,9 +657,12 @@ void NullAndAbsentPolicies() {
   for (const auto& candidate : dt::BuiltinDatatypeDescriptors()) {
     const auto outgoing = candidate.type_id == dt::CanonicalTypeId::int32 ? dt::DatatypeCastCategory::identity :
         (candidate.type_id == dt::CanonicalTypeId::int64 || candidate.type_id == dt::CanonicalTypeId::real64)
-            ? dt::DatatypeCastCategory::lossless_implicit : dt::DatatypeCastCategory::forbidden;
+            ? dt::DatatypeCastCategory::lossless_implicit :
+        candidate.type_id == dt::CanonicalTypeId::character ? dt::DatatypeCastCategory::lossless_explicit :
+        dt::DatatypeCastCategory::forbidden;
     const auto incoming = candidate.type_id == dt::CanonicalTypeId::int32 ? dt::DatatypeCastCategory::identity :
         candidate.type_id == dt::CanonicalTypeId::real64 ? dt::DatatypeCastCategory::lossy_explicit :
+        candidate.type_id == dt::CanonicalTypeId::character ? dt::DatatypeCastCategory::lossless_explicit :
         dt::DatatypeCastCategory::forbidden;
     for (bool compatibility : {false, true}) {
       Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::int32, candidate.type_id, compatibility) == outgoing &&

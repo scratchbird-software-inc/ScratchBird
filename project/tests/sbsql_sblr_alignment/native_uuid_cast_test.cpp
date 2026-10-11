@@ -1144,8 +1144,56 @@ void NativeInt64TextDescriptorCasts() {
   }
 }
 
+void NativeSmallSignedCastFailures() {
+  namespace exec=scratchbird::engine::executor;
+  const auto text=exec::MakeExecutorDescriptor("text","nullability=nullable");
+  for(const auto& [name,lexical]:std::vector<std::pair<std::string,std::string>>{
+      {"int8","-128"},{"int16","-32768"},{"int32","-2147483648"}}) {
+    const auto integer=exec::MakeExecutorDescriptor(name,"nullability=nullable");
+    exec::DescriptorRuntimeDiagnostic diagnostic;
+    const auto source=exec::MakeExecutorValue(text,lexical,false);
+    const auto native=exec::CastDescriptorValue(source,integer,&diagnostic);
+    Check(diagnostic.ok && native.encoded_value.empty(),"small signed allocation warmup");
+    for(bool reverse:{false,true}) {
+      const auto& input=reverse?native:source;
+      const auto& target=reverse?text:integer;
+      const auto warm=exec::CastDescriptorValue(input,target,&diagnostic);
+      Check(diagnostic.ok,"small signed reverse warmup");
+      native_cast_allocations=0;track_native_cast_allocations=true;
+      const auto baseline=exec::CastDescriptorValue(input,target,&diagnostic);
+      track_native_cast_allocations=false;const auto positions=native_cast_allocations;
+      Check(diagnostic.ok && positions>0,"small signed allocation baseline");
+      for(std::size_t at=0;at<positions;++at) {
+        decimal_allocation_budget=static_cast<long>(at);
+        const auto failed=exec::CastDescriptorValue(input,target,&diagnostic);
+        const bool fault_fired=decimal_allocation_budget==-1;
+        decimal_allocation_budget=-1;
+        Check(fault_fired && !diagnostic.ok &&
+              (diagnostic.diagnostic_code=="RESOURCE.BUDGET_EXCEEDED" ||
+               diagnostic.diagnostic_code=="DATATYPE.RESOURCE_EXHAUSTED") &&
+              failed.binary_value.empty() && failed.encoded_value.empty(),
+              "small signed allocation failure must be reached and atomic");
+      }
+      const auto retry=exec::CastDescriptorValue(input,target,&diagnostic);
+      Check(diagnostic.ok && retry.descriptor==target && retry.binary_value==baseline.binary_value &&
+            retry.encoded_value==baseline.encoded_value,"small signed retry after fault sweep");
+      for(bool null:{false,true}) for(bool destination:{false,true}) {
+        auto malformed=input;auto bad_target=target;
+        if(null) {malformed.setState(scratchbird::engine::internal_api::EngineValueState::sql_null);
+          malformed.binary_value.clear();malformed.encoded_value.clear();}
+        auto& binding=destination?bad_target:malformed.descriptor;
+        binding.encoded_descriptor+=";unknown_policy=1";
+        const auto failed=exec::CastDescriptorValue(malformed,bad_target,&diagnostic);
+        Check(!diagnostic.ok && diagnostic.diagnostic_code=="DATATYPE.DESCRIPTOR.INVALID" &&
+              failed.binary_value.empty() && failed.encoded_value.empty(),"small signed metadata cannot be discarded");
+      }
+    }
+  }
+}
+
 int main() {
   NativeInt64TextDescriptorCasts();
+  NativeSmallSignedCastFailures();
   NativeFieldExtraction();
   const auto package = f::BuildStandardFunctionSeedPackage();
   NativeBinarySort();

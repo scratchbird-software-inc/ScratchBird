@@ -6,6 +6,9 @@
 #include "sblr/sblr_special_forms.hpp"
 #include "sblr/sblr_projection_value_runtime.hpp"
 #include "executor/descriptor_value_runtime.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "datatype_operations.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include <bit>
 #include <cfenv>
@@ -100,9 +103,182 @@ void ConversionRefused(const s::SblrResult& result, const char* code,
         result.numeric_facts.inexact == inexact,
         "conversion failed for the wrong reason or lost its numeric facts");
 }
+
+void NativeSignedCharacterCasts() {
+  namespace dt = scratchbird::core::datatypes;
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  Check(manifest.ok(), "signed cast catalog unavailable");
+  const auto descriptor = [&](dt::CanonicalTypeId type) {
+    const auto row = dt::LookupDatatypeCatalogRow(manifest.manifest, type);
+    Check(row.ok() && row.manifest.descriptor_rows.size()==1, "signed cast catalog row missing");
+    dt::CatalogExecutionTypeMetadata metadata;
+    metadata.descriptor_uuid=row.manifest.descriptor_rows.front().descriptor_uuid;
+    metadata.descriptor_epoch=row.manifest.descriptor_rows.front().descriptor_epoch;
+    const auto built=dt::LookupExecutionTypeDescriptorFromCatalog(type,metadata);
+    Check(built.ok(), "signed cast descriptor unavailable");
+    return built.descriptor;
+  };
+  struct Profile { dt::CanonicalTypeId type; const char* name; unsigned width;
+    std::int64_t min,max; const char* underflow; const char* overflow; };
+  const Profile profiles[] = {
+    {dt::CanonicalTypeId::int16,"int16",2,-32768,32767,"-32769","32768"},
+    {dt::CanonicalTypeId::int32,"int32",4,-2147483648LL,2147483647,"-2147483649","2147483648"},
+    {dt::CanonicalTypeId::int64,"int64",8,std::numeric_limits<std::int64_t>::min(),
+      std::numeric_limits<std::int64_t>::max(),"-9223372036854775809","9223372036854775808"}
+  };
+  const auto character=descriptor(dt::CanonicalTypeId::character);
+  const auto text_binding=ex::MakeExecutorDescriptor("character","nullability=nullable");
+  for(const auto& profile:profiles) {
+    const auto integer=descriptor(profile.type);
+    const auto integer_binding=ex::MakeExecutorDescriptor(profile.name,"nullability=nullable");
+    Check(dt::ClassifyDatatypeCast(profile.type,dt::CanonicalTypeId::character)==dt::DatatypeCastCategory::lossless_explicit &&
+          dt::ClassifyDatatypeCast(dt::CanonicalTypeId::character,profile.type)==dt::DatatypeCastCategory::lossless_explicit,
+          "signed character cast classification");
+    std::vector<std::int64_t> samples{profile.min,profile.min+1,-1,0,1,profile.max-1,profile.max};
+    // Exercise signed byte transitions near zero in addition to each width's
+    // independently declared endpoints.
+    for(std::int64_t number=-128;number<=127;++number) samples.push_back(number);
+    for(const auto number:samples) {
+      const auto text=std::to_string(number);
+      std::string bytes(profile.width,'\0');
+      for(unsigned byte=0;byte<profile.width;++byte)
+        bytes[byte]=static_cast<char>(static_cast<std::uint64_t>(number)>>(8*byte));
+      dt::DatatypeCastRequest request;
+      request.value={dt::CanonicalTypeId::character,text,false,character};
+      request.target_type_id=profile.type;request.target_descriptor=integer;
+      request.context=dt::DatatypeCastContext::explicit_cast;
+      const auto parsed=dt::CastDatatypeValue(request);
+      Check(parsed.ok() && parsed.value.type_id==profile.type && !parsed.value.is_null &&
+            parsed.value.encoded_value==bytes,"Core signed text cast must publish exact native bytes");
+      request.value={profile.type,bytes,false,integer};
+      request.target_type_id=dt::CanonicalTypeId::character;request.target_descriptor=character;
+      const auto rendered=dt::CastDatatypeValue(request);
+      Check(rendered.ok() && rendered.value.encoded_value==text,"Core signed decimal render roundtrip");
+      ex::DescriptorRuntimeDiagnostic diagnostic;
+      const auto encoded=ex::CastDescriptorValue(ex::MakeExecutorValue(text_binding,text,false),integer_binding,&diagnostic);
+      Check(diagnostic.ok && encoded.descriptor==integer_binding && encoded.encoded_value.empty() &&
+            encoded.binary_value==std::vector<std::uint8_t>(bytes.begin(),bytes.end()),"executor signed native cast");
+      const auto decoded=ex::CastDescriptorValue(encoded,text_binding,&diagnostic);
+      Check(diagnostic.ok && decoded.descriptor==text_binding && decoded.binary_value.empty() &&
+            decoded.encoded_value==text,"executor signed text roundtrip");
+    }
+    for(const auto context:{dt::DatatypeCastContext::implicit,dt::DatatypeCastContext::assignment,
+                           dt::DatatypeCastContext::explicit_cast})
+      for(bool explicit_flag:{false,true}) for(bool null:{false,true}) {
+        dt::DatatypeCastRequest request;
+        request.value={dt::CanonicalTypeId::character,null?"":"+00042",null,character};
+        request.target_type_id=profile.type;request.target_descriptor=integer;
+        request.context=context;request.explicit_cast=explicit_flag;
+        const auto result=dt::CastDatatypeValue(request);
+        const bool admitted=explicit_flag || context==dt::DatatypeCastContext::explicit_cast;
+        Check(result.ok()==admitted,"signed cast explicit/assignment/implicit admission");
+        if(admitted) Check(result.value.is_null==null && result.value.encoded_value.size()==(null?0:profile.width),
+                           "signed cast NULL/native width");
+        else Check(result.value.encoded_value.empty() && result.diagnostic.diagnostic_code=="DATATYPE.CAST_FORBIDDEN",
+                   "signed implicit refusal must not publish value");
+      }
+    for(const std::string text:std::vector<std::string>{std::string(profile.underflow),std::string(profile.overflow),
+                               "", " 1", "1 ","1.0","1e2","+-1","--1",std::string("1\0",2)}) {
+      dt::DatatypeCastRequest request;
+      request.value={dt::CanonicalTypeId::character,text,false,character};
+      request.target_type_id=profile.type;request.target_descriptor=integer;
+      request.context=dt::DatatypeCastContext::explicit_cast;
+      const auto result=dt::CastDatatypeValue(request);
+      const bool overflow=text==profile.underflow || text==profile.overflow;
+      Check(!result.ok() && result.value.encoded_value.empty() && result.value.type_id==dt::CanonicalTypeId::unknown &&
+            result.diagnostic.diagnostic_code==(overflow?"NUMERIC.CAST.OUT_OF_RANGE":"DATATYPE.CAST_FORBIDDEN"),
+            "signed cast grammar/range must be checked without partial result");
+    }
+    for(bool null:{false,true}) for(bool source:{false,true}) for(unsigned mutation=0;mutation<3;++mutation) {
+      dt::DatatypeCastRequest request;
+      request.value={dt::CanonicalTypeId::character,null?"":"42",null,character};
+      request.target_type_id=profile.type;request.target_descriptor=integer;
+      request.context=dt::DatatypeCastContext::explicit_cast;
+      auto& changed=source?request.value.descriptor:request.target_descriptor;
+      if(mutation==0) ++changed.descriptor_epoch;
+      if(mutation==1) changed.descriptor_authoritative=false;
+      if(mutation==2) changed.security_policy_uuid.bytes[0]^=1;
+      const auto result=dt::CastDatatypeValue(request);
+      Check(!result.ok() && result.value.encoded_value.empty(),"signed cast cannot discard endpoint authority");
+    }
+    dt::DatatypeCastRequest null_request;
+    null_request.value={dt::CanonicalTypeId::character,{},true,character};
+    null_request.target_type_id=profile.type;null_request.target_descriptor=integer;
+    null_request.target_descriptor.nullable_allowed=false;
+    null_request.context=dt::DatatypeCastContext::explicit_cast;
+    Check(dt::CastDatatypeValue(null_request).diagnostic.diagnostic_code=="DATATYPE.NULL_NOT_ADMITTED",
+          "signed cast non-null target must refuse NULL");
+    null_request.target_descriptor=integer;null_request.value.encoded_value="dirty";
+    Check(!dt::CastDatatypeValue(null_request).ok(),"signed cast refuses payload-bearing NULL");
+  }
+  // INT8 already has a native Core codec/cast route. Its executor adapter must
+  // delegate to it rather than returning decimal text as an integer payload.
+  const auto int8_binding=ex::MakeExecutorDescriptor("int8","nullability=nullable");
+  for(int number=-128;number<=127;++number) {
+    ex::DescriptorRuntimeDiagnostic diagnostic;
+    const auto result=ex::CastDescriptorValue(
+        ex::MakeExecutorValue(text_binding,std::to_string(number),false),int8_binding,&diagnostic);
+    Check(diagnostic.ok && result.encoded_value.empty() && result.descriptor==int8_binding &&
+          result.binary_value==std::vector<std::uint8_t>{static_cast<std::uint8_t>(number)},
+          "INT8 executor cast preserves native octet");
+    const auto text=ex::CastDescriptorValue(result,text_binding,&diagnostic);
+    Check(diagnostic.ok && text.binary_value.empty() && text.encoded_value==std::to_string(number),
+          "INT8 executor character roundtrip");
+  }
+  for(const auto cohort:{api::EngineDatatypeCohort{dt::kDatatypeCohortV5,5,5},
+                         api::EngineDatatypeCohort{dt::kDatatypeCohortV10,10,10},
+                         api::EngineDatatypeCohort{dt::kDatatypeCohortV11,11,11}})
+    for(const auto name:{"int8","int16","int32","int64"}) {
+      const auto text=ex::MakeExecutorDescriptor("character","nullability=nullable",cohort);
+      const auto integer=ex::MakeExecutorDescriptor(name,"nullability=nullable",cohort);
+      ex::DescriptorRuntimeDiagnostic diagnostic;
+      for(bool null:{false,true}) {
+        const auto value=ex::CastDescriptorValue(ex::MakeExecutorValue(text,null?"":"42",null),integer,&diagnostic);
+        Check(diagnostic.ok && value.descriptor==integer && value.isSqlNull()==null && value.encoded_value.empty(),
+              "executor signed cast retains exact source cohort");
+        const auto rendered=ex::CastDescriptorValue(value,text,&diagnostic);
+        Check(diagnostic.ok && rendered.descriptor==text && rendered.isSqlNull()==null &&
+              rendered.binary_value.empty() && rendered.encoded_value==(null?"":"42"),
+              "executor signed reverse cast retains exact source cohort");
+        for(bool reverse:{false,true}) for(bool destination:{false,true}) for(unsigned change=0;change<4;++change) {
+          auto input=reverse?value:ex::MakeExecutorValue(text,null?"":"42",null);
+          auto target=reverse?text:integer;
+          auto& altered=destination?target:input.descriptor;
+          if(change==0) altered.datatype_cohort={cohort.catalog_generation==5?dt::kDatatypeCohortV10:dt::kDatatypeCohortV5,
+                                               cohort.catalog_generation==5?10u:5u,cohort.catalog_generation==5?10u:5u};
+          if(change==1) ++altered.datatype_descriptor_generation;
+          if(change==2) altered.type_uuid.bytes[0]^=1;
+          if(change==3) altered.encoded_descriptor+=";unknown=1";
+          const auto failed=ex::CastDescriptorValue(input,target,&diagnostic);
+          Check(!diagnostic.ok && failed.binary_value.empty() && failed.encoded_value.empty(),
+                "executor signed cast must reject foreign or modified endpoint");
+        }
+      }
+      const auto valid=ex::CastDescriptorValue(ex::MakeExecutorValue(text,"42",false),integer,&diagnostic);
+      Check(diagnostic.ok,"integer carrier refusal control");
+      for(unsigned mutation=0;mutation<5;++mutation) {
+        auto malformed=valid;
+        if(mutation==0) malformed.binary_value.pop_back();
+        if(mutation==1) malformed.binary_value.push_back(0);
+        if(mutation==2) malformed.encoded_value="42";
+        if(mutation==3) {malformed.binary_value.clear();malformed.encoded_value="42";}
+        if(mutation==4) {malformed.setState(api::EngineValueState::sql_null);malformed.binary_value.clear();
+          malformed.descriptor.encoded_descriptor="nullability=non_null";}
+        const auto failed=ex::CastDescriptorValue(malformed,text,&diagnostic);
+        Check(!diagnostic.ok && failed.binary_value.empty() && failed.encoded_value.empty(),
+              "integer text/dual/wrong-width or forbidden NULL carrier admitted");
+      }
+      if(std::string_view(name)=="int8") for(const auto text_number:{"-129","128"}) {
+        const auto failed=ex::CastDescriptorValue(ex::MakeExecutorValue(text,text_number,false),integer,&diagnostic);
+        Check(!diagnostic.ok && failed.binary_value.empty() && failed.encoded_value.empty(),
+              "INT8 executor overflow admitted");
+      }
+    }
+}
 }  // namespace
 
 int main() try {
+  NativeSignedCharacterCasts();
   const auto package = f::BuildStandardFunctionSeedPackage();
   const auto integer = Binding("int64"), real = Binding("real64");
   for (const bool callable : {false, true}) {

@@ -1220,6 +1220,11 @@ bool IsInteger(CanonicalTypeId type_id) {
   return IsSignedInteger(type_id) || IsUnsignedInteger(type_id);
 }
 
+bool IsBoundedSignedScalar(CanonicalTypeId type_id) {
+  return type_id == CanonicalTypeId::int8 || type_id == CanonicalTypeId::int16 ||
+         type_id == CanonicalTypeId::int32 || type_id == CanonicalTypeId::int64;
+}
+
 bool IsCanonical128Integer(CanonicalTypeId type_id) {
   return type_id == CanonicalTypeId::int128 ||
          type_id == CanonicalTypeId::uint128;
@@ -3317,10 +3322,14 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
        (IsCharacter(source_type_id) || source_type_id == CanonicalTypeId::boolean))) {
     return DatatypeCastCategory::lossless_explicit;
   }
+  if ((IsBoundedSignedScalar(source_type_id) && IsCharacter(target_type_id)) ||
+      (IsCharacter(source_type_id) && IsBoundedSignedScalar(target_type_id))) {
+    return DatatypeCastCategory::lossless_explicit;
+  }
   // INT64 has an exact canonical LE8 identity operation. Apart from the
-  // exact INT32 widening and checked text/boolean rules above, Core has not admitted
-  // any cross-type PRESENT pair involving INT64, or any complete PRESENT cast
-  // pair involving the other fixed-width types below. Contextual base.null
+  // exact INT32 widening and checked signed/CHARACTER and INT64/BOOLEAN rules
+  // above, Core has not admitted other cross-type PRESENT pairs involving
+  // INT64 or the other fixed-width types below. Contextual base.null
   // binding was admitted above.
   if (source_type_id == CanonicalTypeId::int64 &&
       target_type_id == CanonicalTypeId::int64) {
@@ -3771,12 +3780,19 @@ static DatatypeCastResult CastDatatypeValueImpl(const DatatypeCastRequest& reque
                        DatatypeCastCategory::forbidden,
                        "DATATYPE.CAST_FORBIDDEN");
   }
+  const bool integer_character_pair =
+      (IsBoundedSignedScalar(request.value.type_id) && request.value.type_id != CanonicalTypeId::int8 &&
+       IsCharacter(request.target_type_id)) ||
+      (IsCharacter(request.value.type_id) && IsBoundedSignedScalar(request.target_type_id) &&
+       request.target_type_id != CanonicalTypeId::int8);
+  // INT8 retains its existing native codec route below. This exact-builtin
+  // admission extends the INT64 rule to INT16/INT32, not unrelated policies.
   const bool int64_scalar_pair =
       (request.value.type_id == CanonicalTypeId::int64 &&
        (IsCharacter(request.target_type_id) || request.target_type_id == CanonicalTypeId::boolean)) ||
       (request.target_type_id == CanonicalTypeId::int64 &&
        (IsCharacter(request.value.type_id) || request.value.type_id == CanonicalTypeId::boolean));
-  if (int64_scalar_pair) {
+  if (int64_scalar_pair || integer_character_pair) {
     constexpr auto category = DatatypeCastCategory::lossless_explicit;
     // This is a compiled current-builtin rule, not authority inferred from a
     // type name. Modified/domain descriptors require their own cast policy.
@@ -3795,8 +3811,16 @@ static DatatypeCastResult CastDatatypeValueImpl(const DatatypeCastRequest& reque
     converted.value.descriptor = request.target_descriptor;
     if (!result_is_null) {
       std::int64_t integer = 0;
-      if (request.value.type_id == CanonicalTypeId::int64) {
-        if (!DecodeCanonicalInt64Value(request.value.encoded_value, &integer))
+      if (IsBoundedSignedScalar(request.value.type_id)) {
+        const auto& bytes = request.value.encoded_value;
+        bool decoded = false;
+        switch (request.value.type_id) {
+          case CanonicalTypeId::int16: decoded = DecodeCanonicalInt16Value(bytes, &integer); break;
+          case CanonicalTypeId::int32: decoded = DecodeCanonicalInt32Value(bytes, &integer); break;
+          case CanonicalTypeId::int64: decoded = DecodeCanonicalInt64Value(bytes, &integer); break;
+          default: break;
+        }
+        if (!decoded)
           return CastFailure("int64_source_noncanonical", category,
                              "NUMERIC.ENCODING.NONCANONICAL");
       } else if (request.value.type_id == CanonicalTypeId::boolean) {
@@ -3819,10 +3843,17 @@ static DatatypeCastResult CastDatatypeValueImpl(const DatatypeCastRequest& reque
         if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
           return CastFailure("int64_decimal_text_invalid", category);
       }
-      if (request.target_type_id == CanonicalTypeId::int64) {
-        if (!EncodeCanonicalInt64Value(integer, &converted.value.encoded_value))
-          return CastFailure("int64_target_noncanonical", category,
-                             "NUMERIC.ENCODING.NONCANONICAL");
+      if (IsBoundedSignedScalar(request.target_type_id)) {
+        const unsigned bits = IntegerBits(request.target_type_id);
+        if (bits < 64 &&
+            (integer < -(std::int64_t{1} << (bits - 1)) ||
+             integer > (std::int64_t{1} << (bits - 1)) - 1))
+          return CastFailure("signed_decimal_text_out_of_range", category,
+                             "NUMERIC.CAST.OUT_OF_RANGE");
+        const auto raw = static_cast<std::uint64_t>(integer);
+        converted.value.encoded_value.resize(bits / 8);
+        for (unsigned byte = 0; byte < bits / 8; ++byte)
+          converted.value.encoded_value[byte] = static_cast<char>(raw >> (byte * 8));
       } else if (request.target_type_id == CanonicalTypeId::boolean) {
         if (integer != 0 && integer != 1)
           return CastFailure("boolean_integer_requires_zero_or_one", category,

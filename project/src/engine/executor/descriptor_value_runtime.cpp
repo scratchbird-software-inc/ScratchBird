@@ -2795,9 +2795,13 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
   dt::DatatypeCastRequest null_request;
   const auto source_type = CanonicalDescriptorTypeId(value.descriptor);
   const auto target_type = CanonicalDescriptorTypeId(target_descriptor);
+  const auto bounded_signed = [](CanonicalTypeId type) {
+    return type == CanonicalTypeId::int8 || type == CanonicalTypeId::int16 ||
+           type == CanonicalTypeId::int32 || type == CanonicalTypeId::int64;
+  };
   const bool bounded_integer_cast =
-      (source_type == CanonicalTypeId::int64 && target_type == CanonicalTypeId::character) ||
-      (source_type == CanonicalTypeId::character && target_type == CanonicalTypeId::int64);
+      (bounded_signed(source_type) && target_type == CanonicalTypeId::character) ||
+      (source_type == CanonicalTypeId::character && bounded_signed(target_type));
   if (CanonicalDescriptorTypeId(value.descriptor) == CanonicalTypeId::real64 ||
       CanonicalDescriptorTypeId(target_descriptor) == CanonicalTypeId::real64 || bounded_integer_cast) {
     dt::DatatypeCastRequest request;
