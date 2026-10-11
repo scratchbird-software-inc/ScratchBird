@@ -10977,6 +10977,27 @@ set_tests_properties(sbsql_sblr_alignment_base_time_publication_atomicity PROPER
   LABELS "datatype;base_time;d710;resource;cancellation;atomicity;not_runtime_acceptance"
   TIMEOUT 240)
 
+add_executable(sbsql_sblr_alignment_base_timestamp_decode_bounds base_timestamp_decode_bounds_test.cpp)
+target_compile_features(sbsql_sblr_alignment_base_timestamp_decode_bounds PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_base_timestamp_decode_bounds PRIVATE sb_core_datatypes)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  # Instrument the production decoder itself, not just the calling fixture.
+  # Its definitions satisfy the archive references without extracting its
+  # uninstrumented translation unit from sb_core_datatypes.
+  # Keep -O0: release optimization can discard an overflowing intermediate
+  # whose result is unused after a later validation failure.
+  target_sources(sbsql_sblr_alignment_base_timestamp_decode_bounds PRIVATE
+    ../../src/core/datatypes/datatype_timestamp.cpp)
+  target_compile_options(sbsql_sblr_alignment_base_timestamp_decode_bounds PRIVATE
+    -O0 -fsanitize=undefined -fno-sanitize-recover=undefined)
+  target_link_options(sbsql_sblr_alignment_base_timestamp_decode_bounds PRIVATE -fsanitize=undefined)
+endif()
+add_test(NAME sbsql_sblr_alignment_base_timestamp_decode_bounds
+  COMMAND sbsql_sblr_alignment_base_timestamp_decode_bounds)
+set_tests_properties(sbsql_sblr_alignment_base_timestamp_decode_bounds PROPERTIES
+  LABELS "datatype;base_timestamp;native_decode;component_regression;not_runtime_acceptance"
+  TIMEOUT 60)
+
 add_executable(sbsql_sblr_alignment_base_timestamp_profile_value
   base_timestamp_profile_value_test.cpp)
 target_compile_features(sbsql_sblr_alignment_base_timestamp_profile_value PRIVATE cxx_std_23)

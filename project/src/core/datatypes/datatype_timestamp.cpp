@@ -1073,9 +1073,11 @@ TimestampViewResultV3 DecodeCanonicalTimestampComponentNoAllocV3(
   if(nanos_second>=1'000'000'000u||LoadLittle32(component.data()+12)!=0)
     return Failure<TimestampViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","component_field_invalid");
   const std::int64_t day=FloorDiv(civil_second,86'400);
-  const std::int64_t second_of_day=civil_second-day*86'400;
   if(day<std::numeric_limits<std::int32_t>::min()||day>std::numeric_limits<std::int32_t>::max())
     return Failure<TimestampViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","component_day_range");
+  // Malformed i64 seconds can floor below INT64_MIN / 86400. Prove the
+  // native i32 day bound before multiplying; rejection must itself be safe.
+  const std::int64_t second_of_day=civil_second-day*86'400;
   const u64 nanos=static_cast<u64>(second_of_day)*1'000'000'000ull+nanos_second;
   std::array<byte,16> check{};ScopedClear clear(check.data(),check.size(),TimestampScrubClassV3::component_decode_reencode,control.observe_scrubbed,control.scrub_observer_context);
   EncodeComponent(static_cast<std::int32_t>(day),nanos,check.data());
