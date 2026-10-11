@@ -56,6 +56,7 @@ enum class MetricUnit {
   errors,
   conflicts,
   none,
+  versions,
   count = 254,
   state = 255
 };

@@ -43,9 +43,10 @@ int main(int argc, char** argv) {
   const auto loaded = c::LoadMetricPolicyConfig(dp, fp);
   Check(loaded.ok(), "distributed config did not load");
   if (!loaded.ok()) { std::cerr << loaded.validation.detail << '\n'; return 1; }
-  Check(loaded.config->families.size() == 6, "bootstrap family inventory changed");
+  Check(loaded.config->families.size() == 7, "bootstrap family inventory changed");
   for (const auto* family : {"sb_tx_begin_total", "sb_tx_commit_total",
-                            "sb_mga_cleanup_horizon_local_transaction_id", "sb_metric_samples_rejected_total"}) {
+                            "sb_mga_cleanup_horizon_local_transaction_id", "sb_mga_row_versions_reclaimed_total",
+                            "sb_metric_samples_rejected_total"}) {
     const auto s = c::SelectMetricPolicyDefinition(*loaded.config, family);
     Check(s.ok(), "default family not selected");
     if (!s.ok()) continue;

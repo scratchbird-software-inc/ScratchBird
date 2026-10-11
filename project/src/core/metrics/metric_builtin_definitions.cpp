@@ -72,11 +72,16 @@ MetricDescriptorDefinition Descriptor(std::string family,
   if (descriptor.family == "sb_tx_begin_total" || descriptor.family == "sb_tx_commit_total" ||
       descriptor.family == "sb_tx_active_transactions" ||
       descriptor.family == "sb_mga_cleanup_horizon_local_transaction_id" ||
+      descriptor.family == "sb_mga_row_versions_reclaimed_total" ||
       descriptor.family == "sb_metric_samples_rejected_total")
     descriptor.security_family = "OBS_METRICS_READ_DATABASE";
   descriptor.visibility = cluster_only ? MetricVisibilityScope::cluster : MetricVisibilityScope::family;
   descriptor.cluster_only = cluster_only;
   descriptor.labels = CommonLabels();
+  if (descriptor.family == "sb_mga_row_versions_reclaimed_total") {
+    descriptor.labels = {UuidLabel("database_uuid", true)};
+    descriptor.aliases = {"sys.metrics.mga.cleanup.versions_pruned_total"};
+  }
   descriptor.value_type = type == MetricType::state
       ? MetricScalarType::enumeration
       : (unit == MetricUnit::ratio ||
@@ -593,7 +598,7 @@ std::vector<MetricDescriptorDefinition> BuiltinMetricDescriptorDefinitions() {
       Descriptor("sb_tx_locks_held", MetricType::gauge, MetricUnit::none, "sys.metrics.transactions.locks", "Currently held local transaction lock resources.", "transaction_mga_lock"),
       Descriptor("sb_tx_lock_waiters", MetricType::gauge, MetricUnit::none, "sys.metrics.transactions.locks", "Current local transaction lock waiters.", "transaction_mga_lock"),
       Descriptor("sb_tx_savepoint_operations_total", MetricType::counter, MetricUnit::events, "sys.metrics.transactions.savepoints", "Local savepoint, subtransaction, and rollback-journal operations by action.", "transaction_mga_savepoint"),
-      Descriptor("sb_mga_row_versions_reclaimed_total", MetricType::counter, MetricUnit::events, "sys.metrics.mga.cleanup", "Row versions reclaimed by authoritative MGA cleanup worksets.", "transaction_mga_cleanup"),
+      Descriptor("sb_mga_row_versions_reclaimed_total", MetricType::counter, MetricUnit::versions, "sys.metrics.mga.cleanup", "Row versions removed by durably completed local MGA storage publication; eligible candidates are not removals.", "transaction_mga_cleanup"),
       Descriptor("sb_mga_cleanup_horizon_local_transaction_id", MetricType::gauge, MetricUnit::revisions, "sys.metrics.mga.cleanup", "Authoritative local cleanup horizon transaction id.", "transaction_mga_cleanup"),
       Descriptor("sb_mga_cleanup_blocked_total", MetricType::counter, MetricUnit::events, "sys.metrics.mga.cleanup", "MGA cleanup blocked decisions.", "transaction_mga_cleanup"),
       Descriptor("sb_mga_cleanup_retained_row_versions", MetricType::gauge, MetricUnit::none, "sys.metrics.mga.cleanup", "Row versions retained by the latest authoritative MGA cleanup workset.", "transaction_mga_cleanup"),

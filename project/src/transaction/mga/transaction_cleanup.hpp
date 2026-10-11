@@ -108,6 +108,8 @@ struct LocalCleanupWorksetResult {
   LocalTransactionHorizons horizons;
   std::vector<RowVersionMetadata> retained_row_versions;
   std::vector<LocalCleanupReclaimEvidenceRecord> reclaim_evidence_records;
+  // Historical name: eligible versions omitted from this in-memory retained
+  // workset, NOT a count of durably removed storage versions.
   u64 reclaimed_row_version_count = 0;
   u64 retained_row_version_count = 0;
   u64 horizon_blocked_row_version_count = 0;
@@ -120,7 +122,9 @@ struct LocalCleanupWorksetResult {
   bool bounded_memory_limit_hit = false;
   bool physical_storage_mutated = false;
   DiagnosticRecord diagnostic;
-  // reclaimed count, horizon, retained count, measured retention age, blocked count.
+  // Completed pruning (unavailable at this selection-only boundary), horizon,
+  // retained count, measured retention age, blocked count. No flag in this
+  // caller-constructible result grants authority to emit completed pruning.
   LocalCleanupMetricOutcomes metric_outcomes;
 
   bool ok() const {

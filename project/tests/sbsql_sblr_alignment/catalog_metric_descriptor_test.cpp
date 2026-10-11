@@ -187,7 +187,14 @@ void Invalid(const c::CatalogMetricDescriptor& r){
 void Shapes(){
   const auto baseline=Descriptor();RoundTrip(baseline);
   Check(m::MetricDescriptor{}.readiness==m::MetricReadiness::unvalidated,"runtime defaults to activated");
-  for(unsigned unit=0;unit<16;++unit){auto r=baseline;r.definition.unit=static_cast<m::MetricUnit>(unit);RoundTrip(r);}
+  for(unsigned unit=0;unit<17;++unit){auto r=baseline;r.definition.unit=static_cast<m::MetricUnit>(unit);RoundTrip(r);}
+  {
+    auto r=baseline;r.definition.unit=m::MetricUnit::versions;
+    const auto encoded=c::EncodeCatalogMetricDescriptor(r);
+    Check(encoded.ok(),"versions descriptor encoding");
+    const std::string bytes(encoded.bytes.begin(),encoded.bytes.end());
+    Check(Get(bytes,Offset(bytes,7)+8,8)==17,"versions appends durable code17 without changing codes1..16");
+  }
   for(unsigned visibility=0;visibility<5;++visibility){auto r=baseline;r.definition.visibility=static_cast<m::MetricVisibilityScope>(visibility);RoundTrip(r);}
   for(auto type:{m::MetricType::counter,m::MetricType::gauge,m::MetricType::histogram,m::MetricType::rate,m::MetricType::state,m::MetricType::sample}){
     auto r=baseline;r.definition.type=type;

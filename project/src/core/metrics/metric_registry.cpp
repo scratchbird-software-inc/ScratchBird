@@ -74,6 +74,7 @@ const char* MetricUnitName(MetricUnit unit) {
     case MetricUnit::ratio: return "ratio";
     case MetricUnit::state: return "state";
     case MetricUnit::none: return "none";
+    case MetricUnit::versions: return "versions";
   }
   return "unknown";
 }

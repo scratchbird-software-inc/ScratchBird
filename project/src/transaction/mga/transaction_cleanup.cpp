@@ -323,11 +323,10 @@ LocalCleanupMetricOutcomes PublishCleanupWorksetMetrics(
     core::metrics::MetricRegistry& registry) noexcept {
   LocalCleanupMetricOutcomes outcomes;
   if (!result.ok()) return outcomes;
-  ObserveCleanupMetric(outcomes[0], [&] { return registry.IncrementCounter(
-      "sb_mga_row_versions_reclaimed_total",
-      scratchbird::core::metrics::Labels({{"component", "transaction.mga.cleanup"}, {"result", "reclaimed"}}),
-      result.reclaimed_row_version_count,
-      "transaction_mga_cleanup"); });
+  // Eligibility is not durable pruning. Only the storage publication owner can
+  // supply completed effects and reconcile duplicate/uncertain publication.
+  // Keep this receipt slot explicit: absence is neither success nor a zero.
+  outcomes[0].failure = LocalCleanupMetricFailure::source_unavailable;
   ObserveCleanupMetric(outcomes[1], [&] { return registry.SetGauge(
       "sb_mga_cleanup_horizon_local_transaction_id",
       scratchbird::core::metrics::Labels({{"component", "transaction.mga.cleanup"}, {"authority", "local_inventory"}}),

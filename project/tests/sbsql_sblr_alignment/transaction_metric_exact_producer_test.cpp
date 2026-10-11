@@ -47,8 +47,8 @@ struct Fixture {
     Check(registry.BindObservationQueue(queue).ok,"retain component queue");
     for(unsigned i=0;i<families.size();++i) {
       m::MetricLabelSet labels={{"component","transaction.mga.cleanup"}};
-      labels.push_back(i==0?m::MetricLabel{"result","reclaimed"}:
-          i==4?m::MetricLabel{"reason","row_version_horizon"}:
+      if(i==0) labels={{"database_uuid",Id(1)}};
+      else labels.push_back(i==4?m::MetricLabel{"reason","row_version_horizon"}:
                m::MetricLabel{"authority","local_inventory"});
       Bind(families[i],std::move(labels),registry);
     }
@@ -111,23 +111,32 @@ void ExactCleanup() {
     Fixture f;
     auto request=Request(value);auto result=Result(value);
     const auto published=t::PublishLocalCleanupWorksetMetrics(request,result,f.registry);
-    for(const auto& receipt:published)Check(receipt.attempted&&receipt.publication.ok,"all five actual observations");
-    for(unsigned i=0;i<5;++i)f.Read(families[i],i==3?m::MetricScalar{7000.0}:m::MetricScalar{value});
+    Check(!published[0].attempted&&!published[0].publication.ok&&
+        published[0].failure==t::LocalCleanupMetricFailure::source_unavailable,
+        "eligible workset is not a completed pruning observation");
+    for(unsigned i=1;i<5;++i) {
+      Check(published[i].attempted&&published[i].publication.ok,"four actual workset observations");
+      f.Read(families[i],i==3?m::MetricScalar{7000.0}:m::MetricScalar{value});
+    }
+    Check(!f.queue->TryAcquire().ok(),"no speculative pruning observation queued");
     const auto overflow=t::PublishLocalCleanupWorksetMetrics(request,Result(1),f.registry);
     if(value==std::numeric_limits<m::u64>::max()) {
-      Check(overflow[0].attempted&&!overflow[0].publication.ok&&
-            overflow[0].publication.diagnostic_code=="METRIC.AGGREGATE_OVERFLOW"&&
+      Check(!overflow[0].attempted&&!overflow[0].publication.ok&&
+            overflow[0].failure==t::LocalCleanupMetricFailure::source_unavailable&&
             overflow[1].publication.ok&&overflow[2].publication.ok&&
-            !overflow[4].publication.ok,"counter overflow retains later independent gauge receipts");
+            !overflow[4].publication.ok&&overflow[4].publication.diagnostic_code=="METRIC.AGGREGATE_OVERFLOW",
+            "blocked counter overflow retains independent gauge receipts without inventing pruning");
       f.Read(families[1],m::u64{1});f.Read(families[2],m::u64{1});f.Read(families[3],0.0);
       Check(!f.queue->TryAcquire().ok(),"overflow counters produce no observations");
       const auto values=f.registry.SnapshotCurrent();
       for(const auto& v:values)if(v.type==m::MetricType::counter)
         Check(std::get<m::u64>(v.value)==value,"overflow leaves exact previous counter unchanged");
     } else {
-      for(const auto& receipt:overflow)Check(receipt.publication.ok,"nonoverflow successor admitted");
-      for(unsigned i=0;i<5;++i)f.Read(families[i],i==3?m::MetricScalar{0.0}:
-          m::MetricScalar{i==0||i==4?value+1:m::u64{1}});
+      Check(!overflow[0].attempted&&!overflow[0].publication.ok,"successor selection is not pruning");
+      for(unsigned i=1;i<5;++i) {
+        Check(overflow[i].publication.ok,"nonoverflow successor admitted");
+        f.Read(families[i],i==3?m::MetricScalar{0.0}:m::MetricScalar{i==4?value+1:m::u64{1}});
+      }
     }
   }
 }
@@ -144,7 +153,8 @@ void AgeAndRefusal() {
     Check(!published[3].attempted&&!published[3].publication.ok&&
         std::string_view(published[3].diagnostic_code())=="METRIC.OBSERVATION_SOURCE_UNAVAILABLE",
         "missing/ambiguous/nonmonotonic timestamps never fabricated from transaction distance");
-    for(unsigned i:{0,1,2,4}) {Check(published[i].publication.ok,"independent count observations survive unavailable age");f.Read(families[i],large);}
+    Check(!published[0].attempted,"missing age cannot authorize pruning");
+    for(unsigned i:{1,2,4}) {Check(published[i].publication.ok,"independent count observations survive unavailable age");f.Read(families[i],large);}
     Check(!f.queue->TryAcquire().ok(),"unknown age emitted no sample");
   }
   Fixture f;auto request=Request(large);auto result=Result(0);
@@ -152,7 +162,8 @@ void AgeAndRefusal() {
   result.authoritative_cleanup_horizon_local_transaction_id=large;
   const auto zero=t::PublishLocalCleanupWorksetMetrics(request,result,f.registry);
   Check(!zero[4].attempted,"no blocked event for zero blocked count");
-  f.Read(families[0],m::u64{0});f.Read(families[1],large);f.Read(families[2],m::u64{0});f.Read(families[3],0.0);
+  Check(!zero[0].attempted&&!zero[0].publication.ok,"empty candidate does not manufacture a pruning zero");
+  f.Read(families[1],large);f.Read(families[2],m::u64{0});f.Read(families[3],0.0);
   result.cleanup_horizon_authoritative=false;
   for(const auto& outcome:t::PublishLocalCleanupWorksetMetrics(request,result,f.registry))
     Check(!outcome.attempted,"failed workset emits no completion measurements");
@@ -163,13 +174,17 @@ void AgeAndRefusal() {
     Check(!outcome.attempted,"non-OK primary status has no completion observations");
   m::MetricRegistry empty;
   result=Result(large);
-  for(const auto& outcome:t::PublishLocalCleanupWorksetMetrics(request,result,empty))
-    Check(outcome.attempted&&!outcome.publication.ok,"unbound publication failure retained per field");
+  const auto unbound=t::PublishLocalCleanupWorksetMetrics(request,result,empty);
+  Check(!unbound[0].attempted,"unbound candidate is not pruning");
+  for(unsigned i=1;i<5;++i)
+    Check(unbound[i].attempted&&!unbound[i].publication.ok,"unbound publication failure retained per field");
   Check(empty.Descriptors().empty()&&empty.SnapshotCurrent().empty(),"no invented runtime activation");
   request.inventory_authoritative=true;request.inventory=t::MakeEmptyLocalTransactionInventory();
   const auto real=t::ApplyLocalCleanupWithAuthoritativeInventory(request);
   Check(real.ok()&&!real.physical_storage_mutated,"real empty cleanup candidate unchanged by observation failures");
-  for(unsigned i=0;i<4;++i)Check(real.metric_outcomes[i].attempted&&!real.metric_outcomes[i].publication.ok,
+  Check(!real.metric_outcomes[0].attempted&&!real.metric_outcomes[0].publication.ok,
+      "real candidate cannot fabricate a completed removal metric");
+  for(unsigned i=1;i<4;++i)Check(real.metric_outcomes[i].attempted&&!real.metric_outcomes[i].publication.ok,
       "actual workset retains unbound default registry diagnostics");
 }
 void MeasuredAgeBounds() {
@@ -177,8 +192,9 @@ void MeasuredAgeBounds() {
     Fixture f;auto request=Request(large);auto result=Result(large);
     request.inventory.entries.back().begin_unix_epoch_millis=timestamp;
     const auto published=t::PublishLocalCleanupWorksetMetrics(request,result,f.registry);
-    for(const auto& receipt:published)Check(receipt.publication.ok,"measured age boundary admitted");
-    for(unsigned i=0;i<5;++i)f.Read(families[i],i==3?
+    Check(!published[0].attempted,"age measurement is not pruning authority");
+    for(unsigned i=1;i<5;++i)Check(published[i].publication.ok,"measured age boundary admitted");
+    for(unsigned i=1;i<5;++i)f.Read(families[i],i==3?
         m::MetricScalar{static_cast<double>(timestamp-1000)*1000.0}:m::MetricScalar{large});
   }
 }
@@ -191,7 +207,10 @@ void AllocationOutcomes() {
     const bool injected=allocation_budget<0;
     allocation_budget=-1;
     unsigned accepted=0;
-    for(unsigned i=0;i<5;++i) {
+    Check(!outcomes[0].attempted&&!outcomes[0].publication.ok&&
+        outcomes[0].failure==t::LocalCleanupMetricFailure::source_unavailable,
+        "allocation outcome must not manufacture pruning effects");
+    for(unsigned i=1;i<5;++i) {
       Check(outcomes[i].attempted,"allocation failure must not lose or suppress independent outcomes");
       if(outcomes[i].publication.ok) {
         Check(outcomes[i].failure==t::LocalCleanupMetricFailure::none,"accepted result mislabeled");
@@ -215,9 +234,9 @@ void AllocationOutcomes() {
     }
     Check(request.inventory.entries[1].begin_unix_epoch_millis==1007&&
         result.reclaimed_row_version_count==large,"producer must not mutate retained cleanup inputs");
-    if(!injected){Check(accepted==5&&faults>0&&partial>0,"nonvacuous complete allocation sweep");
+    if(!injected){Check(accepted==4&&faults>0&&partial>0,"nonvacuous complete allocation sweep");
       std::cout<<"cleanup allocation sites="<<faults<<" partial publications="<<partial<<'\n';return;}
-    ++faults;if(accepted>0&&accepted<5)++partial;
+    ++faults;if(accepted>0&&accepted<4)++partial;
   }
   throw std::runtime_error("allocation sweep exceeded its explicit bound");
 }
@@ -231,9 +250,54 @@ void DefaultRegistryAllocation() {
       outcome.failure==t::LocalCleanupMetricFailure::resource_exhausted,
       "source acquisition failure must retain primary result without inventing an observation");
   // Retry source acquisition, not a previously accepted observation/workset.
-  for(const auto& outcome:t::PublishLocalCleanupWorksetMetrics(request,result))
-    Check(outcome.attempted&&!outcome.publication.ok,
+  const auto retried=t::PublishLocalCleanupWorksetMetrics(request,result);
+  Check(!retried[0].attempted&&!retried[0].publication.ok,"registry construction is not durable pruning");
+  for(unsigned i=1;i<5;++i)
+    Check(retried[i].attempted&&!retried[i].publication.ok,
           "successful registry construction is still unbound, not producer activation");
+}
+void PruningCounterMechanism() {
+  Check(std::string_view(m::MetricUnitName(m::MetricUnit::versions))=="versions","versions exact display unit");
+  // Component numeric/queue controls only: direct observations deliberately do
+  // not claim a real storage completion. Keep exact/overflow coverage while
+  // the workset producer is forbidden from issuing these observations.
+  for(const auto value:{large,std::numeric_limits<m::u64>::max()}) {
+    Fixture f; const m::MetricLabelSet labels={{"database_uuid",Id(1)}};
+    for(const m::MetricLabelSet& invalid:std::vector<m::MetricLabelSet>{
+        {},{{"database_uuid","019f0000-0000-7000-8000-000000000001"}},
+        {{"database_uuid",m::MetricUuid{}}},{{"database_uuid",Id(999)}}}) {
+      const auto refused=f.registry.IncrementCounter(families[0],invalid,value,"transaction_mga_cleanup");
+      Check(!refused.ok&&!refused.diagnostic_code.empty()&&
+          !f.queue->TryAcquire().ok()&&f.registry.SnapshotCurrent().empty(),
+          "missing/text/nil/foreign database label never emits or mutates a pruning sample");
+    }
+    Check(f.registry.IncrementCounter(families[0],labels,value,"transaction_mga_cleanup").ok,
+        "explicit component pruning counter numeric input");
+    f.Read(families[0],value);
+    const auto next=f.registry.IncrementCounter("sys.metrics.mga.cleanup.versions_pruned_total",
+        labels,m::u64{1},"transaction_mga_cleanup");
+    if(value==std::numeric_limits<m::u64>::max()) {
+      Check(!next.ok&&next.diagnostic_code=="METRIC.AGGREGATE_OVERFLOW","pruning counter must not wrap");
+      Check(f.registry.SnapshotCurrent().size()==1&&
+          f.registry.SnapshotCurrent()[0].value==m::MetricScalar{value},"overflow preserves exact prior value");
+    } else {Check(next.ok,"exact successor admitted");f.Read(families[0],value+1);}
+    Check(!f.queue->TryAcquire().ok(),"no excess or overflowing observation");
+  }
+}
+void CandidateCannotAssertCompletion() {
+  // A caller-constructible effect flag is not a storage completion receipt.
+  for(bool asserted_effects:{false,true}) {
+    Fixture f;auto request=Request(large);auto result=Result(large);
+    result.physical_storage_mutated=asserted_effects;
+    const auto outcomes=t::PublishLocalCleanupWorksetMetrics(request,result,f.registry);
+    Check(!outcomes[0].attempted&&!outcomes[0].publication.ok&&
+        outcomes[0].failure==t::LocalCleanupMetricFailure::source_unavailable,
+        "workset flag must not authorize completed pruning");
+    for(unsigned i=1;i<5;++i)f.Read(families[i],i==3?m::MetricScalar{7000.0}:m::MetricScalar{large});
+    Check(!f.queue->TryAcquire().ok(),"no invented completion behind actual workset samples");
+    for(const auto& value:f.registry.SnapshotCurrent())
+      Check(value.family!=families[0],"candidate produces neither a completed counter nor zero");
+  }
 }
 void TransactionCounters() {
   Fixture f;
@@ -258,7 +322,7 @@ void TransactionCounters() {
 }
 }
 int main() {
-  try {DefaultRegistryAllocation();ExactCleanup();AgeAndRefusal();MeasuredAgeBounds();AllocationOutcomes();TransactionCounters();}
+  try {DefaultRegistryAllocation();ExactCleanup();AgeAndRefusal();MeasuredAgeBounds();AllocationOutcomes();PruningCounterMechanism();CandidateCannotAssertCompletion();TransactionCounters();}
   catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
   std::cout<<"exact native transaction and cleanup observations passed\n";
 }

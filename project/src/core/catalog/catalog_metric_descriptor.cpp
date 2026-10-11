@@ -22,7 +22,8 @@ constexpr std::array kTypes{MetricScalarType::uint64, MetricScalarType::int64,
 constexpr std::array kUnits{MetricUnit::bytes, MetricUnit::pages, MetricUnit::records,
     MetricUnit::transactions, MetricUnit::operations, MetricUnit::seconds, MetricUnit::milliseconds,
     MetricUnit::microseconds, MetricUnit::nanoseconds, MetricUnit::percent, MetricUnit::ratio,
-    MetricUnit::revisions, MetricUnit::events, MetricUnit::errors, MetricUnit::conflicts, MetricUnit::none};
+    MetricUnit::revisions, MetricUnit::events, MetricUnit::errors, MetricUnit::conflicts, MetricUnit::none,
+    MetricUnit::versions};
 constexpr std::array kVisibility{MetricVisibilityScope::baseline, MetricVisibilityScope::self,
     MetricVisibilityScope::family, MetricVisibilityScope::all, MetricVisibilityScope::cluster};
 constexpr std::array kLabels{MetricLabelType::text, MetricLabelType::system_uuid, MetricLabelType::uuid_value};

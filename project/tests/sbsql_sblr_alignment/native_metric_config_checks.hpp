@@ -26,6 +26,16 @@ void NativeMetricConfigChecks(const fs::path& directory) {
         request.bootstrap.database_uuid,request.creator.transaction_uuid,1);
     Check(made.ok(),"actual builtin definition accepts exact configured policies");
     const auto& bundle=*made.definitions;
+    if(family=="sb_mga_row_versions_reclaimed_total") {
+      Check(bundle.descriptor.definition.unit==m::MetricUnit::versions &&
+          bundle.descriptor.definition.value_type==m::MetricScalarType::uint64 &&
+          bundle.descriptor.definition.aliases==std::vector<std::string>{"sys.metrics.mga.cleanup.versions_pruned_total"} &&
+          bundle.descriptor.definition.labels.size()==1 &&
+          bundle.descriptor.definition.labels[0].key=="database_uuid" &&
+          bundle.descriptor.definition.labels[0].required &&
+          bundle.descriptor.definition.labels[0].value_type==m::MetricLabelType::system_uuid,
+          "approved pruning metric definition uses versions and a required binary database identity");
+    }
     Check(bundle.labels.has_value()&&bundle.visibility.sensitive_read_right.empty()&&
         bundle.descriptor.definition.security_family==policy.read_right,"no sensitive grant or rewritten security requirement");
     auto seed=fixture_seed;
@@ -58,6 +68,11 @@ void NativeMetricConfigChecks(const fs::path& directory) {
       for(const auto& row:read.rows)views.push_back({&row.metadata,row.provisional});
       const auto resolved=c::ResolveLocalCatalogMetricBindings(views,binding.metric_uuid,1);
       Check(resolved.ok(),"reopened configured dependency graph");
+      const auto reopened_descriptor=c::EncodeCatalogMetricDescriptor(resolved.binding->metric.descriptor);
+      const auto expected_descriptor=c::EncodeCatalogMetricDescriptor(bundle.descriptor);
+      Check(reopened_descriptor.ok()&&expected_descriptor.ok()&&
+          reopened_descriptor.bytes==expected_descriptor.bytes,
+          "native descriptor unit, aliases and binary bindings persist exactly");
       Check(c::EncodeCatalogMetricRetentionPolicy(resolved.binding->metric.retention).bytes==
           c::EncodeCatalogMetricRetentionPolicy(bundle.retention).bytes,"all loaded retention values and binary identities persist exactly");
       const auto visibility=c::DecodeCatalogMetricVisibilityPolicy(resolved.binding->metric.visibility_policy.record.payload);
@@ -71,7 +86,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
       ++persisted;
     }
   }
-  Check(persisted==30,"all six real families persist across all five native profiles");
+  Check(persisted==35,"all seven real families persist across all five native profiles");
   auto definition=fixture_descriptor.record->definition;definition.family="sb_tx_begin_total";
   const auto materialize=[&](const auto& d,const auto& b,const config::MetricPolicyDefinition* governing=nullptr){
     return c::MaterializeConfiguredLocalMetricDefinitions(*loaded.config,d,b,
