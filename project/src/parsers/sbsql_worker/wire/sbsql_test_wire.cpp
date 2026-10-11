@@ -19306,10 +19306,20 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalScalarProjectionSubmi
     } else {
       if (!source.value.empty()) return std::nullopt;
       const auto function = FindDmlObjectIdentity(lowered, source.name);
-      const bool native_literal = (source.type == "uuid" || source.type == "binary") && source.name.starts_with("projection_") &&
-          source.name.ends_with("_value") && source.canonical_value_kind ==
+      const bool native_literal = (source.type == "uuid" || source.type == "binary" ||
+          source.type == "real64") && source.name.ends_with("_value") &&
+          engine::sblr::IsProjectionFunctionIdentityPath(
+              std::string_view(source.name).substr(0, source.name.size() - 5)) &&
+          source.canonical_value_kind ==
               static_cast<std::uint16_t>(engine::sblr::SblrValueKind::literal_typed);
       if (!function && !native_literal) return std::nullopt;
+      // Preserve the exact native carrier; no decimal rendering or reparsing.
+      // The common SBOP codec checks descriptor UUID, count and complete extent.
+      // Its generic variable-width literal check is not a REAL64/UUID width check.
+      if (native_literal &&
+          ((source.type == "real64" && source.canonical_value_body.size() != 32) ||
+           (source.type == "uuid" && source.canonical_value_body.size() != 40)))
+        return std::nullopt;
       engine::sblr::SblrOperand operand;
       operand.ordinal = static_cast<std::uint32_t>(envelope->operands.size() + 1);
       operand.type = source.type;
@@ -24878,6 +24888,12 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
 }
 
 } // namespace
+
+std::optional<ipc::ParserCanonicalSblrSubmission>
+BuildCanonicalScalarProjectionSubmissionForTest(const SblrEnvelope& lowered,
+    const ipc::ParserStatementContext& context, const SessionContext& session) {
+  return BuildCanonicalScalarProjectionSubmission(lowered, context, session);
+}
 
 PreparedParameterCanonicalValue CanonicalizePreparedParameterWireValue(
     const PreparedParameterWireValue& value,

@@ -5563,6 +5563,13 @@ if(TARGET sbl_sbsql_parser_worker_core)
     sbsql_authoritative_multi_source_projection_conformance
     sbsql_authoritative_multi_source_projection_conformance.cpp
   )
+  add_executable(sbsql_native_scalar_submission_conformance
+    sbsql_native_scalar_submission_conformance.cpp)
+  target_compile_features(sbsql_native_scalar_submission_conformance PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_native_scalar_submission_conformance PRIVATE sbl_sbsql_parser_worker_core)
+  add_test(NAME sbsql_native_scalar_submission_conformance COMMAND sbsql_native_scalar_submission_conformance)
+  set_tests_properties(sbsql_native_scalar_submission_conformance PROPERTIES
+    LABELS "sbsql_parser_worker;scalar_projection;binary_uuid;native_real64;component_not_live_admission")
   target_compile_features(
     sbsql_authoritative_multi_source_projection_conformance
     PRIVATE
