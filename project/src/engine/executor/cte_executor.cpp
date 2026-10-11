@@ -67,7 +67,8 @@ bool IsCanonicalCteEvidenceUuid(const internal_api::EngineUuid& value) {
   return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 
-internal_api::EngineUuid CanonicalCoreDatatypeUuid(const std::string_view stable_name) {
+internal_api::EngineUuid CanonicalCoreDatatypeUuid(const std::string_view stable_name,
+    const internal_api::EngineDatatypeCohort& cohort) {
   static const auto manifest =
       scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
@@ -83,12 +84,11 @@ internal_api::EngineUuid CanonicalCoreDatatypeUuid(const std::string_view stable
   }
   const auto descriptor_uuid = found->descriptor_uuid.value;
   const auto identity =
-      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-          scratchbird::engine::internal_api::kBootstrapDatatypeCatalogUuid,
-          scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
-          scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
+      scratchbird::core::datatypes::FindDatatypeTypeCodecIdentityV3(
+          cohort.catalog_snapshot_uuid, cohort.catalog_generation,
+          cohort.registry_generation, descriptor_uuid,
           found->descriptor_epoch);
-  return identity.ok ? identity.row.type_uuid : internal_api::EngineUuid{};
+  return identity != nullptr ? identity->legacy_fields.type_uuid : internal_api::EngineUuid{};
 }
 
 struct RecursiveCteCancellationPoll {
@@ -261,15 +261,6 @@ bool AddRecursiveCteTuplePayload(const DescriptorTuple& row,
     *bytes += value.binary_value.size();
   }
   return true;
-}
-
-std::size_t RecursiveCteUnsignedDecimalWidth(std::uint64_t value) {
-  std::size_t width = 1;
-  while (value >= 10) {
-    value /= 10;
-    ++width;
-  }
-  return width;
 }
 
 template <typename T>
@@ -1381,7 +1372,8 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorkingBound(
                   anchor_validation.diagnostic.detail);
   }
   const auto count_anchor_int64_type_uuid =
-      materialized_count_anchor ? CanonicalCoreDatatypeUuid("int64")
+      materialized_count_anchor && anchor_batch.columns.size() == 1
+          ? CanonicalCoreDatatypeUuid("int64", anchor_batch.columns.front().descriptor.datatype_cohort)
                                 : internal_api::EngineUuid{};
   if (materialized_count_anchor &&
       (anchor_batch.columns.size() != 1 ||
@@ -2683,8 +2675,10 @@ ExecuteCanonicalRecursiveCteSearchCycleBound(
     return refuse_memory(
         "recursive CTE SEARCH/CYCLE output descriptor capacity exceeds the container limit");
   }
-  const auto int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
-  const auto boolean_type_uuid = CanonicalCoreDatatypeUuid("boolean");
+  const auto int64_type_uuid = CanonicalCoreDatatypeUuid("int64",
+      request.search_sequence_column.descriptor.datatype_cohort);
+  const auto boolean_type_uuid = CanonicalCoreDatatypeUuid("boolean",
+      request.cycle_mark_column.descriptor.datatype_cohort);
   std::unordered_set<internal_api::EngineUuid, internal_api::EngineUuidHash> anchor_descriptor_uuids;
   std::unordered_set<internal_api::EngineUuid, internal_api::EngineUuidHash> generated_type_uuids;
   if (!scratchbird::core::uuid::IsEngineIdentityUuid(int64_type_uuid) ||
@@ -2708,7 +2702,14 @@ ExecuteCanonicalRecursiveCteSearchCycleBound(
                                                   column,
                                               const std::string_view type_name,
                                               const internal_api::EngineUuid& type_uuid) {
-    return scratchbird::core::uuid::IsEngineIdentityUuid(type_uuid) && !column.nullable &&
+    const auto& descriptor = column.descriptor;
+    const auto& cohort = descriptor.datatype_cohort;
+    const auto* identity = scratchbird::core::datatypes::FindDatatypeTypeCodecIdentityV3(
+        cohort.catalog_snapshot_uuid, cohort.catalog_generation, cohort.registry_generation,
+        descriptor.datatype_descriptor_uuid, descriptor.datatype_descriptor_generation);
+    return identity != nullptr && identity->legacy_fields.type_uuid == type_uuid &&
+           descriptor.charset_uuid.is_nil() && descriptor.collation_uuid.is_nil() &&
+           scratchbird::core::uuid::IsEngineIdentityUuid(type_uuid) && !column.nullable &&
            internal_api::QowCanonicalDescriptorIdentityV1(
                column.descriptor) &&
            column.descriptor.descriptor_kind == "scalar" &&
@@ -2885,7 +2886,10 @@ ExecuteCanonicalRecursiveCteSearchCycleBound(
     }
     api::EngineTypedValue value;
     value.descriptor = request.search_sequence_column.descriptor;
-    value.encoded_value = std::to_string(sequence);
+    value.binary_value.resize(8);
+    for (unsigned byte = 0; byte < 8; ++byte) {
+      value.binary_value[byte] = static_cast<std::uint8_t>(sequence >> (byte * 8));
+    }
     value.state = api::EngineValueState::value;
     return value;
   };
@@ -2906,8 +2910,7 @@ ExecuteCanonicalRecursiveCteSearchCycleBound(
         }
         *bytes = 0;
         if (!AddRecursiveCteTuplePayload(row, bytes)) return false;
-        const auto sequence_bytes =
-            RecursiveCteUnsignedDecimalWidth(next_sequence);
+        constexpr std::size_t sequence_bytes = 8;
         const std::size_t cycle_bytes = cycle ? 4 : 5;
         if (sequence_bytes >
                 std::numeric_limits<std::size_t>::max() - *bytes ||
