@@ -30,6 +30,10 @@ CatalogValueEncodeResult EncodeCatalogContextNamespace(const CatalogContextNames
 bool IsCatalogContextNamespacePayload(std::string_view);
 bool CatalogContextNamespaceMatchesHeader(const CatalogTypedRecordView&);
 bool CatalogContextNamespaceMatchesMetadata(const CatalogMetadataVersionView&);
+// Additional physical-residency constraint. Unrelated families pass through;
+// namespace records must retain exact binary node identity. This is not live
+// visibility or security admission. Safe in allocation-free leaf readers.
+bool CatalogContextNamespaceMatchesDatabase(const CatalogMetadataVersionView&, const Uuid&);
 bool CatalogContextNamespacePreservesOrigin(const CatalogMetadataVersionView&,
                                           const CatalogMetadataVersionView&);
 }  // namespace scratchbird::core::catalog

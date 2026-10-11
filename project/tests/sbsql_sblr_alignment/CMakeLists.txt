@@ -1314,6 +1314,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     COMMAND sbsql_sblr_alignment_filespace_page_zero --catalog-metric-series-stage-only)
   set_tests_properties(sbsql_sblr_alignment_catalog_metric_series_staging PROPERTIES
     LABELS "sbsql_sblr_alignment;native_catalog;native_series;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120)
+  add_test(NAME sbsql_sblr_alignment_catalog_context_namespace_staging
+    COMMAND sbsql_sblr_alignment_filespace_page_zero --catalog-context-namespace-stage-only)
+  set_tests_properties(sbsql_sblr_alignment_catalog_context_namespace_staging PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_catalog;context_namespace;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120)
   add_test(NAME sbsql_sblr_alignment_native_catalog_leaf_staging
     COMMAND sbsql_sblr_alignment_filespace_page_zero --catalog-stage-only)
   set_tests_properties(sbsql_sblr_alignment_native_catalog_leaf_staging PROPERTIES

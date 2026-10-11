@@ -32,6 +32,26 @@ bool Family(const CatalogMetadataVersionView& m) {
   return m.object_subtype == "application_context_namespace" ||
       IsCatalogContextNamespacePayload(m.record.payload);
 }
+bool HeaderMatches(const CatalogTypedRecordView& header, const CatalogContextNamespace& r) {
+  return header.header.kind == CatalogRecordKind::sql_object &&
+      Identity(header.header.object_uuid,UuidKind::object,r.namespace_uuid) &&
+      Identity(header.header.parent_uuid,UuidKind::object,r.schema_uuid);
+}
+bool MetadataMatches(const CatalogMetadataVersionView& m, const CatalogContextNamespace& r) {
+  return m.object_subtype == "application_context_namespace" &&
+      m.authority_scope == CatalogAuthorityScope::local && HeaderMatches(m.record,r) &&
+      r.generation == m.definition_version &&
+      Identity(m.owning_schema_uuid,UuidKind::schema,r.schema_uuid) &&
+      Identity(m.owner_uuid,UuidKind::principal,r.owner_uuid) &&
+      m.default_name_uuid.kind == UuidKind::object && uuid::IsEngineIdentityUuid(m.default_name_uuid.value) &&
+      m.name_vector_uuid.kind == UuidKind::object && uuid::IsEngineIdentityUuid(m.name_vector_uuid.value) &&
+      m.creator_transaction_uuid.kind == UuidKind::transaction &&
+      uuid::IsEngineIdentityUuid(m.creator_transaction_uuid.value) &&
+      r.origin_local_transaction_id <= m.creator_local_transaction_id &&
+      (m.definition_version != 1 ||
+       (r.origin_local_transaction_id == m.creator_local_transaction_id &&
+        r.origin_transaction_uuid == m.creator_transaction_uuid.value));
+}
 }  // namespace
 
 CatalogContextNamespaceResult DecodeCatalogContextNamespace(std::string_view bytes) {
@@ -67,34 +87,27 @@ bool IsCatalogContextNamespacePayload(std::string_view bytes) {
 bool CatalogContextNamespaceMatchesHeader(const CatalogTypedRecordView& r) {
   if (r.header.kind != CatalogRecordKind::sql_object) return false;
   const auto decoded = DecodeCatalogContextNamespace(r.payload);
-  return decoded.ok() && Identity(r.header.object_uuid,UuidKind::object,decoded.record->namespace_uuid) &&
-      Identity(r.header.parent_uuid,UuidKind::object,decoded.record->schema_uuid);
+  return decoded.ok() && HeaderMatches(r,*decoded.record);
 }
 bool CatalogContextNamespaceMatchesMetadata(const CatalogMetadataVersionView& m) {
-  if (m.object_subtype != "application_context_namespace" ||
-      m.authority_scope != CatalogAuthorityScope::local ||
-      !CatalogContextNamespaceMatchesHeader(m.record)) return false;
   const auto decoded = DecodeCatalogContextNamespace(m.record.payload);
-  const auto& r = *decoded.record;
-  return r.generation == m.definition_version &&
-      Identity(m.owning_schema_uuid,UuidKind::schema,r.schema_uuid) &&
-      Identity(m.owner_uuid,UuidKind::principal,r.owner_uuid) &&
-      m.default_name_uuid.kind == UuidKind::object && uuid::IsEngineIdentityUuid(m.default_name_uuid.value) &&
-      m.name_vector_uuid.kind == UuidKind::object && uuid::IsEngineIdentityUuid(m.name_vector_uuid.value) &&
-      m.creator_transaction_uuid.kind == UuidKind::transaction &&
-      uuid::IsEngineIdentityUuid(m.creator_transaction_uuid.value) &&
-      r.origin_local_transaction_id <= m.creator_local_transaction_id &&
-      (m.definition_version != 1 ||
-       (r.origin_local_transaction_id == m.creator_local_transaction_id &&
-        r.origin_transaction_uuid == m.creator_transaction_uuid.value));
+  return decoded.ok() && MetadataMatches(m,*decoded.record);
+}
+bool CatalogContextNamespaceMatchesDatabase(const CatalogMetadataVersionView& m, const Uuid& database) {
+  if (!Family(m)) return true;
+  if (!uuid::IsEngineIdentityUuid(database)) return false;
+  const auto decoded = DecodeCatalogContextNamespace(m.record.payload);
+  return decoded.ok() && decoded.record->database_uuid == database && MetadataMatches(m,*decoded.record);
 }
 bool CatalogContextNamespacePreservesOrigin(const CatalogMetadataVersionView& before,
                                           const CatalogMetadataVersionView& after) {
   if (!Family(before) && !Family(after)) return true;
-  if (!CatalogContextNamespaceMatchesMetadata(before) ||
-      !CatalogContextNamespaceMatchesMetadata(after)) return false;
-  const auto a = *DecodeCatalogContextNamespace(before.record.payload).record;
-  const auto b = *DecodeCatalogContextNamespace(after.record.payload).record;
+  const auto original = DecodeCatalogContextNamespace(before.record.payload);
+  const auto successor = DecodeCatalogContextNamespace(after.record.payload);
+  if (!original.ok() || !successor.ok() || !MetadataMatches(before,*original.record) ||
+      !MetadataMatches(after,*successor.record)) return false;
+  const auto& a = *original.record;
+  const auto& b = *successor.record;
   return a.namespace_uuid == b.namespace_uuid && a.database_uuid == b.database_uuid &&
       a.origin_transaction_uuid == b.origin_transaction_uuid &&
       a.origin_local_transaction_id == b.origin_local_transaction_id;

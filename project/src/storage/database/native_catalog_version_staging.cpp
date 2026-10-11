@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "physical_mga_cow_store.hpp"
+#include "catalog_context_namespace.hpp"
 #include "disk_device.hpp"
 #include "uuid.hpp"
 #include <algorithm>
@@ -48,6 +49,8 @@ NativeCatalogVersionStageResult StageNativeCatalogVersionFromOpenDevices(
         !catalog::CatalogNamePayloadMatchesMetadata(*request.name_payload,desired))))return Fail(E::invalid_metadata);
     const auto validated=catalog::EncodeCatalogMetadataVersion(desired);
     if(!validated.ok()){auto r=Fail(E::invalid_metadata);r.diagnostic=validated.diagnostic;return r;}
+    if(!catalog::CatalogContextNamespaceMatchesDatabase(
+        catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid))return Fail(E::invalid_metadata);
     auto devices=supplied;std::sort(devices.begin(),devices.end(),[](const auto& a,const auto& b){return a.filespace_uuid<b.filespace_uuid;});
     std::set<disk::FileDevice*> handles;std::vector<std::unique_lock<std::recursive_mutex>> guards;guards.reserve(devices.size());
     for(std::size_t i=0;i<devices.size();++i){

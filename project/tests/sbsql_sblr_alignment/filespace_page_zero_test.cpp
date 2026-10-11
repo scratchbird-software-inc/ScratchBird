@@ -8,6 +8,7 @@
 #include "native_btree_tree_memory.hpp"
 #include "metric_observation_queue.hpp"
 #include "catalog_schema_definition.hpp"
+#include "catalog_context_namespace.hpp"
 #include "catalog_metric_retention_policy.hpp"
 #include "catalog_storage_action_policy.hpp"
 #include "transaction_inventory_page.hpp"
@@ -4381,6 +4382,7 @@ struct CatalogTestPin {
 };
 void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::NativeCatalogVersionStageError;using S=page::NativeAllocationState;
   const bool metric_policy=metric_family==1,metric_series=metric_family==2,storage_policy=metric_family==3;
+  const bool context_namespace=metric_family==4;
   for(unsigned p=0;p<5;++p)for(unsigned role=1;role<=5;++role){const unsigned q=(p+1)%5;const bool primary=role<=4;
     Fixture fixture;disk::FileDevice first,second;auto z1=Example(p,primary?role:1),z2=Example(q,5);z2.bootstrap.filespace_uuid=Id(7);z2.page_uuid=Id(8);for(auto& root:z2.roots)root.filespace_uuid=Id(7);
     z1.free_pages=z2.free_pages=z1.preallocated_pages=z2.preallocated_pages=0;
@@ -4436,6 +4438,24 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
       const auto payload=catalog::EncodeCatalogMetricSeries(record);Check(payload.ok(),"encode native series definition");
       metadata.record.payload.assign(payload.bytes.begin(),payload.bytes.end());
     };
+    const auto bind_namespace=[](auto& metadata,const catalog::CatalogContextNamespace* prior=nullptr){
+      catalog::CatalogContextNamespace record;
+      if(prior)record=*prior;
+      else {record.database_uuid=Id(1);record.security_label_uuid=Id(233);
+        record.origin_transaction_uuid=metadata.creator_transaction_uuid.value;
+        record.origin_local_transaction_id=metadata.creator_local_transaction_id;}
+      record.namespace_uuid=metadata.record.header.object_uuid.value;record.generation=metadata.definition_version;
+      record.schema_uuid=metadata.owning_schema_uuid.value;record.owner_uuid=metadata.owner_uuid.value;
+      metadata.record.header.kind=catalog::CatalogRecordKind::sql_object;
+      metadata.record.header.parent_uuid={platform::UuidKind::object,record.schema_uuid};
+      metadata.default_name_uuid={platform::UuidKind::object,Id(231)};
+      metadata.name_vector_uuid={platform::UuidKind::object,Id(232)};
+      metadata.object_subtype="application_context_namespace";
+      const auto payload=catalog::EncodeCatalogContextNamespace(record);Check(payload.ok(),"encode binary namespace definition");
+      metadata.record.payload.assign(payload.bytes.begin(),payload.bytes.end());
+    };
+    if(context_namespace){auto metadata=catalog::DecodeCatalogMetadataVersion(source_leaf.body.rows[0].cells[0].value.payload);Check(metadata.ok(),"source namespace metadata");
+      bind_namespace(metadata.record);const auto encoded=catalog::EncodeCatalogMetadataVersion(metadata.record);Check(encoded.ok(),"namespace source binding");source_leaf.body.rows[0].cells[0].value.payload=encoded.bytes;}
     if(metric_series){auto metadata=catalog::DecodeCatalogMetadataVersion(source_leaf.body.rows[0].cells[0].value.payload);Check(metadata.ok(),"source metadata for native series");
       bind_series(metadata.record);const auto encoded=catalog::EncodeCatalogMetadataVersion(metadata.record);Check(encoded.ok(),"native series source binding");source_leaf.body.rows[0].cells[0].value.payload=encoded.bytes;}
     if(metric_policy){auto metadata=catalog::DecodeCatalogMetadataVersion(source_leaf.body.rows[0].cells[0].value.payload);Check(metadata.ok(),"source metadata for native policy");
@@ -4578,6 +4598,7 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
     if(metric_policy)bind_policy(request.metadata);
     if(storage_policy)bind_storage(request.metadata);
     if(metric_series)bind_series(request.metadata);
+    if(context_namespace)bind_namespace(request.metadata);
     const auto create=request;const auto source_bytes=actual(first,30,sizes[p]);const auto root_bytes=actual(first,12,sizes[p]);const auto zero_bytes=actual(first,0,sizes[p]);
     namespace identity=scratchbird::core::uuid;
     const auto policy_uuid=Id(250);
@@ -4713,9 +4734,79 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
     if(metric_policy){const auto origin=catalog::DecodeCatalogMetricRetentionPolicy(decoded.record.record.payload);Check(origin.ok(),"load persisted policy origin");bind_policy(request.metadata,&*origin.record);}
     if(storage_policy){const auto origin=catalog::DecodeCatalogStorageActionPolicy(decoded.record.record.payload);Check(origin.ok(),"load persisted storage origin");bind_storage(request.metadata,&*origin.record);}
     if(metric_series){const auto origin=catalog::DecodeCatalogMetricSeries(decoded.record.record.payload);Check(origin.ok(),"load persisted series origin");bind_series(request.metadata,&*origin.record);}
+    if(context_namespace){const auto origin=catalog::DecodeCatalogContextNamespace(decoded.record.record.payload);Check(origin.ok(),"load namespace origin");bind_namespace(request.metadata,&*origin.record);}
     result=stage(budget);verify(result,2,Id(170),false);
     reset();request.metadata.record.header.deleted=true;request.metadata.lifecycle=catalog::CatalogObjectLifecycle::dropped;request.metadata.status=catalog::CatalogObjectStatus::retired;request.metadata.retired_transaction_uuid=owner.transaction_uuid;
     result=stage(budget);verify(result,2,Id(170),true);
+    if(context_namespace){
+      const auto original=catalog::DecodeCatalogContextNamespace(decoded.record.record.payload);
+      Check(original.ok(),"retained namespace origin");
+      request.metadata=decoded.record;request.metadata.definition_version=2;bind_namespace(request.metadata,&*original.record);
+      const auto replacement=request;
+      for(unsigned bad=0;bad<4;++bad){reset();request=replacement;
+        auto changed=*catalog::DecodeCatalogContextNamespace(request.metadata.record.payload).record;
+        if(bad==0)changed.origin_transaction_uuid=Id(240);
+        if(bad==1)--changed.origin_local_transaction_id;
+        if(bad==2)changed.database_uuid=Id(240);
+        if(bad==3){request.metadata.object_subtype="generic";request.metadata.record.payload="not a namespace";}
+        else {const auto payload=catalog::EncodeCatalogContextNamespace(changed);Check(payload.ok(),"well-framed namespace substitution");
+          request.metadata.record.payload.assign(payload.bytes.begin(),payload.bytes.end());}
+        Check(catalog::EncodeCatalogMetadataVersion(request.metadata).ok(),"substitution has valid generic envelope");
+        stage_writes=stage_syncs=0;const auto refused=stage(budget);empty(refused);
+        Check((refused.error==E::stale_version||refused.error==E::invalid_metadata)&&!stage_writes&&!stage_syncs&&
+          actual(target,21,sizes[profile])==blank,"namespace origin/node/family substitution refuses without effects");unchanged();
+      }
+      // A fresh namespace is also bound to the physical owning node. No
+      // predecessor exists to catch this with the successor-origin check.
+      reset();request=create;auto foreign=*catalog::DecodeCatalogContextNamespace(request.metadata.record.payload).record;
+      foreign.database_uuid=Id(240);const auto payload=catalog::EncodeCatalogContextNamespace(foreign);
+      Check(payload.ok(),"foreign namespace has valid binary shape");request.metadata.record.payload.assign(payload.bytes.begin(),payload.bytes.end());
+      reads=stage_writes=stage_syncs=0;track_reads=true;const auto refused=stage(budget);track_reads=false;empty(refused);
+      Check(refused.error==E::invalid_metadata&&!reads&&!stage_writes&&!stage_syncs&&refused.issued_version_uuid.is_nil()&&
+        !refused.attempted_row&&!refused.identity_observation&&actual(target,21,sizes[profile])==blank,
+        "new namespace cannot be physically staged in another node");unchanged();
+      request=replacement;reset();request.metadata.owner_uuid.value=Id(241);request.metadata.owning_schema_uuid.value=Id(242);
+      bind_namespace(request.metadata,&*original.record);result=stage(budget);verify(result,2,Id(170),false);
+      const auto final_bytes=actual(target,21,sizes[profile]);
+      const auto stored=db::DecodeNativeCatalogLeaf(final_bytes);Check(stored.ok(),"decode actual updated namespace");
+      const auto retained=catalog::DecodeCatalogContextNamespace(stored.metadata.begin()->second.record.payload);
+      Check(retained.ok()&&retained.record->namespace_uuid==original.record->namespace_uuid&&retained.record->generation==2&&
+        retained.record->owner_uuid==Id(241)&&retained.record->schema_uuid==Id(242)&&
+        retained.record->origin_transaction_uuid==original.record->origin_transaction_uuid&&
+        retained.record->origin_local_transaction_id==original.record->origin_local_transaction_id,
+        "actual namespace successor preserves identity/origin across owner/schema edits");
+      BorrowedRowWorkspace scratch(final_bytes.size()-160);std::vector<db::NativeCatalogLeafRecordView> backing(scratch.rows.size());
+      allocation_budget=0;const auto borrowed=db::DecodeNativeCatalogLeafInto(final_bytes,scratch.get(),backing);
+      const auto remaining=allocation_budget;allocation_budget=-1;
+      Check(borrowed.ok()&&remaining==0&&borrowed.page->metadata.size()==1&&
+        catalog::DecodeCatalogContextNamespace(borrowed.page->metadata[0].metadata.record.payload).record==retained.record,
+        "borrowed actual namespace leaf decode needs no heap allocation");
+      // Independent resealed page with a cross-node payload must fail both
+      // owning and borrowed decoders, even though the common envelope is valid.
+      auto attack=*stored.page;auto metadata=stored.metadata.begin()->second;auto changed=*retained.record;
+      changed.database_uuid=Id(240);const auto other=catalog::EncodeCatalogContextNamespace(changed);
+      metadata.record.payload.assign(other.bytes.begin(),other.bytes.end());const auto envelope=catalog::EncodeCatalogMetadataVersion(metadata);
+      Check(envelope.ok(),"foreign node envelope remains structurally valid");attack.body.rows[0].cells[0].value.payload=envelope.bytes;
+      const auto attack_bytes=LeafOracle(attack);
+      LeafReject(db::EncodeNativeCatalogLeaf(attack),db::NativeCatalogLeafError::invalid_metadata);
+      LeafReject(db::DecodeNativeCatalogLeaf(attack_bytes),db::NativeCatalogLeafError::invalid_metadata);
+      allocation_budget=0;const auto bad_leaf=db::DecodeNativeCatalogLeafInto(attack_bytes,scratch.get(),backing);
+      const auto bad_remaining=allocation_budget;allocation_budget=-1;
+      Check(!bad_leaf.ok()&&!bad_leaf.page&&bad_leaf.error==db::NativeCatalogLeafError::invalid_metadata&&bad_remaining==0,
+        "borrowed foreign namespace refuses without an allocation or partial result");
+      const auto visible=db::ReadNativePinnedCatalogVersionsFromOpenDevices(Id(1),devices,CheckpointRef(cp),2,1,
+        {Id(101),{}},owner,snapshot.pin,budget);
+      Check(visible.ok(),"read namespace through actual pinned catalog root");
+      const auto selected=std::find_if(visible.rows.begin(),visible.rows.end(),[&](const auto& row){
+        return row.metadata.record.header.object_uuid.value==original.record->namespace_uuid;});
+      Check(selected!=visible.rows.end()&&selected->version_uuid==Id(170)&&selected->provisional&&
+        catalog::DecodeCatalogContextNamespace(selected->metadata.record.payload).record==original.record,
+        "physically staged edit does not replace original namespace selected by actual root and pin");
+      Check(first.Close().ok()&&second.Close().ok(),"release namespace owners before reopen");
+      disk::FileDevice reopened;Check(reopened.Open(primary?path1:path2,disk::FileOpenMode::open_existing_read_only).ok(),"read-only namespace reopen");
+      Check(actual(reopened,21,sizes[profile])==final_bytes,"actual staged namespace bytes survive reopen; not publication evidence");
+      continue;
+    }
     if(storage_policy){
       const auto original=catalog::DecodeCatalogStorageActionPolicy(decoded.record.record.payload);Check(original.ok(),"retained storage policy origin");
       request.metadata=decoded.record;request.metadata.definition_version=2;bind_storage(request.metadata,&*original.record);
@@ -7477,6 +7568,9 @@ int main(int argc,char** argv) {
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
   if(argc==2&&std::string_view(argv[1])=="--catalog-metric-series-stage-only"){
     try{CanonicalCatalogVersionStaging(2);std::cout<<"metric series native stage checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
+  if(argc==2&&std::string_view(argv[1])=="--catalog-context-namespace-stage-only"){
+    try{CanonicalCatalogVersionStaging(4);std::cout<<"context namespace native stage checks="<<checks<<" failures=0\n";return 0;}
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
   if(argc==2&&std::string_view(argv[1])=="--catalog-storage-policy-stage-only"){
     try{CanonicalCatalogVersionStaging(3);std::cout<<"storage policy native stage checks="<<checks<<" failures=0\n";return 0;}

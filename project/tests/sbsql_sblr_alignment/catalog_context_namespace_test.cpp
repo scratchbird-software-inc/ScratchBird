@@ -105,6 +105,18 @@ int main() {
   const auto maximum_bytes=Golden(maximum);
   Check(NoHeap([&]{return c::DecodeCatalogContextNamespace(maximum_bytes);}).record==maximum,"uint64 bounds");
   auto m=Metadata(r);
+  const auto resident=[&](const auto& metadata,const p::Uuid& database){return NoHeap([&]{
+    return c::CatalogContextNamespaceMatchesDatabase(c::BorrowCatalogMetadataVersion(metadata),database);});};
+  Check(resident(m,r.database_uuid),"exact binary node residency");
+  Check(!resident(m,Id(90))&&!resident(m,p::Uuid{}),"foreign and absent node residency refused");
+  auto old_uuid=r.database_uuid;old_uuid.bytes[6]=0x40;
+  Check(!resident(m,old_uuid),"non-system residency identity refused");
+  auto relabelled=m;relabelled.object_subtype="generic";
+  Check(!resident(relabelled,r.database_uuid),"binary schema marker prevents subtype bypass");
+  relabelled=m;relabelled.record.payload="not a definition";
+  Check(!resident(relabelled,r.database_uuid),"explicit subtype prevents payload bypass");
+  relabelled.object_subtype="generic";
+  Check(resident(relabelled,r.database_uuid),"unrelated generic families retain their own admission");
   Check(!NoHeap([&]{return c::ValidateCatalogMetadataVersionView(c::BorrowCatalogMetadataVersion(m));}),"valid metadata refused");
   const auto complete=c::EncodeCatalogMetadataVersion(m);
   Check(complete.ok(),"metadata encoding failed");

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "physical_mga_cow_store.hpp"
+#include "catalog_context_namespace.hpp"
 
 #include "database_format.hpp"
 #include "disk_device.hpp"
@@ -1863,7 +1864,9 @@ DecodedNativeCatalogRows DecodeNativeCatalogRows(const RowDataPageBody& body,
     if (!value.ok()) return Propagate<DecodedNativeCatalogRows>(value.status, value.diagnostic);
     if (!SameUuid(value.record.record.header.row_uuid, row.row_uuid) ||
         !SameUuid(value.record.creator_transaction_uuid, row.transaction_uuid) ||
-        value.record.creator_local_transaction_id != row.local_transaction_id)
+        value.record.creator_local_transaction_id != row.local_transaction_id ||
+        !catalog::CatalogContextNamespaceMatchesDatabase(
+            catalog::BorrowCatalogMetadataVersion(value.record),database_uuid.value))
       return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_version.mga_binding_invalid");
     if (!decoded.metadata.emplace(row.version_uuid, value.record).second)
       return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_version.version_duplicate");
@@ -2023,7 +2026,8 @@ NativeCatalogLeafViewResult DecodeNativeCatalogLeafInto(
       const auto& value=*decoded.record;
       if(!SameUuid(value.record.header.row_uuid,row.row_uuid)||
           !SameUuid(value.creator_transaction_uuid,row.transaction_uuid)||
-          value.creator_local_transaction_id!=row.local_transaction_id)return fail(LeafError::invalid_metadata);
+          value.creator_local_transaction_id!=row.local_transaction_id||
+          !catalog::CatalogContextNamespaceMatchesDatabase(value,header.header->database_uuid))return fail(LeafError::invalid_metadata);
       auto& record=records[i];record={row.version_uuid,i,value,{}};
       if(value.record.header.kind==catalog::CatalogRecordKind::localized_name){
         const auto name=catalog::DecodeCatalogNameEnvelopeView(
