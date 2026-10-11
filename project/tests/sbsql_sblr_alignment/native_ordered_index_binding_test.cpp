@@ -336,6 +336,23 @@ void TimeBoundKeys() {
     Check(dt::LookupDatatypeStorageIdentityV3(cohort, generation, generation,
         time.datatype.descriptor_uuid, time.datatype.descriptor_generation, &time.datatype) &&
         key::BindOrderedTimeProfile(&time), "exact TIME index profile did not bind");
+    for (unsigned mutation = 0; mutation < 5; ++mutation) {
+      auto source = Source("time", "nullability=nullable");
+      source.datatype_cohort = {cohort, generation, generation};
+      switch (mutation) {
+        case 0: source.encoded_descriptor += ";precision=1"; break;
+        case 1: source.encoded_descriptor += ";unknown=1"; break;
+        case 2: source.encoded_descriptor += ";nullable=true"; break;
+        case 3: source.charset_uuid = scratchbird::tests::FixtureUuid(1401, 456); break;
+        case 4: source.collation_uuid = scratchbird::tests::FixtureUuid(1401, 457); break;
+      }
+      auto output = time.execution_descriptor; std::string detail;
+      Check(!key::BuildOrderedColumnExecutionDescriptor(source, time.datatype, true, &output, &detail) &&
+          !detail.empty() && output.precision == 0 &&
+          std::equal(std::begin(output.charset_uuid.bytes), std::end(output.charset_uuid.bytes),
+              std::begin(time.execution_descriptor.charset_uuid.bytes)),
+          "TIME projection erased unsupported source metadata");
+    }
     const std::uint64_t values[] = {0, 1, 255, 256, 65536, dt::kTimeMaximumNanosecondsV3};
     for (const auto value : values) {
       std::string raw = "SBTIMK01";
