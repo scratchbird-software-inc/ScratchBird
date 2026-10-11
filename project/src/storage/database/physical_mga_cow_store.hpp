@@ -586,6 +586,7 @@ struct PhysicalMgaCowMutationResult {
   scratchbird::transaction::mga::TransactionIdentity unresolved_owned_transaction;
   std::optional<scratchbird::core::datatypes::TimeDiagnosticFactV3> time_diagnostic;
   std::optional<scratchbird::core::datatypes::TimestampDiagnosticFactV3> timestamp_diagnostic;
+  std::optional<scratchbird::core::datatypes::IntervalDiagnosticFactV3> interval_diagnostic;
 
   bool ok() const {
     return status.ok();
@@ -624,6 +625,7 @@ struct PhysicalMgaCowMutationBatchResult {
   scratchbird::transaction::mga::TransactionIdentity unresolved_mutation_transaction;
   std::optional<scratchbird::core::datatypes::TimeDiagnosticFactV3> time_diagnostic;
   std::optional<scratchbird::core::datatypes::TimestampDiagnosticFactV3> timestamp_diagnostic;
+  std::optional<scratchbird::core::datatypes::IntervalDiagnosticFactV3> interval_diagnostic;
 
   bool ok() const {
     return status.ok();
@@ -700,6 +702,7 @@ struct PhysicalMgaCowReadResult {
   std::vector<scratchbird::transaction::mga::RowVersionMetadata> version_metadata;
   std::optional<scratchbird::core::datatypes::TimeDiagnosticFactV3> time_diagnostic;
   std::optional<scratchbird::core::datatypes::TimestampDiagnosticFactV3> timestamp_diagnostic;
+  std::optional<scratchbird::core::datatypes::IntervalDiagnosticFactV3> interval_diagnostic;
 
   bool ok() const {
     return status.ok();

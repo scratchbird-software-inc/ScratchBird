@@ -6,6 +6,7 @@
 #include "native_row_data_page.hpp"
 #include "datatype_date.hpp"
 #include "datatype_timestamp.hpp"
+#include "datatype_interval.hpp"
 #include <openssl/sha.h>
 namespace page=scratchbird::storage::page;
 namespace disk=scratchbird::storage::disk;
@@ -203,7 +204,9 @@ void ExternalImages(){
 }
 void TemporalReceivers() {
   namespace dt = scratchbird::core::datatypes;
-  for (unsigned generation : {10u, 11u}) for (bool timestamp : {false, true}) {
+  for (unsigned generation : {10u, 11u}) for (const auto type : {dt::CanonicalTypeId::time, dt::CanonicalTypeId::timestamp, dt::CanonicalTypeId::interval}) {
+    const bool timestamp = type == dt::CanonicalTypeId::timestamp;
+    const bool interval = type == dt::CanonicalTypeId::interval;
     const auto snapshot = generation == 10 ? dt::kDatatypeCohortV10 : dt::kDatatypeCohortV11;
     page::RowDataTemporalColumnBinding date_column, time_column;
     date_column.column_ordinal = 1; date_column.null_allowed = true;
@@ -215,7 +218,7 @@ void TemporalReceivers() {
         Check(profile.ok(), "DATE receiver fixture profile");
         date_column.date = std::make_shared<const dt::DateValidatedProfileHandleV3>(std::move(profile.profile));
       }
-      if (!timestamp && identity.legacy_fields.canonical_binary_type_code == 401) {
+      if (!timestamp && !interval && identity.legacy_fields.canonical_binary_type_code == 401) {
         auto profile = dt::BuildTimeValidatedProfileHandleV3({snapshot, snapshot, generation, generation}, identity);
         Check(profile.ok(), "TIME receiver fixture profile");
         time_column.time = std::make_shared<const dt::TimeValidatedProfileHandleV3>(std::move(profile.profile));
@@ -225,8 +228,13 @@ void TemporalReceivers() {
         Check(profile.ok(), "TIMESTAMP receiver fixture profile");
         time_column.timestamp = std::make_shared<const dt::TimestampValidatedProfileHandleV3>(std::move(profile.profile));
       }
+      if (interval && identity.legacy_fields.canonical_binary_type_code == static_cast<unsigned>(type)) {
+        auto profile = dt::BuildIntervalValidatedProfileHandleV3({snapshot, snapshot, generation, generation}, identity);
+        Check(profile.ok(), "INTERVAL receiver fixture profile");
+        time_column.interval = std::make_shared<const dt::IntervalValidatedProfileHandleV3>(std::move(profile.profile));
+      }
     }
-    Check(date_column.date && (time_column.time || time_column.timestamp), "explicit temporal receiver fixture missing");
+    Check(date_column.date && (time_column.time || time_column.timestamp || time_column.interval), "explicit temporal receiver fixture missing");
     const std::array<page::RowDataTemporalColumnBinding, 2> columns{date_column, time_column};
     for (unsigned page_profile = 0; page_profile < 5; ++page_profile) {
       for (unsigned sample = 0; sample < 5; ++sample) {
@@ -241,7 +249,7 @@ void TemporalReceivers() {
           for (unsigned i = 0; i < 2; ++i) {
             page::RowDataCell cell;
             cell.column_ordinal = i + 1;
-            cell.value.type_id = i ? (timestamp ? dt::CanonicalTypeId::timestamp : dt::CanonicalTypeId::time) : dt::CanonicalTypeId::date;
+            cell.value.type_id = i ? type : dt::CanonicalTypeId::date;
             cell.value.is_null = null;
             if (!null) for (unsigned j = 0; j < (i ? 8u : 4u); ++j)
               cell.value.payload.push_back(static_cast<byte>((i ? (timestamp ? static_cast<u64>(seconds[sample]) : times[sample]) : days[sample]) >> (8 * j)));
@@ -249,6 +257,17 @@ void TemporalReceivers() {
               const unsigned fraction = sample % 2 ? 999999999 : 0;
               for (unsigned j = 0; j < 4; ++j) cell.value.payload.push_back(static_cast<byte>(fraction >> (8*j)));
               cell.value.payload.resize(16, 0);
+            }
+            if (!null && i && interval) {
+              cell.value.payload.clear();
+              const std::array<u64,5> nanos{0x8000000000000000ull,0xffffffffffffffffull,0,1,0x7fffffffffffffffull};
+              // Independent LE32 months, LE32 civil days, LE64 fixed nanos;
+              // opposing signs and extrema must not normalize/carry to a day.
+              for(unsigned field=0;field<3;++field) {
+                const u64 value=field==0?days[sample]:field==1?days[4-sample]:nanos[sample];
+                for(unsigned j=0;j<(field==2?8u:4u);++j)
+                  cell.value.payload.push_back(static_cast<byte>(value>>(8*j)));
+              }
             }
             p.body.rows.front().cells.push_back(std::move(cell));
           }
@@ -260,6 +279,19 @@ void TemporalReceivers() {
           Check(!absent.ok() && absent.body.rows.empty() && absent.serialized.empty(), "profileless temporal writer admitted");
           const auto unbound = page::ParseRowDataPageBody(expected, p.body.page_number);
           Check(!unbound.ok() && unbound.body.rows.empty() && unbound.serialized.empty(), "profileless temporal reader admitted");
+          if (interval) {
+            // Do not let the preceding DATE refusal mask an enum-only INTERVAL
+            // fallback. Exercise a page containing only this component.
+            auto isolated=p;
+            isolated.body.rows.front().cells={p.body.rows.front().cells.back()};
+            const auto isolated_image=RowOracle(isolated);
+            const Bytes isolated_body(isolated_image.begin()+128,isolated_image.end()-32);
+            const auto missing_read=page::ParseRowDataPageBody(isolated_body,p.body.page_number);
+            const auto missing_write=page::BuildRowDataPageBody(isolated.body,p.header.page_size_bytes-32);
+            Check(!missing_read.ok()&&missing_read.body.rows.empty()&&missing_read.serialized.empty()&&
+                  !missing_write.ok()&&missing_write.body.rows.empty()&&missing_write.serialized.empty(),
+                  "isolated INTERVAL escaped receiving authority");
+          }
           for (bool retain : {false, true}) {
             const auto decoded = retain ? page::ParseRowDataPageBody(expected, p.body.page_number, receiver) :
                 page::ParseRowDataPageRows(expected, p.body.page_number, receiver);
@@ -285,6 +317,7 @@ void TemporalReceivers() {
             if (fault == 2) bad_columns[0].date.reset();
             if (fault == 3) {
               if (timestamp) bad_columns[0].timestamp = time_column.timestamp;
+              else if (interval) bad_columns[0].interval = time_column.interval;
               else bad_columns[0].time = time_column.time;
             }
             if (fault == 4) bad_columns[1].column_ordinal = 3;
@@ -292,13 +325,17 @@ void TemporalReceivers() {
               auto bad = std::make_shared<dt::DateValidatedProfileHandleV3>(*date_column.date);
               bad->profile_fingerprint[0] ^= 1; bad_columns[0].date = std::move(bad);
             }
-            if (fault == 6 && !timestamp) {
+            if (fault == 6 && !timestamp && !interval) {
               auto bad = std::make_shared<dt::TimeValidatedProfileHandleV3>(*time_column.time);
               ++bad->receipt.registry_generation; bad_columns[1].time = std::move(bad);
             }
             if (fault == 6 && timestamp) {
               auto bad = std::make_shared<dt::TimestampValidatedProfileHandleV3>(*time_column.timestamp);
               ++bad->receipt.registry_generation; bad_columns[1].timestamp = std::move(bad);
+            }
+            if (fault == 6 && interval) {
+              auto bad = std::make_shared<dt::IntervalValidatedProfileHandleV3>(*time_column.interval);
+              ++bad->receipt.registry_generation; bad_columns[1].interval = std::move(bad);
             }
             const auto rejected = page::ParseRowDataPageBody(expected, p.body.page_number, bad_receiver);
             const auto rejected_write = page::BuildRowDataPageBody(p.body, p.header.page_size_bytes-32, bad_receiver);
@@ -318,7 +355,7 @@ void TemporalReceivers() {
             if (fault == 0) cell.value.payload.push_back(0);
             if (fault == 1) cell.value.type_id = dt::CanonicalTypeId::int64;
             if (fault == 2) cell.value.payload_is_toast_reference = true;
-            if (fault == 3) { cell.value.is_null = false; cell.value.payload.assign(timestamp ? 16 : 8, 255); }
+            if (fault == 3) { cell.value.is_null = false; cell.value.payload.assign(interval ? 15 : timestamp ? 16 : 8, 255); }
             const auto image = RowOracle(malformed);
             const Bytes bytes(image.begin()+128, image.end()-32);
             const auto failed_read = page::ParseRowDataPageBody(bytes, p.body.page_number, receiver);
@@ -348,6 +385,10 @@ void TemporalReceivers() {
                 check_fact(dt::DecodeCanonicalTimestampComponentNoAllocV3(*time_column.timestamp,
                     dt::TimestampValueStateV3::value, true, cell.value.payload).diagnostic,
                     [](const auto& result) -> const auto& { return result.timestamp_diagnostic; });
+              else if (interval)
+                check_fact(dt::DecodeCanonicalIntervalComponentNoAllocV3(*time_column.interval,
+                    dt::IntervalValueStateV3::value, true, cell.value.payload).diagnostic,
+                    [](const auto& result) -> const auto& { return result.interval_diagnostic; });
               else
                 check_fact(dt::DecodeCanonicalTimeComponentNoAllocV3(*time_column.time,
                     dt::TimeValueStateV3::value, true, cell.value.payload).diagnostic,
@@ -371,6 +412,7 @@ void TemporalReceivers() {
             auto invalid_columns = columns;
             invalid_columns.back().time.reset();
             invalid_columns.back().timestamp.reset();
+            invalid_columns.back().interval.reset();
             const page::RowDataTemporalReceiver invalid{p.body.relation_uuid, invalid_columns};
             Check(!page::BuildRowDataPageBody(empty.body, p.header.page_size_bytes-32, invalid).ok() &&
                       !page::ParseRowDataPageBody(empty_body, p.body.page_number, invalid).ok(),

@@ -13,6 +13,7 @@
 #include "datatype_binary_view.hpp"
 #include "datatype_time.hpp"
 #include "datatype_timestamp_diagnostic.hpp"
+#include "datatype_interval_diagnostic.hpp"
 #include "runtime_platform.hpp"
 #include "uuid.hpp"
 #include "row_external_value_locator.hpp"
@@ -27,6 +28,7 @@ namespace scratchbird::core::datatypes {
 struct DateValidatedProfileHandleV3;
 struct TimeValidatedProfileHandleV3;
 struct TimestampValidatedProfileHandleV3;
+struct IntervalValidatedProfileHandleV3;
 }
 
 namespace scratchbird::storage::page {
@@ -54,6 +56,7 @@ struct RowDataTemporalColumnBinding {
   std::shared_ptr<const core::datatypes::DateValidatedProfileHandleV3> date;
   std::shared_ptr<const core::datatypes::TimeValidatedProfileHandleV3> time;
   std::shared_ptr<const core::datatypes::TimestampValidatedProfileHandleV3> timestamp;
+  std::shared_ptr<const core::datatypes::IntervalValidatedProfileHandleV3> interval;
 };
 struct RowDataTemporalReceiver {
   TypedUuid relation_uuid;
@@ -168,6 +171,7 @@ struct RowDataPageResult {
   // Preserve native typed arguments when a TIME receiver refuses a cell.
   std::optional<scratchbird::core::datatypes::TimeDiagnosticFactV3> time_diagnostic;
   std::optional<scratchbird::core::datatypes::TimestampDiagnosticFactV3> timestamp_diagnostic;
+  std::optional<scratchbird::core::datatypes::IntervalDiagnosticFactV3> interval_diagnostic;
 
   bool ok() const {
     return status.ok();

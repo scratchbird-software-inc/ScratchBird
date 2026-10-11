@@ -13,6 +13,7 @@
 #include "physical_mga_cow_store.hpp"
 #include "datatype_date.hpp"
 #include "datatype_timestamp.hpp"
+#include "datatype_interval.hpp"
 #include "catalog_schema_definition.hpp"
 #include "transaction_inventory_page.hpp"
 #include "page_header.hpp"
@@ -2310,7 +2311,7 @@ void NativeInventoryLongChain() {
 }
 void TemporalReceivingProfiles() {
   namespace page = scratchbird::storage::page;
-  for (unsigned generation : {10u, 11u}) for (const auto type : {types::CanonicalTypeId::date, types::CanonicalTypeId::time, types::CanonicalTypeId::timestamp}) {
+  for (unsigned generation : {10u, 11u}) for (const auto type : {types::CanonicalTypeId::date, types::CanonicalTypeId::time, types::CanonicalTypeId::timestamp, types::CanonicalTypeId::interval}) {
     Fixture f;
     // Independent storage-component receiver; this does not assert SQL or
     // table-catalog admission. Physical MGA remains the transaction authority.
@@ -2330,13 +2331,17 @@ void TemporalReceivingProfiles() {
         auto bound = types::BuildTimeValidatedProfileHandleV3({snapshot,snapshot,generation,generation}, identity);
         Check(bound.ok(), "exact TIME physical receiver");
         column.time = std::make_shared<const types::TimeValidatedProfileHandleV3>(std::move(bound.profile));
-      } else {
+      } else if (type == types::CanonicalTypeId::timestamp) {
         auto bound = types::BuildTimestampValidatedProfileHandleV3({snapshot,snapshot,generation,generation}, identity);
         Check(bound.ok(), "exact TIMESTAMP physical receiver");
         column.timestamp = std::make_shared<const types::TimestampValidatedProfileHandleV3>(std::move(bound.profile));
+      } else {
+        auto bound = types::BuildIntervalValidatedProfileHandleV3({snapshot,snapshot,generation,generation}, identity);
+        Check(bound.ok(), "exact INTERVAL physical receiver");
+        column.interval = std::make_shared<const types::IntervalValidatedProfileHandleV3>(std::move(bound.profile));
       }
     }
-    Check(column.date || column.time || column.timestamp, "explicit physical receiver absent");
+    Check(column.date || column.time || column.timestamp || column.interval, "explicit physical receiver absent");
     schema->columns.push_back(column);
     const auto make = [&](mga::TransactionIdentity tx, u64 bits, bool null = false) {
       auto mutation = f.Mutation(tx, Id(UuidKind::row), f.first_page, "");
@@ -2349,6 +2354,12 @@ void TemporalReceivingProfiles() {
         const unsigned fraction = 999999999;
         for (unsigned i = 0; i < 4; ++i) cell.payload.push_back(static_cast<platform::byte>(fraction >> (8*i)));
         cell.payload.resize(16, 0);
+      }
+      if (!null && type == types::CanonicalTypeId::interval) {
+        cell.payload.clear();
+        for(const u64 part : {u64{0x80000000u},u64{0x7fffffffu}})
+          for(unsigned i=0;i<4;++i)cell.payload.push_back(static_cast<platform::byte>(part>>(8*i)));
+        for(unsigned i=0;i<8;++i)cell.payload.push_back(static_cast<platform::byte>(bits>>(8*i)));
       }
       return mutation;
     };
@@ -2435,6 +2446,12 @@ void TemporalReceivingProfiles() {
       bad->comparison_fingerprint[0] ^= 1; different->columns[0].timestamp = bad;
       test_failure(types::ValidateTimestampProfileHandleV3(*bad).diagnostic,
           [](const auto& result) -> const auto& { return result.timestamp_diagnostic; });
+    }
+    if (column.interval) {
+      auto bad = std::make_shared<types::IntervalValidatedProfileHandleV3>(*column.interval);
+      bad->equality_fingerprint[0] ^= 1; different->columns[0].interval = bad;
+      test_failure(types::ValidateIntervalProfileHandleV3(*bad).diagnostic,
+          [](const auto& result) -> const auto& { return result.interval_diagnostic; });
     }
     f.Finish(rejected_tx, false);
     f.Locked();
