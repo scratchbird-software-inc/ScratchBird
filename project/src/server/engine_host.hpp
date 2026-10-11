@@ -13,9 +13,11 @@
 #include "config.hpp"
 #include "database_ownership.hpp"
 #include "diagnostics.hpp"
+#include "api_types.hpp"
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -98,6 +100,10 @@ struct HostedEngineState {
 struct HostedEngineResult {
   HostedEngineState state;
   std::vector<ServerDiagnostic> diagnostics;
+  // Exact private recovery failure, including binary identities, occurrence,
+  // native cause and canonical metadata. The public server summary is not a
+  // replacement for this source record.
+  std::optional<engine::internal_api::EngineApiDiagnostic> descriptor_recovery_failure;
 
   bool ok() const { return diagnostics.empty(); }
 };

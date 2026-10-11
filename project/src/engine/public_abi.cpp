@@ -61,6 +61,7 @@
 #include "sblr_source_artifact_runtime.hpp"
 #include "sblr_error_vector_runtime.hpp"
 #include "sblr_error_vector_descriptor_registry.hpp"
+#include "sblr_startup_descriptor_recovery.hpp"
 #include "sblr_diagnostic_identity_registry.hpp"
 #include "sblr_transaction_begin_authority.hpp"
 #include "sblr_transaction_begin_runtime.hpp"
@@ -4906,18 +4907,14 @@ sb_engine_status_t sb_engine_open(const sb_engine_open_params_v1_t* params,
       recovery_context.security_context_present = true;
       recovery_context.statement_metadata_snapshot_engine_owned = true;
       const auto recovered = scratchbird::engine::internal_api::
-          RecoverSblrErrorVectorDescriptorRegistryV1(recovery_context);
-      if (recovered.error) {
+          RecoverSblrStartupDescriptorsV1(recovery_context);
+      if (!recovered.ok()) {
         handle.reset();
-        return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4093,
-                           recovered.code, recovered.message_key, recovered.detail);
-      }
-      const auto source_maps = scratchbird::engine::internal_api::
-          RecoverSblrSourceMapDescriptorRegistryV1(recovery_context);
-      if (source_maps.error) {
-        handle.reset();
-        return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4092,
-                           source_maps.code, source_maps.message_key, source_maps.detail);
+        const auto id = recovered.registry == scratchbird::engine::internal_api::
+            SblrStartupDescriptorRegistryV1::error_vector ? 4093 : 4092;
+        return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, id,
+                           recovered.diagnostic.code, recovered.diagnostic.message_key,
+                           recovered.diagnostic.detail);
       }
     }
   }

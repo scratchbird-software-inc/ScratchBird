@@ -5464,6 +5464,18 @@ if(TARGET sb_server_core)
     memory_policy_config_conformance.cpp
   )
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(server_host_descriptor_recovery_gate
+      "${PROJECT_SOURCE_DIR}/tests/concurrency/server_host_descriptor_recovery_gate.cpp")
+    target_compile_features(server_host_descriptor_recovery_gate PRIVATE cxx_std_23)
+    target_link_libraries(server_host_descriptor_recovery_gate PRIVATE sb_server_core)
+    target_link_options(server_host_descriptor_recovery_gate PRIVATE
+      "LINKER:--wrap=sb_engine_open" "LINKER:--wrap=sb_engine_close")
+    foreach(mode host-normal host-read-only host-maintenance host-restricted
+                 abi-normal abi-read-only abi-maintenance mismatch
+                 host-corrupt-error host-corrupt-source abi-corrupt-error abi-corrupt-source)
+      add_test(NAME server_host_descriptor_recovery_${mode}_gate COMMAND server_host_descriptor_recovery_gate ${mode})
+      set_tests_properties(server_host_descriptor_recovery_${mode}_gate PROPERTIES TIMEOUT 90)
+    endforeach()
     add_executable(server_shutdown_policy_gate
       "${PROJECT_SOURCE_DIR}/tests/concurrency/server_shutdown_policy_gate.cpp")
     target_compile_features(server_shutdown_policy_gate PRIVATE cxx_std_23)

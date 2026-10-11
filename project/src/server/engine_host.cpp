@@ -18,6 +18,7 @@
 #include "database_lifecycle.hpp"
 #include "sblr_bulk_import_stream_registry.hpp"
 #include "sblr_prepared_coordination_registry.hpp"
+#include "sblr_startup_descriptor_recovery.hpp"
 #include "scratchbird/engine/engine.h"
 #include "uuid.hpp"
 
@@ -297,29 +298,32 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
     return result;
   }
 
-  sb_engine_open_params_v1_t open_params{};
-  open_params.struct_size = sizeof(open_params);
-  open_params.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
-  open_params.database_path_utf8 = snapshot.database_path.data();
-  open_params.database_path_size = static_cast<std::uint64_t>(snapshot.database_path.size());
-  open_params.mode = OpenModeForConfig(config);
-
-  sb_engine_handle_t engine = nullptr;
-  sb_engine_result_t open_result = nullptr;
-  const auto status = sb_engine_open(&open_params, &engine, &open_result);
-  if (open_result != nullptr) {
-    (void)sb_engine_result_release(open_result);
-  }
-  if (status != SB_ENGINE_STATUS_OK) {
-    snapshot.state = HostedDatabaseState::kFailed;
-    snapshot.diagnostic_code = "SERVER.ENGINE_HOST.OPEN_FAILED";
-    snapshot.diagnostic_message_key = "server.engine_host.open_failed";
-    result.diagnostics.push_back(EngineHostDiagnostic(snapshot.diagnostic_code,
-                                                      snapshot.diagnostic_message_key,
-                                                      "The configured database could not be opened by the hosted engine public ABI.",
-                                                      snapshot.database_path));
-    result.state.databases.push_back(snapshot);
-    return result;
+  // The host never uses a temporary public ABI handle for sessions/execution.
+  // Perform its actual recovery work directly, sharing the ABI's exact ordered
+  // operation, rather than allocate an unused governor and discard a handle.
+  if (OpenModeForConfig(config) == SB_ENGINE_OPEN_NORMAL) {
+    engine::internal_api::EngineRequestContext recovery_context;
+    recovery_context.database_path = snapshot.database_path;
+    recovery_context.database_uuid = lifecycle_open.state.database_uuid.value;
+    recovery_context.security_context_present = true;
+    recovery_context.statement_metadata_snapshot_engine_owned = true;
+    auto recovered = engine::internal_api::RecoverSblrStartupDescriptorsV1(recovery_context);
+    if (!recovered.ok()) {
+      result.descriptor_recovery_failure.emplace(std::move(recovered.diagnostic));
+      const auto& diagnostic = *result.descriptor_recovery_failure;
+      snapshot.state = HostedDatabaseState::kQuarantined;
+      snapshot.diagnostic_code = diagnostic.code;
+      snapshot.diagnostic_message_key = diagnostic.message_key;
+      result.diagnostics.push_back(ServerDiagnostic{
+          .code = diagnostic.code,
+          .message_key = diagnostic.message_key,
+          .severity = ServerDiagnosticSeverity::kError,
+          .safe_message = "Hosted startup descriptor recovery did not complete.",
+          .fields = {{"database_path", snapshot.database_path}, {"detail", diagnostic.detail}},
+          .occurrence_uuid = diagnostic.occurrence_uuid});
+      result.state.databases.push_back(snapshot);
+      return result;
+    }
   }
   snapshot.database_created = false;
   snapshot.database_open = true;
@@ -329,7 +333,7 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
   snapshot.state = StateForConfig(config);
   snapshot.startup_recovery_classification =
       lifecycle_open.state.startup_recovery_classification.empty()
-          ? "public_abi_hosted_open"
+          ? "hosted_storage_open"
           : lifecycle_open.state.startup_recovery_classification;
 
   std::error_code database_path_error;
@@ -337,10 +341,6 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
       std::filesystem::symlink_status(config.database_default_path,
                                       database_path_error);
   if (database_path_error || std::filesystem::is_symlink(database_path_status)) {
-    if (engine != nullptr) {
-      (void)sb_engine_close(engine, nullptr);
-      engine = nullptr;
-    }
     snapshot.state = HostedDatabaseState::kQuarantined;
     snapshot.database_open = false;
     snapshot.write_admission_fenced = true;
@@ -362,10 +362,6 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
       std::filesystem::canonical(config.database_default_path,
                                  database_path_error);
   if (database_path_error || canonical_database_path.empty()) {
-    if (engine != nullptr) {
-      (void)sb_engine_close(engine, nullptr);
-      engine = nullptr;
-    }
     snapshot.state = HostedDatabaseState::kQuarantined;
     snapshot.database_open = false;
     snapshot.write_admission_fenced = true;
@@ -400,10 +396,6 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
       engine::internal_api::RecoverSblrPreparedCoordinationRegistry(
           prepared_recovery_context);
   if (prepared_recovery.code != "OK") {
-    if (engine != nullptr) {
-      (void)sb_engine_close(engine, nullptr);
-      engine = nullptr;
-    }
     snapshot.state = HostedDatabaseState::kQuarantined;
     snapshot.database_open = false;
     snapshot.write_admission_fenced = true;
@@ -438,10 +430,6 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
     const auto detail =
         database_runtime->bulk_import_stream_registry->startup_error();
     database_runtime.reset();
-    if (engine != nullptr) {
-      (void)sb_engine_close(engine, nullptr);
-      engine = nullptr;
-    }
     snapshot.state = HostedDatabaseState::kQuarantined;
     snapshot.database_open = false;
     snapshot.write_admission_fenced = true;
@@ -513,9 +501,6 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
     snapshot.write_admission_fenced = true;
   } else {
     snapshot.write_admission_fenced = false;
-  }
-  if (engine != nullptr) {
-    (void)sb_engine_close(engine, nullptr);
   }
   if (database_ownership_lock) {
     result.state.database_ownership_locks.push_back(std::move(database_ownership_lock));
