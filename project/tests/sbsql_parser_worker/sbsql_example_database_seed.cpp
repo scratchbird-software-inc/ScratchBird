@@ -10,6 +10,7 @@
 #include "catalog/schema_tree_api.hpp"
 #include "catalog/datatype_bootstrap_identity.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "datatype_operations.hpp"
 #include "security/security_model.hpp"
 #include "server_engine_bridge/statement_context.hpp"
@@ -115,12 +116,15 @@ api::EngineColumnDefinition Column(const api::EngineRequestContext& context,
   column.descriptor.canonical_type_name = std::move(type);
   column.descriptor.datatype_descriptor_uuid = catalog.descriptor_uuid.value;
   column.descriptor.datatype_descriptor_generation = catalog.descriptor_epoch;
-  const auto codec = datatypes::LookupDatatypeTypeCodecIdentityV1(
+  const auto* codec = datatypes::FindDatatypeTypeCodecIdentityV3(
       context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
       context.datatype_registry_generation, catalog.descriptor_uuid.value,
       catalog.descriptor_epoch);
-  if (!codec.ok) Fail("driver fixture datatype codec binding unavailable");
-  column.descriptor.type_uuid = codec.row.type_uuid;
+  if (!codec) Fail("driver fixture datatype codec binding unavailable");
+  column.descriptor.datatype_cohort = {
+      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+      context.datatype_registry_generation};
+  column.descriptor.type_uuid = codec->legacy_fields.type_uuid;
   column.descriptor.encoded_descriptor =
       "type=" + column.descriptor.canonical_type_name + ";nullable=true";
   return column;

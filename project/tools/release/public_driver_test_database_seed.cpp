@@ -11,6 +11,7 @@
 #include "catalog/datatype_bootstrap_identity.hpp"
 #include "database_lifecycle.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "datatype_operations.hpp"
 #include "ddl/create_api.hpp"
 #include "dml/insert_api.hpp"
@@ -394,22 +395,25 @@ api::EngineColumnDefinition Column(const api::EngineRequestContext& context,
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.datatype_descriptor_uuid = catalog.descriptor_uuid.value;
   column.descriptor.datatype_descriptor_generation = catalog.descriptor_epoch;
-  const auto codec = datatypes::LookupDatatypeTypeCodecIdentityV1(
+  const auto* codec = datatypes::FindDatatypeTypeCodecIdentityV3(
       context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
       context.datatype_registry_generation, catalog.descriptor_uuid.value,
       catalog.descriptor_epoch);
-  if (!codec.ok) Fail("driver fixture datatype codec binding unavailable");
+  if (!codec) Fail("driver fixture datatype codec binding unavailable");
+  column.descriptor.datatype_cohort = {
+      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+      context.datatype_registry_generation};
   // The historical registry retains BIGINT as a presentation label. Its
   // binary type identity, not that label or the fixture's SQL spelling,
   // determines the canonical signed-integer execution descriptor. TEXT keeps
   // its exact registered UTF-8 profile rather than the broad character family.
   const auto canonical_type = static_cast<datatypes::CanonicalTypeId>(
-      codec.row.canonical_binary_type_code);
+      codec->legacy_fields.canonical_binary_type_code);
   column.descriptor.canonical_type_name =
       canonical_type == datatypes::CanonicalTypeId::int32 ||
               canonical_type == datatypes::CanonicalTypeId::int64
-          ? datatypes::CanonicalTypeName(canonical_type) : codec.row.canonical_name;
-  column.descriptor.type_uuid = codec.row.type_uuid;
+          ? datatypes::CanonicalTypeName(canonical_type) : codec->legacy_fields.canonical_name;
+  column.descriptor.type_uuid = codec->legacy_fields.type_uuid;
   column.descriptor.encoded_descriptor =
       "type=" + column.descriptor.canonical_type_name + ";nullable=true";
   return column;
