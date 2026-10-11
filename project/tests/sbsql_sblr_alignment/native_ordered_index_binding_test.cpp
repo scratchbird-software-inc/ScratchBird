@@ -19,11 +19,27 @@ void Check(bool ok, const char* reason) {
   ++checks;
   if (!ok) throw std::runtime_error(reason);
 }
+api::EngineDescriptor Source(const char* name, std::string metadata) {
+  const auto type=dt::CanonicalTypeIdFromStableName(name);
+  for(const auto& candidate:dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row=candidate.legacy_fields;
+    if(row.catalog_snapshot_uuid!=dt::kDatatypeCohortV5 ||
+       row.canonical_binary_type_code!=static_cast<std::uint32_t>(type))continue;
+    api::EngineDescriptor source;
+    source.descriptor_uuid=source.datatype_descriptor_uuid=row.descriptor_uuid;
+    source.datatype_descriptor_generation=row.descriptor_generation;source.type_uuid=row.type_uuid;
+    source.datatype_cohort={row.catalog_snapshot_uuid,row.catalog_generation,row.registry_generation};
+    source.descriptor_kind="executor.scalar";source.canonical_type_name=name;
+    source.encoded_descriptor=std::move(metadata);
+    return source;
+  }
+  throw std::runtime_error("explicit D705 fixture row missing");
+}
 key::OrderedIndexColumn Binding(const char* name) {
-  const auto source = exec::MakeExecutorDescriptor(name, "nullability=nullable");
+  const auto source = Source(name, "nullability=nullable");
   key::OrderedIndexColumn binding;
-  Check(dt::LookupDatatypeStorageIdentityV3(api::kBootstrapDatatypeCatalogUuid,
-      api::kBootstrapDatatypeCatalogGeneration, api::kBootstrapDatatypeRegistryGeneration,
+  Check(dt::LookupDatatypeStorageIdentityV3(source.datatype_cohort.catalog_snapshot_uuid,
+      source.datatype_cohort.catalog_generation, source.datatype_cohort.registry_generation,
       source.datatype_descriptor_uuid, source.datatype_descriptor_generation, &binding.datatype),
       "exact index fixture storage identity unavailable");
   binding.descriptor = {scratchbird::core::platform::UuidKind::object, source.datatype_descriptor_uuid};
@@ -86,7 +102,7 @@ void Refusals(const char* name, std::string bytes) {
         &output, &is_null, &diagnostic) && output == "unchanged" && !is_null,
         "index guessed an invalid or text carrier");
   for (unsigned mutation = 0; mutation < 7; ++mutation) {
-    auto source = exec::MakeExecutorDescriptor(name, "nullability=nullable");
+    auto source = Source(name, "nullability=nullable");
     switch (mutation) {
       case 0: source.encoded_descriptor += ";precision=1"; break;
       case 1: source.encoded_descriptor += ";unknown=1"; break;
@@ -103,7 +119,7 @@ void Refusals(const char* name, std::string bytes) {
           destination.descriptor_epoch == bound.execution_descriptor.descriptor_epoch &&
           destination.nullable_allowed, "malformed column projection accepted or changed output");
   }
-  auto source = exec::MakeExecutorDescriptor(name, "canonical=" + std::string(name));
+  auto source = Source(name, "canonical=" + std::string(name));
   scratchbird::engine::ExecutionTypeDescriptor projected;
   std::string detail;
   Check(key::BuildOrderedColumnExecutionDescriptor(source, bound.datatype, false, &projected, &detail) &&
@@ -311,7 +327,80 @@ void DateBoundKeys() {
   }
   }
 }
+void TimeBoundKeys() {
+  for (unsigned generation : {10u, 11u}) {
+    const auto cohort = generation == 10 ? dt::kDatatypeCohortV10 : dt::kDatatypeCohortV11;
+    auto time = Binding("time");
+    Check(!key::BindOrderedTimeProfile(&time) && !time.time_profile,
+          "historical storage-only TIME acquired semantic authority");
+    Check(dt::LookupDatatypeStorageIdentityV3(cohort, generation, generation,
+        time.datatype.descriptor_uuid, time.datatype.descriptor_generation, &time.datatype) &&
+        key::BindOrderedTimeProfile(&time), "exact TIME index profile did not bind");
+    const std::uint64_t values[] = {0, 1, 255, 256, 65536, dt::kTimeMaximumNanosecondsV3};
+    for (const auto value : values) {
+      std::string raw = "SBTIMK01";
+      raw.append(reinterpret_cast<const char*>(cohort.bytes.data()), 16);
+      raw += Integer(generation); raw += Integer(generation);
+      const std::string_view fingerprint = generation == 10 ?
+          "75deaba796da7e2008600237a5ebfb0dd8a76f2b62ea664b66876ba47f05b3d6" :
+          "1673475a46395937c1eef4e90bdc92e72eec21a47404394bfe272224cf983f44";
+      const auto digit = [](char ch) { return ch <= '9' ? ch - '0' : ch - 'a' + 10; };
+      for (std::size_t i = 0; i < fingerprint.size(); i += 2)
+        raw.push_back(static_cast<char>(digit(fingerprint[i]) * 16 + digit(fingerprint[i+1])));
+      constexpr unsigned char ordering_policy[] = {
+          0x01,0xa1,0x03,0x2b,0x9f,0x51,0x72,0x29,0x97,0x7b,0x45,0x73,0x0f,0x3d,0xff,0x36};
+      raw.append(reinterpret_cast<const char*>(ordering_policy), sizeof(ordering_policy));
+      raw += Integer(1); raw.append("\0\0\1\10", 4);
+      for (int shift = 56; shift >= 0; shift -= 8) raw.push_back(static_cast<char>(value >> shift));
+      scratchbird::core::index::IndexKeyEncodingComponent expected;
+      expected.type_descriptor_uuid = time.descriptor;
+      expected.type_descriptor_epoch = time.datatype.descriptor_generation;
+      expected.null_placement = scratchbird::core::index::IndexKeyNullPlacement::nulls_first;
+      expected.payload.assign(raw.begin(), raw.end());
+      const auto encoded = scratchbird::core::index::EncodeIndexKey({expected}, {});
+      Check(encoded.ok() && raw.size() == 108 && Encode(time, Integer(value)) ==
+          std::string(encoded.encoded.begin(), encoded.encoded.end()), "TIME key differs from independent binary oracle");
+    }
+    for (unsigned i = 1; i < std::size(values); ++i)
+      Check(Encode(time, Integer(values[i-1])) < Encode(time, Integer(values[i])), "TIME unsigned order changed");
+    Check(Encode(time, api::CrudStoredValue::SqlNull()) < Encode(time, Integer(0)), "TIME NULL aliases midnight");
+    auto refuses = [](const key::OrderedIndexColumn& binding, const api::CrudStoredValue& value) {
+      std::string output = "unchanged"; bool null_key = false; api::EngineApiDiagnostic diagnostic;
+      Check(!key::EncodeOrderedIndexKey(api::EncodeStoredLogicalKey({value}), {binding},
+          &output, &null_key, &diagnostic) && output == "unchanged" && !null_key && diagnostic.error,
+          "invalid TIME input published a key or changed output");
+    };
+    for (const auto& invalid : {std::string{}, std::string(7, '\0'), std::string(9, '\0'),
+          std::string{"00:00:00"}, Integer(dt::kTimeMaximumNanosecondsV3 + 1), Integer(-1)}) refuses(time, invalid);
+    auto required = time; required.execution_descriptor.nullable_allowed = false;
+    Check(Encode(required, Integer(1)) == Encode(time, Integer(1)), "TIME nullability changed PRESENT key");
+    refuses(required, api::CrudStoredValue::SqlNull());
+    for (unsigned mutation = 0; mutation < 12; ++mutation) {
+      auto changed = time;
+      switch (mutation) {
+        case 0: changed.time_profile.reset(); break;
+        case 1: ++changed.time_profile->receipt.catalog_generation; break;
+        case 2: changed.time_profile->comparison_fingerprint[0] ^= 1; break;
+        case 3: ++changed.datatype.codec->ordering_policy.generation; break;
+        case 4: changed.execution_descriptor.canonical_type_id = 0; break;
+        case 5: changed.execution_descriptor.bit_width = 32; break;
+        case 6: changed.execution_descriptor.precision = 1; break;
+        case 7: changed.execution_descriptor.domain_stack.push_back(changed.execution_descriptor.descriptor_uuid); break;
+        case 8: changed.execution_descriptor.modifier_flags = 1; break;
+        case 9: ++changed.datatype.codec->native_fields.canonical_value_transport_width; break;
+        case 10: changed.datatype.codec.reset(); break;
+        case 11: changed.descriptor.value.bytes[0] ^= 1; break;
+      }
+      refuses(changed, Integer(1)); refuses(changed, api::CrudStoredValue::SqlNull());
+    }
+    auto relabeled = time;
+    relabeled.datatype.codec->legacy_fields.canonical_name = "localized TIME";
+    relabeled.datatype.codec->legacy_fields.codec_id = "localized codec";
+    Check(Encode(relabeled, Integer(1)) == Encode(time, Integer(1)), "TIME labels changed key authority");
+  }
+}
 int main() {
+  TimeBoundKeys();
   DateBoundKeys();
   PolicyBearingBinding();
   const auto integer = Binding("int64");

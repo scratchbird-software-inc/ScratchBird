@@ -634,6 +634,16 @@ TimeProfileResultV3 BuildTimeValidatedProfileHandleV3(
   }
 }
 
+TimeValidationResultV3 ValidateTimeExecutionDescriptorV3(
+    const scratchbird::engine::ExecutionTypeDescriptor& descriptor,
+    const DatatypeTypeCodecIdentityRowV3& identity) noexcept {
+  const auto& row=identity.legacy_fields;
+  if (!ExactReceipt({row.catalog_snapshot_uuid,row.catalog_snapshot_uuid,row.catalog_generation,row.registry_generation}) ||
+      !ExactTimeIdentity(identity) || !TimeDescriptor(&descriptor,identity,descriptor.nullable_allowed))
+    return Failure<TimeValidationResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID","time_execution_descriptor_invalid");
+  return Success<TimeValidationResultV3>();
+}
+
 TimeValidationResultV3 ValidateTimeProfileHandleV3(
     const TimeValidatedProfileHandleV3& profile,
     const TimeExecutionControlV3& control) noexcept {
@@ -1089,21 +1099,23 @@ TimeBytesResultV3 HashTimeValueV3(const TimeOwnedValueV3& value,const TimeExecut
   auto r=Success<TimeBytesResultV3>();try{r.bytes.assign(bytes.begin(),bytes.end());}catch(...){return Failure<TimeBytesResultV3>("RESOURCE.BUDGET_EXCEEDED","hash_allocation",ResourceStatus());}if(Cancelled(control)){SecureClear(r.bytes.data(),r.bytes.size());return Failure<TimeBytesResultV3>("PROCESS.CANCELLED","before_publication");}return r;
 }
 
-TimeNoAllocWriteResultV3 MakeTimeSortKeyIntoNoAllocV3(
-    const TimeOwnedValueV3& value,TimeSortDirectionV3 direction,
+namespace {
+template<class Source>
+TimeNoAllocWriteResultV3 MakeTimeSortKeyBoundIntoNoAllocV3(
+    const Source& source,const TimeValueViewV3& value,TimeSortDirectionV3 direction,
     TimeNullModeV3 null_mode,byte* output,u64 capacity,
     const TimeExecutionControlV3& control) noexcept {
-  const auto authority=ValidateTimeAuthorityEnvelope(value.view());
+  const auto authority=ValidateTimeAuthorityEnvelope(value);
   if(!authority.ok())return Failure<TimeNoAllocWriteResultV3>(authority.diagnostic.diagnostic_code,authority.diagnostic.detail,authority.status);
   if(direction!=TimeSortDirectionV3::ascending&&direction!=TimeSortDirectionV3::descending)
     return Failure<TimeNoAllocWriteResultV3>("CTI.TEMPORAL.INDEX_KEY_REFUSED","direction");
   if(null_mode!=TimeNullModeV3::nulls_first&&null_mode!=TimeNullModeV3::nulls_last)
     return Failure<TimeNoAllocWriteResultV3>("CTI.TEMPORAL.INDEX_KEY_REFUSED","null_mode");
-  const auto state=ValidateTimeStateEnvelope(value.view());if(!state.ok())return Failure<TimeNoAllocWriteResultV3>(state.diagnostic.diagnostic_code,state.diagnostic.detail,state.status);
-  const auto range=ValidateTimePresentRange(value.view());if(!range.ok())return Failure<TimeNoAllocWriteResultV3>(range.diagnostic.diagnostic_code,range.diagnostic.detail,range.status);
+  const auto state=ValidateTimeStateEnvelope(value);if(!state.ok())return Failure<TimeNoAllocWriteResultV3>(state.diagnostic.diagnostic_code,state.diagnostic.detail,state.status);
+  const auto range=ValidateTimePresentRange(value);if(!range.ok())return Failure<TimeNoAllocWriteResultV3>(range.diagnostic.diagnostic_code,range.diagnostic.detail,range.status);
   const u64 extent=value.state==TimeValueStateV3::sql_null?100:108;
   std::array<byte,108> staged{};ScopedClear clear_staged(staged.data(),staged.size(),TimeScrubClassV3::ordered_key_staging,control.observe_scrubbed,control.scrub_observer_context);
-  if(output!=nullptr&&(RangesOverlap(output,extent,&value,sizeof(value))||RangesOverlap(output,extent,&control,sizeof(control))||OutputOverlapsProfile(output,extent,*value.profile)))return Failure<TimeNoAllocWriteResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","key_overlap");
+  if(output!=nullptr&&(RangesOverlap(output,extent,&source,sizeof(source))||RangesOverlap(output,extent,&value,sizeof(value))||RangesOverlap(output,extent,&control,sizeof(control))||OutputOverlapsProfile(output,extent,*value.profile)))return Failure<TimeNoAllocWriteResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","key_overlap");
   if(capacity<extent||control.maximum_allocation_bytes<extent||output==nullptr){auto r=Failure<TimeNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED","key_capacity",ResourceStatus());r.bytes_required=extent;return r;}
   std::memcpy(staged.data(),"SBTIMK01",8);PutUuid(staged.data()+8,value.profile->receipt.catalog_snapshot_uuid);StoreLittle64(staged.data()+24,value.profile->receipt.catalog_generation);StoreLittle64(staged.data()+32,value.profile->receipt.registry_generation);
   std::memcpy(staged.data()+40,value.profile->comparison_fingerprint.data(),32);PutPolicy(staged.data()+72,kOrderingPolicy);
@@ -1114,6 +1126,20 @@ TimeNoAllocWriteResultV3 MakeTimeSortKeyIntoNoAllocV3(
     return Failure<TimeNoAllocWriteResultV3>("PROCESS.CANCELLED","before_publication");
   std::memcpy(output,staged.data(),extent);
   auto r=Success<TimeNoAllocWriteResultV3>();r.bytes_required=extent;r.bytes_written=extent;r.containing_null=value.state==TimeValueStateV3::sql_null;return r;
+}
+
+} // namespace
+
+TimeNoAllocWriteResultV3 MakeTimeSortKeyIntoNoAllocV3(
+    const TimeOwnedValueV3& value,TimeSortDirectionV3 direction,
+    TimeNullModeV3 null_mode,byte* output,u64 capacity,const TimeExecutionControlV3& control) noexcept {
+  return MakeTimeSortKeyBoundIntoNoAllocV3(value,value.view(),direction,null_mode,output,capacity,control);
+}
+
+TimeNoAllocWriteResultV3 MakeTimeSortKeyViewIntoNoAllocV3(
+    const TimeValueViewV3& value,TimeSortDirectionV3 direction,
+    TimeNullModeV3 null_mode,byte* output,u64 capacity,const TimeExecutionControlV3& control) noexcept {
+  return MakeTimeSortKeyBoundIntoNoAllocV3(value,value,direction,null_mode,output,capacity,control);
 }
 
 TimeBytesResultV3 MakeTimeSortKeyV3(const TimeOwnedValueV3& value,

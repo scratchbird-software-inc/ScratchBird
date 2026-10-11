@@ -8,6 +8,7 @@
 #include "crud_support/crud_store.hpp"
 #include "datatype_storage_identity.hpp"
 #include "datatype_date.hpp"
+#include "datatype_time.hpp"
 #include "domain_support/domain_store.hpp"
 #include "mga_relation_store/stored_scalar_payload.hpp"
 #include "engine/executor/descriptor_value_runtime.hpp"
@@ -43,6 +44,7 @@ struct OrderedIndexColumn {
   core::platform::TypedUuid collation;
   engine::ExecutionTypeDescriptor execution_descriptor;
   std::optional<core::datatypes::DateValidatedProfileHandleV3> date_profile;
+  std::optional<core::datatypes::TimeValidatedProfileHandleV3> time_profile;
   std::optional<DomainInheritedProfileResolution> inherited_domain;
 };
 
@@ -60,6 +62,19 @@ inline bool BindOrderedDateProfile(OrderedIndexColumn* column) {
        identity.catalog_generation, identity.registry_generation}, row);
   if (!profile.ok()) return false;
   column->date_profile = std::move(profile.profile);
+  return true;
+}
+
+inline bool BindOrderedTimeProfile(OrderedIndexColumn* column) {
+  if (!column || column->datatype.type_id != core::datatypes::CanonicalTypeId::time ||
+      !column->datatype.codec) return false;
+  const auto& row=*column->datatype.codec;
+  if (!core::datatypes::ValidateTimeExecutionDescriptorV3(column->execution_descriptor,row).ok()) return false;
+  const auto& identity=row.legacy_fields;
+  auto profile=core::datatypes::BuildTimeValidatedProfileHandleV3(
+      {identity.catalog_snapshot_uuid,identity.catalog_snapshot_uuid,identity.catalog_generation,identity.registry_generation},row);
+  if (!profile.ok()) return false;
+  column->time_profile=std::move(profile.profile);
   return true;
 }
 
@@ -306,6 +321,9 @@ class PublicationBindingScope {
     if (column.datatype.type_id == core::datatypes::CanonicalTypeId::date &&
         !BindOrderedDateProfile(&column))
       return refuse("sorted_index_date_profile_unbound");
+    if (column.datatype.type_id == core::datatypes::CanonicalTypeId::time &&
+        !BindOrderedTimeProfile(&column))
+      return refuse("sorted_index_time_profile_unbound");
     if (column.datatype.type_id == core::datatypes::CanonicalTypeId::character) {
       EngineResourceDescriptorLookupResult resource;
       const auto cached = collations_.find(found->collation_uuid);
@@ -453,6 +471,33 @@ inline bool EncodeOrderedIndexKey(std::string_view logical_key,
         return false;
       }
       sort_key.assign(reinterpret_cast<const char*>(bytes.data()), encoded.bytes_written);
+    } else if (binding.datatype.type_id == core::datatypes::CanonicalTypeId::time) {
+      namespace dt = core::datatypes;
+      if (!binding.datatype.codec || !binding.time_profile ||
+          !dt::SameDatatypeTypeCodecIdentityV3(binding.time_profile->identity,*binding.datatype.codec) ||
+          !dt::ValidateTimeExecutionDescriptorV3(binding.execution_descriptor,*binding.datatype.codec).ok()) {
+        *diagnostic=MakeInvalidRequestDiagnostic("mga.index_store","sorted_index_time_profile_unbound");
+        return false;
+      }
+      const auto decoded=dt::DecodeCanonicalTimeComponentNoAllocV3(*binding.time_profile,
+          value.isSqlNull()?dt::TimeValueStateV3::sql_null:dt::TimeValueStateV3::value,
+          binding.execution_descriptor.nullable_allowed,
+          {reinterpret_cast<const core::platform::byte*>(value.bytes.data()),value.bytes.size()});
+      if (!decoded.ok()) {
+        *diagnostic=MakeEngineApiDiagnostic(std::string(decoded.diagnostic.diagnostic_code),
+            "datatype.sort_key.rejected",std::string(decoded.diagnostic.detail),true);
+        return false;
+      }
+      std::array<core::platform::byte,dt::kTimeValueSortKeyBytesV3> bytes{};
+      const auto encoded=dt::MakeTimeSortKeyViewIntoNoAllocV3(decoded.value,
+          dt::TimeSortDirectionV3::ascending,dt::TimeNullModeV3::nulls_first,
+          bytes.data(),bytes.size(),{bytes.size()});
+      if (!encoded.ok()) {
+        *diagnostic=MakeEngineApiDiagnostic(std::string(encoded.diagnostic.diagnostic_code),
+            "datatype.sort_key.rejected",std::string(encoded.diagnostic.detail),true);
+        return false;
+      }
+      sort_key.assign(reinterpret_cast<const char*>(bytes.data()),encoded.bytes_written);
     } else if (binding.datatype.type_id == core::datatypes::CanonicalTypeId::decimal_float) {
       if (!binding.datatype.codec ||
           !core::datatypes::IsExactCanonicalDecimal128TypeCodecIdentityV1(binding.datatype.codec->legacy_fields)) {

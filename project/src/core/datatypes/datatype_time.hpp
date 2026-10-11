@@ -242,6 +242,9 @@ TimeProfileResultV3 BuildCurrentTimeValidatedProfileHandleV3(
 TimeProfileResultV3 BuildTimeValidatedProfileHandleV3(
     const TimeAuthorityReceiptV3& receipt,
     const DatatypeTypeCodecIdentityRowV3& identity) noexcept;
+TimeValidationResultV3 ValidateTimeExecutionDescriptorV3(
+    const scratchbird::engine::ExecutionTypeDescriptor& descriptor,
+    const DatatypeTypeCodecIdentityRowV3& identity) noexcept;
 TimeValidationResultV3 ValidateTimeProfileHandleV3(
     const TimeValidatedProfileHandleV3& profile,
     const TimeExecutionControlV3& control = {}) noexcept;
@@ -451,6 +454,11 @@ TimeBytesResultV3 MakeTimeSortKeyV3(
     const TimeExecutionControlV3& control = {}) noexcept;
 TimeNoAllocWriteResultV3 MakeTimeSortKeyIntoNoAllocV3(
     const TimeOwnedValueV3& value, TimeSortDirectionV3 direction,
+    TimeNullModeV3 null_mode, byte* output, u64 output_capacity,
+    const TimeExecutionControlV3& control = {}) noexcept;
+// Synchronous borrowed view; the caller retains its exact profile until return.
+TimeNoAllocWriteResultV3 MakeTimeSortKeyViewIntoNoAllocV3(
+    const TimeValueViewV3& value, TimeSortDirectionV3 direction,
     TimeNullModeV3 null_mode, byte* output, u64 output_capacity,
     const TimeExecutionControlV3& control = {}) noexcept;
 TimeSortKeyViewResultV3 DecodeTimeSortKeyNoAllocV3(

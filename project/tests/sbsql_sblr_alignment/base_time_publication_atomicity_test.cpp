@@ -224,5 +224,45 @@ void SharedProfileConcurrency(const std::shared_ptr<const dt::TimeValidatedProfi
  Check(std::all_of(accepted.begin(),accepted.end(),[](bool value){return value;}),"shared profile concurrent publication");Check(profile.use_count()==pins,"shared profile pins released");
 }
 
+void BorrowedKeys(){
+ for(const auto cohort:{dt::kDatatypeCohortV10,dt::kDatatypeCohortV11}){
+  const auto generation=cohort==dt::kDatatypeCohortV10?10u:11u;
+  const auto* identity=dt::FindDatatypeTypeCodecIdentityV3(cohort,generation,generation,
+      Identity(dt::CanonicalTypeId::time)->legacy_fields.descriptor_uuid,1);
+  Check(identity!=nullptr,"borrowed exact cohort row");
+  auto built=dt::BuildTimeValidatedProfileHandleV3({cohort,cohort,generation,generation},*identity);
+  Check(built.ok(),"borrowed exact profile");
+  auto profile=std::make_shared<const dt::TimeValidatedProfileHandleV3>(built.profile);
+  auto descriptor=Descriptor(dt::CanonicalTypeId::time);
+  BeginHeapFailure();auto admitted=dt::ValidateTimeExecutionDescriptorV3(descriptor,*identity);EndHeapFailure();
+  Check(admitted.ok()&&allocation_probe::fail_calls==0,"execution descriptor admission has no heap allocation");
+  for(unsigned mutation=0;mutation<7;++mutation){auto wrong=descriptor;
+   switch(mutation){case 0:++wrong.descriptor_epoch;break;case 1:wrong.descriptor_uuid.bytes[0]^=1;break;
+    case 2:wrong.bit_width=32;break;case 3:wrong.precision=1;break;case 4:wrong.modifier_flags=1;break;
+    case 5:wrong.domain_stack.push_back(wrong.descriptor_uuid);break;case 6:wrong.canonical_type_id=0;break;}
+   Check(!dt::ValidateTimeExecutionDescriptorV3(wrong,*identity).ok(),"execution descriptor mutation refused");
+  }
+  for(auto state:{dt::TimeValueStateV3::value,dt::TimeValueStateV3::sql_null}){
+   dt::TimeOwnedValueV3 owned{profile,state,state==dt::TimeValueStateV3::value?dt::kTimeMaximumNanosecondsV3:0};
+   auto view=owned.view();
+   for(auto direction:{dt::TimeSortDirectionV3::ascending,dt::TimeSortDirectionV3::descending})
+    for(auto null_mode:{dt::TimeNullModeV3::nulls_first,dt::TimeNullModeV3::nulls_last}){
+     auto oracle=dt::MakeTimeSortKeyV3(owned,direction,null_mode);Check(oracle.ok(),"borrowed owned parity oracle");
+     ExactGuardMatrix("borrowed key exact guards",oracle.bytes,[&](p::byte*out,p::u64 cap,const dt::TimeExecutionControlV3&control){return dt::MakeTimeSortKeyViewIntoNoAllocV3(view,direction,null_mode,out,cap,control);});
+     std::array<p::byte,108> output{};const auto pins=profile.use_count();
+     BeginHeapFailure();auto encoded=dt::MakeTimeSortKeyViewIntoNoAllocV3(view,direction,null_mode,output.data(),output.size());EndHeapFailure();
+     Check(encoded.ok()&&allocation_probe::fail_calls==0&&profile.use_count()==pins&&std::equal(oracle.bytes.begin(),oracle.bytes.end(),output.begin()),"borrowed key does not allocate or acquire a shared owner");
+    }
+   const auto before=view;dt::TimeExecutionControlV3 control{};
+   auto overlap=dt::MakeTimeSortKeyViewIntoNoAllocV3(view,dt::TimeSortDirectionV3::ascending,dt::TimeNullModeV3::nulls_first,reinterpret_cast<p::byte*>(&view),108);
+   Check(!overlap.ok()&&view.profile==before.profile&&view.state==before.state&&view.nanoseconds_since_midnight==before.nanoseconds_since_midnight,"borrowed view overlap leaves source unchanged");
+   overlap=dt::MakeTimeSortKeyViewIntoNoAllocV3(view,dt::TimeSortDirectionV3::ascending,dt::TimeNullModeV3::nulls_first,reinterpret_cast<p::byte*>(&control),108,control);
+   Check(!overlap.ok()&&control.maximum_allocation_bytes==~p::u64{0}&&!control.cancelled,"borrowed control overlap refused");
+   const auto material=profile->profile_material;
+   overlap=dt::MakeTimeSortKeyViewIntoNoAllocV3(view,dt::TimeSortDirectionV3::ascending,dt::TimeNullModeV3::nulls_first,const_cast<p::byte*>(profile->profile_material.data()),108);
+   Check(!overlap.ok()&&profile->profile_material==material,"borrowed profile overlap refused");
+  }
+ }
 }
-int main(){auto p0=Profile();NoAlloc(p0);FixedOutputGuardContract(p0);ScrubClassCoverage(p0);ScrubFailureCoverage(p0);CapacityOverlapCancellation(p0);OwnedFinalCancellation(p0);AllCheckpointCancellation(p0);BatchAtomicity(p0);HeapFailureAndRetry(p0);SharedProfileConcurrency(p0);std::cout<<"PASS base.time V3 publication atomicity checks="<<checks<<"\n";}
+}
+int main(){auto p0=Profile();NoAlloc(p0);FixedOutputGuardContract(p0);ScrubClassCoverage(p0);ScrubFailureCoverage(p0);CapacityOverlapCancellation(p0);OwnedFinalCancellation(p0);AllCheckpointCancellation(p0);BatchAtomicity(p0);HeapFailureAndRetry(p0);SharedProfileConcurrency(p0);BorrowedKeys();std::cout<<"PASS base.time V3 publication atomicity checks="<<checks<<"\n";}
