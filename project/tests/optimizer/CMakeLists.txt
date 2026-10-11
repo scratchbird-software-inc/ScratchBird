@@ -2874,6 +2874,15 @@ set_tests_properties(optimizer_deficiency_odf_092_gate PROPERTIES
   LABELS "optimizer_deficiency_odf_092_gate;ODF-092;optimizer_deficiency;optimizer;executor;index;nosql;mga;benchmark_clean;mga_transaction_regression"
 )
 
+add_executable(batch_point_lookup_binary_identity_conformance
+  batch_point_lookup_binary_identity_conformance.cpp)
+target_compile_features(batch_point_lookup_binary_identity_conformance PRIVATE cxx_std_20)
+target_link_libraries(batch_point_lookup_binary_identity_conformance PRIVATE sb_core_index)
+add_test(NAME batch_point_lookup_binary_identity_conformance
+  COMMAND batch_point_lookup_binary_identity_conformance)
+set_tests_properties(batch_point_lookup_binary_identity_conformance PROPERTIES
+  LABELS "index;uuid;binary_identity;component_conformance")
+
 add_executable(
   optimizer_deficiency_odf_093_gate
   optimizer_deficiency_odf_093_gate.cpp

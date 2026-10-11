@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <map>
 #include <set>
+#include <string_view>
 #include <utility>
 
 namespace scratchbird::core::index {
@@ -50,6 +51,11 @@ bool RowUuidLess(const BatchPointLookupProviderRow& left,
 
 bool ValidRowUuid(const TypedUuid& uuid) {
   return uuid.valid() && uuid.kind == UuidKind::row;
+}
+
+bool CompleteOccurrenceRecheck(const CandidateSetRow& row) {
+  return row.exact_predicate_match && row.mga_visible &&
+         row.security_authorized;
 }
 
 std::string CountEvidence(std::string key, u64 value) {
@@ -353,8 +359,14 @@ BatchPointLookupResult RunBatchPointLookup(
   }
 
   std::map<std::string, std::vector<BatchPointLookupProviderRow>> rows_by_key;
-  std::set<std::string> key_row_pairs;
+  // Keep the key and exact row identity as separate fields. UUIDs never pass
+  // through a textual nibble encoding, even for transient duplicate detection.
+  // RowKey uses the same unsigned canonical-byte order as the output sort.
+  // Views refer only to immutable map keys, not the provider strings moved
+  // below. Map insertion never invalidates them; the set is destroyed first.
+  std::set<std::pair<std::string_view, RowKey>> key_row_pairs;
   std::vector<CandidateSetRow> candidates;
+  bool all_occurrences_rechecked = true;
   for (auto& row : provider_result.rows) {
     if (requested_keys.find(row.encoded_key) == requested_keys.end()) {
       return Refuse(plan, "SB_BATCH_POINT_LOOKUP.PROVIDER_ROW_OUT_OF_PLAN",
@@ -372,23 +384,16 @@ BatchPointLookupResult RunBatchPointLookup(
                     "batch_point_lookup.exact_row_uuid_required",
                     "provider_row_missing_exact_row_uuid");
     }
-    const auto pair_key =
-        row.encoded_key + "|" + std::to_string(static_cast<u32>(
-                                  row.candidate.row_uuid.kind)) +
-        "|";
-    std::string row_bytes;
-    row_bytes.reserve(row.candidate.row_uuid.value.bytes.size() * 2);
-    for (const auto byte : row.candidate.row_uuid.value.bytes) {
-      row_bytes.push_back(static_cast<char>('A' + ((byte >> 4) & 0x0f)));
-      row_bytes.push_back(static_cast<char>('A' + (byte & 0x0f)));
-    }
-    if (!key_row_pairs.insert(pair_key + row_bytes).second) {
+    const auto bucket = rows_by_key.try_emplace(row.encoded_key).first;
+    if (!key_row_pairs.emplace(std::string_view{bucket->first},
+                              RowKey{row.candidate.row_uuid}).second) {
       return Refuse(plan, "SB_BATCH_POINT_LOOKUP.PROVIDER_DUPLICATE_ROW_UUID",
                     "batch_point_lookup.provider_duplicate_row_uuid",
                     "provider_returned_duplicate_row_uuid_for_key");
     }
+    all_occurrences_rechecked &= CompleteOccurrenceRecheck(row.candidate);
     candidates.push_back(row.candidate);
-    rows_by_key[row.encoded_key].push_back(std::move(row));
+    bucket->second.push_back(std::move(row));
   }
 
   for (auto& [key, rows] : rows_by_key) {
@@ -405,8 +410,32 @@ BatchPointLookupResult RunBatchPointLookup(
                                 candidate_stream.evidence);
   }
 
-  auto exact_recheck =
-      ExactRecheckCandidateSet(candidate_stream.output, authority);
+  // UUID normalization is candidate algebra, not authorization: OR-ing flags
+  // from separate key occurrences can manufacture a complete witness which
+  // none of those occurrences supplied. Only complete original observations
+  // may enter the final recheck. The common all-admitted case needs no second
+  // candidate vector or normalization pass.
+  CandidateSetResult complete_stream;
+  const CandidateSet* exact_input = &candidate_stream.output;
+  if (!all_occurrences_rechecked) {
+    std::vector<CandidateSetRow> complete_occurrences;
+    for (const auto& [key, rows] : rows_by_key) {
+      (void)key;
+      for (const auto& row : rows) {
+        if (CompleteOccurrenceRecheck(row.candidate))
+          complete_occurrences.push_back(row.candidate);
+      }
+    }
+    complete_stream = MakeExactRowUuidOrderedCandidateSet(
+        std::move(complete_occurrences), authority, false);
+    if (!complete_stream.ok()) {
+      return RefuseWithDiagnostic(plan, complete_stream.diagnostic,
+                                  "candidate_stream_refused",
+                                  complete_stream.evidence);
+    }
+    exact_input = &complete_stream.output;
+  }
+  auto exact_recheck = ExactRecheckCandidateSet(*exact_input, authority);
   if (!exact_recheck.ok()) {
     return RefuseWithDiagnostic(plan, exact_recheck.diagnostic,
                                 "exact_recheck_refused",
@@ -438,7 +467,8 @@ BatchPointLookupResult RunBatchPointLookup(
     const auto found = rows_by_key.find(key.encoded_key);
     if (found != rows_by_key.end()) {
       for (const auto& provider_row : found->second) {
-        if (authorized_rows.find(RowKey{provider_row.candidate.row_uuid}) ==
+        if (!CompleteOccurrenceRecheck(provider_row.candidate) ||
+            authorized_rows.find(RowKey{provider_row.candidate.row_uuid}) ==
             authorized_rows.end()) {
           continue;
         }
