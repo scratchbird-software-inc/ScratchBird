@@ -10,6 +10,7 @@
 #include "datatype_date.hpp"
 #include "datatype_time.hpp"
 #include "datatype_timestamp.hpp"
+#include "datatype_bit_string.hpp"
 #include "domain_support/domain_store.hpp"
 #include "mga_relation_store/stored_scalar_payload.hpp"
 #include "engine/executor/descriptor_value_runtime.hpp"
@@ -47,6 +48,9 @@ struct OrderedIndexColumn {
   std::optional<core::datatypes::DateValidatedProfileHandleV3> date_profile;
   std::optional<core::datatypes::TimeValidatedProfileHandleV3> time_profile;
   std::optional<core::datatypes::TimestampValidatedProfileHandleV3> timestamp_profile;
+  std::optional<core::datatypes::BitStringDescriptorProfileV3> bit_profile;
+  core::datatypes::BitStringSurfaceProfileKindV3 bit_profile_kind =
+      core::datatypes::BitStringSurfaceProfileKindV3::unqualified;
   std::optional<DomainInheritedProfileResolution> inherited_domain;
 };
 
@@ -242,6 +246,86 @@ inline bool BuildOrderedColumnExecutionDescriptor(
   return true;
 }
 
+// Shared representation projection for page and ordered-key owners. This is
+// not catalog/transaction admission and cannot select a policy by display name.
+struct BoundBitStringProfile {
+  core::datatypes::BitStringDescriptorProfileV3 profile;
+  core::datatypes::BitStringSurfaceProfileKindV3 kind =
+      core::datatypes::BitStringSurfaceProfileKindV3::unqualified;
+  engine::ExecutionTypeDescriptor execution;
+};
+inline bool BuildBoundBitStringProfile(
+    const EngineDescriptor& descriptor, const core::datatypes::DatatypeStorageIdentityV3& datatype,
+    bool nullable, BoundBitStringProfile* output, EngineApiDiagnostic* diagnostic) {
+  namespace dt = core::datatypes;
+  const auto refuse = [&](std::string_view code, std::string_view detail) {
+    if (diagnostic) *diagnostic = MakeEngineApiDiagnostic(std::string(code),
+        "datatype.native_bit.receiver", std::string(detail), true);
+    return false;
+  };
+  try {
+    if (!output || !datatype.codec || datatype.type_id != dt::CanonicalTypeId::bit_string)
+      return refuse("CTB.BIT.DESCRIPTOR_INVALID", "missing_receiver_binding");
+    const auto& codec = *datatype.codec;
+    const auto& row = codec.legacy_fields;
+    if (descriptor.datatype_cohort != EngineDatatypeCohort{
+            row.catalog_snapshot_uuid, row.catalog_generation, row.registry_generation} ||
+        datatype.descriptor_uuid != row.descriptor_uuid ||
+        datatype.descriptor_generation != row.descriptor_generation ||
+        datatype.type_uuid != row.type_uuid || row.canonical_binary_type_code != 302)
+      return refuse("CTB.BIT.DESCRIPTOR_INVALID", "receiver_cohort_or_codec_identity_mismatch");
+    CatalogColumnMetadata fields;
+    if (!AdmitCatalogColumnMetadata(descriptor.encoded_descriptor, &fields))
+      return refuse("CTB.BIT.DESCRIPTOR_INVALID", "receiver_metadata_invalid");
+    auto kind = dt::BitStringSurfaceProfileKindV3::unqualified;
+    const auto selected = fields.text.find("bit_profile_kind");
+    if (selected != fields.text.end()) {
+      if (selected->second == "1") kind = dt::BitStringSurfaceProfileKindV3::fixed;
+      else if (selected->second == "2") kind = dt::BitStringSurfaceProfileKindV3::varying;
+      else if (selected->second != "0")
+        return refuse("CTB.BIT.DESCRIPTOR_INVALID", "receiver_profile_kind_invalid");
+    }
+    // An omitted kind is unqualified only. Never infer fixed/varying from
+    // a display label or silently erase a supplied zero/ambiguous bound.
+    if ((kind == dt::BitStringSurfaceProfileKindV3::unqualified) == fields.text.contains("length"))
+      return refuse("CTB.BIT.DESCRIPTOR_INVALID", "receiver_profile_length_binding_invalid");
+    engine::ExecutionTypeDescriptor execution;
+    std::string detail;
+    if (!BuildOrderedColumnExecutionDescriptor(
+            descriptor, datatype, nullable, &execution, &detail))
+      return refuse("CTB.BIT.DESCRIPTOR_INVALID", detail);
+    const auto admitted = dt::ValidateBitStringExecutionDescriptorV3(execution, codec, kind);
+    if (!admitted.ok()) {
+      if (diagnostic) *diagnostic = MakeEngineApiDiagnosticFromNative(
+          dt::MakeBitStringDiagnosticV3(admitted.status, std::string(admitted.diagnostic.diagnostic_code),
+              "datatype.bit_string.rejected", std::string(admitted.diagnostic.detail)),
+          std::string(admitted.diagnostic.diagnostic_code), "datatype.native_bit.receiver", "occurrence_rejected", true);
+      return false;
+    }
+    dt::BitStringProfileRequestV3 request;
+    request.receipt = {row.catalog_snapshot_uuid, row.catalog_snapshot_uuid,
+                       row.catalog_generation, row.registry_generation};
+    request.identity = codec;
+    request.kind = kind;
+    request.length_bits = kind == dt::BitStringSurfaceProfileKindV3::unqualified
+        ? dt::kBitStringMaximumLogicalBitsV3 : execution.length;
+    auto profile = dt::BuildBitStringDescriptorProfileV3(request);
+    if (!profile.ok()) {
+      if (diagnostic) *diagnostic = MakeEngineApiDiagnosticFromNative(profile.diagnostic,
+          profile.diagnostic.diagnostic_code, "datatype.native_bit.receiver", "profile_rejected", true);
+      return false;
+    }
+    BoundBitStringProfile staged;
+    staged.profile = std::move(profile.profile);
+    staged.kind = kind;
+    staged.execution = std::move(execution);
+    *output = std::move(staged);
+    return true;
+  } catch (const std::bad_alloc&) {
+    return refuse("RESOURCE.BUDGET_EXCEEDED", "receiver_allocation_failed");
+  }
+}
+
 // This scope cannot be constructed or retained by callers. Each public helper
 // creates it on the stack for one fixed context and destroys it before return.
 // No binding survives an append call, transaction, node or resource epoch.
@@ -350,6 +434,13 @@ class PublicationBindingScope {
     if (column.datatype.type_id == core::datatypes::CanonicalTypeId::timestamp &&
         !BindOrderedTimestampProfile(&column))
       return refuse("sorted_index_timestamp_profile_unbound");
+    if (column.datatype.type_id == core::datatypes::CanonicalTypeId::bit_string) {
+      BoundBitStringProfile profile;
+      if (!BuildBoundBitStringProfile(projection, column.datatype, found->nullable, &profile, diagnostic)) return false;
+      column.bit_profile = std::move(profile.profile);
+      column.bit_profile_kind = profile.kind;
+      column.execution_descriptor = std::move(profile.execution);
+    }
     if (column.datatype.type_id == core::datatypes::CanonicalTypeId::character) {
       EngineResourceDescriptorLookupResult resource;
       const auto cached = collations_.find(found->collation_uuid);
@@ -469,6 +560,7 @@ inline bool EncodeOrderedIndexKey(std::string_view logical_key,
       return false;
     }
     std::string sort_key;
+    std::vector<core::platform::byte> binary_sort_key;
     if (binding.datatype.type_id == core::datatypes::CanonicalTypeId::date) {
       namespace dt = core::datatypes;
       if (!binding.datatype.codec || !binding.date_profile ||
@@ -551,6 +643,40 @@ inline bool EncodeOrderedIndexKey(std::string_view logical_key,
         return false;
       }
       sort_key.assign(reinterpret_cast<const char*>(bytes.data()), encoded.bytes_written);
+    } else if (binding.datatype.type_id == core::datatypes::CanonicalTypeId::bit_string) {
+      namespace dt = core::datatypes;
+      if (!binding.datatype.codec || !binding.bit_profile || !binding.collation.value.is_nil() ||
+          !dt::SameDatatypeTypeCodecIdentityV3(binding.bit_profile->identity, *binding.datatype.codec) ||
+          !dt::ValidateBitStringExecutionDescriptorV3(binding.execution_descriptor, *binding.datatype.codec,
+              binding.bit_profile_kind).ok() ||
+          binding.bit_profile->fixed_length != (binding.bit_profile_kind == dt::BitStringSurfaceProfileKindV3::fixed) ||
+          binding.bit_profile->length_bits != (binding.bit_profile_kind == dt::BitStringSurfaceProfileKindV3::unqualified
+              ? dt::kBitStringMaximumLogicalBitsV3 : binding.execution_descriptor.length)) {
+        *diagnostic = MakeInvalidRequestDiagnostic("mga.index_store", "sorted_index_bit_profile_unbound");
+        return false;
+      }
+      const auto decoded = dt::DecodeCanonicalBitStringComponentNoAllocV3(*binding.bit_profile,
+          value.isSqlNull() ? dt::BitStringValueStateV3::sql_null : dt::BitStringValueStateV3::present,
+          binding.execution_descriptor.nullable_allowed,
+          {reinterpret_cast<const core::platform::byte*>(value.bytes.data()), value.bytes.size()});
+      if (!decoded.ok()) {
+        *diagnostic = MakeEngineApiDiagnosticFromNative(dt::MakeBitStringDiagnosticV3(decoded.status,
+            std::string(decoded.diagnostic.diagnostic_code), "datatype.bit_string.rejected", std::string(decoded.diagnostic.detail)),
+            std::string(decoded.diagnostic.diagnostic_code), "datatype.sort_key.rejected", "bit_component_rejected", true);
+        return false;
+      }
+      // The outer index envelope owns NULL ordering; validate the BIT NULL
+      // profile/state, but do not allocate an inner key that will be discarded.
+      if (!value.isSqlNull()) {
+        auto encoded = dt::MakeBitStringSortKeyV3(decoded.value,
+            dt::BitStringSortDirectionV3::ascending, dt::BitStringNullModeV3::nulls_first);
+        if (!encoded.ok()) {
+          *diagnostic = MakeEngineApiDiagnosticFromNative(encoded.diagnostic, encoded.diagnostic.diagnostic_code,
+              "datatype.sort_key.rejected", "bit_key_rejected", true);
+          return false;
+        }
+        binary_sort_key = std::move(encoded.bytes);
+      }
     } else if (binding.datatype.type_id == core::datatypes::CanonicalTypeId::decimal_float) {
       if (!binding.datatype.codec ||
           !core::datatypes::IsExactCanonicalDecimal128TypeCodecIdentityV1(binding.datatype.codec->legacy_fields)) {
@@ -603,7 +729,11 @@ inline bool EncodeOrderedIndexKey(std::string_view logical_key,
     component.null_placement = core::index::IndexKeyNullPlacement::nulls_first;
     component.is_null = value.isSqlNull();
     contains_null = contains_null || component.is_null;
-    if (!component.is_null) component.payload.assign(sort_key.begin(), sort_key.end());
+    if (!component.is_null) {
+      if (binding.datatype.type_id == core::datatypes::CanonicalTypeId::bit_string)
+        component.payload = std::move(binary_sort_key);
+      else component.payload.assign(sort_key.begin(), sort_key.end());
+    }
     components.push_back(std::move(component));
   }
   const auto encoded = core::index::EncodeIndexKey(components, {});

@@ -517,7 +517,104 @@ void TimestampBoundKeys() {
     }
   }
 }
+void BitBoundKeys() {
+  for(const unsigned generation:{10u,11u})for(unsigned kind=0;kind<3;++kind) {
+    const auto cohort=generation==10?dt::kDatatypeCohortV10:dt::kDatatypeCohortV11;
+    api::EngineDescriptor source;
+    key::OrderedIndexColumn binding;
+    for(const auto& candidate:dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+      const auto& row=candidate.legacy_fields;
+      if(row.catalog_snapshot_uuid!=cohort||row.canonical_binary_type_code!=302)continue;
+      source.descriptor_uuid=source.datatype_descriptor_uuid=row.descriptor_uuid;
+      source.datatype_descriptor_generation=row.descriptor_generation;source.type_uuid=row.type_uuid;
+      source.datatype_cohort={cohort,generation,generation};source.descriptor_kind="scalar";
+      source.canonical_type_name="bit_string";
+      source.encoded_descriptor="nullability=nullable;bit_profile_kind="+std::to_string(kind)+(kind?";length=9":"");
+      binding.datatype={row.descriptor_uuid,row.descriptor_generation,row.type_uuid,dt::CanonicalTypeId::bit_string,candidate};
+      binding.descriptor={scratchbird::core::platform::UuidKind::object,row.descriptor_uuid};
+    }
+    key::BoundBitStringProfile profile;
+    api::EngineApiDiagnostic diagnostic;
+    Check(key::BuildBoundBitStringProfile(source,binding.datatype,true,&profile,&diagnostic),"BIT ordered profile failed");
+    binding.execution_descriptor=profile.execution;binding.bit_profile=profile.profile;binding.bit_profile_kind=profile.kind;
+    const auto component=[](std::string_view bits) {
+      std::string bytes(4+(bits.size()+7)/8,'\0');
+      for(unsigned i=0;i<4;++i)bytes[i]=static_cast<char>(bits.size()>>(8*i));
+      for(std::size_t i=0;i<bits.size();++i)if(bits[i]=='1')bytes[4+i/8]|=static_cast<char>(0x80>>(i%8));
+      return api::CrudStoredValue(bytes);
+    };
+    const std::vector<std::string> ordered=kind==1
+        ?std::vector<std::string>{"000000000","000000001","000000010","010000000","100000000","111111111"}
+        :std::vector<std::string>{"","0","00","000","001","01","1","10","100","101","11","111111111"};
+    std::string previous=Encode(binding,api::CrudStoredValue::SqlNull());
+    for(const auto& bits:ordered) {
+      const auto actual=Encode(binding,component(bits));
+      Check(previous<actual,"BIT prefix/logical order changed");previous=actual;
+      // Independent SBBITK01 literal, then the separately tested outer encoder.
+      std::string raw="SBBITK01";
+      raw.append(reinterpret_cast<const char*>(cohort.bytes.data()),16);
+      raw+=Integer(generation);raw+=Integer(generation);
+      constexpr std::string_view fingerprints[2][3]={
+          {"e1860523736b5b688bfb921c3eac0e786d20b639683d6d51cd4ce1515e961c89",
+           "e13e96cf92a0fea40f2d4cd716f5a3e060660b5514dcf4039d631ff77a7be18b",
+           "1f8a8d9445aa82dbf108a1a6795729fb346c65930c6be7a23ca851466b55c39c"},
+          {"903ff2109fa40d6fb97f5513b9e13713a28b56ef2d772e53a0d0bbd9e436a4aa",
+           "b122f87d0c3b7d0e20b2438e10f8152004ed521470ab2e0280f9c447bd390ed7",
+           "ace42fab9cd71093535f706a2108f46301d46b8eeaaa556b6c627e7904710cce"}};
+      const auto fingerprint=fingerprints[generation-10][kind];
+      const auto hex=[](char c){return c<='9'?c-'0':c-'a'+10;};
+      for(std::size_t i=0;i<fingerprint.size();i+=2)raw.push_back(static_cast<char>(hex(fingerprint[i])*16+hex(fingerprint[i+1])));
+      constexpr unsigned char policy[]={0x01,0xa0,0xff,0x27,0x27,0x17,0x7a,0x54,0xbd,0xbc,0xa3,0xc1,0xfe,0xe7,0xc5,0xe3};
+      raw.append(reinterpret_cast<const char*>(policy),16);raw+=Integer(1);raw.append("\0\0\1\0\0\0\0\0",8);
+      for(const char bit:bits)raw.push_back(bit=='1'?2:1);
+      raw.push_back(0);
+      scratchbird::core::index::IndexKeyEncodingComponent expected;
+      expected.type_descriptor_uuid=binding.descriptor;expected.type_descriptor_epoch=binding.datatype.descriptor_generation;
+      expected.null_placement=scratchbird::core::index::IndexKeyNullPlacement::nulls_first;
+      expected.payload.assign(raw.begin(),raw.end());
+      const auto encoded=scratchbird::core::index::EncodeIndexKey({expected},{});
+      if(encoded.ok()&&actual!=std::string(encoded.encoded.begin(),encoded.encoded.end())) {
+        std::size_t at=0;
+        while(at<actual.size()&&at<encoded.encoded.size()&&static_cast<unsigned char>(actual[at])==encoded.encoded[at])++at;
+        std::cerr<<"BIT oracle generation="<<generation<<" kind="<<kind<<" bits="<<bits.size()<<" mismatch="<<at
+                 <<" sizes="<<actual.size()<<','<<encoded.encoded.size()<<'\n';
+      }
+      Check(encoded.ok()&&actual==std::string(encoded.encoded.begin(),encoded.encoded.end()),"BIT key differs from literal binary oracle");
+    }
+    const auto refuses=[&](const key::OrderedIndexColumn& changed,const api::CrudStoredValue& value) {
+      std::string output="unchanged";bool null_key=false;
+      Check(!key::EncodeOrderedIndexKey(api::EncodeStoredLogicalKey({value}),{changed},&output,&null_key,&diagnostic)&&
+            output=="unchanged"&&!null_key&&diagnostic.error,"invalid BIT index binding published a key");
+    };
+    for(unsigned mutation=0;mutation<14;++mutation) {
+      auto changed=binding;
+      switch(mutation) {
+        case 0: changed.bit_profile.reset();break;
+        case 1: changed.bit_profile->profile_fingerprint[0]^=1;break;
+        case 2: ++changed.bit_profile->length_bits;break;
+        case 3: changed.bit_profile_kind=static_cast<dt::BitStringSurfaceProfileKindV3>(3);break;
+        case 4: ++changed.execution_descriptor.length;break;
+        case 5: ++changed.execution_descriptor.descriptor_epoch;break;
+        case 6: ++changed.datatype.codec->native_fields.canonical_value_maximum_bytes;break;
+        case 7: changed.datatype.codec.reset();break;
+        case 8: changed.bit_profile->receipt.catalog_generation++;break;
+        case 9: changed.bit_profile->fixed_length=!changed.bit_profile->fixed_length;break;
+        case 10: changed.execution_descriptor.charset_uuid.bytes[0]=1;break;
+        case 11: changed.execution_descriptor.domain_stack.push_back(changed.execution_descriptor.descriptor_uuid);break;
+        case 12: changed.collation=changed.descriptor;break;
+        case 13: changed.collation.value.bytes[0]=1;break;
+      }
+      refuses(changed,component("100000001"));refuses(changed,api::CrudStoredValue::SqlNull());
+    }
+    auto dirty=component("100000001");dirty.bytes.back()|=1;refuses(binding,dirty);
+    auto nonnullable=binding;nonnullable.execution_descriptor.nullable_allowed=false;
+    refuses(nonnullable,api::CrudStoredValue::SqlNull());
+    Check(Encode(nonnullable,component("100000001"))==Encode(binding,component("100000001")),"BIT nullability changed PRESENT key");
+  }
+}
+
 int main() {
+  BitBoundKeys();
   TimestampBoundKeys();
   TimeBoundKeys();
   DateBoundKeys();
