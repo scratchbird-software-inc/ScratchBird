@@ -1,4 +1,5 @@
 #include "datatype_storage_identity.hpp"
+#include "datatype_interval.hpp"
 #include "crud_support/retained_row_value_codec.hpp"
 #include "crud_support/native_value_payload.hpp"
 #include "crud_support/composite_logical_key.hpp"
@@ -1045,7 +1046,10 @@ bool DirectBindIndexDatatypes(const EngineRequestContext& context,
     if (!dt::LookupDatatypeStorageIdentityV3(
         context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
         context.datatype_registry_generation, value.datatype_descriptor_uuid,
-        value.datatype_descriptor_generation, &row) || row.type_uuid != value.type_uuid)
+        value.datatype_descriptor_generation, &row) || row.type_uuid != value.type_uuid ||
+        value.datatype_cohort != EngineDatatypeCohort{
+            context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+            context.datatype_registry_generation})
       return false;
     if (!bound.emplace(column.canonical_name_key, std::move(row)).second) return false;
   }
@@ -1064,6 +1068,39 @@ struct DirectStageSimpleIndexPrecomputePlan {
       scratchbird::core::index::IndexKeyComponentKind::scalar;
   std::string non_null_encoded_key_prefix;
 };
+
+std::shared_ptr<const scratchbird::storage::page::RowDataTemporalSchema> DirectTemporalPageSchema(
+    const MgaRelationStorageDescriptor& relation, const InsertRowEncoderPlan& encoder,
+    const DirectIndexDatatypeBindings& datatypes, std::optional<EngineApiDiagnostic>& failure) {
+  namespace page = scratchbird::storage::page;
+  std::shared_ptr<page::RowDataTemporalSchema> schema;
+  for (std::size_t ordinal = 0; ordinal < encoder.columns.size(); ++ordinal) {
+    const auto& column = encoder.columns[ordinal];
+    const auto identity = datatypes.find(column.column_name);
+    if (identity == datatypes.end()) throw std::invalid_argument("physical receiver datatype missing");
+    const auto type = identity->second.type_id;
+    if (!detail::DirectRequiresNativeProfile(type)) continue;
+    const auto actual = std::find_if(relation.columns.begin(), relation.columns.end(),
+        [&](const auto& candidate) { return candidate.canonical_name_key == column.column_name; });
+    if (actual == relation.columns.end() || ordinal >= std::numeric_limits<std::uint16_t>::max())
+      throw std::invalid_argument("physical receiver column missing or out of range");
+    page::RowDataTemporalColumnBinding receiver;
+    EngineApiDiagnostic diagnostic;
+    const auto build_receiver = type == dt::CanonicalTypeId::bit_string
+        ? detail::DirectBuildBitStringPageColumn : detail::DirectBuildTemporalPageColumn;
+    if (!build_receiver(actual->value_descriptor, identity->second,
+            static_cast<std::uint16_t>(ordinal + 1), actual->nullable, &receiver, &diagnostic)) {
+      failure = std::move(diagnostic);
+      return {};
+    }
+    if (!schema) {
+      schema = std::make_shared<page::RowDataTemporalSchema>();
+      schema->relation_uuid = {UuidKind::object, relation.relation_uuid};
+    }
+    schema->columns.push_back(std::move(receiver));
+  }
+  return schema;
+}
 
 using detail::DirectEncodedScalarKeyIsNull;
 using detail::DirectCompareUnsignedText;
@@ -1895,16 +1932,8 @@ bool DirectSortableTypedIndexPayload(
       *out = std::move(sortable);
       return true;
     }
-    case dt::CanonicalTypeId::interval: {
-      std::vector<scratchbird::core::platform::byte> sortable;
-      if (!DirectAppendSortableLittleEndianSegment(raw, 0, 4, true, &sortable) ||
-          !DirectAppendSortableLittleEndianSegment(raw, 4, 4, true, &sortable) ||
-          !DirectAppendSortableLittleEndianSegment(raw, 8, 8, true, &sortable)) {
-        return false;
-      }
-      *out = std::move(sortable);
-      return true;
-    }
+    case dt::CanonicalTypeId::interval:
+      return false; // Mixed INTERVAL has no natural/lexicographic tuple order.
     case dt::CanonicalTypeId::bfloat16:
     case dt::CanonicalTypeId::real16:
     case dt::CanonicalTypeId::real32:
@@ -1978,7 +2007,7 @@ bool DirectBuildTypedSimpleIndexKeyFromTyped(
   if (stats != nullptr) {
     ++stats->typed_key_candidates;
   }
-  if (target_type == dt::CanonicalTypeId::unknown ||
+  if (target_type == dt::CanonicalTypeId::unknown || target_type == dt::CanonicalTypeId::interval ||
       !type_descriptor_uuid.valid()) {
     if (stats != nullptr) { ++stats->typed_key_fallback; }
     return false;
@@ -2056,6 +2085,7 @@ bool DirectBuildTypedCompoundIndexKey(
     const auto binding = datatypes.find(column);
     if (!typed || binding == datatypes.end()) return false;
     const auto type = binding->second.type_id;
+    if (type == dt::CanonicalTypeId::interval) return false;
     idx::IndexKeyEncodingComponent component;
     component.ordinal = static_cast<std::uint32_t>(components.size());
     component.type_descriptor_uuid = {UuidKind::object, binding->second.descriptor_uuid};
@@ -4231,7 +4261,8 @@ DirectPhysicalMgaCowWriteResult WriteDirectPhysicalMgaCowRows(
     const std::vector<CrudValueFields>*
         value_batch = nullptr,
     bool engine_generated_unique_insert_rows = false,
-    const InsertRowEncoderPlan* row_encoder_plan = nullptr) {
+    const InsertRowEncoderPlan* row_encoder_plan = nullptr,
+    std::shared_ptr<const scratchbird::storage::page::RowDataTemporalSchema> temporal_schema = {}) {
   DirectPhysicalMgaCowWriteResult result;
   if (!DirectPhysicalMgaCowRequested(request)) {
     result.evidence.push_back({"direct_physical_bulk_row_page_writer", "disabled"});
@@ -4299,6 +4330,7 @@ DirectPhysicalMgaCowWriteResult WriteDirectPhysicalMgaCowRows(
         row_offset + static_cast<std::uint64_t>(index);
     scratchbird::storage::database::PhysicalMgaCowMutationRequest cow;
     cow.database_path = request.context.database_path;
+    cow.temporal_schema = temporal_schema;
     cow.relation_uuid = relation_uuid;
     cow.row_uuid = BindDirectTypedUuid(UuidKind::row, row.row_uuid);
     cow.transaction_uuid = transaction_uuid;
@@ -4347,6 +4379,10 @@ DirectPhysicalMgaCowWriteResult WriteDirectPhysicalMgaCowRows(
         "batch_rows=" + std::to_string(staged_rows.size()));
     if (written.time_diagnostic)
       PreserveEngineApiTimeDiagnosticCause(result.diagnostic, *written.time_diagnostic);
+    if (written.timestamp_diagnostic)
+      PreserveEngineApiTimestampDiagnosticCause(result.diagnostic, *written.timestamp_diagnostic);
+    if (written.interval_diagnostic)
+      PreserveEngineApiIntervalDiagnosticCause(result.diagnostic, *written.interval_diagnostic);
     return result;
   }
   result.written_rows = written.written_rows;
@@ -5765,11 +5801,29 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   // Validate supplied signed-integer destinations and every packet conversion
   // before row identities, preallocation workers or staging. This also covers
   // reordered/subset input outside the exact-order bulk validator.
+  std::shared_ptr<const scratchbird::storage::page::RowDataTemporalSchema> temporal_schema;
   try {
+    std::optional<EngineApiDiagnostic> receiver_diagnostic;
+    temporal_schema = DirectTemporalPageSchema(relation_descriptor, batch_context.row_encoder_plan,
+        index_datatypes, receiver_diagnostic);
+    if (receiver_diagnostic)
+      return DirectBulkFailureWithEvidence(request, *receiver_diagnostic,
+          "destination_receiver_refused", result.evidence, result.dml_summary);
     for (const auto& row : request.borrowed_input_rows) {
       for (std::size_t ordinal = 0; ordinal < row.fields.size(); ++ordinal) {
         const auto& field = DirectInputFieldName(request, row, ordinal);
         const auto type = DirectColumnTypeForField(batch_context.row_encoder_plan, field, ordinal);
+        if (detail::DirectRequiresNativeProfile(type)) {
+          const auto column = std::find_if(relation_descriptor.columns.begin(), relation_descriptor.columns.end(),
+              [&](const auto& candidate) { return candidate.canonical_name_key == field; });
+          if (column == relation_descriptor.columns.end())
+            throw std::invalid_argument("native profile destination column missing");
+          EngineApiDiagnostic diagnostic;
+          if (!detail::DirectValidateNativeProfileValue(row.fields[ordinal].second, type,
+                  &column->value_descriptor, column->nullable, &diagnostic))
+            return DirectBulkFailureWithEvidence(request, diagnostic,
+                "destination_payload_refused", result.evidence, result.dml_summary);
+        }
         if (type == dt::CanonicalTypeId::int32 || type == dt::CanonicalTypeId::int64)
           (void)detail::DirectStoredValueForColumn(row.fields[ordinal].second, type);
       }
@@ -5789,10 +5843,35 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         }
       }
     }
+    // Representation admission is not ordered-key capability. Resolve the
+    // actual visible index columns before UUID issuance, durable callbacks or
+    // preallocation; a NULL row cannot grant a missing datatype capability.
+    for (const auto& index : visible_indexes) {
+      const auto family = index.family.empty() ? CrudIndexFamilyForProfile(index.profile) : index.family;
+      if (family != kCrudIndexFamilyBtree && family != "unique_btree") continue;
+      for (const auto& name : DirectIndexKeyColumns(index)) {
+        const auto binding = index_datatypes.find(name);
+        if (binding == index_datatypes.end() || binding->second.type_id != dt::CanonicalTypeId::interval) continue;
+        dt::DatatypeSortKeyRequest capability;
+        capability.value.type_id = binding->second.type_id;
+        const auto refused = dt::MakeDatatypeSortKey(capability);
+        if (!refused.ok())
+          return DirectBulkFailureWithEvidence(request,
+              MakeEngineApiDiagnosticFromNative(refused.diagnostic,
+                  "SB_DATATYPE_SORT_KEY_REJECTED", "datatype.sort_key.rejected",
+                  "sorted_index_bound_value_refused:interval", true),
+              "index_datatype_capability_refused", result.evidence, result.dml_summary);
+      }
+    }
   } catch (const std::invalid_argument& failure) {
     return DirectBulkFailureWithEvidence(request,
         MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append", failure.what()),
         "destination_payload_refused", result.evidence, result.dml_summary);
+  } catch (const std::bad_alloc&) {
+    return DirectBulkFailureWithEvidence(request,
+        MakeEngineApiDiagnostic("RESOURCE.BUDGET_EXCEEDED",
+            "datatype.native_temporal.receiver_allocation_failed", {}, true),
+        "destination_receiver_refused", result.evidence, result.dml_summary);
   }
   DirectBulkUuidBatch uuid_batch;
   try {
@@ -8337,7 +8416,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	                                               staged_rows,
 	                                               external_write_value_batch,
 	                                               uuid_batch.caller_row_uuids == 0,
-	                                               &batch_context.row_encoder_plan);
+	                                               &batch_context.row_encoder_plan,
+                                                 temporal_schema);
 	             if (!row_page_write.ok && DirectPhysicalMgaCowRequired(request)) {
 	               set_ingestion_write_failure_reason(
 	                   "physical_mga_cow_row_page_refused");

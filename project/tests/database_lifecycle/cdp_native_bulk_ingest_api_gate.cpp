@@ -15,6 +15,12 @@
 #include "database_format.hpp"
 #include "database_lifecycle.hpp"
 #include "datatype_operations.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
+#include "datatype_date.hpp"
+#include "datatype_timestamp.hpp"
+#include "datatype_interval.hpp"
+#include "datatype_bit_string.hpp"
+#include "dml/direct_bulk_typed_row_codec.hpp"
 #include "sbl_numeric.hpp"
 #include "index_key_encoding.hpp"
 #include "dml/native_bulk_ingest_api.hpp"
@@ -114,6 +120,8 @@ void RequireOk(const TResult& result, std::string_view message) {
     if (!result.diagnostics.empty()) {
       std::cerr << result.diagnostics.front().code << ':'
                 << result.diagnostics.front().detail << '\n';
+      for (const auto& field : result.diagnostics.front().fields)
+        std::cerr << "  " << field.key << '=' << field.value << '\n';
     }
     Fail(message);
   }
@@ -153,6 +161,7 @@ struct Fixture {
   platform::u32 page_size = 0;
   api::EngineRequestContext owner_context;
   std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
+  std::shared_ptr<const scratchbird::storage::page::RowDataTemporalSchema> temporal_schema;
 
   Fixture() = default;
   Fixture(const Fixture&) = delete;
@@ -161,7 +170,8 @@ struct Fixture {
       : dir(std::exchange(other.dir, {})), database_path(std::move(other.database_path)),
         database_uuid(other.database_uuid), table_uuid(other.table_uuid),
         index_uuid(other.index_uuid), salt(other.salt), physical_page(other.physical_page), page_size(other.page_size),
-        owner_context(std::move(other.owner_context)), session(std::move(other.session)) {}
+        owner_context(std::move(other.owner_context)), session(std::move(other.session)),
+        temporal_schema(std::move(other.temporal_schema)) {}
 
   ~Fixture() {
     session.reset();
@@ -276,6 +286,36 @@ api::EngineTypedValue NativeRealFixtureValue(std::string type, std::uint64_t bit
   return BinaryScalarValue(std::move(type), std::move(bytes));
 }
 
+api::EngineTypedValue NativeTemporalFixtureValue(std::string type, std::uint64_t bits, unsigned width,
+                                                std::uint32_t fraction = 0) {
+  auto value = NativeRealFixtureValue(type, bits, std::min(width, 8u));
+  if (type == "timestamp") {
+    for (unsigned i = 0; i < 4; ++i) value.binary_value.push_back(static_cast<std::uint8_t>(fraction >> (8*i)));
+    value.binary_value.resize(16, 0);
+  }
+  value.descriptor.encoded_descriptor = "nullability=nullable";
+  for (const auto& entry : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row = entry.legacy_fields;
+    if (row.catalog_snapshot_uuid != dt::kDatatypeCohortV11 ||
+        row.canonical_binary_type_code != static_cast<std::uint32_t>(dt::CanonicalTypeIdFromStableName(type))) continue;
+    value.descriptor.descriptor_uuid = value.descriptor.datatype_descriptor_uuid = row.descriptor_uuid;
+    value.descriptor.datatype_descriptor_generation = row.descriptor_generation;
+    value.descriptor.type_uuid = row.type_uuid;
+    value.descriptor.datatype_cohort = {row.catalog_snapshot_uuid, row.catalog_generation, row.registry_generation};
+    return value;
+  }
+  throw std::runtime_error("explicit fresh-node temporal fixture identity unavailable");
+}
+
+api::EngineTypedValue NativeIntervalFixtureValue(std::uint32_t months,std::uint32_t days,std::uint64_t nanos) {
+  auto value=NativeTemporalFixtureValue("interval",0,16);
+  value.binary_value.clear();
+  for(const auto part:{months,days})for(unsigned i=0;i<4;++i)
+    value.binary_value.push_back(static_cast<std::uint8_t>(part>>(8*i)));
+  for(unsigned i=0;i<8;++i)value.binary_value.push_back(static_cast<std::uint8_t>(nanos>>(8*i)));
+  return value;
+}
+
 api::EngineTypedValue NullValue(std::string canonical_type_name) {
   api::EngineTypedValue typed;
   typed.descriptor.descriptor_kind = "scalar";
@@ -350,7 +390,8 @@ api::EngineRequestContext BaseContext(const Fixture& fixture, std::string reques
 // Publish actual native column identities using the explicitly declared types;
 // the compatibility descriptor strings are never reconstructed as UUID authority.
 api::EngineApiDiagnostic PublishFixtureTable(
-    api::EngineRequestContext& context, const api::CrudTableRecord& table) {
+    api::EngineRequestContext& context, const api::CrudTableRecord& table,
+    std::shared_ptr<const scratchbird::storage::page::RowDataTemporalSchema>* receiving_schema=nullptr) {
   std::vector<std::string> types;
   for (const auto& column : table.columns) {
     api::CatalogColumnMetadata metadata;
@@ -363,6 +404,55 @@ api::EngineApiDiagnostic PublishFixtureTable(
   const auto published = scratchbird::tests::PublishDdlTableFixture(context, table, types);
   Require(published.table_uuid == table.table_uuid && published.columns.size() == table.columns.size(),
           "CDP-040 actual DDL table publication changed identity or shape");
+  if(receiving_schema) {
+    namespace page=scratchbird::storage::page;
+    auto schema=std::make_shared<page::RowDataTemporalSchema>();
+    schema->relation_uuid={platform::UuidKind::object,published.table_uuid};
+    const auto stored=api::LoadMgaRelationStorageDescriptor(context,published.table_uuid);
+    Require(stored.ok&&stored.descriptor.columns.size()==published.columns.size(),
+            "actual receiving relation descriptor absent");
+    for(std::size_t ordinal=0;ordinal<stored.descriptor.columns.size();++ordinal) {
+      const auto& column=stored.descriptor.columns[ordinal];
+      const auto& d=column.value_descriptor;
+      const auto* identity=dt::FindDatatypeTypeCodecIdentityV3(
+          d.datatype_cohort.catalog_snapshot_uuid,d.datatype_cohort.catalog_generation,
+          d.datatype_cohort.registry_generation,d.datatype_descriptor_uuid,d.datatype_descriptor_generation);
+      if(!identity)continue;
+      const auto type=static_cast<dt::CanonicalTypeId>(identity->legacy_fields.canonical_binary_type_code);
+      if(!api::dml::detail::DirectRequiresNativeProfile(type))continue;
+      Require(identity->legacy_fields.type_uuid==d.type_uuid&&ordinal<65535,"invalid actual temporal binding");
+      page::RowDataTemporalColumnBinding binding;
+      binding.column_ordinal=static_cast<std::uint16_t>(ordinal+1);binding.null_allowed=column.nullable;
+      const auto& row=identity->legacy_fields;
+      if(type==dt::CanonicalTypeId::date) {
+        auto p=dt::BuildDateValidatedProfileHandleV3({row.catalog_snapshot_uuid,row.catalog_snapshot_uuid,row.catalog_generation,row.registry_generation},*identity);
+        Require(p.ok(),"actual DATE receiver invalid");binding.date=std::make_shared<const dt::DateValidatedProfileHandleV3>(std::move(p.profile));
+      } else if(type==dt::CanonicalTypeId::time) {
+        auto p=dt::BuildTimeValidatedProfileHandleV3({row.catalog_snapshot_uuid,row.catalog_snapshot_uuid,row.catalog_generation,row.registry_generation},*identity);
+        Require(p.ok(),"actual TIME receiver invalid");binding.time=std::make_shared<const dt::TimeValidatedProfileHandleV3>(std::move(p.profile));
+      } else if(type==dt::CanonicalTypeId::timestamp) {
+        auto p=dt::BuildTimestampValidatedProfileHandleV3({row.catalog_snapshot_uuid,row.catalog_snapshot_uuid,row.catalog_generation,row.registry_generation},*identity);
+        Require(p.ok(),"actual TIMESTAMP receiver invalid");binding.timestamp=std::make_shared<const dt::TimestampValidatedProfileHandleV3>(std::move(p.profile));
+      } else if(type==dt::CanonicalTypeId::interval) {
+        auto p=dt::BuildIntervalValidatedProfileHandleV3({row.catalog_snapshot_uuid,row.catalog_snapshot_uuid,row.catalog_generation,row.registry_generation},*identity);
+        Require(p.ok(),"actual INTERVAL receiver invalid");binding.interval=std::make_shared<const dt::IntervalValidatedProfileHandleV3>(std::move(p.profile));
+      } else {
+        api::CatalogColumnMetadata fields;
+        Require(api::AdmitCatalogColumnMetadata(d.encoded_descriptor,&fields),"actual BIT metadata invalid");
+        dt::BitStringProfileRequestV3 request;
+        request.receipt={row.catalog_snapshot_uuid,row.catalog_snapshot_uuid,row.catalog_generation,row.registry_generation};
+        request.identity=*identity;
+        if(fields.text.contains("bit_profile_kind"))
+          request.kind=static_cast<dt::BitStringSurfaceProfileKindV3>(std::stoul(fields.text.at("bit_profile_kind")));
+        if(fields.text.contains("length")) request.length_bits=std::stoul(fields.text.at("length"));
+        auto p=dt::BuildBitStringDescriptorProfileV3(request);
+        Require(p.ok(),"actual BIT receiver invalid");
+        binding.bit_string=std::make_shared<const dt::BitStringDescriptorProfileV3>(std::move(p.profile));
+      }
+      schema->columns.push_back(std::move(binding));
+    }
+    *receiving_schema=std::move(schema);
+  }
   return api::MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
 
@@ -496,7 +586,6 @@ const std::vector<std::string>& TypedScalarIndexedColumns() {
       "date_value",
       "time_value",
       "timestamp_value",
-      "interval_value",
       "binary_value",
       "payload"};
   return columns;
@@ -553,7 +642,8 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
 }
 
 Fixture MakeInt64IndexFixture(std::string name, platform::u64 salt,
-                              std::string_view integer_type = "int64") {
+                              std::string_view integer_type = "int64", bool with_index = true,
+                              std::string_view modifiers = {}) {
   Fixture fixture;
   fixture.salt = salt;
   InitializeOwnedFixtureDirectory(fixture, name);
@@ -575,11 +665,13 @@ Fixture MakeInt64IndexFixture(std::string name, platform::u64 salt,
 
   auto metadata = Begin(fixture, "cdp040-int64-index-metadata");
   auto definition = Table(fixture, metadata);
-  definition.columns.front().second = "canonical=" + std::string(integer_type);
-  const auto table = PublishFixtureTable(metadata, definition);
+  definition.columns.front().second = "canonical=" + std::string(integer_type) + std::string(modifiers);
+  const auto table = PublishFixtureTable(metadata, definition, &fixture.temporal_schema);
   Require(!table.error, "CDP-040 int64 index table metadata append failed");
-  const auto index = api::AppendMgaIndexMetadata(metadata, IdIndex(fixture, metadata));
-  Require(!index.error, "CDP-040 int64 index metadata append failed");
+  if(with_index) {
+    const auto index = api::AppendMgaIndexMetadata(metadata, IdIndex(fixture, metadata));
+    Require(!index.error, "CDP-040 int64 index metadata append failed");
+  }
   Commit(metadata);
   StartFixtureSession(fixture, metadata);
   return fixture;
@@ -608,7 +700,7 @@ Fixture MakeTypedScalarFixture(std::string name,
 
   auto metadata = Begin(fixture, "cdp040-typed-scalar-metadata");
   const auto table = PublishFixtureTable(
-      metadata, TypedScalarTable(fixture, metadata));
+      metadata, TypedScalarTable(fixture, metadata), &fixture.temporal_schema);
   Require(!table.error, "CDP-040 typed scalar table metadata append failed");
   if (with_typed_scalar_indexes) {
     platform::u64 index_salt = salt + 200;
@@ -699,10 +791,14 @@ api::EngineRowValue TypedScalarRow(int index) {
   row.fields.push_back({"mac_value", BinaryScalarValue("mac_address", std::vector<std::uint8_t>{
       0, 0, 2, 0, 0, 0, 0, static_cast<std::uint8_t>(index)})});
   row.fields.push_back({"enum_value", IdentityScalarValue("enum_value", NewIdentity(platform::UuidKind::object, 1400 + index))});
-  row.fields.push_back({"date_value", ScalarValue("date", index % 2 == 0 ? "2026-06-25" : "1970-01-01")});
-  row.fields.push_back({"time_value", ScalarValue("time", index % 2 == 0 ? "23:59:58.123456789" : "00:00:01")});
-  row.fields.push_back({"timestamp_value", ScalarValue("timestamp", index % 2 == 0 ? "2026-06-25T12:34:56.123456789Z" : "1970-01-01T00:00:01")});
-  row.fields.push_back({"interval_value", ScalarValue("interval", index % 2 == 0 ? "P1DT2H3M4S" : "3600")});
+  constexpr auto june25 = std::chrono::sys_days(std::chrono::year{2026}/6/25).time_since_epoch().count();
+  row.fields.push_back({"date_value", NativeTemporalFixtureValue("date", index % 2 == 0 ? june25 : 0, 4)});
+  row.fields.push_back({"time_value", NativeTemporalFixtureValue("time", index % 2 == 0 ? 86'398'123'456'789ull : 1'000'000'000ull, 8)});
+  row.fields.push_back({"timestamp_value", NativeTemporalFixtureValue("timestamp",
+      index % 2 == 0 ? june25 * 86400 + 12 * 3600 + 34 * 60 + 56 : 1, 16,
+      index % 2 == 0 ? 123456789 : 0)});
+  row.fields.push_back({"interval_value", NativeIntervalFixtureValue(0,index%2==0?1:0,
+      (index%2==0?7384ull:3600ull)*1000000000ull)});
   row.fields.push_back({"binary_value", ScalarValue("binary", "binary-payload-" + std::to_string(index))});
   row.fields.push_back({"payload", TextValue("typed-scalar-payload-" + std::to_string(index))});
   return row;
@@ -790,6 +886,7 @@ std::string DescriptorPayloadColumnName(std::size_t index) {
 std::vector<std::uint8_t> DescriptorPayloadForType(const std::string& type,
                                                    int row_index,
                                                    std::size_t type_index) {
+  if(type=="bit_string") return {9,0,0,0,static_cast<std::uint8_t>(row_index),0x80};
   if (type == "decimal") {
     const auto encoded = scratchbird::libraries::sbl_numeric::EncodeExactDecimalLittleEndian(
         std::to_string(row_index) + ".25");
@@ -888,7 +985,7 @@ Fixture MakeDescriptorPayloadFixture(std::string name,
 
   auto metadata = Begin(fixture, "cdp040-descriptor-payload-metadata");
   const auto table = PublishFixtureTable(
-      metadata, DescriptorPayloadTable(fixture, metadata));
+      metadata, DescriptorPayloadTable(fixture, metadata), &fixture.temporal_schema);
   Require(!table.error, "CDP-040 descriptor payload table metadata append failed");
   if (with_descriptor_indexes) {
     platform::u64 index_salt = salt + 200;
@@ -915,6 +1012,12 @@ api::EngineRowValue DescriptorPayloadRow(int row_index) {
       NewIdentity(platform::UuidKind::object, 1700 + row_index);
   const auto& types = DescriptorPayloadTypeNames();
   for (std::size_t index = 0; index < types.size(); ++index) {
+    if(types[index]=="bit_string") {
+      auto bit=NativeTemporalFixtureValue("bit_string",0,0);
+      bit.binary_value=DescriptorPayloadForType(types[index],row_index,index);
+      row.fields.push_back({DescriptorPayloadColumnName(index),std::move(bit)});
+      continue;
+    }
     row.fields.push_back(
         {DescriptorPayloadColumnName(index),
          BinaryScalarValue(types[index],
@@ -984,6 +1087,7 @@ db::PhysicalMgaCowReadResult ReadPhysicalPage(const Fixture& fixture,
   request.relation_uuid = RelationUuid(fixture);
   request.page_number = page_number;
   request.use_latest_committed_snapshot = true;
+  request.temporal_schema = fixture.temporal_schema;
   const auto read = db::ReadPhysicalMgaCowRows(request);
   if (!read.ok()) {
     std::cerr << read.diagnostic.diagnostic_code << ':'
@@ -1925,6 +2029,216 @@ void TestNativeUint16IndexReopen() {
   Rollback(reader);
 }
 
+void TestNativeTemporalIndexReopen() {
+  for (const std::string type : {"date", "time", "timestamp"}) {
+    auto fixture = MakeInt64IndexFixture(type + "_binary_reopen", 1498, type);
+    const unsigned width = type == "date" ? 4 : type == "time" ? 8 : 16;
+    // Independent canonical components, in semantic order. DATE spans the
+    // complete signed day range; TIME spans the complete nanosecond-of-day range;
+    // TIMESTAMP spans the complete signed civil-second range with a native fraction.
+    const std::vector<std::uint64_t> values = type == "date"
+        ? std::vector<std::uint64_t>{0x80000000u, 0xffffffffu, 0, 1, 0x7fffffffu}
+        : type == "time" ? std::vector<std::uint64_t>{0, 1, 999'999'999, 1'000'000'000, 86'399'999'999'999ull}
+        : std::vector<std::uint64_t>{static_cast<std::uint64_t>(dt::kTimestampMinimumCivilSecondV3),
+            std::uint64_t(-1), 0, 1, static_cast<std::uint64_t>(dt::kTimestampMaximumCivilSecondV3)};
+    const auto row_for = [&](std::uint64_t bits, std::uint32_t fraction = 999999999) {
+      api::EngineRowValue row;
+      row.fields = {{"id", NativeTemporalFixtureValue(type, bits, width, type == "timestamp" ? fraction : 0)},
+                    {"payload", TextValue("native-temporal-index")}};
+      return row;
+    };
+    std::vector<api::EngineRowValue> rows;
+    for (const auto bits : values) rows.push_back(row_for(bits));
+    auto writer = Begin(fixture, "temporal-binary-insert");
+    if (type == "time" || type == "timestamp") {
+      const auto invalid = api::EngineExecuteNativeBulkIngest(
+          NativeRequest(fixture, writer, {row_for(type == "time" ? 86'400'000'000'000ull :
+              static_cast<std::uint64_t>(dt::kTimestampMaximumCivilSecondV3) + 1)}));
+      Require(!invalid.ok && invalid.inserted_rows == 0 && SelectCount(fixture, writer) == 0,
+              "out-of-range native temporal component published a row");
+      const auto diagnostic = std::find_if(invalid.diagnostics.begin(), invalid.diagnostics.end(),
+          [](const auto& item) { return item.native_source && item.native_source->datatype_cause; });
+      Require(diagnostic != invalid.diagnostics.end() &&
+                  !diagnostic->native_source->datatype_cause->status.ok() &&
+                  diagnostic->native_source->datatype_cause->diagnostic_code == diagnostic->code &&
+                  diagnostic->native_source->datatype_cause->detail == diagnostic->detail,
+              "live native bulk temporal refusal lost its typed diagnostic cause");
+    }
+    auto initial_request = NativeRequest(fixture, writer, rows);
+    initial_request.option_envelopes.push_back("physical_mga_cow.rows_per_page=16");
+    const auto inserted = api::EngineExecuteNativeBulkIngest(initial_request);
+    RequireOk(inserted, type + " indexed native insert failed");
+    Require(inserted.inserted_rows == values.size() &&
+                EvidenceU64(inserted.evidence, "direct_index_key_typed_fallback") == 0 &&
+                EvidenceU64(inserted.evidence, "direct_index_key_sbkobin_keys") == values.size(),
+            type + " indexed insert lost rows or used display-text fallback");
+    Commit(writer);
+    auto append_writer = Begin(fixture, "temporal-existing-page-append");
+    std::vector<api::EngineRowValue> append_rows{row_for(2)};
+    if (type == "timestamp") {
+      append_rows.push_back(row_for(0, 0));
+      append_rows.push_back(row_for(0, 1));
+    }
+    auto null_row = row_for(0);
+    null_row.fields.front().second.binary_value.clear();
+    null_row.fields.front().second.setState(api::EngineValueState::sql_null);
+    append_rows.push_back(std::move(null_row));
+    auto append_request = NativeRequest(fixture, append_writer, append_rows);
+    append_request.option_envelopes.push_back("physical_mga_cow.rows_per_page=16");
+    append_request.option_envelopes.push_back("physical_mga_cow.row_offset=5");
+    const auto appended = api::EngineExecuteNativeBulkIngest(append_request);
+    RequireOk(appended, type + " append to existing temporal page failed");
+    Require(appended.inserted_rows == append_rows.size(), type + " existing-page append lost row");
+    Commit(append_writer);
+    auto expected_values = values;
+    expected_values.insert(expected_values.begin() + (type == "time" ? 2 : 4), 2);
+    std::vector<std::vector<std::uint8_t>> expected_components;
+    for (const auto bits : expected_values) {
+      if (type == "timestamp" && bits == 0) {
+        expected_components.push_back(row_for(0, 0).fields.front().second.binary_value);
+        expected_components.push_back(row_for(0, 1).fields.front().second.binary_value);
+      }
+      expected_components.push_back(row_for(bits).fields.front().second.binary_value);
+    }
+    fixture.session.reset();
+    fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(
+        BaseContext(fixture, "temporal-reopen"));
+    auto reader = Begin(fixture, "temporal-read");
+    const auto stored = api::LoadMgaRelationStoreState(reader);
+    Require(stored.ok, type + " committed index replay failed");
+    std::map<std::vector<std::uint8_t>, std::string> keys;
+    std::string null_key;
+    for (const auto& entry : stored.state.index_entries) {
+      if (entry.index_uuid != fixture.index_uuid) continue;
+      const auto payload = ScalarLogicalPayload(entry.payload_value);
+      if (payload.isSqlNull()) {
+        Require(null_key.empty() && payload.bytes.empty() && entry.key_value.starts_with("SBKOBIN:"),
+                "temporal index NULL duplicated or acquired payload");
+        null_key = entry.key_value;
+        continue;
+      }
+      Require(payload.isPresent() && payload.bytes.size() == width &&
+                  entry.key_value.starts_with("SBKOBIN:"), type + " lost native payload framing");
+      const std::vector<std::uint8_t> component(payload.bytes.begin(), payload.bytes.end());
+      Require(keys.emplace(component, entry.key_value).second, type + " replay duplicated carrier bits");
+    }
+    Require(!null_key.empty() && keys.size() == expected_components.size() &&
+                SelectCount(fixture, reader) == expected_components.size() + 1,
+            type + " reopened row/index count changed");
+    for (std::size_t i = 0; i < expected_components.size(); ++i) {
+      Require(keys.contains(expected_components[i]), type + " reopen altered stored bits");
+      Require(null_key < keys.at(expected_components[i]), "temporal NULL key did not precede PRESENT");
+      if (i) Require(keys.at(expected_components[i - 1]) < keys.at(expected_components[i]),
+                     type + " persisted index order differs from temporal order");
+    }
+    Rollback(reader);
+    auto schema = std::make_shared<scratchbird::storage::page::RowDataTemporalSchema>();
+    schema->relation_uuid = RelationUuid(fixture);
+    scratchbird::storage::page::RowDataTemporalColumnBinding column;
+    column.column_ordinal = 1; column.null_allowed = true;
+    const auto fixture_value = NativeTemporalFixtureValue(type, 0, width);
+    const auto& descriptor = fixture_value.descriptor;
+    const auto& cohort = descriptor.datatype_cohort;
+    const auto* identity = dt::FindDatatypeTypeCodecIdentityV3(cohort.catalog_snapshot_uuid,
+        cohort.catalog_generation, cohort.registry_generation, descriptor.datatype_descriptor_uuid,
+        descriptor.datatype_descriptor_generation);
+    Require(identity != nullptr, "temporal physical receiver identity unavailable");
+    if (type == "date") {
+      auto profile = dt::BuildDateValidatedProfileHandleV3({cohort.catalog_snapshot_uuid,
+          cohort.catalog_snapshot_uuid, cohort.catalog_generation, cohort.registry_generation}, *identity);
+      Require(profile.ok(), "DATE physical receiver fixture refused");
+      column.date = std::make_shared<const dt::DateValidatedProfileHandleV3>(std::move(profile.profile));
+    } else if (type == "time") {
+      auto profile = dt::BuildTimeValidatedProfileHandleV3({cohort.catalog_snapshot_uuid,
+          cohort.catalog_snapshot_uuid, cohort.catalog_generation, cohort.registry_generation}, *identity);
+      Require(profile.ok(), "TIME physical receiver fixture refused");
+      column.time = std::make_shared<const dt::TimeValidatedProfileHandleV3>(std::move(profile.profile));
+    } else {
+      auto profile = dt::BuildTimestampValidatedProfileHandleV3({cohort.catalog_snapshot_uuid,
+          cohort.catalog_snapshot_uuid, cohort.catalog_generation, cohort.registry_generation}, *identity);
+      Require(profile.ok(), "TIMESTAMP physical receiver fixture refused");
+      column.timestamp = std::make_shared<const dt::TimestampValidatedProfileHandleV3>(std::move(profile.profile));
+    }
+    schema->columns.push_back(std::move(column));
+    db::PhysicalMgaCowReadRequest physical_request;
+    physical_request.database_path = fixture.database_path.string();
+    physical_request.relation_uuid = RelationUuid(fixture);
+    physical_request.page_number = fixture.physical_page;
+    physical_request.temporal_schema = schema;
+    const auto physical = db::ReadPhysicalMgaCowRows(physical_request);
+    Require(physical.ok() && physical.visible_rows.size() == expected_components.size() + 1,
+            type + " committed physical page reopen failed");
+    std::set<std::vector<std::uint8_t>> physical_values;
+    unsigned physical_nulls = 0;
+    for (const auto& row : physical.visible_rows) {
+      const auto cell = std::find_if(row.cells.begin(), row.cells.end(), [](const auto& c) { return c.column_ordinal == 1; });
+      Require(cell != row.cells.end() && cell->value.type_id == dt::CanonicalTypeIdFromStableName(type),
+              "temporal physical cell lost exact native type");
+      if (cell->value.is_null) {
+        Require(cell->value.payload.empty(), "physical temporal NULL acquired payload");
+        ++physical_nulls;
+        continue;
+      }
+      Require(cell->value.payload.size() == width && physical_values.insert(cell->value.payload).second,
+              "physical temporal replay duplicated value or changed extent");
+    }
+    Require(physical_nulls == 1 && physical_values == std::set<std::vector<std::uint8_t>>(
+                expected_components.begin(), expected_components.end()),
+            "physical temporal replay changed native bits");
+    physical_request.temporal_schema.reset();
+    const auto unbound = db::ReadPhysicalMgaCowRows(physical_request);
+    Require(!unbound.ok() && unbound.rows.empty() && unbound.visible_rows.empty(),
+            "profileless physical temporal read admitted rows");
+    if (type == "time") {
+      auto invalid_schema = std::make_shared<scratchbird::storage::page::RowDataTemporalSchema>(*schema);
+      auto invalid_profile = std::make_shared<dt::TimeValidatedProfileHandleV3>(*schema->columns[0].time);
+      invalid_profile->comparison_fingerprint[0] ^= 1;
+      invalid_schema->columns[0].time = invalid_profile;
+      physical_request.temporal_schema = invalid_schema;
+      const auto invalid_read = db::ReadPhysicalMgaCowRows(physical_request);
+      const auto expected_fact = dt::ValidateTimeProfileHandleV3(*invalid_profile).diagnostic;
+      const auto preserves = [&](const auto& result) {
+        Require(!result.ok() && result.time_diagnostic.has_value(), "COW lost TIME diagnostic fact");
+        const auto& actual = *result.time_diagnostic;
+        Require(actual.status.code == expected_fact.status.code && actual.diagnostic_code == expected_fact.diagnostic_code &&
+                    actual.detail == expected_fact.detail && actual.parameter_count == expected_fact.parameter_count,
+                "COW changed TIME diagnostic fact");
+        for (unsigned i = 0; i < expected_fact.parameters.size(); ++i) {
+          const auto& a = actual.parameters[i]; const auto& e = expected_fact.parameters[i];
+          Require(a.kind == e.kind && a.name == e.name && a.unsigned_value == e.unsigned_value &&
+                      a.signed_value == e.signed_value && a.uuid_value == e.uuid_value && a.token_value == e.token_value,
+                  "COW changed TIME diagnostic argument");
+        }
+      };
+      preserves(invalid_read);
+      Require(invalid_read.rows.empty() && invalid_read.visible_rows.empty(), "invalid COW read exposed prefix");
+      auto invalid_writer = Begin(fixture, "temporal-invalid-receiver");
+      db::PhysicalMgaCowMutationRequest mutation;
+      mutation.database_path = fixture.database_path.string();
+      mutation.relation_uuid = RelationUuid(fixture);
+      mutation.row_uuid = NewTypedUuid(platform::UuidKind::row, 19601);
+      mutation.transaction_uuid = uuid::MakeTypedUuid(platform::UuidKind::transaction, invalid_writer.transaction_uuid).value;
+      mutation.existing_local_transaction_id = scratchbird::transaction::mga::MakeLocalTransactionId(invalid_writer.local_transaction_id);
+      mutation.use_existing_transaction = true;
+      mutation.page_number = fixture.physical_page;
+      mutation.stable_slot_id = 7;
+      mutation.cells = physical.visible_rows.front().cells;
+      mutation.temporal_schema = invalid_schema;
+      preserves(db::WritePhysicalMgaCowUnpublishedMutation(mutation));
+      db::PhysicalMgaCowMutationBatchRequest batch;
+      batch.mutations.push_back(mutation);
+      const auto invalid_batch = db::WritePhysicalMgaCowUnpublishedMutationBatch(batch);
+      preserves(invalid_batch);
+      Require(invalid_batch.pages_written == 0 && invalid_batch.written_rows == 0 && invalid_batch.row_receipts.empty(),
+              "invalid COW receiver published physical effects");
+      // Fresh-page encoding must retain the same diagnostic as existing-page decode.
+      batch.mutations.front().page_number = std::filesystem::file_size(fixture.database_path) / fixture.page_size + 1;
+      preserves(db::WritePhysicalMgaCowUnpublishedMutationBatch(batch));
+      Rollback(invalid_writer);
+    }
+  }
+}
+
 void TestNativeNarrowRealIndexReopen() {
   for (const std::string type : {"bfloat16", "real16", "real32"}) {
     auto fixture = MakeInt64IndexFixture(type + "_binary_reopen", 1495, type);
@@ -2129,11 +2443,130 @@ void TestTypedScalarIndexKeysUseBinaryPayloads() {
   Commit(context);
 }
 
+void TestNativeBitStorage() {
+  using Bytes=std::vector<std::uint8_t>;
+  struct BytesLess {
+    bool operator()(const Bytes& left,const Bytes& right)const noexcept {
+      for(std::size_t i=0;i<std::min(left.size(),right.size());++i)
+        if(left[i]!=right[i])return left[i]<right[i];
+      return left.size()<right.size();
+    }
+  };
+  for(unsigned kind=0;kind<3;++kind)for(const bool indexed:{false,true}) {
+    const auto modifiers=";bit_profile_kind="+std::to_string(kind)+(kind?";length=9":"");
+    auto fixture=MakeInt64IndexFixture("native_bit_"+std::to_string(kind)+(indexed?"_indexed":""),
+        1950+kind*100+indexed*50,"bit_string",indexed,modifiers);
+    const auto row_for=[&](Bytes bytes,bool null=false) {
+      auto bit=NativeTemporalFixtureValue("bit_string",0,0);
+      bit.descriptor.encoded_descriptor="nullability=nullable"+modifiers;
+      bit.binary_value=std::move(bytes);
+      if(null)bit.state=api::EngineValueState::sql_null;
+      api::EngineRowValue row;
+      row.fields={{"id",std::move(bit)},{"payload",TextValue("native-BIT-profile")}};
+      return row;
+    };
+    const Bytes first{9,0,0,0,0xA5,0x80},second{9,0,0,0,0xA5,0};
+    std::set<Bytes,BytesLess> expected{first,second};
+    auto writer=Begin(fixture,"native-bit-write");
+    for(unsigned mutation=0;mutation<4;++mutation) {
+      auto invalid=row_for(first);
+      auto& value=invalid.fields.front().second;
+      if(mutation==0)value.binary_value.back()|=1;
+      if(mutation==1)value.binary_value.push_back(0);
+      if(mutation==2)value.descriptor.encoded_descriptor="nullability=nullable;bit_profile_kind="+
+          std::to_string(kind==1?2:1)+";length=9";
+      if(mutation==3)value.encoded_value="101001011";
+      auto request=NativeRequest(fixture,writer,{invalid});
+      request.option_envelopes.push_back("dml.ingest.preallocator=true");
+      request.option_envelopes.push_back("dml.ingest.preallocation_bytes=1048576");
+      unsigned callbacks=0;
+      request.before_row_publication=[&](auto,auto,auto) {
+        ++callbacks;
+        return api::MakeEngineApiDiagnostic("SB_ENGINE_API_OK","engine.api.ok",{},false);
+      };
+      const auto snapshot=[&] {
+        std::ifstream input(fixture.database_path,std::ios::binary);
+        Require(input.good(),"BIT refusal file snapshot unavailable");
+        return std::vector<char>(std::istreambuf_iterator<char>(input),std::istreambuf_iterator<char>());
+      };
+      const auto before=snapshot();
+      const auto result=api::EngineExecuteNativeBulkIngest(request);
+      Require(!result.ok && !result.diagnostics.empty() && result.inserted_rows==0 &&
+          result.dml_summary.rows_changed==0 && result.dml_summary.page_reservations==0 &&
+          result.dml_summary.preallocation_requests==0 && callbacks==0 && snapshot()==before,
+          "invalid BIT input caused publication, allocation or physical effects");
+    }
+    auto request=NativeRequest(fixture,writer,{row_for(first),row_for(second)});
+    request.option_envelopes.push_back("physical_mga_cow.rows_per_page=16");
+    const auto inserted=api::EngineExecuteNativeBulkIngest(request);
+    RequireOk(inserted,"native BIT initial insert failed");
+    Require(inserted.inserted_rows==2 && EvidenceU64(inserted.evidence,
+        "direct_physical_bulk_row_page_typed_cells.bit_string")==2,"BIT insert lost concrete type");
+    Commit(writer);
+    auto append=Begin(fixture,"native-bit-append");
+    std::vector<api::EngineRowValue> rows{row_for({},true)};
+    if(kind!=1) { rows.push_back(row_for({0,0,0,0}));expected.insert({0,0,0,0}); }
+    auto append_request=NativeRequest(fixture,append,rows);
+    append_request.option_envelopes.push_back("physical_mga_cow.rows_per_page=16");
+    append_request.option_envelopes.push_back("physical_mga_cow.row_offset=2");
+    const auto appended=api::EngineExecuteNativeBulkIngest(append_request);
+    RequireOk(appended,"native BIT existing-page append failed");
+    Require(appended.inserted_rows==rows.size(),"BIT append lost rows");
+    Commit(append);
+    fixture.session.reset();
+    fixture.session=std::make_shared<scratchbird::tests::FixtureEngineSession>(BaseContext(fixture,"native-bit-reopen"));
+    auto reader=Begin(fixture,"native-bit-read");
+    const auto retained=api::LoadMgaRelationStoreState(reader);
+    Require(retained.ok && SelectCount(fixture,reader)==expected.size()+1,"BIT retained reopen lost rows");
+    std::set<Bytes,BytesLess> actual;
+    unsigned nulls=0;
+    for(const auto& row:retained.state.row_versions) {
+      if(row.table_uuid!=fixture.table_uuid||row.deleted)continue;
+      for(const auto& [name,value]:row.values)if(name=="id") {
+        if(value.isSqlNull()) { ++nulls;Require(value.bytes.empty(),"BIT retained NULL acquired bytes"); }
+        else Require(value.isPresent()&&actual.insert(Bytes(value.bytes.begin(),value.bytes.end())).second,
+                     "BIT retained component duplicated");
+      }
+    }
+    Require(nulls==1&&actual==expected,"BIT retained reopen changed component bytes");
+    if(indexed) {
+      std::map<std::string,std::string> ordered;
+      std::string null_key;
+      for(const auto& entry:retained.state.index_entries)if(entry.index_uuid==fixture.index_uuid) {
+        const auto payload=ScalarLogicalPayload(entry.payload_value);
+        Require(entry.key_value.starts_with("SBKOBIN:"),"BIT index used display fallback");
+        if(payload.isSqlNull()) { Require(null_key.empty(),"BIT NULL key duplicated");null_key=entry.key_value;continue; }
+        Require(payload.isPresent()&&payload.bytes.size()>=4,"BIT index payload lost canonical carrier");
+        std::uint32_t count=0;
+        for(unsigned i=0;i<4;++i)count|=std::uint32_t(static_cast<unsigned char>(payload.bytes[i]))<<(i*8);
+        Require(payload.bytes.size()==4+(count+7)/8,"BIT index payload size changed");
+        std::string logical;
+        for(unsigned i=0;i<count;++i)logical.push_back((static_cast<unsigned char>(payload.bytes[4+i/8])&(0x80>>(i%8)))?'1':'0');
+        Require(ordered.emplace(logical,entry.key_value).second,"BIT index payload duplicated");
+      }
+      Require(!null_key.empty()&&ordered.size()==expected.size(),"BIT reopened index count changed");
+      auto previous=null_key;
+      for(const auto& [logical,key]:ordered) { Require(previous<key,"BIT reopened index logical order changed");previous=key; }
+    }
+    Rollback(reader);
+    const auto page=ReadPhysicalPage(fixture,fixture.physical_page);
+    actual.clear();nulls=0;
+    Require(page.visible_rows.size()==expected.size()+1,"BIT physical reopen lost rows");
+    for(const auto& row:page.visible_rows)for(const auto& cell:row.cells)if(cell.column_ordinal==1) {
+      Require(cell.value.type_id==dt::CanonicalTypeId::bit_string&&!cell.external_value,"BIT physical type or locator changed");
+      if(cell.value.is_null) { ++nulls;Require(cell.value.payload.empty(),"BIT physical NULL acquired bytes"); }
+      else Require(actual.insert(cell.value.payload).second,"BIT physical component duplicated");
+    }
+    Require(nulls==1&&actual==expected,"BIT physical reopen changed exact bits/count");
+  }
+}
+
 void TestTypedScalarRowPageStorage() {
   auto fixture = MakeTypedScalarFixture("typed_scalar", 1500);
   auto context = Begin(fixture, "cdp040-typed-scalar-storage");
-  const auto result = api::EngineExecuteNativeBulkIngest(
-      NativeRequest(fixture, context, TypedScalarRows()));
+  auto initial_request = NativeRequest(fixture, context, TypedScalarRows());
+  initial_request.option_envelopes.push_back("physical_mga_cow.rows_per_page=16");
+  const auto result = api::EngineExecuteNativeBulkIngest(initial_request);
   RequireOk(result, "CDP-040 typed scalar native bulk ingest failed");
   Require(result.accepted_rows == 2 && result.inserted_rows == 2,
           "CDP-040 typed scalar row counts drifted");
@@ -2228,9 +2661,19 @@ void TestTypedScalarRowPageStorage() {
           "CDP-040 typed scalar scoped-row state reload failed");
   bool saw_int32_1973 = false;
   bool saw_int32_2428 = false;
+  // Independent LE32/LE32/LE64 literals, not the datatype encoder as oracle.
+  const std::set<std::string> expected_intervals = {
+      std::string("\x00\x00\x00\x00\x00\x00\x00\x00\x00\xa0\xb8\x30\x46\x03\x00\x00",16),
+      std::string("\x00\x00\x00\x00\x01\x00\x00\x00\x00\x70\xb2\x38\xb7\x06\x00\x00",16)};
+  std::set<std::string> retained_intervals;
   for (const auto& row : loaded.state.row_versions) {
     if (row.table_uuid != fixture.table_uuid || row.deleted) continue;
     for (const auto& [name, value] : row.values) {
+      if (name == "interval_value") {
+        Require(value.isPresent() && value.bytes.size() == 16 &&
+                    retained_intervals.insert(value.bytes).second,
+                "retained INTERVAL lost native bytes or duplicated value");
+      }
       if (name != "int_i") continue;
       Require(value.isPresent() && value.bytes.size() == 4,
               "CDP-040 scoped INT32 lost its native four-byte carrier");
@@ -2240,14 +2683,20 @@ void TestTypedScalarRowPageStorage() {
   }
   Require(saw_int32_1973 && saw_int32_2428,
           "CDP-040 scoped typed-row persistence changed native INT32 bytes");
+  Require(retained_intervals == expected_intervals, "retained INTERVAL component bits changed");
   Commit(context);
 
   const auto page = ReadPhysicalPage(fixture, fixture.physical_page);
   Require(page.visible_rows.size() == 2,
           "CDP-040 typed scalar physical row-page visible count drifted");
   std::map<dt::CanonicalTypeId, api::EngineApiU64> recovered_counts;
+  std::set<std::string> recovered_intervals;
   for (const auto& row : page.visible_rows) {
     for (const auto& cell : row.cells) {
+      if (cell.value.type_id == dt::CanonicalTypeId::interval)
+        Require(!cell.value.is_null && recovered_intervals.emplace(
+                    cell.value.payload.begin(), cell.value.payload.end()).second,
+                "physical INTERVAL duplicated value or changed state");
       if (!cell.value.is_null &&
           cell.value.type_id != dt::CanonicalTypeId::character) {
         ++recovered_counts[cell.value.type_id];
@@ -2285,6 +2734,106 @@ void TestTypedScalarRowPageStorage() {
   for (const auto type_id : expected_recovered_types) {
     Require(recovered_counts[type_id] == 2,
             "CDP-040 recovered typed scalar row-page cell was not typed");
+  }
+  Require(recovered_intervals == expected_intervals, "physical INTERVAL component bits changed");
+  auto append_context = Begin(fixture, "interval-null-existing-page");
+  auto null_row = TypedScalarRow(3);
+  for (auto& [name, value] : null_row.fields) if (name == "interval_value") {
+    value.state = api::EngineValueState::sql_null;
+    value.binary_value.clear();
+  }
+  auto append_request = NativeRequest(fixture, append_context, {null_row});
+  append_request.option_envelopes.push_back("physical_mga_cow.rows_per_page=16");
+  append_request.option_envelopes.push_back("physical_mga_cow.row_offset=2");
+  const auto appended = api::EngineExecuteNativeBulkIngest(append_request);
+  RequireOk(appended, "native INTERVAL NULL existing-page append failed");
+  Require(appended.inserted_rows == 1, "native INTERVAL NULL append lost row");
+  Commit(append_context);
+  fixture.session.reset();
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(
+      BaseContext(fixture, "interval-storage-reopen"));
+  auto reader = Begin(fixture, "interval-storage-read");
+  const auto reopened = api::LoadMgaRelationStoreState(reader);
+  Require(reopened.ok && SelectCount(fixture, reader) == 3, "INTERVAL retained reopen lost rows");
+  unsigned retained_nulls = 0;
+  retained_intervals.clear();
+  for (const auto& row : reopened.state.row_versions) {
+    if (row.table_uuid != fixture.table_uuid || row.deleted) continue;
+    for (const auto& [name, value] : row.values) if (name == "interval_value") {
+      if (value.isSqlNull()) {
+        Require(value.bytes.empty(), "retained INTERVAL NULL acquired payload");
+        ++retained_nulls;
+      } else Require(value.isPresent() && retained_intervals.insert(value.bytes).second,
+                     "retained INTERVAL reopen duplicated component");
+    }
+  }
+  Require(retained_nulls == 1 && retained_intervals == expected_intervals,
+          "INTERVAL retained reopen changed NULL or component bytes");
+  Rollback(reader);
+  const auto appended_page = ReadPhysicalPage(fixture, fixture.physical_page);
+  Require(appended_page.visible_rows.size() == 3, "INTERVAL physical reopen lost appended row");
+  unsigned physical_nulls = 0;
+  recovered_intervals.clear();
+  for (const auto& row : appended_page.visible_rows)
+    for (const auto& cell : row.cells) if (cell.value.type_id == dt::CanonicalTypeId::interval) {
+      if (cell.value.is_null) {
+        Require(cell.value.payload.empty(), "physical INTERVAL NULL acquired payload");
+        ++physical_nulls;
+      } else Require(recovered_intervals.emplace(cell.value.payload.begin(),cell.value.payload.end()).second,
+                     "INTERVAL physical reopen duplicated component");
+    }
+  Require(physical_nulls == 1 && recovered_intervals == expected_intervals,
+          "INTERVAL physical reopen changed NULL or component bytes");
+}
+
+void TestIntervalOrderedIndexRefusal() {
+  for(const bool compound:{false,true}) {
+    auto fixture=MakeTypedScalarFixture(compound?"interval_compound_order_refusal":"interval_order_refusal",1815+compound*100);
+    auto metadata=Begin(fixture,"interval-order-refusal-metadata");
+    auto index=TypedScalarUniqueIndex(fixture,metadata,"interval_value",fixture.salt+200);
+    if(compound)index.key_envelopes={"id","interval_value"};
+    Require(!api::AppendMgaIndexMetadata(metadata,index).error,"interval index refusal fixture metadata failed");
+    Commit(metadata);
+    for(const bool null:{false,true}) {
+      auto context=Begin(fixture,"interval-order-refusal");
+      auto row=TypedScalarRow(1);
+      if(null)for(auto& field:row.fields)if(field.first=="interval_value") {
+        field.second.state=api::EngineValueState::sql_null;field.second.binary_value.clear();
+      }
+      auto request=NativeRequest(fixture,context,{row});
+      request.option_envelopes.push_back("dml.ingest.preallocator=true");
+      request.option_envelopes.push_back("dml.ingest.preallocation_bytes=1048576");
+      unsigned publication_calls=0;
+      request.before_row_publication=[&](auto,auto,auto) {
+        ++publication_calls;
+        return api::MakeEngineApiDiagnostic("SB_ENGINE_API_OK","engine.api.ok",{},false);
+      };
+      const auto bytes=[&] {
+        std::ifstream input(fixture.database_path,std::ios::binary);
+        Require(input.good(),"interval refusal node snapshot unavailable");
+        return std::vector<char>(std::istreambuf_iterator<char>(input),std::istreambuf_iterator<char>());
+      };
+      const auto before=bytes();
+      const auto result=api::EngineExecuteNativeBulkIngest(request);
+      bool exact_cause=false;
+      for(const auto& diagnostic:result.diagnostics)
+        exact_cause=exact_cause||diagnostic.code=="CTI.TEMPORAL.ORDERING_REFUSED"||
+            (diagnostic.native_source&&diagnostic.native_source->record.diagnostic_code=="CTI.TEMPORAL.ORDERING_REFUSED");
+      Require(!result.ok&&exact_cause&&result.inserted_rows==0&&result.dml_summary.rows_changed==0,
+              "mixed INTERVAL acquired an ordered key or wrong refusal");
+      Require(bytes()==before&&result.dml_summary.page_reservations==0&&result.dml_summary.row_extent_reservations==0,
+              "INTERVAL ordering refusal retained physical effects");
+      Require(publication_calls==0&&result.dml_summary.preallocation_requests==0&&
+                  result.dml_summary.preallocation_granted_pages==0,
+              "INTERVAL ordering refusal ran publication or preallocation");
+      const auto loaded=api::LoadMgaRelationStoreState(context);
+      Require(loaded.ok,"INTERVAL refusal relation reread failed");
+      Require(std::none_of(loaded.state.row_versions.begin(),loaded.state.row_versions.end(),
+          [&](const auto& value){return value.table_uuid==fixture.table_uuid;}),"INTERVAL refusal published a row");
+      Require(std::none_of(loaded.state.index_entries.begin(),loaded.state.index_entries.end(),
+          [&](const auto& value){return value.table_uuid==fixture.table_uuid;}),"INTERVAL refusal published an index key");
+      Rollback(context);
+    }
   }
 }
 
@@ -3405,10 +3954,46 @@ int main(int argc, char** argv) try {
   const bool uint16_only = argc == 2 && std::string_view(argv[1]) == "--native-uint16-index";
   const bool narrow_real_only = argc == 2 && std::string_view(argv[1]) == "--native-narrow-real-index";
   const bool network_only = argc == 2 && std::string_view(argv[1]) == "--native-network-index";
+  const bool temporal_only = argc == 2 && std::string_view(argv[1]) == "--native-temporal-index";
+  const bool scalar_index_only = argc == 2 && std::string_view(argv[1]) == "--native-scalar-index";
+  const bool interval_only = argc == 2 && std::string_view(argv[1]) == "--native-interval-storage";
+  const bool bit_only = argc == 2 && std::string_view(argv[1]) == "--native-bit-storage";
+  const bool descriptor_only = argc == 2 && std::string_view(argv[1]) == "--native-descriptor-storage";
   const bool ordered_only = argc == 2 && std::string_view(argv[1]) == "--native-ordered-index";
-  Require(argc == 1 || fixed_scalar_only || typed_null_only || integer_only || ordered_only || uint16_only || narrow_real_only || network_only,
+  Require(argc == 1 || fixed_scalar_only || typed_null_only || integer_only || ordered_only || uint16_only || narrow_real_only || network_only || temporal_only || scalar_index_only || interval_only || descriptor_only || bit_only,
           "unknown native bulk gate arguments");
   ConfigureMemoryFixture();
+  if(bit_only) {
+    TestNativeBitStorage();
+    std::cout<<"native_bit_storage=passed native_profiles_null_empty_commit_reopen\n";
+    return EXIT_SUCCESS;
+  }
+  if (descriptor_only) {
+    TestDescriptorPayloadRowPageStorage();
+    TestDescriptorPayloadIndexKeysUseBinaryPayloads();
+    TestOpaqueRenderOnlyDescriptorPayloadRefusals();
+    TestDecimalIndexKeysPreserveNumericOrder();
+    TestDecimalIndexKeysPreserveNumericOrder(true);
+    TestOpaqueRenderOnlyDescriptorPayloadExplicitAllow();
+    std::cout << "native_descriptor_storage=passed\n";
+    return EXIT_SUCCESS;
+  }
+  if(interval_only) {
+    TestTypedScalarRowPageStorage();
+    TestIntervalOrderedIndexRefusal();
+    std::cout<<"native_interval_storage=passed native_reopen_ordering_refusal\n";
+    return EXIT_SUCCESS;
+  }
+  if (temporal_only) {
+    TestNativeTemporalIndexReopen();
+    std::cout << "native_temporal_index=passed bounds_commit_reopen\n";
+    return EXIT_SUCCESS;
+  }
+  if (scalar_index_only) {
+    TestTypedScalarIndexKeysUseBinaryPayloads();
+    std::cout << "native_scalar_index=passed\n";
+    return EXIT_SUCCESS;
+  }
   if (network_only) {
     TestNativeNetworkIndexReopen();
     std::cout << "native_network_index=passed canonical_order_commit_reopen_invalid_prefix_refusal\n";
@@ -3457,8 +4042,11 @@ int main(int argc, char** argv) try {
   TestNativeUint16IndexReopen();
   TestNativeNarrowRealIndexReopen();
   TestNativeNetworkIndexReopen();
+  TestNativeTemporalIndexReopen();
+  TestNativeBitStorage();
   TestTypedScalarIndexKeysUseBinaryPayloads();
   TestTypedScalarRowPageStorage();
+  TestIntervalOrderedIndexRefusal();
   TestMalformedInlineFixedTypedValueRefuses();
   TestNativeUuidBinaryIndexAndValues();
   TestNativeUuidBinaryIndexAndValues(false);
