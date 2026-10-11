@@ -29,6 +29,7 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -63,8 +64,8 @@ std::string GraphPath(std::initializer_list<api::EngineUuid> vertices) {
 #endif
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  // Unwind the owned fixture directories even when a later assertion fails.
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -279,13 +280,28 @@ void CreateDatabaseFixture(const std::filesystem::path& path) {
 
 void PersistTransactionInventory(const std::filesystem::path& database_path,
                                  mga::TransactionState writer_state) {
-  auto inventory = mga::MakeEmptyLocalTransactionInventory();
-  inventory.entries.push_back(InventoryEntry(113, writer_state));
-  inventory.entries.push_back(InventoryEntry(130, mga::TransactionState::active));
-  inventory.next_local_transaction_id = 131;
+  const auto loaded = db::LoadLocalTransactionInventoryFromDatabase(database_path.string());
+  Require(loaded.ok(), "ODF-113 could not load the publication-owned transaction inventory");
+  auto inventory = loaded.inventory;
+  if (writer_state == mga::TransactionState::active) {
+    Require(inventory.next_local_transaction_id <= 113,
+            "ODF-113 fixture transaction identities must be unallocated");
+    inventory.entries.push_back(InventoryEntry(113, mga::TransactionState::active));
+    inventory.entries.push_back(InventoryEntry(130, mga::TransactionState::active));
+    inventory.next_local_transaction_id = 131;
+  } else {
+    Require(writer_state == mga::TransactionState::committed,
+            "ODF-113 unsupported fixture transaction transition");
+    const auto committed = mga::CommitLocalTransaction(std::move(inventory),
+        mga::MakeLocalTransactionId(113), 1779530000114ull);
+    Require(committed.ok(), "ODF-113 transaction commit transition failed");
+    inventory = committed.inventory;
+  }
   const auto persisted =
       db::PersistLocalTransactionInventoryToDatabase(database_path.string(),
                                                      inventory);
+  if (!persisted.ok()) std::cerr << persisted.diagnostic.diagnostic_code << ':'
+                                << persisted.diagnostic.message_key << '\n';
   Require(persisted.ok(), "ODF-113 could not persist transaction inventory");
 }
 
@@ -326,6 +342,39 @@ void SeedCrudTransaction(const std::filesystem::path& database_path) {
 
 void CommitCrudTransaction(const std::filesystem::path& database_path) {
   PersistTransactionInventory(database_path, mga::TransactionState::committed);
+}
+
+void InventoryPublicationFixtureRegression() {
+  TempDatabase database("inventory_publication");
+  const auto initial=db::LoadLocalTransactionInventoryFromDatabase(database.path.string());
+  Require(initial.ok() && initial.inventory.publication_base,
+          "ODF-113 initial inventory must carry publication authority");
+  SeedCrudTransaction(database.path);
+  const auto seeded=db::LoadLocalTransactionInventoryFromDatabase(database.path.string());
+  Require(seeded.ok() && seeded.inventory.entries.size()==initial.inventory.entries.size()+2 &&
+          seeded.inventory.next_local_transaction_id==131 &&
+          seeded.inventory.next_commit_sequence==initial.inventory.next_commit_sequence,
+          "ODF-113 seed must retain bootstrap entries and commit order");
+  const auto stale=db::PersistLocalTransactionInventoryToDatabase(database.path.string(),initial.inventory);
+  Require(!stale.ok() && stale.diagnostic.diagnostic_code=="SB-TXN-INVENTORY-SNAPSHOT-STALE",
+          "ODF-113 stale fixture snapshot must not overwrite the allocated inventory");
+  CommitCrudTransaction(database.path);
+  const auto committed=db::LoadLocalTransactionInventoryFromDatabase(database.path.string());
+  Require(committed.ok() && committed.inventory.next_local_transaction_id==131 &&
+          committed.inventory.next_commit_sequence==seeded.inventory.next_commit_sequence+1 &&
+          committed.inventory.entries.size()==seeded.inventory.entries.size(),
+          "ODF-113 reopened commit must retain issued allocation and commit order");
+  bool writer=false,reader=false;
+  for(const auto& entry:committed.inventory.entries) {
+    if(entry.identity.local_id.value==113)
+      writer=entry.identity.transaction_uuid.value==TransactionIdentity(113) &&
+          entry.state==mga::TransactionState::committed &&
+          entry.commit_sequence==seeded.inventory.next_commit_sequence;
+    if(entry.identity.local_id.value==130)
+      reader=entry.identity.transaction_uuid.value==TransactionIdentity(130) &&
+          entry.state==mga::TransactionState::active && entry.commit_sequence==0;
+  }
+  Require(writer && reader,"ODF-113 durable writer/reader identities and finality drifted");
 }
 
 void RequireNoForbiddenEvidence(const api::EngineApiResult& result,
@@ -1804,7 +1853,14 @@ void WriteJson(const std::vector<ScenarioEvidence>& scenarios) {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) try {
+  if(argc==2 && std::string_view(argv[1])=="--inventory-publication-only") {
+    InventoryPublicationFixtureRegression();
+    std::cout << "ODF-113 inventory publication fixture regression passed\n";
+    return EXIT_SUCCESS;
+  }
+  Require(argc==1,"ODF-113 unknown test selection");
+  InventoryPublicationFixtureRegression();
   std::vector<ScenarioEvidence> scenarios;
   scenarios.push_back(KvPhysicalProviderScenario());
   scenarios.push_back(DocumentPhysicalProviderScenario());
@@ -1815,4 +1871,7 @@ int main() {
   scenarios.push_back(PhysicalProviderFailClosedMatrixScenario());
   WriteJson(scenarios);
   return EXIT_SUCCESS;
+} catch(const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }
