@@ -31,12 +31,15 @@ struct ServerIpcEndpointResult {
   bool ok() const { return diagnostics.empty(); }
 };
 
+struct ServerIpcClientCohort;
+
 // Caller-owned, stable-address lifetime cohort. The host must retain this owner
 // until DrainServerIpcEndpoint reports completion, even after endpoint throws.
 // In particular, an embedded library never terminates its host on drain failure.
 // Endpoint and Drain calls require exclusive host access; no detached work.
 struct ServerIpcEndpointOwner {
-  explicit ServerIpcEndpointOwner(const HostedEngineState& state) : engine_state(state) {}
+  explicit ServerIpcEndpointOwner(const HostedEngineState& state);
+  ~ServerIpcEndpointOwner();
   ServerIpcEndpointOwner(const ServerIpcEndpointOwner&) = delete;
   ServerIpcEndpointOwner& operator=(const ServerIpcEndpointOwner&) = delete;
   // Declaration order keeps actual database locks/runtime references alive
@@ -48,10 +51,12 @@ struct ServerIpcEndpointOwner {
   std::exception_ptr first_failure;
   bool entered = false;
   bool endpoint_active = false;
+  std::unique_ptr<ServerIpcClientCohort> clients;
 };
 
 struct ServerIpcDrainResult {
   bool complete = false;
+  bool clients_complete = false;
   bool agents_complete = false;
   bool listeners_complete = false;
   bool sessions_complete = false;

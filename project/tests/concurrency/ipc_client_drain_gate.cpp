@@ -25,6 +25,7 @@ namespace core = scratchbird::core;
 using namespace std::chrono_literals;
 std::binary_semaphore ready{0}, consumed{0}, done{0};
 std::binary_semaphore failure_claimed{0}, release_failure_capture{0}, joining_selected_writer{0};
+std::binary_semaphore release_retained_client{0};
 std::atomic<int> first_fd{-1};
 std::atomic<int> listening_fd{-1};
 std::atomic<int> attempted_bind_fd{-1};
@@ -37,6 +38,8 @@ bool cohort_allocation_failure = false;
 bool endpoint_allocation_failure = false;
 bool bind_failure = false;
 bool delayed_failure_publication = false;
+bool native_join_failure = false;
+std::atomic<unsigned> native_join_failures{0};
 int competing_fd = -1;
 thread_local bool fail_allocation = false;
 thread_local unsigned accepted_count = 0;
@@ -89,10 +92,15 @@ extern "C" int __wrap_pthread_join(pthread_t id, void** result) {
   // Fault window is the reporting boundary before cohort join, not later agent
   // cleanup. A failure sink with no native mutex reaches join without a fault.
   fail_record_mutex = false;
+  const bool retained_client = native_join_failure && ::pthread_equal(id, first_thread);
+  if (retained_client && native_join_failures.load() < 2) {
+    ++native_join_failures;
+    return EAGAIN;
+  }
   if (delayed_failure_publication && accepted_count && ::pthread_equal(id, first_thread))
     joining_selected_writer.release();
   const int rc = __real_pthread_join(id, result);
-  if (accepted_count && !rc && ::pthread_equal(id, first_thread)) first_joined = true;
+  if ((accepted_count || retained_client) && !rc && ::pthread_equal(id, first_thread)) first_joined = true;
   return rc;
 }
 extern "C" int __real_pthread_mutex_lock(pthread_mutex_t*);
@@ -111,6 +119,7 @@ extern "C" ssize_t __wrap_recv(int fd, void* data, size_t size, int flags) {
   if (fd == first_fd && rc > 0 && observe_read.exchange(false)) {
     fail_allocation = allocation_failure;
     consumed.release();
+    if (native_join_failure) release_retained_client.acquire();
   }
   return rc;
 }
@@ -156,6 +165,7 @@ int main(int argc, char** argv) {
   cohort_allocation_failure = mode == "cohort-allocation-failure";
   endpoint_allocation_failure = mode == "endpoint-allocation-failure";
   bind_failure = mode == "bind-failure";
+  native_join_failure = mode == "native-join-failure";
   const bool ready_failure = mode == "ready-failure" || mode == "ready-stop-failure";
   const bool record_lock_failure = mode == "failure-record-lock-failure";
   const bool callback_failure = mode == "callback-failure" || mode == "ready-stop-failure" || record_lock_failure || delayed_failure_publication;
@@ -207,12 +217,15 @@ int main(int argc, char** argv) {
     srv::ServerIpcEndpointOwner endpoint_owner(engine);
     std::thread endpoint([&] {
       try {
-        const auto result = srv::RunParserServerIpcEndpoint(config, artifacts, endpoint_owner, callbacks);
+        // Deliberately do not keep argument storage alive after endpoint exit.
+        const auto endpoint_config = config;
+        const auto endpoint_artifacts = artifacts;
+        const auto result = srv::RunParserServerIpcEndpoint(endpoint_config, endpoint_artifacts, endpoint_owner, callbacks);
         exit = result.exit_code;
         for (const auto& diagnostic : result.diagnostics)
           if (diagnostic.code == "PARSER_SERVER_IPC.ENDPOINT_BIND_FAILED") bind_diagnostic = true;
       }
-      catch (const std::system_error& error) { exception = launch_failure && error.code().value() == EAGAIN; }
+      catch (const std::system_error& error) { exception = (launch_failure || native_join_failure) && error.code().value() == EAGAIN; }
       catch (const std::bad_alloc&) { exception = allocation_failure || cohort_allocation_failure || endpoint_allocation_failure; }
       catch (const std::runtime_error& error) {
         exception = !delayed_failure_publication &&
@@ -327,6 +340,33 @@ int main(int argc, char** argv) {
     else if (launch_failure || cohort_allocation_failure) second = Connect(config.sbps_endpoint);
     else if (!allocation_failure) srv::RequestParserServerStop();
     const bool bounded = done.try_acquire_for(5s);
+    if (native_join_failure) {
+      if (!bounded) std::abort();
+      endpoint.join();
+      Require(exception && !first_joined && native_join_failures == 1 &&
+              endpoint_owner.first_failure && !endpoint_owner.endpoint_active,
+              "embedded return must retain client after failed native join");
+      const auto pending = srv::DrainServerIpcEndpoint(endpoint_owner);
+      Require(!pending.complete && !pending.clients_complete && !pending.agents_complete &&
+              !pending.listeners_complete && !pending.sessions_complete &&
+              endpoint_owner.agents.Snapshot().started && native_join_failures == 2,
+              "pending client join must fence dependent cleanup");
+      release_retained_client.release();
+      const auto drained = srv::DrainServerIpcEndpoint(endpoint_owner);
+      Require(drained.complete && drained.clients_complete && first_joined &&
+              !endpoint_owner.agents.Snapshot().started && endpoint_owner.first_failure,
+              "retry must actually join retained client before service cleanup");
+      ::close(peer);
+      peer = -1;
+      Require(!std::filesystem::exists(config.sbps_endpoint), "listening endpoint withdrawn");
+      std::ifstream lifecycle(config.lifecycle_state_file);
+      const std::string state{std::istreambuf_iterator<char>(lifecycle), {}};
+      Require(state.find("state=stopped") == std::string::npos,
+              "resource retry must not invent a clean lifecycle receipt");
+      std::filesystem::remove_all(root);
+      std::cout << "retained_native_client_join_retry=PASS\n";
+      return 0;
+    }
     std::uint8_t byte{};
     const auto closed_read = bounded ? ::recv(peer, &byte, 1, MSG_DONTWAIT) : -1;
     const int closed_error = closed_read < 0 ? errno : 0;

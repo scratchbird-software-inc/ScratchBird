@@ -4687,12 +4687,61 @@ bool ParserChannelHelloMayBeAdmittedForTest(
           hello_identity_unchanged);
 }
 
+// Native threads and ALL of their referenced state belong to the externally
+// retained owner, never an endpoint stack frame. In particular an unsuccessful
+// join can return to an embedded caller without destroying joinable threads.
+struct ServerIpcClientCohort {
+  ServerIpcClientCohort(const ServerBootstrapConfig& config,
+                       const ServerLifecycleArtifacts& artifacts)
+      : config(config), artifacts(artifacts) {}
+  ServerBootstrapConfig config;
+  ServerLifecycleArtifacts artifacts;
+  ParserPackageRegistry parser_registry;
+  ParserEventNotificationRouter event_router;
+  ServerMaintenanceCoordinator maintenance;
+  ServerObservabilityState observability;
+  FairClientDispatchGate dispatch_gate;
+  std::atomic<bool> failure_selected{false};
+  std::exception_ptr failure;
+  std::vector<std::thread> threads;
+
+  void RecordFailure() noexcept {
+    // One writer, observed only after ALL actual joins. The exchange is not
+    // publication of exception_ptr; thread completion supplies that edge.
+    if (!failure_selected.exchange(true, std::memory_order_relaxed))
+      failure = std::current_exception();
+    RequestParserServerStop();
+  }
+  void Join() {
+    for (auto& thread : threads)
+      if (thread.joinable()) thread.join();
+  }
+};
+
+ServerIpcEndpointOwner::ServerIpcEndpointOwner(const HostedEngineState& state)
+    : engine_state(state) {}
+ServerIpcEndpointOwner::~ServerIpcEndpointOwner() = default;
+
 ServerIpcDrainResult DrainServerIpcEndpoint(ServerIpcEndpointOwner& owner) {
   ServerIpcDrainResult result;
   if (owner.endpoint_active) return result;
   const auto retain_failure = [&] {
     if (!owner.first_failure) owner.first_failure = std::current_exception();
   };
+  try {
+    if (owner.clients) {
+      RequestParserServerStop();
+      owner.clients->Join();
+      if (owner.clients->failure && !owner.first_failure)
+        owner.first_failure = owner.clients->failure;
+    }
+    result.clients_complete = true;
+  } catch (...) {
+    retain_failure();
+    // No dependent session/service mutation or reclamation while a native
+    // client handle is still pending, even if the OS thread may have exited.
+    return result;
+  }
   try {
     const auto stopped = StopManagedServerListeners(&owner.listeners, "graceful");
     result.listeners_complete = stopped.ok;
@@ -4733,7 +4782,7 @@ ServerIpcDrainResult DrainServerIpcEndpoint(ServerIpcEndpointOwner& owner) {
     result.agents_complete = stopped.ok();
     result.diagnostics.insert(result.diagnostics.end(), stopped.diagnostics.begin(), stopped.diagnostics.end());
   } catch (...) { retain_failure(); }
-  result.complete = result.agents_complete && result.listeners_complete && result.sessions_complete;
+  result.complete = result.clients_complete && result.agents_complete && result.listeners_complete && result.sessions_complete;
   return result;
 }
 
@@ -4851,8 +4900,10 @@ static ServerIpcEndpointResult RunParserServerIpcEndpointImpl(const ServerBootst
     result.exit_code = 2;
     return result;
   }
-  auto& session_registry = owner.sessions;
-  const ParserPackageRegistry parser_registry = LoadParserPackageRegistry(config);
+  owner.clients = std::make_unique<ServerIpcClientCohort>(config, artifacts);
+  auto& cohort = *owner.clients;
+  cohort.parser_registry = LoadParserPackageRegistry(config);
+  const auto& parser_registry = cohort.parser_registry;
   auto& agent_runtime = owner.agents;
   const auto stop_agents = [&] {
     const auto stopped = agent_runtime.Stop();
@@ -4866,7 +4917,6 @@ static ServerIpcEndpointResult RunParserServerIpcEndpointImpl(const ServerBootst
     server_endpoint.Reset();
     return result;
   }
-  ParserEventNotificationRouter event_router;
   auto& listener_orchestrator = owner.listeners;
   listener_orchestrator = BuildListenerOrchestrator(config, artifacts);
   const auto listener_start = StartEnabledServerListeners(&listener_orchestrator, config, artifacts);
@@ -4892,25 +4942,10 @@ static ServerIpcEndpointResult RunParserServerIpcEndpointImpl(const ServerBootst
     result.diagnostics.insert(result.diagnostics.end(), stopped.diagnostics.begin(), stopped.diagnostics.end());
     return result;
   }
-  ServerMaintenanceCoordinator maintenance_coordinator = BuildMaintenanceCoordinator(config, artifacts);
-  ServerObservabilityState observability =
+  cohort.maintenance = BuildMaintenanceCoordinator(config, artifacts);
+  cohort.observability =
       InitializeServerObservability(config, artifacts, engine_state, parser_registry, listener_orchestrator);
-  FairClientDispatchGate client_dispatch_gate;
-  std::vector<std::thread> client_threads;
-  std::atomic<bool> client_failure_selected{false};
-  std::exception_ptr client_failure;
-  const auto record_client_failure = [&]() noexcept {
-    // One writer claims the retained failure without a fallible native lock.
-    // This one-way state transition is not a lock or publication of
-    // exception_ptr: no caller reads the pointer until EVERY client has joined
-    // below. Thread completion
-    // supplies the happens-before edge even if another reporter requests stop
-    // before the selected writer has assigned its exception. No spin or retry.
-    if (!client_failure_selected.exchange(true, std::memory_order_relaxed)) {
-      client_failure = std::current_exception();
-    }
-    RequestParserServerStop();
-  };
+  auto& observability = cohort.observability;
 
   try {
   // Readiness publication is part of this owned cohort's lifetime. A callback
@@ -4991,19 +5026,19 @@ static ServerIpcEndpointResult RunParserServerIpcEndpointImpl(const ServerBootst
 #endif
           "SBPS accepted socket nonblocking setup failed");
     }
-    client_threads.emplace_back([client = std::move(accepted),
-                                 &config,
-                                 &artifacts,
-                                 &engine_state,
-                                 &session_registry,
-                                 &parser_registry,
-                                 &event_router,
-                                 &listener_orchestrator,
-                                 &maintenance_coordinator,
-                                 &agent_runtime,
-                                 &observability,
-                                 &client_dispatch_gate,
-                                 &record_client_failure]() mutable {
+    cohort.threads.emplace_back([client = std::move(accepted), &owner,
+                                  retained = &cohort]() mutable {
+      const auto& config = retained->config;
+      const auto& artifacts = retained->artifacts;
+      const auto& engine_state = owner.engine_state;
+      auto& session_registry = owner.sessions;
+      const auto& parser_registry = retained->parser_registry;
+      auto& event_router = retained->event_router;
+      auto& listener_orchestrator = owner.listeners;
+      auto& maintenance_coordinator = retained->maintenance;
+      auto& agent_runtime = owner.agents;
+      auto& observability = retained->observability;
+      auto& client_dispatch_gate = retained->dispatch_gate;
       const auto client_fd = client.get();
       bool release_heap_after_close = false;
       ClientNegotiationState negotiation_state;
@@ -5039,7 +5074,7 @@ static ServerIpcEndpointResult RunParserServerIpcEndpointImpl(const ServerBootst
         }
       }
       } catch (...) {
-        record_client_failure();
+        retained->RecordFailure();
       }
       try {
       {
@@ -5070,24 +5105,21 @@ static ServerIpcEndpointResult RunParserServerIpcEndpointImpl(const ServerBootst
       } catch (...) {
         // The owning socket still closes on this thread. Failed session cleanup
         // cannot become a successful shutdown or erase an unknown MGA outcome.
-        record_client_failure();
+        retained->RecordFailure();
       }
     });
   }
   } catch (...) {
     // Includes vector allocation and native launch failure with earlier clients.
-    record_client_failure();
+    cohort.RecordFailure();
   }
 
   RequestParserServerStop();
   try {
     if (callbacks.on_stopping) callbacks.on_stopping();
-  } catch (...) { record_client_failure(); }
-  for (auto& client_thread : client_threads) {
-    if (client_thread.joinable()) {
-      client_thread.join();
-    }
-  }
+  } catch (...) { cohort.RecordFailure(); }
+  cohort.Join();
+  const auto client_failure = cohort.failure;
   server_endpoint.Reset();
   owner.endpoint_active = false;
   const auto drain = DrainServerIpcEndpoint(owner);
