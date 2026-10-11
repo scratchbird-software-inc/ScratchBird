@@ -10,6 +10,7 @@
 
 #include "database_format.hpp"
 #include "page_header.hpp"
+#include "datatype_date.hpp"
 
 #include <algorithm>
 #include <array>
@@ -98,6 +99,100 @@ RowDataPageResult RowPageError(std::string diagnostic_code,
                                                 std::move(diagnostic_code),
                                                 std::move(message_key),
                                                 std::move(detail));
+  return result;
+}
+
+namespace dt = scratchbird::core::datatypes;
+bool IsTypedEngineIdentity(const TypedUuid& uuid, UuidKind expected_kind);
+
+template<class Fact>
+RowDataPageResult TemporalError(const Fact& fact) {
+  auto result = RowPageError(std::string(fact.diagnostic_code),
+      "storage.row_data_page.temporal_component_refused", std::string(fact.detail));
+  result.status = fact.status;
+  result.diagnostic.status = fact.status;
+  if constexpr (std::is_same_v<Fact, dt::TimeDiagnosticFactV3>) result.time_diagnostic = fact;
+  return result;
+}
+
+RowDataPageResult ValidateTemporalReceiver(const RowDataTemporalReceiver& receiver,
+                                         const TypedUuid& relation) {
+  if (!IsTypedEngineIdentity(receiver.relation_uuid, UuidKind::object) ||
+      receiver.relation_uuid.value != relation.value || receiver.relation_uuid.kind != relation.kind)
+    return RowPageError("CTI.TEMPORAL.DESCRIPTOR_INVALID", "storage.row_data_page.temporal_relation_mismatch");
+  bool first = true;
+  u16 previous = 0;
+  for (const auto& column : receiver.columns) {
+    if ((!first && column.column_ordinal <= previous) || bool(column.date) == bool(column.time))
+      return RowPageError("CTI.TEMPORAL.DESCRIPTOR_INVALID", "storage.row_data_page.temporal_schema_invalid");
+    if (column.date) {
+      const auto valid = dt::ValidateDateProfileHandleV3(*column.date);
+      if (!valid.ok()) return TemporalError(valid.diagnostic);
+    } else {
+      const auto valid = dt::ValidateTimeProfileHandleV3(*column.time);
+      if (!valid.ok()) return TemporalError(valid.diagnostic);
+    }
+    first = false;
+    previous = column.column_ordinal;
+  }
+  RowDataPageResult result;
+  result.status = RowPageOkStatus();
+  return result;
+}
+
+const RowDataTemporalColumnBinding* TemporalColumn(const RowDataTemporalReceiver* receiver, u16 ordinal) {
+  if (receiver == nullptr) return nullptr;
+  const auto found = std::lower_bound(receiver->columns.begin(), receiver->columns.end(), ordinal,
+      [](const auto& column, u16 value) { return column.column_ordinal < value; });
+  return found != receiver->columns.end() && found->column_ordinal == ordinal ? &*found : nullptr;
+}
+
+RowDataPageResult EncodeTemporalCell(const RowDataCell& cell, const RowDataTemporalColumnBinding& binding) {
+  if (cell.external_value || cell.value.payload_is_toast_reference ||
+      cell.value.type_id != (binding.date ? dt::CanonicalTypeId::date : dt::CanonicalTypeId::time))
+    return RowPageError("CTI.TEMPORAL.DESCRIPTOR_INVALID", "storage.row_data_page.temporal_type_mismatch");
+  RowDataPageResult result;
+  if (binding.date) {
+    const auto decoded = dt::DecodeCanonicalDateComponentNoAllocV3(*binding.date,
+        cell.value.is_null ? dt::DateValueStateV3::sql_null : dt::DateValueStateV3::value,
+        binding.null_allowed, cell.value.payload);
+    if (!decoded.ok()) return TemporalError(decoded.diagnostic);
+    auto encoded = dt::EncodeDateSbdvalComposedV3(
+        {binding.date, decoded.value.state, decoded.value.day}, binding.null_allowed);
+    if (!encoded.ok()) return TemporalError(encoded.diagnostic);
+    result.serialized = std::move(encoded.bytes);
+  } else {
+    const auto decoded = dt::DecodeCanonicalTimeComponentNoAllocV3(*binding.time,
+        cell.value.is_null ? dt::TimeValueStateV3::sql_null : dt::TimeValueStateV3::value,
+        binding.null_allowed, cell.value.payload);
+    if (!decoded.ok()) return TemporalError(decoded.diagnostic);
+    auto encoded = dt::EncodeTimeSbdvalComposedV3(
+        {binding.time, decoded.value.state, decoded.value.nanoseconds_since_midnight}, binding.null_allowed);
+    if (!encoded.ok()) return TemporalError(encoded.diagnostic);
+    result.serialized = std::move(encoded.bytes);
+  }
+  result.status = RowPageOkStatus();
+  return result;
+}
+
+RowDataPageResult DecodeTemporalCell(std::span<const byte> bytes,
+    const RowDataTemporalColumnBinding& binding, RowDataCell* cell) {
+  if (binding.date) {
+    const auto decoded = dt::DecodeDateSbdvalComposedNoAllocV3(*binding.date, binding.null_allowed, bytes);
+    if (!decoded.ok()) return TemporalError(decoded.diagnostic);
+    cell->value.type_id = dt::CanonicalTypeId::date;
+    cell->value.is_null = decoded.value.state == dt::DateValueStateV3::sql_null;
+  } else {
+    const auto decoded = dt::DecodeTimeSbdvalComposedNoAllocV3(*binding.time, binding.null_allowed, bytes);
+    if (!decoded.ok()) return TemporalError(decoded.diagnostic);
+    cell->value.type_id = dt::CanonicalTypeId::time;
+    cell->value.is_null = decoded.value.state == dt::TimeValueStateV3::sql_null;
+  }
+  // Composed owner admission above checked the complete SBDVAL01 frame. Retain
+  // exactly its canonical bytes, not a display rendering or a second conversion.
+  cell->value.payload.assign(bytes.begin() + dt::kDatatypeBinaryEnvelopeHeaderBytes, bytes.end());
+  RowDataPageResult result;
+  result.status = RowPageOkStatus();
   return result;
 }
 
@@ -315,7 +410,8 @@ DenseRowOrdinalValidation ValidateDenseRowOrdinalLocator(
   return result;
 }
 
-RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size) {
+static RowDataPageResult BuildRowDataPageBodyImpl(RowDataPageBody body, u32 page_size,
+                                                const RowDataTemporalReceiver* receiver) {
   if (page_size <= kPageHeaderSerializedBytes + kRowDataPageBodyHeaderBytes) {
     return RowPageError("SB-ROW-DATA-PAGE-SIZE-TOO-SMALL",
                         "storage.row_data_page.page_size_too_small",
@@ -323,6 +419,10 @@ RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size)
   }
 
   RowDataPageBody body_with_ordinals = std::move(body);
+  if (receiver != nullptr) {
+    auto valid = ValidateTemporalReceiver(*receiver, body_with_ordinals.relation_uuid);
+    if (!valid.ok()) return valid;
+  }
   AssignDenseInternalRowOrdinals(&body_with_ordinals);
   if (!IsTypedEngineIdentity(body_with_ordinals.relation_uuid, UuidKind::object)) {
     return RowPageError("SB-ROW-DATA-PAGE-RELATION-UUID-REQUIRED",
@@ -368,7 +468,12 @@ RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size)
     body_bytes += kRowHeaderBytes;
     for (const RowDataCell& cell : row.cells) {
       scratchbird::core::datatypes::DatatypeBinaryResult encoded;
-      if (cell.external_value) {
+      if (const auto* binding = TemporalColumn(receiver, cell.column_ordinal)) {
+        auto temporal = EncodeTemporalCell(cell, *binding);
+        if (!temporal.ok()) return temporal;
+        encoded.status = temporal.status;
+        encoded.encoded = std::move(temporal.serialized);
+      } else if (cell.external_value) {
         const auto locator = EncodeRowExternalValueLocator(*cell.external_value);
         if (!locator || cell.value.type_id != scratchbird::core::datatypes::CanonicalTypeId::unknown ||
             cell.value.is_null || cell.value.payload_is_toast_reference || !cell.value.payload.empty())
@@ -391,7 +496,7 @@ RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size)
                             "storage.row_data_page.body_too_large");
       }
       body_bytes += kCellHeaderBytes + encoded.encoded.size();
-      encoded_cells.push_back(encoded.encoded);
+      encoded_cells.push_back(std::move(encoded.encoded));
     }
   }
   if (body_bytes > page_size) {
@@ -512,6 +617,20 @@ RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size)
 
 RowDataPageResult BuildRowDataPageBody(const RowDataPageBody& body, u32 page_size) {
   return BuildRowDataPageBodyOwned(body, page_size);
+}
+
+RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size) {
+  return BuildRowDataPageBodyImpl(std::move(body), page_size, nullptr);
+}
+
+RowDataPageResult BuildRowDataPageBody(const RowDataPageBody& body, u32 page_size,
+                                     const RowDataTemporalReceiver& receiver) {
+  return BuildRowDataPageBodyImpl(body, page_size, &receiver);
+}
+
+RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size,
+                                          const RowDataTemporalReceiver& receiver) {
+  return BuildRowDataPageBodyImpl(std::move(body), page_size, &receiver);
 }
 
 namespace {
@@ -638,7 +757,8 @@ template<bool Borrowed = false>
 ReadResult<Borrowed> ParseRowDataPageBodyImpl(
     std::span<const byte> serialized, u64 page_number,
     const scratchbird::core::datatypes::DatatypeBinaryDiagnosticContextV1* binary_context,
-    bool retain_serialized = true, RowDataPageViewWorkspace workspace = {}) {
+    bool retain_serialized = true, RowDataPageViewWorkspace workspace = {},
+    const RowDataTemporalReceiver* receiver = nullptr) {
   if (serialized.size() < kRowDataPageBodyHeaderBytes) {
     return RowReadError<Borrowed>("SB-ROW-DATA-PAGE-BODY-SHORT",
                         "storage.row_data_page.body_short",
@@ -706,6 +826,12 @@ ReadResult<Borrowed> ParseRowDataPageBodyImpl(
       result.body.segment_id == 0 || result.body.segment_generation == 0 ||
       result.body.page_generation == 0 || result.body.compaction_generation == 0) {
     return RowReadError<Borrowed>("CATALOG.INVALID_INPUT", "storage.row_data_page.identity_scope_invalid");
+  }
+  if constexpr (!Borrowed) {
+    if (receiver != nullptr) {
+      auto valid = ValidateTemporalReceiver(*receiver, result.body.relation_uuid);
+      if (!valid.ok()) return valid;
+    }
   }
   RowReadState<Borrowed> state(workspace);
   u32 offset = kRowDataPageBodyHeaderBytes;
@@ -789,6 +915,8 @@ ReadResult<Borrowed> ParseRowDataPageBodyImpl(
                             cell_index);
       }
       if (cell_kind == 1) {
+        if (TemporalColumn(receiver, cell.column_ordinal) != nullptr)
+          return RowReadError<Borrowed>("CTI.TEMPORAL.DESCRIPTOR_INVALID", "storage.row_data_page.temporal_external_refused");
         if (binary_context != nullptr)
           return RowReadError<Borrowed>("CATALOG.INVALID_INPUT", "storage.row_data_page.external_value_not_admitted");
         const auto locator = DecodeRowExternalValueLocator(serialized.subspan(offset, payload_bytes));
@@ -817,15 +945,20 @@ ReadResult<Borrowed> ParseRowDataPageBodyImpl(
         }
       } else {
         if constexpr (!Borrowed) {
-          std::vector<byte> encoded(serialized.begin() + offset, serialized.begin() + offset + payload_bytes);
-          auto decoded = DecodeDatatypeBinaryValue(encoded);
-          if (!decoded.ok()) {
-            RowDataPageResult decoded_result;
-            decoded_result.status = decoded.status;
-            decoded_result.diagnostic = std::move(decoded.diagnostic);
-            return decoded_result;
+          if (const auto* binding = TemporalColumn(receiver, cell.column_ordinal)) {
+            auto decoded = DecodeTemporalCell(serialized.subspan(offset, payload_bytes), *binding, &cell);
+            if (!decoded.ok()) return decoded;
+          } else {
+            std::vector<byte> encoded(serialized.begin() + offset, serialized.begin() + offset + payload_bytes);
+            auto decoded = DecodeDatatypeBinaryValue(encoded);
+            if (!decoded.ok()) {
+              RowDataPageResult decoded_result;
+              decoded_result.status = decoded.status;
+              decoded_result.diagnostic = std::move(decoded.diagnostic);
+              return decoded_result;
+            }
+            cell.value = std::move(decoded.value);
           }
-          cell.value = std::move(decoded.value);
         }
       }
       if (!state.CellValue(row,std::move(cell))) {
@@ -895,6 +1028,11 @@ RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 
   return ParseRowDataPageBodyImpl(serialized, page_number, nullptr);
 }
 
+RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 page_number,
+                                     const RowDataTemporalReceiver& receiver) {
+  return ParseRowDataPageBodyImpl(serialized, page_number, nullptr, true, {}, &receiver);
+}
+
 RowDataPageResult ParseRowDataPageBodyWithCanonicalBinaryCells(
     const std::vector<byte>& serialized, u64 page_number,
     const scratchbird::core::datatypes::DatatypeBinaryDiagnosticContextV1& context) {
@@ -903,6 +1041,11 @@ RowDataPageResult ParseRowDataPageBodyWithCanonicalBinaryCells(
 
 RowDataPageResult ParseRowDataPageRows(std::span<const byte> serialized, u64 page_number) {
   return ParseRowDataPageBodyImpl(serialized, page_number, nullptr, false);
+}
+
+RowDataPageResult ParseRowDataPageRows(std::span<const byte> serialized, u64 page_number,
+                                     const RowDataTemporalReceiver& receiver) {
+  return ParseRowDataPageBodyImpl(serialized, page_number, nullptr, false, {}, &receiver);
 }
 
 RowDataPageResult ParseRowDataPageRowsWithCanonicalBinaryCells(

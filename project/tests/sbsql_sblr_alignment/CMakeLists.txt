@@ -1446,7 +1446,7 @@ target_include_directories(sbsql_sblr_alignment_native_row_data_page PRIVATE
   ${CMAKE_SOURCE_DIR}/include
   ${CMAKE_SOURCE_DIR}/src/storage/page ${CMAKE_SOURCE_DIR}/src/storage/disk
   ${CMAKE_SOURCE_DIR}/src/core/datatypes ${CMAKE_SOURCE_DIR}/src/core/metrics ${SBL_NUMERIC_BOOST_INCLUDE_DIR})
-target_link_libraries(sbsql_sblr_alignment_native_row_data_page PRIVATE sb_core_platform sb_core_uuid sb_core_hash sbl_numeric)
+target_link_libraries(sbsql_sblr_alignment_native_row_data_page PRIVATE sb_core_platform sb_core_uuid sb_core_hash sb_core_datatypes sbl_numeric)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(sbsql_sblr_alignment_native_row_data_page PRIVATE -ffunction-sections -fdata-sections)
   target_link_options(sbsql_sblr_alignment_native_row_data_page PRIVATE -Wl,--gc-sections)

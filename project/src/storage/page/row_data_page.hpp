@@ -11,6 +11,7 @@
 // SB-ROW-DATA-PAGE-ANCHOR
 #include "datatype_binary.hpp"
 #include "datatype_binary_view.hpp"
+#include "datatype_time.hpp"
 #include "runtime_platform.hpp"
 #include "uuid.hpp"
 #include "row_external_value_locator.hpp"
@@ -19,6 +20,12 @@
 #include <optional>
 #include <span>
 #include <vector>
+#include <memory>
+
+namespace scratchbird::core::datatypes {
+struct DateValidatedProfileHandleV3;
+struct TimeValidatedProfileHandleV3;
+}
 
 namespace scratchbird::storage::page {
 
@@ -32,6 +39,23 @@ using scratchbird::core::platform::u32;
 using scratchbird::core::platform::u64;
 
 inline constexpr u32 kRowDataPageBodyHeaderBytes = 96;
+
+// Synchronous, borrowed receiving schema. The owner supplies profiles from the
+// admitted relation, not from a cell's enum or payload. This component validates
+// representation and relation binding; it does not grant catalog/MGA authority.
+// Exactly one profile per column, in strictly increasing ordinal order. Profiles
+// and the span must remain immutable and alive throughout the call. Returned
+// owning rows retain no borrowed schema, so a rebuild needs explicit re-binding.
+struct RowDataTemporalColumnBinding {
+  u16 column_ordinal = 0;
+  bool null_allowed = false;
+  std::shared_ptr<const core::datatypes::DateValidatedProfileHandleV3> date;
+  std::shared_ptr<const core::datatypes::TimeValidatedProfileHandleV3> time;
+};
+struct RowDataTemporalReceiver {
+  TypedUuid relation_uuid;
+  std::span<const RowDataTemporalColumnBinding> columns;
+};
 
 struct RowDataCell {
   u16 column_ordinal = 0;
@@ -132,6 +156,8 @@ struct RowDataPageResult {
   // of them. A failure never publishes body or serialized prefixes.
   std::optional<scratchbird::core::datatypes::DatatypeBinaryDiagnosticView>
       binary_diagnostic;
+  // Preserve native typed arguments when a TIME receiver refuses a cell.
+  std::optional<scratchbird::core::datatypes::TimeDiagnosticFactV3> time_diagnostic;
 
   bool ok() const {
     return status.ok();
@@ -154,7 +180,13 @@ DenseRowOrdinalValidation ValidateDenseRowOrdinalLocator(const RowDataPageBody& 
                                                          const DenseRowOrdinalLocator& locator);
 RowDataPageResult BuildRowDataPageBody(const RowDataPageBody& body, u32 page_size);
 RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size);
+RowDataPageResult BuildRowDataPageBody(const RowDataPageBody& body, u32 page_size,
+                                    const RowDataTemporalReceiver& receiver);
+RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size,
+                                         const RowDataTemporalReceiver& receiver);
 RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 page_number);
+RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 page_number,
+                                    const RowDataTemporalReceiver& receiver);
 // Same row framing/identity/checksum admission as the general reader, but every
 // cell must use the datatype owner's direct, non-NULL binary component profile.
 // Context is reporting-only and must come from the containing admitted schema.
@@ -167,6 +199,8 @@ RowDataPageResult ParseRowDataPageBodyWithCanonicalBinaryCells(
 // serialized is intentionally empty on success. These are not grant-backed or
 // allocation-free row containers; framing and diagnostics share the old reader.
 RowDataPageResult ParseRowDataPageRows(std::span<const byte> serialized, u64 page_number);
+RowDataPageResult ParseRowDataPageRows(std::span<const byte> serialized, u64 page_number,
+                                    const RowDataTemporalReceiver& receiver);
 RowDataPageResult ParseRowDataPageRowsWithCanonicalBinaryCells(
     std::span<const byte> serialized, u64 page_number,
     const scratchbird::core::datatypes::DatatypeBinaryDiagnosticContextV1& context);

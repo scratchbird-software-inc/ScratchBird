@@ -4,6 +4,7 @@
 #include "metric_sample_codec_test.cpp"
 #undef METRIC_SAMPLE_CODEC_MAIN
 #include "native_row_data_page.hpp"
+#include "datatype_date.hpp"
 #include <openssl/sha.h>
 namespace page=scratchbird::storage::page;
 namespace disk=scratchbird::storage::disk;
@@ -199,5 +200,175 @@ void ExternalImages(){
   }
 }
 }
-int main(){MetricSamplePageBaseMain();auto before=checks;Images();SemanticImages();PageFaults();ExternalImages();
+void TemporalReceivers() {
+  namespace dt = scratchbird::core::datatypes;
+  for (unsigned generation : {10u, 11u}) {
+    const auto snapshot = generation == 10 ? dt::kDatatypeCohortV10 : dt::kDatatypeCohortV11;
+    page::RowDataTemporalColumnBinding date_column, time_column;
+    date_column.column_ordinal = 1; date_column.null_allowed = true;
+    time_column.column_ordinal = 2; time_column.null_allowed = true;
+    for (const auto& identity : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+      if (identity.legacy_fields.catalog_snapshot_uuid != snapshot) continue;
+      if (identity.legacy_fields.canonical_binary_type_code == 400) {
+        auto profile = dt::BuildDateValidatedProfileHandleV3({snapshot, snapshot, generation, generation}, identity);
+        Check(profile.ok(), "DATE receiver fixture profile");
+        date_column.date = std::make_shared<const dt::DateValidatedProfileHandleV3>(std::move(profile.profile));
+      }
+      if (identity.legacy_fields.canonical_binary_type_code == 401) {
+        auto profile = dt::BuildTimeValidatedProfileHandleV3({snapshot, snapshot, generation, generation}, identity);
+        Check(profile.ok(), "TIME receiver fixture profile");
+        time_column.time = std::make_shared<const dt::TimeValidatedProfileHandleV3>(std::move(profile.profile));
+      }
+    }
+    Check(date_column.date && time_column.time, "explicit temporal receiver fixture missing");
+    const std::array<page::RowDataTemporalColumnBinding, 2> columns{date_column, time_column};
+    for (unsigned page_profile = 0; page_profile < 5; ++page_profile) {
+      for (unsigned sample = 0; sample < 5; ++sample) {
+        auto p = RowExample(page_profile, Sample());
+        p.body.rows.front().cells.front().column_ordinal = 0;
+        const page::RowDataTemporalReceiver receiver{p.body.relation_uuid, columns};
+        const std::array<u64, 5> days{0x80000000u, 0xffffffffu, 0, 1, 0x7fffffffu};
+        const std::array<u64, 5> times{0, 1, 999'999'999, 1'000'000'000, 86'399'999'999'999ull};
+        for (bool null : {false, true}) {
+          p.body.rows.front().cells.resize(1);
+          for (unsigned i = 0; i < 2; ++i) {
+            page::RowDataCell cell;
+            cell.column_ordinal = i + 1;
+            cell.value.type_id = i ? dt::CanonicalTypeId::time : dt::CanonicalTypeId::date;
+            cell.value.is_null = null;
+            if (!null) for (unsigned j = 0; j < (i ? 8u : 4u); ++j)
+              cell.value.payload.push_back(static_cast<byte>((i ? times[sample] : days[sample]) >> (8 * j)));
+            p.body.rows.front().cells.push_back(std::move(cell));
+          }
+          const auto oracle = RowOracle(p);
+          const Bytes expected(oracle.begin()+128, oracle.end()-32);
+          const auto built = page::BuildRowDataPageBody(p.body, p.header.page_size_bytes-32, receiver);
+          Check(built.ok() && built.serialized == expected, "bound temporal body differs from independent binary oracle");
+          const auto absent = page::BuildRowDataPageBody(p.body, p.header.page_size_bytes-32);
+          Check(!absent.ok() && absent.body.rows.empty() && absent.serialized.empty(), "profileless temporal writer admitted");
+          const auto unbound = page::ParseRowDataPageBody(expected, p.body.page_number);
+          Check(!unbound.ok() && unbound.body.rows.empty() && unbound.serialized.empty(), "profileless temporal reader admitted");
+          for (bool retain : {false, true}) {
+            const auto decoded = retain ? page::ParseRowDataPageBody(expected, p.body.page_number, receiver) :
+                page::ParseRowDataPageRows(expected, p.body.page_number, receiver);
+            Check(decoded.ok() && decoded.body.rows.size() == 1 && decoded.body.rows[0].cells.size() == 3,
+                  "bound temporal row decode lost cells");
+            if (!decoded.ok() || decoded.body.rows.size() != 1 || decoded.body.rows[0].cells.size() != 3) continue;
+            Check(retain ? decoded.serialized == expected : decoded.serialized.empty(), "row reader image ownership drift");
+            for (unsigned i = 1; i < 3; ++i) {
+              const auto& actual = decoded.body.rows[0].cells[i].value;
+              const auto& source = p.body.rows[0].cells[i].value;
+              Check(actual.type_id == source.type_id && actual.is_null == null && actual.payload == source.payload,
+                    "temporal row decode altered native component");
+            }
+            const auto rebuilt = page::BuildRowDataPageBodyOwned(decoded.body, p.header.page_size_bytes-32, receiver);
+            Check(rebuilt.ok() && rebuilt.serialized == expected, "temporal read/rebuild changed canonical image");
+          }
+          for (unsigned fault = 0; fault < 7; ++fault) {
+            auto bad_columns = columns;
+            auto bad_receiver = receiver;
+            bad_receiver.columns = bad_columns;
+            if (fault == 0) bad_receiver.relation_uuid.value.bytes[0] ^= 1;
+            if (fault == 1) bad_columns[1].column_ordinal = 1;
+            if (fault == 2) bad_columns[0].date.reset();
+            if (fault == 3) bad_columns[0].time = time_column.time;
+            if (fault == 4) bad_columns[1].column_ordinal = 3;
+            if (fault == 5) {
+              auto bad = std::make_shared<dt::DateValidatedProfileHandleV3>(*date_column.date);
+              bad->profile_fingerprint[0] ^= 1; bad_columns[0].date = std::move(bad);
+            }
+            if (fault == 6) {
+              auto bad = std::make_shared<dt::TimeValidatedProfileHandleV3>(*time_column.time);
+              ++bad->receipt.registry_generation; bad_columns[1].time = std::move(bad);
+            }
+            const auto rejected = page::ParseRowDataPageBody(expected, p.body.page_number, bad_receiver);
+            const auto rejected_write = page::BuildRowDataPageBody(p.body, p.header.page_size_bytes-32, bad_receiver);
+            Check(!rejected.ok() && rejected.body.rows.empty() && rejected.serialized.empty() &&
+                      !rejected_write.ok() && rejected_write.body.rows.empty() && rejected_write.serialized.empty(),
+                  "invalid temporal receiver published rows or image");
+          }
+          if (null) {
+            auto strict = columns; strict[0].null_allowed = strict[1].null_allowed = false;
+            const page::RowDataTemporalReceiver nonnull{p.body.relation_uuid, strict};
+            Check(!page::BuildRowDataPageBody(p.body, p.header.page_size_bytes-32, nonnull).ok() &&
+                      !page::ParseRowDataPageBody(expected, p.body.page_number, nonnull).ok(), "NULL crossed nonnull receiver");
+          }
+          for (unsigned fault = 0; fault < 4; ++fault) {
+            auto malformed = p;
+            auto& cell = malformed.body.rows.front().cells.back();
+            if (fault == 0) cell.value.payload.push_back(0);
+            if (fault == 1) cell.value.type_id = dt::CanonicalTypeId::int64;
+            if (fault == 2) cell.value.payload_is_toast_reference = true;
+            if (fault == 3) { cell.value.is_null = false; cell.value.payload.assign(8, 255); }
+            const auto image = RowOracle(malformed);
+            const Bytes bytes(image.begin()+128, image.end()-32);
+            const auto failed_read = page::ParseRowDataPageBody(bytes, p.body.page_number, receiver);
+            const auto failed_write = page::BuildRowDataPageBody(malformed.body, p.header.page_size_bytes-32, receiver);
+            Check(!failed_read.ok() && failed_read.body.rows.empty() && failed_read.serialized.empty() &&
+                      !failed_write.ok() && failed_write.body.rows.empty() && failed_write.serialized.empty(),
+                  "malformed temporal component crossed page boundary");
+            if (fault == 3) {
+              const auto fact = dt::DecodeCanonicalTimeComponentNoAllocV3(*time_column.time,
+                  dt::TimeValueStateV3::value, true, cell.value.payload).diagnostic;
+              for (const auto* failed : {&failed_read, &failed_write}) {
+                Check(failed->time_diagnostic.has_value(), "TIME typed diagnostic was discarded");
+                if (!failed->time_diagnostic) continue;
+                const auto& actual = *failed->time_diagnostic;
+                Check(actual.status.code == fact.status.code && actual.diagnostic_code == fact.diagnostic_code &&
+                    actual.detail == fact.detail && actual.parameter_count == fact.parameter_count,
+                    "TIME diagnostic fact changed at row boundary");
+                for (unsigned i = 0; i < fact.parameters.size(); ++i) {
+                  const auto& a = actual.parameters[i]; const auto& e = fact.parameters[i];
+                  Check(a.kind == e.kind && a.name == e.name && a.unsigned_value == e.unsigned_value &&
+                      a.signed_value == e.signed_value && a.uuid_value == e.uuid_value && a.token_value == e.token_value,
+                      "TIME diagnostic parameter changed at row boundary");
+                }
+              }
+            }
+          }
+          auto external = p;
+          external.body.rows.front().cells.back().value = {};
+          external.body.rows.front().cells.back().external_value = page::RowExternalValueLocator{Id(80), 123, 12000};
+          const auto external_image = RowOracle(external);
+          const Bytes external_body(external_image.begin()+128, external_image.end()-32);
+          Check(!page::BuildRowDataPageBody(external.body, p.header.page_size_bytes-32, receiver).ok() &&
+                    !page::ParseRowDataPageBody(external_body, p.body.page_number, receiver).ok(),
+                "temporal ordinal accepted external locator substitution");
+          if (sample == 0 && page_profile == 0 && !null) {
+            // Supplied-but-unused profiles are not an unchecked side channel,
+            // even on a valid empty page.
+            auto empty = p; empty.body.rows.clear();
+            const auto empty_image = RowOracle(empty);
+            const Bytes empty_body(empty_image.begin()+128, empty_image.end()-32);
+            auto invalid_columns = columns; invalid_columns.back().time.reset();
+            const page::RowDataTemporalReceiver invalid{p.body.relation_uuid, invalid_columns};
+            Check(!page::BuildRowDataPageBody(empty.body, p.header.page_size_bytes-32, invalid).ok() &&
+                      !page::ParseRowDataPageBody(empty_body, p.body.page_number, invalid).ok(),
+                  "empty page bypassed unused receiving-profile validation");
+            for (unsigned operation = 0; operation < 2; ++operation) {
+              unsigned faults = 0; bool finished = false;
+              for (long point = 0; point < 1000; ++point) {
+                std::optional<page::RowDataPageResult> result;
+                bool threw = false;
+                codec_fault::remaining = point; codec_fault::fired = false;
+                try {
+                  result = operation ? page::ParseRowDataPageBody(expected, p.body.page_number, receiver) :
+                      page::BuildRowDataPageBody(p.body, p.header.page_size_bytes-32, receiver);
+                } catch (const std::bad_alloc&) { threw = true; }
+                const bool fired = codec_fault::fired; codec_fault::remaining = -1;
+                Check(!result || result->ok() || (result->body.rows.empty() && result->serialized.empty()),
+                      "temporal allocation failure exposed partial output");
+                if (fired) { ++faults; Check(threw || (result && !result->ok()), "temporal allocation failure reported success"); }
+                else { Check(result && result->ok() && !threw, "unfaulted temporal row codec failed"); finished = true; break; }
+              }
+              Check(finished && faults, "temporal row allocation sweep incomplete");
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+int main(){MetricSamplePageBaseMain();auto before=checks;Images();SemanticImages();PageFaults();ExternalImages();TemporalReceivers();
   std::cout<<"native row image checks="<<checks-before<<" combined="<<checks<<" failures="<<failures<<'\n';return failures?1:0;}
