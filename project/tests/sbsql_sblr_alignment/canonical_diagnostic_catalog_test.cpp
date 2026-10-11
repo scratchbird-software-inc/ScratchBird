@@ -56,7 +56,14 @@ int main() {
   const auto catalog=d::CanonicalDiagnosticCodeCatalog();
   // Includes native bulk policy, shutdown identity and retained agent notices. Check the
   // exact admitted Core import, not a minimum row count.
-  Check(catalog.size==1544 && catalog.data!=nullptr,"complete Core code inventory missing");
+  Check(catalog.size==1546 && catalog.data!=nullptr,"complete Core code inventory missing");
+  for (const auto code : {"NUMERIC.INT128.OVERFLOW", "NUMERIC.UINT128.OVERFLOW"}) {
+    Sample(code,S::error,true,"retry_only_with_corrected_input_or_context",
+           "reject_without_numeric_value","NUMERIC");
+    const auto* row=d::FindCanonicalDiagnosticCode(code);
+    Check(row && row->sqlstate=="22003" && row->numeric_binding=="not_applicable",
+          "128-bit overflow source registration changed");
+  }
   Sample("MEMORY.LEAK_CLASSIFIED",S::informational,false,"not_applicable",
          "report_retention_preserve_ownership_and_operation_outcome","MEMORY");
   Sample("MEMORY.LEAK_SUSPECTED",S::warning,false,"not_applicable",
@@ -327,7 +334,7 @@ int main() {
     Check(found==nullptr,"unknown code was invented, normalized or guessed");
   }
   constexpr std::array<std::uint8_t,32> expected_source{
-    0x3d,0xef,0xf7,0x91,0xcc,0xc3,0xb6,0x77,0xf5,0xb8,0x3f,0xe0,0x37,0xe1,0x38,0x34,0xdf,0x7b,0x1a,0x38,0x64,0xb9,0xb5,0x69,0x5e,0xbf,0xb0,0x21,0xe3,0xc1,0x15,0x9f};
+    0x42,0x21,0x83,0x3c,0xee,0x3e,0x0e,0x02,0x43,0x2d,0x61,0x66,0x5c,0x65,0x4a,0x5c,0xa2,0x22,0x73,0xd3,0x14,0xce,0xf4,0x0d,0x70,0x68,0x92,0xb0,0xfd,0x82,0xa8,0x2b};
   Check(d::CanonicalDiagnosticCodeSourceSha256()==expected_source,"Core source provenance differs");
   std::cout<<"canonical_diagnostic_catalog rows="<<catalog.size<<" checks="<<checks
            <<" failures="<<failures<<'\n';
