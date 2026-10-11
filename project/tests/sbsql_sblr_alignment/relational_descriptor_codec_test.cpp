@@ -97,7 +97,8 @@ Bytes Oracle(const Descriptor& d) {
   Bytes out;
   Append(out, 1, 2);
   Append(out, (d.datatype_identity_authoritative ? 1 : 0) | (d.collation_uuid ? 2 : 0) |
-      (d.timezone_profile_id ? 4 : 0) | (d.width ? 8 : 0) | (d.precision ? 16 : 0) | (d.scale ? 32 : 0), 2);
+      (d.timezone_profile_id ? 4 : 0) | (d.width ? 8 : 0) | (d.precision ? 16 : 0) | (d.scale ? 32 : 0) |
+      (d.decimal_codec_profile ? 64 : 0), 2);
   Append(out, d.descriptor_id, 4);
   for (const auto uuid : {d.descriptor_uuid, d.type_uuid, d.collation_uuid.value_or(Uuid{}),
                          d.statement_receipt_uuid, d.datatype_catalog_snapshot_uuid})
@@ -112,7 +113,37 @@ Bytes Oracle(const Descriptor& d) {
   Require(out.size() == 152, "oracle fixed prefix differs from specification");
   out.insert(out.end(), d.codec_id.begin(), d.codec_id.end());
   if (d.timezone_profile_id) out.insert(out.end(), d.timezone_profile_id->begin(), d.timezone_profile_id->end());
+  if (d.decimal_codec_profile) {
+    out.insert(out.end(), d.decimal_codec_profile->uuid.bytes.begin(), d.decimal_codec_profile->uuid.bytes.end());
+    Append(out, d.decimal_codec_profile->generation, 8);
+  }
   return out;
+}
+void TestDecimalProfileLayout() {
+  auto d = Fixture();
+  d.decimal_codec_profile = Descriptor::DecimalCodecProfile{
+      Uuid{{0x01,0xa1,0x18,0x6b,0xdf,0x04,0x76,0x0a,0xa3,0xd5,0xd0,0x2d,0x2e,0xe3,0x01,0x54}}, 1};
+  Bytes actual;
+  Require(wire::EncodeRelationalTypeDescriptorV1(d, &actual) && actual == Oracle(d), "decimal profile binary tail differs");
+  Descriptor decoded;
+  Require(wire::DecodeRelationalTypeDescriptorV1(actual.data(), actual.size(), &decoded) && decoded == d,
+          "decimal profile was lost in transport");
+  const auto refuse = [&](Bytes bytes) {
+    auto sentinel = d;
+    Require(!wire::DecodeRelationalTypeDescriptorV1(bytes.data(), bytes.size(), &sentinel) && sentinel == d,
+            "malformed decimal tail changed published descriptor");
+  };
+  for (unsigned missing = 1; missing <= 24; ++missing)
+    refuse(Bytes(actual.begin(), actual.end() - missing));
+  auto bad = actual; bad[2] &= ~64; refuse(bad);
+  bad = actual; bad.push_back(0); refuse(bad);
+  bad = actual; std::fill(bad.end() - 8, bad.end(), 0); refuse(bad);
+  bad = actual; std::fill(bad.end() - 24, bad.end() - 8, 0); refuse(bad);
+  for (const unsigned mask : {1u, 16u, 32u}) { bad = actual; bad[2] &= ~mask; refuse(bad); }
+  auto legacy = d; legacy.decimal_codec_profile.reset();
+  const auto bytes = Oracle(legacy);
+  Require(wire::DecodeRelationalTypeDescriptorV1(bytes.data(), bytes.size(), &decoded) && decoded == legacy,
+          "legacy decode retained stale decimal profile");
 }
 void RoundTrip(const Descriptor& d) {
   const auto expected = Oracle(d);
@@ -6085,7 +6116,7 @@ void TestNativeUuidLiteralBoundary() {
 
 int main() {
   try {
-    TestLayout(); TestAllocationAtomicity(); TestOperationPlacement(); TestNumericBinding(); TestFrozenOperands();
+    TestLayout(); TestDecimalProfileLayout(); TestAllocationAtomicity(); TestOperationPlacement(); TestNumericBinding(); TestFrozenOperands();
     TestReservationSnapshot();
     TestContextIdentityOperands();
     TestDmlIdentityOperands();

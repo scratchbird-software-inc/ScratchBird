@@ -9,6 +9,7 @@
 #include "query/plan_api.hpp"
 #include "query/canonical_sample_descriptor_registry.hpp"
 #include "uuid.hpp"
+#include "query/native_scalar_descriptor_projection.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include <mutex>
 #include <tuple>
@@ -1876,7 +1877,8 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
       descriptors_by_uuid;
   const auto carries_any_datatype_authority =
       [](const RelationalTypeDescriptor& descriptor) {
-        return descriptor.datatype_identity_authoritative ||
+        return descriptor.decimal_codec_profile.has_value() ||
+               descriptor.datatype_identity_authoritative ||
                descriptor.descriptor_generation != 0 ||
                descriptor.type_generation != 0 || !descriptor.codec_id.empty() ||
                descriptor.codec_version != 0 ||
@@ -1888,6 +1890,8 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
       };
   const auto carries_complete_datatype_authority =
       [&](const RelationalTypeDescriptor& descriptor) {
+        if (descriptor.decimal_codec_profile &&
+            !FindExactRelationalDatatypeIdentityV3(descriptor)) return false;
         return descriptor.datatype_identity_authoritative &&
                descriptor.descriptor_generation != 0 &&
                descriptor.type_generation != 0 && !descriptor.codec_id.empty() &&
@@ -1903,7 +1907,8 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
   const auto same_non_authoritative_descriptor =
       [](const RelationalTypeDescriptor& left,
          const RelationalTypeDescriptor& right) {
-        return left.type_uuid == right.type_uuid &&
+        return left.decimal_codec_profile == right.decimal_codec_profile &&
+               left.type_uuid == right.type_uuid &&
                left.nullability == right.nullability &&
                left.collation_uuid == right.collation_uuid &&
                left.timezone_profile_id == right.timezone_profile_id &&
@@ -1913,7 +1918,8 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
   const auto same_immutable_datatype_authority =
       [](const RelationalTypeDescriptor& left,
          const RelationalTypeDescriptor& right) {
-        return left.type_uuid == right.type_uuid &&
+        return left.decimal_codec_profile == right.decimal_codec_profile &&
+               left.type_uuid == right.type_uuid &&
                left.descriptor_generation == right.descriptor_generation &&
                left.type_generation == right.type_generation &&
                left.codec_id == right.codec_id &&

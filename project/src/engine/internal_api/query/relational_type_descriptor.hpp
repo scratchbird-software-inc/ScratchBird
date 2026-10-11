@@ -16,6 +16,11 @@ enum class RelationalNullability : std::uint8_t {
 };
 
 struct RelationalTypeDescriptor {
+  struct DecimalCodecProfile {
+    core::platform::Uuid uuid;
+    std::uint64_t generation{0};
+    bool operator==(const DecimalCodecProfile&) const = default;
+  };
   std::uint32_t descriptor_id{0};
   core::platform::Uuid descriptor_uuid;
   core::platform::Uuid type_uuid;
@@ -35,6 +40,8 @@ struct RelationalTypeDescriptor {
   core::platform::Uuid datatype_catalog_snapshot_uuid;
   std::uint64_t datatype_catalog_generation{0};
   std::uint64_t datatype_registry_generation{0};
+  // Explicit parameterized occurrence profile, not inferred from the base row.
+  std::optional<DecimalCodecProfile> decimal_codec_profile;
 
   bool operator==(const RelationalTypeDescriptor&) const = default;
 };

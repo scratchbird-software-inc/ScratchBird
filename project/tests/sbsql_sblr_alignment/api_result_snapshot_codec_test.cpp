@@ -62,7 +62,7 @@ void CheckMetadata(const api::EngineQueryResultMetadataV1& a,
     Check(x.bound_descriptor_uuid == y.bound_descriptor_uuid &&
           x.collation_uuid == y.collation_uuid &&
           x.timezone_profile_id == y.timezone_profile_id && x.width == y.width &&
-          x.precision == y.precision && x.scale == y.scale,
+          x.precision == y.precision && x.scale == y.scale && x.decimal_codec_profile == y.decimal_codec_profile,
           "query expression descriptor field lost");
   }
 }
@@ -103,6 +103,24 @@ api::EngineApiResult Fixture(){
 }
 }
 int main(){
+  {
+    auto profiled = Fixture();
+    auto metadata = std::make_shared<api::EngineQueryResultMetadataV1>(*profiled.result_shape.query_metadata);
+    const api::RelationalTypeDescriptor::DecimalCodecProfile profile{
+        api::EngineUuid{{0x01,0xa1,0x18,0x6b,0xdf,0x04,0x76,0x0a,0xa3,0xd5,0xd0,0x2d,0x2e,0xe3,0x01,0x54}}, 1};
+    metadata->columns.front().decimal_codec_profile = profile;
+    profiled.result_shape.query_metadata = metadata;
+    const auto bytes = Encode(profiled);
+    api::EngineApiResult decoded;
+    Check(bytes[4] == 7 && api::DecodeEngineApiResultSnapshot(bytes, &decoded), "SAPI7 decimal profile snapshot refused");
+    Check(decoded.result_shape.query_metadata->columns.front().decimal_codec_profile == profile,
+          "snapshot lost explicit decimal codec profile");
+    Check(!decoded.result_shape.query_values->metadata->columns.front().decimal_codec_profile,
+          "snapshot manufactured another metadata owner's profile");
+    Check(Encode(decoded) == bytes, "profile snapshot round trip changed bytes");
+    auto wrong = bytes; wrong[4] = 6;
+    Check(!api::DecodeEngineApiResultSnapshot(wrong, &decoded), "profile snapshot accepted old layout tag");
+  }
   api::EngineApiResult empty;auto minimal=Encode(empty);
   std::vector<std::uint8_t> oracle(226,0);oracle[0]='S';oracle[1]='A';oracle[2]='P';oracle[3]='I';oracle[4]=6;oracle[223]=1;
   Check(minimal==oracle,"independent empty snapshot layout differs");

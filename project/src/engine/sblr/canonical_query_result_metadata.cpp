@@ -249,6 +249,12 @@ bool PreserveCanonicalQueryResultMetadataV1(
       if (shape->columns[published].collation_uuid !=
           bound.collation_uuid.value_or(api::EngineUuid{}))
         return refuse("executed output carries a contradictory collation identity");
+      if (!MatchesExplicitDecimalCodecProfileV1(bound.decimal_codec_profile,
+            static_cast<dt::CanonicalTypeId>(identity->canonical_binary_type_code),
+            bound.precision, bound.scale,
+            {context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation, context.datatype_registry_generation},
+            shape->columns[published]))
+        return refuse("executed output carries a contradictory decimal occurrence profile");
       api::EngineQueryResultColumnV1 column;
       if (!BinaryIdentity(bound.descriptor_uuid, &column.bound_descriptor_uuid) ||
           !BinaryIdentity(identity->descriptor_uuid, &column.transport.descriptor_uuid) ||
@@ -264,6 +270,7 @@ bool PreserveCanonicalQueryResultMetadataV1(
       column.width = bound.width;
       column.precision = bound.precision;
       column.scale = bound.scale;
+      column.decimal_codec_profile = bound.decimal_codec_profile;
       auto& transport = column.transport;
       transport.ordinal = static_cast<std::uint32_t>(published);
       transport.name = output.output_name_utf8;

@@ -616,7 +616,7 @@ bool SameDescriptor(const api::EngineDescriptor& left,
 bool ExactCanonicalBooleanRelationalDescriptorV1(
     const api::RelationalTypeDescriptor& descriptor,
     const api::RelationalNullability effective_nullability) {
-  if (!descriptor.datatype_identity_authoritative ||
+  if (descriptor.decimal_codec_profile || !descriptor.datatype_identity_authoritative ||
       (effective_nullability != api::RelationalNullability::kNonNull &&
        effective_nullability != api::RelationalNullability::kNullable) ||
       (descriptor.nullability != api::RelationalNullability::kNonNull &&
@@ -639,7 +639,7 @@ bool ExactCanonicalBooleanRelationalDescriptorV1(
 bool ExactCanonicalTextRelationalDescriptorV1(
     const api::RelationalTypeDescriptor& descriptor,
     const api::RelationalNullability effective_nullability) {
-  if (!descriptor.datatype_identity_authoritative ||
+  if (descriptor.decimal_codec_profile || !descriptor.datatype_identity_authoritative ||
       (effective_nullability != api::RelationalNullability::kNonNull &&
        effective_nullability != api::RelationalNullability::kNullable) ||
       (descriptor.nullability != api::RelationalNullability::kNonNull &&
@@ -670,7 +670,7 @@ bool BuildExactCanonicalBooleanRuntimeDescriptorV1(
     const api::RelationalTypeDescriptor& source,
     const api::RelationalNullability effective_nullability,
     api::EngineDescriptor* descriptor) {
-  if (descriptor == nullptr ||
+  if (descriptor == nullptr || source.decimal_codec_profile ||
       !ExactCanonicalBooleanRelationalDescriptorV1(source,
                                                    effective_nullability)) {
     return false;
@@ -743,6 +743,24 @@ bool SamePersistedRowDescriptor(
         *authority_refusal_detail = "persisted column UUID differs from bound identifier";
       return false;
     }
+  }
+
+  if (bound.decimal_codec_profile) {
+    api::EngineDescriptor projected;
+    if (!BuildExactCanonicalScalarRuntimeDescriptorV1(bound, dt::CanonicalTypeId::decimal, &projected) ||
+        actual.descriptor_uuid != bound.descriptor_uuid || actual.type_uuid != bound.type_uuid ||
+        actual.canonical_type_name != "decimal" || actual.datatype_cohort != projected.datatype_cohort ||
+        actual.datatype_descriptor_uuid != projected.datatype_descriptor_uuid ||
+        actual.datatype_descriptor_generation != projected.datatype_descriptor_generation ||
+        !metadata.identities.contains("decimal_codec_uuid") ||
+        metadata.identities.at("decimal_codec_uuid") != bound.decimal_codec_profile->uuid ||
+        !metadata.text.contains("decimal_codec_generation") ||
+        metadata.text.at("decimal_codec_generation") != std::to_string(bound.decimal_codec_profile->generation) ||
+        !metadata.text.contains("precision") || metadata.text.at("precision") != std::to_string(*bound.precision) ||
+        !metadata.text.contains("scale") || metadata.text.at("scale") != std::to_string(*bound.scale)) return false;
+    // Persisted catalog metadata additionally carries base codec, column and
+    // datatype identities. These are checked below/by the qualified owner;
+    // the execution-only scalar modifier allowlist is not a storage schema.
   }
 
   const auto expected_nullability =
@@ -867,7 +885,9 @@ bool SamePersistedRowDescriptor(
     else if (key == "type_uuid") { if (value != bound.type_uuid) return false; }
     else if (key == "collation_uuid") { if (value != actual.collation_uuid) return false; }
     else if (key == "charset_uuid") { if (value != actual.charset_uuid) return false; }
-    else if (key == "codec_uuid") {
+    else if (key == "decimal_codec_uuid") {
+      if (!bound.decimal_codec_profile || value != bound.decimal_codec_profile->uuid) return false;
+    } else if (key == "codec_uuid") {
       if (!datatype_identity || value != datatype_identity->codec_uuid) return false;
     } else if (key == "column_uuid") {
       if (!bound_column_uuid || value != *bound_column_uuid) return false;
@@ -889,6 +909,8 @@ bool SamePersistedRowDescriptor(
   bool codec_version_seen = false;
   bool codec_generation_seen = false;
   bool null_encoding_seen = false;
+  bool decimal_codec_generation_seen = false;
+  if (metadata.identities.contains("decimal_codec_uuid") != bound.decimal_codec_profile.has_value()) return false;
 
 
   const auto exact_string_optional = [](const std::string_view value,
@@ -922,7 +944,7 @@ bool SamePersistedRowDescriptor(
           "timezone_profile_id", "width", "character_length", "precision",
           "scale", "descriptor_generation", "datatype_descriptor_generation",
           "type_generation", "codec_uuid", "column_uuid", "codec_id",
-          "codec_version", "codec_generation", "null_encoding"};
+          "codec_version", "codec_generation", "null_encoding", "decimal_codec_generation"};
       *authority_refusal_detail = "persisted descriptor field rejected: ";
       *authority_refusal_detail +=
           std::find(std::begin(known_fields), std::end(known_fields), key) !=
@@ -974,6 +996,10 @@ bool SamePersistedRowDescriptor(
       }
     } else if (key == "scale") {
       if (!exact_u32_optional(value, bound.scale, &scale_seen)) return false;
+    } else if (key == "decimal_codec_generation") {
+      if (decimal_codec_generation_seen || !bound.decimal_codec_profile ||
+          value != std::to_string(bound.decimal_codec_profile->generation)) return false;
+      decimal_codec_generation_seen = true;
     } else if (key == "descriptor_generation" ||
                key == "datatype_descriptor_generation") {
       if (descriptor_generation_seen || value.empty()) return false;
@@ -1038,7 +1064,8 @@ bool SamePersistedRowDescriptor(
          timezone_seen == bound.timezone_profile_id.has_value() &&
          width_seen == bound.width.has_value() &&
          precision_seen == bound.precision.has_value() &&
-         scale_seen == bound.scale.has_value();
+         scale_seen == bound.scale.has_value() &&
+         decimal_codec_generation_seen == bound.decimal_codec_profile.has_value();
   if (matches && authority_refusal_detail != nullptr) {
     authority_refusal_detail->clear();
   }
@@ -2538,6 +2565,14 @@ bool CanonicalRelationalExpressionRuntime::ResolveDescriptorType(
     return false;
   }
   canonical_type_name->clear();
+  if (descriptor.decimal_codec_profile) {
+    api::EngineDescriptor admitted;
+    if (!BuildExactCanonicalScalarRuntimeDescriptorV1(descriptor,
+          dt::CanonicalTypeId::decimal, &admitted)) {
+      *refusal_detail = "expression decimal occurrence profile is invalid";
+      return false;
+    }
+  }
   if (!IsCanonicalUuid(descriptor.type_uuid)) {
     *refusal_detail = "expression descriptor type UUID is not canonical";
     return false;

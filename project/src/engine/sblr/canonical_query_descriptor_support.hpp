@@ -17,6 +17,12 @@
 
 namespace scratchbird::engine::sblr {
 
+bool MatchesExplicitDecimalCodecProfileV1(
+    const std::optional<internal_api::RelationalTypeDescriptor::DecimalCodecProfile>& profile,
+    core::datatypes::CanonicalTypeId type, const std::optional<std::uint32_t>& precision,
+    const std::optional<std::uint32_t>& scale, const internal_api::EngineDatatypeCohort& cohort,
+    const internal_api::EngineDescriptor& actual);
+
 // Project an already admitted statement occurrence without conflating its
 // UUID with the canonical datatype descriptor UUID. The caller retains live
 // receipt/occurrence authorization; this helper matches the exact supplied

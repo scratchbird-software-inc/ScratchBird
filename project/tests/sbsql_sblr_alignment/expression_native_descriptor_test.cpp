@@ -54,6 +54,16 @@ void CheckV3RelationalBindings() {
       Check(s::ExactCanonicalCoreDatatypeTypeUuidV1(d::CanonicalTypeName(type), bad).is_nil());
     }
     Check(s::ExactCanonicalCoreDatatypeTypeUuidV1("not-a-datatype", cohort).is_nil());
+    {
+      auto wrong_profile = descriptor;
+      wrong_profile.decimal_codec_profile = a::RelationalTypeDescriptor::DecimalCodecProfile{
+          a::EngineUuid{{0x01,0xa1,0x18,0x6b,0xdf,0x04,0x76,0x0a,0xa3,0xd5,0xd0,0x2d,0x2e,0xe3,0x01,0x54}}, 1};
+      Check(!s::SameExactRelationalTypeDescriptorV2(wrong_profile, descriptor));
+      Check(!s::ExactCanonicalBooleanRelationalDescriptorV1(wrong_profile, a::RelationalNullability::kNonNull));
+      Check(!s::ExactCanonicalTextRelationalDescriptorV1(wrong_profile, a::RelationalNullability::kNonNull));
+      a::EngineDescriptor output;
+      Check(!s::BuildExactCanonicalScalarRuntimeDescriptorV1(wrong_profile, type, &output));
+    }
     for (unsigned mutation = 0; mutation < 9; ++mutation) {
       auto candidate = descriptor;
       if (mutation == 1) ++candidate.datatype_catalog_generation;
@@ -99,6 +109,122 @@ void CheckV3RelationalBindings() {
     }
   }
   Check(cases == 9);
+}
+
+void CheckExplicitDecimalProfiles() {
+  namespace ex = scratchbird::engine::executor;
+  unsigned cohorts = 0;
+  for (const auto& identity : d::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row = identity.legacy_fields;
+    if ((row.catalog_generation != 5 && row.catalog_generation != 10 && row.catalog_generation != 11) ||
+        row.canonical_binary_type_code != static_cast<std::uint32_t>(d::CanonicalTypeId::decimal)) continue;
+    ++cohorts;
+    a::RelationalTypeDescriptor source;
+    source.descriptor_id = 1;
+    source.datatype_identity_authoritative = true;
+    source.descriptor_uuid = scratchbird::tests::FixtureUuid(1086, 1003);
+    source.descriptor_generation = row.descriptor_generation;
+    source.type_uuid = row.type_uuid;
+    source.type_generation = row.type_generation;
+    source.codec_id = row.codec_id;
+    source.codec_version = row.codec_version;
+    source.codec_generation = row.codec_generation;
+    source.datatype_catalog_snapshot_uuid = row.catalog_snapshot_uuid;
+    source.datatype_catalog_generation = row.catalog_generation;
+    source.datatype_registry_generation = row.registry_generation;
+    source.statement_receipt_uuid = scratchbird::tests::FixtureUuid(1086, 1004);
+    // Independent Core profile identity, not the frozen base-row codec UUID.
+    const a::EngineUuid codec_uuid{{0x01,0xa1,0x18,0x6b,0xdf,0x04,0x76,0x0a,
+                                  0xa3,0xd5,0xd0,0x2d,0x2e,0xe3,0x01,0x54}};
+    source.decimal_codec_profile = a::RelationalTypeDescriptor::DecimalCodecProfile{codec_uuid, 1};
+    for (const auto nullable : {a::RelationalNullability::kNonNull, a::RelationalNullability::kNullable}) {
+      source.nullability = nullable;
+      for (unsigned precision = 1; precision <= 38; ++precision) {
+        source.precision = precision;
+        for (unsigned scale = 0; scale <= precision; ++scale) {
+          source.scale = scale;
+          a::EngineDescriptor projected;
+          Check(s::BuildExactCanonicalScalarRuntimeDescriptorV1(source, d::CanonicalTypeId::decimal, &projected));
+          a::CatalogColumnMetadata fields;
+          Check(a::DecodeCatalogColumnMetadata(projected.encoded_descriptor, &fields));
+          Check(fields.identities.at("decimal_codec_uuid") == codec_uuid &&
+                fields.text.at("decimal_codec_generation") == "1");
+          scratchbird::engine::ExecutionTypeDescriptor execution;
+          d::DatatypeDecimalCodecBindingV1 codec;
+          Check(ex::BuildBoundDecimalExecutionTypeDescriptor(projected, &execution, &codec));
+          Check(codec.codec_uuid == codec_uuid && execution.precision == precision && execution.scale == scale);
+        }
+      }
+      source.precision = 18; source.scale = 0;
+      a::EngineDescriptor target;
+      Check(s::BuildExactCanonicalScalarRuntimeDescriptorV1(source, d::CanonicalTypeId::decimal, &target));
+      {
+        auto stored = target;
+        const auto column = scratchbird::tests::FixtureUuid(1086, 1005);
+        a::CatalogColumnMetadata fields;
+        Check(a::DecodeCatalogColumnMetadata(stored.encoded_descriptor, &fields));
+        fields.identities.emplace("column_uuid", column);
+        fields.identities.emplace("type_uuid", row.type_uuid);
+        fields.identities.emplace("datatype_descriptor_uuid", row.descriptor_uuid);
+        if (!row.codec_uuid.is_nil()) fields.identities.emplace("codec_uuid", row.codec_uuid);
+        Check(a::EncodeCatalogColumnMetadata(fields, &stored.encoded_descriptor));
+        Check(s::SamePersistedRowDescriptor(1, source, stored, std::nullopt, nullptr, nullptr, column));
+        s::CanonicalRelationalExpressionRuntimeServices services;
+        unsigned calls = 0;
+        services.prevalidated_persisted_row_descriptor_authority = [&](auto, const auto&, const auto&, auto) {
+          ++calls;
+          return std::optional<bool>{true};
+        };
+        Check(s::SamePersistedRowDescriptor(1, source, stored, std::nullopt, &services, nullptr, column));
+        Check(calls == 1);
+        fields.identities.at("decimal_codec_uuid").bytes[0] ^= 1;
+        Check(a::EncodeCatalogColumnMetadata(fields, &stored.encoded_descriptor));
+        Check(!s::SamePersistedRowDescriptor(1, source, stored, std::nullopt, &services, nullptr, column));
+        Check(calls == 1); // A prevalidated hook cannot mask a crossed profile.
+      }
+      auto real = ex::MakeExecutorDescriptor("real64", nullable == a::RelationalNullability::kNullable
+          ? "nullability=nullable" : "nullability=non_null",
+          {row.catalog_snapshot_uuid, row.catalog_generation, row.registry_generation});
+      a::EngineTypedValue value;
+      value.descriptor = real;
+      value.binary_value = {0,0,0,0,0,0,4,0x40}; // Exact IEEE754 2.5, LE8.
+      ex::DescriptorRuntimeDiagnostic diagnostic;
+      const auto cast = ex::CastDescriptorValue(value, target, &diagnostic);
+      std::vector<std::uint8_t> expected(24, 0);
+      expected[1] = 1; expected[2] = 1; expected[4] = 2; // Half-even -> 2.
+      Check(diagnostic.ok && diagnostic.numeric_facts.inexact && cast.binary_value == expected &&
+            cast.encoded_value.empty() && cast.descriptor == target);
+      if (nullable == a::RelationalNullability::kNullable) {
+        value.binary_value.clear(); value.setState(a::EngineValueState::sql_null);
+        const auto null = ex::CastDescriptorValue(value, target, &diagnostic);
+        Check(diagnostic.ok && null.is_null && null.binary_value.empty() && null.descriptor == target);
+      }
+      auto missing = source; missing.decimal_codec_profile.reset();
+      Check(s::BuildExactCanonicalScalarRuntimeDescriptorV1(missing, d::CanonicalTypeId::decimal, &target));
+      const auto refused = ex::CastDescriptorValue(value, target, &diagnostic);
+      Check(!diagnostic.ok && diagnostic.diagnostic_code == "DATATYPE.DESCRIPTOR.INVALID" && refused.binary_value.empty());
+    }
+    for (unsigned bit = 0; bit < 128; ++bit) {
+      auto bad = source;
+      bad.decimal_codec_profile->uuid.bytes[bit / 8] ^= 1u << (bit % 8);
+      a::EngineDescriptor output;
+      Check(!s::BuildExactCanonicalScalarRuntimeDescriptorV1(bad, d::CanonicalTypeId::decimal, &output));
+    }
+    for (unsigned mutation = 0; mutation < 8; ++mutation) {
+      auto bad = source;
+      if (mutation == 0) ++bad.decimal_codec_profile->generation;
+      if (mutation == 1) bad.precision.reset();
+      if (mutation == 2) bad.scale.reset();
+      if (mutation == 3) bad.precision = 0;
+      if (mutation == 4) bad.scale = 19;
+      if (mutation == 5) ++bad.datatype_registry_generation;
+      if (mutation == 6) ++bad.codec_generation;
+      if (mutation == 7) bad.statement_receipt_uuid = {};
+      a::EngineDescriptor output;
+      Check(!s::BuildExactCanonicalScalarRuntimeDescriptorV1(bad, d::CanonicalTypeId::decimal, &output));
+    }
+  }
+  Check(cohorts == 3);
 }
 
 void CheckPreparedAggregateCohortCustody() {
@@ -227,6 +353,7 @@ void CheckGroupedPreparationCohortCustody() {
 
 int main() {
   CheckV3RelationalBindings();
+  CheckExplicitDecimalProfiles();
   CheckPreparedAggregateCohortCustody();
   CheckGroupedPreparationCohortCustody();
   unsigned qualified_producer_receipts = 0;

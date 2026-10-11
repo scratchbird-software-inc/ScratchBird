@@ -15,6 +15,26 @@ namespace scratchbird::engine::sblr {
 namespace api = scratchbird::engine::internal_api;
 namespace exec = scratchbird::engine::executor;
 
+bool MatchesExplicitDecimalCodecProfileV1(
+    const std::optional<api::RelationalTypeDescriptor::DecimalCodecProfile>& profile,
+    core::datatypes::CanonicalTypeId type, const std::optional<std::uint32_t>& precision,
+    const std::optional<std::uint32_t>& scale, const api::EngineDatatypeCohort& cohort,
+    const api::EngineDescriptor& actual) {
+  api::CatalogColumnMetadata fields;
+  if (!profile) {
+    return api::AdmitCatalogColumnMetadata(actual.encoded_descriptor, &fields) &&
+        !fields.identities.contains("decimal_codec_uuid") &&
+        !fields.text.contains("decimal_codec_generation");
+  }
+  ExecutionTypeDescriptor admitted;
+  core::datatypes::DatatypeDecimalCodecBindingV1 codec;
+  return type == core::datatypes::CanonicalTypeId::decimal && precision && scale &&
+      actual.datatype_cohort == cohort &&
+      exec::BuildBoundDecimalExecutionTypeDescriptor(actual, &admitted, &codec) &&
+      admitted.precision == *precision && admitted.scale == *scale &&
+      codec.codec_uuid == profile->uuid && codec.generation == profile->generation;
+}
+
 bool BuildExactCanonicalUuidRuntimeDescriptorV1(
     const api::RelationalTypeDescriptor& source, api::EngineDescriptor* output) {
   return scratchbird::engine::sblr::BuildExactCanonicalScalarRuntimeDescriptorV1(
@@ -62,7 +82,8 @@ bool SameExactEngineDescriptorV1(const api::EngineDescriptor& left,
 bool SameExactRelationalTypeDescriptorV2(
     const api::RelationalTypeDescriptor& left,
     const api::RelationalTypeDescriptor& right) {
-  return left.descriptor_id == right.descriptor_id &&
+  return left.decimal_codec_profile == right.decimal_codec_profile &&
+         left.descriptor_id == right.descriptor_id &&
          left.descriptor_uuid == right.descriptor_uuid &&
          left.type_uuid == right.type_uuid &&
          left.nullability == right.nullability &&

@@ -5,6 +5,8 @@
 #include "api_types.hpp"
 #include "query/relational_type_descriptor.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "datatype_decimal_codec_profile.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include "uuid.hpp"
 #include <utility>
 
@@ -30,6 +32,11 @@ FindExactRelationalDatatypeIdentityV3(const RelationalTypeDescriptor& source) {
   }
   if (!matched) return nullptr;
   const auto& row = matched->legacy_fields;
+  if (source.decimal_codec_profile &&
+      (row.canonical_binary_type_code != static_cast<std::uint32_t>(core::datatypes::CanonicalTypeId::decimal) ||
+       !source.precision || !source.scale ||
+       !core::datatypes::ExactDecimalCodecProfileMatches(source.decimal_codec_profile->uuid,
+           source.decimal_codec_profile->generation, *source.precision, *source.scale))) return nullptr;
   return row.type_generation == source.type_generation &&
       row.codec_id == source.codec_id && row.codec_version == source.codec_version &&
       row.codec_generation == source.codec_generation ? matched : nullptr;
@@ -53,11 +60,16 @@ inline bool BuildExactCanonicalScalarRuntimeDescriptorV1(
       expected_type != dt::CanonicalTypeId::decimal &&
       expected_type != dt::CanonicalTypeId::real64) return false;
   const bool decimal = expected_type == dt::CanonicalTypeId::decimal;
+  if (source.decimal_codec_profile &&
+      (!decimal || !source.precision || !source.scale ||
+       !dt::ExactDecimalCodecProfileMatches(source.decimal_codec_profile->uuid,
+           source.decimal_codec_profile->generation, *source.precision, *source.scale))) return false;
   if ((source.nullability != RelationalNullability::kNonNull &&
        source.nullability != RelationalNullability::kNullable) ||
       source.collation_uuid || source.timezone_profile_id || source.width ||
       (decimal ? (!source.precision || !source.scale || *source.precision == 0 ||
-                  *source.precision > 38 || *source.scale > *source.precision)
+                  *source.precision > 38 ||
+                  *source.scale > *source.precision)
                : (source.precision.has_value() || source.scale.has_value()))) return false;
   const auto* identity = FindExactRelationalDatatypeIdentityV3(source);
   if (!identity || identity->legacy_fields.canonical_binary_type_code !=
@@ -76,6 +88,15 @@ inline bool BuildExactCanonicalScalarRuntimeDescriptorV1(
       ? "nullability=nullable" : "nullability=non_null";
   if (decimal) descriptor.encoded_descriptor += ";precision=" + std::to_string(*source.precision) +
                                                ";scale=" + std::to_string(*source.scale);
+  if (source.decimal_codec_profile) {
+    CatalogColumnMetadata fields;
+    fields.text = {{"nullability", source.nullability == RelationalNullability::kNullable ? "nullable" : "non_null"},
+                   {"precision", std::to_string(*source.precision)},
+                   {"scale", std::to_string(*source.scale)},
+                   {"decimal_codec_generation", std::to_string(source.decimal_codec_profile->generation)}};
+    fields.identities.emplace("decimal_codec_uuid", source.decimal_codec_profile->uuid);
+    if (!EncodeCatalogColumnMetadata(fields, &descriptor.encoded_descriptor)) return false;
+  }
   *output = std::move(descriptor);
   return true;
 }

@@ -17,7 +17,7 @@
 namespace scratchbird::engine::sblr {
 
 inline constexpr std::size_t kRelationalDescriptorFixedBytesV1 = 152;
-inline constexpr std::size_t kRelationalDescriptorMaximumBytesV1 = 1432;
+inline constexpr std::size_t kRelationalDescriptorMaximumBytesV1 = 1456;
 
 // Pure structural transport. Authority still comes from the owning live
 // receipt and datatype registry. Failure leaves the caller's output unchanged;

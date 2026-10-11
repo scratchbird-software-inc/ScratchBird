@@ -93,6 +93,11 @@ bool MaterializePayload(const api::EngineTypedValue& value,
       }
       break;
     case dt::CanonicalTypeId::decimal: {
+      if (column.decimal_codec_profile) {
+        if (!binary || !column.precision || !column.scale) return false;
+        return numeric::ValidateExactDecimal(value.binary_value.data(), value.binary_value.size(),
+            {numeric::ExactDecimalCodec::le24_v1, *column.precision, *column.scale}) == numeric::ExactDecimalError::none;
+      }
       auto decimal = binary
           ? numeric::DecodeExactDecimalLittleEndian(payload->data(), payload->size())
           : numeric::EncodeExactDecimalLittleEndian(value.encoded_value);
@@ -247,6 +252,11 @@ bool PreserveCanonicalQueryResultValuesV1(
       }
       if (matches != 1) return refuse("query value datatype descriptor is absent or ambiguous");
       identities.push_back(matched_identity);
+      if (!MatchesExplicitDecimalCodecProfileV1(column.decimal_codec_profile,
+            transport.canonical_type_id, column.precision, column.scale,
+            {context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation, context.datatype_registry_generation},
+            shape->columns[i]))
+        return refuse("query value decimal occurrence profile differs from output schema");
       // Descriptor validity is independent of cardinality and SQL NULLs.
       if (transport.canonical_type_id == dt::CanonicalTypeId::decimal &&
           (!column.precision || !column.scale || *column.precision == 0 ||

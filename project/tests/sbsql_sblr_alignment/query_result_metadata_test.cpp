@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "../support/binary_uuid_fixture.hpp"
 #include "engine/sblr/canonical_query_result_metadata.hpp"
+#include "engine/sblr/canonical_query_result_values.hpp"
+#include "query/native_scalar_descriptor_projection.hpp"
 #include "engine/executor/descriptor_value_runtime.hpp"
 #include "query/expression_api.hpp"
 #include "engine/sblr/relational_descriptor_codec.hpp"
@@ -133,6 +135,100 @@ struct Fixture {
     return engine::PreserveCanonicalQueryResultMetadataV1(context, dag, &shape, &code, &detail);
   }
 };
+
+void DecimalProfilePublication() {
+  const auto initial_checks = checks;
+  for (unsigned mode = 0; mode < 3; ++mode) {
+    Fixture f(identities[3], 1, 0, api::RelationalNullability::kNullable);
+    auto& bound = f.dag.descriptors.front();
+    bound.precision = 18; bound.scale = 0;
+    bound.decimal_codec_profile = api::RelationalTypeDescriptor::DecimalCodecProfile{
+        api::EngineUuid{{0x01,0xa1,0x18,0x6b,0xdf,0x04,0x76,0x0a,0xa3,0xd5,0xd0,0x2d,0x2e,0xe3,0x01,0x54}}, 1};
+    Check(api::BuildExactCanonicalScalarRuntimeDescriptorV1(bound, dt::CanonicalTypeId::decimal,
+          &f.shape.columns.front()), "decimal publication fixture binding");
+    if (mode) {
+      api::EngineTypedValue value;
+      value.descriptor = f.shape.columns.front();
+      if (mode == 2) value.setState(api::EngineValueState::sql_null);
+      else {
+        value.binary_value.resize(24, 0);
+        value.binary_value[1] = 1; value.binary_value[2] = 1; value.binary_value[4] = 2;
+      }
+      api::EngineRowValue row;
+      row.fields.emplace_back("same;=résumé", value);
+      f.shape.rows.push_back(row);
+    }
+    Check(f.Run(), "decimal profile metadata publication");
+    Check(f.shape.query_metadata->columns.front().decimal_codec_profile == bound.decimal_codec_profile,
+          "decimal result metadata lost occurrence profile");
+    Check(engine::PreserveCanonicalQueryResultValuesV1(f.context, &f.shape, &f.code, &f.detail),
+          "decimal profile value publication");
+    if (mode == 1) {
+      const auto original = f.shape.rows.front().fields.front().second;
+      for (unsigned mutation = 0; mutation < 4; ++mutation) {
+        auto& value = f.shape.rows.front().fields.front().second;
+        if (mutation == 0) { value.binary_value.clear(); value.encoded_value = "2"; }
+        if (mutation == 1) value.encoded_value = "2";
+        if (mutation == 2) value.binary_value[3] = 1; // Reserved byte.
+        if (mutation == 3) value.binary_value.pop_back();
+        Check(!engine::PreserveCanonicalQueryResultValuesV1(f.context, &f.shape, &f.code, &f.detail) &&
+              !f.shape.query_values, "profiled decimal published nonnative or malformed payload");
+        value = original;
+        Check(engine::PreserveCanonicalQueryResultValuesV1(f.context, &f.shape, &f.code, &f.detail),
+              "profiled decimal native retry failed");
+      }
+    }
+    const auto original_shape = f.shape;
+    for (unsigned mutation = 0; mutation < 10; ++mutation) {
+      auto& actual = f.shape.columns.front();
+      api::CatalogColumnMetadata fields;
+      Check(api::DecodeCatalogColumnMetadata(actual.encoded_descriptor, &fields), "fixture profile metadata decode");
+      if (mutation == 0) { fields.identities["codec_uuid"] = scratchbird::tests::FixtureUuid(1086, 2000); fields.text["codec_generation"] = "1"; }
+      if (mutation == 1) fields.text["width"] = "24";
+      if (mutation == 2) fields.identities["domain_uuid"] = scratchbird::tests::FixtureUuid(1086, 2001);
+      if (mutation == 3) fields.identities.erase("decimal_codec_uuid");
+      if (mutation == 4) fields.text["decimal_codec_generation"] = "2";
+      if (mutation == 5) ++actual.datatype_cohort.registry_generation;
+      if (mutation == 6) actual.charset_uuid = scratchbird::tests::FixtureUuid(1086, 2002);
+      if (mutation == 7) actual.canonical_type_name = "binary";
+      if (mutation == 8) fields.text["precision"] = "018";
+      if (mutation == 9) fields.text["scale"] = "1";
+      Check(api::EncodeCatalogColumnMetadata(fields, &actual.encoded_descriptor), "fixture profile mutation encode");
+      for (auto& row : f.shape.rows) row.fields.front().second.descriptor = actual;
+      Check(!engine::PreserveCanonicalQueryResultValuesV1(f.context, &f.shape, &f.code, &f.detail),
+            "value publication accepted contradictory executed profile");
+      Check(!f.Run(), "metadata publication accepted contradictory executed profile");
+      f.shape = original_shape;
+    }
+    const auto original_bound = bound;
+    for (unsigned mutation = 0; mutation < 4; ++mutation) {
+      if (mutation == 0) bound.decimal_codec_profile.reset();
+      if (mutation == 1) bound.decimal_codec_profile->uuid.bytes[0] ^= 1;
+      if (mutation == 2) ++bound.decimal_codec_profile->generation;
+      if (mutation == 3) ++*bound.scale;
+      Check(!f.Run() && !f.shape.query_metadata && f.code == "DATATYPE.DESCRIPTOR.INVALID",
+            "publication ignored altered decimal profile");
+      bound = original_bound;
+      Check(f.Run(), "publication retry failed");
+    }
+    const auto original_metadata = f.shape.query_metadata;
+    for (unsigned mutation = 0; mutation < 3; ++mutation) {
+      auto metadata = std::make_shared<api::EngineQueryResultMetadataV1>(*original_metadata);
+      auto& profile = metadata->columns.front().decimal_codec_profile;
+      if (mutation == 0) profile.reset();
+      if (mutation == 1) profile->uuid.bytes[0] ^= 1;
+      if (mutation == 2) ++profile->generation;
+      f.shape.query_metadata = metadata;
+      Check(!engine::PreserveCanonicalQueryResultValuesV1(f.context, &f.shape, &f.code, &f.detail) &&
+            !f.shape.query_values, "values ignored altered decimal profile");
+    }
+    Fixture other;
+    other.dag.descriptors.front().decimal_codec_profile = bound.decimal_codec_profile;
+    other.dag.descriptors.front().precision = 18; other.dag.descriptors.front().scale = 0;
+    Check(!other.Run(), "nondecimal output accepted decimal profile");
+  }
+  Check(checks == initial_checks + 176, "fixed decimal profile publication check population");
+}
 
 template <typename Mutation>
 void Reject(Mutation mutation, const char* expected = "DATATYPE.DESCRIPTOR.INVALID") {
@@ -716,6 +812,7 @@ int main() try {
           "reordered same-typed descriptors refuse without stale publication");
   }
   Check(checks == 6561 + 8 + 5 + 1 + 2 + 10 + 76 + 3 * 2 * (2 + 5 * 2), "fixed check population including binary/outer-join and forwarding refusal regressions");
+  DecimalProfilePublication();
   JoinSchemaConformance();
   AllocationConformance();
   std::cout << "PASS schema_tuples=" << cases << " checks=" << checks << '\n';

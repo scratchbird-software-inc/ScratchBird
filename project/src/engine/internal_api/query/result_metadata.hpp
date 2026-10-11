@@ -3,6 +3,7 @@
 #pragma once
 
 #include "wire/typed_result_transport_codec.hpp"
+#include "relational_type_descriptor.hpp"
 
 #include <optional>
 #include <memory>
@@ -20,6 +21,7 @@ struct EngineQueryResultColumnV1 {
   std::optional<std::uint32_t> width;
   std::optional<std::uint32_t> precision;
   std::optional<std::uint32_t> scale;
+  std::optional<RelationalTypeDescriptor::DecimalCodecProfile> decimal_codec_profile;
 };
 
 struct EngineQueryResultMetadataV1 {

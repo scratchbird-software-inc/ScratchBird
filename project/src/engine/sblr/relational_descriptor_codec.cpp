@@ -16,6 +16,7 @@ using Uuid = core::platform::Uuid;
 using Bytes = std::vector<std::uint8_t>;
 constexpr std::uint16_t kAuthority = 1, kCollation = 2, kTimezone = 4;
 constexpr std::uint16_t kWidth = 8, kPrecision = 16, kScale = 32;
+constexpr std::uint16_t kDecimalProfile = 64;
 bool TextValid(std::string_view value, std::size_t maximum) noexcept {
   return !value.empty() && value.size() <= maximum &&
       core::datatypes::ValidateCanonicalUtf8(
@@ -561,6 +562,10 @@ bool DecodeRelationalNodeBindingV1(const std::uint8_t* data, std::size_t size,
 }
 
 bool ValidateRelationalTypeDescriptorV1(const Descriptor& value) noexcept {
+  if (value.decimal_codec_profile &&
+      (!value.datatype_identity_authoritative || !value.precision || !value.scale ||
+       !core::uuid::IsEngineIdentityUuid(value.decimal_codec_profile->uuid) ||
+       value.decimal_codec_profile->generation == 0)) return false;
   if (value.descriptor_id == 0 ||
       !core::uuid::IsEngineIdentityUuid(value.descriptor_uuid) ||
       !core::uuid::IsEngineIdentityUuid(value.type_uuid) ||
@@ -587,11 +592,13 @@ bool ValidateRelationalTypeDescriptorV1(const Descriptor& value) noexcept {
 bool EncodeRelationalTypeDescriptorV1(const Descriptor& value, Bytes* output) {
   if (output == nullptr || !ValidateRelationalTypeDescriptorV1(value)) return false;
   const std::size_t timezone_size = value.timezone_profile_id ? value.timezone_profile_id->size() : 0;
-  Bytes encoded(kRelationalDescriptorFixedBytesV1 + value.codec_id.size() + timezone_size, 0);
+  Bytes encoded(kRelationalDescriptorFixedBytesV1 + value.codec_id.size() + timezone_size +
+                (value.decimal_codec_profile ? 24 : 0), 0);
   Put(encoded, 0, 1, 2);
   const std::uint16_t flags = (value.datatype_identity_authoritative ? kAuthority : 0) |
       (value.collation_uuid ? kCollation : 0) | (value.timezone_profile_id ? kTimezone : 0) |
-      (value.width ? kWidth : 0) | (value.precision ? kPrecision : 0) | (value.scale ? kScale : 0);
+      (value.width ? kWidth : 0) | (value.precision ? kPrecision : 0) | (value.scale ? kScale : 0) |
+      (value.decimal_codec_profile ? kDecimalProfile : 0);
   Put(encoded, 2, flags, 2);
   Put(encoded, 4, value.descriptor_id, 4);
   PutUuid(encoded, 8, value.descriptor_uuid);
@@ -614,6 +621,11 @@ bool EncodeRelationalTypeDescriptorV1(const Descriptor& value, Bytes* output) {
   auto cursor = std::copy(value.codec_id.begin(), value.codec_id.end(), encoded.begin() + 152);
   if (value.timezone_profile_id)
     std::copy(value.timezone_profile_id->begin(), value.timezone_profile_id->end(), cursor);
+  if (value.decimal_codec_profile) {
+    const auto offset = kRelationalDescriptorFixedBytesV1 + value.codec_id.size() + timezone_size;
+    PutUuid(encoded, offset, value.decimal_codec_profile->uuid);
+    Put(encoded, offset + 16, value.decimal_codec_profile->generation, 8);
+  }
   output->swap(encoded);
   return true;
 }
@@ -623,8 +635,8 @@ bool DecodeRelationalTypeDescriptorV1(const std::uint8_t* data, std::size_t size
       size > kRelationalDescriptorMaximumBytesV1 || Get(data, 0, 2) != 1 || data[131] != 0) return false;
   const auto flags = Get(data, 2, 2);
   const auto codec_size = Get(data, 144, 4), timezone_size = Get(data, 148, 4);
-  if ((flags & ~std::uint64_t{63}) != 0 || codec_size > 256 || timezone_size > 1024 ||
-      size != 152 + codec_size + timezone_size ||
+  if ((flags & ~std::uint64_t{127}) != 0 || codec_size > 256 || timezone_size > 1024 ||
+      size != 152 + codec_size + timezone_size + ((flags & kDecimalProfile) ? 24 : 0) ||
       (!(flags & kTimezone) && timezone_size != 0) ||
       (!(flags & kCollation) && !GetUuid(data, 40).is_nil()) ||
       (!(flags & kWidth) && Get(data, 132, 4) != 0) ||
@@ -652,6 +664,11 @@ bool DecodeRelationalTypeDescriptorV1(const std::uint8_t* data, std::size_t size
   if (flags & kTimezone)
     decoded.timezone_profile_id.emplace(reinterpret_cast<const char*>(data + 152 + codec_size),
                                         static_cast<std::size_t>(timezone_size));
+  if (flags & kDecimalProfile) {
+    const auto offset = 152 + codec_size + timezone_size;
+    decoded.decimal_codec_profile = Descriptor::DecimalCodecProfile{
+        GetUuid(data, offset), Get(data, offset + 16, 8)};
+  }
   if (!ValidateRelationalTypeDescriptorV1(decoded)) return false;
   static_assert(std::is_nothrow_move_assignable_v<Descriptor>);
   *output = std::move(decoded);

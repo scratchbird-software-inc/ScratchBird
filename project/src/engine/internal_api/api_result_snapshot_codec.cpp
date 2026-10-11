@@ -32,6 +32,7 @@ template<class T> bool ValidEnum(T v){
 struct Writer {
   static constexpr bool reading=false;
   static constexpr std::size_t datatype_parameter_slots=5;
+  bool decimal_profiles=false;
   bool ok=true;std::vector<std::uint8_t> bytes;std::size_t owned=sizeof(EngineApiResult);
   bool Charge(std::size_t n){if(!ok||n>limit-owned){ok=false;return false;}owned+=n;return true;}
   void Raw(const std::uint8_t* p,std::size_t n){
@@ -72,6 +73,7 @@ struct Reader {
   static constexpr bool reading=true;
   bool ok=true;std::span<const std::uint8_t> bytes;std::size_t offset=0,owned=sizeof(EngineApiResult);
   std::size_t datatype_parameter_slots=5;
+  bool decimal_profiles=false;
   bool Charge(std::size_t n){if(!ok||n>limit-owned){ok=false;return false;}owned+=n;return true;}
   bool Raw(std::uint8_t* p,std::size_t n){
     if(!ok||n>bytes.size()-offset){ok=false;return false;}
@@ -196,7 +198,11 @@ template<class A,class T>void Record(A& a,T& v){
     a.ok=a.ok&&core::uuid::IsEngineIdentityUuid(EngineUuid{v.occurrence_uuid});
   }
   else REC(wire::TypedResultColumnDescriptor,v.ordinal,v.name_occurrence,v.name,v.nullability,v.descriptor_uuid,v.descriptor_generation,v.type_uuid,v.type_generation,v.canonical_type_id,v.codec_id,v.codec_version,v.codec_generation,v.canonical_value_bytes)
-  else REC(EngineQueryResultColumnV1,v.transport,v.bound_descriptor_uuid,v.collation_uuid,v.timezone_profile_id,v.width,v.precision,v.scale)
+  else REC(RelationalTypeDescriptor::DecimalCodecProfile,v.uuid,v.generation)
+  else if constexpr(std::is_same_v<U,EngineQueryResultColumnV1>){
+    a(v.transport,v.bound_descriptor_uuid,v.collation_uuid,v.timezone_profile_id,v.width,v.precision,v.scale);
+    if(a.decimal_profiles)a(v.decimal_codec_profile);
+  }
   else REC(EngineQueryResultMetadataV1,v.statement_receipt_uuid,v.statement_snapshot_uuid,v.datatype_catalog_snapshot_uuid,v.datatype_catalog_generation,v.datatype_registry_generation,v.columns)
   else REC(wire::TypedResultCell,v.column_ordinal,v.name_occurrence,v.state,v.canonical_payload)
   else REC(wire::TypedResultRow,v.row_ordinal,v.cells)
@@ -210,14 +216,20 @@ template<class A,class T>void Record(A& a,T& v){
 }
 bool EncodeEngineApiResultSnapshot(const EngineApiResult& result,std::vector<std::uint8_t>* output){
   if(!output)return false;
-  Writer writer;const std::array<std::uint8_t,8> header{'S','A','P','I',6,0,0,0};writer(header,result);
+  const auto profiles=[](const auto& metadata){return metadata && std::ranges::any_of(metadata->columns,
+      [](const auto& column){return column.decimal_codec_profile.has_value();});};
+  Writer writer;
+  writer.decimal_profiles=profiles(result.result_shape.query_metadata) ||
+      (result.result_shape.query_values && profiles(result.result_shape.query_values->metadata));
+  const std::array<std::uint8_t,8> header{'S','A','P','I',static_cast<std::uint8_t>(writer.decimal_profiles?7:6),0,0,0};writer(header,result);
   if(!writer.ok)return false;output->swap(writer.bytes);return true;
 }
 bool DecodeEngineApiResultSnapshot(std::span<const std::uint8_t> bytes,EngineApiResult* output){
   constexpr std::array<std::uint8_t,4> magic{'S','A','P','I'};
   if(!output||bytes.size()<8||bytes.size()>limit||!std::equal(magic.begin(),magic.end(),bytes.begin())||
-     (bytes[4]!=5&&bytes[4]!=6)||bytes[5]!=0||bytes[6]!=0||bytes[7]!=0)return false;
+     (bytes[4]!=5&&bytes[4]!=6&&bytes[4]!=7)||bytes[5]!=0||bytes[6]!=0||bytes[7]!=0)return false;
   Reader reader{true,bytes,8};reader.datatype_parameter_slots=bytes[4]==5?4:5;
+  reader.decimal_profiles=bytes[4]==7;
   EngineApiResult result;reader(result);
   if(!reader.ok||reader.offset!=bytes.size())return false;
   static_assert(std::is_nothrow_move_assignable_v<EngineApiResult>);
