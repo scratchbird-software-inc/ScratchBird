@@ -382,6 +382,60 @@ exec::CanonicalDescriptorRowNumberRequest Request() {
 // QOW-TEST-QRY-007-WINDOW-V1
 bool ValidatePhysicalRowNumber() {
   bool passed = true;
+  for (const auto cohort : {
+           api::EngineDatatypeCohort{dt::kDatatypeCohortV5,5,5},
+           api::EngineDatatypeCohort{dt::kDatatypeCohortV10,10,10},
+           api::EngineDatatypeCohort{dt::kDatatypeCohortV11,11,11}}) {
+    auto bound = Request();
+    const auto bind = [&](api::EngineDescriptor& descriptor) {
+      const auto occurrence = descriptor.descriptor_uuid;
+      const auto kind = descriptor.descriptor_kind;
+      descriptor = exec::MakeExecutorDescriptor(
+          "int64", descriptor.encoded_descriptor, cohort);
+      descriptor.descriptor_uuid = occurrence;
+      descriptor.descriptor_kind = kind;
+    };
+    bind(bound.row_number_column.descriptor);
+    for (auto& column : bound.ordered_input_batch.columns) bind(column.descriptor);
+    for (auto& row : bound.ordered_input_batch.rows)
+      for (auto& value : row.values) bind(value.descriptor);
+    for (const bool empty : {false,true}) {
+      auto current = bound;
+      if (empty) current.ordered_input_batch.rows.clear();
+      const auto result = exec::ExecuteCanonicalDescriptorRowNumber(current);
+      passed &= Require(result.diagnostic.ok &&
+          result.output_batch.rows.size() == (empty ? 0 : 2) &&
+          result.output_batch.columns.size() == 2 &&
+          result.output_batch.columns.back().descriptor.datatype_cohort == cohort,
+          "ROW_NUMBER failed exact explicit datatype cohort or empty result");
+      if (result.diagnostic.ok && !empty) {
+        for (unsigned row=0; row!=2; ++row)
+          passed &= Require(result.output_batch.rows[row].values.back().descriptor.datatype_cohort == cohort &&
+              scratchbird::tests::NativeInt64Equals(result.output_batch.rows[row].values.back(),row+1),
+              "ROW_NUMBER changed native ordinal or admitted result cohort");
+      }
+      for (unsigned mutation=0; mutation!=5; ++mutation) {
+        auto invalid = current;
+        switch (mutation) {
+          case 0: invalid.row_number_column.descriptor.datatype_cohort = {}; break;
+          case 1: ++invalid.row_number_column.descriptor.datatype_cohort.catalog_generation; break;
+          case 2: ++invalid.row_number_column.descriptor.datatype_cohort.registry_generation; break;
+          case 3: invalid.ordered_input_batch.columns[0].descriptor.datatype_cohort = {}; break;
+          case 4:
+            // Individually valid cohorts cannot silently migrate a derived
+            // result. This remains an error when no row payload is visited.
+            invalid.row_number_column.descriptor.datatype_cohort = cohort.catalog_generation == 5
+                ? api::EngineDatatypeCohort{dt::kDatatypeCohortV11,11,11}
+                : api::EngineDatatypeCohort{dt::kDatatypeCohortV5,5,5};
+            break;
+        }
+        const auto refused = exec::ExecuteCanonicalDescriptorRowNumber(invalid);
+        passed &= Require(!refused.diagnostic.ok && refused.output_batch.rows.empty() &&
+                              refused.output_batch.columns.empty(),
+                          "ROW_NUMBER accepted unbound or mismatched datatype cohort");
+      }
+    }
+  }
   auto result = exec::ExecuteCanonicalDescriptorRowNumber(Request());
   passed &= Require(
       result.diagnostic.ok &&

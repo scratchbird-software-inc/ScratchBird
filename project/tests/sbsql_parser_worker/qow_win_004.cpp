@@ -81,6 +81,7 @@ api::EngineDescriptor WindowDescriptor(
   descriptor.datatype_descriptor_uuid = builtin.datatype_descriptor_uuid;
   descriptor.datatype_descriptor_generation =
       builtin.datatype_descriptor_generation;
+  descriptor.datatype_cohort = builtin.datatype_cohort;
   if (!collation_uuid.is_nil()) {
     descriptor.charset_uuid = WindowUuid(4200);
   }

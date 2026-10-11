@@ -74,6 +74,8 @@ inline bool BuildHistoricalTimestampScalarDescriptorV1(
   descriptor.type_uuid = matched->type_uuid;
   descriptor.datatype_descriptor_uuid = matched->descriptor_uuid;
   descriptor.datatype_descriptor_generation = matched->descriptor_generation;
+  descriptor.datatype_cohort = {matched->catalog_snapshot_uuid,
+      matched->catalog_generation, matched->registry_generation};
   if (!EncodeCatalogColumnMetadata(metadata, &descriptor.encoded_descriptor)) return refuse();
   *output = std::move(descriptor);
   detail->clear();

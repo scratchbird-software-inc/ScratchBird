@@ -11,7 +11,7 @@
 #include "aggregate_executor_internal.hpp"
 
 #include "datatype_catalog_manifest.hpp"
-#include "../internal_api/catalog/datatype_bootstrap_identity.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -109,7 +109,9 @@ bool IsCanonicalUuid(const internal_api::EngineUuid& value) {
   return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 
-internal_api::EngineUuid CanonicalCoreDatatypeUuid(const std::string_view stable_name) {
+internal_api::EngineUuid CanonicalCoreDatatypeUuid(
+    const std::string_view stable_name,
+    const internal_api::EngineDatatypeCohort& cohort) {
   static const auto manifest =
       scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
@@ -124,13 +126,12 @@ internal_api::EngineUuid CanonicalCoreDatatypeUuid(const std::string_view stable
     return {};
   }
   const auto descriptor_uuid = found->descriptor_uuid.value;
-  const auto identity =
-      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-          scratchbird::engine::internal_api::kBootstrapDatatypeCatalogUuid,
-          scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
-          scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
+  const auto* identity =
+      scratchbird::core::datatypes::FindDatatypeTypeCodecIdentityV3(
+          cohort.catalog_snapshot_uuid, cohort.catalog_generation,
+          cohort.registry_generation, descriptor_uuid,
           found->descriptor_epoch);
-  return identity.ok ? identity.row.type_uuid : internal_api::EngineUuid{};
+  return identity ? identity->legacy_fields.type_uuid : internal_api::EngineUuid{};
 }
 
 std::optional<internal_api::EngineUuid> CanonicalDescriptorTypeIdentity(
@@ -699,11 +700,17 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumberBound(
       input_node->output_descriptor_ids;
   output_descriptor_ids.push_back(request.row_number_column.descriptor_id);
   const auto result_type_uuid = CanonicalDescriptorTypeIdentity(request.row_number_column.descriptor);
-  const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
+  const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid(
+      "int64", request.row_number_column.descriptor.datatype_cohort);
   constexpr internal_api::EngineUuid kRowNumberFunctionUuid{{
       0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x75, 0x39, 0xbc, 0xce, 0x00, 0xee, 0xf3, 0xae, 0x72, 0x20}};
   if (selected_node->output_descriptor_ids != output_descriptor_ids ||
       request.row_number_column.descriptor_id == 0 ||
+      !std::ranges::all_of(execution_ordered_input_batch.columns,
+          [&](const auto& input) {
+            return input.descriptor.datatype_cohort ==
+                   request.row_number_column.descriptor.datatype_cohort;
+          }) ||
       request.row_number_column.nullable ||
       request.row_number_column.descriptor.descriptor_kind != "scalar" ||
       request.row_number_column.descriptor.canonical_type_name != "int64" ||
@@ -926,7 +933,8 @@ CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtileBound(
   const auto decoded_bucket_count =
       DecodeInt64Value(request.bucket_count_operand);
   const auto output_type_uuid = CanonicalDescriptorTypeIdentity(request.ntile_column.descriptor);
-  const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
+  const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid(
+      "int64", request.ntile_column.descriptor.datatype_cohort);
   const auto output_nullability = CanonicalDescriptorField(
       request.ntile_column.descriptor, "nullability");
   const auto operand_type_uuid = CanonicalDescriptorTypeIdentity(request.bucket_count_operand.descriptor);
@@ -1333,8 +1341,10 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
   const auto source_type_uuid = CanonicalDescriptorTypeIdentity(execution_ordered_input_batch.columns[request.value_column].descriptor);
   const auto order_type_uuid = CanonicalDescriptorTypeIdentity(execution_ordered_input_batch.columns[request.order_term.column]
           .descriptor);
-  const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
-  const auto canonical_boolean_type_uuid = CanonicalCoreDatatypeUuid("boolean");
+  const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid(
+      "int64", request.result_column.descriptor.datatype_cohort);
+  const auto canonical_boolean_type_uuid = CanonicalCoreDatatypeUuid(
+      "boolean", request.result_column.descriptor.datatype_cohort);
   const auto has_auxiliary_type_fields = [](const auto& descriptor) {
     const auto contains_field = [&](const std::string_view key) {
       const auto prefix = std::string(key) + "=";
@@ -1415,7 +1425,8 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
       execution_ordered_input_batch.columns[request.order_term.column]
           .descriptor;
   const auto canonical_order_type_uuid =
-      CanonicalCoreDatatypeUuid(order_descriptor.canonical_type_name);
+      CanonicalCoreDatatypeUuid(order_descriptor.canonical_type_name,
+                               order_descriptor.datatype_cohort);
   const bool exact_narrow_bounded_signed_order =
       !nth_value && order_type_uuid.has_value() &&
       order_descriptor.canonical_type_name != "int64" &&
@@ -1976,9 +1987,12 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       input_node->output_descriptor_ids;
   expected_output_descriptor_ids.push_back(
       request.result_column.descriptor_id);
-  const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
+  const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid(
+      "int64", request.result_column.descriptor.datatype_cohort);
   const auto canonical_boolean_type_uuid =
-      boolean_window ? CanonicalCoreDatatypeUuid("boolean") : internal_api::EngineUuid{};
+      boolean_window ? CanonicalCoreDatatypeUuid(
+          "boolean", request.result_column.descriptor.datatype_cohort)
+          : internal_api::EngineUuid{};
   const bool value_column_in_range =
       request.value_column.has_value() &&
       *request.value_column < execution_ordered_input_batch.columns.size();
@@ -2023,7 +2037,9 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       value_column_in_range
           ? CanonicalCoreDatatypeUuid(
                 execution_ordered_input_batch.columns[*request.value_column]
-                    .descriptor.canonical_type_name)
+                    .descriptor.canonical_type_name,
+                execution_ordered_input_batch.columns[*request.value_column]
+                    .descriptor.datatype_cohort)
           : internal_api::EngineUuid{};
   const auto result_type_uuid = CanonicalDescriptorTypeIdentity(request.result_column.descriptor);
   const auto order_type_uuid =
@@ -2041,7 +2057,8 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       order_descriptor == nullptr
           ? internal_api::EngineUuid{}
           : CanonicalCoreDatatypeUuid(
-                order_descriptor->canonical_type_name);
+                order_descriptor->canonical_type_name,
+                order_descriptor->datatype_cohort);
   const auto has_auxiliary_type_fields = [](const auto& descriptor) {
     const auto contains_field = [&](const std::string_view key) {
       const auto prefix = std::string(key) + "=";
@@ -2820,7 +2837,8 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
   output_descriptor_ids.push_back(request.ranking_column.descriptor_id);
   const auto result_type_uuid = CanonicalDescriptorTypeIdentity(request.ranking_column.descriptor);
   const auto expected_result_type_uuid =
-      CanonicalCoreDatatypeUuid(expected_result_type);
+      CanonicalCoreDatatypeUuid(expected_result_type,
+                               request.ranking_column.descriptor.datatype_cohort);
   if (selected_node->output_descriptor_ids != output_descriptor_ids ||
       request.ranking_column.descriptor_id == 0 ||
       request.ranking_column.nullable ||

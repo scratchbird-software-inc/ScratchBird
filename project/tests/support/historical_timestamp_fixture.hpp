@@ -2,22 +2,21 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "binary_uuid_fixture.hpp"
-#include "catalog/datatype_bootstrap_identity.hpp"
+#include "admitted_datatype_cohort.hpp"
 #include "query/historical_timestamp_scalar.hpp"
 #include "datatype_temporal_wire.hpp"
 #include <stdexcept>
 
 namespace scratchbird::tests {
 
-// Component-only bootstrap binding. Live route fixtures must bind their own
+// Frozen D705 component binding. Live route fixtures must bind their own
 // engine-issued statement receipt and catalog cohort instead of using this.
 inline engine::internal_api::EngineDescriptor HistoricalTimestampFixtureDescriptor(
     engine::internal_api::EngineUuid occurrence, bool nullable = false) {
   namespace api = engine::internal_api;
   for (const auto& row : core::datatypes::CurrentDatatypeTypeCodecIdentityRowsV1()) {
-    if (row.catalog_snapshot_uuid != api::kBootstrapDatatypeCatalogUuid ||
-        row.catalog_generation != api::kBootstrapDatatypeCatalogGeneration ||
-        row.registry_generation != api::kBootstrapDatatypeRegistryGeneration ||
+    if (row.catalog_snapshot_uuid != core::datatypes::kDatatypeCohortV5 ||
+        row.catalog_generation != 5 || row.registry_generation != 5 ||
         row.canonical_name != "timestamp") continue;
     api::RelationalTypeDescriptor source;
     source.descriptor_uuid = occurrence;

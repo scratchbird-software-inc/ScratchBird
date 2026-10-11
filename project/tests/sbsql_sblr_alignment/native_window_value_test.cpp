@@ -4,6 +4,7 @@
 #include "../sbsql_parser_worker/qow_win_003.cpp"
 #include "executor_foundation.hpp"
 #include "../support/binary_uuid_fixture.hpp"
+#include "admitted_datatype_cohort.hpp"
 #include <array>
 #include <bit>
 #include <limits>
@@ -15,6 +16,15 @@ unsigned checks = 0;
 void Check(bool ok, const char* message) {
   ++checks;
   if (!ok) throw std::runtime_error(message);
+}
+std::uint64_t NativeRealBits(const api::EngineTypedValue& value) {
+  Check(value.state == api::EngineValueState::value && !value.is_null &&
+        value.encoded_value.empty() && value.binary_value.size() == 8,
+        "REAL64 window result is not an exact native LE8 carrier");
+  std::uint64_t bits = 0;
+  for (unsigned byte=0; byte!=8; ++byte)
+    bits |= std::uint64_t(value.binary_value[byte]) << (byte*8);
+  return bits;
 }
 api::EngineDescriptor InvalidRatioDescriptor(api::EngineDescriptor descriptor, unsigned mutation) {
   switch (mutation) {
@@ -100,8 +110,26 @@ void NativeIntegerOrdering() {
           "physical INT64 accepted an unbound or malformed operand");
   }
 }
-void NativeWindows(const char* type, unsigned pattern) {
+constexpr api::EngineDatatypeCohort kHistoricalWindowCohort{dt::kDatatypeCohortV5, 5, 5};
+void BindWindowFixture(api::EngineDescriptor& descriptor, const api::EngineDatatypeCohort& cohort) {
+  const auto bound = exec::MakeExecutorDescriptor(descriptor.canonical_type_name,
+      descriptor.encoded_descriptor, cohort);
+  Check(!bound.type_uuid.is_nil(), "window fixture explicit cohort is not registered");
+  descriptor.type_uuid = bound.type_uuid;
+  descriptor.datatype_descriptor_uuid = bound.datatype_descriptor_uuid;
+  descriptor.datatype_descriptor_generation = bound.datatype_descriptor_generation;
+  descriptor.datatype_cohort = bound.datatype_cohort;
+}
+void BindWindowFixture(exec::CanonicalWindowPartitionOrderRequest& request,
+                       const api::EngineDatatypeCohort& cohort) {
+  for (auto& column : request.input_batch.columns) BindWindowFixture(column.descriptor, cohort);
+  for (auto& row : request.input_batch.rows)
+    for (auto& value : row.values) BindWindowFixture(value.descriptor, cohort);
+}
+void NativeWindows(const char* type, unsigned pattern,
+                   const api::EngineDatatypeCohort& cohort = kHistoricalWindowCohort) {
   auto partition = Window401Request();
+  BindWindowFixture(partition, cohort);
   for (auto& row : partition.input_batch.rows) {
     for (auto& value : row.values) {
       if (value.descriptor.canonical_type_name == "int64" && !value.is_null)
@@ -111,6 +139,7 @@ void NativeWindows(const char* type, unsigned pattern) {
   auto& column = partition.input_batch.columns[4];
   column.descriptor = WindowDescriptor(4105, type, exec::MakeExecutorDescriptor(type).type_uuid,
                                        "nullability=nullable");
+  BindWindowFixture(column.descriptor, cohort);
   column.nullable = true;
   std::array<Cell, 9> input;
   for (unsigned row = 0; row < input.size(); ++row) {
@@ -152,8 +181,9 @@ void NativeWindows(const char* type, unsigned pattern) {
     request.result_column = column; request.result_column.descriptor_id = 4999;
     request.result_column.stable_name = "window_value";
     request.mga_authority = partition.mga_authority;
-    const auto integer_descriptor = WindowDescriptor(5000, "int64",
+    auto integer_descriptor = WindowDescriptor(5000, "int64",
         exec::MakeExecutorDescriptor("int64").type_uuid, "nullability=non_null");
+    BindWindowFixture(integer_descriptor, cohort);
     if (fn == 4) {
       request.nth_values = std::vector<api::EngineTypedValue>(9, NativeInteger(integer_descriptor, 2));
       request.nth_origin = exec::CanonicalWindowNthOrigin::from_first;
@@ -274,12 +304,13 @@ void NativeWindows(const char* type, unsigned pattern) {
     }
   }
 }
-void NativeIntegerWindowPositions() {
+void NativeIntegerWindowPositions(const api::EngineDatatypeCohort& cohort = kHistoricalWindowCohort) {
   auto partition = Window401Request();
+  BindWindowFixture(partition, cohort);
   for (auto& row : partition.input_batch.rows) for (auto& value : row.values)
     if (value.descriptor.canonical_type_name == "int64" && !value.is_null)
       value = NativeInteger(value.descriptor, std::stoll(WindowScalarText(value)));
-  auto descriptor = exec::MakeExecutorDescriptor("int64", "nullability=non_null");
+  auto descriptor = exec::MakeExecutorDescriptor("int64", "nullability=non_null", cohort);
   descriptor.descriptor_kind = "scalar";
   auto& column = partition.input_batch.columns[4];
   column.descriptor = descriptor;
@@ -346,6 +377,7 @@ void NativeIntegerWindowPositions() {
     ranking.ntile_bucket_count.reset();
     ranking.output_descriptor = WindowDescriptor(6010, "real64",
         exec::MakeExecutorDescriptor("real64").type_uuid, "nullability=non_null");
+    BindWindowFixture(ranking.output_descriptor, cohort);
     const auto good = exec::ExecuteCanonicalWindowRanking(ranking);
     Check(good.diagnostic.ok && good.values.empty(), "exact empty real ranking binding refused");
     for (unsigned mutation = 0; mutation < 8; ++mutation) {
@@ -552,7 +584,7 @@ void ExactRankingRatios() {
     request.partition_row_count = ratio.denominator;
     const auto result = exec::ComputeCanonicalWindowCumeDistValue(request);
     Check(result.diagnostic.ok && result.value.descriptor == descriptor &&
-              std::bit_cast<std::uint64_t>(std::stod(result.value.encoded_value)) == ratio.bits,
+              NativeRealBits(result.value) == ratio.bits,
           "CUME_DIST differs from independent nearest-even binary64 ratio oracle");
     for (unsigned mutation = 0; mutation < 8; ++mutation) {
       auto invalid = request;
@@ -571,11 +603,11 @@ void ExactRankingRatios() {
       percent.partition_row_count = ratio.denominator + 1;
       const auto ranked = exec::ComputeCanonicalWindowPercentRankValue(percent);
       Check(ranked.diagnostic.ok &&
-                std::bit_cast<std::uint64_t>(std::stod(ranked.value.encoded_value)) == ratio.bits,
+                NativeRealBits(ranked.value) == ratio.bits,
             "PERCENT_RANK differs from independent rational oracle");
       percent.one_based_rank = 1;
       const auto zero = exec::ComputeCanonicalWindowPercentRankValue(percent);
-      Check(zero.diagnostic.ok && std::stod(zero.value.encoded_value) == 0,
+      Check(zero.diagnostic.ok && NativeRealBits(zero.value) == 0,
             "first PERCENT_RANK is not zero");
       for (unsigned mutation = 0; mutation < 8; ++mutation) {
         auto invalid = percent;
@@ -595,5 +627,11 @@ int main() {
   NativeIntegerWindowPositions();
   for (unsigned pattern = 0; pattern < 130; ++pattern) NativeWindows("uuid", pattern);
   NativeWindows("binary", 0);
+  for (const auto cohort : {api::EngineDatatypeCohort{dt::kDatatypeCohortV10, 10, 10},
+                            api::EngineDatatypeCohort{dt::kDatatypeCohortV11, 11, 11}}) {
+    NativeIntegerWindowPositions(cohort);
+    NativeWindows("uuid", 0, cohort);
+    NativeWindows("binary", 0, cohort);
+  }
   std::cout << "native_window_value checks=" << checks << " uuid_patterns=130 failures=0\n";
 }
