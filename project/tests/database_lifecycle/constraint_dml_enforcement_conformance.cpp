@@ -8,6 +8,7 @@
 
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
+#include "../support/native_int64_fixture.hpp"
 #include "memory.hpp"
 #include "database_lifecycle.hpp"
 #include <map>
@@ -15,16 +16,22 @@
 #include "dml/delete_api.hpp"
 #include "dml/insert_api.hpp"
 #include "dml/update_api.hpp"
+#include "dml/constraint_enforcement.hpp"
+#include "dml/mga_relation_read_view.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
+#include "datatype_operations.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
 #include <chrono>
+#include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unistd.h>
 #include <vector>
 
@@ -341,7 +348,13 @@ void VerifyConstraintEnforcement(Fixture& fixture) {
           "primary key support evidence missing");
   bool saw_default_amount = false;
   for (const auto& [field, typed] : child.result_shape.rows.front().fields) {
-    if (field == "amount" && typed.encoded_value == "1") { saw_default_amount = true; }
+    // The private returning-row carrier retains native octets, not display
+    // digits. The public parser owns rendering of the stored INT64 value.
+    if (field == "amount" && typed.state == api::EngineValueState::value &&
+        !typed.isSqlNull() && typed.binary_value.empty() &&
+        typed.encoded_value == std::string("\x01\0\0\0\0\0\0\0", 8)) {
+      saw_default_amount = true;
+    }
   }
   Require(saw_default_amount, "default value was not materialized into returned row");
 
@@ -360,15 +373,25 @@ void VerifyConstraintEnforcement(Fixture& fixture) {
   Require(HasDiagnostic(missing_not_null, "CLI.CONSTRAINT_NOT_NULL_VIOLATION"),
           "missing NOT NULL value did not emit canonical diagnostic");
 
+  const auto child_storage = api::LoadMgaRelationStorageDescriptor(writer, kChildTableUuid);
+  Require(child_storage.ok, "CHECK input requires actual stored column binding");
+  const api::EngineDescriptor* amount_descriptor = nullptr;
+  for (const auto& column : child_storage.descriptor.columns)
+    if (column.canonical_name_key == "amount") amount_descriptor = &column.value_descriptor;
+  Require(amount_descriptor, "CHECK amount column missing");
   const auto bad_check = Insert(fixture, writer,
                                 kChildTableUuid,
                                 Row(scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000504"),
                                     {{"id", TextValue("o3")},
                                      {"customer_id", TextValue("c1")},
-                                     {"amount", TextValue("0")},
+                                     {"amount", scratchbird::tests::NativeInt64Fixture(*amount_descriptor, "0")},
                                      {"note", TextValue("bad")}}));
   Require(HasDiagnostic(bad_check, "CLI.CONSTRAINT_CHECK_VIOLATION"),
           "CHECK violation did not emit canonical diagnostic");
+  bool predicate_failed = false;
+  for (const auto& diagnostic : bad_check.diagnostics)
+    predicate_failed |= diagnostic.detail.find("detail=check_gt_failed") != std::string::npos;
+  Require(predicate_failed, "CHECK zero test did not reach the actual predicate");
 
   const auto bad_fk = Insert(fixture, writer,
                              kChildTableUuid,
@@ -502,9 +525,191 @@ void VerifyRollbackAndSavepointVisibility(Fixture& fixture) {
   Commit(savepoint_writer);
 }
 
+// Exercise the real non-mutating row validator without a store fallback. This
+// is representation/CHECK conformance, not a fabricated write capability.
+void VerifyNativeIntegerCheckCohorts() {
+  namespace dt = scratchbird::core::datatypes;
+  unsigned profiles = 0;
+  for (const auto& [snapshot, generation] : std::array{
+           std::pair{dt::kDatatypeCohortV5, std::uint64_t{5}},
+           std::pair{dt::kDatatypeCohortV10, std::uint64_t{10}},
+           std::pair{dt::kDatatypeCohortV11, std::uint64_t{11}}}) {
+    for (const auto& [type, width, signed_value] : std::array{
+        std::tuple{dt::CanonicalTypeId::int8, 1u, true},
+        std::tuple{dt::CanonicalTypeId::int16, 2u, true},
+        std::tuple{dt::CanonicalTypeId::int32, 4u, true},
+        std::tuple{dt::CanonicalTypeId::int64, 8u, true},
+        std::tuple{dt::CanonicalTypeId::int128, 16u, true},
+        std::tuple{dt::CanonicalTypeId::uint8, 1u, false},
+        std::tuple{dt::CanonicalTypeId::uint16, 2u, false},
+        std::tuple{dt::CanonicalTypeId::uint32, 4u, false},
+        std::tuple{dt::CanonicalTypeId::uint64, 8u, false},
+        std::tuple{dt::CanonicalTypeId::uint128, 16u, false}}) {
+      const dt::DatatypeTypeCodecIdentityRowV3* selected = nullptr;
+      for (const auto& candidate : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+        if (candidate.legacy_fields.catalog_snapshot_uuid == snapshot &&
+            candidate.legacy_fields.canonical_binary_type_code == static_cast<std::uint32_t>(type)) {
+          Require(!selected, "ambiguous integer CHECK fixture type");
+          selected = &candidate;
+        }
+      }
+      Require(selected && selected->legacy_fields.canonical_value_exact_bytes == width,
+              "integer CHECK fixture requires exact registry width");
+      const auto& identity = selected->legacy_fields;
+      api::EngineRequestContext context;
+      context.datatype_catalog_snapshot_uuid = snapshot;
+      context.datatype_catalog_generation = context.datatype_registry_generation = generation;
+      api::ConstraintDmlValidationCache context_cache;
+      api::StoreConstraintDmlProof(&context_cache, context, "cohort_control", "same_identity", "retained");
+      Require(api::FindConstraintDmlProofPayload(&context_cache, context, "cohort_control", "same_identity") ==
+                  std::optional<std::string>{"retained"}, "unchanged proof context missed");
+      api::EngineColumnDefinition column;
+      column.ordinal = 0;
+      column.requested_column_uuid = scratchbird::tests::FixtureUuid(1547, 901);
+      auto& descriptor = column.descriptor;
+      descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(1547, 902);
+      descriptor.descriptor_kind = "scalar";
+      descriptor.canonical_type_name = dt::CanonicalTypeName(type);
+      descriptor.datatype_descriptor_uuid = identity.descriptor_uuid;
+      descriptor.datatype_descriptor_generation = identity.descriptor_generation;
+      descriptor.type_uuid = identity.type_uuid;
+      descriptor.datatype_cohort = {snapshot, generation, generation};
+      const auto encoded = ColumnMetadata("check=gt:0", scratchbird::tests::FixtureUuid(1547, 903));
+      auto table = Table("integer_check", kChildTableUuid, {{"amount", encoded}});
+      table.bound_columns.push_back(column);
+      const auto check = [&](const auto& owner, const auto& source, api::CrudStoredValue bytes,
+                             api::ConstraintDmlValidationCache* cache = nullptr) {
+        return api::ValidateImmediateRowConstraints(owner, api::MgaRelationReadView{}, source,
+            scratchbird::tests::FixtureUuid(1547, 904), {{"amount", std::move(bytes)}}, "insert", cache);
+      };
+      std::string one(width, '\0'); one[0] = 1;
+      std::string maximum(width, static_cast<char>(0xff));
+      if (signed_value) maximum.back() = 0x7f;
+      Require(check(context, table, one).ok && check(context, table, maximum).ok,
+              "native integer CHECK rejected positive or maximum value");
+      api::ConstraintDmlValidationCache warm_cache;
+      Require(check(context, table, one, &warm_cache).ok &&
+              !warm_cache.validation_proof_payloads.empty(), "integer CHECK did not cache proof");
+      const auto proof_count = warm_cache.validation_proof_payloads.size();
+      Require(check(context, table, one, &warm_cache).ok &&
+              warm_cache.validation_proof_payloads.size() == proof_count,
+              "unchanged integer CHECK proof was not reusable");
+      const auto null = api::CrudStoredValue::SqlNull();
+      api::ConstraintDmlValidationCache null_cache;
+      Require(check(context, table, null).ok && check(context, table, null, &null_cache).ok &&
+              !null_cache.validation_proof_payloads.empty(), "valid NULL CHECK lost UNKNOWN-pass semantics");
+      std::string minimum(width, '\0');
+      if (signed_value) minimum.back() = static_cast<char>(0x80);
+      const auto default_value = [&](const auto& owner, const auto& source, const std::string& literal,
+                                     api::CrudValueFields input = {}) {
+        auto target = source;
+        target.columns[0].second = ColumnMetadata("default=literal:" + literal,
+            scratchbird::tests::FixtureUuid(1547, 903));
+        return api::ApplyConstraintDefaultsForInsert(owner, target, input);
+      };
+      const auto decimal = [&](const std::string& bytes) {
+        std::string full = bytes;
+        full.resize(16, signed_value && (static_cast<unsigned char>(bytes.back()) & 0x80)
+            ? static_cast<char>(0xff) : '\0');
+        std::string text;
+        Require(signed_value ? dt::DecodeCanonicalInt128Value(full, &text)
+                             : dt::DecodeCanonicalUint128Value(full, &text),
+                "integer default fixture decimal oracle failed");
+        return text;
+      };
+      for (const auto& bytes : {one, std::string(width, '\0'), minimum, maximum}) {
+        for (bool explicit_default : {false, true}) {
+          const auto result = default_value(context, table, decimal(bytes), explicit_default
+              ? api::CrudValueFields{{"amount", api::CrudStoredValue::DefaultRequested()}}
+              : api::CrudValueFields{});
+          Require(result.ok && result.values.size() == 1 && result.values[0].second.isPresent() &&
+                  result.values[0].second.bytes == bytes, "integer default lost exact native bytes");
+        }
+      }
+      const auto increment_magnitude = [](std::string value) {
+        for (std::size_t i = value.size(); i > 0; --i) {
+          if (value[i - 1] == '-') { value.insert(i, "1"); return value; }
+          if (value[i - 1] != '9') { ++value[i - 1]; return value; }
+          value[i - 1] = '0';
+        }
+        return "1" + value;
+      };
+      for (const auto& invalid : {increment_magnitude(decimal(maximum)),
+                                 signed_value ? increment_magnitude(decimal(minimum)) : std::string("-1"),
+                                 std::string("not-a-number")}) {
+        const auto refused = default_value(context, table, invalid);
+        Require(!refused.ok && refused.diagnostic.error && refused.values.empty(),
+                "integer default overflow/malformed input admitted or partially published");
+      }
+      const auto retained = default_value(context, table, "not-a-number", {{"amount", one}});
+      Require(retained.ok && retained.values[0].second.bytes == one,
+              "default replaced an explicit value");
+      for (const auto& bytes : {std::string(width, '\0'), minimum,
+                               std::string(width - 1, '\0'), std::string(width + 1, '\0')}) {
+        const auto refused = check(context, table, bytes);
+        Require(!refused.ok && refused.diagnostic.code == "CLI.CONSTRAINT_CHECK_VIOLATION",
+                "native integer CHECK admitted zero/minimum or malformed width");
+      }
+      for (unsigned field = 0; field < 6; ++field) {
+        auto stale = table;
+        auto& binding = stale.bound_columns[0].descriptor;
+        if (field == 0) binding.datatype_cohort.catalog_snapshot_uuid = {};
+        if (field == 1) ++binding.datatype_cohort.catalog_generation;
+        if (field == 2) ++binding.datatype_cohort.registry_generation;
+        if (field == 3) binding.datatype_cohort = generation == 5
+            ? api::EngineDatatypeCohort{dt::kDatatypeCohortV10, 10, 10}
+            : api::EngineDatatypeCohort{dt::kDatatypeCohortV5, 5, 5};
+        if (field == 4) binding.type_uuid = kChildTableUuid;
+        if (field == 5) ++binding.datatype_descriptor_generation;
+        const auto refused = check(context, stale, one);
+        Require(!refused.ok && refused.diagnostic.error,
+                "stale integer CHECK binding admitted");
+        auto cached = warm_cache;
+        const auto cached_refusal = check(context, stale, one, &cached);
+        Require(!cached_refusal.ok && cached_refusal.diagnostic.error,
+                "cached integer CHECK admitted stale source binding");
+        auto cached_null = null_cache;
+        Require(!check(context, stale, null).ok && !check(context, stale, null, &cached_null).ok,
+                "NULL CHECK admitted stale source binding");
+        Require(!default_value(context, stale, "1").ok, "default admitted stale source binding");
+      }
+      for (unsigned field = 0; field < 4; ++field) {
+        auto stale = context;
+        if (field == 0) stale.datatype_catalog_snapshot_uuid = {};
+        if (field == 1) ++stale.datatype_catalog_generation;
+        if (field == 2) ++stale.datatype_registry_generation;
+        if (field == 3) {
+          stale.datatype_catalog_snapshot_uuid = generation == 5
+              ? dt::kDatatypeCohortV10 : dt::kDatatypeCohortV5;
+          stale.datatype_catalog_generation = stale.datatype_registry_generation = generation == 5 ? 10 : 5;
+        }
+        std::vector<api::EngineEvidenceReference> refused_evidence;
+        Require(!api::FindConstraintDmlProofPayload(&context_cache, stale, "cohort_control", "same_identity",
+                    &refused_evidence).has_value(), "proof cache ignored changed request datatype cohort");
+        Require(std::any_of(refused_evidence.begin(), refused_evidence.end(), [](const auto& evidence) {
+                  const auto* text = std::get_if<std::string>(&evidence.evidence_id);
+                  return evidence.evidence_kind == "constraint_proof_refusal" && text &&
+                         *text == "cohort_control:datatype_cohort_mismatch";
+                }), "proof cache omitted datatype cohort mismatch evidence");
+        auto cached = warm_cache;
+        const auto refused = check(stale, table, one, &cached);
+        Require(!refused.ok && refused.diagnostic.error,
+                "cached integer CHECK admitted stale request cohort");
+        auto cached_null = null_cache;
+        Require(!check(stale, table, null).ok && !check(stale, table, null, &cached_null).ok,
+                "NULL CHECK admitted stale request cohort");
+        Require(!default_value(stale, table, "1").ok, "default admitted stale request cohort");
+      }
+      ++profiles;
+    }
+  }
+  Require(profiles == 30, "integer CHECK cohort matrix incomplete");
+}
+
 }  // namespace
 
 int main() {
+  VerifyNativeIntegerCheckCohorts();
   auto policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
   policy.policy_name = "constraint_dml_fixture";
   Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(

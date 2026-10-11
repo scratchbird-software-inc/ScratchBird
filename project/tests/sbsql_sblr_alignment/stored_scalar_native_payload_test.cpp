@@ -14,6 +14,7 @@
 #include "engine/internal_api/dml/dml_executable_trigger_runtime.hpp"
 #include "engine/functions/dispatch/function_dispatch.hpp"
 #include "engine/functions/registry/function_seed_registry.hpp"
+#include "../support/exact_datatype_descriptor_fixture.hpp"
 
 #include <array>
 #include <cstdlib>
@@ -560,12 +561,22 @@ void NativeSequenceConsumers() {
   api::CrudTableRecord table;
   table.table_uuid = identity;
   table.columns = {{"id", "canonical=int64;default=sequence_next:native_int64_default"}};
+  api::EngineColumnDefinition column;
+  column.ordinal = 0;
+  column.requested_column_uuid = identity;
+  column.descriptor = scratchbird::tests::ExactScalarDescriptorFixture(
+      scratchbird::core::datatypes::CanonicalTypeId::int64, "int64", identity, "nullable=false");
+  table.bound_columns.push_back(column);
+  engine_context.datatype_catalog_snapshot_uuid = column.descriptor.datatype_cohort.catalog_snapshot_uuid;
+  engine_context.datatype_catalog_generation = column.descriptor.datatype_cohort.catalog_generation;
+  engine_context.datatype_registry_generation = column.descriptor.datatype_cohort.registry_generation;
   request.set_value = 41;
   Require(sblr::SetSblrSequenceValue(&registry, request).ok(), "default sequence reset failed");
   const auto defaults = api::ApplyConstraintDefaultsForInsert(engine_context, table, {});
   Require(defaults.ok && defaults.values.size() == 1 && defaults.values.front().first == "id" &&
-              defaults.values.front().second == "41",
-          "legacy default consumer lost its native sequence value");
+              defaults.values.front().second.isPresent() &&
+              defaults.values.front().second.bytes == std::string("\x29\0\0\0\0\0\0\0", 8),
+          "default consumer lost its native sequence value");
   std::uint64_t audit_id = 123;
   api::EngineApiDiagnostic diagnostic;
   Require(api::dml_trigger_runtime::NextSequenceAuditId(engine_context, identity, &audit_id, &diagnostic) &&

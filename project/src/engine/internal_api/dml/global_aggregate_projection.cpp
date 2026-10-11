@@ -13,6 +13,7 @@
 #include "crud_support/crud_store.hpp"
 #include "datatype_operations.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "descriptor_value_runtime.hpp"
 #include "mga_relation_store/mga_relation_descriptor.hpp"
 #include "mga_relation_store/mga_binary_fields.hpp"
@@ -768,19 +769,27 @@ EngineGlobalAggregateExecutionResult ExecuteGlobalAggregateProjection(
       return result;
     }
     const auto& source = column->value_descriptor;
-    const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+    const auto* selected = dt::FindDatatypeTypeCodecIdentityV3(
         context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
         context.datatype_registry_generation, source.datatype_descriptor_uuid,
         source.datatype_descriptor_generation);
     const auto source_type = dt::CanonicalTypeIdFromStableName(source.canonical_type_name);
-    if (!binding.ok || binding.row.type_uuid != source.type_uuid ||
-        binding.row.canonical_binary_type_code != static_cast<std::uint32_t>(source_type) ||
+    if (!selected || source.datatype_cohort != EngineDatatypeCohort{
+            context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+            context.datatype_registry_generation} ||
+        selected->legacy_fields.type_uuid != source.type_uuid ||
+        selected->legacy_fields.canonical_binary_type_code != static_cast<std::uint32_t>(source_type) ||
         source.canonical_type_name != dt::CanonicalTypeName(source_type) ||
         ((source_type == dt::CanonicalTypeId::int32 ||
           source_type == dt::CanonicalTypeId::int64 ||
           source_type == dt::CanonicalTypeId::real64) &&
-         binding.row.canonical_value_exact_bytes !=
-             (source_type == dt::CanonicalTypeId::int32 ? 4 : 8))) {
+         (selected->legacy_fields.canonical_value_exact_bytes !=
+              (source_type == dt::CanonicalTypeId::int32 ? 4 : 8) ||
+          (selected->native_fields.present &&
+           (selected->native_fields.canonical_value_minimum_bytes != selected->legacy_fields.canonical_value_exact_bytes ||
+            selected->native_fields.canonical_value_maximum_bytes != selected->legacy_fields.canonical_value_exact_bytes ||
+            selected->native_fields.canonical_value_transport_width != selected->legacy_fields.canonical_value_exact_bytes ||
+            selected->native_fields.canonical_value_variable_width))))) {
       result.diagnostic = AggregateDiagnostic("global_aggregate_source_datatype_binding_invalid");
       return result;
     }

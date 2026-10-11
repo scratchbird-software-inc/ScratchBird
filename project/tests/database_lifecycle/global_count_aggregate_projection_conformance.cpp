@@ -19,6 +19,7 @@
 #include "dml/insert_api.hpp"
 #include "dml/select_api.hpp"
 #include "descriptor_value_runtime.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
@@ -103,7 +104,8 @@ std::string FixtureNumericText(const api::EngineTypedValue& value) {
 
 void FixtureColumnType(api::EngineDescriptor* descriptor, std::string type) {
   const auto occurrence = descriptor->descriptor_uuid;
-  *descriptor = scratchbird::engine::executor::MakeExecutorDescriptor(std::move(type), "nullability=nullable");
+  const auto cohort = descriptor->datatype_cohort;
+  *descriptor = scratchbird::engine::executor::MakeExecutorDescriptor(std::move(type), "nullability=nullable", cohort);
   descriptor->descriptor_kind = "scalar";
   descriptor->descriptor_uuid = occurrence;
 }
@@ -855,7 +857,7 @@ void TestBoundIdentityAndTypedIntegerDistinct(
                   "2",
           "typed int64 DISTINCT did not canonicalize equivalent encodings");
 
-  for (unsigned mutation = 0; mutation < 4; ++mutation) {
+  for (unsigned mutation = 0; mutation < 8; ++mutation) {
     auto stale_context = context;
     auto stale_relation = loaded.descriptor;
     auto stale_outputs = bound.outputs;
@@ -863,6 +865,11 @@ void TestBoundIdentityAndTypedIntegerDistinct(
     if (mutation == 1) ++stale_context.datatype_registry_generation;
     if (mutation == 2) ++stale_relation.columns[0].value_descriptor.datatype_descriptor_generation;
     if (mutation == 3) stale_relation.columns[0].value_descriptor.type_uuid = table_uuid;
+    if (mutation == 4) stale_relation.columns[0].value_descriptor.datatype_cohort.catalog_snapshot_uuid = {};
+    if (mutation == 5) ++stale_relation.columns[0].value_descriptor.datatype_cohort.catalog_generation;
+    if (mutation == 6) ++stale_relation.columns[0].value_descriptor.datatype_cohort.registry_generation;
+    if (mutation == 7) stale_relation.columns[0].value_descriptor.datatype_cohort = {
+        scratchbird::core::datatypes::kDatatypeCohortV5, 5, 5};
     for (std::size_t i = 1; i < stale_outputs.size(); ++i)
       stale_outputs[i].source_field.value_descriptor = stale_relation.columns[0].value_descriptor;
     const auto refused = api::ExecuteGlobalAggregateProjection(
@@ -1347,12 +1354,12 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
               !source_descriptor.columns.front().nullable,
           "global aggregate view source lost the bound nonnullable int32 descriptor");
   const auto& bound_type = source_descriptor.columns.front().value_descriptor;
-  const auto type_identity = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+  const auto* type_identity = scratchbird::core::datatypes::FindDatatypeTypeCodecIdentityV3(
       metadata.datatype_catalog_snapshot_uuid, metadata.datatype_catalog_generation,
       metadata.datatype_registry_generation, bound_type.datatype_descriptor_uuid,
       bound_type.datatype_descriptor_generation);
-  Require(type_identity.ok && type_identity.row.type_uuid == bound_type.type_uuid &&
-              type_identity.row.canonical_binary_type_code == static_cast<platform::u32>(
+  Require(type_identity && type_identity->legacy_fields.type_uuid == bound_type.type_uuid &&
+              type_identity->legacy_fields.canonical_binary_type_code == static_cast<platform::u32>(
                   scratchbird::core::datatypes::CanonicalTypeId::int32),
           "global aggregate source has no actual signed32 datatype binding");
   Commit(metadata);

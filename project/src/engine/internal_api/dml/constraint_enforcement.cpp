@@ -11,6 +11,7 @@
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "domain_support/domain_base_descriptor_codec.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "datatype_operations.hpp"
 #include "sbl_numeric.hpp"
 #include <stdexcept>
@@ -306,7 +307,9 @@ scratchbird::engine::sblr::SblrExecutionContext ConstraintSblrContext(
 }
 
 std::optional<CrudStoredValue> MaterializeDefault(const EngineRequestContext& context,
-                                              const std::string& envelope) {
+                                              const std::string& envelope,
+                                              bool* native_sequence) {
+  *native_sequence = false;
   if (envelope.empty()) { return std::nullopt; }
   if (StartsWith(envelope, "literal:")) { return envelope.substr(8); }
   if (StartsWith(envelope, "value:")) { return envelope.substr(6); }
@@ -327,9 +330,11 @@ std::optional<CrudStoredValue> MaterializeDefault(const EngineRequestContext& co
     if (!result.ok() || result.scalar_values.size() != 1 ||
         !scratchbird::engine::sblr::SblrInt64PayloadValid(result.scalar_values.front()))
       return std::nullopt;
-    // This legacy default-envelope API consumes a lexical CrudStoredValue;
-    // it must not require a redundant text arm in the native sequence result.
-    return std::to_string(result.scalar_values.front().int64_value);
+    std::string bytes;
+    if (!core::datatypes::EncodeCanonicalInt64Value(result.scalar_values.front().int64_value, &bytes))
+      return std::nullopt;
+    *native_sequence = true;
+    return bytes;
   }
   const std::string lower = LowerAscii(envelope);
   if (lower == "null") { return CrudStoredValue::SqlNull(); }
@@ -362,6 +367,94 @@ bool NumberCompare(const std::string& left, const std::string& op, const std::st
   return false;
 }
 
+const core::datatypes::DatatypeTypeCodecIdentityRowV3* SelectCheckDatatype(
+    const EngineRequestContext& context, const EngineDescriptor& descriptor) {
+  namespace dt = core::datatypes;
+  const auto* selected = dt::FindDatatypeTypeCodecIdentityV3(
+      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+      context.datatype_registry_generation, descriptor.datatype_descriptor_uuid,
+      descriptor.datatype_descriptor_generation);
+  if (!selected || descriptor.datatype_cohort != EngineDatatypeCohort{
+          context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+          context.datatype_registry_generation} ||
+      selected->legacy_fields.type_uuid != descriptor.type_uuid ||
+      descriptor.descriptor_kind != "scalar" ||
+      !core::uuid::IsEngineIdentityUuid(descriptor.descriptor_uuid) ||
+      selected->legacy_fields.canonical_binary_type_code != static_cast<std::uint32_t>(
+          dt::CanonicalTypeIdFromStableName(descriptor.canonical_type_name))) return nullptr;
+  return selected;
+}
+
+const EngineDescriptor* ResolveConstraintValueDescriptor(
+    const EngineRequestContext& context, const CrudTableRecord& table,
+    const std::string& column_name,
+    std::optional<MgaRelationStorageDescriptorLoadResult>* stored,
+    EngineApiDiagnostic* diagnostic) {
+  const EngineDescriptor* descriptor = nullptr;
+  for (std::size_t ordinal = 0; ordinal < table.columns.size(); ++ordinal) {
+    if (table.columns[ordinal].first != column_name) continue;
+    for (const auto& column : table.bound_columns) {
+      if (column.ordinal != ordinal) continue;
+      if (descriptor || !core::uuid::IsEngineIdentityUuid(column.requested_column_uuid)) {
+        *diagnostic = MakeInvalidRequestDiagnostic("constraint.validate_row", "ambiguous_bound_column:" + column_name);
+        return nullptr;
+      }
+      descriptor = &column.descriptor;
+    }
+  }
+  if (descriptor) return descriptor;
+  if (!stored->has_value()) *stored = LoadMgaRelationStorageDescriptor(context, table.table_uuid);
+  if (!(*stored)->ok) { *diagnostic = (*stored)->diagnostic; return nullptr; }
+  for (const auto& column : (*stored)->descriptor.columns) {
+    if (column.canonical_name_key != column_name) continue;
+    if (descriptor || !column.column_generation || !core::uuid::IsEngineIdentityUuid(column.column_uuid)) {
+      *diagnostic = MakeInvalidRequestDiagnostic("constraint.validate_row", "ambiguous_bound_column:" + column_name);
+      return nullptr;
+    }
+    descriptor = &column.value_descriptor;
+  }
+  if (!descriptor) *diagnostic = MakeInvalidRequestDiagnostic("constraint.validate_row", "bound_column_not_visible:" + column_name);
+  return descriptor;
+}
+
+bool NativeIntegerDefault(const core::datatypes::DatatypeTypeCodecIdentityRowV3& selected,
+                          bool native_sequence, CrudStoredValue* value) {
+  namespace dt = core::datatypes;
+  const auto& binding = selected.legacy_fields;
+  const auto type = static_cast<dt::CanonicalTypeId>(binding.canonical_binary_type_code);
+  const bool signed_integer = type == dt::CanonicalTypeId::int8 || type == dt::CanonicalTypeId::int16 ||
+      type == dt::CanonicalTypeId::int32 || type == dt::CanonicalTypeId::int64 || type == dt::CanonicalTypeId::int128;
+  const bool unsigned_integer = type == dt::CanonicalTypeId::uint8 || type == dt::CanonicalTypeId::uint16 ||
+      type == dt::CanonicalTypeId::uint32 || type == dt::CanonicalTypeId::uint64 || type == dt::CanonicalTypeId::uint128;
+  if (!signed_integer && !unsigned_integer) return !native_sequence;
+  if (!value->isPresent()) return true;
+  const auto width = binding.canonical_value_bytes;
+  const auto& native = selected.native_fields;
+  if (!width || width > 16 || binding.canonical_value_minimum_bytes != width ||
+      binding.canonical_value_maximum_bytes != width || binding.canonical_value_exact_bytes != width ||
+      binding.canonical_value_variable_width ||
+      (native.present && (native.canonical_value_minimum_bytes != width ||
+       native.canonical_value_maximum_bytes != width || native.canonical_value_transport_width != width ||
+       native.canonical_value_variable_width))) return false;
+  // This existing neutral default envelope carries a lexical constant, not a
+  // stored integer. Decode it once, then retain only the destination's bytes.
+  std::string full;
+  if (native_sequence) {
+    if (value->bytes.size() != 8) return false;
+    const bool negative = static_cast<unsigned char>(value->bytes.back()) & 0x80;
+    if (negative && unsigned_integer) return false;
+    full = value->bytes;
+    full.resize(16, negative ? static_cast<char>(0xff) : '\0');
+  } else if (!(signed_integer ? dt::EncodeCanonicalInt128Value(value->bytes, &full)
+                             : dt::EncodeCanonicalUint128Value(value->bytes, &full)) || full.size() != 16) return false;
+  const char extension = signed_integer && (static_cast<unsigned char>(full[width - 1]) & 0x80)
+      ? static_cast<char>(0xff) : '\0';
+  for (std::size_t i = width; i < full.size(); ++i) if (full[i] != extension) return false;
+  full.resize(width);
+  value->bytes = std::move(full);
+  return true;
+}
+
 CheckResult EvaluateCheckEnvelope(const EngineRequestContext& context,
                                    const EngineDescriptor* descriptor,
                                    const std::string& encoded, const CrudStoredValue& value) {
@@ -386,23 +479,27 @@ CheckResult EvaluateCheckEnvelope(const EngineRequestContext& context,
   if (descriptor && (op == "eq" || op == "ne" || op == "gt" || op == "gte" || op == "lt" || op == "lte")) {
     namespace dt = scratchbird::core::datatypes;
     namespace numeric = scratchbird::libraries::sbl_numeric;
-    const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
-        context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
-        context.datatype_registry_generation, descriptor->datatype_descriptor_uuid,
-        descriptor->datatype_descriptor_generation);
-    if (!binding.ok || binding.row.type_uuid != descriptor->type_uuid ||
-        descriptor->descriptor_kind != "scalar" ||
-        !core::uuid::IsEngineIdentityUuid(descriptor->descriptor_uuid) ||
-        binding.row.canonical_binary_type_code != static_cast<std::uint32_t>(
-            dt::CanonicalTypeIdFromStableName(descriptor->canonical_type_name)))
+    const auto* selected = SelectCheckDatatype(context, *descriptor);
+    if (!selected)
       return {false, true, "check_datatype_binding_invalid"};
-    const auto type = static_cast<dt::CanonicalTypeId>(binding.row.canonical_binary_type_code);
+    const auto& binding = selected->legacy_fields;
+    const auto type = static_cast<dt::CanonicalTypeId>(binding.canonical_binary_type_code);
     const bool signed_integer = type == dt::CanonicalTypeId::int8 || type == dt::CanonicalTypeId::int16 ||
         type == dt::CanonicalTypeId::int32 || type == dt::CanonicalTypeId::int64 || type == dt::CanonicalTypeId::int128;
     const bool unsigned_integer = type == dt::CanonicalTypeId::uint8 || type == dt::CanonicalTypeId::uint16 ||
         type == dt::CanonicalTypeId::uint32 || type == dt::CanonicalTypeId::uint64 || type == dt::CanonicalTypeId::uint128;
     if (signed_integer || unsigned_integer) {
-      if (value.bytes.size() != binding.row.canonical_value_bytes)
+      const auto& native = selected->native_fields;
+      if (binding.canonical_value_minimum_bytes != binding.canonical_value_bytes ||
+          binding.canonical_value_maximum_bytes != binding.canonical_value_bytes ||
+          binding.canonical_value_exact_bytes != binding.canonical_value_bytes ||
+          binding.canonical_value_variable_width ||
+          (native.present && (native.canonical_value_minimum_bytes != binding.canonical_value_bytes ||
+           native.canonical_value_maximum_bytes != binding.canonical_value_bytes ||
+           native.canonical_value_transport_width != binding.canonical_value_bytes ||
+           native.canonical_value_variable_width)))
+        return {false, true, "check_datatype_binding_invalid"};
+      if (value.bytes.size() != binding.canonical_value_bytes)
         return {false, false, "check_integer_encoding_invalid"};
       const auto compared = numeric::CompareIntegerLittleEndianToDecimalLiteral(
           reinterpret_cast<const std::uint8_t*>(value.bytes.data()), value.bytes.size(), signed_integer, rhs);
@@ -554,6 +651,8 @@ ConstraintDmlProofContext MakeProofContext(const EngineRequestContext& context) 
   proof_context.database_uuid = context.database_uuid;
   proof_context.transaction_uuid = context.transaction_uuid;
   proof_context.principal_uuid = context.principal_uuid;
+  proof_context.datatype_cohort = {context.datatype_catalog_snapshot_uuid,
+      context.datatype_catalog_generation, context.datatype_registry_generation};
   proof_context.isolation_level = context.transaction_isolation_level;
   proof_context.trace_tag_fingerprint = TraceTagFingerprint(context);
   proof_context.local_transaction_id = context.local_transaction_id;
@@ -572,6 +671,7 @@ bool SameProofContext(const ConstraintDmlProofContext& left,
   return left.database_uuid == right.database_uuid &&
          left.transaction_uuid == right.transaction_uuid &&
          left.principal_uuid == right.principal_uuid &&
+         left.datatype_cohort == right.datatype_cohort &&
          left.isolation_level == right.isolation_level &&
          left.trace_tag_fingerprint == right.trace_tag_fingerprint &&
          left.local_transaction_id == right.local_transaction_id &&
@@ -591,9 +691,13 @@ std::string ProofBody(const std::string& proof_kind,
 
 std::string ProofFullKey(const std::string& proof_body,
                          const ConstraintDmlProofContext& context) {
-  return EncodeMgaMetadataFields({"constraint.proof.context.v2",proof_body,
+  return EncodeMgaMetadataFields({"constraint.proof.context.v3",proof_body,
       MetadataUuidBytes(context.database_uuid),MetadataUuidBytes(context.transaction_uuid),
-      MetadataUuidBytes(context.principal_uuid),context.isolation_level,context.trace_tag_fingerprint,
+      MetadataUuidBytes(context.principal_uuid),
+      MetadataUuidBytes(context.datatype_cohort.catalog_snapshot_uuid),
+      std::to_string(context.datatype_cohort.catalog_generation),
+      std::to_string(context.datatype_cohort.registry_generation),
+      context.isolation_level,context.trace_tag_fingerprint,
       std::to_string(context.local_transaction_id),std::to_string(context.snapshot_visible_through_local_transaction_id),
       std::to_string(context.catalog_generation_id),std::to_string(context.security_epoch),
       std::to_string(context.resource_epoch),std::to_string(context.name_resolution_epoch),
@@ -602,6 +706,9 @@ std::string ProofFullKey(const std::string& proof_body,
 
 std::string FirstProofContextMismatch(const ConstraintDmlProofContext& stored,
                                       const ConstraintDmlProofContext& current) {
+  if (stored.datatype_cohort != current.datatype_cohort) {
+    return "datatype_cohort_mismatch";
+  }
   if (stored.catalog_generation_id != current.catalog_generation_id) {
     return "catalog_epoch_mismatch";
   }
@@ -1251,6 +1358,7 @@ ConstraintDmlValidationResult ApplyConstraintDefaultsForInsert(
     ConstraintDmlValidationCache* cache) {
   ConstraintDmlValidationResult result;
   result.values = input_values;
+  std::optional<MgaRelationStorageDescriptorLoadResult> stored_descriptor;
   for (const auto& [column_name, fields] : CachedConstraintColumns(cache, table)) {
     const bool present = HasField(result.values, column_name);
     const bool requested_default = present && FieldValue(result.values, column_name).isDefaultRequested();
@@ -1276,7 +1384,16 @@ ConstraintDmlValidationResult ApplyConstraintDefaultsForInsert(
       result.diagnostic = *timing;
       return result;
     }
-    const auto materialized = MaterializeDefault(context, default_envelope);
+    const auto* descriptor = ResolveConstraintValueDescriptor(context, table, column_name,
+        &stored_descriptor, &result.diagnostic);
+    if (!descriptor) return result;
+    const auto* selected = SelectCheckDatatype(context, *descriptor);
+    if (!selected) {
+      result.diagnostic = MakeInvalidRequestDiagnostic("constraint.default", "default_datatype_binding_invalid:" + column_name);
+      return result;
+    }
+    bool native_sequence = false;
+    auto materialized = MaterializeDefault(context, default_envelope, &native_sequence);
     if (!materialized.has_value()) {
       result.diagnostic = ConstraintDiagnostic("CLI.NO_ENFORCEMENT_PATH",
                                                "constraint.no_enforcement_path",
@@ -1289,6 +1406,10 @@ ConstraintDmlValidationResult ApplyConstraintDefaultsForInsert(
                                                {},
                                                {},
                                                "none");
+      return result;
+    }
+    if (!NativeIntegerDefault(*selected, native_sequence, &*materialized)) {
+      result.diagnostic = MakeInvalidRequestDiagnostic("constraint.default", "default_integer_encoding_invalid:" + column_name);
       return result;
     }
     UpsertField(&result.values, column_name, *materialized);
@@ -1384,50 +1505,35 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraintsWithOptions(
 
     const std::string check_envelope = FieldOrEmpty(fields, {"check_constraint", "check", "predicate_sblr_ref"});
     if (!check_envelope.empty()) {
-      const EngineDescriptor* value_descriptor = nullptr;
-      for (std::size_t ordinal = 0; ordinal < table.columns.size(); ++ordinal) {
-        if (table.columns[ordinal].first != column_name) continue;
-        for (const auto& column : table.bound_columns) {
-          if (column.ordinal != ordinal) continue;
-          if (value_descriptor || !core::uuid::IsEngineIdentityUuid(column.requested_column_uuid)) {
-            result.diagnostic = MakeInvalidRequestDiagnostic("constraint.validate_row", "ambiguous_bound_column:" + column_name);
-            return result;
-          }
-          value_descriptor = &column.descriptor;
-        }
-      }
-      if (!value_descriptor) {
-        if (!stored_descriptor) stored_descriptor = LoadMgaRelationStorageDescriptor(context, table.table_uuid);
-        if (!stored_descriptor->ok) {
-          result.diagnostic = stored_descriptor->diagnostic;
-          return result;
-        }
-        for (const auto& column : stored_descriptor->descriptor.columns) {
-          if (column.canonical_name_key != column_name) continue;
-          if (value_descriptor || !column.column_generation ||
-              !core::uuid::IsEngineIdentityUuid(column.column_uuid)) {
-            result.diagnostic = MakeInvalidRequestDiagnostic("constraint.validate_row", "ambiguous_bound_column:" + column_name);
-            return result;
-          }
-          value_descriptor = &column.value_descriptor;
-        }
-        if (!value_descriptor) {
-          result.diagnostic = MakeInvalidRequestDiagnostic("constraint.validate_row", "bound_column_not_visible:" + column_name);
-          return result;
-        }
+      const auto* value_descriptor = ResolveConstraintValueDescriptor(context, table, column_name,
+          &stored_descriptor, &result.diagnostic);
+      if (!value_descriptor) return result;
+      // NULL/UNKNOWN and proof hits must not bypass datatype admission.
+      if (!SelectCheckDatatype(context, *value_descriptor)) {
+        result.diagnostic = ConstraintDiagnostic("CLI.NO_ENFORCEMENT_PATH",
+            "constraint.no_enforcement_path", context, table, "check_constraint",
+            ConstraintUuid(fields, table, column_name, "check_constraint"),
+            "check_datatype_binding_invalid", column_name, {}, {}, "none");
+        return result;
       }
       std::string bound_descriptor_material;
       if (value_descriptor && !EncodeDomainBaseDescriptorV1(*value_descriptor, &bound_descriptor_material)) {
         result.diagnostic = MakeInvalidRequestDiagnostic("constraint.validate_row", "invalid_bound_column:" + column_name);
         return result;
       }
+      // The frozen domain-base carrier predates datatype cohorts. Bind the full
+      // source cohort in this local proof envelope rather than changing that ABI.
+      bound_descriptor_material = EncodeMgaMetadataFields({bound_descriptor_material,
+          MetadataUuidBytes(value_descriptor->datatype_cohort.catalog_snapshot_uuid),
+          std::to_string(value_descriptor->datatype_cohort.catalog_generation),
+          std::to_string(value_descriptor->datatype_cohort.registry_generation)});
       if (deferred_timing) {
         record_deferred("check_constraint");
       } else {
         const std::string unknown_policy = LowerAscii(FieldOrEmpty(fields, {"check_unknown_policy", "unknown_policy"}));
         if (IsNullValue(value) && unknown_policy != "fail") {
           const std::string proof_identity =
-              EncodeMgaMetadataFields({"constraint.check.proof.v3",bound_descriptor_material,
+              EncodeMgaMetadataFields({"constraint.check.proof.v4",bound_descriptor_material,
                   MetadataUuidBytes(ConstraintUuid(fields, table, column_name, "check_constraint")),
                   MetadataUuidBytes(table.table_uuid),column_name,check_envelope,unknown_policy,EncodeCrudValues({{"value", value}})});
           if (!FindConstraintDmlProofPayload(cache,
@@ -1446,7 +1552,7 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraintsWithOptions(
           result.evidence.push_back({"constraint_check_unknown_passed", column_name});
         } else {
           const std::string proof_identity =
-              EncodeMgaMetadataFields({"constraint.check.proof.v3",bound_descriptor_material,
+              EncodeMgaMetadataFields({"constraint.check.proof.v4",bound_descriptor_material,
                   MetadataUuidBytes(ConstraintUuid(fields, table, column_name, "check_constraint")),
                   MetadataUuidBytes(table.table_uuid),column_name,check_envelope,unknown_policy,EncodeCrudValues({{"value", value}})});
           if (FindConstraintDmlProofPayload(cache,

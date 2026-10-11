@@ -39,6 +39,7 @@ struct ConstraintDmlProofContext {
   EngineUuid database_uuid;
   EngineUuid transaction_uuid;
   EngineUuid principal_uuid;
+  EngineDatatypeCohort datatype_cohort;
   std::string isolation_level;
   std::string trace_tag_fingerprint;
   std::uint64_t local_transaction_id = 0;
