@@ -8,7 +8,9 @@
 #include "datatype_date.hpp"
 #include "datatype_time.hpp"
 #include "canonical_utf8.hpp"
+#include <algorithm>
 #include <type_traits>
+#include <limits>
 
 namespace scratchbird::engine::sblr {
 namespace {
@@ -311,6 +313,19 @@ SblrResult Cast(
   return MakeSblrFailure(SblrStatusCode::resource_exhausted, std::string(operation),
       MakeSblrRefusalDiagnostic("RESOURCE.BUDGET_EXCEEDED", context, "native temporal cast allocation failed"));
 }
+bool BindInt64(const api::EngineDescriptor& binding, ExecutionTypeDescriptor& out,
+               std::string& detail, core::platform::Status& status) {
+  if (binding.canonical_type_name != "int64" || !binding.charset_uuid.is_nil() ||
+      !binding.collation_uuid.is_nil()) return false;
+  api::CatalogColumnMetadata fields;
+  if (!api::AdmitCatalogColumnMetadata(binding.encoded_descriptor, &fields) || !fields.identities.empty())
+    return false;
+  for (const auto& [key, ignored] : fields.text)
+    if (key != "nullability" && key != "nullable") return false;
+  return executor::BuildBoundExecutionTypeDescriptor(binding, dt::CanonicalTypeId::int64,
+                                                     &out, &detail, &status);
+}
+
 template<class Traits>
 SblrResult Calendar(std::string_view operation, SblrCalendarField field,
                     const SblrValue& value, const SblrExecutionContext& context,
@@ -329,17 +344,10 @@ SblrResult Calendar(std::string_view operation, SblrCalendarField field,
   if (!Bind(*value.projection_descriptor, true, source))
     return fail(source.failure.diagnostic_code.empty() ? "CTI.TEMPORAL.DESCRIPTOR_INVALID" :
                 source.failure.diagnostic_code, "invalid calendar source binding");
-  api::CatalogColumnMetadata fields;
-  if (!api::AdmitCatalogColumnMetadata(target->encoded_descriptor, &fields) || !fields.identities.empty())
-    return fail("CTI.TEMPORAL.DESCRIPTOR_INVALID", "invalid calendar result metadata");
-  for (const auto& [key, ignored] : fields.text)
-    if (key != "nullability" && key != "nullable")
-      return fail("CTI.TEMPORAL.DESCRIPTOR_INVALID", "unhandled calendar result modifier");
   ExecutionTypeDescriptor destination;
   std::string detail;
   core::platform::Status provider_status;
-  if (!executor::BuildBoundExecutionTypeDescriptor(*target, dt::CanonicalTypeId::int64,
-          &destination, &detail, &provider_status))
+  if (!BindInt64(*target, destination, detail, provider_status))
     return fail(provider_status.code == core::platform::StatusCode::memory_allocation_failed ?
                 "RESOURCE.BUDGET_EXCEEDED" : "CTI.TEMPORAL.DESCRIPTOR_INVALID", detail);
   if (!Carrier<Traits>(value, true))
@@ -402,6 +410,90 @@ SblrResult Calendar(std::string_view operation, SblrCalendarField field,
       MakeSblrRefusalDiagnostic("RESOURCE.BUDGET_EXCEEDED", context, "native calendar allocation failed"));
 }
 } // namespace
+
+SblrResult EvaluateSblrDateMonth(
+    std::string_view operation, const SblrValue& value, const SblrValue* months,
+    const SblrExecutionContext& context, std::shared_ptr<const api::EngineDescriptor> target) try {
+  const auto fail = [&](std::string_view code, std::string_view detail) {
+    return MakeSblrFailure(code == "RESOURCE.BUDGET_EXCEEDED" ? SblrStatusCode::resource_exhausted :
+                          SblrStatusCode::execution_failed, std::string(operation),
+        MakeSblrRefusalDiagnostic(std::string(code), context, std::string(detail)));
+  };
+  if (value.descriptor_id != "date" || !value.projection_descriptor || !target ||
+      target->datatype_cohort != value.projection_descriptor->datatype_cohort)
+    return fail("CTI.TEMPORAL.DESCRIPTOR_INVALID", "date month operation requires exact DATE endpoints");
+  Endpoint<DateTraits> source, destination;
+  if (!Bind(*value.projection_descriptor, true, source) || !Bind(*target, true, destination, &source)) {
+    const auto& cause = source.failure.diagnostic_code.empty() ? destination.failure : source.failure;
+    return fail(cause.diagnostic_code.empty() ? "CTI.TEMPORAL.DESCRIPTOR_INVALID" : cause.diagnostic_code,
+                "invalid date month endpoint binding");
+  }
+  ExecutionTypeDescriptor offset_binding;
+  if (months) {
+    if (months->descriptor_id != "int64" || !months->projection_descriptor ||
+        months->projection_descriptor->datatype_cohort != target->datatype_cohort)
+      return fail("CTI.TEMPORAL.DESCRIPTOR_INVALID", "month count requires same-cohort INT64 binding");
+    std::string detail;
+    core::platform::Status status;
+    if (!BindInt64(*months->projection_descriptor, offset_binding, detail, status))
+      return fail(status.code == core::platform::StatusCode::memory_allocation_failed ?
+                  "RESOURCE.BUDGET_EXCEEDED" : "CTI.TEMPORAL.DESCRIPTOR_INVALID", detail);
+  }
+  if (!Carrier<DateTraits>(value, true))
+    return fail(value.is_null ? "DATATYPE.NULL_STATE.INVALID" : "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+                "invalid date month source carrier");
+  if (months && (months->is_null ? !SblrNullPayloadEmpty(*months) : !SblrInt64PayloadValid(*months)))
+    return fail(months->is_null ? "DATATYPE.NULL_STATE.INVALID" : "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+                "invalid month count carrier");
+  const auto decoded = DateTraits::Decode(*source.profile,
+      value.is_null ? DateTraits::State::sql_null : DateTraits::State::value,
+      source.execution.nullable_allowed, value.binary_value);
+  if (!decoded.ok()) return fail(decoded.diagnostic.diagnostic_code, decoded.diagnostic.detail);
+  const bool is_null = value.is_null || (months && months->is_null);
+  if ((months && months->is_null && !offset_binding.nullable_allowed) ||
+      (is_null && !destination.execution.nullable_allowed))
+    return fail("DATATYPE.NULL_NOT_ADMITTED", "date month operation has a nonnullable NULL occurrence");
+  SblrValue output;
+  output.descriptor_id = "date";
+  output.projection_descriptor = std::move(target);
+  output.is_null = is_null;
+  if (!is_null) {
+    const auto native = DateTraits::Own(source.profile, decoded.value);
+    const auto civil = dt::DecomposeDateCivilV3(native.view(), false);
+    if (!civil.ok()) return fail(civil.diagnostic.diagnostic_code, civil.diagnostic.detail);
+    std::int64_t year = civil.civil.year;
+    std::int64_t month = civil.civil.month;
+    if (months) {
+      const std::int64_t initial = year * 12 + month - 1;
+      const auto delta = months->int64_value;
+      if ((delta > 0 && initial > std::numeric_limits<std::int64_t>::max() - delta) ||
+          (delta < 0 && initial < std::numeric_limits<std::int64_t>::min() - delta))
+        return fail("CTI.TEMPORAL.RANGE_EXCEEDED", "month count overflow");
+      const auto total = initial + delta;
+      year = total / 12;
+      month = total % 12;
+      if (month < 0) { --year; month += 12; }
+      ++month;
+    }
+    constexpr unsigned month_days[]{31,28,31,30,31,30,31,31,30,31,30,31};
+    const auto last = month == 2 && year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+        ? 29u : month_days[month - 1];
+    const auto day = months ? std::min<unsigned>(civil.civil.day, last) : last;
+    const auto changed = dt::ConstructDateFromCivilV3(destination.profile, year, month, day,
+                                                     destination.execution.nullable_allowed);
+    if (!changed.ok()) return fail(changed.diagnostic.diagnostic_code, changed.diagnostic.detail);
+    output.payload_kind = SblrValuePayloadKind::binary;
+    output.binary_value.resize(4);
+    const auto encoded = DateTraits::Encode(changed.value, output.binary_value);
+    if (!encoded.ok()) return fail(encoded.diagnostic.diagnostic_code, encoded.diagnostic.detail);
+  }
+  auto result = MakeSblrSuccess(std::string(operation));
+  result.scalar_values.push_back(std::move(output));
+  return result;
+} catch (const std::bad_alloc&) {
+  return MakeSblrFailure(SblrStatusCode::resource_exhausted, std::string(operation),
+      MakeSblrRefusalDiagnostic("RESOURCE.BUDGET_EXCEEDED", context, "date month operation allocation failed"));
+}
 
 SblrResult EvaluateSblrTemporalCalendar(
     std::string_view operation, SblrCalendarField field, const SblrValue& value,

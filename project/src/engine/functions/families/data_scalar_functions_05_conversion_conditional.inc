@@ -561,6 +561,9 @@
   // recovers the (year, month, day) via CivilFromDays.
   if (IdIs(id, {"data.scalar.add_months", "sb.fn.temporal.add_months", "sb.temporal.add_months", "add_months"})) {
     if (request.arguments.size() != 2) return RefuseFunctionInvalidInput(request, "add_months expects date and integer month offset");
+    if (scratchbird::engine::sblr::IsSblrCivilTemporalType(request.arguments[0].value.descriptor_id))
+      return {scratchbird::engine::sblr::EvaluateSblrDateMonth(id, request.arguments[0].value,
+          &request.arguments[1].value, request.context.sblr_context, request.result_descriptor)};
     if (IsSqlNull(request.arguments[0].value) || IsSqlNull(request.arguments[1].value)) {
       return MakeFunctionSuccess(request, {MakeNullValue("date")});
     }
@@ -595,6 +598,9 @@
   }
   if (IdIs(id, {"data.scalar.last_day", "sb.fn.temporal.last_day", "sb.temporal.last_day", "last_day"})) {
     if (request.arguments.size() != 1) return RefuseFunctionInvalidInput(request, "last_day expects one temporal argument");
+    if (scratchbird::engine::sblr::IsSblrCivilTemporalType(request.arguments[0].value.descriptor_id))
+      return {scratchbird::engine::sblr::EvaluateSblrDateMonth(id, request.arguments[0].value,
+          nullptr, request.context.sblr_context, request.result_descriptor)};
     if (IsSqlNull(request.arguments[0].value)) return MakeFunctionSuccess(request, {MakeNullValue("date")});
     const auto temporal = ValueAsText(request.arguments[0].value);
     if (temporal.size() < 10) return RefuseFunctionInvalidInput(request, "last_day requires ISO-like date text");

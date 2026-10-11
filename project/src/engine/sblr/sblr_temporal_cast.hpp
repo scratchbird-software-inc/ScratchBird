@@ -22,4 +22,10 @@ SblrResult EvaluateSblrTemporalCalendar(
     std::string_view operation, SblrCalendarField field, const SblrValue& value,
     const SblrExecutionContext& context,
     std::shared_ptr<const internal_api::EngineDescriptor> target);
+// DATE -> DATE. A null months pointer selects LAST_DAY; otherwise ADD_MONTHS
+// consumes the exact bound INT64 operand, including its independent NULL state.
+SblrResult EvaluateSblrDateMonth(
+    std::string_view operation, const SblrValue& value, const SblrValue* months,
+    const SblrExecutionContext& context,
+    std::shared_ptr<const internal_api::EngineDescriptor> target);
 }
