@@ -1,5 +1,6 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
+#include "../support/timestamp_successor_fixture.hpp"
 
 #include "../../../src/core/datatypes/datatype_timestamp_projection.hpp"
 
@@ -165,9 +166,9 @@ struct Fixtures {
   dt::TimestampStatisticsProjectionV3 statistics;
 };
 
-Fixtures MakeFixtures() {
+Fixtures MakeFixtures(bool successor = false) {
   Fixtures fixture;
-  fixture.profile = Profile();
+  fixture.profile = successor ? scratchbird::tests::D711TimestampProfile() : Profile();
   fixture.lower = {fixture.profile, dt::TimestampValueStateV3::value, -1,
                    86'399'999'999'999ull};
   fixture.upper = {fixture.profile, dt::TimestampValueStateV3::value, 0, 0};
@@ -1026,7 +1027,8 @@ void NoPartialFactOrMetricPublication() {
 }  // namespace
 
 int main() {
-  auto fixture = MakeFixtures();
+  for (bool successor : {false, true}) {
+  auto fixture = MakeFixtures(successor);
   RefreshFixtureSpans(fixture);
   ExactCapacityAndPrecedence(fixture);
   NullEmptyAndMaximumCapacity(fixture);
@@ -1036,6 +1038,7 @@ int main() {
   AllocationFailureAndRetry(fixture);
   PinLifetimeAndOwnership(fixture);
   ConcurrentDisjointPublication(fixture);
+  }
   NoPartialFactOrMetricPublication();
   if (failures != 0) {
     std::cerr << "FAIL base.timestamp V3 publication atomicity checks=" << checks

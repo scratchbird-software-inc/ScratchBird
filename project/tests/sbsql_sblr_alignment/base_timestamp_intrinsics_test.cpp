@@ -1,5 +1,6 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
+#include "../support/timestamp_successor_fixture.hpp"
 #include "../../../src/core/datatypes/datatype_timestamp.hpp"
 
 #include <array>
@@ -62,4 +63,4 @@ void Arithmetic(const std::shared_ptr<const dt::TimestampValidatedProfileHandleV
 
 void ParseLocalCivil(const std::shared_ptr<const dt::TimestampValidatedProfileHandleV3>& profile){auto parsed=dt::ParseCanonicalTimestampV3(profile,"2024-02-29T06:07:08.9");Check(parsed.ok()&&dt::RenderCanonicalTimestampV3(parsed.value).text=="2024-02-29T06:07:08.9","parse/render roundtrip");constexpr std::array<std::string_view,12> invalid{{"2024-02-29 06:07:08","2024-02-29t06:07:08","2024-02-29T06:07:08Z","2024-02-29T06:07:08+00:00","2024-02-29T24:00:00","2024-02-29T23:59:60","2024-02-29T06:07:08.900","2024-02-29T06:07:08.1234567890","2024-00-01T00:00:00","2024-02-30T00:00:00"," 2024-02-29T00:00:00","2024-02-29T00:00:00 "}};for(auto text:invalid)Check(!dt::ParseCanonicalTimestampV3(profile,text).ok(),"strict local-civil grammar refuses zone/offset/noncanonical text");auto literal=dt::RenderCanonicalTimestampV3(parsed.value,true);Check(literal.ok()&&literal.text=="TIMESTAMP '2024-02-29T06:07:08.9'","inert SQL export literal");}
 }  // namespace
-int main(){auto profile=Profile();Registry(profile);CivilAndFacts(profile);Arithmetic(profile);ParseLocalCivil(profile);std::cout<<"PASS base.timestamp V3 intrinsics checks="<<checks<<" rows=33\n";}
+int main(){auto profile=Profile();Registry(profile);CivilAndFacts(profile);Arithmetic(profile);ParseLocalCivil(profile);auto successor=scratchbird::tests::D711TimestampProfile();Registry(successor);CivilAndFacts(successor);Arithmetic(successor);ParseLocalCivil(successor);std::cout<<"PASS base.timestamp V3 intrinsics checks="<<checks<<" rows=33\n";}

@@ -1,5 +1,6 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
+#include "../support/timestamp_successor_fixture.hpp"
 #include "../../../src/core/datatypes/datatype_timestamp_projection.hpp"
 
 #include <algorithm>
@@ -1073,6 +1074,10 @@ int main() {
   TestProjectionLayouts(profile);
   TestStatisticsAndBackup(profile);
   TestProtectionAndWire(profile);
+  const auto successor = scratchbird::tests::D711TimestampProfile();
+  TestProjectionLayouts(successor);
+  TestStatisticsAndBackup(successor);
+  TestProtectionAndWire(successor);
   TestDiagnosticsAndMetrics();
   std::cout << "PASS base.timestamp V3 projection/observability checks=" << checks << '\n';
 }

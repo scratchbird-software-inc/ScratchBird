@@ -1,8 +1,10 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
+#include "../support/timestamp_successor_fixture.hpp"
 #include "../../../src/core/datatypes/datatype_timestamp.hpp"
 
 #include <array>
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -129,11 +131,14 @@ void ProfileAuthority(const std::shared_ptr<const dt::TimestampValidatedProfileH
   Check(profile->comparison_material.size() == 416 &&
             std::memcmp(profile->comparison_material.data(), "SBTSPC01", 8) == 0,
         "exact 416-byte SBTSPC01 material");
-  Check(profile->profile_fingerprint ==
-            Hex32("4aa13879ac9d345ceb2b17e1068f0a0049ff45508d76f4f5af5c6ddc1d07a3ca"),
+  const bool successor = profile->receipt.catalog_generation == 11;
+  Check(profile->profile_fingerprint == Hex32(successor ?
+            "b3f2a0e9d7c564c93754f4471b3710b7e9215216987166e5c3f16fbbe8b226d8" :
+            "4aa13879ac9d345ceb2b17e1068f0a0049ff45508d76f4f5af5c6ddc1d07a3ca"),
         "exact timestamp profile fingerprint");
-  Check(profile->comparison_fingerprint ==
-            Hex32("35ce26afa08d48af46c79e08cd056a453b7deba80d3569e78ffdba5b1c93fee7"),
+  Check(profile->comparison_fingerprint == Hex32(successor ?
+            "879004814d3fc6583cc0de3263cd72da1d97e15bb06d942609056f58ca9c2da4" :
+            "35ce26afa08d48af46c79e08cd056a453b7deba80d3569e78ffdba5b1c93fee7"),
         "exact timestamp comparison fingerprint");
   Check(dt::ValidateTimestampProfileHandleV3(*profile).ok(),
         "exact profile validates");
@@ -231,6 +236,98 @@ void BatchRules(const std::shared_ptr<const dt::TimestampValidatedProfileHandleV
         "checked dual-array batch extent");
 }
 
+void SuccessorAuthority(
+    const std::shared_ptr<const dt::TimestampValidatedProfileHandleV3>& old,
+    const std::shared_ptr<const dt::TimestampValidatedProfileHandleV3>& successor) {
+  auto material = old->profile_material;
+  auto comparison = old->comparison_material;
+  const auto uuid = Hex("01a1095ff20572d3abea15c6d41a4ad4");
+  for (auto data : {material.data(), comparison.data()}) {
+    std::copy(uuid.begin(), uuid.end(), data + 16);
+    p::StoreLittle64(data + 32, 11);
+    p::StoreLittle64(data + 40, 11);
+  }
+  auto copy_seal = [](auto& destination, std::size_t offset, auto seal) {
+    std::copy(seal.begin(), seal.end(), destination.begin() + offset);
+  };
+  copy_seal(material, 592, Hex32("1f2886db581146fc27408d3fc9c2914b348a6fd957891925a0ef245b858a8a77"));
+  copy_seal(material, 624, Hex32("f17f7861ee31364530c880dc01b1836a8629d4c5c6ea5d287b4f9bef1882528d"));
+  copy_seal(comparison, 352, Hex32("0d747769d2324170e000cb1973f8b1f0282990343cd308da83804a641b9c5796"));
+  copy_seal(comparison, 384, Hex32("1673475a46395937c1eef4e90bdc92e72eec21a47404394bfe272224cf983f44"));
+  Check(material == successor->profile_material &&
+        comparison == successor->comparison_material, "exact successor dependencies and cohort");
+  Check(!dt::BuildTimestampValidatedProfileHandleV3(old->receipt, successor->identity).ok() &&
+        !dt::BuildTimestampValidatedProfileHandleV3(successor->receipt, old->identity).ok(),
+        "no receipt relabeling");
+  for (const auto& profile : {old, successor}) {
+    for (unsigned field = 0; field < 8; ++field) {
+      auto altered = *profile;
+      auto& native = altered.identity.native_fields;
+      switch (field) {
+        case 0: native.present = !native.present; break;
+        case 1: ++native.canonical_value_minimum_bytes; break;
+        case 2: ++native.canonical_value_maximum_bytes; break;
+        case 3: ++native.canonical_value_transport_width; break;
+        case 4: native.canonical_value_variable_width = !native.canonical_value_variable_width; break;
+        case 5: native.policy_profile_uuid.bytes[0] ^= 1; break;
+        case 6: ++native.policy_profile_generation; break;
+        case 7: native.profile_fingerprint_sha256[0] ^= 1; break;
+      }
+      Check(!dt::ValidateTimestampProfileHandleV3(altered).ok() &&
+            !dt::BuildTimestampValidatedProfileHandleV3(altered.receipt, altered.identity).ok(),
+            "every native identity field is authoritative");
+    }
+  }
+  for (const auto& fixture : kVectors) {
+    dt::TimestampOwnedValueV3 value{successor, fixture.state, fixture.civil_day, fixture.nanoseconds_since_midnight};
+    dt::TimestampOwnedValueV3 previous{old, fixture.state, fixture.civil_day, fixture.nanoseconds_since_midnight};
+    Check(dt::CompareTimestampValuesV3(value.view(), value.view()).ok() &&
+          !dt::CompareTimestampValuesV3(value.view(), previous.view()).ok() &&
+          !dt::DifferenceTimestampV3(value.view(), previous.view()).ok(),
+          "same-cohort comparison and cross-cohort refusal include NULL");
+    for (auto direction : {dt::TimestampSortDirectionV3::ascending, dt::TimestampSortDirectionV3::descending})
+      for (auto mode : {dt::TimestampNullModeV3::nulls_first, dt::TimestampNullModeV3::nulls_last}) {
+        auto key = dt::MakeTimestampSortKeyV3(value, direction, mode);
+        auto old_key = dt::MakeTimestampSortKeyV3(previous, direction, mode);
+        Check(key.ok() && old_key.ok(), "both cohorts produce keys");
+        const bool present = fixture.state == dt::TimestampValueStateV3::value;
+        std::vector<p::byte> expected(present ? 112 : 100, 0);
+        std::memcpy(expected.data(), "SBTSPK01", 8);
+        std::copy(uuid.begin(), uuid.end(), expected.begin() + 8);
+        p::StoreLittle64(expected.data() + 24, 11);
+        p::StoreLittle64(expected.data() + 32, 11);
+        copy_seal(expected, 40, Hex32("879004814d3fc6583cc0de3263cd72da1d97e15bb06d942609056f58ca9c2da4"));
+        const auto ordering = Hex("01a104ec8e3c7dff8e89868ecc2a8a0c");
+        std::copy(ordering.begin(), ordering.end(), expected.begin() + 72);
+        p::StoreLittle64(expected.data() + 88, 1);
+        expected[96] = static_cast<p::byte>(direction);
+        expected[97] = static_cast<p::byte>(mode);
+        expected[98] = present ? 1 : (mode == dt::TimestampNullModeV3::nulls_first ? 0 : 2);
+        expected[99] = present ? 12 : 0;
+        if (present) {
+          // Independent canonical fixture bytes, not a production key encoder.
+          const auto component = Hex(fixture.component_hex);
+          for (unsigned n = 0; n < 8; ++n) expected[100+n] = component[7-n];
+          expected[100] ^= 0x80;
+          for (unsigned n = 0; n < 4; ++n) expected[108+n] = component[11-n];
+          if (direction == dt::TimestampSortDirectionV3::descending)
+            for (unsigned n = 100; n < 112; ++n) expected[n] ^= 0xff;
+        }
+        Check(key.bytes == expected, "independent successor key oracle");
+        Check(!dt::DecodeTimestampSortKeyNoAllocV3(*old, key.bytes).ok() &&
+              !dt::DecodeTimestampSortKeyNoAllocV3(*successor, old_key.bytes).ok(),
+              "key cross-cohort refusal both directions");
+      }
+  }
+  for (bool null : {false, true}) {
+    const auto result = dt::HashTimestampValueV3({successor, null ? dt::TimestampValueStateV3::sql_null : dt::TimestampValueStateV3::value, 0, 0});
+    Check(result.ok() && result.bytes == Hex(null ?
+          "9c216850057be2015961474a90f3045fe868d726322f9c9f1d88890fd97382cb" :
+          "833264d581e4c1e83d23bfccb31a6fa7bbbf5aabf359fcfe0fbacdb5b0b83262"),
+          "independently computed D711 NULL and epoch hashes");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -238,6 +335,11 @@ int main() {
   ProfileAuthority(profile);
   CanonicalValues(profile);
   BatchRules(profile);
+  auto successor = scratchbird::tests::D711TimestampProfile();
+  ProfileAuthority(successor);
+  CanonicalValues(successor);
+  BatchRules(successor);
+  SuccessorAuthority(profile, successor);
   std::cout << "PASS base.timestamp V3 profile/value checks=" << checks
             << " canonical_vectors=21 profile_mutations=656"
                " comparison_mutations=416\n";

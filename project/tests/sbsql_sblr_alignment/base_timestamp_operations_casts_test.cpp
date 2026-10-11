@@ -1,5 +1,6 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
+#include "../support/timestamp_successor_fixture.hpp"
 #include "../../../src/core/datatypes/datatype_timestamp.hpp"
 
 #include <algorithm>
@@ -21,7 +22,7 @@ void Check(bool value, std::string_view message) {
 }
 p::Uuid D710(){return p::Uuid{{1,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x10}};}
 std::shared_ptr<const dt::TimestampValidatedProfileHandleV3> Profile(){auto r=dt::BuildCurrentTimestampValidatedProfileHandleV3(D710());Check(r.ok(),"profile");return std::make_shared<const dt::TimestampValidatedProfileHandleV3>(std::move(r.profile));}
-const dt::DatatypeTypeCodecIdentityRowV3* Identity(dt::CanonicalTypeId type){for(const auto& row:dt::CurrentDatatypeTypeCodecIdentityRowsV3())if(row.legacy_fields.catalog_snapshot_uuid==D710()&&row.legacy_fields.catalog_generation==10&&row.legacy_fields.registry_generation==10&&row.legacy_fields.canonical_binary_type_code==static_cast<p::u32>(type))return &row;return nullptr;}
+const dt::DatatypeTypeCodecIdentityRowV3* Identity(dt::CanonicalTypeId type, bool successor=false){for(const auto& row:dt::CurrentDatatypeTypeCodecIdentityRowsV3())if(row.legacy_fields.catalog_snapshot_uuid==(successor?dt::kDatatypeCohortV11:D710())&&row.legacy_fields.catalog_generation==(successor?11:10)&&row.legacy_fields.registry_generation==(successor?11:10)&&row.legacy_fields.canonical_binary_type_code==static_cast<p::u32>(type))return &row;return nullptr;}
 scratchbird::engine::ExecutionTypeDescriptor Descriptor(dt::CanonicalTypeId type){auto manifest=dt::LoadCurrentCoreDatatypeCatalogManifest();Check(manifest.ok(),"catalog");auto row=dt::LookupDatatypeCatalogRow(manifest.manifest,type);Check(row.ok()&&row.manifest.descriptor_rows.size()==1,"descriptor row");dt::CatalogExecutionTypeMetadata metadata;metadata.descriptor_uuid=row.manifest.descriptor_rows.front().descriptor_uuid;metadata.descriptor_epoch=row.manifest.descriptor_rows.front().descriptor_epoch;auto result=dt::LookupExecutionTypeDescriptorFromCatalog(type,metadata);Check(result.ok(),"execution descriptor");return result.descriptor;}
 
 struct CastShape { bool incoming=false, contextual=false, exact=false; dt::CanonicalTypeId peer=dt::CanonicalTypeId::unknown; };
@@ -84,12 +85,36 @@ constexpr std::array<ValueHash,20> kValueHashes{{
 constexpr std::string_view kNullHash="e21379194989dd7aa6ae43ca7601c171a6deb8094d2bd409e41d56d3ca25047a";
 std::array<p::byte,32> Hex32(std::string_view text){std::array<p::byte,32> out{};auto n=[](char c){return static_cast<unsigned>(c<='9'?c-'0':(c|32)-'a'+10);};for(std::size_t i=0;i<out.size();++i)out[i]=static_cast<p::byte>((n(text[2*i])<<4)|n(text[2*i+1]));return out;}
 
+// Independent SHA-256 over the specified D711 header and LE16 fixtures.
+constexpr std::array<std::string_view, 20> kD711ValueHashes{{
+  "c73b238ca6f93da5c401d0f951115d6e8a4959f4a734b74319eafe20c3dedc3b",
+  "eca92968f5101786bfb7811e287b79d98d131d88ef48ee52503978aefb6209cb",
+  "d4ebfe5e00c023d65f0be961f2287a928731ab0d223e56f72f1ee6e44bf3feb4",
+  "f58decc29efc6863f05612bfecd7cda6c5a07a9c5cfcedbe0dc06dc654d1acf4",
+  "d8554a80955deab44924922ee611b525bc8f93e74de4a5151331a89ae695054a",
+  "833264d581e4c1e83d23bfccb31a6fa7bbbf5aabf359fcfe0fbacdb5b0b83262",
+  "805ae5c7ef7a894f8cfa433d999d1556b7e6176b865145463dd983455d724402",
+  "a14b6499c419ac0748a405047acf97a8d9ee710751b9ede3a5157757a972ee84",
+  "4c794b70d7a69d1084f36011ee1ddc9605ccd4393fab5dbbce07e9ea7206e32e",
+  "ca5a3f0384326043ad445ee49153faaef840c9a15dddd7d48fa159d2e272e596",
+  "80245fde1e2570ccf3958b5e97c8468d475917ee99972ba1c4f8fcb6c5c51eab",
+  "cee1dd92e84dd3524fdce538ab6416381513dbd8af2c51a894fc522c72b3f930",
+  "d83ba0de87cde7f87b5c82cc9f1b9a9cf559a3db15f82a79c9dbbad171dc4807",
+  "ca69b94c88ab8f087e90e39f10092a87aabbae5e9d6e3f14cac71c9677fd106c",
+  "968fff3649c5eb2f07f46abfe3ef81b3ccd800655cea6f658c423f690d2428b1",
+  "849931e46b4ba381956be6d4b66b542f61227619e5db966d5b6f1a6350fe8753",
+  "b76e205bef96d03b903a5dbf92630a645326d0879830cdfdb834291c4fc51be0",
+  "07c7ae45df602394069a1abd431dfbe1b7078207ff63f6a530c996fa5334b146",
+  "ed589acd479f3b1856fe2cce54c4f836d9626dc098fcfd8bdf5044d85a0e0e15",
+  "a35e0607da9fefdc864efc1f7bbf8cc5bd0fae52057feee3a08f52a490e3892c",
+}};
+
 void HashAndCompare(const std::shared_ptr<const dt::TimestampValidatedProfileHandleV3>& p0){
   std::array<dt::TimestampOwnedValueV3,21> values{};
   for(std::size_t i=0;i<kValueHashes.size();++i)values[i]={p0,dt::TimestampValueStateV3::value,kValueHashes[i].day,kValueHashes[i].nanos};
   values.back()={p0,dt::TimestampValueStateV3::sql_null,0,0};
-  for(std::size_t i=0;i<kValueHashes.size();++i){auto hash=dt::HashTimestampValueV3(values[i]);Check(hash.ok()&&hash.bytes.size()==32&&std::equal(hash.bytes.begin(),hash.bytes.end(),Hex32(kValueHashes[i].hash).begin()),"exact SBTSPH01 PRESENT hash");}
-  auto null_hash=dt::HashTimestampValueV3(values.back());Check(null_hash.ok()&&std::equal(null_hash.bytes.begin(),null_hash.bytes.end(),Hex32(kNullHash).begin()),"exact SBTSPH01 NULL hash");
+  for(std::size_t i=0;i<kValueHashes.size();++i){auto hash=dt::HashTimestampValueV3(values[i]);Check(hash.ok()&&hash.bytes.size()==32&&std::equal(hash.bytes.begin(),hash.bytes.end(),Hex32(p0->receipt.catalog_generation==11?kD711ValueHashes[i]:kValueHashes[i].hash).begin()),"exact SBTSPH01 PRESENT hash");}
+  auto null_hash=dt::HashTimestampValueV3(values.back());Check(null_hash.ok()&&std::equal(null_hash.bytes.begin(),null_hash.bytes.end(),Hex32(p0->receipt.catalog_generation==11?"9c216850057be2015961474a90f3045fe868d726322f9c9f1d88890fd97382cb":kNullHash).begin()),"exact SBTSPH01 NULL hash");
   for(std::size_t i=0;i<values.size();++i)for(std::size_t j=0;j<values.size();++j){auto relation=dt::CompareTimestampValuesV3(values[i].view(),values[j].view());Check(relation.ok(),"comparison admitted");if(i==20||j==20)Check(relation.fact==dt::TimestampComparisonFactV3::unordered_null,"NULL unordered");else{auto expected=kValueHashes[i].day<kValueHashes[j].day?dt::TimestampComparisonFactV3::less:kValueHashes[i].day>kValueHashes[j].day?dt::TimestampComparisonFactV3::greater:kValueHashes[i].nanos<kValueHashes[j].nanos?dt::TimestampComparisonFactV3::less:kValueHashes[i].nanos>kValueHashes[j].nanos?dt::TimestampComparisonFactV3::greater:dt::TimestampComparisonFactV3::equal;Check(relation.fact==expected,"signed-day then unsigned-nanosecond comparison");}}
   auto bad=*p0;bad.comparison_fingerprint[0]^=1;Check(!dt::CompareTimestampValuesWithValidatedCohortForConformanceV3(values[0].view(),{&bad,dt::TimestampValueStateV3::value,0,0},bad.comparison_fingerprint).ok(),"comparison cohort mismatch");
   dt::TimestampValueViewV3 poisoned_present{p0.get(),dt::TimestampValueStateV3::value,0,~p::u64{0}};auto null_before_present=dt::CompareTimestampValuesV3(values.back().view(),poisoned_present);Check(null_before_present.ok()&&null_before_present.fact==dt::TimestampComparisonFactV3::unordered_null,"comparison clean NULL propagates without other PRESENT payload access");
@@ -143,21 +168,21 @@ void OrderedKeys(const std::shared_ptr<const dt::TimestampValidatedProfileHandle
         "malformed persisted sort direction is canonical corruption");
 }
 
-void Casts(const std::shared_ptr<const dt::TimestampValidatedProfileHandleV3>& p0){
-  auto* character_identity=Identity(dt::CanonicalTypeId::character);Check(character_identity!=nullptr,"character identity");auto character_descriptor=Descriptor(dt::CanonicalTypeId::character);auto timestamp_descriptor=Descriptor(dt::CanonicalTypeId::timestamp);
+void Casts(const std::shared_ptr<const dt::TimestampValidatedProfileHandleV3>& p0, bool successor_peer=false){
+  auto* character_identity=Identity(dt::CanonicalTypeId::character,successor_peer);Check(character_identity!=nullptr,"character identity");auto character_descriptor=Descriptor(dt::CanonicalTypeId::character);auto timestamp_descriptor=Descriptor(dt::CanonicalTypeId::timestamp);
   dt::DatatypeOperationValue text{dt::CanonicalTypeId::character,"2024-02-29T06:07:08.9",false,character_descriptor},null_value{dt::CanonicalTypeId::null_type,"",true,{}};dt::TimestampOwnedValueV3 value{p0,dt::TimestampValueStateV3::value,19782,22'028'900'000'000ull};
   unsigned decisions=0,admitted=0;
   dt::DatatypeOperationValue scalar;
   for(unsigned row=1;row<=221;++row){const auto shape=Shape(row);for(auto context:{dt::DatatypeCastContext::implicit,dt::DatatypeCastContext::assignment,dt::DatatypeCastContext::explicit_cast}){auto want=dt::TimestampCastPolicyDispositionV3::forbidden;if(row==1)want=dt::TimestampCastPolicyDispositionV3::contextual_null;else if(row==24&&context==dt::DatatypeCastContext::explicit_cast)want=dt::TimestampCastPolicyDispositionV3::explicit_character_to_timestamp;else if(row==50&&context==dt::DatatypeCastContext::explicit_cast)want=dt::TimestampCastPolicyDispositionV3::explicit_timestamp_to_character;else if(row==53)want=dt::TimestampCastPolicyDispositionV3::identity;Check(dt::ClassifyTimestampCastPolicyRowV3(row,context)==want,"221x3 cast classification");dt::TimestampCastRequestV3 q;q.one_based_policy_row=row;q.context=context;
     if(row==53){q.timestamp_source=&value;q.timestamp_target=&p0;}
-    else if(shape.incoming){scalar={};scalar.type_id=shape.peer;scalar.is_null=shape.contextual;scalar.encoded_value=shape.contextual?"":(row==24?"2024-02-29T06:07:08.9":"poison-present-payload-must-not-be-read");if(shape.exact){q.scalar_source_identity=Identity(shape.peer);Check(q.scalar_source_identity!=nullptr,"exact incoming identity");scalar.descriptor=Descriptor(shape.peer);}q.scalar_source=&scalar;q.timestamp_target=&p0;q.timestamp_target_descriptor=&timestamp_descriptor;}
-    else {q.timestamp_source=&value;q.scalar_target=shape.peer;if(shape.exact){q.scalar_target_identity=Identity(shape.peer);Check(q.scalar_target_identity!=nullptr,"exact outgoing identity");q.scalar_target_descriptor=Descriptor(shape.peer);}}
+    else if(shape.incoming){scalar={};scalar.type_id=shape.peer;scalar.is_null=shape.contextual;scalar.encoded_value=shape.contextual?"":(row==24?"2024-02-29T06:07:08.9":"poison-present-payload-must-not-be-read");if(shape.exact){q.scalar_source_identity=Identity(shape.peer,successor_peer);Check(q.scalar_source_identity!=nullptr,"exact incoming identity");scalar.descriptor=Descriptor(shape.peer);}q.scalar_source=&scalar;q.timestamp_target=&p0;q.timestamp_target_descriptor=&timestamp_descriptor;}
+    else {q.timestamp_source=&value;q.scalar_target=shape.peer;if(shape.exact){q.scalar_target_identity=Identity(shape.peer,successor_peer);Check(q.scalar_target_identity!=nullptr,"exact outgoing identity");q.scalar_target_descriptor=Descriptor(shape.peer);}}
     auto result=dt::CastTimestampValueV3(q);if(want==dt::TimestampCastPolicyDispositionV3::forbidden)Check(!result.ok()&&result.diagnostic.diagnostic_code=="DATATYPE.CAST_FORBIDDEN","221x3 endpoint-bound runtime forbidden cast");else{Check(result.ok(),"221x3 endpoint-bound runtime admitted cast");++admitted;}++decisions;}}
   Check(decisions==663&&admitted==8,"closed cast matrix");
 
   // Exact UUID/generation/profile/descriptor authority is resolved before
   // state and before the closed-policy refusal.
-  auto* int32_identity=Identity(dt::CanonicalTypeId::int32);Check(int32_identity!=nullptr,"int32 identity");auto int32_descriptor=Descriptor(dt::CanonicalTypeId::int32);
+  auto* int32_identity=Identity(dt::CanonicalTypeId::int32,successor_peer);Check(int32_identity!=nullptr,"int32 identity");auto int32_descriptor=Descriptor(dt::CanonicalTypeId::int32);
   dt::TimestampCastRequestV3 exact_out;exact_out.one_based_policy_row=31;exact_out.timestamp_source=&value;exact_out.scalar_target=dt::CanonicalTypeId::int32;exact_out.scalar_target_identity=int32_identity;exact_out.scalar_target_descriptor=int32_descriptor;
   Check(dt::CastTimestampValueV3(exact_out).diagnostic.diagnostic_code=="DATATYPE.CAST_FORBIDDEN","exact outbound endpoint reaches policy");
   auto changed_identity=*int32_identity;changed_identity.legacy_fields.type_uuid.bytes[0]^=1;exact_out.scalar_target_identity=&changed_identity;Check(dt::CastTimestampValueV3(exact_out).diagnostic.diagnostic_code=="CTI.TEMPORAL.DESCRIPTOR_INVALID","peer UUID mutation precedes policy");exact_out.scalar_target_identity=int32_identity;exact_out.scalar_target_descriptor.descriptor_uuid.bytes[0]^=1;Check(dt::CastTimestampValueV3(exact_out).diagnostic.diagnostic_code=="CTI.TEMPORAL.DESCRIPTOR_INVALID","peer descriptor mutation precedes policy");
@@ -203,6 +228,40 @@ void Casts(const std::shared_ptr<const dt::TimestampValidatedProfileHandleV3>& p
   Check(dt::CastTimestampValueV3(in).diagnostic.diagnostic_code==
             "RESOURCE.BUDGET_EXCEEDED",
         "character to timestamp enforces PRESENT component resource grant");
+  for (bool null : {false, true}) {
+    text.is_null = null;
+    text.encoded_value = null ? "" : "2024-02-29T06:07:08.9";
+    dt::TimestampOwnedValueV3 outgoing_source{p0,
+        null ? dt::TimestampValueStateV3::sql_null : dt::TimestampValueStateV3::value, 0, 0};
+    out.timestamp_source = &outgoing_source;
+    for (unsigned field = 0; field < 8; ++field) {
+      auto altered = *character_identity;
+      auto& native = altered.native_fields;
+      switch (field) {
+        case 0: native.present = !native.present; break;
+        case 1: ++native.canonical_value_minimum_bytes; break;
+        case 2: ++native.canonical_value_maximum_bytes; break;
+        case 3: ++native.canonical_value_transport_width; break;
+        case 4: native.canonical_value_variable_width = !native.canonical_value_variable_width; break;
+        case 5: native.policy_profile_uuid.bytes[0] ^= 1; break;
+        case 6: ++native.policy_profile_generation; break;
+        case 7: native.profile_fingerprint_sha256[0] ^= 1; break;
+      }
+      in.scalar_source_identity = &altered;
+      out.scalar_target_identity = &altered;
+      Check(dt::CastTimestampValueV3(in).diagnostic.diagnostic_code == "CTI.TEMPORAL.DESCRIPTOR_INVALID" &&
+            dt::CastTimestampValueV3(out).diagnostic.diagnostic_code == "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+            "mutated peer native fields refuse before state/resource/output handling");
+    }
+    auto other = p0->receipt.catalog_generation == 10 ?
+        scratchbird::tests::D711TimestampProfile() : Profile();
+    dt::TimestampOwnedValueV3 source{p0, null ? dt::TimestampValueStateV3::sql_null : dt::TimestampValueStateV3::value, 0, 0};
+    dt::TimestampCastRequestV3 identity_cast;
+    identity_cast.one_based_policy_row = 53;
+    identity_cast.timestamp_source = &source;
+    identity_cast.timestamp_target = &other;
+    Check(!dt::CastTimestampValueV3(identity_cast).ok(), "cross-cohort identity cast refuses for equal components and NULL");
+  }
   dt::TimestampOperandV3 bad_operand;
   bad_operand.day_carrier=dt::TimestampDayCarrierKindV3::wrong_host_type;
   bad_operand.time_carrier=dt::TimestampUnsignedCarrierKindV3::wrong_host_type;
@@ -314,4 +373,4 @@ void PropertyAndMutationFuzz(
   }
 }
 }  // namespace
-int main(){auto p0=Profile();HashAndCompare(p0);OrderedKeys(p0);Casts(p0);PropertyAndMutationFuzz(p0);std::cout<<"PASS base.timestamp V3 operations/casts checks="<<checks<<" hashes=21 keys=84 decisions=663 property_fuzz_iterations=2048\n";}
+int main(){auto p0=Profile();HashAndCompare(p0);OrderedKeys(p0);Casts(p0);PropertyAndMutationFuzz(p0);auto successor=scratchbird::tests::D711TimestampProfile();HashAndCompare(successor);OrderedKeys(successor);Casts(successor);Casts(p0,true);Casts(successor,true);PropertyAndMutationFuzz(successor);std::cout<<"PASS base.timestamp V3 operations/casts checks="<<checks<<" hashes=21 keys=84 decisions=663 property_fuzz_iterations=2048\n";}

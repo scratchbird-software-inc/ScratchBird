@@ -91,6 +91,50 @@ inline constexpr std::array<byte, 32> kTimeComparisonFingerprint{{
     0x75,0xde,0xab,0xa7,0x96,0xda,0x7e,0x20,0x08,0x60,0x02,0x37,0xa5,0xeb,0xfb,0x0d,
     0xd8,0xa7,0x6f,0x2b,0x62,0xea,0x66,0x4b,0x66,0x87,0x6b,0xa4,0x7f,0x05,0xb3,0xd6}};
 
+// Independently sealed D711 materials; frozen D710 constants remain above.
+inline constexpr std::array<byte, 32> kD711ProfileFingerprint{{
+    0xb3,0xf2,0xa0,0xe9,0xd7,0xc5,0x64,0xc9,0x37,0x54,0xf4,0x47,0x1b,0x37,0x10,0xb7,
+    0xe9,0x21,0x52,0x16,0x98,0x71,0x66,0xe5,0xc3,0xf1,0x6f,0xbb,0xe8,0xb2,0x26,0xd8}};
+const std::array<byte, 32>& ProfileFingerprint(
+    const TimestampAuthorityReceiptV3& receipt) noexcept {
+  return receipt.catalog_generation == 10 ? kProfileFingerprint : kD711ProfileFingerprint;
+}
+inline constexpr std::array<byte, 32> kD711ComparisonFingerprint{{
+    0x87,0x90,0x04,0x81,0x4d,0x3f,0xc6,0x58,0x3c,0xc0,0xde,0x32,0x63,0xcd,0x72,0xda,
+    0x1d,0x97,0xe1,0x5b,0xb0,0x6d,0x94,0x26,0x09,0x05,0x6f,0x58,0xca,0x9c,0x2d,0xa4}};
+const std::array<byte, 32>& ComparisonFingerprint(
+    const TimestampAuthorityReceiptV3& receipt) noexcept {
+  return receipt.catalog_generation == 10 ? kComparisonFingerprint : kD711ComparisonFingerprint;
+}
+inline constexpr std::array<byte, 32> kD711DateProfileFingerprint{{
+    0x1f,0x28,0x86,0xdb,0x58,0x11,0x46,0xfc,0x27,0x40,0x8d,0x3f,0xc9,0xc2,0x91,0x4b,
+    0x34,0x8a,0x6f,0xd9,0x57,0x89,0x19,0x25,0xa0,0xef,0x24,0x5b,0x85,0x8a,0x8a,0x77}};
+const std::array<byte, 32>& DateProfileFingerprint(
+    const TimestampAuthorityReceiptV3& receipt) noexcept {
+  return receipt.catalog_generation == 10 ? kDateProfileFingerprint : kD711DateProfileFingerprint;
+}
+inline constexpr std::array<byte, 32> kD711TimeProfileFingerprint{{
+    0xf1,0x7f,0x78,0x61,0xee,0x31,0x36,0x45,0x30,0xc8,0x80,0xdc,0x01,0xb1,0x83,0x6a,
+    0x86,0x29,0xd4,0xc5,0xc6,0xea,0x5d,0x28,0x7b,0x4f,0x9b,0xef,0x18,0x82,0x52,0x8d}};
+const std::array<byte, 32>& TimeProfileFingerprint(
+    const TimestampAuthorityReceiptV3& receipt) noexcept {
+  return receipt.catalog_generation == 10 ? kTimeProfileFingerprint : kD711TimeProfileFingerprint;
+}
+inline constexpr std::array<byte, 32> kD711DateComparisonFingerprint{{
+    0x0d,0x74,0x77,0x69,0xd2,0x32,0x41,0x70,0xe0,0x00,0xcb,0x19,0x73,0xf8,0xb1,0xf0,
+    0x28,0x29,0x90,0x34,0x3c,0xd3,0x08,0xda,0x83,0x80,0x4a,0x64,0x1b,0x9c,0x57,0x96}};
+const std::array<byte, 32>& DateComparisonFingerprint(
+    const TimestampAuthorityReceiptV3& receipt) noexcept {
+  return receipt.catalog_generation == 10 ? kDateComparisonFingerprint : kD711DateComparisonFingerprint;
+}
+inline constexpr std::array<byte, 32> kD711TimeComparisonFingerprint{{
+    0x16,0x73,0x47,0x5a,0x46,0x39,0x59,0x37,0xc1,0xee,0xf4,0xe9,0x0b,0xdc,0x92,0xe7,
+    0x2e,0xec,0x21,0xa4,0x74,0x04,0x39,0x4b,0xfe,0x27,0x22,0x24,0xcf,0x98,0x3f,0x44}};
+const std::array<byte, 32>& TimeComparisonFingerprint(
+    const TimestampAuthorityReceiptV3& receipt) noexcept {
+  return receipt.catalog_generation == 10 ? kTimeComparisonFingerprint : kD711TimeComparisonFingerprint;
+}
+
 Status OkStatus() noexcept { return {StatusCode::ok, Severity::info, Subsystem::datatypes}; }
 Status ErrorStatus() noexcept { return {StatusCode::platform_required_feature_missing, Severity::error, Subsystem::datatypes}; }
 Status ResourceStatus() noexcept { return {StatusCode::memory_allocation_failed, Severity::error, Subsystem::datatypes}; }
@@ -173,16 +217,34 @@ bool EqualIdentityIgnoringName(const DatatypeTypeCodecIdentityRowV3& a,
       Same(a.descriptor_policy, b.descriptor_policy) &&
       Same(a.canonicalization_policy, b.canonicalization_policy) &&
       Same(a.ordering_policy, b.ordering_policy) && Same(a.hash_policy, b.hash_policy) &&
-      Same(a.operation_policy, b.operation_policy);
+      Same(a.operation_policy, b.operation_policy) && a.native_fields == b.native_fields;
 }
 
-const DatatypeTypeCodecIdentityRowV3* CurrentIdentityFor(CanonicalTypeId type) noexcept {
+TimestampAuthorityReceiptV3 ReceiptForIdentity(
+    const DatatypeTypeCodecIdentityRowV3& identity) noexcept {
+  const auto& row = identity.legacy_fields;
+  return {row.catalog_snapshot_uuid, row.catalog_snapshot_uuid,
+          row.catalog_generation, row.registry_generation};
+}
+
+bool ExactReceipt(const TimestampAuthorityReceiptV3& receipt) noexcept {
+  return receipt.statement_receipt_uuid == receipt.catalog_snapshot_uuid &&
+      ((receipt.catalog_snapshot_uuid == kSnapshot &&
+        receipt.catalog_generation == 10 && receipt.registry_generation == 10) ||
+       (receipt.catalog_snapshot_uuid == kDatatypeCohortV11 &&
+        receipt.catalog_generation == 11 && receipt.registry_generation == 11));
+}
+
+const DatatypeTypeCodecIdentityRowV3* IdentityForReceipt(
+    CanonicalTypeId type, const TimestampAuthorityReceiptV3& receipt) noexcept {
+  if (!ExactReceipt(receipt)) return nullptr;
   const auto code = static_cast<u32>(type);
   const DatatypeTypeCodecIdentityRowV3* found = nullptr;
   for (const auto& row : CurrentDatatypeTypeCodecIdentityRowsV3()) {
     const auto& legacy = row.legacy_fields;
-    if (legacy.catalog_snapshot_uuid != kSnapshot || legacy.catalog_generation != 10 ||
-        legacy.registry_generation != 10 || legacy.canonical_binary_type_code != code)
+    if (legacy.catalog_snapshot_uuid != receipt.catalog_snapshot_uuid ||
+        legacy.catalog_generation != receipt.catalog_generation ||
+        legacy.registry_generation != receipt.registry_generation || legacy.canonical_binary_type_code != code)
       continue;
     if (found != nullptr) return nullptr;
     found = &row;
@@ -191,7 +253,7 @@ const DatatypeTypeCodecIdentityRowV3* CurrentIdentityFor(CanonicalTypeId type) n
 }
 
 bool ExactTimestampIdentity(const DatatypeTypeCodecIdentityRowV3& identity) noexcept {
-  const auto* current = CurrentIdentityFor(CanonicalTypeId::timestamp);
+  const auto* current = IdentityForReceipt(CanonicalTypeId::timestamp, ReceiptForIdentity(identity));
   return current != nullptr && EqualIdentityIgnoringName(identity, *current) &&
       identity.legacy_fields.descriptor_uuid == kDescriptor &&
       identity.legacy_fields.type_uuid == kType &&
@@ -200,12 +262,6 @@ bool ExactTimestampIdentity(const DatatypeTypeCodecIdentityRowV3& identity) noex
       identity.legacy_fields.codec_generation == 1 &&
       identity.legacy_fields.canonical_value_exact_bytes == 16 &&
       identity.legacy_fields.sql_null_requires_zero_payload;
-}
-
-bool ExactReceipt(const TimestampAuthorityReceiptV3& receipt) noexcept {
-  return receipt.statement_receipt_uuid == kSnapshot &&
-      receipt.catalog_snapshot_uuid == kSnapshot &&
-      receipt.catalog_generation == 10 && receipt.registry_generation == 10;
 }
 
 bool Cancelled(const TimestampExecutionControlV3& control) noexcept {
@@ -349,8 +405,8 @@ std::array<byte, kTimestampProfileMaterialBytesV3> BuildProfileMaterial(
   StoreLittle32(result.data() + 580, 16);
   StoreLittle32(result.data() + 584, 0x3fff);
   StoreLittle32(result.data() + 588, 0);
-  std::memcpy(result.data() + 592, kDateProfileFingerprint.data(), 32);
-  std::memcpy(result.data() + 624, kTimeProfileFingerprint.data(), 32);
+  std::memcpy(result.data() + 592, DateProfileFingerprint(profile.receipt).data(), 32);
+  std::memcpy(result.data() + 624, TimeProfileFingerprint(profile.receipt).data(), 32);
   return result;
 }
 
@@ -385,8 +441,8 @@ std::array<byte, kTimestampComparisonMaterialBytesV3> BuildComparisonMaterial(
   StoreLittle64(result.data() + 336, static_cast<u64>(kTimestampMaximumCivilSecondV3));
   StoreLittle32(result.data() + 344, 16);
   StoreLittle32(result.data() + 348, 0);
-  std::memcpy(result.data() + 352, kDateComparisonFingerprint.data(), 32);
-  std::memcpy(result.data() + 384, kTimeComparisonFingerprint.data(), 32);
+  std::memcpy(result.data() + 352, DateComparisonFingerprint(profile.receipt).data(), 32);
+  std::memcpy(result.data() + 384, TimeComparisonFingerprint(profile.receipt).data(), 32);
   return result;
 }
 
@@ -394,8 +450,8 @@ bool ProfileValidNoAlloc(const TimestampValidatedProfileHandleV3& profile,
                          const TimestampExecutionControlV3* control=nullptr) noexcept {
   if (!ExactReceipt(profile.receipt) || !ExactTimestampIdentity(profile.identity) ||
       profile.identity.legacy_fields.catalog_snapshot_uuid != profile.receipt.catalog_snapshot_uuid ||
-      profile.identity.legacy_fields.catalog_generation != 10 ||
-      profile.identity.legacy_fields.registry_generation != 10 ||
+      profile.identity.legacy_fields.catalog_generation != profile.receipt.catalog_generation ||
+      profile.identity.legacy_fields.registry_generation != profile.receipt.registry_generation ||
       !Same(profile.render_policy, kRenderPolicy) || !Same(profile.cast_policy, kCastPolicy) ||
       !Same(profile.calendar_policy, kCalendarPolicy) ||
       !Same(profile.storage_epoch_policy, kStorageEpochPolicy) ||
@@ -423,8 +479,8 @@ bool ProfileValidNoAlloc(const TimestampValidatedProfileHandleV3& profile,
       Digest(profile.comparison_material,&comparison_digest,control) &&
       profile.profile_fingerprint==profile_digest &&
       profile.comparison_fingerprint==comparison_digest &&
-      profile.profile_fingerprint == kProfileFingerprint &&
-      profile.comparison_fingerprint == kComparisonFingerprint;
+      profile.profile_fingerprint == ProfileFingerprint(profile.receipt) &&
+      profile.comparison_fingerprint == ComparisonFingerprint(profile.receipt);
 }
 
 bool ValidState(TimestampValueStateV3 state) noexcept {
@@ -643,7 +699,7 @@ bool DescriptorBindsIdentityNoAlloc(
     const DatatypeTypeCodecIdentityRowV3& identity,
     CanonicalTypeId expected_type) noexcept {
   TimestampPeerDescriptorShape shape{};
-  const auto* current = CurrentIdentityFor(expected_type);
+  const auto* current = IdentityForReceipt(expected_type, ReceiptForIdentity(identity));
   if (current == nullptr || !EqualIdentityIgnoringName(identity, *current) ||
       !TimestampPeerDescriptorShapeFor(expected_type, &shape) ||
       !EngineUuidEqual(descriptor.descriptor_uuid,
@@ -771,7 +827,8 @@ bool ResolveTimestampCastRowShape(u32 row,
 
 bool ExactPeerIdentity(const DatatypeTypeCodecIdentityRowV3* supplied,
                        CanonicalTypeId expected_type) noexcept {
-  const auto* expected = CurrentIdentityFor(expected_type);
+  const auto* expected = supplied == nullptr ? nullptr :
+      IdentityForReceipt(expected_type, ReceiptForIdentity(*supplied));
   return supplied != nullptr && expected != nullptr &&
       EqualIdentityIgnoringName(*supplied, *expected);
 }
@@ -779,7 +836,7 @@ bool ExactPeerIdentity(const DatatypeTypeCodecIdentityRowV3* supplied,
 bool ExactCharacterDescriptor(
     const scratchbird::engine::ExecutionTypeDescriptor& descriptor,
     const TimestampAuthorityReceiptV3& receipt) noexcept {
-  const auto* identity = CurrentIdentityFor(CanonicalTypeId::character);
+  const auto* identity = IdentityForReceipt(CanonicalTypeId::character, receipt);
   return ExactReceipt(receipt) && identity != nullptr &&
       descriptor.length <= 16'777'216 &&
       DescriptorBindsIdentityNoAlloc(descriptor, *identity,
@@ -787,7 +844,8 @@ bool ExactCharacterDescriptor(
 }
 
 bool CharacterIdentity(const DatatypeTypeCodecIdentityRowV3* identity) noexcept {
-  const auto* current = CurrentIdentityFor(CanonicalTypeId::character);
+  const auto* current = identity == nullptr ? nullptr :
+      IdentityForReceipt(CanonicalTypeId::character, ReceiptForIdentity(*identity));
   return identity != nullptr && current != nullptr &&
       EqualIdentityIgnoringName(*identity, *current);
 }
@@ -849,7 +907,7 @@ bool TimestampDescriptor(const scratchbird::engine::ExecutionTypeDescriptor* des
 
 TimestampProfileResultV3 BuildCurrentTimestampValidatedProfileHandleV3(
     const platform::Uuid& statement_receipt_uuid) noexcept {
-  const auto* identity = CurrentIdentityFor(CanonicalTypeId::timestamp);
+  const auto* identity = IdentityForReceipt(CanonicalTypeId::timestamp, {kSnapshot,kSnapshot,10,10});
   if (identity == nullptr)
     return Failure<TimestampProfileResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                         "d710_timestamp_identity_missing");
@@ -883,10 +941,10 @@ TimestampProfileResultV3 BuildTimestampValidatedProfileHandleV3(
         !Digest(p.comparison_material,&p.comparison_fingerprint))
       return Failure<TimestampProfileResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                           "sha256_provider",ResourceStatus());
-    if (p.profile_fingerprint != kProfileFingerprint)
+    if (p.profile_fingerprint != ProfileFingerprint(p.receipt))
       return Failure<TimestampProfileResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                                 "profile_fingerprint_mismatch");
-    if (p.comparison_fingerprint != kComparisonFingerprint)
+    if (p.comparison_fingerprint != ComparisonFingerprint(p.receipt))
       return Failure<TimestampProfileResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                                 "comparison_fingerprint_mismatch");
     if (!ProfileValidNoAlloc(p))
@@ -1216,9 +1274,9 @@ TimestampScalarResultV3 TimestampQuarterV3(const TimestampValueViewV3& v,bool n,
 TimestampIsoWeekResultV3 TimestampIsoWeekV3(const TimestampValueViewV3& v,bool n,const TimestampExecutionControlV3& c) noexcept {const auto checked=ValidateTimestampValueViewV3(v,n);if(!checked.ok())return Failure<TimestampIsoWeekResultV3>(checked.diagnostic.diagnostic_code,checked.diagnostic.detail,checked.status);auto r=Success<TimestampIsoWeekResultV3>();if(v.state==TimestampValueStateV3::sql_null){r.is_null=true;if(Cancelled(c))return Failure<TimestampIsoWeekResultV3>("PROCESS.CANCELLED","before_publication");return r;}const std::int64_t weekday=FloorMod(static_cast<std::int64_t>(v.civil_day)+3,7)+1;const std::int64_t thursday=static_cast<std::int64_t>(v.civil_day)+(4-weekday);const auto tc=DaysToCivil(thursday);std::int64_t jan4=0;CivilToDays(tc.year,1,4,&jan4);const std::int64_t jan4wd=FloorMod(jan4+3,7)+1;const std::int64_t week1=jan4-(jan4wd-1);r.value.iso_year=tc.year;r.value.iso_week=static_cast<u8>((thursday-week1)/7+1);if(Cancelled(c))return Failure<TimestampIsoWeekResultV3>("PROCESS.CANCELLED","before_publication");return r;}
 
 namespace {TimestampComparisonResultV3 CompareResolved(const TimestampValueViewV3& left,const TimestampValueViewV3& right,const std::array<byte,32>& fingerprint,const TimestampExecutionControlV3& control) noexcept {const auto lp0=ValidateTimestampProfileOnly(left);if(!lp0.ok())return Failure<TimestampComparisonResultV3>(lp0.diagnostic.diagnostic_code,lp0.diagnostic.detail,lp0.status);const auto rp0=ValidateTimestampProfileOnly(right);if(!rp0.ok())return Failure<TimestampComparisonResultV3>(rp0.diagnostic.diagnostic_code,rp0.diagnostic.detail,rp0.status);const auto l=ValidateTimestampStateNoPayload(left,true);if(!l.ok())return Failure<TimestampComparisonResultV3>(l.diagnostic.diagnostic_code,l.diagnostic.detail,l.status);const auto rcheck=ValidateTimestampStateNoPayload(right,true);if(!rcheck.ok())return Failure<TimestampComparisonResultV3>(rcheck.diagnostic.diagnostic_code,rcheck.diagnostic.detail,rcheck.status);if(left.profile->comparison_fingerprint!=right.profile->comparison_fingerprint||left.profile->comparison_fingerprint!=fingerprint)return Failure<TimestampComparisonResultV3>("CTI.TEMPORAL.ORDERING_REFUSED","comparison_cohort");auto r=Success<TimestampComparisonResultV3>();if(left.state==TimestampValueStateV3::sql_null||right.state==TimestampValueStateV3::sql_null){r.fact=TimestampComparisonFactV3::unordered_null;r.grouping_equivalent=left.state==right.state;r.null_equivalent=r.grouping_equivalent;if(Cancelled(control))return Failure<TimestampComparisonResultV3>("PROCESS.CANCELLED","before_publication");return r;}const auto lp=ValidateTimestampValueViewV3(left,false);if(!lp.ok())return Failure<TimestampComparisonResultV3>(lp.diagnostic.diagnostic_code,lp.diagnostic.detail,lp.status);const auto rp=ValidateTimestampValueViewV3(right,false);if(!rp.ok())return Failure<TimestampComparisonResultV3>(rp.diagnostic.diagnostic_code,rp.diagnostic.detail,rp.status);if(left.civil_day<right.civil_day||(left.civil_day==right.civil_day&&left.nanoseconds_since_midnight<right.nanoseconds_since_midnight))r.fact=TimestampComparisonFactV3::less;else if(left.civil_day>right.civil_day||(left.civil_day==right.civil_day&&left.nanoseconds_since_midnight>right.nanoseconds_since_midnight))r.fact=TimestampComparisonFactV3::greater;else{r.fact=TimestampComparisonFactV3::equal;r.grouping_equivalent=true;}if(Cancelled(control))return Failure<TimestampComparisonResultV3>("PROCESS.CANCELLED","before_publication");return r;}}
-TimestampComparisonResultV3 CompareTimestampValuesV3(const TimestampValueViewV3& l,const TimestampValueViewV3& r,const TimestampExecutionControlV3& c) noexcept {return CompareResolved(l,r,kComparisonFingerprint,c);}TimestampComparisonResultV3 CompareTimestampValuesWithValidatedCohortForConformanceV3(const TimestampValueViewV3& l,const TimestampValueViewV3& r,const std::array<byte,32>& f,const TimestampExecutionControlV3& c) noexcept{return CompareResolved(l,r,f,c);}
+TimestampComparisonResultV3 CompareTimestampValuesV3(const TimestampValueViewV3& l,const TimestampValueViewV3& r,const TimestampExecutionControlV3& c) noexcept {return CompareResolved(l,r,l.profile == nullptr ? kComparisonFingerprint : l.profile->comparison_fingerprint,c);}TimestampComparisonResultV3 CompareTimestampValuesWithValidatedCohortForConformanceV3(const TimestampValueViewV3& l,const TimestampValueViewV3& r,const std::array<byte,32>& f,const TimestampExecutionControlV3& c) noexcept{return CompareResolved(l,r,f,c);}
 
-TimestampNoAllocWriteResultV3 HashTimestampValueIntoNoAllocV3(const TimestampOwnedValueV3& value,byte* output,u64 capacity,const TimestampExecutionControlV3& control) noexcept {const auto checked=ValidateTimestampValueViewV3(value.view(),true);if(!checked.ok())return Failure<TimestampNoAllocWriteResultV3>(checked.diagnostic.diagnostic_code,checked.diagnostic.detail,checked.status);std::array<byte,117> preimage{};ScopedClear clear(preimage.data(),preimage.size(),TimestampScrubClassV3::hash_preimage,control.observe_scrubbed,control.scrub_observer_context);std::array<byte,32> digest{};ScopedClear clear_digest(digest.data(),digest.size(),TimestampScrubClassV3::hash_digest,control.observe_scrubbed,control.scrub_observer_context);if(output&&(RangesOverlap(output,32,&value,sizeof(value))||RangesOverlap(output,32,&control,sizeof(control))||OutputOverlapsProfile(output,32,*value.profile)))return Failure<TimestampNoAllocWriteResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","hash_overlap");if(capacity<32||!output){auto r=Failure<TimestampNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED","hash_capacity",ResourceStatus());r.bytes_required=32;return r;}if(control.maximum_allocation_bytes<32){auto r=Failure<TimestampNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED","hash_budget",ResourceStatus());r.bytes_required=32;return r;}std::memcpy(preimage.data(),"SBTSPH01",8);PutUuid(preimage.data()+8,kSnapshot);StoreLittle64(preimage.data()+24,10);StoreLittle64(preimage.data()+32,10);std::memcpy(preimage.data()+40,value.profile->comparison_fingerprint.data(),32);PutPolicy(preimage.data()+72,kHashPolicy);preimage[96]=value.state==TimestampValueStateV3::sql_null?0:1;StoreLittle32(preimage.data()+97,value.state==TimestampValueStateV3::sql_null?0:16);std::size_t extent=101;if(value.state==TimestampValueStateV3::value){EncodeComponent(value.civil_day,value.nanoseconds_since_midnight,preimage.data()+101);extent=117;}if(!Digest(std::span<const byte>(preimage.data(),extent),&digest,&control))return Failure<TimestampNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED","hash_provider",ResourceStatus());if(Cancelled(control))return Failure<TimestampNoAllocWriteResultV3>("PROCESS.CANCELLED","before_publication");std::memcpy(output,digest.data(),32);auto r=Success<TimestampNoAllocWriteResultV3>();r.bytes_required=32;r.bytes_written=32;return r;}
+TimestampNoAllocWriteResultV3 HashTimestampValueIntoNoAllocV3(const TimestampOwnedValueV3& value,byte* output,u64 capacity,const TimestampExecutionControlV3& control) noexcept {const auto checked=ValidateTimestampValueViewV3(value.view(),true);if(!checked.ok())return Failure<TimestampNoAllocWriteResultV3>(checked.diagnostic.diagnostic_code,checked.diagnostic.detail,checked.status);std::array<byte,117> preimage{};ScopedClear clear(preimage.data(),preimage.size(),TimestampScrubClassV3::hash_preimage,control.observe_scrubbed,control.scrub_observer_context);std::array<byte,32> digest{};ScopedClear clear_digest(digest.data(),digest.size(),TimestampScrubClassV3::hash_digest,control.observe_scrubbed,control.scrub_observer_context);if(output&&(RangesOverlap(output,32,&value,sizeof(value))||RangesOverlap(output,32,&control,sizeof(control))||OutputOverlapsProfile(output,32,*value.profile)))return Failure<TimestampNoAllocWriteResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","hash_overlap");if(capacity<32||!output){auto r=Failure<TimestampNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED","hash_capacity",ResourceStatus());r.bytes_required=32;return r;}if(control.maximum_allocation_bytes<32){auto r=Failure<TimestampNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED","hash_budget",ResourceStatus());r.bytes_required=32;return r;}std::memcpy(preimage.data(),"SBTSPH01",8);PutUuid(preimage.data()+8,value.profile->receipt.catalog_snapshot_uuid);StoreLittle64(preimage.data()+24,value.profile->receipt.catalog_generation);StoreLittle64(preimage.data()+32,value.profile->receipt.registry_generation);std::memcpy(preimage.data()+40,value.profile->comparison_fingerprint.data(),32);PutPolicy(preimage.data()+72,kHashPolicy);preimage[96]=value.state==TimestampValueStateV3::sql_null?0:1;StoreLittle32(preimage.data()+97,value.state==TimestampValueStateV3::sql_null?0:16);std::size_t extent=101;if(value.state==TimestampValueStateV3::value){EncodeComponent(value.civil_day,value.nanoseconds_since_midnight,preimage.data()+101);extent=117;}if(!Digest(std::span<const byte>(preimage.data(),extent),&digest,&control))return Failure<TimestampNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED","hash_provider",ResourceStatus());if(Cancelled(control))return Failure<TimestampNoAllocWriteResultV3>("PROCESS.CANCELLED","before_publication");std::memcpy(output,digest.data(),32);auto r=Success<TimestampNoAllocWriteResultV3>();r.bytes_required=32;r.bytes_written=32;return r;}
 TimestampBytesResultV3 HashTimestampValueV3(
     const TimestampOwnedValueV3& value) noexcept {
   return HashTimestampValueV3(value, {});
@@ -1258,7 +1316,7 @@ TimestampBytesResultV3 HashTimestampValueV3(
   return result;
 }
 
-TimestampNoAllocWriteResultV3 MakeTimestampSortKeyIntoNoAllocV3(const TimestampOwnedValueV3& value,TimestampSortDirectionV3 direction,TimestampNullModeV3 null_mode,byte* output,u64 capacity,const TimestampExecutionControlV3& control) noexcept {const auto checked=ValidateTimestampValueViewV3(value.view(),true);if(!checked.ok())return Failure<TimestampNoAllocWriteResultV3>(checked.diagnostic.diagnostic_code,checked.diagnostic.detail,checked.status);if(static_cast<unsigned>(direction)>1||static_cast<unsigned>(null_mode)>1)return Failure<TimestampNoAllocWriteResultV3>("CTI.TEMPORAL.INDEX_KEY_REFUSED","key_mode");const u64 extent=value.state==TimestampValueStateV3::sql_null?100:112;std::array<byte,112> staged{};ScopedClear clear(staged.data(),staged.size(),TimestampScrubClassV3::ordered_key_staging,control.observe_scrubbed,control.scrub_observer_context);if(output&&(RangesOverlap(output,extent,&value,sizeof(value))||RangesOverlap(output,extent,&control,sizeof(control))||OutputOverlapsProfile(output,extent,*value.profile)))return Failure<TimestampNoAllocWriteResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","key_overlap");if(capacity<extent||!output){auto r=Failure<TimestampNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED","key_capacity",ResourceStatus());r.bytes_required=extent;return r;}if(extent>control.maximum_allocation_bytes){auto r=Failure<TimestampNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED","key_budget",ResourceStatus());r.bytes_required=extent;return r;}std::memcpy(staged.data(),"SBTSPK01",8);PutUuid(staged.data()+8,kSnapshot);StoreLittle64(staged.data()+24,10);StoreLittle64(staged.data()+32,10);std::memcpy(staged.data()+40,value.profile->comparison_fingerprint.data(),32);PutPolicy(staged.data()+72,kOrderingPolicy);staged[96]=static_cast<byte>(direction);staged[97]=static_cast<byte>(null_mode);staged[98]=value.state==TimestampValueStateV3::value?1:(null_mode==TimestampNullModeV3::nulls_first?0:2);staged[99]=value.state==TimestampValueStateV3::value?12:0;if(value.state==TimestampValueStateV3::value){const std::int64_t sec=static_cast<std::int64_t>(value.civil_day)*86'400+static_cast<std::int64_t>(value.nanoseconds_since_midnight/1'000'000'000ull);u64 sortable=static_cast<u64>(sec)^0x8000000000000000ull;const u32 ns=static_cast<u32>(value.nanoseconds_since_midnight%1'000'000'000ull);for(unsigned i=0;i<8;++i)staged[100+i]=static_cast<byte>(sortable>>(56-i*8));for(unsigned i=0;i<4;++i)staged[108+i]=static_cast<byte>(ns>>(24-i*8));if(direction==TimestampSortDirectionV3::descending)for(unsigned i=100;i<112;++i)staged[i]=static_cast<byte>(~staged[i]);}if(Cancelled(control))return Failure<TimestampNoAllocWriteResultV3>("PROCESS.CANCELLED","before_publication");std::memcpy(output,staged.data(),extent);auto r=Success<TimestampNoAllocWriteResultV3>();r.bytes_required=extent;r.bytes_written=extent;r.containing_null=value.state==TimestampValueStateV3::sql_null;return r;}
+TimestampNoAllocWriteResultV3 MakeTimestampSortKeyIntoNoAllocV3(const TimestampOwnedValueV3& value,TimestampSortDirectionV3 direction,TimestampNullModeV3 null_mode,byte* output,u64 capacity,const TimestampExecutionControlV3& control) noexcept {const auto checked=ValidateTimestampValueViewV3(value.view(),true);if(!checked.ok())return Failure<TimestampNoAllocWriteResultV3>(checked.diagnostic.diagnostic_code,checked.diagnostic.detail,checked.status);if(static_cast<unsigned>(direction)>1||static_cast<unsigned>(null_mode)>1)return Failure<TimestampNoAllocWriteResultV3>("CTI.TEMPORAL.INDEX_KEY_REFUSED","key_mode");const u64 extent=value.state==TimestampValueStateV3::sql_null?100:112;std::array<byte,112> staged{};ScopedClear clear(staged.data(),staged.size(),TimestampScrubClassV3::ordered_key_staging,control.observe_scrubbed,control.scrub_observer_context);if(output&&(RangesOverlap(output,extent,&value,sizeof(value))||RangesOverlap(output,extent,&control,sizeof(control))||OutputOverlapsProfile(output,extent,*value.profile)))return Failure<TimestampNoAllocWriteResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","key_overlap");if(capacity<extent||!output){auto r=Failure<TimestampNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED","key_capacity",ResourceStatus());r.bytes_required=extent;return r;}if(extent>control.maximum_allocation_bytes){auto r=Failure<TimestampNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED","key_budget",ResourceStatus());r.bytes_required=extent;return r;}std::memcpy(staged.data(),"SBTSPK01",8);PutUuid(staged.data()+8,value.profile->receipt.catalog_snapshot_uuid);StoreLittle64(staged.data()+24,value.profile->receipt.catalog_generation);StoreLittle64(staged.data()+32,value.profile->receipt.registry_generation);std::memcpy(staged.data()+40,value.profile->comparison_fingerprint.data(),32);PutPolicy(staged.data()+72,kOrderingPolicy);staged[96]=static_cast<byte>(direction);staged[97]=static_cast<byte>(null_mode);staged[98]=value.state==TimestampValueStateV3::value?1:(null_mode==TimestampNullModeV3::nulls_first?0:2);staged[99]=value.state==TimestampValueStateV3::value?12:0;if(value.state==TimestampValueStateV3::value){const std::int64_t sec=static_cast<std::int64_t>(value.civil_day)*86'400+static_cast<std::int64_t>(value.nanoseconds_since_midnight/1'000'000'000ull);u64 sortable=static_cast<u64>(sec)^0x8000000000000000ull;const u32 ns=static_cast<u32>(value.nanoseconds_since_midnight%1'000'000'000ull);for(unsigned i=0;i<8;++i)staged[100+i]=static_cast<byte>(sortable>>(56-i*8));for(unsigned i=0;i<4;++i)staged[108+i]=static_cast<byte>(ns>>(24-i*8));if(direction==TimestampSortDirectionV3::descending)for(unsigned i=100;i<112;++i)staged[i]=static_cast<byte>(~staged[i]);}if(Cancelled(control))return Failure<TimestampNoAllocWriteResultV3>("PROCESS.CANCELLED","before_publication");std::memcpy(output,staged.data(),extent);auto r=Success<TimestampNoAllocWriteResultV3>();r.bytes_required=extent;r.bytes_written=extent;r.containing_null=value.state==TimestampValueStateV3::sql_null;return r;}
 TimestampBytesResultV3 MakeTimestampSortKeyV3(
     const TimestampOwnedValueV3& value,
     TimestampSortDirectionV3 direction,
@@ -1602,7 +1660,7 @@ TimestampCastResultV3 CastTimestampValueV3(
     }
     if (shape.peer_type == CanonicalTypeId::character &&
         !ExactCharacterDescriptor(request.scalar_source->descriptor,
-                                  (*request.timestamp_target)->receipt))
+                                  ReceiptForIdentity(*request.scalar_source_identity)))
       return Failure<TimestampCastResultV3>(
           "CTI.TEMPORAL.DESCRIPTOR_INVALID",
           "character_source_descriptor_invalid");
@@ -1709,7 +1767,7 @@ TimestampCastResultV3 CastTimestampValueV3(
   }
   if (shape.peer_type == CanonicalTypeId::character &&
       !ExactCharacterDescriptor(request.scalar_target_descriptor,
-                                source_profile->receipt))
+                                ReceiptForIdentity(*request.scalar_target_identity)))
     return Failure<TimestampCastResultV3>(
         "CTI.TEMPORAL.DESCRIPTOR_INVALID",
         "character_target_descriptor_invalid");
