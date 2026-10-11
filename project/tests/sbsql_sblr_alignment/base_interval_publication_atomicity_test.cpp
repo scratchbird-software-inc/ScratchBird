@@ -1313,6 +1313,17 @@ void ScrubCoverage(const std::shared_ptr<const dt::IntervalValidatedProfileHandl
 }  // namespace
 int main() {
   for (auto profile : {Profile(), scratchbird::tests::D711IntervalProfile()}) {
+  for (const bool invalid : {false,true}) {
+    auto descriptor=Descriptor(dt::CanonicalTypeId::interval);
+    if(invalid)++descriptor.modifier_flags;
+    const auto before=allocation_probe::calls;
+    allocation_probe::fail_next=true;
+    const auto result=dt::ValidateIntervalExecutionDescriptorV3(descriptor,profile->identity);
+    const bool untouched=allocation_probe::fail_next;
+    allocation_probe::fail_next=false;
+    Check(result.ok()==!invalid&&untouched&&allocation_probe::calls==before,
+          "interval descriptor validation allocated or changed disposition");
+  }
   Wire(*profile); RouteTable(); DiagnosticRouteExecution(); MetricProductionAndValidation(*profile); Replay(); Protection(*profile);
   PinnedReaders(profile); ResourceAtomicity(profile); ScrubCoverage(profile);
   }

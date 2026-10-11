@@ -10,6 +10,7 @@
 #include "crud_support/native_value_payload.hpp"
 #include "crud_support/bound_ordered_index_key.hpp"
 #include "datatype_binary_view.hpp"
+#include "datatype_interval.hpp"
 #include "mga_relation_store/mga_large_value_codec.hpp"
 #include <type_traits>
 
@@ -52,14 +53,6 @@ void DirectAppendLittleUnsigned128(std::vector<scratchbird::core::platform::byte
                                    const DirectU128Bytes& value) {
   out->reserve(out->size() + 16);
   out->insert(out->end(), value.begin(), value.end());
-}
-
-void DirectAppendLittleSigned(std::vector<scratchbird::core::platform::byte>* out,
-                              std::int64_t value,
-                              std::size_t bytes) {
-  std::uint64_t bits = 0;
-  std::memcpy(&bits, &value, sizeof(value));
-  DirectAppendLittleUnsigned(out, bits, bytes);
 }
 
 int DirectCompareU128Bytes(const DirectU128Bytes& left,
@@ -180,16 +173,6 @@ bool DirectParseUnsigned128Payload(std::string_view text,
   return true;
 }
 
-
-bool DirectParseI64Text(std::string_view text, std::int64_t* out) {
-  if (out == nullptr) {
-    return false;
-  }
-  const char* begin = text.data();
-  const char* end = begin + text.size();
-  const auto parse = std::from_chars(begin, end, *out, 10);
-  return parse.ec == std::errc{} && parse.ptr == end;
-}
 
 bool DirectTargetIsSignedInteger(dt::CanonicalTypeId target_type);
 bool DirectTargetIsUnsignedInteger(dt::CanonicalTypeId target_type);
@@ -363,105 +346,6 @@ bool DirectPackBinaryIntegerPayload(dt::CanonicalTypeId target_type,
     return true;
   }
   return false;
-}
-
-bool DirectParseIntervalPayload(std::string_view text,
-                                std::vector<scratchbird::core::platform::byte>* out) {
-  std::int64_t seconds = 0;
-  if (DirectParseI64Text(text, &seconds)) {
-    if (seconds > std::numeric_limits<std::int64_t>::max() / 1000000000ll ||
-        seconds < std::numeric_limits<std::int64_t>::min() / 1000000000ll) {
-      return false;
-    }
-    DirectAppendLittleSigned(out, 0, 4);
-    DirectAppendLittleSigned(out, 0, 4);
-    DirectAppendLittleSigned(out, seconds * 1000000000ll, 8);
-    return true;
-  }
-  if (text.empty() || text[0] != 'P') {
-    return false;
-  }
-  std::size_t offset = 1;
-  bool in_time = false;
-  std::int64_t months = 0;
-  std::int64_t days = 0;
-  std::int64_t nanos = 0;
-  bool consumed = false;
-  while (offset < text.size()) {
-    if (text[offset] == 'T') {
-      if (in_time) {
-        return false;
-      }
-      in_time = true;
-      ++offset;
-      continue;
-    }
-    const std::size_t number_start = offset;
-    while (offset < text.size() &&
-           std::isdigit(static_cast<unsigned char>(text[offset]))) {
-      ++offset;
-    }
-    if (number_start == offset || offset >= text.size()) {
-      return false;
-    }
-    std::int64_t value = 0;
-    if (!DirectParseI64Text(text.substr(number_start, offset - number_start), &value)) {
-      return false;
-    }
-    const char designator = text[offset++];
-    consumed = true;
-    switch (designator) {
-      case 'Y':
-        if (in_time || value > std::numeric_limits<std::int64_t>::max() / 12) {
-          return false;
-        }
-        months += value * 12;
-        break;
-      case 'M':
-        if (in_time) {
-          if (value > std::numeric_limits<std::int64_t>::max() / 60 / 1000000000ll) {
-            return false;
-          }
-          nanos += value * 60 * 1000000000ll;
-        } else {
-          months += value;
-        }
-        break;
-      case 'D':
-        if (in_time) {
-          return false;
-        }
-        days += value;
-        break;
-      case 'H':
-        if (!in_time ||
-            value > std::numeric_limits<std::int64_t>::max() / 3600 / 1000000000ll) {
-          return false;
-        }
-        nanos += value * 3600 * 1000000000ll;
-        break;
-      case 'S':
-        if (!in_time ||
-            value > std::numeric_limits<std::int64_t>::max() / 1000000000ll) {
-          return false;
-        }
-        nanos += value * 1000000000ll;
-        break;
-      default:
-        return false;
-    }
-  }
-  if (!consumed ||
-      months < std::numeric_limits<std::int32_t>::min() ||
-      months > std::numeric_limits<std::int32_t>::max() ||
-      days < std::numeric_limits<std::int32_t>::min() ||
-      days > std::numeric_limits<std::int32_t>::max()) {
-    return false;
-  }
-  DirectAppendLittleSigned(out, months, 4);
-  DirectAppendLittleSigned(out, days, 4);
-  DirectAppendLittleSigned(out, nanos, 8);
-  return true;
 }
 
 bool DirectParseSignedIntegerPayload(std::string_view text,
@@ -660,7 +544,7 @@ bool DirectValidateNativeTemporalValue(const EngineTypedValue& typed,
     if (diagnostic) *diagnostic = MakeInvalidRequestDiagnostic("dml.native_temporal", std::move(detail));
     return false;
   };
-  if (target_type != dt::CanonicalTypeId::date && target_type != dt::CanonicalTypeId::time && target_type != dt::CanonicalTypeId::timestamp)
+  if (target_type != dt::CanonicalTypeId::date && target_type != dt::CanonicalTypeId::time && target_type != dt::CanonicalTypeId::timestamp && target_type != dt::CanonicalTypeId::interval)
     return refuse("unsupported_target");
   const auto& source = typed.descriptor;
   const auto& descriptor = destination ? *destination : source;
@@ -683,6 +567,9 @@ bool DirectValidateNativeTemporalValue(const EngineTypedValue& typed,
       !bound_index_key::BuildOrderedColumnExecutionDescriptor(source,
           binding.datatype, source_execution.nullable_allowed, &source_execution, &detail)) return refuse("source_descriptor:" + detail);
   const bool slot_nullable = destination ? nullable : source_execution.nullable_allowed;
+  if (target_type == dt::CanonicalTypeId::interval &&
+      (!binding.datatype.codec || !dt::ValidateIntervalExecutionDescriptorV3(
+          source_execution, *binding.datatype.codec).ok())) return refuse("source_interval_descriptor");
   if (destination) {
     if (!bound_index_key::BuildOrderedColumnExecutionDescriptor(descriptor,
             binding.datatype, slot_nullable, &binding.execution_descriptor, &detail)) return refuse("destination_descriptor:" + detail);
@@ -701,6 +588,8 @@ bool DirectValidateNativeTemporalValue(const EngineTypedValue& typed,
         PreserveEngineApiTimeDiagnosticCause(rejected, decoded.diagnostic);
       if constexpr (std::is_same_v<std::remove_cvref_t<decltype(decoded.diagnostic)>, dt::TimestampDiagnosticFactV3>)
         PreserveEngineApiTimestampDiagnosticCause(rejected, decoded.diagnostic);
+      if constexpr (std::is_same_v<std::remove_cvref_t<decltype(decoded.diagnostic)>, dt::IntervalDiagnosticFactV3>)
+        PreserveEngineApiIntervalDiagnosticCause(rejected, decoded.diagnostic);
       *diagnostic = std::move(rejected);
     }
     return false;
@@ -709,6 +598,19 @@ bool DirectValidateNativeTemporalValue(const EngineTypedValue& typed,
     if (!bound_index_key::BindOrderedDateProfile(&binding)) return refuse("date_profile");
     return decoded_result(dt::DecodeCanonicalDateComponentNoAllocV3(*binding.date_profile,
         typed.isSqlNull() ? dt::DateValueStateV3::sql_null : dt::DateValueStateV3::value,
+        slot_nullable, typed.binary_value));
+  }
+  if (target_type == dt::CanonicalTypeId::interval) {
+    // Reuse column metadata projection, never its ordered-key admission.
+    const auto& identity = *binding.datatype.codec;
+    if (!dt::ValidateIntervalExecutionDescriptorV3(binding.execution_descriptor, identity).ok())
+      return refuse("destination_interval_descriptor");
+    const auto& row = identity.legacy_fields;
+    auto profile = dt::BuildIntervalValidatedProfileHandleV3(
+        {row.catalog_snapshot_uuid, row.catalog_snapshot_uuid, row.catalog_generation, row.registry_generation}, identity);
+    if (!profile.ok()) return decoded_result(profile);
+    return decoded_result(dt::DecodeCanonicalIntervalComponentNoAllocV3(profile.profile,
+        typed.isSqlNull() ? dt::IntervalValueStateV3::sql_null : dt::IntervalValueStateV3::value,
         slot_nullable, typed.binary_value));
   }
   if (target_type == dt::CanonicalTypeId::timestamp) {
@@ -726,7 +628,7 @@ bool DirectValidateNativeTemporalValue(const EngineTypedValue& typed,
 bool DirectPackTypedPayload(dt::CanonicalTypeId target_type,
                             const EngineTypedValue& typed,
                             std::vector<scratchbird::core::platform::byte>* out) {
-  if (target_type == dt::CanonicalTypeId::date || target_type == dt::CanonicalTypeId::time || target_type == dt::CanonicalTypeId::timestamp) {
+  if (target_type == dt::CanonicalTypeId::date || target_type == dt::CanonicalTypeId::time || target_type == dt::CanonicalTypeId::timestamp || target_type == dt::CanonicalTypeId::interval) {
     if (!out || !DirectValidateNativeTemporalValue(typed, target_type)) return false;
     *out = typed.binary_value;
     return true;
@@ -807,8 +709,6 @@ bool DirectPackTypedPayload(dt::CanonicalTypeId target_type,
     case dt::CanonicalTypeId::real32:
     case dt::CanonicalTypeId::real64:
       return DirectParseRealPayload(target_type, typed.encoded_value, out);
-    case dt::CanonicalTypeId::interval:
-      return DirectParseIntervalPayload(typed.encoded_value, out);
     case dt::CanonicalTypeId::binary:
       out->assign(typed.encoded_value.begin(), typed.encoded_value.end());
       return true;
@@ -826,7 +726,7 @@ bool DirectPackTypedPayload(dt::CanonicalTypeId target_type,
 
 CrudStoredValue DirectStoredValueForColumn(
     const EngineTypedValue& typed, dt::CanonicalTypeId target_type) {
-  if (target_type == dt::CanonicalTypeId::date || target_type == dt::CanonicalTypeId::time || target_type == dt::CanonicalTypeId::timestamp) {
+  if (target_type == dt::CanonicalTypeId::date || target_type == dt::CanonicalTypeId::time || target_type == dt::CanonicalTypeId::timestamp || target_type == dt::CanonicalTypeId::interval) {
     if (!DirectValidateNativeTemporalValue(typed, target_type))
       throw std::invalid_argument("native temporal column requires an exact bound canonical component");
     return CrudTypedValuePayload(typed);
@@ -850,7 +750,7 @@ scratchbird::storage::page::RowDataCell DirectPhysicalCellFromTypedValue(
   cell.column_ordinal = ordinal;
   dt::CanonicalTypeId target_type =
       dt::CanonicalTypeIdFromStableName(std::string(target_canonical_type_name));
-  if (target_type == dt::CanonicalTypeId::date || target_type == dt::CanonicalTypeId::time || target_type == dt::CanonicalTypeId::timestamp) {
+  if (target_type == dt::CanonicalTypeId::date || target_type == dt::CanonicalTypeId::time || target_type == dt::CanonicalTypeId::timestamp || target_type == dt::CanonicalTypeId::interval) {
     if (!DirectValidateNativeTemporalValue(typed, target_type))
       throw std::invalid_argument("native temporal physical component invalid");
     cell.value.type_id = target_type;
@@ -897,7 +797,7 @@ scratchbird::storage::page::RowDataCell DirectPhysicalCellFromTypedValueWithPlan
     const DirectFixedWidthPayloadValidationColumnPlan& column_plan) {
   scratchbird::storage::page::RowDataCell cell;
   cell.column_ordinal = ordinal;
-  if (column_plan.target_type == dt::CanonicalTypeId::date || column_plan.target_type == dt::CanonicalTypeId::time || column_plan.target_type == dt::CanonicalTypeId::timestamp) {
+  if (column_plan.target_type == dt::CanonicalTypeId::date || column_plan.target_type == dt::CanonicalTypeId::time || column_plan.target_type == dt::CanonicalTypeId::timestamp || column_plan.target_type == dt::CanonicalTypeId::interval) {
     if (!DirectValidateNativeTemporalValue(typed, column_plan.target_type))
       throw std::invalid_argument("native temporal planned physical component invalid");
     cell.value.type_id = column_plan.target_type;
@@ -982,7 +882,7 @@ std::vector<scratchbird::storage::page::RowDataCell> DirectPhysicalCells(
       // The receiver's owner must still validate these canonical components.
       // A retained temporal value cannot masquerade as opaque BINARY to evade
       // the profile-aware row codec. Non-temporal fallback behavior is unchanged.
-      if (retained_type == dt::CanonicalTypeId::date || retained_type == dt::CanonicalTypeId::time || retained_type == dt::CanonicalTypeId::timestamp)
+      if (retained_type == dt::CanonicalTypeId::date || retained_type == dt::CanonicalTypeId::time || retained_type == dt::CanonicalTypeId::timestamp || retained_type == dt::CanonicalTypeId::interval)
         cell.value.type_id = retained_type;
     }
     if (lob) {
@@ -1104,7 +1004,7 @@ std::string DirectFixedWidthTypedPayloadFailure(
   for (std::size_t field_index = 0; field_index < input_row.fields.size(); ++field_index) {
     const auto& typed = input_row.fields[field_index].second;
     const auto type = plan[field_index].target_type;
-    if ((type == dt::CanonicalTypeId::date || type == dt::CanonicalTypeId::time || type == dt::CanonicalTypeId::timestamp) &&
+    if ((type == dt::CanonicalTypeId::date || type == dt::CanonicalTypeId::time || type == dt::CanonicalTypeId::timestamp || type == dt::CanonicalTypeId::interval) &&
         !DirectValidateNativeTemporalValue(typed, type))
       return "typed_temporal_payload_invalid:" + plan[field_index].column_name;
     if (typed.isSqlNull()) {

@@ -200,6 +200,10 @@ IntervalAliasAuditResultV3 AuditIntervalRequiredAliasResolutionV3(const Interval
 IntervalProfileResultV3 BuildCurrentIntervalValidatedProfileHandleV3(const platform::Uuid&) noexcept;
 IntervalProfileResultV3 BuildIntervalValidatedProfileHandleV3(const IntervalAuthorityReceiptV3&, const DatatypeTypeCodecIdentityRowV3&) noexcept;
 IntervalValidationResultV3 ValidateIntervalProfileHandleV3(const IntervalValidatedProfileHandleV3&, const IntervalExecutionControlV3& = {}) noexcept;
+// Exact base occurrence validation, not ordered-index admission. Identity is
+// checked against its own sealed cohort; descriptor nullability remains data.
+IntervalValidationResultV3 ValidateIntervalExecutionDescriptorV3(
+    const scratchbird::engine::ExecutionTypeDescriptor&, const DatatypeTypeCodecIdentityRowV3&) noexcept;
 IntervalViewResultV3 ValidateIntervalValueViewV3(
     const IntervalValueViewV3&, bool null_allowed = true,
     const IntervalExecutionControlV3& = {}) noexcept;

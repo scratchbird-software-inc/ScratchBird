@@ -101,6 +101,52 @@ scratchbird::engine::ExecutionTypeDescriptor Descriptor(
   return descriptor.descriptor;
 }
 
+void ExecutionDescriptorAdmission(const dt::IntervalValidatedProfileHandleV3& profile) {
+  namespace e=scratchbird::engine;
+  const auto exact=Descriptor(dt::CanonicalTypeId::interval);
+  for(const bool nullable:{false,true}) {
+    auto descriptor=exact;descriptor.nullable_allowed=nullable;
+    Check(dt::ValidateIntervalExecutionDescriptorV3(descriptor,profile.identity).ok(),
+          "exact interval execution descriptor refused");
+    for(unsigned mutation=0;mutation<23;++mutation) {
+      auto bad=descriptor;
+      switch(mutation) {
+        case 0: bad.descriptor_uuid.bytes[0]^=1;break;
+        case 1: ++bad.descriptor_epoch;break;
+        case 2: ++bad.canonical_type_id;break;
+        case 3: bad.family=e::ExecutionTypeFamily::unknown;break;
+        case 4: bad.width_class=e::ExecutionTypeWidthClass::unknown;break;
+        case 5: ++bad.bit_width;break;
+        case 6: ++bad.precision;break;
+        case 7: ++bad.scale;break;
+        case 8: ++bad.length;break;
+        case 9: ++bad.modifier_flags;break;
+        case 10: bad.domain_uuid=bad.descriptor_uuid;break;
+        case 11: bad.domain_stack.push_back(bad.descriptor_uuid);break;
+        case 12: bad.charset_uuid=bad.descriptor_uuid;break;
+        case 13: bad.collation_uuid=bad.descriptor_uuid;break;
+        case 14: bad.timezone_uuid=bad.descriptor_uuid;break;
+        case 15: bad.element_descriptor_uuid=bad.descriptor_uuid;break;
+        case 16: bad.security_policy_uuid=bad.descriptor_uuid;break;
+        case 17: ++bad.vector_dimensions;break;
+        case 18: ++bad.container_rank;break;
+        case 19: bad.descriptor_authoritative=false;break;
+        case 20: bad.parser_independent=false;break;
+        case 21: bad.descriptor_epoch=0;break;
+        case 22: bad.descriptor_uuid={};break;
+      }
+      const auto refused=dt::ValidateIntervalExecutionDescriptorV3(bad,profile.identity);
+      Check(!refused.ok()&&refused.diagnostic.diagnostic_code=="CTI.INTERVAL.DESCRIPTOR_INVALID",
+            "mutated interval execution descriptor admitted");
+    }
+    for(unsigned field=0;field<8;++field) {
+      auto bad=profile.identity;scratchbird::tests::MutateIntervalNativeIdentity(bad,field);
+      Check(!dt::ValidateIntervalExecutionDescriptorV3(descriptor,bad).ok(),
+            "mutated interval native binding admitted");
+    }
+  }
+}
+
 dt::IntervalOwnedValueV3 Value(
     const std::shared_ptr<const dt::IntervalValidatedProfileHandleV3>& profile,
     std::int32_t months,
@@ -806,6 +852,7 @@ __wrap__ZN11scratchbird4core9datatypes19CastIntervalValueV3ERKNS1_21IntervalCast
 
 int main() {
   for (auto profile : {Profile(), scratchbird::tests::D711IntervalProfile()}) {
+  ExecutionDescriptorAdmission(*profile);
   for (unsigned generation : {10u,11u}) {
   peer_generation=generation;
   CastCorpus(profile);

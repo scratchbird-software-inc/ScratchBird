@@ -4,6 +4,7 @@
 #include "datatype_type_codec_identity_v3.hpp"
 #include "datatype_time.hpp"
 #include "datatype_timestamp.hpp"
+#include "datatype_interval.hpp"
 #include <iostream>
 #include <stdexcept>
 
@@ -29,7 +30,8 @@ api::EngineTypedValue Value(dt::CanonicalTypeId type, unsigned generation, std::
     descriptor.datatype_cohort = {cohort, generation, generation};
     descriptor.descriptor_kind = "scalar";
     descriptor.canonical_type_name = type == dt::CanonicalTypeId::date ? "date" :
-        type == dt::CanonicalTypeId::time ? "time" : "timestamp";
+        type == dt::CanonicalTypeId::time ? "time" :
+        type == dt::CanonicalTypeId::timestamp ? "timestamp" : "interval";
     descriptor.encoded_descriptor = "nullability=nullable";
     for (unsigned i = 0; i < (type == dt::CanonicalTypeId::date ? 4u : 8u); ++i)
       value.binary_value.push_back(static_cast<std::uint8_t>(bits >> (8 * i)));
@@ -37,6 +39,12 @@ api::EngineTypedValue Value(dt::CanonicalTypeId type, unsigned generation, std::
       for (unsigned i = 0; i < 4; ++i)
         value.binary_value.push_back(static_cast<std::uint8_t>(fraction >> (8*i)));
       value.binary_value.resize(16, 0);
+    }
+    if (type == dt::CanonicalTypeId::interval) {
+      value.binary_value.clear();
+      for (const auto part : {bits, ~bits})
+        for (unsigned i=0;i<4;++i)value.binary_value.push_back(static_cast<std::uint8_t>(part>>(8*i)));
+      for (unsigned i=0;i<8;++i)value.binary_value.push_back(static_cast<std::uint8_t>(bits>>(8*i)));
     }
     return value;
   }
@@ -73,6 +81,9 @@ void Run(dt::CanonicalTypeId type, unsigned generation) {
       std::vector<std::uint64_t>{0, 1, 0xffffffffu, 0x80000000u, 0x7fffffffu} :
       type == dt::CanonicalTypeId::time ?
       std::vector<std::uint64_t>{0, 1, 255, 256, dt::kTimeMaximumNanosecondsV3} :
+      type == dt::CanonicalTypeId::interval ?
+      std::vector<std::uint64_t>{0,1,~std::uint64_t{0},0x80000000u,0x7fffffffu,
+          0x8000000000000000ull,0x7fffffffffffffffull} :
       std::vector<std::uint64_t>{0, 1, 255, 256, ~std::uint64_t{0},
           static_cast<std::uint64_t>(dt::kTimestampMinimumCivilSecondV3),
           static_cast<std::uint64_t>(dt::kTimestampMaximumCivilSecondV3)};
@@ -166,6 +177,32 @@ void Run(dt::CanonicalTypeId type, unsigned generation) {
         diagnostic.native_source->datatype_cause->detail == diagnostic.detail,
         "native TIME component failure lost its typed cause");
   }
+  if (type == dt::CanonicalTypeId::interval) {
+    for (const auto* text : {"3600", "-3600", "P1DT2H3M4S", "P1Y2M", "P1M", "P0D", "1,2,3"}) {
+      auto value=Value(type,generation,0);value.binary_value.clear();value.encoded_value=text;
+      Refuses(type,value);
+    }
+    // Exhaustive independent component boundary combinations. No normalization
+    // or conversion to seconds is authorized by this bulk carrier.
+    for(const std::uint32_t months:{0u,1u,0xffffffffu,0x80000000u,0x7fffffffu})
+      for(const std::uint32_t days:{0u,1u,0xffffffffu,0x80000000u,0x7fffffffu})
+        for(const std::uint64_t nanos:{0ull,1ull,0xffffffffffffffffull,0x8000000000000000ull,0x7fffffffffffffffull}) {
+          auto value=Value(type,generation,0);value.binary_value.clear();
+          for(const auto part:{months,days})for(unsigned i=0;i<4;++i)
+            value.binary_value.push_back(static_cast<std::uint8_t>(part>>(8*i)));
+          for(unsigned i=0;i<8;++i)value.binary_value.push_back(static_cast<std::uint8_t>(nanos>>(8*i)));
+          std::vector<std::uint8_t> output;
+          Check(bulk::DirectPackTypedPayload(type,value,&output)&&output==value.binary_value,
+                "INTERVAL component tuple normalized or lost bounds");
+        }
+    auto malformed=Value(type,generation,0);malformed.binary_value.pop_back();
+    api::EngineApiDiagnostic diagnostic;
+    Check(!bulk::DirectValidateNativeTemporalValue(malformed,type,nullptr,true,&diagnostic)&&
+          diagnostic.native_source&&diagnostic.native_source->datatype_cause&&
+          diagnostic.native_source->datatype_cause->diagnostic_code==diagnostic.code&&
+          diagnostic.native_source->datatype_cause->detail==diagnostic.detail,
+          "INTERVAL component failure lost typed cause");
+  }
   if (type == dt::CanonicalTypeId::timestamp) {
     for (const auto* text : {"1970-01-01T00:00:00", "1970-01-01 01:00:00+01:00", "1970-01-01T00:00:00Z"}) {
       auto value = Value(type, generation, 0);
@@ -201,6 +238,7 @@ void RetainedColumnBindings() {
     const auto date = Value(dt::CanonicalTypeId::date, generation, 0xffffffffu);
     const auto time = Value(dt::CanonicalTypeId::time, generation, dt::kTimeMaximumNanosecondsV3);
     const auto timestamp = Value(dt::CanonicalTypeId::timestamp, generation, ~std::uint64_t{0}, 999999999);
+    const auto interval = Value(dt::CanonicalTypeId::interval, generation, 0x8000000000000000ull);
     auto plan = Plan(date);
     plan.columns[0].column_name = "day";
     auto middle = plan.columns[0]; middle.column_name = "opaque"; middle.canonical_type_name = "binary";
@@ -208,13 +246,17 @@ void RetainedColumnBindings() {
     plan.columns.push_back(middle); plan.columns.push_back(last);
     auto stamp_column = last; stamp_column.column_name = "stamp"; stamp_column.canonical_type_name = "timestamp";
     plan.columns.push_back(stamp_column);
+    auto interval_column=stamp_column;interval_column.column_name="span";interval_column.canonical_type_name="interval";
+    plan.columns.push_back(interval_column);
     const auto day = bulk::DirectStoredValueForColumn(date, dt::CanonicalTypeId::date);
     const auto clock = bulk::DirectStoredValueForColumn(time, dt::CanonicalTypeId::time);
     const auto stamp = bulk::DirectStoredValueForColumn(timestamp, dt::CanonicalTypeId::timestamp);
+    const auto span = bulk::DirectStoredValueForColumn(interval, dt::CanonicalTypeId::interval);
     for (const bool null : {false, true}) {
       const auto day_value = null ? api::CrudStoredValue::SqlNull() : day;
       const auto clock_value = null ? api::CrudStoredValue::SqlNull() : clock;
       const auto stamp_value = null ? api::CrudStoredValue::SqlNull() : stamp;
+      const auto span_value = null ? api::CrudStoredValue::SqlNull() : span;
       // Retained input can be reordered or sparse. Its position is not the
       // physical column ordinal and must not select a different receiver.
       const api::CrudValueFields reordered{{"clock", clock_value}, {"day", day_value}};
@@ -243,6 +285,13 @@ void RetainedColumnBindings() {
               result[0].value.type_id == dt::CanonicalTypeId::timestamp && result[0].value.is_null == null &&
               result[0].value.payload == (null ? std::vector<std::uint8_t>{} : timestamp.binary_value),
               "retained TIMESTAMP reordered/sparse/NULL binding lost");
+        const api::CrudValueFields interval_fields=sparse_timestamp ? api::CrudValueFields{{"span",span_value}} :
+            api::CrudValueFields{{"span",span_value},{"stamp",stamp_value},{"day",day_value}};
+        const auto interval_result=bulk::DirectPhysicalCells(interval_fields,&plan);
+        Check(interval_result.size()==(sparse_timestamp?1:3)&&interval_result[0].column_ordinal==5&&
+              interval_result[0].value.type_id==dt::CanonicalTypeId::interval&&interval_result[0].value.is_null==null&&
+              interval_result[0].value.payload==(null?std::vector<std::uint8_t>{}:interval.binary_value),
+              "retained INTERVAL reordered/sparse/NULL binding lost");
       }
     }
     const std::string bytes{"\xff\0\x80", 3};
@@ -266,7 +315,7 @@ void RetainedColumnBindings() {
   }
 }
 int main() {
-  for (const auto type : {dt::CanonicalTypeId::date, dt::CanonicalTypeId::time, dt::CanonicalTypeId::timestamp})
+  for (const auto type : {dt::CanonicalTypeId::date, dt::CanonicalTypeId::time, dt::CanonicalTypeId::timestamp, dt::CanonicalTypeId::interval})
     for (const unsigned generation : {10u, 11u}) Run(type, generation);
   RetainedColumnBindings();
   std::cout << "direct_bulk_temporal_payload checks=" << checks << '\n';

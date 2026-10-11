@@ -138,6 +138,7 @@ inline bool BuildOrderedColumnExecutionDescriptor(
       type == core::datatypes::CanonicalTypeId::date ||
       type == core::datatypes::CanonicalTypeId::time ||
       type == core::datatypes::CanonicalTypeId::timestamp ||
+      type == core::datatypes::CanonicalTypeId::interval ||
       type == core::datatypes::CanonicalTypeId::decimal) {
     if (!source.charset_uuid.is_nil() ||
         !source.collation_uuid.is_nil()) {

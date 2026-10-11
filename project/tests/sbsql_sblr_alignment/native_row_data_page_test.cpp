@@ -286,11 +286,18 @@ void TemporalReceivers() {
             isolated.body.rows.front().cells={p.body.rows.front().cells.back()};
             const auto isolated_image=RowOracle(isolated);
             const Bytes isolated_body(isolated_image.begin()+128,isolated_image.end()-32);
+            Check(page::BuildRowDataPageBody(isolated.body,p.header.page_size_bytes-32,receiver).ok()&&
+                  page::ParseRowDataPageBody(isolated_body,p.body.page_number,receiver).ok(),
+                  "isolated bound INTERVAL positive failed");
             const auto missing_read=page::ParseRowDataPageBody(isolated_body,p.body.page_number);
             const auto missing_write=page::BuildRowDataPageBody(isolated.body,p.header.page_size_bytes-32);
             Check(!missing_read.ok()&&missing_read.body.rows.empty()&&missing_read.serialized.empty()&&
                   !missing_write.ok()&&missing_write.body.rows.empty()&&missing_write.serialized.empty(),
                   "isolated INTERVAL escaped receiving authority");
+            for(const auto* refused:{&missing_read,&missing_write})
+              Check(refused->diagnostic.diagnostic_code=="CTI.INTERVAL.DESCRIPTOR_INVALID"&&
+                    refused->diagnostic.message_key=="storage.row_data_page.interval_profile_missing",
+                    "isolated INTERVAL refused for the wrong reason");
           }
           for (bool retain : {false, true}) {
             const auto decoded = retain ? page::ParseRowDataPageBody(expected, p.body.page_number, receiver) :

@@ -284,6 +284,14 @@ IntervalValueResultV3 Publish(std::shared_ptr<const IntervalValidatedProfileHand
 
 IntervalValueViewV3 IntervalOwnedValueV3::view() const noexcept{return{profile.get(),state,months,civil_days,fixed_nanoseconds};}
 
+IntervalValidationResultV3 ValidateIntervalExecutionDescriptorV3(
+    const scratchbird::engine::ExecutionTypeDescriptor& descriptor,
+    const DatatypeTypeCodecIdentityRowV3& identity) noexcept {
+  if (!DescriptorBinds(descriptor, identity, CanonicalTypeId::interval))
+    return Failure<IntervalValidationResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID", "execution_descriptor_invalid");
+  return Success<IntervalValidationResultV3>();
+}
+
 IntervalProfileResultV3 BuildCurrentIntervalValidatedProfileHandleV3(const platform::Uuid&statement) noexcept {
  const auto*i=Current(CanonicalTypeId::interval);
  if(!i)return Failure<IntervalProfileResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","current_interval_identity_missing");
