@@ -1021,6 +1021,13 @@
     const auto target_descriptor =
         LowerAscii(TrimAscii(ValueAsText(target_value)));
     if (target_descriptor.empty()) return RefuseFunctionInvalidInput(request, "cast target descriptor id is required");
+    if (request.arguments[0].value.descriptor_id == "timestamp" || target_descriptor == "timestamp") {
+      if (request.arguments.size() != 2)
+        return RefuseFunctionInvalidInput(request, "native temporal cast does not accept a compatibility or rounding profile");
+      return {scratchbird::engine::sblr::EvaluateSblrCastForm(request.context.function_id,
+          request.arguments[0].value, target_descriptor, request.context.sblr_context,
+          true, false, request.result_descriptor)};
+    }
     if (NativeBinaryCast(request.arguments[0].value, target_descriptor) ||
         NativeFixedNumericCast(request.arguments[0].value, target_descriptor)) {
       if (request.arguments.size() != 2)

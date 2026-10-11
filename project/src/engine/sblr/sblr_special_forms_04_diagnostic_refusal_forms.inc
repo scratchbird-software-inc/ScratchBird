@@ -45,6 +45,13 @@ SblrResult EvaluateSblrCastForm(std::string_view operation_id,
                                 bool reference_compatibility_profile,
                                 std::shared_ptr<const internal_api::EngineDescriptor> target_binding,
                                 const core::datatypes::DatatypeNumericContext* numeric_context) try {
+  if (value.descriptor_id == "timestamp" || target_descriptor_id == "timestamp") {
+    if (numeric_context)
+      return SpecialFormFailure(operation_id, context, "DATATYPE.CAST_FORBIDDEN",
+                                "numeric context is not admitted for a temporal cast");
+    return EvaluateSblrTimestampCast(operation_id, value, target_descriptor_id,
+        context, explicit_cast, reference_compatibility_profile, std::move(target_binding));
+  }
   if (!SblrNativeCastCarrierValid(value)) {
     return SpecialFormFailure(operation_id, context, "SBLR.DESCRIPTOR_MISMATCH",
                               "cast source has conflicting or non-native value carriers");

@@ -731,7 +731,7 @@ bool DescriptorBindsIdentityNoAlloc(
       descriptor.domain_stack.empty() && EngineUuidNil(descriptor.charset_uuid) &&
       EngineUuidNil(descriptor.collation_uuid) && EngineUuidNil(descriptor.timezone_uuid) &&
       EngineUuidNil(descriptor.element_descriptor_uuid) &&
-      EngineUuidNil(descriptor.security_policy_uuid) && descriptor.nullable_allowed &&
+      EngineUuidNil(descriptor.security_policy_uuid) &&
       descriptor.descriptor_authoritative && descriptor.parser_independent;
 }
 
@@ -1699,7 +1699,7 @@ TimestampCastResultV3 CastTimestampValueV3(
           !request.scalar_source->encoded_value.empty())
         return Failure<TimestampCastResultV3>(
             "DATATYPE.NULL_STATE.INVALID", "contextual_null_dirty");
-      if (!request.target_null_allowed)
+      if (!request.target_null_allowed || !request.timestamp_target_descriptor->nullable_allowed)
         return Failure<TimestampCastResultV3>(
             "DATATYPE.NULL_NOT_ADMITTED", "target_nonnullable");
       if (disposition != TimestampCastPolicyDispositionV3::contextual_null)
@@ -1754,7 +1754,8 @@ TimestampCastResultV3 CastTimestampValueV3(
       if (!request.scalar_source->encoded_value.empty())
         return Failure<TimestampCastResultV3>(
             "DATATYPE.NULL_STATE.INVALID", "incoming_peer_dirty_null");
-      if (!request.target_null_allowed)
+      if (!request.target_null_allowed || !request.timestamp_target_descriptor->nullable_allowed ||
+          !request.scalar_source->descriptor.nullable_allowed)
         return Failure<TimestampCastResultV3>(
             "DATATYPE.NULL_NOT_ADMITTED", "target_nonnullable");
     }

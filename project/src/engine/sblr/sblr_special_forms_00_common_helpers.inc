@@ -9,6 +9,7 @@
 // SBSQL source-layout fragment. Included only by sblr_special_forms.cpp.
 // This fragment preserves pre-existing behavior; do not add unrelated future work here.
 #include "sblr_special_forms.hpp"
+#include "sblr_timestamp_cast.hpp"
 #include "sblr_binary_value_carrier.hpp"
 #include "sblr_decimal_projection_profile.hpp"
 #include "../executor/descriptor_value_runtime.hpp"

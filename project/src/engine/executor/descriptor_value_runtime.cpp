@@ -6,7 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-#include "descriptor_value_runtime.hpp"
+#include "descriptor_binding_status.hpp"
 #include "../internal_api/query/historical_timestamp_scalar.hpp"
 #include "../internal_api/catalog/column_metadata_codec.hpp"
 #include "../internal_api/catalog/datatype_bootstrap_identity.hpp"
@@ -266,11 +266,13 @@ bool BoundExecutionTypeDescriptor(
     const EngineDescriptor& descriptor,
     const CanonicalTypeId type_id,
     scratchbird::engine::ExecutionTypeDescriptor* execution_descriptor,
-    std::string* detail) {
+    std::string* detail,
+    scratchbird::core::platform::Status* provider_status = nullptr) {
   namespace dt = scratchbird::core::datatypes;
   namespace platform = scratchbird::core::platform;
   namespace api = scratchbird::engine::internal_api;
   if (execution_descriptor == nullptr || detail == nullptr) return false;
+  if (provider_status) *provider_status = {};
   *execution_descriptor = {};
   detail->clear();
   const auto refuse = [&](const char* reason) {
@@ -390,6 +392,7 @@ bool BoundExecutionTypeDescriptor(
   const auto built =
       dt::LookupExecutionTypeDescriptorFromCatalog(type_id, metadata);
   if (!built.ok()) {
+    if (provider_status) *provider_status = built.status;
     return refuse("bound scalar execution descriptor could not be built from catalog authority");
   }
   *execution_descriptor = built.descriptor;
@@ -910,6 +913,13 @@ bool BuildBoundExecutionTypeDescriptor(
     std::string* refusal_detail) {
   return BoundExecutionTypeDescriptor(
       descriptor, type_id, execution_descriptor, refusal_detail);
+}
+
+bool BuildBoundExecutionTypeDescriptor(
+    const internal_api::EngineDescriptor& binding,
+    core::datatypes::CanonicalTypeId type, ExecutionTypeDescriptor* descriptor,
+    std::string* detail, core::platform::Status* provider_status) {
+  return BoundExecutionTypeDescriptor(binding, type, descriptor, detail, provider_status);
 }
 
 bool BuildBoundDecimalExecutionTypeDescriptor(const internal_api::EngineDescriptor& binding,
