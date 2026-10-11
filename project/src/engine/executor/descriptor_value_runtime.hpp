@@ -67,6 +67,13 @@ bool BuildBoundExecutionTypeDescriptor(
     engine::ExecutionTypeDescriptor* execution_descriptor,
     std::string* refusal_detail);
 
+// Base DECIMAL projection/cast admission requires explicit precision, scale,
+// binary codec identity and generation, including for default-sized profiles.
+bool BuildBoundDecimalExecutionTypeDescriptor(
+    const internal_api::EngineDescriptor& descriptor,
+    engine::ExecutionTypeDescriptor* execution_descriptor,
+    core::datatypes::DatatypeDecimalCodecBindingV1* codec);
+
 struct DescriptorRuntimeDiagnostic {
   bool ok = true;
   std::string diagnostic_code = "SB_EXECUTOR_OK";

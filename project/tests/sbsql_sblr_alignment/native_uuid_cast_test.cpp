@@ -11,19 +11,25 @@
 #include "sblr/canonical_query_aggregate_registration.hpp"
 #include "internal_api/query/expression_api.hpp"
 #include "internal_api/catalog/datatype_bootstrap_identity.hpp"
+#include "internal_api/catalog/column_metadata_codec.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_operations.hpp"
+#include "sbl_numeric.hpp"
+#include <bit>
 #include "../support/binary_uuid_fixture.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <new>
 #include <stdexcept>
 
-// Warmed component-operation allocation evidence; no failure injection or
-// skipped validation. Exact counts are observations, not allocator ABI rules.
+// Warmed component allocation counts and separate one-shot failure sweeps.
+// Exact counts are observations, not allocator ABI rules.
 thread_local bool track_native_cast_allocations = false;
 thread_local std::size_t native_cast_allocations = 0;
+thread_local long decimal_allocation_budget = -1;
 void* operator new(std::size_t bytes) {
+  if (decimal_allocation_budget == 0) { decimal_allocation_budget=-1; throw std::bad_alloc(); }
+  if (decimal_allocation_budget > 0) --decimal_allocation_budget;
   if (track_native_cast_allocations) ++native_cast_allocations;
   if (void* allocation = std::malloc(bytes ? bytes : 1)) return allocation;
   throw std::bad_alloc();
@@ -683,6 +689,268 @@ void NativeCastAllocationSample() {
               << '=' << native_cast_allocations << '\n';
   }
 }
+void Real64DecimalCallable(const f::FunctionRegistry& registry) {
+  namespace api = scratchbird::engine::internal_api;
+  namespace n = scratchbird::libraries::sbl_numeric;
+  const auto* entry=registry.Lookup("data.scalar.cast");
+  Check(entry!=nullptr,"registered decimal cast");
+  for(unsigned p : {2,38,39,76}) for(unsigned scale : {0,1}) {
+    auto descriptor=*Binding("decimal");
+    api::CatalogColumnMetadata metadata;
+    metadata.text={{"nullability","nullable"},{"precision",std::to_string(p)},
+                   {"scale",std::to_string(scale)},{"decimal_codec_generation","1"}};
+    metadata.identities["decimal_codec_uuid"]=p<=38
+        ? api::EngineUuid{{0x01,0xa1,0x18,0x6b,0xdf,0x04,0x76,0x0a,0xa3,0xd5,0xd0,0x2d,0x2e,0xe3,0x01,0x54}}
+        : api::EngineUuid{{0x01,0xa1,0x18,0x6b,0xdf,0x04,0x7b,0x1b,0x9c,0xaf,0x87,0xb3,0xbd,0x29,0x94,0x3e}};
+    Check(api::EncodeCatalogColumnMetadata(metadata,&descriptor.encoded_descriptor),"decimal callable binding metadata");
+    f::FunctionCallRequest request;
+    request.result_descriptor=std::make_shared<const api::EngineDescriptor>(descriptor);
+    request.context.function_uuid=entry->function_uuid;
+    request.context.security_allowed=request.context.policy_allowed=true;
+    Check(registry.BindCallContext(request.context)!=nullptr,"bound decimal callable");
+    request.arguments={{"value",Bound(f::MakeReal64Value("real64",1.25))},
+                       {"target",f::MakeTextValue("text","decimal("+std::to_string(p)+","+std::to_string(scale)+")")}};
+    const auto direct_source=s::EngineTypedValueFromSblrValue(request.arguments[0].value);
+    scratchbird::engine::executor::DescriptorRuntimeDiagnostic direct_diagnostic;
+    const auto direct=scratchbird::engine::executor::CastDescriptorValue(
+        direct_source,descriptor,&direct_diagnostic);
+    const auto direct_expected=n::EncodeBoundExactDecimal(scale==0 ? "1" : "1.2",
+        {p<=38?n::ExactDecimalCodec::le24_v1:n::ExactDecimalCodec::le40_v1,p,scale});
+    Check(direct_diagnostic.ok && direct_diagnostic.numeric_facts.inexact &&
+          direct.descriptor==descriptor && direct.binary_value==direct_expected.bytes && direct.encoded_value.empty(),
+          "executor REAL64 decimal cast delegates exact binary conversion");
+    if(p==2 && scale==1) for(std::uint64_t bits :
+        {0x3ff4000000000000ULL,0x4023e66666666667ULL,0x7ff8000000000001ULL}) {
+      auto source=direct_source;
+      for(unsigned i=0;i<8;++i) source.binary_value[i]=static_cast<std::uint8_t>(bits>>(8*i));
+      const bool success=bits==0x3ff4000000000000ULL,nan=bits==0x7ff8000000000001ULL;
+      bool completed=false,retained=false;
+      for(long budget=0;budget<1000 && !completed;++budget) {
+        scratchbird::engine::executor::DescriptorRuntimeDiagnostic diagnostic;
+        decimal_allocation_budget=budget;
+        const auto result=scratchbird::engine::executor::CastDescriptorValue(source,descriptor,&diagnostic);
+        const bool injected=decimal_allocation_budget==-1;
+        decimal_allocation_budget=-1;
+        const bool facts=success ? diagnostic.numeric_facts.inexact : nan ? diagnostic.numeric_facts.invalid :
+            diagnostic.numeric_facts.overflow && diagnostic.numeric_facts.inexact;
+        if(injected) {
+          Check(!diagnostic.ok && diagnostic.diagnostic_code=="DATATYPE.RESOURCE_EXHAUSTED" &&
+                result.state==api::EngineValueState::error && result.binary_value.empty(),
+                "executor allocation failure publishes no value");
+          Check(!retained || facts,"executor diagnostic allocation loses computed facts");
+          retained=retained || facts;
+        } else {
+          Check(diagnostic.ok==success && facts,"executor conversion outcome facts");completed=true;
+        }
+      }
+      Check(completed && retained,"executor full allocation sweep");
+    }
+    for(const char* mode : {"half_even","half_up","truncate"}) {
+      auto call=request;
+      call.arguments.push_back({"rounding",f::MakeTextValue("text",mode)});
+      const auto result=f::DispatchFunctionCall(registry,call).result;
+      const auto expected=n::EncodeBoundExactDecimal(scale==0 ? "1" : std::string_view(mode)=="half_up" ? "1.3" : "1.2",
+          {p<=38?n::ExactDecimalCodec::le24_v1:n::ExactDecimalCodec::le40_v1,p,scale});
+      Check(result.ok() && result.numeric_facts.inexact && result.scalar_values.size()==1,
+            "native callable decimal cast with inexact fact");
+      const auto& value=result.scalar_values.front();
+      Check(value.binary_value==expected.bytes && value.text_value.empty() && value.encoded_value.empty() &&
+            value.projection_descriptor==request.result_descriptor &&
+            !value.has_real64_value && !value.has_int64_value && !value.has_uint64_value,
+            "decimal callable publishes sole native payload and exact retained binding");
+      Check(s::ProjectionSblrValueResolved(value),"native decimal projection unresolved");
+      const auto projected=s::EngineTypedValueFromSblrValue(value);
+      api::EngineProjectionFunctionArgument argument;
+      argument.type_name="decimal";argument.descriptor=projected.descriptor;
+      argument.binary_value=projected.binary_value;argument.is_null=projected.is_null;
+      argument.state=projected.state;
+      Check(s::ProjectionArgumentEncodingValid(argument),"native decimal argument rejected");
+      const auto restored=s::EngineTypedValueFromSblrValue(s::SblrValueFromProjectionArgument(argument));
+      Check(restored.descriptor==descriptor && restored.binary_value==expected.bytes &&
+            restored.encoded_value.empty() && restored.state==projected.state,
+            "native decimal full projection round trip changed bytes or binding");
+      if(scale==1 && std::string_view(mode)=="half_even") {
+        bool completed=false;unsigned faults=0;
+        for(long budget=0;budget<1000 && !completed;++budget) {
+          api::EngineTypedValue publication;
+          publication.encoded_value="untouched";
+          decimal_allocation_budget=budget;
+          try {
+            Check(s::ProjectionSblrValueResolved(value),"projection allocation source valid");
+            const auto engine=s::EngineTypedValueFromSblrValue(value);
+            auto staged=argument;
+            staged.descriptor=engine.descriptor;staged.binary_value=engine.binary_value;
+            Check(s::ProjectionArgumentEncodingValid(staged),"projection allocation argument valid");
+            publication=s::EngineTypedValueFromSblrValue(s::SblrValueFromProjectionArgument(staged));
+            completed=true;
+          } catch(const std::bad_alloc&) { ++faults; }
+          decimal_allocation_budget=-1;
+          Check(value.projection_descriptor==request.result_descriptor && value.binary_value==expected.bytes &&
+                argument.descriptor==descriptor && argument.binary_value==expected.bytes,
+                "projection allocation failure changed source");
+          Check(completed ? publication.binary_value==expected.bytes && publication.descriptor==descriptor :
+                publication.binary_value.empty() && publication.encoded_value=="untouched",
+                "projection allocation failure published partial value");
+        }
+        Check(completed && faults>1,"complete decimal projection allocation sweep");
+      }
+      for(unsigned mutation=0;mutation<14;++mutation) {
+        auto bad=value;
+        auto changed=descriptor;auto fields=metadata;
+        switch(mutation) {
+          case 0: bad.descriptor_id="binary";break;
+          case 1: bad.descriptor_id="real64";break;
+          case 2: bad.text_value="1.2";break;
+          case 3: bad.encoded_value="1.2";break;
+          case 4: bad.binary_value.pop_back();break;
+          case 5: bad.binary_value[0]=0xff;break;
+          case 6: bad.projection_descriptor.reset();break;
+          case 7: bad.is_null=true;break;
+          case 8: bad.real64_value=1.25;break;
+          case 9: fields.text.erase("scale");break;
+          case 10: fields.identities.erase("decimal_codec_uuid");break;
+          case 11: changed.canonical_type_name="binary";break;
+          case 12: changed.type_uuid.bytes[15]^=1;break;
+          case 13: fields.text["scale"]="0";bad.binary_value=n::EncodeBoundExactDecimal("1.2",
+              {p<=38?n::ExactDecimalCodec::le24_v1:n::ExactDecimalCodec::le40_v1,p,1}).bytes;break;
+        }
+        if(mutation>=9) {
+          Check(api::EncodeCatalogColumnMetadata(fields,&changed.encoded_descriptor),"projection mutation binding");
+          bad.projection_descriptor=std::make_shared<const api::EngineDescriptor>(changed);
+        }
+        Check(!s::ProjectionSblrValueResolved(bad),"invalid decimal projection resolved");
+        bool threw=false;
+        try { (void)s::EngineTypedValueFromSblrValue(bad); }
+        catch(const std::invalid_argument&) { threw=true; }
+        Check(threw,"invalid decimal projection returned engine value");
+        auto invalid=argument;
+        invalid.type_name=bad.descriptor_id;
+        invalid.descriptor=bad.projection_descriptor ? *bad.projection_descriptor : api::EngineDescriptor{};
+        invalid.binary_value=bad.binary_value;
+        invalid.is_null=bad.is_null;
+        if(mutation==2 || mutation==3) invalid.encoded_value="1.2";
+        // Numeric shadow fields exist only in SblrValue, not the engine argument.
+        if(mutation!=8) {
+          Check(!s::ProjectionArgumentEncodingValid(invalid),"invalid decimal argument admitted");
+          Check(!s::ProjectionSblrValueResolved(s::SblrValueFromProjectionArgument(invalid)),
+                "invalid decimal argument became resolved SBLR");
+        }
+      }
+    }
+    bool allocation_success=false;unsigned allocation_failures=0;
+    for(long budget=0;budget<1000 && !allocation_success;++budget) {
+      auto call=request;
+      decimal_allocation_budget=budget;
+      const auto result=f::DispatchFunctionCall(registry,std::move(call)).result;
+      decimal_allocation_budget=-1;
+      if(result.ok()) allocation_success=true;
+      else {
+        ++allocation_failures;
+        Check(result.status==s::SblrStatusCode::resource_exhausted && result.scalar_values.empty() &&
+              !result.diagnostics.empty() && result.diagnostics.front().diagnostic_id=="DATATYPE.RESOURCE_EXHAUSTED",
+              "decimal callable allocation failure loses typed resource status or publishes bytes");
+      }
+    }
+    Check(allocation_success && allocation_failures>1,"full decimal callable allocation sweep");
+    if(p==2 && scale==1) for(const std::uint64_t bits : {0x4023e66666666667ULL,0x7ff8000000000001ULL}) {
+      auto failing=request;
+      failing.arguments[0].value=Bound(f::MakeReal64Value("real64",std::bit_cast<double>(bits)));
+      const bool nan=bits==0x7ff8000000000001ULL;
+      bool completed=false,retained=false;
+      for(long budget=0;budget<1000 && !completed;++budget) {
+        auto call=failing;
+        decimal_allocation_budget=budget;
+        const auto result=f::DispatchFunctionCall(registry,std::move(call)).result;
+        const bool injected=decimal_allocation_budget==-1;
+        decimal_allocation_budget=-1;
+        Check(!result.ok() && result.scalar_values.empty(),"failed callable published value");
+        const bool facts=nan ? result.numeric_facts.invalid :
+            result.numeric_facts.overflow && result.numeric_facts.inexact;
+        if(injected) {
+          Check(result.status==s::SblrStatusCode::resource_exhausted,"failed callable allocation status");
+          Check(!retained || facts,"callable diagnostic allocation dropped computed facts");
+          retained=retained || facts;
+        } else {Check(facts,"failed callable numeric facts");completed=true;}
+      }
+      Check(completed && retained,"callable failed-result allocation sweep");
+    }
+    for(bool is_null : {false,true}) for(unsigned mutation=0;mutation<17;++mutation) {
+      auto bad=request;
+      if(is_null) bad.arguments[0].value=Bound(f::MakeNullValue("real64"));
+      auto fields=metadata;
+      auto changed=descriptor;
+      switch(mutation) {
+        case 0: bad.result_descriptor.reset();break;
+        case 1: bad.arguments[0].value.projection_descriptor.reset();break;
+        case 2: fields.identities["decimal_codec_uuid"].bytes[15]^=1;break;
+        case 3: fields.text["decimal_codec_generation"]="2";break;
+        case 4: fields.text["scale"]=std::to_string(scale+1);break;
+        case 5: fields.text["unknown_modifier"]="ignored";break;
+        case 6: fields.identities["domain_uuid"]=changed.type_uuid;break;
+        case 7: changed.datatype_descriptor_generation++;break;
+        case 8: bad.arguments[0].value.text_value="1.25";break;
+        case 9: bad.arguments[0].value.is_null=true;bad.arguments[0].value.has_real64_value=true;break;
+        case 10: bad.arguments[0].value=Bound(f::MakeReal64Value("real64",std::bit_cast<double>(0x7ff8000000000001ULL)));break;
+        case 11: bad.arguments[0].value=Bound(f::MakeReal64Value("real64",std::bit_cast<double>(0x7fefffffffffffffULL)));break;
+        case 12: fields.text.erase("precision");break;
+        case 13: fields.text.erase("scale");break;
+        case 14: fields.identities.erase("decimal_codec_uuid");break;
+        case 15: fields.text.erase("decimal_codec_generation");break;
+        case 16: fields.identities.erase("decimal_codec_uuid");fields.text.erase("decimal_codec_generation");break;
+      }
+      if((mutation>=2 && mutation<=7) || mutation>=12) {
+        Check(api::EncodeCatalogColumnMetadata(fields,&changed.encoded_descriptor),"mutation metadata");
+        bad.result_descriptor=std::make_shared<const api::EngineDescriptor>(changed);
+      }
+      auto invalid_source=direct_source;
+      if(is_null) {invalid_source.setState(api::EngineValueState::sql_null);invalid_source.binary_value.clear();}
+      if(mutation==0) changed={};
+      if(mutation==1) invalid_source.descriptor={};
+      if(mutation==8) invalid_source.encoded_value="1.25";
+      if(mutation==9) {invalid_source.is_null=true;invalid_source.state=api::EngineValueState::value;}
+      if(mutation==10 || mutation==11) {
+        invalid_source.setState(api::EngineValueState::value);invalid_source.binary_value.resize(8);
+        const std::uint64_t bits=mutation==10 ? 0x7ff8000000000001ULL : 0x7fefffffffffffffULL;
+        for(unsigned i=0;i<8;++i) invalid_source.binary_value[i]=static_cast<std::uint8_t>(bits>>(8*i));
+      }
+      // A changed scale alone is valid for the executor's descriptor-only API;
+      // the callable separately checks target spelling against that binding.
+      if(mutation!=4) {
+        const auto refused_direct=scratchbird::engine::executor::CastDescriptorValue(
+            invalid_source,changed,&direct_diagnostic);
+        Check(!direct_diagnostic.ok && refused_direct.state==api::EngineValueState::error &&
+              refused_direct.binary_value.empty(),"executor invalid binding or carrier published result");
+      }
+      const auto refused=f::DispatchFunctionCall(registry,bad).result;
+      Check(!refused.ok() && refused.scalar_values.empty(),"decimal callable invalid binding/carrier published result");
+      if(mutation==10) Check(refused.numeric_facts.invalid,"NaN invalid fact retained");
+      if(mutation==11) Check(refused.numeric_facts.overflow,"decimal overflow fact retained");
+    }
+    request.arguments[0].value=Bound(f::MakeNullValue("real64"));
+    const auto null=f::DispatchFunctionCall(registry,request).result;
+    Check(null.ok() && null.scalar_values.size()==1 && null.scalar_values[0].is_null &&
+          null.scalar_values[0].binary_value.empty() &&
+          null.scalar_values[0].projection_descriptor==request.result_descriptor,
+          "typed NULL REAL64 callable retains exact decimal target");
+    auto null_source=direct_source;null_source.setState(api::EngineValueState::sql_null);null_source.binary_value.clear();
+    const auto direct_null=scratchbird::engine::executor::CastDescriptorValue(null_source,descriptor,&direct_diagnostic);
+    Check(direct_diagnostic.ok && direct_null.isSqlNull() && direct_null.descriptor==descriptor &&
+          direct_null.binary_value.empty(),"executor typed NULL retains decimal binding");
+    const auto null_engine=s::EngineTypedValueFromSblrValue(null.scalar_values[0]);
+    api::EngineProjectionFunctionArgument null_argument;
+    null_argument.type_name="decimal";null_argument.descriptor=null_engine.descriptor;
+    null_argument.is_null=true;null_argument.state=api::EngineValueState::sql_null;
+    Check(s::ProjectionArgumentEncodingValid(null_argument) &&
+          s::ProjectionSblrValueResolved(s::SblrValueFromProjectionArgument(null_argument)),
+          "typed NULL decimal projection round trip");
+    metadata.text["nullability"]="non_null";
+    Check(api::EncodeCatalogColumnMetadata(metadata,&null_argument.descriptor.encoded_descriptor),"non-null binding");
+    Check(!s::ProjectionArgumentEncodingValid(null_argument),"nonnullable decimal NULL argument accepted");
+    auto forbidden_null=null.scalar_values[0];
+    forbidden_null.projection_descriptor=std::make_shared<const api::EngineDescriptor>(null_argument.descriptor);
+    Check(!s::ProjectionSblrValueResolved(forbidden_null),"nonnullable decimal NULL result accepted");
+  }
+}
 int main() {
   const auto package = f::BuildStandardFunctionSeedPackage();
   NativeBinarySort();
@@ -690,6 +958,7 @@ int main() {
   NativeUuidValues(package.registry);
   NativeComparisons();
   NativeCastBindingContracts(package.registry);
+  Real64DecimalCallable(package.registry);
   const char* functions[] = {"data.scalar.cast", "sb.scalar.safe_cast", "sb.scalar.try_cast"};
   for (unsigned pattern = 0; pattern < 130; ++pattern) {
     s::SblrUuid id;

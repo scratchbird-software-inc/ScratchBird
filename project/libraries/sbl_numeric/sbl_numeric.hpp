@@ -238,6 +238,12 @@ ExactDecimalArithmeticResult ApplyExactDecimalArithmetic(
     NumericOperation operation, ExactDecimalOperand left,
     ExactDecimalOperand right, ExactDecimalProfile result,
     RoundingMode rounding = RoundingMode::half_even) noexcept;
+// Interpret the exact IEEE binary64 value, round once to the declared decimal
+// quantum and publish only canonical decimal bytes. No text, host FP or heap
+// scratch. Specials are invalid even when another numeric profile admits them.
+ExactDecimalArithmeticResult Real64ToExactDecimal(
+    const Real64Bytes& source, ExactDecimalProfile result,
+    RoundingMode rounding = RoundingMode::half_even) noexcept;
 // Quantile coordinate consumption, not a general SQL cast. Validate the exact
 // decimal against its declared profile and [0,1] before rounding once to
 // binary64, round-to-nearest ties-to-even. No text or host floating arithmetic;

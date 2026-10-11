@@ -590,19 +590,21 @@ void PresentSemanticSurfacesRefuse() {
   auto character_descriptor = DescriptorFor(dt::CanonicalTypeId::character);
 
   for (const auto& candidate : dt::BuiltinDatatypeDescriptors()) {
+    const auto incoming = candidate.type_id == dt::CanonicalTypeId::real64
+        ? dt::DatatypeCastCategory::lossy_explicit : dt::DatatypeCastCategory::forbidden;
     Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::decimal,
                                    candidate.type_id) ==
                   dt::DatatypeCastCategory::forbidden &&
               dt::ClassifyDatatypeCast(candidate.type_id,
                                        dt::CanonicalTypeId::decimal) ==
-                  dt::DatatypeCastCategory::forbidden &&
+                  incoming &&
               dt::ClassifyDatatypeCast(dt::CanonicalTypeId::decimal,
                                        candidate.type_id, true) ==
                   dt::DatatypeCastCategory::forbidden &&
               dt::ClassifyDatatypeCast(candidate.type_id,
                                        dt::CanonicalTypeId::decimal, true) ==
-                  dt::DatatypeCastCategory::forbidden,
-          "every registered PRESENT cast classifier pair incident to decimal refuses");
+                  incoming,
+          "complete decimal classifier matrix admits only the defined REAL64 incoming pair");
   }
 
   for (const auto context : {dt::DatatypeCastContext::implicit,

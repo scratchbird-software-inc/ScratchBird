@@ -338,8 +338,162 @@ void CoreAndEngine() {
     }
   }
 }
+void Binary64DecimalOracle(std::uint64_t bits, unsigned p, unsigned s, num::RoundingMode mode) {
+  num::Real64Bytes bytes{};
+  for (unsigned i=0;i<8;++i) bytes[i]=bits>>(8*i);
+  forbid_allocation=true;
+  const auto actual=num::Real64ToExactDecimal(bytes,Profile(p,s),mode);
+  forbid_allocation=false;
+  const auto exponent=(bits>>52)&0x7ff;
+  if (exponent==0x7ff) {
+    Check(actual.status==num::NumericStatusCode::invalid_left && actual.size==0 &&
+          actual.bytes==std::array<std::uint8_t,40>{},"special REAL64 published decimal"); return;
+  }
+  cpp_int numerator=bits&((std::uint64_t{1}<<52)-1), denominator=1;
+  if(exponent) numerator+=(cpp_int(1)<<52);
+  const int shift=exponent ? int(exponent)-1075 : -1074;
+  if(shift>=0) numerator<<=shift; else denominator<<=-shift;
+  numerator*=Ten(s);
+  cpp_int q=numerator/denominator, rem=numerator%denominator;
+  if(mode!=num::RoundingMode::truncate &&
+     (2*rem>denominator || (2*rem==denominator &&
+      (mode==num::RoundingMode::half_up || q%2!=0)))) ++q;
+  if(q>=Ten(p)) {
+    Check(actual.status==num::NumericStatusCode::overflow && actual.size==0 &&
+          actual.bytes==std::array<std::uint8_t,40>{} && actual.inexact==(rem!=0),
+          "REAL64 decimal overflow effects or facts"); return;
+  }
+  if(bits>>63) q=-q;
+  const auto expected=num::EncodeBoundExactDecimal(Fixed(q,s),Profile(p,s));
+  Check(expected.ok() && actual.status==num::NumericStatusCode::ok &&
+        actual.inexact==(rem!=0) && actual.size==expected.bytes.size() &&
+        std::equal(expected.bytes.begin(),expected.bytes.end(),actual.bytes.begin()),
+        "exact binary REAL64 decimal rational oracle");
+}
+void Binary64DecimalCasts() {
+  for(unsigned p=1;p<=76;++p) for(unsigned s=0;s<=p;++s)
+    for(auto mode : {num::RoundingMode::half_even,num::RoundingMode::half_up,num::RoundingMode::truncate})
+      Binary64DecimalOracle(0x3ff4000000000000ULL,p,s,mode); // 1.25 exact tie at scale1
+  for(auto bits : {0ULL,0x8000000000000000ULL,1ULL,0x8000000000000001ULL,
+      0x000fffffffffffffULL,0x0010000000000000ULL,0x7fefffffffffffffULL,
+      0x7ff0000000000000ULL,0xfff0000000000000ULL,0x7ff8000000000001ULL,
+      0x7ff0000000000001ULL,0x3ff3ffffffffffffULL,0x3ff4000000000000ULL,
+      0x3ff4000000000001ULL,0xbff4000000000000ULL,0x3ff599999999999aULL,
+      0x3fb999999999999aULL,0x4023e66666666666ULL})
+    for(unsigned p : {1,2,38,39,76}) for(unsigned s : {0u,1u,p})
+      for(auto mode : {num::RoundingMode::half_even,num::RoundingMode::half_up,num::RoundingMode::truncate})
+        Binary64DecimalOracle(bits,p,s,mode);
+  // Every IEEE exponent, both signs, changing fraction patterns.
+  for(unsigned e=0;e<2048;++e)
+    Binary64DecimalOracle((std::uint64_t(e&1)<<63)|(std::uint64_t(e)<<52)|
+        ((std::uint64_t(e)*0x5deece66dULL)&((1ULL<<52)-1)),76,e%77,num::RoundingMode::half_even);
+  for(unsigned mutation=0;mutation<3;++mutation) {
+    auto profile=Profile(38,2); auto rounding=num::RoundingMode::half_even;
+    if(mutation==0) profile.precision=0;
+    if(mutation==1) profile.scale=39;
+    if(mutation==2) rounding=static_cast<num::RoundingMode>(99);
+    const auto bad=num::Real64ToExactDecimal({},profile,rounding);
+    Check(bad.status==num::NumericStatusCode::invalid_context && bad.size==0 &&
+          bad.bytes==std::array<std::uint8_t,40>{},"invalid REAL64 decimal context");
+  }
+  dt::DatatypeCastRequest cast;
+  cast.value.type_id=dt::CanonicalTypeId::real64;
+  auto real_descriptor=exec::MakeExecutorDescriptor("real64","nullability=nullable");
+  real_descriptor.descriptor_kind="scalar";
+  cast.value.descriptor=Core(real_descriptor);
+  cast.value.encoded_value=std::string("\0\0\0\0\0\0\xf4\x3f",8);
+  cast.target_type_id=dt::CanonicalTypeId::decimal;
+  cast.target_descriptor=Core(Descriptor(39,1));
+  dt::DatatypeSortKeyRequest codec;
+  Check(dt::BindExactDecimalSortKeyProfile(cast.target_descriptor,&codec),"cast target codec binding");
+  cast.decimal_target_codec={codec.decimal_codec_uuid,codec.decimal_codec_generation};
+  cast.numeric_context.precision=39; cast.numeric_context.scale=1;
+  cast.context=dt::DatatypeCastContext::explicit_cast;
+  auto converted=dt::CastDatatypeValue(cast);
+  const auto expected=num::EncodeBoundExactDecimal("1.2",Profile(39,1));
+  Check(converted.ok() && converted.numeric_facts.inexact &&
+        converted.value.encoded_value==std::string(expected.bytes.begin(),expected.bytes.end()),
+        "bound REAL64 to native decimal owner cast");
+  bool reached_success=false;unsigned failures=0;
+  for(long budget=0;budget<200 && !reached_success;++budget) {
+    allocation_budget=budget;
+    const auto attempted=dt::CastDatatypeValue(cast);
+    allocation_budget=-1;
+    if(attempted.ok()) reached_success=true;
+    else {
+      ++failures;
+      Check(attempted.value.encoded_value.empty() &&
+            attempted.diagnostic.diagnostic_code=="DATATYPE.RESOURCE_EXHAUSTED" &&
+            attempted.status.code==scratchbird::core::platform::StatusCode::memory_allocation_failed,
+            "REAL64 decimal allocation refusal loses native status or returns payload");
+    }
+  }
+  Check(reached_success && failures>1,"REAL64 decimal full owner allocation sweep");
+  // Include failure publication, not only successful quantization. After the
+  // first computed-fact diagnostic allocation, all later faults retain facts.
+  for (const std::uint64_t bits : {0x4023e66666666667ULL,0x7ff8000000000001ULL}) {
+    auto failing=cast;
+    failing.target_descriptor=Core(Descriptor(2,1));
+    Check(dt::BindExactDecimalSortKeyProfile(failing.target_descriptor,&codec),"failure codec binding");
+    failing.decimal_target_codec={codec.decimal_codec_uuid,codec.decimal_codec_generation};
+    failing.numeric_context.precision=2;
+    for(unsigned i=0;i<8;++i) failing.value.encoded_value[i]=static_cast<char>(bits>>(8*i));
+    const bool nan=bits==0x7ff8000000000001ULL;
+    bool completed=false,retained=false;
+    for(long budget=0;budget<300 && !completed;++budget) {
+      allocation_budget=budget;
+      const auto result=dt::CastDatatypeValue(failing);
+      const bool injected=allocation_budget==-1;
+      allocation_budget=-1;
+      Check(!result.ok() && result.value.encoded_value.empty(),"failed cast published a value");
+      const bool facts=nan ? result.numeric_facts.invalid :
+          result.numeric_facts.overflow && result.numeric_facts.inexact;
+      if(injected) {
+        Check(result.status.code==scratchbird::core::platform::StatusCode::memory_allocation_failed &&
+              result.diagnostic.diagnostic_code=="DATATYPE.RESOURCE_EXHAUSTED",
+              "failed cast allocation status");
+        Check(!retained || facts,"later diagnostic allocation dropped computed facts");
+        retained=retained || facts;
+      } else {
+        Check(facts,"native failed cast lost facts");completed=true;
+      }
+    }
+    Check(completed && retained,"failure diagnostic allocation sweep missing computed-fact coverage");
+  }
+  for(bool is_null : {false,true}) for(bool legacy_explicit : {false,true}) {
+    auto bad=cast;bad.context=dt::DatatypeCastContext::implicit;
+    bad.explicit_cast=legacy_explicit;
+    if(is_null) {bad.value.is_null=true;bad.value.encoded_value.clear();}
+    Check(!dt::CastDatatypeValue(bad).ok(),"legacy explicit flag bypasses implicit cast refusal");
+  }
+  for(bool is_null : {false,true}) for(unsigned mutation=0;mutation<13;++mutation) {
+    auto bad=cast;
+    if(is_null) {bad.value.is_null=true;bad.value.encoded_value.clear();}
+    switch(mutation) {
+      case 0: bad.context=dt::DatatypeCastContext::implicit;break;
+      case 1: bad.value.descriptor={};break;
+      case 2: bad.target_descriptor={};break;
+      case 3: bad.numeric_context.scale=2;break;
+      case 4: bad.numeric_context.allow_special_values=true;break;
+      case 5: bad.numeric_context.rounding=static_cast<dt::DatatypeRoundingMode>(99);break;
+      case 6: if(is_null) bad.value.encoded_value="x";else bad.value.encoded_value.pop_back();break;
+      case 7: bad.value.is_null=true;bad.value.encoded_value="x";break;
+      case 8: bad.target_descriptor.security_policy_uuid=bad.target_descriptor.descriptor_uuid;break;
+      case 9: bad.value.descriptor.descriptor_epoch++;break;
+      case 10: bad.decimal_target_codec={};break;
+      case 11: bad.decimal_target_codec.generation++;break;
+      case 12: bad.decimal_target_codec.codec_uuid.bytes[15]^=1;break;
+    }
+    const auto refused=dt::CastDatatypeValue(bad);
+    Check(!refused.ok() && refused.value.encoded_value.empty(),"invalid bound decimal cast published bytes");
+  }
+  cast.value.is_null=true;cast.value.encoded_value.clear();
+  converted=dt::CastDatatypeValue(cast);
+  Check(converted.ok() && converted.value.is_null && converted.value.encoded_value.empty(),
+        "typed NULL REAL64 decimal cast");
+}
 int main() try {
-  Matrix(); InvalidBackend(); CoreAndEngine();
+  Matrix(); InvalidBackend(); CoreAndEngine(); Binary64DecimalCasts();
   std::cout<<checks<<" native decimal arithmetic checks passed\n";
   return 0;
 } catch(const std::exception& e) {

@@ -881,6 +881,44 @@ bool BuildBoundExecutionTypeDescriptor(
       descriptor, type_id, execution_descriptor, refusal_detail);
 }
 
+bool BuildBoundDecimalExecutionTypeDescriptor(const internal_api::EngineDescriptor& binding,
+    ExecutionTypeDescriptor* descriptor,
+    core::datatypes::DatatypeDecimalCodecBindingV1* codec) {
+  namespace dt = core::datatypes;
+  if (!descriptor || !codec || binding.canonical_type_name != "decimal" ||
+      !binding.charset_uuid.is_nil() || !binding.collation_uuid.is_nil()) return false;
+  internal_api::CatalogColumnMetadata fields;
+  if (!internal_api::AdmitCatalogColumnMetadata(binding.encoded_descriptor, &fields)) return false;
+  for (const auto& [key, ignored] : fields.identities)
+    if (key != "decimal_codec_uuid" && key != "codec_uuid") return false;
+  for (const auto& [key, ignored] : fields.text)
+    if (key != "nullability" && key != "nullable" && key != "precision" && key != "scale" &&
+        key != "decimal_codec_generation" && key != "codec_generation" &&
+        key != "codec_id" && key != "codec_version") return false;
+  if (!fields.text.contains("precision") || !fields.text.contains("scale") ||
+      fields.identities.empty()) return false;
+  ExecutionTypeDescriptor admitted;
+  std::string detail;
+  dt::DatatypeSortKeyRequest expected;
+  if (!BuildBoundExecutionTypeDescriptor(binding, dt::CanonicalTypeId::decimal,
+          &admitted, &detail) || !dt::BindExactDecimalSortKeyProfile(admitted, &expected)) return false;
+  for (const auto key : {"decimal_codec_uuid", "codec_uuid"}) {
+    const auto found = fields.identities.find(key);
+    const auto generation = std::string_view(key) == "codec_uuid" ? "codec_generation" : "decimal_codec_generation";
+    if (found != fields.identities.end()) {
+      if (found->second != expected.decimal_codec_uuid || !fields.text.contains(generation) ||
+          fields.text.at(generation) != "1") return false;
+    } else if (fields.text.contains(generation)) return false;
+  }
+  if (fields.text.contains("codec_version") && fields.text.at("codec_version") != "1") return false;
+  if (fields.text.contains("codec_id") && fields.text.at("codec_id") !=
+      (admitted.precision <= 38 ? "datatype.decimal.base1e9.le.v1" : "datatype.decimal.base1e9.le40.v1")) return false;
+  const auto supplied = fields.identities.contains("decimal_codec_uuid") ? "decimal_codec_uuid" : "codec_uuid";
+  *descriptor = admitted;
+  *codec = {fields.identities.at(supplied), 1};
+  return true;
+}
+
 bool IsCanonicalInt128DescriptorV1(const EngineDescriptor& descriptor) {
   constexpr scratchbird::engine::internal_api::EngineUuid kDescriptorUuid{
       {0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x14}};
@@ -2571,9 +2609,60 @@ EngineTypedValue EvaluateDescriptorCoalesce(const std::vector<EngineTypedValue>&
   return null_value;
 }
 
+static EngineTypedValue CastReal64ToDecimalDescriptorValue(const EngineTypedValue& value,
+    const EngineDescriptor& target, DescriptorRuntimeDiagnostic* diagnostic) {
+  namespace dt = core::datatypes;
+  dt::DatatypeNumericFacts facts;
+  const auto refuse = [&](std::string code, std::string detail) {
+    auto report=ErrorDiagnostic(std::move(code), std::move(detail));
+    report.numeric_facts=facts;
+    SetDiagnostic(diagnostic,std::move(report));
+    EngineTypedValue failed;failed.setState(EngineValueState::error);return failed;
+  };
+  try {
+    dt::DatatypeCastRequest request;
+    request.value.type_id=CanonicalTypeId::real64;
+    request.target_type_id=CanonicalTypeId::decimal;
+    request.context=dt::DatatypeCastContext::explicit_cast;
+    std::string detail;
+    internal_api::CatalogColumnMetadata source_fields;
+    if (value.descriptor.canonical_type_name != "real64" ||
+        !internal_api::AdmitCatalogColumnMetadata(value.descriptor.encoded_descriptor,&source_fields) ||
+        !source_fields.identities.empty())
+      return refuse("DATATYPE.DESCRIPTOR.INVALID","invalid REAL64 source binding");
+    for(const auto& [key, ignored] : source_fields.text)
+      if(key!="nullability" && key!="nullable")
+        return refuse("DATATYPE.DESCRIPTOR.INVALID","unsupported REAL64 source modifier");
+    if (!BoundExecutionTypeDescriptor(value.descriptor,request.value.type_id,&request.value.descriptor,&detail) ||
+        !BuildBoundDecimalExecutionTypeDescriptor(target,&request.target_descriptor,&request.decimal_target_codec))
+      return refuse("DATATYPE.DESCRIPTOR.INVALID","incomplete REAL64 to DECIMAL binding");
+    if ((value.state!=EngineValueState::value && value.state!=EngineValueState::sql_null) ||
+        value.is_null!=(value.state==EngineValueState::sql_null) || !value.encoded_value.empty() ||
+        value.binary_value.size()!=(value.is_null ? 0u : 8u))
+      return refuse("NUMERIC.ENCODING.NONCANONICAL","invalid REAL64 cast carrier");
+    request.value.is_null=value.is_null;
+    request.value.encoded_value.assign(value.binary_value.begin(),value.binary_value.end());
+    request.numeric_context.precision=request.target_descriptor.precision;
+    request.numeric_context.scale=request.target_descriptor.scale;
+    const auto cast=dt::CastDatatypeValue(request);
+    facts=cast.numeric_facts;
+    if(!cast.ok()) return refuse(cast.diagnostic.diagnostic_code,cast.diagnostic.message_key);
+    auto output=MakeExecutorValue(target,{},cast.value.is_null);
+    output.binary_value.assign(cast.value.encoded_value.begin(),cast.value.encoded_value.end());
+    auto report=OkDiagnostic();report.numeric_facts=facts;
+    SetDiagnostic(diagnostic,std::move(report));
+    return output;
+  } catch(const std::bad_alloc&) {
+    return refuse("DATATYPE.RESOURCE_EXHAUSTED","native decimal cast allocation failed");
+  }
+}
+
 EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
                                      const EngineDescriptor& target_descriptor,
                                      DescriptorRuntimeDiagnostic* diagnostic) {
+  if (CanonicalDescriptorTypeId(value.descriptor)==CanonicalTypeId::real64 &&
+      CanonicalDescriptorTypeId(target_descriptor)==CanonicalTypeId::decimal)
+    return CastReal64ToDecimalDescriptorValue(value,target_descriptor,diagnostic);
   const auto failed_value = [] {
     EngineTypedValue failed;
     failed.setState(EngineValueState::error);

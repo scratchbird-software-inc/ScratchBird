@@ -562,6 +562,11 @@ void PresentSemanticSurfacesWork() {
     dt::DatatypeCastRequest request;
     request.value=std::move(value); request.target_type_id=target;
     request.target_descriptor=DescriptorFor(target); request.context=context;
+    if(target==T::decimal) {
+      dt::DatatypeSortKeyRequest codec;
+      Check(dt::BindExactDecimalSortKeyProfile(request.target_descriptor,&codec),"REAL64 decimal declared codec");
+      request.decimal_target_codec={codec.decimal_codec_uuid,codec.decimal_codec_generation};
+    }
     return dt::CastDatatypeValue(request);
   };
   for(const auto& candidate:dt::BuiltinDatatypeDescriptors()) {
@@ -571,7 +576,7 @@ void PresentSemanticSurfacesWork() {
         type==T::int128 || type==T::uint128;
     const bool peer=integer || type==T::character || type==T::real64 || type==T::real128;
     for(bool compatibility:{false,true}) {
-      Check((dt::ClassifyDatatypeCast(T::real64,type,compatibility)!=dt::DatatypeCastCategory::forbidden)==peer,
+      Check((dt::ClassifyDatatypeCast(T::real64,type,compatibility)!=dt::DatatypeCastCategory::forbidden)==(peer || type==T::decimal),
             "REAL64 outgoing classifier matrix");
       Check((dt::ClassifyDatatypeCast(type,T::real64,compatibility)!=dt::DatatypeCastCategory::forbidden)==
                 (peer || type==T::null_type),"REAL64 incoming classifier matrix");
@@ -590,6 +595,11 @@ void PresentSemanticSurfacesWork() {
       const auto implicit=cast(one,type,dt::DatatypeCastContext::implicit);
       Check(!implicit.ok(),"REAL64 integer narrowing is not implicit");
       Check(cast(one,type,dt::DatatypeCastContext::assignment).ok(),"exact integer assignment is admitted");
+    } else if(type==T::decimal) {
+      const auto converted=cast(one,type);
+      Check(converted.ok() && !converted.numeric_facts.inexact &&
+            converted.value.encoded_value.size()==24,
+            "REAL64 one casts exactly to declared default DECIMAL38 scale0");
     } else if(!peer && type!=T::null_type) {
       Check(!cast(one,type).ok(),"unrelated type cannot reinterpret REAL64 bytes");
     }

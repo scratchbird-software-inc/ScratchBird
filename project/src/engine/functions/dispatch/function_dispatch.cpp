@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dispatch/function_dispatch.hpp"
+#include "api_types.hpp"
 
 #include "common/function_gate.hpp"
 #include "common/function_result_helpers.hpp"
@@ -35,7 +36,7 @@
 namespace scratchbird::engine::functions {
 
 FunctionCallResult DispatchFunctionCall(const FunctionRegistry& registry,
-                                        FunctionCallRequest request) {
+                                        FunctionCallRequest request) try {
   const auto* entry = registry.BindCallContext(request.context);
   if (!entry) {
     return RefuseFunctionWithDiagnostic(request,
@@ -90,6 +91,13 @@ FunctionCallResult DispatchFunctionCall(const FunctionRegistry& registry,
                                       scratchbird::engine::sblr::SblrStatusCode::unsupported_feature,
                                       "SB_DIAG_FUNCTION_FAMILY_HANDLER_MISSING",
                                       "function family does not have a dispatch handler");
+} catch (const std::bad_alloc&) {
+  if (request.context.function_id != "data.scalar.cast" || request.arguments.empty() ||
+      request.arguments.front().value.descriptor_id != "real64" || !request.result_descriptor ||
+      request.result_descriptor->canonical_type_name != "decimal") throw;
+  return RefuseFunctionWithDiagnostic(request, sblr::SblrStatusCode::resource_exhausted,
+                                     "DATATYPE.RESOURCE_EXHAUSTED",
+                                     "native decimal callable allocation failed");
 }
 
 }  // namespace scratchbird::engine::functions

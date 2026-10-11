@@ -5,6 +5,7 @@
 #include "sblr_runtime.hpp"
 #include "sblr_binary_value_carrier.hpp"
 #include "sblr_uint16_projection_profile.hpp"
+#include "sblr_decimal_projection_profile.hpp"
 #include "../internal_api/query/projection_api.hpp"
 
 #include <algorithm>
@@ -75,6 +76,17 @@ inline SblrValue SblrValueFromProjectionArgument(
   value.descriptor_id = type_name;
   // Invalid carriers are unresolved non-NULL values, never manufactured NULLs.
   value.is_null = false;
+  if (type_name == "decimal" || ReferencesDecimalProjection(argument.descriptor)) {
+    if (!DecimalProjectionArgumentValid(argument)) return value;
+    value.projection_descriptor =
+        std::make_shared<const internal_api::EngineDescriptor>(argument.descriptor);
+    value.is_null = argument.is_null;
+    if (!value.is_null) {
+      value.binary_value = argument.binary_value;
+      value.payload_kind = SblrValuePayloadKind::binary;
+    }
+    return value;
+  }
   if (type_name == "real64") {
     static_assert(sizeof(double) == 8 && std::numeric_limits<double>::is_iec559);
     if (!projection_value_detail::Real64ArgumentCarrierValid(argument)) return value;
@@ -272,6 +284,8 @@ inline bool ProjectionArgumentEncodingValid(
     const internal_api::EngineProjectionFunctionArgument& argument) {
   if (argument.type_name.empty()) return false;
   const auto type = projection_value_detail::LowerAscii(argument.type_name);
+  if (type == "decimal" || ReferencesDecimalProjection(argument.descriptor))
+    return DecimalProjectionArgumentValid(argument);
   if (type == "real64") return projection_value_detail::Real64ArgumentCarrierValid(argument);
   if (type == "uint16" || ReferencesUint16Projection(argument.descriptor))
     return Uint16ProjectionArgumentValid(argument);
@@ -291,6 +305,9 @@ inline bool ProjectionArgumentEncodingValid(
 
 inline bool ProjectionSblrValueResolved(const SblrValue& value) {
   if (value.descriptor_id.empty()) return false;
+  if (value.descriptor_id == "decimal" ||
+      (value.projection_descriptor && ReferencesDecimalProjection(*value.projection_descriptor)))
+    return SblrDecimalProjectionResolved(value);
   if (value.descriptor_id == "int64") return projection_value_detail::Int64CarrierValid(value);
   if (value.descriptor_id == "real64") return projection_value_detail::Real64CarrierValid(value);
   if (value.descriptor_id == "uint16" ||
@@ -316,6 +333,17 @@ inline bool ProjectionSblrValueResolved(const SblrValue& value) {
 }
 
 inline internal_api::EngineTypedValue EngineTypedValueFromSblrValue(const SblrValue& value) {
+  if (value.descriptor_id == "decimal" ||
+      (value.projection_descriptor && ReferencesDecimalProjection(*value.projection_descriptor))) {
+    if (!SblrDecimalProjectionResolved(value))
+      throw std::invalid_argument("invalid or unbound SBLR decimal projection carrier");
+    internal_api::EngineTypedValue out;
+    out.descriptor = *value.projection_descriptor;
+    out.setState(value.is_null ? internal_api::EngineValueState::sql_null
+                              : internal_api::EngineValueState::value);
+    out.binary_value = value.binary_value;
+    return out;
+  }
   if (value.descriptor_id == "int64" && !projection_value_detail::Int64CarrierValid(value))
     throw std::invalid_argument("conflicting SBLR INT64 payload representations");
   if (value.descriptor_id == "real64" && !projection_value_detail::Real64CarrierValid(value))

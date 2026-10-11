@@ -3271,6 +3271,8 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
       IsUnresolvedRealSemantics(target_type_id)) {
     return DatatypeCastCategory::forbidden;
   }
+  if (source_type_id == CanonicalTypeId::real64 && target_type_id == CanonicalTypeId::decimal)
+    return DatatypeCastCategory::lossy_explicit;
   if (IsDecimal(source_type_id) || IsDecimal(target_type_id)) {
     return DatatypeCastCategory::forbidden;
   }
@@ -3395,7 +3397,7 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
   return DatatypeCastCategory::forbidden;
 }
 
-DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
+static DatatypeCastResult CastDatatypeValueImpl(const DatatypeCastRequest& request) {
   if (request.value.type_id == CanonicalTypeId::blob ||
       request.target_type_id == CanonicalTypeId::blob) {
     if (request.value.type_id == CanonicalTypeId::blob &&
@@ -3839,6 +3841,76 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
     converted.diagnostic = MakeDatatypeOperationDiagnostic(
         converted.status, "SB_DATATYPE_OK", "datatype.ok");
     return converted;
+  }
+  if (request.value.type_id == CanonicalTypeId::real64 &&
+      request.target_type_id == CanonicalTypeId::decimal) {
+    namespace n = scratchbird::libraries::sbl_numeric;
+    constexpr auto category = DatatypeCastCategory::lossy_explicit;
+    const auto invalid = [&](const char* code, const char* detail) {
+      auto result = CastFailure(detail, category, code);
+      result.numeric_facts.invalid = true;
+      return result;
+    };
+    DatatypeSortKeyRequest expected_codec;
+    if (!ExecutionDescriptorExactlyMatchesCurrentBuiltinIgnoringNullability(
+            request.value.descriptor, CanonicalTypeId::real64) ||
+        !DecimalDescriptorValidForPresent(request.target_descriptor) ||
+        !EngineUuidIsNil(request.target_descriptor.security_policy_uuid) ||
+        !EngineUuidIsNil(request.target_descriptor.element_descriptor_uuid) ||
+        !BindExactDecimalSortKeyProfile(request.target_descriptor, &expected_codec) ||
+        request.decimal_target_codec.codec_uuid != expected_codec.decimal_codec_uuid ||
+        request.decimal_target_codec.generation != expected_codec.decimal_codec_generation)
+      return invalid("DATATYPE.DESCRIPTOR.INVALID", "real64_decimal_binding_invalid");
+    if (request.context == DatatypeCastContext::implicit)
+      return invalid("DATATYPE.CAST_FORBIDDEN", "explicit_cast_required");
+    n::RoundingMode rounding;
+    switch (request.numeric_context.rounding) {
+      case DatatypeRoundingMode::half_even: rounding=n::RoundingMode::half_even; break;
+      case DatatypeRoundingMode::half_up: rounding=n::RoundingMode::half_up; break;
+      case DatatypeRoundingMode::truncate: rounding=n::RoundingMode::truncate; break;
+      default: return invalid("SB_DATATYPE_NUMERIC_OPERATION_REJECTED", "decimal_rounding_invalid");
+    }
+    if (request.numeric_context.allow_special_values ||
+        request.numeric_context.precision != request.target_descriptor.precision ||
+        request.numeric_context.scale != request.target_descriptor.scale)
+      return invalid("SB_DATATYPE_NUMERIC_OPERATION_REJECTED", "decimal_result_context_invalid");
+    n::ExactDecimalArithmeticResult native;
+    try {
+    if (!result_is_null) {
+      n::Real64Bytes bytes{};
+      std::copy(request.value.encoded_value.begin(), request.value.encoded_value.end(), bytes.begin());
+      native = n::Real64ToExactDecimal(bytes,
+          {request.target_descriptor.precision <= 38 ? n::ExactDecimalCodec::le24_v1 :
+                                                     n::ExactDecimalCodec::le40_v1,
+           request.target_descriptor.precision, request.target_descriptor.scale}, rounding);
+      if (native.status != n::NumericStatusCode::ok) {
+        const bool overflow = native.status == n::NumericStatusCode::overflow;
+        auto failure = CastFailure(overflow ? "real64_decimal_overflow" : "real64_decimal_nonfinite",
+            category, overflow ? "NUMERIC.CAST.OUT_OF_RANGE" : "NUMERIC.REAL64.INVALID");
+        failure.numeric_facts.overflow = overflow;
+        failure.numeric_facts.invalid = !overflow;
+        failure.numeric_facts.inexact = native.inexact;
+        return failure;
+      }
+    }
+      DatatypeCastResult converted;
+      converted.status=OkStatus(); converted.category=category;
+      converted.value.type_id=CanonicalTypeId::decimal;
+      converted.value.descriptor=request.target_descriptor;
+      converted.value.is_null=result_is_null;
+      converted.numeric_facts.inexact=native.inexact;
+      if (!result_is_null)
+        converted.value.encoded_value.assign(reinterpret_cast<const char*>(native.bytes.data()), native.size);
+      converted.diagnostic=MakeDatatypeOperationDiagnostic(converted.status,"SB_DATATYPE_OK","datatype.ok");
+      return converted;
+    } catch (const std::bad_alloc&) {
+      auto failure = CastFailure("real64_decimal_allocation_failed", category, "DATATYPE.RESOURCE_EXHAUSTED");
+      failure.status = ResourceErrorStatus();
+      failure.numeric_facts.inexact=native.inexact;
+      failure.numeric_facts.overflow=native.status == n::NumericStatusCode::overflow;
+      failure.numeric_facts.invalid=native.status == n::NumericStatusCode::invalid_left;
+      return failure;
+    }
   }
   if (request.value.type_id == CanonicalTypeId::real64 ||
       request.target_type_id == CanonicalTypeId::real64) {
@@ -4569,6 +4641,18 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
     return CastFailure("hstore_document_requires_domain_or_reference_wire_profile", result.category);
   }
   return result;
+}
+
+DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
+  if (request.value.type_id != CanonicalTypeId::real64 || request.target_type_id != CanonicalTypeId::decimal)
+    return CastDatatypeValueImpl(request);
+  try { return CastDatatypeValueImpl(request); }
+  catch (const std::bad_alloc&) {
+    auto failure = CastFailure("real64_decimal_allocation_failed", DatatypeCastCategory::lossy_explicit,
+                               "DATATYPE.RESOURCE_EXHAUSTED");
+    failure.status = ResourceErrorStatus();
+    return failure;
+  }
 }
 
 DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request) {

@@ -103,6 +103,11 @@ struct DatatypeNumericContext {
   bool allow_special_values = false;
 };
 
+struct DatatypeDecimalCodecBindingV1 {
+  platform::Uuid codec_uuid{};
+  u64 generation = 0;
+  bool operator==(const DatatypeDecimalCodecBindingV1&) const = default;
+};
 struct DatatypeCastRequest {
   DatatypeOperationValue value;
   CanonicalTypeId target_type_id = CanonicalTypeId::unknown;
@@ -113,6 +118,9 @@ struct DatatypeCastRequest {
   // Execution context supplied by the bound owner, not descriptor authority.
   DatatypeNumericContext numeric_context;
   scratchbird::engine::ExecutionTypeDescriptor target_descriptor;
+  // Required for the REAL64-to-DECIMAL profile; representation authority is
+  // supplied by the bound owner, not inferred from a target spelling or p/s.
+  DatatypeDecimalCodecBindingV1 decimal_target_codec;
 };
 
 struct DatatypeCastResult {
@@ -173,11 +181,6 @@ struct DatatypeSetOperationResult {
   }
 };
 
-struct DatatypeDecimalCodecBindingV1 {
-  platform::Uuid codec_uuid{};
-  u64 generation = 0;
-  bool operator==(const DatatypeDecimalCodecBindingV1&) const = default;
-};
 struct DatatypeDecimalArithmeticBindingV1 {
   platform::Uuid policy_uuid{};
   u64 generation = 0;

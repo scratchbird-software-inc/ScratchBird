@@ -15,6 +15,8 @@
 #include <string_view>
 #include <vector>
 
+namespace scratchbird::core::datatypes { struct DatatypeNumericContext; }
+
 namespace scratchbird::engine::sblr {
 
 struct SblrCaseBranch {
@@ -78,7 +80,8 @@ SblrResult EvaluateSblrCastForm(std::string_view operation_id,
                                 const SblrExecutionContext& context,
                                 bool explicit_cast = true,
                                 bool reference_compatibility_profile = false,
-                                std::shared_ptr<const internal_api::EngineDescriptor> target_binding = {});
+                                std::shared_ptr<const internal_api::EngineDescriptor> target_binding = {},
+                                const core::datatypes::DatatypeNumericContext* numeric_context = nullptr);
 SblrResult EvaluateSblrExtractForm(std::string_view operation_id,
                                    std::string_view field_name,
                                    const SblrValue& value,

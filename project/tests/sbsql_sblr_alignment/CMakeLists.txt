@@ -406,13 +406,11 @@ set_tests_properties(sbsql_sblr_alignment_sequence_binary_identity PROPERTIES
   TIMEOUT 60 LABELS "sbsql_sblr_alignment;binary_uuid;sequence_runtime")
 
 add_executable(sbsql_sblr_alignment_context_variable_binary_identity
-  context_variable_binary_identity_test.cpp
-  ../../src/engine/sblr/sblr_runtime.cpp
-  ../../src/engine/sblr/sblr_context_variables.cpp)
+  context_variable_binary_identity_test.cpp)
 target_compile_features(sbsql_sblr_alignment_context_variable_binary_identity PRIVATE cxx_std_23)
 target_include_directories(sbsql_sblr_alignment_context_variable_binary_identity PRIVATE
   ../../src/engine/sblr)
-target_link_libraries(sbsql_sblr_alignment_context_variable_binary_identity PRIVATE sb_core_uuid)
+target_link_libraries(sbsql_sblr_alignment_context_variable_binary_identity PRIVATE sb_engine_sblr)
 add_test(NAME sbsql_sblr_alignment_context_variable_binary_identity
   COMMAND sbsql_sblr_alignment_context_variable_binary_identity)
 set_tests_properties(sbsql_sblr_alignment_context_variable_binary_identity PROPERTIES
@@ -881,24 +879,11 @@ set_tests_properties(sbsql_sblr_alignment_blake3_incremental_v3 PROPERTIES
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_function_registry_binary
-    function_registry_binary_test.cpp
-    ../../src/engine/functions/registry/function_registry.cpp
-    ../../src/engine/functions/registry/function_seed_registry.cpp
-    ../../src/engine/functions/metadata/function_hardening.cpp
-    ../../src/engine/functions/metadata/function_optimizer_metadata.cpp
-    ../../src/engine/functions/metadata/function_parser_projection.cpp
-    ../../src/engine/functions/common/function_runtime.cpp
-    ../../src/engine/functions/common/function_result_helpers.cpp
-    ../../src/engine/functions/families/crypto_hash/crypto_hash_function_landing_zone.cpp
-    ../../src/engine/sblr/sblr_aggregate_window_runtime.cpp
-    ../../src/engine/sblr/sblr_block_runtime.cpp
-    ../../src/engine/sblr/sblr_function_diagnostic.cpp
-    ../../src/engine/executor/canonical_aggregate_registry.cpp
-    ../../src/engine/sblr/sblr_runtime.cpp)
+    function_registry_binary_test.cpp)
   target_compile_features(sbsql_sblr_alignment_function_registry_binary PRIVATE cxx_std_23)
   target_include_directories(sbsql_sblr_alignment_function_registry_binary PRIVATE
     ../../src/engine/functions ../../src/engine ../../src/engine/executor)
-  target_link_libraries(sbsql_sblr_alignment_function_registry_binary PRIVATE sb_core_uuid sb_core_hash Threads::Threads)
+  target_link_libraries(sbsql_sblr_alignment_function_registry_binary PRIVATE sb_engine_sblr sb_engine_functions Threads::Threads)
   target_link_options(sbsql_sblr_alignment_function_registry_binary PRIVATE
     "-Wl,--wrap=RAND_bytes" "-Wl,--wrap=EVP_Digest" "-Wl,--wrap=HMAC" "-Wl,--wrap=OPENSSL_cleanse" "-Wl,--wrap=EVP_PBE_scrypt")
   add_test(NAME sbsql_sblr_alignment_function_registry_binary

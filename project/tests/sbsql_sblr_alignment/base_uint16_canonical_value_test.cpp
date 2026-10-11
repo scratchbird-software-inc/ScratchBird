@@ -546,7 +546,7 @@ void ConsumerCarrierBoundaries() {
               &null_key, &diagnostic) &&
               output == "unchanged" && null_key &&
               diagnostic.detail.ends_with(
-                  "sorted_index_uint16_carrier_provenance_unbound") &&
+                  "sorted_index_codec_provenance_unbound") &&
               diagnostic.code == "SB_ENGINE_API_INVALID_REQUEST",
           "ordered-index adapter refuses every untagged uint16 retained state");
   }
@@ -557,7 +557,7 @@ void ConsumerCarrierBoundaries() {
   platform::Uuid descriptor_uuid;
   std::copy(std::begin(execution_descriptor.descriptor_uuid.bytes),
             std::end(execution_descriptor.descriptor_uuid.bytes), descriptor_uuid.bytes.begin());
-  Check(dt::LookupDatatypeStorageIdentityV1(dt::kDatatypeCohortV5, 5, 5,
+  Check(dt::LookupDatatypeStorageIdentityV3(dt::kDatatypeCohortV5, 5, 5,
             descriptor_uuid, execution_descriptor.descriptor_epoch, &index_column.datatype),
         "bind exact uint16 retained codec for ordered key encoding");
   index_column.descriptor = scratchbird::core::uuid::MakeTypedUuid(
@@ -581,7 +581,7 @@ void ConsumerCarrierBoundaries() {
   }
   for (unsigned mutation = 0; mutation < 12; ++mutation) {
     auto invalid = index_column;
-    auto& codec = *invalid.datatype.codec;
+    auto& codec = invalid.datatype.codec->legacy_fields;
     switch (mutation) {
       case 0: codec.catalog_snapshot_uuid = {}; break;
       case 1: ++codec.catalog_generation; break;
@@ -590,7 +590,7 @@ void ConsumerCarrierBoundaries() {
       case 4: codec.type_uuid = {}; break;
       case 5: ++codec.type_generation; break;
       case 6: ++codec.codec_generation; break;
-      case 7: codec.codec_id += "stale"; break;
+      case 7: codec.codec_uuid.bytes[15] ^= 1; break;
       case 8: codec.canonical_value_exact_bytes = 1; break;
       case 9: codec.canonical_representation = "text"; break;
       case 10: invalid.datatype.type_uuid = {}; break;
@@ -603,6 +603,21 @@ void ConsumerCarrierBoundaries() {
               api::EncodeStoredLogicalKey({api::CrudStoredValue{std::string("42")}}),
               {invalid}, &output, &null_key, &diagnostic) && output == "unchanged" && null_key,
           "uint16 key encoder rejects codec or descriptor drift without replacing output");
+  }
+  {
+    auto relabeled = index_column;
+    relabeled.datatype.codec->legacy_fields.codec_id = "localized codec name";
+    relabeled.datatype.codec->legacy_fields.canonical_name = "localized datatype name";
+    const auto logical = api::EncodeStoredLogicalKey({api::CrudStoredValue{std::string("42")}});
+    std::string original, localized;
+    bool original_null = true, localized_null = true;
+    api::EngineApiDiagnostic diagnostic;
+    Check(api::bound_index_key::EncodeOrderedIndexKey(logical, {index_column},
+              &original, &original_null, &diagnostic) &&
+          api::bound_index_key::EncodeOrderedIndexKey(logical, {relabeled},
+              &localized, &localized_null, &diagnostic) &&
+          original == localized && !original_null && !localized_null,
+          "uint16 presentation labels cannot replace binary codec identity");
   }
   for (unsigned width : {0u, 1u, 3u, 8u}) {
     std::string output = "unchanged";

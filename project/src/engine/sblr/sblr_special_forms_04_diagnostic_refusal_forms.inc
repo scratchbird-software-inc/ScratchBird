@@ -43,7 +43,8 @@ SblrResult EvaluateSblrCastForm(std::string_view operation_id,
                                 const SblrExecutionContext& context,
                                 bool explicit_cast,
                                 bool reference_compatibility_profile,
-                                std::shared_ptr<const internal_api::EngineDescriptor> target_binding) {
+                                std::shared_ptr<const internal_api::EngineDescriptor> target_binding,
+                                const core::datatypes::DatatypeNumericContext* numeric_context) try {
   if (!SblrNativeCastCarrierValid(value)) {
     return SpecialFormFailure(operation_id, context, "SBLR.DESCRIPTOR_MISMATCH",
                               "cast source has conflicting or non-native value carriers");
@@ -71,7 +72,13 @@ SblrResult EvaluateSblrCastForm(std::string_view operation_id,
   };
   const bool native_numeric_pair = native_numeric_type(request.value.type_id) &&
                                    native_numeric_type(target_type);
-  if (native_numeric_pair) {
+  const bool real64_decimal = request.value.type_id == datatypes::CanonicalTypeId::real64 &&
+                             target_type == datatypes::CanonicalTypeId::decimal;
+  if (numeric_context && !real64_decimal)
+    return SpecialFormFailure(operation_id, context, "DATATYPE.CAST_FORBIDDEN",
+                              "numeric cast context is not admitted for this pair");
+  if (numeric_context) request.numeric_context = *numeric_context;
+  if (native_numeric_pair || real64_decimal) {
     // Fixed-width execution values are not decimal display strings. Retain all
     // 64 bits (including signed zero) across the datatype-owner boundary.
     if (!value.is_null &&
@@ -93,21 +100,24 @@ SblrResult EvaluateSblrCastForm(std::string_view operation_id,
     request.value.encoded_value = EncodedCastInput(value);
   }
 
-  if (native_numeric_pair || value.projection_descriptor || target_binding) {
+  if (native_numeric_pair || real64_decimal || value.projection_descriptor || target_binding) {
     // This native adapter consumes supplied bindings; target spelling is only
     // checked for agreement and cannot supply missing descriptor authority.
     const auto native_type = [&](auto type) {
       return type == datatypes::CanonicalTypeId::uuid ||
              type == datatypes::CanonicalTypeId::binary ||
-             (native_numeric_pair && native_numeric_type(type));
+             ((native_numeric_pair || real64_decimal) && native_numeric_type(type)) ||
+             (real64_decimal && type == datatypes::CanonicalTypeId::decimal);
     };
     const auto bind = [&](const auto& binding, auto type, auto* descriptor) {
       if (!binding || !native_type(type) ||
           CanonicalTypeFromDescriptor(binding->canonical_type_name) != type ||
           !binding->charset_uuid.is_nil() || !binding->collation_uuid.is_nil()) return false;
+      if (type == datatypes::CanonicalTypeId::decimal)
+        return BindDecimalProjectionDescriptor(*binding, descriptor, &request.decimal_target_codec);
       internal_api::CatalogColumnMetadata fields;
-      if (!internal_api::AdmitCatalogColumnMetadata(binding->encoded_descriptor, &fields) ||
-          !fields.identities.empty()) return false;
+      if (!internal_api::AdmitCatalogColumnMetadata(binding->encoded_descriptor, &fields)) return false;
+      if (!fields.identities.empty()) return false;
       for (const auto& [key, ignored] : fields.text)
         if (key != "nullability" && key != "nullable") return false;
       std::string detail;
@@ -117,7 +127,7 @@ SblrResult EvaluateSblrCastForm(std::string_view operation_id,
         !bind(value.projection_descriptor, request.value.type_id, &request.value.descriptor) ||
         !bind(target_binding, target_type, &request.target_descriptor)) {
       return SpecialFormFailure(operation_id, context, "DATATYPE.DESCRIPTOR.INVALID",
-                                "native cast requires exact source and target bindings without modifiers");
+                                "native cast requires exact source and target bindings with admitted modifiers");
     }
   }
 
@@ -129,6 +139,7 @@ SblrResult EvaluateSblrCastForm(std::string_view operation_id,
   }
 
   const auto result = datatypes::CastDatatypeValue(request);
+  try {
   if (!result.ok()) {
     std::string diagnostic_id = result.diagnostic.diagnostic_code.empty() ? "SBLR.CAST_FAILED" : result.diagnostic.diagnostic_code;
     std::string detail = result.diagnostic.message_key.empty() ? "canonical datatype cast refused the conversion" : result.diagnostic.message_key;
@@ -138,6 +149,8 @@ SblrResult EvaluateSblrCastForm(std::string_view operation_id,
     }
     auto failure = SpecialFormFailure(
         operation_id, context, std::move(diagnostic_id), std::move(detail));
+    if (real64_decimal && result.status.code == core::platform::StatusCode::memory_allocation_failed)
+      failure.status = SblrStatusCode::resource_exhausted;
     failure.numeric_facts = result.numeric_facts;
     if (!failure.diagnostics.empty()) {
       for (const auto& argument : result.diagnostic.arguments) {
@@ -151,7 +164,14 @@ SblrResult EvaluateSblrCastForm(std::string_view operation_id,
   }
 
   SblrValue published;
-  if (native_numeric_pair) {
+  if (real64_decimal) {
+    published.descriptor_id = "decimal";
+    published.is_null = result.value.is_null;
+    if (!published.is_null) {
+      published.payload_kind = SblrValuePayloadKind::binary;
+      published.binary_value.assign(result.value.encoded_value.begin(), result.value.encoded_value.end());
+    }
+  } else if (native_numeric_pair) {
     published.descriptor_id = datatypes::CanonicalTypeName(target_type);
     published.is_null = result.value.is_null;
     if (!published.is_null) {
@@ -179,6 +199,20 @@ SblrResult EvaluateSblrCastForm(std::string_view operation_id,
   auto output = ScalarResult(operation_id, std::move(published));
   output.numeric_facts = result.numeric_facts;
   return output;
+  } catch (const std::bad_alloc&) {
+    if (!real64_decimal) throw;
+    auto failure = SpecialFormFailure(operation_id, context, "DATATYPE.RESOURCE_EXHAUSTED",
+                                      "native decimal cast result allocation failed");
+    failure.status = SblrStatusCode::resource_exhausted;
+    failure.numeric_facts = result.numeric_facts;
+    return failure;
+  }
+} catch (const std::bad_alloc&) {
+  if (value.descriptor_id != "real64" || target_descriptor_id != "decimal") throw;
+  auto failure = SpecialFormFailure(operation_id, context, "DATATYPE.RESOURCE_EXHAUSTED",
+                                    "native decimal cast admission allocation failed");
+  failure.status = SblrStatusCode::resource_exhausted;
+  return failure;
 }
 
 SblrResult EvaluateSblrExtractForm(std::string_view operation_id,

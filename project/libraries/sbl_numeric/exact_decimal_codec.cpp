@@ -182,6 +182,64 @@ ExactDecimalArithmeticResult ApplyExactDecimalArithmetic(
   result.status = NumericStatusCode::ok;
   return result;
 }
+ExactDecimalArithmeticResult Real64ToExactDecimal(
+    const Real64Bytes& source, ExactDecimalProfile profile,
+    RoundingMode rounding) noexcept {
+  ExactDecimalArithmeticResult result;
+  if (!ExactDecimalProfileValid(profile) ||
+      (rounding != RoundingMode::half_even && rounding != RoundingMode::half_up &&
+       rounding != RoundingMode::truncate)) return result;
+  std::uint64_t bits = 0;
+  for (unsigned i = 0; i < 8; ++i) bits |= std::uint64_t(source[i]) << (8*i);
+  const unsigned exponent = (bits >> 52) & 0x7ff;
+  const bool negative = (bits >> 63) != 0;
+  if (exponent == 0x7ff) { result.status = NumericStatusCode::invalid_left; return result; }
+  const auto significand = (bits & ((std::uint64_t{1} << 52) - 1)) |
+                          (exponent ? std::uint64_t{1} << 52 : 0);
+  const int shift = exponent ? int(exponent) - 1023 - 52 : -1074;
+  // Largest scaled finite binary64 numerator is below 2^1024 * 10^76
+  // (<2^1277); smallest subnormal denominator is 2^1074. Fixed 2048-bit
+  // stack limbs cover both and the doubled remainder without allocation.
+  using Integer = boost::multiprecision::number<boost::multiprecision::cpp_int_backend<
+      2048, 2048, boost::multiprecision::unsigned_magnitude,
+      boost::multiprecision::unchecked, void>>;
+  const auto power = [](unsigned n) { Integer v = 1; while (n--) v *= 10; return v; };
+  Integer numerator = significand;
+  numerator *= power(profile.scale);
+  Integer denominator = 1;
+  if (shift >= 0) numerator <<= shift;
+  else denominator <<= -shift;
+  Integer quantized = numerator / denominator;
+  const Integer remainder = numerator % denominator;
+  result.inexact = remainder != 0;
+  if (rounding != RoundingMode::truncate &&
+      (2 * remainder > denominator || (2 * remainder == denominator &&
+       (rounding == RoundingMode::half_up || (quantized & 1) != 0)))) ++quantized;
+  if (quantized >= power(profile.precision)) {
+    result.status = NumericStatusCode::overflow; return result;
+  }
+  unsigned scale = profile.scale;
+  if (quantized == 0) scale = 0;
+  else while (scale && quantized % 10 == 0) { quantized /= 10; --scale; }
+  auto digits_value = quantized;
+  unsigned digits = 1;
+  while (digits_value >= 10) { digits_value /= 10; ++digits; }
+  result.bytes[0] = static_cast<std::uint8_t>(scale | (negative && quantized != 0 ? 128 : 0));
+  result.bytes[1] = static_cast<std::uint8_t>(std::max(digits, scale));
+  unsigned groups = 0;
+  do {
+    const auto group = (quantized % 1000000000).convert_to<std::uint32_t>();
+    quantized /= 1000000000;
+    for (unsigned b = 0; b < 4; ++b)
+      result.bytes[4 + 4 * groups + b] = static_cast<std::uint8_t>(group >> (8*b));
+    ++groups;
+  } while (quantized != 0);
+  result.bytes[2] = static_cast<std::uint8_t>(groups);
+  result.size = profile.codec == ExactDecimalCodec::le24_v1 ? 24 : 40;
+  result.status = NumericStatusCode::ok;
+  return result;
+}
+
 Real64BinaryResult ExactDecimalUnitFractionToReal64(
     const std::uint8_t* bytes, std::size_t size,
     const ExactDecimalProfile& profile) {

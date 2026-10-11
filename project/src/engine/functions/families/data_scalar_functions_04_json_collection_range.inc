@@ -1029,7 +1029,9 @@
     }
 
     const auto& source_value = request.arguments[0].value;
-    if (IsSqlNull(source_value)) {
+    const auto decimal_descriptor = ParseDecimalTargetDescriptor(target_descriptor);
+    const bool native_real64_decimal = decimal_descriptor && source_value.descriptor_id == "real64";
+    if (IsSqlNull(source_value) && !native_real64_decimal) {
       if (!scratchbird::engine::sblr::SblrNullPayloadEmpty(source_value)) {
         return RefuseFunctionWithDiagnostic(
             request,
@@ -1044,8 +1046,6 @@
           "SBLR NULL cast input lacks an exact bound execution descriptor");
     }
 
-    const auto decimal_descriptor =
-        ParseDecimalTargetDescriptor(target_descriptor);
     namespace dt = scratchbird::core::datatypes;
     dt::DatatypeRoundingMode rounding = dt::DatatypeRoundingMode::half_even;
     std::optional<std::string> cast_profile;
@@ -1080,6 +1080,15 @@
       }
     }
 
+    if (native_real64_decimal) {
+      dt::DatatypeNumericContext numeric_context;
+      numeric_context.precision=decimal_descriptor->precision;
+      numeric_context.scale=decimal_descriptor->scale;
+      numeric_context.rounding=rounding;
+      return {scratchbird::engine::sblr::EvaluateSblrCastForm(request.context.function_id,
+          source_value, "decimal", request.context.sblr_context, true, false,
+          request.result_descriptor, &numeric_context)};
+    }
     if (decimal_descriptor) {
       dt::DatatypeNumericOperationRequest numeric_request;
       numeric_request.operation = dt::DatatypeNumericOperationKind::canonicalize;
@@ -1122,7 +1131,7 @@
     if (target_descriptor.rfind("decimal", 0) == 0) {
       return RefuseFunctionInvalidInput(
           request,
-          "cast decimal target must use decimal(precision,scale) with precision 1 to 38 and scale not exceeding precision");
+          "cast decimal target must use decimal(precision,scale) with precision 1 to 76 and scale not exceeding precision");
     }
     const auto& value = request.arguments[0].value;
     if (target_descriptor == "character" || target_descriptor == "varchar" ||

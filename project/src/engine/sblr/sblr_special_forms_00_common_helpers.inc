@@ -10,6 +10,7 @@
 // This fragment preserves pre-existing behavior; do not add unrelated future work here.
 #include "sblr_special_forms.hpp"
 #include "sblr_binary_value_carrier.hpp"
+#include "sblr_decimal_projection_profile.hpp"
 #include "../executor/descriptor_value_runtime.hpp"
 #include "../internal_api/catalog/column_metadata_codec.hpp"
 

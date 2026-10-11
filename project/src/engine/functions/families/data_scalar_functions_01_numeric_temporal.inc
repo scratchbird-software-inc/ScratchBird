@@ -290,7 +290,7 @@ bool ParseDecimalDescriptorComponent(std::string_view encoded,
   for (const unsigned char ch : component) {
     if (std::isdigit(ch) == 0) return false;
     value = (value * 10) + static_cast<std::uint32_t>(ch - '0');
-    if (value > 38) return false;
+    if (value > 76) return false;
   }
   *out = value;
   return true;
