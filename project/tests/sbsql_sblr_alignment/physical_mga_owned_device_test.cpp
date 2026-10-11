@@ -14,6 +14,7 @@
 #include "datatype_date.hpp"
 #include "datatype_timestamp.hpp"
 #include "datatype_interval.hpp"
+#include "datatype_bit_string.hpp"
 #include "catalog_schema_definition.hpp"
 #include "transaction_inventory_page.hpp"
 #include "page_header.hpp"
@@ -2311,7 +2312,7 @@ void NativeInventoryLongChain() {
 }
 void TemporalReceivingProfiles() {
   namespace page = scratchbird::storage::page;
-  for (unsigned generation : {10u, 11u}) for (const auto type : {types::CanonicalTypeId::date, types::CanonicalTypeId::time, types::CanonicalTypeId::timestamp, types::CanonicalTypeId::interval}) {
+  for (unsigned generation : {10u, 11u}) for (const auto type : {types::CanonicalTypeId::date, types::CanonicalTypeId::time, types::CanonicalTypeId::timestamp, types::CanonicalTypeId::interval, types::CanonicalTypeId::bit_string}) {
     Fixture f;
     // Independent storage-component receiver; this does not assert SQL or
     // table-catalog admission. Physical MGA remains the transaction authority.
@@ -2335,13 +2336,17 @@ void TemporalReceivingProfiles() {
         auto bound = types::BuildTimestampValidatedProfileHandleV3({snapshot,snapshot,generation,generation}, identity);
         Check(bound.ok(), "exact TIMESTAMP physical receiver");
         column.timestamp = std::make_shared<const types::TimestampValidatedProfileHandleV3>(std::move(bound.profile));
-      } else {
+      } else if (type == types::CanonicalTypeId::interval) {
         auto bound = types::BuildIntervalValidatedProfileHandleV3({snapshot,snapshot,generation,generation}, identity);
         Check(bound.ok(), "exact INTERVAL physical receiver");
         column.interval = std::make_shared<const types::IntervalValidatedProfileHandleV3>(std::move(bound.profile));
+      } else {
+        auto bound = types::BuildBitStringDescriptorProfileV3({{snapshot,snapshot,generation,generation}, identity});
+        Check(bound.ok(), "exact BIT physical receiver");
+        column.bit_string = std::make_shared<const types::BitStringDescriptorProfileV3>(std::move(bound.profile));
       }
     }
-    Check(column.date || column.time || column.timestamp || column.interval, "explicit physical receiver absent");
+    Check(column.date || column.time || column.timestamp || column.interval || column.bit_string, "explicit physical receiver absent");
     schema->columns.push_back(column);
     const auto make = [&](mga::TransactionIdentity tx, u64 bits, bool null = false) {
       auto mutation = f.Mutation(tx, Id(UuidKind::row), f.first_page, "");
@@ -2361,6 +2366,9 @@ void TemporalReceivingProfiles() {
           for(unsigned i=0;i<4;++i)cell.payload.push_back(static_cast<platform::byte>(part>>(8*i)));
         for(unsigned i=0;i<8;++i)cell.payload.push_back(static_cast<platform::byte>(bits>>(8*i)));
       }
+      if (!null && type == types::CanonicalTypeId::bit_string)
+        cell.payload = bits == 1 ? std::vector<platform::byte>{8,0,0,0,0xaa} :
+                                  std::vector<platform::byte>{9,0,0,0,0xaa,0x80};
       return mutation;
     };
     const auto tx = f.Begin();
@@ -2452,6 +2460,26 @@ void TemporalReceivingProfiles() {
       bad->equality_fingerprint[0] ^= 1; different->columns[0].interval = bad;
       test_failure(types::ValidateIntervalProfileHandleV3(*bad).diagnostic,
           [](const auto& result) -> const auto& { return result.interval_diagnostic; });
+    }
+    if (column.bit_string) {
+      auto bad = std::make_shared<types::BitStringDescriptorProfileV3>(*column.bit_string);
+      bad->profile_fingerprint[0] ^= 1;
+      different->columns[0].bit_string = bad;
+      const auto refused_read = db::ReadPhysicalMgaCowRowsFromOpenDevice(
+          f.device, f.relation, f.first_page, {}, true, {}, nullptr, different);
+      Check(!refused_read.ok() && refused_read.rows.empty() && refused_read.row_page.rows.empty() &&
+                refused_read.diagnostic.diagnostic_code == "CTB.BIT.DESCRIPTOR_INVALID",
+            "physical BIT invalid binding published values");
+      invalid.temporal_schema = different;
+      const auto refused_write = db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(f.device, invalid);
+      Check(!refused_write.ok() && refused_write.diagnostic.diagnostic_code == "CTB.BIT.DESCRIPTOR_INVALID",
+            "physical BIT invalid binding accepted");
+      invalid.temporal_schema = schema;
+      invalid.cells[0].value.payload.back() |= 1;
+      const auto dirty_tail = db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(f.device, invalid);
+      Check(!dirty_tail.ok() && dirty_tail.diagnostic.diagnostic_code == "CTB.BIT.CANONICAL_ENCODING_INVALID",
+            "physical BIT dirty tail accepted");
+      Check(write_calls == writes && f.Bytes() == before, "physical BIT refusal changed node bytes");
     }
     f.Finish(rejected_tx, false);
     f.Locked();

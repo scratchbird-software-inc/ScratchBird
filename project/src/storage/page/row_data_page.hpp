@@ -29,6 +29,7 @@ struct DateValidatedProfileHandleV3;
 struct TimeValidatedProfileHandleV3;
 struct TimestampValidatedProfileHandleV3;
 struct IntervalValidatedProfileHandleV3;
+struct BitStringDescriptorProfileV3;
 }
 
 namespace scratchbird::storage::page {
@@ -50,24 +51,30 @@ inline constexpr u32 kRowDataPageBodyHeaderBytes = 96;
 // Exactly one profile per column, in strictly increasing ordinal order. Profiles
 // and the span must remain immutable and alive throughout the call. Returned
 // owning rows retain no borrowed schema, so a rebuild needs explicit re-binding.
-struct RowDataTemporalColumnBinding {
+struct RowDataProfileColumnBinding {
   u16 column_ordinal = 0;
   bool null_allowed = false;
   std::shared_ptr<const core::datatypes::DateValidatedProfileHandleV3> date;
   std::shared_ptr<const core::datatypes::TimeValidatedProfileHandleV3> time;
   std::shared_ptr<const core::datatypes::TimestampValidatedProfileHandleV3> timestamp;
   std::shared_ptr<const core::datatypes::IntervalValidatedProfileHandleV3> interval;
+  std::shared_ptr<const core::datatypes::BitStringDescriptorProfileV3> bit_string;
 };
-struct RowDataTemporalReceiver {
+struct RowDataProfileReceiver {
   TypedUuid relation_uuid;
-  std::span<const RowDataTemporalColumnBinding> columns;
+  std::span<const RowDataProfileColumnBinding> columns;
 };
 // Lifetime owner for operations which retain work beyond the submitting call.
-struct RowDataTemporalSchema {
+struct RowDataProfileSchema {
   TypedUuid relation_uuid;
-  std::vector<RowDataTemporalColumnBinding> columns;
-  RowDataTemporalReceiver receiver() const noexcept { return {relation_uuid, columns}; }
+  std::vector<RowDataProfileColumnBinding> columns;
+  RowDataProfileReceiver receiver() const noexcept { return {relation_uuid, columns}; }
 };
+// Source compatibility for existing temporal-only consumers. These are the
+// same profile-bearing receiver, not a second encoding or admission path.
+using RowDataTemporalColumnBinding = RowDataProfileColumnBinding;
+using RowDataTemporalReceiver = RowDataProfileReceiver;
+using RowDataTemporalSchema = RowDataProfileSchema;
 
 struct RowDataCell {
   u16 column_ordinal = 0;

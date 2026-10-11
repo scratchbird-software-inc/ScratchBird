@@ -13,6 +13,7 @@
 #include "datatype_date.hpp"
 #include "datatype_timestamp.hpp"
 #include "datatype_interval.hpp"
+#include "datatype_bit_string.hpp"
 
 #include <algorithm>
 #include <array>
@@ -108,7 +109,7 @@ namespace dt = scratchbird::core::datatypes;
 bool IsTypedEngineIdentity(const TypedUuid& uuid, UuidKind expected_kind);
 
 template<class Fact>
-RowDataPageResult TemporalError(const Fact& fact) {
+RowDataPageResult ProfileError(const Fact& fact) {
   auto result = RowPageError(std::string(fact.diagnostic_code),
       "storage.row_data_page.temporal_component_refused", std::string(fact.detail));
   result.status = fact.status;
@@ -119,29 +120,42 @@ RowDataPageResult TemporalError(const Fact& fact) {
   return result;
 }
 
-RowDataPageResult ValidateTemporalReceiver(const RowDataTemporalReceiver& receiver,
+RowDataPageResult ProfileError(const DiagnosticRecord& fact) {
+  RowDataPageResult result;
+  result.status = fact.status;
+  result.diagnostic = fact;
+  return result;
+}
+
+RowDataPageResult ValidateProfileReceiver(const RowDataProfileReceiver& receiver,
                                          const TypedUuid& relation) {
+  const auto code = std::any_of(receiver.columns.begin(), receiver.columns.end(),
+      [](const auto& column){ return bool(column.bit_string); })
+      ? "CTB.BIT.DESCRIPTOR_INVALID" : "CTI.TEMPORAL.DESCRIPTOR_INVALID";
   if (!IsTypedEngineIdentity(receiver.relation_uuid, UuidKind::object) ||
       receiver.relation_uuid.value != relation.value || receiver.relation_uuid.kind != relation.kind)
-    return RowPageError("CTI.TEMPORAL.DESCRIPTOR_INVALID", "storage.row_data_page.temporal_relation_mismatch");
+    return RowPageError(code, "storage.row_data_page.profile_relation_mismatch");
   bool first = true;
   u16 previous = 0;
   for (const auto& column : receiver.columns) {
     if ((!first && column.column_ordinal <= previous) ||
-        unsigned(bool(column.date)) + unsigned(bool(column.time)) + unsigned(bool(column.timestamp)) + unsigned(bool(column.interval)) != 1)
-      return RowPageError("CTI.TEMPORAL.DESCRIPTOR_INVALID", "storage.row_data_page.temporal_schema_invalid");
+        unsigned(bool(column.date)) + unsigned(bool(column.time)) + unsigned(bool(column.timestamp)) + unsigned(bool(column.interval)) + unsigned(bool(column.bit_string)) != 1)
+      return RowPageError(code, "storage.row_data_page.profile_schema_invalid");
     if (column.date) {
       const auto valid = dt::ValidateDateProfileHandleV3(*column.date);
-      if (!valid.ok()) return TemporalError(valid.diagnostic);
+      if (!valid.ok()) return ProfileError(valid.diagnostic);
     } else if (column.time) {
       const auto valid = dt::ValidateTimeProfileHandleV3(*column.time);
-      if (!valid.ok()) return TemporalError(valid.diagnostic);
+      if (!valid.ok()) return ProfileError(valid.diagnostic);
     } else if (column.timestamp) {
       const auto valid = dt::ValidateTimestampProfileHandleV3(*column.timestamp);
-      if (!valid.ok()) return TemporalError(valid.diagnostic);
-    } else {
+      if (!valid.ok()) return ProfileError(valid.diagnostic);
+    } else if (column.interval) {
       const auto valid = dt::ValidateIntervalProfileHandleV3(*column.interval);
-      if (!valid.ok()) return TemporalError(valid.diagnostic);
+      if (!valid.ok()) return ProfileError(valid.diagnostic);
+    } else {
+      const auto valid = dt::ValidateBitStringDescriptorProfileV3(*column.bit_string);
+      if (!valid.ok()) return ProfileError(valid.diagnostic);
     }
     first = false;
     previous = column.column_ordinal;
@@ -151,85 +165,99 @@ RowDataPageResult ValidateTemporalReceiver(const RowDataTemporalReceiver& receiv
   return result;
 }
 
-const RowDataTemporalColumnBinding* TemporalColumn(const RowDataTemporalReceiver* receiver, u16 ordinal) {
+const RowDataProfileColumnBinding* ProfileColumn(const RowDataProfileReceiver* receiver, u16 ordinal) {
   if (receiver == nullptr) return nullptr;
   const auto found = std::lower_bound(receiver->columns.begin(), receiver->columns.end(), ordinal,
       [](const auto& column, u16 value) { return column.column_ordinal < value; });
   return found != receiver->columns.end() && found->column_ordinal == ordinal ? &*found : nullptr;
 }
 
-RowDataPageResult EncodeTemporalCell(const RowDataCell& cell, const RowDataTemporalColumnBinding& binding) {
+RowDataPageResult EncodeProfileCell(const RowDataCell& cell, const RowDataProfileColumnBinding& binding) {
   if (cell.external_value || cell.value.payload_is_toast_reference ||
       cell.value.type_id != (binding.date ? dt::CanonicalTypeId::date :
           binding.time ? dt::CanonicalTypeId::time :
-          binding.timestamp ? dt::CanonicalTypeId::timestamp : dt::CanonicalTypeId::interval))
-    return RowPageError("CTI.TEMPORAL.DESCRIPTOR_INVALID", "storage.row_data_page.temporal_type_mismatch");
+          binding.timestamp ? dt::CanonicalTypeId::timestamp :
+          binding.interval ? dt::CanonicalTypeId::interval : dt::CanonicalTypeId::bit_string))
+    return RowPageError(binding.bit_string ? "CTB.BIT.DESCRIPTOR_INVALID" : "CTI.TEMPORAL.DESCRIPTOR_INVALID", "storage.row_data_page.profile_type_mismatch");
   RowDataPageResult result;
   if (binding.date) {
     const auto decoded = dt::DecodeCanonicalDateComponentNoAllocV3(*binding.date,
         cell.value.is_null ? dt::DateValueStateV3::sql_null : dt::DateValueStateV3::value,
         binding.null_allowed, cell.value.payload);
-    if (!decoded.ok()) return TemporalError(decoded.diagnostic);
+    if (!decoded.ok()) return ProfileError(decoded.diagnostic);
     auto encoded = dt::EncodeDateSbdvalComposedV3(
         {binding.date, decoded.value.state, decoded.value.day}, binding.null_allowed);
-    if (!encoded.ok()) return TemporalError(encoded.diagnostic);
+    if (!encoded.ok()) return ProfileError(encoded.diagnostic);
     result.serialized = std::move(encoded.bytes);
   } else if (binding.time) {
     const auto decoded = dt::DecodeCanonicalTimeComponentNoAllocV3(*binding.time,
         cell.value.is_null ? dt::TimeValueStateV3::sql_null : dt::TimeValueStateV3::value,
         binding.null_allowed, cell.value.payload);
-    if (!decoded.ok()) return TemporalError(decoded.diagnostic);
+    if (!decoded.ok()) return ProfileError(decoded.diagnostic);
     auto encoded = dt::EncodeTimeSbdvalComposedV3(
         {binding.time, decoded.value.state, decoded.value.nanoseconds_since_midnight}, binding.null_allowed);
-    if (!encoded.ok()) return TemporalError(encoded.diagnostic);
+    if (!encoded.ok()) return ProfileError(encoded.diagnostic);
     result.serialized = std::move(encoded.bytes);
   } else if (binding.timestamp) {
     const auto decoded = dt::DecodeCanonicalTimestampComponentNoAllocV3(*binding.timestamp,
         cell.value.is_null ? dt::TimestampValueStateV3::sql_null : dt::TimestampValueStateV3::value,
         binding.null_allowed, cell.value.payload);
-    if (!decoded.ok()) return TemporalError(decoded.diagnostic);
+    if (!decoded.ok()) return ProfileError(decoded.diagnostic);
     auto encoded = dt::EncodeTimestampSbdvalComposedV3(
         {binding.timestamp, decoded.value.state, decoded.value.civil_day,
          decoded.value.nanoseconds_since_midnight}, binding.null_allowed);
-    if (!encoded.ok()) return TemporalError(encoded.diagnostic);
+    if (!encoded.ok()) return ProfileError(encoded.diagnostic);
     result.serialized = std::move(encoded.bytes);
-  } else {
+  } else if (binding.interval) {
     const auto decoded = dt::DecodeCanonicalIntervalComponentNoAllocV3(*binding.interval,
         cell.value.is_null ? dt::IntervalValueStateV3::sql_null : dt::IntervalValueStateV3::value,
         binding.null_allowed, cell.value.payload);
-    if (!decoded.ok()) return TemporalError(decoded.diagnostic);
+    if (!decoded.ok()) return ProfileError(decoded.diagnostic);
     auto encoded = dt::EncodeIntervalSbdvalComposedV3(
         {binding.interval, decoded.value.state, decoded.value.months,
          decoded.value.civil_days, decoded.value.fixed_nanoseconds}, binding.null_allowed);
-    if (!encoded.ok()) return TemporalError(encoded.diagnostic);
+    if (!encoded.ok()) return ProfileError(encoded.diagnostic);
+    result.serialized = std::move(encoded.bytes);
+  } else {
+    const auto decoded = dt::DecodeCanonicalBitStringComponentNoAllocV3(*binding.bit_string,
+        cell.value.is_null ? dt::BitStringValueStateV3::sql_null : dt::BitStringValueStateV3::present,
+        binding.null_allowed, cell.value.payload);
+    if (!decoded.ok()) return ProfileError(decoded.diagnostic);
+    auto encoded = dt::EncodeBitStringSbdvalComposedV3(decoded.value, binding.null_allowed);
+    if (!encoded.ok()) return ProfileError(encoded.diagnostic);
     result.serialized = std::move(encoded.bytes);
   }
   result.status = RowPageOkStatus();
   return result;
 }
 
-RowDataPageResult DecodeTemporalCell(std::span<const byte> bytes,
-    const RowDataTemporalColumnBinding& binding, RowDataCell* cell) {
+RowDataPageResult DecodeProfileCell(std::span<const byte> bytes,
+    const RowDataProfileColumnBinding& binding, RowDataCell* cell) {
   if (binding.date) {
     const auto decoded = dt::DecodeDateSbdvalComposedNoAllocV3(*binding.date, binding.null_allowed, bytes);
-    if (!decoded.ok()) return TemporalError(decoded.diagnostic);
+    if (!decoded.ok()) return ProfileError(decoded.diagnostic);
     cell->value.type_id = dt::CanonicalTypeId::date;
     cell->value.is_null = decoded.value.state == dt::DateValueStateV3::sql_null;
   } else if (binding.time) {
     const auto decoded = dt::DecodeTimeSbdvalComposedNoAllocV3(*binding.time, binding.null_allowed, bytes);
-    if (!decoded.ok()) return TemporalError(decoded.diagnostic);
+    if (!decoded.ok()) return ProfileError(decoded.diagnostic);
     cell->value.type_id = dt::CanonicalTypeId::time;
     cell->value.is_null = decoded.value.state == dt::TimeValueStateV3::sql_null;
   } else if (binding.timestamp) {
     const auto decoded = dt::DecodeTimestampSbdvalComposedNoAllocV3(*binding.timestamp, binding.null_allowed, bytes);
-    if (!decoded.ok()) return TemporalError(decoded.diagnostic);
+    if (!decoded.ok()) return ProfileError(decoded.diagnostic);
     cell->value.type_id = dt::CanonicalTypeId::timestamp;
     cell->value.is_null = decoded.value.state == dt::TimestampValueStateV3::sql_null;
-  } else {
+  } else if (binding.interval) {
     const auto decoded = dt::DecodeIntervalSbdvalComposedNoAllocV3(*binding.interval, binding.null_allowed, bytes);
-    if (!decoded.ok()) return TemporalError(decoded.diagnostic);
+    if (!decoded.ok()) return ProfileError(decoded.diagnostic);
     cell->value.type_id = dt::CanonicalTypeId::interval;
     cell->value.is_null = decoded.value.state == dt::IntervalValueStateV3::sql_null;
+  } else {
+    const auto decoded = dt::DecodeBitStringSbdvalComposedNoAllocV3(*binding.bit_string, binding.null_allowed, bytes);
+    if (!decoded.ok()) return ProfileError(decoded.diagnostic);
+    cell->value.type_id = dt::CanonicalTypeId::bit_string;
+    cell->value.is_null = decoded.value.state == dt::BitStringValueStateV3::sql_null;
   }
   // Composed owner admission above checked the complete SBDVAL01 frame. Retain
   // exactly its canonical bytes, not a display rendering or a second conversion.
@@ -454,7 +482,7 @@ DenseRowOrdinalValidation ValidateDenseRowOrdinalLocator(
 }
 
 static RowDataPageResult BuildRowDataPageBodyImpl(RowDataPageBody body, u32 page_size,
-                                                const RowDataTemporalReceiver* receiver) {
+                                                const RowDataProfileReceiver* receiver) {
   if (page_size <= kPageHeaderSerializedBytes + kRowDataPageBodyHeaderBytes) {
     return RowPageError("SB-ROW-DATA-PAGE-SIZE-TOO-SMALL",
                         "storage.row_data_page.page_size_too_small",
@@ -463,7 +491,7 @@ static RowDataPageResult BuildRowDataPageBodyImpl(RowDataPageBody body, u32 page
 
   RowDataPageBody body_with_ordinals = std::move(body);
   if (receiver != nullptr) {
-    auto valid = ValidateTemporalReceiver(*receiver, body_with_ordinals.relation_uuid);
+    auto valid = ValidateProfileReceiver(*receiver, body_with_ordinals.relation_uuid);
     if (!valid.ok()) return valid;
   }
   AssignDenseInternalRowOrdinals(&body_with_ordinals);
@@ -511,8 +539,8 @@ static RowDataPageResult BuildRowDataPageBodyImpl(RowDataPageBody body, u32 page
     body_bytes += kRowHeaderBytes;
     for (const RowDataCell& cell : row.cells) {
       scratchbird::core::datatypes::DatatypeBinaryResult encoded;
-      if (const auto* binding = TemporalColumn(receiver, cell.column_ordinal)) {
-        auto temporal = EncodeTemporalCell(cell, *binding);
+      if (const auto* binding = ProfileColumn(receiver, cell.column_ordinal)) {
+        auto temporal = EncodeProfileCell(cell, *binding);
         if (!temporal.ok()) return temporal;
         encoded.status = temporal.status;
         encoded.encoded = std::move(temporal.serialized);
@@ -669,12 +697,12 @@ RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size)
 }
 
 RowDataPageResult BuildRowDataPageBody(const RowDataPageBody& body, u32 page_size,
-                                     const RowDataTemporalReceiver& receiver) {
+                                     const RowDataProfileReceiver& receiver) {
   return BuildRowDataPageBodyImpl(body, page_size, &receiver);
 }
 
 RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size,
-                                          const RowDataTemporalReceiver& receiver) {
+                                          const RowDataProfileReceiver& receiver) {
   return BuildRowDataPageBodyImpl(std::move(body), page_size, &receiver);
 }
 
@@ -803,7 +831,7 @@ ReadResult<Borrowed> ParseRowDataPageBodyImpl(
     std::span<const byte> serialized, u64 page_number,
     const scratchbird::core::datatypes::DatatypeBinaryDiagnosticContextV1* binary_context,
     bool retain_serialized = true, RowDataPageViewWorkspace workspace = {},
-    const RowDataTemporalReceiver* receiver = nullptr) {
+    const RowDataProfileReceiver* receiver = nullptr) {
   if (serialized.size() < kRowDataPageBodyHeaderBytes) {
     return RowReadError<Borrowed>("SB-ROW-DATA-PAGE-BODY-SHORT",
                         "storage.row_data_page.body_short",
@@ -874,7 +902,7 @@ ReadResult<Borrowed> ParseRowDataPageBodyImpl(
   }
   if constexpr (!Borrowed) {
     if (receiver != nullptr) {
-      auto valid = ValidateTemporalReceiver(*receiver, result.body.relation_uuid);
+      auto valid = ValidateProfileReceiver(*receiver, result.body.relation_uuid);
       if (!valid.ok()) return valid;
     }
   }
@@ -960,8 +988,9 @@ ReadResult<Borrowed> ParseRowDataPageBodyImpl(
                             cell_index);
       }
       if (cell_kind == 1) {
-        if (TemporalColumn(receiver, cell.column_ordinal) != nullptr)
-          return RowReadError<Borrowed>("CTI.TEMPORAL.DESCRIPTOR_INVALID", "storage.row_data_page.temporal_external_refused");
+        if (const auto* binding = ProfileColumn(receiver, cell.column_ordinal))
+          return RowReadError<Borrowed>(binding->bit_string ? "CTB.BIT.DESCRIPTOR_INVALID" : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+                                       "storage.row_data_page.profile_external_refused");
         if (binary_context != nullptr)
           return RowReadError<Borrowed>("CATALOG.INVALID_INPUT", "storage.row_data_page.external_value_not_admitted");
         const auto locator = DecodeRowExternalValueLocator(serialized.subspan(offset, payload_bytes));
@@ -990,8 +1019,8 @@ ReadResult<Borrowed> ParseRowDataPageBodyImpl(
         }
       } else {
         if constexpr (!Borrowed) {
-          if (const auto* binding = TemporalColumn(receiver, cell.column_ordinal)) {
-            auto decoded = DecodeTemporalCell(serialized.subspan(offset, payload_bytes), *binding, &cell);
+          if (const auto* binding = ProfileColumn(receiver, cell.column_ordinal)) {
+            auto decoded = DecodeProfileCell(serialized.subspan(offset, payload_bytes), *binding, &cell);
             if (!decoded.ok()) return decoded;
           } else {
             std::vector<byte> encoded(serialized.begin() + offset, serialized.begin() + offset + payload_bytes);
@@ -1076,7 +1105,7 @@ RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 
 }
 
 RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 page_number,
-                                     const RowDataTemporalReceiver& receiver) {
+                                     const RowDataProfileReceiver& receiver) {
   return ParseRowDataPageBodyImpl(serialized, page_number, nullptr, true, {}, &receiver);
 }
 
@@ -1091,7 +1120,7 @@ RowDataPageResult ParseRowDataPageRows(std::span<const byte> serialized, u64 pag
 }
 
 RowDataPageResult ParseRowDataPageRows(std::span<const byte> serialized, u64 page_number,
-                                     const RowDataTemporalReceiver& receiver) {
+                                     const RowDataProfileReceiver& receiver) {
   return ParseRowDataPageBodyImpl(serialized, page_number, nullptr, false, {}, &receiver);
 }
 

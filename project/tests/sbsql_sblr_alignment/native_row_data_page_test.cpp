@@ -7,6 +7,7 @@
 #include "datatype_date.hpp"
 #include "datatype_timestamp.hpp"
 #include "datatype_interval.hpp"
+#include "datatype_bit_string.hpp"
 #include <openssl/sha.h>
 namespace page=scratchbird::storage::page;
 namespace disk=scratchbird::storage::disk;
@@ -449,5 +450,102 @@ void TemporalReceivers() {
   }
 }
 
-int main(){MetricSamplePageBaseMain();auto before=checks;Images();SemanticImages();PageFaults();ExternalImages();TemporalReceivers();
+void BitReceivers() {
+  namespace dt = scratchbird::core::datatypes;
+  const platform::Uuid descriptor{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x29}};
+  for (unsigned generation : {10u, 11u}) {
+    const auto snapshot = generation == 10 ? dt::kDatatypeCohortV10 : dt::kDatatypeCohortV11;
+    const auto identity = dt::LookupDatatypeTypeCodecIdentityV3(snapshot, generation, generation, descriptor, 1);
+    Check(identity.ok, "BIT row identity unavailable");
+    for (auto kind : {dt::BitStringSurfaceProfileKindV3::unqualified,
+                      dt::BitStringSurfaceProfileKindV3::fixed,
+                      dt::BitStringSurfaceProfileKindV3::varying}) {
+      const auto profile = dt::BuildBitStringDescriptorProfileV3(
+          {{Id(90), snapshot, generation, generation}, identity.row, kind, 9});
+      Check(profile.ok(), "BIT row profile unavailable");
+      std::array<page::RowDataProfileColumnBinding, 1> columns;
+      columns[0].column_ordinal = 1;
+      columns[0].null_allowed = true;
+      columns[0].bit_string = std::make_shared<const dt::BitStringDescriptorProfileV3>(profile.profile);
+      for (unsigned page_profile = 0; page_profile < 5; ++page_profile) {
+        for (unsigned sample = 0; sample <= 10; ++sample) {
+          auto p = RowExample(page_profile, Sample());
+          auto& cell = p.body.rows[0].cells[0];
+          cell.value.type_id = dt::CanonicalTypeId::bit_string;
+          cell.value.is_null = sample == 10;
+          cell.value.payload.clear();
+          if (!cell.value.is_null) {
+            const unsigned count = kind == dt::BitStringSurfaceProfileKindV3::fixed ? 9 : sample;
+            cell.value.payload = {static_cast<byte>(count), 0, 0, 0};
+            for (unsigned i = 0; i < (count + 7) / 8; ++i) cell.value.payload.push_back(0xaa);
+            if (count % 8) cell.value.payload.back() &= static_cast<byte>(0xffu << (8 - count % 8));
+          }
+          const page::RowDataProfileReceiver receiver{p.body.relation_uuid, columns};
+          const auto oracle = RowOracle(p);
+          const Bytes body(oracle.begin()+128, oracle.end()-32);
+          const auto encoded = page::BuildRowDataPageBody(p.body, p.header.page_size_bytes-32, receiver);
+          Check(encoded.ok() && encoded.serialized == body, "BIT row differs from independent exact page oracle");
+          const auto absent = page::BuildRowDataPageBody(p.body, p.header.page_size_bytes-32);
+          Check(!absent.ok() && absent.body.rows.empty() && absent.serialized.empty() &&
+                    absent.diagnostic.diagnostic_code == "CTB.BIT.SERIALIZATION_PROFILE_MISSING",
+                "profileless BIT writer admitted");
+          const auto unbound = page::ParseRowDataPageBody(body, p.body.page_number);
+          Check(!unbound.ok() && unbound.body.rows.empty() && unbound.serialized.empty(), "profileless BIT reader admitted");
+          for (bool retained : {false, true}) {
+            const auto decoded = retained ? page::ParseRowDataPageBody(body, p.body.page_number, receiver) :
+                page::ParseRowDataPageRows(body, p.body.page_number, receiver);
+            Check(decoded.ok() && decoded.body.rows.size() == 1 && decoded.body.rows[0].cells.size() == 1,
+                  "BIT bound row lost cells");
+            if (!decoded.ok() || decoded.body.rows.size() != 1 || decoded.body.rows[0].cells.size() != 1) continue;
+            const auto& actual = decoded.body.rows[0].cells[0].value;
+            Check(actual.type_id == cell.value.type_id && actual.is_null == cell.value.is_null &&
+                      actual.payload == cell.value.payload, "BIT row lost state or exact native bits");
+            const auto rebuilt = page::BuildRowDataPageBodyOwned(decoded.body, p.header.page_size_bytes-32, receiver);
+            Check(rebuilt.ok() && rebuilt.serialized == body, "BIT row re-encode changed bytes");
+          }
+          const auto refuse = [&](auto change_page, auto change_receiver) {
+            auto bad = p;
+            auto bindings = columns;
+            auto receiving = receiver;
+            receiving.columns = bindings;
+            change_page(bad); change_receiver(receiving, bindings);
+            const auto bytes = RowOracle(bad);
+            const Bytes damaged(bytes.begin()+128, bytes.end()-32);
+            const auto write = page::BuildRowDataPageBody(bad.body, bad.header.page_size_bytes-32, receiving);
+            const auto read = page::ParseRowDataPageBody(damaged, bad.body.page_number, receiving);
+            Check(!write.ok() && write.body.rows.empty() && write.serialized.empty() &&
+                      !read.ok() && read.body.rows.empty() && read.serialized.empty(),
+                  "invalid BIT receiver or payload published partial rows");
+          };
+          const auto no_page_change = [](auto&){};
+          const auto no_receiver_change = [](auto&, auto&){};
+          refuse(no_page_change, [](auto& r, auto&){ r.relation_uuid.value.bytes[0] ^= 1; });
+          refuse(no_page_change, [](auto&, auto& b){ b[0].column_ordinal = 2; });
+          refuse(no_page_change, [](auto&, auto& b){ b[0].bit_string.reset(); });
+          refuse(no_page_change, [](auto&, auto& b){
+            auto changed = std::make_shared<dt::BitStringDescriptorProfileV3>(*b[0].bit_string);
+            changed->profile_fingerprint[0] ^= 1; b[0].bit_string = std::move(changed);
+          });
+          refuse([](auto& q){ q.body.rows[0].cells[0].value.payload.push_back(1); }, no_receiver_change);
+          auto external = p;
+          external.body.rows[0].cells[0].value = {};
+          external.body.rows[0].cells[0].external_value = page::RowExternalValueLocator{Id(80),123,12000};
+          const auto external_image = RowOracle(external);
+          const Bytes external_body(external_image.begin()+128,external_image.end()-32);
+          const auto external_write = page::BuildRowDataPageBody(external.body, p.header.page_size_bytes-32, receiver);
+          const auto external_read = page::ParseRowDataPageBody(external_body, p.body.page_number, receiver);
+          for (const auto* rejected : {&external_write, &external_read})
+            Check(!rejected->ok() && rejected->diagnostic.diagnostic_code == "CTB.BIT.DESCRIPTOR_INVALID" &&
+                      rejected->body.rows.empty() && rejected->serialized.empty(), "BIT locator substitution lost exact refusal");
+          if (cell.value.is_null)
+            refuse(no_page_change, [](auto&, auto& b){ b[0].null_allowed = false; });
+          else if (cell.value.payload[0] % 8)
+            refuse([](auto& q){ q.body.rows[0].cells[0].value.payload.back() |= 1; }, no_receiver_change);
+        }
+      }
+    }
+  }
+}
+
+int main(){MetricSamplePageBaseMain();auto before=checks;Images();SemanticImages();PageFaults();ExternalImages();TemporalReceivers();BitReceivers();
   std::cout<<"native row image checks="<<checks-before<<" combined="<<checks<<" failures="<<failures<<'\n';return failures?1:0;}
