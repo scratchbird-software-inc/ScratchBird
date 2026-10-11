@@ -97,7 +97,8 @@ Result Failure(std::string_view code, std::string_view detail,
                Status status = ErrorStatus()) noexcept {
   Result result;
   result.status = status;
-  if constexpr (std::is_same_v<Result, BitStringViewResultV3> ||
+  if constexpr (std::is_same_v<Result, BitStringValidationResultV3> ||
+                std::is_same_v<Result, BitStringViewResultV3> ||
                 std::is_same_v<Result, BitStringSearchResultV3> ||
                 std::is_same_v<Result, BitStringSortKeyViewResultV3>) {
     result.diagnostic.status = status;
@@ -601,6 +602,43 @@ BitStringProfileResultV3 ValidateBitStringDescriptorProfileV3(
                                              ResourceStatus());
   }
   return result;
+}
+
+BitStringValidationResultV3 ValidateBitStringDescriptorProfileNoAllocV3(
+    const BitStringDescriptorProfileV3& profile) noexcept {
+  if (!ProfileValidNoAlloc(profile))
+    return Failure<BitStringValidationResultV3>("CTB.BIT.DESCRIPTOR_INVALID",
+        "profile_identity_or_policy_invalid");
+  return Success<BitStringValidationResultV3>();
+}
+
+BitStringValidationResultV3 ValidateBitStringExecutionDescriptorV3(
+    const scratchbird::engine::ExecutionTypeDescriptor& d,
+    const DatatypeTypeCodecIdentityRowV3& identity,
+    BitStringSurfaceProfileKindV3 kind) noexcept {
+  using namespace scratchbird::engine;
+  const bool unqualified = kind == BitStringSurfaceProfileKindV3::unqualified;
+  const bool bounded = kind == BitStringSurfaceProfileKindV3::fixed ||
+                       kind == BitStringSurfaceProfileKindV3::varying;
+  if (!IsExactCanonicalBitStringTypeCodecIdentityV3(identity) ||
+      !std::equal(std::begin(d.descriptor_uuid.bytes), std::end(d.descriptor_uuid.bytes),
+                  identity.legacy_fields.descriptor_uuid.bytes.begin()) ||
+      d.descriptor_epoch != identity.legacy_fields.descriptor_generation ||
+      d.canonical_type_id != static_cast<u32>(CanonicalTypeId::bit_string) ||
+      d.family != ExecutionTypeFamily::bit_string ||
+      d.width_class != ExecutionTypeWidthClass::descriptor_defined ||
+      d.bit_width != 0 || d.precision != 0 || d.scale != 0 ||
+      (!unqualified && !bounded) ||
+      (unqualified ? d.length != 0 : (d.length == 0 || d.length > kBitStringMaximumLogicalBitsV3)) ||
+      d.modifier_flags != (unqualified ? 0 : ExecutionTypeModifierFlagBit(ExecutionTypeModifierFlag::length)) ||
+      d.vector_dimensions != 0 || d.container_rank != 0 ||
+      !EngineUuidNil(d.domain_uuid) || !d.domain_stack.empty() ||
+      !EngineUuidNil(d.charset_uuid) || !EngineUuidNil(d.collation_uuid) ||
+      !EngineUuidNil(d.timezone_uuid) || !EngineUuidNil(d.element_descriptor_uuid) ||
+      !EngineUuidNil(d.security_policy_uuid) || !d.descriptor_authoritative || !d.parser_independent)
+    return Failure<BitStringValidationResultV3>("CTB.BIT.DESCRIPTOR_INVALID",
+        "execution_descriptor_invalid");
+  return Success<BitStringValidationResultV3>();
 }
 
 BitStringProfileResultV3 DecodeBitStringDescriptorProfileMaterialV3(

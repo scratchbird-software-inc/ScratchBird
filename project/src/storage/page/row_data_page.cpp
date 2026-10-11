@@ -154,7 +154,7 @@ RowDataPageResult ValidateProfileReceiver(const RowDataProfileReceiver& receiver
       const auto valid = dt::ValidateIntervalProfileHandleV3(*column.interval);
       if (!valid.ok()) return ProfileError(valid.diagnostic);
     } else {
-      const auto valid = dt::ValidateBitStringDescriptorProfileV3(*column.bit_string);
+      const auto valid = dt::ValidateBitStringDescriptorProfileNoAllocV3(*column.bit_string);
       if (!valid.ok()) return ProfileError(valid.diagnostic);
     }
     first = false;

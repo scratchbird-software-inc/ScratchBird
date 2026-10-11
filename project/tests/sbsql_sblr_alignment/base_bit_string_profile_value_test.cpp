@@ -12,10 +12,23 @@
 #include <array>
 #include <cstdlib>
 #include <iostream>
+#include <new>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <vector>
+
+namespace { thread_local bool deny_allocation = false; }
+void* operator new(std::size_t size) {
+  if (deny_allocation) throw std::bad_alloc();
+  if (auto* value = std::malloc(size ? size : 1)) return value;
+  throw std::bad_alloc();
+}
+void* operator new[](std::size_t size) { return ::operator new(size); }
+void operator delete(void* value) noexcept { std::free(value); }
+void operator delete(void* value, std::size_t) noexcept { std::free(value); }
+void operator delete[](void* value) noexcept { std::free(value); }
+void operator delete[](void* value, std::size_t) noexcept { std::free(value); }
 
 namespace {
 namespace dt = scratchbird::core::datatypes;
@@ -89,6 +102,77 @@ void CheckDigest(const std::array<platform::byte, 32>& actual,
   const auto bytes = Hex(expected);
   Check(std::equal(actual.begin(), actual.end(), bytes.begin(), bytes.end()),
         message);
+}
+
+void ExecutionDescriptorsAreExact() {
+  namespace engine = scratchbird::engine;
+  for (auto kind : {dt::BitStringSurfaceProfileKindV3::unqualified,
+                    dt::BitStringSurfaceProfileKindV3::fixed,
+                    dt::BitStringSurfaceProfileKindV3::varying}) {
+    const auto profile = Profile(kind, 9);
+    for (bool nullable : {false, true}) {
+      engine::ExecutionTypeDescriptor descriptor;
+      std::copy(profile.identity.legacy_fields.descriptor_uuid.bytes.begin(),
+          profile.identity.legacy_fields.descriptor_uuid.bytes.end(), descriptor.descriptor_uuid.bytes);
+      descriptor.descriptor_epoch = 1;
+      descriptor.canonical_type_id = static_cast<std::uint32_t>(dt::CanonicalTypeId::bit_string);
+      descriptor.family = engine::ExecutionTypeFamily::bit_string;
+      descriptor.width_class = engine::ExecutionTypeWidthClass::descriptor_defined;
+      descriptor.nullable_allowed = nullable;
+      descriptor.descriptor_authoritative = descriptor.parser_independent = true;
+      descriptor.stable_name.assign(200, 'x');
+      if (kind != dt::BitStringSurfaceProfileKindV3::unqualified) {
+        descriptor.length = 9;
+        descriptor.modifier_flags = engine::ExecutionTypeModifierFlagBit(engine::ExecutionTypeModifierFlag::length);
+      }
+      deny_allocation = true;
+      const auto valid = dt::ValidateBitStringExecutionDescriptorV3(descriptor, profile.identity, kind);
+      const auto bound = dt::ValidateBitStringDescriptorProfileNoAllocV3(profile);
+      deny_allocation = false;
+      Check(valid.ok() && bound.ok(), "BIT borrowed execution/profile validation failed");
+      const auto reject = [&](auto mutate) {
+        auto changed = descriptor;
+        mutate(changed);
+        deny_allocation = true;
+        const auto refused = dt::ValidateBitStringExecutionDescriptorV3(changed, profile.identity, kind);
+        deny_allocation = false;
+        Check(!refused.ok() && refused.diagnostic.diagnostic_code == "CTB.BIT.DESCRIPTOR_INVALID",
+              "BIT mutated occurrence admitted");
+      };
+      reject([](auto& d){ d.descriptor_uuid.bytes[0] ^= 1; });
+      reject([](auto& d){ ++d.descriptor_epoch; });
+      reject([](auto& d){ ++d.canonical_type_id; });
+      reject([](auto& d){ d.family = engine::ExecutionTypeFamily::unknown; });
+      reject([](auto& d){ d.width_class = engine::ExecutionTypeWidthClass::unknown; });
+      reject([](auto& d){ ++d.bit_width; });
+      reject([](auto& d){ ++d.precision; });
+      reject([](auto& d){ ++d.scale; });
+      reject([](auto& d){ d.length = dt::kBitStringMaximumLogicalBitsV3 + 1; });
+      reject([](auto& d){ d.modifier_flags ^= 0x8000000000000000ull; });
+      reject([](auto& d){ ++d.vector_dimensions; });
+      reject([](auto& d){ ++d.container_rank; });
+      reject([](auto& d){ d.domain_uuid.bytes[0] = 1; });
+      reject([](auto& d){ d.domain_stack.emplace_back(); });
+      reject([](auto& d){ d.charset_uuid.bytes[0] = 1; });
+      reject([](auto& d){ d.collation_uuid.bytes[0] = 1; });
+      reject([](auto& d){ d.timezone_uuid.bytes[0] = 1; });
+      reject([](auto& d){ d.element_descriptor_uuid.bytes[0] = 1; });
+      reject([](auto& d){ d.security_policy_uuid.bytes[0] = 1; });
+      reject([](auto& d){ d.descriptor_authoritative = false; });
+      reject([](auto& d){ d.parser_independent = false; });
+      auto corrupt_profile = profile;
+      corrupt_profile.profile_fingerprint[0] ^= 1;
+      auto corrupt_identity = profile.identity;
+      corrupt_identity.native_fields.canonical_value_maximum_bytes ^= 1;
+      deny_allocation = true;
+      const auto invalid_profile = dt::ValidateBitStringDescriptorProfileNoAllocV3(corrupt_profile);
+      const auto invalid_identity = dt::ValidateBitStringExecutionDescriptorV3(descriptor, corrupt_identity, kind);
+      const auto invalid_kind = dt::ValidateBitStringExecutionDescriptorV3(descriptor, profile.identity,
+          static_cast<dt::BitStringSurfaceProfileKindV3>(255));
+      deny_allocation = false;
+      Check(!invalid_profile.ok() && !invalid_identity.ok() && !invalid_kind.ok(), "BIT invalid no-allocation authority admitted");
+    }
+  }
 }
 
 void ProfilesAreExact() {
@@ -495,6 +579,7 @@ void BoundsOwnershipAndAtomicity() {
 int main() {
   for (generation = 10; generation <= 11; ++generation) {
     ProfilesAreExact();
+    ExecutionDescriptorsAreExact();
     AcceptedAndNegativeVectors();
     BoundsOwnershipAndAtomicity();
   }

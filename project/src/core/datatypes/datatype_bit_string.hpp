@@ -101,13 +101,21 @@ struct BitStringResultV3 {
   bool ok() const noexcept { return status.ok(); }
 };
 
+struct BitStringDiagnosticViewV3 {
+  Status status;
+  std::string_view diagnostic_code;
+  std::string_view detail;
+};
+
+struct BitStringValidationResultV3 {
+  Status status;
+  BitStringDiagnosticViewV3 diagnostic;
+  bool ok() const noexcept { return status.ok(); }
+};
+
 struct BitStringViewResultV3 {
   Status status;
-  struct {
-    Status status;
-    std::string_view diagnostic_code;
-    std::string_view detail;
-  } diagnostic;
+  BitStringDiagnosticViewV3 diagnostic;
   BitStringValueViewV3 value;
   bool ok() const noexcept { return status.ok(); }
 };
@@ -134,6 +142,14 @@ BitStringProfileResultV3 DecodeBitStringDescriptorProfileMaterialV3(
     std::span<const byte> material) noexcept;
 BitStringProfileResultV3 ValidateBitStringDescriptorProfileV3(
     const BitStringDescriptorProfileV3& profile) noexcept;
+BitStringValidationResultV3 ValidateBitStringDescriptorProfileNoAllocV3(
+    const BitStringDescriptorProfileV3& profile) noexcept;
+// Exact native occurrence validation. Surface syntax and actual catalog
+// admission remain with the caller; labels never select an identity/profile.
+BitStringValidationResultV3 ValidateBitStringExecutionDescriptorV3(
+    const scratchbird::engine::ExecutionTypeDescriptor& descriptor,
+    const DatatypeTypeCodecIdentityRowV3& identity,
+    BitStringSurfaceProfileKindV3 kind) noexcept;
 
 BitStringViewResultV3 ValidateBitStringValueViewV3(
     const BitStringValueViewV3& value, bool null_allowed) noexcept;
