@@ -284,6 +284,11 @@ std::optional<CanonicalBytes> FreezeContextualReservationSkeletonV2(
     CanonicalAppendUuid(&frozen, descriptor.datatype_catalog_snapshot_uuid);
     CanonicalAppendU64(&frozen, descriptor.datatype_catalog_generation);
     CanonicalAppendU64(&frozen, descriptor.datatype_registry_generation);
+    CanonicalAppendU16(&frozen, descriptor.decimal_codec_profile ? 1 : 0);
+    if (descriptor.decimal_codec_profile) {
+      CanonicalAppendUuid(&frozen, descriptor.decimal_codec_profile->uuid);
+      CanonicalAppendU64(&frozen, descriptor.decimal_codec_profile->generation);
+    }
   }
 
   CanonicalAppendU32(

@@ -4,6 +4,7 @@
 #include "engine/internal_api/query/relational_type_descriptor.hpp"
 
 #include "binder.hpp"
+#include "common/native_datatype_codec_identity.hpp"
 #include "core/datatypes/datatype_catalog_manifest.hpp"
 #include "wire/parser_server_ipc/parser_client_types.hpp"
 #include "core/uuid/uuid.hpp"
@@ -79,7 +80,10 @@ inline bool PreserveNativeDescriptorAuthority(
       descriptor->datatype_registry_generation != 0;
   if (any_authority) {
     // Partial or contradictory authority is never repaired by filling defaults.
-    return descriptor->descriptor_generation == identity->descriptor_generation &&
+    return MatchesNativeDecimalOccurrenceProfile(*descriptor,
+        descriptor->width_precision_scale.precision,
+        descriptor->width_precision_scale.scale) &&
+        descriptor->descriptor_generation == identity->descriptor_generation &&
         descriptor->type_generation == identity->type_generation &&
         descriptor->codec_id == identity->codec_id &&
         descriptor->codec_version == identity->codec_version &&
@@ -132,6 +136,9 @@ inline bool PreserveNativeDescriptorAuthority(
   projected.datatype_catalog_snapshot_uuid = identity->catalog_snapshot_uuid;
   projected.datatype_catalog_generation = identity->catalog_generation;
   projected.datatype_registry_generation = identity->registry_generation;
+  if (!MatchesNativeDecimalOccurrenceProfile(projected,
+          projected.width_precision_scale.precision,
+          projected.width_precision_scale.scale)) return false;
   *descriptor = std::move(projected);
   return true;
 }
@@ -160,6 +167,7 @@ inline bool MatchesNativeNumericDescriptorRecord(
       lowered.codec_generation == descriptor.codec_generation &&
       lowered.precision == descriptor.width_precision_scale.precision &&
       lowered.scale == descriptor.width_precision_scale.scale &&
+      lowered.decimal_codec_profile == descriptor.decimal_codec_profile &&
       lowered.statement_receipt_uuid == descriptor.statement_receipt_uuid &&
       lowered.datatype_catalog_snapshot_uuid == descriptor.datatype_catalog_snapshot_uuid &&
       lowered.datatype_catalog_generation == descriptor.datatype_catalog_generation &&

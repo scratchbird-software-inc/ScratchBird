@@ -5,6 +5,13 @@
 #include <cstdint>
 
 namespace scratchbird::core::datatypes {
+// Occurrence-local representation binding, shared by parser and engine carriers.
+// Presence does not issue statement authority or authorize execution.
+struct DecimalCodecProfile {
+  platform::Uuid uuid;
+  std::uint64_t generation{0};
+  bool operator==(const DecimalCodecProfile&) const = default;
+};
 inline constexpr platform::Uuid kExactDecimal24CodecUuid{{
     0x01,0xa1,0x18,0x6b,0xdf,0x04,0x76,0x0a,0xa3,0xd5,0xd0,0x2d,0x2e,0xe3,0x01,0x54}};
 inline constexpr platform::Uuid kExactDecimal40CodecUuid{{

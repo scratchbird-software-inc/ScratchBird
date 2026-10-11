@@ -11,6 +11,7 @@
 #include "ast/ast.hpp"
 #include "common/common.hpp"
 #include "../../../core/platform/runtime_platform.hpp"
+#include "../../../core/datatypes/datatype_decimal_codec_profile.hpp"
 
 #include <cstdint>
 #include <compare>
@@ -58,6 +59,7 @@ struct NativeDescriptorBindingInput {
   scratchbird::core::platform::Uuid datatype_catalog_snapshot_uuid;
   std::uint64_t datatype_catalog_generation{0};
   std::uint64_t datatype_registry_generation{0};
+  std::optional<core::datatypes::DecimalCodecProfile> decimal_codec_profile;
 };
 
 struct NativeExpressionBindingInput {
@@ -183,6 +185,7 @@ struct BoundDescriptorAstRecord {
   scratchbird::core::platform::Uuid datatype_catalog_snapshot_uuid;
   std::uint64_t datatype_catalog_generation{0};
   std::uint64_t datatype_registry_generation{0};
+  std::optional<core::datatypes::DecimalCodecProfile> decimal_codec_profile;
 };
 
 struct BoundExpressionAstRecord {

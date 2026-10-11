@@ -3,6 +3,7 @@
 #pragma once
 
 #include "../../../core/uuid/uuid.hpp"
+#include "../../../core/datatypes/datatype_decimal_codec_profile.hpp"
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -16,11 +17,7 @@ enum class RelationalNullability : std::uint8_t {
 };
 
 struct RelationalTypeDescriptor {
-  struct DecimalCodecProfile {
-    core::platform::Uuid uuid;
-    std::uint64_t generation{0};
-    bool operator==(const DecimalCodecProfile&) const = default;
-  };
+  using DecimalCodecProfile = core::datatypes::DecimalCodecProfile;
   std::uint32_t descriptor_id{0};
   core::platform::Uuid descriptor_uuid;
   core::platform::Uuid type_uuid;

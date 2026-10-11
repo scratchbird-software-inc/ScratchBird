@@ -3372,6 +3372,16 @@ set_tests_properties(sbsql_sblr_alignment_sblr_binary_identity_codec PROPERTIES
   LABELS "sbsql_sblr_alignment;binary_uuid;SBOP;SBOS;component_codec;not_e2e"
   TIMEOUT 60)
 
+add_executable(sbsql_sblr_alignment_parser_decimal_profile parser_decimal_profile_test.cpp)
+target_compile_features(sbsql_sblr_alignment_parser_decimal_profile PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_parser_decimal_profile PRIVATE
+  sbl_sbsql_parser_pipeline sbl_sbsql_reservation_projection)
+add_test(NAME sbsql_sblr_alignment_parser_decimal_profile
+  COMMAND sbsql_sblr_alignment_parser_decimal_profile)
+set_tests_properties(sbsql_sblr_alignment_parser_decimal_profile PROPERTIES
+  LABELS "sbsql_sblr_alignment;binary_uuid;decimal;parser_lowering;component_regression;not_e2e"
+  TIMEOUT 60)
+
 add_executable(sbsql_sblr_alignment_relational_descriptor_codec
   relational_descriptor_codec_test.cpp
   ${PROJECT_SOURCE_DIR}/src/engine/internal_api/mga_relation_store/mga_relation_descriptor_codec.cpp)

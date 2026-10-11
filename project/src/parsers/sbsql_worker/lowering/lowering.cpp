@@ -33696,7 +33696,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   const auto emit_relational_descriptors = [&]() {
     const auto carries_any_authoritative_field =
         [](const BoundDescriptorAstRecord& descriptor) {
-          return descriptor.descriptor_generation != 0 ||
+          return descriptor.decimal_codec_profile.has_value() ||
+                 descriptor.descriptor_generation != 0 ||
                  descriptor.type_generation != 0 ||
                  !descriptor.codec_id.empty() || descriptor.codec_version != 0 ||
                  descriptor.codec_generation != 0 ||
@@ -33728,7 +33729,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     const auto same_non_authoritative_descriptor =
         [](const BoundDescriptorAstRecord& left,
            const BoundDescriptorAstRecord& right) {
-          return left.type_uuid == right.type_uuid &&
+          return left.decimal_codec_profile == right.decimal_codec_profile &&
+                 left.type_uuid == right.type_uuid &&
                  left.nullability == right.nullability &&
                  left.collation_uuid == right.collation_uuid &&
                  left.timezone_profile_id == right.timezone_profile_id &&
@@ -33756,7 +33758,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     const auto same_immutable_datatype_authority =
         [](const BoundDescriptorAstRecord& left,
            const BoundDescriptorAstRecord& right) {
-          return left.type_uuid == right.type_uuid &&
+          return left.decimal_codec_profile == right.decimal_codec_profile &&
+                 left.type_uuid == right.type_uuid &&
                  left.canonical_type_name == right.canonical_type_name &&
                  left.element_profile == right.element_profile &&
                  left.descriptor_generation == right.descriptor_generation &&
@@ -33780,10 +33783,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       const bool carries_any =
           carries_any_authoritative_field(descriptor);
       const bool carries_complete = carries_complete_authority(descriptor);
-      if (carries_any != carries_complete) {
+      if (carries_any != carries_complete ||
+          !MatchesNativeDecimalOccurrenceProfile(descriptor,
+              descriptor.width_precision_scale.precision,
+              descriptor.width_precision_scale.scale)) {
         AddNativeRelationalLoweringError(
             &envelope, "DATATYPE.DESCRIPTOR.INVALID",
-            "relational descriptor carries a partial authoritative receipt tuple",
+            "relational descriptor carries incomplete or contradictory datatype/profile authority",
             {{"descriptor_id", std::to_string(descriptor.descriptor_id)}});
         return false;
       }
@@ -33835,6 +33841,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       wire.width = descriptor.width_precision_scale.width;
       wire.precision = descriptor.width_precision_scale.precision;
       wire.scale = descriptor.width_precision_scale.scale;
+      wire.decimal_codec_profile = descriptor.decimal_codec_profile;
       wire.datatype_identity_authoritative = carries_complete_authority(descriptor);
       wire.descriptor_generation = descriptor.descriptor_generation;
       wire.type_generation = descriptor.type_generation;
@@ -44877,6 +44884,7 @@ struct ParsedRelationalDescriptor {
   std::optional<std::uint32_t> width;
   std::optional<std::uint32_t> precision;
   std::optional<std::uint32_t> scale;
+  std::optional<core::datatypes::DecimalCodecProfile> decimal_codec_profile;
   bool datatype_identity_authoritative{false};
   std::uint64_t descriptor_generation{0};
   std::uint64_t type_generation{0};
@@ -45601,6 +45609,7 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
       descriptor.width = wire.width;
       descriptor.precision = wire.precision;
       descriptor.scale = wire.scale;
+      descriptor.decimal_codec_profile = wire.decimal_codec_profile;
       descriptor.datatype_identity_authoritative = wire.datatype_identity_authoritative;
       descriptor.descriptor_generation = wire.descriptor_generation;
       descriptor.type_generation = wire.type_generation;
@@ -46589,7 +46598,8 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
   const auto same_non_authoritative_descriptor =
       [](const ParsedRelationalDescriptor& left,
          const ParsedRelationalDescriptor& right) {
-        return left.type_uuid == right.type_uuid &&
+        return left.decimal_codec_profile == right.decimal_codec_profile &&
+               left.type_uuid == right.type_uuid &&
                left.nullability == right.nullability &&
                left.collation_uuid == right.collation_uuid &&
                left.timezone_profile_id == right.timezone_profile_id &&
@@ -46614,7 +46624,8 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
   const auto same_immutable_datatype_authority =
       [](const ParsedRelationalDescriptor& left,
          const ParsedRelationalDescriptor& right) {
-        return left.type_uuid == right.type_uuid &&
+        return left.decimal_codec_profile == right.decimal_codec_profile &&
+               left.type_uuid == right.type_uuid &&
                left.descriptor_generation == right.descriptor_generation &&
                left.type_generation == right.type_generation &&
                left.codec_id == right.codec_id &&
@@ -46653,6 +46664,8 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
          (!descriptor.precision.has_value() ||
           *descriptor.scale > *descriptor.precision)) ||
         !exact_datatype_identity ||
+        !MatchesNativeDecimalOccurrenceProfile(descriptor,
+            descriptor.precision, descriptor.scale) ||
         !descriptors.emplace(descriptor.id, &descriptor).second) {
       return RefuseRelationalGraph(
           descriptor.datatype_identity_authoritative

@@ -514,6 +514,7 @@ BoundDescriptorAstRecord CopyBoundDescriptorAstRecord(
   record.collation_uuid = descriptor.collation_uuid;
   record.timezone_profile_id = descriptor.timezone_profile_id;
   record.width_precision_scale = descriptor.width_precision_scale;
+  record.decimal_codec_profile = descriptor.decimal_codec_profile;
   record.canonical_type_name = descriptor.canonical_type_name;
   record.element_profile = descriptor.element_profile;
   record.descriptor_generation = descriptor.descriptor_generation;
@@ -754,7 +755,8 @@ static BoundNativeRelationalDocument BindNativeRelationalAstImpl(
   // occurrence handle and never cause those handles to merge.
   const auto carries_any_authoritative_field =
       [](const NativeDescriptorBindingInput& descriptor) {
-        return descriptor.descriptor_generation != 0 ||
+        return descriptor.decimal_codec_profile.has_value() ||
+               descriptor.descriptor_generation != 0 ||
                descriptor.type_generation != 0 || !descriptor.codec_id.empty() ||
                descriptor.codec_version != 0 ||
                descriptor.codec_generation != 0 ||
@@ -782,7 +784,8 @@ static BoundNativeRelationalDocument BindNativeRelationalAstImpl(
   const auto same_non_authoritative_descriptor =
       [](const NativeDescriptorBindingInput& left,
          const NativeDescriptorBindingInput& right) {
-        return left.type_uuid == right.type_uuid &&
+        return left.decimal_codec_profile == right.decimal_codec_profile &&
+               left.type_uuid == right.type_uuid &&
                left.nullability == right.nullability &&
                left.collation_uuid == right.collation_uuid &&
                left.timezone_profile_id == right.timezone_profile_id &&
@@ -810,7 +813,8 @@ static BoundNativeRelationalDocument BindNativeRelationalAstImpl(
   const auto same_immutable_datatype_authority =
       [](const NativeDescriptorBindingInput& left,
          const NativeDescriptorBindingInput& right) {
-        return left.type_uuid == right.type_uuid &&
+        return left.decimal_codec_profile == right.decimal_codec_profile &&
+               left.type_uuid == right.type_uuid &&
                left.canonical_type_name == right.canonical_type_name &&
                left.element_profile == right.element_profile &&
                left.descriptor_generation == right.descriptor_generation &&
@@ -838,7 +842,10 @@ static BoundNativeRelationalDocument BindNativeRelationalAstImpl(
          (!descriptor.width_precision_scale.precision.has_value() ||
           *descriptor.width_precision_scale.scale >
               *descriptor.width_precision_scale.precision)) ||
-        carries_any != carries_complete) {
+        carries_any != carries_complete ||
+        !MatchesNativeDecimalOccurrenceProfile(descriptor,
+            descriptor.width_precision_scale.precision,
+            descriptor.width_precision_scale.scale)) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-DESCRIPTOR",
                             "descriptor binding contains an invalid typed field");
       return RefusedBoundAst(std::move(bound));
