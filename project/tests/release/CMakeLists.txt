@@ -6,6 +6,13 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
+add_test(NAME public_runtime_stage_conformance
+  COMMAND ${Python3_EXECUTABLE} -B
+    "${CMAKE_CURRENT_SOURCE_DIR}/public_runtime_stage_conformance.py"
+    --cmake "${CMAKE_COMMAND}"
+    --module "${PROJECT_SOURCE_DIR}/cmake/PublicBranding.cmake")
+set_tests_properties(public_runtime_stage_conformance PROPERTIES TIMEOUT 60)
+
 if(NOT TARGET sb_core_platform)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../src/core/platform
                    ${CMAKE_CURRENT_BINARY_DIR}/src_core_platform)

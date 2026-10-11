@@ -127,7 +127,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   target_compile_features(listener_process_stop_gate PRIVATE cxx_std_23)
   target_link_libraries(listener_process_stop_gate PRIVATE sb_server_core)
   target_link_options(listener_process_stop_gate PRIVATE -Wl,--wrap=kill -Wl,--wrap=waitpid)
-  foreach(mode force-success kill-denied wait-failed wait-interrupted graceful-refused restart-denied retry wait-retry unconfirmed-owner invalid-native-pid)
+  foreach(mode force-success kill-denied wait-failed wait-interrupted graceful-refused restart-denied retry wait-retry unconfirmed-owner invalid-native-pid embedded-graceful-retry)
     add_test(NAME listener_process_stop_${mode} COMMAND listener_process_stop_gate ${mode})
     set_tests_properties(listener_process_stop_${mode} PROPERTIES TIMEOUT 30 LABELS "concurrency;listener;shutdown")
   endforeach()
@@ -450,6 +450,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
     set_tests_properties(server_agent_startup_cleanup_failure_${failed_launch}_gate PROPERTIES
       TIMEOUT 120 LABELS "agents;concurrency;startup;partial_failure;linux_proof")
   endforeach()
+  add_test(NAME server_agent_startup_join_failure_gate
+    COMMAND server_agent_shutdown_wakeup_gate --startup-join-failure 3)
+  add_test(NAME server_agent_startup_worker_join_failure_gate
+    COMMAND server_agent_shutdown_wakeup_gate --startup-worker-join-failure 3)
+  set_tests_properties(server_agent_startup_join_failure_gate server_agent_startup_worker_join_failure_gate PROPERTIES
+    TIMEOUT 120 LABELS "agents;concurrency;startup;shutdown;native_join;linux_proof")
   add_test(NAME server_agent_sequential_thread_restart_gate
     COMMAND server_agent_shutdown_wakeup_gate --sequential-restart)
   set_tests_properties(server_agent_sequential_thread_restart_gate PROPERTIES

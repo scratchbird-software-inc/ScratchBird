@@ -783,6 +783,19 @@ ServerListenerOperationResult StopListenerProcess(ServerListenerProfileRuntime* 
   result.state_before = profile->state;
   result.state_after = profile->state;
   const auto command = mode == "force" ? "STOP FORCE" : "STOP GRACEFUL";
+  // A refused/late management response may be followed by real child exit.
+  // Reconcile the retained waitable child before attempting its now-absent
+  // management socket. ECHILD is deliberately not proof of owned exit.
+  if (mode != "force" && profile->pid > 0 && ReapIfExited(profile->pid)) {
+    profile->pid = -1;
+    profile->enabled = false;
+    profile->state = "stopped";
+    profile->last_transition = command;
+    result.ok = true;
+    result.outcome = "completed";
+    result.state_after = profile->state;
+    return result;
+  }
   auto stop = SendManagementCommand(profile, command, 1000);
   if (profile->pid > 0) {
     const std::int64_t pid = profile->pid;

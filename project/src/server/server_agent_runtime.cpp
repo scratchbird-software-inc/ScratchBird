@@ -668,11 +668,23 @@ ServerAgentRuntime::~ServerAgentRuntime() {
 
 bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
                                const HostedEngineState& engine_state,
-                               std::vector<ServerDiagnostic>* diagnostics) {
+                               std::vector<ServerDiagnostic>* diagnostics,
+                               void (*before_failure_cleanup)() noexcept) {
   // SEARCH_KEY: SERVER_AGENT_START_STOP_LIFECYCLE_SERIALIZATION
   // Retain ownership through durable setup, publication and native launch.
   // started_ alone is not proof that the thread handles are fully installed.
   std::lock_guard<std::mutex> lifecycle_guard(lifecycle_mutex_);
+  {
+    std::lock_guard<std::mutex> guard(state_mutex_);
+    if (started_ && stopping_.load()) {
+      if (diagnostics != nullptr) {
+        diagnostics->push_back(ServerDiagnostic{
+            "AGENT.INVALID_STATE", "AGENT.INVALID_STATE", ServerDiagnosticSeverity::kError,
+            "A runtime with unfinished native cleanup cannot be restarted.", {}});
+      }
+      return false;
+    }
+  }
   const auto database = FirstOpenDatabase(engine_state);
   if (!database.has_value()) {
     return true;
@@ -1151,7 +1163,26 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
   } catch (...) {
     // Retain the native exception contract, but never leave a partially launched
     // or fully launched cohort running when construction/publication fails.
-    StopWithLifecycleLock();
+    const auto startup_failure = std::current_exception();
+    if (before_failure_cleanup) before_failure_cleanup();
+    {
+      std::lock_guard<std::mutex> guard(state_mutex_);
+      if (!startup_failure_) startup_failure_ = startup_failure;
+    }
+    try {
+      StopWithLifecycleLock();
+#if defined(__GLIBCXX__) && !defined(_WIN32)
+    } catch (const __cxxabiv1::__forced_unwind&) {
+      throw;
+#endif
+    } catch (...) {
+      std::lock_guard<std::mutex> guard(state_mutex_);
+      if (!cleanup_failure_) {
+        cleanup_failure_ = std::current_exception();
+        cleanup_failure_stage_ = ServerAgentRuntimeSnapshot::CleanupFailureStage::kOther;
+      }
+      std::rethrow_exception(startup_failure);
+    }
     throw;
   }
   return true;
@@ -1167,22 +1198,39 @@ ServerAgentRuntimeStopResult ServerAgentRuntime::Stop() {
 ServerAgentRuntimeStopResult ServerAgentRuntime::StopWithLifecycleLock() {
   {
     std::lock_guard<std::mutex> guard(state_mutex_);
-    if (!started_ || stopping_.load()) {
+    if (!started_) {
       return last_stop_result_;
     }
+    // A native join can fail without consuming its thread handle. Preserve an
+    // incomplete receipt and let a later serialized Stop retry those handles;
+    // stopping=true alone must never return the previous empty/success receipt.
+    last_stop_result_.attempted = true;
+    last_stop_result_.durable_cleanup_complete = false;
     // Publish under the waiters' mutex so notification cannot fall between a
     // false stopping predicate and the condition variable's unlock-and-park.
     std::lock_guard<std::mutex> schedule_guard(schedule_mutex_);
     stopping_.store(true);
   }
   schedule_cv_.notify_all();
-  if (scheduler_thread_.joinable()) {
-    scheduler_thread_.join();
-  }
-  for (auto& thread : worker_threads_) {
-    if (thread.joinable()) {
+  const auto join_owned = [&](std::thread& thread,
+                             ServerAgentRuntimeSnapshot::CleanupFailureStage stage,
+                             std::size_t worker_index) {
+    if (!thread.joinable()) return;
+    try {
       thread.join();
+    } catch (const std::system_error&) {
+      std::lock_guard<std::mutex> guard(state_mutex_);
+      if (!cleanup_failure_) {
+        cleanup_failure_ = std::current_exception();
+        cleanup_failure_stage_ = stage;
+        cleanup_failure_worker_index_ = worker_index;
+      }
+      throw;
     }
+  };
+  join_owned(scheduler_thread_, ServerAgentRuntimeSnapshot::CleanupFailureStage::kSchedulerJoin, 0);
+  for (std::size_t i = 0; i < worker_threads_.size(); ++i) {
+    join_owned(worker_threads_[i], ServerAgentRuntimeSnapshot::CleanupFailureStage::kWorkerJoin, i);
   }
   worker_threads_.clear();
   // SEARCH_KEY: SERVER_AGENT_DURABLE_STOP_RESULT
@@ -1300,6 +1348,10 @@ ServerAgentRuntimeSnapshot ServerAgentRuntime::Snapshot() const {
   snapshot.started = started_;
   snapshot.stopping = stopping_.load();
   snapshot.stop_result = last_stop_result_;
+  snapshot.startup_failure = startup_failure_;
+  snapshot.cleanup_failure = cleanup_failure_;
+  snapshot.cleanup_failure_stage = cleanup_failure_stage_;
+  snapshot.cleanup_failure_worker_index = cleanup_failure_worker_index_;
   snapshot.database_path = database_path_;
   snapshot.database_uuid = database_uuid_;
   snapshot.filespace_uuid = filespace_uuid_;

@@ -16,9 +16,12 @@
 #include "lifecycle.hpp"
 #include "session_registry.hpp"
 #include "sbps.hpp"
+#include "listener_orchestrator.hpp"
+#include "server_agent_runtime.hpp"
 
 #include <functional>
 #include <vector>
+#include <exception>
 
 namespace scratchbird::server {
 
@@ -27,6 +30,37 @@ struct ServerIpcEndpointResult {
   std::vector<ServerDiagnostic> diagnostics;
   bool ok() const { return diagnostics.empty(); }
 };
+
+// Caller-owned, stable-address lifetime cohort. The host must retain this owner
+// until DrainServerIpcEndpoint reports completion, even after endpoint throws.
+// In particular, an embedded library never terminates its host on drain failure.
+// Endpoint and Drain calls require exclusive host access; no detached work.
+struct ServerIpcEndpointOwner {
+  explicit ServerIpcEndpointOwner(const HostedEngineState& state) : engine_state(state) {}
+  ServerIpcEndpointOwner(const ServerIpcEndpointOwner&) = delete;
+  ServerIpcEndpointOwner& operator=(const ServerIpcEndpointOwner&) = delete;
+  // Declaration order keeps actual database locks/runtime references alive
+  // until all dependent service and native-resource records have been retired.
+  HostedEngineState engine_state;
+  ServerSessionRegistry sessions;
+  ServerListenerOrchestrator listeners;
+  ServerAgentRuntime agents;
+  std::exception_ptr first_failure;
+  bool entered = false;
+  bool endpoint_active = false;
+};
+
+struct ServerIpcDrainResult {
+  bool complete = false;
+  bool agents_complete = false;
+  bool listeners_complete = false;
+  bool sessions_complete = false;
+  std::vector<ServerDiagnostic> diagnostics;
+};
+
+// One cooperative reconciliation pass, not a hard I/O deadline. The standalone
+// process supervisor enforces the approved terminal deadline independently.
+ServerIpcDrainResult DrainServerIpcEndpoint(ServerIpcEndpointOwner& owner);
 
 struct ParserServerIpcLifecycleCallbacks {
   std::function<void()> on_ready;
@@ -37,12 +71,12 @@ struct ParserServerIpcLifecycleCallbacks {
 // is safe to call from service-control and worker threads; the endpoint polls
 // it and performs its normal listener/session/lifecycle cleanup before return.
 void ResetParserServerStopRequest();
-void RequestParserServerStop();
+void RequestParserServerStop() noexcept;
 bool ParserServerStopRequested();
 
 ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& config,
                                                    const ServerLifecycleArtifacts& artifacts,
-                                                   const HostedEngineState& engine_state,
+                                                   ServerIpcEndpointOwner& owner,
                                                    const ParserServerIpcLifecycleCallbacks& callbacks = {});
 
 std::vector<std::uint8_t> ResolveNamePublicFrameForEmbedded(

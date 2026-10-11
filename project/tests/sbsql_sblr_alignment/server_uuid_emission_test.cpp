@@ -121,7 +121,8 @@ void RetainedOwnerChecks() {
       if (kind == 1) invalid.server_uuid.bytes[6] = 0x40;
       else invalid.server_uuid.bytes[8] = 0xc0;
     }
-    const auto denied = server::RunParserServerIpcEndpoint(config, invalid, no_engine);
+    server::ServerIpcEndpointOwner endpoint_owner(no_engine);
+    const auto denied = server::RunParserServerIpcEndpoint(config, invalid, endpoint_owner);
     Check(!denied.ok() && denied.exit_code != 0 &&
               denied.diagnostics.size() == 1 &&
               denied.diagnostics.front().code == "PARSER_SERVER_IPC.ENDPOINT_CREATE_FAILED",

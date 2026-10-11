@@ -220,6 +220,7 @@ const std::set<std::string>& KnownKeys() {
       "server.parser.sbps_max_frame_bytes",
       "server.parser.sbps_max_streams",
       "server.parser.sbps_hello_timeout_ms",
+      "server.shutdown.drain_timeout_ms",
   };
   return keys;
 }
@@ -338,7 +339,7 @@ bool ParseDurationMs(const std::string& value, std::uint64_t* out) {
     multiplier = 3600000;
   }
   std::uint64_t base = 0;
-  if (!ParseUint64(trimmed, &base)) {
+  if (!ParseUint64(trimmed, &base) || base > UINT64_MAX / multiplier) {
     return false;
   }
   *out = base * multiplier;
@@ -1421,6 +1422,10 @@ bool ApplyParsedConfig(const ParsedConfig& parsed,
       if (!ParseUint64(value, &config->sbps_max_streams)) return invalid("CONFIG.VALUE_INVALID_UINT", key, value);
     } else if (key == "server.parser.sbps_hello_timeout_ms") {
       if (!ParseDurationMs(value, &config->sbps_hello_timeout_ms)) return invalid("CONFIG.VALUE_INVALID_DURATION", key, value);
+    } else if (key == "server.shutdown.drain_timeout_ms") {
+      if (!ParseDurationMs(value, &config->shutdown_drain_timeout_ms) ||
+          config->shutdown_drain_timeout_ms < 1000 || config->shutdown_drain_timeout_ms > 300000)
+        return invalid("CONFIG.VALUE_INVALID_DURATION", key, value);
     }
   }
   return true;

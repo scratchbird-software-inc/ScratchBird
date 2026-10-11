@@ -151,6 +151,8 @@ struct ServerBootstrapConfig {
   std::uint64_t sbps_max_frame_bytes = 1048576;
   std::uint64_t sbps_max_streams = 16;
   std::uint64_t sbps_hello_timeout_ms = 5000;
+  // Whole-node standalone shutdown budget, distinct from parser-channel drain.
+  std::uint64_t shutdown_drain_timeout_ms = 30000;
   std::vector<std::string> server_agent_runtime_test_options;
   std::optional<std::filesystem::path> selected_config_path;
   std::string selected_config_source = "compiled_defaults";

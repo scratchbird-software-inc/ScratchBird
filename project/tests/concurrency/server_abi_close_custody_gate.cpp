@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "session_registry.hpp"
 #include "sblr_dispatch_server.hpp"
+#include "ipc_server.hpp"
 #include "memory.hpp"
 #include "uuid.hpp"
 #include "../support/engine_statement_fixture.hpp"
@@ -84,6 +85,15 @@ void ReceiptCustody() {
   fixtures::ConfigureCredentialedFixtureBootstrap(create);
   const auto created = db::CreateDatabaseFile(create);
   Check(created.ok(), "credentialed real receipt database");
+  s::HostedEngineState hosted;
+  s::DatabaseOwnershipRequest ownership_request;
+  ownership_request.database_path = create.path;
+  ownership_request.owner_kind = "server";
+  auto ownership = s::AcquireDatabaseOwnership(ownership_request);
+  Check(ownership.acquired, "actual database ownership lock");
+  hosted.database_ownership_locks.push_back(std::move(ownership.lock));
+  s::ServerIpcEndpointOwner endpoint_owner(hosted);
+  hosted.database_ownership_locks.clear();
   auto context = fixtures::BootstrapFixtureOwnerContext(create);
   api::EngineBeginTransactionRequest begin;
   begin.context = context; begin.isolation_level = "read_committed";
@@ -99,7 +109,7 @@ void ReceiptCustody() {
       if (!api::EngineRollbackTransaction(rollback).ok) std::terminate();
     }
   } transaction{context};
-  s::ServerSessionRegistry registry;
+  auto& registry = endpoint_owner.sessions;
   s::ServerSessionRecord session;
   session.session_uuid = context.session_uuid.bytes;
   session.effective_user_uuid = context.principal_uuid.bytes;
@@ -140,7 +150,14 @@ void ReceiptCustody() {
   cursor.prepared_statement_uuid = prepared.prepared_statement_uuid;
   cursor.statement_context_statement_uuid = stored.statement_uuid;
   registry.cursors_by_uuid.emplace(Uuid{cursor.cursor_uuid}, cursor);
-  if (mode == "receipt_session") {
+  if (mode == "receipt_owner") {
+    const auto refused = s::DrainServerIpcEndpoint(endpoint_owner);
+    Check(!refused.complete && !refused.sessions_complete && refused.agents_complete && refused.listeners_complete,
+          "embedded drain retains actual failed native ownership");
+    Check(!s::AcquireDatabaseOwnership(ownership_request).acquired &&
+          endpoint_owner.engine_state.database_ownership_locks.front()->valid(),
+          "pending embedded owner retains actual database exclusion");
+  } else if (mode == "receipt_session") {
     const auto refused = s::CloseServerPublicAbiSessionForSession(&registry, session.session_uuid);
     Check(!refused.completed && refused.stage == s::ServerPublicAbiCloseStage::statement_receipts &&
           refused.status == SB_ENGINE_STATUS_RESOURCE_EXHAUSTED && ends == 0 && closes == 0,
@@ -163,6 +180,7 @@ void ReceiptCustody() {
         "successful release revokes actual engine receipt");
   Check(s::CloseServerPublicAbiSessionForSession(&registry, session.session_uuid).completed,
         "native session drains only after receipt release");
+  Check(s::DrainServerIpcEndpoint(endpoint_owner).complete, "embedded host can retry to actual resource completion");
   }
   artifacts.Cleanup();
 }
@@ -170,7 +188,7 @@ int main(int argc, char** argv) try {
   mode = argc == 2 ? argv[1] : "engine";
   Check(m::ConfigureDefaultMemoryManagerForFixture(m::DefaultLocalEngineMemoryPolicy(),
         "server_abi_close_custody").ok(), "real fixture manager");
-  if (mode == "receipt_session" || mode == "receipt_prepared") {ReceiptCustody(); return 0;}
+  if (mode == "receipt_session" || mode == "receipt_prepared" || mode == "receipt_owner") {ReceiptCustody(); return 0;}
   s::ServerSessionRegistry registry;
   s::ServerSessionRecord session;
   session.session_uuid = Id().bytes;

@@ -145,7 +145,10 @@ function(sb_public_configure_output_stage project_root python_executable)
     "  }\n"
     "}\n")
 
-  add_custom_target(scratchbird_public_output_stage ALL
+  # A targeted executable build must refresh its runtime policy/configuration
+  # too. The full output stage depends on all products, so using it as that
+  # prerequisite would introduce a cycle and build unrelated executables.
+  add_custom_target(scratchbird_public_runtime_stage ALL
     COMMAND "${CMAKE_COMMAND}" -E remove_directory
             "${SB_PUBLIC_ARTIFACT_ROOT}/etc/scratchbird"
     COMMAND "${CMAKE_COMMAND}" -E make_directory
@@ -172,6 +175,12 @@ function(sb_public_configure_output_stage project_root python_executable)
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${project_root}/config/templates/SBbootstrap.profile"
             "${SB_PUBLIC_ARTIFACT_ROOT}/etc/scratchbird/SBbootstrap.profile"
+    COMMENT "Stage ScratchBird runtime policies and configuration"
+    VERBATIM
+  )
+
+  add_custom_target(scratchbird_public_output_stage ALL
+    DEPENDS scratchbird_public_runtime_stage
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
             "${project_root}/docs/public_api"
             "${SB_PUBLIC_ARTIFACT_ROOT}/share/scratchbird/docs/public_api"
@@ -192,6 +201,7 @@ function(sb_public_configure_output_stage project_root python_executable)
   get_property(sb_public_output_dependencies GLOBAL PROPERTY SB_PUBLIC_BRANDING_TARGETS)
   foreach(public_output_dependency IN LISTS sb_public_output_dependencies)
     if(TARGET "${public_output_dependency}")
+      add_dependencies("${public_output_dependency}" scratchbird_public_runtime_stage)
       add_dependencies(scratchbird_public_output_stage "${public_output_dependency}")
     endif()
   endforeach()

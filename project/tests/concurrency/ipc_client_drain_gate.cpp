@@ -204,9 +204,10 @@ int main(int argc, char** argv) {
     };
     bool exception = false, bind_diagnostic = false; int exit = -1;
     const auto threads_before_endpoint = created_threads.load();
+    srv::ServerIpcEndpointOwner endpoint_owner(engine);
     std::thread endpoint([&] {
       try {
-        const auto result = srv::RunParserServerIpcEndpoint(config, artifacts, engine, callbacks);
+        const auto result = srv::RunParserServerIpcEndpoint(config, artifacts, endpoint_owner, callbacks);
         exit = result.exit_code;
         for (const auto& diagnostic : result.diagnostics)
           if (diagnostic.code == "PARSER_SERVER_IPC.ENDPOINT_BIND_FAILED") bind_diagnostic = true;

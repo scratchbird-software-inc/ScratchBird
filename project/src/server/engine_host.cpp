@@ -132,7 +132,8 @@ std::shared_ptr<const HostedDatabaseRuntime> FindHostedDatabaseRuntime(
   return {};
 }
 
-HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config) {
+HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
+                                    void (*before_failure_cleanup)() noexcept) {
   HostedEngineResult result;
   result.state.engine_context_active = true;
 
@@ -179,6 +180,15 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config) {
   }
 
   std::shared_ptr<DatabaseOwnershipLock> database_ownership_lock;
+  bool startup_completed = false;
+  struct FailureCleanupArm {
+    const bool& completed;
+    void (*callback)() noexcept;
+    int exceptions = std::uncaught_exceptions();
+    ~FailureCleanupArm() {
+      if (callback && (std::uncaught_exceptions() > exceptions || !completed)) callback();
+    }
+  } failure_cleanup_arm{startup_completed, before_failure_cleanup};
   if (!config.database_ownership_prelocked) {
     DatabaseOwnershipRequest ownership_request;
     ownership_request.database_path = config.database_default_path;
@@ -513,6 +523,7 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config) {
   result.state.database_runtimes.push_back(std::move(database_runtime));
   result.state.databases.push_back(snapshot);
   hosted_process_bound = true;
+  startup_completed = true;
   return result;
 }
 

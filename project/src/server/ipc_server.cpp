@@ -4595,7 +4595,7 @@ void ResetParserServerStopRequest() {
   g_stop_requested.store(false, std::memory_order_release);
 }
 
-void RequestParserServerStop() {
+void RequestParserServerStop() noexcept {
   g_stop_requested.store(true, std::memory_order_release);
 }
 
@@ -4687,10 +4687,68 @@ bool ParserChannelHelloMayBeAdmittedForTest(
           hello_identity_unchanged);
 }
 
-ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& config,
+ServerIpcDrainResult DrainServerIpcEndpoint(ServerIpcEndpointOwner& owner) {
+  ServerIpcDrainResult result;
+  if (owner.endpoint_active) return result;
+  const auto retain_failure = [&] {
+    if (!owner.first_failure) owner.first_failure = std::current_exception();
+  };
+  try {
+    const auto stopped = StopManagedServerListeners(&owner.listeners, "graceful");
+    result.listeners_complete = stopped.ok;
+    result.diagnostics = stopped.diagnostics;
+  } catch (...) { retain_failure(); }
+  try {
+    auto& registry = owner.sessions;
+    for (auto it = registry.sessions_by_uuid.begin(); it != registry.sessions_by_uuid.end();) {
+      const auto session = it++->second;
+      sbps::Frame disconnect;
+      disconnect.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kDisconnectNotice);
+      disconnect.header.request_uuid = sbps::MakeUuidV7Bytes();
+      disconnect.header.session_uuid = session.session_uuid;
+      disconnect.header.connection_uuid = session.connection_uuid;
+      disconnect.payload.insert(disconnect.payload.end(), session.session_uuid.begin(), session.session_uuid.end());
+      PutString(&disconnect.payload, "server_shutdown");
+      const auto detached = HandleDisconnectNotice(&registry, disconnect);
+      result.diagnostics.insert(result.diagnostics.end(), detached.diagnostics.begin(), detached.diagnostics.end());
+    }
+    // Acquisition can fail before publishing a server session. Its native
+    // owner still needs cleanup, but cannot stand in for MGA session recovery.
+    for (auto it = registry.public_abi_sessions_by_session_uuid.begin();
+         it != registry.public_abi_sessions_by_session_uuid.end();) {
+      const auto identity = it++->first;
+      if (!registry.sessions_by_uuid.contains(identity))
+        (void)CloseServerPublicAbiSessionForSession(&registry, identity.bytes);
+    }
+    result.sessions_complete = registry.sessions_by_uuid.empty() &&
+        registry.public_abi_sessions_by_session_uuid.empty() &&
+        registry.statement_contexts_by_statement_uuid.empty();
+    for (const auto& [_, cursor] : registry.cursors_by_uuid)
+      result.sessions_complete = result.sessions_complete && !ServerCursorCleanupPending(&registry, cursor);
+    for (const auto& [_, prepared] : registry.prepared_by_uuid)
+      result.sessions_complete = result.sessions_complete && !prepared.prepared_metadata_binding;
+  } catch (...) { retain_failure(); }
+  try {
+    const auto stopped = owner.agents.Stop();
+    result.agents_complete = stopped.ok();
+    result.diagnostics.insert(result.diagnostics.end(), stopped.diagnostics.begin(), stopped.diagnostics.end());
+  } catch (...) { retain_failure(); }
+  result.complete = result.agents_complete && result.listeners_complete && result.sessions_complete;
+  return result;
+}
+
+static ServerIpcEndpointResult RunParserServerIpcEndpointImpl(const ServerBootstrapConfig& config,
                                                    const ServerLifecycleArtifacts& artifacts,
-                                                   const HostedEngineState& engine_state,
+                                                   ServerIpcEndpointOwner& owner,
                                                    const ParserServerIpcLifecycleCallbacks& callbacks) {
+  if (owner.entered) throw std::logic_error("IPC owner cannot be reused for endpoint startup");
+  owner.entered = true;
+  owner.endpoint_active = true;
+  struct ActiveGuard {
+    ServerIpcEndpointOwner& owner;
+    ~ActiveGuard() { owner.endpoint_active = false; }
+  } active_guard{owner};
+  const auto& engine_state = owner.engine_state;
   ServerIpcEndpointResult result;
   if (!core::uuid::IsEngineIdentityUuid(artifacts.server_uuid)) {
     result.exit_code = 2;
@@ -4793,26 +4851,31 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
     result.exit_code = 2;
     return result;
   }
-  ServerSessionRegistry session_registry;
+  auto& session_registry = owner.sessions;
   const ParserPackageRegistry parser_registry = LoadParserPackageRegistry(config);
-  ServerAgentRuntime agent_runtime;
+  auto& agent_runtime = owner.agents;
   const auto stop_agents = [&] {
     const auto stopped = agent_runtime.Stop();
     result.diagnostics.insert(result.diagnostics.end(), stopped.diagnostics.begin(),
                               stopped.diagnostics.end());
     return stopped.ok();
   };
-  if (!agent_runtime.Start(config, engine_state, &result.diagnostics)) {
+  if (!agent_runtime.Start(config, engine_state, &result.diagnostics, RequestParserServerStop)) {
+    RequestParserServerStop();
     result.exit_code = 2;
     server_endpoint.Reset();
     return result;
   }
   ParserEventNotificationRouter event_router;
-  ServerListenerOrchestrator listener_orchestrator = BuildListenerOrchestrator(config, artifacts);
+  auto& listener_orchestrator = owner.listeners;
+  listener_orchestrator = BuildListenerOrchestrator(config, artifacts);
   const auto listener_start = StartEnabledServerListeners(&listener_orchestrator, config, artifacts);
   if (!listener_start.ok) {
+    RequestParserServerStop();
     result.exit_code = 2;
     result.diagnostics = listener_start.diagnostics;
+    const auto stopped = StopManagedServerListeners(&listener_orchestrator, "graceful");
+    result.diagnostics.insert(result.diagnostics.end(), stopped.diagnostics.begin(), stopped.diagnostics.end());
     stop_agents();
     server_endpoint.Reset();
     return result;
@@ -4820,11 +4883,13 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
   const auto daemon_lifecycle =
       EvaluateServerDaemonLifecycle(config, artifacts, engine_state);
   if (!daemon_lifecycle.diagnostics.empty()) {
+    RequestParserServerStop();
     result.exit_code = 2;
     result.diagnostics = daemon_lifecycle.diagnostics;
     stop_agents();
     server_endpoint.Reset();
-    StopManagedServerListeners(&listener_orchestrator, "force");
+    const auto stopped = StopManagedServerListeners(&listener_orchestrator, "graceful");
+    result.diagnostics.insert(result.diagnostics.end(), stopped.diagnostics.begin(), stopped.diagnostics.end());
     return result;
   }
   ServerMaintenanceCoordinator maintenance_coordinator = BuildMaintenanceCoordinator(config, artifacts);
@@ -5024,15 +5089,15 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
     }
   }
   server_endpoint.Reset();
-  const bool agents_stopped = stop_agents();
-  const auto listener_stop = StopManagedServerListeners(&listener_orchestrator, "graceful");
-  if (!listener_stop.diagnostics.empty()) {
+  owner.endpoint_active = false;
+  const auto drain = DrainServerIpcEndpoint(owner);
+  if (!drain.diagnostics.empty()) {
     result.diagnostics.insert(result.diagnostics.end(),
-                              listener_stop.diagnostics.begin(),
-                              listener_stop.diagnostics.end());
+                              drain.diagnostics.begin(),
+                              drain.diagnostics.end());
   }
   // SEARCH_KEY: SERVER_IPC_DURABLE_STOP_FAILURE_PROPAGATION
-  const bool cleanup_ok = agents_stopped && listener_stop.ok && !client_failure;
+  const bool cleanup_ok = drain.complete && !client_failure && !owner.first_failure;
   RecordServerAuditEvent(&observability, "server.shutdown",
                         cleanup_ok ? "completed" : "failed",
                         cleanup_ok ? "parser-server IPC endpoint stopped"
@@ -5060,9 +5125,26 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
     result.diagnostics.insert(result.diagnostics.end(),
                               failed.diagnostics.begin(), failed.diagnostics.end());
   }
-  result.exit_code = cleanup_ok && result.diagnostics.empty() ? 0 : 2;
-  if (client_failure) std::rethrow_exception(client_failure);
+  const bool diagnostic_failure = std::any_of(result.diagnostics.begin(), result.diagnostics.end(),
+      [](const auto& diagnostic) { return diagnostic.severity == ServerDiagnosticSeverity::kError; });
+  result.exit_code = cleanup_ok && !diagnostic_failure && result.exit_code == 0 ? 0 : 2;
+  if (client_failure) {
+    if (!owner.first_failure) owner.first_failure = client_failure;
+    std::rethrow_exception(client_failure);
+  }
   return result;
+}
+
+ServerIpcEndpointResult RunParserServerIpcEndpoint(
+    const ServerBootstrapConfig& config, const ServerLifecycleArtifacts& artifacts,
+    ServerIpcEndpointOwner& owner, const ParserServerIpcLifecycleCallbacks& callbacks) {
+  try {
+    return RunParserServerIpcEndpointImpl(config, artifacts, owner, callbacks);
+  } catch (...) {
+    if (!owner.first_failure) owner.first_failure = std::current_exception();
+    RequestParserServerStop();
+    throw;
+  }
 }
 
 }  // namespace scratchbird::server

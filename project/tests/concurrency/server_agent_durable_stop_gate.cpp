@@ -392,7 +392,8 @@ int main(int argc, char** argv) {
           fault = true;
         }
       };
-      const auto result = server::RunParserServerIpcEndpoint(config, artifacts, engine, callbacks);
+      server::ServerIpcEndpointOwner endpoint_owner(engine);
+      const auto result = server::RunParserServerIpcEndpoint(config, artifacts, endpoint_owner, callbacks);
       const auto state = Read(config.lifecycle_state_file);
       const auto journal = Read(config.lifecycle_journal_file);
       bool stop_failure = false;

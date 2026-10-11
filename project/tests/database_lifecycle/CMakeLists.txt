@@ -5464,6 +5464,21 @@ if(TARGET sb_server_core)
     memory_policy_config_conformance.cpp
   )
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(server_shutdown_policy_gate
+      "${PROJECT_SOURCE_DIR}/tests/concurrency/server_shutdown_policy_gate.cpp")
+    target_compile_features(server_shutdown_policy_gate PRIVATE cxx_std_23)
+    target_compile_definitions(server_shutdown_policy_gate PRIVATE
+      SB_DEFAULT_POLICY_PACK_ROOT="${PROJECT_SOURCE_DIR}/resources/policy-packs/default-local-password")
+    target_link_libraries(server_shutdown_policy_gate PRIVATE sb_server_core)
+    # Exercise failure-return cleanup without relying on NRVO. These symbols
+    # satisfy the host API without extracting its object from sb_server_core.
+    target_sources(server_shutdown_policy_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/server/engine_host.cpp")
+    target_compile_options(server_shutdown_policy_gate PRIVATE -fno-elide-constructors)
+    foreach(mode config deadline clean host-failure)
+      add_test(NAME server_shutdown_policy_${mode}_gate COMMAND server_shutdown_policy_gate ${mode})
+      set_tests_properties(server_shutdown_policy_${mode}_gate PROPERTIES TIMEOUT 60
+        LABELS "runtime;shutdown;policy;component;not_runtime_acceptance")
+    endforeach()
     add_executable(server_abi_close_custody_gate
       "${PROJECT_SOURCE_DIR}/tests/concurrency/server_abi_close_custody_gate.cpp")
     target_compile_features(server_abi_close_custody_gate PRIVATE cxx_std_23)
@@ -5473,7 +5488,7 @@ if(TARGET sb_server_core)
       "LINKER:--wrap=sb_engine_result_release")
     target_link_options(server_abi_close_custody_gate PRIVATE
       "LINKER:--wrap=_ZN11scratchbird20server_engine_bridge30ReleaseStatementContextReceiptENS0_29StatementContextReceiptHandleE")
-    foreach(mode session engine authority begin cursor prepared prepared_route cursor_route retired_cursor_route cancel_route receipt_session receipt_prepared)
+    foreach(mode session engine authority begin cursor prepared prepared_route cursor_route retired_cursor_route cancel_route receipt_session receipt_prepared receipt_owner)
       add_test(NAME server_abi_close_custody_${mode}_gate COMMAND server_abi_close_custody_gate ${mode})
       set_tests_properties(server_abi_close_custody_${mode}_gate PROPERTIES
         TIMEOUT 90 LABELS "runtime;cleanup;actual_handles;fault_injection;component;not_runtime_acceptance")

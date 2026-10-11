@@ -2079,9 +2079,10 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     }
     ready_condition.notify_one();
   };
+  server::ServerIpcEndpointOwner endpoint_owner(engine_state);
   std::thread endpoint([&] {
     endpoint_result = server::RunParserServerIpcEndpoint(
-        config, artifacts, engine_state, callbacks);
+        config, artifacts, endpoint_owner, callbacks);
     ready_condition.notify_one();
   });
   struct EndpointCleanup {

@@ -15,9 +15,11 @@
 #include "product_identity.hpp"
 #include "server_daemon_lifecycle.hpp"
 #include "startup.hpp"
+#include "standalone_shutdown_deadline.hpp"
 #include "windows_service_runtime.hpp"
 
 #include <iostream>
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -52,8 +54,16 @@ int RunServerProduct(
       startup.effective_config.mode == scratchbird::server::ServerMode::kValidationOnly) {
     return startup.exit_code;
   }
+  // Declared before engine/IPC owners: it outlives their actual destruction.
+  scratchbird::server::StandaloneShutdownDeadline shutdown_deadline(
+      startup.effective_config.shutdown_drain_timeout_ms,
+      scratchbird::server::ParserServerStopRequested);
   const auto engine_host =
-      scratchbird::server::StartHostedEngine(startup.effective_config);
+      scratchbird::server::StartHostedEngine(startup.effective_config,
+                                            scratchbird::server::RequestParserServerStop);
+  struct ShutdownArm {
+    ~ShutdownArm() { scratchbird::server::RequestParserServerStop(); }
+  } shutdown_arm;
   if (!engine_host.diagnostics.empty()) {
     EmitDiagnostics(engine_host.diagnostics);
     return 2;
@@ -66,14 +76,32 @@ int RunServerProduct(
   }
   if (startup.exit_code == 0 && startup.serving_requested) {
     std::cout.flush();
-    const auto ipc = scratchbird::server::RunParserServerIpcEndpoint(
-        startup.effective_config,
-        startup.lifecycle_artifacts,
-        engine_host.state,
-        ipc_callbacks);
-    if (!ipc.diagnostics.empty()) {
-      EmitDiagnostics(ipc.diagnostics);
+    scratchbird::server::ServerIpcEndpointOwner owner(engine_host.state);
+    scratchbird::server::ServerIpcEndpointResult ipc;
+    try {
+      ipc = scratchbird::server::RunParserServerIpcEndpoint(
+          startup.effective_config, startup.lifecycle_artifacts, owner, ipc_callbacks);
+    } catch (...) {
+      if (!owner.first_failure) owner.first_failure = std::current_exception();
+      ipc.exit_code = 2;
     }
+    scratchbird::server::RequestParserServerStop();
+    // On persistent failure the independent deadline exits without destroying
+    // this cohort. Embedded callers instead keep their own owner for retry.
+    auto retry_delay = std::chrono::milliseconds(10);
+    for (;;) {
+      try {
+        const auto drained = scratchbird::server::DrainServerIpcEndpoint(owner);
+        if (drained.complete) break;
+      } catch (...) {
+        if (!owner.first_failure) owner.first_failure = std::current_exception();
+      }
+      ipc.exit_code = 2;
+      std::this_thread::sleep_for(retry_delay);
+      retry_delay = std::min(retry_delay * 2, std::chrono::milliseconds(250));
+    }
+    if (!ipc.diagnostics.empty()) EmitDiagnostics(ipc.diagnostics);
+    if (owner.first_failure) ipc.exit_code = 2;
     return ipc.exit_code;
   }
   return startup.exit_code;

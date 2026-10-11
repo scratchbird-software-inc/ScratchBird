@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "listener_orchestrator.hpp"
+#include "ipc_server.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 
 #include <cerrno>
@@ -80,16 +81,18 @@ class Child {
   }
   ~Child() {
     deny_kill = deny_wait = interrupt_wait = deny_poll = false;
-    ::close(release_);
+    Release();
     int status;
     while (__real_waitpid(child_pid, &status, 0) < 0 && errno == EINTR) {}
   }
+  void Release() { if (release_ >= 0) { ::close(release_); release_ = -1; } }
  private:
   int release_ = -1;
 };
 void Run(const std::string& mode) {
   Child child;
-  scratchbird::server::ServerListenerOrchestrator orchestrator;
+  scratchbird::server::ServerIpcEndpointOwner owner({});
+  auto& orchestrator = owner.listeners;
   orchestrator.profiles.emplace_back();
   auto& profile = orchestrator.profiles.back();
   profile.listener_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000001");
@@ -99,6 +102,17 @@ void Run(const std::string& mode) {
   const auto retained_pid = profile.pid;
   profile.enabled = true;
   profile.state = "running";
+  if (mode == "embedded-graceful-retry") {
+    const auto pending = scratchbird::server::DrainServerIpcEndpoint(owner);
+    Check(!pending.complete && !pending.listeners_complete && profile.pid == child_pid && kill_calls == 0,
+          "embedded pending listener retained without termination");
+    child.Release();
+    siginfo_t exit{};
+    Check(::waitid(P_PID, child_pid, &exit, WEXITED | WNOWAIT) == 0, "child actually exited, not yet reaped");
+    Check(scratchbird::server::DrainServerIpcEndpoint(owner).complete && profile.pid == -1 && kill_calls == 0,
+          "graceful retry reconciles actual owned child exit");
+    return;
+  }
   deny_kill = mode == "kill-denied" || mode == "retry" || mode == "restart-denied";
   deny_wait = mode == "wait-failed" || mode == "wait-retry";
   deny_poll = mode == "unconfirmed-owner";

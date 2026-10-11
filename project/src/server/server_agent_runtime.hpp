@@ -20,6 +20,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <filesystem>
+#include <exception>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -65,6 +66,13 @@ struct ServerAgentRuntimeSnapshot {
   bool started = false;
   bool stopping = false;
   ServerAgentRuntimeStopResult stop_result;
+  // Retained failure evidence, not the current cleanup disposition. A later
+  // successful join does not erase either original exception.
+  std::exception_ptr startup_failure;
+  std::exception_ptr cleanup_failure;
+  enum class CleanupFailureStage { kNone, kSchedulerJoin, kWorkerJoin, kOther };
+  CleanupFailureStage cleanup_failure_stage = CleanupFailureStage::kNone;
+  std::size_t cleanup_failure_worker_index = 0;
   std::string database_path;
   std::string database_uuid;
   std::string filespace_uuid;
@@ -119,7 +127,8 @@ class ServerAgentRuntime {
   // channel after stopping/joining the cohort. This does not certify durable cleanup.
   bool Start(const ServerBootstrapConfig& config,
              const HostedEngineState& engine_state,
-             std::vector<ServerDiagnostic>* diagnostics);
+             std::vector<ServerDiagnostic>* diagnostics,
+             void (*before_failure_cleanup)() noexcept = nullptr);
   // Start and Stop serialize their complete lifecycle operations. A Stop racing
   // with Start waits through native cohort creation or failure cleanup before
   // it examines/join-cleans that cohort. This does not cancel an in-flight Start.
@@ -185,6 +194,11 @@ class ServerAgentRuntime {
   std::condition_variable schedule_cv_;
   bool started_ = false;
   ServerAgentRuntimeStopResult last_stop_result_;
+  std::exception_ptr startup_failure_;
+  std::exception_ptr cleanup_failure_;
+  ServerAgentRuntimeSnapshot::CleanupFailureStage cleanup_failure_stage_ =
+      ServerAgentRuntimeSnapshot::CleanupFailureStage::kNone;
+  std::size_t cleanup_failure_worker_index_ = 0;
   std::atomic_bool stopping_{false};
   std::string database_path_;
   std::string database_uuid_;

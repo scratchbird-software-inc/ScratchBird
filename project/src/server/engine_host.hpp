@@ -103,7 +103,8 @@ struct HostedEngineResult {
 };
 
 const char* HostedDatabaseStateName(HostedDatabaseState state);
-HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config);
+HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
+                                    void (*before_failure_cleanup)() noexcept = nullptr);
 std::string HostedEngineStatusJson(const HostedEngineState& state);
 std::shared_ptr<const HostedDatabaseRuntime> FindHostedDatabaseRuntime(
     const HostedEngineState& state,

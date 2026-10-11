@@ -115,6 +115,10 @@ pthread_mutex_t* runtime_state_mutex = nullptr;
 server::ServerAgentRuntime* startup_runtime = nullptr;
 bool runtime_threads_ready = false;
 bool startup_failure_injected = false;
+bool failure_cleanup_armed = false;
+bool cleanup_join_failure_mode = false;
+bool cleanup_worker_join_failure_mode = false;
+unsigned cleanup_join_failures = 0;
 bool cleanup_failure_mode = false;
 bool post_launch_allocation_mode = false;
 unsigned cleanup_sync_failures = 0;
@@ -489,8 +493,15 @@ extern "C" int __wrap_pthread_join(pthread_t thread, void** result) {
       }
     }
   }
+  if (startup_probe && tracked < launched_threads && cleanup_join_failure_mode && cleanup_join_failures == 0 &&
+      (!cleanup_worker_join_failure_mode || tracked == 1)) {
+    ++cleanup_join_failures;
+    return EINVAL;
+  }
   const int joined = __real_pthread_join(thread, result);
   if (startup_probe && tracked < launched_threads && joined == 0) {
+    if (startup_failure_injected || post_launch_allocation_failures != 0)
+      Require(failure_cleanup_armed, "startup failure joined before deadline activation callback");
     startup_joined[tracked] = true;
   }
   if (stop_caller == 1 && joined == 0 && ++completed_joins == expected_joins) {
@@ -1001,7 +1012,7 @@ bool CheckStartupFailure(server::ServerAgentRuntime& runtime,
   Require(runtime_state_mutex != nullptr, "could not observe the runtime state mutex");
   startup_probe = true;
   try {
-    (void)runtime.Start(config, engine, &diagnostics);
+    (void)runtime.Start(config, engine, &diagnostics, []() noexcept { failure_cleanup_armed = true; });
   } catch (const std::system_error& error) {
     expected_exception = !post_launch_allocation_mode &&
         error.code() == std::errc::resource_unavailable_try_again;
@@ -1012,6 +1023,47 @@ bool CheckStartupFailure(server::ServerAgentRuntime& runtime,
   }
   startup_probe = false;
   post_launch_allocation_armed = false;
+  if (cleanup_join_failure_mode) {
+    const auto pending = runtime.Snapshot();
+    Require(cleanup_join_failures == 1 && pending.started && pending.stopping &&
+            pending.stop_result.attempted && !pending.stop_result.ok(),
+            "native join failure must retain an incomplete stop receipt");
+    const auto error_is = [](const std::exception_ptr& failure, std::errc code) {
+      if (!failure) return false;
+      try { std::rethrow_exception(failure); }
+      catch (const std::system_error& error) { return error.code() == code; }
+      catch (...) { return false; }
+    };
+    Require(error_is(pending.startup_failure, std::errc::resource_unavailable_try_again) &&
+            error_is(pending.cleanup_failure, std::errc::invalid_argument) &&
+            pending.cleanup_failure_stage == (cleanup_worker_join_failure_mode
+                ? server::ServerAgentRuntimeSnapshot::CleanupFailureStage::kWorkerJoin
+                : server::ServerAgentRuntimeSnapshot::CleanupFailureStage::kSchedulerJoin) &&
+            pending.cleanup_failure_worker_index == 0,
+            "retain distinct launch and native join exceptions");
+    std::vector<server::ServerDiagnostic> restart_diagnostics;
+    Require(!runtime.Start(config, engine, &restart_diagnostics) &&
+            restart_diagnostics.size() == 1 &&
+            restart_diagnostics.front().code == "AGENT.INVALID_STATE",
+            "restart must refuse an owner with pending native joins");
+    auto embedded_config = config;
+    embedded_config.embedded_direct_mode = true;
+    Require(!runtime.Start(embedded_config, engine, nullptr) &&
+            !runtime.Start(config, server::HostedEngineState{}, nullptr),
+            "startup shortcuts cannot hide pending native joins");
+    const auto after_restart = runtime.Snapshot();
+    Require(after_restart.started && after_restart.stopping &&
+            after_restart.stop_result.attempted && !after_restart.stop_result.ok() &&
+            cleanup_join_failures == 1,
+            "refused restart must preserve incomplete cleanup custody");
+    startup_probe = true;
+    Require(runtime.Stop().ok(), "retained native thread handles can be retried");
+    startup_probe = false;
+    const auto retried = runtime.Snapshot();
+    Require(retried.startup_failure == pending.startup_failure &&
+            retried.cleanup_failure == pending.cleanup_failure,
+            "successful cleanup retry cannot erase original failure evidence");
+  }
   const auto after_failure = runtime.Snapshot();
   bool all_joined = true;
   for (unsigned i = 0; i < launched_threads; ++i) {
@@ -1020,7 +1072,7 @@ bool CheckStartupFailure(server::ServerAgentRuntime& runtime,
   const bool expected_launches = post_launch_allocation_mode
       ? launch_attempts == 3 && launched_threads == 3
       : launch_attempts == fail_launch && launched_threads == fail_launch - 1;
-  const bool unwound = expected_exception && expected_launches && all_joined &&
+  const bool unwound = expected_exception && expected_launches && all_joined && failure_cleanup_armed &&
                        !after_failure.started && !after_failure.stopping;
   std::cout << "startup_failure=" << fail_launch
             << " actual_launches=" << launched_threads
@@ -1379,7 +1431,10 @@ int main(int argc, char** argv) {
        std::string_view(argv[1]) == "--post-launch-allocation-cleanup-failure");
   cleanup_failure_mode = (argc == 3 && std::string_view(argv[1]) == "--startup-cleanup-failure") ||
       (post_launch_allocation_mode && std::string_view(argv[1]) == "--post-launch-allocation-cleanup-failure");
-  const bool startup_failure = post_launch_allocation_mode || cleanup_failure_mode ||
+  cleanup_worker_join_failure_mode = argc == 3 && std::string_view(argv[1]) == "--startup-worker-join-failure";
+  cleanup_join_failure_mode = cleanup_worker_join_failure_mode ||
+      (argc == 3 && std::string_view(argv[1]) == "--startup-join-failure");
+  const bool startup_failure = cleanup_join_failure_mode || post_launch_allocation_mode || cleanup_failure_mode ||
       (argc == 3 && std::string_view(argv[1]) == "--startup-failure");
   const bool binary_boundary = argc == 3 && std::string_view(argv[1]) == "--binary-status-boundary";
   const bool malformed_identity = argc == 4 && std::string_view(argv[1]) == "--malformed-identity";
