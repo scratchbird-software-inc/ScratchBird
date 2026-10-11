@@ -13,6 +13,7 @@
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "admitted_datatype_cohort.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "wire/narrow_query_binding_demand_codec.hpp"
 
@@ -88,26 +89,29 @@ std::string Int32Descriptor() {
   return "type=int32;nullable=false";
 }
 
-api::EngineColumnDefinition Int32Column() {
-  const auto lookup = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-      kDatatypeCatalogSnapshotUuid, 1, 1, kInt32DescriptorUuid, 1);
-  Require(lookup.ok && lookup.row.type_uuid == kInt32TypeUuid,
+api::EngineColumnDefinition Int32Column(const api::EngineDatatypeCohort& cohort) {
+  const auto* lookup = scratchbird::core::datatypes::FindDatatypeTypeCodecIdentityV3(
+      cohort.catalog_snapshot_uuid, cohort.catalog_generation, cohort.registry_generation, kInt32DescriptorUuid, 1);
+  Require(lookup && lookup->legacy_fields.type_uuid == kInt32TypeUuid,
           "exact fixture datatype catalog binding is unavailable");
+  const auto& row = lookup->legacy_fields;
   api::EngineColumnDefinition column;
   column.requested_column_uuid = NewUuid(platform::UuidKind::object);
   column.ordinal = 0;
   column.nullable = false;
-  column.descriptor.descriptor_uuid = lookup.row.descriptor_uuid;
-  column.descriptor.datatype_descriptor_uuid = lookup.row.descriptor_uuid;
-  column.descriptor.datatype_descriptor_generation = lookup.row.descriptor_generation;
-  column.descriptor.type_uuid = lookup.row.type_uuid;
+  column.descriptor.descriptor_uuid = row.descriptor_uuid;
+  column.descriptor.datatype_descriptor_uuid = row.descriptor_uuid;
+  column.descriptor.datatype_descriptor_generation = row.descriptor_generation;
+  column.descriptor.type_uuid = row.type_uuid;
+  column.descriptor.datatype_cohort = cohort;
   column.descriptor.descriptor_kind = "scalar";
-  column.descriptor.canonical_type_name = lookup.row.canonical_name;
+  column.descriptor.canonical_type_name = row.canonical_name;
   column.descriptor.encoded_descriptor = Int32Descriptor();
   return column;
 }
 
 struct Fixture {
+  api::EngineDatatypeCohort cohort{kDatatypeCatalogSnapshotUuid, 1, 1};
   std::filesystem::path directory;
   std::filesystem::path database_path;
   platform::Uuid database_uuid;
@@ -146,9 +150,9 @@ api::EngineRequestContext BaseContext(const Fixture& fixture) {
   context.maximum_typed_result_transport_bytes_per_packet = kTransportBytes;
   context.name_resolution_epoch = 1;
   context.datatype_catalog_snapshot_uuid =
-      kDatatypeCatalogSnapshotUuid;
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
+      fixture.cohort.catalog_snapshot_uuid;
+  context.datatype_catalog_generation = fixture.cohort.catalog_generation;
+  context.datatype_registry_generation = fixture.cohort.registry_generation;
   context.catalog_epoch_uuid = NewUuid(platform::UuidKind::object);
   context.query_cancellation_requested = [flag = fixture.cancelled]() {
     return flag->load();
@@ -156,8 +160,9 @@ api::EngineRequestContext BaseContext(const Fixture& fixture) {
   return context;
 }
 
-Fixture MakeFixture() {
+Fixture MakeFixture(api::EngineDatatypeCohort cohort = {kDatatypeCatalogSnapshotUuid, 1, 1}) {
   Fixture fixture;
+  fixture.cohort = cohort;
   fixture.directory = std::filesystem::temp_directory_path() /
                       ("scratchbird_narrow_authority_scan_" +
                        std::to_string(NowMillis()));
@@ -204,7 +209,7 @@ Fixture MakeFixture() {
   table.table_uuid = fixture.relation_uuid;
   table.default_name = "authority_scan_values";
   table.columns = {{"id", Int32Descriptor()}};
-  table.bound_columns = {Int32Column()};
+  table.bound_columns = {Int32Column(fixture.cohort)};
   table.bound_relation_generation = 1;
   table.bound_column_generation = 1;
   Require(!api::AppendMgaTableMetadata(fixture.transaction, table).error,
@@ -303,8 +308,8 @@ void Rollback(const api::EngineRequestContext& context) {
             "fixture rollback failed");
 }
 
-void TestAuthorityScanByteAndProjectionContract() {
-  auto fixture = MakeFixture();
+void TestAuthorityScanByteAndProjectionContract(api::EngineDatatypeCohort cohort) {
+  auto fixture = MakeFixture(cohort);
   const auto binder_context = BindingContext(&fixture);
   api::EngineNarrowQueryBindingAuthorityIssueRequestV1 issue;
   issue.context = binder_context;
@@ -495,6 +500,25 @@ void TestAuthorityScanByteAndProjectionContract() {
       api::RevalidateNarrowQuerySourceOccurrenceAuthorityV1(
           consumed.authority, consumer_context, 0, loaded.descriptor);
   RequireOk(revalidated, "current source projection revalidation failed");
+  for (unsigned mutation = 0; mutation != 7; ++mutation) {
+    auto changed = loaded.descriptor;
+    auto& column = changed.columns.front().value_descriptor;
+    switch (mutation) {
+      case 0: column.datatype_descriptor_uuid.bytes.back() ^= 1; break;
+      case 1: ++column.datatype_descriptor_generation; break;
+      case 2: column.type_uuid.bytes.back() ^= 1; break;
+      case 3: column.datatype_cohort.catalog_snapshot_uuid.bytes.back() ^= 1; break;
+      case 4: ++column.datatype_cohort.catalog_generation; break;
+      case 5: ++column.datatype_cohort.registry_generation; break;
+      case 6: column.datatype_descriptor_uuid = {}; break;
+    }
+    const auto refused = api::RevalidateNarrowQuerySourceOccurrenceAuthorityV1(
+        consumed.authority, consumer_context, 0, changed);
+    Require(!refused.ok && refused.stale, "changed stored datatype binding retained source authority");
+    RequireOk(api::RevalidateNarrowQuerySourceOccurrenceAuthorityV1(
+                  consumed.authority, consumer_context, 0, loaded.descriptor),
+              "datatype refusal consumed valid source authority");
+  }
 
   auto wrong_context = consumer_context;
   wrong_context.maximum_mga_relation_decoded_bytes_per_pass = kScanBytes * 2u;
@@ -552,7 +576,12 @@ void TestAuthorityScanByteAndProjectionContract() {
 }  // namespace
 
 int main() {
-  TestAuthorityScanByteAndProjectionContract();
+  namespace dt = scratchbird::core::datatypes;
+  for (const auto& cohort : {api::EngineDatatypeCohort{dt::kDatatypeCohortV1, 1, 1},
+                            api::EngineDatatypeCohort{dt::kDatatypeCohortV5, 5, 5},
+                            api::EngineDatatypeCohort{dt::kDatatypeCohortV10, 10, 10},
+                            api::EngineDatatypeCohort{dt::kDatatypeCohortV11, 11, 11}})
+    TestAuthorityScanByteAndProjectionContract(cohort);
   std::cout << "PASS narrow_query_binding_authority scan_bytes=1"
             << " independent_full_passes=2 projection_revalidation=1"
             << " typed_result_packets=2 retain_once=1"

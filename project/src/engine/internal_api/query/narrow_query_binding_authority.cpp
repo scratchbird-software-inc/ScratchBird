@@ -354,15 +354,23 @@ bool BuildProjectedSource(const EngineRequestContext& context,
     projected.descriptor = column;
     const auto& canonical_datatype_descriptor_uuid =
         column.value_descriptor.datatype_descriptor_uuid;
-    const auto datatype = datatypes::LookupDatatypeTypeCodecIdentityV1(
+    const auto& stored_cohort = column.value_descriptor.datatype_cohort;
+    if (stored_cohort.catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
+        stored_cohort.catalog_generation != context.datatype_catalog_generation ||
+        stored_cohort.registry_generation != context.datatype_registry_generation) {
+      *diagnostic = Diagnostic("DATATYPE.DESCRIPTOR.INVALID",
+                               "sblr.query_execute.source_datatype_cohort_mismatch");
+      return false;
+    }
+    const auto* datatype = datatypes::FindDatatypeTypeCodecIdentityV3(
         context.datatype_catalog_snapshot_uuid,
         context.datatype_catalog_generation,
         context.datatype_registry_generation,
         canonical_datatype_descriptor_uuid,
         column.value_descriptor.datatype_descriptor_generation);
-    if (ExactUuid(canonical_datatype_descriptor_uuid) && datatype.ok &&
-        datatype.row.type_uuid == column.value_descriptor.type_uuid) {
-      projected.datatype = datatype.row;
+    if (ExactUuid(canonical_datatype_descriptor_uuid) && datatype != nullptr &&
+        datatype->legacy_fields.type_uuid == column.value_descriptor.type_uuid) {
+      projected.datatype = datatype->legacy_fields;
     }
 
     if (!column.charset_uuid.is_nil()) {
@@ -417,6 +425,19 @@ bool BuildProjectedSource(const EngineRequestContext& context,
       return false;
     }
     AppendU32(&projection, column.ordinal);
+    // Bind the actual stored identity independently of any optional codec
+    // projection. Unsupported, unselected columns grant no codec authority,
+    // but changes to their identities must still invalidate retained reads.
+    if (!AppendUuid(&projection, canonical_datatype_descriptor_uuid) ||
+        !AppendUuid(&projection, column.value_descriptor.type_uuid) ||
+        !AppendUuid(&projection, stored_cohort.catalog_snapshot_uuid)) {
+      *diagnostic = Diagnostic("DATATYPE.DESCRIPTOR.INVALID",
+                               "sblr.query_execute.source_datatype_identity_invalid");
+      return false;
+    }
+    AppendU64(&projection, column.value_descriptor.datatype_descriptor_generation);
+    AppendU64(&projection, stored_cohort.catalog_generation);
+    AppendU64(&projection, stored_cohort.registry_generation);
     if (!AppendString(&projection, column.canonical_name_key) ||
         !AppendUuid(&projection,
                     column.value_descriptor.descriptor_uuid) ||

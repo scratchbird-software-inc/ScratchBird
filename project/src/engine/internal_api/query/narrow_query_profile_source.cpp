@@ -972,10 +972,8 @@ class NarrowQueryProfileOccurrenceSource final
         return false;
       }
       const auto& canonical_datatype_descriptor_uuid =
-          found->value_descriptor.datatype_descriptor_uuid.is_nil()
-              ? found->value_descriptor.descriptor_uuid
-              : found->value_descriptor.datatype_descriptor_uuid;
-      const auto datatype = datatypes::LookupDatatypeTypeCodecIdentityV1(
+          found->value_descriptor.datatype_descriptor_uuid;
+      const auto* datatype = datatypes::FindDatatypeTypeCodecIdentityV3(
           context_.datatype_catalog_snapshot_uuid,
           context_.datatype_catalog_generation,
           context_.datatype_registry_generation,
@@ -984,12 +982,17 @@ class NarrowQueryProfileOccurrenceSource final
       const auto metadata_descriptor = metadata.identities.find("datatype_descriptor_uuid");
       if ((metadata_descriptor != metadata.identities.end() &&
            metadata_descriptor->second != canonical_datatype_descriptor_uuid) ||
-          !datatype.ok ||
-          (datatype.row.canonical_binary_type_code !=
+          datatype == nullptr ||
+          found->value_descriptor.type_uuid != datatype->legacy_fields.type_uuid ||
+          found->value_descriptor.datatype_cohort != EngineDatatypeCohort{
+              context_.datatype_catalog_snapshot_uuid,
+              context_.datatype_catalog_generation,
+              context_.datatype_registry_generation} ||
+          (datatype->legacy_fields.canonical_binary_type_code !=
                static_cast<std::uint32_t>(datatypes::CanonicalTypeId::int32) &&
-           datatype.row.canonical_binary_type_code !=
+           datatype->legacy_fields.canonical_binary_type_code !=
                static_cast<std::uint32_t>(datatypes::CanonicalTypeId::int64) &&
-           datatype.row.canonical_binary_type_code !=
+           datatype->legacy_fields.canonical_binary_type_code !=
                static_cast<std::uint32_t>(datatypes::CanonicalTypeId::character))) {
         preparation_diagnostic_ = Diagnostic(
             "DATATYPE.DESCRIPTOR.INVALID",
@@ -1001,7 +1004,7 @@ class NarrowQueryProfileOccurrenceSource final
       bound.ordinal = found->ordinal;
       bound.storage_key = found->canonical_name_key;
       bound.descriptor = found->value_descriptor;
-      if (datatype.row.canonical_binary_type_code !=
+      if (datatype->legacy_fields.canonical_binary_type_code !=
           static_cast<std::uint32_t>(datatypes::CanonicalTypeId::character)) {
         std::string detail;
         if (!ProjectStoredIntegerDescriptorV1(context_, found->value_descriptor,
@@ -1015,7 +1018,7 @@ class NarrowQueryProfileOccurrenceSource final
       bound.charset_uuid = found->charset_uuid;
       bound.collation_uuid = found->collation_uuid;
       bound.maximum_inline_bytes = found->max_inline_bytes;
-      bound.datatype = datatype.row;
+      bound.datatype = datatype->legacy_fields;
       state.columns.push_back(std::move(bound));
     }
 
