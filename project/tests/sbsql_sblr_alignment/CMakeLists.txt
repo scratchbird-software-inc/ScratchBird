@@ -21,6 +21,19 @@ add_test(NAME sbsql_sblr_alignment_mga_relation_descriptor_validation
 set_tests_properties(sbsql_sblr_alignment_mga_relation_descriptor_validation PROPERTIES
   TIMEOUT 60 LABELS "sbsql_sblr_alignment;binary_uuid;relational_descriptor;component_regression;not_native_table_CRUD")
 
+add_executable(sbsql_sblr_alignment_catalog_context_namespace catalog_context_namespace_test.cpp)
+add_executable(sbsql_sblr_alignment_context_namespace_access context_namespace_access_test.cpp)
+target_compile_features(sbsql_sblr_alignment_context_namespace_access PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_context_namespace_access PRIVATE sb_engine_internal_api)
+add_test(NAME sbsql_sblr_alignment_context_namespace_access COMMAND sbsql_sblr_alignment_context_namespace_access)
+set_tests_properties(sbsql_sblr_alignment_context_namespace_access PROPERTIES
+  TIMEOUT 60 LABELS "sbsql_sblr_alignment;binary_uuid;context_namespace;security;component_regression;not_SQL_E2E")
+target_compile_features(sbsql_sblr_alignment_catalog_context_namespace PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_context_namespace PRIVATE sb_core_catalog)
+add_test(NAME sbsql_sblr_alignment_catalog_context_namespace COMMAND sbsql_sblr_alignment_catalog_context_namespace)
+set_tests_properties(sbsql_sblr_alignment_catalog_context_namespace PROPERTIES
+  TIMEOUT 60 LABELS "sbsql_sblr_alignment;binary_uuid;context_namespace;catalog_codec;not_runtime_authorization")
+
 add_executable(sbsql_sblr_alignment_catalog_security_record catalog_security_record_test.cpp)
 target_compile_features(sbsql_sblr_alignment_catalog_security_record PRIVATE cxx_std_23)
 target_link_libraries(sbsql_sblr_alignment_catalog_security_record PRIVATE sb_core_catalog)
@@ -1600,6 +1613,7 @@ add_executable(sbsql_sblr_alignment_catalog_metric_retention_policy
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_update.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_record_codec.cpp
+  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_context_namespace.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_security_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_storage_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_value_codec.cpp
@@ -1631,6 +1645,7 @@ add_executable(sbsql_sblr_alignment_catalog_metric_descriptor
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_visibility_policy.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_record_codec.cpp
+  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_context_namespace.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_security_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_storage_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_value_codec.cpp
@@ -1687,6 +1702,7 @@ add_executable(sbsql_sblr_alignment_catalog_metric_label_schema
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_visibility_policy.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_record_codec.cpp
+  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_context_namespace.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_security_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_storage_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_value_codec.cpp
@@ -1719,6 +1735,7 @@ add_executable(sbsql_sblr_alignment_catalog_metric_series
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_visibility_policy.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_record_codec.cpp
+  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_context_namespace.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_security_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_storage_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_value_codec.cpp
@@ -1752,6 +1769,7 @@ add_executable(sbsql_sblr_alignment_catalog_metric_binding
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_visibility_policy.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_record_codec.cpp
+  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_context_namespace.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_security_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_storage_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_value_codec.cpp

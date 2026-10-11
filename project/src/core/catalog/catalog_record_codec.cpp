@@ -11,6 +11,7 @@
 #include "catalog_schema_definition.hpp"
 #include "catalog_table_definition.hpp"
 #include "catalog_security_record_codec.hpp"
+#include "catalog_context_namespace.hpp"
 #include "catalog_storage_record_codec.hpp"
 #include "catalog_metric_retention_policy.hpp"
 #include "catalog_storage_action_policy.hpp"
@@ -141,6 +142,10 @@ CatalogTypedRecordViewResult ValidateCatalogTypedRecordView(CatalogTypedRecordVi
       !CatalogTableDefinitionMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.table_definition.invalid",
                       "table_binary_payload_or_header_invalid");
+  if (IsCatalogContextNamespacePayload(record.payload) &&
+      !CatalogContextNamespaceMatchesHeader(record))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.context_namespace.invalid",
+                          "context_namespace_binary_payload_or_header_invalid");
   if (IsCatalogColumnDefinitionPayload(record.payload) &&
       !CatalogColumnDefinitionMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.column_definition.invalid",
@@ -378,6 +383,10 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
        value.object_subtype == "metric_series" || IsCatalogMetricSeriesPayload(value.record.payload)) &&
       !CatalogMetricSeriesMatchesMetadata(value))
     return MetadataViewError("metric_series_definition_binding_invalid");
+  if ((value.object_subtype == "application_context_namespace" ||
+       IsCatalogContextNamespacePayload(value.record.payload)) &&
+      !CatalogContextNamespaceMatchesMetadata(value))
+    return MetadataViewError("context_namespace_definition_binding_invalid");
   if ((value.record.header.kind == CatalogRecordKind::metric_label_schema ||
        value.object_subtype == "metric_label_schema" || IsCatalogMetricLabelSchemaPayload(value.record.payload)) &&
       !CatalogMetricLabelSchemaMatchesMetadata(value))
@@ -617,6 +626,7 @@ DiagnosticRecord MakeCatalogRecordCodecDiagnostic(Status status,
 bool CatalogMetadataPreservesFamilyOrigin(
     const CatalogMetadataVersionView& previous, const CatalogMetadataVersionView& successor) {
   return CatalogRuntimeAuthorityBindingPreservesOrigin(previous,successor) &&
+      CatalogContextNamespacePreservesOrigin(previous,successor) &&
       CatalogSchedulerPolicyPreservesOrigin(previous,successor) &&
       CatalogSchedulerQueueProfilePreservesOrigin(previous,successor) &&
       CatalogSchedulerFairnessProfilePreservesOrigin(previous,successor) &&
