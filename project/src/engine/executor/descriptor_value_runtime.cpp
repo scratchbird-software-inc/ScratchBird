@@ -1000,7 +1000,7 @@ DescriptorBatch MakeDescriptorBatch(std::vector<ExecutorColumnDescriptor> column
 std::string DescriptorFingerprint(const std::vector<ExecutorColumnDescriptor>& columns) {
   // This is an opaque equality key, not a diagnostic or UUID presentation.
   // Frame variable fields so embedded separators and NULs cannot alias.
-  std::string out = "scratchbird.descriptor-fingerprint.v3";
+  std::string out = "scratchbird.descriptor-fingerprint.v4";
   const auto append_u64 = [&](const std::uint64_t value) {
     for (unsigned shift = 0; shift < 64; shift += 8) {
       out.push_back(static_cast<char>(value >> shift));
@@ -1016,6 +1016,12 @@ std::string DescriptorFingerprint(const std::vector<ExecutorColumnDescriptor>& c
     out.append(reinterpret_cast<const char*>(column.descriptor.descriptor_uuid.bytes.data()), 16);
     out.append(reinterpret_cast<const char*>(column.descriptor.type_uuid.bytes.data()), 16);
     out.append(reinterpret_cast<const char*>(column.descriptor.collation_uuid.bytes.data()), 16);
+    out.append(reinterpret_cast<const char*>(column.descriptor.charset_uuid.bytes.data()), 16);
+    out.append(reinterpret_cast<const char*>(column.descriptor.datatype_descriptor_uuid.bytes.data()), 16);
+    append_u64(column.descriptor.datatype_descriptor_generation);
+    out.append(reinterpret_cast<const char*>(column.descriptor.datatype_cohort.catalog_snapshot_uuid.bytes.data()), 16);
+    append_u64(column.descriptor.datatype_cohort.catalog_generation);
+    append_u64(column.descriptor.datatype_cohort.registry_generation);
     append_text(column.descriptor.descriptor_kind);
     append_text(column.descriptor.canonical_type_name);
     append_text(column.descriptor.encoded_descriptor);
@@ -1038,6 +1044,10 @@ bool CanonicalDerivedDescriptorTypeMatches(
   return scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(input) &&
          scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(output) &&
          input.type_uuid == output.type_uuid &&
+         input.datatype_descriptor_uuid == output.datatype_descriptor_uuid &&
+         input.datatype_descriptor_generation == output.datatype_descriptor_generation &&
+         input.datatype_cohort == output.datatype_cohort &&
+         input.charset_uuid == output.charset_uuid &&
          input.collation_uuid == output.collation_uuid &&
          input.descriptor_kind == output.descriptor_kind &&
          input.canonical_type_name == output.canonical_type_name &&

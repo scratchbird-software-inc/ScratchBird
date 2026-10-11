@@ -207,32 +207,62 @@ int main() {
     Require(!codec::CanonicalDerivedDescriptorTypeMatches(
                 value.descriptor, false, changed_descriptor, true),
             "nullable derivation admitted a different binary type identity");
+    for (unsigned field = 0; field < 6; ++field) {
+      changed_descriptor = value.descriptor;
+      changed_descriptor.encoded_descriptor = "nullability=nullable";
+      switch (field) {
+        case 0: changed_descriptor.datatype_descriptor_uuid.bytes[15] ^= 1; break;
+        case 1: ++changed_descriptor.datatype_descriptor_generation; break;
+        case 2: changed_descriptor.charset_uuid.bytes[15] ^= 1; break;
+        case 3: changed_descriptor.datatype_cohort.catalog_snapshot_uuid.bytes[15] ^= 1; break;
+        case 4: ++changed_descriptor.datatype_cohort.catalog_generation; break;
+        case 5: ++changed_descriptor.datatype_cohort.registry_generation; break;
+      }
+      Require(!codec::CanonicalDerivedDescriptorTypeMatches(value.descriptor, false, changed_descriptor, true),
+              "nullable derivation lost a resource or datatype cohort field");
+    }
 
     const codec::ExecutorColumnDescriptor column{"v", value.descriptor, false, 1};
     const auto fingerprint = codec::DescriptorFingerprint({column});
     std::vector<std::uint8_t> fingerprint_bytes;
-    const std::string_view fingerprint_version = "scratchbird.descriptor-fingerprint.v3";
+    const std::string_view fingerprint_version = "scratchbird.descriptor-fingerprint.v4";
     fingerprint_bytes.insert(fingerprint_bytes.end(), fingerprint_version.begin(), fingerprint_version.end());
     GoldenU64(&fingerprint_bytes, 1);
     GoldenText(&fingerprint_bytes, "v");
     fingerprint_bytes.insert(fingerprint_bytes.end(), descriptor.bytes.begin(), descriptor.bytes.end());
     fingerprint_bytes.insert(fingerprint_bytes.end(), type.bytes.begin(), type.bytes.end());
     fingerprint_bytes.insert(fingerprint_bytes.end(), 16, 0);
+    fingerprint_bytes.insert(fingerprint_bytes.end(), 16 + 16 + 8 + 16 + 8 + 8, 0);
     GoldenText(&fingerprint_bytes, "scalar");
     GoldenText(&fingerprint_bytes, "int128");
     GoldenText(&fingerprint_bytes, "nullability=non_null");
     fingerprint_bytes.push_back(0);
     Require(std::vector<std::uint8_t>(fingerprint.begin(), fingerprint.end()) == fingerprint_bytes,
             "descriptor fingerprint differs from independent binary16 oracle");
-    for (unsigned identity = 0; identity < 2; ++identity) {
+    for (unsigned identity = 0; identity < 6; ++identity) {
       for (unsigned byte = 0; byte < 16; ++byte) {
         auto altered = column;
-        auto& uuid = identity == 0 ? altered.descriptor.descriptor_uuid : altered.descriptor.type_uuid;
+        auto& uuid = identity == 0 ? altered.descriptor.descriptor_uuid :
+            identity == 1 ? altered.descriptor.type_uuid :
+            identity == 2 ? altered.descriptor.collation_uuid :
+            identity == 3 ? altered.descriptor.charset_uuid :
+            identity == 4 ? altered.descriptor.datatype_descriptor_uuid :
+            altered.descriptor.datatype_cohort.catalog_snapshot_uuid;
         uuid.bytes[byte] ^= 1;
         Require(codec::DescriptorFingerprint({altered}) != fingerprint &&
                 !codec::DescriptorMatches(column.descriptor, altered.descriptor),
                 "descriptor key or comparison ignored a changed UUID byte");
       }
+    }
+    for (unsigned identity = 0; identity < 3; ++identity) {
+      auto altered = column;
+      auto& generation = identity == 0 ? altered.descriptor.datatype_descriptor_generation :
+          identity == 1 ? altered.descriptor.datatype_cohort.catalog_generation :
+          altered.descriptor.datatype_cohort.registry_generation;
+      ++generation;
+      Require(codec::DescriptorFingerprint({altered}) != fingerprint &&
+              !codec::DescriptorMatches(column.descriptor, altered.descriptor),
+              "descriptor key ignored a changed binary generation");
     }
     auto framed_left = column;
     auto framed_right = column;
