@@ -11,6 +11,7 @@
 #include "crud_support/bound_ordered_index_key.hpp"
 #include "datatype_binary_view.hpp"
 #include "datatype_interval.hpp"
+#include "datatype_bit_string.hpp"
 #include "mga_relation_store/mga_large_value_codec.hpp"
 #include <type_traits>
 
@@ -26,6 +27,133 @@ namespace scratchbird::engine::internal_api::dml::detail {
 
 // SEARCH_KEY: SB_ENGINE_DIRECT_BULK_TYPED_ROW_CODEC_AUTHORITY
 // Typed row encoding and fixed-width validation only; no publication authority.
+
+bool DirectBuildBitStringPageColumn(
+    const EngineDescriptor& descriptor, const dt::DatatypeStorageIdentityV3& datatype,
+    std::uint16_t ordinal, bool nullable,
+    scratchbird::storage::page::RowDataProfileColumnBinding* output,
+    EngineApiDiagnostic* diagnostic) {
+  const auto refuse = [&](std::string_view code, std::string_view detail) {
+    if (diagnostic) *diagnostic = MakeEngineApiDiagnostic(std::string(code),
+        "datatype.native_bit.receiver", std::string(detail), true);
+    return false;
+  };
+  try {
+    if (!output || !ordinal || !datatype.codec || datatype.type_id != dt::CanonicalTypeId::bit_string)
+      return refuse("CTB.BIT.DESCRIPTOR_INVALID", "missing_receiver_binding");
+    const auto& codec = *datatype.codec;
+    const auto& row = codec.legacy_fields;
+    if (descriptor.datatype_cohort != EngineDatatypeCohort{
+            row.catalog_snapshot_uuid, row.catalog_generation, row.registry_generation} ||
+        datatype.descriptor_uuid != row.descriptor_uuid ||
+        datatype.descriptor_generation != row.descriptor_generation ||
+        datatype.type_uuid != row.type_uuid || row.canonical_binary_type_code != 302)
+      return refuse("CTB.BIT.DESCRIPTOR_INVALID", "receiver_cohort_or_codec_identity_mismatch");
+    CatalogColumnMetadata fields;
+    if (!AdmitCatalogColumnMetadata(descriptor.encoded_descriptor, &fields))
+      return refuse("CTB.BIT.DESCRIPTOR_INVALID", "receiver_metadata_invalid");
+    auto kind = dt::BitStringSurfaceProfileKindV3::unqualified;
+    const auto selected = fields.text.find("bit_profile_kind");
+    if (selected != fields.text.end()) {
+      if (selected->second == "1") kind = dt::BitStringSurfaceProfileKindV3::fixed;
+      else if (selected->second == "2") kind = dt::BitStringSurfaceProfileKindV3::varying;
+      else if (selected->second != "0")
+        return refuse("CTB.BIT.DESCRIPTOR_INVALID", "receiver_profile_kind_invalid");
+    }
+    // An omitted kind is unqualified only. Never infer fixed/varying from
+    // a display label or silently erase a supplied zero/ambiguous bound.
+    if ((kind == dt::BitStringSurfaceProfileKindV3::unqualified) == fields.text.contains("length"))
+      return refuse("CTB.BIT.DESCRIPTOR_INVALID", "receiver_profile_length_binding_invalid");
+    engine::ExecutionTypeDescriptor execution;
+    std::string detail;
+    if (!bound_index_key::BuildOrderedColumnExecutionDescriptor(
+            descriptor, datatype, nullable, &execution, &detail))
+      return refuse("CTB.BIT.DESCRIPTOR_INVALID", detail);
+    const auto admitted = dt::ValidateBitStringExecutionDescriptorV3(execution, codec, kind);
+    if (!admitted.ok()) {
+      if (diagnostic) *diagnostic = MakeEngineApiDiagnosticFromNative(
+          dt::MakeBitStringDiagnosticV3(admitted.status, std::string(admitted.diagnostic.diagnostic_code),
+              "datatype.bit_string.rejected", std::string(admitted.diagnostic.detail)),
+          std::string(admitted.diagnostic.diagnostic_code), "datatype.native_bit.receiver", "occurrence_rejected", true);
+      return false;
+    }
+    dt::BitStringProfileRequestV3 request;
+    request.receipt = {row.catalog_snapshot_uuid, row.catalog_snapshot_uuid,
+                       row.catalog_generation, row.registry_generation};
+    request.identity = codec;
+    request.kind = kind;
+    request.length_bits = kind == dt::BitStringSurfaceProfileKindV3::unqualified
+        ? dt::kBitStringMaximumLogicalBitsV3 : execution.length;
+    auto profile = dt::BuildBitStringDescriptorProfileV3(request);
+    if (!profile.ok()) {
+      if (diagnostic) *diagnostic = MakeEngineApiDiagnosticFromNative(profile.diagnostic,
+          profile.diagnostic.diagnostic_code, "datatype.native_bit.receiver", "profile_rejected", true);
+      return false;
+    }
+    scratchbird::storage::page::RowDataProfileColumnBinding receiver;
+    receiver.column_ordinal = ordinal;
+    receiver.null_allowed = nullable;
+    receiver.bit_string = std::make_shared<const dt::BitStringDescriptorProfileV3>(std::move(profile.profile));
+    *output = std::move(receiver);
+    return true;
+  } catch (const std::bad_alloc&) {
+    return refuse("RESOURCE.BUDGET_EXCEEDED", "receiver_allocation_failed");
+  }
+}
+
+bool DirectValidateNativeBitStringValue(
+    const EngineTypedValue& typed, const EngineDescriptor* destination,
+    bool nullable, EngineApiDiagnostic* diagnostic) {
+  const auto refuse = [&](std::string_view code, std::string_view detail) {
+    if (diagnostic) *diagnostic = MakeEngineApiDiagnostic(std::string(code),
+        "datatype.native_bit.rejected", std::string(detail), true);
+    return false;
+  };
+  try {
+    const auto& source = typed.descriptor;
+    const auto& cohort = source.datatype_cohort;
+    const auto* codec = dt::FindDatatypeTypeCodecIdentityV3(cohort.catalog_snapshot_uuid,
+        cohort.catalog_generation, cohort.registry_generation,
+        source.datatype_descriptor_uuid, source.datatype_descriptor_generation);
+    if (!codec || codec->legacy_fields.canonical_binary_type_code != 302)
+      return refuse("CTB.BIT.DESCRIPTOR_INVALID", "source_identity_invalid");
+    // Borrow the exact row first; owning lookup conflates allocation failure
+    // with absent identity. Copies here remain inside our resource catch.
+    dt::DatatypeStorageIdentityV3 identity;
+    identity.descriptor_uuid = codec->legacy_fields.descriptor_uuid;
+    identity.descriptor_generation = codec->legacy_fields.descriptor_generation;
+    identity.type_uuid = codec->legacy_fields.type_uuid;
+    identity.type_id = dt::CanonicalTypeId::bit_string;
+    identity.codec = *codec;
+    engine::ExecutionTypeDescriptor execution;
+    std::string detail;
+    if (!executor::BuildBoundExecutionTypeDescriptor(source, dt::CanonicalTypeId::bit_string, &execution, &detail))
+      return refuse("CTB.BIT.DESCRIPTOR_INVALID", detail);
+    scratchbird::storage::page::RowDataProfileColumnBinding from, to;
+    if (!DirectBuildBitStringPageColumn(source, identity, 1, execution.nullable_allowed, &from, diagnostic))
+      return false;
+    if (destination) {
+      if (!DirectBuildBitStringPageColumn(*destination, identity, 1, nullable, &to, diagnostic)) return false;
+      if (from.bit_string->canonical_profile_material != to.bit_string->canonical_profile_material)
+        return refuse("CTB.BIT.DESCRIPTOR_INVALID", "source_destination_profile_mismatch");
+    }
+    if ((!typed.isSqlNull() && typed.state != EngineValueState::value) || !typed.encoded_value.empty())
+      return refuse("CTB.BIT.DESCRIPTOR_INVALID", "source_state_or_carrier");
+    const auto decoded = dt::DecodeCanonicalBitStringComponentNoAllocV3(*from.bit_string,
+        typed.isSqlNull() ? dt::BitStringValueStateV3::sql_null : dt::BitStringValueStateV3::present,
+        execution.nullable_allowed && (!destination || nullable), typed.binary_value);
+    if (!decoded.ok()) {
+      if (diagnostic) *diagnostic = MakeEngineApiDiagnosticFromNative(
+          dt::MakeBitStringDiagnosticV3(decoded.status, std::string(decoded.diagnostic.diagnostic_code),
+              "datatype.bit_string.rejected", std::string(decoded.diagnostic.detail)),
+          std::string(decoded.diagnostic.diagnostic_code), "datatype.native_bit.rejected", "component_rejected", true);
+      return false;
+    }
+    return true;
+  } catch (const std::bad_alloc&) {
+    return refuse("RESOURCE.BUDGET_EXCEEDED", "value_admission_allocation_failed");
+  }
+}
 
 bool DirectBuildTemporalPageColumn(
     const EngineDescriptor& descriptor, const dt::DatatypeStorageIdentityV3& datatype,

@@ -80,6 +80,17 @@ bool DirectBuildTemporalPageColumn(
     scratchbird::storage::page::RowDataTemporalColumnBinding* output,
     EngineApiDiagnostic* diagnostic);
 
+// BIT has an occurrence-specific length/profile, not an implicit generic
+// binary codec. This constructor validates the exact column and cohort.
+bool DirectBuildBitStringPageColumn(
+    const EngineDescriptor& descriptor, const dt::DatatypeStorageIdentityV3& datatype,
+    std::uint16_t ordinal, bool nullable,
+    scratchbird::storage::page::RowDataProfileColumnBinding* output,
+    EngineApiDiagnostic* diagnostic);
+bool DirectValidateNativeBitStringValue(
+    const EngineTypedValue& typed, const EngineDescriptor* destination = nullptr,
+    bool nullable = true, EngineApiDiagnostic* diagnostic = nullptr);
+
 CrudStoredValue DirectStoredValueForColumn(
     const EngineTypedValue& typed, dt::CanonicalTypeId target_type);
 

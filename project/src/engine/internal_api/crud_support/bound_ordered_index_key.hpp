@@ -139,6 +139,7 @@ inline bool BuildOrderedColumnExecutionDescriptor(
       type == core::datatypes::CanonicalTypeId::time ||
       type == core::datatypes::CanonicalTypeId::timestamp ||
       type == core::datatypes::CanonicalTypeId::interval ||
+      type == core::datatypes::CanonicalTypeId::bit_string ||
       type == core::datatypes::CanonicalTypeId::decimal) {
     if (!source.charset_uuid.is_nil() ||
         !source.collation_uuid.is_nil()) {
@@ -169,6 +170,8 @@ inline bool BuildOrderedColumnExecutionDescriptor(
       if (type == core::datatypes::CanonicalTypeId::decimal &&
           (name == "precision" || name == "scale" || name == "decimal_codec_generation" ||
            name == "codec_generation" || name == "codec_version" || name == "codec_id")) continue;
+      if (type == core::datatypes::CanonicalTypeId::bit_string &&
+          (name == "bit_profile_kind" || name == "length")) continue;
       if (datatype.codec) {
         const auto& codec = datatype.codec->legacy_fields;
         if ((name == "datatype_descriptor_generation" && value == std::to_string(codec.descriptor_generation)) ||

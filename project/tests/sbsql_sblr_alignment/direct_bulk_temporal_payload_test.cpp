@@ -5,6 +5,7 @@
 #include "datatype_time.hpp"
 #include "datatype_timestamp.hpp"
 #include "datatype_interval.hpp"
+#include "datatype_bit_string.hpp"
 #include <iostream>
 #include <cstdlib>
 #include <new>
@@ -433,10 +434,178 @@ void ReceiverConstruction() {
       }
     }
 }
+api::EngineTypedValue BitValue(unsigned generation, unsigned kind, bool nullable) {
+  api::EngineTypedValue value;
+  const auto cohort = generation == 10 ? dt::kDatatypeCohortV10 : dt::kDatatypeCohortV11;
+  for (const auto& entry : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row = entry.legacy_fields;
+    if (row.catalog_snapshot_uuid != cohort || row.canonical_binary_type_code != 302) continue;
+    auto& descriptor = value.descriptor;
+    descriptor.descriptor_uuid = descriptor.datatype_descriptor_uuid = row.descriptor_uuid;
+    descriptor.datatype_descriptor_generation = row.descriptor_generation;
+    descriptor.type_uuid = row.type_uuid;
+    descriptor.datatype_cohort = {cohort, generation, generation};
+    descriptor.descriptor_kind = "scalar";
+    descriptor.canonical_type_name = "bit_string";
+    descriptor.encoded_descriptor = std::string("nullability=") + (nullable ? "nullable" : "non_null") +
+        ";bit_profile_kind=" + std::to_string(kind) + (kind ? ";length=9" : "");
+    // Independently written count LE32 followed by exactly nine MSB0 bits.
+    value.binary_value = {9,0,0,0,0xA5,0x80};
+    return value;
+  }
+  throw std::runtime_error("explicit BIT identity unavailable");
+}
+
+void BitReceivers() {
+  namespace page = scratchbird::storage::page;
+  for (const unsigned generation : {10u,11u}) for (unsigned kind = 0; kind < 3; ++kind)
+    for (const bool nullable : {false,true}) {
+      auto value = BitValue(generation,kind,nullable);
+      const auto& descriptor = value.descriptor;
+      const auto& cohort = descriptor.datatype_cohort;
+      dt::DatatypeStorageIdentityV3 identity;
+      Check(dt::LookupDatatypeStorageIdentityV3(cohort.catalog_snapshot_uuid,cohort.catalog_generation,
+          cohort.registry_generation,descriptor.datatype_descriptor_uuid,descriptor.datatype_descriptor_generation,
+          &identity),"BIT exact identity unavailable");
+      page::RowDataProfileColumnBinding original;
+      api::EngineApiDiagnostic diagnostic;
+      Check(bulk::DirectBuildBitStringPageColumn(descriptor,identity,7,nullable,&original,&diagnostic),
+            "BIT receiver baseline failed");
+      Check(original.column_ordinal==7 && original.null_allowed==nullable && original.bit_string &&
+            !original.date && !original.time && !original.timestamp && !original.interval &&
+            original.bit_string->length_bits == (kind ? 9u : dt::kBitStringMaximumLogicalBitsV3) &&
+            original.bit_string->fixed_length == (kind==1) &&
+            dt::ValidateBitStringDescriptorProfileNoAllocV3(*original.bit_string).ok(),
+            "BIT receiver profile invalid");
+      const auto unchanged = [&](const page::RowDataProfileColumnBinding& actual) {
+        return actual.column_ordinal==original.column_ordinal && actual.null_allowed==original.null_allowed &&
+            actual.bit_string==original.bit_string && !actual.date && !actual.time && !actual.timestamp && !actual.interval;
+      };
+      for (const bool null : {false,true}) {
+        auto sample=value;
+        if(null) { sample.state=api::EngineValueState::sql_null; sample.binary_value.clear(); }
+        Check(bulk::DirectValidateNativeBitStringValue(sample,nullptr,true,&diagnostic)==(!null||nullable),
+              "BIT source state admission disagrees");
+        Check(bulk::DirectValidateNativeBitStringValue(sample,&descriptor,nullable,&diagnostic)==(!null||nullable),
+              "BIT receiving state admission disagrees");
+        for (const unsigned target_generation : {10u,11u}) for (unsigned target_kind=0;target_kind<3;++target_kind) {
+          auto target=BitValue(target_generation,target_kind,nullable).descriptor;
+          Check(bulk::DirectValidateNativeBitStringValue(sample,&target,nullable,&diagnostic)==
+                (target_generation==generation && target_kind==kind && (!null||nullable)),
+                "BIT source/target profile or cohort was silently converted");
+        }
+      }
+      for(unsigned mutation=0;mutation<12;++mutation) {
+        auto invalid=value;
+        switch(mutation) {
+          case 0: invalid.binary_value.back()|=1;break;
+          case 1: invalid.binary_value.push_back(0);break;
+          case 2: invalid.binary_value.pop_back();break;
+          case 3: invalid.binary_value[0]=10;break;
+          case 4: invalid.encoded_value="101001011";break;
+          case 5: invalid.state=api::EngineValueState::lob_handle;break;
+          case 6: invalid.state=api::EngineValueState::sql_null;break;
+          case 7: ++invalid.descriptor.datatype_descriptor_generation;break;
+          case 8: invalid.descriptor.type_uuid.bytes.back()^=1;break;
+          case 9: invalid.descriptor.datatype_cohort.catalog_generation++;break;
+          case 10: invalid.descriptor.encoded_descriptor+=";timezone_generation=1";break;
+          case 11: invalid.descriptor.encoded_descriptor+=";precision=1";break;
+        }
+        // Ten bits with an all-zero tail is valid for variable BIT, so make
+        // the alternate count exceed the complete carrier instead.
+        if(mutation==3) invalid.binary_value[0]=17;
+        Check(!bulk::DirectValidateNativeBitStringValue(invalid,&descriptor,nullable,&diagnostic),
+              "malformed BIT carrier or authority admitted");
+        if(mutation==0) Check(diagnostic.code=="CTB.BIT.CANONICAL_ENCODING_INVALID" && diagnostic.native_source,
+                              "BIT component native diagnosis lost");
+      }
+      for(const auto metadata : {"", "length=9", "bit_profile_kind=1", "bit_profile_kind=2",
+          "bit_profile_kind=3", "bit_profile_kind=01", "bit_profile_kind=0;length=0",
+          "bit_profile_kind=1;length=0", "bit_profile_kind=2;length=16777217",
+          "bit_profile_kind=2;length=-1", "bit_profile_kind=1;length=9;other=1"}) {
+        auto invalid=descriptor;
+        invalid.encoded_descriptor=std::string("nullability=")+(nullable?"nullable":"non_null")+";"+metadata;
+        auto output=original;
+        const bool accepted=bulk::DirectBuildBitStringPageColumn(invalid,identity,9,nullable,&output,&diagnostic);
+        if(std::string_view(metadata).empty()) Check(accepted,"unqualified BIT default refused");
+        else Check(!accepted && unchanged(output) && diagnostic.code=="CTB.BIT.DESCRIPTOR_INVALID",
+                   "invalid BIT profile metadata admitted or output modified");
+      }
+      for(unsigned mutation=0;mutation<8;++mutation) {
+        auto invalid=identity;
+        switch(mutation) {
+          case 0: invalid.descriptor_uuid.bytes.back()^=1;break;
+          case 1: ++invalid.descriptor_generation;break;
+          case 2: invalid.type_uuid.bytes.back()^=1;break;
+          case 3: invalid.type_id=dt::CanonicalTypeId::binary;break;
+          case 4: invalid.codec.reset();break;
+          case 5: ++invalid.codec->native_fields.canonical_value_maximum_bytes;break;
+          case 6: ++invalid.codec->legacy_fields.codec_generation;break;
+          case 7: ++invalid.codec->legacy_fields.registry_generation;break;
+        }
+        auto output=original;
+        Check(!bulk::DirectBuildBitStringPageColumn(descriptor,invalid,9,nullable,&output,&diagnostic) && unchanged(output),
+              "inconsistent BIT identity admitted");
+      }
+      for(const bool zero_ordinal:{false,true}) {
+        auto output=original;
+        Check(!bulk::DirectBuildBitStringPageColumn(descriptor,identity,zero_ordinal?0:9,
+                  zero_ordinal?nullable:!nullable,&output,&diagnostic) && unchanged(output),
+              "BIT ordinal/nullability contradiction admitted");
+      }
+      auto output=original;
+      std::size_t allocations=0;
+      allocation_counter=&allocations;
+      const bool counted=bulk::DirectBuildBitStringPageColumn(descriptor,identity,9,nullable,&output,&diagnostic);
+      allocation_counter=nullptr;
+      Check(counted && allocations>0 && allocations<1000,"BIT receiver allocation sweep unbounded");
+      for(std::size_t position=0;position<allocations;++position) {
+        output=original;
+        diagnostic={};
+        const auto before=allocation_faults;
+        allocation_failure_after=static_cast<long>(position);
+        bool accepted=false,threw=false;
+        try { accepted=bulk::DirectBuildBitStringPageColumn(descriptor,identity,9,nullable,&output,&diagnostic); }
+        catch(...) { threw=true; }
+        allocation_failure_after=-1;
+        Check(allocation_faults==before+1 && !accepted && !threw && unchanged(output) &&
+              diagnostic.code=="RESOURCE.BUDGET_EXCEEDED", "BIT allocation failure lost atomicity or diagnosis");
+        Check(bulk::DirectBuildBitStringPageColumn(descriptor,identity,9,nullable,&output,&diagnostic),
+              "BIT receiver fresh retry failed");
+      }
+      for(const bool null:{false,true}) for(const bool receiving:{false,true}) {
+        if(null&&!nullable) continue;
+        auto sample=value;
+        if(null) { sample.state=api::EngineValueState::sql_null; sample.binary_value.clear(); }
+        const auto* target=receiving?&descriptor:nullptr;
+        allocations=0;
+        allocation_counter=&allocations;
+        const bool valid=bulk::DirectValidateNativeBitStringValue(sample,target,nullable,&diagnostic);
+        allocation_counter=nullptr;
+        Check(valid && allocations>0 && allocations<1000,"BIT value allocation sweep unbounded");
+        for(std::size_t position=0;position<allocations;++position) {
+          diagnostic={};
+          const auto before=allocation_faults;
+          allocation_failure_after=static_cast<long>(position);
+          bool accepted=false,threw=false;
+          try { accepted=bulk::DirectValidateNativeBitStringValue(sample,target,nullable,&diagnostic); }
+          catch(...) { threw=true; }
+          allocation_failure_after=-1;
+          if(accepted||threw||diagnostic.code!="RESOURCE.BUDGET_EXCEEDED")
+            std::cerr<<"BIT value allocation="<<position<<" code="<<diagnostic.code<<" detail="<<diagnostic.detail<<'\n';
+          Check(allocation_faults==before+1 && !accepted && !threw && diagnostic.code=="RESOURCE.BUDGET_EXCEEDED",
+                "BIT value allocation failure misclassified");
+          Check(bulk::DirectValidateNativeBitStringValue(sample,target,nullable,&diagnostic),"BIT value retry failed");
+        }
+      }
+    }
+}
+
 int main() {
   for (const auto type : {dt::CanonicalTypeId::date, dt::CanonicalTypeId::time, dt::CanonicalTypeId::timestamp, dt::CanonicalTypeId::interval})
     for (const unsigned generation : {10u, 11u}) Run(type, generation);
   RetainedColumnBindings();
   ReceiverConstruction();
+  BitReceivers();
   std::cout << "direct_bulk_temporal_payload checks=" << checks << '\n';
 }
