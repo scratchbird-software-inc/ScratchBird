@@ -149,7 +149,74 @@ void CheckRealResult(exec::CanonicalAggregateRuntimeRequest request, double expe
   }
 }
 
+void CheckFixedResultCohorts() {
+  using Fn = exec::CanonicalAggregateFunction;
+  for (const auto& cohort : {api::EngineDatatypeCohort{dt::kDatatypeCohortV5, 5, 5},
+                            api::EngineDatatypeCohort{dt::kDatatypeCohortV10, 10, 10},
+                            api::EngineDatatypeCohort{dt::kDatatypeCohortV11, 11, 11}}) {
+    for (const auto fn : {Fn::count, Fn::avg, Fn::bool_and}) {
+      auto request = fn == Fn::count ? NativeRequest(fn) :
+          fn == Fn::avg ? Request(fn, 1, 2102, "real64") : Request(fn, 2, 2103, "boolean");
+      const auto bind = [&](api::EngineDescriptor& descriptor) {
+        const auto* row = dt::FindDatatypeTypeCodecIdentityV3(
+            cohort.catalog_snapshot_uuid, cohort.catalog_generation, cohort.registry_generation,
+            descriptor.datatype_descriptor_uuid, descriptor.datatype_descriptor_generation);
+        Check(row && row->legacy_fields.type_uuid == descriptor.type_uuid,
+              "explicit aggregate fixture cohort is unavailable");
+        descriptor.datatype_cohort = cohort;
+      };
+      bind(request.result_column.descriptor);
+      for (std::size_t index = 0; index < request.input_batch.columns.size(); ++index) {
+        bind(request.input_batch.columns[index].descriptor);
+        for (auto& row : request.input_batch.rows)
+          row.values[index].descriptor = request.input_batch.columns[index].descriptor;
+      }
+      if (fn == Fn::avg) CheckRealResult(request, 8.0 / 3.0);
+      for (const bool empty : {false, true}) {
+        auto candidate = request;
+        if (empty) candidate.input_batch.rows.clear();
+        const auto valid = exec::ExecuteCanonicalAggregateRuntime(candidate);
+        Check(valid.diagnostic.ok && valid.output_batch.rows.size() == 1 &&
+                  valid.output_batch.rows.front().values.front().descriptor == candidate.result_column.descriptor,
+              "explicit aggregate cohort did not preserve result binding");
+        if (fn == Fn::count) CheckResult(candidate, valid, empty ? 0 : 4);
+        if (fn == Fn::bool_and) {
+          const auto& value = valid.output_batch.rows.front().values.front();
+          if (empty) Check(value.isSqlNull(), "empty BOOLEAN aggregate lost typed NULL");
+          else {
+            const auto decoded = exec::DecodeBoolValue(value);
+            Check(decoded.ok() && !decoded.value, "BOOLEAN aggregate cohort changed truth result");
+          }
+        }
+        for (unsigned mutation = 0; mutation != 7; ++mutation) {
+          auto changed = candidate;
+          auto& descriptor = changed.result_column.descriptor;
+          switch (mutation) {
+            case 0: descriptor.datatype_cohort.catalog_snapshot_uuid = {}; break;
+            case 1: ++descriptor.datatype_cohort.catalog_generation; break;
+            case 2: ++descriptor.datatype_cohort.registry_generation; break;
+            case 3: descriptor.datatype_descriptor_uuid = {}; break;
+            case 4: ++descriptor.datatype_descriptor_generation; break;
+            case 5: descriptor.type_uuid = {}; break;
+            case 6: descriptor.datatype_cohort.catalog_snapshot_uuid.bytes.back() ^= 1; break;
+          }
+          const auto refused = exec::ExecuteCanonicalAggregateRuntime(changed);
+          if (refused.diagnostic.ok || !refused.output_batch.rows.empty())
+            std::cerr << "aggregate_cohort_mutation function=" << static_cast<unsigned>(fn)
+                      << " generation=" << cohort.catalog_generation
+                      << " empty=" << empty << " mutation=" << mutation << '\n';
+          Check(!refused.diagnostic.ok && refused.output_batch.rows.empty(),
+                "invalid aggregate result cohort published rows");
+          Check(exec::ExecuteCanonicalAggregateRuntime(candidate).diagnostic.ok,
+                "invalid aggregate cohort consumed valid retry");
+        }
+      }
+    }
+  }
+}
+
 int main() {
+  CheckFixedResultCohorts();
   using Fn = exec::CanonicalAggregateFunction;
   const auto real_admitted = Request(Fn::avg, 1, 2102, "real64").result_column;
   Check(exec::detail::ValidateAggregateReal64ResultDescriptor(real_admitted).ok,

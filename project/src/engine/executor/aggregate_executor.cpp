@@ -272,7 +272,8 @@ std::optional<std::string_view> AggregateDescriptorField(
 }
 
 scratchbird::engine::internal_api::EngineUuid ExactCoreAggregateTypeUuid(
-    const std::string_view stable_name) {
+    const std::string_view stable_name,
+    const scratchbird::engine::internal_api::EngineDatatypeCohort& cohort) {
   static const auto manifest =
       scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
@@ -287,13 +288,12 @@ scratchbird::engine::internal_api::EngineUuid ExactCoreAggregateTypeUuid(
     return {};
   }
   const auto descriptor_uuid = found->descriptor_uuid.value;
-  const auto identity = scratchbird::core::datatypes::
-      LookupDatatypeTypeCodecIdentityV1(
-          scratchbird::engine::internal_api::kBootstrapDatatypeCatalogUuid,
-          scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
-          scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
+  const auto* identity = scratchbird::core::datatypes::
+      FindDatatypeTypeCodecIdentityV3(
+          cohort.catalog_snapshot_uuid, cohort.catalog_generation,
+          cohort.registry_generation, descriptor_uuid,
           found->descriptor_epoch);
-  return identity.ok ? identity.row.type_uuid
+  return identity ? identity->legacy_fields.type_uuid
                      : scratchbird::engine::internal_api::EngineUuid{};
 }
 
@@ -1803,6 +1803,35 @@ bool ValidateCanonicalAggregateResultType(
     const CanonicalAggregateRuntimeRequest& request,
     const DescriptorBatch& input_batch,
     DescriptorRuntimeDiagnostic* diagnostic) {
+  if (request.result_column.descriptor.canonical_type_name == "boolean") {
+    try {
+      scratchbird::engine::ExecutionTypeDescriptor bound;
+      std::string reason;
+      if (!internal_api::QowResolveBoundExecutionDescriptorV1(
+              request.result_column.descriptor, &bound, &reason)) {
+        *diagnostic = Refusal("DATATYPE.DESCRIPTOR.INVALID", reason);
+        return false;
+      }
+      internal_api::CatalogColumnMetadata fields;
+      if (!internal_api::AdmitCatalogColumnMetadata(
+              request.result_column.descriptor.encoded_descriptor, &fields)) {
+        *diagnostic = Refusal("DATATYPE.DESCRIPTOR.INVALID", "aggregate BOOLEAN result metadata is invalid");
+        return false;
+      }
+      const auto nullable = fields.text.find("nullability");
+      const auto legacy = fields.text.find("nullable");
+      const bool allows_null = nullable != fields.text.end()
+          ? nullable->second == "nullable"
+          : legacy != fields.text.end() && legacy->second == "true";
+      if (request.result_column.nullable != allows_null) {
+        *diagnostic = Refusal("DATATYPE.DESCRIPTOR.INVALID", "aggregate BOOLEAN result nullability disagrees");
+        return false;
+      }
+    } catch (const std::bad_alloc&) {
+      *diagnostic = Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT", "aggregate BOOLEAN result admission allocation failed");
+      return false;
+    }
+  }
   if (request.result_column.descriptor.canonical_type_name == "int64") {
     const auto admission = detail::ValidateAggregateInt64ResultDescriptor(request.result_column);
     if (!admission.ok) {
@@ -1843,7 +1872,7 @@ bool ValidateCanonicalAggregateResultType(
                              : std::string_view{};
   if (!fixed_type_name.empty()) {
     const auto expected_type_uuid =
-        ExactCoreAggregateTypeUuid(fixed_type_name);
+        ExactCoreAggregateTypeUuid(fixed_type_name, request.result_column.descriptor.datatype_cohort);
     const auto& actual_type_uuid = request.result_column.descriptor.type_uuid;
     const auto& result_descriptor_uuid =
         request.result_column.descriptor.descriptor_uuid;
