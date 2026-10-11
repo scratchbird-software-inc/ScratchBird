@@ -5,11 +5,12 @@
 #include "core/platform/runtime_platform.hpp"
 
 namespace scratchbird::engine::internal_api {
-// Preliminary V11 bootstrap cohort published by the engine. These constants
+// D711 bootstrap cohort published for newly created databases. These constants
 // are for bootstrap publishers, not a fallback for statement consumers: those
 // must use and validate their live receipt's exact datatype catalog cohort.
 inline constexpr core::platform::Uuid kBootstrapDatatypeCatalogUuid{{
-    0x01, 0x9d, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0xd7, 0x05}};
-inline constexpr std::uint64_t kBootstrapDatatypeCatalogGeneration = 5;
-inline constexpr std::uint64_t kBootstrapDatatypeRegistryGeneration = 5;
+    0x01, 0xa1, 0x09, 0x5f, 0xf2, 0x05, 0x72, 0xd3,
+    0xab, 0xea, 0x15, 0xc6, 0xd4, 0x1a, 0x4a, 0xd4}};
+inline constexpr std::uint64_t kBootstrapDatatypeCatalogGeneration = 11;
+inline constexpr std::uint64_t kBootstrapDatatypeRegistryGeneration = 11;
 }  // namespace scratchbird::engine::internal_api

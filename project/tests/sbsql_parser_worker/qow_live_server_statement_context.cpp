@@ -15,6 +15,11 @@
 #include <stdexcept>
 #include "wire/public_result_packet.hpp"
 #include "database_lifecycle.hpp"
+#include "admitted_datatype_cohort.hpp"
+#include "catalog_database_record_codec.hpp"
+#include "catalog_record_codec.hpp"
+#include "catalog_page.hpp"
+#include "page_header.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_operations.hpp"
 #include "ddl/create_api.hpp"
@@ -51,8 +56,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -491,6 +499,206 @@ void Rollback(const api::EngineRequestContext& context) {
   rollback.context = context;
   RequireEngineOk(api::EngineRollbackTransaction(rollback),
                   "statement-context transaction rollback failed");
+}
+
+// Construct an explicitly historical on-disk fixture before opening an engine.
+// This is not a migration API: retain the actual committed catalog identity and
+// replace only its payload, including all physical framing/checksums.
+void SetFixtureDatatypeCohort(
+    const Fixture& fixture,
+    std::optional<scratchbird::core::catalog::CatalogDatabaseDatatypeCohort> cohort) {
+  namespace catalog = scratchbird::core::catalog;
+  namespace disk = scratchbird::storage::disk;
+  namespace page = scratchbird::storage::page;
+  const auto identity = db::ReadDatabaseCatalogIdentity(
+      fixture.database_path.string(), fixture.database_uuid);
+  Require(identity.ok(), "cohort fixture identity unavailable");
+  auto record = *identity.record;
+  record.datatype_cohort = cohort;
+  const auto payload = catalog::EncodeCatalogDatabaseRecord(record);
+  Require(payload.ok(), "cohort fixture payload encode failed");
+  disk::FileDevice device;
+  Require(device.Open(fixture.database_path.string(),
+                      disk::FileOpenMode::open_existing).ok(),
+          "cohort fixture device open failed");
+  const auto checksum = [](std::string_view bytes) {
+    std::uint64_t result = 1469598103934665603ull;
+    for (unsigned char byte : bytes) { result ^= byte; result *= 1099511628211ull; }
+    return result;
+  };
+  std::uint64_t number = db::kCatalogPageNumber;
+  bool replaced = false;
+  for (unsigned guard = 0; number != 0 && guard < 1000; ++guard) {
+    std::vector<platform::byte> body(record.page_size - disk::kPageHeaderSerializedBytes);
+    Require(device.ReadAt(number * record.page_size + disk::kPageHeaderSerializedBytes,
+                          body.data(), body.size()).ok(), "cohort fixture page read failed");
+    const auto parsed = page::ParseCatalogPageBody(body, number);
+    Require(parsed.ok(), "cohort fixture catalog framing invalid");
+    std::size_t offset = page::kCatalogPageBodyHeaderBytes;
+    for (const auto& row : parsed.body.rows) {
+      if (row.kind == page::CatalogPageRowKind::typed_catalog_record) {
+        const auto typed = catalog::DecodeCatalogTypedRecord(row);
+        Require(typed.ok(), "cohort fixture typed row invalid");
+        if (typed.record.header.kind == catalog::CatalogRecordKind::database) {
+          Require(!replaced, "cohort fixture duplicate database record");
+          catalog::CatalogTypedRecord replacement{
+              typed.record.header, {payload.bytes.begin(), payload.bytes.end()}};
+          const auto encoded = catalog::EncodeCatalogTypedRecord(
+              replacement, platform::LoadLittle32(body.data() + offset + 4));
+          Require(encoded.ok(), "cohort fixture row encoding failed");
+          const auto old_used = platform::LoadLittle32(body.data() + 24);
+          const auto start = offset + 20;
+          const auto new_used = old_used - row.payload.size() + encoded.row.payload.size();
+          Require(new_used <= body.size(), "cohort fixture page capacity exceeded");
+          std::vector<platform::byte> changed(body.size());
+          std::copy_n(body.begin(), start, changed.begin());
+          std::copy(encoded.row.payload.begin(), encoded.row.payload.end(), changed.begin() + start);
+          std::copy(body.begin() + start + row.payload.size(), body.begin() + old_used,
+                    changed.begin() + start + encoded.row.payload.size());
+          platform::StoreLittle32(changed.data() + offset + 8, encoded.row.payload.size());
+          platform::StoreLittle64(changed.data() + offset + 12, checksum(encoded.row.payload));
+          platform::StoreLittle32(changed.data() + 24, new_used);
+          platform::StoreLittle64(changed.data() + 40, page::ComputeCatalogPageBodyChecksum(changed));
+          Require(page::ParseCatalogPageBody(changed, number).ok(), "cohort fixture changed framing invalid");
+          Require(device.WriteAt(number * record.page_size + disk::kPageHeaderSerializedBytes,
+                                 changed.data(), changed.size()).ok(), "cohort fixture page write failed");
+          replaced = true;
+        }
+      }
+      offset += 20 + row.payload.size();
+    }
+    number = parsed.body.next_page_number;
+  }
+  Require(replaced && number == 0 && device.Sync().ok(), "cohort fixture publication incomplete");
+}
+
+void VerifyPersistedDatatypeCohortReceipts() {
+  namespace catalog = scratchbird::core::catalog;
+  const std::array<std::optional<catalog::CatalogDatabaseDatatypeCohort>, 3> cohorts = {
+      catalog::CatalogDatabaseDatatypeCohort{{platform::UuidKind::object, dt::kDatatypeCohortV11}, 11, 11},
+      catalog::CatalogDatabaseDatatypeCohort{{platform::UuidKind::object, dt::kDatatypeCohortV5}, 5, 5},
+      std::nullopt};
+  const auto file_bytes = [](const std::filesystem::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    Require(stream.is_open(), "cohort proof database read failed");
+    return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+  };
+  for (std::size_t profile = 0; profile < cohorts.size(); ++profile) {
+    auto fixture = CreateFixture();
+    if (profile != 0) SetFixtureDatatypeCohort(fixture, cohorts[profile]);
+    // Each iteration destroys the public engine/session before reopening it.
+    for (unsigned reopen = 0; reopen != 2; ++reopen) {
+      const auto stored = db::ReadDatabaseCatalogIdentity(fixture.database_path.string(), fixture.database_uuid);
+      Require(stored.ok() && stored.record->datatype_cohort == cohorts[profile],
+              "persisted fixture cohort drifted across reopen");
+      auto transaction = BeginTransaction(fixture);
+      PublicSession session(fixture, fixture.session_uuid);
+      // Deliberately wrong observations: a D711 caller must not upgrade D705;
+      // a historical observation must not downgrade a freshly created node.
+      transaction.datatype_catalog_snapshot_uuid = profile == 0 ? dt::kDatatypeCohortV5 : dt::kDatatypeCohortV11;
+      transaction.datatype_catalog_generation = profile == 0 ? 5 : 11;
+      transaction.datatype_registry_generation = profile == 0 ? 5 : 11;
+      const auto before = file_bytes(fixture.database_path);
+      bridge::StatementContextReceiptView view;
+      if (!cohorts[profile]) {
+        bridge::StatementParameterCoordinationBeginRequestV1 begin;
+        begin.engine_session = session.get();
+        begin.engine_context = &transaction;
+        begin.mode = bridge::StatementParameterExecutionMode::kPrepared;
+        begin.operation_uuid = NewIdentity(platform::UuidKind::object, fixture.salt + 100 + reopen);
+        bridge::StatementParameterCoordinationViewV1 coordination;
+        sb_engine_result_t begin_result = nullptr;
+        const auto begun = bridge::BeginStatementParameterExecutionCoordinationV1(&begin, &coordination, &begin_result);
+        if (begin_result) (void)sb_engine_result_release(begin_result);
+        Require(begun == SB_ENGINE_STATUS_OK && coordination.private_handle != 0 &&
+                    coordination.coordinator_generation != 0,
+                "legacy refusal prepared coordination setup failed");
+        const auto artifacts = [&] {
+          std::map<std::filesystem::path, std::string> result;
+          for (const auto& entry : std::filesystem::recursive_directory_iterator(fixture.directory)) {
+            if (entry.is_regular_file()) result.emplace(entry.path(), file_bytes(entry.path()));
+          }
+          return result;
+        };
+        const auto artifacts_before = artifacts();
+        Require(artifacts_before.contains(fixture.database_path.string() + ".sb.sblr_prepared_coordination.v1"),
+                "legacy refusal lacks actual prepared coordination journal");
+        const auto inventory = db::LoadLocalTransactionInventoryFromDatabase(fixture.database_path.string());
+        Require(inventory.ok(), "legacy refusal inventory unavailable");
+        const auto snapshots_before = scratchbird::transaction::mga::PublishedSnapshotRetentionHorizons(inventory.inventory);
+        Require(snapshots_before.ok(), "legacy refusal snapshot baseline unavailable");
+        for (bool prepared : {false, true}) {
+        bridge::StatementContextAcquireRequest request;
+        request.engine_context = &transaction;
+        request.exact_transaction_uuid = transaction.transaction_uuid;
+        // A malformed selector would fail later. Missing durable cohort must
+        // refuse before selecting/consuming any prepared coordination.
+        if (prepared) {
+          request.parameter_execution_selector.mode = bridge::StatementParameterExecutionMode::kPrepared;
+          request.parameter_execution_selector.prepared_binding_handle = coordination.private_handle;
+        } else {
+          request.parameter_execution_selector.version = 0;
+        }
+        bridge::StatementContextReceiptHandle receipt;
+        sb_engine_result_t result = nullptr;
+        const auto status = bridge::AcquireStatementContextReceipt(session.get(), &request, &receipt, &view, &result);
+        sb_engine_diagnostic_set_view_t diagnostics{};
+        Require(result && sb_engine_result_diagnostics(result, &diagnostics) == SB_ENGINE_STATUS_OK &&
+                    diagnostics.diagnostic_count == 1, "legacy cohort diagnostic missing");
+        const auto& diagnostic = diagnostics.diagnostics[0];
+        const auto text = [](sb_engine_string_view_t value) {
+          return std::string_view(value.data ? value.data : "", value.data ? value.size_bytes : 0);
+        };
+        Require(status == SB_ENGINE_STATUS_CONFLICT && !receipt && view.receipt_uuid.is_nil() &&
+                    view.statement_uuid.is_nil() && view.statement_snapshot_uuid.is_nil() &&
+                    view.literal_catalog_snapshot_uuid.is_nil() && view.literal_catalog_generation == 0 &&
+                    view.literal_registry_generation == 0 &&
+                    text(diagnostic.symbolic_code) == "DATATYPE.DESCRIPTOR.INVALID" &&
+                    text(diagnostic.message_key) == "engine.statement_context.datatype_catalog_unavailable" &&
+                    text(diagnostic.safe_detail) == "explicit_datatype_cohort_migration_required",
+                "legacy cohort refusal authority or diagnostic drifted");
+        Require(sb_engine_result_release(result) == SB_ENGINE_STATUS_OK, "legacy diagnostic release failed");
+        }
+        const auto retry = Acquire(session.get(), transaction, &view, SB_ENGINE_STATUS_CONFLICT, "DATATYPE.DESCRIPTOR.INVALID");
+        Require(!retry && view.receipt_uuid.is_nil(), "legacy retry manufactured authority");
+        const auto inventory_after = db::LoadLocalTransactionInventoryFromDatabase(fixture.database_path.string());
+        Require(inventory_after.ok(), "legacy refusal changed inventory readability");
+        const auto snapshots_after = scratchbird::transaction::mga::PublishedSnapshotRetentionHorizons(inventory_after.inventory);
+        const auto sorted_horizons = [](const auto& snapshots) {
+          std::vector<std::uint64_t> values;
+          for (const auto& id : snapshots.horizons) values.push_back(id.value);
+          std::sort(values.begin(), values.end());
+          return values;
+        };
+        Require(snapshots_after.ok() && sorted_horizons(snapshots_after) == sorted_horizons(snapshots_before),
+                "legacy cohort refusal retained a statement snapshot");
+        Require(artifacts() == artifacts_before, "legacy refusal changed database/coordination artifacts");
+      } else {
+        const auto receipt = Acquire(session.get(), transaction, &view);
+        api::EngineRequestContext owned;
+        sb_engine_result_t result = nullptr;
+        const auto copied = bridge::CopyStatementContextEngineContextV1(receipt, &owned, &result);
+        if (result) (void)sb_engine_result_release(result);
+        const auto& expected = *cohorts[profile];
+        Require(copied == SB_ENGINE_STATUS_OK &&
+                    view.literal_catalog_snapshot_uuid == expected.catalog_snapshot_uuid.value &&
+                    view.literal_catalog_generation == expected.catalog_generation &&
+                    view.literal_registry_generation == expected.registry_generation &&
+                    owned.datatype_catalog_snapshot_uuid == expected.catalog_snapshot_uuid.value &&
+                    owned.datatype_catalog_generation == expected.catalog_generation &&
+                    owned.datatype_registry_generation == expected.registry_generation,
+                "caller observations replaced persisted receipt cohort");
+        Require(bridge::ReleaseStatementContextReceipt(receipt) == SB_ENGINE_STATUS_OK,
+                "cohort receipt release failed");
+        api::EngineResolveStatementSnapshotRequest resolve;
+        resolve.context = owned;
+        Require(!api::EngineResolveStatementSnapshot(resolve).ok, "cohort receipt leaked snapshot after release");
+      }
+      Require(file_bytes(fixture.database_path) == before, "cohort acquisition/release mutated durable database");
+      session.End();
+      Rollback(transaction);
+    }
+  }
 }
 
 api::EngineLocalizedName PrimaryName(std::string name) {
@@ -5164,6 +5372,11 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
 
 int RunConformance(int argc, char** argv) {
   ConfigureMemoryFixture();
+  if (argc == 2 && std::string_view(argv[1]) == "--datatype-cohort-proof-only") {
+    VerifyPersistedDatatypeCohortReceipts();
+    std::cout << "qow_persisted_datatype_cohort_receipts=passed\n";
+    return EXIT_SUCCESS;
+  }
   const bool join_tail_proof_only =
       argc == 2 &&
       std::string_view(argv[1]) == "--join-tail-proof-only";
@@ -5225,6 +5438,7 @@ int RunConformance(int argc, char** argv) {
   }
 
   namespace mga = scratchbird::transaction::mga;
+  VerifyPersistedDatatypeCohortReceipts();
   const auto empty_begin = mga::BeginLocalTransaction({},
       NewTypedUuid(platform::UuidKind::transaction, 1), 1945000000001ull);
   Require(empty_begin.ok(), "empty-inventory transaction begin failed");

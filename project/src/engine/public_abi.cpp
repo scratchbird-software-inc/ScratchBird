@@ -893,8 +893,6 @@ namespace {
 constexpr scratchbird::engine::internal_api::EngineUuid
     kParameterBigintDescriptor{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0,
                                0x80, 0, 0, 0, 0, 0, 0xd7, 0x11}};
-constexpr auto kCanonicalDatatypeCatalogUuid =
-    scratchbird::engine::internal_api::kBootstrapDatatypeCatalogUuid;
 constexpr scratchbird::engine::internal_api::EngineUuid
     kCanonicalTextDescriptorUuid{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0,
                                  0x80, 0, 0, 0, 0, 0, 0xd7, 0x18}};
@@ -6209,6 +6207,21 @@ sb_engine_status_t AcquireStatementContextReceipt(
         "ENGINE.STATEMENT_CONTEXT.TRANSACTION_UUID_INVALID",
         "engine.statement_context.transaction_uuid_invalid");
   }
+  // Caller observations and process defaults cannot choose a node's datatype
+  // cohort. Resolve the actual owned, committed record before coordination
+  // effects. A frozen V1 record needs explicit migration, never relabelling.
+  const auto datatype_catalog = scratchbird::storage::database::ReadDatabaseCatalogIdentity(
+      engine_context.database_path, engine_context.database_uuid);
+  if (!datatype_catalog.ok() || !datatype_catalog.record->datatype_cohort)
+    return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4044,
+        "DATATYPE.DESCRIPTOR.INVALID", "engine.statement_context.datatype_catalog_unavailable",
+        datatype_catalog.ok() ? "explicit_datatype_cohort_migration_required"
+                              : datatype_catalog.diagnostic.diagnostic_code);
+  const auto& datatype_cohort = *datatype_catalog.record->datatype_cohort;
+  const auto kCanonicalDatatypeCatalogUuid = datatype_cohort.catalog_snapshot_uuid.value;
+  engine_context.datatype_catalog_snapshot_uuid = kCanonicalDatatypeCatalogUuid;
+  engine_context.datatype_catalog_generation = datatype_cohort.catalog_generation;
+  engine_context.datatype_registry_generation = datatype_cohort.registry_generation;
   std::optional<StatementParameterCoordinationOpaque> parameter_coordination;
   const auto& selector = request->parameter_execution_selector;
   const bool direct_selector =
@@ -6712,8 +6725,8 @@ sb_engine_status_t AcquireStatementContextReceipt(
   const auto int64_identity =
       scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV3(
           kCanonicalDatatypeCatalogUuid,
-          scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
-          scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration,
+          datatype_cohort.catalog_generation,
+          datatype_cohort.registry_generation,
           int64_descriptor_uuid,
           int64_row->descriptor_epoch);
   const auto numeric_type_uuid =
@@ -6723,8 +6736,8 @@ sb_engine_status_t AcquireStatementContextReceipt(
   const auto text_identity =
       scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV3(
           kCanonicalDatatypeCatalogUuid,
-          scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
-          scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration,
+          datatype_cohort.catalog_generation,
+          datatype_cohort.registry_generation,
           kCanonicalTextDescriptorUuid, 1);
   const auto text_type_uuid = text_identity.row.legacy_fields.type_uuid;
   const auto aggregate_type_identity = [&](scratchbird::core::datatypes::CanonicalTypeId type) {
@@ -6732,8 +6745,8 @@ sb_engine_status_t AcquireStatementContextReceipt(
       const auto& row = identity.legacy_fields;
       if (row.canonical_binary_type_code == static_cast<std::uint32_t>(type) &&
           row.catalog_snapshot_uuid == kCanonicalDatatypeCatalogUuid &&
-          row.catalog_generation == scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration &&
-          row.registry_generation == scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration) return row.type_uuid;
+          row.catalog_generation == datatype_cohort.catalog_generation &&
+          row.registry_generation == datatype_cohort.registry_generation) return row.type_uuid;
     }
     return scratchbird::engine::internal_api::EngineUuid{};
   };
@@ -6841,8 +6854,8 @@ sb_engine_status_t AcquireStatementContextReceipt(
   const auto real64_identity =
       scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV3(
           kCanonicalDatatypeCatalogUuid,
-          scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
-          scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration,
+          datatype_cohort.catalog_generation,
+          datatype_cohort.registry_generation,
           real64_row->descriptor_uuid.value, real64_row->descriptor_epoch);
   const auto real64_type_uuid = real64_identity.ok
       ? real64_identity.row.legacy_fields.type_uuid
@@ -6902,8 +6915,8 @@ sb_engine_status_t AcquireStatementContextReceipt(
   const auto uuid_identity =
       scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV3(
           kCanonicalDatatypeCatalogUuid,
-          scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
-          scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration,
+          datatype_cohort.catalog_generation,
+          datatype_cohort.registry_generation,
           uuid_row->descriptor_uuid.value, uuid_row->descriptor_epoch);
   const auto uuid_type_uuid = uuid_identity.ok
       ? uuid_identity.row.legacy_fields.type_uuid
@@ -6968,8 +6981,8 @@ sb_engine_status_t AcquireStatementContextReceipt(
   const auto geometry_identity =
       scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV3(
           kCanonicalDatatypeCatalogUuid,
-          scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
-          scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration,
+          datatype_cohort.catalog_generation,
+          datatype_cohort.registry_generation,
           geometry_row->descriptor_uuid.value, geometry_row->descriptor_epoch);
   const auto geometry_type_uuid = geometry_identity.ok
       ? geometry_identity.row.legacy_fields.type_uuid
@@ -7075,15 +7088,14 @@ sb_engine_status_t AcquireStatementContextReceipt(
   view.inventory_authoritative = snapshot.inventory_authoritative;
   view.snapshot_complete = snapshot.complete;
   view.catalog_generation_id = engine_context.catalog_generation_id;
-  // DATATYPE-TYPE-CODEC-IDENTITY-REGISTRY-V1 is the sole literal descriptor
-  // identity snapshot. Keep it distinct from the general statement catalog
-  // epoch and publish it only as the preliminary V11 bootstrap authority.
+  // Keep the node's persisted datatype cohort distinct from the general
+  // statement catalog epoch. No current default supplies legacy authority.
   view.literal_catalog_snapshot_uuid =
       kCanonicalDatatypeCatalogUuid;
   view.literal_catalog_generation =
-      scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration;
+      datatype_cohort.catalog_generation;
   view.literal_registry_generation =
-      scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration;
+      datatype_cohort.registry_generation;
   {
     auto diagnostic_context = engine_context;
     diagnostic_context.statement_metadata_snapshot_engine_owned = true;

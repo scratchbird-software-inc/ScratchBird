@@ -235,6 +235,8 @@ int main() {
     expected.creator_transaction_number=1;
     Codec(expected);
     CohortCodec(expected);
+    expected.datatype_cohort=c::CatalogDatabaseDatatypeCohort{
+        {p::UuidKind::object,scratchbird::core::datatypes::kDatatypeCohortV11},11,11};
     const auto created=db::CreateDatabaseFile(cfg);
     if(!created.ok())std::cerr<<created.diagnostic.diagnostic_code<<'\n';
     Setup(created.ok(),"actual database create failed");
@@ -245,8 +247,8 @@ int main() {
     const auto before_identity_read=ReadAll(cfg.path);
     const auto owned=db::ReadDatabaseCatalogIdentity(cfg.path,cfg.database_uuid.value);
     if(!owned.ok())std::cerr<<owned.diagnostic.diagnostic_code<<'\n';
-    Check(owned.ok()&&!owned.record->datatype_cohort,
-          "owned V1 read must preserve absence, never infer D711");
+    Check(owned.ok()&&owned.record->datatype_cohort==expected.datatype_cohort,
+          "fresh bootstrap must publish exact D711 cohort");
     if(owned.ok())Check(Golden(*owned.record)==Golden(expected),"owned record differs from durable bytes");
     Check(ReadAll(cfg.path)==before_identity_read,"owned identity read changed database");
     const auto foreign_owner=uuid::GenerateEngineIdentityV7(p::UuidKind::database,millis+1);
@@ -291,8 +293,8 @@ int main() {
       auto body=original;
       const auto row_size=p::LoadLittle32(body.data()+found_offset+8);
       std::string record(reinterpret_cast<const char*>(body.data()+found_offset+20),row_size);
-      Setup(payload.size()==176&&record.size()==96+176,"fixed fixture size");
-      record.replace(96,176,payload);
+      Setup(payload.size()==232&&record.size()==96+232,"fixed fixture size");
+      record.replace(96,232,payload);
       std::copy(record.begin(),record.end(),body.begin()+found_offset+20);
       p::StoreLittle64(body.data()+found_offset+12,Fnv(record));
       p::StoreLittle64(body.data()+40,page::ComputeCatalogPageBodyChecksum(body));
@@ -312,7 +314,7 @@ int main() {
       mutate(Golden(foreign));}
     {auto bytes=Golden(expected);bytes[16]^=1;mutate(bytes);}
     {auto bytes=Golden(expected);bytes[32+6]&=15;mutate(bytes);}
-    mutate(std::string("database_uuid=legacy\n")+std::string(155,'x'));
+    mutate(std::string("database_uuid=legacy\n")+std::string(211,'x'));
     // Real-file V2 source fixture. This is deliberately a physical fixture
     // construction, not a claim that rewriting bytes is a migration API.
     const auto replace_payload = [&](const std::string& payload, bool deleted=false,
@@ -344,6 +346,14 @@ int main() {
       Setup(page::ParseCatalogPageBody(body,found_page).ok(),"V2 fixture body checksum");
       write(body);
     };
+    auto legacy=expected;
+    legacy.datatype_cohort.reset();
+    replace_payload(Golden(legacy));
+    const auto before_v1=ReadAll(cfg.path);
+    const auto owned_v1=db::ReadDatabaseCatalogIdentity(cfg.path,cfg.database_uuid.value);
+    Check(owned_v1.ok()&&!owned_v1.record->datatype_cohort,
+          "owned V1 read must preserve absence, never infer D711");
+    Check(ReadAll(cfg.path)==before_v1,"legacy read changed source");
     auto bound=expected;
     bound.datatype_cohort=c::CatalogDatabaseDatatypeCohort{
         {p::UuidKind::object,scratchbird::core::datatypes::kDatatypeCohortV11},11,11};

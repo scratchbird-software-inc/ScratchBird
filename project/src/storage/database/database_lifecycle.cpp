@@ -30,6 +30,7 @@
 #include "database_local_private_relation_locator.hpp"
 #include "database_dirty_manifest.hpp"
 #include "datatype_descriptor.hpp"
+#include "admitted_datatype_cohort.hpp"
 #include "memory.hpp"
 #include "metric_registry.hpp"
 #include "metric_retention_policy.hpp"
@@ -3191,6 +3192,8 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
   database_record.feature_flags = config.feature_flags;
   database_record.compatibility_flags = config.compatibility_flags;
   database_record.creator_transaction_number = kBootstrapCatalogTransactionId;
+  database_record.datatype_cohort = scratchbird::core::catalog::CatalogDatabaseDatatypeCohort{
+      {UuidKind::object, scratchbird::core::datatypes::kDatatypeCohortV11}, 11, 11};
   const auto database_binary = scratchbird::core::catalog::EncodeCatalogDatabaseRecord(database_record);
   if (!database_binary.ok()) {
     const auto refused = LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
