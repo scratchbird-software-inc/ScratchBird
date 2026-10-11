@@ -151,7 +151,7 @@ void ProveNativeRequestLookup() {
   const auto denied = CancelServerRequestLifecycle(&registry, token, actor, false);
   Require(denied.error && denied.diagnostics.size() == 1 &&
               denied.diagnostics.front().identity_fields.size() == 1 &&
-              denied.diagnostics.front().identity_fields.front().second.bytes == request.request_uuid &&
+              denied.diagnostics.front().identity_fields.front().second.bytes == request.finality_token_uuid &&
               registry.requests_by_uuid.begin()->second.state == ServerRequestLifecycleState::kCursorOpen,
           "native cancellation authorization refusal lost identity or mutated the request");
   actor.session_uuid = request.session_uuid;
@@ -198,7 +198,10 @@ void ProveNativeRequestStatus() {
   actor.session_uuid = Uuid(100);
   const auto denied = CancelServerRequestLifecycle(&registry, target, actor, false, 0);
   Require(denied.error && denied.outcome == "authorization_required", "cross-session cancellation must remain denied");
-  verify(denied.records_json);
+  std::vector<packet::Field> denied_fields;
+  Require(status::Decode(denied.records_json, &denied_fields) && denied_fields.size() == 2 &&
+              denied_fields[1].kind == packet::Kind::text && denied_fields[1].value == "[]",
+          "denied cancellation must return a framed empty record set without foreign identities");
   Require(registry.requests_by_uuid.begin()->second.state == request.state, "denied cancellation mutated request");
   for (const auto& malformed : {std::string(15,'x'), std::string(16,'\0'),
                                std::string("019d0000-0000-7000-8000-000000000001")}) {

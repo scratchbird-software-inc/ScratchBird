@@ -5500,7 +5500,7 @@ if(TARGET sb_server_core)
       "LINKER:--wrap=sb_engine_result_release")
     target_link_options(server_abi_close_custody_gate PRIVATE
       "LINKER:--wrap=_ZN11scratchbird20server_engine_bridge30ReleaseStatementContextReceiptENS0_29StatementContextReceiptHandleE")
-    foreach(mode session engine authority begin cursor prepared prepared_route cursor_route retired_cursor_route cancel_route receipt_session receipt_prepared receipt_owner)
+    foreach(mode session engine authority begin cursor prepared prepared_route cursor_route retired_cursor_route cancel_route receipt_session receipt_prepared receipt_owner cancel_prepared cancel_prepared_exception cancel_prepared_unauthorized cancel_prepared_allocation)
       add_test(NAME server_abi_close_custody_${mode}_gate COMMAND server_abi_close_custody_gate ${mode})
       set_tests_properties(server_abi_close_custody_${mode}_gate PROPERTIES
         TIMEOUT 90 LABELS "runtime;cleanup;actual_handles;fault_injection;component;not_runtime_acceptance")

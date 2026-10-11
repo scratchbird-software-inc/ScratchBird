@@ -8,6 +8,8 @@
 #include "../support/engine_statement_fixture.hpp"
 #include "../support/owned_temp_directory.hpp"
 #include "transaction/transaction_api.hpp"
+#include "wire/binary_status_packet.hpp"
+#include <cstdlib>
 #include <iostream>
 #include <stdexcept>
 #include <string_view>
@@ -23,6 +25,25 @@ bool inject = true;
 unsigned ends = 0, closes = 0;
 sb_engine_result_t injected_result = nullptr;
 bridge::StatementContextReceiptHandle injected_receipt;
+s::ServerSessionRegistry* cancellation_registry = nullptr;
+unsigned cancellation_release_calls = 0;
+bool cancellation_all_fenced = true;
+bool inject_cancellation_reporting = false;
+void* operator new(std::size_t bytes) {
+  if (inject_cancellation_reporting && cancellation_registry) {
+    bool fenced = !cancellation_registry->cursors_by_uuid.empty();
+    for (const auto& [_, cursor] : cancellation_registry->cursors_by_uuid)
+      fenced &= cursor.closed && cursor.exhausted;
+    if (fenced) { inject_cancellation_reporting = false; throw std::bad_alloc(); }
+  }
+  if (auto* pointer = std::malloc(bytes ? bytes : 1)) return pointer;
+  throw std::bad_alloc();
+}
+void* operator new[](std::size_t bytes) { return ::operator new(bytes); }
+void operator delete(void* pointer) noexcept { std::free(pointer); }
+void operator delete[](void* pointer) noexcept { std::free(pointer); }
+void operator delete(void* pointer, std::size_t) noexcept { std::free(pointer); }
+void operator delete[](void* pointer, std::size_t) noexcept { std::free(pointer); }
 extern "C" sb_engine_status_t real_release_receipt(bridge::StatementContextReceiptHandle)
     asm("__real__ZN11scratchbird20server_engine_bridge30ReleaseStatementContextReceiptENS0_29StatementContextReceiptHandleE");
 extern "C" sb_engine_status_t wrapped_release_receipt(bridge::StatementContextReceiptHandle)
@@ -35,8 +56,14 @@ extern "C" sb_engine_status_t wrapped_release_receipt(bridge::StatementContextRe
 }
 extern "C" sb_engine_status_t __real_sb_engine_result_release(sb_engine_result_t);
 extern "C" sb_engine_status_t __wrap_sb_engine_result_release(sb_engine_result_t result) {
+  if (cancellation_registry && result) {
+    ++cancellation_release_calls;
+    for (const auto& [_, cursor] : cancellation_registry->cursors_by_uuid)
+      cancellation_all_fenced &= cursor.closed && cursor.exhausted;
+  }
   if (inject && result && result == injected_result) {
     inject = false;
+    if (mode == "cancel_prepared_exception") throw std::bad_alloc();
     return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED;
   }
   return __real_sb_engine_result_release(result);
@@ -72,6 +99,128 @@ extern "C" sb_engine_status_t __wrap_sb_engine_session_begin(sb_engine_handle_t 
 }
 void Check(bool ok, const char* reason) {if (!ok) throw std::runtime_error(reason);}
 Uuid Id() {auto id = u::IssueRuntimeIdentityV7(); Check(bool(id), "native identity"); return *id;}
+void CancelPreparedCustody() {
+  s::ServerSessionRegistry registry;
+  s::ServerSessionRecord session;
+  session.session_uuid = Id().bytes; session.effective_user_uuid = Id().bytes;
+  session.connection_uuid = Id().bytes; session.embedded_in_process = true;
+  struct Cleanup {
+    s::ServerSessionRegistry& registry;
+    std::array<std::uint8_t, 16> session;
+    ~Cleanup() {
+      inject = false; inject_cancellation_reporting = false; cancellation_registry = nullptr;
+      if (!s::CloseServerPublicAbiSessionForSession(&registry, session).completed) std::terminate();
+    }
+  } cleanup{registry, session.session_uuid};
+  std::string detail;
+  const auto* owner = s::EnsureServerPublicAbiSessionForContext(&registry, session, &detail);
+  Check(owner && owner->engine, "real engine owns cancellation result cohort");
+  const auto prepared = Id();
+  std::array<Uuid, 4> requests, cursors;
+  for (unsigned i = 0; i < requests.size(); ++i) {
+    requests[i] = Id(); cursors[i] = Id();
+    s::ServerCursorRecord cursor;
+    cursor.session_uuid = session.session_uuid;
+    cursor.cursor_uuid = cursors[i].bytes;
+    cursor.prepared_statement_uuid = prepared.bytes;
+    if (i < 3) Check(sb_engine_describe_capabilities(owner->engine, nullptr, &cursor.engine_result) == SB_ENGINE_STATUS_OK &&
+          cursor.engine_result, "independent real retained result");
+    cursor.row_packet = "retained_cancel_payload";
+    if (i == 1) injected_result = cursor.engine_result;
+    registry.cursors_by_uuid.emplace(cursors[i], std::move(cursor));
+    s::ServerRequestRecord request;
+    request.request_uuid = requests[i].bytes;
+    request.session_uuid = session.session_uuid;
+    request.prepared_statement_uuid = prepared.bytes;
+    request.cursor_uuid = cursors[i].bytes;
+    request.engine_result_retained = i < 3;
+    request.operation_id = "query.select";
+    request.state = s::ServerRequestLifecycleState::kActive;
+    registry.requests_by_uuid.emplace(requests[i], std::move(request));
+  }
+  // The close command adds another lifecycle record for an existing cursor.
+  // Its known request state must not resolve the older execution's unknown
+  // outcome, nor cause an implicit second release attempt after a refusal.
+  auto alias = registry.requests_by_uuid.at(requests[1]);
+  alias.request_uuid = Id().bytes;
+  alias.engine_result_retained = false;
+  const Uuid alias_key{alias.request_uuid};
+  registry.requests_by_uuid.emplace(alias_key, alias);
+  const std::string target(reinterpret_cast<const char*>(prepared.bytes.data()), prepared.bytes.size());
+  cancellation_registry = &registry;
+  if (mode == "cancel_prepared_unauthorized") {
+    // Foreign first record and a separate foreign member: map order must not
+    // affect either admission or disclosure of private request identities.
+    registry.requests_by_uuid.at(requests[1]).session_uuid = Id().bytes;
+    const auto first_key = registry.requests_by_uuid.begin()->first;
+    registry.requests_by_uuid.at(first_key).session_uuid = Id().bytes;
+    const auto refused = s::CancelServerRequestLifecycle(&registry, target, session, false, 1000);
+    scratchbird::wire::binary_status::Stream empty;
+    empty << "[]";
+    Check(refused.error && !refused.accepted && refused.records_json == empty.str() &&
+          cancellation_release_calls == 0, "whole selection authorization precedes effects and disclosure");
+    Check(refused.diagnostics.size() == 1 && refused.diagnostics.front().identity_fields.size() == 1 &&
+          refused.diagnostics.front().identity_fields.front().second == prepared,
+          "denial exposes only the supplied target, never a discovered request identity");
+    const auto all = s::CancelServerRequestLifecycle(&registry, {}, session, false, 1000);
+    Check(all.error && all.records_json == empty.str() && all.diagnostics.size() == 1 &&
+          all.diagnostics.front().identity_fields.empty() && cancellation_release_calls == 0,
+          "empty-target denial exposes no foreign identities");
+    for (const auto& [_, cursor] : registry.cursors_by_uuid)
+      Check(!cursor.closed, "authorization refusal has no partial cancellation");
+    registry.requests_by_uuid.at(requests[1]).session_uuid = session.session_uuid;
+    registry.requests_by_uuid.at(first_key).session_uuid = session.session_uuid;
+  }
+  if (mode == "cancel_prepared_allocation") { inject = false; inject_cancellation_reporting = true; }
+  bool threw = false;
+  try {
+    const auto cancelled = s::CancelServerRequestLifecycle(&registry, target, session, false, 1000);
+    Check(cancelled.accepted && cancelled.unknown_outcome && !cancelled.error,
+          "cancellation admitted without claiming unknown finality resolved");
+  } catch (const std::bad_alloc&) { threw = true; }
+  Check(threw == (mode == "cancel_prepared_exception" || mode == "cancel_prepared_allocation") &&
+        !inject && !inject_cancellation_reporting && cancellation_all_fenced,
+        "all selected cursors fenced before actual release or exception");
+  if (mode == "cancel_prepared_allocation")
+    Check(cancellation_release_calls == 0, "reporting allocation fault precedes every native release");
+  for (const auto& [_, cursor] : registry.cursors_by_uuid)
+    Check(cursor.closed && cursor.exhausted, "every cursor remains fenced after interrupted reporting or release");
+  Check(registry.cursors_by_uuid.at(cursors[1]).engine_result == injected_result &&
+        registry.requests_by_uuid.at(requests[1]).engine_result_retained &&
+        registry.cursors_by_uuid.at(cursors[1]).row_packet == "retained_cancel_payload",
+        "failed member retains actual handle, bytes and request accounting");
+  if (!threw) {
+    Check(cancellation_release_calls == 3, "ordinary refusal does not skip sibling releases");
+    for (const unsigned i : {0u, 2u})
+      Check(!registry.cursors_by_uuid.at(cursors[i]).engine_result &&
+            !registry.requests_by_uuid.at(requests[i]).engine_result_retained,
+            "every successful sibling publishes actual release");
+  }
+  const auto retry = s::CancelServerRequestLifecycle(&registry, target, session, false, 1000);
+  Check(retry.accepted && retry.unknown_outcome, "retry preserves unknown finality after physical release");
+  for (unsigned i = 0; i < requests.size(); ++i) {
+    const auto& cursor = registry.cursors_by_uuid.at(cursors[i]);
+    const auto& request = registry.requests_by_uuid.at(requests[i]);
+    Check(cursor.closed && cursor.exhausted && !cursor.engine_result && cursor.row_packet.empty() &&
+          !request.engine_result_retained && request.state == (i < 3 ? s::ServerRequestLifecycleState::kUnknownOutcome :
+                                                                     s::ServerRequestLifecycleState::kCancelled),
+          "full retry drains every member without manufacturing transaction success");
+    Check(cursor.finality_state == (i < 3 ? "cancelled_unknown_outcome" : "cancelled"),
+          "mixed cohort preserves per-cursor finality classification");
+  }
+  const auto calls = cancellation_release_calls;
+  Check(registry.requests_by_uuid.at(alias_key).state == s::ServerRequestLifecycleState::kCancelled &&
+        registry.cursors_by_uuid.at(cursors[1]).finality_state == "cancelled_unknown_outcome",
+        "duplicate cursor requests retain independent finality and aggregate uncertainty");
+  Check(s::CancelServerRequestLifecycle(&registry, target, session, false, 1000).unknown_outcome &&
+        cancellation_release_calls == calls, "completed physical retry is idempotent");
+  const std::string alias_target(reinterpret_cast<const char*>(alias_key.bytes.data()), alias_key.bytes.size());
+  const auto alias_retry = s::CancelServerRequestLifecycle(&registry, alias_target, session, false, 1000);
+  Check(alias_retry.accepted && !alias_retry.unknown_outcome && cancellation_release_calls == calls &&
+        registry.cursors_by_uuid.at(cursors[1]).finality_state == "cancelled_unknown_outcome" &&
+        registry.requests_by_uuid.at(requests[1]).state == s::ServerRequestLifecycleState::kUnknownOutcome,
+        "narrow known-request retry cannot resolve prior shared-cursor uncertainty");
+}
 void ReceiptCustody() {
   namespace db = scratchbird::storage::database;
   namespace fixtures = scratchbird::tests;
@@ -189,6 +338,7 @@ int main(int argc, char** argv) try {
   Check(m::ConfigureDefaultMemoryManagerForFixture(m::DefaultLocalEngineMemoryPolicy(),
         "server_abi_close_custody").ok(), "real fixture manager");
   if (mode == "receipt_session" || mode == "receipt_prepared" || mode == "receipt_owner") {ReceiptCustody(); return 0;}
+  if (mode.starts_with("cancel_prepared")) {CancelPreparedCustody(); return 0;}
   s::ServerSessionRegistry registry;
   s::ServerSessionRecord session;
   session.session_uuid = Id().bytes;

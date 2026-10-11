@@ -695,6 +695,7 @@ bool OperationCancellationCanBeDeterministic(std::string_view operation_id) {
 
 bool CancellationOutcomeUnknown(const ServerRequestRecord& request,
                                 const ServerSessionRecord& actor) {
+  if (request.state == ServerRequestLifecycleState::kUnknownOutcome) return true;
   if (request.engine_result_retained) return true;
   const bool active_transaction =
       request.local_transaction_id_at_start != 0 ||
@@ -5600,28 +5601,52 @@ ServerRequestLifecycleResult CancelServerRequestLifecycle(
   }
 
   auto& request = registry->requests_by_uuid[matched_keys.front()];
-  if (request.session_uuid != actor.session_uuid && !authorization_proven) {
+  const bool unauthorized = !authorization_proven && std::any_of(
+      matched_keys.begin(), matched_keys.end(), [&](const auto& key) {
+        return registry->requests_by_uuid.at(key).session_uuid != actor.session_uuid;
+      });
+  if (unauthorized) {
     result.error = true;
     result.outcome = "authorization_required";
     scratchbird::wire::binary_status::Stream records;
-    records << "[" << RequestLifecycleRecordJson(request) << "]";
+    records << "[]";
     result.records_json = records.str();
     result.diagnostics.push_back(RequestLifecycleDiagnostic(
         "SECURITY.AUTHORIZATION.DENIED",
         ServerDiagnosticSeverity::kError,
         "Cancelling another session request requires engine authorization.",
-        {},
-        {{"target_request_uuid", core::platform::Uuid{request.request_uuid}}}));
+        {}));
+    if (target) result.diagnostics.back().identity_fields.push_back({"target_uuid", *target});
     return result;
   }
 
+  // Several lifecycle requests can refer to the same cursor (including the
+  // close request itself). Allocate/deduplicate before effects so each physical
+  // owner gets exactly one release attempt per cancellation invocation.
+  std::map<core::platform::Uuid, bool> cursor_outcomes;
+  for (const auto& key : matched_keys) {
+    const auto& matched = registry->requests_by_uuid.at(key);
+    if (!sbps::IsZeroUuid(matched.cursor_uuid))
+      cursor_outcomes.try_emplace(core::platform::Uuid{matched.cursor_uuid}, false);
+  }
+  // A prepared identity may select several requests/cursors. Fence the whole
+  // authorized cohort before fallible finality reporting or any native release.
+  for (const auto& key : matched_keys) {
+    const auto& matched = registry->requests_by_uuid.at(key);
+    const auto cursor = registry->cursors_by_uuid.find(core::platform::Uuid{matched.cursor_uuid});
+    if (cursor != registry->cursors_by_uuid.end()) {
+      cursor->second.closed = true;
+      cursor->second.exhausted = true;
+    }
+  }
   bool any_unknown_outcome = false;
   for (const auto& key : matched_keys) {
     auto& matched = registry->requests_by_uuid[key];
-    if (matched.session_uuid != actor.session_uuid && !authorization_proven) continue;
     matched.cancel_timeout_ms = cancel_timeout_ms == 0 ? matched.cancel_timeout_ms : cancel_timeout_ms;
     const bool unknown_outcome = CancellationOutcomeUnknown(matched, actor);
     any_unknown_outcome = any_unknown_outcome || unknown_outcome;
+    if (!sbps::IsZeroUuid(matched.cursor_uuid))
+      cursor_outcomes.at(core::platform::Uuid{matched.cursor_uuid}) |= unknown_outcome;
     matched.state = unknown_outcome ? ServerRequestLifecycleState::kUnknownOutcome
                                     : ServerRequestLifecycleState::kCancelled;
     matched.detail = unknown_outcome
@@ -5632,18 +5657,17 @@ ServerRequestLifecycleResult CancelServerRequestLifecycle(
     UpsertRequestFinality(registry, matched);
   }
 
-  request = registry->requests_by_uuid[matched_keys.front()];
-  if (!sbps::IsZeroUuid(request.cursor_uuid)) {
-    auto cursor_it = registry->cursors_by_uuid.find(scratchbird::core::platform::Uuid{request.cursor_uuid});
+  for (const auto& [cursor_uuid, selected_unknown] : cursor_outcomes) {
+    auto cursor_it = registry->cursors_by_uuid.find(cursor_uuid);
     if (cursor_it != registry->cursors_by_uuid.end()) {
       auto& cursor = cursor_it->second;
-      (void)ReleaseAndClearServerCursorResources(registry, &cursor);
-      cursor.finality_state = any_unknown_outcome ? "cancelled_unknown_outcome" : "cancelled";
-      cursor.finality_reason = any_unknown_outcome
+      const bool unknown = selected_unknown ||
+          cursor.finality_state == "cancelled_unknown_outcome";
+      cursor.finality_state = unknown ? "cancelled_unknown_outcome" : "cancelled";
+      cursor.finality_reason = unknown
                                    ? "cancel_requested_outcome_unknown_preserved"
                                    : "cancel_requested_completed";
-      cursor.exhausted = true;
-      cursor.closed = true;
+      (void)ReleaseAndClearServerCursorResources(registry, &cursor);
     }
   }
   result.accepted = true;
