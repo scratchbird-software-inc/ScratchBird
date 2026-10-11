@@ -71,7 +71,7 @@ void DirectoryGuardedSnapshotObservation(unsigned primary){
  source_memory.memory={};source_memory.Empty();
 }
 #include "native_catalog_visibility_selection_checks.hpp"
-void DirectoryCatalogRelationMemory(unsigned primary,unsigned secondary,bool indexed,unsigned fault=0,bool visibility=false){
+void DirectoryCatalogRelationMemory(unsigned primary,unsigned secondary,bool indexed,unsigned fault=0,bool visibility=false,bool context_namespaces=false){
  using E=db::NativeCatalogRelationLeaseError;
  const bool refusal=fault>=1&&fault<=6,empty=fault==9,known_outcome=fault==7||fault==8||fault==17||fault==18||fault==23||fault==24;
  const unsigned expected_rows=empty?0:indexed?4:2;
@@ -168,6 +168,24 @@ void DirectoryCatalogRelationMemory(unsigned primary,unsigned secondary,bool ind
   if(fault>=19)localize(amended,true);
   second=db::EncodeNativeCatalogLeaf(amended);Check(second.ok(),"well-formed cross-page version chain fixture");
  }
+ if(context_namespaces){
+  const auto convert=[&](auto& image){namespace c=scratchbird::core::catalog;auto leaf=*image.page;
+   for(auto& row:leaf.body.rows){auto decoded=c::DecodeCatalogMetadataVersion(row.cells[0].value.payload);
+    Check(decoded.ok(),"namespace fixture complete source metadata");auto& m=decoded.record;
+    m.record.header.parent_uuid.kind=UuidKind::object;m.object_subtype="application_context_namespace";
+    m.default_name_uuid={UuidKind::object,Id(63950)};m.name_vector_uuid={UuidKind::object,Id(63951)};
+    c::CatalogContextNamespace definition{m.record.header.object_uuid.value,m.definition_version,Id(1),
+      m.owning_schema_uuid.value,m.owner_uuid.value,Id(63952),
+      row.previous_version_uuid.is_nil()?row.transaction_uuid.value:creator.transaction_uuid.value,
+      row.previous_version_uuid.is_nil()?row.local_transaction_id:creator.local_id.value};
+    const auto payload=c::EncodeCatalogContextNamespace(definition);Check(payload.ok(),"namespace binary fixture payload");
+    m.record.payload.assign(payload.bytes.begin(),payload.bytes.end());const auto encoded=c::EncodeCatalogMetadataVersion(m);
+    Check(encoded.ok(),"namespace complete metadata binding");row.cells[0].value.payload=encoded.bytes;
+   }
+   image=db::EncodeNativeCatalogLeaf(leaf);Check(image.ok(),"namespace native residency in actual catalog leaf");
+  };
+  convert(first);convert(second);f.Write(first.bytes);
+ }
  page::NativeBtreePage tree;
  tree.header={q.page_size_bytes,0x200,Id(1),f.t.other,Id(62002),248,1,0,q.uuid};
  tree.dependencies={Id(62003),1,1,Id(62004),Id(62005),Id(62006),{}};tree.dependencies.dependency_map_sha256.fill(39);
@@ -217,7 +235,7 @@ void DirectoryCatalogRelationMemory(unsigned primary,unsigned secondary,bool ind
  auto oracle=db::ReadNativeCheckpointCatalogRelationFromOpenDevices(Id(1),storage.devices,checkpoint_ref,2,1,binding,allowance);
  Check(oracle.ok()==!refusal,"independent owning relation reader agrees on fixture validity");
  const db::NativeCatalogRelationMemoryLimits limits{d::kCanonicalFilespacePageProfiles.back().uuid,3,2,empty?0u:4u,empty?0u:4u,{1,q.page_size_bytes}};
- if(visibility){CheckCatalogVisibilitySelection(f,checkpoint_ref,binding,limits,allowance,fault);return;}
+ if(visibility){CheckCatalogVisibilitySelection(f,checkpoint_ref,binding,limits,allowance,fault,context_namespaces);return;}
  const auto bytes=db::NativeCatalogRelationWorkspaceBytes(limits);
  checkpoint_inventory_memory::Grant memory(bytes),source_memory(32*1024*1024);
  if(!refusal){

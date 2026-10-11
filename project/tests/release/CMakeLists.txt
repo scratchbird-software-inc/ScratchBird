@@ -392,6 +392,25 @@ if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
     endforeach()
   endforeach()
   foreach(primary RANGE 0 4)
+    foreach(secondary RANGE 0 4)
+      add_test(NAME native_context_namespace_lease_1_${primary}_${secondary}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --guarded-context-namespace 1 ${primary} ${secondary})
+      set_tests_properties(native_context_namespace_lease_1_${primary}_${secondary}_gate PROPERTIES
+        TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;context_namespace;mga_visibility;fault_injection;not_runtime_acceptance")
+    endforeach()
+    math(EXPR secondary "(${primary}+1)%5")
+    add_test(NAME native_context_namespace_lease_0_${primary}_${secondary}_gate
+      COMMAND sbsql_sblr_alignment_native_management_control_bundle --guarded-context-namespace 0 ${primary} ${secondary})
+    set_tests_properties(native_context_namespace_lease_0_${primary}_${secondary}_gate PROPERTIES
+      TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;context_namespace;mga_visibility;fault_injection;not_runtime_acceptance")
+  endforeach()
+  foreach(scenario 10 16 18 23 24)
+    add_test(NAME native_context_namespace_lifecycle_${scenario}_gate
+      COMMAND sbsql_sblr_alignment_native_management_control_bundle --guarded-context-namespace 1 0 1 ${scenario})
+    set_tests_properties(native_context_namespace_lifecycle_${scenario}_gate PROPERTIES
+      TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;context_namespace;mga_visibility;version_chain;not_runtime_acceptance")
+  endforeach()
+  foreach(primary RANGE 0 4)
     add_test(NAME native_guarded_snapshot_observation_${primary}_gate
       COMMAND sbsql_sblr_alignment_native_management_control_bundle --guarded-snapshot-observation ${primary})
     set_tests_properties(native_guarded_snapshot_observation_${primary}_gate PROPERTIES

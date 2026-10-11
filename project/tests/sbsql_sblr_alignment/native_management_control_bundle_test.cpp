@@ -18,6 +18,7 @@
 #include "native_catalog_roots_lease_reader.hpp"
 #include "native_catalog_relation_lease_reader.hpp"
 #include "native_catalog_visibility_lease_reader.hpp"
+#include "native_context_namespace_lease_reader.hpp"
 #include "native_allocation_lease_reader.hpp"
 #include "native_page_reservation_lease_reader.hpp"
 #include "row_version_observation.hpp"
@@ -4263,13 +4264,15 @@ int main(int argc,char** argv){
   const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"guarded snapshot profile");
   DirectoryGuardedSnapshotObservation(profile);std::cout<<"PASS guarded snapshot observation checks="<<checks<<'\n';return 0;
  }
- if((argc==5||argc==6)&&(std::string_view(argv[1])=="--guarded-catalog-relation"||std::string_view(argv[1])=="--guarded-catalog-visibility")){
+ if((argc==5||argc==6)&&(std::string_view(argv[1])=="--guarded-catalog-relation"||std::string_view(argv[1])=="--guarded-catalog-visibility"||std::string_view(argv[1])=="--guarded-context-namespace")){
+  const bool namespaces=std::string_view(argv[1])=="--guarded-context-namespace";
   const auto indexed=std::stoi(argv[2]),primary=std::stoi(argv[3]),secondary=std::stoi(argv[4]);
   const auto fault=argc==6?std::stoi(argv[5]):0;
   Check(indexed>=0&&indexed<=1&&primary>=0&&primary<5&&secondary>=0&&secondary<5&&fault>=0&&fault<=24&&
-    (fault<=9||std::string_view(argv[1])=="--guarded-catalog-visibility")&&
+    (fault<=9||std::string_view(argv[1])=="--guarded-catalog-visibility"||namespaces)&&
     (!fault||(fault==9?!indexed:bool(indexed))),"guarded catalog relation arguments");
-  DirectoryCatalogRelationMemory(primary,secondary,indexed,fault,std::string_view(argv[1])=="--guarded-catalog-visibility");std::cout<<"PASS guarded catalog relation checks="<<checks<<'\n';return 0;
+  Check(!namespaces||fault==0||fault==10||fault==16||fault==18||fault==23||fault==24,"namespace fixture scenarios");
+  DirectoryCatalogRelationMemory(primary,secondary,indexed,fault,std::string_view(argv[1])=="--guarded-catalog-visibility"||namespaces,namespaces);std::cout<<"PASS guarded catalog relation checks="<<checks<<'\n';return 0;
  }
  if(argc==4&&std::string_view(argv[1])=="--guarded-btree-memory"){
   const auto primary=std::stoi(argv[2]),secondary=std::stoi(argv[3]);

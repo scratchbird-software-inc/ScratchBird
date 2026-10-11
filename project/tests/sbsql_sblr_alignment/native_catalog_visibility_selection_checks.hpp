@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 void CheckCatalogVisibilitySelection(DirectoryHistoryFixture& f,const d::FilespaceRootReference& checkpoint,
- const db::NativeCatalogRelationBinding& binding,const db::NativeCatalogRelationMemoryLimits& limits,u64 allowance,unsigned scenario){
+ const db::NativeCatalogRelationBinding& binding,const db::NativeCatalogRelationMemoryLimits& limits,u64 allowance,unsigned scenario,bool context_namespaces=false){
  using E=db::NativePinnedCatalogReadError;
  auto& storage=f.t.fixture;
  mga::TransactionIdentity reader;
@@ -49,6 +49,13 @@ void CheckCatalogVisibilitySelection(DirectoryHistoryFixture& f,const d::Filespa
     r.source.bindings.empty()&&r.source.row_creators.empty()&&r.source.navigation_creators.empty()&&r.source.roots.catalogs.empty()&&r.source.tree.pages.empty()&&
     !r.source.retained_image_bytes,"failed selection exposes no graph or row prefix");};
   const auto absent=read(allowance);empty(absent);Check(!absent.source.physical_bytes_read,"moved visibility backing refuses before effects");
+  if(context_namespaces){
+   const auto missing_workspace=db::NativeContextNamespaceLeaseReader::ReadCommitted(*source.lease,2,1,binding,
+     {Id(1),Id(60020),1},allowance,prepared.workspace);
+   Check(!missing_workspace.ok()&&!missing_workspace.definition&&!missing_workspace.selected&&
+     missing_workspace.error==db::NativeContextNamespaceReadError::source_failure&&
+     !missing_workspace.source.source.physical_bytes_read,"typed namespace requires actual pre-admitted workspace before catalog I/O");
+  }
   prepared.workspace=std::move(moved);
   allocation_budget=0;reads=0;hash_seen=0;io_counting=hash_counting=true;
   const auto observed=read(allowance);const auto left=allocation_budget;allocation_budget=-1;io_counting=hash_counting=false;
@@ -75,14 +82,74 @@ void CheckCatalogVisibilitySelection(DirectoryHistoryFixture& f,const d::Filespa
     const auto r=read(allowance);const bool consumed=!hash_fault;hash_fault=0;hash_active=false;empty(r);Check(consumed,"complete visibility consumes each hash fault");}
    allocation_budget=0;const auto retry=read(allowance);const auto retry_left=allocation_budget;allocation_budget=-1;
    Check(retry.ok()&&retry_left==0,"same-lease full visibility recovers after every physical refusal");
+   if(context_namespaces){
+    using NE=db::NativeContextNamespaceReadError;
+    const auto lookup=[&](const db::NativeContextNamespaceBinding& expected,u64 budget){
+     return pin.valid()?db::NativeContextNamespaceLeaseReader::ReadPinned(*source.lease,2,1,binding,reader,pin,expected,budget,prepared.workspace):
+      db::NativeContextNamespaceLeaseReader::ReadCommitted(*source.lease,2,1,binding,expected,budget,prepared.workspace);};
+    for(const auto& row:oracle.rows){
+     const db::NativeContextNamespaceBinding expected{Id(1),row.metadata.record.header.object_uuid.value,row.metadata.definition_version};
+     allocation_budget=0;const auto typed=lookup(expected,allowance);const auto remaining=allocation_budget;allocation_budget=-1;
+     Check(typed.ok()&&remaining==0&&typed.definition->namespace_uuid==expected.namespace_uuid&&
+       typed.definition->generation==expected.definition_generation&&typed.selected->version_uuid==row.version_uuid&&
+       typed.selected->provisional==row.provisional&&typed.selected->effective_lifecycle==row.effective_lifecycle&&
+       typed.selected->effective_status==row.effective_status&&typed.selected->metadata.record.header.deleted==row.metadata.record.header.deleted&&
+       typed.source.snapshot_uuid==oracle.snapshot_uuid,"typed namespace observation preserves exact selected row, lifecycle and pin without heap");
+    }
+    const auto& row=oracle.rows.front();const db::NativeContextNamespaceBinding expected{Id(1),row.metadata.record.header.object_uuid.value,row.metadata.definition_version};
+    const auto refused=[](const auto& r,NE error){Check(!r.ok()&&!r.definition&&!r.selected&&r.error==error,"namespace refusal returns no selected definition");};
+    for(unsigned bad=0;bad<7;++bad){auto changed=expected;auto budget=allowance;
+     if(bad==0)changed.database_uuid={};if(bad==1)changed.namespace_uuid.bytes[6]=0x40;
+     if(bad==2)changed.definition_generation=0;if(bad==3)budget=0;
+     if(bad==4)changed.database_uuid=Id(63999);if(bad==5)changed.namespace_uuid=Id(63999);
+     if(bad==6)++changed.definition_generation;
+     reads=0;io_counting=true;allocation_budget=0;const auto denied=lookup(changed,budget);
+     const auto remaining=allocation_budget;allocation_budget=-1;io_counting=false;
+     refused(denied,bad<4?NE::invalid_request:bad==4?NE::node_mismatch:bad==5?NE::missing:NE::generation_mismatch);
+     Check(remaining==0&&(bad>=5||reads==0),"invalid namespace binding refuses before I/O and every refusal avoids heap");
+    }
+    refused(lookup(expected,1),NE::source_failure);
+    // Sweep the typed entry point too, not only its underlying generic reader.
+    for(unsigned site=1;site<=sites;++site){reads=0;history_observed_read_bytes=0;read_fault=site;io_counting=true;
+     const auto failed=lookup(expected,allowance);io_counting=false;read_fault=0;
+     Check(reads>=site,"typed namespace actual read fault consumed");refused(failed,NE::source_failure);
+     Check(!failed.source.ok()&&failed.source.source.physical_bytes_read==history_observed_read_bytes,
+       "typed refusal preserves exact source diagnostic/effect evidence including zero transferred bytes");
+    }
+    Check(lookup(expected,allowance).ok(),"typed namespace same-lease retry after physical refusals");
+   }
+   if(!context_namespaces&&scenario==0&&!oracle.rows.empty()){
+    const auto& row=oracle.rows.front();allocation_budget=0;
+    const auto wrong_family=db::NativeContextNamespaceLeaseReader::ReadCommitted(*source.lease,2,1,binding,
+      {Id(1),row.metadata.record.header.object_uuid.value,row.metadata.definition_version},allowance,prepared.workspace);
+    const auto remaining=allocation_budget;allocation_budget=-1;
+    Check(!wrong_family.ok()&&!wrong_family.definition&&!wrong_family.selected&&
+      wrong_family.error==db::NativeContextNamespaceReadError::family_mismatch&&remaining==0,
+      "generic catalog object with matching UUID and generation cannot masquerade as a namespace");
+   }
    if(pin.valid()){
     auto foreign=reader;foreign.transaction_uuid.value=Id(63991);
     const auto refused=db::NativeCatalogVisibilityLeaseReader::ReadPinned(*source.lease,2,1,binding,foreign,pin,allowance,prepared.workspace);
     empty(refused);Check(refused.error==E::reader_mismatch&&!refused.source.physical_bytes_read,"foreign reader fails before physical work");
     std::thread revoke([&]{while(historical_read_pause!=2)std::this_thread::yield();mga::RevokePublishedSnapshotVector(snapshot_id);historical_read_pause=3;});
-    historical_read_pause=1;const auto revoked=read(allowance);historical_read_pause=0;revoke.join();empty(revoked);
+    historical_read_pause=1;
+    db::NativeCatalogVisibilityLeaseResult revoked;
+    if(context_namespaces){const auto& row=oracle.rows.front();
+     auto typed=db::NativeContextNamespaceLeaseReader::ReadPinned(*source.lease,2,1,binding,reader,pin,
+       {Id(1),row.metadata.record.header.object_uuid.value,row.metadata.definition_version},allowance,prepared.workspace);
+     // Join before checking to avoid a failed assertion escaping a live thread.
+     historical_read_pause=0;revoke.join();
+     Check(!typed.ok()&&!typed.definition&&!typed.selected&&typed.error==db::NativeContextNamespaceReadError::source_failure,
+       "revocation during typed namespace I/O prevents definition delivery");revoked=std::move(typed.source);
+    }else {revoked=read(allowance);historical_read_pause=0;revoke.join();}
+    empty(revoked);
     Check(revoked.error==E::snapshot_failure&&revoked.source.physical_bytes_read>0&&
       revoked.snapshot_diagnostic.error==mga::PublishedSnapshotObservationError::revoked,"revocation during actual I/O prevents delivery after real physical reads");
+    if(context_namespaces){const auto& row=oracle.rows.front();
+     const auto denied=db::NativeContextNamespaceLeaseReader::ReadPinned(*source.lease,2,1,binding,reader,pin,
+       {Id(1),row.metadata.record.header.object_uuid.value,row.metadata.definition_version},allowance,prepared.workspace);
+     Check(!denied.ok()&&!denied.definition&&!denied.selected&&denied.error==db::NativeContextNamespaceReadError::source_failure&&
+       denied.source.error==E::snapshot_failure&&!denied.source.source.physical_bytes_read,"typed namespace cannot bypass revoked pin");}
    }
   }
  }
