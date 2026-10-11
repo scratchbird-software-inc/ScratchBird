@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "datatype_interval.hpp"
+#include "../support/interval_successor_fixture.hpp"
 
 #include <array>
 #include <cstdlib>
@@ -146,4 +147,4 @@ void Extractors(const std::shared_ptr<const dt::IntervalValidatedProfileHandleV3
 
 } // namespace
 
-int main(){auto p=Profile();Classification(p);BaseVectors(p);OperationMatrix(p);OverflowVectors(p);PrecedenceAndUnknown(p);Extractors(p);Check(vectors==136,"all 136 Core intrinsic vectors executed");std::cout<<"PASS checks="<<checks<<" intrinsic_vectors="<<vectors<<" resource_cancel_all_13=true atomic_defaults=true\n";}
+int main(){for(auto p:{Profile(),scratchbird::tests::D711IntervalProfile()}){vectors=0;Classification(p);BaseVectors(p);OperationMatrix(p);OverflowVectors(p);PrecedenceAndUnknown(p);Extractors(p);Check(vectors==136,"all 136 Core intrinsic vectors executed per cohort");}std::cout<<"PASS checks="<<checks<<" cohorts=2 intrinsic_vectors_per_cohort="<<vectors<<" resource_cancel_all_13=true atomic_defaults=true\n";}

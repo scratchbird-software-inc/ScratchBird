@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "datatype_interval.hpp"
+#include "../support/interval_successor_fixture.hpp"
 #include "datatype_interval_projection.hpp"
 #include "datatype_physical_encoding.hpp"
 #include "disk_device.hpp"
@@ -70,6 +71,7 @@ std::shared_ptr<const dt::IntervalValidatedProfileHandleV3> Profile() {
   return std::make_shared<const dt::IntervalValidatedProfileHandleV3>(
       std::move(built.profile));
 }
+bool successor_oracles=false;
 std::vector<p::byte> Hex(std::string_view text) {
   auto digit = [](char c) -> unsigned {
     return c <= '9' ? static_cast<unsigned>(c - '0')
@@ -80,6 +82,7 @@ std::vector<p::byte> Hex(std::string_view text) {
   for (std::size_t i = 0; i < result.size(); ++i)
     result[i] = static_cast<p::byte>((digit(text[2 * i]) << 4) |
                                      digit(text[2 * i + 1]));
+  if(successor_oracles)scratchbird::tests::D711IntervalOracle(result);
   return result;
 }
 bool Cancel(void*) noexcept { return true; }
@@ -698,6 +701,13 @@ int main() try {
   ExactBackupCorpus(profile);
   ExactPersistenceCorpus(profile);
   BatchBoundaries(profile);
+  const auto successor = scratchbird::tests::D711IntervalProfile();
+  successor_oracles=true;
+  ExactComponentExtentCorpus(successor);
+  ExactComposedCorpus(successor);
+  ExactBackupCorpus(successor);
+  ExactPersistenceCorpus(successor);
+  BatchBoundaries(successor);
   std::cout << "PASS checks=" << checks
             << " component_extent_cases=66 composed_mutations=906"
                " backup_byte_mutations=736 backup_split=84/652"

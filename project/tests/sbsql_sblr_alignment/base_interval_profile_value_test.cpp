@@ -1,6 +1,8 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "datatype_interval.hpp"
+#include "../support/interval_successor_fixture.hpp"
+#include "../support/temporal_profile_overlap_fixture.hpp"
 #include "datatype_interval_projection.hpp"
 #include "hash_digest.hpp"
 
@@ -35,6 +37,23 @@ void Put64(p::byte* out, p::u64 v) { for (unsigned i=0;i<8;++i) out[i]=p::byte(v
 p::u32 Get32(const p::byte* in){p::u32 v=0;for(unsigned i=0;i<4;++i)v|=p::u32(in[i])<<(8*i);return v;}
 void PutUuid(p::byte* out, const p::Uuid& v) { std::copy(v.bytes.begin(),v.bytes.end(),out); }
 void PutPolicy(p::byte* out, const dt::DatatypePolicyIdentityV3& v) { PutUuid(out,v.uuid); Put64(out+16,v.generation); }
+std::string SuccessorHash(std::string_view component_hex) {
+  // Independent SBINTH01 oracle: literal identity bytes, not runtime profile material.
+  std::vector<p::byte> bytes(117 + component_hex.size()/2, 0);
+  std::memcpy(bytes.data(), "SBINTH01", 8);
+  const auto hex_at = [&](unsigned offset, std::string_view hex) {
+    const auto digit=[](char c){return c<='9'?c-'0':c-'a'+10;};
+    for(unsigned i=0;i<hex.size();i+=2)bytes[offset+i/2]=p::byte(digit(hex[i])*16+digit(hex[i+1]));
+  };
+  hex_at(8,"01a1095ff20572d3abea15c6d41a4ad4");Put64(bytes.data()+24,11);Put64(bytes.data()+32,11);
+  hex_at(40,"93010000696e7465b276616c00000000");Put64(bytes.data()+56,1);
+  hex_at(64,"019d000000007000800000000000d822");Put64(bytes.data()+80,1);
+  hex_at(88,"01a10510696e70008000000000000004");Put64(bytes.data()+104,1);
+  bytes[112]=component_hex.empty()?0:1;Put32(bytes.data()+113,component_hex.size()/2);
+  hex_at(117,component_hex);
+  const auto hash=h::ComputeSha256DigestNative(bytes.data(),bytes.size());
+  Check(hash.ok(),"independent successor hash");return h::HexLower(hash.digest);
+}
 std::shared_ptr<const dt::IntervalValidatedProfileHandleV3> Profile() {
   auto result=dt::BuildCurrentIntervalValidatedProfileHandleV3(D710()); Check(result.ok(),"build current d710 profile");
   return std::make_shared<const dt::IntervalValidatedProfileHandleV3>(std::move(result.profile));
@@ -73,14 +92,27 @@ void RolesAndCounts(const dt::IntervalValidatedProfileHandleV3& x){
   std::set<std::pair<std::string_view,std::string_view>> pairs;unsigned rows=0;for(auto label:labels){pairs.emplace("base.interval",canonical(label));++rows;}for(auto label:labels)if(label!="base.interval"){pairs.emplace(canonical(label),"base.interval");++rows;}Check(rows==221,"221 incident rows independently derived");Check(pairs.size()==219,"219 UUID-level pairs independently derived");Check(rows*3==663,"663 contexts independently derived");
 }
 void Authority(const std::shared_ptr<const dt::IntervalValidatedProfileHandleV3>& x) {
-  Check(x->receipt.statement_receipt_uuid==D710()&&x->receipt.catalog_snapshot_uuid==D710()&&x->receipt.catalog_generation==10&&x->receipt.registry_generation==10,"exact d710 receipt");
+  for(unsigned field=0;field<8;++field) {
+    auto bad=*x;scratchbird::tests::MutateIntervalNativeIdentity(bad.identity,field);
+    Check(!dt::ValidateIntervalProfileHandleV3(bad).ok()&&
+          !dt::BuildIntervalValidatedProfileHandleV3(bad.receipt,bad.identity).ok(),
+          "every native interval identity field is authoritative");
+  }
+  for (unsigned operation=0;operation<3;++operation)
+    scratchbird::tests::CheckTemporalProfileStringOverlap(*x,[&](const auto& profile,p::byte* out) {
+      dt::IntervalOwnedValueV3 value{profile,dt::IntervalValueStateV3::value,1,-2,3};
+      if(operation==0)return dt::HashIntervalValueIntoNoAllocV3(value,out,32);
+      if(operation==1)return dt::EncodeCanonicalIntervalComponentIntoNoAllocV3(value,out,16);
+      return dt::RenderCanonicalIntervalIntoNoAllocV3(value,reinterpret_cast<char*>(out),63);
+    });
+  Check(x->receipt.statement_receipt_uuid==x->receipt.catalog_snapshot_uuid&&x->receipt.catalog_snapshot_uuid==(x->receipt.catalog_generation==10?D710():dt::kDatatypeCohortV11)&&x->receipt.registry_generation==x->receipt.catalog_generation,"exact d710 receipt");
   const auto&i=x->identity.legacy_fields;Check(i.descriptor_uuid==p::Uuid(std::array<p::byte,16>{0x93,0x01,0,0,0x69,0x6e,0x74,0x65,0xb2,0x76,0x61,0x6c,0,0,0,0})&&i.descriptor_generation==1,"descriptor identity");Check(i.type_uuid==p::Uuid(std::array<p::byte,16>{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x22})&&i.type_generation==1,"type identity");Check(i.codec_uuid==p::Uuid(std::array<p::byte,16>{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x23})&&i.codec_version==1&&i.codec_generation==1,"codec identity");
   auto pm=RebuildProfile(*x); auto em=RebuildEquality(*x); Check(pm.size()==608&&em.size()==344,"exact material extents");Check(pm==x->profile_material,"independently rebuilt SBINPP01");Check(em==x->equality_material,"independently rebuilt SBINEQ01");
   constexpr std::array<std::pair<unsigned,p::u32>,6> tail{{
     {584,1},{588,16},{592,7},{596,1},{600,221},{604,13}
   }};for(const auto&v:tail)Check(Get32(pm.data()+v.first)==v.second,"six profile tail fields");
   auto pd=h::ComputeSha256DigestNative(pm.data(),pm.size()),ed=h::ComputeSha256DigestNative(em.data(),em.size());Check(pd.ok()&&pd.digest==x->profile_fingerprint,"profile digest from rebuilt bytes");Check(ed.ok()&&ed.digest==x->equality_fingerprint,"equality digest from rebuilt bytes");
-  Check(h::HexLower(pd.digest)=="db1e0236a8dd8a04561a57868ccd1ab8bad508f3c1c751aa5d6ba8b5b42823eb","frozen profile SHA");Check(h::HexLower(ed.digest)=="c0783942e7db60aa79346ddc223e48fabcc197b1894cc81490a4f48b90d498f6","frozen equality SHA");
+  Check(h::HexLower(pd.digest)==(x->receipt.catalog_generation==10?"db1e0236a8dd8a04561a57868ccd1ab8bad508f3c1c751aa5d6ba8b5b42823eb":"287d76776e481d06ac384bcc73f6e38ebb5902b1180a2040c41379572880d3d4"),"frozen profile SHA");Check(h::HexLower(ed.digest)==(x->receipt.catalog_generation==10?"c0783942e7db60aa79346ddc223e48fabcc197b1894cc81490a4f48b90d498f6":"e1b4a6390e3fb96b9e7e349068b91c9f9a5979cb399a77749abf338606d9f717"),"frozen equality SHA");
   unsigned mutations=0;
   for(std::size_t n=0;n<pm.size();++n){auto bad=*x;bad.profile_material[n]^=1;auto r=dt::ValidateIntervalProfileHandleV3(bad);Check(!r.ok()&&r.diagnostic.diagnostic_code=="CTI.INTERVAL.DESCRIPTOR_INVALID","profile frozen fingerprint mutation");++mutations;auto digest=h::ComputeSha256DigestNative(bad.profile_material.data(),bad.profile_material.size());Check(digest.ok(),"profile mutation digest");bad.profile_fingerprint=digest.digest;r=dt::ValidateIntervalProfileHandleV3(bad);Check(!r.ok()&&r.diagnostic.diagnostic_code=="CTI.INTERVAL.DESCRIPTOR_INVALID","profile recomputed fingerprint mutation");++mutations;}
   for(std::size_t n=0;n<em.size();++n){auto bad=*x;bad.equality_material[n]^=1;auto r=dt::ValidateIntervalProfileHandleV3(bad);Check(!r.ok()&&r.diagnostic.diagnostic_code=="CTI.INTERVAL.DESCRIPTOR_INVALID","equality frozen fingerprint mutation");++mutations;auto digest=h::ComputeSha256DigestNative(bad.equality_material.data(),bad.equality_material.size());Check(digest.ok(),"equality mutation digest");bad.equality_fingerprint=digest.digest;r=dt::ValidateIntervalProfileHandleV3(bad);Check(!r.ok()&&r.diagnostic.diagnostic_code=="CTI.INTERVAL.DESCRIPTOR_INVALID","equality recomputed fingerprint mutation");++mutations;}Check(mutations==1904,"1,904 mutation fixtures");
@@ -107,13 +139,13 @@ void Values(const std::shared_ptr<const dt::IntervalValidatedProfileHandleV3>& p
     {7,0,0,"SBINTERVAL1:M=7;D=0;NS=0","07000000000000000000000000000000","3794aca49f220db0164dc59abbe12d9cd55eef7750f4fa9efba8d4fd42524bfc"}
   }};
   auto hex=[](std::span<const p::byte> bytes){static constexpr char x[]="0123456789abcdef";std::string s;s.reserve(bytes.size()*2);for(auto b:bytes){s.push_back(x[b>>4]);s.push_back(x[b&15]);}return s;};
-  for(const auto& c:cases){auto v=dt::ConstructIntervalV3(profile,c.m,c.d,c.n);Check(v.ok(),"construct sealed vector");auto b=dt::EncodeCanonicalIntervalComponentV3(v.value);Check(b.ok()&&b.bytes.size()==16&&hex(b.bytes)==c.hex,"sealed LE16 vector");auto d=dt::DecodeCanonicalIntervalComponentNoAllocV3(*profile,dt::IntervalValueStateV3::value,true,b.bytes);Check(d.ok()&&d.value.months==c.m&&d.value.civil_days==c.d&&d.value.fixed_nanoseconds==c.n,"sealed LE16 roundtrip");auto t=dt::RenderCanonicalIntervalV3(v.value);Check(t.ok()&&t.text==c.text&&t.text.size()<=63,"sealed canonical text");auto q=dt::ParseCanonicalIntervalV3(profile,t.text);Check(q.ok()&&q.value.months==c.m&&q.value.civil_days==c.d&&q.value.fixed_nanoseconds==c.n,"sealed text roundtrip");auto hash=dt::HashIntervalValueV3(v.value);Check(hash.ok()&&hex(hash.bytes)==c.hash,"sealed hash vector");}
+  for(const auto& c:cases){auto v=dt::ConstructIntervalV3(profile,c.m,c.d,c.n);Check(v.ok(),"construct sealed vector");auto b=dt::EncodeCanonicalIntervalComponentV3(v.value);Check(b.ok()&&b.bytes.size()==16&&hex(b.bytes)==c.hex,"sealed LE16 vector");auto d=dt::DecodeCanonicalIntervalComponentNoAllocV3(*profile,dt::IntervalValueStateV3::value,true,b.bytes);Check(d.ok()&&d.value.months==c.m&&d.value.civil_days==c.d&&d.value.fixed_nanoseconds==c.n,"sealed LE16 roundtrip");auto t=dt::RenderCanonicalIntervalV3(v.value);Check(t.ok()&&t.text==c.text&&t.text.size()<=63,"sealed canonical text");auto q=dt::ParseCanonicalIntervalV3(profile,t.text);Check(q.ok()&&q.value.months==c.m&&q.value.civil_days==c.d&&q.value.fixed_nanoseconds==c.n,"sealed text roundtrip");auto hash=dt::HashIntervalValueV3(v.value);Check(hash.ok()&&hex(hash.bytes)==(profile->receipt.catalog_generation==10?std::string(c.hash):SuccessorHash(c.hex)),"sealed hash vector");}
   struct InvalidText { std::string_view text, diagnostic; };constexpr std::array<InvalidText,25> invalid_text{{{"","CTI.TEMPORAL.INVALID_LITERAL"},{"sbinterval1:M=0;D=0;NS=0","CTI.TEMPORAL.INVALID_LITERAL"},{"INTERVAL:M=0;D=0;NS=0","CTI.TEMPORAL.INVALID_LITERAL"},{"SBINTERVAL1:M=+1;D=0;NS=0","CTI.TEMPORAL.INVALID_LITERAL"},{"SBINTERVAL1:M=-0;D=0;NS=0","CTI.TEMPORAL.INVALID_LITERAL"},{"SBINTERVAL1:M=01;D=0;NS=0","CTI.TEMPORAL.INVALID_LITERAL"},{"SBINTERVAL1:M=0;D=+1;NS=0","CTI.TEMPORAL.INVALID_LITERAL"},{"SBINTERVAL1:M=0;D=-0;NS=0","CTI.TEMPORAL.INVALID_LITERAL"},{"SBINTERVAL1:M=0;D=01;NS=0","CTI.TEMPORAL.INVALID_LITERAL"},{"SBINTERVAL1:M=0;D=0;NS=+1","CTI.TEMPORAL.INVALID_LITERAL"},{"SBINTERVAL1:M=0;D=0;NS=-0","CTI.TEMPORAL.INVALID_LITERAL"},{"SBINTERVAL1:M=0;D=0;NS=01","CTI.TEMPORAL.INVALID_LITERAL"},{"SBINTERVAL1: M=0;D=0;NS=0","CTI.TEMPORAL.INVALID_LITERAL"},{"SBINTERVAL1:M=0;D=0;NS=0 ","CTI.TEMPORAL.INVALID_LITERAL"},{"SBINTERVAL1:D=0;M=0;NS=0","CTI.TEMPORAL.INVALID_LITERAL"},{"SBINTERVAL1:M=0;D=0","CTI.TEMPORAL.INVALID_LITERAL"},{"SBINTERVAL1:M=0;D=0;NS=0;X=0","CTI.TEMPORAL.INVALID_LITERAL"},{"SBINTERVAL1:M=-2147483649;D=0;NS=0","CTI.TEMPORAL.RANGE_EXCEEDED"},{"SBINTERVAL1:M=2147483648;D=0;NS=0","CTI.TEMPORAL.RANGE_EXCEEDED"},{"SBINTERVAL1:M=0;D=-2147483649;NS=0","CTI.TEMPORAL.RANGE_EXCEEDED"},{"SBINTERVAL1:M=0;D=2147483648;NS=0","CTI.TEMPORAL.RANGE_EXCEEDED"},{"SBINTERVAL1:M=0;D=0;NS=-9223372036854775809","CTI.TEMPORAL.RANGE_EXCEEDED"},{"SBINTERVAL1:M=0;D=0;NS=9223372036854775808","CTI.TEMPORAL.RANGE_EXCEEDED"},{"P1M2DT3S","CTI.TEMPORAL.INVALID_LITERAL"},{"1 year 2 days","CTI.TEMPORAL.INVALID_LITERAL"}}};for(const auto& row:invalid_text){auto result=dt::ParseCanonicalIntervalV3(profile,row.text);Check(!result.ok()&&result.diagnostic.diagnostic_code==row.diagnostic&&result.value.profile==nullptr,"25 sealed invalid text vectors");}
   std::array<std::string,5> exceptional{{std::string("SBINTERVAL1:M=0;D=0;NS=\0" "0",25),"SBINTERVAL1:M=0;D=0;NS=0\n","SBINTERVAL1:M=0;D=0;NS=0\r\n","SBINTERVAL1:M=\xe2\x88\x92" "1;D=0;NS=0","SBINTERVAL1:M=\xd9\xa1;D=0;NS=0"}};for(const auto& text:exceptional){auto r=dt::ParseCanonicalIntervalV3(profile,std::string_view(text.data(),text.size()));Check(!r.ok()&&r.diagnostic.diagnostic_code=="CTI.TEMPORAL.INVALID_LITERAL"&&!r.value.profile,"five sealed exceptional byte vectors");}for(unsigned octet=0;octet<256;++octet){if(octet>='0'&&octet<='9')continue;std::string text="SBINTERVAL1:M=";text.push_back(static_cast<char>(octet));text.append(";D=0;NS=0");auto r=dt::ParseCanonicalIntervalV3(profile,std::string_view(text.data(),text.size()));Check(!r.ok()&&r.diagnostic.diagnostic_code=="CTI.TEMPORAL.INVALID_LITERAL"&&!r.value.profile,"246 exhaustive single-octet invalid vectors");}
   auto longest=dt::ConstructIntervalV3(profile,INT32_MIN,INT32_MIN,INT64_MIN);Check(longest.ok(),"maximum text source");auto text=dt::RenderCanonicalIntervalV3(longest.value);Check(text.ok()&&text.text.size()==63,"exact maximum text extent");
   std::array<p::byte,17> bytes{};auto trailing=dt::DecodeCanonicalIntervalComponentNoAllocV3(*profile,dt::IntervalValueStateV3::value,true,bytes);Check(!trailing.ok()&&trailing.diagnostic.diagnostic_code=="CTI.TEMPORAL.CANONICAL_ENCODING_INVALID"&&!trailing.value.profile,"trailing byte refused");auto dirty=dt::DecodeCanonicalIntervalComponentNoAllocV3(*profile,dt::IntervalValueStateV3::sql_null,true,std::span<const p::byte>(bytes.data(),1));Check(!dirty.ok()&&dirty.diagnostic.diagnostic_code=="DATATYPE.NULL_STATE.INVALID"&&!dirty.value.profile,"dirty NULL refused");auto clean=dt::DecodeCanonicalIntervalComponentNoAllocV3(*profile,dt::IntervalValueStateV3::sql_null,true,{});Check(clean.ok()&&clean.value.profile==profile.get()&&clean.value.state==dt::IntervalValueStateV3::sql_null&&clean.value.months==0&&clean.value.civil_days==0&&clean.value.fixed_nanoseconds==0,"clean NULL admitted");
   std::array<p::byte,17> misaligned{};auto source=dt::ConstructIntervalV3(profile,17,-23,86400000000000ll);Check(source.ok(),"misalignment source");auto raw=dt::EncodeCanonicalIntervalComponentV3(source.value);Check(raw.ok(),"misalignment encode");std::copy(raw.bytes.begin(),raw.bytes.end(),misaligned.begin()+1);auto md=dt::DecodeCanonicalIntervalComponentNoAllocV3(*profile,dt::IntervalValueStateV3::value,true,std::span<const p::byte>(misaligned.data()+1,16));Check(md.ok()&&md.value.months==17&&md.value.civil_days==-23&&md.value.fixed_nanoseconds==86400000000000ll,"misaligned LE16 admitted without unaligned access");
-  dt::IntervalOwnedValueV3 nullv{profile,dt::IntervalValueStateV3::sql_null,0,0,0};auto nh=dt::HashIntervalValueV3(nullv);Check(nh.ok()&&hex(nh.bytes)=="bc67ce9998c0a782fa11ca0f9ce418ef25047fc4fc38fbbcb8caa6c6cf0327cf","sealed SQL NULL hash");
+  dt::IntervalOwnedValueV3 nullv{profile,dt::IntervalValueStateV3::sql_null,0,0,0};auto nh=dt::HashIntervalValueV3(nullv);Check(nh.ok()&&hex(nh.bytes)==(profile->receipt.catalog_generation==10?"bc67ce9998c0a782fa11ca0f9ce418ef25047fc4fc38fbbcb8caa6c6cf0327cf":SuccessorHash({})),"sealed SQL NULL hash");
 }
 void ReceiptCohortIsolation(const std::shared_ptr<const dt::IntervalValidatedProfileHandleV3>& profile) {
   const auto successor = dt::LookupDatatypeTypeCodecIdentityV3(
@@ -138,8 +170,17 @@ void ReceiptCohortIsolation(const std::shared_ptr<const dt::IntervalValidatedPro
         "D710 statement receipt cannot authorize D711 snapshot");
   receipt.statement_receipt_uuid = dt::kDatatypeCohortV11;
   built = dt::BuildIntervalValidatedProfileHandleV3(receipt, successor.row);
-  Check(!built.ok() && built.diagnostic.diagnostic_code == "CTI.INTERVAL.DESCRIPTOR_INVALID",
-        "D711 interval profile requires separate owning-profile admission");
+  Check(built.ok(), "independently sealed D711 interval profile admitted");
+  const auto peer = scratchbird::tests::D711IntervalProfile();
+  for (const auto state : {dt::IntervalValueStateV3::value, dt::IntervalValueStateV3::sql_null}) {
+    dt::IntervalOwnedValueV3 a{profile,state,0,0,0}, b{peer,state,0,0,0};
+    Check(!dt::EqualIntervalValuesV3(a.view(),b.view()).ok() && !dt::DistinctIntervalValuesV3(a.view(),b.view()).ok() &&
+          !dt::AddIntervalCheckedV3(a,b).ok() && !dt::SubtractIntervalCheckedV3(a,b).ok(),
+          "mixed cohort equality or arithmetic was admitted");
+    dt::IntervalCastRequestV3 request;
+    request.one_based_policy_row=39;request.interval_source=&a;request.interval_target=&peer;
+    Check(!dt::CastIntervalValueV3(request).ok(),"mixed cohort identity cast admitted");
+  }
 }
 
 void Aliases(const std::shared_ptr<const dt::IntervalValidatedProfileHandleV3>& profile){
@@ -151,4 +192,4 @@ void Aliases(const std::shared_ptr<const dt::IntervalValidatedProfileHandleV3>& 
   e.audit_case=static_cast<dt::IntervalRequiredAliasAuditCaseV3>(255);r=dt::AuditIntervalRequiredAliasResolutionV3(e,*profile);Check(!r.ok()&&r.disposition==dt::IntervalAliasAuditDispositionV3::unknown_audit_case,"unknown alias case");
 }
 }
-int main(){auto profile=Profile();Authority(profile);Values(profile);Aliases(profile);ReceiptCohortIsolation(profile);std::cout<<"PASS checks="<<checks<<" profile_mutations=1904 invalid_profiles=5 role_uuids=44 fixed_vectors=16 aliases=5 identities=110 uuid_pairs=219 cast_rows=221 cast_decisions=663 intrinsics=13\n";}
+int main(){auto profile=Profile();Authority(profile);Values(profile);Aliases(profile);ReceiptCohortIsolation(profile);profile=scratchbird::tests::D711IntervalProfile();Authority(profile);Values(profile);Aliases(profile);std::cout<<"PASS checks="<<checks<<" profile_mutations=1904 invalid_profiles=5 role_uuids=44 fixed_vectors=16 aliases=5 identities=110 uuid_pairs=219 cast_rows=221 cast_decisions=663 intrinsics=13\n";}

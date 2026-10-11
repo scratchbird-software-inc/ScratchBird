@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "datatype_interval.hpp"
+#include "../support/interval_successor_fixture.hpp"
 
 #include <algorithm>
 #include <array>
@@ -71,13 +72,14 @@ std::shared_ptr<const dt::IntervalValidatedProfileHandleV3> Profile() {
       std::move(result.profile));
 }
 
+unsigned peer_generation = 10;
 const dt::DatatypeTypeCodecIdentityRowV3* Identity(dt::CanonicalTypeId type) {
   for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
     if (row.legacy_fields.canonical_binary_type_code ==
             static_cast<p::u32>(type) &&
-        row.legacy_fields.catalog_snapshot_uuid == D710() &&
-        row.legacy_fields.catalog_generation == 10 &&
-        row.legacy_fields.registry_generation == 10) {
+        row.legacy_fields.catalog_snapshot_uuid == (peer_generation==10?D710():dt::kDatatypeCohortV11) &&
+        row.legacy_fields.catalog_generation == peer_generation &&
+        row.legacy_fields.registry_generation == peer_generation) {
       return &row;
     }
   }
@@ -282,6 +284,51 @@ void CastCorpus(
 
 bool AlwaysCancelled(void*) noexcept {
   return true;
+}
+
+void CastEndpointNullability(const std::shared_ptr<const dt::IntervalValidatedProfileHandleV3>& profile) {
+  for(bool null:{false,true})for(unsigned field=0;field<8;++field) {
+    auto identity=*Identity(dt::CanonicalTypeId::character);
+    scratchbird::tests::MutateIntervalNativeIdentity(identity,field);
+    dt::DatatypeOperationValue source;
+    source.type_id=dt::CanonicalTypeId::character;source.descriptor=Descriptor(source.type_id);
+    source.is_null=null;source.encoded_value=null?"":"SBINTERVAL1:M=1;D=-2;NS=3";
+    const auto target=Descriptor(dt::CanonicalTypeId::interval);
+    dt::IntervalCastRequestV3 request;
+    request.one_based_policy_row=124;request.context=dt::DatatypeCastContext::explicit_cast;
+    request.scalar_source=&source;request.scalar_source_identity=&identity;
+    request.interval_target=&profile;request.interval_target_descriptor=&target;
+    auto result=dt::CastIntervalValueV3(request);
+    Check(AtomicCastFailure(result)&&result.diagnostic.diagnostic_code=="CTI.INTERVAL.DESCRIPTOR_INVALID",
+        "incoming cast ignored native peer identity field");
+    const dt::IntervalOwnedValueV3 value{profile,null?dt::IntervalValueStateV3::sql_null:dt::IntervalValueStateV3::value,0,0,0};
+    request={};request.one_based_policy_row=13;request.context=dt::DatatypeCastContext::explicit_cast;
+    request.interval_source=&value;request.scalar_target=dt::CanonicalTypeId::character;
+    request.scalar_target_identity=&identity;request.scalar_target_descriptor=source.descriptor;
+    result=dt::CastIntervalValueV3(request);
+    Check(AtomicCastFailure(result)&&result.diagnostic.diagnostic_code=="CTI.INTERVAL.DESCRIPTOR_INVALID",
+        "outgoing cast ignored native peer identity field");
+  }
+  for (const bool null : {false,true}) for (const bool source_nullable : {false,true})
+  for (const bool target_nullable : {false,true}) for (const bool slot_nullable : {false,true}) {
+    dt::DatatypeOperationValue source;
+    source.type_id=dt::CanonicalTypeId::character;source.descriptor=Descriptor(source.type_id);
+    source.descriptor.nullable_allowed=source_nullable;source.is_null=null;
+    source.encoded_value=null?"":"SBINTERVAL1:M=1;D=-2;NS=3";
+    auto target=Descriptor(dt::CanonicalTypeId::interval);target.nullable_allowed=target_nullable;
+    dt::IntervalCastRequestV3 request;
+    request.one_based_policy_row=124;request.context=dt::DatatypeCastContext::explicit_cast;
+    request.scalar_source=&source;request.scalar_source_identity=Identity(source.type_id);
+    request.interval_target=&profile;request.interval_target_descriptor=&target;
+    request.target_null_allowed=slot_nullable;
+    const auto result=dt::CastIntervalValueV3(request);
+    const bool expected=!null||(source_nullable&&target_nullable&&slot_nullable);
+    Check(result.ok()==expected,"character to interval independent source/target/slot nullability");
+    if(!expected)Check(UnpublishedCastPayload(result)&&result.diagnostic.diagnostic_code=="DATATYPE.NULL_NOT_ADMITTED",
+        "nonnullable interval cast published output or wrong diagnostic");
+    else Check(result.produced_interval&&result.interval_value.state==(null?dt::IntervalValueStateV3::sql_null:dt::IntervalValueStateV3::value),
+        "incoming interval cast changed NULL state");
+  }
 }
 
 void CastFailureBoundaries(
@@ -758,13 +805,18 @@ __wrap__ZN11scratchbird4core9datatypes19CastIntervalValueV3ERKNS1_21IntervalCast
 }
 
 int main() {
-  auto profile = Profile();
+  for (auto profile : {Profile(), scratchbird::tests::D711IntervalProfile()}) {
+  for (unsigned generation : {10u,11u}) {
+  peer_generation=generation;
   CastCorpus(profile);
+  CastEndpointNullability(profile);
   CastFailureBoundaries(profile);
   ContextualNullHasNoSourceDescriptor(profile);
   GenericCarrierRefusal();
   Properties(profile);
   MalformedShrink(profile);
+  }
+  }
   std::cout << "PASS checks=" << checks << " mapping=" << kMapping
             << " seed=0x" << std::hex << kSeed << std::dec
             << " property_cases=4096 cast_decisions=663 cast_executions=663"

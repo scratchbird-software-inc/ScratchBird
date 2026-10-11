@@ -5,6 +5,7 @@
 
 #include "datatype_binary_view.hpp"
 #include "datatype_physical_encoding.hpp"
+#include "datatype_identity_overlap.hpp"
 
 #include <algorithm>
 #include <array>
@@ -47,6 +48,12 @@ inline constexpr std::array<byte,32> kProfileDigest{{
 inline constexpr std::array<byte,32> kEqualityDigest{{
   0xc0,0x78,0x39,0x42,0xe7,0xdb,0x60,0xaa,0x79,0x34,0x6d,0xdc,0x22,0x3e,0x48,0xfa,
   0xbc,0xc1,0x97,0xb1,0x89,0x4c,0xc8,0x14,0x90,0xa4,0xf4,0x8b,0x90,0xd4,0x98,0xf6}};
+inline constexpr std::array<byte,32> kSuccessorProfileDigest{{
+  0x28,0x7d,0x76,0x77,0x6e,0x48,0x1d,0x06,0xac,0x38,0x4b,0xcc,0x73,0xf6,0xe3,0x8e,
+  0xbb,0x59,0x02,0xb1,0x18,0x0a,0x20,0x40,0xc4,0x13,0x79,0x57,0x28,0x80,0xd3,0xd4}};
+inline constexpr std::array<byte,32> kSuccessorEqualityDigest{{
+  0xe1,0xb4,0xa6,0x39,0x0e,0x3f,0xb9,0x6b,0x9e,0x7e,0x34,0x90,0x68,0xb9,0x1c,0x9f,
+  0x9a,0x59,0x79,0xcb,0x39,0x9a,0x77,0x74,0x9a,0xbf,0x33,0x86,0x06,0xd9,0xf7,0x17}};
 
 Status OkStatus() noexcept { return {StatusCode::ok,Severity::info,Subsystem::datatypes}; }
 Status ErrorStatus() noexcept { return {StatusCode::platform_required_feature_missing,Severity::error,Subsystem::datatypes}; }
@@ -95,17 +102,27 @@ bool SameLegacy(const DatatypeTypeCodecIdentityRowV1&a,const DatatypeTypeCodecId
     a.comparison_policy_generation==b.comparison_policy_generation&&a.comparison_profile==b.comparison_profile&&a.allow_special_values==b.allow_special_values;
 }
 bool SameIdentity(const DatatypeTypeCodecIdentityRowV3&a,const DatatypeTypeCodecIdentityRowV3&b) noexcept {
- return SameLegacy(a.legacy_fields,b.legacy_fields)&&Same(a.descriptor_policy,b.descriptor_policy)&&Same(a.canonicalization_policy,b.canonicalization_policy)&&Same(a.ordering_policy,b.ordering_policy)&&Same(a.hash_policy,b.hash_policy)&&Same(a.operation_policy,b.operation_policy);
+ return SameLegacy(a.legacy_fields,b.legacy_fields)&&Same(a.descriptor_policy,b.descriptor_policy)&&Same(a.canonicalization_policy,b.canonicalization_policy)&&Same(a.ordering_policy,b.ordering_policy)&&Same(a.hash_policy,b.hash_policy)&&Same(a.operation_policy,b.operation_policy)&&a.native_fields==b.native_fields;
 }
-const DatatypeTypeCodecIdentityRowV3* Current(CanonicalTypeId type) noexcept {
+IntervalAuthorityReceiptV3 ReceiptForIdentity(const DatatypeTypeCodecIdentityRowV3& i) noexcept {
+ const auto& r=i.legacy_fields;
+ return {r.catalog_snapshot_uuid,r.catalog_snapshot_uuid,r.catalog_generation,r.registry_generation};
+}
+bool ExactReceipt(const IntervalAuthorityReceiptV3&r) noexcept {
+ return r.statement_receipt_uuid==r.catalog_snapshot_uuid&&
+   ((r.catalog_snapshot_uuid==kSnapshot&&r.catalog_generation==10&&r.registry_generation==10)||
+    (r.catalog_snapshot_uuid==kDatatypeCohortV11&&r.catalog_generation==11&&r.registry_generation==11));
+}
+const DatatypeTypeCodecIdentityRowV3* Current(CanonicalTypeId type,
+    const IntervalAuthorityReceiptV3& receipt={kSnapshot,kSnapshot,10,10}) noexcept {
+ if(!ExactReceipt(receipt))return nullptr;
  const auto rows=CurrentDatatypeTypeCodecIdentityRowsV3();
- // Unrelated successor rows do not invalidate this exact D710 receipt.
+ // Every endpoint resolves its own exact cohort, never a process-wide latest row.
  const auto code=static_cast<u32>(type);
  const DatatypeTypeCodecIdentityRowV3* found=nullptr;
- for(const auto&r:rows)if(r.legacy_fields.catalog_snapshot_uuid==kSnapshot&&r.legacy_fields.catalog_generation==10&&r.legacy_fields.registry_generation==10&&r.legacy_fields.canonical_binary_type_code==code){if(found)return nullptr;found=&r;}
+ for(const auto&r:rows)if(r.legacy_fields.catalog_snapshot_uuid==receipt.catalog_snapshot_uuid&&r.legacy_fields.catalog_generation==receipt.catalog_generation&&r.legacy_fields.registry_generation==receipt.registry_generation&&r.legacy_fields.canonical_binary_type_code==code){if(found)return nullptr;found=&r;}
  return found;
 }
-bool ExactReceipt(const IntervalAuthorityReceiptV3&r) noexcept{return r.statement_receipt_uuid==kSnapshot&&r.catalog_snapshot_uuid==kSnapshot&&r.catalog_generation==10&&r.registry_generation==10;}
 bool IdentityMatchesReceipt(const DatatypeTypeCodecIdentityRowV3&i,
                             const IntervalAuthorityReceiptV3&r) noexcept {
  return i.legacy_fields.catalog_snapshot_uuid==r.catalog_snapshot_uuid &&
@@ -162,7 +179,9 @@ bool ProfileValid(const IntervalValidatedProfileHandleV3&p,const IntervalExecuti
  auto pm=ProfileMaterial(p);Clear cp(pm.data(),pm.size(),IntervalScrubClassV3::profile_material,ctl);
  auto em=EqualityMaterial(p);Clear ce(em.data(),em.size(),IntervalScrubClassV3::equality_material,ctl);
  std::array<byte,32>pd{},ed{};Clear cpd(pd.data(),32,IntervalScrubClassV3::profile_digest,ctl),ced(ed.data(),32,IntervalScrubClassV3::equality_digest,ctl);
- return pm==p.profile_material&&em==p.equality_material&&Digest(pm,&pd,ctl)&&Digest(em,&ed,ctl)&&pd==p.profile_fingerprint&&ed==p.equality_fingerprint&&pd==kProfileDigest&&ed==kEqualityDigest;
+ return pm==p.profile_material&&em==p.equality_material&&Digest(pm,&pd,ctl)&&Digest(em,&ed,ctl)&&pd==p.profile_fingerprint&&ed==p.equality_fingerprint&&
+   pd==(p.receipt.catalog_generation==11?kSuccessorProfileDigest:kProfileDigest)&&
+   ed==(p.receipt.catalog_generation==11?kSuccessorEqualityDigest:kEqualityDigest);
 }
 bool ValidState(IntervalValueStateV3 s) noexcept{return s==IntervalValueStateV3::value||s==IntervalValueStateV3::sql_null;}
 bool CleanNull(const IntervalValueViewV3&v) noexcept{return v.months==0&&v.civil_days==0&&v.fixed_nanoseconds==0;}
@@ -173,6 +192,7 @@ bool RangesOverlap(const void*a,std::size_t an,const void*b,std::size_t bn) noex
 bool OutputOverlapsProfile(const void* output, std::size_t extent,
                            const IntervalValidatedProfileHandleV3& profile) noexcept {
   return RangesOverlap(output, extent, &profile, sizeof(profile)) ||
+      DatatypeIdentityStringStorageOverlaps(output, extent, profile.identity.legacy_fields) ||
       RangesOverlap(output, extent, profile.profile_material.data(),
                     profile.profile_material.size()) ||
       RangesOverlap(output, extent, profile.equality_material.data(),
@@ -225,7 +245,7 @@ bool EmptyContextualDescriptor(
       d.descriptor_authoritative && d.parser_independent;
 }
 bool DescriptorBinds(const scratchbird::engine::ExecutionTypeDescriptor&d,const DatatypeTypeCodecIdentityRowV3&i,CanonicalTypeId t) noexcept {
- const auto*c=Current(t);
+ const auto*c=Current(t,ReceiptForIdentity(i));
  if(!c||!SameIdentity(i,*c)||!EngineUuidEqual(d.descriptor_uuid,i.legacy_fields.descriptor_uuid)||d.descriptor_epoch!=i.legacy_fields.descriptor_generation||d.canonical_type_id!=static_cast<u32>(t)||!d.descriptor_authoritative||!d.parser_independent||!EngineUuidNil(d.domain_uuid)||!d.domain_stack.empty()||!EngineUuidNil(d.charset_uuid)||!EngineUuidNil(d.collation_uuid)||!EngineUuidNil(d.timezone_uuid)||!EngineUuidNil(d.element_descriptor_uuid)||!EngineUuidNil(d.security_policy_uuid)||d.vector_dimensions!=0||d.container_rank!=0)return false;
  using F=scratchbird::engine::ExecutionTypeFamily;
  using W=scratchbird::engine::ExecutionTypeWidthClass;
@@ -233,7 +253,7 @@ bool DescriptorBinds(const scratchbird::engine::ExecutionTypeDescriptor&d,const 
  const u64 length_flag=scratchbird::engine::ExecutionTypeModifierFlagBit(scratchbird::engine::ExecutionTypeModifierFlag::length);
  return t==CanonicalTypeId::character&&d.family==F::character&&d.width_class==W::variable&&d.bit_width==0&&d.precision==0&&d.scale==0&&d.length<=16'777'216&&d.modifier_flags==(d.length==0?0:length_flag);
 }
-bool ExactPeer(const DatatypeTypeCodecIdentityRowV3*p,CanonicalTypeId t) noexcept{const auto*c=Current(t);
+bool ExactPeer(const DatatypeTypeCodecIdentityRowV3*p,CanonicalTypeId t) noexcept{const auto*c=p?Current(t,ReceiptForIdentity(*p)):nullptr;
  return p&&c&&SameIdentity(*p,*c);}
 
 template<class R> R FromFailure(const IntervalDiagnosticFactV3&d,Status s) noexcept{R r;
@@ -798,7 +818,7 @@ IntervalCastResultV3 CastIntervalValueV3(const IntervalCastRequestV3&r) noexcept
        r.scalar_source->is_null?IntervalValueStateV3::sql_null:IntervalValueStateV3::value,
        r.scalar_source->encoded_value,r.scalar_source->encoded_value.size()};
    auto parsed=ParseCanonicalIntervalOperandV3(*r.interval_target,operand,
-                                                r.target_null_allowed,r.control);
+       r.target_null_allowed&&r.interval_target_descriptor->nullable_allowed,r.control);
    if(!parsed.ok())return FromFailure<IntervalCastResultV3>(parsed.diagnostic,parsed.status);
    if(parsed.value.state==IntervalValueStateV3::value&&
       r.control.maximum_allocation_bytes<kIntervalComponentBytesV3)

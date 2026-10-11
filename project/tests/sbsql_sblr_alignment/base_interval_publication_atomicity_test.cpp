@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "datatype_interval_projection.hpp"
+#include "../support/interval_successor_fixture.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -1311,9 +1312,10 @@ void ScrubCoverage(const std::shared_ptr<const dt::IntervalValidatedProfileHandl
 
 }  // namespace
 int main() {
-  auto profile = Profile();
+  for (auto profile : {Profile(), scratchbird::tests::D711IntervalProfile()}) {
   Wire(*profile); RouteTable(); DiagnosticRouteExecution(); MetricProductionAndValidation(*profile); Replay(); Protection(*profile);
   PinnedReaders(profile); ResourceAtomicity(profile); ScrubCoverage(profile);
+  }
   std::cout << "PASS checks=" << checks
             << " wire_cases=243 diagnostic_route_cases=555 wire_parameter_cases=5"
             << " route_table_cases=6 production_cases=196 validation_cases=31 replay_cases=61"
