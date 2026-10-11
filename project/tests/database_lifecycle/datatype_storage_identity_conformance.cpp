@@ -319,6 +319,50 @@ int main() try {
   require(dt::LookupDatatypeStorageIdentityV3(
       dt::kDatatypeCohortV10,10,10,blob_descriptor,1,&out_v3));
   require(out_v3.type_uuid == blob_descriptor && !out_v3.codec);
+  // D711 inherits exact storage-only catalog identities, not value codecs.
+  // Exercise the whole immutable manifest, not only the first failed type.
+  const auto catalog = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  require(catalog.ok());
+  unsigned inherited_storage_rows = 0;
+  for (const auto& row : catalog.manifest.descriptor_rows) {
+    const auto descriptor = row.descriptor_uuid.value;
+    if (dt::FindDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV11,11,11,
+                                           descriptor,row.descriptor_epoch)) continue;
+    if (!row.descriptor_authoritative || row.type_id == dt::CanonicalTypeId::unknown) continue;
+    require(dt::LookupDatatypeStorageIdentityV3(dt::kDatatypeCohortV11,11,11,
+                                                descriptor,row.descriptor_epoch,&out_v3));
+    require(out_v3.descriptor_uuid==descriptor && out_v3.descriptor_generation==row.descriptor_epoch &&
+            out_v3.type_uuid==descriptor && out_v3.type_id==row.type_id && !out_v3.codec);
+    dt::DatatypeStorageIdentityV3 predecessor;
+    require(dt::LookupDatatypeStorageIdentityV3(dt::kDatatypeCohortV10,10,10,
+                                                descriptor,row.descriptor_epoch,&predecessor));
+    require(predecessor.descriptor_uuid==out_v3.descriptor_uuid &&
+            predecessor.type_uuid==out_v3.type_uuid && predecessor.type_id==out_v3.type_id && !predecessor.codec);
+    const auto unchanged=[&] {
+      require(out_v3.descriptor_uuid==descriptor && out_v3.descriptor_generation==row.descriptor_epoch &&
+              out_v3.type_uuid==descriptor && out_v3.type_id==row.type_id && !out_v3.codec);
+    };
+    for(const auto generation:{0ULL,1ULL,10ULL,12ULL,~0ULL}) {
+      require(!dt::LookupDatatypeStorageIdentityV3(dt::kDatatypeCohortV11,generation,11,
+                                                   descriptor,row.descriptor_epoch,&out_v3));unchanged();
+      require(!dt::LookupDatatypeStorageIdentityV3(dt::kDatatypeCohortV11,11,generation,
+                                                   descriptor,row.descriptor_epoch,&out_v3));unchanged();
+    }
+    require(!dt::LookupDatatypeStorageIdentityV3(dt::kDatatypeCohortV10,11,11,
+                                                 descriptor,row.descriptor_epoch,&out_v3));unchanged();
+    require(!dt::LookupDatatypeStorageIdentityV3(dt::kDatatypeCohortV11,11,11,
+                                                 descriptor,row.descriptor_epoch+1,&out_v3));unchanged();
+    require(!dt::LookupDatatypeStorageIdentityV3(dt::kDatatypeCohortV11,11,11,
+                                                 unknown,row.descriptor_epoch,&out_v3));unchanged();
+    require(!dt::LookupDatatypeStorageIdentityV1(dt::kDatatypeCohortV11,11,11,
+                                                 descriptor,row.descriptor_epoch,&out));
+    ++inherited_storage_rows;
+  }
+  require(inherited_storage_rows>0);
+  require(!dt::LookupDatatypeStorageIdentityV3(dt::kDatatypeCohortV11,11,11,blob_descriptor,1,&out_v3));
+  require(dt::LookupDatatypeStorageIdentityV3(dt::kDatatypeCohortV11,11,11,current_blob_descriptor,1,&out_v3));
+  require(out_v3.codec && dt::IsExactCanonicalBlobTypeCodecIdentityV3(*out_v3.codec));
+  std::cout << "inherited_storage_only_rows=" << inherited_storage_rows << '\n';
   std::cout << "datatype_storage_identity_conformance=passed rejected=" << rejected+1 << '\n';
   return 0;
 } catch (const std::exception& error) {

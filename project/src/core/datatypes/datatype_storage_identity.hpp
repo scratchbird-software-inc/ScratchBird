@@ -65,7 +65,8 @@ inline bool LookupDatatypeStorageIdentityV3(
           (snapshot == kDatatypeCohortV7 && catalog_generation == 7 && registry_generation == 7) ||
           (snapshot == kDatatypeCohortV8 && catalog_generation == 8 && registry_generation == 8) ||
           (snapshot == kDatatypeCohortV9 && catalog_generation == 9 && registry_generation == 9) ||
-          (snapshot == kDatatypeCohortV10 && catalog_generation == 10 && registry_generation == 10)))
+          (snapshot == kDatatypeCohortV10 && catalog_generation == 10 && registry_generation == 10) ||
+          (snapshot == kDatatypeCohortV11 && catalog_generation == 11 && registry_generation == 11)))
       return false;
     // Frozen D704-D710 storage-only BLOB identity. The current catalog now
     // publishes the distinct D711 profile; consulting that mutable head alone
@@ -75,7 +76,7 @@ inline bool LookupDatatypeStorageIdentityV3(
         0xf4,0x01,0x00,0x00,0x62,0x6c,0x7f,0x62,
         0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00}};
     if (descriptor == historical_blob_descriptor) {
-      if (descriptor_generation != 1) return false;
+      if (descriptor_generation != 1 || snapshot == kDatatypeCohortV11) return false;
       selected = {descriptor, 1, descriptor, CanonicalTypeId::blob, std::nullopt};
       *output = std::move(selected);
       return true;
