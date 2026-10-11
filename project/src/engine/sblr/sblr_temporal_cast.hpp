@@ -13,5 +13,6 @@ SblrResult EvaluateSblrTemporalCast(
     std::string_view operation, const SblrValue& value,
     std::string_view target_name, const SblrExecutionContext& context,
     bool explicit_cast, bool compatibility,
-    std::shared_ptr<const internal_api::EngineDescriptor> target);
+    std::shared_ptr<const internal_api::EngineDescriptor> target,
+    bool try_conversion = false);
 }

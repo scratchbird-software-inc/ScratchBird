@@ -1,6 +1,8 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "sblr/sblr_special_forms.hpp"
+#include "sblr/sblr_temporal_cast.hpp"
+#include "sblr/sblr_binary_value_carrier.hpp"
 #include "executor/descriptor_value_runtime.hpp"
 #include "datatype_type_codec_identity_v3.hpp"
 #include "datatype_date.hpp"
@@ -44,6 +46,8 @@ namespace f = scratchbird::engine::functions;
 namespace {
 unsigned checks = 0;
 bool callable = false;
+bool direct_try = false;
+const char* function_name = "data.scalar.cast";
 void Check(bool ok, const char* detail) {
   ++checks;
   if (!ok) throw std::runtime_error(detail);
@@ -84,7 +88,7 @@ s::SblrResult Cast(const s::SblrValue& value,
                   bool explicit_cast = true) {
   if (callable && explicit_cast) {
     static const auto package = f::BuildStandardFunctionSeedPackage();
-    const auto* entry = package.registry.Lookup("data.scalar.cast");
+    const auto* entry = package.registry.Lookup(function_name);
     Check(entry != nullptr, "CAST registration missing");
     f::FunctionCallRequest request;
     request.context.function_uuid = entry->function_uuid;
@@ -95,6 +99,8 @@ s::SblrResult Cast(const s::SblrValue& value,
     return f::DispatchFunctionCall(package.registry, std::move(request)).result;
   }
   static const s::SblrExecutionContext context;
+  if (direct_try) return s::EvaluateSblrTemporalCast("native.date.try_cast", value,
+      target->canonical_type_name, context, explicit_cast, false, target, true);
   return s::EvaluateSblrCastForm("native.date.cast", value,
       target->canonical_type_name, context, explicit_cast, false, target);
 }
@@ -178,10 +184,81 @@ void CoreNullability(unsigned generation) {
   const auto parsed=dt::ParseCanonicalDateOperandV3(profile,operand);
   Check(parsed.ok() && parsed.value.day==0,"direct DATE parse rejected nonnullable PRESENT");
 }
+
+void TrySemantics(unsigned generation) {
+  callable=true;function_name="sb.scalar.try_cast";
+  const auto target=Binding("date",generation);
+  const auto source=Native(0,generation);
+  Check(Scalar(Cast(source,target)).binary_value==source.binary_value,"TRY_CAST native identity changed bytes");
+  Check(Scalar(Cast(source,Binding("character",generation))).text_value=="1970-01-01","TRY_CAST native render failed");
+  Check(Scalar(Cast(Text("1970-01-01",generation),target)).binary_value==source.binary_value,"TRY_CAST parse failed");
+  for(const auto* bad : {"", "not a date", "2026-02-30", "2026-00-01", "+9999999-12-31"}) {
+    auto input=Text(bad,generation);
+    input.projection_descriptor=Binding("character",generation,false);
+    const auto result=Cast(input,target);
+    const auto& output=Scalar(result);
+    Check(s::SblrNullPayloadEmpty(output) && output.projection_descriptor==target &&
+          output.descriptor_id=="date" && result.diagnostics.empty(),
+          "TRY_CAST conversion failure did not publish exact bound NULL");
+    Refused(Cast(input,Binding("date",generation,false)),"DATATYPE.NULL_NOT_ADMITTED");
+  }
+  for(const auto& invalid : {std::string("\xC0\x80",2),std::string("\xED\xA0\x80",3),std::string("\xF4\x90\x80\x80",4)}) {
+    Refused(Cast(Text(invalid,generation),target),"CTI.TEMPORAL.INVALID_LITERAL");
+  }
+  auto unicode=Text("\xc3\xa9",generation);
+  auto one_character=std::make_shared<api::EngineDescriptor>(*unicode.projection_descriptor);
+  one_character->encoded_descriptor+=";length=1";unicode.projection_descriptor=one_character;
+  Check(s::SblrNullPayloadEmpty(Scalar(Cast(unicode,target))),"valid Unicode source was confused with invalid encoding");
+  auto too_long=Text("1970-01-01",generation);
+  auto short_source=std::make_shared<api::EngineDescriptor>(*too_long.projection_descriptor);
+  short_source->encoded_descriptor+=";length=5";too_long.projection_descriptor=short_source;
+  Refused(Cast(too_long,target),"CTI.TEMPORAL.RANGE_EXCEEDED");
+  auto short_target=std::make_shared<api::EngineDescriptor>(*Binding("character",generation));
+  short_target->encoded_descriptor+=";length=5";
+  Check(s::SblrNullPayloadEmpty(Scalar(Cast(source,short_target))),"TRY_CAST target length conversion did not produce NULL");
+  short_target->encoded_descriptor="nullability=non_null;length=5";
+  Refused(Cast(source,short_target),"DATATYPE.NULL_NOT_ADMITTED");
+  for(unsigned mutation=0;mutation<4;++mutation) {
+    auto malformed=source;
+    if(mutation==0)malformed.binary_value.pop_back();
+    if(mutation==1)malformed.text_value="1970-01-01";
+    if(mutation==2)malformed.is_null=true;
+    if(mutation==3)malformed.projection_descriptor.reset();
+    Refused(Cast(malformed,target));
+  }
+  auto invalid_binding=std::make_shared<api::EngineDescriptor>(*target);
+  ++invalid_binding->datatype_descriptor_generation;
+  Refused(Cast(Text("invalid",generation),invalid_binding),"CTI.TEMPORAL.DESCRIPTOR_INVALID");
+
+  for(unsigned mutation=0;mutation<7;++mutation) for(bool bad_target : {false,true}) {
+    auto binding=std::make_shared<api::EngineDescriptor>(*target);
+    switch(mutation) {
+      case 0:binding->descriptor_uuid={};break;
+      case 1:binding->type_uuid.bytes[15]^=0x7f;break;
+      case 2:binding->datatype_descriptor_uuid.bytes[15]^=0x7f;break;
+      case 3:++binding->datatype_descriptor_generation;break;
+      case 4:binding->datatype_cohort.catalog_snapshot_uuid.bytes[15]^=0x7f;break;
+      case 5:++binding->datatype_cohort.catalog_generation;break;
+      case 6:++binding->datatype_cohort.registry_generation;break;
+    }
+    if(bad_target) Refused(Cast(Text("invalid temporal",generation),binding),"CTI.TEMPORAL.DESCRIPTOR_INVALID");
+    else {
+      auto input=Native(0,generation);input.projection_descriptor=binding;
+      Refused(Cast(input,Binding("character",generation)),"CTI.TEMPORAL.DESCRIPTOR_INVALID");
+    }
+  }
+  auto conflicting=Text("invalid",generation);conflicting.encoded_value="different";
+  Refused(Cast(conflicting,target),"CTI.TEMPORAL.CANONICAL_ENCODING_INVALID");
+  Refused(Cast(source,Binding("time",generation)),"DATATYPE.CAST_FORBIDDEN");
+  s::SblrValue contextual;contextual.descriptor_id="null_type";
+  Check(s::SblrNullPayloadEmpty(Scalar(Cast(contextual,target))),"TRY_CAST contextual NULL failed");
+}
+
 int main() try {
   for(unsigned generation : {7u,8u,9u,10u,11u}) CoreNullability(generation);
-  for (const bool route : {true,false}) {
-  callable = route;
+  for (unsigned route : {0u,1u,2u}) {
+  callable = route != 0;
+  function_name = route == 2 ? "sb.scalar.safe_cast" : "data.scalar.cast";
   for (unsigned generation : {7u,8u,9u,10u,11u}) {
     const auto date=Binding("date",generation), character=Binding("character",generation);
     struct Case { std::int32_t day; const char* text; };
@@ -293,6 +370,7 @@ int main() try {
     }
   }
   }
+  for(unsigned generation : {7u,8u,9u,10u,11u}) TrySemantics(generation);
   callable=false;
   const auto fault_source=Native(0,11);
   unsigned failures=AllocationSweep(fault_source,Binding("character",11));
@@ -300,5 +378,13 @@ int main() try {
   failures+=AllocationSweep(Text("1970-01-01",11),Binding("date",11));
   s::SblrValue contextual;contextual.descriptor_id="null_type";
   failures+=AllocationSweep(contextual,Binding("date",11));
+  direct_try=true;
+  const unsigned try_parse_failures=AllocationSweep(Text("invalid temporal",11),Binding("date",11));
+  auto short_target=std::make_shared<api::EngineDescriptor>(*Binding("character",11));
+  short_target->encoded_descriptor+=";length=5";
+  const unsigned try_render_failures=AllocationSweep(fault_source,short_target);
+  Check(try_parse_failures>0 && try_render_failures>0,"TRY_CAST allocation paths were not exercised");
+  failures+=try_parse_failures+try_render_failures;
+  direct_try=false;
   std::cout << "native date cast checks=" << checks << " allocation_failures=" << failures << '\n';
 } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

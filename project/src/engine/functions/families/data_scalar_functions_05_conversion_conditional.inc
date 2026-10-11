@@ -62,6 +62,12 @@
       return RefuseFunctionInvalidInput(request, "safe_cast/try_cast target descriptor is required");
     }
     const auto& value = request.arguments[0].value;
+    if (scratchbird::engine::sblr::IsSblrCivilTemporalType(value.descriptor_id) ||
+        scratchbird::engine::sblr::IsSblrCivilTemporalType(target_descriptor))
+      return {scratchbird::engine::sblr::EvaluateSblrTemporalCast(
+          request.context.function_id, value, target_descriptor,
+          request.context.sblr_context, true, false, request.result_descriptor,
+          try_conversion)};
     if (NativeBinaryCast(value, target_descriptor))
       return CastNativeBinaryValue(request, target_descriptor, try_conversion);
     if (IsSqlNull(value)) {

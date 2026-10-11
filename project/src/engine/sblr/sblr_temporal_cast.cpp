@@ -7,6 +7,7 @@
 #include "datatype_timestamp.hpp"
 #include "datatype_date.hpp"
 #include "datatype_time.hpp"
+#include "canonical_utf8.hpp"
 
 namespace scratchbird::engine::sblr {
 namespace {
@@ -197,7 +198,8 @@ SblrResult Cast(
     std::string_view operation, const SblrValue& value,
     std::string_view target_name, const SblrExecutionContext& context,
     bool explicit_cast, bool compatibility,
-    std::shared_ptr<const internal_api::EngineDescriptor> target) try {
+    std::shared_ptr<const internal_api::EngineDescriptor> target,
+    bool try_conversion) try {
   const auto fail = [&](std::string_view code, std::string_view detail) {
     return MakeSblrFailure(code == "RESOURCE.BUDGET_EXCEEDED" ? SblrStatusCode::resource_exhausted :
                           SblrStatusCode::execution_failed, std::string(operation),
@@ -258,12 +260,38 @@ SblrResult Cast(
     Traits::Target(request, destination.profile, destination.execution, true);
   }
   const auto result = Traits::Cast(request);
-  if (!result.ok()) return fail(result.diagnostic.diagnostic_code, result.diagnostic.detail);
+  bool conversion_null = false;
+  if (!result.ok()) {
+    // Eligibility is owned here, after exact binding, native decoding and Core
+    // cast-policy admission. Never infer it from an arbitrary callback error.
+    const auto& code = result.diagnostic.diagnostic_code;
+    if (try_conversion && explicit_cast && !value.is_null) {
+      if (from_native && !to_native) {
+        conversion_null = code == "CTB.TEXT.LENGTH_EXCEEDED";
+      } else if (!from_native && to_native &&
+          (code == "CTI.TEMPORAL.INVALID_LITERAL" ||
+           code == "CTI.TEMPORAL.ZERO_DATE_REFUSED" ||
+           code == "CTI.TEMPORAL.LEAP_SECOND_REFUSED" ||
+           code == "CTI.TEMPORAL.PRECISION_LOSS" ||
+           code == "CTI.TEMPORAL.RANGE_EXCEEDED")) {
+        std::uint64_t characters = 0;
+        conversion_null = text.encoded_value.size() <=
+                source.identity->legacy_fields.canonical_value_maximum_bytes &&
+            dt::ValidateCanonicalUtf8(
+                reinterpret_cast<const std::uint8_t*>(text.encoded_value.data()),
+                text.encoded_value.size(), &characters) &&
+            (source.execution.length == 0 || characters <= source.execution.length);
+      }
+    }
+    if (!conversion_null) return fail(code, result.diagnostic.detail);
+    if (!destination.execution.nullable_allowed)
+      return fail("DATATYPE.NULL_NOT_ADMITTED", "TRY_CAST target is nonnullable");
+  }
   SblrValue output;
   output.descriptor_id = to_native ? std::string(Traits::name) : "character";
   output.projection_descriptor = std::move(target);
-  output.is_null = Traits::HasNative(result)
-      ? Traits::Native(result).state == Traits::State::sql_null : result.scalar_value.is_null;
+  output.is_null = conversion_null || (Traits::HasNative(result)
+      ? Traits::Native(result).state == Traits::State::sql_null : result.scalar_value.is_null);
   if (!output.is_null) {
     if (to_native) {
       output.payload_kind = SblrValuePayloadKind::binary;
@@ -288,11 +316,12 @@ SblrResult EvaluateSblrTemporalCast(
     std::string_view operation, const SblrValue& value,
     std::string_view target_name, const SblrExecutionContext& context,
     bool explicit_cast, bool compatibility,
-    std::shared_ptr<const internal_api::EngineDescriptor> target) {
+    std::shared_ptr<const internal_api::EngineDescriptor> target,
+    bool try_conversion) {
   const auto family = IsSblrCivilTemporalType(value.descriptor_id)
       ? std::string_view(value.descriptor_id) : target_name;
-  if (family == "date") return Cast<DateTraits>(operation, value, target_name, context, explicit_cast, compatibility, std::move(target));
-  if (family == "time") return Cast<TimeTraits>(operation, value, target_name, context, explicit_cast, compatibility, std::move(target));
-  return Cast<TimestampTraits>(operation, value, target_name, context, explicit_cast, compatibility, std::move(target));
+  if (family == "date") return Cast<DateTraits>(operation, value, target_name, context, explicit_cast, compatibility, std::move(target), try_conversion);
+  if (family == "time") return Cast<TimeTraits>(operation, value, target_name, context, explicit_cast, compatibility, std::move(target), try_conversion);
+  return Cast<TimestampTraits>(operation, value, target_name, context, explicit_cast, compatibility, std::move(target), try_conversion);
 }
 }
