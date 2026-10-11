@@ -14,6 +14,7 @@
 #include "hash_digest.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "query/canonical_relational_bridge.hpp"
+#include "query/native_scalar_descriptor_projection.hpp"
 #include "security/security_model.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
@@ -41,7 +42,8 @@ bool IsCanonicalUuid(const EngineUuid& value) {
   return !value.is_nil() && scratchbird::core::uuid::IsValidUuidVariant(value);
 }
 
-EngineUuid CanonicalCoreDatatypeUuid(const std::string_view stable_name) {
+EngineUuid CanonicalCoreTypeUuid(const std::string_view stable_name,
+                                const EngineRequestContext& context) {
   static const auto manifest =
       scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
@@ -49,36 +51,49 @@ EngineUuid CanonicalCoreDatatypeUuid(const std::string_view stable_name) {
       manifest.manifest.descriptor_rows, [&](const auto& row) {
         return row.stable_name == stable_name;
       });
-  return found == manifest.manifest.descriptor_rows.end()
-             ? EngineUuid{}
-             : found->descriptor_uuid.value;
+  if (found == manifest.manifest.descriptor_rows.end()) return {};
+  const auto* row = core::datatypes::FindDatatypeTypeCodecIdentityV3(
+      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+      context.datatype_registry_generation, found->descriptor_uuid.value,
+      found->descriptor_epoch);
+  return row ? row->legacy_fields.type_uuid : EngineUuid{};
 }
 
-EngineUuid CanonicalInt64TypeUuid() {
-  const auto descriptor_uuid = CanonicalCoreDatatypeUuid("int64");
-  const auto identity =
-      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-          EngineUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}}, 1, 1,
-          descriptor_uuid, 1);
-  return identity.ok ? identity.row.type_uuid : EngineUuid{};
+EngineUuid CanonicalInt64TypeUuid(const EngineRequestContext& context) {
+  return CanonicalCoreTypeUuid("int64", context);
 }
 
-unsigned BoundedSignedIntegerTypeRank(const EngineUuid& type_uuid) {
+unsigned BoundedSignedIntegerTypeRank(const EngineUuid& type_uuid,
+                                     const EngineRequestContext& context) {
   constexpr std::array<std::string_view, 4> kTypes{
       "int8", "int16", "int32", "int64"};
   for (std::size_t ordinal = 0; ordinal < kTypes.size(); ++ordinal) {
-    const auto descriptor_uuid = CanonicalCoreDatatypeUuid(kTypes[ordinal]);
-    const auto identity =
-        scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-            EngineUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}}, 1, 1,
-            descriptor_uuid, 1);
-    const auto exact_type_uuid =
-        identity.ok ? identity.row.type_uuid : descriptor_uuid;
+    const auto exact_type_uuid = CanonicalCoreTypeUuid(kTypes[ordinal], context);
     if (!exact_type_uuid.is_nil() && type_uuid == exact_type_uuid) {
       return static_cast<unsigned>(ordinal + 1);
     }
   }
   return 0;
+}
+
+bool ExactStatementDescriptorCohort(const RelationalTypeDescriptor& descriptor,
+                                   const EngineRequestContext& context) {
+  return descriptor.statement_receipt_uuid == context.statement_receipt_uuid &&
+      descriptor.datatype_catalog_snapshot_uuid == context.datatype_catalog_snapshot_uuid &&
+      descriptor.datatype_catalog_generation == context.datatype_catalog_generation &&
+      descriptor.datatype_registry_generation == context.datatype_registry_generation;
+}
+
+bool ExactPersistedDatatypeBinding(const RelationalTypeDescriptor& descriptor,
+                                  const EngineDescriptor& stored,
+                                  const EngineRequestContext& context) {
+  if (!ExactStatementDescriptorCohort(descriptor, context) ||
+      stored.datatype_cohort != EngineDatatypeCohort{context.datatype_catalog_snapshot_uuid,
+          context.datatype_catalog_generation, context.datatype_registry_generation}) return false;
+  const auto* identity = FindExactRelationalDatatypeIdentityV3(descriptor);
+  return identity && stored.datatype_descriptor_uuid == identity->legacy_fields.descriptor_uuid &&
+      stored.datatype_descriptor_generation == identity->legacy_fields.descriptor_generation &&
+      stored.type_uuid == identity->legacy_fields.type_uuid;
 }
 
 bool ParsePositiveU64(const std::string_view text, std::uint64_t* value) {
@@ -827,7 +842,8 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
           !limit_descriptor_ids.insert(descriptor->first).second ||
           descriptor->second->nullability !=
               RelationalNullability::kNonNull ||
-          descriptor->second->type_uuid != CanonicalInt64TypeUuid() ||
+          descriptor->second->type_uuid.is_nil() ||
+          descriptor->second->type_uuid != CanonicalInt64TypeUuid(context) ||
           descriptor->second->collation_uuid.has_value() ||
           descriptor->second->timezone_profile_id.has_value() ||
           descriptor->second->width.has_value() ||
@@ -998,14 +1014,16 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
         literal_descriptor == descriptors_by_id.end() ||
         predicate_descriptor == descriptors_by_id.end() ||
         BoundedSignedIntegerTypeRank(
-            identifier_descriptor->second->type_uuid) == 0 ||
-        literal_descriptor->second->type_uuid != CanonicalInt64TypeUuid() ||
+            identifier_descriptor->second->type_uuid, context) == 0 ||
+        literal_descriptor->second->type_uuid.is_nil() ||
+        literal_descriptor->second->type_uuid != CanonicalInt64TypeUuid(context) ||
         literal_descriptor->second->nullability !=
             RelationalNullability::kNonNull ||
         predicate_descriptor->second->nullability !=
             RelationalNullability::kNullable ||
         predicate_descriptor->second->type_uuid !=
-            CanonicalCoreDatatypeUuid("boolean") ||
+            CanonicalCoreTypeUuid("boolean", context) ||
+        predicate_descriptor->second->type_uuid.is_nil() ||
         identifier_descriptor->second->collation_uuid.has_value() ||
         literal_descriptor->second->collation_uuid.has_value() ||
         predicate_descriptor->second->collation_uuid.has_value() ||
@@ -1473,6 +1491,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
               descriptor.descriptor_uuid ||
           persisted_type_uuid.is_nil() ||
           persisted_type_uuid != descriptor.type_uuid ||
+          !ExactPersistedDatatypeBinding(descriptor, column.value_descriptor, context) ||
           column.nullable != nullable ||
           !ExactNullabilityCarrierMatches(
               column.value_descriptor.encoded_descriptor, nullable) ||
@@ -1701,11 +1720,11 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalTableFunctionAdmission(
                   "table_function_output_descriptor");
   }
   EngineDescriptor projected;
-  projected.descriptor_uuid = output_descriptor->descriptor_uuid;
-  projected.descriptor_kind = "scalar";
-  projected.canonical_type_name = "int64";
-  projected.type_uuid = output_descriptor->type_uuid;
-  projected.encoded_descriptor = "nullability=non_null";
+  if (!ExactStatementDescriptorCohort(*output_descriptor, context) ||
+      output_descriptor->nullability != RelationalNullability::kNonNull ||
+      !BuildExactCanonicalScalarRuntimeDescriptorV1(*output_descriptor,
+          core::datatypes::CanonicalTypeId::int64, &projected))
+    return Refuse("QOW-DIAG-QRY-004-TABLE-FUNCTION-PROFILE-V1", "table_function_output_datatype_binding");
   CanonicalHeapOptimizerAdmissionResult result;
   result.built = true;
   result.request = std::move(built.request);
@@ -1865,11 +1884,11 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalMatchRecognizeAdmission(
                   "match_recognize_output_descriptor");
   }
   EngineDescriptor projected;
-  projected.descriptor_uuid = output_descriptor->descriptor_uuid;
-  projected.descriptor_kind = "scalar";
-  projected.canonical_type_name = "int64";
-  projected.type_uuid = output_descriptor->type_uuid;
-  projected.encoded_descriptor = "nullability=non_null";
+  if (!ExactStatementDescriptorCohort(*output_descriptor, context) ||
+      output_descriptor->nullability != RelationalNullability::kNonNull ||
+      !BuildExactCanonicalScalarRuntimeDescriptorV1(*output_descriptor,
+          core::datatypes::CanonicalTypeId::int64, &projected))
+    return Refuse("QOW-DIAG-QRY-004-MATCH-RECOGNIZE-PROFILE-V1", "match_recognize_output_datatype_binding");
   CanonicalHeapOptimizerAdmissionResult result;
   result.built = true;
   result.request = std::move(built.request);
@@ -1928,6 +1947,16 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
       context.prepared_metadata_required_metadata_epoch != 0) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-SCOPE-V1",
                   "prepared_or_cached_execution");
+  }
+
+  // Structural DAG validation may accept wholly unbound computed descriptors.
+  // This live admission boundary may not: constants, window results and
+  // positions need the same exact receipt/codec authority as stored scans.
+  for (const auto& descriptor : relational.descriptors) {
+    if (!ExactStatementDescriptorCohort(descriptor, context) ||
+        FindExactRelationalDatatypeIdentityV3(descriptor) == nullptr)
+      return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-BINDING-V1",
+                    "statement_datatype_binding");
   }
 
   const auto inventory_guard =
@@ -2553,16 +2582,23 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
     const bool value_operand_window =
         value_window && !aggregate_count_star_window;
     const auto canonical_int64_type_uuid =
-        value_window ? CanonicalCoreDatatypeUuid("int64") : EngineUuid{};
+        value_window ? CanonicalCoreTypeUuid("int64", context) : EngineUuid{};
     const auto canonical_boolean_type_uuid =
         (aggregate_boolean_window || navigation_value_window)
-            ? CanonicalCoreDatatypeUuid("boolean")
+            ? CanonicalCoreTypeUuid("boolean", context)
             : EngineUuid{};
     const std::array<EngineUuid, 4> canonical_bounded_signed_type_uuids = {
-        aggregate_window ? CanonicalCoreDatatypeUuid("int8") : EngineUuid{},
-        aggregate_window ? CanonicalCoreDatatypeUuid("int16") : EngineUuid{},
-        aggregate_window ? CanonicalCoreDatatypeUuid("int32") : EngineUuid{},
+        aggregate_window ? CanonicalCoreTypeUuid("int8", context) : EngineUuid{},
+        aggregate_window ? CanonicalCoreTypeUuid("int16", context) : EngineUuid{},
+        aggregate_window ? CanonicalCoreTypeUuid("int32", context) : EngineUuid{},
         aggregate_window ? canonical_int64_type_uuid : EngineUuid{}};
+    if ((value_window && canonical_int64_type_uuid.is_nil()) ||
+        ((aggregate_boolean_window || navigation_value_window) && canonical_boolean_type_uuid.is_nil()) ||
+        (aggregate_bounded_signed_window && std::ranges::any_of(
+            canonical_bounded_signed_type_uuids, [](const auto& value) { return value.is_nil(); }))) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-BINDING-V1",
+                    "window_datatype_cohort_unavailable");
+    }
     const std::string_view expected_builtin_id =
         aggregate_window
             ? (aggregate_window_row == nullptr
@@ -3236,6 +3272,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         persisted_type_uuid.is_nil() ||
         !IsCanonicalUuid(persisted_type_uuid) ||
         persisted_type_uuid != descriptor.type_uuid ||
+        !ExactPersistedDatatypeBinding(descriptor, column.value_descriptor, context) ||
         column.nullable != nullable ||
         !ExactNullabilityCarrierMatches(
             column.value_descriptor.encoded_descriptor, nullable) ||

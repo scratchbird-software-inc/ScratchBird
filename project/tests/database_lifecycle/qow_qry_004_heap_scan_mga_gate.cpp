@@ -64,12 +64,12 @@ const api::EngineUuid& Int64TypeUuid() {
     if (!descriptor.ok() || descriptor.manifest.descriptor_rows.size() != 1)
       throw std::runtime_error("int64 catalog descriptor missing");
     const auto& row = descriptor.manifest.descriptor_rows.front();
-    const auto codec = dt::LookupDatatypeTypeCodecIdentityV1(
+    const auto codec = dt::LookupDatatypeTypeCodecIdentityV3(
         api::kBootstrapDatatypeCatalogUuid, api::kBootstrapDatatypeCatalogGeneration,
         api::kBootstrapDatatypeRegistryGeneration, row.descriptor_uuid.value,
         row.descriptor_epoch);
     if (!codec.ok) throw std::runtime_error("int64 codec identity unavailable");
-    return codec.row.type_uuid;
+    return codec.row.legacy_fields.type_uuid;
   }();
   return identity;
 }
@@ -178,8 +178,7 @@ static_assert(!HasCallerWalAuthority<
               api::CanonicalHeapOptimizerAdmissionRequest>);
 
 [[noreturn]] void Fail(std::string_view detail) {
-  std::cerr << "QOW-TEST-QRY-004-HEAP-MGA-V1: " << detail << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error("QOW-TEST-QRY-004-HEAP-MGA-V1: " + std::string(detail));
 }
 
 void Require(const bool condition, std::string_view detail) {
@@ -1156,6 +1155,23 @@ exec::CanonicalHeapRelationAcquisitionRequest BoundRequest(
     type.descriptor_id = id;
     type.descriptor_uuid = column.value_descriptor.descriptor_uuid;
     type.type_uuid = column.value_descriptor.type_uuid;
+    const auto* codec = scratchbird::core::datatypes::FindDatatypeTypeCodecIdentityV3(
+        context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+        context.datatype_registry_generation, column.value_descriptor.datatype_descriptor_uuid,
+        column.value_descriptor.datatype_descriptor_generation);
+    Require(codec && codec->legacy_fields.type_uuid == type.type_uuid,
+            "stored fixture datatype codec unavailable");
+    const auto& row = codec->legacy_fields;
+    type.datatype_identity_authoritative = true;
+    type.statement_receipt_uuid = context.statement_receipt_uuid;
+    type.datatype_catalog_snapshot_uuid = row.catalog_snapshot_uuid;
+    type.datatype_catalog_generation = row.catalog_generation;
+    type.datatype_registry_generation = row.registry_generation;
+    type.descriptor_generation = row.descriptor_generation;
+    type.type_generation = row.type_generation;
+    type.codec_id = row.codec_id;
+    type.codec_version = row.codec_version;
+    type.codec_generation = row.codec_generation;
     type.nullability = column.nullable
                            ? api::RelationalNullability::kNullable
                            : api::RelationalNullability::kNonNull;
@@ -4337,6 +4353,56 @@ void ValidateHeapOptimizerAdmissionMatrix(Fixture& fixture) {
   Rollback(reader);
 }
 
+void ValidateHeapOptimizerDatatypeAuthority(Fixture& fixture) {
+  for (const auto& table : {fixture.full_width_table_uuid, fixture.empty_full_width_table_uuid}) {
+    auto reader = QueryContext(fixture, Begin(fixture, "qow-heap-datatype-refusals"),
+                               table, fixture.salt + 3380);
+    auto acquisition = RequestFor(reader, table, fixture.salt + 3381);
+    const auto baseline = AdmissionRequestFor(acquisition);
+    const auto before = CaptureFixtureFiles(fixture.directory);
+    Require(api::BuildCanonicalCurrentHeapOptimizerAdmission(baseline).built,
+            "datatype mutation baseline was not admitted");
+    for (unsigned mutation = 0; mutation != 11; ++mutation) {
+      auto changed = baseline;
+      auto& descriptor = changed.relational_dag.descriptors.front();
+      switch (mutation) {
+        case 0:
+          descriptor.datatype_identity_authoritative = false;
+          descriptor.statement_receipt_uuid = {};
+          descriptor.datatype_catalog_snapshot_uuid = {};
+          descriptor.datatype_catalog_generation = 0;
+          descriptor.datatype_registry_generation = 0;
+          descriptor.descriptor_generation = 0;
+          descriptor.type_generation = 0;
+          descriptor.codec_id.clear();
+          descriptor.codec_version = 0;
+          descriptor.codec_generation = 0;
+          break;
+        case 1: ++descriptor.type_generation; break;
+        case 2: descriptor.codec_id += ".wrong"; break;
+        case 3: ++descriptor.codec_version; break;
+        case 4: ++descriptor.codec_generation; break;
+        case 5: descriptor.statement_receipt_uuid.bytes.back() ^= 1; break;
+        case 6: descriptor.datatype_catalog_snapshot_uuid.bytes.back() ^= 1; break;
+        case 7: ++descriptor.datatype_catalog_generation; break;
+        case 8: ++descriptor.datatype_registry_generation; break;
+        case 9: ++descriptor.descriptor_generation; break;
+        case 10: descriptor.datatype_identity_authoritative = false; break;
+      }
+      const auto refused = api::BuildCanonicalCurrentHeapOptimizerAdmission(changed);
+      RequireAtomicAdmissionFailure(refused, "altered datatype authority reached optimizer admission");
+      Require(refused.issue.field_id == "statement_datatype_binding",
+              "datatype refusal did not come from the exact live identity gate");
+      Require(api::BuildCanonicalCurrentHeapOptimizerAdmission(baseline).built,
+              "refused datatype mutation consumed valid admission authority");
+      Require(CaptureFixtureFiles(fixture.directory) == before,
+              "datatype admission mutation/retry changed durable storage");
+    }
+    ReleaseRequest(&acquisition);
+    Rollback(reader);
+  }
+}
+
 void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
   auto reader = QueryContext(fixture, Begin(fixture, "qow-heap-admission-refusals"),
                              fixture.full_width_table_uuid,
@@ -4914,7 +4980,7 @@ void ValidateExplicitLargeValueStream(Fixture& fixture) {
 
 }  // namespace
 
-int main() {
+int RunConformance() {
   scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
       "QOW-TEST-QRY-004-HEAP-MGA-V1");
   auto fixture = MakeFixture();
@@ -4925,6 +4991,7 @@ int main() {
   ValidateRevokedHeapAuthorityHasNoAccess(fixture);
   ValidatePhysicalV2StatementContextRefusalMatrix(fixture);
   ValidateHeapOptimizerAdmissionMatrix(fixture);
+  ValidateHeapOptimizerDatatypeAuthority(fixture);
   ValidateHeapOptimizerAdmissionRefusals(fixture);
   ValidateFullWidthHeapMatrix(fixture);
   ValidateFullWidthHeapRefusals(fixture);
@@ -4943,4 +5010,12 @@ int main() {
   ValidateBindingSecurityAndResourceRefusals(fixture);
   ValidateOptimizerSelectedHeapTableSampleMatrix(fixture);
   return EXIT_SUCCESS;
+}
+
+int main() {
+  try { return RunConformance(); }
+  catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }

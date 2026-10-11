@@ -9,6 +9,7 @@
 #include "canonical_query_descriptor_support.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "query/native_scalar_descriptor_projection.hpp"
 
 namespace scratchbird::engine::sblr {
 namespace api = scratchbird::engine::internal_api;
@@ -16,75 +17,14 @@ namespace exec = scratchbird::engine::executor;
 
 bool BuildExactCanonicalUuidRuntimeDescriptorV1(
     const api::RelationalTypeDescriptor& source, api::EngineDescriptor* output) {
-  return BuildExactCanonicalScalarRuntimeDescriptorV1(
+  return scratchbird::engine::sblr::BuildExactCanonicalScalarRuntimeDescriptorV1(
       source, core::datatypes::CanonicalTypeId::uuid, output);
 }
 
 bool BuildExactCanonicalScalarRuntimeDescriptorV1(
     const api::RelationalTypeDescriptor& source,
     core::datatypes::CanonicalTypeId expected_type, api::EngineDescriptor* output) {
-  if (!output) return false;
-  *output = {};
-  namespace dt = scratchbird::core::datatypes;
-  if (expected_type != dt::CanonicalTypeId::uuid &&
-      expected_type != dt::CanonicalTypeId::binary &&
-      expected_type != dt::CanonicalTypeId::boolean &&
-      expected_type != dt::CanonicalTypeId::int8 &&
-      expected_type != dt::CanonicalTypeId::int16 &&
-      expected_type != dt::CanonicalTypeId::int32 &&
-      expected_type != dt::CanonicalTypeId::int64 &&
-      expected_type != dt::CanonicalTypeId::int128 &&
-      expected_type != dt::CanonicalTypeId::uint64 &&
-      expected_type != dt::CanonicalTypeId::decimal &&
-      expected_type != dt::CanonicalTypeId::real64) return false;
-  const bool decimal = expected_type == dt::CanonicalTypeId::decimal;
-  if (!source.datatype_identity_authoritative ||
-      !core::uuid::IsEngineIdentityUuid(source.descriptor_uuid) ||
-      !core::uuid::IsEngineIdentityUuid(source.statement_receipt_uuid) ||
-      (source.nullability != api::RelationalNullability::kNonNull &&
-       source.nullability != api::RelationalNullability::kNullable) ||
-      source.collation_uuid || source.timezone_profile_id || source.width ||
-      (decimal ? (!source.precision || !source.scale || *source.precision == 0 ||
-                  *source.precision > 38 || *source.scale > *source.precision)
-               : (source.precision.has_value() || source.scale.has_value()))) return false;
-  // descriptor_uuid identifies this admitted statement occurrence (for a
-  // literal, its SBLP profile), not the catalog datatype definition. Resolve
-  // the latter only within the supplied exact cohort and type identity, as
-  // dispatch admission does. Never replace the occurrence or use a name or
-  // nearest/latest registry generation to fill missing authority.
-  const dt::DatatypeTypeCodecIdentityRowV3* matched = nullptr;
-  for (const auto& identity : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
-    const auto& candidate = identity.legacy_fields;
-    if (candidate.catalog_snapshot_uuid != source.datatype_catalog_snapshot_uuid ||
-        candidate.catalog_generation != source.datatype_catalog_generation ||
-        candidate.registry_generation != source.datatype_registry_generation ||
-        candidate.type_uuid != source.type_uuid ||
-        candidate.descriptor_generation != source.descriptor_generation) continue;
-    if (matched) return false;
-    matched = &identity;
-  }
-  if (!matched) return false;
-  const auto& row = matched->legacy_fields;
-  if (row.canonical_binary_type_code != static_cast<std::uint32_t>(expected_type) ||
-      row.descriptor_generation != source.descriptor_generation ||
-      row.type_uuid != source.type_uuid || row.type_generation != source.type_generation ||
-      row.codec_id != source.codec_id || row.codec_version != source.codec_version ||
-      row.codec_generation != source.codec_generation) return false;
-  api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid = source.descriptor_uuid;
-  descriptor.type_uuid = source.type_uuid;
-  descriptor.datatype_descriptor_uuid = row.descriptor_uuid;
-  descriptor.datatype_descriptor_generation = row.descriptor_generation;
-  descriptor.datatype_cohort = {source.datatype_catalog_snapshot_uuid,
-      source.datatype_catalog_generation, source.datatype_registry_generation};
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = dt::CanonicalTypeName(expected_type);
-  descriptor.encoded_descriptor = source.nullability == api::RelationalNullability::kNullable
-      ? "nullability=nullable" : "nullability=non_null";
-  if (decimal) descriptor.encoded_descriptor += ";precision=" + std::to_string(*source.precision) +
-                                               ";scale=" + std::to_string(*source.scale);
-  *output = std::move(descriptor);
-  return true;
+  return api::BuildExactCanonicalScalarRuntimeDescriptorV1(source, expected_type, output);
 }
 
 // SEARCH_KEY: SB_ENGINE_CANONICAL_QUERY_DESCRIPTOR_SUPPORT_AUTHORITY
