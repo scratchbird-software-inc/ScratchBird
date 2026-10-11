@@ -38,6 +38,75 @@ api::EngineTypedValue Value(dt::CanonicalTypeId type, unsigned width,
   return value;
 }
 int main() {
+  for (unsigned generation : {5u, 10u, 11u}) {
+    const api::EngineDatatypeCohort cohort{
+        generation == 5 ? dt::kDatatypeCohortV5 : generation == 10 ? dt::kDatatypeCohortV10 : dt::kDatatypeCohortV11,
+        generation, generation};
+    auto value = Value(dt::CanonicalTypeId::int64, 8, 9, 991);
+    value.descriptor = ex::MakeExecutorDescriptor("int64", "nullability=non_null", cohort);
+    Check(value.descriptor.datatype_cohort == cohort, "explicit scalar constructor lost cohort");
+    auto batch = ex::MakeDescriptorBatch({{"key", value.descriptor, false}}, {{{value}}, {{value}}});
+    for (unsigned failure = 0; failure < 3; ++failure) {
+      auto malformed = batch;
+      if (failure == 0) malformed.rows.back().values.front().binary_value.pop_back();
+      if (failure == 1) malformed.rows.back().values.clear();
+      if (failure == 2) {
+        auto unsupported = Value(dt::CanonicalTypeId::uint16, 2, 7, 993);
+        unsupported.descriptor = ex::MakeExecutorDescriptor("uint16", "nullability=non_null", cohort);
+        malformed = ex::MakeDescriptorBatch({{"key", unsupported.descriptor, false}}, {{{unsupported}}});
+      }
+      for (const bool expose_diagnostic : {false, true}) {
+        ex::DescriptorRuntimeDiagnostic diagnostic;
+        auto* output_diagnostic = expose_diagnostic ? &diagnostic : nullptr;
+        const auto counted = ex::AggregateDescriptorCountByKey(malformed, 0, "count", output_diagnostic);
+        Check(counted.columns.empty() && counted.rows.empty() && (!expose_diagnostic || !diagnostic.ok),
+              "malformed count input published partial output without diagnostic storage");
+        const auto numbered = ex::WindowDescriptorRowNumberByInt64(malformed, 0, "position", true, output_diagnostic);
+        Check(numbered.columns.empty() && numbered.rows.empty() && (!expose_diagnostic || !diagnostic.ok),
+              "malformed sort input published row numbers without diagnostic storage");
+      }
+    }
+    for (const bool empty : {false, true}) {
+      if (empty) batch.rows.clear();
+      ex::DescriptorRuntimeDiagnostic diagnostic;
+      for (const bool specialized : {false, true}) {
+        const auto counted = specialized ? ex::AggregateDescriptorCountByInt64(batch, 0, "count", &diagnostic) :
+            ex::AggregateDescriptorCountByKey(batch, 0, "count", &diagnostic);
+        Check(diagnostic.ok && ex::ValidateDescriptorBatch(counted).ok && counted.columns.size() == 2 &&
+            counted.columns.back().descriptor.datatype_cohort == cohort, "derived count replaced actual cohort");
+        for (const auto& row : counted.rows)
+          Check(row.values.back().descriptor.datatype_cohort == cohort && ex::DecodeInt64Value(row.values.back()).value == 2,
+                "count value does not retain admitted result cohort");
+      }
+      const auto numbered = ex::WindowDescriptorRowNumberByInt64(batch, 0, "position", true, &diagnostic);
+      Check(diagnostic.ok && ex::ValidateDescriptorBatch(numbered).ok && numbered.columns.size() == 2 &&
+          numbered.columns.back().descriptor.datatype_cohort == cohort, "row-number result lost actual cohort");
+      for (std::size_t i = 0; i < numbered.rows.size(); ++i)
+        Check(numbered.rows[i].values.back().descriptor.datatype_cohort == cohort &&
+            ex::DecodeInt64Value(numbered.rows[i].values.back()).value == static_cast<std::int64_t>(i+1),
+            "row-number value lost cohort or ordinal");
+    }
+    auto wrong = cohort; ++wrong.registry_generation;
+    const auto refused = ex::MakeExecutorDescriptor("int64", "nullability=non_null", wrong);
+    Check(refused.type_uuid.is_nil() && refused.datatype_descriptor_uuid.is_nil(), "constructor fabricated missing identity");
+    for (const char* name : {"boolean", "real64", "text"}) {
+      for (unsigned mutation = 0; mutation < 5; ++mutation) {
+        auto descriptor = ex::MakeExecutorDescriptor(name, "nullability=non_null", cohort);
+        if (mutation == 1) descriptor.datatype_cohort = {};
+        if (mutation == 2) ++descriptor.datatype_cohort.registry_generation;
+        if (mutation == 3) descriptor.type_uuid.bytes[0] ^= 1;
+        if (mutation == 4) ++descriptor.datatype_descriptor_generation;
+        const auto empty = ex::MakeDescriptorBatch({{"key", descriptor, false}}, {});
+        ex::DescriptorRuntimeDiagnostic diagnostic;
+        const auto counted = ex::AggregateDescriptorCountByKey(empty, 0, "count", &diagnostic);
+        Check(diagnostic.ok == (mutation == 0) && (mutation == 0 || counted.columns.empty()),
+              "empty noninteger count bypassed exact input/result admission");
+        const auto numbered = ex::WindowDescriptorRowNumberByInt64(empty, 0, "position", true, &diagnostic);
+        Check(diagnostic.ok == (mutation == 0) && (mutation == 0 || numbered.columns.empty()),
+              "empty noninteger row number bypassed exact input/result admission");
+      }
+    }
+  }
   for (const unsigned width : {4u, 8u}) {
     const auto type = width == 4 ? dt::CanonicalTypeId::int32 : dt::CanonicalTypeId::int64;
     for (const bool nullable : {false, true}) {

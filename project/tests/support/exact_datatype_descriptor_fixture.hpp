@@ -5,6 +5,7 @@
 #include "api_types.hpp"
 #include "catalog/datatype_bootstrap_identity.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "uuid.hpp"
 
 #include <stdexcept>
@@ -27,10 +28,11 @@ inline engine::internal_api::EngineDescriptor ExactScalarDescriptorFixture(
   namespace api = engine::internal_api;
   namespace dt = core::datatypes;
   const dt::DatatypeTypeCodecIdentityRowV1* selected = nullptr;
-  for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
-    if (row.catalog_snapshot_uuid != api::kBootstrapDatatypeCatalogUuid ||
-        row.catalog_generation != api::kBootstrapDatatypeCatalogGeneration ||
-        row.registry_generation != api::kBootstrapDatatypeRegistryGeneration ||
+  // This is a frozen representation fixture, not a live statement receipt.
+  for (const auto& entry : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row = entry.legacy_fields;
+    if (row.catalog_snapshot_uuid != dt::kDatatypeCohortV5 ||
+        row.catalog_generation != 5 || row.registry_generation != 5 ||
         row.canonical_binary_type_code !=
             static_cast<std::uint32_t>(type_id)) {
       continue;
@@ -51,6 +53,8 @@ inline engine::internal_api::EngineDescriptor ExactScalarDescriptorFixture(
   descriptor.type_uuid = selected->type_uuid;
   descriptor.datatype_descriptor_uuid = selected->descriptor_uuid;
   descriptor.datatype_descriptor_generation = selected->descriptor_generation;
+  descriptor.datatype_cohort = {selected->catalog_snapshot_uuid,
+      selected->catalog_generation, selected->registry_generation};
   return descriptor;
 }
 

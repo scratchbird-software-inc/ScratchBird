@@ -10,6 +10,7 @@
 #include "../internal_api/query/historical_timestamp_scalar.hpp"
 #include "../internal_api/catalog/column_metadata_codec.hpp"
 #include "../internal_api/catalog/datatype_bootstrap_identity.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "sbl_numeric.hpp"
 #include "../../core/uuid/uuid.hpp"
@@ -289,17 +290,17 @@ bool BoundExecutionTypeDescriptor(
       descriptor.type_uuid.is_nil()) {
     return refuse("bound scalar datatype descriptor identity is incomplete");
   }
-  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      api::kBootstrapDatatypeCatalogUuid,
-      api::kBootstrapDatatypeCatalogGeneration,
-      api::kBootstrapDatatypeRegistryGeneration,
+  const auto* identity = dt::FindDatatypeTypeCodecIdentityV3(
+      descriptor.datatype_cohort.catalog_snapshot_uuid,
+      descriptor.datatype_cohort.catalog_generation,
+      descriptor.datatype_cohort.registry_generation,
       descriptor.datatype_descriptor_uuid,
       descriptor.datatype_descriptor_generation);
-  if (!identity.ok || identity.row.type_uuid != descriptor.type_uuid ||
-      identity.row.descriptor_uuid != descriptor.datatype_descriptor_uuid ||
-      identity.row.descriptor_generation !=
+  if (identity == nullptr || identity->legacy_fields.type_uuid != descriptor.type_uuid ||
+      identity->legacy_fields.descriptor_uuid != descriptor.datatype_descriptor_uuid ||
+      identity->legacy_fields.descriptor_generation !=
           descriptor.datatype_descriptor_generation ||
-      identity.row.canonical_binary_type_code !=
+      identity->legacy_fields.canonical_binary_type_code !=
           static_cast<std::uint32_t>(type_id)) {
     return refuse("bound scalar datatype identity is not an exact admitted registry row");
   }
@@ -935,44 +936,36 @@ bool IsCanonicalBoundedSignedIntegerDescriptor(
 }
 
 EngineDescriptor MakeExecutorDescriptor(std::string canonical_type_name, std::string encoded_descriptor) {
+  // Frozen component constructor; never silently follow the live-node default.
+  return MakeExecutorDescriptor(std::move(canonical_type_name), std::move(encoded_descriptor),
+      {scratchbird::core::datatypes::kDatatypeCohortV5, 5, 5});
+}
+
+EngineDescriptor MakeExecutorDescriptor(std::string canonical_type_name, std::string encoded_descriptor,
+    const scratchbird::engine::internal_api::EngineDatatypeCohort& cohort) {
   EngineDescriptor descriptor;
   descriptor.descriptor_kind = "executor.scalar";
   descriptor.canonical_type_name = std::move(canonical_type_name);
   descriptor.encoded_descriptor = encoded_descriptor.empty()
                                       ? "canonical_type=" + descriptor.canonical_type_name
                                       : std::move(encoded_descriptor);
-  // Internal builtin values carry the compiled Core datatype identity. This
-  // constructor neither resolves user-defined names nor binds a column or a
-  // request-specific catalog occurrence; those callers retain their bindings.
+  // Pure representation construction, not live statement or column admission.
+  // Missing tuples never fall back to descriptor-as-type or a current cohort.
   namespace dt = scratchbird::core::datatypes;
   namespace api = scratchbird::engine::internal_api;
-  struct BuiltinIdentity {
-    api::EngineUuid descriptor_uuid;
-    api::EngineUuid type_uuid;
-    std::uint64_t generation;
-  };
-  static const auto identities = [] {
-    std::map<CanonicalTypeId, BuiltinIdentity> bindings;
-    const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
-    if (!manifest.ok()) return bindings;
-    for (const auto& datatype : manifest.manifest.descriptor_rows) {
-      const auto codec = dt::LookupDatatypeTypeCodecIdentityV1(
-          api::kBootstrapDatatypeCatalogUuid, api::kBootstrapDatatypeCatalogGeneration,
-          api::kBootstrapDatatypeRegistryGeneration, datatype.descriptor_uuid.value,
-          datatype.descriptor_epoch);
-      bindings.emplace(datatype.type_id, BuiltinIdentity{
-          datatype.descriptor_uuid.value,
-          codec.ok ? codec.row.type_uuid : datatype.descriptor_uuid.value,
-          datatype.descriptor_epoch});
-    }
-    return bindings;
-  }();
-  const auto identity = identities.find(CanonicalDescriptorTypeId(descriptor));
-  if (identity == identities.end()) return descriptor;
-  descriptor.descriptor_uuid = identity->second.descriptor_uuid;
-  descriptor.datatype_descriptor_uuid = identity->second.descriptor_uuid;
-  descriptor.datatype_descriptor_generation = identity->second.generation;
-  descriptor.type_uuid = identity->second.type_uuid;
+  const auto type = CanonicalDescriptorTypeId(descriptor);
+  for (const auto& identity : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row = identity.legacy_fields;
+    if (row.catalog_snapshot_uuid != cohort.catalog_snapshot_uuid ||
+        row.catalog_generation != cohort.catalog_generation ||
+        row.registry_generation != cohort.registry_generation ||
+        row.canonical_binary_type_code != static_cast<std::uint32_t>(type)) continue;
+    descriptor.descriptor_uuid = descriptor.datatype_descriptor_uuid = row.descriptor_uuid;
+    descriptor.datatype_descriptor_generation = row.descriptor_generation;
+    descriptor.type_uuid = row.type_uuid;
+    descriptor.datatype_cohort = cohort;
+    break;
+  }
   return descriptor;
 }
 
@@ -2216,6 +2209,36 @@ DescriptorBatch JoinDescriptorBatchesOnEqual(const DescriptorBatch& left,
   return output;
 }
 
+namespace {
+bool BindDerivedInt64Descriptor(const EngineDescriptor& source, EngineDescriptor* output,
+                               DescriptorRuntimeDiagnostic* diagnostic) {
+  ExecutionTypeDescriptor execution;
+  std::string detail;
+  if (!BoundExecutionTypeDescriptor(source, CanonicalDescriptorTypeId(source), &execution, &detail)) {
+    SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_DESCRIPTOR_INVALID", detail));
+    return false;
+  }
+  auto descriptor = MakeExecutorDescriptor("int64", "nullability=non_null", source.datatype_cohort);
+  if (!BoundExecutionTypeDescriptor(descriptor, CanonicalTypeId::int64, &execution, &detail)) {
+    SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_DESCRIPTOR_INVALID", detail));
+    return false;
+  }
+  *output = std::move(descriptor);
+  return true;
+}
+
+EngineTypedValue EncodeBoundInt64Value(std::int64_t value, const EngineDescriptor& descriptor) {
+  EngineTypedValue encoded;
+  encoded.descriptor = descriptor;
+  encoded.setState(EngineValueState::value);
+  const auto bits = static_cast<std::uint64_t>(value);
+  encoded.binary_value.resize(8);
+  for (unsigned byte = 0; byte < 8; ++byte)
+    encoded.binary_value[byte] = static_cast<std::uint8_t>(bits >> (byte * 8));
+  return encoded;
+}
+} // namespace
+
 DescriptorBatch AggregateDescriptorCountByInt64(const DescriptorBatch& input,
                                                 std::size_t group_column,
                                                 std::string count_stable_name,
@@ -2259,11 +2282,14 @@ DescriptorBatch AggregateDescriptorCountByInt64(const DescriptorBatch& input,
     ++state.count;
   }
 
+  EngineDescriptor count_descriptor;
+  if (!BindDerivedInt64Descriptor(input.columns[group_column].descriptor, &count_descriptor, diagnostic)) return {};
   DescriptorBatch output;
-  output.columns = {input.columns[group_column], {std::move(count_stable_name), MakeExecutorDescriptor("int64", "nullability=non_null"), false}};
+  output.columns = {input.columns[group_column], {std::move(count_stable_name), std::move(count_descriptor), false}};
   output.rows.reserve(counts.size());
   for (const auto& [group_value, state] : counts) {
-    output.rows.push_back({{*state.representative, EncodeInt64Value(state.count)}});
+    auto count = EncodeBoundInt64Value(state.count, output.columns.back().descriptor);
+    output.rows.push_back({{*state.representative, std::move(count)}});
   }
   SetDiagnostic(diagnostic, OkDiagnostic());
   return output;
@@ -2273,6 +2299,8 @@ DescriptorBatch AggregateDescriptorCountByKey(const DescriptorBatch& input,
                                               std::size_t group_column,
                                               std::string count_stable_name,
                                               DescriptorRuntimeDiagnostic* diagnostic) {
+  DescriptorRuntimeDiagnostic local_diagnostic;
+  if (diagnostic == nullptr) diagnostic = &local_diagnostic;
   const auto valid = ValidateDescriptorBatch(input);
   if (!valid.ok) {
     SetDiagnostic(diagnostic, valid);
@@ -2313,12 +2341,15 @@ DescriptorBatch AggregateDescriptorCountByKey(const DescriptorBatch& input,
     ++state.count;
   }
 
+  EngineDescriptor count_descriptor;
+  if (!BindDerivedInt64Descriptor(input.columns[group_column].descriptor, &count_descriptor, diagnostic)) return {};
   DescriptorBatch output;
-  output.columns = {input.columns[group_column], {std::move(count_stable_name), MakeExecutorDescriptor("int64", "nullability=non_null"), false}};
+  output.columns = {input.columns[group_column], {std::move(count_stable_name), std::move(count_descriptor), false}};
   output.rows.reserve(counts.size());
   for (const auto& [key, state] : counts) {
     (void)key;
-    output.rows.push_back({{state.representative, EncodeInt64Value(state.count)}});
+    auto count = EncodeBoundInt64Value(state.count, output.columns.back().descriptor);
+    output.rows.push_back({{state.representative, std::move(count)}});
   }
   SetDiagnostic(diagnostic, OkDiagnostic());
   return output;
@@ -2329,17 +2360,22 @@ DescriptorBatch WindowDescriptorRowNumberByInt64(const DescriptorBatch& input,
                                                  std::string row_number_stable_name,
                                                  bool ascending,
                                                  DescriptorRuntimeDiagnostic* diagnostic) {
+  DescriptorRuntimeDiagnostic local_diagnostic;
+  if (diagnostic == nullptr) diagnostic = &local_diagnostic;
   auto sorted = SortDescriptorBatchByColumn(input, order_column, ascending, diagnostic);
-  if (diagnostic != nullptr && !diagnostic->ok) { return {}; }
+  if (order_column >= input.columns.size() || (diagnostic != nullptr && !diagnostic->ok)) { return {}; }
   if (sorted.rows.size() >
       static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
     SetDiagnostic(diagnostic, ErrorDiagnostic(
         "SB_EXECUTOR_NUMERIC_OVERFLOW", "row number exceeds int64"));
     return {};
   }
-  sorted.columns.push_back({std::move(row_number_stable_name), MakeExecutorDescriptor("int64", "nullability=non_null"), false});
+  EngineDescriptor position_descriptor;
+  if (!BindDerivedInt64Descriptor(input.columns[order_column].descriptor, &position_descriptor, diagnostic)) return {};
+  sorted.columns.push_back({std::move(row_number_stable_name), std::move(position_descriptor), false});
   for (std::size_t row = 0; row < sorted.rows.size(); ++row) {
-    sorted.rows[row].values.push_back(EncodeInt64Value(static_cast<std::int64_t>(row + 1)));
+    auto position = EncodeBoundInt64Value(static_cast<std::int64_t>(row + 1), sorted.columns.back().descriptor);
+    sorted.rows[row].values.push_back(std::move(position));
   }
   SetDiagnostic(diagnostic, OkDiagnostic());
   return sorted;
@@ -3388,14 +3424,7 @@ Real64DecodeResult DecodeReal64Value(const EngineTypedValue& value) {
 }
 
 EngineTypedValue EncodeInt64Value(std::int64_t value) {
-  EngineTypedValue encoded;
-  encoded.descriptor = MakeExecutorDescriptor("int64", "nullability=non_null");
-  encoded.setState(EngineValueState::value);
-  const auto bits = static_cast<std::uint64_t>(value);
-  encoded.binary_value.resize(8);
-  for (unsigned byte = 0; byte < 8; ++byte)
-    encoded.binary_value[byte] = static_cast<std::uint8_t>(bits >> (byte * 8));
-  return encoded;
+  return EncodeBoundInt64Value(value, MakeExecutorDescriptor("int64", "nullability=non_null"));
 }
 
 EngineTypedValue EncodeBoolValue(bool value) {

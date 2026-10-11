@@ -3093,6 +3093,9 @@ struct DescriptorDomainPolicy {
 
 scratchbird::engine::internal_api::EngineDescriptor MakeExecutorDescriptor(std::string canonical_type_name,
                                                                            std::string encoded_descriptor = {});
+// Explicit representation cohort; this constructor does not admit a statement.
+scratchbird::engine::internal_api::EngineDescriptor MakeExecutorDescriptor(std::string canonical_type_name,
+    std::string encoded_descriptor, const scratchbird::engine::internal_api::EngineDatatypeCohort& cohort);
 scratchbird::engine::internal_api::EngineTypedValue MakeExecutorValue(
     const scratchbird::engine::internal_api::EngineDescriptor& descriptor,
     std::string encoded_value,
