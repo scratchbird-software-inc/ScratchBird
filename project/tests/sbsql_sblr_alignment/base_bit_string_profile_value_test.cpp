@@ -22,6 +22,7 @@ namespace dt = scratchbird::core::datatypes;
 namespace platform = scratchbird::core::platform;
 
 unsigned checks = 0;
+unsigned generation = 10;
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << "FAIL: " << message << '\n';
   std::exit(EXIT_FAILURE);
@@ -49,14 +50,15 @@ std::vector<platform::byte> Hex(std::string_view text) {
 }
 
 dt::BitStringAuthorityReceiptV3 Receipt() {
-  return {scratchbird::tests::FixtureUuid(9901, 1), dt::kDatatypeCohortV10,
-          10, 10};
+  return {scratchbird::tests::FixtureUuid(9901, 1),
+          generation == 10 ? dt::kDatatypeCohortV10 : dt::kDatatypeCohortV11,
+          generation, generation};
 }
 
 dt::BitStringDescriptorProfileV3 Profile(
     dt::BitStringSurfaceProfileKindV3 kind, std::uint32_t length) {
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV10, 10, 10,
+      Receipt().catalog_snapshot_uuid, generation, generation,
       scratchbird::tests::FixtureUuidLiteral(
           "019d0000-0000-7000-8000-00000000d829"),
       1);
@@ -102,16 +104,16 @@ void ProfilesAreExact() {
             varying_max.canonical_profile_material,
         "unqualified and varying(max) differ");
   CheckDigest(unqualified.profile_fingerprint,
-              "6b591a716ed950c86c2559ff1d81912ce9d60af9a19b4bb34263d722e35743e8",
+              generation == 10 ? "6b591a716ed950c86c2559ff1d81912ce9d60af9a19b4bb34263d722e35743e8" : "bbbd9fba73824eb3b7ba7ea66ba5530d4d88f5d6c911b21615fb7445061db690",
               "unqualified profile fingerprint drifted");
   CheckDigest(unqualified.comparison_cohort_fingerprint,
-              "e1860523736b5b688bfb921c3eac0e786d20b639683d6d51cd4ce1515e961c89",
+              generation == 10 ? "e1860523736b5b688bfb921c3eac0e786d20b639683d6d51cd4ce1515e961c89" : "903ff2109fa40d6fb97f5513b9e13713a28b56ef2d772e53a0d0bbd9e436a4aa",
               "unqualified cohort fingerprint drifted");
   CheckDigest(fixed8.profile_fingerprint,
-              "298a46e43a0cf8881b0c7e51777578b6aa4ae1025760e8a97ca43da2fcbc09f5",
+              generation == 10 ? "298a46e43a0cf8881b0c7e51777578b6aa4ae1025760e8a97ca43da2fcbc09f5" : "752ee2393ce5f2f1abed3bf1401e143d941ddeedbacd7339997a7bcc94676468",
               "fixed8 profile fingerprint drifted");
   CheckDigest(varying8.profile_fingerprint,
-              "3b739cffe573471aca8aac2cfbfd98eda2fab53ee9236cc50519fadc24e4faf4",
+              generation == 10 ? "3b739cffe573471aca8aac2cfbfd98eda2fab53ee9236cc50519fadc24e4faf4" : "bfe87398b3a14d3253bab8b354c3b53e78a053c78fbc2a4ddd7040a1d5b1a3f1",
               "varying8 profile fingerprint drifted");
 
   const auto decoded = dt::DecodeBitStringDescriptorProfileMaterialV3(
@@ -128,6 +130,30 @@ void ProfilesAreExact() {
   substituted.render.generation = 2;
   Check(!dt::ValidateBitStringDescriptorProfileV3(substituted).ok(),
         "substituted render policy was admitted");
+  for (std::size_t i = 0; i < unqualified.canonical_profile_material.size(); ++i) {
+    auto material = unqualified.canonical_profile_material;
+    material[i] ^= 0x80;
+    Check(!dt::DecodeBitStringDescriptorProfileMaterialV3(
+        Receipt(), unqualified.identity, material).ok(), "mutated profile octet admitted");
+  }
+  const auto invalid = [&](auto mutate) {
+    auto changed = unqualified;
+    mutate(changed);
+    Check(!dt::ValidateBitStringDescriptorProfileV3(changed).ok(),
+          "mutated receipt or native identity admitted");
+  };
+  invalid([](auto& p){ p.receipt.statement_receipt_uuid = {}; });
+  invalid([](auto& p){ p.receipt.catalog_snapshot_uuid.bytes[0] ^= 1; });
+  invalid([](auto& p){ ++p.receipt.catalog_generation; });
+  invalid([](auto& p){ ++p.receipt.registry_generation; });
+  invalid([](auto& p){ p.identity.native_fields.present = !p.identity.native_fields.present; });
+  invalid([](auto& p){ p.identity.native_fields.policy_profile_uuid.bytes[0] ^= 1; });
+  invalid([](auto& p){ ++p.identity.native_fields.policy_profile_generation; });
+  invalid([](auto& p){ p.identity.native_fields.profile_fingerprint_sha256[0] ^= 1; });
+  invalid([](auto& p){ p.identity.native_fields.canonical_value_variable_width = !p.identity.native_fields.canonical_value_variable_width; });
+  invalid([](auto& p){ ++p.identity.native_fields.canonical_value_minimum_bytes; });
+  invalid([](auto& p){ ++p.identity.native_fields.canonical_value_maximum_bytes; });
+  invalid([](auto& p){ ++p.identity.native_fields.canonical_value_transport_width; });
 }
 
 struct AcceptedVector {
@@ -423,7 +449,7 @@ void BoundsOwnershipAndAtomicity() {
                 Hex("4d9300e99759561a1adf3fd28eeb2faa55922c46a6ed6fa82e182c40113cb692"),
         "maximum canonical component hash drifted");
   Check(dt::HashBitStringValueV3(max_view).bytes ==
-            Hex("7dd37e8abfa3587147537577e141b45ab7f3fed8abf134bff9bacfd1ed32bfe2"),
+            Hex(generation == 10 ? "7dd37e8abfa3587147537577e141b45ab7f3fed8abf134bff9bacfd1ed32bfe2" : "40f2215a37f45f82fbafe8d79acecbd1269963089904582b1d21487d2bc1fead"),
         "maximum value hash drifted");
 
   std::array<bool, 4> concurrent_ok{};
@@ -467,9 +493,11 @@ void BoundsOwnershipAndAtomicity() {
 }  // namespace
 
 int main() {
-  ProfilesAreExact();
-  AcceptedAndNegativeVectors();
-  BoundsOwnershipAndAtomicity();
+  for (generation = 10; generation <= 11; ++generation) {
+    ProfilesAreExact();
+    AcceptedAndNegativeVectors();
+    BoundsOwnershipAndAtomicity();
+  }
   std::cout << "base.bit_string profile/value checks: " << checks << '\n';
   return EXIT_SUCCESS;
 }

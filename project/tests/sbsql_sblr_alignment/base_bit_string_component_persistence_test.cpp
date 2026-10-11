@@ -101,7 +101,70 @@ OracleResult CheckOracle(const dt::BitStringDescriptorProfileV3& profile,
   return OracleResult::ok;
 }
 }
+void SuccessorComponentReopen() {
+  const platform::Uuid descriptor{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x29}};
+  for (unsigned generation : {10u, 11u}) {
+    const auto snapshot = generation == 10 ? dt::kDatatypeCohortV10 : dt::kDatatypeCohortV11;
+    const auto identity = dt::LookupDatatypeTypeCodecIdentityV3(snapshot, generation, generation, descriptor, 1);
+    Require(identity.ok, "exact component identity");
+    for (auto kind : {dt::BitStringSurfaceProfileKindV3::unqualified,
+                      dt::BitStringSurfaceProfileKindV3::fixed,
+                      dt::BitStringSurfaceProfileKindV3::varying}) {
+      const auto built = dt::BuildBitStringDescriptorProfileV3(
+          {{Nonzero(9), snapshot, generation, generation}, identity.row, kind, 8});
+      Require(built.ok(), "exact component profile");
+      for (bool null : {false, true}) {
+        const auto component = null ? std::vector<platform::byte>{} : Hex("08000000a5");
+        const auto state = null ? dt::BitStringValueStateV3::sql_null : dt::BitStringValueStateV3::present;
+        const auto value = dt::DecodeCanonicalBitStringComponentNoAllocV3(built.profile, state, true, component);
+        Require(value.ok(), "exact component admission");
+        const auto frame = dt::EncodeBitStringSbdvalComposedV3(value.value, true);
+        Require(frame.ok(), "exact component frame");
+        const auto record = Oracle(built.profile, state, frame.bytes);
+        scratchbird::tests::OwnedTempDirectory directory;
+        const auto path = directory.path()/"bit-exact-cohort.test";
+        disk::FileDevice writer;
+        Require(writer.Open(path.string(), disk::FileOpenMode::create_new).ok(), "cohort file create");
+        auto written = writer.WriteAt(0, record.data(), record.size());
+        Require(written.ok() && written.bytes_transferred == record.size() &&
+                    writer.Sync().ok() && writer.Close().ok(), "cohort file write sync close");
+        disk::FileDevice reader;
+        Require(reader.Open(path.string(), disk::FileOpenMode::open_existing_read_only).ok(), "cohort reopen");
+        std::vector<platform::byte> restored(record.size());
+        auto read = reader.ReadAt(0, restored.data(), restored.size());
+        Require(read.ok() && read.bytes_transferred == restored.size() && reader.Close().ok() &&
+                    restored == record, "cohort file exact bytes");
+        // Reacquire independent receiving authority after the close/reopen.
+        const auto rebound = dt::BuildBitStringDescriptorProfileV3(
+            {{Nonzero(10), snapshot, generation, generation}, identity.row, kind, 8});
+        Require(rebound.ok() && CheckOracle(rebound.profile, restored) == OracleResult::ok,
+                "cohort receiving binding");
+        const auto decoded = dt::DecodeBitStringSbdvalComposedNoAllocV3(rebound.profile, true,
+            std::span<const platform::byte>(restored).subspan(200));
+        Require(decoded.ok() && decoded.value.state == state &&
+                    dt::EncodeCanonicalBitStringComponentV3(decoded.value).bytes == component,
+                "cohort exact canonical reopen");
+        const auto other_generation = generation == 10 ? 11u : 10u;
+        const auto other_snapshot = generation == 10 ? dt::kDatatypeCohortV11 : dt::kDatatypeCohortV10;
+        const auto other_identity = dt::LookupDatatypeTypeCodecIdentityV3(
+            other_snapshot, other_generation, other_generation, descriptor, 1);
+        const auto other = dt::BuildBitStringDescriptorProfileV3(
+            {{Nonzero(11), other_snapshot, other_generation, other_generation}, other_identity.row, kind, 8});
+        Require(other.ok() && CheckOracle(other.profile, restored) != OracleResult::ok,
+                "reopen silently relabeled cohort");
+        for (std::size_t i = 0; i < restored.size(); ++i) {
+          auto dirty = restored; dirty[i] ^= 0x80;
+          Require(CheckOracle(rebound.profile, dirty) != OracleResult::ok,
+                  "corrupt component record accepted");
+        }
+        directory.Cleanup();
+      }
+    }
+  }
+}
+
 int main() try {
+  SuccessorComponentReopen();
   Require(dt::kDatatypeBinaryPayloadChecksumV1Seed==1469598103934665603ull,"frozen seed");
   Require(dt::ComputeDatatypeBinaryPayloadChecksumV1(nullptr,0)==1469598103934665603ull,"empty checksum");
   Require(dt::kDatatypeBinaryPayloadChecksumV1Seed!=14695981039346656037ull,"nonstandard FNV terminology identity");

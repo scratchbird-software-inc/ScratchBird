@@ -305,6 +305,10 @@ struct BitStringCastRequestV3 {
   DatatypeCastContext context = DatatypeCastContext::implicit;
   bool target_null_allowed = true;
   BitStringExecutionControlV3 control;
+  // Required for a scalar endpoint, including typed NULL. Together with its
+  // binary descriptor UUID/epoch this resolves that peer's exact V3 identity.
+  // It is independent of the BIT receipt and never inferred from a name.
+  BitStringAuthorityReceiptV3 scalar_receipt;
 };
 
 struct BitStringCastResultV3 {
@@ -314,6 +318,7 @@ struct BitStringCastResultV3 {
   bool produced_bit_string = false;
   BitStringOwnedValueV3 bit_value;
   DatatypeOperationValue scalar_value;
+  BitStringAuthorityReceiptV3 scalar_receipt;
   bool ok() const noexcept { return status.ok(); }
 };
 BitStringCastResultV3 CastBitStringValueV3(

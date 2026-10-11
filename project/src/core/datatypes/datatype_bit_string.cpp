@@ -6,6 +6,7 @@
 #include "datatype_binary_view.hpp"
 #include "datatype_blob.hpp"
 #include "datatype_physical_encoding.hpp"
+#include "datatype_storage_identity.hpp"
 #include "../hash/hash_digest_parts.hpp"
 
 #include <algorithm>
@@ -31,8 +32,6 @@ using platform::Subsystem;
 
 constexpr platform::Uuid U(std::array<byte, 16> bytes) { return {bytes}; }
 
-inline constexpr platform::Uuid kSnapshot = U(
-    {0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x10});
 inline constexpr platform::Uuid kDescriptor = U(
     {0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd8,0x29});
 inline constexpr platform::Uuid kType = U(
@@ -238,8 +237,17 @@ bool ProfileValidNoAlloc(const BitStringDescriptorProfileV3& profile) noexcept {
 
 bool ExactReceipt(const BitStringAuthorityReceiptV3& receipt) noexcept {
   return !IsNil(receipt.statement_receipt_uuid) &&
-      receipt.catalog_snapshot_uuid == kSnapshot &&
-      receipt.catalog_generation == 10 && receipt.registry_generation == 10;
+      ((receipt.catalog_snapshot_uuid == kDatatypeCohortV10 &&
+        receipt.catalog_generation == 10 && receipt.registry_generation == 10) ||
+       (receipt.catalog_snapshot_uuid == kDatatypeCohortV11 &&
+        receipt.catalog_generation == 11 && receipt.registry_generation == 11));
+}
+
+bool SameCatalogReceipt(const BitStringAuthorityReceiptV3& a,
+                        const BitStringAuthorityReceiptV3& b) noexcept {
+  return a.catalog_snapshot_uuid == b.catalog_snapshot_uuid &&
+      a.catalog_generation == b.catalog_generation &&
+      a.registry_generation == b.registry_generation;
 }
 
 bool ExactExtraPolicies(const BitStringDescriptorProfileV3& p) noexcept {
@@ -446,10 +454,6 @@ std::size_t IntegerBytes(CanonicalTypeId id) noexcept {
   }
 }
 
-bool EngineUuidEqual(const scratchbird::engine::Uuid& a,
-                     const platform::Uuid& b) noexcept {
-  return std::equal(std::begin(a.bytes), std::end(a.bytes), b.bytes.begin());
-}
 bool EngineUuidNil(const scratchbird::engine::Uuid& value) noexcept {
   return std::all_of(std::begin(value.bytes), std::end(value.bytes),
                      [](byte b) { return b == 0; });
@@ -459,20 +463,27 @@ bool ExactScalarDescriptor(const scratchbird::engine::ExecutionTypeDescriptor& d
                            const BitStringAuthorityReceiptV3& receipt) noexcept {
   const auto canonical = LookupDatatypeDescriptor(id);
   if (!ExactReceipt(receipt) || !canonical.ok()) return false;
-  DatatypeCatalogManifestResult manifest;
+  platform::Uuid descriptor;
+  std::copy_n(std::begin(d.descriptor_uuid.bytes), 16, descriptor.bytes.begin());
+  // Resolve the supplied peer's exact binary binding, never the mutable head
+  // catalog or the BIT endpoint's receipt. Borrow codec rows on the hot path.
   try {
-    manifest = LoadCurrentCoreDatatypeCatalogManifest();
+    const auto* codec = FindDatatypeTypeCodecIdentityV3(
+        receipt.catalog_snapshot_uuid, receipt.catalog_generation,
+        receipt.registry_generation, descriptor, d.descriptor_epoch);
+    if (codec) {
+      if (codec->legacy_fields.canonical_binary_type_code != static_cast<u32>(id))
+        return false;
+    } else {
+      DatatypeStorageIdentityV3 storage;
+      if (!LookupDatatypeStorageIdentityV3(receipt.catalog_snapshot_uuid,
+              receipt.catalog_generation, receipt.registry_generation,
+              descriptor, d.descriptor_epoch, &storage) || storage.codec ||
+          storage.type_id != id) return false;
+    }
   } catch (...) {
     return false;
   }
-  if (!manifest.ok()) return false;
-  const auto catalog_row = LookupDatatypeCatalogRow(manifest.manifest, id);
-  if (!catalog_row.ok() || catalog_row.manifest.descriptor_rows.size() != 1)
-    return false;
-  const auto& live = catalog_row.manifest.descriptor_rows.front();
-  if (!live.descriptor_uuid.valid() || live.descriptor_epoch == 0 ||
-      !live.descriptor_authoritative)
-    return false;
   const bool length_parameterized = id == CanonicalTypeId::character;
   u64 expected_flags = 0;
   if (canonical.descriptor.default_precision != 0)
@@ -486,8 +497,6 @@ bool ExactScalarDescriptor(const scratchbird::engine::ExecutionTypeDescriptor& d
     expected_flags |= scratchbird::engine::ExecutionTypeModifierFlagBit(
         scratchbird::engine::ExecutionTypeModifierFlag::length);
   return
-      EngineUuidEqual(d.descriptor_uuid, live.descriptor_uuid.value) &&
-      d.descriptor_epoch == live.descriptor_epoch &&
       d.canonical_type_id == static_cast<u32>(id) &&
       d.family == static_cast<scratchbird::engine::ExecutionTypeFamily>(
           canonical.descriptor.family) &&
@@ -870,8 +879,8 @@ BitStringResultV3 BitStringSliceV3(
     const BitStringDescriptorProfileV3& target, bool null_allowed,
     u64 start, u64 count, const BitStringExecutionControlV3& control) noexcept {
   auto checked = ValidateFor<BitStringResultV3>(value, null_allowed); if (!checked.ok()) return checked;
-  const auto target_ok = ValidateBitStringDescriptorProfileV3(target);
-  if (!target_ok.ok() || target.fixed_length ||
+  if (!ProfileValidNoAlloc(target) ||
+      !SameCatalogReceipt(value.profile->receipt, target.receipt) || target.fixed_length ||
       target.length_bits != kBitStringMaximumLogicalBitsV3)
     return Failure<BitStringResultV3>("CTB.BIT.OPERATION_INCOMPATIBLE",
                                       "slice_target_profile_invalid");
@@ -1235,12 +1244,7 @@ BitStringCastResultV3 CastBitStringValueV3(
   if (from_bit == from_scalar || to_bit == to_scalar)
     return Failure<BitStringCastResultV3>("DATATYPE.CAST_FORBIDDEN",
                                           "cast_shape_invalid");
-  const auto receipt = from_bit
-      ? (request.bit_source->profile != nullptr
-             ? request.bit_source->profile->receipt
-             : BitStringAuthorityReceiptV3{})
-      : (request.bit_target != nullptr ? request.bit_target->receipt
-                                       : BitStringAuthorityReceiptV3{});
+  const auto& receipt = request.scalar_receipt;
   if (request.context != DatatypeCastContext::implicit &&
       request.context != DatatypeCastContext::assignment &&
       request.context != DatatypeCastContext::explicit_cast)
@@ -1264,7 +1268,7 @@ BitStringCastResultV3 CastBitStringValueV3(
     return Failure<BitStringCastResultV3>("CTB.BIT.DESCRIPTOR_INVALID",
                                           "scalar_source_identity_invalid");
   if (to_bit &&
-      !ValidateBitStringDescriptorProfileV3(*request.bit_target).ok())
+      !ProfileValidNoAlloc(*request.bit_target))
     return Failure<BitStringCastResultV3>("CTB.BIT.DESCRIPTOR_INVALID",
                                           "bit_target_invalid");
   if (to_scalar &&
@@ -1274,6 +1278,10 @@ BitStringCastResultV3 CastBitStringValueV3(
                                           "scalar_target_identity_invalid");
 
   if (from_bit && to_bit) {
+    if (!SameCatalogReceipt(request.bit_source->profile->receipt,
+                            request.bit_target->receipt))
+      return Failure<BitStringCastResultV3>("CTB.BIT.DESCRIPTOR_INVALID",
+                                            "catalog_migration_required");
     auto result = Success<BitStringCastResultV3>();
     result.produced_bit_string = true;
     const auto& source = *request.bit_source;
@@ -1459,13 +1467,24 @@ BitStringCastResultV3 CastBitStringValueV3(
   auto result = Success<BitStringCastResultV3>();
   result.category = DatatypeCastCategory::lossless_explicit;
   result.scalar_value.type_id = request.scalar_target;
-  result.scalar_value.descriptor = request.scalar_target_descriptor;
+  const auto publish_scalar = [&]() noexcept -> BitStringCastResultV3 {
+    // Stage owning presentation metadata after semantic admission. A failed
+    // copy discards the private value and cannot publish its receipt.
+    try {
+      result.scalar_value.descriptor = request.scalar_target_descriptor;
+    } catch (const std::bad_alloc&) {
+      return Failure<BitStringCastResultV3>("RESOURCE.BUDGET_EXCEEDED",
+          "scalar_descriptor_allocation_failed", ResourceStatus());
+    }
+    result.scalar_receipt = request.scalar_receipt;
+    return std::move(result);
+  };
   if (source.state == BitStringValueStateV3::sql_null) {
     if (!request.target_null_allowed)
       return Failure<BitStringCastResultV3>("DATATYPE.NULL_NOT_ADMITTED",
                                             "target_nonnullable");
     result.scalar_value.is_null = true;
-    return result;
+    return publish_scalar();
   }
   const auto source_valid = ValidateBitStringValueViewV3(source, true);
   if (!source_valid.ok())
@@ -1504,7 +1523,7 @@ BitStringCastResultV3 CastBitStringValueV3(
                                             "scalar_cast_allocation_failed",
                                             ResourceStatus());
     }
-    return result;
+    return publish_scalar();
   }
 
   if (source.logical_bit_count == 0)
@@ -1551,7 +1570,7 @@ BitStringCastResultV3 CastBitStringValueV3(
           static_cast<byte>(1u << (magnitude_index % 8u)));
     }
   }
-  return result;
+  return publish_scalar();
 }
 
 BitStringViewResultV3 DecodeBitStringSbdvalComposedNoAllocV3(

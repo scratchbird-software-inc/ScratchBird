@@ -10,9 +10,32 @@
 #include <array>
 #include <cstdlib>
 #include <iostream>
+#include <new>
 #include <string>
 #include <string_view>
 #include <vector>
+
+namespace {
+thread_local long allocation_failure_after = -1;
+thread_local std::size_t* allocation_counter = nullptr;
+thread_local unsigned allocation_faults = 0;
+}
+void* operator new(std::size_t size) {
+  if (allocation_counter) ++*allocation_counter;
+  if (allocation_failure_after == 0) {
+    allocation_failure_after = -1;
+    ++allocation_faults;
+    throw std::bad_alloc();
+  }
+  if (allocation_failure_after > 0) --allocation_failure_after;
+  if (auto* pointer = std::malloc(size ? size : 1)) return pointer;
+  throw std::bad_alloc();
+}
+void* operator new[](std::size_t size) { return ::operator new(size); }
+void operator delete(void* pointer) noexcept { std::free(pointer); }
+void operator delete(void* pointer, std::size_t) noexcept { std::free(pointer); }
+void operator delete[](void* pointer) noexcept { std::free(pointer); }
+void operator delete[](void* pointer, std::size_t) noexcept { std::free(pointer); }
 
 namespace {
 namespace dt = scratchbird::core::datatypes;
@@ -314,12 +337,21 @@ void Check(bool value, std::string_view message) {
   if (!value) Fail(message);
 }
 
+unsigned bit_generation = 10;
+unsigned scalar_generation = 10;
+dt::BitStringAuthorityReceiptV3 ScalarReceipt() {
+  return {scratchbird::tests::FixtureUuid(9902, 3),
+      scalar_generation == 10 ? dt::kDatatypeCohortV10 : dt::kDatatypeCohortV11,
+      scalar_generation, scalar_generation};
+}
+
 dt::BitStringDescriptorProfileV3 Profile(
     dt::BitStringSurfaceProfileKindV3 kind =
         dt::BitStringSurfaceProfileKindV3::unqualified,
     std::uint32_t length = dt::kBitStringMaximumLogicalBitsV3) {
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV10, 10, 10,
+      bit_generation == 10 ? dt::kDatatypeCohortV10 : dt::kDatatypeCohortV11,
+      bit_generation, bit_generation,
       scratchbird::tests::FixtureUuidLiteral(
           "019d0000-0000-7000-8000-00000000d829"), 1);
   Check(identity.ok &&
@@ -338,7 +370,9 @@ dt::BitStringDescriptorProfileV3 Profile(
   Check(!historical_profile.ok(),
         "d706 historical identity established a current bit profile");
   dt::BitStringAuthorityReceiptV3 receipt{
-      scratchbird::tests::FixtureUuid(9902, 1), dt::kDatatypeCohortV10, 10, 10};
+      scratchbird::tests::FixtureUuid(9902, 1),
+      bit_generation == 10 ? dt::kDatatypeCohortV10 : dt::kDatatypeCohortV11,
+      bit_generation, bit_generation};
   const auto profile = dt::BuildBitStringDescriptorProfileV3(
       {receipt, identity.row, kind, length});
   Check(profile.ok(), "bit profile construction failed");
@@ -739,7 +773,7 @@ void ComparisonHashAndKeys() {
         "stable value hash failed");
   const auto null_hash = dt::HashBitStringValueV3(null_value);
   Check(null_hash.ok() && null_hash.bytes ==
-            Hex("888ed669517b0e02c7c2b54aa15d9645bc2abbf71fa2cc8a73b35c85d5ffae17"),
+            Hex(bit_generation == 10 ? "888ed669517b0e02c7c2b54aa15d9645bc2abbf71fa2cc8a73b35c85d5ffae17" : "40704c86dacea0f26528ccd48f883ff0dd0af6445a5129d5742b07a0918d4129"),
         "sealed SQL NULL value hash drifted");
   const auto key = dt::MakeBitStringSortKeyV3(
       one, dt::BitStringSortDirectionV3::ascending,
@@ -762,7 +796,16 @@ void ComparisonHashAndKeys() {
     std::vector<platform::byte> packed=Pack(item.bits);
     dt::BitStringValueViewV3 value{&profile,item.is_null?dt::BitStringValueStateV3::sql_null:dt::BitStringValueStateV3::present,item.is_null?0u:static_cast<std::uint32_t>(item.bits.size()),item.is_null?std::span<const platform::byte>{}:std::span<const platform::byte>{packed},dt::BitStringOwnershipV3::borrowed};
       const auto actual=dt::MakeBitStringSortKeyV3(value,item.direction,item.null_mode);Check(actual.ok(),"one of 32 sort-key vectors was refused");
-      Check(actual.bytes == Hex(item.hex),
+      auto expected = Hex(item.hex);
+      if (bit_generation == 11) {
+        // Frozen key plus independently calculated successor binding.
+        const auto snapshot = Hex("01a1095ff20572d3abea15c6d41a4ad4");
+        std::copy(snapshot.begin(), snapshot.end(), expected.begin() + 8);
+        expected[24] = 11; expected[32] = 11;
+        const auto fingerprint = Hex("903ff2109fa40d6fb97f5513b9e13713a28b56ef2d772e53a0d0bbd9e436a4aa");
+        std::copy(fingerprint.begin(), fingerprint.end(), expected.begin() + 40);
+      }
+      Check(actual.bytes == expected,
             std::string(item.name) + " did not match exact sealed key bytes");
       const auto decoded_key=dt::DecodeBitStringSortKeyNoAllocV3(profile,actual.bytes);Check(decoded_key.ok()&&decoded_key.value.state==value.state,"one of 32 sort-key vectors did not decode");
       const std::size_t expected_size=104+(item.is_null?0:item.bits.size()+1);Check(actual.bytes.size()==expected_size,"sort-key vector extent drifted");
@@ -790,9 +833,28 @@ void ComparisonHashAndKeys() {
 
   struct HashVector { dt::BitStringSurfaceProfileKindV3 kind;std::uint32_t bound;std::string_view bits;std::string_view hash; };
   static constexpr HashVector hashes[]={{dt::BitStringSurfaceProfileKindV3::unqualified,1,"","a600d648dff45bdbe9f423d558fceb4b3663fab00b9f1a36896085c5bfe1feba"},{dt::BitStringSurfaceProfileKindV3::unqualified,1,"0","cd5ab73c4975a3406b2a98bca43c3bfb3b2b06cf01c57c1742e9094ccf638748"},{dt::BitStringSurfaceProfileKindV3::unqualified,1,"1","bbfa485e1176188263e8d8d82073d359fefe8d0cd53f2770fb4e00573619539a"},{dt::BitStringSurfaceProfileKindV3::unqualified,1,"10","807c77f36f260b934c72c266bc5ae6121a210218d8b7e0ccffcd8fcf4c8523a0"},{dt::BitStringSurfaceProfileKindV3::unqualified,1,"101","316fe4769d04474ec0e2116cc32c8b881efaa284618278c89792f737723febc0"},{dt::BitStringSurfaceProfileKindV3::unqualified,1,"1010","e83ebc7ce38b05b477d941fc0e21a1aa9991fe508fba3911095cb073b4c6f3fc"},{dt::BitStringSurfaceProfileKindV3::unqualified,1,"10101","89ad692cde042165d5951b59bd5b9ede37d4ae733d89e66439a6f5f2e9549d8f"},{dt::BitStringSurfaceProfileKindV3::unqualified,1,"101010","64bbd0c16d4eed3d594003a379adfdad3a0730503481475a4afc257f55f76eae"},{dt::BitStringSurfaceProfileKindV3::unqualified,1,"1010101","ee116c3379e611190e6fca46d74d07203be56e423db4281a8f4f2b052d935b4a"},{dt::BitStringSurfaceProfileKindV3::unqualified,1,"10101010","30828dcc8cc52283512eb3e5ffe29b0a1208cb0321e879cacc1c43ca3fec5a3f"},{dt::BitStringSurfaceProfileKindV3::unqualified,1,"101010101","86af072f7f04ff9a400c948248a32a0362de06384aacce31f4dfb02082fe251a"},{dt::BitStringSurfaceProfileKindV3::fixed,8,"10100000","087cd3501d15fbdec40fa81f5a55e05b19c244676f5a96da1f862c1e6a1f416e"},{dt::BitStringSurfaceProfileKindV3::fixed,8,"11001010","b7c634d48cf69234c148976c850b5a96724bc4c1849ccb5014d2d66577416e53"},{dt::BitStringSurfaceProfileKindV3::varying,8,"","6d2c5a1f57faafc9acb93a6e2dd6d3a7b52495df85a9b5439f681b0a0bbdffdf"},{dt::BitStringSurfaceProfileKindV3::varying,8,"00110101","d7de01118d3726a446bf24b5eaf573abf0f04f1538945442979ed60fdfe1ee9d"}};
-  for(const auto& fixture:hashes){auto p=Profile(fixture.kind,fixture.bound);auto packed=Pack(fixture.bits);dt::BitStringValueViewV3 value{&p,dt::BitStringValueStateV3::present,static_cast<std::uint32_t>(fixture.bits.size()),packed,dt::BitStringOwnershipV3::borrowed};const auto actual=dt::HashBitStringValueV3(value);Check(actual.ok()&&actual.bytes==Hex(fixture.hash),"sealed value-hash vector drifted");}
+  static constexpr std::string_view successor_hashes[] = {
+    "dd9f51c99839bb98e15eca539327b6a61ac09960e72a21c16c03393234cbe134",
+    "c317ef79f3e534d92f054f4858a7badb9b6343edac859e1fea38ef8b5e5a2f76",
+    "627871db1f563e613b6b29b4836d805a62a035aace935d609e04e0ab9e535d00",
+    "c3ed1bdd33641725f6b7504c2fceb87c1bdc9eb32d76672833ce9820e385cf4a",
+    "09e3826e2d5ca4ca90507f56cc33b2dbd6f1b4a68d2f3ee3ff180002125c4183",
+    "ac94ebe28f091764f3a836577185d2478381867d7f15d7507a1c995c1c596830",
+    "bbe52671cf32b245028f0bf49335a9b9e2737d4dcc33096f1d26762ed316868f",
+    "0732b1528bc6e685212798fab7ea5926bf101d059420e8fbe3229815da775881",
+    "f363dfc93f52eeab33853ade6f44a0a9c10b98ece099894a0d3d957aa5cb4739",
+    "0615eb72b713a7153d63cb20226b309f48c57c1a47c8380f421224b0aab56965",
+    "50c78e47d220a9c5efd831c8057a86905dd29722faf28ee1bcec6f1c40d13070",
+    "a2292078d6c814fb3f80be14cc9b656cc405c1bd6aae193c3ffddf63e49982de",
+    "6a596645a6c2284af501b7b9c1b23798a4aeb806bc3ce23a2cf49a386de735cb",
+    "241bd0ce7bc6dc99418b442466c8aeb078e22e7ae911c4b3cd3c56db41ac28c0",
+    "1e884ef367db6ca170599d8d018d0321c8daded50dd7a0fa8e4561ed996d4fe3",
+  };
+  static_assert(std::size(successor_hashes) == std::size(hashes));
+  std::size_t hash_index = 0;
+  for(const auto& fixture:hashes){auto p=Profile(fixture.kind,fixture.bound);auto packed=Pack(fixture.bits);dt::BitStringValueViewV3 value{&p,dt::BitStringValueStateV3::present,static_cast<std::uint32_t>(fixture.bits.size()),packed,dt::BitStringOwnershipV3::borrowed};const auto actual=dt::HashBitStringValueV3(value);Check(actual.ok()&&actual.bytes==Hex(bit_generation == 10 ? fixture.hash : successor_hashes[hash_index]),"sealed value-hash vector drifted");++hash_index;}
 
-  std::vector<platform::byte> maximum(2'097'152,0xff);dt::BitStringValueViewV3 maximum_value{&profile,dt::BitStringValueStateV3::present,dt::kBitStringMaximumLogicalBitsV3,maximum,dt::BitStringOwnershipV3::borrowed};const auto maximum_hash=dt::HashBitStringValueV3(maximum_value);Check(maximum_hash.ok()&&maximum_hash.bytes==Hex("7dd37e8abfa3587147537577e141b45ab7f3fed8abf134bff9bacfd1ed32bfe2"),"maximum value hash drifted");const auto maximum_key=dt::MakeBitStringSortKeyV3(maximum_value,dt::BitStringSortDirectionV3::ascending,dt::BitStringNullModeV3::nulls_first);Check(maximum_key.ok()&&maximum_key.bytes.size()==dt::kBitStringMaximumSortKeyBytesV3,"maximum SBBITK01 extent drifted");Check(dt::DecodeBitStringSortKeyNoAllocV3(profile,maximum_key.bytes).ok(),"maximum SBBITK01 did not decode allocation-free");
+  std::vector<platform::byte> maximum(2'097'152,0xff);dt::BitStringValueViewV3 maximum_value{&profile,dt::BitStringValueStateV3::present,dt::kBitStringMaximumLogicalBitsV3,maximum,dt::BitStringOwnershipV3::borrowed};const auto maximum_hash=dt::HashBitStringValueV3(maximum_value);Check(maximum_hash.ok()&&maximum_hash.bytes==Hex(bit_generation == 10 ? "7dd37e8abfa3587147537577e141b45ab7f3fed8abf134bff9bacfd1ed32bfe2" : "40f2215a37f45f82fbafe8d79acecbd1269963089904582b1d21487d2bc1fead"),"maximum value hash drifted");const auto maximum_key=dt::MakeBitStringSortKeyV3(maximum_value,dt::BitStringSortDirectionV3::ascending,dt::BitStringNullModeV3::nulls_first);Check(maximum_key.ok()&&maximum_key.bytes.size()==dt::kBitStringMaximumSortKeyBytesV3,"maximum SBBITK01 extent drifted");Check(dt::DecodeBitStringSortKeyNoAllocV3(profile,maximum_key.bytes).ok(),"maximum SBBITK01 did not decode allocation-free");
 }
 
 void CastsAndClosedRegistry() {
@@ -801,12 +863,28 @@ void CastsAndClosedRegistry() {
   auto varying8 = Profile(dt::BitStringSurfaceProfileKindV3::varying, 8);
   auto text = Scalar(dt::CanonicalTypeId::character, "0b101");
   dt::BitStringCastRequestV3 to_bit;
+  to_bit.scalar_receipt = ScalarReceipt();
   to_bit.scalar_source = &text;
   to_bit.bit_target = &profile;
   to_bit.context = dt::DatatypeCastContext::explicit_cast;
   auto cast = dt::CastBitStringValueV3(to_bit);
   Check(cast.ok() && IsBits(cast.bit_value, "101"),
         "strict character-to-bit cast failed");
+  for (bool null : {false, true}) {
+    auto source = null ? Scalar(dt::CanonicalTypeId::character, "", true) : text;
+    auto missing = to_bit;
+    missing.scalar_source = &source;
+    for (unsigned field = 0; field < 4; ++field) {
+      missing.scalar_receipt = ScalarReceipt();
+      if (field == 0) missing.scalar_receipt.statement_receipt_uuid = {};
+      if (field == 1) missing.scalar_receipt.catalog_snapshot_uuid.bytes[0] ^= 1;
+      if (field == 2) ++missing.scalar_receipt.catalog_generation;
+      if (field == 3) ++missing.scalar_receipt.registry_generation;
+      const auto refused = dt::CastBitStringValueV3(missing);
+      Check(!refused.ok() && refused.diagnostic.diagnostic_code == "CTB.BIT.DESCRIPTOR_INVALID" &&
+                refused.bit_value.packed_msb0.empty(), "invalid scalar receipt admitted");
+    }
+  }
   const auto expect_descriptor_refusal = [&](auto mutate,
                                              std::string_view message) {
     auto changed = text;
@@ -886,6 +964,7 @@ void CastsAndClosedRegistry() {
   dt::BitStringCastRequestV3 forbidden_dirty_cast;
   forbidden_dirty_cast.bit_source = &dirty_cast_source;
   forbidden_dirty_cast.scalar_target = dt::CanonicalTypeId::boolean;
+  forbidden_dirty_cast.scalar_receipt = ScalarReceipt();
   forbidden_dirty_cast.scalar_target_descriptor =
       Descriptor(dt::CanonicalTypeId::boolean);
   forbidden_dirty_cast.context = dt::DatatypeCastContext::explicit_cast;
@@ -902,11 +981,16 @@ void CastsAndClosedRegistry() {
   dt::BitStringCastRequestV3 to_integer;
   to_integer.bit_source = &bit5;
   to_integer.scalar_target = dt::CanonicalTypeId::uint64;
+  to_integer.scalar_receipt = ScalarReceipt();
   to_integer.scalar_target_descriptor = Descriptor(dt::CanonicalTypeId::uint64);
   to_integer.context = dt::DatatypeCastContext::explicit_cast;
   const auto integer_result = dt::CastBitStringValueV3(to_integer);
   std::uint64_t decoded = 0;
   Check(integer_result.ok() &&
+            integer_result.scalar_receipt.catalog_snapshot_uuid == ScalarReceipt().catalog_snapshot_uuid &&
+            integer_result.scalar_receipt.catalog_generation == scalar_generation &&
+            integer_result.scalar_receipt.registry_generation == scalar_generation &&
+            integer_result.scalar_receipt.statement_receipt_uuid == ScalarReceipt().statement_receipt_uuid &&
             dt::DecodeCanonicalUint64Value(
                 integer_result.scalar_value.encoded_value, &decoded) &&
             decoded == 5,
@@ -918,6 +1002,7 @@ void CastsAndClosedRegistry() {
       Scalar(dt::CanonicalTypeId::int8, std::move(negative_bytes));
   auto negative_request = to_bit;
   negative_request.scalar_source = &negative_integer;
+  negative_request.scalar_receipt = ScalarReceipt();
   negative_request.bit_target = &profile;
   negative_request.context = dt::DatatypeCastContext::explicit_cast;
   Check(dt::CastBitStringValueV3(negative_request)
@@ -933,6 +1018,7 @@ void CastsAndClosedRegistry() {
   dt::BitStringCastRequestV3 to_character;
   to_character.bit_source = &bit5;
   to_character.scalar_target = dt::CanonicalTypeId::character;
+  to_character.scalar_receipt = ScalarReceipt();
   to_character.scalar_target_descriptor = Descriptor(dt::CanonicalTypeId::character);
   to_character.context = dt::DatatypeCastContext::explicit_cast;
   Check(dt::CastBitStringValueV3(to_character).ok(),
@@ -973,6 +1059,7 @@ void CastsAndClosedRegistry() {
   for (const auto& source_integer : integer_sources) {
     dt::BitStringCastRequestV3 incoming;
     incoming.scalar_source=&source_integer;incoming.bit_target=&profile;
+    incoming.scalar_receipt=ScalarReceipt();
     incoming.context=dt::DatatypeCastContext::explicit_cast;
     const auto as_bits=dt::CastBitStringValueV3(incoming);
     Check(as_bits.ok()&&IsBits(as_bits.bit_value,"101"),"one of ten explicit integer-to-bit directions failed");
@@ -981,6 +1068,7 @@ void CastsAndClosedRegistry() {
     dt::BitStringCastRequestV3 outgoing;
     const auto as_bits_view=as_bits.bit_value.view();outgoing.bit_source=&as_bits_view;
     outgoing.scalar_target=source_integer.type_id;outgoing.scalar_target_descriptor=source_integer.descriptor;outgoing.context=dt::DatatypeCastContext::explicit_cast;
+    outgoing.scalar_receipt=ScalarReceipt();
     Check(dt::CastBitStringValueV3(outgoing).ok(),"one of ten explicit bit-to-integer directions failed");
     for(auto context:{dt::DatatypeCastContext::implicit,dt::DatatypeCastContext::assignment}){outgoing.context=context;Check(!dt::CastBitStringValueV3(outgoing).ok(),"bit-to-integer non-explicit context admitted");}
     integer_directions+=2;
@@ -1055,6 +1143,7 @@ void CastsAndClosedRegistry() {
         continue;
       }
       dt::BitStringCastRequestV3 request;
+      request.scalar_receipt = ScalarReceipt();
       request.context = contexts[context_index];
       if (source_is_bit)
         request.bit_source = &bit5;
@@ -1348,6 +1437,7 @@ void ResourceCancellationAndGenericRefusal() {
   dt::BitStringCastRequestV3 bit_to_character;
   bit_to_character.bit_source = &exact;
   bit_to_character.scalar_target = dt::CanonicalTypeId::character;
+  bit_to_character.scalar_receipt = ScalarReceipt();
   bit_to_character.scalar_target_descriptor =
       Descriptor(dt::CanonicalTypeId::character);
   bit_to_character.context = dt::DatatypeCastContext::explicit_cast;
@@ -1385,6 +1475,7 @@ void ResourceCancellationAndGenericRefusal() {
       Scalar(dt::CanonicalTypeId::character, std::move(large_text));
   dt::BitStringCastRequestV3 character_to_bit;
   character_to_bit.scalar_source = &large_character;
+  character_to_bit.scalar_receipt = ScalarReceipt();
   character_to_bit.bit_target = &profile;
   character_to_bit.context = dt::DatatypeCastContext::explicit_cast;
   character_to_bit.control.maximum_allocation_bytes = 8'191;
@@ -1470,13 +1561,94 @@ void ResourceCancellationAndGenericRefusal() {
 
 }  // namespace
 
+void ScalarOutputAllocationFailures() {
+  const auto profile = Profile();
+  for (bool null : {false, true}) {
+    std::vector<platform::byte> bytes;
+    auto source = View(profile, "101", &bytes);
+    if (null) { source.state = dt::BitStringValueStateV3::sql_null;
+                source.logical_bit_count = 0; source.packed_msb0 = {}; }
+    dt::BitStringCastRequestV3 request;
+    request.bit_source = &source;
+    request.scalar_target = dt::CanonicalTypeId::character;
+    request.scalar_target_descriptor = Descriptor(request.scalar_target);
+    request.scalar_target_descriptor.stable_name.assign(256, 'x');
+    request.scalar_receipt = ScalarReceipt();
+    request.context = dt::DatatypeCastContext::explicit_cast;
+    std::size_t allocations = 0;
+    allocation_counter = &allocations;
+    const auto measured = dt::CastBitStringValueV3(request);
+    allocation_counter = nullptr;
+    Check(measured.ok() && allocations > 0 && measured.scalar_value.is_null == null &&
+              measured.scalar_value.encoded_value == (null ? "" : "0b101") &&
+              measured.scalar_receipt.catalog_snapshot_uuid == request.scalar_receipt.catalog_snapshot_uuid,
+          "scalar allocation baseline");
+    for (std::size_t i = 0; i < allocations; ++i) {
+      allocation_faults = 0;
+      allocation_failure_after = static_cast<long>(i);
+      const auto failed = dt::CastBitStringValueV3(request);
+      allocation_failure_after = -1;
+      Check(allocation_faults == 1 && !failed.ok() &&
+                failed.diagnostic.diagnostic_code == "RESOURCE.BUDGET_EXCEEDED" &&
+                failed.scalar_value.encoded_value.empty() &&
+                failed.scalar_receipt.catalog_snapshot_uuid.is_nil() &&
+                failed.scalar_receipt.catalog_generation == 0 &&
+                failed.scalar_receipt.registry_generation == 0 &&
+                failed.bit_value.packed_msb0.empty(), "scalar allocation failure published output or lost resource cause");
+      Check(dt::CastBitStringValueV3(request).ok(), "scalar allocation fresh retry failed");
+    }
+  }
+}
+
+void CrossCohortPublicationRefusals() {
+  bit_generation = 10;
+  const auto a = Profile();
+  bit_generation = 11;
+  const auto b = Profile();
+  for (const auto* source : {&a, &b}) {
+    const auto* target = source == &a ? &b : &a;
+    for (bool null : {false, true}) {
+      std::vector<platform::byte> bytes;
+      auto value = View(*source, "101", &bytes);
+      if (null) { value.state = dt::BitStringValueStateV3::sql_null;
+                  value.logical_bit_count = 0; value.packed_msb0 = {}; }
+      const auto sliced = dt::BitStringSliceV3(value, *target, true, 0, null ? 0 : 1);
+      Check(!sliced.ok() && sliced.diagnostic.diagnostic_code == "CTB.BIT.OPERATION_INCOMPATIBLE" &&
+                sliced.value.packed_msb0.empty(), "slice silently migrated a cohort");
+      for (auto context : {dt::DatatypeCastContext::implicit, dt::DatatypeCastContext::assignment,
+                           dt::DatatypeCastContext::explicit_cast}) {
+        dt::BitStringCastRequestV3 request;
+        request.bit_source = &value; request.bit_target = target; request.context = context;
+        const auto cast = dt::CastBitStringValueV3(request);
+        Check(!cast.ok() && cast.diagnostic.diagnostic_code == "CTB.BIT.DESCRIPTOR_INVALID" &&
+                  cast.bit_value.packed_msb0.empty(), "cast silently migrated a cohort");
+      }
+      const auto key = dt::MakeBitStringSortKeyV3(value, dt::BitStringSortDirectionV3::ascending,
+          dt::BitStringNullModeV3::nulls_first);
+      Check(key.ok() && !dt::DecodeBitStringSortKeyNoAllocV3(*target, key.bytes).ok(),
+            "cross-cohort key admitted");
+      const auto component = dt::EncodeBitStringSbdvalComposedV3(value, true);
+      Check(component.ok(), "cohort component refused");
+      Check(!dt::CompareBitStringValuesV3(value,
+          {target, value.state, value.logical_bit_count, value.packed_msb0},
+          dt::BitStringComparisonModeV3::grouping).ok(), "mixed-cohort grouping admitted");
+    }
+  }
+}
+
 int main() {
-  Operations();
-  ComparisonHashAndKeys();
-  CastsAndClosedRegistry();
-  NativeBlobClosedPair();
-  ResourceCancellationAndGenericRefusal();
-  TypedMetricApi();
+  CrossCohortPublicationRefusals();
+  for (bit_generation = 10; bit_generation <= 11; ++bit_generation) {
+    ComparisonHashAndKeys();
+    Operations();
+    NativeBlobClosedPair();
+    TypedMetricApi();
+    for (scalar_generation = 10; scalar_generation <= 11; ++scalar_generation) {
+      ScalarOutputAllocationFailures();
+      CastsAndClosedRegistry();
+      ResourceCancellationAndGenericRefusal();
+    }
+  }
   std::cout << "base.bit_string operation/cast checks: " << checks << '\n';
   return EXIT_SUCCESS;
 }
