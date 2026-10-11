@@ -3791,31 +3791,35 @@ EngineExtractValueResult ExtractNativeDate(const EngineExtractValueRequest& requ
   };
   if (request.descriptors.size() != 1)
     return refuse("DATATYPE.DESCRIPTOR.INVALID", "date_extract_result_binding_required");
-  const auto output = request.descriptors.front();
-  const auto identity = dt::LookupDatatypeTypeCodecIdentityV3(
+  const auto& output = request.descriptors.front();
+  const EngineDatatypeCohort cohort{request.context.datatype_catalog_snapshot_uuid,
+      request.context.datatype_catalog_generation, request.context.datatype_registry_generation};
+  // Each endpoint must be bound to the request's exact cohort, even for NULL.
+  // Stable type UUIDs do not authorize rebinding an occurrence across cohorts.
+  if (input.descriptor.datatype_cohort != cohort)
+    return refuse("CTI.TEMPORAL.DESCRIPTOR_INVALID", "date_extract_source_cohort_mismatch");
+  if (output.datatype_cohort != cohort)
+    return refuse("DATATYPE.DESCRIPTOR.INVALID", "date_extract_result_cohort_mismatch");
+  const auto* identity = dt::FindDatatypeTypeCodecIdentityV3(
       request.context.datatype_catalog_snapshot_uuid, request.context.datatype_catalog_generation,
       request.context.datatype_registry_generation, input.descriptor.datatype_descriptor_uuid,
       input.descriptor.datatype_descriptor_generation);
-  if (!identity.ok && identity.diagnostic_id == "RESOURCE.BUDGET_EXCEEDED")
-    return refuse("RESOURCE.BUDGET_EXCEEDED", "date_extract_identity_allocation_failed");
-  if (!identity.ok ||
-      identity.row.legacy_fields.type_uuid != input.descriptor.type_uuid)
+  if (identity == nullptr ||
+      identity->legacy_fields.type_uuid != input.descriptor.type_uuid)
     return refuse("CTI.TEMPORAL.DESCRIPTOR_INVALID", "date_extract_exact_cohort_required");
-  const auto result_identity = dt::LookupDatatypeTypeCodecIdentityV3(
+  const auto* result_identity = dt::FindDatatypeTypeCodecIdentityV3(
       request.context.datatype_catalog_snapshot_uuid, request.context.datatype_catalog_generation,
       request.context.datatype_registry_generation, output.datatype_descriptor_uuid,
       output.datatype_descriptor_generation);
-  if (!result_identity.ok && result_identity.diagnostic_id == "RESOURCE.BUDGET_EXCEEDED")
-    return refuse("RESOURCE.BUDGET_EXCEEDED", "date_extract_result_identity_allocation_failed");
-  if (!result_identity.ok || result_identity.row.legacy_fields.type_uuid != output.type_uuid ||
-      result_identity.row.legacy_fields.canonical_binary_type_code !=
+  if (result_identity == nullptr || result_identity->legacy_fields.type_uuid != output.type_uuid ||
+      result_identity->legacy_fields.canonical_binary_type_code !=
           static_cast<std::uint32_t>(dt::CanonicalTypeId::int32))
     return refuse("DATATYPE.DESCRIPTOR.INVALID", "date_extract_result_cohort_invalid");
   engine::ExecutionTypeDescriptor source_execution, result_execution;
   std::string detail;
   if (!QowBoundExecutionTypeDescriptorV1(input.descriptor, dt::CanonicalTypeId::date,
           &source_execution, &detail) ||
-      !dt::ValidateDateExecutionDescriptorV3(source_execution, identity.row).ok())
+      !dt::ValidateDateExecutionDescriptorV3(source_execution, *identity).ok())
     return refuse("CTI.TEMPORAL.DESCRIPTOR_INVALID", "date_extract_descriptor_invalid");
   if (output.canonical_type_name != "int32" || !output.charset_uuid.is_nil() ||
       !output.collation_uuid.is_nil() ||
@@ -3834,7 +3838,7 @@ EngineExtractValueResult ExtractNativeDate(const EngineExtractValueRequest& requ
     for (const auto& [name, uuid] : fields.identities) {
       if (name == "type_uuid" && uuid == descriptor.type_uuid) continue;
       if (name == "datatype_descriptor_uuid" && uuid == descriptor.datatype_descriptor_uuid) continue;
-      if (date && name == "codec_uuid" && uuid == identity.row.legacy_fields.codec_uuid) continue;
+      if (date && name == "codec_uuid" && uuid == identity->legacy_fields.codec_uuid) continue;
       return false;
     }
     for (const auto& [name, value] : fields.text) {
@@ -3845,10 +3849,10 @@ EngineExtractValueResult ExtractNativeDate(const EngineExtractValueRequest& requ
       if (name == "datatype_descriptor_generation" &&
           value == std::to_string(descriptor.datatype_descriptor_generation)) continue;
       if (date && name == "codec_generation" &&
-          value == std::to_string(identity.row.legacy_fields.codec_generation)) continue;
+          value == std::to_string(identity->legacy_fields.codec_generation)) continue;
       if (date && name == "codec_version" &&
-          value == std::to_string(identity.row.legacy_fields.codec_version)) continue;
-      if (date && name == "codec_id" && value == identity.row.legacy_fields.codec_id) continue;
+          value == std::to_string(identity->legacy_fields.codec_version)) continue;
+      if (date && name == "codec_id" && value == identity->legacy_fields.codec_id) continue;
       return false;
     }
     return true;
@@ -3857,12 +3861,12 @@ EngineExtractValueResult ExtractNativeDate(const EngineExtractValueRequest& requ
     return refuse("CTI.TEMPORAL.DESCRIPTOR_INVALID", "date_extract_metadata_invalid");
   if (!metadata_valid(output, false, result_execution))
     return refuse("DATATYPE.DESCRIPTOR.INVALID", "date_extract_result_metadata_invalid");
-  const auto& row = identity.row.legacy_fields;
+  const auto& row = identity->legacy_fields;
   // The datatype receipt pins representation only; it is not an engine
   // statement receipt and must never grant catalog or transaction authority.
   const auto profile = dt::BuildDateValidatedProfileHandleV3(
       {row.catalog_snapshot_uuid, row.catalog_snapshot_uuid,
-       row.catalog_generation, row.registry_generation}, identity.row);
+       row.catalog_generation, row.registry_generation}, *identity);
   if (!profile.ok()) return refuse(std::string(profile.diagnostic.diagnostic_code),
                                    std::string(profile.diagnostic.detail));
   if (!((input.state == EngineValueState::value && !input.is_null) ||

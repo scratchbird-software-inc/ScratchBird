@@ -13,7 +13,10 @@
 #include <stdexcept>
 
 long allocation_budget=-1;
+bool count_allocations=false;
+unsigned allocation_count=0;
 void* operator new(std::size_t n) {
+  if(count_allocations)++allocation_count;
   if(allocation_budget==0){allocation_budget=-1;throw std::bad_alloc();}
   if(allocation_budget>0)--allocation_budget;
   if(auto* p=std::malloc(n?n:1))return p;
@@ -39,16 +42,18 @@ api::EngineExtractValueRequest Request(unsigned cohort=10) {
   r.context.datatype_catalog_snapshot_uuid=cohort==11
       ? scratchbird::tests::FixtureUuidLiteral("01a1095f-f205-72d3-abea-15c6d41a4ad4")
       : scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d710");
-  if(cohort>=7 && cohort<=9) r.context.datatype_catalog_snapshot_uuid.bytes[15]=cohort;
+  if(cohort>=4 && cohort<=9) r.context.datatype_catalog_snapshot_uuid.bytes[15]=cohort;
   r.context.datatype_catalog_generation=cohort;r.context.datatype_registry_generation=cohort;
-  r.input_value.descriptor=exec::MakeExecutorDescriptor("date","nullability=nullable");
+  const api::EngineDatatypeCohort binding_cohort{r.context.datatype_catalog_snapshot_uuid,
+      r.context.datatype_catalog_generation,r.context.datatype_registry_generation};
+  r.input_value.descriptor=exec::MakeExecutorDescriptor("date","nullability=nullable",binding_cohort);
   r.input_value.descriptor.descriptor_kind="scalar";
   api::CatalogColumnMetadata fields;
   fields.text={{"nullability","nullable"},{"codec_generation","1"}};
   fields.identities["codec_uuid"]=scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d81d");
   Check(api::EncodeCatalogColumnMetadata(fields,&r.input_value.descriptor.encoded_descriptor),"encode DATE metadata");
   r.input_value.binary_value=Bytes(0);r.field="year";
-  r.descriptors={exec::MakeExecutorDescriptor("int32","nullability=nullable")};
+  r.descriptors={exec::MakeExecutorDescriptor("int32","nullability=nullable",binding_cohort)};
   r.descriptors.front().descriptor_kind="scalar";
   return r;
 }
@@ -162,14 +167,60 @@ void Refusals() {
           "storage-only DATE receipt acquired semantic authority");
   }
 }
+void ExactEndpointCohorts() {
+  for(unsigned admitted:{7u,8u,9u,10u,11u})for(unsigned foreign:{5u,7u,8u,9u,10u,11u}) {
+    if(admitted==foreign)continue;
+    auto other=Request(foreign);
+    // D705 is storage-only for DATE, but has a valid identity row. It cannot
+    // obtain another cohort's semantics by leaving its outer descriptor stale.
+    for(bool target:{false,true})for(bool null:{false,true}) {
+      auto r=Request(admitted);
+      if(target)r.descriptors[0].datatype_cohort=other.descriptors[0].datatype_cohort;
+      else r.input_value.descriptor.datatype_cohort=other.input_value.descriptor.datatype_cohort;
+      if(null){r.input_value.binary_value.clear();r.input_value.setState(api::EngineValueState::sql_null);}
+      unsigned callbacks=0;
+      r.context.query_cancellation_requested=[&]{++callbacks;return false;};
+      const auto result=api::EngineExtractValue(r);
+      Check(!result.ok && result.value.binary_value.empty() && result.value.encoded_value.empty() &&
+            !result.diagnostics.empty() && result.diagnostics.front().code==
+                (target?"DATATYPE.DESCRIPTOR.INVALID":"CTI.TEMPORAL.DESCRIPTOR_INVALID") && callbacks==0,
+            "DATE extraction accepted a foreign endpoint cohort");
+    }
+  }
+  for(unsigned cohort:{7u,8u,9u,10u,11u})for(bool target:{false,true})
+    for(bool null:{false,true})for(unsigned mutation=0;mutation<4;++mutation) {
+      auto r=Request(cohort);
+      auto& binding=target?r.descriptors[0].datatype_cohort:r.input_value.descriptor.datatype_cohort;
+      switch(mutation) {
+        case 0: binding.catalog_snapshot_uuid={};break;
+        case 1: binding.catalog_snapshot_uuid.bytes[0]^=1;break;
+        case 2: ++binding.catalog_generation;break;
+        case 3: ++binding.registry_generation;break;
+      }
+      if(null){r.input_value.binary_value.clear();r.input_value.setState(api::EngineValueState::sql_null);}
+      const auto result=api::EngineExtractValue(r);
+      Check(!result.ok && result.value.state==api::EngineValueState::error &&
+            result.value.binary_value.empty() && result.value.encoded_value.empty() &&
+            !result.diagnostics.empty() && result.diagnostics.front().code==
+                (target?"DATATYPE.DESCRIPTOR.INVALID":"CTI.TEMPORAL.DESCRIPTOR_INVALID"),
+            "DATE extraction ignored one endpoint cohort field");
+    }
+}
 void AllocationFailures() {
-  auto r=Request();const auto input=r.input_value;bool success=false;unsigned failures=0;
-  for(long budget=0;budget<500 && !success;++budget) {
+  auto r=Request();const auto input=r.input_value;
+  allocation_count=0;count_allocations=true;
+  const auto baseline=api::EngineExtractValue(r);
+  count_allocations=false;
+  const auto positions=allocation_count;
+  Check(baseline.ok && baseline.value.binary_value==Bytes(1970) && positions>1,
+        "DATE allocation baseline failed");
+  unsigned failures=0;
+  for(unsigned budget=0;budget<positions;++budget) {
     allocation_budget=budget;
     const auto result=api::EngineExtractValue(r);
     allocation_budget=-1;
-    if(result.ok){success=true;Check(result.value.binary_value==Bytes(1970),"DATE allocation sweep successful value");}
-    else {
+    Check(!result.ok,"DATE allocation failure was silently ignored");
+    {
       ++failures;
       const bool resource=!result.diagnostics.empty() &&
           (result.diagnostics.front().code=="DATATYPE.RESOURCE_EXHAUSTED" ||
@@ -184,7 +235,9 @@ void AllocationFailures() {
     Check(r.input_value.binary_value==input.binary_value && r.input_value.descriptor==input.descriptor,
           "DATE allocation failure changed source");
   }
-  Check(success && failures>1,"DATE allocation sweep incomplete");
+  Check(failures==positions,"DATE allocation sweep incomplete");
+  Expect(r,1970);
+  std::cout<<positions<<" independently measured DATE extraction allocation failures checked\n";
 }
-int main() try { Calendar();Refusals();AllocationFailures();std::cout<<checks<<" native DATE extraction checks passed\n"; }
+int main() try { ExactEndpointCohorts();Calendar();Refusals();AllocationFailures();std::cout<<checks<<" native DATE extraction checks passed\n"; }
 catch(const std::exception& e){allocation_budget=-1;std::cerr<<e.what()<<" after "<<checks<<" checks\n";return 1;}
