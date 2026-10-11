@@ -373,7 +373,10 @@ class PublicationBindingScope {
             context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
             context.datatype_registry_generation, value.datatype_descriptor_uuid,
             value.datatype_descriptor_generation, &column.datatype) ||
-        column.datatype.type_uuid != value.type_uuid)
+        column.datatype.type_uuid != value.type_uuid ||
+        value.datatype_cohort != EngineDatatypeCohort{
+            context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+            context.datatype_registry_generation})
       return refuse("sorted_index_datatype_authority_mismatch");
     const auto descriptor = core::uuid::MakeTypedUuid(core::platform::UuidKind::object,
                                                      column.datatype.descriptor_uuid);
@@ -679,8 +682,17 @@ inline bool EncodeOrderedIndexKey(std::string_view logical_key,
       }
     } else if (binding.datatype.type_id == core::datatypes::CanonicalTypeId::decimal_float) {
       if (!binding.datatype.codec ||
-          !core::datatypes::IsExactCanonicalDecimal128TypeCodecIdentityV1(binding.datatype.codec->legacy_fields)) {
+          !core::datatypes::IsExactRegisteredDatatypeTypeCodecIdentityV3(*binding.datatype.codec) ||
+          binding.datatype.codec->legacy_fields.canonical_binary_type_code !=
+              static_cast<std::uint32_t>(core::datatypes::CanonicalTypeId::decimal_float) ||
+          binding.datatype.codec->legacy_fields.comparison_profile !=
+              "decimal128_numeric_total_nan_last_v1") {
         *diagnostic = MakeInvalidRequestDiagnostic("mga.index_store", "sorted_index_decimal128_policy_unbound");
+        return false;
+      }
+      if (value.isSqlNull() && !binding.execution_descriptor.nullable_allowed) {
+        *diagnostic = MakeEngineApiDiagnostic("DATATYPE.NULL_NOT_ADMITTED",
+            "datatype.sort_key.rejected", "sorted_index_decimal128_null_not_admitted", true);
         return false;
       }
       if (!value.isSqlNull()) {

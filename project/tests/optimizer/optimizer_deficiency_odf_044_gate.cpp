@@ -605,6 +605,28 @@ void OrderedKeyAuthorityAndValueStates() {
   Require(!api::bound_index_key::BindOrderedIndexColumns(invalid_context, index, fixture.table_uuid,
                 &unchanged, &diagnostic) && unchanged.size() == columns.size(),
           "ODF-044 stale datatype cohort was accepted");
+  // Another fully registered cohort still cannot authorize the persisted
+  // column. Unlike an invalid generation, this reaches the outer-cohort
+  // equality guard after the native storage identity lookup succeeds.
+  for (const auto& cohort : {api::EngineDatatypeCohort{
+          scratchbird::core::datatypes::kDatatypeCohortV5, 5, 5},
+          api::EngineDatatypeCohort{scratchbird::core::datatypes::kDatatypeCohortV10, 10, 10}}) {
+    auto other = context;
+    other.datatype_catalog_snapshot_uuid = cohort.catalog_snapshot_uuid;
+    other.datatype_catalog_generation = cohort.catalog_generation;
+    other.datatype_registry_generation = cohort.registry_generation;
+    auto retained = columns;
+    Require(!api::bound_index_key::BindOrderedIndexColumns(other, index, fixture.table_uuid,
+                &retained, &diagnostic) &&
+            diagnostic.detail.ends_with("sorted_index_datatype_authority_mismatch") &&
+            retained.size() == columns.size() &&
+            retained.front().datatype.codec && columns.front().datatype.codec &&
+            retained.front().datatype.codec->legacy_fields.catalog_snapshot_uuid ==
+                columns.front().datatype.codec->legacy_fields.catalog_snapshot_uuid,
+            "ODF-044 valid foreign cohort acquired publication authority or changed output");
+  }
+  Require(api::bound_index_key::BindOrderedIndexColumns(context, index, fixture.table_uuid,
+                &unchanged, &diagnostic), "ODF-044 retry after foreign cohort refusal failed");
   std::string output = "unchanged";
   bool null_key = false;
   auto unbound = columns;
@@ -616,6 +638,9 @@ void OrderedKeyAuthorityAndValueStates() {
               output == "unchanged", "ODF-044 malformed logical key altered output");
   namespace dt = scratchbird::core::datatypes;
   const auto registry = dt::CurrentDatatypeTypeCodecIdentityRowsV1();
+  for (const auto& cohort : {api::EngineDatatypeCohort{dt::kDatatypeCohortV5, 5, 5},
+                            api::EngineDatatypeCohort{dt::kDatatypeCohortV10, 10, 10},
+                            api::EngineDatatypeCohort{dt::kDatatypeCohortV11, 11, 11}}) {
   for (const auto type : {dt::CanonicalTypeId::int32, dt::CanonicalTypeId::uuid,
                          dt::CanonicalTypeId::real128, dt::CanonicalTypeId::decimal,
                          dt::CanonicalTypeId::decimal_float}) {
@@ -624,8 +649,8 @@ void OrderedKeyAuthorityAndValueStates() {
     });
     Require(row != registry.end(), "ODF-044 canonical datatype fixture missing");
     api::bound_index_key::OrderedIndexColumn binding;
-    Require(dt::LookupDatatypeStorageIdentityV3(context.datatype_catalog_snapshot_uuid,
-                context.datatype_catalog_generation, context.datatype_registry_generation,
+    Require(dt::LookupDatatypeStorageIdentityV3(cohort.catalog_snapshot_uuid,
+                cohort.catalog_generation, cohort.registry_generation,
                 row->descriptor_uuid, row->descriptor_generation, &binding.datatype),
             "ODF-044 native datatype fixture authority missing");
     binding.descriptor = {platform::UuidKind::object, row->descriptor_uuid};
@@ -664,13 +689,31 @@ void OrderedKeyAuthorityAndValueStates() {
               key({one},{binding}) == key({equivalent},{binding}) &&
               key({zero},{binding}) == key({negative_zero},{binding}),
               "ODF-044 bound decimal128 numeric equivalence/order changed");
-      for (const auto invalid : {0,1,2,3,4}) {
+      Require(key({api::CrudStoredValue::SqlNull()}, {binding}) < key({negative}, {binding}),
+              "ODF-044 nullable decimal128 NULL ordering changed");
+      auto nonnullable = binding;
+      nonnullable.execution_descriptor.nullable_allowed = false;
+      for (const bool previous_null_key : {false, true}) {
+        output = "unchanged";
+        null_key = previous_null_key;
+        Require(!api::bound_index_key::EncodeOrderedIndexKey(
+                    api::EncodeStoredLogicalKey({api::CrudStoredValue::SqlNull()}),
+                    {nonnullable}, &output, &null_key, &diagnostic) &&
+                    diagnostic.code == "DATATYPE.NULL_NOT_ADMITTED" &&
+                    output == "unchanged" && null_key == previous_null_key,
+                "ODF-044 nonnullable decimal128 admitted NULL or changed output");
+      }
+      Require(key({one}, {nonnullable}) == key({one}, {binding}),
+              "ODF-044 PRESENT decimal128 nullability changed value ordering");
+      for (const auto invalid : {0,1,2,3,4,5,6}) {
         auto changed=binding;
         if (invalid==0) changed.datatype.codec.reset();
         if (invalid==1) changed.datatype.codec->legacy_fields.comparison_policy_uuid.bytes[0]^=1;
         if (invalid==2) ++changed.datatype.codec->legacy_fields.numeric_context_generation;
         if (invalid==3) changed.datatype.codec->legacy_fields.allow_special_values=false;
         if (invalid==4) changed.datatype.codec->legacy_fields.comparison_profile="decimal128_ieee_total_order_v1";
+        if (invalid==5) ++changed.datatype.codec->legacy_fields.registry_generation;
+        if (invalid==6) changed.datatype.codec->legacy_fields.codec_uuid.bytes[0]^=1;
         Require(!api::bound_index_key::EncodeOrderedIndexKey(api::EncodeStoredLogicalKey({one}),
                     {changed}, &output, &null_key, &diagnostic) && output=="unchanged",
                 "ODF-044 substituted decimal128 policy admitted or wrote output");
@@ -695,6 +738,7 @@ void OrderedKeyAuthorityAndValueStates() {
                   key({user_v4}, {binding}) < key({maximum}, {binding}),
               "ODF-044 UUID user data was text encoded or constrained to system UUIDv7");
     }
+  }
   }
   // Publication must validate all bound key batches before a valid prefix can
   // reserve sequence numbers, queue jobs, or leave durable memberships.
