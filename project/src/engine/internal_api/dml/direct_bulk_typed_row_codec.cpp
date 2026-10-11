@@ -844,8 +844,8 @@ bool DirectValidateNativeTemporalValue(const EngineTypedValue& typed,
 bool DirectPackTypedPayload(dt::CanonicalTypeId target_type,
                             const EngineTypedValue& typed,
                             std::vector<scratchbird::core::platform::byte>* out) {
-  if (target_type == dt::CanonicalTypeId::date || target_type == dt::CanonicalTypeId::time || target_type == dt::CanonicalTypeId::timestamp || target_type == dt::CanonicalTypeId::interval) {
-    if (!out || !DirectValidateNativeTemporalValue(typed, target_type)) return false;
+  if (DirectRequiresNativeProfile(target_type)) {
+    if (!out || !DirectValidateNativeProfileValue(typed, target_type)) return false;
     *out = typed.binary_value;
     return true;
   }
@@ -942,9 +942,9 @@ bool DirectPackTypedPayload(dt::CanonicalTypeId target_type,
 
 CrudStoredValue DirectStoredValueForColumn(
     const EngineTypedValue& typed, dt::CanonicalTypeId target_type) {
-  if (target_type == dt::CanonicalTypeId::date || target_type == dt::CanonicalTypeId::time || target_type == dt::CanonicalTypeId::timestamp || target_type == dt::CanonicalTypeId::interval) {
-    if (!DirectValidateNativeTemporalValue(typed, target_type))
-      throw std::invalid_argument("native temporal column requires an exact bound canonical component");
+  if (DirectRequiresNativeProfile(target_type)) {
+    if (!DirectValidateNativeProfileValue(typed, target_type))
+      throw std::invalid_argument("native column requires an exact profile-bound canonical component");
     return CrudTypedValuePayload(typed);
   }
   if (typed.isSqlNull() || typed.state != EngineValueState::value ||
@@ -966,9 +966,9 @@ scratchbird::storage::page::RowDataCell DirectPhysicalCellFromTypedValue(
   cell.column_ordinal = ordinal;
   dt::CanonicalTypeId target_type =
       dt::CanonicalTypeIdFromStableName(std::string(target_canonical_type_name));
-  if (target_type == dt::CanonicalTypeId::date || target_type == dt::CanonicalTypeId::time || target_type == dt::CanonicalTypeId::timestamp || target_type == dt::CanonicalTypeId::interval) {
-    if (!DirectValidateNativeTemporalValue(typed, target_type))
-      throw std::invalid_argument("native temporal physical component invalid");
+  if (DirectRequiresNativeProfile(target_type)) {
+    if (!DirectValidateNativeProfileValue(typed, target_type))
+      throw std::invalid_argument("native profile-bound physical component invalid");
     cell.value.type_id = target_type;
     cell.value.is_null = typed.isSqlNull();
     cell.value.payload = typed.binary_value;
@@ -1013,9 +1013,9 @@ scratchbird::storage::page::RowDataCell DirectPhysicalCellFromTypedValueWithPlan
     const DirectFixedWidthPayloadValidationColumnPlan& column_plan) {
   scratchbird::storage::page::RowDataCell cell;
   cell.column_ordinal = ordinal;
-  if (column_plan.target_type == dt::CanonicalTypeId::date || column_plan.target_type == dt::CanonicalTypeId::time || column_plan.target_type == dt::CanonicalTypeId::timestamp || column_plan.target_type == dt::CanonicalTypeId::interval) {
-    if (!DirectValidateNativeTemporalValue(typed, column_plan.target_type))
-      throw std::invalid_argument("native temporal planned physical component invalid");
+  if (DirectRequiresNativeProfile(column_plan.target_type)) {
+    if (!DirectValidateNativeProfileValue(typed, column_plan.target_type))
+      throw std::invalid_argument("native profile-bound planned physical component invalid");
     cell.value.type_id = column_plan.target_type;
     cell.value.is_null = typed.isSqlNull();
     cell.value.payload = typed.binary_value;
@@ -1096,9 +1096,9 @@ std::vector<scratchbird::storage::page::RowDataCell> DirectPhysicalCells(
       cell.column_ordinal = static_cast<std::uint16_t>(index + 1);
       retained_type = dt::CanonicalTypeIdFromStableName(column->canonical_type_name);
       // The receiver's owner must still validate these canonical components.
-      // A retained temporal value cannot masquerade as opaque BINARY to evade
-      // the profile-aware row codec. Non-temporal fallback behavior is unchanged.
-      if (retained_type == dt::CanonicalTypeId::date || retained_type == dt::CanonicalTypeId::time || retained_type == dt::CanonicalTypeId::timestamp || retained_type == dt::CanonicalTypeId::interval)
+      // A retained profile-bound value cannot masquerade as opaque BINARY to
+      // evade the receiving profile-aware row codec.
+      if (DirectRequiresNativeProfile(retained_type))
         cell.value.type_id = retained_type;
     }
     if (lob) {
@@ -1220,9 +1220,8 @@ std::string DirectFixedWidthTypedPayloadFailure(
   for (std::size_t field_index = 0; field_index < input_row.fields.size(); ++field_index) {
     const auto& typed = input_row.fields[field_index].second;
     const auto type = plan[field_index].target_type;
-    if ((type == dt::CanonicalTypeId::date || type == dt::CanonicalTypeId::time || type == dt::CanonicalTypeId::timestamp || type == dt::CanonicalTypeId::interval) &&
-        !DirectValidateNativeTemporalValue(typed, type))
-      return "typed_temporal_payload_invalid:" + plan[field_index].column_name;
+    if (DirectRequiresNativeProfile(type) && !DirectValidateNativeProfileValue(typed, type))
+      return "typed_profile_payload_invalid:" + plan[field_index].column_name;
     if (typed.isSqlNull()) {
       if (stats != nullptr) {
         ++stats->null_cells;

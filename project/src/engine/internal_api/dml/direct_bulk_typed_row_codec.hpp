@@ -27,6 +27,12 @@ namespace scratchbird::engine::internal_api::dml::detail {
 
 namespace dt = scratchbird::core::datatypes;
 
+constexpr bool DirectRequiresNativeProfile(dt::CanonicalTypeId type) noexcept {
+  return type == dt::CanonicalTypeId::date || type == dt::CanonicalTypeId::time ||
+      type == dt::CanonicalTypeId::timestamp || type == dt::CanonicalTypeId::interval ||
+      type == dt::CanonicalTypeId::bit_string;
+}
+
 struct DirectFixedWidthPayloadValidationColumnPlan {
   std::string column_name;
   std::string canonical_type_name;
@@ -90,6 +96,15 @@ bool DirectBuildBitStringPageColumn(
 bool DirectValidateNativeBitStringValue(
     const EngineTypedValue& typed, const EngineDescriptor* destination = nullptr,
     bool nullable = true, EngineApiDiagnostic* diagnostic = nullptr);
+
+inline bool DirectValidateNativeProfileValue(
+    const EngineTypedValue& typed, dt::CanonicalTypeId type,
+    const EngineDescriptor* destination = nullptr, bool nullable = true,
+    EngineApiDiagnostic* diagnostic = nullptr) {
+  return type == dt::CanonicalTypeId::bit_string
+      ? DirectValidateNativeBitStringValue(typed, destination, nullable, diagnostic)
+      : DirectValidateNativeTemporalValue(typed, type, destination, nullable, diagnostic);
+}
 
 CrudStoredValue DirectStoredValueForColumn(
     const EngineTypedValue& typed, dt::CanonicalTypeId target_type);

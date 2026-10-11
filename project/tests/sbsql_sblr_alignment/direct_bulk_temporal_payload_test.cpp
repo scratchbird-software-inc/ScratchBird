@@ -456,6 +456,39 @@ api::EngineTypedValue BitValue(unsigned generation, unsigned kind, bool nullable
   throw std::runtime_error("explicit BIT identity unavailable");
 }
 
+void BitCarrier(const api::EngineTypedValue& value, bool valid) {
+  constexpr auto type=dt::CanonicalTypeId::bit_string;
+  std::vector<std::uint8_t> packed{0x5A};
+  Check(bulk::DirectPackTypedPayload(type,value,&packed)==valid,"BIT pack admission disagrees");
+  Check(packed==(valid?value.binary_value:std::vector<std::uint8_t>{0x5A}),"BIT pack changed or lost bytes");
+  const auto plan=Plan(value);
+  api::EngineRowValue row;
+  row.fields.push_back({"v",value});
+  const auto validation=bulk::BuildDirectFixedWidthPayloadValidationPlan(plan,&row);
+  Check(bulk::DirectFixedWidthTypedPayloadFailure(row,validation).empty()==valid,
+        "planned BIT validator bypassed profile");
+  bool rejected=false;
+  try {
+    const auto retained=bulk::DirectStoredValueForColumn(value,type);
+    Check(valid && retained.isSqlNull()==value.isSqlNull() &&
+          retained.bytes==std::string(value.binary_value.begin(),value.binary_value.end()),"retained BIT changed bytes/state");
+    const auto cells=bulk::DirectPhysicalCells({{"v",retained}},&plan);
+    Check(cells.size()==1 && cells[0].value.type_id==type && cells[0].value.is_null==value.isSqlNull() &&
+          cells[0].value.payload==value.binary_value,"retained BIT lost concrete type/bytes/state");
+  } catch(const std::invalid_argument&) { rejected=true; }
+  Check(rejected!=valid,"retained BIT admission disagrees");
+  for(const auto* selected:{static_cast<const std::vector<bulk::DirectFixedWidthPayloadValidationColumnPlan>*>(nullptr),&validation}) {
+    rejected=false;
+    try {
+      const auto physical=bulk::DirectPhysicalCellsFromTypedInputRow(row,plan,selected);
+      Check(valid && physical.cells.size()==1 && physical.cells[0].value.type_id==type &&
+            physical.cells[0].value.is_null==value.isSqlNull() && physical.cells[0].value.payload==value.binary_value,
+            "typed BIT lost concrete type/bytes/state");
+    } catch(const std::invalid_argument&) { rejected=true; }
+    Check(rejected!=valid,"physical BIT admission disagrees");
+  }
+}
+
 void BitReceivers() {
   namespace page = scratchbird::storage::page;
   for (const unsigned generation : {10u,11u}) for (unsigned kind = 0; kind < 3; ++kind)
@@ -484,6 +517,7 @@ void BitReceivers() {
       for (const bool null : {false,true}) {
         auto sample=value;
         if(null) { sample.state=api::EngineValueState::sql_null; sample.binary_value.clear(); }
+        BitCarrier(sample,!null||nullable);
         Check(bulk::DirectValidateNativeBitStringValue(sample,nullptr,true,&diagnostic)==(!null||nullable),
               "BIT source state admission disagrees");
         Check(bulk::DirectValidateNativeBitStringValue(sample,&descriptor,nullable,&diagnostic)==(!null||nullable),
@@ -514,6 +548,7 @@ void BitReceivers() {
         // Ten bits with an all-zero tail is valid for variable BIT, so make
         // the alternate count exceed the complete carrier instead.
         if(mutation==3) invalid.binary_value[0]=17;
+        BitCarrier(invalid,false);
         Check(!bulk::DirectValidateNativeBitStringValue(invalid,&descriptor,nullable,&diagnostic),
               "malformed BIT carrier or authority admitted");
         if(mutation==0) Check(diagnostic.code=="CTB.BIT.CANONICAL_ENCODING_INVALID" && diagnostic.native_source,
