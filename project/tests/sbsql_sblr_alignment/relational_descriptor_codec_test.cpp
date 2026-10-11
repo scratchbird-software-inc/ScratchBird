@@ -5671,6 +5671,51 @@ void TestColumnDatatypeBinding() {
       Require(ok&&target==source&&allocations==before&&untouched,
               "registered V2 row decode allocated or lost cohort");
     }
+    const auto manifest=dt::LoadCurrentCoreDatatypeCatalogManifest();
+    Require(manifest.ok(),"storage-only column catalog unavailable");
+    unsigned storage_rows=0;
+    for(const auto& row:manifest.manifest.descriptor_rows) {
+      if(!row.descriptor_authoritative||row.type_id==dt::CanonicalTypeId::unknown||
+         dt::FindDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV11,11,11,
+                                            row.descriptor_uuid.value,row.descriptor_epoch))continue;
+      for(const unsigned generation:{10u,11u}) {
+        auto source=fixture;
+        source.datatype_descriptor_uuid=row.descriptor_uuid.value;
+        source.datatype_descriptor_generation=row.descriptor_epoch;
+        source.type_uuid=row.descriptor_uuid.value;
+        source.datatype_cohort={generation==10?dt::kDatatypeCohortV10:dt::kDatatypeCohortV11,generation,generation};
+        Bytes oracle{'S','B','D','T',2,0,80,0};
+        oracle.insert(oracle.end(),source.datatype_descriptor_uuid.bytes.begin(),source.datatype_descriptor_uuid.bytes.end());
+        Append(oracle,source.datatype_descriptor_generation,8);
+        oracle.insert(oracle.end(),source.type_uuid.bytes.begin(),source.type_uuid.bytes.end());
+        oracle.insert(oracle.end(),source.datatype_cohort.catalog_snapshot_uuid.bytes.begin(),source.datatype_cohort.catalog_snapshot_uuid.bytes.end());
+        Append(oracle,generation,8);Append(oracle,generation,8);
+        std::string bytes;
+        Require(api::EncodeMgaColumnDatatypeBinding(source,&bytes)&&Bytes(bytes.begin(),bytes.end())==oracle,
+                "storage-only V2 binding differs from independent binary oracle");
+        target=fixture;
+        const auto before=allocations;
+        fail_after=0;
+        const bool ok=api::DecodeMgaColumnDatatypeBinding(oracle,&target);
+        const bool untouched=fail_after==0;
+        fail_after=-1;
+        Require(ok&&target==source&&allocations==before&&untouched,
+                "storage-only V2 decode allocated or lost identity/cohort");
+        for(std::size_t offset=0;offset<oracle.size();++offset) {
+          auto bad=oracle;bad[offset]^=0x80;target=source;
+          const auto before_bad=allocations;
+          Require(!api::DecodeMgaColumnDatatypeBinding(bad,&target)&&target==source&&allocations==before_bad,
+                  "storage-only V2 corrupt binding admitted or changed output");
+        }
+        for(std::size_t extent=0;extent<oracle.size();++extent) {
+          target=source;
+          Require(!api::DecodeMgaColumnDatatypeBinding(std::span(oracle).first(extent),&target)&&target==source,
+                  "storage-only V2 truncation admitted or changed output");
+        }
+      }
+      ++storage_rows;
+    }
+    Require(storage_rows==51,"storage-only V2 catalog coverage changed");
   }
   const std::vector<std::pair<std::string, std::string>> fields{
       {"column.1.datatype_binding_v1", "not this column"},

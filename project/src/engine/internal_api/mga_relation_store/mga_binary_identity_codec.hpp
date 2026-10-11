@@ -6,6 +6,7 @@
 #include "mga_binary_fields.hpp"
 #include "../../../core/uuid/uuid.hpp"
 #include "../../../core/datatypes/datatype_type_codec_identity_v3.hpp"
+#include "../../../core/datatypes/datatype_storage_identity.hpp"
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -88,16 +89,30 @@ inline bool HasMgaBoundColumnIdentities(std::span<const EngineColumnDefinition> 
   }
   return true;
 }
+inline bool HasExactMgaColumnStorageIdentity(const EngineDatatypeCohort& cohort,
+    const EngineUuid& descriptor, std::uint64_t generation, const EngineUuid& type) noexcept {
+  try {
+    // Borrow value-codec rows: decoding must not copy their owned profile strings.
+    if (const auto* identity = core::datatypes::FindDatatypeTypeCodecIdentityV3(
+            cohort.catalog_snapshot_uuid, cohort.catalog_generation, cohort.registry_generation,
+            descriptor, generation)) return identity->legacy_fields.type_uuid == type;
+    core::datatypes::DatatypeStorageIdentityV3 storage;
+    return core::datatypes::LookupDatatypeStorageIdentityV3(
+        cohort.catalog_snapshot_uuid, cohort.catalog_generation, cohort.registry_generation,
+        descriptor, generation, &storage) && !storage.codec && storage.type_uuid == type;
+  } catch (...) {
+    // A representation probe grants no authority on registry/resource failure.
+    return false;
+  }
+}
 inline bool EncodeMgaColumnDatatypeBinding(const EngineDescriptor& value, std::string* output) {
   if (!output || !HasMgaColumnDatatypeBinding(value)) return false;
   const auto& cohort = value.datatype_cohort;
   const bool v2 = !cohort.catalog_snapshot_uuid.is_nil() ||
       cohort.catalog_generation != 0 || cohort.registry_generation != 0;
   if (v2) {
-    const auto* identity = core::datatypes::FindDatatypeTypeCodecIdentityV3(
-        cohort.catalog_snapshot_uuid, cohort.catalog_generation, cohort.registry_generation,
-        value.datatype_descriptor_uuid, value.datatype_descriptor_generation);
-    if (!identity || identity->legacy_fields.type_uuid != value.type_uuid) return false;
+    if (!HasExactMgaColumnStorageIdentity(cohort, value.datatype_descriptor_uuid,
+                                         value.datatype_descriptor_generation, value.type_uuid)) return false;
   }
   std::string staged(v2 ? "SBDT\x02\x00\x50\x00" : "SBDT\x01\x00\x30\x00", 8);
   staged.reserve(v2 ? 80 : 48);
@@ -132,10 +147,7 @@ inline bool DecodeMgaColumnDatatypeBinding(std::span<const std::uint8_t> bytes,
     if (!ReadBinaryEngineUuid(bytes, &cursor, &cohort.catalog_snapshot_uuid)) return false;
     for (auto* part : {&cohort.catalog_generation, &cohort.registry_generation})
       for (unsigned i = 0; i < 8; ++i) *part |= std::uint64_t(bytes[cursor++]) << (8 * i);
-    const auto* identity = core::datatypes::FindDatatypeTypeCodecIdentityV3(
-        cohort.catalog_snapshot_uuid, cohort.catalog_generation, cohort.registry_generation,
-        descriptor, generation);
-    if (!identity || identity->legacy_fields.type_uuid != type) return false;
+    if (!HasExactMgaColumnStorageIdentity(cohort, descriptor, generation, type)) return false;
   }
   // Do not copy/replace unrelated occurrence, shape or rendering metadata.
   output->datatype_descriptor_uuid = descriptor;
