@@ -9,9 +9,11 @@
 #include "wire/public_result_packet.hpp"
 #include "dml/direct_bulk_typed_row_codec.hpp"
 #include "engine/sblr/native_row_field.hpp"
+#include "engine/sblr/relational_descriptor_codec.hpp"
 #include "../support/exact_datatype_descriptor_fixture.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include <array>
+#include <algorithm>
 #include <bit>
 #include <iostream>
 #include <limits>
@@ -37,7 +39,122 @@ api::EngineTypedValue Value(dt::CanonicalTypeId type, unsigned width,
         static_cast<std::uint64_t>(number) >> (8 * byte)));
   return value;
 }
+void CheckBoundProjection(const api::EngineDescriptor& descriptor, bool expected,
+                          bool nullable, unsigned length = 0) {
+  const auto before = descriptor;
+  scratchbird::engine::ExecutionTypeDescriptor output;
+  output.descriptor_epoch = 999;
+  output.stable_name = "must be cleared on refusal";
+  output.length = 999;
+  std::string detail = "stale diagnostic";
+  const bool admitted = api::QowResolveBoundExecutionDescriptorV1(descriptor, &output, &detail);
+  if (admitted != expected) std::cerr << "projection: " << detail << '\n';
+  Check(admitted == expected && descriptor == before, "projection changed input or admission outcome");
+  if (expected) {
+    Check(detail.empty() && std::equal(std::begin(output.descriptor_uuid.bytes),
+        std::end(output.descriptor_uuid.bytes), descriptor.datatype_descriptor_uuid.bytes.begin()) &&
+        output.descriptor_epoch == descriptor.datatype_descriptor_generation &&
+        output.canonical_type_id == static_cast<unsigned>(dt::CanonicalTypeIdFromStableName(descriptor.canonical_type_name)) &&
+        output.nullable_allowed == nullable && output.length == length,
+        "projection lost exact descriptor, nullability or modifiers");
+  } else {
+    Check(!detail.empty() && std::all_of(std::begin(output.descriptor_uuid.bytes),
+        std::end(output.descriptor_uuid.bytes), [](auto byte) { return byte == 0; }) && output.descriptor_epoch == 0 &&
+        output.stable_name.empty() && output.length == 0 && output.canonical_type_id == 0,
+        "refused projection retained stale published output");
+  }
+}
+
+void CheckExplicitCohortProjection() {
+  for (unsigned generation : {5u, 10u, 11u}) {
+    const api::EngineDatatypeCohort cohort{
+        generation == 5 ? dt::kDatatypeCohortV5 : generation == 10 ? dt::kDatatypeCohortV10 : dt::kDatatypeCohortV11,
+        generation, generation};
+    for (const char* name : {"int32", "int64", "uint64", "real64", "uuid", "boolean", "text"}) {
+      for (bool nullable : {false, true}) {
+        auto valid = ex::MakeExecutorDescriptor(name,
+            nullable ? "nullability=nullable" : "nullability=non_null", cohort);
+        valid.descriptor_kind = "scalar";
+        CheckBoundProjection(valid, true, nullable);
+        for (unsigned mutation = 0; mutation < 14; ++mutation) {
+          auto invalid = valid;
+          switch (mutation) {
+            case 0: invalid.datatype_cohort = {}; break;
+            case 1: invalid.datatype_cohort.catalog_snapshot_uuid.bytes[0] ^= 1; break;
+            case 2: ++invalid.datatype_cohort.catalog_generation; break;
+            case 3: ++invalid.datatype_cohort.registry_generation; break;
+            case 4: invalid.datatype_descriptor_uuid.bytes[0] ^= 1; break;
+            case 5: ++invalid.datatype_descriptor_generation; break;
+            case 6: invalid.type_uuid.bytes[0] ^= 1; break;
+            case 7: invalid.descriptor_uuid = {}; break;
+            case 8: invalid.canonical_type_name = "unknown"; break;
+            case 9: invalid.encoded_descriptor = ""; break;
+            case 10: invalid.encoded_descriptor = "nullability=invalid"; break;
+            case 11: invalid.encoded_descriptor += ";nullable=true"; break;
+            case 12: invalid.encoded_descriptor += ";length=4294967296"; break;
+            case 13: invalid.encoded_descriptor += ";length=01"; break;
+          }
+          CheckBoundProjection(invalid, false, nullable);
+        }
+        valid.encoded_descriptor = nullable ? "nullable=true" : "nullable=false";
+        CheckBoundProjection(valid, true, nullable);
+      }
+    }
+    for (bool nullable : {false, true}) {
+      auto outer = ex::MakeExecutorDescriptor("text", "nullability=non_null", cohort);
+      outer.descriptor_kind = "scalar";
+      outer.collation_uuid = scratchbird::tests::FixtureUuid(32, 995);
+      const auto* identity = dt::FindDatatypeTypeCodecIdentityV3(cohort.catalog_snapshot_uuid,
+          cohort.catalog_generation, cohort.registry_generation,
+          outer.datatype_descriptor_uuid, outer.datatype_descriptor_generation);
+      Check(identity != nullptr, "TEXT test identity is missing");
+      const auto& fields = identity->legacy_fields;
+      api::RelationalTypeDescriptor frame;
+      frame.descriptor_id = 1;
+      frame.descriptor_uuid = outer.descriptor_uuid;
+      frame.type_uuid = outer.type_uuid;
+      frame.collation_uuid = outer.collation_uuid;
+      frame.width = 42;
+      frame.nullability = nullable ? api::RelationalNullability::kNullable : api::RelationalNullability::kNonNull;
+      frame.datatype_identity_authoritative = true;
+      frame.descriptor_generation = fields.descriptor_generation;
+      frame.type_generation = fields.type_generation;
+      frame.codec_id = fields.codec_id;
+      frame.codec_version = fields.codec_version;
+      frame.codec_generation = fields.codec_generation;
+      frame.statement_receipt_uuid = scratchbird::tests::FixtureUuid(32, 996);
+      frame.datatype_catalog_snapshot_uuid = cohort.catalog_snapshot_uuid;
+      frame.datatype_catalog_generation = cohort.catalog_generation;
+      frame.datatype_registry_generation = cohort.registry_generation;
+      for (unsigned mutation = 0; mutation < 11; ++mutation) {
+        auto candidate = frame;
+        auto descriptor = outer;
+        switch (mutation) {
+          case 1: candidate.datatype_catalog_snapshot_uuid.bytes[0] ^= 1; break;
+          case 2: ++candidate.datatype_catalog_generation; break;
+          case 3: ++candidate.datatype_registry_generation; break;
+          case 4: descriptor.datatype_cohort = generation == 5
+              ? api::EngineDatatypeCohort{dt::kDatatypeCohortV10, 10, 10}
+              : api::EngineDatatypeCohort{dt::kDatatypeCohortV5, 5, 5}; break;
+          case 5: ++candidate.descriptor_generation; break;
+          case 6: ++candidate.type_generation; break;
+          case 7: ++candidate.codec_version; break;
+          case 8: ++candidate.codec_generation; break;
+          case 9: candidate.codec_id += ".invalid"; break;
+          case 10: candidate.type_uuid.bytes[0] ^= 1; break;
+        }
+        std::vector<std::uint8_t> encoded;
+        Check(scratchbird::engine::sblr::EncodeRelationalTypeDescriptorV1(candidate, &encoded),
+              "TEXT fixture must be structurally valid before semantic admission");
+        descriptor.encoded_descriptor.assign(encoded.begin(), encoded.end());
+        CheckBoundProjection(descriptor, mutation == 0, nullable, 42);
+      }
+    }
+  }
+}
+
 int main() {
+  CheckExplicitCohortProjection();
   for (unsigned generation : {5u, 10u, 11u}) {
     const api::EngineDatatypeCohort cohort{
         generation == 5 ? dt::kDatatypeCohortV5 : generation == 10 ? dt::kDatatypeCohortV10 : dt::kDatatypeCohortV11,

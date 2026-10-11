@@ -9,7 +9,7 @@
 #include "query/expression_api.hpp"
 #include "query/historical_timestamp_scalar.hpp"
 #include "catalog/column_metadata_codec.hpp"
-#include "catalog/datatype_bootstrap_identity.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_descriptor.hpp"
@@ -182,16 +182,19 @@ bool QowBoundExecutionTypeDescriptorV1(
       descriptor.datatype_descriptor_generation == 0) {
     return refuse("bound scalar datatype descriptor identity is incomplete");
   }
-  auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      kBootstrapDatatypeCatalogUuid, kBootstrapDatatypeCatalogGeneration,
-      kBootstrapDatatypeRegistryGeneration,
+  const auto* identity = dt::FindDatatypeTypeCodecIdentityV3(
+      descriptor.datatype_cohort.catalog_snapshot_uuid,
+      descriptor.datatype_cohort.catalog_generation,
+      descriptor.datatype_cohort.registry_generation,
       descriptor.datatype_descriptor_uuid,
       descriptor.datatype_descriptor_generation);
-  if (!identity.ok || identity.row.type_uuid != descriptor.type_uuid ||
-      identity.row.descriptor_uuid != descriptor.datatype_descriptor_uuid ||
-      identity.row.descriptor_generation !=
+  if (!identity) return refuse("bound scalar datatype cohort is absent or not registered");
+  const auto& identity_fields = identity->legacy_fields;
+  if (identity_fields.type_uuid != descriptor.type_uuid ||
+      identity_fields.descriptor_uuid != descriptor.datatype_descriptor_uuid ||
+      identity_fields.descriptor_generation !=
           descriptor.datatype_descriptor_generation ||
-      identity.row.canonical_binary_type_code !=
+      identity_fields.canonical_binary_type_code !=
           static_cast<std::uint32_t>(type_id)) {
     return refuse("bound scalar datatype identity is not an exact admitted registry row");
   }
@@ -202,17 +205,14 @@ bool QowBoundExecutionTypeDescriptorV1(
     if (type_id != dt::CanonicalTypeId::character ||
         !QowDecodeCanonicalTextDescriptorV1(descriptor, &relational))
       return refuse("bound scalar descriptor metadata is not admitted column metadata or exact relational TEXT metadata");
-    identity = dt::LookupDatatypeTypeCodecIdentityV1(
-        relational.datatype_catalog_snapshot_uuid,
-        relational.datatype_catalog_generation, relational.datatype_registry_generation,
-        descriptor.datatype_descriptor_uuid, descriptor.datatype_descriptor_generation);
-    if (!identity.ok || identity.row.type_uuid != descriptor.type_uuid ||
-        identity.row.canonical_binary_type_code != static_cast<std::uint32_t>(type_id) ||
-        relational.descriptor_generation != identity.row.descriptor_generation ||
-        relational.type_generation != identity.row.type_generation ||
-        relational.codec_id != identity.row.codec_id ||
-        relational.codec_version != identity.row.codec_version ||
-        relational.codec_generation != identity.row.codec_generation ||
+    if (relational.datatype_catalog_snapshot_uuid != descriptor.datatype_cohort.catalog_snapshot_uuid ||
+        relational.datatype_catalog_generation != descriptor.datatype_cohort.catalog_generation ||
+        relational.datatype_registry_generation != descriptor.datatype_cohort.registry_generation ||
+        relational.descriptor_generation != identity_fields.descriptor_generation ||
+        relational.type_generation != identity_fields.type_generation ||
+        relational.codec_id != identity_fields.codec_id ||
+        relational.codec_version != identity_fields.codec_version ||
+        relational.codec_generation != identity_fields.codec_generation ||
         (relational.nullability != RelationalNullability::kNullable &&
          relational.nullability != RelationalNullability::kNonNull))
       return refuse("bound scalar descriptor metadata is not admitted column metadata or exact relational TEXT metadata");
