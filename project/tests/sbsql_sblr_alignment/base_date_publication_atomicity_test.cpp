@@ -1,5 +1,6 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
+#include "../support/temporal_profile_overlap_fixture.hpp"
 #include "datatype_date.hpp"
 #include <algorithm>
 #include <array>
@@ -259,6 +260,23 @@ void BatchAndLifetime(){auto shared=Profile();dt::DateOwnedValueV3 owned{shared,
 }
 void BorrowedSortKeyPublication() {
   auto profile = Profile();
+  for (const auto cohort : {dt::kDatatypeCohortV10, dt::kDatatypeCohortV11}) {
+    const auto generation = cohort == dt::kDatatypeCohortV10 ? 10u : 11u;
+    const auto* identity = dt::FindDatatypeTypeCodecIdentityV3(cohort, generation, generation,
+        profile->identity.legacy_fields.descriptor_uuid, 1);
+    Check(identity != nullptr, "profile overlap exact DATE row");
+    auto exact = dt::BuildDateValidatedProfileHandleV3({cohort, cohort, generation, generation}, *identity);
+    Check(exact.ok(), "profile overlap exact DATE profile");
+    for (bool borrowed : {false, true})
+      scratchbird::tests::CheckTemporalProfileStringOverlap(exact.profile, [borrowed](const auto& mutable_profile, p::byte* output) {
+        dt::DateOwnedValueV3 owned{mutable_profile, dt::DateValueStateV3::value, 0};
+        auto view = owned.view();
+        return borrowed ? dt::MakeDateSortKeyViewIntoNoAllocV3(view, dt::DateSortDirectionV3::ascending,
+            dt::DateNullModeV3::nulls_first, output, 104) :
+            dt::MakeDateSortKeyIntoNoAllocV3(owned, dt::DateSortDirectionV3::ascending,
+            dt::DateNullModeV3::nulls_first, output, 104);
+      });
+  }
   for (const auto day : {INT32_MIN, -1, 0, 1, INT32_MAX}) {
     for (const auto state : {dt::DateValueStateV3::value, dt::DateValueStateV3::sql_null}) {
       dt::DateOwnedValueV3 owned{profile, state, state == dt::DateValueStateV3::value ? day : 0};

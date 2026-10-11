@@ -5,6 +5,7 @@
 
 #include "datatype_binary_view.hpp"
 #include "datatype_physical_encoding.hpp"
+#include "datatype_identity_overlap.hpp"
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -262,6 +263,7 @@ bool RangesOverlap(const void* a, std::size_t a_size,
 bool OutputOverlapsProfile(const void* output, std::size_t bytes,
                            const TimeValidatedProfileHandleV3& profile) noexcept {
   return RangesOverlap(output, bytes, &profile, sizeof(profile)) ||
+      DatatypeIdentityStringStorageOverlaps(output, bytes, profile.identity.legacy_fields) ||
       RangesOverlap(output, bytes, profile.profile_material.data(), profile.profile_material.size()) ||
       RangesOverlap(output, bytes, profile.comparison_material.data(), profile.comparison_material.size());
 }

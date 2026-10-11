@@ -201,6 +201,11 @@ TimestampProfileResultV3 BuildTimestampValidatedProfileHandleV3(
 TimestampValidationResultV3 ValidateTimestampProfileHandleV3(
     const TimestampValidatedProfileHandleV3& profile,
     const TimestampExecutionControlV3& control = {}) noexcept;
+// Representation authority only; containing object/operation admission is
+// retained by the caller. Nullable and nonnullable concrete slots are valid.
+TimestampValidationResultV3 ValidateTimestampExecutionDescriptorV3(
+    const scratchbird::engine::ExecutionTypeDescriptor& descriptor,
+    const DatatypeTypeCodecIdentityRowV3& identity) noexcept;
 TimestampViewResultV3 ValidateTimestampValueViewV3(
     const TimestampValueViewV3& value, bool null_allowed = true) noexcept;
 TimestampViewResultV3 AdmitTimestampOperandV3(
@@ -368,6 +373,12 @@ TimestampBytesResultV3 MakeTimestampSortKeyV3(const TimestampOwnedValueV3& value
     const TimestampExecutionControlV3& control = {}) noexcept;
 TimestampNoAllocWriteResultV3 MakeTimestampSortKeyIntoNoAllocV3(
     const TimestampOwnedValueV3& value, TimestampSortDirectionV3 direction,
+    TimestampNullModeV3 null_mode, byte* output, u64 output_capacity,
+    const TimestampExecutionControlV3& control = {}) noexcept;
+// Borrowed profile must outlive this synchronous call. No allocation or
+// shared-owner acquisition; overlap/capacity/cancellation remain atomic.
+TimestampNoAllocWriteResultV3 MakeTimestampSortKeyViewIntoNoAllocV3(
+    const TimestampValueViewV3& value, TimestampSortDirectionV3 direction,
     TimestampNullModeV3 null_mode, byte* output, u64 output_capacity,
     const TimestampExecutionControlV3& control = {}) noexcept;
 TimestampSortKeyViewResultV3 DecodeTimestampSortKeyNoAllocV3(

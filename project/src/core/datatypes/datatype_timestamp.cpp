@@ -5,6 +5,7 @@
 
 #include "datatype_binary_view.hpp"
 #include "datatype_physical_encoding.hpp"
+#include "datatype_identity_overlap.hpp"
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -321,6 +322,7 @@ bool RangesOverlap(const void* a, std::size_t a_size,
 bool OutputOverlapsProfile(const void* output, std::size_t bytes,
                            const TimestampValidatedProfileHandleV3& profile) noexcept {
   return RangesOverlap(output, bytes, &profile, sizeof(profile)) ||
+      DatatypeIdentityStringStorageOverlaps(output, bytes, profile.identity.legacy_fields) ||
       RangesOverlap(output, bytes, profile.profile_material.data(), profile.profile_material.size()) ||
       RangesOverlap(output, bytes, profile.comparison_material.data(), profile.comparison_material.size());
 }
@@ -957,6 +959,16 @@ TimestampProfileResultV3 BuildTimestampValidatedProfileHandleV3(
   }
 }
 
+TimestampValidationResultV3 ValidateTimestampExecutionDescriptorV3(
+    const scratchbird::engine::ExecutionTypeDescriptor& descriptor,
+    const DatatypeTypeCodecIdentityRowV3& identity) noexcept {
+  if (!ExactReceipt(ReceiptForIdentity(identity)) || !ExactTimestampIdentity(identity) ||
+      !TimestampDescriptor(&descriptor, identity, descriptor.nullable_allowed))
+    return Failure<TimestampValidationResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+                                               "timestamp_execution_descriptor_invalid");
+  return Success<TimestampValidationResultV3>();
+}
+
 TimestampValidationResultV3 ValidateTimestampProfileHandleV3(
     const TimestampValidatedProfileHandleV3& profile,
     const TimestampExecutionControlV3& control) noexcept {
@@ -1316,7 +1328,81 @@ TimestampBytesResultV3 HashTimestampValueV3(
   return result;
 }
 
-TimestampNoAllocWriteResultV3 MakeTimestampSortKeyIntoNoAllocV3(const TimestampOwnedValueV3& value,TimestampSortDirectionV3 direction,TimestampNullModeV3 null_mode,byte* output,u64 capacity,const TimestampExecutionControlV3& control) noexcept {const auto checked=ValidateTimestampValueViewV3(value.view(),true);if(!checked.ok())return Failure<TimestampNoAllocWriteResultV3>(checked.diagnostic.diagnostic_code,checked.diagnostic.detail,checked.status);if(static_cast<unsigned>(direction)>1||static_cast<unsigned>(null_mode)>1)return Failure<TimestampNoAllocWriteResultV3>("CTI.TEMPORAL.INDEX_KEY_REFUSED","key_mode");const u64 extent=value.state==TimestampValueStateV3::sql_null?100:112;std::array<byte,112> staged{};ScopedClear clear(staged.data(),staged.size(),TimestampScrubClassV3::ordered_key_staging,control.observe_scrubbed,control.scrub_observer_context);if(output&&(RangesOverlap(output,extent,&value,sizeof(value))||RangesOverlap(output,extent,&control,sizeof(control))||OutputOverlapsProfile(output,extent,*value.profile)))return Failure<TimestampNoAllocWriteResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","key_overlap");if(capacity<extent||!output){auto r=Failure<TimestampNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED","key_capacity",ResourceStatus());r.bytes_required=extent;return r;}if(extent>control.maximum_allocation_bytes){auto r=Failure<TimestampNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED","key_budget",ResourceStatus());r.bytes_required=extent;return r;}std::memcpy(staged.data(),"SBTSPK01",8);PutUuid(staged.data()+8,value.profile->receipt.catalog_snapshot_uuid);StoreLittle64(staged.data()+24,value.profile->receipt.catalog_generation);StoreLittle64(staged.data()+32,value.profile->receipt.registry_generation);std::memcpy(staged.data()+40,value.profile->comparison_fingerprint.data(),32);PutPolicy(staged.data()+72,kOrderingPolicy);staged[96]=static_cast<byte>(direction);staged[97]=static_cast<byte>(null_mode);staged[98]=value.state==TimestampValueStateV3::value?1:(null_mode==TimestampNullModeV3::nulls_first?0:2);staged[99]=value.state==TimestampValueStateV3::value?12:0;if(value.state==TimestampValueStateV3::value){const std::int64_t sec=static_cast<std::int64_t>(value.civil_day)*86'400+static_cast<std::int64_t>(value.nanoseconds_since_midnight/1'000'000'000ull);u64 sortable=static_cast<u64>(sec)^0x8000000000000000ull;const u32 ns=static_cast<u32>(value.nanoseconds_since_midnight%1'000'000'000ull);for(unsigned i=0;i<8;++i)staged[100+i]=static_cast<byte>(sortable>>(56-i*8));for(unsigned i=0;i<4;++i)staged[108+i]=static_cast<byte>(ns>>(24-i*8));if(direction==TimestampSortDirectionV3::descending)for(unsigned i=100;i<112;++i)staged[i]=static_cast<byte>(~staged[i]);}if(Cancelled(control))return Failure<TimestampNoAllocWriteResultV3>("PROCESS.CANCELLED","before_publication");std::memcpy(output,staged.data(),extent);auto r=Success<TimestampNoAllocWriteResultV3>();r.bytes_required=extent;r.bytes_written=extent;r.containing_null=value.state==TimestampValueStateV3::sql_null;return r;}
+namespace {
+template <typename Source>
+TimestampNoAllocWriteResultV3 MakeTimestampSortKeyBoundIntoNoAllocV3(
+    const Source& source, const TimestampValueViewV3& value,
+    TimestampSortDirectionV3 direction, TimestampNullModeV3 null_mode,
+    byte* output, u64 capacity, const TimestampExecutionControlV3& control) noexcept {
+  const auto checked = ValidateTimestampValueViewV3(value, true);
+  if (!checked.ok())
+    return Failure<TimestampNoAllocWriteResultV3>(checked.diagnostic.diagnostic_code,
+                                                 checked.diagnostic.detail, checked.status);
+  if (static_cast<unsigned>(direction) > 1 || static_cast<unsigned>(null_mode) > 1)
+    return Failure<TimestampNoAllocWriteResultV3>("CTI.TEMPORAL.INDEX_KEY_REFUSED", "key_mode");
+  const u64 extent = value.state == TimestampValueStateV3::sql_null ? 100 : 112;
+  std::array<byte, 112> staged{};
+  ScopedClear clear(staged.data(), staged.size(), TimestampScrubClassV3::ordered_key_staging,
+                    control.observe_scrubbed, control.scrub_observer_context);
+  if (output && (RangesOverlap(output, extent, &source, sizeof(source)) ||
+                 RangesOverlap(output, extent, &value, sizeof(value)) ||
+                 RangesOverlap(output, extent, &control, sizeof(control)) ||
+                 OutputOverlapsProfile(output, extent, *value.profile)))
+    return Failure<TimestampNoAllocWriteResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID", "key_overlap");
+  if (capacity < extent || !output) {
+    auto result = Failure<TimestampNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED", "key_capacity", ResourceStatus());
+    result.bytes_required = extent;
+    return result;
+  }
+  if (extent > control.maximum_allocation_bytes) {
+    auto result = Failure<TimestampNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED", "key_budget", ResourceStatus());
+    result.bytes_required = extent;
+    return result;
+  }
+  std::memcpy(staged.data(), "SBTSPK01", 8);
+  PutUuid(staged.data() + 8, value.profile->receipt.catalog_snapshot_uuid);
+  StoreLittle64(staged.data() + 24, value.profile->receipt.catalog_generation);
+  StoreLittle64(staged.data() + 32, value.profile->receipt.registry_generation);
+  std::memcpy(staged.data() + 40, value.profile->comparison_fingerprint.data(), 32);
+  PutPolicy(staged.data() + 72, kOrderingPolicy);
+  staged[96] = static_cast<byte>(direction);
+  staged[97] = static_cast<byte>(null_mode);
+  staged[98] = value.state == TimestampValueStateV3::value ? 1 :
+      (null_mode == TimestampNullModeV3::nulls_first ? 0 : 2);
+  staged[99] = value.state == TimestampValueStateV3::value ? 12 : 0;
+  if (value.state == TimestampValueStateV3::value) {
+    const std::int64_t seconds = static_cast<std::int64_t>(value.civil_day) * 86'400 +
+        static_cast<std::int64_t>(value.nanoseconds_since_midnight / 1'000'000'000ull);
+    const u64 sortable = static_cast<u64>(seconds) ^ 0x8000000000000000ull;
+    const u32 fraction = static_cast<u32>(value.nanoseconds_since_midnight % 1'000'000'000ull);
+    for (unsigned i = 0; i < 8; ++i) staged[100+i] = static_cast<byte>(sortable >> (56-i*8));
+    for (unsigned i = 0; i < 4; ++i) staged[108+i] = static_cast<byte>(fraction >> (24-i*8));
+    if (direction == TimestampSortDirectionV3::descending)
+      for (unsigned i = 100; i < 112; ++i) staged[i] = static_cast<byte>(~staged[i]);
+  }
+  if (Cancelled(control))
+    return Failure<TimestampNoAllocWriteResultV3>("PROCESS.CANCELLED", "before_publication");
+  std::memcpy(output, staged.data(), extent);
+  auto result = Success<TimestampNoAllocWriteResultV3>();
+  result.bytes_required = extent;
+  result.bytes_written = extent;
+  result.containing_null = value.state == TimestampValueStateV3::sql_null;
+  return result;
+}
+}  // namespace
+
+TimestampNoAllocWriteResultV3 MakeTimestampSortKeyIntoNoAllocV3(
+    const TimestampOwnedValueV3& value, TimestampSortDirectionV3 direction,
+    TimestampNullModeV3 null_mode, byte* output, u64 capacity,
+    const TimestampExecutionControlV3& control) noexcept {
+  return MakeTimestampSortKeyBoundIntoNoAllocV3(value, value.view(), direction, null_mode, output, capacity, control);
+}
+TimestampNoAllocWriteResultV3 MakeTimestampSortKeyViewIntoNoAllocV3(
+    const TimestampValueViewV3& value, TimestampSortDirectionV3 direction,
+    TimestampNullModeV3 null_mode, byte* output, u64 capacity,
+    const TimestampExecutionControlV3& control) noexcept {
+  return MakeTimestampSortKeyBoundIntoNoAllocV3(value, value, direction, null_mode, output, capacity, control);
+}
 TimestampBytesResultV3 MakeTimestampSortKeyV3(
     const TimestampOwnedValueV3& value,
     TimestampSortDirectionV3 direction,

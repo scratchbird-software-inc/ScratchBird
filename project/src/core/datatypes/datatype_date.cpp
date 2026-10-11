@@ -6,6 +6,7 @@
 #include "admitted_datatype_cohort.hpp"
 #include "datatype_binary_view.hpp"
 #include "datatype_physical_encoding.hpp"
+#include "datatype_identity_overlap.hpp"
 
 #include <algorithm>
 #include <array>
@@ -311,15 +312,7 @@ bool OutputOverlapsString(const void* output, std::size_t output_bytes,
 bool OutputOverlapsIdentityBuffers(
     const void* output, std::size_t output_bytes,
     const DatatypeTypeCodecIdentityRowV3& identity) noexcept {
-  const auto& row = identity.legacy_fields;
-  return OutputOverlapsString(output, output_bytes, row.codec_id) ||
-      OutputOverlapsString(output, output_bytes, row.canonical_name) ||
-      OutputOverlapsString(output, output_bytes, row.canonical_byte_order) ||
-      OutputOverlapsString(output, output_bytes, row.canonical_representation) ||
-      OutputOverlapsString(output, output_bytes, row.canonical_charset) ||
-      OutputOverlapsString(output, output_bytes,
-                           row.invalid_encoding_diagnostic_id) ||
-      OutputOverlapsString(output, output_bytes, row.comparison_profile);
+  return DatatypeIdentityStringStorageOverlaps(output, output_bytes, identity.legacy_fields);
 }
 
 bool OutputOverlapsDescriptorBuffers(

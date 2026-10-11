@@ -9,6 +9,7 @@
 #include "datatype_storage_identity.hpp"
 #include "datatype_date.hpp"
 #include "datatype_time.hpp"
+#include "datatype_timestamp.hpp"
 #include "domain_support/domain_store.hpp"
 #include "mga_relation_store/stored_scalar_payload.hpp"
 #include "engine/executor/descriptor_value_runtime.hpp"
@@ -45,6 +46,7 @@ struct OrderedIndexColumn {
   engine::ExecutionTypeDescriptor execution_descriptor;
   std::optional<core::datatypes::DateValidatedProfileHandleV3> date_profile;
   std::optional<core::datatypes::TimeValidatedProfileHandleV3> time_profile;
+  std::optional<core::datatypes::TimestampValidatedProfileHandleV3> timestamp_profile;
   std::optional<DomainInheritedProfileResolution> inherited_domain;
 };
 
@@ -75,6 +77,21 @@ inline bool BindOrderedTimeProfile(OrderedIndexColumn* column) {
       {identity.catalog_snapshot_uuid,identity.catalog_snapshot_uuid,identity.catalog_generation,identity.registry_generation},row);
   if (!profile.ok()) return false;
   column->time_profile=std::move(profile.profile);
+  return true;
+}
+
+inline bool BindOrderedTimestampProfile(OrderedIndexColumn* column) {
+  namespace dt = core::datatypes;
+  if (!column || column->datatype.type_id != dt::CanonicalTypeId::timestamp ||
+      !column->datatype.codec) return false;
+  const auto& row = *column->datatype.codec;
+  if (!dt::ValidateTimestampExecutionDescriptorV3(column->execution_descriptor, row).ok()) return false;
+  const auto& identity = row.legacy_fields;
+  auto profile = dt::BuildTimestampValidatedProfileHandleV3(
+      {identity.catalog_snapshot_uuid, identity.catalog_snapshot_uuid,
+       identity.catalog_generation, identity.registry_generation}, row);
+  if (!profile.ok()) return false;
+  column->timestamp_profile = std::move(profile.profile);
   return true;
 }
 
@@ -120,6 +137,7 @@ inline bool BuildOrderedColumnExecutionDescriptor(
       type == core::datatypes::CanonicalTypeId::uuid ||
       type == core::datatypes::CanonicalTypeId::date ||
       type == core::datatypes::CanonicalTypeId::time ||
+      type == core::datatypes::CanonicalTypeId::timestamp ||
       type == core::datatypes::CanonicalTypeId::decimal) {
     if (!source.charset_uuid.is_nil() ||
         !source.collation_uuid.is_nil()) {
@@ -325,6 +343,9 @@ class PublicationBindingScope {
     if (column.datatype.type_id == core::datatypes::CanonicalTypeId::time &&
         !BindOrderedTimeProfile(&column))
       return refuse("sorted_index_time_profile_unbound");
+    if (column.datatype.type_id == core::datatypes::CanonicalTypeId::timestamp &&
+        !BindOrderedTimestampProfile(&column))
+      return refuse("sorted_index_timestamp_profile_unbound");
     if (column.datatype.type_id == core::datatypes::CanonicalTypeId::character) {
       EngineResourceDescriptorLookupResult resource;
       const auto cached = collations_.find(found->collation_uuid);
@@ -499,6 +520,33 @@ inline bool EncodeOrderedIndexKey(std::string_view logical_key,
         return false;
       }
       sort_key.assign(reinterpret_cast<const char*>(bytes.data()),encoded.bytes_written);
+    } else if (binding.datatype.type_id == core::datatypes::CanonicalTypeId::timestamp) {
+      namespace dt = core::datatypes;
+      if (!binding.datatype.codec || !binding.timestamp_profile ||
+          !dt::SameDatatypeTypeCodecIdentityV3(binding.timestamp_profile->identity, *binding.datatype.codec) ||
+          !dt::ValidateTimestampExecutionDescriptorV3(binding.execution_descriptor, *binding.datatype.codec).ok()) {
+        *diagnostic = MakeInvalidRequestDiagnostic("mga.index_store", "sorted_index_timestamp_profile_unbound");
+        return false;
+      }
+      const auto decoded = dt::DecodeCanonicalTimestampComponentNoAllocV3(*binding.timestamp_profile,
+          value.isSqlNull() ? dt::TimestampValueStateV3::sql_null : dt::TimestampValueStateV3::value,
+          binding.execution_descriptor.nullable_allowed,
+          {reinterpret_cast<const core::platform::byte*>(value.bytes.data()), value.bytes.size()});
+      if (!decoded.ok()) {
+        *diagnostic = MakeEngineApiDiagnostic(std::string(decoded.diagnostic.diagnostic_code),
+            "datatype.sort_key.rejected", std::string(decoded.diagnostic.detail), true);
+        return false;
+      }
+      std::array<core::platform::byte, dt::kTimestampValueSortKeyBytesV3> bytes{};
+      const auto encoded = dt::MakeTimestampSortKeyViewIntoNoAllocV3(decoded.value,
+          dt::TimestampSortDirectionV3::ascending, dt::TimestampNullModeV3::nulls_first,
+          bytes.data(), bytes.size(), {bytes.size()});
+      if (!encoded.ok()) {
+        *diagnostic = MakeEngineApiDiagnostic(std::string(encoded.diagnostic.diagnostic_code),
+            "datatype.sort_key.rejected", std::string(encoded.diagnostic.detail), true);
+        return false;
+      }
+      sort_key.assign(reinterpret_cast<const char*>(bytes.data()), encoded.bytes_written);
     } else if (binding.datatype.type_id == core::datatypes::CanonicalTypeId::decimal_float) {
       if (!binding.datatype.codec ||
           !core::datatypes::IsExactCanonicalDecimal128TypeCodecIdentityV1(binding.datatype.codec->legacy_fields)) {

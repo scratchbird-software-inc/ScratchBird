@@ -416,7 +416,109 @@ void TimeBoundKeys() {
     Check(Encode(relabeled, Integer(1)) == Encode(time, Integer(1)), "TIME labels changed key authority");
   }
 }
+void TimestampBoundKeys() {
+  for (unsigned generation : {10u, 11u}) {
+    const auto cohort = generation == 10 ? dt::kDatatypeCohortV10 : dt::kDatatypeCohortV11;
+    auto timestamp = Binding("timestamp");
+    Check(!key::BindOrderedTimestampProfile(&timestamp) && !timestamp.timestamp_profile,
+          "historical UTC acquired local-civil authority");
+    Check(dt::LookupDatatypeStorageIdentityV3(cohort, generation, generation,
+        timestamp.datatype.descriptor_uuid, timestamp.datatype.descriptor_generation, &timestamp.datatype) &&
+        key::BindOrderedTimestampProfile(&timestamp), "exact civil TIMESTAMP profile did not bind");
+    for (unsigned mutation = 0; mutation < 6; ++mutation) {
+      auto source = Source("timestamp", "nullability=nullable");
+      source.datatype_cohort = {cohort, generation, generation};
+      switch (mutation) {
+        case 0: source.encoded_descriptor += ";precision=1"; break;
+        case 1: source.encoded_descriptor += ";unknown=1"; break;
+        case 2: source.encoded_descriptor += ";nullable=true"; break;
+        case 3: source.charset_uuid = scratchbird::tests::FixtureUuid(1401, 456); break;
+        case 4: source.collation_uuid = scratchbird::tests::FixtureUuid(1401, 457); break;
+        case 5: source.encoded_descriptor += ";timestamp_timezone_profile=utc"; break;
+      }
+      auto output = timestamp.execution_descriptor; std::string detail;
+      Check(!key::BuildOrderedColumnExecutionDescriptor(source, timestamp.datatype, true, &output, &detail) &&
+          !detail.empty() && output.precision == 0, "TIMESTAMP unsupported metadata erased");
+    }
+    const auto component = [](std::int64_t seconds, std::uint32_t fraction) {
+      std::string bytes = Integer(seconds);
+      for (unsigned n = 0; n < 4; ++n) bytes.push_back(static_cast<char>(fraction >> (8*n)));
+      bytes.append(4, '\0');
+      return bytes;
+    };
+    const std::pair<std::int64_t, std::uint32_t> values[] = {
+        {dt::kTimestampMinimumCivilSecondV3, 0}, {-257, 0}, {-1, 999999999},
+        {0, 0}, {0, 1}, {255, 0}, {256, 0}, {dt::kTimestampMaximumCivilSecondV3, 999999999}};
+    std::string prior;
+    for (const auto [seconds, fraction] : values) {
+      std::string raw = "SBTSPK01";
+      raw.append(reinterpret_cast<const char*>(cohort.bytes.data()), 16);
+      raw += Integer(generation); raw += Integer(generation);
+      const auto append_hex = [&](std::string_view hex) {
+        const auto digit = [](char ch){return ch <= '9' ? ch-'0' : ch-'a'+10;};
+        for (std::size_t n = 0; n < hex.size(); n += 2)
+          raw.push_back(static_cast<char>(digit(hex[n])*16+digit(hex[n+1])));
+      };
+      append_hex(generation == 10 ? "35ce26afa08d48af46c79e08cd056a453b7deba80d3569e78ffdba5b1c93fee7" :
+          "879004814d3fc6583cc0de3263cd72da1d97e15bb06d942609056f58ca9c2da4");
+      append_hex("01a104ec8e3c7dff8e89868ecc2a8a0c");
+      raw += Integer(1); raw.append("\0\0\1\14", 4);
+      const auto sortable = static_cast<std::uint64_t>(seconds) ^ 0x8000000000000000ull;
+      for (int shift = 56; shift >= 0; shift -= 8) raw.push_back(static_cast<char>(sortable >> shift));
+      for (int shift = 24; shift >= 0; shift -= 8) raw.push_back(static_cast<char>(fraction >> shift));
+      scratchbird::core::index::IndexKeyEncodingComponent expected;
+      expected.type_descriptor_uuid = timestamp.descriptor;
+      expected.type_descriptor_epoch = timestamp.datatype.descriptor_generation;
+      expected.null_placement = scratchbird::core::index::IndexKeyNullPlacement::nulls_first;
+      expected.payload.assign(raw.begin(), raw.end());
+      const auto oracle = scratchbird::core::index::EncodeIndexKey({expected}, {});
+      const auto actual = Encode(timestamp, component(seconds, fraction));
+      Check(oracle.ok() && actual == std::string(oracle.encoded.begin(), oracle.encoded.end()),
+            "TIMESTAMP independent native binary key oracle");
+      Check(prior.empty() || prior < actual, "civil signed-second/unsigned-fraction ordering");
+      prior = actual;
+    }
+    Check(Encode(timestamp, api::CrudStoredValue::SqlNull()) < Encode(timestamp, component(0, 0)),
+          "TIMESTAMP NULL does not alias epoch");
+    auto refuses = [](const auto& binding, const api::CrudStoredValue& value) {
+      std::string output = "unchanged"; bool null_key = false; api::EngineApiDiagnostic diagnostic;
+      Check(!key::EncodeOrderedIndexKey(api::EncodeStoredLogicalKey({value}), {binding},
+          &output, &null_key, &diagnostic) && output == "unchanged" && !null_key && diagnostic.error,
+          "invalid TIMESTAMP binding or value changed outputs");
+    };
+    for (auto bytes : {std::string{}, std::string(15, '\0'), std::string(17, '\0'),
+        std::string{"1970-01-01T00:00:00"}, component(0, 1000000000),
+        component(dt::kTimestampMinimumCivilSecondV3-1, 0), component(dt::kTimestampMaximumCivilSecondV3+1, 0)})
+      refuses(timestamp, bytes);
+    for (unsigned n = 12; n < 16; ++n) {
+      auto reserved = component(0, 0); reserved[n] = 1; refuses(timestamp, reserved);
+    }
+    auto required = timestamp; required.execution_descriptor.nullable_allowed = false;
+    refuses(required, api::CrudStoredValue::SqlNull());
+    Check(Encode(required, component(0, 1)) == Encode(timestamp, component(0, 1)), "nullability changed PRESENT key");
+    for (unsigned mutation = 0; mutation < 13; ++mutation) {
+      auto changed = timestamp;
+      switch (mutation) {
+        case 0: changed.timestamp_profile.reset(); break;
+        case 1: ++changed.timestamp_profile->receipt.catalog_generation; break;
+        case 2: changed.timestamp_profile->comparison_fingerprint[0] ^= 1; break;
+        case 3: ++changed.datatype.codec->ordering_policy.generation; break;
+        case 4: changed.execution_descriptor.canonical_type_id = 0; break;
+        case 5: changed.execution_descriptor.bit_width = 64; break;
+        case 6: changed.execution_descriptor.precision = 1; break;
+        case 7: changed.execution_descriptor.domain_stack.push_back(changed.execution_descriptor.descriptor_uuid); break;
+        case 8: changed.execution_descriptor.modifier_flags = 1; break;
+        case 9: ++changed.datatype.codec->native_fields.canonical_value_transport_width; break;
+        case 10: changed.datatype.codec.reset(); break;
+        case 11: changed.descriptor.value.bytes[0] ^= 1; break;
+        case 12: changed.execution_descriptor.timezone_uuid.bytes[0] = 1; break;
+      }
+      refuses(changed, component(0, 1)); refuses(changed, api::CrudStoredValue::SqlNull());
+    }
+  }
+}
 int main() {
+  TimestampBoundKeys();
   TimeBoundKeys();
   DateBoundKeys();
   PolicyBearingBinding();

@@ -1,5 +1,6 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
+#include "../support/temporal_profile_overlap_fixture.hpp"
 #include "../../../src/core/datatypes/datatype_time.hpp"
 #include <algorithm>
 #include <array>
@@ -233,6 +234,15 @@ void BorrowedKeys(){
   auto built=dt::BuildTimeValidatedProfileHandleV3({cohort,cohort,generation,generation},*identity);
   Check(built.ok(),"borrowed exact profile");
   auto profile=std::make_shared<const dt::TimeValidatedProfileHandleV3>(built.profile);
+  for (bool borrowed : {false, true})
+    scratchbird::tests::CheckTemporalProfileStringOverlap(*profile, [borrowed](const auto& mutable_profile, p::byte* output) {
+      dt::TimeOwnedValueV3 owned{mutable_profile, dt::TimeValueStateV3::value, 0};
+      auto view = owned.view();
+      return borrowed ? dt::MakeTimeSortKeyViewIntoNoAllocV3(view, dt::TimeSortDirectionV3::ascending,
+          dt::TimeNullModeV3::nulls_first, output, 108) :
+          dt::MakeTimeSortKeyIntoNoAllocV3(owned, dt::TimeSortDirectionV3::ascending,
+          dt::TimeNullModeV3::nulls_first, output, 108);
+    });
   auto descriptor=Descriptor(dt::CanonicalTypeId::time);
   BeginHeapFailure();auto admitted=dt::ValidateTimeExecutionDescriptorV3(descriptor,*identity);EndHeapFailure();
   Check(admitted.ok()&&allocation_probe::fail_calls==0,"execution descriptor admission has no heap allocation");

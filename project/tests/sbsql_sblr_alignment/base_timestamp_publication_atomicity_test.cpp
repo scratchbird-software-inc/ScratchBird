@@ -1,5 +1,6 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
+#include "../support/temporal_profile_overlap_fixture.hpp"
 #include "../support/timestamp_successor_fixture.hpp"
 
 #include "../../../src/core/datatypes/datatype_timestamp_projection.hpp"
@@ -1026,9 +1027,88 @@ void NoPartialFactOrMetricPublication() {
 
 }  // namespace
 
+void BorrowedKeys(const std::shared_ptr<const dt::TimestampValidatedProfileHandleV3>& profile) {
+  for (bool borrowed : {false, true})
+    scratchbird::tests::CheckTemporalProfileStringOverlap(*profile, [borrowed](const auto& mutable_profile, p::byte* output) {
+      dt::TimestampOwnedValueV3 owned{mutable_profile, dt::TimestampValueStateV3::value, 0, 0};
+      auto view = owned.view();
+      return borrowed ? dt::MakeTimestampSortKeyViewIntoNoAllocV3(view, dt::TimestampSortDirectionV3::ascending,
+          dt::TimestampNullModeV3::nulls_first, output, 112) :
+          dt::MakeTimestampSortKeyIntoNoAllocV3(owned, dt::TimestampSortDirectionV3::ascending,
+          dt::TimestampNullModeV3::nulls_first, output, 112);
+    });
+  const auto descriptor = Descriptor(dt::CanonicalTypeId::timestamp);
+  Check(dt::ValidateTimestampExecutionDescriptorV3(descriptor, profile->identity).ok(), "exact execution descriptor");
+  for (unsigned mutation = 0; mutation < 9; ++mutation) {
+    auto changed = descriptor;
+    switch (mutation) {
+      case 0: ++changed.descriptor_epoch; break;
+      case 1: changed.descriptor_uuid.bytes[0] ^= 1; break;
+      case 2: changed.bit_width = 64; break;
+      case 3: changed.precision = 1; break;
+      case 4: changed.modifier_flags = 1; break;
+      case 5: changed.domain_stack.push_back(changed.descriptor_uuid); break;
+      case 6: changed.canonical_type_id = 0; break;
+      case 7: changed.timezone_uuid.bytes[0] = 1; break;
+      case 8: changed.charset_uuid.bytes[0] = 1; break;
+    }
+    Check(!dt::ValidateTimestampExecutionDescriptorV3(changed, profile->identity).ok(), "malformed execution descriptor");
+  }
+  for (const auto owned : {
+      dt::TimestampOwnedValueV3{profile, dt::TimestampValueStateV3::value, INT32_MIN, 0},
+      dt::TimestampOwnedValueV3{profile, dt::TimestampValueStateV3::value, INT32_MAX, dt::kTimestampMaximumNanosecondsV3},
+      dt::TimestampOwnedValueV3{profile, dt::TimestampValueStateV3::sql_null, 0, 0}}) {
+    auto view = owned.view();
+    for (auto direction : {dt::TimestampSortDirectionV3::ascending, dt::TimestampSortDirectionV3::descending})
+      for (auto mode : {dt::TimestampNullModeV3::nulls_first, dt::TimestampNullModeV3::nulls_last}) {
+        const auto oracle = dt::MakeTimestampSortKeyV3(owned, direction, mode);
+        Check(oracle.ok(), "borrowed parity oracle");
+        std::array<p::byte, 120> buffer;
+        buffer.fill(0xa5);
+        const auto pins = profile.use_count();
+        BeginHeapFailure(1);
+        auto result = dt::MakeTimestampSortKeyViewIntoNoAllocV3(view, direction, mode, buffer.data()+3, oracle.bytes.size());
+        EndHeapFailure();
+        Check(result.ok() && allocation_probe::calls.load() == 0 && profile.use_count() == pins &&
+              result.bytes_written == oracle.bytes.size() &&
+              std::equal(oracle.bytes.begin(), oracle.bytes.end(), buffer.begin()+3) &&
+              std::all_of(buffer.begin(), buffer.begin()+3, [](auto b){return b == 0xa5;}) &&
+              std::all_of(buffer.begin()+3+oracle.bytes.size(), buffer.end(), [](auto b){return b == 0xa5;}),
+              "borrowed adapter allocates nothing, acquires no owner and preserves guards");
+        buffer.fill(0xa5);
+        const auto sentinel = buffer;
+        for (unsigned failure = 0; failure < 3; ++failure) {
+          CancelProbe cancel{0, 1};
+          auto control = failure == 2 ? Control(cancel) : dt::TimestampExecutionControlV3{};
+          if (failure == 1) control.maximum_allocation_bytes = oracle.bytes.size()-1;
+          result = dt::MakeTimestampSortKeyViewIntoNoAllocV3(view, direction, mode, buffer.data()+3,
+              oracle.bytes.size()-(failure == 0 ? 1 : 0), control);
+          Check(!result.ok() && buffer == sentinel && result.bytes_written == 0,
+                "borrowed capacity, budget and cancellation failures are atomic");
+        }
+      }
+    const auto before = view;
+    auto overlap = dt::MakeTimestampSortKeyViewIntoNoAllocV3(view, dt::TimestampSortDirectionV3::ascending,
+        dt::TimestampNullModeV3::nulls_first, reinterpret_cast<p::byte*>(&view), 112);
+    Check(!overlap.ok() && view.profile == before.profile && view.civil_day == before.civil_day &&
+          view.nanoseconds_since_midnight == before.nanoseconds_since_midnight && view.state == before.state,
+          "borrowed source overlap unchanged");
+    dt::TimestampExecutionControlV3 control;
+    overlap = dt::MakeTimestampSortKeyViewIntoNoAllocV3(view, dt::TimestampSortDirectionV3::ascending,
+        dt::TimestampNullModeV3::nulls_first, reinterpret_cast<p::byte*>(&control), 112, control);
+    Check(!overlap.ok() && control.maximum_allocation_bytes == ~p::u64{0} && !control.cancelled,
+          "borrowed control overlap unchanged");
+    const auto material = profile->profile_material;
+    overlap = dt::MakeTimestampSortKeyViewIntoNoAllocV3(view, dt::TimestampSortDirectionV3::ascending,
+        dt::TimestampNullModeV3::nulls_first, const_cast<p::byte*>(profile->profile_material.data()), 112);
+    Check(!overlap.ok() && material == profile->profile_material, "borrowed profile overlap unchanged");
+  }
+}
+
 int main() {
   for (bool successor : {false, true}) {
   auto fixture = MakeFixtures(successor);
+  BorrowedKeys(fixture.profile);
   RefreshFixtureSpans(fixture);
   ExactCapacityAndPrecedence(fixture);
   NullEmptyAndMaximumCapacity(fixture);
