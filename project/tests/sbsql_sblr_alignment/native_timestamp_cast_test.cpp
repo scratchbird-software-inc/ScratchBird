@@ -195,6 +195,45 @@ int main() try {
     auto short_text=std::make_shared<api::EngineDescriptor>(*character);
     short_text->encoded_descriptor+=";length=5";
     Refused(Cast(Native(0,0,generation),short_text),"CTB.TEXT.LENGTH_EXCEEDED");
+    auto short_source=Text("1970-01-01T00:00:00",generation);
+    auto short_source_binding=std::make_shared<api::EngineDescriptor>(*short_source.projection_descriptor);
+    short_source_binding->encoded_descriptor+=";length=5";
+    short_source.projection_descriptor=short_source_binding;
+    Refused(Cast(short_source,timestamp),"CTB.TEXT.LENGTH_EXCEEDED");
+    for (unsigned mutation=0;mutation<8;++mutation) for (bool null_value : {false,true}) {
+      auto bad=std::make_shared<api::EngineDescriptor>(*timestamp);
+      switch(mutation) {
+        case 0:bad->descriptor_uuid={};break;
+        case 1:bad->type_uuid.bytes[15]^=0x7f;break;
+        case 2:bad->datatype_descriptor_uuid.bytes[15]^=0x7f;break;
+        case 3:++bad->datatype_descriptor_generation;break;
+        case 4:bad->datatype_cohort.catalog_snapshot_uuid.bytes[15]^=0x7f;break;
+        case 5:++bad->datatype_cohort.catalog_generation;break;
+        case 6:++bad->datatype_cohort.registry_generation;break;
+        case 7:bad->canonical_type_name="date";break;
+      }
+      auto bad_source=Native(0,0,generation);
+      bad_source.projection_descriptor=bad;
+      auto parse_source=Text("1970-01-01T00:00:00",generation);
+      if(null_value) {
+        bad_source.is_null=true;bad_source.binary_value.clear();bad_source.payload_kind=s::SblrValuePayloadKind::none;
+        parse_source.is_null=true;parse_source.text_value.clear();parse_source.encoded_value.clear();parse_source.payload_kind=s::SblrValuePayloadKind::none;
+      }
+      Refused(Cast(bad_source,character),"CTI.TEMPORAL.DESCRIPTOR_INVALID");
+      // The advertised target label is checked independently by dispatch;
+      // a non-temporal label is a forbidden pair, not an exact binding.
+      Refused(Cast(parse_source,bad),mutation==7?nullptr:"CTI.TEMPORAL.DESCRIPTOR_INVALID");
+    }
+    for (bool from_nullable : {false,true}) for (bool to_nullable : {false,true}) {
+      auto identity_source=Native(0,0,generation);
+      identity_source.projection_descriptor=Binding("timestamp",generation,from_nullable);
+      const auto identity_target=Binding("timestamp",generation,to_nullable);
+      Check(Scalar(Cast(identity_source,identity_target)).binary_value==identity_source.binary_value,
+            "PRESENT identity nullability combination failed");
+      identity_source.is_null=true;identity_source.binary_value.clear();identity_source.payload_kind=s::SblrValuePayloadKind::none;
+      if(from_nullable && to_nullable) Check(Scalar(Cast(identity_source,identity_target)).is_null,"NULL identity changed state");
+      else Refused(Cast(identity_source,identity_target),"DATATYPE.NULL_NOT_ADMITTED");
+    }
     auto conflicting=Text("1970-01-01T00:00:00",generation);
     conflicting.encoded_value="2000-01-01T00:00:00";Refused(Cast(conflicting,timestamp));
     for (unsigned peer_generation : {10u,11u})

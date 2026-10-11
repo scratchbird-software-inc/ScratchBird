@@ -485,6 +485,14 @@ ParsedTime ParseStrict(std::string_view text) noexcept {
   return {true,value,{},{}};
 }
 
+ParsedTime ParseBoundStrict(std::string_view text, u64 maximum_length) noexcept {
+  const auto parsed = ParseStrict(text);
+  if (!parsed.ok) return parsed;
+  if (maximum_length != 0 && text.size() > maximum_length)
+    return {false,0,"CTB.TEXT.LENGTH_EXCEEDED","character_source_length"};
+  return parsed;
+}
+
 std::size_t RenderStrict(u64 value, char* output) noexcept {
   const u64 hour = value / 3'600'000'000'000ull;
   value %= 3'600'000'000'000ull;
@@ -827,7 +835,10 @@ TimeValueResultV3 ParseCanonicalTimeOperandV3(
     if(Cancelled(control))return Failure<TimeValueResultV3>("PROCESS.CANCELLED","before_publication");
     auto r=Success<TimeValueResultV3>();r.value={profile,TimeValueStateV3::sql_null,0};return r;
   }
-  return ParseCanonicalTimeV3(profile,operand.bytes,null_allowed,control);
+  const auto parsed=ParseBoundStrict(operand.bytes,operand.descriptor->length);
+  if(!parsed.ok)return Failure<TimeValueResultV3>(parsed.code,parsed.detail);
+  if(Cancelled(control))return Failure<TimeValueResultV3>("PROCESS.CANCELLED","before_publication");
+  auto r=Success<TimeValueResultV3>();r.value={profile,TimeValueStateV3::value,parsed.value};return r;
 }
 
 TimeNoAllocWriteResultV3 RenderCanonicalTimeIntoNoAllocV3(
@@ -1222,7 +1233,7 @@ TimeCastResultV3 CastTimeValueV3(const TimeCastRequestV3& request) noexcept {
     if(request.scalar_source==nullptr||request.scalar_source->type_id!=CanonicalTypeId::character||!CharacterIdentity(request.scalar_source_identity)||!CharacterDescriptor(&request.scalar_source->descriptor,request.scalar_source_identity))return Failure<TimeCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID","character_source_authority");
     if(request.time_target==nullptr||!*request.time_target||!ProfileValidNoAlloc(**request.time_target)||!TimeDescriptor(request.time_target_descriptor,(*request.time_target)->identity,request.target_null_allowed))return Failure<TimeCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID","time_target_authority");
     if(request.scalar_source->is_null){if(!request.scalar_source->encoded_value.empty())return Failure<TimeCastResultV3>("DATATYPE.NULL_STATE.INVALID","character_dirty_null");if(!request.scalar_source->descriptor.nullable_allowed||!request.target_null_allowed)return Failure<TimeCastResultV3>("DATATYPE.NULL_NOT_ADMITTED","target_null");if(Cancelled(request.control))return Failure<TimeCastResultV3>("PROCESS.CANCELLED","before_publication");auto r=Success<TimeCastResultV3>();r.category=DatatypeCastCategory::lossless_explicit;r.produced_time=true;r.time_value={*request.time_target,TimeValueStateV3::sql_null,0};return r;}
-    const auto parsed=ParseStrict(request.scalar_source->encoded_value);if(!parsed.ok)return Failure<TimeCastResultV3>(parsed.code,parsed.detail);if(Cancelled(request.control))return Failure<TimeCastResultV3>("PROCESS.CANCELLED","before_publication");auto r=Success<TimeCastResultV3>();r.category=DatatypeCastCategory::lossless_explicit;r.produced_time=true;r.time_value={*request.time_target,TimeValueStateV3::value,parsed.value};return r;
+    const auto parsed=ParseBoundStrict(request.scalar_source->encoded_value,request.scalar_source->descriptor.length);if(!parsed.ok)return Failure<TimeCastResultV3>(parsed.code,parsed.detail);if(Cancelled(request.control))return Failure<TimeCastResultV3>("PROCESS.CANCELLED","before_publication");auto r=Success<TimeCastResultV3>();r.category=DatatypeCastCategory::lossless_explicit;r.produced_time=true;r.time_value={*request.time_target,TimeValueStateV3::value,parsed.value};return r;
   }
   if(disposition==TimeCastPolicyDispositionV3::explicit_time_to_character){
     if(request.time_source==nullptr)return Failure<TimeCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID","time_source_shape");

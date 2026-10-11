@@ -800,7 +800,7 @@ bool DatePeerDescriptorShapeFor(CanonicalTypeId type,
 bool DescriptorBindsIdentityNoAlloc(
     const scratchbird::engine::ExecutionTypeDescriptor& descriptor,
     const DatatypeTypeCodecIdentityRowV3& identity,
-    CanonicalTypeId expected_type, bool require_nullable = true) noexcept {
+    CanonicalTypeId expected_type) noexcept {
   DatePeerDescriptorShape shape{};
   const auto& legacy = identity.legacy_fields;
   const auto* current = IdentityForReceipt(expected_type,
@@ -835,7 +835,7 @@ bool DescriptorBindsIdentityNoAlloc(
       descriptor.domain_stack.empty() && EngineUuidNil(descriptor.charset_uuid) &&
       EngineUuidNil(descriptor.collation_uuid) && EngineUuidNil(descriptor.timezone_uuid) &&
       EngineUuidNil(descriptor.element_descriptor_uuid) &&
-      EngineUuidNil(descriptor.security_policy_uuid) && (!require_nullable || descriptor.nullable_allowed) &&
+      EngineUuidNil(descriptor.security_policy_uuid) &&
       descriptor.descriptor_authoritative && descriptor.parser_independent;
 }
 
@@ -1075,7 +1075,7 @@ DateValidationResultV3 ValidateDateExecutionDescriptorV3(
     const scratchbird::engine::ExecutionTypeDescriptor& descriptor,
     const DatatypeTypeCodecIdentityRowV3& identity) noexcept {
   if (!ExactDateIdentity(identity) ||
-      !DescriptorBindsIdentityNoAlloc(descriptor, identity, CanonicalTypeId::date, false))
+      !DescriptorBindsIdentityNoAlloc(descriptor, identity, CanonicalTypeId::date))
     return Failure<DateValidationResultV3>(
         "CTI.TEMPORAL.DESCRIPTOR_INVALID", "date_execution_descriptor_invalid");
   return Success<DateValidationResultV3>();
@@ -1400,7 +1400,7 @@ DateValueResultV3 ParseCanonicalDateOperandV3(
         operand.extent != 0 || !operand.bytes.empty())
       return Failure<DateValueResultV3>("DATATYPE.NULL_STATE.INVALID",
                                         "text_operand_dirty_null");
-    if (!null_allowed)
+    if (!null_allowed || !operand.descriptor->nullable_allowed)
       return Failure<DateValueResultV3>("DATATYPE.NULL_NOT_ADMITTED",
                                         "parse_result_nonnullable");
     auto result = Success<DateValueResultV3>();
@@ -2412,7 +2412,7 @@ DateCastResultV3 CastDateValueV3(const DateCastRequestV3& request) noexcept {
           !request.scalar_source->encoded_value.empty())
         return Failure<DateCastResultV3>("DATATYPE.NULL_STATE.INVALID",
                                          "contextual_null_dirty");
-      if (!request.target_null_allowed)
+      if (!request.target_null_allowed || !request.date_target_descriptor->nullable_allowed)
         return Failure<DateCastResultV3>("DATATYPE.NULL_NOT_ADMITTED",
                                          "target_nonnullable");
       if (disposition != DateCastPolicyDispositionV3::contextual_null)
@@ -2471,7 +2471,8 @@ DateCastResultV3 CastDateValueV3(const DateCastRequestV3& request) noexcept {
       if (!request.scalar_source->encoded_value.empty())
         return Failure<DateCastResultV3>("DATATYPE.NULL_STATE.INVALID",
                                          "incoming_peer_dirty_null");
-      if (!request.target_null_allowed)
+      if (!request.target_null_allowed || !request.date_target_descriptor->nullable_allowed ||
+          !request.scalar_source->descriptor.nullable_allowed)
         return Failure<DateCastResultV3>("DATATYPE.NULL_NOT_ADMITTED",
                                          "target_nonnullable");
     }

@@ -474,7 +474,7 @@ add_library(sb_engine_sblr
   sblr_routine_runtime.cpp
   sblr_runtime_logging.cpp
   sblr_special_forms.cpp
-  sblr_timestamp_cast.cpp
+  sblr_temporal_cast.cpp
   sblr_test_vectors.cpp
   sblr_transaction_hooks.cpp
   window/sblr_window_family_landing_zone.cpp

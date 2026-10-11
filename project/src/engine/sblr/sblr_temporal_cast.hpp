@@ -4,9 +4,12 @@
 #include "sblr_runtime.hpp"
 
 namespace scratchbird::engine::sblr {
-// Exact civil TIMESTAMP representation adapter, not catalog/security admission.
+constexpr bool IsSblrCivilTemporalType(std::string_view name) noexcept {
+  return name == "date" || name == "time" || name == "timestamp";
+}
+// Exact civil temporal representation adapter, not catalog/security admission.
 // The enclosing owner retains both bound endpoint receipts. Never a zoned alias.
-SblrResult EvaluateSblrTimestampCast(
+SblrResult EvaluateSblrTemporalCast(
     std::string_view operation, const SblrValue& value,
     std::string_view target_name, const SblrExecutionContext& context,
     bool explicit_cast, bool compatibility,
