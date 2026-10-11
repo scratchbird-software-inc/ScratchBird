@@ -13,6 +13,99 @@ void Check(bool ok, std::source_location at = std::source_location::current()) {
   if (!ok) { std::cerr << "failure at " << at.line() << '\n'; std::abort(); }
 }
 auto Id(unsigned n) { return scratchbird::tests::FixtureUuid(1175,n); }
+void DatatypeReceiptBinding() {
+  namespace dt = scratchbird::core::datatypes;
+  const auto catalog = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  Check(catalog.ok());
+  unsigned admitted_codec = 0, admitted_storage_only = 0;
+  for (const auto cohort : {
+           api::EngineDatatypeCohort{dt::kDatatypeCohortV5,5,5},
+           api::EngineDatatypeCohort{dt::kDatatypeCohortV10,10,10},
+           api::EngineDatatypeCohort{dt::kDatatypeCohortV11,11,11}}) {
+    for (const auto name : {"int64", "uuid", "geometry", "document", "character"}) {
+      const auto found = std::ranges::find_if(catalog.manifest.descriptor_rows,
+          [&](const auto& row) { return row.stable_name == name; });
+      Check(found != catalog.manifest.descriptor_rows.end());
+      dt::DatatypeStorageIdentityV3 datatype;
+      Check(dt::LookupDatatypeStorageIdentityV3(
+          cohort.catalog_snapshot_uuid, cohort.catalog_generation, cohort.registry_generation,
+          found->descriptor_uuid.value, found->descriptor_epoch, &datatype));
+      api::EngineRequestContext context;
+      context.datatype_catalog_snapshot_uuid = cohort.catalog_snapshot_uuid;
+      context.datatype_catalog_generation = cohort.catalog_generation;
+      context.datatype_registry_generation = cohort.registry_generation;
+      api::MgaRelationColumnStorageDescriptor column;
+      column.column_uuid = Id(300);
+      column.nullable = false;
+      auto& value = column.value_descriptor;
+      value.descriptor_uuid = Id(301);
+      value.canonical_type_name = name;
+      value.datatype_cohort = cohort;
+      value.datatype_descriptor_uuid = datatype.descriptor_uuid;
+      value.datatype_descriptor_generation = datatype.descriptor_generation;
+      value.type_uuid = datatype.type_uuid;
+      s::Rcp079DescriptorFields fields;
+      fields.identities = {{"column_uuid",column.column_uuid},
+                           {"type_uuid",datatype.type_uuid}};
+      fields.text = {{"canonical",name},{"nullable","false"}};
+      if (datatype.codec) {
+        ++admitted_codec;
+        const auto& codec = datatype.codec->legacy_fields;
+        fields.identities["datatype_descriptor_uuid"] = codec.descriptor_uuid;
+        if (!codec.codec_uuid.is_nil()) fields.identities["codec_uuid"] = codec.codec_uuid;
+        fields.text["datatype_descriptor_generation"] = std::to_string(codec.descriptor_generation);
+        fields.text["type_generation"] = std::to_string(codec.type_generation);
+        fields.text["codec_id"] = codec.codec_id;
+        fields.text["codec_version"] = std::to_string(codec.codec_version);
+        fields.text["codec_generation"] = std::to_string(codec.codec_generation);
+        fields.text["null_encoding"] = std::to_string(codec.null_encoding_code);
+        if (std::string_view(name) == "character") fields.text["canonical"] = "text";
+      } else {
+        ++admitted_storage_only;
+      }
+      const auto resolved = s::Rcp079ResolvePersistedDatatypeAuthorityV1(context,column,fields);
+      Check(resolved && resolved->descriptor_uuid == datatype.descriptor_uuid &&
+            resolved->type_uuid == datatype.type_uuid &&
+            resolved->exact_canonical_text == (std::string_view(name) == "character"));
+      for (unsigned mutation=0; mutation != 13; ++mutation) {
+        auto changed_context = context;
+        auto changed_column = column;
+        auto changed_fields = fields;
+        auto& changed_value = changed_column.value_descriptor;
+        switch (mutation) {
+          case 0: changed_context.datatype_catalog_snapshot_uuid = Id(400); break;
+          case 1: ++changed_context.datatype_catalog_generation; break;
+          case 2: ++changed_context.datatype_registry_generation; break;
+          case 3: changed_value.datatype_cohort.catalog_snapshot_uuid = Id(400); break;
+          case 4: ++changed_value.datatype_cohort.catalog_generation; break;
+          case 5: ++changed_value.datatype_cohort.registry_generation; break;
+          case 6: changed_value.datatype_descriptor_uuid = Id(400); break;
+          case 7: ++changed_value.datatype_descriptor_generation; break;
+          case 8: changed_value.type_uuid = Id(400); break;
+          case 9: changed_value.canonical_type_name = "uint64"; break;
+          case 10:
+            // Both caller and persisted descriptor claiming an unknown cohort
+            // must still fail; agreement is not registry authority.
+            changed_value.datatype_cohort.catalog_snapshot_uuid = Id(400);
+            changed_context.datatype_catalog_snapshot_uuid = Id(400);
+            break;
+          case 11:
+            changed_fields.identities["codec_uuid"] = Id(400);
+            break;
+          case 12:
+            // Missing registry metadata cannot downgrade an invalid binding.
+            changed_fields = {};
+            changed_value.datatype_descriptor_uuid = Id(400);
+            break;
+        }
+        Check(!s::Rcp079ResolvePersistedDatatypeAuthorityV1(
+            changed_context,changed_column,changed_fields));
+      }
+    }
+  }
+  // GEOMETRY has a registered SBP1 codec; DOCUMENT remains storage-only.
+  Check(admitted_codec == 12 && admitted_storage_only == 3);
+}
 exec::PhysicalMgaStatementContext Mga() {
   exec::PhysicalMgaStatementContext c;
   c.statement_uuid=Id(1); c.owning_transaction_uuid=Id(2);
@@ -26,6 +119,7 @@ exec::PhysicalMgaStatementContext Mga() {
   return c;
 }
 int main() {
+  DatatypeReceiptBinding();
   auto row=Id(10); row.bytes[10]=0; row.bytes[15]=255;
   std::string bytes(reinterpret_cast<const char*>(row.bytes.data()),16);
   Check(s::Rcp079NativeUuidCell(&bytes)==std::optional(row));

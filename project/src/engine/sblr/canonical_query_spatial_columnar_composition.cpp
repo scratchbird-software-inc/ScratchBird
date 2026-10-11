@@ -29,6 +29,7 @@
 #include "mga_relation_store/stored_scalar_descriptor.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "datatype_storage_identity.hpp"
 #include "../internal_api/catalog/datatype_bootstrap_identity.hpp"
 #include "engine/executor/executor_foundation.hpp"
 #include "engine/executor/model_family_executor.hpp"
@@ -831,41 +832,45 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
         return is_registry_suffix_key(entry.first);
       });
 
-  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+  const auto& value = persisted.value_descriptor;
+  if (value.datatype_cohort != api::EngineDatatypeCohort{
+          context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+          context.datatype_registry_generation} ||
+      value.datatype_descriptor_uuid != descriptor_uuid ||
+      value.datatype_descriptor_generation != manifest_row.descriptor_epoch)
+    return std::nullopt;
+  dt::DatatypeStorageIdentityV3 storage_identity;
+  if (!dt::LookupDatatypeStorageIdentityV3(
       context.datatype_catalog_snapshot_uuid,
       context.datatype_catalog_generation,
       context.datatype_registry_generation, descriptor_uuid,
-      manifest_row.descriptor_epoch);
-  if (!identity.ok) {
-    const auto registered_identity = dt::LookupDatatypeTypeCodecIdentityV1(
-        scratchbird::engine::internal_api::kBootstrapDatatypeCatalogUuid,
-        scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
-        scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
-        manifest_row.descriptor_epoch);
-    // A live registered identity may not be downgraded to a legacy
-    // descriptor/type alias merely because its receipt is stale.  Only rows
-    // that have no registered distinct type identity and carry no registry
-    // authority retain the legacy descriptor UUID fallback.
-    if (registered_identity.ok || carries_registry_authority) {
-      return std::nullopt;
-    }
+      manifest_row.descriptor_epoch, &storage_identity) ||
+      storage_identity.type_uuid != value.type_uuid ||
+      storage_identity.type_id != canonical_type_id)
+    return std::nullopt;
+  // Absence of a codec is legal only for an exact registry-admitted
+  // storage-only row in this receipt. Failed lookup never becomes authority
+  // through a process-global fallback or a descriptor/type substitution.
+  if (!storage_identity.codec) {
+    if (carries_registry_authority) return std::nullopt;
     return Rcp079ResolvedDatatypeAuthorityV1{
-        descriptor_uuid, descriptor_uuid, false};
+        descriptor_uuid, storage_identity.type_uuid, false};
   }
-  if (identity.row.catalog_snapshot_uuid !=
+  const auto& identity = *storage_identity.codec;
+  if (identity.legacy_fields.catalog_snapshot_uuid !=
           context.datatype_catalog_snapshot_uuid ||
-      identity.row.catalog_generation !=
+      identity.legacy_fields.catalog_generation !=
           context.datatype_catalog_generation ||
-      identity.row.registry_generation !=
+      identity.legacy_fields.registry_generation !=
           context.datatype_registry_generation ||
-      identity.row.descriptor_uuid != descriptor_uuid ||
-      identity.row.descriptor_generation != manifest_row.descriptor_epoch ||
-      !core::uuid::IsEngineIdentityUuid(identity.row.type_uuid)) {
+      identity.legacy_fields.descriptor_uuid != descriptor_uuid ||
+      identity.legacy_fields.descriptor_generation != manifest_row.descriptor_epoch ||
+      !core::uuid::IsEngineIdentityUuid(identity.legacy_fields.type_uuid)) {
     return std::nullopt;
   }
 
   const bool exact_canonical_text =
-      dt::IsExactCanonicalTextTypeCodecIdentityV1(identity.row);
+      dt::IsExactCanonicalTextTypeCodecIdentityV1(identity.legacy_fields);
   if (canonical_type_id == dt::CanonicalTypeId::character &&
       !exact_canonical_text) {
     return std::nullopt;
@@ -882,7 +887,7 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
                               [&](const auto key) {
                                 return !fields.contains(key);
                               }) ||
-          fields.contains("codec_uuid") != !identity.row.codec_uuid.is_nil() ||
+          fields.contains("codec_uuid") != !identity.legacy_fields.codec_uuid.is_nil() ||
           std::ranges::any_of(fields, [&](const auto& entry) {
             return is_registry_suffix_key(entry.first) &&
                    std::ranges::find(kRegistrySuffixFields, entry.first) ==
@@ -912,27 +917,27 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
       std::uint64_t codec_version = 0;
       std::uint64_t codec_generation = 0;
       std::uint64_t null_encoding = 0;
-      if (!exact("datatype_descriptor_uuid", identity.row.descriptor_uuid) ||
+      if (!exact("datatype_descriptor_uuid", identity.legacy_fields.descriptor_uuid) ||
           !parse_u64("datatype_descriptor_generation",
                      &descriptor_generation) ||
-          descriptor_generation != identity.row.descriptor_generation ||
+          descriptor_generation != identity.legacy_fields.descriptor_generation ||
           !parse_u64("type_generation", &type_generation) ||
-          type_generation != identity.row.type_generation ||
-          (identity.row.codec_uuid.is_nil()
+          type_generation != identity.legacy_fields.type_generation ||
+          (identity.legacy_fields.codec_uuid.is_nil()
                ? fields.contains("codec_uuid")
-               : !exact("codec_uuid", identity.row.codec_uuid)) ||
-          !exact("codec_id", identity.row.codec_id) ||
+               : !exact("codec_uuid", identity.legacy_fields.codec_uuid)) ||
+          !exact("codec_id", identity.legacy_fields.codec_id) ||
           !parse_u64("codec_version", &codec_version) ||
-          codec_version != identity.row.codec_version ||
+          codec_version != identity.legacy_fields.codec_version ||
           !parse_u64("codec_generation", &codec_generation) ||
-          codec_generation != identity.row.codec_generation ||
+          codec_generation != identity.legacy_fields.codec_generation ||
           !parse_u64("null_encoding", &null_encoding) ||
-          null_encoding != identity.row.null_encoding_code) {
+          null_encoding != identity.legacy_fields.null_encoding_code) {
         return std::nullopt;
       }
     }
     return Rcp079ResolvedDatatypeAuthorityV1{
-        descriptor_uuid, identity.row.type_uuid, false};
+        descriptor_uuid, identity.legacy_fields.type_uuid, false};
   }
 
   // Ordinary persisted TEXT columns carry the exact registry/type/codec
@@ -986,28 +991,28 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
         std::ranges::any_of(kRequiredPlainTextFields, [&](const auto key) {
           return !fields.contains(key);
         }) ||
-        !exact(spelling, identity.row.canonical_name) ||
+        !exact(spelling, identity.legacy_fields.canonical_name) ||
         !exact("nullable", expected_nullable) ||
-        !exact("datatype_descriptor_uuid", identity.row.descriptor_uuid) ||
+        !exact("datatype_descriptor_uuid", identity.legacy_fields.descriptor_uuid) ||
         !parse_u64("datatype_descriptor_generation",
                    &descriptor_generation) ||
-        descriptor_generation != identity.row.descriptor_generation ||
-        !exact("type_uuid", identity.row.type_uuid) ||
+        descriptor_generation != identity.legacy_fields.descriptor_generation ||
+        !exact("type_uuid", identity.legacy_fields.type_uuid) ||
         !parse_u64("type_generation", &type_generation) ||
-        type_generation != identity.row.type_generation ||
-        !exact("codec_uuid", identity.row.codec_uuid) ||
-        !exact("codec_id", identity.row.codec_id) ||
+        type_generation != identity.legacy_fields.type_generation ||
+        !exact("codec_uuid", identity.legacy_fields.codec_uuid) ||
+        !exact("codec_id", identity.legacy_fields.codec_id) ||
         !parse_u64("codec_version", &codec_version) ||
-        codec_version != identity.row.codec_version ||
+        codec_version != identity.legacy_fields.codec_version ||
         !parse_u64("codec_generation", &codec_generation) ||
-        codec_generation != identity.row.codec_generation ||
+        codec_generation != identity.legacy_fields.codec_generation ||
         !parse_u64("null_encoding", &null_encoding) ||
-        null_encoding != identity.row.null_encoding_code ||
+        null_encoding != identity.legacy_fields.null_encoding_code ||
         !exact("column_uuid", persisted.column_uuid)) {
       return std::nullopt;
     }
     return Rcp079ResolvedDatatypeAuthorityV1{
-        descriptor_uuid, identity.row.type_uuid, true};
+        descriptor_uuid, identity.legacy_fields.type_uuid, true};
   }
 
   constexpr std::array<std::string_view, 17> kRequiredTextFields{
@@ -1075,23 +1080,23 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
       !parse_u64("codec_version", &codec_version) ||
       !parse_u64("codec_generation", &codec_generation) ||
       !parse_u64("null_encoding", &null_encoding) ||
-      !exact(spelling, identity.row.canonical_name) ||
+      !exact(spelling, identity.legacy_fields.canonical_name) ||
       character_length != persisted.character_length ||
-      character_length > identity.row.canonical_value_maximum_bytes ||
+      character_length > identity.legacy_fields.canonical_value_maximum_bytes ||
       !exact("charset_uuid", persisted.charset_uuid) ||
       !exact("collation_uuid", persisted.collation_uuid) ||
       !exact("nullable", expected_nullable) ||
       !exact("column_uuid", persisted.column_uuid) ||
       resource_epoch != context.resource_epoch ||
-      !exact("datatype_descriptor_uuid", identity.row.descriptor_uuid) ||
-      descriptor_generation != identity.row.descriptor_generation ||
-      !exact("type_uuid", identity.row.type_uuid) ||
-      type_generation != identity.row.type_generation ||
-      !exact("codec_uuid", identity.row.codec_uuid) ||
-      !exact("codec_id", identity.row.codec_id) ||
-      codec_version != identity.row.codec_version ||
-      codec_generation != identity.row.codec_generation ||
-      null_encoding != identity.row.null_encoding_code ||
+      !exact("datatype_descriptor_uuid", identity.legacy_fields.descriptor_uuid) ||
+      descriptor_generation != identity.legacy_fields.descriptor_generation ||
+      !exact("type_uuid", identity.legacy_fields.type_uuid) ||
+      type_generation != identity.legacy_fields.type_generation ||
+      !exact("codec_uuid", identity.legacy_fields.codec_uuid) ||
+      !exact("codec_id", identity.legacy_fields.codec_id) ||
+      codec_version != identity.legacy_fields.codec_version ||
+      codec_generation != identity.legacy_fields.codec_generation ||
+      null_encoding != identity.legacy_fields.null_encoding_code ||
       !core::uuid::IsEngineIdentityUuid(persisted.charset_uuid) ||
       !core::uuid::IsEngineIdentityUuid(persisted.collation_uuid)) {
     return std::nullopt;
@@ -1126,7 +1131,7 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
   }
 
   return Rcp079ResolvedDatatypeAuthorityV1{
-      descriptor_uuid, identity.row.type_uuid, true};
+      descriptor_uuid, identity.legacy_fields.type_uuid, true};
 }
 
 bool Rcp079ExactColumnarJoinStorageSnapshotV1(
