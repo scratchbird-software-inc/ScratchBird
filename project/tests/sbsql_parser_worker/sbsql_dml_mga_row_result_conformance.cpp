@@ -463,14 +463,16 @@ void BindColumnDatatype(api::EngineColumnDefinition* column) {
   Require(row.ok() && row.manifest.descriptor_rows.size() == 1,
           "column fixture datatype missing from catalog");
   const auto& datatype = row.manifest.descriptor_rows.front();
-  const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+  const auto* binding = dt::FindDatatypeTypeCodecIdentityV3(
       api::kBootstrapDatatypeCatalogUuid, api::kBootstrapDatatypeCatalogGeneration,
       api::kBootstrapDatatypeRegistryGeneration, datatype.descriptor_uuid.value,
       datatype.descriptor_epoch);
-  Require(binding.ok, "column fixture datatype codec binding unavailable");
-  column->descriptor.datatype_descriptor_uuid = binding.row.descriptor_uuid;
-  column->descriptor.datatype_descriptor_generation = binding.row.descriptor_generation;
-  column->descriptor.type_uuid = binding.row.type_uuid;
+  Require(binding != nullptr, "column fixture datatype codec binding unavailable");
+  column->descriptor.datatype_descriptor_uuid = binding->legacy_fields.descriptor_uuid;
+  column->descriptor.datatype_descriptor_generation = binding->legacy_fields.descriptor_generation;
+  column->descriptor.type_uuid = binding->legacy_fields.type_uuid;
+  column->descriptor.datatype_cohort = {api::kBootstrapDatatypeCatalogUuid,
+      api::kBootstrapDatatypeCatalogGeneration,api::kBootstrapDatatypeRegistryGeneration};
 }
 
 api::EngineColumnDefinition Column(std::uint32_t ordinal, std::string name) {
@@ -4087,17 +4089,57 @@ void VerifyTextTargetAuthority(const std::filesystem::path& database_path) {
     pressure_tag.binary_ownership[memory::MemoryBinaryScopeKind::transaction] = context.transaction_uuid.bytes;
     pressure_tag.binary_ownership[memory::MemoryBinaryScopeKind::statement] = context.statement_uuid.bytes;
     pressure_tag.purpose = "text_preparation_budget_refusal_fixture";
-    auto pressure = memory::DefaultMemoryManager().AllocateScoped(
-        memory::DefaultMemoryManager().policy().per_context_limit_bytes,
-        alignof(std::max_align_t), pressure_tag);
-    Require(pressure.ok(), "TEXT memory-pressure fixture allocation failed");
-    const auto before = memory::DefaultMemoryManager().Snapshot();
-    const auto refused = prepare(api::EngineValueState::value, {'a'});
-    Require(!refused.ok && !refused.value.valid() &&
-                refused.diagnostic.code == "RESOURCE.BUDGET_EXCEEDED",
-            "TEXT preparation ignored the live statement memory limit");
-    Require(memory::DefaultMemoryManager().Snapshot().current_bytes == before.current_bytes,
-            "failed TEXT preparation leaked tracked memory");
+    auto& manager = memory::DefaultMemoryManager();
+    auto* allocator = manager.allocator();
+    const auto headroom = allocator->AvailableCapacity(pressure_tag);
+    Require(headroom.ok() && headroom.available_bytes >= 2,
+            "TEXT pressure fixture requires actual remaining scoped capacity");
+    const auto live_totals = [](const memory::MemoryAccountingSnapshot& snapshot) {
+      return std::array{snapshot.current_bytes, snapshot.reserved_capacity_bytes,
+                        snapshot.active_allocation_count, snapshot.active_capacity_reservation_count};
+    };
+    const auto scope_totals = [&](const memory::MemoryAccountingSnapshot& snapshot) {
+      std::array<std::array<std::uint64_t, 3>, memory::MemoryBinaryOwnership::scope_count> totals{};
+      for (const auto& scope : snapshot.contexts) {
+        if (!scope.binary_scope) continue;
+        const auto i = static_cast<std::size_t>(scope.binary_scope->kind);
+        if (i < totals.size() && memory::MemoryUuidPresent(pressure_tag.binary_ownership.scopes[i]) &&
+            scope.binary_scope->uuid == pressure_tag.binary_ownership.scopes[i])
+          totals[i] = {scope.current_bytes, scope.reserved_capacity_bytes, scope.active_allocation_count};
+      }
+      return totals;
+    };
+    const auto baseline = manager.Snapshot();
+    {
+      // Existing owner/database allocations already consume part of the limit.
+      // Reserve actual remaining credit and materialize one byte, rather than
+      // allocating and zeroing an entire policy limit just to test admission.
+      auto credit = allocator->ReserveCapacity(headroom.available_bytes - 1, pressure_tag);
+      Require(credit.ok(), "TEXT memory-pressure credit admission failed");
+      auto pressure = manager.AllocateScoped(1, alignof(std::max_align_t), pressure_tag);
+      Require(pressure.ok(), "TEXT memory-pressure fixture allocation failed");
+      const auto exhausted = allocator->AvailableCapacity(pressure_tag);
+      const auto before = manager.Snapshot();
+      Require(exhausted.ok() && exhausted.available_bytes == 0 &&
+                  before.current_bytes == baseline.current_bytes + 1 &&
+                  before.reserved_capacity_bytes == baseline.reserved_capacity_bytes + headroom.available_bytes - 1,
+              "TEXT pressure must be real charged allocation and reserved credit");
+      Require(!api::RevalidateDmlUpdateTextTargetV2(context, captured.handle).error,
+              "TEXT pressure must not substitute a catalog admission failure");
+      const auto refused = prepare(api::EngineValueState::value, {'a'});
+      Require(!refused.ok && !refused.value.valid() &&
+                  refused.diagnostic.code == "RESOURCE.BUDGET_EXCEEDED" &&
+                  refused.diagnostic.detail == "TEXT canonical payload allocation refused",
+              "TEXT preparation ignored its applicable scoped memory budget");
+      const auto after = manager.Snapshot();
+      Require(live_totals(after) == live_totals(before) && scope_totals(after) == scope_totals(before),
+              "failed TEXT preparation leaked live allocation or reserved credit");
+    }
+    const auto restored = manager.Snapshot();
+    const auto restored_headroom = allocator->AvailableCapacity(pressure_tag);
+    Require(live_totals(restored) == live_totals(baseline) && scope_totals(restored) == scope_totals(baseline) &&
+                restored_headroom.ok() && restored_headroom.available_bytes == headroom.available_bytes,
+            "TEXT pressure owners did not restore exact live accounting and headroom");
   }
   Require(prepare(api::EngineValueState::value, {'a'}).ok,
           "TEXT preparation did not recover after pressure was released");

@@ -349,11 +349,11 @@ ApiFixture MakeApiFixture() {
   if (!manifest.ok() || !type.ok() || type.manifest.descriptor_rows.size() != 1)
     throw std::runtime_error("serializable fixture text datatype unavailable");
   const auto& datatype = type.manifest.descriptor_rows.front();
-  const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+  const auto* binding = dt::FindDatatypeTypeCodecIdentityV3(
       metadata.datatype_catalog_snapshot_uuid, metadata.datatype_catalog_generation,
       metadata.datatype_registry_generation, datatype.descriptor_uuid.value,
       datatype.descriptor_epoch);
-  if (!binding.ok) throw std::runtime_error("serializable fixture text codec unavailable");
+  if (!binding) throw std::runtime_error("serializable fixture text codec unavailable");
   const auto definition = Table(fixture, metadata);
   for (std::size_t ordinal = 0; ordinal < definition.columns.size(); ++ordinal) {
     api::EngineColumnDefinition column;
@@ -363,9 +363,11 @@ ApiFixture MakeApiFixture() {
     column.descriptor.descriptor_uuid = api::GenerateCrudEngineUuid("object");
     column.descriptor.descriptor_kind = "scalar";
     column.descriptor.canonical_type_name = "text";
-    column.descriptor.datatype_descriptor_uuid = binding.row.descriptor_uuid;
-    column.descriptor.datatype_descriptor_generation = binding.row.descriptor_generation;
-    column.descriptor.type_uuid = binding.row.type_uuid;
+    column.descriptor.datatype_descriptor_uuid = binding->legacy_fields.descriptor_uuid;
+    column.descriptor.datatype_descriptor_generation = binding->legacy_fields.descriptor_generation;
+    column.descriptor.type_uuid = binding->legacy_fields.type_uuid;
+    column.descriptor.datatype_cohort = {metadata.datatype_catalog_snapshot_uuid,
+        metadata.datatype_catalog_generation,metadata.datatype_registry_generation};
     column.descriptor.encoded_descriptor = definition.columns[ordinal].second;
     column.nullable = ordinal != 0;
     if (ordinal == 0)

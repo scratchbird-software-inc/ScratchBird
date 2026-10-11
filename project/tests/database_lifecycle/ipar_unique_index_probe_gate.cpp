@@ -265,6 +265,7 @@ api::EngineLocalizedName Name(std::string name) {
 
 void VerifyTextFixtureBindingControls(const api::EngineRequestContext& context,
                                       const api::EngineColumnDefinition& bound) {
+  namespace datatypes = scratchbird::core::datatypes;
   const auto refused = [&](api::EngineRequestContext candidate_context,
                            api::EngineColumnDefinition candidate) {
     const auto original = candidate;
@@ -275,8 +276,13 @@ void VerifyTextFixtureBindingControls(const api::EngineRequestContext& context,
       rejected = true;
     }
     Require(rejected, "TEXT fixture accepted contradictory or unavailable authority");
-    Require(candidate.requested_column_uuid == original.requested_column_uuid &&
+    Require(candidate.descriptor == original.descriptor &&
+                candidate.requested_column_uuid == original.requested_column_uuid &&
                 candidate.descriptor.descriptor_uuid == original.descriptor.descriptor_uuid &&
+                candidate.descriptor.datatype_descriptor_uuid == original.descriptor.datatype_descriptor_uuid &&
+                candidate.descriptor.datatype_descriptor_generation == original.descriptor.datatype_descriptor_generation &&
+                candidate.descriptor.type_uuid == original.descriptor.type_uuid &&
+                candidate.descriptor.datatype_cohort == original.descriptor.datatype_cohort &&
                 candidate.descriptor.charset_uuid == original.descriptor.charset_uuid &&
                 candidate.descriptor.collation_uuid == original.descriptor.collation_uuid &&
                 candidate.descriptor.encoded_descriptor == original.descriptor.encoded_descriptor,
@@ -288,6 +294,41 @@ void VerifyTextFixtureBindingControls(const api::EngineRequestContext& context,
   invalid = bound;
   ++invalid.descriptor.datatype_descriptor_generation;
   refused(context, invalid);
+  for(unsigned field=0;field<6;++field) {
+    auto bad_context=context;invalid=bound;
+    if(field==0)invalid.descriptor.datatype_cohort.catalog_snapshot_uuid={};
+    if(field==1)++invalid.descriptor.datatype_cohort.catalog_generation;
+    if(field==2)++invalid.descriptor.datatype_cohort.registry_generation;
+    if(field==3)invalid.descriptor.type_uuid={};
+    if(field==4)invalid.descriptor.datatype_descriptor_uuid={};
+    if(field==5)++bad_context.datatype_catalog_generation;
+    refused(bad_context,invalid);
+  }
+  // A real but different registered cohort is not this column's binding.
+  auto wrong_context=context;
+  wrong_context.datatype_catalog_snapshot_uuid=datatypes::kDatatypeCohortV10;
+  wrong_context.datatype_catalog_generation=10;
+  wrong_context.datatype_registry_generation=10;
+  Require(wrong_context.datatype_catalog_snapshot_uuid!=context.datatype_catalog_snapshot_uuid,
+          "foreign-cohort control must differ from actual fixture cohort");
+  refused(wrong_context,bound);
+  bool tested_noncharacter=false;
+  for(const auto& row:datatypes::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& identity=row.legacy_fields;
+    if(identity.catalog_snapshot_uuid==context.datatype_catalog_snapshot_uuid&&
+       identity.catalog_generation==context.datatype_catalog_generation&&
+       identity.registry_generation==context.datatype_registry_generation&&
+       identity.canonical_binary_type_code==static_cast<platform::u32>(datatypes::CanonicalTypeId::int64)) {
+      invalid=bound;
+      invalid.descriptor.datatype_descriptor_uuid=identity.descriptor_uuid;
+      invalid.descriptor.datatype_descriptor_generation=identity.descriptor_generation;
+      invalid.descriptor.type_uuid=identity.type_uuid;
+      refused(context,invalid);
+      tested_noncharacter=true;
+      break;
+    }
+  }
+  Require(tested_noncharacter,"non-character control must use a real registered datatype identity");
   api::CatalogColumnMetadata attributes;
   Require(api::DecodeCatalogColumnMetadata(bound.descriptor.encoded_descriptor, &attributes),
           "TEXT fixture must carry native binary metadata");
@@ -347,11 +388,11 @@ void CreateTable(Fixture& fixture, const api::EngineRequestContext& context) {
     Require(catalog.ok() && catalog.manifest.descriptor_rows.size() == 1,
             "IPAR unique-probe datatype binding unavailable");
     const auto& row = catalog.manifest.descriptor_rows.front();
-    const auto codec = datatypes::LookupDatatypeTypeCodecIdentityV1(
+    const auto* codec = datatypes::FindDatatypeTypeCodecIdentityV3(
         context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
         context.datatype_registry_generation, row.descriptor_uuid.value,
         row.descriptor_epoch);
-    Require(codec.ok,
+    Require(codec != nullptr,
             "IPAR unique-probe datatype codec binding unavailable");
     api::EngineColumnDefinition column;
     column.ordinal = request.table_columns.size();
@@ -363,7 +404,9 @@ void CreateTable(Fixture& fixture, const api::EngineRequestContext& context) {
     column.descriptor.canonical_type_name = type;
     column.descriptor.datatype_descriptor_uuid = row.descriptor_uuid.value;
     column.descriptor.datatype_descriptor_generation = row.descriptor_epoch;
-    column.descriptor.type_uuid = codec.row.type_uuid;
+    column.descriptor.type_uuid = codec->legacy_fields.type_uuid;
+    column.descriptor.datatype_cohort = {context.datatype_catalog_snapshot_uuid,
+        context.datatype_catalog_generation,context.datatype_registry_generation};
     column.descriptor.encoded_descriptor = "canonical=" + type +
         (column.nullable ? ";nullable=true" : ";nullable=false");
     scratchbird::tests::BindFixtureUtf8BinaryTextResources(context, column);

@@ -5,6 +5,7 @@
 #include "../../src/engine/internal_api/catalog/column_metadata_codec.hpp"
 #include "../../src/engine/internal_api/catalog/name_resolution_api.hpp"
 #include "../../src/core/datatypes/datatype_catalog_manifest.hpp"
+#include "../../src/core/datatypes/datatype_type_codec_identity_v3.hpp"
 #include <stdexcept>
 
 namespace scratchbird::tests {
@@ -16,14 +17,22 @@ inline void BindFixtureUtf8BinaryTextResources(
     engine::internal_api::EngineColumnDefinition& column) {
   namespace api = engine::internal_api;
   namespace dt = core::datatypes;
-  const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+  const auto* binding = dt::FindDatatypeTypeCodecIdentityV3(
       context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
       context.datatype_registry_generation, column.descriptor.datatype_descriptor_uuid,
       column.descriptor.datatype_descriptor_generation);
-  if (!binding.ok || !dt::IsExactCanonicalTextTypeCodecIdentityV1(binding.row) ||
-      binding.row.type_uuid != column.descriptor.type_uuid ||
-      !binding.row.canonical_value_maximum_bytes)
+  if (!binding || binding->legacy_fields.canonical_binary_type_code !=
+          static_cast<core::platform::u32>(dt::CanonicalTypeId::character) ||
+      binding->legacy_fields.type_uuid != column.descriptor.type_uuid ||
+      column.descriptor.datatype_cohort.catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
+      column.descriptor.datatype_cohort.catalog_generation != context.datatype_catalog_generation ||
+      column.descriptor.datatype_cohort.registry_generation != context.datatype_registry_generation)
     throw std::invalid_argument("TEXT fixture requires an admitted character codec");
+  const auto maximum_bytes = binding->native_fields.present
+      ? binding->native_fields.canonical_value_maximum_bytes
+      : binding->legacy_fields.canonical_value_maximum_bytes;
+  if (!maximum_bytes)
+    throw std::invalid_argument("TEXT fixture requires a bounded character codec");
   api::CatalogColumnMetadata attributes;
   if (!api::AdmitCatalogColumnMetadata(column.descriptor.encoded_descriptor, &attributes))
     throw std::invalid_argument("TEXT fixture column metadata is malformed");
@@ -63,7 +72,7 @@ inline void BindFixtureUtf8BinaryTextResources(
   if (!attributes.text.contains("character_length") &&
       !attributes.text.contains("char_length") &&
       !attributes.text.contains("text_resource_storage"))
-    attributes.text["character_length"] = std::to_string(binding.row.canonical_value_maximum_bytes);
+    attributes.text["character_length"] = std::to_string(maximum_bytes);
   std::string encoded;
   if (!api::EncodeCatalogColumnMetadata(attributes, &encoded))
     throw std::invalid_argument("TEXT fixture column metadata cannot be encoded");

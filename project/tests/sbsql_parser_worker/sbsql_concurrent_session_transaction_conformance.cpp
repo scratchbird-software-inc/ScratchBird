@@ -481,14 +481,16 @@ void BindDatatype(api::EngineDescriptor& descriptor) {
   Require(catalog.ok() && catalog.manifest.descriptor_rows.size() == 1,
           "concurrency datatype catalog row unavailable");
   const auto& row = catalog.manifest.descriptor_rows.front();
-  const auto codec = types::LookupDatatypeTypeCodecIdentityV1(
+  const auto* codec = types::FindDatatypeTypeCodecIdentityV3(
       fixture_owner.datatype_catalog_snapshot_uuid,
       fixture_owner.datatype_catalog_generation, fixture_owner.datatype_registry_generation,
       row.descriptor_uuid.value, row.descriptor_epoch);
-  Require(codec.ok, "concurrency datatype codec unavailable");
+  Require(codec != nullptr, "concurrency datatype codec unavailable");
   descriptor.datatype_descriptor_uuid = row.descriptor_uuid.value;
   descriptor.datatype_descriptor_generation = row.descriptor_epoch;
-  descriptor.type_uuid = codec.row.type_uuid;
+  descriptor.type_uuid = codec->legacy_fields.type_uuid;
+  descriptor.datatype_cohort = {fixture_owner.datatype_catalog_snapshot_uuid,
+      fixture_owner.datatype_catalog_generation,fixture_owner.datatype_registry_generation};
 }
 
 api::EngineTypedValue TextValue(std::string value) {
