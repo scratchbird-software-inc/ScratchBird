@@ -1816,9 +1816,24 @@ BlobFactoryStructuralClassV3 ClassifyFactoryStructure(
       request.operation == SB_BLOB_OP_HASH_V3 ||
       request.operation == SB_BLOB_OP_COMPARE_V3 ||
       request.operation == SB_BLOB_OP_INTRINSIC_TRANSFORM_V3;
-  if (carrier.carrier_kind != SB_BLOB_MODE_MATERIALIZED_BYTES_V3 ||
-      !required_modes_present || !materialized_modes || !materialized_owner ||
-      !materialized_operation)
+  const bool logical_modes =
+      (token.mode_bits & SB_BLOB_MODE_IMMUTABLE_READ_V3) != 0 &&
+      carrier_modes == SB_BLOB_MODE_LOGICAL_READER_V3;
+  const bool logical_operation =
+      request.operation >= SB_BLOB_OP_READ_V3 &&
+      request.operation <= SB_BLOB_OP_COMPONENT_ENCODE_V3;
+  const bool requires_replay = request.operation == SB_BLOB_OP_REPLAY_V3 ||
+      request.operation == SB_BLOB_OP_COMPONENT_ENCODE_V3;
+  const bool logical_admitted =
+      carrier.carrier_kind == SB_BLOB_MODE_LOGICAL_READER_V3 &&
+      logical_modes && logical_operation &&
+      (!requires_replay ||
+       (token.mode_bits & SB_BLOB_MODE_REPLAYABLE_SAME_SNAPSHOT_V3) != 0);
+  const bool materialized_admitted =
+      carrier.carrier_kind == SB_BLOB_MODE_MATERIALIZED_BYTES_V3 &&
+      materialized_modes && materialized_operation;
+  if (!required_modes_present || !materialized_owner ||
+      (!materialized_admitted && !logical_admitted))
     return BlobFactoryStructuralClassV3::mode_mismatch;
   return BlobFactoryStructuralClassV3::valid;
 }
@@ -2161,8 +2176,9 @@ void BlobLifetimeAuthorityAdmissionV3Generation1::TransferFrom(
   source.receiver_reclamation_pin_established_ = false;
 }
 
+template <typename Capability, typename Carrier>
 BlobLifetimeRuntimeResultV3
-BlobLifetimeRuntimeFactoryV3Generation1::AdmitMaterialized(
+BlobLifetimeRuntimeFactoryV3Generation1::AdmitCarrier(
     u8 trusted_operation,
     const BlobValidatedProfileHandleV3& profile,
     const BlobLifetimeAuthorityV3* authority,
@@ -2173,9 +2189,16 @@ BlobLifetimeRuntimeFactoryV3Generation1::AdmitMaterialized(
     BlobMonotonicClockBindingV3 request_clock,
     const BlobLifetimeTokenV3& token,
     const BlobLifetimeUseRequestV3& request,
-    const BlobReceiverMaterializedCapabilityV3Generation1& capability,
+    const Capability& capability,
     BlobLifetimeAuthorityAdmissionV3Generation1& out_admission,
-    BlobBoundMaterializedCarrierV3Generation1& out_carrier) noexcept {
+    Carrier& out_carrier) noexcept {
+  constexpr bool logical_reader = std::is_same_v<
+      Capability, BlobReceiverLogicalReaderCapabilityV3Generation1>;
+  static_assert(logical_reader
+      ? std::is_same_v<Carrier, BlobBoundLogicalReaderCarrierV3Generation1>
+      : (std::is_same_v<Capability,
+                       BlobReceiverMaterializedCapabilityV3Generation1> &&
+         std::is_same_v<Carrier, BlobBoundMaterializedCarrierV3Generation1>));
   if (trusted_operation < SB_BLOB_OP_VALIDATE_VIEW_V3 ||
       trusted_operation > SB_BLOB_OP_RESTORE_V3)
     return RuntimeTerminated();
@@ -2301,6 +2324,11 @@ BlobLifetimeRuntimeFactoryV3Generation1::AdmitMaterialized(
     case BlobFactoryStructuralClassV3::mode_mismatch:
       return fail_after_pin("BLOB.HANDLE_MODE_REFUSED", "wrong_mode");
   }
+  // Reconstructible mode metadata cannot change the concrete capability kind.
+  constexpr u8 expected_kind = logical_reader ? SB_BLOB_MODE_LOGICAL_READER_V3
+                                              : SB_BLOB_MODE_MATERIALIZED_BYTES_V3;
+  if (capability.binding_.carrier_kind != expected_kind)
+    return fail_after_pin("BLOB.HANDLE_MODE_REFUSED", "wrong_mode");
   const auto fail_state_after_pin = [&](BlobValueStateV3 state) noexcept {
     auto failure = RuntimeFailure("BLOB.STATE_INVALID", "carrier_state_not_admitted");
     failure.fact.stage = BlobLifetimeFactStageV3::factory_admission;
@@ -2314,6 +2342,12 @@ BlobLifetimeRuntimeFactoryV3Generation1::AdmitMaterialized(
   // A default carrier has VALUE state but no binding. Population is determined
   // fieldwise, never from padding or the default state byte alone.
   const auto& output_binding = out_carrier.binding_;
+  const bool output_backing_populated = [&]() noexcept {
+    if constexpr (logical_reader)
+      return out_carrier.context_ != nullptr || out_carrier.read_at_ != nullptr;
+    else
+      return out_carrier.data_ != nullptr;
+  }();
   const bool output_populated =
       !PlatformUuidIsNil(output_binding.authority_instance_uuid) ||
       output_binding.authority_instance_generation != 0 ||
@@ -2322,7 +2356,7 @@ BlobLifetimeRuntimeFactoryV3Generation1::AdmitMaterialized(
       !PlatformUuidIsNil(output_binding.lifetime_token_uuid) ||
       output_binding.lifetime_token_generation != 0 ||
       output_binding.immutable_binding_generation != 0 ||
-      out_carrier.data_ != nullptr || out_carrier.logical_length_ != 0;
+      output_backing_populated || out_carrier.logical_length_ != 0;
   if (output_populated) {
     if (static_cast<u8>(out_carrier.state_) > 2)
       return fail_after_pin("CINL.LOB.DESCRIPTOR_INVALID", "token_struct_invalid");
@@ -2340,24 +2374,34 @@ BlobLifetimeRuntimeFactoryV3Generation1::AdmitMaterialized(
   if (capability.state_ != BlobValueStateV3::value &&
       capability.state_ != BlobValueStateV3::sql_null)
     return fail_state_after_pin(capability.state_);
+  const bool dirty_null_backing = [&]() noexcept {
+    if constexpr (logical_reader) return false;
+    else return capability.data_ != nullptr;
+  }();
   if (capability.state_ == BlobValueStateV3::sql_null &&
-      (capability.logical_length_ != 0 || capability.data_ != nullptr))
+      (capability.logical_length_ != 0 || dirty_null_backing))
     return fail_state_after_pin(capability.state_);
-  if (capability.logical_length_ != 0 && capability.data_ == nullptr)
-    return fail_state_after_pin(capability.state_);
+  if constexpr (logical_reader) {
+    // Required even for NULL/empty: context is routing, never lifetime proof.
+    if (capability.context_ == nullptr || capability.read_at_ == nullptr)
+      return fail_after_pin("CINL.LOB.DESCRIPTOR_INVALID", "token_struct_invalid");
+  } else {
+    if (capability.logical_length_ != 0 && capability.data_ == nullptr)
+      return fail_state_after_pin(capability.state_);
+  }
 
   constexpr u64 kMaximumAddressableSpan =
       static_cast<u64>(std::numeric_limits<std::size_t>::max());
-  constexpr u64 kMaximumMaterializedSpan =
-      MaximumMaterializedSpanForAddressSpace(kMaximumAddressableSpan);
-  if (capability.logical_length_ > kMaximumMaterializedSpan) {
+  constexpr u64 maximum_length = logical_reader ? kBlobMaximumLogicalBytesV3
+      : MaximumMaterializedSpanForAddressSpace(kMaximumAddressableSpan);
+  if (capability.logical_length_ > maximum_length) {
     auto failure = RuntimeFailure("BLOB.LENGTH_EXCEEDED",
                                   "length_not_representable");
     failure.fact.parameters.present = blob_parameter_actual_length |
                                       blob_parameter_maximum_length |
                                       blob_parameter_operation;
     failure.fact.parameters.actual_length_u64 = capability.logical_length_;
-    failure.fact.parameters.maximum_length_u64 = kMaximumMaterializedSpan;
+    failure.fact.parameters.maximum_length_u64 = maximum_length;
     failure.fact.parameters.operation_enum = request.operation;
     drop_acquired_pins();
     return failure;
@@ -2432,9 +2476,50 @@ BlobLifetimeRuntimeFactoryV3Generation1::AdmitMaterialized(
   out_admission.admitted_ = true;
   out_carrier.binding_ = capability.binding_;
   out_carrier.state_ = capability.state_;
-  out_carrier.data_ = capability.data_;
+  if constexpr (logical_reader) {
+    out_carrier.context_ = capability.context_;
+    out_carrier.read_at_ = capability.read_at_;
+  } else {
+    out_carrier.data_ = capability.data_;
+  }
   out_carrier.logical_length_ = capability.logical_length_;
   return RuntimeSuccess();
+}
+
+BlobLifetimeRuntimeResultV3
+BlobLifetimeRuntimeFactoryV3Generation1::AdmitMaterialized(
+    u8 trusted_operation, const BlobValidatedProfileHandleV3& profile,
+    const BlobLifetimeAuthorityV3* authority,
+    const BaseBlobLifetimeReceiverServicesV3Generation1* services,
+    const BlobReceiverLifetimePinOpsV3Generation1& pin_ops,
+    const BlobLifetimeBudgetControlCapabilityV3Generation1& budget_control,
+    BlobMonotonicClockBindingV3 token_clock,
+    BlobMonotonicClockBindingV3 request_clock,
+    const BlobLifetimeTokenV3& token, const BlobLifetimeUseRequestV3& request,
+    const BlobReceiverMaterializedCapabilityV3Generation1& capability,
+    BlobLifetimeAuthorityAdmissionV3Generation1& out_admission,
+    BlobBoundMaterializedCarrierV3Generation1& out_carrier) noexcept {
+  return AdmitCarrier(trusted_operation, profile, authority, services, pin_ops,
+      budget_control, token_clock, request_clock, token, request, capability,
+      out_admission, out_carrier);
+}
+
+BlobLifetimeRuntimeResultV3
+BlobLifetimeRuntimeFactoryV3Generation1::AdmitLogicalReader(
+    u8 trusted_operation, const BlobValidatedProfileHandleV3& profile,
+    const BlobLifetimeAuthorityV3* authority,
+    const BaseBlobLifetimeReceiverServicesV3Generation1* services,
+    const BlobReceiverLifetimePinOpsV3Generation1& pin_ops,
+    const BlobLifetimeBudgetControlCapabilityV3Generation1& budget_control,
+    BlobMonotonicClockBindingV3 token_clock,
+    BlobMonotonicClockBindingV3 request_clock,
+    const BlobLifetimeTokenV3& token, const BlobLifetimeUseRequestV3& request,
+    const BlobReceiverLogicalReaderCapabilityV3Generation1& capability,
+    BlobLifetimeAuthorityAdmissionV3Generation1& out_admission,
+    BlobBoundLogicalReaderCarrierV3Generation1& out_carrier) noexcept {
+  return AdmitCarrier(trusted_operation, profile, authority, services, pin_ops,
+      budget_control, token_clock, request_clock, token, request, capability,
+      out_admission, out_carrier);
 }
 
 BlobRetainedLifetimeLeaseV3::~BlobRetainedLifetimeLeaseV3() noexcept {

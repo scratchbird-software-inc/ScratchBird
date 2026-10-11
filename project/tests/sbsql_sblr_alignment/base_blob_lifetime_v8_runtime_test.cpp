@@ -409,6 +409,18 @@ class BlobLifetimeRuntimeConformanceAccessV3 final {
 
 class BlobLifetimeReceiverHostV3Generation1 final {
  public:
+  static BlobReceiverLogicalReaderCapabilityV3Generation1 LogicalCapability(
+      const BlobCarrierBindingV3& binding, BlobValueStateV3 state, u64 length,
+      void* context, BlobReadAtV3 read_at) noexcept {
+    return BlobReceiverLogicalReaderCapabilityV3Generation1(
+        binding, state, length, context, read_at);
+  }
+  static BlobReceiverLogicalReaderCapabilityV3Generation1* LogicalCapabilityAt(
+      void* storage, const BlobCarrierBindingV3& binding,
+      void* context, BlobReadAtV3 read_at) noexcept {
+    return new (storage) BlobReceiverLogicalReaderCapabilityV3Generation1(
+        binding, BlobValueStateV3::value, 0, context, read_at);
+  }
   static void PoisonReleasedCapability(
       BlobReceiverMaterializedCapabilityV3Generation1& capability) noexcept {
     capability.logical_length_ = 0;
@@ -1054,6 +1066,214 @@ struct Fixture {
         static_cast<std::uint64_t>(100 + fake.pins));
   }
 };
+
+dt::BlobReaderResultV3 NeverReadDuringAdmission(
+    void*, const dt::BlobReaderRequestV3&) {
+  Fail("logical reader invoked before guarded access");
+}
+
+void LogicalReaderFactoryAdmission() {
+  using Capability = dt::BlobReceiverLogicalReaderCapabilityV3Generation1;
+  using Carrier = dt::BlobBoundLogicalReaderCarrierV3Generation1;
+  static_assert(!std::is_default_constructible_v<Capability>);
+  static_assert(!std::is_copy_constructible_v<Capability>);
+  static_assert(!std::is_move_constructible_v<Capability>);
+  static_assert(!std::is_copy_constructible_v<Carrier>);
+  static_assert(!std::is_move_constructible_v<Carrier>);
+  // Closed owner/operation/mode matrix, including every known and unknown bit.
+  // No logical callback may run, including for the admitted maximum extent.
+  for (unsigned owner = 1; owner != 4; ++owner) {
+    for (unsigned op = 1; op != 14; ++op) {
+      for (unsigned choice = 0; choice != 153; ++choice) {
+        const unsigned modes = choice < 128 ? choice
+            : (0x13U | (1U << (choice - 128 + 7)));
+        Fixture f(0);
+        f.fake.pins = 0;
+        f.token.owner_class = owner;
+        f.request.required_owner_class = owner;
+        if (owner == SB_BLOB_OWNER_EXECUTION_BORROW_V3) {
+          f.token.session_uuid = f.request.expected_session_uuid = BlobUuid(0xb0);
+          f.token.statement_uuid = f.request.expected_statement_uuid = BlobUuid(0xc0);
+        }
+        f.token.mode_bits = modes;
+        f.request.required_mode_bits = SB_BLOB_MODE_IMMUTABLE_READ_V3 |
+                                       SB_BLOB_MODE_LOGICAL_READER_V3;
+        f.request.operation = op;
+        f.carrier_binding.carrier_kind = SB_BLOB_MODE_LOGICAL_READER_V3;
+        auto cap = dt::BlobLifetimeReceiverHostV3Generation1::LogicalCapability(
+            f.carrier_binding, dt::BlobValueStateV3::value,
+            dt::kBlobMaximumLogicalBytesV3, &f.fake, NeverReadDuringAdmission);
+        auto budget = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+            f.ledger, f.pins);
+        const bool replay_required = op == 3 || op == 8;
+        const bool expected = owner != 3 && op >= 2 && op <= 8 &&
+            (modes & 0x39) == 0x11 && (modes & ~0x3f) == 0 &&
+            (!replay_required || (modes & 2) != 0);
+        const auto allocation_before = allocation_probe::calls.load();
+        allocation_probe::enabled.store(true);
+        {
+          dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
+          Carrier carrier;
+          const auto result = dt::BlobLifetimeRuntimeFactoryV3Generation1::
+              AdmitLogicalReader(op, f.profile, &f.authority, &f.services,
+                  f.pins, budget, f.services.monotonic_clock,
+                  f.services.monotonic_clock, f.token, f.request, cap,
+                  admission, carrier);
+          allocation_probe::enabled.store(false);
+          if (result.ok() != expected) {
+            std::cerr << "logical factory owner/op/modes=" << owner << '/'
+                      << op << '/' << modes << " code=" << result.diagnostic_code
+                      << " reason=" << result.reason << '\n';
+            Fail("logical-reader closed admission matrix");
+          }
+          Check(allocation_probe::calls.load() == allocation_before,
+                "logical admission allocated");
+          Check(f.fake.pins == (expected ? 2U : 0U),
+                "logical admission pin custody");
+          Check(carrier.logical_length() ==
+                    (expected ? dt::kBlobMaximumLogicalBytesV3 : 0),
+                "logical admission extent or atomic output");
+          Check(f.fake.call_count == 0 && f.fake.clock_calls == 0 &&
+                    f.fake.cancellation_calls == 0,
+                "logical admission invoked content or runtime callbacks");
+          if (!expected) {
+            const auto carrier_bits = modes & 0x38;
+            const bool malformed = modes == 0 || (modes & ~0x3f) != 0 ||
+                carrier_bits == 0 || (carrier_bits & (carrier_bits - 1)) != 0;
+            Check(result.fact.stage == dt::BlobLifetimeFactStageV3::factory_admission &&
+                      (malformed
+                        ? result.diagnostic_code == "CINL.LOB.DESCRIPTOR_INVALID" &&
+                          result.reason == "token_struct_invalid"
+                        : result.diagnostic_code == "BLOB.HANDLE_MODE_REFUSED" &&
+                          result.reason.empty() &&
+                          result.fact.parameters.operation_enum == op &&
+                          result.fact.parameters.open_mode_enum ==
+                              ((modes & 8) != 0 ? 4 : (modes & 16) != 0 ? 5 : 6)),
+                  "logical admission exact typed mode/shape diagnostic");
+          }
+        }
+        Check(f.fake.pins == 0 && f.fake.pin_drop_calls == 2,
+              "logical admission did not drain both pins");
+      }
+    }
+  }
+
+  for (unsigned mutation = 0; mutation != 28; ++mutation) {
+    Fixture f(0);
+    f.fake.pins = 0;
+    f.token.mode_bits = SB_BLOB_MODE_IMMUTABLE_READ_V3 |
+                       SB_BLOB_MODE_REPLAYABLE_SAME_SNAPSHOT_V3 |
+                       SB_BLOB_MODE_LOGICAL_READER_V3;
+    f.request.required_mode_bits = f.token.mode_bits;
+    f.request.operation = SB_BLOB_OP_COMPONENT_ENCODE_V3;
+    f.carrier_binding.carrier_kind = SB_BLOB_MODE_LOGICAL_READER_V3;
+    auto state = dt::BlobValueStateV3::value;
+    std::uint64_t length = 17;
+    void* context = &f.fake;
+    dt::BlobReadAtV3 read_at = NeverReadDuringAdmission;
+    auto clock = f.services.monotonic_clock;
+    switch (mutation) {
+      case 0: break;
+      case 1: length = 0; break;
+      case 2: length = 0; state = dt::BlobValueStateV3::sql_null; break;
+      case 3: state = dt::BlobValueStateV3::sql_null; break;
+      case 4: state = static_cast<dt::BlobValueStateV3>(2); break;
+      case 5: state = static_cast<dt::BlobValueStateV3>(255); break;
+      case 6: length = dt::kBlobMaximumLogicalBytesV3 + 1; break;
+      case 7: length = UINT64_MAX; break;
+      case 8: context = nullptr; break;
+      case 9: read_at = nullptr; break;
+      case 10: f.carrier_binding.carrier_uuid = {}; break;
+      case 11: f.carrier_binding.carrier_generation = 0; break;
+      case 12: f.carrier_binding.lifetime_token_generation++; break;
+      case 13: f.carrier_binding.immutable_binding_generation++; break;
+      case 14: f.carrier_binding.authority_instance_generation++; break;
+      case 15: f.carrier_binding.lifetime_token_uuid = PlatformUuid(0xd0); break;
+      case 16: f.request.expected_database_uuid = BlobUuid(0xd0); break;
+      case 17: f.request.expected_transaction_uuid = BlobUuid(0xd0); break;
+      case 18: f.request.expected_security_generation++; break;
+      case 19: f.request.expected_snapshot_generation++; break;
+      case 20: f.request.required_owner_class = 1; break;
+      case 21: clock.clock_generation++; break;
+      case 22: f.authority.probe = nullptr; break;
+      case 23: f.services.read_monotonic_ns = nullptr; break;
+      case 24: f.profile.identity.descriptor_generation++; break;
+      case 25: f.carrier_binding.carrier_kind = SB_BLOB_MODE_MATERIALIZED_BYTES_V3; break;
+      case 26: length = 0; context = nullptr; break;
+      case 27: length = 0; state = dt::BlobValueStateV3::sql_null; read_at = nullptr; break;
+    }
+    auto cap = dt::BlobLifetimeReceiverHostV3Generation1::LogicalCapability(
+        f.carrier_binding, state, length, context, read_at);
+    auto budget = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+        f.ledger, f.pins);
+    {
+      dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
+      Carrier carrier;
+      const auto result = dt::BlobLifetimeRuntimeFactoryV3Generation1::
+          AdmitLogicalReader(SB_BLOB_OP_COMPONENT_ENCODE_V3, f.profile,
+              &f.authority, &f.services, f.pins, budget, clock, clock,
+              f.token, f.request, cap, admission, carrier);
+      Check(result.ok() == (mutation < 3), "logical-reader admission mutation");
+      Check(carrier.logical_length() == (mutation < 3 ? length : 0) &&
+                carrier.state() == (mutation < 3 ? state : dt::BlobValueStateV3::value),
+            "logical-reader refusal mutated output");
+      if (mutation == 6 || mutation == 7) {
+        Check(result.diagnostic_code == "BLOB.LENGTH_EXCEEDED" &&
+                  result.fact.parameters.actual_length_u64 == length &&
+                  result.fact.parameters.maximum_length_u64 == dt::kBlobMaximumLogicalBytesV3,
+              "logical-reader exact extent diagnostic");
+      }
+      if (result.ok()) {
+        // A populated output is not silently rebound and its original pin
+        // custody remains intact after the failed second admission.
+        const auto second = dt::BlobLifetimeRuntimeFactoryV3Generation1::
+            AdmitLogicalReader(SB_BLOB_OP_COMPONENT_ENCODE_V3, f.profile,
+                &f.authority, &f.services, f.pins, budget, clock, clock,
+                f.token, f.request, cap, admission, carrier);
+        Check(!second.ok() && second.diagnostic_code == "BLOB.STATE_INVALID" &&
+                  f.fake.pins == 2 && carrier.logical_length() == length &&
+                  carrier.state() == state,
+              "logical-reader second admission changed original custody");
+      }
+    }
+    Check(f.fake.pins == 0, "logical-reader mutation pin leak");
+  }
+
+  // The receiver-created capability itself is unstable until both factory
+  // pins succeed. Fault-protected backing proves it is not eagerly inspected.
+  const auto page_size = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
+  void* page = mmap(nullptr, page_size, PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  Check(page != MAP_FAILED, "logical capability guard allocation");
+  Fixture guarded(0);
+  guarded.fake.pins = 0;
+  auto* cap = dt::BlobLifetimeReceiverHostV3Generation1::LogicalCapabilityAt(
+      page, guarded.carrier_binding, &guarded.fake, NeverReadDuringAdmission);
+  auto budget = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+      guarded.ledger, guarded.pins);
+  Check(mprotect(page, page_size, PROT_NONE) == 0, "logical capability guard");
+  for (unsigned failed_pin = 1; failed_pin != 3; ++failed_pin) {
+    guarded.fake.pin_acquire_calls = 0;
+    guarded.fake.pin_failure_call = failed_pin;
+    guarded.fake.pin_acquire_status = dt::BlobReceiverPinAcquireStatusV3::draining;
+    guarded.fake.pin_zero_cookie = true;
+    dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
+    Carrier carrier;
+    const auto result = dt::BlobLifetimeRuntimeFactoryV3Generation1::
+        AdmitLogicalReader(SB_BLOB_OP_COMPONENT_ENCODE_V3, guarded.profile,
+            &guarded.authority, &guarded.services, guarded.pins, budget,
+            guarded.services.monotonic_clock, guarded.services.monotonic_clock,
+            guarded.token, guarded.request, *cap, admission, carrier);
+    Check(result.diagnostic_code == "BLOB.LIFETIME_AUTHORITY_UNAVAILABLE" &&
+              guarded.fake.pins == 0 && guarded.fake.call_count == 0 &&
+              guarded.fake.pin_acquire_calls == failed_pin,
+          "logical factory inspected unpinned capability or leaked pin");
+  }
+  Check(mprotect(page, page_size, PROT_READ | PROT_WRITE) == 0,
+        "logical capability guard restore");
+  cap->~BlobReceiverLogicalReaderCapabilityV3Generation1();
+  Check(munmap(page, page_size) == 0, "logical capability guard unmap");
+}
 
 struct VisitContext {
   std::array<platform::byte, 8> copied{};
@@ -2230,10 +2450,11 @@ void NullVisitorStatePrecedence() {
 }
 
 void PinResultProtocol() {
-  // All four surfaces share the same status/cookie/reserved-byte contract.
+  // All six surfaces share the same status/cookie/reserved-byte contract.
   // Check both legal zero-cookie refusals and process death for malformed
   // replies, including each reserved byte independently.
-  for (unsigned surface = 0; surface != 4; ++surface) {
+  for (unsigned surface = 0; surface != 6; ++surface) {
+    const bool clone_surface = surface >= 2 && surface < 4;
     for (const unsigned status : {0U, 1U, 2U, 3U, 4U, 255U}) {
       for (int dirty_byte = -1; dirty_byte != 7; ++dirty_byte) {
         for (const bool zero_cookie : {false, true}) {
@@ -2246,14 +2467,14 @@ void PinResultProtocol() {
             Fixture fixture(64);
             dt::BlobRetainedLifetimeLeaseV3 source;
             dt::BlobRetainedLifetimeLeaseV3 destination;
-            if (surface >= 2) {
+            if (clone_surface) {
               auto bound = dt::BlobLifetimeRuntimeConformanceAccessV3::Carrier(
                   fixture.carrier_binding, dt::BlobValueStateV3::value, nullptr, 0);
               if (!dt::RetainBaseBlobLifetimeLeaseV3Generation1(
                       fixture.profile, fixture.Admission(), bound, fixture.token,
                       fixture.request, source).ok()) _exit(2);
               fixture.fake.pin_clone_failure_call = surface - 1;
-            } else fixture.fake.pin_failure_call = surface + 1;
+            } else fixture.fake.pin_failure_call = surface % 2 + 1;
             fixture.fake.pin_acquire_status =
                 static_cast<dt::BlobReceiverPinAcquireStatusV3>(status);
             fixture.fake.pin_zero_cookie = zero_cookie;
@@ -2265,16 +2486,33 @@ void PinResultProtocol() {
                 fixture.carrier_binding, dt::BlobValueStateV3::value, nullptr, 0);
             dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
             dt::BlobBoundMaterializedCarrierV3Generation1 carrier;
-            const auto result = surface >= 2 ? source.CloneInto(destination)
-                : dt::BlobLifetimeRuntimeFactoryV3Generation1::AdmitMaterialized(
+            dt::BlobBoundLogicalReaderCarrierV3Generation1 logical_carrier;
+            const auto result = [&]() {
+              if (clone_surface) return source.CloneInto(destination);
+              if (surface >= 4) {
+                fixture.token.mode_bits = SB_BLOB_MODE_IMMUTABLE_READ_V3 |
+                                          SB_BLOB_MODE_LOGICAL_READER_V3;
+                fixture.request.required_mode_bits = fixture.token.mode_bits;
+                fixture.carrier_binding.carrier_kind = SB_BLOB_MODE_LOGICAL_READER_V3;
+                auto logical = dt::BlobLifetimeReceiverHostV3Generation1::LogicalCapability(
+                    fixture.carrier_binding, dt::BlobValueStateV3::value, 0,
+                    &fixture.fake, NeverReadDuringAdmission);
+                return dt::BlobLifetimeRuntimeFactoryV3Generation1::AdmitLogicalReader(
+                    SB_BLOB_OP_READ_V3, fixture.profile, &fixture.authority,
+                    &fixture.services, fixture.pins, budget,
+                    fixture.services.monotonic_clock, fixture.services.monotonic_clock,
+                    fixture.token, fixture.request, logical, admission, logical_carrier);
+              }
+              return dt::BlobLifetimeRuntimeFactoryV3Generation1::AdmitMaterialized(
                     SB_BLOB_OP_READ_V3, fixture.profile, &fixture.authority,
                     &fixture.services, fixture.pins, budget,
                     fixture.services.monotonic_clock, fixture.services.monotonic_clock,
                     fixture.token, fixture.request, capability, admission, carrier);
+            }();
             if (malformed) _exit(3); // A malformed provider must not return.
             if (status == 0) {
               if (!result.ok()) _exit(4);
-              if (surface >= 2 &&
+              if (clone_surface &&
                   (!source.Release().ok() || !destination.Release().ok())) _exit(5);
               _exit(0);
             }
@@ -2290,7 +2528,7 @@ void PinResultProtocol() {
                 result.fact.parameters.phase_enum == dt::BlobLifetimePublicPhaseV3::retain &&
                 fixture.fake.pin_drop_calls == (surface % 2) &&
                 fixture.fake.invariant_calls == 0;
-            if (surface >= 2 && (!source.retained() || !source.Release().ok()))
+            if (clone_surface && (!source.retained() || !source.Release().ok()))
               _exit(6);
             _exit(exact ? 0 : 7);
           }
@@ -5307,6 +5545,7 @@ int main(int argc, char** argv) {
   const std::string_view mode = argc > 1 ? std::string_view{argv[1]}
                                          : std::string_view{argv[0]};
   if (mode == "factory") {
+    LogicalReaderFactoryAdmission();
     FactoryEarlyGateObservability();
     FactoryStateAndClockBoundaries();
     PinSelectorObservability();
@@ -5364,6 +5603,7 @@ int main(int argc, char** argv) {
     return EXIT_SUCCESS;
   }
   ProductionPrecedence();
+  LogicalReaderFactoryAdmission();
   AuthenticatedMaterializedLength();
   NullVisitorStatePrecedence();
   FactoryEarlyGateObservability();

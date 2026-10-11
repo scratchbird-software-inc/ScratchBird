@@ -491,7 +491,7 @@ class BlobLifetimeAuthorityAdmissionV3Generation1 final {
   bool admitted_ = false;
 };
 
-struct BlobMaterializedCarrierBindingV3 {
+struct BlobCarrierBindingV3 {
   platform::Uuid authority_instance_uuid{};
   u64 authority_instance_generation = 0;
   platform::Uuid carrier_uuid{};
@@ -500,6 +500,90 @@ struct BlobMaterializedCarrierBindingV3 {
   u64 lifetime_token_generation = 0;
   u64 immutable_binding_generation = 0;
   u8 carrier_kind = SB_BLOB_MODE_MATERIALIZED_BYTES_V3;
+};
+
+// The binary binding has the same shape for every carrier. Concrete private
+// capabilities, not this reconstructible metadata, select construction rights.
+using BlobMaterializedCarrierBindingV3 = BlobCarrierBindingV3;
+
+// Generation-1 private reader boundary. None of these structures is persisted
+// or added to the frozen public C ABI. The receiver copies into admitted scratch;
+// a callback never returns a byte pointer or transfers lifetime authority.
+struct BlobReaderDiagnosticFactsV3 {
+  u8 lifetime_enum = 0;
+  u8 expiry_reason_enum = 0;
+  u8 resource_enum = 0;
+  u8 format_enum = 0;
+  u32 reason_enum = 0;
+  u64 window_octets = 0;
+  u64 timeout_milliseconds = 0;
+  u64 required = 0;
+  u64 available = 0;
+};
+
+struct BlobReaderRequestV3 {
+  u64 offset = 0;
+  u64 requested_octets = 0;
+  byte* destination = nullptr;
+  u64 destination_capacity = 0;
+  u64 absolute_deadline_monotonic_ns = 0;
+};
+
+struct BlobReaderResultV3 {
+  u8 status = 1;
+  std::array<u8, 7> reserved{};
+  u64 actual_octets = 0;
+  u32 fact_bits = 0;
+  BlobReaderDiagnosticFactsV3 diagnostic_facts{};
+};
+
+using BlobReadAtV3 = BlobReaderResultV3 (*)(void*, const BlobReaderRequestV3&);
+
+class BlobReceiverLogicalReaderCapabilityV3Generation1 final {
+ public:
+  BlobReceiverLogicalReaderCapabilityV3Generation1(
+      const BlobReceiverLogicalReaderCapabilityV3Generation1&) = delete;
+  BlobReceiverLogicalReaderCapabilityV3Generation1& operator=(
+      const BlobReceiverLogicalReaderCapabilityV3Generation1&) = delete;
+  BlobReceiverLogicalReaderCapabilityV3Generation1(
+      BlobReceiverLogicalReaderCapabilityV3Generation1&&) = delete;
+  BlobReceiverLogicalReaderCapabilityV3Generation1& operator=(
+      BlobReceiverLogicalReaderCapabilityV3Generation1&&) = delete;
+ private:
+  friend class BlobLifetimeReceiverHostV3Generation1;
+  friend class BlobLifetimeRuntimeFactoryV3Generation1;
+  BlobReceiverLogicalReaderCapabilityV3Generation1(
+      const BlobCarrierBindingV3& binding, BlobValueStateV3 state,
+      u64 logical_length, void* context, BlobReadAtV3 read_at) noexcept
+      : binding_(binding), state_(state), logical_length_(logical_length),
+        context_(context), read_at_(read_at) {}
+  BlobCarrierBindingV3 binding_{};
+  BlobValueStateV3 state_ = BlobValueStateV3::value;
+  u64 logical_length_ = 0;
+  void* context_ = nullptr;
+  BlobReadAtV3 read_at_ = nullptr;
+};
+
+class BlobBoundLogicalReaderCarrierV3Generation1 final {
+ public:
+  BlobBoundLogicalReaderCarrierV3Generation1() noexcept = default;
+  BlobBoundLogicalReaderCarrierV3Generation1(
+      const BlobBoundLogicalReaderCarrierV3Generation1&) = delete;
+  BlobBoundLogicalReaderCarrierV3Generation1& operator=(
+      const BlobBoundLogicalReaderCarrierV3Generation1&) = delete;
+  BlobBoundLogicalReaderCarrierV3Generation1(
+      BlobBoundLogicalReaderCarrierV3Generation1&&) = delete;
+  BlobBoundLogicalReaderCarrierV3Generation1& operator=(
+      BlobBoundLogicalReaderCarrierV3Generation1&&) = delete;
+  BlobValueStateV3 state() const noexcept { return state_; }
+  u64 logical_length() const noexcept { return logical_length_; }
+ private:
+  friend class BlobLifetimeRuntimeFactoryV3Generation1;
+  BlobCarrierBindingV3 binding_{};
+  BlobValueStateV3 state_ = BlobValueStateV3::value;
+  u64 logical_length_ = 0;
+  void* context_ = nullptr;
+  BlobReadAtV3 read_at_ = nullptr;
 };
 
 // Implemented by the receiver owner in the stable host. Its exact class name
@@ -801,6 +885,21 @@ struct BlobLifetimeRuntimeResultV3 {
 
 class BlobLifetimeRuntimeFactoryV3Generation1 final {
  public:
+  static BlobLifetimeRuntimeResultV3 AdmitLogicalReader(
+      u8 trusted_operation,
+      const BlobValidatedProfileHandleV3& profile,
+      const BlobLifetimeAuthorityV3* authority,
+      const BaseBlobLifetimeReceiverServicesV3Generation1* services,
+      const BlobReceiverLifetimePinOpsV3Generation1& pin_ops,
+      const BlobLifetimeBudgetControlCapabilityV3Generation1& budget_control,
+      BlobMonotonicClockBindingV3 token_clock,
+      BlobMonotonicClockBindingV3 request_clock,
+      const BlobLifetimeTokenV3& token,
+      const BlobLifetimeUseRequestV3& request,
+      const BlobReceiverLogicalReaderCapabilityV3Generation1& capability,
+      BlobLifetimeAuthorityAdmissionV3Generation1& out_admission,
+      BlobBoundLogicalReaderCarrierV3Generation1& out_carrier) noexcept;
+
   static BlobLifetimeRuntimeResultV3 AdmitMaterialized(
       // Trusted caller-owned scalar, never fetched from an unpinned request.
       u8 trusted_operation,
@@ -816,6 +915,22 @@ class BlobLifetimeRuntimeFactoryV3Generation1 final {
       const BlobReceiverMaterializedCapabilityV3Generation1& capability,
       BlobLifetimeAuthorityAdmissionV3Generation1& out_admission,
       BlobBoundMaterializedCarrierV3Generation1& out_carrier) noexcept;
+ private:
+  template <typename Capability, typename Carrier>
+  static BlobLifetimeRuntimeResultV3 AdmitCarrier(
+      u8 trusted_operation,
+      const BlobValidatedProfileHandleV3& profile,
+      const BlobLifetimeAuthorityV3* authority,
+      const BaseBlobLifetimeReceiverServicesV3Generation1* services,
+      const BlobReceiverLifetimePinOpsV3Generation1& pin_ops,
+      const BlobLifetimeBudgetControlCapabilityV3Generation1& budget_control,
+      BlobMonotonicClockBindingV3 token_clock,
+      BlobMonotonicClockBindingV3 request_clock,
+      const BlobLifetimeTokenV3& token,
+      const BlobLifetimeUseRequestV3& request,
+      const Capability& capability,
+      BlobLifetimeAuthorityAdmissionV3Generation1& out_admission,
+      Carrier& out_carrier) noexcept;
 };
 
 class BlobRetainedLifetimeLeaseV3;
