@@ -3,6 +3,7 @@
 #include "api_result_snapshot_codec.hpp"
 #include "api_diagnostics.hpp"
 #include "datatype_time.hpp"
+#include "datatype_timestamp_diagnostic.hpp"
 #include "query/result_metadata.hpp"
 #include <algorithm>
 #include <cstdlib>
@@ -286,13 +287,14 @@ int main(){
   // Capture owns strings rather than retaining views into a datatype call, and
   // preserves the already dominant native/owning diagnostic and occurrence.
   namespace dt=scratchbird::core::datatypes;
+  const auto check_capture = [&]<typename Fact>(auto preserve) {
   for (const bool existing_native : {false, true}) {
   std::string detail(96,'d'), name(96,'n'), token(96,'t');
-  dt::TimeDiagnosticFactV3 time;
+  Fact time;
   time.status=cause.status;time.diagnostic_code=detail;time.detail=detail;time.parameter_count=4;
   for(unsigned i=0;i<4;++i) {
     auto& p=time.parameters[i];const auto& original=cause.parameters[i];
-    p.kind=static_cast<dt::TimeDiagnosticParameterKindV3>(i+1);p.name=name;
+    p.kind=static_cast<decltype(time.parameters[0].kind)>(i+1);p.name=name;
     p.unsigned_value=original.unsigned_value;p.signed_value=original.signed_value;
     p.uuid_value=original.uuid_value;p.token_value=token;
   }
@@ -302,7 +304,7 @@ int main(){
     if(!existing_native)value.diagnostics[0].native_source.reset();
     const auto original=Encode(value);
     try {
-      fail_after=point;api::PreserveEngineApiTimeDiagnosticCause(value.diagnostics[0],time);fail_after=-1;
+      fail_after=point;preserve(value.diagnostics[0],time);fail_after=-1;
       Check(value.diagnostics[0].code==source.diagnostics[0].code &&
             value.diagnostics[0].occurrence_uuid==source.diagnostics[0].occurrence_uuid &&
             value.diagnostics[0].native_source->record.diagnostic_code==
@@ -326,14 +328,17 @@ int main(){
     const auto original=Encode(value);
     auto invalid=time;
     if(bad_count)invalid.parameter_count=5;
-    else invalid.parameters[3].kind=static_cast<dt::TimeDiagnosticParameterKindV3>(255);
+    else invalid.parameters[3].kind=static_cast<decltype(time.parameters[0].kind)>(255);
     bool refused=false;
-    try{api::PreserveEngineApiTimeDiagnosticCause(value.diagnostics[0],invalid);}
+    try{preserve(value.diagnostics[0],invalid);}
     catch(const std::invalid_argument&){refused=true;}
-    Check(refused&&Encode(value)==original,"malformed TIME fact partially changed diagnostic");
+    Check(refused&&Encode(value)==original,"malformed temporal fact partially changed diagnostic");
   }
   }
 
+  };
+  check_capture.template operator()<dt::TimeDiagnosticFactV3>(api::PreserveEngineApiTimeDiagnosticCause);
+  check_capture.template operator()<dt::TimestampDiagnosticFactV3>(api::PreserveEngineApiTimestampDiagnosticCause);
   // These bytes are user data, not identity authority: retain all UUID versions.
   for (unsigned version = 0; version < 16; ++version) {
     auto user_uuid = Id(90); user_uuid.bytes[6] = static_cast<std::uint8_t>(version << 4);

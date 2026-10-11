@@ -3,6 +3,7 @@
 #pragma once
 
 #include "datatype_date.hpp"
+#include "datatype_timestamp_diagnostic.hpp"
 #include "datatype_operations.hpp"
 #include "datatype_type_codec_identity_v3.hpp"
 
@@ -157,24 +158,6 @@ struct TimestampExecutionControlV3 {
   bool force_reencode_mismatch_for_conformance = false;
 };
 
-enum class TimestampDiagnosticParameterKindV3 : u8 {
-  none = 0, unsigned_u64 = 1, signed_i64 = 2, uuid = 3, token = 4,
-};
-struct TimestampDiagnosticParameterV3 {
-  TimestampDiagnosticParameterKindV3 kind = TimestampDiagnosticParameterKindV3::none;
-  std::string_view name;
-  u64 unsigned_value = 0;
-  std::int64_t signed_value = 0;
-  platform::Uuid uuid_value;
-  std::string_view token_value;
-};
-struct TimestampDiagnosticFactV3 {
-  Status status;
-  std::string_view diagnostic_code;
-  std::string_view detail;
-  std::array<TimestampDiagnosticParameterV3, 4> parameters{};
-  u8 parameter_count = 0;
-};
 
 #define SB_TIMESTAMP_RESULT(name, payload) \
   struct name { Status status; TimestampDiagnosticFactV3 diagnostic; payload; \

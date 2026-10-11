@@ -8,6 +8,7 @@
 
 #include "api_unsupported.hpp"
 #include "../../core/datatypes/datatype_time_diagnostic.hpp"
+#include "../../core/datatypes/datatype_timestamp_diagnostic.hpp"
 
 #include <stdexcept>
 #include <type_traits>
@@ -38,15 +39,16 @@ EngineApiDiagnostic MakeEngineApiDiagnosticFromNative(
   return diagnostic;
 }
 
-void PreserveEngineApiTimeDiagnosticCause(
-    EngineApiDiagnostic& diagnostic,
-    const scratchbird::core::datatypes::TimeDiagnosticFactV3& cause) {
-  namespace dt = scratchbird::core::datatypes;
+namespace {
+template <typename Fact>
+void PreserveTemporalDiagnosticCause(
+    EngineApiDiagnostic& diagnostic, const Fact& cause, std::string_view message_key) {
+  using Kind = decltype(cause.parameters[0].kind);
   namespace cd = scratchbird::core::diagnostics;
   static_assert(std::is_nothrow_move_assignable_v<cd::NativeDiagnosticSource>);
   static_assert(std::is_nothrow_move_assignable_v<cd::NativeDatatypeDiagnosticFact>);
   if (cause.parameter_count > cause.parameters.size())
-    throw std::invalid_argument("invalid TIME diagnostic parameter count");
+    throw std::invalid_argument("invalid temporal diagnostic parameter count");
   cd::NativeDatatypeDiagnosticFact owned;
   owned.status = cause.status;
   owned.diagnostic_code = cause.diagnostic_code;
@@ -56,12 +58,12 @@ void PreserveEngineApiTimeDiagnosticCause(
     const auto& source = cause.parameters[i];
     auto& target = owned.parameters[i];
     switch (source.kind) {
-      case dt::TimeDiagnosticParameterKindV3::none: target.kind = cd::NativeDatatypeParameterKind::none; break;
-      case dt::TimeDiagnosticParameterKindV3::unsigned_u64: target.kind = cd::NativeDatatypeParameterKind::unsigned_u64; break;
-      case dt::TimeDiagnosticParameterKindV3::signed_i64: target.kind = cd::NativeDatatypeParameterKind::signed_i64; break;
-      case dt::TimeDiagnosticParameterKindV3::uuid: target.kind = cd::NativeDatatypeParameterKind::uuid; break;
-      case dt::TimeDiagnosticParameterKindV3::token: target.kind = cd::NativeDatatypeParameterKind::token; break;
-      default: throw std::invalid_argument("invalid TIME diagnostic parameter kind");
+      case Kind::none: target.kind = cd::NativeDatatypeParameterKind::none; break;
+      case Kind::unsigned_u64: target.kind = cd::NativeDatatypeParameterKind::unsigned_u64; break;
+      case Kind::signed_i64: target.kind = cd::NativeDatatypeParameterKind::signed_i64; break;
+      case Kind::uuid: target.kind = cd::NativeDatatypeParameterKind::uuid; break;
+      case Kind::token: target.kind = cd::NativeDatatypeParameterKind::token; break;
+      default: throw std::invalid_argument("invalid temporal diagnostic parameter kind");
     }
     target.name = source.name;
     target.unsigned_value = source.unsigned_value;
@@ -75,11 +77,24 @@ void PreserveEngineApiTimeDiagnosticCause(
     cd::NativeDiagnosticSource source;
     source.record.status = cause.status;
     source.record.diagnostic_code = cause.diagnostic_code;
-    source.record.message_key = "datatype.time.rejected";
+    source.record.message_key = message_key;
     source.canonical_metadata = cd::CaptureCanonicalDiagnosticMetadata(cause.diagnostic_code);
     source.datatype_cause = std::move(owned);
     diagnostic.native_source = std::move(source);
   }
+}
+
+}  // namespace
+
+void PreserveEngineApiTimeDiagnosticCause(
+    EngineApiDiagnostic& diagnostic,
+    const scratchbird::core::datatypes::TimeDiagnosticFactV3& cause) {
+  PreserveTemporalDiagnosticCause(diagnostic, cause, "datatype.time.rejected");
+}
+void PreserveEngineApiTimestampDiagnosticCause(
+    EngineApiDiagnostic& diagnostic,
+    const scratchbird::core::datatypes::TimestampDiagnosticFactV3& cause) {
+  PreserveTemporalDiagnosticCause(diagnostic, cause, "datatype.timestamp.rejected");
 }
 
 EngineApiDiagnostic MakeUnavailableDiagnostic(std::string operation_id) {

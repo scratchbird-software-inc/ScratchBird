@@ -180,221 +180,6 @@ bool DirectParseUnsigned128Payload(std::string_view text,
   return true;
 }
 
-bool DirectParseFixedDigits(std::string_view text,
-                            std::size_t offset,
-                            std::size_t count,
-                            int* out) {
-  if (out == nullptr || offset + count > text.size()) {
-    return false;
-  }
-  int parsed = 0;
-  for (std::size_t index = 0; index < count; ++index) {
-    const char ch = text[offset + index];
-    if (!std::isdigit(static_cast<unsigned char>(ch))) {
-      return false;
-    }
-    parsed = parsed * 10 + (ch - '0');
-  }
-  *out = parsed;
-  return true;
-}
-
-bool DirectLeapYear(int year) {
-  return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
-}
-
-int DirectDaysInMonth(int year, int month) {
-  switch (month) {
-    case 1: return 31;
-    case 2: return DirectLeapYear(year) ? 29 : 28;
-    case 3: return 31;
-    case 4: return 30;
-    case 5: return 31;
-    case 6: return 30;
-    case 7: return 31;
-    case 8: return 31;
-    case 9: return 30;
-    case 10: return 31;
-    case 11: return 30;
-    case 12: return 31;
-    default: return 0;
-  }
-}
-
-bool DirectParseDateParts(std::string_view text, int* year, int* month, int* day) {
-  int parsed_year = 0;
-  int parsed_month = 0;
-  int parsed_day = 0;
-  if (text.size() != 10 || text[4] != '-' || text[7] != '-') {
-    return false;
-  }
-  if (!DirectParseFixedDigits(text, 0, 4, &parsed_year) ||
-      !DirectParseFixedDigits(text, 5, 2, &parsed_month) ||
-      !DirectParseFixedDigits(text, 8, 2, &parsed_day)) {
-    return false;
-  }
-  if (parsed_year < 1 || parsed_month < 1 || parsed_month > 12 ||
-      parsed_day < 1 || parsed_day > DirectDaysInMonth(parsed_year, parsed_month)) {
-    return false;
-  }
-  if (year != nullptr) { *year = parsed_year; }
-  if (month != nullptr) { *month = parsed_month; }
-  if (day != nullptr) { *day = parsed_day; }
-  return true;
-}
-
-std::int64_t DirectDaysFromCivil(int year, unsigned month, unsigned day) {
-  year -= month <= 2 ? 1 : 0;
-  const int era = (year >= 0 ? year : year - 399) / 400;
-  const unsigned year_of_era = static_cast<unsigned>(year - era * 400);
-  const unsigned day_of_year =
-      (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
-  const unsigned day_of_era =
-      year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-  return static_cast<std::int64_t>(era) * 146097 +
-         static_cast<std::int64_t>(day_of_era) - 719468;
-}
-
-bool DirectParseFractionNanos(std::string_view text,
-                              std::size_t* offset,
-                              std::uint32_t* nanos) {
-  if (offset == nullptr || nanos == nullptr) {
-    return false;
-  }
-  *nanos = 0;
-  if (*offset >= text.size() || text[*offset] != '.') {
-    return true;
-  }
-  ++(*offset);
-  const std::size_t start = *offset;
-  std::uint32_t parsed = 0;
-  while (*offset < text.size() &&
-         std::isdigit(static_cast<unsigned char>(text[*offset]))) {
-    if (*offset - start >= 9) {
-      return false;
-    }
-    parsed = parsed * 10 + static_cast<std::uint32_t>(text[*offset] - '0');
-    ++(*offset);
-  }
-  const std::size_t digits = *offset - start;
-  if (digits == 0) {
-    return false;
-  }
-  for (std::size_t index = digits; index < 9; ++index) {
-    parsed *= 10;
-  }
-  *nanos = parsed;
-  return true;
-}
-
-bool DirectParseTimeParts(std::string_view text,
-                          std::uint64_t* nanos_since_midnight,
-                          std::uint32_t* nanos_of_second = nullptr) {
-  int hour = 0;
-  int minute = 0;
-  int second = 0;
-  if (text.size() < 8 || text[2] != ':' || text[5] != ':') {
-    return false;
-  }
-  if (!DirectParseFixedDigits(text, 0, 2, &hour) ||
-      !DirectParseFixedDigits(text, 3, 2, &minute) ||
-      !DirectParseFixedDigits(text, 6, 2, &second)) {
-    return false;
-  }
-  if (hour < 0 || hour > 23 || minute < 0 || minute > 59 ||
-      second < 0 || second > 59) {
-    return false;
-  }
-  std::size_t offset = 8;
-  std::uint32_t nanos = 0;
-  if (!DirectParseFractionNanos(text, &offset, &nanos) || offset != text.size()) {
-    return false;
-  }
-  if (nanos_since_midnight != nullptr) {
-    const std::uint64_t seconds =
-        static_cast<std::uint64_t>(hour) * 3600ull +
-        static_cast<std::uint64_t>(minute) * 60ull +
-        static_cast<std::uint64_t>(second);
-    *nanos_since_midnight = seconds * 1000000000ull + nanos;
-  }
-  if (nanos_of_second != nullptr) {
-    *nanos_of_second = nanos;
-  }
-  return true;
-}
-
-bool DirectParseTimezoneOffsetMinutes(std::string_view text,
-                                      std::size_t* end,
-                                      int* offset_minutes) {
-  if (end == nullptr || offset_minutes == nullptr) {
-    return false;
-  }
-  *offset_minutes = 0;
-  if (*end == 0) {
-    return true;
-  }
-  if (text[*end - 1] == 'Z' || text[*end - 1] == 'z') {
-    --(*end);
-    return true;
-  }
-  if (*end < 6) {
-    return true;
-  }
-  const std::size_t offset = *end - 6;
-  if ((text[offset] != '+' && text[offset] != '-') || text[offset + 3] != ':') {
-    return true;
-  }
-  int hour = 0;
-  int minute = 0;
-  if (!DirectParseFixedDigits(text, offset + 1, 2, &hour) ||
-      !DirectParseFixedDigits(text, offset + 4, 2, &minute) ||
-      hour > 23 || minute > 59) {
-    return false;
-  }
-  *offset_minutes = (hour * 60 + minute) * (text[offset] == '-' ? -1 : 1);
-  *end = offset;
-  return true;
-}
-
-bool DirectParseTimestampPayload(std::string_view text,
-                                 std::vector<scratchbird::core::platform::byte>* out) {
-  std::size_t end = text.size();
-  int offset_minutes = 0;
-  if (!DirectParseTimezoneOffsetMinutes(text, &end, &offset_minutes)) {
-    return false;
-  }
-  const std::string_view local = text.substr(0, end);
-  const std::size_t separator = local.find('T') == std::string_view::npos
-                                    ? local.find(' ')
-                                    : local.find('T');
-  if (separator == std::string_view::npos) {
-    return false;
-  }
-  int year = 0;
-  int month = 0;
-  int day = 0;
-  if (!DirectParseDateParts(local.substr(0, separator), &year, &month, &day)) {
-    return false;
-  }
-  std::uint64_t nanos_since_midnight = 0;
-  std::uint32_t nanos_of_second = 0;
-  if (!DirectParseTimeParts(local.substr(separator + 1),
-                            &nanos_since_midnight,
-                            &nanos_of_second)) {
-    return false;
-  }
-  const std::int64_t days = DirectDaysFromCivil(
-      year, static_cast<unsigned>(month), static_cast<unsigned>(day));
-  const std::int64_t seconds_since_midnight =
-      static_cast<std::int64_t>(nanos_since_midnight / 1000000000ull);
-  const std::int64_t epoch_seconds =
-      days * 86400 + seconds_since_midnight -
-      static_cast<std::int64_t>(offset_minutes) * 60;
-  DirectAppendLittleSigned(out, epoch_seconds, 8);
-  DirectAppendLittleUnsigned(out, nanos_of_second, 4);
-  DirectAppendLittleSigned(out, 0, 4);
-  return true;
-}
 
 bool DirectParseI64Text(std::string_view text, std::int64_t* out) {
   if (out == nullptr) {
@@ -875,7 +660,7 @@ bool DirectValidateNativeTemporalValue(const EngineTypedValue& typed,
     if (diagnostic) *diagnostic = MakeInvalidRequestDiagnostic("dml.native_temporal", std::move(detail));
     return false;
   };
-  if (target_type != dt::CanonicalTypeId::date && target_type != dt::CanonicalTypeId::time)
+  if (target_type != dt::CanonicalTypeId::date && target_type != dt::CanonicalTypeId::time && target_type != dt::CanonicalTypeId::timestamp)
     return refuse("unsupported_target");
   const auto& source = typed.descriptor;
   const auto& descriptor = destination ? *destination : source;
@@ -914,6 +699,8 @@ bool DirectValidateNativeTemporalValue(const EngineTypedValue& typed,
           "datatype.native_temporal.rejected", std::string(decoded.diagnostic.detail), true);
       if constexpr (std::is_same_v<std::remove_cvref_t<decltype(decoded.diagnostic)>, dt::TimeDiagnosticFactV3>)
         PreserveEngineApiTimeDiagnosticCause(rejected, decoded.diagnostic);
+      if constexpr (std::is_same_v<std::remove_cvref_t<decltype(decoded.diagnostic)>, dt::TimestampDiagnosticFactV3>)
+        PreserveEngineApiTimestampDiagnosticCause(rejected, decoded.diagnostic);
       *diagnostic = std::move(rejected);
     }
     return false;
@@ -922,6 +709,12 @@ bool DirectValidateNativeTemporalValue(const EngineTypedValue& typed,
     if (!bound_index_key::BindOrderedDateProfile(&binding)) return refuse("date_profile");
     return decoded_result(dt::DecodeCanonicalDateComponentNoAllocV3(*binding.date_profile,
         typed.isSqlNull() ? dt::DateValueStateV3::sql_null : dt::DateValueStateV3::value,
+        slot_nullable, typed.binary_value));
+  }
+  if (target_type == dt::CanonicalTypeId::timestamp) {
+    if (!bound_index_key::BindOrderedTimestampProfile(&binding)) return refuse("timestamp_profile");
+    return decoded_result(dt::DecodeCanonicalTimestampComponentNoAllocV3(*binding.timestamp_profile,
+        typed.isSqlNull() ? dt::TimestampValueStateV3::sql_null : dt::TimestampValueStateV3::value,
         slot_nullable, typed.binary_value));
   }
   if (!bound_index_key::BindOrderedTimeProfile(&binding)) return refuse("time_profile");
@@ -933,7 +726,7 @@ bool DirectValidateNativeTemporalValue(const EngineTypedValue& typed,
 bool DirectPackTypedPayload(dt::CanonicalTypeId target_type,
                             const EngineTypedValue& typed,
                             std::vector<scratchbird::core::platform::byte>* out) {
-  if (target_type == dt::CanonicalTypeId::date || target_type == dt::CanonicalTypeId::time) {
+  if (target_type == dt::CanonicalTypeId::date || target_type == dt::CanonicalTypeId::time || target_type == dt::CanonicalTypeId::timestamp) {
     if (!out || !DirectValidateNativeTemporalValue(typed, target_type)) return false;
     *out = typed.binary_value;
     return true;
@@ -1014,8 +807,6 @@ bool DirectPackTypedPayload(dt::CanonicalTypeId target_type,
     case dt::CanonicalTypeId::real32:
     case dt::CanonicalTypeId::real64:
       return DirectParseRealPayload(target_type, typed.encoded_value, out);
-    case dt::CanonicalTypeId::timestamp:
-      return DirectParseTimestampPayload(typed.encoded_value, out);
     case dt::CanonicalTypeId::interval:
       return DirectParseIntervalPayload(typed.encoded_value, out);
     case dt::CanonicalTypeId::binary:
@@ -1035,7 +826,7 @@ bool DirectPackTypedPayload(dt::CanonicalTypeId target_type,
 
 CrudStoredValue DirectStoredValueForColumn(
     const EngineTypedValue& typed, dt::CanonicalTypeId target_type) {
-  if (target_type == dt::CanonicalTypeId::date || target_type == dt::CanonicalTypeId::time) {
+  if (target_type == dt::CanonicalTypeId::date || target_type == dt::CanonicalTypeId::time || target_type == dt::CanonicalTypeId::timestamp) {
     if (!DirectValidateNativeTemporalValue(typed, target_type))
       throw std::invalid_argument("native temporal column requires an exact bound canonical component");
     return CrudTypedValuePayload(typed);
@@ -1059,7 +850,7 @@ scratchbird::storage::page::RowDataCell DirectPhysicalCellFromTypedValue(
   cell.column_ordinal = ordinal;
   dt::CanonicalTypeId target_type =
       dt::CanonicalTypeIdFromStableName(std::string(target_canonical_type_name));
-  if (target_type == dt::CanonicalTypeId::date || target_type == dt::CanonicalTypeId::time) {
+  if (target_type == dt::CanonicalTypeId::date || target_type == dt::CanonicalTypeId::time || target_type == dt::CanonicalTypeId::timestamp) {
     if (!DirectValidateNativeTemporalValue(typed, target_type))
       throw std::invalid_argument("native temporal physical component invalid");
     cell.value.type_id = target_type;
@@ -1106,7 +897,7 @@ scratchbird::storage::page::RowDataCell DirectPhysicalCellFromTypedValueWithPlan
     const DirectFixedWidthPayloadValidationColumnPlan& column_plan) {
   scratchbird::storage::page::RowDataCell cell;
   cell.column_ordinal = ordinal;
-  if (column_plan.target_type == dt::CanonicalTypeId::date || column_plan.target_type == dt::CanonicalTypeId::time) {
+  if (column_plan.target_type == dt::CanonicalTypeId::date || column_plan.target_type == dt::CanonicalTypeId::time || column_plan.target_type == dt::CanonicalTypeId::timestamp) {
     if (!DirectValidateNativeTemporalValue(typed, column_plan.target_type))
       throw std::invalid_argument("native temporal planned physical component invalid");
     cell.value.type_id = column_plan.target_type;
@@ -1191,7 +982,7 @@ std::vector<scratchbird::storage::page::RowDataCell> DirectPhysicalCells(
       // The receiver's owner must still validate these canonical components.
       // A retained temporal value cannot masquerade as opaque BINARY to evade
       // the profile-aware row codec. Non-temporal fallback behavior is unchanged.
-      if (retained_type == dt::CanonicalTypeId::date || retained_type == dt::CanonicalTypeId::time)
+      if (retained_type == dt::CanonicalTypeId::date || retained_type == dt::CanonicalTypeId::time || retained_type == dt::CanonicalTypeId::timestamp)
         cell.value.type_id = retained_type;
     }
     if (lob) {
@@ -1313,7 +1104,7 @@ std::string DirectFixedWidthTypedPayloadFailure(
   for (std::size_t field_index = 0; field_index < input_row.fields.size(); ++field_index) {
     const auto& typed = input_row.fields[field_index].second;
     const auto type = plan[field_index].target_type;
-    if ((type == dt::CanonicalTypeId::date || type == dt::CanonicalTypeId::time) &&
+    if ((type == dt::CanonicalTypeId::date || type == dt::CanonicalTypeId::time || type == dt::CanonicalTypeId::timestamp) &&
         !DirectValidateNativeTemporalValue(typed, type))
       return "typed_temporal_payload_invalid:" + plan[field_index].column_name;
     if (typed.isSqlNull()) {
