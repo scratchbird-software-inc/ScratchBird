@@ -15,4 +15,11 @@ SblrResult EvaluateSblrTemporalCast(
     bool explicit_cast, bool compatibility,
     std::shared_ptr<const internal_api::EngineDescriptor> target,
     bool try_conversion = false);
+
+enum class SblrCalendarField { dow, doy, quarter, isodow, week };
+// DATE/civil TIMESTAMP only. Result is an actual bound native INT64, never text.
+SblrResult EvaluateSblrTemporalCalendar(
+    std::string_view operation, SblrCalendarField field, const SblrValue& value,
+    const SblrExecutionContext& context,
+    std::shared_ptr<const internal_api::EngineDescriptor> target);
 }

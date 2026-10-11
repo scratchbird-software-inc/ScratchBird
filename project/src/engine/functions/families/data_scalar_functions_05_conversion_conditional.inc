@@ -484,13 +484,15 @@
     return MakeFunctionSuccess(request, {MakeInt64Value("int64", extracted)});
   }
 
-  // dow/doy/quarter temporal sub-stream 2026-05-11. Each canonical takes a
-  // single date/timestamp argument and returns the int64 field extracted via
-  // ExtractTimestampField. ExtractTimestampField extended with dow (Sunday=0
-  // per PostgreSQL convention via days_from_civil mod 7), doy (1..366), and
-  // quarter (1..4) field handlers.
+  // Native DATE/civil TIMESTAMP calendar facts use exact bound Core routines
+  // and return native INT64. The older explicit text-input branch remains
+  // separate; native carriers must never reach its text parser/NULL shortcut.
   if (IdIs(id, {"data.scalar.dow", "sb.fn.temporal.dow", "sb.temporal.dow", "dow", "day_of_week"})) {
     if (request.arguments.size() != 1) return RefuseFunctionInvalidInput(request, "dow expects one temporal argument");
+    if (scratchbird::engine::sblr::IsSblrCivilTemporalType(request.arguments[0].value.descriptor_id))
+      return {scratchbird::engine::sblr::EvaluateSblrTemporalCalendar(
+          id, scratchbird::engine::sblr::SblrCalendarField::dow, request.arguments[0].value,
+          request.context.sblr_context, request.result_descriptor)};
     if (IsSqlNull(request.arguments[0].value)) return MakeFunctionSuccess(request, {MakeNullValue("int64")});
     std::int64_t extracted = 0;
     if (!ExtractTimestampField("dow", ValueAsText(request.arguments[0].value), &extracted)) {
@@ -500,6 +502,10 @@
   }
   if (IdIs(id, {"data.scalar.doy", "sb.fn.temporal.doy", "sb.temporal.doy", "doy", "day_of_year"})) {
     if (request.arguments.size() != 1) return RefuseFunctionInvalidInput(request, "doy expects one temporal argument");
+    if (scratchbird::engine::sblr::IsSblrCivilTemporalType(request.arguments[0].value.descriptor_id))
+      return {scratchbird::engine::sblr::EvaluateSblrTemporalCalendar(
+          id, scratchbird::engine::sblr::SblrCalendarField::doy, request.arguments[0].value,
+          request.context.sblr_context, request.result_descriptor)};
     if (IsSqlNull(request.arguments[0].value)) return MakeFunctionSuccess(request, {MakeNullValue("int64")});
     std::int64_t extracted = 0;
     if (!ExtractTimestampField("doy", ValueAsText(request.arguments[0].value), &extracted)) {
@@ -509,6 +515,10 @@
   }
   if (IdIs(id, {"data.scalar.quarter", "sb.fn.temporal.quarter", "sb.temporal.quarter", "quarter"})) {
     if (request.arguments.size() != 1) return RefuseFunctionInvalidInput(request, "quarter expects one temporal argument");
+    if (scratchbird::engine::sblr::IsSblrCivilTemporalType(request.arguments[0].value.descriptor_id))
+      return {scratchbird::engine::sblr::EvaluateSblrTemporalCalendar(
+          id, scratchbird::engine::sblr::SblrCalendarField::quarter, request.arguments[0].value,
+          request.context.sblr_context, request.result_descriptor)};
     if (IsSqlNull(request.arguments[0].value)) return MakeFunctionSuccess(request, {MakeNullValue("int64")});
     std::int64_t extracted = 0;
     if (!ExtractTimestampField("quarter", ValueAsText(request.arguments[0].value), &extracted)) {
@@ -518,6 +528,10 @@
   }
   if (IdIs(id, {"data.scalar.isodow", "sb.fn.temporal.isodow", "sb.temporal.isodow", "isodow"})) {
     if (request.arguments.size() != 1) return RefuseFunctionInvalidInput(request, "isodow expects one temporal argument");
+    if (scratchbird::engine::sblr::IsSblrCivilTemporalType(request.arguments[0].value.descriptor_id))
+      return {scratchbird::engine::sblr::EvaluateSblrTemporalCalendar(
+          id, scratchbird::engine::sblr::SblrCalendarField::isodow, request.arguments[0].value,
+          request.context.sblr_context, request.result_descriptor)};
     if (IsSqlNull(request.arguments[0].value)) return MakeFunctionSuccess(request, {MakeNullValue("int64")});
     std::int64_t extracted = 0;
     if (!ExtractTimestampField("isodow", ValueAsText(request.arguments[0].value), &extracted)) {
@@ -527,6 +541,10 @@
   }
   if (IdIs(id, {"data.scalar.week", "sb.fn.temporal.week", "sb.temporal.week", "week"})) {
     if (request.arguments.size() != 1) return RefuseFunctionInvalidInput(request, "week expects one temporal argument");
+    if (scratchbird::engine::sblr::IsSblrCivilTemporalType(request.arguments[0].value.descriptor_id))
+      return {scratchbird::engine::sblr::EvaluateSblrTemporalCalendar(
+          id, scratchbird::engine::sblr::SblrCalendarField::week, request.arguments[0].value,
+          request.context.sblr_context, request.result_descriptor)};
     if (IsSqlNull(request.arguments[0].value)) return MakeFunctionSuccess(request, {MakeNullValue("int64")});
     std::int64_t extracted = 0;
     if (!ExtractTimestampField("week", ValueAsText(request.arguments[0].value), &extracted)) {

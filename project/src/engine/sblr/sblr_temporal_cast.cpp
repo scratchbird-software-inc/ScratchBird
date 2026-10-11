@@ -8,6 +8,7 @@
 #include "datatype_date.hpp"
 #include "datatype_time.hpp"
 #include "canonical_utf8.hpp"
+#include <type_traits>
 
 namespace scratchbird::engine::sblr {
 namespace {
@@ -310,7 +311,104 @@ SblrResult Cast(
   return MakeSblrFailure(SblrStatusCode::resource_exhausted, std::string(operation),
       MakeSblrRefusalDiagnostic("RESOURCE.BUDGET_EXCEEDED", context, "native temporal cast allocation failed"));
 }
+template<class Traits>
+SblrResult Calendar(std::string_view operation, SblrCalendarField field,
+                    const SblrValue& value, const SblrExecutionContext& context,
+                    std::shared_ptr<const api::EngineDescriptor> target) try {
+  const auto fail = [&](std::string_view code, std::string_view detail) {
+    return MakeSblrFailure(code == "RESOURCE.BUDGET_EXCEEDED" ? SblrStatusCode::resource_exhausted :
+                          SblrStatusCode::execution_failed, std::string(operation),
+        MakeSblrRefusalDiagnostic(std::string(code), context, std::string(detail)));
+  };
+  if (value.descriptor_id != Traits::name || !value.projection_descriptor || !target ||
+      target->canonical_type_name != "int64" || !target->charset_uuid.is_nil() ||
+      !target->collation_uuid.is_nil() ||
+      target->datatype_cohort != value.projection_descriptor->datatype_cohort)
+    return fail("CTI.TEMPORAL.DESCRIPTOR_INVALID", "calendar requires native temporal and INT64 bindings");
+  Endpoint<Traits> source;
+  if (!Bind(*value.projection_descriptor, true, source))
+    return fail(source.failure.diagnostic_code.empty() ? "CTI.TEMPORAL.DESCRIPTOR_INVALID" :
+                source.failure.diagnostic_code, "invalid calendar source binding");
+  api::CatalogColumnMetadata fields;
+  if (!api::AdmitCatalogColumnMetadata(target->encoded_descriptor, &fields) || !fields.identities.empty())
+    return fail("CTI.TEMPORAL.DESCRIPTOR_INVALID", "invalid calendar result metadata");
+  for (const auto& [key, ignored] : fields.text)
+    if (key != "nullability" && key != "nullable")
+      return fail("CTI.TEMPORAL.DESCRIPTOR_INVALID", "unhandled calendar result modifier");
+  ExecutionTypeDescriptor destination;
+  std::string detail;
+  core::platform::Status provider_status;
+  if (!executor::BuildBoundExecutionTypeDescriptor(*target, dt::CanonicalTypeId::int64,
+          &destination, &detail, &provider_status))
+    return fail(provider_status.code == core::platform::StatusCode::memory_allocation_failed ?
+                "RESOURCE.BUDGET_EXCEEDED" : "CTI.TEMPORAL.DESCRIPTOR_INVALID", detail);
+  if (!Carrier<Traits>(value, true))
+    return fail(value.is_null ? "DATATYPE.NULL_STATE.INVALID" : "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+                "invalid calendar source carrier");
+  const auto decoded = Traits::Decode(*source.profile,
+      value.is_null ? Traits::State::sql_null : Traits::State::value,
+      source.execution.nullable_allowed, value.binary_value);
+  if (!decoded.ok()) return fail(decoded.diagnostic.diagnostic_code, decoded.diagnostic.detail);
+  const auto native = Traits::Own(source.profile, decoded.value);
+  if (value.is_null && !destination.nullable_allowed)
+    return fail("DATATYPE.NULL_NOT_ADMITTED", "calendar result is nonnullable");
+  if (field != SblrCalendarField::dow && field != SblrCalendarField::doy &&
+      field != SblrCalendarField::quarter && field != SblrCalendarField::isodow &&
+      field != SblrCalendarField::week)
+    return fail("CTI.TEMPORAL.OPERATION_REFUSED", "unknown calendar field");
+  std::int64_t number = 0;
+  bool is_null = false;
+  if (field == SblrCalendarField::week) {
+    const auto fact = [&] {
+      if constexpr (std::is_same_v<Traits, DateTraits>)
+        return dt::DateIsoWeekV3(native.view(), destination.nullable_allowed);
+      else return dt::TimestampIsoWeekV3(native.view(), destination.nullable_allowed);
+    }();
+    if (!fact.ok()) return fail(fact.diagnostic.diagnostic_code, fact.diagnostic.detail);
+    is_null = fact.is_null;
+    if constexpr (std::is_same_v<Traits, DateTraits>) number = fact.iso_week;
+    else number = fact.value.iso_week;
+  } else {
+    const auto fact = [&] {
+      if constexpr (std::is_same_v<Traits, DateTraits>) {
+        if (field == SblrCalendarField::doy) return dt::DateDayOfYearV3(native.view(), destination.nullable_allowed);
+        if (field == SblrCalendarField::quarter) return dt::DateQuarterV3(native.view(), destination.nullable_allowed);
+        return dt::DateIsoWeekdayV3(native.view(), destination.nullable_allowed);
+      } else {
+        if (field == SblrCalendarField::doy) return dt::TimestampDayOfYearV3(native.view(), destination.nullable_allowed);
+        if (field == SblrCalendarField::quarter) return dt::TimestampQuarterV3(native.view(), destination.nullable_allowed);
+        return dt::TimestampIsoWeekdayV3(native.view(), destination.nullable_allowed);
+      }
+    }();
+    if (!fact.ok()) return fail(fact.diagnostic.diagnostic_code, fact.diagnostic.detail);
+    is_null = fact.is_null;
+    number = fact.signed_value;
+    if (field == SblrCalendarField::dow && !is_null) number %= 7;
+  }
+  SblrValue output;
+  output.descriptor_id = "int64";
+  output.projection_descriptor = std::move(target);
+  output.is_null = is_null;
+  if (!is_null) {
+    output.payload_kind = SblrValuePayloadKind::signed_integer;
+    output.has_int64_value = true;
+    output.int64_value = number;
+  }
+  auto published = MakeSblrSuccess(std::string(operation));
+  published.scalar_values.push_back(std::move(output));
+  return published;
+} catch (const std::bad_alloc&) {
+  return MakeSblrFailure(SblrStatusCode::resource_exhausted, std::string(operation),
+      MakeSblrRefusalDiagnostic("RESOURCE.BUDGET_EXCEEDED", context, "native calendar allocation failed"));
+}
 } // namespace
+
+SblrResult EvaluateSblrTemporalCalendar(
+    std::string_view operation, SblrCalendarField field, const SblrValue& value,
+    const SblrExecutionContext& context, std::shared_ptr<const api::EngineDescriptor> target) {
+  if (value.descriptor_id == "date") return Calendar<DateTraits>(operation, field, value, context, std::move(target));
+  return Calendar<TimestampTraits>(operation, field, value, context, std::move(target));
+}
 
 SblrResult EvaluateSblrTemporalCast(
     std::string_view operation, const SblrValue& value,

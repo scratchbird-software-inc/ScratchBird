@@ -135,6 +135,14 @@ add_test(NAME sbsql_sblr_alignment_openpgp_seipd COMMAND sbsql_sblr_alignment_op
 set_tests_properties(sbsql_sblr_alignment_openpgp_seipd PROPERTIES
   TIMEOUT 180 LABELS "sbsql_sblr_alignment;crypto;openpgp;component_regression;not_SQL_E2E")
 
+add_executable(sbsql_sblr_alignment_native_calendar native_calendar_test.cpp)
+target_compile_features(sbsql_sblr_alignment_native_calendar PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_calendar PRIVATE ../../src/engine ../../src/engine/functions)
+target_link_libraries(sbsql_sblr_alignment_native_calendar PRIVATE sb_engine_executor sb_engine_sblr sb_engine_functions)
+add_test(NAME sbsql_sblr_alignment_native_calendar COMMAND sbsql_sblr_alignment_native_calendar)
+set_tests_properties(sbsql_sblr_alignment_native_calendar PROPERTIES
+  TIMEOUT 60 LABELS "sbsql_sblr_alignment;native_temporal;calendar;component_regression;not_SQL_E2E")
+
 foreach(temporal_kind IN ITEMS date time)
   add_executable(sbsql_sblr_alignment_native_${temporal_kind}_cast native_${temporal_kind}_cast_test.cpp)
   target_compile_features(sbsql_sblr_alignment_native_${temporal_kind}_cast PRIVATE cxx_std_23)
