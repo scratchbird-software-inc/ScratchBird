@@ -40,6 +40,7 @@
 #include "canonical_sblr_admission_test_helper.hpp"
 
 #include "../database_lifecycle/credentialed_database_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 
 #include <array>
 #include <atomic>
@@ -73,8 +74,7 @@ constexpr auto kOverlapTableUuid = scratchbird::tests::FixtureUuidLiteral("019e0
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
-    std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -89,14 +89,6 @@ void ConfigureMemoryFixture() {
       MemoryPolicy(), "sbsql_concurrent_session_transaction_conformance");
   Require(configured.ok(), "FSPE-011E memory fixture configuration failed");
   Require(configured.fixture_mode, "FSPE-011E memory fixture mode was not active");
-}
-
-std::filesystem::path MakeTempDir() {
-  std::string tmpl = "/tmp/sb_sbsql_concurrent_session_txn.XXXXXX";
-  std::vector<char> writable(tmpl.begin(), tmpl.end());
-  writable.push_back('\0');
-  char* made = ::mkdtemp(writable.data());
-  return made == nullptr ? std::filesystem::path{} : std::filesystem::path(made);
 }
 
 bool HasEvidence(const api::EngineApiResult& result,
@@ -219,6 +211,7 @@ std::string IdentityBytes(const api::EngineUuid& id) {
 class FixtureSession {
  public:
   explicit FixtureSession(const api::EngineRequestContext& context) {
+    try {
     sb_engine_open_params_v1_t open{};
     open.struct_size = sizeof(open);
     open.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
@@ -238,15 +231,28 @@ class FixtureSession {
     begin.trust_mode = SB_ENGINE_TRUST_SERVER_ISOLATED;
     Check(sb_engine_session_begin(engine_, &begin, &session_, nullptr), nullptr,
           "session begin");
+    } catch (...) {
+      Close();
+      throw;
+    }
   }
-  ~FixtureSession() {
+  ~FixtureSession() { Close(); }
+  void Close() noexcept {
     sb_engine_session_end_params_v1_t end{};
     end.struct_size = sizeof(end);
     end.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
     end.rollback_active_transactions = 1;
     end.cancel_open_results = 1;
-    (void)sb_engine_session_end(session_, &end, nullptr);
-    (void)sb_engine_close(engine_, nullptr);
+    // Do not delete the fixture behind a failed native release. Terminating
+    // this test process leaves failure artifacts available for inspection.
+    if (session_) {
+      if (sb_engine_session_end(session_, &end, nullptr) != SB_ENGINE_STATUS_OK) std::terminate();
+      session_ = nullptr;
+    }
+    if (engine_) {
+      if (sb_engine_close(engine_, nullptr) != SB_ENGINE_STATUS_OK) std::terminate();
+      engine_ = nullptr;
+    }
   }
   FixtureSession(const FixtureSession&) = delete;
   FixtureSession& operator=(const FixtureSession&) = delete;
@@ -266,7 +272,7 @@ class FixtureSession {
         }
       }
     }
-    if (result) sb_engine_result_release(result);
+    if (result && sb_engine_result_release(result) != SB_ENGINE_STATUS_OK) std::terminate();
     if (status != SB_ENGINE_STATUS_OK)
       Require(false, std::string("concurrency fixture ") + phase + " failed");
   }
@@ -278,6 +284,7 @@ class FixtureSession {
 class FixtureStatement {
  public:
   FixtureStatement(const FixtureSession& session, const api::EngineRequestContext& base) {
+    try {
     namespace bridge = scratchbird::server_engine_bridge;
     bridge::StatementContextAcquireRequest request;
     request.engine_context = &base;
@@ -291,9 +298,18 @@ class FixtureStatement {
     const auto copied = bridge::CopyStatementContextEngineContextV1(
         receipt_, &context, &result);
     FixtureSession::Check(copied, result, "statement context copy");
+    } catch (...) {
+      Close();
+      throw;
+    }
   }
-  ~FixtureStatement() {
-    (void)scratchbird::server_engine_bridge::ReleaseStatementContextReceipt(receipt_);
+  ~FixtureStatement() { Close(); }
+  void Close() noexcept {
+    if (receipt_) {
+      if (scratchbird::server_engine_bridge::ReleaseStatementContextReceipt(receipt_) != SB_ENGINE_STATUS_OK)
+        std::terminate();
+      receipt_ = {};
+    }
   }
   FixtureStatement(const FixtureStatement&) = delete;
   FixtureStatement& operator=(const FixtureStatement&) = delete;
@@ -2454,10 +2470,17 @@ void VerifyParserCacheConformance() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  const bool cleanup_probe = argc == 2 && std::string_view(argv[1]) == "--fixture-cleanup-failure";
+  std::filesystem::path work;
+  bool injected_failure = false;
+  try {
   ConfigureMemoryFixture();
-  const auto work = MakeTempDir();
-  Require(!work.empty(), "failed to create temp directory");
+  scratchbird::tests::OwnedTempDirectory artifacts;
+  work = artifacts.path();
+  struct SessionCleanup {
+    ~SessionCleanup() { fixture_sessions.clear(); }
+  } cleanup;
   const auto database_path = work / "fspe011e.sbdb";
 
   const auto created =
@@ -2473,6 +2496,12 @@ int main() {
                               "SBLR_LIFECYCLE_OPEN_DATABASE",
                               BaseContext(database_path));
   Require(open_result.api_result.ok, "SBLR lifecycle open failed");
+
+  if (cleanup_probe) {
+    (void)SessionFor(BaseContext(database_path));
+    injected_failure = true;
+    Require(false, "injected failure after native fixture session acquisition");
+  }
 
   CreateSchemaTableAndIndex(database_path);
   VerifyTransactionVisibility(database_path);
@@ -2490,7 +2519,18 @@ int main() {
   VerifyParserCacheConformance();
 
   fixture_sessions.clear();
+  artifacts.Cleanup();
   std::cout << "sbsql_concurrent_session_transaction_conformance=passed\n";
   std::cout << "cdp_concurrency_transaction_stress_gate=passed\n";
   return EXIT_SUCCESS;
+  } catch (const std::exception& error) {
+    if (cleanup_probe && injected_failure && fixture_sessions.empty() &&
+        !work.empty() && !std::filesystem::exists(work) &&
+        std::string_view(error.what()) == "injected failure after native fixture session acquisition") {
+      std::cout << "fixture native session unwind and artifact cleanup=passed\n";
+      return EXIT_SUCCESS;
+    }
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }

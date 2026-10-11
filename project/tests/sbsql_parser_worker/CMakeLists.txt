@@ -7375,6 +7375,11 @@ if(TARGET sb_engine_sblr AND TARGET sb_server_core AND TARGET sbl_sbsql_parser_p
   set_tests_properties(sbsql_concurrent_session_transaction_conformance PROPERTIES
     LABELS "sbsql_concurrent_session_transaction_conformance;cdp_concurrency_transaction_stress_gate;CDP-032;mga;transaction;concurrency;sbsql_parser_worker;mga_transaction_regression"
   )
+  add_test(NAME sbsql_concurrent_session_fixture_cleanup_gate
+    COMMAND sbsql_concurrent_session_transaction_conformance --fixture-cleanup-failure)
+  set_tests_properties(sbsql_concurrent_session_fixture_cleanup_gate PROPERTIES
+    LABELS "fixture_cleanup;native_resource_custody;sbsql_parser_worker"
+    TIMEOUT 60)
   add_test(
     NAME cdp_concurrency_transaction_stress_gate
     COMMAND sbsql_concurrent_session_transaction_conformance
