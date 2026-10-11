@@ -20,6 +20,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set_tests_properties(crypto_bootstrap_identity_${mode}_gate PROPERTIES
       TIMEOUT 15 LABELS "runtime;crypto;binary_uuid;bootstrap;fault_injection;component")
   endforeach()
+  foreach(mode layout real short unavailable zero interrupted partial_failure clock_failure range regression quota failure_quota concurrent fork fork_inflight seal_busy)
+    add_test(NAME crypto_bootstrap_diagnostic_${mode}_gate COMMAND crypto_bootstrap_identity_gate diagnostic ${mode})
+    set_tests_properties(crypto_bootstrap_diagnostic_${mode}_gate PROPERTIES
+      TIMEOUT 15 LABELS "runtime;crypto;binary_uuid;bootstrap;diagnostics;fault_injection;component")
+  endforeach()
   add_executable(runtime_crypto_pool_owner_gate "${PROJECT_SOURCE_DIR}/tests/concurrency/runtime_crypto_pool_owner_gate.cpp")
   target_compile_features(runtime_crypto_pool_owner_gate PRIVATE cxx_std_20)
   target_include_directories(runtime_crypto_pool_owner_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/core/runtime")

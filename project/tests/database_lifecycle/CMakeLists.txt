@@ -5463,6 +5463,23 @@ if(TARGET sb_server_core)
   add_executable(database_lifecycle_memory_policy_config_conformance
     memory_policy_config_conformance.cpp
   )
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(server_crypto_config_bootstrap_gate
+      "${PROJECT_SOURCE_DIR}/tests/concurrency/server_crypto_config_bootstrap_gate.cpp")
+    target_compile_features(server_crypto_config_bootstrap_gate PRIVATE cxx_std_23)
+    target_include_directories(server_crypto_config_bootstrap_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/core/runtime")
+    target_compile_definitions(server_crypto_config_bootstrap_gate PRIVATE
+      SB_DEFAULT_POLICY_PACK_ROOT="${PROJECT_SOURCE_DIR}/resources/policy-packs/default-local-password")
+    target_link_libraries(server_crypto_config_bootstrap_gate PRIVATE sb_server_core)
+    target_link_options(server_crypto_config_bootstrap_gate PRIVATE
+      "LINKER:--wrap=RAND_bytes" "LINKER:--wrap=getrandom" "LINKER:--wrap=write")
+    foreach(mode default override diag diag_source_failure diag_write_eintr diag_write_partial diag_write_full
+                 fail_adopt fail_install fail_prepare)
+      add_test(NAME server_crypto_config_bootstrap_${mode}_gate COMMAND server_crypto_config_bootstrap_gate ${mode})
+      set_tests_properties(server_crypto_config_bootstrap_${mode}_gate PROPERTIES
+        TIMEOUT 30 LABELS "runtime;crypto;configuration;actual_memory;component;not_runtime_acceptance")
+    endforeach()
+  endif()
   target_compile_features(database_lifecycle_memory_policy_config_conformance PRIVATE cxx_std_23)
   target_compile_definitions(database_lifecycle_memory_policy_config_conformance PRIVATE
     SB_DEFAULT_POLICY_PACK_ROOT="${PROJECT_SOURCE_DIR}/resources/policy-packs/default-local-password"

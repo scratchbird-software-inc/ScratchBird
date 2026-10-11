@@ -53,7 +53,7 @@ bool IncrementAllocation(Uuid& value) noexcept {
   if ((value.bytes[6] & 15) != 15) { ++value.bytes[6]; return true; }
   return false;
 }
-// OS entropy is deliberately private to the single bootstrap batch below.
+// OS entropy is private to bootstrap identities and startup diagnostics.
 // It is never consulted by ordinary generation, even after RAND failure.
 std::optional<Uuid> BootstrapSeed(u64 millis) noexcept {
   Uuid candidate{};
@@ -166,6 +166,54 @@ std::optional<Uuid> IssueIdentity(RuntimeGenerator& generator, bool bootstrap) n
   }
 }
 } // namespace
+
+namespace {
+// Establish process ownership before touching a function-static generator.
+// A fork during initialization/issuance refuses before any inherited mutex or
+// initialization guard, even if the parent later fails the source operation.
+std::atomic<std::uint64_t> diagnostic_process{0};
+std::atomic_flag diagnostic_claim=ATOMIC_FLAG_INIT;
+std::atomic<bool> diagnostic_sealed{false};
+bool DiagnosticProcessMatches() noexcept {
+  const auto process=ProcessIdentity();
+  std::uint64_t unclaimed=0;
+  diagnostic_process.compare_exchange_strong(unclaimed,process);
+  return diagnostic_process.load()==process;
+}
+struct DiagnosticClaimRelease {
+  ~DiagnosticClaimRelease() {diagnostic_claim.clear(std::memory_order_release);}
+};
+}
+
+CryptoBootstrapDiagnosticIdentityResult IssueCryptoBootstrapDiagnosticIdentityV7() noexcept {
+  using E=CryptoBootstrapDiagnosticError;
+  if constexpr (!std::atomic<std::uint64_t>::is_always_lock_free)
+    return {E::unsupported_platform,{}};
+  if(!DiagnosticProcessMatches()) return {E::foreign_process,{}};
+  if(diagnostic_claim.test_and_set(std::memory_order_acquire)) return {E::busy,{}};
+  DiagnosticClaimRelease release;
+  if(diagnostic_sealed.load()) return {E::sealed,{}};
+  try {
+    static unsigned attempts=0; // Serialized by the claim; failures consume quota too.
+    if(attempts==kCryptoBootstrapDiagnosticAttemptLimit) return {E::exhausted,{}};
+    ++attempts;
+    static RuntimeGenerator generator;
+    const auto generated=IssueIdentity(generator,true);
+    return generated ? CryptoBootstrapDiagnosticIdentityResult{E::none,*generated} :
+                       CryptoBootstrapDiagnosticIdentityResult{E::source_failure,{}};
+  } catch(...) {return {E::source_failure,{}};}
+}
+
+CryptoBootstrapDiagnosticError SealCryptoBootstrapDiagnosticIdentities() noexcept {
+  using E=CryptoBootstrapDiagnosticError;
+  if constexpr (!std::atomic<std::uint64_t>::is_always_lock_free)
+    return E::unsupported_platform;
+  if(!DiagnosticProcessMatches()) return E::foreign_process;
+  if(diagnostic_claim.test_and_set(std::memory_order_acquire)) return E::busy;
+  DiagnosticClaimRelease release;
+  diagnostic_sealed.store(true);
+  return E::none;
+}
 
 std::optional<Uuid> IssueRuntimeIdentityV7() noexcept {
   try {

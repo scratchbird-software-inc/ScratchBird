@@ -134,6 +134,22 @@ struct CryptoBootstrapIdentities {
 // memory grant. The host serializes bootstrap against every OpenSSL user.
 std::optional<CryptoBootstrapIdentities> IssueCryptoBootstrapIdentitiesV7() noexcept;
 
+// Separate source-owned diagnostic occurrences before provider installation.
+// Never reuses the four bootstrap identities or acts as an ordinary RAND fallback.
+inline constexpr unsigned kCryptoBootstrapDiagnosticAttemptLimit = 64;
+enum class CryptoBootstrapDiagnosticError {
+  none, busy, sealed, foreign_process, exhausted, source_failure, unsupported_platform
+};
+struct CryptoBootstrapDiagnosticIdentityResult {
+  CryptoBootstrapDiagnosticError error = CryptoBootstrapDiagnosticError::source_failure;
+  Uuid value{};
+  bool ok() const noexcept { return error == CryptoBootstrapDiagnosticError::none; }
+};
+CryptoBootstrapDiagnosticIdentityResult IssueCryptoBootstrapDiagnosticIdentityV7() noexcept;
+// Serialize with startup; busy refuses rather than racing a live issuer.
+// A successful seal is terminal and idempotent for this process.
+CryptoBootstrapDiagnosticError SealCryptoBootstrapDiagnosticIdentities() noexcept;
+
 UuidResult GenerateCompatibilityTimeNodeV1(u64 gregorian_100ns_timestamp,
                                            u16 clock_sequence,
                                            std::array<byte, 6> node);

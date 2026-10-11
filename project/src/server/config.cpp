@@ -1629,8 +1629,9 @@ ServerConfigCompatibilityResult ClassifyServerConfigFormat(
         compatibility_class ==
             ServerConfigCompatibilityClass::kMigrationRequiredWithoutPlanRefused;
     result.compatibility_class = compatibility_class;
+    auto message_key = LowerAscii(code);
     result.diagnostic = ConfigDiagnostic(std::move(code),
-                                         LowerAscii(code),
+                                         std::move(message_key),
                                          std::move(message),
                                          {{"format", std::string(format)},
                                           {"detail", std::move(detail)}});

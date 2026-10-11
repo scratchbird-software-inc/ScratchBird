@@ -187,7 +187,10 @@ struct ServerConfigCompatibilityResult {
   bool migration_required = false;
   ServerConfigCompatibilityClass compatibility_class =
       ServerConfigCompatibilityClass::kUnsupportedNew;
-  ServerDiagnostic diagnostic;
+  // An empty result slot is not an emitted diagnostic occurrence. In
+  // particular a successful pre-provider format check must not invoke RAND.
+  // Refusal branches replace this slot with a fully issued source record.
+  ServerDiagnostic diagnostic{.occurrence_uuid = {}};
 };
 
 const char* ServerModeName(ServerMode mode);

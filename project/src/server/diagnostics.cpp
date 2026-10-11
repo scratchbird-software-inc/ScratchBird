@@ -9,6 +9,7 @@
 // SEARCH_KEY: SB_SERVER_PRODUCT_DIAGNOSTICS
 
 #include "diagnostics.hpp"
+#include "uuid.hpp"
 #include "wire/binary_status_packet.hpp"
 
 #include <cctype>
@@ -18,8 +19,68 @@
 #include <string>
 #include <type_traits>
 #include <utility>
+#include <cerrno>
+#include <cstring>
+#if defined(_WIN32)
+#include <io.h>
+#else
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 namespace scratchbird::server {
+
+namespace {thread_local bool bootstrap_diagnostic_source=false;}
+BootstrapDiagnosticScope::BootstrapDiagnosticScope() noexcept
+    : previous_(bootstrap_diagnostic_source) {bootstrap_diagnostic_source=true;}
+BootstrapDiagnosticScope::~BootstrapDiagnosticScope() {bootstrap_diagnostic_source=previous_;}
+
+std::array<std::uint8_t,16> NewServerDiagnosticOccurrenceUuid() {
+  if(!bootstrap_diagnostic_source) return core::uuid::NewDiagnosticOccurrenceUuid();
+  const auto issued=core::uuid::IssueCryptoBootstrapDiagnosticIdentityV7();
+  if(!issued.ok()) throw BootstrapDiagnosticIdentityFailure(issued.error);
+  return issued.value.bytes;
+}
+
+bool WriteBootstrapDiagnosticFailureStatus(int descriptor,
+    core::uuid::CryptoBootstrapDiagnosticError error) noexcept {
+  using E=core::uuid::CryptoBootstrapDiagnosticError;
+  const char* text=nullptr;
+  switch(error) {
+    case E::none: return false;
+    case E::busy: text="startup failed: diagnostic identity issuer busy\n"; break;
+    case E::sealed: text="startup failed: diagnostic identity issuer sealed\n"; break;
+    case E::foreign_process: text="startup failed: diagnostic identity requires fresh process\n"; break;
+    case E::exhausted: text="startup failed: diagnostic identity quota exhausted\n"; break;
+    case E::source_failure: text="startup failed: diagnostic clock or entropy unavailable\n"; break;
+    case E::unsupported_platform: text="startup failed: diagnostic identity platform unsupported\n"; break;
+    default: text="startup failed: invalid diagnostic identity outcome\n"; break;
+  }
+#if !defined(_WIN32)
+  // Never change flags on the caller's shared open-file description. A pipe,
+  // terminal or socket without nonblocking mode may stall on the first write.
+  struct stat sink{};
+  if (::fstat(descriptor, &sink) != 0) return false;
+  if (!S_ISREG(sink.st_mode)) {
+    const auto flags = ::fcntl(descriptor, F_GETFL);
+    if (flags < 0 || !(flags & O_NONBLOCK)) return false;
+  }
+#endif
+  const auto size=std::strlen(text);
+  std::size_t offset=0;
+  for(unsigned attempt=0;offset<size && attempt<32;++attempt) {
+#if defined(_WIN32)
+    const auto count=::_write(descriptor,text+offset,static_cast<unsigned>(size-offset));
+#else
+    const auto count=::write(descriptor,text+offset,size-offset);
+#endif
+    if(count<0 && errno==EINTR) continue;
+    if(count<=0 || static_cast<std::size_t>(count)>size-offset) return false;
+    offset+=static_cast<std::size_t>(count);
+  }
+  return offset==size;
+}
 
 bool AdoptEngineDiagnosticSource(
     const scratchbird::server_engine_bridge::EngineDiagnosticSnapshot& source,

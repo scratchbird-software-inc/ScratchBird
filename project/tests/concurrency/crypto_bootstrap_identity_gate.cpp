@@ -21,6 +21,7 @@ namespace t=scratchbird::core::time;
 std::string_view mode;
 std::atomic<unsigned> entropy_calls{0}, rand_calls{0}, clock_calls{0};
 bool recovery=false;
+bool diagnostic_test=false;
 unsigned checks=0;
 void Check(bool value,const char* label) {
   ++checks; if (!value) {std::cerr<<"FAIL "<<label<<'\n'; std::abort();}
@@ -31,9 +32,16 @@ extern "C" ssize_t __wrap_getrandom(void* output,size_t bytes,unsigned flags) {
   if(flags!=GRND_NONBLOCK || bytes>16 || !bytes) std::abort();
   if(mode=="real") return __real_getrandom(output,bytes,flags);
   if(!recovery) {
+    if(mode=="seal_busy")
+      Check(u::SealCryptoBootstrapDiagnosticIdentities()==u::CryptoBootstrapDiagnosticError::busy,
+            "seal cannot race an in-flight diagnostic issuance");
     if(mode=="fork_inflight" && call==1) {
       const auto child=fork(); Check(child>=0,"fork during claimed issuance");
-      if(child==0) _exit(u::IssueCryptoBootstrapIdentitiesV7()?1:0);
+      if(child==0) {
+        if(diagnostic_test) _exit(u::IssueCryptoBootstrapDiagnosticIdentityV7().error==
+            u::CryptoBootstrapDiagnosticError::foreign_process ? 0 : 1);
+        _exit(u::IssueCryptoBootstrapIdentitiesV7()?1:0);
+      }
       int status=0; pid_t reaped;
       do {reaped=waitpid(child,&status,0);} while(reaped<0 && errno==EINTR);
       Check(reaped==child && WIFEXITED(status) && WEXITSTATUS(status)==0,
@@ -86,7 +94,78 @@ void Layout(const u::CryptoBootstrapIdentities& batch) {
     }
   }
 }
+void Diagnostics() {
+  using E=u::CryptoBootstrapDiagnosticError;
+  if(mode=="concurrent") {
+    std::array<u::CryptoBootstrapDiagnosticIdentityResult,8> results;
+    std::array<std::thread,8> threads;
+    for(unsigned i=0;i<8;++i) threads[i]=std::thread([&,i]{
+      results[i]=u::IssueCryptoBootstrapDiagnosticIdentityV7();
+    });
+    for(auto& thread:threads) thread.join();
+    unsigned successes=0;
+    for(unsigned i=0;i<8;++i) {
+      Check(results[i].ok() || results[i].error==E::busy,"concurrent diagnostic is actual success or busy");
+      if(!results[i].ok()) continue;
+      ++successes;
+      Check(u::IsEngineIdentityUuid(results[i].value),"concurrent diagnostic binary v7");
+      for(unsigned j=0;j<i;++j) if(results[j].ok())
+        Check(results[i].value!=results[j].value,"concurrent diagnostic occurrences distinct");
+    }
+    Check(successes>0,"diagnostic concurrency makes progress");
+  } else {
+    auto result=u::IssueCryptoBootstrapDiagnosticIdentityV7();
+    const bool fail=mode=="unavailable" || mode=="zero" || mode=="interrupted" ||
+        mode=="partial_failure" || mode=="clock_failure" || mode=="range" || mode=="fork_inflight";
+    Check(fail ? result.error==E::source_failure && result.value==p::Uuid{} : result.ok(),
+          "typed startup diagnostic source outcome");
+    if(mode=="interrupted") Check(entropy_calls==32,"diagnostic EINTR bound");
+    if(mode=="clock_failure" || mode=="range") Check(entropy_calls==0,"bad diagnostic clock precedes entropy");
+    if(fail) {
+      recovery=true;
+      result=u::IssueCryptoBootstrapDiagnosticIdentityV7();
+      Check(result.ok(),"fresh diagnostic attempt after source failure");
+    }
+    Check(u::IsEngineIdentityUuid(result.value),"actual diagnostic binary occurrence");
+    if(mode=="regression") {
+      const auto next=u::IssueCryptoBootstrapDiagnosticIdentityV7();
+      Check(next.error==E::source_failure,"diagnostic issuer retains accepted clock history");
+    }
+    if(mode=="quota" || mode=="failure_quota") {
+      auto previous=result.value;
+      if(mode=="failure_quota") mode="clock_failure";
+      for(unsigned i=1;i<u::kCryptoBootstrapDiagnosticAttemptLimit;++i) {
+        const auto next=u::IssueCryptoBootstrapDiagnosticIdentityV7();
+        if(mode=="clock_failure") Check(next.error==E::source_failure,"source failures consume attempt quota");
+        else {Check(next.ok() && previous<next.value,"retained74-bit diagnostic sequence");previous=next.value;}
+      }
+      const auto before=entropy_calls.load();
+      Check(u::IssueCryptoBootstrapDiagnosticIdentityV7().error==E::exhausted && entropy_calls==before,
+            "bounded process diagnostic quota never wraps or obtains extra entropy");
+    }
+    if(mode=="fork") {
+      const auto child=fork(); Check(child>=0,"diagnostic fork");
+      if(child==0) _exit(u::IssueCryptoBootstrapDiagnosticIdentityV7().error==E::foreign_process &&
+          u::SealCryptoBootstrapDiagnosticIdentities()==E::foreign_process ? 0 : 1);
+      int status=0; pid_t reaped;
+      do {reaped=waitpid(child,&status,0);} while(reaped<0 && errno==EINTR);
+      Check(reaped==child && WIFEXITED(status) && WEXITSTATUS(status)==0,"diagnostic fork ownership refuses");
+    }
+  }
+  Check(rand_calls==0,"startup diagnostic never invokes ordinary RAND");
+  Check(u::SealCryptoBootstrapDiagnosticIdentities()==E::none &&
+        u::SealCryptoBootstrapDiagnosticIdentities()==E::none,"diagnostic seal is terminal and idempotent");
+  const auto before=entropy_calls.load();
+  Check(u::IssueCryptoBootstrapDiagnosticIdentityV7().error==E::sealed && entropy_calls==before,
+        "sealed issuer never restarts");
+  Check(!u::GenerateCompatibilityUnixTimeV7(123456).ok() && rand_calls>0 && entropy_calls==before,
+        "ordinary RAND failure is not a diagnostic-source fallback");
+}
 int main(int argc,char** argv) {
+  if(argc>2 && std::string_view(argv[1])=="diagnostic") {
+    diagnostic_test=true; mode=argv[2]; Diagnostics();
+    std::cout<<"PASS startup diagnostic "<<mode<<" checks="<<checks<<'\n'; return 0;
+  }
   mode=argc>1?argv[1]:"layout";
   if(mode=="concurrent") {
     std::array<std::optional<u::CryptoBootstrapIdentities>,8> results;

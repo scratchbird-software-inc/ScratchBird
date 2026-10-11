@@ -50,9 +50,8 @@ class RuntimeCryptoPoolOwner {
           request.binary_ownership[memory::MemoryBinaryScopeKind::context] != binding.context.bytes ||
           !request.operation_id.empty() || !request.owner_id.empty())
         return {RuntimeCryptoPoolError::invalid_binding};
-      // The older resource admission validates database-through-query scopes,
-      // not the later process carrier. Check the actual charged root here;
-      // matching a tag alone must not relabel another process's reservation.
+      // Shared admission checks supplied scope tags; this narrower process
+      // owner additionally requires a singleton process-only charged chain.
       if (binding.process != platform::Uuid{} &&
           (request.scope_chain.size() != 1 ||
            request.scope_chain.front().kind != memory::HierarchicalMemoryScopeKind::process ||

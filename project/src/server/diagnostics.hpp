@@ -17,8 +17,43 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <exception>
+
+namespace scratchbird::core::uuid { enum class CryptoBootstrapDiagnosticError; }
 
 namespace scratchbird::server {
+
+// Trusted host entry only, before provider readiness. This is an explicit
+// source selection, never a fallback from failed ordinary UUID generation.
+class BootstrapDiagnosticScope final {
+ public:
+  BootstrapDiagnosticScope() noexcept;
+  ~BootstrapDiagnosticScope();
+  BootstrapDiagnosticScope(const BootstrapDiagnosticScope&)=delete;
+  BootstrapDiagnosticScope& operator=(const BootstrapDiagnosticScope&)=delete;
+ private:
+  bool previous_;
+};
+class BootstrapDiagnosticIdentityFailure final : public std::exception {
+ public:
+  explicit BootstrapDiagnosticIdentityFailure(core::uuid::CryptoBootstrapDiagnosticError error) noexcept
+      : error_(error) {}
+  const char* what() const noexcept override {return "Startup diagnostic identity unavailable";}
+  core::uuid::CryptoBootstrapDiagnosticError error() const noexcept {return error_;}
+ private:
+  core::uuid::CryptoBootstrapDiagnosticError error_;
+};
+std::array<std::uint8_t,16> NewServerDiagnosticOccurrenceUuid();
+// Fixed, noncanonical terminal status; no UUID or recursive diagnostic. Caller
+// must terminate startup regardless of delivery success. Descriptor is owned
+// by the caller, not closed here; writes have a bounded retry count, not a
+// storage-I/O deadline. POSIX nonregular sinks must already be nonblocking;
+// flags are never changed here. The caller must retain exclusive descriptor
+// lifecycle/flag control and handle broken-pipe signals. Regular-file and
+// Windows sinks require a host-qualified latency contract; delivery is best
+// effort and must not be used as proof of bounded shutdown completion.
+bool WriteBootstrapDiagnosticFailureStatus(int descriptor,
+    core::uuid::CryptoBootstrapDiagnosticError error) noexcept;
 
 enum class ServerDiagnosticSeverity {
   kInfo,
@@ -50,7 +85,7 @@ struct ServerDiagnostic {
   // Newly emitted server records own this identity. An engine-to-server
   // adapter must preserve the engine occurrence instead of using this new ID.
   std::array<std::uint8_t, 16> occurrence_uuid =
-      scratchbird::core::uuid::NewDiagnosticOccurrenceUuid();
+      NewServerDiagnosticOccurrenceUuid();
   // Trusted engine source, not parser-safe payload. Retain exact key, native
   // cause, canonical severity/retry/outcome and fields until the owning bridge
   // applies actual template/redaction authority. Legacy serializers ignore it.
