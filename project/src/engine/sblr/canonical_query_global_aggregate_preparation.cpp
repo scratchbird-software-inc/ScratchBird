@@ -472,6 +472,19 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   PreparedGlobalAggregateRoot result;
   result.count_star = count_star;
   result.distinct = distinct;
+  const auto result_identity = std::ranges::find_if(dag.descriptors,
+      [&](const auto& candidate) {
+        return root.output_descriptor_ids.size() == 1 &&
+            candidate.descriptor_id == root.output_descriptor_ids.front();
+      });
+  if (result_identity == dag.descriptors.end()) {
+    result.detail = "global aggregate result datatype binding is absent";
+    return result;
+  }
+  const api::EngineDatatypeCohort result_cohort{
+      result_identity->datatype_catalog_snapshot_uuid,
+      result_identity->datatype_catalog_generation,
+      result_identity->datatype_registry_generation};
   const bool is_count = function == exec::CanonicalAggregateFunction::count;
   const bool is_sum = function == exec::CanonicalAggregateFunction::sum;
   const bool is_avg = function == exec::CanonicalAggregateFunction::avg;
@@ -643,7 +656,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         return result;
       }
       bounded_signed_source_type_uuids[index] =
-          ExactCanonicalCoreDatatypeTypeUuidV1(stable_name);
+          ExactCanonicalCoreDatatypeTypeUuidV1(stable_name, result_cohort);
       if (bounded_signed_source_type_uuids[index].is_nil()) {
         result.detail =
             "global bounded-signed aggregate/order core datatype identity is "
@@ -653,7 +666,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
     }
   }
   if (uses_exact_core_int64_result || requires_bounded_signed_input) {
-    core_int64_type_uuid = ExactCanonicalInt64TypeUuidV1();
+    core_int64_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1("int64", result_cohort);
     if (core_int64_type_uuid.is_nil()) {
       result.detail =
           "global aggregate core int64 datatype identity is unavailable";
@@ -681,7 +694,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
           "global real64 aggregate result core datatype cohort is incomplete";
       return result;
     }
-    core_real64_result_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1("real64");
+    core_real64_result_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1("real64", result_cohort);
     if (core_real64_result_type_uuid.is_nil()) {
       result.detail =
           "global real64 aggregate result core datatype identity is unavailable";
@@ -709,7 +722,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
           "global aggregate boolean-input core datatype cohort is incomplete";
       return result;
     }
-    core_boolean_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1("boolean");
+    core_boolean_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1("boolean", result_cohort);
     if (core_boolean_type_uuid.is_nil()) {
       result.detail =
           "global aggregate boolean-input core datatype identity is unavailable";
@@ -840,6 +853,12 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
 
   if (!count_star) {
     CanonicalRelationalExpressionRuntime expression_runtime(dag);
+    const auto exact_source_binding = [](const api::RelationalTypeDescriptor& source,
+        const api::EngineDescriptor& actual, dt::CanonicalTypeId type) {
+      api::EngineDescriptor expected;
+      return BuildExactCanonicalScalarRuntimeDescriptorV1(source, type, &expected) &&
+          expected == actual;
+    };
     const auto exact_bounded_signed_input =
         [&](const std::uint32_t expression_descriptor_id,
             const std::size_t value_column,
@@ -867,6 +886,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
           }();
           return source_index.has_value() &&
                  source_descriptor != dag.descriptors.end() &&
+                 exact_source_binding(*source_descriptor, source_column.descriptor, source_type_id) &&
                  *source_index < bounded_signed_source_type_uuids.size() &&
                  source_descriptor->descriptor_uuid ==
                      source_column.descriptor.descriptor_uuid &&
@@ -905,6 +925,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
           return input_type == "boolean" &&
                  !core_boolean_type_uuid.is_nil() &&
                  source_descriptor != dag.descriptors.end() &&
+                 exact_source_binding(*source_descriptor, source_column.descriptor, dt::CanonicalTypeId::boolean) &&
                  source_descriptor->descriptor_uuid ==
                      source_column.descriptor.descriptor_uuid &&
                  source_descriptor->descriptor_uuid !=

@@ -1865,7 +1865,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                     "current core datatype catalog is unavailable");
     }
     const auto type_uuid_for = [&](const std::string_view stable_name) {
-      return ExactCanonicalCoreDatatypeTypeUuidV1(stable_name);
+      return ExactCanonicalCoreDatatypeTypeUuidV1(stable_name, input.context);
     };
     auto previous_logical = logical_node_for(source->node_id);
     std::unordered_set<api::RelationalDagNodeKind> consumer_kinds;

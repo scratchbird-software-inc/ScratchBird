@@ -512,9 +512,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
   std::vector<exec::ExecutorColumnDescriptor> public_columns;
   std::vector<api::EngineDescriptor> output_descriptors;
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
-  const auto uuid_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1("uuid");
-  const auto uint64_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1("uint64");
-  const auto real64_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1("real64");
+  const auto uuid_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1("uuid", input.context);
+  const auto uint64_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1("uint64", input.context);
+  const auto real64_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1("real64", input.context);
   if (uuid_type_uuid.is_nil() || uint64_type_uuid.is_nil() ||
       real64_type_uuid.is_nil()) {
     return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
@@ -656,7 +656,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
   const auto generation_output_descriptor =
       descriptor_for(outputs[2]->descriptor_id);
   const auto stored_text_type =
-      ExactCanonicalCoreDatatypeTypeUuidV1("character");
+      ExactCanonicalCoreDatatypeTypeUuidV1("character", input.context);
   if (query_descriptor == dag.descriptors.end() ||
       analyzer_descriptor == dag.descriptors.end() ||
       analyzer_generation_descriptor == dag.descriptors.end() ||
@@ -1078,8 +1078,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "current core datatype catalog is unavailable");
   }
-  const auto type_uuid_for = [](const std::string_view stable_name) {
-    return ExactCanonicalCoreDatatypeTypeUuidV1(stable_name);
+  const auto type_uuid_for = [&input](const std::string_view stable_name) {
+    return ExactCanonicalCoreDatatypeTypeUuidV1(stable_name, input.context);
   };
   std::unordered_set<api::RelationalDagNodeKind> consumer_kinds;
   for (const auto* consumer : consumer_chain) {

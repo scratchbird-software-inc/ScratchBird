@@ -254,8 +254,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
   std::vector<exec::ExecutorColumnDescriptor> public_columns;
   std::vector<api::EngineDescriptor> output_descriptors;
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
-  const auto uuid_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1("uuid");
-  const auto real64_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1("real64");
+  const auto uuid_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1("uuid", input.context);
+  const auto real64_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1("real64", input.context);
   if (uuid_type_uuid.is_nil() || real64_type_uuid.is_nil()) {
     return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
                   "vector public core type registry is unavailable");
@@ -369,10 +369,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
   const auto metric_descriptor = descriptor_for(metric->result_descriptor_id);
   const auto top_k_descriptor = descriptor_for(top_k->result_descriptor_id);
   const auto stored_embedding_type =
-      ExactCanonicalCoreDatatypeTypeUuidV1("dense_vector");
+      ExactCanonicalCoreDatatypeTypeUuidV1("dense_vector", input.context);
   const auto stored_metadata_type =
-      ExactCanonicalCoreDatatypeTypeUuidV1("character");
-  const auto top_k_type = ExactCanonicalCoreDatatypeTypeUuidV1("uint64");
+      ExactCanonicalCoreDatatypeTypeUuidV1("character", input.context);
+  const auto top_k_type = ExactCanonicalCoreDatatypeTypeUuidV1("uint64", input.context);
   if (query_descriptor == dag.descriptors.end() ||
       metric_descriptor == dag.descriptors.end() ||
       top_k_descriptor == dag.descriptors.end() ||

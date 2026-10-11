@@ -1045,9 +1045,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
                         " authority is unavailable");
     }
     const auto order_type_uuid =
-        ExactCanonicalCoreDatatypeTypeUuidV1("int64");
+        ExactCanonicalCoreDatatypeTypeUuidV1("int64", input.context);
     const auto boolean_type_uuid =
-        ExactCanonicalCoreDatatypeTypeUuidV1("boolean");
+        ExactCanonicalCoreDatatypeTypeUuidV1("boolean", input.context);
     if (!aggregate_window &&
         DirectValueWindowUsesExactTypeForComposition(
             dag, window_node->node_id, ranking_profile.builtin_id,
@@ -1055,11 +1055,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
       ranking_profile.result_type_name = "boolean";
     }
     const auto result_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1(
-        ranking_profile.result_type_name);
+        ranking_profile.result_type_name, input.context);
     const std::array<api::EngineUuid, 4> bounded_signed_type_uuids = {
-        ExactCanonicalCoreDatatypeTypeUuidV1("int8"),
-        ExactCanonicalCoreDatatypeTypeUuidV1("int16"),
-        ExactCanonicalCoreDatatypeTypeUuidV1("int32"),
+        ExactCanonicalCoreDatatypeTypeUuidV1("int8", input.context),
+        ExactCanonicalCoreDatatypeTypeUuidV1("int16", input.context),
+        ExactCanonicalCoreDatatypeTypeUuidV1("int32", input.context),
         order_type_uuid};
     const auto ranking = PrepareGlobalRankingWindowBindingForComposition(
         dag, admission.request.logical_properties, *window_node,
@@ -2362,7 +2362,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
             slot->row_ordinal < binding.descriptors.size() &&
             literal_descriptor != dag.descriptors.end() &&
             ExactBoundedSignedIntegerTypeRankForComposition(
-                literal_descriptor->type_uuid) != 0) {
+                literal_descriptor->type_uuid, input.context) != 0) {
           api::EngineTypedValue literal_value;
           std::string literal_detail;
           if (predicate_runtime.EvaluateForConsumer(

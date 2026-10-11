@@ -804,8 +804,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "current core datatype descriptor manifest is unavailable");
   }
-  const auto type_uuid_for = [](const std::string_view stable_name) {
-    return ExactCanonicalCoreDatatypeTypeUuidV1(stable_name);
+  const auto type_uuid_for = [&input](const std::string_view stable_name) {
+    return ExactCanonicalCoreDatatypeTypeUuidV1(stable_name, input.context);
   };
   LivePhysicalNodeProfile profile;
   profile.logical_node_id = scan->node_id;

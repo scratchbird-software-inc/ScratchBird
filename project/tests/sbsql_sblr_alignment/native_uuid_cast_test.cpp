@@ -157,13 +157,13 @@ void NativeBuiltinDescriptors() {
   const auto binary = exec::MakeExecutorDescriptor("binary");
   Check(binary.datatype_descriptor_uuid == scratchbird::tests::FixtureUuidLiteral("2d010000-6269-7e61-b279-000000000000") &&
         binary.type_uuid == scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d743") &&
-        s::ExactCanonicalCoreDatatypeTypeUuidV1("binary") == binary.type_uuid,
+        s::ExactCanonicalCoreDatatypeTypeUuidV1("binary", binary.datatype_cohort) == binary.type_uuid,
         "current binary datatype descriptor and type differ from independent registry identities");
   for (const auto* type : {"boolean", "int8", "int16", "int32", "int64", "uint8", "uint64",
                            "real64", "text", "uuid", "binary"}) {
     const auto descriptor = exec::MakeExecutorDescriptor(type);
     const auto expected = s::ExactCanonicalCoreDatatypeTypeUuidV1(
-        std::string_view(type) == "text" ? "character" : type);
+        std::string_view(type) == "text" ? "character" : type, descriptor.datatype_cohort);
     Check(!expected.is_nil() && !descriptor.descriptor_uuid.is_nil() &&
           descriptor.type_uuid == expected &&
           descriptor.datatype_descriptor_uuid == descriptor.descriptor_uuid &&
@@ -295,12 +295,12 @@ void NativeUuidValues(const f::FunctionRegistry& registry) {
   api::TypedRelationalDag dag;
   namespace dt = scratchbird::core::datatypes;
   const auto builtin = scratchbird::engine::executor::MakeExecutorDescriptor("uuid");
-  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      api::kBootstrapDatatypeCatalogUuid, api::kBootstrapDatatypeCatalogGeneration,
-      api::kBootstrapDatatypeRegistryGeneration, builtin.datatype_descriptor_uuid,
+  const auto* identity = dt::FindDatatypeTypeCodecIdentityV3(
+      builtin.datatype_cohort.catalog_snapshot_uuid, builtin.datatype_cohort.catalog_generation,
+      builtin.datatype_cohort.registry_generation, builtin.datatype_descriptor_uuid,
       builtin.datatype_descriptor_generation);
-  Check(identity.ok, "VALUES fixture cannot resolve the actual UUID codec row");
-  const auto& row = identity.row;
+  Check(identity != nullptr, "VALUES fixture cannot resolve the actual UUID codec row");
+  const auto& row = identity->legacy_fields;
   api::RelationalTypeDescriptor descriptor;
   descriptor.descriptor_id = 1;
   descriptor.descriptor_uuid = row.descriptor_uuid;
@@ -466,12 +466,13 @@ void NativeUuidValues(const f::FunctionRegistry& registry) {
     auto function_dag = dag;
     auto output_descriptor = descriptor;
     const auto runtime_target = Binding(type);
-    const auto target_identity = dt::LookupDatatypeTypeCodecIdentityV1(
-        api::kBootstrapDatatypeCatalogUuid, api::kBootstrapDatatypeCatalogGeneration,
-        api::kBootstrapDatatypeRegistryGeneration, runtime_target->datatype_descriptor_uuid,
+    const auto* target_identity = dt::FindDatatypeTypeCodecIdentityV3(
+        runtime_target->datatype_cohort.catalog_snapshot_uuid,
+        runtime_target->datatype_cohort.catalog_generation,
+        runtime_target->datatype_cohort.registry_generation, runtime_target->datatype_descriptor_uuid,
         runtime_target->datatype_descriptor_generation);
-    Check(target_identity.ok, "relational callable target codec missing");
-    const auto& target_row = target_identity.row;
+    Check(target_identity != nullptr, "relational callable target codec missing");
+    const auto& target_row = target_identity->legacy_fields;
     output_descriptor.descriptor_id = 2;
     output_descriptor.descriptor_uuid = target_row.descriptor_uuid;
     output_descriptor.type_uuid = target_row.type_uuid;
@@ -480,6 +481,9 @@ void NativeUuidValues(const f::FunctionRegistry& registry) {
     output_descriptor.codec_id = target_row.codec_id;
     output_descriptor.codec_version = target_row.codec_version;
     output_descriptor.codec_generation = target_row.codec_generation;
+    output_descriptor.datatype_catalog_snapshot_uuid = target_row.catalog_snapshot_uuid;
+    output_descriptor.datatype_catalog_generation = target_row.catalog_generation;
+    output_descriptor.datatype_registry_generation = target_row.registry_generation;
     function_dag.descriptors.push_back(output_descriptor);
     api::RelationalExpressionRecord function;
     function.expression_id = 131;

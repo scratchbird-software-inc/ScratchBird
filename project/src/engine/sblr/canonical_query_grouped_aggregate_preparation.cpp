@@ -256,12 +256,6 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
         "grouped COUNT/SUM grouping-set expansion has an unused key";
     return result;
   }
-  const auto core_int64_key_type_uuid = ExactCanonicalInt64TypeUuidV1();
-  if (!core::uuid::IsEngineIdentityUuid(core_int64_key_type_uuid)) {
-    result.detail =
-        "grouped COUNT/SUM core int64 key identity is unavailable";
-    return result;
-  }
   for (std::size_t key_ordinal = 0; key_ordinal < profile.key_count;
        ++key_ordinal) {
     const auto key_expression = std::ranges::find_if(
@@ -324,10 +318,17 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
       return result;
     }
     const auto& runtime_key = input.batch.columns[key_column];
+    const auto core_int64_key_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1(
+        "int64", runtime_key.descriptor.datatype_cohort);
     const auto expected_nullability =
         runtime_key.nullable ? std::string_view("nullable")
                              : std::string_view("non_null");
-    if (key_descriptor->type_uuid != core_int64_key_type_uuid ||
+    api::EngineDescriptor expected_key;
+    if (!core::uuid::IsEngineIdentityUuid(core_int64_key_type_uuid) ||
+        !BuildExactCanonicalScalarRuntimeDescriptorV1(*key_descriptor,
+            dt::CanonicalTypeId::int64, &expected_key) ||
+        expected_key != runtime_key.descriptor ||
+        key_descriptor->type_uuid != core_int64_key_type_uuid ||
         key_descriptor->descriptor_uuid !=
             runtime_key.descriptor.descriptor_uuid ||
         key_descriptor->descriptor_uuid == key_descriptor->type_uuid ||
@@ -437,11 +438,6 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
   result.result_bindings.push_back(result.sum.result_bindings.front());
 
   if (profile.projects_grouping_metadata) {
-    const auto grouping_int64_type_uuid = ExactCanonicalInt64TypeUuidV1();
-    if (!core::uuid::IsEngineIdentityUuid(grouping_int64_type_uuid)) {
-      result.detail = "GROUPING metadata core int64 identity is not exact";
-      return result;
-    }
     std::set<core::platform::Uuid> grouping_descriptor_uuids;
     const auto prepare_projection =
         [&](const std::size_t projection_ordinal,
@@ -466,7 +462,14 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
                        candidate.expression_id == expression_id &&
                        candidate.descriptor_id == descriptor_id;
               });
+          const auto grouping_int64_type_uuid = descriptor == dag.descriptors.end()
+              ? core::platform::Uuid{}
+              : ExactCanonicalCoreDatatypeTypeUuidV1("int64", api::EngineDatatypeCohort{
+                    descriptor->datatype_catalog_snapshot_uuid,
+                    descriptor->datatype_catalog_generation,
+                    descriptor->datatype_registry_generation});
           if (expression == dag.expressions.end() ||
+              grouping_int64_type_uuid.is_nil() ||
               descriptor == dag.descriptors.end() ||
               output == dag.outputs.end() ||
               expression->expression_kind != expected_kind ||

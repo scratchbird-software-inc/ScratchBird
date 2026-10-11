@@ -901,6 +901,8 @@ PreparedProjectRoot PrepareExpressionProjectRoot(
       if ((type_id == dt::CanonicalTypeId::uuid ||
            type_id == dt::CanonicalTypeId::binary ||
            type_id == dt::CanonicalTypeId::boolean ||
+           type_id == dt::CanonicalTypeId::int8 ||
+           type_id == dt::CanonicalTypeId::int16 ||
            type_id == dt::CanonicalTypeId::int32 ||
            type_id == dt::CanonicalTypeId::int64 ||
            type_id == dt::CanonicalTypeId::uint64 ||

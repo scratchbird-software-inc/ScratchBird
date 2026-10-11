@@ -171,7 +171,8 @@ void BindCanonicalPersistedRowDescriptorAuthorityForComposition(
     CanonicalRelationalExpressionRuntimeServices* services);
 
 unsigned ExactBoundedSignedIntegerTypeRankForComposition(
-    scratchbird::core::platform::Uuid type_uuid);
+    scratchbird::core::platform::Uuid type_uuid,
+    const api::EngineRequestContext& context);
 
 // Enters the coordinator-owned selected-DAG execution boundary. The gateway
 // revalidates the supplied engine-selected MGA statement context but cannot

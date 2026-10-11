@@ -1162,9 +1162,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
           literal_descriptor == dag.descriptors.end() ||
           predicate_descriptor == dag.descriptors.end() ||
           ExactBoundedSignedIntegerTypeRankForComposition(
-              identifier_descriptor->type_uuid) == 0 ||
+              identifier_descriptor->type_uuid, input.context) == 0 ||
           literal_descriptor->type_uuid !=
-              ExactCanonicalInt64TypeUuidV1() ||
+              ExactCanonicalCoreDatatypeTypeUuidV1("int64", input.context) ||
           literal_descriptor->nullability !=
               api::RelationalNullability::kNonNull ||
           predicate_descriptor->nullability !=
@@ -1247,7 +1247,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
           limit_descriptor_ids.insert(descriptor->descriptor_id).second &&
           descriptor->nullability ==
               api::RelationalNullability::kNonNull &&
-          descriptor->type_uuid == ExactCanonicalInt64TypeUuidV1() &&
+          descriptor->type_uuid == ExactCanonicalCoreDatatypeTypeUuidV1("int64", input.context) &&
           !descriptor->collation_uuid.has_value() &&
           !descriptor->timezone_profile_id.has_value() &&
           !descriptor->width.has_value() && !descriptor->precision.has_value() &&
@@ -1470,8 +1470,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
           });
       if (left_descriptor == dag.descriptors.end() ||
           right_descriptor == dag.descriptors.end() ||
-          ExactBoundedSignedIntegerTypeRankForComposition(left_descriptor->type_uuid) == 0 ||
-          ExactBoundedSignedIntegerTypeRankForComposition(right_descriptor->type_uuid) == 0) {
+          ExactBoundedSignedIntegerTypeRankForComposition(left_descriptor->type_uuid, input.context) == 0 ||
+          ExactBoundedSignedIntegerTypeRankForComposition(right_descriptor->type_uuid, input.context) == 0) {
         continue;
       }
       streaming_hash_left_key_ordinal = candidate_left;

@@ -29,6 +29,8 @@ bool BuildExactCanonicalScalarRuntimeDescriptorV1(
   if (expected_type != dt::CanonicalTypeId::uuid &&
       expected_type != dt::CanonicalTypeId::binary &&
       expected_type != dt::CanonicalTypeId::boolean &&
+      expected_type != dt::CanonicalTypeId::int8 &&
+      expected_type != dt::CanonicalTypeId::int16 &&
       expected_type != dt::CanonicalTypeId::int32 &&
       expected_type != dt::CanonicalTypeId::int64 &&
       expected_type != dt::CanonicalTypeId::int128 &&

@@ -26,11 +26,15 @@ int main() {
   Check(initial == a::BoundTimeSeriesResultLogicalMemoryBytesV1(result));
   a::EngineDescriptor descriptor;
   descriptor.descriptor_uuid = id;
-  dt::DatatypeStorageIdentityV1 identity;
-  Check(dt::LookupDatatypeStorageIdentityV1(dt::kDatatypeCohortV5, 5, 5,
+  dt::DatatypeStorageIdentityV3 identity;
+  Check(dt::LookupDatatypeStorageIdentityV3(dt::kDatatypeCohortV5, 5, 5,
       scratchbird::tests::FixtureUuidLiteral("92010000-7469-7d65-b374-616d70000000"), 1, &identity));
   Check(identity.codec.has_value());
-  const auto& codec = *identity.codec;
+  const auto& codec = identity.codec->legacy_fields;
+  a::EngineRequestContext context;
+  context.datatype_catalog_snapshot_uuid = dt::kDatatypeCohortV5;
+  context.datatype_catalog_generation = context.datatype_registry_generation = 5;
+  descriptor.datatype_cohort = {dt::kDatatypeCohortV5, 5, 5};
   descriptor.type_uuid = identity.type_uuid;
   descriptor.datatype_descriptor_uuid = identity.descriptor_uuid;
   descriptor.datatype_descriptor_generation = identity.descriptor_generation;
@@ -40,7 +44,7 @@ int main() {
   metadata.identities = {{"type_uuid", identity.type_uuid},
                         {"datatype_descriptor_uuid", identity.descriptor_uuid},
                         {"codec_uuid", codec.codec_uuid}};
-  metadata.text = {{"canonical", "timestamp_tz"}, {"nullable", "false"},
+  metadata.text = {{"canonical", "timestamp"}, {"nullable", "false"},
                    {"datatype_descriptor_generation", std::to_string(identity.descriptor_generation)},
                    {"type_generation", std::to_string(codec.type_generation)},
                    {"codec_id", codec.codec_id}, {"codec_version", std::to_string(codec.codec_version)},
@@ -50,9 +54,23 @@ int main() {
   const auto column_uuid = scratchbird::tests::FixtureUuid(1130, 3);
   Check(column_uuid != descriptor.descriptor_uuid);
   const auto admitted = [&] { return a::ExactTimeSeriesValueDescriptor(
-      descriptor, "timestamp_tz", column_uuid, identity); };
+      context, descriptor, "timestamp", column_uuid, 0, identity); };
   Check(a::EncodeCatalogColumnMetadata(metadata, &descriptor.encoded_descriptor));
   Check(admitted());
+  for (unsigned mutation = 0; mutation < 7; ++mutation) {
+    const auto saved_descriptor = descriptor;
+    const auto saved_context = context;
+    if (mutation == 0) descriptor.datatype_cohort = {};
+    if (mutation == 1) ++descriptor.datatype_cohort.catalog_generation;
+    if (mutation == 2) ++descriptor.datatype_cohort.registry_generation;
+    if (mutation == 3) descriptor.datatype_cohort.catalog_snapshot_uuid.bytes[0] ^= 1;
+    if (mutation == 4) ++context.datatype_catalog_generation;
+    if (mutation == 5) ++context.datatype_registry_generation;
+    if (mutation == 6) descriptor.canonical_type_name = "timestamp_tz";
+    Check(!admitted());
+    descriptor = saved_descriptor;
+    context = saved_context;
+  }
   metadata.text["timezone_profile_id"] = "local";
   Check(a::EncodeCatalogColumnMetadata(metadata, &descriptor.encoded_descriptor));
   Check(!admitted());

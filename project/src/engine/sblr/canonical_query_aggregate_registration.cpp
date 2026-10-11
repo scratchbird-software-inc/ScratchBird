@@ -50,13 +50,11 @@ core::platform::Uuid ExactCanonicalCoreDatatypeUuidV1(
              : core::platform::Uuid{};
 }
 
-core::platform::Uuid ExactCanonicalInt64TypeUuidV1() {
-  return ExactCanonicalCoreDatatypeTypeUuidV1("int64");
-}
-
 core::platform::Uuid ExactCanonicalCoreDatatypeTypeUuidV1(
-    const std::string_view stable_name) {
-  return ExactCanonicalCoreDatatypeTypeUuidV1(stable_name, {dt::kDatatypeCohortV5, 5, 5});
+    const std::string_view stable_name, const api::EngineRequestContext& context) {
+  return ExactCanonicalCoreDatatypeTypeUuidV1(stable_name, api::EngineDatatypeCohort{
+      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+      context.datatype_registry_generation});
 }
 
 core::platform::Uuid ExactCanonicalCoreDatatypeTypeUuidV1(

@@ -527,9 +527,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "key/value public descriptor cohort differs from storage");
   }
-  const auto row_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1("uuid");
+  const auto row_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1("uuid", input.context);
   const auto text_type_uuid =
-      ExactCanonicalCoreDatatypeTypeUuidV1("character");
+      ExactCanonicalCoreDatatypeTypeUuidV1("character", input.context);
   if (row_type_uuid.is_nil() || text_type_uuid.is_nil() ||
       persisted_relation.columns[0].value_descriptor.type_uuid != text_type_uuid ||
       persisted_relation.columns[1].value_descriptor.type_uuid != text_type_uuid ||
@@ -937,8 +937,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "current core datatype catalog is unavailable");
   }
-  const auto type_uuid_for = [](const std::string_view stable_name) {
-    return ExactCanonicalCoreDatatypeTypeUuidV1(stable_name);
+  const auto type_uuid_for = [&input](const std::string_view stable_name) {
+    return ExactCanonicalCoreDatatypeTypeUuidV1(stable_name, input.context);
   };
   std::unordered_set<api::RelationalDagNodeKind> consumer_kinds;
   for (const auto* consumer : consumer_chain) {

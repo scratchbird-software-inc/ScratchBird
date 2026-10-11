@@ -3,7 +3,9 @@
 #include "../../src/engine/sblr/canonical_relational_expression.cpp"
 #include "canonical_query_object_free_composition_support.hpp"
 #include "canonical_query_aggregate_registration.hpp"
+#include "canonical_query_aggregate_composition.hpp"
 #include "canonical_aggregate_registry.hpp"
+#include "../support/canonical_int64_literal_fixture.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "query/historical_timestamp_scalar.hpp"
 #include "mga_relation_store/stored_scalar_descriptor.hpp"
@@ -152,9 +154,81 @@ void CheckPreparedAggregateCohortCustody() {
   }
 }
 
+void CheckGroupedPreparationCohortCustody() {
+  namespace ex = scratchbird::engine::executor;
+  for (const auto cohort : {a::EngineDatatypeCohort{d::kDatatypeCohortV5, 5, 5},
+                            a::EngineDatatypeCohort{d::kDatatypeCohortV10, 10, 10},
+                            a::EngineDatatypeCohort{d::kDatatypeCohortV11, 11, 11}}) {
+    a::TypedRelationalDag dag;
+    for (unsigned id = 1; id <= 4; ++id) {
+      auto descriptor = scratchbird::tests::Int64LiteralDescriptor(id, cohort);
+      descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(1086, 1010 + id);
+      if (id == 4) descriptor.nullability = a::RelationalNullability::kNullable;
+      dag.descriptors.push_back(descriptor);
+      a::RelationalExpressionRecord expression;
+      expression.expression_id = id;
+      expression.result_descriptor_id = id;
+      if (id <= 2) {
+        expression.expression_kind = a::RelationalExpressionKind::kIdentifier;
+        expression.bound_name_uuid = scratchbird::tests::FixtureUuid(1086, 1020 + id);
+      } else {
+        expression.expression_kind = a::RelationalExpressionKind::kFunctionCall;
+        expression.function_uuid = ex::LookupCanonicalAggregateByFunctionV1(id == 3
+            ? ex::CanonicalAggregateFunction::count : ex::CanonicalAggregateFunction::sum)->function_uuid;
+        if (id == 4) expression.child_expression_ids = {2};
+      }
+      dag.expressions.push_back(expression);
+    }
+    dag.outputs = {{1, 1, 1, "key", 1, true, 0}, {2, 1, 2, "value", 2, true, 1},
+        {3, 2, 1, "key", 1, true, 0}, {4, 2, 3, "count", 3, true, 1},
+        {5, 2, 4, "sum", 4, true, 2}};
+    scratchbird::engine::planner::CanonicalLogicalRelationalNode root, source;
+    source.logical_node_id = 1;
+    source.output_descriptor_ids = {1, 2};
+    root.logical_node_id = 2;
+    root.output_descriptor_ids = root.bound_expression_ids = {1, 3, 4};
+    const auto profile = s::MatchLiveGroupedCountSumProfileForComposition("aggregate.grouped-int64-key-count-sum.v1");
+    for (bool populated : {false, true}) {
+      s::MaterializedValues input;
+      input.ok = true;
+      input.result_bindings.resize(2);
+      ex::DescriptorTuple tuple;
+      for (unsigned index = 0; index < 2; ++index) {
+        a::EngineDescriptor descriptor;
+        Check(s::BuildExactCanonicalScalarRuntimeDescriptorV1(dag.descriptors[index], d::CanonicalTypeId::int64, &descriptor));
+        input.batch.columns.push_back({index == 0 ? "key" : "value", descriptor, false, index + 1});
+        auto value = ex::EncodeInt64Value(5);
+        value.descriptor = descriptor;
+        tuple.values.push_back(value);
+      }
+      if (populated) input.batch.rows.push_back(tuple);
+      const auto valid = s::PrepareGroupedCountSumRootForComposition(dag, root, source, input, profile);
+      if (!valid.ok) std::cerr << "grouped fixture: " << valid.detail << '\n';
+      Check(valid.ok && valid.key_binding_receipts.size() == 1);
+      Check(valid.key_binding_receipts.front().datatype_cohort == cohort);
+      std::string detail;
+      Check(s::RevalidatePreparedGroupedKeyBindings(valid, input.batch, &detail));
+      for (unsigned mutation = 0; mutation < 4; ++mutation) {
+        auto invalid = dag;
+        auto& key = invalid.descriptors.front();
+        if (mutation == 0) {
+          key.datatype_catalog_snapshot_uuid = cohort.catalog_generation == 5 ? d::kDatatypeCohortV11 : d::kDatatypeCohortV5;
+          key.datatype_catalog_generation = key.datatype_registry_generation = cohort.catalog_generation == 5 ? 11 : 5;
+        }
+        if (mutation == 1) ++key.codec_generation;
+        if (mutation == 2) ++key.type_generation;
+        if (mutation == 3) ++key.descriptor_generation;
+        const auto refused = s::PrepareGroupedCountSumRootForComposition(invalid, root, source, input, profile);
+        Check(!refused.ok && refused.key_binding_receipts.empty());
+      }
+    }
+  }
+}
+
 int main() {
   CheckV3RelationalBindings();
   CheckPreparedAggregateCohortCustody();
+  CheckGroupedPreparationCohortCustody();
   unsigned qualified_producer_receipts = 0;
   // Frozen UTC cohorts remain distinct from the current civil timestamp.
   unsigned historical_cohorts = 0;
@@ -550,11 +624,13 @@ int main() {
   // Planning with no rows and planning from real values must retain exactly
   // the same native descriptor, including datatype UUID and generation.
   for (const auto type : {d::CanonicalTypeId::uuid, d::CanonicalTypeId::binary,
-                          d::CanonicalTypeId::boolean, d::CanonicalTypeId::int32,
+                          d::CanonicalTypeId::boolean, d::CanonicalTypeId::int8,
+                          d::CanonicalTypeId::int16, d::CanonicalTypeId::int32,
                           d::CanonicalTypeId::int64, d::CanonicalTypeId::uint64,
                           d::CanonicalTypeId::real64}) {
     const auto identity = std::ranges::find_if(rows, [&](const auto& item) {
-      return item.canonical_binary_type_code == static_cast<std::uint32_t>(type);
+      return item.catalog_generation == 5 && item.registry_generation == 5 &&
+          item.canonical_binary_type_code == static_cast<std::uint32_t>(type);
     });
     Check(identity != rows.end());
     auto descriptor = bound;
@@ -590,7 +666,9 @@ int main() {
     input.ok = true;
     input.batch.columns.push_back({"native_value", runtime_descriptor, false, 1});
     input.result_bindings.resize(1);
-    if (type == d::CanonicalTypeId::int64 || type == d::CanonicalTypeId::boolean) {
+    if (type == d::CanonicalTypeId::int8 || type == d::CanonicalTypeId::int16 ||
+        type == d::CanonicalTypeId::int32 || type == d::CanonicalTypeId::int64 ||
+        type == d::CanonicalTypeId::boolean) {
       namespace exec = scratchbird::engine::executor;
       const bool boolean = type == d::CanonicalTypeId::boolean;
       const auto result_name = boolean ? "boolean" : "real64";
@@ -614,7 +692,12 @@ int main() {
         const auto* registration = exec::LookupCanonicalAggregateByFunctionV1(function);
         Check(registration != nullptr);
         const auto real_identity = std::ranges::find_if(rows, [&](const auto& item) {
-          return item.type_uuid == s::ExactCanonicalCoreDatatypeTypeUuidV1(result_name);
+          return item.catalog_snapshot_uuid == descriptor.datatype_catalog_snapshot_uuid &&
+              item.catalog_generation == descriptor.datatype_catalog_generation &&
+              item.registry_generation == descriptor.datatype_registry_generation &&
+              item.type_uuid == s::ExactCanonicalCoreDatatypeTypeUuidV1(result_name,
+              a::EngineDatatypeCohort{descriptor.datatype_catalog_snapshot_uuid,
+                  descriptor.datatype_catalog_generation, descriptor.datatype_registry_generation});
         });
         Check(real_identity != rows.end());
         auto result_type = descriptor;
@@ -643,7 +726,8 @@ int main() {
             function == exec::CanonicalAggregateFunction::approx_percentile_disc;
         if (percentile) {
           const auto decimal_identity = std::ranges::find_if(rows, [](const auto& item) {
-            return item.canonical_binary_type_code == static_cast<std::uint32_t>(d::CanonicalTypeId::decimal);
+            return item.catalog_generation == 5 && item.registry_generation == 5 &&
+                item.canonical_binary_type_code == static_cast<std::uint32_t>(d::CanonicalTypeId::decimal);
           });
           Check(decimal_identity != rows.end());
           auto fraction_descriptor = descriptor;
@@ -687,6 +771,33 @@ int main() {
             aggregate_dag, aggregate_root, source, input, function, false, false, false);
         if (!prepared.ok) std::cerr << prepared.detail << '\n';
         Check(prepared.ok);
+        auto populated_input = input;
+        auto source_value = boolean ? exec::EncodeBoolValue(true) : exec::EncodeInt64Value(5);
+        if (!boolean) source_value.binary_value.resize(identity->canonical_value_exact_bytes);
+        source_value.descriptor = runtime_descriptor;
+        populated_input.batch.rows.push_back({{source_value}});
+        const auto populated_prepared = s::PrepareGlobalAggregateRootForComposition(
+            aggregate_dag, aggregate_root, source, populated_input, function, false, false, false);
+        if (!populated_prepared.ok) std::cerr << populated_prepared.detail << '\n';
+        Check(populated_prepared.ok);
+        for (unsigned mutation = 0; mutation < 5; ++mutation) {
+          auto invalid_input_dag = aggregate_dag;
+          auto& source_binding = invalid_input_dag.descriptors.front();
+          if (mutation == 0) {
+            source_binding.datatype_catalog_snapshot_uuid = d::kDatatypeCohortV11;
+            source_binding.datatype_catalog_generation = source_binding.datatype_registry_generation = 11;
+          }
+          if (mutation == 1) ++source_binding.codec_generation;
+          if (mutation == 2) ++source_binding.type_generation;
+          if (mutation == 3) ++source_binding.descriptor_generation;
+          if (mutation == 4) ++source_binding.codec_version;
+          for (bool populated : {false, true}) {
+            const auto& input_variant = populated ? populated_input : input;
+            const auto invalid_prepared = s::PrepareGlobalAggregateRootForComposition(
+                invalid_input_dag, aggregate_root, source, input_variant, function, false, false, false);
+            Check(!invalid_prepared.ok && invalid_prepared.result_bindings.empty());
+          }
+        }
         if (!prepared.exact_value_binding_receipts.empty()) {
           qualified_producer_receipts += prepared.exact_value_binding_receipts.size();
           std::string receipt_detail;
@@ -732,6 +843,7 @@ int main() {
     value.descriptor = runtime_descriptor;
     if (type == d::CanonicalTypeId::boolean) value.encoded_value = "true";
     else value.binary_value.resize(type == d::CanonicalTypeId::uuid ? 16 :
+        type == d::CanonicalTypeId::int8 ? 1 : type == d::CanonicalTypeId::int16 ? 2 :
         type == d::CanonicalTypeId::int32 ? 4 :
         type == d::CanonicalTypeId::int64 || type == d::CanonicalTypeId::uint64 ||
         type == d::CanonicalTypeId::real64 ? 8 : 2, 0);

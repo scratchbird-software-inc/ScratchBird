@@ -1258,9 +1258,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                       "unavailable");
       }
       const auto int64_type_uuid =
-          ExactCanonicalCoreDatatypeTypeUuidV1("int64");
+          ExactCanonicalCoreDatatypeTypeUuidV1("int64", request.context);
       const auto boolean_type_uuid =
-          ExactCanonicalCoreDatatypeTypeUuidV1("boolean");
+          ExactCanonicalCoreDatatypeTypeUuidV1("boolean", request.context);
       std::unordered_set<std::uint32_t> anchor_descriptor_ids;
       std::unordered_set<std::uint32_t> generated_descriptor_ids;
       std::set<api::EngineUuid> anchor_descriptor_uuids;
@@ -4301,9 +4301,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                             " core datatype catalog is unavailable");
         }
         const auto order_type_uuid =
-            ExactCanonicalCoreDatatypeTypeUuidV1("int64");
+            ExactCanonicalCoreDatatypeTypeUuidV1("int64", request.context);
         const auto boolean_type_uuid =
-            ExactCanonicalCoreDatatypeTypeUuidV1("boolean");
+            ExactCanonicalCoreDatatypeTypeUuidV1("boolean", request.context);
         if (!aggregate_window &&
             DirectValueWindowUsesExactTypeForComposition(
                 request.relational_dag, node.logical_node_id,
@@ -4311,11 +4311,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           ranking_profile.result_type_name = "boolean";
         }
         const auto result_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1(
-            ranking_profile.result_type_name);
+            ranking_profile.result_type_name, request.context);
         const std::array<api::EngineUuid, 4> bounded_signed_type_uuids = {
-            ExactCanonicalCoreDatatypeTypeUuidV1("int8"),
-            ExactCanonicalCoreDatatypeTypeUuidV1("int16"),
-            ExactCanonicalCoreDatatypeTypeUuidV1("int32"),
+            ExactCanonicalCoreDatatypeTypeUuidV1("int8", request.context),
+            ExactCanonicalCoreDatatypeTypeUuidV1("int16", request.context),
+            ExactCanonicalCoreDatatypeTypeUuidV1("int32", request.context),
             order_type_uuid};
         const auto ranking = PrepareGlobalRankingWindowBindingForComposition(
             request.relational_dag,
@@ -5424,7 +5424,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           const bool exists =
               prepared.kind == LivePredicateSubqueryKind::kExists;
           const auto canonical_boolean_type_uuid =
-              ExactCanonicalCoreDatatypeTypeUuidV1("boolean");
+              ExactCanonicalCoreDatatypeTypeUuidV1("boolean", request.context);
           if (prepared.result_column.descriptor.canonical_type_name !=
                   "boolean" ||
               prepared.result_column.nullable == exists ||

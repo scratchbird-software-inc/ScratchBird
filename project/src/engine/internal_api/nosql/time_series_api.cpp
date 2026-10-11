@@ -1222,6 +1222,13 @@ bool ExactTimeSeriesValueDescriptor(
     const std::uint32_t expected_character_length,
     const scratchbird::core::datatypes::DatatypeStorageIdentityV3& identity) {
   if (!QowCanonicalDescriptorIdentityV1(descriptor) ||
+      descriptor.datatype_cohort != EngineDatatypeCohort{
+          context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+          context.datatype_registry_generation} ||
+      !identity.codec ||
+      identity.codec->legacy_fields.catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
+      identity.codec->legacy_fields.catalog_generation != context.datatype_catalog_generation ||
+      identity.codec->legacy_fields.registry_generation != context.datatype_registry_generation ||
       (descriptor.descriptor_kind != "canonical_type_descriptor" && descriptor.descriptor_kind != "scalar") ||
       descriptor.canonical_type_name != expected_type ||
       descriptor.datatype_descriptor_uuid != identity.descriptor_uuid ||

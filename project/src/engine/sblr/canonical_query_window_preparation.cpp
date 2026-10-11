@@ -163,11 +163,11 @@ bool CanonicalDescriptorFieldEqualsV1(
 
 
 unsigned ExactBoundedSignedIntegerTypeRankV1(
-    const core::platform::Uuid type_uuid) {
+    const core::platform::Uuid type_uuid, const api::EngineRequestContext& context) {
   constexpr std::array<std::string_view, 4> kTypes{
       "int8", "int16", "int32", "int64"};
   for (std::size_t ordinal = 0; ordinal < kTypes.size(); ++ordinal) {
-    if (type_uuid == ExactCanonicalCoreDatatypeTypeUuidV1(kTypes[ordinal])) {
+    if (!type_uuid.is_nil() && type_uuid == ExactCanonicalCoreDatatypeTypeUuidV1(kTypes[ordinal], context)) {
       return static_cast<unsigned>(ordinal + 1);
     }
   }
@@ -1271,8 +1271,8 @@ PrepareGlobalRowNumberWindowBindingForComposition(
 }
 
 unsigned ExactBoundedSignedIntegerTypeRankForComposition(
-    const core::platform::Uuid type_uuid) {
-  return ExactBoundedSignedIntegerTypeRankV1(type_uuid);
+    const core::platform::Uuid type_uuid, const api::EngineRequestContext& context) {
+  return ExactBoundedSignedIntegerTypeRankV1(type_uuid, context);
 }
 
 }  // namespace scratchbird::engine::sblr

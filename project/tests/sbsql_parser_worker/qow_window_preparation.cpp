@@ -46,7 +46,8 @@ api::EngineUuid Id(unsigned ordinal) {
 }
 
 api::EngineUuid Type(std::string_view name) {
-  return sblr::ExactCanonicalCoreDatatypeTypeUuidV1(name);
+  return sblr::ExactCanonicalCoreDatatypeTypeUuidV1(name, api::EngineDatatypeCohort{
+      scratchbird::core::datatypes::kDatatypeCohortV5, 5, 5});
 }
 
 std::array<api::EngineUuid, 4> SignedTypes() {
@@ -388,11 +389,40 @@ void DescriptorMatrix(Results& results) {
   }
   unsigned rank = 0;
   for (const auto& type : SignedTypes()) {
-    results.Check(sblr::ExactBoundedSignedIntegerTypeRankForComposition(type) == ++rank,
+    api::EngineRequestContext context;
+    context.datatype_catalog_snapshot_uuid = scratchbird::core::datatypes::kDatatypeCohortV5;
+    context.datatype_catalog_generation = context.datatype_registry_generation = 5;
+    results.Check(sblr::ExactBoundedSignedIntegerTypeRankForComposition(type, context) == ++rank,
                   "exact signed type rank");
   }
-  results.Check(sblr::ExactBoundedSignedIntegerTypeRankForComposition(Id(999)) == 0,
+  results.Check(sblr::ExactBoundedSignedIntegerTypeRankForComposition(Id(999), {}) == 0,
                 "unknown signed type rank");
+  for (const auto cohort : {api::EngineDatatypeCohort{scratchbird::core::datatypes::kDatatypeCohortV5, 5, 5},
+                            api::EngineDatatypeCohort{scratchbird::core::datatypes::kDatatypeCohortV10, 10, 10},
+                            api::EngineDatatypeCohort{scratchbird::core::datatypes::kDatatypeCohortV11, 11, 11}}) {
+    api::EngineRequestContext context;
+    context.datatype_catalog_snapshot_uuid = cohort.catalog_snapshot_uuid;
+    context.datatype_catalog_generation = cohort.catalog_generation;
+    context.datatype_registry_generation = cohort.registry_generation;
+    unsigned expected = 0;
+    for (const auto name : {"int8", "int16", "int32", "int64"}) {
+      const auto type = sblr::ExactCanonicalCoreDatatypeTypeUuidV1(name, context);
+      results.Check(!type.is_nil() && sblr::ExactBoundedSignedIntegerTypeRankForComposition(type, context) == ++expected,
+                    "explicit statement cohort signed rank");
+      for (unsigned mutation = 0; mutation < 4; ++mutation) {
+        auto stale = context;
+        if (mutation == 0) stale.datatype_catalog_snapshot_uuid = {};
+        if (mutation == 1) ++stale.datatype_catalog_generation;
+        if (mutation == 2) ++stale.datatype_registry_generation;
+        if (mutation == 3) stale.datatype_catalog_snapshot_uuid.bytes[0] ^= 1;
+        results.Check(sblr::ExactCanonicalCoreDatatypeTypeUuidV1(name, stale).is_nil() &&
+            sblr::ExactBoundedSignedIntegerTypeRankForComposition(type, stale) == 0,
+            "stale statement cohort cannot borrow compatibility rank");
+      }
+    }
+    results.Check(sblr::ExactBoundedSignedIntegerTypeRankForComposition({}, context) == 0,
+                  "nil signed type has no rank");
+  }
   const auto boolean = Descriptor(101, "boolean", true);
   auto runtime = Runtime(boolean, "boolean");
   const auto bool_source = [&] {

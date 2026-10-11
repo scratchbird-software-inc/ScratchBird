@@ -2122,12 +2122,12 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
                family == "vector" || family == "search" || family == "spatial";
       })) {
     exact_derived_type_uuids = {
-        ExactCanonicalCoreDatatypeTypeUuidV1("uuid"),
-        ExactCanonicalCoreDatatypeTypeUuidV1("character"),
-        ExactCanonicalCoreDatatypeTypeUuidV1("timestamp"),
-        ExactCanonicalCoreDatatypeTypeUuidV1("real64"),
-        ExactCanonicalCoreDatatypeTypeUuidV1("uint64"),
-        ExactCanonicalCoreDatatypeTypeUuidV1("geometry")};
+        ExactCanonicalCoreDatatypeTypeUuidV1("uuid", input.context),
+        ExactCanonicalCoreDatatypeTypeUuidV1("character", input.context),
+        ExactCanonicalCoreDatatypeTypeUuidV1("timestamp", input.context),
+        ExactCanonicalCoreDatatypeTypeUuidV1("real64", input.context),
+        ExactCanonicalCoreDatatypeTypeUuidV1("uint64", input.context),
+        ExactCanonicalCoreDatatypeTypeUuidV1("geometry", input.context)};
     if (std::ranges::any_of(exact_derived_type_uuids,
                             [](const auto& uuid) { return uuid.is_nil(); })) {
       return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",

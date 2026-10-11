@@ -1187,7 +1187,7 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
         return ErrorDiagnostic("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                "historical timestamp column binding is invalid", 0, column);
     }
-    if (type == CanonicalTypeId::int32 || type == CanonicalTypeId::int64 ||
+    if (IsBoundedSignedIntegerTypeId(type) ||
         type == CanonicalTypeId::uint64) {
       try {
         // Descriptor admission cannot depend on whether a row is present or
@@ -1195,7 +1195,8 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
         EngineTypedValue probe;
         probe.descriptor = descriptor;
         probe.setState(internal_api::EngineValueState::value);
-        probe.binary_value.assign(type == CanonicalTypeId::int32 ? 4 : 8, 0);
+        probe.binary_value.assign(type == CanonicalTypeId::int8 ? 1 :
+            type == CanonicalTypeId::int16 ? 2 : type == CanonicalTypeId::int32 ? 4 : 8, 0);
         std::int64_t ignored = 0;
         std::uint64_t unsigned_ignored = 0;
         std::string reason;
@@ -1277,11 +1278,11 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
         }
         continue;
       }
-      if (CanonicalDescriptorTypeId(expected.descriptor) == CanonicalTypeId::int32) {
+      if (IsBoundedSignedIntegerTypeId(CanonicalDescriptorTypeId(expected.descriptor))) {
         const auto decoded = DecodeInt64Value(value);
-        if (!value.encoded_value.empty() || value.binary_value.size() != 4 || !decoded.ok()) {
+        if (!decoded.ok()) {
           return ErrorDiagnostic("QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
-                                 "INT32 requires an exact bound native LE4 value:" +
+                                 "signed integer requires its exact bound native-width value:" +
                                      decoded.diagnostic.detail, row, column);
         }
         continue;
@@ -3193,10 +3194,13 @@ static bool DecodeBoundSignedIntegerValue(const EngineTypedValue& value,
   namespace dt = scratchbird::core::datatypes;
   if (!decoded || !refusal_detail) return false;
   refusal_detail->clear();
+  const std::size_t width = type == CanonicalTypeId::int8 ? 1 :
+      type == CanonicalTypeId::int16 ? 2 : type == CanonicalTypeId::int32 ? 4 :
+      type == CanonicalTypeId::int64 ? 8 : 0;
   if (value.state != EngineValueState::value || value.is_null ||
-      value.descriptor.canonical_type_name != (type == CanonicalTypeId::int32 ? "int32" : "int64") ||
+      width == 0 || value.descriptor.canonical_type_name != dt::CanonicalTypeName(type) ||
       !value.encoded_value.empty() ||
-      value.binary_value.size() != (type == CanonicalTypeId::int32 ? 4 : 8)) {
+      value.binary_value.size() != width) {
     *refusal_detail = "scalar is not a non-NULL canonical signed integer value";
     return false;
   }
@@ -3216,6 +3220,17 @@ static bool DecodeBoundSignedIntegerValue(const EngineTypedValue& value,
   engine::ExecutionTypeDescriptor descriptor;
   if (!BoundExecutionTypeDescriptor(value.descriptor, type,
                                     &descriptor, refusal_detail)) return false;
+  // Admission and exact carrier width above establish this representation.
+  // Decoding is not a cast: INT16's separately selected cast policy must not
+  // be consulted merely to read an already-bound native value.
+  if (type == CanonicalTypeId::int8) {
+    const auto raw = value.binary_value.front();
+    *decoded = raw < 128 ? static_cast<std::int64_t>(raw) : static_cast<std::int64_t>(raw) - 256;
+    return true;
+  }
+  if (type == CanonicalTypeId::int16)
+    return dt::DecodeCanonicalInt16Value(std::string_view(
+        reinterpret_cast<const char*>(value.binary_value.data()), value.binary_value.size()), decoded);
   dt::DatatypeCastRequest request;
   request.value.type_id = request.target_type_id = type;
   request.value.descriptor = request.target_descriptor = descriptor;
@@ -3298,7 +3313,7 @@ Int64DecodeResult DecodeInt64Value(const EngineTypedValue& value) {
     return result;
   }
   const auto canonical_type = CanonicalDescriptorTypeId(value.descriptor);
-  if (canonical_type == CanonicalTypeId::int32 || canonical_type == CanonicalTypeId::int64) {
+  if (IsBoundedSignedIntegerTypeId(canonical_type)) {
     std::string detail;
     if (!DecodeBoundSignedIntegerValue(value, canonical_type, &result.value, &detail)) {
       result.diagnostic = ErrorDiagnostic("QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1", std::move(detail));

@@ -3086,6 +3086,8 @@ bool CanonicalRelationalExpressionRuntime::BuildDescriptor(
   if (native_type == dt::CanonicalTypeId::uuid ||
       native_type == dt::CanonicalTypeId::binary ||
       native_type == dt::CanonicalTypeId::boolean ||
+      native_type == dt::CanonicalTypeId::int8 ||
+      native_type == dt::CanonicalTypeId::int16 ||
       native_type == dt::CanonicalTypeId::int32 ||
       native_type == dt::CanonicalTypeId::int64 ||
       native_type == dt::CanonicalTypeId::uint64 ||

@@ -79,10 +79,9 @@ core::platform::Uuid ExactCanonicalCoreDatatypeUuidV1(std::string_view stable_na
 core::platform::Uuid ExactCanonicalCoreDatatypeTypeUuidV1(
     std::string_view stable_name,
     const scratchbird::engine::internal_api::EngineDatatypeCohort& cohort);
-// Context-free compatibility is a frozen D705 component profile, not live
-// statement authority. Production callers must supply their admitted cohort.
-core::platform::Uuid ExactCanonicalCoreDatatypeTypeUuidV1(std::string_view stable_name);
-core::platform::Uuid ExactCanonicalInt64TypeUuidV1();
+core::platform::Uuid ExactCanonicalCoreDatatypeTypeUuidV1(
+    std::string_view stable_name,
+    const scratchbird::engine::internal_api::EngineRequestContext& context);
 
 bool RevalidatePreparedAggregateValueBindings(
     const std::vector<std::size_t>& value_columns,

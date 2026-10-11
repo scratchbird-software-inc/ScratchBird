@@ -3946,7 +3946,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   if (spatial) {
     for (std::size_t ordinal = 0; ordinal < kSpatialTypes.size(); ++ordinal) {
       spatial_type_uuids[ordinal] =
-          ExactCanonicalCoreDatatypeTypeUuidV1(kSpatialTypes[ordinal]);
+          ExactCanonicalCoreDatatypeTypeUuidV1(kSpatialTypes[ordinal], input.context);
     }
     if (std::ranges::any_of(spatial_type_uuids,
                             [](const auto& uuid) { return uuid.is_nil(); })) {
@@ -3992,7 +3992,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                                                   : found->second;
       };
       const auto expected_core_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1(
-          column.value_descriptor.canonical_type_name);
+          column.value_descriptor.canonical_type_name, input.context);
       if (!ordinal_exact || !name_present || !column_uuid_exact ||
           !column_uuid_unique || !column_name_unique ||
           !descriptor_identity_exact || !descriptor_kind_exact ||

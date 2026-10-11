@@ -153,7 +153,70 @@ void CheckExplicitCohortProjection() {
   }
 }
 
+void CheckNativeNarrowSignedValues() {
+  for (unsigned generation : {5u, 10u, 11u}) {
+    const api::EngineDatatypeCohort cohort{
+        generation == 5 ? dt::kDatatypeCohortV5 : generation == 10 ? dt::kDatatypeCohortV10 : dt::kDatatypeCohortV11,
+        generation, generation};
+    for (unsigned width : {1u, 2u}) {
+      auto descriptor = ex::MakeExecutorDescriptor(width == 1 ? "int8" : "int16",
+          "nullability=nullable", cohort);
+      descriptor.descriptor_kind = "scalar";
+      std::vector<std::int64_t> numbers;
+      if (width == 1) {
+        for (int n = -128; n <= 127; ++n) numbers.push_back(n);
+      } else {
+        numbers = {-32768, -32767, -257, -256, -255, -129, -128, -127, -1, 0, 1,
+                   127, 128, 129, 255, 256, 257, 32766, 32767};
+        for (unsigned bit = 0; bit < 15; ++bit) {
+          numbers.push_back(INT64_C(1) << bit);
+          numbers.push_back(-(INT64_C(1) << bit));
+        }
+      }
+      auto batch = ex::MakeDescriptorBatch({{"native_signed", descriptor, true}}, {});
+      Check(ex::ValidateDescriptorBatch(batch).ok, "empty narrow integer batch lost binding");
+      for (auto number : numbers) {
+        api::EngineTypedValue value;
+        value.descriptor = descriptor;
+        value.setState(api::EngineValueState::value);
+        for (unsigned byte = 0; byte < width; ++byte)
+          value.binary_value.push_back(static_cast<std::uint8_t>(static_cast<std::uint64_t>(number) >> (8 * byte)));
+        const auto decoded = ex::DecodeInt64Value(value);
+        Check(decoded.ok() && decoded.value == number, "native narrow integer signed decode changed bits");
+        batch.rows = {{{value}}};
+        Check(ex::ValidateDescriptorBatch(batch).ok, "native narrow integer batch refused");
+      }
+      for (unsigned mutation = 0; mutation < 8; ++mutation) {
+        auto invalid = batch.rows.front().values.front();
+        if (mutation == 0) invalid.binary_value.pop_back();
+        if (mutation == 1) invalid.binary_value.push_back(0);
+        if (mutation == 2) invalid.encoded_value = "1";
+        if (mutation == 3) { invalid.binary_value.clear(); invalid.encoded_value = "1"; }
+        if (mutation == 4) invalid.descriptor.datatype_cohort = {};
+        if (mutation == 5) ++invalid.descriptor.datatype_descriptor_generation;
+        if (mutation == 6) invalid.descriptor.type_uuid.bytes[0] ^= 1;
+        if (mutation == 7) invalid.descriptor.encoded_descriptor += ";precision=2";
+        Check(!ex::DecodeInt64Value(invalid).ok(), "malformed narrow integer decoded");
+        auto refused = ex::MakeDescriptorBatch({{"native_signed", invalid.descriptor, true}}, {{{invalid}}});
+        Check(!ex::ValidateDescriptorBatch(refused).ok, "malformed narrow integer batch admitted");
+        if (mutation >= 4) {
+          refused.rows.clear();
+          Check(!ex::ValidateDescriptorBatch(refused).ok, "empty narrow integer bypassed authority");
+        }
+      }
+      api::EngineTypedValue null;
+      null.descriptor = descriptor;
+      null.setState(api::EngineValueState::sql_null);
+      batch.rows = {{{null}}};
+      Check(ex::ValidateDescriptorBatch(batch).ok, "native narrow integer NULL was refused");
+      batch.rows.front().values.front().binary_value.push_back(0);
+      Check(!ex::ValidateDescriptorBatch(batch).ok, "native narrow integer NULL retained payload");
+    }
+  }
+}
+
 int main() {
+  CheckNativeNarrowSignedValues();
   CheckExplicitCohortProjection();
   for (unsigned generation : {5u, 10u, 11u}) {
     const api::EngineDatatypeCohort cohort{
