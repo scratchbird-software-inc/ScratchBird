@@ -1,6 +1,34 @@
 #include "engine/sblr/sblr_source_map_runtime.hpp"
 #include <cstdlib>
 #include <iostream>
+#include <new>
+#include <algorithm>
+namespace {
+thread_local bool observe_allocations = false;
+thread_local long fail_allocation = -1;
+thread_local std::size_t allocation_count = 0, largest_allocation = 0;
+void BeginAllocationObservation(long failure = -1) {
+  allocation_count = largest_allocation = 0;
+  fail_allocation = failure;
+  observe_allocations = true;
+}
+void EndAllocationObservation() { observe_allocations = false; fail_allocation = -1; }
+}
+void* operator new(std::size_t size) {
+  if (observe_allocations) {
+    ++allocation_count;
+    largest_allocation = std::max(largest_allocation, size);
+    if (fail_allocation == 0) { fail_allocation = -1; throw std::bad_alloc(); }
+    if (fail_allocation > 0) --fail_allocation;
+  }
+  if (auto* pointer = std::malloc(size ? size : 1)) return pointer;
+  throw std::bad_alloc();
+}
+void* operator new[](std::size_t size) { return ::operator new(size); }
+void operator delete(void* pointer) noexcept { std::free(pointer); }
+void operator delete[](void* pointer) noexcept { std::free(pointer); }
+void operator delete(void* pointer, std::size_t) noexcept { std::free(pointer); }
+void operator delete[](void* pointer, std::size_t) noexcept { std::free(pointer); }
 namespace s=scratchbird::engine::sblr;void R(bool v,const char*m){if(!v){std::cerr<<m<<'\n';std::exit(1);}}
 namespace { int IdentityChecks(); }
 int main(){s::SblrSourceMapDescriptorVectorV1 v;v.descriptor_uuid[0]=1;v.descriptor_uuid[6]=0x70;v.descriptor_uuid[8]=0x80;v.descriptor_generation=1;v.registry_snapshot_uuid[0]=2;v.registry_snapshot_uuid[6]=0x70;v.registry_snapshot_uuid[8]=0x80;v.registry_generation=3;v.statement_receipt_uuid[0]=4;v.statement_receipt_uuid[6]=0x70;v.statement_receipt_uuid[8]=0x80;v.bound_ast_sha256[0]=5;s::SblrSourceMapEntryV1 e;e.node_id=7;e.source_artifact_uuid[0]=6;e.source_artifact_uuid[6]=0x70;e.source_artifact_uuid[8]=0x80;e.source_artifact_generation=1;e.byte_length=2;e.line=1;e.column=1;v.entries.push_back(e);auto b=s::EncodeSblrSourceMapDescriptorVectorV1(&v);R(b.size()==256,"SMVD extent");auto d=s::DecodeSblrSourceMapDescriptorVectorV1(b.data(),b.size());R(d.status==s::SblrSourceMapDecodeStatusV1::ok&&d.canonical_bytes==b,"SMVD roundtrip");for(auto o:{0u,4u,6u,8u,12u,116u,120u,218u,224u}){auto m=b;m[o]^=1;R(s::DecodeSblrSourceMapDescriptorVectorV1(m.data(),m.size()).status==s::SblrSourceMapDecodeStatusV1::operand_invalid,"SMVD mutation admitted");}
@@ -115,6 +143,81 @@ int IdentityChecks() {
     auto wire=s::EncodeSblrSourceMapDescriptorVectorV1(&value);
     Check(!wire.empty()&&s::DecodeSblrSourceMapDescriptorVectorV1(wire.data(),wire.size()).status==
           s::SblrSourceMapDecodeStatusV1::ok,"UUIDv7 random bits incorrectly constrained");
+  }
+  // Exact bounded staging, including the full normative 4096-entry extent.
+  // Count C++ allocations only; this does not claim provider grant accounting.
+  for (const unsigned count : {1u, 2u, 4096u}) {
+    auto value = v;
+    value.entries.clear();
+    for (unsigned i = 0; i < count; ++i) {
+      auto entry = e;
+      entry.node_id = i + 1;
+      entry.parent_node_id = i;
+      value.entries.push_back(entry);
+    }
+    BeginAllocationObservation();
+    auto wire = s::EncodeSblrSourceMapDescriptorVectorV1(&value);
+    EndAllocationObservation();
+    const auto encoded_allocations = allocation_count;
+    Check(wire.size() == 152 + count * 104, "bounded staging exact encoded extent");
+    Check(encoded_allocations <= 3 * count + 8, "encoder must not geometrically grow fixed records");
+    BeginAllocationObservation();
+    auto decoded = s::DecodeSblrSourceMapDescriptorVectorV1(wire.data(), wire.size());
+    EndAllocationObservation();
+    Check(decoded.status == s::SblrSourceMapDecodeStatusV1::ok &&
+          decoded.canonical_bytes == wire && decoded.vector.entries.size() == count,
+          "full bounded descriptor roundtrip");
+    Check(allocation_count <= 6 * count + 12, "decoder must not geometrically grow fixed records");
+    // Independent entry/vector digest material and offsets, for every row.
+    auto oracle = wire;
+    for (unsigned i = 0; i < count; ++i)
+      Seal(oracle, 152 + i * 104 + 72, "ScratchBird.SblrSourceMapEntry.V1", 152 + i * 104, 72);
+    Seal(oracle, 120, "ScratchBird.SblrSourceMapDescriptorVector.V1", 152, count * 104);
+    Check(oracle == wire, "bounded staging preserves independent wire hash oracle");
+    std::cout << "source_map_staging entries=" << count
+              << " encode_allocations=" << encoded_allocations << '\n';
+    if (count == 2) {
+      // Exhaust the actual encode/decode allocation paths, including the new
+      // reserves. A thrown allocation failure never publishes a partial value.
+      for (const bool encoding : {true, false}) {
+        bool completed = false;
+        for (long ordinal = 0; ordinal < 256; ++ordinal) {
+          auto candidate = value;
+          bool threw = false;
+          Bytes published;
+          BeginAllocationObservation(ordinal);
+          try {
+            if (encoding) published = s::EncodeSblrSourceMapDescriptorVectorV1(&candidate);
+            else {
+              auto result = s::DecodeSblrSourceMapDescriptorVectorV1(wire.data(), wire.size());
+              published = std::move(result.canonical_bytes);
+            }
+          } catch (const std::bad_alloc&) { threw = true; }
+          EndAllocationObservation();
+          Check(threw ? published.empty() : published == wire, "allocation failure cannot publish partial codec result");
+          Check(wire == oracle, "fault sweep preserves immutable input bytes");
+          if (!threw) { completed = true; break; }
+        }
+        Check(completed, "complete codec allocation sweep reaches success");
+      }
+    }
+    if (count == 4096) {
+      auto oversized = wire;
+      oversized.resize(oversized.size() + 104);
+      const auto put32 = [&](std::size_t at, std::uint32_t number) {
+        for (unsigned i = 0; i < 4; ++i) oversized[at + i] = number >> (8 * i);
+      };
+      put32(8, oversized.size()); put32(112, 4097);
+      BeginAllocationObservation();
+      auto refused = s::DecodeSblrSourceMapDescriptorVectorV1(oversized.data(), oversized.size());
+      EndAllocationObservation();
+      Check(refused.status == s::SblrSourceMapDecodeStatusV1::resource_exceeded &&
+            refused.vector.entries.empty() && refused.canonical_bytes.empty() && largest_allocation < 104,
+            "over-budget extent refuses before entry allocation or hashing");
+      oversized[8] ^= 1;
+      Check(s::DecodeSblrSourceMapDescriptorVectorV1(oversized.data(), oversized.size()).status ==
+            s::SblrSourceMapDecodeStatusV1::operand_invalid, "malformed header precedes extent budget");
+    }
   }
   std::cout<<"source_map_identity checks="<<checks<<" failures="<<failures<<'\n';
   return failures?1:0;
