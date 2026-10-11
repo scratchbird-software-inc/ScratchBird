@@ -163,6 +163,16 @@ struct EngineBoundObjectIdentity {
   EngineApiU64 resource_epoch = 0;
 };
 
+// Representation binding only, not execution permission. Empty is unbound;
+// no engine/process default may fill it. Admission binds the exact tuple to
+// the owning catalog or statement receipt before projecting descriptors.
+struct EngineDatatypeCohort {
+  EngineUuid catalog_snapshot_uuid;
+  EngineApiU64 catalog_generation = 0;
+  EngineApiU64 registry_generation = 0;
+  bool operator==(const EngineDatatypeCohort&) const = default;
+};
+
 struct EngineDescriptor {
   EngineUuid descriptor_uuid;
   std::string descriptor_kind;
@@ -179,6 +189,7 @@ struct EngineDescriptor {
   EngineApiU64 datatype_descriptor_generation = 0;
   // Bound resource identity, never extracted from encoded descriptor text.
   EngineUuid charset_uuid;
+  EngineDatatypeCohort datatype_cohort;
   bool operator==(const EngineDescriptor&) const = default;
 };
 

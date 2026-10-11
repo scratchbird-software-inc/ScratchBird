@@ -5,6 +5,7 @@
 #include "api_types.hpp"
 #include "mga_binary_fields.hpp"
 #include "../../../core/uuid/uuid.hpp"
+#include "../../../core/datatypes/datatype_type_codec_identity_v3.hpp"
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -40,8 +41,8 @@ inline bool ReadBinaryEngineUuid(std::span<const std::uint8_t> bytes,
   return true;
 }
 
-// SBDT revision1: exact48-byte column datatype binding. This is a metadata
-// field value, not a new journal or an issuer of catalog authority.
+// SBDT revision1 is frozen, without a cohort. Revision2 retains the exact
+// binary cohort in 80 bytes. Neither representation issues catalog authority.
 inline bool HasMgaColumnDatatypeBinding(const EngineDescriptor& value) noexcept {
   return core::uuid::IsEngineIdentityUuid(value.datatype_descriptor_uuid) &&
       value.datatype_descriptor_generation != 0 && core::uuid::IsEngineIdentityUuid(value.type_uuid);
@@ -89,28 +90,58 @@ inline bool HasMgaBoundColumnIdentities(std::span<const EngineColumnDefinition> 
 }
 inline bool EncodeMgaColumnDatatypeBinding(const EngineDescriptor& value, std::string* output) {
   if (!output || !HasMgaColumnDatatypeBinding(value)) return false;
-  std::string staged("SBDT\x01\x00\x30\x00", 8);
-  staged.reserve(48);
+  const auto& cohort = value.datatype_cohort;
+  const bool v2 = !cohort.catalog_snapshot_uuid.is_nil() ||
+      cohort.catalog_generation != 0 || cohort.registry_generation != 0;
+  if (v2) {
+    const auto* identity = core::datatypes::FindDatatypeTypeCodecIdentityV3(
+        cohort.catalog_snapshot_uuid, cohort.catalog_generation, cohort.registry_generation,
+        value.datatype_descriptor_uuid, value.datatype_descriptor_generation);
+    if (!identity || identity->legacy_fields.type_uuid != value.type_uuid) return false;
+  }
+  std::string staged(v2 ? "SBDT\x02\x00\x50\x00" : "SBDT\x01\x00\x30\x00", 8);
+  staged.reserve(v2 ? 80 : 48);
   if (!AppendBinaryEngineUuid(&staged, value.datatype_descriptor_uuid)) return false;
   for (unsigned i = 0; i < 8; ++i)
     staged.push_back(static_cast<char>(value.datatype_descriptor_generation >> (8 * i)));
   if (!AppendBinaryEngineUuid(&staged, value.type_uuid)) return false;
+  if (v2) {
+    if (!AppendBinaryEngineUuid(&staged, cohort.catalog_snapshot_uuid)) return false;
+    for (const auto generation : {cohort.catalog_generation, cohort.registry_generation})
+      for (unsigned i = 0; i < 8; ++i)
+        staged.push_back(static_cast<char>(generation >> (8 * i)));
+  }
   output->swap(staged); return true;
 }
 inline bool DecodeMgaColumnDatatypeBinding(std::span<const std::uint8_t> bytes,
                                            EngineDescriptor* output) noexcept {
   constexpr std::array<std::uint8_t, 8> prefix{'S','B','D','T',1,0,48,0};
-  if (!output || bytes.size() != 48 || !std::equal(prefix.begin(), prefix.end(), bytes.begin())) return false;
+  constexpr std::array<std::uint8_t, 8> prefix2{'S','B','D','T',2,0,80,0};
+  const bool v2 = bytes.size() == 80;
+  if (!output || (!v2 && bytes.size() != 48) ||
+      !(v2 ? std::equal(prefix2.begin(), prefix2.end(), bytes.begin())
+           : std::equal(prefix.begin(), prefix.end(), bytes.begin()))) return false;
   EngineUuid descriptor, type;
   std::size_t cursor = 8;
   if (!ReadBinaryEngineUuid(bytes, &cursor, &descriptor)) return false;
   std::uint64_t generation = 0;
   for (unsigned i = 0; i < 8; ++i) generation |= std::uint64_t(bytes[cursor++]) << (8 * i);
   if (!generation || !ReadBinaryEngineUuid(bytes, &cursor, &type)) return false;
+  EngineDatatypeCohort cohort;
+  if (v2) {
+    if (!ReadBinaryEngineUuid(bytes, &cursor, &cohort.catalog_snapshot_uuid)) return false;
+    for (auto* part : {&cohort.catalog_generation, &cohort.registry_generation})
+      for (unsigned i = 0; i < 8; ++i) *part |= std::uint64_t(bytes[cursor++]) << (8 * i);
+    const auto* identity = core::datatypes::FindDatatypeTypeCodecIdentityV3(
+        cohort.catalog_snapshot_uuid, cohort.catalog_generation, cohort.registry_generation,
+        descriptor, generation);
+    if (!identity || identity->legacy_fields.type_uuid != type) return false;
+  }
   // Do not copy/replace unrelated occurrence, shape or rendering metadata.
   output->datatype_descriptor_uuid = descriptor;
   output->datatype_descriptor_generation = generation;
   output->type_uuid = type;
+  output->datatype_cohort = cohort; // V1 explicitly clears prior authority.
   return true;
 }
 

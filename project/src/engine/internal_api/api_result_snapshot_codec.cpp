@@ -160,7 +160,8 @@ template<class A, class T> void DiagnosticArgument(A& a, T& argument) {
 template<class A,class T>void Record(A& a,T& v){
   using U=std::remove_cv_t<T>;
 #define REC(type,...) if constexpr(std::is_same_v<U,type>){a(__VA_ARGS__);}
-  REC(EngineDescriptor,v.descriptor_uuid,v.descriptor_kind,v.canonical_type_name,v.encoded_descriptor,v.type_uuid,v.collation_uuid,v.datatype_descriptor_uuid,v.datatype_descriptor_generation,v.charset_uuid)
+  REC(EngineDatatypeCohort,v.catalog_snapshot_uuid,v.catalog_generation,v.registry_generation)
+  else REC(EngineDescriptor,v.descriptor_uuid,v.descriptor_kind,v.canonical_type_name,v.encoded_descriptor,v.type_uuid,v.collation_uuid,v.datatype_descriptor_uuid,v.datatype_descriptor_generation,v.charset_uuid,v.datatype_cohort)
   else REC(EngineTypedValue,v.descriptor,v.encoded_value,v.binary_value,v.is_null,v.state)
   else REC(EngineRowValue,v.requested_row_uuid,v.fields)
   else REC(EngineEvidenceReference,v.evidence_kind,v.evidence_id)
@@ -191,11 +192,11 @@ template<class A,class T>void Record(A& a,T& v){
 }
 bool EncodeEngineApiResultSnapshot(const EngineApiResult& result,std::vector<std::uint8_t>* output){
   if(!output)return false;
-  Writer writer;const std::array<std::uint8_t,8> header{'S','A','P','I',3,0,0,0};writer(header,result);
+  Writer writer;const std::array<std::uint8_t,8> header{'S','A','P','I',4,0,0,0};writer(header,result);
   if(!writer.ok)return false;output->swap(writer.bytes);return true;
 }
 bool DecodeEngineApiResultSnapshot(std::span<const std::uint8_t> bytes,EngineApiResult* output){
-  constexpr std::array<std::uint8_t,8> header{'S','A','P','I',3,0,0,0};
+  constexpr std::array<std::uint8_t,8> header{'S','A','P','I',4,0,0,0};
   if(!output||bytes.size()<header.size()||bytes.size()>limit||!std::equal(header.begin(),header.end(),bytes.begin()))return false;
   Reader reader{true,bytes,header.size()};EngineApiResult result;reader(result);
   if(!reader.ok||reader.offset!=bytes.size())return false;

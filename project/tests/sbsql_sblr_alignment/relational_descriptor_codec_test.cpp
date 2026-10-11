@@ -5585,6 +5585,7 @@ void TestColumnDatatypeBinding() {
   api::EngineDescriptor fixture;
   fixture.descriptor_uuid = Id(1); fixture.datatype_descriptor_uuid = Id(2); fixture.type_uuid = Id(3);
   fixture.collation_uuid = Id(4); fixture.datatype_descriptor_generation = 0x1020304050607080ULL;
+  fixture.charset_uuid = Id(5);
   fixture.descriptor_kind = "occurrence"; fixture.canonical_type_name = "presentation_only";
   fixture.encoded_descriptor = "datatype_descriptor_uuid=not_authority;generation=1";
   Bytes expected{'S','B','D','T',1,0,48,0};
@@ -5599,6 +5600,78 @@ void TestColumnDatatypeBinding() {
   const auto before_decode = allocations;
   Require(api::DecodeMgaColumnDatatypeBinding(expected, &decoded) && decoded == fixture && allocations == before_decode,
           "datatype binding decode changed occurrence metadata or allocated");
+  // The current binary field preserves its actual cohort, not a process
+  // default. V1 inspection cannot leave stale V2 authority in the destination.
+  {
+    namespace dt = scratchbird::core::datatypes;
+    const dt::DatatypeTypeCodecIdentityRowV3* selected=nullptr;
+    for (const auto& row:dt::CurrentDatatypeTypeCodecIdentityRowsV3())
+      if (row.legacy_fields.catalog_snapshot_uuid==dt::kDatatypeCohortV11 &&
+          row.legacy_fields.canonical_binary_type_code==static_cast<std::uint32_t>(dt::CanonicalTypeId::int64))
+        selected=&row;
+    Require(selected!=nullptr,"V2 test requires registered D711 INT64");
+    const auto& row=selected->legacy_fields;
+    auto current=fixture;
+    current.datatype_descriptor_uuid=row.descriptor_uuid;
+    current.datatype_descriptor_generation=row.descriptor_generation;
+    current.type_uuid=row.type_uuid;
+    current.datatype_cohort={row.catalog_snapshot_uuid,row.catalog_generation,row.registry_generation};
+    Bytes oracle{'S','B','D','T',2,0,80,0};
+    oracle.insert(oracle.end(),row.descriptor_uuid.bytes.begin(),row.descriptor_uuid.bytes.end());
+    Append(oracle,row.descriptor_generation,8);
+    oracle.insert(oracle.end(),row.type_uuid.bytes.begin(),row.type_uuid.bytes.end());
+    oracle.insert(oracle.end(),row.catalog_snapshot_uuid.bytes.begin(),row.catalog_snapshot_uuid.bytes.end());
+    Append(oracle,row.catalog_generation,8);Append(oracle,row.registry_generation,8);
+    std::string bytes;
+    Require(api::EncodeMgaColumnDatatypeBinding(current,&bytes)&&Bytes(bytes.begin(),bytes.end())==oracle,
+            "V2 differs from independent 80-byte oracle");
+    auto target=fixture;
+    const auto before=allocations;
+    Require(api::DecodeMgaColumnDatatypeBinding(oracle,&target)&&target==current&&allocations==before,
+            "V2 lost cohort or allocated");
+    for(std::size_t extent=0;extent<oracle.size();++extent) {
+      target=current;
+      Require(!api::DecodeMgaColumnDatatypeBinding(std::span(oracle).first(extent),&target)&&target==current,
+              "V2 truncation accepted or partially published");
+    }
+    for(std::size_t offset=48;offset<80;++offset) {
+      auto bad=oracle;bad[offset]^=0x80;target=current;
+      const auto before_bad=allocations;
+      Require(!api::DecodeMgaColumnDatatypeBinding(bad,&target)&&target==current&&allocations==before_bad,
+              "V2 malformed cohort admitted, allocated or changed output");
+    }
+    target=current;
+    Require(api::DecodeMgaColumnDatatypeBinding(expected,&target)&&target==fixture,
+            "V1 inherited destination V2 cohort");
+    for(unsigned part=0;part<3;++part) {
+      auto bad=current;
+      if(part==0)bad.datatype_cohort.catalog_snapshot_uuid={};
+      if(part==1)bad.datatype_cohort.catalog_generation=0;
+      if(part==2)bad.datatype_cohort.registry_generation=0;
+      std::string out="preserve";const auto before_bad=allocations;
+      Require(!api::EncodeMgaColumnDatatypeBinding(bad,&out)&&out=="preserve"&&allocations==before_bad,
+              "V2 partial cohort encoded or altered output");
+    }
+    for(const auto& registered:dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+      const auto& fields=registered.legacy_fields;
+      auto source=fixture;
+      source.datatype_descriptor_uuid=fields.descriptor_uuid;
+      source.datatype_descriptor_generation=fields.descriptor_generation;
+      source.type_uuid=fields.type_uuid;
+      source.datatype_cohort={fields.catalog_snapshot_uuid,fields.catalog_generation,fields.registry_generation};
+      std::string bytes;
+      Require(api::EncodeMgaColumnDatatypeBinding(source,&bytes),"registered V2 binding encode refused");
+      target=fixture;
+      const auto before=allocations;
+      fail_after=0;
+      const bool ok=api::DecodeMgaColumnDatatypeBinding(
+          {reinterpret_cast<const std::uint8_t*>(bytes.data()),bytes.size()},&target);
+      const bool untouched=fail_after==0;
+      fail_after=-1;
+      Require(ok&&target==source&&allocations==before&&untouched,
+              "registered V2 row decode allocated or lost cohort");
+    }
+  }
   const std::vector<std::pair<std::string, std::string>> fields{
       {"column.1.datatype_binding_v1", "not this column"},
       {"column.0.datatype_binding_v1", encoded},

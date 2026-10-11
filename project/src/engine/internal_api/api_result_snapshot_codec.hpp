@@ -4,7 +4,7 @@
 #include "api_types.hpp"
 #include <span>
 namespace scratchbird::engine::internal_api {
-// Private SAPI3 replay snapshot, not canonical IPC or execution authority.
+// Private SAPI4 replay snapshot, not canonical IPC or execution authority.
 // Native diagnostic arguments use explicit text/UUID tags; UUID data retain
 // all 128 bits independently of system-identity admission policy.
 // Malformed input leaves outputs unchanged; allocation failure propagates.

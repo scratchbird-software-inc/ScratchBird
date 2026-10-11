@@ -63,6 +63,7 @@ api::EngineApiResult Fixture(){
   r.embedded_trust_mode_observed=true;r.cluster_authority_required=true;
   api::EngineDescriptor d;d.descriptor_uuid=Id(4);d.type_uuid=Id(5);d.collation_uuid=Id(6);d.datatype_descriptor_uuid=Id(7);d.charset_uuid=Id(8);d.datatype_descriptor_generation=999;
   d.descriptor_kind="scalar";d.canonical_type_name="fixture.value";d.encoded_descriptor=std::string("metadata\0bytes",14);
+  d.datatype_cohort={Id(88),0x1020304050607080ull,0x8877665544332211ull};
   r.result_shape.result_kind="fixture.rows";r.result_shape.columns.push_back(d);
   api::EngineTypedValue v;v.descriptor=d;v.binary_value={0,1,2,3,255};v.encoded_value="source text";
   for(unsigned n=0;n<8;++n){v.state=static_cast<api::EngineValueState>(n);v.is_null=n==1;r.result_shape.rows.push_back({Id(20+n),{{"same_name",v},{"same_name",v}}});}
@@ -82,7 +83,7 @@ api::EngineApiResult Fixture(){
 }
 int main(){
   api::EngineApiResult empty;auto minimal=Encode(empty);
-  std::vector<std::uint8_t> oracle(226,0);oracle[0]='S';oracle[1]='A';oracle[2]='P';oracle[3]='I';oracle[4]=3;oracle[223]=1;
+  std::vector<std::uint8_t> oracle(226,0);oracle[0]='S';oracle[1]='A';oracle[2]='P';oracle[3]='I';oracle[4]=4;oracle[223]=1;
   Check(minimal==oracle,"independent empty snapshot layout differs");
   auto source=Fixture();const auto bytes=Encode(source);api::EngineApiResult decoded;
   Check(api::DecodeEngineApiResultSnapshot(bytes,&decoded),"complete source result refused");
@@ -227,6 +228,9 @@ int main(){
   bad = minimal;
   bad[4] = 2;
   refuse(bad); // v2 arguments had no type tag; never guess their new meaning.
+  bad = minimal;
+  bad[4] = 3;
+  refuse(bad); // v3 descriptors lacked their source datatype cohort.
 
   // These bytes are user data, not identity authority: retain all UUID versions.
   for (unsigned version = 0; version < 16; ++version) {
@@ -246,9 +250,9 @@ int main(){
       64u*1024u*1024u / sizeof(api::EngineDescriptor) + 1;
   for (unsigned byte = 0; byte < 4; ++byte)
     expanded[29 + byte] = static_cast<std::uint8_t>(many_descriptors >> (8 * byte));
-  // The normative empty descriptor has five raw16 UUIDs, three u32 string
-  // lengths and one u64 generation: exactly 100 bytes, without host padding.
-  expanded.insert(expanded.begin() + 33, std::size_t(many_descriptors) * 100, 0);
+  // SAPI4 adds one raw16 cohort UUID and two u64 generations to the
+  // previous 100-byte empty descriptor: exactly 132 bytes, no host padding.
+  expanded.insert(expanded.begin() + 33, std::size_t(many_descriptors) * 132, 0);
   Check(expanded.size() < 64u*1024u*1024u && many_descriptors <= 1048576,
         "decoded bound fixture exceeds independent wire/count bounds");
   refuse(expanded);
