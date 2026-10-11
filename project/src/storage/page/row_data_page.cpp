@@ -11,6 +11,7 @@
 #include "database_format.hpp"
 #include "page_header.hpp"
 #include "datatype_date.hpp"
+#include "datatype_timestamp.hpp"
 
 #include <algorithm>
 #include <array>
@@ -112,6 +113,7 @@ RowDataPageResult TemporalError(const Fact& fact) {
   result.status = fact.status;
   result.diagnostic.status = fact.status;
   if constexpr (std::is_same_v<Fact, dt::TimeDiagnosticFactV3>) result.time_diagnostic = fact;
+  if constexpr (std::is_same_v<Fact, dt::TimestampDiagnosticFactV3>) result.timestamp_diagnostic = fact;
   return result;
 }
 
@@ -123,13 +125,17 @@ RowDataPageResult ValidateTemporalReceiver(const RowDataTemporalReceiver& receiv
   bool first = true;
   u16 previous = 0;
   for (const auto& column : receiver.columns) {
-    if ((!first && column.column_ordinal <= previous) || bool(column.date) == bool(column.time))
+    if ((!first && column.column_ordinal <= previous) ||
+        unsigned(bool(column.date)) + unsigned(bool(column.time)) + unsigned(bool(column.timestamp)) != 1)
       return RowPageError("CTI.TEMPORAL.DESCRIPTOR_INVALID", "storage.row_data_page.temporal_schema_invalid");
     if (column.date) {
       const auto valid = dt::ValidateDateProfileHandleV3(*column.date);
       if (!valid.ok()) return TemporalError(valid.diagnostic);
-    } else {
+    } else if (column.time) {
       const auto valid = dt::ValidateTimeProfileHandleV3(*column.time);
+      if (!valid.ok()) return TemporalError(valid.diagnostic);
+    } else {
+      const auto valid = dt::ValidateTimestampProfileHandleV3(*column.timestamp);
       if (!valid.ok()) return TemporalError(valid.diagnostic);
     }
     first = false;
@@ -149,7 +155,8 @@ const RowDataTemporalColumnBinding* TemporalColumn(const RowDataTemporalReceiver
 
 RowDataPageResult EncodeTemporalCell(const RowDataCell& cell, const RowDataTemporalColumnBinding& binding) {
   if (cell.external_value || cell.value.payload_is_toast_reference ||
-      cell.value.type_id != (binding.date ? dt::CanonicalTypeId::date : dt::CanonicalTypeId::time))
+      cell.value.type_id != (binding.date ? dt::CanonicalTypeId::date :
+          binding.time ? dt::CanonicalTypeId::time : dt::CanonicalTypeId::timestamp))
     return RowPageError("CTI.TEMPORAL.DESCRIPTOR_INVALID", "storage.row_data_page.temporal_type_mismatch");
   RowDataPageResult result;
   if (binding.date) {
@@ -161,13 +168,23 @@ RowDataPageResult EncodeTemporalCell(const RowDataCell& cell, const RowDataTempo
         {binding.date, decoded.value.state, decoded.value.day}, binding.null_allowed);
     if (!encoded.ok()) return TemporalError(encoded.diagnostic);
     result.serialized = std::move(encoded.bytes);
-  } else {
+  } else if (binding.time) {
     const auto decoded = dt::DecodeCanonicalTimeComponentNoAllocV3(*binding.time,
         cell.value.is_null ? dt::TimeValueStateV3::sql_null : dt::TimeValueStateV3::value,
         binding.null_allowed, cell.value.payload);
     if (!decoded.ok()) return TemporalError(decoded.diagnostic);
     auto encoded = dt::EncodeTimeSbdvalComposedV3(
         {binding.time, decoded.value.state, decoded.value.nanoseconds_since_midnight}, binding.null_allowed);
+    if (!encoded.ok()) return TemporalError(encoded.diagnostic);
+    result.serialized = std::move(encoded.bytes);
+  } else {
+    const auto decoded = dt::DecodeCanonicalTimestampComponentNoAllocV3(*binding.timestamp,
+        cell.value.is_null ? dt::TimestampValueStateV3::sql_null : dt::TimestampValueStateV3::value,
+        binding.null_allowed, cell.value.payload);
+    if (!decoded.ok()) return TemporalError(decoded.diagnostic);
+    auto encoded = dt::EncodeTimestampSbdvalComposedV3(
+        {binding.timestamp, decoded.value.state, decoded.value.civil_day,
+         decoded.value.nanoseconds_since_midnight}, binding.null_allowed);
     if (!encoded.ok()) return TemporalError(encoded.diagnostic);
     result.serialized = std::move(encoded.bytes);
   }
@@ -182,11 +199,16 @@ RowDataPageResult DecodeTemporalCell(std::span<const byte> bytes,
     if (!decoded.ok()) return TemporalError(decoded.diagnostic);
     cell->value.type_id = dt::CanonicalTypeId::date;
     cell->value.is_null = decoded.value.state == dt::DateValueStateV3::sql_null;
-  } else {
+  } else if (binding.time) {
     const auto decoded = dt::DecodeTimeSbdvalComposedNoAllocV3(*binding.time, binding.null_allowed, bytes);
     if (!decoded.ok()) return TemporalError(decoded.diagnostic);
     cell->value.type_id = dt::CanonicalTypeId::time;
     cell->value.is_null = decoded.value.state == dt::TimeValueStateV3::sql_null;
+  } else {
+    const auto decoded = dt::DecodeTimestampSbdvalComposedNoAllocV3(*binding.timestamp, binding.null_allowed, bytes);
+    if (!decoded.ok()) return TemporalError(decoded.diagnostic);
+    cell->value.type_id = dt::CanonicalTypeId::timestamp;
+    cell->value.is_null = decoded.value.state == dt::TimestampValueStateV3::sql_null;
   }
   // Composed owner admission above checked the complete SBDVAL01 frame. Retain
   // exactly its canonical bytes, not a display rendering or a second conversion.

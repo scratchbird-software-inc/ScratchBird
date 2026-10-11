@@ -12,6 +12,7 @@
 #include "transaction_cleanup.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "datatype_date.hpp"
+#include "datatype_timestamp.hpp"
 #include "catalog_schema_definition.hpp"
 #include "transaction_inventory_page.hpp"
 #include "page_header.hpp"
@@ -2309,7 +2310,7 @@ void NativeInventoryLongChain() {
 }
 void TemporalReceivingProfiles() {
   namespace page = scratchbird::storage::page;
-  for (unsigned generation : {10u, 11u}) for (const auto type : {types::CanonicalTypeId::date, types::CanonicalTypeId::time}) {
+  for (unsigned generation : {10u, 11u}) for (const auto type : {types::CanonicalTypeId::date, types::CanonicalTypeId::time, types::CanonicalTypeId::timestamp}) {
     Fixture f;
     // Independent storage-component receiver; this does not assert SQL or
     // table-catalog admission. Physical MGA remains the transaction authority.
@@ -2325,13 +2326,17 @@ void TemporalReceivingProfiles() {
         auto bound = types::BuildDateValidatedProfileHandleV3({snapshot,snapshot,generation,generation}, identity);
         Check(bound.ok(), "exact DATE physical receiver");
         column.date = std::make_shared<const types::DateValidatedProfileHandleV3>(std::move(bound.profile));
-      } else {
+      } else if (type == types::CanonicalTypeId::time) {
         auto bound = types::BuildTimeValidatedProfileHandleV3({snapshot,snapshot,generation,generation}, identity);
         Check(bound.ok(), "exact TIME physical receiver");
         column.time = std::make_shared<const types::TimeValidatedProfileHandleV3>(std::move(bound.profile));
+      } else {
+        auto bound = types::BuildTimestampValidatedProfileHandleV3({snapshot,snapshot,generation,generation}, identity);
+        Check(bound.ok(), "exact TIMESTAMP physical receiver");
+        column.timestamp = std::make_shared<const types::TimestampValidatedProfileHandleV3>(std::move(bound.profile));
       }
     }
-    Check(column.date || column.time, "explicit physical receiver absent");
+    Check(column.date || column.time || column.timestamp, "explicit physical receiver absent");
     schema->columns.push_back(column);
     const auto make = [&](mga::TransactionIdentity tx, u64 bits, bool null = false) {
       auto mutation = f.Mutation(tx, Id(UuidKind::row), f.first_page, "");
@@ -2340,10 +2345,17 @@ void TemporalReceivingProfiles() {
       cell.type_id = type; cell.is_null = null;
       if (!null) for (unsigned i = 0; i < (type == types::CanonicalTypeId::date ? 4u : 8u); ++i)
         cell.payload.push_back(static_cast<platform::byte>(bits >> (8*i)));
+      if (!null && type == types::CanonicalTypeId::timestamp) {
+        const unsigned fraction = 999999999;
+        for (unsigned i = 0; i < 4; ++i) cell.payload.push_back(static_cast<platform::byte>(fraction >> (8*i)));
+        cell.payload.resize(16, 0);
+      }
       return mutation;
     };
     const auto tx = f.Begin();
-    auto first = make(tx, type == types::CanonicalTypeId::date ? 0x80000000u : 86'399'999'999'999ull);
+    auto first = make(tx, type == types::CanonicalTypeId::date ? 0x80000000u :
+        type == types::CanonicalTypeId::time ? 86'399'999'999'999ull :
+        static_cast<u64>(types::kTimestampMinimumCivilSecondV3));
     Check(db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(f.device, first).ok(), "temporal physical first write");
     db::PhysicalMgaCowMutationBatch batch;
     batch.mutations = {make(tx, 1), make(tx, 0, true)};
@@ -2372,21 +2384,18 @@ void TemporalReceivingProfiles() {
     const auto conflict = db::WritePhysicalMgaCowUnpublishedMutationBatchToOpenDevice(f.device, batch);
     Check(!conflict.ok() && conflict.written_rows == 0 && conflict.row_receipts.empty() && write_calls == writes && f.Bytes() == before,
           "mixed physical schema owner published effects");
-    if (column.time) {
-      auto bad = std::make_shared<types::TimeValidatedProfileHandleV3>(*column.time);
-      bad->comparison_fingerprint[0] ^= 1; different->columns[0].time = bad;
-      const auto expected_fact = types::ValidateTimeProfileHandleV3(*bad).diagnostic;
+    const auto test_failure = [&](const auto& expected_fact, auto get_fact) {
       const auto check_fact = [&](const auto& result) {
-        Check(!result.ok() && result.time_diagnostic.has_value(), "physical boundary lost TIME fact");
-        const auto& actual = *result.time_diagnostic;
+        Check(!result.ok() && get_fact(result).has_value(), "physical boundary lost temporal fact");
+        const auto& actual = *get_fact(result);
         Check(actual.status.code == expected_fact.status.code && actual.status.severity == expected_fact.status.severity &&
             actual.status.subsystem == expected_fact.status.subsystem && actual.diagnostic_code == expected_fact.diagnostic_code &&
-            actual.detail == expected_fact.detail && actual.parameter_count == expected_fact.parameter_count, "physical TIME fact changed");
+            actual.detail == expected_fact.detail && actual.parameter_count == expected_fact.parameter_count, "physical temporal fact changed");
         for (unsigned i = 0; i < expected_fact.parameters.size(); ++i) {
           const auto& a = actual.parameters[i]; const auto& e = expected_fact.parameters[i];
           Check(a.kind == e.kind && a.name == e.name && a.unsigned_value == e.unsigned_value &&
               a.signed_value == e.signed_value && a.uuid_value == e.uuid_value && a.token_value == e.token_value,
-              "physical TIME diagnostic argument changed");
+              "physical temporal diagnostic argument changed");
         }
       };
       check_fact(db::ReadPhysicalMgaCowRowsFromOpenDevice(f.device, f.relation, f.first_page, {}, true, {}, nullptr, different));
@@ -2414,6 +2423,18 @@ void TemporalReceivingProfiles() {
                 uncompensated.diagnostic.diagnostic_code != expected_fact.diagnostic_code,
             "temporal cause replaced dominant compensation failure or lost recovery identity");
       f.Finish(uncompensated.unresolved_owned_transaction, false);
+    };
+    if (column.time) {
+      auto bad = std::make_shared<types::TimeValidatedProfileHandleV3>(*column.time);
+      bad->comparison_fingerprint[0] ^= 1; different->columns[0].time = bad;
+      test_failure(types::ValidateTimeProfileHandleV3(*bad).diagnostic,
+          [](const auto& result) -> const auto& { return result.time_diagnostic; });
+    }
+    if (column.timestamp) {
+      auto bad = std::make_shared<types::TimestampValidatedProfileHandleV3>(*column.timestamp);
+      bad->comparison_fingerprint[0] ^= 1; different->columns[0].timestamp = bad;
+      test_failure(types::ValidateTimestampProfileHandleV3(*bad).diagnostic,
+          [](const auto& result) -> const auto& { return result.timestamp_diagnostic; });
     }
     f.Finish(rejected_tx, false);
     f.Locked();

@@ -585,6 +585,7 @@ struct PhysicalMgaCowMutationResult {
   // Exact recovery identity, not a transaction-state or publication receipt.
   scratchbird::transaction::mga::TransactionIdentity unresolved_owned_transaction;
   std::optional<scratchbird::core::datatypes::TimeDiagnosticFactV3> time_diagnostic;
+  std::optional<scratchbird::core::datatypes::TimestampDiagnosticFactV3> timestamp_diagnostic;
 
   bool ok() const {
     return status.ok();
@@ -622,6 +623,7 @@ struct PhysicalMgaCowMutationBatchResult {
   // inventory and roll back/recover this exact transaction, never commit a prefix.
   scratchbird::transaction::mga::TransactionIdentity unresolved_mutation_transaction;
   std::optional<scratchbird::core::datatypes::TimeDiagnosticFactV3> time_diagnostic;
+  std::optional<scratchbird::core::datatypes::TimestampDiagnosticFactV3> timestamp_diagnostic;
 
   bool ok() const {
     return status.ok();
@@ -697,6 +699,7 @@ struct PhysicalMgaCowReadResult {
   // This low-level ownership result is not a user-visible row projection.
   std::vector<scratchbird::transaction::mga::RowVersionMetadata> version_metadata;
   std::optional<scratchbird::core::datatypes::TimeDiagnosticFactV3> time_diagnostic;
+  std::optional<scratchbird::core::datatypes::TimestampDiagnosticFactV3> timestamp_diagnostic;
 
   bool ok() const {
     return status.ok();

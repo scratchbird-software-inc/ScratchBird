@@ -160,6 +160,7 @@ template<typename Result, typename Source>
 Result PropagateTemporal(const Source& source) {
   auto result = Propagate<Result>(source.status, source.diagnostic);
   result.time_diagnostic = source.time_diagnostic;
+  result.timestamp_diagnostic = source.timestamp_diagnostic;
   return result;
 }
 
@@ -1106,6 +1107,7 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutationToOpenDevice(
     auto compensation = compensate();
     if (!compensation.ok()) {
       compensation.time_diagnostic = operation.time_diagnostic;
+      compensation.timestamp_diagnostic = operation.timestamp_diagnostic;
       compensation.unresolved_owned_transaction = owned_identity;
       compensation.diagnostic.arguments.push_back({"mutation_failure_code", operation.diagnostic.diagnostic_code});
       compensation.diagnostic.arguments.push_back({"mutation_failure_key", operation.diagnostic.message_key});

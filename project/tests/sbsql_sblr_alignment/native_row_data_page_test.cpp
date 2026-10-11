@@ -5,6 +5,7 @@
 #undef METRIC_SAMPLE_CODEC_MAIN
 #include "native_row_data_page.hpp"
 #include "datatype_date.hpp"
+#include "datatype_timestamp.hpp"
 #include <openssl/sha.h>
 namespace page=scratchbird::storage::page;
 namespace disk=scratchbird::storage::disk;
@@ -202,7 +203,7 @@ void ExternalImages(){
 }
 void TemporalReceivers() {
   namespace dt = scratchbird::core::datatypes;
-  for (unsigned generation : {10u, 11u}) {
+  for (unsigned generation : {10u, 11u}) for (bool timestamp : {false, true}) {
     const auto snapshot = generation == 10 ? dt::kDatatypeCohortV10 : dt::kDatatypeCohortV11;
     page::RowDataTemporalColumnBinding date_column, time_column;
     date_column.column_ordinal = 1; date_column.null_allowed = true;
@@ -214,13 +215,18 @@ void TemporalReceivers() {
         Check(profile.ok(), "DATE receiver fixture profile");
         date_column.date = std::make_shared<const dt::DateValidatedProfileHandleV3>(std::move(profile.profile));
       }
-      if (identity.legacy_fields.canonical_binary_type_code == 401) {
+      if (!timestamp && identity.legacy_fields.canonical_binary_type_code == 401) {
         auto profile = dt::BuildTimeValidatedProfileHandleV3({snapshot, snapshot, generation, generation}, identity);
         Check(profile.ok(), "TIME receiver fixture profile");
         time_column.time = std::make_shared<const dt::TimeValidatedProfileHandleV3>(std::move(profile.profile));
       }
+      if (timestamp && identity.legacy_fields.canonical_binary_type_code == static_cast<unsigned>(dt::CanonicalTypeId::timestamp)) {
+        auto profile = dt::BuildTimestampValidatedProfileHandleV3({snapshot, snapshot, generation, generation}, identity);
+        Check(profile.ok(), "TIMESTAMP receiver fixture profile");
+        time_column.timestamp = std::make_shared<const dt::TimestampValidatedProfileHandleV3>(std::move(profile.profile));
+      }
     }
-    Check(date_column.date && time_column.time, "explicit temporal receiver fixture missing");
+    Check(date_column.date && (time_column.time || time_column.timestamp), "explicit temporal receiver fixture missing");
     const std::array<page::RowDataTemporalColumnBinding, 2> columns{date_column, time_column};
     for (unsigned page_profile = 0; page_profile < 5; ++page_profile) {
       for (unsigned sample = 0; sample < 5; ++sample) {
@@ -229,15 +235,21 @@ void TemporalReceivers() {
         const page::RowDataTemporalReceiver receiver{p.body.relation_uuid, columns};
         const std::array<u64, 5> days{0x80000000u, 0xffffffffu, 0, 1, 0x7fffffffu};
         const std::array<u64, 5> times{0, 1, 999'999'999, 1'000'000'000, 86'399'999'999'999ull};
+        const std::array<std::int64_t, 5> seconds{dt::kTimestampMinimumCivilSecondV3, -1, 0, 1, dt::kTimestampMaximumCivilSecondV3};
         for (bool null : {false, true}) {
           p.body.rows.front().cells.resize(1);
           for (unsigned i = 0; i < 2; ++i) {
             page::RowDataCell cell;
             cell.column_ordinal = i + 1;
-            cell.value.type_id = i ? dt::CanonicalTypeId::time : dt::CanonicalTypeId::date;
+            cell.value.type_id = i ? (timestamp ? dt::CanonicalTypeId::timestamp : dt::CanonicalTypeId::time) : dt::CanonicalTypeId::date;
             cell.value.is_null = null;
             if (!null) for (unsigned j = 0; j < (i ? 8u : 4u); ++j)
-              cell.value.payload.push_back(static_cast<byte>((i ? times[sample] : days[sample]) >> (8 * j)));
+              cell.value.payload.push_back(static_cast<byte>((i ? (timestamp ? static_cast<u64>(seconds[sample]) : times[sample]) : days[sample]) >> (8 * j)));
+            if (!null && i && timestamp) {
+              const unsigned fraction = sample % 2 ? 999999999 : 0;
+              for (unsigned j = 0; j < 4; ++j) cell.value.payload.push_back(static_cast<byte>(fraction >> (8*j)));
+              cell.value.payload.resize(16, 0);
+            }
             p.body.rows.front().cells.push_back(std::move(cell));
           }
           const auto oracle = RowOracle(p);
@@ -271,15 +283,22 @@ void TemporalReceivers() {
             if (fault == 0) bad_receiver.relation_uuid.value.bytes[0] ^= 1;
             if (fault == 1) bad_columns[1].column_ordinal = 1;
             if (fault == 2) bad_columns[0].date.reset();
-            if (fault == 3) bad_columns[0].time = time_column.time;
+            if (fault == 3) {
+              if (timestamp) bad_columns[0].timestamp = time_column.timestamp;
+              else bad_columns[0].time = time_column.time;
+            }
             if (fault == 4) bad_columns[1].column_ordinal = 3;
             if (fault == 5) {
               auto bad = std::make_shared<dt::DateValidatedProfileHandleV3>(*date_column.date);
               bad->profile_fingerprint[0] ^= 1; bad_columns[0].date = std::move(bad);
             }
-            if (fault == 6) {
+            if (fault == 6 && !timestamp) {
               auto bad = std::make_shared<dt::TimeValidatedProfileHandleV3>(*time_column.time);
               ++bad->receipt.registry_generation; bad_columns[1].time = std::move(bad);
+            }
+            if (fault == 6 && timestamp) {
+              auto bad = std::make_shared<dt::TimestampValidatedProfileHandleV3>(*time_column.timestamp);
+              ++bad->receipt.registry_generation; bad_columns[1].timestamp = std::move(bad);
             }
             const auto rejected = page::ParseRowDataPageBody(expected, p.body.page_number, bad_receiver);
             const auto rejected_write = page::BuildRowDataPageBody(p.body, p.header.page_size_bytes-32, bad_receiver);
@@ -299,7 +318,7 @@ void TemporalReceivers() {
             if (fault == 0) cell.value.payload.push_back(0);
             if (fault == 1) cell.value.type_id = dt::CanonicalTypeId::int64;
             if (fault == 2) cell.value.payload_is_toast_reference = true;
-            if (fault == 3) { cell.value.is_null = false; cell.value.payload.assign(8, 255); }
+            if (fault == 3) { cell.value.is_null = false; cell.value.payload.assign(timestamp ? 16 : 8, 255); }
             const auto image = RowOracle(malformed);
             const Bytes bytes(image.begin()+128, image.end()-32);
             const auto failed_read = page::ParseRowDataPageBody(bytes, p.body.page_number, receiver);
@@ -308,22 +327,31 @@ void TemporalReceivers() {
                       !failed_write.ok() && failed_write.body.rows.empty() && failed_write.serialized.empty(),
                   "malformed temporal component crossed page boundary");
             if (fault == 3) {
-              const auto fact = dt::DecodeCanonicalTimeComponentNoAllocV3(*time_column.time,
-                  dt::TimeValueStateV3::value, true, cell.value.payload).diagnostic;
+              const auto check_fact = [&](const auto& fact, auto get_fact) {
               for (const auto* failed : {&failed_read, &failed_write}) {
-                Check(failed->time_diagnostic.has_value(), "TIME typed diagnostic was discarded");
-                if (!failed->time_diagnostic) continue;
-                const auto& actual = *failed->time_diagnostic;
-                Check(actual.status.code == fact.status.code && actual.diagnostic_code == fact.diagnostic_code &&
+                Check(get_fact(*failed).has_value(), "temporal typed diagnostic was discarded");
+                if (!get_fact(*failed)) continue;
+                const auto& actual = *get_fact(*failed);
+                Check(actual.status.code == fact.status.code && actual.status.severity == fact.status.severity &&
+                    actual.status.subsystem == fact.status.subsystem && actual.diagnostic_code == fact.diagnostic_code &&
                     actual.detail == fact.detail && actual.parameter_count == fact.parameter_count,
-                    "TIME diagnostic fact changed at row boundary");
+                    "temporal diagnostic fact changed at row boundary");
                 for (unsigned i = 0; i < fact.parameters.size(); ++i) {
                   const auto& a = actual.parameters[i]; const auto& e = fact.parameters[i];
                   Check(a.kind == e.kind && a.name == e.name && a.unsigned_value == e.unsigned_value &&
                       a.signed_value == e.signed_value && a.uuid_value == e.uuid_value && a.token_value == e.token_value,
-                      "TIME diagnostic parameter changed at row boundary");
+                      "temporal diagnostic parameter changed at row boundary");
                 }
               }
+              };
+              if (timestamp)
+                check_fact(dt::DecodeCanonicalTimestampComponentNoAllocV3(*time_column.timestamp,
+                    dt::TimestampValueStateV3::value, true, cell.value.payload).diagnostic,
+                    [](const auto& result) -> const auto& { return result.timestamp_diagnostic; });
+              else
+                check_fact(dt::DecodeCanonicalTimeComponentNoAllocV3(*time_column.time,
+                    dt::TimeValueStateV3::value, true, cell.value.payload).diagnostic,
+                    [](const auto& result) -> const auto& { return result.time_diagnostic; });
             }
           }
           auto external = p;
@@ -340,7 +368,9 @@ void TemporalReceivers() {
             auto empty = p; empty.body.rows.clear();
             const auto empty_image = RowOracle(empty);
             const Bytes empty_body(empty_image.begin()+128, empty_image.end()-32);
-            auto invalid_columns = columns; invalid_columns.back().time.reset();
+            auto invalid_columns = columns;
+            invalid_columns.back().time.reset();
+            invalid_columns.back().timestamp.reset();
             const page::RowDataTemporalReceiver invalid{p.body.relation_uuid, invalid_columns};
             Check(!page::BuildRowDataPageBody(empty.body, p.header.page_size_bytes-32, invalid).ok() &&
                       !page::ParseRowDataPageBody(empty_body, p.body.page_number, invalid).ok(),
