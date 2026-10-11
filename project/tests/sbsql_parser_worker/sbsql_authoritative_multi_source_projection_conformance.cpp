@@ -14,9 +14,15 @@
 namespace scratchbird::parser::sbsql {
 std::uint64_t AuthoritativeMultiSourceProjectionProofMaskForTest();
 std::string AuthoritativeMultiSourceProjectionProofDetailForTest();
+std::string PublicDecimalColumnProjectionProofForTest();
 }
 
 int main() {
+  const auto decimal = scratchbird::parser::sbsql::PublicDecimalColumnProjectionProofForTest();
+  if (!decimal.empty()) {
+    std::cerr << "public DECIMAL column projection failed: " << decimal << '\n';
+    return EXIT_FAILURE;
+  }
   constexpr std::uint64_t kExpectedProofMask = 0x7fff;
   const auto actual = scratchbird::parser::sbsql::
       AuthoritativeMultiSourceProjectionProofMaskForTest();

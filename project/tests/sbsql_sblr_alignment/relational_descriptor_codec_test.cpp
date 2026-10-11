@@ -15,6 +15,7 @@
 #include "wire/language_bundle_identity.hpp"
 #include "engine/sblr/native_row_field.hpp"
 #include "server/native_identity_selector.hpp"
+#include "server/public_relation_decimal_profile.hpp"
 #include "engine/sblr/sblr_engine_envelope.hpp"
 #include "engine/sblr/sblr_opcode_registry.hpp"
 #include "binder/descriptor_authority.hpp"
@@ -4770,7 +4771,7 @@ void TestPublicRelationTypeShape() {
   Shape maximum{0, 0xffffffffu, 0, std::string(4096, 'z')};
   Bytes encoded;
   Require(ipc::EncodePublicRelationTypeShapeV1(maximum, limit, &encoded) &&
-              encoded.size() == limit, "maximum shape refused");
+              encoded.size() == 4116, "maximum legacy shape refused");
   Shape decoded;
   Require(ipc::DecodePublicRelationTypeShapeV1(encoded, limit, &decoded) &&
               decoded == maximum, "maximum shape changed");
@@ -5084,6 +5085,121 @@ void TestBinaryProjectionFields() {
   auto invalid=fields::Identity(id); invalid[6]=0x40;
   Require(!fields::Read(invalid, &identity) && identity==id,
           "invalid system UUID accepted");
+}
+
+void TestPublicDecimalProfileProjection() {
+  namespace ipc = scratchbird::parser::ipc;
+  namespace dt = scratchbird::core::datatypes;
+  namespace api = scratchbird::engine::internal_api;
+  constexpr Uuid native24{{0x01,0xa1,0x18,0x6b,0xdf,0x04,0x76,0x0a,
+                          0xa3,0xd5,0xd0,0x2d,0x2e,0xe3,0x01,0x54}};
+  constexpr Uuid native40{{0x01,0xa1,0x18,0x6b,0xdf,0x04,0x7b,0x1b,
+                          0x9c,0xaf,0x87,0xb3,0xbd,0x29,0x94,0x3e}};
+  constexpr auto limit=ipc::kPublicRelationTypeShapeMaximumBytes;
+  for (unsigned precision:{1U,38U,39U,76U}) for(unsigned scale:{0U,precision}) {
+    for(const std::string timezone:{std::string{},std::string{"bound/timezone"},std::string(4096,'z')}) {
+      ipc::PublicRelationTypeShapeV1 shape;
+      shape.precision=precision;shape.scale=scale;
+      const auto uuid=precision<=38?native24:native40;
+      shape.decimal_codec_profile=dt::DecimalCodecProfile{uuid,1};
+      if(!timezone.empty())shape.timezone_profile_id=timezone;
+      Bytes oracle{1,0,static_cast<std::uint8_t>(timezone.empty()?22:30),0};
+      Append(oracle,0,4);Append(oracle,precision,4);Append(oracle,scale,4);
+      if(!timezone.empty()) {
+        Append(oracle,timezone.size(),4);
+        oracle.insert(oracle.end(),timezone.begin(),timezone.end());
+      }
+      oracle.insert(oracle.end(),uuid.bytes.begin(),uuid.bytes.end());Append(oracle,1,8);
+      Bytes encoded{0xaa};
+      Require(ipc::EncodePublicRelationTypeShapeV1(shape,limit,&encoded) && encoded==oracle,
+              "public DECIMAL shape independent byte oracle");
+      auto decoded=shape;
+      Require(ipc::DecodePublicRelationTypeShapeV1(oracle,limit,&decoded) && decoded==shape,
+              "public DECIMAL profile/shape lost");
+      Require(oracle.size()==(timezone.empty()?40:44+timezone.size()),"DECIMAL shape extent");
+      for(std::size_t n=0;n<oracle.size();++n) {
+        auto sentinel=shape;
+        Require(!ipc::DecodePublicRelationTypeShapeV1(std::span(oracle).first(n),limit,&sentinel) &&
+                sentinel==shape,"truncated profile published state");
+      }
+      for(unsigned bit=0;bit<192;++bit) {
+        auto corrupted=oracle;
+        corrupted[corrupted.size()-24+bit/8]^=1U<<(bit%8);
+        auto sentinel=shape;
+        Require(!ipc::DecodePublicRelationTypeShapeV1(corrupted,limit,&sentinel) && sentinel==shape,
+                "profile UUID/generation substitution admitted");
+      }
+      auto invalid=shape;invalid.decimal_codec_profile->generation=2;
+      encoded={0xaa};
+      Require(!ipc::EncodePublicRelationTypeShapeV1(invalid,limit,&encoded) && encoded==Bytes{0xaa},
+              "invalid profile emitted bytes");
+      Require(!ipc::EncodePublicRelationTypeShapeV1(shape,oracle.size()-1,&encoded) && encoded==Bytes{0xaa},
+              "profile encode exceeded limit");
+      Bytes legacy(16,0);legacy[0]=1;
+      Require(ipc::DecodePublicRelationTypeShapeV1(legacy,limit,&decoded) &&
+              !decoded.decimal_codec_profile,"legacy shape retained prior profile");
+
+      api::CatalogColumnMetadata fields;
+      fields.identities={{"decimal_codec_uuid",uuid},{"codec_uuid",Id(31)},
+                         {"column_uuid",Id(32)},{"datatype_descriptor_uuid",Id(33)}};
+      fields.text={{"decimal_codec_generation","1"},{"precision",std::to_string(precision)},
+                   {"scale",std::to_string(scale)}};
+      std::optional<dt::DecimalCodecProfile> projected=dt::DecimalCodecProfile{Id(99),9};
+      const auto decimal=static_cast<std::uint32_t>(dt::CanonicalTypeId::decimal);
+      Require(scratchbird::server::ProjectStoredDecimalCodecProfile(fields,decimal,&projected) &&
+              projected==shape.decimal_codec_profile,"stored profile confused with base codec identity");
+      for(unsigned mutation=0;mutation<10;++mutation) {
+        auto bad=fields;
+        switch(mutation) {
+          case 0:bad.identities.erase("decimal_codec_uuid");break;
+          case 1:bad.text.erase("decimal_codec_generation");break;
+          case 2:bad.text["decimal_codec_uuid"]="not_a_binary_uuid";break;
+          case 3:bad.identities["decimal_codec_uuid"]=Id(31);break;
+          case 4:bad.text["decimal_codec_generation"]="2";break;
+          case 5:bad.text["decimal_codec_generation"]="01";break;
+          case 6:bad.text["precision"]="77";break;
+          case 7:bad.text["scale"]="77";break;
+          case 8:bad.text.erase("precision");break;
+          case 9:bad.identities["decimal_codec_generation"]=Id(31);break;
+        }
+        const auto before=projected;
+        Require(!scratchbird::server::ProjectStoredDecimalCodecProfile(bad,decimal,&projected) &&
+                projected==before,"invalid stored profile partially published");
+      }
+      Require(!scratchbird::server::ProjectStoredDecimalCodecProfile(fields,
+                  static_cast<std::uint32_t>(dt::CanonicalTypeId::int64),&projected),
+              "stored DECIMAL profile accepted for nondecimal binary type");
+      fields.identities.erase("decimal_codec_uuid");fields.text.erase("decimal_codec_generation");
+      Require(scratchbird::server::ProjectStoredDecimalCodecProfile(fields,decimal,&projected) && !projected,
+              "base codec UUID manufactured missing parameterized profile");
+
+      ipc::PublicRelationProjectionV4 relation;
+      relation.descriptor_uuid=Id(1);relation.relation_uuid=Id(2);relation.schema_uuid=Id(3);
+      relation.datatype_catalog_snapshot_uuid=Id(4);
+      relation.descriptor_generation=1;relation.validated_resource_epoch=1;
+      relation.datatype_catalog_generation=1;relation.datatype_registry_generation=1;
+      ipc::PublicRelationProjectionColumnV4 column;
+      column.column_uuid=Id(5);column.descriptor_uuid=Id(6);column.type_uuid=Id(7);
+      column.datatype_descriptor_uuid=Id(8);column.canonical_name="value";
+      column.descriptor_kind="scalar";column.canonical_type_name="decimal";
+      column.codec_id="codec";column.codec_version=1;column.codec_generation=1;
+      column.descriptor_generation=1;column.type_generation=1;column.null_encoding=2;
+      column.shape=shape;column.scalar_metadata="precision="+std::to_string(precision)+";scale="+std::to_string(scale);
+      if(!timezone.empty())column.scalar_metadata+=";timezone_profile_id="+timezone;
+      // Scalar metadata has its own4096-byte cap; maximal timezone is tested
+      // in the shape codec above, not made legal by enlarging this envelope.
+      if(column.scalar_metadata.size()>4096)continue;
+      relation.columns.push_back(column);
+      Require(ipc::EncodePublicRelationProjectionV4(relation,524288,&encoded),
+              "containing public projection profile encode failed");
+      ipc::PublicRelationProjectionV4 received;
+      Require(ipc::DecodePublicRelationProjectionV4(encoded,524288,&received) && received==relation,
+              "containing public projection lost binary profile or timezone");
+      Bytes sentinel{0xaa};
+      Require(!ipc::EncodePublicRelationProjectionV4(relation,encoded.size()-1,&sentinel) && sentinel==Bytes{0xaa},
+              "containing projection omitted profile memory accounting");
+    }
+  }
 }
 
 void TestPublicRelationProjection() {
@@ -6157,6 +6273,7 @@ int main() {
     TestMgaColumnOrdinalContinuity();
     TestCanonicalRenderReplies();
     TestPublicRelationTypeShape();
+    TestPublicDecimalProfileProjection();
     TestPublicRelationProjection();
     TestBinaryProjectionFields();
     TestLanguageBundleIdentity();

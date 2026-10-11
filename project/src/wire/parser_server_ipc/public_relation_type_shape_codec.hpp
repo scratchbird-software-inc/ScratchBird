@@ -3,6 +3,7 @@
 #pragma once
 
 #include "../../core/datatypes/canonical_utf8.hpp"
+#include "../../core/datatypes/datatype_decimal_codec_profile.hpp"
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -15,15 +16,18 @@ namespace scratchbird::parser::ipc {
 
 // Descriptor shape only. Object/type/collation identities and nullable state
 // belong to the surrounding binary projection, not this record or a display.
+// The optional parameterized codec is a binary occurrence binding, not the
+// base datatype codec identity and not a grant of live engine authority.
 struct PublicRelationTypeShapeV1 {
   std::optional<std::uint32_t> width, precision, scale;
   std::optional<std::string> timezone_profile_id;
+  std::optional<core::datatypes::DecimalCodecProfile> decimal_codec_profile;
   bool operator==(const PublicRelationTypeShapeV1&) const = default;
 };
 
 inline constexpr std::size_t kPublicRelationTypeShapePrefixBytes = 16;
 inline constexpr std::size_t kPublicRelationTimezoneProfileMaximumBytes = 4096;
-inline constexpr std::size_t kPublicRelationTypeShapeMaximumBytes = 4116;
+inline constexpr std::size_t kPublicRelationTypeShapeMaximumBytes = 4140;
 
 namespace relation_shape_detail {
 inline bool Timezone(std::span<const std::uint8_t> bytes) noexcept {
@@ -58,6 +62,13 @@ inline bool EncodePublicRelationTypeShapeV1(
                       timezone.size()})) return false;
     total += 4 + timezone.size(); // bounded to 4116, no size_t overflow
   }
+  if (shape.decimal_codec_profile) {
+    if (!shape.precision || !shape.scale ||
+        !core::datatypes::ExactDecimalCodecProfileMatches(
+            shape.decimal_codec_profile->uuid, shape.decimal_codec_profile->generation,
+            *shape.precision, *shape.scale)) return false;
+    total += 24;
+  }
   if (total > maximum_bytes) return false;
   std::vector<std::uint8_t> staged(total, 0);
   staged[0] = 1;
@@ -76,6 +87,15 @@ inline bool EncodePublicRelationTypeShapeV1(
     for (std::size_t i = 0; i != timezone.size(); ++i)
       staged[20 + i] = static_cast<std::uint8_t>(timezone[i]);
   }
+  if (shape.decimal_codec_profile) {
+    staged[2] |= 16;
+    const auto offset = total - 24;
+    for (unsigned i = 0; i != 16; ++i)
+      staged[offset + i] = shape.decimal_codec_profile->uuid.bytes[i];
+    for (unsigned i = 0; i != 8; ++i)
+      staged[offset + 16 + i] = static_cast<std::uint8_t>(
+          shape.decimal_codec_profile->generation >> (8 * i));
+  }
   *output = std::move(staged);
   return true;
 }
@@ -87,18 +107,29 @@ inline bool ValidatePublicRelationTypeShapeV1(
       bytes.size() > maximum_bytes ||
       bytes.size() > kPublicRelationTypeShapeMaximumBytes ||
       bytes[0] != 1 || bytes[1] != 0 || bytes[3] != 0 ||
-      (bytes[2] & 0xf0u) != 0) return false;
+      (bytes[2] & 0xe0u) != 0) return false;
   const auto flags = bytes[2];
   for (unsigned i = 0; i != 3; ++i)
     if (!(flags & (1u << i)) && d::Read32(bytes, 4 + 4 * i) != 0)
       return false;
+  std::size_t offset = kPublicRelationTypeShapePrefixBytes;
   if (flags & 8) {
-    if (bytes.size() < 20 || d::Read32(bytes, 16) != bytes.size() - 20 ||
-        !d::Timezone(bytes.subspan(20))) return false;
-  } else if (bytes.size() != kPublicRelationTypeShapePrefixBytes) {
-    return false;
+    if (bytes.size() < 20) return false;
+    const auto length = d::Read32(bytes, 16);
+    if (length > bytes.size() - 20 || !d::Timezone(bytes.subspan(20, length))) return false;
+    offset = 20 + length;
   }
-  return true;
+  if (flags & 16) {
+    if ((flags & 6) != 6 || bytes.size() - offset != 24) return false;
+    core::datatypes::DecimalCodecProfile profile;
+    for (unsigned i = 0; i != 16; ++i) profile.uuid.bytes[i] = bytes[offset + i];
+    for (unsigned i = 0; i != 8; ++i)
+      profile.generation |= std::uint64_t(bytes[offset + 16 + i]) << (8 * i);
+    if (!core::datatypes::ExactDecimalCodecProfileMatches(profile.uuid, profile.generation,
+            d::Read32(bytes, 8), d::Read32(bytes, 12))) return false;
+    offset += 24;
+  }
+  return bytes.size() == offset;
 }
 
 inline bool DecodePublicRelationTypeShapeV1(
@@ -113,9 +144,20 @@ inline bool DecodePublicRelationTypeShapeV1(
       &staged.width, &staged.precision, &staged.scale};
   for (unsigned i = 0; i != 3; ++i)
     if (flags & (1u << i)) *fields[i] = d::Read32(bytes, 4 + 4 * i);
-  if (flags & 8)
+  std::size_t offset = kPublicRelationTypeShapePrefixBytes;
+  if (flags & 8) {
+    const auto length = d::Read32(bytes, 16);
     staged.timezone_profile_id.emplace(
-        reinterpret_cast<const char*>(bytes.data() + 20), bytes.size() - 20);
+        reinterpret_cast<const char*>(bytes.data() + 20), length);
+    offset = 20 + length;
+  }
+  if (flags & 16) {
+    staged.decimal_codec_profile.emplace();
+    for (unsigned i = 0; i != 16; ++i)
+      staged.decimal_codec_profile->uuid.bytes[i] = bytes[offset + i];
+    for (unsigned i = 0; i != 8; ++i)
+      staged.decimal_codec_profile->generation |= std::uint64_t(bytes[offset + 16 + i]) << (8 * i);
+  }
   static_assert(std::is_nothrow_move_assignable_v<PublicRelationTypeShapeV1>);
   *output = std::move(staged);
   return true;

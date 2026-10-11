@@ -26,6 +26,7 @@ using scratchbird::tests::NativeFixtureIdentity;
 #include "uuid.hpp"
 #include "time.hpp"
 #include "parser_server_client.hpp"
+#include "core/datatypes/datatype_decimal_codec_profile.hpp"
 
 #include <array>
 #include <algorithm>
@@ -344,20 +345,22 @@ api::EngineColumnDefinition NeutralBoundColumn(
   Require(row.ok() && row.manifest.descriptor_rows.size() == 1,
           "neutral fixture datatype is absent from the engine catalog");
   const auto& datatype = row.manifest.descriptor_rows.front();
-  const auto binding = datatypes::LookupDatatypeTypeCodecIdentityV1(
+  const auto* binding = datatypes::FindDatatypeTypeCodecIdentityV3(
       context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
       context.datatype_registry_generation, datatype.descriptor_uuid.value,
       datatype.descriptor_epoch);
-  Require(binding.ok, "neutral fixture datatype codec binding unavailable");
+  Require(binding != nullptr, "neutral fixture datatype codec binding unavailable");
   api::EngineColumnDefinition column;
   column.requested_column_uuid = api::GenerateCrudEngineUuid("object");
   column.names.push_back(NeutralName(std::move(name)));
   column.descriptor.descriptor_uuid = api::GenerateCrudEngineUuid("object");
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = std::move(type);
-  column.descriptor.datatype_descriptor_uuid = binding.row.descriptor_uuid;
-  column.descriptor.datatype_descriptor_generation = binding.row.descriptor_generation;
-  column.descriptor.type_uuid = binding.row.type_uuid;
+  column.descriptor.datatype_descriptor_uuid = binding->legacy_fields.descriptor_uuid;
+  column.descriptor.datatype_descriptor_generation = binding->legacy_fields.descriptor_generation;
+  column.descriptor.type_uuid = binding->legacy_fields.type_uuid;
+  column.descriptor.datatype_cohort = {context.datatype_catalog_snapshot_uuid,
+      context.datatype_catalog_generation, context.datatype_registry_generation};
   column.descriptor.encoded_descriptor =
       "type=" + column.descriptor.canonical_type_name + ";nullable=false";
   column.ordinal = ordinal;
@@ -1438,6 +1441,54 @@ const ipc::PublicRelationColumnDescriptor* FindProjectedColumn(
 void VerifyNeutralPersistedRelationProjection() {
   auto fixture = CreateEngineTransactionFixture();
   CreateNeutralVisibilityTable(&fixture);
+  // Publish actual stored occurrences before opening the projection reader.
+  // The base registry codec is not the parameterized DECIMAL codec binding.
+  namespace dt = scratchbird::core::datatypes;
+  const auto decimal_context = BeginEngineTransaction(fixture, 25);
+  const dt::DatatypeTypeCodecIdentityRowV1* decimal_type = nullptr;
+  for (const auto& entry : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row = entry.legacy_fields;
+    if (row.catalog_snapshot_uuid == decimal_context.datatype_catalog_snapshot_uuid &&
+        row.catalog_generation == decimal_context.datatype_catalog_generation &&
+        row.registry_generation == decimal_context.datatype_registry_generation &&
+        row.canonical_binary_type_code == static_cast<std::uint32_t>(dt::CanonicalTypeId::decimal))
+      decimal_type = &row;
+  }
+  Require(decimal_type != nullptr, "neutral DECIMAL fixture has no actual datatype cohort");
+  api::EngineCreateTableRequest decimal_table;
+  decimal_table.context = decimal_context;
+  decimal_table.target_schema.uuid = fixture.schema_uuid;
+  decimal_table.target_schema.object_kind = "schema";
+  decimal_table.table_names.push_back(NeutralName("neutral_decimal_projection"));
+  for (unsigned ordinal = 0; ordinal != 2; ++ordinal) {
+    api::EngineColumnDefinition column;
+    column.requested_column_uuid = api::GenerateCrudEngineUuid("object");
+    column.names.push_back(NeutralName(ordinal ? "wide_amount" : "amount"));
+    column.ordinal = ordinal;
+    column.nullable = ordinal != 0;
+    column.descriptor.descriptor_uuid = api::GenerateCrudEngineUuid("object");
+    column.descriptor.descriptor_kind = "scalar";
+    column.descriptor.canonical_type_name = "decimal";
+    column.descriptor.datatype_descriptor_uuid = decimal_type->descriptor_uuid;
+    column.descriptor.datatype_descriptor_generation = decimal_type->descriptor_generation;
+    column.descriptor.type_uuid = decimal_type->type_uuid;
+    column.descriptor.datatype_cohort = {decimal_context.datatype_catalog_snapshot_uuid,
+        decimal_context.datatype_catalog_generation, decimal_context.datatype_registry_generation};
+    api::CatalogColumnMetadata fields;
+    fields.text = {{"type", "decimal"}, {"precision", ordinal ? "50" : "18"},
+                   {"scale", "2"}, {"decimal_codec_generation", "1"}};
+    fields.identities["decimal_codec_uuid"] = ordinal
+        ? dt::kExactDecimal40CodecUuid : dt::kExactDecimal24CodecUuid;
+    column.descriptor.encoded_descriptor =
+        scratchbird::tests::NativeCatalogColumnFixture(std::move(fields));
+    decimal_table.table_columns.push_back(std::move(column));
+  }
+  const auto created_decimal = api::EngineCreateTable(decimal_table);
+  RequireEngineOk(created_decimal, "neutral DECIMAL table publication failed");
+  api::EngineCommitTransactionRequest decimal_commit;
+  decimal_commit.context = decimal_context;
+  RequireEngineOk(api::EngineCommitTransaction(decimal_commit),
+                  "neutral DECIMAL metadata commit failed");
   const auto context = BeginEngineTransaction(fixture, 30);
   auto route = MakeNeutralLiveV2Route(fixture, context);
 
@@ -1774,6 +1825,44 @@ void VerifyNeutralPersistedRelationProjection() {
           "V3 text projection lost canonical charset/collation metadata");
   Require(ReadBinaryFile(descriptor_path) == descriptor_bytes_before,
           "V3 persisted relation projection changed durable descriptor bytes");
+  const auto decimal_frame = DecodeServerFrame(
+      server::ResolveNamePublicFrameForEmbedded(
+          ResolveNameFrame(route.session_uuid, sbps::kSchemaResolveNameRequestV3,
+              ipc::EncodeResolveNameRequestPayloadV3ForTest(client_session,
+                  "neutral_decimal_projection", false, "relation", client_config, selector, 0x01u)),
+          route.engine_state, &route.registry),
+      "stored DECIMAL public response did not decode");
+  ipc::PublicNameResolutionResult decimal_projection;
+  Require((decimal_frame.header.flags & sbps::kFlagError) == 0 &&
+      ipc::DecodeResolveNameResultPayloadV3ForTest(decimal_frame.payload, true, &decimal_projection) &&
+      decimal_projection.resolved && decimal_projection.object_uuid == created_decimal.primary_object.uuid &&
+      decimal_projection.relation_descriptor.present &&
+      decimal_projection.relation_descriptor.columns.size() == 2,
+      "stored DECIMAL public projection failed");
+  for (unsigned ordinal = 0; ordinal != 2; ++ordinal) {
+    const auto& column = decimal_projection.relation_descriptor.columns[ordinal];
+    const auto& original = decimal_table.table_columns[ordinal];
+    const auto& projected_relation = decimal_projection.relation_descriptor;
+    const dt::DecimalCodecProfile expected{
+        ordinal ? dt::kExactDecimal40CodecUuid : dt::kExactDecimal24CodecUuid, 1};
+    Require(column.column_uuid == original.requested_column_uuid &&
+        column.type_descriptor_uuid == original.descriptor.descriptor_uuid &&
+        projected_relation.datatype_catalog_snapshot_uuid == decimal_context.datatype_catalog_snapshot_uuid &&
+        projected_relation.datatype_catalog_generation == decimal_context.datatype_catalog_generation &&
+        projected_relation.datatype_registry_generation == decimal_context.datatype_registry_generation &&
+        column.datatype_descriptor_generation == decimal_type->descriptor_generation &&
+        column.datatype_type_generation == decimal_type->type_generation &&
+        column.datatype_codec_version == decimal_type->codec_version &&
+        column.datatype_codec_generation == decimal_type->codec_generation &&
+        column.type_shape.decimal_codec_profile == expected &&
+        column.type_shape.precision == (ordinal ? 50u : 18u) && column.type_shape.scale == 2 &&
+        column.nullable == (ordinal != 0) && column.datatype_descriptor_uuid == decimal_type->descriptor_uuid &&
+        column.datatype_type_uuid == decimal_type->type_uuid && column.datatype_codec_id == decimal_type->codec_id &&
+        column.encoded_type_descriptor.find("decimal_codec") == std::string::npos,
+        "server/client lost stored parameterized codec or rendered its UUID as scalar text");
+  }
+  Require(ReadBinaryFile(descriptor_path) == descriptor_bytes_before,
+          "DECIMAL projection mutated committed storage");
   Require(route.registry.public_name_resolution_cache_by_key.size() ==
                   normal_cache_before &&
               route.registry.stable_public_name_resolution_cache_by_key.size() ==

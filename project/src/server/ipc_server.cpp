@@ -11,6 +11,7 @@
 // SEARCH_KEY: SB_SERVER_IPC_FOUNDATION_ENDPOINT
 
 #include "ipc_server.hpp"
+#include "public_relation_decimal_profile.hpp"
 #include "ipc_client_io.hpp"
 #include "../core/uuid/uuid.hpp"
 #include "public_name_resolution_trace.hpp"
@@ -2057,6 +2058,19 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
           "datatype_catalog_binding_mismatch");
       return result;
     }
+    engine_api::CatalogColumnMetadata stored_fields;
+    if (!engine_api::DecodeCatalogColumnMetadata(source.value_descriptor.encoded_descriptor,
+                                                 &stored_fields) ||
+        !ProjectStoredDecimalCodecProfile(stored_fields,
+            datatype_identity->legacy_fields.canonical_binary_type_code,
+            &column.type_shape.decimal_codec_profile)) {
+      result.diagnostic = PsRelationProjectionDiagnostic(
+          "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
+          "parser_server_ipc.relation_descriptor_invalid",
+          "A persisted parameterized codec binding is incomplete or contradictory.",
+          "decimal_codec_profile_invalid");
+      return result;
+    }
     if (datatype_identity) {
       const bool exact_variable_width_text = scratchbird::core::datatypes::
           IsExactCanonicalTextTypeCodecIdentityV1(datatype_identity->legacy_fields);
@@ -2247,6 +2261,7 @@ EncodePsNameResolvePayloadV3(
     const auto scalar_metadata = PsPublicScalarMetadata(column.encoded_type_descriptor);
     if (!scalar_metadata) return std::nullopt;
     target.scalar_metadata = *scalar_metadata;
+    target.shape.decimal_codec_profile = column.type_shape.decimal_codec_profile;
     target.datatype_descriptor_uuid = column.datatype_descriptor_uuid;
     target.nullable = column.nullable;
     target.generated = column.generated;

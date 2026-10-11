@@ -779,6 +779,7 @@ struct ExactProjectedDescriptorFields {
   std::optional<std::string> timezone_profile_id;
   std::optional<std::uint32_t> width, precision, scale;
   bool nullable{false};
+  std::optional<core::datatypes::DecimalCodecProfile> decimal_codec_profile;
 };
 
 std::optional<ExactProjectedDescriptorFields> ParseExactProjectedDescriptor(
@@ -800,6 +801,7 @@ std::optional<ExactProjectedDescriptorFields> ParseExactProjectedDescriptor(
   fields.width = column.type_shape.width;
   fields.precision = column.type_shape.precision;
   fields.scale = column.type_shape.scale;
+  fields.decimal_codec_profile = column.type_shape.decimal_codec_profile;
   fields.nullable = column.nullable;
   return fields;
 }
@@ -1589,6 +1591,7 @@ BuildEngineProjectedNativeBindingContext(
       descriptor.width_precision_scale = {width, precision, scale};
       descriptor.canonical_type_name = canonical_type;
       if (authoritative_column != nullptr) {
+        descriptor.decimal_codec_profile = authoritative_column->type_shape.decimal_codec_profile;
         descriptor.descriptor_generation =
             authoritative_column->datatype_descriptor_generation;
         descriptor.type_generation =
@@ -1612,7 +1615,8 @@ BuildEngineProjectedNativeBindingContext(
             return descriptor.descriptor_uuid == descriptor_uuid;
           });
       if (existing != context.descriptors.end()) {
-        return existing->type_uuid == descriptor.type_uuid &&
+        return existing->decimal_codec_profile == descriptor.decimal_codec_profile &&
+                       existing->type_uuid == descriptor.type_uuid &&
                        existing->nullability == descriptor.nullability &&
                        existing->collation_uuid == descriptor.collation_uuid &&
                        existing->timezone_profile_id ==
@@ -2940,6 +2944,8 @@ BuildEngineProjectedNativeBindingContext(
           static_cast<std::uint32_t>(context.descriptors.size() + 1);
       descriptor.descriptor_uuid = column.type_descriptor_uuid;
       descriptor.type_uuid = fields->type_uuid;
+      descriptor.decimal_codec_profile = fields->decimal_codec_profile;
+      descriptor.width_precision_scale = {fields->width, fields->precision, fields->scale};
       descriptor.nullability = BoundNullability::kNonNull;
       descriptor.timezone_profile_id = fields->timezone_profile_id;
       context.descriptors.push_back(std::move(descriptor));
@@ -3462,6 +3468,8 @@ BuildEngineProjectedNativeBindingContext(
           static_cast<std::uint32_t>(context.descriptors.size() + 1);
       descriptor.descriptor_uuid = column.type_descriptor_uuid;
       descriptor.type_uuid = fields->type_uuid;
+      descriptor.decimal_codec_profile = fields->decimal_codec_profile;
+      descriptor.width_precision_scale = {fields->width, fields->precision, fields->scale};
       descriptor.nullability = fields->nullable
                                    ? BoundNullability::kNullable
                                    : BoundNullability::kNonNull;
@@ -3838,6 +3846,7 @@ BuildEngineProjectedNativeBindingContext(
       descriptor.width_precision_scale.width = descriptor_fields->width;
       descriptor.width_precision_scale.precision = descriptor_fields->precision;
       descriptor.width_precision_scale.scale = descriptor_fields->scale;
+      descriptor.decimal_codec_profile = descriptor_fields->decimal_codec_profile;
       context.descriptors.push_back(std::move(descriptor));
       const auto descriptor_id = context.descriptors.back().descriptor_id;
       column_descriptor_by_name.emplace(column.canonical_name_key,
@@ -4238,6 +4247,7 @@ BuildEngineProjectedNativeBindingContext(
         descriptor.width_precision_scale.precision =
             descriptor_fields->precision;
         descriptor.width_precision_scale.scale = descriptor_fields->scale;
+        descriptor.decimal_codec_profile = descriptor_fields->decimal_codec_profile;
         context.descriptors.push_back(std::move(descriptor));
         const auto descriptor_id = context.descriptors.back().descriptor_id;
         column_descriptor_by_name.emplace(column.canonical_name_key,
@@ -4668,6 +4678,9 @@ BuildEngineProjectedNativeBindingContext(
       descriptor.descriptor_id = binding_id;
       descriptor.descriptor_uuid = column->type_descriptor_uuid;
       descriptor.type_uuid = descriptor_fields->type_uuid;
+      descriptor.decimal_codec_profile = descriptor_fields->decimal_codec_profile;
+      descriptor.width_precision_scale = {descriptor_fields->width,
+          descriptor_fields->precision, descriptor_fields->scale};
       descriptor.nullability = descriptor_fields->nullable
                                    ? BoundNullability::kNullable
                                    : BoundNullability::kNonNull;
@@ -6583,6 +6596,9 @@ BuildEngineProjectedNativeBindingContext(
         descriptor.descriptor_id = binding_id;
         descriptor.descriptor_uuid = column.type_descriptor_uuid;
         descriptor.type_uuid = descriptor_fields->type_uuid;
+        descriptor.decimal_codec_profile = descriptor_fields->decimal_codec_profile;
+        descriptor.width_precision_scale = {descriptor_fields->width,
+            descriptor_fields->precision, descriptor_fields->scale};
         descriptor.canonical_type_name = column.canonical_type_name;
         descriptor.nullability = descriptor_fields->nullable
                                      ? BoundNullability::kNullable
@@ -6690,7 +6706,7 @@ BuildEngineProjectedNativeBindingContext(
           descriptor.collation_uuid.reset();
           descriptor.timezone_profile_id.reset();
         }
-        if (column.character_length != 0) {
+        if (column.character_length != 0 && !descriptor.width_precision_scale.width) {
           descriptor.width_precision_scale.width = column.character_length;
         }
         if (exact_projected_datatype_identity &&
@@ -9119,7 +9135,8 @@ bool IsContextualTextEqualityLiteralV2(
 bool ExactNativeDescriptorBindingInputV2(
     const NativeDescriptorBindingInput& left,
     const NativeDescriptorBindingInput& right) {
-  return left.descriptor_id == right.descriptor_id &&
+  return left.decimal_codec_profile == right.decimal_codec_profile &&
+         left.descriptor_id == right.descriptor_id &&
          left.descriptor_uuid == right.descriptor_uuid &&
          left.type_uuid == right.type_uuid &&
          left.nullability == right.nullability &&
@@ -9148,7 +9165,8 @@ bool ExactNativeDescriptorBindingInputV2(
 bool ExactNativeBoundDescriptorBindingV2(
     const NativeDescriptorBindingInput& native,
     const BoundDescriptorAstRecord& bound) {
-  return native.descriptor_id == bound.descriptor_id &&
+  return native.decimal_codec_profile == bound.decimal_codec_profile &&
+         native.descriptor_id == bound.descriptor_id &&
          native.descriptor_uuid == bound.descriptor_uuid &&
          native.type_uuid == bound.type_uuid &&
          native.nullability == bound.nullability &&
@@ -24939,6 +24957,120 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskForTest() {
 
 std::string AuthoritativeMultiSourceProjectionProofDetailForTest() {
   return g_authoritative_multi_source_projection_proof_detail;
+}
+
+// Component conformance only: these fixture receipts never authorize execution.
+// Exercise the actual public-column builders, not a hand-built binding context.
+std::string PublicDecimalColumnProjectionProofForTest() {
+  namespace dt = core::datatypes;
+  const dt::DatatypeTypeCodecIdentityRowV1* decimal = nullptr;
+  for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    if (row.legacy_fields.catalog_generation == 5 &&
+        row.legacy_fields.canonical_binary_type_code ==
+            static_cast<std::uint32_t>(dt::CanonicalTypeId::decimal)) {
+      decimal = &row.legacy_fields;
+    }
+  }
+  if (!decimal) return "missing DECIMAL fixture cohort";
+  constexpr std::array<std::string_view, 3> sqls{
+      "SELECT l.amount FROM app.left_table AS l CROSS JOIN app.right_table AS r;",
+      "SELECT ROW_NUMBER() OVER (ORDER BY amount) FROM app.left_table;",
+      "SELECT * FROM COLUMNAR_SOURCE(app.left_table);"};
+  for (const auto sql : sqls) {
+    const auto cst = BuildCst(sql);
+    const auto ast = BuildAst(cst);
+    const auto refs = ExtractObjectReferences(cst, ast);
+    if (!ast.native_relational.accepted() || refs.empty())
+      return std::string(sql) + ": invalid test AST";
+    for (const unsigned precision : {18u, 50u}) {
+      auto statement = Rcp079ProofStatementContext();
+      BindProofScalarProfiles(&statement);
+      statement.window_function_profiles.front() = {1, "sb.window.row_number",
+          core::platform::Uuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x75,0x39,
+                                0xbc,0xce,0x00,0xee,0xf3,0xae,0x72,0x20}}, true};
+      statement.literal_preliminary_receipt_uuid = Rcp073ProofUuid(10001);
+      statement.literal_catalog_snapshot_uuid = decimal->catalog_snapshot_uuid;
+      statement.literal_catalog_generation = decimal->catalog_generation;
+      std::vector<ResolvedObjectReferenceSeed> seeds;
+      for (std::size_t i = 0; i < refs.size(); ++i) {
+        auto seed = Rcp079ProofSeed(refs[i], false);
+        seed.resolved.object_uuid = Rcp073ProofUuid(10100 + i);
+        auto& projection = seed.resolved.relation_descriptor;
+        projection.relation_uuid = seed.resolved.object_uuid;
+        projection.descriptor_uuid = Rcp073ProofUuid(10200 + i);
+        projection.datatype_catalog_snapshot_uuid = decimal->catalog_snapshot_uuid;
+        projection.datatype_catalog_generation = decimal->catalog_generation;
+        projection.datatype_registry_generation = decimal->registry_generation;
+        projection.columns.clear();
+        ipc::PublicRelationColumnDescriptor column;
+        column.ordinal = 0;
+        column.column_uuid = Rcp073ProofUuid(10300 + i);
+        column.canonical_name_key = "amount";
+        column.type_descriptor_uuid = Rcp073ProofUuid(10400 + i);
+        column.type_descriptor_kind = "canonical_type_descriptor";
+        column.canonical_type_name = "decimal";
+        column.nullable = false;
+        column.type_shape.precision = precision;
+        column.type_shape.scale = 2;
+        column.type_shape.decimal_codec_profile = dt::DecimalCodecProfile{
+            precision <= 38 ? dt::kExactDecimal24CodecUuid : dt::kExactDecimal40CodecUuid, 1};
+        column.encoded_type_descriptor = "nullability=non_null;precision=" +
+            std::to_string(precision) + ";scale=2";
+        column.datatype_identity_present = true;
+        column.datatype_descriptor_uuid = decimal->descriptor_uuid;
+        column.datatype_descriptor_generation = decimal->descriptor_generation;
+        column.datatype_type_uuid = decimal->type_uuid;
+        column.datatype_type_generation = decimal->type_generation;
+        column.datatype_codec_id = decimal->codec_id;
+        column.datatype_codec_version = decimal->codec_version;
+        column.datatype_codec_generation = decimal->codec_generation;
+        column.datatype_canonical_value_bytes = decimal->canonical_value_bytes;
+        column.datatype_null_encoding = decimal->null_encoding_code;
+        projection.columns.push_back(std::move(column));
+        seeds.push_back(std::move(seed));
+      }
+      MessageVectorSet messages;
+      const auto context = BuildEngineProjectedNativeBindingContext(
+          ast.native_relational, statement, seeds, &messages);
+      const auto failure = [&](std::string detail) {
+        return std::string(sql) + ":p=" + std::to_string(precision) + ":" + detail;
+      };
+      if (!context || messages.has_errors())
+        return failure("projection:" + ipc::MessageVectorToJson(messages));
+      const auto bound = BindNativeRelationalAst(ast.native_relational, *context);
+      if (!bound.bound || bound.messages.has_errors())
+        return failure("binding:" + ipc::MessageVectorToJson(bound.messages));
+      for (const auto& seed : seeds) {
+        const auto& column = seed.resolved.relation_descriptor.columns.front();
+        const auto native = std::ranges::find_if(context->descriptors, [&](const auto& d) {
+          return d.descriptor_uuid == column.type_descriptor_uuid;
+        });
+        const auto copy = std::ranges::find_if(bound.descriptors, [&](const auto& d) {
+          return d.descriptor_uuid == column.type_descriptor_uuid;
+        });
+        if (native == context->descriptors.end() || copy == bound.descriptors.end() ||
+            native->width_precision_scale.precision != precision ||
+            native->width_precision_scale.scale != 2 ||
+            native->decimal_codec_profile != column.type_shape.decimal_codec_profile ||
+            !ExactNativeBoundDescriptorBindingV2(*native, *copy))
+          return failure("projected or bound profile/shape lost");
+        auto changed = *native;
+        changed.decimal_codec_profile->generation = 2;
+        if (ExactNativeDescriptorBindingInputV2(*native, changed))
+          return failure("profile substitution passed immutable binding comparison");
+      }
+      // Valid positive above is essential: a refusing builder cannot pass this
+      // profile-substitution test simply by refusing every input.
+      auto stale = seeds;
+      stale.front().resolved.relation_descriptor.columns.front()
+          .type_shape.decimal_codec_profile->generation = 2;
+      messages = {};
+      if (BuildEngineProjectedNativeBindingContext(
+              ast.native_relational, statement, stale, &messages) || !messages.has_errors())
+        return failure("stale profile accepted");
+    }
+  }
+  return {};
 }
 
 struct SbsqlTestWireSession::HeldBulkImportStream {

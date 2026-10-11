@@ -160,6 +160,13 @@ inline bool Measure(const PublicRelationProjectionV4& p, std::size_t limit,
       if (!relation_shape_detail::Timezone(BytesOf(*c.shape.timezone_profile_id))) return false;
       n += 4 + c.shape.timezone_profile_id->size();
     }
+    if (c.shape.decimal_codec_profile) {
+      if (!c.shape.precision || !c.shape.scale ||
+          !core::datatypes::ExactDecimalCodecProfileMatches(
+              c.shape.decimal_codec_profile->uuid, c.shape.decimal_codec_profile->generation,
+              *c.shape.precision, *c.shape.scale)) return false;
+      n += 24;
+    }
     if (n > limit - size) return false;
     size += n;
   }
@@ -223,7 +230,7 @@ inline bool ReadColumn(Reader& r, std::size_t ordinal, ColumnView& c) noexcept {
   };
   std::optional<std::string_view> timezone;
   if (c.shape[2] & 8) timezone = std::string_view{
-      reinterpret_cast<const char*>(c.shape.data() + 20), c.shape.size() - 20};
+      reinterpret_cast<const char*>(c.shape.data() + 20), relation_shape_detail::Read32(c.shape, 16)};
   return ScalarShapeMatches(c.scalar_metadata, optional_number(1,4), optional_number(2,8),
       optional_number(4,12), timezone, c.attributes & 1, c.type_name);
 }
