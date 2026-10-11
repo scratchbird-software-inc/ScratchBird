@@ -96,12 +96,8 @@ bool UuidV7Text(const api::EngineUuid& value) {
   return uuid::IsEngineIdentityUuid(value);
 }
 
-api::EngineUuid CoreRuntimeTypeUuid(std::string_view stable_name);
-api::EngineUuid CoreTypeUuid(const std::string_view stable_name) {
-  return CoreRuntimeTypeUuid(stable_name);
-}
-
-api::EngineUuid CoreRuntimeTypeUuid(const std::string_view stable_name) {
+api::EngineUuid CoreTypeUuid(const std::string_view stable_name,
+                             const api::EngineRequestContext& context) {
   const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
   const auto count = std::ranges::count_if(
@@ -116,11 +112,12 @@ api::EngineUuid CoreRuntimeTypeUuid(const std::string_view stable_name) {
   }
   const auto descriptor_uuid =
       descriptor->descriptor_uuid.value;
-  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      api::kBootstrapDatatypeCatalogUuid,
-      api::kBootstrapDatatypeCatalogGeneration, api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
+  const auto* identity = dt::FindDatatypeTypeCodecIdentityV3(
+      context.datatype_catalog_snapshot_uuid,
+      context.datatype_catalog_generation, context.datatype_registry_generation, descriptor_uuid,
       descriptor->descriptor_epoch);
-  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
+  if (!identity) throw std::invalid_argument("search fixture lacks exact node datatype binding");
+  return identity->legacy_fields.type_uuid;
 }
 
 enum class FixtureKind { kBase, kEmpty, kInvalid, kDuplicate };
@@ -265,7 +262,7 @@ bool BuildFixture(const FixtureKind kind, SearchFixture* fixture) {
   fixture->owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   fixture->principal_uuid = fixture->owner_context.principal_uuid;
   fixture->session_uuid = fixture->owner_context.session_uuid;
-  const auto text_type = CoreTypeUuid("character");
+  const auto text_type = CoreTypeUuid("character", fixture->owner_context);
   if (text_type.is_nil()) return Require(false, "fixture TEXT type missing");
 
   api::EngineRequestContext metadata;
@@ -290,7 +287,7 @@ bool BuildFixture(const FixtureKind kind, SearchFixture* fixture) {
   join_table.default_name = "rcp078_search_join";
   join_table.columns = {
       {"join_document_uuid",
-       scratchbird::tests::NativeCatalogColumnFixture({{{"canonical", "uuid"}, {"nullable", "false"}}, {{"type_uuid", CoreTypeUuid("uuid")}}})},
+       scratchbird::tests::NativeCatalogColumnFixture({{{"canonical", "uuid"}, {"nullable", "false"}}, {{"type_uuid", CoreTypeUuid("uuid", metadata)}}})},
       {"payload", scratchbird::tests::NativeCatalogColumnFixture({{{"canonical", "text"}, {"nullable", "false"}}, {{"type_uuid", text_type}}})},
   };
   join_table = scratchbird::tests::PublishDdlTableFixture(
@@ -416,9 +413,9 @@ bool EngineUuidExecutionCohortAuthority() {
 }
 
 std::vector<api::EngineDescriptor> OutputDescriptors(const api::EngineRequestContext& context) {
-  const auto uuid_type = CoreTypeUuid("uuid");
-  const auto uint64_type = CoreTypeUuid("uint64");
-  const auto real64_type = CoreTypeUuid("real64");
+  const auto uuid_type = CoreTypeUuid("uuid", context);
+  const auto uint64_type = CoreTypeUuid("uint64", context);
+  const auto real64_type = CoreTypeUuid("real64", context);
   const std::array<api::EngineUuid, 5> types{uuid_type, uuid_type, uint64_type,
                                          real64_type, uint64_type};
   const std::array<std::string_view, 5> names{"uuid", "uuid", "uint64",
@@ -432,7 +429,8 @@ std::vector<api::EngineDescriptor> OutputDescriptors(const api::EngineRequestCon
     descriptor.type_uuid = types[index];
     descriptor.encoded_descriptor = "nullability=non_null";
     const dt::DatatypeTypeCodecIdentityRowV1* binding = nullptr;
-    for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+    for (const auto& entry : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+      const auto& row = entry.legacy_fields;
       if (row.catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
           row.catalog_generation != context.datatype_catalog_generation ||
           row.registry_generation != context.datatype_registry_generation ||
@@ -443,6 +441,8 @@ std::vector<api::EngineDescriptor> OutputDescriptors(const api::EngineRequestCon
     if (!binding) throw std::runtime_error("missing search output datatype binding");
     descriptor.datatype_descriptor_uuid = binding->descriptor_uuid;
     descriptor.datatype_descriptor_generation = binding->descriptor_generation;
+    descriptor.datatype_cohort = {binding->catalog_snapshot_uuid,
+        binding->catalog_generation, binding->registry_generation};
     descriptors.push_back(std::move(descriptor));
   }
   return descriptors;
@@ -559,7 +559,7 @@ bool SearchDescriptorMutationRefusals(const SearchFixture& fixture) {
                       "search accepted a substituted database or datatype cohort");
   }
   for (unsigned ordinal = 0; ordinal < 2; ++ordinal) {
-    for (unsigned mutation = 0; mutation < 27; ++mutation) {
+    for (unsigned mutation = 0; mutation < 30; ++mutation) {
       auto changed = storage;
       auto& column = changed.columns[ordinal];
       auto& descriptor = column.value_descriptor;
@@ -599,10 +599,28 @@ bool SearchDescriptorMutationRefusals(const SearchFixture& fixture) {
         column.collation_uuid = descriptor.collation_uuid = {};
         metadata.identities.erase("collation_uuid");
       }
+      if (mutation == 27) descriptor.datatype_cohort.catalog_snapshot_uuid = {};
+      if (mutation == 28) ++descriptor.datatype_cohort.catalog_generation;
+      if (mutation == 29) ++descriptor.datatype_cohort.registry_generation;
       if (!api::EncodeCatalogColumnMetadata(metadata, &descriptor.encoded_descriptor))
         return Require(false, "search mutation metadata did not encode");
       passed &= Require(!api::ExactBoundSearchStorageDescriptorV1(context, changed, kCollection),
                         "search admitted substituted native descriptor metadata");
+    }
+  }
+  for (unsigned ordinal = 0; ordinal < 5; ++ordinal) {
+    for (unsigned mutation = 0; mutation < 6; ++mutation) {
+      auto changed = SearchRequest(fixture, api::EngineBoundSearchOperationV1::kTerms, "alpha", 2);
+      auto& descriptor = changed.output_descriptors.at(ordinal);
+      if (mutation == 0) descriptor.datatype_cohort.catalog_snapshot_uuid = {};
+      if (mutation == 1) ++descriptor.datatype_cohort.catalog_generation;
+      if (mutation == 2) ++descriptor.datatype_cohort.registry_generation;
+      if (mutation == 3) descriptor.datatype_descriptor_uuid = {};
+      if (mutation == 4) ++descriptor.datatype_descriptor_generation;
+      if (mutation == 5) descriptor.type_uuid = {};
+      passed &= Require(ExactRefusal(api::EngineBoundSearchReadV1(changed),
+          "SB_MODEL_TYPED_EXCHANGE_INVALID_V1", false),
+          "search accepted malformed public output datatype binding before resource acquisition");
     }
   }
   return passed;
@@ -1636,7 +1654,8 @@ api::RelationalTypeDescriptor DagDescriptor(
   descriptor.type_uuid = std::move(type_uuid);
   descriptor.nullability = api::RelationalNullability::kNonNull;
   const dt::DatatypeTypeCodecIdentityRowV1* identity = nullptr;
-  for (const auto& candidate : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+  for (const auto& entry : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& candidate = entry.legacy_fields;
     if (candidate.catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
         candidate.catalog_generation != context.datatype_catalog_generation ||
         candidate.registry_generation != context.datatype_registry_generation ||
@@ -1663,9 +1682,9 @@ api::TypedRelationalDag ProductionSearchDag(
     const SearchFixture& fixture, const std::string_view query_operator,
     const std::string_view query_text, const std::uint32_t top_k) {
   const auto& context = fixture.reader;
-  const auto uuid_type = CoreTypeUuid("uuid");
-  const auto uint64_type = CoreTypeUuid("uint64");
-  const auto real64_type = CoreTypeUuid("real64");
+  const auto uuid_type = CoreTypeUuid("uuid", context);
+  const auto uint64_type = CoreTypeUuid("uint64", context);
+  const auto real64_type = CoreTypeUuid("real64", context);
   const auto body_type =
       DescriptorTypeUuid(fixture.storage.columns[0].value_descriptor);
   const auto category_type =
@@ -1805,10 +1824,10 @@ api::TypedRelationalDag ProductionSearchUnaryCompositionDag(
   dag.root_node_id = 5;
   dag.descriptors.push_back(DagDescriptor(fixture.reader,
       108, GeneratedUuid(platform::UuidKind::object, 0xe08),
-      CoreTypeUuid("boolean")));
+      CoreTypeUuid("boolean", fixture.reader)));
   dag.descriptors.push_back(DagDescriptor(fixture.reader,
       109, GeneratedUuid(platform::UuidKind::object, 0xe09),
-      CoreRuntimeTypeUuid("int64")));
+      CoreTypeUuid("int64", fixture.reader)));
 
   std::array<std::uint32_t, 5> projected_expression_ids{};
   for (std::size_t ordinal = 0; ordinal < projected_expression_ids.size();
@@ -1956,7 +1975,7 @@ api::TypedRelationalDag ProductionSearchCteFetchDag(
   dag.nodes.push_back(std::move(cte));
   dag.descriptors.push_back(DagDescriptor(fixture.reader,
       108, GeneratedUuid(platform::UuidKind::object, 0xe20),
-      CoreRuntimeTypeUuid("int64")));
+      CoreTypeUuid("int64", fixture.reader)));
   api::RelationalExpressionRecord count;
   count.expression_id = 40;
   count.expression_kind = api::RelationalExpressionKind::kLiteral;
@@ -1989,7 +2008,7 @@ api::TypedRelationalDag ProductionSearchCountDag(
   dag.root_node_id = 2;
   dag.descriptors.push_back(DagDescriptor(fixture.reader,
       108, GeneratedUuid(platform::UuidKind::object, 0xe30),
-      CoreRuntimeTypeUuid("int64")));
+      CoreTypeUuid("int64", fixture.reader)));
   const auto count = exec::LookupCanonicalAggregateByFunctionV1(
       exec::CanonicalAggregateFunction::count);
   api::RelationalExpressionRecord aggregate;
@@ -2015,7 +2034,7 @@ api::TypedRelationalDag ProductionSearchGroupedAggregateDag(
   auto dag = ProductionSearchDag(
       fixture, "SEARCH_TERMS", "alpha beta", 3);
   dag.root_node_id = 3;
-  const auto int64_type = CoreRuntimeTypeUuid("int64");
+  const auto int64_type = CoreTypeUuid("int64", fixture.reader);
   dag.descriptors.push_back(DagDescriptor(fixture.reader,
       108, GeneratedUuid(platform::UuidKind::object, 0xe31), int64_type));
   dag.descriptors.push_back(DagDescriptor(fixture.reader,
@@ -2216,7 +2235,7 @@ api::TypedRelationalDag ProductionSearchMixedJoinDag(
   }
   dag.descriptors.push_back(DagDescriptor(fixture.reader,
       203, GeneratedUuid(platform::UuidKind::object, 0xe40),
-      CoreTypeUuid("boolean")));
+      CoreTypeUuid("boolean", fixture.reader)));
   api::RelationalDagNode heap;
   heap.node_id = 2;
   heap.node_kind = api::RelationalDagNodeKind::kScan;
@@ -2258,11 +2277,12 @@ api::TypedRelationalDag ProductionSearchMixedJoinDag(
 }
 
 std::vector<opt::MultilegDescriptorProfileV1>
-ProductionSearchMultilegProfilesV10(const api::TypedRelationalDag& dag) {
+ProductionSearchMultilegProfilesV10(const api::TypedRelationalDag& dag,
+                                   const api::EngineRequestContext& context) {
   const std::array<api::EngineUuid, 5> type_uuids{
-      CoreTypeUuid("uuid"), CoreTypeUuid("uint64"),
-      CoreTypeUuid("real64"), CoreTypeUuid("boolean"),
-      CoreTypeUuid("geometry")};
+      CoreTypeUuid("uuid", context), CoreTypeUuid("uint64", context),
+      CoreTypeUuid("real64", context), CoreTypeUuid("boolean", context),
+      CoreTypeUuid("geometry", context)};
   const auto descriptor_uuid = [&](const std::uint32_t descriptor_id) {
     const auto descriptor = std::ranges::find_if(
         dag.descriptors, [&](const auto& candidate) {
@@ -2501,7 +2521,7 @@ bool ProductionCanonicalRoute() {
   }
   const auto joined_dag = ProductionSearchMixedJoinDag(fixture);
   const auto direct_multileg_profiles =
-      ProductionSearchMultilegProfilesV10(joined_dag);
+      ProductionSearchMultilegProfilesV10(joined_dag, fixture.reader);
   sblr::CanonicalObjectFreeValuesExecutionResult joined;
   bool direct_multileg_scope_exact = direct_multileg_profiles.size() == 320;
   {

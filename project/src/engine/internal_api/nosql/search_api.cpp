@@ -645,17 +645,17 @@ bool ExactBoundSearchStorageDescriptorImpl(
       manifest.manifest, dt::CanonicalTypeId::character);
   if (!type.ok() || type.manifest.descriptor_rows.size() != 1) return false;
   const auto& datatype = type.manifest.descriptor_rows.front();
-  const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+  const auto* binding = dt::FindDatatypeTypeCodecIdentityV3(
       context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
       context.datatype_registry_generation, datatype.descriptor_uuid.value,
       datatype.descriptor_epoch);
-  if (!binding.ok || ValidateMgaRelationStorageDescriptor(descriptor).error ||
+  if (!binding || ValidateMgaRelationStorageDescriptor(descriptor).error ||
       descriptor.database_uuid != context.database_uuid ||
       descriptor.relation_uuid != collection_uuid ||
       descriptor.relation_kind != "table" ||
       descriptor.storage_profile != "local_mga_rowstore_v1" ||
       descriptor.columns.size() != 2) return false;
-  const auto& codec = binding.row;
+  const auto& codec = binding->legacy_fields;
   const auto exact_text = [&](const auto& column, const std::uint32_t ordinal,
                               const std::string_view name) {
     const auto& value = column.value_descriptor;
@@ -684,6 +684,9 @@ bool ExactBoundSearchStorageDescriptorImpl(
            value.type_uuid == codec.type_uuid &&
            value.datatype_descriptor_uuid == codec.descriptor_uuid &&
            value.datatype_descriptor_generation == codec.descriptor_generation &&
+           value.datatype_cohort == EngineDatatypeCohort{
+               context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+               context.datatype_registry_generation} &&
            metadata.text == expected.text && metadata.identities == expected.identities;
   };
   // Column identity and scalar-descriptor identity have independent ownership.
@@ -705,14 +708,16 @@ bool ExactBoundSearchOutputDescriptors(
   for (std::size_t index = 0; index < descriptors.size(); ++index) {
     const auto& descriptor = descriptors[index];
     namespace dt = scratchbird::core::datatypes;
-    const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+    const auto* binding = dt::FindDatatypeTypeCodecIdentityV3(
         context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
         context.datatype_registry_generation, descriptor.datatype_descriptor_uuid,
         descriptor.datatype_descriptor_generation);
-    if (!binding.ok || binding.row.canonical_binary_type_code !=
+    if (!binding || descriptor.datatype_cohort != EngineDatatypeCohort{
+            context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+            context.datatype_registry_generation} || binding->legacy_fields.canonical_binary_type_code !=
             static_cast<std::uint32_t>(dt::CanonicalTypeIdFromStableName(std::string(kTypes[index]))))
       return false;
-    const auto type_uuid = binding.row.type_uuid;
+    const auto type_uuid = binding->legacy_fields.type_uuid;
     if (!CanonicalBoundSearchUuid(descriptor.descriptor_uuid) ||
         !descriptor_uuids.insert(descriptor.descriptor_uuid).second ||
         descriptor.descriptor_kind != "scalar" || type_uuid.is_nil() ||
