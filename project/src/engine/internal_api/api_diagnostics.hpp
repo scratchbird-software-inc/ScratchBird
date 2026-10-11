@@ -10,6 +10,7 @@
 #include "api_types.hpp"
 namespace scratchbird::core::datatypes { struct TimeDiagnosticFactV3; }
 namespace scratchbird::core::datatypes { struct TimestampDiagnosticFactV3; }
+namespace scratchbird::core::datatypes { struct IntervalDiagnosticFactV3; }
 namespace scratchbird::engine::internal_api {
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_DIAGNOSTICS
 EngineApiDiagnostic MakeEngineApiDiagnostic(std::string code, std::string message_key, std::string detail, bool error = true);
@@ -26,6 +27,9 @@ void PreserveEngineApiTimeDiagnosticCause(
 void PreserveEngineApiTimestampDiagnosticCause(
     EngineApiDiagnostic& diagnostic,
     const scratchbird::core::datatypes::TimestampDiagnosticFactV3& cause);
+void PreserveEngineApiIntervalDiagnosticCause(
+    EngineApiDiagnostic& diagnostic,
+    const scratchbird::core::datatypes::IntervalDiagnosticFactV3& cause);
 EngineApiDiagnostic MakeUnavailableDiagnostic(std::string operation_id);
 EngineApiDiagnostic MakeUnsupportedProfileDiagnostic(std::string operation_id, std::string profile);
 EngineApiDiagnostic MakeClusterAuthorityUnavailableDiagnostic(std::string operation_id);

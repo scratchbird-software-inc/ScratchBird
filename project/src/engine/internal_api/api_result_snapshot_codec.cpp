@@ -31,6 +31,7 @@ template<class T> bool ValidEnum(T v){
 }
 struct Writer {
   static constexpr bool reading=false;
+  static constexpr std::size_t datatype_parameter_slots=5;
   bool ok=true;std::vector<std::uint8_t> bytes;std::size_t owned=sizeof(EngineApiResult);
   bool Charge(std::size_t n){if(!ok||n>limit-owned){ok=false;return false;}owned+=n;return true;}
   void Raw(const std::uint8_t* p,std::size_t n){
@@ -70,6 +71,7 @@ struct Writer {
 struct Reader {
   static constexpr bool reading=true;
   bool ok=true;std::span<const std::uint8_t> bytes;std::size_t offset=0,owned=sizeof(EngineApiResult);
+  std::size_t datatype_parameter_slots=5;
   bool Charge(std::size_t n){if(!ok||n>limit-owned){ok=false;return false;}owned+=n;return true;}
   bool Raw(std::uint8_t* p,std::size_t n){
     if(!ok||n>bytes.size()-offset){ok=false;return false;}
@@ -185,8 +187,8 @@ template<class A,class T>void Record(A& a,T& v){
   }
   else if constexpr(std::is_same_v<U,core::diagnostics::NativeDatatypeDiagnosticFact>){
     a(v.status,v.diagnostic_code,v.detail,v.parameter_count);
-    if(v.parameter_count>v.parameters.size()){a.ok=false;return;}
-    for(auto& parameter:v.parameters)a(parameter);
+    if(v.parameter_count>a.datatype_parameter_slots){a.ok=false;return;}
+    for(std::size_t i=0;i<a.datatype_parameter_slots;++i)a(v.parameters[i]);
   }
   else REC(core::diagnostics::NativeDiagnosticSource,v.record,v.canonical_metadata,v.datatype_cause)
   else if constexpr(std::is_same_v<U,EngineApiDiagnostic>){
@@ -208,13 +210,15 @@ template<class A,class T>void Record(A& a,T& v){
 }
 bool EncodeEngineApiResultSnapshot(const EngineApiResult& result,std::vector<std::uint8_t>* output){
   if(!output)return false;
-  Writer writer;const std::array<std::uint8_t,8> header{'S','A','P','I',5,0,0,0};writer(header,result);
+  Writer writer;const std::array<std::uint8_t,8> header{'S','A','P','I',6,0,0,0};writer(header,result);
   if(!writer.ok)return false;output->swap(writer.bytes);return true;
 }
 bool DecodeEngineApiResultSnapshot(std::span<const std::uint8_t> bytes,EngineApiResult* output){
-  constexpr std::array<std::uint8_t,8> header{'S','A','P','I',5,0,0,0};
-  if(!output||bytes.size()<header.size()||bytes.size()>limit||!std::equal(header.begin(),header.end(),bytes.begin()))return false;
-  Reader reader{true,bytes,header.size()};EngineApiResult result;reader(result);
+  constexpr std::array<std::uint8_t,4> magic{'S','A','P','I'};
+  if(!output||bytes.size()<8||bytes.size()>limit||!std::equal(magic.begin(),magic.end(),bytes.begin())||
+     (bytes[4]!=5&&bytes[4]!=6)||bytes[5]!=0||bytes[6]!=0||bytes[7]!=0)return false;
+  Reader reader{true,bytes,8};reader.datatype_parameter_slots=bytes[4]==5?4:5;
+  EngineApiResult result;reader(result);
   if(!reader.ok||reader.offset!=bytes.size())return false;
   static_assert(std::is_nothrow_move_assignable_v<EngineApiResult>);
   *output=std::move(result);return true;

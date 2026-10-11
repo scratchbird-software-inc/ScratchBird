@@ -54,7 +54,7 @@ struct NativeDatatypeDiagnosticFact {
   platform::Status status;
   std::string diagnostic_code;
   std::string detail;
-  std::array<NativeDatatypeDiagnosticParameter, 4> parameters;
+  std::array<NativeDatatypeDiagnosticParameter, 5> parameters;
   std::uint8_t parameter_count = 0;
 };
 

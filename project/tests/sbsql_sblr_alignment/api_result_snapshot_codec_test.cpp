@@ -4,6 +4,7 @@
 #include "api_diagnostics.hpp"
 #include "datatype_time.hpp"
 #include "datatype_timestamp_diagnostic.hpp"
+#include "datatype_interval_diagnostic.hpp"
 #include "query/result_metadata.hpp"
 #include <algorithm>
 #include <cstdlib>
@@ -84,9 +85,9 @@ api::EngineApiResult Fixture(){
   diagnostic.native_source=cd::NativeDiagnosticSource{native,diagnostic.canonical_metadata};
   cd::NativeDatatypeDiagnosticFact cause;
   cause.status={cp::StatusCode::diagnostic_invalid_record,cp::Severity::error,cp::Subsystem::datatypes};
-  cause.diagnostic_code="typed-cause.source";cause.detail="typed-cause.detail";cause.parameter_count=4;
-  for (unsigned i=0;i<4;++i) {
-    auto& p=cause.parameters[i];p.kind=static_cast<cd::NativeDatatypeParameterKind>(i+1);
+  cause.diagnostic_code="typed-cause.source";cause.detail="typed-cause.detail";cause.parameter_count=5;
+  for (unsigned i=0;i<5;++i) {
+    auto& p=cause.parameters[i];p.kind=static_cast<cd::NativeDatatypeParameterKind>(i%4+1);
     p.name="typed-cause.parameter."+std::to_string(i);p.unsigned_value=~std::uint64_t{0}-i;
     p.signed_value=std::numeric_limits<std::int64_t>::min()+i;
     p.uuid_value=Id(100+i);p.uuid_value.bytes[6]=0x40;
@@ -103,7 +104,7 @@ api::EngineApiResult Fixture(){
 }
 int main(){
   api::EngineApiResult empty;auto minimal=Encode(empty);
-  std::vector<std::uint8_t> oracle(226,0);oracle[0]='S';oracle[1]='A';oracle[2]='P';oracle[3]='I';oracle[4]=5;oracle[223]=1;
+  std::vector<std::uint8_t> oracle(226,0);oracle[0]='S';oracle[1]='A';oracle[2]='P';oracle[3]='I';oracle[4]=6;oracle[223]=1;
   Check(minimal==oracle,"independent empty snapshot layout differs");
   auto source=Fixture();const auto bytes=Encode(source);api::EngineApiResult decoded;
   Check(api::DecodeEngineApiResultSnapshot(bytes,&decoded),"complete source result refused");
@@ -266,10 +267,37 @@ int main(){
   Check(detail_marker!=bytes.end(),"typed cause layout marker absent");
   if(detail_marker!=bytes.end()) {
     const auto count_offset=static_cast<std::size_t>(detail_marker-bytes.begin())+cause.detail.size();
-    for(unsigned count=5;count<256;++count) {bad=bytes;bad[count_offset]=count;refuse(bad);}
+    for(unsigned count=6;count<256;++count) {bad=bytes;bad[count_offset]=count;refuse(bad);}
     for(unsigned kind=5;kind<256;++kind) {bad=bytes;bad[count_offset+1]=kind;refuse(bad);}
+    // Independently frame the four-slot SAPI5 predecessor from its specified
+    // parameter layout; never reinterpret it as a five-slot record.
+    std::size_t fifth_offset=count_offset+1;
+    for(unsigned i=0;i<4;++i)
+      fifth_offset+=1+4+cause.parameters[i].name.size()+8+8+16+4+cause.parameters[i].token_value.size();
+    const auto fifth_size=1+4+cause.parameters[4].name.size()+8+8+16+4+cause.parameters[4].token_value.size();
+    auto old=bytes;
+    old.erase(old.begin()+fifth_offset,old.begin()+fifth_offset+fifth_size);
+    old[4]=5;old[count_offset]=4;
+    Check(api::DecodeEngineApiResultSnapshot(old,&decoded),"SAPI5 predecessor refused");
+    auto upgraded=source;
+    upgraded.diagnostics[0].native_source->datatype_cause->parameter_count=4;
+    upgraded.diagnostics[0].native_source->datatype_cause->parameters[4]={};
+    Check(Encode(decoded)==Encode(upgraded),"SAPI5 upgrade lost fields or manufactured fifth operand");
+    for(std::size_t n=0;n<old.size();++n)refuse({old.begin(),old.begin()+n});
+    bad=old;bad[count_offset]=5;refuse(bad);
+    bad=old;bad[4]=6;refuse(bad);
+    bad=bytes;bad[4]=5;refuse(bad);
+    for(unsigned kind=0;kind<=4;++kind){
+      auto value=source;
+      value.diagnostics[0].native_source->datatype_cause->parameters[4].kind=
+          static_cast<cd::NativeDatatypeParameterKind>(kind);
+      const auto encoded=Encode(value);
+      Check(api::DecodeEngineApiResultSnapshot(encoded,&decoded)&&Encode(decoded)==encoded,
+            "fifth typed cause operand lost");
+    }
+    for(unsigned kind=5;kind<256;++kind){bad=bytes;bad[fifth_offset]=kind;refuse(bad);}
   }
-  for(unsigned count=0;count<=4;++count) {
+  for(unsigned count=0;count<=5;++count) {
     auto value=source;value.diagnostics[0].native_source->datatype_cause->parameter_count=count;
     value.diagnostics[0].native_source->datatype_cause->parameters[0].kind=cd::NativeDatatypeParameterKind::none;
     const auto encoded=Encode(value);
@@ -278,7 +306,7 @@ int main(){
   }
   for(bool bad_count:{false,true}) {
     auto value=source;auto& fact=*value.diagnostics[0].native_source->datatype_cause;
-    if(bad_count)fact.parameter_count=5;else fact.parameters[0].kind=static_cast<cd::NativeDatatypeParameterKind>(255);
+    if(bad_count)fact.parameter_count=6;else fact.parameters[0].kind=static_cast<cd::NativeDatatypeParameterKind>(255);
     std::vector<std::uint8_t> sentinel{42};
     Check(!api::EncodeEngineApiResultSnapshot(value,&sentinel)&&sentinel==std::vector<std::uint8_t>{42},
           "malformed typed cause encoded or changed output");
@@ -291,10 +319,10 @@ int main(){
   for (const bool existing_native : {false, true}) {
   std::string detail(96,'d'), name(96,'n'), token(96,'t');
   Fact time;
-  time.status=cause.status;time.diagnostic_code=detail;time.detail=detail;time.parameter_count=4;
-  for(unsigned i=0;i<4;++i) {
+  time.status=cause.status;time.diagnostic_code=detail;time.detail=detail;time.parameter_count=time.parameters.size();
+  for(unsigned i=0;i<time.parameters.size();++i) {
     auto& p=time.parameters[i];const auto& original=cause.parameters[i];
-    p.kind=static_cast<decltype(time.parameters[0].kind)>(i+1);p.name=name;
+    p.kind=static_cast<decltype(time.parameters[0].kind)>(i%4+1);p.name=name;
     p.unsigned_value=original.unsigned_value;p.signed_value=original.signed_value;
     p.uuid_value=original.uuid_value;p.token_value=token;
   }
@@ -311,9 +339,23 @@ int main(){
                 (existing_native ? "native.source" : detail),
             "typed cause replaced dominant failure");
       const auto retained=*value.diagnostics[0].native_source->datatype_cause;
+      Check(retained.parameter_count==time.parameters.size(),"capture lost source parameter count");
+      for(std::size_t i=0;i<time.parameters.size();++i){
+        const auto& p=retained.parameters[i];const auto& q=time.parameters[i];
+        Check(static_cast<unsigned>(p.kind)==static_cast<unsigned>(q.kind)&&p.name==q.name&&
+              p.unsigned_value==q.unsigned_value&&p.signed_value==q.signed_value&&
+              p.uuid_value==q.uuid_value&&p.token_value==q.token_value,
+              "capture lost typed source parameter");
+      }
+      for(std::size_t i=time.parameters.size();i<retained.parameters.size();++i)
+        Check(retained.parameters[i]==cd::NativeDatatypeDiagnosticParameter{},
+              "capture retained a previous diagnostic's unused fifth slot");
+      const auto captured=Encode(value);
+      Check(api::DecodeEngineApiResultSnapshot(captured,&decoded)&&Encode(decoded)==captured,
+            "captured source fact did not survive private replay");
       detail.assign(96,'x');name.assign(96,'x');token.assign(96,'x');
       Check(retained.detail==std::string(96,'d')&&retained.parameters[0].name==std::string(96,'n')&&
-            retained.parameters[3].token_value==std::string(96,'t'),"typed cause kept borrowed strings");
+            retained.parameters[time.parameters.size()-1].token_value==std::string(96,'t'),"typed cause kept borrowed strings");
       capture_completed=true;break;
     } catch(const std::bad_alloc&) {
       fail_after=-1;++capture_faults;Check(Encode(value)==original,"failed capture partially replaced diagnostic");
@@ -327,8 +369,8 @@ int main(){
     if(!existing_native)value.diagnostics[0].native_source.reset();
     const auto original=Encode(value);
     auto invalid=time;
-    if(bad_count)invalid.parameter_count=5;
-    else invalid.parameters[3].kind=static_cast<decltype(time.parameters[0].kind)>(255);
+    if(bad_count)invalid.parameter_count=time.parameters.size()+1;
+    else invalid.parameters[time.parameters.size()-1].kind=static_cast<decltype(time.parameters[0].kind)>(255);
     bool refused=false;
     try{preserve(value.diagnostics[0],invalid);}
     catch(const std::invalid_argument&){refused=true;}
@@ -339,6 +381,7 @@ int main(){
   };
   check_capture.template operator()<dt::TimeDiagnosticFactV3>(api::PreserveEngineApiTimeDiagnosticCause);
   check_capture.template operator()<dt::TimestampDiagnosticFactV3>(api::PreserveEngineApiTimestampDiagnosticCause);
+  check_capture.template operator()<dt::IntervalDiagnosticFactV3>(api::PreserveEngineApiIntervalDiagnosticCause);
   // These bytes are user data, not identity authority: retain all UUID versions.
   for (unsigned version = 0; version < 16; ++version) {
     auto user_uuid = Id(90); user_uuid.bytes[6] = static_cast<std::uint8_t>(version << 4);

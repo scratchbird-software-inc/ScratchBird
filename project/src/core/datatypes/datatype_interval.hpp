@@ -4,6 +4,7 @@
 
 #include "datatype_operations.hpp"
 #include "datatype_type_codec_identity_v3.hpp"
+#include "datatype_interval_diagnostic.hpp"
 
 #include <array>
 #include <cstddef>
@@ -145,26 +146,6 @@ struct IntervalExecutionControlV3 {
   void* scrub_observer_context = nullptr;
   bool force_reencode_mismatch_for_conformance = false;
 };
-enum class IntervalDiagnosticParameterKindV3 : u8 {
-  none = 0, unsigned_u64 = 1, signed_i64 = 2, uuid = 3, token = 4,
-};
-struct IntervalDiagnosticParameterV3 {
-  IntervalDiagnosticParameterKindV3 kind = IntervalDiagnosticParameterKindV3::none;
-  std::string_view name;
-  u64 unsigned_value = 0;
-  std::int64_t signed_value = 0;
-  platform::Uuid uuid_value;
-  std::string_view token_value;
-};
-inline constexpr u8 kIntervalDiagnosticParameterCapacityV3 = 5;
-struct IntervalDiagnosticFactV3 {
-  Status status;
-  std::string_view diagnostic_code;
-  std::string_view detail;
-  std::array<IntervalDiagnosticParameterV3, kIntervalDiagnosticParameterCapacityV3> parameters{};
-  u8 parameter_count = 0;
-};
-
 #define SB_INTERVAL_RESULT(NAME, BODY) struct NAME { Status status; IntervalDiagnosticFactV3 diagnostic; BODY bool ok() const noexcept { return status.ok(); } }
 SB_INTERVAL_RESULT(IntervalValidationResultV3, );
 SB_INTERVAL_RESULT(IntervalProfileResultV3, IntervalValidatedProfileHandleV3 profile;);

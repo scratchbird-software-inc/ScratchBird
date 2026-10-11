@@ -4,7 +4,8 @@
 #include "api_types.hpp"
 #include <span>
 namespace scratchbird::engine::internal_api {
-// Private SAPI5 replay snapshot, not canonical IPC or execution authority.
+// Private SAPI6 replay snapshot (SAPI5 decoding retained), not canonical IPC or
+// execution authority. SAPI6 carries five typed cause slots, SAPI5 carries four.
 // Native diagnostic arguments use explicit text/UUID tags; UUID data retain
 // all 128 bits independently of system-identity admission policy.
 // Bounded datatype causes retain owned names, typed numbers and raw UUID data.

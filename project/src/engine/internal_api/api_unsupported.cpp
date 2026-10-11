@@ -9,6 +9,7 @@
 #include "api_unsupported.hpp"
 #include "../../core/datatypes/datatype_time_diagnostic.hpp"
 #include "../../core/datatypes/datatype_timestamp_diagnostic.hpp"
+#include "../../core/datatypes/datatype_interval_diagnostic.hpp"
 
 #include <stdexcept>
 #include <type_traits>
@@ -50,6 +51,8 @@ void PreserveTemporalDiagnosticCause(
   if (cause.parameter_count > cause.parameters.size())
     throw std::invalid_argument("invalid temporal diagnostic parameter count");
   cd::NativeDatatypeDiagnosticFact owned;
+  static_assert(std::tuple_size_v<decltype(cause.parameters)> <=
+                std::tuple_size_v<decltype(owned.parameters)>);
   owned.status = cause.status;
   owned.diagnostic_code = cause.diagnostic_code;
   owned.detail = cause.detail;
@@ -95,6 +98,11 @@ void PreserveEngineApiTimestampDiagnosticCause(
     EngineApiDiagnostic& diagnostic,
     const scratchbird::core::datatypes::TimestampDiagnosticFactV3& cause) {
   PreserveTemporalDiagnosticCause(diagnostic, cause, "datatype.timestamp.rejected");
+}
+void PreserveEngineApiIntervalDiagnosticCause(
+    EngineApiDiagnostic& diagnostic,
+    const scratchbird::core::datatypes::IntervalDiagnosticFactV3& cause) {
+  PreserveTemporalDiagnosticCause(diagnostic, cause, "datatype.interval.rejected");
 }
 
 EngineApiDiagnostic MakeUnavailableDiagnostic(std::string operation_id) {
