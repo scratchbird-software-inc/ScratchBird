@@ -5464,6 +5464,20 @@ if(TARGET sb_server_core)
     memory_policy_config_conformance.cpp
   )
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(server_abi_close_custody_gate
+      "${PROJECT_SOURCE_DIR}/tests/concurrency/server_abi_close_custody_gate.cpp")
+    target_compile_features(server_abi_close_custody_gate PRIVATE cxx_std_23)
+    target_link_libraries(server_abi_close_custody_gate PRIVATE sb_server_core)
+    target_link_options(server_abi_close_custody_gate PRIVATE
+      "LINKER:--wrap=sb_engine_close" "LINKER:--wrap=sb_engine_session_end" "LINKER:--wrap=sb_engine_session_begin"
+      "LINKER:--wrap=sb_engine_result_release")
+    target_link_options(server_abi_close_custody_gate PRIVATE
+      "LINKER:--wrap=_ZN11scratchbird20server_engine_bridge30ReleaseStatementContextReceiptENS0_29StatementContextReceiptHandleE")
+    foreach(mode session engine authority begin cursor prepared prepared_route cursor_route retired_cursor_route cancel_route receipt_session receipt_prepared)
+      add_test(NAME server_abi_close_custody_${mode}_gate COMMAND server_abi_close_custody_gate ${mode})
+      set_tests_properties(server_abi_close_custody_${mode}_gate PROPERTIES
+        TIMEOUT 90 LABELS "runtime;cleanup;actual_handles;fault_injection;component;not_runtime_acceptance")
+    endforeach()
     add_executable(server_crypto_config_bootstrap_gate
       "${PROJECT_SOURCE_DIR}/tests/concurrency/server_crypto_config_bootstrap_gate.cpp")
     target_compile_features(server_crypto_config_bootstrap_gate PRIVATE cxx_std_23)

@@ -32,6 +32,7 @@
 #include <string_view>
 #include <vector>
 #include <utility>
+#include <type_traits>
 
 namespace scratchbird::engine::internal_api {
 struct DurableAuthorizationMaterializeResult;
@@ -331,6 +332,7 @@ struct ServerPreparedStatementRecord {
   scratchbird::server_engine_bridge::PreparedMetadataBindingHandle
       prepared_metadata_binding = nullptr;
   bool closed = false;
+  bool cleanup_pending = false;
 };
 
 struct ServerPreparedExecutionContextRecord {
@@ -351,9 +353,12 @@ struct ServerPreparedExecutionContextRecord {
 struct ServerPreparedStatementCloseSummary {
   bool found = false;
   bool already_closed = false;
+  bool completed = false;
+  sb_engine_status_t cleanup_status = SB_ENGINE_STATUS_OK;
   std::uint64_t cursors_closed = 0;
   std::uint64_t engine_results_released = 0;
   bool session_object_handle_revoked = false;
+  sb_engine_status_t metadata_release_status = SB_ENGINE_STATUS_OK;
 };
 
 struct ServerSessionObjectHandleRecord {
@@ -509,6 +514,7 @@ struct ServerCursorRecord {
   scratchbird::core::platform::Uuid owning_transaction_uuid;
   bool holdable_after_commit = false;
   sb_engine_result_t engine_result = nullptr;
+  sb_engine_status_t last_engine_result_release_status = SB_ENGINE_STATUS_OK;
   // Non-empty only while this cursor owns the live private engine statement
   // receipt associated with its canonical execution. The receipt itself
   // remains in the server-owned statement-context registry and never crosses
@@ -581,6 +587,20 @@ struct ServerRequestRecord {
   bool engine_result_retained = false;
 };
 
+enum class ServerPublicAbiCloseStage {
+  complete = 0,
+  cursor_results = 1,
+  statement_receipts = 2,
+  prepared_metadata = 3,
+  session = 4,
+  engine = 5
+};
+struct ServerPublicAbiSessionCloseResult {
+  bool found = false;
+  bool completed = false;
+  ServerPublicAbiCloseStage stage = ServerPublicAbiCloseStage::complete;
+  sb_engine_status_t status = SB_ENGINE_STATUS_OK;
+};
 struct ServerPublicAbiSessionContext {
   sb_engine_handle_t engine = nullptr;
   sb_engine_session_t engine_session = nullptr;
@@ -589,6 +609,14 @@ struct ServerPublicAbiSessionContext {
   std::array<std::uint8_t, 16> effective_user_uuid{};
   bool embedded_in_process = false;
   std::uint64_t reuse_count = 0;
+  // Revocation is immediate; physical handles remain owned until each exact
+  // close confirms success. A draining context can never be reused/replaced.
+  bool closing = false;
+  ServerPublicAbiSessionCloseResult last_close;
+  // Empty records do not depend on the engine ABI; the issuing implementation
+  // supplies the destructor together with an actual native result.
+  std::unique_ptr<std::remove_pointer_t<sb_engine_result_t>, void (*)(sb_engine_result_t)>
+      close_diagnostics{nullptr, nullptr};
 };
 
 // Server-owned association between a parser-visible statement identity and
@@ -605,6 +633,7 @@ struct ServerStatementContextRecord {
   // Logical revocation precedes physical cleanup. A failed engine release
   // retains this record/handle for retry but must never admit new execution.
   bool release_in_progress = false;
+  sb_engine_status_t last_release_status = SB_ENGINE_STATUS_OK;
   std::array<std::uint8_t, 16> variable_final_receipt_uuid{}, variable_admission_token_uuid{};
   std::array<std::uint8_t,32> variable_binding_sha256{};
   bool variable_binding_finalized = false, variable_token_consumed = false;
@@ -1028,6 +1057,10 @@ void CloseSessionObjectHandlesForSession(
 bool ReleaseAndClearServerCursorResources(
     ServerSessionRegistry* registry,
     ServerCursorRecord* cursor);
+bool ServerCursorCleanupPending(const ServerSessionRegistry* registry,
+                               const ServerCursorRecord& cursor);
+sb_engine_status_t ServerCursorCleanupStatus(const ServerSessionRegistry* registry,
+                                           const ServerCursorRecord& cursor);
 bool ReleaseServerCursorExecutionAuthority(
     ServerSessionRegistry* registry,
     ServerCursorRecord* cursor);
@@ -1036,7 +1069,7 @@ ServerPreparedStatementCloseSummary CloseServerPreparedStatement(
     const std::array<std::uint8_t, 16>& session_uuid,
     const std::array<std::uint8_t, 16>& prepared_statement_uuid,
     std::string detail = "prepared_statement_closed");
-void CloseServerPublicAbiSessionForSession(
+ServerPublicAbiSessionCloseResult CloseServerPublicAbiSessionForSession(
     ServerSessionRegistry* registry,
     const std::array<std::uint8_t, 16>& session_uuid,
     std::string detail = "session_closed");

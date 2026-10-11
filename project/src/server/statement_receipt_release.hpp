@@ -49,6 +49,7 @@ bool ReleaseOwnedStatementReceipt(
       found->second.view.receipt_uuid != receipt_uuid ||
       found->second.session_uuid != owner_session) return false;
   found->second.release_in_progress = false;
+  found->second.last_release_status = status;
   if (status != SB_ENGINE_STATUS_OK && status != SB_ENGINE_STATUS_ALREADY_RELEASED)
     return false;
   registry->statement_contexts_by_statement_uuid.erase(found);

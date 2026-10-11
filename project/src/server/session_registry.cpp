@@ -2795,12 +2795,30 @@ void LinkServerRequestPreparedStatement(
 
 
 
+bool ServerCursorCleanupPending(const ServerSessionRegistry* registry,
+                               const ServerCursorRecord& cursor) {
+  return ServerCursorCleanupStatus(registry, cursor) != SB_ENGINE_STATUS_OK;
+}
+sb_engine_status_t ServerCursorCleanupStatus(const ServerSessionRegistry* registry,
+                                           const ServerCursorRecord& cursor) {
+  if (cursor.engine_result) return cursor.last_engine_result_release_status == SB_ENGINE_STATUS_OK ?
+      SB_ENGINE_STATUS_CONFLICT : cursor.last_engine_result_release_status;
+  if (cursor.statement_context_statement_uuid.is_nil()) return SB_ENGINE_STATUS_OK;
+  if (!registry || !registry->statement_context_mutex) return SB_ENGINE_STATUS_INTERNAL_ERROR;
+  std::lock_guard lock(*registry->statement_context_mutex);
+  const auto found = registry->statement_contexts_by_statement_uuid.find(cursor.statement_context_statement_uuid);
+  if (found == registry->statement_contexts_by_statement_uuid.end()) return SB_ENGINE_STATUS_OK;
+  return found->second.last_release_status == SB_ENGINE_STATUS_OK ? SB_ENGINE_STATUS_CONFLICT :
+                                                                 found->second.last_release_status;
+}
+
 bool ReleaseAndClearServerCursorResources(
     ServerSessionRegistry* registry,
     ServerCursorRecord* cursor) {
   if (cursor == nullptr) return false;
   const bool released_engine_result =
       ReleaseServerCursorExecutionAuthority(registry, cursor);
+  if (cursor->engine_result != nullptr) return false;
   cursor->row_packet.clear();
   cursor->bulk_stream_kind.clear();
   cursor->bulk_reject_records.clear();
@@ -2826,7 +2844,9 @@ bool ReleaseServerCursorExecutionAuthority(
   if (cursor == nullptr) return false;
   const bool released_engine_result = cursor->engine_result != nullptr;
   if (cursor->engine_result != nullptr) {
-    (void)sb_engine_result_release(cursor->engine_result);
+    cursor->last_engine_result_release_status = SB_ENGINE_STATUS_INTERNAL_ERROR;
+    cursor->last_engine_result_release_status = sb_engine_result_release(cursor->engine_result);
+    if (cursor->last_engine_result_release_status != SB_ENGINE_STATUS_OK) return false;
     cursor->engine_result = nullptr;
   }
 
@@ -2875,12 +2895,17 @@ ServerPreparedStatementCloseSummary CloseServerPreparedStatement(
   summary.found = true;
   summary.already_closed = prepared.closed;
   prepared.closed = true;
-  if (prepared.prepared_metadata_binding != nullptr) {
-    (void)engine_bridge::ReleasePreparedMetadataBinding(
-        prepared.prepared_metadata_binding);
-  }
-  prepared.prepared_metadata_binding = nullptr;
+  prepared.cleanup_pending = true;
   prepared.prepared_metadata_transferable = false;
+  if (prepared.prepared_metadata_binding != nullptr) {
+    summary.metadata_release_status = engine_bridge::ReleasePreparedMetadataBinding(
+        prepared.prepared_metadata_binding);
+    if (summary.metadata_release_status == SB_ENGINE_STATUS_OK ||
+        summary.metadata_release_status == SB_ENGINE_STATUS_ALREADY_RELEASED)
+      prepared.prepared_metadata_binding = nullptr;
+  }
+  summary.completed = prepared.prepared_metadata_binding == nullptr;
+  if (!summary.completed) summary.cleanup_status = summary.metadata_release_status;
   // Preserve the opaque identity, owner, operation, and immutable prepare
   // selector as tombstone evidence.  The executable envelope and derived
   // execution context are no longer needed once the resource is retired.
@@ -2897,6 +2922,13 @@ ServerPreparedStatementCloseSummary CloseServerPreparedStatement(
     if (ReleaseAndClearServerCursorResources(registry, &cursor)) {
       ++summary.engine_results_released;
     }
+    const auto cursor_status = ServerCursorCleanupStatus(registry, cursor);
+    const bool cursor_complete = cursor_status == SB_ENGINE_STATUS_OK;
+    if (cursor_complete) cursor.statement_context_statement_uuid = {};
+    if (!cursor_complete) {
+      summary.completed = false;
+      if (summary.cleanup_status == SB_ENGINE_STATUS_OK) summary.cleanup_status = cursor_status;
+    }
     if (!cursor_was_closed) {
       ++summary.cursors_closed;
       cursor.finality_state = "prepared_statement_closed";
@@ -2904,13 +2936,14 @@ ServerPreparedStatementCloseSummary CloseServerPreparedStatement(
     }
     cursor.closed = true;
     cursor.exhausted = true;
-    if (!cursor_was_closed) {
+    if (cursor_complete && prepared.prepared_metadata_binding == nullptr) {
       MarkServerRequestClosedByCursor(registry,
                                       cursor.cursor_uuid,
                                       ServerRequestLifecycleState::kCompleted,
                                       detail);
     }
   }
+  prepared.cleanup_pending = !summary.completed;
 
   if (prepared.session_object_handle_id != 0 &&
       prepared.session_object_handle_generation != 0) {
@@ -2968,42 +3001,116 @@ bool ReleaseServerStatementContext(
       });
 }
 
-void CloseServerPublicAbiSessionForSession(
+namespace {
+void ReleaseServerOwnedAbiCloseDiagnostic(sb_engine_result_t result) noexcept {
+  try {
+    if (sb_engine_result_release(result) != SB_ENGINE_STATUS_OK) std::terminate();
+  } catch (...) { std::terminate(); }
+}
+}
+
+ServerPublicAbiSessionCloseResult CloseServerPublicAbiSessionForSession(
     ServerSessionRegistry* registry,
     const std::array<std::uint8_t, 16>& session_uuid,
     std::string) {
-  if (registry == nullptr) return;
-  (void)ReleaseServerStatementContextsForSession(registry, session_uuid);
+  ServerPublicAbiSessionCloseResult closed;
+  if (registry == nullptr || !registry->statement_context_mutex) {
+    closed.status = SB_ENGINE_STATUS_INVALID_ARGUMENT; return closed;
+  }
+  if (!core::uuid::IsEngineIdentityUuid(core::platform::Uuid{session_uuid})) {
+    closed.status = SB_ENGINE_STATUS_INVALID_ARGUMENT; return closed;
+  }
   const auto key = scratchbird::core::platform::Uuid{session_uuid};
   auto it = registry->public_abi_sessions_by_session_uuid.find(key);
-  if (it == registry->public_abi_sessions_by_session_uuid.end()) {
-    return;
+  closed.found = it != registry->public_abi_sessions_by_session_uuid.end();
+  if (closed.found) it->second.closing = true;
+  const auto pending = [&](ServerPublicAbiCloseStage stage, sb_engine_status_t status) {
+    closed.stage = stage; closed.status = status;
+    if (closed.found) it->second.last_close = closed;
+    return closed;
+  };
+  // Fence every dependent owner before the first fallible release. Returning
+  // on one failed close must not leave later cursors/prepares executable.
+  for (auto& [_, cursor] : registry->cursors_by_uuid) {
+    if (cursor.session_uuid == session_uuid) {cursor.closed = true; cursor.exhausted = true;}
   }
-  auto& context = it->second;
   for (auto& [_, prepared] : registry->prepared_by_uuid) {
-    if (prepared.session_uuid != session_uuid ||
-        prepared.prepared_metadata_binding == nullptr) {
+    if (prepared.session_uuid == session_uuid) {
+      prepared.closed = true;
+      prepared.prepared_metadata_transferable = false;
+      prepared.cleanup_pending = true;
+    }
+  }
+  {
+    std::lock_guard lock(*registry->statement_context_mutex);
+    for (auto& [_, statement] : registry->statement_contexts_by_statement_uuid)
+      if (statement.session_uuid == session_uuid) statement.released = true;
+  }
+  for (auto& [_, cursor] : registry->cursors_by_uuid) {
+    if (cursor.session_uuid != session_uuid) continue;
+    cursor.closed = true;
+    cursor.exhausted = true;
+    (void)ReleaseAndClearServerCursorResources(registry, &cursor);
+    if (cursor.engine_result != nullptr)
+      return pending(ServerPublicAbiCloseStage::cursor_results, cursor.last_engine_result_release_status);
+    if (ServerCursorCleanupPending(registry, cursor))
+      return pending(ServerPublicAbiCloseStage::statement_receipts, ServerCursorCleanupStatus(registry, cursor));
+  }
+  (void)ReleaseServerStatementContextsForSession(registry, session_uuid);
+  {
+    std::lock_guard lock(*registry->statement_context_mutex);
+    for (const auto& [_, record] : registry->statement_contexts_by_statement_uuid) {
+      if (record.session_uuid == session_uuid)
+        return pending(ServerPublicAbiCloseStage::statement_receipts,
+            record.last_release_status == SB_ENGINE_STATUS_OK ? SB_ENGINE_STATUS_CONFLICT :
+                                                               record.last_release_status);
+    }
+  }
+  for (auto& [_, prepared] : registry->prepared_by_uuid) {
+    if (prepared.session_uuid != session_uuid) {
       continue;
     }
-    (void)engine_bridge::ReleasePreparedMetadataBinding(
-        prepared.prepared_metadata_binding);
-    prepared.prepared_metadata_binding = nullptr;
     prepared.prepared_metadata_transferable = false;
+    prepared.closed = true;
+    prepared.cleanup_pending = true;
+    if (prepared.prepared_metadata_binding) {
+      const auto status = engine_bridge::ReleasePreparedMetadataBinding(prepared.prepared_metadata_binding);
+      if (status != SB_ENGINE_STATUS_OK && status != SB_ENGINE_STATUS_ALREADY_RELEASED)
+        return pending(ServerPublicAbiCloseStage::prepared_metadata, status);
+    }
+    prepared.prepared_metadata_binding = nullptr;
+    prepared.cleanup_pending = false;
+    prepared.encoded_sblr_envelope.clear();
+    registry->prepared_execution_contexts_by_uuid.erase(core::platform::Uuid{prepared.prepared_statement_uuid});
   }
+  if (!closed.found) {closed.completed = true; return closed;}
+  auto& context = it->second;
   if (context.engine_session != nullptr) {
     sb_engine_session_end_params_v1_t end_params{};
     end_params.struct_size = sizeof(end_params);
     end_params.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
     end_params.rollback_active_transactions = 1;
     end_params.cancel_open_results = 1;
-    (void)sb_engine_session_end(context.engine_session, &end_params, nullptr);
+    context.close_diagnostics.reset();
+    sb_engine_result_t diagnostic = nullptr;
+    const auto status = sb_engine_session_end(context.engine_session, &end_params, &diagnostic);
+    context.close_diagnostics = {diagnostic, ReleaseServerOwnedAbiCloseDiagnostic};
+    if (status != SB_ENGINE_STATUS_OK)
+      return pending(ServerPublicAbiCloseStage::session, status);
     context.engine_session = nullptr;
   }
   if (context.engine != nullptr) {
-    (void)sb_engine_close(context.engine, nullptr);
+    context.close_diagnostics.reset();
+    sb_engine_result_t diagnostic = nullptr;
+    const auto status = sb_engine_close(context.engine, &diagnostic);
+    context.close_diagnostics = {diagnostic, ReleaseServerOwnedAbiCloseDiagnostic};
+    if (status != SB_ENGINE_STATUS_OK)
+      return pending(ServerPublicAbiCloseStage::engine, status);
     context.engine = nullptr;
   }
   registry->public_abi_sessions_by_session_uuid.erase(it);
+  closed.completed = true;
+  return closed;
 }
 
 ServerPublicAbiSessionContext* EnsureServerPublicAbiSessionForContext(
@@ -3017,11 +3124,20 @@ ServerPublicAbiSessionContext* EnsureServerPublicAbiSessionForContext(
     return nullptr;
   }
 
+  if (!core::uuid::IsEngineIdentityUuid(core::platform::Uuid{session.session_uuid})) {
+    if (diagnostic_detail) *diagnostic_detail = "session_identity_invalid";
+    return nullptr;
+  }
+
   const auto session_key = scratchbird::core::platform::Uuid{session.session_uuid};
   auto cached_it =
       registry->public_abi_sessions_by_session_uuid.find(session_key);
   if (cached_it != registry->public_abi_sessions_by_session_uuid.end()) {
     const auto& cached = cached_it->second;
+    if (cached.closing) {
+      if (diagnostic_detail) *diagnostic_detail = "public_abi_context_cleanup_pending";
+      return nullptr;
+    }
     const bool cache_matches =
         cached.engine != nullptr && cached.engine_session != nullptr &&
         cached.database_path == session.database_path &&
@@ -3029,15 +3145,29 @@ ServerPublicAbiSessionContext* EnsureServerPublicAbiSessionForContext(
         cached.effective_user_uuid == session.effective_user_uuid &&
         cached.embedded_in_process == session.embedded_in_process;
     if (!cache_matches) {
-      CloseServerPublicAbiSessionForSession(
+      const auto closed = CloseServerPublicAbiSessionForSession(
           registry,
           session.session_uuid,
           "public_abi_context_authority_changed");
+      if (!closed.completed) {
+        if (diagnostic_detail) *diagnostic_detail = "public_abi_context_cleanup_pending";
+        return nullptr;
+      }
       cached_it = registry->public_abi_sessions_by_session_uuid.end();
     }
   }
 
   if (cached_it == registry->public_abi_sessions_by_session_uuid.end()) {
+    // Allocate/map the owner before crossing an effectful ABI boundary. No
+    // successful engine/session handle can be lost to a later map allocation.
+    ServerPublicAbiSessionContext cached_context;
+    cached_context.database_path = session.database_path;
+    cached_context.session_uuid = session.session_uuid;
+    cached_context.effective_user_uuid = session.effective_user_uuid;
+    cached_context.embedded_in_process = session.embedded_in_process;
+    cached_it = registry->public_abi_sessions_by_session_uuid
+                    .emplace(session_key, std::move(cached_context)).first;
+    auto& owned = cached_it->second;
     sb_engine_open_params_v1_t open_params{};
     open_params.struct_size = sizeof(open_params);
     open_params.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
@@ -3045,10 +3175,10 @@ ServerPublicAbiSessionContext* EnsureServerPublicAbiSessionForContext(
     open_params.database_path_size =
         static_cast<std::uint64_t>(session.database_path.size());
     open_params.mode = SB_ENGINE_OPEN_VALIDATION_ONLY;
-    sb_engine_handle_t engine = nullptr;
-    if (sb_engine_open(&open_params, &engine, nullptr) !=
+    if (sb_engine_open(&open_params, &owned.engine, nullptr) !=
             SB_ENGINE_STATUS_OK ||
-        engine == nullptr) {
+        owned.engine == nullptr) {
+      (void)CloseServerPublicAbiSessionForSession(registry, session.session_uuid);
       if (diagnostic_detail != nullptr) {
         *diagnostic_detail = "engine_open_failed";
       }
@@ -3069,29 +3199,18 @@ ServerPublicAbiSessionContext* EnsureServerPublicAbiSessionForContext(
                                     : SB_ENGINE_TRUST_SERVER_ISOLATED;
     session_params.default_language_utf8 = "en";
     session_params.default_language_size = 2;
-    sb_engine_session_t engine_session = nullptr;
-    if (sb_engine_session_begin(engine,
+    if (sb_engine_session_begin(owned.engine,
                                 &session_params,
-                                &engine_session,
+                                &owned.engine_session,
                                 nullptr) != SB_ENGINE_STATUS_OK ||
-        engine_session == nullptr) {
-      (void)sb_engine_close(engine, nullptr);
+        owned.engine_session == nullptr) {
+      (void)CloseServerPublicAbiSessionForSession(registry, session.session_uuid);
       if (diagnostic_detail != nullptr) {
         *diagnostic_detail = "engine_session_begin_failed";
       }
       return nullptr;
     }
 
-    ServerPublicAbiSessionContext cached_context;
-    cached_context.engine = engine;
-    cached_context.engine_session = engine_session;
-    cached_context.database_path = session.database_path;
-    cached_context.session_uuid = session.session_uuid;
-    cached_context.effective_user_uuid = session.effective_user_uuid;
-    cached_context.embedded_in_process = session.embedded_in_process;
-    cached_it = registry->public_abi_sessions_by_session_uuid
-                    .emplace(session_key, std::move(cached_context))
-                    .first;
   }
   return &cached_it->second;
 }
@@ -5550,7 +5669,8 @@ void MarkServerRequestTimedOutByCursor(ServerSessionRegistry* registry,
   if (registry == nullptr) return;
   for (auto& [_, request] : registry->requests_by_uuid) {
     if (request.cursor_uuid != cursor_uuid) continue;
-    request.engine_result_retained = false;
+    const auto cursor = registry->cursors_by_uuid.find(core::platform::Uuid{cursor_uuid});
+    request.engine_result_retained = cursor != registry->cursors_by_uuid.end() && cursor->second.engine_result;
     if (TerminalRequestState(request.state) &&
         request.state != ServerRequestLifecycleState::kCompleted) {
       // Resource release is deterministic even when an earlier transaction
@@ -5581,7 +5701,8 @@ void MarkServerRequestClosedByCursor(ServerSessionRegistry* registry,
   if (registry == nullptr) return;
   for (auto& [_, request] : registry->requests_by_uuid) {
     if (request.cursor_uuid != cursor_uuid) continue;
-    request.engine_result_retained = false;
+    const auto cursor = registry->cursors_by_uuid.find(core::platform::Uuid{cursor_uuid});
+    request.engine_result_retained = cursor != registry->cursors_by_uuid.end() && cursor->second.engine_result;
     if (TerminalRequestState(request.state) &&
         request.state != ServerRequestLifecycleState::kCompleted) {
       // Cursor resource retirement is deterministic even when an earlier
@@ -6696,31 +6817,8 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
   // Transaction rollback is not evidence that temporary session state was
   // reclaimed. Keep its owning session/auth binding until both operations
   // actually complete; otherwise a failed cleanup becomes an unowned leak.
-  const bool retained_for_recovery =
+  bool retained_for_recovery =
       unresolved_transaction_count != 0 || temporary_cleanup_failed;
-  const std::uint64_t erased =
-      retained_for_recovery ? 0 : registry->sessions_by_uuid.erase(key);
-  std::uint64_t auth_contexts_removed = 0;
-  if (erased != 0) {
-    auth_contexts_removed += registry->auth_contexts_by_uuid.erase(AuthContextKey(auth_context_uuid));
-    for (auto it = registry->auth_contexts_by_uuid.begin();
-         it != registry->auth_contexts_by_uuid.end();) {
-      if (it->second.session_uuid == session_uuid) {
-        it = registry->auth_contexts_by_uuid.erase(it);
-        ++auth_contexts_removed;
-      } else {
-        ++it;
-      }
-    }
-    if (!sbps::IsZeroUuid(connection_uuid)) {
-      const auto connection_key = scratchbird::core::platform::Uuid{connection_uuid};
-      registry->physical_channel_by_connection_uuid.erase(connection_key);
-      registry->negotiated_capabilities_by_connection_uuid.erase(
-          connection_key);
-      registry->admitted_parser_identity_by_connection_uuid.erase(
-          connection_key);
-    }
-  }
   std::uint64_t prepared_tombstoned = 0;
   std::uint64_t cursors_tombstoned = 0;
   std::uint64_t engine_results_released = 0;
@@ -6771,12 +6869,32 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
       }
     }
   }
-  if (registry->public_abi_sessions_by_session_uuid.find(key) !=
-      registry->public_abi_sessions_by_session_uuid.end()) {
-    CloseServerPublicAbiSessionForSession(registry,
-                                          session_uuid,
-                                          disconnect_reason);
-    public_abi_contexts_closed = 1;
+  const auto abi_closed = CloseServerPublicAbiSessionForSession(registry, session_uuid, disconnect_reason);
+  if (abi_closed.completed) {
+    public_abi_contexts_closed = abi_closed.found ? 1 : 0;
+  } else {
+    retained_for_recovery = true;
+    if (session_found != registry->sessions_by_uuid.end())
+      session_found->second.detached_recovery_quarantined = true;
+  }
+  // Only erase the owner/auth/channel binding after all actual resources have
+  // closed, not merely after transaction rollback or attempted ABI close.
+  const std::uint64_t erased = retained_for_recovery ? 0 : registry->sessions_by_uuid.erase(key);
+  std::uint64_t auth_contexts_removed = 0;
+  if (erased != 0) {
+    auth_contexts_removed += registry->auth_contexts_by_uuid.erase(AuthContextKey(auth_context_uuid));
+    for (auto it = registry->auth_contexts_by_uuid.begin(); it != registry->auth_contexts_by_uuid.end();) {
+      if (it->second.session_uuid == session_uuid) {
+        it = registry->auth_contexts_by_uuid.erase(it);
+        ++auth_contexts_removed;
+      } else ++it;
+    }
+    if (!sbps::IsZeroUuid(connection_uuid)) {
+      const auto connection_key = scratchbird::core::platform::Uuid{connection_uuid};
+      registry->physical_channel_by_connection_uuid.erase(connection_key);
+      registry->negotiated_capabilities_by_connection_uuid.erase(connection_key);
+      registry->admitted_parser_identity_by_connection_uuid.erase(connection_key);
+    }
   }
   for (auto& [_, request_record] : registry->requests_by_uuid) {
     if (request_record.session_uuid != session_uuid ||
@@ -6859,6 +6977,8 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
         ServerDiagnosticSeverity::kWarning,
         "The session remains quarantined until engine-owned transaction recovery and session cleanup complete.",
         {{"temporary_cleanup_state", temporary_cleanup_state},
+         {"abi_cleanup_stage", std::to_string(static_cast<unsigned>(abi_closed.stage))},
+         {"abi_cleanup_status", std::to_string(abi_closed.status)},
          {"unresolved_transaction_count",
           std::to_string(unresolved_transaction_count)},
          {"session_erased", "false"}},

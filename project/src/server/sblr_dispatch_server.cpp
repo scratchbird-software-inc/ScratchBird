@@ -1388,10 +1388,11 @@ bool DefaultTransactionFinalityUnknown(const ServerSessionRecord& session) {
 
 ServerPreparedStatementRecord* FindPreparedByName(ServerSessionRegistry* registry,
                                                   const std::array<std::uint8_t, 16>& session_uuid,
-                                                  std::string_view statement_name) {
+                                                  std::string_view statement_name,
+                                                  bool include_pending_cleanup = false) {
   if (registry == nullptr || statement_name.empty()) return nullptr;
   for (auto& [_, prepared] : registry->prepared_by_uuid) {
-    if (!prepared.closed && prepared.session_uuid == session_uuid &&
+    if ((!prepared.closed || (include_pending_cleanup && prepared.cleanup_pending)) && prepared.session_uuid == session_uuid &&
         prepared.statement_name == statement_name) {
       return &prepared;
     }
@@ -1401,10 +1402,11 @@ ServerPreparedStatementRecord* FindPreparedByName(ServerSessionRegistry* registr
 
 ServerCursorRecord* FindCursorByName(ServerSessionRegistry* registry,
                                      const std::array<std::uint8_t, 16>& session_uuid,
-                                     std::string_view cursor_name) {
+                                     std::string_view cursor_name,
+                                     bool include_pending_cleanup = false) {
   if (registry == nullptr || cursor_name.empty()) return nullptr;
   for (auto& [_, cursor] : registry->cursors_by_uuid) {
-    if (!cursor.closed && cursor.session_uuid == session_uuid &&
+    if ((!cursor.closed || (include_pending_cleanup && ServerCursorCleanupPending(registry, cursor))) && cursor.session_uuid == session_uuid &&
         cursor.cursor_name == cursor_name) {
       return &cursor;
     }
@@ -2735,6 +2737,18 @@ SessionOperationResult Failure(std::uint16_t response_type,
   result.frame_flags = sbps::kFlagResponse | sbps::kFlagError | sbps::kFlagFinal;
   result.diagnostics.push_back(SblrServerDiagnostic(std::move(code), std::move(message), detail));
   result.payload = EncodePrepareResult("rejected", {}, "sblr.dispatch", std::move(detail));
+  return result;
+}
+
+SessionOperationResult PreparedCleanupPending(std::uint16_t response_type,
+    std::uint32_t schema, std::array<std::uint8_t,16> session_uuid,
+    const ServerPreparedStatementCloseSummary& closed) {
+  auto result = Failure(response_type, schema, session_uuid, "SBLR.EXECUTION_FAILED",
+      "Prepared statement resource cleanup has not completed.", "prepared_statement_cleanup_pending");
+  result.diagnostics.front().fields.push_back({"native_cleanup_status", std::to_string(closed.cleanup_status)});
+  result.diagnostics.front().fields.push_back({"metadata_release_status", std::to_string(closed.metadata_release_status)});
+  result.diagnostics.front().fields.push_back({"logical_retirement", "true"});
+  result.diagnostics.front().fields.push_back({"physical_release", "pending"});
   return result;
 }
 
@@ -8307,12 +8321,18 @@ SessionOperationResult HandleExecuteSblrImpl(
                      "PREPARE requires a session-scoped prepared statement name.",
                      "prepared_statement_name_required");
     }
-    if (auto* existing = FindPreparedByName(registry, decoded->session_uuid, statement_name)) {
+    if (auto* existing = FindPreparedByName(registry, decoded->session_uuid, statement_name, true)) {
       const auto existing_uuid = existing->prepared_statement_uuid;
-      (void)CloseServerPreparedStatement(registry,
+      const auto retired = CloseServerPreparedStatement(registry,
                                          decoded->session_uuid,
                                          existing_uuid,
                                          "prepared_statement_replaced");
+      if (!retired.completed) {
+        CompleteServerRequestLifecycle(registry, request_record.request_uuid,
+            ServerRequestLifecycleState::kFailed, "prepared_statement_cleanup_pending");
+        return PreparedCleanupPending(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+            kSchemaExecuteResultTestV1, decoded->session_uuid, retired);
+      }
     }
     ServerPreparedStatementRecord prepared;
     prepared.prepared_statement_uuid = sbps::MakeUuidV7Bytes();
@@ -8431,7 +8451,7 @@ SessionOperationResult HandleExecuteSblrImpl(
   }
   if (admission.operation_id == "session.deallocate_prepared_statement") {
     const std::string statement_name = JsonTextField(encoded, "prepared_statement_name").value_or("");
-    auto* prepared = FindPreparedByName(registry, decoded->session_uuid, statement_name);
+    auto* prepared = FindPreparedByName(registry, decoded->session_uuid, statement_name, true);
     if (prepared == nullptr) {
       CompleteServerRequestLifecycle(registry,
                                      request_record.request_uuid,
@@ -8460,6 +8480,12 @@ SessionOperationResult HandleExecuteSblrImpl(
                      "PARSER_SERVER_IPC.PREPARED_STATEMENT_NOT_FOUND",
                      "The prepared SBLR statement is not available for this session.",
                      "prepared_statement_not_found");
+    }
+    if (!closed.completed) {
+      CompleteServerRequestLifecycle(registry, request_record.request_uuid,
+          ServerRequestLifecycleState::kFailed, "prepared_statement_cleanup_pending");
+      return PreparedCleanupPending(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+          kSchemaExecuteResultTestV1, decoded->session_uuid, closed);
     }
     UpdateServerRequestLifecycleOperation(registry,
                                           request_record.request_uuid,
@@ -8611,7 +8637,7 @@ SessionOperationResult HandleExecuteSblrImpl(
   }
   if (admission.operation_id == "session.cursor_close") {
     const std::string cursor_name = JsonTextField(encoded, "cursor_name").value_or("");
-    auto* cursor = FindCursorByName(registry, decoded->session_uuid, cursor_name);
+    auto* cursor = FindCursorByName(registry, decoded->session_uuid, cursor_name, true);
     if (cursor == nullptr) {
       CompleteServerRequestLifecycle(registry,
                                      request_record.request_uuid,
@@ -8633,6 +8659,16 @@ SessionOperationResult HandleExecuteSblrImpl(
                             cursor->engine_result != nullptr);
     MarkCursorFinality(registry, cursor, "closed", "client_closed");
     cursor->closed = true;
+    if (ServerCursorCleanupPending(registry, *cursor)) {
+      CompleteServerRequestLifecycle(registry, request_record.request_uuid,
+          ServerRequestLifecycleState::kFailed, "cursor_cleanup_pending");
+      auto failure = Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+          kSchemaExecuteResultTestV1, decoded->session_uuid, "SBLR.EXECUTION_FAILED",
+          "Cursor resources remain owned pending cleanup.", "cursor_cleanup_pending");
+      failure.diagnostics.front().fields.push_back({"native_cleanup_status",
+          std::to_string(ServerCursorCleanupStatus(registry, *cursor))});
+      return failure;
+    }
     CompleteServerRequestLifecycle(registry,
                                    request_record.request_uuid,
                                    ServerRequestLifecycleState::kCompleted,
@@ -11479,6 +11515,12 @@ SessionOperationResult HandleClosePreparedSblr(
         "prepared_statement_not_found");
   }
 
+  if (!closed.completed) {
+    CompleteServerRequestLifecycle(registry, request_record.request_uuid,
+        ServerRequestLifecycleState::kFailed, "prepared_statement_cleanup_pending");
+    return PreparedCleanupPending(static_cast<std::uint16_t>(sbps::MessageType::kClosePreparedSblrResult),
+        kSchemaClosePreparedSblrResultTestV1, decoded->session_uuid, closed);
+  }
   const std::string detail = closed.already_closed
                                  ? "prepared_statement_already_closed"
                                  : "prepared_statement_closed";
@@ -11513,7 +11555,7 @@ SessionOperationResult HandleCloseCursor(ServerSessionRegistry* registry,
   std::string detail;
   if (it != registry->cursors_by_uuid.end()) {
     if (it->second.session_uuid != decoded->session_uuid ||
-        it->second.closed) {
+        (it->second.closed && !ServerCursorCleanupPending(registry, it->second))) {
       return Failure(static_cast<std::uint16_t>(sbps::MessageType::kCloseCursorResult),
                      kSchemaCloseCursorResultTestV1,
                      decoded->session_uuid,
@@ -11536,7 +11578,12 @@ SessionOperationResult HandleCloseCursor(ServerSessionRegistry* registry,
           std::unique_lock<std::mutex>(*session->transaction_mutex);
     }
     const ServerTransactionState* cursor_transaction = nullptr;
-    if (it->second.owning_local_transaction_id != 0) {
+    // A logically retired cursor cannot execute again. Its retained native
+    // resources still belong to this session even after MGA retires the
+    // transaction, so cleanup-only retries must not require a live selector.
+    const bool cleanup_retry = it->second.closed &&
+        ServerCursorCleanupPending(registry, it->second);
+    if (it->second.owning_local_transaction_id != 0 && !cleanup_retry) {
       const auto found = session->transactions_by_local_id.find(
           it->second.owning_local_transaction_id);
       if (found == session->transactions_by_local_id.end() ||
@@ -11592,6 +11639,16 @@ SessionOperationResult HandleCloseCursor(ServerSessionRegistry* registry,
     } else {
       MarkCursorFinality(registry, &it->second, "closed", "client_closed");
       it->second.closed = true;
+      if (ServerCursorCleanupPending(registry, it->second)) {
+        CompleteServerRequestLifecycle(registry, request_record.request_uuid,
+            ServerRequestLifecycleState::kFailed, "cursor_cleanup_pending");
+        auto failure = Failure(static_cast<std::uint16_t>(sbps::MessageType::kCloseCursorResult),
+            kSchemaCloseCursorResultTestV1, decoded->session_uuid, "SBLR.EXECUTION_FAILED",
+            "Cursor resources remain owned pending cleanup.", "cursor_cleanup_pending");
+        failure.diagnostics.front().fields.push_back({"native_cleanup_status",
+            std::to_string(ServerCursorCleanupStatus(registry, it->second))});
+        return failure;
+      }
       CompleteServerRequestLifecycle(registry,
                                      request_record.request_uuid,
                                      ServerRequestLifecycleState::kCompleted,
@@ -11601,6 +11658,14 @@ SessionOperationResult HandleCloseCursor(ServerSessionRegistry* registry,
                                       ServerRequestLifecycleState::kCompleted,
                                       "client_closed");
       detail = CursorMetadataDetail(it->second);
+    }
+    if (ServerCursorCleanupPending(registry, it->second)) {
+      auto failure = Failure(static_cast<std::uint16_t>(sbps::MessageType::kCloseCursorResult),
+          kSchemaCloseCursorResultTestV1, decoded->session_uuid, "SBLR.EXECUTION_FAILED",
+          "Cancelled cursor resources remain owned pending cleanup.", "cursor_cleanup_pending");
+      failure.diagnostics.front().fields.push_back({"native_cleanup_status",
+          std::to_string(ServerCursorCleanupStatus(registry, it->second))});
+      return failure;
     }
   }
   SessionOperationResult result;
