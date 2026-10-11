@@ -4728,19 +4728,33 @@ DatabaseLifecycleResult ReadTransactionInventoryPageWithoutJournal(
     FileDevice* device,
     u32 page_size,
     LocalTransactionInventory* inventory,
-    LocalTransactionHorizons* horizons) {
-  if (device == nullptr || inventory == nullptr || horizons == nullptr) {
+    LocalTransactionHorizons* horizons,
+    const scratchbird::core::platform::Uuid& expected_database,
+    const scratchbird::core::platform::Uuid& expected_filespace) {
+  if (device == nullptr || inventory == nullptr || horizons == nullptr ||
+      page_size <= kPageHeaderSerializedBytes || expected_database.is_nil() ||
+      expected_filespace.is_nil()) {
     return LifecycleError(
         "SB-DB-LIFECYCLE-TXN-ARGUMENT-INVALID",
         "storage.database_lifecycle.transaction_argument_invalid");
   }
+  const auto size = device->Size();
+  if (!size.ok()) return PropagateDiagnostic(size.status, size.diagnostic);
+  if (size.size_bytes % page_size != 0)
+    return LifecycleError("SB-DB-BOOTSTRAP-SECURITY-INVENTORY-CHAIN-INVALID",
+        "storage.database_lifecycle.bootstrap_inventory_chain_invalid", device->path());
+  const u64 page_count = size.size_bytes / page_size;
+  // Reuse bounded body storage for the retained source's complete chain.
+  std::vector<scratchbird::core::platform::byte> serialized_body(
+      page_size - kPageHeaderSerializedBytes, 0);
   LocalTransactionInventory loaded;
   std::set<u64> visited;
   u64 page_number = kTransactionInventoryPageNumber;
   u64 previous_page_number = 0;
   u64 inventory_generation = 0;
   while (page_number != 0) {
-    if (visited.size() >= 4096 || !visited.insert(page_number).second) {
+    if (page_number >= page_count || visited.size() >= 4096 ||
+        !visited.insert(page_number).second) {
       return LifecycleError(
           "SB-DB-BOOTSTRAP-SECURITY-INVENTORY-CHAIN-INVALID",
           "storage.database_lifecycle.bootstrap_inventory_chain_invalid",
@@ -4755,6 +4769,16 @@ DatabaseLifecycleResult ReadTransactionInventoryPageWithoutJournal(
     if (!page_header.ok()) {
       return PropagateDiagnostic(page_header.status, page_header.diagnostic);
     }
+    const auto parsed_header = ParsePageHeader(page_header.serialized);
+    if (!parsed_header.ok())
+      return PropagateDiagnostic(parsed_header.status, parsed_header.diagnostic);
+    if (parsed_header.header.database_uuid != expected_database ||
+        parsed_header.header.filespace_uuid != expected_filespace ||
+        parsed_header.header.page_number != page_number ||
+        parsed_header.header.page_size != page_size)
+      return LifecycleError("SB-DB-LIFECYCLE-INVENTORY-PAGE-IDENTITY-MISMATCH",
+          "storage.database_lifecycle.inventory_page_identity_mismatch",
+          device->path(), std::to_string(page_number));
     if (page_header.classification.page_type != PageType::transaction_inventory) {
       return LifecycleError(
           "SB-DB-BOOTSTRAP-SECURITY-INVENTORY-PAGE-TYPE-INVALID",
@@ -4767,8 +4791,6 @@ DatabaseLifecycleResult ReadTransactionInventoryPageWithoutJournal(
     if (!body_offset.ok()) {
       return PropagateDiagnostic(body_offset.status, body_offset.diagnostic);
     }
-    std::vector<scratchbird::core::platform::byte> serialized_body(
-        page_size - kPageHeaderSerializedBytes, 0);
     const auto read = device->ReadAt(body_offset.offset,
                                      serialized_body.data(),
                                      serialized_body.size());
@@ -5473,54 +5495,76 @@ DatabaseLifecycleResult EnsureFirstOpenActivationTransaction(FileDevice* device,
 
 DatabaseLifecycleResult ReadCatalogPageRows(FileDevice* device,
                                             u32 page_size,
-                                            std::vector<CatalogPageRow>* rows) {
+                                            std::vector<CatalogPageRow>* rows,
+                                            scratchbird::core::platform::Uuid expected_database = {},
+                                            scratchbird::core::platform::Uuid expected_filespace = {}) {
   const auto size = device->Size();
   if (!size.ok()) return PropagateDiagnostic(size.status, size.diagnostic);
-  if (page_size == 0 || size.size_bytes % page_size != 0)
+  if (page_size <= kPageHeaderSerializedBytes || size.size_bytes % page_size != 0)
     return LifecycleError("SB-CATALOG-PAGE-BODY-NEXT-CHAIN-TOO-LONG",
                           "storage.database_lifecycle.catalog_next_chain_too_long");
   const u64 page_count = size.size_bytes / page_size;
   u64 page_number = kCatalogPageNumber;
   std::set<u64> visited;
   std::vector<CatalogPageRow> staged;
+  scratchbird::core::memory::PageBufferRequest page_buffer_request;
+  page_buffer_request.page_size = page_size;
+  page_buffer_request.page_count = 1;
+  page_buffer_request.tag = MemoryTag{Subsystem::storage_disk,
+      "catalog_page_body_read", MemoryCategory::page_buffer,
+      MemoryLifetime::page_buffer, "storage.database.lifecycle", "open"};
+  auto page_buffer = DefaultMemoryManager().AllocateScopedPageBuffer(page_buffer_request);
+  if (!page_buffer.ok()) return PropagateDiagnostic(page_buffer.status, page_buffer.diagnostic);
+  auto* buffer_bytes = static_cast<scratchbird::core::platform::byte*>(page_buffer.buffer.data());
+  // Reuse one admitted full-page buffer and one parser-owned body throughout
+  // the chain. No per-page reallocation or second I/O just to validate headers.
+  std::vector<scratchbird::core::platform::byte> body(page_size - kPageHeaderSerializedBytes);
   while (page_number != 0) {
     if (page_number >= page_count || !visited.insert(page_number).second) {
       return LifecycleError("SB-CATALOG-PAGE-BODY-NEXT-CHAIN-TOO-LONG",
                             "storage.database_lifecycle.catalog_next_chain_too_long");
     }
-    scratchbird::core::memory::PageBufferRequest page_buffer_request;
-    page_buffer_request.page_size = page_size;
-    page_buffer_request.page_count = 1;
-    page_buffer_request.tag = MemoryTag{Subsystem::storage_disk,
-                                        "catalog_page_body_read",
-                                        MemoryCategory::page_buffer,
-                                        MemoryLifetime::page_buffer,
-                                        "storage.database.lifecycle",
-                                        "open"};
-    auto page_buffer = DefaultMemoryManager().AllocateScopedPageBuffer(page_buffer_request);
-    if (!page_buffer.ok()) {
-      return PropagateDiagnostic(page_buffer.status, page_buffer.diagnostic);
-    }
-    auto* buffer_bytes = static_cast<scratchbird::core::platform::byte*>(page_buffer.buffer.data());
-    const auto body_offset = CheckedPageBodyOffset(page_size,
-                                                   page_number,
-                                                   kPageHeaderSerializedBytes);
+    const auto body_offset = CheckedPageOffset(page_size, page_number);
     if (!body_offset.ok()) {
       return PropagateDiagnostic(body_offset.status, body_offset.diagnostic);
     }
-    const auto read = device->ReadAt(body_offset.offset,
-                                     buffer_bytes + kPageHeaderSerializedBytes,
-                                     page_size - kPageHeaderSerializedBytes);
+    const auto read = device->ReadAt(body_offset.offset, buffer_bytes, page_size);
     if (!read.ok()) {
       return PropagateDiagnostic(read.status, read.diagnostic);
     }
-    std::vector<scratchbird::core::platform::byte> body(buffer_bytes + kPageHeaderSerializedBytes,
-                                                        buffer_bytes + page_size);
-    const auto parsed = ParseCatalogPageBody(body, page_number);
+    scratchbird::storage::disk::SerializedPageHeader header_bytes{};
+    std::copy_n(buffer_bytes, header_bytes.size(), header_bytes.begin());
+    const auto header = ParsePageHeader(header_bytes);
+    if (!header.ok()) return PropagateDiagnostic(header.status, header.diagnostic);
+    const auto classification = scratchbird::storage::disk::ClassifyPageHeader(header_bytes);
+    if (classification.kind != scratchbird::storage::disk::PageClassificationKind::supported_local ||
+        !classification.readable || classification.cluster_authority_required ||
+        classification.decryption_required)
+      return LifecycleError("SB-DB-LIFECYCLE-CATALOG-PAGE-AUTHORITY-REQUIRED",
+          "storage.database_lifecycle.catalog_page_authority_required", device->path(),
+          std::to_string(page_number));
+    if (page_number == kCatalogPageNumber) {
+      if (expected_database.is_nil()) expected_database = header.header.database_uuid;
+      if (expected_filespace.is_nil()) expected_filespace = header.header.filespace_uuid;
+    }
+    if (header.header.page_type != PageType::catalog ||
+        header.header.page_number != page_number || header.header.page_size != page_size ||
+        header.header.database_uuid != expected_database ||
+        header.header.filespace_uuid != expected_filespace)
+      return LifecycleError("SB-DB-LIFECYCLE-CATALOG-PAGE-IDENTITY-MISMATCH",
+          "storage.database_lifecycle.catalog_page_identity_mismatch", device->path(),
+          std::to_string(page_number));
+    std::copy_n(buffer_bytes + kPageHeaderSerializedBytes, body.size(), body.begin());
+    auto parsed = ParseCatalogPageBody(body, page_number);
     if (!parsed.ok()) {
       return PropagateDiagnostic(parsed.status, parsed.diagnostic);
     }
-    staged.insert(staged.end(), parsed.body.rows.begin(), parsed.body.rows.end());
+    if (parsed.body.page_sequence != visited.size() - 1)
+      return LifecycleError("SB-DB-LIFECYCLE-CATALOG-PAGE-SEQUENCE-MISMATCH",
+          "storage.database_lifecycle.catalog_page_sequence_mismatch", device->path(),
+          std::to_string(page_number));
+    staged.insert(staged.end(), std::make_move_iterator(parsed.body.rows.begin()),
+                  std::make_move_iterator(parsed.body.rows.end()));
     page_number = parsed.body.next_page_number;
   }
 
@@ -7119,7 +7163,9 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
         &device,
         config.page_size,
         &inventory_readback,
-        &horizons_readback);
+        &horizons_readback,
+        config.database_uuid.value,
+        config.filespace_uuid.value);
     const auto committed_readback = direct_read.ok()
                                         ? ValidateCommittedLifecycleTransaction(
                                               inventory_readback,
@@ -7160,7 +7206,9 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
       &device,
       config.page_size,
       &authoritative_inventory,
-      &authoritative_horizons);
+      &authoritative_horizons,
+      config.database_uuid.value,
+      config.filespace_uuid.value);
   const auto authoritative_commit = authoritative_read.ok()
                                         ? ValidateCommittedLifecycleTransaction(
                                               authoritative_inventory,
@@ -7244,6 +7292,107 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
 
   return make_committed_result(DatabaseCreateFinalityClass::committed,
                                final_create_health.snapshot);
+}
+
+DatabaseCatalogIdentityReadResult ReadDatabaseCatalogIdentity(
+    const std::string& path,
+    const scratchbird::core::platform::Uuid& expected_database_uuid) {
+  const auto propagate = [](Status status, DiagnosticRecord diagnostic) {
+    DatabaseCatalogIdentityReadResult result;
+    result.status = status;
+    result.diagnostic = std::move(diagnostic);
+    return result;
+  };
+  const auto refuse = [&](const char* detail) {
+    const auto error = LifecycleError("DATATYPE.DESCRIPTOR.INVALID",
+        "storage.database_lifecycle.datatype_catalog_binding_invalid", path, detail);
+    return propagate(error.status, error.diagnostic);
+  };
+  if (path.empty() || !scratchbird::core::uuid::IsEngineIdentityUuid(expected_database_uuid))
+    return refuse("database_identity_required");
+
+  // FileDevice retains the path serialization/ownership guard until Close.
+  // Read the immutable bootstrap record and its owning committed inventory
+  // through that one device, not a path-based cache or an unowned header hint.
+  FileDevice device;
+  const auto opened = device.Open(path, FileOpenMode::open_existing_read_only);
+  if (!opened.ok()) return propagate(opened.status, opened.diagnostic);
+  SerializedDatabaseHeader bytes{};
+  const auto read_header = device.ReadAt(0, bytes.data(), bytes.size());
+  if (!read_header.ok()) return propagate(read_header.status, read_header.diagnostic);
+  const auto header = ParseDatabaseHeader(bytes);
+  if (!header.ok()) return propagate(header.status, header.diagnostic);
+  if (header.header.database_uuid != expected_database_uuid)
+    return refuse("database_header_identity_mismatch");
+  // This reader has no decryption or cluster-provider authority. Such sources
+  // must use their owning admitted reader, never a local raw-byte shortcut.
+  if ((header.header.feature_flags &
+       (disk::DatabaseFeatureFlag::encrypted_database |
+        disk::DatabaseFeatureFlag::cluster_structures_present)) != 0 ||
+      (header.header.compatibility_flags &
+       (disk::DatabaseCompatibilityFlag::requires_decryption_password |
+        disk::DatabaseCompatibilityFlag::requires_cluster_authority)) != 0)
+    return refuse("database_requires_external_read_authority");
+  const auto policy = LifecycleDiskPolicy(header.header.page_size, true, true);
+  const auto health = CheckDiskDeviceHealth(device, policy);
+  if (!health.ok()) return propagate(health.status, health.diagnostic);
+  const auto pages = ValidateCorePageHeaders(
+      &device, header.header.page_size, policy, PageType::security_root);
+  if (!pages.ok()) return propagate(pages.status, pages.diagnostic);
+  const auto startup = ReadStartupStatePageBody(&device, header.header.page_size);
+  if (!startup.ok()) return propagate(startup.status, startup.diagnostic);
+  if (startup.state.database_uuid.value != expected_database_uuid)
+    return refuse("database_startup_identity_mismatch");
+  const auto identities = ValidateStartupPageIdentities(
+      &device, header.header.page_size, policy, startup.state.database_uuid,
+      startup.state.first_filespace_uuid);
+  if (!identities.ok()) return propagate(identities.status, identities.diagnostic);
+  std::vector<CatalogPageRow> rows;
+  const auto read_rows = ReadCatalogPageRows(&device, header.header.page_size, &rows,
+      expected_database_uuid, startup.state.first_filespace_uuid.value);
+  if (!read_rows.ok()) return propagate(read_rows.status, read_rows.diagnostic);
+  std::optional<scratchbird::core::catalog::CatalogDatabaseRecord> record;
+  for (const auto& row : rows) {
+    if (row.kind != CatalogPageRowKind::typed_catalog_record) continue;
+    const auto typed = scratchbird::core::catalog::DecodeCatalogTypedRecordView(row.kind, row.payload);
+    if (!typed.ok()) return propagate(typed.diagnostic.status,
+        scratchbird::core::catalog::MaterializeCatalogRecordDiagnostic(typed.diagnostic));
+    if (typed.record->header.kind != CatalogRecordKind::database) continue;
+    if (record || typed.record->header.deleted || typed.record->header.record_version != 1)
+      return refuse("database_catalog_record_ambiguous");
+    const auto decoded = scratchbird::core::catalog::DecodeCatalogDatabaseRecord(
+        typed.record->payload);
+    if (!decoded.ok()) return refuse("database_catalog_payload_invalid");
+    const auto& candidate = *decoded.record;
+    if (candidate.database_uuid.value != expected_database_uuid ||
+        candidate.database_header_format_major != header.header.format_major ||
+        candidate.database_header_format_minor != header.header.format_minor ||
+        candidate.page_size != header.header.page_size ||
+        candidate.creation_unix_epoch_millis != header.header.creation_unix_epoch_millis ||
+        candidate.feature_flags != header.header.feature_flags ||
+        candidate.compatibility_flags != header.header.compatibility_flags ||
+        candidate.catalog_manifest_format_version != kDatabaseCatalogManifestFormatCurrent ||
+        candidate.creator_transaction_number != kBootstrapCatalogTransactionId)
+      return refuse("database_catalog_owner_mismatch");
+    record = candidate;
+  }
+  if (!record) return refuse("database_catalog_record_missing");
+  LocalTransactionInventory inventory;
+  LocalTransactionHorizons horizons;
+  const auto read_inventory = ReadTransactionInventoryPageWithoutJournal(
+      &device, header.header.page_size, &inventory, &horizons,
+      expected_database_uuid, startup.state.first_filespace_uuid.value);
+  if (!read_inventory.ok()) return propagate(read_inventory.status, read_inventory.diagnostic);
+  const auto committed = ValidateCommittedLifecycleTransaction(
+      inventory, record->creator_transaction_number, path,
+      "SB-DB-DATATYPE-CATALOG-TX-MISSING", "SB-DB-DATATYPE-CATALOG-TX-NOT-COMMITTED");
+  if (!committed.ok()) return propagate(committed.status, committed.diagnostic);
+  const auto closed = device.Close();
+  if (!closed.ok()) return propagate(closed.status, closed.diagnostic);
+  DatabaseCatalogIdentityReadResult result;
+  result.status = DatabaseLifecycleOkStatus();
+  result.record = std::move(record);
+  return result;
 }
 
 DatabaseBootstrapSecurityCatalogReadResult
@@ -7364,7 +7513,9 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
       &device,
       parsed_header.header.page_size,
       &inventory,
-      &horizons);
+      &horizons,
+      database_uuid.value,
+      startup.state.first_filespace_uuid.value);
   if (!inventory_read.ok()) {
     return propagate(inventory_read.status, inventory_read.diagnostic);
   }

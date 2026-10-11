@@ -11,6 +11,7 @@
 // SB-DB-LIFECYCLE-ANCHOR
 // SEARCH_KEY: CONFIG_POLICY_MIGRATION
 #include "database_format.hpp"
+#include "catalog_database_record_codec.hpp"
 #include "disk_device.hpp"
 #include "agent_engine_lifecycle.hpp"
 #include "memory.hpp"
@@ -165,6 +166,15 @@ struct DatabaseBootstrapSecurityCatalogReadResult {
   bool ok() const {
     return status.ok();
   }
+};
+
+// Nonmutating, owned-source bootstrap identity read. Successful V1 inspection
+// deliberately retains an absent datatype cohort; it grants no current cohort.
+struct DatabaseCatalogIdentityReadResult {
+  Status status;
+  std::optional<scratchbird::core::catalog::CatalogDatabaseRecord> record;
+  DiagnosticRecord diagnostic;
+  bool ok() const { return status.ok() && record.has_value(); }
 };
 
 enum class DatabaseOpenCompatibilityClass : u16 {
@@ -354,6 +364,8 @@ PolicySeedPackDescriptor DefaultPolicyPackDescriptor();
 DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config);
 DatabaseBootstrapSecurityCatalogReadResult ReadDatabaseBootstrapSecurityCatalog(
     const std::string& path);
+DatabaseCatalogIdentityReadResult ReadDatabaseCatalogIdentity(
+    const std::string& path, const scratchbird::core::platform::Uuid& expected_database_uuid);
 DatabaseLifecycleResult OpenDatabaseFile(const DatabaseOpenConfig& config);
 DatabaseLifecycleResult EnterDatabaseMaintenanceMode(const DatabaseLifecycleOperationConfig& config);
 DatabaseLifecycleResult ExitDatabaseMaintenanceMode(const DatabaseLifecycleOperationConfig& config);

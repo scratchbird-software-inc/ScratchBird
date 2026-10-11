@@ -6710,25 +6710,26 @@ sb_engine_status_t AcquireStatementContextReceipt(
   }
   const auto int64_descriptor_uuid = int64_row->descriptor_uuid.value;
   const auto int64_identity =
-      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV3(
           kCanonicalDatatypeCatalogUuid,
           scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
           scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration,
           int64_descriptor_uuid,
           int64_row->descriptor_epoch);
   const auto numeric_type_uuid =
-      int64_identity.ok ? int64_identity.row.type_uuid
+      int64_identity.ok ? int64_identity.row.legacy_fields.type_uuid
                         : scratchbird::engine::internal_api::EngineUuid{};
   const auto boolean_type_uuid = boolean_row->descriptor_uuid.value;
   const auto text_identity =
-      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV3(
           kCanonicalDatatypeCatalogUuid,
           scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
           scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration,
           kCanonicalTextDescriptorUuid, 1);
-  const auto text_type_uuid = text_identity.row.type_uuid;
+  const auto text_type_uuid = text_identity.row.legacy_fields.type_uuid;
   const auto aggregate_type_identity = [&](scratchbird::core::datatypes::CanonicalTypeId type) {
-    for (const auto& row : scratchbird::core::datatypes::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+    for (const auto& identity : scratchbird::core::datatypes::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+      const auto& row = identity.legacy_fields;
       if (row.canonical_binary_type_code == static_cast<std::uint32_t>(type) &&
           row.catalog_snapshot_uuid == kCanonicalDatatypeCatalogUuid &&
           row.catalog_generation == scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration &&
@@ -6741,8 +6742,10 @@ sb_engine_status_t AcquireStatementContextReceipt(
   if (numeric_type_uuid.is_nil() || boolean_type_uuid.is_nil() ||
       numeric_type_uuid == boolean_type_uuid ||
       !text_identity.ok ||
-      !scratchbird::core::datatypes::IsExactCanonicalTextTypeCodecIdentityV1(
+      !scratchbird::core::datatypes::IsExactRegisteredDatatypeTypeCodecIdentityV3(
           text_identity.row) ||
+      text_identity.row.legacy_fields.canonical_binary_type_code !=
+          static_cast<std::uint32_t>(scratchbird::core::datatypes::CanonicalTypeId::character) ||
       json_type_uuid.is_nil() ||
       text_list_type_uuid.is_nil()) {
     return fail_result(
@@ -6836,13 +6839,13 @@ sb_engine_status_t AcquireStatementContextReceipt(
         "engine.statement_context.real64_descriptor_unavailable");
   }
   const auto real64_identity =
-      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV3(
           kCanonicalDatatypeCatalogUuid,
           scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
           scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration,
           real64_row->descriptor_uuid.value, real64_row->descriptor_epoch);
   const auto real64_type_uuid = real64_identity.ok
-      ? real64_identity.row.type_uuid
+      ? real64_identity.row.legacy_fields.type_uuid
       : scratchbird::engine::internal_api::EngineUuid{};
   std::array<scratchbird::engine::internal_api::EngineUuid, 2> real64_descriptor_uuids;
   if (real64_type_uuid.is_nil() ||
@@ -6897,13 +6900,13 @@ sb_engine_status_t AcquireStatementContextReceipt(
         "statement_v9_descriptor_type_cohort");
   }
   const auto uuid_identity =
-      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV3(
           kCanonicalDatatypeCatalogUuid,
           scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
           scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration,
           uuid_row->descriptor_uuid.value, uuid_row->descriptor_epoch);
   const auto uuid_type_uuid = uuid_identity.ok
-      ? uuid_identity.row.type_uuid
+      ? uuid_identity.row.legacy_fields.type_uuid
       : scratchbird::engine::internal_api::EngineUuid{};
   const auto uint64_type_uuid = aggregate_type_identity(scratchbird::core::datatypes::CanonicalTypeId::uint64);
   std::array<scratchbird::engine::internal_api::EngineUuid, 4> search_descriptor_uuids;
@@ -6963,13 +6966,13 @@ sb_engine_status_t AcquireStatementContextReceipt(
   }
   const auto boolean_catalog_type_uuid = boolean_row->descriptor_uuid.value;
   const auto geometry_identity =
-      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV3(
           kCanonicalDatatypeCatalogUuid,
           scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
           scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration,
           geometry_row->descriptor_uuid.value, geometry_row->descriptor_epoch);
   const auto geometry_type_uuid = geometry_identity.ok
-      ? geometry_identity.row.type_uuid
+      ? geometry_identity.row.legacy_fields.type_uuid
       : scratchbird::engine::internal_api::EngineUuid{};
   const std::array<scratchbird::engine::internal_api::EngineUuid, 5> multileg_type_uuids = {
       uuid_type_uuid, uint64_type_uuid, real64_type_uuid,
@@ -12495,15 +12498,16 @@ sb_engine_status_t BindStatementDdlCreateProcedureAuthorityV1(
                                 : static_cast<char>(value);
                    });
     const auto datatype_identity = scratchbird::core::datatypes::
-        LookupDatatypeTypeCodecIdentityV1(
+        LookupDatatypeTypeCodecIdentityV3(
             view.literal_catalog_snapshot_uuid, view.literal_catalog_generation,
             view.literal_registry_generation, kParameterBigintDescriptor, 1);
     if (requested_type != "BIGINT" || !datatype_identity.ok ||
-        datatype_identity.row.canonical_name != "bigint" ||
-        datatype_identity.row.canonical_value_exact_bytes != 8 ||
-        !datatype_identity.row.signed_code ||
-        !valid_engine_identity(datatype_identity.row.descriptor_uuid) ||
-        !valid_engine_identity(datatype_identity.row.type_uuid)) {
+        datatype_identity.row.legacy_fields.canonical_binary_type_code !=
+            static_cast<std::uint32_t>(scratchbird::core::datatypes::CanonicalTypeId::int64) ||
+        datatype_identity.row.legacy_fields.canonical_value_exact_bytes != 8 ||
+        !datatype_identity.row.legacy_fields.signed_code ||
+        !valid_engine_identity(datatype_identity.row.legacy_fields.descriptor_uuid) ||
+        !valid_engine_identity(datatype_identity.row.legacy_fields.type_uuid)) {
       return refuse(SB_ENGINE_STATUS_UNSUPPORTED,
                     "DATATYPE.DESCRIPTOR.INVALID",
                     "sblr.ddl_create_procedure.parameter_type_unavailable",
@@ -12518,10 +12522,10 @@ sb_engine_status_t BindStatementDdlCreateProcedureAuthorityV1(
     parameter.name_utf8 = canonical_parameter_name;
     parameter.canonical_type_name = "int64";
     parameter.datatype_descriptor_uuid =
-        datatype_identity.row.descriptor_uuid.bytes;
+        datatype_identity.row.legacy_fields.descriptor_uuid.bytes;
     parameter.datatype_descriptor_generation =
-        datatype_identity.row.descriptor_generation;
-    parameter.type_uuid = datatype_identity.row.type_uuid.bytes;
+        datatype_identity.row.legacy_fields.descriptor_generation;
+    parameter.type_uuid = datatype_identity.row.legacy_fields.type_uuid.bytes;
     procedure_abi.parameters.push_back(std::move(parameter));
   }
   const auto procedure_abi_bytes =
@@ -17921,18 +17925,18 @@ sb_engine_status_t NegotiateStatementLiteralDescriptorsV1(
                            "DATATYPE.DESCRIPTOR.INVALID",
                            "sblr.literal_prebind.demand_unregistered");
       const auto identity=scratchbird::core::datatypes::
-          LookupDatatypeTypeCodecIdentityV1(
+          LookupDatatypeTypeCodecIdentityV3(
               receipt->view.literal_catalog_snapshot_uuid,
               receipt->view.literal_catalog_generation,
               receipt->view.literal_registry_generation,
               *descriptor_uuid,1);
       if(!identity.ok){
         return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4072,
-                           identity.diagnostic_id,
+                           std::string(identity.diagnostic_id),
                            "sblr.literal_prebind.registry_lookup_failed");
       }
-      identities.insert(identity.row.descriptor_uuid);
-      identities.insert(identity.row.type_uuid);
+      identities.insert(identity.row.legacy_fields.descriptor_uuid);
+      identities.insert(identity.row.legacy_fields.type_uuid);
       scratchbird::engine::internal_api::EngineUuid profile_uuid;
       if(!generate_distinct_statement_context_uuid(&identities,&profile_uuid)){
         return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4073,
@@ -17941,18 +17945,18 @@ sb_engine_status_t NegotiateStatementLiteralDescriptorsV1(
       }
       scratchbird::engine::sblr::SblrLiteralStatementDescriptorProfileV1 profile;
       if(!uuid_bytes(profile_uuid,&profile.profile_uuid)||
-         !uuid_bytes(identity.row.descriptor_uuid,&profile.descriptor_uuid)||
-         !uuid_bytes(identity.row.type_uuid,&profile.type_uuid)){
+         !uuid_bytes(identity.row.legacy_fields.descriptor_uuid,&profile.descriptor_uuid)||
+         !uuid_bytes(identity.row.legacy_fields.type_uuid,&profile.type_uuid)){
         return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4073,
                            "DATATYPE.DESCRIPTOR.INVALID",
                            "sblr.literal_prebind.registry_identity_invalid");
       }
       profile.statement_receipt_uuid=receipt_uuid;
       profile.catalog_snapshot_uuid=catalog_uuid;
-      profile.catalog_generation=identity.row.catalog_generation;
-      profile.descriptor_generation=identity.row.descriptor_generation;
-      profile.codec_id=identity.row.codec_id;profile.codec_version=identity.row.codec_version;
-      profile.codec_generation=identity.row.codec_generation;profile.nullable=false;
+      profile.catalog_generation=identity.row.legacy_fields.catalog_generation;
+      profile.descriptor_generation=identity.row.legacy_fields.descriptor_generation;
+      profile.codec_id=identity.row.legacy_fields.codec_id;profile.codec_version=identity.row.legacy_fields.codec_version;
+      profile.codec_generation=identity.row.legacy_fields.codec_generation;profile.nullable=false;
       profile.profile_binding_sha256=
           scratchbird::engine::sblr::ComputeSblrLiteralDescriptorProfileBindingV1(
               profile,receipt->view.security_epoch,receipt->view.resource_epoch);
@@ -17970,11 +17974,11 @@ sb_engine_status_t NegotiateStatementLiteralDescriptorsV1(
       // A relation-backed persisted handle requires SBLP v2 and is attached
       // by the engine binder before negotiation.
       persisted.persisted_descriptor_uuid = profile.descriptor_uuid;
-      if(identity.row.descriptor_generation == 0)
+      if(identity.row.legacy_fields.descriptor_generation == 0)
         return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4073,
                            "DATATYPE.DESCRIPTOR.INVALID",
                            "sblr.literal_prebind.persisted_identity_invalid");
-      persisted.persisted_descriptor_generation = identity.row.descriptor_generation;
+      persisted.persisted_descriptor_generation = identity.row.legacy_fields.descriptor_generation;
       receipt->literal_persisted_descriptor_mappings.push_back(persisted);
       response.mappings.push_back({demand.occurrence_id,std::move(sblp)});
     }
@@ -18073,14 +18077,14 @@ sb_engine_status_t FinalizeStatementLiteralBindingV1(
       return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4075,
                          "DATATYPE.DESCRIPTOR.INVALID",
                          "sblr.literal_finalize.demand_unregistered");
-    const auto identity=scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+    const auto identity=scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV3(
         receipt->view.literal_catalog_snapshot_uuid,
         receipt->view.literal_catalog_generation,
         receipt->view.literal_registry_generation,
         *descriptor_uuid,1);
     std::array<std::uint8_t,16> type{};
-    if(!identity.ok||!uuid_bytes(identity.row.type_uuid,&type)||
-       node.descriptor_generation!=identity.row.descriptor_generation||
+    if(!identity.ok||!uuid_bytes(identity.row.legacy_fields.type_uuid,&type)||
+       node.descriptor_generation!=identity.row.legacy_fields.descriptor_generation||
        node.type_uuid!=type)
       return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4075,
                          "DATATYPE.DESCRIPTOR.INVALID",
@@ -18160,7 +18164,7 @@ sb_engine_status_t FinalizeStatementLiteralBindingV1(
       return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4075,
                          "DATATYPE.DESCRIPTOR.INVALID",
                          "sblr.literal_finalize.demand_unregistered");
-    const auto identity=scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+    const auto identity=scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV3(
         receipt->view.literal_catalog_snapshot_uuid,
         receipt->view.literal_catalog_generation,
         receipt->view.literal_registry_generation,
@@ -18209,8 +18213,8 @@ sb_engine_status_t FinalizeStatementLiteralBindingV1(
        profile_uuid!=ast.profile_uuid||
        bound_descriptor_uuid!=ast.descriptor_uuid||
        !identity.ok||
-       !uuid_bytes(identity.row.descriptor_uuid,&core_descriptor)||
-       !uuid_bytes(identity.row.type_uuid,&core_type)||
+       !uuid_bytes(identity.row.legacy_fields.descriptor_uuid,&core_descriptor)||
+       !uuid_bytes(identity.row.legacy_fields.type_uuid,&core_type)||
        profile_descriptor_uuid!=core_descriptor||
        bound_descriptor_generation!=ast.descriptor_generation||
        profile_type_uuid!=core_type||profile_type_uuid!=ast.type_uuid||
@@ -18728,14 +18732,14 @@ sb_engine_status_t NegotiateStatementParameterDescriptorsV1(
                        parameter_executor.detail);
   }
   const auto identity = scratchbird::core::datatypes::
-      LookupDatatypeTypeCodecIdentityV1(
+      LookupDatatypeTypeCodecIdentityV3(
           receipt->view.literal_catalog_snapshot_uuid,
           receipt->view.literal_catalog_generation,
           receipt->view.literal_registry_generation,
           kParameterBigintDescriptor, 1);
   if (!identity.ok) {
     return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4082,
-                       identity.diagnostic_id,
+                       std::string(identity.diagnostic_id),
                        "sblr.parameter_negotiate.demand_registry_lookup_failed");
   }
   scratchbird::engine::internal_api::SblrParameterSetIssueRequest issue;
@@ -18769,8 +18773,8 @@ sb_engine_status_t NegotiateStatementParameterDescriptorsV1(
                          "SBLR.OPERAND_INVALID",
                          "sblr.parameter_negotiate.demand_code_unregistered");
     }
-    issue.slots.push_back({identity.row.descriptor_uuid,
-                           identity.row.descriptor_generation,
+    issue.slots.push_back({identity.row.legacy_fields.descriptor_uuid,
+                           identity.row.legacy_fields.descriptor_generation,
                            scratchbird::engine::internal_api::
                                SblrParameterDirection::in,
                            demand.nullable_demand == 1});
@@ -18810,7 +18814,7 @@ sb_engine_status_t NegotiateStatementParameterDescriptorsV1(
     if (!uuid_bytes(slot.slot_uuid, &mapping.slot_uuid) ||
         !uuid_bytes(slot.datatype_descriptor_uuid,
                     &mapping.datatype_descriptor_uuid) ||
-        !uuid_bytes(identity.row.type_uuid, &mapping.datatype_type_uuid)) {
+        !uuid_bytes(identity.row.legacy_fields.type_uuid, &mapping.datatype_type_uuid)) {
       return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4082,
                          "DATATYPE.DESCRIPTOR.INVALID",
                          "sblr.parameter_negotiate.slot_identity_invalid");
