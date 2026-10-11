@@ -17,7 +17,145 @@ namespace d = scratchbird::core::datatypes;
 void Check(bool ok, std::source_location at = std::source_location::current()) {
   if (!ok) { std::cerr << "failure at " << at.line() << '\n'; std::abort(); }
 }
+void CheckV3RelationalBindings() {
+  unsigned cases = 0;
+  for (const auto& identity : d::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row = identity.legacy_fields;
+    if (row.catalog_generation != 5 && row.catalog_generation != 10 && row.catalog_generation != 11) continue;
+    const auto type = static_cast<d::CanonicalTypeId>(row.canonical_binary_type_code);
+    if (type != d::CanonicalTypeId::boolean && type != d::CanonicalTypeId::character &&
+        type != d::CanonicalTypeId::int64) continue;
+    ++cases;
+    a::RelationalTypeDescriptor descriptor;
+    descriptor.descriptor_id = 1;
+    descriptor.datatype_identity_authoritative = true;
+    descriptor.descriptor_uuid = row.descriptor_uuid;
+    descriptor.descriptor_generation = row.descriptor_generation;
+    descriptor.type_uuid = row.type_uuid;
+    descriptor.type_generation = row.type_generation;
+    descriptor.codec_id = row.codec_id;
+    descriptor.codec_version = row.codec_version;
+    descriptor.codec_generation = row.codec_generation;
+    descriptor.datatype_catalog_snapshot_uuid = row.catalog_snapshot_uuid;
+    descriptor.datatype_catalog_generation = row.catalog_generation;
+    descriptor.datatype_registry_generation = row.registry_generation;
+    descriptor.statement_receipt_uuid = scratchbird::tests::FixtureUuid(1086, 1001);
+    descriptor.nullability = a::RelationalNullability::kNonNull;
+    const a::EngineDatatypeCohort cohort{row.catalog_snapshot_uuid, row.catalog_generation, row.registry_generation};
+    Check(s::ExactCanonicalCoreDatatypeTypeUuidV1(d::CanonicalTypeName(type), cohort) == row.type_uuid);
+    for (unsigned mutation = 0; mutation < 4; ++mutation) {
+      auto bad = cohort;
+      if (mutation == 0) bad = {};
+      if (mutation == 1) ++bad.catalog_generation;
+      if (mutation == 2) ++bad.registry_generation;
+      if (mutation == 3) bad.catalog_snapshot_uuid.bytes[0] ^= 1;
+      Check(s::ExactCanonicalCoreDatatypeTypeUuidV1(d::CanonicalTypeName(type), bad).is_nil());
+    }
+    Check(s::ExactCanonicalCoreDatatypeTypeUuidV1("not-a-datatype", cohort).is_nil());
+    for (unsigned mutation = 0; mutation < 9; ++mutation) {
+      auto candidate = descriptor;
+      if (mutation == 1) ++candidate.datatype_catalog_generation;
+      if (mutation == 2) ++candidate.datatype_registry_generation;
+      if (mutation == 3) candidate.datatype_catalog_snapshot_uuid.bytes[0] ^= 1;
+      if (mutation == 4) ++candidate.type_generation;
+      if (mutation == 5) ++candidate.codec_generation;
+      if (mutation == 6) ++candidate.codec_version;
+      if (mutation == 7) candidate.codec_id += ".invalid";
+      if (mutation == 8) candidate.statement_receipt_uuid = {};
+      if (type != d::CanonicalTypeId::character) {
+        a::EngineDescriptor output;
+        Check(s::BuildExactCanonicalScalarRuntimeDescriptorV1(candidate, type, &output) == (mutation == 0));
+        if (mutation == 0) Check(output.datatype_cohort == cohort &&
+            output.datatype_descriptor_uuid == row.descriptor_uuid &&
+            output.datatype_descriptor_generation == row.descriptor_generation &&
+            output.type_uuid == row.type_uuid && output.canonical_type_name == d::CanonicalTypeName(type));
+      }
+      if (type == d::CanonicalTypeId::boolean) {
+        a::EngineDescriptor output;
+        Check(s::BuildExactCanonicalBooleanRuntimeDescriptorV1(candidate,
+            a::RelationalNullability::kNonNull, &output) == (mutation == 0));
+        if (mutation == 0) Check(output.datatype_cohort == cohort);
+      }
+      if (type == d::CanonicalTypeId::character)
+        Check(s::ExactCanonicalTextRelationalDescriptorV1(candidate,
+            a::RelationalNullability::kNonNull) == (mutation == 0));
+      a::TypedRelationalDag dag;
+      dag.descriptors = {candidate};
+      a::RelationalExpressionRecord expression;
+      expression.expression_id = 1;
+      expression.result_descriptor_id = 1;
+      expression.expression_kind = a::RelationalExpressionKind::kParameter;
+      expression.parameter_typed_value_v1.emplace();
+      expression.parameter_typed_value_v1->descriptor_uuid = candidate.descriptor_uuid;
+      expression.parameter_typed_value_v1->descriptor_generation = candidate.descriptor_generation;
+      expression.parameter_typed_value_v1->value_state = "value";
+      dag.expressions = {expression};
+      s::CanonicalRelationalExpressionRuntime runtime(dag);
+      std::string name, detail;
+      Check(runtime.InferType(1, std::nullopt, &name, &detail) == (mutation == 0));
+      if (mutation == 0) Check(name == d::CanonicalTypeName(type));
+    }
+  }
+  Check(cases == 9);
+}
+
+void CheckPreparedAggregateCohortCustody() {
+  namespace ex = scratchbird::engine::executor;
+  for (const auto cohort : {a::EngineDatatypeCohort{d::kDatatypeCohortV5, 5, 5},
+                            a::EngineDatatypeCohort{d::kDatatypeCohortV11, 11, 11}}) {
+    auto descriptor = ex::MakeExecutorDescriptor("int64", "nullability=non_null", cohort);
+    descriptor.descriptor_kind = "scalar";
+    descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(1086, 1002);
+    s::PreparedAggregateValueBindingReceipt receipt{0, 1, descriptor.descriptor_uuid,
+        descriptor.type_uuid, false, descriptor.canonical_type_name, descriptor.encoded_descriptor,
+        cohort, descriptor.datatype_descriptor_uuid, descriptor.datatype_descriptor_generation};
+    auto value = ex::EncodeInt64Value(5);
+    value.descriptor = descriptor;
+    for (bool empty : {false, true}) {
+      ex::DescriptorBatch batch;
+      batch.columns.push_back({"value", descriptor, false, 1});
+      if (!empty) batch.rows.push_back({{value}});
+      for (unsigned mutation = 0; mutation < 5; ++mutation) {
+        auto candidate = batch;
+        auto& binding = candidate.columns.front().descriptor;
+        if (mutation == 1) binding.datatype_cohort = cohort.catalog_generation == 5
+            ? a::EngineDatatypeCohort{d::kDatatypeCohortV11, 11, 11}
+            : a::EngineDatatypeCohort{d::kDatatypeCohortV5, 5, 5};
+        if (mutation == 2) binding.datatype_cohort = {};
+        if (mutation == 3) binding.datatype_descriptor_uuid = {};
+        if (mutation == 4) ++binding.datatype_descriptor_generation;
+        for (auto& row : candidate.rows) row.values.front().descriptor = binding;
+        std::string detail;
+        Check(s::RevalidatePreparedAggregateValueBindings({0}, {1}, {receipt}, candidate, &detail) == (mutation == 0));
+        Check(detail.empty() == (mutation == 0));
+        s::PreparedGroupedCountSumRoot grouped;
+        grouped.key_binding_receipts = {receipt};
+        scratchbird::engine::executor::CanonicalDescriptorOrderTerm term;
+        term.column = 0;
+        term.expression_descriptor_id = 1;
+        grouped.key_terms = {term};
+        Check(s::RevalidatePreparedGroupedKeyBindings(grouped, candidate, &detail) == (mutation == 0));
+        Check(detail.empty() == (mutation == 0));
+      }
+    }
+    const auto manifest = d::LoadCurrentCoreDatatypeCatalogManifest();
+    Check(manifest.ok());
+    const auto storage = std::ranges::find_if(manifest.manifest.descriptor_rows,
+        [](const auto& row) { return row.type_id == d::CanonicalTypeId::document; });
+    Check(storage != manifest.manifest.descriptor_rows.end());
+    Check(d::FindDatatypeTypeCodecIdentityV3(cohort.catalog_snapshot_uuid, cohort.catalog_generation,
+        cohort.registry_generation, storage->descriptor_uuid.value, storage->descriptor_epoch) == nullptr);
+    Check(s::ExactCanonicalCoreDatatypeTypeUuidV1(storage->stable_name, cohort) == storage->descriptor_uuid.value);
+    auto unknown = cohort;
+    ++unknown.registry_generation;
+    Check(s::ExactCanonicalCoreDatatypeTypeUuidV1(storage->stable_name, unknown).is_nil());
+  }
+}
+
 int main() {
+  CheckV3RelationalBindings();
+  CheckPreparedAggregateCohortCustody();
+  unsigned qualified_producer_receipts = 0;
   // Frozen UTC cohorts remain distinct from the current civil timestamp.
   unsigned historical_cohorts = 0;
   for (const auto& identity : d::CurrentDatatypeTypeCodecIdentityRowsV1()) {
@@ -549,6 +687,25 @@ int main() {
             aggregate_dag, aggregate_root, source, input, function, false, false, false);
         if (!prepared.ok) std::cerr << prepared.detail << '\n';
         Check(prepared.ok);
+        if (!prepared.exact_value_binding_receipts.empty()) {
+          qualified_producer_receipts += prepared.exact_value_binding_receipts.size();
+          std::string receipt_detail;
+          Check(s::RevalidatePreparedAggregateValueBindings(prepared.value_columns,
+              prepared.value_descriptor_ids, prepared.exact_value_binding_receipts,
+              input.batch, &receipt_detail));
+          auto replaced = input.batch;
+          for (const auto& receipt : prepared.exact_value_binding_receipts) {
+            const auto& original = input.batch.columns[receipt.value_column].descriptor;
+            Check(receipt.datatype_cohort == original.datatype_cohort &&
+                  receipt.datatype_descriptor_uuid == original.datatype_descriptor_uuid &&
+                  receipt.datatype_descriptor_generation == original.datatype_descriptor_generation);
+            replaced.columns[receipt.value_column].descriptor.datatype_cohort =
+                {d::kDatatypeCohortV11, 11, 11};
+          }
+          Check(!s::RevalidatePreparedAggregateValueBindings(prepared.value_columns,
+              prepared.value_descriptor_ids, prepared.exact_value_binding_receipts,
+              replaced, &receipt_detail));
+        }
         a::EngineDescriptor expected;
         Check(s::BuildExactCanonicalScalarRuntimeDescriptorV1(result_type, result_id, &expected));
         Check(prepared.result_column.descriptor == expected && prepared.result_column.nullable);
@@ -631,4 +788,5 @@ int main() {
     input.batch.rows.clear();
     Check(!s::PrepareExpressionProjectRootForComposition(dag, root, source, input, {}).ok);
   }
+  Check(qualified_producer_receipts > 0);
 }

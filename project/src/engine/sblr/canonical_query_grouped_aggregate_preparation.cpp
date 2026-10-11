@@ -371,7 +371,10 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
             key_descriptor->type_uuid,
             runtime_key.nullable,
             runtime_key.descriptor.canonical_type_name,
-            runtime_key.descriptor.encoded_descriptor});
+            runtime_key.descriptor.encoded_descriptor,
+            runtime_key.descriptor.datatype_cohort,
+            runtime_key.descriptor.datatype_descriptor_uuid,
+            runtime_key.descriptor.datatype_descriptor_generation});
 
     auto key_result_column = input.batch.columns[key_column];
     key_result_column.stable_name = key_output->output_name_utf8;

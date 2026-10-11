@@ -1344,7 +1344,10 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
              source_descriptor->descriptor_uuid,
              source_descriptor->type_uuid, source_column.nullable,
              source_column.descriptor.canonical_type_name,
-             source_column.descriptor.encoded_descriptor});
+             source_column.descriptor.encoded_descriptor,
+             source_column.descriptor.datatype_cohort,
+             source_column.descriptor.datatype_descriptor_uuid,
+             source_column.descriptor.datatype_descriptor_generation});
       }
       result.value_columns.push_back(value_column);
       result.value_descriptor_ids.push_back(argument->result_descriptor_id);

@@ -30,6 +30,9 @@ struct PreparedAggregateValueBindingReceipt {
   bool nullable{false};
   std::string canonical_type_name;
   std::string encoded_descriptor;
+  scratchbird::engine::internal_api::EngineDatatypeCohort datatype_cohort;
+  core::platform::Uuid datatype_descriptor_uuid;
+  std::uint64_t datatype_descriptor_generation{0};
 };
 
 struct PreparedGlobalAggregateRoot {
@@ -73,6 +76,11 @@ struct PreparedGroupedCountSumRoot {
 };
 
 core::platform::Uuid ExactCanonicalCoreDatatypeUuidV1(std::string_view stable_name);
+core::platform::Uuid ExactCanonicalCoreDatatypeTypeUuidV1(
+    std::string_view stable_name,
+    const scratchbird::engine::internal_api::EngineDatatypeCohort& cohort);
+// Context-free compatibility is a frozen D705 component profile, not live
+// statement authority. Production callers must supply their admitted cohort.
 core::platform::Uuid ExactCanonicalCoreDatatypeTypeUuidV1(std::string_view stable_name);
 core::platform::Uuid ExactCanonicalInt64TypeUuidV1();
 

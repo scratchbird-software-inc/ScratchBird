@@ -3,7 +3,7 @@
 #pragma once
 
 #include "binary_uuid_fixture.hpp"
-#include "catalog/datatype_bootstrap_identity.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "engine/executor/descriptor_value_runtime.hpp"
 #include "engine/internal_api/query/plan_api.hpp"
@@ -13,15 +13,17 @@
 namespace scratchbird::tests {
 
 inline engine::internal_api::RelationalTypeDescriptor Int64LiteralDescriptor(
-    std::uint32_t id) {
+    std::uint32_t id,
+    const engine::internal_api::EngineDatatypeCohort& cohort =
+        {core::datatypes::kDatatypeCohortV5, 5, 5}) {
   namespace api = engine::internal_api;
-  const auto builtin = engine::executor::MakeExecutorDescriptor("int64");
-  const auto identity = core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-      api::kBootstrapDatatypeCatalogUuid, api::kBootstrapDatatypeCatalogGeneration,
-      api::kBootstrapDatatypeRegistryGeneration, builtin.datatype_descriptor_uuid,
+  const auto builtin = engine::executor::MakeExecutorDescriptor("int64", "nullability=non_null", cohort);
+  const auto* identity = core::datatypes::FindDatatypeTypeCodecIdentityV3(
+      cohort.catalog_snapshot_uuid, cohort.catalog_generation,
+      cohort.registry_generation, builtin.datatype_descriptor_uuid,
       builtin.datatype_descriptor_generation);
-  if (!identity.ok) throw std::runtime_error("INT64 fixture codec unavailable");
-  const auto& row = identity.row;
+  if (!identity) throw std::runtime_error("INT64 fixture codec unavailable");
+  const auto& row = identity->legacy_fields;
   api::RelationalTypeDescriptor result;
   result.descriptor_id = id;
   result.descriptor_uuid = row.descriptor_uuid;

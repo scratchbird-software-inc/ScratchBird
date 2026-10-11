@@ -13,13 +13,12 @@
 #include "descriptor_value_runtime.hpp"
 
 #include "datatype_catalog_manifest.hpp"
-#include "../internal_api/catalog/datatype_bootstrap_identity.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "datatype_operations.hpp"
 #include "query/expression_api.hpp"
 #include "query/historical_timestamp_scalar.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "mga_relation_store/stored_scalar_payload.hpp"
-#include <map>
 
 #include <algorithm>
 #include <array>
@@ -93,6 +92,30 @@ std::string UpperAscii(std::string value) {
 
 bool IsCanonicalUuid(const api::EngineUuid& value) {
   return core::uuid::IsEngineIdentityUuid(value);
+}
+
+// Occurrence UUIDs are not datatype UUIDs. Resolve an authoritative relational
+// descriptor using its complete supplied codec/cohort tuple, never bootstrap.
+const dt::DatatypeTypeCodecIdentityRowV3* RelationalDatatypeIdentity(
+    const api::RelationalTypeDescriptor& descriptor) {
+  if (!descriptor.datatype_identity_authoritative ||
+      !IsCanonicalUuid(descriptor.statement_receipt_uuid)) return nullptr;
+  const dt::DatatypeTypeCodecIdentityRowV3* selected = nullptr;
+  for (const auto& candidate : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row = candidate.legacy_fields;
+    if (row.catalog_snapshot_uuid != descriptor.datatype_catalog_snapshot_uuid ||
+        row.catalog_generation != descriptor.datatype_catalog_generation ||
+        row.registry_generation != descriptor.datatype_registry_generation ||
+        row.type_uuid != descriptor.type_uuid ||
+        row.descriptor_generation != descriptor.descriptor_generation ||
+        row.type_generation != descriptor.type_generation ||
+        row.codec_id != descriptor.codec_id ||
+        row.codec_version != descriptor.codec_version ||
+        row.codec_generation != descriptor.codec_generation) continue;
+    if (selected) return nullptr;
+    selected = &candidate;
+  }
+  return selected;
 }
 
 bool IsNumericType(const dt::CanonicalTypeId type_id) {
@@ -603,19 +626,9 @@ bool ExactCanonicalBooleanRelationalDescriptorV1(
       descriptor.statement_receipt_uuid.is_nil()) {
     return false;
   }
-  const auto identity = dt::LookupCanonicalBooleanTypeCodecIdentityV1(
-      descriptor.datatype_catalog_snapshot_uuid,
-      descriptor.datatype_catalog_generation,
-      descriptor.datatype_registry_generation);
-  return identity.ok &&
-         descriptor.descriptor_uuid == identity.row.descriptor_uuid &&
-         descriptor.descriptor_generation ==
-             identity.row.descriptor_generation &&
-         descriptor.type_uuid == identity.row.type_uuid &&
-         descriptor.type_generation == identity.row.type_generation &&
-         descriptor.codec_id == identity.row.codec_id &&
-         descriptor.codec_version == identity.row.codec_version &&
-         descriptor.codec_generation == identity.row.codec_generation &&
+  const auto* identity = RelationalDatatypeIdentity(descriptor);
+  return identity &&
+         descriptor.descriptor_uuid == identity->legacy_fields.descriptor_uuid &&
          dt::IsExactCanonicalBooleanDescriptorTypeAliasV1(
              descriptor.descriptor_uuid, descriptor.descriptor_generation,
              descriptor.type_uuid, descriptor.type_generation,
@@ -636,20 +649,9 @@ bool ExactCanonicalTextRelationalDescriptorV1(
       descriptor.statement_receipt_uuid.is_nil()) {
     return false;
   }
-  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      descriptor.datatype_catalog_snapshot_uuid,
-      descriptor.datatype_catalog_generation,
-      descriptor.datatype_registry_generation, descriptor.descriptor_uuid,
-      descriptor.descriptor_generation);
-  return identity.ok && dt::IsExactCanonicalTextTypeCodecIdentityV1(identity.row) &&
-         descriptor.descriptor_uuid == identity.row.descriptor_uuid &&
-         descriptor.descriptor_generation ==
-             identity.row.descriptor_generation &&
-         descriptor.type_uuid == identity.row.type_uuid &&
-         descriptor.type_generation == identity.row.type_generation &&
-         descriptor.codec_id == identity.row.codec_id &&
-         descriptor.codec_version == identity.row.codec_version &&
-         descriptor.codec_generation == identity.row.codec_generation;
+  const auto* identity = RelationalDatatypeIdentity(descriptor);
+  return identity && dt::IsExactCanonicalTextTypeCodecIdentityV1(identity->legacy_fields) &&
+         descriptor.descriptor_uuid == identity->legacy_fields.descriptor_uuid;
 }
 
 bool CarriesPersistedTextAuthorityFieldsV1(
@@ -677,6 +679,8 @@ bool BuildExactCanonicalBooleanRuntimeDescriptorV1(
   descriptor->type_uuid = source.type_uuid;
   descriptor->datatype_descriptor_uuid = source.descriptor_uuid;
   descriptor->datatype_descriptor_generation = source.descriptor_generation;
+  descriptor->datatype_cohort = {source.datatype_catalog_snapshot_uuid,
+      source.datatype_catalog_generation, source.datatype_registry_generation};
   descriptor->descriptor_kind = "scalar";
   descriptor->canonical_type_name = "boolean";
   descriptor->encoded_descriptor =
@@ -807,39 +811,14 @@ bool SamePersistedRowDescriptor(
 
   if (actual.descriptor_uuid != bound.descriptor_uuid) return false;
 
-  static const auto canonical_type_name_by_type_uuid = [] {
-    std::map<api::EngineUuid, std::string> names;
-    const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
-    if (!manifest.ok()) return names;
-    const auto record_name = [&](const api::EngineUuid& type_uuid,
-                                 const std::string& stable_name) {
-      if (type_uuid.is_nil()) return;
-      const auto [found, inserted] = names.emplace(type_uuid, stable_name);
-      if (!inserted && !SameCanonicalType(found->second, stable_name)) {
-        found->second.clear();
-      }
-    };
-    for (const auto& row : manifest.manifest.descriptor_rows) {
-      const auto descriptor_uuid = TypedUuidIdentity(row.descriptor_uuid);
-      // Record both exact descriptor and separately registered value-type
-      // identities. The sole descriptor/type alias is handled above through
-      // the full canonical boolean authority tuple.
-      record_name(descriptor_uuid, row.stable_name);
-      const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-          api::kBootstrapDatatypeCatalogUuid,
-          api::kBootstrapDatatypeCatalogGeneration, api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
-          row.descriptor_epoch);
-      if (!identity.ok || identity.row.type_uuid.is_nil()) continue;
-      record_name(identity.row.type_uuid, row.stable_name);
-    }
-    return names;
-  }();
-  const auto bound_type_name =
-      canonical_type_name_by_type_uuid.find(bound.type_uuid);
-  if (bound_type_name == canonical_type_name_by_type_uuid.end() ||
-      bound_type_name->second.empty() ||
-      !SameCanonicalType(bound_type_name->second,
-                         actual.canonical_type_name)) {
+  const auto* bound_identity = RelationalDatatypeIdentity(bound);
+  if (!bound_identity ||
+      actual.datatype_cohort != api::EngineDatatypeCohort{
+          bound.datatype_catalog_snapshot_uuid, bound.datatype_catalog_generation,
+          bound.datatype_registry_generation} ||
+      actual.datatype_descriptor_uuid != bound_identity->legacy_fields.descriptor_uuid ||
+      actual.datatype_descriptor_generation != bound_identity->legacy_fields.descriptor_generation ||
+      !SameCanonicalType(bound_identity->legacy_fields.canonical_name, actual.canonical_type_name)) {
     if (authority_refusal_detail != nullptr) {
       *authority_refusal_detail = "persisted datatype identity has no matching canonical type";
     }
@@ -872,18 +851,13 @@ bool SamePersistedRowDescriptor(
       metadata, "datatype_descriptor_uuid", actual.datatype_descriptor_uuid);
   if (!actual.datatype_descriptor_uuid.is_nil() &&
       datatype_uuid != actual.datatype_descriptor_uuid) return false;
-  std::optional<dt::DatatypeTypeCodecIdentityRowV1> datatype_identity;
+  const dt::DatatypeTypeCodecIdentityRowV1* datatype_identity = nullptr;
   if (!datatype_uuid.is_nil() && datatype_uuid != bound.descriptor_uuid) {
-    const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+    const auto* identity = dt::FindDatatypeTypeCodecIdentityV3(
         bound.datatype_catalog_snapshot_uuid, bound.datatype_catalog_generation,
         bound.datatype_registry_generation, datatype_uuid, bound.descriptor_generation);
-    if (!bound.datatype_identity_authoritative || !identity.ok ||
-        identity.row.type_uuid != bound.type_uuid ||
-        identity.row.type_generation != bound.type_generation ||
-        identity.row.codec_id != bound.codec_id ||
-        identity.row.codec_version != bound.codec_version ||
-        identity.row.codec_generation != bound.codec_generation) return false;
-    datatype_identity = identity.row;
+    if (identity != bound_identity) return false;
+    datatype_identity = &identity->legacy_fields;
   }
   if (actual.datatype_descriptor_generation != 0 &&
       actual.datatype_descriptor_generation != bound.descriptor_generation) return false;
@@ -1040,7 +1014,7 @@ bool SamePersistedRowDescriptor(
       if ((key == "codec_version" && parsed != bound.codec_version) ||
           (key == "codec_generation" &&
            parsed != bound.codec_generation) ||
-          (key == "null_encoding" && datatype_identity.has_value() &&
+          (key == "null_encoding" && datatype_identity != nullptr &&
            parsed != datatype_identity->null_encoding_code)) {
         return false;
       }
@@ -2568,6 +2542,16 @@ bool CanonicalRelationalExpressionRuntime::ResolveDescriptorType(
     *refusal_detail = "expression descriptor type UUID is not canonical";
     return false;
   }
+  if (descriptor.datatype_identity_authoritative) {
+    const auto* identity = RelationalDatatypeIdentity(descriptor);
+    if (!identity) {
+      *refusal_detail = "expression descriptor does not match its exact datatype cohort and codec tuple";
+      return false;
+    }
+    *canonical_type_name = dt::CanonicalTypeName(
+        static_cast<dt::CanonicalTypeId>(identity->legacy_fields.canonical_binary_type_code));
+    return true;
+  }
   static const auto core_manifest =
       dt::LoadCurrentCoreDatatypeCatalogManifest();
   if (core_manifest.ok()) {
@@ -2580,15 +2564,14 @@ bool CanonicalRelationalExpressionRuntime::ResolveDescriptorType(
       *canonical_type_name = row->stable_name;
       return true;
     }
-    // Literal codecs use distinct current descriptor and value-type
-    // identities. Resolve those type UUIDs only through exact current registry
-    // rows; never treat an arbitrary UUID as a datatype alias.
+    // Unauthoritative component type inference is frozen to D705. It grants
+    // no receipt, storage or execution authority; authoritative descriptors
+    // above cannot fall through to this legacy naming seam or a service hook.
     for (const auto& row : core_manifest.manifest.descriptor_rows) {
-      const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-          api::kBootstrapDatatypeCatalogUuid,
-          api::kBootstrapDatatypeCatalogGeneration, api::kBootstrapDatatypeRegistryGeneration,
+      const auto* identity = dt::FindDatatypeTypeCodecIdentityV3(
+          dt::kDatatypeCohortV5, 5, 5,
           TypedUuidIdentity(row.descriptor_uuid), row.descriptor_epoch);
-      if (identity.ok && identity.row.type_uuid == descriptor.type_uuid) {
+      if (identity && identity->legacy_fields.type_uuid == descriptor.type_uuid) {
         *canonical_type_name = row.stable_name;
         return true;
       }

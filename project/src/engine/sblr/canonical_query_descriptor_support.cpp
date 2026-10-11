@@ -50,18 +50,19 @@ bool BuildExactCanonicalScalarRuntimeDescriptorV1(
   // the latter only within the supplied exact cohort and type identity, as
   // dispatch admission does. Never replace the occurrence or use a name or
   // nearest/latest registry generation to fill missing authority.
-  const dt::DatatypeTypeCodecIdentityRowV1* matched = nullptr;
-  for (const auto& candidate : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+  const dt::DatatypeTypeCodecIdentityRowV3* matched = nullptr;
+  for (const auto& identity : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& candidate = identity.legacy_fields;
     if (candidate.catalog_snapshot_uuid != source.datatype_catalog_snapshot_uuid ||
         candidate.catalog_generation != source.datatype_catalog_generation ||
         candidate.registry_generation != source.datatype_registry_generation ||
         candidate.type_uuid != source.type_uuid ||
         candidate.descriptor_generation != source.descriptor_generation) continue;
     if (matched) return false;
-    matched = &candidate;
+    matched = &identity;
   }
   if (!matched) return false;
-  const auto& row = *matched;
+  const auto& row = matched->legacy_fields;
   if (row.canonical_binary_type_code != static_cast<std::uint32_t>(expected_type) ||
       row.descriptor_generation != source.descriptor_generation ||
       row.type_uuid != source.type_uuid || row.type_generation != source.type_generation ||
@@ -72,6 +73,8 @@ bool BuildExactCanonicalScalarRuntimeDescriptorV1(
   descriptor.type_uuid = source.type_uuid;
   descriptor.datatype_descriptor_uuid = row.descriptor_uuid;
   descriptor.datatype_descriptor_generation = row.descriptor_generation;
+  descriptor.datatype_cohort = {source.datatype_catalog_snapshot_uuid,
+      source.datatype_catalog_generation, source.datatype_registry_generation};
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = dt::CanonicalTypeName(expected_type);
   descriptor.encoded_descriptor = source.nullability == api::RelationalNullability::kNullable

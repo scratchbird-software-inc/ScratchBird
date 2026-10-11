@@ -15,7 +15,7 @@
 
 #include "catalog/name_resolution_api.hpp"
 #include "datatype_catalog_manifest.hpp"
-#include "../internal_api/catalog/datatype_bootstrap_identity.hpp"
+#include "datatype_storage_identity.hpp"
 #include "datatype_operations.hpp"
 #include "uuid.hpp"
 
@@ -56,6 +56,11 @@ core::platform::Uuid ExactCanonicalInt64TypeUuidV1() {
 
 core::platform::Uuid ExactCanonicalCoreDatatypeTypeUuidV1(
     const std::string_view stable_name) {
+  return ExactCanonicalCoreDatatypeTypeUuidV1(stable_name, {dt::kDatatypeCohortV5, 5, 5});
+}
+
+core::platform::Uuid ExactCanonicalCoreDatatypeTypeUuidV1(
+    const std::string_view stable_name, const api::EngineDatatypeCohort& cohort) {
   static const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
   const auto count = std::ranges::count_if(
@@ -69,15 +74,14 @@ core::platform::Uuid ExactCanonicalCoreDatatypeTypeUuidV1(
     return {};
   }
   const auto descriptor_uuid = found->descriptor_uuid.value;
-  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      scratchbird::engine::internal_api::kBootstrapDatatypeCatalogUuid,
-      scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
-      scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
-      found->descriptor_epoch);
-  // Core rows that have a registered codec identity carry a distinct type
-  // UUID (notably int64).  Older core rows still use their catalog descriptor
-  // UUID as the exact type identity until their codec row is registered.
-  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
+  const auto* codec = dt::FindDatatypeTypeCodecIdentityV3(
+      cohort.catalog_snapshot_uuid, cohort.catalog_generation,
+      cohort.registry_generation, descriptor_uuid, found->descriptor_epoch);
+  if (codec) return codec->legacy_fields.type_uuid;
+  dt::DatatypeStorageIdentityV3 storage;
+  return dt::LookupDatatypeStorageIdentityV3(cohort.catalog_snapshot_uuid,
+      cohort.catalog_generation, cohort.registry_generation, descriptor_uuid,
+      found->descriptor_epoch, &storage) ? storage.type_uuid : core::platform::Uuid{};
 }
 
 bool RevalidatePreparedAggregateValueBindings(
@@ -103,6 +107,12 @@ bool RevalidatePreparedAggregateValueBindings(
       return false;
     }
     const auto& column = input_batch.columns[receipt.value_column];
+    if (column.descriptor.datatype_cohort != receipt.datatype_cohort ||
+        column.descriptor.datatype_descriptor_uuid != receipt.datatype_descriptor_uuid ||
+        column.descriptor.datatype_descriptor_generation != receipt.datatype_descriptor_generation) {
+      *detail = "aggregate exact value-binding datatype receipt drifted";
+      return false;
+    }
     const auto canonical_type_id = dt::CanonicalTypeIdFromStableName(
         receipt.canonical_type_name);
     const auto canonical_stable_name = [&]() -> std::string_view {
@@ -122,7 +132,7 @@ bool RevalidatePreparedAggregateValueBindings(
     const auto canonical_type_uuid =
         canonical_stable_name.empty()
             ? core::platform::Uuid{}
-            : ExactCanonicalCoreDatatypeTypeUuidV1(canonical_stable_name);
+            : ExactCanonicalCoreDatatypeTypeUuidV1(canonical_stable_name, receipt.datatype_cohort);
     if (canonical_stable_name.empty() || canonical_type_uuid.is_nil() ||
         receipt.type_uuid != canonical_type_uuid ||
         receipt.descriptor_uuid.is_nil() || receipt.type_uuid.is_nil() ||
@@ -257,6 +267,10 @@ bool RevalidatePreparedGroupedKeyBindings(
         receipt.nullable ? std::string_view("nullable")
                          : std::string_view("non_null");
     if (receipt.canonical_type_name != "int64" ||
+        column.descriptor.datatype_cohort != receipt.datatype_cohort ||
+        column.descriptor.datatype_descriptor_uuid != receipt.datatype_descriptor_uuid ||
+        column.descriptor.datatype_descriptor_generation != receipt.datatype_descriptor_generation ||
+        receipt.type_uuid != ExactCanonicalCoreDatatypeTypeUuidV1("int64", receipt.datatype_cohort) ||
         receipt.descriptor_uuid.is_nil() || receipt.type_uuid.is_nil() ||
         column.descriptor.type_uuid != receipt.type_uuid ||
         receipt.encoded_descriptor !=
@@ -272,6 +286,10 @@ bool RevalidatePreparedGroupedKeyBindings(
             receipt.encoded_descriptor ||
         !api::QowCanonicalDescriptorIdentityV1(column.descriptor)) {
       *detail = "grouped aggregate exact int64 key binding drifted";
+      return false;
+    }
+    if (!exec::IsCanonicalBoundedSignedIntegerDescriptor(column.descriptor)) {
+      *detail = "grouped aggregate key datatype receipt is not admitted";
       return false;
     }
   }
