@@ -10,6 +10,7 @@
 #include "sblr/canonical_query_object_free_composition_support.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_operations.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 
 #include <algorithm>
@@ -122,12 +123,12 @@ void LiteralBindings() {
   namespace s = scratchbird::engine::sblr;
   namespace dt = scratchbird::core::datatypes;
   const auto builtin=exec::MakeExecutorDescriptor("uuid");
-  const auto identity=dt::LookupDatatypeTypeCodecIdentityV1(
+  const auto* identity=dt::FindDatatypeTypeCodecIdentityV3(
       api::kBootstrapDatatypeCatalogUuid,api::kBootstrapDatatypeCatalogGeneration,
       api::kBootstrapDatatypeRegistryGeneration,builtin.datatype_descriptor_uuid,
       builtin.datatype_descriptor_generation);
-  Check(identity.ok,"fixture resolves actual published UUID codec row");
-  const auto& row=identity.row;
+  Check(identity!=nullptr,"fixture resolves actual published UUID codec row");
+  const auto& row=identity->legacy_fields;
   api::RelationalTypeDescriptor source;
   source.descriptor_id=1;source.descriptor_uuid=row.descriptor_uuid;source.type_uuid=row.type_uuid;
   source.nullability=api::RelationalNullability::kNonNull;

@@ -3,6 +3,7 @@
 #include "query/expression_api.hpp"
 #include "catalog/datatype_bootstrap_identity.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "uuid.hpp"
 #include "sbl_numeric.hpp"
 #include <cstdlib>
@@ -57,14 +58,16 @@ api::EngineDescriptor Descriptor() {
     throw std::runtime_error("real64 fixture catalog identity unavailable");
   }
   const auto& datatype = row.manifest.descriptor_rows.front();
-  const auto type = dt::LookupDatatypeTypeCodecIdentityV1(
+  const auto* type = dt::FindDatatypeTypeCodecIdentityV3(
       api::kBootstrapDatatypeCatalogUuid,
       api::kBootstrapDatatypeCatalogGeneration,
       api::kBootstrapDatatypeRegistryGeneration,
       datatype.descriptor_uuid.value, datatype.descriptor_epoch);
-  if (!type.ok) throw std::runtime_error("real64 fixture type identity unavailable");
+  if (!type) throw std::runtime_error("real64 fixture type identity unavailable");
   out.descriptor_uuid = identity.value;
-  out.type_uuid = type.row.type_uuid;
+  out.type_uuid = type->legacy_fields.type_uuid;
+  out.datatype_cohort = {api::kBootstrapDatatypeCatalogUuid,
+      api::kBootstrapDatatypeCatalogGeneration, api::kBootstrapDatatypeRegistryGeneration};
   out.datatype_descriptor_uuid = datatype.descriptor_uuid.value;
   out.datatype_descriptor_generation = datatype.descriptor_epoch;
   out.descriptor_kind = "scalar";

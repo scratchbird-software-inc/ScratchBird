@@ -2767,6 +2767,10 @@ static EngineTypedValue CastReal64ToDecimalDescriptorValue(const EngineTypedValu
 EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
                                      const EngineDescriptor& target_descriptor,
                                      DescriptorRuntimeDiagnostic* diagnostic) {
+  // Preserve completed numeric work if reporting or result publication fails;
+  // never inherit facts from the caller's previous diagnostic.
+  core::datatypes::DatatypeNumericFacts operation_facts;
+  try {
   if (CanonicalDescriptorTypeId(value.descriptor)==CanonicalTypeId::real64 &&
       CanonicalDescriptorTypeId(target_descriptor)==CanonicalTypeId::decimal)
     return CastReal64ToDecimalDescriptorValue(value,target_descriptor,diagnostic);
@@ -2789,17 +2793,43 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
   }
   namespace dt = scratchbird::core::datatypes;
   dt::DatatypeCastRequest null_request;
+  const auto source_type = CanonicalDescriptorTypeId(value.descriptor);
+  const auto target_type = CanonicalDescriptorTypeId(target_descriptor);
+  const bool bounded_integer_cast =
+      (source_type == CanonicalTypeId::int64 && target_type == CanonicalTypeId::character) ||
+      (source_type == CanonicalTypeId::character && target_type == CanonicalTypeId::int64);
   if (CanonicalDescriptorTypeId(value.descriptor) == CanonicalTypeId::real64 ||
-      CanonicalDescriptorTypeId(target_descriptor) == CanonicalTypeId::real64) {
+      CanonicalDescriptorTypeId(target_descriptor) == CanonicalTypeId::real64 || bounded_integer_cast) {
     dt::DatatypeCastRequest request;
     request.value.type_id=CanonicalDescriptorTypeId(value.descriptor);
     request.target_type_id=CanonicalDescriptorTypeId(target_descriptor);
     request.value.is_null=value.isSqlNull();
     request.explicit_cast=true; request.context=dt::DatatypeCastContext::explicit_cast;
     std::string detail;
-    if (!BoundExecutionTypeDescriptor(value.descriptor,request.value.type_id,&request.value.descriptor,&detail) ||
-        !BoundExecutionTypeDescriptor(target_descriptor,request.target_type_id,&request.target_descriptor,&detail)) {
-      SetDiagnostic(diagnostic,ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID",detail)); return failed_value();
+    if (bounded_integer_cast) {
+      const auto supported_metadata = [&](const EngineDescriptor& descriptor, CanonicalTypeId type) {
+        internal_api::CatalogColumnMetadata fields;
+        if (!internal_api::AdmitCatalogColumnMetadata(descriptor.encoded_descriptor,&fields) ||
+            !fields.identities.empty() || !descriptor.charset_uuid.is_nil() ||
+            !descriptor.collation_uuid.is_nil()) return false;
+        for(const auto& [name, ignored]:fields.text)
+          if(name!="nullability" && name!="nullable" &&
+             !(type==CanonicalTypeId::character && name=="length")) return false;
+        return true;
+      };
+      if (value.descriptor.datatype_cohort!=target_descriptor.datatype_cohort ||
+          !supported_metadata(value.descriptor,source_type) ||
+          !supported_metadata(target_descriptor,target_type)) {
+        SetDiagnostic(diagnostic,ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID",
+            "native integer cast requires exact same-cohort endpoint metadata"));return failed_value();
+      }
+    }
+    core::platform::Status provider_status;
+    if (!BoundExecutionTypeDescriptor(value.descriptor,request.value.type_id,&request.value.descriptor,&detail,&provider_status) ||
+        !BoundExecutionTypeDescriptor(target_descriptor,request.target_type_id,&request.target_descriptor,&detail,&provider_status)) {
+      SetDiagnostic(diagnostic,ErrorDiagnostic(
+          provider_status.code==core::platform::StatusCode::memory_allocation_failed
+              ? "RESOURCE.BUDGET_EXCEEDED" : "DATATYPE.DESCRIPTOR.INVALID",detail)); return failed_value();
     }
     const bool text=request.value.type_id==CanonicalTypeId::character;
     if ((value.state!=EngineValueState::value && value.state!=EngineValueState::sql_null) ||
@@ -2811,6 +2841,7 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
     request.value.encoded_value=text ? value.encoded_value
         : std::string(value.binary_value.begin(),value.binary_value.end());
     const auto cast=dt::CastDatatypeValue(request);
+    operation_facts=cast.numeric_facts;
     auto report=cast.ok() ? OkDiagnostic() : ErrorDiagnostic(cast.diagnostic.diagnostic_code,cast.diagnostic.message_key);
     report.numeric_facts=cast.numeric_facts;
     SetDiagnostic(diagnostic,std::move(report));
@@ -3001,11 +3032,95 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
   }
   SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_CAST_UNSUPPORTED", value.descriptor.canonical_type_name + "->" + target_descriptor.canonical_type_name));
   return failed_value();
+} catch(const std::bad_alloc&) {
+  auto report=ErrorDiagnostic("RESOURCE.BUDGET_EXCEEDED","native cast allocation failed");
+  report.numeric_facts=operation_facts;
+  SetDiagnostic(diagnostic,std::move(report));
+  EngineTypedValue failed;failed.setState(EngineValueState::error);return failed;
+}
 }
 
 EngineTypedValue ExtractDescriptorField(const EngineTypedValue& value,
                                         const std::string& field_name,
-                                        DescriptorRuntimeDiagnostic* diagnostic) {
+                                        DescriptorRuntimeDiagnostic* diagnostic) try {
+  if (IsBinaryType(value.descriptor) || IsUuidType(value.descriptor)) {
+    const bool uuid = IsUuidType(value.descriptor);
+    // Validate the borrowed carrier directly. A length/bit extraction must not
+    // copy the entire value into a temporary descriptor batch.
+    const bool null = value.state == EngineValueState::sql_null;
+    if ((null && (!value.is_null || !value.encoded_value.empty() || !value.binary_value.empty())) ||
+        (!null && (value.state != EngineValueState::value || value.is_null ||
+                   !value.encoded_value.empty() || (uuid && value.binary_value.size() != 16)))) {
+      SetDiagnostic(diagnostic, ErrorDiagnostic("QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
+          "UUID/binary extraction requires an exclusive native value or clean NULL"));
+      return {};
+    }
+    const std::string field = LowerAscii(field_name);
+    if (uuid ? field != "version" : (field != "octet_length" && field != "length")) {
+      SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_EXTRACT_FIELD_UNSUPPORTED", field_name));
+      return {};
+    }
+    ExecutionTypeDescriptor execution;
+    std::string detail;
+    core::platform::Status provider_status;
+    if (!BoundExecutionTypeDescriptor(value.descriptor,
+            uuid ? CanonicalTypeId::uuid : CanonicalTypeId::binary, &execution, &detail, &provider_status)) {
+      SetDiagnostic(diagnostic, ErrorDiagnostic(
+          provider_status.code == core::platform::StatusCode::memory_allocation_failed
+              ? "RESOURCE.BUDGET_EXCEEDED" : "SB_EXECUTOR_DESCRIPTOR_INVALID", detail));
+      return {};
+    }
+    // The generic binder projects fields for many consumers; extraction must
+    // not silently discard unknown policy, domain, width or codec modifiers.
+    internal_api::CatalogColumnMetadata fields;
+    const auto metadata_supported = [&] {
+      if (!value.descriptor.charset_uuid.is_nil() || !value.descriptor.collation_uuid.is_nil() ||
+          !internal_api::AdmitCatalogColumnMetadata(value.descriptor.encoded_descriptor, &fields)) return false;
+      for (const auto& [name,id] : fields.identities) {
+        if (name == "type_uuid" && id == value.descriptor.type_uuid) continue;
+        if (name == "datatype_descriptor_uuid" && id == value.descriptor.datatype_descriptor_uuid) continue;
+        return false;
+      }
+      for (const auto& [name,field] : fields.text) {
+        if (name == "nullability" && field == (execution.nullable_allowed ? "nullable" : "non_null")) continue;
+        if (name == "nullable" && field == (execution.nullable_allowed ? "true" : "false")) continue;
+        if ((name == "canonical_type" || name == "type" || name == "canonical") &&
+            field == value.descriptor.canonical_type_name) continue;
+        if (name == "datatype_descriptor_generation" &&
+            field == std::to_string(value.descriptor.datatype_descriptor_generation)) continue;
+        return false;
+      }
+      return true;
+    };
+    if (!metadata_supported()) {
+      SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_DESCRIPTOR_INVALID", "extract_source_metadata_invalid"));
+      return {};
+    }
+    if (value.isSqlNull() && !execution.nullable_allowed) {
+      SetDiagnostic(diagnostic, ErrorDiagnostic("DATATYPE.NULL_NOT_ADMITTED", "extract_source_nonnullable"));
+      return {};
+    }
+    EngineTypedValue output;
+    output.descriptor = MakeExecutorDescriptor(uuid ? "uint8" : "uint64",
+        execution.nullable_allowed ? "nullability=nullable" : "nullability=non_null",
+        value.descriptor.datatype_cohort);
+    if (!BoundExecutionTypeDescriptor(output.descriptor,
+            uuid ? CanonicalTypeId::uint8 : CanonicalTypeId::uint64, &execution, &detail, &provider_status)) {
+      SetDiagnostic(diagnostic, ErrorDiagnostic(
+          provider_status.code == core::platform::StatusCode::memory_allocation_failed
+              ? "RESOURCE.BUDGET_EXCEEDED" : "SB_EXECUTOR_DESCRIPTOR_INVALID", detail));
+      return {};
+    }
+    output.setState(value.state);
+    if (!value.isSqlNull()) {
+      const std::uint64_t fact = uuid ? value.binary_value[6] >> 4 : value.binary_value.size();
+      output.binary_value.resize(uuid ? 1 : 8);
+      for (unsigned byte = 0; byte < output.binary_value.size(); ++byte)
+        output.binary_value[byte] = static_cast<std::uint8_t>(fact >> (byte * 8));
+    }
+    SetDiagnostic(diagnostic, OkDiagnostic());
+    return output;
+  }
   DescriptorBatch source_batch;
   source_batch.columns = {{"extract_source", value.descriptor, true}};
   source_batch.rows = {{{value}}};
@@ -3019,29 +3134,6 @@ EngineTypedValue ExtractDescriptorField(const EngineTypedValue& value,
     return MakeExecutorValue(MakeExecutorDescriptor("int64"), {}, true);
   }
   if (!IsTextType(value.descriptor)) {
-    if (IsBinaryType(value.descriptor)) {
-      const std::string field = LowerAscii(field_name);
-      if (field == "octet_length" || field == "length") {
-        const auto byte_count = value.binary_value.empty()
-                                    ? value.encoded_value.size()
-                                    : value.binary_value.size();
-        SetDiagnostic(diagnostic, OkDiagnostic());
-        return MakeExecutorValue(MakeExecutorDescriptor("uint64"),
-                                 std::to_string(byte_count), false);
-      }
-      SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_EXTRACT_FIELD_UNSUPPORTED", field_name));
-      return {};
-    }
-    if (IsUuidType(value.descriptor)) {
-      const std::string field = LowerAscii(field_name);
-      if (field == "version" && value.binary_value.size() == 16) {
-        SetDiagnostic(diagnostic, OkDiagnostic());
-        return MakeExecutorValue(MakeExecutorDescriptor("uint8"),
-                                 std::to_string(value.binary_value[6] >> 4), false);
-      }
-      SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_EXTRACT_FIELD_UNSUPPORTED", field_name));
-      return {};
-    }
     SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_EXTRACT_TYPE_UNSUPPORTED", value.descriptor.canonical_type_name));
     return {};
   }
@@ -3081,6 +3173,9 @@ EngineTypedValue ExtractDescriptorField(const EngineTypedValue& value,
   }
   SetDiagnostic(diagnostic, OkDiagnostic());
   return EncodeInt64Value(parsed);
+} catch (const std::bad_alloc&) {
+  SetDiagnostic(diagnostic, ErrorDiagnostic("RESOURCE.BUDGET_EXCEEDED", "extract_allocation_failed"));
+  return {};
 }
 
 void SetDescriptorRuntimeVariable(DescriptorRuntimeSetScope* scope,

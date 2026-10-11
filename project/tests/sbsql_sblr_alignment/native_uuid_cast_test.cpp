@@ -20,17 +20,19 @@
 #include <cstdlib>
 #include <iostream>
 #include <new>
+#include <limits>
 #include <stdexcept>
 
 // Warmed component allocation counts and separate one-shot failure sweeps.
 // Exact counts are observations, not allocator ABI rules.
 thread_local bool track_native_cast_allocations = false;
 thread_local std::size_t native_cast_allocations = 0;
+thread_local std::size_t native_cast_allocation_bytes = 0;
 thread_local long decimal_allocation_budget = -1;
 void* operator new(std::size_t bytes) {
   if (decimal_allocation_budget == 0) { decimal_allocation_budget=-1; throw std::bad_alloc(); }
   if (decimal_allocation_budget > 0) --decimal_allocation_budget;
-  if (track_native_cast_allocations) ++native_cast_allocations;
+  if (track_native_cast_allocations) { ++native_cast_allocations; native_cast_allocation_bytes += bytes; }
   if (void* allocation = std::malloc(bytes ? bytes : 1)) return allocation;
   throw std::bad_alloc();
 }
@@ -176,9 +178,11 @@ void NativeBuiltinDescriptors() {
   Check(exec::MakeExecutorDescriptor("unknown_user_type").descriptor_uuid.is_nil(),
         "builtin constructor invented a user-defined datatype binding");
   exec::DescriptorRuntimeDiagnostic diagnostic;
-  const auto cast = exec::CastDescriptorValue(exec::EncodeTextValue("42"),
-      exec::MakeExecutorDescriptor("int64"), &diagnostic);
-  Check(diagnostic.ok && cast.encoded_value == "42" && cast.binary_value.empty(),
+  const auto cast = exec::CastDescriptorValue(exec::MakeExecutorValue(
+      exec::MakeExecutorDescriptor("text","nullability=non_null"),"42",false),
+      exec::MakeExecutorDescriptor("int64","nullability=non_null"), &diagnostic);
+  Check(diagnostic.ok && cast.encoded_value.empty() &&
+        cast.binary_value == std::vector<std::uint8_t>{42,0,0,0,0,0,0,0},
         "bound internal scalar constructors could not execute their ordinary cast");
 }
 
@@ -219,8 +223,11 @@ void NativeExecutorUuidValue(const scratchbird::engine::internal_api::EngineType
   const auto rebound = exec::CastDescriptorValue(native, uuid, &diagnostic);
   Check(diagnostic.ok, "executor UUID descriptor rebind refused"); preserved(rebound, uuid);
   const auto version = exec::ExtractDescriptorField(native, "version", &diagnostic);
-  Check(diagnostic.ok && version.encoded_value == std::to_string(native.binary_value[6] >> 4) &&
-        version.binary_value.empty() && !version.is_null, "UUID version extraction did not read native bits");
+  Check(diagnostic.ok && version.encoded_value.empty() &&
+        version.binary_value == std::vector<std::uint8_t>{static_cast<std::uint8_t>(native.binary_value[6] >> 4)} &&
+        version.descriptor.canonical_type_name == "uint8" &&
+        version.descriptor.datatype_cohort == native.descriptor.datatype_cohort && !version.is_null,
+        "UUID version extraction did not publish native UINT8 bits in the source cohort");
   api::EngineTypedValue coerced;
   std::string category, detail;
   Check(api::QowApplyCanonicalDescriptorCoercionV1(native, binary, true, &coerced, &category, &detail),
@@ -955,7 +962,191 @@ void Real64DecimalCallable(const f::FunctionRegistry& registry) {
     Check(!s::ProjectionSblrValueResolved(forbidden_null),"nonnullable decimal NULL result accepted");
   }
 }
+void NativeFieldExtraction() {
+  namespace api = scratchbird::engine::internal_api;
+  namespace exec = scratchbird::engine::executor;
+  namespace dt = scratchbird::core::datatypes;
+  for (const auto cohort : {api::EngineDatatypeCohort{dt::kDatatypeCohortV5,5,5},
+                           api::EngineDatatypeCohort{dt::kDatatypeCohortV10,10,10},
+                           api::EngineDatatypeCohort{dt::kDatatypeCohortV11,11,11}})
+    for (bool uuid : {false,true}) {
+      api::EngineTypedValue input;
+      input.descriptor = exec::MakeExecutorDescriptor(uuid ? "uuid" : "binary", "nullability=nullable", cohort);
+      input.setState(api::EngineValueState::value);
+      const char* field = uuid ? "VERSION" : "OCTET_LENGTH";
+      std::size_t first_allocation_bytes=0;
+      for (unsigned n : {0u,1u,15u,16u,32u,48u,64u,80u,96u,112u,128u,144u,
+                         160u,176u,192u,208u,224u,240u,255u,256u,4097u}) {
+        input.binary_value.assign(uuid ? 16 : n, 0xab);
+        if(uuid) input.binary_value[6] = static_cast<std::uint8_t>(n);
+        exec::DescriptorRuntimeDiagnostic diagnostic;
+        native_cast_allocation_bytes=0;track_native_cast_allocations=true;
+        const auto result = exec::ExtractDescriptorField(input,field,&diagnostic);
+        track_native_cast_allocations=false;
+        if(n==0) first_allocation_bytes=native_cast_allocation_bytes;
+        Check(native_cast_allocation_bytes==first_allocation_bytes,
+              "native length/version extraction allocations grew with payload size");
+        const std::uint64_t fact = uuid ? ((n & 255) >> 4) : n;
+        std::vector<std::uint8_t> expected(uuid ? 1 : 8);
+        for(unsigned byte=0;byte<expected.size();++byte) expected[byte]=static_cast<std::uint8_t>(fact>>(8*byte));
+        Check(diagnostic.ok && result.binary_value==expected && result.encoded_value.empty() &&
+              result.descriptor.datatype_cohort==cohort &&
+              result.descriptor.canonical_type_name==(uuid?"uint8":"uint64") && !result.isSqlNull(),
+              "native field extraction lost exact bytes, width or cohort");
+      }
+      input.binary_value.clear();input.setState(api::EngineValueState::sql_null);
+      exec::DescriptorRuntimeDiagnostic diagnostic;
+      const auto null = exec::ExtractDescriptorField(input,field,&diagnostic);
+      Check(diagnostic.ok && null.isSqlNull() && null.binary_value.empty() && null.encoded_value.empty() &&
+            null.descriptor.datatype_cohort==cohort &&
+            null.descriptor.canonical_type_name==(uuid?"uint8":"uint64"),"native field NULL lost result type");
+      for(bool sql_null:{false,true})for(const char* modifier:{";unknown_modifier=1",";length=17",
+          ";precision=3",";scale=1",";codec_generation=999",";canonical_type=character"}) {
+        auto bad=input;
+        if(!sql_null){bad.setState(api::EngineValueState::value);bad.binary_value.assign(uuid?16:2,0);}
+        bad.descriptor.encoded_descriptor+=modifier;
+        const auto refused=exec::ExtractDescriptorField(bad,field,&diagnostic);
+        Check(!diagnostic.ok && diagnostic.diagnostic_code=="SB_EXECUTOR_DESCRIPTOR_INVALID" &&
+              refused.descriptor.canonical_type_name.empty() && refused.binary_value.empty(),
+              "native extraction discarded unsupported source metadata");
+      }
+      for(unsigned mutation=0;mutation<7;++mutation) {
+        auto bad=input;const char* selected=field;
+        switch(mutation) {
+          case 0: bad.descriptor.encoded_descriptor="nullability=non_null";break;
+          case 1: bad.descriptor.datatype_cohort.catalog_snapshot_uuid={};break;
+          case 2: ++bad.descriptor.datatype_cohort.catalog_generation;break;
+          case 3: ++bad.descriptor.datatype_cohort.registry_generation;break;
+          case 4: bad.binary_value={0};break;
+          case 5: bad.encoded_value="NULL";break;
+          case 6: selected="not_a_field";break;
+        }
+        const auto refused=exec::ExtractDescriptorField(bad,selected,&diagnostic);
+        Check(!diagnostic.ok && refused.binary_value.empty() && refused.encoded_value.empty() &&
+              refused.descriptor.canonical_type_name.empty(),"invalid NULL extraction published value");
+      }
+      input.setState(api::EngineValueState::value);input.binary_value.assign(uuid?16:1024,0xff);
+      native_cast_allocations=0;track_native_cast_allocations=true;
+      const auto baseline=exec::ExtractDescriptorField(input,field,&diagnostic);
+      track_native_cast_allocations=false;const auto positions=native_cast_allocations;
+      Check(diagnostic.ok && positions>0,"native extraction allocation baseline");
+      for(std::size_t at=0;at<positions;++at) {
+        decimal_allocation_budget=static_cast<long>(at);
+        const auto failed=exec::ExtractDescriptorField(input,field,&diagnostic);
+        decimal_allocation_budget=-1;
+        Check(!diagnostic.ok && diagnostic.diagnostic_code=="RESOURCE.BUDGET_EXCEEDED" &&
+              failed.binary_value.empty() && failed.encoded_value.empty() &&
+              failed.descriptor.canonical_type_name.empty(),"native extraction allocation failure was not atomic");
+      }
+      const auto retry=exec::ExtractDescriptorField(input,field,&diagnostic);
+      Check(diagnostic.ok && retry.binary_value==baseline.binary_value && retry.descriptor==baseline.descriptor,
+            "native extraction failed retry after allocation sweep");
+    }
+}
+
+void NativeInt64TextDescriptorCasts() {
+  namespace api=scratchbird::engine::internal_api;
+  namespace exec=scratchbird::engine::executor;
+  namespace dt=scratchbird::core::datatypes;
+  {
+    const auto source=exec::EncodeInt64Value(9007199254740993LL);
+    const auto target=exec::MakeExecutorDescriptor("real64","nullability=non_null");
+    exec::DescriptorRuntimeDiagnostic diagnostic;
+    const auto warmed=exec::CastDescriptorValue(source,target,&diagnostic);
+    Check(diagnostic.ok && diagnostic.numeric_facts.inexact &&
+          warmed.binary_value==std::vector<std::uint8_t>{0,0,0,0,0,0,0x40,0x43},
+          "inexact REAL64 cast warmup");
+    native_cast_allocations=0;track_native_cast_allocations=true;
+    const auto baseline=exec::CastDescriptorValue(source,target,&diagnostic);
+    track_native_cast_allocations=false;const auto positions=native_cast_allocations;
+    if(!diagnostic.ok || !diagnostic.numeric_facts.inexact)
+      std::cerr << "REAL64 allocation fixture: " << diagnostic.diagnostic_code << ':'
+                << diagnostic.detail << '\n';
+    Check(diagnostic.ok && diagnostic.numeric_facts.inexact && positions>1 &&
+          baseline.binary_value==std::vector<std::uint8_t>{0,0,0,0,0,0,0x40,0x43},"inexact REAL64 cast baseline");
+    for(const auto at:{std::size_t{0},positions-1}) {
+      diagnostic.numeric_facts.overflow=true;
+      decimal_allocation_budget=static_cast<long>(at);
+      const auto failed=exec::CastDescriptorValue(source,target,&diagnostic);
+      decimal_allocation_budget=-1;
+      if(diagnostic.ok || diagnostic.diagnostic_code!="RESOURCE.BUDGET_EXCEEDED" ||
+         diagnostic.numeric_facts.inexact!=(at==positions-1) || diagnostic.numeric_facts.overflow)
+        std::cerr << "cast allocation " << at << '/' << positions << ' '
+                  << diagnostic.diagnostic_code << " inexact=" << diagnostic.numeric_facts.inexact
+                  << " overflow=" << diagnostic.numeric_facts.overflow << '\n';
+      Check(!diagnostic.ok && diagnostic.diagnostic_code=="RESOURCE.BUDGET_EXCEEDED" &&
+            diagnostic.numeric_facts.inexact==(at==positions-1) && !diagnostic.numeric_facts.overflow &&
+            failed.binary_value.empty() && failed.encoded_value.empty(),
+            "cast allocation failure lost current numeric facts or retained stale facts");
+    }
+  }
+  for(const auto cohort:{api::EngineDatatypeCohort{dt::kDatatypeCohortV5,5,5},
+                        api::EngineDatatypeCohort{dt::kDatatypeCohortV10,10,10},
+                        api::EngineDatatypeCohort{dt::kDatatypeCohortV11,11,11}}) {
+    const auto text=exec::MakeExecutorDescriptor("text","nullability=nullable",cohort);
+    const auto integer=exec::MakeExecutorDescriptor("int64","nullability=nullable",cohort);
+    exec::DescriptorRuntimeDiagnostic diagnostic;
+    for(const auto [lexical,number]:std::vector<std::pair<std::string,std::int64_t>>{
+        {"0",0},{"-0",0},{"+00042",42},{"-1",-1},
+        {"9223372036854775807",std::numeric_limits<std::int64_t>::max()},
+        {"-9223372036854775808",std::numeric_limits<std::int64_t>::min()}}) {
+      const auto input=exec::MakeExecutorValue(text,lexical,false);
+      const auto output=exec::CastDescriptorValue(input,integer,&diagnostic);
+      const auto bits=static_cast<std::uint64_t>(number);
+      std::vector<std::uint8_t> expected(8);
+      for(unsigned byte=0;byte<8;++byte)expected[byte]=static_cast<std::uint8_t>(bits>>(8*byte));
+      Check(diagnostic.ok && output.binary_value==expected && output.encoded_value.empty() &&
+            output.descriptor==integer && !output.isSqlNull(),"executor INT64 cast did not publish exact native bytes");
+      const auto rendered=exec::CastDescriptorValue(output,text,&diagnostic);
+      Check(diagnostic.ok && rendered.binary_value.empty() && rendered.encoded_value==std::to_string(number) &&
+            rendered.descriptor==text,"executor INT64 explicit text cast lost value/target");
+    }
+    for(const auto& malformed:std::vector<std::string>{""," ","1.0","1e2","+-1","--1",
+        "9223372036854775808","-9223372036854775809",std::string("1\0",2)}) {
+      const auto failed=exec::CastDescriptorValue(exec::MakeExecutorValue(text,malformed,false),integer,&diagnostic);
+      Check(!diagnostic.ok && failed.state==api::EngineValueState::error && failed.binary_value.empty() &&
+            failed.encoded_value.empty(),"malformed integer text cast published a value");
+    }
+    for(bool null:{false,true})for(bool destination:{false,true})for(unsigned mutation=0;mutation<5;++mutation) {
+      auto input=exec::MakeExecutorValue(text,null?"":"42",null);auto target=integer;
+      auto& binding=destination?target:input.descriptor;
+      switch(mutation) {
+        case 0: ++binding.datatype_cohort.registry_generation;break;
+        case 1: ++binding.datatype_descriptor_generation;break;
+        case 2: binding.encoded_descriptor+=";unknown=1";break;
+        case 3: binding.charset_uuid=binding.type_uuid;break;
+        case 4: binding.type_uuid.bytes[0]^=1;break;
+      }
+      const auto failed=exec::CastDescriptorValue(input,target,&diagnostic);
+      Check(!diagnostic.ok && diagnostic.diagnostic_code=="DATATYPE.DESCRIPTOR.INVALID" &&
+            failed.binary_value.empty() && failed.encoded_value.empty(),"integer cast ignored endpoint authority");
+    }
+    auto input=exec::MakeExecutorValue(text,{},true);
+    const auto null=exec::CastDescriptorValue(input,integer,&diagnostic);
+    Check(diagnostic.ok && null.isSqlNull() && null.descriptor==integer && null.binary_value.empty() &&
+          null.encoded_value.empty(),"INT64 text cast NULL binding lost");
+    input=exec::MakeExecutorValue(text,"-9223372036854775808",false);
+    native_cast_allocations=0;track_native_cast_allocations=true;
+    const auto baseline=exec::CastDescriptorValue(input,integer,&diagnostic);
+    track_native_cast_allocations=false;const auto positions=native_cast_allocations;
+    Check(diagnostic.ok && positions>0,"integer text allocation baseline failed");
+    for(std::size_t at=0;at<positions;++at) {
+      decimal_allocation_budget=static_cast<long>(at);
+      const auto failed=exec::CastDescriptorValue(input,integer,&diagnostic);
+      decimal_allocation_budget=-1;
+      Check(!diagnostic.ok && (diagnostic.diagnostic_code=="RESOURCE.BUDGET_EXCEEDED" ||
+            diagnostic.diagnostic_code=="DATATYPE.RESOURCE_EXHAUSTED") &&
+            failed.binary_value.empty() && failed.encoded_value.empty(),"integer cast lost allocation failure classification");
+    }
+    const auto retry=exec::CastDescriptorValue(input,integer,&diagnostic);
+    Check(diagnostic.ok && retry.binary_value==baseline.binary_value && retry.descriptor==integer,
+          "integer cast retry failed");
+  }
+}
+
 int main() {
+  NativeInt64TextDescriptorCasts();
+  NativeFieldExtraction();
   const auto package = f::BuildStandardFunctionSeedPackage();
   NativeBinarySort();
   NativeBuiltinDescriptors();
