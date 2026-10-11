@@ -449,6 +449,28 @@ void CheckProjectDescriptorInference(a::RelationalTypeDescriptor source_descript
   Check(retry_runtime.Evaluate(2, type, &evaluated, &input.detail) && calls == 4);
   Check(evaluated.descriptor == described && evaluated.binary_value == input_value.binary_value &&
         evaluated.encoded_value == input_value.encoded_value && evaluated.state == input_value.state);
+  Check(s::CanonicalFunctionResultStateValidV1(input_value));
+  for (unsigned mutation = 0; mutation < 11; ++mutation) {
+    auto malformed = input_value;
+    malformed.descriptor = expected;
+    malformed.binary_value.clear(); malformed.encoded_value.clear();
+    if (mutation == 0) { malformed.state = a::EngineValueState::sql_null; malformed.is_null = false; }
+    if (mutation == 1) { malformed.state = a::EngineValueState::value; malformed.is_null = true; }
+    if (mutation == 2) { malformed.setState(a::EngineValueState::sql_null); malformed.binary_value = {0}; }
+    if (mutation >= 3 && mutation < 10) {
+      malformed.state = static_cast<a::EngineValueState>(mutation == 9 ? 255 : mutation - 1);
+      malformed.is_null = false;
+    }
+    if (mutation == 10) { malformed.setState(a::EngineValueState::sql_null); malformed.encoded_value = "NULL"; }
+    Check(!s::CanonicalFunctionResultStateValidV1(malformed));
+    auto malformed_services = services;
+    malformed_services.function_evaluator = [&](const auto&, const auto&, const auto&,
+        auto* value, auto*, auto*) { *value = malformed; return true; };
+    s::CanonicalRelationalExpressionRuntime malformed_runtime(dag, malformed_services);
+    Check(!malformed_runtime.Evaluate(2, type, &evaluated, &input.detail));
+    Check(input.detail.starts_with("QOW-DIAG-RCP024-FUNCTION-RESULT-REFUSAL-V1:"));
+    Check(evaluated.state == a::EngineValueState::error && evaluated.binary_value.empty() && evaluated.encoded_value.empty());
+  }
 }
 
 void CheckExplicitDecimalProfiles() {

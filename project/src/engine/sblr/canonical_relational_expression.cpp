@@ -38,6 +38,12 @@ namespace scratchbird::engine::sblr {
 namespace api = scratchbird::engine::internal_api;
 namespace dt = scratchbird::core::datatypes;
 
+bool CanonicalFunctionResultStateValidV1(const api::EngineTypedValue& value) noexcept {
+  return (value.state == api::EngineValueState::value && !value.is_null) ||
+      (value.state == api::EngineValueState::sql_null && value.is_null &&
+       value.binary_value.empty() && value.encoded_value.empty());
+}
+
 void BindContractOnlyCanonicalPersistedRowDescriptorAuthorityV1(
     CanonicalRelationalExpressionRuntimeServices* services) {
   if (services == nullptr) return;
@@ -3749,14 +3755,11 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
           ":" + *refusal_detail;
       return false;
     }
-    if (computed.isSqlNull()) {
-      if (!computed.encoded_value.empty() || !computed.binary_value.empty()) {
-        *refusal_detail =
-            "QOW-DIAG-RCP024-FUNCTION-RESULT-REFUSAL-V1:function SQL NULL "
-            "carries substitute payload";
-        return false;
-      }
-      computed.setState(api::EngineValueState::sql_null);
+    if (!CanonicalFunctionResultStateValidV1(computed)) {
+      *refusal_detail =
+          "QOW-DIAG-RCP024-FUNCTION-RESULT-REFUSAL-V1:function result "
+          "state, NULL flag or payload is malformed";
+      return false;
     }
     api::EngineCanonicalExpressionEvaluationRequest scalar_request;
     scalar_request.consumer = active_consumer_;

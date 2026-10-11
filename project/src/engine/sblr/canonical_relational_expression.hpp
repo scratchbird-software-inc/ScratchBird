@@ -23,6 +23,11 @@
 
 namespace scratchbird::engine::sblr {
 
+// Shared by the engine function-service bridge and scalar consumer. Pure
+// shape validation, not datatype/catalog admission; never normalize bad state.
+bool CanonicalFunctionResultStateValidV1(
+    const internal_api::EngineTypedValue& value) noexcept;
+
 // QOW-SOURCE-QRY-017-HAVING-ROW-BINDING-V1
 // A materialized row slot is an engine-owned execution binding. It names the
 // exact grouping-key identifier or materialized function expression whose

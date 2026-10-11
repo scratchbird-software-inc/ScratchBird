@@ -9129,6 +9129,7 @@ BuildCanonicalRelationalExpressionRuntimeServices(
           return false;
         }
         *value = api::EngineTypedValue{};
+        value->state = api::EngineValueState::error;
         diagnostic_id->clear();
         refusal_detail->clear();
         const auto& package = StandardFunctionSeedPackage();
@@ -9147,7 +9148,7 @@ BuildCanonicalRelationalExpressionRuntimeServices(
           auto argument = api::MakeProjectionFunctionArgument("arg" + std::to_string(index), argument_value);
           request.arguments.push_back(std::move(argument));
         }
-        const auto evaluated = EvaluateProjectionFunction(request);
+        auto evaluated = EvaluateProjectionFunction(request);
         if (!evaluated.ok) {
           if (!evaluated.diagnostics.empty()) {
             *diagnostic_id = evaluated.diagnostics.front().code;
@@ -9160,20 +9161,18 @@ BuildCanonicalRelationalExpressionRuntimeServices(
           }
           return false;
         }
-        *value = evaluated.value;
-        if (value->isSqlNull()) {
-          value->encoded_value.clear();
-          value->binary_value.clear();
-          value->setState(api::EngineValueState::sql_null);
-        } else {
-          value->setState(api::EngineValueState::value);
+        if (!CanonicalFunctionResultStateValidV1(evaluated.value)) {
+          *diagnostic_id = "QOW-DIAG-RCP024-FUNCTION-RESULT-REFUSAL-V1";
+          *refusal_detail = "function result state, NULL flag or payload is malformed";
+          return false;
         }
-        if (!EnrichCanonicalFunctionResultDescriptor(value,
+        if (!EnrichCanonicalFunctionResultDescriptor(&evaluated.value,
                                                       refusal_detail)) {
           *diagnostic_id =
               "QOW-DIAG-RCP024-FUNCTION-RESULT-DESCRIPTOR-REFUSAL-V1";
           return false;
         }
+        *value = std::move(evaluated.value);
         return true;
       };
   services.comparison_evaluator =
