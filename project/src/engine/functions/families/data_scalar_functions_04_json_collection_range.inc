@@ -1021,6 +1021,14 @@
     const auto target_descriptor =
         LowerAscii(TrimAscii(ValueAsText(target_value)));
     if (target_descriptor.empty()) return RefuseFunctionInvalidInput(request, "cast target descriptor id is required");
+    if (scratchbird::engine::sblr::IsSblrSignedCharacterCast(
+            request.arguments[0].value.descriptor_id, target_descriptor)) {
+      if (request.arguments.size() != 2)
+        return RefuseFunctionInvalidInput(request, "native signed CHARACTER cast does not accept a rounding or compatibility profile");
+      return {scratchbird::engine::sblr::EvaluateSblrCastForm(request.context.function_id,
+          request.arguments[0].value, target_descriptor, request.context.sblr_context,
+          true, false, request.result_descriptor)};
+    }
     if (scratchbird::engine::sblr::IsSblrCivilTemporalType(request.arguments[0].value.descriptor_id) ||
         scratchbird::engine::sblr::IsSblrCivilTemporalType(target_descriptor)) {
       if (request.arguments.size() != 2)

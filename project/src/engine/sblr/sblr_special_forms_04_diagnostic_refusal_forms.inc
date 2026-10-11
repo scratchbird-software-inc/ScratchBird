@@ -45,6 +45,13 @@ SblrResult EvaluateSblrCastForm(std::string_view operation_id,
                                 bool reference_compatibility_profile,
                                 std::shared_ptr<const internal_api::EngineDescriptor> target_binding,
                                 const core::datatypes::DatatypeNumericContext* numeric_context) try {
+  if (IsSblrSignedCharacterCast(value.descriptor_id, target_descriptor_id)) {
+    if (numeric_context)
+      return SpecialFormFailure(operation_id, context, "DATATYPE.CAST_FORBIDDEN",
+                                "numeric context is not admitted for a signed CHARACTER cast");
+    return EvaluateSblrSignedCharacterCast(operation_id, value, target_descriptor_id,
+        context, explicit_cast, reference_compatibility_profile, std::move(target_binding));
+  }
   if (IsSblrCivilTemporalType(value.descriptor_id) || IsSblrCivilTemporalType(target_descriptor_id)) {
     if (numeric_context)
       return SpecialFormFailure(operation_id, context, "DATATYPE.CAST_FORBIDDEN",

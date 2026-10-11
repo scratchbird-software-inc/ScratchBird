@@ -24,6 +24,7 @@
 #include "sblr/sblr_sequence_runtime.hpp"
 #include "sblr/sblr_special_forms.hpp"
 #include "sblr/sblr_temporal_cast.hpp"
+#include "sblr/sblr_signed_character_cast.hpp"
 #include "sblr/sblr_binary_value_carrier.hpp"
 #include "uuid.hpp"
 

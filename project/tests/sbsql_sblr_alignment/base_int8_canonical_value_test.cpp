@@ -12,6 +12,7 @@
 #include "sblr_special_forms.hpp"
 #include "query/expression_api.hpp"
 #include "../support/exact_datatype_descriptor_fixture.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <algorithm>
 #include <array>
@@ -517,12 +518,22 @@ void SblrBoundaryAdapters() {
   text.encoded_value = "-128";
   text.text_value = "-128";
   text.is_null = false;
+  text.projection_descriptor = std::make_shared<const api::EngineDescriptor>(
+      scratchbird::tests::ExactScalarDescriptorFixture(dt::CanonicalTypeId::character,
+          "character", scratchbird::tests::FixtureUuid(2118,1), "nullability=nullable"));
+  const auto target = std::make_shared<const api::EngineDescriptor>(
+      scratchbird::tests::ExactScalarDescriptorFixture(dt::CanonicalTypeId::int8,
+          "int8", scratchbird::tests::FixtureUuid(2118,2), "nullability=nullable"));
   const auto converted = sblr::EvaluateSblrCastForm(
-      "text_to_int8", text, "int8", {}, true, false);
+      "text_to_int8", text, "int8", {}, true, false, target);
   Check(converted.ok() && converted.scalar_values.size() == 1 &&
             converted.scalar_values.front().int64_value == -128 &&
-            converted.scalar_values.front().encoded_value == "-128",
-        "SBLR text boundary publishes decoded int8 without raw-byte leakage");
+            converted.scalar_values.front().has_int64_value &&
+            converted.scalar_values.front().projection_descriptor == target &&
+            converted.scalar_values.front().encoded_value.empty() &&
+            converted.scalar_values.front().text_value.empty() &&
+            converted.scalar_values.front().binary_value.empty(),
+        "SBLR text boundary publishes bound machine INT8 without numeric text shadows");
 }
 
 api::EngineDescriptor EngineDescriptor(const std::string& uuid,

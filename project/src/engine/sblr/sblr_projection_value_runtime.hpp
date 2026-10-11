@@ -6,6 +6,7 @@
 #include "sblr_binary_value_carrier.hpp"
 #include "sblr_uint16_projection_profile.hpp"
 #include "sblr_decimal_projection_profile.hpp"
+#include "sblr_signed_character_cast.hpp"
 #include "../internal_api/query/projection_api.hpp"
 
 #include <algorithm>
@@ -57,6 +58,25 @@ inline bool Real64CarrierValid(const SblrValue& value) noexcept {
       value.projection_descriptor->canonical_type_name != "real64")) return false;
   return value.is_null ? EmptyNullCarrier(value) : SblrReal64PayloadValid(value);
 }
+inline bool BoundSignedCharacterCarrierValid(const SblrValue& value) noexcept {
+  if (!value.projection_descriptor ||
+      ReferencesDecimalProjection(*value.projection_descriptor) ||
+      ReferencesUint16Projection(*value.projection_descriptor) ||
+      value.projection_descriptor->canonical_type_name != value.descriptor_id) return false;
+  const auto width = SblrSignedIntegerWidth(value.descriptor_id);
+  if (!width && value.descriptor_id != "character") return false;
+  if (value.is_null) return EmptyNullCarrier(value);
+  if (!value.binary_value.empty() || !value.uuid_value.is_nil() ||
+      !value.uuid_array_value.empty() || !value.charset_name.empty() ||
+      !value.collation_name.empty() || value.has_uint64_value || value.has_real64_value) return false;
+  if (!width) return value.payload_kind == SblrValuePayloadKind::text &&
+      !value.has_int64_value && value.text_value == value.encoded_value;
+  if (value.payload_kind != SblrValuePayloadKind::signed_integer || !value.has_int64_value ||
+      !value.text_value.empty() || !value.encoded_value.empty()) return false;
+  if (width == 8) return true;
+  const auto limit = std::int64_t{1} << (width * 8 - 1);
+  return value.int64_value >= -limit && value.int64_value < limit;
+}
 inline bool Real64ArgumentCarrierValid(
     const internal_api::EngineProjectionFunctionArgument& argument) noexcept {
   return (argument.descriptor.canonical_type_name.empty() ||
@@ -76,6 +96,37 @@ inline SblrValue SblrValueFromProjectionArgument(
   value.descriptor_id = type_name;
   // Invalid carriers are unresolved non-NULL values, never manufactured NULLs.
   value.is_null = false;
+  const auto signed_width = SblrSignedIntegerWidth(type_name);
+  if ((signed_width || type_name == "character") &&
+      !argument.descriptor.canonical_type_name.empty()) {
+    using State = internal_api::EngineValueState;
+    if (ReferencesDecimalProjection(argument.descriptor) ||
+        ReferencesUint16Projection(argument.descriptor) ||
+        argument.descriptor.canonical_type_name != type_name ||
+        (argument.state != State::value && argument.state != State::sql_null) ||
+        argument.is_null != (argument.state == State::sql_null) ||
+        (argument.is_null && (!argument.binary_value.empty() || !argument.encoded_value.empty())) ||
+        (signed_width ? (!argument.encoded_value.empty() ||
+            argument.binary_value.size() != (argument.is_null ? 0u : signed_width))
+                      : !argument.binary_value.empty())) return value;
+    value.projection_descriptor =
+        std::make_shared<const internal_api::EngineDescriptor>(argument.descriptor);
+    value.is_null = argument.is_null;
+    if (!value.is_null && signed_width) {
+      std::uint64_t bits = 0;
+      for (unsigned i = 0; i < signed_width; ++i)
+        bits |= static_cast<std::uint64_t>(argument.binary_value[i]) << (8 * i);
+      if (signed_width < 8 && (argument.binary_value.back() & 0x80))
+        bits |= std::numeric_limits<std::uint64_t>::max() << (8 * signed_width);
+      value.int64_value = std::bit_cast<std::int64_t>(bits);
+      value.has_int64_value = true;
+      value.payload_kind = SblrValuePayloadKind::signed_integer;
+    } else if (!value.is_null) {
+      value.encoded_value = value.text_value = argument.encoded_value;
+      value.payload_kind = SblrValuePayloadKind::text;
+    }
+    return value;
+  }
   if (type_name == "decimal" || ReferencesDecimalProjection(argument.descriptor)) {
     if (!DecimalProjectionArgumentValid(argument)) return value;
     value.projection_descriptor =
@@ -305,6 +356,9 @@ inline bool ProjectionArgumentEncodingValid(
 
 inline bool ProjectionSblrValueResolved(const SblrValue& value) {
   if (value.descriptor_id.empty()) return false;
+  if (value.projection_descriptor &&
+      (SblrSignedIntegerWidth(value.descriptor_id) || value.descriptor_id == "character"))
+    return projection_value_detail::BoundSignedCharacterCarrierValid(value);
   if (value.descriptor_id == "decimal" ||
       (value.projection_descriptor && ReferencesDecimalProjection(*value.projection_descriptor)))
     return SblrDecimalProjectionResolved(value);
@@ -333,6 +387,23 @@ inline bool ProjectionSblrValueResolved(const SblrValue& value) {
 }
 
 inline internal_api::EngineTypedValue EngineTypedValueFromSblrValue(const SblrValue& value) {
+  if (value.projection_descriptor &&
+      (SblrSignedIntegerWidth(value.descriptor_id) || value.descriptor_id == "character")) {
+    if (!projection_value_detail::BoundSignedCharacterCarrierValid(value))
+      throw std::invalid_argument("conflicting bound signed CHARACTER projection carrier");
+    internal_api::EngineTypedValue out;
+    out.descriptor = *value.projection_descriptor;
+    out.setState(value.is_null ? internal_api::EngineValueState::sql_null : internal_api::EngineValueState::value);
+    if (!value.is_null) {
+      const auto width = SblrSignedIntegerWidth(value.descriptor_id);
+      if (width) {
+        const auto bits = static_cast<std::uint64_t>(value.int64_value);
+        out.binary_value.resize(width);
+        for (unsigned i = 0; i < width; ++i) out.binary_value[i] = static_cast<std::uint8_t>(bits >> (8 * i));
+      } else out.encoded_value = value.text_value;
+    }
+    return out;
+  }
   if (value.descriptor_id == "decimal" ||
       (value.projection_descriptor && ReferencesDecimalProjection(*value.projection_descriptor))) {
     if (!SblrDecimalProjectionResolved(value))

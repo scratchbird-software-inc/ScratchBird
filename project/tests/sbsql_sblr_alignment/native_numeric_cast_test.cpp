@@ -15,6 +15,22 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <cstdlib>
+
+namespace {
+thread_local bool track_cast_allocations=false;
+thread_local std::size_t cast_allocations=0, fail_cast_allocation=0;
+}
+void* operator new(std::size_t bytes) {
+  if(track_cast_allocations && ++cast_allocations==fail_cast_allocation) {
+    track_cast_allocations=false;
+    throw std::bad_alloc();
+  }
+  if(void* allocation=std::malloc(bytes?bytes:1)) return allocation;
+  throw std::bad_alloc();
+}
+void operator delete(void* allocation) noexcept { std::free(allocation); }
+void operator delete(void* allocation,std::size_t) noexcept { std::free(allocation); }
 
 namespace s = scratchbird::engine::sblr;
 namespace f = scratchbird::engine::functions;
@@ -275,11 +291,173 @@ void NativeSignedCharacterCasts() {
       }
     }
 }
+void SblrSignedCharacterCasts(const f::FunctionRegistry& registry) {
+  const auto bridge = [&](const s::SblrValue& value) {
+    Check(s::ProjectionSblrValueResolved(value), "bound signed CHARACTER result must be projection-resolved");
+    const auto output = s::EngineTypedValueFromSblrValue(value);
+    Check(output.descriptor==*value.projection_descriptor && output.isSqlNull()==value.is_null,
+          "projection bridge must preserve exact signed CHARACTER descriptor and NULL");
+    api::EngineProjectionFunctionArgument argument;
+    argument.type_name=value.descriptor_id; argument.descriptor=output.descriptor;
+    argument.state=output.state; argument.is_null=output.is_null;
+    argument.binary_value=output.binary_value; argument.encoded_value=output.encoded_value;
+    Check(s::ProjectionArgumentEncodingValid(argument), "signed CHARACTER projection argument validation");
+    const auto decoded=s::SblrValueFromProjectionArgument(argument);
+    Check(s::ProjectionSblrValueResolved(decoded) && decoded.projection_descriptor &&
+          *decoded.projection_descriptor==output.descriptor && decoded.is_null==value.is_null &&
+          decoded.int64_value==value.int64_value && decoded.text_value==value.text_value &&
+          decoded.encoded_value==value.encoded_value, "signed CHARACTER projection roundtrip");
+    const unsigned width=s::SblrSignedIntegerWidth(value.descriptor_id);
+    if(width) {
+      Check(output.encoded_value.empty() && output.binary_value.size()==(value.is_null?0u:width),
+            "signed projection must use native width and no text");
+      if(!value.is_null) for(unsigned i=0;i<width;++i)
+        Check(output.binary_value[i]==static_cast<std::uint8_t>(static_cast<std::uint64_t>(value.int64_value)>>(8*i)),
+              "signed projection independent byte oracle");
+    } else Check(output.binary_value.empty() && output.encoded_value==value.text_value,
+                 "CHARACTER projection exact decimal text");
+    auto dirty=argument; dirty.is_null=!dirty.is_null;
+    Check(!s::ProjectionArgumentEncodingValid(dirty), "projection NULL flag/state disagreement refused");
+    dirty=argument; dirty.descriptor.canonical_type_name="binary";
+    Check(!s::ProjectionArgumentEncodingValid(dirty), "projection conflicting endpoint name refused");
+    if(width || value.is_null) {
+      dirty=argument;dirty.encoded_value="42";
+      Check(!s::ProjectionArgumentEncodingValid(dirty), "projection textual integer or dirty NULL refused");
+    }
+    dirty=argument;dirty.binary_value.push_back(0);
+    Check(!s::ProjectionArgumentEncodingValid(dirty), "projection extra native byte refused");
+    for(const auto wrong_type : {"decimal","uint16"}) {
+      auto binding=ex::MakeExecutorDescriptor(wrong_type,"nullability=nullable");
+      binding.canonical_type_name=value.descriptor_id;
+      dirty=argument;dirty.descriptor=binding;
+      Check(!s::ProjectionArgumentEncodingValid(dirty) &&
+            !s::ProjectionSblrValueResolved(s::SblrValueFromProjectionArgument(dirty)),
+            "renamed DECIMAL/UINT16 argument binding cannot bypass strict profile admission");
+      auto bad=value;bad.projection_descriptor=std::make_shared<const api::EngineDescriptor>(binding);
+      Check(!s::ProjectionSblrValueResolved(bad), "renamed DECIMAL/UINT16 result binding refused");
+      bool refused=false;
+      try { (void)s::EngineTypedValueFromSblrValue(bad); }
+      catch(const std::invalid_argument&) { refused=true; }
+      Check(refused, "renamed DECIMAL/UINT16 binding cannot publish via signed CHARACTER bridge");
+    }
+  };
+  const auto text = std::make_shared<const api::EngineDescriptor>(
+      ex::MakeExecutorDescriptor("character", "nullability=nullable"));
+  const auto character = [&](std::string bytes) {
+    auto value = f::MakeTextValue("character", std::move(bytes));
+    value.projection_descriptor = text;
+    return value;
+  };
+  struct Profile { const char* name; std::int64_t minimum, maximum; const char* below; const char* above; };
+  for (const auto& p : {
+      Profile{"int8",-128,127,"-129","128"},
+      Profile{"int16",-32768,32767,"-32769","32768"},
+      Profile{"int32",-2147483648LL,2147483647,"-2147483649","2147483648"},
+      Profile{"int64",std::numeric_limits<std::int64_t>::min(),std::numeric_limits<std::int64_t>::max(),
+              "-9223372036854775809","9223372036854775808"}}) {
+    const auto integer = std::make_shared<const api::EngineDescriptor>(
+        ex::MakeExecutorDescriptor(p.name, "nullability=nullable"));
+    for (bool callable : {false,true}) {
+      std::vector<std::int64_t> samples{p.minimum,p.minimum+1,-1,0,1,p.maximum-1,p.maximum};
+      for (std::int64_t n=-128;n<=127;++n) samples.push_back(n);
+      for (const auto number : samples) {
+        const auto parsed = Cast(registry, character(std::to_string(number)), integer, callable);
+        const auto& native = Scalar(parsed);
+        Check(native.projection_descriptor==integer && native.descriptor_id==p.name &&
+              native.payload_kind==s::SblrValuePayloadKind::signed_integer && native.has_int64_value &&
+              native.int64_value==number && !native.is_null && !native.has_uint64_value && !native.has_real64_value &&
+              native.encoded_value.empty() && native.text_value.empty() && native.binary_value.empty(),
+              "SBLR signed CHARACTER parse must retain binding and machine integer without text");
+        bridge(native);
+        const auto rendered = Cast(registry, native, text, callable);
+        const auto& out = Scalar(rendered);
+        Check(out.projection_descriptor==text && !out.is_null && !out.has_int64_value &&
+              out.payload_kind==s::SblrValuePayloadKind::text && out.binary_value.empty() &&
+              out.encoded_value==std::to_string(number) && out.text_value==out.encoded_value,
+              "SBLR signed CHARACTER render roundtrip");
+        bridge(out);
+      }
+      for (const auto bad : {p.below,p.above,"","1.2","1e2"," 1","1 ","+","--1"})
+        Refused(Cast(registry,character(bad),integer,callable));
+      auto null = s::SblrValue{};
+      null.descriptor_id="character"; null.is_null=true; null.projection_descriptor=text;
+      const auto null_cast=Cast(registry,null,integer,callable);
+      Check(Scalar(null_cast).is_null && Scalar(null_cast).projection_descriptor==integer &&
+            s::SblrNullPayloadEmpty(Scalar(null_cast)), "SBLR signed NULL binding and empty carrier");
+      bridge(Scalar(null_cast));
+      const auto null_back=Cast(registry,Scalar(null_cast),text,callable);
+      Check(Scalar(null_back).is_null && Scalar(null_back).projection_descriptor==text,
+            "SBLR signed NULL render preserves binding");
+      bridge(Scalar(null_back));
+      auto nonnull=*integer; nonnull.encoded_descriptor="nullability=non_null";
+      Refused(Cast(registry,null,std::make_shared<const api::EngineDescriptor>(nonnull),callable));
+      null.text_value="0";
+      Refused(Cast(registry,null,integer,callable));
+      auto input=character("42"); input.projection_descriptor.reset();
+      Refused(Cast(registry,input,integer,callable));
+      input=character("42"); input.binary_value={42};
+      Refused(Cast(registry,input,integer,callable));
+      input=character("42"); input.text_value="43";
+      Refused(Cast(registry,input,integer,callable));
+      for (unsigned defect=0;defect<6;++defect) {
+        auto bad=*integer;
+        if(defect==0) bad.type_uuid={};
+        if(defect==1) bad.datatype_descriptor_generation++;
+        if(defect==2) bad.datatype_cohort.catalog_snapshot_uuid.bytes[15]^=1;
+        if(defect==3) bad.encoded_descriptor="nullable=true;rounding=truncate";
+        if(defect==4) bad.charset_uuid=scratchbird::tests::FixtureUuid(2120,3);
+        if(defect==5) bad.datatype_descriptor_uuid={};
+        Refused(Cast(registry,character("42"),std::make_shared<const api::EngineDescriptor>(bad),callable));
+      }
+      const auto native_result=Cast(registry,character("42"),integer,callable);
+      auto native=Scalar(native_result); native.encoded_value="42";
+      Refused(Cast(registry,native,text,callable));
+      native=Scalar(native_result); native.has_uint64_value=true;
+      Refused(Cast(registry,native,text,callable));
+      if(std::string_view(p.name)!="int64") {
+        native=Scalar(native_result); native.int64_value=p.maximum+1;
+        Refused(Cast(registry,native,text,callable));
+        native.int64_value=p.minimum-1;
+        Refused(Cast(registry,native,text,callable));
+      }
+    }
+    Refused(s::EvaluateSblrCastForm("native.cast",character("42"),p.name,{},false,false,integer));
+    Refused(s::EvaluateSblrCastForm("native.cast",character("42"),p.name,{},true,true,integer));
+    for(bool null:{false,true}) for(bool reverse:{false,true}) {
+      auto input=character("42");
+      auto target=integer;
+      if(reverse) { input=Scalar(Cast(registry,input,integer,false));target=text; }
+      if(null) {
+        const auto descriptor=input.projection_descriptor;
+        const auto name=input.descriptor_id;
+        input=s::SblrValue{};input.descriptor_id=name;input.projection_descriptor=descriptor;input.is_null=true;
+      }
+      const s::SblrExecutionContext context;
+      cast_allocations=0;fail_cast_allocation=0;track_cast_allocations=true;
+      const auto measured=s::EvaluateSblrCastForm("native.cast",input,target->canonical_type_name,context,true,false,target);
+      track_cast_allocations=false;
+      const auto allocations=cast_allocations;
+      Check(measured.ok() && allocations>0,"direct signed cast allocation measurement");
+      for(std::size_t fault=1;fault<=allocations;++fault) {
+        cast_allocations=0;fail_cast_allocation=fault;track_cast_allocations=true;
+        const auto failed=s::EvaluateSblrCastForm("native.cast",input,target->canonical_type_name,context,true,false,target);
+        const bool injected=!track_cast_allocations;
+        track_cast_allocations=false;fail_cast_allocation=0;
+        Refused(failed);
+        Check(injected && (failed.diagnostics.front().diagnostic_id=="DATATYPE.RESOURCE_EXHAUSTED" ||
+                          failed.diagnostics.front().diagnostic_id=="RESOURCE.BUDGET_EXCEEDED"),
+              "signed cast injected allocation failure must retain resource diagnostic without value");
+        Check(Cast(registry,input,target,false).ok(),"signed cast retry after allocation failure");
+      }
+    }
+  }
+}
 }  // namespace
 
 int main() try {
   NativeSignedCharacterCasts();
   const auto package = f::BuildStandardFunctionSeedPackage();
+  SblrSignedCharacterCasts(package.registry);
   const auto integer = Binding("int64"), real = Binding("real64");
   for (const bool callable : {false, true}) {
     for (const auto number : {std::numeric_limits<std::int64_t>::min(), std::int64_t{-1},
