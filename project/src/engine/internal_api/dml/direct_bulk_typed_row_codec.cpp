@@ -8,6 +8,7 @@
 
 #include "dml/direct_bulk_typed_row_codec.hpp"
 #include "crud_support/native_value_payload.hpp"
+#include "crud_support/bound_ordered_index_key.hpp"
 #include "datatype_binary_view.hpp"
 #include "mga_relation_store/mga_large_value_codec.hpp"
 
@@ -318,34 +319,6 @@ bool DirectParseTimeParts(std::string_view text,
   if (nanos_of_second != nullptr) {
     *nanos_of_second = nanos;
   }
-  return true;
-}
-
-bool DirectParseDatePayload(std::string_view text,
-                            std::vector<scratchbird::core::platform::byte>* out) {
-  int year = 0;
-  int month = 0;
-  int day = 0;
-  if (!DirectParseDateParts(text, &year, &month, &day)) {
-    return false;
-  }
-  const std::int64_t days = DirectDaysFromCivil(
-      year, static_cast<unsigned>(month), static_cast<unsigned>(day));
-  if (days < std::numeric_limits<std::int32_t>::min() ||
-      days > std::numeric_limits<std::int32_t>::max()) {
-    return false;
-  }
-  DirectAppendLittleSigned(out, days, 4);
-  return true;
-}
-
-bool DirectParseTimePayload(std::string_view text,
-                            std::vector<scratchbird::core::platform::byte>* out) {
-  std::uint64_t nanos = 0;
-  if (!DirectParseTimeParts(text, &nanos)) {
-    return false;
-  }
-  DirectAppendLittleUnsigned(out, nanos, 8);
   return true;
 }
 
@@ -893,9 +866,72 @@ bool DirectParseRealPayload(dt::CanonicalTypeId type_id,
   return false;
 }
 
+bool DirectValidateNativeTemporalValue(const EngineTypedValue& typed,
+                                       dt::CanonicalTypeId target_type,
+                                       const EngineDescriptor* destination,
+                                       bool nullable, EngineApiDiagnostic* diagnostic) {
+  const auto refuse = [&](std::string detail) {
+    if (diagnostic) *diagnostic = MakeInvalidRequestDiagnostic("dml.native_temporal", std::move(detail));
+    return false;
+  };
+  if (target_type != dt::CanonicalTypeId::date && target_type != dt::CanonicalTypeId::time)
+    return refuse("unsupported_target");
+  const auto& source = typed.descriptor;
+  const auto& descriptor = destination ? *destination : source;
+  const auto& cohort = descriptor.datatype_cohort;
+  bound_index_key::OrderedIndexColumn binding;
+  if (!dt::LookupDatatypeStorageIdentityV3(cohort.catalog_snapshot_uuid,
+          cohort.catalog_generation, cohort.registry_generation,
+          descriptor.datatype_descriptor_uuid, descriptor.datatype_descriptor_generation,
+          &binding.datatype) || binding.datatype.type_id != target_type ||
+      binding.datatype.type_uuid != descriptor.type_uuid) return refuse("destination_identity");
+  std::string detail;
+  // A same-spelled source is not authority. No implicit temporal conversion or
+  // cross-cohort relabeling is performed by this canonical storage boundary.
+  if (source.datatype_cohort != cohort ||
+      source.datatype_descriptor_uuid != descriptor.datatype_descriptor_uuid ||
+      source.datatype_descriptor_generation != descriptor.datatype_descriptor_generation ||
+      source.type_uuid != descriptor.type_uuid) return refuse("source_destination_identity_mismatch");
+  engine::ExecutionTypeDescriptor source_execution;
+  if (!executor::BuildBoundExecutionTypeDescriptor(source, target_type, &source_execution, &detail) ||
+      !bound_index_key::BuildOrderedColumnExecutionDescriptor(source,
+          binding.datatype, source_execution.nullable_allowed, &source_execution, &detail)) return refuse("source_descriptor:" + detail);
+  const bool slot_nullable = destination ? nullable : source_execution.nullable_allowed;
+  if (destination) {
+    if (!bound_index_key::BuildOrderedColumnExecutionDescriptor(descriptor,
+            binding.datatype, slot_nullable, &binding.execution_descriptor, &detail)) return refuse("destination_descriptor:" + detail);
+  } else {
+    binding.execution_descriptor = std::move(source_execution);
+  }
+  if ((!typed.isSqlNull() && typed.state != EngineValueState::value) ||
+      !typed.encoded_value.empty() || (typed.isSqlNull() &&
+          (!(destination ? source_execution.nullable_allowed : slot_nullable) || !typed.binary_value.empty()))) return refuse("source_state_or_carrier");
+  const auto decoded_result = [&](const auto& decoded) {
+    if (decoded.ok()) return true;
+    if (diagnostic) *diagnostic = MakeEngineApiDiagnostic(std::string(decoded.diagnostic.diagnostic_code),
+        "datatype.native_temporal.rejected", std::string(decoded.diagnostic.detail), true);
+    return false;
+  };
+  if (target_type == dt::CanonicalTypeId::date) {
+    if (!bound_index_key::BindOrderedDateProfile(&binding)) return refuse("date_profile");
+    return decoded_result(dt::DecodeCanonicalDateComponentNoAllocV3(*binding.date_profile,
+        typed.isSqlNull() ? dt::DateValueStateV3::sql_null : dt::DateValueStateV3::value,
+        slot_nullable, typed.binary_value));
+  }
+  if (!bound_index_key::BindOrderedTimeProfile(&binding)) return refuse("time_profile");
+  return decoded_result(dt::DecodeCanonicalTimeComponentNoAllocV3(*binding.time_profile,
+      typed.isSqlNull() ? dt::TimeValueStateV3::sql_null : dt::TimeValueStateV3::value,
+      slot_nullable, typed.binary_value));
+}
+
 bool DirectPackTypedPayload(dt::CanonicalTypeId target_type,
                             const EngineTypedValue& typed,
                             std::vector<scratchbird::core::platform::byte>* out) {
+  if (target_type == dt::CanonicalTypeId::date || target_type == dt::CanonicalTypeId::time) {
+    if (!out || !DirectValidateNativeTemporalValue(typed, target_type)) return false;
+    *out = typed.binary_value;
+    return true;
+  }
   if (target_type == dt::CanonicalTypeId::int32 ||
       target_type == dt::CanonicalTypeId::int64) {
     if (out == nullptr || typed.isSqlNull() ||
@@ -972,10 +1008,6 @@ bool DirectPackTypedPayload(dt::CanonicalTypeId target_type,
     case dt::CanonicalTypeId::real32:
     case dt::CanonicalTypeId::real64:
       return DirectParseRealPayload(target_type, typed.encoded_value, out);
-    case dt::CanonicalTypeId::date:
-      return DirectParseDatePayload(typed.encoded_value, out);
-    case dt::CanonicalTypeId::time:
-      return DirectParseTimePayload(typed.encoded_value, out);
     case dt::CanonicalTypeId::timestamp:
       return DirectParseTimestampPayload(typed.encoded_value, out);
     case dt::CanonicalTypeId::interval:
@@ -997,6 +1029,11 @@ bool DirectPackTypedPayload(dt::CanonicalTypeId target_type,
 
 CrudStoredValue DirectStoredValueForColumn(
     const EngineTypedValue& typed, dt::CanonicalTypeId target_type) {
+  if (target_type == dt::CanonicalTypeId::date || target_type == dt::CanonicalTypeId::time) {
+    if (!DirectValidateNativeTemporalValue(typed, target_type))
+      throw std::invalid_argument("native temporal column requires an exact bound canonical component");
+    return CrudTypedValuePayload(typed);
+  }
   if (typed.isSqlNull() || typed.state != EngineValueState::value ||
       (target_type != dt::CanonicalTypeId::int32 &&
        target_type != dt::CanonicalTypeId::int64))
@@ -1016,6 +1053,14 @@ scratchbird::storage::page::RowDataCell DirectPhysicalCellFromTypedValue(
   cell.column_ordinal = ordinal;
   dt::CanonicalTypeId target_type =
       dt::CanonicalTypeIdFromStableName(std::string(target_canonical_type_name));
+  if (target_type == dt::CanonicalTypeId::date || target_type == dt::CanonicalTypeId::time) {
+    if (!DirectValidateNativeTemporalValue(typed, target_type))
+      throw std::invalid_argument("native temporal physical component invalid");
+    cell.value.type_id = target_type;
+    cell.value.is_null = typed.isSqlNull();
+    cell.value.payload = typed.binary_value;
+    return cell;
+  }
   if (typed.isSqlNull()) {
     if (target_type == dt::CanonicalTypeId::unknown || target_type == dt::CanonicalTypeId::null_type)
       throw std::invalid_argument("physical NULL requires a concrete bound column type");
@@ -1055,6 +1100,14 @@ scratchbird::storage::page::RowDataCell DirectPhysicalCellFromTypedValueWithPlan
     const DirectFixedWidthPayloadValidationColumnPlan& column_plan) {
   scratchbird::storage::page::RowDataCell cell;
   cell.column_ordinal = ordinal;
+  if (column_plan.target_type == dt::CanonicalTypeId::date || column_plan.target_type == dt::CanonicalTypeId::time) {
+    if (!DirectValidateNativeTemporalValue(typed, column_plan.target_type))
+      throw std::invalid_argument("native temporal planned physical component invalid");
+    cell.value.type_id = column_plan.target_type;
+    cell.value.is_null = typed.isSqlNull();
+    cell.value.payload = typed.binary_value;
+    return cell;
+  }
   if (typed.isSqlNull()) {
     if (column_plan.target_type == dt::CanonicalTypeId::unknown ||
         column_plan.target_type == dt::CanonicalTypeId::null_type)
@@ -1118,6 +1171,23 @@ std::vector<scratchbird::storage::page::RowDataCell> DirectPhysicalCells(
     // labelling arbitrary UUID/BINARY octets as character would impose UTF-8
     // validation on user data and cannot preserve the retained carrier.
     cell.value.type_id = dt::CanonicalTypeId::binary;
+    dt::CanonicalTypeId retained_type = dt::CanonicalTypeId::unknown;
+    if (row_encoder_plan != nullptr) {
+      const auto column = std::find_if(row_encoder_plan->columns.begin(), row_encoder_plan->columns.end(),
+          [&](const auto& candidate) { return candidate.column_name == value.first; });
+      if (column == row_encoder_plan->columns.end())
+        throw std::invalid_argument("physical retained column descriptor missing");
+      const auto index = static_cast<std::size_t>(column - row_encoder_plan->columns.begin());
+      if (index >= std::numeric_limits<std::uint16_t>::max())
+        throw std::invalid_argument("physical retained column ordinal out of range");
+      cell.column_ordinal = static_cast<std::uint16_t>(index + 1);
+      retained_type = dt::CanonicalTypeIdFromStableName(column->canonical_type_name);
+      // The receiver's owner must still validate these canonical components.
+      // A retained temporal value cannot masquerade as opaque BINARY to evade
+      // the profile-aware row codec. Non-temporal fallback behavior is unchanged.
+      if (retained_type == dt::CanonicalTypeId::date || retained_type == dt::CanonicalTypeId::time)
+        cell.value.type_id = retained_type;
+    }
     if (lob) {
       cell.external_value = scratchbird::storage::page::DecodeRowExternalValueLocator(
           std::span(reinterpret_cast<const std::uint8_t*>(value.second.bytes.data()), value.second.bytes.size()));
@@ -1127,14 +1197,8 @@ std::vector<scratchbird::storage::page::RowDataCell> DirectPhysicalCells(
     if (value.second.isSqlNull()) {
       if (row_encoder_plan == nullptr)
         throw std::invalid_argument("physical NULL requires a bound column descriptor");
-      const auto column = std::find_if(row_encoder_plan->columns.begin(),
-          row_encoder_plan->columns.end(), [&](const auto& candidate) {
-            return candidate.column_name == value.first;
-          });
-      if (column == row_encoder_plan->columns.end())
-        throw std::invalid_argument("physical NULL column descriptor missing");
       cell.value.is_null = true;
-      cell.value.type_id = dt::CanonicalTypeIdFromStableName(column->canonical_type_name);
+      cell.value.type_id = retained_type;
       if (cell.value.type_id == dt::CanonicalTypeId::unknown ||
           cell.value.type_id == dt::CanonicalTypeId::null_type)
         throw std::invalid_argument("physical NULL requires a concrete bound column type");
@@ -1242,6 +1306,10 @@ std::string DirectFixedWidthTypedPayloadFailure(
   }
   for (std::size_t field_index = 0; field_index < input_row.fields.size(); ++field_index) {
     const auto& typed = input_row.fields[field_index].second;
+    const auto type = plan[field_index].target_type;
+    if ((type == dt::CanonicalTypeId::date || type == dt::CanonicalTypeId::time) &&
+        !DirectValidateNativeTemporalValue(typed, type))
+      return "typed_temporal_payload_invalid:" + plan[field_index].column_name;
     if (typed.isSqlNull()) {
       if (stats != nullptr) {
         ++stats->null_cells;

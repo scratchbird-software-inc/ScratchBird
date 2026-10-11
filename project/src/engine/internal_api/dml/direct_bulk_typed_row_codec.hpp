@@ -63,6 +63,13 @@ struct DirectFixedWidthPayloadValidationStats {
 
 // The caller supplies the admitted destination column type. Retained values
 // must have the same width as physical cells, never the source display width.
+// Pure representation admission; a destination supplied by the effectful
+// caller must come from its freshly admitted relation descriptor.
+bool DirectValidateNativeTemporalValue(
+    const EngineTypedValue& typed, dt::CanonicalTypeId target_type,
+    const EngineDescriptor* destination = nullptr, bool nullable = true,
+    EngineApiDiagnostic* diagnostic = nullptr);
+
 CrudStoredValue DirectStoredValueForColumn(
     const EngineTypedValue& typed, dt::CanonicalTypeId target_type);
 
