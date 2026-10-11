@@ -11,6 +11,7 @@
 #include "crud_support/bound_ordered_index_key.hpp"
 #include "datatype_binary_view.hpp"
 #include "mga_relation_store/mga_large_value_codec.hpp"
+#include <type_traits>
 
 #include <algorithm>
 #include <array>
@@ -908,8 +909,13 @@ bool DirectValidateNativeTemporalValue(const EngineTypedValue& typed,
           (!(destination ? source_execution.nullable_allowed : slot_nullable) || !typed.binary_value.empty()))) return refuse("source_state_or_carrier");
   const auto decoded_result = [&](const auto& decoded) {
     if (decoded.ok()) return true;
-    if (diagnostic) *diagnostic = MakeEngineApiDiagnostic(std::string(decoded.diagnostic.diagnostic_code),
-        "datatype.native_temporal.rejected", std::string(decoded.diagnostic.detail), true);
+    if (diagnostic) {
+      auto rejected = MakeEngineApiDiagnostic(std::string(decoded.diagnostic.diagnostic_code),
+          "datatype.native_temporal.rejected", std::string(decoded.diagnostic.detail), true);
+      if constexpr (std::is_same_v<std::remove_cvref_t<decltype(decoded.diagnostic)>, dt::TimeDiagnosticFactV3>)
+        PreserveEngineApiTimeDiagnosticCause(rejected, decoded.diagnostic);
+      *diagnostic = std::move(rejected);
+    }
     return false;
   };
   if (target_type == dt::CanonicalTypeId::date) {

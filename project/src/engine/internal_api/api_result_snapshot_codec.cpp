@@ -4,6 +4,7 @@
 #include "query/result_metadata.hpp"
 #include "uuid.hpp"
 #include <algorithm>
+#include <bit>
 #include <limits>
 #include <type_traits>
 
@@ -25,6 +26,7 @@ template<class T> bool ValidEnum(T v){
   else if constexpr(std::is_same_v<T,wire::TypedResultValueState>)return n<=1;
   else if constexpr(std::is_same_v<T,core::diagnostics::CanonicalSeverity>)return n>=1&&n<=13;
   else if constexpr(std::is_same_v<T,core::platform::Severity>)return n>=1&&n<=5;
+  else if constexpr(std::is_same_v<T,core::diagnostics::NativeDatatypeParameterKind>)return n<=4;
   else return true; // Native status/subsystem and datatype code are source facts.
 }
 struct Writer {
@@ -172,7 +174,21 @@ template<class A,class T>void Record(A& a,T& v){
   else REC(core::platform::Status,v.code,v.severity,v.subsystem)
   else REC(core::platform::DiagnosticRecord,v.status,v.diagnostic_code,v.message_key,v.arguments,v.trace_id,v.source_component,v.remediation_hint)
   else REC(core::diagnostics::CanonicalDiagnosticMetadata,v.code,v.severity,v.is_failure,v.sqlstate,v.numeric_binding,v.retry_class,v.required_outcome,v.diagnostic_class)
-  else REC(core::diagnostics::NativeDiagnosticSource,v.record,v.canonical_metadata)
+  else if constexpr(std::is_same_v<U,core::diagnostics::NativeDatatypeDiagnosticParameter>){
+    a(v.kind,v.name,v.unsigned_value);
+    std::uint64_t signed_bits=0;
+    if constexpr(!A::reading)signed_bits=std::bit_cast<std::uint64_t>(v.signed_value);
+    a(signed_bits);
+    if constexpr(A::reading)v.signed_value=std::bit_cast<std::int64_t>(signed_bits);
+    a.Raw(v.uuid_value.bytes.data(),v.uuid_value.bytes.size());
+    a(v.token_value);
+  }
+  else if constexpr(std::is_same_v<U,core::diagnostics::NativeDatatypeDiagnosticFact>){
+    a(v.status,v.diagnostic_code,v.detail,v.parameter_count);
+    if(v.parameter_count>v.parameters.size()){a.ok=false;return;}
+    for(auto& parameter:v.parameters)a(parameter);
+  }
+  else REC(core::diagnostics::NativeDiagnosticSource,v.record,v.canonical_metadata,v.datatype_cause)
   else if constexpr(std::is_same_v<U,EngineApiDiagnostic>){
     a(v.code,v.message_key,v.detail,v.error,v.fields,v.occurrence_uuid,v.canonical_metadata,v.native_source);
     a.ok=a.ok&&core::uuid::IsEngineIdentityUuid(EngineUuid{v.occurrence_uuid});
@@ -192,11 +208,11 @@ template<class A,class T>void Record(A& a,T& v){
 }
 bool EncodeEngineApiResultSnapshot(const EngineApiResult& result,std::vector<std::uint8_t>* output){
   if(!output)return false;
-  Writer writer;const std::array<std::uint8_t,8> header{'S','A','P','I',4,0,0,0};writer(header,result);
+  Writer writer;const std::array<std::uint8_t,8> header{'S','A','P','I',5,0,0,0};writer(header,result);
   if(!writer.ok)return false;output->swap(writer.bytes);return true;
 }
 bool DecodeEngineApiResultSnapshot(std::span<const std::uint8_t> bytes,EngineApiResult* output){
-  constexpr std::array<std::uint8_t,8> header{'S','A','P','I',4,0,0,0};
+  constexpr std::array<std::uint8_t,8> header{'S','A','P','I',5,0,0,0};
   if(!output||bytes.size()<header.size()||bytes.size()>limit||!std::equal(header.begin(),header.end(),bytes.begin()))return false;
   Reader reader{true,bytes,header.size()};EngineApiResult result;reader(result);
   if(!reader.ok||reader.offset!=bytes.size())return false;

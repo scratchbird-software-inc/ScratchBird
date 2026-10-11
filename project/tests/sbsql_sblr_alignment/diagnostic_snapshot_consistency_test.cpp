@@ -133,16 +133,30 @@ void PrivateAndFaultCases() {
   input.native_source->record.diagnostic_code = "private.native.cause";
   input.native_source->record.message_key = "private.native.key";
   input.native_source->canonical_metadata = d::CaptureCanonicalDiagnosticMetadata("ENGINE.ABI.PARAMETER_NULL");
+  input.native_source->datatype_cause.emplace();
+  auto& cause=*input.native_source->datatype_cause;
+  cause.diagnostic_code="private.time.original.cause";
+  cause.detail="private.time.detail";
+  cause.parameter_count=1;
+  cause.parameters[0].kind=d::NativeDatatypeParameterKind::uuid;
+  cause.parameters[0].name="private.time.identity";
+  cause.parameters[0].uuid_value.bytes.fill(255);
   auto target = Target(input.code);
   Check(s::AdoptEngineDiagnosticSource(input, &target) && target.engine_source_snapshot &&
       target.engine_source_snapshot->native_source->record.message_key == "private.native.key" &&
       target.engine_source_snapshot->severity == SB_ENGINE_DIAGNOSTIC_SECURITY,
       "native cause replaced owner or was lost");
+  Check(target.engine_source_snapshot->native_source->datatype_cause &&
+        target.engine_source_snapshot->native_source->datatype_cause->parameters==cause.parameters &&
+        target.engine_source_snapshot->native_source->datatype_cause->diagnostic_code==cause.diagnostic_code,
+        "server source adoption dropped the typed datatype cause");
   const auto rendered = s::ToMessageVectorJsonLine(target);
   Check(rendered.find("private.native.key") == std::string::npos &&
         rendered.find("/private/catalog/path") == std::string::npos &&
         rendered.find(input.message_key) == std::string::npos,
         "private source copied into legacy public text");
+  Check(rendered.find("private.time.")==std::string::npos,
+        "typed datatype cause leaked through legacy public rendering");
   Check(target.engine_source_snapshot &&
         s::AdoptEngineDiagnosticSource(*target.engine_source_snapshot, &target) &&
         target.engine_source_snapshot->fields[0].value == "/private/catalog/path",

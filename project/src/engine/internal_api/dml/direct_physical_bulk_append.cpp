@@ -4345,6 +4345,8 @@ DirectPhysicalMgaCowWriteResult WriteDirectPhysicalMgaCowRows(
             ? "dml.direct_physical_bulk.physical_mga_cow_failed"
             : written.diagnostic.message_key,
         "batch_rows=" + std::to_string(staged_rows.size()));
+    if (written.time_diagnostic)
+      PreserveEngineApiTimeDiagnosticCause(result.diagnostic, *written.time_diagnostic);
     return result;
   }
   result.written_rows = written.written_rows;

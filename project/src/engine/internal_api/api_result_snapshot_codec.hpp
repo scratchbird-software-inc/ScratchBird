@@ -4,9 +4,10 @@
 #include "api_types.hpp"
 #include <span>
 namespace scratchbird::engine::internal_api {
-// Private SAPI4 replay snapshot, not canonical IPC or execution authority.
+// Private SAPI5 replay snapshot, not canonical IPC or execution authority.
 // Native diagnostic arguments use explicit text/UUID tags; UUID data retain
 // all 128 bits independently of system-identity admission policy.
+// Bounded datatype causes retain owned names, typed numbers and raw UUID data.
 // Malformed input leaves outputs unchanged; allocation failure propagates.
 bool EncodeEngineApiResultSnapshot(const EngineApiResult&, std::vector<std::uint8_t>*);
 bool DecodeEngineApiResultSnapshot(std::span<const std::uint8_t>, EngineApiResult*);

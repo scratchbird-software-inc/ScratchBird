@@ -7,7 +7,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "api_unsupported.hpp"
+#include "../../core/datatypes/datatype_time_diagnostic.hpp"
 
+#include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 namespace scratchbird::engine::internal_api {
@@ -33,6 +36,50 @@ EngineApiDiagnostic MakeEngineApiDiagnosticFromNative(
       source, scratchbird::core::diagnostics::CaptureCanonicalDiagnosticMetadata(
                   source.diagnostic_code)};
   return diagnostic;
+}
+
+void PreserveEngineApiTimeDiagnosticCause(
+    EngineApiDiagnostic& diagnostic,
+    const scratchbird::core::datatypes::TimeDiagnosticFactV3& cause) {
+  namespace dt = scratchbird::core::datatypes;
+  namespace cd = scratchbird::core::diagnostics;
+  static_assert(std::is_nothrow_move_assignable_v<cd::NativeDiagnosticSource>);
+  static_assert(std::is_nothrow_move_assignable_v<cd::NativeDatatypeDiagnosticFact>);
+  if (cause.parameter_count > cause.parameters.size())
+    throw std::invalid_argument("invalid TIME diagnostic parameter count");
+  cd::NativeDatatypeDiagnosticFact owned;
+  owned.status = cause.status;
+  owned.diagnostic_code = cause.diagnostic_code;
+  owned.detail = cause.detail;
+  owned.parameter_count = cause.parameter_count;
+  for (std::size_t i = 0; i < cause.parameters.size(); ++i) {
+    const auto& source = cause.parameters[i];
+    auto& target = owned.parameters[i];
+    switch (source.kind) {
+      case dt::TimeDiagnosticParameterKindV3::none: target.kind = cd::NativeDatatypeParameterKind::none; break;
+      case dt::TimeDiagnosticParameterKindV3::unsigned_u64: target.kind = cd::NativeDatatypeParameterKind::unsigned_u64; break;
+      case dt::TimeDiagnosticParameterKindV3::signed_i64: target.kind = cd::NativeDatatypeParameterKind::signed_i64; break;
+      case dt::TimeDiagnosticParameterKindV3::uuid: target.kind = cd::NativeDatatypeParameterKind::uuid; break;
+      case dt::TimeDiagnosticParameterKindV3::token: target.kind = cd::NativeDatatypeParameterKind::token; break;
+      default: throw std::invalid_argument("invalid TIME diagnostic parameter kind");
+    }
+    target.name = source.name;
+    target.unsigned_value = source.unsigned_value;
+    target.signed_value = source.signed_value;
+    target.uuid_value = source.uuid_value;
+    target.token_value = source.token_value;
+  }
+  if (diagnostic.native_source) {
+    diagnostic.native_source->datatype_cause = std::move(owned);
+  } else {
+    cd::NativeDiagnosticSource source;
+    source.record.status = cause.status;
+    source.record.diagnostic_code = cause.diagnostic_code;
+    source.record.message_key = "datatype.time.rejected";
+    source.canonical_metadata = cd::CaptureCanonicalDiagnosticMetadata(cause.diagnostic_code);
+    source.datatype_cause = std::move(owned);
+    diagnostic.native_source = std::move(source);
+  }
 }
 
 EngineApiDiagnostic MakeUnavailableDiagnostic(std::string operation_id) {

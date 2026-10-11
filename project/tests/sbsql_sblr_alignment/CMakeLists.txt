@@ -554,7 +554,7 @@ add_executable(sbsql_sblr_alignment_api_result_snapshot
   api_result_snapshot_codec_test.cpp ../../src/engine/internal_api/api_result_snapshot_codec.cpp)
 target_compile_features(sbsql_sblr_alignment_api_result_snapshot PRIVATE cxx_std_23)
 target_include_directories(sbsql_sblr_alignment_api_result_snapshot PRIVATE ../../src/engine/internal_api ../../src)
-target_link_libraries(sbsql_sblr_alignment_api_result_snapshot PRIVATE sb_core_uuid sb_core_datatypes sb_core_diagnostic_catalog)
+target_link_libraries(sbsql_sblr_alignment_api_result_snapshot PRIVATE sb_core_uuid sb_core_datatypes sb_core_diagnostic_catalog sb_engine_api_diagnostics)
 add_test(NAME sbsql_sblr_alignment_api_result_snapshot COMMAND sbsql_sblr_alignment_api_result_snapshot)
 set_tests_properties(sbsql_sblr_alignment_api_result_snapshot PROPERTIES TIMEOUT 120
   LABELS "sbsql_sblr_alignment;binary_uuid;prepared_result_snapshot;actual_codec;not_runtime_acceptance")

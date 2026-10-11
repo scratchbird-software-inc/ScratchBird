@@ -145,6 +145,14 @@ void Run(dt::CanonicalTypeId type, unsigned generation) {
   if (type == dt::CanonicalTypeId::time) {
     Refuses(type, Value(type, generation, dt::kTimeMaximumNanosecondsV3 + 1));
     Refuses(type, Value(type, generation, ~std::uint64_t{0}));
+    api::EngineApiDiagnostic diagnostic;
+    Check(!bulk::DirectValidateNativeTemporalValue(
+        Value(type, generation, dt::kTimeMaximumNanosecondsV3 + 1), type, nullptr, true, &diagnostic) &&
+        diagnostic.native_source && diagnostic.native_source->datatype_cause &&
+        !diagnostic.native_source->datatype_cause->status.ok() &&
+        diagnostic.native_source->datatype_cause->diagnostic_code == diagnostic.code &&
+        diagnostic.native_source->datatype_cause->detail == diagnostic.detail,
+        "native TIME component failure lost its typed cause");
   }
 }
 void RetainedColumnBindings() {

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "datatype_operations.hpp"
+#include "datatype_time_diagnostic.hpp"
 #include "datatype_type_codec_identity_v3.hpp"
 
 #include <array>
@@ -151,31 +152,6 @@ struct TimeExecutionControlV3 {
   void (*observe_scrubbed)(void*, TimeScrubClassV3, const byte*, u64) noexcept = nullptr;
   void* scrub_observer_context = nullptr;
   bool force_reencode_mismatch_for_conformance = false;
-};
-
-enum class TimeDiagnosticParameterKindV3 : u8 {
-  none = 0,
-  unsigned_u64 = 1,
-  signed_i64 = 2,
-  uuid = 3,
-  token = 4,
-};
-
-struct TimeDiagnosticParameterV3 {
-  TimeDiagnosticParameterKindV3 kind = TimeDiagnosticParameterKindV3::none;
-  std::string_view name;
-  u64 unsigned_value = 0;
-  std::int64_t signed_value = 0;
-  platform::Uuid uuid_value;
-  std::string_view token_value;
-};
-
-struct TimeDiagnosticFactV3 {
-  Status status;
-  std::string_view diagnostic_code;
-  std::string_view detail;
-  std::array<TimeDiagnosticParameterV3, 4> parameters{};
-  u8 parameter_count = 0;
 };
 
 struct TimeProfileResultV3 {

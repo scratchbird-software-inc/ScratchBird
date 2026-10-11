@@ -1,11 +1,14 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "api_result_snapshot_codec.hpp"
+#include "api_diagnostics.hpp"
+#include "datatype_time.hpp"
 #include "query/result_metadata.hpp"
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <new>
+#include <limits>
 #include <stdexcept>
 namespace { long fail_after=-1;unsigned checks=0,failures=0,faults=0; }
 void* operator new(std::size_t n){if(fail_after==0)throw std::bad_alloc();if(fail_after>0)--fail_after;if(auto*p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
@@ -18,6 +21,11 @@ namespace cd=scratchbird::core::diagnostics;
 namespace cp=scratchbird::core::platform;
 namespace {
 void Check(bool ok,const char* why){++checks;if(!ok){++failures;std::cerr<<"FAIL "<<why<<'\n';}}
+bool SameFact(const cd::NativeDatatypeDiagnosticFact& a, const cd::NativeDatatypeDiagnosticFact& b) {
+  return a.status.code == b.status.code && a.status.severity == b.status.severity &&
+      a.status.subsystem == b.status.subsystem && a.diagnostic_code == b.diagnostic_code &&
+      a.detail == b.detail && a.parameter_count == b.parameter_count && a.parameters == b.parameters;
+}
 void CheckCanonical(const cd::CanonicalDiagnosticMetadata& a,
                     const cd::CanonicalDiagnosticMetadata& b) {
   Check(a.code == b.code && a.severity == b.severity &&
@@ -72,7 +80,18 @@ api::EngineApiResult Fixture(){
   api::EngineApiDiagnostic diagnostic;diagnostic.code="CATALOG.INVALID_INPUT";diagnostic.message_key="source.key";diagnostic.detail="private detail";diagnostic.fields={{"field","original"}};diagnostic.occurrence_uuid=Id(10).bytes;
   diagnostic.canonical_metadata=cd::CaptureCanonicalDiagnosticMetadata(diagnostic.code);
   cp::DiagnosticRecord native;native.status={cp::StatusCode::memory_limit_exceeded,cp::Severity::warning,cp::Subsystem::memory};native.diagnostic_code="native.source";native.message_key="native.key";native.arguments={{"argument","source value"}};native.trace_id="trace";native.source_component="source";native.remediation_hint="owner hint";
-  diagnostic.native_source=cd::NativeDiagnosticSource{native,diagnostic.canonical_metadata};r.diagnostics.push_back(diagnostic);
+  diagnostic.native_source=cd::NativeDiagnosticSource{native,diagnostic.canonical_metadata};
+  cd::NativeDatatypeDiagnosticFact cause;
+  cause.status={cp::StatusCode::diagnostic_invalid_record,cp::Severity::error,cp::Subsystem::datatypes};
+  cause.diagnostic_code="typed-cause.source";cause.detail="typed-cause.detail";cause.parameter_count=4;
+  for (unsigned i=0;i<4;++i) {
+    auto& p=cause.parameters[i];p.kind=static_cast<cd::NativeDatatypeParameterKind>(i+1);
+    p.name="typed-cause.parameter."+std::to_string(i);p.unsigned_value=~std::uint64_t{0}-i;
+    p.signed_value=std::numeric_limits<std::int64_t>::min()+i;
+    p.uuid_value=Id(100+i);p.uuid_value.bytes[6]=0x40;
+    p.token_value=std::string("typed-token\0value",17);
+  }
+  diagnostic.native_source->datatype_cause=cause;r.diagnostics.push_back(diagnostic);
   auto metadata=std::make_shared<api::EngineQueryResultMetadataV1>();metadata->statement_receipt_uuid=Id(11).bytes;metadata->statement_snapshot_uuid=Id(12).bytes;metadata->datatype_catalog_snapshot_uuid=Id(13).bytes;metadata->datatype_catalog_generation=123;metadata->datatype_registry_generation=456;
   api::EngineQueryResultColumnV1 c;c.transport.name="column";c.transport.nullability=wire::TypedResultNullability::nullable;c.transport.descriptor_uuid=Id(14).bytes;c.transport.descriptor_generation=2;c.transport.type_uuid=Id(15).bytes;c.transport.type_generation=3;c.transport.canonical_type_id=scratchbird::core::datatypes::CanonicalTypeId::int64;c.transport.codec_id="fixture.codec";c.transport.codec_version=1;c.transport.codec_generation=4;c.transport.canonical_value_bytes=8;c.bound_descriptor_uuid=Id(16).bytes;c.collation_uuid=Id(17).bytes;c.timezone_profile_id="source.timezone";c.width=8;c.precision=19;c.scale=0;metadata->columns.push_back(c);
   r.result_shape.query_metadata=metadata;auto values=std::make_shared<api::EngineQueryResultValuesV1>();values->metadata=metadata;
@@ -83,11 +102,14 @@ api::EngineApiResult Fixture(){
 }
 int main(){
   api::EngineApiResult empty;auto minimal=Encode(empty);
-  std::vector<std::uint8_t> oracle(226,0);oracle[0]='S';oracle[1]='A';oracle[2]='P';oracle[3]='I';oracle[4]=4;oracle[223]=1;
+  std::vector<std::uint8_t> oracle(226,0);oracle[0]='S';oracle[1]='A';oracle[2]='P';oracle[3]='I';oracle[4]=5;oracle[223]=1;
   Check(minimal==oracle,"independent empty snapshot layout differs");
   auto source=Fixture();const auto bytes=Encode(source);api::EngineApiResult decoded;
   Check(api::DecodeEngineApiResultSnapshot(bytes,&decoded),"complete source result refused");
   Check(Encode(decoded)==bytes,"source snapshot not byte-exact after replay");
+  Check(decoded.diagnostics[0].native_source->datatype_cause &&
+        SameFact(*decoded.diagnostics[0].native_source->datatype_cause,
+                 *source.diagnostics[0].native_source->datatype_cause), "typed datatype cause changed during replay");
   Check(decoded.result_shape.columns==source.result_shape.columns,"bound descriptor fields lost");
   Check(decoded.primary_object.uuid==source.primary_object.uuid && decoded.primary_object.object_kind=="table" && decoded.catalog_row_uuid==Id(2) && decoded.transaction_uuid==Id(3) && decoded.local_transaction_id==source.local_transaction_id && decoded.embedded_trust_mode_observed && decoded.cluster_authority_required,"result identities or outcome flags lost");
   for(std::size_t n=0;n<source.result_shape.rows.size();++n){
@@ -182,6 +204,7 @@ int main(){
     auto diagnostic = source.diagnostics.front();
     diagnostic.native_source->record.arguments = {
         {uuid_key, id}, {"text_value", "019d0000-0000-7000-8000-000000000009"}};
+    diagnostic.native_source->datatype_cause->parameters[2].uuid_value=id;
     value.diagnostics.push_back(std::move(diagnostic));
     return value;
   };
@@ -199,6 +222,8 @@ int main(){
             arguments[1].text() && *arguments[1].text() ==
                 "019d0000-0000-7000-8000-000000000009" && Encode(decoded) == encoded,
             "diagnostic value kind, byte, text or source order changed");
+      Check(decoded.diagnostics[0].native_source->datatype_cause->parameters[2].uuid_value==id,
+            "typed datatype cause UUID was subjected to identity policy");
       // Independent layout oracle: u32 key length, exact key, u8 UUID tag,
       // then exactly sixteen raw bytes without text UUID encoding or padding.
       std::vector<std::uint8_t> marker{static_cast<std::uint8_t>(uuid_key.size()), 0, 0, 0};
@@ -231,6 +256,83 @@ int main(){
   bad = minimal;
   bad[4] = 3;
   refuse(bad); // v3 descriptors lacked their source datatype cohort.
+  bad = minimal; bad[4] = 4; refuse(bad); // v4 lost the native datatype cause.
+
+  // Count and kind are independently bounded; no unknown tags, omitted slots,
+  // or reinterpretation of a negative number as a textual operand.
+  const auto& cause=*source.diagnostics[0].native_source->datatype_cause;
+  const auto detail_marker=std::search(bytes.begin(),bytes.end(),cause.detail.begin(),cause.detail.end());
+  Check(detail_marker!=bytes.end(),"typed cause layout marker absent");
+  if(detail_marker!=bytes.end()) {
+    const auto count_offset=static_cast<std::size_t>(detail_marker-bytes.begin())+cause.detail.size();
+    for(unsigned count=5;count<256;++count) {bad=bytes;bad[count_offset]=count;refuse(bad);}
+    for(unsigned kind=5;kind<256;++kind) {bad=bytes;bad[count_offset+1]=kind;refuse(bad);}
+  }
+  for(unsigned count=0;count<=4;++count) {
+    auto value=source;value.diagnostics[0].native_source->datatype_cause->parameter_count=count;
+    value.diagnostics[0].native_source->datatype_cause->parameters[0].kind=cd::NativeDatatypeParameterKind::none;
+    const auto encoded=Encode(value);
+    Check(api::DecodeEngineApiResultSnapshot(encoded,&decoded)&&Encode(decoded)==encoded,
+          "inactive typed parameter slots were dropped");
+  }
+  for(bool bad_count:{false,true}) {
+    auto value=source;auto& fact=*value.diagnostics[0].native_source->datatype_cause;
+    if(bad_count)fact.parameter_count=5;else fact.parameters[0].kind=static_cast<cd::NativeDatatypeParameterKind>(255);
+    std::vector<std::uint8_t> sentinel{42};
+    Check(!api::EncodeEngineApiResultSnapshot(value,&sentinel)&&sentinel==std::vector<std::uint8_t>{42},
+          "malformed typed cause encoded or changed output");
+  }
+
+  // Capture owns strings rather than retaining views into a datatype call, and
+  // preserves the already dominant native/owning diagnostic and occurrence.
+  namespace dt=scratchbird::core::datatypes;
+  for (const bool existing_native : {false, true}) {
+  std::string detail(96,'d'), name(96,'n'), token(96,'t');
+  dt::TimeDiagnosticFactV3 time;
+  time.status=cause.status;time.diagnostic_code=detail;time.detail=detail;time.parameter_count=4;
+  for(unsigned i=0;i<4;++i) {
+    auto& p=time.parameters[i];const auto& original=cause.parameters[i];
+    p.kind=static_cast<dt::TimeDiagnosticParameterKindV3>(i+1);p.name=name;
+    p.unsigned_value=original.unsigned_value;p.signed_value=original.signed_value;
+    p.uuid_value=original.uuid_value;p.token_value=token;
+  }
+  bool capture_completed=false;unsigned capture_faults=0;
+  for(long point=0;point<128;++point) {
+    auto value=source;
+    if(!existing_native)value.diagnostics[0].native_source.reset();
+    const auto original=Encode(value);
+    try {
+      fail_after=point;api::PreserveEngineApiTimeDiagnosticCause(value.diagnostics[0],time);fail_after=-1;
+      Check(value.diagnostics[0].code==source.diagnostics[0].code &&
+            value.diagnostics[0].occurrence_uuid==source.diagnostics[0].occurrence_uuid &&
+            value.diagnostics[0].native_source->record.diagnostic_code==
+                (existing_native ? "native.source" : detail),
+            "typed cause replaced dominant failure");
+      const auto retained=*value.diagnostics[0].native_source->datatype_cause;
+      detail.assign(96,'x');name.assign(96,'x');token.assign(96,'x');
+      Check(retained.detail==std::string(96,'d')&&retained.parameters[0].name==std::string(96,'n')&&
+            retained.parameters[3].token_value==std::string(96,'t'),"typed cause kept borrowed strings");
+      capture_completed=true;break;
+    } catch(const std::bad_alloc&) {
+      fail_after=-1;++capture_faults;Check(Encode(value)==original,"failed capture partially replaced diagnostic");
+    }
+  }
+  Check(capture_completed&&capture_faults>0,"typed cause allocation sweep incomplete");
+  time.diagnostic_code=detail;time.detail=detail;
+  for(auto& parameter:time.parameters){parameter.name=name;parameter.token_value=token;}
+  for(const bool bad_count:{false,true}) {
+    auto value=source;
+    if(!existing_native)value.diagnostics[0].native_source.reset();
+    const auto original=Encode(value);
+    auto invalid=time;
+    if(bad_count)invalid.parameter_count=5;
+    else invalid.parameters[3].kind=static_cast<dt::TimeDiagnosticParameterKindV3>(255);
+    bool refused=false;
+    try{api::PreserveEngineApiTimeDiagnosticCause(value.diagnostics[0],invalid);}
+    catch(const std::invalid_argument&){refused=true;}
+    Check(refused&&Encode(value)==original,"malformed TIME fact partially changed diagnostic");
+  }
+  }
 
   // These bytes are user data, not identity authority: retain all UUID versions.
   for (unsigned version = 0; version < 16; ++version) {

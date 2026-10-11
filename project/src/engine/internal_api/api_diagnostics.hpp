@@ -8,6 +8,7 @@
 
 #pragma once
 #include "api_types.hpp"
+namespace scratchbird::core::datatypes { struct TimeDiagnosticFactV3; }
 namespace scratchbird::engine::internal_api {
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_DIAGNOSTICS
 EngineApiDiagnostic MakeEngineApiDiagnostic(std::string code, std::string message_key, std::string detail, bool error = true);
@@ -16,6 +17,11 @@ EngineApiDiagnostic MakeEngineApiDiagnostic(std::string code, std::string messag
 EngineApiDiagnostic MakeEngineApiDiagnosticFromNative(
     const scratchbird::core::platform::DiagnosticRecord& source,
     std::string code, std::string message_key, std::string detail, bool error = true);
+// Deep-copy the typed cause without replacing an existing native/owning error.
+// Invalid fact structure or allocation failure throws before changing diagnostic.
+void PreserveEngineApiTimeDiagnosticCause(
+    EngineApiDiagnostic& diagnostic,
+    const scratchbird::core::datatypes::TimeDiagnosticFactV3& cause);
 EngineApiDiagnostic MakeUnavailableDiagnostic(std::string operation_id);
 EngineApiDiagnostic MakeUnsupportedProfileDiagnostic(std::string operation_id, std::string profile);
 EngineApiDiagnostic MakeClusterAuthorityUnavailableDiagnostic(std::string operation_id);
