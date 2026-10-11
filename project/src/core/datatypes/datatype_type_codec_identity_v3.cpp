@@ -1723,6 +1723,15 @@ bool IsExactRegisteredDatatypeTypeCodecIdentityV3(
   return match && SameDatatypeTypeCodecIdentityV3(supplied, *match);
 }
 
+const DatatypeTypeCodecIdentityRowV3* FindDatatypeTypeCodecIdentityV3(
+    const platform::Uuid& snapshot, u64 catalog_generation, u64 registry_generation,
+    const platform::Uuid& descriptor, u64 descriptor_generation) noexcept {
+  if (!IsAdmittedDatatypeCohort(snapshot, catalog_generation, registry_generation) ||
+      descriptor.is_nil() || descriptor_generation == 0) return nullptr;
+  return FindExactIdentityRow(snapshot, catalog_generation, registry_generation,
+      descriptor, descriptor_generation);
+}
+
 DatatypeTypeCodecIdentityLookupV3 LookupDatatypeTypeCodecIdentityV3(
     const platform::Uuid& catalog_snapshot_uuid,
     u64 catalog_generation,

@@ -76,6 +76,14 @@ struct DatatypeTypeCodecIdentityProjectionV1 {
 std::span<const DatatypeTypeCodecIdentityRowV3>
 CurrentDatatypeTypeCodecIdentityRowsV3() noexcept;
 
+// Borrowed immutable compiled row, valid for process lifetime. Exact lookup
+// allocates nothing, including first index construction. This authenticates
+// representation identity only, not receipt/security/operation authority.
+const DatatypeTypeCodecIdentityRowV3* FindDatatypeTypeCodecIdentityV3(
+    const platform::Uuid& catalog_snapshot_uuid,
+    u64 catalog_generation, u64 registry_generation,
+    const platform::Uuid& descriptor_uuid, u64 descriptor_generation) noexcept;
+
 DatatypeTypeCodecIdentityLookupV3 LookupDatatypeTypeCodecIdentityV3(
     const platform::Uuid& catalog_snapshot_uuid,
     u64 catalog_generation,

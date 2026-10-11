@@ -485,6 +485,15 @@ void TestPopulationAndAuthoritativeRows() {
 
   std::array<std::size_t, 11> counts{};
   for (const auto& row : v3) {
+    allocation_probe::fail_next = true;
+    const auto* borrowed = dt::FindDatatypeTypeCodecIdentityV3(
+        row.legacy_fields.catalog_snapshot_uuid, row.legacy_fields.catalog_generation,
+        row.legacy_fields.registry_generation, row.legacy_fields.descriptor_uuid,
+        row.legacy_fields.descriptor_generation);
+    const bool untouched = allocation_probe::fail_next;
+    allocation_probe::fail_next = false;
+    Check(borrowed == &row && untouched,
+          "borrowed V3 identity allocated or lost exact immutable row");
     const auto generation = row.legacy_fields.catalog_generation;
     Check(generation >= 1 && generation <= 11 &&
               row.legacy_fields.registry_generation == generation,
