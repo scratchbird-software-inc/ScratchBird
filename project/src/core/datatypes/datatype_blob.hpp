@@ -453,6 +453,7 @@ class BlobLifetimeAuthorityAdmissionV3Generation1 final {
   ~BlobLifetimeAuthorityAdmissionV3Generation1() noexcept;
 
  private:
+  friend class BlobLifetimeDatatypeConsumerAccessV3Generation1;
   friend class BlobRetainedLifetimeLeaseV3;
   friend class BlobLifetimeRuntimeFactoryV3Generation1;
   friend class BlobLifetimeRuntimeConformanceAccessV3;
@@ -543,6 +544,7 @@ class BlobBoundMaterializedCarrierV3Generation1 final {
   u64 logical_length() const noexcept { return logical_length_; }
 
  private:
+  friend class BlobLifetimeDatatypeConsumerAccessV3Generation1;
   friend class BlobRetainedLifetimeLeaseV3;
   friend class BlobLifetimeRuntimeFactoryV3Generation1;
   friend class BlobLifetimeRuntimeConformanceAccessV3;
@@ -1075,6 +1077,28 @@ BlobLifetimeRuntimeResultV3 ConsumeBlobMaterializedValueScopedV3Generation1(
     const BlobLifetimeTokenV3& token,
     const BlobLifetimeUseRequestV3& request,
     const BlobTrustedInternalVisitorV3& visitor,
+    bool null_allowed) noexcept;
+
+// A scalar result, not a view or lifetime capability. The state and length are
+// published only after retain, probe, release and the final return gate have
+// all succeeded. No content is read, including for a nonempty VALUE.
+struct BlobMaterializedLengthResultV3 {
+  BlobLifetimeRuntimeResultV3 runtime{};
+  bool is_null = false;
+  u64 length = 0;
+  bool ok() const noexcept { return runtime.ok(); }
+};
+
+// The receiver must admit the request for SB_BLOB_OP_READ_V3. This trusted
+// consumer cannot turn a profile, raw span, or caller length into authority.
+// SQL NULL propagates when null_allowed; an inadmissible NULL has no lifetime
+// callback. Failure exposes neither a length nor a NULL result.
+BlobMaterializedLengthResultV3 ReadBlobMaterializedLengthV3Generation1(
+    const BlobValidatedProfileHandleV3& profile,
+    const BlobBoundMaterializedCarrierV3Generation1& carrier,
+    BlobLifetimeAuthorityAdmissionV3Generation1&& trusted_admission,
+    const BlobLifetimeTokenV3& token,
+    const BlobLifetimeUseRequestV3& request,
     bool null_allowed) noexcept;
 
 }  // namespace scratchbird::core::datatypes

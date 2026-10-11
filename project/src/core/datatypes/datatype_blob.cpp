@@ -2860,6 +2860,58 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::MoveReplaceFrom(
   return AdoptFrom(source, true, 17, true, destination_predecessor);
 }
 
+class BlobLifetimeDatatypeConsumerAccessV3Generation1 final {
+ public:
+  // Shared, callback-free gate. A NULL shortcut must never outrank profile,
+  // admission, token/carrier binding or dirty-state validation.
+  static BlobLifetimeRuntimeResultV3 Validate(
+      const BlobValidatedProfileHandleV3& profile,
+      const BlobLifetimeAuthorityAdmissionV3Generation1& admission,
+      const BlobBoundMaterializedCarrierV3Generation1& carrier,
+      const BlobLifetimeTokenV3& token,
+      const BlobLifetimeUseRequestV3& request) noexcept {
+    if (!ExactProfile(profile)) {
+      const auto* canonical = CurrentBlobIdentity();
+      if (canonical == nullptr) return RuntimeTerminated();
+      auto failure = ProtocolFailure(
+          "authority_profile_binding_mismatch",
+          canonical->legacy_fields.descriptor_uuid,
+          canonical->legacy_fields.descriptor_generation);
+      failure.fact.authority_source =
+          BlobLifetimeAuthoritySourceV3::datatype_local_state;
+      failure.fact.stage = BlobLifetimeFactStageV3::local_precondition;
+      return failure;
+    }
+    if (!admission.admitted_ || admission.budget_ == nullptr ||
+        admission.pin_cookie_ == 0 ||
+        admission.services_.read_monotonic_ns == nullptr ||
+        admission.services_.sample_cancellation == nullptr ||
+        admission.services_.record_invariant_and_quarantine == nullptr ||
+        PlatformUuidIsNil(admission.services_.receiver_services_uuid) ||
+        admission.services_.receiver_services_generation == 0 ||
+        PlatformUuidIsNil(admission.services_.monotonic_clock.clock_uuid) ||
+        admission.services_.monotonic_clock.clock_generation == 0 ||
+        admission.token_clock_.clock_uuid !=
+            admission.services_.monotonic_clock.clock_uuid ||
+        admission.request_clock_.clock_uuid !=
+            admission.services_.monotonic_clock.clock_uuid ||
+        admission.token_clock_.clock_generation !=
+            admission.services_.monotonic_clock.clock_generation ||
+        admission.request_clock_.clock_generation !=
+            admission.services_.monotonic_clock.clock_generation ||
+        !TokenAndRequestShapeValid(admission.authority_, token, request,
+                                   carrier.binding_) ||
+        (carrier.state_ != BlobValueStateV3::sql_null &&
+         carrier.state_ != BlobValueStateV3::value) ||
+        (carrier.state_ == BlobValueStateV3::sql_null &&
+         (carrier.logical_length_ != 0 || carrier.data_ != nullptr)) ||
+        (carrier.logical_length_ != 0 && carrier.data_ == nullptr) ||
+        carrier.logical_length_ > kBlobMaximumLogicalBytesV3)
+      return RuntimeTerminated();
+    return RuntimeSuccess();
+  }
+};
+
 BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::RetainFrom(
     const BlobValidatedProfileHandleV3& profile,
     BlobLifetimeAuthorityAdmissionV3Generation1& admission,
@@ -2886,44 +2938,9 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::RetainFrom(
       return RejectOverlappingUse(BlobLifetimePhaseV3::retain);
     return LocalStateFailure(destination_state, true);
   }
-  if (!ExactProfile(profile)) {
-    const auto* canonical = CurrentBlobIdentity();
-    if (canonical == nullptr) return RuntimeTerminated();
-    auto failure = ProtocolFailure(
-        "authority_profile_binding_mismatch",
-        canonical->legacy_fields.descriptor_uuid,
-        canonical->legacy_fields.descriptor_generation);
-    failure.fact.authority_source =
-        BlobLifetimeAuthoritySourceV3::datatype_local_state;
-    failure.fact.stage = BlobLifetimeFactStageV3::local_precondition;
-    return failure;
-  }
-  if (!admission.admitted_ || admission.budget_ == nullptr ||
-      admission.pin_cookie_ == 0 ||
-      admission.services_.read_monotonic_ns == nullptr ||
-      admission.services_.sample_cancellation == nullptr ||
-      admission.services_.record_invariant_and_quarantine == nullptr ||
-      PlatformUuidIsNil(admission.services_.receiver_services_uuid) ||
-      admission.services_.receiver_services_generation == 0 ||
-      PlatformUuidIsNil(admission.services_.monotonic_clock.clock_uuid) ||
-      admission.services_.monotonic_clock.clock_generation == 0 ||
-      admission.token_clock_.clock_uuid !=
-          admission.services_.monotonic_clock.clock_uuid ||
-      admission.request_clock_.clock_uuid !=
-          admission.services_.monotonic_clock.clock_uuid ||
-      admission.token_clock_.clock_generation !=
-          admission.services_.monotonic_clock.clock_generation ||
-      admission.request_clock_.clock_generation !=
-          admission.services_.monotonic_clock.clock_generation ||
-      !TokenAndRequestShapeValid(admission.authority_, token, request,
-                                 carrier.binding_) ||
-      (carrier.state_ != BlobValueStateV3::sql_null &&
-       carrier.state_ != BlobValueStateV3::value) ||
-      (carrier.state_ == BlobValueStateV3::sql_null &&
-       (carrier.logical_length_ != 0 || carrier.data_ != nullptr)) ||
-      (carrier.logical_length_ != 0 && carrier.data_ == nullptr) ||
-      carrier.logical_length_ > kBlobMaximumLogicalBytesV3)
-    return RuntimeTerminated();
+  const auto validated = BlobLifetimeDatatypeConsumerAccessV3Generation1::Validate(
+      profile, admission, carrier, token, request);
+  if (!validated.ok()) return validated;
   const auto generation_reset =
       state_.ResetGeneration(destination_already_installing
                                  ? State::installing : State::disarmed,
@@ -4281,6 +4298,11 @@ BlobLifetimeRuntimeResultV3 ConsumeBlobMaterializedValueScopedV3Generation1(
   const BlobLifetimeUseRequestV3& request,
   const BlobTrustedInternalVisitorV3& visitor,
   bool null_allowed) noexcept {
+  if (MarkActiveBindingReentry(token))
+    return CanonicalProtocolFailure("callback_reentrant");
+  const auto validated = BlobLifetimeDatatypeConsumerAccessV3Generation1::Validate(
+      profile, trusted_admission, carrier, token, request);
+  if (!validated.ok()) return validated;
   if (carrier.state() == BlobValueStateV3::sql_null && !null_allowed) {
     auto failure = RuntimeFailure("BLOB.STATE_INVALID",
                                   "sql_null_not_admitted");
@@ -4308,6 +4330,50 @@ BlobLifetimeRuntimeResultV3 ConsumeBlobMaterializedValueScopedV3Generation1(
       released.fact.fact_class == BlobLifetimeFactClassV3::security)
     return released;
   return primary;
+}
+
+BlobMaterializedLengthResultV3 ReadBlobMaterializedLengthV3Generation1(
+    const BlobValidatedProfileHandleV3& profile,
+    const BlobBoundMaterializedCarrierV3Generation1& carrier,
+    BlobLifetimeAuthorityAdmissionV3Generation1&& trusted_admission,
+    const BlobLifetimeTokenV3& token,
+    const BlobLifetimeUseRequestV3& request,
+    bool null_allowed) noexcept {
+  if (MarkActiveBindingReentry(token))
+    return {CanonicalProtocolFailure("callback_reentrant")};
+  // As with RetainFrom, violating this private trusted-consumer contract is
+  // not a public user error. The receiving owner must select the operation
+  // before its generation-specific factory admission.
+  if (request.operation != SB_BLOB_OP_READ_V3)
+    return {RuntimeTerminated()};
+  const auto validated = BlobLifetimeDatatypeConsumerAccessV3Generation1::Validate(
+      profile, trusted_admission, carrier, token, request);
+  if (!validated.ok()) return {validated};
+  if (carrier.state() == BlobValueStateV3::sql_null && !null_allowed) {
+    auto failure = RuntimeFailure("BLOB.STATE_INVALID", "sql_null_not_admitted");
+    failure.fact.parameters.present = blob_parameter_supplied_state |
+                                      blob_parameter_operation;
+    failure.fact.parameters.supplied_state_u8 =
+        static_cast<u8>(BlobValueStateV3::sql_null);
+    failure.fact.parameters.operation_enum = SB_BLOB_OP_READ_V3;
+    return {failure};
+  }
+  BlobRetainedLifetimeLeaseV3 lease;
+  const auto retained = RetainBaseBlobLifetimeLeaseV3Generation1(
+      profile, std::move(trusted_admission), carrier, token, request, lease);
+  if (!retained.ok()) return {retained};
+
+  // Copy only authenticated metadata while the receiver is still pinned.
+  // Release may destroy the carrier, token, request and their backing owner.
+  const bool is_null = carrier.state() == BlobValueStateV3::sql_null;
+  const u64 length = carrier.logical_length();
+  const auto probed = lease.Probe();
+  // A failed probe has already consumed its release obligation. Preserve its
+  // selected primary (including the cleanup SECURITY override) exactly.
+  if (!probed.ok()) return {probed};
+  const auto released = lease.Release();
+  if (!released.ok()) return {released};
+  return {released, is_null, length};
 }
 
 }  // namespace scratchbird::core::datatypes

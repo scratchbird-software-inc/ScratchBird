@@ -613,6 +613,7 @@ struct FakeReceiver {
   bool clock_dirty_reserved = false;
   bool cancellation_dirty_reserved = false;
   bool cancelled = false;
+  bool cancel_on_release = false;
   bool regress_clock = false;
   bool throw_retain = false;
   bool throw_retain_after_output = false;
@@ -698,6 +699,17 @@ void AttemptAdminReentry(FakeReceiver& fake) {
         *fake.reentry_profile, std::move(*fake.reentry_admission),
         *fake.reentry_carrier, *fake.reentry_token, *fake.reentry_request,
         *fake.reentry_third);
+  } else if (action == 7) {
+    fake.reentry_result = dt::ReadBlobMaterializedLengthV3Generation1(
+        *fake.reentry_profile, *fake.reentry_carrier,
+        std::move(*fake.reentry_admission), *fake.reentry_token,
+        *fake.reentry_request, false).runtime;
+  } else if (action == 8) {
+    auto visitor = dt::BlobLifetimeRuntimeConformanceAccessV3::Visitor(nullptr, nullptr);
+    fake.reentry_result = dt::ConsumeBlobMaterializedValueScopedV3Generation1(
+        *fake.reentry_profile, *fake.reentry_carrier,
+        std::move(*fake.reentry_admission), *fake.reentry_token,
+        *fake.reentry_request, visitor, false);
   }
 }
 
@@ -821,6 +833,7 @@ BlobLifetimeCallbackResultV3 SCRATCHBIRD_ENGINE_CALL Release(
   std::lock_guard lock(fake.callback_mutex);
   fake.Push('L');
   fake.release_ticket_seen = *inout;
+  if (fake.cancel_on_release) fake.cancelled = true;
   if (fake.throw_release) throw 1;
   if (MalformedTicket(fake, 5))
     std::memset(inout, 0xcc, sizeof(*inout));
@@ -3744,6 +3757,8 @@ void AdministrativeCallbackReentry() {
 }
 
 void RetainReentryUsesCanonicalDescriptor() {
+  for (const std::uint8_t action : {6, 7, 8}) {
+  for (const bool null_shortcut : {false, true}) {
   Fixture fixture(96);
   const std::array<platform::byte, 1> bytes{{0x42}};
   auto carrier = dt::BlobLifetimeRuntimeConformanceAccessV3::Carrier(
@@ -3756,17 +3771,21 @@ void RetainReentryUsesCanonicalDescriptor() {
             fixture.request, active).ok(),
         "retain reentry canonical setup failed");
   auto poisoned_profile = fixture.profile;
-  poisoned_profile.identity.descriptor_uuid = PlatformUuid(0xe1);
-  poisoned_profile.identity.descriptor_generation = UINT64_C(0xdeadbeef);
+  if (!null_shortcut) {
+    poisoned_profile.identity.descriptor_uuid = PlatformUuid(0xe1);
+    poisoned_profile.identity.descriptor_generation = UINT64_C(0xdeadbeef);
+  }
+  auto null_carrier = dt::BlobLifetimeRuntimeConformanceAccessV3::Carrier(
+      fixture.carrier_binding, dt::BlobValueStateV3::sql_null, nullptr, 0);
   auto nested_admission = fixture.Admission();
   fixture.fake.reentry_first = &active;
   fixture.fake.reentry_third = &destination;
   fixture.fake.reentry_profile = &poisoned_profile;
   fixture.fake.reentry_admission = &nested_admission;
-  fixture.fake.reentry_carrier = &carrier;
+  fixture.fake.reentry_carrier = null_shortcut ? &null_carrier : &carrier;
   fixture.fake.reentry_token = &fixture.token;
   fixture.fake.reentry_request = &fixture.request;
-  fixture.fake.reentry_action = 6;
+  fixture.fake.reentry_action = action;
   const auto outer = active.Probe();
   const auto& nested = fixture.fake.reentry_result;
   Check(!outer.ok() && !nested.ok() &&
@@ -3775,18 +3794,22 @@ void RetainReentryUsesCanonicalDescriptor() {
                 fixture.profile.identity.descriptor_uuid &&
             nested.fact.parameters.descriptor_generation ==
                 fixture.profile.identity.descriptor_generation &&
-            nested.fact.parameters.descriptor_uuid !=
+            (null_shortcut || (nested.fact.parameters.descriptor_uuid !=
                 poisoned_profile.identity.descriptor_uuid &&
             nested.fact.parameters.descriptor_generation !=
-                poisoned_profile.identity.descriptor_generation &&
+                poisoned_profile.identity.descriptor_generation)) &&
             dt::BlobLifetimeRuntimeConformanceAccessV3::AdmissionAdmitted(
                 nested_admission) &&
             dt::BlobLifetimeRuntimeConformanceAccessV3::ControlState(
                 destination) == 0 &&
             CountCall(fixture.fake, 'R') == 1 &&
+            CountCall(fixture.fake, 'P') == 1 &&
+            CountCall(fixture.fake, 'L') == 1 &&
             fixture.fake.reentry_attempts == 1 &&
             fixture.fake.invariant_calls == 1,
-        "retain reentry trusted poisoned pre-admission profile identity");
+        "consumer reentry trusted poisoned profile or NULL shortcut");
+  }
+  }
 }
 
 void DeferredProbePrimaryMatrix() {
@@ -5112,6 +5135,167 @@ void Exact95CallbackDiagnosticMaterialization() {
   }
 }
 
+dt::BlobMaterializedLengthResultV3 AdmittedLength(
+    Fixture& fixture, dt::BlobValueStateV3 state,
+    std::span<const platform::byte> bytes, bool null_allowed = true,
+    unsigned post_admission_mutation = 0, bool use_scoped_consumer = false) {
+  auto budget = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+      fixture.ledger, fixture.pins);
+  auto capability = dt::BlobLifetimeReceiverHostV3Generation1::Capability(
+      fixture.carrier_binding, state, bytes.data(), bytes.size());
+  dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
+  dt::BlobBoundMaterializedCarrierV3Generation1 carrier;
+  const auto admitted = dt::BlobLifetimeRuntimeFactoryV3Generation1::AdmitMaterialized(
+      SB_BLOB_OP_READ_V3, fixture.profile, &fixture.authority, &fixture.services,
+      fixture.pins, budget, fixture.services.monotonic_clock,
+      fixture.services.monotonic_clock, fixture.token, fixture.request,
+      capability, admission, carrier);
+  if (!admitted.ok()) return {admitted};
+  if (post_admission_mutation == 1) ++fixture.profile.receipt.registry_generation;
+  if (post_admission_mutation == 2) ++fixture.token.immutable_binding_generation;
+  if (use_scoped_consumer) {
+    VisitContext context;
+    auto visitor = dt::BlobLifetimeRuntimeConformanceAccessV3::Visitor(
+        CopyVisitor, &context);
+    return {dt::ConsumeBlobMaterializedValueScopedV3Generation1(
+        fixture.profile, carrier, std::move(admission), fixture.token,
+        fixture.request, visitor, null_allowed)};
+  }
+  return dt::ReadBlobMaterializedLengthV3Generation1(
+      fixture.profile, carrier, std::move(admission), fixture.token,
+      fixture.request, null_allowed);
+}
+
+void AuthenticatedMaterializedLength() {
+  const std::array<platform::byte, 4096> content{};
+  for (const auto state : {dt::BlobValueStateV3::value,
+                          dt::BlobValueStateV3::sql_null}) {
+    for (const auto length : {std::size_t{0}, std::size_t{1}, content.size()}) {
+      if (state == dt::BlobValueStateV3::sql_null && length != 0) continue;
+      Fixture fixture(3);
+      // Zero content-read allowance proves length never traverses the payload.
+      dt::BlobLifetimeRuntimeConformanceAccessV3::SetCounter(
+          fixture.ledger, dt::BlobLifetimeResourceV3::logical_bytes_read, 0, 0, 0);
+      const auto bytes = length == 0 ? std::span<const platform::byte>{}
+                                    : std::span{content}.first(length);
+      const auto before = allocation_probe::calls.load();
+      allocation_probe::enabled.store(true);
+      const auto result = AdmittedLength(fixture, state, bytes);
+      allocation_probe::enabled.store(false);
+      Check(allocation_probe::calls.load() == before,
+            "authenticated length allocated memory");
+      Check(result.ok() && result.length == length &&
+                result.is_null == (state == dt::BlobValueStateV3::sql_null),
+            "authenticated length conflated NULL/empty or lost exact length");
+      Check(fixture.fake.call_count == 3 && fixture.fake.calls[0] == 'R' &&
+                fixture.fake.calls[1] == 'P' && fixture.fake.calls[2] == 'L' &&
+                fixture.fake.pin_drop_calls == 2 && fixture.fake.pins == 1,
+            "length did not retain/probe/release and drain both pins exactly");
+      Check(dt::BlobLifetimeRuntimeConformanceAccessV3::Invoked(
+                fixture.ledger, dt::BlobLifetimeResourceV3::logical_bytes_read) == 0,
+            "length charged a content read");
+    }
+  }
+  for (std::uint64_t budget = 0; budget != 3; ++budget) {
+    Fixture fixture(budget);
+    const auto result = AdmittedLength(fixture, dt::BlobValueStateV3::value, content);
+    Check(!result.ok() && result.length == 0 && !result.is_null &&
+              result.runtime.diagnostic_code == "RESOURCE.BUDGET_EXCEEDED",
+          "length ignored callback budget or published failed metadata");
+    Check(CountCall(fixture.fake, 'R') == (budget == 2 ? 1 : 0) &&
+              CountCall(fixture.fake, 'P') == 0 &&
+              CountCall(fixture.fake, 'L') == (budget == 2 ? 1 : 0) &&
+              fixture.fake.pin_drop_calls == 2,
+          "length callback shortage lost reserved cleanup");
+  }
+  for (const bool scoped_consumer : {false, true}) {
+    for (const unsigned mutation : {1U, 2U}) {
+      Fixture fixture(3);
+      const auto result = AdmittedLength(fixture, dt::BlobValueStateV3::sql_null,
+                                        {}, false, mutation, scoped_consumer);
+      Check(!result.ok() && !result.is_null && result.length == 0 &&
+                fixture.fake.call_count == 0 && fixture.fake.pin_drop_calls == 2,
+            "NULL shortcut bypassed profile/binding validation");
+      if (mutation == 1)
+        Check(result.runtime.diagnostic_code == "CINL.LOB.DESCRIPTOR_INVALID" &&
+                  result.runtime.reason == "authority_profile_binding_mismatch",
+              "nonnullable NULL outranked stale profile");
+      else
+        Check(result.runtime.disposition ==
+                  dt::BlobLifetimeOuterDispositionV3::terminated_out_of_band,
+              "nonnullable NULL hid broken private admission");
+    }
+  }
+  {
+    Fixture fixture(3);
+    fixture.fake.poison_request_on_drop = &fixture.request;
+    const auto result = AdmittedLength(fixture, dt::BlobValueStateV3::value, content);
+    Check(result.ok() && result.length == content.size() && !result.is_null &&
+              fixture.request.operation == 0 && fixture.fake.pin_drop_calls == 2,
+          "length depended on request after final unpin");
+  }
+  {
+    Fixture fixture(3);
+    const auto result = AdmittedLength(fixture, dt::BlobValueStateV3::sql_null,
+                                      {}, false);
+    Check(!result.ok() && result.runtime.diagnostic_code == "BLOB.STATE_INVALID" &&
+              result.runtime.fact.parameters.supplied_state_u8 == 1 &&
+              result.runtime.fact.parameters.operation_enum == SB_BLOB_OP_READ_V3 &&
+              result.length == 0 && !result.is_null &&
+              fixture.fake.call_count == 0 && fixture.fake.pin_drop_calls == 2,
+          "nonnullable length did not refuse before lifetime callbacks");
+  }
+  // Exercise all legal callback failures at every callback used by length.
+  // The existing 95-cell diagnostic suite independently verifies each mapping.
+  for (const auto phase : {1, 2, 5}) {
+    for (std::uint8_t code = 1; code <= 18; ++code) {
+      Fixture fixture(3);
+      if (phase == 1) fixture.fake.retain_code = code;
+      if (phase == 2) fixture.fake.probe_code = code;
+      if (phase == 5) fixture.fake.release_code = code;
+      const auto result = AdmittedLength(fixture, dt::BlobValueStateV3::value, content);
+      Check(!result.ok() && !result.is_null && result.length == 0,
+            "lifetime failure published length");
+      Check(CountCall(fixture.fake, 'L') == (phase == 1 ? 0 : 1) &&
+                CountCall(fixture.fake, 'B') == 0 &&
+                CountCall(fixture.fake, 'E') == 0 &&
+                fixture.fake.pin_drop_calls == 2,
+            "length failure repeated cleanup or accessed bytes");
+    }
+  }
+  for (const bool security_cleanup : {false, true}) {
+    Fixture fixture(3);
+    fixture.fake.probe_code = SB_BLOB_CALLBACK_STALE_SNAPSHOT_V3;
+    fixture.fake.release_code = security_cleanup ? SB_BLOB_CALLBACK_SECURITY_DENIED_V3
+                                               : SB_BLOB_CALLBACK_AUTHORITY_UNAVAILABLE_V3;
+    const auto result = AdmittedLength(fixture, dt::BlobValueStateV3::value, content);
+    Check(!result.ok() && result.length == 0 &&
+              result.runtime.diagnostic_code == (security_cleanup
+                  ? "SECURITY.ACCESS_DENIED" : "CINL.LOB.HANDLE_EXPIRED") &&
+              CountCall(fixture.fake, 'L') == 1,
+          "length lost sticky primary or cleanup SECURITY override");
+  }
+  {
+    Fixture fixture(3);
+    fixture.fake.cancel_on_release = true;
+    const auto result = AdmittedLength(fixture, dt::BlobValueStateV3::value, content);
+    Check(!result.ok() && result.runtime.diagnostic_code == "PROCESS.CANCELLED" &&
+              result.length == 0 && !result.is_null &&
+              CountCall(fixture.fake, 'L') == 1,
+          "length published before final post-release cancellation gate");
+  }
+  {
+    Fixture fixture(3);
+    fixture.fake.throw_release = true;
+    const auto result = AdmittedLength(fixture, dt::BlobValueStateV3::value, content);
+    Check(result.runtime.disposition ==
+              dt::BlobLifetimeOuterDispositionV3::terminated_out_of_band &&
+              result.length == 0 && !result.is_null &&
+              fixture.fake.invariant_calls == 1 && fixture.fake.pin_drop_calls == 2,
+          "length published after release exception or lost quarantine");
+  }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -5180,6 +5364,7 @@ int main(int argc, char** argv) {
     return EXIT_SUCCESS;
   }
   ProductionPrecedence();
+  AuthenticatedMaterializedLength();
   NullVisitorStatePrecedence();
   FactoryEarlyGateObservability();
   FactoryStateAndClockBoundaries();
