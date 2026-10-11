@@ -10,6 +10,7 @@
 #include "crud_support/native_value_payload.hpp"
 #include "crud_support/retained_row_value_codec.hpp"
 #include "dml/update_column_identity.hpp"
+#include "dml/datatype_operator_registry_projection.hpp"
 #include "dml/update_retained_value_projection.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
@@ -3296,24 +3297,25 @@ bool DmlUpdateResolveColumnIdentity(
   // The outer descriptor identifies the relation column. The separate binary
   // datatype binding is the registry key; encoded descriptor text cannot
   // substitute identity authority for either UUID.
-  const auto lookup = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
-      context.datatype_registry_generation, binding.datatype_descriptor_uuid,
+  const auto* lookup = datatype_operator_projection::FindDatatypeProjection(
+      context, binding.datatype_descriptor_uuid,
       binding.datatype_descriptor_generation);
   const auto codec = fields.find("codec_id");
-  if (!lookup.ok || binding.type_uuid != lookup.row.type_uuid ||
-      BinaryCatalogUuid(metadata, "codec_uuid") != lookup.row.codec_uuid ||
-      codec == fields.end() || codec->second != lookup.row.codec_id ||
-      !number("type_generation", lookup.row.type_generation) ||
-      !number("codec_version", lookup.row.codec_version) ||
-      !number("codec_generation", lookup.row.codec_generation) ||
-      !number("null_encoding", lookup.row.null_encoding_code))
+  if (!lookup || binding.datatype_cohort != EngineDatatypeCohort{
+          context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+          context.datatype_registry_generation} || binding.type_uuid != lookup->type_uuid ||
+      BinaryCatalogUuid(metadata, "codec_uuid") != lookup->codec_uuid ||
+      codec == fields.end() || codec->second != lookup->codec_id ||
+      !number("type_generation", lookup->type_generation) ||
+      !number("codec_version", lookup->codec_version) ||
+      !number("codec_generation", lookup->codec_generation) ||
+      !number("null_encoding", lookup->null_encoding_code))
     return refuse_stale();
   // Keep all current catalog metadata/codec checks above. The recovered helper
   // only stages the validated binding; it cannot select or authorize a column.
   if (!BindDmlUpdateColumnIdentityV1(
           column.column_uuid, column.column_generation, column.ordinal,
-          column.canonical_name_key, binding, lookup.row, identity))
+          column.canonical_name_key, binding, *lookup, identity))
     return refuse_stale();
   return true;
 }
@@ -3357,16 +3359,13 @@ bool DmlUpdateBindLiteral(
       !DmlUpdateResolveColumnIdentity(context, column, identity, diagnostic)) {
     return false;
   }
-  const auto lookup = scratchbird::core::datatypes::
-      LookupDatatypeTypeCodecIdentityV1(
-          context.datatype_catalog_snapshot_uuid,
-          context.datatype_catalog_generation,
-          context.datatype_registry_generation,
+  const auto* lookup = datatype_operator_projection::FindDatatypeProjection(
+          context,
           identity->datatype_descriptor_uuid,
           identity->datatype_descriptor_generation);
   std::vector<std::uint8_t> canonical_binary;
-  if (!lookup.ok ||
-      !DmlUpdateEncodeSignedInteger(literal, lookup.row, &canonical_binary)) {
+  if (!lookup ||
+      !DmlUpdateEncodeSignedInteger(literal, *lookup, &canonical_binary)) {
     *diagnostic = DmlUpdateDescriptorDiagnostic(
         "DATATYPE.DESCRIPTOR.INVALID",
         "sblr.dml_update_rows.literal_codec_refused",

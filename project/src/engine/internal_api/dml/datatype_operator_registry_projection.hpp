@@ -4,12 +4,35 @@
 #include "api_types.hpp"
 #include "typed_update_carrier_codec.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "uuid.hpp"
 #include <algorithm>
 
 namespace scratchbird::engine::internal_api::datatype_operator_projection {
 namespace update_wire = scratchbird::wire;
 namespace datatype_catalog = scratchbird::core::datatypes;
+
+// The operation's admitted receipt selects the full immutable V3 row. DUDR's
+// fixed legacy fields are only a lossless wire projection, not a fallback to
+// the frozen V1 registry. New widths/profiles require their own carrier contract.
+inline const datatype_catalog::DatatypeTypeCodecIdentityRowV1* FindDatatypeProjection(
+    const EngineRequestContext& context, const EngineUuid& descriptor, std::uint64_t generation) noexcept {
+  const auto* selected = datatype_catalog::FindDatatypeTypeCodecIdentityV3(
+      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+      context.datatype_registry_generation, descriptor, generation);
+  if (!selected) return nullptr;
+  const auto& row = selected->legacy_fields;
+  const auto& native = selected->native_fields;
+  if (native.present &&
+      (native.canonical_value_minimum_bytes != row.canonical_value_minimum_bytes ||
+       native.canonical_value_maximum_bytes != row.canonical_value_maximum_bytes ||
+       native.canonical_value_transport_width != row.canonical_value_exact_bytes ||
+       native.canonical_value_variable_width != row.canonical_value_variable_width ||
+       !native.policy_profile_uuid.is_nil() || native.policy_profile_generation != 0 ||
+       std::any_of(native.profile_fingerprint_sha256.begin(), native.profile_fingerprint_sha256.end(),
+                   [](auto byte) { return byte != 0; }))) return nullptr;
+  return &row;
+}
 
 // Pure live-registry projection only. This supplies neither a statement
 // capability nor mutation/security authority. Each DML provider separately
@@ -62,26 +85,23 @@ inline bool BuildDatatypeRecord(
   update_wire::TypedUpdateDatatypeAuthorityRecord candidate;
   auto* output = record;
   record = &candidate;
-  const auto lookup = datatype_catalog::LookupDatatypeTypeCodecIdentityV1(
-      context.datatype_catalog_snapshot_uuid,
-      context.datatype_catalog_generation,
-      context.datatype_registry_generation,
+  const auto* selected = FindDatatypeProjection(context,
       UuidValue(reference.descriptor_uuid), reference.descriptor_generation);
-  if (!lookup.ok || lookup.row.type_uuid != UuidValue(reference.type_uuid) ||
-      lookup.row.type_generation != reference.type_generation ||
-      lookup.row.codec_id != reference.codec_id ||
-      lookup.row.codec_version != reference.codec_version ||
-      lookup.row.codec_generation != reference.codec_generation ||
-      !TypedUuid(lookup.row.descriptor_uuid, &record->descriptor_uuid) ||
-      !TypedUuid(lookup.row.type_uuid, &record->type_uuid) ||
-      !TypedUuid(lookup.row.catalog_snapshot_uuid,
+  if (!selected || selected->type_uuid != UuidValue(reference.type_uuid) ||
+      selected->type_generation != reference.type_generation ||
+      selected->codec_id != reference.codec_id ||
+      selected->codec_version != reference.codec_version ||
+      selected->codec_generation != reference.codec_generation ||
+      !TypedUuid(selected->descriptor_uuid, &record->descriptor_uuid) ||
+      !TypedUuid(selected->type_uuid, &record->type_uuid) ||
+      !TypedUuid(selected->catalog_snapshot_uuid,
                  &record->datatype_snapshot_uuid)) {
     return false;
   }
   // SBLR-DML-UPDATE-ROWS-DATATYPE-AUTHORITY-V2 projects the existing exact
   // TEXT registry identity. Its v1 closed-carrier code fields stay zero;
   // neither a codec spelling nor variable width alone admits another type.
-  const auto& row = lookup.row;
+  const auto& row = *selected;
   const bool text = datatype_catalog::IsExactCanonicalTextTypeCodecIdentityV1(row);
   if (!text &&
       (row.datatype_identity_code == 0 || row.null_encoding_code == 0 ||
@@ -95,33 +115,33 @@ inline bool BuildDatatypeRecord(
   record->datatype_identity_code =
       text ? update_wire::TypedUpdateDatatypeIdentityCode::text_v2
            : static_cast<update_wire::TypedUpdateDatatypeIdentityCode>(
-          lookup.row.datatype_identity_code);
+          row.datatype_identity_code);
   record->null_encoding_code =
       static_cast<update_wire::TypedUpdateNullEncodingCode>(
-          lookup.row.null_encoding_code);
+          row.null_encoding_code);
   record->byte_order_code =
       text ? update_wire::TypedUpdateByteOrderCode::byte_sequence
            : static_cast<update_wire::TypedUpdateByteOrderCode>(
-          lookup.row.byte_order_code);
-  record->is_signed = lookup.row.signed_code;
-  record->descriptor_generation = lookup.row.descriptor_generation;
-  record->type_generation = lookup.row.type_generation;
-  record->codec_version = lookup.row.codec_version;
-  record->canonical_name = lookup.row.canonical_name;
-  record->codec_id = lookup.row.codec_id;
+          row.byte_order_code);
+  record->is_signed = row.signed_code;
+  record->descriptor_generation = row.descriptor_generation;
+  record->type_generation = row.type_generation;
+  record->codec_version = row.codec_version;
+  record->canonical_name = row.canonical_name;
+  record->codec_id = row.codec_id;
   record->representation_code =
       text ? update_wire::TypedUpdateRepresentationCode::utf8_scalar_sequence
            : static_cast<update_wire::TypedUpdateRepresentationCode>(
-          lookup.row.representation_code);
-  record->codec_generation = lookup.row.codec_generation;
+          row.representation_code);
+  record->codec_generation = row.codec_generation;
   record->canonical_value_minimum_bytes =
-      lookup.row.canonical_value_minimum_bytes;
+      row.canonical_value_minimum_bytes;
   record->canonical_value_maximum_bytes =
-      lookup.row.canonical_value_maximum_bytes;
+      row.canonical_value_maximum_bytes;
   record->canonical_value_exact_bytes =
-      lookup.row.canonical_value_exact_bytes;
-  record->datatype_catalog_generation = lookup.row.catalog_generation;
-  record->datatype_registry_generation = lookup.row.registry_generation;
+      row.canonical_value_exact_bytes;
+  record->datatype_catalog_generation = row.catalog_generation;
+  record->datatype_registry_generation = row.registry_generation;
   *output = std::move(candidate);
   return true;
 }

@@ -70,13 +70,14 @@ bool ColumnType(const EngineRequestContext& context,
   // generation is a new profile, not permission to infer registry identity.
   if (binding.datatype_descriptor_generation != 1 ||
       !number("datatype_descriptor_generation", binding.datatype_descriptor_generation)) return false;
-  const auto current = dt::LookupDatatypeTypeCodecIdentityV1(
-      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
-      context.datatype_registry_generation, binding.datatype_descriptor_uuid,
+  const auto* current = projection::FindDatatypeProjection(
+      context, binding.datatype_descriptor_uuid,
       binding.datatype_descriptor_generation);
-  if (!current.ok) return false;
+  if (!current || binding.datatype_cohort != EngineDatatypeCohort{
+          context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+          context.datatype_registry_generation}) return false;
   const auto codec = fields.find("codec_id");
-  const auto& resolved = current.row;
+  const auto& resolved = *current;
   if (binding.type_uuid != resolved.type_uuid ||
       BinaryCatalogUuid(metadata, "codec_uuid") != resolved.codec_uuid || codec == fields.end() ||
       codec->second != resolved.codec_id ||
@@ -132,18 +133,17 @@ EngineDmlDeletePredicateBindingResultV1 BindDmlDeletePredicateV1(
   if (result.relation.relation_uuid != demand.target_relation_uuid_hint ||
       ValidateMgaRelationStorageDescriptor(result.relation).error)
     return refuse("live_relation_descriptor", "DATATYPE.DESCRIPTOR.INVALID");
-  const auto boolean = dt::LookupCanonicalBooleanTypeCodecIdentityV1(
-      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
-      context.datatype_registry_generation);
+  const auto* boolean = projection::FindDatatypeProjection(
+      context, projection::UuidValue(wire::kTypedUpdateBooleanUuid), 1);
   const auto operators = dt::LoadCurrentBuiltinOperatorRegistrySnapshotIdentityV1();
-  if (!boolean.ok || !operators.ok) return refuse("live_registry", "DATATYPE.DESCRIPTOR.INVALID");
+  if (!boolean || !operators.ok) return refuse("live_registry", "DATATYPE.DESCRIPTOR.INVALID");
   auto& predicate = result.predicate;
   if (!Issue(&predicate.identity.vector_uuid)) return refuse("expression_identity");
   predicate.identity.vector_generation = 1;
   predicate.identity.owner_descriptor_uuid = descriptor_uuid;
   predicate.identity.owner_descriptor_generation = descriptor_generation;
   wire::TypedUpdatePredicateRecord root;
-  if (!Issue(&root.node_occurrence_uuid) || !Output(boolean.row, &root))
+  if (!Issue(&root.node_occurrence_uuid) || !Output(*boolean, &root))
     return refuse("boolean_identity", "DATATYPE.DESCRIPTOR.INVALID");
   root.node_occurrence_generation = 1;
   if (demand.predicate_kind.empty()) {
@@ -179,11 +179,11 @@ EngineDmlDeletePredicateBindingResultV1 BindDmlDeletePredicateV1(
         operators.equality_operator_generation, type.descriptor_uuid, type.descriptor_generation,
         type.type_uuid, type.type_generation, type.descriptor_uuid, type.descriptor_generation,
         type.type_uuid, type.type_generation);
-    if (!equality.ok || equality.row.result_descriptor_uuid != boolean.row.descriptor_uuid ||
-        equality.row.result_descriptor_generation != boolean.row.descriptor_generation ||
-        equality.row.result_type_uuid != boolean.row.type_uuid || equality.row.result_type_generation != boolean.row.type_generation ||
-        equality.row.result_codec_id != boolean.row.codec_id || equality.row.result_codec_version != boolean.row.codec_version ||
-        equality.row.result_codec_generation != boolean.row.codec_generation)
+    if (!equality.ok || equality.row.result_descriptor_uuid != boolean->descriptor_uuid ||
+        equality.row.result_descriptor_generation != boolean->descriptor_generation ||
+        equality.row.result_type_uuid != boolean->type_uuid || equality.row.result_type_generation != boolean->type_generation ||
+        equality.row.result_codec_id != boolean->codec_id || equality.row.result_codec_version != boolean->codec_version ||
+        equality.row.result_codec_generation != boolean->codec_generation)
       return refuse("equality_registry", "DATATYPE.DESCRIPTOR.INVALID");
     wire::TypedUpdatePredicateRecord column, literal;
     if (!Issue(&column.node_occurrence_uuid) || !Issue(&literal.node_occurrence_uuid) ||

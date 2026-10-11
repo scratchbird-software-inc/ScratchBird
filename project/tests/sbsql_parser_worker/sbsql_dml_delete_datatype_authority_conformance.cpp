@@ -25,8 +25,9 @@ api::EngineRequestContext Context(const fixture::Fixture& f, std::string phase) 
   c.statement_snapshot_generation = 1;
   c.statement_metadata_snapshot_uuid = native_uuid(f.descriptor.catalog_snapshot_uuid);
   c.catalog_generation_id = f.descriptor.catalog_generation;
-  c.datatype_catalog_snapshot_uuid = native_uuid(wire::kTypedUpdateDatatypeSnapshotUuid);
-  c.datatype_catalog_generation = c.datatype_registry_generation = 1;
+  c.datatype_catalog_snapshot_uuid = native_uuid(f.datatypes.identity.vector_uuid);
+  c.datatype_catalog_generation = f.datatypes.records.front().datatype_catalog_generation;
+  c.datatype_registry_generation = f.descriptor.datatype_registry_generation;
   c.statement_metadata_snapshot_engine_owned = c.security_context_present = true;
   c.authorization_context.present = true;
   c.authorization_context.principal_uuid = c.principal_uuid;
@@ -36,8 +37,21 @@ api::EngineRequestContext Context(const fixture::Fixture& f, std::string phase) 
   return c;
 }
 int main() try {
+  namespace dt = scratchbird::core::datatypes;
+  for (const auto& [snapshot, generation] : std::array{
+           std::pair{dt::kDatatypeCohortV1, std::uint64_t{1}},
+           std::pair{dt::kDatatypeCohortV10, std::uint64_t{10}},
+           std::pair{dt::kDatatypeCohortV11, std::uint64_t{11}}}) {
   for (unsigned profile = 0; profile != 3; ++profile) {
     auto f = fixture::Make(profile);
+    f.descriptor.datatype_registry_generation = generation;
+    f.datatypes.identity.vector_uuid = snapshot.bytes;
+    f.datatypes.identity.vector_generation = generation;
+    for (auto& row : f.datatypes.records) {
+      row.datatype_snapshot_uuid = snapshot.bytes;
+      row.datatype_catalog_generation = row.datatype_registry_generation = generation;
+    }
+    fixture::Seal(f);
     auto binder = Context(f, "private_dml_delete_rows_binder");
     auto consumer = Context(f, "private_dml_delete_rows_consumer");
     auto recovery = Context(f, "private_dml_delete_rows_recovery");
@@ -112,6 +126,7 @@ int main() try {
     bad = f; bad.descriptor.security_context_uuid = fixture::Uuid(90);
     fixture::Seal(bad);
     Check(!capture(binder, bad).ok, "cross-security descriptor admitted");
+  }
   }
   std::cout << "DELETE datatype authority checks=" << checks << " failures=0\n";
   return 0;

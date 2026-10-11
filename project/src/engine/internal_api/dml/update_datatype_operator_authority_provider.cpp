@@ -159,19 +159,16 @@ ResolveDmlUpdateDatatypeOperatorBindingAuthorityV1(
       ValidateProviderContext(request.context, ProviderPhaseV1::binder);
   if (result.diagnostic.error) return result;
 
-  const auto boolean =
-      datatype_catalog::LookupCanonicalBooleanTypeCodecIdentityV1(
-      request.context.datatype_catalog_snapshot_uuid,
-      request.context.datatype_catalog_generation,
-      request.context.datatype_registry_generation);
+  const auto* boolean = datatype_operator_projection::FindDatatypeProjection(
+      request.context, UuidValue(update_wire::kTypedUpdateBooleanUuid), 1);
   const auto operator_snapshot =
       datatype_catalog::LoadCurrentBuiltinOperatorRegistrySnapshotIdentityV1();
-  if (!boolean.ok || boolean.row.datatype_identity_code != 1 ||
-      boolean.row.canonical_name != "boolean" ||
-      boolean.row.null_encoding_code != 1 ||
-      boolean.row.byte_order_code != 1 || boolean.row.signed_code ||
-      boolean.row.representation_code != 1 ||
-      boolean.row.canonical_value_exact_bytes != 1 ||
+  if (!boolean || boolean->datatype_identity_code != 1 ||
+      boolean->canonical_name != "boolean" ||
+      boolean->null_encoding_code != 1 ||
+      boolean->byte_order_code != 1 || boolean->signed_code ||
+      boolean->representation_code != 1 ||
+      boolean->canonical_value_exact_bytes != 1 ||
       !operator_snapshot.ok ||
       !ExactUuid(operator_snapshot.snapshot_uuid) ||
       operator_snapshot.registry_generation == 0) {
@@ -181,16 +178,16 @@ ResolveDmlUpdateDatatypeOperatorBindingAuthorityV1(
     return result;
   }
 
-  result.datatype_snapshot_uuid = boolean.row.catalog_snapshot_uuid;
-  result.datatype_catalog_generation = boolean.row.catalog_generation;
-  result.datatype_registry_generation = boolean.row.registry_generation;
-  result.boolean_descriptor_uuid = boolean.row.descriptor_uuid;
-  result.boolean_descriptor_generation = boolean.row.descriptor_generation;
-  result.boolean_type_uuid = boolean.row.type_uuid;
-  result.boolean_type_generation = boolean.row.type_generation;
-  result.boolean_codec_id = boolean.row.codec_id;
-  result.boolean_codec_version = boolean.row.codec_version;
-  result.boolean_codec_generation = boolean.row.codec_generation;
+  result.datatype_snapshot_uuid = boolean->catalog_snapshot_uuid;
+  result.datatype_catalog_generation = boolean->catalog_generation;
+  result.datatype_registry_generation = boolean->registry_generation;
+  result.boolean_descriptor_uuid = boolean->descriptor_uuid;
+  result.boolean_descriptor_generation = boolean->descriptor_generation;
+  result.boolean_type_uuid = boolean->type_uuid;
+  result.boolean_type_generation = boolean->type_generation;
+  result.boolean_codec_id = boolean->codec_id;
+  result.boolean_codec_version = boolean->codec_version;
+  result.boolean_codec_generation = boolean->codec_generation;
   result.builtin_operator_snapshot_uuid = operator_snapshot.snapshot_uuid;
   result.builtin_operator_registry_generation =
       operator_snapshot.registry_generation;

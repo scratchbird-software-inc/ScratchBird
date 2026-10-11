@@ -8,16 +8,20 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/update_datatype_operator_authority_provider.hpp"
+#include "dml/datatype_operator_registry_projection.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "admitted_datatype_cohort.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <iostream>
 #include <span>
 #include <string>
 #include <string_view>
 #include <vector>
+#include <utility>
 
 namespace {
 
@@ -619,12 +623,135 @@ void TestTextV2CaptureAndRecovery() {
           "v2 provider mutated the general registry's closed v1 carrier codes");
 }
 
+void TestCurrentCohortAuthority() {
+  namespace dt = scratchbird::core::datatypes;
+  for (const auto& [snapshot, generation] : std::array{
+           std::pair{dt::kDatatypeCohortV10, std::uint64_t{10}},
+           std::pair{dt::kDatatypeCohortV11, std::uint64_t{11}}}) {
+    auto context = Context();
+    context.datatype_catalog_snapshot_uuid = snapshot;
+    context.datatype_catalog_generation = generation;
+    context.datatype_registry_generation = generation;
+    api::EngineDmlUpdateDatatypeOperatorBindingRequestV1 binding;
+    binding.context = context;
+    const auto resolved = api::ResolveDmlUpdateDatatypeOperatorBindingAuthorityV1(binding);
+    Require(resolved.ok && resolved.datatype_snapshot_uuid == snapshot &&
+                resolved.datatype_catalog_generation == generation &&
+                resolved.datatype_registry_generation == generation,
+            "current exact cohort BOOLEAN prebinding failed");
+    binding.equality_required = true;
+    binding.left_descriptor_uuid = binding.right_descriptor_uuid = kBigintDescriptorUuid;
+    binding.left_descriptor_generation = binding.right_descriptor_generation = 1;
+    binding.left_type_uuid = binding.right_type_uuid = kBigintTypeUuid;
+    binding.left_type_generation = binding.right_type_generation = 1;
+    const auto equality_binding = api::ResolveDmlUpdateDatatypeOperatorBindingAuthorityV1(binding);
+    Require(equality_binding.ok && equality_binding.datatype_snapshot_uuid == snapshot &&
+                equality_binding.equality_operator_uuid == NativeIdentity(wire::kTypedUpdateEqualOperatorUuid) &&
+                equality_binding.equality_operator_generation == 1,
+            "current exact cohort equality prebinding failed");
+    for (const auto [text, equality] : std::array{
+             std::pair{false, false}, std::pair{false, true},
+             std::pair{true, false}, std::pair{true, true}}) {
+      auto fixture = MakeFixture(equality, text);
+      fixture.descriptor.datatype_registry_generation = generation;
+      wire::TypedUpdateCarrierError error;
+      Require(wire::EncodeTypedUpdateDescriptor(fixture.descriptor, &fixture.dudc, &error) &&
+                  wire::DecodeAndValidateTypedUpdateDescriptor(fixture.dudc, &fixture.descriptor, &error),
+              "current cohort DUDC encoding failed");
+      const auto captured = Capture(fixture, context);
+      Require(captured.ok && captured.datatype_snapshot_handle.valid() &&
+                  captured.datatypes.format_version == (text ? 2 : 1) &&
+                  captured.operators.records.size() == (equality ? 1 : 0) &&
+                  captured.datatypes.identity.vector_uuid == snapshot.bytes &&
+                  captured.datatypes.identity.vector_generation == generation,
+              "current cohort exact datatype authority capture failed");
+      auto consumer = context;
+      consumer.trace_tags = {"private_dml_update_rows_consumer"};
+      Require(!api::RevalidateDmlUpdateDatatypeOperatorAuthorityV1(consumer, captured).error,
+              "current cohort retained authority did not revalidate");
+      auto recovery = context;
+      recovery.trace_tags = {"private_dml_update_rows_recovery"};
+      Require(!api::RevalidateRecoveredDmlUpdateDatatypeOperatorAuthorityV1(
+                  recovery, fixture.descriptor, fixture.assignments, fixture.predicate,
+                  captured.datatypes, captured.operators).error,
+              "current cohort exact durable authority did not revalidate");
+      auto substituted = captured.datatypes;
+      substituted.exact_bytes.back() ^= 1;
+      Require(api::RevalidateRecoveredDmlUpdateDatatypeOperatorAuthorityV1(
+                  recovery, fixture.descriptor, fixture.assignments, fixture.predicate,
+                  substituted, captured.operators).error,
+              "current cohort recovery admitted changed durable datatype bytes");
+      for (unsigned field = 0; field < 3; ++field) {
+        auto stale = context;
+        if (field == 0) stale.datatype_catalog_snapshot_uuid = {};
+        if (field == 1) ++stale.datatype_catalog_generation;
+        if (field == 2) ++stale.datatype_registry_generation;
+        const auto refused = Capture(fixture, stale);
+        Require(!refused.ok && !refused.datatype_snapshot_handle.valid() &&
+                    !refused.operator_snapshot_handle.valid(),
+                "mismatched current cohort received datatype authority");
+      }
+    }
+  }
+}
+
+void TestExactClosedProjection() {
+  namespace dt = scratchbird::core::datatypes;
+  namespace projection = api::datatype_operator_projection;
+  const std::array allowed{
+      NativeIdentity(wire::kTypedUpdateBooleanUuid), kBigintDescriptorUuid, kTextDescriptorUuid,
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d716"),
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d714"),
+      scratchbird::tests::FixtureUuidLiteral("a0000000-6465-7369-ad61-6c0000000000")};
+  unsigned admitted = 0, refused = 0;
+  for (const auto& selected : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row = selected.legacy_fields;
+    auto context = Context();
+    context.datatype_catalog_snapshot_uuid = row.catalog_snapshot_uuid;
+    context.datatype_catalog_generation = row.catalog_generation;
+    context.datatype_registry_generation = row.registry_generation;
+    projection::DatatypeReference reference{row.descriptor_uuid.bytes, row.descriptor_generation,
+        row.type_uuid.bytes, row.type_generation, row.codec_id, row.codec_version, row.codec_generation};
+    wire::TypedUpdateDatatypeAuthorityRecord output;
+    output.canonical_name = "unchanged-on-refusal";
+    output.exact_bytes = {9, 8, 7};
+    const bool expected = std::find(allowed.begin(), allowed.end(), row.descriptor_uuid) != allowed.end();
+    const bool accepted = projection::BuildDatatypeRecord(context, reference, &output);
+    Require(accepted == expected, "exact registry projection widened or lost a closed datatype profile");
+    if (!accepted) {
+      ++refused;
+      Require(output.canonical_name == "unchanged-on-refusal" && output.exact_bytes == std::vector<std::uint8_t>{9, 8, 7},
+              "refused native profile replaced the caller's output");
+      continue;
+    }
+    ++admitted;
+    Require(output.datatype_snapshot_uuid == row.catalog_snapshot_uuid.bytes &&
+                output.datatype_catalog_generation == row.catalog_generation &&
+                output.datatype_registry_generation == row.registry_generation &&
+                output.canonical_value_minimum_bytes == row.canonical_value_minimum_bytes &&
+                output.canonical_value_maximum_bytes == row.canonical_value_maximum_bytes &&
+                output.canonical_value_exact_bytes == row.canonical_value_exact_bytes,
+            "exact cohort projection changed identity or native extent");
+    const auto original = output;
+    ++reference.codec_generation;
+    Require(!projection::BuildDatatypeRecord(context, reference, &output) &&
+                output.descriptor_uuid == original.descriptor_uuid &&
+                output.codec_generation == original.codec_generation &&
+                output.datatype_snapshot_uuid == original.datatype_snapshot_uuid,
+            "wrong codec generation admitted or overwrote the existing projection");
+  }
+  Require(admitted == 66 && refused != 0,
+          "projection must exercise all six frozen profiles in all eleven exact cohorts");
+}
+
 }  // namespace
 
 int main() {
   TestPrebindingAndCanonicalTrue();
   TestEqualityBindingAndOperatorAuthority();
   TestTextV2CaptureAndRecovery();
+  TestCurrentCohortAuthority();
+  TestExactClosedProjection();
   std::cout
       << "sbsql_dml_update_datatype_operator_authority_provider_conformance: PASS\n";
   return EXIT_SUCCESS;

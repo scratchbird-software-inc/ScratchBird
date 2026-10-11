@@ -54,6 +54,7 @@
 #include <array>
 #include <cstdint>
 #include <cerrno>
+#include <charconv>
 #include <csignal>
 #include <cstdlib>
 #include <filesystem>
@@ -3117,7 +3118,37 @@ api::EngineApiResult SelectFromTableById(
   request.source_object.object_kind = "table";
   request.select_predicate.predicate_kind = "column_equals";
   request.select_predicate.canonical_predicate_envelope = "id";
-  request.select_predicate.bound_values.push_back(TextValue(std::move(id)));
+  // This private post-state oracle supplies an already-bound integer value,
+  // not a text spelling for a parser to cast. Never compare display digits
+  // with the persisted little-endian integer bytes.
+  const auto relation = api::LoadMgaRelationStorageDescriptor(context, table_uuid);
+  Require(relation.ok, "typed post-state relation descriptor unavailable");
+  const auto column = std::find_if(relation.descriptor.columns.begin(), relation.descriptor.columns.end(),
+      [](const auto& value) { return value.canonical_name_key == "id"; });
+  Require(column != relation.descriptor.columns.end(), "typed post-state id column absent");
+  const auto& descriptor = column->value_descriptor;
+  const auto* datatype = scratchbird::core::datatypes::FindDatatypeTypeCodecIdentityV3(
+      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+      context.datatype_registry_generation, descriptor.datatype_descriptor_uuid,
+      descriptor.datatype_descriptor_generation);
+  Require(datatype && descriptor.datatype_cohort == api::EngineDatatypeCohort{
+              context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+              context.datatype_registry_generation} &&
+              datatype->legacy_fields.descriptor_uuid == scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711") &&
+              datatype->legacy_fields.type_uuid == descriptor.type_uuid &&
+              datatype->legacy_fields.canonical_value_exact_bytes == 8,
+          "typed post-state oracle requires the exact INT64 column binding");
+  std::int64_t number = 0;
+  const auto parsed = std::from_chars(id.data(), id.data() + id.size(), number);
+  Require(parsed.ec == std::errc{} && parsed.ptr == id.data() + id.size(),
+          "typed post-state oracle integer spelling invalid");
+  api::EngineTypedValue bound;
+  bound.descriptor = descriptor;
+  bound.setState(api::EngineValueState::value);
+  const auto bits = static_cast<std::uint64_t>(number);
+  for (unsigned byte = 0; byte < 8; ++byte)
+    bound.binary_value.push_back(static_cast<std::uint8_t>(bits >> (8 * byte)));
+  request.select_predicate.bound_values.push_back(std::move(bound));
   request.select_projection.canonical_projection_envelopes.push_back("id");
   const auto selected = api::EngineSelectRows(request);
   Require(selected.ok, "typed UPDATE post-state select failed");
@@ -4830,20 +4861,20 @@ void VerifyTypedUpdateDescriptorContract(
   auto context = TypedUpdateStatementContext(transaction, "01");
   VerifyPublicDmlResourceShutdown(TypedUpdateStatementContext(
       BeginTransaction(database_path, "2ff"), "fe"));
-  const auto boolean_identity =
-      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+  const auto* boolean_identity =
+      scratchbird::core::datatypes::FindDatatypeTypeCodecIdentityV3(
           context.datatype_catalog_snapshot_uuid,
           context.datatype_catalog_generation,
           context.datatype_registry_generation,
           scratchbird::tests::FixtureUuidLiteral("01000000-626f-7f6c-a561-6e0000000000"), 1);
-  Require(boolean_identity.ok &&
-              boolean_identity.row.type_uuid ==
+  Require(boolean_identity &&
+              boolean_identity->legacy_fields.type_uuid ==
                   scratchbird::tests::FixtureUuidLiteral("01000000-626f-7f6c-a561-6e0000000000") &&
-              boolean_identity.row.type_generation == 1 &&
-              boolean_identity.row.codec_id == "datatype.boolean.u8.v1" &&
-              boolean_identity.row.codec_version == 1 &&
-              boolean_identity.row.codec_generation == 1 &&
-              boolean_identity.row.canonical_value_bytes == 1,
+              boolean_identity->legacy_fields.type_generation == 1 &&
+              boolean_identity->legacy_fields.codec_id == "datatype.boolean.u8.v1" &&
+              boolean_identity->legacy_fields.codec_version == 1 &&
+              boolean_identity->legacy_fields.codec_generation == 1 &&
+              boolean_identity->legacy_fields.canonical_value_bytes == 1,
           "typed UPDATE boolean predicate identity registry row drifted");
 
   api::EngineDmlUpdateRowsBindingDemandV1 demand;
@@ -5975,6 +6006,7 @@ int main(int argc, char** argv) {
 
   CreateSchemaAndTable(database_path);
   if (descriptor_only) {
+    VerifyTypedUpdateAllRowsContract(database_path);
     VerifyTypedDeleteDescriptorContract(database_path);
     VerifyTypedUpdateDescriptorContract(database_path);
     FixtureTypedStatements().clear();
