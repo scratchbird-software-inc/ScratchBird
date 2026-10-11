@@ -363,6 +363,95 @@ bool AdmitDecimalComparisonResult(const EngineDescriptor& descriptor,
   return true;
 }
 
+// Publish an already typed function result, not an implicit arithmetic cast.
+// The occurrence may change; datatype authority and the value's profile may not.
+bool PublishBoundScalarFunctionResult(const EngineTypedValue& source,
+    const EngineDescriptor& target, EngineTypedValue* output, std::string* detail) {
+  namespace dt = core::datatypes;
+  namespace numeric = scratchbird::libraries::sbl_numeric;
+  const auto type = dt::CanonicalTypeIdFromStableName(target.canonical_type_name);
+  const auto& binding = source.descriptor;
+  engine::ExecutionTypeDescriptor from, to;
+  if (!QowBoundExecutionTypeDescriptorV1(binding, type, &from, detail) ||
+      !QowBoundExecutionTypeDescriptorV1(target, type, &to, detail)) return false;
+  if (binding.canonical_type_name != target.canonical_type_name ||
+      binding.type_uuid != target.type_uuid ||
+      binding.datatype_descriptor_uuid != target.datatype_descriptor_uuid ||
+      binding.datatype_descriptor_generation != target.datatype_descriptor_generation ||
+      binding.datatype_cohort != target.datatype_cohort ||
+      !binding.charset_uuid.is_nil() || !target.charset_uuid.is_nil() ||
+      !binding.collation_uuid.is_nil() || !target.collation_uuid.is_nil() ||
+      from.precision != to.precision || from.scale != to.scale) {
+    *detail = "DATATYPE.DESCRIPTOR.INVALID:function result profile changed";
+    return false;
+  }
+  if (type == dt::CanonicalTypeId::decimal) {
+    dt::DatatypeSortKeyRequest from_profile, to_profile;
+    if (!dt::BindExactDecimalSortKeyProfile(from, &from_profile) ||
+        !dt::BindExactDecimalSortKeyProfile(to, &to_profile) ||
+        !AdmitDecimalArithmeticCodec(binding, {from_profile.decimal_codec_uuid, 1}, from) ||
+        !AdmitDecimalArithmeticCodec(target, {to_profile.decimal_codec_uuid, 1}, to)) {
+      *detail = "DATATYPE.DESCRIPTOR.INVALID:function DECIMAL codec binding invalid";
+      return false;
+    }
+  } else {
+    for (const auto* descriptor : {&binding, &target}) {
+      CatalogColumnMetadata fields;
+      if (!AdmitCatalogColumnMetadata(descriptor->encoded_descriptor, &fields) ||
+          !fields.identities.empty()) {
+        *detail = "DATATYPE.DESCRIPTOR.INVALID:function numeric metadata invalid";
+        return false;
+      }
+      for (const auto& [name, ignored] : fields.text) {
+        if (name != "nullability" && name != "nullable") {
+          *detail = "DATATYPE.DESCRIPTOR.INVALID:function numeric modifier unsupported";
+          return false;
+        }
+      }
+    }
+  }
+  if (source.state == EngineValueState::sql_null) {
+    if (!source.is_null || !from.nullable_allowed || !to.nullable_allowed ||
+        !source.encoded_value.empty() || !source.binary_value.empty()) {
+      *detail = "DATATYPE.NULL_STATE.INVALID:function SQL NULL invalid";
+      return false;
+    }
+  } else {
+    if (source.state != EngineValueState::value || source.is_null ||
+        (type != dt::CanonicalTypeId::boolean && !source.encoded_value.empty())) {
+      *detail = "NUMERIC.ENCODING.NONCANONICAL:function native carrier invalid";
+      return false;
+    }
+    if (type == dt::CanonicalTypeId::boolean) {
+      if (!source.binary_value.empty() ||
+          (source.encoded_value != "true" && source.encoded_value != "false")) {
+        *detail = "NUMERIC.ENCODING.NONCANONICAL:function boolean carrier invalid";
+        return false;
+      }
+    } else if (type == dt::CanonicalTypeId::decimal) {
+      const auto error = numeric::ValidateExactDecimal(source.binary_value.data(),
+          source.binary_value.size(), {from.precision <= 38
+              ? numeric::ExactDecimalCodec::le24_v1 : numeric::ExactDecimalCodec::le40_v1,
+              from.precision, from.scale});
+      if (error != numeric::ExactDecimalError::none) {
+        *detail = std::string("NUMERIC.ENCODING.NONCANONICAL:") + numeric::ExactDecimalErrorName(error);
+        return false;
+      }
+    } else {
+      const auto width = type == dt::CanonicalTypeId::int8 ? 1u :
+          type == dt::CanonicalTypeId::int16 ? 2u : type == dt::CanonicalTypeId::int32 ? 4u : 8u;
+      if (source.binary_value.size() != width) {
+        *detail = "NUMERIC.ENCODING.NONCANONICAL:function native width invalid";
+        return false;
+      }
+    }
+  }
+  auto staged = source;
+  staged.descriptor = target;
+  *output = std::move(staged);
+  return true;
+}
+
 }  // namespace
 }  // namespace scratchbird::engine::internal_api
 
@@ -2543,6 +2632,18 @@ bool QowEvaluateCanonicalTypedExpressionV1(
         *refusal_detail =
             "bound function result or target descriptor is invalid";
         return false;
+      }
+      if (source_type == result_type &&
+          (source_type == dt::CanonicalTypeId::boolean ||
+           source_type == dt::CanonicalTypeId::decimal ||
+           source_type == dt::CanonicalTypeId::int8 ||
+           source_type == dt::CanonicalTypeId::int16 ||
+           source_type == dt::CanonicalTypeId::int32 ||
+           source_type == dt::CanonicalTypeId::int64 ||
+           source_type == dt::CanonicalTypeId::uint64 ||
+           source_type == dt::CanonicalTypeId::real64)) {
+        return PublishBoundScalarFunctionResult(function_value, request.result_descriptor,
+                                                   &result->value, refusal_detail);
       }
       if (function_value.isSqlNull() ||
           source_type == dt::CanonicalTypeId::uuid || source_type == dt::CanonicalTypeId::binary ||

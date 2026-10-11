@@ -9,10 +9,26 @@
 #include "../support/binary_uuid_fixture.hpp"
 #include "query/historical_timestamp_scalar.hpp"
 #include "mga_relation_store/stored_scalar_descriptor.hpp"
+#include "sbl_numeric.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <source_location>
 #include <bit>
+#include <new>
+
+// One-shot allocation failures leave diagnostics/retry allocations available.
+thread_local long descriptor_allocation_budget = -1;
+void* operator new(std::size_t size) {
+  if (descriptor_allocation_budget == 0) {
+    descriptor_allocation_budget = -1;
+    throw std::bad_alloc();
+  }
+  if (descriptor_allocation_budget > 0) --descriptor_allocation_budget;
+  if (auto* allocation = std::malloc(size ? size : 1)) return allocation;
+  throw std::bad_alloc();
+}
+void operator delete(void* allocation) noexcept { std::free(allocation); }
+void operator delete(void* allocation, std::size_t) noexcept { std::free(allocation); }
 namespace s = scratchbird::engine::sblr;
 namespace a = scratchbird::engine::internal_api;
 namespace d = scratchbird::core::datatypes;
@@ -111,6 +127,252 @@ void CheckV3RelationalBindings() {
   Check(cases == 9);
 }
 
+void CheckFunctionResultAdmission(const a::EngineTypedValue& input) {
+  const auto type = d::CanonicalTypeIdFromStableName(input.descriptor.canonical_type_name);
+  if (type == d::CanonicalTypeId::uuid || type == d::CanonicalTypeId::binary) return;
+  a::EngineCanonicalExpressionEvaluationRequest request;
+  request.consumer = a::EngineCanonicalExpressionConsumer::projection;
+  request.operation = a::EngineCanonicalExpressionOperation::scalar_function;
+  request.precomputed_value = input;
+  request.result_descriptor = input.descriptor;
+  request.result_descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(1086, 1021);
+  const auto evaluate = [&](const auto& candidate, bool accepted) {
+    a::EngineCanonicalExpressionEvaluationResult result;
+    result.value = input;
+    std::string detail;
+    const bool ok = a::QowEvaluateCanonicalTypedExpressionV1(candidate, &result, &detail);
+    if (ok != accepted) std::cerr << input.descriptor.canonical_type_name << ':' << detail << '\n';
+    Check(ok == accepted);
+    if (ok) {
+      Check(result.value.descriptor == candidate.result_descriptor &&
+          result.value.state == candidate.precomputed_value->state &&
+          result.value.is_null == candidate.precomputed_value->is_null &&
+          result.value.binary_value == candidate.precomputed_value->binary_value &&
+          result.value.encoded_value == candidate.precomputed_value->encoded_value);
+    } else {
+      Check(!detail.empty() && result.value.state == a::EngineValueState::error &&
+            result.value.binary_value.empty() && result.value.encoded_value.empty());
+    }
+  };
+  evaluate(request, true);
+  bool exhausted = false;
+  unsigned injected_failures = 0;
+  for (long budget = 0; budget < 2048; ++budget) {
+    a::EngineCanonicalExpressionEvaluationResult result;
+    result.value = input;
+    std::string detail;
+    bool accepted = false;
+    descriptor_allocation_budget = budget;
+    try { accepted = a::QowEvaluateCanonicalTypedExpressionV1(request, &result, &detail); }
+    catch (const std::bad_alloc&) {}
+    const bool injected = descriptor_allocation_budget == -1;
+    descriptor_allocation_budget = -1;
+    if (!injected) { Check(accepted); exhausted = true; break; }
+    ++injected_failures;
+    Check(!accepted && result.value.state == a::EngineValueState::error &&
+        result.value.encoded_value.empty() && result.value.binary_value.empty());
+    evaluate(request, true);
+  }
+  Check(exhausted && injected_failures > 0);
+  for (bool source_side : {true, false}) {
+    for (unsigned mutation = 0; mutation < 8; ++mutation) {
+      auto bad = request;
+      auto& descriptor = source_side ? bad.precomputed_value->descriptor : bad.result_descriptor;
+      if (mutation == 0) ++descriptor.datatype_cohort.catalog_generation;
+      if (mutation == 1) ++descriptor.datatype_descriptor_generation;
+      if (mutation == 2) descriptor.type_uuid.bytes[0] ^= 1;
+      if (mutation == 3) descriptor.charset_uuid = scratchbird::tests::FixtureUuid(1086, 1022);
+      if (mutation == 4) descriptor.collation_uuid = scratchbird::tests::FixtureUuid(1086, 1022);
+      if (mutation == 5) descriptor.descriptor_uuid = {};
+      if (mutation >= 6) {
+        a::CatalogColumnMetadata fields;
+        Check(a::AdmitCatalogColumnMetadata(descriptor.encoded_descriptor, &fields));
+        if (mutation == 6) fields.text["unknown_modifier"] = "1";
+        if (mutation == 7) fields.identities["unknown_uuid"] = scratchbird::tests::FixtureUuid(1086, 1022);
+        Check(a::EncodeCatalogColumnMetadata(fields, &descriptor.encoded_descriptor));
+      }
+      evaluate(bad, false);
+      evaluate(request, true);
+    }
+  }
+  for (unsigned mutation = 0; mutation < 5; ++mutation) {
+    auto bad = request;
+    auto& value = *bad.precomputed_value;
+    if (mutation == 0) { value.setState(a::EngineValueState::sql_null); value.binary_value = {0}; }
+    if (mutation == 1) { value.setState(a::EngineValueState::value); value.is_null = true; }
+    if (mutation == 2) value.state = a::EngineValueState::missing;
+    if (mutation == 3) { value.setState(a::EngineValueState::value); value.encoded_value = "invalid"; }
+    if (mutation == 4) { value.setState(a::EngineValueState::value); value.binary_value.assign(3, 0); }
+    evaluate(bad, false);
+  }
+  for (bool source_nullable : {false, true}) for (bool target_nullable : {false, true}) {
+    auto candidate = request;
+    for (bool source_side : {true, false}) {
+      auto& descriptor = source_side ? candidate.precomputed_value->descriptor : candidate.result_descriptor;
+      a::CatalogColumnMetadata fields;
+      Check(a::AdmitCatalogColumnMetadata(descriptor.encoded_descriptor, &fields));
+      fields.text.erase("nullable");
+      fields.text["nullability"] = (source_side ? source_nullable : target_nullable) ? "nullable" : "non_null";
+      Check(a::EncodeCatalogColumnMetadata(fields, &descriptor.encoded_descriptor));
+    }
+    if (!input.is_null) evaluate(candidate, true);
+    candidate.precomputed_value->setState(a::EngineValueState::sql_null);
+    candidate.precomputed_value->encoded_value.clear(); candidate.precomputed_value->binary_value.clear();
+    evaluate(candidate, source_nullable && target_nullable);
+  }
+  if (type == d::CanonicalTypeId::decimal) {
+    for (bool source_side : {true, false}) for (const auto key : {"precision", "scale", "decimal_codec_generation"}) {
+      auto bad = request;
+      auto& descriptor = source_side ? bad.precomputed_value->descriptor : bad.result_descriptor;
+      a::CatalogColumnMetadata fields;
+      Check(a::AdmitCatalogColumnMetadata(descriptor.encoded_descriptor, &fields));
+      fields.text.at(key) = std::to_string(std::stoul(fields.text.at(key)) + 1);
+      Check(a::EncodeCatalogColumnMetadata(fields, &descriptor.encoded_descriptor));
+      evaluate(bad, false);
+    }
+  }
+  if (type == d::CanonicalTypeId::boolean) {
+    auto boolean = request;
+    boolean.precomputed_value->setState(a::EngineValueState::value);
+    boolean.precomputed_value->binary_value.clear();
+    for (const auto spelling : {"true", "false", "TRUE", "FALSE", "0", "1"}) {
+      boolean.precomputed_value->encoded_value = spelling;
+      evaluate(boolean, std::string_view(spelling) == "true" || std::string_view(spelling) == "false");
+    }
+  }
+  if (!input.is_null && type != d::CanonicalTypeId::decimal && type != d::CanonicalTypeId::boolean) {
+    auto bits = request;
+    for (const auto byte : {0x80, 0xff}) {
+      std::fill(bits.precomputed_value->binary_value.begin(), bits.precomputed_value->binary_value.end(), byte);
+      evaluate(bits, true); // Signed extremes and REAL64 NaN payload stay bit-exact.
+    }
+    if (type == d::CanonicalTypeId::real64) {
+      bits.precomputed_value->binary_value = {0,0,0,0,0,0,0,0x80};
+      evaluate(bits, true); // Negative zero.
+    }
+  }
+}
+
+// Function callbacks here are counted component producers, not live registry
+// authority. Descriptor construction must not execute them to learn metadata.
+void CheckProjectDescriptorInference(a::RelationalTypeDescriptor source_descriptor,
+                                     const a::EngineTypedValue& input_value) {
+  CheckFunctionResultAdmission(input_value);
+  namespace planner = scratchbird::engine::planner;
+  source_descriptor.descriptor_id = 1;
+  auto output_descriptor = source_descriptor;
+  output_descriptor.descriptor_id = 2;
+  output_descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(1086, 1010);
+  a::EngineDescriptor expected;
+  Check(s::BuildExactCanonicalScalarRuntimeDescriptorV1(output_descriptor,
+      d::CanonicalTypeIdFromStableName(input_value.descriptor.canonical_type_name), &expected));
+  a::TypedRelationalDag dag;
+  dag.descriptors = {source_descriptor, output_descriptor};
+  a::RelationalExpressionRecord leaf, function;
+  leaf.expression_id = 1;
+  leaf.expression_kind = a::RelationalExpressionKind::kIdentifier;
+  leaf.result_descriptor_id = 1;
+  leaf.bound_name_uuid = scratchbird::tests::FixtureUuid(1086, 1011);
+  function.expression_id = 2;
+  function.expression_kind = a::RelationalExpressionKind::kParenthesized;
+  function.result_descriptor_id = 2;
+  function.child_expression_ids = {1};
+  dag.expressions = {leaf, function};
+  dag.outputs = {{1, 2, 2, "result", 2, true, 0}};
+  planner::CanonicalLogicalRelationalNode root, source;
+  root.logical_node_id = 2;
+  root.output_descriptor_ids = {2};
+  root.bound_expression_ids = {2};
+  source.logical_node_id = 1;
+  source.output_descriptor_ids = {1};
+  s::MaterializedValues input;
+  input.ok = true;
+  input.batch.columns.push_back({"input", input_value.descriptor,
+      source_descriptor.nullability == a::RelationalNullability::kNullable, 1});
+  input.result_bindings.resize(1);
+  unsigned calls = 0;
+  s::CanonicalRelationalExpressionRuntimeServices services;
+  services.function_evaluator = [&](const a::EngineUuid& identity,
+      const std::vector<a::EngineTypedValue>& arguments, const a::EngineDescriptor& target,
+      a::EngineTypedValue* value, std::string*, std::string*) {
+    ++calls;
+    Check(identity == scratchbird::tests::FixtureUuid(1086, 1012) && arguments.empty() && target == expected);
+    *value = input_value;
+    value->descriptor = target;
+    return true;
+  };
+  for (const unsigned rows : {0, 1, 3}) {
+    input.batch.rows.assign(rows, {{input_value}});
+    calls = 0;
+    const auto prepared = s::PrepareExpressionProjectRootForComposition(dag, root, source, input, services);
+    if (!prepared.ok) std::cerr << prepared.detail << '\n';
+    Check(prepared.ok && calls == 0 && prepared.expression_output_batch.rows.size() == rows);
+    Check(prepared.expression_output_batch.columns.front().descriptor == expected);
+    for (const auto& row : prepared.expression_output_batch.rows) {
+      const auto& value = row.values.front();
+      Check(value.descriptor == expected && value.binary_value == input_value.binary_value &&
+            value.encoded_value == input_value.encoded_value && value.state == input_value.state);
+    }
+    s::CanonicalRelationalExpressionRuntime runtime(dag, services);
+    auto output = expected;
+    Check(runtime.DescribeBoundDescriptor(2, expected.canonical_type_name, &output, &input.detail));
+    Check(output == expected && calls == 0);
+    auto invalid = dag;
+    ++invalid.descriptors.back().codec_generation;
+    s::CanonicalRelationalExpressionRuntime stale(invalid, services);
+    Check(!stale.DescribeBoundDescriptor(2, expected.canonical_type_name, &output, &input.detail));
+    Check(output == expected && calls == 0); // Atomic refusal, no execution.
+    Check(!s::PrepareExpressionProjectRootForComposition(invalid, root, source, input, services).ok);
+    Check(calls == 0);
+  }
+  // The existing object-free function runtime supplies a real callback-count
+  // oracle. It is not the independently restricted row-function profile.
+  auto& callable = dag.expressions.back();
+  callable.expression_kind = a::RelationalExpressionKind::kFunctionCall;
+  callable.function_uuid = scratchbird::tests::FixtureUuid(1086, 1012);
+  callable.child_expression_ids.clear();
+  s::CanonicalRelationalExpressionRuntime runtime(dag, services);
+  std::string type;
+  Check(runtime.InferType(2, std::nullopt, &type, &input.detail));
+  a::EngineDescriptor described;
+  Check(runtime.DescribeBoundDescriptor(2, type, &described, &input.detail));
+  Check(calls == 0 && described == expected);
+  a::EngineTypedValue evaluated;
+  const bool evaluated_ok = runtime.Evaluate(2, type, &evaluated, &input.detail);
+  if (!evaluated_ok) std::cerr << type << ":" << input.detail << '\n';
+  Check(evaluated_ok);
+  Check(calls == 1 && evaluated.descriptor == described &&
+        evaluated.binary_value == input_value.binary_value &&
+        evaluated.encoded_value == input_value.encoded_value &&
+        evaluated.state == input_value.state);
+  // A callable service does not admit the separately bounded row-function
+  // profile. Retain that refusal rather than treating metadata as authority.
+  Check(!s::PrepareExpressionProjectRootForComposition(dag, root, source, input, services).ok);
+  Check(calls == 1);
+  // VALUES uses the same exact descriptor builder, without substituting an
+  // incomplete column descriptor for REAL64/DECIMAL/BOOLEAN/smaller integers.
+  a::RelationalDagNode node;
+  node.node_id = 2;
+  node.node_kind = a::RelationalDagNodeKind::kValues;
+  node.output_descriptor_ids = {2};
+  node.values_row_ids = {1, 2, 3};
+  dag.nodes = {node};
+  dag.values_rows = {{1, {2}}, {2, {2}}, {3, {2}}};
+  calls = 0;
+  const auto values = s::MaterializeValues(dag, root, services);
+  if (!values.ok) std::cerr << values.detail << '\n';
+  Check(values.ok && calls == 3 && values.batch.rows.size() == 3 &&
+        values.batch.columns.front().descriptor == described);
+  for (const auto& row : values.batch.rows) {
+    const auto& value = row.values.front();
+    Check(value.descriptor == described && value.binary_value == input_value.binary_value &&
+          value.encoded_value == input_value.encoded_value && value.state == input_value.state);
+  }
+  ++dag.descriptors.back().codec_generation;
+  const auto refused = s::MaterializeValues(dag, root, services);
+  Check(!refused.ok && refused.batch.columns.empty() && refused.batch.rows.empty() && calls == 3);
+}
+
 void CheckExplicitDecimalProfiles() {
   namespace ex = scratchbird::engine::executor;
   unsigned cohorts = 0;
@@ -194,10 +456,12 @@ void CheckExplicitDecimalProfiles() {
       expected[1] = 1; expected[2] = 1; expected[4] = 2; // Half-even -> 2.
       Check(diagnostic.ok && diagnostic.numeric_facts.inexact && cast.binary_value == expected &&
             cast.encoded_value.empty() && cast.descriptor == target);
+      CheckProjectDescriptorInference(source, cast);
       if (nullable == a::RelationalNullability::kNullable) {
         value.binary_value.clear(); value.setState(a::EngineValueState::sql_null);
         const auto null = ex::CastDescriptorValue(value, target, &diagnostic);
         Check(diagnostic.ok && null.is_null && null.binary_value.empty() && null.descriptor == target);
+        CheckProjectDescriptorInference(source, null);
       }
       auto missing = source; missing.decimal_codec_profile.reset();
       Check(s::BuildExactCanonicalScalarRuntimeDescriptorV1(missing, d::CanonicalTypeId::decimal, &target));
@@ -225,6 +489,109 @@ void CheckExplicitDecimalProfiles() {
     }
   }
   Check(cohorts == 3);
+}
+
+void CheckDecimalBatchAdmission() {
+  namespace ex = scratchbird::engine::executor;
+  namespace num = scratchbird::libraries::sbl_numeric;
+  for (const unsigned precision : {18u, 50u}) {
+    const auto profile = num::ExactDecimalProfile{precision <= 38
+        ? num::ExactDecimalCodec::le24_v1 : num::ExactDecimalCodec::le40_v1, precision, 2};
+    auto descriptor = ex::MakeExecutorDescriptor("decimal", "nullability=nullable;precision=" +
+        std::to_string(precision) + ";scale=2", {d::kDatatypeCohortV11, 11, 11});
+    descriptor.descriptor_kind = "scalar";
+    scratchbird::engine::ExecutionTypeDescriptor execution;
+    std::string detail;
+    Check(ex::BuildBoundExecutionTypeDescriptor(descriptor, d::CanonicalTypeId::decimal, &execution, &detail));
+    d::DatatypeSortKeyRequest binding;
+    Check(d::BindExactDecimalSortKeyProfile(execution, &binding));
+    a::CatalogColumnMetadata fields;
+    Check(a::AdmitCatalogColumnMetadata(descriptor.encoded_descriptor, &fields));
+    fields.identities["decimal_codec_uuid"] = binding.decimal_codec_uuid;
+    fields.text["decimal_codec_generation"] = "1";
+    Check(a::EncodeCatalogColumnMetadata(fields, &descriptor.encoded_descriptor));
+    a::EngineTypedValue present;
+    present.descriptor = descriptor;
+    const auto encoded = num::EncodeBoundExactDecimal("-12.34", profile);
+    Check(encoded.ok());
+    present.binary_value = encoded.bytes;
+    CheckFunctionResultAdmission(present);
+    a::EngineTypedValue null;
+    null.descriptor = descriptor;
+    null.setState(a::EngineValueState::sql_null);
+    const auto check = [&](const ex::DescriptorBatch& batch, bool accepted) {
+      const auto before = batch;
+      const auto ordinary = ex::ValidateDescriptorBatch(batch);
+      const auto canonical = ex::ValidateCanonicalDescriptorBatch(batch, {1});
+      Check(ordinary.ok == accepted && canonical.ok == accepted);
+      Check(s::CanonicalQueryDescriptorBatchesExactlyEqual(batch, before));
+    };
+    for (unsigned shape = 0; shape < 3; ++shape) {
+      ex::DescriptorBatch batch;
+      batch.columns.push_back({"decimal", descriptor, true, 1});
+      if (shape != 0) batch.rows.push_back({{shape == 1 ? present : null}});
+      check(batch, true);
+      for (bool canonical : {false, true}) {
+        bool exhausted = false;
+        unsigned injected_failures = 0;
+        for (long budget = 0; budget < 2048; ++budget) {
+          const auto before = batch;
+          const std::vector<std::uint32_t> ids{1};
+          bool accepted = false;
+          descriptor_allocation_budget = budget;
+          try {
+            accepted = canonical ? ex::ValidateCanonicalDescriptorBatch(batch, ids).ok
+                                 : ex::ValidateDescriptorBatch(batch).ok;
+          } catch (const std::bad_alloc&) {}
+          const bool injected = descriptor_allocation_budget == -1;
+          descriptor_allocation_budget = -1;
+          Check(s::CanonicalQueryDescriptorBatchesExactlyEqual(batch, before));
+          if (!injected) { Check(accepted); exhausted = true; break; }
+          ++injected_failures;
+          Check(!accepted);
+          check(batch, true);
+        }
+        Check(exhausted && injected_failures > 0);
+      }
+      for (unsigned mutation = 0; mutation < 8; ++mutation) {
+        auto bad = batch;
+        auto altered = fields;
+        if (mutation == 0) altered.identities.clear();
+        if (mutation == 1) altered.text["decimal_codec_generation"] = "2";
+        if (mutation == 2) altered.identities["decimal_codec_uuid"].bytes[0] ^= 1;
+        if (mutation == 3) altered.text["scale"] = std::to_string(precision + 1);
+        if (mutation == 4) altered.text["unknown_modifier"] = "1";
+        if (mutation == 5) {
+          altered.identities["codec_uuid"] = binding.decimal_codec_uuid;
+          altered.identities["codec_uuid"].bytes[0] ^= 1;
+          altered.text["codec_generation"] = "1";
+        }
+        auto& changed = bad.columns.front().descriptor;
+        Check(a::EncodeCatalogColumnMetadata(altered, &changed.encoded_descriptor));
+        if (mutation == 6) ++changed.datatype_cohort.catalog_generation;
+        if (mutation == 7) bad.columns.front().nullable = false;
+        if (!bad.rows.empty()) bad.rows.front().values.front().descriptor = changed;
+        check(bad, false);
+        check(batch, true);
+      }
+    }
+    for (unsigned mutation = 0; mutation < 9; ++mutation) {
+      ex::DescriptorBatch bad;
+      bad.columns.push_back({"decimal", descriptor, true, 1});
+      bad.rows.push_back({{present}});
+      auto& value = bad.rows.front().values.front();
+      if (mutation == 0) value.binary_value.pop_back();
+      if (mutation == 1) value.binary_value.push_back(0);
+      if (mutation == 2) value.encoded_value = "-12.34";
+      if (mutation == 3) { value.binary_value.clear(); value.encoded_value = "-12.34"; }
+      if (mutation == 4) value.binary_value[0] = 0xff;
+      if (mutation == 5) value.setState(a::EngineValueState::sql_null); // Dirty NULL.
+      if (mutation == 6) value.is_null = true;
+      if (mutation == 7) value.state = a::EngineValueState::missing;
+      if (mutation == 8) value.descriptor.descriptor_uuid.bytes[0] ^= 1;
+      check(bad, false);
+    }
+  }
 }
 
 void CheckPreparedAggregateCohortCustody() {
@@ -354,6 +721,7 @@ void CheckGroupedPreparationCohortCustody() {
 int main() {
   CheckV3RelationalBindings();
   CheckExplicitDecimalProfiles();
+  CheckDecimalBatchAdmission();
   CheckPreparedAggregateCohortCustody();
   CheckGroupedPreparationCohortCustody();
   unsigned qualified_producer_receipts = 0;
@@ -983,6 +1351,7 @@ int main() {
     Check(actual.descriptor == value.descriptor && actual.encoded_value == value.encoded_value &&
           actual.binary_value == value.binary_value && actual.state == value.state &&
           actual.is_null == value.is_null);
+    CheckProjectDescriptorInference(descriptor, value);
     if (type != d::CanonicalTypeId::boolean) {
       auto malformed = input;
       malformed.batch.rows.front().values.front().encoded_value = "0";

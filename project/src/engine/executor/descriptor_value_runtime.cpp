@@ -416,6 +416,36 @@ bool DescriptorU32(const EngineDescriptor& descriptor,
   return true;
 }
 
+bool ValidateBoundDecimalColumn(const EngineDescriptor& descriptor, bool nullable) {
+  ExecutionTypeDescriptor execution;
+  core::datatypes::DatatypeDecimalCodecBindingV1 codec;
+  return BuildBoundDecimalExecutionTypeDescriptor(descriptor, &execution, &codec) &&
+      execution.nullable_allowed == nullable;
+}
+
+bool ValidateBoundDecimalPayload(const EngineTypedValue& value, std::string* detail) {
+  namespace numeric = scratchbird::libraries::sbl_numeric;
+  ExecutionTypeDescriptor execution;
+  core::datatypes::DatatypeDecimalCodecBindingV1 codec;
+  if (!BuildBoundDecimalExecutionTypeDescriptor(value.descriptor, &execution, &codec)) {
+    *detail = "DECIMAL profile binding is invalid";
+    return false;
+  }
+  if (!value.encoded_value.empty()) {
+    *detail = "DECIMAL requires its exclusive native binary payload";
+    return false;
+  }
+  const auto error = numeric::ValidateExactDecimal(value.binary_value.data(),
+      value.binary_value.size(), {execution.precision <= 38
+          ? numeric::ExactDecimalCodec::le24_v1 : numeric::ExactDecimalCodec::le40_v1,
+          execution.precision, execution.scale});
+  if (error != numeric::ExactDecimalError::none) {
+    *detail = numeric::ExactDecimalErrorName(error);
+    return false;
+  }
+  return true;
+}
+
 bool ValidateExpandedScalarEncoding(const EngineTypedValue& value,
                                     std::string* detail) {
   namespace dt = scratchbird::core::datatypes;
@@ -1178,6 +1208,10 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
       return ErrorDiagnostic("SB_EXECUTOR_DESCRIPTOR_TYPE_UNSUPPORTED", descriptor.canonical_type_name, 0, column);
     }
     const auto type = CanonicalDescriptorTypeId(descriptor);
+    if (type == CanonicalTypeId::decimal &&
+        !ValidateBoundDecimalColumn(descriptor, batch.columns[column].nullable))
+      return ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID",
+                             "DECIMAL column profile or nullability is invalid", 0, column);
     if (type == CanonicalTypeId::timestamp &&
         descriptor.encoded_descriptor.starts_with("SBMETA02")) {
       bool nullable = false;
@@ -1260,6 +1294,12 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
             "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
             "non-value sentinel or legacy NULL flag reached operator", row,
             column);
+      }
+      if (CanonicalDescriptorTypeId(expected.descriptor) == CanonicalTypeId::decimal) {
+        std::string detail;
+        if (!ValidateBoundDecimalPayload(value, &detail))
+          return ErrorDiagnostic("NUMERIC.ENCODING.NONCANONICAL", std::move(detail), row, column);
+        continue;
       }
       if (CanonicalDescriptorTypeId(expected.descriptor) == CanonicalTypeId::uint64) {
         std::uint64_t decoded = 0;
@@ -1640,6 +1680,10 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
     }
     const auto& bound_column = batch.columns[column];
     const auto& descriptor = bound_column.descriptor;
+    if (CanonicalDescriptorTypeId(descriptor) == CanonicalTypeId::decimal &&
+        !ValidateBoundDecimalColumn(descriptor, bound_column.nullable))
+      return ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID",
+                             "DECIMAL column profile or nullability is invalid", 0, column);
     if (descriptor.canonical_type_name == "timestamp" &&
         descriptor.encoded_descriptor.starts_with("SBMETA02")) {
       bool nullable = false;
@@ -1731,6 +1775,12 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
             "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
             "legacy NULL flag or non-value sentinel reached operator", row,
             column);
+      }
+      if (CanonicalDescriptorTypeId(bound_column.descriptor) == CanonicalTypeId::decimal) {
+        std::string detail;
+        if (!ValidateBoundDecimalPayload(value, &detail))
+          return ErrorDiagnostic("NUMERIC.ENCODING.NONCANONICAL", std::move(detail), row, column);
+        continue;
       }
       if (IsCanonicalInt128DescriptorV1(bound_column.descriptor) &&
           (!value.encoded_value.empty() || value.binary_value.size() != 16)) {

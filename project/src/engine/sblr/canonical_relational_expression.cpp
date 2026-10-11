@@ -3300,6 +3300,19 @@ bool CanonicalRelationalExpressionRuntime::InferTypeForConsumer(
   return inferred;
 }
 
+bool CanonicalRelationalExpressionRuntime::DescribeBoundDescriptor(
+    const std::uint32_t descriptor_id,
+    const std::string_view canonical_type_name,
+    api::EngineDescriptor* descriptor,
+    std::string* refusal_detail) const {
+  if (descriptor == nullptr || refusal_detail == nullptr) return false;
+  api::EngineDescriptor candidate;
+  if (!BuildDescriptor(descriptor_id, canonical_type_name, &candidate,
+                       refusal_detail)) return false;
+  *descriptor = std::move(candidate);
+  return true;
+}
+
 bool CanonicalRelationalExpressionRuntime::EvaluateForConsumer(
     const std::uint32_t expression_id,
     const std::string_view expected_type,

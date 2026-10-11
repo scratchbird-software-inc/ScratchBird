@@ -287,6 +287,15 @@ class CanonicalRelationalExpressionRuntime {
       std::string* canonical_type_name,
       std::string* refusal_detail);
 
+  // Produces the same descriptor used by evaluation after type inference,
+  // without invoking functions or reading row payloads. This checks the bound
+  // descriptor, not statement admission. Output is unchanged on failure.
+  bool DescribeBoundDescriptor(
+      std::uint32_t descriptor_id,
+      std::string_view canonical_type_name,
+      internal_api::EngineDescriptor* descriptor,
+      std::string* refusal_detail) const;
+
   bool EvaluateForConsumer(
       std::uint32_t expression_id,
       std::string_view expected_type,

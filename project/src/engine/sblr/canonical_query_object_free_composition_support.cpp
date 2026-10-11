@@ -198,42 +198,11 @@ MaterializedValues MaterializeValues(
       return result;
     }
     api::EngineDescriptor engine_descriptor;
-    engine_descriptor.descriptor_uuid =
-        descriptor->second->descriptor_uuid;
-    engine_descriptor.type_uuid = descriptor->second->type_uuid;
-    engine_descriptor.descriptor_kind = "scalar";
-    engine_descriptor.canonical_type_name = type_names[column];
-    engine_descriptor.encoded_descriptor =
-        std::string("nullability=") +
-        (descriptor->second->nullability ==
-                 api::RelationalNullability::kNullable
-             ? "nullable"
-             : "non_null");
-    engine_descriptor.collation_uuid = descriptor->second->collation_uuid.value_or(api::EngineUuid{});
-    if (descriptor->second->timezone_profile_id.has_value()) {
-      engine_descriptor.encoded_descriptor +=
-          ";timezone_profile_id=" + *descriptor->second->timezone_profile_id;
-    }
-    if (descriptor->second->width.has_value()) {
-      engine_descriptor.encoded_descriptor +=
-          ";width=" + std::to_string(*descriptor->second->width);
-    }
-    if (descriptor->second->precision.has_value()) {
-      engine_descriptor.encoded_descriptor +=
-          ";precision=" + std::to_string(*descriptor->second->precision);
-    }
-    if (descriptor->second->scale.has_value()) {
-      engine_descriptor.encoded_descriptor +=
-          ";scale=" + std::to_string(*descriptor->second->scale);
-    }
-    const auto native_type = dt::CanonicalTypeIdFromStableName(type_names[column]);
-    if ((native_type == dt::CanonicalTypeId::uuid || native_type == dt::CanonicalTypeId::binary ||
-         native_type == dt::CanonicalTypeId::int32 ||
-         native_type == dt::CanonicalTypeId::int64) &&
-        !BuildExactCanonicalScalarRuntimeDescriptorV1(*descriptor->second, native_type, &engine_descriptor)) {
+    if (!expression_runtime.DescribeBoundDescriptor(
+            descriptor->second->descriptor_id, type_names[column],
+            &engine_descriptor, &result.detail)) {
       result.batch = {};
       result.result_bindings.clear();
-      result.detail = "live VALUES canonical native binary datatype receipt binding is invalid";
       return result;
     }
     result.batch.columns.push_back(

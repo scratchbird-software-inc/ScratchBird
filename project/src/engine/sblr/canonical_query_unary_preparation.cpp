@@ -825,6 +825,7 @@ PreparedProjectRoot PrepareExpressionProjectRoot(
 
     PreparedProjectExpression prepared_expression;
     prepared_expression.expression_id = expression_id;
+    api::EngineDescriptor output_descriptor;
     if (!PrepareInputRowBinding(
             dag, expression_id, input_node.output_descriptor_ids,
             &prepared_expression.row_binding, &result.detail) ||
@@ -833,8 +834,8 @@ PreparedProjectRoot PrepareExpressionProjectRoot(
             type_inference_row,
             api::EngineCanonicalExpressionConsumer::projection,
             &prepared_expression.expected_type, &result.detail) ||
-        prepared_expression.expected_type.empty() ||
-        prepared_expression.expected_type == "null") {
+        !runtime.DescribeBoundDescriptor(expression->second->result_descriptor_id,
+            prepared_expression.expected_type, &output_descriptor, &result.detail)) {
       if (result.detail.empty()) {
         result.detail = "expression PROJECT result type is unresolved";
       }
@@ -850,67 +851,6 @@ PreparedProjectRoot PrepareExpressionProjectRoot(
       result.detail =
           "expression PROJECT descriptor metadata contradicts its result type";
       return result;
-    }
-    api::EngineDescriptor output_descriptor;
-    if (!input.batch.rows.empty()) {
-      api::EngineTypedValue first_value;
-      if (!runtime.EvaluateForConsumer(
-              expression_id, prepared_expression.expected_type,
-              prepared_expression.row_binding,
-              input.batch.rows.front().values,
-              api::EngineCanonicalExpressionConsumer::projection,
-              &first_value, &result.detail)) {
-        return result;
-      }
-      output_descriptor = std::move(first_value.descriptor);
-    } else {
-      const auto& source = *descriptor->second;
-      output_descriptor.descriptor_uuid = source.descriptor_uuid;
-      output_descriptor.type_uuid = source.type_uuid;
-      output_descriptor.descriptor_kind = "scalar";
-      output_descriptor.canonical_type_name =
-          prepared_expression.expected_type;
-      output_descriptor.encoded_descriptor =
-          std::string("nullability=") +
-          (source.nullability == api::RelationalNullability::kNullable
-               ? "nullable"
-               : "non_null");
-      output_descriptor.collation_uuid = source.collation_uuid.value_or(api::EngineUuid{});
-      if (source.timezone_profile_id.has_value()) {
-        output_descriptor.encoded_descriptor +=
-            ";timezone_profile_id=" + *source.timezone_profile_id;
-      }
-      if (source.width.has_value()) {
-        output_descriptor.encoded_descriptor +=
-            ";width=" + std::to_string(*source.width);
-      }
-      if (source.precision.has_value()) {
-        output_descriptor.encoded_descriptor +=
-            ";precision=" + std::to_string(*source.precision);
-      }
-      if (source.scale.has_value()) {
-        output_descriptor.encoded_descriptor +=
-            ";scale=" + std::to_string(*source.scale);
-      }
-      if (type_id == dt::CanonicalTypeId::timestamp &&
-          source.codec_id == "datatype.timestamp.utc_tuple.le.v1" &&
-          !api::BuildHistoricalTimestampScalarDescriptorV1(source, &output_descriptor, &result.detail))
-        return result;
-      // Empty planning batches must produce the same bound descriptor as
-      // row evaluation. Occurrence/type UUIDs alone are not datatype authority.
-      if ((type_id == dt::CanonicalTypeId::uuid ||
-           type_id == dt::CanonicalTypeId::binary ||
-           type_id == dt::CanonicalTypeId::boolean ||
-           type_id == dt::CanonicalTypeId::int8 ||
-           type_id == dt::CanonicalTypeId::int16 ||
-           type_id == dt::CanonicalTypeId::int32 ||
-           type_id == dt::CanonicalTypeId::int64 ||
-           type_id == dt::CanonicalTypeId::uint64 ||
-           type_id == dt::CanonicalTypeId::real64) &&
-          !BuildExactCanonicalScalarRuntimeDescriptorV1(source, type_id, &output_descriptor)) {
-        result.detail = "empty PROJECT native datatype binding is invalid";
-        return result;
-      }
     }
     output_columns.push_back(
         {output->output_name_utf8, std::move(output_descriptor),
