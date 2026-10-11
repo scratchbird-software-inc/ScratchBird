@@ -12,7 +12,9 @@
 #include "copy_on_write.hpp"
 #include "transaction_cleanup_horizon_service.hpp"
 #include "transaction_horizon.hpp"
+#include "metric_registry.hpp"
 
+#include <array>
 #include <string>
 #include <vector>
 
@@ -82,6 +84,25 @@ struct LocalCleanupWorksetRequest {
   bool reclaim_obsolete_committed_versions = true;
 };
 
+// Independent observation outcomes, not a cleanup/commit receipt. An unavailable
+// measurement is not published as zero. Earlier accepted samples survive a
+// later refusal; callers must not retry the whole workset to retry telemetry.
+enum class LocalCleanupMetricFailure { none, source_unavailable, resource_exhausted, outcome_unknown };
+struct LocalCleanupMetricOutcome {
+  bool attempted = false;
+  core::metrics::MetricValidationResult publication;
+  LocalCleanupMetricFailure failure = LocalCleanupMetricFailure::none;
+  const char* diagnostic_code() const noexcept {
+    switch (failure) {
+      case LocalCleanupMetricFailure::source_unavailable:
+      case LocalCleanupMetricFailure::outcome_unknown: return "METRIC.OBSERVATION_SOURCE_UNAVAILABLE";
+      case LocalCleanupMetricFailure::resource_exhausted: return "METRIC.OBSERVATION_RESOURCE_EXHAUSTED";
+      default: return publication.diagnostic_code.c_str();
+    }
+  }
+};
+using LocalCleanupMetricOutcomes = std::array<LocalCleanupMetricOutcome, 5>;
+
 struct LocalCleanupWorksetResult {
   Status status;
   LocalTransactionHorizons horizons;
@@ -99,6 +120,8 @@ struct LocalCleanupWorksetResult {
   bool bounded_memory_limit_hit = false;
   bool physical_storage_mutated = false;
   DiagnosticRecord diagnostic;
+  // reclaimed count, horizon, retained count, measured retention age, blocked count.
+  LocalCleanupMetricOutcomes metric_outcomes;
 
   bool ok() const {
     return status.ok() && cleanup_horizon_authoritative;
@@ -136,6 +159,14 @@ TransactionCleanupDecisionResult EvaluateLocalCleanupWithAuthoritativeHolds(
     const std::vector<AuthoritativeCleanupHold>& additional_holds);
 LocalCleanupWorksetResult ApplyLocalCleanupWithAuthoritativeInventory(
     const LocalCleanupWorksetRequest& request);
+// Projection of an already completed workset into an already-owned registry.
+// Does not register descriptors/series, admit cleanup, or certify physical effects.
+LocalCleanupMetricOutcomes PublishLocalCleanupWorksetMetrics(
+    const LocalCleanupWorksetRequest&, const LocalCleanupWorksetResult&,
+    core::metrics::MetricRegistry&) noexcept;
+// Contains first-use allocation failure of the process-owned registry too.
+LocalCleanupMetricOutcomes PublishLocalCleanupWorksetMetrics(
+    const LocalCleanupWorksetRequest&, const LocalCleanupWorksetResult&) noexcept;
 LocalGarbageCollectionSweepResult RunLocalGarbageCollectionSweep(
     const LocalGarbageCollectionSweepRequest& request);
 DiagnosticRecord MakeTransactionCleanupDiagnostic(Status status,

@@ -13,6 +13,8 @@
 
 #include <algorithm>
 #include <limits>
+#include <new>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -268,44 +270,89 @@ bool IsKnownSweepFamily(LocalCleanupSweepFamily family) {
   return family != LocalCleanupSweepFamily::unknown;
 }
 
-double RetentionAgeMicroseconds(const LocalCleanupWorksetResult& result) {
-  if (result.oldest_retained_row_version_local_transaction_id == 0 ||
-      result.authoritative_cleanup_horizon_local_transaction_id <=
-          result.oldest_retained_row_version_local_transaction_id) {
+std::optional<double> RetentionAgeMicroseconds(const LocalCleanupWorksetRequest& request,
+                                             const LocalCleanupWorksetResult& result) {
+  if (result.retained_row_version_count == 0 &&
+      result.oldest_retained_row_version_local_transaction_id == 0) {
     return 0.0;
   }
-  return static_cast<double>((result.authoritative_cleanup_horizon_local_transaction_id -
-                              result.oldest_retained_row_version_local_transaction_id) * 1000ull);
+  // Transaction sequence distance is not elapsed time. An inventory may have
+  // compacted either entry, or its horizon may be the not-yet-allocated next ID.
+  // In those cases no age measurement exists. Never invent one from the IDs.
+  const TransactionInventoryEntry* oldest = nullptr;
+  const TransactionInventoryEntry* horizon = nullptr;
+  for (const auto& entry : request.inventory.entries) {
+    if (entry.identity.local_id.value == result.oldest_retained_row_version_local_transaction_id) {
+      if (oldest) return std::nullopt;
+      oldest = &entry;
+    }
+    if (entry.identity.local_id.value == result.authoritative_cleanup_horizon_local_transaction_id) {
+      if (horizon) return std::nullopt;
+      horizon = &entry;
+    }
+  }
+  if (!oldest || !horizon || !oldest->begin_unix_epoch_millis ||
+      !horizon->begin_unix_epoch_millis ||
+      horizon->begin_unix_epoch_millis < oldest->begin_unix_epoch_millis)
+    return std::nullopt;
+  // The duration family is REAL64; subtract exact timestamps first and multiply
+  // in REAL64, avoiding UINT64 wraparound in the millisecond-to-microsecond scale.
+  return static_cast<double>(horizon->begin_unix_epoch_millis - oldest->begin_unix_epoch_millis) * 1000.0;
 }
 
-void PublishCleanupWorksetMetrics(const LocalCleanupWorksetResult& result) {
-  (void)scratchbird::core::metrics::IncrementCounter(
+template <typename Publish>
+void ObserveCleanupMetric(LocalCleanupMetricOutcome& outcome, Publish&& publish) noexcept {
+  outcome.attempted = true;
+  try {
+    outcome.publication = publish();
+  } catch (const std::bad_alloc&) {
+    // Allocation-free receipt: registry stages allocations before publishing
+    // its sample. Do not allocate a diagnostic while handling allocation loss.
+    outcome.failure = LocalCleanupMetricFailure::resource_exhausted;
+  } catch (const std::length_error&) {
+    outcome.failure = LocalCleanupMetricFailure::resource_exhausted;
+  } catch (...) {
+    // Preserve the earlier receipts and primary cleanup result. An unexpected
+    // failure is not proof of no observation effects and does not permit replay.
+    outcome.failure = LocalCleanupMetricFailure::outcome_unknown;
+  }
+}
+
+LocalCleanupMetricOutcomes PublishCleanupWorksetMetrics(
+    const LocalCleanupWorksetRequest& request, const LocalCleanupWorksetResult& result,
+    core::metrics::MetricRegistry& registry) noexcept {
+  LocalCleanupMetricOutcomes outcomes;
+  if (!result.ok()) return outcomes;
+  ObserveCleanupMetric(outcomes[0], [&] { return registry.IncrementCounter(
       "sb_mga_row_versions_reclaimed_total",
       scratchbird::core::metrics::Labels({{"component", "transaction.mga.cleanup"}, {"result", "reclaimed"}}),
-      static_cast<double>(result.reclaimed_row_version_count),
-      "transaction_mga_cleanup");
-  (void)scratchbird::core::metrics::SetGauge(
+      result.reclaimed_row_version_count,
+      "transaction_mga_cleanup"); });
+  ObserveCleanupMetric(outcomes[1], [&] { return registry.SetGauge(
       "sb_mga_cleanup_horizon_local_transaction_id",
       scratchbird::core::metrics::Labels({{"component", "transaction.mga.cleanup"}, {"authority", "local_inventory"}}),
-      static_cast<double>(result.authoritative_cleanup_horizon_local_transaction_id),
-      "transaction_mga_cleanup");
-  (void)scratchbird::core::metrics::SetGauge(
+      result.authoritative_cleanup_horizon_local_transaction_id,
+      "transaction_mga_cleanup"); });
+  ObserveCleanupMetric(outcomes[2], [&] { return registry.SetGauge(
       "sb_mga_cleanup_retained_row_versions",
       scratchbird::core::metrics::Labels({{"component", "transaction.mga.cleanup"}, {"authority", "local_inventory"}}),
-      static_cast<double>(result.retained_row_version_count),
-      "transaction_mga_cleanup");
-  (void)scratchbird::core::metrics::SetGauge(
+      result.retained_row_version_count,
+      "transaction_mga_cleanup"); });
+  const auto age = RetentionAgeMicroseconds(request, result);
+  if (age) ObserveCleanupMetric(outcomes[3], [&] { return registry.SetGauge(
       "sb_mga_cleanup_retention_age_microseconds",
       scratchbird::core::metrics::Labels({{"component", "transaction.mga.cleanup"}, {"authority", "local_inventory"}}),
-      RetentionAgeMicroseconds(result),
-      "transaction_mga_cleanup");
+      *age,
+      "transaction_mga_cleanup"); });
+  else outcomes[3].failure = LocalCleanupMetricFailure::source_unavailable;
   if (result.horizon_blocked_row_version_count != 0) {
-    (void)scratchbird::core::metrics::IncrementCounter(
+    ObserveCleanupMetric(outcomes[4], [&] { return registry.IncrementCounter(
         "sb_mga_cleanup_blocked_total",
         scratchbird::core::metrics::Labels({{"component", "transaction.mga.cleanup"}, {"reason", "row_version_horizon"}}),
-        static_cast<double>(result.horizon_blocked_row_version_count),
-        "transaction_mga_cleanup");
+        result.horizon_blocked_row_version_count,
+        "transaction_mga_cleanup"); });
   }
+  return outcomes;
 }
 
 LocalGarbageCollectionSweepResult CleanupSweepError(LocalCleanupSweepFamily family,
@@ -413,6 +460,31 @@ TransactionCleanupDecisionResult EvaluateSuccessorTransactionForCleanup(
 }
 
 }  // namespace
+
+LocalCleanupMetricOutcomes PublishLocalCleanupWorksetMetrics(
+    const LocalCleanupWorksetRequest& request, const LocalCleanupWorksetResult& result,
+    core::metrics::MetricRegistry& registry) noexcept {
+  return PublishCleanupWorksetMetrics(request, result, registry);
+}
+
+LocalCleanupMetricOutcomes PublishLocalCleanupWorksetMetrics(
+    const LocalCleanupWorksetRequest& request, const LocalCleanupWorksetResult& result) noexcept {
+  LocalCleanupMetricOutcomes outcomes;
+  if (!result.ok()) return outcomes;
+  auto failure = LocalCleanupMetricFailure::outcome_unknown;
+  try {
+    return PublishLocalCleanupWorksetMetrics(request, result, core::metrics::DefaultMetricRegistry());
+  } catch (const std::bad_alloc&) {
+    failure = LocalCleanupMetricFailure::resource_exhausted;
+  } catch (const std::length_error&) {
+    failure = LocalCleanupMetricFailure::resource_exhausted;
+  } catch (...) {}
+  // Source acquisition failed before any field could be attempted. No receipt
+  // or diagnostic allocation is needed to return the completed cleanup result.
+  for (unsigned i = 0; i < outcomes.size(); ++i)
+    if (i != 4 || result.horizon_blocked_row_version_count != 0) outcomes[i].failure = failure;
+  return outcomes;
+}
 
 const char* LocalCleanupSweepFamilyName(LocalCleanupSweepFamily family) {
   switch (family) {
@@ -687,7 +759,7 @@ LocalCleanupWorksetResult ApplyLocalCleanupWithAuthoritativeInventory(
                                                        "SB-SNTXN-CLEANUP-APPLIED",
                                                        "transaction.cleanup.applied",
                                                        std::to_string(result.reclaimed_row_version_count));
-  PublishCleanupWorksetMetrics(result);
+  result.metric_outcomes = PublishLocalCleanupWorksetMetrics(request, result);
   return result;
 }
 

@@ -17,7 +17,7 @@ void Counter(const char* family, const char* operation) {
   (void)scratchbird::core::metrics::IncrementCounter(
       family,
       scratchbird::core::metrics::Labels({{"component", "transaction.mga"}, {"operation", operation}, {"result", "ok"}}),
-      1.0,
+      u64{1},
       "transaction_mga");
 }
 
@@ -25,7 +25,7 @@ void ActiveGauge(u64 value) {
   (void)scratchbird::core::metrics::SetGauge(
       "sb_tx_active_transactions",
       scratchbird::core::metrics::Labels({{"component", "transaction.mga"}}),
-      static_cast<double>(value),
+      value,
       "transaction_mga");
 }
 

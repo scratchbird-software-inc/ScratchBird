@@ -50,6 +50,15 @@ target_link_libraries(sb_transaction_mga PUBLIC sb_core_platform sb_core_uuid sb
 
 if(BUILD_TESTING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
   find_package(Threads REQUIRED)
+  add_executable(sbsql_sblr_alignment_transaction_metric_exact_producer
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../tests/sbsql_sblr_alignment/transaction_metric_exact_producer_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_transaction_metric_exact_producer PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_transaction_metric_exact_producer PRIVATE sb_transaction_mga)
+  add_test(NAME sbsql_sblr_alignment_transaction_metric_exact_producer
+    COMMAND sbsql_sblr_alignment_transaction_metric_exact_producer)
+  set_tests_properties(sbsql_sblr_alignment_transaction_metric_exact_producer PROPERTIES
+    LABELS "sbsql_sblr_alignment;MGA;metrics;binary_uuid;component_regression;not_runtime_acceptance"
+    TIMEOUT 60)
   if(NOT TARGET sb_core_diagnostic_catalog)
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../core/diagnostics
                      ${CMAKE_CURRENT_BINARY_DIR}/core_diagnostics)
