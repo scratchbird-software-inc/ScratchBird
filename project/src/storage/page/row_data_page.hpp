@@ -56,6 +56,12 @@ struct RowDataTemporalReceiver {
   TypedUuid relation_uuid;
   std::span<const RowDataTemporalColumnBinding> columns;
 };
+// Lifetime owner for operations which retain work beyond the submitting call.
+struct RowDataTemporalSchema {
+  TypedUuid relation_uuid;
+  std::vector<RowDataTemporalColumnBinding> columns;
+  RowDataTemporalReceiver receiver() const noexcept { return {relation_uuid, columns}; }
+};
 
 struct RowDataCell {
   u16 column_ordinal = 0;

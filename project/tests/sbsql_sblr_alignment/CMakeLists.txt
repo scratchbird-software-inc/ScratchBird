@@ -1350,7 +1350,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(sbsql_sblr_alignment_physical_mga_owned_device PRIVATE
     sb_transaction_mga sb_storage_database sb_core_uuid)
   target_link_options(sbsql_sblr_alignment_physical_mga_owned_device PRIVATE
-    "-Wl,--wrap=pwrite" "-Wl,--wrap=fsync")
+    "-Wl,--wrap=pwrite" "-Wl,--wrap=pread" "-Wl,--wrap=fsync")
   add_test(NAME sbsql_sblr_alignment_physical_mga_owned_device COMMAND sbsql_sblr_alignment_physical_mga_owned_device)
   set_tests_properties(sbsql_sblr_alignment_physical_mga_owned_device PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-07;component_regression;physical_MGA;node_ownership"

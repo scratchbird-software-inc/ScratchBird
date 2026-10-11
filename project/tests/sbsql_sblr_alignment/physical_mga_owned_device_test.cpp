@@ -11,6 +11,7 @@
 #include "transaction_inventory_validation.hpp"
 #include "transaction_cleanup.hpp"
 #include "physical_mga_cow_store.hpp"
+#include "datatype_date.hpp"
 #include "catalog_schema_definition.hpp"
 #include "transaction_inventory_page.hpp"
 #include "page_header.hpp"
@@ -43,9 +44,20 @@ enum class OwnedFault { none, row_write, row_sync, after_row_write_exception,
 OwnedFault owned_fault = OwnedFault::none;
 off_t owned_row_offset = 0;
 unsigned owned_faults = 0;
+bool reject_write_after_row_read = false;
+off_t temporal_read_offset = 0;
 }
+extern "C" ssize_t __real_pread(int, void*, size_t, off_t);
 extern "C" ssize_t __real_pwrite(int, const void*, size_t, off_t);
 extern "C" int __real_fsync(int);
+extern "C" ssize_t __wrap_pread(int fd, void* bytes, size_t count, off_t offset) {
+  const auto result = __real_pread(fd, bytes, count, offset);
+  if (reject_write_after_row_read && offset == temporal_read_offset && result == static_cast<ssize_t>(count)) {
+    reject_write_after_row_read = false;
+    reject_write = true;
+  }
+  return result;
+}
 extern "C" ssize_t __wrap_pwrite(int fd, const void* bytes, size_t count, off_t offset) {
   ++write_calls;
   if (owned_fault != OwnedFault::none && offset == owned_row_offset) {
@@ -2001,13 +2013,15 @@ void Run() {
   const auto failure_tx = f.Begin();
   auto failure_row = f.Mutation(failure_tx, Id(UuidKind::row), f.first_page + 8, "unpublished-failure");
   const auto before_io = f.Bytes();
+  const auto write_faults_before = write_faults;
+  const auto sync_faults_before = sync_faults;
   reject_write = true;
   const auto failed_write = db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(f.device, failure_row);
-  Check(!failed_write.ok() && write_faults == 1 && !reject_write, "real pwrite failure not propagated");
+  Check(!failed_write.ok() && write_faults == write_faults_before + 1 && !reject_write, "real pwrite failure not propagated");
   Check(f.Bytes() == before_io, "failed first write mutated node"); f.Locked();
   reject_sync = true;
   const auto failed_sync = db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(f.device, failure_row);
-  Check(!failed_sync.ok() && sync_faults == 1 && !reject_sync, "real fsync failure not propagated");
+  Check(!failed_sync.ok() && sync_faults == sync_faults_before + 1 && !reject_sync, "real fsync failure not propagated");
   Check(f.Read(f.first_page + 8).visible_rows.empty(), "failed sync published transaction visibility");
   f.Locked(); f.Finish(failure_tx, false);
   Check(f.Read(f.first_page + 8).visible_rows.empty(), "failed publication survived rollback as visible");
@@ -2016,7 +2030,7 @@ void Run() {
   failing_batch.mutations.push_back(f.Mutation(failed_batch_tx, Id(UuidKind::row), f.first_page + 10, "failed-batch-two"));
   reject_sync = true;
   const auto failed_batch = db::WritePhysicalMgaCowUnpublishedMutationBatchToOpenDevice(f.device, failing_batch);
-  Check(!failed_batch.ok() && sync_faults == 2 && !reject_sync, "batch fsync failure not propagated");
+  Check(!failed_batch.ok() && sync_faults == sync_faults_before + 2 && !reject_sync, "batch fsync failure not propagated");
   Check(f.Read(f.first_page + 9).visible_rows.empty() && f.Read(f.first_page + 10).visible_rows.empty(), "failed batch leaked independent rows");
   f.Locked(); f.Finish(failed_batch_tx, false);
   Check(f.device.Close().ok() && f.device.Open(f.path, disk::FileOpenMode::open_existing).ok(), "reopen after failed publication");
@@ -2293,8 +2307,124 @@ void NativeInventoryLongChain() {
   for(u64 i=0;i<count;++i) Check(loaded.inventory.entries[i].identity.transaction_uuid.value==transaction_ids[i],"long-chain native transaction identity changed");
   Check(write_calls==writes,"long inventory read performed writes");f.Locked();
 }
+void TemporalReceivingProfiles() {
+  namespace page = scratchbird::storage::page;
+  for (unsigned generation : {10u, 11u}) for (const auto type : {types::CanonicalTypeId::date, types::CanonicalTypeId::time}) {
+    Fixture f;
+    // Independent storage-component receiver; this does not assert SQL or
+    // table-catalog admission. Physical MGA remains the transaction authority.
+    const auto snapshot = generation == 10 ? types::kDatatypeCohortV10 : types::kDatatypeCohortV11;
+    auto schema = std::make_shared<page::RowDataTemporalSchema>();
+    schema->relation_uuid = f.relation;
+    page::RowDataTemporalColumnBinding column;
+    column.column_ordinal = 1; column.null_allowed = true;
+    for (const auto& identity : types::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+      if (identity.legacy_fields.catalog_snapshot_uuid != snapshot ||
+          identity.legacy_fields.canonical_binary_type_code != static_cast<unsigned>(type)) continue;
+      if (type == types::CanonicalTypeId::date) {
+        auto bound = types::BuildDateValidatedProfileHandleV3({snapshot,snapshot,generation,generation}, identity);
+        Check(bound.ok(), "exact DATE physical receiver");
+        column.date = std::make_shared<const types::DateValidatedProfileHandleV3>(std::move(bound.profile));
+      } else {
+        auto bound = types::BuildTimeValidatedProfileHandleV3({snapshot,snapshot,generation,generation}, identity);
+        Check(bound.ok(), "exact TIME physical receiver");
+        column.time = std::make_shared<const types::TimeValidatedProfileHandleV3>(std::move(bound.profile));
+      }
+    }
+    Check(column.date || column.time, "explicit physical receiver absent");
+    schema->columns.push_back(column);
+    const auto make = [&](mga::TransactionIdentity tx, u64 bits, bool null = false) {
+      auto mutation = f.Mutation(tx, Id(UuidKind::row), f.first_page, "");
+      mutation.temporal_schema = schema;
+      auto& cell = mutation.cells[0].value;
+      cell.type_id = type; cell.is_null = null;
+      if (!null) for (unsigned i = 0; i < (type == types::CanonicalTypeId::date ? 4u : 8u); ++i)
+        cell.payload.push_back(static_cast<platform::byte>(bits >> (8*i)));
+      return mutation;
+    };
+    const auto tx = f.Begin();
+    auto first = make(tx, type == types::CanonicalTypeId::date ? 0x80000000u : 86'399'999'999'999ull);
+    Check(db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(f.device, first).ok(), "temporal physical first write");
+    db::PhysicalMgaCowMutationBatch batch;
+    batch.mutations = {make(tx, 1), make(tx, 0, true)};
+    const auto appended = db::WritePhysicalMgaCowUnpublishedMutationBatchToOpenDevice(f.device, batch);
+    Check(appended.ok() && appended.written_rows == 2 && appended.pages_written == 1,
+          "temporal physical existing-page append");
+    f.Finish(tx, true);
+    Check(f.device.Close().ok() && f.device.Open(f.path, disk::FileOpenMode::open_existing).ok(), "temporal physical independent reopen");
+    const auto read = db::ReadPhysicalMgaCowRowsFromOpenDevice(f.device, f.relation, f.first_page, {}, true, {}, nullptr, schema);
+    Check(read.ok() && read.visible_rows.size() == 3, "temporal committed physical visibility");
+    const std::array<types::DatatypeBinaryValue,3> expected{first.cells[0].value,batch.mutations[0].cells[0].value,batch.mutations[1].cells[0].value};
+    for (unsigned i = 0; i < 3; ++i) {
+      const auto& cell = read.visible_rows[i].cells[0].value;
+      Check(cell.type_id == type && cell.is_null == expected[i].is_null && cell.payload == expected[i].payload,
+            "temporal committed native component changed");
+    }
+    const auto unbound = db::ReadPhysicalMgaCowRowsFromOpenDevice(f.device, f.relation, f.first_page, {}, true);
+    Check(!unbound.ok() && unbound.rows.empty() && unbound.row_page.rows.empty(), "profileless physical temporal read");
+    const auto rejected_tx = f.Begin();
+    auto invalid = make(rejected_tx, 7);
+    auto different = std::make_shared<page::RowDataTemporalSchema>(*schema);
+    batch.mutations = {invalid, make(rejected_tx, 8)};
+    batch.mutations.back().temporal_schema = different;
+    const auto before = f.Bytes();
+    const auto writes = write_calls;
+    const auto conflict = db::WritePhysicalMgaCowUnpublishedMutationBatchToOpenDevice(f.device, batch);
+    Check(!conflict.ok() && conflict.written_rows == 0 && conflict.row_receipts.empty() && write_calls == writes && f.Bytes() == before,
+          "mixed physical schema owner published effects");
+    if (column.time) {
+      auto bad = std::make_shared<types::TimeValidatedProfileHandleV3>(*column.time);
+      bad->comparison_fingerprint[0] ^= 1; different->columns[0].time = bad;
+      const auto expected_fact = types::ValidateTimeProfileHandleV3(*bad).diagnostic;
+      const auto check_fact = [&](const auto& result) {
+        Check(!result.ok() && result.time_diagnostic.has_value(), "physical boundary lost TIME fact");
+        const auto& actual = *result.time_diagnostic;
+        Check(actual.status.code == expected_fact.status.code && actual.status.severity == expected_fact.status.severity &&
+            actual.status.subsystem == expected_fact.status.subsystem && actual.diagnostic_code == expected_fact.diagnostic_code &&
+            actual.detail == expected_fact.detail && actual.parameter_count == expected_fact.parameter_count, "physical TIME fact changed");
+        for (unsigned i = 0; i < expected_fact.parameters.size(); ++i) {
+          const auto& a = actual.parameters[i]; const auto& e = expected_fact.parameters[i];
+          Check(a.kind == e.kind && a.name == e.name && a.unsigned_value == e.unsigned_value &&
+              a.signed_value == e.signed_value && a.uuid_value == e.uuid_value && a.token_value == e.token_value,
+              "physical TIME diagnostic argument changed");
+        }
+      };
+      check_fact(db::ReadPhysicalMgaCowRowsFromOpenDevice(f.device, f.relation, f.first_page, {}, true, {}, nullptr, different));
+      invalid.temporal_schema = different;
+      check_fact(db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(f.device, invalid));
+      batch.mutations = {invalid};
+      check_fact(db::WritePhysicalMgaCowUnpublishedMutationBatchToOpenDevice(f.device, batch));
+      batch.mutations[0].page_number = f.device.Size().size_bytes / page_size + 1;
+      check_fact(db::WritePhysicalMgaCowUnpublishedMutationBatchToOpenDevice(f.device, batch));
+      Check(write_calls == writes && f.Bytes() == before, "invalid temporal receiver changed node bytes");
+      auto owned = invalid;
+      owned.use_existing_transaction = false;
+      owned.existing_local_transaction_id = {};
+      owned.transaction_uuid = Id(UuidKind::transaction);
+      owned.begin_unix_epoch_millis = 1790000000200ull;
+      temporal_read_offset = f.first_page * page_size + disk::kPageHeaderSerializedBytes;
+      reject_write_after_row_read = true;
+      const auto faults_before = write_faults;
+      const auto uncompensated = db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(f.device, owned);
+      Check(!reject_write_after_row_read && write_faults == faults_before + 1 && !reject_write,
+            "temporal compensation write failure not exercised");
+      check_fact(uncompensated);
+      Check(uncompensated.unresolved_owned_transaction.local_id.valid() &&
+                uncompensated.unresolved_owned_transaction.transaction_uuid.value == owned.transaction_uuid.value &&
+                uncompensated.diagnostic.diagnostic_code != expected_fact.diagnostic_code,
+            "temporal cause replaced dominant compensation failure or lost recovery identity");
+      f.Finish(uncompensated.unresolved_owned_transaction, false);
+    }
+    f.Finish(rejected_tx, false);
+    f.Locked();
+  }
+}
 }  // namespace
 int main(int argc, char** argv) {
+  if(argc==2&&std::string_view(argv[1])=="--temporal-receivers") {
+    try {TemporalReceivingProfiles();std::cout<<"temporal_receivers checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}
+  }
   if(argc==2&&std::string_view(argv[1])=="--inventory-evolution") {
     try {ImmutableInventoryPublication();std::cout<<"inventory_evolution checks="<<checks<<" failures=0\n";return 0;}
     catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}
@@ -2311,6 +2441,6 @@ int main(int argc, char** argv) {
     disk::FileDevice device; const auto opened = device.Open(argv[2], disk::FileOpenMode::open_existing);
     return !opened.ok() && OwnershipError(opened.diagnostic) ? 0 : 1;
   }
-  try { NativeCatalogNames(); ImmutableInventoryPublication(); NativeInventoryPageBindings(); NativeInventoryLongChain(); Run(); OwnedMutationFailureFinality(); FinalizationIdentityAndOwnership(); ReaderIdentityBeforeMaterialization(); PublishedSnapshotNativeVisibility(); TransactionStartCommitOrder(); ArchiveAndRecoveryCommitOrder(); NativeInventoryPublicationConcurrency(); NativeCatalogMetadataVersions(); FailedNativeBatchCannotCommitPrefix(); std::cout << "owned_device checks=" << checks << " failures=0\n"; return 0; }
+  try { TemporalReceivingProfiles(); NativeCatalogNames(); ImmutableInventoryPublication(); NativeInventoryPageBindings(); NativeInventoryLongChain(); Run(); OwnedMutationFailureFinality(); FinalizationIdentityAndOwnership(); ReaderIdentityBeforeMaterialization(); PublishedSnapshotNativeVisibility(); TransactionStartCommitOrder(); ArchiveAndRecoveryCommitOrder(); NativeInventoryPublicationConcurrency(); NativeCatalogMetadataVersions(); FailedNativeBatchCannotCommitPrefix(); std::cout << "owned_device checks=" << checks << " failures=0\n"; return 0; }
   catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

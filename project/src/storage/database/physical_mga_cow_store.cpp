@@ -156,6 +156,13 @@ Result Propagate(Status status, DiagnosticRecord diagnostic) {
   return result;
 }
 
+template<typename Result, typename Source>
+Result PropagateTemporal(const Source& source) {
+  auto result = Propagate<Result>(source.status, source.diagnostic);
+  result.time_diagnostic = source.time_diagnostic;
+  return result;
+}
+
 struct DatabaseContextResult {
   Status status;
   u32 page_size = 0;
@@ -585,10 +592,11 @@ PhysicalMgaCowMutationResult ReadRowDataPage(FileDevice* device,
     return Propagate<PhysicalMgaCowMutationResult>(read_body.status,
                                                    read_body.diagnostic);
   }
-  const auto parsed = ParseRowDataPageBody(serialized, request.page_number);
+  const auto parsed = request.temporal_schema
+      ? ParseRowDataPageBody(serialized, request.page_number, request.temporal_schema->receiver())
+      : ParseRowDataPageBody(serialized, request.page_number);
   if (!parsed.ok()) {
-    return Propagate<PhysicalMgaCowMutationResult>(parsed.status,
-                                                   parsed.diagnostic);
+    return PropagateTemporal<PhysicalMgaCowMutationResult>(parsed);
   }
   if (!SameUuid(parsed.body.relation_uuid, request.relation_uuid)) {
     return ErrorResult<PhysicalMgaCowMutationResult>(
@@ -635,9 +643,10 @@ PhysicalMgaCowReadResult ReadRowDataPageForRead(FileDevice* device,
   mutation_request.database_path = request.database_path;
   mutation_request.relation_uuid = request.relation_uuid;
   mutation_request.page_number = request.page_number;
+  mutation_request.temporal_schema = request.temporal_schema;
   const auto read = ReadRowDataPage(device, context, mutation_request, body);
   if (!read.ok()) {
-    return Propagate<PhysicalMgaCowReadResult>(read.status, read.diagnostic);
+    return PropagateTemporal<PhysicalMgaCowReadResult>(read);
   }
   return PhysicalMgaCowReadResult{CowStoreOkStatus(), {}, *body, {}, {}, 0, 0, 0, 0, {}, {}};
 }
@@ -658,13 +667,16 @@ struct PreparedRowDataPage {
 };
 
 PreparedRowDataPage PrepareRowDataPage(const DatabaseContextResult& context,
-                                      RowDataPageBody body) {
+                                      RowDataPageBody body,
+                                      const std::shared_ptr<const page::RowDataTemporalSchema>& temporal_schema = {}) {
   body.page_generation = std::max<u64>(1, body.page_generation);
   body.compaction_generation = std::max<u64>(body.compaction_generation,
                                              body.page_generation);
-  auto built = BuildRowDataPageBodyOwned(std::move(body), context.page_size);
+  auto built = temporal_schema
+      ? BuildRowDataPageBodyOwned(std::move(body), context.page_size, temporal_schema->receiver())
+      : BuildRowDataPageBodyOwned(std::move(body), context.page_size);
   if (!built.ok()) {
-    return {Propagate<PhysicalMgaCowMutationResult>(built.status, built.diagnostic)};
+    return {PropagateTemporal<PhysicalMgaCowMutationResult>(built)};
   }
   const auto page_uuid = IssuePhysicalIdentity(UuidKind::page);
   if (!page_uuid.ok()) {
@@ -707,8 +719,9 @@ PreparedRowDataPage PrepareRowDataPage(const DatabaseContextResult& context,
 PhysicalMgaCowMutationResult WriteRowDataPage(FileDevice* device,
                                               const DatabaseContextResult& context,
                                               RowDataPageBody body,
-                                              bool sync_after_write = true) {
-  auto prepared = PrepareRowDataPage(context, std::move(body));
+                                              bool sync_after_write = true,
+                                              const std::shared_ptr<const page::RowDataTemporalSchema>& temporal_schema = {}) {
+  auto prepared = PrepareRowDataPage(context, std::move(body), temporal_schema);
   if (!prepared.result.ok()) return std::move(prepared.result);
   const auto written = device->WriteAt(prepared.offset, prepared.image.data(), prepared.image.size());
   if (!written.ok()) {
@@ -1028,7 +1041,7 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutationToOpenDevice(
   }
   row_page.rows.push_back(new_row);
 
-  const auto written = WriteRowDataPage(&device, context, row_page);
+  const auto written = WriteRowDataPage(&device, context, row_page, true, request.temporal_schema);
   if (!written.ok()) {
     return written;
   }
@@ -1092,6 +1105,7 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutationToOpenDevice(
     };
     auto compensation = compensate();
     if (!compensation.ok()) {
+      compensation.time_diagnostic = operation.time_diagnostic;
       compensation.unresolved_owned_transaction = owned_identity;
       compensation.diagnostic.arguments.push_back({"mutation_failure_code", operation.diagnostic.diagnostic_code});
       compensation.diagnostic.arguments.push_back({"mutation_failure_key", operation.diagnostic.message_key});
@@ -1221,6 +1235,7 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToO
   mark_phase("initial_device_size");
 
   std::map<u64, RowDataPageBody> page_cache;
+  std::map<u64, std::shared_ptr<const page::RowDataTemporalSchema>> page_schemas;
   std::vector<PhysicalMgaCowRowReceipt> row_receipts;
   bool used_empty_page_insert_fast_path = false;
   row_receipts.reserve(request.mutations.size());
@@ -1256,6 +1271,10 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToO
     }
 
     auto page = page_cache.find(mutation_request.page_number);
+    const auto [schema, new_schema] = page_schemas.emplace(mutation_request.page_number, mutation_request.temporal_schema);
+    if (!new_schema && schema->second != mutation_request.temporal_schema)
+      return ErrorResult<PhysicalMgaCowMutationBatchResult>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
+          "storage.physical_mga_cow.receiving_schema_changed");
     if (page == page_cache.end()) {
       RowDataPageBody loaded_page;
       const auto page_offset =
@@ -1276,9 +1295,7 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToO
                                          mutation_request,
                                          &loaded_page);
         if (!read_page.ok()) {
-          return Propagate<PhysicalMgaCowMutationBatchResult>(
-              read_page.status,
-              read_page.diagnostic);
+          return PropagateTemporal<PhysicalMgaCowMutationBatchResult>(read_page);
         }
       }
       if (!loaded_page.rows.empty()) {
@@ -1449,9 +1466,9 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToO
   prepared_pages.reserve(page_cache.size());
   for (auto& [page_number, row_page] : page_cache) {
     (void)page_number;
-    auto prepared = PrepareRowDataPage(context, std::move(row_page));
+    auto prepared = PrepareRowDataPage(context, std::move(row_page), page_schemas.at(page_number));
     if (!prepared.result.ok())
-      return Propagate<PhysicalMgaCowMutationBatchResult>(prepared.result.status, prepared.result.diagnostic);
+      return PropagateTemporal<PhysicalMgaCowMutationBatchResult>(prepared.result);
     page_locations.emplace(page_number, std::make_pair(prepared.result.page_uuid, prepared.result.page_generation));
     // Batch publication needs the complete image, not a duplicate decoded page.
     prepared.result.row_page = {};
@@ -1626,7 +1643,7 @@ PhysicalMgaCowReadResult ReadPhysicalMgaCowRows(
   return ReadPhysicalMgaCowRowsFromOpenDevice(
       device, request.relation_uuid, request.page_number,
       request.visibility_snapshot, request.use_latest_committed_snapshot, request.reader_identity,
-      request.snapshot_pin);
+      request.snapshot_pin, request.temporal_schema);
 }
 
 PhysicalMgaCowReadResult ReadPhysicalMgaCowRowsFromOpenDevice(
@@ -1636,7 +1653,8 @@ PhysicalMgaCowReadResult ReadPhysicalMgaCowRowsFromOpenDevice(
     const VisibilitySnapshot& visibility_snapshot,
     bool use_latest_committed_snapshot,
     const scratchbird::transaction::mga::TransactionIdentity& reader_identity,
-    const scratchbird::transaction::mga::PublishedSnapshotPin* snapshot_pin) {
+    const scratchbird::transaction::mga::PublishedSnapshotPin* snapshot_pin,
+    std::shared_ptr<const page::RowDataTemporalSchema> temporal_schema) {
   const auto operation_guard = device.AcquireOperationGuard();
   PhysicalMgaCowReadRequest request;
   request.database_path = device.path();
@@ -1646,6 +1664,7 @@ PhysicalMgaCowReadResult ReadPhysicalMgaCowRowsFromOpenDevice(
   request.reader_identity = reader_identity;
   request.use_latest_committed_snapshot = use_latest_committed_snapshot;
   request.snapshot_pin = snapshot_pin;
+  request.temporal_schema = std::move(temporal_schema);
   const auto common = ValidateCommonRequest<PhysicalMgaCowReadResult>(
       request.database_path, request.relation_uuid, request.page_number);
   if (!common.ok()) {

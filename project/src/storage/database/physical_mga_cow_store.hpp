@@ -513,6 +513,7 @@ struct PhysicalMgaCowMutation {
   // row-data page. Zero identifies the tail of the chain.
   u64 predecessor_page_number = 0;
   std::optional<NativeCatalogNameMaterialization> catalog_name;
+  std::shared_ptr<const scratchbird::storage::page::RowDataTemporalSchema> temporal_schema;
 };
 
 struct PhysicalMgaCowMutationRequest : PhysicalMgaCowMutation {
@@ -555,6 +556,7 @@ struct PhysicalMgaCowReadRequest {
   // default/empty and latest-committed override must be disabled. The pin,
   // bound to reader_identity in the native inventory, supplies visibility.
   const scratchbird::transaction::mga::PublishedSnapshotPin* snapshot_pin = nullptr;
+  std::shared_ptr<const scratchbird::storage::page::RowDataTemporalSchema> temporal_schema;
 };
 
 struct PhysicalMgaCowReadRow {
@@ -582,6 +584,7 @@ struct PhysicalMgaCowMutationResult {
   // Present only if rollback of a helper-owned transaction cannot be confirmed.
   // Exact recovery identity, not a transaction-state or publication receipt.
   scratchbird::transaction::mga::TransactionIdentity unresolved_owned_transaction;
+  std::optional<scratchbird::core::datatypes::TimeDiagnosticFactV3> time_diagnostic;
 
   bool ok() const {
     return status.ok();
@@ -618,6 +621,7 @@ struct PhysicalMgaCowMutationBatchResult {
   // Failed/uncertain native publication barrier. Caller must inspect durable
   // inventory and roll back/recover this exact transaction, never commit a prefix.
   scratchbird::transaction::mga::TransactionIdentity unresolved_mutation_transaction;
+  std::optional<scratchbird::core::datatypes::TimeDiagnosticFactV3> time_diagnostic;
 
   bool ok() const {
     return status.ok();
@@ -692,6 +696,7 @@ struct PhysicalMgaCowReadResult {
   // Complete page metadata bound to the same validated native page/inventory.
   // This low-level ownership result is not a user-visible row projection.
   std::vector<scratchbird::transaction::mga::RowVersionMetadata> version_metadata;
+  std::optional<scratchbird::core::datatypes::TimeDiagnosticFactV3> time_diagnostic;
 
   bool ok() const {
     return status.ok();
@@ -734,7 +739,8 @@ PhysicalMgaCowReadResult ReadPhysicalMgaCowRowsFromOpenDevice(
     const scratchbird::transaction::mga::VisibilitySnapshot& visibility_snapshot,
     bool use_latest_committed_snapshot,
     const scratchbird::transaction::mga::TransactionIdentity& reader_identity = {},
-    const scratchbird::transaction::mga::PublishedSnapshotPin* snapshot_pin = nullptr);
+    const scratchbird::transaction::mga::PublishedSnapshotPin* snapshot_pin = nullptr,
+    std::shared_ptr<const scratchbird::storage::page::RowDataTemporalSchema> temporal_schema = {});
 
 DiagnosticRecord MakePhysicalMgaCowDiagnostic(Status status,
                                               std::string diagnostic_code,
