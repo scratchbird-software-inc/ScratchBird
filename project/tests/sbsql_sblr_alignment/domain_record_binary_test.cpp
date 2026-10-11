@@ -62,6 +62,7 @@ int main(){
   a::DomainInheritedBaseBindingV1 profile;
   profile.base=plain;profile.catalog_snapshot_uuid=Id(30);profile.catalog_generation=7;
   profile.registry_generation=8;profile.codec_uuid=Id(31);profile.codec_version=1;profile.codec_generation=9;
+  profile.base.datatype_cohort={profile.catalog_snapshot_uuid,profile.catalog_generation,profile.registry_generation};
   profile.native_profile_fingerprint.assign(32,'\0');
   for(std::size_t i=0;i<8;++i){profile.policy_uuids[i]=Id(40+i);profile.policy_generations[i]=i+1;}
   std::string inherited;Check(a::EncodeDomainInheritedBaseBindingV1(profile,&inherited));
@@ -74,6 +75,14 @@ int main(){
   }
   a::DomainInheritedBaseBindingV1 profile_read;
   Check(a::DecodeDomainInheritedBaseBindingV1(inherited,&profile_read)&&profile_read==profile);
+  for (unsigned field=0;field<3;++field) {
+    auto mismatch=profile;
+    if(field==0)mismatch.base.datatype_cohort.catalog_snapshot_uuid=Id(32);
+    if(field==1)++mismatch.base.datatype_cohort.catalog_generation;
+    if(field==2)++mismatch.base.datatype_cohort.registry_generation;
+    std::string retained="unchanged";
+    Check(!a::EncodeDomainInheritedBaseBindingV1(mismatch,&retained)&&retained=="unchanged");
+  }
   const auto reject_profile=[&](const std::string& damaged){
     auto retained=profile;Check(!a::DecodeDomainInheritedBaseBindingV1(damaged,&retained));Check(retained==profile);
   };
@@ -87,6 +96,27 @@ int main(){
   auto builtin=profile;builtin.policy_uuids={};builtin.policy_generations={};
   Check(a::EncodeDomainInheritedBaseBindingV1(builtin,&inherited));
   Check(a::DecodeDomainInheritedBaseBindingV1(inherited,&profile_read)&&profile_read==builtin);
+  unsigned integer_cohorts = 0;
+  for (const auto& row : scratchbird::core::datatypes::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& identity = row.legacy_fields;
+    if (identity.canonical_binary_type_code != static_cast<std::uint32_t>(
+            scratchbird::core::datatypes::CanonicalTypeId::int64)) continue;
+    auto scalar = plain;
+    scalar.canonical_type_name = identity.canonical_name;
+    scalar.encoded_descriptor = "nullable=false";
+    scalar.type_uuid = identity.type_uuid;
+    scalar.datatype_descriptor_uuid = identity.descriptor_uuid;
+    scalar.datatype_descriptor_generation = identity.descriptor_generation;
+    scalar.datatype_cohort = {identity.catalog_snapshot_uuid, identity.catalog_generation, identity.registry_generation};
+    const auto captured = a::CaptureDomainInheritedBaseBindingV1(scalar, row);
+    std::string frame, reencoded;
+    a::DomainInheritedBaseBindingV1 decoded;
+    Check(a::EncodeDomainInheritedBaseBindingV1(captured, &frame));
+    Check(a::DecodeDomainInheritedBaseBindingV1(frame, &decoded) && decoded == captured && decoded.base == scalar);
+    Check(a::EncodeDomainInheritedBaseBindingV1(decoded, &reencoded) && reencoded == frame);
+    ++integer_cohorts;
+  }
+  Check(integer_cohorts == 11);
   builtin.codec_uuid={};
   Check(a::EncodeDomainInheritedBaseBindingV1(builtin,&inherited));
   Check(a::DecodeDomainInheritedBaseBindingV1(inherited,&profile_read)&&profile_read==builtin);

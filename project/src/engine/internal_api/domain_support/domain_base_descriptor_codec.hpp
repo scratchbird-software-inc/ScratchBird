@@ -100,6 +100,8 @@ inline DomainInheritedBaseBindingV1 CaptureDomainInheritedBaseBindingV1(
 
 inline bool DomainInheritedBaseBindingStructureValidV1(const DomainInheritedBaseBindingV1& value) {
   if (!DomainBaseDescriptorStructureValidV1(value.base) ||
+      value.base.datatype_cohort != EngineDatatypeCohort{value.catalog_snapshot_uuid,
+          value.catalog_generation, value.registry_generation} ||
       !core::uuid::IsEngineIdentityUuid(value.catalog_snapshot_uuid) ||
       (!value.codec_uuid.is_nil() && !core::uuid::IsEngineIdentityUuid(value.codec_uuid)) ||
       !value.catalog_generation || !value.registry_generation ||
@@ -154,7 +156,12 @@ inline bool DecodeDomainInheritedBaseBindingV1(std::string_view encoded,
   cursor += 32;
   std::string base;
   if (!catalog_record_codec::Get(bytes, cursor, base) || cursor != bytes.size() ||
-      !DecodeDomainBaseDescriptorV1(base, &staged.base) || !DomainInheritedBaseBindingStructureValidV1(staged)) return false;
+      !DecodeDomainBaseDescriptorV1(base, &staged.base)) return false;
+  // The enclosing frame is the sole serialized cohort. The frozen nested
+  // descriptor has no such fields and its default must never replace them.
+  staged.base.datatype_cohort = {staged.catalog_snapshot_uuid,
+      staged.catalog_generation, staged.registry_generation};
+  if (!DomainInheritedBaseBindingStructureValidV1(staged)) return false;
   *output = std::move(staged);
   return true;
 }

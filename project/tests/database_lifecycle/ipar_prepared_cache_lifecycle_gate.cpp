@@ -485,6 +485,16 @@ void SeedLiveValidatorMetadata(api::EngineRequestContext& context) {
   Require(api::BindDomainScalarBaseDescriptor(context, stale_descriptor, &unchanged).error &&
           unchanged.base_encoded_descriptor == domain.base_encoded_descriptor,
           "stale datatype generation must not change a domain binding");
+  for (unsigned field = 0; field < 4; ++field) {
+    auto stale = column.descriptor;
+    if (field == 0) stale.datatype_cohort.catalog_snapshot_uuid = {};
+    if (field == 1) ++stale.datatype_cohort.catalog_generation;
+    if (field == 2) ++stale.datatype_cohort.registry_generation;
+    if (field == 3) stale.datatype_cohort = {scratchbird::core::datatypes::kDatatypeCohortV5, 5, 5};
+    Require(api::BindDomainScalarBaseDescriptor(context, stale, &unchanged).error &&
+            unchanged.base_encoded_descriptor == domain.base_encoded_descriptor,
+            "source cohort mismatch must not change a domain binding");
+  }
   const auto domain_status =
       api::AppendDomainEvent(context, api::MakeDomainCreateEvent(
                                           domain));
@@ -708,6 +718,7 @@ void SeedLiveValidatorMetadata(api::EngineRequestContext& context) {
   auto stale=inner;api::DomainInheritedBaseBindingV1 stale_binding;
   Require(api::DecodeDomainInheritedBaseBindingV1(stale.base_encoded_descriptor,&stale_binding),"decode profile for stale test");
   ++stale_binding.registry_generation;
+  ++stale_binding.base.datatype_cohort.registry_generation;
   Require(api::EncodeDomainInheritedBaseBindingV1(stale_binding,&stale.base_encoded_descriptor),"encode structurally valid stale profile");
   Require(!api::AppendDomainEvent(context,api::MakeDomainAlterEvent(stale)).error,"publish stale profile fixture");
   admitted_key(positive,false);

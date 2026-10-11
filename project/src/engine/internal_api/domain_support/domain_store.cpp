@@ -411,11 +411,14 @@ bool AdmitDomainScalarBaseDescriptor(const EngineRequestContext& context,
     *detail = "domain_base_descriptor_structure_invalid";
     return false;
   }
-  const auto bound = dt::LookupDatatypeTypeCodecIdentityV1(
+  const auto* bound = dt::FindDatatypeTypeCodecIdentityV3(
       context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
       context.datatype_registry_generation, descriptor.datatype_descriptor_uuid,
       descriptor.datatype_descriptor_generation);
-  if (!bound.ok || bound.row.type_uuid != descriptor.type_uuid) {
+  if (!bound || bound->legacy_fields.type_uuid != descriptor.type_uuid ||
+      descriptor.datatype_cohort != EngineDatatypeCohort{
+          context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+          context.datatype_registry_generation}) {
     *detail = "domain_base_datatype_cohort_mismatch";
     return false;
   }
@@ -524,17 +527,19 @@ bool BindDomainLiteralCharacterDescriptor(const EngineRequestContext& context,
     *detail = "domain_literal_datatype_not_unique"; return false;
   }
   const auto& row = selected.manifest.descriptor_rows.front();
-  const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+  const auto* binding = dt::FindDatatypeTypeCodecIdentityV3(
       context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
       context.datatype_registry_generation, row.descriptor_uuid.value, row.descriptor_epoch);
-  if (!binding.ok) { *detail = "domain_literal_datatype_cohort_mismatch"; return false; }
+  if (!binding) { *detail = "domain_literal_datatype_cohort_mismatch"; return false; }
   EngineDescriptor staged;
   staged.descriptor_uuid = GenerateCrudEngineUuid("object");
   staged.descriptor_kind = "scalar";
   staged.canonical_type_name = row.stable_name;
   staged.datatype_descriptor_uuid = row.descriptor_uuid.value;
   staged.datatype_descriptor_generation = row.descriptor_epoch;
-  staged.type_uuid = binding.row.type_uuid;
+  staged.type_uuid = binding->legacy_fields.type_uuid;
+  staged.datatype_cohort = {context.datatype_catalog_snapshot_uuid,
+      context.datatype_catalog_generation, context.datatype_registry_generation};
   staged.encoded_descriptor = "nullable=false";
   if (!AdmitDomainScalarBaseDescriptor(context, staged, detail)) return false;
   *descriptor = std::move(staged);
