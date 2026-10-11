@@ -15,6 +15,7 @@
 #include <source_location>
 #include <bit>
 #include <new>
+#include <stdexcept>
 
 // One-shot allocation failures leave diagnostics/retry allocations available.
 thread_local long descriptor_allocation_budget = -1;
@@ -325,6 +326,66 @@ void CheckProjectDescriptorInference(a::RelationalTypeDescriptor source_descript
     Check(!s::PrepareExpressionProjectRootForComposition(invalid, root, source, input, services).ok);
     Check(calls == 0);
   }
+  if (expected.canonical_type_name == "int64") {
+    s::CanonicalRelationalExpressionRowBinding binding;
+    binding.row_descriptor_ids = {1};
+    binding.slots.push_back({1, 1, 0, s::CanonicalRelationalExpressionRowSlotKind::input_identifier});
+    const std::vector<a::EngineTypedValue> row{input_value};
+    auto object_free = dag;
+    auto& literal = object_free.expressions.front();
+    literal.expression_kind = a::RelationalExpressionKind::kLiteral;
+    literal.bound_name_uuid.reset();
+    literal.literal_kind = a::RelationalLiteralKind::kNumeric;
+    literal.literal_typed_value_v1.emplace();
+    auto& carrier = *literal.literal_typed_value_v1;
+    carrier.descriptor_uuid = source_descriptor.descriptor_uuid;
+    carrier.descriptor_generation = source_descriptor.descriptor_generation;
+    carrier.value_state = "value";
+    carrier.canonical_value_bytes = input_value.binary_value;
+    carrier.canonical_value_sha256 = scratchbird::core::hash::ComputeSha256Digest(carrier.canonical_value_bytes).digest;
+    for (unsigned operation = 0; operation < 4; ++operation) {
+      bool exhausted = false;
+      unsigned faults = 0;
+      for (long budget = 0; budget < 2048; ++budget) {
+        // Fresh runtime before each injection; a warmed graph can hide the
+        // allocation that occurs between installing and releasing row state.
+        s::CanonicalRelationalExpressionRuntime candidate(operation == 3 ? object_free : dag, services);
+        a::EngineTypedValue value;
+        a::EngineDescriptor descriptor = expected;
+        std::string type, detail;
+        bool accepted = false;
+        descriptor_allocation_budget = budget;
+        try {
+          if (operation == 0) accepted = candidate.InferTypeForConsumer(2, binding, row,
+              a::EngineCanonicalExpressionConsumer::projection, &type, &detail);
+          if (operation == 1) accepted = candidate.EvaluateForConsumer(2, "int64", binding, row,
+              a::EngineCanonicalExpressionConsumer::projection, &value, &detail);
+          if (operation == 2) accepted = candidate.DescribeBoundDescriptor(2, "int64", &descriptor, &detail);
+          if (operation == 3) accepted = candidate.InferType(2, std::nullopt, &type, &detail);
+        } catch (const std::bad_alloc&) {}
+        const bool injected = descriptor_allocation_budget == -1;
+        descriptor_allocation_budget = -1;
+        if (!injected) { Check(accepted); exhausted = true; break; }
+        ++faults;
+        Check(!accepted);
+        if (operation == 2) Check(descriptor == expected);
+        if (operation == 3) {
+          Check(candidate.InferType(2, std::nullopt, &type, &detail) && type == "int64");
+          Check(candidate.Evaluate(2, type, &value, &detail));
+          Check(value.descriptor == expected && value.binary_value == input_value.binary_value);
+          continue;
+        }
+        const bool retry = candidate.InferTypeForConsumer(2, binding, row,
+            a::EngineCanonicalExpressionConsumer::projection, &type, &detail);
+        if (!retry) std::cerr << "exception retry operation=" << operation << " budget=" << budget << ':' << detail << '\n';
+        Check(retry && type == "int64");
+        Check(candidate.EvaluateForConsumer(2, "int64", binding, row,
+            a::EngineCanonicalExpressionConsumer::projection, &value, &detail));
+        Check(value.descriptor == expected && value.binary_value == input_value.binary_value);
+      }
+      Check(exhausted && faults > 0);
+    }
+  }
   // The existing object-free function runtime supplies a real callback-count
   // oracle. It is not the independently restricted row-function profile.
   auto& callable = dag.expressions.back();
@@ -371,6 +432,23 @@ void CheckProjectDescriptorInference(a::RelationalTypeDescriptor source_descript
   ++dag.descriptors.back().codec_generation;
   const auto refused = s::MaterializeValues(dag, root, services);
   Check(!refused.ok && refused.batch.columns.empty() && refused.batch.rows.empty() && calls == 3);
+  --dag.descriptors.back().codec_generation;
+  bool throw_once = true;
+  auto throwing = services;
+  throwing.function_evaluator = [&](const auto& id, const auto& arguments,
+      const auto& target, auto* value, auto* diagnostic, auto* detail) {
+    if (throw_once) { throw_once = false; throw std::runtime_error("component callback failure"); }
+    return services.function_evaluator(id, arguments, target, value, diagnostic, detail);
+  };
+  s::CanonicalRelationalExpressionRuntime retry_runtime(dag, throwing);
+  bool observed = false;
+  try { (void)retry_runtime.Evaluate(2, type, &evaluated, &input.detail); }
+  catch (const std::runtime_error&) { observed = true; }
+  Check(observed && evaluated.state == a::EngineValueState::error &&
+        evaluated.binary_value.empty() && evaluated.encoded_value.empty());
+  Check(retry_runtime.Evaluate(2, type, &evaluated, &input.detail) && calls == 4);
+  Check(evaluated.descriptor == described && evaluated.binary_value == input_value.binary_value &&
+        evaluated.encoded_value == input_value.encoded_value && evaluated.state == input_value.state);
 }
 
 void CheckExplicitDecimalProfiles() {

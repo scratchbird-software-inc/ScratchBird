@@ -83,6 +83,27 @@ void BindContractOnlyCanonicalPersistedRowDescriptorAuthorityV1(
 
 namespace {
 
+// No allocation: runtime state must be restored even when a descriptor,
+// payload or service callback throws while a materialized row is borrowed.
+template <typename T>
+class ScopedExpressionState {
+ public:
+  ScopedExpressionState(T& slot, T value) noexcept
+      : slot_(slot), previous_(std::exchange(slot, value)) {}
+  ~ScopedExpressionState() { slot_ = previous_; }
+  ScopedExpressionState(const ScopedExpressionState&) = delete;
+  ScopedExpressionState& operator=(const ScopedExpressionState&) = delete;
+ private:
+  T& slot_;
+  T previous_;
+};
+
+struct ScopedInferenceEntry {
+  std::unordered_set<std::uint32_t>& stack;
+  std::uint32_t expression_id;
+  ~ScopedInferenceEntry() { stack.erase(expression_id); }
+};
+
 std::string UpperAscii(std::string value) {
   std::ranges::transform(value, value.begin(), [](const unsigned char byte) {
     return static_cast<char>(std::toupper(byte));
@@ -1972,7 +1993,10 @@ BoundCanonicalRowPredicateLogicalMemoryV1(
       sizeof(api::EngineCanonicalExpressionEvaluationRequest) +
       sizeof(api::EngineCanonicalExpressionEvaluationResult) +
       4 * sizeof(api::EngineTypedValue) +
-      2 * sizeof(api::EngineDescriptor) + 6 * sizeof(std::string);
+      2 * sizeof(api::EngineDescriptor) + 6 * sizeof(std::string) +
+      sizeof(ScopedInferenceEntry) +
+      sizeof(ScopedExpressionState<api::EngineCanonicalExpressionConsumer>) +
+      sizeof(ScopedExpressionState<const void*>);
   std::uint64_t per_frame_dynamic_string_bytes = 0;
   std::uint64_t string_with_terminator = 0;
   std::uint64_t per_frame_dynamic_descriptor_bytes = 0;
@@ -2659,10 +2683,8 @@ bool CanonicalRelationalExpressionRuntime::InferTypeInternal(
     *refusal_detail = "expression graph cycle reached scalar runtime";
     return false;
   }
-  const auto leave = [&](const bool result) {
-    inference_stack_.erase(expression_id);
-    return result;
-  };
+  const ScopedInferenceEntry inference_entry{inference_stack_, expression_id};
+  const auto leave = [](const bool result) { return result; };
   const auto& expression = *found->second;
   const auto finish_type = [&](std::string type_name) {
     if (type_name == "null" && expected_type.has_value()) {
@@ -3258,12 +3280,8 @@ bool CanonicalRelationalExpressionRuntime::EvaluateForConsumer(
   if (!InferType(expression_id, expected_type, &inferred_type, refusal_detail)) {
     return false;
   }
-  const auto previous_consumer = active_consumer_;
-  active_consumer_ = consumer;
-  const bool evaluated =
-      EvaluateInternal(expression_id, expected_type, value, refusal_detail);
-  active_consumer_ = previous_consumer;
-  return evaluated;
+  const ScopedExpressionState consumer_scope(active_consumer_, consumer);
+  return EvaluateInternal(expression_id, expected_type, value, refusal_detail);
 }
 
 bool CanonicalRelationalExpressionRuntime::InferTypeForConsumer(
@@ -3290,14 +3308,9 @@ bool CanonicalRelationalExpressionRuntime::InferTypeForConsumer(
                          &prepared, refusal_detail)) {
     return false;
   }
-  const auto previous_consumer = active_consumer_;
-  active_row_binding_ = &prepared;
-  active_consumer_ = consumer;
-  const bool inferred = InferType(expression_id, std::nullopt,
-                                  canonical_type_name, refusal_detail);
-  active_consumer_ = previous_consumer;
-  active_row_binding_ = nullptr;
-  return inferred;
+  const ScopedExpressionState<const ActiveRowBinding*> row_scope(active_row_binding_, &prepared);
+  const ScopedExpressionState consumer_scope(active_consumer_, consumer);
+  return InferType(expression_id, std::nullopt, canonical_type_name, refusal_detail);
 }
 
 bool CanonicalRelationalExpressionRuntime::DescribeBoundDescriptor(
@@ -3347,11 +3360,9 @@ bool CanonicalRelationalExpressionRuntime::EvaluateForConsumer(
                          &prepared, refusal_detail)) {
     return false;
   }
-  active_row_binding_ = &prepared;
-  const bool evaluated = EvaluateForConsumer(
+  const ScopedExpressionState<const ActiveRowBinding*> row_scope(active_row_binding_, &prepared);
+  return EvaluateForConsumer(
       expression_id, expected_type, consumer, value, refusal_detail);
-  active_row_binding_ = nullptr;
-  return evaluated;
 }
 
 bool CanonicalRelationalExpressionRuntime::EvaluatePredicate(
