@@ -85,34 +85,42 @@ bool ValidateCanonicalPersistedTextRowDescriptorAuthorityV1(
   }
   const auto encoded_datatype_descriptor_uuid =
       api::BinaryCatalogUuid(metadata, "datatype_descriptor_uuid");
-  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+  if (persisted.datatype_cohort != api::EngineDatatypeCohort{
+          bound.datatype_catalog_snapshot_uuid, bound.datatype_catalog_generation,
+          bound.datatype_registry_generation} ||
+      persisted.datatype_descriptor_uuid != encoded_datatype_descriptor_uuid ||
+      persisted.datatype_descriptor_generation != bound.descriptor_generation) {
+    return refuse("persisted canonical TEXT outer datatype binding is stale or crossed");
+  }
+  const auto* identity = dt::FindDatatypeTypeCodecIdentityV3(
       bound.datatype_catalog_snapshot_uuid,
       bound.datatype_catalog_generation,
       bound.datatype_registry_generation, encoded_datatype_descriptor_uuid,
       bound.descriptor_generation);
-  if (!identity.ok)
+  if (!identity)
     return refuse("bound canonical TEXT registry authority is stale: datatype identity lookup");
-  if (!dt::IsExactCanonicalTextTypeCodecIdentityV1(identity.row))
+  if (!dt::IsExactCanonicalTextTypeCodecIdentityV1(identity->legacy_fields))
     return refuse("bound canonical TEXT registry authority is stale: codec row");
   if (bound.descriptor_uuid != persisted.descriptor_uuid &&
-      bound.descriptor_uuid != identity.row.descriptor_uuid)
+      bound.descriptor_uuid != identity->legacy_fields.descriptor_uuid)
     return refuse("bound canonical TEXT registry authority is stale: descriptor identity");
-  if (bound.descriptor_generation != identity.row.descriptor_generation)
+  if (bound.descriptor_generation != identity->legacy_fields.descriptor_generation)
     return refuse("bound canonical TEXT registry authority is stale: descriptor generation");
-  if (bound.type_uuid != identity.row.type_uuid)
+  if (bound.type_uuid != identity->legacy_fields.type_uuid ||
+      persisted.type_uuid != identity->legacy_fields.type_uuid)
     return refuse("bound canonical TEXT registry authority is stale: type identity");
-  if (bound.type_generation != identity.row.type_generation)
+  if (bound.type_generation != identity->legacy_fields.type_generation)
     return refuse("bound canonical TEXT registry authority is stale: type generation");
-  if (bound.codec_id != identity.row.codec_id ||
-      bound.codec_version != identity.row.codec_version ||
-      bound.codec_generation != identity.row.codec_generation)
+  if (bound.codec_id != identity->legacy_fields.codec_id ||
+      bound.codec_version != identity->legacy_fields.codec_version ||
+      bound.codec_generation != identity->legacy_fields.codec_generation)
     return refuse("bound canonical TEXT registry authority is stale: codec binding");
-  if (*bound.width > identity.row.canonical_value_maximum_bytes)
+  if (*bound.width > identity->legacy_fields.canonical_value_maximum_bytes)
     return refuse("bound canonical TEXT registry authority is stale: value width");
   if (!api::QowCanonicalDescriptorIdentityV1(persisted) ||
-      persisted.descriptor_uuid == identity.row.descriptor_uuid ||
+      persisted.descriptor_uuid == identity->legacy_fields.descriptor_uuid ||
       persisted.descriptor_kind != "scalar" ||
-      persisted.canonical_type_name != identity.row.canonical_name) {
+      persisted.canonical_type_name != identity->legacy_fields.canonical_name) {
     return refuse("persisted canonical TEXT outer descriptor is invalid");
   }
 
@@ -189,28 +197,30 @@ bool ValidateCanonicalPersistedTextRowDescriptorAuthorityV1(
       effective_nullability == api::RelationalNullability::kNullable
           ? std::string_view("true")
           : std::string_view("false");
-  if (!exact(spelling, identity.row.canonical_name) ||
+  if (!exact(spelling, identity->legacy_fields.canonical_name) ||
       character_length != *bound.width ||
       !exact_uuid("collation_uuid", *bound.collation_uuid) ||
       !exact("nullable", expected_nullable) ||
       resource_epoch == 0 || resource_epoch != context.resource_epoch ||
-      !exact_uuid("datatype_descriptor_uuid", identity.row.descriptor_uuid) ||
-      descriptor_generation != identity.row.descriptor_generation ||
-      !exact_uuid("type_uuid", identity.row.type_uuid) ||
-      type_generation != identity.row.type_generation ||
-      !exact_uuid("codec_uuid", identity.row.codec_uuid) ||
-      !exact("codec_id", identity.row.codec_id) ||
-      codec_version != identity.row.codec_version ||
-      codec_generation != identity.row.codec_generation ||
-      null_encoding != identity.row.null_encoding_code) {
+      !exact_uuid("datatype_descriptor_uuid", identity->legacy_fields.descriptor_uuid) ||
+      descriptor_generation != identity->legacy_fields.descriptor_generation ||
+      !exact_uuid("type_uuid", identity->legacy_fields.type_uuid) ||
+      type_generation != identity->legacy_fields.type_generation ||
+      !exact_uuid("codec_uuid", identity->legacy_fields.codec_uuid) ||
+      !exact("codec_id", identity->legacy_fields.codec_id) ||
+      codec_version != identity->legacy_fields.codec_version ||
+      codec_generation != identity->legacy_fields.codec_generation ||
+      null_encoding != identity->legacy_fields.null_encoding_code) {
     return refuse(
         "persisted canonical TEXT descriptor differs from bound authority");
   }
 
   const auto charset_uuid = api::BinaryCatalogUuid(metadata, "charset_uuid");
+  const auto collation_uuid = api::BinaryCatalogUuid(metadata, "collation_uuid");
+  if (persisted.charset_uuid != charset_uuid || persisted.collation_uuid != collation_uuid)
+    return refuse("persisted canonical TEXT outer resource identities disagree");
   const auto charset = api::LookupEngineResourceDescriptorByUuid(
       context, charset_uuid, "charset");
-  const auto collation_uuid = api::BinaryCatalogUuid(metadata, "collation_uuid");
   const auto collation = api::LookupEngineResourceDescriptorByUuid(
       context, collation_uuid, "collation");
   if (!charset.ok || !collation.ok ||

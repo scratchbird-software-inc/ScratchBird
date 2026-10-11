@@ -327,16 +327,16 @@ bool DescriptorIsLiveText(
       value.datatype_catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
       value.datatype_catalog_generation != context.datatype_catalog_generation ||
       value.datatype_registry_generation != context.datatype_registry_generation) return false;
-  const auto identity = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+  const auto* identity = scratchbird::core::datatypes::FindDatatypeTypeCodecIdentityV3(
       value.datatype_catalog_snapshot_uuid, value.datatype_catalog_generation,
       value.datatype_registry_generation, value.descriptor_uuid, value.descriptor_generation);
-  return identity.ok &&
-      scratchbird::core::datatypes::IsExactCanonicalTextTypeCodecIdentityV1(identity.row) &&
-      identity.row.type_uuid == value.type_uuid &&
-      identity.row.type_generation == value.type_generation &&
-      identity.row.codec_id == value.codec_id &&
-      identity.row.codec_version == value.codec_version &&
-      identity.row.codec_generation == value.codec_generation;
+  return identity &&
+      scratchbird::core::datatypes::IsExactCanonicalTextTypeCodecIdentityV1(identity->legacy_fields) &&
+      identity->legacy_fields.type_uuid == value.type_uuid &&
+      identity->legacy_fields.type_generation == value.type_generation &&
+      identity->legacy_fields.codec_id == value.codec_id &&
+      identity->legacy_fields.codec_version == value.codec_version &&
+      identity->legacy_fields.codec_generation == value.codec_generation;
 }
 
 class CanonicalOperandGraphSelector final

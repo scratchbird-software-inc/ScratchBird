@@ -1682,8 +1682,8 @@ BuildEngineProjectedNativeBindingContext(
       if (column.datatype_identity_present) {
         const auto canonical_datatype_descriptor_uuid =
             *fields->datatype_descriptor_uuid;
-        const auto datatype_identity = scratchbird::core::datatypes::
-            LookupDatatypeTypeCodecIdentityV1(
+        const auto* datatype_identity = scratchbird::core::datatypes::
+            FindDatatypeTypeCodecIdentityV3(
                 projection.datatype_catalog_snapshot_uuid,
                 projection.datatype_catalog_generation,
                 projection.datatype_registry_generation,
@@ -1709,22 +1709,22 @@ BuildEngineProjectedNativeBindingContext(
             column.datatype_codec_id.find('|') != std::string::npos ||
             column.datatype_codec_version == 0 ||
             column.datatype_codec_generation == 0 ||
-            !datatype_identity.ok ||
-            datatype_identity.row.descriptor_uuid !=
+            !datatype_identity ||
+            datatype_identity->legacy_fields.descriptor_uuid !=
                 canonical_datatype_descriptor_uuid ||
-            datatype_identity.row.descriptor_generation !=
+            datatype_identity->legacy_fields.descriptor_generation !=
                 column.datatype_descriptor_generation ||
-            datatype_identity.row.type_uuid != column.datatype_type_uuid ||
-            datatype_identity.row.type_generation !=
+            datatype_identity->legacy_fields.type_uuid != column.datatype_type_uuid ||
+            datatype_identity->legacy_fields.type_generation !=
                 column.datatype_type_generation ||
-            datatype_identity.row.codec_id != column.datatype_codec_id ||
-            datatype_identity.row.codec_version !=
+            datatype_identity->legacy_fields.codec_id != column.datatype_codec_id ||
+            datatype_identity->legacy_fields.codec_version !=
                 column.datatype_codec_version ||
-            datatype_identity.row.codec_generation !=
+            datatype_identity->legacy_fields.codec_generation !=
                 column.datatype_codec_generation ||
-            datatype_identity.row.canonical_value_bytes !=
+            datatype_identity->legacy_fields.canonical_value_bytes !=
                 column.datatype_canonical_value_bytes ||
-            datatype_identity.row.null_encoding_code !=
+            datatype_identity->legacy_fields.null_encoding_code !=
                 column.datatype_null_encoding ||
             fields->type_uuid != column.datatype_type_uuid) {
           return refuse(
@@ -6592,8 +6592,8 @@ BuildEngineProjectedNativeBindingContext(
             descriptor_fields->timezone_profile_id;
         bool exact_projected_datatype_identity = false;
         if (column.datatype_identity_present) {
-          const auto datatype_identity = scratchbird::core::datatypes::
-              LookupDatatypeTypeCodecIdentityV1(
+          const auto* datatype_identity = scratchbird::core::datatypes::
+              FindDatatypeTypeCodecIdentityV3(
                   projection.datatype_catalog_snapshot_uuid,
                   projection.datatype_catalog_generation,
                   projection.datatype_registry_generation,
@@ -6619,22 +6619,22 @@ BuildEngineProjectedNativeBindingContext(
               column.datatype_codec_id.find('|') != std::string::npos ||
               column.datatype_codec_version == 0 ||
               column.datatype_codec_generation == 0 ||
-              !datatype_identity.ok ||
-              datatype_identity.row.descriptor_uuid !=
+              !datatype_identity ||
+              datatype_identity->legacy_fields.descriptor_uuid !=
                   *descriptor_fields->datatype_descriptor_uuid ||
-              datatype_identity.row.descriptor_generation !=
+              datatype_identity->legacy_fields.descriptor_generation !=
                   column.datatype_descriptor_generation ||
-              datatype_identity.row.type_uuid != column.datatype_type_uuid ||
-              datatype_identity.row.type_generation !=
+              datatype_identity->legacy_fields.type_uuid != column.datatype_type_uuid ||
+              datatype_identity->legacy_fields.type_generation !=
                   column.datatype_type_generation ||
-              datatype_identity.row.codec_id != column.datatype_codec_id ||
-              datatype_identity.row.codec_version !=
+              datatype_identity->legacy_fields.codec_id != column.datatype_codec_id ||
+              datatype_identity->legacy_fields.codec_version !=
                   column.datatype_codec_version ||
-              datatype_identity.row.codec_generation !=
+              datatype_identity->legacy_fields.codec_generation !=
                   column.datatype_codec_generation ||
-              datatype_identity.row.canonical_value_bytes !=
+              datatype_identity->legacy_fields.canonical_value_bytes !=
                   column.datatype_canonical_value_bytes ||
-              datatype_identity.row.null_encoding_code !=
+              datatype_identity->legacy_fields.null_encoding_code !=
                   column.datatype_null_encoding ||
               descriptor.descriptor_uuid != column.type_descriptor_uuid ||
               descriptor.type_uuid != column.datatype_type_uuid) {
@@ -7813,8 +7813,8 @@ BuildEngineProjectedNativeBindingContext(
       constexpr core::platform::Uuid kBigintTypeUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x12}};
       constexpr core::platform::Uuid kInt128DescriptorUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x14}};
       constexpr core::platform::Uuid kInt128TypeUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x15}};
-      const auto int128_identity =
-          scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+      const auto* int128_identity =
+          scratchbird::core::datatypes::FindDatatypeTypeCodecIdentityV3(
               projection.datatype_catalog_snapshot_uuid,
               projection.datatype_catalog_generation,
               projection.datatype_registry_generation,
@@ -7870,13 +7870,13 @@ BuildEngineProjectedNativeBindingContext(
           aggregate_expression->child_expression_ids !=
               std::vector<std::uint32_t>{
                   relation.output_expression_ids.back()} ||
-          !sum_function_uuid.has_value() || !int128_identity.ok ||
-          int128_identity.row.type_uuid != kInt128TypeUuid ||
-          int128_identity.row.codec_id != "datatype.int128.le.v1" ||
-          int128_identity.row.codec_version != 1 ||
-          int128_identity.row.codec_generation != 1 ||
-          int128_identity.row.canonical_value_bytes != 16 ||
-          !int128_identity.row.null_supported) {
+          !sum_function_uuid.has_value() || !int128_identity ||
+          int128_identity->legacy_fields.type_uuid != kInt128TypeUuid ||
+          int128_identity->legacy_fields.codec_id != "datatype.int128.le.v1" ||
+          int128_identity->legacy_fields.codec_version != 1 ||
+          int128_identity->legacy_fields.codec_generation != 1 ||
+          int128_identity->legacy_fields.canonical_value_bytes != 16 ||
+          !int128_identity->legacy_fields.null_supported) {
         return fail("catalog_grouped_sum_int128_profile_unavailable");
       }
       aggregate_binding_id =
@@ -7885,12 +7885,12 @@ BuildEngineProjectedNativeBindingContext(
       descriptor.descriptor_id = *aggregate_binding_id;
       descriptor.descriptor_uuid = kInt128DescriptorUuid;
       descriptor.descriptor_generation =
-          int128_identity.row.descriptor_generation;
+          int128_identity->legacy_fields.descriptor_generation;
       descriptor.type_uuid = kInt128TypeUuid;
-      descriptor.type_generation = int128_identity.row.type_generation;
-      descriptor.codec_id = int128_identity.row.codec_id;
-      descriptor.codec_version = int128_identity.row.codec_version;
-      descriptor.codec_generation = int128_identity.row.codec_generation;
+      descriptor.type_generation = int128_identity->legacy_fields.type_generation;
+      descriptor.codec_id = int128_identity->legacy_fields.codec_id;
+      descriptor.codec_version = int128_identity->legacy_fields.codec_version;
+      descriptor.codec_generation = int128_identity->legacy_fields.codec_generation;
       descriptor.statement_receipt_uuid =
           statement_context.literal_preliminary_receipt_uuid;
       descriptor.datatype_catalog_snapshot_uuid =
@@ -9952,10 +9952,10 @@ EncodeContextualTextPrebindRequestV2(
                 !projected_descriptor_fields.has_value()
             ? core::platform::Uuid{}
             : *projected_descriptor_fields->datatype_descriptor_uuid;
-    const auto datatype_identity =
+    const auto* datatype_identity =
         projected_column == projection.columns.end()
-            ? scratchbird::core::datatypes::DatatypeTypeCodecIdentityLookupV1{}
-            : scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+            ? nullptr
+            : scratchbird::core::datatypes::FindDatatypeTypeCodecIdentityV3(
                   projection.datatype_catalog_snapshot_uuid,
                   projection.datatype_catalog_generation,
                   projection.datatype_registry_generation,
@@ -9986,23 +9986,23 @@ EncodeContextualTextPrebindRequestV2(
         projected_column->datatype_null_encoding != 1 ||
         projected_column->collation_uuid.is_nil() ||
         !CanonicalUuidBytes(projected_column->collation_uuid) ||
-        !datatype_identity.ok ||
+        !datatype_identity ||
         !scratchbird::core::datatypes::
-            IsExactCanonicalTextTypeCodecIdentityV1(datatype_identity.row) ||
-        datatype_identity.row.descriptor_uuid !=
+            IsExactCanonicalTextTypeCodecIdentityV1(datatype_identity->legacy_fields) ||
+        datatype_identity->legacy_fields.descriptor_uuid !=
             canonical_datatype_descriptor_uuid ||
-        datatype_identity.row.descriptor_generation != 1 ||
-        datatype_identity.row.type_uuid !=
+        datatype_identity->legacy_fields.descriptor_generation != 1 ||
+        datatype_identity->legacy_fields.type_uuid !=
             projected_column->datatype_type_uuid ||
-        datatype_identity.row.type_generation != 1 ||
-        datatype_identity.row.codec_id !=
+        datatype_identity->legacy_fields.type_generation != 1 ||
+        datatype_identity->legacy_fields.codec_id !=
             projected_column->datatype_codec_id ||
-        datatype_identity.row.codec_version !=
+        datatype_identity->legacy_fields.codec_version !=
             projected_column->datatype_codec_version ||
-        datatype_identity.row.codec_generation !=
+        datatype_identity->legacy_fields.codec_generation !=
             projected_column->datatype_codec_generation ||
-        datatype_identity.row.canonical_value_bytes != 0 ||
-        datatype_identity.row.null_encoding_code != 1 ||
+        datatype_identity->legacy_fields.canonical_value_bytes != 0 ||
+        datatype_identity->legacy_fields.null_encoding_code != 1 ||
         projection.descriptor_generation == 0 ||
         projection.datatype_catalog_snapshot_uuid !=
             statement_context.preliminary_catalog_snapshot_uuid ||

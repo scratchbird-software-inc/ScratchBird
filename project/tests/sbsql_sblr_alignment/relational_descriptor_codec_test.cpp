@@ -23,6 +23,7 @@
 #include "wire/contextual_operand_freeze.hpp"
 #include "lowering/relational_identity_operand.hpp"
 #include "common/native_uuid_literal.hpp"
+#include "common/native_datatype_codec_identity.hpp"
 #include "wire/native_query_artifact.hpp"
 #include "engine/internal_api/query/contextual_text_descriptor_match.hpp"
 #include "engine/internal_api/dml/datatype_operator_registry_projection.hpp"
@@ -1921,12 +1922,13 @@ void TestNativeDescriptorBinaryKeys() {
     const auto row = std::find_if(manifest.manifest.descriptor_rows.begin(), manifest.manifest.descriptor_rows.end(),
                                  [type](const auto& value) { return value.type_id == type; });
     Require(row != manifest.manifest.descriptor_rows.end(), "expected catalog type row absent");
-    const auto registry = dt::CurrentDatatypeTypeCodecIdentityRowsV1();
+    const auto registry = dt::CurrentDatatypeTypeCodecIdentityRowsV3();
     const auto binding = std::find_if(registry.begin(), registry.end(), [&](const auto& candidate) {
-      return candidate.descriptor_uuid == row->descriptor_uuid.value && candidate.descriptor_generation == row->descriptor_epoch;
+      return candidate.legacy_fields.descriptor_uuid == row->descriptor_uuid.value &&
+          candidate.legacy_fields.descriptor_generation == row->descriptor_epoch;
     });
     const auto actual = parser::LookupNativeCanonicalTypeIdentity(manifest.manifest, type);
-    Require(binding == registry.end() ? !actual : actual == binding->type_uuid,
+    Require(binding == registry.end() ? !actual : actual == binding->legacy_fields.type_uuid,
             "native type lookup confused the descriptor identity with its registered type");
   }
   Require(!parser::LookupNativeCanonicalTypeIdentity(manifest.manifest, dt::CanonicalTypeId::unknown),
@@ -1941,6 +1943,73 @@ void TestNativeDescriptorBinaryKeys() {
                                [](const auto& value) { return value.type_id == dt::CanonicalTypeId::uuid; });
   row->descriptor_uuid.value = {};
   Require(!parser::LookupNativeCanonicalTypeIdentity(invalid, dt::CanonicalTypeId::uuid), "native type lookup accepted nil identity");
+}
+
+void TestNativeDescriptorCohortPreservation() {
+  namespace parser = scratchbird::parser::sbsql;
+  namespace dt = scratchbird::core::datatypes;
+  unsigned cases = 0;
+  for (const auto& entry : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row = entry.legacy_fields;
+    if (row.catalog_generation != 5 && row.catalog_generation != 10 && row.catalog_generation != 11) continue;
+    const auto type = static_cast<dt::CanonicalTypeId>(row.canonical_binary_type_code);
+    if (type != dt::CanonicalTypeId::int64 && type != dt::CanonicalTypeId::uuid &&
+        type != dt::CanonicalTypeId::character) continue;
+    ++cases;
+    scratchbird::parser::ipc::ParserStatementContext context;
+    context.literal_preliminary_receipt_uuid = Id(101);
+    context.literal_catalog_snapshot_uuid = row.catalog_snapshot_uuid;
+    context.literal_catalog_generation = row.catalog_generation;
+    parser::NativeDescriptorBindingInput descriptor;
+    descriptor.descriptor_id = 1;
+    descriptor.descriptor_uuid = Id(102);
+    descriptor.type_uuid = row.type_uuid;
+    descriptor.nullability = parser::BoundNullability::kNullable;
+    scratchbird::parser::ipc::ParserStatementContext::DescriptorProfile profile;
+    profile.descriptor_uuid = descriptor.descriptor_uuid;
+    profile.type_uuid = row.type_uuid;
+    profile.nullable = true;
+    context.descriptor_profiles.push_back(profile);
+    Require(parser::PreserveNativeDescriptorAuthority(&descriptor, context),
+            "exact issued descriptor could not preserve selected cohort");
+    Require(descriptor.datatype_catalog_snapshot_uuid == row.catalog_snapshot_uuid &&
+        descriptor.datatype_catalog_generation == row.catalog_generation &&
+        descriptor.datatype_registry_generation == row.registry_generation &&
+        descriptor.statement_receipt_uuid == context.literal_preliminary_receipt_uuid &&
+        parser::MatchesNativeDatatypeCodecIdentity(descriptor, row.descriptor_uuid),
+        "preserved native descriptor lost exact registry tuple");
+    const auto state = [](const auto& d) {
+      return std::tie(d.descriptor_uuid, d.type_uuid, d.descriptor_generation,
+          d.type_generation, d.codec_id, d.codec_version, d.codec_generation,
+          d.statement_receipt_uuid, d.datatype_catalog_snapshot_uuid,
+          d.datatype_catalog_generation, d.datatype_registry_generation);
+    };
+    Require(parser::PreserveNativeDescriptorAuthority(&descriptor, context),
+            "already complete native descriptor refused");
+    for (unsigned mutation = 0; mutation < 12; ++mutation) {
+      auto invalid = descriptor;
+      auto invalid_context = context;
+      if (mutation == 0) ++invalid.descriptor_generation;
+      if (mutation == 1) ++invalid.type_generation;
+      if (mutation == 2) invalid.codec_id += ".invalid";
+      if (mutation == 3) ++invalid.codec_version;
+      if (mutation == 4) ++invalid.codec_generation;
+      if (mutation == 5) invalid.statement_receipt_uuid = Id(103);
+      if (mutation == 6) invalid.datatype_catalog_snapshot_uuid.bytes[0] ^= 1;
+      if (mutation == 7) ++invalid.datatype_catalog_generation;
+      if (mutation == 8) ++invalid.datatype_registry_generation;
+      if (mutation == 9) invalid.codec_id.clear();
+      if (mutation == 10) ++invalid_context.literal_catalog_generation;
+      if (mutation == 11) invalid_context.literal_catalog_generation = 0;
+      const auto before = invalid;
+      Require(!parser::PreserveNativeDescriptorAuthority(&invalid, invalid_context) &&
+          state(invalid) == state(before), "native descriptor repaired or published crossed authority");
+      if (mutation < 5 || mutation == 6 || mutation == 7 || mutation == 8 || mutation == 9)
+        Require(!parser::MatchesNativeDatatypeCodecIdentity(invalid, row.descriptor_uuid),
+                "parser registry membership accepted a mutated tuple");
+    }
+  }
+  Require(cases == 9, "native descriptor cohort coverage incomplete");
 }
 
 void TestEngineIssuedFunctionIdentities() {
@@ -6030,6 +6099,7 @@ int main() {
     TestDmlRegistryBinaryProjection();
     TestEngineIssuedFunctionIdentities();
     TestNativeDescriptorBinaryKeys();
+    TestNativeDescriptorCohortPreservation();
     TestBinaryTransactionRouting();
     TestNativeArtifactPublication();
     TestContextualDescriptorAgreement();

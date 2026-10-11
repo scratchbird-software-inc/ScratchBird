@@ -14,8 +14,9 @@ bool MatchesNativeDatatypeCodecIdentity(
     const Descriptor& descriptor,
     const scratchbird::core::platform::Uuid& canonical_datatype_descriptor_uuid) {
   const scratchbird::core::datatypes::DatatypeTypeCodecIdentityRowV1* match = nullptr;
-  for (const auto& row :
-       scratchbird::core::datatypes::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+  for (const auto& entry :
+       scratchbird::core::datatypes::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row = entry.legacy_fields;
     if (row.catalog_snapshot_uuid != descriptor.datatype_catalog_snapshot_uuid ||
         row.catalog_generation != descriptor.datatype_catalog_generation ||
         row.registry_generation != descriptor.datatype_registry_generation ||

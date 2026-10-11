@@ -2749,16 +2749,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
                   "current core datatype descriptor manifest is unavailable");
   }
   for (const auto& row : core_manifest.manifest.descriptor_rows) {
-    const auto descriptor_uuid =
-        row.descriptor_uuid.value;
-    type_names_by_uuid.emplace(descriptor_uuid, row.stable_name);
-    const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-        scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}},
-        core_manifest.manifest.catalog_epoch, 1, descriptor_uuid,
-        row.descriptor_epoch);
-    if (identity.ok) {
-      type_names_by_uuid.emplace(identity.row.type_uuid, row.stable_name);
-    }
+    const auto type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1(row.stable_name, input.context);
+    if (!type_uuid.is_nil()) type_names_by_uuid.emplace(type_uuid, row.stable_name);
   }
   CanonicalRelationalExpressionRuntimeServices expression_services;
   expression_services.descriptor_type_resolver =

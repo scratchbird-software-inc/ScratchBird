@@ -228,7 +228,8 @@ bool PreserveCanonicalQueryResultValuesV1(
         return refuse("query value column identity differs from engine schema");
       std::size_t matches = 0;
       const dt::DatatypeTypeCodecIdentityRowV1* matched_identity = nullptr;
-      for (const auto& identity : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+      for (const auto& entry : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+        const auto& identity = entry.legacy_fields;
         if (identity.catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
             identity.catalog_generation != context.datatype_catalog_generation ||
             identity.registry_generation != context.datatype_registry_generation ||

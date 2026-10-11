@@ -11,6 +11,7 @@ namespace scratchbird::engine::internal_api {
 inline bool StoredScalarProjectionRequiredV1(const EngineDescriptor& source) {
   return source.canonical_type_name == "int32" ||
          source.canonical_type_name == "int64" ||
+         source.canonical_type_name == "boolean" ||
          source.canonical_type_name == "timestamp";
 }
 inline bool ProjectStoredScalarDescriptorV1(
@@ -18,6 +19,6 @@ inline bool ProjectStoredScalarDescriptorV1(
     bool nullable, EngineDescriptor* output, std::string* detail) {
   if (source.canonical_type_name == "timestamp")
     return ProjectStoredHistoricalTimestampDescriptorV1(context, source, nullable, output, detail);
-  return ProjectStoredIntegerDescriptorV1(context, source, nullable, output, detail);
+  return ProjectStoredIntegerOrBooleanDescriptorV1(context, source, nullable, output, detail);
 }
 }  // namespace scratchbird::engine::internal_api

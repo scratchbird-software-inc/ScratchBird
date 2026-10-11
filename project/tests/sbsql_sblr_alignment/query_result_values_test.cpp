@@ -130,6 +130,38 @@ void Reject(std::size_t type, Mutation mutation, const char* code = "DATATYPE.DE
 }
 
 int main() try {
+  for (const auto generation : {5U, 10U, 11U})
+  for (const auto rows : {0U, 2U})
+  for (const bool null : {false, true}) {
+    Fixture f(2, rows, 2, true, null);
+    const auto snapshot = generation == 5
+        ? scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d705")
+        : generation == 10 ? dt::kDatatypeCohortV10 : dt::kDatatypeCohortV11;
+    f.context.datatype_catalog_snapshot_uuid = snapshot;
+    f.context.datatype_catalog_generation = f.context.datatype_registry_generation = generation;
+    f.metadata->datatype_catalog_snapshot_uuid = Bytes(snapshot);
+    f.metadata->datatype_catalog_generation = f.metadata->datatype_registry_generation = generation;
+    Check(f.Run(), f.detail);
+    Check(f.shape.query_values && f.shape.query_values->rows.size() == rows,
+          "current cohort values lost rows");
+    for (const auto& row : f.shape.query_values->rows)
+      for (const auto& cell : row.cells)
+        Check(null ? cell.state == wire::TypedResultValueState::sql_null && cell.canonical_payload.empty()
+                   : cell.state == wire::TypedResultValueState::value_present && cell.canonical_payload == vectors[2].bytes,
+              "current cohort values changed canonical bytes or NULL");
+    for (unsigned mutation = 0; mutation < 5; ++mutation) {
+      const auto saved = *f.metadata;
+      if (mutation == 0) f.metadata->datatype_catalog_snapshot_uuid[0] ^= 1;
+      if (mutation == 1) ++f.metadata->datatype_catalog_generation;
+      if (mutation == 2) ++f.metadata->datatype_registry_generation;
+      if (mutation == 3) ++f.metadata->columns[0].transport.codec_generation;
+      if (mutation == 4) f.metadata->statement_receipt_uuid[0] ^= 1;
+      Check(!f.Run() && !f.shape.query_values && f.code == "DATATYPE.DESCRIPTOR.INVALID",
+            "current cohort values accepted crossed authority");
+      *f.metadata = saved;
+      Check(f.Run(), "current cohort values retry did not recover");
+    }
+  }
   Reject(6,[](Fixture& fixture) {
     fixture.Value().binary_value.clear();fixture.Value().encoded_value="1.5";
   });

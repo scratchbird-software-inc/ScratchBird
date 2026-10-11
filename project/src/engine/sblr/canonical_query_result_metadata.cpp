@@ -196,7 +196,8 @@ bool PreserveCanonicalQueryResultMetadataV1(
     // still revalidates the supplied receipt/cohort and exact codec tuple;
     // copying the registry's strings does not add authority.
     std::vector<const dt::DatatypeTypeCodecIdentityRowV1*> identities;
-    for (const auto& candidate : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+    for (const auto& entry : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+      const auto& candidate = entry.legacy_fields;
       if (candidate.catalog_snapshot_uuid == context.datatype_catalog_snapshot_uuid &&
           candidate.catalog_generation == context.datatype_catalog_generation &&
           candidate.registry_generation == context.datatype_registry_generation)

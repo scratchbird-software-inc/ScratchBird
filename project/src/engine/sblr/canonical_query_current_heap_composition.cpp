@@ -659,16 +659,16 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
                 input.context.datatype_registry_generation) {
           return false;
         }
-        const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+        const auto* identity = dt::FindDatatypeTypeCodecIdentityV3(
             d->datatype_catalog_snapshot_uuid,
             d->datatype_catalog_generation,
             d->datatype_registry_generation, descriptor_uuid,
             d->descriptor_generation);
-        return identity.ok && identity.row.type_uuid == d->type_uuid &&
-               identity.row.type_generation == d->type_generation &&
-               identity.row.codec_id == d->codec_id &&
-               identity.row.codec_version == d->codec_version &&
-               identity.row.codec_generation == d->codec_generation;
+        return identity && identity->legacy_fields.type_uuid == d->type_uuid &&
+               identity->legacy_fields.type_generation == d->type_generation &&
+               identity->legacy_fields.codec_id == d->codec_id &&
+               identity->legacy_fields.codec_version == d->codec_version &&
+               identity->legacy_fields.codec_generation == d->codec_generation;
       };
       const bool key_nullable =
           key_descriptor != nullptr &&

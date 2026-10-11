@@ -670,6 +670,22 @@ void VerifyCanonicalTextPersistedRowAuthority(
   }
   Require(positive,
           "exact persisted canonical TEXT authority was refused");
+  for (unsigned mutation = 0; mutation < 11; ++mutation) {
+    auto crossed = runtime_descriptor;
+    if (mutation == 0) crossed.datatype_cohort = {};
+    if (mutation == 1) ++crossed.datatype_cohort.catalog_generation;
+    if (mutation == 2) ++crossed.datatype_cohort.registry_generation;
+    if (mutation == 3) crossed.datatype_cohort.catalog_snapshot_uuid.bytes[0] ^= 1;
+    if (mutation == 4) crossed.datatype_descriptor_uuid.bytes[0] ^= 1;
+    if (mutation == 5) ++crossed.datatype_descriptor_generation;
+    if (mutation == 6) crossed.type_uuid.bytes[0] ^= 1;
+    if (mutation == 7) crossed.charset_uuid.bytes[0] ^= 1;
+    if (mutation == 8) crossed.collation_uuid.bytes[0] ^= 1;
+    if (mutation == 9) crossed.charset_uuid = {};
+    if (mutation == 10) crossed.collation_uuid = {};
+    Require(!validates(receipt_context, bound, crossed),
+            "persisted canonical TEXT outer datatype binding drift was admitted");
+  }
 
   const auto refused_field = [&](const std::string_view key,
                                  const std::string_view replacement,
@@ -1043,17 +1059,18 @@ void VerifyCanonicalNonTextPersistedSuffixAuthority(
                   .descriptor_uuid.valid(),
           "canonical int64 manifest row is unavailable");
   const auto descriptor_uuid = int64_row.manifest.descriptor_rows.front().descriptor_uuid.value;
-  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+  const auto* identity = dt::FindDatatypeTypeCodecIdentityV3(
       receipt_context.datatype_catalog_snapshot_uuid,
       receipt_context.datatype_catalog_generation,
       receipt_context.datatype_registry_generation, descriptor_uuid,
       int64_row.manifest.descriptor_rows.front().descriptor_epoch);
+  Require(identity != nullptr, "non-TEXT actual datatype codec unavailable");
   // Current DDL publishes the complete registry tuple. Derive the legacy
   // suffix-absent test carrier explicitly, retaining its bound identities.
   auto suffix_absent = persisted;
   auto absent_fields = DescriptorFields(suffix_absent.value_descriptor.encoded_descriptor);
   for (const auto key : {"datatype_descriptor_uuid", "datatype_descriptor_generation",
-                         "type_generation", "codec_id", "codec_version", "codec_generation",
+                         "type_generation", "codec_uuid", "codec_id", "codec_version", "codec_generation",
                          "null_encoding"}) {
     absent_fields.text.erase(key);
     absent_fields.identities.erase(key);
@@ -1061,14 +1078,27 @@ void VerifyCanonicalNonTextPersistedSuffixAuthority(
   suffix_absent.value_descriptor.encoded_descriptor =
       scratchbird::tests::NativeCatalogColumnFixture(std::move(absent_fields));
   const bool exact_suffix_absent =
-      identity.ok && identity.row.codec_uuid.is_nil() &&
+      identity != nullptr &&
       persisted.value_descriptor.canonical_type_name == "int64" &&
-      persisted.value_descriptor.type_uuid == identity.row.type_uuid &&
+      persisted.value_descriptor.type_uuid == identity->legacy_fields.type_uuid &&
       persisted.value_descriptor.descriptor_uuid !=
-          identity.row.descriptor_uuid &&
+          identity->legacy_fields.descriptor_uuid &&
       sblr::Rcp079ExactPersistedColumnDescriptorV1(receipt_context,
                                                    suffix_absent);
-  if (!exact_suffix_absent) std::cerr << "qow_int64_suffix_authority_invalid\n";
+  if (!exact_suffix_absent) {
+    std::cerr << "qow_int64_suffix_authority_invalid"
+        << " codec_nil=" << identity->legacy_fields.codec_uuid.is_nil()
+        << " type=" << persisted.value_descriptor.canonical_type_name
+        << " type_match=" << (persisted.value_descriptor.type_uuid == identity->legacy_fields.type_uuid)
+        << " datatype_match=" << (persisted.value_descriptor.datatype_descriptor_uuid == identity->legacy_fields.descriptor_uuid)
+        << " generation=" << persisted.value_descriptor.datatype_descriptor_generation
+        << " cohort=" << persisted.value_descriptor.datatype_cohort.catalog_generation
+        << " expected=" << receipt_context.datatype_catalog_generation
+        << " storage=" << persisted.storage_class << " inline=" << persisted.max_inline_bytes
+        << " overflow=" << persisted.overflow_policy << '\n';
+    for (const auto& [key, value] : DescriptorFields(suffix_absent.value_descriptor.encoded_descriptor).text)
+      std::cerr << key << '=' << value << '\n';
+  }
   Require(exact_suffix_absent,
           "suffix-absent non-TEXT descriptor handle was not preserved");
 
@@ -1081,14 +1111,15 @@ void VerifyCanonicalNonTextPersistedSuffixAuthority(
     } else fields.text.try_emplace(name, value);
     complete.value_descriptor.encoded_descriptor = scratchbird::tests::NativeCatalogColumnFixture(std::move(fields));
   };
-  append("datatype_descriptor_uuid", identity.row.descriptor_uuid);
+  append("datatype_descriptor_uuid", identity->legacy_fields.descriptor_uuid);
   append("datatype_descriptor_generation",
-         std::to_string(identity.row.descriptor_generation));
-  append("type_generation", std::to_string(identity.row.type_generation));
-  append("codec_id", identity.row.codec_id);
-  append("codec_version", std::to_string(identity.row.codec_version));
-  append("codec_generation", std::to_string(identity.row.codec_generation));
-  append("null_encoding", std::to_string(identity.row.null_encoding_code));
+         std::to_string(identity->legacy_fields.descriptor_generation));
+  append("type_generation", std::to_string(identity->legacy_fields.type_generation));
+  if (!identity->legacy_fields.codec_uuid.is_nil()) append("codec_uuid", identity->legacy_fields.codec_uuid);
+  append("codec_id", identity->legacy_fields.codec_id);
+  append("codec_version", std::to_string(identity->legacy_fields.codec_version));
+  append("codec_generation", std::to_string(identity->legacy_fields.codec_generation));
+  append("null_encoding", std::to_string(identity->legacy_fields.null_encoding_code));
   Require(sblr::Rcp079ExactPersistedColumnDescriptorV1(receipt_context,
                                                        complete),
           "complete non-TEXT registry suffix was refused");
@@ -1110,7 +1141,7 @@ void VerifyCanonicalNonTextPersistedSuffixAuthority(
                 "stale non-TEXT descriptor generation was admitted");
   refused_field("type_generation", "2",
                 "stale non-TEXT type generation was admitted");
-  refused_field("codec_id", identity.row.codec_id + ".lookalike",
+  refused_field("codec_id", identity->legacy_fields.codec_id + ".lookalike",
                 "lookalike non-TEXT codec ID was admitted");
   refused_field("codec_version", "2",
                 "stale non-TEXT codec version was admitted");
@@ -1123,7 +1154,7 @@ void VerifyCanonicalNonTextPersistedSuffixAuthority(
 
   auto partial = suffix_absent;
   auto partial_fields = DescriptorFields(partial.value_descriptor.encoded_descriptor);
-  partial_fields.identities["datatype_descriptor_uuid"] = identity.row.descriptor_uuid;
+  partial_fields.identities["datatype_descriptor_uuid"] = identity->legacy_fields.descriptor_uuid;
   partial.value_descriptor.encoded_descriptor = scratchbird::tests::NativeCatalogColumnFixture(std::move(partial_fields));
   Require(!sblr::Rcp079ExactPersistedColumnDescriptorV1(receipt_context,
                                                         partial),
@@ -1135,10 +1166,22 @@ void VerifyCanonicalNonTextPersistedSuffixAuthority(
                                                         missing),
           "incomplete non-TEXT registry suffix was admitted");
   auto unsupported = complete;
-  unsupported.value_descriptor.encoded_descriptor = AddDescriptorField(unsupported.value_descriptor.encoded_descriptor, "codec_uuid", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d71a"));
+  const auto wrong_codec = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d71a");
+  Require(wrong_codec != identity->legacy_fields.codec_uuid,
+          "non-TEXT codec mutation must change actual identity");
+  unsupported.value_descriptor.encoded_descriptor = identity->legacy_fields.codec_uuid.is_nil()
+      ? AddDescriptorField(unsupported.value_descriptor.encoded_descriptor, "codec_uuid", wrong_codec)
+      : ReplaceExactDescriptorField(unsupported.value_descriptor.encoded_descriptor, "codec_uuid", IdentityBytes(wrong_codec));
   Require(!sblr::Rcp079ExactPersistedColumnDescriptorV1(receipt_context,
                                                         unsupported),
           "unsupported non-TEXT codec UUID suffix was admitted");
+  if (!identity->legacy_fields.codec_uuid.is_nil()) {
+    auto missing_codec = complete;
+    missing_codec.value_descriptor.encoded_descriptor = RemoveExactDescriptorField(
+        missing_codec.value_descriptor.encoded_descriptor, "codec_uuid");
+    Require(!sblr::Rcp079ExactPersistedColumnDescriptorV1(receipt_context, missing_codec),
+            "missing required non-TEXT codec UUID was admitted");
+  }
   auto unknown = complete;
   unknown.value_descriptor.encoded_descriptor = AddDescriptorField(unknown.value_descriptor.encoded_descriptor, "codec_alias", "lookalike");
   Require(!sblr::Rcp079ExactPersistedColumnDescriptorV1(receipt_context,
@@ -1444,13 +1487,15 @@ void CreateObjectBackedRelation(Fixture* fixture) {
     Require(found.ok() && found.manifest.descriptor_rows.size() == 1,
             "object-backed datatype descriptor unavailable");
     const auto& row = found.manifest.descriptor_rows.front();
-    const auto codec = dt::LookupDatatypeTypeCodecIdentityV1(
+    const auto* codec = dt::FindDatatypeTypeCodecIdentityV3(
         context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
         context.datatype_registry_generation, row.descriptor_uuid.value, row.descriptor_epoch);
-    Require(codec.ok, "object-backed fixture exact datatype codec unavailable");
+    Require(codec != nullptr, "object-backed fixture exact datatype codec unavailable");
     descriptor.datatype_descriptor_uuid = row.descriptor_uuid.value;
     descriptor.datatype_descriptor_generation = row.descriptor_epoch;
-    descriptor.type_uuid = codec.row.type_uuid;
+    descriptor.type_uuid = codec->legacy_fields.type_uuid;
+    descriptor.datatype_cohort = {context.datatype_catalog_snapshot_uuid,
+        context.datatype_catalog_generation, context.datatype_registry_generation};
   };
   std::uint64_t column_salt = fixture->salt + 200;
   const auto bind_columns = [&](api::EngineCreateTableRequest& request) {

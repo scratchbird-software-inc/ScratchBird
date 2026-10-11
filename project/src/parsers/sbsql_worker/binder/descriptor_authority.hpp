@@ -25,7 +25,8 @@ inline std::optional<core::platform::Uuid> LookupNativeCanonicalTypeIdentity(
   const auto identity = row.manifest.descriptor_rows.front().descriptor_uuid.value;
   if (!core::uuid::IsEngineIdentityUuid(identity)) return std::nullopt;
   std::optional<core::platform::Uuid> type_identity;
-  for (const auto& candidate : core::datatypes::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+  for (const auto& entry : core::datatypes::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& candidate = entry.legacy_fields;
     if (candidate.descriptor_uuid != identity || candidate.descriptor_generation !=
         row.manifest.descriptor_rows.front().descriptor_epoch) continue;
     if (!core::uuid::IsEngineIdentityUuid(candidate.type_uuid) ||
@@ -60,7 +61,8 @@ inline bool PreserveNativeDescriptorAuthority(
   // nearest-generation choice. The engine checks the selected registry
   // generation against its independently retained live receipt.
   const dt::DatatypeTypeCodecIdentityRowV1* identity = nullptr;
-  for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+  for (const auto& entry : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row = entry.legacy_fields;
     if (row.catalog_snapshot_uuid != context.literal_catalog_snapshot_uuid ||
         row.catalog_generation != context.literal_catalog_generation ||
         row.type_uuid != descriptor->type_uuid) continue;

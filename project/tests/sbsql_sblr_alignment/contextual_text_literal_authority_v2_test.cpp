@@ -16,6 +16,7 @@
 #include "engine/sblr/sblr_literal_runtime.hpp"
 #include "engine/sblr/sblr_opcode_stream.hpp"
 #include "hash_digest.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "uuid.hpp"
 #include "engine/sblr/relational_descriptor_codec.hpp"
 #include "../support/native_catalog_column_fixture.hpp"
@@ -165,7 +166,7 @@ Bytes LiteralReference(const std::uint64_t node_id, const Bytes& sbxn,
   return result;
 }
 
-api::EngineRequestContext Context(std::uint64_t ordinal) {
+api::EngineRequestContext Context(std::uint64_t ordinal, std::uint64_t generation = 1) {
   api::EngineRequestContext context;
   context.database_path =
       (std::filesystem::temp_directory_path() /
@@ -184,8 +185,12 @@ api::EngineRequestContext Context(std::uint64_t ordinal) {
   context.statement_receipt_uuid = NewIdentity(
       scratchbird::core::platform::UuidKind::object, ordinal * 16 + 6);
   context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
+  if (generation == 5) context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d705");
+  if (generation == 10) context.datatype_catalog_snapshot_uuid = scratchbird::core::datatypes::kDatatypeCohortV10;
+  if (generation == 11) context.datatype_catalog_snapshot_uuid = scratchbird::core::datatypes::kDatatypeCohortV11;
+  assert(generation == 1 || generation == 5 || generation == 10 || generation == 11);
+  context.datatype_catalog_generation = generation;
+  context.datatype_registry_generation = generation;
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.security_context_present = true;
@@ -236,8 +241,8 @@ sblr::ContextualTextDescriptorV2 Descriptor(
   descriptor.equality_operation_generation = policies.rows.equality.generation;
   descriptor.datatype_catalog_snapshot_uuid =
       WireUuid(context.datatype_catalog_snapshot_uuid);
-  descriptor.datatype_catalog_generation = 1;
-  descriptor.datatype_registry_generation = 1;
+  descriptor.datatype_catalog_generation = context.datatype_catalog_generation;
+  descriptor.datatype_registry_generation = context.datatype_registry_generation;
   descriptor.resource_epoch = context.resource_epoch;
   return descriptor;
 }
@@ -716,7 +721,8 @@ CanonicalGraphEvidence GraphEvidence(
     const api::EngineRequestContext& context,
     const sblr::ContextualTextLiteralProfileSetV2& profiles,
     const Bytes& sbxn,
-    const CanonicalGraphMutation mutation) {
+    const CanonicalGraphMutation mutation, unsigned descriptor_mutation = 0,
+    bool mutate_target = false) {
   assert(profiles.mappings.size() == 1);
   const auto& profile = profiles.mappings.front().profile;
   constexpr std::uint32_t source_node_id = 10;
@@ -807,10 +813,17 @@ CanonicalGraphEvidence GraphEvidence(
     push_binding(11, second_source_binding);
   }
 
-  const auto literal_descriptor_fields = EncodeRelationalDescriptor(
-      RelationalDescriptor(profile, false));
-  const auto target_descriptor_fields = EncodeRelationalDescriptor(
-      RelationalDescriptor(profile, true));
+  auto literal_descriptor = RelationalDescriptor(profile, false);
+  auto target_descriptor = RelationalDescriptor(profile, true);
+  auto& changed = mutate_target ? target_descriptor : literal_descriptor;
+  if (descriptor_mutation == 1) changed.datatype_catalog_snapshot_uuid.bytes[0] ^= 1;
+  if (descriptor_mutation == 2) ++changed.datatype_catalog_generation;
+  if (descriptor_mutation == 3) ++changed.datatype_registry_generation;
+  if (descriptor_mutation == 4) changed.type_uuid.bytes[0] ^= 1;
+  if (descriptor_mutation == 5) ++changed.codec_generation;
+  if (descriptor_mutation == 6) changed.statement_receipt_uuid.bytes[0] ^= 1;
+  const auto literal_descriptor_fields = EncodeRelationalDescriptor(literal_descriptor);
+  const auto target_descriptor_fields = EncodeRelationalDescriptor(target_descriptor);
   const auto push_descriptor = [&](std::uint32_t handle, const Bytes& body) {
     sblr::SblrOperand operand; operand.ordinal = static_cast<std::uint32_t>(operands.size() + 1);
     operand.type = "relational_descriptor_v3"; operand.name = "slot_" + std::to_string(handle);
@@ -938,8 +951,8 @@ api::SblrExecutorAvailabilityRowIdentity AvailabilityIdentity() {
 api::EngineContextualTextPreparedResourceEstimateV2 PreparedResourceEstimate(
     const std::uint64_t ordinal,
     const std::string_view literal_body,
-    const std::size_t target_name_padding) {
-  auto context = Context(ordinal);
+    const std::size_t target_name_padding, std::uint64_t generation = 1) {
+  auto context = Context(ordinal, generation);
   RemoveAvailabilityStore(context);
   FakeTargetResolver resolver(context, target_name_padding);
   sblr::ContextualTextLiteralNegotiationRequestV2 decoded_request;
@@ -974,6 +987,25 @@ api::EngineContextualTextPreparedResourceEstimateV2 PreparedResourceEstimate(
   request.exact_sbxn = sbxn;
   auto prepared = api::PrepareContextualTextLiteralAuthorityV2(request);
   assert(prepared.ok && prepared.prepared.valid());
+
+  if (generation != 1) {
+    for (const bool target : {false, true})
+    for (unsigned mutation = 1; mutation <= 6; ++mutation) {
+      const auto invalid_graph = GraphEvidence(context, issued.profile_set, sbxn,
+          CanonicalGraphMutation::none, mutation, target);
+      auto invalid = request;
+      invalid.exact_sbel_v1 = Sbel(transferred.record, invalid_graph.sbos);
+      invalid.exact_canonical_sbos = invalid_graph.sbos;
+      invalid.exact_sbtlxe02 = invalid_graph.execute;
+      invalid.exact_pre_contextual_operand_records = invalid_graph.pre_contextual_records;
+      invalid.pre_contextual_operand_count = invalid_graph.pre_contextual_operand_count;
+      const auto rejected = api::PrepareContextualTextLiteralAuthorityV2(invalid);
+      assert(!rejected.ok && !rejected.prepared.valid() &&
+             rejected.diagnostic.code == "CTB.TEXT.DESCRIPTOR_INVALID");
+    }
+    const auto retried = api::PrepareContextualTextLiteralAuthorityV2(request);
+    assert(retried.ok && retried.prepared.valid());
+  }
 
   const auto revalidations_before = resolver.revalidation_count;
   const auto resource_snapshots_before = resolver.comparison_snapshot_count;
@@ -1079,6 +1111,8 @@ void RequireProjectionKindRefusal(const std::uint64_t ordinal,
 }  // namespace
 
 int main() {
+  for (const auto generation : {5U, 10U, 11U})
+    assert(PreparedResourceEstimate(100 + generation, "native cohort", 0, generation).ok);
   RequireProjectionKindRefusal(31, "scalar");
   RequireProjectionKindRefusal(32, "canonical_type_descriptor ");
   auto context = Context(1);

@@ -415,7 +415,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         descriptor.datatype_catalog_generation != input.context.datatype_catalog_generation ||
         descriptor.datatype_registry_generation != input.context.datatype_registry_generation) return nullptr;
     const dt::DatatypeTypeCodecIdentityRowV1* matched = nullptr;
-    for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+    for (const auto& entry : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+      const auto& row = entry.legacy_fields;
       if (row.catalog_snapshot_uuid != descriptor.datatype_catalog_snapshot_uuid ||
           row.catalog_generation != descriptor.datatype_catalog_generation ||
           row.registry_generation != descriptor.datatype_registry_generation ||
@@ -758,7 +759,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
   const auto core_type_uuid = [&](const std::string_view stable_name) {
     api::EngineUuid type;
     const auto code = dt::CanonicalTypeIdFromStableName(std::string(stable_name));
-    for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+    for (const auto& entry : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+      const auto& row = entry.legacy_fields;
       if (row.catalog_snapshot_uuid != input.context.datatype_catalog_snapshot_uuid ||
           row.catalog_generation != input.context.datatype_catalog_generation ||
           row.registry_generation != input.context.datatype_registry_generation ||

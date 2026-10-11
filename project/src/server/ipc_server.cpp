@@ -2031,6 +2031,9 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
 
     if (!scratchbird::core::uuid::IsEngineIdentityUuid(source.value_descriptor.datatype_descriptor_uuid) ||
         source.value_descriptor.datatype_descriptor_generation == 0 ||
+        source.value_descriptor.datatype_cohort != engine_api::EngineDatatypeCohort{
+            context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+            context.datatype_registry_generation} ||
         !scratchbird::core::uuid::IsEngineIdentityUuid(source.value_descriptor.type_uuid)) {
       result.diagnostic = PsRelationProjectionDiagnostic(
           "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
@@ -2039,14 +2042,14 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
           "binary_datatype_binding_required");
       return result;
     }
-    const auto datatype_identity =
-        scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+    const auto* datatype_identity =
+        scratchbird::core::datatypes::FindDatatypeTypeCodecIdentityV3(
             context.datatype_catalog_snapshot_uuid,
             context.datatype_catalog_generation,
             context.datatype_registry_generation,
             source.value_descriptor.datatype_descriptor_uuid,
             source.value_descriptor.datatype_descriptor_generation);
-    if (!datatype_identity.ok || datatype_identity.row.type_uuid != source.value_descriptor.type_uuid) {
+    if (!datatype_identity || datatype_identity->legacy_fields.type_uuid != source.value_descriptor.type_uuid) {
       result.diagnostic = PsRelationProjectionDiagnostic(
           "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
           "parser_server_ipc.relation_descriptor_invalid",
@@ -2054,22 +2057,26 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
           "datatype_catalog_binding_mismatch");
       return result;
     }
-    if (datatype_identity.ok) {
+    if (datatype_identity) {
       const bool exact_variable_width_text = scratchbird::core::datatypes::
-          IsExactCanonicalTextTypeCodecIdentityV1(datatype_identity.row);
+          IsExactCanonicalTextTypeCodecIdentityV1(datatype_identity->legacy_fields);
       const auto type_uuid =
-          PsNameUuidFromIdentity(datatype_identity.row.type_uuid);
-      if (!type_uuid || datatype_identity.row.descriptor_generation == 0 ||
-          datatype_identity.row.type_generation == 0 ||
-          datatype_identity.row.codec_id.empty() ||
-          datatype_identity.row.codec_id.size() >
+          PsNameUuidFromIdentity(datatype_identity->legacy_fields.type_uuid);
+      if (!type_uuid || datatype_identity->legacy_fields.descriptor_generation == 0 ||
+          datatype_identity->legacy_fields.type_generation == 0 ||
+          datatype_identity->legacy_fields.codec_id.empty() ||
+          datatype_identity->legacy_fields.codec_id.size() >
               kMaxPsRelationMetadataTextBytes ||
-          datatype_identity.row.codec_version == 0 ||
-          datatype_identity.row.codec_generation == 0 ||
-          (datatype_identity.row.canonical_value_bytes == 0 &&
-           !datatype_identity.row.canonical_value_variable_width) ||
-          (datatype_identity.row.null_encoding_code != 1 &&
-           datatype_identity.row.null_encoding_code != 2)) {
+          datatype_identity->legacy_fields.codec_version == 0 ||
+          datatype_identity->legacy_fields.codec_generation == 0 ||
+          (datatype_identity->legacy_fields.canonical_value_bytes == 0 &&
+           !datatype_identity->legacy_fields.canonical_value_variable_width &&
+           !(datatype_identity->legacy_fields.canonical_value_exact_zero_is_width_marker &&
+             datatype_identity->legacy_fields.canonical_value_minimum_bytes != 0 &&
+             datatype_identity->legacy_fields.canonical_value_minimum_bytes ==
+                 datatype_identity->legacy_fields.canonical_value_maximum_bytes)) ||
+          (datatype_identity->legacy_fields.null_encoding_code != 1 &&
+           datatype_identity->legacy_fields.null_encoding_code != 2)) {
         result.diagnostic = PsRelationProjectionDiagnostic(
             "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
             "parser_server_ipc.relation_descriptor_invalid",
@@ -2079,18 +2086,18 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
       }
       column.datatype_identity_present = true;
       column.datatype_descriptor_generation =
-          datatype_identity.row.descriptor_generation;
+          datatype_identity->legacy_fields.descriptor_generation;
       column.datatype_type_uuid = *type_uuid;
       column.datatype_type_generation =
-          datatype_identity.row.type_generation;
-      column.datatype_codec_id = datatype_identity.row.codec_id;
-      column.datatype_codec_version = datatype_identity.row.codec_version;
+          datatype_identity->legacy_fields.type_generation;
+      column.datatype_codec_id = datatype_identity->legacy_fields.codec_id;
+      column.datatype_codec_version = datatype_identity->legacy_fields.codec_version;
       column.datatype_codec_generation =
-          datatype_identity.row.codec_generation;
+          datatype_identity->legacy_fields.codec_generation;
       column.datatype_canonical_value_bytes =
-          datatype_identity.row.canonical_value_bytes;
+          datatype_identity->legacy_fields.canonical_value_bytes;
       column.datatype_null_encoding =
-          datatype_identity.row.null_encoding_code;
+          datatype_identity->legacy_fields.null_encoding_code;
     }
 
     if (!source.charset_uuid.is_nil()) {

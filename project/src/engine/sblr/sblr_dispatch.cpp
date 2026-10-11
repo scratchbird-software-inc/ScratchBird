@@ -1488,28 +1488,28 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
         return decoded;
       }
       if (descriptor.datatype_identity_authoritative) {
-      scratchbird::core::datatypes::DatatypeTypeCodecIdentityLookupV1 identity;
-      for (const auto& row : scratchbird::core::datatypes::
-               CurrentDatatypeTypeCodecIdentityRowsV1()) {
+      const scratchbird::core::datatypes::DatatypeTypeCodecIdentityRowV1* identity = nullptr;
+      for (const auto& entry : scratchbird::core::datatypes::
+               CurrentDatatypeTypeCodecIdentityRowsV3()) {
+        const auto& row = entry.legacy_fields;
         if (row.catalog_snapshot_uuid != descriptor.datatype_catalog_snapshot_uuid ||
             row.catalog_generation != descriptor.datatype_catalog_generation ||
             row.registry_generation != descriptor.datatype_registry_generation ||
             row.type_uuid != descriptor.type_uuid ||
             row.descriptor_generation != descriptor.descriptor_generation) continue;
-        if (identity.ok) {
+        if (identity) {
           decoded.diagnostic_id = "DATATYPE.DESCRIPTOR.INVALID";
           decoded.detail = "authoritative relational datatype identity is ambiguous";
           return decoded;
         }
-        identity.ok = true;
-        identity.row = row;
+        identity = &row;
       }
       const bool exact_datatype_identity =
-          identity.ok && identity.row.type_uuid == descriptor.type_uuid &&
-          identity.row.type_generation == descriptor.type_generation &&
-          identity.row.codec_id == descriptor.codec_id &&
-          identity.row.codec_version == descriptor.codec_version &&
-          identity.row.codec_generation == descriptor.codec_generation;
+          identity && identity->type_uuid == descriptor.type_uuid &&
+          identity->type_generation == descriptor.type_generation &&
+          identity->codec_id == descriptor.codec_id &&
+          identity->codec_version == descriptor.codec_version &&
+          identity->codec_generation == descriptor.codec_generation;
       if (!scratchbird::core::uuid::IsEngineIdentityUuid(descriptor.statement_receipt_uuid) ||
           !scratchbird::core::uuid::IsEngineIdentityUuid(descriptor.datatype_catalog_snapshot_uuid) ||
           descriptor.statement_receipt_uuid !=

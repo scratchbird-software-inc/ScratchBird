@@ -5,6 +5,7 @@
 #include "engine/executor/descriptor_value_runtime.hpp"
 #include "query/expression_api.hpp"
 #include "engine/sblr/relational_descriptor_codec.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 
 #include <array>
 #include <cstdlib>
@@ -313,6 +314,36 @@ void AllocationConformance() {
 }
 
 int main() try {
+  for (const auto generation : {5U, 10U, 11U})
+  for (const auto rows : {0U, 2U}) {
+    Fixture f(identities[2], 2, rows);
+    const auto snapshot = generation == 5
+        ? scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d705")
+        : generation == 10 ? dt::kDatatypeCohortV10 : dt::kDatatypeCohortV11;
+    f.context.datatype_catalog_snapshot_uuid = snapshot;
+    f.context.datatype_catalog_generation = f.context.datatype_registry_generation = generation;
+    auto& descriptor = f.dag.descriptors.front();
+    descriptor.datatype_catalog_snapshot_uuid = snapshot;
+    descriptor.datatype_catalog_generation = descriptor.datatype_registry_generation = generation;
+    Check(f.Run(), f.detail.c_str());
+    Check(f.shape.query_metadata && f.shape.query_metadata->columns.size() == 2 &&
+        f.shape.query_metadata->datatype_catalog_snapshot_uuid == Bytes(snapshot) &&
+        f.shape.query_metadata->datatype_catalog_generation == generation &&
+        f.shape.query_metadata->datatype_registry_generation == generation,
+        "current cohort metadata lost the exact admitted tuple");
+    for (unsigned mutation = 0; mutation < 5; ++mutation) {
+      const auto saved = descriptor;
+      if (mutation == 0) descriptor.datatype_catalog_snapshot_uuid.bytes[0] ^= 1;
+      if (mutation == 1) ++descriptor.datatype_catalog_generation;
+      if (mutation == 2) ++descriptor.datatype_registry_generation;
+      if (mutation == 3) ++descriptor.codec_generation;
+      if (mutation == 4) descriptor.statement_receipt_uuid.bytes[0] ^= 1;
+      Check(!f.Run() && !f.shape.query_metadata && f.code == "DATATYPE.DESCRIPTOR.INVALID",
+          "current cohort metadata accepted crossed authority");
+      descriptor = saved;
+      Check(f.Run(), "current cohort metadata retry did not recover");
+    }
+  }
   // Optional diagnostic I/O deliberately swallows allocation failures. Keep
   // publication-allocation measurements independent of an inherited trace sink
   // and do not let this standalone test append to somebody else's trace file.
@@ -472,6 +503,7 @@ int main() try {
           "UUID fixture type agrees with the independently fixed registry identity");
     left.descriptor.datatype_descriptor_uuid = current_uuid.datatype_descriptor_uuid;
     left.descriptor.datatype_descriptor_generation = current_uuid.datatype_descriptor_generation;
+    left.descriptor.datatype_cohort = current_uuid.datatype_cohort;
     left.state = api::EngineValueState::value;
     right = left;
     const std::string bytes("\x01\x02\x03\x04\x05\x06\x70\x00\x80\x00\x09\x0a\x3b\x7c\x00\xff",16);
@@ -508,6 +540,7 @@ int main() try {
           "TEXT fixture type agrees with independently fixed registry identity");
     left.descriptor.datatype_descriptor_uuid = current_text.datatype_descriptor_uuid;
     left.descriptor.datatype_descriptor_generation = current_text.datatype_descriptor_generation;
+    left.descriptor.datatype_cohort = current_text.datatype_cohort;
     left.descriptor.collation_uuid = scratchbird::tests::FixtureUuid(1900,1);
     left.encoded_value = "a"; right = left;
     api::EngineSqlTruthValue truth;
@@ -517,6 +550,9 @@ int main() try {
     const auto catalog_left = left;
     Fixture text_fixture(identities[5]);
     auto binary_descriptor = text_fixture.dag.descriptors.front();
+    binary_descriptor.datatype_catalog_snapshot_uuid = left.descriptor.datatype_cohort.catalog_snapshot_uuid;
+    binary_descriptor.datatype_catalog_generation = left.descriptor.datatype_cohort.catalog_generation;
+    binary_descriptor.datatype_registry_generation = left.descriptor.datatype_cohort.registry_generation;
     binary_descriptor.collation_uuid = left.descriptor.collation_uuid;
     std::vector<std::uint8_t> binary_metadata;
     Check(scratchbird::engine::sblr::EncodeRelationalTypeDescriptorV1(
@@ -679,7 +715,7 @@ int main() try {
     Check(!f.Run() && !f.shape.query_metadata && !f.shape.query_values,
           "reordered same-typed descriptors refuse without stale publication");
   }
-  Check(checks == 6561 + 8 + 5 + 1 + 2 + 10 + 76, "fixed check population including binary/outer-join and forwarding refusal regressions");
+  Check(checks == 6561 + 8 + 5 + 1 + 2 + 10 + 76 + 3 * 2 * (2 + 5 * 2), "fixed check population including binary/outer-join and forwarding refusal regressions");
   JoinSchemaConformance();
   AllocationConformance();
   std::cout << "PASS schema_tuples=" << cases << " checks=" << checks << '\n';

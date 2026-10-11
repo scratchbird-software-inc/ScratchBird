@@ -1190,15 +1190,15 @@ bool ValidatePublicRelationDatatypeIdentityV3(
   }
   const auto& snapshot_uuid = descriptor.datatype_catalog_snapshot_uuid;
   const auto& type_uuid = column.datatype_type_uuid;
-  const auto authority = scratchbird::core::datatypes::
-      LookupDatatypeTypeCodecIdentityV1(
+  const auto* authority = scratchbird::core::datatypes::
+      FindDatatypeTypeCodecIdentityV3(
           snapshot_uuid,
           descriptor.datatype_catalog_generation,
           descriptor.datatype_registry_generation,
           descriptor_uuid,
           column.datatype_descriptor_generation);
-  if (!authority.ok) return false;
-  const auto& row = authority.row;
+  if (!authority) return false;
+  const auto& row = authority->legacy_fields;
   return row.catalog_snapshot_uuid ==
              snapshot_uuid &&
          row.catalog_generation == descriptor.datatype_catalog_generation &&
@@ -1214,7 +1214,10 @@ bool ValidatePublicRelationDatatypeIdentityV3(
          row.canonical_value_bytes ==
              column.datatype_canonical_value_bytes &&
          row.null_encoding_code == column.datatype_null_encoding &&
-         (row.canonical_value_bytes != 0 || row.canonical_value_variable_width) &&
+         (row.canonical_value_bytes != 0 || row.canonical_value_variable_width ||
+          (row.canonical_value_exact_zero_is_width_marker &&
+           row.canonical_value_minimum_bytes != 0 &&
+           row.canonical_value_minimum_bytes == row.canonical_value_maximum_bytes)) &&
          (row.null_encoding_code == 1 || row.null_encoding_code == 2);
 }
 

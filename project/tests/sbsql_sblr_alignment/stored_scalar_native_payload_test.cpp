@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "engine/internal_api/mga_relation_store/stored_scalar_payload.hpp"
 #include "engine/internal_api/mga_relation_store/stored_integer_descriptor.hpp"
+#include "engine/internal_api/mga_relation_store/stored_scalar_descriptor.hpp"
 #include "engine/executor/descriptor_value_runtime.hpp"
 #include "engine/public_abi_int64_payload.hpp"
 #include "wire/public_result_packet.hpp"
@@ -663,6 +664,94 @@ void PublicInt64Transport() {
     Require(!packet::Valid({"v", static_cast<packet::Kind>(kind), std::string(8, '\0')}),
             "unknown wire kind accepted");
 }
+void StoredBooleanDescriptors() {
+  namespace dt = scratchbird::core::datatypes;
+  unsigned cases = 0;
+  for (const auto& identity : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row = identity.legacy_fields;
+    if (row.canonical_binary_type_code != static_cast<unsigned>(dt::CanonicalTypeId::boolean) ||
+        (row.catalog_generation != 5 && row.catalog_generation != 10 && row.catalog_generation != 11)) continue;
+    api::EngineRequestContext context;
+    context.datatype_catalog_snapshot_uuid = row.catalog_snapshot_uuid;
+    context.datatype_catalog_generation = row.catalog_generation;
+    context.datatype_registry_generation = row.registry_generation;
+    for (const bool nullable : {false, true}) {
+      ++cases;
+      auto source = Sentinel("boolean").descriptor;
+      source.type_uuid = row.type_uuid;
+      source.datatype_descriptor_uuid = row.descriptor_uuid;
+      source.datatype_descriptor_generation = row.descriptor_generation;
+      source.datatype_cohort = {row.catalog_snapshot_uuid, row.catalog_generation, row.registry_generation};
+      api::CatalogColumnMetadata metadata;
+      metadata.identities = {{"type_uuid", row.type_uuid}, {"datatype_descriptor_uuid", row.descriptor_uuid}};
+      metadata.text = {{"canonical", "boolean"}, {"nullable", nullable ? "true" : "false"},
+          {"codec_id", row.codec_id}, {"codec_version", std::to_string(row.codec_version)},
+          {"codec_generation", std::to_string(row.codec_generation)}, {"default", "false"}};
+      Require(api::EncodeCatalogColumnMetadata(metadata, &source.encoded_descriptor), "BOOLEAN metadata encode");
+      auto expected = source;
+      expected.descriptor_kind = "scalar";
+      expected.encoded_descriptor = nullable ? "nullability=nullable" : "nullability=non_null";
+      api::EngineDescriptor output;
+      std::string detail;
+      Require(api::StoredScalarProjectionRequiredV1(source) &&
+          api::ProjectStoredScalarDescriptorV1(context, source, nullable, &output, &detail) &&
+          output == expected, "BOOLEAN stored scalar projection lost exact binding");
+      // This test qualifies descriptor projection, not replacement of the
+      // legacy executor's BOOLEAN payload carrier. Exercise its actual caller
+      // contract; native BOOLEAN carrier unification is a separate repair.
+      for (const bool expected_value : {false, true}) {
+        api::EngineTypedValue value;
+        value.descriptor = output;
+        value.encoded_value = expected_value ? "true" : "false";
+        const auto decoded = scratchbird::engine::executor::DecodeBoolValue(value);
+        Require(decoded.ok() && decoded.value == expected_value,
+                "projected BOOLEAN descriptor changed the executor value");
+        value.binary_value = {static_cast<std::uint8_t>(expected_value)};
+        Require(!scratchbird::engine::executor::DecodeBoolValue(value).ok(),
+                "projected BOOLEAN descriptor admitted a dual carrier");
+      }
+      for (unsigned change = 0; change < 9; ++change) {
+        auto invalid = source;
+        if (change == 0) invalid.datatype_cohort.catalog_snapshot_uuid.bytes[0] ^= 1;
+        if (change == 1) ++invalid.datatype_cohort.catalog_generation;
+        if (change == 2) ++invalid.datatype_cohort.registry_generation;
+        if (change == 3) ++invalid.datatype_descriptor_generation;
+        if (change == 4) invalid.type_uuid.bytes[0] ^= 1;
+        if (change == 5) invalid.charset_uuid = row.type_uuid;
+        if (change == 6) invalid.collation_uuid = row.type_uuid;
+        if (change >= 7) {
+          auto changed = metadata;
+          changed.text[change == 7 ? "nullable" : "codec_generation"] = change == 7
+              ? (nullable ? "false" : "true") : "99";
+          Require(api::EncodeCatalogColumnMetadata(changed, &invalid.encoded_descriptor), "invalid BOOLEAN frame");
+        }
+        output = expected;
+        Require(!api::ProjectStoredScalarDescriptorV1(context, invalid, nullable, &output, &detail) &&
+                output == expected && !detail.empty(), "BOOLEAN projection repaired crossed authority");
+      }
+      bool completed = false;
+      unsigned faults = 0;
+      for (long site = 0; site < 512; ++site) {
+        auto candidate = Sentinel("output").descriptor;
+        const auto before = candidate;
+        fail_after = site;
+        try {
+          const bool ok = api::ProjectStoredScalarDescriptorV1(context, source, nullable, &candidate, &detail);
+          fail_after = -1;
+          Require(ok && candidate == expected, "BOOLEAN projection allocation retry");
+          completed = true;
+          break;
+        } catch (const std::bad_alloc&) {
+          fail_after = -1;
+          ++faults;
+          Require(candidate == before, "BOOLEAN allocation failure published partial descriptor");
+        }
+      }
+      Require(completed && faults != 0, "BOOLEAN allocation sweep incomplete");
+    }
+  }
+  Require(cases == 6, "BOOLEAN projection cohort/nullability coverage incomplete");
+}
 void StoredIntegerDescriptors() {
   namespace dt = scratchbird::core::datatypes;
   unsigned int32_rows = 0, int64_rows = 0;
@@ -684,6 +773,7 @@ void StoredIntegerDescriptors() {
     source.type_uuid = row.type_uuid;
     source.datatype_descriptor_uuid = row.descriptor_uuid;
     source.datatype_descriptor_generation = row.descriptor_generation;
+    source.datatype_cohort = {row.catalog_snapshot_uuid, row.catalog_generation, row.registry_generation};
     source.descriptor_kind = "scalar";
     for (bool nullable : {false, true}) {
       api::CatalogColumnMetadata metadata;
@@ -835,6 +925,7 @@ void StoredIntegerDescriptors() {
 
 int main() {
   StoredIntegerDescriptors();
+  StoredBooleanDescriptors();
   UuidValues(); Int64Values(); TimestampOctets(); OtherCarriersAndState(); AliasAndAllocation();
   PublicInt64Transport();
   NativeSequenceConsumers();
