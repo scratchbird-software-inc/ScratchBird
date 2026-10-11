@@ -656,6 +656,11 @@ bool ExactBoundSearchStorageDescriptorImpl(
       descriptor.storage_profile != "local_mga_rowstore_v1" ||
       descriptor.columns.size() != 2) return false;
   const auto& codec = binding->legacy_fields;
+  // Invocation-local only: the separate post-read admission must resolve
+  // resources again because heap-read cancellation callbacks may run between
+  // checkpoints. Never reuse a column's occurrence/datatype metadata.
+  const MgaRelationColumnStorageDescriptor* resource_column = nullptr;
+  CatalogColumnMetadata resource_fields;
   const auto exact_text = [&](const auto& column, const std::uint32_t ordinal,
                               const std::string_view name) {
     const auto& value = column.value_descriptor;
@@ -671,8 +676,16 @@ bool ExactBoundSearchStorageDescriptorImpl(
         {"null_encoding", std::to_string(codec.null_encoding_code)}};
     expected.identities = {{"type_uuid", codec.type_uuid}, {"column_uuid", column.column_uuid},
         {"datatype_descriptor_uuid", codec.descriptor_uuid}, {"codec_uuid", codec.codec_uuid}};
-    if (!BindExactModelTextResourceFields(context, column, codec.canonical_value_maximum_bytes, &expected))
-      return false;
+    if (!resource_column || resource_column->charset_uuid != column.charset_uuid ||
+        resource_column->collation_uuid != column.collation_uuid ||
+        resource_column->character_length != column.character_length) {
+      resource_fields = {};
+      if (!BindExactModelTextResourceFields(context, column,
+              codec.canonical_value_maximum_bytes, &resource_fields)) return false;
+      resource_column = &column;
+    }
+    expected.text.insert(resource_fields.text.begin(), resource_fields.text.end());
+    expected.identities.insert(resource_fields.identities.begin(), resource_fields.identities.end());
     return column.ordinal == ordinal && column.canonical_name_key == name &&
            !column.nullable && !column.generated && !column.identity_column &&
            column.storage_class == "inline_row_value" &&
@@ -682,6 +695,8 @@ bool ExactBoundSearchStorageDescriptorImpl(
             value.descriptor_kind == "canonical_type_descriptor") &&
            value.canonical_type_name == "text" &&
            value.type_uuid == codec.type_uuid &&
+           value.charset_uuid == column.charset_uuid &&
+           value.collation_uuid == column.collation_uuid &&
            value.datatype_descriptor_uuid == codec.descriptor_uuid &&
            value.datatype_descriptor_generation == codec.descriptor_generation &&
            value.datatype_cohort == EngineDatatypeCohort{
@@ -712,7 +727,8 @@ bool ExactBoundSearchOutputDescriptors(
         context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
         context.datatype_registry_generation, descriptor.datatype_descriptor_uuid,
         descriptor.datatype_descriptor_generation);
-    if (!binding || descriptor.datatype_cohort != EngineDatatypeCohort{
+    if (!binding || !descriptor.charset_uuid.is_nil() || !descriptor.collation_uuid.is_nil() ||
+        descriptor.datatype_cohort != EngineDatatypeCohort{
             context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
             context.datatype_registry_generation} || binding->legacy_fields.canonical_binary_type_code !=
             static_cast<std::uint32_t>(dt::CanonicalTypeIdFromStableName(std::string(kTypes[index]))))

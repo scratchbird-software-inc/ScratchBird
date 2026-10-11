@@ -559,7 +559,7 @@ bool SearchDescriptorMutationRefusals(const SearchFixture& fixture) {
                       "search accepted a substituted database or datatype cohort");
   }
   for (unsigned ordinal = 0; ordinal < 2; ++ordinal) {
-    for (unsigned mutation = 0; mutation < 30; ++mutation) {
+    for (unsigned mutation = 0; mutation < 32; ++mutation) {
       auto changed = storage;
       auto& column = changed.columns[ordinal];
       auto& descriptor = column.value_descriptor;
@@ -602,6 +602,8 @@ bool SearchDescriptorMutationRefusals(const SearchFixture& fixture) {
       if (mutation == 27) descriptor.datatype_cohort.catalog_snapshot_uuid = {};
       if (mutation == 28) ++descriptor.datatype_cohort.catalog_generation;
       if (mutation == 29) ++descriptor.datatype_cohort.registry_generation;
+      if (mutation == 30) descriptor.charset_uuid = {};
+      if (mutation == 31) descriptor.collation_uuid = {};
       if (!api::EncodeCatalogColumnMetadata(metadata, &descriptor.encoded_descriptor))
         return Require(false, "search mutation metadata did not encode");
       passed &= Require(!api::ExactBoundSearchStorageDescriptorV1(context, changed, kCollection),
@@ -609,7 +611,7 @@ bool SearchDescriptorMutationRefusals(const SearchFixture& fixture) {
     }
   }
   for (unsigned ordinal = 0; ordinal < 5; ++ordinal) {
-    for (unsigned mutation = 0; mutation < 6; ++mutation) {
+    for (unsigned mutation = 0; mutation < 8; ++mutation) {
       auto changed = SearchRequest(fixture, api::EngineBoundSearchOperationV1::kTerms, "alpha", 2);
       auto& descriptor = changed.output_descriptors.at(ordinal);
       if (mutation == 0) descriptor.datatype_cohort.catalog_snapshot_uuid = {};
@@ -618,11 +620,24 @@ bool SearchDescriptorMutationRefusals(const SearchFixture& fixture) {
       if (mutation == 3) descriptor.datatype_descriptor_uuid = {};
       if (mutation == 4) ++descriptor.datatype_descriptor_generation;
       if (mutation == 5) descriptor.type_uuid = {};
+      if (mutation == 6) descriptor.charset_uuid = TestUuid(0xd713);
+      if (mutation == 7) descriptor.collation_uuid = TestUuid(0xd714);
       passed &= Require(ExactRefusal(api::EngineBoundSearchReadV1(changed),
           "SB_MODEL_TYPED_EXCHANGE_INVALID_V1", false),
           "search accepted malformed public output datatype binding before resource acquisition");
     }
   }
+  auto shorter = storage;
+  auto& second = shorter.columns[1];
+  api::CatalogColumnMetadata fields;
+  if (!api::DecodeCatalogColumnMetadata(second.value_descriptor.encoded_descriptor, &fields)) return false;
+  second.character_length = 1024;
+  fields.text["character_length"] = "1024";
+  if (!api::EncodeCatalogColumnMetadata(fields, &second.value_descriptor.encoded_descriptor)) return false;
+  passed &= Require(api::ExactBoundSearchStorageDescriptorV1(context, shorter, kCollection),
+      "operation-local resource reuse ignored a valid distinct second-column bound");
+  passed &= Require(api::ExactBoundSearchStorageDescriptorV1(context, storage, kCollection),
+      "search descriptor retry retained mutated admission state");
   return passed;
 }
 
