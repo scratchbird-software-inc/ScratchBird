@@ -91,14 +91,17 @@ inline engine::internal_api::CrudTableRecord PublishDdlTableFixture(
         // width or an arbitrary SQL default.
         if (attributes.text.find("character_length") == attributes.text.end() &&
             attributes.text.find("text_resource_storage") == attributes.text.end()) {
-          const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+          const auto identity = dt::LookupDatatypeTypeCodecIdentityV3(
               context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
               context.datatype_registry_generation, column.descriptor.datatype_descriptor_uuid,
               column.descriptor.datatype_descriptor_generation);
-          if (!identity.ok || !identity.row.canonical_value_maximum_bytes)
+          const auto capacity = identity.row.native_fields.present
+              ? identity.row.native_fields.canonical_value_maximum_bytes
+              : identity.row.legacy_fields.canonical_value_maximum_bytes;
+          if (!identity.ok || !capacity)
             throw std::invalid_argument("DDL fixture text codec capacity is unavailable");
           attributes.text["character_length"] =
-              std::to_string(identity.row.canonical_value_maximum_bytes);
+              std::to_string(capacity);
         }
       }
     }

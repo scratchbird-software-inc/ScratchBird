@@ -135,42 +135,42 @@ bool ExactCanonicalTextIdentityAuthorityAvailable(
     return false;
   }
   const auto identity =
-      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV3(
           context.datatype_catalog_snapshot_uuid,
           context.datatype_catalog_generation,
           context.datatype_registry_generation,
           kCanonicalTextDescriptorIdentity, 1);
   return identity.ok &&
-         identity.row.catalog_snapshot_uuid ==
+         identity.row.legacy_fields.catalog_snapshot_uuid ==
              context.datatype_catalog_snapshot_uuid &&
-         identity.row.catalog_generation ==
+         identity.row.legacy_fields.catalog_generation ==
              context.datatype_catalog_generation &&
-         identity.row.registry_generation ==
+         identity.row.legacy_fields.registry_generation ==
              context.datatype_registry_generation &&
-         identity.row.descriptor_uuid == kCanonicalTextDescriptorIdentity &&
-         identity.row.descriptor_generation == 1 &&
-         identity.row.type_uuid == kCanonicalTextTypeIdentity &&
-         identity.row.type_generation == 1 &&
-         identity.row.codec_uuid == kCanonicalTextCodecIdentity &&
-         identity.row.codec_id == kCanonicalTextCodecId &&
-         identity.row.codec_version == 1 &&
-         identity.row.codec_generation == 1 &&
-         identity.row.canonical_name == "text" &&
-         identity.row.null_supported &&
-         identity.row.null_encoding_code == 1 &&
-         identity.row.canonical_value_variable_width &&
-         identity.row.canonical_value_exact_zero_is_width_marker &&
-         identity.row.canonical_value_minimum_bytes == 0 &&
-         identity.row.canonical_value_maximum_bytes == 16777216 &&
-         identity.row.canonical_value_exact_bytes == 0 &&
-         identity.row.canonical_charset == "UTF-8" &&
-         identity.row.shortest_form_utf8_required &&
-         !identity.row.implicit_normalization_allowed &&
-         identity.row.descriptor_bound_collation_required &&
-         identity.row.empty_value_distinct_from_sql_null &&
-         identity.row.sql_null_requires_zero_payload &&
-         identity.row.variable_width_storage_without_truncation &&
-         identity.row.invalid_encoding_diagnostic_id ==
+         identity.row.legacy_fields.descriptor_uuid == kCanonicalTextDescriptorIdentity &&
+         identity.row.legacy_fields.descriptor_generation == 1 &&
+         identity.row.legacy_fields.type_uuid == kCanonicalTextTypeIdentity &&
+         identity.row.legacy_fields.type_generation == 1 &&
+         identity.row.legacy_fields.codec_uuid == kCanonicalTextCodecIdentity &&
+         identity.row.legacy_fields.codec_id == kCanonicalTextCodecId &&
+         identity.row.legacy_fields.codec_version == 1 &&
+         identity.row.legacy_fields.codec_generation == 1 &&
+         identity.row.legacy_fields.canonical_name == "text" &&
+         identity.row.legacy_fields.null_supported &&
+         identity.row.legacy_fields.null_encoding_code == 1 &&
+         identity.row.legacy_fields.canonical_value_variable_width &&
+         identity.row.legacy_fields.canonical_value_exact_zero_is_width_marker &&
+         identity.row.legacy_fields.canonical_value_minimum_bytes == 0 &&
+         identity.row.legacy_fields.canonical_value_maximum_bytes == 16777216 &&
+         identity.row.legacy_fields.canonical_value_exact_bytes == 0 &&
+         identity.row.legacy_fields.canonical_charset == "UTF-8" &&
+         identity.row.legacy_fields.shortest_form_utf8_required &&
+         !identity.row.legacy_fields.implicit_normalization_allowed &&
+         identity.row.legacy_fields.descriptor_bound_collation_required &&
+         identity.row.legacy_fields.empty_value_distinct_from_sql_null &&
+         identity.row.legacy_fields.sql_null_requires_zero_payload &&
+         identity.row.legacy_fields.variable_width_storage_without_truncation &&
+         identity.row.legacy_fields.invalid_encoding_diagnostic_id ==
              "CTB.TEXT.INVALID_ENCODING";
 }
 
@@ -346,6 +346,9 @@ bool RewriteLegacyTextStorageDescriptor(
   migrated.datatype_descriptor_uuid = kCanonicalTextDescriptorUuid;
   migrated.datatype_descriptor_generation = 1;
   migrated.type_uuid = kCanonicalTextTypeUuid;
+  migrated.datatype_cohort = {context.datatype_catalog_snapshot_uuid,
+                              context.datatype_catalog_generation,
+                              context.datatype_registry_generation};
   migrated.canonical_type_name = "text";
   *descriptor = std::move(migrated);
   return true;
@@ -571,14 +574,14 @@ bool BuildMgaContextualTextProjectionMaterialV2(
       return false;
     }
     const auto datatype = catalog_context_exact
-        ? scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+        ? scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV3(
               context.datatype_catalog_snapshot_uuid,
               context.datatype_catalog_generation,
               context.datatype_registry_generation,
               canonical_datatype_descriptor_uuid, 1)
-        : scratchbird::core::datatypes::DatatypeTypeCodecIdentityLookupV1{};
+        : scratchbird::core::datatypes::DatatypeTypeCodecIdentityLookupV3{};
     if (datatype.ok) {
-      const auto& row = datatype.row;
+      const auto& row = datatype.row.legacy_fields;
       projected.identity_present = true;
       projected.descriptor_generation = row.descriptor_generation;
       projected.type_generation = row.type_generation;
@@ -604,7 +607,7 @@ bool BuildMgaContextualTextProjectionMaterialV2(
           !ExactCanonicalTextIdentityAuthorityAvailable(context) ||
           !datatype.ok ||
           !scratchbird::core::datatypes::
-              IsExactCanonicalTextTypeCodecIdentityV1(datatype.row) ||
+              IsExactRegisteredDatatypeTypeCodecIdentityV3(datatype.row) ||
           !ExactCanonicalMigratedTextDescriptor(
               context, column.value_descriptor.encoded_descriptor,
               column.column_uuid) ||
@@ -663,17 +666,17 @@ bool BuildMgaContextualTextProjectionMaterialV2(
         descriptor.null_encoding = 1;
         descriptor.descriptor_uuid =
             contextual.projected_datatype_descriptor_uuid;
-        descriptor.descriptor_generation = datatype.row.descriptor_generation;
+        descriptor.descriptor_generation = datatype.row.legacy_fields.descriptor_generation;
         descriptor.type_uuid = projected.type_uuid;
-        descriptor.type_generation = datatype.row.type_generation;
-        if (!CopyContextualUuidV2(datatype.row.codec_uuid,
+        descriptor.type_generation = datatype.row.legacy_fields.type_generation;
+        if (!CopyContextualUuidV2(datatype.row.legacy_fields.codec_uuid,
                                   &descriptor.codec_uuid)) {
           *diagnostic = ContextualTextMgaDiagnostic(
               "canonical d718 codec UUID is invalid");
           return false;
         }
-        descriptor.codec_version = datatype.row.codec_version;
-        descriptor.codec_generation = datatype.row.codec_generation;
+        descriptor.codec_version = datatype.row.legacy_fields.codec_version;
+        descriptor.codec_generation = datatype.row.legacy_fields.codec_generation;
         descriptor.character_limit =
             column.character_length == 0
                 ? std::numeric_limits<std::uint64_t>::max()

@@ -476,33 +476,38 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
               "ddl.create_table",
               "column_type_catalog_row_invalid:" + column_name));
     }
-    EngineUuid engine_type_uuid =
-        type_row.manifest.descriptor_rows.front().descriptor_uuid.value;
-    const EngineUuid engine_datatype_descriptor_uuid = engine_type_uuid;
-    const bool persist_full_registry_tuple = std::ranges::any_of(
-        scratchbird::core::datatypes::CurrentDatatypeTypeCodecIdentityRowsV1(),
-        [&](const auto& row) { return row.descriptor_uuid == engine_datatype_descriptor_uuid; });
-    // Fresh descriptors for the manifest-admitted datatype rows are issued
-    // only from the exact datatype receipt carried by this DDL request. Other
-    // canonical types retain their existing catalog projection and cannot be
-    // inferred into this registry from a name, width, enum, or random UUID.
-    const auto identity =
-        scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+    const auto& catalog_type = type_row.manifest.descriptor_rows.front();
+    const EngineUuid engine_datatype_descriptor_uuid = catalog_type.descriptor_uuid.value;
+    scratchbird::core::datatypes::DatatypeStorageIdentityV3 storage_identity;
+    // Storage-only rows require exact cohort admission too. Validate before
+    // EngineCatalogCreateObject can publish any object/name/column prefix.
+    if (!scratchbird::core::datatypes::LookupDatatypeStorageIdentityV3(
             request.context.datatype_catalog_snapshot_uuid,
             request.context.datatype_catalog_generation,
             request.context.datatype_registry_generation,
-            engine_datatype_descriptor_uuid, 1);
+            engine_datatype_descriptor_uuid, catalog_type.descriptor_epoch,
+            &storage_identity) || storage_identity.type_id != canonical_type_id ||
+        storage_identity.type_uuid.is_nil()) {
+      return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+          request.context, "ddl.create_table", MakeInvalidRequestDiagnostic(
+              "ddl.create_table", "column_type_storage_identity_invalid:" + column_name));
+    }
+    const EngineUuid engine_type_uuid = storage_identity.type_uuid;
+    const auto descriptor_generation = storage_identity.descriptor_generation;
+    const bool persist_full_registry_tuple = storage_identity.codec.has_value();
+    const scratchbird::core::datatypes::DatatypeTypeCodecIdentityRowV1 no_codec;
+    const auto& identity_fields = persist_full_registry_tuple
+        ? storage_identity.codec->legacy_fields : no_codec;
     if (persist_full_registry_tuple) {
-      if (!identity.ok ||
-          identity.row.catalog_snapshot_uuid !=
+      if (identity_fields.catalog_snapshot_uuid !=
               request.context.datatype_catalog_snapshot_uuid ||
-          identity.row.catalog_generation !=
+          identity_fields.catalog_generation !=
               request.context.datatype_catalog_generation ||
-          identity.row.registry_generation !=
+          identity_fields.registry_generation !=
               request.context.datatype_registry_generation ||
-          identity.row.descriptor_uuid != engine_datatype_descriptor_uuid ||
-          identity.row.descriptor_generation != 1 ||
-          identity.row.type_uuid.is_nil()) {
+          identity_fields.descriptor_uuid != engine_datatype_descriptor_uuid ||
+          identity_fields.descriptor_generation != descriptor_generation ||
+          identity_fields.type_uuid.is_nil()) {
         return MakeCrudDiagnosticResult<EngineCreateTableResult>(
             request.context,
             "ddl.create_table",
@@ -510,17 +515,17 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
                 "ddl.create_table",
                 "column_type_codec_registry_row_invalid:" + column_name));
       }
-      engine_type_uuid = identity.row.type_uuid;
     }
     // Validate the supplied binary binding against the catalog that owns this
     // datatype. The codec registry is not the complete builtin
     // catalog; unregistered types cannot acquire codec authority by inference.
-    const auto descriptor_generation = persist_full_registry_tuple
-        ? identity.row.descriptor_generation
-        : type_row.manifest.descriptor_rows.front().descriptor_epoch;
     if (column.descriptor.datatype_descriptor_uuid != engine_datatype_descriptor_uuid ||
         column.descriptor.datatype_descriptor_generation != descriptor_generation ||
-        column.descriptor.type_uuid != engine_type_uuid) {
+        column.descriptor.type_uuid != engine_type_uuid ||
+        column.descriptor.datatype_cohort != EngineDatatypeCohort{
+            request.context.datatype_catalog_snapshot_uuid,
+            request.context.datatype_catalog_generation,
+            request.context.datatype_registry_generation}) {
       return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context, "ddl.create_table",
           MakeInvalidRequestDiagnostic("ddl.create_table", "bound_column_datatype_catalog_mismatch"));
     }
@@ -544,13 +549,13 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
     const bool exact_registry_tuple = match_uuid("type_uuid", engine_type_uuid) &&
         (!persist_full_registry_tuple ||
          (match_uuid("datatype_descriptor_uuid", engine_datatype_descriptor_uuid) &&
-          match_text("datatype_descriptor_generation", std::to_string(identity.row.descriptor_generation)) &&
-          match_text("type_generation", std::to_string(identity.row.type_generation)) &&
-          match_uuid("codec_uuid", identity.row.codec_uuid) &&
-          match_text("codec_id", identity.row.codec_id) &&
-          match_text("codec_version", std::to_string(identity.row.codec_version)) &&
-          match_text("codec_generation", std::to_string(identity.row.codec_generation)) &&
-          match_text("null_encoding", std::to_string(identity.row.null_encoding_code))));
+          match_text("datatype_descriptor_generation", std::to_string(identity_fields.descriptor_generation)) &&
+          match_text("type_generation", std::to_string(identity_fields.type_generation)) &&
+          match_uuid("codec_uuid", identity_fields.codec_uuid) &&
+          match_text("codec_id", identity_fields.codec_id) &&
+          match_text("codec_version", std::to_string(identity_fields.codec_version)) &&
+          match_text("codec_generation", std::to_string(identity_fields.codec_generation)) &&
+          match_text("null_encoding", std::to_string(identity_fields.null_encoding_code))));
     if (!exact_registry_tuple || !EncodeCatalogColumnMetadata(registry_fields, &column_descriptor)) {
       return MakeCrudDiagnosticResult<EngineCreateTableResult>(
           request.context, "ddl.create_table", MakeInvalidRequestDiagnostic(

@@ -9,6 +9,7 @@
 // SBSQL source-layout fragment. Included only by create_api.cpp.
 // This fragment preserves pre-existing behavior; do not add unrelated future work here.
 #include "ddl/create_api.hpp"
+#include "datatype_storage_identity.hpp"
 #include "crud_support/bound_ordered_index_key.hpp"
 #include "crud_support/retained_row_value_codec.hpp"
 

@@ -22,6 +22,7 @@
 #include "page_header.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_operations.hpp"
+#include "datatype_storage_identity.hpp"
 #include "ddl/create_api.hpp"
 #include "dml/insert_api.hpp"
 #include "ipc_server.hpp"
@@ -528,7 +529,11 @@ void SetFixtureDatatypeCohort(
   };
   std::uint64_t number = db::kCatalogPageNumber;
   bool replaced = false;
-  for (unsigned guard = 0; number != 0 && guard < 1000; ++guard) {
+  const auto page_count = std::filesystem::file_size(fixture.database_path) / record.page_size;
+  std::set<std::uint64_t> visited;
+  while (number != 0) {
+    Require(number < page_count && visited.insert(number).second,
+            "cohort fixture catalog chain is outside file or cyclic");
     std::vector<platform::byte> body(record.page_size - disk::kPageHeaderSerializedBytes);
     Require(device.ReadAt(number * record.page_size + disk::kPageHeaderSerializedBytes,
                           body.data(), body.size()).ok(), "cohort fixture page read failed");
@@ -710,6 +715,127 @@ api::EngineLocalizedName PrimaryName(std::string name) {
   localized.display_name = localized.name;
   localized.default_name = true;
   return localized;
+}
+
+void VerifyStorageOnlyDatatypeDdlAdmission() {
+  namespace catalog = scratchbird::core::catalog;
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "storage-only DDL manifest unavailable");
+  const auto document = dt::LookupDatatypeCatalogRow(manifest.manifest, dt::CanonicalTypeId::document);
+  Require(document.ok() && document.manifest.descriptor_rows.size() == 1,
+          "storage-only DDL DOCUMENT identity unavailable");
+  const auto& row = document.manifest.descriptor_rows.front();
+  for (const auto& cohort : {
+      catalog::CatalogDatabaseDatatypeCohort{{platform::UuidKind::object, dt::kDatatypeCohortV5}, 5, 5},
+      catalog::CatalogDatabaseDatatypeCohort{{platform::UuidKind::object, dt::kDatatypeCohortV10}, 10, 10},
+      catalog::CatalogDatabaseDatatypeCohort{{platform::UuidKind::object, dt::kDatatypeCohortV11}, 11, 11}}) {
+    auto fixture = CreateFixture(true);
+    if (cohort.catalog_generation != 11) SetFixtureDatatypeCohort(fixture, cohort);
+    const auto artifacts = [&] {
+      std::map<std::filesystem::path, std::string> files;
+      for (const auto& entry : std::filesystem::recursive_directory_iterator(fixture.directory)) {
+        if (!entry.is_regular_file()) continue;
+        std::ifstream stream(entry.path(), std::ios::binary);
+        Require(stream.is_open(), "storage-only DDL artifact read failed");
+        files.emplace(entry.path(), std::string(std::istreambuf_iterator<char>(stream), {}));
+      }
+      return files;
+    };
+    api::EngineColumnDefinition column;
+    column.ordinal = 0;
+    column.names.push_back(PrimaryName("document_value"));
+    column.nullable = true;
+    column.requested_column_uuid = NewIdentity(platform::UuidKind::object, fixture.salt + 201);
+    auto& descriptor = column.descriptor;
+    descriptor.descriptor_uuid = NewIdentity(platform::UuidKind::object, fixture.salt + 202);
+    descriptor.descriptor_kind = "canonical_type_descriptor";
+    descriptor.canonical_type_name = "document";
+    descriptor.encoded_descriptor = "type=document;nullable=true";
+    descriptor.datatype_descriptor_uuid = row.descriptor_uuid.value;
+    descriptor.datatype_descriptor_generation = row.descriptor_epoch;
+    dt::DatatypeStorageIdentityV3 identity;
+    Require(dt::LookupDatatypeStorageIdentityV3(cohort.catalog_snapshot_uuid.value,
+                cohort.catalog_generation, cohort.registry_generation, row.descriptor_uuid.value,
+                row.descriptor_epoch, &identity) && !identity.codec,
+            "storage-only DDL fixture acquired unintended codec authority");
+    descriptor.type_uuid = identity.type_uuid;
+    descriptor.datatype_cohort = {cohort.catalog_snapshot_uuid.value,
+        cohort.catalog_generation, cohort.registry_generation};
+    for (unsigned reopen = 0; reopen != 2; ++reopen) {
+      auto transaction = BeginTransaction(fixture);
+      PublicSession session(fixture, fixture.session_uuid);
+      bridge::StatementContextReceiptView view;
+      const auto receipt = Acquire(session.get(), transaction, &view);
+      Require(static_cast<bool>(receipt), "storage-only DDL receipt acquisition failed");
+      api::EngineRequestContext context;
+      sb_engine_result_t result = nullptr;
+      const auto status = bridge::CopyStatementContextEngineContextV1(receipt, &context, &result);
+      if (result) (void)sb_engine_result_release(result);
+      Require(status == SB_ENGINE_STATUS_OK &&
+                  context.datatype_catalog_snapshot_uuid == cohort.catalog_snapshot_uuid.value &&
+                  context.datatype_catalog_generation == cohort.catalog_generation &&
+                  context.datatype_registry_generation == cohort.registry_generation,
+              "storage-only DDL did not use durable receipt");
+      if (reopen == 0) {
+        api::EngineCreateSchemaRequest schema;
+        schema.context = context;
+        schema.target_object.uuid = fixture.schema_uuid.value;
+        schema.target_object.object_kind = "schema";
+        schema.localized_names.push_back(PrimaryName("storage_only_cohort"));
+        RequireEngineOk(api::EngineCreateSchema(schema), "storage-only DDL schema creation failed");
+        api::EngineCreateTableRequest table;
+        table.context = context;
+        table.target_schema = schema.target_object;
+        table.requested_table_uuid = fixture.relation_uuid.value;
+        table.table_names.push_back(PrimaryName("storage_only_document"));
+        table.table_columns.push_back(column);
+        const auto before = artifacts();
+        // Matching forged caller/column tuples must not get as far as catalog
+        // publication merely because DOCUMENT has no value-codec registry row.
+        for (unsigned mutation = 0; mutation != 6; ++mutation) {
+          auto invalid = table;
+          auto& supplied = invalid.context;
+          if (mutation == 0) supplied.datatype_catalog_snapshot_uuid.bytes[0] ^= 1;
+          if (mutation == 1) ++supplied.datatype_catalog_generation;
+          if (mutation == 2) ++supplied.datatype_registry_generation;
+          if (mutation == 3) supplied.datatype_catalog_snapshot_uuid = {};
+          if (mutation == 4) supplied.datatype_catalog_generation = 0;
+          if (mutation == 5) supplied.datatype_registry_generation = 0;
+          invalid.table_columns.front().descriptor.datatype_cohort = {
+              supplied.datatype_catalog_snapshot_uuid, supplied.datatype_catalog_generation,
+              supplied.datatype_registry_generation};
+          const auto rejected = api::EngineCreateTable(invalid);
+          Require(!rejected.ok && !rejected.diagnostics.empty() &&
+                      rejected.diagnostics.front().detail.ends_with(
+                          "column_type_storage_identity_invalid:document_value"),
+                  "storage-only DDL malformed cohort missed early admission refusal");
+          Require(artifacts() == before, "storage-only DDL refusal published physical effects");
+        }
+        RequireEngineOk(api::EngineCreateTable(table), "storage-only DDL retry creation failed");
+      }
+      const auto loaded = api::LoadMgaRelationStorageDescriptor(context, fixture.relation_uuid.value);
+      Require(loaded.ok && loaded.descriptor.columns.size() == 1,
+              "storage-only DDL publication missing across reopen");
+      const auto& stored = loaded.descriptor.columns.front();
+      Require(stored.column_uuid == column.requested_column_uuid &&
+                  stored.value_descriptor.descriptor_uuid == descriptor.descriptor_uuid &&
+                  stored.value_descriptor.type_uuid == descriptor.type_uuid &&
+                  stored.value_descriptor.datatype_descriptor_uuid == descriptor.datatype_descriptor_uuid &&
+                  stored.value_descriptor.datatype_descriptor_generation == descriptor.datatype_descriptor_generation &&
+                  stored.value_descriptor.datatype_cohort == descriptor.datatype_cohort,
+              "storage-only DDL persisted identity or cohort changed");
+      Require(bridge::ReleaseStatementContextReceipt(receipt) == SB_ENGINE_STATUS_OK,
+              "storage-only DDL receipt release failed");
+      session.End();
+      if (reopen == 0) {
+        api::EngineCommitTransactionRequest commit;
+        commit.context = transaction;
+        RequireEngineOk(api::EngineCommitTransaction(commit), "storage-only DDL commit failed");
+      } else {
+        Rollback(transaction);
+      }
+    }
+  }
 }
 
 api::EngineUuid CoreTypeUuid(const std::string_view stable_name) {
@@ -5372,6 +5498,11 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
 
 int RunConformance(int argc, char** argv) {
   ConfigureMemoryFixture();
+  if (argc == 2 && std::string_view(argv[1]) == "--datatype-ddl-cohort-proof-only") {
+    VerifyStorageOnlyDatatypeDdlAdmission();
+    std::cout << "qow_storage_only_datatype_ddl_cohorts=passed\n";
+    return EXIT_SUCCESS;
+  }
   if (argc == 2 && std::string_view(argv[1]) == "--datatype-cohort-proof-only") {
     VerifyPersistedDatatypeCohortReceipts();
     std::cout << "qow_persisted_datatype_cohort_receipts=passed\n";
@@ -5438,6 +5569,7 @@ int RunConformance(int argc, char** argv) {
   }
 
   namespace mga = scratchbird::transaction::mga;
+  VerifyStorageOnlyDatatypeDdlAdmission();
   VerifyPersistedDatatypeCohortReceipts();
   const auto empty_begin = mga::BeginLocalTransaction({},
       NewTypedUuid(platform::UuidKind::transaction, 1), 1945000000001ull);

@@ -1137,6 +1137,10 @@ if(TARGET sb_engine AND TARGET sb_engine_internal_api AND
     COMMAND qow_live_server_statement_context_regression)
   add_test(NAME qow_persisted_datatype_cohort_receipts
     COMMAND qow_live_server_statement_context_regression --datatype-cohort-proof-only)
+  add_test(NAME qow_storage_only_datatype_ddl_cohorts
+    COMMAND qow_live_server_statement_context_regression --datatype-ddl-cohort-proof-only)
+  set_tests_properties(qow_storage_only_datatype_ddl_cohorts PROPERTIES
+    LABELS "datatype_cohort;real_storage;ddl;binary_uuid;mga_transaction_regression")
   set_tests_properties(qow_persisted_datatype_cohort_receipts PROPERTIES
     LABELS "datatype_cohort;real_storage;statement_context;binary_uuid;mga_transaction_regression")
   set_tests_properties(qow_live_server_statement_context_regression PROPERTIES

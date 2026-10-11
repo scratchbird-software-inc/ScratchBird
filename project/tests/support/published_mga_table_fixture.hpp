@@ -8,6 +8,8 @@
 #include "../../src/engine/internal_api/mga_relation_store/mga_relation_store.hpp"
 #include "../../src/core/datatypes/datatype_catalog_manifest.hpp"
 #include "../../src/core/datatypes/datatype_operations.hpp"
+#include "../../src/core/datatypes/datatype_type_codec_identity_v3.hpp"
+#include "../../src/storage/database/database_lifecycle.hpp"
 #include <optional>
 #include <stdexcept>
 
@@ -26,9 +28,14 @@ inline engine::internal_api::CrudTableRecord PublishMgaTableCatalogFixture(
   namespace dt = core::datatypes;
   if (canonical_types.size() != table.columns.size() || !context.local_transaction_id)
     throw std::invalid_argument("fixture table requires explicit types and MGA transaction");
-  context.datatype_catalog_snapshot_uuid = api::kBootstrapDatatypeCatalogUuid;
-  context.datatype_catalog_generation = api::kBootstrapDatatypeCatalogGeneration;
-  context.datatype_registry_generation = api::kBootstrapDatatypeRegistryGeneration;
+  const auto catalog = storage::database::ReadDatabaseCatalogIdentity(
+      context.database_path, context.database_uuid);
+  if (!catalog.ok() || !catalog.record->datatype_cohort)
+    throw std::invalid_argument("fixture requires actual persisted datatype cohort");
+  const auto& cohort = *catalog.record->datatype_cohort;
+  context.datatype_catalog_snapshot_uuid = cohort.catalog_snapshot_uuid.value;
+  context.datatype_catalog_generation = cohort.catalog_generation;
+  context.datatype_registry_generation = cohort.registry_generation;
   const auto checked = [](const auto& result) {
     if (!result.ok) throw std::runtime_error(result.diagnostics.empty()
         ? "fixture catalog publication failed"
@@ -58,7 +65,7 @@ inline engine::internal_api::CrudTableRecord PublishMgaTableCatalogFixture(
     if (!row.ok() || row.manifest.descriptor_rows.size() != 1)
       throw std::invalid_argument("fixture datatype is not in the engine catalog");
     const auto& datatype = row.manifest.descriptor_rows.front();
-    const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+    const auto binding = dt::LookupDatatypeTypeCodecIdentityV3(
         context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
         context.datatype_registry_generation, datatype.descriptor_uuid.value,
         datatype.descriptor_epoch);
@@ -70,9 +77,11 @@ inline engine::internal_api::CrudTableRecord PublishMgaTableCatalogFixture(
     column.descriptor.descriptor_uuid = api::GenerateCrudEngineUuid("object");
     column.descriptor.descriptor_kind = "scalar";
     column.descriptor.canonical_type_name = canonical_types[i];
-    column.descriptor.datatype_descriptor_uuid = binding.row.descriptor_uuid;
-    column.descriptor.datatype_descriptor_generation = binding.row.descriptor_generation;
-    column.descriptor.type_uuid = binding.row.type_uuid;
+    column.descriptor.datatype_descriptor_uuid = binding.row.legacy_fields.descriptor_uuid;
+    column.descriptor.datatype_descriptor_generation = binding.row.legacy_fields.descriptor_generation;
+    column.descriptor.type_uuid = binding.row.legacy_fields.type_uuid;
+    column.descriptor.datatype_cohort = {context.datatype_catalog_snapshot_uuid,
+        context.datatype_catalog_generation, context.datatype_registry_generation};
     column.descriptor.encoded_descriptor = table.columns[i].second;
     api::CatalogColumnMetadata attributes;
     if (!api::AdmitCatalogColumnMetadata(table.columns[i].second, &attributes))
@@ -100,10 +109,13 @@ inline engine::internal_api::CrudTableRecord PublishMgaTableCatalogFixture(
       // wider integer field used to carry descriptor limits.
       if (attributes.text.find("character_length") == attributes.text.end() &&
           attributes.text.find("text_resource_storage") == attributes.text.end()) {
-        if (!binding.row.canonical_value_maximum_bytes)
+        const auto capacity = binding.row.native_fields.present
+            ? binding.row.native_fields.canonical_value_maximum_bytes
+            : binding.row.legacy_fields.canonical_value_maximum_bytes;
+        if (!capacity)
           throw std::invalid_argument("fixture text codec capacity is unavailable");
         attributes.text["character_length"] =
-            std::to_string(binding.row.canonical_value_maximum_bytes);
+            std::to_string(capacity);
       }
       if (!api::EncodeCatalogColumnMetadata(attributes, &table.columns[i].second))
         throw std::invalid_argument("fixture bound text metadata encoding failed");
