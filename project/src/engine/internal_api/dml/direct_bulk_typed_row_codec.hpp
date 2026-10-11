@@ -10,6 +10,7 @@
 
 #include "crud_support/crud_store.hpp"
 #include "datatype_operations.hpp"
+#include "datatype_storage_identity.hpp"
 #include "dml/insert_batch.hpp"
 #include "insert_physical_integration.hpp"
 #include "physical_mga_cow_store.hpp"
@@ -69,6 +70,15 @@ bool DirectValidateNativeTemporalValue(
     const EngineTypedValue& typed, dt::CanonicalTypeId target_type,
     const EngineDescriptor* destination = nullptr, bool nullable = true,
     EngineApiDiagnostic* diagnostic = nullptr);
+
+// Representation-only receiver construction from a caller's freshly admitted
+// column. No catalog lookup, policy selection, ordered capability or effects.
+// Failure leaves the previous receiver unchanged and retains the native cause.
+bool DirectBuildTemporalPageColumn(
+    const EngineDescriptor& descriptor, const dt::DatatypeStorageIdentityV3& datatype,
+    std::uint16_t ordinal, bool nullable,
+    scratchbird::storage::page::RowDataTemporalColumnBinding* output,
+    EngineApiDiagnostic* diagnostic);
 
 CrudStoredValue DirectStoredValueForColumn(
     const EngineTypedValue& typed, dt::CanonicalTypeId target_type);

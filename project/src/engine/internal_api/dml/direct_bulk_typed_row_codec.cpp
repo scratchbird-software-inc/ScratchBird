@@ -27,6 +27,94 @@ namespace scratchbird::engine::internal_api::dml::detail {
 // SEARCH_KEY: SB_ENGINE_DIRECT_BULK_TYPED_ROW_CODEC_AUTHORITY
 // Typed row encoding and fixed-width validation only; no publication authority.
 
+bool DirectBuildTemporalPageColumn(
+    const EngineDescriptor& descriptor, const dt::DatatypeStorageIdentityV3& datatype,
+    std::uint16_t ordinal, bool nullable,
+    scratchbird::storage::page::RowDataTemporalColumnBinding* output,
+    EngineApiDiagnostic* diagnostic) {
+  const auto refuse = [&](const std::string& detail) {
+    if (diagnostic) *diagnostic = MakeInvalidRequestDiagnostic("datatype.native_temporal.receiver", detail);
+    return false;
+  };
+  const auto admitted = [&](const auto& result) {
+    if (result.ok()) return true;
+    if (diagnostic) {
+      auto cause = MakeEngineApiDiagnostic(std::string(result.diagnostic.diagnostic_code),
+          "datatype.native_temporal.receiver_rejected", std::string(result.diagnostic.detail), true);
+      using Fact = std::remove_cvref_t<decltype(result.diagnostic)>;
+      if constexpr (std::is_same_v<Fact, dt::TimeDiagnosticFactV3>)
+        PreserveEngineApiTimeDiagnosticCause(cause, result.diagnostic);
+      if constexpr (std::is_same_v<Fact, dt::TimestampDiagnosticFactV3>)
+        PreserveEngineApiTimestampDiagnosticCause(cause, result.diagnostic);
+      if constexpr (std::is_same_v<Fact, dt::IntervalDiagnosticFactV3>)
+        PreserveEngineApiIntervalDiagnosticCause(cause, result.diagnostic);
+      *diagnostic = std::move(cause);
+    }
+    return false;
+  };
+  try {
+    if (!output || !ordinal || !datatype.codec) return refuse("missing_receiver_binding");
+    const auto& codec = *datatype.codec;
+    const auto& row = codec.legacy_fields;
+    if (descriptor.datatype_cohort != EngineDatatypeCohort{
+            row.catalog_snapshot_uuid,row.catalog_generation,row.registry_generation} ||
+        datatype.descriptor_uuid != row.descriptor_uuid ||
+        datatype.descriptor_generation != row.descriptor_generation ||
+        datatype.type_uuid != row.type_uuid ||
+        static_cast<std::uint32_t>(datatype.type_id) != row.canonical_binary_type_code)
+      return refuse("receiver_cohort_or_codec_identity_mismatch");
+    engine::ExecutionTypeDescriptor execution;
+    std::string detail;
+    if (!bound_index_key::BuildOrderedColumnExecutionDescriptor(descriptor, datatype,
+            nullable, &execution, &detail)) return refuse(detail);
+    scratchbird::storage::page::RowDataTemporalColumnBinding receiver;
+    receiver.column_ordinal = ordinal;
+    receiver.null_allowed = nullable;
+    // These are component profiles, not ordered-index profile admission.
+    switch (datatype.type_id) {
+      case dt::CanonicalTypeId::date: {
+        if (!admitted(dt::ValidateDateExecutionDescriptorV3(execution, codec))) return false;
+        auto result = dt::BuildDateValidatedProfileHandleV3(
+            {row.catalog_snapshot_uuid,row.catalog_snapshot_uuid,row.catalog_generation,row.registry_generation},codec);
+        if (!admitted(result)) return false;
+        receiver.date = std::make_shared<const dt::DateValidatedProfileHandleV3>(std::move(result.profile));
+        break;
+      }
+      case dt::CanonicalTypeId::time: {
+        if (!admitted(dt::ValidateTimeExecutionDescriptorV3(execution, codec))) return false;
+        auto result = dt::BuildTimeValidatedProfileHandleV3(
+            {row.catalog_snapshot_uuid,row.catalog_snapshot_uuid,row.catalog_generation,row.registry_generation},codec);
+        if (!admitted(result)) return false;
+        receiver.time = std::make_shared<const dt::TimeValidatedProfileHandleV3>(std::move(result.profile));
+        break;
+      }
+      case dt::CanonicalTypeId::timestamp: {
+        if (!admitted(dt::ValidateTimestampExecutionDescriptorV3(execution, codec))) return false;
+        auto result = dt::BuildTimestampValidatedProfileHandleV3(
+            {row.catalog_snapshot_uuid,row.catalog_snapshot_uuid,row.catalog_generation,row.registry_generation},codec);
+        if (!admitted(result)) return false;
+        receiver.timestamp = std::make_shared<const dt::TimestampValidatedProfileHandleV3>(std::move(result.profile));
+        break;
+      }
+      case dt::CanonicalTypeId::interval: {
+        if (!admitted(dt::ValidateIntervalExecutionDescriptorV3(execution, codec))) return false;
+        auto result = dt::BuildIntervalValidatedProfileHandleV3(
+            {row.catalog_snapshot_uuid,row.catalog_snapshot_uuid,row.catalog_generation,row.registry_generation},codec);
+        if (!admitted(result)) return false;
+        receiver.interval = std::make_shared<const dt::IntervalValidatedProfileHandleV3>(std::move(result.profile));
+        break;
+      }
+      default: return refuse("not_a_temporal_receiver");
+    }
+    *output = std::move(receiver);
+    return true;
+  } catch (const std::bad_alloc&) {
+    if (diagnostic) *diagnostic = MakeEngineApiDiagnostic("RESOURCE.BUDGET_EXCEEDED",
+        "datatype.native_temporal.receiver_allocation_failed", {}, true);
+    return false;
+  }
+}
+
 scratchbird::storage::page::RowDataCell DirectPhysicalCell(
     std::uint16_t ordinal,
     const std::string& encoded_value) {

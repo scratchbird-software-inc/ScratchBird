@@ -6,7 +6,31 @@
 #include "datatype_timestamp.hpp"
 #include "datatype_interval.hpp"
 #include <iostream>
+#include <cstdlib>
+#include <new>
 #include <stdexcept>
+
+namespace {
+thread_local long allocation_failure_after = -1;
+thread_local std::size_t* allocation_counter = nullptr;
+thread_local unsigned allocation_faults = 0;
+}
+void* operator new(std::size_t size) {
+  if (allocation_counter) ++*allocation_counter;
+  if (allocation_failure_after == 0) {
+    allocation_failure_after = -1; // Fail once so diagnostic ownership can recover.
+    ++allocation_faults;
+    throw std::bad_alloc();
+  }
+  if (allocation_failure_after > 0) --allocation_failure_after;
+  if (auto* pointer = std::malloc(size ? size : 1)) return pointer;
+  throw std::bad_alloc();
+}
+void* operator new[](std::size_t size) { return ::operator new(size); }
+void operator delete(void* pointer) noexcept { std::free(pointer); }
+void operator delete(void* pointer, std::size_t) noexcept { std::free(pointer); }
+void operator delete[](void* pointer) noexcept { std::free(pointer); }
+void operator delete[](void* pointer, std::size_t) noexcept { std::free(pointer); }
 
 namespace api = scratchbird::engine::internal_api;
 namespace bulk = api::dml::detail;
@@ -314,9 +338,105 @@ void RetainedColumnBindings() {
     Check(refused, "retained physical ordinal truncated");
   }
 }
+void ReceiverConstruction() {
+  namespace page = scratchbird::storage::page;
+  for (const auto type : {dt::CanonicalTypeId::date, dt::CanonicalTypeId::time,
+                         dt::CanonicalTypeId::timestamp, dt::CanonicalTypeId::interval})
+    for (const unsigned generation : {10u,11u}) for (const bool nullable : {false,true}) {
+      auto value = Value(type,generation,0);
+      auto& descriptor = value.descriptor;
+      descriptor.encoded_descriptor = nullable ? "nullability=nullable" : "nullability=non_null";
+      const auto& cohort = descriptor.datatype_cohort;
+      dt::DatatypeStorageIdentityV3 identity;
+      Check(dt::LookupDatatypeStorageIdentityV3(cohort.catalog_snapshot_uuid,cohort.catalog_generation,
+          cohort.registry_generation,descriptor.datatype_descriptor_uuid,descriptor.datatype_descriptor_generation,
+          &identity),"receiver exact identity unavailable");
+      page::RowDataTemporalColumnBinding original;
+      api::EngineApiDiagnostic diagnostic;
+      Check(bulk::DirectBuildTemporalPageColumn(descriptor,identity,7,nullable,&original,&diagnostic),
+            "receiver baseline failed");
+      Check(original.column_ordinal==7&&original.null_allowed==nullable&&
+          (bool(original.date)+bool(original.time)+bool(original.timestamp)+bool(original.interval))==1,
+          "receiver shape or profile count invalid");
+      if(original.date)Check(dt::ValidateDateProfileHandleV3(*original.date).ok(),"DATE receiver invalid");
+      if(original.time)Check(dt::ValidateTimeProfileHandleV3(*original.time).ok(),"TIME receiver invalid");
+      if(original.timestamp)Check(dt::ValidateTimestampProfileHandleV3(*original.timestamp).ok(),"TIMESTAMP receiver invalid");
+      if(original.interval)Check(dt::ValidateIntervalProfileHandleV3(*original.interval).ok(),"INTERVAL receiver invalid");
+      const auto unchanged = [&](const page::RowDataTemporalColumnBinding& actual) {
+        return actual.column_ordinal==original.column_ordinal&&actual.null_allowed==original.null_allowed&&
+            actual.date==original.date&&actual.time==original.time&&actual.timestamp==original.timestamp&&
+            actual.interval==original.interval;
+      };
+      auto output=original;
+      std::size_t allocations=0;
+      allocation_counter=&allocations;
+      const bool counted=bulk::DirectBuildTemporalPageColumn(descriptor,identity,9,nullable,&output,&diagnostic);
+      allocation_counter=nullptr;
+      Check(counted&&allocations>0&&allocations<1000,"receiver allocation sweep unbounded or empty");
+      unsigned native_resource_causes=0;
+      for(std::size_t position=0;position<allocations;++position) {
+        output=original;
+        diagnostic=api::EngineApiDiagnostic{};
+        const auto before=allocation_faults;
+        allocation_failure_after=static_cast<long>(position);
+        bool accepted=false,threw=false;
+        try { accepted=bulk::DirectBuildTemporalPageColumn(descriptor,identity,9,nullable,&output,&diagnostic); }
+        catch(...) { threw=true; }
+        allocation_failure_after=-1;
+        Check(allocation_faults==before+1,"receiver allocation fault did not fire");
+        if(accepted||threw||diagnostic.code!="RESOURCE.BUDGET_EXCEEDED")
+          std::cerr<<"receiver allocation position="<<position<<" type="<<static_cast<unsigned>(type)
+                   <<" code="<<diagnostic.code<<" detail="<<diagnostic.detail<<'\n';
+        Check(!accepted&&!threw&&diagnostic.error&&diagnostic.code=="RESOURCE.BUDGET_EXCEEDED",
+              "receiver allocation failure lost resource diagnosis");
+        Check(unchanged(output),"receiver allocation failure replaced previous owner");
+        if(diagnostic.native_source&&diagnostic.native_source->datatype_cause) {
+          const auto& cause=*diagnostic.native_source->datatype_cause;
+          Check(cause.diagnostic_code=="RESOURCE.BUDGET_EXCEEDED"&&!cause.status.ok(),
+                "receiver native resource cause changed");
+          ++native_resource_causes;
+        }
+        Check(bulk::DirectBuildTemporalPageColumn(descriptor,identity,9,nullable,&output,&diagnostic)&&
+              output.column_ordinal==9,"receiver fresh retry failed");
+      }
+      if(type!=dt::CanonicalTypeId::date)
+        Check(native_resource_causes>0,"receiver sweep did not exercise typed profile allocation failure");
+      for(const bool invalid_ordinal:{false,true}) {
+        output=original;
+        auto invalid=descriptor;
+        if(!invalid_ordinal)++invalid.datatype_descriptor_generation;
+        Check(!bulk::DirectBuildTemporalPageColumn(invalid,identity,invalid_ordinal?0:9,nullable,&output,&diagnostic)&&
+              unchanged(output),"invalid receiver published a profile");
+      }
+      output=original;
+      Check(!bulk::DirectBuildTemporalPageColumn(descriptor,identity,9,!nullable,&output,&diagnostic)&&
+            unchanged(output),"receiver nullability contradiction accepted");
+      const auto foreign=Value(type,generation==10?11:10,0);
+      auto foreign_descriptor=foreign.descriptor;
+      foreign_descriptor.encoded_descriptor=descriptor.encoded_descriptor;
+      output=original;
+      Check(!bulk::DirectBuildTemporalPageColumn(foreign_descriptor,identity,9,nullable,&output,&diagnostic)&&
+            unchanged(output),"receiver relabeled another valid cohort");
+      for(unsigned mutation=0;mutation<6;++mutation) {
+        auto invalid=identity;
+        switch(mutation) {
+          case 0: invalid.descriptor_uuid.bytes.back()^=1;break;
+          case 1: ++invalid.descriptor_generation;break;
+          case 2: invalid.type_uuid.bytes.back()^=1;break;
+          case 3: invalid.type_id=dt::CanonicalTypeId::int64;break;
+          case 4: invalid.codec.reset();break;
+          case 5: ++invalid.codec->native_fields.canonical_value_maximum_bytes;break;
+        }
+        output=original;
+        Check(!bulk::DirectBuildTemporalPageColumn(descriptor,invalid,9,nullable,&output,&diagnostic)&&
+              unchanged(output),"receiver admitted inconsistent storage/codec identity");
+      }
+    }
+}
 int main() {
   for (const auto type : {dt::CanonicalTypeId::date, dt::CanonicalTypeId::time, dt::CanonicalTypeId::timestamp, dt::CanonicalTypeId::interval})
     for (const unsigned generation : {10u, 11u}) Run(type, generation);
   RetainedColumnBindings();
+  ReceiverConstruction();
   std::cout << "direct_bulk_temporal_payload checks=" << checks << '\n';
 }
