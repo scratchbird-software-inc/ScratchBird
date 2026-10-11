@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "../../../src/core/datatypes/datatype_time.hpp"
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <cstring>
@@ -146,7 +147,68 @@ constexpr std::array<Vector,20> kVectors{{
 }};
 }
 
+void TestD711Successor() {
+  const dt::DatatypeTypeCodecIdentityRowV3* row = nullptr;
+  for (const auto& candidate : dt::CurrentDatatypeTypeCodecIdentityRowsV3())
+    if (candidate.legacy_fields.catalog_snapshot_uuid == dt::kDatatypeCohortV11 &&
+        candidate.legacy_fields.canonical_binary_type_code == static_cast<p::u32>(dt::CanonicalTypeId::time)) row = &candidate;
+  Check(row != nullptr,"registered D711 TIME row");
+  const dt::TimeAuthorityReceiptV3 receipt{dt::kDatatypeCohortV11,dt::kDatatypeCohortV11,11,11};
+  const auto built = dt::BuildTimeValidatedProfileHandleV3(receipt,*row);
+  Check(built.ok(),"explicit D711 TIME profile");
+  auto profile = std::make_shared<const dt::TimeValidatedProfileHandleV3>(built.profile);
+  auto old = Profile();
+  auto expected_profile = Hex(kProfileMaterialHex), expected_comparison = Hex(kComparisonMaterialHex);
+  for (auto* bytes : {&expected_profile,&expected_comparison}) {
+    const auto uuid = Hex("01a1095ff20572d3abea15c6d41a4ad4");
+    std::copy(uuid.begin(),uuid.end(),bytes->begin()+16);
+    p::StoreLittle64(bytes->data()+32,11);p::StoreLittle64(bytes->data()+40,11);
+  }
+  Check(std::equal(expected_profile.begin(),expected_profile.end(),profile->profile_material.begin()) &&
+        std::equal(expected_comparison.begin(),expected_comparison.end(),profile->comparison_material.begin()),
+        "D711 material changes only its explicit cohort");
+  const auto profile_hash=Hex("f17f7861ee31364530c880dc01b1836a8629d4c5c6ea5d287b4f9bef1882528d");
+  const auto comparison_hash=Hex("1673475a46395937c1eef4e90bdc92e72eec21a47404394bfe272224cf983f44");
+  Check(std::equal(profile_hash.begin(),profile_hash.end(),profile->profile_fingerprint.begin()) &&
+        std::equal(comparison_hash.begin(),comparison_hash.end(),profile->comparison_fingerprint.begin()),"independent D711 SHA256 seals");
+  for (const auto& mutation:kProfileMutations) Mutate(*profile,[&](auto& p){p.profile_material[mutation.offset]^=1;},mutation.case_id);
+  for (const auto& mutation:kComparisonMutations) Mutate(*profile,[&](auto& p){p.comparison_material[mutation.offset]^=1;},mutation.case_id);
+  Mutate(*profile,[](auto& p){p.identity.native_fields.canonical_value_transport_width++;},"native extent is authority");
+  Mutate(*profile,[](auto& p){p.identity.native_fields.profile_fingerprint_sha256[0]^=1;},"native fingerprint is authority");
+  Check(!dt::BuildTimeValidatedProfileHandleV3(receipt,old->identity).ok() &&
+        !dt::BuildTimeValidatedProfileHandleV3(old->receipt,*row).ok(),"no successor relabeling");
+  for(const auto& vector:kVectors) {
+    auto parsed=dt::ParseCanonicalTimeV3(profile,vector.text);
+    Check(parsed.ok()&&parsed.value.nanoseconds_since_midnight==vector.value,"D711 parse canonical vector");
+    auto component=dt::EncodeCanonicalTimeComponentV3(parsed.value);
+    Check(component.ok()&&component.bytes.size()==8&&p::LoadLittle64(component.bytes.data())==vector.value,"D711 LE8 native component");
+    auto decoded=dt::DecodeCanonicalTimeComponentNoAllocV3(*profile,dt::TimeValueStateV3::value,true,component.bytes);
+    Check(decoded.ok()&&decoded.value.profile==profile.get()&&decoded.value.nanoseconds_since_midnight==vector.value,"D711 decoded source profile");
+    for(auto direction:{dt::TimeSortDirectionV3::ascending,dt::TimeSortDirectionV3::descending})
+      for(auto mode:{dt::TimeNullModeV3::nulls_first,dt::TimeNullModeV3::nulls_last}) {
+        auto key=dt::MakeTimeSortKeyV3(parsed.value,direction,mode);
+        Check(key.ok()&&key.bytes.size()==108&&p::LoadLittle64(key.bytes.data()+24)==11&&
+              p::LoadLittle64(key.bytes.data()+32)==11&&
+              std::equal(dt::kDatatypeCohortV11.bytes.begin(),dt::kDatatypeCohortV11.bytes.end(),key.bytes.begin()+8),"D711 key exact cohort");
+        auto restored=dt::DecodeTimeSortKeyNoAllocV3(*profile,key.bytes);
+        Check(restored.ok()&&restored.value.nanoseconds_since_midnight==vector.value&&restored.value.direction==direction&&restored.value.null_mode==mode,"D711 key roundtrip");
+        Check(!dt::DecodeTimeSortKeyNoAllocV3(*old,key.bytes).ok(),"D710 may not consume D711 key");
+        dt::TimeOwnedValueV3 historical{old,dt::TimeValueStateV3::value,vector.value};
+        auto historical_key=dt::MakeTimeSortKeyV3(historical,direction,mode);
+        Check(historical_key.ok()&&!dt::DecodeTimeSortKeyNoAllocV3(*profile,historical_key.bytes).ok(),"D711 may not consume D710 key");
+      }
+  }
+  for(bool is_null:{false,true}) {
+    dt::TimeOwnedValueV3 value{profile,is_null?dt::TimeValueStateV3::sql_null:dt::TimeValueStateV3::value,0};
+    const auto hash=dt::HashTimeValueV3(value);
+    Check(hash.ok()&&hash.bytes==Hex(is_null?"fd0596f8149a17e97f0256ddd1de3f325bfe063eac9ed8bb9ea2ae641fa33ff7":"dbe0780ad39860d34469e755e6fc68abd5b18dae2e1189bf48423d6f650531dd"),"independent D711 NULL/value hash oracle");
+    auto key=dt::MakeTimeSortKeyV3(value,dt::TimeSortDirectionV3::ascending,dt::TimeNullModeV3::nulls_first);
+    Check(key.ok()&&dt::DecodeTimeSortKeyNoAllocV3(*profile,key.bytes).ok(),"D711 NULL/value key");
+  }
+}
+
 int main(){
+  TestD711Successor();
   auto profile=Profile();const auto& valid=*profile;
   Check(valid.profile_material.size()==592&&std::memcmp(valid.profile_material.data(),"SBTIMP01",8)==0,"SBTIMP01");
   Check(valid.comparison_material.size()==352&&std::memcmp(valid.comparison_material.data(),"SBTIMC01",8)==0,"SBTIMC01");

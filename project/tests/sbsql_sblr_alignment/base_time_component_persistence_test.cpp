@@ -30,7 +30,15 @@ if(!v)Fail(m);
 }
 p::Uuid D710(){return{{1,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x10}};
 }
-std::shared_ptr<const dt::TimeValidatedProfileHandleV3> Profile(){auto r=dt::BuildCurrentTimeValidatedProfileHandleV3(D710());
+std::shared_ptr<const dt::TimeValidatedProfileHandleV3> Profile(bool successor=false){auto r=dt::BuildCurrentTimeValidatedProfileHandleV3(D710());
+if(successor) {
+  const dt::DatatypeTypeCodecIdentityRowV3* row=nullptr;
+  for(const auto& candidate:dt::CurrentDatatypeTypeCodecIdentityRowsV3())
+    if(candidate.legacy_fields.catalog_snapshot_uuid==dt::kDatatypeCohortV11&&
+       candidate.legacy_fields.canonical_binary_type_code==static_cast<p::u32>(dt::CanonicalTypeId::time))row=&candidate;
+  Check(row!=nullptr,"D711 TIME row");
+  r=dt::BuildTimeValidatedProfileHandleV3({dt::kDatatypeCohortV11,dt::kDatatypeCohortV11,11,11},*row);
+}
 Check(r.ok(),"profile");
 return std::make_shared<const dt::TimeValidatedProfileHandleV3>(r.profile);
 }
@@ -138,7 +146,7 @@ void Mutations(const std::shared_ptr<const dt::TimeValidatedProfileHandleV3>&pro
 }
 
 }
-int main(){auto profile=Profile();
+int main(){for(bool successor:{false,true}){auto profile=Profile(successor);
 
 for(const auto& fixture:kExactSbdval){dt::TimeOwnedValueV3 value{profile,fixture.is_null?dt::TimeValueStateV3::sql_null:dt::TimeValueStateV3::value,fixture.value};auto encoded=dt::EncodeTimeSbdvalComposedV3(value,true);auto expected=HexBytes(fixture.hex);Check(encoded.ok()&&encoded.bytes==expected,"exact independent SBDVAL01 frame");auto decoded=dt::DecodeTimeSbdvalComposedNoAllocV3(*profile,true,expected);Check(decoded.ok()&&decoded.value.state==value.state&&decoded.value.nanoseconds_since_midnight==fixture.value,"exact SBDVAL01 decode roster");}
 for(const auto& fixture:kExactSbdpv){dt::TimeOwnedValueV3 value{profile,fixture.is_null?dt::TimeValueStateV3::sql_null:dt::TimeValueStateV3::value,fixture.value};auto encoded=dt::EncodeTimeSbdpvComposedV3(value,true);auto expected=HexBytes(fixture.hex);Check(encoded.ok()&&encoded.bytes==expected,"exact independent SBDPV001 frame");auto decoded=dt::DecodeTimeSbdpvComposedNoAllocV3(*profile,true,expected);Check(decoded.ok()&&decoded.value.state==value.state&&decoded.value.nanoseconds_since_midnight==fixture.value,"exact SBDPV001 decode roster");}
@@ -181,4 +189,5 @@ offset+=n;
 }Check(offset==restored.size()&&records==8,"restored exact roster");
 Mutations(profile,sample_val,sample_pv);
 std::cout<<"PASS base.time V3 component persistence checks="<<checks<<" records=8 sbdval_mutations="<<exact_sbdval_mutations<<" sbdpv_mutations="<<exact_sbdpv_mutations<<" not_page_mga\n";
+}
 }

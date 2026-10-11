@@ -77,6 +77,12 @@ inline constexpr std::array<byte, 32> kProfileFingerprint{{
 inline constexpr std::array<byte, 32> kComparisonFingerprint{{
     0x75,0xde,0xab,0xa7,0x96,0xda,0x7e,0x20,0x08,0x60,0x02,0x37,0xa5,0xeb,0xfb,0x0d,
     0xd8,0xa7,0x6f,0x2b,0x62,0xea,0x66,0x4b,0x66,0x87,0x6b,0xa4,0x7f,0x05,0xb3,0xd6}};
+inline constexpr std::array<byte, 32> kD711ProfileFingerprint{{
+    0xf1,0x7f,0x78,0x61,0xee,0x31,0x36,0x45,0x30,0xc8,0x80,0xdc,0x01,0xb1,0x83,0x6a,
+    0x86,0x29,0xd4,0xc5,0xc6,0xea,0x5d,0x28,0x7b,0x4f,0x9b,0xef,0x18,0x82,0x52,0x8d}};
+inline constexpr std::array<byte, 32> kD711ComparisonFingerprint{{
+    0x16,0x73,0x47,0x5a,0x46,0x39,0x59,0x37,0xc1,0xee,0xf4,0xe9,0x0b,0xdc,0x92,0xe7,
+    0x2e,0xec,0x21,0xa4,0x74,0x04,0x39,0x4b,0xfe,0x27,0x22,0x24,0xcf,0x98,0x3f,0x44}};
 
 Status OkStatus() noexcept { return {StatusCode::ok, Severity::info, Subsystem::datatypes}; }
 Status ErrorStatus() noexcept { return {StatusCode::platform_required_feature_missing, Severity::error, Subsystem::datatypes}; }
@@ -160,16 +166,18 @@ bool EqualIdentityIgnoringName(const DatatypeTypeCodecIdentityRowV3& a,
       Same(a.descriptor_policy, b.descriptor_policy) &&
       Same(a.canonicalization_policy, b.canonicalization_policy) &&
       Same(a.ordering_policy, b.ordering_policy) && Same(a.hash_policy, b.hash_policy) &&
-      Same(a.operation_policy, b.operation_policy);
+      Same(a.operation_policy, b.operation_policy) && a.native_fields == b.native_fields;
 }
 
-const DatatypeTypeCodecIdentityRowV3* CurrentIdentityFor(CanonicalTypeId type) noexcept {
+const DatatypeTypeCodecIdentityRowV3* IdentityForReceipt(
+    CanonicalTypeId type, const TimeAuthorityReceiptV3& receipt) noexcept {
   const auto code = static_cast<u32>(type);
   const DatatypeTypeCodecIdentityRowV3* found = nullptr;
   for (const auto& row : CurrentDatatypeTypeCodecIdentityRowsV3()) {
     const auto& legacy = row.legacy_fields;
-    if (legacy.catalog_snapshot_uuid != kSnapshot || legacy.catalog_generation != 10 ||
-        legacy.registry_generation != 10 || legacy.canonical_binary_type_code != code)
+    if (legacy.catalog_snapshot_uuid != receipt.catalog_snapshot_uuid ||
+        legacy.catalog_generation != receipt.catalog_generation ||
+        legacy.registry_generation != receipt.registry_generation || legacy.canonical_binary_type_code != code)
       continue;
     if (found != nullptr) return nullptr;
     found = &row;
@@ -178,7 +186,9 @@ const DatatypeTypeCodecIdentityRowV3* CurrentIdentityFor(CanonicalTypeId type) n
 }
 
 bool ExactTimeIdentity(const DatatypeTypeCodecIdentityRowV3& identity) noexcept {
-  const auto* current = CurrentIdentityFor(CanonicalTypeId::time);
+  const auto& row = identity.legacy_fields;
+  const auto* current = IdentityForReceipt(CanonicalTypeId::time,
+      {row.catalog_snapshot_uuid,row.catalog_snapshot_uuid,row.catalog_generation,row.registry_generation});
   return current != nullptr && EqualIdentityIgnoringName(identity, *current) &&
       identity.legacy_fields.descriptor_uuid == kDescriptor &&
       identity.legacy_fields.type_uuid == kType &&
@@ -190,9 +200,9 @@ bool ExactTimeIdentity(const DatatypeTypeCodecIdentityRowV3& identity) noexcept 
 }
 
 bool ExactReceipt(const TimeAuthorityReceiptV3& receipt) noexcept {
-  return receipt.statement_receipt_uuid == kSnapshot &&
-      receipt.catalog_snapshot_uuid == kSnapshot &&
-      receipt.catalog_generation == 10 && receipt.registry_generation == 10;
+  return receipt.statement_receipt_uuid == receipt.catalog_snapshot_uuid &&
+      ((receipt.catalog_snapshot_uuid == kSnapshot && receipt.catalog_generation == 10 && receipt.registry_generation == 10) ||
+       (receipt.catalog_snapshot_uuid == kDatatypeCohortV11 && receipt.catalog_generation == 11 && receipt.registry_generation == 11));
 }
 
 bool Cancelled(const TimeExecutionControlV3& control) noexcept {
@@ -377,8 +387,8 @@ bool ProfileValidNoAlloc(const TimeValidatedProfileHandleV3& profile,
                          const TimeExecutionControlV3* control=nullptr) noexcept {
   if (!ExactReceipt(profile.receipt) || !ExactTimeIdentity(profile.identity) ||
       profile.identity.legacy_fields.catalog_snapshot_uuid != profile.receipt.catalog_snapshot_uuid ||
-      profile.identity.legacy_fields.catalog_generation != 10 ||
-      profile.identity.legacy_fields.registry_generation != 10 ||
+      profile.identity.legacy_fields.catalog_generation != profile.receipt.catalog_generation ||
+      profile.identity.legacy_fields.registry_generation != profile.receipt.registry_generation ||
       !Same(profile.render_policy, kRenderPolicy) || !Same(profile.cast_policy, kCastPolicy) ||
       !Same(profile.civil_day_policy, kCivilDayPolicy) ||
       !Same(profile.storage_epoch_policy, kStorageEpochPolicy) ||
@@ -406,8 +416,8 @@ bool ProfileValidNoAlloc(const TimeValidatedProfileHandleV3& profile,
       Digest(profile.comparison_material,&comparison_digest,control) &&
       profile.profile_fingerprint==profile_digest &&
       profile.comparison_fingerprint==comparison_digest &&
-      profile.profile_fingerprint == kProfileFingerprint &&
-      profile.comparison_fingerprint == kComparisonFingerprint;
+      profile.profile_fingerprint == (profile.receipt.catalog_generation == 10 ? kProfileFingerprint : kD711ProfileFingerprint) &&
+      profile.comparison_fingerprint == (profile.receipt.catalog_generation == 10 ? kComparisonFingerprint : kD711ComparisonFingerprint);
 }
 
 bool ValidState(TimeValueStateV3 state) noexcept {
@@ -496,8 +506,11 @@ std::size_t RenderStrict(u64 value, char* output) noexcept {
 }
 
 bool CharacterIdentity(const DatatypeTypeCodecIdentityRowV3* identity) noexcept {
-  const auto* current = CurrentIdentityFor(CanonicalTypeId::character);
-  return identity != nullptr && current != nullptr &&
+  if (identity == nullptr) return false;
+  const auto& row = identity->legacy_fields;
+  const TimeAuthorityReceiptV3 receipt{row.catalog_snapshot_uuid,row.catalog_snapshot_uuid,row.catalog_generation,row.registry_generation};
+  const auto* current = ExactReceipt(receipt) ? IdentityForReceipt(CanonicalTypeId::character,receipt) : nullptr;
+  return current != nullptr &&
       EqualIdentityIgnoringName(*identity, *current);
 }
 
@@ -577,7 +590,7 @@ bool TimeDescriptor(const scratchbird::engine::ExecutionTypeDescriptor* descript
 
 TimeProfileResultV3 BuildCurrentTimeValidatedProfileHandleV3(
     const platform::Uuid& statement_receipt_uuid) noexcept {
-  const auto* identity = CurrentIdentityFor(CanonicalTypeId::time);
+  const auto* identity = IdentityForReceipt(CanonicalTypeId::time, {kSnapshot,kSnapshot,10,10});
   if (identity == nullptr)
     return Failure<TimeProfileResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                         "d710_time_identity_missing");
@@ -1058,7 +1071,7 @@ TimeNoAllocWriteResultV3 HashTimeValueIntoNoAllocV3(const TimeOwnedValueV3& owne
   std::array<byte,32> digest{};ScopedClear clear_digest(digest.data(),digest.size(),TimeScrubClassV3::hash_digest,control.observe_scrubbed,control.scrub_observer_context);
   if(output!=nullptr && (RangesOverlap(output,32,&owned,sizeof(owned))||RangesOverlap(output,32,&control,sizeof(control))||OutputOverlapsProfile(output,32,*owned.profile)))return Failure<TimeNoAllocWriteResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","hash_overlap");
   if(capacity<32 || control.maximum_allocation_bytes<32 || output==nullptr){auto r=Failure<TimeNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED","hash_capacity",ResourceStatus());r.bytes_required=32;return r;}
-  std::memcpy(preimage.data(),"SBTIMH01",8);PutUuid(preimage.data()+8,kSnapshot);StoreLittle64(preimage.data()+24,10);StoreLittle64(preimage.data()+32,10);
+  std::memcpy(preimage.data(),"SBTIMH01",8);PutUuid(preimage.data()+8,owned.profile->receipt.catalog_snapshot_uuid);StoreLittle64(preimage.data()+24,owned.profile->receipt.catalog_generation);StoreLittle64(preimage.data()+32,owned.profile->receipt.registry_generation);
   std::memcpy(preimage.data()+40,owned.profile->comparison_fingerprint.data(),32);PutPolicy(preimage.data()+72,kHashPolicy);
   preimage[96]=owned.state==TimeValueStateV3::sql_null?0:1;StoreLittle32(preimage.data()+97,owned.state==TimeValueStateV3::sql_null?0:8);
   std::size_t extent=101;if(owned.state==TimeValueStateV3::value){StoreLittle64(preimage.data()+101,owned.nanoseconds_since_midnight);extent=109;}
@@ -1092,7 +1105,7 @@ TimeNoAllocWriteResultV3 MakeTimeSortKeyIntoNoAllocV3(
   std::array<byte,108> staged{};ScopedClear clear_staged(staged.data(),staged.size(),TimeScrubClassV3::ordered_key_staging,control.observe_scrubbed,control.scrub_observer_context);
   if(output!=nullptr&&(RangesOverlap(output,extent,&value,sizeof(value))||RangesOverlap(output,extent,&control,sizeof(control))||OutputOverlapsProfile(output,extent,*value.profile)))return Failure<TimeNoAllocWriteResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","key_overlap");
   if(capacity<extent||control.maximum_allocation_bytes<extent||output==nullptr){auto r=Failure<TimeNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED","key_capacity",ResourceStatus());r.bytes_required=extent;return r;}
-  std::memcpy(staged.data(),"SBTIMK01",8);PutUuid(staged.data()+8,kSnapshot);StoreLittle64(staged.data()+24,10);StoreLittle64(staged.data()+32,10);
+  std::memcpy(staged.data(),"SBTIMK01",8);PutUuid(staged.data()+8,value.profile->receipt.catalog_snapshot_uuid);StoreLittle64(staged.data()+24,value.profile->receipt.catalog_generation);StoreLittle64(staged.data()+32,value.profile->receipt.registry_generation);
   std::memcpy(staged.data()+40,value.profile->comparison_fingerprint.data(),32);PutPolicy(staged.data()+72,kOrderingPolicy);
   staged[96]=direction==TimeSortDirectionV3::descending?1:0;staged[97]=null_mode==TimeNullModeV3::nulls_last?1:0;
   staged[98]=value.state==TimeValueStateV3::value?1:(null_mode==TimeNullModeV3::nulls_first?0:2);staged[99]=value.state==TimeValueStateV3::value?8:0;
@@ -1115,14 +1128,14 @@ TimeSortKeyViewResultV3 DecodeTimeSortKeyNoAllocV3(
     const TimeValidatedProfileHandleV3& profile,std::span<const byte> encoded,
     const TimeExecutionControlV3& control) noexcept {
   if((encoded.size()!=100&&encoded.size()!=108)||std::memcmp(encoded.data(),"SBTIMK01",8)!=0)return Failure<TimeSortKeyViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","key_extent_or_magic");
-  if(!ProfileValidNoAlloc(profile,&control)||std::memcmp(encoded.data()+8,kSnapshot.bytes.data(),16)!=0||LoadLittle64(encoded.data()+24)!=10||LoadLittle64(encoded.data()+32)!=10||std::memcmp(encoded.data()+40,profile.comparison_fingerprint.data(),32)!=0||std::memcmp(encoded.data()+72,kOrderingPolicy.uuid.bytes.data(),16)!=0||LoadLittle64(encoded.data()+88)!=1)return Failure<TimeSortKeyViewResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID","key_authority");
+  if(!ProfileValidNoAlloc(profile,&control)||std::memcmp(encoded.data()+8,profile.receipt.catalog_snapshot_uuid.bytes.data(),16)!=0||LoadLittle64(encoded.data()+24)!=profile.receipt.catalog_generation||LoadLittle64(encoded.data()+32)!=profile.receipt.registry_generation||std::memcmp(encoded.data()+40,profile.comparison_fingerprint.data(),32)!=0||std::memcmp(encoded.data()+72,kOrderingPolicy.uuid.bytes.data(),16)!=0||LoadLittle64(encoded.data()+88)!=1)return Failure<TimeSortKeyViewResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID","key_authority");
   if(encoded[96]>1||encoded[97]>1)return Failure<TimeSortKeyViewResultV3>("CTI.TEMPORAL.INDEX_KEY_REFUSED","key_mode");
   const auto direction=static_cast<TimeSortDirectionV3>(encoded[96]);const auto mode=static_cast<TimeNullModeV3>(encoded[97]);
   TimeValueStateV3 state=TimeValueStateV3::sql_null;u64 value=0;
   if(encoded.size()==100){if(encoded[98]!=(mode==TimeNullModeV3::nulls_first?0:2)||encoded[99]!=0)return Failure<TimeSortKeyViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","key_null_rank");}
   else{if(encoded[98]!=1||encoded[99]!=8)return Failure<TimeSortKeyViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","key_value_rank");for(unsigned i=0;i<8;++i){byte x=encoded[100+i];if(direction==TimeSortDirectionV3::descending)x=static_cast<byte>(~x);value=(value<<8)|x;}if(value>kTimeMaximumNanosecondsV3)return Failure<TimeSortKeyViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","key_range");state=TimeValueStateV3::value;}
   TimeOwnedValueV3 owned{std::shared_ptr<const TimeValidatedProfileHandleV3>{},state,value};
-  std::array<byte,108> check{};ScopedClear clear_check(check.data(),check.size(),TimeScrubClassV3::ordered_key_decode_reencode,control.observe_scrubbed,control.scrub_observer_context);std::memcpy(check.data(),"SBTIMK01",8);PutUuid(check.data()+8,kSnapshot);StoreLittle64(check.data()+24,10);StoreLittle64(check.data()+32,10);std::memcpy(check.data()+40,profile.comparison_fingerprint.data(),32);PutPolicy(check.data()+72,kOrderingPolicy);check[96]=encoded[96];check[97]=encoded[97];check[98]=state==TimeValueStateV3::value?1:(mode==TimeNullModeV3::nulls_first?0:2);check[99]=state==TimeValueStateV3::value?8:0;if(state==TimeValueStateV3::value){for(unsigned i=0;i<8;++i)check[100+i]=static_cast<byte>(value>>(56-8*i));if(direction==TimeSortDirectionV3::descending)for(unsigned i=100;i<108;++i)check[i]=static_cast<byte>(~check[i]);}
+  std::array<byte,108> check{};ScopedClear clear_check(check.data(),check.size(),TimeScrubClassV3::ordered_key_decode_reencode,control.observe_scrubbed,control.scrub_observer_context);std::memcpy(check.data(),"SBTIMK01",8);PutUuid(check.data()+8,profile.receipt.catalog_snapshot_uuid);StoreLittle64(check.data()+24,profile.receipt.catalog_generation);StoreLittle64(check.data()+32,profile.receipt.registry_generation);std::memcpy(check.data()+40,profile.comparison_fingerprint.data(),32);PutPolicy(check.data()+72,kOrderingPolicy);check[96]=encoded[96];check[97]=encoded[97];check[98]=state==TimeValueStateV3::value?1:(mode==TimeNullModeV3::nulls_first?0:2);check[99]=state==TimeValueStateV3::value?8:0;if(state==TimeValueStateV3::value){for(unsigned i=0;i<8;++i)check[100+i]=static_cast<byte>(value>>(56-8*i));if(direction==TimeSortDirectionV3::descending)for(unsigned i=100;i<108;++i)check[i]=static_cast<byte>(~check[i]);}
   if(control.force_reencode_mismatch_for_conformance)check[0]^=1;
   if(!std::equal(check.begin(),check.begin()+static_cast<std::ptrdiff_t>(encoded.size()),encoded.begin()))return Failure<TimeSortKeyViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","key_reencode");
   if(Cancelled(control))return Failure<TimeSortKeyViewResultV3>("PROCESS.CANCELLED","before_publication");

@@ -435,7 +435,57 @@ nullv.descriptor={};n.scalar_source_identity=nullptr;nullv.encoded_value="dirty"
 n.time_target=&invalid_target;Check(dt::CastTimeValueV3(n).diagnostic.diagnostic_code=="CTI.TEMPORAL.DESCRIPTOR_INVALID","contextual target authority precedes dirty NULL");
 }
 }
+void SuccessorCharacterCasts(){
+  const auto row=[](dt::CanonicalTypeId type,bool successor){
+    const auto snapshot=successor?dt::kDatatypeCohortV11:D710();
+    for(const auto& value:dt::CurrentDatatypeTypeCodecIdentityRowsV3())
+      if(value.legacy_fields.catalog_snapshot_uuid==snapshot&&
+         value.legacy_fields.canonical_binary_type_code==static_cast<p::u32>(type))return &value;
+    return static_cast<const dt::DatatypeTypeCodecIdentityRowV3*>(nullptr);
+  };
+  const auto cd=Descriptor(dt::CanonicalTypeId::character),td=Descriptor(dt::CanonicalTypeId::time);
+  for(bool time_successor:{false,true})for(bool character_successor:{false,true}){
+    const auto* ti=row(dt::CanonicalTypeId::time,time_successor);
+    const auto* ci=row(dt::CanonicalTypeId::character,character_successor);
+    Check(ti&&ci,"independently registered TIME/character peers");
+    const auto& source=ti->legacy_fields;
+    auto built=dt::BuildTimeValidatedProfileHandleV3({source.catalog_snapshot_uuid,source.catalog_snapshot_uuid,source.catalog_generation,source.registry_generation},*ti);
+    Check(built.ok(),"explicit TIME target cohort");
+    auto profile=std::make_shared<const dt::TimeValidatedProfileHandleV3>(built.profile);
+    dt::TimeTextOperandV3 operand{ci,&cd,dt::TimeTextCarrierKindV3::utf8_bytes,dt::TimeValueStateV3::value,"12:34:56.1",10};
+    auto parsed=dt::ParseCanonicalTimeOperandV3(profile,operand);
+    Check(parsed.ok()&&parsed.value.profile==profile&&parsed.value.nanoseconds_since_midnight==45'296'100'000'000ull,"bound character operand preserves target cohort");
+    dt::DatatypeOperationValue text;
+    text.type_id=dt::CanonicalTypeId::character;text.encoded_value="12:34:56.1";text.descriptor=cd;
+    dt::TimeCastRequestV3 in;
+    in.one_based_policy_row=24;in.context=dt::DatatypeCastContext::explicit_cast;
+    in.scalar_source=&text;in.scalar_source_identity=ci;in.time_target=&profile;in.time_target_descriptor=&td;
+    auto incoming=dt::CastTimeValueV3(in);
+    Check(incoming.ok()&&incoming.produced_time&&incoming.time_value.profile==profile&&incoming.time_value.nanoseconds_since_midnight==parsed.value.nanoseconds_since_midnight,"independent peer cohorts explicit character-to-TIME");
+    dt::TimeCastRequestV3 out;
+    out.one_based_policy_row=50;out.context=dt::DatatypeCastContext::explicit_cast;
+    out.time_source=&parsed.value;out.scalar_target=dt::CanonicalTypeId::character;
+    out.scalar_target_identity=ci;out.scalar_target_descriptor=cd;
+    auto outgoing=dt::CastTimeValueV3(out);
+    Check(outgoing.ok()&&outgoing.scalar_value.encoded_value==text.encoded_value,"independent peer cohorts explicit TIME-to-character");
+    for(unsigned mutation=0;mutation<5;++mutation){
+      auto invalid=*ci;
+      if(mutation==0)++invalid.legacy_fields.catalog_generation;
+      if(mutation==1)++invalid.legacy_fields.registry_generation;
+      if(mutation==2)invalid.legacy_fields.catalog_snapshot_uuid.bytes[0]^=1;
+      if(mutation==3)++invalid.native_fields.canonical_value_transport_width;
+      if(mutation==4)invalid.native_fields.profile_fingerprint_sha256[0]^=1;
+      operand.identity=&invalid;in.scalar_source_identity=&invalid;out.scalar_target_identity=&invalid;
+      auto p=dt::ParseCanonicalTimeOperandV3(profile,operand);
+      auto a=dt::CastTimeValueV3(in),b=dt::CastTimeValueV3(out);
+      Check(!p.ok()&&!a.ok()&&!b.ok()&&p.diagnostic.diagnostic_code=="CTI.TEMPORAL.DESCRIPTOR_INVALID"&&
+            a.diagnostic.diagnostic_code=="CTI.TEMPORAL.DESCRIPTOR_INVALID"&&b.diagnostic.diagnostic_code=="CTI.TEMPORAL.DESCRIPTOR_INVALID"&&
+            !a.produced_time&&!b.produced_time&&b.scalar_value.encoded_value.empty(),"mutated character authority cannot parse/cast or publish");
+    }
+  }
+}
 int main(){auto p0=Profile();
+SuccessorCharacterCasts();
 HashComparison(p0);
 Keys(p0);
 Casts(p0);
