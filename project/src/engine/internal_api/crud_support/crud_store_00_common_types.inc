@@ -25,6 +25,7 @@
 #include "metric_producer.hpp"
 #include "transaction_inventory.hpp"
 #include "transaction/transaction_api.hpp"
+#include "transaction/mutation_authority.hpp"
 #include "transaction_state.hpp"
 #include "uuid.hpp"
 
@@ -304,22 +305,5 @@ EngineApiDiagnostic OverlayCrudTransactionAuthority(const EngineRequestContext& 
 }
 
 EngineApiDiagnostic ValidateCrudMutatingTransactionAuthority(const EngineRequestContext& context) {
-  if (context.local_transaction_id == 0) {
-    return MakeInvalidRequestDiagnostic("crud.transaction_authority", "local_transaction_id_required");
-  }
-
-  const auto loaded = LoadLocalTransactionInventoryFromDatabase(context.database_path);
-  if (!loaded.ok()) {
-    return DiagnosticFromTransactionAuthority(loaded.diagnostic,
-                                              "SB-MGA-TXN-INV-LOAD-FAILED",
-                                              "mga.transaction_inventory.load_failed");
-  }
-
-  const auto lookup = LookupLocalTransaction(loaded.inventory, MakeLocalTransactionId(context.local_transaction_id));
-  if (!lookup.ok()) {
-    return DiagnosticFromTransactionAuthority(lookup.diagnostic,
-                                              "SB-MGA-TXN-INV-LOOKUP-FAILED",
-                                              "mga.transaction_inventory.lookup_failed");
-  }
-
-  if (lookup.entry.state != TransactionState::active) {
+  return ValidateCurrentMutatingTransactionAuthority(context, "crud.transaction_authority");
+}

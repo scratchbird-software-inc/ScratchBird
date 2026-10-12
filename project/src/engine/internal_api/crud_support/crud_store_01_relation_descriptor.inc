@@ -8,16 +8,6 @@
 
 // SBSQL source-layout fragment. Included only by crud_store.cpp.
 // This fragment preserves pre-existing behavior; do not add unrelated future work here.
-    return MakeInvalidRequestDiagnostic("crud.transaction_authority", "active_local_transaction_required");
-  }
-
-  if (IsTerminalTransactionState(lookup.entry.state)) {
-    return MakeInvalidRequestDiagnostic("crud.transaction_authority", "terminal_transaction_cannot_mutate");
-  }
-
-  return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
-}
-
 EngineApiDiagnostic ValidateCrudRowVersionChains(const RelationReadSnapshot& state) {
   std::map<EngineUuid, const CrudRowVersionRecord*> by_version_uuid;
   for (const auto& row : state.row_versions) {

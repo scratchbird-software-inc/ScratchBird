@@ -35,6 +35,7 @@
 #include "secondary_index_delta_merge.hpp"
 #include "security/security_model.hpp"
 #include "transaction/transaction_api.hpp"
+#include "transaction/mutation_authority.hpp"
 #include "transaction_inventory.hpp"
 #include "transaction_state.hpp"
 #include "typed_update_carrier_codec.hpp"
@@ -813,14 +814,7 @@ void FilterVisibleRetiredTemporaryMetadata(const EngineRequestContext& context,
 
 EngineApiDiagnostic ValidateMgaMutatingTransactionAuthority(const EngineRequestContext& context,
                                                            const std::string& operation_id) {
-  if (context.local_transaction_id == 0) {
-    return MakeInvalidRequestDiagnostic(operation_id, "local_transaction_id_required");
-  }
-  CrudState state;
-  const auto authority =
-      OverlayMgaTransactionAuthority(context, &state, false);
-  if (authority.error) { return authority; }
-  return OkDiagnostic();
+  return ValidateCurrentMutatingTransactionAuthority(context, operation_id);
 }
 
 EngineApiDiagnostic ValidateMgaRowVersionRecordChains(

@@ -16,6 +16,7 @@
 }
 
 EngineApiDiagnostic AppendCrudEvent(const EngineRequestContext& context, const std::string& event) {
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   const auto path_status = ValidateCrudDatabasePath(context, "crud.append_event");
   if (path_status.error) { return path_status; }
   const auto authority_status = ValidateCrudMutatingTransactionAuthority(context);

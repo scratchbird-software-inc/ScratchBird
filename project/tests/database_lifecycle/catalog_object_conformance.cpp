@@ -13,6 +13,8 @@
 #include "catalog/name_registry_codec.hpp"
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
 #include "mga_relation_store/mga_savepoint_store.hpp"
+#include "mga_relation_store/mga_relation_store_internal_support.hpp"
+#include "crud_support/crud_store.hpp"
 #include "catalog/constraint_metadata_codec.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/owned_temp_directory.hpp"
@@ -1192,6 +1194,94 @@ void TestCatalogWholeOperationOwnership(const std::filesystem::path& path) {
   Rollback(reader);
 }
 
+void TestMutationExclusionAuthority(const std::filesystem::path& path) {
+  namespace mga = scratchbird::transaction::mga;
+  const auto database = CreateDatabase(path);
+  auto context = Begin(path, database, scratchbird::tests::FixtureUuid(1378, 8));
+  const auto validate = [&](const auto& candidate) {
+    return catalog_api::ValidateMgaMutatingTransactionAuthorityForStoreModule(candidate, "mutation_authority_probe");
+  };
+  Require(!validate(context).error, "actual writable transaction refused");
+  const auto snapshot = db::AcquireLocalTransactionInventorySnapshot(context.database_path);
+  Require(snapshot.ok(), "mutation authority snapshot acquisition failed");
+  context.statement_transaction_inventory_snapshot = snapshot.snapshot;
+  const auto inventory = db::LoadLocalTransactionInventoryFromDatabase(context.database_path);
+  Require(inventory.ok(), "mutation exclusion inventory unavailable");
+  const auto marked = mga::MarkLocalTransactionRollbackOnly(inventory.inventory,
+      mga::MakeLocalTransactionId(context.local_transaction_id));
+  Require(marked.ok() && db::PersistLocalTransactionInventoryToDatabase(context.database_path, marked.inventory).ok(),
+          "actual mutation exclusion publication failed");
+  const auto denied = validate(context);
+  Require(denied.error && denied.detail.find("rollback_only") != std::string::npos,
+          "mutation admission ignored a durable rollback-only fence behind a retained statement snapshot");
+  catalog_api::CrudIndexRecord index;
+  index.creator_tx = context.local_transaction_id;
+  index.index_uuid = scratchbird::tests::FixtureUuid(1393, 1);
+  index.table_uuid = scratchbird::tests::FixtureUuid(1393, 2);
+  index.column_name = "id"; index.default_name = "fenced_index";
+  index.family = "btree"; index.profile = "row_store_scalar_btree_v1";
+  const auto legacy = catalog_api::AppendCrudEvent(context,
+      catalog_api::MakeCrudIndexCreateEventV2(context.local_transaction_id, index));
+  Require(legacy.error && legacy.detail.find("rollback_only") != std::string::npos &&
+              !std::filesystem::exists(context.database_path + ".sb.crud_events"),
+          "legacy CRUD appended effects for a rollback-only owner");
+  catalog_api::EngineCommitTransactionRequest commit; commit.context = context;
+  Require(!catalog_api::EngineCommitTransaction(commit).ok, "fenced transaction committed");
+  Rollback(context);
+  Require(validate(context).error, "retained statement authorized an already rolled-back writer");
+  auto writable = Begin(path, database, scratchbird::tests::FixtureUuid(1378, 8));
+  for (unsigned fault = 0; fault != 4; ++fault) {
+    auto foreign = writable;
+    if (fault == 0) foreign.transaction_uuid = scratchbird::tests::FixtureUuid(1393, 3);
+    else if (fault == 1) foreign.database_uuid = scratchbird::tests::FixtureUuid(1393, 4);
+    else if (fault == 2) foreign.transaction_uuid = {};
+    else foreign.local_transaction_id = 0;
+    Require(validate(foreign).error, "mutation admission accepted a foreign/incomplete binary owner");
+    Require(catalog_api::AppendCrudEvent(foreign,
+                catalog_api::MakeCrudIndexCreateEventV2(writable.local_transaction_id, index)).error &&
+                !std::filesystem::exists(context.database_path + ".sb.crud_events"),
+            "legacy CRUD appended effects for a foreign/incomplete binary owner");
+  }
+  Require(!validate(writable).error, "fence from another transaction denied the actual writer");
+  const auto retained = db::AcquireLocalTransactionInventorySnapshot(context.database_path);
+  Require(retained.ok(), "writable snapshot acquisition failed");
+  writable.statement_transaction_inventory_snapshot = retained.snapshot;
+  index.creator_tx = writable.local_transaction_id;
+  Require(!catalog_api::AppendCrudEvent(writable,
+              catalog_api::MakeCrudIndexCreateEventV2(writable.local_transaction_id, index)).error &&
+              std::filesystem::file_size(context.database_path + ".sb.crud_events") != 0,
+          "actual unfenced legacy CRUD append failed");
+  catalog_api::CrudTableRecord table;
+  table.creator_tx = writable.local_transaction_id;
+  table.table_uuid = index.table_uuid; table.default_name = "owned_metadata";
+  // An actual standalone metadata writer must hold admission until effects.
+  // Retain finality's guard while changing authority and forcing the waiting
+  // append to reload it; the writer must not use its old statement snapshot.
+  std::promise<void> starting;
+  auto started = starting.get_future();
+  std::future<catalog_api::EngineApiDiagnostic> append;
+  bool waited = false;
+  {
+    const auto owner = catalog_api::AcquireTransactionInventoryGuard(context.database_path);
+    append = std::async(std::launch::async, [&] {
+      starting.set_value(); return catalog_api::AppendMgaTableMetadata(writable, table);
+    });
+    const bool running = started.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+    waited = running && append.wait_for(std::chrono::milliseconds(100)) == std::future_status::timeout;
+    Commit(writable);
+  }
+  const auto stale = append.get();
+  Require(waited && stale.error && !std::filesystem::exists(context.database_path + ".sb.mga_relation_metadata"),
+          "standalone metadata append escaped finality ownership or used stale active authority");
+  Require(validate(writable).error, "retained statement authorized a committed writer");
+  const auto final_writer = Begin(path, database, scratchbird::tests::FixtureUuid(1378, 8));
+  table.creator_tx = final_writer.local_transaction_id;
+  Require(!catalog_api::AppendMgaTableMetadata(final_writer, table).error &&
+              std::filesystem::file_size(context.database_path + ".sb.mga_relation_metadata") != 0,
+          "actual standalone unfenced metadata append failed");
+  Rollback(final_writer);
+}
+
 }  // namespace
 
 int main() try {
@@ -1220,6 +1310,7 @@ int main() try {
   TestCatalogPublicationFailures(artifacts.path() / "publication.sbdb");
   TestImmediateReservationFailure(artifacts.path() / "reservation.sbdb");
   TestCatalogWholeOperationOwnership(artifacts.path() / "ownership.sbdb");
+  TestMutationExclusionAuthority(artifacts.path() / "mutation-authority.sbdb");
 
   artifacts.Cleanup();
   return EXIT_SUCCESS;

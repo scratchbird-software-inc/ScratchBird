@@ -225,6 +225,7 @@ EngineApiDiagnostic PublishSealedMetadataReservation(
 
 EngineApiDiagnostic AppendMgaTableMetadata(const EngineRequestContext& context,
                                            const CrudTableRecord& table) {
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   // Only sequenced relation-storage metadata is appended here. Catalog/name
   // mutations remain guarded at their owning API boundary.
   const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::relation_descriptor);
@@ -270,6 +271,7 @@ EngineApiDiagnostic AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
     const CrudTableRecord& table,
     const std::vector<CrudIndexRecord>& indexes,
     MgaRelationStorageDescriptor* descriptor) {
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   constexpr const char* kOperation =
       "mga.relation_metadata.table_create.sealed_descriptor_v2";
   const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::catalog_mutation);
@@ -419,6 +421,7 @@ EngineApiDiagnostic AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
 EngineApiDiagnostic AppendMgaConstraintMutationBatch(
     const EngineRequestContext& context,
     const MgaConstraintMutationBatch& batch) {
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   constexpr const char* kOperation = "mga.constraint_mutation_batch";
   const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::catalog_mutation);
   if (savepoint.error) return savepoint;
@@ -964,6 +967,7 @@ EngineApiDiagnostic AppendMgaConstraintMutationBatch(
 MgaBigintIdentityMigrationResult AppendMgaBigintIdentityMigrationBatch(
     const EngineRequestContext& context,
     const MgaBigintIdentityMigrationRequest& request) {
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   constexpr const char* kOperation = "mga.bigint_identity_migration";
   MgaBigintIdentityMigrationResult result;
   auto refuse = [&](std::string code, std::string key, const auto& detail) {
@@ -1179,6 +1183,7 @@ MgaBigintIdentityMigrationResult AppendMgaBigintIdentityMigrationBatch(
 MgaInt32IdentityMigrationResult AppendMgaInt32IdentityMigrationBatch(
     const EngineRequestContext& context,
     const MgaInt32IdentityMigrationRequest& request) {
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   constexpr const char* kOperation = "mga.int32_identity_migration";
   MgaInt32IdentityMigrationResult result;
   auto refuse = [&](std::string code, std::string key, const auto& detail) {
@@ -1438,6 +1443,7 @@ MgaInt32IdentityMigrationResult AppendMgaInt32IdentityMigrationBatch(
 MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
     const EngineRequestContext& context,
     const MgaTextIdentityMigrationRequest& request) {
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   constexpr const char* kOperation = "mga.text_identity_migration";
   MgaTextIdentityMigrationResult result;
   auto refuse = [&](std::string code, std::string key, const auto& detail) {
@@ -1870,6 +1876,7 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
 
 EngineApiDiagnostic AppendMgaIndexMetadata(const EngineRequestContext& context,
                                            const CrudIndexRecord& index) {
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::relation_descriptor);
   if (savepoint.error) return savepoint;
   if (context.database_path.empty()) {

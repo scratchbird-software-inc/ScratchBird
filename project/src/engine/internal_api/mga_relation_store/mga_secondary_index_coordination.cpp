@@ -15,6 +15,7 @@
 #include "mga_relation_store/mga_row_codec.hpp"
 
 #include "api_diagnostics.hpp"
+#include "transaction/transaction_api.hpp"
 #include "agents/index_garbage_cleanup_agent.hpp"
 #include "crud_support/crud_store.hpp"
 #include "crud_support/native_value_payload.hpp"
@@ -856,6 +857,7 @@ EngineApiDiagnostic AppendMgaSecondaryIndexDeltaLedgerEntries(
     const EngineRequestContext& context,
     const std::vector<MgaSecondaryIndexDeltaLedgerEntryInput>& entries,
     std::vector<EngineEvidenceReference>* evidence) {
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   // DPC_DEFERRED_INDEX_WRITE_PATH
   if (entries.empty()) {
     return OkDiagnostic();

@@ -651,6 +651,7 @@ EngineApiDiagnostic ApplyMgaTemporarySessionCleanupActions(
 MgaTemporaryTableDropResult DropMgaTemporaryTable(
     const EngineRequestContext& context,
     const EngineUuid& table_uuid) {
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   MgaTemporaryTableDropResult result;
   if (!scratchbird::core::uuid::IsEngineIdentityUuid(table_uuid)) {
     result.diagnostic = MakeInvalidRequestDiagnostic("ddl.drop_object",
