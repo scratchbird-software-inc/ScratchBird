@@ -8,6 +8,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "catalog/catalog_object_lifecycle.hpp"
+#include "catalog/catalog_object_lifecycle_codec.hpp"
+#include "catalog/name_registry_codec.hpp"
+#include "mga_relation_store/mga_event_sequence_allocator.hpp"
+#include "mga_relation_store/mga_savepoint_store.hpp"
 #include "catalog/constraint_metadata_codec.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/owned_temp_directory.hpp"
@@ -18,6 +22,7 @@
 #include "uuid.hpp"
 
 #include <cstdlib>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -568,6 +573,160 @@ void TestDdlSynonymCreateDropRoute(const std::filesystem::path& path,
   Commit(target_drop_context);
 }
 
+// Storage replay fixture, not permission for the enclosing CREATE producer.
+// Records use the real binary codecs and engine-reserved metadata sequences;
+// transaction outcomes and rollback markers are issued by their real owners.
+void TestSequencedCatalogReplay(const std::filesystem::path& path) {
+  const auto database = CreateDatabase(path);
+  auto context = Begin(path, database, scratchbird::tests::FixtureUuid(1378, 8));
+  const auto id = [](unsigned n) { return scratchbird::tests::FixtureUuid(1390, n); };
+  const auto append_bytes = [&](const char* suffix, const std::string& bytes) {
+    std::ofstream out(path.string() + suffix, std::ios::binary | std::ios::app);
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    out.close();
+    Require(static_cast<bool>(out), "sequenced replay fixture append failed");
+  };
+  const auto reserve = [&] {
+    const auto reservation = catalog_api::ReserveEventSequenceRange(context,
+        "relation_metadata", path.string() + ".sb.mga_relation_metadata", 1,
+        [&] { return catalog_api::ScanNextMetadataEventSequence(context); });
+    Require(reservation.ok, "sequenced replay fixture reservation failed");
+    return reservation.first;
+  };
+  const auto append = [&](const catalog_api::CatalogLifecycleRecord& record, bool legacy = false) {
+    std::string bytes;
+    const auto sequence = legacy ? 0 : reserve();
+    Require(std::visit([&](const auto& value) {
+      return catalog_api::EncodeCatalogLifecycleRecord(value, &bytes, sequence);
+    }, record), "sequenced catalog fixture encoding failed");
+    append_bytes(".sb.catalog_object_events", bytes);
+  };
+  catalog_api::EngineCatalogObjectRecord object;
+  object.creator_tx = context.local_transaction_id;
+  object.object_uuid = id(1); object.catalog_row_uuid = id(2);
+  object.object_kind = "table"; object.metadata_epoch = 10;
+  append(object, true); // Legacy remains readable but has no shared sequence.
+  catalog_api::EngineCatalogNameRecord name;
+  name.creator_tx = context.local_transaction_id;
+  name.name_entry_uuid = id(3); name.object_uuid = id(1); name.object_kind = "table";
+  name.raw_name_text = name.display_name = name.exact_lookup_key = "retained";
+  name.normalized_lookup_key = "RETAINED"; name.metadata_epoch = 10;
+  catalog_api::EngineCatalogDependencyRecord dependency;
+  dependency.source_uuid = dependency.dependency_uuid = id(1);
+  catalog_api::EngineCatalogColumnMetadataRecord column;
+  column.column_uuid = id(4); column.owner_object_uuid = id(1);
+  column.descriptor_kind = "scalar"; column.canonical_type_name = "int64";
+  catalog_api::EngineCatalogConstraintDescriptorRecord constraint;
+  constraint.constraint_uuid = id(5); constraint.owner_object_uuid = id(1);
+  catalog_api::EngineCatalogKeyDescriptorRecord key;
+  key.key_descriptor_uuid = id(6); key.constraint_uuid = id(5); key.owner_object_uuid = id(1);
+  catalog_api::EngineCatalogConstraintSubjectRecord subject;
+  subject.subject_uuid = id(7); subject.constraint_uuid = id(5); subject.subject_object_uuid = id(1);
+  catalog_api::EngineCatalogConstraintDependencyRecord constraint_dependency;
+  constraint_dependency.dependency_uuid = id(8); constraint_dependency.constraint_uuid = id(5);
+  constraint_dependency.dependency_object_uuid = id(1);
+  catalog_api::EngineCatalogConstraintSupportStructureRecord support;
+  support.support_binding_uuid = id(9); support.constraint_uuid = id(5); support.support_uuid = id(10);
+  std::vector<catalog_api::CatalogLifecycleRecord> records{
+      name, dependency, column, constraint, key, subject, constraint_dependency, support};
+  for (auto& record : records) {
+    std::visit([&](auto& value) { value.creator_tx = context.local_transaction_id; value.metadata_epoch = 10; }, record);
+    append(record);
+  }
+  const auto append_resolver = [&](bool retire, bool extra = false) {
+    catalog_api::ApiBehaviorRecord frame;
+    frame.creator_tx = context.local_transaction_id; frame.event_sequence = reserve();
+    frame.operation_id = "catalog.replay.fixture"; frame.state = retire ? "retired" : "active";
+    frame.object_kind = retire ? "name_registry.retire" : "name_registry.entry";
+    frame.object_uuid = retire ? id(1) : id(extra ? 12 : 11); frame.target_object_uuid = id(1);
+    if (!retire) {
+      catalog_api::NameRegistryEntry entry;
+      entry.creator_tx = context.local_transaction_id; entry.name_entry_uuid = frame.object_uuid;
+      entry.object_uuid = id(1); entry.object_class = "table";
+      entry.raw_name_text = entry.display_name = entry.exact_lookup_key = extra ? "extra" : "retained";
+      entry.normalized_lookup_key = extra ? "EXTRA" : "RETAINED";
+      Require(catalog_api::EncodeNameRegistryEntry(entry, &frame.payload), "resolver fixture encoding failed");
+    }
+    std::string bytes;
+    Require(catalog_api::EncodeApiBehaviorRecord(frame, &bytes), "resolver frame encoding failed");
+    append_bytes(".sb.name_events.v2", bytes);
+  };
+  append_resolver(false);
+  const auto check = [&](const catalog_api::EngineRequestContext& reader, std::uint64_t epoch) {
+    const auto loaded = catalog_api::LoadCatalogObjectLifecycleState(reader);
+    Require(loaded.ok, "sequenced catalog replay refused");
+    const auto epochs = catalog_api::LoadCatalogObjectLifecycleEpochState(reader);
+    Require(epochs.ok && epochs.state.metadata_epoch == epoch && epochs.state.name_resolution_epoch == 10,
+            "epoch-only catalog replay diverged after metadata rollback");
+    const auto& s = loaded.state;
+    Require(s.objects.size() == 1 && s.names.size() == 1 && s.dependencies.size() == 1 &&
+                s.columns.size() == 1 && s.constraints.size() == 1 && s.key_descriptors.size() == 1 &&
+                s.constraint_subjects.size() == 1 && s.constraint_dependencies.size() == 1 &&
+                s.constraint_support_structures.size() == 1 && s.metadata_epoch == epoch &&
+                s.name_resolution_epoch == 10 &&
+                (epoch != 10 || s.objects.front().event_sequence == 0) &&
+                s.names.front().event_sequence != 0,
+            "catalog rollback did not restore every record family and epoch");
+    const auto resolved = catalog_api::LoadNameRegistryState(reader, reader.local_transaction_id);
+    if (!resolved.ok) std::cerr << resolved.diagnostic.code << ':' << resolved.diagnostic.detail << '\n';
+    Require(resolved.ok && std::count_if(resolved.state.entries.begin(), resolved.state.entries.end(),
+                [&](const auto& entry) { return entry.object_uuid == id(1); }) == 1,
+            "resolver retirement survived metadata rollback");
+  };
+  check(context, 10);
+  Require(!catalog_api::CreateMgaSavepointMarker(context, "catalog_outer").error, "catalog marker create failed");
+  for (int repeat = 0; repeat != 2; ++repeat) {
+    Require(!catalog_api::CreateMgaSavepointMarker(context, "catalog_inner").error, "nested catalog marker failed");
+    auto deleted = object; deleted.deleted = true; deleted.metadata_epoch = 90;
+    append(deleted);
+    for (auto record : records) {
+      std::visit([](auto& value) {
+        if constexpr (requires { value.deleted; }) value.deleted = true;
+        value.metadata_epoch = 90;
+      }, record);
+      append(record);
+    }
+    append(catalog_api::EngineCatalogRetireNamesRecord{context.local_transaction_id, id(1), 90});
+    append(catalog_api::EngineCatalogCacheInvalidationRecord{context.local_transaction_id, id(1), "retire", 90, 90, 90});
+    append_resolver(false, true);
+    append_resolver(true);
+    const auto deleted_state = catalog_api::LoadCatalogObjectLifecycleState(context);
+    Require(deleted_state.ok && deleted_state.state.objects.empty(), "catalog successor was not applied");
+    Require(!catalog_api::RollbackToMgaSavepointMarker(context, "catalog_outer").error, "catalog rollback failed");
+    Require(catalog_api::ValidateMgaSavepointExists(context, "catalog_inner", "fixture").error,
+            "outer catalog rollback retained nested marker");
+    check(context, 10); check(context, 10); // Warm caches must honor new exclusions.
+  }
+  const auto marker_path = path.string() + ".sb.mga_savepoints";
+  std::ifstream markers(marker_path, std::ios::binary);
+  const std::string marker_bytes((std::istreambuf_iterator<char>(markers)), std::istreambuf_iterator<char>());
+  Require(!markers.bad() && !marker_bytes.empty(), "marker fault fixture read failed");
+  markers.close();
+  const auto marker_time = std::filesystem::last_write_time(marker_path);
+  const auto replace_markers = [&](const std::string& bytes) {
+    std::ofstream out(marker_path, std::ios::binary | std::ios::trunc);
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size())); out.close();
+    Require(static_cast<bool>(out), "marker fault fixture replacement failed");
+    std::filesystem::last_write_time(marker_path, marker_time);
+  };
+  auto corrupt = marker_bytes; corrupt.back() ^= 1; replace_markers(corrupt);
+  const auto bad_catalog = catalog_api::LoadCatalogObjectLifecycleState(context);
+  const auto bad_epoch = catalog_api::LoadCatalogObjectLifecycleEpochState(context);
+  const auto bad_names = catalog_api::LoadNameRegistryState(context, context.local_transaction_id);
+  Require(!bad_catalog.ok && bad_catalog.state.objects.empty() && bad_catalog.state.metadata_epoch == 0 &&
+              !bad_epoch.ok && bad_epoch.state.metadata_epoch == 0 &&
+              !bad_names.ok && bad_names.state.entries.empty(),
+          "warm catalog/name cache bypassed corrupt rollback authority");
+  replace_markers(marker_bytes); check(context, 10);
+  Require(!catalog_api::ReleaseMgaSavepointMarker(context, "catalog_outer").error, "catalog release failed");
+  object.metadata_epoch = 11; append(object);
+  check(context, 11);
+  Commit(context);
+  auto reader = Begin(path, database, scratchbird::tests::FixtureUuid(1378, 8));
+  check(reader, 11); // Committed-inventory fallback must not resurrect undone names.
+  Rollback(reader);
+}
+
 }  // namespace
 
 int main() try {
@@ -591,6 +750,7 @@ int main() try {
   TestCreateAlterRenameDropAndDependencies(path, database_uuid);
   TestMissingUuidOwnershipCacheAndMga(path, database_uuid);
   TestDdlSynonymCreateDropRoute(path, database_uuid);
+  TestSequencedCatalogReplay(artifacts.path() / "sequenced.sbdb");
 
   artifacts.Cleanup();
   return EXIT_SUCCESS;

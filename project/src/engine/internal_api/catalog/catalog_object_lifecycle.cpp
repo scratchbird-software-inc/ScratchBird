@@ -15,6 +15,7 @@
 #include "crud_support/crud_store.hpp"
 #include "local_transaction_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "mga_relation_store/mga_savepoint_store.hpp"
 #include "hash_digest.hpp"
 #include "memory.hpp"
 #include "uuid.hpp"
@@ -626,6 +627,7 @@ struct CatalogReadCacheImage {
 // replay without cache lookup/publication rather than allocating off-budget.
 bool PrepareCatalogReadCacheImage(const EngineRequestContext& context,
                                   LoadOptions options, const CrudState* transactions,
+                                  const SavepointParsedState& savepoints,
                                   std::ifstream& journal, CatalogReadCacheImage* image) {
   namespace memory = core::memory;
   journal.seekg(0, std::ios::end);
@@ -634,8 +636,8 @@ bool PrepareCatalogReadCacheImage(const EngineRequestContext& context,
   if (end < 0 || !journal) return false;
   const auto extent = static_cast<std::uint64_t>(end);
   if (extent > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max()) ||
-      extent > std::numeric_limits<std::size_t>::max() - 8) return true;
-  std::size_t total = static_cast<std::size_t>(extent) + 8;
+      extent > std::numeric_limits<std::size_t>::max() - 16) return true;
+  std::size_t total = static_cast<std::size_t>(extent) + 16;
   if (transactions != nullptr) {
     for (const auto& [id, state] : transactions->transactions) {
       (void)id;
@@ -643,6 +645,13 @@ bool PrepareCatalogReadCacheImage(const EngineRequestContext& context,
           total + state.size() > std::numeric_limits<std::size_t>::max() - 16) return true;
       total += 16 + state.size();
     }
+  }
+  for (const auto& [tx, ranges] : savepoints.rollback_ranges) {
+    (void)tx;
+    if (total > std::numeric_limits<std::size_t>::max() - 16) return true;
+    total += 16;
+    if (ranges.size() > (std::numeric_limits<std::size_t>::max() - total) / 16) return true;
+    total += 16 * ranges.size();
   }
   memory::MemoryTag tag;
   tag.subsystem = core::platform::Subsystem::catalog;
@@ -671,6 +680,18 @@ bool PrepareCatalogReadCacheImage(const EngineRequestContext& context,
       append_u64(id);
       append_u64(state.size());
       cursor = std::copy(state.begin(), state.end(), cursor);
+    }
+  }
+  // Use the same validated effective metadata exclusions as replay, including
+  // transaction-owned scoped marker journals. A primary marker mtime is not
+  // sufficient cache identity, nor is a reparse after a cache hit.
+  append_u64(savepoints.rollback_ranges.size());
+  for (const auto& [tx, ranges] : savepoints.rollback_ranges) {
+    append_u64(tx);
+    append_u64(ranges.size());
+    for (const auto& range : ranges) {
+      append_u64(range.cutoffs.metadata_event_sequence);
+      append_u64(range.metadata_upper_event_sequence);
     }
   }
   const auto digest = core::hash::ComputeSha256Digest(bytes, total);
@@ -725,6 +746,11 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
     result.diagnostic = CatalogDiagnostic(kCatalogObjectDiagnosticDatabasePathRequired, "database_path");
     return result;
   }
+  const auto savepoints = ParseSavepoints(context);
+  if (savepoints.diagnostic.error) {
+    result.diagnostic = savepoints.diagnostic;
+    return result;
+  }
   std::ifstream in;
   const auto opened = OpenCatalogJournal(context, in);
   if (opened == CatalogJournalOpenStatus::refused) {
@@ -747,7 +773,7 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
   }
   const CrudState* transaction_state = crud_state.ok ? &crud_state.state : nullptr;
   CatalogReadCacheImage image;
-  if (!PrepareCatalogReadCacheImage(context, options, transaction_state, in, &image)) {
+  if (!PrepareCatalogReadCacheImage(context, options, transaction_state, savepoints, in, &image)) {
     result.diagnostic = CatalogDiagnostic(kCatalogObjectDiagnosticMgaVisibilityRefused,
                                          "catalog_journal_read_failed");
     return result;
@@ -767,17 +793,18 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
   std::map<EngineUuid, EngineCatalogConstraintDependencyRecord> constraint_dependencies;
   std::map<EngineUuid, EngineCatalogConstraintSupportStructureRecord> constraint_supports;
   std::set<EngineUuid> retired_objects;
-  std::uint64_t event_sequence = 0;
   while (input.peek() != std::char_traits<char>::eof()) {
     CatalogLifecycleRecord event;
-    if (!ReadCatalogLifecycleRecord(input, &event)) {
+    std::uint64_t event_sequence = 0;
+    if (!ReadCatalogLifecycleRecord(input, &event, &event_sequence)) {
       result.state = {};
       result.diagnostic = CatalogDiagnostic(kCatalogObjectDiagnosticMgaVisibilityRefused,
                                            "invalid_binary_catalog_record");
       return result;
     }
-    ++event_sequence;
     const auto creator_tx = std::visit([](const auto& record) { return record.creator_tx; }, event);
+    if (event_sequence != 0 &&
+        MetadataEventRolledBackBySavepoint(savepoints, creator_tx, event_sequence)) continue;
     if (options.enforce_visibility && !EventVisible(context, transaction_state, creator_tx)) continue;
     if (const auto* decoded = std::get_if<EngineCatalogObjectRecord>(&event)) {
       auto record = *decoded;
@@ -1223,6 +1250,12 @@ EngineLoadCatalogObjectLifecycleStateResult LoadCatalogObjectLifecycleEpochState
     return result;
   }
 
+  const auto savepoints = ParseSavepoints(context);
+  if (savepoints.diagnostic.error) {
+    result.diagnostic = savepoints.diagnostic;
+    return result;
+  }
+
   const auto inventory =
       scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(
           context.database_path);
@@ -1286,13 +1319,16 @@ EngineLoadCatalogObjectLifecycleStateResult LoadCatalogObjectLifecycleEpochState
   };
   while (in.peek() != std::char_traits<char>::eof()) {
     CatalogLifecycleRecord event;
-    if (!ReadCatalogLifecycleRecord(in, &event)) {
+    std::uint64_t event_sequence = 0;
+    if (!ReadCatalogLifecycleRecord(in, &event, &event_sequence)) {
       result.state = {};
       result.diagnostic = CatalogDiagnostic(kCatalogObjectDiagnosticMgaVisibilityRefused,
                                            "invalid_binary_catalog_epoch_record");
       return result;
     }
     std::visit([&](const auto& record) {
+      if (event_sequence != 0 && MetadataEventRolledBackBySavepoint(
+              savepoints, record.creator_tx, event_sequence)) return;
       if (!event_visible(record.creator_tx)) return;
       using Record = std::decay_t<decltype(record)>;
       observe_metadata(record.metadata_epoch);

@@ -18,6 +18,7 @@
 #include "domain_support/domain_store.hpp"
 #include "local_transaction_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "mga_relation_store/mga_savepoint_store.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -307,7 +308,7 @@ bool EntryVisible(const RelationReadSnapshot& crud_state,
   return CreatorVisible(crud_state,
                         transaction_inventory,
                         entry.creator_tx,
-                        entry.event_sequence,
+                        0, // Native metadata sequence is not a legacy CRUD ordinal.
                         observer_tx);
 }
 
@@ -586,6 +587,11 @@ NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context
     result.diagnostic = path_status;
     return result;
   }
+  const auto savepoints = ParseSavepoints(context);
+  if (savepoints.diagnostic.error) {
+    result.diagnostic = savepoints.diagnostic;
+    return result;
+  }
   // Every load checks current read authority. Never scan the primary binary
   // database as a substitute for a missing/unreadable journal.
   std::ifstream in;
@@ -615,16 +621,17 @@ NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context
 
   std::set<NameEntryKey> added_entries;
   std::set<EngineUuid> suppress_legacy_objects;
-  std::uint64_t event_sequence = 0;
   while(in.is_open()&&in.peek()!=std::char_traits<char>::eof()){
     ApiBehaviorRecord record;
     if(!ReadApiBehaviorRecord(in,&record)){
       result.state={};result.diagnostic=MakeInvalidRequestDiagnostic("catalog.name_registry.load","name_record_invalid");return result;
     }
-    ++event_sequence;
+    const auto event_sequence = record.event_sequence;
+    const bool undone = event_sequence != 0 &&
+        MetadataEventRolledBackBySavepoint(savepoints, record.creator_tx, event_sequence);
     if(record.object_kind=="name_registry.retire"){
       if(record.target_object_uuid!=record.object_uuid){result.state={};result.diagnostic=MakeInvalidRequestDiagnostic("catalog.name_registry.load","name_retirement_invalid");return result;}
-      if(CreatorVisible(catalog_state,transaction_inventory,record.creator_tx,event_sequence,observer_tx)){
+      if(!undone && CreatorVisible(catalog_state,transaction_inventory,record.creator_tx,0,observer_tx)){
         suppress_legacy_objects.insert(record.object_uuid);RemoveObjectEntries(&result.state,&added_entries,record.object_uuid);
       }
       continue;
@@ -634,7 +641,7 @@ NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context
       result.state={};result.diagnostic=MakeInvalidRequestDiagnostic("catalog.name_registry.load","name_entry_invalid");return result;
     }
     entry.event_sequence=event_sequence;
-    if (EntryVisible(catalog_state, transaction_inventory, entry, observer_tx)) {
+    if (!undone && EntryVisible(catalog_state, transaction_inventory, entry, observer_tx)) {
       suppress_legacy_objects.insert(entry.object_uuid);
       ReplaceEntry(&result.state, &added_entries, std::move(entry));
     }
