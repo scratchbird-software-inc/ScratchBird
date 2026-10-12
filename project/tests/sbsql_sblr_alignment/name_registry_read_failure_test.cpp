@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "catalog/name_registry.hpp"
 #include "database_lifecycle.hpp"
+#include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
 #include <chrono>
@@ -61,7 +62,6 @@ int main(int argc, char** argv) {
     const auto identity = object.value.value;
     // Exercise the real writer and reader with the issued binary identities.
     api::NameRegistryEntry entry;
-    entry.creator_tx = 1; // Real committed database bootstrap transaction.
     const auto name_entry = uuid::GenerateEngineIdentityV7(UuidKind::object, millis);
     Setup(name_entry.ok(), "name entry identity generation failed");
     entry.name_entry_uuid = name_entry.value.value;
@@ -110,8 +110,30 @@ int main(int argc, char** argv) {
     absent();
     { std::ofstream empty(journal, std::ios::binary); Setup(empty.good(), "empty fixture open failed"); }
     absent();
-    Setup(!api::AppendNameRegistryEntry(context, entry, "name_read_probe").error,
+    api::EngineBeginTransactionRequest begin;
+    begin.context = context;
+    const auto session = uuid::IssueRuntimeIdentityV7();
+    const auto principal = uuid::GenerateEngineIdentityV7(UuidKind::principal, millis);
+    Setup(session.has_value() && principal.ok(), "name writer identity issuance failed");
+    begin.context.session_uuid = *session;
+    begin.context.principal_uuid = principal.value.value;
+    begin.context.security_context_present = true;
+    begin.context.catalog_generation_id = begin.context.security_epoch =
+        begin.context.resource_epoch = begin.context.name_resolution_epoch = 1;
+    begin.isolation_level = "read_committed";
+    const auto begun = api::EngineBeginTransaction(begin);
+    if (!begun.ok) for (const auto& diagnostic : begun.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+    Setup(begun.ok, "name writer transaction begin failed");
+    auto writer = begin.context;
+    writer.local_transaction_id = begun.local_transaction_id;
+    writer.transaction_uuid = begun.transaction_uuid;
+    entry.creator_tx = begun.local_transaction_id;
+    Setup(!api::AppendNameRegistryEntry(writer, entry, "name_read_probe").error,
           "actual name journal append failed");
+    api::EngineCommitTransactionRequest commit;
+    commit.context = writer;
+    Setup(api::EngineCommitTransaction(commit).ok, "name writer transaction commit failed");
     present(); present();
     const auto permissions = fs::status(journal).permissions();
 #if defined(__linux__)

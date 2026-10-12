@@ -8,6 +8,7 @@
 
 #include "catalog/catalog_object_lifecycle.hpp"
 #include "catalog/catalog_object_lifecycle_codec.hpp"
+#include "catalog/catalog_journal_publication.hpp"
 #include "catalog/constraint_metadata_codec.hpp"
 
 #include "behavior_support/api_behavior_store.hpp"
@@ -556,12 +557,11 @@ EngineApiDiagnostic AppendEvent(const EngineRequestContext& context, const std::
       !DecodeCatalogLifecycleFrame(frame, &record) || frame.creator_tx != context.local_transaction_id) {
     return CatalogDiagnostic(kCatalogObjectDiagnosticDatabaseWriteFailed, "invalid_binary_catalog_record");
   }
-  std::ofstream out(EventPath(context), std::ios::binary | std::ios::app);
-  if (!out) { return CatalogDiagnostic(kCatalogObjectDiagnosticDatabaseWriteFailed, "open"); }
-  out.write(event.data(), static_cast<std::streamsize>(event.size()));
-  out.flush();
-  if (!out) { return CatalogDiagnostic(kCatalogObjectDiagnosticDatabaseWriteFailed, "flush"); }
-  return OkDiagnostic();
+  const auto publication = AppendSequencedCatalogJournalRecord(
+      context, std::move(frame), CatalogJournalKind::lifecycle);
+  return publication.error
+      ? CatalogDiagnostic(kCatalogObjectDiagnosticDatabaseWriteFailed, publication.detail)
+      : OkDiagnostic();
 }
 
 EngineApiDiagnostic AppendCacheInvalidation(const EngineRequestContext& context,

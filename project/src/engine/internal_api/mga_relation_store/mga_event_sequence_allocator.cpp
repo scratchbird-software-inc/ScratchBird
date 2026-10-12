@@ -148,14 +148,25 @@ std::mutex& EventSequenceCacheMutex() {
   return mutex;
 }
 
-std::map<std::string, std::uint64_t>& EventSequenceCache() {
-  static std::map<std::string, std::uint64_t> cache;
+using EventSequenceKey = std::pair<std::string, std::string>;
+using EventSequenceKeyView = std::pair<std::string_view, std::string_view>;
+struct EventSequenceKeyLess {
+  using is_transparent = void;
+  template <typename Left, typename Right>
+  bool operator()(const Left& left, const Right& right) const noexcept {
+    return EventSequenceKeyView(left.first, left.second) <
+           EventSequenceKeyView(right.first, right.second);
+  }
+};
+
+std::map<EventSequenceKey, std::uint64_t, EventSequenceKeyLess>& EventSequenceCache() {
+  static std::map<EventSequenceKey, std::uint64_t, EventSequenceKeyLess> cache;
   return cache;
 }
 
-std::string EventSequenceStreamKey(const std::string& stream_kind,
-                                   const std::string& stream_path) {
-  return stream_kind + "\n" + stream_path;
+EventSequenceKeyView EventSequenceStreamKey(const std::string& stream_kind,
+                                           const std::string& stream_path) noexcept {
+  return {stream_kind, stream_path};
 }
 
 struct DurableEventSequenceState {
@@ -281,7 +292,7 @@ MgaEventSequenceRangeReservation ReserveEventSequenceRange(
   }
   const std::uint64_t normalized_count = count == 0 ? 1 : count;
   const std::lock_guard<std::mutex> guard(EventSequenceCacheMutex());
-  const std::string cache_key = EventSequenceStreamKey(stream_kind, stream_path);
+  const auto cache_key = EventSequenceStreamKey(stream_kind, stream_path);
   const auto cache_it = EventSequenceCache().find(cache_key);
   std::uint64_t next_sequence = 0;
   bool bootstrapped = false;
@@ -333,14 +344,9 @@ MgaEventSequenceRangeReservation ReserveEventSequenceRange(
        std::to_string(next),
        route,
        bootstrapped ? "1" : "0"});
-  if (deferred_allocator_lines != nullptr) {
-    deferred_allocator_lines->push_back(line);
-  } else if (!AppendLine(allocator_path, line)) {
-    return RefuseEventSequenceReservation(
-        context, stream_kind, stream_path, "durable_allocator_append_failed");
-  }
-  EventSequenceCache()[cache_key] = next;
-
+  // Prepare every allocating return field and the cache node before any
+  // reservation effects. A throwing construction must not strand a deferred
+  // range before its caller can acquire cleanup responsibility.
   MgaEventSequenceRangeReservation reservation;
   reservation.ok = true;
   reservation.diagnostic = OkDiagnostic();
@@ -351,6 +357,20 @@ MgaEventSequenceRangeReservation ReserveEventSequenceRange(
   reservation.count = normalized_count;
   reservation.next = next;
   reservation.bootstrapped_from_store = bootstrapped;
+  const auto cached = cache_it != EventSequenceCache().end() ? cache_it :
+      EventSequenceCache().try_emplace(EventSequenceKey(stream_kind, stream_path), next_sequence).first;
+  if (deferred_allocator_lines != nullptr) {
+    deferred_allocator_lines->push_back(line);
+    cached->second = next;
+  } else {
+    // An attempted append can leave real bytes even on false/exception. Never
+    // return its range to a warm caller; cold admission validates the journal.
+    cached->second = next;
+    if (!AppendLine(allocator_path, line)) {
+      return RefuseEventSequenceReservation(
+          context, stream_kind, stream_path, "durable_allocator_append_failed");
+    }
+  }
   return reservation;
 }
 
@@ -361,7 +381,7 @@ void AbandonDeferredEventSequenceReservation(
     return;
   }
   const std::lock_guard<std::mutex> guard(EventSequenceCacheMutex());
-  const std::string key = EventSequenceStreamKey(
+  const auto key = EventSequenceStreamKey(
       reservation.stream_kind, reservation.stream_path);
   const auto found = EventSequenceCache().find(key);
   if (found != EventSequenceCache().end() &&

@@ -8,6 +8,7 @@
 
 #include "catalog/name_registry.hpp"
 #include "catalog/name_registry_codec.hpp"
+#include "catalog/catalog_journal_publication.hpp"
 #include <tuple>
 
 #include "api_diagnostics.hpp"
@@ -106,13 +107,10 @@ NameJournalOpenStatus OpenNameJournal(const EngineRequestContext& context,
 }
 
 EngineApiDiagnostic AppendNativeNameRecord(const EngineRequestContext& context,const ApiBehaviorRecord& record){
-  std::string bytes;if(!EncodeApiBehaviorRecord(record,&bytes))return MakeInvalidRequestDiagnostic(record.operation_id,"name_record_invalid");
   const auto path=context.database_path+".sb.name_events.v2";
   std::error_code error;const bool exists=std::filesystem::exists(path,error);
   if(error||(!exists&&std::filesystem::exists(context.database_path+".sb.api_events",error))||error)return MakeInvalidRequestDiagnostic(record.operation_id,"legacy_name_format_unsupported");
-  std::ofstream out(path,std::ios::binary|std::ios::app);out.write(bytes.data(),bytes.size());out.flush();out.close();
-  if(!out)return MakeInvalidRequestDiagnostic(record.operation_id,"name_journal_write_failed");
-  return MakeEngineApiDiagnostic("SB_ENGINE_API_OK","engine.api.ok",{},false);
+  return AppendSequencedCatalogJournalRecord(context, record, CatalogJournalKind::resolver_names);
 }
 
 void MergeMgaRelationCatalogState(CrudState* base, const RelationReadSnapshot& mga_state,

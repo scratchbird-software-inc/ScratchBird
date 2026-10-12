@@ -14,6 +14,7 @@
 
 #include "api_diagnostics.hpp"
 #include "crud_support/crud_store.hpp"
+#include "transaction/transaction_api.hpp"
 #include "disk_device.hpp"
 #include "uuid.hpp"
 #include "core/platform/savepoint_crash_injection.hpp"
@@ -302,6 +303,7 @@ std::uint64_t CurrentMgaSavepointAuthorityGeneration(
 
 
 EngineApiDiagnostic CreateMgaSavepointMarker(const EngineRequestContext& context, const std::string& savepoint_name) {
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   if (context.local_transaction_id == 0) {
     return MakeInvalidRequestDiagnostic("transaction.create_savepoint", "local_transaction_id_required");
   }
@@ -324,6 +326,7 @@ EngineApiDiagnostic CreateMgaSavepointMarker(const EngineRequestContext& context
 }
 
 EngineApiDiagnostic ReleaseMgaSavepointMarker(const EngineRequestContext& context, const std::string& savepoint_name) {
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   const auto exists = ValidateMgaSavepointExists(context, savepoint_name, "transaction.release_savepoint");
   if (exists.error) { return exists; }
   const std::uint64_t row_next = NextRowEventSequence(context);
@@ -340,6 +343,7 @@ EngineApiDiagnostic ReleaseMgaSavepointMarker(const EngineRequestContext& contex
 }
 
 EngineApiDiagnostic RollbackToMgaSavepointMarker(const EngineRequestContext& context, const std::string& savepoint_name) {
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   const auto authority = ValidateMgaSavepointMarkerAuthority(context);
   if (authority.error) return authority;
   const auto savepoints = ParseSavepoints(context);

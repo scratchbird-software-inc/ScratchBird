@@ -9,6 +9,7 @@
 
 #include "catalog/catalog_object_lifecycle.hpp"
 #include "catalog/catalog_object_lifecycle_codec.hpp"
+#include "catalog/catalog_journal_publication.hpp"
 #include "catalog/name_registry_codec.hpp"
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
 #include "mga_relation_store/mga_savepoint_store.hpp"
@@ -29,6 +30,68 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <set>
+#include <new>
+#include <future>
+#include <chrono>
+
+namespace catalog_allocation_fault {
+thread_local bool denied = false;
+thread_local unsigned failures = 0;
+}
+void* operator new(std::size_t size) {
+  if (catalog_allocation_fault::denied) {
+    ++catalog_allocation_fault::failures;
+    throw std::bad_alloc();
+  }
+  if (auto* memory = std::malloc(size == 0 ? 1 : size)) return memory;
+  throw std::bad_alloc();
+}
+void* operator new[](std::size_t size) { return ::operator new(size); }
+void operator delete(void* memory) noexcept { std::free(memory); }
+void operator delete[](void* memory) noexcept { std::free(memory); }
+void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
+void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
+
+#if defined(SB_CATALOG_TEST_WRAP_SYNC)
+#include <cerrno>
+#include <sys/stat.h>
+#include <sys/resource.h>
+#include <csignal>
+namespace catalog_publication_fault {
+thread_local bool armed = false, hit = false;
+thread_local unsigned skip_matches = 0;
+thread_local struct stat target {};
+struct Pause {
+  struct stat target {};
+  std::promise<void> reached;
+  std::shared_future<void> release;
+  bool hit = false;
+};
+thread_local Pause* pause = nullptr;
+}
+extern "C" int __real_fsync(int);
+extern "C" int __wrap_fsync(int fd) {
+  struct stat actual {};
+  auto* pause = catalog_publication_fault::pause;
+  if (pause && !pause->hit && ::fstat(fd, &actual) == 0 &&
+      actual.st_dev == pause->target.st_dev && actual.st_ino == pause->target.st_ino) {
+    pause->hit = true;
+    pause->reached.set_value();
+    pause->release.wait();
+  }
+  if (catalog_publication_fault::armed && ::fstat(fd, &actual) == 0 &&
+      actual.st_dev == catalog_publication_fault::target.st_dev &&
+      actual.st_ino == catalog_publication_fault::target.st_ino) {
+    if (catalog_publication_fault::skip_matches != 0) --catalog_publication_fault::skip_matches;
+    else {
+      catalog_publication_fault::armed = false; catalog_publication_fault::hit = true;
+      errno = EIO; return -1;
+    }
+  }
+  return __real_fsync(fd);
+}
+#endif
 
 namespace {
 
@@ -727,6 +790,341 @@ void TestSequencedCatalogReplay(const std::filesystem::path& path) {
   Rollback(reader);
 }
 
+void RequireSequencedPublication(const std::filesystem::path& path) {
+  std::set<std::uint64_t> sequences;
+  for (const char* suffix : {".sb.catalog_object_events", ".sb.name_events.v2"}) {
+    std::ifstream in(path.string() + suffix, std::ios::binary);
+    Require(in.is_open(), "production catalog journal absent");
+    unsigned count = 0;
+    while (in.peek() != std::char_traits<char>::eof()) {
+      catalog_api::ApiBehaviorRecord record;
+      Require(catalog_api::ReadApiBehaviorRecord(in, &record) && record.event_sequence != 0 &&
+                  sequences.insert(record.event_sequence).second,
+              "production catalog/name record lacks a unique shared sequence");
+      ++count;
+    }
+    Require(!in.bad() && count != 0, "production catalog/name journal read failed");
+  }
+}
+
+void TestCatalogPublicationFailures(const std::filesystem::path& path) {
+  const auto database = CreateDatabase(path);
+  auto context = Begin(path, database, scratchbird::tests::FixtureUuid(1378, 8));
+  catalog_api::EngineCatalogObjectRecord object;
+  object.creator_tx = context.local_transaction_id;
+  object.object_uuid = scratchbird::tests::FixtureUuid(1391, 1);
+  object.catalog_row_uuid = scratchbird::tests::FixtureUuid(1391, 2);
+  object.object_kind = "table"; object.metadata_epoch = 1;
+  std::string bytes;
+  Require(catalog_api::EncodeCatalogLifecycleRecord(object, &bytes), "publication fixture encoding failed");
+  catalog_api::ApiBehaviorRecord frame;
+  Require(catalog_api::DecodeApiBehaviorRecord(
+      {reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()}, &frame), "publication frame decode failed");
+  const auto read = [](const std::string& file) {
+    std::ifstream in(file, std::ios::binary);
+    Require(in.is_open(), "publication evidence read failed");
+    std::string result((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    Require(!in.bad(), "publication evidence read failed");
+    return result;
+  };
+  const auto allocator = path.string() + ".sb.mga_event_sequence_allocator";
+  // Use the exact producer guard and real frame encoder with sustained
+  // allocation denial. Cleanup must neither allocate nor terminate while the
+  // encoder is unwinding; only a never-attempted tail may be reused.
+  {
+    const auto next = catalog_api::NextMetadataEventSequence(context);
+    std::vector<std::string> deferred;
+    const auto reserve = [&] {
+      return catalog_api::ReserveEventSequenceRange(context, "relation_metadata",
+          context.database_path + ".sb.mga_relation_metadata", 1,
+          [&] { return catalog_api::ScanNextMetadataEventSequence(context); }, &deferred);
+    };
+    const auto reservation = reserve();
+    Require(reservation.ok && reservation.first == next, "allocation fault reservation failed");
+    auto candidate = frame; candidate.event_sequence = reservation.first;
+    unsigned caught = 0;
+    struct Denial {
+      Denial() { catalog_allocation_fault::failures = 0; catalog_allocation_fault::denied = true; }
+      ~Denial() { catalog_allocation_fault::denied = false; }
+    };
+    {
+      Denial denial;
+      try {
+        catalog_api::catalog_publication_detail::UnpublishedReservation unpublished{reservation};
+        std::string encoded;
+        (void)catalog_api::EncodeApiBehaviorRecord(candidate, &encoded);
+      } catch (const std::bad_alloc&) { ++caught; }
+      // Denial is still active, not a fail-once injector.
+      try { std::string encoded; (void)catalog_api::EncodeApiBehaviorRecord(candidate, &encoded); }
+      catch (const std::bad_alloc&) { ++caught; }
+    }
+    Require(caught == 2 && catalog_allocation_fault::failures == 2 &&
+                catalog_api::NextMetadataEventSequence(context) == next &&
+                !std::filesystem::exists(allocator),
+            "allocation failure cleanup allocated, lost its tail, or published effects");
+    deferred.clear();
+    const auto first = reserve(), second = reserve();
+    Require(first.ok && second.ok && first.first == next && second.first == next + 1,
+            "post-allocation-failure reservations invalid");
+    { Denial denial; catalog_api::AbandonDeferredEventSequenceReservation(first); }
+    Require(catalog_api::NextMetadataEventSequence(context) == next + 2,
+            "non-tail cleanup rewound a later reservation");
+    { Denial denial;
+      catalog_api::AbandonDeferredEventSequenceReservation(second);
+      catalog_api::AbandonDeferredEventSequenceReservation(first);
+    }
+    Require(catalog_allocation_fault::failures == 0 &&
+                catalog_api::NextMetadataEventSequence(context) == next,
+            "sustained-denial tail abandonment failed");
+  }
+  for (const auto kind : {catalog_api::CatalogJournalKind::lifecycle,
+                          catalog_api::CatalogJournalKind::resolver_names}) {
+    auto record = frame;
+    if (kind == catalog_api::CatalogJournalKind::resolver_names) {
+      record.object_kind = "name_registry.retire";
+      record.target_object_uuid = record.object_uuid;
+      record.payload.clear(); record.state = "retired";
+    }
+    const auto journal = path.string() + (kind == catalog_api::CatalogJournalKind::lifecycle
+        ? ".sb.catalog_object_events" : ".sb.name_events.v2");
+    const auto publish = [&] { return catalog_api::AppendSequencedCatalogJournalRecord(context, record, kind); };
+    Require(!publish().error, "initial real catalog publication failed");
+    const auto before_invalid = read(journal), allocator_before_invalid = read(allocator);
+    const auto next_before_invalid = catalog_api::NextMetadataEventSequence(context);
+    auto invalid = record; invalid.object_uuid = {};
+    Require(catalog_api::AppendSequencedCatalogJournalRecord(context, invalid, kind).error &&
+                read(journal) == before_invalid && read(allocator) == allocator_before_invalid &&
+                catalog_api::NextMetadataEventSequence(context) == next_before_invalid,
+            "invalid encoding changed publication or consumed an unpublished tail");
+    const auto refuses_without_effects = [&](const auto& owner, const auto& candidate, auto destination) {
+      const auto journal_before = read(journal), ranges_before = read(allocator);
+      const auto next_before = catalog_api::NextMetadataEventSequence(context);
+      Require(catalog_api::AppendSequencedCatalogJournalRecord(owner, candidate, destination).error &&
+                  read(journal) == journal_before && read(allocator) == ranges_before &&
+                  catalog_api::NextMetadataEventSequence(context) == next_before,
+              "invalid publication authority changed durable artifacts or reservation state");
+    };
+    auto foreign = context;
+    foreign.transaction_uuid = scratchbird::tests::FixtureUuid(1391, 100);
+    refuses_without_effects(foreign, record, kind);
+    foreign = context; foreign.database_uuid = scratchbird::tests::FixtureUuid(1391, 101);
+    refuses_without_effects(foreign, record, kind);
+    foreign = context; foreign.local_transaction_id = 0;
+    auto malformed = record; malformed.creator_tx = 0;
+    refuses_without_effects(foreign, malformed, kind);
+    malformed = record; malformed.event_sequence = 1;
+    refuses_without_effects(context, malformed, kind);
+    malformed = record; ++malformed.creator_tx;
+    refuses_without_effects(context, malformed, kind);
+    malformed = record;
+    if (kind == catalog_api::CatalogJournalKind::lifecycle) malformed.payload.pop_back();
+    else malformed.target_object_uuid = scratchbird::tests::FixtureUuid(1391, 102);
+    refuses_without_effects(context, malformed, kind);
+    refuses_without_effects(context, record, static_cast<catalog_api::CatalogJournalKind>(77));
+#if defined(SB_CATALOG_TEST_WRAP_SYNC)
+    for (unsigned fault = 0; fault != 4; ++fault) {
+      const auto before = read(journal);
+      const auto next = catalog_api::NextMetadataEventSequence(context);
+      const std::string target = fault == 0 ? allocator : fault == 2 ? journal : path.parent_path().string();
+      Require(::stat(target.c_str(), &catalog_publication_fault::target) == 0, "sync fault target unavailable");
+      struct Fault {
+        explicit Fault(unsigned skip) {
+          catalog_publication_fault::hit = false; catalog_publication_fault::skip_matches = skip;
+          catalog_publication_fault::armed = true;
+        }
+        ~Fault() { catalog_publication_fault::armed = false; }
+      };
+      catalog_api::EngineApiDiagnostic diagnostic;
+      { Fault scope(fault == 3 ? 1 : 0); diagnostic = publish(); }
+      const char* details[] = {"allocator_sync_failed:", "allocator_directory_sync_failed:",
+                               "journal_sync_failed:", "journal_directory_sync_failed:"};
+      Require(catalog_publication_fault::hit && diagnostic.error &&
+                  diagnostic.detail.find(details[fault]) != std::string::npos,
+              "catalog publication missed an actual sync failure");
+      Require((fault < 2 ? read(journal) == before : read(journal).size() > before.size()),
+              "catalog physical effects disagree with failure boundary");
+      catalog_api::ClearMgaEventSequenceRangeCacheForTesting();
+      Require(catalog_api::NextMetadataEventSequence(context) == next + 1,
+              "cold allocator reused a possibly published reservation");
+      Require(!publish().error, "real publication retry failed");
+    }
+    for (const bool allocator_failure : {true, false}) {
+      const auto before = read(journal), allocator_before = read(allocator);
+      const auto next = catalog_api::NextMetadataEventSequence(context);
+      const auto target = allocator_failure ? allocator : journal;
+      const auto mode = std::filesystem::status(target).permissions();
+      struct Restore {
+        std::string path; std::filesystem::perms mode;
+        ~Restore() {
+          std::error_code error; std::filesystem::permissions(path, mode, error);
+          if (error) std::terminate();
+        }
+      };
+      catalog_api::EngineApiDiagnostic diagnostic;
+      {
+        Restore restore{target, mode};
+        std::filesystem::permissions(target, std::filesystem::perms::owner_read);
+        Require(!std::ofstream(target, std::ios::app | std::ios::binary), "write fault needs unprivileged execution");
+        diagnostic = publish();
+      }
+      Require(diagnostic.error && diagnostic.detail.find(allocator_failure ? "allocator_append_failed" : "journal_open_failed") != std::string::npos &&
+                  read(journal) == before, "failed append falsely published catalog metadata");
+      if (allocator_failure) Require(read(allocator) == allocator_before, "denied allocator write changed bytes");
+      else {
+        catalog_api::ClearMgaEventSequenceRangeCacheForTesting();
+        Require(catalog_api::NextMetadataEventSequence(context) == next + 1,
+                "denied record append lost its durable reservation");
+      }
+      Require(!publish().error, "real append retry failed");
+    }
+#endif
+  }
+#if defined(SB_CATALOG_TEST_WRAP_SYNC)
+  // Suspend actual publication at allocator fsync while it owns the inventory
+  // guard. Every marker writer must wait; its cutoff must include the completed
+  // publication rather than observing half of it. No detached workers escape.
+  for (const auto action : {catalog_api::CreateMgaSavepointMarker,
+                            catalog_api::RollbackToMgaSavepointMarker,
+                            catalog_api::ReleaseMgaSavepointMarker}) {
+    if (action != catalog_api::CreateMgaSavepointMarker)
+      Require(!catalog_api::CreateMgaSavepointMarker(context, "publication_serialized").error,
+              "serialized marker setup failed");
+    const auto next = catalog_api::NextMetadataEventSequence(context);
+    catalog_publication_fault::Pause pause;
+    Require(::stat(allocator.c_str(), &pause.target) == 0, "publication pause target unavailable");
+    std::promise<void> release, starting;
+    pause.release = release.get_future().share();
+    auto reached = pause.reached.get_future(), started = starting.get_future();
+    auto writer = std::async(std::launch::async, [&] {
+      struct Hook {
+        explicit Hook(catalog_publication_fault::Pause* value) { catalog_publication_fault::pause = value; }
+        ~Hook() { catalog_publication_fault::pause = nullptr; }
+      } hook(&pause);
+      return catalog_api::AppendSequencedCatalogJournalRecord(context, frame, catalog_api::CatalogJournalKind::lifecycle);
+    });
+    std::future<catalog_api::EngineApiDiagnostic> marker;
+    // Release before any throwing assertion or async-future destruction.
+    struct Release {
+      std::promise<void>& signal;
+      bool sent = false;
+      ~Release() { if (!sent) signal.set_value(); }
+    } resume{release};
+    const bool paused = reached.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+    bool blocked = false;
+    if (paused) {
+      marker = std::async(std::launch::async, [&] {
+        starting.set_value(); return action(context, "publication_serialized");
+      });
+      const bool running = started.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+      blocked = running && marker.wait_for(std::chrono::milliseconds(100)) == std::future_status::timeout;
+    }
+    release.set_value(); resume.sent = true;
+    const auto written = writer.get();
+    const auto marked = marker.valid() ? marker.get() : catalog_api::EngineApiDiagnostic{};
+    Require(paused && blocked && !written.error && !marked.error,
+            "marker writer interleaved with an unfinished catalog publication");
+    const auto markers = catalog_api::ParseSavepoints(context);
+    Require(!markers.diagnostic.error, "serialized marker replay failed");
+    if (action == catalog_api::CreateMgaSavepointMarker)
+      Require(markers.active_savepoints.at(context.local_transaction_id).at("publication_serialized").metadata_event_sequence == next,
+              "marker cutoff omitted the completed catalog publication");
+    else if (action == catalog_api::RollbackToMgaSavepointMarker)
+      Require(catalog_api::MetadataEventRolledBackBySavepoint(markers, context.local_transaction_id, next),
+              "rollback upper bound omitted the completed catalog publication");
+    else
+      Require(!markers.active_savepoints.at(context.local_transaction_id).contains("publication_serialized"),
+              "serialized marker release remained active");
+  }
+#endif
+  Rollback(context);
+  const auto lifecycle_path = path.string() + ".sb.catalog_object_events";
+  const auto rolled_bytes = read(lifecycle_path), rolled_allocator = read(allocator);
+  Require(catalog_api::AppendSequencedCatalogJournalRecord(context, frame,
+              catalog_api::CatalogJournalKind::lifecycle).error &&
+              read(lifecycle_path) == rolled_bytes && read(allocator) == rolled_allocator,
+          "rolled-back writer appended already-visible catalog state");
+  auto committed_writer = Begin(path, database, scratchbird::tests::FixtureUuid(1378, 8));
+  object.creator_tx = committed_writer.local_transaction_id;
+  Require(catalog_api::EncodeCatalogLifecycleRecord(object, &bytes) &&
+              catalog_api::DecodeApiBehaviorRecord(
+                  {reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()}, &frame),
+          "committed-writer fixture frame invalid");
+  Commit(committed_writer);
+  Require(catalog_api::AppendSequencedCatalogJournalRecord(committed_writer, frame,
+              catalog_api::CatalogJournalKind::lifecycle).error &&
+              read(lifecycle_path) == rolled_bytes && read(allocator) == rolled_allocator,
+          "committed writer appended new catalog state after finality");
+}
+
+void TestImmediateReservationFailure(const std::filesystem::path& path) {
+#if defined(SB_CATALOG_TEST_WRAP_SYNC)
+  catalog_api::EngineRequestContext context;
+  context.database_path = path.string();
+  const auto stream = context.database_path + ".sb.mga_relation_metadata";
+  const auto allocator = context.database_path + ".sb.mga_event_sequence_allocator";
+  const auto reserve = [&](std::vector<std::string>* deferred = nullptr) {
+    return catalog_api::ReserveEventSequenceRange(context, "relation_metadata", stream, 1,
+        [] { return 1; }, deferred);
+  };
+  Require(reserve().ok, "immediate allocator fixture setup failed");
+  for (const bool cold : {true, false}) {
+    catalog_api::ClearMgaEventSequenceRangeCacheForTesting();
+    const auto next = catalog_api::NextMetadataEventSequence(context);
+    if (!cold) {
+      std::vector<std::string> deferred;
+      const auto warm = reserve(&deferred);
+      Require(warm.ok && warm.first == next, "immediate allocator warm setup failed");
+      catalog_api::AbandonDeferredEventSequenceReservation(warm);
+    }
+    const auto size = std::filesystem::file_size(allocator);
+    // A real kernel short write, not a synthesized error return. Keep the
+    // process limit/signal changes inside this single-threaded fixture scope.
+    struct Limit {
+      struct rlimit saved {};
+      struct sigaction previous {};
+      explicit Limit(rlim_t bytes) {
+        Require(::getrlimit(RLIMIT_FSIZE, &saved) == 0, "read file-size limit failed");
+        struct sigaction ignore {}; ignore.sa_handler = SIG_IGN; ::sigemptyset(&ignore.sa_mask);
+        Require(::sigaction(SIGXFSZ, &ignore, &previous) == 0, "set file-size signal failed");
+        auto limited = saved; limited.rlim_cur = bytes;
+        if (::setrlimit(RLIMIT_FSIZE, &limited) != 0) {
+          ::sigaction(SIGXFSZ, &previous, nullptr); Fail("set file-size limit failed");
+        }
+      }
+      ~Limit() {
+        if (::setrlimit(RLIMIT_FSIZE, &saved) != 0 ||
+            ::sigaction(SIGXFSZ, &previous, nullptr) != 0) std::terminate();
+      }
+    };
+    catalog_api::MgaEventSequenceRangeReservation failed;
+    { Limit limit(size + 20); failed = reserve(); }
+    if (failed.ok || failed.diagnostic.detail != "mga.event_sequence_allocator:durable_allocator_append_failed" ||
+        std::filesystem::file_size(allocator) != size + 20 || catalog_api::NextMetadataEventSequence(context) != 0)
+      std::cerr << "short-write cold=" << cold << " ok=" << failed.ok << " detail=" << failed.diagnostic.detail
+                << " size=" << std::filesystem::file_size(allocator) << " expected=" << size + 20
+                << " next=" << catalog_api::NextMetadataEventSequence(context) << '\n';
+    Require(!failed.ok && failed.diagnostic.detail == "mga.event_sequence_allocator:durable_allocator_append_failed" &&
+                std::filesystem::file_size(allocator) == size + 20 &&
+                catalog_api::NextMetadataEventSequence(context) == 0,
+            "partial allocator write was not refused as corrupt authority");
+    // Restore only this deliberately torn fixture tail. This is not a runtime
+    // recovery algorithm. Inspect the retained process reservation independently.
+    std::filesystem::resize_file(allocator, size);
+    std::vector<std::string> deferred;
+    const auto after = reserve(&deferred);
+    Require(after.ok && after.first == next + 1,
+            "immediate partial append reused a possibly published reservation");
+    Require(catalog_api::AppendDeferredEventSequenceAllocatorLines(context, &deferred, nullptr),
+            "post-fault reservation publication failed");
+    catalog_api::ClearMgaEventSequenceRangeCacheForTesting();
+    Require(catalog_api::NextMetadataEventSequence(context) == next + 2,
+            "post-fault reservation lost its high water on cold replay");
+  }
+#else
+  (void)path;
+#endif
+}
+
 }  // namespace
 
 int main() try {
@@ -750,7 +1148,10 @@ int main() try {
   TestCreateAlterRenameDropAndDependencies(path, database_uuid);
   TestMissingUuidOwnershipCacheAndMga(path, database_uuid);
   TestDdlSynonymCreateDropRoute(path, database_uuid);
+  RequireSequencedPublication(path);
   TestSequencedCatalogReplay(artifacts.path() / "sequenced.sbdb");
+  TestCatalogPublicationFailures(artifacts.path() / "publication.sbdb");
+  TestImmediateReservationFailure(artifacts.path() / "reservation.sbdb");
 
   artifacts.Cleanup();
   return EXIT_SUCCESS;
