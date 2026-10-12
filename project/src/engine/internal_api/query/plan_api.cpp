@@ -11799,6 +11799,7 @@ struct QuerySysProjectionSources {
   std::vector<SysInformationCatalogObjectSource> objects;
   std::vector<SysInformationResolverNameSource> resolver_names;
   std::vector<SysInformationColumnSource> columns;
+  std::vector<SysInformationCommentSource> comments;
   std::vector<SysInformationDomainSource> domains;
 };
 
@@ -11863,7 +11864,22 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
   }
 
   const auto lifecycle = LoadCatalogObjectLifecycleState(request.context);
+  if (!lifecycle.ok) {
+    sources.diagnostic = lifecycle.diagnostic;
+    return sources;
+  }
   if (lifecycle.ok) {
+    for (const auto& comment : lifecycle.state.comments) {
+      SysInformationCommentSource source;
+      source.object_uuid = comment.target_object_uuid;
+      source.object_class = comment.target_object_kind;
+      source.language_tag = comment.language_tag;
+      source.comment_text = comment.comment_text;
+      source.catalog_generation_id = comment.metadata_epoch;
+      source.comment_kind = comment.comment_kind;
+      source.row_ordinal = comment.event_sequence;
+      sources.comments.push_back(std::move(source));
+    }
     for (const auto& record : lifecycle.state.objects) {
       if (record.deleted || record.object_uuid.is_nil()) { continue; }
       if (record.object_kind == "table" &&
@@ -12259,7 +12275,7 @@ std::optional<EngineQueryRelation> SysInformationProjectionRelation(
       ProjectionContextFromRequest(request),
       sources.objects,
       sources.resolver_names,
-      std::vector<SysInformationCommentSource>{},
+      sources.comments,
       std::vector<SysInformationDatatypeDescriptorSource>{},
       sources.columns,
       std::vector<SysInformationSettingSource>{},

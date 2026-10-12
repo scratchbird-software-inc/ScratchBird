@@ -11,6 +11,8 @@
 #include "catalog/catalog_journal_publication.hpp"
 #include "catalog/catalog_journal_batch.hpp"
 #include "catalog/catalog_read_admission.hpp"
+#include "ddl/comment_api.hpp"
+#include "security/authorization_api.hpp"
 #include "catalog/constraint_metadata_codec.hpp"
 #include "dml/mutation_savepoint_capability.hpp"
 
@@ -254,7 +256,8 @@ void AddEvidence(EngineApiResult* result, std::string kind, EngineEvidenceValue 
 
 bool TransactionStatusVisible(const EngineRequestContext& context,
                               const std::map<std::uint64_t, std::string>& statuses,
-                              std::uint64_t creator_tx) {
+                              std::uint64_t creator_tx,
+                              const transaction::mga::LocalTransactionInventory* inventory) {
   const auto it = statuses.find(creator_tx);
   if (it == statuses.end()) { return false; }
   if (it->second == "rolled_back" || it->second == "rolling_back" || it->second == "failed_terminal") {
@@ -265,6 +268,19 @@ bool TransactionStatusVisible(const EngineRequestContext& context,
     return true;
   }
   if (it->second != "committed") { return false; }
+  if (inventory && context.local_transaction_id != 0 &&
+      !context.statement_metadata_snapshot_engine_owned) {
+    const auto reader = transaction::mga::LookupLocalTransaction(*inventory,
+        transaction::mga::MakeLocalTransactionId(context.local_transaction_id));
+    const auto creator = transaction::mga::LookupLocalTransaction(*inventory,
+        transaction::mga::MakeLocalTransactionId(creator_tx));
+    if (!reader.ok() || !creator.ok() ||
+        reader.entry.identity.transaction_uuid.value != context.transaction_uuid ||
+        !transaction::mga::HasCommittedInventoryOutcome(creator.entry)) return false;
+    if (reader.entry.stable_snapshot)
+      return creator.entry.commit_sequence <= reader.entry.begin_visible_through_commit_sequence;
+    return true; // READ COMMITTED uses this admitted native read boundary.
+  }
   if (context.snapshot_visible_through_local_transaction_id != 0) {
     return creator_tx <= context.snapshot_visible_through_local_transaction_id;
   }
@@ -274,10 +290,11 @@ bool TransactionStatusVisible(const EngineRequestContext& context,
 
 bool EventVisible(const EngineRequestContext& context,
                   const CrudState* crud_state,
-                  std::uint64_t creator_tx) {
+                  std::uint64_t creator_tx,
+                  const transaction::mga::LocalTransactionInventory* inventory = nullptr) {
   if (creator_tx == 0) { return true; }
   if (crud_state != nullptr && !crud_state->transactions.empty()) {
-    return TransactionStatusVisible(context, crud_state->transactions, creator_tx);
+    return TransactionStatusVisible(context, crud_state->transactions, creator_tx, inventory);
   }
   return false;
 }
@@ -654,16 +671,17 @@ struct CatalogLifecycleCacheKey {
   std::string database_path;
   EngineUuid database_uuid, session_uuid, transaction_uuid;
   bool enforce_visibility = true;
+  bool metadata_observation_mode = false;
   std::uint64_t local_tx = 0, snapshot_bound = 0, catalog = 0, security = 0,
                 resource = 0, name_resolution = 0, journal_bytes = 0;
   core::hash::Digest256 content{};
 
   bool operator<(const CatalogLifecycleCacheKey& other) const {
     return std::tie(database_path, database_uuid, session_uuid, transaction_uuid,
-                    enforce_visibility, local_tx, snapshot_bound, catalog, security,
+                    enforce_visibility, metadata_observation_mode, local_tx, snapshot_bound, catalog, security,
                     resource, name_resolution, journal_bytes, content) <
            std::tie(other.database_path, other.database_uuid, other.session_uuid,
-                    other.transaction_uuid, other.enforce_visibility, other.local_tx,
+                    other.transaction_uuid, other.enforce_visibility, other.metadata_observation_mode, other.local_tx,
                     other.snapshot_bound, other.catalog, other.security, other.resource,
                     other.name_resolution, other.journal_bytes, other.content);
   }
@@ -754,7 +772,7 @@ bool PrepareCatalogReadCacheImage(const EngineRequestContext& context,
                                        static_cast<std::size_t>(extent)));
   image->key = CatalogLifecycleCacheKey{
       context.database_path, context.database_uuid, context.session_uuid, context.transaction_uuid,
-      options.enforce_visibility, context.local_transaction_id,
+      options.enforce_visibility, context.statement_metadata_snapshot_engine_owned, context.local_transaction_id,
       context.snapshot_visible_through_local_transaction_id, context.catalog_generation_id,
       context.security_epoch, context.resource_epoch, context.name_resolution_epoch,
       extent, digest.digest};
@@ -829,6 +847,12 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
     return result;
   }
   const CrudState* transaction_state = crud_state.ok ? &crud_state.state : nullptr;
+  const auto native_inventory = storage::database::AcquireLocalTransactionInventorySnapshot(context.database_path);
+  if (options.enforce_visibility && !native_inventory.ok()) {
+    result.diagnostic = CatalogDiagnostic(kCatalogObjectDiagnosticMgaVisibilityRefused,
+                                         "catalog_transaction_inventory_unavailable");
+    return result;
+  }
   CatalogReadCacheImage image;
   if (!PrepareCatalogReadCacheImage(context, options, transaction_state, savepoints, in, &image)) {
     result.diagnostic = CatalogDiagnostic(kCatalogObjectDiagnosticMgaVisibilityRefused,
@@ -841,6 +865,7 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
   std::istream& input = image.input ? *image.input : static_cast<std::istream&>(in);
 
   std::map<EngineUuid, EngineCatalogObjectRecord> objects;
+  std::map<EngineUuid, EngineCatalogCommentRecord> comments;
   std::vector<EngineCatalogNameRecord> names;
   std::map<std::tuple<EngineUuid, EngineUuid, std::string>, EngineCatalogDependencyRecord> dependencies;
   std::map<EngineUuid, EngineCatalogColumnMetadataRecord> columns;
@@ -862,8 +887,15 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
     const auto creator_tx = std::visit([](const auto& record) { return record.creator_tx; }, event);
     if (event_sequence != 0 &&
         MetadataEventRolledBackBySavepoint(savepoints, creator_tx, event_sequence)) continue;
-    if (options.enforce_visibility && !EventVisible(context, transaction_state, creator_tx)) continue;
-    if (const auto* decoded = std::get_if<EngineCatalogObjectRecord>(&event)) {
+    if (options.enforce_visibility && !EventVisible(context, transaction_state, creator_tx,
+        &native_inventory.snapshot->inventory)) continue;
+    if (const auto* decoded = std::get_if<EngineCatalogCommentRecord>(&event)) {
+      auto record = *decoded;
+      record.event_sequence = event_sequence;
+      result.state.metadata_epoch = std::max(result.state.metadata_epoch, record.metadata_epoch);
+      if (record.deleted) comments.erase(record.comment_uuid);
+      else comments[record.comment_uuid] = std::move(record);
+    } else if (const auto* decoded = std::get_if<EngineCatalogObjectRecord>(&event)) {
       auto record = *decoded;
       record.event_sequence = event_sequence;
       result.state.metadata_epoch = std::max(result.state.metadata_epoch, record.metadata_epoch);
@@ -981,6 +1013,10 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
   for (auto& [_, object] : objects) { result.state.objects.push_back(std::move(object)); }
   std::set<EngineUuid> active_objects;
   for (const auto& object : result.state.objects) { active_objects.insert(object.object_uuid); }
+  for (auto& [_, comment] : comments) {
+    if (active_objects.count(comment.target_object_uuid) != 0)
+      result.state.comments.push_back(std::move(comment));
+  }
   for (auto& name : names) {
     if (active_objects.count(name.object_uuid) != 0) { result.state.names.push_back(std::move(name)); }
   }
@@ -1302,7 +1338,7 @@ EngineLoadCatalogObjectLifecycleStateResult LoadCatalogObjectLifecycleEpochState
   }
 
   const auto inventory =
-      scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(
+      scratchbird::storage::database::AcquireLocalTransactionInventorySnapshot(
           context.database_path);
   if (!inventory.ok()) {
     result.diagnostic = CatalogDiagnostic(
@@ -1314,7 +1350,7 @@ EngineLoadCatalogObjectLifecycleStateResult LoadCatalogObjectLifecycleEpochState
   const auto event_visible = [&](std::uint64_t creator_tx) {
     if (creator_tx == 0) return true;
     const auto found = scratchbird::transaction::mga::LookupLocalTransaction(
-        inventory.inventory,
+        inventory.snapshot->inventory,
         scratchbird::transaction::mga::MakeLocalTransactionId(creator_tx));
     if (!found.ok()) return false;
     using scratchbird::transaction::mga::TransactionState;
@@ -1331,6 +1367,14 @@ EngineLoadCatalogObjectLifecycleStateResult LoadCatalogObjectLifecycleEpochState
     }
     if (!scratchbird::transaction::mga::HasCommittedInventoryOutcome(found.entry)) {
       return false;
+    }
+    if (context.local_transaction_id != 0 && !context.statement_metadata_snapshot_engine_owned) {
+      const auto reader = transaction::mga::LookupLocalTransaction(inventory.snapshot->inventory,
+          transaction::mga::MakeLocalTransactionId(context.local_transaction_id));
+      if (!reader.ok() || reader.entry.identity.transaction_uuid.value != context.transaction_uuid) return false;
+      if (reader.entry.stable_snapshot)
+        return found.entry.commit_sequence <= reader.entry.begin_visible_through_commit_sequence;
+      return true;
     }
     if (context.snapshot_visible_through_local_transaction_id != 0) {
       return creator_tx <=
@@ -1928,6 +1972,190 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
   if (publication.error)
     return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation,
         CatalogBatchPublicationDiagnostic(std::move(publication)));
+  return result;
+}
+
+EngineCommentOnObjectResult EngineCatalogPublishComment(const EngineCommentOnObjectRequest& request) {
+  constexpr const char* operation = "ddl.comment_on_object";
+  const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
+  const auto refuse = [&](EngineApiDiagnostic diagnostic) {
+    return DiagnosticResult<EngineCommentOnObjectResult>(request.context, operation, std::move(diagnostic));
+  };
+  const auto valid = ValidateApiBehaviorContext(request.context, operation, true, true);
+  if (valid.error) return refuse(valid);
+  const auto authority = ValidateCurrentMutatingTransactionAuthority(request.context, operation);
+  if (authority.error) return refuse(authority);
+  EngineAuthorizeRequest authorization;
+  authorization.context = request.context;
+  authorization.target_object = request.target_object;
+  authorization.required_right = "CATALOG_MUTATE";
+  const auto authorized = EngineAuthorize(authorization);
+  if (!authorized.ok || !authorized.authorized)
+    return refuse(authorized.diagnostics.empty()
+        ? MakeInvalidRequestDiagnostic(operation, "comment_authorization_denied")
+        : authorized.diagnostics.front());
+  const auto savepoint = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::catalog_mutation);
+  if (savepoint.error) return refuse(savepoint);
+  const auto loaded = LoadState(request.context, {.enforce_visibility = true});
+  if (!loaded.ok) return refuse(loaded.diagnostic);
+  const auto* target = FindObject(loaded.state, request.target_object.uuid);
+  if (!target || target->object_kind != request.target_object.object_kind)
+    return refuse(CatalogDiagnostic(kCatalogObjectDiagnosticNotFound, "comment_target_not_visible"));
+  if (!PrincipalOwnsSchema(loaded.state, request.context, target->schema_uuid))
+    return refuse(CatalogDiagnostic(kCatalogObjectDiagnosticSchemaOwnerDenied, "comment_target_schema_owner"));
+  std::string language, text, null_value;
+  std::set<std::string> seen;
+  for (const auto& option : request.option_envelopes) {
+    const auto colon = option.find(':');
+    const auto key = option.substr(0, colon);
+    if (key != "comment_language" && key != "comment_text" && key != "comment_is_null" &&
+        key != "comment_target_kind") continue;
+    if (colon == std::string::npos || !seen.insert(key).second)
+      return refuse(MakeInvalidRequestDiagnostic(operation, "comment_option_duplicate_or_invalid"));
+    const auto value = option.substr(colon + 1);
+    if (key == "comment_language") language = value;
+    else if (key == "comment_text") text = value;
+    else if (key == "comment_is_null") null_value = value;
+    else if (value != target->object_kind)
+      return refuse(MakeInvalidRequestDiagnostic(operation, "comment_target_kind_mismatch"));
+  }
+  if (language.empty()) language = request.context.language_context.language_tag;
+  if (language.empty()) language = request.context.language_context.default_language_tag;
+  if (language.empty() || (null_value != "true" && null_value != "false") ||
+      (null_value == "true" && seen.count("comment_text")) ||
+      (null_value == "false" && !seen.count("comment_text")))
+    return refuse(MakeInvalidRequestDiagnostic(operation, "comment_language_or_value_invalid"));
+  for (const unsigned char c : language)
+    if (c <= 0x20 || c >= 0x7f)
+      return refuse(MakeInvalidRequestDiagnostic(operation, "comment_language_or_value_invalid"));
+  const EngineCatalogCommentRecord* existing = nullptr;
+  for (const auto& comment : loaded.state.comments) {
+    if (comment.target_object_uuid == target->object_uuid &&
+        comment.target_object_kind == target->object_kind &&
+        comment.language_tag == language && comment.comment_kind == "general") {
+      if (existing) return refuse(MakeInvalidRequestDiagnostic(operation, "comment_duplicate_active_key"));
+      existing = &comment;
+    }
+  }
+  // The snapshot selects the version to replace; the current source separately
+  // excludes invisible concurrent writers and stale replacements. Retain this
+  // re-admission through the final observation callback, not merely preparation.
+  const auto expected_row = existing ? existing->catalog_row_uuid : EngineUuid{};
+  std::uint64_t admitted_catalog_epoch = 0;
+  bool catalog_epoch_bound = false;
+  const auto readmit = [&]() -> EngineApiDiagnostic {
+    const auto current_authorization = EngineAuthorize(authorization);
+    if (!current_authorization.ok || !current_authorization.authorized)
+      return current_authorization.diagnostics.empty()
+          ? MakeInvalidRequestDiagnostic(operation, "comment_authorization_denied")
+          : current_authorization.diagnostics.front();
+    const auto current = storage::database::AcquireLocalTransactionInventorySnapshot(request.context.database_path);
+    if (!current.ok()) return MakeInvalidRequestDiagnostic(operation, "comment_inventory_unavailable");
+    const auto native_reader = transaction::mga::LookupLocalTransaction(current.snapshot->inventory,
+        transaction::mga::MakeLocalTransactionId(request.context.local_transaction_id));
+    if (!native_reader.ok() || native_reader.entry.identity.transaction_uuid.value != request.context.transaction_uuid)
+      return MakeInvalidRequestDiagnostic(operation, "comment_reader_owner_invalid");
+    const auto savepoints = ParseSavepoints(request.context);
+    if (savepoints.diagnostic.error) return savepoints.diagnostic;
+    const auto crud = LoadCrudState(request.context);
+    if (!crud.ok) return MakeInvalidRequestDiagnostic(operation, "comment_visibility_unavailable");
+    std::ifstream input;
+    if (OpenCatalogJournal(request.context, input) != CatalogJournalOpenStatus::opened)
+      return MakeInvalidRequestDiagnostic(operation, "comment_journal_unavailable");
+    std::optional<EngineCatalogCommentRecord> latest;
+    std::optional<EngineCatalogObjectRecord> latest_target;
+    std::uint64_t current_catalog_epoch = 0;
+    while (input.peek() != std::char_traits<char>::eof()) {
+      CatalogLifecycleRecord event;
+      std::uint64_t sequence = 0;
+      if (!ReadCatalogLifecycleRecord(input, &event, &sequence))
+        return MakeInvalidRequestDiagnostic(operation, "invalid_binary_catalog_record");
+      current_catalog_epoch = std::max(current_catalog_epoch,
+          std::visit([](const auto& record) { return record.metadata_epoch; }, event));
+      const auto* comment = std::get_if<EngineCatalogCommentRecord>(&event);
+      const auto* object = std::get_if<EngineCatalogObjectRecord>(&event);
+      const bool matching_comment = comment && comment->target_object_uuid == request.target_object.uuid &&
+          comment->target_object_kind == request.target_object.object_kind &&
+          comment->comment_kind == "general" && comment->language_tag == language;
+      const bool matching_target = object && object->object_uuid == request.target_object.uuid;
+      if (!matching_comment && !matching_target) continue;
+      const auto creator_tx = matching_comment ? comment->creator_tx : object->creator_tx;
+      if (MetadataEventRolledBackBySavepoint(savepoints, creator_tx, sequence)) continue;
+      const auto creator = transaction::mga::LookupLocalTransaction(current.snapshot->inventory,
+          transaction::mga::MakeLocalTransactionId(creator_tx));
+      if (!creator.ok()) return MakeInvalidRequestDiagnostic(operation, "comment_creator_unavailable");
+      const auto state = transaction::mga::InventoryVisibilityState(creator.entry);
+      if (state == transaction::mga::TransactionState::rolled_back ||
+          state == transaction::mga::TransactionState::failed_terminal) continue;
+      if (creator_tx != request.context.local_transaction_id &&
+          !transaction::mga::HasCommittedInventoryOutcome(creator.entry))
+        return MakeInvalidRequestDiagnostic(operation, matching_comment
+            ? "comment_concurrent_key_conflict" : "comment_concurrent_target_conflict");
+      if (creator_tx != request.context.local_transaction_id && native_reader.entry.stable_snapshot &&
+          creator.entry.commit_sequence > native_reader.entry.begin_visible_through_commit_sequence)
+        return MakeInvalidRequestDiagnostic(operation, matching_comment
+            ? "comment_snapshot_key_conflict" : "comment_snapshot_target_conflict");
+      if (matching_comment) {
+        latest = *comment;
+        latest->event_sequence = sequence;
+      } else latest_target = *object;
+    }
+    if (input.bad() || !input.eof())
+      return MakeInvalidRequestDiagnostic(operation, "comment_journal_read_failed");
+    if (catalog_epoch_bound && current_catalog_epoch != admitted_catalog_epoch)
+      return MakeInvalidRequestDiagnostic(operation, "comment_catalog_generation_changed");
+    admitted_catalog_epoch = current_catalog_epoch;
+    if (latest && !EventVisible(request.context, &crud.state, latest->creator_tx, &current.snapshot->inventory))
+      return MakeInvalidRequestDiagnostic(operation, "comment_snapshot_key_conflict");
+    const auto actual_row = latest && !latest->deleted ? latest->catalog_row_uuid : EngineUuid{};
+    if (actual_row != expected_row)
+      return MakeInvalidRequestDiagnostic(operation, "comment_superseded_key_conflict");
+    if (!latest_target || latest_target->deleted || latest_target->lifecycle_state == "dropped" ||
+        latest_target->catalog_row_uuid != target->catalog_row_uuid ||
+        latest_target->metadata_epoch != target->metadata_epoch ||
+        latest_target->object_kind != target->object_kind)
+      return MakeInvalidRequestDiagnostic(operation, "comment_target_changed_before_publication");
+    const auto target_now = LoadState(request.context, {.enforce_visibility = true});
+    if (!target_now.ok) return target_now.diagnostic;
+    const auto* current_target = FindObject(target_now.state, request.target_object.uuid);
+    if (!current_target || current_target->catalog_row_uuid != target->catalog_row_uuid)
+      return MakeInvalidRequestDiagnostic(operation, "comment_target_changed_before_publication");
+    return OkDiagnostic();
+  };
+  const auto current_key = readmit();
+  if (current_key.error) return refuse(current_key);
+  catalog_epoch_bound = true;
+  auto result = SuccessResult<EngineCommentOnObjectResult>(request.context, operation);
+  if (!existing && null_value == "true") return result;
+  if (admitted_catalog_epoch == std::numeric_limits<std::uint64_t>::max())
+    return refuse(MakeInvalidRequestDiagnostic(operation, "comment_metadata_epoch_overflow"));
+  EngineCatalogCommentRecord record;
+  record.creator_tx = request.context.local_transaction_id;
+  record.comment_uuid = existing ? existing->comment_uuid : GenerateCrudEngineUuid("object");
+  record.catalog_row_uuid = GenerateCrudEngineUuid("row");
+  record.target_object_uuid = target->object_uuid;
+  record.target_object_kind = target->object_kind;
+  record.language_tag = language;
+  record.comment_text = null_value == "true" ? std::string{} : text;
+  record.deleted = null_value == "true";
+  record.metadata_epoch = admitted_catalog_epoch + 1;
+  std::string bytes;
+  if (!EncodeCatalogLifecycleRecord(record, &bytes))
+    return refuse(MakeInvalidRequestDiagnostic(operation, "comment_record_encoding_failed"));
+  std::vector<PreparedCatalogJournalRecord> prepared;
+  auto staged = StageCatalogJournalEvent(request.context, bytes, prepared);
+  if (staged.error) return refuse(staged);
+  staged = StageCatalogJournalEvent(request.context,
+      CacheInvalidateEvent(request.context, operation, target->object_uuid, record.metadata_epoch), prepared);
+  if (staged.error) return refuse(staged);
+  result.primary_object.uuid = record.comment_uuid;
+  result.primary_object.object_kind = "object_comment";
+  result.catalog_row_uuid = record.catalog_row_uuid;
+  AddEvidence(&result, "comment_target", record.target_object_uuid);
+  AddEvidence(&result, "comment_catalog_record", record.comment_uuid);
+  const CatalogCommentPublicationCustody custody(readmit);
+  auto published = PublishPreparedCatalogJournalBatch(custody, request.context, operation, std::move(prepared));
+  if (published.error) return refuse(CatalogBatchPublicationDiagnostic(std::move(published)));
   return result;
 }
 

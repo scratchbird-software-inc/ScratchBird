@@ -130,6 +130,8 @@ struct SysInformationCommentSource {
   std::string comment_text;
   std::uint64_t catalog_generation_id = 0;
   bool hidden = false;
+  std::string comment_kind = "general";
+  std::uint64_t row_ordinal = 0;
 };
 
 struct SysInformationDatatypeDescriptorSource {
@@ -571,8 +573,14 @@ struct SysInformationBinaryValue {
   bool operator==(const SysInformationBinaryValue&) const = default;
 };
 
+// Explicit PRESENT empty text, distinct from older nullable text projections
+// whose empty std::string still represents absence until their own migration.
+struct SysInformationPresentEmptyText {
+  bool operator==(const SysInformationPresentEmptyText&) const = default;
+};
 using SysInformationProjectionValue =
-    std::variant<std::string, EngineUuid, SysInformationBinaryValue>;
+    std::variant<std::string, EngineUuid, SysInformationBinaryValue, std::monostate,
+                 SysInformationPresentEmptyText>;
 
 struct SysInformationProjectionRow {
   std::vector<std::pair<std::string, SysInformationProjectionValue>> fields;
@@ -592,6 +600,12 @@ inline EngineTypedValue SysInformationTypedValue(const SysInformationProjectionV
     } else {
       result.binary_value.assign(uuid->bytes.begin(), uuid->bytes.end());
     }
+  } else if (std::holds_alternative<SysInformationPresentEmptyText>(value)) {
+    result.descriptor.canonical_type_name = "text";
+  } else if (std::holds_alternative<std::monostate>(value)) {
+    result.descriptor.canonical_type_name = "text";
+    result.is_null = true;
+    result.state = EngineValueState::sql_null;
   } else {
     result.descriptor.canonical_type_name = "binary";
     const auto& bytes = std::get<SysInformationBinaryValue>(value).bytes;
@@ -610,9 +624,11 @@ inline const SysInformationProjectionValue* SysInformationField(
 
 inline bool SysInformationFieldIsNull(const SysInformationProjectionValue* value) {
   if (value == nullptr) { return true; }
+  if (std::holds_alternative<std::monostate>(*value)) return true;
   if (const auto* uuid = std::get_if<EngineUuid>(value)) { return uuid->is_nil(); }
-  // Existing text projections represent absent text with an empty value.
-  if (const auto* text = std::get_if<std::string>(value)) { return text->empty(); }
+  // Legacy nullable producers retain their prior contract. New comment
+  // producers use explicit NULL / PRESENT-empty alternatives above.
+  if (const auto* text = std::get_if<std::string>(value)) return text->empty();
   return false;
 }
 

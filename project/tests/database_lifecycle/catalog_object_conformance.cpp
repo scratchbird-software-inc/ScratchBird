@@ -214,10 +214,11 @@ catalog_api::EngineRequestContext BaseContext(const std::filesystem::path& path,
 
 catalog_api::EngineRequestContext Begin(const std::filesystem::path& path,
                                         const catalog_api::EngineUuid& database_uuid,
-                                        catalog_api::EngineUuid principal) {
+                                        catalog_api::EngineUuid principal,
+                                        std::string isolation = "read_committed") {
   catalog_api::EngineBeginTransactionRequest request;
   request.context = BaseContext(path, database_uuid, std::move(principal));
-  request.isolation_level = "read_committed";
+  request.isolation_level = std::move(isolation);
   const auto begun = catalog_api::EngineBeginTransaction(request);
   if (!begun.ok) {
     for (const auto& diagnostic : begun.diagnostics) {
@@ -539,6 +540,7 @@ void TestMissingUuidOwnershipCacheAndMga(const std::filesystem::path& path,
   auto barrier = Begin(path, database_uuid, scratchbird::tests::FixtureUuid(1378, 8));
   Commit(barrier);
   auto outcome_observer = Begin(path, database_uuid, scratchbird::tests::FixtureUuid(1378, 8));
+  auto hidden_context = Begin(path, database_uuid, scratchbird::tests::FixtureUuid(1378, 8), "repeatable_read");
   Require(outcome_observer.snapshot_visible_through_local_transaction_id >= created_tx,
           "issued observer boundary does not cover creator");
   const auto read_catalog_bytes = [&] {
@@ -582,26 +584,20 @@ void TestMissingUuidOwnershipCacheAndMga(const std::filesystem::path& path,
             "current metadata cache epoch was rejected");
   Rollback(current_cache_context);
 
-  auto hidden_context = Begin(path, database_uuid, scratchbird::tests::FixtureUuid(1378, 8));
-  hidden_context.snapshot_visible_through_local_transaction_id = created_tx - 1;
   const auto hidden = catalog_api::EngineCatalogLookupObjectByUuid(
       LookupRequest(hidden_context, scratchbird::tests::FixtureUuid(1378, 17), "table"));
   RequireDiagnostic(hidden,
                     catalog_api::kCatalogObjectDiagnosticMgaVisibilityRefused,
                     "snapshot-stale MGA visibility lookup did not fail closed");
-  Rollback(hidden_context);
 
   auto visible_context = Begin(path, database_uuid, scratchbird::tests::FixtureUuid(1378, 8));
-  visible_context.snapshot_visible_through_local_transaction_id = created_tx;
   const auto visible = catalog_api::EngineCatalogLookupObjectByUuid(
       LookupRequest(visible_context, scratchbird::tests::FixtureUuid(1378, 17), "table"));
   RequireOk(visible, "MGA-visible object lookup failed");
-  // Exercise the low-level catalog projection with the same observer and
-  // unchanged journals. A cached wider snapshot must not supply visibility
-  // to a narrower request, nor may the narrower cached result hide the row
-  // when the original bound is read again.
-  auto same_observer_hidden = visible_context;
-  same_observer_hidden.snapshot_visible_through_local_transaction_id = created_tx - 1;
+  // Interleave two actually admitted native snapshots over unchanged journals.
+  // An old repeatable snapshot must stay hidden after a current cache hit,
+  // and a current reader must stay visible after the old cache is consulted.
+  const auto& same_observer_hidden = hidden_context;
   for (int repeat = 0; repeat != 2; ++repeat) {
     RequireDiagnostic(catalog_api::EngineCatalogLookupObjectByUuid(
         LookupRequest(same_observer_hidden, scratchbird::tests::FixtureUuid(1378, 17), "table")),
@@ -611,6 +607,21 @@ void TestMissingUuidOwnershipCacheAndMga(const std::filesystem::path& path,
         LookupRequest(visible_context, scratchbird::tests::FixtureUuid(1378, 17), "table")),
         "narrow cached catalog snapshot hid an eligible object");
   }
+  // Component-level mode partitioning, not issuance or admission of a public
+  // metadata receipt. Identical native observer identities and numeric bounds
+  // must not reuse a cache entry from the other engine-private visibility mode.
+  auto metadata_observation = hidden_context;
+  metadata_observation.statement_metadata_snapshot_engine_owned = true;
+  for (int repeat = 0; repeat != 2; ++repeat) {
+    RequireOk(catalog_api::EngineCatalogLookupObjectByUuid(
+        LookupRequest(metadata_observation, scratchbird::tests::FixtureUuid(1378, 17), "table")),
+        "metadata observation reused the ordinary stable-snapshot cache");
+    RequireDiagnostic(catalog_api::EngineCatalogLookupObjectByUuid(
+        LookupRequest(hidden_context, scratchbird::tests::FixtureUuid(1378, 17), "table")),
+        catalog_api::kCatalogObjectDiagnosticMgaVisibilityRefused,
+        "metadata observation cache widened the native repeatable snapshot");
+  }
+  Rollback(hidden_context);
   Rollback(visible_context);
 }
 

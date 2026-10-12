@@ -84,6 +84,13 @@ std::string RowFieldTextValue(const SysInformationProjectionRow& row, std::strin
   return {};
 }
 
+bool RowFieldIsPresentText(const SysInformationProjectionRow& row, std::string_view field_name) {
+  const auto* value = SysInformationField(row, field_name);
+  return !SysInformationFieldIsNull(value) &&
+      (std::holds_alternative<std::string>(*value) ||
+       std::holds_alternative<SysInformationPresentEmptyText>(*value));
+}
+
 std::string LowerAscii(std::string value) {
   for (char& c : value) {
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -158,7 +165,9 @@ bool CatalogProjectionPredicateMatches(const SysInformationProjectionRow& row,
       ? predicate_columns.substr(predicate_columns.find(':') + 1) : predicate_columns;
   for (const auto& column : SplitCommaList(text_columns)) {
     const auto* value = SysInformationField(row, column);
-    if (value != nullptr && !std::holds_alternative<std::string>(*value)) { return false; }
+    if (SysInformationFieldIsNull(value) ||
+        (!std::holds_alternative<std::string>(*value) &&
+         !std::holds_alternative<SysInformationPresentEmptyText>(*value))) return false;
   }
   if (predicate_kind == "column_mod_equals") {
     const auto values = SplitCommaList(predicate_values);
@@ -249,6 +258,7 @@ std::vector<SysInformationProjectionRow> FilterCatalogProjectionRows(
     const SysInformationProjectionContext& projection_context,
     const std::vector<SysInformationCatalogObjectSource>& catalog_objects,
     const std::vector<SysInformationResolverNameSource>& resolver_names,
+    const std::vector<SysInformationCommentSource>& comments,
     const std::vector<SysInformationColumnSource>& columns,
     const std::vector<SysInformationDomainSource>& domains,
     const std::vector<SysInformationIparAgentLifecycleSource>& ipar_agent_lifecycle,
@@ -286,7 +296,7 @@ std::vector<SysInformationProjectionRow> FilterCatalogProjectionRows(
                                                              projection_context,
                                                              catalog_objects,
                                                              resolver_names,
-                                                             {},
+                                                             comments,
                                                              {},
                                                              columns,
                                                              {},
@@ -328,7 +338,7 @@ std::vector<SysInformationProjectionRow> FilterCatalogProjectionRows(
                                                              projection_context,
                                                              catalog_objects,
                                                              resolver_names,
-                                                             {},
+                                                             comments,
                                                              {},
                                                              columns,
                                                              {},
@@ -359,14 +369,14 @@ std::vector<SysInformationProjectionRow> FilterCatalogProjectionRows(
           continue;
         }
         const std::string admitted = RowFieldTextValue(nested_row, nested_select_column);
-        if (!admitted.empty()) { nested_admitted_values.insert(admitted); }
+        if (RowFieldIsPresentText(nested_row, nested_select_column)) nested_admitted_values.insert(admitted);
       }
     }
     std::set<std::string> admitted_values;
     for (const auto& row : subquery_rows.rows) {
       if (subquery_predicate_kind == "column_in_projection") {
         const std::string candidate = RowFieldTextValue(row, subquery_predicate_column);
-        if (candidate.empty() ||
+        if (!RowFieldIsPresentText(row, subquery_predicate_column) ||
             nested_admitted_values.find(candidate) == nested_admitted_values.end()) {
           continue;
         }
@@ -386,13 +396,13 @@ std::vector<SysInformationProjectionRow> FilterCatalogProjectionRows(
         continue;
       }
       const std::string admitted = RowFieldTextValue(row, subquery_select_column);
-      if (!admitted.empty()) { admitted_values.insert(admitted); }
+      if (RowFieldIsPresentText(row, subquery_select_column)) admitted_values.insert(admitted);
     }
     std::vector<SysInformationProjectionRow> filtered;
     filtered.reserve(rows.size());
     for (const auto& row : rows) {
       const std::string candidate = RowFieldTextValue(row, predicate_column);
-      if (!candidate.empty() && admitted_values.find(candidate) != admitted_values.end()) {
+      if (RowFieldIsPresentText(row, predicate_column) && admitted_values.find(candidate) != admitted_values.end()) {
         filtered.push_back(row);
       }
     }
@@ -1003,6 +1013,7 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
 
   std::vector<SysInformationCatalogObjectSource> objects;
   std::vector<SysInformationResolverNameSource> resolver_names;
+  std::vector<SysInformationCommentSource> comments;
   std::vector<SysInformationColumnSource> columns;
   std::vector<SysInformationDomainSource> domain_sources;
   EngineApiDiagnostic schema_diagnostic;
@@ -1059,7 +1070,20 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
   }
 
   const auto lifecycle = LoadCatalogObjectLifecycleState(request.context);
+  if (!lifecycle.ok) return MakeApiBehaviorDiagnostic<EngineShowCatalogResult>(
+      request.context, "observability.show_catalog", lifecycle.diagnostic);
   if (lifecycle.ok) {
+    for (const auto& comment : lifecycle.state.comments) {
+      SysInformationCommentSource source;
+      source.object_uuid = comment.target_object_uuid;
+      source.object_class = comment.target_object_kind;
+      source.language_tag = comment.language_tag;
+      source.comment_text = comment.comment_text;
+      source.comment_kind = comment.comment_kind;
+      source.catalog_generation_id = comment.metadata_epoch;
+      source.row_ordinal = comment.event_sequence;
+      comments.push_back(std::move(source));
+    }
     for (const auto& record : lifecycle.state.objects) {
       if (record.deleted || record.object_uuid.is_nil()) { continue; }
       if (record.object_kind == "table" &&
@@ -1381,7 +1405,7 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
       projection_context,
       objects,
       resolver_names,
-      {},
+      comments,
       {},
       columns,
       {},
@@ -1417,6 +1441,7 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
                                                          projection_context,
                                                          objects,
 	                                                         resolver_names,
+	                                                         comments,
 	                                                         columns,
 	                                                         domain_sources,
 	                                                         request.ipar_agent_lifecycle,

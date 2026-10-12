@@ -4,6 +4,7 @@
 
 #include "catalog/catalog_journal_publication.hpp"
 #include "catalog/catalog_table_storage_creation.hpp"
+#include "catalog/catalog_comment_publication.hpp"
 #include "mga_relation_store/mga_metadata_preparation.hpp"
 #include "mga_relation_store/mga_publication_callback_scope.hpp"
 #include "transaction/mutation_authority.hpp"
@@ -48,10 +49,13 @@ class CatalogJournalBatchPublisher final {
   friend EngineApiDiagnostic PublishPreparedCatalogJournalBatch(
       const CatalogTableCreationCustody&, const EngineRequestContext&, std::string_view,
       std::vector<PreparedCatalogJournalRecord>, PreparedCatalogTableStorage&);
+  friend EngineApiDiagnostic PublishPreparedCatalogJournalBatch(
+      const CatalogCommentPublicationCustody&, const EngineRequestContext&, std::string_view,
+      std::vector<PreparedCatalogJournalRecord>);
   static EngineApiDiagnostic Publish(
     const EngineRequestContext& context, std::string_view operation,
     std::vector<PreparedCatalogJournalRecord> records,
-    PreparedCatalogTableStorage* storage) {
+    PreparedCatalogTableStorage* storage, const CatalogCommentPublicationCustody* comment_custody = nullptr) {
   const auto refused = [&](std::string detail) {
     return MakeInvalidRequestDiagnostic(std::string(operation), std::move(detail));
   };
@@ -70,6 +74,7 @@ class CatalogJournalBatchPublisher final {
       context.database_path + ".sb.name_events.v2",
       context.database_path + ".sb.mga_relation_metadata"};
   std::array<bool, 3> touched{};
+  bool owns_comment_mutation = false;
   touched[2] = storage != nullptr;
   for (const auto& item : records) {
     const auto& record = item.record;
@@ -80,6 +85,8 @@ class CatalogJournalBatchPublisher final {
         CatalogLifecycleRecord decoded;
         if (!DecodeCatalogLifecycleFrame(record, &decoded))
           return refused("catalog_publication_record_invalid");
+        if (std::holds_alternative<EngineCatalogCommentRecord>(decoded))
+          owns_comment_mutation = true;
         touched[0] = true;
         break;
       }
@@ -104,6 +111,13 @@ class CatalogJournalBatchPublisher final {
       }
       default: return refused("catalog_publication_kind_invalid");
     }
+  }
+  if (owns_comment_mutation) {
+    if (!comment_custody) return refused("comment_owned_publication_required");
+    const auto readmit = comment_custody->Readmit();
+    if (readmit.error) return readmit;
+    const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::catalog_mutation);
+    if (savepoint.error) return savepoint;
   }
   for (std::size_t i = 0; i != paths.size(); ++i) {
     if (!touched[i]) continue;
@@ -214,12 +228,16 @@ class CatalogJournalBatchPublisher final {
   // callback and before marking or publishing any allocator bytes.
   const auto callback = CheckMgaPublicationCallback(context, "catalog_batch_cancelled_before_publication");
   if (callback.error) return callback;
-  if (storage) {
+  if (storage || owns_comment_mutation) {
     const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::catalog_mutation);
     if (savepoint.error) return savepoint;
   }
   const auto final_authority = ValidateCurrentMutatingTransactionAuthority(context, std::string(operation));
   if (final_authority.error) return final_authority;
+  if (owns_comment_mutation) {
+    const auto readmit = comment_custody->Readmit();
+    if (readmit.error) return readmit;
+  }
   auto marked = transaction::mga::MarkLocalTransactionRollbackOnly(
       current.snapshot->inventory, transaction::mga::MakeLocalTransactionId(context.local_transaction_id));
   if (!marked.ok()) return MakeEngineApiDiagnosticFromNative(marked.diagnostic,
@@ -302,6 +320,12 @@ inline EngineApiDiagnostic PublishPreparedCatalogJournalBatch(
     const CatalogTableCreationCustody&, const EngineRequestContext& context, std::string_view operation,
     std::vector<PreparedCatalogJournalRecord> records, PreparedCatalogTableStorage& storage) {
   return CatalogJournalBatchPublisher::Publish(context, operation, std::move(records), &storage);
+}
+
+inline EngineApiDiagnostic PublishPreparedCatalogJournalBatch(
+    const CatalogCommentPublicationCustody& custody, const EngineRequestContext& context,
+    std::string_view operation, std::vector<PreparedCatalogJournalRecord> records) {
+  return CatalogJournalBatchPublisher::Publish(context, operation, std::move(records), nullptr, &custody);
 }
 
 } // namespace scratchbird::engine::internal_api

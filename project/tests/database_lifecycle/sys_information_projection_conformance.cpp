@@ -55,6 +55,8 @@ std::string Field(const info::SysInformationProjectionRow& row, std::string_view
   for (const auto& field : row.fields) {
     if (field.first == name) {
       if (const auto* text = std::get_if<std::string>(&field.second)) { return *text; }
+      if (std::holds_alternative<std::monostate>(field.second) ||
+          std::holds_alternative<info::SysInformationPresentEmptyText>(field.second)) return {};
       Fail("text accessor used for native projection value");
     }
   }
@@ -65,6 +67,8 @@ bool RowContainsFieldValue(const info::SysInformationProjectionResult& result,
                            std::string_view field_name,
                            std::string_view value) {
   for (const auto& row : result.rows) {
+    const auto* field = info::SysInformationField(row, field_name);
+    if (!field || std::holds_alternative<std::monostate>(*field)) continue;
     if (Field(row, field_name) == value) { return true; }
   }
   return false;
@@ -131,6 +135,15 @@ void RequireNoUuidColumnsOrValues(const info::SysInformationProjectionResult& re
               "sys.information projection exposed a UUID-shaped column");
       const auto* text = std::get_if<std::string>(&field.second);
       if (text == nullptr) {
+        if (std::holds_alternative<std::monostate>(field.second) ||
+            std::holds_alternative<info::SysInformationPresentEmptyText>(field.second)) {
+          Require(field.first == "comment_text", "unexpected nullable text field in display projection");
+          const auto typed = info::SysInformationTypedValue(field.second);
+          Require(typed.descriptor.canonical_type_name == "text" &&
+                  typed.is_null == std::holds_alternative<std::monostate>(field.second),
+                  "display projection lost NULL versus present-empty text state");
+          continue;
+        }
         Require(field.first == "object_id" || field.first == "parent_object_id" ||
                 field.first == "node_id" || field.first == "parent_node_id",
                 "unexpected native identity field in display projection");

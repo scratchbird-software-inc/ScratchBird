@@ -3,6 +3,7 @@
 #pragma once
 #include "catalog_object_lifecycle.hpp"
 #include "behavior_support/api_behavior_record_codec.hpp"
+#include "../../../core/datatypes/canonical_utf8.hpp"
 #include <tuple>
 #include <type_traits>
 #include <variant>
@@ -46,6 +47,15 @@ template<> struct Traits<EngineCatalogObjectRecord> {
     return std::tie(r.creator_tx, r.object_uuid, r.catalog_row_uuid, r.object_kind, r.schema_uuid, r.owner_principal_uuid, r.lifecycle_state, r.definition_epoch, r.metadata_epoch, r.payload, r.synonym_target_uuid, r.synonym_target_class, r.deleted);
   }
   static const EngineUuid& Identity(const EngineCatalogObjectRecord& r) { return r.object_uuid; }
+};
+template<> struct Traits<EngineCatalogCommentRecord> {
+  static constexpr const char* kind = "EngineCatalogCommentRecord";
+  template<class T> static auto Fields(T& r) {
+    return std::tie(r.creator_tx, r.comment_uuid, r.catalog_row_uuid,
+        r.target_object_uuid, r.target_object_kind, r.language_tag,
+        r.comment_kind, r.comment_text, r.metadata_epoch, r.deleted);
+  }
+  static const EngineUuid& Identity(const EngineCatalogCommentRecord& r) { return r.comment_uuid; }
 };
 template<> struct Traits<EngineCatalogNameRecord> {
   static constexpr const char* kind = "EngineCatalogNameRecord";
@@ -119,6 +129,7 @@ template<> struct Traits<EngineCatalogCacheInvalidationRecord> {
 };
 }  // namespace catalog_record_codec
 using CatalogLifecycleRecord = std::variant<EngineCatalogObjectRecord,
+    EngineCatalogCommentRecord,
     EngineCatalogNameRecord,
     EngineCatalogDependencyRecord,
     EngineCatalogColumnMetadataRecord,
@@ -133,6 +144,19 @@ template<class Record>
 bool EncodeCatalogLifecycleRecord(const Record& record, std::string* output,
                                   std::uint64_t metadata_event_sequence = 0) {
   using Traits = catalog_record_codec::Traits<Record>;
+  if constexpr (std::is_same_v<Record, EngineCatalogCommentRecord>) {
+    if (!core::uuid::IsEngineIdentityUuid(record.comment_uuid) ||
+        !core::uuid::IsEngineIdentityUuid(record.catalog_row_uuid) ||
+        !core::uuid::IsEngineIdentityUuid(record.target_object_uuid) ||
+        record.catalog_row_uuid == record.comment_uuid ||
+        record.target_object_kind.empty() || record.language_tag.empty() ||
+        record.comment_kind != "general" || record.metadata_epoch == 0 ||
+        (record.deleted && !record.comment_text.empty())) return false;
+    if (!core::datatypes::ValidateCanonicalUtf8(
+        reinterpret_cast<const std::uint8_t*>(record.comment_text.data()), record.comment_text.size())) return false;
+    for (const unsigned char c : record.language_tag)
+      if (c <= 0x20 || c >= 0x7f) return false;
+  }
   if constexpr (std::is_same_v<Record, EngineCatalogObjectRecord>) {
     if (!core::uuid::IsEngineIdentityUuid(record.catalog_row_uuid) ||
         record.catalog_row_uuid == record.object_uuid) return false;
@@ -167,10 +191,19 @@ bool DecodeCatalogLifecycleBody(const ApiBehaviorRecord& frame, Record* output) 
     if (!core::uuid::IsEngineIdentityUuid(candidate.catalog_row_uuid) ||
         candidate.catalog_row_uuid == candidate.object_uuid) return false;
   }
+  if constexpr (std::is_same_v<Record, EngineCatalogCommentRecord>) {
+    std::string validated;
+    if (!EncodeCatalogLifecycleRecord(candidate, &validated)) return false;
+  }
   *output = std::move(candidate); return true;
 }
 inline bool DecodeCatalogLifecycleFrame(const ApiBehaviorRecord& frame, CatalogLifecycleRecord* output) {
   if (!output) return false;
+  if (frame.object_kind == catalog_record_codec::Traits<EngineCatalogCommentRecord>::kind) {
+    EngineCatalogCommentRecord record;
+    if (!DecodeCatalogLifecycleBody(frame, &record)) return false;
+    *output = std::move(record); return true;
+  }
   if (frame.object_kind == catalog_record_codec::Traits<EngineCatalogObjectRecord>::kind) {
     EngineCatalogObjectRecord record;
     if (!DecodeCatalogLifecycleBody(frame, &record)) return false;

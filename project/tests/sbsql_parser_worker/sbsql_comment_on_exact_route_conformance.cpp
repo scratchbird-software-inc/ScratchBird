@@ -7,10 +7,22 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
+#include "../support/component_authorization_fixture.hpp"
+#include "binary_identity_operand_oracle.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
+#include "catalog/catalog_object_lifecycle.hpp"
+#include "catalog/catalog_object_lifecycle_codec.hpp"
+#include "catalog/catalog_journal_batch.hpp"
+#include "catalog/sys_information_projection.hpp"
+#include "transaction/transaction_api.hpp"
+#include "query/plan_api.hpp"
+#include "observability/show_api.hpp"
+#include "memory.hpp"
+#include "local_transaction_store.hpp"
 #include "lowering/lowering.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
 #include "sblr_admission.hpp"
@@ -27,6 +39,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -52,8 +65,7 @@ constexpr std::string_view kTargetUuid = "019f0000-0000-7000-8000-000000b5e101";
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
-    std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -72,6 +84,14 @@ bool HasEvidence(const api::EngineApiResult& result,
     if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
+}
+
+bool HasEvidence(const api::EngineApiResult& result, std::string_view kind,
+                 const api::EngineUuid& id) {
+  return std::any_of(result.evidence.begin(), result.evidence.end(), [&](const auto& evidence) {
+    const auto* binary = std::get_if<api::EngineUuid>(&evidence.evidence_id);
+    return evidence.evidence_kind == kind && binary && *binary == id;
+  });
 }
 
 bool ResultPayloadContains(const api::EngineApiResult& result, std::string_view expected) {
@@ -204,13 +224,19 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
           "COMMENT ON payload missing object comment catalog authority");
   Require(Contains(artifacts.envelope.payload, "\"target_object_kind\":\"table\""),
           "COMMENT ON payload missing target object kind");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"target_object_uuid\":\"019f0000-0000-7000-8000-000000b5e101\""),
-          "COMMENT ON payload missing target UUID");
+  Require(scratchbird::test::sbsql::HasExactBinaryIdentityOperand(
+              artifacts.envelope, "target_object_uuid",
+              scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000b5e101")) &&
+              !Contains(artifacts.envelope.payload, kTargetUuid),
+          "COMMENT ON lost its exact binary target or emitted a text UUID");
   Require(Contains(artifacts.envelope.payload, "\"comment_text\":\"primary table\""),
           "COMMENT ON payload missing user comment text");
   Require(Contains(artifacts.envelope.payload, "\"comment_text_is_user_payload\":true"),
           "COMMENT ON payload did not classify comment text as user payload");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"comment_language_source\":\"admitted_session_then_database_default\"") &&
+          !Contains(artifacts.envelope.payload, "\"comment_language\":\"en\""),
+          "COMMENT lowering hardcoded English rather than admitted language selection");
   Require(Contains(artifacts.envelope.payload, kSurfaceId),
           "COMMENT ON payload missing row-identifiable statement evidence");
   Require(Contains(artifacts.envelope.payload, kObjectClassSurfaceId),
@@ -486,27 +512,33 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
-  context.trace_tags.push_back("right:CATALOG_MUTATE");
+  scratchbird::tests::MaterializeComponentAuthorization(context, {"CATALOG_MUTATE"});
   context.trace_tags.push_back("sbsql_surface_id:SBSQL-B5E19A3E35A7");
   return context;
 }
 
 api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& path,
-                                                 const scratchbird::core::platform::Uuid& database_uuid) {
+                                                 const scratchbird::core::platform::Uuid& database_uuid,
+                                                 std::string isolation = "read_committed") {
   auto context = EngineContext(path, database_uuid);
-  auto envelope = sblr::MakeSblrEnvelope("engine.op.txn_begin",
-                                         "SBLR_TXN_BEGIN",
-                                         "trace.comment_on.exact_route.transaction.begin");
-  envelope.requires_security_context = true;
-  envelope.requires_transaction_context = false;
-  envelope.contains_sql_text = false;
-  const sblr::SblrDispatchRequest request{context, envelope, api::EngineApiRequest{}};
-  const auto result = sblr::DispatchSblrOperation(request);
-  Require(result.envelope_validated, "transaction begin envelope did not validate");
-  Require(result.accepted, "transaction begin dispatch did not accept");
-  Require(result.api_result.ok, "transaction begin did not return success");
-  context.local_transaction_id = result.api_result.local_transaction_id;
-  context.transaction_uuid = result.api_result.transaction_uuid;
+  // Fixture setup owns real native BEGIN. Canonical engine.op.txn_begin is
+  // acquisition preflight, not a second durable transaction publication.
+  api::EngineBeginTransactionRequest begin_request;
+  begin_request.context = context;
+  begin_request.isolation_level = isolation;
+  const auto result = api::EngineBeginTransaction(begin_request);
+  Require(result.ok, "COMMENT fixture native BEGIN did not return success");
+  context.local_transaction_id = result.local_transaction_id;
+  context.transaction_uuid = result.transaction_uuid;
+  const auto inventory = db::AcquireLocalTransactionInventorySnapshot(path.string());
+  Require(inventory.ok(), "COMMENT fixture could not read its actual BEGIN inventory");
+  const auto entry = scratchbird::transaction::mga::LookupLocalTransaction(inventory.snapshot->inventory,
+      scratchbird::transaction::mga::MakeLocalTransactionId(context.local_transaction_id));
+  Require(entry.ok() && entry.entry.identity.transaction_uuid.value == context.transaction_uuid,
+          "COMMENT fixture BEGIN owner differs from native inventory");
+  context.snapshot_visible_through_local_transaction_id = entry.entry.begin_visible_through_local_transaction_id;
+  Require(result.isolation_level == isolation, "COMMENT BEGIN isolation receipt differs");
+  context.transaction_isolation_level = isolation;
   return context;
 }
 
@@ -540,12 +572,44 @@ sblr::SblrOperationEnvelope EngineEnvelope() {
 }
 
 void RequireEngineDispatch() {
-  const auto path = TestDatabasePath();
+  scratchbird::tests::OwnedTempDirectory temporary;
+  const auto path = temporary.path() / TestDatabasePath().filename();
   RemoveDatabaseArtifacts(path);
   const auto database_uuid = CreateMinimalDatabase(path);
-  auto context = EngineContext(path, database_uuid);
-  context.local_transaction_id = 1;
-  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000b5e123");
+  auto context = BeginEngineTransaction(path, database_uuid);
+  api::EngineCatalogCreateObjectRequest schema;
+  schema.context = context;
+  schema.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000b5e100");
+  schema.target_object.object_kind = "schema";
+  api::EngineLocalizedName schema_name;
+  schema_name.language_tag = "en"; schema_name.name = "comments"; schema_name.default_name = true;
+  schema.localized_names.push_back(schema_name);
+  Require(api::EngineCatalogCreateObject(schema).ok, "COMMENT fixture actual schema publication failed");
+  api::EngineCatalogCreateObjectRequest target;
+  target.context = context;
+  target.target_schema = schema.target_object;
+  target.target_object = EngineCommentApiRequest().target_object;
+  api::EngineLocalizedName name;
+  name.language_tag = "en"; name.name = "replay_target"; name.default_name = true;
+  target.localized_names.push_back(name);
+  const auto created_target = api::EngineCatalogCreateObject(target);
+  for (const auto& diagnostic : created_target.diagnostics)
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  Require(created_target.ok, "COMMENT fixture could not publish its actual target");
+  api::EngineCommitTransactionRequest target_commit;
+  target_commit.context = context;
+  Require(api::EngineCommitTransaction(target_commit).ok, "COMMENT fixture target commit failed");
+  context = BeginEngineTransaction(path, database_uuid);
+
+  auto unauthenticated = context;
+  unauthenticated.security_context_present = false;
+  unauthenticated.authorization_context = {};
+  Require(!sblr::DispatchSblrOperation({unauthenticated, EngineEnvelope(), EngineCommentApiRequest()}).api_result.ok,
+          "COMMENT accepted an unauthenticated writer");
+  auto denied = context;
+  scratchbird::tests::MaterializeComponentAuthorization(denied, {}, {"CATALOG_MUTATE"});
+  Require(!sblr::DispatchSblrOperation({denied, EngineEnvelope(), EngineCommentApiRequest()}).api_result.ok,
+          "COMMENT accepted an authenticated but denied writer");
 
   const sblr::SblrDispatchRequest comment_request{
       context, EngineEnvelope(), EngineCommentApiRequest()};
@@ -564,27 +628,269 @@ void RequireEngineDispatch() {
           "EngineCommentOnObject returned wrong operation id");
   Require(result.api_result.primary_object.object_kind == "object_comment",
           "EngineCommentOnObject did not return object_comment primary object");
-  Require(HasEvidence(result.api_result, "api_behavior_event", kOperationId),
-          "EngineCommentOnObject missing API behavior event evidence");
-  Require(ResultPayloadContains(result.api_result, "comment_text:primary table"),
-          "EngineCommentOnObject did not persist comment text payload");
-  Require(ResultPayloadContains(result.api_result, "comment_language:en"),
-          "EngineCommentOnObject did not persist comment language payload");
+  Require(HasEvidence(result.api_result, "comment_catalog_record", result.api_result.primary_object.uuid),
+          "EngineCommentOnObject missing actual centralized record evidence");
+  const auto stored = api::LoadCatalogObjectLifecycleState(context);
+  Require(stored.ok && stored.state.comments.size() == 1,
+          "COMMENT did not persist one actual resolver record");
+  const auto original = stored.state.comments.front();
+  Require(original.comment_text == "primary table" && original.language_tag == "en" &&
+          original.target_object_uuid == target.target_object.uuid &&
+          original.catalog_row_uuid == result.api_result.catalog_row_uuid &&
+          original.comment_uuid == result.api_result.primary_object.uuid,
+          "COMMENT stored text, language, target or identities differ from published result");
   Require(!result.api_result.catalog_row_uuid.is_nil(),
           "EngineCommentOnObject missing catalog row UUID evidence");
+  auto conflicting = BeginEngineTransaction(path, database_uuid);
+  const auto conflict = sblr::DispatchSblrOperation({conflicting, EngineEnvelope(), EngineCommentApiRequest()});
+  for (const auto& diagnostic : conflict.api_result.diagnostics)
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  Require(!conflict.api_result.ok && std::any_of(conflict.api_result.diagnostics.begin(),
+      conflict.api_result.diagnostics.end(), [](const auto& d) {
+        return d.code == "SB_ENGINE_API_INVALID_REQUEST" &&
+               d.detail == "ddl.comment_on_object:comment_concurrent_key_conflict";
+      }), "COMMENT accepted a second active writer for the same key");
+  api::EngineRollbackTransactionRequest conflicting_rollback;
+  conflicting_rollback.context = conflicting;
+  Require(api::EngineRollbackTransaction(conflicting_rollback).ok, "COMMENT conflicting writer rollback failed");
+  std::string encoded;
+  auto direct = original;
+  direct.creator_tx = context.local_transaction_id;
+  Require(api::EncodeCatalogLifecycleRecord(direct, &encoded), "COMMENT direct receiving control failed to encode");
+  api::ApiBehaviorRecord direct_frame;
+  Require(api::DecodeApiBehaviorRecord({reinterpret_cast<const std::uint8_t*>(encoded.data()), encoded.size()},
+      &direct_frame), "COMMENT direct receiving control failed to decode");
+  auto malformed = original;
+  malformed.metadata_epoch = 0;
+  Require(!api::EncodeCatalogLifecycleRecord(malformed, &encoded), "COMMENT codec accepted zero metadata epoch");
+  malformed = original;
+  malformed.deleted = true;
+  Require(!api::EncodeCatalogLifecycleRecord(malformed, &encoded), "COMMENT codec accepted text in a retirement row");
+  malformed = original;
+  malformed.comment_text = std::string(1, static_cast<char>(0xff));
+  Require(!api::EncodeCatalogLifecycleRecord(malformed, &encoded), "COMMENT codec accepted malformed UTF8");
+  malformed = original;
+  malformed.language_tag = "en\n";
+  Require(!api::EncodeCatalogLifecycleRecord(malformed, &encoded), "COMMENT codec accepted a control-byte language tag");
+  Require(api::AppendSequencedCatalogJournalRecord(context, direct_frame, api::CatalogJournalKind::lifecycle).error &&
+      api::PublishPreparedCatalogJournalBatch(context, kOperationId,
+          {{api::CatalogJournalKind::lifecycle, direct_frame}}).error,
+      "COMMENT generic journal writer bypassed owned admission");
+
+  const auto check_projection = [&](const api::EngineRequestContext& reader,
+                                    std::string_view expected, bool null_expected) {
+    const auto state = api::LoadCatalogObjectLifecycleState(reader);
+    Require(state.ok, "COMMENT readable source load failed");
+    std::vector<api::SysInformationCatalogObjectSource> objects;
+    std::vector<api::SysInformationResolverNameSource> names;
+    std::vector<api::SysInformationCommentSource> comments;
+    for (const auto& object : state.state.objects) {
+      api::SysInformationCatalogObjectSource source;
+      source.object_uuid = object.object_uuid; source.object_class = object.object_kind;
+      source.schema_uuid = object.schema_uuid;
+      source.parent_object_uuid = object.schema_uuid;
+      objects.push_back(source);
+    }
+    for (const auto& name : state.state.names) {
+      api::SysInformationResolverNameSource source;
+      source.object_uuid = name.object_uuid; source.object_class = name.object_kind;
+      source.language_tag = name.language_tag; source.display_name = name.display_name;
+      source.raw_name_text = name.raw_name_text; source.scope_uuid = name.schema_uuid;
+      names.push_back(source);
+    }
+    for (const auto& comment : state.state.comments) {
+      api::SysInformationCommentSource source;
+      source.object_uuid = comment.target_object_uuid; source.object_class = comment.target_object_kind;
+      source.language_tag = comment.language_tag; source.comment_text = comment.comment_text;
+      source.catalog_generation_id = comment.metadata_epoch; source.row_ordinal = comment.event_sequence;
+      comments.push_back(source);
+    }
+    api::SysInformationProjectionContext projection_context;
+    projection_context.session_language = reader.language_context.language_tag;
+    projection_context.default_language = reader.language_context.default_language_tag;
+    const auto projection = api::BuildSysInformationProjection("sys.catalog_readable.objects",
+        projection_context, objects, names, comments);
+    Require(projection.ok && projection.rows.size() == objects.size(),
+            "COMMENT readable projection did not resolve its real schema and target");
+    const api::SysInformationProjectionRow* target_projection = nullptr;
+    for (const auto& row : projection.rows) {
+      const auto* projected_name = api::SysInformationField(row, "object_name");
+      if (projected_name && *projected_name == api::SysInformationProjectionValue{std::string("replay_target")})
+        target_projection = &row;
+    }
+    Require(target_projection, "COMMENT readable projection omitted its actual target");
+    const auto* value = api::SysInformationField(*target_projection, "comment_text");
+    Require(value && api::SysInformationFieldIsNull(value) == null_expected,
+            "COMMENT readable projection conflated missing and empty text");
+    const auto typed = api::SysInformationTypedValue(*value);
+    Require(typed.is_null == null_expected && (null_expected || typed.encoded_value == expected),
+            "COMMENT readable projection lost its typed NULL/text value");
+    api::EnginePlanOperationRequest query;
+    query.context = reader;
+    query.context.catalog_generation_id = state.state.metadata_epoch;
+    scratchbird::tests::MaterializeComponentAuthorization(query.context, {"CATALOG_MUTATE"});
+    query.execute = true;
+    query.query_operation = "values";
+    query.option_envelopes.push_back("catalog_projection:sys.catalog_readable.objects");
+    const auto live = api::EnginePlanOperation(query);
+    for (const auto& diagnostic : live.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+    Require(live.ok, "COMMENT production query projection failed");
+    bool found = false;
+    for (const auto& row : live.result_shape.rows) {
+      bool target_row = false;
+      const api::EngineTypedValue* comment = nullptr;
+      for (const auto& [field, cell] : row.fields) {
+        if (field == "object_name" && cell.encoded_value == "replay_target") target_row = true;
+        if (field == "comment_text") comment = &cell;
+      }
+      if (!target_row) continue;
+      Require(comment && comment->is_null == null_expected &&
+              (null_expected || comment->encoded_value == expected),
+              "COMMENT production query did not publish the actual stored nullable text");
+      found = true;
+    }
+    Require(found, "COMMENT production query omitted its actual target");
+    api::EngineShowCatalogRequest show;
+    show.context = query.context;
+    show.option_envelopes = {"projection:sys.catalog_readable.objects",
+                            "predicate_kind:column_like", "predicate_column:comment_text",
+                            "predicate_value:%"};
+    const auto shown = api::EngineShowCatalog(show);
+    for (const auto& diagnostic : shown.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+    Require(shown.ok, "COMMENT production SHOW projection failed");
+    bool show_target = false;
+    for (const auto& row : shown.result_shape.rows)
+      for (const auto& [field, cell] : row.fields)
+        if (field == "object_name" && cell.encoded_value == "replay_target") show_target = true;
+    Require(show_target == !null_expected,
+            "COMMENT SHOW LIKE rejected present-empty text or admitted missing NULL");
+    show.option_envelopes = {"projection:sys.catalog_readable.object_comments"};
+    const auto listed = api::EngineShowCatalog(show);
+    Require(listed.ok && listed.result_shape.rows.size() == state.state.comments.size(),
+            "COMMENT SHOW listing did not preserve every visible language record");
+    show.option_envelopes = {"projection:sys.catalog_readable.objects",
+        "predicate_kind:column_in_projection", "predicate_column:comment_text",
+        "subquery_projection:sys.catalog_readable.object_comments", "subquery_select_column:comment_text",
+        "subquery_predicate_kind:column_like", "subquery_predicate_column:comment_text", "subquery_predicate_value:%"};
+    const auto nested = api::EngineShowCatalog(show);
+    Require(nested.ok && (nested.result_shape.rows.size() == 1) == !null_expected,
+            "COMMENT SHOW nested projection lost stored text, present-empty or NULL distinction");
+  };
+
+  auto replacement_request = EngineCommentApiRequest();
+  replacement_request.option_envelopes.back() = "comment_text:replacement:with;framing";
+  const auto replacement = sblr::DispatchSblrOperation({context, EngineEnvelope(), replacement_request});
+  Require(replacement.api_result.ok && replacement.api_result.primary_object.uuid == original.comment_uuid &&
+          replacement.api_result.catalog_row_uuid != original.catalog_row_uuid,
+          "COMMENT replacement failed to preserve logical identity with a new row version");
+  auto replaced = api::LoadCatalogObjectLifecycleState(context);
+  Require(replaced.ok && replaced.state.comments.size() == 1 &&
+          replaced.state.comments.front().comment_text == "replacement:with;framing",
+          "COMMENT replacement was not losslessly stored");
+  auto default_context = context;
+  default_context.language_context.language_tag.clear();
+  auto default_request = replacement_request;
+  default_request.option_envelopes.erase(default_request.option_envelopes.begin() + 1);
+  const auto default_replacement = sblr::DispatchSblrOperation({default_context, EngineEnvelope(), default_request});
+  Require(default_replacement.api_result.ok &&
+          default_replacement.api_result.primary_object.uuid == original.comment_uuid,
+          "COMMENT omitted language did not fall back to the database default");
+
+  auto french_context = context;
+  french_context.language_context.language_tag = "fr";
+  auto french_request = EngineCommentApiRequest();
+  french_request.option_envelopes.erase(french_request.option_envelopes.begin() + 1);
+  french_request.option_envelopes.back() = "comment_text:bonjour";
+  const auto french = sblr::DispatchSblrOperation({french_context, EngineEnvelope(), french_request});
+  Require(french.api_result.ok, "COMMENT omitted-language session selection failed");
+  const auto localized = api::LoadCatalogObjectLifecycleState(context);
+  Require(localized.ok && localized.state.comments.size() == 2,
+          "COMMENT session language overwrote the default language");
+  Require(std::any_of(localized.state.comments.begin(), localized.state.comments.end(),
+      [](const auto& row) { return row.language_tag == "fr" && row.comment_text == "bonjour"; }),
+      "COMMENT omitted language did not persist the admitted session language");
+  check_projection(french_context, "bonjour", false);
+  auto french_null = EngineCommentApiRequest(true);
+  french_null.option_envelopes.erase(french_null.option_envelopes.begin() + 1);
+  Require(sblr::DispatchSblrOperation({french_context, EngineEnvelope(), french_null}).api_result.ok,
+          "COMMENT session language retirement failed");
+  check_projection(french_context, "replacement:with;framing", false);
+  french_request.option_envelopes.back() = "comment_text:";
+  Require(sblr::DispatchSblrOperation({french_context, EngineEnvelope(), french_request}).api_result.ok,
+          "COMMENT empty text publication failed");
+  check_projection(french_context, "", false);
 
   const sblr::SblrDispatchRequest null_comment_request{
       context, EngineEnvelope(), EngineCommentApiRequest(true)};
   const auto null_result = sblr::DispatchSblrOperation(null_comment_request);
   Require(null_result.api_result.ok, "EngineCommentOnObject did not accept NULL comment");
-  Require(ResultPayloadContains(null_result.api_result, "comment_is_null:true"),
-          "EngineCommentOnObject did not persist NULL comment evidence");
+  const auto retired = api::LoadCatalogObjectLifecycleState(context);
+  Require(retired.ok && retired.state.comments.size() == 1 &&
+          retired.state.comments.front().language_tag == "fr",
+          "COMMENT NULL did not retire only the exact language key");
+  const auto noop = sblr::DispatchSblrOperation(null_comment_request);
+  Require(noop.api_result.ok && noop.api_result.catalog_row_uuid.is_nil(),
+          "COMMENT NULL on a missing key manufactured a catalog row");
+  auto invalid_noop = EngineCommentApiRequest(true);
+  invalid_noop.option_envelopes[1] = "comment_language:en\n";
+  Require(!sblr::DispatchSblrOperation({context, EngineEnvelope(), invalid_noop}).api_result.ok,
+          "COMMENT NULL no-op bypassed language validation");
+  check_projection(context, "", true);
+  const auto recreated = sblr::DispatchSblrOperation(comment_request);
+  Require(recreated.api_result.ok && recreated.api_result.primary_object.uuid != original.comment_uuid,
+          "COMMENT recreation reused a retired logical identity");
+  auto sibling = BeginEngineTransaction(path, database_uuid);
+  const auto invisible = api::LoadCatalogObjectLifecycleState(sibling);
+  Require(invisible.ok && invisible.state.comments.empty(), "COMMENT exposed uncommitted rows to sibling");
+  api::EngineRollbackTransactionRequest rollback;
+  rollback.context = sibling;
+  Require(api::EngineRollbackTransaction(rollback).ok, "COMMENT sibling rollback failed");
+  api::EngineCommitTransactionRequest commit;
+  commit.context = context;
+  Require(api::EngineCommitTransaction(commit).ok, "COMMENT transaction commit failed");
+  auto reopened = BeginEngineTransaction(path, database_uuid);
+  const auto durable = api::LoadCatalogObjectLifecycleState(reopened);
+  Require(durable.ok && durable.state.comments.size() == 2,
+          "COMMENT commit/fresh-reader did not retain both language records");
+  auto stale = BeginEngineTransaction(path, database_uuid, "repeatable_read");
+  auto rollback_request = EngineCommentApiRequest();
+  rollback_request.option_envelopes.back() = "comment_text:must roll back";
+  Require(sblr::DispatchSblrOperation({reopened, EngineEnvelope(), rollback_request}).api_result.ok,
+          "COMMENT rollback fixture mutation failed");
+  api::EngineCommitTransactionRequest update_commit;
+  update_commit.context = reopened;
+  Require(api::EngineCommitTransaction(update_commit).ok, "COMMENT concurrent update commit failed");
+  check_projection(stale, "primary table", false);
+  const auto stale_mutation = sblr::DispatchSblrOperation({stale, EngineEnvelope(), EngineCommentApiRequest()});
+  Require(!stale_mutation.api_result.ok, "COMMENT stale snapshot overwrote a newer committed version");
+  auto forged_metadata_override = stale;
+  forged_metadata_override.statement_metadata_snapshot_engine_owned = true;
+  Require(!sblr::DispatchSblrOperation({forged_metadata_override, EngineEnvelope(), EngineCommentApiRequest()}).api_result.ok,
+          "COMMENT caller observation flag overrode the actual native transaction boundary");
+  rollback.context = stale;
+  Require(api::EngineRollbackTransaction(rollback).ok, "COMMENT stale reader rollback failed");
+  reopened = BeginEngineTransaction(path, database_uuid);
+  rollback_request.option_envelopes.back() = "comment_text:must roll back again";
+  Require(sblr::DispatchSblrOperation({reopened, EngineEnvelope(), rollback_request}).api_result.ok,
+          "COMMENT second rollback fixture mutation failed");
+  rollback.context = reopened;
+  Require(api::EngineRollbackTransaction(rollback).ok, "COMMENT reopened reader rollback failed");
+  auto after_rollback = BeginEngineTransaction(path, database_uuid);
+  check_projection(after_rollback, "must roll back", false);
+  rollback.context = after_rollback;
+  Require(api::EngineRollbackTransaction(rollback).ok, "COMMENT final reader rollback failed");
   RemoveDatabaseArtifacts(path);
+  temporary.Cleanup();
 }
 
 }  // namespace
 
-int main() {
+int main() try {
+  Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+      scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(), "comment_exact_route").ok(),
+      "COMMENT fixture memory policy configuration failed");
   RequireRegistryEvidence();
   const auto artifacts = RunPipeline(kSql);
   RequireExactLowering(artifacts);
@@ -594,4 +900,7 @@ int main() {
   RequireEngineDispatch();
   std::cout << "sbsql_comment_on_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

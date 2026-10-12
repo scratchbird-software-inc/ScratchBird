@@ -30802,7 +30802,7 @@ void AppendCommentOnDdlJson(std::ostream& out, const CommentOnDdlInfo& info) {
       << "\"comment_target_name_parts\":" << info.target_name_parts << ','
       << "\"comment_literal_present\":" << (info.comment_is_null ? "false" : "true") << ','
       << "\"comment_is_null\":" << (info.comment_is_null ? "true" : "false") << ','
-      << "\"comment_language\":\"en\",";
+      << "\"comment_language_source\":\"admitted_session_then_database_default\",";
   if (!info.comment_is_null) {
     out << "\"comment_text\":\"" << EscapeJson(info.comment_text) << "\",";
   }

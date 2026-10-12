@@ -578,25 +578,39 @@ std::string SelectResolverDisplayName(
   return {};
 }
 
-std::string SelectCommentText(const std::vector<SysInformationCommentSource>& comments,
+const SysInformationCommentSource* SelectComment(const std::vector<SysInformationCommentSource>& comments,
                               const SysInformationProjectionContext& context,
                               const EngineUuid& object_uuid,
                               const std::string& object_class) {
   const auto languages = LanguageOrder(context);
   for (const auto& language : languages) {
+    const SysInformationCommentSource* best = nullptr;
     for (const auto& comment : comments) {
       if (comment.object_uuid != object_uuid) { continue; }
       if (!object_class.empty() && comment.object_class != object_class) { continue; }
       if (comment.language_tag != language) { continue; }
       if (comment.hidden) { continue; }
+      if (comment.comment_kind != "general") { continue; }
       if (context.visible_catalog_generation_id != 0 &&
           comment.catalog_generation_id > context.visible_catalog_generation_id) {
         continue;
       }
-      return comment.comment_text;
+      if (!best || std::tie(comment.catalog_generation_id, comment.row_ordinal) >
+          std::tie(best->catalog_generation_id, best->row_ordinal)) best = &comment;
     }
+    if (best) return best;
   }
-  return {};
+  return nullptr;
+}
+
+SysInformationProjectionValue SelectCommentText(
+    const std::vector<SysInformationCommentSource>& comments,
+    const SysInformationProjectionContext& context, const EngineUuid& object_uuid,
+    const std::string& object_class) {
+  const auto* selected = SelectComment(comments, context, object_uuid, object_class);
+  if (selected && selected->comment_text.empty()) return SysInformationPresentEmptyText{};
+  return selected ? SysInformationProjectionValue{selected->comment_text}
+                  : SysInformationProjectionValue{std::monostate{}};
 }
 
 std::string ObjectDisplayName(const std::vector<SysInformationResolverNameSource>& resolver_names,
@@ -3267,7 +3281,7 @@ SysInformationProjectionResult BuildSysInformationProjection(
         }
         continue;
       }
-      const std::string comment = SelectCommentText(
+      const auto comment = SelectCommentText(
           comments, context, object.object_uuid, object.object_class);
       SysInformationProjectionRow row;
       if (canonical_view_path == "sys.catalog_readable.object_tree") {
@@ -3508,9 +3522,9 @@ SysInformationProjectionResult BuildSysInformationProjection(
 
   if (canonical_view_path == "sys.catalog_readable.object_comments") {
     for (const auto& comment : comments) {
-      if (!ProjectionSourceVisible(comment.hidden, comment.catalog_generation_id, context)) { continue; }
+      if (!ProjectionSourceVisible(comment.hidden, comment.catalog_generation_id, context)) continue;
       const auto* object = FindObject(catalog_objects, comment.object_uuid, context);
-      if (object == nullptr) { continue; }
+      if (object == nullptr || object->object_class != comment.object_class) continue;
       bool found_path = false;
       bool found_name = false;
       const std::string object_path = ObjectDisplayPath(resolver_names, context, *object, &found_path);
@@ -3519,7 +3533,9 @@ SysInformationProjectionResult BuildSysInformationProjection(
       SysInformationProjectionRow row;
       AddField(&row, "object_path", object_path);
       AddField(&row, "object_name", object_name);
-      AddField(&row, "comment_text", comment.comment_text);
+      AddField(&row, "comment_text", comment.comment_text.empty()
+          ? SysInformationProjectionValue{SysInformationPresentEmptyText{}}
+          : SysInformationProjectionValue{comment.comment_text});
       AddField(&row, "comment_language", comment.language_tag);
       AddField(&row, "visibility_state", "visible");
       result.rows.push_back(std::move(row));

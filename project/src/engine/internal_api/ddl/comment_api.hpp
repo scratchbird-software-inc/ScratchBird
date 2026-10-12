@@ -16,5 +16,6 @@ namespace scratchbird::engine::internal_api {
 struct EngineCommentOnObjectRequest : EngineApiRequest {};
 struct EngineCommentOnObjectResult : EngineApiResult {};
 EngineCommentOnObjectResult EngineCommentOnObject(const EngineCommentOnObjectRequest& request);
+EngineCommentOnObjectResult EngineCatalogPublishComment(const EngineCommentOnObjectRequest& request);
 
 }  // namespace scratchbird::engine::internal_api

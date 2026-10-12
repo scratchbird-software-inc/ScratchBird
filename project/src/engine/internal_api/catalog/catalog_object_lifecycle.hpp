@@ -74,6 +74,21 @@ struct EngineCatalogObjectRecord {
   bool deleted = false;
 };
 
+// Central comment resolver versions; never embedded in an ordinary object row.
+struct EngineCatalogCommentRecord {
+  std::uint64_t creator_tx = 0;
+  std::uint64_t event_sequence = 0;
+  EngineUuid comment_uuid;
+  EngineUuid catalog_row_uuid;
+  EngineUuid target_object_uuid;
+  std::string target_object_kind;
+  std::string language_tag;
+  std::string comment_kind = "general";
+  std::string comment_text;
+  std::uint64_t metadata_epoch = 0;
+  bool deleted = false;
+};
+
 struct EngineCatalogNameRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
@@ -221,6 +236,7 @@ struct EngineCatalogCacheInvalidationRecord {
 
 struct EngineCatalogObjectLifecycleState {
   std::vector<EngineCatalogObjectRecord> objects;
+  std::vector<EngineCatalogCommentRecord> comments;
   std::vector<EngineCatalogNameRecord> names;
   std::vector<EngineCatalogDependencyRecord> dependencies;
   std::vector<EngineCatalogColumnMetadataRecord> columns;
