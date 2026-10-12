@@ -889,7 +889,7 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
   result.primary_object.uuid = table_uuid;
   result.primary_object.object_kind = "table";
   result.table_object = result.primary_object;
-  result.table_catalog_row_uuid = GenerateCrudEngineUuid("row");
+  result.table_catalog_row_uuid = catalog_created.catalog_row_uuid;
   result.catalog_row_uuid = result.table_catalog_row_uuid;
   result.created_catalog_records.push_back(result.primary_object);
   result.evidence.push_back({"mga_relation_metadata", "table_create"});

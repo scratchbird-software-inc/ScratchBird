@@ -10,6 +10,7 @@
 #include "memory.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include "mga_relation_store/mga_metadata_preparation.hpp"
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
 #include "mga_relation_store/mga_relation_metadata_store.hpp"
 #include "mga_relation_store/mga_contextual_text_descriptor.hpp"
@@ -2233,6 +2234,15 @@ int RunConformance(const int argc, char* argv[]) {
     std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   Require(fresh_created.ok,
           "fresh text table creation failed");
+  api::EngineCatalogLookupObjectRequest created_lookup;
+  created_lookup.context = fresh;
+  created_lookup.target_object.uuid = fresh_table.requested_table_uuid;
+  created_lookup.target_object.object_kind = "table";
+  const auto actual_catalog_row = api::EngineCatalogLookupObjectByUuid(created_lookup);
+  Require(actual_catalog_row.ok && !actual_catalog_row.catalog_row_uuid.is_nil() &&
+              fresh_created.catalog_row_uuid == actual_catalog_row.catalog_row_uuid &&
+              fresh_created.table_catalog_row_uuid == actual_catalog_row.catalog_row_uuid,
+          "CREATE TABLE returned an unrelated catalog row identity");
   const auto fresh_descriptor = VisibleDescriptor(
       fresh, fixture, fixture.fresh_text_table_uuid);
   Require(DescriptorField(fresh_descriptor, "datatype_descriptor_uuid") ==
@@ -2624,6 +2634,12 @@ int RunConformance(const int argc, char* argv[]) {
           "fresh text descriptor changed after restart");
   const auto fresh_relation = api::LoadMgaRelationStorageDescriptor(
       fresh_restart, FixtureIdentity(fixture.fresh_text_table_uuid));
+  created_lookup.context = fresh_restart;
+  for (unsigned repeat = 0; repeat != 2; ++repeat) {
+    const auto persisted_row = api::EngineCatalogLookupObjectByUuid(created_lookup);
+    Require(persisted_row.ok && persisted_row.catalog_row_uuid == fresh_created.catalog_row_uuid,
+            "CREATE TABLE catalog row identity changed after commit or repeated lookup");
+  }
   Require(fresh_relation.ok && fresh_relation.descriptor.columns.size() == 1 &&
               fresh_relation.descriptor.columns.front()
                       .value_descriptor.descriptor_uuid ==
@@ -2664,6 +2680,46 @@ int RunConformance(const int argc, char* argv[]) {
       published_retry_catalog.bound_object_identity.object_descriptor_generation;
   retry_request.bound_column_generation = published_retry_catalog.metadata_cache_epoch;
   const auto& retry_table = retry_request;
+  {
+    const auto owner = api::AcquireTransactionInventoryGuard(sealed_retry.database_path);
+    const auto before = CaptureRefusalArtifacts(sealed_retry, fixture);
+    const auto inventory_before = db::AcquireStrongLocalTransactionInventorySnapshot(sealed_retry.database_path);
+    const auto next = api::NextMetadataEventSequence(sealed_retry);
+    std::vector<std::string> deferred;
+    const auto range = api::ReserveEventSequenceRange(sealed_retry, "relation_metadata",
+        fixture.path.string() + ".sb.mga_relation_metadata", 1,
+        [&] { return api::ScanNextMetadataEventSequence(sealed_retry); }, &deferred);
+    Require(range.ok && range.first == next && inventory_before.ok(), "pure sealed preparation reservation failed");
+    struct Abandon {
+      const api::MgaEventSequenceRangeReservation& range;
+      ~Abandon() { api::AbandonDeferredEventSequenceReservation(range); }
+    } abandon{range};
+    api::MgaPreparedSealedTableMetadata prepared;
+    Require(!api::PrepareMgaSealedTableMetadata(sealed_retry, retry_table, {}, range.first, &prepared).error &&
+                !prepared.frame.empty() && prepared.descriptor.relation_uuid == retry_table.table_uuid &&
+                prepared.descriptor.columns.size() == 1 &&
+                prepared.descriptor.columns.front().column_uuid == retry_column.requested_column_uuid &&
+                !api::ValidateMgaRelationStorageDescriptor(prepared.descriptor).error,
+            "pure sealed preparation lost exact bound storage identities");
+    std::vector<std::string> fields;
+    Require(api::DecodeMgaMetadataFields(prepared.frame, &fields) && fields.size() == 19 &&
+                fields[1] == "TABLE_METADATA_SEALED_DESCRIPTOR_V2" && fields[3] == std::to_string(range.first) &&
+                fields[6] == api::MetadataUuidBytes(retry_table.table_uuid) &&
+                fields[13] == api::MetadataUuidBytes(prepared.descriptor.descriptor_uuid),
+            "pure sealed preparation did not bind its assigned event and binary descriptor");
+    RequireRefusalArtifactsUnchanged(before, sealed_retry, fixture, "pure sealed preparation wrote storage");
+    const auto inventory_after = db::AcquireStrongLocalTransactionInventorySnapshot(sealed_retry.database_path);
+    Require(inventory_after.ok() && inventory_before.snapshot->inventory.publication_base ==
+                inventory_after.snapshot->inventory.publication_base,
+            "pure sealed preparation changed native inventory");
+    auto foreign = sealed_retry;
+    foreign.transaction_uuid = api::GenerateCrudEngineUuid("transaction");
+    Require(api::PrepareMgaSealedTableMetadata(foreign, retry_table, {}, range.first, &prepared).error &&
+                prepared.frame.empty() && prepared.descriptor.descriptor_uuid.is_nil(),
+            "foreign preparation retained usable output");
+    Require(api::PrepareMgaSealedTableMetadata(sealed_retry, retry_table, {}, 0, &prepared).error &&
+                prepared.frame.empty(), "zero-event preparation retained usable output");
+  }
   {
     const auto before = CaptureRefusalArtifacts(sealed_retry, fixture);
     const auto before_next = api::NextMetadataEventSequence(sealed_retry);

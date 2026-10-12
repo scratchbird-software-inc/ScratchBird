@@ -8,6 +8,7 @@
 
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include "mga_relation_store/mga_metadata_preparation.hpp"
 #include "mga_relation_store/mga_contextual_text_descriptor.hpp"
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
 #include "mga_relation_store/mga_heap_runtime_support.hpp"
@@ -316,20 +317,19 @@ EngineApiDiagnostic AppendMgaTableMetadata(const EngineRequestContext& context,
   return success;
 }
 
-EngineApiDiagnostic AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
+EngineApiDiagnostic PrepareMgaSealedTableMetadata(
     const EngineRequestContext& context,
     const CrudTableRecord& table,
     const std::vector<CrudIndexRecord>& indexes,
-    MgaRelationStorageDescriptor* descriptor) {
+    std::uint64_t event_sequence,
+    MgaPreparedSealedTableMetadata* output) {
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   constexpr const char* kOperation =
       "mga.relation_metadata.table_create.sealed_descriptor_v2";
-  const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::catalog_mutation);
-  if (savepoint.error) return savepoint;
-  if (descriptor == nullptr) {
+  if (output == nullptr) {
     return MakeInvalidRequestDiagnostic(kOperation, "descriptor_output_required");
   }
-  *descriptor = {};
+  *output = {};
   if (context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic(kOperation, "database_path_required");
   }
@@ -337,7 +337,7 @@ EngineApiDiagnostic AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
       ValidateMgaMutatingTransactionAuthorityForStoreModule(context,
                                                             kOperation);
   if (authority.error) return authority;
-  if (!CanonicalNonNilMigrationUuid(table.table_uuid) ||
+  if (event_sequence == 0 || !CanonicalNonNilMigrationUuid(table.table_uuid) ||
       table.columns.empty()) {
     return MakeInvalidRequestDiagnostic(
         kOperation, "table_identity_or_columns_invalid");
@@ -346,20 +346,9 @@ EngineApiDiagnostic AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
   if (!TableColumnMetadataAdmissible(table)) {
     return MakeInvalidRequestDiagnostic(kOperation, "column_metadata_invalid");
   }
-  std::vector<std::string> allocator_lines;
-  const auto reservation = ReserveEventSequenceRange(
-      context, "relation_metadata", MetadataStorePath(context), 1,
-      [&context]() { return ScanNextMetadataEventSequence(context); },
-      &allocator_lines);
-  if (!reservation.ok) return reservation.diagnostic;
-  const auto abandon_reservation = [&]() {
-    AbandonDeferredEventSequenceReservation(reservation);
-    allocator_lines.clear();
-  };
-
   CrudTableRecord writable = table;
   writable.creator_tx = context.local_transaction_id;
-  writable.event_sequence = reservation.first;
+  writable.event_sequence = event_sequence;
   auto base_fields = BuildPersistedMgaRelationDescriptorFields(
       context, writable, indexes);
   auto relation_descriptor =
@@ -367,13 +356,11 @@ EngineApiDiagnostic AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
   EngineApiDiagnostic material_diagnostic;
   if (!BindFreshCanonicalTextColumnIdentitiesV2(
           &writable, &relation_descriptor, &material_diagnostic)) {
-    abandon_reservation();
     return material_diagnostic;
   }
   const auto validated =
       ValidateMgaRelationStorageDescriptor(relation_descriptor);
   if (validated.error) {
-    abandon_reservation();
     return validated;
   }
 
@@ -398,7 +385,6 @@ EngineApiDiagnostic AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
     const auto policy =
         LoadCurrentEngineContextualTextPolicyRowSetForPublicationV2();
     if (!policy.ok) {
-      abandon_reservation();
       return policy.diagnostic;
     }
     policy_rows = policy.rows;
@@ -407,7 +393,6 @@ EngineApiDiagnostic AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
   if (!BuildMgaSealedContextualTextDescriptorMaterialV2(
           context, writable, std::move(relation_descriptor), policy_rows,
           &material, &material_diagnostic)) {
-    abandon_reservation();
     return material_diagnostic;
   }
 
@@ -425,7 +410,6 @@ EngineApiDiagnostic AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
           kMgaContextualTextSidecarSetSealKeyV2 ||
       complete_fields.back().second.size() !=
           material.sealed_set.seal_sha256.size()) {
-    abandon_reservation();
     return ContextualTextMgaDiagnostic(
         "sealed descriptor vector header or final seal is invalid");
   }
@@ -456,18 +440,55 @@ EngineApiDiagnostic AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
   fields[stf::kContextualSidecarCount] =
       std::to_string(material.sealed_set.contextual_sidecar_count);
   fields[stf::kDescriptorFields] = EncodeMetadataPairs(complete_fields);
-  const std::string line = JoinLine(fields);
+  if (fields[stf::kColumns].empty() || fields[stf::kDescriptorFields].empty())
+    return MakeInvalidRequestDiagnostic(kOperation, "sealed_table_descriptor_frame_encoding_failed");
+  auto frame = JoinLine(fields);
+  if (frame.empty())
+    return MakeInvalidRequestDiagnostic(kOperation, "sealed_table_descriptor_frame_encoding_failed");
+  auto success = OkDiagnostic();
+  output->frame = std::move(frame);
+  output->descriptor = std::move(material.relation_descriptor);
+  return success;
+}
+
+EngineApiDiagnostic AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
+    const EngineRequestContext& context, const CrudTableRecord& table,
+    const std::vector<CrudIndexRecord>& indexes,
+    MgaRelationStorageDescriptor* descriptor) {
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
+  constexpr const char* kOperation = "mga.relation_metadata.table_create.sealed_descriptor_v2";
+  const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::catalog_mutation);
+  if (savepoint.error) return savepoint;
+  if (descriptor == nullptr) return MakeInvalidRequestDiagnostic(kOperation, "descriptor_output_required");
+  *descriptor = {};
+  if (context.database_path.empty()) return MakeInvalidRequestDiagnostic(kOperation, "database_path_required");
+  const auto authority = ValidateMgaMutatingTransactionAuthorityForStoreModule(context, kOperation);
+  if (authority.error) return authority;
+  if (!CanonicalNonNilMigrationUuid(table.table_uuid) || table.columns.empty())
+    return MakeInvalidRequestDiagnostic(kOperation, "table_identity_or_columns_invalid");
+  if (!TableColumnMetadataAdmissible(table))
+    return MakeInvalidRequestDiagnostic(kOperation, "column_metadata_invalid");
+  std::vector<std::string> allocator_lines;
+  const auto reservation = ReserveEventSequenceRange(context, "relation_metadata", MetadataStorePath(context), 1,
+      [&context]() { return ScanNextMetadataEventSequence(context); }, &allocator_lines);
+  if (!reservation.ok) return reservation.diagnostic;
+  UnpublishedMetadataReservation unpublished{reservation};
+  MgaPreparedSealedTableMetadata material;
+  const auto prepared = PrepareMgaSealedTableMetadata(context, table, indexes, reservation.first, &material);
+  if (prepared.error) return prepared;
+  auto success = OkDiagnostic();
+  unpublished.attempted = true;
   const auto publication = PublishSealedMetadataReservation(
-      context, reservation, &allocator_lines, line, kOperation, "sealed_table_descriptor");
+      context, reservation, &allocator_lines, material.frame, kOperation, "sealed_table_descriptor");
   if (publication.error) return publication;
-  if (!AppendLine(MetadataStorePath(context), line)) {
+  if (!AppendLine(MetadataStorePath(context), material.frame)) {
     return MakeInvalidRequestDiagnostic(
         kOperation, "sealed_table_descriptor_append_failed");
   }
   const auto durable = SynchronizeSealedMetadata(context, kOperation, "sealed_table_descriptor");
   if (durable.error) return durable;
-  *descriptor = std::move(material.relation_descriptor);
-  return OkDiagnostic();
+  *descriptor = std::move(material.descriptor);
+  return success;
 }
 
 EngineApiDiagnostic AppendMgaConstraintMutationBatch(
