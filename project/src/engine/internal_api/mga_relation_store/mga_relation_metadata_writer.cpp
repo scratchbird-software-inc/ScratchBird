@@ -193,12 +193,13 @@ bool AppendLine(const std::string& path, const std::string& frame) {
   return static_cast<bool>(output);
 }
 
-// Append success is not durability. Each sealed producer must complete these
+// Append success is not durability. Every metadata producer must complete these
 // barriers before returning a descriptor or successful mutation count. A sync
 // error retains the physical frame and its reservation; it is not rollback.
 EngineApiDiagnostic SynchronizeSealedMetadata(
     const EngineRequestContext& context, const char* operation,
     const std::string& prefix) {
+  auto success = OkDiagnostic();
   const auto path = MetadataStorePath(context);
   const auto file = scratchbird::storage::disk::SyncFilesystemPath(path, true);
   if (!file.ok())
@@ -208,7 +209,7 @@ EngineApiDiagnostic SynchronizeSealedMetadata(
   if (!parent.ok())
     return MakeInvalidRequestDiagnostic(operation, prefix + "_metadata_directory_sync_failed:" +
         parent.diagnostic.diagnostic_code + ":physical_effects_require_reconciliation:event_reservation_retained");
-  return OkDiagnostic();
+  return success;
 }
 
 // Materialization may abandon a deferred reservation before publication.
@@ -240,6 +241,24 @@ EngineApiDiagnostic PublishSealedMetadataReservation(
   return OkDiagnostic();
 }
 
+struct UnpublishedMetadataReservation {
+  const MgaEventSequenceRangeReservation& reservation;
+  bool attempted = false;
+  ~UnpublishedMetadataReservation() {
+    if (!attempted) AbandonDeferredEventSequenceReservation(reservation);
+  }
+};
+
+EngineApiDiagnostic CheckMetadataPublicationCancellation(
+    const EngineRequestContext& context, const char* operation, const std::string& prefix) {
+  if (context.query_cancellation_requested && context.query_cancellation_requested())
+    return MakeEngineApiDiagnostic("PROCESS.CANCELLED", prefix + "_cancelled_before_publication",
+        "cancellation was observed before allocator publication", true);
+  // A runtime observation callback is not mutation authority. In particular,
+  // recursive same-thread finality can change native state despite our guard.
+  return ValidateMgaMutatingTransactionAuthorityForStoreModule(context, operation);
+}
+
 }  // namespace
 
 EngineApiDiagnostic AppendMgaTableMetadata(const EngineRequestContext& context,
@@ -260,13 +279,15 @@ EngineApiDiagnostic AppendMgaTableMetadata(const EngineRequestContext& context,
   }
   CrudTableRecord writable = table;
   writable.creator_tx = context.local_transaction_id;
+  std::vector<std::string> allocator_lines;
   const auto reservation = ReserveEventSequenceRange(
       context,
       "relation_metadata",
       MetadataStorePath(context),
       1,
-      [&context]() { return ScanNextMetadataEventSequence(context); });
+      [&context]() { return ScanNextMetadataEventSequence(context); }, &allocator_lines);
   if (!reservation.ok) { return reservation.diagnostic; }
+  UnpublishedMetadataReservation unpublished{reservation};
   writable.event_sequence = reservation.first;
   const std::string line = JoinLine({kRowStoreMagic,
                                      "TABLE_METADATA",
@@ -279,10 +300,20 @@ EngineApiDiagnostic AppendMgaTableMetadata(const EngineRequestContext& context,
                                      writable.temporary_scope,
                                      MetadataUuidBytes(writable.temporary_session_uuid),
                                      writable.on_commit_action});
+  auto success = OkDiagnostic();
+  const auto cancelled = CheckMetadataPublicationCancellation(context, "mga.relation_metadata.table_create", "table_metadata");
+  if (cancelled.error) return cancelled;
+  unpublished.attempted = true;
+  const auto publication = PublishSealedMetadataReservation(context, reservation, &allocator_lines,
+      line, "mga.relation_metadata", "table");
+  if (publication.error) return publication;
   if (!AppendLine(MetadataStorePath(context), line)) {
-    return MakeInvalidRequestDiagnostic("mga.relation_metadata", "table_metadata_append_failed");
+    return MakeInvalidRequestDiagnostic("mga.relation_metadata",
+        "table_metadata_append_failed:physical_effects_require_reconciliation:event_reservation_retained");
   }
-  return OkDiagnostic();
+  const auto durable = SynchronizeSealedMetadata(context, "mga.relation_metadata", "table");
+  if (durable.error) return durable;
+  return success;
 }
 
 EngineApiDiagnostic AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
@@ -1116,13 +1147,15 @@ MgaBigintIdentityMigrationResult AppendMgaBigintIdentityMigrationBatch(
     tables.push_back(std::move(updated));
   }
 
+  std::vector<std::string> allocator_lines;
   const auto reservation = ReserveEventSequenceRange(
       context, "relation_metadata", MetadataStorePath(context), 1,
-      [&context]() { return ScanNextMetadataEventSequence(context); });
+      [&context]() { return ScanNextMetadataEventSequence(context); }, &allocator_lines);
   if (!reservation.ok) {
     result.diagnostic = reservation.diagnostic;
     return result;
   }
+  UnpublishedMetadataReservation unpublished{reservation};
   for (std::size_t i = 0; i < tables.size(); ++i) {
     if (reservation.first <= request.rows[i].old_row_generation) {
       return refuse("DATATYPE.DESCRIPTOR.INVALID",
@@ -1182,15 +1215,7 @@ MgaBigintIdentityMigrationResult AppendMgaBigintIdentityMigrationBatch(
         EncodeMetadataPairs(table.columns),
         "0", "", MetadataUuidBytes({}), ""});
   }
-  // Publication is this single append. MGA visibility subsequently admits it
-  // only for its creator or after the owning transaction commits.
-  if (!AppendLine(MetadataStorePath(context), JoinLine(fields))) {
-    return refuse("DATATYPE.DESCRIPTOR.INVALID",
-                  "bigint_identity_migration_append_failed",
-                  "sealed batch was not published");
-  }
-  result.ok = true;
-  result.migrated_row_count = request.rows.size();
+  const auto line = JoinLine(fields);
   result.diagnostic = OkDiagnostic();
   result.evidence = {
       {"migration_id", request.migration_id},
@@ -1200,6 +1225,21 @@ MgaBigintIdentityMigrationResult AppendMgaBigintIdentityMigrationBatch(
       {"prior_catalog_generation", std::to_string(request.prior_catalog_generation)},
       {"new_catalog_generation", std::to_string(request.new_catalog_generation)},
       {"decision_sha256", result.decision_sha256}};
+  const auto cancelled = CheckMetadataPublicationCancellation(context, kOperation, "bigint_identity_migration");
+  if (cancelled.error) { result.diagnostic = cancelled; return result; }
+  unpublished.attempted = true;
+  const auto publication = PublishSealedMetadataReservation(context, reservation, &allocator_lines,
+      line, kOperation, "bigint_identity_migration");
+  if (publication.error) { result.diagnostic = publication; return result; }
+  if (!AppendLine(MetadataStorePath(context), line)) {
+    return refuse("DATATYPE.DESCRIPTOR.INVALID",
+                  "bigint_identity_migration_append_failed",
+                  "metadata append failed; physical effects require reconciliation; event reservation retained");
+  }
+  const auto durable = SynchronizeSealedMetadata(context, kOperation, "bigint_identity_migration");
+  if (durable.error) { result.diagnostic = durable; return result; }
+  result.ok = true;
+  result.migrated_row_count = request.rows.size();
   return result;
 }
 
@@ -1366,13 +1406,15 @@ MgaInt32IdentityMigrationResult AppendMgaInt32IdentityMigrationBatch(
                   "int32_identity_migration_cancelled_before_publication",
                   "cancellation was observed before the sealed batch append");
   }
+  std::vector<std::string> allocator_lines;
   const auto reservation = ReserveEventSequenceRange(
       context, "relation_metadata", MetadataStorePath(context), 1,
-      [&context]() { return ScanNextMetadataEventSequence(context); });
+      [&context]() { return ScanNextMetadataEventSequence(context); }, &allocator_lines);
   if (!reservation.ok) {
     result.diagnostic = reservation.diagnostic;
     return result;
   }
+  UnpublishedMetadataReservation unpublished{reservation};
   for (auto& [object_uuid, table] : updated_by_object) {
     if (reservation.first <= object_generations[object_uuid]) {
       return refuse("DATATYPE.DESCRIPTOR.INVALID",
@@ -1438,13 +1480,7 @@ MgaInt32IdentityMigrationResult AppendMgaInt32IdentityMigrationBatch(
         EncodeMetadataPairs(table.columns),
         "0", "", MetadataUuidBytes({}), ""});
   }
-  if (!AppendLine(MetadataStorePath(context), JoinLine(fields))) {
-    return refuse("DATATYPE.DESCRIPTOR.INVALID",
-                  "int32_identity_migration_append_failed",
-                  "sealed batch was not published");
-  }
-  result.ok = true;
-  result.migrated_row_count = request.rows.size();
+  const auto line = JoinLine(fields);
   result.diagnostic = OkDiagnostic();
   result.evidence = {
       {"migration_id", request.migration_id},
@@ -1460,6 +1496,21 @@ MgaInt32IdentityMigrationResult AppendMgaInt32IdentityMigrationBatch(
       {"old_type_uuid", kLegacyInt32TypeUuid},
       {"new_type_uuid", kCanonicalInt32TypeUuid},
       {"decision_sha256", result.decision_sha256}};
+  const auto cancelled = CheckMetadataPublicationCancellation(context, kOperation, "int32_identity_migration");
+  if (cancelled.error) { result.diagnostic = cancelled; return result; }
+  unpublished.attempted = true;
+  const auto publication = PublishSealedMetadataReservation(context, reservation, &allocator_lines,
+      line, kOperation, "int32_identity_migration");
+  if (publication.error) { result.diagnostic = publication; return result; }
+  if (!AppendLine(MetadataStorePath(context), line)) {
+    return refuse("DATATYPE.DESCRIPTOR.INVALID",
+                  "int32_identity_migration_append_failed",
+                  "metadata append failed; physical effects require reconciliation; event reservation retained");
+  }
+  const auto durable = SynchronizeSealedMetadata(context, kOperation, "int32_identity_migration");
+  if (durable.error) { result.diagnostic = durable; return result; }
+  result.ok = true;
+  result.migrated_row_count = request.rows.size();
   return result;
 }
 
@@ -1915,13 +1966,15 @@ EngineApiDiagnostic AppendMgaIndexMetadata(const EngineRequestContext& context,
   if (authority.error) { return authority; }
   CrudIndexRecord writable = index;
   writable.creator_tx = context.local_transaction_id;
+  std::vector<std::string> allocator_lines;
   const auto reservation = ReserveEventSequenceRange(
       context,
       "relation_metadata",
       MetadataStorePath(context),
       1,
-      [&context]() { return ScanNextMetadataEventSequence(context); });
+      [&context]() { return ScanNextMetadataEventSequence(context); }, &allocator_lines);
   if (!reservation.ok) { return reservation.diagnostic; }
+  UnpublishedMetadataReservation unpublished{reservation};
   writable.event_sequence = reservation.first;
   const std::string line = JoinLine({kRowStoreMagic,
                                      "INDEX_METADATA",
@@ -1940,10 +1993,20 @@ EngineApiDiagnostic AppendMgaIndexMetadata(const EngineRequestContext& context,
                                      std::string(writable.predicate_value),
                                      writable.unique ? "1" : "0",
                                      writable.exact_fallback ? "1" : "0"});
+  auto success = OkDiagnostic();
+  const auto cancelled = CheckMetadataPublicationCancellation(context, "mga.relation_metadata.index_create", "index_metadata");
+  if (cancelled.error) return cancelled;
+  unpublished.attempted = true;
+  const auto publication = PublishSealedMetadataReservation(context, reservation, &allocator_lines,
+      line, "mga.relation_metadata", "index");
+  if (publication.error) return publication;
   if (!AppendLine(MetadataStorePath(context), line)) {
-    return MakeInvalidRequestDiagnostic("mga.relation_metadata", "index_metadata_append_failed");
+    return MakeInvalidRequestDiagnostic("mga.relation_metadata",
+        "index_metadata_append_failed:physical_effects_require_reconciliation:event_reservation_retained");
   }
-  return OkDiagnostic();
+  const auto durable = SynchronizeSealedMetadata(context, "mga.relation_metadata", "index");
+  if (durable.error) return durable;
+  return success;
 }
 
 

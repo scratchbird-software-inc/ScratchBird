@@ -1488,6 +1488,103 @@ int RunConformance(const int argc, char* argv[]) {
   Commit(stale_column_seed);
 
   if (mode == FixtureMode::kNumericIdentityMigration) {
+#if defined(SB_SEALED_METADATA_TEST_WRAP_SYNC)
+  // Ordinary table/index and numeric migration frames have the same durable
+  // allocator-before-metadata contract as the contextual sealed producers.
+  for (unsigned producer = 0; producer != 4; ++producer) {
+    for (const bool directory : {false, true}) {
+      auto writer = Begin(BaseContext(fixture));
+      const auto bigint = Migration(fixture, 1);
+      const auto int32 = Int32Migration(fixture, 2);
+      if (producer >= 2) writer.statement_metadata_snapshot_uuid = producer == 2
+          ? bigint.prior_catalog_snapshot_uuid : int32.prior_catalog_snapshot_uuid;
+      const std::string prefix = producer == 0 ? "table" : producer == 1 ? "index" :
+          producer == 2 ? "bigint_identity_migration" : "int32_identity_migration";
+      const auto publish = [&] {
+        if (producer == 0) return api::AppendMgaTableMetadata(writer, LegacyTable(fixture));
+        if (producer == 1) {
+          api::CrudIndexRecord index;
+          index.index_uuid = api::GenerateCrudEngineUuid("object");
+          index.table_uuid = FixtureIdentity(fixture.table_uuid);
+          index.profile = "row_store_scalar_btree_v1"; index.family = "btree";
+          index.default_name = "durable_index"; index.column_name = "id";
+          index.key_envelopes = {"id"};
+          return api::AppendMgaIndexMetadata(writer, index);
+        }
+        if (producer == 2) {
+          const auto result = api::AppendMgaBigintIdentityMigrationBatch(writer, bigint);
+          Require(!result.ok && result.migrated_row_count == 0, "undurable BIGINT migration reported successful rows");
+          return result.diagnostic;
+        }
+        const auto result = api::AppendMgaInt32IdentityMigrationBatch(writer, int32);
+        Require(!result.ok && result.migrated_row_count == 0, "undurable INT32 migration reported successful rows");
+        return result.diagnostic;
+      };
+      if (!directory) {
+        for (const bool unwind : {false, true}) {
+          const auto before = CaptureRefusalArtifacts(writer, fixture);
+          const auto next = api::NextMetadataEventSequence(writer);
+          const auto inventory_before = db::AcquireStrongLocalTransactionInventorySnapshot(writer.database_path);
+          Require(next != 0 && inventory_before.ok(), "prepublication unwind authority missing");
+          bool reached_reserved_tail = false, threw = false;
+          writer.query_cancellation_requested = [&] {
+            const auto reserved_next = api::NextMetadataEventSequence(writer);
+            if (reserved_next == next) return false;
+            Require(reserved_next == next + 1, "unexpected prepublication reservation range");
+            reached_reserved_tail = true;
+            if (unwind) throw std::bad_alloc();
+            return true;
+          };
+          api::EngineApiDiagnostic cancelled;
+          try { cancelled = publish(); } catch (const std::bad_alloc&) { threw = true; }
+          writer.query_cancellation_requested = {};
+          Require(reached_reserved_tail && (unwind ? threw : !threw && cancelled.error && cancelled.code == "PROCESS.CANCELLED"),
+                  "publisher did not cancel/unwind after actual deferred reservation");
+          RequireRefusalArtifactsUnchanged(before, writer, fixture,
+              "prepublication cancellation or unwind published bytes");
+          const auto inventory_after = db::AcquireStrongLocalTransactionInventorySnapshot(writer.database_path);
+          Require(inventory_after.ok() && inventory_before.snapshot->inventory.publication_base ==
+                      inventory_after.snapshot->inventory.publication_base &&
+                      api::NextMetadataEventSequence(writer) == next,
+                  "prepublication unwind changed native inventory or retained an unpublished tail");
+        }
+        // A callback may complete its own transaction through recursive
+        // same-thread entry. Its earlier active state must not authorize the
+        // prepared append when the callback returns false.
+        const auto saved_writer = writer;
+        writer = Begin(BaseContext(fixture));
+        if (producer >= 2) writer.statement_metadata_snapshot_uuid = producer == 2
+            ? bigint.prior_catalog_snapshot_uuid : int32.prior_catalog_snapshot_uuid;
+        const auto before = CaptureRefusalArtifacts(writer, fixture);
+        const auto next = api::NextMetadataEventSequence(writer);
+        bool completed = false;
+        writer.query_cancellation_requested = [&] {
+          if (api::NextMetadataEventSequence(writer) == next) return false;
+          Require(!completed, "completion callback was reused after finality");
+          completed = true;
+          Commit(writer);
+          return false;
+        };
+        const auto stale = publish();
+        writer.query_cancellation_requested = {};
+        Require(completed && stale.error, "runtime callback's stale state authorized metadata after COMMIT");
+        RequireRefusalArtifactsUnchanged(before, saved_writer, fixture,
+            "completed callback owner published prepared metadata");
+        Require(api::NextMetadataEventSequence(saved_writer) == next,
+                "completed callback owner retained an unpublished reservation");
+        writer = saved_writer;
+      }
+      if (!directory) RequireSealedReservationFailureOrdering(writer, fixture, publish,
+          prefix + "_allocator_append_failed", prefix + (producer < 2 ? "_metadata_append_failed" : "_append_failed"));
+      RequireSealedMetadataSyncFailure(writer, fixture, directory, publish, prefix);
+      Rollback(writer);
+      auto reader = Begin(BaseContext(fixture));
+      Require(VisibleDescriptor(reader, fixture).find(kLegacy) != std::string::npos,
+              "undurable numeric publication escaped full rollback");
+      Rollback(reader);
+    }
+  }
+#endif
   auto rollback_tx = Begin(BaseContext(fixture));
   auto rollback_request = Migration(fixture, 1);
   rollback_tx.statement_metadata_snapshot_uuid =
