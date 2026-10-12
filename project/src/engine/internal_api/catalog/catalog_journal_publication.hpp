@@ -54,6 +54,9 @@ inline EngineApiDiagnostic AppendSequencedCatalogJournalRecord(
     if (!DecodeCatalogLifecycleFrame(record, &decoded)) return refused("catalog_publication_record_invalid");
     if (std::holds_alternative<EngineCatalogCommentRecord>(decoded))
       return refused("comment_owned_publication_required");
+    if (const auto* object = std::get_if<EngineCatalogObjectRecord>(&decoded);
+        object && object->object_kind == "view" && !object->deleted && object->payload.starts_with("SBVIEW02"))
+      return refused("view_owned_publication_required");
   } else if (record.object_kind == "name_registry.retire") {
     if (!core::uuid::IsEngineIdentityUuid(record.object_uuid) ||
         record.target_object_uuid != record.object_uuid || !record.payload.empty() ||

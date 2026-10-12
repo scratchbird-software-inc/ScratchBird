@@ -16,10 +16,13 @@
 #include "wire/projection_fields.hpp"
 #include "catalog/binary_view_options.hpp"
 #include "catalog/column_metadata_codec.hpp"
+#include "catalog/catalog_object_lifecycle_codec.hpp"
 #include "behavior_support/api_behavior_store.hpp"
+#include "behavior_support/api_behavior_record_codec.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "catalog/relation_projection_view.hpp"
 #include "ddl/create_api.hpp"
+#include "ddl/alter_api.hpp"
 #include "dml/delete_api.hpp"
 #include "dml/insert_api.hpp"
 #include "dml/select_api.hpp"
@@ -37,10 +40,13 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -310,6 +316,91 @@ void RewriteDescriptorStoreBytes(const std::filesystem::path& path,
               !size_error,
           "descriptor cache fixture store rewrite changed file size");
 }
+
+api::EngineCatalogObjectRecord NativeViewRecord(const api::EngineRequestContext& context,
+                                               const api::EngineUuid& uuid) {
+  const auto catalog = api::LoadCatalogObjectLifecycleState(context);
+  Require(catalog.ok, "native VIEW catalog read failed");
+  const api::EngineCatalogObjectRecord* found = nullptr;
+  for (const auto& record : catalog.state.objects) {
+    if (record.object_uuid != uuid) continue;
+    Require(!found && record.object_kind == "view" && !record.catalog_row_uuid.is_nil(),
+            "native VIEW catalog identity is ambiguous or unowned");
+    found = &record;
+  }
+  Require(found != nullptr, "actual published native VIEW record missing");
+  return *found;
+}
+
+using NativeViewImage = std::map<api::EngineUuid,
+    std::tuple<api::EngineUuid, std::string, std::uint64_t, std::uint64_t>>;
+NativeViewImage NativeViews(const api::EngineRequestContext& context) {
+  const auto catalog = api::LoadCatalogObjectLifecycleState(context);
+  Require(catalog.ok, "native VIEW inventory read failed");
+  NativeViewImage image;
+  for (const auto& record : catalog.state.objects) {
+    if (record.object_kind != "view") continue;
+    Require(image.emplace(record.object_uuid, std::tuple{record.catalog_row_uuid,
+        record.payload, record.definition_epoch, record.metadata_epoch}).second,
+        "native VIEW inventory has duplicate logical identity");
+  }
+  return image;
+}
+
+// Fault injection into an owned, actually published record, not an authorized
+// creation API for malformed definitions. Preserve all other bytes/identities.
+class NativeViewJournalCorruption final {
+ public:
+  NativeViewJournalCorruption(const api::EngineRequestContext& context,
+      const api::EngineCatalogObjectRecord& original, std::string payload)
+      : path_(context.database_path + ".sb.catalog_object_events"),
+        original_(ReadDescriptorStoreBytes(path_)) {
+    std::istringstream input(original_, std::ios::in | std::ios::binary);
+    std::string changed;
+    unsigned matches = 0;
+    while (input.peek() != std::char_traits<char>::eof()) {
+      const auto begin = input.tellg();
+      api::CatalogLifecycleRecord event;
+      std::uint64_t sequence = 0;
+      Require(api::ReadCatalogLifecycleRecord(input, &event, &sequence),
+              "native VIEW corruption fixture encountered invalid source frame");
+      const auto end = input.tellg();
+      Require(begin >= 0 && end >= begin, "native VIEW source frame boundary invalid");
+      auto* object = std::get_if<api::EngineCatalogObjectRecord>(&event);
+      if (object && object->object_uuid == original.object_uuid &&
+          object->catalog_row_uuid == original.catalog_row_uuid) {
+        Require(++matches == 1 && object->creator_tx == original.creator_tx &&
+                    object->payload == original.payload,
+                "native VIEW corruption target is not the exact published version");
+        object->payload = payload;
+        std::string encoded;
+        Require(api::EncodeCatalogLifecycleRecord(*object, &encoded, sequence),
+                "native VIEW corruption frame encoding failed");
+        changed += encoded;
+      } else {
+        changed.append(original_, static_cast<std::size_t>(begin),
+                       static_cast<std::size_t>(end - begin));
+      }
+    }
+    Require(matches == 1 && !input.bad(), "native VIEW corruption target not found");
+    try { RewriteDescriptorStoreBytes(path_, changed); }
+    catch (...) { RewriteDescriptorStoreBytes(path_, original_); throw; }
+  }
+  ~NativeViewJournalCorruption() {
+    if (restored_) return;
+    try { Restore(); }
+    catch (...) { std::cerr << "native VIEW fixture restoration failed during unwinding\n"; }
+  }
+  void Restore() {
+    RewriteDescriptorStoreBytes(path_, original_);
+    Require(ReadDescriptorStoreBytes(path_) == original_, "native VIEW journal restoration changed bytes");
+    restored_ = true;
+  }
+ private:
+  const std::filesystem::path path_;
+  const std::string original_;
+  bool restored_ = false;
+};
 
 void TestExactDescriptorCacheFalseNegativeRecovery() {
   Fixture fixture;
@@ -1425,6 +1516,72 @@ void TestRelationProjectionView(Fixture& fixture) {
     Require(publication_image() == before_refusals,
             "refused native view owner changed the database or publication sidecars");
   }
+  auto callback_view = ViewRequest(fixture, create, fixture.singleton_descriptor,
+                                  "V_SCHEMA_CALLBACK", "X");
+  bool schema_changed = false;
+  decltype(publication_image()) after_schema_change;
+  callback_view.context.query_cancellation_requested = [&] {
+    if (!schema_changed) {
+      schema_changed = true;
+      api::EngineAlterObjectRequest alter;
+      alter.context = create;
+      alter.target_object = {fixture.schema_uuid, "schema"};
+      alter.option_envelopes.push_back("comment:changed during native VIEW publication");
+      RequireOk(api::EngineAlterObject(alter), "real callback schema mutation failed");
+      after_schema_change = publication_image();
+    }
+    return false;
+  };
+  const auto schema_refused = api::EngineCreateView(callback_view);
+  Require(schema_changed && !schema_refused.ok &&
+              HasDiagnostic(schema_refused, "view_schema_generation_changed") &&
+              publication_image() == after_schema_change,
+          "VIEW callback schema mutation escaped final admission or published outer effects");
+  callback_view.context.query_cancellation_requested = {};
+  RequireOk(api::EngineCreateView(callback_view),
+            "same-owner VIEW retry after actual schema mutation failed");
+  const auto resolver_path = create.database_path + ".sb.name_events.v2";
+  const auto resolver_original = ReadDescriptorStoreBytes(resolver_path);
+  std::istringstream resolver_input(resolver_original, std::ios::in | std::ios::binary);
+  api::ApiBehaviorRecord resolver_frame;
+  Require(api::ReadApiBehaviorRecord(resolver_input, &resolver_frame),
+          "published resolver corruption fixture has no actual frame");
+  const auto resolver_end = resolver_input.tellg();
+  Require(resolver_end > 0, "actual resolver frame boundary missing");
+  for (unsigned malformed = 0; malformed != 5; ++malformed) {
+    auto invalid_frame = resolver_frame;
+    if (malformed == 0) invalid_frame.state = "invalid";
+    if (malformed == 1) invalid_frame.default_name = "forged";
+    if (malformed == 2) invalid_frame.target_database_uuid = create.database_uuid;
+    if (malformed == 3) invalid_frame.deleted = true;
+    if (malformed == 4) {
+      invalid_frame.object_kind = "name_registry.retire";
+      invalid_frame.object_uuid = resolver_frame.target_object_uuid;
+      invalid_frame.target_object_uuid = invalid_frame.object_uuid;
+      invalid_frame.payload.clear();
+      invalid_frame.state = "retired";
+      invalid_frame.target_schema_uuid = fixture.schema_uuid;
+    }
+    std::string corrupted;
+    Require(api::EncodeApiBehaviorRecord(invalid_frame, &corrupted),
+            "resolver corruption frame encoding failed");
+    corrupted.append(resolver_original, static_cast<std::size_t>(resolver_end), std::string::npos);
+    try {
+      RewriteDescriptorStoreBytes(resolver_path, corrupted);
+      const auto corrupted_image = publication_image();
+      auto invalid_view = ViewRequest(fixture, create, fixture.singleton_descriptor,
+                                     "V_BAD_RESOLVER", "X");
+      const auto refused = api::EngineCreateView(invalid_view);
+      Require(!refused.ok && publication_image() == corrupted_image,
+              "malformed resolver admission published outer VIEW effects");
+      RewriteDescriptorStoreBytes(resolver_path, resolver_original);
+    } catch (...) {
+      RewriteDescriptorStoreBytes(resolver_path, resolver_original);
+      throw;
+    }
+    Require(ReadDescriptorStoreBytes(resolver_path) == resolver_original,
+            "resolver corruption fixture failed exact restoration");
+  }
   const auto singleton_created = api::EngineCreateView(
       ViewRequest(fixture,
                   create,
@@ -1441,6 +1598,24 @@ void TestRelationProjectionView(Fixture& fixture) {
                   "NUM"));
   RequireOk(multi_created,
             "exact test_05 relation projection view create failed");
+  const auto native_catalog = api::LoadCatalogObjectLifecycleState(create);
+  Require(native_catalog.ok, "native VIEW dependency inventory read failed");
+  for (const auto& [created, source] : {
+           std::pair{&singleton_created, &fixture.singleton_descriptor},
+           std::pair{&multi_created, &fixture.multi_descriptor}}) {
+    const auto record = NativeViewRecord(create, created->primary_object.uuid);
+    Require(!created->catalog_row_uuid.is_nil() && record.catalog_row_uuid == created->catalog_row_uuid &&
+                record.schema_uuid == fixture.schema_uuid && record.payload.starts_with("SBVIEW02"),
+            "VIEW success did not identify its actual complete native catalog row");
+    bool relation = false, column = false;
+    for (const auto& dependency : native_catalog.state.dependencies) {
+      if (dependency.source_uuid != record.object_uuid) continue;
+      relation |= dependency.dependency_uuid == source->relation_uuid;
+      column |= dependency.dependency_uuid == source->columns.front().column_uuid &&
+          dependency.dependency_kind == "view_source_column";
+    }
+    Require(relation && column, "actual VIEW relation/column dependency closure is incomplete");
+  }
   Require(EvidenceValue(singleton_created,
                         "relation_projection_view_marker") ==
               api::kEngineRelationProjectionViewMarkerV1 &&
@@ -1531,6 +1706,43 @@ void TestRelationProjectionView(Fixture& fixture) {
   Rollback(rollback_reader);
 
   auto fresh = Begin(fixture, 7);
+  auto schema_observer = Begin(fixture, 81, "snapshot");
+  auto schema_mutator = Begin(fixture, 82);
+  api::EngineAlterObjectRequest hidden_schema;
+  hidden_schema.context = schema_mutator;
+  hidden_schema.target_object = {fixture.schema_uuid, "schema"};
+  hidden_schema.option_envelopes.push_back("comment:invisible sibling schema successor");
+  RequireOk(api::EngineAlterObject(hidden_schema), "actual sibling schema alteration failed");
+  const auto hidden_schema_image = publication_image();
+  const auto hidden_schema_view = api::EngineCreateView(ViewRequest(fixture, schema_observer,
+      fixture.singleton_descriptor, "V_HIDDEN_SCHEMA", "X"));
+  Require(!hidden_schema_view.ok && HasDiagnostic(hidden_schema_view, "view_schema_generation_changed") &&
+              publication_image() == hidden_schema_image,
+          "initial admission accepted an invisible SchemaTree successor");
+  Rollback(schema_mutator);
+  RequireOk(api::EngineCreateView(ViewRequest(fixture, schema_observer,
+      fixture.singleton_descriptor, "V_HIDDEN_SCHEMA", "X")),
+      "actual rolled-back schema successor retained false occupancy");
+  Rollback(schema_observer);
+  auto occupancy_reader = Begin(fixture, 78, "snapshot");
+  auto occupancy_writer = Begin(fixture, 79);
+  RequireOk(api::EngineCreateView(ViewRequest(fixture, occupancy_writer,
+      fixture.singleton_descriptor, "V_OCCUPANCY", "X")),
+      "actual pending VIEW occupancy creation failed");
+  for (unsigned phase = 0; phase != 2; ++phase) {
+    if (phase) Commit(occupancy_writer);
+    const auto before_duplicate = publication_image();
+    const auto duplicate = api::EngineCreateView(ViewRequest(fixture, occupancy_reader,
+        fixture.singleton_descriptor, "V_OCCUPANCY", "X"));
+    const bool exact_refusal = phase == 0
+        ? !duplicate.diagnostics.empty() && duplicate.diagnostics.front().code == api::kCatalogObjectDiagnosticDuplicateName
+        : HasDiagnostic(duplicate, "relation_projection_view_already_exists");
+    Require(!duplicate.ok && !duplicate.diagnostics.empty() &&
+                exact_refusal &&
+                publication_image() == before_duplicate,
+            "current VIEW occupancy was released by active owner or historical snapshot");
+  }
+  Rollback(occupancy_reader);
   const auto singleton = api::EngineResolveName(
       ResolveRequest(fixture, fresh, "V_TEST"));
   const auto multi = api::EngineResolveName(
@@ -1700,10 +1912,7 @@ void TestRelationProjectionView(Fixture& fixture) {
             "rpvs1 result row contract drifted");
   }
 
-  api::EngineApiDiagnostic behavior_read_diagnostic_1;
-  const auto visible_before_rejections = api::VisibleApiBehaviorRecords(
-      sblr_context, "view", sblr_context.local_transaction_id, behavior_read_diagnostic_1);
-  Require(!behavior_read_diagnostic_1.error, "behavior catalog read failed");
+  const auto visible_before_rejections = NativeViews(sblr_context);
   Require(pf::Decode(rpvc_source).size() == 16 && pf::Decode(rpvc_source).back().empty(),
           "rpvc1 malformed-count fixture drifted");
   RequireRelationProjectionDispatchRejectedBeforeScan(
@@ -1759,12 +1968,8 @@ void TestRelationProjectionView(Fixture& fixture) {
           "2",
           {{"row_field:int32", "row-1|ID", "1"}}),
       "rpvc1 normalized away an injected row");
-  api::EngineApiDiagnostic behavior_read_diagnostic_2;
-  const auto visible_after_create_rejections = api::VisibleApiBehaviorRecords(
-      sblr_context, "view", sblr_context.local_transaction_id, behavior_read_diagnostic_2);
-  Require(!behavior_read_diagnostic_2.error, "behavior catalog read failed");
-  Require(visible_after_create_rejections.size() ==
-              visible_before_rejections.size(),
+  const auto visible_after_create_rejections = NativeViews(sblr_context);
+  Require(visible_after_create_rejections == visible_before_rejections,
           "malformed rpvc1 mutated durable view state");
 
   RequireRelationProjectionDispatchRejectedBeforeScan(
@@ -1913,19 +2118,12 @@ void TestRelationProjectionView(Fixture& fixture) {
   Require(!durable.diagnostic.error && durable.present,
           "durable descriptor required for stale runtime probe");
 
-  api::EngineApiDiagnostic behavior_read_diagnostic_3;
-  const auto persisted_record = api::FindVisibleApiBehaviorRecord(
-      final_reader,
-      durable.view_uuid,
-      final_reader.local_transaction_id, behavior_read_diagnostic_3);
-  Require(!behavior_read_diagnostic_3.error, "behavior catalog read failed");
-  Require(persisted_record.has_value(),
-          "persisted relation projection behavior record required");
+  const auto persisted_record = NativeViewRecord(final_reader, durable.view_uuid);
   std::vector<std::string> persisted_fields;
   const auto literal_bytes = Int32Value({}, 5).binary_value;
   const std::string native_literal_field = "output_1_literal_le4:" +
       std::string(literal_bytes.begin(), literal_bytes.end());
-  Require(api::DecodeBinaryViewOptions(persisted_record->payload, &persisted_fields) &&
+  Require(api::DecodeBinaryViewOptions(persisted_record.payload, &persisted_fields) &&
               std::count(persisted_fields.begin(), persisted_fields.end(),
                          native_literal_field) == 1,
           "persisted view literal lost its exact native INT32 encoding");
@@ -1934,36 +2132,28 @@ void TestRelationProjectionView(Fixture& fixture) {
   for (const std::string replacement : {"output_1_literal_value:5",
                                         "output_1_literal_value:1234",
                                         "output_1_literal_le4:5"}) {
-    auto record = *persisted_record;
-    record.creator_tx = final_reader.local_transaction_id;
-    record.object_uuid = NewUuid(platform::UuidKind::object, NowMillis());
-    record.target_object_uuid = record.object_uuid;
-    ReplaceOnce(&record.payload, native_literal_field, replacement);
-    Require(!api::AppendApiBehaviorEvent(
-                 final_reader, api::MakeApiBehaviorRecordEvent(record)).error,
-            "malformed native literal fixture append failed");
+    auto payload = persisted_record.payload;
+    ReplaceOnce(&payload, native_literal_field, replacement);
+    NativeViewJournalCorruption corrupt(final_reader, persisted_record, std::move(payload));
     const auto described = api::DescribeEngineRelationProjectionView(
-        final_reader, record.object_uuid);
+        final_reader, persisted_record.object_uuid);
     Require(described.diagnostic.error && !described.present,
             "persisted lexical or malformed-width literal was accepted");
+    corrupt.Restore();
+    Require(api::DescribeEngineRelationProjectionView(final_reader, durable.view_uuid).present,
+            "restored native view remained poisoned after malformed literal");
   }
+  std::unique_ptr<NativeViewJournalCorruption> stale_corruption;
   const auto persist_stale_variant =
       [&](std::string_view suffix,
           const std::string& expected_field,
           const std::string& replacement_field) {
-        auto record = *persisted_record;
-        record.creator_tx = final_reader.local_transaction_id;
-        record.object_uuid = NewUuid(platform::UuidKind::object, NowMillis());
-        record.target_object_uuid = record.object_uuid;
-        record.default_name = "V_STALE_" + std::string(suffix);
-        ReplaceOnce(&record.payload, expected_field, replacement_field);
-        Require(!api::AppendApiBehaviorEvent(
-                     final_reader,
-                     api::MakeApiBehaviorRecordEvent(record))
-                     .error,
-                "stale persisted descriptor variant append failed");
+        if (stale_corruption) { stale_corruption->Restore(); stale_corruption.reset(); }
+        auto payload = persisted_record.payload;
+        ReplaceOnce(&payload, expected_field, replacement_field);
+        stale_corruption = std::make_unique<NativeViewJournalCorruption>(final_reader, persisted_record, std::move(payload));
         const auto described = api::DescribeEngineRelationProjectionView(
-            final_reader, record.object_uuid);
+            final_reader, persisted_record.object_uuid);
         if (described.diagnostic.error || !described.present)
           std::cerr << "stale variant=" << suffix << " present=" << described.present
                     << ' ' << described.diagnostic.code << ':'
@@ -2006,6 +2196,9 @@ void TestRelationProjectionView(Fixture& fixture) {
                             "relation_projection_relation_scan")
                   .empty(),
           "stale persisted source resource epoch reached the MGA scan");
+  stale_corruption->Restore(); stale_corruption.reset();
+  Require(api::DescribeEngineRelationProjectionView(final_reader, durable.view_uuid).present,
+          "restored native view remained poisoned after stale source controls");
 
   api::EngineSelectRowsRequest direct;
   direct.context = final_reader;
@@ -2053,32 +2246,19 @@ void TestRelationProjectionView(Fixture& fixture) {
                   .empty(),
           "colliding relation projection identities reached the MGA scan");
 
-  const api::EngineUuid malformed_view_uuid =
-      NewUuid(platform::UuidKind::object, NowMillis());
-  api::ApiBehaviorRecord malformed_record;
-  malformed_record.creator_tx = final_reader.local_transaction_id;
-  malformed_record.operation_id = "ddl.create_view";
-  malformed_record.object_uuid = malformed_view_uuid;
-  malformed_record.target_object_uuid = malformed_view_uuid;
-  malformed_record.target_schema_uuid = fixture.schema_uuid;
-  malformed_record.object_kind = "view";
-  malformed_record.default_name = "V_MALFORMED";
-  malformed_record.state = "created";
-  malformed_record.payload = api::EncodeBinaryViewOptions({
+  NativeViewJournalCorruption malformed_corruption(final_reader, persisted_record, api::EncodeBinaryViewOptions({
       std::string("view_query_shape:") + api::kEngineRelationProjectionViewMarkerV1,
-      "view_descriptor_uuid:not-a-binary-uuid"});
-  Require(!api::AppendApiBehaviorEvent(
-               final_reader,
-               api::MakeApiBehaviorRecordEvent(malformed_record))
-               .error,
-          "malformed relation projection descriptor append failed");
+      "view_descriptor_uuid:not-a-binary-uuid"}));
   const auto malformed = api::DescribeEngineRelationProjectionView(
-      final_reader, malformed_view_uuid);
+      final_reader, durable.view_uuid);
   Require(malformed.diagnostic.error && !malformed.present &&
               malformed.diagnostic.detail.find(
                   "relation_projection_view_descriptor_invalid") !=
                   std::string::npos,
           "malformed persisted relation projection codec was accepted");
+  malformed_corruption.Restore();
+  Require(api::DescribeEngineRelationProjectionView(final_reader, durable.view_uuid).present,
+          "restored native view remained poisoned after malformed definition");
   Rollback(final_reader);
 }
 
@@ -2104,14 +2284,10 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
       fixture.updatable_descriptor);
   Require(pf::Decode(rpvc2).size() == 16 && pf::Decode(rpvc2).back().empty(),
           "rpvc2 malformed-count fixture drifted");
-  api::EngineApiDiagnostic behavior_read_diagnostic_4;
-  const auto visible_before_create_refusals =
-      api::VisibleApiBehaviorRecords(
-          create, "view", create.local_transaction_id, behavior_read_diagnostic_4);
-  Require(!behavior_read_diagnostic_4.error, "behavior catalog read failed");
+  const auto visible_before_create_refusals = NativeViews(create);
   std::set<api::EngineUuid> visible_view_ids_before;
   for (const auto& record : visible_before_create_refusals) {
-    visible_view_ids_before.insert(record.object_uuid);
+    visible_view_ids_before.insert(record.first);
   }
   RequireUpdatableCreateDispatchRejectedBeforeMutation(
       DispatchUpdatableRelationProjectionViewCreate(
@@ -2202,17 +2378,12 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
           "1",
           {{"row_field:int32", "row-1|ID", "10"}}),
       "rpvc2 normalized away an injected row");
-  api::EngineApiDiagnostic behavior_read_diagnostic_5;
-  const auto visible_after_create_refusals =
-      api::VisibleApiBehaviorRecords(
-          create, "view", create.local_transaction_id, behavior_read_diagnostic_5);
-  Require(!behavior_read_diagnostic_5.error, "behavior catalog read failed");
+  const auto visible_after_create_refusals = NativeViews(create);
   std::set<api::EngineUuid> visible_view_ids_after;
   for (const auto& record : visible_after_create_refusals) {
-    visible_view_ids_after.insert(record.object_uuid);
+    visible_view_ids_after.insert(record.first);
   }
-  Require(visible_after_create_refusals.size() ==
-              visible_before_create_refusals.size() &&
+  Require(visible_after_create_refusals == visible_before_create_refusals &&
               visible_view_ids_after == visible_view_ids_before,
           "refused rpvc2 packets changed durable view inventory");
 
@@ -2515,35 +2686,22 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
                   v1_row_count_before,
           "non-updatable V1 view mutated its source table");
 
-  api::EngineApiDiagnostic behavior_read_diagnostic_6;
-  const auto persisted_record = api::FindVisibleApiBehaviorRecord(
-      refusal_writer, view_uuid, refusal_writer.local_transaction_id, behavior_read_diagnostic_6);
-  Require(!behavior_read_diagnostic_6.error, "behavior catalog read failed");
-  Require(persisted_record.has_value(),
-          "V2 persisted descriptor record required for corruption refusal");
+  const auto persisted_record = NativeViewRecord(refusal_writer, view_uuid);
 
-  auto stale_source_record = *persisted_record;
-  stale_source_record.creator_tx = refusal_writer.local_transaction_id;
-  stale_source_record.object_uuid =
-      NewUuid(platform::UuidKind::object, NowMillis());
-  stale_source_record.target_object_uuid = stale_source_record.object_uuid;
-  stale_source_record.default_name = "V2_STALE_SOURCE";
+  auto stale_source_payload = persisted_record.payload;
   ReplaceOnce(
-      &stale_source_record.payload,
+      &stale_source_payload,
       "source_relation_descriptor_generation:" +
           std::to_string(
               refusal_descriptor.source_relation_descriptor_generation),
       "source_relation_descriptor_generation:" +
           std::to_string(
               refusal_descriptor.source_relation_descriptor_generation + 1));
-  Require(!api::AppendApiBehaviorEvent(
-               refusal_writer,
-               api::MakeApiBehaviorRecordEvent(stale_source_record))
-               .error,
-          "stale-source V2 descriptor append failed");
+  NativeViewJournalCorruption stale_source_corruption(refusal_writer, persisted_record,
+                                                     std::move(stale_source_payload));
   const auto stale_source_descriptor =
       api::DescribeEngineRelationProjectionView(
-          refusal_writer, stale_source_record.object_uuid);
+          refusal_writer, view_uuid);
   Require(!stale_source_descriptor.diagnostic.error &&
               stale_source_descriptor.present,
           "stale-source V2 descriptor did not decode");
@@ -2551,24 +2709,18 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
       UpdatableDeleteRequest(refusal_writer, stale_source_descriptor),
       "relation_projection_view_delete_source_descriptor_stale",
       "stale durable V2 source descriptor reached mutation");
+  stale_source_corruption.Restore();
+  Require(api::DescribeEngineRelationProjectionView(refusal_writer, view_uuid).present,
+          "restored native V2 view remained poisoned after stale source");
 
-  auto malformed_record = *persisted_record;
-  malformed_record.creator_tx = refusal_writer.local_transaction_id;
-  malformed_record.object_uuid =
-      NewUuid(platform::UuidKind::object, NowMillis());
-  malformed_record.target_object_uuid = malformed_record.object_uuid;
-  malformed_record.default_name = "V2_MALFORMED";
-  ReplaceOnce(&malformed_record.payload,
+  auto malformed_payload = persisted_record.payload;
+  ReplaceOnce(&malformed_payload,
               "output_count:1",
               "output_count:2");
-  Require(!api::AppendApiBehaviorEvent(
-               refusal_writer,
-               api::MakeApiBehaviorRecordEvent(malformed_record))
-               .error,
-          "malformed V2 persisted descriptor append failed");
+  NativeViewJournalCorruption malformed_corruption(refusal_writer, persisted_record, std::move(malformed_payload));
   const auto malformed_descriptor =
       api::DescribeEngineRelationProjectionView(
-          refusal_writer, malformed_record.object_uuid);
+          refusal_writer, view_uuid);
   Require(malformed_descriptor.diagnostic.error &&
               !malformed_descriptor.present &&
               malformed_descriptor.diagnostic.detail.find(
@@ -2577,12 +2729,14 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
           "malformed V2 persisted descriptor decoded");
   auto malformed_delete =
       UpdatableDeleteRequest(refusal_writer, refusal_descriptor);
-  malformed_delete.target_table.uuid =
-      malformed_record.object_uuid;
+  malformed_delete.target_table.uuid = view_uuid;
   require_direct_refusal(
       std::move(malformed_delete),
       "relation_projection_view_descriptor_invalid",
       "malformed persisted V2 descriptor reached mutation");
+  malformed_corruption.Restore();
+  Require(api::DescribeEngineRelationProjectionView(refusal_writer, view_uuid).present,
+          "restored native V2 view remained poisoned after malformed definition");
 
   const auto before_packet_refusals = ReadDelete03VisibleRows(
       refusal_writer, fixture.updatable_table_uuid);

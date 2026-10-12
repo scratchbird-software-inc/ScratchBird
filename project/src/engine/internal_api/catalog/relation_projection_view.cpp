@@ -9,6 +9,7 @@
 #include "catalog/relation_projection_view.hpp"
 #include "catalog/binary_view_options.hpp"
 #include "catalog/column_metadata_codec.hpp"
+#include "catalog/catalog_object_lifecycle.hpp"
 #include "datatype_storage_identity.hpp"
 
 #include "api_diagnostics.hpp"
@@ -453,7 +454,7 @@ std::optional<EngineRelationProjectionViewOutput> ParseCommonOutput(
 }
 
 std::optional<EngineRelationProjectionViewDescriptor>
-ParsePersistedDescriptor(const ApiBehaviorRecord& record) {
+ParsePersistedDescriptor(const EngineCatalogObjectRecord& record) {
   const auto options = PayloadOptions(record.payload);
   if (!PayloadRequestsRelationProjectionView(options)) return std::nullopt;
   const bool v1 = options[0] ==
@@ -554,11 +555,8 @@ ParsePersistedDescriptor(const ApiBehaviorRecord& record) {
   const auto validated = ValidateEngineRelationProjectionEnvelope(envelope);
 
   const EngineUuid schema_uuid =
-      record.target_schema_uuid;
-  const EngineUuid target_uuid =
-      record.target_object_uuid;
-  if (validated.error || !SafeUnquotedIdentifier(record.default_name) ||
-      target_uuid != record.object_uuid ||
+      record.schema_uuid;
+  if (validated.error || !core::uuid::IsEngineIdentityUuid(record.catalog_row_uuid) ||
       !CanonicalTypedUuid(scratchbird::core::platform::UuidKind::schema,
                           schema_uuid) ||
       !CanonicalTypedUuid(scratchbird::core::platform::UuidKind::object,
@@ -611,22 +609,22 @@ const MgaRelationColumnStorageDescriptor* FindExactColumn(
   return found;
 }
 
-struct VisibleApiBehaviorLookup {
+struct VisibleCatalogViewLookup {
   bool ok = false;
   EngineApiDiagnostic diagnostic = OkDiagnostic();
-  std::optional<ApiBehaviorRecord> record;
+  std::optional<EngineCatalogObjectRecord> record;
 };
 
-VisibleApiBehaviorLookup LookupVisibleApiBehaviorRecord(
+VisibleCatalogViewLookup LookupVisibleCatalogViewRecord(
     const EngineRequestContext& context,
     const EngineUuid& object_uuid) {
-  VisibleApiBehaviorLookup lookup;
-  const auto loaded = LoadApiBehaviorState(context);
+  VisibleCatalogViewLookup lookup;
+  const auto loaded = LoadCatalogObjectLifecycleState(context);
   if (!loaded.ok) {
     lookup.diagnostic = loaded.diagnostic;
     return lookup;
   }
-  for (const auto& record : loaded.state.records) {
+  for (const auto& record : loaded.state.objects) {
     if (record.object_uuid == object_uuid) {
       lookup.record = record;
       break;
@@ -677,6 +675,15 @@ VisibleIdentityInventory LoadVisibleIdentityInventory(
   for (const auto& record : behaviors.state.records) {
     remember(record.object_uuid);
     inventory.encoded_identity_payloads.push_back(record.payload);
+  }
+  const auto catalog = LoadCatalogObjectLifecycleState(context);
+  if (!catalog.ok) {
+    inventory.diagnostic = catalog.diagnostic;
+    return inventory;
+  }
+  for (const auto& object : catalog.state.objects) {
+    remember(object.object_uuid); remember(object.catalog_row_uuid);
+    inventory.encoded_identity_payloads.push_back(object.payload);
   }
   const auto names =
       LoadNameRegistryState(context, context.local_transaction_id);
@@ -1315,7 +1322,7 @@ EngineRelationProjectionViewDescriptor DescribeEngineRelationProjectionView(
     descriptor.diagnostic = exact_transaction;
     return descriptor;
   }
-  const auto lookup = LookupVisibleApiBehaviorRecord(context, view_uuid);
+  const auto lookup = LookupVisibleCatalogViewRecord(context, view_uuid);
   if (!lookup.ok) {
     descriptor.diagnostic = lookup.diagnostic;
     return descriptor;
@@ -1335,8 +1342,7 @@ EngineRelationProjectionViewDescriptor DescribeEngineRelationProjectionView(
   const auto parsed = ParsePersistedDescriptor(record);
   if (!PayloadRequestsRelationProjectionView(options) || !parsed ||
       record.object_kind != "view" ||
-      record.operation_id != "ddl.create_view" ||
-      record.state != "created" || record.deleted) {
+      record.lifecycle_state != "active" || record.deleted) {
     descriptor.diagnostic =
         ViewDiagnostic("relation_projection_view_descriptor_invalid");
     return descriptor;

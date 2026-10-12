@@ -11,12 +11,14 @@
 #include "catalog/catalog_journal_publication.hpp"
 #include "catalog/catalog_journal_batch.hpp"
 #include "catalog/catalog_read_admission.hpp"
+#include "catalog/schema_tree_api.hpp"
 #include "ddl/comment_api.hpp"
 #include "security/authorization_api.hpp"
 #include "catalog/constraint_metadata_codec.hpp"
 #include "dml/mutation_savepoint_capability.hpp"
 
 #include "behavior_support/api_behavior_store.hpp"
+#include "behavior_support/api_behavior_record_codec.hpp"
 #include "catalog/name_registry.hpp"
 #include "crud_support/crud_store.hpp"
 #include "local_transaction_store.hpp"
@@ -644,6 +646,10 @@ EngineApiDiagnostic StageCatalogResolverRetirement(const EngineRequestContext& c
 
 struct LoadOptions {
   bool enforce_visibility = true;
+  // Private mutation admission only: occupied names include other native
+  // writers and commits beyond a repeatable reader's boundary. This is never
+  // a public metadata visibility mode.
+  bool creation_admission = false;
 };
 
 enum class CatalogJournalOpenStatus { opened, absent, refused };
@@ -672,16 +678,17 @@ struct CatalogLifecycleCacheKey {
   EngineUuid database_uuid, session_uuid, transaction_uuid;
   bool enforce_visibility = true;
   bool metadata_observation_mode = false;
+  bool creation_admission = false;
   std::uint64_t local_tx = 0, snapshot_bound = 0, catalog = 0, security = 0,
                 resource = 0, name_resolution = 0, journal_bytes = 0;
   core::hash::Digest256 content{};
 
   bool operator<(const CatalogLifecycleCacheKey& other) const {
     return std::tie(database_path, database_uuid, session_uuid, transaction_uuid,
-                    enforce_visibility, metadata_observation_mode, local_tx, snapshot_bound, catalog, security,
+                    enforce_visibility, metadata_observation_mode, creation_admission, local_tx, snapshot_bound, catalog, security,
                     resource, name_resolution, journal_bytes, content) <
            std::tie(other.database_path, other.database_uuid, other.session_uuid,
-                    other.transaction_uuid, other.enforce_visibility, other.metadata_observation_mode, other.local_tx,
+                    other.transaction_uuid, other.enforce_visibility, other.metadata_observation_mode, other.creation_admission, other.local_tx,
                     other.snapshot_bound, other.catalog, other.security, other.resource,
                     other.name_resolution, other.journal_bytes, other.content);
   }
@@ -772,7 +779,7 @@ bool PrepareCatalogReadCacheImage(const EngineRequestContext& context,
                                        static_cast<std::size_t>(extent)));
   image->key = CatalogLifecycleCacheKey{
       context.database_path, context.database_uuid, context.session_uuid, context.transaction_uuid,
-      options.enforce_visibility, context.statement_metadata_snapshot_engine_owned, context.local_transaction_id,
+      options.enforce_visibility, context.statement_metadata_snapshot_engine_owned, options.creation_admission, context.local_transaction_id,
       context.snapshot_visible_through_local_transaction_id, context.catalog_generation_id,
       context.security_epoch, context.resource_epoch, context.name_resolution_epoch,
       extent, digest.digest};
@@ -841,14 +848,14 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
   // Readability is checked even for cache hits. Never cache an open/read failure
   // as an empty catalog: restoring access must reconstruct the real objects.
   const auto crud_state = LoadCrudState(context);
-  if (options.enforce_visibility && !crud_state.ok) {
+  if ((options.enforce_visibility || options.creation_admission) && !crud_state.ok) {
     result.diagnostic = CatalogDiagnostic(kCatalogObjectDiagnosticMgaVisibilityRefused,
                                          "catalog_transaction_inventory_unavailable");
     return result;
   }
   const CrudState* transaction_state = crud_state.ok ? &crud_state.state : nullptr;
   const auto native_inventory = storage::database::AcquireLocalTransactionInventorySnapshot(context.database_path);
-  if (options.enforce_visibility && !native_inventory.ok()) {
+  if ((options.enforce_visibility || options.creation_admission) && !native_inventory.ok()) {
     result.diagnostic = CatalogDiagnostic(kCatalogObjectDiagnosticMgaVisibilityRefused,
                                          "catalog_transaction_inventory_unavailable");
     return result;
@@ -893,6 +900,28 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
     const auto creator_tx = std::visit([](const auto& record) { return record.creator_tx; }, event);
     if (event_sequence != 0 &&
         MetadataEventRolledBackBySavepoint(savepoints, creator_tx, event_sequence)) continue;
+    if (options.creation_admission && creator_tx != 0) {
+      const auto transaction = transaction::mga::LookupLocalTransaction(native_inventory.snapshot->inventory,
+          transaction::mga::MakeLocalTransactionId(creator_tx));
+      if (!transaction.ok()) {
+        result.diagnostic = CatalogDiagnostic(kCatalogObjectDiagnosticMgaVisibilityRefused,
+                                             "catalog_admission_creator_missing");
+        return result;
+      }
+      using transaction::mga::TransactionState;
+      const bool committed = transaction::mga::HasCommittedInventoryOutcome(transaction.entry);
+      // Unresolved recovery/finality is not a durable rollback. Its names stay
+      // occupied, including limbo, recovery and in-progress finality states.
+      if (!committed && transaction::mga::InventoryVisibilityState(transaction.entry) == TransactionState::rolled_back) continue;
+      // Another pending retirement cannot release a name for this creator.
+      // Keep its predecessor occupied until the retirement really commits.
+      if (!committed && creator_tx != context.local_transaction_id &&
+          (std::holds_alternative<EngineCatalogRetireNamesRecord>(event) ||
+           std::visit([](const auto& record) {
+             if constexpr (requires { record.deleted; }) return record.deleted;
+             else return false;
+           }, event))) continue;
+    }
     if (options.enforce_visibility && !EventVisible(context, transaction_state, creator_tx,
         &native_inventory.snapshot->inventory, native_reader ? &*native_reader : nullptr)) continue;
     if (const auto* decoded = std::get_if<EngineCatalogCommentRecord>(&event)) {
@@ -1027,7 +1056,12 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
     if (active_objects.count(name.object_uuid) != 0) { result.state.names.push_back(std::move(name)); }
   }
   for (auto& [_, dependency] : dependencies) {
-    if (active_objects.count(dependency.source_uuid) != 0 && active_objects.count(dependency.dependency_uuid) != 0) {
+    const auto column = columns.find(dependency.dependency_uuid);
+    const bool active_column = column != columns.end() &&
+        active_objects.count(column->second.owner_object_uuid) != 0;
+    if (active_objects.count(dependency.source_uuid) != 0 &&
+        (active_objects.count(dependency.dependency_uuid) != 0 ||
+         (dependency.dependency_kind == "view_source_column" && active_column))) {
       result.state.dependencies.push_back(std::move(dependency));
     }
   }
@@ -1788,7 +1822,9 @@ EngineApiDiagnostic PrepareCatalogColumnAndConstraintMetadata(
 // across this complete authorized materialization and eventual publication.
 static EngineCatalogCreateObjectResult PrepareCatalogObjectCreateData(
     const EngineCatalogCreateObjectRequest& request,
-    std::vector<PreparedCatalogJournalRecord>& prepared) {
+    std::vector<PreparedCatalogJournalRecord>& prepared,
+    const std::string* owned_payload = nullptr,
+    const EngineCatalogObjectLifecycleState* admission_state = nullptr) {
   constexpr const char* kOperation = "catalog.object.create";
   const auto valid = ValidateMutatingContext(request.context);
   if (valid.error) { return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation, valid); }
@@ -1817,7 +1853,8 @@ static EngineCatalogCreateObjectResult PrepareCatalogObjectCreateData(
   if (!loaded.ok) {
     return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation, loaded.diagnostic);
   }
-  if (FindObject(loaded.state, object_uuid) != nullptr) {
+  if (FindObject(loaded.state, object_uuid) != nullptr ||
+      (admission_state && FindObject(*admission_state, object_uuid) != nullptr)) {
     return DiagnosticResult<EngineCatalogCreateObjectResult>(
         request.context, kOperation, CatalogDiagnostic(kCatalogObjectDiagnosticDuplicateName, "object_uuid"));
   }
@@ -1865,7 +1902,7 @@ static EngineCatalogCreateObjectResult PrepareCatalogObjectCreateData(
     return DiagnosticResult<EngineCatalogCreateObjectResult>(
         request.context, kOperation, CatalogDiagnostic(kCatalogObjectDiagnosticSchemaOwnerDenied, schema_uuid));
   }
-  const auto conflict = CheckNameConflict(loaded.state,
+  const auto conflict = CheckNameConflict(admission_state ? *admission_state : loaded.state,
                                           object_uuid,
                                           object_kind,
                                           schema_uuid,
@@ -1906,7 +1943,11 @@ static EngineCatalogCreateObjectResult PrepareCatalogObjectCreateData(
     }
   }
 
-  const std::uint64_t epoch = loaded.state.metadata_epoch + 1;
+  const auto prior_epoch = admission_state ? admission_state->metadata_epoch : loaded.state.metadata_epoch;
+  if (prior_epoch == std::numeric_limits<std::uint64_t>::max())
+    return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation,
+        CatalogDiagnostic(kCatalogObjectDiagnosticCacheEpochStale, "catalog_generation_exhausted"));
+  const std::uint64_t epoch = prior_epoch + 1;
   std::vector<std::string> prepared_definitions;
   const auto definitions = PrepareCatalogColumnAndConstraintMetadata(
       request, loaded.state, object_uuid, epoch, prepared_definitions);
@@ -1924,7 +1965,7 @@ static EngineCatalogCreateObjectResult PrepareCatalogObjectCreateData(
   record.metadata_epoch = epoch;
   record.synonym_target_uuid = synonym_target_uuid;
   record.synonym_target_class = synonym_target_class;
-  record.payload = PayloadFromRequest(request);
+  record.payload = owned_payload ? *owned_payload : PayloadFromRequest(request);
   auto appended = StageCatalogJournalEvent(request.context, ObjectEvent(record), prepared);
   if (appended.error) {
     return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation, appended);
@@ -1982,6 +2023,233 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
   if (publication.error)
     return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation,
         CatalogBatchPublicationDiagnostic(std::move(publication)));
+  return result;
+}
+
+static EngineApiDiagnostic ValidateCurrentViewResolverOccupancy(
+    const EngineCatalogCreateObjectRequest& request) {
+  constexpr const char* operation = "ddl.create_view";
+  const auto inventory = storage::database::AcquireLocalTransactionInventorySnapshot(request.context.database_path);
+  if (!inventory.ok()) return MakeInvalidRequestDiagnostic(operation, "view_resolver_inventory_unavailable");
+  std::ifstream input;
+  const auto path = request.context.database_path + ".sb.name_events.v2";
+  std::error_code error;
+  const auto status = std::filesystem::symlink_status(path, error);
+  if (status.type() == std::filesystem::file_type::not_found &&
+      (!error || error == std::errc::no_such_file_or_directory)) return OkDiagnostic();
+  if (error || status.type() != std::filesystem::file_type::regular)
+    return MakeInvalidRequestDiagnostic(operation, "view_resolver_journal_unreadable");
+  input.open(path, std::ios::binary);
+  if (!input) return MakeInvalidRequestDiagnostic(operation, "view_resolver_journal_unreadable");
+  const auto savepoints = ParseSavepoints(request.context);
+  if (savepoints.diagnostic.error) return savepoints.diagnostic;
+  std::map<EngineUuid, NameRegistryEntry> entries;
+  while (input.peek() != std::char_traits<char>::eof()) {
+    ApiBehaviorRecord frame;
+    if (!ReadApiBehaviorRecord(input, &frame))
+      return MakeInvalidRequestDiagnostic(operation, "view_resolver_frame_invalid");
+    if (frame.event_sequence && MetadataEventRolledBackBySavepoint(savepoints, frame.creator_tx, frame.event_sequence)) continue;
+    bool committed = frame.creator_tx == 0;
+    if (frame.creator_tx) {
+      const auto owner = transaction::mga::LookupLocalTransaction(inventory.snapshot->inventory,
+          transaction::mga::MakeLocalTransactionId(frame.creator_tx));
+      if (!owner.ok()) return MakeInvalidRequestDiagnostic(operation, "view_resolver_creator_missing");
+      committed = transaction::mga::HasCommittedInventoryOutcome(owner.entry);
+      if (!committed && transaction::mga::InventoryVisibilityState(owner.entry) == transaction::mga::TransactionState::rolled_back) continue;
+    }
+    const bool own = frame.creator_tx == request.context.local_transaction_id;
+    if (frame.object_kind == "name_registry.retire") {
+      if (!committed && !own) continue;
+      if (!core::uuid::IsEngineIdentityUuid(frame.object_uuid) || frame.target_object_uuid != frame.object_uuid ||
+          !frame.payload.empty() || frame.state != "retired" || !frame.target_schema_uuid.is_nil() ||
+          !frame.target_database_uuid.is_nil() || !frame.default_name.empty() || frame.deleted)
+        return MakeInvalidRequestDiagnostic(operation, "view_resolver_retirement_invalid");
+      std::erase_if(entries, [&](const auto& entry) { return entry.second.object_uuid == frame.object_uuid; });
+      continue;
+    }
+    NameRegistryEntry entry;
+    if (frame.object_kind != "name_registry.entry" || frame.state != "active" ||
+        !frame.target_database_uuid.is_nil() || !frame.default_name.empty() || frame.deleted ||
+        !DecodeNameRegistryEntry(frame.payload, &entry) ||
+        frame.object_uuid != entry.name_entry_uuid || frame.target_object_uuid != entry.object_uuid ||
+        frame.target_schema_uuid != entry.scope_uuid || frame.creator_tx != entry.creator_tx)
+      return MakeInvalidRequestDiagnostic(operation, "view_resolver_frame_invalid");
+    if (entry.deleted) { if (committed || own) entries.erase(entry.name_entry_uuid); }
+    else entries[entry.name_entry_uuid] = std::move(entry);
+  }
+  if (input.bad() || !input.eof()) return MakeInvalidRequestDiagnostic(operation, "view_resolver_journal_read_failed");
+  EngineCatalogObjectLifecycleState occupied;
+  for (const auto& [_, entry] : entries) {
+    EngineCatalogNameRecord name;
+    name.name_entry_uuid = entry.name_entry_uuid; name.object_uuid = entry.object_uuid;
+    name.object_kind = entry.object_class; name.schema_uuid = entry.scope_uuid;
+    name.language_tag = entry.language_tag; name.name_class = entry.name_class;
+    name.identifier_profile_uuid = entry.identifier_profile_uuid;
+    name.raw_name_text = entry.raw_name_text; name.display_name = entry.display_name;
+    name.normalized_lookup_key = entry.normalized_lookup_key; name.exact_lookup_key = entry.exact_lookup_key;
+    name.requires_exact_match = entry.requires_exact_match;
+    occupied.names.push_back(std::move(name));
+  }
+  return CheckNameConflict(occupied, request.target_object.uuid, "view", request.target_schema.uuid,
+      EffectiveNames(request), request.context);
+}
+
+EngineApiDiagnostic ValidateCatalogViewCreationAdmission(
+    const EngineCatalogCreateObjectRequest& request,
+    const EngineRelationProjectionViewDescriptor& definition,
+    std::optional<std::uint64_t>* expected_catalog_epoch,
+    std::optional<std::vector<std::string>>* expected_schema_frames) {
+  constexpr const char* operation = "ddl.create_view";
+  const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
+  const auto authority = ValidateCurrentMutatingTransactionAuthority(request.context, operation);
+  if (authority.error) return authority;
+  const auto savepoint = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::catalog_mutation);
+  if (savepoint.error) return savepoint;
+  EngineAuthorizeRequest authorization;
+  authorization.context = request.context;
+  authorization.target_object = request.target_schema;
+  authorization.required_right = "CATALOG_MUTATE";
+  const auto authorized = EngineAuthorize(authorization);
+  if (!authorized.ok || !authorized.authorized)
+    return authorized.diagnostics.empty() ? MakeInvalidRequestDiagnostic(operation, "view_authorization_denied")
+                                        : authorized.diagnostics.front();
+  const auto visible = LoadState(request.context, {.enforce_visibility = true});
+  if (!visible.ok) return visible.diagnostic;
+  const auto* schema = FindObject(visible.state, request.target_schema.uuid);
+  EngineApiDiagnostic schema_diagnostic;
+  const auto schema_tree = FindVisibleSchemaTreeRecord(request.context, request.target_schema.uuid,
+      request.context.local_transaction_id, schema_diagnostic);
+  if (schema_diagnostic.error) return schema_diagnostic;
+  // Retain the owning source's exact frames, including unresolved and newly
+  // committed successors invisible to this statement's reader snapshot.
+  // Callback observations must not authorize a different schema definition.
+  if (!expected_schema_frames)
+    return MakeInvalidRequestDiagnostic(operation, "view_schema_observation_required");
+  std::vector<std::string> schema_frames;
+  const auto schema_inventory = storage::database::AcquireLocalTransactionInventorySnapshot(request.context.database_path);
+  if (!schema_inventory.ok()) return MakeInvalidRequestDiagnostic(operation, "view_schema_inventory_unavailable");
+  const auto schema_savepoints = ParseSavepoints(request.context);
+  if (schema_savepoints.diagnostic.error) return schema_savepoints.diagnostic;
+  const auto schema_path = request.context.database_path + ".sb.api_events.v2";
+  std::error_code schema_error;
+  const auto schema_status = std::filesystem::symlink_status(schema_path, schema_error);
+  const bool schema_absent = schema_status.type() == std::filesystem::file_type::not_found &&
+      (!schema_error || schema_error == std::errc::no_such_file_or_directory);
+  if (!schema_absent) {
+    if (schema_error || schema_status.type() != std::filesystem::file_type::regular)
+      return MakeInvalidRequestDiagnostic(operation, "view_schema_journal_unreadable");
+    std::ifstream schema_input(schema_path, std::ios::binary);
+    if (!schema_input) return MakeInvalidRequestDiagnostic(operation, "view_schema_journal_unreadable");
+    std::uint64_t schema_ordinal = 0;
+    while (schema_input.peek() != std::char_traits<char>::eof()) {
+      ApiBehaviorRecord frame;
+      if (!ReadApiBehaviorRecord(schema_input, &frame))
+        return MakeInvalidRequestDiagnostic(operation, "view_schema_frame_invalid");
+      if (schema_ordinal == std::numeric_limits<std::uint64_t>::max())
+        return MakeInvalidRequestDiagnostic(operation, "view_schema_ordinal_exhausted");
+      ++schema_ordinal;
+      if (frame.object_kind != "schema" || frame.object_uuid != request.target_schema.uuid) continue;
+      if (frame.event_sequence && MetadataEventRolledBackBySavepoint(schema_savepoints, frame.creator_tx, frame.event_sequence)) continue;
+      if (frame.creator_tx) {
+        const auto creator = transaction::mga::LookupLocalTransaction(schema_inventory.snapshot->inventory,
+            transaction::mga::MakeLocalTransactionId(frame.creator_tx));
+        if (!creator.ok()) return MakeInvalidRequestDiagnostic(operation, "view_schema_creator_missing");
+        if (transaction::mga::InventoryVisibilityState(creator.entry) == transaction::mga::TransactionState::rolled_back) continue;
+      }
+      // The existing SchemaTree reader exposes the physical API-stream ordinal,
+      // not the separately encoded metadata rewind sequence. Do not conflate them.
+      if (schema_tree && schema_ordinal > schema_tree->event_sequence)
+        return MakeInvalidRequestDiagnostic(operation, "view_schema_generation_changed");
+      std::string encoded;
+      if (!EncodeApiBehaviorRecord(frame, &encoded))
+        return MakeInvalidRequestDiagnostic(operation, "view_schema_frame_invalid");
+      schema_frames.push_back(std::move(encoded));
+    }
+    if (schema_input.bad() || !schema_input.eof())
+      return MakeInvalidRequestDiagnostic(operation, "view_schema_journal_read_failed");
+  }
+  if (*expected_schema_frames && **expected_schema_frames != schema_frames)
+    return MakeInvalidRequestDiagnostic(operation, "view_schema_generation_changed");
+  if (!*expected_schema_frames) *expected_schema_frames = std::move(schema_frames);
+  // Schema-tree storage is an existing owning source, not an object fabricated
+  // to satisfy FindObject. Authorization above is required in both cases.
+  if ((!schema && (!schema_tree || schema_tree->state != "active")) ||
+      (schema && (schema->object_kind != "schema" ||
+                  !PrincipalOwnsSchema(visible.state, request.context, schema->object_uuid))))
+    return CatalogDiagnostic(kCatalogObjectDiagnosticSchemaOwnerDenied, "view_schema_owner_required");
+  const auto current = LoadState(request.context, {.enforce_visibility = false, .creation_admission = true});
+  if (!current.ok) return current.diagnostic;
+  if (!expected_catalog_epoch)
+    return MakeInvalidRequestDiagnostic(operation, "view_catalog_generation_storage_required");
+  if (*expected_catalog_epoch && **expected_catalog_epoch != current.state.metadata_epoch)
+    return MakeInvalidRequestDiagnostic(operation, "view_catalog_generation_changed");
+  *expected_catalog_epoch = current.state.metadata_epoch;
+  if (FindObject(current.state, definition.view_uuid))
+    return CatalogDiagnostic(kCatalogObjectDiagnosticDuplicateName, "view_uuid_occupied");
+  const auto collision = CheckNameConflict(current.state, definition.view_uuid, "view",
+      request.target_schema.uuid, EffectiveNames(request), request.context);
+  if (collision.error) return collision;
+  const auto resolver = ValidateCurrentViewResolverOccupancy(request);
+  if (resolver.error) return resolver;
+  const auto* source = FindObject(current.state, definition.source_relation_uuid);
+  if (!source || source->object_kind != "table" ||
+      source->definition_epoch != definition.source_relation_descriptor_generation)
+    return MakeInvalidRequestDiagnostic(operation, "view_source_catalog_generation_changed");
+  bool source_column_found = false;
+  for (const auto& column : current.state.columns) {
+    if (column.column_uuid != definition.outputs.front().source_column_uuid) continue;
+    if (source_column_found || column.owner_object_uuid != definition.source_relation_uuid)
+      return MakeInvalidRequestDiagnostic(operation, "view_source_column_catalog_owner_invalid");
+    source_column_found = true;
+  }
+  if (!source_column_found)
+    return MakeInvalidRequestDiagnostic(operation, "view_source_column_catalog_record_missing");
+  const auto* current_schema = FindObject(current.state, request.target_schema.uuid);
+  if (schema && (!current_schema || current_schema->catalog_row_uuid != schema->catalog_row_uuid))
+    return MakeInvalidRequestDiagnostic(operation, "view_schema_generation_changed");
+  authorization.target_object = {definition.source_relation_uuid, "table"};
+  authorization.required_right = "SELECT";
+  const auto readable = EngineAuthorize(authorization);
+  if (!readable.ok || !readable.authorized)
+    return readable.diagnostics.empty() ? MakeInvalidRequestDiagnostic(operation, "view_source_authorization_denied")
+                                       : readable.diagnostics.front();
+  return OkDiagnostic();
+}
+
+EngineCatalogCreateObjectResult EngineCatalogCreateViewWithDefinition(
+    const CatalogViewCreationCustody& custody, const EngineCatalogCreateObjectRequest& request) {
+  constexpr const char* operation = "ddl.create_view";
+  const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
+  const auto readmit = custody.Readmit();
+  if (readmit.error) return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation, readmit);
+  const auto& definition = custody.definition();
+  if (ObjectKind(request) != "view" || ObjectUuid(request) != definition.view_uuid ||
+      custody.payload().empty() || !custody.payload().starts_with("SBVIEW02"))
+    return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation,
+        MakeInvalidRequestDiagnostic(operation, "view_owned_definition_mismatch"));
+  const auto current = LoadState(request.context, {.enforce_visibility = false, .creation_admission = true});
+  if (!current.ok) return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation, current.diagnostic);
+  std::vector<PreparedCatalogJournalRecord> prepared;
+  auto result = PrepareCatalogObjectCreateData(request, prepared, &custody.payload(), &current.state);
+  if (!result.ok) return result;
+  result.operation_id = operation;
+  AddEvidence(&result, "relation_projection_view_marker", definition.marker);
+  AddEvidence(&result, "relation_projection_view_descriptor_uuid", definition.view_descriptor_uuid);
+  AddEvidence(&result, "relation_projection_view_descriptor_generation", std::to_string(definition.view_descriptor_generation));
+  AddEvidence(&result, "relation_projection_view_source_resource_epoch", std::to_string(definition.source_resource_epoch));
+  AddEvidence(&result, "relation_projection_view_output_count", std::to_string(definition.outputs.size()));
+  AddEvidence(&result, "relation_projection_view_parser_sql", "false");
+  AddEvidence(&result, "relation_projection_view_row_storage", "none_mga_source_scan_only");
+  EngineCatalogDependencyRecord column;
+  column.creator_tx = request.context.local_transaction_id;
+  column.source_uuid = definition.view_uuid; column.source_kind = "view";
+  column.dependency_uuid = definition.outputs.front().source_column_uuid;
+  column.dependency_kind = "view_source_column"; column.metadata_epoch = result.metadata_cache_epoch;
+  const auto staged = StageCatalogJournalEvent(request.context, DependencyEvent(column), prepared);
+  if (staged.error) return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation, staged);
+  const auto publication = PublishPreparedCatalogJournalBatch(custody, request.context, operation, std::move(prepared));
+  if (publication.error) return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation,
+      CatalogBatchPublicationDiagnostic(publication));
   return result;
 }
 
