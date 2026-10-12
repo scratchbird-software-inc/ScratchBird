@@ -15,6 +15,7 @@
 #include "engine/executor/descriptor_value_runtime.hpp"
 #include "wire/projection_fields.hpp"
 #include "catalog/binary_view_options.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "catalog/relation_projection_view.hpp"
@@ -35,6 +36,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -1211,6 +1213,34 @@ void TestNativeProjectionBoundaries(const api::EngineRequestContext& context,
   envelope.outputs = view.outputs;
   const auto binding = api::BindEngineRelationProjectionEnvelope(context, envelope, source);
   Require(binding.ok, "native projection fixture did not bind its actual source");
+  for (const auto& output : envelope.outputs) {
+    api::CatalogColumnMetadata packet;
+    Require(api::DecodeCatalogColumnMetadata(output.output_type.encoded_descriptor, &packet),
+            "persisted projection output lost its binary metadata packet");
+    Require(packet.identities.at("datatype_catalog_snapshot_uuid") ==
+                source.columns[0].value_descriptor.datatype_cohort.catalog_snapshot_uuid,
+            "persisted projection output changed its binary cohort snapshot");
+    for (const auto key : {"datatype_catalog_generation_le64", "datatype_registry_generation_le64"}) {
+      const auto& bytes = packet.text.at(key);
+      Require(bytes.size() == 8, "projection cohort generation is not a native eight-byte carrier");
+      std::uint64_t generation = 0;
+      for (unsigned i = 0; i != 8; ++i)
+        generation |= static_cast<std::uint64_t>(static_cast<unsigned char>(bytes[i])) << (8 * i);
+      Require(generation == (std::string_view(key) == "datatype_catalog_generation_le64"
+                  ? context.datatype_catalog_generation : context.datatype_registry_generation),
+              "projection cohort generation changed its native value");
+      for (const auto width : {0u, 7u, 8u, 9u}) {
+        auto malformed = envelope;
+        auto invalid = packet;
+        invalid.text[key].assign(width, '\0');
+        Require(api::EncodeCatalogColumnMetadata(invalid,
+                    &malformed.outputs[output.ordinal].output_type.encoded_descriptor),
+                "could not encode malformed projection cohort control");
+        Require(!api::BindEngineRelationProjectionEnvelope(context, malformed, source).ok,
+                "malformed native projection cohort generation was admitted");
+      }
+    }
+  }
   namespace executor = scratchbird::engine::executor;
   for (const auto number : {INT32_MIN, -1, 0, 1, INT32_MAX, 0x34333231}) {
     const auto bytes = Int32Value({}, number).binary_value;
@@ -1228,6 +1258,7 @@ void TestNativeProjectionBoundaries(const api::EngineRequestContext& context,
       Require(value.descriptor.datatype_descriptor_uuid ==
                   source.columns[0].value_descriptor.datatype_descriptor_uuid &&
               value.descriptor.type_uuid == source.columns[0].value_descriptor.type_uuid &&
+              value.descriptor.datatype_cohort == source.columns[0].value_descriptor.datatype_cohort &&
               value.descriptor.datatype_descriptor_generation ==
                   source.columns[0].value_descriptor.datatype_descriptor_generation,
               "projection output lost its datatype binding");
@@ -1275,12 +1306,14 @@ void TestNativeProjectionBoundaries(const api::EngineRequestContext& context,
   Require(!api::ExecuteEngineRelationProjection(stale_context, binding.outputs,
       source, view.source_resource_epoch, {}).ok,
       "empty projection bypassed exact cohort admission");
-  for (unsigned mutation = 0; mutation < 3; ++mutation) {
+  for (unsigned mutation = 0; mutation < 5; ++mutation) {
     auto stale = source;
     auto& type = stale.columns[0].value_descriptor;
     if (mutation == 0) ++type.datatype_descriptor_generation;
     if (mutation == 1) type.datatype_descriptor_uuid = {};
     if (mutation == 2) type.type_uuid = {};
+    if (mutation == 3) type.datatype_cohort = {};
+    if (mutation == 4) ++type.datatype_cohort.registry_generation;
     Require(!api::BindEngineRelationProjectionEnvelope(context, envelope, stale).ok,
             "native projection accepted a missing or stale datatype binding");
   }
@@ -1320,6 +1353,43 @@ void TestRelationProjectionView(Fixture& fixture) {
   Commit(initial_rows);
 
   auto create = Begin(fixture, 3);
+  const auto publication_image = [&] {
+    std::map<std::string, std::string> image;
+    const auto prefix = fixture.database_path.filename().string();
+    for (const auto& entry : std::filesystem::directory_iterator(fixture.directory)) {
+      const auto name = entry.path().filename().string();
+      if (!entry.is_regular_file() ||
+          (name != prefix && !name.starts_with(prefix + "."))) continue;
+      std::ifstream input(entry.path(), std::ios::binary);
+      Require(input.is_open(), "could not capture native view publication image");
+      image.emplace(name, std::string(std::istreambuf_iterator<char>(input), {}));
+      Require(!input.bad(), "native view publication image read failed");
+    }
+    return image;
+  };
+  const auto before_refusals = publication_image();
+  // Retained statement observations cannot authorize a different native
+  // database/transaction, and a VIEW entrypoint cannot publish another kind.
+  for (unsigned mutation = 0; mutation != 3; ++mutation) {
+    auto invalid = ViewRequest(fixture, create, fixture.singleton_descriptor,
+                              "V_NATIVE_OWNER_REFUSED", "X");
+    if (mutation == 0) invalid.context.database_uuid = fixture.multi_table_uuid;
+    if (mutation == 1) invalid.context.transaction_uuid = fixture.singleton_table_uuid;
+    if (mutation == 2) invalid.target_object.object_kind = "table";
+    const auto refused = api::EngineCreateView(invalid);
+    const char* detail = mutation == 0 ? "database_identity_mismatch" :
+        mutation == 1 ? "transaction_identity_mismatch" : "target_object_kind_must_be_view";
+    Require(!refused.ok && HasDiagnostic(refused, detail) &&
+                refused.primary_object.uuid.is_nil() && refused.catalog_row_uuid.is_nil(),
+            "view creation bypassed current native ownership or object-kind admission");
+    const auto absent = api::EngineResolveName(
+        ResolveRequest(fixture, create, "V_NATIVE_OWNER_REFUSED"));
+    Require(!absent.ok && !absent.diagnostics.empty() &&
+                absent.diagnostics.front().code == "CATALOG.NAME.NOT_FOUND",
+            "refused view creation published a resolvable name");
+    Require(publication_image() == before_refusals,
+            "refused native view owner changed the database or publication sidecars");
+  }
   const auto singleton_created = api::EngineCreateView(
       ViewRequest(fixture,
                   create,
@@ -1385,6 +1455,15 @@ void TestRelationProjectionView(Fixture& fixture) {
           "uncommitted relation projection view escaped MGA visibility");
   Rollback(precommit_reader);
   Commit(create);
+  const auto committed_image = publication_image();
+  auto terminal = ViewRequest(fixture, create, fixture.singleton_descriptor,
+                              "V_TERMINAL_OWNER_REFUSED", "X");
+  const auto terminal_refused = api::EngineCreateView(terminal);
+  Require(!terminal_refused.ok &&
+              HasDiagnostic(terminal_refused, "active_local_transaction_required") &&
+              terminal_refused.primary_object.uuid.is_nil() &&
+              publication_image() == committed_image,
+          "retained active view snapshot authorized effects after native COMMIT");
 
   auto rollback_create = Begin(fixture, 5);
   const auto rollback_created = api::EngineCreateView(

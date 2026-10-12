@@ -64,12 +64,29 @@ bool DescriptorExactlyMatches(const EngineDescriptor& left,
 
 bool BoundInt32Cohort(const EngineRequestContext& context, const EngineDescriptor& source) {
   dt::DatatypeStorageIdentityV3 identity;
-  return dt::LookupDatatypeStorageIdentityV3(
+  return source.datatype_cohort == EngineDatatypeCohort{
+      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+      context.datatype_registry_generation} && dt::LookupDatatypeStorageIdentityV3(
       context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
       context.datatype_registry_generation, source.datatype_descriptor_uuid,
       source.datatype_descriptor_generation, &identity) &&
       identity.type_id == dt::CanonicalTypeId::int32 && identity.type_uuid == source.type_uuid &&
       identity.codec && identity.codec->legacy_fields.canonical_value_exact_bytes == 4;
+}
+
+std::string NativeGenerationBytes(std::uint64_t value) {
+  std::string bytes(8, '\0');
+  for (unsigned i = 0; i != 8; ++i)
+    bytes[i] = static_cast<char>((value >> (8 * i)) & 0xff);
+  return bytes;
+}
+
+std::optional<std::uint64_t> NativeGeneration(std::string_view bytes) {
+  if (bytes.size() != 8) return std::nullopt;
+  std::uint64_t value = 0;
+  for (unsigned i = 0; i != 8; ++i)
+    value |= static_cast<std::uint64_t>(static_cast<unsigned char>(bytes[i])) << (8 * i);
+  return value ? std::optional<std::uint64_t>{value} : std::nullopt;
 }
 
 // The packed projection descriptor has one opaque, binary metadata field.
@@ -80,6 +97,12 @@ std::optional<std::string> BoundOutputMetadata(const EngineDescriptor& source) {
       !core::uuid::IsEngineIdentityUuid(source.type_uuid) ||
       !source.datatype_descriptor_generation || !source.charset_uuid.is_nil() ||
       !source.collation_uuid.is_nil()) return std::nullopt;
+  dt::DatatypeStorageIdentityV3 identity;
+  if (!dt::LookupDatatypeStorageIdentityV3(source.datatype_cohort.catalog_snapshot_uuid,
+          source.datatype_cohort.catalog_generation, source.datatype_cohort.registry_generation,
+          source.datatype_descriptor_uuid, source.datatype_descriptor_generation, &identity) ||
+      identity.type_id != dt::CanonicalTypeId::int32 || identity.type_uuid != source.type_uuid)
+    return std::nullopt;
   CatalogColumnMetadata fields;
   if (!AdmitCatalogColumnMetadata(source.encoded_descriptor, &fields)) return std::nullopt;
   if (source.canonical_type_name != "int32" || source.descriptor_kind != "scalar")
@@ -101,15 +124,18 @@ std::optional<std::string> BoundOutputMetadata(const EngineDescriptor& source) {
       if (value != "32") return std::nullopt;
     } else if (name == "scale") {
       if (value != "0") return std::nullopt;
-    } else if (name != "datatype_descriptor_generation") {
+    } else if (name != "datatype_descriptor_generation" &&
+               name != "datatype_catalog_generation_le64" && name != "datatype_registry_generation_le64") {
       return std::nullopt;
     }
   }
   if (!nullable) return std::nullopt;
   for (const auto& [name, value] : fields.identities)
-    if (name != "datatype_descriptor_uuid" && name != "type_uuid") return std::nullopt;
+    if (name != "datatype_descriptor_uuid" && name != "type_uuid" &&
+        name != "datatype_catalog_snapshot_uuid") return std::nullopt;
   for (const auto& entry : {std::pair{"datatype_descriptor_uuid", source.datatype_descriptor_uuid},
-                             std::pair{"type_uuid", source.type_uuid}}) {
+                             std::pair{"type_uuid", source.type_uuid},
+                             std::pair{"datatype_catalog_snapshot_uuid", source.datatype_cohort.catalog_snapshot_uuid}}) {
     const auto existing = fields.identities.find(entry.first);
     if (existing != fields.identities.end() && existing->second != entry.second)
       return std::nullopt;
@@ -119,8 +145,16 @@ std::optional<std::string> BoundOutputMetadata(const EngineDescriptor& source) {
   const auto existing = fields.text.find("datatype_descriptor_generation");
   if (existing != fields.text.end() && existing->second != generation) return std::nullopt;
   fields.text["datatype_descriptor_generation"] = generation;
+  for (const auto& entry : {
+           std::pair{"datatype_catalog_generation_le64", NativeGenerationBytes(source.datatype_cohort.catalog_generation)},
+           std::pair{"datatype_registry_generation_le64", NativeGenerationBytes(source.datatype_cohort.registry_generation)}}) {
+    const auto found = fields.text.find(entry.first);
+    if (found != fields.text.end() && found->second != entry.second) return std::nullopt;
+  }
   fields.text = {{"nullability", *nullable ? "nullable" : "non_null"},
-                 {"datatype_descriptor_generation", generation}};
+                 {"datatype_descriptor_generation", generation},
+                 {"datatype_catalog_generation_le64", NativeGenerationBytes(source.datatype_cohort.catalog_generation)},
+                 {"datatype_registry_generation_le64", NativeGenerationBytes(source.datatype_cohort.registry_generation)}};
   std::string encoded;
   if (!EncodeCatalogColumnMetadata(fields, &encoded)) return std::nullopt;
   return encoded;
@@ -906,19 +940,29 @@ EngineDescriptor EngineRelationProjectionOutputTypeDescriptor(
     const auto datatype = metadata.identities.find("datatype_descriptor_uuid");
     const auto type = metadata.identities.find("type_uuid");
     const auto generation = metadata.text.find("datatype_descriptor_generation");
+    const auto snapshot = metadata.identities.find("datatype_catalog_snapshot_uuid");
+    const auto catalog_generation = metadata.text.find("datatype_catalog_generation_le64");
+    const auto registry_generation = metadata.text.find("datatype_registry_generation_le64");
     if (datatype != metadata.identities.end() && type != metadata.identities.end() &&
-        generation != metadata.text.end()) {
+        generation != metadata.text.end() && snapshot != metadata.identities.end() &&
+        catalog_generation != metadata.text.end() && registry_generation != metadata.text.end()) {
       const auto parsed = ParseCanonicalU64(generation->second);
-      if (parsed && *parsed) {
+      const auto catalog = NativeGeneration(catalog_generation->second);
+      const auto registry = NativeGeneration(registry_generation->second);
+      if (parsed && *parsed && catalog && *catalog && registry && *registry) {
         result.datatype_descriptor_uuid = datatype->second;
         result.datatype_descriptor_generation = *parsed;
         result.type_uuid = type->second;
+        result.datatype_cohort = {snapshot->second, *catalog, *registry};
         // The retained projection packet carries the datatype binding inside
         // its opaque metadata. The execution descriptor has dedicated binary
         // identity fields; its scalar modifiers must not duplicate that arm.
         metadata.identities.erase("datatype_descriptor_uuid");
         metadata.identities.erase("type_uuid");
+        metadata.identities.erase("datatype_catalog_snapshot_uuid");
         metadata.text.erase("datatype_descriptor_generation");
+        metadata.text.erase("datatype_catalog_generation_le64");
+        metadata.text.erase("datatype_registry_generation_le64");
         if (!EncodeCatalogColumnMetadata(metadata, &result.encoded_descriptor))
           return {};
       }
@@ -1194,6 +1238,7 @@ PrepareEngineRelationProjectionViewCreate(const EngineApiRequest& request) {
     literal_type.datatype_descriptor_uuid = source_type.datatype_descriptor_uuid;
     literal_type.datatype_descriptor_generation = source_type.datatype_descriptor_generation;
     literal_type.type_uuid = source_type.type_uuid;
+    literal_type.datatype_cohort = source_type.datatype_cohort;
     literal_output.output_type = AllocateOutputType(
         literal_type,
         visible_inventory,
@@ -1715,6 +1760,7 @@ EngineApiDiagnostic ValidateEngineRelationProjectionEnvelope(
     expected_literal.datatype_descriptor_uuid = source_binding.datatype_descriptor_uuid;
     expected_literal.datatype_descriptor_generation = source_binding.datatype_descriptor_generation;
     expected_literal.type_uuid = source_binding.type_uuid;
+    expected_literal.datatype_cohort = source_binding.datatype_cohort;
     if (!valid_common(literal, 1) ||
         LowerAscii(source.output_name) == LowerAscii(literal.output_name) ||
         literal.expression_kind !=
@@ -1860,12 +1906,11 @@ EngineRelationProjectionExecutionResult ExecuteEngineRelationProjection(
           outputs[1].output.output_type));
   result.result_shape.rows.reserve(visible_rows.size());
 
-  const EngineDescriptor source_type =
-      EngineRelationProjectionOutputTypeDescriptor(
-          outputs[0].output.output_type);
-  const EngineDescriptor literal_type =
-      EngineRelationProjectionOutputTypeDescriptor(
-          outputs[1].output.output_type);
+  // The admitted unpacked descriptors already belong to this result shape;
+  // rows do not change its columns. Avoid decoding/allocating both packets
+  // again merely to assign identical descriptors to the row values.
+  const EngineDescriptor& source_type = result.result_shape.columns[0];
+  const EngineDescriptor& literal_type = result.result_shape.columns[1];
   const auto literal_bytes = EncodeNativeI32(outputs[1].output.literal_int32);
   for (const auto& row : visible_rows) {
     const auto stored = StoredFieldValueExact(

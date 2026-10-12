@@ -355,6 +355,27 @@ EngineCreateSequenceResult EngineCreateSequence(const EngineCreateSequenceReques
 }
 
 EngineCreateViewResult EngineCreateView(const EngineCreateViewRequest& request) {
+  // Definition preparation and its publication must observe one owned native
+  // transaction boundary, not independent snapshots taken by each helper.
+  const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
+  const auto authority = ValidateCurrentMutatingTransactionAuthority(
+      request.context, "ddl.create_view");
+  if (authority.error) {
+    return MakeApiBehaviorDiagnostic<EngineCreateViewResult>(
+        request.context, "ddl.create_view", authority);
+  }
+  const auto savepoint = AdmitMgaSavepointProducer(
+      request.context, MgaMutationProducer::catalog_mutation);
+  if (savepoint.error) {
+    return MakeApiBehaviorDiagnostic<EngineCreateViewResult>(
+        request.context, "ddl.create_view", savepoint);
+  }
+  if (!request.target_object.object_kind.empty() &&
+      request.target_object.object_kind != "view") {
+    return MakeApiBehaviorDiagnostic<EngineCreateViewResult>(
+        request.context, "ddl.create_view",
+        MakeInvalidRequestDiagnostic("ddl.create_view", "target_object_kind_must_be_view"));
+  }
   const std::string object_kind =
       request.target_object.object_kind.empty() ? "view" : request.target_object.object_kind;
   if (IsEngineGlobalAggregateViewCreateRequest(request)) {
