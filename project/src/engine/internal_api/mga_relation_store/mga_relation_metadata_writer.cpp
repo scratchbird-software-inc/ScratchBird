@@ -192,6 +192,35 @@ bool AppendLine(const std::string& path, const std::string& frame) {
   return static_cast<bool>(output);
 }
 
+// Materialization may abandon a deferred reservation before publication.
+// Once publication is attempted, a failed write or sync is not proof of zero
+// effects. Keep the consumed range and publish no metadata until its durable
+// allocator authority (including directory entry) is established.
+EngineApiDiagnostic PublishSealedMetadataReservation(
+    const EngineRequestContext& context,
+    const MgaEventSequenceRangeReservation& reservation,
+    std::vector<std::string>* allocator_lines,
+    const std::string& frame, const char* operation, const std::string& prefix) {
+  if (frame.empty()) {
+    AbandonDeferredEventSequenceReservation(reservation);
+    allocator_lines->clear();
+    return MakeInvalidRequestDiagnostic(operation, prefix + "_frame_encoding_failed");
+  }
+  if (!AppendDeferredEventSequenceAllocatorLines(context, allocator_lines, nullptr))
+    return MakeInvalidRequestDiagnostic(operation, prefix + "_allocator_append_failed");
+  const auto allocator_sync = scratchbird::storage::disk::SyncFilesystemPath(
+      reservation.allocator_path, true);
+  if (!allocator_sync.ok())
+    return MakeInvalidRequestDiagnostic(operation,
+        prefix + "_allocator_sync_failed:" + allocator_sync.diagnostic.diagnostic_code);
+  const auto directory_sync = scratchbird::storage::disk::SyncParentDirectoryPath(
+      reservation.allocator_path);
+  if (!directory_sync.ok())
+    return MakeInvalidRequestDiagnostic(operation,
+        prefix + "_allocator_directory_sync_failed:" + directory_sync.diagnostic.diagnostic_code);
+  return OkDiagnostic();
+}
+
 }  // namespace
 
 EngineApiDiagnostic AppendMgaTableMetadata(const EngineRequestContext& context,
@@ -375,15 +404,14 @@ EngineApiDiagnostic AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
   fields[stf::kContextualSidecarCount] =
       std::to_string(material.sealed_set.contextual_sidecar_count);
   fields[stf::kDescriptorFields] = EncodeMetadataPairs(complete_fields);
-  if (!AppendLine(MetadataStorePath(context), JoinLine(fields))) {
-    abandon_reservation();
+  const std::string line = JoinLine(fields);
+  const auto publication = PublishSealedMetadataReservation(
+      context, reservation, &allocator_lines, line, kOperation, "sealed_table_descriptor");
+  if (publication.error) return publication;
+  if (!AppendLine(MetadataStorePath(context), line)) {
     return MakeInvalidRequestDiagnostic(
         kOperation, "sealed_table_descriptor_append_failed");
   }
-  // The sealed line is the atomic recovery authority. The allocator record is
-  // acceleration only and is published after that one visibility barrier.
-  (void)AppendDeferredEventSequenceAllocatorLines(
-      context, &allocator_lines, nullptr);
   *descriptor = std::move(material.relation_descriptor);
   return OkDiagnostic();
 }
@@ -923,22 +951,9 @@ EngineApiDiagnostic AppendMgaConstraintMutationBatch(
   // All fallible materialization has finished. Persist the reservation before
   // its metadata event: restart uses the durable allocator high-water mark.
   // An append failure may retain a consumed event, but never reuse it.
-  if (!AppendDeferredEventSequenceAllocatorLines(context, &allocator_lines, nullptr)) {
-    // A failed write/flush is not proof of zero effects. Retain the in-process
-    // reservation and let durable framing/high-water recovery reconcile it.
-    return MakeInvalidRequestDiagnostic(kOperation,
-                                        "sealed_batch_allocator_append_failed");
-  }
-  const auto allocator_sync = scratchbird::storage::disk::SyncFilesystemPath(
-      reservation.allocator_path, true);
-  if (!allocator_sync.ok())
-    return MakeInvalidRequestDiagnostic(kOperation,
-        "sealed_batch_allocator_sync_failed:" + allocator_sync.diagnostic.diagnostic_code);
-  const auto directory_sync = scratchbird::storage::disk::SyncParentDirectoryPath(
-      reservation.allocator_path);
-  if (!directory_sync.ok())
-    return MakeInvalidRequestDiagnostic(kOperation,
-        "sealed_batch_allocator_directory_sync_failed:" + directory_sync.diagnostic.diagnostic_code);
+  const auto publication = PublishSealedMetadataReservation(
+      context, reservation, &allocator_lines, line, kOperation, "sealed_batch");
+  if (publication.error) return publication;
   if (!AppendLine(MetadataStorePath(context), line)) {
     return MakeInvalidRequestDiagnostic(kOperation,
                                         "sealed_batch_append_failed");
@@ -1811,17 +1826,18 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
         std::to_string(snapshot.contextual_sidecar_count),
         "0", "", MetadataUuidBytes({}), ""});
   }
-  if (!AppendLine(MetadataStorePath(context), JoinLine(fields))) {
-    abandon_reservation();
+  const std::string line = JoinLine(fields);
+  const auto publication = PublishSealedMetadataReservation(
+      context, reservation, &allocator_lines, line, kOperation, "text_identity_migration");
+  if (publication.error) {
+    result.diagnostic = publication;
+    return result;
+  }
+  if (!AppendLine(MetadataStorePath(context), line)) {
     return refuse("DATATYPE.DESCRIPTOR.INVALID",
                   "text_identity_migration_append_failed",
-                  "sealed batch and relation descriptor were not published");
+                  "metadata append failed; physical effects require reconciliation; event reservation retained");
   }
-  // The sealed metadata line is authoritative and can bootstrap the allocator
-  // on restart. Publish allocator acceleration only after the one-line seal;
-  // failure here cannot turn an already-visible migration into a refusal.
-  (void)AppendDeferredEventSequenceAllocatorLines(
-      context, &allocator_lines, nullptr);
   result.ok = true;
   result.migrated_row_count = request.rows.size();
   result.diagnostic = OkDiagnostic();

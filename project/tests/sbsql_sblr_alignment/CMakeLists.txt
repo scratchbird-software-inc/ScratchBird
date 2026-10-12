@@ -3754,6 +3754,12 @@ target_compile_definitions(sbsql_sblr_alignment_ia01_bigint_identity_migration
 target_link_libraries(sbsql_sblr_alignment_ia01_bigint_identity_migration
   PRIVATE sb_engine_internal_api sb_storage_database sb_transaction_mga
           sb_core_uuid)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_compile_definitions(sbsql_sblr_alignment_ia01_bigint_identity_migration
+    PRIVATE SB_SEALED_METADATA_TEST_WRAP_SYNC=1)
+  target_link_options(sbsql_sblr_alignment_ia01_bigint_identity_migration
+    PRIVATE -Wl,--wrap=fsync)
+endif()
 add_test(NAME sbsql_sblr_alignment_ia01_bigint_identity_migration
   COMMAND sbsql_sblr_alignment_ia01_bigint_identity_migration
           numeric-identity-migration)

@@ -1,6 +1,7 @@
 #include "../support/diagnostic_value_fixture.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/owned_temp_directory.hpp"
+#include "catalog/catalog_object_lifecycle.hpp"
 #include "database_lifecycle.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "ddl/create_api.hpp"
@@ -9,6 +10,7 @@
 #include "memory.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include "mga_relation_store/mga_event_sequence_allocator.hpp"
 #include "mga_relation_store/mga_relation_metadata_store.hpp"
 #include "mga_relation_store/mga_contextual_text_descriptor.hpp"
 #include "transaction/transaction_api.hpp"
@@ -30,6 +32,29 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#if defined(SB_SEALED_METADATA_TEST_WRAP_SYNC)
+#include <cerrno>
+#include <sys/stat.h>
+namespace publication_fault {
+thread_local bool armed = false;
+thread_local bool hit = false;
+thread_local struct stat target {};
+}
+extern "C" int __real_fsync(int);
+extern "C" int __wrap_fsync(int fd) {
+  struct stat actual {};
+  if (publication_fault::armed && ::fstat(fd, &actual) == 0 &&
+      actual.st_dev == publication_fault::target.st_dev &&
+      actual.st_ino == publication_fault::target.st_ino) {
+    publication_fault::armed = false;
+    publication_fault::hit = true;
+    errno = EIO;
+    return -1;
+  }
+  return __real_fsync(fd);
+}
+#endif
 
 namespace {
 namespace api = scratchbird::engine::internal_api;
@@ -1122,6 +1147,110 @@ void RequireRefusalArtifactsUnchanged(
           message);
 }
 
+// Exercise actual failed opens, not a synthetic success/failure response. The
+// original mode is restored during assertion unwinding as well as on success.
+class ReadOnlyPublicationFile {
+ public:
+  explicit ReadOnlyPublicationFile(std::filesystem::path path)
+      : path_(std::move(path)), mode_(std::filesystem::status(path_).permissions()) {
+    std::filesystem::permissions(path_, std::filesystem::perms::owner_write |
+        std::filesystem::perms::group_write | std::filesystem::perms::others_write,
+        std::filesystem::perm_options::remove);
+  }
+  ~ReadOnlyPublicationFile() {
+    std::error_code error;
+    std::filesystem::permissions(path_, mode_, error);
+    if (error) std::terminate();
+  }
+ private:
+  std::filesystem::path path_;
+  std::filesystem::perms mode_;
+};
+
+template <typename Publish>
+void RequireSealedReservationFailureOrdering(
+    const api::EngineRequestContext& context, const Fixture& fixture,
+    Publish publish, std::string_view allocator_reason,
+    std::string_view metadata_reason) {
+  const auto allocator_path = fixture.path.string() + ".sb.mga_event_sequence_allocator";
+  const auto metadata_path = fixture.path.string() + ".sb.mga_relation_metadata";
+  {
+    const auto before = CaptureRefusalArtifacts(context, fixture);
+    ReadOnlyPublicationFile readonly(allocator_path);
+    Require(!std::ofstream(allocator_path, std::ios::app | std::ios::binary),
+            "fixture must deny allocator append (run without root privileges)");
+    const auto diagnostic = publish();
+    if (diagnostic.detail.find(allocator_reason) == std::string::npos &&
+        diagnostic.message_key != allocator_reason)
+      std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':'
+                << diagnostic.detail << '\n';
+    Require(diagnostic.error &&
+                (diagnostic.detail.find(allocator_reason) != std::string::npos ||
+                 diagnostic.message_key == allocator_reason),
+            "sealed publication did not report its allocator append failure");
+    RequireRefusalArtifactsUnchanged(before, context, fixture,
+        "failed allocator append published sealed metadata");
+  }
+  {
+    const auto before = CaptureRefusalArtifacts(context, fixture);
+    const auto reserved_event = api::NextMetadataEventSequence(context);
+    Require(reserved_event != 0, "metadata sequence admission failed before fault");
+    {
+      ReadOnlyPublicationFile readonly(metadata_path);
+      Require(!std::ofstream(metadata_path, std::ios::app | std::ios::binary),
+              "fixture must deny metadata append (run without root privileges)");
+      const auto diagnostic = publish();
+      Require(diagnostic.error &&
+                  (diagnostic.detail.find(metadata_reason) != std::string::npos ||
+                   diagnostic.message_key == metadata_reason),
+              "sealed publication did not report its metadata append failure");
+    }
+    const auto after = CaptureRefusalArtifacts(context, fixture);
+    Require(after.metadata == before.metadata &&
+                after.max_event_sequence == before.max_event_sequence &&
+                after.allocator.size() > before.allocator.size(),
+            "failed metadata append did not retain its preceding reservation");
+    const auto warm_next = api::NextMetadataEventSequence(context);
+    api::ClearMgaEventSequenceRangeCacheForTesting();
+    Require(warm_next == reserved_event + 1 &&
+                api::NextMetadataEventSequence(context) == warm_next,
+            "cold allocator recovery reused an event after metadata append failure");
+  }
+#if defined(SB_SEALED_METADATA_TEST_WRAP_SYNC)
+  for (const bool directory : {false, true}) {
+    const auto before = CaptureRefusalArtifacts(context, fixture);
+    const auto reserved_event = api::NextMetadataEventSequence(context);
+    const auto target = directory ? std::filesystem::path(allocator_path).parent_path()
+                                  : std::filesystem::path(allocator_path);
+    Require(::stat(target.c_str(), &publication_fault::target) == 0,
+            "sync fault target is missing");
+    struct FaultScope {
+      FaultScope() { publication_fault::hit = false; publication_fault::armed = true; }
+      ~FaultScope() { publication_fault::armed = false; }
+    };
+    api::EngineApiDiagnostic diagnostic;
+    {
+      FaultScope fault;
+      diagnostic = publish();
+    }
+    Require(publication_fault::hit && diagnostic.error &&
+                diagnostic.detail.find(directory ? "_allocator_directory_sync_failed:"
+                                                  : "_allocator_sync_failed:") != std::string::npos,
+            "sealed publication ignored or missed the actual sync fault");
+    const auto after = CaptureRefusalArtifacts(context, fixture);
+    Require(after.metadata == before.metadata &&
+                after.max_event_sequence == before.max_event_sequence &&
+                after.allocator.size() > before.allocator.size(),
+            "sync failure published metadata or lost the written reservation");
+    const auto warm_next = api::NextMetadataEventSequence(context);
+    api::ClearMgaEventSequenceRangeCacheForTesting();
+    Require(warm_next == reserved_event + 1 &&
+                api::NextMetadataEventSequence(context) == warm_next,
+            "cold recovery reused a physically retained reservation after sync failure");
+  }
+#endif
+}
+
 void RequirePhysicalTailRefused(const api::EngineRequestContext& context,
                                 const Fixture& fixture) {
   const auto before = CaptureRefusalArtifacts(context, fixture);
@@ -1679,8 +1808,15 @@ int RunConformance(const int argc, char* argv[]) {
   Rollback(text_cancelled);
 
   auto text_rollback = BeginTextMigration(fixture, text_request);
+  RequireSealedReservationFailureOrdering(text_rollback, fixture, [&] {
+    const auto result = api::AppendMgaTextIdentityMigrationBatch(text_rollback, text_request);
+    Require(!result.ok && result.migrated_row_count == 0,
+            "failed TEXT publication reported migrated rows");
+    return result.diagnostic;
+  }, "text_identity_migration_allocator_append_failed",
+     "text_identity_migration_append_failed");
   const auto expected_first_text_event =
-      CaptureRefusalArtifacts(text_rollback, fixture).max_event_sequence + 1;
+      api::NextMetadataEventSequence(text_rollback);
   const auto text_appended = api::AppendMgaTextIdentityMigrationBatch(
       text_rollback, text_request);
   if (!text_appended.ok) {
@@ -1916,6 +2052,8 @@ int RunConformance(const int argc, char* argv[]) {
   fresh_column.descriptor.datatype_descriptor_uuid = FixtureIdentity(kCanonicalTextDescriptor);
   fresh_column.descriptor.datatype_descriptor_generation = 1;
   fresh_column.descriptor.type_uuid = FixtureIdentity(kCanonicalTextType);
+  fresh_column.descriptor.datatype_cohort = {fresh.datatype_catalog_snapshot_uuid,
+      fresh.datatype_catalog_generation, fresh.datatype_registry_generation};
   fresh_column.descriptor.canonical_type_name = "text";
   fresh_column.descriptor.encoded_descriptor = "type=text";
   fresh_column.nullable = true;
@@ -2199,6 +2337,8 @@ int RunConformance(const int argc, char* argv[]) {
     column.descriptor.datatype_descriptor_uuid = FixtureIdentity(expected.descriptor_uuid);
     column.descriptor.datatype_descriptor_generation = 1;
     column.descriptor.type_uuid = FixtureIdentity(expected.type_uuid);
+    column.descriptor.datatype_cohort = {fresh.datatype_catalog_snapshot_uuid,
+        fresh.datatype_catalog_generation, fresh.datatype_registry_generation};
     column.descriptor.canonical_type_name = expected.type;
     column.descriptor.encoded_descriptor = "type=" + expected.type;
     column.nullable = false;
@@ -2330,6 +2470,67 @@ int RunConformance(const int argc, char* argv[]) {
                       .value_descriptor.encoded_descriptor == fresh_descriptor,
           "fresh relation descriptor lost canonical text authority");
   Rollback(fresh_restart);
+  auto sealed_retry = Begin(BaseContext(fixture));
+  api::CrudTableRecord retry_request;
+  retry_request.table_uuid = api::GenerateCrudEngineUuid("object");
+  retry_request.default_name = "sealed_publication_retry";
+  retry_request.columns = {{"payload", fresh_descriptor}};
+  retry_request.bound_columns = fresh_table.table_columns;
+  auto& retry_column = retry_request.bound_columns.front();
+  retry_column.requested_column_uuid = api::GenerateCrudEngineUuid("object");
+  retry_column.descriptor.descriptor_uuid = api::GenerateCrudEngineUuid("object");
+  SetColumnIdentity(retry_request.columns.front().second, "column_uuid",
+                IdentityBytes(retry_column.requested_column_uuid));
+  api::EngineCatalogCreateObjectRequest retry_catalog;
+  retry_catalog.context = sealed_retry;
+  retry_catalog.target_object.uuid = retry_request.table_uuid;
+  retry_catalog.target_object.object_kind = "table";
+  retry_catalog.target_schema = schema.target_object;
+  retry_catalog.localized_names.push_back(PrimaryName(retry_request.default_name));
+  retry_catalog.columns = retry_request.bound_columns;
+  const auto published_retry_catalog = api::EngineCatalogCreateObject(retry_catalog);
+  Require(published_retry_catalog.ok, "sealed retry catalog prerequisite failed");
+  retry_request.bound_relation_generation =
+      published_retry_catalog.bound_object_identity.object_descriptor_generation;
+  retry_request.bound_column_generation = published_retry_catalog.metadata_cache_epoch;
+  const auto& retry_table = retry_request;
+  {
+    const auto before = CaptureRefusalArtifacts(sealed_retry, fixture);
+    const auto before_next = api::NextMetadataEventSequence(sealed_retry);
+    auto oversized = retry_table;
+    oversized.default_name.assign(api::kMgaMetadataMaximumBytes, 'x');
+    api::MgaRelationStorageDescriptor output;
+    const auto diagnostic = api::AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
+        sealed_retry, oversized, {}, &output);
+    Require(ExactInvalidRequestDiagnostic(diagnostic,
+                "mga.relation_metadata.table_create.sealed_descriptor_v2:"
+                "sealed_table_descriptor_frame_encoding_failed") && output.columns.empty(),
+            "oversized sealed frame was not rejected during preflight");
+    RequireRefusalArtifactsUnchanged(before, sealed_retry, fixture,
+        "failed sealed frame encoding published a reservation or metadata");
+    Require(api::NextMetadataEventSequence(sealed_retry) == before_next,
+            "failed frame preflight retained an isolated unpublished reservation");
+    api::ClearMgaEventSequenceRangeCacheForTesting();
+    Require(api::NextMetadataEventSequence(sealed_retry) == before_next,
+            "failed frame preflight changed cold allocator authority");
+  }
+  RequireSealedReservationFailureOrdering(sealed_retry, fixture, [&] {
+    api::MgaRelationStorageDescriptor output;
+    const auto diagnostic = api::AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
+        sealed_retry, retry_table, {}, &output);
+    Require(diagnostic.error && output.columns.empty(),
+            "failed sealed table publication returned a descriptor");
+    return diagnostic;
+  }, "sealed_table_descriptor_allocator_append_failed",
+     "sealed_table_descriptor_append_failed");
+  const auto retry_event = api::NextMetadataEventSequence(sealed_retry);
+  api::MgaRelationStorageDescriptor retried_descriptor;
+  Require(!api::AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
+      sealed_retry, retry_table, {}, &retried_descriptor).error &&
+      retried_descriptor.relation_generation == retry_table.bound_relation_generation &&
+      VisibleTableGeneration(sealed_retry, IdentityBytes(retry_table.table_uuid)) == retry_event,
+      "sealed table retry did not consume a fresh metadata event");
+  Rollback(sealed_retry);
   return EXIT_SUCCESS;
   }
 
