@@ -1387,6 +1387,22 @@ void TestCatalogDefinitionPreflight(const std::filesystem::path& path) {
                 journals() == before_apply && catalog_api::NextMetadataEventSequence(context) == apply_next,
             "constraint application ignored a pending binary identity collision");
   }
+  {
+    auto existing_column = apply;
+    existing_column.columns.clear();
+    auto constraint = valid;
+    constraint.requested_constraint_uuid = column.requested_column_uuid;
+    existing_column.constraints = {constraint};
+    Require(!catalog_api::EngineCatalogApplyConstraintsToObject(existing_column).ok &&
+                journals() == before_apply && catalog_api::NextMetadataEventSequence(context) == apply_next,
+            "constraint creation reused an existing column identity omitted from the request");
+    auto other_table = table;
+    other_table.target_object.uuid = scratchbird::tests::FixtureUuid(1394, 7);
+    other_table.localized_names = {Name("other_preflight_table")};
+    Require(!catalog_api::EngineCatalogCreateObject(other_table).ok &&
+                journals() == before_apply && catalog_api::NextMetadataEventSequence(context) == apply_next,
+            "column identity was silently transferred to another table");
+  }
   apply.constraints = {valid};
   RequireOk(catalog_api::EngineCatalogApplyConstraintsToObject(apply),
             "preflight constraint retry failed");

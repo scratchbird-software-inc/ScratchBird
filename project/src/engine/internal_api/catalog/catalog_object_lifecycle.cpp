@@ -1450,7 +1450,10 @@ EngineApiDiagnostic PrepareCatalogColumnAndConstraintMetadata(
     if (record.column_uuid.is_nil()) {
       return CatalogDiagnostic(kCatalogObjectDiagnosticUuidRequired, "column_uuid");
     }
-    if (!pending_definition_identities.insert(record.column_uuid).second)
+    if (!pending_definition_identities.insert(record.column_uuid).second ||
+        std::any_of(state.columns.begin(), state.columns.end(), [&](const auto& existing) {
+          return existing.column_uuid == record.column_uuid && existing.owner_object_uuid != owner_object_uuid;
+        }))
       return CatalogDiagnostic(kCatalogObjectDiagnosticDuplicateName, "column_uuid");
     record.owner_object_uuid = owner_object_uuid;
     record.descriptor_kind = column.descriptor.descriptor_kind;
@@ -1474,6 +1477,9 @@ EngineApiDiagnostic PrepareCatalogColumnAndConstraintMetadata(
       return CatalogDiagnostic(kCatalogConstraintDiagnosticKindRequired, constraint_uuid);
     }
     if (FindObject(state, constraint_uuid) != nullptr ||
+        std::any_of(state.columns.begin(), state.columns.end(), [&](const auto& existing) {
+          return existing.column_uuid == constraint_uuid;
+        }) ||
         !pending_definition_identities.insert(constraint_uuid).second) {
       return CatalogDiagnostic(kCatalogObjectDiagnosticDuplicateName,
                                "constraint_uuid");
