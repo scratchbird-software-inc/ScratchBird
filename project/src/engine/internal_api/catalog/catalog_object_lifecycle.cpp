@@ -257,7 +257,8 @@ void AddEvidence(EngineApiResult* result, std::string kind, EngineEvidenceValue 
 bool TransactionStatusVisible(const EngineRequestContext& context,
                               const std::map<std::uint64_t, std::string>& statuses,
                               std::uint64_t creator_tx,
-                              const transaction::mga::LocalTransactionInventory* inventory) {
+                              const transaction::mga::LocalTransactionInventory* inventory,
+                              const transaction::mga::TransactionInventoryEntry* reader) {
   const auto it = statuses.find(creator_tx);
   if (it == statuses.end()) { return false; }
   if (it->second == "rolled_back" || it->second == "rolling_back" || it->second == "failed_terminal") {
@@ -270,15 +271,13 @@ bool TransactionStatusVisible(const EngineRequestContext& context,
   if (it->second != "committed") { return false; }
   if (inventory && context.local_transaction_id != 0 &&
       !context.statement_metadata_snapshot_engine_owned) {
-    const auto reader = transaction::mga::LookupLocalTransaction(*inventory,
-        transaction::mga::MakeLocalTransactionId(context.local_transaction_id));
     const auto creator = transaction::mga::LookupLocalTransaction(*inventory,
         transaction::mga::MakeLocalTransactionId(creator_tx));
-    if (!reader.ok() || !creator.ok() ||
-        reader.entry.identity.transaction_uuid.value != context.transaction_uuid ||
+    if (!reader || !creator.ok() ||
+        reader->identity.transaction_uuid.value != context.transaction_uuid ||
         !transaction::mga::HasCommittedInventoryOutcome(creator.entry)) return false;
-    if (reader.entry.stable_snapshot)
-      return creator.entry.commit_sequence <= reader.entry.begin_visible_through_commit_sequence;
+    if (reader->stable_snapshot)
+      return creator.entry.commit_sequence <= reader->begin_visible_through_commit_sequence;
     return true; // READ COMMITTED uses this admitted native read boundary.
   }
   if (context.snapshot_visible_through_local_transaction_id != 0) {
@@ -291,10 +290,11 @@ bool TransactionStatusVisible(const EngineRequestContext& context,
 bool EventVisible(const EngineRequestContext& context,
                   const CrudState* crud_state,
                   std::uint64_t creator_tx,
-                  const transaction::mga::LocalTransactionInventory* inventory = nullptr) {
+                  const transaction::mga::LocalTransactionInventory* inventory,
+                  const transaction::mga::TransactionInventoryEntry* reader) {
   if (creator_tx == 0) { return true; }
   if (crud_state != nullptr && !crud_state->transactions.empty()) {
-    return TransactionStatusVisible(context, crud_state->transactions, creator_tx, inventory);
+    return TransactionStatusVisible(context, crud_state->transactions, creator_tx, inventory, reader);
   }
   return false;
 }
@@ -853,6 +853,12 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
                                          "catalog_transaction_inventory_unavailable");
     return result;
   }
+  std::optional<transaction::mga::TransactionInventoryEntry> native_reader;
+  if (native_inventory.ok() && context.local_transaction_id != 0) {
+    const auto lookup = transaction::mga::LookupLocalTransaction(native_inventory.snapshot->inventory,
+        transaction::mga::MakeLocalTransactionId(context.local_transaction_id));
+    if (lookup.ok()) native_reader = lookup.entry;
+  }
   CatalogReadCacheImage image;
   if (!PrepareCatalogReadCacheImage(context, options, transaction_state, savepoints, in, &image)) {
     result.diagnostic = CatalogDiagnostic(kCatalogObjectDiagnosticMgaVisibilityRefused,
@@ -888,7 +894,7 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
     if (event_sequence != 0 &&
         MetadataEventRolledBackBySavepoint(savepoints, creator_tx, event_sequence)) continue;
     if (options.enforce_visibility && !EventVisible(context, transaction_state, creator_tx,
-        &native_inventory.snapshot->inventory)) continue;
+        &native_inventory.snapshot->inventory, native_reader ? &*native_reader : nullptr)) continue;
     if (const auto* decoded = std::get_if<EngineCatalogCommentRecord>(&event)) {
       auto record = *decoded;
       record.event_sequence = event_sequence;
@@ -1347,6 +1353,12 @@ EngineLoadCatalogObjectLifecycleStateResult LoadCatalogObjectLifecycleEpochState
     return result;
   }
 
+  std::optional<transaction::mga::TransactionInventoryEntry> native_reader;
+  if (context.local_transaction_id != 0) {
+    const auto lookup = transaction::mga::LookupLocalTransaction(inventory.snapshot->inventory,
+        transaction::mga::MakeLocalTransactionId(context.local_transaction_id));
+    if (lookup.ok()) native_reader = lookup.entry;
+  }
   const auto event_visible = [&](std::uint64_t creator_tx) {
     if (creator_tx == 0) return true;
     const auto found = scratchbird::transaction::mga::LookupLocalTransaction(
@@ -1369,11 +1381,9 @@ EngineLoadCatalogObjectLifecycleStateResult LoadCatalogObjectLifecycleEpochState
       return false;
     }
     if (context.local_transaction_id != 0 && !context.statement_metadata_snapshot_engine_owned) {
-      const auto reader = transaction::mga::LookupLocalTransaction(inventory.snapshot->inventory,
-          transaction::mga::MakeLocalTransactionId(context.local_transaction_id));
-      if (!reader.ok() || reader.entry.identity.transaction_uuid.value != context.transaction_uuid) return false;
-      if (reader.entry.stable_snapshot)
-        return found.entry.commit_sequence <= reader.entry.begin_visible_through_commit_sequence;
+      if (!native_reader || native_reader->identity.transaction_uuid.value != context.transaction_uuid) return false;
+      if (native_reader->stable_snapshot)
+        return found.entry.commit_sequence <= native_reader->begin_visible_through_commit_sequence;
       return true;
     }
     if (context.snapshot_visible_through_local_transaction_id != 0) {
@@ -2105,7 +2115,8 @@ EngineCommentOnObjectResult EngineCatalogPublishComment(const EngineCommentOnObj
     if (catalog_epoch_bound && current_catalog_epoch != admitted_catalog_epoch)
       return MakeInvalidRequestDiagnostic(operation, "comment_catalog_generation_changed");
     admitted_catalog_epoch = current_catalog_epoch;
-    if (latest && !EventVisible(request.context, &crud.state, latest->creator_tx, &current.snapshot->inventory))
+    if (latest && !EventVisible(request.context, &crud.state, latest->creator_tx,
+        &current.snapshot->inventory, &native_reader.entry))
       return MakeInvalidRequestDiagnostic(operation, "comment_snapshot_key_conflict");
     const auto actual_row = latest && !latest->deleted ? latest->catalog_row_uuid : EngineUuid{};
     if (actual_row != expected_row)
