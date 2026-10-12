@@ -8,44 +8,23 @@
 
 // SBSQL source-layout fragment. Included only by create_api.cpp.
 // This fragment preserves pre-existing behavior; do not add unrelated future work here.
-      if (inline_index_name_appended.error) {
-        return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context, "ddl.create_table", inline_index_name_appended);
-      }
       result.created_storage_objects.push_back({{created_index.index_uuid}, "index"});
       result.evidence.push_back({"inline_index_create", created_index.index_uuid});
       relation_descriptor_indexes.push_back(created_index);
     }
   }
-  MgaRelationStorageDescriptor relation_descriptor;
-  EngineRequestContext relation_descriptor_context = request.context;
-  relation_descriptor_context.current_schema_uuid =
-      target_schema_uuid;
-  const auto relation_descriptor_ready =
-      AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
-          relation_descriptor_context,
-          created_table,
-          relation_descriptor_indexes,
-          &relation_descriptor);
-  if (relation_descriptor_ready.error) {
-    return MakeCrudDiagnosticResult<EngineCreateTableResult>(
-        request.context,
-        "ddl.create_table",
-        relation_descriptor_ready);
+  storage.table = std::move(created_table);
+  storage.indexes = std::move(relation_descriptor_indexes);
+  storage.result = std::move(result);
+  const CatalogTableCreationCustody custody;
+  const auto published = EngineCatalogCreateObjectWithTableStorage(custody, catalog_request, &storage);
+  if (!published.ok) {
+    const auto diagnostic = published.diagnostics.empty()
+        ? MakeInvalidRequestDiagnostic("ddl.create_table", "catalog_table_object_create_failed")
+        : published.diagnostics.front();
+    return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context, "ddl.create_table", diagnostic);
   }
-  result.effective_table_descriptor.descriptor_uuid =
-      relation_descriptor.descriptor_uuid;
-  result.effective_table_descriptor.descriptor_kind =
-      "mga_relation_storage_descriptor";
-  result.effective_table_descriptor.canonical_type_name = "table";
-  result.evidence.push_back(
-      {"mga_relation_descriptor", relation_descriptor.descriptor_uuid});
-  AddDdlPublicationResult(&result,
-                          "ddl.create_table",
-                          "table",
-                          table_uuid,
-                          result.catalog_row_uuid,
-                          "mga_relation_metadata");
-  return result;
+  return std::move(storage.result);
 }
 
 EngineCreateIndexResult EngineCreateIndex(const EngineCreateIndexRequest& request) {

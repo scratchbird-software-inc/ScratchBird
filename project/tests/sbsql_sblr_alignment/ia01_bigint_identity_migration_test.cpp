@@ -2,6 +2,8 @@
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/owned_temp_directory.hpp"
 #include "catalog/catalog_object_lifecycle.hpp"
+#include "catalog/catalog_table_storage_creation.hpp"
+#include "catalog/name_registry.hpp"
 #include "database_lifecycle.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "ddl/create_api.hpp"
@@ -11,10 +13,13 @@
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "mga_relation_store/mga_metadata_preparation.hpp"
+#include "mga_relation_store/mga_publication_callback_scope.hpp"
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
 #include "mga_relation_store/mga_relation_metadata_store.hpp"
+#include "mga_relation_store/mga_savepoint_store.hpp"
 #include "mga_relation_store/mga_contextual_text_descriptor.hpp"
 #include "transaction/transaction_api.hpp"
+#include "transaction/savepoint_api.hpp"
 #include "transaction_inventory.hpp"
 #include "uuid.hpp"
 
@@ -32,7 +37,13 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <type_traits>
 #include <vector>
+
+using TableCreationCustody = scratchbird::engine::internal_api::CatalogTableCreationCustody;
+static_assert(!std::is_default_constructible_v<TableCreationCustody>);
+static_assert(!std::is_copy_constructible_v<TableCreationCustody>);
+static_assert(!std::is_move_constructible_v<TableCreationCustody>);
 
 #if defined(SB_SEALED_METADATA_TEST_WRAP_SYNC)
 #include <cerrno>
@@ -42,11 +53,14 @@ thread_local bool armed = false;
 thread_local bool hit = false;
 thread_local unsigned skip_matches = 0;
 thread_local struct stat target {};
+struct AfterSync { struct stat trigger {}, failure {}; bool hit = false; };
+thread_local AfterSync* after_sync = nullptr;
 }
 extern "C" int __real_fsync(int);
 extern "C" int __wrap_fsync(int fd) {
   struct stat actual {};
-  if (publication_fault::armed && ::fstat(fd, &actual) == 0 &&
+  const bool observed = (publication_fault::armed || publication_fault::after_sync) && ::fstat(fd, &actual) == 0;
+  if (publication_fault::armed && observed &&
       actual.st_dev == publication_fault::target.st_dev &&
       actual.st_ino == publication_fault::target.st_ino) {
     if (publication_fault::skip_matches != 0) {
@@ -58,7 +72,16 @@ extern "C" int __wrap_fsync(int fd) {
     errno = EIO;
     return -1;
   }
-  return __real_fsync(fd);
+  const auto result = __real_fsync(fd);
+  auto* after = publication_fault::after_sync;
+  if (result == 0 && observed && after && !after->hit &&
+      actual.st_dev == after->trigger.st_dev && actual.st_ino == after->trigger.st_ino) {
+    after->hit = true;
+    publication_fault::target = after->failure;
+    publication_fault::skip_matches = 0;
+    publication_fault::armed = true;
+  }
+  return result;
 }
 #endif
 
@@ -2656,6 +2679,261 @@ int RunConformance(const int argc, char* argv[]) {
                       .value_descriptor.encoded_descriptor == fresh_descriptor,
           "fresh relation descriptor lost canonical text authority");
   Rollback(fresh_restart);
+#if defined(SB_SEALED_METADATA_TEST_WRAP_SYNC)
+  const auto make_whole = [&](const api::EngineRequestContext& writer, const std::string& suffix) {
+    auto whole = fresh_table;
+    whole.context = writer;
+    whole.requested_table_uuid = api::GenerateCrudEngineUuid("object");
+    whole.table_names = {PrimaryName("whole_batch_" + suffix)};
+    auto column = fresh_column;
+    column.requested_column_uuid = api::GenerateCrudEngineUuid("object");
+    column.names = {PrimaryName("id")}; column.nullable = false;
+    column.descriptor.descriptor_uuid = api::GenerateCrudEngineUuid("object");
+    column.descriptor.datatype_descriptor_uuid = FixtureIdentity(kCanonicalBigintDescriptor);
+    column.descriptor.type_uuid = FixtureIdentity(kCanonical);
+    column.descriptor.canonical_type_name = "bigint";
+    column.descriptor.encoded_descriptor = "type=bigint;nullable=false;primary_key=true";
+    whole.table_columns = {column};
+    api::EngineIndexDefinition index;
+    index.requested_index_uuid = api::GenerateCrudEngineUuid("object");
+    index.names = {PrimaryName("whole_index_" + suffix)};
+    index.index_kind = "btree"; index.key_envelopes = {"id"};
+    whole.table_indexes = {index};
+    return whole;
+  };
+  {
+    auto writer = Begin(BaseContext(fixture));
+    auto whole = make_whole(writer, "preflight");
+    const auto capture = [&] {
+      std::vector<std::string> bytes;
+      for (const auto suffix : {".sb.catalog_object_events", ".sb.name_events.v2",
+                               ".sb.mga_relation_metadata", ".sb.mga_event_sequence_allocator"})
+        bytes.push_back(ReadFileBytes(fixture.path.string() + suffix));
+      return bytes;
+    };
+    const auto before = capture();
+    const auto native_before = db::AcquireStrongLocalTransactionInventorySnapshot(writer.database_path);
+    const auto next = api::NextMetadataEventSequence(writer);
+    Require(native_before.ok(), "whole preflight native authority missing");
+    auto missing = whole; missing.table_indexes.front().key_envelopes = {"missing_column"};
+    Require(!api::EngineCreateTable(missing).ok && capture() == before && api::NextMetadataEventSequence(writer) == next,
+            "unbound inline index published a CREATE prefix");
+    auto duplicate = whole; duplicate.table_indexes.push_back(duplicate.table_indexes.front());
+    Require(!api::EngineCreateTable(duplicate).ok && capture() == before && api::NextMetadataEventSequence(writer) == next,
+            "duplicate index identity published a CREATE prefix");
+    for (const bool unwind : {false, true}) {
+      bool reached_reserved_tail = false;
+      whole.context.query_cancellation_requested = [&] {
+        reached_reserved_tail = api::NextMetadataEventSequence(writer) > next;
+        if (reached_reserved_tail && unwind) throw std::bad_alloc();
+        return reached_reserved_tail;
+      };
+      bool threw = false;
+      api::EngineCreateTableResult cancelled;
+      try { cancelled = api::EngineCreateTable(whole); }
+      catch (const std::bad_alloc&) { threw = true; }
+      whole.context.query_cancellation_requested = {};
+      const auto after_cancel = db::AcquireStrongLocalTransactionInventorySnapshot(writer.database_path);
+      Require(reached_reserved_tail && (unwind ? threw : !threw && !cancelled.ok &&
+                  !cancelled.diagnostics.empty() && cancelled.diagnostics.front().code == "PROCESS.CANCELLED") &&
+                  capture() == before && api::NextMetadataEventSequence(writer) == next &&
+                  after_cancel.ok() && native_before.snapshot->inventory.publication_base ==
+                      after_cancel.snapshot->inventory.publication_base,
+              "whole CREATE cancellation/unwind retained effects or an unpublished range");
+    }
+    memory::MemoryFailureInjectionConfiguration injection;
+    injection.test_guard = memory::MakeMemoryFailureInjectionTestGuard();
+    injection.fixture_enabled = true; injection.fixture_name = "whole_catalog_batch";
+    memory::MemoryFailureInjectionRule rule;
+    rule.rule_id = "whole_catalog_batch"; rule.purpose = "catalog_journal_batch";
+    rule.scope_kind = memory::MemoryFailureInjectionScopeKind::database;
+    rule.binary_scope_uuid = writer.database_uuid.bytes; injection.rules.push_back(rule);
+    Require(memory::DefaultMemoryManager().EnableAllocationFailureInjection(injection).ok(),
+            "whole batch managed grant refusal setup failed");
+    struct Disable {
+      ~Disable() { if (!memory::DefaultMemoryManager().DisableAllocationFailureInjection().ok()) std::terminate(); }
+    } disable;
+    const auto refused = api::EngineCreateTable(whole);
+    const auto faults = memory::DefaultMemoryManager().FailureInjectionSnapshot();
+    const auto native_after = db::AcquireStrongLocalTransactionInventorySnapshot(writer.database_path);
+    Require(!refused.ok && faults.rules.size() == 1 && faults.rules.front().failure_count == 1 &&
+                capture() == before && native_after.ok() &&
+                native_before.snapshot->inventory.publication_base == native_after.snapshot->inventory.publication_base &&
+                api::NextMetadataEventSequence(writer) == next,
+            "whole managed-image refusal changed journals, inventory or an unpublished range");
+    Rollback(writer);
+  }
+  {
+    auto writer = Begin(BaseContext(fixture));
+    auto whole = make_whole(writer, "callback_savepoint");
+    const auto next = api::NextMetadataEventSequence(writer);
+    std::vector<std::string> before;
+    for (const auto suffix : {".sb.catalog_object_events", ".sb.name_events.v2",
+                             ".sb.mga_relation_metadata", ".sb.mga_event_sequence_allocator", ".sb.mga_savepoints"})
+      before.push_back(ReadFileBytes(fixture.path.string() + suffix));
+    bool attempted = false;
+    api::EngineCreateSavepointRequest marker;
+    marker.context = writer; marker.localized_names = {PrimaryName("callback_marker")};
+    whole.context.query_cancellation_requested = [&] {
+      if (api::NextMetadataEventSequence(writer) == next) return false;
+      attempted = true;
+      Require(!api::EngineCreateSavepoint(marker).ok,
+              "callback published a savepoint watermark over a deferred range");
+      auto aliased = marker;
+      aliased.context.database_path = (fixture.path.parent_path() / "." / fixture.path.filename()).string();
+      Require(aliased.context.database_path != marker.context.database_path &&
+                  !api::EngineCreateSavepoint(aliased).ok,
+              "callback path alias bypassed binary node watermark custody");
+      api::EngineReleaseSavepointRequest release;
+      release.context = writer; release.localized_names = marker.localized_names;
+      api::EngineRollbackToSavepointRequest rollback_to;
+      rollback_to.context = writer; rollback_to.localized_names = marker.localized_names;
+      Require(!api::EngineReleaseSavepoint(release).ok && !api::EngineRollbackToSavepoint(rollback_to).ok,
+              "callback changed marker lifetime or rollback watermark");
+      return false;
+    };
+    const auto refused = api::EngineCreateTable(whole);
+    whole.context.query_cancellation_requested = {};
+    std::vector<std::string> after;
+    for (const auto suffix : {".sb.catalog_object_events", ".sb.name_events.v2",
+                             ".sb.mga_relation_metadata", ".sb.mga_event_sequence_allocator", ".sb.mga_savepoints"})
+      after.push_back(ReadFileBytes(fixture.path.string() + suffix));
+    Require(attempted && !refused.ok && before == after && api::NextMetadataEventSequence(writer) == next,
+            "callback savepoint refusal retained a watermark, table prefix or unpublished range");
+    Require(api::EngineCreateSavepoint(marker).ok, "lexical callback guard escaped its scope");
+    const auto marker_before = ReadFileBytes(fixture.path.string() + ".sb.mga_savepoints");
+    {
+      api::MgaPublicationCallbackScope outer(writer);
+      auto other = writer; other.database_uuid = api::GenerateCrudEngineUuid("object");
+      other.database_path += ".different_node";
+      {
+        api::MgaPublicationCallbackScope inner(other);
+        Require(api::CreateMgaSavepointMarker(writer, "nested_callback_marker").error &&
+                    api::ReleaseMgaSavepointMarker(writer, "callback_marker").error &&
+                    api::RollbackToMgaSavepointMarker(writer, "callback_marker").error &&
+                    outer.savepoint_mutation_refused() && !inner.savepoint_mutation_refused(),
+                "nested callback lost outer node custody or contaminated another node");
+      }
+      Require(api::ReleaseMgaSavepointMarker(writer, "callback_marker").error,
+              "inner scope unwinding prematurely removed outer custody");
+    }
+    Require(ReadFileBytes(fixture.path.string() + ".sb.mga_savepoints") == marker_before,
+            "guarded marker lifecycle mutation changed actual marker bytes");
+    api::CrudIndexRecord index;
+    index.index_uuid = api::GenerateCrudEngineUuid("object");
+    index.table_uuid = FixtureIdentity(fixture.fresh_text_table_uuid);
+    index.default_name = "callback_after_marker"; index.profile = "btree"; index.key_envelopes = {"payload"};
+    Require(!api::AppendMgaIndexMetadata(writer, index).error,
+            "ordinary metadata append after a real savepoint failed");
+    api::EngineRollbackToSavepointRequest rollback_to;
+    rollback_to.context = writer; rollback_to.localized_names = marker.localized_names;
+    Require(api::EngineRollbackToSavepoint(rollback_to).ok, "callback followup rollback-to failed");
+    const auto savepoints = api::ParseSavepoints(writer);
+    Require(!savepoints.diagnostic.error &&
+                api::MetadataEventRolledBackBySavepoint(savepoints, writer.local_transaction_id, next),
+            "ordinary metadata reused a callback watermark and escaped savepoint rollback");
+    Rollback(writer);
+  }
+  {
+    auto writer = Begin(BaseContext(fixture));
+    auto whole = make_whole(writer, "callback_finality");
+    std::vector<std::string> before;
+    for (const auto suffix : {".sb.catalog_object_events", ".sb.name_events.v2",
+                             ".sb.mga_relation_metadata", ".sb.mga_event_sequence_allocator"})
+      before.push_back(ReadFileBytes(fixture.path.string() + suffix));
+    const auto next = api::NextMetadataEventSequence(writer);
+    bool completed = false;
+    whole.context.query_cancellation_requested = [&] {
+      if (api::NextMetadataEventSequence(writer) == next) return false;
+      Require(!completed, "whole CREATE completion callback was reused");
+      completed = true;
+      Commit(writer);
+      return false;
+    };
+    const auto stale = api::EngineCreateTable(whole);
+    whole.context.query_cancellation_requested = {};
+    std::vector<std::string> after;
+    for (const auto suffix : {".sb.catalog_object_events", ".sb.name_events.v2",
+                             ".sb.mga_relation_metadata", ".sb.mga_event_sequence_allocator"})
+      after.push_back(ReadFileBytes(fixture.path.string() + suffix));
+    Require(completed && !stale.ok && before == after && api::NextMetadataEventSequence(writer) == next,
+            "whole CREATE published using its callback's completed transaction or retained an unpublished range");
+  }
+  for (unsigned phase = 0; phase != 4; ++phase) {
+    auto writer = Begin(BaseContext(fixture));
+    auto whole = make_whole(writer, std::to_string(phase));
+    const auto& column = whole.table_columns.front();
+    const auto& index = whole.table_indexes.front();
+    const auto target = fixture.path.string() + (phase == 0 ? ".sb.catalog_object_events" :
+        phase == 1 ? ".sb.name_events.v2" : ".sb.mga_relation_metadata");
+    Require(::stat(target.c_str(), &publication_fault::target) == 0, "whole CREATE fault target missing");
+    publication_fault::AfterSync after;
+    after.trigger = publication_fault::target;
+    Require(::stat(fixture.path.parent_path().c_str(), &after.failure) == 0, "whole CREATE parent missing");
+    struct Fault {
+      explicit Fault(unsigned phase, publication_fault::AfterSync& after) {
+        publication_fault::hit = false; publication_fault::skip_matches = 0;
+        publication_fault::armed = phase != 3;
+        publication_fault::after_sync = phase == 3 ? &after : nullptr;
+      }
+      ~Fault() { publication_fault::armed = false; publication_fault::after_sync = nullptr; }
+    };
+    api::EngineCreateTableResult failed;
+    { Fault fault(phase, after); failed = api::EngineCreateTable(whole); }
+    Require(publication_fault::hit && !failed.ok && (phase != 3 || after.hit) &&
+                failed.table_object.uuid.is_nil() && failed.catalog_row_uuid.is_nil() &&
+                failed.effective_table_descriptor.descriptor_uuid.is_nil(),
+            "whole CREATE missed an actual sync failure or returned its staged success");
+    const auto native = db::AcquireStrongLocalTransactionInventorySnapshot(writer.database_path);
+    Require(native.ok(), "whole CREATE native outcome could not be observed");
+    const auto entry = scratchbird::transaction::mga::LookupLocalTransaction(native.snapshot->inventory,
+        scratchbird::transaction::mga::MakeLocalTransactionId(writer.local_transaction_id));
+    Require(entry.ok() && entry.entry.rollback_only && entry.entry.identity.transaction_uuid.value == writer.transaction_uuid,
+            "failed whole CREATE lost its native commit exclusion");
+    api::EngineCommitTransactionRequest commit; commit.context = writer;
+    Require(!api::EngineCommitTransaction(commit).ok, "failed whole CREATE remained committable");
+    Require(!api::LoadCatalogObjectLifecycleState(writer).ok &&
+                !api::LoadNameRegistryState(writer, writer.local_transaction_id).ok &&
+                !api::LoadMgaRelationStorageDescriptor(writer, whole.requested_table_uuid).ok,
+            "ordinary reader exposed a failed whole CREATE");
+    if (phase >= 2) {
+      std::vector<std::string> records;
+      Require(api::ReadCompleteMgaMetadataRecords(fixture.path.string() + ".sb.mga_relation_metadata", &records),
+              "whole CREATE retained malformed metadata frames");
+      unsigned actual_frames = 0;
+      for (const auto& bytes : records) {
+        std::vector<std::string> fields;
+        Require(api::DecodeMgaMetadataFields(bytes, &fields), "whole CREATE frame decode failed");
+        if (fields.size() > 3 && fields[2] == std::to_string(writer.local_transaction_id)) ++actual_frames;
+      }
+      Require(actual_frames == 3, "whole CREATE did not retain implicit/inline indexes and sealed table effects");
+    }
+    Rollback(writer);
+    auto reader = Begin(BaseContext(fixture));
+    api::EngineCatalogLookupObjectRequest absent;
+    absent.context = reader; absent.target_object.uuid = whole.requested_table_uuid;
+    absent.target_object.object_kind = "table";
+    Require(!api::EngineCatalogLookupObjectByUuid(absent).ok &&
+                !api::LoadMgaRelationStorageDescriptor(reader, whole.requested_table_uuid).ok,
+            "failed whole CREATE escaped full rollback");
+    whole.context = reader;
+    const auto retried = api::EngineCreateTable(whole);
+    Require(retried.ok, "whole CREATE fresh retry failed");
+    Commit(reader);
+    reader = Begin(BaseContext(fixture));
+    absent.context = reader;
+    const auto object = api::EngineCatalogLookupObjectByUuid(absent);
+    const auto relation = api::LoadMgaRelationStorageDescriptor(reader, whole.requested_table_uuid);
+    Require(object.ok && relation.ok && object.catalog_row_uuid == retried.catalog_row_uuid &&
+                relation.descriptor.descriptor_uuid == retried.effective_table_descriptor.descriptor_uuid &&
+                relation.descriptor.columns.size() == 1 && relation.descriptor.indexes.size() == 2 &&
+                relation.descriptor.columns.front().column_uuid == column.requested_column_uuid &&
+                std::any_of(relation.descriptor.indexes.begin(), relation.descriptor.indexes.end(),
+                    [&](const auto& persisted) { return persisted.index_uuid == index.requested_index_uuid; }),
+            "whole CREATE committed retry lost actual catalog/column/index/sealed identities");
+    Rollback(reader);
+  }
+#endif
   auto sealed_retry = Begin(BaseContext(fixture));
   api::CrudTableRecord retry_request;
   retry_request.table_uuid = api::GenerateCrudEngineUuid("object");

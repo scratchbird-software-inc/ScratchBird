@@ -15,7 +15,7 @@
 
 namespace scratchbird::engine::internal_api {
 
-enum class CatalogJournalKind { lifecycle, resolver_names };
+enum class CatalogJournalKind { lifecycle, resolver_names, relation_metadata };
 
 namespace catalog_publication_detail {
 struct UnpublishedReservation {

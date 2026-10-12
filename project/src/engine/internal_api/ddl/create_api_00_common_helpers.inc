@@ -16,6 +16,7 @@
 #include "api_unsupported.hpp"
 #include "dml/mutation_savepoint_capability.hpp"
 #include "catalog/catalog_object_lifecycle.hpp"
+#include "catalog/catalog_table_storage_creation.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "catalog/global_aggregate_view.hpp"
 #include "catalog/name_resolution_api.hpp"

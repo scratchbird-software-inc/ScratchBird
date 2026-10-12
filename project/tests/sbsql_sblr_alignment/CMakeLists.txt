@@ -3752,6 +3752,7 @@ target_include_directories(sbsql_sblr_alignment_ia01_bigint_identity_migration
           ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
 target_compile_definitions(sbsql_sblr_alignment_ia01_bigint_identity_migration
   PRIVATE
+    SCRATCHBIRD_MEMORY_FAILURE_INJECTION_TEST_GUARD=1
     SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack")
 target_link_libraries(sbsql_sblr_alignment_ia01_bigint_identity_migration
   PRIVATE sb_engine_internal_api sb_storage_database sb_transaction_mga

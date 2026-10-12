@@ -16,6 +16,8 @@
 #include "mga_relation_store/mga_descriptor_record_codec.hpp"
 
 #include "api_diagnostics.hpp"
+#include "catalog/catalog_read_admission.hpp"
+#include "transaction/transaction_api.hpp"
 #include "crud_support/crud_store.hpp"
 #include "hash_digest.hpp"
 #include "uuid.hpp"
@@ -445,6 +447,9 @@ std::shared_ptr<const DescriptorFieldsByRelation>
 LoadDescriptorFieldsSnapshot(
     const EngineRequestContext& context,
     const EngineUuid& required_relation_uuid) {
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
+  if (ValidateCatalogReadCommitExclusion(context, context.local_transaction_id,
+          "mga.relation_descriptor").error) return nullptr;
   const std::string path = DescriptorStorePath(context);
   return LoadAdmittedDescriptorFieldsSnapshot(path, ReadContent(path, true), required_relation_uuid);
 }
@@ -489,6 +494,10 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
   if (state == nullptr) {
     return MakeInvalidRequestDiagnostic("mga.relation_metadata", "state_required");
   }
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
+  const auto admission = ValidateCatalogReadCommitExclusion(context, context.local_transaction_id,
+      "mga.relation_metadata");
+  if (admission.error) return admission;
   const std::string metadata_path = MetadataStorePath(context);
   const std::string savepoint_path = SavepointStorePath(context);
   const std::string descriptor_path = DescriptorStorePath(context);
@@ -1758,7 +1767,11 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
 
 MgaMetadataSnapshotLoadResult LoadMgaMetadataSnapshot(
     const EngineRequestContext& context) {
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   MgaMetadataSnapshotLoadResult result;
+  result.diagnostic = ValidateCatalogReadCommitExclusion(context, context.local_transaction_id,
+      "mga.relation_metadata");
+  if (result.diagnostic.error) return result;
   const std::string metadata_path = MetadataStorePath(context);
   const std::string savepoint_path = SavepointStorePath(context);
   const std::string descriptor_path = DescriptorStorePath(context);

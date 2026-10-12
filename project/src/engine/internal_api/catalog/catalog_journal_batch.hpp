@@ -3,7 +3,11 @@
 #pragma once
 
 #include "catalog/catalog_journal_publication.hpp"
+#include "catalog/catalog_table_storage_creation.hpp"
+#include "mga_relation_store/mga_metadata_preparation.hpp"
+#include "mga_relation_store/mga_publication_callback_scope.hpp"
 #include "transaction/mutation_authority.hpp"
+#include "dml/mutation_savepoint_capability.hpp"
 #include "memory.hpp"
 
 #include <array>
@@ -32,21 +36,41 @@ inline EngineApiDiagnostic ValidateCatalogResolverJournalFormat(
 // the native execution fence; ordinary writers cannot enter through that fence.
 // Destruction never clears an exclusion after failure or allocation unwinding.
 inline EngineApiDiagnostic PublishPreparedCatalogJournalBatch(
+    const EngineRequestContext&, std::string_view, std::vector<PreparedCatalogJournalRecord>);
+inline EngineApiDiagnostic PublishPreparedCatalogJournalBatch(
+    const CatalogTableCreationCustody&, const EngineRequestContext&, std::string_view,
+    std::vector<PreparedCatalogJournalRecord>, PreparedCatalogTableStorage&);
+
+class CatalogJournalBatchPublisher final {
+ private:
+  friend EngineApiDiagnostic PublishPreparedCatalogJournalBatch(
+      const EngineRequestContext&, std::string_view, std::vector<PreparedCatalogJournalRecord>);
+  friend EngineApiDiagnostic PublishPreparedCatalogJournalBatch(
+      const CatalogTableCreationCustody&, const EngineRequestContext&, std::string_view,
+      std::vector<PreparedCatalogJournalRecord>, PreparedCatalogTableStorage&);
+  static EngineApiDiagnostic Publish(
     const EngineRequestContext& context, std::string_view operation,
-    std::vector<PreparedCatalogJournalRecord> records) {
+    std::vector<PreparedCatalogJournalRecord> records,
+    PreparedCatalogTableStorage* storage) {
   const auto refused = [&](std::string detail) {
     return MakeInvalidRequestDiagnostic(std::string(operation), std::move(detail));
   };
   if (records.empty()) return refused("catalog_batch_records_required");
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
+  if (storage) {
+    const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::catalog_mutation);
+    if (savepoint.error) return savepoint;
+  }
   const auto authority = ValidateCurrentMutatingTransactionAuthority(context, std::string(operation));
   if (authority.error) return authority;
   const auto current = storage::database::AcquireLocalTransactionInventorySnapshot(context.database_path);
   if (!current.ok()) return refused("catalog_batch_inventory_unavailable");
-  const std::array<std::string, 2> paths{
+  const std::array<std::string, 3> paths{
       context.database_path + ".sb.catalog_object_events",
-      context.database_path + ".sb.name_events.v2"};
-  std::array<bool, 2> touched{};
+      context.database_path + ".sb.name_events.v2",
+      context.database_path + ".sb.mga_relation_metadata"};
+  std::array<bool, 3> touched{};
+  touched[2] = storage != nullptr;
   for (const auto& item : records) {
     const auto& record = item.record;
     if (record.creator_tx != context.local_transaction_id || record.event_sequence != 0)
@@ -94,14 +118,25 @@ inline EngineApiDiagnostic PublishPreparedCatalogJournalBatch(
     const auto format = ValidateCatalogResolverJournalFormat(context, std::string(operation));
     if (format.error) return format;
   }
+  std::size_t storage_count = 0;
+  if (storage) {
+    if (storage->indexes.size() == std::numeric_limits<std::size_t>::max())
+      return refused("catalog_batch_size_overflow");
+    storage_count = storage->indexes.size() + 1;
+  }
+  if (records.size() > std::numeric_limits<std::size_t>::max() - storage_count)
+    return refused("catalog_batch_size_overflow");
+  const auto record_count = records.size() + storage_count;
   std::vector<std::string> allocator_lines;
   const auto reservation = ReserveEventSequenceRange(context, "relation_metadata",
-      context.database_path + ".sb.mga_relation_metadata", records.size(),
+      context.database_path + ".sb.mga_relation_metadata", record_count,
       [&] { return ScanNextMetadataEventSequence(context); }, &allocator_lines);
   if (!reservation.ok) return reservation.diagnostic;
   catalog_publication_detail::UnpublishedReservation unpublished{reservation};
   std::vector<std::string> frames;
-  frames.reserve(records.size());
+  frames.reserve(record_count);
+  std::vector<CatalogJournalKind> kinds;
+  kinds.reserve(record_count);
   std::size_t frame_bytes = 0;
   for (std::size_t i = 0; i != records.size(); ++i) {
     records[i].record.event_sequence = reservation.first + i;
@@ -112,6 +147,36 @@ inline EngineApiDiagnostic PublishPreparedCatalogJournalBatch(
       return refused("catalog_batch_size_overflow");
     frame_bytes += frame.size();
     frames.push_back(std::move(frame));
+    kinds.push_back(records[i].kind);
+  }
+  if (storage) {
+    for (std::size_t i = 0; i != storage->indexes.size(); ++i) {
+      std::string frame;
+      const auto prepared = PrepareMgaIndexMetadataFrame(context, storage->indexes[i],
+          reservation.first + records.size() + i, &frame);
+      if (prepared.error) return prepared;
+      if (frame.size() > std::numeric_limits<std::size_t>::max() - frame_bytes)
+        return refused("catalog_batch_size_overflow");
+      frame_bytes += frame.size(); frames.push_back(std::move(frame));
+      kinds.push_back(CatalogJournalKind::relation_metadata);
+    }
+    EngineRequestContext descriptor_context = context;
+    descriptor_context.current_schema_uuid = storage->schema_uuid;
+    MgaPreparedSealedTableMetadata material;
+    const auto prepared = PrepareMgaSealedTableMetadata(descriptor_context, storage->table, storage->indexes,
+        reservation.first + records.size() + storage->indexes.size(), &material);
+    if (prepared.error) return prepared;
+    if (material.frame.size() > std::numeric_limits<std::size_t>::max() - frame_bytes)
+      return refused("catalog_batch_size_overflow");
+    frame_bytes += material.frame.size(); frames.push_back(std::move(material.frame));
+    kinds.push_back(CatalogJournalKind::relation_metadata);
+    storage->result.effective_table_descriptor.descriptor_uuid = material.descriptor.descriptor_uuid;
+    storage->result.effective_table_descriptor.descriptor_kind = "mga_relation_storage_descriptor";
+    storage->result.effective_table_descriptor.canonical_type_name = "table";
+    storage->result.evidence.push_back({"mga_relation_descriptor", material.descriptor.descriptor_uuid});
+    AddDdlPublicationResult(&storage->result, "ddl.create_table", "table", storage->table.table_uuid,
+        storage->result.catalog_row_uuid, "mga_relation_metadata");
+    if (!storage->result.ok) return refused("catalog_table_result_binding_invalid");
   }
   namespace memory = core::memory;
   memory::MemoryTag tag;
@@ -133,16 +198,28 @@ inline EngineApiDiagnostic PublishPreparedCatalogJournalBatch(
   std::size_t offset = 0;
   for (std::size_t i = 0; i != frames.size(); ++i) {
     std::memcpy(bytes + offset, frames[i].data(), frames[i].size());
-    locations.push_back({offset, frames[i].size(), records[i].kind});
+    locations.push_back({offset, frames[i].size(), kinds[i]});
     offset += frames[i].size();
   }
   // The publication image is the real managed allocation. Discard duplicate
   // staging payloads before entering the durable exclusion/effects phase.
   std::vector<std::string>{}.swap(frames);
   std::vector<PreparedCatalogJournalRecord>{}.swap(records);
+  std::vector<CatalogJournalKind>{}.swap(kinds);
   // Prepare success before marking: allocation failure after release must not
   // turn an acknowledged complete operation into a fabricated partial result.
   auto success = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  // Cancellation callbacks can re-enter engine APIs. They are observations,
+  // not retained authority; re-admit the actual native writer after the last
+  // callback and before marking or publishing any allocator bytes.
+  const auto callback = CheckMgaPublicationCallback(context, "catalog_batch_cancelled_before_publication");
+  if (callback.error) return callback;
+  if (storage) {
+    const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::catalog_mutation);
+    if (savepoint.error) return savepoint;
+  }
+  const auto final_authority = ValidateCurrentMutatingTransactionAuthority(context, std::string(operation));
+  if (final_authority.error) return final_authority;
   auto marked = transaction::mga::MarkLocalTransactionRollbackOnly(
       current.snapshot->inventory, transaction::mga::MakeLocalTransactionId(context.local_transaction_id));
   if (!marked.ok()) return MakeEngineApiDiagnosticFromNative(marked.diagnostic,
@@ -212,6 +289,19 @@ inline EngineApiDiagnostic PublishPreparedCatalogJournalBatch(
   const auto released = storage::database::PersistLocalTransactionInventoryToDatabase(context.database_path, std::move(completed));
   if (!released.ok()) return unresolved("catalog_batch_release_publication_failed", &released.diagnostic);
   return success;
+}
+};
+
+inline EngineApiDiagnostic PublishPreparedCatalogJournalBatch(
+    const EngineRequestContext& context, std::string_view operation,
+    std::vector<PreparedCatalogJournalRecord> records) {
+  return CatalogJournalBatchPublisher::Publish(context, operation, std::move(records), nullptr);
+}
+
+inline EngineApiDiagnostic PublishPreparedCatalogJournalBatch(
+    const CatalogTableCreationCustody&, const EngineRequestContext& context, std::string_view operation,
+    std::vector<PreparedCatalogJournalRecord> records, PreparedCatalogTableStorage& storage) {
+  return CatalogJournalBatchPublisher::Publish(context, operation, std::move(records), &storage);
 }
 
 } // namespace scratchbird::engine::internal_api

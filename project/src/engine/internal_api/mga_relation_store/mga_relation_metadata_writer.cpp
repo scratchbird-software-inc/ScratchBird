@@ -9,6 +9,7 @@
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "mga_relation_store/mga_metadata_preparation.hpp"
+#include "mga_relation_store/mga_publication_callback_scope.hpp"
 #include "mga_relation_store/mga_contextual_text_descriptor.hpp"
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
 #include "mga_relation_store/mga_heap_runtime_support.hpp"
@@ -252,9 +253,8 @@ struct UnpublishedMetadataReservation {
 
 EngineApiDiagnostic CheckMetadataPublicationCancellation(
     const EngineRequestContext& context, const char* operation, const std::string& prefix) {
-  if (context.query_cancellation_requested && context.query_cancellation_requested())
-    return MakeEngineApiDiagnostic("PROCESS.CANCELLED", prefix + "_cancelled_before_publication",
-        "cancellation was observed before allocator publication", true);
+  const auto callback = CheckMgaPublicationCallback(context, prefix + "_cancelled_before_publication");
+  if (callback.error) return callback;
   // A runtime observation callback is not mutation authority. In particular,
   // recursive same-thread finality can change native state despite our guard.
   return ValidateMgaMutatingTransactionAuthorityForStoreModule(context, operation);
@@ -1974,30 +1974,30 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
   return result;
 }
 
-EngineApiDiagnostic AppendMgaIndexMetadata(const EngineRequestContext& context,
-                                           const CrudIndexRecord& index) {
+EngineApiDiagnostic PrepareMgaIndexMetadataFrame(
+    const EngineRequestContext& context, const CrudIndexRecord& index,
+    std::uint64_t event_sequence, std::string* output) {
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
-  const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::relation_descriptor);
-  if (savepoint.error) return savepoint;
+  constexpr const char* operation = "mga.relation_metadata.index_create";
+  if (!output) return MakeInvalidRequestDiagnostic(operation, "index_frame_output_required");
+  output->clear();
   if (context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.relation_metadata", "database_path_required");
   }
   const auto authority = ValidateMgaMutatingTransactionAuthorityForStoreModule(
-      context, "mga.relation_metadata.index_create");
+      context, operation);
   if (authority.error) { return authority; }
+  if (!core::uuid::IsEngineIdentityUuid(index.index_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(index.table_uuid) || event_sequence == 0)
+    return MakeInvalidRequestDiagnostic(operation, "index_identity_or_event_invalid");
   CrudIndexRecord writable = index;
   writable.creator_tx = context.local_transaction_id;
-  std::vector<std::string> allocator_lines;
-  const auto reservation = ReserveEventSequenceRange(
-      context,
-      "relation_metadata",
-      MetadataStorePath(context),
-      1,
-      [&context]() { return ScanNextMetadataEventSequence(context); }, &allocator_lines);
-  if (!reservation.ok) { return reservation.diagnostic; }
-  UnpublishedMetadataReservation unpublished{reservation};
-  writable.event_sequence = reservation.first;
-  const std::string line = JoinLine({kRowStoreMagic,
+  writable.event_sequence = event_sequence;
+  auto keys = EncodeMetadataStringList(writable.key_envelopes);
+  auto includes = EncodeMetadataStringList(writable.include_columns);
+  if (keys.empty() || includes.empty())
+    return MakeInvalidRequestDiagnostic(operation, "index_frame_encoding_failed");
+  auto frame = JoinLine({kRowStoreMagic,
                                      "INDEX_METADATA",
                                      std::to_string(writable.creator_tx),
                                      std::to_string(writable.event_sequence),
@@ -2007,13 +2007,36 @@ EngineApiDiagnostic AppendMgaIndexMetadata(const EngineRequestContext& context,
                                      writable.family.empty() ? CrudIndexFamilyForProfile(writable.profile) : writable.family,
                                      std::string(writable.default_name),
                                      std::string(writable.column_name),
-                                     EncodeMetadataStringList(writable.key_envelopes),
-                                     EncodeMetadataStringList(writable.include_columns),
+                                     std::move(keys),
+                                     std::move(includes),
                                      writable.predicate_kind,
                                      std::string(writable.predicate_column),
                                      std::string(writable.predicate_value),
                                      writable.unique ? "1" : "0",
                                      writable.exact_fallback ? "1" : "0"});
+  if (frame.empty()) return MakeInvalidRequestDiagnostic(operation, "index_frame_encoding_failed");
+  auto success = OkDiagnostic();
+  *output = std::move(frame);
+  return success;
+}
+
+EngineApiDiagnostic AppendMgaIndexMetadata(const EngineRequestContext& context,
+                                           const CrudIndexRecord& index) {
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
+  const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::relation_descriptor);
+  if (savepoint.error) return savepoint;
+  if (context.database_path.empty())
+    return MakeInvalidRequestDiagnostic("mga.relation_metadata", "database_path_required");
+  const auto authority = ValidateMgaMutatingTransactionAuthorityForStoreModule(context, "mga.relation_metadata.index_create");
+  if (authority.error) return authority;
+  std::vector<std::string> allocator_lines;
+  const auto reservation = ReserveEventSequenceRange(context, "relation_metadata", MetadataStorePath(context), 1,
+      [&context]() { return ScanNextMetadataEventSequence(context); }, &allocator_lines);
+  if (!reservation.ok) return reservation.diagnostic;
+  UnpublishedMetadataReservation unpublished{reservation};
+  std::string line;
+  const auto prepared = PrepareMgaIndexMetadataFrame(context, index, reservation.first, &line);
+  if (prepared.error) return prepared;
   auto success = OkDiagnostic();
   const auto cancelled = CheckMetadataPublicationCancellation(context, "mga.relation_metadata.index_create", "index_metadata");
   if (cancelled.error) return cancelled;

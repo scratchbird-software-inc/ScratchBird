@@ -631,6 +631,11 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
           "ddl.create_table",
           UnsupportedCrudFeatureDiagnostic("ddl.create_table", "inline_direct_key_or_supported_expression_required"));
     }
+    for (const auto& key_column : inline_key_columns) {
+      if (std::none_of(columns.begin(), columns.end(), [&](const auto& column) { return column.first == key_column; }))
+        return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context, "ddl.create_table",
+            MakeInvalidRequestDiagnostic("ddl.create_table", "inline_index_key_column_not_found:" + key_column));
+    }
     if (inline_record.family == kCrudIndexFamilyExpression &&
         !SupportedExpressionEnvelope(inline_record.key_envelopes.front())) {
       return MakeCrudDiagnosticResult<EngineCreateTableResult>(
@@ -818,24 +823,7 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
     catalog_request.name_namespace.owner_session_uuid =
         created_table.temporary_session_uuid;
   }
-  const auto catalog_created = EngineCatalogCreateObject(catalog_request);
-  if (!catalog_created.ok) {
-    EngineApiDiagnostic diagnostic = catalog_created.diagnostics.empty()
-                                         ? MakeInvalidRequestDiagnostic("ddl.create_table",
-                                                                        "catalog_table_object_create_failed")
-                                         : catalog_created.diagnostics.front();
-    return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context,
-                                                             "ddl.create_table",
-                                                             diagnostic);
-  }
-  created_table.bound_relation_generation = catalog_created.bound_object_identity.object_descriptor_generation;
-  // PersistCatalogColumnAndConstraintMetadata records this exact publication
-  // epoch for every column in the accepted creation cohort.
-  created_table.bound_column_generation = catalog_created.metadata_cache_epoch;
-  if (!created_table.bound_relation_generation || !created_table.bound_column_generation) {
-    return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context, "ddl.create_table",
-        MakeInvalidRequestDiagnostic("ddl.create_table", "catalog_column_publication_generation_required"));
-  }
+  PreparedCatalogTableStorage storage;
   std::vector<CrudIndexRecord> implicit_support_indexes;
   for (const auto& [column_name, column_descriptor] : columns) {
     const auto descriptor_fields = DescriptorFieldsLocal(column_descriptor);
@@ -860,37 +848,15 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
     support_index.key_envelopes.push_back(column_name);
     support_index.key_envelopes.push_back(primary_key ? "primary_key" : "unique");
     support_index.unique = true;
-    const auto index_appended = AppendMgaIndexMetadata(request.context, support_index);
-    if (index_appended.error) {
-      return MakeCrudDiagnosticResult<EngineCreateTableResult>(
-          request.context,
-          "ddl.create_table",
-          index_appended);
-    }
     std::vector<EngineLocalizedName> support_names;
     support_names.push_back({"en", "primary", "", support_index.default_name, true});
-    const auto support_name_appended = PersistNameRegistryEntriesForObject(
-        request.context,
-        "ddl.create_table",
-        support_index.index_uuid,
-        "index",
-        table_uuid,
-        support_names,
-        support_index.default_name);
-    if (support_name_appended.error) {
-      return MakeCrudDiagnosticResult<EngineCreateTableResult>(
-          request.context,
-          "ddl.create_table",
-          support_name_appended);
-    }
+    storage.index_names.emplace(support_index.index_uuid, std::move(support_names));
     implicit_support_indexes.push_back(std::move(support_index));
   }
   auto result = MakeCrudSuccessResult<EngineCreateTableResult>(request.context, "ddl.create_table");
   result.primary_object.uuid = table_uuid;
   result.primary_object.object_kind = "table";
   result.table_object = result.primary_object;
-  result.table_catalog_row_uuid = catalog_created.catalog_row_uuid;
-  result.catalog_row_uuid = result.table_catalog_row_uuid;
   result.created_catalog_records.push_back(result.primary_object);
   result.evidence.push_back({"mga_relation_metadata", "table_create"});
   AddApiBehaviorRow(&result, {{"object_uuid", table_uuid},
@@ -916,12 +882,4 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
                                                          inline_index.names.empty() ? "inline_index" : inline_index.names.front().name);
     created_index.creator_tx = request.context.local_transaction_id;
     if (!created_index.key_envelopes.empty() && IsSupportedCrudIndexProfile(created_index.profile)) {
-      const auto index_appended = AppendMgaIndexMetadata(request.context, created_index);
-      if (index_appended.error) { return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context, "ddl.create_table", index_appended); }
-      const auto inline_index_name_appended = PersistNameRegistryEntriesForObject(request.context,
-                                                                                 "ddl.create_table",
-                                                                                 created_index.index_uuid,
-                                                                                 "index",
-                                                                                 table_uuid,
-                                                                                 inline_index.names,
-                                                                                 created_index.default_name);
+      storage.index_names.emplace(created_index.index_uuid, inline_index.names);

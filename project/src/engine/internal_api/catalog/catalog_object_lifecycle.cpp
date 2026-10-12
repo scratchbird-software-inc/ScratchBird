@@ -12,6 +12,7 @@
 #include "catalog/catalog_journal_batch.hpp"
 #include "catalog/catalog_read_admission.hpp"
 #include "catalog/constraint_metadata_codec.hpp"
+#include "dml/mutation_savepoint_capability.hpp"
 
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/name_registry.hpp"
@@ -591,6 +592,9 @@ EngineApiDiagnostic StageCatalogResolverNames(const EngineRequestContext& contex
 }
 
 EngineApiDiagnostic CatalogBatchPublicationDiagnostic(EngineApiDiagnostic diagnostic) {
+  // A cooperative stop before fencing/effects is cancellation, not a failed
+  // physical catalog write. Preserve its enumerated identity end-to-end.
+  if (diagnostic.code == "PROCESS.CANCELLED") return diagnostic;
   // Preserve native causes, binary owner operands and phase/outcome fields
   // under the established catalog write-error identity.
   auto owning = CatalogDiagnostic(kCatalogObjectDiagnosticDatabaseWriteFailed, diagnostic.detail);
@@ -1726,8 +1730,11 @@ EngineApiDiagnostic PrepareCatalogColumnAndConstraintMetadata(
   return OkDiagnostic();
 }
 
-EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCreateObjectRequest& request) {
-  const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
+// Private preparation only. Its caller retains native inventory ownership
+// across this complete authorized materialization and eventual publication.
+static EngineCatalogCreateObjectResult PrepareCatalogObjectCreateData(
+    const EngineCatalogCreateObjectRequest& request,
+    std::vector<PreparedCatalogJournalRecord>& prepared) {
   constexpr const char* kOperation = "catalog.object.create";
   const auto valid = ValidateMutatingContext(request.context);
   if (valid.error) { return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation, valid); }
@@ -1864,7 +1871,6 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
   record.synonym_target_uuid = synonym_target_uuid;
   record.synonym_target_class = synonym_target_class;
   record.payload = PayloadFromRequest(request);
-  std::vector<PreparedCatalogJournalRecord> prepared;
   auto appended = StageCatalogJournalEvent(request.context, ObjectEvent(record), prepared);
   if (appended.error) {
     return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation, appended);
@@ -1909,10 +1915,85 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
                           object_uuid,
                           result.catalog_row_uuid,
                           object_kind);
+  return result;
+}
+
+EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCreateObjectRequest& request) {
+  const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
+  constexpr const char* kOperation = "catalog.object.create";
+  std::vector<PreparedCatalogJournalRecord> prepared;
+  auto result = PrepareCatalogObjectCreateData(request, prepared);
+  if (!result.ok) return result;
   auto publication = PublishPreparedCatalogJournalBatch(request.context, kOperation, std::move(prepared));
   if (publication.error)
     return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation,
         CatalogBatchPublicationDiagnostic(std::move(publication)));
+  return result;
+}
+
+EngineCatalogCreateObjectResult EngineCatalogCreateObjectWithTableStorage(
+    const CatalogTableCreationCustody& custody,
+    const EngineCatalogCreateObjectRequest& request, PreparedCatalogTableStorage* storage) {
+  const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
+  constexpr const char* operation = "ddl.create_table";
+  const auto savepoint = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::catalog_mutation);
+  if (savepoint.error)
+    return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation, savepoint);
+  const auto refuse = [&](const std::string& detail) {
+    return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation,
+        MakeInvalidRequestDiagnostic(operation, detail));
+  };
+  if (!storage || ObjectKind(request) != "table" || ObjectUuid(request) != storage->table.table_uuid ||
+      !storage->result.ok || storage->result.primary_object.uuid != storage->table.table_uuid ||
+      storage->table.bound_columns.size() != request.columns.size() ||
+      storage->table.columns.size() != request.columns.size() ||
+      storage->index_names.size() != storage->indexes.size())
+    return refuse("catalog_table_storage_preparation_mismatch");
+  std::set<EngineUuid> identities{storage->table.table_uuid};
+  for (std::size_t i = 0; i != request.columns.size(); ++i) {
+    const auto& requested = request.columns[i];
+    const auto& bound = storage->table.bound_columns[i];
+    if (requested.requested_column_uuid != bound.requested_column_uuid || requested.ordinal != bound.ordinal ||
+        requested.descriptor.descriptor_uuid != bound.descriptor.descriptor_uuid ||
+        requested.descriptor.datatype_descriptor_uuid != bound.descriptor.datatype_descriptor_uuid ||
+        requested.descriptor.datatype_descriptor_generation != bound.descriptor.datatype_descriptor_generation ||
+        requested.descriptor.type_uuid != bound.descriptor.type_uuid ||
+        requested.descriptor.datatype_cohort != bound.descriptor.datatype_cohort ||
+        !identities.insert(bound.requested_column_uuid).second)
+      return refuse("catalog_table_column_preparation_mismatch");
+  }
+  for (const auto& index : storage->indexes) {
+    if (index.table_uuid != storage->table.table_uuid || !core::uuid::IsEngineIdentityUuid(index.index_uuid) ||
+        !identities.insert(index.index_uuid).second || !storage->index_names.contains(index.index_uuid) ||
+        !IsSupportedCrudIndexProfile(NormalizeCrudIndexProfile(index.profile)))
+      return refuse("catalog_table_index_preparation_mismatch");
+  }
+  std::vector<PreparedCatalogJournalRecord> prepared;
+  auto result = PrepareCatalogObjectCreateData(request, prepared);
+  if (!result.ok) return result;
+  // These are actual engine-issued prospective catalog generations and row
+  // identity. No published snapshot is fabricated to construct the seal.
+  storage->table.bound_relation_generation = result.bound_object_identity.object_descriptor_generation;
+  storage->table.bound_column_generation = result.metadata_cache_epoch;
+  storage->schema_uuid = result.bound_object_identity.resolved_schema_uuid;
+  storage->result.catalog_row_uuid = result.catalog_row_uuid;
+  storage->result.table_catalog_row_uuid = result.catalog_row_uuid;
+  for (const auto& index : storage->indexes) {
+    auto names = storage->index_names.at(index.index_uuid);
+    if (names.empty()) {
+      EngineLocalizedName name;
+      name.language_tag = NameRegistryDefaultLanguage(request.context);
+      name.name_class = "primary"; name.name = index.default_name;
+      name.raw_name_text = index.default_name; name.display_name = index.default_name;
+      name.default_name = true; names.push_back(std::move(name));
+    }
+    const auto staged = StageCatalogResolverNames(request.context, operation, index.index_uuid, "index",
+        storage->table.table_uuid, names, index.default_name, prepared);
+    if (staged.error) return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation, staged);
+  }
+  auto publication = PublishPreparedCatalogJournalBatch(custody, request.context, operation, std::move(prepared), *storage);
+  if (publication.error) return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation,
+      CatalogBatchPublicationDiagnostic(std::move(publication)));
   return result;
 }
 

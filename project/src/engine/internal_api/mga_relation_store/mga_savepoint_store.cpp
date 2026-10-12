@@ -8,6 +8,7 @@
 
 #include "mga_relation_store/mga_savepoint_store.hpp"
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
+#include "mga_relation_store/mga_publication_callback_scope.hpp"
 #include "mga_relation_store/mga_update_durable_store.hpp"
 #include "mga_relation_store/mga_relation_metadata_store.hpp"
 #include "mga_relation_store/mga_savepoint_marker_codec.hpp"
@@ -304,6 +305,8 @@ std::uint64_t CurrentMgaSavepointAuthorityGeneration(
 
 EngineApiDiagnostic CreateMgaSavepointMarker(const EngineRequestContext& context, const std::string& savepoint_name) {
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
+  if (MgaPublicationCallbackScope::RefuseSavepointMutation(context))
+    return MakeInvalidRequestDiagnostic("transaction.create_savepoint", "publication_callback_reentry");
   if (context.local_transaction_id == 0) {
     return MakeInvalidRequestDiagnostic("transaction.create_savepoint", "local_transaction_id_required");
   }
@@ -327,6 +330,8 @@ EngineApiDiagnostic CreateMgaSavepointMarker(const EngineRequestContext& context
 
 EngineApiDiagnostic ReleaseMgaSavepointMarker(const EngineRequestContext& context, const std::string& savepoint_name) {
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
+  if (MgaPublicationCallbackScope::RefuseSavepointMutation(context))
+    return MakeInvalidRequestDiagnostic("transaction.release_savepoint", "publication_callback_reentry");
   const auto exists = ValidateMgaSavepointExists(context, savepoint_name, "transaction.release_savepoint");
   if (exists.error) { return exists; }
   const std::uint64_t row_next = NextRowEventSequence(context);
@@ -344,6 +349,8 @@ EngineApiDiagnostic ReleaseMgaSavepointMarker(const EngineRequestContext& contex
 
 EngineApiDiagnostic RollbackToMgaSavepointMarker(const EngineRequestContext& context, const std::string& savepoint_name) {
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
+  if (MgaPublicationCallbackScope::RefuseSavepointMutation(context))
+    return MakeInvalidRequestDiagnostic("transaction.rollback_to_savepoint", "publication_callback_reentry");
   const auto authority = ValidateMgaSavepointMarkerAuthority(context);
   if (authority.error) return authority;
   const auto savepoints = ParseSavepoints(context);

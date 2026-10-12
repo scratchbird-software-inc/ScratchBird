@@ -20,4 +20,8 @@ EngineApiDiagnostic PrepareMgaSealedTableMetadata(
     const std::vector<CrudIndexRecord>& indexes, std::uint64_t event_sequence,
     MgaPreparedSealedTableMetadata* output);
 
+EngineApiDiagnostic PrepareMgaIndexMetadataFrame(
+    const EngineRequestContext& context, const CrudIndexRecord& index,
+    std::uint64_t event_sequence, std::string* output);
+
 } // namespace scratchbird::engine::internal_api
