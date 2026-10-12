@@ -357,11 +357,119 @@ void MissingRechecksAndUnsafeInputsFailClosed() {
           "ODF-090 missing exact rerank payload was accepted");
 }
 
+void DuplicateOccurrencesCannotManufactureRechecks() {
+  const auto authority = Authority();
+  std::size_t cases = 0;
+  // Independent truth-table oracle: predicate/visibility/security/payload,
+  // both input orders and both relative scores. Payload is not authorization.
+  for (unsigned a = 0; a < 16; ++a) {
+    for (unsigned b = 0; b < 16; ++b) {
+      for (unsigned order = 0; order < 2; ++order) {
+        for (unsigned high = 0; high < 2; ++high) {
+          auto left = Row(0x21, high ? 90.0 : 10.0,
+                          a & 1, a & 2, a & 4, a & 8);
+          auto right = Row(0x21, high ? 10.0 : 90.0,
+                           b & 1, b & 2, b & 4, b & 8);
+          left.source = "left occurrence";
+          right.source = "right occurrence";
+          const bool left_complete = (a & 7) == 7;
+          const bool right_complete = (b & 7) == 7;
+          const bool admitted = left_complete || right_complete;
+          const bool prefer_left = left_complete != right_complete ? left_complete
+              : bool(a & 1) != bool(b & 1) ? bool(a & 1) : left.score > right.score;
+          const auto& expected = prefer_left ? left : right;
+          const auto& first = order ? right : left;
+          const auto& second = order ? left : right;
+          const auto first_set = idx::MakeExactRowUuidOrderedCandidateSet({first}, authority);
+          const auto second_set = idx::MakeExactRowUuidOrderedCandidateSet({second}, authority);
+          Require(first_set.ok() && second_set.ok(), "ODF-090 occurrence setup");
+          auto united = idx::UnionCandidateSets(first_set.output, second_set.output, authority);
+          auto built = idx::MakeExactRowUuidOrderedCandidateSet({first, second}, authority, false);
+          for (const auto* result : {&united, &built}) {
+            Require(result->ok() && result->output.rows.size() == 1,
+                    "ODF-090 duplicate candidate membership changed");
+            const auto& row = result->output.rows.front();
+            Require(row.exact_predicate_match == bool((a | b) & 1),
+                    "ODF-090 UNION predicate membership changed");
+            auto finalized = exec::FinalizeCandidateSetForExecutor(result->output, authority);
+            Require(finalized.ok() && finalized.final_row_uuids.size() == std::size_t(admitted),
+                    "ODF-090 duplicate occurrences manufactured a complete recheck");
+            Require(row.source == expected.source && row.score == expected.score &&
+                        row.exact_predicate_match == expected.exact_predicate_match &&
+                        row.exact_payload_available == expected.exact_payload_available &&
+                        row.mga_visible == expected.mga_visible &&
+                        row.security_authorized == expected.security_authorized,
+                    "ODF-090 occurrence borrowed flags/score/payload/source");
+            unsigned scorer_calls = 0;
+            auto reranked = idx::RerankCandidateSet(result->output,
+                [&](const idx::CandidateSetRow& input) {
+                  ++scorer_calls;
+                  Require(input.source == expected.source && input.score == expected.score &&
+                              input.exact_payload_available,
+                          "ODF-090 rerank received a fabricated occurrence");
+                  return input.score + 1.0;
+                }, authority);
+            Require(reranked.ok() == expected.exact_payload_available &&
+                        scorer_calls == unsigned(expected.exact_payload_available),
+                    "ODF-090 rerank borrowed a losing occurrence's payload");
+            if (reranked.ok()) {
+              auto reranked_final = exec::FinalizeCandidateSetForExecutor(reranked.output, authority);
+              Require(reranked_final.ok() && reranked_final.final_row_uuids.size() == std::size_t(admitted),
+                      "ODF-090 rerank changed occurrence admission");
+            } else {
+              Require(reranked.fail_closed && reranked.output.rows.empty() &&
+                          reranked.diagnostic.diagnostic_code == "SB_CANDIDATE_SET.EXACT_RERANK_REQUIRED",
+                      "ODF-090 missing winning payload lost its refusal");
+            }
+            auto ranked = idx::TopKCandidateSet(result->output, 1, authority);
+            Require(ranked.ok(), "ODF-090 occurrence top-K failed");
+            auto ranked_final = exec::FinalizeCandidateSetForExecutor(ranked.output, authority);
+            Require(ranked_final.ok() && ranked_final.final_row_uuids.size() == std::size_t(admitted),
+                    "ODF-090 top-K manufactured a complete recheck");
+          }
+          auto intersected = idx::IntersectCandidateSets(first_set.output, second_set.output, authority);
+          Require(intersected.ok(), "ODF-090 occurrence intersection failed");
+          auto final_intersection = exec::FinalizeCandidateSetForExecutor(intersected.output, authority);
+          Require(final_intersection.ok() && final_intersection.final_row_uuids.size() ==
+                      std::size_t(left_complete && right_complete),
+                  "ODF-090 intersection recheck changed");
+          ++cases;
+        }
+      }
+    }
+  }
+  // Three separately positive facts must remain unqualified through nesting.
+  auto p = idx::MakeExactRowUuidOrderedCandidateSet({Row(0x22, 3, true, false, false)}, authority);
+  auto v = idx::MakeExactRowUuidOrderedCandidateSet({Row(0x22, 2, false, true, false)}, authority);
+  auto s = idx::MakeExactRowUuidOrderedCandidateSet({Row(0x22, 1, false, false, true)}, authority);
+  auto pv = idx::UnionCandidateSets(p.output, v.output, authority);
+  auto pvs = idx::UnionCandidateSets(pv.output, s.output, authority);
+  auto final = exec::FinalizeCandidateSetForExecutor(pvs.output, authority);
+  Require(final.ok() && final.final_row_uuids.empty(), "ODF-090 nested union manufactured authority");
+  for (bool complete : {false, true}) {
+    std::vector<idx::CandidateSetRow> duplicates;
+    for (unsigned i = 0; i < 64; ++i) {
+      auto row = Row(0x21, 42, true, complete, complete, i == 0);
+      row.source = std::to_string(i);
+      duplicates.push_back(row);
+      duplicates.push_back(Row(i % 2 ? 0x20 : 0x23, 50));
+    }
+    auto stable = idx::MakeExactRowUuidOrderedCandidateSet(std::move(duplicates), authority, false);
+    Require(stable.ok() && stable.output.rows.size() == 3 &&
+                stable.output.rows[1].source == "0" &&
+                stable.output.rows[1].exact_payload_available &&
+                SameUuid(stable.output.rows[1].row_uuid, Row(0x21, 0).row_uuid),
+            "ODF-090 equal-score ties lost first-input occurrence or canonical order");
+  }
+  std::cout << "duplicate occurrence truth-table cases=" << cases << '\n';
+}
+
 }  // namespace
 
 int main() {
   AlgebraTopKRerankAndExecutorRecheck();
   UnsafeAuthorityFailsClosed();
   MissingRechecksAndUnsafeInputsFailClosed();
+  DuplicateOccurrencesCannotManufactureRechecks();
   return EXIT_SUCCESS;
 }

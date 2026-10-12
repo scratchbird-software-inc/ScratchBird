@@ -421,23 +421,32 @@ bool ValidateCompressedBitmapRepresentation(const CandidateSet& set) {
 
 CandidateSet NormalizeRows(std::vector<CandidateSetRow> rows,
                            CandidateSetEncoding encoding) {
-  std::map<RowKey, CandidateSetRow> merged;
-  for (auto& row : rows) {
-    auto key = RowKey{row.row_uuid};
-    auto found = merged.find(key);
-    if (found == merged.end()) {
-      merged.emplace(key, std::move(row));
-      continue;
-    }
-    found->second.score = std::max(found->second.score, row.score);
-    found->second.exact_predicate_match =
-        found->second.exact_predicate_match || row.exact_predicate_match;
-    found->second.mga_visible = found->second.mga_visible || row.mga_visible;
-    found->second.security_authorized =
-        found->second.security_authorized || row.security_authorized;
-    found->second.exact_payload_available =
-        found->second.exact_payload_available || row.exact_payload_available;
+  // Keep one complete occurrence, never a conjunction assembled from distinct
+  // observations. Predicate-positive occurrences precede predicate-negative
+  // ones even when neither is complete, preserving UNION membership semantics.
+  const auto priority = [](const CandidateSetRow& row) {
+    return row.exact_predicate_match
+        ? (row.mga_visible && row.security_authorized ? 2 : 1) : 0;
+  };
+  if (!std::is_sorted(rows.begin(), rows.end(), RowUuidLess)) {
+    std::stable_sort(rows.begin(), rows.end(), RowUuidLess);
   }
+  std::size_t count = 0;
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    if (count && SameUuid(rows[count - 1].row_uuid, rows[i].row_uuid)) {
+      auto& retained = rows[count - 1];
+      const auto retained_priority = priority(retained);
+      const auto incoming_priority = priority(rows[i]);
+      if (incoming_priority > retained_priority ||
+          (incoming_priority == retained_priority && rows[i].score > retained.score)) {
+        retained = std::move(rows[i]);
+      }
+    } else {
+      if (count != i) rows[count] = std::move(rows[i]);
+      ++count;
+    }
+  }
+  rows.resize(count);
 
   CandidateSet set;
   set.encoding = encoding;
@@ -447,9 +456,7 @@ CandidateSet NormalizeRows(std::vector<CandidateSetRow> rows,
   set.requires_exact_recheck = true;
   set.requires_mga_visibility_recheck = true;
   set.requires_security_authorization_recheck = true;
-  for (auto& item : merged) {
-    set.rows.push_back(std::move(item.second));
-  }
+  set.rows = std::move(rows);
   return set;
 }
 
@@ -1139,7 +1146,6 @@ CandidateSetResult MakeExactRowUuidOrderedCandidateSet(
                     CandidateSetEncoding::exact_row_uuid_ordered_stream);
     }
   }
-  std::sort(rows.begin(), rows.end(), RowUuidLess);
   auto set = NormalizeRows(std::move(rows),
                            CandidateSetEncoding::exact_row_uuid_ordered_stream);
   auto evidence = BaseEvidence(CandidateSetOperationKind::build_exact_stream,
