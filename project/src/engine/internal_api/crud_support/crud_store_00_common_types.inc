@@ -296,7 +296,8 @@ EngineApiDiagnostic OverlayCrudTransactionAuthority(const EngineRequestContext& 
                                                 "SB-MGA-TXN-INV-LOOKUP-FAILED",
                                                 "mga.transaction_inventory.lookup_failed");
     }
-    if (lookup.entry.state != TransactionState::active) {
+    if (lookup.entry.state != TransactionState::active &&
+        lookup.entry.state != TransactionState::read_only_active) {
       return MakeInvalidRequestDiagnostic("crud.transaction_authority", "active_local_transaction_required");
     }
   }

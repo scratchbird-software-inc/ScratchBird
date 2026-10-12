@@ -23,6 +23,7 @@
 #include "ddl/drop_api.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
+#include "memory.hpp"
 
 #include <cstdlib>
 #include <algorithm>
@@ -60,6 +61,8 @@ void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); 
 #include <sys/stat.h>
 #include <sys/resource.h>
 #include <csignal>
+#include <sys/wait.h>
+#include <unistd.h>
 namespace catalog_publication_fault {
 thread_local bool armed = false, hit = false;
 thread_local unsigned skip_matches = 0;
@@ -71,6 +74,20 @@ struct Pause {
   bool hit = false;
 };
 thread_local Pause* pause = nullptr;
+struct AfterSync {
+  struct stat trigger {}, failure {};
+  unsigned skip = 0;
+  bool hit = false;
+  bool deny_allocations = false;
+};
+thread_local AfterSync* after_sync = nullptr;
+struct Crash {
+  struct stat trigger {}, parent {};
+  unsigned skip = 0;
+  bool next_parent = false;
+  int exit_code = 0;
+};
+thread_local Crash* crash = nullptr;
 }
 extern "C" int __real_fsync(int);
 extern "C" int __wrap_fsync(int fd) {
@@ -91,7 +108,29 @@ extern "C" int __wrap_fsync(int fd) {
       errno = EIO; return -1;
     }
   }
-  return __real_fsync(fd);
+  const int result = __real_fsync(fd);
+  auto* crash = catalog_publication_fault::crash;
+  if (result == 0 && crash && ::fstat(fd, &actual) == 0 &&
+      actual.st_dev == crash->trigger.st_dev && actual.st_ino == crash->trigger.st_ino) {
+    if (crash->skip != 0) --crash->skip;
+    else if (crash->next_parent) { crash->trigger = crash->parent; crash->next_parent = false; }
+    else std::_Exit(crash->exit_code);
+  }
+  auto* after = catalog_publication_fault::after_sync;
+  if (result == 0 && after && !after->hit && ::fstat(fd, &actual) == 0 &&
+      actual.st_dev == after->trigger.st_dev && actual.st_ino == after->trigger.st_ino) {
+    if (after->skip != 0) --after->skip;
+    else {
+      after->hit = true;
+      if (after->deny_allocations) catalog_allocation_fault::denied = true;
+      else {
+        catalog_publication_fault::target = after->failure;
+        catalog_publication_fault::skip_matches = 0;
+        catalog_publication_fault::armed = true;
+      }
+    }
+  }
+  return result;
 }
 #endif
 
@@ -1417,9 +1456,415 @@ void TestCatalogDefinitionPreflight(const std::filesystem::path& path) {
   Commit(reader);
 }
 
+void TestCatalogFailedPublicationCustody(const std::filesystem::path& path) {
+  const auto database = CreateDatabase(path);
+  const auto principal = scratchbird::tests::FixtureUuid(1395, 1);
+  auto setup = Begin(path, database, principal);
+  const auto schema = scratchbird::tests::FixtureUuid(1395, 2);
+  RequireOk(catalog_api::EngineCatalogCreateObject(
+      CreateRequest(setup, schema, "schema", {}, "custody")), "custody schema setup failed");
+  Commit(setup);
+  auto writer = Begin(path, database, principal);
+  const auto object = scratchbird::tests::FixtureUuid(1395, 3);
+  const auto request = CreateRequest(writer, object, "table", schema, "failed_publication");
+  const auto names = path.string() + ".sb.name_events.v2";
+  struct ReadOnly {
+    std::filesystem::path path;
+    std::filesystem::perms previous;
+    explicit ReadOnly(std::filesystem::path file) : path(std::move(file)),
+        previous(std::filesystem::status(path).permissions()) {
+      std::filesystem::permissions(path, std::filesystem::perms::owner_write |
+          std::filesystem::perms::group_write | std::filesystem::perms::others_write,
+          std::filesystem::perm_options::remove);
+    }
+    ~ReadOnly() { std::error_code error; std::filesystem::permissions(path, previous, error);
+      if (error) std::terminate(); }
+  };
+  {
+    ReadOnly fault(names);
+    Require(!std::ofstream(names, std::ios::binary | std::ios::app),
+            "custody fixture must deny name append (run unprivileged)");
+    Require(!catalog_api::EngineCatalogCreateObject(request).ok,
+            "failed resolver publication reported success");
+  }
+  std::ifstream journal(path.string() + ".sb.catalog_object_events", std::ios::binary);
+  Require(journal.is_open(), "custody journal open failed");
+  bool found_prefix = false;
+  while (journal.peek() != std::char_traits<char>::eof()) {
+    catalog_api::ApiBehaviorRecord frame;
+    Require(catalog_api::ReadApiBehaviorRecord(journal, &frame), "custody journal frame invalid");
+    if (frame.creator_tx == writer.local_transaction_id && frame.object_uuid == object)
+      found_prefix = true;
+  }
+  Require(found_prefix, "custody fixture did not retain an actual catalog prefix");
+  Require(!catalog_api::LoadCatalogObjectLifecycleState(writer).ok &&
+              !catalog_api::LoadCatalogObjectLifecycleEpochState(writer).ok &&
+              !catalog_api::LoadNameRegistryState(writer, writer.local_transaction_id).ok,
+          "ordinary catalog readers exposed a failed publication prefix");
+  catalog_api::EngineCommitTransactionRequest commit;
+  commit.context = writer;
+  Require(!catalog_api::EngineCommitTransaction(commit).ok,
+          "failed multi-record catalog prefix remained eligible for COMMIT");
+  Require(catalog_api::ValidateMgaMutatingTransactionAuthorityForStoreModule(writer, "custody").error,
+          "failed catalog publication allowed ordinary mutations");
+  catalog_api::EngineRollbackTransactionRequest rollback;
+  rollback.context = writer;
+  Require(catalog_api::EngineRollbackTransaction(rollback).ok,
+          "failed catalog publication prevented full rollback");
+  auto reader = Begin(path, database, principal);
+  const auto recovered = catalog_api::LoadCatalogObjectLifecycleState(reader);
+  Require(recovered.ok && std::none_of(recovered.state.objects.begin(), recovered.state.objects.end(),
+      [&](const auto& item) { return item.object_uuid == object; }),
+      "failed catalog prefix became visible after full rollback");
+  RequireOk(catalog_api::EngineCatalogCreateObject(
+      CreateRequest(reader, object, "table", schema, "failed_publication")),
+      "fresh transaction could not retry rolled-back catalog creation");
+  Commit(reader);
+}
+
+void TestCatalogBatchBoundaries(const std::filesystem::path& path) {
+  const auto database = CreateDatabase(path);
+  const auto principal = scratchbird::tests::FixtureUuid(1396, 1);
+  const auto schema = scratchbird::tests::FixtureUuid(1396, 2);
+  auto setup = Begin(path, database, principal);
+  RequireOk(catalog_api::EngineCatalogCreateObject(
+      CreateRequest(setup, schema, "schema", {}, "batch_boundaries")), "batch boundary setup failed");
+  Commit(setup);
+  const auto read = [](const std::string& file) {
+    std::ifstream input(file, std::ios::binary);
+    Require(input.is_open(), "batch evidence file missing");
+    std::string bytes(std::istreambuf_iterator<char>{input}, {});
+    Require(!input.bad(), "batch evidence file read failed");
+    return bytes;
+  };
+  const auto catalog = path.string() + ".sb.catalog_object_events";
+  const auto names = path.string() + ".sb.name_events.v2";
+  const auto allocator = path.string() + ".sb.mga_event_sequence_allocator";
+  {
+    auto context = Begin(path, database, principal);
+    const auto before = db::AcquireStrongLocalTransactionInventorySnapshot(context.database_path);
+    const auto catalog_before = read(catalog), allocator_before = read(allocator);
+    const auto next = catalog_api::NextMetadataEventSequence(context);
+    namespace memory = scratchbird::core::memory;
+    memory::MemoryFailureInjectionConfiguration injection;
+    injection.test_guard = memory::MakeMemoryFailureInjectionTestGuard();
+    injection.fixture_enabled = true;
+    injection.fixture_name = "catalog_batch_admission";
+    memory::MemoryFailureInjectionRule rule;
+    rule.rule_id = "catalog_batch_admission";
+    rule.purpose = "catalog_journal_batch";
+    rule.scope_kind = memory::MemoryFailureInjectionScopeKind::database;
+    rule.binary_scope_uuid = context.database_uuid.bytes;
+    injection.rules.push_back(rule);
+    Require(memory::DefaultMemoryManager().EnableAllocationFailureInjection(injection).ok(),
+            "batch memory fault setup failed");
+    struct Cleanup { ~Cleanup() { if (!scratchbird::core::memory::DefaultMemoryManager().DisableAllocationFailureInjection().ok()) std::terminate(); } } cleanup;
+    const auto failed = catalog_api::EngineCatalogCreateObject(
+        CreateRequest(context, scratchbird::tests::FixtureUuid(1396, 3), "table", schema, "denied_batch"));
+    const auto injected = memory::DefaultMemoryManager().FailureInjectionSnapshot();
+    const auto after = db::AcquireStrongLocalTransactionInventorySnapshot(context.database_path);
+    Require(!failed.ok && injected.rules.size() == 1 && injected.rules.front().failure_count == 1 &&
+                before.ok() && after.ok() && before.snapshot->inventory.publication_base == after.snapshot->inventory.publication_base &&
+                read(catalog) == catalog_before && read(allocator) == allocator_before &&
+                catalog_api::NextMetadataEventSequence(context) == next,
+            "batch memory denial published state or retained an unpublished reservation");
+    Rollback(context);
+  }
+  // Actual legacy-file admission. Restore the native name journal even if an
+  // assertion throws; this is one temporary fixture rename, not an archive.
+  {
+    auto context = Begin(path, database, principal);
+    const auto before = db::AcquireStrongLocalTransactionInventorySnapshot(context.database_path);
+    const auto catalog_before = read(catalog), allocator_before = read(allocator);
+    const auto legacy = path.string() + ".sb.api_events";
+    const bool had_legacy = std::filesystem::exists(legacy);
+    if (!had_legacy) { std::ofstream out(legacy, std::ios::binary); Require(out.good(), "legacy fixture creation failed"); }
+    const auto saved = names + ".fixture";
+    std::filesystem::rename(names, saved);
+    struct Restore {
+      std::string names, saved, legacy; bool had_legacy;
+      ~Restore() { std::error_code error; std::filesystem::rename(saved, names, error);
+        if (error) std::terminate(); if (!had_legacy) { std::filesystem::remove(legacy, error); if (error) std::terminate(); } }
+    } restore{names, saved, legacy, had_legacy};
+    const auto failed = catalog_api::EngineCatalogCreateObject(
+        CreateRequest(context, scratchbird::tests::FixtureUuid(1396, 4), "table", schema, "legacy_refusal"));
+    const auto after = db::AcquireStrongLocalTransactionInventorySnapshot(context.database_path);
+    Require(!failed.ok && !std::filesystem::exists(names) && before.ok() && after.ok() &&
+                before.snapshot->inventory.publication_base == after.snapshot->inventory.publication_base &&
+                read(catalog) == catalog_before && read(allocator) == allocator_before,
+            "batch bypassed legacy name admission or changed state on preflight refusal");
+    Rollback(context);
+  }
+#if defined(SB_CATALOG_TEST_WRAP_SYNC)
+  for (unsigned phase = 0; phase != 10; ++phase) {
+    auto context = Begin(path, database, principal);
+    const auto object = scratchbird::tests::FixtureUuid(1396, 10 + phase);
+    const auto request = CreateRequest(context, object, "table", schema, "sync_boundary_" + std::to_string(phase));
+    Require(catalog_api::LoadCatalogObjectLifecycleState(context).ok &&
+                catalog_api::LoadCatalogObjectLifecycleEpochState(context).ok &&
+                catalog_api::LoadNameRegistryState(context, context.local_transaction_id).ok,
+            "batch warm reader setup failed");
+    const auto retained = db::AcquireLocalTransactionInventorySnapshot(context.database_path);
+    Require(retained.ok(), "batch retained snapshot setup failed");
+    context.statement_transaction_inventory_snapshot = retained.snapshot;
+    const auto catalog_before = read(catalog), names_before = read(names);
+    const std::string target = phase < 2 ? allocator : phase < 4 ? catalog : phase < 6 ? names : path.string();
+    catalog_publication_fault::AfterSync after;
+    Require(::stat(target.c_str(), &catalog_publication_fault::target) == 0,
+            "batch sync target missing");
+    after.trigger = catalog_publication_fault::target;
+    Require(::stat(path.parent_path().c_str(), &after.failure) == 0,
+            "batch directory target missing");
+    const bool directory = phase < 6 ? phase % 2 != 0 : phase >= 8;
+    after.skip = phase == 9 ? 1 : 0;
+    struct FaultScope {
+      FaultScope(bool directory, unsigned phase, catalog_publication_fault::AfterSync& after) {
+        catalog_publication_fault::hit = false;
+        catalog_publication_fault::skip_matches = phase == 7 ? 1 : 0;
+        catalog_publication_fault::armed = !directory;
+        catalog_publication_fault::after_sync = directory ? &after : nullptr;
+      }
+      ~FaultScope() { catalog_publication_fault::armed = false; catalog_publication_fault::after_sync = nullptr; }
+    };
+    catalog_api::EngineCatalogCreateObjectResult failed;
+    { FaultScope fault(directory, phase, after); failed = catalog_api::EngineCatalogCreateObject(request); }
+    Require(catalog_publication_fault::hit && !failed.ok && (!directory || after.hit),
+            "batch ignored actual file/directory/inventory sync failure");
+    const auto actual = db::AcquireStrongLocalTransactionInventorySnapshot(context.database_path);
+    Require(actual.ok(), "batch failed acknowledgement inventory could not be reopened");
+    const auto entry = scratchbird::transaction::mga::LookupLocalTransaction(actual.snapshot->inventory,
+        scratchbird::transaction::mga::MakeLocalTransactionId(context.local_transaction_id));
+    const bool excluded = phase != 6 && phase != 9;
+    Require(entry.ok() && entry.entry.identity.transaction_uuid.value == context.transaction_uuid &&
+                entry.entry.rollback_only == excluded,
+            "batch failure was classified from acknowledgement instead of actual inventory");
+    bool typed_owner = false, classified = false;
+    for (const auto& diagnostic : failed.diagnostics) {
+      for (const auto& [key, value] : diagnostic.identity_fields)
+        if (key == "transaction_uuid" && value == context.transaction_uuid) typed_owner = true;
+      for (const auto& field : diagnostic.fields)
+        if (field.key == "observed_native_commit_exclusion" && field.value == (excluded ? "retained" : "absent")) classified = true;
+    }
+    Require(typed_owner && classified, "batch failure dropped its binary owner or actual inventory classification");
+    if (phase == 6 || phase == 8)
+      Require(read(catalog) == catalog_before && read(names) == names_before,
+              "failed native marking attempted catalog publication");
+    if (excluded) {
+      Require(!catalog_api::LoadCatalogObjectLifecycleState(context).ok &&
+                  !catalog_api::LoadCatalogObjectLifecycleEpochState(context).ok &&
+                  !catalog_api::LoadNameRegistryState(context, context.local_transaction_id).ok,
+              "warm/retained catalog reader bypassed current batch exclusion");
+      catalog_api::EngineCommitTransactionRequest commit; commit.context = context;
+      Require(!catalog_api::EngineCommitTransaction(commit).ok,
+              "failed batch became committable");
+    }
+    if (phase == 9) {
+      const auto complete = catalog_api::LoadCatalogObjectLifecycleState(context);
+      Require(complete.ok && std::any_of(complete.state.objects.begin(), complete.state.objects.end(),
+          [&](const auto& item) { return item.object_uuid == object; }),
+          "lost release acknowledgement lost completed catalog object");
+      RequireOk(catalog_api::EngineCatalogResolveObjectName(
+          ResolveRequest(context, "table", schema, "sync_boundary_9")),
+          "lost release acknowledgement lost completed resolver publication");
+      Commit(context);
+    } else Rollback(context);
+  }
+  {
+    auto context = Begin(path, database, principal);
+    catalog_publication_fault::Pause pause;
+    Require(::stat(catalog.c_str(), &pause.target) == 0, "batch reader pause target missing");
+    std::promise<void> resume;
+    pause.release = resume.get_future().share();
+    auto reached = pause.reached.get_future();
+    std::promise<void> full_started, epoch_started, name_started;
+    auto full_signal = full_started.get_future(), epoch_signal = epoch_started.get_future(), name_signal = name_started.get_future();
+    std::future<catalog_api::EngineCatalogCreateObjectResult> publisher;
+    std::future<bool> full_reader, epoch_reader, name_reader;
+    struct Release {
+      std::promise<void>& resume; bool released = false;
+      void Now() { if (!released) { released = true; resume.set_value(); } }
+      ~Release() { Now(); }
+    } release{resume};
+    publisher = std::async(std::launch::async, [&] {
+      struct PauseScope { explicit PauseScope(catalog_publication_fault::Pause& pause) {
+          catalog_publication_fault::pause = &pause;
+        } ~PauseScope() { catalog_publication_fault::pause = nullptr; } } scope(pause);
+      return catalog_api::EngineCatalogCreateObject(
+          CreateRequest(context, scratchbird::tests::FixtureUuid(1396, 31), "table", schema, "concurrent_batch"));
+    });
+    Require(reached.wait_for(std::chrono::seconds(5)) == std::future_status::ready,
+            "batch did not reach actual catalog synchronization");
+    full_reader = std::async(std::launch::async, [&] { full_started.set_value(); return catalog_api::LoadCatalogObjectLifecycleState(context).ok; });
+    epoch_reader = std::async(std::launch::async, [&] { epoch_started.set_value(); return catalog_api::LoadCatalogObjectLifecycleEpochState(context).ok; });
+    name_reader = std::async(std::launch::async, [&] { name_started.set_value(); return catalog_api::LoadNameRegistryState(context, context.local_transaction_id).ok; });
+    full_signal.wait(); epoch_signal.wait(); name_signal.wait();
+    Require(full_reader.wait_for(std::chrono::milliseconds(50)) == std::future_status::timeout &&
+                epoch_reader.wait_for(std::chrono::milliseconds(50)) == std::future_status::timeout &&
+                name_reader.wait_for(std::chrono::milliseconds(50)) == std::future_status::timeout,
+            "catalog reader consumed an in-flight publication prefix");
+    release.Now();
+    RequireOk(publisher.get(), "concurrent batch publication failed");
+    Require(full_reader.get() && epoch_reader.get() && name_reader.get(),
+            "readers did not resume after complete durable batch release");
+    Commit(context);
+  }
+  {
+    auto context = Begin(path, database, principal);
+    catalog_publication_fault::AfterSync after;
+    Require(::stat(catalog.c_str(), &after.trigger) == 0, "allocation fault trigger missing");
+    after.deny_allocations = true;
+    bool caught = false;
+    {
+      struct FaultScope {
+        explicit FaultScope(catalog_publication_fault::AfterSync& after) {
+          catalog_allocation_fault::failures = 0; catalog_publication_fault::after_sync = &after;
+        }
+        ~FaultScope() { catalog_publication_fault::after_sync = nullptr; catalog_allocation_fault::denied = false; }
+      } fault(after);
+      try { (void)catalog_api::EngineCatalogCreateObject(
+          CreateRequest(context, scratchbird::tests::FixtureUuid(1396, 30), "table", schema, "allocation_unwind")); }
+      catch (const std::bad_alloc&) { caught = true; }
+    }
+    Require(caught && after.hit && catalog_allocation_fault::failures != 0,
+            "batch did not exercise actual allocation failure after catalog effects");
+    const auto actual = db::AcquireStrongLocalTransactionInventorySnapshot(context.database_path);
+    Require(actual.ok() && scratchbird::transaction::mga::LookupLocalTransaction(actual.snapshot->inventory,
+        scratchbird::transaction::mga::MakeLocalTransactionId(context.local_transaction_id)).entry.rollback_only &&
+        !catalog_api::LoadCatalogObjectLifecycleState(context).ok,
+        "allocation unwinding cleared owned exclusion or exposed a prefix");
+    Rollback(context);
+  }
+#endif
+  {
+    catalog_api::EngineBeginTransactionRequest request;
+    request.context = BaseContext(path, database, principal);
+    request.option_envelopes.push_back("transaction_read_mode:read_only");
+    const auto begun = catalog_api::EngineBeginTransaction(request);
+    RequireOk(begun, "real read-only catalog observer BEGIN failed");
+    Require(begun.read_only && begun.read_mode == "read_only", "catalog observer was not actually read-only");
+    auto context = request.context;
+    context.local_transaction_id = begun.local_transaction_id;
+    context.transaction_uuid = begun.transaction_uuid;
+    context.snapshot_visible_through_local_transaction_id = begun.snapshot_visible_through_local_transaction_id;
+    const auto full = catalog_api::LoadCatalogObjectLifecycleState(context);
+    const auto epoch = catalog_api::LoadCatalogObjectLifecycleEpochState(context);
+    const auto names = catalog_api::LoadNameRegistryState(context, context.local_transaction_id);
+    if (!full.ok) std::cerr << "readonly full " << full.diagnostic.code << ':' << full.diagnostic.detail << '\n';
+    if (!epoch.ok) std::cerr << "readonly epoch " << epoch.diagnostic.code << ':' << epoch.diagnostic.detail << '\n';
+    if (!names.ok) std::cerr << "readonly names " << names.diagnostic.code << ':' << names.diagnostic.detail << '\n';
+    Require(full.ok && epoch.ok && names.ok,
+            "catalog commit-exclusion gate refused an unfenced read-only observer");
+    const auto before = db::AcquireStrongLocalTransactionInventorySnapshot(context.database_path);
+    const auto catalog_before = read(catalog), names_before = read(path.string() + ".sb.name_events.v2");
+    const auto next = catalog_api::NextMetadataEventSequence(context);
+    Require(!catalog_api::EngineCatalogCreateObject(
+        CreateRequest(context, scratchbird::tests::FixtureUuid(1396, 32), "table", schema, "readonly_write")).ok,
+        "read-only catalog support admitted a write");
+    const auto after = db::AcquireStrongLocalTransactionInventorySnapshot(context.database_path);
+    Require(before.ok() && after.ok() && before.snapshot->inventory.publication_base == after.snapshot->inventory.publication_base &&
+                read(catalog) == catalog_before && read(path.string() + ".sb.name_events.v2") == names_before &&
+                catalog_api::NextMetadataEventSequence(context) == next,
+            "read-only writer refusal retained catalog, allocation or inventory effects");
+    Commit(context);
+  }
+}
+
+#if defined(SB_CATALOG_TEST_WRAP_SYNC)
+int RunCatalogCrashChild(const std::filesystem::path& path, std::uint64_t local, unsigned phase) {
+  const auto configured = scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+      scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(), "catalog_crash_child");
+  Require(configured.ok(), "crash child memory configuration failed");
+  const auto current = db::AcquireStrongLocalTransactionInventorySnapshot(path.string());
+  Require(current.ok() && current.snapshot->inventory.publication_base, "crash child inventory unavailable");
+  auto context = BaseContext(path, current.snapshot->inventory.publication_base->database_uuid,
+      scratchbird::tests::FixtureUuid(1397, 1));
+  const auto entry = scratchbird::transaction::mga::LookupLocalTransaction(current.snapshot->inventory,
+      scratchbird::transaction::mga::MakeLocalTransactionId(local));
+  Require(entry.ok(), "crash child owner absent");
+  context.local_transaction_id = local;
+  context.transaction_uuid = entry.entry.identity.transaction_uuid.value;
+  catalog_publication_fault::Crash crash;
+  const std::string target = phase == 1 ? path.string() + ".sb.mga_event_sequence_allocator"
+      : phase == 2 ? path.string() + ".sb.catalog_object_events"
+      : phase == 3 ? path.string() + ".sb.name_events.v2" : path.string();
+  Require(::stat(target.c_str(), &crash.trigger) == 0 &&
+              ::stat(path.parent_path().c_str(), &crash.parent) == 0,
+          "crash child boundary target missing");
+  crash.skip = phase >= 4 ? 1 : 0;
+  crash.next_parent = phase == 5;
+  crash.exit_code = 80 + phase;
+  catalog_publication_fault::crash = &crash;
+  const auto result = catalog_api::EngineCatalogCreateObject(CreateRequest(context,
+      scratchbird::tests::FixtureUuid(1397, 10 + phase), "table", scratchbird::tests::FixtureUuid(1397, 2),
+      "crash_boundary_" + std::to_string(phase)));
+  catalog_publication_fault::crash = nullptr;
+  RequireOk(result, "crash child catalog operation failed before its boundary");
+  Fail("crash child did not reach its actual synchronization boundary");
+}
+
+void TestCatalogBatchProcessLoss(const std::filesystem::path& path) {
+  const auto database = CreateDatabase(path);
+  const auto principal = scratchbird::tests::FixtureUuid(1397, 1);
+  const auto schema = scratchbird::tests::FixtureUuid(1397, 2);
+  auto setup = Begin(path, database, principal);
+  RequireOk(catalog_api::EngineCatalogCreateObject(
+      CreateRequest(setup, schema, "schema", {}, "crash_custody")), "crash schema setup failed");
+  Commit(setup);
+  for (unsigned phase = 0; phase != 6; ++phase) {
+    auto context = Begin(path, database, principal);
+    const auto local = std::to_string(context.local_transaction_id), mode = std::to_string(phase);
+    const auto file = path.string();
+    // The parent has no open node device while the child is running. Exec a
+    // fresh process; no inherited C++ caches/mutexes authorize its operation.
+    const auto child = ::fork();
+    Require(child >= 0, "crash child fork failed");
+    if (child == 0) {
+      ::execl("/proc/self/exe", "catalog_object_conformance", "--crash-catalog", file.c_str(), local.c_str(), mode.c_str(), static_cast<char*>(nullptr));
+      std::_Exit(125);
+    }
+    int status = 0;
+    pid_t waited;
+    do { waited = ::waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
+    Require(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 80 + static_cast<int>(phase),
+            "catalog child did not stop at the requested real boundary");
+    const auto actual = db::AcquireStrongLocalTransactionInventorySnapshot(context.database_path);
+    Require(actual.ok(), "native inventory could not reopen after catalog process loss");
+    const auto entry = scratchbird::transaction::mga::LookupLocalTransaction(actual.snapshot->inventory,
+        scratchbird::transaction::mga::MakeLocalTransactionId(context.local_transaction_id));
+    const bool excluded = phase != 0 && phase != 5;
+    Require(entry.ok() && entry.entry.identity.transaction_uuid.value == context.transaction_uuid &&
+                entry.entry.rollback_only == excluded,
+            "catalog process loss recovered the wrong native exclusion state");
+    if (excluded) {
+      Require(!catalog_api::LoadCatalogObjectLifecycleState(context).ok &&
+                  !catalog_api::LoadNameRegistryState(context, context.local_transaction_id).ok,
+              "process-loss prefix became ordinary readable catalog");
+      catalog_api::EngineCommitTransactionRequest commit; commit.context = context;
+      Require(!catalog_api::EngineCommitTransaction(commit).ok,
+              "process-loss catalog prefix became committable");
+      Rollback(context);
+    } else if (phase == 5) {
+      RequireOk(catalog_api::EngineCatalogLookupObjectByUuid(
+          LookupRequest(context, scratchbird::tests::FixtureUuid(1397, 15), "table")),
+          "completed catalog release did not survive process loss");
+      RequireOk(catalog_api::EngineCatalogResolveObjectName(
+          ResolveRequest(context, "table", schema, "crash_boundary_5")),
+          "completed resolver release did not survive process loss");
+      Commit(context);
+    } else Rollback(context);
+  }
+}
+#endif
+
 }  // namespace
 
-int main() try {
+int main(int argc, char** argv) try {
+#if defined(SB_CATALOG_TEST_WRAP_SYNC)
+  if (argc == 5 && std::string_view(argv[1]) == "--crash-catalog")
+    return RunCatalogCrashChild(argv[2], std::stoull(argv[3]), static_cast<unsigned>(std::stoul(argv[4])));
+#else
+  (void)argc; (void)argv;
+#endif
   // Exercise the same assertion-failure path with a real database, not just
   // an empty-directory helper test. No device handle escapes CreateDatabase.
   std::filesystem::path failed_directory;
@@ -1447,6 +1892,11 @@ int main() try {
   TestCatalogWholeOperationOwnership(artifacts.path() / "ownership.sbdb");
   TestMutationExclusionAuthority(artifacts.path() / "mutation-authority.sbdb");
   TestCatalogDefinitionPreflight(artifacts.path() / "preflight.sbdb");
+  TestCatalogFailedPublicationCustody(artifacts.path() / "custody.sbdb");
+  TestCatalogBatchBoundaries(artifacts.path() / "batch-boundaries.sbdb");
+#if defined(SB_CATALOG_TEST_WRAP_SYNC)
+  TestCatalogBatchProcessLoss(artifacts.path() / "batch-process-loss.sbdb");
+#endif
 
   artifacts.Cleanup();
   return EXIT_SUCCESS;

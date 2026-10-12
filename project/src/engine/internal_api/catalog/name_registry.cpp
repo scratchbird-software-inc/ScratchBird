@@ -9,6 +9,7 @@
 #include "catalog/name_registry.hpp"
 #include "catalog/name_registry_codec.hpp"
 #include "catalog/catalog_journal_publication.hpp"
+#include "catalog/catalog_read_admission.hpp"
 #include <tuple>
 
 #include "api_diagnostics.hpp"
@@ -579,12 +580,15 @@ EngineApiDiagnostic RetireNameRegistryEntriesForObject(const EngineRequestContex
 
 NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context,
                                              std::uint64_t observer_tx) {
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   NameRegistryLoadResult result;
   const auto path_status = ValidateApiBehaviorContext(context, "catalog.name_registry.load", false, true);
   if (path_status.error) {
     result.diagnostic = path_status;
     return result;
   }
+  const auto exclusion = ValidateCatalogReadCommitExclusion(context, observer_tx, "catalog.name_registry.load");
+  if (exclusion.error) { result.diagnostic = exclusion; return result; }
   const auto savepoints = ParseSavepoints(context);
   if (savepoints.diagnostic.error) {
     result.diagnostic = savepoints.diagnostic;

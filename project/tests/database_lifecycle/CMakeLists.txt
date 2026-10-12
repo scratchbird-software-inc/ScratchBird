@@ -1751,6 +1751,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     catalog_object_conformance.cpp
   )
   target_compile_features(database_lifecycle_catalog_object_conformance PRIVATE cxx_std_23)
+  target_compile_definitions(database_lifecycle_catalog_object_conformance PRIVATE SCRATCHBIRD_MEMORY_FAILURE_INJECTION_TEST_GUARD=1)
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_definitions(database_lifecycle_catalog_object_conformance PRIVATE SB_CATALOG_TEST_WRAP_SYNC=1)
     target_link_options(database_lifecycle_catalog_object_conformance PRIVATE "-Wl,--wrap=fsync")

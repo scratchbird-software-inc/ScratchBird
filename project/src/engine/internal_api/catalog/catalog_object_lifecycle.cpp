@@ -9,6 +9,8 @@
 #include "catalog/catalog_object_lifecycle.hpp"
 #include "catalog/catalog_object_lifecycle_codec.hpp"
 #include "catalog/catalog_journal_publication.hpp"
+#include "catalog/catalog_journal_batch.hpp"
+#include "catalog/catalog_read_admission.hpp"
 #include "catalog/constraint_metadata_codec.hpp"
 
 #include "behavior_support/api_behavior_store.hpp"
@@ -571,6 +573,57 @@ EngineApiDiagnostic AppendCacheInvalidation(const EngineRequestContext& context,
   return AppendEvent(context, CacheInvalidateEvent(context, operation_id, object_uuid, metadata_epoch));
 }
 
+EngineApiDiagnostic StageCatalogJournalEvent(const EngineRequestContext& context,
+                                            std::string_view event,
+                                            std::vector<PreparedCatalogJournalRecord>& prepared) {
+  ApiBehaviorRecord frame;
+  CatalogLifecycleRecord record;
+  if (!DecodeApiBehaviorRecord({reinterpret_cast<const std::uint8_t*>(event.data()), event.size()}, &frame) ||
+      !DecodeCatalogLifecycleFrame(frame, &record) || frame.creator_tx != context.local_transaction_id)
+    return CatalogDiagnostic(kCatalogObjectDiagnosticDatabaseWriteFailed, "invalid_binary_catalog_record");
+  prepared.push_back({CatalogJournalKind::lifecycle, std::move(frame)});
+  return OkDiagnostic();
+}
+
+EngineApiDiagnostic StageCatalogResolverNames(const EngineRequestContext& context,
+                                              const std::string& operation,
+                                              const EngineUuid& object,
+                                              const std::string& kind,
+                                              const EngineUuid& scope,
+                                              const std::vector<EngineLocalizedName>& names,
+                                              const std::string& fallback,
+                                              std::vector<PreparedCatalogJournalRecord>& prepared) {
+  const auto valid = ValidateApiBehaviorContext(context, operation, false, true);
+  if (valid.error) return valid;
+  const auto format = ValidateCatalogResolverJournalFormat(context, operation);
+  if (format.error) return format;
+  for (const auto& name : names) {
+    const auto entry = MakeNameRegistryEntry(context, object, kind, scope, name, fallback);
+    ApiBehaviorRecord record;
+    record.creator_tx = entry.creator_tx;
+    record.operation_id = operation;
+    record.object_uuid = entry.name_entry_uuid;
+    record.target_object_uuid = entry.object_uuid;
+    record.target_schema_uuid = entry.scope_uuid;
+    record.object_kind = "name_registry.entry";
+    record.state = "active";
+    if (!EncodeNameRegistryEntry(entry, &record.payload))
+      return MakeInvalidRequestDiagnostic(operation, "name_entry_invalid");
+    prepared.push_back({CatalogJournalKind::resolver_names, std::move(record)});
+  }
+  return OkDiagnostic();
+}
+
+EngineApiDiagnostic CatalogBatchPublicationDiagnostic(EngineApiDiagnostic diagnostic) {
+  // Preserve native causes, binary owner operands and phase/outcome fields
+  // under the established catalog write-error identity.
+  auto owning = CatalogDiagnostic(kCatalogObjectDiagnosticDatabaseWriteFailed, diagnostic.detail);
+  diagnostic.code = std::move(owning.code);
+  diagnostic.message_key = std::move(owning.message_key);
+  diagnostic.detail = std::move(owning.detail);
+  return diagnostic;
+}
+
 struct LoadOptions {
   bool enforce_visibility = true;
 };
@@ -741,11 +794,14 @@ void StoreCatalogLifecycleLoadCache(
 
 EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext& context,
                                                       LoadOptions options) {
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   EngineLoadCatalogObjectLifecycleStateResult result;
   if (context.database_path.empty()) {
     result.diagnostic = CatalogDiagnostic(kCatalogObjectDiagnosticDatabasePathRequired, "database_path");
     return result;
   }
+  const auto exclusion = ValidateCatalogReadCommitExclusion(context, context.local_transaction_id, "catalog.object.load");
+  if (exclusion.error) { result.diagnostic = exclusion; return result; }
   const auto savepoints = ParseSavepoints(context);
   if (savepoints.diagnostic.error) {
     result.diagnostic = savepoints.diagnostic;
@@ -1243,6 +1299,7 @@ EngineLoadCatalogObjectLifecycleStateResult LoadCatalogObjectLifecycleState(
 
 EngineLoadCatalogObjectLifecycleStateResult LoadCatalogObjectLifecycleEpochState(
     const EngineRequestContext& context) {
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   EngineLoadCatalogObjectLifecycleStateResult result;
   if (context.database_path.empty()) {
     result.diagnostic = CatalogDiagnostic(
@@ -1250,6 +1307,8 @@ EngineLoadCatalogObjectLifecycleStateResult LoadCatalogObjectLifecycleEpochState
     return result;
   }
 
+  const auto exclusion = ValidateCatalogReadCommitExclusion(context, context.local_transaction_id, "catalog.object.epoch");
+  if (exclusion.error) { result.diagnostic = exclusion; return result; }
   const auto savepoints = ParseSavepoints(context);
   if (savepoints.diagnostic.error) {
     result.diagnostic = savepoints.diagnostic;
@@ -1823,12 +1882,13 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
   record.synonym_target_uuid = synonym_target_uuid;
   record.synonym_target_class = synonym_target_class;
   record.payload = PayloadFromRequest(request);
-  auto appended = AppendEvent(request.context, ObjectEvent(record));
+  std::vector<PreparedCatalogJournalRecord> prepared;
+  auto appended = StageCatalogJournalEvent(request.context, ObjectEvent(record), prepared);
   if (appended.error) {
     return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation, appended);
   }
   for (const auto& name : names) {
-    appended = AppendEvent(request.context, NameEvent(MakeNameRecord(request.context, object_uuid, object_kind, schema_uuid, name, epoch)));
+    appended = StageCatalogJournalEvent(request.context, NameEvent(MakeNameRecord(request.context, object_uuid, object_kind, schema_uuid, name, epoch)), prepared);
     if (appended.error) {
       return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation, appended);
     }
@@ -1842,19 +1902,20 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
     dependency.dependency_uuid = related.uuid;
     dependency.dependency_kind = DependencyKindForRelatedObject(object_kind, related);
     dependency.metadata_epoch = epoch;
-    appended = AppendEvent(request.context, DependencyEvent(dependency));
+    appended = StageCatalogJournalEvent(request.context, DependencyEvent(dependency), prepared);
     if (appended.error) {
       return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation, appended);
     }
   }
   for (const auto& event : prepared_definitions) {
-    appended = AppendEvent(request.context, event);
+    appended = StageCatalogJournalEvent(request.context, event, prepared);
     if (appended.error)
       return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation, appended);
   }
-  appended = AppendCacheInvalidation(request.context, kOperation, object_uuid, epoch);
+  prepared_definitions.clear();
+  appended = StageCatalogJournalEvent(request.context, CacheInvalidateEvent(request.context, kOperation, object_uuid, epoch), prepared);
   if (appended.error) { return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation, appended); }
-  const auto resolver = PersistResolverNames(request.context, kOperation, object_uuid, object_kind, schema_uuid, names, PrimaryName(request), false);
+  const auto resolver = StageCatalogResolverNames(request.context, kOperation, object_uuid, object_kind, schema_uuid, names, PrimaryName(request), prepared);
   if (resolver.error) { return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation, resolver); }
 
   auto result = SuccessResult<EngineCatalogCreateObjectResult>(request.context, kOperation);
@@ -1866,6 +1927,10 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
                           object_uuid,
                           result.catalog_row_uuid,
                           object_kind);
+  auto publication = PublishPreparedCatalogJournalBatch(request.context, kOperation, std::move(prepared));
+  if (publication.error)
+    return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation,
+        CatalogBatchPublicationDiagnostic(std::move(publication)));
   return result;
 }
 
@@ -1915,12 +1980,15 @@ EngineCatalogApplyConstraintsResult EngineCatalogApplyConstraintsToObject(
       request, loaded.state, owner_object_uuid, epoch, prepared_definitions);
   if (definitions.error)
     return DiagnosticResult<EngineCatalogApplyConstraintsResult>(request.context, operation_id, definitions);
+  std::vector<PreparedCatalogJournalRecord> prepared;
   for (const auto& event : prepared_definitions) {
-    const auto appended = AppendEvent(request.context, event);
+    const auto appended = StageCatalogJournalEvent(request.context, event, prepared);
     if (appended.error)
       return DiagnosticResult<EngineCatalogApplyConstraintsResult>(request.context, operation_id, appended);
   }
-  const auto invalidated = AppendCacheInvalidation(request.context, operation_id, owner_object_uuid, epoch);
+  prepared_definitions.clear();
+  const auto invalidated = StageCatalogJournalEvent(request.context,
+      CacheInvalidateEvent(request.context, operation_id, owner_object_uuid, epoch), prepared);
   if (invalidated.error) {
     return DiagnosticResult<EngineCatalogApplyConstraintsResult>(request.context, operation_id, invalidated);
   }
@@ -1935,6 +2003,10 @@ EngineCatalogApplyConstraintsResult EngineCatalogApplyConstraintsToObject(
                           owner_object_uuid,
                           result.catalog_row_uuid,
                           "constraint_descriptor");
+  auto publication = PublishPreparedCatalogJournalBatch(request.context, operation_id, std::move(prepared));
+  if (publication.error)
+    return DiagnosticResult<EngineCatalogApplyConstraintsResult>(request.context, operation_id,
+        CatalogBatchPublicationDiagnostic(std::move(publication)));
   return result;
 }
 
