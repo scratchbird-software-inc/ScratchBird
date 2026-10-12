@@ -45,6 +45,34 @@
 #include <unistd.h>
 #include <vector>
 
+#if defined(SB_CONSTRAINT_METADATA_TEST_WRAP_SYNC)
+#include <cerrno>
+#include <sys/stat.h>
+namespace constraint_sync_fault {
+thread_local bool armed = false;
+thread_local bool hit = false;
+thread_local unsigned skip_matches = 0;
+thread_local struct stat target {};
+}
+extern "C" int __real_fsync(int);
+extern "C" int __wrap_fsync(int fd) {
+  struct stat actual {};
+  if (constraint_sync_fault::armed && ::fstat(fd, &actual) == 0 &&
+      actual.st_dev == constraint_sync_fault::target.st_dev &&
+      actual.st_ino == constraint_sync_fault::target.st_ino) {
+    if (constraint_sync_fault::skip_matches != 0) {
+      --constraint_sync_fault::skip_matches;
+      return __real_fsync(fd);
+    }
+    constraint_sync_fault::armed = false;
+    constraint_sync_fault::hit = true;
+    errno = EIO;
+    return -1;
+  }
+  return __real_fsync(fd);
+}
+#endif
+
 namespace {
 
 namespace api = scratchbird::engine::internal_api;
@@ -682,6 +710,50 @@ void VerifyForeignKeyDescriptorLifecycle() {
             ReadChildSidecar(fixture,writer).owner==original.owner,
             "allocator reload reused the failed event or published its descriptor");
   }
+#if defined(SB_CONSTRAINT_METADATA_TEST_WRAP_SYNC)
+  for (const bool directory : {false, true}) {
+    const auto before = metadata_records();
+    const auto event = api::NextMetadataEventSequence(writer);
+    const auto target = directory ? std::filesystem::path(metadata_path).parent_path()
+                                  : std::filesystem::path(metadata_path);
+    Require(::stat(target.c_str(), &constraint_sync_fault::target) == 0,
+            "constraint sync target missing");
+    struct FaultScope {
+      explicit FaultScope(bool directory) {
+        constraint_sync_fault::hit = false;
+        constraint_sync_fault::skip_matches = directory ? 1 : 0;
+        constraint_sync_fault::armed = true;
+      }
+      ~FaultScope() { constraint_sync_fault::armed = false; constraint_sync_fault::skip_matches = 0; }
+    };
+    const auto failure = [&] {
+      FaultScope fault(directory);
+      return PublishForeignKey(fixture, writer, false);
+    }();
+    Require(constraint_sync_fault::hit && !failure.ok &&
+                HasDiagnostic(failure, directory ? "sealed_batch_metadata_directory_sync_failed:"
+                                                 : "sealed_batch_metadata_sync_failed:") &&
+                HasDiagnostic(failure, "physical_effects_require_reconciliation"),
+            "constraint publication reported success or missed its metadata sync fault");
+    const auto after = metadata_records();
+    Require(after.size() == before.size() + 1 &&
+                std::equal(before.begin(), before.end(), after.begin()) &&
+                ReadChildSidecar(fixture, writer).owner.event_sequence == event &&
+                ReadChildSidecar(fixture, sibling).owner == original.owner,
+            "constraint durability failure lost or exposed retained creator-only effects");
+    const auto warm_next = api::NextMetadataEventSequence(writer);
+    api::ClearMgaEventSequenceRangeCacheForTesting();
+    Require(warm_next == event + 1 && api::NextMetadataEventSequence(writer) == warm_next,
+            "constraint metadata sync failure reused its event");
+    api::EngineRollbackTransactionRequest rollback_failed;
+    rollback_failed.context = writer;
+    Require(api::EngineRollbackTransaction(rollback_failed).ok,
+            "constraint failed-publication rollback failed");
+    writer = Begin(fixture, "fk-sync-retry");
+    Require(ReadChildSidecar(fixture, writer).owner == original.owner,
+            "constraint sync failure survived actual rollback");
+  }
+#endif
   PublishForeignKey(fixture, writer);
   const auto staged = ReadChildSidecar(fixture, writer);
   Require(staged.owner.event_sequence > original.owner.event_sequence &&

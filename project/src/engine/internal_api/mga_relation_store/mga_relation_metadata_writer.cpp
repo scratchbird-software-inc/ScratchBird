@@ -189,7 +189,26 @@ bool AppendLine(const std::string& path, const std::string& frame) {
   if (!output) return false;
   output.write(frame.data(), static_cast<std::streamsize>(frame.size()));
   output.flush();
+  output.close();
   return static_cast<bool>(output);
+}
+
+// Append success is not durability. Each sealed producer must complete these
+// barriers before returning a descriptor or successful mutation count. A sync
+// error retains the physical frame and its reservation; it is not rollback.
+EngineApiDiagnostic SynchronizeSealedMetadata(
+    const EngineRequestContext& context, const char* operation,
+    const std::string& prefix) {
+  const auto path = MetadataStorePath(context);
+  const auto file = scratchbird::storage::disk::SyncFilesystemPath(path, true);
+  if (!file.ok())
+    return MakeInvalidRequestDiagnostic(operation, prefix + "_metadata_sync_failed:" +
+        file.diagnostic.diagnostic_code + ":physical_effects_require_reconciliation:event_reservation_retained");
+  const auto parent = scratchbird::storage::disk::SyncParentDirectoryPath(path);
+  if (!parent.ok())
+    return MakeInvalidRequestDiagnostic(operation, prefix + "_metadata_directory_sync_failed:" +
+        parent.diagnostic.diagnostic_code + ":physical_effects_require_reconciliation:event_reservation_retained");
+  return OkDiagnostic();
 }
 
 // Materialization may abandon a deferred reservation before publication.
@@ -414,6 +433,8 @@ EngineApiDiagnostic AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
     return MakeInvalidRequestDiagnostic(
         kOperation, "sealed_table_descriptor_append_failed");
   }
+  const auto durable = SynchronizeSealedMetadata(context, kOperation, "sealed_table_descriptor");
+  if (durable.error) return durable;
   *descriptor = std::move(material.relation_descriptor);
   return OkDiagnostic();
 }
@@ -961,6 +982,8 @@ EngineApiDiagnostic AppendMgaConstraintMutationBatch(
     return MakeInvalidRequestDiagnostic(kOperation,
                                         "sealed_batch_append_failed");
   }
+  const auto durable = SynchronizeSealedMetadata(context, kOperation, "sealed_batch");
+  if (durable.error) return durable;
   return OkDiagnostic();
 }
 
@@ -1843,6 +1866,11 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
     return refuse("DATATYPE.DESCRIPTOR.INVALID",
                   "text_identity_migration_append_failed",
                   "metadata append failed; physical effects require reconciliation; event reservation retained");
+  }
+  const auto durable = SynchronizeSealedMetadata(context, kOperation, "text_identity_migration");
+  if (durable.error) {
+    result.diagnostic = durable;
+    return result;
   }
   result.ok = true;
   result.migrated_row_count = request.rows.size();

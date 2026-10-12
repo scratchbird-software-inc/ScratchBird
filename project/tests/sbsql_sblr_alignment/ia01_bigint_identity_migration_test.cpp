@@ -39,6 +39,7 @@
 namespace publication_fault {
 thread_local bool armed = false;
 thread_local bool hit = false;
+thread_local unsigned skip_matches = 0;
 thread_local struct stat target {};
 }
 extern "C" int __real_fsync(int);
@@ -47,6 +48,10 @@ extern "C" int __wrap_fsync(int fd) {
   if (publication_fault::armed && ::fstat(fd, &actual) == 0 &&
       actual.st_dev == publication_fault::target.st_dev &&
       actual.st_ino == publication_fault::target.st_ino) {
+    if (publication_fault::skip_matches != 0) {
+      --publication_fault::skip_matches;
+      return __real_fsync(fd);
+    }
     publication_fault::armed = false;
     publication_fault::hit = true;
     errno = EIO;
@@ -1225,7 +1230,7 @@ void RequireSealedReservationFailureOrdering(
     Require(::stat(target.c_str(), &publication_fault::target) == 0,
             "sync fault target is missing");
     struct FaultScope {
-      FaultScope() { publication_fault::hit = false; publication_fault::armed = true; }
+      FaultScope() { publication_fault::hit = false; publication_fault::skip_matches = 0; publication_fault::armed = true; }
       ~FaultScope() { publication_fault::armed = false; }
     };
     api::EngineApiDiagnostic diagnostic;
@@ -1248,6 +1253,54 @@ void RequireSealedReservationFailureOrdering(
                 api::NextMetadataEventSequence(context) == warm_next,
             "cold recovery reused a physically retained reservation after sync failure");
   }
+#endif
+}
+
+template <typename Publish>
+void RequireSealedMetadataSyncFailure(
+    const api::EngineRequestContext& context, const Fixture& fixture,
+    bool directory, Publish publish, std::string_view prefix) {
+#if defined(SB_SEALED_METADATA_TEST_WRAP_SYNC)
+  const auto before = CaptureRefusalArtifacts(context, fixture);
+  const auto event = api::NextMetadataEventSequence(context);
+  const auto path = fixture.path.string() + ".sb.mga_relation_metadata";
+  const auto target = directory ? std::filesystem::path(path).parent_path()
+                                : std::filesystem::path(path);
+  Require(::stat(target.c_str(), &publication_fault::target) == 0,
+          "metadata sync fault target missing");
+  struct FaultScope {
+    explicit FaultScope(bool directory) {
+      publication_fault::hit = false;
+      // The first parent sync belongs to the preceding allocator publication.
+      publication_fault::skip_matches = directory ? 1 : 0;
+      publication_fault::armed = true;
+    }
+    ~FaultScope() { publication_fault::armed = false; publication_fault::skip_matches = 0; }
+  };
+  api::EngineApiDiagnostic diagnostic;
+  {
+    FaultScope fault(directory);
+    diagnostic = publish();
+  }
+  const auto reason = std::string(prefix) +
+      (directory ? "_metadata_directory_sync_failed:" : "_metadata_sync_failed:");
+  Require(publication_fault::hit && diagnostic.error &&
+              diagnostic.detail.find(reason) != std::string::npos &&
+              diagnostic.detail.find("physical_effects_require_reconciliation") != std::string::npos,
+          "sealed publisher missed metadata durability failure or its retained effects");
+  const auto after = CaptureRefusalArtifacts(context, fixture);
+  Require(after.metadata.size() > before.metadata.size() &&
+              after.metadata.starts_with(before.metadata) &&
+              after.allocator.size() > before.allocator.size() &&
+              after.max_event_sequence == event,
+          "metadata sync failure lost or misclassified the actual written frame");
+  std::vector<std::string> records;
+  Require(api::ReadCompleteMgaMetadataRecords(path, &records) && !records.empty(),
+          "post-sync failure record is not complete");
+  const auto warm_next = api::NextMetadataEventSequence(context);
+  api::ClearMgaEventSequenceRangeCacheForTesting();
+  Require(warm_next == event + 1 && api::NextMetadataEventSequence(context) == warm_next,
+          "metadata sync failure reused its physically retained event");
 #endif
 }
 
@@ -1807,6 +1860,26 @@ int RunConformance(const int argc, char* argv[]) {
           "cancelled TEXT migration was observed more than once");
   Rollback(text_cancelled);
 
+#if defined(SB_SEALED_METADATA_TEST_WRAP_SYNC)
+  for (const bool directory : {false, true}) {
+    auto writer = BeginTextMigration(fixture, text_request);
+    RequireSealedMetadataSyncFailure(writer, fixture, directory, [&] {
+      const auto result = api::AppendMgaTextIdentityMigrationBatch(writer, text_request);
+      Require(!result.ok && result.migrated_row_count == 0,
+              "undurable TEXT publication reported successful rows");
+      return result.diagnostic;
+    }, "text_identity_migration");
+    Require(VisibleDescriptor(writer, fixture, fixture.text_table_uuid)
+                .find(kCanonicalTextDescriptor) != std::string::npos,
+            "TEXT sync failure was incorrectly treated as no physical effect");
+    Rollback(writer);
+    auto reader = Begin(BaseContext(fixture));
+    Require(VisibleDescriptor(reader, fixture, fixture.text_table_uuid)
+                .find(kLegacyText) != std::string::npos,
+            "failed TEXT publication escaped actual rollback");
+    Rollback(reader);
+  }
+#endif
   auto text_rollback = BeginTextMigration(fixture, text_request);
   RequireSealedReservationFailureOrdering(text_rollback, fixture, [&] {
     const auto result = api::AppendMgaTextIdentityMigrationBatch(text_rollback, text_request);
@@ -2523,6 +2596,21 @@ int RunConformance(const int argc, char* argv[]) {
     return diagnostic;
   }, "sealed_table_descriptor_allocator_append_failed",
      "sealed_table_descriptor_append_failed");
+  for (const bool directory : {false, true}) {
+    RequireSealedMetadataSyncFailure(sealed_retry, fixture, directory, [&] {
+      api::MgaRelationStorageDescriptor output;
+      output.descriptor_uuid = retry_table.table_uuid;
+      output.database_uuid = sealed_retry.database_uuid;
+      output.columns.resize(1);
+      output.root_page_number = 991;
+      output.storage_profile = "sentinel_not_a_result";
+      const auto diagnostic = api::AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
+          sealed_retry, retry_table, {}, &output);
+      Require(diagnostic.error && output == api::MgaRelationStorageDescriptor{},
+              "undurable sealed table publication returned a successful descriptor");
+      return diagnostic;
+    }, "sealed_table_descriptor");
+  }
   const auto retry_event = api::NextMetadataEventSequence(sealed_retry);
   api::MgaRelationStorageDescriptor retried_descriptor;
   Require(!api::AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(

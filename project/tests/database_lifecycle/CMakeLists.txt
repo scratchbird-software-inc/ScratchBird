@@ -4830,6 +4830,10 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
 		    ipar_relation_state_load_route_gate.cpp
 		  )
 		  target_compile_features(ipar_relation_state_load_route_gate PRIVATE cxx_std_23)
+          if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            target_compile_definitions(ipar_relation_state_load_route_gate PRIVATE SB_CONSTRAINT_METADATA_TEST_WRAP_SYNC=1)
+            target_link_options(ipar_relation_state_load_route_gate PRIVATE -Wl,--wrap=fsync)
+          endif()
 		  target_link_libraries(ipar_relation_state_load_route_gate
 		    PRIVATE
 		      sb_engine
