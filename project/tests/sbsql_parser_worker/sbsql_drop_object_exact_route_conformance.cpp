@@ -247,6 +247,15 @@ void RequireMalformedTargetBindingRefused() {
     Require(!artifacts.envelope.parser_executes_sql &&
                 !artifacts.envelope.real_file_effects,
             "DROP malformed binding claimed parser effects");
+    Require(artifacts.envelope.operation_id == "engine.op.diagnostic_refusal" &&
+                artifacts.envelope.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL" &&
+                artifacts.envelope.engine_api_operation_id == "not_admitted" &&
+                artifacts.envelope.payload.empty() &&
+                artifacts.envelope.operands.empty() &&
+                artifacts.envelope.resolved_object_uuids.empty() &&
+                artifacts.envelope.policy_refs.empty() &&
+                artifacts.envelope.required_rights.empty(),
+            "DROP malformed binding retained an executable carrier");
   }
 }
 

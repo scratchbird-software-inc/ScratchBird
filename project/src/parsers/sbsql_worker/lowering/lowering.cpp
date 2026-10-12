@@ -43197,7 +43197,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
             : "The recognized ALTER OBJECT form is specified but is not "
               "admitted for execution.");
   }
-  if (simple_drop_object.active && simple_drop_object.valid) {
+  if (simple_drop_object.active) {
     std::string_view canonical_parent_operation_id = "not_admitted";
     std::string_view canonical_parent_sblr_opcode =
         "SBLR_DIAGNOSTIC_REFUSAL";
@@ -43208,7 +43208,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
       canonical_parent_operation_id = "engine.op.filespace_drop";
       canonical_parent_sblr_opcode = "SBLR_FILESPACE_DROP";
     }
-    return refuse_missing_engine_bound_parent(
+    auto refusal = refuse_missing_engine_bound_parent(
         "sblr.catalog.mutation.v3", bound.command_family,
         "trace.sbsql.drop_object_exact_refusal",
         canonical_parent_operation_id, canonical_parent_sblr_opcode,
@@ -43218,6 +43218,17 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
         "The recognized DROP object form has no admitted generic "
         "ddl.drop_object carrier; an exact engine-bound object-specific "
         "descriptor is required when Core defines one.");
+    if (!simple_drop_object.valid) {
+      // Invalid/ambiguous binding is a diagnostic, never a partially populated
+      // DROP carrier. Preserve earlier diagnostics, but do not describe malformed
+      // input as a valid operation awaiting implementation.
+      refusal.messages = envelope.messages;
+      AddVerifierError(&refusal.messages,
+                       "SBSQL.DROP_OBJECT_DDL.UNSUPPORTED_SHAPE",
+                       "DROP requires a supported object class, one resolved target UUID, and an admitted dependency/options shape",
+                       {{"feature", simple_drop_object.invalid_reason}});
+    }
+    return refusal;
   }
   if (job_route.active && job_route.valid) {
     SblrEnvelope refusal = envelope;
@@ -44421,12 +44432,6 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
                      "SBSQL.ALTER_TABLE_COLUMN_DDL.UNSUPPORTED_SHAPE",
                      "ALTER TABLE column lifecycle requires a resolved table UUID and supported ADD/DROP/RENAME/SET DEFAULT shape",
                      {{"feature", alter_table_column_ddl.invalid_reason}});
-  }
-  if (simple_drop_object.active && !simple_drop_object.valid) {
-    AddVerifierError(&envelope.messages,
-                     "SBSQL.DROP_OBJECT_DDL.UNSUPPORTED_SHAPE",
-                     "this bounded DROP route requires a supported object class, resolved target UUID, and no cascade/options syntax",
-                     {{"feature", simple_drop_object.invalid_reason}});
   }
   if (simple_create_sequence.active && !simple_create_sequence.valid) {
     AddVerifierError(&envelope.messages,

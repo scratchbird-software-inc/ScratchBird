@@ -447,9 +447,20 @@ void RequireRejectedTemporarySql(std::string_view sql) {
 }
 
 void RequireDropTableExactRefusalWithoutEngineDescriptor() {
-  const auto artifacts = RunPipelineWithResolvedObjectUuids(
-      "DROP TABLE session_customer;",
-      {kTableUuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440012")});
+  struct Case {
+    std::string_view sql;
+    std::vector<api::EngineUuid> identities;
+    const char* diagnostic;
+    bool bound = true;
+  };
+  const auto other = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440012");
+  for (const auto& test : std::vector<Case>{
+           {"DROP TABLE session_customer;", {kTableUuid}, "SBSQL.IMPL.NOT_AVAILABLE"},
+           {"DROP TABLE session_customer;", {kTableUuid, other}, "SBSQL.DROP_OBJECT_DDL.UNSUPPORTED_SHAPE"},
+           {"DROP TABLE session_customer;", {}, "SBSQL.DROP_OBJECT_DDL.UNSUPPORTED_SHAPE", false},
+           {"DROP TABLE session_customer CASCADE;", {kTableUuid}, "SBSQL.DROP_OBJECT_DDL.UNSUPPORTED_SHAPE"},
+           {"DROP TABLE session_customer unexpected;", {kTableUuid}, "SBSQL.DROP_OBJECT_DDL.UNSUPPORTED_SHAPE"}}) {
+  const auto artifacts = RunPipelineWithResolvedObjectUuids(test.sql, test.identities);
   PrintMessages(artifacts.cst.messages);
   PrintMessages(artifacts.ast.messages);
   PrintMessages(artifacts.bound.messages);
@@ -459,8 +470,15 @@ void RequireDropTableExactRefusalWithoutEngineDescriptor() {
           "TEMP-TABLE-GATE-015 DROP TABLE CST failed");
   Require(!artifacts.ast.messages.has_errors(),
           "TEMP-TABLE-GATE-015 DROP TABLE AST failed");
-  Require(artifacts.bound.bound,
+  Require(artifacts.bound.bound == test.bound,
           "TEMP-TABLE-GATE-015 DROP TABLE bind failed");
+  if (!test.bound) {
+    Require(artifacts.bound.messages.has_errors() && std::ranges::any_of(
+                artifacts.envelope.messages.diagnostics, [](const auto& diagnostic) {
+                  return diagnostic.code == "SBSQL.NAME_RESOLUTION.PUBLIC_RESOLVER_REQUIRED";
+                }),
+            "TEMP-TABLE-GATE-015 DROP refusal lost prior name resolution diagnostic");
+  }
   Require(!artifacts.verifier.admitted &&
               artifacts.envelope.messages.has_errors(),
           "TEMP-TABLE-GATE-015 parser-authored DROP TABLE was admitted without an engine descriptor");
@@ -472,8 +490,8 @@ void RequireDropTableExactRefusalWithoutEngineDescriptor() {
           "TEMP-TABLE-GATE-015 DROP TABLE refusal opcode drifted");
   Require(std::ranges::any_of(
               artifacts.envelope.messages.diagnostics,
-              [](const auto& diagnostic) {
-                return diagnostic.code == "SBSQL.IMPL.NOT_AVAILABLE";
+              [&](const auto& diagnostic) {
+                return diagnostic.code == test.diagnostic;
               }),
           "TEMP-TABLE-GATE-015 DROP TABLE exact refusal diagnostic missing");
   Require(HasValue(artifacts.envelope.required_authority_steps,
@@ -486,6 +504,13 @@ void RequireDropTableExactRefusalWithoutEngineDescriptor() {
           "TEMP-TABLE-GATE-015 DROP TABLE refusal carried parser-authored payload authority");
   Require(artifacts.envelope.resolved_object_uuids.empty(),
           "TEMP-TABLE-GATE-015 DROP TABLE refusal retained parser-supplied object UUID authority");
+  Require(artifacts.envelope.operands.empty() &&
+              artifacts.envelope.policy_refs.empty() &&
+              artifacts.envelope.required_rights.empty() &&
+              !artifacts.envelope.real_file_effects &&
+              !artifacts.envelope.parser_executes_sql,
+          "TEMP-TABLE-GATE-015 DROP refusal retained executable authority");
+  }
 }
 
 std::filesystem::path TestDatabasePath() {
@@ -2826,7 +2851,13 @@ void RequireEngineTemporaryBackupAndDeltaExclusion(
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc == 2 && std::string_view(argv[1]) == "--drop-refusal-only") {
+    RequireDropTableExactRefusalWithoutEngineDescriptor();
+    std::cout << "drop_refusal_component=passed\n";
+    return EXIT_SUCCESS;
+  }
+  Require(argc == 1, "unexpected test argument");
   // SEARCH_KEY: SBSQL-TEMPORARY-TABLE-PROOF-CLOSURE
   // SEARCH_KEY: TEMP-TABLE-GATE-001 TEMP-TABLE-GATE-002 TEMP-TABLE-GATE-003
   // SEARCH_KEY: TEMP-TABLE-GATE-004 TEMP-TABLE-GATE-006 TEMP-TABLE-GATE-007
