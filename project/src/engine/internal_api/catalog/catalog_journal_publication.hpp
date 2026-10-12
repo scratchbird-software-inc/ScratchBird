@@ -67,12 +67,15 @@ inline EngineApiDiagnostic AppendSequencedCatalogJournalRecord(
   // Revalidate actual durable authority while holding the same guard as
   // finality. A prior caller check or retained statement snapshot cannot
   // authorize an append after this transaction has committed or rolled back.
-  const auto inventory = storage::database::LoadLocalTransactionInventoryFromDatabase(context.database_path);
-  if (!inventory.ok() || !inventory.inventory.publication_base ||
-      inventory.inventory.publication_base->database_uuid != context.database_uuid)
+  // Acquire current authority without duplicating the entire immutable
+  // inventory/horizon history for every individual catalog or name record.
+  // The copy-returning loader uses this same native cache and strong fallback.
+  const auto inventory = storage::database::AcquireLocalTransactionInventorySnapshot(context.database_path);
+  if (!inventory.ok() || !inventory.snapshot->inventory.publication_base ||
+      inventory.snapshot->inventory.publication_base->database_uuid != context.database_uuid)
     return refused("catalog_publication_database_authority_invalid");
   const auto admitted_transaction = transaction::mga::LookupLocalTransaction(
-      inventory.inventory, transaction::mga::MakeLocalTransactionId(context.local_transaction_id));
+      inventory.snapshot->inventory, transaction::mga::MakeLocalTransactionId(context.local_transaction_id));
   if (!admitted_transaction.ok() || !admitted_transaction.entry.identity.valid() ||
       admitted_transaction.entry.identity.transaction_uuid.value != context.transaction_uuid ||
       admitted_transaction.entry.state != transaction::mga::TransactionState::active || admitted_transaction.entry.rollback_only)
