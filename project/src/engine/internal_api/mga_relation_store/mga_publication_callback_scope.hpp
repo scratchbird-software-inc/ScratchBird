@@ -19,10 +19,14 @@ class MgaPublicationCallbackScope final {
   MgaPublicationCallbackScope& operator=(const MgaPublicationCallbackScope&) = delete;
   bool savepoint_mutation_refused() const noexcept { return refused_; }
   static bool RefuseSavepointMutation(const EngineRequestContext& context) noexcept {
+    return RefuseSavepointMutation(context.database_uuid, context.database_path);
+  }
+  static bool RefuseSavepointMutation(const EngineUuid& database_uuid,
+                                     const std::string& database_path) noexcept {
     bool blocked = false;
     for (auto* scope = current_; scope; scope = scope->prior_) {
-      if ((!scope->database_uuid_.is_nil() && scope->database_uuid_ == context.database_uuid) ||
-          scope->database_path_ == context.database_path) {
+      if ((!scope->database_uuid_.is_nil() && scope->database_uuid_ == database_uuid) ||
+          scope->database_path_ == database_path) {
         scope->refused_ = true;
         blocked = true;
       }

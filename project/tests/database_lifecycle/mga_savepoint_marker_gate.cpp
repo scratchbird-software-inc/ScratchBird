@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
+#include "database_lifecycle_test_memory.hpp"
+#include "database_lifecycle.hpp"
+#include "local_transaction_store.hpp"
+#include "transaction_inventory.hpp"
+#include "mga_relation_store/mga_publication_callback_scope.hpp"
 #include "mga_relation_store/mga_savepoint_store.hpp"
 #include "transaction/savepoint_api.hpp"
 #include "sblr_savepoint_coordinator.hpp"
@@ -33,24 +39,58 @@ void Check(bool value, const std::string& message) {
   if (!value) { ++failures; std::cerr << "FAIL: " << message << '\n'; }
 }
 struct Fixture {
-  int failures_at_start = failures;
+  scratchbird::tests::OwnedTempDirectory owned;
   std::filesystem::path root;
   api::EngineRequestContext context;
   Fixture() {
-    root = std::filesystem::temp_directory_path() /
-        ("sb_savepoint_marker_" + std::to_string(
-            std::chrono::steady_clock::now().time_since_epoch().count()));
-    std::filesystem::create_directory(root);
+    static std::uint32_t ordinal = 10000;
+    const auto identity = ordinal += 10;
+    root = owned.path();
     context.database_path = (root / "markers.sbdb").string();
-    context.local_transaction_id = 17;
+    namespace db = scratchbird::storage::database;
+    namespace platform = scratchbird::core::platform;
+    db::DatabaseCreateConfig config;
+    config.path = context.database_path;
+    config.database_uuid = {platform::UuidKind::database, scratchbird::tests::FixtureUuid(1606, identity)};
+    config.filespace_uuid = {platform::UuidKind::filespace, scratchbird::tests::FixtureUuid(1606, identity + 1)};
+    config.page_size = 16384;
+    config.creation_unix_epoch_millis = 1791800000000ull;
+    config.allow_minimal_resource_bootstrap = true;
+    config.require_resource_seed_pack = false;
+    const auto created = db::CreateDatabaseFile(config);
+    if (!created.ok()) throw std::runtime_error("savepoint fixture native database creation failed");
+    context.database_uuid = config.database_uuid.value;
+    context.transaction_uuid = scratchbird::tests::FixtureUuid(1606, identity + 2);
+    auto loaded = db::LoadLocalTransactionInventoryFromDatabase(context.database_path);
+    if (!loaded.ok()) throw std::runtime_error("savepoint fixture native inventory load failed");
+    // Retain the historical test coordinates, but actually allocate/publish
+    // these transaction numbers instead of inventing an active owner.
+    loaded.inventory.next_local_transaction_id = 17;
+    const auto begun = scratchbird::transaction::mga::BeginLocalTransaction(std::move(loaded.inventory),
+        {platform::UuidKind::transaction, context.transaction_uuid}, config.creation_unix_epoch_millis + 1);
+    if (!begun.ok() || !db::PersistLocalTransactionInventoryToDatabase(context.database_path, begun.inventory).ok())
+      throw std::runtime_error("savepoint fixture actual BEGIN publication failed");
+    context.local_transaction_id = begun.entry.identity.local_id.value;
   }
-  ~Fixture() {
-    if (failures > failures_at_start || std::uncaught_exceptions() != 0) {
-      std::cerr << "preserved_marker_artifacts=" << root << '\n';
-      return;
-    }
-    std::error_code error;
-    std::filesystem::remove_all(root, error);
+  api::EngineRequestContext BeginOther(bool read_only = false) {
+    namespace db = scratchbird::storage::database;
+    namespace platform = scratchbird::core::platform;
+    auto other = context;
+    auto loaded = db::LoadLocalTransactionInventoryFromDatabase(context.database_path);
+    if (!loaded.ok()) throw std::runtime_error("savepoint other owner inventory missing");
+    other.transaction_uuid = api::GenerateCrudEngineUuid("transaction");
+    const platform::TypedUuid identity{platform::UuidKind::transaction, other.transaction_uuid};
+    const auto begun = read_only
+        ? scratchbird::transaction::mga::BeginLocalReadOnlyTransaction(std::move(loaded.inventory), identity, 1791800000002ull)
+        : scratchbird::transaction::mga::BeginLocalTransaction(std::move(loaded.inventory), identity, 1791800000002ull);
+    if (!begun.ok() || !db::PersistLocalTransactionInventoryToDatabase(context.database_path, begun.inventory).ok())
+      throw std::runtime_error("savepoint other actual BEGIN publication failed");
+    other.local_transaction_id = begun.entry.identity.local_id.value;
+    return other;
+  }
+  ~Fixture() noexcept {
+    try { owned.Cleanup(); }
+    catch (const std::exception& error) { Check(false, std::string("fixture cleanup failed: ") + error.what()); }
   }
   std::filesystem::path Path() const {
     return context.database_path + ".sb.mga_savepoints";
@@ -60,6 +100,81 @@ struct Fixture {
     out << bytes;
   }
 };
+
+void CurrentOwnerAdmission() {
+  Fixture f;
+  Check(!api::CreateMgaSavepointMarker(f.context, "bound").error, "actual owner marker prerequisite");
+  const auto capture = [&] {
+    std::vector<std::string> bytes;
+    for (const auto suffix : {".sb.mga_savepoints", ".sb.mga_event_sequence_allocator",
+                             ".sb.mga_relation_metadata", ".sb.catalog_object_events", ".sb.name_events.v2"}) {
+      std::ifstream in(f.context.database_path + suffix, std::ios::binary);
+      bytes.emplace_back(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    return bytes;
+  };
+  auto before = capture();
+  const auto next = api::NextMetadataEventSequence(f.context);
+  const auto refuse = [&](const auto& context, const std::string& label) {
+    for (auto action : {api::CreateMgaSavepointMarker, api::ReleaseMgaSavepointMarker,
+                        api::RollbackToMgaSavepointMarker}) {
+      Check(action(context, "bound").error, label);
+      Check(capture() == before && api::NextMetadataEventSequence(f.context) == next,
+            "refused native marker owner changed a journal or allocator");
+    }
+  };
+  auto foreign = f.context;
+  foreign.database_uuid = api::GenerateCrudEngineUuid("object");
+  refuse(foreign, "foreign database owner refuses every marker mutation");
+  foreign = f.context; foreign.transaction_uuid = api::GenerateCrudEngineUuid("transaction");
+  refuse(foreign, "foreign binary transaction owner refuses every marker mutation");
+  foreign = f.context; foreign.local_transaction_id = 90000;
+  refuse(foreign, "unallocated transaction number refuses every marker mutation");
+  foreign = f.context;
+  foreign.database_path = (f.root / "." / "markers.sbdb").string();
+  foreign.database_uuid = api::GenerateCrudEngineUuid("object");
+  for (auto action : {api::CreateMgaSavepointMarker, api::ReleaseMgaSavepointMarker,
+                      api::RollbackToMgaSavepointMarker}) {
+    api::MgaPublicationCallbackScope scope(f.context);
+    Check(action(foreign, "bound").error && scope.savepoint_mutation_refused(),
+          "actual node identity blocks/latches alias plus forged UUID callback");
+    Check(capture() == before && api::NextMetadataEventSequence(f.context) == next,
+          "aliased callback mutation changed a marker cutoff or journal");
+  }
+  auto terminal = f.BeginOther();
+  Check(!api::CreateMgaSavepointMarker(terminal, "bound").error, "terminal owner actual marker prerequisite");
+  before = capture();
+  namespace db = scratchbird::storage::database;
+  const auto retained = db::AcquireLocalTransactionInventorySnapshot(terminal.database_path);
+  if (!retained.ok()) throw std::runtime_error("terminal marker test snapshot unavailable");
+  terminal.statement_transaction_inventory_snapshot = retained.snapshot;
+  const auto committed = scratchbird::transaction::mga::CommitLocalTransaction(
+      retained.snapshot->inventory, scratchbird::transaction::mga::MakeLocalTransactionId(terminal.local_transaction_id),
+      1791800000003ull);
+  if (!committed.ok() || !db::PersistLocalTransactionInventoryToDatabase(terminal.database_path, committed.inventory).ok())
+    throw std::runtime_error("terminal marker test actual COMMIT failed");
+  refuse(terminal, "retained active snapshot cannot authorize marker after actual COMMIT");
+  for (auto action : {api::CreateMgaSavepointMarker, api::ReleaseMgaSavepointMarker,
+                      api::RollbackToMgaSavepointMarker})
+    Check(action(terminal, "bound").detail.find("active_local_transaction_required") != std::string::npos,
+          "terminal refusal is native finality, not a missing marker");
+  const auto current = db::AcquireLocalTransactionInventorySnapshot(f.context.database_path);
+  if (!current.ok()) throw std::runtime_error("rollback-only marker native inventory missing");
+  const auto marked = scratchbird::transaction::mga::MarkLocalTransactionRollbackOnly(current.snapshot->inventory,
+      scratchbird::transaction::mga::MakeLocalTransactionId(f.context.local_transaction_id));
+  if (!marked.ok() || !db::PersistLocalTransactionInventoryToDatabase(f.context.database_path, marked.inventory).ok())
+    throw std::runtime_error("rollback-only marker actual native publication failed");
+  refuse(f.context, "actual persisted rollback-only fence refuses all marker mutations");
+  for (auto action : {api::CreateMgaSavepointMarker, api::ReleaseMgaSavepointMarker,
+                      api::RollbackToMgaSavepointMarker})
+    Check(action(f.context, "bound").detail.find("transaction_rollback_only") != std::string::npos,
+          "marker must preserve the actual native exclusion identity");
+  auto reader = f.BeginOther(true);
+  Check(!api::CreateMgaSavepointMarker(reader, "readonly").error &&
+            !api::RollbackToMgaSavepointMarker(reader, "readonly").error &&
+            !api::ReleaseMgaSavepointMarker(reader, "readonly").error,
+        "genuine native read-only transaction retains savepoint control");
+}
 
 void Stack() {
   Fixture f;
@@ -71,8 +186,7 @@ void Stack() {
         "adjacent savepoints share row cutoff");
   Check(active.at("outer").creation_ordinal < active.at("inner").creation_ordinal,
         "creation order is independent of row cutoff");
-  auto other = f.context;
-  other.local_transaction_id = 18;
+  auto other = f.BeginOther();
   Check(!api::CreateMgaSavepointMarker(other, "other").error, "create other transaction");
   Check(!api::RollbackToMgaSavepointMarker(f.context, "outer").error, "rollback outer");
   Check(api::ValidateMgaSavepointExists(f.context, "inner", "test").error,
@@ -171,8 +285,6 @@ void Ranges() {
 void Coordinator() {
   Fixture f;
   auto& c = f.context;
-  c.database_uuid = scratchbird::tests::FixtureUuidLiteral("12340000-0000-7000-8000-000000000001");
-  c.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("12340000-0000-7000-8000-000000000002");
   c.statement_uuid = scratchbird::tests::FixtureUuidLiteral("12340000-0000-7000-8000-000000000003");
   c.security_context_present = true;
   c.statement_metadata_snapshot_engine_owned = true;
@@ -631,7 +743,8 @@ void AllocatorSequenceAuthority() {
 }  // namespace
 
 int main() {
-  for (const auto test : {Stack, MarkerObservation, Ranges, Coordinator, BinaryCodec, WireUuidCodec, BinaryReplay, Corruption, MetadataSequenceAuthority, AllocatorSequenceAuthority}) {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("mga_savepoint_marker_gate");
+  for (const auto test : {CurrentOwnerAdmission, Stack, MarkerObservation, Ranges, Coordinator, BinaryCodec, WireUuidCodec, BinaryReplay, Corruption, MetadataSequenceAuthority, AllocatorSequenceAuthority}) {
     try { test(); }
     catch (const std::exception& error) {
       Check(false, std::string("unexpected exception: ") + error.what());
