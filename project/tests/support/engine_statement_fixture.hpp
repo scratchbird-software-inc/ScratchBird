@@ -31,17 +31,47 @@ class FixtureEngineSession {
     begin.default_language_utf8 = "en";
     begin.default_language_size = 2;
     begin.trust_mode = SB_ENGINE_TRUST_SERVER_ISOLATED;
-    Check(sb_engine_session_begin(engine_, &begin, &session_, nullptr), nullptr,
-          "session begin");
+    try {
+      Check(sb_engine_session_begin(engine_, &begin, &session_, nullptr), nullptr,
+            "session begin");
+    } catch (...) {
+      // A failed constructor has no destructor to retain/retry raw handles.
+      // Refuse further execution if its unwind cannot close them.
+      try { Close(); }
+      catch (const std::exception& error) {
+        std::cerr << "engine fixture construction cleanup failed: " << error.what() << '\n';
+        std::terminate();
+      }
+      throw;
+    }
   }
   ~FixtureEngineSession() {
+    try { Close(); }
+    catch (const std::exception& error) {
+      std::cerr << "engine fixture cleanup failed: " << error.what() << '\n';
+      std::terminate();
+    }
+  }
+  // A refused close retains the handle for retry. Call before removing files;
+  // successful return, not owner destruction alone, is the cleanup evidence.
+  void Close() {
     sb_engine_session_end_params_v1_t end{};
     end.struct_size = sizeof(end);
     end.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
     end.rollback_active_transactions = 1;
     end.cancel_open_results = 1;
-    (void)sb_engine_session_end(session_, &end, nullptr);
-    (void)sb_engine_close(engine_, nullptr);
+    if (session_) {
+      sb_engine_result_t result = nullptr;
+      const auto status = sb_engine_session_end(session_, &end, &result);
+      if (status == SB_ENGINE_STATUS_OK) session_ = nullptr;
+      Check(status, result, "session end");
+    }
+    if (engine_) {
+      sb_engine_result_t result = nullptr;
+      const auto status = sb_engine_close(engine_, &result);
+      if (status == SB_ENGINE_STATUS_OK) engine_ = nullptr;
+      Check(status, result, "engine close");
+    }
   }
   FixtureEngineSession(const FixtureEngineSession&) = delete;
   FixtureEngineSession& operator=(const FixtureEngineSession&) = delete;
@@ -61,7 +91,10 @@ class FixtureEngineSession {
         }
       }
     }
-    if (result) sb_engine_result_release(result);
+    if (result && sb_engine_result_release(result) != SB_ENGINE_STATUS_OK) {
+      std::cerr << "engine fixture diagnostic release failed during " << phase << '\n';
+      std::terminate();
+    }
     if (status != SB_ENGINE_STATUS_OK)
       throw std::runtime_error(std::string("engine fixture ") + phase + " failed");
   }
@@ -85,10 +118,29 @@ class FixtureEngineStatement {
     result = nullptr;
     const auto copied = bridge::CopyStatementContextEngineContextV1(
         receipt_, &context, &result);
-    FixtureEngineSession::Check(copied, result, "statement context copy");
+    try {
+      FixtureEngineSession::Check(copied, result, "statement context copy");
+    } catch (...) {
+      try { Release(); }
+      catch (const std::exception& error) {
+        std::cerr << "statement fixture construction cleanup failed: " << error.what() << '\n';
+        std::terminate();
+      }
+      throw;
+    }
   }
   ~FixtureEngineStatement() {
-    (void)scratchbird::server_engine_bridge::ReleaseStatementContextReceipt(receipt_);
+    try { Release(); }
+    catch (const std::exception& error) {
+      std::cerr << "statement fixture cleanup failed: " << error.what() << '\n';
+      std::terminate();
+    }
+  }
+  void Release() {
+    if (!receipt_) return;
+    const auto status = scratchbird::server_engine_bridge::ReleaseStatementContextReceipt(receipt_);
+    if (status == SB_ENGINE_STATUS_OK) receipt_ = {};
+    FixtureEngineSession::Check(status, nullptr, "statement release");
   }
   FixtureEngineStatement(const FixtureEngineStatement&) = delete;
   FixtureEngineStatement& operator=(const FixtureEngineStatement&) = delete;
