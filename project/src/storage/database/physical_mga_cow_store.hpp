@@ -190,6 +190,15 @@ NativeCatalogLeafStageResult StageNativeCatalogLeafFromOpenDevices(
     const scratchbird::transaction::mga::TransactionIdentity& owner,
     const NativeCatalogLeafPage&,u64 maximum_retained_image_bytes) noexcept;
 
+// Exact reservation retry guard, checked against current owned allocation
+// metadata before destination I/O. Does not grant allocation or write authority.
+NativeCatalogLeafStageResult StageNativeCatalogLeafFromOpenDevices(
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
+    const scratchbird::storage::disk::FilespaceRootReference& current_checkpoint,
+    const scratchbird::transaction::mga::TransactionIdentity& owner,
+    const NativeCatalogLeafPage&,u64 maximum_retained_image_bytes,
+    const scratchbird::core::platform::Uuid& expected_allocation_uuid) noexcept;
+
 enum class NativeCatalogRootStageError {
   none, invalid_request, checkpoint_failure, allocation_failure, root_failure,
   invalid_destination, creator_mismatch, creator_not_active, reservation_mismatch,
@@ -636,7 +645,27 @@ enum class NativeCatalogVersionStageError {
   none, invalid_request, invalid_metadata, source_failure, snapshot_failure,
   writer_not_writable, object_reserved, row_reserved, stale_version,
   version_overflow, identity_failure, stage_failure, resource_exhausted, io_failure,
-  identity_collision
+  identity_collision, retry_mismatch, hash_failure
+};
+namespace detail { struct NativeCatalogVersionStager; }
+// Process-local, immutable binding issued by the actual version constructor.
+// Copyable for exact retries, but not caller-constructible or serializable.
+// Not permission, a durable recovery record, or evidence of physical completion.
+class NativeCatalogVersionRetry {
+ public:
+  NativeCatalogVersionRetry(const NativeCatalogVersionRetry&) = default;
+  NativeCatalogVersionRetry& operator=(const NativeCatalogVersionRetry&) = default;
+ private:
+  NativeCatalogVersionRetry() = default;
+  PhysicalMgaCowRowReceipt row_;
+  scratchbird::storage::disk::FilespaceRootReference checkpoint_;
+  NativeCatalogRelationBinding binding_;
+  scratchbird::core::platform::Uuid snapshot_uuid_,policy_snapshot_uuid_,allocation_uuid_;
+  std::array<scratchbird::core::platform::byte,32> checkpoint_sha256_{},image_sha256_{};
+  u16 selector_=0,role_=0;
+  std::optional<scratchbird::core::time::ClockSnapshot> observation_;
+  scratchbird::core::time::LocalClockObservationDecision clock_decision_=scratchbird::core::time::LocalClockObservationDecision::accepted;
+  friend struct detail::NativeCatalogVersionStager;
 };
 struct NativeCatalogVersionStageResult {
   NativeCatalogVersionStageError error=NativeCatalogVersionStageError::invalid_request;
@@ -649,11 +678,16 @@ struct NativeCatalogVersionStageResult {
   // Physical completion is independent of the final snapshot recheck. On
   // snapshot_failure this may still contain a successful physical receipt.
   NativeCatalogLeafStageResult stage;
-  // Set immediately before entering the physical writer. Exact reconciliation
+  // Set immediately before entering the physical writer, or retained from the
+  // original attempt on retry. Exact reconciliation
   // input, NOT proof of writes, durability, version admission or publication.
   // A failed writer can have effects even without stage.receipt. Retain the
   // original owning request; do not retry by generating another version UUID.
   std::optional<PhysicalMgaCowRowReceipt> attempted_row;
+  // Available after complete image construction and actual reservation binding,
+  // even if physical staging fails.
+  // A retry returns this same binding; effects describe only that invocation.
+  std::optional<NativeCatalogVersionRetry> retry;
   // Only present on complete version-staging success (including pin recheck).
   std::optional<PhysicalMgaCowRowReceipt> row;
   DiagnosticRecord diagnostic;
@@ -672,6 +706,21 @@ NativeCatalogVersionStageResult StageNativeCatalogVersionFromOpenDevices(
     u64 maximum_retained_image_bytes,
     const scratchbird::core::platform::Uuid& policy_snapshot_uuid,
     scratchbird::core::uuid::StandaloneUuidV7Issuer&) noexcept;
+
+// Revalidate the exact original checkpoint/snapshot, writer, metadata and
+// reservation, then reconcile the same generated image without issuing a UUID.
+// Blank destinations may be written; exact images are synchronized/read back;
+// conflicting/partial images are preserved for owning recovery. No restart
+// reconstruction, publication, authorization or fresh-operation fallback.
+NativeCatalogVersionStageResult RetryNativeCatalogVersionFromOpenDevices(
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
+    const scratchbird::storage::disk::FilespaceRootReference& current_checkpoint,
+    u16 catalog_selector,u16 relation_role,const NativeCatalogRelationBinding&,
+    const scratchbird::transaction::mga::PublishedSnapshotPin&,
+    const NativeCatalogVersionMutation&,const NativeCatalogLeafPage& empty_destination,
+    u64 maximum_retained_image_bytes,
+    const scratchbird::core::platform::Uuid& policy_snapshot_uuid,
+    const NativeCatalogVersionRetry&) noexcept;
 
 struct PhysicalMgaCowFinalizeResult {
   Status status;

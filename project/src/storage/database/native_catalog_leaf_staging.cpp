@@ -7,16 +7,18 @@ namespace {
 namespace mga=scratchbird::transaction::mga;
 using E=NativeCatalogLeafStageError;
 NativeCatalogLeafStageResult Fail(E error){NativeCatalogLeafStageResult r;r.error=error;return r;}
-}
-NativeCatalogLeafStageResult StageNativeCatalogLeafFromOpenDevices(
+NativeCatalogLeafStageResult StageLeaf(
     const std::vector<disk::NativeFilespaceDevice>& supplied,
     const disk::FilespaceRootReference& checkpoint,
-    const mga::TransactionIdentity& owner,const NativeCatalogLeafPage& leaf,u64 budget) noexcept {
+    const mga::TransactionIdentity& owner,const NativeCatalogLeafPage& leaf,u64 budget,
+    const core::platform::Uuid* expected_allocation) noexcept {
   try {
     NativeCatalogLeafStageResult result;
     auto prepared=detail::PrepareNativeReservedPage<NativeCatalogLeafStageResult,E>(
       supplied,checkpoint,owner,leaf.header,leaf.body.relation_uuid.value,0x3eu,budget,result);
     if(!prepared)return result;
+    if(expected_allocation&&prepared->reservation.allocation_uuid!=*expected_allocation)
+      return Fail(E::reservation_mismatch);
     if(2*u64{leaf.header.page_size_bytes}>budget-prepared->retained_image_bytes)return Fail(E::resource_exhausted);
     auto encoded=EncodeNativeCatalogLeaf(leaf);if(!encoded.ok()){auto r=Fail(E::leaf_failure);r.leaf_error=encoded.error;return r;}
     const auto& inventory=prepared->authority.checkpoint_inventory.inventory;
@@ -27,5 +29,18 @@ NativeCatalogLeafStageResult StageNativeCatalogLeafFromOpenDevices(
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}
    catch(const std::length_error&){return Fail(E::resource_exhausted);}
    catch(...){return Fail(E::io_failure);}
+}
+}
+NativeCatalogLeafStageResult StageNativeCatalogLeafFromOpenDevices(
+    const std::vector<disk::NativeFilespaceDevice>& supplied,const disk::FilespaceRootReference& checkpoint,
+    const mga::TransactionIdentity& owner,const NativeCatalogLeafPage& leaf,u64 budget) noexcept {
+  return StageLeaf(supplied,checkpoint,owner,leaf,budget,nullptr);
+}
+NativeCatalogLeafStageResult StageNativeCatalogLeafFromOpenDevices(
+    const std::vector<disk::NativeFilespaceDevice>& supplied,const disk::FilespaceRootReference& checkpoint,
+    const mga::TransactionIdentity& owner,const NativeCatalogLeafPage& leaf,u64 budget,
+    const core::platform::Uuid& expected_allocation) noexcept {
+  if(!core::uuid::IsEngineIdentityUuid(expected_allocation))return Fail(E::invalid_request);
+  return StageLeaf(supplied,checkpoint,owner,leaf,budget,&expected_allocation);
 }
 } // namespace scratchbird::storage::database

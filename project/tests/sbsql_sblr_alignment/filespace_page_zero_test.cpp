@@ -4381,6 +4381,9 @@ struct CatalogTestPin {
   ~CatalogTestPin(){mga::RevokePublishedSnapshotVector(published.descriptor.snapshot_uuid);mga::ReleasePublishedSnapshotVector(published.descriptor.snapshot_uuid);}
 };
 void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::NativeCatalogVersionStageError;using S=page::NativeAllocationState;
+  static_assert(!std::is_default_constructible_v<db::NativeCatalogVersionRetry>);
+  static_assert(!std::is_aggregate_v<db::NativeCatalogVersionRetry>);
+  u64 fixture_written_bytes=0,fixture_unchanged_bytes=0;
   const bool metric_policy=metric_family==1,metric_series=metric_family==2,storage_policy=metric_family==3;
   const bool context_namespace=metric_family==4;
   for(unsigned p=0;p<5;++p)for(unsigned role=1;role<=5;++role){const unsigned q=(p+1)%5;const bool primary=role<=4;
@@ -4483,23 +4486,33 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
     page::NativeFilespaceDirectory directory;directory.header={sizes[p],9,Id(1),Id(2),Id(80),15,105,0,Profile(p)};directory.object_uuid=Id(45);directory.directory_generation=5;directory.creator_transaction_uuid=Id(98);directory.creator_local_transaction_id=17;directory.total_records=2;
     for(const auto* z:{&z1,&z2})directory.records.push_back({z->bootstrap,Id(z==&z1?190:191),z->page_uuid,z->page_generation,z->root_set_generation,z->total_pages,0,{}});
     const auto put=[&](auto& file,u64 number,unsigned size,const Bytes& bytes){const auto io=file.WriteAt(number*size,bytes.data(),bytes.size());Check(io.ok()&&io.bytes_transferred==bytes.size()&&file.Sync().ok(),"persist catalog staging fixture bytes");};
+    // Fixture source preparation only: compare actual current bytes, not cached
+    // expectations. Each changed source write still synchronizes immediately.
+    // Production staging, destination resets, corruption and fault injections
+    // continue through their original unconditional paths.
+    const auto put_fixture=[&](auto& file,u64 number,unsigned size,const Bytes& bytes){
+      Bytes current(bytes.size());const auto read=file.ReadAt(number*size,current.data(),current.size());
+      Check(read.ok()&&read.bytes_transferred==current.size(),"read actual source fixture before replacing it");
+      if(current==bytes){fixture_unchanged_bytes+=bytes.size();return;}
+      put(file,number,size,bytes);fixture_written_bytes+=bytes.size();
+    };
     const auto persist=[&](){const bool extended=std::any_of(directory.records.begin(),directory.records.end(),[](const auto& row){return row.allocation_root.has_value();});
       const auto ib=InventoryStateOracle(inv),ab=AllocationOracle(map),dbb=extended?DirectoryAllocationOracle(directory):DirectoryOracle(directory),cb=RootOracle(catalog_root);
       cp.selected_local_transaction_id=inv.inventory.next_local_transaction_id-1;
       cp.roots[4].page={Id(2),12,102,Profile(p)};cp.roots[4].object_uuid=Id(42);cp.roots[4].sha256=WholeRootHash(cb);
       cp.roots[8]=cp.roots[4];cp.roots[8].role=9;
-      put(first,12,sizes[p],cb);put(first,30,sizes[p],LeafOracle(source_leaf));
+      put_fixture(first,12,sizes[p],cb);put_fixture(first,30,sizes[p],LeafOracle(source_leaf));
       if(storage_policy){
         const auto configuration=RootOracle(configuration_root),security=RootOracle(security_root);
         cp.roots[5].page={Id(2),16,106,Profile(p)};cp.roots[5].object_uuid=Id(46);
         cp.roots[6].page={Id(2),17,107,Profile(p)};cp.roots[6].object_uuid=Id(47);
         cp.roots[5].sha256=WholeRootHash(configuration);cp.roots[6].sha256=WholeRootHash(security);
-        put(first,16,sizes[p],configuration);put(first,17,sizes[p],security);
+        put_fixture(first,16,sizes[p],configuration);put_fixture(first,17,sizes[p],security);
       }
       cp.roots[0].page=InventoryRef(inv);cp.roots[0].object_uuid=inv.object_uuid;cp.roots[0].sha256=WholeRootHash(ib);
       cp.roots[2].page={Id(2),15,105,Profile(p)};cp.roots[2].object_uuid=Id(45);cp.roots[2].sha256=WholeRootHash(dbb);
       if(primary){cp.roots[3].page={fs,13,103,Profile(profile)};cp.roots[3].object_uuid=Id(43);cp.roots[3].sha256=WholeRootHash(ab);}
-      put(first,0,sizes[p],Oracle(z1));put(second,0,sizes[q],Oracle(z2));put(first,14,sizes[p],ib);put(first,15,sizes[p],dbb);put(target,13,sizes[profile],ab);put(first,19,sizes[p],CheckpointOracle(cp));};
+      put_fixture(first,0,sizes[p],Oracle(z1));put_fixture(second,0,sizes[q],Oracle(z2));put_fixture(first,14,sizes[p],ib);put_fixture(first,15,sizes[p],dbb);put_fixture(target,13,sizes[profile],ab);put_fixture(first,19,sizes[p],CheckpointOracle(cp));};
     const std::vector<disk::NativeFilespaceDevice> devices{{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}};
 
     const u64 budget=std::max(4*sizes[p],3*sizes[p]+3*sizes[profile]);const Bytes blank(sizes[profile],0);
@@ -4607,6 +4620,9 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
     const auto bound_stage=[&](u64 limit,const auto& policy,auto& allocation){
       return db::StageNativeCatalogVersionFromOpenDevices(devices,CheckpointRef(cp),2,1,{Id(101),{}},snapshot.pin,request,leaf,limit,policy,allocation);};
     const auto stage=[&](u64 limit){return bound_stage(limit,policy_uuid,issuer);};
+    const auto retry_stage=[&](const auto& retained,u64 limit){
+      return db::RetryNativeCatalogVersionFromOpenDevices(devices,CheckpointRef(cp),2,1,{Id(101),{}},
+        snapshot.pin,request,leaf,limit,policy_uuid,retained);};
     const auto empty=[&](const auto& r){Check(!r.ok()&&!r.row,"failed version staging never returns an admitted row");
       if(r.stage.receipt)Check(r.stage.ok()&&r.attempted_row&&
         (r.error==E::snapshot_failure||r.error==E::resource_exhausted||r.error==E::io_failure),
@@ -4704,11 +4720,11 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
     // Every page profile/destination and typed-family route retains the exact
     // generated identity after actual write/sync failures. A zero reported
     // write count from the OS is not evidence that the page is unchanged.
-    for(unsigned fault=1;fault<=3;++fault){reset();stage_writes=stage_syncs=0;
-      if(fault<3)stage_write_fault=fault;else stage_sync_fault=1;
+    for(unsigned fault=1;fault<=4;++fault){reset();stage_writes=stage_syncs=0;
+      if(fault==3)stage_sync_fault=1;else stage_write_fault=fault==4?3:fault;
       const auto failed=stage(budget);empty(failed);
       Check(!stage_write_fault&&!stage_sync_fault&&failed.error==E::stage_failure&&
-        failed.stage.error==db::NativeCatalogLeafStageError::io_failure&&failed.attempted_row&&
+        failed.stage.error==db::NativeCatalogLeafStageError::io_failure&&failed.attempted_row&&failed.retry&&
         stage_writes==1&&stage_syncs==(fault==3?1u:0u),"physical failure retains attempted generated row");
       const auto written=actual(target,21,sizes[profile]);
       if(fault==1)Check(written==blank,"pre-write native error leaves blank destination");
@@ -4720,9 +4736,90 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
         Check(decoded_page.ok()&&decoded_page.page->body.rows.front().version_uuid==failed.issued_version_uuid&&
           decoded_page.page->body.rows.front().row_uuid.value==failed.attempted_row->row_uuid.value,
           "sync failure retains original row identity matching actual bytes");}
+      stage_writes=stage_syncs=0;initialization_clock_failure=true;
+      const auto resumed=retry_stage(*failed.retry,budget);initialization_clock_failure=false;
+      Check(resumed.issued_version_uuid==failed.issued_version_uuid&&resumed.retry&&
+        resumed.identity_observation.has_value(),"retry preserves private originally issued identity and evidence");
+      if(fault==1||db::DecodeNativeCatalogLeaf(written).ok()){
+        verify(resumed,1,platform::Uuid{},false);
+        Check(stage_writes==(fault==1?1u:0u)&&stage_syncs==1,
+          "exact retry writes only blank destination and always synchronizes/readbacks");
+        CheckCompletedStageEffects(resumed.stage.effects,*resumed.stage.receipt,sizes[profile],fault==1);
+        const auto exact=actual(target,21,sizes[profile]);stage_writes=stage_syncs=0;
+        const auto repeated=retry_stage(*resumed.retry,budget);verify(repeated,1,platform::Uuid{},false);
+        Check(!stage_writes&&stage_syncs==1&&actual(target,21,sizes[profile])==exact&&
+          repeated.row->version_uuid==failed.issued_version_uuid,"repeated retry retains identical complete image");
+      }else{
+        empty(resumed);Check(resumed.error==E::stage_failure&&
+          resumed.stage.error==db::NativeCatalogLeafStageError::destination_not_empty&&
+          !stage_writes&&!stage_syncs&&actual(target,21,sizes[profile])==written,
+          "genuine partial original image remains untouched for owning recovery");
+      }
       unchanged();
     }
     reset();result=stage(budget);verify(result,1,platform::Uuid{},false);
+    {
+      const auto retained=*result.retry;const auto written=actual(target,21,sizes[profile]);
+      for(unsigned bad=0;bad<6;++bad){auto selected=CheckpointRef(cp);auto policy=policy_uuid;
+        auto relation=db::NativeCatalogRelationBinding{Id(101),{}};disk::u16 selector=2,relation_role=1;
+        if(bad==0)++selected.page_generation;if(bad==1)policy=Id(249);if(bad==2)selector=6;
+        if(bad==3)relation_role=2;if(bad==4)relation.relation_uuid=Id(249);
+        if(bad==5)relation.index_dependencies=page::NativeBtreeDependencies{};
+        reads=stage_writes=stage_syncs=0;track_reads=true;
+        const auto refused=db::RetryNativeCatalogVersionFromOpenDevices(devices,selected,selector,relation_role,
+          relation,snapshot.pin,request,leaf,budget,policy,retained);track_reads=false;empty(refused);
+        Check(refused.error==E::retry_mismatch&&refused.retry&&!reads&&!stage_writes&&!stage_syncs&&
+          refused.issued_version_uuid==result.issued_version_uuid&&actual(target,21,sizes[profile])==written,
+          "retry context substitution refuses before I/O without dropping original binding");
+      }
+      // A valid independently admissible definition is still a conflicting retry.
+      ++request.metadata.schema_epoch;stage_writes=stage_syncs=0;
+      const auto changed=retry_stage(retained,budget);--request.metadata.schema_epoch;empty(changed);
+      Check(changed.error==E::retry_mismatch&&!stage_writes&&!stage_syncs&&changed.retry&&
+        actual(target,21,sizes[profile])==written,"exact image binding refuses changed metadata without writes");
+      CatalogTestPin different(inv.inventory,13);stage_writes=stage_syncs=0;
+      const auto moved=db::RetryNativeCatalogVersionFromOpenDevices(devices,CheckpointRef(cp),2,1,{Id(101),{}},
+        different.pin,request,leaf,budget,policy_uuid,retained);empty(moved);
+      Check(moved.error==E::retry_mismatch&&moved.retry&&!stage_writes&&!stage_syncs&&
+        actual(target,21,sizes[profile])==written,"new snapshot cannot silently replace original retry pin");
+      const auto short_budget=retry_stage(retained,1);empty(short_budget);
+      Check(short_budget.retry&&short_budget.issued_version_uuid==result.issued_version_uuid&&
+        actual(target,21,sizes[profile])==written,"resource refusal retains original binding and physical bytes");
+      {
+        // Secondary reservation identity can change without changing the
+        // primary checkpoint digest. The physical owner must check it too.
+        const auto allocation=map.records.back().allocation_uuid;
+        map.records.back().allocation_uuid=Id(249);persist();stage_writes=stage_syncs=0;
+        const auto replaced=retry_stage(retained,budget);empty(replaced);
+        Check(replaced.retry&&!stage_writes&&!stage_syncs&&actual(target,21,sizes[profile])==written&&
+          (primary?replaced.error==E::retry_mismatch:
+            replaced.error==E::stage_failure&&replaced.stage.error==db::NativeCatalogLeafStageError::reservation_mismatch),
+          "original allocation UUID remains bound even when checkpoint and page coordinates are unchanged");
+        map.records.back().allocation_uuid=allocation;persist();
+      }
+      verify(retry_stage(retained,budget),1,platform::Uuid{},false);unchanged();
+      if(p==0&&role==1){
+        const auto original_inventory=inv;const auto original_map=map;
+        for(unsigned change=0;change<3;++change){
+          if(change==0)inv.inventory.entries[0].rollback_only=true;
+          if(change==1)inv.inventory.entries[0].state=mga::TransactionState::rolled_back;
+          if(change==2)map.records.back().page_uuid=Id(249);
+          persist();stage_writes=stage_syncs=0;const auto refused=retry_stage(retained,budget);empty(refused);
+          Check(refused.retry&&!stage_writes&&!stage_syncs&&actual(target,21,sizes[profile])==written,
+            "retained handle does not override current transaction or reservation authority");
+          inv=original_inventory;map=original_map;persist();
+        }
+        observed_allocations=0;count_allocations=true;const auto baseline=retry_stage(retained,budget);count_allocations=false;
+        const auto count=observed_allocations;Check(baseline.ok()&&count,"measure exact retry allocations");
+        for(unsigned long fault=0;fault<=count;++fault){
+          allocation_budget=fault;const auto attempted=retry_stage(retained,budget);allocation_budget=-1;
+          Check(attempted.retry&&attempted.issued_version_uuid==result.issued_version_uuid&&
+            actual(target,21,sizes[profile])==written,"allocation failure preserves exact retry identity and bytes");
+          if(attempted.ok())verify(attempted,1,platform::Uuid{},false);else empty(attempted);
+          if(fault==count)Check(attempted.ok(),"retry allocation sweep reaches complete success");
+        }
+      }
+    }
     auto previous_identity=result.row->version_uuid;
     const auto entropy_calls=initialization_entropy_calls;
     for(unsigned repeat=0;repeat<3;++repeat){reset();result=stage(budget);verify(result,1,platform::Uuid{},false);
@@ -4802,6 +4899,10 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
       Check(selected!=visible.rows.end()&&selected->version_uuid==Id(170)&&selected->provisional&&
         catalog::DecodeCatalogContextNamespace(selected->metadata.record.payload).record==original.record,
         "physically staged edit does not replace original namespace selected by actual root and pin");
+      mga::RevokePublishedSnapshotVector(snapshot.published.descriptor.snapshot_uuid);
+      stage_writes=stage_syncs=0;const auto revoked=retry_stage(*result.retry,budget);empty(revoked);
+      Check(revoked.retry&&revoked.error==E::source_failure&&!stage_writes&&!stage_syncs&&
+        actual(target,21,sizes[profile])==final_bytes,"revoked namespace pin refuses exact retry without losing physical state");
       Check(first.Close().ok()&&second.Close().ok(),"release namespace owners before reopen");
       disk::FileDevice reopened;Check(reopened.Open(primary?path1:path2,disk::FileOpenMode::open_existing_read_only).ok(),"read-only namespace reopen");
       Check(actual(reopened,21,sizes[profile])==final_bytes,"actual staged namespace bytes survive reopen; not publication evidence");
@@ -5955,11 +6056,18 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
       second.Open(path2,disk::FileOpenMode::open_existing).ok(),"independent native file reopen after snapshot refusal");
     Check(actual(target,21,sizes[profile])==staged_image,"retained physical stage survives reopen");unchanged();
     stage_writes=stage_syncs=0;const auto prior_entropy=initialization_entropy_calls;
+    const auto exact_retry=retry_stage(*result.retry,budget);empty(exact_retry);
+    Check(exact_retry.retry&&exact_retry.issued_version_uuid==result.issued_version_uuid&&
+      exact_retry.error==E::source_failure&&!stage_writes&&!stage_syncs&&
+      actual(target,21,sizes[profile])==staged_image,"revoked original pin refuses private-handle retry after reopen");
     const auto retry=stage(budget);empty(retry);
     Check(!retry.attempted_row&&retry.issued_version_uuid.is_nil()&&!retry.identity_observation&&
       !stage_writes&&!stage_syncs&&initialization_entropy_calls==prior_entropy&&
       actual(target,21,sizes[profile])==staged_image,"revoked snapshot retry cannot replace original effects or issue identity");unchanged();
   }
+  Check(fixture_written_bytes&&fixture_unchanged_bytes,"source fixture exercises actual replacement and unchanged comparisons");
+  std::cout<<"catalog source fixture written_bytes="<<fixture_written_bytes
+    <<" unchanged_bytes="<<fixture_unchanged_bytes<<'\n';
 }
 void CheckpointCatalogRelations() {
   using E=db::NativeCheckpointCatalogRelationError;

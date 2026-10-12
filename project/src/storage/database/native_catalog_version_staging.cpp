@@ -4,6 +4,7 @@
 #include "catalog_context_namespace.hpp"
 #include "disk_device.hpp"
 #include "uuid.hpp"
+#include "hash_digest_parts.hpp"
 #include <algorithm>
 #include <limits>
 #include <mutex>
@@ -20,23 +21,50 @@ using Uuid=scratchbird::core::platform::Uuid;
 using Kind=scratchbird::core::platform::UuidKind;
 using E=NativeCatalogVersionStageError;
 bool Same(const TypedUuid& a,const TypedUuid& b){return a.kind==b.kind&&a.value==b.value;}
+bool Same(const disk::FilespaceRootReference& a,const disk::FilespaceRootReference& b){
+  return a.kind==b.kind&&a.page_type==b.page_type&&a.filespace_uuid==b.filespace_uuid&&
+    a.page_number==b.page_number&&a.page_generation==b.page_generation&&
+    a.page_size_profile_uuid==b.page_size_profile_uuid&&a.object_uuid==b.object_uuid;
+}
 }
 
-NativeCatalogVersionStageResult StageNativeCatalogVersionFromOpenDevices(
+struct detail::NativeCatalogVersionStager {
+ static NativeCatalogVersionStageResult Run(
+    const std::vector<disk::NativeFilespaceDevice>&,
+    const disk::FilespaceRootReference&,u16,u16,const NativeCatalogRelationBinding&,
+    const mga::PublishedSnapshotPin&,const NativeCatalogVersionMutation&,
+    const NativeCatalogLeafPage&,u64,const Uuid&,uuid::StandaloneUuidV7Issuer*,
+    const NativeCatalogVersionRetry*) noexcept;
+};
+NativeCatalogVersionStageResult detail::NativeCatalogVersionStager::Run(
     const std::vector<disk::NativeFilespaceDevice>& supplied,
     const disk::FilespaceRootReference& checkpoint,u16 selector,u16 role,
     const NativeCatalogRelationBinding& binding,const mga::PublishedSnapshotPin& pin,
     const NativeCatalogVersionMutation& request,const NativeCatalogLeafPage& destination,u64 budget,
-    const Uuid& policy_snapshot_uuid,uuid::StandaloneUuidV7Issuer& issuer) noexcept {
+    const Uuid& policy_snapshot_uuid,uuid::StandaloneUuidV7Issuer* issuer,
+    const NativeCatalogVersionRetry* retry) noexcept {
   NativeCatalogVersionStageResult result;
+  if(retry){
+    result.retry=*retry;result.issued_version_uuid=retry->row_.version_uuid;
+    result.identity_observation=retry->observation_;result.identity_clock_decision=retry->clock_decision_;
+    result.attempted_row=retry->row_;
+  }
   // Keep issued identity, attempted residency and physical outcome across all
   // post-admission failures, including exceptions. None grants publication.
-  const auto Fail=[&](E error){result.error=error;return std::move(result);};
+  const auto Fail=[&](E error){
+    // Without actual reservation evidence there is no physical retry binding.
+    // Existing retry bindings are retained even when this invocation refuses.
+    if(!retry&&!result.stage.effects.intent)result.retry.reset();
+    result.error=error;return std::move(result);
+  };
   try {
     const auto& h=destination.header;const auto& owner=request.transaction;const auto& desired=request.metadata;
+    if(retry&&(!Same(retry->checkpoint_,checkpoint)||retry->selector_!=selector||retry->role_!=role||
+        retry->policy_snapshot_uuid_!=policy_snapshot_uuid||retry->row_.database_uuid.value!=h.database_uuid||
+        retry->binding_.relation_uuid!=binding.relation_uuid||retry->binding_.index_dependencies!=binding.index_dependencies))return Fail(E::retry_mismatch);
     if(!uuid::IsEngineIdentityUuid(policy_snapshot_uuid)||
-        issuer.binding().database_uuid!=h.database_uuid||
-        issuer.binding().policy_snapshot_uuid!=policy_snapshot_uuid||
+        (!retry&&(!issuer||issuer->binding().database_uuid!=h.database_uuid||
+        issuer->binding().policy_snapshot_uuid!=policy_snapshot_uuid))||
         !budget||supplied.empty()||!owner.valid()||owner.scope!=mga::TransactionScope::local_node||
         owner.transaction_uuid.kind!=Kind::transaction||!uuid::IsEngineIdentityUuid(owner.transaction_uuid.value)||
         !destination.body.rows.empty()||destination.body.next_page_number||
@@ -47,7 +75,7 @@ NativeCatalogVersionStageResult StageNativeCatalogVersionFromOpenDevices(
     const bool name=desired.record.header.kind==catalog::CatalogRecordKind::localized_name;
     if(name!=request.name_payload.has_value()||(name&&(!desired.record.payload.empty()||
         !catalog::CatalogNamePayloadMatchesMetadata(*request.name_payload,desired))))return Fail(E::invalid_metadata);
-    const auto validated=catalog::EncodeCatalogMetadataVersion(desired);
+    auto validated=catalog::EncodeCatalogMetadataVersion(desired);
     if(!validated.ok()){auto r=Fail(E::invalid_metadata);r.diagnostic=validated.diagnostic;return r;}
     if(!catalog::CatalogContextNamespaceMatchesDatabase(
         catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid))return Fail(E::invalid_metadata);
@@ -62,6 +90,8 @@ NativeCatalogVersionStageResult StageNativeCatalogVersionFromOpenDevices(
     auto source=ReadNativePinnedCatalogVersionsFromOpenDevices(h.database_uuid,devices,checkpoint,selector,role,binding,owner,pin,budget);
     if(!source.ok()){auto r=Fail(E::source_failure);r.source_error=source.error;r.diagnostic=source.diagnostic;return r;}
     const auto snapshot_uuid=source.snapshot_uuid;
+    const auto checkpoint_sha256=source.source.checkpoint.checkpoint_inventory.checkpoint_sha256;
+    if(retry&&(retry->snapshot_uuid_!=snapshot_uuid||retry->checkpoint_sha256_!=checkpoint_sha256))return Fail(E::retry_mismatch);
     const auto& inventory=source.source.checkpoint.checkpoint_inventory.inventory;
     const auto actor=mga::LookupLocalTransaction(inventory,owner.local_id);
     if(!actor.ok()||!Same(actor.entry.identity.transaction_uuid,owner.transaction_uuid)||actor.entry.state!=mga::TransactionState::active||actor.entry.rollback_only)return Fail(E::writer_not_writable);
@@ -96,15 +126,17 @@ NativeCatalogVersionStageResult StageNativeCatalogVersionFromOpenDevices(
     const auto plan=mga::PlanLocalCopyOnWriteMutationForTransaction(actor.entry,identity,
         previous?mga::CopyOnWriteMutationKind::update:mga::CopyOnWriteMutationKind::insert,previous_sequence,maximum+1);
     if(!plan.ok()){auto r=Fail(E::invalid_metadata);r.diagnostic=plan.diagnostic;return r;}
-    const auto issued=issuer.Issue(Kind::row);
-    if(!issued.ok()){
-      auto r=Fail(issued.error==uuid::StandaloneUuidV7Error::resource_exhausted?E::resource_exhausted:E::identity_failure);
-      r.identity_error=issued.error;return r;
+    if(!retry){
+      const auto issued=issuer->Issue(Kind::row);
+      if(!issued.ok()){
+        auto r=Fail(issued.error==uuid::StandaloneUuidV7Error::resource_exhausted?E::resource_exhausted:E::identity_failure);
+        r.identity_error=issued.error;return r;
+      }
+      result.issued_version_uuid=issued.value->value;
+      result.identity_observation=issued.observation;
+      result.identity_clock_decision=issued.clock_decision;
     }
-    const auto& version=issued.value->value;
-    result.issued_version_uuid=version;
-    result.identity_observation=issued.observation;
-    result.identity_clock_decision=issued.clock_decision;
+    const auto& version=result.issued_version_uuid;
     for(const auto& id:{h.database_uuid,h.filespace_uuid,h.page_uuid,h.page_size_profile_uuid,
         request.relation_uuid.value,owner.transaction_uuid.value,desired.record.header.row_uuid.value,
         desired.record.header.object_uuid.value,policy_snapshot_uuid})
@@ -118,32 +150,73 @@ NativeCatalogVersionStageResult StageNativeCatalogVersionFromOpenDevices(
           return Fail(E::identity_collision);
     }
     auto leaf=destination;page::RowDataRecord row;row.row_uuid=desired.record.header.row_uuid;row.transaction_uuid=owner.transaction_uuid;
-    row.local_transaction_id=owner.local_id.value;row.version_uuid=issued.value->value;row.row_version=maximum+1;
+    row.local_transaction_id=owner.local_id.value;row.version_uuid=version;row.row_version=maximum+1;
     row.previous_version_uuid=previous?previous->version_uuid:Uuid{};row.previous_row_version=previous_sequence;
     row.internal_row_ordinal=1;row.stable_slot_id=1;row.storage_generation=h.page_generation;
-    auto metadata=desired;
-    if(name){catalog::CatalogNameVersionBinding resident;resident.database_uuid={Kind::database,h.database_uuid};resident.filespace_uuid={Kind::filespace,h.filespace_uuid};
+    if(name){auto metadata=desired;
+      catalog::CatalogNameVersionBinding resident;resident.database_uuid={Kind::database,h.database_uuid};resident.filespace_uuid={Kind::filespace,h.filespace_uuid};
       resident.row_uuid=row.row_uuid;resident.version_uuid={Kind::row,row.version_uuid};resident.catalog_object_uuid=metadata.record.header.object_uuid;resident.creating_transaction_uuid=owner.transaction_uuid;
       resident.page_id=h.page_number;resident.slot_id=row.stable_slot_id;resident.storage_generation=row.storage_generation;resident.version_sequence=row.row_version;resident.creating_transaction_number=row.local_transaction_id;resident.catalog_generation=metadata.catalog_generation;
       const auto envelope=catalog::EncodeCatalogNameEnvelope({resident,*request.name_payload});if(!envelope.ok())return Fail(E::invalid_metadata);
       metadata.record.payload.assign(envelope.bytes.begin(),envelope.bytes.end());
+      validated=catalog::EncodeCatalogMetadataVersion(metadata);
+      if(!validated.ok()){auto r=Fail(E::invalid_metadata);r.diagnostic=validated.diagnostic;return r;}
     }
-    const auto encoded=catalog::EncodeCatalogMetadataVersion(metadata);if(!encoded.ok()){auto r=Fail(E::invalid_metadata);r.diagnostic=encoded.diagnostic;return r;}
-    page::RowDataCell cell;cell.column_ordinal=1;cell.value.type_id=scratchbird::core::datatypes::CanonicalTypeId::binary;cell.value.payload=encoded.bytes;row.cells.push_back(std::move(cell));leaf.body.rows.push_back(row);
+    // Non-name definitions are unchanged after preflight. Reuse that exact
+    // validated envelope instead of copying/re-encoding it, then move its bytes.
+    page::RowDataCell cell;cell.column_ordinal=1;cell.value.type_id=scratchbird::core::datatypes::CanonicalTypeId::binary;cell.value.payload=std::move(validated.bytes);row.cells.push_back(std::move(cell));leaf.body.rows.push_back(row);
     PhysicalMgaCowRowReceipt receipt;receipt.database_uuid={Kind::database,h.database_uuid};receipt.filespace_uuid={Kind::filespace,h.filespace_uuid};receipt.relation_uuid=request.relation_uuid;receipt.row_uuid=row.row_uuid;receipt.page_uuid={Kind::page,h.page_uuid};
     receipt.creator=owner;receipt.version_uuid=row.version_uuid;receipt.previous_version_uuid=row.previous_version_uuid;receipt.page_number=h.page_number;receipt.page_generation=h.page_generation;receipt.row_version=row.row_version;receipt.storage_generation=row.storage_generation;receipt.stable_slot_id=row.stable_slot_id;
     source=NativePinnedCatalogReadResult{};
+    // Release source images before constructing the binding image. The handle
+    // retains only fixed-size identities/digests, never a second page buffer.
+    if(h.page_size_bytes>budget)return Fail(E::resource_exhausted);
+    {
+      const auto image=EncodeNativeCatalogLeaf(leaf);
+      if(!image.ok()){
+        result.stage.error=NativeCatalogLeafStageError::leaf_failure;result.stage.leaf_error=image.error;
+        return Fail(E::stage_failure);
+      }
+      const auto digest=core::hash::ComputeSha256Digest(image.bytes);
+      if(!digest.ok())return Fail(E::hash_failure);
+      if(retry){if(retry->image_sha256_!=digest.digest)return Fail(E::retry_mismatch);}
+      else {
+        NativeCatalogVersionRetry retained;
+        retained.row_=receipt;retained.checkpoint_=checkpoint;retained.binding_=binding;
+        retained.snapshot_uuid_=snapshot_uuid;retained.policy_snapshot_uuid_=policy_snapshot_uuid;
+        retained.checkpoint_sha256_=checkpoint_sha256;retained.image_sha256_=digest.digest;
+        retained.selector_=selector;retained.role_=role;retained.observation_=result.identity_observation;
+        retained.clock_decision_=result.identity_clock_decision;result.retry=retained;
+      }
+    }
     const auto valid_pin=[&](){auto current=pin.Resolve();
       if(!current.ok()){result.diagnostic=std::move(current.diagnostic);return false;}
       return current.descriptor.snapshot_uuid.value==snapshot_uuid&&Same(current.descriptor.owning_transaction_uuid,owner.transaction_uuid)&&current.descriptor.owning_transaction.value==owner.local_id.value;};
     if(!valid_pin())return Fail(E::snapshot_failure);
     result.attempted_row=receipt;
-    result.stage=StageNativeCatalogLeafFromOpenDevices(devices,checkpoint,owner,leaf,budget);
+    result.stage=retry?StageNativeCatalogLeafFromOpenDevices(devices,checkpoint,owner,leaf,budget,retry->allocation_uuid_):
+      StageNativeCatalogLeafFromOpenDevices(devices,checkpoint,owner,leaf,budget);
+    if(!retry&&result.stage.effects.intent)result.retry->allocation_uuid_=result.stage.effects.intent->allocation_uuid;
     if(!result.stage.ok())return Fail(E::stage_failure);
     if(!valid_pin())return Fail(E::snapshot_failure);
     result.error=E::none;result.row=receipt;return result;
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}
    catch(const std::length_error&){return Fail(E::resource_exhausted);}
    catch(...){return Fail(E::io_failure);}
+}
+
+NativeCatalogVersionStageResult StageNativeCatalogVersionFromOpenDevices(
+    const std::vector<disk::NativeFilespaceDevice>& devices,const disk::FilespaceRootReference& checkpoint,
+    u16 selector,u16 role,const NativeCatalogRelationBinding& binding,const mga::PublishedSnapshotPin& pin,
+    const NativeCatalogVersionMutation& request,const NativeCatalogLeafPage& destination,u64 budget,
+    const Uuid& policy,uuid::StandaloneUuidV7Issuer& issuer) noexcept {
+  return detail::NativeCatalogVersionStager::Run(devices,checkpoint,selector,role,binding,pin,request,destination,budget,policy,&issuer,nullptr);
+}
+NativeCatalogVersionStageResult RetryNativeCatalogVersionFromOpenDevices(
+    const std::vector<disk::NativeFilespaceDevice>& devices,const disk::FilespaceRootReference& checkpoint,
+    u16 selector,u16 role,const NativeCatalogRelationBinding& binding,const mga::PublishedSnapshotPin& pin,
+    const NativeCatalogVersionMutation& request,const NativeCatalogLeafPage& destination,u64 budget,
+    const Uuid& policy,const NativeCatalogVersionRetry& retry) noexcept {
+  return detail::NativeCatalogVersionStager::Run(devices,checkpoint,selector,role,binding,pin,request,destination,budget,policy,nullptr,&retry);
 }
 }  // namespace scratchbird::storage::database
