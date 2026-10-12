@@ -10,6 +10,7 @@
 #include "catalog/catalog_object_lifecycle.hpp"
 #include "catalog/catalog_object_lifecycle_codec.hpp"
 #include "catalog/catalog_journal_publication.hpp"
+#include "catalog/catalog_journal_batch.hpp"
 #include "catalog/name_registry_codec.hpp"
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
 #include "mga_relation_store/mga_savepoint_store.hpp"
@@ -1522,6 +1523,229 @@ void TestCatalogFailedPublicationCustody(const std::filesystem::path& path) {
   Commit(reader);
 }
 
+void TestCatalogResolverFrameAdmission(const std::filesystem::path& path) {
+  const auto database = CreateDatabase(path);
+  const auto principal = scratchbird::tests::FixtureUuid(1399, 1);
+  auto context = Begin(path, database, principal);
+  RequireOk(catalog_api::EngineCatalogCreateObject(
+      CreateRequest(context, scratchbird::tests::FixtureUuid(1399, 2), "schema", {}, "frame_admission")),
+      "resolver frame setup failed");
+  const auto read = [](const std::string& file) {
+    std::ifstream input(file, std::ios::binary);
+    Require(input.is_open(), "resolver frame evidence file absent");
+    std::string bytes{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+    Require(!input.bad(), "resolver frame evidence read failed");
+    return bytes;
+  };
+  const auto names = path.string() + ".sb.name_events.v2";
+  const auto allocator = path.string() + ".sb.mga_event_sequence_allocator";
+  // Derive a valid entry from actual storage, retaining its binary owner and
+  // nested codec rather than inventing an apparently valid payload.
+  std::ifstream input(names, std::ios::binary);
+  catalog_api::ApiBehaviorRecord entry;
+  Require(catalog_api::ReadApiBehaviorRecord(input, &entry) && entry.object_kind == "name_registry.entry",
+          "resolver frame fixture entry missing");
+  input.close();
+  entry.event_sequence = 0;
+  catalog_api::ApiBehaviorRecord retirement;
+  retirement.creator_tx = context.local_transaction_id;
+  retirement.operation_id = "catalog.frame.admission";
+  retirement.object_uuid = entry.target_object_uuid;
+  retirement.target_object_uuid = retirement.object_uuid;
+  retirement.object_kind = "name_registry.retire";
+  retirement.state = "retired";
+  const auto names_before = read(names), allocator_before = read(allocator);
+  const auto next = catalog_api::NextMetadataEventSequence(context);
+  namespace db = scratchbird::storage::database;
+  const auto before = db::AcquireStrongLocalTransactionInventorySnapshot(context.database_path);
+  Require(before.ok(), "resolver frame native authority absent");
+  for (unsigned kind = 0; kind != 2; ++kind) {
+    for (unsigned invalid = 0; invalid != (kind == 0 ? 9u : 4u); ++invalid) {
+      auto record = kind == 0 ? retirement : entry;
+      if (invalid == 0) record.state = "malformed";
+      if (invalid == 1) record.target_database_uuid = principal;
+      if (invalid == 2) record.default_name = "noncanonical";
+      if (invalid == 3) record.deleted = true;
+      if (invalid == 4) record.target_schema_uuid = principal;
+      if (invalid == 5) record.payload = "invalid";
+      if (invalid == 6) record.target_object_uuid = principal;
+      if (invalid == 7) record.object_uuid = {};
+      if (invalid == 8) record.creator_tx = 0;
+      Require(catalog_api::PublishPreparedCatalogJournalBatch(context, "catalog.frame.admission",
+          {{catalog_api::CatalogJournalKind::resolver_names, record}}).error,
+          "batch admitted a noncanonical resolver frame");
+      Require(catalog_api::AppendSequencedCatalogJournalRecord(context, std::move(record),
+          catalog_api::CatalogJournalKind::resolver_names).error,
+          "single writer admitted a noncanonical resolver frame");
+      const auto after = db::AcquireStrongLocalTransactionInventorySnapshot(context.database_path);
+      Require(after.ok() && after.snapshot->inventory.publication_base == before.snapshot->inventory.publication_base &&
+                  read(names) == names_before && read(allocator) == allocator_before &&
+                  catalog_api::NextMetadataEventSequence(context) == next,
+              "invalid resolver frame changed inventory, journals or sequence reservation");
+    }
+  }
+  Commit(context);
+}
+
+void TestCatalogSuccessorPublicationCustody(const std::filesystem::path& path) {
+#if defined(SB_CATALOG_TEST_WRAP_SYNC)
+  const auto database = CreateDatabase(path);
+  const auto principal = scratchbird::tests::FixtureUuid(1398, 1);
+  const auto schema = scratchbird::tests::FixtureUuid(1398, 2);
+  auto setup = Begin(path, database, principal);
+  RequireOk(catalog_api::EngineCatalogCreateObject(
+      CreateRequest(setup, schema, "schema", {}, "successor_custody")), "successor schema setup failed");
+  Commit(setup);
+  // Each operation must retain exclusion after actual lifecycle effects but
+  // before complete publication. Rename/drop additionally exercise the second
+  // physical stream, including retirement followed by replacement names.
+  for (unsigned operation = 0; operation != 3; ++operation) {
+    for (unsigned phase = 0; phase != (operation == 0 ? 1u : 2u); ++phase) {
+      const auto object = scratchbird::tests::FixtureUuid(1398, 10 + operation * 2 + phase);
+      const auto original_name = "successor_" + std::to_string(operation) + "_" + std::to_string(phase);
+      setup = Begin(path, database, principal);
+      RequireOk(catalog_api::EngineCatalogCreateObject(
+          CreateRequest(setup, object, "table", schema, original_name)), "successor table setup failed");
+      Commit(setup);
+      auto writer = Begin(path, database, principal);
+      const auto mutate = [&](const catalog_api::EngineRequestContext& context) {
+        if (operation == 0) {
+          catalog_api::EngineCatalogAlterObjectRequest request;
+          request.context = context; request.target_object.uuid = object;
+          request.option_envelopes = {"payload:successor=altered"};
+          return catalog_api::EngineCatalogAlterObject(request).ok;
+        }
+        if (operation == 1) {
+          catalog_api::EngineCatalogRenameObjectRequest request;
+          request.context = context; request.target_object.uuid = object;
+          request.localized_names = {Name(original_name + "_renamed")};
+          return catalog_api::EngineCatalogRenameObject(request).ok;
+        }
+        catalog_api::EngineCatalogDropObjectRequest request;
+        request.context = context; request.target_object.uuid = object;
+        return catalog_api::EngineCatalogDropObject(request).ok;
+      };
+      const auto target = path.string() + (phase == 0 ? ".sb.catalog_object_events" : ".sb.name_events.v2");
+      Require(::stat(target.c_str(), &catalog_publication_fault::target) == 0,
+              "successor sync target missing");
+      struct Fault {
+        Fault() { catalog_publication_fault::armed = true;
+          catalog_publication_fault::hit = false; catalog_publication_fault::skip_matches = 0; }
+        ~Fault() { catalog_publication_fault::armed = false; }
+      };
+      bool accepted;
+      { Fault fault; accepted = mutate(writer); }
+      Require(catalog_publication_fault::hit && !accepted, "successor ignored actual journal sync failure");
+      catalog_api::EngineCommitTransactionRequest commit; commit.context = writer;
+      Require(!catalog_api::EngineCommitTransaction(commit).ok,
+              "failed catalog successor remained eligible for COMMIT");
+      Require(!catalog_api::LoadCatalogObjectLifecycleState(writer).ok &&
+                  !catalog_api::LoadCatalogObjectLifecycleEpochState(writer).ok &&
+                  !catalog_api::LoadNameRegistryState(writer, writer.local_transaction_id).ok,
+              "ordinary reader exposed failed catalog successor");
+      Rollback(writer);
+      auto reader = Begin(path, database, principal);
+      const auto restored = catalog_api::LoadCatalogObjectLifecycleState(reader);
+      const auto record = restored.ok ? std::find_if(restored.state.objects.begin(), restored.state.objects.end(),
+          [&](const auto& item) { return item.object_uuid == object; }) : restored.state.objects.end();
+      Require(restored.ok && record != restored.state.objects.end() && record->definition_epoch == 1 &&
+                  record->payload != "successor=altered",
+              "rollback did not retain the original committed object definition");
+      RequireOk(catalog_api::EngineCatalogResolveObjectName(
+          ResolveRequest(reader, "table", schema, original_name)), "rollback lost original catalog name");
+      Require(mutate(reader), "successor retry in a fresh transaction failed");
+      Commit(reader);
+      reader = Begin(path, database, principal);
+      const auto final = catalog_api::LoadCatalogObjectLifecycleState(reader);
+      Require(final.ok, "successor committed readback failed");
+      const auto final_record = std::find_if(final.state.objects.begin(), final.state.objects.end(),
+          [&](const auto& item) { return item.object_uuid == object; });
+      Require(operation == 2 ? final_record == final.state.objects.end() :
+                  final_record != final.state.objects.end() && final_record->definition_epoch == 2,
+              "successor retry did not persist exactly one successful mutation");
+      if (operation == 0) Require(final_record->payload == "successor=altered", "alter payload was not durable");
+      if (operation != 0) {
+        Require(!catalog_api::EngineCatalogResolveObjectName(
+            ResolveRequest(reader, "table", schema, original_name)).ok, "retired name remained visible after retry");
+        if (operation == 1) RequireOk(catalog_api::EngineCatalogResolveObjectName(
+            ResolveRequest(reader, "table", schema, original_name + "_renamed")), "rename retry lost replacement name");
+      }
+      Commit(reader);
+    }
+  }
+#else
+  (void)path;
+#endif
+}
+
+void TestCatalogSynonymSuccessorCustody(const std::filesystem::path& path) {
+#if defined(SB_CATALOG_TEST_WRAP_SYNC)
+  const auto database = CreateDatabase(path);
+  const auto principal = scratchbird::tests::FixtureUuid(1400, 1);
+  const auto schema = scratchbird::tests::FixtureUuid(1400, 2);
+  const auto first = scratchbird::tests::FixtureUuid(1400, 3);
+  const auto second = scratchbird::tests::FixtureUuid(1400, 4);
+  const auto synonym = scratchbird::tests::FixtureUuid(1400, 5);
+  auto setup = Begin(path, database, principal);
+  RequireOk(catalog_api::EngineCatalogCreateObject(CreateRequest(setup, schema, "schema", {}, "synonym_custody")),
+            "synonym custody schema setup failed");
+  RequireOk(catalog_api::EngineCatalogCreateObject(CreateRequest(setup, first, "table", schema, "first")),
+            "synonym first target setup failed");
+  RequireOk(catalog_api::EngineCatalogCreateObject(CreateRequest(setup, second, "table", schema, "second")),
+            "synonym second target setup failed");
+  auto create = CreateRequest(setup, synonym, "synonym", schema, "alias");
+  create.related_objects = {{first, "table"}};
+  RequireOk(catalog_api::EngineCatalogCreateObject(create), "synonym custody setup failed");
+  Commit(setup);
+  auto writer = Begin(path, database, principal);
+  catalog_api::EngineCatalogAlterObjectRequest alter;
+  alter.context = writer; alter.target_object.uuid = synonym;
+  alter.related_objects = {{second, "table"}};
+  Require(::stat((path.string() + ".sb.catalog_object_events").c_str(), &catalog_publication_fault::target) == 0,
+          "synonym failure target absent");
+  catalog_publication_fault::hit = false;
+  catalog_publication_fault::skip_matches = 0;
+  catalog_publication_fault::armed = true;
+  struct Reset { ~Reset() { catalog_publication_fault::armed = false; } } reset;
+  const auto failed = catalog_api::EngineCatalogAlterObject(alter);
+  catalog_publication_fault::armed = false;
+  Require(catalog_publication_fault::hit && !failed.ok, "synonym ignored catalog sync fault");
+  catalog_api::EngineCommitTransactionRequest commit; commit.context = writer;
+  Require(!catalog_api::EngineCommitTransaction(commit).ok, "failed synonym dependency successor was committable");
+  Rollback(writer);
+  auto reader = Begin(path, database, principal);
+  const auto count_target = [&](const catalog_api::EngineRequestContext& context, const catalog_api::EngineUuid& target) {
+    const auto state = catalog_api::LoadCatalogObjectLifecycleState(context);
+    Require(state.ok, "synonym dependency read failed");
+    return std::count_if(state.state.dependencies.begin(), state.state.dependencies.end(),
+        [&](const auto& item) { return item.source_uuid == synonym && item.dependency_uuid == target && !item.deleted; });
+  };
+  Require(count_target(reader, first) == 1 && count_target(reader, second) == 0,
+          "failed synonym alter changed committed dependency ownership");
+  const auto original = catalog_api::EngineCatalogResolveObjectName(ResolveRequest(reader, "table", schema, "alias"));
+  RequireOk(original, "original synonym could not resolve after rollback");
+  Require(original.bound_object_identity.object_uuid == first, "original synonym target was not restored");
+  alter.context = reader;
+  RequireOk(catalog_api::EngineCatalogAlterObject(alter), "synonym fresh retry failed");
+  Commit(reader);
+  reader = Begin(path, database, principal);
+  Require(count_target(reader, first) == 0 && count_target(reader, second) == 1,
+          "synonym retry did not retire and replace exact dependency");
+  const auto replacement = catalog_api::EngineCatalogResolveObjectName(ResolveRequest(reader, "table", schema, "alias"));
+  RequireOk(replacement, "replacement synonym could not resolve");
+  Require(replacement.bound_object_identity.object_uuid == second, "replacement synonym target was not durable");
+  catalog_api::EngineCatalogDropObjectRequest drop;
+  drop.context = reader; drop.target_object.uuid = first;
+  RequireOk(catalog_api::EngineCatalogDropObject(drop), "retired synonym dependency still blocked old target");
+  drop.target_object.uuid = second;
+  RequireDiagnostic(catalog_api::EngineCatalogDropObject(drop), catalog_api::kCatalogObjectDiagnosticDependencyBlockedDrop,
+                    "replacement synonym dependency did not protect new target");
+  Commit(reader);
+#else
+  (void)path;
+#endif
+}
+
 void TestCatalogBatchBoundaries(const std::filesystem::path& path) {
   const auto database = CreateDatabase(path);
   const auto principal = scratchbird::tests::FixtureUuid(1396, 1);
@@ -1893,6 +2117,9 @@ int main(int argc, char** argv) try {
   TestMutationExclusionAuthority(artifacts.path() / "mutation-authority.sbdb");
   TestCatalogDefinitionPreflight(artifacts.path() / "preflight.sbdb");
   TestCatalogFailedPublicationCustody(artifacts.path() / "custody.sbdb");
+  TestCatalogSuccessorPublicationCustody(artifacts.path() / "successor-custody.sbdb");
+  TestCatalogResolverFrameAdmission(artifacts.path() / "resolver-admission.sbdb");
+  TestCatalogSynonymSuccessorCustody(artifacts.path() / "synonym-custody.sbdb");
   TestCatalogBatchBoundaries(artifacts.path() / "batch-boundaries.sbdb");
 #if defined(SB_CATALOG_TEST_WRAP_SYNC)
   TestCatalogBatchProcessLoss(artifacts.path() / "batch-process-loss.sbdb");

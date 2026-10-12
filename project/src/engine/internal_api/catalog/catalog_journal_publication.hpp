@@ -54,11 +54,15 @@ inline EngineApiDiagnostic AppendSequencedCatalogJournalRecord(
     if (!DecodeCatalogLifecycleFrame(record, &decoded)) return refused("catalog_publication_record_invalid");
   } else if (record.object_kind == "name_registry.retire") {
     if (!core::uuid::IsEngineIdentityUuid(record.object_uuid) ||
-        record.target_object_uuid != record.object_uuid || !record.payload.empty())
+        record.target_object_uuid != record.object_uuid || !record.payload.empty() ||
+        record.state != "retired" || !record.target_schema_uuid.is_nil() ||
+        !record.target_database_uuid.is_nil() || !record.default_name.empty() || record.deleted)
       return refused("catalog_publication_record_invalid");
   } else {
     NameRegistryEntry decoded;
-    if (record.object_kind != "name_registry.entry" || !DecodeNameRegistryEntry(record.payload, &decoded) ||
+    if (record.object_kind != "name_registry.entry" || record.state != "active" ||
+        !record.target_database_uuid.is_nil() || !record.default_name.empty() || record.deleted ||
+        !DecodeNameRegistryEntry(record.payload, &decoded) ||
         decoded.name_entry_uuid != record.object_uuid || decoded.object_uuid != record.target_object_uuid ||
         decoded.scope_uuid != record.target_schema_uuid || decoded.creator_tx != record.creator_tx)
       return refused("catalog_publication_record_invalid");

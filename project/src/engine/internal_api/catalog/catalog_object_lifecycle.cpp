@@ -549,30 +549,6 @@ std::string CacheInvalidateEvent(const EngineRequestContext& context,
   return bytes;
 }
 
-EngineApiDiagnostic AppendEvent(const EngineRequestContext& context, const std::string& event) {
-  if (context.database_path.empty()) {
-    return CatalogDiagnostic(kCatalogObjectDiagnosticDatabasePathRequired, "database_path");
-  }
-  ApiBehaviorRecord frame;
-  CatalogLifecycleRecord record;
-  if (!DecodeApiBehaviorRecord({reinterpret_cast<const std::uint8_t*>(event.data()), event.size()}, &frame) ||
-      !DecodeCatalogLifecycleFrame(frame, &record) || frame.creator_tx != context.local_transaction_id) {
-    return CatalogDiagnostic(kCatalogObjectDiagnosticDatabaseWriteFailed, "invalid_binary_catalog_record");
-  }
-  const auto publication = AppendSequencedCatalogJournalRecord(
-      context, std::move(frame), CatalogJournalKind::lifecycle);
-  return publication.error
-      ? CatalogDiagnostic(kCatalogObjectDiagnosticDatabaseWriteFailed, publication.detail)
-      : OkDiagnostic();
-}
-
-EngineApiDiagnostic AppendCacheInvalidation(const EngineRequestContext& context,
-                                            const std::string& operation_id,
-                                            const EngineUuid& object_uuid,
-                                            std::uint64_t metadata_epoch) {
-  return AppendEvent(context, CacheInvalidateEvent(context, operation_id, object_uuid, metadata_epoch));
-}
-
 EngineApiDiagnostic StageCatalogJournalEvent(const EngineRequestContext& context,
                                             std::string_view event,
                                             std::vector<PreparedCatalogJournalRecord>& prepared) {
@@ -622,6 +598,27 @@ EngineApiDiagnostic CatalogBatchPublicationDiagnostic(EngineApiDiagnostic diagno
   diagnostic.message_key = std::move(owning.message_key);
   diagnostic.detail = std::move(owning.detail);
   return diagnostic;
+}
+
+EngineApiDiagnostic StageCatalogResolverRetirement(const EngineRequestContext& context,
+                                                   const std::string& operation,
+                                                   const EngineUuid& object,
+                                                   std::vector<PreparedCatalogJournalRecord>& prepared) {
+  const auto valid = ValidateApiBehaviorContext(context, operation, false, true);
+  if (valid.error) return valid;
+  const auto format = ValidateCatalogResolverJournalFormat(context, operation);
+  if (format.error) return format;
+  if (!core::uuid::IsEngineIdentityUuid(object))
+    return MakeInvalidRequestDiagnostic(operation, "object_uuid_required");
+  ApiBehaviorRecord record;
+  record.creator_tx = context.local_transaction_id;
+  record.operation_id = operation;
+  record.object_uuid = object;
+  record.target_object_uuid = object;
+  record.object_kind = "name_registry.retire";
+  record.state = "retired";
+  prepared.push_back({CatalogJournalKind::resolver_names, std::move(record)});
+  return OkDiagnostic();
 }
 
 struct LoadOptions {
@@ -1273,21 +1270,6 @@ void FillObjectResult(TResult* result,
                   {"lifecycle_state", object.lifecycle_state},
                   {"definition_epoch", std::to_string(object.definition_epoch)},
                   {"metadata_epoch", std::to_string(metadata_epoch)}});
-}
-
-EngineApiDiagnostic PersistResolverNames(const EngineRequestContext& context,
-                                         const std::string& operation_id,
-                                         const EngineUuid& object_uuid,
-                                         const std::string& object_kind,
-                                         const EngineUuid& schema_uuid,
-                                         const std::vector<EngineLocalizedName>& names,
-                                         const std::string& fallback_name,
-                                         bool retire_first) {
-  if (retire_first) {
-    const auto retired = RetireNameRegistryEntriesForObject(context, operation_id, object_uuid);
-    if (retired.error) { return retired; }
-  }
-  return PersistNameRegistryEntriesForObject(context, operation_id, object_uuid, object_kind, schema_uuid, names, fallback_name);
 }
 
 }  // namespace
@@ -2070,7 +2052,8 @@ EngineCatalogAlterObjectResult EngineCatalogAlterObject(const EngineCatalogAlter
   replacement.synonym_target_uuid = synonym_target_uuid;
   replacement.synonym_target_class = synonym_target_class;
   replacement.payload = PayloadFromRequest(request);
-  auto appended = AppendEvent(request.context, ObjectEvent(replacement));
+  std::vector<PreparedCatalogJournalRecord> prepared;
+  auto appended = StageCatalogJournalEvent(request.context, ObjectEvent(replacement), prepared);
   if (appended.error) { return DiagnosticResult<EngineCatalogAlterObjectResult>(request.context, kOperation, appended); }
   if (existing->object_kind == "synonym") {
     const EngineUuid old_target_uuid = SynonymTargetUuid(*existing);
@@ -2085,7 +2068,7 @@ EngineCatalogAlterObjectResult EngineCatalogAlterObject(const EngineCatalogAlter
       retired_dependency.dependency_kind = "synonym_hard:" + old_target_class;
       retired_dependency.metadata_epoch = epoch;
       retired_dependency.deleted = true;
-      appended = AppendEvent(request.context, DependencyEvent(retired_dependency));
+      appended = StageCatalogJournalEvent(request.context, DependencyEvent(retired_dependency), prepared);
       if (appended.error) { return DiagnosticResult<EngineCatalogAlterObjectResult>(request.context, kOperation, appended); }
     }
     EngineCatalogDependencyRecord dependency;
@@ -2095,10 +2078,10 @@ EngineCatalogAlterObjectResult EngineCatalogAlterObject(const EngineCatalogAlter
     dependency.dependency_uuid = synonym_target_uuid;
     dependency.dependency_kind = "synonym_hard:" + synonym_target_class;
     dependency.metadata_epoch = epoch;
-    appended = AppendEvent(request.context, DependencyEvent(dependency));
+    appended = StageCatalogJournalEvent(request.context, DependencyEvent(dependency), prepared);
     if (appended.error) { return DiagnosticResult<EngineCatalogAlterObjectResult>(request.context, kOperation, appended); }
   }
-  appended = AppendCacheInvalidation(request.context, kOperation, object_uuid, epoch);
+  appended = StageCatalogJournalEvent(request.context, CacheInvalidateEvent(request.context, kOperation, object_uuid, epoch), prepared);
   if (appended.error) { return DiagnosticResult<EngineCatalogAlterObjectResult>(request.context, kOperation, appended); }
 
   auto result = SuccessResult<EngineCatalogAlterObjectResult>(request.context, kOperation);
@@ -2109,6 +2092,10 @@ EngineCatalogAlterObjectResult EngineCatalogAlterObject(const EngineCatalogAlter
                           object_uuid,
                           result.catalog_row_uuid,
                           replacement.object_kind);
+  auto publication = PublishPreparedCatalogJournalBatch(request.context, kOperation, std::move(prepared));
+  if (publication.error)
+    return DiagnosticResult<EngineCatalogAlterObjectResult>(request.context, kOperation,
+        CatalogBatchPublicationDiagnostic(std::move(publication)));
   return result;
 }
 
@@ -2144,10 +2131,11 @@ EngineCatalogRenameObjectResult EngineCatalogRenameObject(const EngineCatalogRen
   if (conflict.error) { return DiagnosticResult<EngineCatalogRenameObjectResult>(request.context, kOperation, conflict); }
 
   const std::uint64_t epoch = loaded.state.metadata_epoch + 1;
-  auto appended = AppendEvent(request.context, RetireNamesEvent(request.context.local_transaction_id, object_uuid, epoch));
+  std::vector<PreparedCatalogJournalRecord> prepared;
+  auto appended = StageCatalogJournalEvent(request.context, RetireNamesEvent(request.context.local_transaction_id, object_uuid, epoch), prepared);
   if (appended.error) { return DiagnosticResult<EngineCatalogRenameObjectResult>(request.context, kOperation, appended); }
   for (const auto& name : names) {
-    appended = AppendEvent(request.context, NameEvent(MakeNameRecord(request.context, object_uuid, existing->object_kind, existing->schema_uuid, name, epoch)));
+    appended = StageCatalogJournalEvent(request.context, NameEvent(MakeNameRecord(request.context, object_uuid, existing->object_kind, existing->schema_uuid, name, epoch)), prepared);
     if (appended.error) {
       return DiagnosticResult<EngineCatalogRenameObjectResult>(request.context, kOperation, appended);
     }
@@ -2156,11 +2144,13 @@ EngineCatalogRenameObjectResult EngineCatalogRenameObject(const EngineCatalogRen
   replacement.creator_tx = request.context.local_transaction_id;
   replacement.definition_epoch = existing->definition_epoch + 1;
   replacement.metadata_epoch = epoch;
-  appended = AppendEvent(request.context, ObjectEvent(replacement));
+  appended = StageCatalogJournalEvent(request.context, ObjectEvent(replacement), prepared);
   if (appended.error) { return DiagnosticResult<EngineCatalogRenameObjectResult>(request.context, kOperation, appended); }
-  appended = AppendCacheInvalidation(request.context, kOperation, object_uuid, epoch);
+  appended = StageCatalogJournalEvent(request.context, CacheInvalidateEvent(request.context, kOperation, object_uuid, epoch), prepared);
   if (appended.error) { return DiagnosticResult<EngineCatalogRenameObjectResult>(request.context, kOperation, appended); }
-  const auto resolver = PersistResolverNames(request.context, kOperation, object_uuid, existing->object_kind, existing->schema_uuid, names, PrimaryName(request), true);
+  auto resolver = StageCatalogResolverRetirement(request.context, kOperation, object_uuid, prepared);
+  if (resolver.error) { return DiagnosticResult<EngineCatalogRenameObjectResult>(request.context, kOperation, resolver); }
+  resolver = StageCatalogResolverNames(request.context, kOperation, object_uuid, existing->object_kind, existing->schema_uuid, names, PrimaryName(request), prepared);
   if (resolver.error) { return DiagnosticResult<EngineCatalogRenameObjectResult>(request.context, kOperation, resolver); }
 
   auto result = SuccessResult<EngineCatalogRenameObjectResult>(request.context, kOperation);
@@ -2172,6 +2162,10 @@ EngineCatalogRenameObjectResult EngineCatalogRenameObject(const EngineCatalogRen
                           object_uuid,
                           result.catalog_row_uuid,
                           replacement.object_kind);
+  auto publication = PublishPreparedCatalogJournalBatch(request.context, kOperation, std::move(prepared));
+  if (publication.error)
+    return DiagnosticResult<EngineCatalogRenameObjectResult>(request.context, kOperation,
+        CatalogBatchPublicationDiagnostic(std::move(publication)));
   return result;
 }
 
@@ -2215,24 +2209,25 @@ EngineCatalogDropObjectResult EngineCatalogDropObject(const EngineCatalogDropObj
   dropped.lifecycle_state = "dropped";
   dropped.deleted = true;
   dropped.metadata_epoch = epoch;
+  std::vector<PreparedCatalogJournalRecord> prepared;
   EngineApiDiagnostic appended;
   for (auto dependency : inbound_dependencies) {
     dependency.creator_tx = request.context.local_transaction_id;
     dependency.metadata_epoch = epoch;
     dependency.deleted = true;
-    appended = AppendEvent(request.context, DependencyEvent(dependency));
+    appended = StageCatalogJournalEvent(request.context, DependencyEvent(dependency), prepared);
     if (appended.error) {
       return DiagnosticResult<EngineCatalogDropObjectResult>(
           request.context, kOperation, appended);
     }
   }
-  appended = AppendEvent(request.context, ObjectEvent(dropped));
+  appended = StageCatalogJournalEvent(request.context, ObjectEvent(dropped), prepared);
   if (appended.error) { return DiagnosticResult<EngineCatalogDropObjectResult>(request.context, kOperation, appended); }
-  appended = AppendEvent(request.context, RetireNamesEvent(request.context.local_transaction_id, object_uuid, epoch));
+  appended = StageCatalogJournalEvent(request.context, RetireNamesEvent(request.context.local_transaction_id, object_uuid, epoch), prepared);
   if (appended.error) { return DiagnosticResult<EngineCatalogDropObjectResult>(request.context, kOperation, appended); }
-  appended = AppendCacheInvalidation(request.context, kOperation, object_uuid, epoch);
+  appended = StageCatalogJournalEvent(request.context, CacheInvalidateEvent(request.context, kOperation, object_uuid, epoch), prepared);
   if (appended.error) { return DiagnosticResult<EngineCatalogDropObjectResult>(request.context, kOperation, appended); }
-  const auto resolver = RetireNameRegistryEntriesForObject(request.context, kOperation, object_uuid);
+  const auto resolver = StageCatalogResolverRetirement(request.context, kOperation, object_uuid, prepared);
   if (resolver.error) { return DiagnosticResult<EngineCatalogDropObjectResult>(request.context, kOperation, resolver); }
 
   auto result = SuccessResult<EngineCatalogDropObjectResult>(request.context, kOperation);
@@ -2253,6 +2248,10 @@ EngineCatalogDropObjectResult EngineCatalogDropObject(const EngineCatalogDropObj
                           object_uuid,
                           result.catalog_row_uuid,
                           existing->object_kind);
+  auto publication = PublishPreparedCatalogJournalBatch(request.context, kOperation, std::move(prepared));
+  if (publication.error)
+    return DiagnosticResult<EngineCatalogDropObjectResult>(request.context, kOperation,
+        CatalogBatchPublicationDiagnostic(std::move(publication)));
   return result;
 }
 
