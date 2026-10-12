@@ -130,7 +130,8 @@ using CatalogLifecycleRecord = std::variant<EngineCatalogObjectRecord,
     EngineCatalogRetireNamesRecord,
     EngineCatalogCacheInvalidationRecord>;
 template<class Record>
-bool EncodeCatalogLifecycleRecord(const Record& record, std::string* output) {
+bool EncodeCatalogLifecycleRecord(const Record& record, std::string* output,
+                                  std::uint64_t metadata_event_sequence = 0) {
   using Traits = catalog_record_codec::Traits<Record>;
   if constexpr (std::is_same_v<Record, EngineCatalogObjectRecord>) {
     if (!core::uuid::IsEngineIdentityUuid(record.catalog_row_uuid) ||
@@ -139,6 +140,7 @@ bool EncodeCatalogLifecycleRecord(const Record& record, std::string* output) {
   ApiBehaviorRecord frame;
   frame.object_uuid = Traits::Identity(record);
   frame.creator_tx = record.creator_tx;
+  frame.event_sequence = metadata_event_sequence;
   frame.operation_id = "catalog.lifecycle.record";
   frame.object_kind = Traits::kind;
   frame.state = "record";
@@ -226,8 +228,12 @@ inline bool DecodeCatalogLifecycleFrame(const ApiBehaviorRecord& frame, CatalogL
   }
   return false;
 }
-inline bool ReadCatalogLifecycleRecord(std::istream& input, CatalogLifecycleRecord* output) {
+inline bool ReadCatalogLifecycleRecord(std::istream& input, CatalogLifecycleRecord* output,
+                                       std::uint64_t* metadata_event_sequence = nullptr) {
   ApiBehaviorRecord frame;
-  return ReadApiBehaviorRecord(input, &frame) && DecodeCatalogLifecycleFrame(frame, output);
+  if (!ReadApiBehaviorRecord(input, &frame) || !DecodeCatalogLifecycleFrame(frame, output))
+    return false;
+  if (metadata_event_sequence) *metadata_event_sequence = frame.event_sequence;
+  return true;
 }
 }  // namespace scratchbird::engine::internal_api

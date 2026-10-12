@@ -91,6 +91,20 @@ template<class Record> void CheckRecord() {
   },Traits::Fields(malformed));
   auto saved=encoded;
   Check(!a::EncodeCatalogLifecycleRecord(malformed,&encoded)&&encoded==saved);
+  // The outer binary sequence survives all eleven catalog record kinds;
+  // physical record positions are not substituted for an absent sequence.
+  std::string sequenced;
+  constexpr std::uint64_t sequence=0x0102030405060708;
+  Check(a::EncodeCatalogLifecycleRecord(record,&sequenced,sequence));
+  Check(decode_frame(sequenced,&frame)&&frame.event_sequence==sequence);
+  std::istringstream mixed(saved+sequenced,std::ios::binary);
+  std::uint64_t recovered=99;
+  Check(a::ReadCatalogLifecycleRecord(mixed,&decoded,&recovered)&&recovered==0);
+  Check(a::ReadCatalogLifecycleRecord(mixed,&decoded,&recovered)&&recovered==sequence);
+  Check(Traits::Fields(std::get<Record>(decoded))==Traits::Fields(record));
+  std::istringstream truncated(sequenced.substr(0,sequenced.size()-1),std::ios::binary);
+  recovered=99;
+  Check(!a::ReadCatalogLifecycleRecord(truncated,&decoded,&recovered)&&recovered==99);
 }
 int main() {
   CheckRecord<a::EngineCatalogObjectRecord>();

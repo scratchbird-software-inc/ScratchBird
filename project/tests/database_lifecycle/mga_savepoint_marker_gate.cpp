@@ -7,6 +7,10 @@
 #include "sblr_savepoint_coordinator.hpp"
 #include "mga_relation_store/mga_savepoint_marker_codec.hpp"
 #include "mga_relation_store/mga_savepoint_marker_replay.hpp"
+#include "mga_relation_store/mga_event_sequence_allocator.hpp"
+#include "catalog/catalog_object_lifecycle_codec.hpp"
+#include "catalog/name_registry_codec.hpp"
+#include "crud_support/crud_store.hpp"
 #include "uuid.hpp"
 #include "sblr_savepoint_runtime.hpp"
 
@@ -16,6 +20,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -393,10 +398,240 @@ void Corruption() {
   Check(api::ValidateMgaSavepointMarkerAuthority(directory.context).error,
         "directory cannot masquerade as missing marker file");
 }
+
+void MetadataSequenceAuthority() {
+  Fixture f;
+  api::EngineCatalogObjectRecord object;
+  object.creator_tx=17;
+  object.object_uuid=scratchbird::tests::FixtureUuid(1606,1);
+  object.catalog_row_uuid=scratchbird::tests::FixtureUuid(1606,2);
+  object.object_kind="table";
+  object.lifecycle_state="active";
+  std::string catalog;
+  Check(api::EncodeCatalogLifecycleRecord(object,&catalog,41), "encode sequenced catalog frame");
+  api::ApiBehaviorRecord name;
+  name.creator_tx=17;name.object_uuid=object.object_uuid;
+  name.target_object_uuid=object.object_uuid;
+  name.object_kind="name_registry.retire";name.operation_id="catalog.retire";name.state="retired";
+  name.event_sequence=57;
+  std::string names;
+  Check(api::EncodeApiBehaviorRecord(name,&names), "encode sequenced name frame");
+  api::NameRegistryEntry entry;
+  entry.creator_tx=17;entry.name_entry_uuid=scratchbird::tests::FixtureUuid(1606,3);
+  entry.object_uuid=object.object_uuid;entry.scope_uuid=scratchbird::tests::FixtureUuid(1606,4);
+  entry.object_class="table";entry.lifecycle_state="active";entry.raw_name_text="sequence fixture";
+  api::ApiBehaviorRecord entry_frame;
+  entry_frame.creator_tx=entry.creator_tx;entry_frame.object_uuid=entry.name_entry_uuid;
+  entry_frame.target_object_uuid=entry.object_uuid;entry_frame.target_schema_uuid=entry.scope_uuid;
+  entry_frame.object_kind="name_registry.entry";entry_frame.operation_id="catalog.name";
+  entry_frame.state="active";entry_frame.event_sequence=53;
+  Check(api::EncodeNameRegistryEntry(entry,&entry_frame.payload), "encode complete name entry body");
+  std::string entry_bytes;
+  Check(api::EncodeApiBehaviorRecord(entry_frame,&entry_bytes), "encode sequenced name entry");
+  names+=entry_bytes; // A lower sequence appended later must not reduce the maximum.
+  entry_frame.event_sequence=0;
+  Check(api::EncodeApiBehaviorRecord(entry_frame,&entry_bytes), "encode legacy name entry");
+  names+=entry_bytes;
+  const auto write = [](const std::string& path, const std::string& bytes) {
+    std::ofstream out(path,std::ios::binary|std::ios::trunc);
+    out.write(bytes.data(),bytes.size());out.close();
+    Check(static_cast<bool>(out), "write native sequence fixture");
+  };
+  write(f.context.database_path+".sb.catalog_object_events",catalog);
+  write(f.context.database_path+".sb.name_events.v2",names);
+  Check(api::ScanNextMetadataEventSequence(f.context)==58,
+        "metadata high water includes both native catalog journals");
+  Check(!api::CreateMgaSavepointMarker(f.context,"cutoff").error,
+        "create captures sequenced catalog high water");
+  auto parsed=api::ParseSavepoints(f.context);
+  Check(parsed.active_savepoints.at(17).at("cutoff").metadata_event_sequence==57,
+        "catalog and name frames share the metadata cutoff domain");
+  const auto marker_size=std::filesystem::file_size(f.Path());
+  for (const auto kind : {"relation_metadata", "row_versions", "index_entries"}) {
+    const auto suffix=std::string_view(kind)=="relation_metadata" ? ".sb.mga_relation_metadata" :
+        (std::string_view(kind)=="row_versions" ? ".sb.mga_row_versions" : ".sb.mga_index_entries");
+    const auto reserved=api::ReserveEventSequenceRange(f.context,kind,f.context.database_path+suffix,3,
+        [&] { return std::string_view(kind)=="relation_metadata" ? api::ScanNextMetadataEventSequence(f.context) : 1; });
+    Check(reserved.ok, "populate real reservation cache before corrupt observations");
+  }
+  const auto refused = [&] {
+    for (auto action : {api::CreateMgaSavepointMarker,api::ReleaseMgaSavepointMarker,
+                        api::RollbackToMgaSavepointMarker}) {
+      const auto result=action(f.context,"cutoff");
+      Check(result.error && result.detail.find("event_sequence_authority_invalid")!=std::string::npos,
+            "all marker writers refuse invalid sequence authority");
+      Check(std::filesystem::file_size(f.Path())==marker_size,
+            "failed sequence observation appends no marker");
+    }
+  };
+  for (const auto suffix : {".sb.catalog_object_events", ".sb.name_events.v2",
+                           ".sb.mga_relation_metadata"}) {
+    const std::string path=f.context.database_path+suffix;
+    const std::string original=std::string_view(suffix)==".sb.catalog_object_events" ? catalog :
+        (std::string_view(suffix)==".sb.name_events.v2" ? names : std::string{});
+    write(path,original+"torn");
+    Check(api::ScanNextMetadataEventSequence(f.context)==0,
+          "corrupt journal cannot produce an allocation high water");
+    Check(api::NextMetadataEventSequence(f.context)==0,
+          "invalid scan cannot become a zero cutoff through fallback");
+    refused();
+    write(path,original);
+  }
+  for (const auto suffix : {".sb.mga_row_versions", ".sb.mga_index_entries"}) {
+    const auto path=f.context.database_path+suffix;
+    write(path,"torn");
+    Check((std::string_view(suffix)==".sb.mga_row_versions" ? api::NextRowEventSequence(f.context) :
+        api::NextIndexEventSequence(f.context))==0,"invalid row/index scan beats a warm reservation cache");
+    refused();write(path,{});
+  }
+  const auto scope=f.context.database_path+".sb.mga_relation_scope";
+  std::filesystem::create_directory(scope);
+  write(scope+"/locators.v2","torn");
+  Check(api::NextRowEventSequence(f.context)==0 && api::NextIndexEventSequence(f.context)==0,
+        "malformed binary relation locator returns invalid observation rather than escaping marker diagnostics");
+  refused();std::filesystem::remove(scope+"/locators.v2");std::filesystem::remove(scope);
+  for (const auto suffix : {".sb.catalog_object_events", ".sb.name_events.v2"}) {
+    const auto path=f.context.database_path+suffix;
+    const auto& original=std::string_view(suffix)==".sb.catalog_object_events" ? catalog : names;
+    std::filesystem::remove(path);
+    std::filesystem::create_directory(path);
+    Check(api::NextMetadataEventSequence(f.context)==0,"nonregular journal is not an empty journal");
+    refused();std::filesystem::remove(path);write(path,original);
+    std::filesystem::permissions(path,std::filesystem::perms::none);
+    {
+      std::ifstream probe(path,std::ios::binary);
+      if (!probe) {
+        Check(api::NextMetadataEventSequence(f.context)==0,"unreadable journal is not absent");
+        refused();
+      } else {
+        // Root/DAC-override hosts may still read mode000 files. Test actual
+        // access, not an assumption that permission bits overrule that grant.
+        Check(api::NextMetadataEventSequence(f.context)==61,"effective host read permission retains valid authority");
+      }
+    }
+    std::filesystem::permissions(path,std::filesystem::perms::owner_read|std::filesystem::perms::owner_write);
+    std::filesystem::remove(path);std::filesystem::create_symlink(f.Path(),path);
+    Check(api::NextMetadataEventSequence(f.context)==0,"symlink is not owned journal authority");
+    refused();std::filesystem::remove(path);write(path,original);
+  }
+  api::ApiBehaviorRecord catalog_frame;
+  Check(api::DecodeApiBehaviorRecord({reinterpret_cast<const std::uint8_t*>(catalog.data()),catalog.size()},&catalog_frame),
+        "decode catalog envelope for independently resealed body mismatch");
+  for (const bool is_catalog : {true,false}) {
+    auto frame=is_catalog ? catalog_frame : entry_frame;
+    frame.event_sequence=59;
+    frame.object_uuid=scratchbird::tests::FixtureUuid(1606,9);
+    std::string bad;
+    Check(api::EncodeApiBehaviorRecord(frame,&bad),"reseal valid envelope with wrong nested identity");
+    const auto path=f.context.database_path+(is_catalog ? ".sb.catalog_object_events" : ".sb.name_events.v2");
+    write(path,bad);
+    Check(api::NextMetadataEventSequence(f.context)==0,"outer digest does not qualify mismatched native body");
+    refused();write(path,is_catalog ? catalog : names);
+  }
+  name.event_sequence=75;
+  Check(api::EncodeApiBehaviorRecord(name,&names), "encode effect beyond retained reservation journal");
+  write(f.context.database_path+".sb.name_events.v2",names);
+  api::ClearMgaEventSequenceRangeCacheForTesting();
+  const auto recovered=api::ReserveEventSequenceRange(f.context,"relation_metadata",
+      f.context.database_path+".sb.mga_relation_metadata",1,[&] { return api::ScanNextMetadataEventSequence(f.context); });
+  Check(recovered.ok && recovered.first==76,"cold reservation includes actual journal effects beyond durable reservation");
+  name.event_sequence=std::numeric_limits<std::uint64_t>::max();
+  Check(api::EncodeApiBehaviorRecord(name,&names), "encode exhausted sequence domain");
+  write(f.context.database_path+".sb.name_events.v2",names);
+  Check(api::NextMetadataEventSequence(f.context)==0,
+        "exhausted metadata domain cannot wrap to one");
+  Check(api::CreateMgaSavepointMarker(f.context,"exhausted").error &&
+        std::filesystem::file_size(f.Path())==marker_size,
+        "exhaustion writes no manufactured cutoff");
+  api::ClearMgaEventSequenceRangeCacheForTesting();
+  const auto exhausted=api::ReserveEventSequenceRange(f.context,"relation_metadata",
+      f.context.database_path+".sb.mga_relation_metadata",1,[&] { return api::ScanNextMetadataEventSequence(f.context); });
+  Check(!exhausted.ok,"cold reservation cannot hide exhausted source behind valid allocator record");
+}
+
+void AllocatorSequenceAuthority() {
+  Fixture f;
+  api::ClearMgaEventSequenceRangeCacheForTesting();
+  const auto stream=f.context.database_path+".sb.mga_row_versions";
+  const auto allocator=f.context.database_path+".sb.mga_event_sequence_allocator";
+  std::vector<std::string> first_lines,second_lines;
+  const auto first=api::ReserveEventSequenceRange(f.context,"row_versions",stream,2,[]{return 1;},&first_lines);
+  const auto second=api::ReserveEventSequenceRange(f.context,"row_versions",stream,4,[]{return 1;},&second_lines);
+  Check(first.ok && second.ok && first.first==1 && second.first==3,"reserve disjoint deferred ranges");
+  const auto first_line=first_lines.at(0),second_line=second_lines.at(0);
+  Check(api::AppendDeferredEventSequenceAllocatorLines(f.context,&second_lines,nullptr),"publish later range first");
+  Check(api::AppendDeferredEventSequenceAllocatorLines(f.context,&first_lines,nullptr),"publish earlier range last");
+  const auto write=[&](const std::string& bytes) {
+    std::ofstream out(allocator,std::ios::binary|std::ios::trunc);out<<bytes;out.close();
+    Check(static_cast<bool>(out),"write allocator qualification fixture");
+  };
+  const auto valid=second_line+"\n"+first_line+"\n";
+  api::ClearMgaEventSequenceRangeCacheForTesting();
+  Check(api::NextRowEventSequence(f.context)==7,"cold recovery uses maximum not last deferred range");
+  write(valid+first_line+"\n");
+  Check(api::NextRowEventSequence(f.context)==7,"exact retry record is redundant evidence");
+  write(second_line+"\n");
+  Check(api::NextRowEventSequence(f.context)==7,"reserved gaps do not lower recovered authority");
+  write(valid);
+  const auto cold=api::ReserveMgaRowEventSequenceRangeForTesting(f.context,1);
+  Check(cold.ok && cold.first==7 && cold.next==8 && !cold.bootstrapped_from_store,"cold allocator reuses recovered high water");
+  std::vector<std::string> tail_lines;
+  const auto tail=api::ReserveEventSequenceRange(f.context,"row_versions",stream,2,[]{return 1;},&tail_lines);
+  api::AbandonDeferredEventSequenceReservation(tail);
+  tail_lines.clear();
+  const auto retry=api::ReserveEventSequenceRange(f.context,"row_versions",stream,2,[]{return 1;},&tail_lines);
+  Check(tail.ok && retry.ok && tail.first==8 && retry.first==tail.first,"unpublished effect-free tail may be abandoned");
+  Check(api::AppendDeferredEventSequenceAllocatorLines(f.context,&tail_lines,nullptr),"publish only replacement after effect-free abandonment");
+  api::ClearMgaEventSequenceRangeCacheForTesting();
+  Check(api::NextRowEventSequence(f.context)==10,"replacement history remains valid after cache eviction");
+  write(valid);
+  const auto delta_path=f.context.database_path+".sb.mga_secondary_index_delta_ledger";
+  const auto delta=api::ReserveEventSequenceRange(f.context,"secondary_index_delta_ledger",delta_path,4,[]{return 1;});
+  Check(delta.ok && delta.first==1,"production secondary-index delta domain shares allocator journal");
+  api::ClearMgaEventSequenceRangeCacheForTesting();
+  Check(api::NextRowEventSequence(f.context)==7 && api::NextMetadataEventSequence(f.context)==1 &&
+        api::NextIndexEventSequence(f.context)==1,"unrelated delta reservations preserve all observed domains");
+  const auto delta_reopen=api::ReserveEventSequenceRange(f.context,"secondary_index_delta_ledger",delta_path,1,[]{return 1;});
+  Check(delta_reopen.ok && delta_reopen.first==5,"delta domain recovers its own retained reservations");
+  Check(api::ReserveMgaRowEventSequenceRangeForTesting(f.context,1).ok,"populate row reservation cache in mixed journal");
+  write(valid);
+  Check(!api::CreateMgaSavepointMarker(f.context,"cutoff").error,"create with valid retained range and warm cache");
+  const auto marker_size=std::filesystem::file_size(f.Path());
+  const auto record=[&](std::string a,std::string count,std::string next,std::string kind="row_versions",std::string path="") {
+    return "SBMGAEVSEQ1\tRANGE\t"+kind+"\t"+api::EncodeCrudText(path.empty()?stream:path)+
+        "\t"+a+"\t"+count+"\t"+next+"\tbootstrap_store_scan\t1\n";
+  };
+  const std::vector<std::string> malformed={"torn", valid.substr(0,valid.size()-1), valid+"\n",
+      record("1junk","2","3"),record("-1","2","1"),record("1","0","1"),
+      record("1","2","4"),record("18446744073709551615","1","0"),
+      record("1","2","3junk"),record("1","2","3","unknown"),
+      record("1","2","3","row_versions",stream+"foreign"),valid+record("2","2","4"),
+      valid+record("1","3","4"),valid+"SBMGAEVSEQ1\tRANGE\n"};
+  for (const auto& bytes : malformed) {
+    write(bytes);
+    Check(api::NextRowEventSequence(f.context)==0,"malformed allocator beats warm cache");
+    for (auto action : {api::CreateMgaSavepointMarker,api::ReleaseMgaSavepointMarker,api::RollbackToMgaSavepointMarker}) {
+      const auto result=action(f.context,"cutoff");
+      Check(result.error && result.detail.find("event_sequence_authority_invalid")!=std::string::npos,
+            "marker refuses malformed reservation journal");
+      Check(std::filesystem::file_size(f.Path())==marker_size,"bad allocator appends no marker");
+    }
+    Check(std::filesystem::file_size(allocator)==bytes.size(),"observation does not repair or append allocator bytes");
+  }
+  api::ClearMgaEventSequenceRangeCacheForTesting();
+  const auto refused=api::ReserveMgaRowEventSequenceRangeForTesting(f.context,1);
+  Check(!refused.ok && refused.diagnostic.detail.find("event_sequence_authority_invalid")!=std::string::npos,
+        "cold admission refuses malformed durable reservations");
+  std::filesystem::remove(allocator);std::filesystem::create_directory(allocator);
+  Check(api::NextRowEventSequence(f.context)==0,"nonregular allocator is not absence");
+  std::filesystem::remove(allocator);write(valid);
+  Check(api::NextRowEventSequence(f.context)==7,"restored valid journal recovers without poisoned observation cache");
+  api::ClearMgaEventSequenceRangeCacheForTesting();
+}
 }  // namespace
 
 int main() {
-  for (const auto test : {Stack, MarkerObservation, Ranges, Coordinator, BinaryCodec, WireUuidCodec, BinaryReplay, Corruption}) {
+  for (const auto test : {Stack, MarkerObservation, Ranges, Coordinator, BinaryCodec, WireUuidCodec, BinaryReplay, Corruption, MetadataSequenceAuthority, AllocatorSequenceAuthority}) {
     try { test(); }
     catch (const std::exception& error) {
       Check(false, std::string("unexpected exception: ") + error.what());

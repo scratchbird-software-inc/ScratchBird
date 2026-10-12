@@ -310,26 +310,32 @@ EngineApiDiagnostic CreateMgaSavepointMarker(const EngineRequestContext& context
   }
   const auto authority = ValidateMgaSavepointMarkerAuthority(context);
   if (authority.error) return authority;
-  const std::uint64_t row_cutoff = NextRowEventSequence(context) - 1;
-  const std::uint64_t metadata_cutoff = NextMetadataEventSequence(context) - 1;
-  const std::uint64_t index_cutoff = NextIndexEventSequence(context) - 1;
+  const std::uint64_t row_next = NextRowEventSequence(context);
+  const std::uint64_t metadata_next = NextMetadataEventSequence(context);
+  const std::uint64_t index_next = NextIndexEventSequence(context);
+  if (row_next == 0 || metadata_next == 0 || index_next == 0) {
+    return MakeInvalidRequestDiagnostic("transaction.create_savepoint", "event_sequence_authority_invalid");
+  }
   auto success = OkDiagnostic();
   auto failure = MakeInvalidRequestDiagnostic("transaction.create_savepoint", "savepoint_append_failed");
   if (!AppendMarker(SavepointStorePath(context), 1, context.local_transaction_id, savepoint_name,
-      {row_cutoff, metadata_cutoff, index_cutoff})) return failure;
+      {row_next - 1, metadata_next - 1, index_next - 1})) return failure;
   return success;
 }
 
 EngineApiDiagnostic ReleaseMgaSavepointMarker(const EngineRequestContext& context, const std::string& savepoint_name) {
   const auto exists = ValidateMgaSavepointExists(context, savepoint_name, "transaction.release_savepoint");
   if (exists.error) { return exists; }
-  const std::uint64_t row_cutoff = NextRowEventSequence(context) - 1;
-  const std::uint64_t metadata_cutoff = NextMetadataEventSequence(context) - 1;
-  const std::uint64_t index_cutoff = NextIndexEventSequence(context) - 1;
+  const std::uint64_t row_next = NextRowEventSequence(context);
+  const std::uint64_t metadata_next = NextMetadataEventSequence(context);
+  const std::uint64_t index_next = NextIndexEventSequence(context);
+  if (row_next == 0 || metadata_next == 0 || index_next == 0) {
+    return MakeInvalidRequestDiagnostic("transaction.release_savepoint", "event_sequence_authority_invalid");
+  }
   auto success = OkDiagnostic();
   auto failure = MakeInvalidRequestDiagnostic("transaction.release_savepoint", "savepoint_release_append_failed");
   if (!AppendMarker(SavepointStorePath(context), 2, context.local_transaction_id, savepoint_name,
-      {row_cutoff, metadata_cutoff, index_cutoff})) return failure;
+      {row_next - 1, metadata_next - 1, index_next - 1})) return failure;
   return success;
 }
 
@@ -346,16 +352,19 @@ EngineApiDiagnostic RollbackToMgaSavepointMarker(const EngineRequestContext& con
   if (savepoint_it == tx_it->second.end()) {
     return MakeInvalidRequestDiagnostic("transaction.rollback_to_savepoint", "savepoint_not_found");
   }
-  const std::uint64_t row_upper = NextRowEventSequence(context) - 1;
-  const std::uint64_t metadata_upper = NextMetadataEventSequence(context) - 1;
-  const std::uint64_t index_upper = NextIndexEventSequence(context) - 1;
+  const std::uint64_t row_next = NextRowEventSequence(context);
+  const std::uint64_t metadata_next = NextMetadataEventSequence(context);
+  const std::uint64_t index_next = NextIndexEventSequence(context);
+  if (row_next == 0 || metadata_next == 0 || index_next == 0) {
+    return MakeInvalidRequestDiagnostic("transaction.rollback_to_savepoint", "event_sequence_authority_invalid");
+  }
   auto success = OkDiagnostic();
   auto failure = MakeInvalidRequestDiagnostic("transaction.rollback_to_savepoint", "savepoint_rollback_append_failed");
   scratchbird::core::platform::MaybeCrashAtMgaSavepointBoundary(
       "rollback_before_marker", context.local_transaction_id);
   if (!AppendMarker(SavepointStorePath(context), 3, context.local_transaction_id, savepoint_name,
       {savepoint_it->second.row_event_sequence, savepoint_it->second.metadata_event_sequence,
-       savepoint_it->second.index_event_sequence}, {row_upper, metadata_upper, index_upper})) return failure;
+       savepoint_it->second.index_event_sequence}, {row_next - 1, metadata_next - 1, index_next - 1})) return failure;
   scratchbird::core::platform::MaybeCrashAtMgaSavepointBoundary(
       "rollback_after_marker", context.local_transaction_id);
   return success;

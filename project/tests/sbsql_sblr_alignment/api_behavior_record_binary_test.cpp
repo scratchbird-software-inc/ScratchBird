@@ -3,6 +3,7 @@
 #include "behavior_support/api_behavior_record_codec.hpp"
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <source_location>
 namespace a=scratchbird::engine::internal_api;
@@ -27,4 +28,31 @@ int main(){
   std::istringstream stream(bytes+bytes,std::ios::binary);Check(a::ReadApiBehaviorRecord(stream,&read));Check(a::ReadApiBehaviorRecord(stream,&read));Check(stream.peek()==std::char_traits<char>::eof());
   r.target_schema_uuid={};Check(a::EncodeApiBehaviorRecord(r,&bytes));Check(decode(bytes,&read)&&read.target_schema_uuid.is_nil());
   auto saved=bytes;r.object_uuid={};Check(!a::EncodeApiBehaviorRecord(r,&bytes)&&bytes==saved);
+
+  r.object_uuid=Id(1);
+  for (const auto sequence : {std::uint64_t{1}, std::uint64_t{0x0102030405060708},
+                              std::numeric_limits<std::uint64_t>::max()}) {
+    r.event_sequence=sequence;
+    Check(a::EncodeApiBehaviorRecord(r,&bytes)&&bytes.substr(4,8)=="SBAPI003");
+    for(unsigned n=0;n<8;++n)
+      Check(static_cast<std::uint8_t>(bytes[20+n])==(sequence>>(8*n)&255));
+    for(unsigned n=0;n<16;++n)
+      Check(static_cast<std::uint8_t>(bytes[28+n])==r.object_uuid.bytes[n]);
+    Check(decode(bytes,&read)&&read.event_sequence==sequence&&read.creator_tx==r.creator_tx&&
+          read.payload==r.payload&&read.object_uuid==r.object_uuid);
+    Check(a::EncodeApiBehaviorRecord(read,&repeated)&&repeated==bytes);
+    for(std::size_t n=0;n<bytes.size();++n) {
+      reject(bytes.substr(0,n));
+      auto damaged=bytes;damaged[n]^=1;reject(damaged);
+    }
+    invalid=bytes;invalid.replace(20,8,8,'\0');reject(seal(invalid));
+    invalid=bytes;invalid.replace(4,8,"SBAPI002");reject(seal(invalid));
+    reject(bytes+"x");
+    std::istringstream mixed(saved+bytes+saved,std::ios::binary);
+    read.event_sequence=sequence;
+    Check(a::ReadApiBehaviorRecord(mixed,&read)&&read.event_sequence==0);
+    Check(a::ReadApiBehaviorRecord(mixed,&read)&&read.event_sequence==sequence);
+    Check(a::ReadApiBehaviorRecord(mixed,&read)&&read.event_sequence==0);
+    Check(mixed.peek()==std::char_traits<char>::eof());
+  }
 }

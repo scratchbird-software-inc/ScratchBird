@@ -10,10 +10,15 @@
 #include <istream>
 namespace scratchbird::engine::internal_api {
 inline constexpr std::size_t kApiBehaviorRecordMaximumBytes=64*1024*1024;
+// SBAPI003 preserves an engine-reserved metadata sequence. Zero denotes the
+// older unsequenced frame, never a sequence inferred from physical position.
+inline constexpr std::string_view kSequencedApiBehaviorEventMagic = "SBAPI003";
 inline bool EncodeApiBehaviorRecord(const ApiBehaviorRecord& record,std::string* output){
   if(!output||!core::uuid::IsEngineIdentityUuid(record.object_uuid)||record.operation_id.empty()||record.object_kind.empty()||record.state.empty())return false;
-  std::string payload(kApiBehaviorEventMagic);
+  std::string payload(record.event_sequence == 0 ? std::string_view(kApiBehaviorEventMagic)
+                                                : kSequencedApiBehaviorEventMagic);
   AppendBinaryU64(&payload,record.creator_tx);
+  if (record.event_sequence != 0) AppendBinaryU64(&payload, record.event_sequence);
   for(const auto& id:{record.object_uuid,record.target_database_uuid,record.target_schema_uuid,record.target_object_uuid}){
     if(!id.is_nil()&&!core::uuid::IsEngineIdentityUuid(id))return false;
     payload.append(reinterpret_cast<const char*>(id.bytes.data()),16);
@@ -33,11 +38,15 @@ inline bool DecodeApiBehaviorRecord(std::span<const std::uint8_t> framed,ApiBeha
   std::size_t cursor=0;std::uint32_t length=0;
   if(!ReadBinaryU32(framed,&cursor,&length)||length>kApiBehaviorRecordMaximumBytes||length!=framed.size()-4||length<8+8+64+20+1+32)return false;
   const auto bytes=framed.subspan(4);const auto payload=bytes.first(bytes.size()-32);
-  if(std::string_view(reinterpret_cast<const char*>(payload.data()),8)!=kApiBehaviorEventMagic)return false;
+  const auto magic = std::string_view(reinterpret_cast<const char*>(payload.data()),8);
+  const bool sequenced = magic == kSequencedApiBehaviorEventMagic;
+  if (!sequenced && magic != kApiBehaviorEventMagic) return false;
   const auto hash=core::hash::ComputeSha256Digest(payload.data(),payload.size());
   if(!hash.ok()||!std::equal(hash.digest.begin(),hash.digest.end(),bytes.end()-32))return false;
   cursor=8;ApiBehaviorRecord candidate;
   if(!ReadBinaryU64(payload,&cursor,&candidate.creator_tx))return false;
+  if (sequenced && (!ReadBinaryU64(payload, &cursor, &candidate.event_sequence) ||
+                    candidate.event_sequence == 0)) return false;
   for(auto* id:{&candidate.object_uuid,&candidate.target_database_uuid,&candidate.target_schema_uuid,&candidate.target_object_uuid}){
     if(payload.size()-cursor<16)return false;
     std::copy_n(payload.begin()+cursor,16,id->bytes.begin());cursor+=16;
