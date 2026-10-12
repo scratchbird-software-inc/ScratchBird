@@ -14,6 +14,11 @@ inline constexpr platform::Uuid kNativeTextSetPolicyV1{{
 struct NativeTextSetBindingV1 {
   platform::Uuid policy_uuid;
   u64 policy_generation = 0;
+  platform::Uuid catalog_snapshot_uuid;
+  u64 catalog_generation = 0;
+  u64 registry_generation = 0;
+  platform::Uuid element_type_uuid;
+  u64 element_type_generation = 0;
   scratchbird::engine::ExecutionTypeDescriptor element;
   DatatypeTextSeedAuthority text_seed;
   bool ordered = false;

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "datatype_text_set.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "resource_seed_pack.hpp"
 #include "../support/bounded_memory_resource_probe.hpp"
 #include <algorithm>
@@ -36,11 +37,18 @@ dt::NativeTextSetBindingV1 Binding(unsigned profile=2){
   s.resource_epoch=10;s.collation_epoch=11;s.comparison_profile=static_cast<res::CollationProfile>(profile);
   s.collation_case_insensitive=profile==2||profile==3;s.collation_accent_insensitive=profile==2;
   if(profile!=1)s.unicode_collation=resources.unicode_collation;
-  const auto catalog=dt::LoadCurrentCoreDatatypeCatalogManifest();Check(catalog.ok(),"catalog");
-  const auto row=dt::LookupDatatypeCatalogRow(catalog.manifest,dt::CanonicalTypeId::character);
-  Check(row.ok()&&row.manifest.descriptor_rows.size()==1,"character descriptor");
-  dt::CatalogExecutionTypeMetadata md;md.descriptor_uuid=row.manifest.descriptor_rows[0].descriptor_uuid;
-  md.descriptor_epoch=row.manifest.descriptor_rows[0].descriptor_epoch;
+  const auto rows=dt::CurrentDatatypeTypeCodecIdentityRowsV3();
+  const auto entry=std::find_if(rows.begin(),rows.end(),[](const auto& registered){
+    const auto& value=registered.legacy_fields;
+    return value.catalog_generation==8&&value.registry_generation==8&&
+        dt::IsExactCanonicalTextTypeCodecIdentityV1(value);});
+  Check(entry!=rows.end(),"explicit native character registry row");
+  const auto& row=entry->legacy_fields;
+  b.catalog_snapshot_uuid=row.catalog_snapshot_uuid;b.catalog_generation=row.catalog_generation;
+  b.registry_generation=row.registry_generation;b.element_type_uuid=row.type_uuid;
+  b.element_type_generation=row.type_generation;
+  dt::CatalogExecutionTypeMetadata md;md.descriptor_uuid={p::UuidKind::object,row.descriptor_uuid};
+  md.descriptor_epoch=row.descriptor_generation;
   md.charset_uuid={p::UuidKind::object,s.charset_uuid};md.collation_uuid={p::UuidKind::object,s.collation_uuid};
   auto d=dt::LookupExecutionTypeDescriptorFromCatalog(dt::CanonicalTypeId::character,md);
   Check(d.ok(),"bound descriptor");b.element=d.descriptor;b.element.nullable_allowed=true;b.allow_null_elements=true;
@@ -72,7 +80,7 @@ void Semantics(){
   Check(count.ok()&&count.value.encoded_value.size()==8&&count.value.encoded_value[0]==5,"native cardinality");
   auto renamed=b;renamed.element.stable_name="renamed";renamed.text_seed.collation_name="untrusted label";
   Check(Encode(renamed,input)==frame,"display rename changed binary frame");
-  Check(frame.starts_with("SBTSET01")&&frame.find("019f0000-")==std::string::npos,"text UUID in frame");
+  Check(frame.starts_with("SBTSET02")&&frame.find("019f0000-")==std::string::npos,"text UUID in frame");
   b.duplicates=dt::TextSetDuplicatePolicyV1::reject;
   const auto duplicate=dt::EncodeNativeTextSetV1(b,input,Limits());Check(!duplicate.ok()&&duplicate.diagnostic.diagnostic_code=="CSCR.SET.DUPLICATE_REFUSED","explicit rejection");
   b.duplicates=dt::TextSetDuplicatePolicyV1::preserve;
@@ -84,14 +92,24 @@ void Semantics(){
     Check(dt::DecodeNativeTextSetV1(q,f,Limits()).ok(),"all declared collation recipes");}
 }
 void Invalid(){auto b=Binding();const auto f=Encode(b,{{false,"abc"},{true,{}}});
+  auto predecessor=f;predecessor.replace(0,8,"SBTSET01");
+  Check(!dt::DecodeNativeTextSetV1(b,predecessor,Limits()).ok(),"cohort-free predecessor frame accepted");
   for(std::size_t n=0;n<f.size();++n)Check(!dt::DecodeNativeTextSetV1(b,std::string_view(f).substr(0,n),Limits()).ok(),"truncated frame accepted");
   auto garbage=f;garbage+='x';Check(!dt::DecodeNativeTextSetV1(b,garbage,Limits()).ok(),"trailing byte accepted");
-  for(unsigned i=0;i<12;++i){auto bad=b;switch(i){case 0:++bad.policy_generation;break;case 1:bad.policy_uuid.bytes[0]^=1;break;
+  for(unsigned i=0;i<18;++i){auto bad=b;switch(i){case 0:++bad.policy_generation;break;case 1:bad.policy_uuid.bytes[0]^=1;break;
     case 2:++bad.text_seed.resource_epoch;break;case 3:++bad.text_seed.collation_epoch;break;case 4:bad.text_seed.database_uuid.bytes[0]^=1;break;
     case 5:bad.text_seed.charset_uuid.bytes[0]^=1;break;case 6:bad.element.collation_uuid.bytes[0]^=1;break;
     case 7:bad.element.domain_uuid.bytes[0]=1;break;case 8:++bad.element.descriptor_epoch;break;case 9:bad.text_seed.unicode_collation.reset();break;
-    case 10:bad.ordered=true;break;case 11:bad.element.modifier_flags^=0x80000000;break;}
-    auto r=dt::DecodeNativeTextSetV1(bad,f,Limits());Check(!r.ok()&&r.elements.empty(),"binding mutation accepted");}
+    case 10:bad.ordered=true;break;case 11:bad.element.modifier_flags^=0x80000000;break;
+    case 12:bad.catalog_snapshot_uuid={};break;case 13:++bad.catalog_generation;break;
+    case 14:++bad.registry_generation;break;case 15:bad.element_type_uuid={};break;
+    case 16:++bad.element_type_generation;break;case 17:bad.catalog_snapshot_uuid.bytes[15]^=1;break;}
+    auto r=dt::DecodeNativeTextSetV1(bad,f,Limits());Check(!r.ok()&&r.elements.empty(),"binding mutation accepted");
+    if(i>=12){const auto encoded=dt::EncodeNativeTextSetV1(bad,std::vector<dt::NativeTextSetElementV1>{{false,"abc"}},Limits());
+      Check(!encoded.ok()&&encoded.encoded_set.empty()&&encoded.value.encoded_value.empty()&&
+          encoded.diagnostic.diagnostic_code=="DATATYPE.DESCRIPTOR.INVALID","invalid cohort encoded a text SET");
+      const auto applied=dt::ApplyNativeTextSetOperationV1(bad,dt::DatatypeSetOperationKind::cardinality,f,{}, {},Limits());
+      Check(!applied.ok()&&applied.value.encoded_value.empty()&&applied.encoded_set.empty(),"invalid cohort published cardinality");}}
   for(const auto& v:std::vector<dt::NativeTextSetElementV1>{{false,std::string("\xc0\x80",2)},{true,"<NULL>"}}){auto r=dt::EncodeNativeTextSetV1(b,std::vector{v},Limits());Check(!r.ok()&&r.encoded_set.empty()&&r.value.encoded_value.empty(),"malformed value output");}
   for(unsigned i=0;i<5;++i){auto limits=Limits();if(i==0)limits.maximum_elements=1;if(i==1)limits.maximum_value_bytes=1;if(i==2)limits.maximum_key_bytes=1;if(i==3)limits.maximum_work_bytes=1;if(i==4)limits.maximum_output_bytes=1;
     auto r=dt::DecodeNativeTextSetV1(b,f,limits);Check(!r.ok()&&r.elements.empty(),"resource bound ignored");}
@@ -185,5 +203,78 @@ void Cancellation(){auto b=Binding();const std::vector<dt::NativeTextSetElementV
     for(unsigned stop=1;stop<=count;++stop){state={0,stop};run(true);Check(state.count==stop,"cancelled operation continued");}
   }
 }
-int main()try{Semantics();Invalid();Allocation();Boundaries();Cancellation();std::cout<<checks<<" native text SET checks passed\n";}
+void Cohorts(){
+  const auto original=Binding();const std::vector<dt::NativeTextSetElementV1> values={{false,"a"},{false,"A"},{true,{}}};
+  const auto original_frame=Encode(original,values);unsigned admitted=0;
+  const auto u64_at=[](std::string_view frame,std::size_t at){std::uint64_t value=0;
+    for(unsigned i=0;i<8;++i)value=(value<<8)|static_cast<unsigned char>(frame[at+i]);return value;};
+  for(const auto& registered:dt::CurrentDatatypeTypeCodecIdentityRowsV3()){
+    const auto& row=registered.legacy_fields;
+    if(!dt::IsExactCanonicalTextTypeCodecIdentityV1(row))continue;
+    auto b=original;b.catalog_snapshot_uuid=row.catalog_snapshot_uuid;
+    b.catalog_generation=row.catalog_generation;b.registry_generation=row.registry_generation;
+    b.element_type_uuid=row.type_uuid;b.element_type_generation=row.type_generation;
+    const auto frame=Encode(b,values);++admitted;
+    Check(frame.size()>=88&&std::equal(row.catalog_snapshot_uuid.bytes.begin(),row.catalog_snapshot_uuid.bytes.end(),
+        reinterpret_cast<const unsigned char*>(frame.data()+32)),"catalog snapshot is not raw binary16 in SET frame");
+    Check(u64_at(frame,48)==row.catalog_generation&&u64_at(frame,56)==row.registry_generation&&
+        u64_at(frame,80)==row.type_generation,"SET cohort generations are not exact native BE64");
+    Check(std::equal(row.type_uuid.bytes.begin(),row.type_uuid.bytes.end(),
+        reinterpret_cast<const unsigned char*>(frame.data()+64)),"element type UUID is not raw binary16");
+    Check(dt::DecodeNativeTextSetV1(b,frame,Limits()).ok(),"explicit admitted TEXT cohort failed round trip");
+    Check(Truth(dt::ApplyNativeTextSetOperationV1(b,dt::DatatypeSetOperationKind::equals,frame,frame,{},Limits())),
+        "explicit admitted TEXT cohort equality failed");
+    if(row.catalog_snapshot_uuid!=original.catalog_snapshot_uuid){
+      Check(frame!=original_frame&&!dt::DecodeNativeTextSetV1(original,frame,Limits()).ok(),"cross-cohort frame acquired default authority");
+      const auto cross=dt::ApplyNativeTextSetOperationV1(original,dt::DatatypeSetOperationKind::equals,original_frame,frame,{},Limits());
+      Check(!cross.ok()&&cross.value.encoded_value.empty(),"cross-cohort equality published a result");
+    }
+  }
+  Check(admitted>1,"TEXT cohort matrix did not cover multiple admitted cohorts");
+}
+void CohortSnapshot(){
+  auto binding=Binding();const auto original=binding;
+  const std::vector<dt::NativeTextSetElementV1> values={{false,"a"},{true,{}}};
+  const auto expected=Encode(original,values);
+  struct State{dt::NativeTextSetBindingV1* binding;bool changed=false;} state{&binding};
+  auto limits=Limits();limits.cancellation_context=&state;
+  limits.cancelled=[](void* opaque)noexcept{auto& s=*static_cast<State*>(opaque);
+    if(!s.changed){s.changed=true;s.binding->catalog_snapshot_uuid={};s.binding->catalog_generation=0;
+      s.binding->registry_generation=0;s.binding->element_type_uuid={};s.binding->element_type_generation=0;}
+    return false;};
+  const auto result=dt::EncodeNativeTextSetV1(binding,values,limits);
+  Check(state.changed&&result.ok()&&result.encoded_set==expected,"callback changed admitted cohort/frame identity");
+  const auto next=dt::EncodeNativeTextSetV1(binding,values,Limits());
+  Check(!next.ok()&&next.encoded_set.empty()&&next.value.encoded_value.empty(),"next call reused absent cohort authority");
+}
+void NonTextRegistry(){
+  auto binding=Binding();const auto frame=Encode(binding,{{false,"a"}});
+  const auto rows=dt::CurrentDatatypeTypeCodecIdentityRowsV3();
+  const auto other=std::find_if(rows.begin(),rows.end(),[](const auto& row){
+    return row.legacy_fields.catalog_generation==8&&row.legacy_fields.registry_generation==8&&
+        row.legacy_fields.canonical_binary_type_code==static_cast<unsigned>(dt::CanonicalTypeId::binary);});
+  Check(other!=rows.end(),"registered binary cohort fixture unavailable");
+  const auto& row=other->legacy_fields;
+  binding.catalog_snapshot_uuid=row.catalog_snapshot_uuid;binding.catalog_generation=row.catalog_generation;
+  binding.registry_generation=row.registry_generation;binding.element_type_uuid=row.type_uuid;
+  binding.element_type_generation=row.type_generation;
+  std::copy(row.descriptor_uuid.bytes.begin(),row.descriptor_uuid.bytes.end(),binding.element.descriptor_uuid.bytes);
+  binding.element.descriptor_epoch=row.descriptor_generation;
+  Check(dt::FindDatatypeTypeCodecIdentityV3(binding.catalog_snapshot_uuid,binding.catalog_generation,
+      binding.registry_generation,row.descriptor_uuid,binding.element.descriptor_epoch)==&*other,
+      "non-TEXT control is not a complete exact registered tuple");
+  const auto encoded=dt::EncodeNativeTextSetV1(binding,std::vector<dt::NativeTextSetElementV1>{{false,"a"}},Limits());
+  Check(!encoded.ok()&&encoded.encoded_set.empty()&&encoded.value.encoded_value.empty()&&
+      encoded.diagnostic.diagnostic_code=="DATATYPE.DESCRIPTOR.INVALID","registered non-TEXT tuple encoded a TEXT set");
+  const auto decoded=dt::DecodeNativeTextSetV1(binding,frame,Limits());
+  Check(!decoded.ok()&&decoded.elements.empty()&&decoded.diagnostic.diagnostic_code=="DATATYPE.DESCRIPTOR.INVALID",
+      "registered non-TEXT tuple decoded a TEXT set");
+  for(const auto operation:{dt::DatatypeSetOperationKind::membership,dt::DatatypeSetOperationKind::cardinality,
+      dt::DatatypeSetOperationKind::equals,dt::DatatypeSetOperationKind::subset,dt::DatatypeSetOperationKind::superset}){
+    const auto result=dt::ApplyNativeTextSetOperationV1(binding,operation,frame,frame,{false,"a"},Limits());
+    Check(!result.ok()&&result.value.encoded_value.empty()&&result.encoded_set.empty()&&
+        result.diagnostic.diagnostic_code=="DATATYPE.DESCRIPTOR.INVALID","registered non-TEXT tuple published SET operation result");
+  }
+}
+int main()try{Semantics();Invalid();Allocation();Boundaries();Cancellation();Cohorts();CohortSnapshot();NonTextRegistry();std::cout<<checks<<" native text SET checks passed\n";}
 catch(const std::exception&e){allocation_budget=-1;std::cerr<<e.what()<<" after "<<checks<<" checks\n";return 1;}

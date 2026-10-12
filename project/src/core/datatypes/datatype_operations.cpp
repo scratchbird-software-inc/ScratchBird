@@ -5451,10 +5451,19 @@ NativeTextSetBindingV1 ValidateTextSetBinding(const NativeTextSetBindingV1& b) {
       (!b.ordered && duplicate == TextSetDuplicatePolicyV1::collapse_first))
     TextSetRefuse("CSCR.DESCRIPTOR.INVALID", "text_set_binding_invalid");
   CatalogExecutionTypeMetadata md;
-  const auto* row=CurrentValidatedBuiltinRow(CanonicalTypeId::character);
-  if (!row) TextSetRefuse("DATATYPE.DESCRIPTOR.INVALID", "text_set_catalog_unavailable");
-  md.descriptor_uuid = row->descriptor_uuid;
-  md.descriptor_epoch = row->descriptor_epoch;
+  platform::Uuid descriptor_uuid;
+  std::copy_n(b.element.descriptor_uuid.bytes, 16, descriptor_uuid.bytes.begin());
+  // Borrow the immutable registry row instead of copying its strings and
+  // unrelated codec metadata into every SET operation's transient result.
+  const auto* registered = FindDatatypeTypeCodecIdentityV3(b.catalog_snapshot_uuid,
+      b.catalog_generation, b.registry_generation, descriptor_uuid, b.element.descriptor_epoch);
+  if (!registered || !IsExactCanonicalTextTypeCodecIdentityV1(registered->legacy_fields) ||
+      registered->legacy_fields.type_uuid != b.element_type_uuid ||
+      registered->legacy_fields.type_generation != b.element_type_generation)
+    TextSetRefuse("DATATYPE.DESCRIPTOR.INVALID", "text_set_catalog_binding_invalid");
+  const auto* row = &registered->legacy_fields;
+  md.descriptor_uuid = {platform::UuidKind::object, row->descriptor_uuid};
+  md.descriptor_epoch = row->descriptor_generation;
   md.length = b.element.length;
   md.charset_uuid = {platform::UuidKind::object, b.text_seed.charset_uuid};
   md.collation_uuid = {platform::UuidKind::object, b.text_seed.collation_uuid};
@@ -5467,6 +5476,9 @@ NativeTextSetBindingV1 ValidateTextSetBinding(const NativeTextSetBindingV1& b) {
   // large) and rejected domain stacks are never copied into execution state.
   NativeTextSetBindingV1 result;
   result.policy_uuid=b.policy_uuid;result.policy_generation=b.policy_generation;
+  result.catalog_snapshot_uuid=b.catalog_snapshot_uuid;
+  result.catalog_generation=b.catalog_generation;result.registry_generation=b.registry_generation;
+  result.element_type_uuid=b.element_type_uuid;result.element_type_generation=b.element_type_generation;
   result.element=std::move(expected.descriptor);
   result.element.nullable_allowed=b.element.nullable_allowed;
   result.element.stable_name.clear();
@@ -5481,8 +5493,11 @@ NativeTextSetBindingV1 ValidateTextSetBinding(const NativeTextSetBindingV1& b) {
   return result;
 }
 std::pmr::string TextSetHeader(const NativeTextSetBindingV1& b, TextSetWork& work) {
-  std::pmr::string bytes("SBTSET01", &work), material(&work);
+  std::pmr::string bytes("SBTSET02", &work), material(&work);
   AppendSetUuid(&bytes, b.policy_uuid); AppendSetU64(&bytes, b.policy_generation);
+  AppendSetUuid(&bytes, b.catalog_snapshot_uuid);
+  AppendSetU64(&bytes, b.catalog_generation); AppendSetU64(&bytes, b.registry_generation);
+  AppendSetUuid(&bytes, b.element_type_uuid); AppendSetU64(&bytes, b.element_type_generation);
   AppendExecutionDescriptorMaterial(b.element, false, material);
   AppendSetString(&bytes, material);
   AppendSetUuid(&bytes, b.text_seed.database_uuid);
