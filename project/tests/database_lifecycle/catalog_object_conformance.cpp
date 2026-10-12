@@ -19,6 +19,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -422,7 +423,37 @@ void TestMissingUuidOwnershipCacheAndMga(const std::filesystem::path& path,
   const auto created = catalog_api::EngineCatalogCreateObject(visible_object);
   RequireOk(created, "epoch probe create failed");
   const auto created_tx = create_context.local_transaction_id;
+  // A real later committed transaction makes the issued observer bound cover
+  // the still-active creator. Only that creator's outcome changes below; no
+  // caller-manufactured snapshot bound or inventory status is used.
+  auto barrier = Begin(path, database_uuid, scratchbird::tests::FixtureUuid(1378, 8));
+  Commit(barrier);
+  auto outcome_observer = Begin(path, database_uuid, scratchbird::tests::FixtureUuid(1378, 8));
+  Require(outcome_observer.snapshot_visible_through_local_transaction_id >= created_tx,
+          "issued observer boundary does not cover creator");
+  const auto read_catalog_bytes = [&] {
+    std::ifstream in(path.string() + ".sb.catalog_object_events", std::ios::binary);
+    Require(in.is_open(), "catalog outcome fixture journal unavailable");
+    std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    Require(!in.bad(), "catalog outcome fixture journal read failed");
+    return bytes;
+  };
+  const auto catalog_before_commit = read_catalog_bytes();
+  for (int repeat = 0; repeat != 2; ++repeat) {
+    RequireDiagnostic(catalog_api::EngineCatalogLookupObjectByUuid(
+        LookupRequest(outcome_observer, scratchbird::tests::FixtureUuid(1378, 17), "table")),
+        catalog_api::kCatalogObjectDiagnosticMgaVisibilityRefused,
+        "active sibling creator leaked through catalog cache");
+  }
   Commit(create_context);
+  Require(read_catalog_bytes() == catalog_before_commit,
+          "creator commit unexpectedly changed the catalog journal");
+  for (int repeat = 0; repeat != 2; ++repeat) {
+    RequireOk(catalog_api::EngineCatalogLookupObjectByUuid(
+        LookupRequest(outcome_observer, scratchbird::tests::FixtureUuid(1378, 17), "table")),
+        "cached catalog hid creator after its actual commit");
+  }
+  Rollback(outcome_observer);
 
   auto stale_cache_context = Begin(path, database_uuid, scratchbird::tests::FixtureUuid(1378, 8));
   catalog_api::EngineCatalogValidateMetadataCacheRequest stale_cache;

@@ -15,16 +15,21 @@
 #include "crud_support/crud_store.hpp"
 #include "local_transaction_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "hash_digest.hpp"
+#include "memory.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <set>
 #include <sstream>
+#include <spanstream>
+#include <tuple>
 #include <utility>
 
 namespace scratchbird::engine::internal_api {
@@ -590,54 +595,95 @@ CatalogJournalOpenStatus OpenCatalogJournal(const EngineRequestContext& context,
                                         : CatalogJournalOpenStatus::refused;
 }
 
-std::string CatalogLifecycleFileFingerprint(const std::string& path) {
-  std::error_code ec;
-  const std::filesystem::path fs_path(path);
-  if (!std::filesystem::exists(fs_path, ec) || ec) return path + ":missing";
-  const auto size = std::filesystem::file_size(fs_path, ec);
-  if (ec) return path + ":size_error";
-  const auto mtime = std::filesystem::last_write_time(fs_path, ec);
-  const auto size_value = static_cast<unsigned long long>(size);
-  if (ec) return path + ":" + std::to_string(size_value) + ":mtime_error";
-  const auto mtime_ticks = static_cast<long long>(mtime.time_since_epoch().count());
-  return path + ":" + std::to_string(size_value) + ":" + std::to_string(mtime_ticks);
-}
+struct CatalogLifecycleCacheKey {
+  std::string database_path;
+  EngineUuid database_uuid, session_uuid, transaction_uuid;
+  bool enforce_visibility = true;
+  std::uint64_t local_tx = 0, snapshot_bound = 0, catalog = 0, security = 0,
+                resource = 0, name_resolution = 0, journal_bytes = 0;
+  core::hash::Digest256 content{};
 
-std::string CatalogLifecycleLoadCacheKey(const EngineRequestContext& context,
-                                         LoadOptions options) {
-  std::ostringstream key;
-  key << "db=" << context.database_path
-      << "|visible=" << (options.enforce_visibility ? "1" : "0")
-      << "|local_tx=" << context.local_transaction_id
-      << "|snapshot_visible_through="
-      << context.snapshot_visible_through_local_transaction_id
-      << "|catalog=" << context.catalog_generation_id
-      << "|security=" << context.security_epoch
-      << "|resource=" << context.resource_epoch
-      << "|name_resolution=" << context.name_resolution_epoch
-      << "|events=" << CatalogLifecycleFileFingerprint(EventPath(context))
-      << "|crud=" << CatalogLifecycleFileFingerprint(context.database_path + ".sb.crud_events")
-      << "|mga_savepoints="
-      << CatalogLifecycleFileFingerprint(context.database_path +
-                                         ".sb.mga_savepoints");
-  if (context.statement_transaction_inventory_snapshot != nullptr) {
-    const auto& inventory =
-        *context.statement_transaction_inventory_snapshot;
-    key << "|txn_snapshot_db_size=" << inventory.database_file_size
-        << "|txn_snapshot_db_mtime=" << inventory.database_write_time_count
-        << "|txn_snapshot_journal_present="
-        << (inventory.publish_journal_present ? 1 : 0)
-        << "|txn_snapshot_journal_size=" << inventory.publish_journal_size
-        << "|txn_snapshot_journal_mtime="
-        << inventory.publish_journal_write_time_count;
-  } else {
-    key << "|txn_db="
-        << CatalogLifecycleFileFingerprint(context.database_path)
-        << "|txn_publish="
-        << CatalogLifecycleFileFingerprint(context.database_path +
-                                           ".sb.txn_publish");
+  bool operator<(const CatalogLifecycleCacheKey& other) const {
+    return std::tie(database_path, database_uuid, session_uuid, transaction_uuid,
+                    enforce_visibility, local_tx, snapshot_bound, catalog, security,
+                    resource, name_resolution, journal_bytes, content) <
+           std::tie(other.database_path, other.database_uuid, other.session_uuid,
+                    other.transaction_uuid, other.enforce_visibility, other.local_tx,
+                    other.snapshot_bound, other.catalog, other.security, other.resource,
+                    other.name_resolution, other.journal_bytes, other.content);
   }
-  return key.str();
+};
+
+struct CatalogReadCacheImage {
+  core::memory::ScopedAllocation bytes;
+  std::optional<std::ispanstream> input;
+  std::optional<CatalogLifecycleCacheKey> key;
+};
+
+// Cache admission is optional; successful cached reads are not. Hash and
+// decode the same owned bytes, never a hash followed by a second file read.
+// If the memory manager cannot grant the image, retain ordinary streaming
+// replay without cache lookup/publication rather than allocating off-budget.
+bool PrepareCatalogReadCacheImage(const EngineRequestContext& context,
+                                  LoadOptions options, const CrudState* transactions,
+                                  std::ifstream& journal, CatalogReadCacheImage* image) {
+  namespace memory = core::memory;
+  journal.seekg(0, std::ios::end);
+  const auto end = journal.tellg();
+  journal.seekg(0, std::ios::beg);
+  if (end < 0 || !journal) return false;
+  const auto extent = static_cast<std::uint64_t>(end);
+  if (extent > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max()) ||
+      extent > std::numeric_limits<std::size_t>::max() - 8) return true;
+  std::size_t total = static_cast<std::size_t>(extent) + 8;
+  if (transactions != nullptr) {
+    for (const auto& [id, state] : transactions->transactions) {
+      (void)id;
+      if (state.size() > std::numeric_limits<std::size_t>::max() - total ||
+          total + state.size() > std::numeric_limits<std::size_t>::max() - 16) return true;
+      total += 16 + state.size();
+    }
+  }
+  memory::MemoryTag tag;
+  tag.subsystem = core::platform::Subsystem::catalog;
+  tag.category = memory::MemoryCategory::core_runtime;
+  tag.lifetime = memory::MemoryLifetime::statement;
+  tag.purpose = "catalog_read_cache_image";
+  tag.callsite = "catalog.object.load";
+  tag.binary_ownership[memory::MemoryBinaryScopeKind::owner] = context.database_uuid.bytes;
+  tag.binary_ownership[memory::MemoryBinaryScopeKind::context] = context.database_uuid.bytes;
+  tag.binary_ownership[memory::MemoryBinaryScopeKind::database] = context.database_uuid.bytes;
+  if (!memory::MemorySystemUuidValid(context.database_uuid.bytes)) return true;
+  auto allocation = memory::DefaultMemoryManager().AllocateScoped(
+      total, alignof(std::max_align_t), std::move(tag));
+  if (!allocation.ok()) return true;
+  image->bytes = std::move(allocation.allocation);
+  auto* bytes = static_cast<std::uint8_t*>(image->bytes.data());
+  journal.read(reinterpret_cast<char*>(bytes), static_cast<std::streamsize>(extent));
+  if (!journal || journal.peek() != std::char_traits<char>::eof() || journal.bad()) return false;
+  auto* cursor = bytes + extent;
+  const auto append_u64 = [&](std::uint64_t value) {
+    for (int shift = 56; shift >= 0; shift -= 8) *cursor++ = static_cast<std::uint8_t>(value >> shift);
+  };
+  append_u64(transactions == nullptr ? 0 : transactions->transactions.size());
+  if (transactions != nullptr) {
+    for (const auto& [id, state] : transactions->transactions) {
+      append_u64(id);
+      append_u64(state.size());
+      cursor = std::copy(state.begin(), state.end(), cursor);
+    }
+  }
+  const auto digest = core::hash::ComputeSha256Digest(bytes, total);
+  if (!digest.ok() || digest.digest_bytes != core::hash::kSha256DigestBytes) return false;
+  image->input.emplace(std::span<char>(reinterpret_cast<char*>(bytes),
+                                       static_cast<std::size_t>(extent)));
+  image->key = CatalogLifecycleCacheKey{
+      context.database_path, context.database_uuid, context.session_uuid, context.transaction_uuid,
+      options.enforce_visibility, context.local_transaction_id,
+      context.snapshot_visible_through_local_transaction_id, context.catalog_generation_id,
+      context.security_epoch, context.resource_epoch, context.name_resolution_epoch,
+      extent, digest.digest};
+  return true;
 }
 
 std::mutex& CatalogLifecycleLoadCacheMutex() {
@@ -645,14 +691,14 @@ std::mutex& CatalogLifecycleLoadCacheMutex() {
   return mutex;
 }
 
-std::map<std::string, EngineLoadCatalogObjectLifecycleStateResult>&
+std::map<CatalogLifecycleCacheKey, EngineLoadCatalogObjectLifecycleStateResult>&
 CatalogLifecycleLoadCache() {
-  static std::map<std::string, EngineLoadCatalogObjectLifecycleStateResult> cache;
+  static std::map<CatalogLifecycleCacheKey, EngineLoadCatalogObjectLifecycleStateResult> cache;
   return cache;
 }
 
 std::optional<EngineLoadCatalogObjectLifecycleStateResult>
-LookupCatalogLifecycleLoadCache(const std::string& cache_key) {
+LookupCatalogLifecycleLoadCache(const CatalogLifecycleCacheKey& cache_key) {
   std::lock_guard<std::mutex> guard(CatalogLifecycleLoadCacheMutex());
   const auto found = CatalogLifecycleLoadCache().find(cache_key);
   if (found == CatalogLifecycleLoadCache().end()) return std::nullopt;
@@ -660,9 +706,9 @@ LookupCatalogLifecycleLoadCache(const std::string& cache_key) {
 }
 
 void StoreCatalogLifecycleLoadCache(
-    const std::string& cache_key,
+    const CatalogLifecycleCacheKey& cache_key,
     const EngineLoadCatalogObjectLifecycleStateResult& result) {
-  if (cache_key.empty() || !result.ok) return;
+  if (!result.ok) return;
   std::lock_guard<std::mutex> guard(CatalogLifecycleLoadCacheMutex());
   auto& cache = CatalogLifecycleLoadCache();
   cache[cache_key] = result;
@@ -699,12 +745,17 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
                                          "catalog_transaction_inventory_unavailable");
     return result;
   }
-  const std::string load_cache_key =
-      CatalogLifecycleLoadCacheKey(context, options);
-  if (auto cached = LookupCatalogLifecycleLoadCache(load_cache_key)) {
-    return *cached;
-  }
   const CrudState* transaction_state = crud_state.ok ? &crud_state.state : nullptr;
+  CatalogReadCacheImage image;
+  if (!PrepareCatalogReadCacheImage(context, options, transaction_state, in, &image)) {
+    result.diagnostic = CatalogDiagnostic(kCatalogObjectDiagnosticMgaVisibilityRefused,
+                                         "catalog_journal_read_failed");
+    return result;
+  }
+  if (image.key) {
+    if (auto cached = LookupCatalogLifecycleLoadCache(*image.key)) return *cached;
+  }
+  std::istream& input = image.input ? *image.input : static_cast<std::istream&>(in);
 
   std::map<EngineUuid, EngineCatalogObjectRecord> objects;
   std::vector<EngineCatalogNameRecord> names;
@@ -717,9 +768,9 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
   std::map<EngineUuid, EngineCatalogConstraintSupportStructureRecord> constraint_supports;
   std::set<EngineUuid> retired_objects;
   std::uint64_t event_sequence = 0;
-  while (in.peek() != std::char_traits<char>::eof()) {
+  while (input.peek() != std::char_traits<char>::eof()) {
     CatalogLifecycleRecord event;
-    if (!ReadCatalogLifecycleRecord(in, &event)) {
+    if (!ReadCatalogLifecycleRecord(input, &event)) {
       result.state = {};
       result.diagnostic = CatalogDiagnostic(kCatalogObjectDiagnosticMgaVisibilityRefused,
                                            "invalid_binary_catalog_record");
@@ -824,7 +875,7 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
       result.state.name_resolution_epoch = std::max(result.state.name_resolution_epoch, decoded->name_resolution_epoch);
     }
   }
-  if (in.bad() || !in.eof()) {
+  if (input.bad() || !input.eof()) {
     result.state = {};
     result.diagnostic = CatalogDiagnostic(kCatalogObjectDiagnosticMgaVisibilityRefused,
                                          "catalog_journal_read_failed");
@@ -890,7 +941,7 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
   }
   result.ok = true;
   result.diagnostic = OkDiagnostic();
-  StoreCatalogLifecycleLoadCache(load_cache_key, result);
+  if (image.key) StoreCatalogLifecycleLoadCache(*image.key, result);
   return result;
 }
 

@@ -3,6 +3,7 @@
 #include "catalog/catalog_object_lifecycle.hpp"
 #include "catalog/catalog_object_lifecycle_codec.hpp"
 #include "database_lifecycle.hpp"
+#include "memory.hpp"
 #include "uuid.hpp"
 
 #include <chrono>
@@ -19,6 +20,7 @@ namespace api = scratchbird::engine::internal_api;
 namespace db = scratchbird::storage::database;
 namespace uuid = scratchbird::core::uuid;
 namespace fs = std::filesystem;
+namespace memory = scratchbird::core::memory;
 using scratchbird::core::platform::UuidKind;
 
 int failures = 0;
@@ -83,14 +85,15 @@ int main() {
       Check(state.ok && state.state.objects.empty(), "absent/empty catalog state");
       Check(epoch.ok && epoch.state.metadata_epoch == 0, "absent/empty catalog epoch");
     };
+    std::uint64_t expected_epoch = 41;
     const auto present = [&] {
       const auto state = api::LoadCatalogObjectLifecycleState(context);
       const auto epoch = api::LoadCatalogObjectLifecycleEpochState(context);
       Check(state.ok && state.state.objects.size() == 1 &&
             state.state.objects[0].object_uuid == identity &&
             state.state.objects[0].catalog_row_uuid == record.catalog_row_uuid &&
-            state.state.metadata_epoch == 41, "actual object identity and epoch must survive");
-      Check(epoch.ok && epoch.state.metadata_epoch == 41, "actual metadata epoch must survive");
+            state.state.metadata_epoch == expected_epoch, "actual object identity and epoch must survive");
+      Check(epoch.ok && epoch.state.metadata_epoch == expected_epoch, "actual metadata epoch must survive");
     };
     const auto refused = [&] {
       const auto state = api::LoadCatalogObjectLifecycleState(context);
@@ -106,6 +109,61 @@ int main() {
     absent();
     write(""); absent();
     write(event); present(); present();
+    const auto original_mtime = fs::last_write_time(journal);
+    record.metadata_epoch = 42;
+    std::string replacement;
+    Setup(api::EncodeCatalogLifecycleRecord(record, &replacement) &&
+              replacement.size() == event.size(), "same-size valid replacement encoding failed");
+    write(replacement);
+    fs::last_write_time(journal, original_mtime);
+    expected_epoch = 42;
+    present(); present();
+    auto corrupt = replacement;
+    corrupt.back() ^= 1;
+    write(corrupt);
+    fs::last_write_time(journal, original_mtime);
+    refused();
+    write(event);
+    fs::last_write_time(journal, original_mtime);
+    expected_epoch = 41;
+    present();
+    const auto before_image = memory::DefaultMemoryManager().Snapshot();
+    present();
+    const auto after_image = memory::DefaultMemoryManager().Snapshot();
+    Check(after_image.allocation_count > before_image.allocation_count &&
+              after_image.current_bytes == before_image.current_bytes &&
+              after_image.active_allocation_count == before_image.active_allocation_count,
+          "cache image must use and release real managed memory even on a warm hit");
+    memory::MemoryFailureInjectionConfiguration injection;
+    injection.test_guard = memory::MakeMemoryFailureInjectionTestGuard();
+    injection.fixture_enabled = true;
+    injection.fixture_name = "catalog_cache_image_admission";
+    memory::MemoryFailureInjectionRule rule;
+    rule.rule_id = "catalog_cache_image_admission";
+    rule.purpose = "catalog_read_cache_image";
+    rule.scope_kind = memory::MemoryFailureInjectionScopeKind::database;
+    rule.binary_scope_uuid = context.database_uuid.bytes;
+    injection.rules.push_back(rule);
+    for (const bool invalid : {false, true}) {
+      write(invalid ? corrupt : replacement);
+      fs::last_write_time(journal, original_mtime);
+      Setup(memory::DefaultMemoryManager().EnableAllocationFailureInjection(injection).ok(),
+            "cache image admission fault setup failed");
+      expected_epoch = 42;
+      if (invalid) refused();
+      else present();
+      const auto injected = memory::DefaultMemoryManager().FailureInjectionSnapshot();
+      Setup(memory::DefaultMemoryManager().DisableAllocationFailureInjection().ok(),
+            "cache image admission fault cleanup failed");
+      Check(injected.rules.size() == 1 && injected.rules[0].failure_count == 1,
+            "actual binary-bound image grant refusal was not exercised");
+      Check(memory::DefaultMemoryManager().Snapshot().current_bytes == before_image.current_bytes,
+            "streaming fallback retained a cache image allocation");
+    }
+    write(event);
+    fs::last_write_time(journal, original_mtime);
+    expected_epoch = 41;
+    present();
     const auto permissions = fs::status(journal).permissions();
 #if defined(__linux__)
     // Run as an ordinary user: require a real kernel access denial, no mock.
