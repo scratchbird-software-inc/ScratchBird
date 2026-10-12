@@ -1368,6 +1368,41 @@ void TestRelationProjectionView(Fixture& fixture) {
     return image;
   };
   const auto before_refusals = publication_image();
+  for (unsigned shape = 0; shape != 4; ++shape) {
+    api::EngineCreateViewRequest incomplete;
+    incomplete.context = create;
+    incomplete.target_schema.uuid = fixture.schema_uuid;
+    incomplete.target_schema.object_kind = "schema";
+    incomplete.target_object.object_kind = "view";
+    incomplete.localized_names.push_back(Name("V_DEFINITION_FLAGS_REFUSED"));
+    if (shape != 0) {
+      incomplete.target_object.uuid = NewUuid(platform::UuidKind::object, NowMillis() + shape);
+      incomplete.related_objects.push_back({fixture.singleton_table_uuid, "table"});
+      incomplete.option_envelopes = {
+          shape == 1 ? "view_query_shape:filtered_relation" : "view_query_shape:invented_profile",
+          "view_projection_count:1", "view_definition_embedded:true",
+          "view_query_dependencies_included:true", "parser_executes_sql:false"};
+    }
+    if (shape == 3) {
+      api::EngineDescriptor forged;
+      forged.descriptor_uuid = NewUuid(platform::UuidKind::object, NowMillis() + 20);
+      forged.descriptor_kind = "view_query";
+      forged.canonical_type_name = "filtered_relation";
+      forged.encoded_descriptor = "definition_embedded=true;dependencies_validated=true";
+      incomplete.descriptors.push_back(std::move(forged));
+    }
+    const auto refused = api::EngineCreateView(incomplete);
+    Require(!refused.ok && HasDiagnostic(refused, "view_executable_definition_required") &&
+                refused.primary_object.uuid.is_nil() && refused.catalog_row_uuid.is_nil() &&
+                publication_image() == before_refusals,
+            "incomplete VIEW assertions manufactured definition/name/storage success");
+    const auto absent = api::EngineResolveName(
+        ResolveRequest(fixture, create, "V_DEFINITION_FLAGS_REFUSED"));
+    Require(!absent.ok && !absent.diagnostics.empty() &&
+                absent.diagnostics.front().code == "CATALOG.NAME.NOT_FOUND" &&
+                publication_image() == before_refusals,
+            "incomplete VIEW became resolvable or changed storage on lookup");
+  }
   // Retained statement observations cannot authorize a different native
   // database/transaction, and a VIEW entrypoint cannot publish another kind.
   for (unsigned mutation = 0; mutation != 3; ++mutation) {

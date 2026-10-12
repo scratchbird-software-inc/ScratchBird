@@ -499,8 +499,12 @@ EngineCreateViewResult EngineCreateView(const EngineCreateViewRequest& request) 
     }
     return result;
   }
-  return PersistedCreateWithNameRegistry<EngineCreateViewResult>(
-      request, "ddl.create_view", object_kind, true, "created");
+  // A query-shape label and "definition embedded" assertion are not a bound
+  // executable definition. Do not turn them into an API-event/name pair and
+  // report a VIEW that cannot actually expand or execute.
+  return MakeApiBehaviorDiagnostic<EngineCreateViewResult>(
+      request.context, "ddl.create_view",
+      MakeInvalidRequestDiagnostic("ddl.create_view", "view_executable_definition_required"));
 }
 
 EngineCreateIndexTemplateResult EngineCreateIndexTemplate(const EngineCreateIndexTemplateRequest& request) {
