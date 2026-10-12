@@ -1425,11 +1425,24 @@ EngineCatalogSynonymResolutionResult ResolveCatalogSynonymChain(
   return result;
 }
 
-EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
+EngineApiDiagnostic PrepareCatalogColumnAndConstraintMetadata(
     const EngineApiRequest& request,
     const EngineCatalogObjectLifecycleState& state,
     const EngineUuid& owner_object_uuid,
-    std::uint64_t metadata_epoch) {
+    std::uint64_t metadata_epoch,
+    std::vector<std::string>& prepared) {
+  // Pure preflight. Do not publish columns or a valid prefix of constraints
+  // before validating and encoding the complete definition set.
+  const auto stage = [&](std::string event) {
+    ApiBehaviorRecord frame;
+    CatalogLifecycleRecord record;
+    if (!DecodeApiBehaviorRecord({reinterpret_cast<const std::uint8_t*>(event.data()), event.size()}, &frame) ||
+        !DecodeCatalogLifecycleFrame(frame, &record) || frame.creator_tx != request.context.local_transaction_id)
+      return CatalogDiagnostic(kCatalogObjectDiagnosticDatabaseWriteFailed, "invalid_binary_catalog_record");
+    prepared.push_back(std::move(event));
+    return OkDiagnostic();
+  };
+  std::set<EngineUuid> pending_definition_identities{owner_object_uuid};
   for (const auto& column : request.columns) {
     EngineCatalogColumnMetadataRecord record;
     record.creator_tx = request.context.local_transaction_id;
@@ -1437,6 +1450,8 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
     if (record.column_uuid.is_nil()) {
       return CatalogDiagnostic(kCatalogObjectDiagnosticUuidRequired, "column_uuid");
     }
+    if (!pending_definition_identities.insert(record.column_uuid).second)
+      return CatalogDiagnostic(kCatalogObjectDiagnosticDuplicateName, "column_uuid");
     record.owner_object_uuid = owner_object_uuid;
     record.descriptor_kind = column.descriptor.descriptor_kind;
     record.canonical_type_name = column.descriptor.canonical_type_name;
@@ -1444,7 +1459,7 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
     record.ordinal = column.ordinal;
     record.nullable = column.nullable;
     record.metadata_epoch = metadata_epoch;
-    const auto appended = AppendEvent(request.context, ColumnMetadataEvent(record));
+    const auto appended = stage(ColumnMetadataEvent(record));
     if (appended.error) { return appended; }
   }
 
@@ -1458,7 +1473,8 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
     if (definition.constraint_kind.empty()) {
       return CatalogDiagnostic(kCatalogConstraintDiagnosticKindRequired, constraint_uuid);
     }
-    if (FindObject(state, constraint_uuid) != nullptr) {
+    if (FindObject(state, constraint_uuid) != nullptr ||
+        !pending_definition_identities.insert(constraint_uuid).second) {
       return CatalogDiagnostic(kCatalogObjectDiagnosticDuplicateName,
                                "constraint_uuid");
     }
@@ -1516,12 +1532,11 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
     object.metadata_epoch = metadata_epoch;
     object.payload = "constraint_catalog_table=sys.constraint_descriptor;constraint_class=" +
                      definition.constraint_kind;
-    auto appended = AppendEvent(request.context, ObjectEvent(object));
+    auto appended = stage(ObjectEvent(object));
     if (appended.error) { return appended; }
 
     for (const auto& name : definition.names) {
-      appended = AppendEvent(request.context,
-                             NameEvent(MakeNameRecord(request.context,
+      appended = stage(NameEvent(MakeNameRecord(request.context,
                                                       constraint_uuid,
                                                       "constraint",
                                                       owner_object_uuid,
@@ -1552,7 +1567,7 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
     descriptor.constraint_hash = constraint_hash;
     descriptor.canonical_constraint_envelope = definition.canonical_constraint_envelope;
     descriptor.metadata_epoch = metadata_epoch;
-    appended = AppendEvent(request.context, ConstraintDescriptorEvent(descriptor));
+    appended = stage(ConstraintDescriptorEvent(descriptor));
     if (appended.error) { return appended; }
 
     const EngineUuid key_descriptor_uuid = CatalogConstraintUuid(metadata, "key_descriptor_uuid");
@@ -1577,7 +1592,7 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
       key.key_state = PayloadField(fields, "key_state", "active");
       key.key_hash = PayloadField(fields, "key_hash", constraint_hash);
       key.metadata_epoch = metadata_epoch;
-      appended = AppendEvent(request.context, KeyDescriptorEvent(key));
+      appended = stage(KeyDescriptorEvent(key));
       if (appended.error) { return appended; }
     }
 
@@ -1595,7 +1610,7 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
       return CatalogDiagnostic(kCatalogConstraintDiagnosticDescriptorInvalid,
                                "constraint_subject");
     }
-    appended = AppendEvent(request.context, ConstraintSubjectEvent(subject));
+    appended = stage(ConstraintSubjectEvent(subject));
     if (appended.error) { return appended; }
 
     const EngineUuid dependency_object_uuid = CatalogConstraintUuid(metadata, "dependency_object_uuid");
@@ -1614,7 +1629,7 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
         return CatalogDiagnostic(kCatalogConstraintDiagnosticDependencyInvalid,
                                  "dependency");
       }
-      appended = AppendEvent(request.context, ConstraintDependencyEvent(dependency));
+      appended = stage(ConstraintDependencyEvent(dependency));
       if (appended.error) { return appended; }
 
       EngineCatalogDependencyRecord object_dependency;
@@ -1624,7 +1639,7 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
       object_dependency.dependency_uuid = dependency_object_uuid;
       object_dependency.dependency_kind = "constraint:" + dependency.dependency_kind;
       object_dependency.metadata_epoch = metadata_epoch;
-      appended = AppendEvent(request.context, DependencyEvent(object_dependency));
+      appended = stage(DependencyEvent(object_dependency));
       if (appended.error) { return appended; }
     }
 
@@ -1647,7 +1662,7 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
         return CatalogDiagnostic(kCatalogConstraintDiagnosticSupportRequired,
                                  "support");
       }
-      appended = AppendEvent(request.context, ConstraintSupportStructureEvent(support));
+      appended = stage(ConstraintSupportStructureEvent(support));
       if (appended.error) { return appended; }
 
       EngineCatalogDependencyRecord support_dependency;
@@ -1657,7 +1672,7 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
       support_dependency.dependency_uuid = support_uuid;
       support_dependency.dependency_kind = "constraint:support_structure";
       support_dependency.metadata_epoch = metadata_epoch;
-      appended = AppendEvent(request.context, DependencyEvent(support_dependency));
+      appended = stage(DependencyEvent(support_dependency));
       if (appended.error) { return appended; }
     }
   }
@@ -1784,6 +1799,11 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
   }
 
   const std::uint64_t epoch = loaded.state.metadata_epoch + 1;
+  std::vector<std::string> prepared_definitions;
+  const auto definitions = PrepareCatalogColumnAndConstraintMetadata(
+      request, loaded.state, object_uuid, epoch, prepared_definitions);
+  if (definitions.error)
+    return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation, definitions);
   EngineCatalogObjectRecord record;
   record.creator_tx = request.context.local_transaction_id;
   record.object_uuid = object_uuid;
@@ -1821,9 +1841,10 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
       return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation, appended);
     }
   }
-  appended = PersistCatalogColumnAndConstraintMetadata(request, loaded.state, object_uuid, epoch);
-  if (appended.error) {
-    return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation, appended);
+  for (const auto& event : prepared_definitions) {
+    appended = AppendEvent(request.context, event);
+    if (appended.error)
+      return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation, appended);
   }
   appended = AppendCacheInvalidation(request.context, kOperation, object_uuid, epoch);
   if (appended.error) { return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation, appended); }
@@ -1883,10 +1904,15 @@ EngineCatalogApplyConstraintsResult EngineCatalogApplyConstraintsToObject(
   }
 
   const std::uint64_t epoch = loaded.state.metadata_epoch + 1;
-  const auto appended = PersistCatalogColumnAndConstraintMetadata(
-      request, loaded.state, owner_object_uuid, epoch);
-  if (appended.error) {
-    return DiagnosticResult<EngineCatalogApplyConstraintsResult>(request.context, operation_id, appended);
+  std::vector<std::string> prepared_definitions;
+  const auto definitions = PrepareCatalogColumnAndConstraintMetadata(
+      request, loaded.state, owner_object_uuid, epoch, prepared_definitions);
+  if (definitions.error)
+    return DiagnosticResult<EngineCatalogApplyConstraintsResult>(request.context, operation_id, definitions);
+  for (const auto& event : prepared_definitions) {
+    const auto appended = AppendEvent(request.context, event);
+    if (appended.error)
+      return DiagnosticResult<EngineCatalogApplyConstraintsResult>(request.context, operation_id, appended);
   }
   const auto invalidated = AppendCacheInvalidation(request.context, operation_id, owner_object_uuid, epoch);
   if (invalidated.error) {

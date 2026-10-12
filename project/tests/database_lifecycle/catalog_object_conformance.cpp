@@ -1282,6 +1282,125 @@ void TestMutationExclusionAuthority(const std::filesystem::path& path) {
   Rollback(final_writer);
 }
 
+void TestCatalogDefinitionPreflight(const std::filesystem::path& path) {
+  const auto database_uuid = CreateDatabase(path);
+  const auto principal = scratchbird::tests::FixtureUuid(1394, 1);
+  auto context = Begin(path, database_uuid, principal);
+  const auto schema_uuid = scratchbird::tests::FixtureUuid(1394, 2);
+  RequireOk(catalog_api::EngineCatalogCreateObject(
+      CreateRequest(context, schema_uuid, "schema", {}, "preflight")),
+      "preflight schema setup failed");
+  auto table = CreateRequest(context, scratchbird::tests::FixtureUuid(1394, 3),
+      "table", schema_uuid, "preflight_table");
+  catalog_api::EngineColumnDefinition column;
+  column.requested_column_uuid = scratchbird::tests::FixtureUuid(1394, 4);
+  column.descriptor.descriptor_kind = "scalar";
+  column.descriptor.canonical_type_name = "text";
+  column.names.push_back(Name("payload"));
+  table.columns.push_back(column);
+  catalog_api::EngineConstraintDefinition valid;
+  valid.requested_constraint_uuid = scratchbird::tests::FixtureUuid(1394, 5);
+  valid.constraint_kind = "check";
+  valid.names.push_back(Name("first_check"));
+  catalog_api::CatalogConstraintMetadata metadata;
+  metadata.text["constraint_hash"] = "preflight_check_hash";
+  Require(catalog_api::EncodeCatalogConstraintMetadata(metadata, &valid.canonical_constraint_envelope),
+          "preflight check fixture encoding failed");
+  auto invalid = valid;
+  invalid.requested_constraint_uuid = scratchbird::tests::FixtureUuid(1394, 6);
+  invalid.names = {Name("second_check")};
+  invalid.canonical_constraint_envelope = "not_binary_constraint_metadata";
+  table.constraints = {valid, invalid};
+  const auto journals = [&] {
+    std::vector<std::pair<bool, std::string>> captured;
+    for (const auto suffix : {".sb.catalog_object_events", ".sb.name_events.v2",
+                              ".sb.mga_event_sequence_allocator"}) {
+      const auto file = path.string() + suffix;
+      const bool present = std::filesystem::exists(file);
+      std::string bytes;
+      if (present) {
+        std::ifstream in(file, std::ios::binary);
+        Require(in.is_open(), "preflight journal open failed");
+        bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        Require(!in.bad(), "preflight journal read failed");
+      }
+      captured.emplace_back(present, std::move(bytes));
+    }
+    return captured;
+  };
+  const auto inventory_before = db::AcquireLocalTransactionInventorySnapshot(context.database_path);
+  Require(inventory_before.ok(), "preflight inventory unavailable");
+  const auto before = journals();
+  const auto next = catalog_api::NextMetadataEventSequence(context);
+  Require(!catalog_api::EngineCatalogCreateObject(table).ok,
+          "late invalid constraint was admitted");
+  Require(journals() == before && catalog_api::NextMetadataEventSequence(context) == next,
+          "late invalid CREATE definition published an earlier catalog prefix");
+  const auto inventory_after = db::AcquireLocalTransactionInventorySnapshot(context.database_path);
+  Require(inventory_after.ok() && inventory_after.snapshot->inventory.publication_base ==
+              inventory_before.snapshot->inventory.publication_base,
+          "preflight refusal changed native transaction authority");
+  {
+    auto malformed_column = table;
+    malformed_column.constraints.clear();
+    auto later_column = column;
+    later_column.ordinal = 1;
+    later_column.requested_column_uuid.bytes[6] = 0x40; // user UUIDv4 is not a system identity
+    malformed_column.columns.push_back(later_column);
+    Require(!catalog_api::EngineCatalogCreateObject(malformed_column).ok && journals() == before &&
+                catalog_api::NextMetadataEventSequence(context) == next,
+            "late column frame encoding failure published a prefix");
+  }
+  for (unsigned collision = 0; collision != 3; ++collision) {
+    auto repeated = table;
+    auto second = valid;
+    second.names = {Name("distinct_name_same_identity")};
+    if (collision == 1) second.requested_constraint_uuid = repeated.target_object.uuid;
+    if (collision == 2) second.requested_constraint_uuid = column.requested_column_uuid;
+    repeated.constraints = {valid, second};
+    Require(!catalog_api::EngineCatalogCreateObject(repeated).ok && journals() == before &&
+                catalog_api::NextMetadataEventSequence(context) == next,
+            "pending constraint identity collision was admitted or published effects");
+  }
+  // The same object and constraint identities can be retried: no hidden prefix
+  // or rollback-only exclusion is allowed for pure input validation failure.
+  table.constraints.clear();
+  RequireOk(catalog_api::EngineCatalogCreateObject(table), "preflight table retry failed");
+  catalog_api::EngineCatalogApplyConstraintsRequest apply;
+  apply.context = context;
+  apply.target_object = table.target_object;
+  apply.columns = table.columns;
+  apply.constraints = {valid, invalid};
+  const auto before_apply = journals();
+  const auto apply_next = catalog_api::NextMetadataEventSequence(context);
+  Require(!catalog_api::EngineCatalogApplyConstraintsToObject(apply).ok,
+          "late invalid constraint application was admitted");
+  Require(journals() == before_apply && catalog_api::NextMetadataEventSequence(context) == apply_next,
+          "late invalid constraint application published a valid prefix");
+  for (unsigned collision = 0; collision != 3; ++collision) {
+    auto second = valid;
+    second.names = {Name("apply_distinct_name_same_identity")};
+    if (collision == 1) second.requested_constraint_uuid = table.target_object.uuid;
+    if (collision == 2) second.requested_constraint_uuid = column.requested_column_uuid;
+    apply.constraints = {valid, second};
+    Require(!catalog_api::EngineCatalogApplyConstraintsToObject(apply).ok &&
+                journals() == before_apply && catalog_api::NextMetadataEventSequence(context) == apply_next,
+            "constraint application ignored a pending binary identity collision");
+  }
+  apply.constraints = {valid};
+  RequireOk(catalog_api::EngineCatalogApplyConstraintsToObject(apply),
+            "preflight constraint retry failed");
+  Commit(context);
+  auto reader = Begin(path, database_uuid, principal);
+  const auto loaded = catalog_api::LoadCatalogObjectLifecycleState(reader);
+  Require(loaded.ok && std::count_if(loaded.state.constraints.begin(), loaded.state.constraints.end(),
+      [&](const auto& item) { return item.constraint_uuid == valid.requested_constraint_uuid; }) == 1 &&
+      std::none_of(loaded.state.objects.begin(), loaded.state.objects.end(),
+      [&](const auto& item) { return item.object_uuid == invalid.requested_constraint_uuid; }),
+      "preflight retry did not persist exactly the valid constraint");
+  Commit(reader);
+}
+
 }  // namespace
 
 int main() try {
@@ -1311,6 +1430,7 @@ int main() try {
   TestImmediateReservationFailure(artifacts.path() / "reservation.sbdb");
   TestCatalogWholeOperationOwnership(artifacts.path() / "ownership.sbdb");
   TestMutationExclusionAuthority(artifacts.path() / "mutation-authority.sbdb");
+  TestCatalogDefinitionPreflight(artifacts.path() / "preflight.sbdb");
 
   artifacts.Cleanup();
   return EXIT_SUCCESS;
