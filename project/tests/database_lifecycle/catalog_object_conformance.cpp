@@ -1125,6 +1125,73 @@ void TestImmediateReservationFailure(const std::filesystem::path& path) {
 #endif
 }
 
+void TestCatalogWholeOperationOwnership(const std::filesystem::path& path) {
+  const auto database = CreateDatabase(path);
+  auto context = Begin(path, database, scratchbird::tests::FixtureUuid(1378, 8));
+  const auto must_wait = [&](auto operation) {
+    std::promise<void> starting;
+    auto started = starting.get_future();
+    std::future<bool> completed;
+    bool waited = false;
+    {
+      const auto owner = catalog_api::AcquireTransactionInventoryGuard(context.database_path);
+      completed = std::async(std::launch::async, [&] {
+        starting.set_value(); return operation();
+      });
+      const bool running = started.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+      waited = running && completed.wait_for(std::chrono::milliseconds(100)) == std::future_status::timeout;
+    }
+    const auto ok = completed.get();
+    Require(waited && !ok, "catalog preflight escaped whole-operation ownership");
+  };
+  // Refusals occur before the first record append. Per-record locking alone
+  // cannot satisfy these controls; observation/preflight must own the guard.
+  must_wait([&] { catalog_api::EngineCatalogCreateObjectRequest r; r.context = context;
+    return catalog_api::EngineCatalogCreateObject(r).ok; });
+  must_wait([&] { catalog_api::EngineCatalogApplyConstraintsRequest r; r.context = context;
+    return catalog_api::EngineCatalogApplyConstraintsToObject(r).ok; });
+  must_wait([&] { catalog_api::EngineCatalogAlterObjectRequest r; r.context = context;
+    return catalog_api::EngineCatalogAlterObject(r).ok; });
+  must_wait([&] { catalog_api::EngineCatalogRenameObjectRequest r; r.context = context;
+    return catalog_api::EngineCatalogRenameObject(r).ok; });
+  must_wait([&] { catalog_api::EngineCatalogDropObjectRequest r; r.context = context;
+    return catalog_api::EngineCatalogDropObject(r).ok; });
+  must_wait([&] { catalog_api::EngineCreateTableRequest r; r.context = context;
+    return catalog_api::EngineCreateTable(r).ok; });
+
+  constexpr unsigned count = 4;
+  std::vector<catalog_api::EngineCatalogCreateObjectRequest> requests;
+  for (unsigned n = 0; n < count; ++n)
+    requests.push_back(CreateRequest(context, scratchbird::tests::FixtureUuid(1392, n + 1),
+        "schema", {}, "serialized_" + std::to_string(n)));
+  std::promise<void> start;
+  auto released = start.get_future().share();
+  std::vector<std::future<catalog_api::EngineCatalogCreateObjectResult>> writers;
+  writers.reserve(count);
+  struct Release {
+    std::promise<void>& start; bool sent = false;
+    ~Release() { if (!sent) start.set_value(); }
+  } release{start};
+  for (unsigned n = 0; n < count; ++n)
+    writers.push_back(std::async(std::launch::async, [&, n] {
+      released.wait(); return catalog_api::EngineCatalogCreateObject(requests[n]);
+    }));
+  start.set_value(); release.sent = true;
+  std::set<std::uint64_t> epochs;
+  for (auto& writer : writers) {
+    const auto created = writer.get();
+    RequireOk(created, "concurrent catalog creation failed");
+    Require(epochs.insert(created.metadata_cache_epoch).second,
+            "concurrent catalog operations reused a metadata publication epoch");
+  }
+  Commit(context);
+  const auto reader = Begin(path, database, scratchbird::tests::FixtureUuid(1378, 8));
+  for (const auto& request : requests)
+    RequireOk(catalog_api::EngineCatalogLookupObjectByUuid(
+        LookupRequest(reader, request.target_object.uuid, "schema")), "serialized object missing after commit");
+  Rollback(reader);
+}
+
 }  // namespace
 
 int main() try {
@@ -1152,6 +1219,7 @@ int main() try {
   TestSequencedCatalogReplay(artifacts.path() / "sequenced.sbdb");
   TestCatalogPublicationFailures(artifacts.path() / "publication.sbdb");
   TestImmediateReservationFailure(artifacts.path() / "reservation.sbdb");
+  TestCatalogWholeOperationOwnership(artifacts.path() / "ownership.sbdb");
 
   artifacts.Cleanup();
   return EXIT_SUCCESS;

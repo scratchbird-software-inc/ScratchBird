@@ -193,6 +193,9 @@ EngineCreateSynonymResult EngineCreateSynonym(const EngineCreateSynonymRequest& 
 }
 
 EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& request) {
+  // Retain ownership across preflight, catalog/name/column publication and
+  // the sealed relation descriptor, not merely across individual appends.
+  const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   const auto savepoint = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::catalog_mutation);
   if (savepoint.error) return MakeCrudDiagnosticResult<EngineCreateTableResult>(
       request.context, "ddl.create_table", savepoint);

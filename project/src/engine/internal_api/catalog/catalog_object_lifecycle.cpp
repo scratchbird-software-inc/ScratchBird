@@ -1665,6 +1665,7 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
 }
 
 EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCreateObjectRequest& request) {
+  const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "catalog.object.create";
   const auto valid = ValidateMutatingContext(request.context);
   if (valid.error) { return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation, valid); }
@@ -1843,6 +1844,7 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
 
 EngineCatalogApplyConstraintsResult EngineCatalogApplyConstraintsToObject(
     const EngineCatalogApplyConstraintsRequest& request) {
+  const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   const std::string operation_id =
       request.operation_id.empty() ? "catalog.constraint.apply" : request.operation_id;
   const auto valid = ValidateMutatingContext(request.context);
@@ -1905,6 +1907,7 @@ EngineCatalogApplyConstraintsResult EngineCatalogApplyConstraintsToObject(
 }
 
 EngineCatalogAlterObjectResult EngineCatalogAlterObject(const EngineCatalogAlterObjectRequest& request) {
+  const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "catalog.object.alter";
   const auto valid = ValidateMutatingContext(request.context);
   if (valid.error) { return DiagnosticResult<EngineCatalogAlterObjectResult>(request.context, kOperation, valid); }
@@ -2006,6 +2009,7 @@ EngineCatalogAlterObjectResult EngineCatalogAlterObject(const EngineCatalogAlter
 }
 
 EngineCatalogRenameObjectResult EngineCatalogRenameObject(const EngineCatalogRenameObjectRequest& request) {
+  const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "catalog.object.rename";
   const auto valid = ValidateMutatingContext(request.context);
   if (valid.error) { return DiagnosticResult<EngineCatalogRenameObjectResult>(request.context, kOperation, valid); }
@@ -2068,6 +2072,7 @@ EngineCatalogRenameObjectResult EngineCatalogRenameObject(const EngineCatalogRen
 }
 
 EngineCatalogDropObjectResult EngineCatalogDropObject(const EngineCatalogDropObjectRequest& request) {
+  const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "catalog.object.drop";
   const auto valid = ValidateMutatingContext(request.context);
   if (valid.error) { return DiagnosticResult<EngineCatalogDropObjectResult>(request.context, kOperation, valid); }

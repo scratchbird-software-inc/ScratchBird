@@ -29,6 +29,7 @@
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "mga_relation_store/mga_binary_identity_codec.hpp"
 #include "security/security_model.hpp"
+#include "transaction/transaction_api.hpp"
 #include "sblr_sequence_runtime.hpp"
 #include "sorted_bulk_index_build.hpp"
 #include "uuid.hpp"
