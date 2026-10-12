@@ -2350,6 +2350,10 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   set_tests_properties(transactional_index_lifecycle_matrix_gate PROPERTIES
     LABELS "transactional_index_lifecycle_matrix_gate;DML_INDEX_TRANSACTIONAL_MATRIX;index_runtime_correctness;dml_write_path;mga_transaction_regression;database_lifecycle"
   )
+  add_test(NAME transactional_index_mutation_admission_gate
+    COMMAND transactional_index_lifecycle_matrix_gate --admission-only)
+  set_tests_properties(transactional_index_mutation_admission_gate PROPERTIES
+    LABELS "savepoint;component_regression;mga_transaction_regression;database_lifecycle")
 
   add_executable(dpc_secondary_index_delta_overlay_lookup_gate
     dpc_secondary_index_delta_overlay_lookup_gate.cpp

@@ -9,6 +9,7 @@
 // SBSQL source-layout fragment. Included only by crud_store.cpp.
 // This fragment preserves pre-existing behavior; do not add unrelated future work here.
 #include "crud_support/crud_store.hpp"
+#include "crud_support/crud_index_visibility.hpp"
 #include "crud_support/native_value_payload.hpp"
 #include "crud_support/retained_row_value_codec.hpp"
 #include "crud_support/composite_logical_key.hpp"

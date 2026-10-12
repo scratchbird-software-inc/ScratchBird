@@ -11,6 +11,9 @@
 #include "memory.hpp"
 #include "api_types.hpp"
 #include "catalog/descriptor_mutation_api.hpp"
+#include "catalog/name_registry.hpp"
+#include "catalog/schema_tree_api.hpp"
+#include "crud_support/crud_index_visibility.hpp"
 #include "database_lifecycle.hpp"
 #include "dml/delete_api.hpp"
 #include "dml/insert_api.hpp"
@@ -23,10 +26,13 @@
 #include "dml/update_api.hpp"
 #include "extensibility/udr_api.hpp"
 #include "index_family_registry.hpp"
+#include "hash_digest.hpp"
 #include "local_transaction_store.hpp"
 #include "lifecycle/sequence_generator_lifecycle.hpp"
 #include "mga_relation_store/mga_large_value_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "observability/show_api.hpp"
+#include "query/plan_api.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
@@ -720,6 +726,183 @@ void ValidateAdmittedFamily(const FamilyCase& test_case,
   Commit(final_reader, family);
 }
 
+void ValidateIndexVersionProjection() {
+  api::RelationReadSnapshot state;
+  state.transactions = {{1, "committed"}, {2, "active"}, {3, "aborted"}};
+  const auto table = NewNativeUuid(platform::UuidKind::object, 91001);
+  api::CrudIndexRecord first;
+  first.table_uuid = table;
+  first.index_uuid = NewNativeUuid(platform::UuidKind::object, 91002);
+  first.creator_tx = 1;
+  first.event_sequence = 10;
+  first.default_name = "first";
+  first.column_name = "old_column";
+  auto second = first;
+  second.index_uuid = NewNativeUuid(platform::UuidKind::object, 91003);
+  second.event_sequence = 11;
+  auto own = first;
+  own.creator_tx = 2;
+  own.event_sequence = 20;
+  own.default_name = "own_successor";
+  own.column_name = "new_column";
+  auto older = first;
+  older.event_sequence = 15;
+  older.default_name = "committed_successor";
+  auto aborted = first;
+  aborted.creator_tx = 3;
+  aborted.event_sequence = 30;
+  auto missing = first;
+  missing.creator_tx = 4;
+  missing.event_sequence = 40;
+  state.indexes = {first, second, own, older, aborted, missing};
+  const auto local = api::VisibleCrudIndexesForTable(state, table, 2);
+  Require(local.size() == 2 && local[0].index_uuid == first.index_uuid &&
+              local[0].event_sequence == 20 && local[0].default_name == own.default_name &&
+              local[1].index_uuid == second.index_uuid,
+          "visibility", "index winner ignored visibility, sequence or stable identity order");
+  const auto sibling = api::VisibleCrudIndexesForTable(state, table, 99);
+  Require(sibling.size() == 2 && sibling[0].event_sequence == 15 &&
+              sibling[0].default_name == older.default_name,
+          "visibility", "hidden newer index suppressed the committed predecessor");
+  const auto old_key = api::VisibleCrudIndexesForTableColumn(state, table, "old_column", 2);
+  Require(old_key.size() == 1 && old_key[0].index_uuid == second.index_uuid,
+          "visibility", "key filtering resurrected a superseded index version");
+  const auto all = api::VisibleCrudIndexes(state, 2);
+  Require(all.size() == local.size() && all[0].event_sequence == 20 &&
+              all[1].index_uuid == second.index_uuid,
+          "visibility", "statement-wide index projection disagreed with table projection");
+  auto other_table = first;
+  other_table.table_uuid = NewNativeUuid(platform::UuidKind::object, 91004);
+  other_table.index_uuid = NewNativeUuid(platform::UuidKind::object, 91005);
+  state.indexes.push_back(other_table);
+  const auto across_tables = api::VisibleCrudIndexes(state, 2);
+  Require(across_tables.size() == 3 &&
+              across_tables.back().index_uuid == other_table.index_uuid &&
+              api::VisibleCrudIndexesForTable(state, table, 2).size() == 2 &&
+              api::VisibleCrudIndexesForTable(state, other_table.table_uuid, 2).size() == 1,
+          "visibility", "statement-wide projection lost or mixed another table's index");
+  // Legacy ties are tested in a separate source domain, never compared to
+  // native metadata sequences or treated as native reservation authority.
+  state.indexes = {first, older};
+  for (const auto sequence : {std::uint64_t{0}, std::uint64_t{7}}) {
+    for (auto& index : state.indexes) index.event_sequence = sequence;
+    const auto tied = api::VisibleCrudIndexes(state, 99);
+    Require(tied.size() == 1 && tied[0].default_name == older.default_name,
+            "visibility", "legacy equal-sequence projection did not retain the last visible record");
+  }
+}
+
+void ValidateIndexSuccessorConsumers() {
+  constexpr std::string_view family = "index-successor";
+  const auto descriptor = idx::FindBuiltinIndexFamilyById("btree");
+  Require(descriptor.ok(), family, "B-tree fixture family missing");
+  const auto test_case = BuildCase(*descriptor.descriptor);
+  auto fixture = MakeFixture(test_case, 92000);
+  // The storage matrix publishes catalog identities/columns, not the schema
+  // tree used by the object browser. Publish that real prerequisite for this
+  // broader reader test using the same existing binary schema identity.
+  auto schema_owner = Begin(fixture, "index-successor-schema-tree");
+  api::EngineSchemaTreeRecord schema;
+  schema.schema_uuid = schema_owner.current_schema_uuid;
+  schema.default_name = "fixture_schema";
+  schema.localized_names = {{"en", "primary", "", schema.default_name, true}};
+  schema.payload = api::SchemaTreePayload(schema.parent_schema_uuid,
+                                         schema.localized_names, {});
+  RequireDiagnosticOk(api::PersistSchemaTreeRecord(schema_owner, schema,
+                          "catalog.schema_tree.fixture"), family,
+                      "native schema-tree prerequisite publication failed");
+  auto named_index = IndexRecord(fixture, test_case, schema_owner);
+  named_index.default_name = "index_successor_original";
+  RequireDiagnosticOk(api::AppendMgaIndexMetadata(schema_owner, named_index), family,
+                      "named index prerequisite publication failed");
+  Commit(schema_owner, family);
+  auto writer = Begin(fixture, "index-successor-writer");
+  const auto initial = LoadState(writer, family);
+  const auto initial_indexes = api::VisibleCrudIndexesForTable(
+      initial, fixture.table_uuid, writer.local_transaction_id);
+  Require(initial_indexes.size() == 1 &&
+              initial_indexes.front().index_uuid == fixture.index_uuid &&
+              initial_indexes.front().default_name == named_index.default_name,
+          family, "named committed predecessor missing");
+  auto successor = initial_indexes.front();
+  const auto original_name = successor.default_name;
+  successor.default_name = "index_successor_own_uncommitted";
+  RequireDiagnosticOk(api::AppendMgaIndexMetadata(writer, successor), family,
+                      "hidden successor publication failed");
+  auto sibling = Begin(fixture, "index-successor-sibling");
+  const auto verify_names = [&](const api::EngineRequestContext& context,
+                                const std::string& expected_name) {
+    const auto names = api::LoadNameRegistryState(context, context.local_transaction_id);
+    Require(names.ok, family, "native fallback name load failed");
+    std::size_t identities = 0;
+    for (const auto& name : names.state.entries) {
+      if (name.object_uuid != fixture.index_uuid) continue;
+      ++identities;
+      Require(name.derived_from_legacy_name && name.raw_name_text == expected_name,
+              family, "fallback name did not select exact visible binary identity");
+    }
+    Require(identities == 1, family, "fallback name lost or duplicated the index");
+    const auto verify_projection = [&](const api::EngineApiResult& result,
+                                       const std::string& route) {
+      RequireOk(result, family, "live catalog projection failed");
+      std::size_t matches = 0;
+      for (const auto& row : result.result_shape.rows) {
+        for (const auto& [field, value] : row.fields) {
+          if (field != "object_name") continue;
+          if (value.encoded_value == expected_name) ++matches;
+          if (value.encoded_value == original_name ||
+              value.encoded_value == "index_successor_own_uncommitted" ||
+              value.encoded_value == "index_successor_committed") {
+            Require(value.encoded_value == expected_name, family,
+                    "projection exposed a hidden or superseded index name");
+          }
+        }
+      }
+      Require(matches == 1, family, route + " projection expected exactly one " +
+                  expected_name + ", found " + std::to_string(matches));
+    };
+    api::EngineShowCatalogRequest show;
+    show.context = context;
+    show.option_envelopes = {"catalog_projection:sys.catalog_readable.objects"};
+    verify_projection(api::EngineShowCatalog(show), "SHOW");
+    api::EnginePlanOperationRequest query;
+    query.context = context;
+    query.execute = true;
+    query.query_operation = "values";
+    query.option_envelopes = show.option_envelopes;
+    verify_projection(api::EnginePlanOperation(query), "query");
+  };
+  verify_names(sibling, original_name);
+  verify_names(writer, successor.default_name);
+  Rollback(writer, family);
+  verify_names(sibling, original_name);
+  Commit(sibling, family);
+
+  auto metadata = Begin(fixture, "index-successor-committed-metadata");
+  successor.default_name = "index_successor_committed";
+  RequireDiagnosticOk(api::AppendMgaIndexMetadata(metadata, successor), family,
+                      "committed successor publication failed");
+  Commit(metadata, family);
+  auto inserter = Begin(fixture, "index-successor-insert");
+  verify_names(inserter, successor.default_name);
+  const auto row_uuid = NewNativeUuid(platform::UuidKind::object, 92200);
+  RequireOk(Insert(fixture, inserter, row_uuid, test_case.new_key, "successor"),
+            family, "DML after committed successor failed");
+  const auto validation = api::ValidateTransactionalIndexMutationSetForCommit(
+      inserter, LoadState(inserter, family));
+  Require(validation.ok && validation.prepared_insert_count == 1 &&
+              validation.prepared_retire_count == 0 && validation.visible_entry_count == 1,
+          family, "commit counted historical definitions or demanded obsolete effects");
+  Commit(inserter, family);
+  auto reopen = Begin(fixture, "index-successor-reopen");
+  const auto reopened = LoadState(reopen, family);
+  const auto rows = api::VisibleMgaRowsForContext(reopened, fixture.table_uuid, reopen);
+  Require(rows.size() == 1 && rows.front().row_uuid == row_uuid,
+          family, "committed DML after successor did not survive reopen");
+  verify_names(reopen, successor.default_name);
+  Commit(reopen, family);
+}
+
 void ValidateMutationAdmissionRefusals() {
   using P = api::MgaMutationProducer;
   const auto capabilities = api::MgaMutationSavepointCapabilities();
@@ -749,21 +932,15 @@ void ValidateMutationAdmissionRefusals() {
   // Test-only byte oracle, not transaction authority. Include every companion
   // so a refused early/direct lane cannot conceal a metadata or index write.
   const auto durable_bytes = [&] {
-    std::map<std::string, std::pair<std::uint64_t, std::uint64_t>> result;
+    std::map<std::string, std::pair<std::uint64_t, scratchbird::core::hash::Digest256>> result;
     for (const auto& entry : std::filesystem::recursive_directory_iterator(fixture.dir)) {
       if (!entry.is_regular_file()) continue;
       std::ifstream input(entry.path(), std::ios::binary);
-      std::uint64_t length = 0, hash = 1469598103934665603ull;
-      std::array<char, 16384> bytes{};
-      while (input) {
-        input.read(bytes.data(), bytes.size());
-        length += input.gcount();
-        for (std::streamsize n = 0; n < input.gcount(); ++n) {
-          hash ^= static_cast<unsigned char>(bytes[n]); hash *= 1099511628211ull;
-        }
-      }
-      Require(input.eof(), "admission", "durable byte oracle failed");
-      result.emplace(entry.path().string(), std::make_pair(length, hash));
+      const auto length = std::filesystem::file_size(entry.path());
+      const auto digest = scratchbird::core::hash::ComputeSha256Stream(input, length);
+      Require(digest.ok() && digest.digest_bytes == scratchbird::core::hash::kSha256DigestBytes,
+              "admission", "complete durable byte oracle failed");
+      result.emplace(entry.path().string(), std::make_pair(length, digest.digest));
     }
     return result;
   };
@@ -892,6 +1069,58 @@ void ValidateMutationAdmissionRefusals() {
     auto writer = Begin(fixture, "admission-refused-writer");
     RequireDiagnosticOk(api::CreateMgaSavepointMarker(writer, "admission_outer"),
                         "admission", "refusal boundary creation failed");
+    // Storage-only sequenced metadata has its own qualified rewind provider.
+    // Its admission is independent of the still-guarded catalog/name owners.
+    const auto predecessor_state = LoadState(writer, "admission");
+    const auto predecessor = api::FindVisibleMgaTable(
+        predecessor_state, fixture.table_uuid, writer.local_transaction_id);
+    Require(predecessor.has_value(), "admission", "storage predecessor missing");
+    const auto visible_index_for = [&](const api::MgaRelationReadView& state) {
+      const auto indexes = api::VisibleMgaIndexesForTable(
+          state, fixture.table_uuid, writer.local_transaction_id);
+      const auto matches = [&](const auto& index) { return index.index_uuid == fixture.index_uuid; };
+      Require(std::count_if(indexes.begin(), indexes.end(), matches) == 1,
+              "admission", "exact visible index successor missing or ambiguous");
+      return *std::find_if(indexes.begin(), indexes.end(), matches);
+    };
+    const auto predecessor_index = visible_index_for(predecessor_state);
+    for (const auto suffix : {"_first_rewind", "_second_rewind"}) {
+      auto changed = *predecessor;
+      changed.default_name += suffix;
+      RequireDiagnosticOk(api::AppendMgaTableMetadata(writer, changed),
+                          "admission", "sequenced storage metadata append failed");
+      auto changed_index = predecessor_index;
+      changed_index.default_name += suffix;
+      RequireDiagnosticOk(api::AppendMgaIndexMetadata(writer, changed_index),
+                          "admission", "sequenced index metadata append failed");
+      const auto changed_state = LoadState(writer, "admission");
+      const auto visible_changed = api::FindVisibleMgaTable(
+          changed_state, fixture.table_uuid, writer.local_transaction_id);
+      Require(visible_changed.has_value() &&
+                  visible_changed->default_name == changed.default_name &&
+                  visible_changed->event_sequence > predecessor->event_sequence,
+              "admission", "storage metadata append did not publish its successor");
+      const auto visible_index = visible_index_for(changed_state);
+      Require(visible_index.default_name == changed_index.default_name &&
+                  visible_index.event_sequence > visible_changed->event_sequence,
+              "admission", "index metadata append did not publish its sequenced successor");
+      RequireDiagnosticOk(api::RollbackToMgaSavepointMarker(writer, "admission_outer"),
+                          "admission", "storage metadata rollback failed");
+      const auto rewound_state = LoadState(writer, "admission");
+      const auto rewound = api::FindVisibleMgaTable(
+          rewound_state, fixture.table_uuid, writer.local_transaction_id);
+      Require(rewound.has_value() && rewound->default_name == predecessor->default_name &&
+                  rewound->columns == predecessor->columns &&
+                  rewound->event_sequence == predecessor->event_sequence,
+              "admission", "repeated storage metadata rollback did not restore exact predecessor");
+      const auto rewound_index = visible_index_for(rewound_state);
+      Require(rewound_index.default_name == predecessor_index.default_name &&
+                  rewound_index.event_sequence == predecessor_index.event_sequence &&
+                  rewound_index.table_uuid == predecessor_index.table_uuid &&
+                  rewound_index.key_envelopes == predecessor_index.key_envelopes &&
+                  rewound_index.include_columns == predecessor_index.include_columns,
+              "admission", "repeated index metadata rollback did not restore predecessor");
+    }
     const auto before = durable_bytes();
     for (const auto& capability : capabilities) {
       const auto observed = api::AdmitMgaSavepointProducer(writer, capability.producer);
@@ -932,18 +1161,11 @@ void ValidateMutationAdmissionRefusals() {
     Require(!catalog_refused.ok && !catalog_refused.diagnostics.empty() &&
                 catalog_refused.diagnostics.front().code == "SBLR.OPERATION_UNSUPPORTED",
             "admission", "direct catalog producer bypassed savepoint admission");
-    const auto table_refused = api::AppendMgaTableMetadata(writer, *table);
-    Require(table_refused.error && table_refused.code == "SBLR.OPERATION_UNSUPPORTED",
-            "admission", "table metadata append bypassed savepoint admission");
     api::MgaRelationStorageDescriptor sealed_descriptor;
     const auto sealed_refused = api::AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
         writer, *table, {}, &sealed_descriptor);
     Require(sealed_refused.error && sealed_refused.code == "SBLR.OPERATION_UNSUPPORTED",
             "admission", "sealed table metadata append bypassed savepoint admission");
-    const auto index_refused = api::AppendMgaIndexMetadata(
-        writer, IndexRecord(fixture, test_case, writer));
-    Require(index_refused.error && index_refused.code == "SBLR.OPERATION_UNSUPPORTED",
-            "admission", "index metadata append bypassed savepoint admission");
     const auto constraint_refused = api::AppendMgaConstraintMutationBatch(writer, {});
     Require(constraint_refused.error && constraint_refused.code == "SBLR.OPERATION_UNSUPPORTED",
             "admission", "constraint catalog batch bypassed savepoint admission");
@@ -1085,7 +1307,12 @@ void ValidateNonAdmittedFamily(const FamilyCase& test_case,
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  const bool admission_only = argc == 2 && std::string_view(argv[1]) == "--admission-only";
+  if (argc != 1 && !admission_only) {
+    std::cerr << "expected no arguments or --admission-only\n";
+    return EXIT_FAILURE;
+  }
   auto policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
   policy.policy_name = "transactional_index_matrix_fixture";
   Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
@@ -1099,10 +1326,16 @@ int main() {
   std::size_t refused = 0;
   std::size_t failures = 0;
   try {
+    ValidateIndexVersionProjection();
+    ValidateIndexSuccessorConsumers();
     ValidateMutationAdmissionRefusals();
   } catch (const std::exception& error) {
     ++failures;
     std::cerr << "mutation_admission=failed " << error.what() << '\n';
+  }
+  if (admission_only) {
+    if (failures == 0) std::cout << "mutation_admission=passed\n";
+    return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
   }
   platform::u64 salt = 10000;
   for (const auto& descriptor : idx::BuiltinIndexFamilyDescriptors()) {

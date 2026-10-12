@@ -14,6 +14,7 @@
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/schema_tree_api.hpp"
 #include "crud_support/crud_store.hpp"
+#include "crud_support/crud_index_visibility.hpp"
 #include "domain_support/domain_store.hpp"
 #include "local_transaction_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
@@ -113,7 +114,8 @@ EngineApiDiagnostic AppendNativeNameRecord(const EngineRequestContext& context,c
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK","engine.api.ok",{},false);
 }
 
-void MergeMgaRelationCatalogState(CrudState* base, const RelationReadSnapshot& mga_state) {
+void MergeMgaRelationCatalogState(CrudState* base, const RelationReadSnapshot& mga_state,
+                                  std::uint64_t observer_tx) {
   if (base == nullptr) { return; }
   for (const auto& [tx, state] : mga_state.transactions) {
     base->transactions[tx] = state;
@@ -130,7 +132,7 @@ void MergeMgaRelationCatalogState(CrudState* base, const RelationReadSnapshot& m
       *existing = table;
     }
   }
-  for (const auto& index : mga_state.indexes) {
+  for (const auto& index : VisibleCrudIndexes(mga_state, observer_tx)) {
     auto existing = std::find_if(base->indexes.begin(), base->indexes.end(),
                                  [&index](const CrudIndexRecord& candidate) {
                                    return candidate.index_uuid == index.index_uuid;
@@ -601,11 +603,12 @@ NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context
     return result;
   }
   CrudState catalog_state = crud.state;
+  catalog_state.indexes = VisibleCrudIndexes(crud.state, observer_tx);
   const auto mga_relations = LoadMgaRelationStoreState(context);
   if (mga_relations.ok) {
     MergeMgaRelationCatalogState(
         &catalog_state,
-        BuildCrudCompatibilityStateFromMga(mga_relations.state));
+        BuildCrudCompatibilityStateFromMga(mga_relations.state), observer_tx);
   }
   const auto transaction_inventory =
       scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(context.database_path);

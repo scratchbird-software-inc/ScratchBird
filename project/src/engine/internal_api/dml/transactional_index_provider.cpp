@@ -9,6 +9,7 @@
 #include "dml/transactional_index_provider.hpp"
 #include "crud_support/retained_row_value_codec.hpp"
 #include "crud_support/crud_index_evidence.hpp"
+#include "crud_support/crud_index_visibility.hpp"
 #include "dml/test_optimization_profile.hpp"
 #include "dml/index_apply_locality_bridge.hpp"
 
@@ -706,10 +707,8 @@ ValidateTransactionalIndexMutationSetForCommit(
                       &result.evidence);
 
   std::map<EngineUuid, std::vector<CrudIndexRecord>> indexes_by_table;
-  for (const auto& index : state.indexes) {
-    if (IsAdmittedMgaTransactionalIndexFamily(index) &&
-        CrudCreatorVisible(state, index.creator_tx, index.event_sequence,
-                           context.local_transaction_id)) {
+  for (const auto& index : VisibleCrudIndexes(state, context.local_transaction_id)) {
+    if (IsAdmittedMgaTransactionalIndexFamily(index)) {
       indexes_by_table[index.table_uuid].push_back(index);
     }
   }

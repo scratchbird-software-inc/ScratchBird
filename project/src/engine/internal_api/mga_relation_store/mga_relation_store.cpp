@@ -8,6 +8,7 @@
 
 #include "mga_relation_store/mga_relation_locator.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "crud_support/crud_index_visibility.hpp"
 #include "dml/delete_binding_authority.hpp"
 #include "dml/datatype_operator_registry_projection.hpp"
 #include "mga_relation_store/mga_contextual_text_descriptor.hpp"
@@ -1101,12 +1102,9 @@ MgaStatementMetadataViewLoadResult LoadMgaStatementMetadataView(
   }
   view->visible_indexes_by_relation.reserve(
       view->visible_metadata.indexes.size());
-  for (const auto& index : view->visible_metadata.indexes) {
-    if (CrudCreatorVisible(view->visible_metadata, index.creator_tx,
-                           index.event_sequence,
-                           statement_context.local_transaction_id)) {
-      view->visible_indexes_by_relation[index.table_uuid].push_back(index);
-    }
+  for (auto& index : VisibleCrudIndexes(view->visible_metadata,
+                                       statement_context.local_transaction_id)) {
+    view->visible_indexes_by_relation[index.table_uuid].push_back(std::move(index));
   }
   result.view = view;
   result.diagnostic = OkDiagnostic();

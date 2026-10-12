@@ -24,6 +24,7 @@
 #include "catalog/catalog_object_lifecycle.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "catalog/name_registry.hpp"
+#include "crud_support/crud_index_visibility.hpp"
 #include "catalog/schema_tree_api.hpp"
 #include "catalog/sys_information_projection.hpp"
 #include "catalog/sys_information_security_context.hpp"
@@ -11694,7 +11695,8 @@ std::string QueryProjectionTableTypeForCrud(const CrudTableRecord& table) {
   return "LOCAL TEMPORARY";
 }
 
-void QueryProjectionMergeCrudState(CrudState* base, const RelationReadSnapshot& source) {
+void QueryProjectionMergeCrudState(CrudState* base, const RelationReadSnapshot& source,
+                                   std::uint64_t observer_tx) {
   if (base == nullptr) { return; }
   for (const auto& [tx, state] : source.transactions) {
     base->transactions[tx] = state;
@@ -11711,7 +11713,7 @@ void QueryProjectionMergeCrudState(CrudState* base, const RelationReadSnapshot& 
       *existing = table;
     }
   }
-  for (const auto& index : source.indexes) {
+  for (const auto& index : VisibleCrudIndexes(source, observer_tx)) {
     auto existing = std::find_if(base->indexes.begin(), base->indexes.end(),
                                  [&index](const CrudIndexRecord& candidate) {
                                    return candidate.index_uuid == index.index_uuid;
@@ -11727,13 +11729,18 @@ void QueryProjectionMergeCrudState(CrudState* base, const RelationReadSnapshot& 
   base->max_index_sequence = std::max(base->max_index_sequence, source.max_index_sequence);
 }
 
-CrudState QueryProjectionReadableCrudState(const EngineRequestContext& context) {
+CrudState QueryProjectionReadableCrudState(const EngineRequestContext& context,
+                                          std::uint64_t observer_tx) {
   CrudState state;
   const auto crud = LoadCrudState(context);
-  if (crud.ok) { state = crud.state; }
+  if (crud.ok) {
+    state = crud.state;
+    state.indexes = VisibleCrudIndexes(crud.state, observer_tx);
+  }
   const auto mga_relations = LoadMgaRelationStoreState(context);
   if (mga_relations.ok) {
-    QueryProjectionMergeCrudState(&state, BuildCrudCompatibilityStateFromMga(mga_relations.state));
+    QueryProjectionMergeCrudState(&state, BuildCrudCompatibilityStateFromMga(mga_relations.state),
+                                  observer_tx);
   }
   return state;
 }
@@ -11845,7 +11852,7 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
     }
   }
 
-  const CrudState crud = QueryProjectionReadableCrudState(catalog_read_context);
+  const CrudState crud = QueryProjectionReadableCrudState(catalog_read_context, observer_tx);
   std::set<EngineUuid> crud_table_uuids;
   for (const auto& table : crud.tables) {
     if (table.table_uuid.is_nil() ||

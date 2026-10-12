@@ -112,14 +112,36 @@ std::optional<CrudRowVersionRecord> FindVisibleCrudRowForContext(const RelationR
   return std::nullopt;
 }
 
+static std::vector<CrudIndexRecord> SelectVisibleCrudIndexes(
+    const RelationReadSnapshot& state, const EngineUuid* table_uuid,
+    std::uint64_t observer_tx) {
+  std::map<EngineUuid, std::size_t> positions;
+  std::vector<const CrudIndexRecord*> selected;
+  for (const auto& index : state.indexes) {
+    if ((table_uuid != nullptr && index.table_uuid != *table_uuid) ||
+        !TxVisible(state, index.creator_tx, observer_tx)) continue;
+    const auto [position, inserted] = positions.emplace(index.index_uuid, selected.size());
+    if (inserted) selected.push_back(&index);
+    else if (index.event_sequence >= selected[position->second]->event_sequence)
+      selected[position->second] = &index;
+  }
+  // Copy only winners, not every historical key/predicate payload. Last visible
+  // record wins legacy sequence ties; visibility always precedes selection.
+  std::vector<CrudIndexRecord> indexes;
+  indexes.reserve(selected.size());
+  for (const auto* index : selected) indexes.push_back(*index);
+  return indexes;
+}
+
+std::vector<CrudIndexRecord> VisibleCrudIndexes(const RelationReadSnapshot& state,
+                                               std::uint64_t observer_tx) {
+  return SelectVisibleCrudIndexes(state, nullptr, observer_tx);
+}
+
 std::vector<CrudIndexRecord> VisibleCrudIndexesForTable(const RelationReadSnapshot& state,
                                                         const EngineUuid& table_uuid,
                                                         std::uint64_t observer_tx) {
-  std::vector<CrudIndexRecord> indexes;
-  for (const auto& index : state.indexes) {
-    if (index.table_uuid == table_uuid && TxVisible(state, index.creator_tx, observer_tx)) { indexes.push_back(index); }
-  }
-  return indexes;
+  return SelectVisibleCrudIndexes(state, &table_uuid, observer_tx);
 }
 
 std::vector<CrudIndexRecord> VisibleCrudIndexesForTableColumn(const RelationReadSnapshot& state,

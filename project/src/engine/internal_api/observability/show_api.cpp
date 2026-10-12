@@ -19,6 +19,7 @@
 #include "catalog/sys_information_security_context.hpp"
 #include "catalog_index_profile.hpp"
 #include "crud_support/crud_store.hpp"
+#include "crud_support/crud_index_visibility.hpp"
 #include "domain_support/domain_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "observability/acceleration_registry.hpp"
@@ -589,7 +590,8 @@ EngineRequestContext CatalogReadContext(EngineRequestContext context) {
   return context;
 }
 
-void MergeCrudCatalogState(CrudState* base, const RelationReadSnapshot& source) {
+void MergeCrudCatalogState(CrudState* base, const RelationReadSnapshot& source,
+                           std::uint64_t observer_tx) {
   if (base == nullptr) { return; }
   for (const auto& [tx, state] : source.transactions) {
     base->transactions[tx] = state;
@@ -606,7 +608,7 @@ void MergeCrudCatalogState(CrudState* base, const RelationReadSnapshot& source) 
       *existing = table;
     }
   }
-  for (const auto& index : source.indexes) {
+  for (const auto& index : VisibleCrudIndexes(source, observer_tx)) {
     auto existing = std::find_if(base->indexes.begin(), base->indexes.end(),
                                  [&index](const CrudIndexRecord& candidate) {
                                    return candidate.index_uuid == index.index_uuid;
@@ -622,13 +624,18 @@ void MergeCrudCatalogState(CrudState* base, const RelationReadSnapshot& source) 
   base->max_index_sequence = std::max(base->max_index_sequence, source.max_index_sequence);
 }
 
-CrudState LoadReadableCatalogCrudState(const EngineRequestContext& context) {
+CrudState LoadReadableCatalogCrudState(const EngineRequestContext& context,
+                                       std::uint64_t observer_tx) {
   CrudState state;
   const auto crud = LoadCrudState(context);
-  if (crud.ok) { state = crud.state; }
+  if (crud.ok) {
+    state = crud.state;
+    state.indexes = VisibleCrudIndexes(crud.state, observer_tx);
+  }
   const auto mga_relations = LoadMgaRelationStoreState(context);
   if (mga_relations.ok) {
-    MergeCrudCatalogState(&state, BuildCrudCompatibilityStateFromMga(mga_relations.state));
+    MergeCrudCatalogState(&state, BuildCrudCompatibilityStateFromMga(mga_relations.state),
+                          observer_tx);
   }
   return state;
 }
@@ -1041,7 +1048,7 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
     }
   }
 
-  const CrudState readable_crud = LoadReadableCatalogCrudState(catalog_read_context);
+  const CrudState readable_crud = LoadReadableCatalogCrudState(catalog_read_context, observer_tx);
   std::set<EngineUuid> crud_table_uuids;
   for (const auto& table : readable_crud.tables) {
     if (table.table_uuid.is_nil() ||
