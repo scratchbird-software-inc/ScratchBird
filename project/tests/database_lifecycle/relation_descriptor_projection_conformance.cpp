@@ -21,6 +21,7 @@
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 #include "catalog/column_metadata_codec.hpp"
+#include "datatype_storage_identity.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -325,16 +326,12 @@ api::EngineColumnDefinition Column(const api::EngineRequestContext& context,
   Require(row.ok() && row.manifest.descriptor_rows.size() == 1,
           "projection fixture datatype absent from current catalog");
   const auto& datatype = row.manifest.descriptor_rows.front();
-  const auto binding = datatypes::LookupDatatypeTypeCodecIdentityV1(
+  datatypes::DatatypeStorageIdentityV3 binding;
+  const bool bound = datatypes::LookupDatatypeStorageIdentityV3(
       context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
       context.datatype_registry_generation, datatype.descriptor_uuid.value,
-      datatype.descriptor_epoch);
-  // This test projects catalog metadata, not a BLOB literal/parameter codec.
-  // BLOB is owned by the complete builtin datatype catalog, whose existing
-  // metadata contract uses its catalog descriptor identity as the type
-  // identity. Do not invent a codec tuple or substitute the TEXT identity.
-  const bool builtin_blob = canonical_type == "blob";
-  Require(builtin_blob ? !binding.ok : binding.ok,
+      datatype.descriptor_epoch, &binding);
+  Require(bound && binding.type_id == datatype.type_id && !binding.type_uuid.is_nil(),
           "projection fixture datatype authority does not match its catalog");
   api::EngineColumnDefinition column;
   column.ordinal = ordinal;
@@ -343,8 +340,9 @@ api::EngineColumnDefinition Column(const api::EngineRequestContext& context,
   column.descriptor.descriptor_uuid = api::GenerateCrudEngineUuid("object");
   column.descriptor.datatype_descriptor_uuid = datatype.descriptor_uuid.value;
   column.descriptor.datatype_descriptor_generation = datatype.descriptor_epoch;
-  column.descriptor.type_uuid = builtin_blob
-      ? datatype.descriptor_uuid.value : binding.row.type_uuid;
+  column.descriptor.type_uuid = binding.type_uuid;
+  column.descriptor.datatype_cohort = {context.datatype_catalog_snapshot_uuid,
+      context.datatype_catalog_generation, context.datatype_registry_generation};
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = std::move(canonical_type);
   column.descriptor.encoded_descriptor = std::move(encoded_descriptor);
@@ -386,6 +384,8 @@ api::MgaRelationStorageDescriptor CreateSourceRelation(
       "blob",
       ResourceMetadata("type=blob;text_resource_storage=large_object", utf8->resource_uuid, utf8->default_collation_uuid)));
   auto wrong_blob_identity = table;
+  Require(table.table_columns.back().descriptor.type_uuid != table.table_columns[1].descriptor.type_uuid,
+          "projection BLOB fixture did not bind a distinct catalog type identity");
   wrong_blob_identity.table_columns.back().descriptor.type_uuid =
       table.table_columns[1].descriptor.type_uuid;
   const auto rejected_blob_identity = api::EngineCreateTable(wrong_blob_identity);
