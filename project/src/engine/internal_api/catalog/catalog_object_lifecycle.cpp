@@ -609,6 +609,8 @@ std::string CatalogLifecycleLoadCacheKey(const EngineRequestContext& context,
   key << "db=" << context.database_path
       << "|visible=" << (options.enforce_visibility ? "1" : "0")
       << "|local_tx=" << context.local_transaction_id
+      << "|snapshot_visible_through="
+      << context.snapshot_visible_through_local_transaction_id
       << "|catalog=" << context.catalog_generation_id
       << "|security=" << context.security_epoch
       << "|resource=" << context.resource_epoch

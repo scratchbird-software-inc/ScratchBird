@@ -455,6 +455,21 @@ void TestMissingUuidOwnershipCacheAndMga(const std::filesystem::path& path,
   const auto visible = catalog_api::EngineCatalogLookupObjectByUuid(
       LookupRequest(visible_context, scratchbird::tests::FixtureUuid(1378, 17), "table"));
   RequireOk(visible, "MGA-visible object lookup failed");
+  // Exercise the low-level catalog projection with the same observer and
+  // unchanged journals. A cached wider snapshot must not supply visibility
+  // to a narrower request, nor may the narrower cached result hide the row
+  // when the original bound is read again.
+  auto same_observer_hidden = visible_context;
+  same_observer_hidden.snapshot_visible_through_local_transaction_id = created_tx - 1;
+  for (int repeat = 0; repeat != 2; ++repeat) {
+    RequireDiagnostic(catalog_api::EngineCatalogLookupObjectByUuid(
+        LookupRequest(same_observer_hidden, scratchbird::tests::FixtureUuid(1378, 17), "table")),
+        catalog_api::kCatalogObjectDiagnosticMgaVisibilityRefused,
+        "cached catalog visibility crossed the requested snapshot boundary");
+    RequireOk(catalog_api::EngineCatalogLookupObjectByUuid(
+        LookupRequest(visible_context, scratchbird::tests::FixtureUuid(1378, 17), "table")),
+        "narrow cached catalog snapshot hid an eligible object");
+  }
   Rollback(visible_context);
 }
 
