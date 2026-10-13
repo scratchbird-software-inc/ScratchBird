@@ -11,9 +11,11 @@
 #include "../support/engine_statement_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "catalog/name_registry.hpp"
+#include "crud_support/native_value_payload.hpp"
 #include "catalog/datatype_bootstrap_identity.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_operations.hpp"
+#include "datatype_storage_identity.hpp"
 #include "catalog/name_registry_codec.hpp"
 #include "behavior_support/api_behavior_record_codec.hpp"
 #include "ddl/create_api.hpp"
@@ -44,6 +46,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -58,8 +61,7 @@ namespace sblr = scratchbird::engine::sblr;
 namespace uuid = scratchbird::core::uuid;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -225,12 +227,13 @@ api::EngineLocalizedName Name(std::string value) {
   return name;
 }
 
-api::EngineTypedValue IntegerValue(std::int64_t value) {
+api::EngineTypedValue IntegerValue(const api::EngineDescriptor& descriptor, std::int32_t value) {
   api::EngineTypedValue typed;
-  typed.descriptor.descriptor_kind = "scalar";
-  typed.descriptor.canonical_type_name = "integer";
-  typed.descriptor.encoded_descriptor = "type=integer";
-  typed.encoded_value = std::to_string(value);
+  typed.descriptor = descriptor;
+  typed.binary_value.resize(4);
+  for (unsigned i = 0; i < 4; ++i)
+    typed.binary_value[i] = static_cast<std::uint8_t>(static_cast<std::uint32_t>(value) >> (8 * i));
+  typed.setState(api::EngineValueState::value);
   return typed;
 }
 
@@ -254,7 +257,7 @@ void CreateTableAndRows(Fixture& fixture,
   column.names.push_back(Name("a"));
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "integer";
-  column.descriptor.encoded_descriptor = "type=integer";
+  column.descriptor.encoded_descriptor = "canonical=int32;precision=32;scale=0;nullable=false";
   namespace dt = scratchbird::core::datatypes;
   const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   Require(manifest.ok(), "routine fixture datatype catalog is unavailable");
@@ -262,16 +265,20 @@ void CreateTableAndRows(Fixture& fixture,
   Require(datatype.ok() && datatype.manifest.descriptor_rows.size() == 1,
           "routine fixture integer datatype is not catalog-bound");
   const auto& published = datatype.manifest.descriptor_rows.front();
-  const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+  dt::DatatypeStorageIdentityV3 binding;
+  const bool bound = dt::LookupDatatypeStorageIdentityV3(
       context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
       context.datatype_registry_generation, published.descriptor_uuid.value,
-      published.descriptor_epoch);
-  Require(binding.ok, "routine fixture integer codec is not catalog-bound");
+      published.descriptor_epoch, &binding);
+  Require(bound && binding.type_id == dt::CanonicalTypeId::int32 && !binding.type_uuid.is_nil(),
+      "routine fixture integer codec is not catalog-bound");
   column.requested_column_uuid = api::GenerateCrudEngineUuid("column");
   column.descriptor.descriptor_uuid = api::GenerateCrudEngineUuid("object");
-  column.descriptor.datatype_descriptor_uuid = binding.row.descriptor_uuid;
-  column.descriptor.datatype_descriptor_generation = binding.row.descriptor_generation;
-  column.descriptor.type_uuid = binding.row.type_uuid;
+  column.descriptor.datatype_descriptor_uuid = published.descriptor_uuid.value;
+  column.descriptor.datatype_descriptor_generation = published.descriptor_epoch;
+  column.descriptor.type_uuid = binding.type_uuid;
+  column.descriptor.datatype_cohort = {context.datatype_catalog_snapshot_uuid,
+      context.datatype_catalog_generation, context.datatype_registry_generation};
   column.ordinal = 0;
   column.nullable = false;
   table.table_columns.push_back(column);
@@ -284,13 +291,64 @@ void CreateTableAndRows(Fixture& fixture,
   insert.target_table.object_kind = "table";
   for (std::int64_t value = 1; value <= 10; ++value) {
     api::EngineRowValue row;
-    row.fields.push_back({"a", IntegerValue(value)});
+    row.fields.push_back({"a", IntegerValue(column.descriptor, static_cast<std::int32_t>(value))});
     insert.input_rows.push_back(std::move(row));
   }
   const auto inserted = api::EngineInsertRows(insert);
   RequireOk(inserted, "routine vertical-slice row insert failed");
   Require(inserted.inserted_count == 10,
           "routine vertical-slice did not insert ten rows");
+
+  const auto compare = [&](std::int32_t left, std::int32_t right) {
+    const auto native_left = api::CrudTypedValuePayload(IntegerValue(column.descriptor, left));
+    const auto native_right = IntegerValue(column.descriptor, right);
+    return api::CompareCrudPredicateValue(native_left, native_right,
+        [](const auto&, const auto&) -> int { Fail("native INTEGER comparison reached lexical fallback"); });
+  };
+  Require(compare(256, 255) == 1 && compare(255, 256) == -1 &&
+              compare(-1, 0) == -1 && compare(0, -1) == 1 &&
+              compare(INT32_MIN, INT32_MAX) == -1 && compare(INT32_MAX, INT32_MIN) == 1 &&
+              compare(INT32_MIN, INT32_MIN) == 0,
+          "native INTEGER predicate ordering is not signed machine ordering");
+  auto malformed_bound = IntegerValue(column.descriptor, 7);
+  malformed_bound.is_null = true;
+  const auto null_left = api::CrudTypedValuePayload(IntegerValue(column.descriptor, 4));
+  Require(!api::CompareCrudPredicateValue(null_left, malformed_bound,
+      [](const auto&, const auto&) { return 0; }), "legacy NULL flag with native payload acquired ordering");
+  malformed_bound.binary_value.clear();
+  Require(!api::CompareCrudPredicateValue(null_left, malformed_bound,
+      [](const auto&, const auto&) { return 0; }), "legacy NULL flag without payload acquired ordering");
+  malformed_bound = IntegerValue(column.descriptor, 7);
+  malformed_bound.binary_value.pop_back();
+  const auto native_left = api::CrudTypedValuePayload(IntegerValue(column.descriptor, 4));
+  Require(!api::CompareCrudPredicateValue(native_left, malformed_bound,
+      [](const auto&, const auto&) { return 0; }), "malformed native INTEGER bound acquired ordering");
+  malformed_bound = IntegerValue(column.descriptor, 7);
+  malformed_bound.descriptor.datatype_cohort.registry_generation++;
+  Require(!api::CompareCrudPredicateValue(native_left, malformed_bound,
+      [](const auto&, const auto&) { return 0; }), "stale native INTEGER cohort acquired ordering");
+  malformed_bound.descriptor.canonical_type_name = "renamed_integer_label";
+  Require(!api::CompareCrudPredicateValue(native_left, malformed_bound,
+      [](const auto&, const auto&) { return 0; }), "renamed stale INTEGER binding acquired byte ordering");
+  const auto int64_row = dt::LookupDatatypeCatalogRow(manifest.manifest, dt::CanonicalTypeId::int64);
+  Require(int64_row.ok() && int64_row.manifest.descriptor_rows.size() == 1,
+      "conflicting INTEGER fixture lacks actual INT64 descriptor");
+  malformed_bound = IntegerValue(column.descriptor, 256);
+  malformed_bound.descriptor.datatype_descriptor_uuid = int64_row.manifest.descriptor_rows.front().descriptor_uuid.value;
+  malformed_bound.descriptor.datatype_descriptor_generation = int64_row.manifest.descriptor_rows.front().descriptor_epoch;
+  malformed_bound.descriptor.canonical_type_name = "renamed_integer_label";
+  Require(!api::CompareCrudPredicateValue(native_left, malformed_bound,
+      [](const auto&, const auto&) { return 0; }), "INT32 type with INT64 descriptor acquired byte ordering");
+  malformed_bound = IntegerValue(column.descriptor, 7);
+  malformed_bound.binary_value.resize(16);
+  malformed_bound.descriptor.canonical_type_name = "uuid";
+  const api::CrudStoredValue sixteen_bytes{api::EngineValueState::value, std::string(16, '\0')};
+  Require(!api::CompareCrudPredicateValue(sixteen_bytes, malformed_bound,
+      [](const auto&, const auto&) { return 0; }), "INT32-bound malformed carrier acquired UUID ordering");
+  malformed_bound = IntegerValue(column.descriptor, 7);
+  malformed_bound.descriptor.type_uuid = api::GenerateCrudEngineUuid("object");
+  Require(!api::CompareCrudPredicateValue(native_left, malformed_bound,
+      [](const auto&, const auto&) { return 0; }), "foreign native INTEGER type acquired ordering");
 
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "routine vertical-slice MGA relation load failed");
@@ -770,6 +828,7 @@ void RequireApiOk(const api::EngineApiResult& result,
 }  // namespace
 
 int main() {
+  try {
   scratchbird::core::memory::AllocationPolicy memory_policy;
   memory_policy.policy_name = "routine_delete_column_range_vertical_slice";
   memory_policy.hard_limit_bytes = 64ull * 1024 * 1024;
@@ -785,6 +844,17 @@ int main() {
 
   auto setup = Begin(fixture, 1);
   CreateTableAndRows(fixture, setup);
+  const auto identity_before_invalid_cohort = DurableRoutineIdentityState(fixture);
+  for (const bool missing : {true, false}) {
+    auto invalid_context = setup;
+    invalid_context.datatype_catalog_snapshot_uuid = missing ? platform::Uuid{} :
+        api::GenerateCrudEngineUuid("object");
+    const auto refused = ExecuteCreateOrAlter(fixture, invalid_context);
+    Require(!refused.ok && !refused.diagnostics.empty() &&
+        refused.diagnostics.front().code == api::kExecutableObjectDiagnosticRoutineBindingNotVisible &&
+        DurableRoutineIdentityState(fixture) == identity_before_invalid_cohort,
+        "routine binding admitted a missing/foreign request datatype cohort or published effects");
+  }
 
   fixture.procedure_uuid =
       NewUuid(platform::UuidKind::object, fixture.salt + 1000);
@@ -900,11 +970,14 @@ int main() {
           "routine active later ALTER did not create generation three");
 
   auto prepare_before_later_commit = Begin(fixture, 6);
-  Require(VisibleGeneration(fixture, prepare_before_later_commit) == 2,
+  scratchbird::tests::FixtureEngineStatement prepared_statement(
+      *fixture.engine_session, prepare_before_later_commit);
+  Require(VisibleGeneration(fixture, prepared_statement.context) == 2,
           "active later routine generation leaked into prepare visibility");
   Commit(active_later_alter);
-  Require(VisibleGeneration(fixture, prepare_before_later_commit) == 2,
+  Require(VisibleGeneration(fixture, prepared_statement.context) == 2,
           "routine statement snapshot adopted a later committed generation");
+  prepared_statement.Release();
   Commit(prepare_before_later_commit);
 
   auto current_prepare = Begin(fixture, 7);
@@ -912,7 +985,7 @@ int main() {
           "committed later routine generation is not current metadata");
   Commit(current_prepare);
 
-  Require(VisibleGeneration(fixture, old_data_context) == 1,
+  Require(VisibleGeneration(fixture, old_data_statement.context) == 1,
           "routine old data snapshot unexpectedly adopted later metadata");
 
   auto stale_context = old_data_context;
@@ -932,6 +1005,13 @@ int main() {
               missing_argument.diagnostics.front().code ==
                   api::kExecutableObjectDiagnosticRoutineArgumentInvalid,
           "routine invocation admitted a missing INTEGER input slot");
+
+  const auto overflowing_argument = ExecuteInvoke(fixture, old_data_statement, "2147483648", "7");
+  Require(!overflowing_argument.ok && !overflowing_argument.diagnostics.empty() &&
+              overflowing_argument.diagnostics.front().code ==
+                  api::kExecutableObjectDiagnosticRoutineArgumentInvalid &&
+              overflowing_argument.diagnostics.front().detail == "routine_integer_argument_out_of_range",
+          "routine invocation narrowed an overflowing INTEGER argument");
 
   auto concurrent_alter = Begin(fixture, 8);
   Require(VisibleGeneration(fixture, concurrent_alter) == 3,
@@ -964,6 +1044,7 @@ int main() {
                           "2:4") &&
               HasEvidence(invoked, "executable_generation", "1"),
           "routine invocation did not preserve the old snapshot's exact UUID-bound program");
+  old_data_statement.Release();
   Commit(old_data_context);
   Commit(concurrent_alter);
 
@@ -1000,6 +1081,16 @@ int main() {
           "routine binding recreated missing relation metadata");
   Rollback(missing_descriptor);
 
+  fixture.engine_session.reset();
+  std::error_code cleanup_error;
+  std::filesystem::remove_all(fixture.directory, cleanup_error);
+  Require(!cleanup_error, "routine fixture cleanup failed");
+  fixture.directory.clear();
+
   std::cout << "routine_delete_column_range_vertical_slice=passed\n";
   return EXIT_SUCCESS;
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }

@@ -18,6 +18,7 @@
 #include "hash_digest.hpp"
 #include "local_transaction_store.hpp"
 #include "transaction/transaction_api.hpp"
+#include "datatype_storage_identity.hpp"
 #include "dml/insert_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "security/security_model.hpp"
@@ -30,6 +31,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <map>
+#include <limits>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -691,7 +693,8 @@ EngineApiDiagnostic ValidateRoutineIntegerSignature(
 EngineApiDiagnostic ResolveRoutineColumnBinding(
     const EngineRequestContext& context,
     const RoutineDeleteColumnRangeCountDescriptor& routine,
-    std::string* column_name) {
+    std::string* column_name,
+    EngineDescriptor* value_descriptor = nullptr) {
   // Stored routine binding is a read-only validation boundary.  CREATE TABLE
   // owns descriptor persistence; routine creation/invocation must not repair
   // or synthesize catalog/storage metadata as a side effect of validation.
@@ -704,7 +707,20 @@ EngineApiDiagnostic ResolveRoutineColumnBinding(
       return ExecDiagnostic(kExecutableObjectDiagnosticRoutineBindingNotVisible,
                             "column_name_key_missing");
     }
+    core::datatypes::DatatypeStorageIdentityV3 datatype;
+    const auto& value = column.value_descriptor;
+    if (value.datatype_cohort != EngineDatatypeCohort{context.datatype_catalog_snapshot_uuid,
+            context.datatype_catalog_generation, context.datatype_registry_generation} ||
+        !core::datatypes::LookupDatatypeStorageIdentityV3(
+        value.datatype_cohort.catalog_snapshot_uuid, value.datatype_cohort.catalog_generation,
+        value.datatype_cohort.registry_generation, value.datatype_descriptor_uuid,
+        value.datatype_descriptor_generation, &datatype) ||
+        datatype.type_id != core::datatypes::CanonicalTypeId::int32 || !datatype.codec ||
+        datatype.type_uuid != value.type_uuid)
+      return ExecDiagnostic(kExecutableObjectDiagnosticRoutineBindingNotVisible,
+          "routine_integer_column_binding_invalid");
     if (column_name != nullptr) { *column_name = column.canonical_name_key; }
+    if (value_descriptor != nullptr) { *value_descriptor = column.value_descriptor; }
     return OkDiagnostic();
   }
   return ExecDiagnostic(kExecutableObjectDiagnosticRoutineBindingNotVisible,
@@ -865,8 +881,8 @@ EngineLoadExecutableObjectLifecycleStateResult LoadState(const EngineRequestCont
         scratchbird::transaction::mga::MakeLocalTransactionId(context.local_transaction_id));
     if (!found.ok() || !found.entry.identity.transaction_uuid.valid() ||
         found.entry.identity.transaction_uuid.value != context.transaction_uuid) {
-      result.diagnostic = ExecDiagnostic(kExecutableObjectDiagnosticMgaVisibilityRefused,
-          "executable_reader_transaction_identity_mismatch");
+      result.diagnostic = ExecDiagnostic(kExecutableObjectDiagnosticExactMgaSelectorMismatch,
+          "local_transaction_id_and_transaction_uuid_do_not_match");
       return result;
     }
     reader = found.entry;
@@ -1360,9 +1376,22 @@ EngineApiDiagnostic ExecuteDeleteColumnRangeCountProcedure(
   }
 
   std::string column_name;
+  EngineDescriptor column_descriptor;
   const auto binding =
-      ResolveRoutineColumnBinding(request.context, descriptor, &column_name);
+      ResolveRoutineColumnBinding(request.context, descriptor, &column_name, &column_descriptor);
   if (binding.error) { return binding; }
+  const auto integer = [&](std::int64_t value) {
+    EngineTypedValue result;
+    result.descriptor = column_descriptor;
+    result.binary_value.resize(4);
+    for (unsigned i = 0; i < 4; ++i)
+      result.binary_value[i] = static_cast<std::uint8_t>(static_cast<std::uint32_t>(value) >> (8 * i));
+    result.setState(EngineValueState::value);
+    return result;
+  };
+  for (const auto value : arguments)
+    if (value < std::numeric_limits<std::int32_t>::min() || value > std::numeric_limits<std::int32_t>::max())
+      return ExecDiagnostic(kExecutableObjectDiagnosticRoutineArgumentInvalid, "routine_integer_argument_out_of_range");
 
   EngineDeleteRowsRequest delete_request;
   delete_request.context = request.context;
@@ -1376,9 +1405,9 @@ EngineApiDiagnostic ExecuteDeleteColumnRangeCountProcedure(
   delete_request.delete_predicate.predicate_kind = "column_range";
   delete_request.delete_predicate.canonical_predicate_envelope = column_name;
   delete_request.delete_predicate.bound_values.push_back(
-      ScalarValue("integer", std::to_string(arguments[descriptor.lower_input_slot])));
+      integer(arguments[descriptor.lower_input_slot]));
   delete_request.delete_predicate.bound_values.push_back(
-      ScalarValue("integer", std::to_string(arguments[descriptor.upper_input_slot])));
+      integer(arguments[descriptor.upper_input_slot]));
   delete_request.option_envelopes.push_back(
       "policy:executable.side_effect:allow");
   const auto deleted = EngineDeleteRows(delete_request);
