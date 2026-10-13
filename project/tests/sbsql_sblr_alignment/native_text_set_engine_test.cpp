@@ -110,6 +110,125 @@ api::EngineDescriptor Relational(const api::EngineDescriptor& descriptor, const 
 }
 void Exercise(const api::EngineRequestContext& context) {
   const auto p = Profile(context, "SB_UCA_17_PRIMARY");
+  // A relational occurrence UUID is not its native datatype descriptor UUID.
+  // Both actual collation profiles must work under the live statement cohort.
+  for (const auto name : {"SB_UCA_17_PRIMARY", "SB_UTF8_BINARY"}) {
+    const auto profile = Profile(context, name);
+    api::EngineCompareScalarValuesRequest compare;
+    compare.context = context;
+    compare.left_value.descriptor = Relational(profile.descriptor, context);
+    compare.right_value.descriptor = compare.left_value.descriptor;
+    compare.left_value.encoded_value = "A";
+    compare.right_value.encoded_value = "a";
+    const auto result = api::EngineCompareScalarValues(compare);
+    Ok(result, "live native character comparison");
+    Check(result.collation_uuid == profile.descriptor.collation_uuid && result.collation_epoch != 0 &&
+        (std::string_view(name) == "SB_UCA_17_PRIMARY" ? result.comparison == 0 : result.comparison < 0),
+        "native comparison lost exact collation semantics");
+    for (const bool right : {false, true}) {
+      for (unsigned mutation = 0; mutation != 19; ++mutation) {
+        auto forged = compare;
+        auto& value = right ? forged.right_value : forged.left_value;
+        auto& descriptor = value.descriptor;
+        if (mutation < 11 || mutation == 18) {
+          switch (mutation) {
+            case 0: descriptor.datatype_descriptor_uuid = api::GenerateCrudEngineUuid("object"); break;
+            case 1: ++descriptor.datatype_descriptor_generation; break;
+            case 2: descriptor.datatype_cohort.catalog_snapshot_uuid = api::GenerateCrudEngineUuid("object"); break;
+            case 3: ++descriptor.datatype_cohort.catalog_generation; break;
+            case 4: ++descriptor.datatype_cohort.registry_generation; break;
+            case 5: descriptor.type_uuid = api::GenerateCrudEngineUuid("object"); break;
+            case 6: descriptor.charset_uuid = {}; break;
+            case 7: descriptor.collation_uuid = api::GenerateCrudEngineUuid("object"); break;
+            case 8: value.binary_value = {0}; break;
+            case 9: value.state = static_cast<api::EngineValueState>(255); break;
+            case 10: value.setState(api::EngineValueState::sql_null); break; // Dirty NULL keeps its payload.
+            case 18: descriptor.charset_uuid = api::GenerateCrudEngineUuid("object"); break;
+          }
+        } else {
+          api::RelationalTypeDescriptor record;
+          Check(scratchbird::engine::sblr::DecodeRelationalTypeDescriptorV1(
+              reinterpret_cast<const std::uint8_t*>(descriptor.encoded_descriptor.data()),
+              descriptor.encoded_descriptor.size(), &record), "comparison mutation decode");
+          switch (mutation) {
+            case 11: record.statement_receipt_uuid = api::GenerateCrudEngineUuid("object"); break;
+            case 12: ++record.descriptor_generation; break;
+            case 13: ++record.type_generation; break;
+            case 14: ++record.codec_version; break;
+            case 15: ++record.codec_generation; break;
+            case 16: ++record.datatype_catalog_generation; break;
+            case 17: record.codec_id = "foreign.text.codec"; break;
+          }
+          std::vector<std::uint8_t> bytes;
+          Check(scratchbird::engine::sblr::EncodeRelationalTypeDescriptorV1(record, &bytes),
+              "comparison mutation encode");
+          descriptor.encoded_descriptor.assign(bytes.begin(), bytes.end());
+        }
+        const auto refused = api::EngineCompareScalarValues(forged);
+        if (refused.ok || refused.diagnostics.empty() || !refused.evidence.empty())
+          std::cerr << "comparison mutation " << name << ' ' << right << ' ' << mutation
+                    << " ok=" << refused.ok << " evidence=" << refused.evidence.size() << '\n';
+        Check(!refused.ok && !refused.diagnostics.empty() && refused.evidence.empty(),
+            "forged comparison produced success or partial evidence");
+        auto null_peer = forged;
+        auto& peer = right ? null_peer.left_value : null_peer.right_value;
+        peer.encoded_value.clear(); peer.setState(api::EngineValueState::sql_null);
+        const auto null_refusal = api::EngineCompareScalarValues(null_peer);
+        Check(!null_refusal.ok && !null_refusal.diagnostics.empty() && null_refusal.evidence.empty(),
+            "NULL peer concealed forged comparison authority or malformed payload");
+        Check(api::EngineCompareScalarValues(compare).ok, "valid comparison retry failed");
+      }
+      auto null = compare;
+      auto& operand = right ? null.right_value : null.left_value;
+      operand.encoded_value.clear(); operand.setState(api::EngineValueState::sql_null);
+      const auto unknown = api::EngineCompareScalarValues(null);
+      Ok(unknown, "bound NULL comparison");
+      Check(std::any_of(unknown.evidence.begin(), unknown.evidence.end(), [](const auto& evidence) {
+        const auto* value = std::get_if<std::string>(&evidence.evidence_id);
+        return evidence.evidence_kind == "sql_truth_value" && value && *value == "unknown";
+      }), "NULL comparison did not preserve SQL unknown");
+      for (const std::string bytes : {std::string{"AA"}, std::string{"\xc3\xa9\xc3\xa9"},
+                                      std::string{"\xc0\xaf",2}, std::string{"\xed\xa0\x80",3}}) {
+        auto bounded = compare;
+        auto& operand = right ? bounded.right_value : bounded.left_value;
+        api::RelationalTypeDescriptor record;
+        Check(scratchbird::engine::sblr::DecodeRelationalTypeDescriptorV1(
+            reinterpret_cast<const std::uint8_t*>(operand.descriptor.encoded_descriptor.data()),
+            operand.descriptor.encoded_descriptor.size(), &record), "bounded comparison decode");
+        record.width = 1;
+        std::vector<std::uint8_t> encoded;
+        Check(scratchbird::engine::sblr::EncodeRelationalTypeDescriptorV1(record, &encoded),
+              "bounded comparison encode");
+        operand.descriptor.encoded_descriptor.assign(encoded.begin(), encoded.end());
+        operand.encoded_value = bytes;
+        Check(!api::EngineCompareScalarValues(bounded).ok, "TEXT extent or invalid UTF8 was ignored");
+        auto& peer = right ? bounded.left_value : bounded.right_value;
+        peer.encoded_value.clear(); peer.setState(api::EngineValueState::sql_null);
+        Check(!api::EngineCompareScalarValues(bounded).ok, "NULL concealed TEXT extent or invalid UTF8");
+        operand.encoded_value = "\xc3\xa9";
+        Check(api::EngineCompareScalarValues(bounded).ok, "one multibyte scalar exceeded character width1");
+        peer.setState(api::EngineValueState::value); peer.encoded_value = "\xc3\xa9";
+        const auto multibyte_equal = api::EngineCompareScalarValues(bounded);
+        Check(multibyte_equal.ok && multibyte_equal.comparison == 0,
+              "one multibyte scalar did not execute an actual comparison");
+        operand.encoded_value.clear();
+        Check(api::EngineCompareScalarValues(bounded).ok, "empty present TEXT was confused with NULL");
+        peer.encoded_value.clear();
+        const auto empty_equal = api::EngineCompareScalarValues(bounded);
+        Check(empty_equal.ok && empty_equal.comparison == 0,
+              "empty present TEXT did not execute an actual comparison");
+      }
+    }
+    auto borrowed = compare;
+    borrowed.context = {}; borrowed.left_value = {}; borrowed.right_value = {};
+    borrowed.borrowed_context = &compare.context;
+    borrowed.borrowed_left_value = &compare.left_value;
+    borrowed.borrowed_right_value = &compare.right_value;
+    const auto borrowed_result = api::EngineCompareScalarValues(borrowed);
+    Check(borrowed_result.ok && borrowed_result.comparison == result.comparison &&
+        borrowed_result.collation_uuid == result.collation_uuid,
+        "borrowed comparison changed native authority or semantics");
+  }
   api::EngineSetOperationRequest request; request.context = context;
   request.descriptors.push_back(p.descriptor); request.allow_null_elements = true;
   request.set_operation = "membership";

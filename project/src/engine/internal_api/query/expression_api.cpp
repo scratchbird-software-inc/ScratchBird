@@ -16,6 +16,7 @@
 #include "datatype_operations.hpp"
 #include "datatype_temporal_wire.hpp"
 #include "datatype_text_set.hpp"
+#include "canonical_utf8.hpp"
 #include "sbl_numeric.hpp"
 #include "../../../core/uuid/uuid.hpp"
 
@@ -3473,30 +3474,74 @@ EngineCompareScalarValuesResult EngineCompareScalarValues(
       left_descriptor.collation_uuid != right_descriptor.collation_uuid) {
     return refuse("bound scalar binary descriptors are absent, invalid or mismatched");
   }
-  const auto live_descriptor = [&](const RelationalTypeDescriptor& descriptor) {
+  const auto live_descriptor = [&](const EngineDescriptor& occurrence,
+                                   const RelationalTypeDescriptor& descriptor,
+                                   ExecutionTypeDescriptor* execution) {
     if (!context.security_context_present ||
         descriptor.statement_receipt_uuid != context.statement_receipt_uuid ||
         descriptor.datatype_catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
         descriptor.datatype_catalog_generation != context.datatype_catalog_generation ||
-        descriptor.datatype_registry_generation != context.datatype_registry_generation) return false;
-    const auto identity = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+        descriptor.datatype_registry_generation != context.datatype_registry_generation ||
+        occurrence.datatype_cohort.catalog_snapshot_uuid != descriptor.datatype_catalog_snapshot_uuid ||
+        occurrence.datatype_cohort.catalog_generation != descriptor.datatype_catalog_generation ||
+        occurrence.datatype_cohort.registry_generation != descriptor.datatype_registry_generation ||
+        occurrence.datatype_descriptor_generation != descriptor.descriptor_generation ||
+        occurrence.charset_uuid.is_nil()) return false;
+    // The relational descriptor identifies the occurrence, not the immutable
+    // datatype row. Validate the complete occurrence before selecting that row.
+    std::string detail;
+    if (!QowBoundExecutionTypeDescriptorV1(occurrence, dt::CanonicalTypeId::character,
+                                         execution, &detail)) return false;
+    const auto* identity = scratchbird::core::datatypes::FindDatatypeTypeCodecIdentityV3(
         descriptor.datatype_catalog_snapshot_uuid, descriptor.datatype_catalog_generation,
-        descriptor.datatype_registry_generation, descriptor.descriptor_uuid, descriptor.descriptor_generation);
-    return identity.ok &&
-        scratchbird::core::datatypes::CanonicalTypeIdFromStableName(identity.row.canonical_name) ==
+        descriptor.datatype_registry_generation, occurrence.datatype_descriptor_uuid,
+        occurrence.datatype_descriptor_generation);
+    return identity != nullptr &&
+        scratchbird::core::datatypes::CanonicalTypeIdFromStableName(identity->legacy_fields.canonical_name) ==
             scratchbird::core::datatypes::CanonicalTypeId::character &&
-        identity.row.type_uuid == descriptor.type_uuid &&
-        identity.row.type_generation == descriptor.type_generation &&
-        identity.row.codec_id == descriptor.codec_id &&
-        identity.row.codec_version == descriptor.codec_version &&
-        identity.row.codec_generation == descriptor.codec_generation;
+        identity->legacy_fields.type_uuid == descriptor.type_uuid &&
+        identity->legacy_fields.type_generation == descriptor.type_generation &&
+        identity->legacy_fields.codec_id == descriptor.codec_id &&
+        identity->legacy_fields.codec_version == descriptor.codec_version &&
+        identity->legacy_fields.codec_generation == descriptor.codec_generation;
   };
-  if (!live_descriptor(left_descriptor) || !live_descriptor(right_descriptor))
+  ExecutionTypeDescriptor left_execution, right_execution;
+  if (!live_descriptor(left.descriptor, left_descriptor, &left_execution) ||
+      !live_descriptor(right.descriptor, right_descriptor, &right_execution))
     return refuse("bound scalar descriptor differs from the live receipt/catalog authority");
+  // Validate both complete carriers before a NULL can produce UNKNOWN. The
+  // collation primitive must not erase occurrence-specific length constraints.
+  const auto valid_value = [](const EngineTypedValue& value,
+                              const ExecutionTypeDescriptor& execution) {
+    if (value.isSqlNull())
+      return QowCanonicalSqlNullStateV1(value) && execution.nullable_allowed;
+    if (value.state != EngineValueState::value || value.is_null ||
+        !value.binary_value.empty()) return false;
+    const auto* identity = dt::FindDatatypeTypeCodecIdentityV3(
+        value.descriptor.datatype_cohort.catalog_snapshot_uuid,
+        value.descriptor.datatype_cohort.catalog_generation,
+        value.descriptor.datatype_cohort.registry_generation,
+        value.descriptor.datatype_descriptor_uuid,
+        value.descriptor.datatype_descriptor_generation);
+    if (!identity) return false;
+    const auto maximum_bytes = identity->native_fields.present
+        ? identity->native_fields.canonical_value_maximum_bytes
+        : identity->legacy_fields.canonical_value_maximum_bytes;
+    std::uint64_t scalars = 0;
+    return maximum_bytes != 0 && value.encoded_value.size() <= maximum_bytes &&
+        dt::ValidateCanonicalUtf8(reinterpret_cast<const std::uint8_t*>(value.encoded_value.data()),
+                                  value.encoded_value.size(), &scalars) &&
+        (execution.length == 0 || scalars <= execution.length);
+  };
+  if (!valid_value(left, left_execution) || !valid_value(right, right_execution))
+    return refuse("bound scalar value state, UTF8 or declared extent is invalid");
   const EngineUuid collation_uuid = *left_descriptor.collation_uuid;
   const auto resolved = LookupEngineResourceDescriptorByUuid(context, collation_uuid, "collation");
   if (!resolved.ok || !resolved.resource_descriptor.present ||
       resolved.resource_descriptor.resource_uuid != collation_uuid ||
+      resolved.resource_descriptor.database_uuid != context.database_uuid ||
+      resolved.resource_descriptor.parent_resource_uuid != left.descriptor.charset_uuid ||
+      resolved.resource_descriptor.parent_resource_uuid != right.descriptor.charset_uuid ||
       resolved.resource_descriptor.resource_epoch != context.resource_epoch ||
       resolved.resource_descriptor.resource_epoch == 0 ||
       resolved.resource_descriptor.family_epoch == 0 ||
