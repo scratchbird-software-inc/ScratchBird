@@ -60,15 +60,25 @@ class CatalogJournalBatchPublisher final {
     const EngineRequestContext& context, std::string_view operation,
     std::vector<PreparedCatalogJournalRecord> records,
     PreparedCatalogTableStorage* storage, const CatalogCommentPublicationCustody* comment_custody = nullptr,
-    const CatalogViewCreationCustody* view_custody = nullptr) {
+    const CatalogViewCreationCustody* view_custody = nullptr,
+    const CatalogTableCreationCustody* table_custody = nullptr) {
   const auto refused = [&](std::string detail) {
     return MakeInvalidRequestDiagnostic(std::string(operation), std::move(detail));
   };
   if (records.empty()) return refused("catalog_batch_records_required");
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   if (storage) {
-    const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::catalog_mutation);
+    if (!table_custody) return refused("table_creation_owned_publication_required");
+    const auto generic = AdmitMgaSavepointProducer(context, MgaMutationProducer::catalog_mutation);
+    if (generic.error) {
+      if (!storage->indexes.empty()) return generic;
+      for (const auto& column : storage->table.bound_columns)
+        if (!IsPlainSavepointTableColumn(column)) return generic;
+    }
+    const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::plain_table_creation);
     if (savepoint.error) return savepoint;
+    const auto readmit = table_custody->Readmit();
+    if (readmit.error) return readmit;
   }
   const auto authority = ValidateCurrentMutatingTransactionAuthority(context, std::string(operation));
   if (authority.error) return authority;
@@ -246,7 +256,19 @@ class CatalogJournalBatchPublisher final {
   // callback and before marking or publishing any allocator bytes.
   const auto callback = CheckMgaPublicationCallback(context, "catalog_batch_cancelled_before_publication");
   if (callback.error) return callback;
-  if (storage || owns_comment_mutation || owns_view_definition) {
+  if (storage) {
+    const auto generic = AdmitMgaSavepointProducer(context, MgaMutationProducer::catalog_mutation);
+    if (generic.error) {
+      if (!storage->indexes.empty()) return generic;
+      for (const auto& column : storage->table.bound_columns)
+        if (!IsPlainSavepointTableColumn(column)) return generic;
+    }
+    const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::plain_table_creation);
+    if (savepoint.error) return savepoint;
+    const auto readmit = table_custody->Readmit();
+    if (readmit.error) return readmit;
+  }
+  if (owns_comment_mutation || owns_view_definition) {
     const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::catalog_mutation);
     if (savepoint.error) return savepoint;
   }
@@ -339,9 +361,9 @@ inline EngineApiDiagnostic PublishPreparedCatalogJournalBatch(
 }
 
 inline EngineApiDiagnostic PublishPreparedCatalogJournalBatch(
-    const CatalogTableCreationCustody&, const EngineRequestContext& context, std::string_view operation,
+    const CatalogTableCreationCustody& custody, const EngineRequestContext& context, std::string_view operation,
     std::vector<PreparedCatalogJournalRecord> records, PreparedCatalogTableStorage& storage) {
-  return CatalogJournalBatchPublisher::Publish(context, operation, std::move(records), &storage);
+  return CatalogJournalBatchPublisher::Publish(context, operation, std::move(records), &storage, nullptr, nullptr, &custody);
 }
 
 inline EngineApiDiagnostic PublishPreparedCatalogJournalBatch(

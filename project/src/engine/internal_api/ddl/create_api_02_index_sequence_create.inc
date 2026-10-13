@@ -196,7 +196,7 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
   // Retain ownership across preflight, catalog/name/column publication and
   // the sealed relation descriptor, not merely across individual appends.
   const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
-  const auto savepoint = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::catalog_mutation);
+  const auto savepoint = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::plain_table_creation);
   if (savepoint.error) return MakeCrudDiagnosticResult<EngineCreateTableResult>(
       request.context, "ddl.create_table", savepoint);
   if (request.context.local_transaction_id == 0) {
@@ -205,6 +205,19 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
         "ddl.create_table",
         MakeInvalidRequestDiagnostic("ddl.create_table", "local_transaction_id_required"));
   }
+  const auto generic = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::catalog_mutation);
+  if (generic.error) {
+    bool plain = request.table_constraints.empty() && request.table_indexes.empty();
+    for (const auto& column : request.table_columns) {
+      plain = plain && IsPlainSavepointTableColumn(column);
+    }
+    if (!plain) return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+        request.context, "ddl.create_table", generic);
+  }
+  CatalogTableCreationSources creation_sources;
+  const auto sources = CaptureCatalogTableCreationSources(request.context, &creation_sources);
+  if (sources.error) return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+      request.context, "ddl.create_table", sources);
   if (!SecurityOptionValue(request, "unresolved_schema_parent_path:").empty()) {
     return MakeCrudDiagnosticResult<EngineCreateTableResult>(
         request.context,

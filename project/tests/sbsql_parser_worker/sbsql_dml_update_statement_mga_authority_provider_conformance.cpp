@@ -10,6 +10,13 @@
 #include "dml/update_statement_mga_authority_provider.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "uuid.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "mga_relation_store/mga_savepoint_store.hpp"
+#include "mga_relation_store/mga_update_durable_frame_store_internal.hpp"
+#include "hash_digest.hpp"
+#include "transaction/transaction_api.hpp"
+#include "memory.hpp"
+#include <map>
 
 #include <algorithm>
 #include <array>
@@ -26,6 +33,7 @@
 namespace {
 
 namespace engine_api = scratchbird::engine::internal_api;
+std::map<std::filesystem::path, engine_api::EngineRequestContext> native_contexts;
 
 constexpr auto kDatabaseUuid = scratchbird::tests::FixtureUuidLiteral("019d5200-0000-7000-8000-000000000001");
 constexpr auto kTransactionUuid = scratchbird::tests::FixtureUuidLiteral("019d5200-0000-7000-8000-000000000002");
@@ -94,19 +102,38 @@ engine_api::EngineDmlUpdateStatementMgaAuthorityOpenRequestV1 Request(
   request.context.trust_mode =
       engine_api::EngineTrustMode::server_isolated;
   request.context.database_path = database_path.string();
-  request.context.database_uuid = kDatabaseUuid;
-  request.context.transaction_uuid = kTransactionUuid;
-  request.context.local_transaction_id = 901;
+  auto found = native_contexts.find(database_path);
+  if (found == native_contexts.end()) {
+    scratchbird::storage::database::DatabaseCreateConfig create;
+    create.path = database_path.string();
+    create.database_uuid = scratchbird::core::uuid::GenerateEngineIdentityV7(
+        scratchbird::core::platform::UuidKind::database, 1791800000000).value;
+    create.filespace_uuid = scratchbird::core::uuid::GenerateEngineIdentityV7(
+        scratchbird::core::platform::UuidKind::filespace, 1791800000000).value;
+    create.creation_unix_epoch_millis = 1791800000000;
+    scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+    const auto created = scratchbird::storage::database::CreateDatabaseFile(create);
+    if (!created.ok()) std::cerr << created.diagnostic.diagnostic_code << ':' << created.diagnostic.message_key << '\n';
+    Require(created.ok(),
+            "authority fixture native database creation failed");
+    auto context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+    engine_api::EngineBeginTransactionRequest begin;
+    begin.context = context;
+    begin.isolation_level = "read_committed";
+    const auto started = engine_api::EngineBeginTransaction(begin);
+    Require(started.ok, "authority fixture native transaction creation failed");
+    context.local_transaction_id = started.local_transaction_id;
+    context.transaction_uuid = started.transaction_uuid;
+    context.snapshot_visible_through_local_transaction_id = started.snapshot_visible_through_local_transaction_id;
+    found = native_contexts.emplace(database_path, std::move(context)).first;
+  }
+  request.context = found->second;
   request.context.statement_receipt_uuid =
       kReceiptUuid;
   request.context.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d5200-0000-7000-8000-00000000000c");
   request.context.statement_metadata_snapshot_engine_owned = true;
   request.context.statement_metadata_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d5200-0000-7000-8000-00000000000d");
   request.context.security_context_present = true;
-  request.context.authorization_context.present = true;
-  request.context.authorization_context.authority_uuid =
-      kDatabaseUuid;
-  request.context.authorization_context.security_context_generation = 1;
   request.context.trace_tags.push_back("private_dml_update_rows_consumer");
   request.authenticated_statement_receipt_uuid = kReceiptUuid;
   request.operation_uuid = kOperationUuid;
@@ -380,6 +407,10 @@ void TestReleaseBarrierRecoveryAndContradiction(
   RequireDiagnostic(contradictory.diagnostic,
                     engine_api::kDmlUpdateStatementMgaDiagnosticFailed,
                     "contradictory active savepoint plus barrier was accepted");
+  Require(std::filesystem::remove(database_path.string() + ".sb.mga_savepoints"),
+          "owned malformed savepoint fixture cleanup failed");
+  Require(!engine_api::ActiveMgaSavepointNames(request.context).diagnostic.error,
+          "clean native savepoint chain did not recover after malformed fixture removal");
 }
 
 void TestBinarySavepointFileIdentity(const std::filesystem::path& database_path) {
@@ -431,15 +462,115 @@ void TestBinarySavepointFileIdentity(const std::filesystem::path& database_path)
           "restored binary frame remained invalid");
 }
 
+void ResealStatementFrame(engine_api::mga_update_durable_detail::DmlUpdateDurableFrameV1* frame) {
+  const std::string_view domain = "ScratchBird.MgaDmlUpdateStatementSavepointAuthority.V1";
+  std::vector<std::uint8_t> material(domain.begin(), domain.end());
+  material.insert(material.end(), {1, frame->state, frame->payload[48]});
+  auto append_u64 = [&](std::uint64_t value) {
+    for (unsigned i = 0; i < 8; ++i) material.push_back(static_cast<std::uint8_t>(value >> (i * 8)));
+  };
+  append_u64(frame->sequence);
+  material.insert(material.end(), frame->payload.begin() + 56, frame->payload.begin() + 104);
+  const auto& binding = frame->identity;
+  for (const auto& identity : {binding.database_uuid, binding.owning_transaction_uuid,
+       binding.authenticated_statement_receipt_uuid, binding.operation_uuid,
+       binding.descriptor_uuid, binding.recovery_token_uuid})
+    material.insert(material.end(), identity.bytes.begin(), identity.bytes.end());
+  material.insert(material.end(), frame->payload.begin(), frame->payload.begin() + 16);
+  material.insert(material.end(), frame->payload.begin() + 24, frame->payload.begin() + 40);
+  append_u64(binding.owning_local_transaction_id);
+  append_u64(binding.descriptor_generation);
+  append_u64(binding.recovery_generation);
+  material.insert(material.end(), frame->payload.begin() + 16, frame->payload.begin() + 24);
+  material.insert(material.end(), frame->payload.begin() + 40, frame->payload.begin() + 48);
+  material.insert(material.end(), frame->prior_record_sha256.begin(), frame->prior_record_sha256.end());
+  const auto hash = scratchbird::core::hash::ComputeSha256Digest(material);
+  Require(hash.ok(), "statement frame reseal failed");
+  frame->record_evidence_sha256 = hash.digest;
+  std::copy(hash.digest.begin(), hash.digest.end(), frame->payload.begin() + 104);
+}
+
+void WriteFrames(const std::string& path,
+    const std::vector<engine_api::mga_update_durable_detail::DmlUpdateDurableFrameV1>& frames) {
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  for (const auto& frame : frames) {
+    std::vector<std::uint8_t> bytes;
+    Require(engine_api::mga_update_durable_detail::DmlUpdateDurableEncodeFrame(frame, &bytes),
+            "statement frame fixture encode failed");
+    out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  }
+  out.flush();
+  Require(static_cast<bool>(out), "statement frame fixture write failed");
+}
+
+void TestReplayOwnershipAndCutoffs(const std::filesystem::path& root) {
+  namespace durable = engine_api::mga_update_durable_detail;
+  auto source = Request(root / "replay_source.sdb");
+  auto destination = Request(root / "replay_destination.sdb");
+  Require(source.context.local_transaction_id == destination.context.local_transaction_id,
+          "foreign replay fixture lacks colliding local transaction numbers");
+  const auto opened = engine_api::OpenDmlUpdateStatementMgaAuthorityV1(source);
+  Require(opened.ok, "replay fixture authority open failed");
+  const auto source_path = durable::DmlUpdateDurableSavepointPath(source.context, opened.authority.savepoint_uuid);
+  const auto destination_path = durable::DmlUpdateDurableSavepointPath(destination.context, opened.authority.savepoint_uuid);
+  std::filesystem::create_directories(std::filesystem::path(destination_path).parent_path());
+  std::filesystem::copy_file(source_path, destination_path);
+  auto state = engine_api::ParseSavepoints(destination.context);
+  Require(state.diagnostic.error && state.diagnostic.detail.find("node_transaction_authority_mismatch") != std::string::npos,
+          "foreign binary savepoint affected colliding local transaction");
+  std::filesystem::remove(destination_path);
+
+  auto original = durable::DmlUpdateDurableLoadFrames(source_path);
+  Require(original.ok && original.frames.size() == 1, "replay fixture root missing");
+  auto wrong_owner = original.frames;
+  wrong_owner.front().identity.owning_transaction_uuid = kOtherTransactionUuid;
+  ResealStatementFrame(&wrong_owner.front());
+  WriteFrames(source_path, wrong_owner);
+  state = engine_api::ParseSavepoints(source.context);
+  Require(state.diagnostic.error && state.diagnostic.detail.find("node_transaction_authority_mismatch") != std::string::npos,
+          "resealed savepoint replaced retained transaction identity");
+  WriteFrames(source_path, original.frames);
+  Require(!engine_api::ParseSavepoints(source.context).diagnostic.error,
+          "restored native savepoint authority remained invalid");
+
+  const auto released = engine_api::ReleaseDmlUpdateStatementMgaAuthorityV1(Transition(source, opened.authority));
+  Require(released.ok, "replay fixture release failed");
+  original = durable::DmlUpdateDurableLoadFrames(source_path);
+  Require(original.ok && original.frames.size() == 2, "replay fixture terminal missing");
+  for (const std::size_t offset : {56u, 64u, 72u}) {
+    auto shifted = original.frames;
+    shifted.back().payload[offset] ^= 1;
+    ResealStatementFrame(&shifted.back());
+    WriteFrames(source_path, shifted);
+    state = engine_api::ParseSavepoints(source.context);
+    Require(state.diagnostic.error && state.diagnostic.detail.find("chain_forked") != std::string::npos,
+            "resealed terminal changed root cutoff authority");
+  }
+  WriteFrames(source_path, original.frames);
+  Require(!engine_api::ParseSavepoints(source.context).diagnostic.error,
+          "restored terminal chain remained invalid");
+}
+
 }  // namespace
 
 int main() {
+  Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+      scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(),
+      "update_statement_authority_fixture").ok(), "native authority memory configuration failed");
   TemporaryDirectory temporary;
+  TestReplayOwnershipAndCutoffs(temporary.path());
   TestBinarySavepointFileIdentity(temporary.path() / "binary_paths.sdb");
   TestFreshIdentityAndStaleRefusals(temporary.path() / "fresh.sdb");
   TestRollbackAndRecovery(temporary.path() / "rollback.sdb");
   TestReleaseBarrierRecoveryAndContradiction(
       temporary.path() / "release.sdb");
+  for (const auto& [path, context] : native_contexts) {
+    engine_api::EngineRollbackTransactionRequest rollback;
+    rollback.context = context;
+    Require(engine_api::EngineRollbackTransaction(rollback).ok,
+            "authority fixture native transaction cleanup failed");
+  }
+  native_contexts.clear();
   std::cout
       << "sbsql_dml_update_statement_mga_authority_provider_conformance: PASS\n";
   return EXIT_SUCCESS;

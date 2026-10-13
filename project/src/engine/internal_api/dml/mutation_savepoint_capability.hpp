@@ -16,7 +16,8 @@ enum class MgaMutationProducer : std::uint8_t {
   immediate_constraint_read, deferred_constraint_reservation,
   literal_default, sequence_default, trigger_body, cascade_body,
   catalog_mutation, security_mutation, temporary_lifetime,
-  large_value_reclaim, index_rebuild, serializable_conflict_tracking, metrics, external_effect, unknown,
+  large_value_reclaim, index_rebuild, serializable_conflict_tracking, metrics, external_effect,
+  plain_table_creation, unknown,
   count
 };
 enum class MgaSavepointDisposition : std::uint8_t {

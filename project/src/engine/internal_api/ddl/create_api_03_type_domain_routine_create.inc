@@ -16,7 +16,24 @@
   storage.table = std::move(created_table);
   storage.indexes = std::move(relation_descriptor_indexes);
   storage.result = std::move(result);
-  const CatalogTableCreationCustody custody;
+  const CatalogTableCreationCustody custody([&] {
+    CatalogTableCreationSources current;
+    const auto captured = CaptureCatalogTableCreationSources(request.context, &current);
+    if (captured.error) return captured;
+    if (current != creation_sources)
+      return MakeInvalidRequestDiagnostic("ddl.create_table", "table_creation_source_changed");
+    EngineAuthorizeRequest authorization;
+    authorization.context = request.context;
+    authorization.target_object = request.target_schema;
+    authorization.target_object.uuid = target_schema_uuid;
+    authorization.required_right = "CATALOG_MUTATE";
+    const auto authorized = EngineAuthorize(authorization);
+    if (!authorized.ok || !authorized.authorized)
+      return authorized.diagnostics.empty()
+          ? MakeInvalidRequestDiagnostic("ddl.create_table", "table_creation_authorization_denied")
+          : authorized.diagnostics.front();
+    return MakeEngineApiDiagnostic("OK", "", "", false);
+  });
   const auto published = EngineCatalogCreateObjectWithTableStorage(custody, catalog_request, &storage);
   if (!published.ok) {
     const auto diagnostic = published.diagnostics.empty()

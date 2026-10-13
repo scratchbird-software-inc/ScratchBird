@@ -16,6 +16,7 @@
 
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_operations.hpp"
+#include "security/authorization_api.hpp"
 
 #include "create_api_00_common_helpers.inc"
 #include "create_api_01_schema_table_create.inc"

@@ -65,6 +65,8 @@ constexpr std::array kCapabilities{
       "observations_are_not_transactional_database_state"},
   MgaMutationSavepointCapability{P::external_effect, "external_effect", D::prohibited,
       "external_effect_has_no_MGA_rewind_authority"},
+  MgaMutationSavepointCapability{P::plain_table_creation, "plain_table_creation", D::write_set_rewind,
+      "private_complete_catalog_name_sealed_table_batch_and_native_metadata_exclusions"},
   MgaMutationSavepointCapability{P::unknown, "unknown", D::unsupported,
       "unregistered_producer"},
 };
@@ -147,6 +149,10 @@ EngineApiDiagnostic AdmitMgaSavepointOperation(
   // its direct, optimized or ordinary lane. No general local_write waiver.
   if (operation_id == "dml.insert_rows" || operation_id == "dml.update_rows" ||
       operation_id == "dml.delete_rows") return MakeEngineApiDiagnostic("OK", "", "", false);
+  // The owning receiver still rejects indexed/defaulted/constraint-bearing
+  // shapes before effects. No other catalog writer acquires this profile.
+  if (operation_id == "ddl.create_table" || operation_id == "engine.op.ddl_create_table")
+    return Admit(P::plain_table_creation);
   switch (entry->transaction_effect) {
     case sblr::SblrOpcodeTransactionEffect::none:
     case sblr::SblrOpcodeTransactionEffect::read:

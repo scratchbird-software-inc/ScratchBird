@@ -4093,6 +4093,10 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     sbsql_temporary_table_proof_closure_conformance.cpp
   )
   target_compile_features(sbsql_temporary_table_proof_closure_conformance PRIVATE cxx_std_23)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_definitions(sbsql_temporary_table_proof_closure_conformance PRIVATE SB_TEMP_TEST_WRAP_SYNC=1)
+    target_link_options(sbsql_temporary_table_proof_closure_conformance PRIVATE "-Wl,--wrap=fsync")
+  endif()
   target_link_libraries(
     sbsql_temporary_table_proof_closure_conformance
     PRIVATE

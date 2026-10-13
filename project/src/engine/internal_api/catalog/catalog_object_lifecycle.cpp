@@ -2017,6 +2017,79 @@ static EngineCatalogCreateObjectResult PrepareCatalogObjectCreateData(
   return result;
 }
 
+EngineApiDiagnostic CaptureCatalogTableCreationSources(
+    const EngineRequestContext& context, CatalogTableCreationSources* output) {
+  const auto refused = [](std::string detail) {
+    return MakeInvalidRequestDiagnostic("ddl.create_table", std::move(detail));
+  };
+  if (!output) return refused("table_creation_source_output_required");
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
+  const auto inventory = storage::database::AcquireLocalTransactionInventorySnapshot(context.database_path);
+  if (!inventory.ok() || !inventory.snapshot->inventory.publication_base ||
+      inventory.snapshot->inventory.publication_base->database_uuid != context.database_uuid)
+    return refused("table_creation_inventory_source_invalid");
+  CatalogTableCreationSources staged;
+  staged.inventory = *inventory.snapshot->inventory.publication_base;
+  // The UPDATE statement store is a directory of validated binary frame
+  // chains. Borrow the owning parser's effective authority, not a fabricated
+  // regular-file fingerprint of the directory itself.
+  auto savepoints = ParseSavepoints(context);
+  if (savepoints.diagnostic.error || savepoints.update_statement_authority_corrupt ||
+      savepoints.marker_authority_corrupt)
+    return refused("table_creation_savepoint_source_invalid");
+  staged.active_savepoints = std::move(savepoints.active_savepoints);
+  staged.rollback_ranges = std::move(savepoints.rollback_ranges);
+  staged.next_savepoint_ordinal = savepoints.next_creation_ordinal;
+  staged.context_identities = {context.database_uuid, context.cluster_uuid, context.node_uuid,
+      context.principal_uuid, context.session_uuid, context.transaction_uuid,
+      context.statement_uuid, context.statement_snapshot_uuid, context.statement_receipt_uuid,
+      context.datatype_catalog_snapshot_uuid, context.catalog_epoch_uuid,
+      context.statement_metadata_snapshot_uuid, context.default_root_uuid,
+      context.current_schema_uuid, context.current_role_uuid, context.resource_admission_uuid,
+      context.transaction_policy_snapshot_uuid, context.authorization_context.authority_uuid,
+      context.authorization_context.principal_uuid};
+  staged.context_generations = {context.local_transaction_id, context.statement_snapshot_generation,
+      context.datatype_catalog_generation, context.datatype_registry_generation,
+      context.snapshot_visible_through_local_transaction_id,
+      context.statement_metadata_snapshot_visible_through_local_transaction_id,
+      context.catalog_generation_id, context.security_epoch, context.resource_epoch,
+      context.name_resolution_epoch, context.transaction_policy_snapshot_generation,
+      context.authorization_context.security_context_generation,
+      context.authorization_context.security_epoch, context.authorization_context.policy_epoch,
+      context.authorization_context.catalog_generation_id,
+      static_cast<EngineApiU64>(context.trust_mode), context.read_only_mode,
+      context.security_context_present, context.statement_metadata_snapshot_engine_owned};
+  staged.visibility_exclusions = {
+      context.statement_metadata_snapshot_active_excluded_local_transaction_ids,
+      context.statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids};
+  staged.context_modes = {context.database_path, context.transaction_isolation_level,
+      context.identifier_profile_uuid, context.reference_profile_uuid};
+  std::error_code legacy_error;
+  if (std::filesystem::exists(context.database_path + ".sb.api_events", legacy_error) || legacy_error)
+    return refused("table_creation_legacy_schema_source_unsupported");
+  const std::array<const char*,5> suffixes{
+      ".sb.catalog_object_events", ".sb.name_events.v2", ".sb.mga_relation_metadata",
+      ".sb.api_events.v2", ".sb.mga_savepoints"};
+  for (std::size_t i = 0; i != suffixes.size(); ++i) {
+    const auto path = context.database_path + suffixes[i];
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(path, error);
+    if (status.type() == std::filesystem::file_type::not_found &&
+        (!error || error == std::errc::no_such_file_or_directory)) continue;
+    if (error || status.type() != std::filesystem::file_type::regular)
+      return refused("table_creation_source_not_regular");
+    const auto bytes = std::filesystem::file_size(path, error);
+    if (error) return refused("table_creation_source_extent_unavailable");
+    std::ifstream input(path, std::ios::binary);
+    if (!input) return refused("table_creation_source_open_failed");
+    const auto digest = core::hash::ComputeSha256Stream(input, bytes);
+    if (!digest.ok()) return refused("table_creation_source_read_or_hash_failed");
+    staged.journals[i] = {true, bytes, digest.digest};
+  }
+  *output = std::move(staged);
+  return MakeEngineApiDiagnostic("OK", "", "", false);
+}
+
 EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCreateObjectRequest& request) {
   const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "catalog.object.create";
@@ -2541,9 +2614,15 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObjectWithTableStorage(
     const EngineCatalogCreateObjectRequest& request, PreparedCatalogTableStorage* storage) {
   const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* operation = "ddl.create_table";
-  const auto savepoint = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::catalog_mutation);
+  const auto savepoint = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::plain_table_creation);
   if (savepoint.error)
     return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation, savepoint);
+  const auto generic = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::catalog_mutation);
+  if (generic.error && storage && !storage->indexes.empty())
+    return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation, generic);
+  const auto readmit = custody.Readmit();
+  if (readmit.error)
+    return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation, readmit);
   const auto refuse = [&](const std::string& detail) {
     return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation,
         MakeInvalidRequestDiagnostic(operation, detail));

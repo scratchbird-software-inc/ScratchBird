@@ -1,4 +1,5 @@
 #include "catalog/binary_catalog_metadata.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include "mga_relation_store/mga_row_codec.hpp"
 #include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
@@ -10,6 +11,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
+#include "../support/catalog_text_binding_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/sb_test_temp_compat.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "backup_archive/backup_archive_api.hpp"
@@ -35,9 +40,39 @@
 #include "transaction/savepoint_api.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
+#include "memory.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "mga_relation_store/mga_large_value_codec.hpp"
 #include <map>
+#ifdef SB_TEMP_TEST_WRAP_SYNC
+#include <sys/stat.h>
+#include <cerrno>
+namespace temporary_publication_fault {
+struct State {
+  struct stat file {}, parent {};
+  bool parent_failure = false;
+  bool parent_armed = false;
+  bool hit = false;
+};
+thread_local State* state = nullptr;
+}
+extern "C" int __real_fsync(int);
+extern "C" int __wrap_fsync(int fd) {
+  auto* state = temporary_publication_fault::state;
+  struct stat actual {};
+  if (!state || state->hit || ::fstat(fd, &actual) != 0) return __real_fsync(fd);
+  const bool file = actual.st_dev == state->file.st_dev && actual.st_ino == state->file.st_ino;
+  const bool parent = actual.st_dev == state->parent.st_dev && actual.st_ino == state->parent.st_ino;
+  if ((!state->parent_failure && file) || (state->parent_armed && parent)) {
+    state->hit = true;
+    errno = EIO;
+    return -1;
+  }
+  const int result = __real_fsync(fd);
+  if (result == 0 && state->parent_failure && file) state->parent_armed = true;
+  return result;
+}
+#endif
 
 #include "../release/public_release_authz_fixture.hpp"
 
@@ -160,7 +195,7 @@ constexpr auto kNamespaceLifecycleOnlyAttemptTableUuid =
 void Require(bool condition, std::string_view message) {
   if (!condition) {
     std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -513,55 +548,62 @@ void RequireDropTableExactRefusalWithoutEngineDescriptor() {
   }
 }
 
+std::filesystem::path fixture_root;
+
 std::filesystem::path TestDatabasePath() {
-  return std::filesystem::temp_directory_path() / std::string(kDatabasePathName);
+  return fixture_root / "lifecycle" / std::string(kDatabasePathName);
 }
 
 std::filesystem::path TestRecoveryDatabasePath() {
-  return std::filesystem::temp_directory_path() /
+  return fixture_root / "recovery" /
          std::string(kRecoveryDatabasePathName);
 }
 
 std::filesystem::path TestBackupDatabasePath() {
-  return std::filesystem::temp_directory_path() /
+  return fixture_root / "backup" /
          std::string(kBackupDatabasePathName);
 }
 
+using FixtureSessions = std::map<std::pair<std::string, std::array<std::uint8_t, 16>>,
+                                std::unique_ptr<scratchbird::tests::FixtureEngineSession>>;
+// Non-owning access to main's scope: sessions close before function-static
+// allocator/engine registries, including on an assertion or API exception.
+FixtureSessions* fixture_sessions = nullptr;
+
+template<class Request, class Function>
+auto ExecuteDml(Request request, Function function) {
+  // Keep intentional missing-session controls at the real API boundary.
+  if (request.context.session_uuid.is_nil()) return function(request);
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(request.context);
+  auto& session = (*fixture_sessions)[{request.context.database_path,
+                                       request.context.session_uuid.bytes}];
+  if (!session) session = std::make_unique<scratchbird::tests::FixtureEngineSession>(request.context);
+  scratchbird::tests::FixtureEngineStatement statement(*session, request.context);
+  request.context = statement.context;
+  auto result = function(request);
+  statement.Release();
+  return result;
+}
+
 void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-  for (const auto suffix : {".sb.api_events",
-                            ".sb.catalog_object_events",
-                            ".sb.crud_events",
-                            ".sb.name_events",
-                            ".sb.mga_event_sequence_allocator",
-                            ".sb.mga_relation_metadata",
-                            ".sb.mga_relation_descriptors",
-                            ".sb.mga_row_versions",
-                            ".sb.mga_index_entries",
-                            ".sb.mga_secondary_index_delta_ledger",
-                            ".sb.mga_large_values",
-                            ".sb.mga_savepoints",
-                            ".sb.mga_durable_operations",
-                            ".sb.mga_update_statement_savepoints.v1",
-                            ".sb.transaction_inventory",
-                            ".sb.txn_publish",
-                            ".sb.txn_publish.tmp",
-                            ".sb.backup_archive_lifecycle",
-                            ".sb.backup_forward_sessions",
-                            ".dirty.manifest",
-                            ".recovery.evidence",
-                            ".sb.owner.lock"}) {
-    std::filesystem::remove(path.string() + suffix, ignored);
+  for (auto it = fixture_sessions->begin(); it != fixture_sessions->end();) {
+    if (it->first.first != path.string()) { ++it; continue; }
+    it->second->Close();
+    it = fixture_sessions->erase(it);
   }
-  ignored.clear();
-  std::filesystem::remove_all(path.string() + ".sb.mga_relation_scope",
-                              ignored);
+  // Each database owns a private directory, including all versioned sidecars.
+  // Never infer deletion authority over the shared temporary root or a prefix.
+  Require(!fixture_root.empty() && path.parent_path().parent_path() == fixture_root &&
+              (path == TestDatabasePath() || path == TestRecoveryDatabasePath() ||
+               path == TestBackupDatabasePath()),
+          "temporary fixture cleanup escaped owned database directory");
+  std::filesystem::remove_all(path.parent_path());
 }
 
 std::map<std::string, api::EngineUuid> created_filespaces;
 
 api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
+  std::filesystem::create_directories(path.parent_path());
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -570,8 +612,7 @@ api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
       uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1779814400001).value;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = 1779814400002;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -596,20 +637,24 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
   context.request_id = "sbsql-temporary-table-proof-closure";
   context.database_path = path.string();
   context.database_uuid = database_uuid;
+  context.default_root_uuid = MinimalDatabaseFilespaceUuid(path);
   context.session_uuid = std::move(session_uuid);
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440011");
+  const auto bootstrap = db::ReadDatabaseBootstrapSecurityCatalog(path.string());
+  Require(bootstrap.ok() && bootstrap.state.present && bootstrap.state.committed_by_inventory,
+          "temporary fixture requires actual bootstrap authority");
+  context.principal_uuid = bootstrap.state.principal_uuid.value;
+  context.trust_mode = api::EngineTrustMode::server_isolated;
   context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440012");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
+  scratchbird::tests::UseBootstrapDatatypeCohort(context);
   context.name_resolution_epoch = 1;
   context.trace_tags.push_back("right:CATALOG_MUTATE");
   context.trace_tags.push_back("right:DML_MUTATE");
   context.trace_tags.push_back("SBSQL-TEMPORARY-TABLE-PROOF-CLOSURE");
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
   return context;
 }
 
@@ -659,8 +704,10 @@ api::EngineCreateTableRequest TemporaryCreateTableRequest(
   column.requested_column_uuid = column_uuid;
   column.names.push_back({"en", "primary", "", "id", true});
   column.descriptor.descriptor_kind = "scalar";
-  column.descriptor.canonical_type_name = "int";
-  column.descriptor.encoded_descriptor = "type=int";
+  column.descriptor.canonical_type_name = "int64";
+  column.descriptor.encoded_descriptor = "type=int64";
+  scratchbird::tests::BindFixtureColumnDatatype(context,
+      scratchbird::core::datatypes::CanonicalTypeId::int64, column);
   column.ordinal = 0;
   column.nullable = true;
   request.table_columns.push_back(std::move(column));
@@ -690,6 +737,9 @@ api::EngineCreateTableRequest TemporaryPayloadCreateTableRequest(
   payload.descriptor.descriptor_kind = "scalar";
   payload.descriptor.canonical_type_name = "text";
   payload.descriptor.encoded_descriptor = "type=text";
+  scratchbird::tests::BindFixtureColumnDatatype(context,
+      scratchbird::core::datatypes::CanonicalTypeId::character, payload);
+  scratchbird::tests::BindFixtureUtf8BinaryTextResources(context, payload);
   payload.ordinal = 1;
   payload.nullable = true;
   request.table_columns.push_back(std::move(payload));
@@ -711,8 +761,10 @@ api::EngineCreateTableRequest DurableCreateTableRequest(
   column.requested_column_uuid = column_uuid;
   column.names.push_back({"en", "primary", "", "id", true});
   column.descriptor.descriptor_kind = "scalar";
-  column.descriptor.canonical_type_name = "int";
-  column.descriptor.encoded_descriptor = "type=int";
+  column.descriptor.canonical_type_name = "int64";
+  column.descriptor.encoded_descriptor = "type=int64";
+  scratchbird::tests::BindFixtureColumnDatatype(context,
+      scratchbird::core::datatypes::CanonicalTypeId::int64, column);
   column.ordinal = 0;
   column.nullable = true;
   request.table_columns.push_back(std::move(column));
@@ -721,18 +773,31 @@ api::EngineCreateTableRequest DurableCreateTableRequest(
 
 api::EngineTypedValue IntValue(std::int64_t value) {
   api::EngineTypedValue typed;
-  typed.descriptor.descriptor_kind = "scalar";
-  typed.descriptor.canonical_type_name = "int";
-  typed.descriptor.encoded_descriptor = "type=int";
-  typed.encoded_value = std::to_string(value);
+  api::EngineRequestContext context;
+  scratchbird::tests::UseBootstrapDatatypeCohort(context);
+  api::EngineColumnDefinition operand;
+  operand.descriptor.descriptor_kind = "scalar";
+  operand.descriptor.canonical_type_name = "int64";
+  operand.descriptor.encoded_descriptor = "type=int64";
+  scratchbird::tests::BindFixtureColumnDatatype(context,
+      scratchbird::core::datatypes::CanonicalTypeId::int64, operand);
+  typed.descriptor = std::move(operand.descriptor);
+  const auto bits = static_cast<std::uint64_t>(value);
+  for (unsigned i = 0; i < 8; ++i)
+    typed.binary_value.push_back(static_cast<std::uint8_t>(bits >> (8 * i)));
   return typed;
 }
 
-api::EngineTypedValue TextValue(std::string value) {
+api::EngineTypedValue TextValue(const api::EngineRequestContext& context, std::string value) {
   api::EngineTypedValue typed;
-  typed.descriptor.descriptor_kind = "scalar";
-  typed.descriptor.canonical_type_name = "text";
-  typed.descriptor.encoded_descriptor = "type=text";
+  api::EngineColumnDefinition operand;
+  operand.descriptor.descriptor_kind = "scalar";
+  operand.descriptor.canonical_type_name = "text";
+  operand.descriptor.encoded_descriptor = "type=text";
+  scratchbird::tests::BindFixtureColumnDatatype(context,
+      scratchbird::core::datatypes::CanonicalTypeId::character, operand);
+  scratchbird::tests::BindFixtureUtf8BinaryTextResources(context, operand);
+  typed.descriptor = std::move(operand.descriptor);
   typed.encoded_value = std::move(value);
   return typed;
 }
@@ -744,11 +809,12 @@ api::EngineRowValue Row(const api::EngineUuid& row_uuid, std::int64_t id) {
   return row;
 }
 
-api::EngineRowValue PayloadRow(const api::EngineUuid& row_uuid,
+api::EngineRowValue PayloadRow(const api::EngineRequestContext& context,
+                               const api::EngineUuid& row_uuid,
                                std::int64_t id,
                                std::string payload) {
   auto row = Row(std::move(row_uuid), id);
-  row.fields.push_back({"payload", TextValue(std::move(payload))});
+  row.fields.push_back({"payload", TextValue(context, std::move(payload))});
   return row;
 }
 
@@ -762,7 +828,7 @@ api::EngineInsertRowsResult InsertRow(const api::EngineRequestContext& context,
   insert.target_table.object_kind = "table";
   insert.input_rows = {Row(std::move(row_uuid), id)};
   insert.require_generated_row_uuid = false;
-  return api::EngineInsertRows(insert);
+  return ExecuteDml(insert, api::EngineInsertRows);
 }
 
 api::EngineInsertRowsResult InsertPayloadRow(
@@ -776,12 +842,12 @@ api::EngineInsertRowsResult InsertPayloadRow(
   insert.context = context;
   insert.target_table.uuid = table_uuid;
   insert.target_table.object_kind = "table";
-  insert.input_rows = {PayloadRow(std::move(row_uuid), id, std::move(payload))};
+  insert.input_rows = {PayloadRow(context, std::move(row_uuid), id, std::move(payload))};
   insert.require_generated_row_uuid = false;
   if (force_large_value) {
     insert.option_envelopes.push_back("large_value.force_toast=true");
   }
-  return api::EngineInsertRows(insert);
+  return ExecuteDml(insert, api::EngineInsertRows);
 }
 
 api::EngineInsertRowsResult InsertRow(const api::EngineRequestContext& context,
@@ -798,7 +864,7 @@ api::EngineSelectRowsResult SelectRows(const api::EngineRequestContext& context,
   select.context = context;
   select.source_object.uuid = table_uuid;
   select.source_object.object_kind = "table";
-  return api::EngineSelectRows(select);
+  return ExecuteDml(select, api::EngineSelectRows);
 }
 
 api::EngineSelectRowsResult SelectRows(const api::EngineRequestContext& context) {
@@ -821,7 +887,7 @@ api::EngineSelectRowsResult SelectRowsById(const api::EngineRequestContext& cont
   select.source_object.uuid = table_uuid;
   select.source_object.object_kind = "table";
   select.select_predicate = IdPredicate(id);
-  return api::EngineSelectRows(select);
+  return ExecuteDml(select, api::EngineSelectRows);
 }
 
 api::EngineIndexDefinition UniqueIdIndexDefinition(const api::EngineUuid& index_uuid,
@@ -863,7 +929,8 @@ std::string FirstSelectedFieldValue(const api::EngineSelectRowsResult& result,
 
 std::uint64_t CountLargeValueSidecarLines(const std::filesystem::path& path,
                                           std::string_view kind,
-                                          const api::EngineUuid& table_uuid = {}) {
+                                          const api::EngineUuid& table_uuid = {},
+                                          const api::EngineUuid& overflow_uuid = {}) {
   const auto contents = ReadFile(path.string() + ".sb.mga_large_values");
   std::vector<std::string> records;
   Require(api::DecodeMgaMetadataStream(
@@ -875,6 +942,7 @@ std::uint64_t CountLargeValueSidecarLines(const std::filesystem::path& path,
     Require(api::DecodeMgaMetadataFields(record, &fields) && api::ValidateMgaLargeValueFields(fields),
             "large value fixture record invalid");
     if (fields[1] != kind) continue;
+    if (!overflow_uuid.is_nil() && fields[3] != api::MetadataUuidBytes(overflow_uuid)) continue;
     if (!table_uuid.is_nil() && (fields.size() < 9 || fields[4] != api::MetadataUuidBytes(table_uuid))) continue;
     ++count;
   }
@@ -903,7 +971,7 @@ void RequireTemporaryDmlRequiresSession(const api::EngineRequestContext& context
   update.target_table.uuid = table_uuid;
   update.target_table.object_kind = "table";
   update.assignments.push_back({"id", IntValue(32)});
-  auto updated = api::EngineUpdateRows(update);
+  auto updated = ExecuteDml(update, api::EngineUpdateRows);
   Require(!updated.ok &&
               FirstDetail(updated) ==
                   "dml.update_rows:temporary_table_requires_session_uuid",
@@ -913,7 +981,7 @@ void RequireTemporaryDmlRequiresSession(const api::EngineRequestContext& context
   delete_request.context = context;
   delete_request.target_table.uuid = table_uuid;
   delete_request.target_table.object_kind = "table";
-  auto deleted = api::EngineDeleteRows(delete_request);
+  auto deleted = ExecuteDml(delete_request, api::EngineDeleteRows);
   Require(!deleted.ok &&
               FirstDetail(deleted) ==
                   "dml.delete_rows:temporary_table_requires_session_uuid",
@@ -927,7 +995,7 @@ void RequireTemporaryDmlRequiresSession(const api::EngineRequestContext& context
   merge.insert_when_not_matched = true;
   merge.input_rows.push_back(
       Row(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440432"), 32));
-  auto merged = api::EngineMergeRows(merge);
+  auto merged = ExecuteDml(merge, api::EngineMergeRows);
   Require(!merged.ok &&
               FirstDetail(merged) ==
                   "dml.merge_rows:temporary_table_requires_session_uuid",
@@ -1373,8 +1441,11 @@ void RequireEngineTemporaryDmlAndCommit(const std::filesystem::path& path,
 
   auto preserve = BeginTransaction(
       EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440033")));
-  auto preserve_request = TemporaryCreateTableRequest(preserve, "preserve_rows");
-  preserve_request.requested_table_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440103");
+  auto preserve_request = TemporaryCreateTableRequest(preserve, "preserve_rows",
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440103"),
+      "session_customer", api::GenerateCrudEngineUuid("object"));
+  Require(preserve_request.table_columns.front().requested_column_uuid != kColumnUuid,
+          "distinct temporary table reused the delete-rows table column identity");
   preserve_request.table_names.front().name = "preserve_customer";
   auto preserve_create = api::EngineCreateTable(preserve_request);
   if (!preserve_create.ok) { PrintApiDiagnostics(preserve_create); }
@@ -1386,7 +1457,7 @@ void RequireEngineTemporaryDmlAndCommit(const std::filesystem::path& path,
   preserve_insert.input_rows = {
       Row(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440202"), 11)};
   preserve_insert.require_generated_row_uuid = false;
-  auto preserve_inserted = api::EngineInsertRows(preserve_insert);
+  auto preserve_inserted = ExecuteDml(preserve_insert, api::EngineInsertRows);
   if (!preserve_inserted.ok) { PrintApiDiagnostics(preserve_inserted); }
   Require(preserve_inserted.ok && preserve_inserted.inserted_count == 1,
           "TEMP-TABLE-GATE-008 preserve insert failed");
@@ -1403,7 +1474,7 @@ void RequireEngineTemporaryDmlAndCommit(const std::filesystem::path& path,
   preserve_select.context = preserve;
   preserve_select.source_object.uuid = preserve_request.requested_table_uuid;
   preserve_select.source_object.object_kind = "table";
-  auto preserve_selected = api::EngineSelectRows(preserve_select);
+  auto preserve_selected = ExecuteDml(preserve_select, api::EngineSelectRows);
   if (!preserve_selected.ok) { PrintApiDiagnostics(preserve_selected); }
   Require(preserve_selected.ok && preserve_selected.visible_count == 1,
           "TEMP-TABLE-GATE-008 preserve rows were not visible after commit");
@@ -1425,7 +1496,7 @@ void RequireEngineTemporaryDmlAndCommit(const std::filesystem::path& path,
   preserve.transaction_uuid = {};
   preserve = BeginTransaction(preserve);
   preserve_select.context = preserve;
-  preserve_selected = api::EngineSelectRows(preserve_select);
+  preserve_selected = ExecuteDml(preserve_select, api::EngineSelectRows);
   Require(!preserve_selected.ok &&
               FirstDetail(preserve_selected) ==
                   "dml.select_rows:source_table_not_visible",
@@ -1796,19 +1867,38 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
       ResolveTableRequest(malformed_persisted, kMalformedPersistedName));
   Require(!malformed_persisted_resolved.ok &&
               HasDiagnosticCode(malformed_persisted_resolved,
-                                "SB_ENGINE_API_INVALID_REQUEST"),
+                                "SB_ENGINE_API_INVALID_REQUEST") &&
+              Contains(FirstDetail(malformed_persisted_resolved),
+                       "binary_metadata_uuid_invalid"),
           "TEMP-TABLE-GATE-005 malformed persisted owner resolved as private");
+  const auto corrupt_metadata = ReadFile(path.string() + ".sb.mga_relation_metadata");
+  const auto catalog_before = ReadFile(path.string() + ".sb.catalog_object_events");
   const auto malformed_persisted_collision = api::EngineCreateTable(
       DurableCreateTableRequest(
           malformed_persisted,
           kNamespaceMalformedPersistedAttemptTableUuid,
           kMalformedPersistedName,
           scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440852")));
+  if (malformed_persisted_collision.ok ||
+      !Contains(FirstDetail(malformed_persisted_collision), "binary_metadata_uuid_invalid"))
+    PrintApiDiagnostics(malformed_persisted_collision);
+  // Native metadata identity validation now refuses before name-namespace
+  // classification. Require that exact earlier refusal and no catalog effect.
   Require(!malformed_persisted_collision.ok &&
               HasDiagnosticCode(
                   malformed_persisted_collision,
-                  api::kCatalogObjectDiagnosticNameNamespaceInvalid),
+                  "SB_ENGINE_API_INVALID_REQUEST") &&
+              Contains(FirstDetail(malformed_persisted_collision),
+                       "binary_metadata_uuid_invalid") &&
+              ReadFile(path.string() + ".sb.mga_relation_metadata") == corrupt_metadata &&
+              ReadFile(path.string() + ".sb.catalog_object_events") == catalog_before,
           "TEMP-TABLE-GATE-005 malformed persisted owner admitted a catalog collision");
+  // Restore only the deliberately damaged owner before later independent
+  // lifecycle cases; rollback must not be relied upon to repair corrupt bytes.
+  CorruptPersistedTemporaryOwnerForTest(
+      path, kNamespaceMalformedPersistedTableUuid,
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-6000-8000-00000044009b"),
+      malformed_persisted.session_uuid);
   rolled_back = Rollback(malformed_persisted);
   if (!rolled_back.ok) { PrintApiDiagnostics(rolled_back); }
   Require(rolled_back.ok,
@@ -2168,6 +2258,40 @@ void RequireEngineTemporaryRollbackAndSavepoints(
       CreateSavepointRequest(descriptor_context, "before_temp_descriptor"));
   if (!savepoint.ok) { PrintApiDiagnostics(savepoint); }
   Require(savepoint.ok, "TEMP-TABLE-GATE-009 savepoint before descriptor failed");
+  // Effectful aliases must not enter the plain-table rewind profile, even
+  // when they are hidden in column metadata rather than table constraints.
+  for (const auto* key : {"default", "default_expression", "default_constraint",
+                         "default_value", "check_constraint", "check",
+                         "predicate_sblr_ref", "foreign_key", "generated", "identity"}) {
+    auto effectful = TemporaryCreateTableRequest(descriptor_context,
+        "delete_rows", kRollbackCreatedTableUuid, "rollback_created_customer",
+        scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440502"), "private");
+    api::BinaryCatalogMetadata metadata;
+    Require(api::AdmitCatalogColumnMetadata(effectful.table_columns.front().descriptor.encoded_descriptor,
+                                           &metadata), "plain-table negative fixture metadata invalid");
+    metadata.text[key] = "true";
+    Require(api::EncodeCatalogColumnMetadata(metadata,
+        &effectful.table_columns.front().descriptor.encoded_descriptor),
+        "plain-table negative fixture encoding failed");
+    const auto refused = api::EngineCreateTable(effectful);
+    Require(!refused.ok && FirstDetail(refused).find("catalog_provider_specific_rewind_proof_required") != std::string::npos,
+            std::string("effectful column entered plain savepoint profile: ") + key);
+  }
+  auto changed = TemporaryCreateTableRequest(descriptor_context,
+      "delete_rows", kRollbackCreatedTableUuid, "rollback_created_customer",
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440502"), "private");
+  bool callback_called = false;
+  changed.context.query_cancellation_requested = [&] {
+    callback_called = true;
+    ++changed.context.resource_epoch;
+    return false;
+  };
+  const auto changed_result = api::EngineCreateTable(changed);
+  Require(callback_called && !changed_result.ok &&
+              FirstDetail(changed_result) == "ddl.create_table:table_creation_source_changed",
+          "callback changed admission context without refusing table publication");
+  resolved = api::EngineResolveName(ResolveTableRequest(descriptor_context, "rollback_created_customer"));
+  Require(!resolved.ok, "refused callback mutation published a table name");
   auto rollback_create = api::EngineCreateTable(
       TemporaryCreateTableRequest(descriptor_context,
                                   "delete_rows",
@@ -2196,6 +2320,16 @@ void RequireEngineTemporaryRollbackAndSavepoints(
       ResolveTableRequest(descriptor_context, "rollback_created_customer"));
   Require(!resolved.ok,
           "TEMP-TABLE-GATE-009 rolled-back temp descriptor still visible by name");
+  auto retry = api::EngineCreateTable(TemporaryCreateTableRequest(descriptor_context,
+      "delete_rows", kRollbackCreatedTableUuid, "rollback_created_customer",
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440502"), "private"));
+  if (!retry.ok) PrintApiDiagnostics(retry);
+  Require(retry.ok, "rolled-back table identity/name could not be created again");
+  rollback_to = api::EngineRollbackToSavepoint(
+      RollbackToSavepointRequest(descriptor_context, "before_temp_descriptor"));
+  Require(rollback_to.ok, "repeat rollback of retried table creation failed");
+  resolved = api::EngineResolveName(ResolveTableRequest(descriptor_context, "rollback_created_customer"));
+  Require(!resolved.ok, "retried table name survived repeat rollback");
 
   auto full = BeginTransaction(
       EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440052")));
@@ -2221,6 +2355,53 @@ void RequireEngineTemporaryRollbackAndSavepoints(
   resolved = api::EngineResolveName(ResolveTableRequest(full, "full_rollback_temp"));
   Require(!resolved.ok,
           "TEMP-TABLE-GATE-009 full-rolled-back temp table visible by name");
+}
+
+void RequireTemporaryPublicationFailureRecovery(const std::filesystem::path& path,
+                                               const api::EngineUuid& database_uuid) {
+#ifdef SB_TEMP_TEST_WRAP_SYNC
+  for (const bool parent_failure : {false, true}) {
+    auto context = BeginTransaction(EngineContext(path, database_uuid, api::GenerateCrudEngineUuid("session")));
+    auto savepoint = api::EngineCreateSavepoint(CreateSavepointRequest(context, "failed_table_publication"));
+    Require(savepoint.ok, "publication failure fixture savepoint failed");
+    const auto table_uuid = api::GenerateCrudEngineUuid("object");
+    const auto request = TemporaryCreateTableRequest(context, "delete_rows", table_uuid,
+        parent_failure ? "parent_sync_failed_table" : "file_sync_failed_table",
+        api::GenerateCrudEngineUuid("object"));
+    const auto metadata_path = path.string() + ".sb.mga_relation_metadata";
+    const auto before = std::filesystem::file_size(metadata_path);
+    temporary_publication_fault::State fault;
+    fault.parent_failure = parent_failure;
+    Require(::stat(metadata_path.c_str(), &fault.file) == 0 &&
+                ::stat(path.parent_path().c_str(), &fault.parent) == 0,
+            "publication failure fixture inode unavailable");
+    struct Hook {
+      explicit Hook(temporary_publication_fault::State* state) { temporary_publication_fault::state = state; }
+      ~Hook() { temporary_publication_fault::state = nullptr; }
+    };
+    api::EngineCreateTableResult failed;
+    { Hook hook(&fault); failed = api::EngineCreateTable(request); }
+    Require(fault.hit && !failed.ok && std::filesystem::file_size(metadata_path) > before,
+            "failed table synchronization did not retain actual physical effects");
+    Require(!Commit(context).ok, "uncertain table publication became committable");
+    const auto partial = api::EngineRollbackToSavepoint(
+        RollbackToSavepointRequest(context, "failed_table_publication"));
+    Require(!partial.ok && !Commit(context).ok,
+            "partial rollback cleared uncertain table publication fence");
+    Require(Rollback(context).ok, "full rollback after table synchronization failure failed");
+    context.local_transaction_id = 0;
+    context.transaction_uuid = {};
+    context = BeginTransaction(context);
+    Require(!SelectRows(context, table_uuid).ok &&
+                !api::EngineResolveName(ResolveTableRequest(context,
+                    parent_failure ? "parent_sync_failed_table" : "file_sync_failed_table")).ok,
+            "failed table publication survived full rollback");
+    Require(Rollback(context).ok, "publication recovery reader rollback failed");
+  }
+#else
+  (void)path;
+  (void)database_uuid;
+#endif
 }
 
 void RequireEngineTemporaryIndexAndConstraintIsolation(
@@ -2344,7 +2525,7 @@ void RequireEngineTemporaryIndexAndConstraintIsolation(
   update.update_predicate.predicate_kind = "row_uuid_match";
   update.update_predicate.row_uuid = kRowB2;
   update.assignments.push_back({"id", IntValue(71)});
-  auto updated = api::EngineUpdateRows(update);
+  auto updated = ExecuteDml(update, api::EngineUpdateRows);
   Require(!updated.ok &&
               (Contains(FirstDetail(updated), "unique_index_duplicate") ||
                Contains(FirstDetail(updated), "duplicate_key")),
@@ -2425,13 +2606,21 @@ void RequireEngineTemporaryLargeValueCleanup(
   if (!inserted.ok) { PrintApiDiagnostics(inserted); }
   Require(inserted.ok && inserted.inserted_count == 1,
           "TEMP-TABLE-GATE-011 large-value temp insert failed");
-  Require(EvidenceContains(inserted, "mga_large_value_overflow", ""),
-          "TEMP-TABLE-GATE-011 insert did not force large-value sidecar storage");
+  api::EngineUuid overflow_uuid;
+  for (const auto& evidence : inserted.evidence) {
+    if (evidence.evidence_kind != "mga_large_value_overflow") continue;
+    const auto* identity = std::get_if<api::EngineUuid>(&evidence.evidence_id);
+    Require(identity && scratchbird::core::uuid::IsEngineIdentityUuid(*identity) && overflow_uuid.is_nil(),
+            "TEMP-TABLE-GATE-011 overflow evidence not one exact binary identity");
+    overflow_uuid = *identity;
+  }
+  Require(!overflow_uuid.is_nil(),
+          "TEMP-TABLE-GATE-011 insert did not publish binary overflow identity");
   Require(CountLargeValueSidecarLines(path,
                                       "LARGE_VALUE",
-                                      kTemporaryLargeValueTableUuid) == 1,
+                                      kTemporaryLargeValueTableUuid, overflow_uuid) == 1,
           "TEMP-TABLE-GATE-011 sidecar missing large-value metadata");
-  Require(CountLargeValueSidecarLines(path, "LARGE_VALUE_CHUNK") > 0,
+  Require(CountLargeValueSidecarLines(path, "LARGE_VALUE_CHUNK", {}, overflow_uuid) > 0,
           "TEMP-TABLE-GATE-011 sidecar missing large-value chunks");
 
   auto selected = SelectRows(session_a, kTemporaryLargeValueTableUuid);
@@ -2500,7 +2689,22 @@ void AppendFencedTemporaryRowEvidence(const std::filesystem::path& path) {
   row.row_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440891");
   row.version_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440892");
   row.temporary_session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440082");
-  const auto bytes = api::BuildRowVersionStoreLine(row);
+  // Inject only absent transaction authority, not an empty/malformed row. The
+  // table has one INT64 column; use the same native value encoder as live DML.
+  api::EngineRowValue typed;
+  typed.fields.emplace_back("id", IntValue(93));
+  const std::array<std::string, 1> order{"id"};
+  std::string bytes;
+  api::AppendTypedRowVersionStoreLine(&bytes, row, row.event_sequence,
+                                     typed, order, {});
+  std::vector<scratchbird::core::index::byte> encoded(bytes.begin(), bytes.end());
+  std::vector<api::CrudRowVersionRecord> decoded;
+  api::ScopedRelationSummary summary;
+  Require(api::DecodeScopedRowBinaryBytes(encoded, &decoded, &summary) &&
+              decoded.size() == 1 && decoded.front().creator_tx == 999999 &&
+              decoded.front().table_uuid == row.table_uuid &&
+              decoded.front().values.size() == 1,
+          "TEMP-TABLE-GATE-012 fenced row fixture was not a valid native row");
   out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
   Require(static_cast<bool>(out),
           "TEMP-TABLE-GATE-012 fenced row evidence append failed");
@@ -2746,6 +2950,13 @@ void RequireEngineTemporaryBackupAndDeltaExclusion(
   backup.option_envelopes.push_back("target_uri:" +
                                     logical_manifest.string());
   backup.option_envelopes.push_back("filespace_uuid:" + api::MetadataUuidBytes(filespace_uuid));
+  // This component fixture selects one binary lineage for both packages; it
+  // tests content exclusion, not cluster lineage admission or key management.
+  const std::vector<std::string> lineage{
+      "timeline_uuid:" + api::MetadataUuidBytes(scratchbird::tests::FixtureUuid(1605, 1401)),
+      "fork_uuid:" + api::MetadataUuidBytes(scratchbird::tests::FixtureUuid(1605, 1402)),
+      "key_lineage_id:" + api::MetadataUuidBytes(scratchbird::tests::FixtureUuid(1605, 1403))};
+  backup.option_envelopes.insert(backup.option_envelopes.end(), lineage.begin(), lineage.end());
   auto backed_up = api::EngineStartLogicalBackup(backup);
   if (!backed_up.ok) { PrintApiDiagnostics(backed_up); }
   Require(backed_up.ok,
@@ -2783,6 +2994,7 @@ void RequireEngineTemporaryBackupAndDeltaExclusion(
   delta.option_envelopes.push_back("source_backup_uuid:" +
                                    api::MetadataUuidBytes(backed_up.backup_uuid));
   delta.option_envelopes.push_back("filespace_uuid:" + api::MetadataUuidBytes(filespace_uuid));
+  delta.option_envelopes.insert(delta.option_envelopes.end(), lineage.begin(), lineage.end());
   delta.option_envelopes.push_back("start_transaction_id:" +
                                    std::to_string(source_tx));
   delta.option_envelopes.push_back("end_transaction_id:" +
@@ -2851,13 +3063,26 @@ void RequireEngineTemporaryBackupAndDeltaExclusion(
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int RunConformance(int argc, char** argv) {
   if (argc == 2 && std::string_view(argv[1]) == "--drop-refusal-only") {
     RequireDropTableExactRefusalWithoutEngineDescriptor();
     std::cout << "drop_refusal_component=passed\n";
     return EXIT_SUCCESS;
   }
   Require(argc == 1, "unexpected test argument");
+  namespace memory = scratchbird::core::memory;
+  memory::AllocationPolicy memory_policy;
+  memory_policy.policy_name = "temporary_table_conformance";
+  memory_policy.hard_limit_bytes = 64ull * 1024 * 1024;
+  memory_policy.soft_limit_bytes = 48ull * 1024 * 1024;
+  memory_policy.per_context_limit_bytes = 32ull * 1024 * 1024;
+  memory_policy.page_buffer_pool_limit_bytes = 16ull * 1024 * 1024;
+  memory_policy.track_allocations = true;
+  memory_policy.zero_memory_on_release = true;
+  const auto memory_config = memory::ConfigureDefaultMemoryManagerForFixture(
+      memory_policy, "temporary_table_conformance");
+  Require(memory_config.ok() && memory_config.fixture_mode,
+          "temporary table memory fixture configuration failed");
   // SEARCH_KEY: SBSQL-TEMPORARY-TABLE-PROOF-CLOSURE
   // SEARCH_KEY: TEMP-TABLE-GATE-001 TEMP-TABLE-GATE-002 TEMP-TABLE-GATE-003
   // SEARCH_KEY: TEMP-TABLE-GATE-004 TEMP-TABLE-GATE-006 TEMP-TABLE-GATE-007
@@ -2911,10 +3136,45 @@ int main(int argc, char** argv) {
   RequireEngineTemporaryNameScopesAndGttDataIsolation(path, database_uuid);
   RequireEngineTemporaryCatalogNamespaceSemantics(path, database_uuid);
   RequireEngineTemporaryRollbackAndSavepoints(path, database_uuid);
+  RequireTemporaryPublicationFailureRecovery(path, database_uuid);
   RequireEngineTemporaryIndexAndConstraintIsolation(path, database_uuid);
   RequireEngineTemporaryLargeValueCleanup(path, database_uuid);
   RemoveDatabaseArtifacts(path);
 
   std::cout << "sbsql_temporary_table_proof_closure_conformance=passed\n";
   return EXIT_SUCCESS;
+}
+
+int main(int argc, char** argv) {
+  FixtureSessions sessions;
+  fixture_sessions = &sessions;
+  int result = EXIT_FAILURE;
+  try {
+    auto pattern = (std::filesystem::temp_directory_path() / "sb-temporary-table-XXXXXXXX").string();
+    Require(::mkdtemp(pattern.data()) != nullptr, "could not create private fixture directory");
+    fixture_root = pattern;
+    result = RunConformance(argc, argv);
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+  }
+  for (auto& [key, session] : sessions) {
+    try { if (session) session->Close(); }
+    catch (const std::exception& error) {
+      std::cerr << "retaining database artifacts after cleanup failure: "
+                << key.first << ':' << error.what() << '\n';
+      result = EXIT_FAILURE;
+    }
+  }
+  sessions.clear();
+  fixture_sessions = nullptr;
+  if (result == EXIT_SUCCESS) {
+    try { std::filesystem::remove_all(fixture_root); }
+    catch (const std::exception& error) {
+      std::cerr << "fixture artifact cleanup failed: " << error.what() << '\n';
+      result = EXIT_FAILURE;
+    }
+  } else if (!fixture_root.empty()) {
+    std::cerr << "failure artifacts retained at " << fixture_root << '\n';
+  }
+  return result;
 }

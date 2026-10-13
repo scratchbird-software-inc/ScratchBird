@@ -1633,6 +1633,9 @@ bool DmlUpdateStatementLoadBinaryChainAtPath(
         terminal.authority.lifecycle ==
             MgaDmlUpdateStatementSavepointLifecycleV1::active ||
         terminal.authority.binding != first.authority.binding ||
+        terminal.cutoffs.row_event_sequence != first.cutoffs.row_event_sequence ||
+        terminal.cutoffs.metadata_event_sequence != first.cutoffs.metadata_event_sequence ||
+        terminal.cutoffs.index_event_sequence != first.cutoffs.index_event_sequence ||
         terminal.authority.publication_barrier_uuid !=
             first.authority.publication_barrier_uuid ||
         terminal.authority.publication_barrier_generation !=
@@ -1734,6 +1737,12 @@ bool ApplyDmlUpdateBinarySavepointRecords(
     }
     return false;
   }
+  const auto inventory = LoadLocalTransactionInventoryFromDatabase(context.database_path);
+  if (!inventory.ok() || !inventory.inventory.publication_base ||
+      inventory.inventory.publication_base->database_uuid != context.database_uuid) {
+    if (refusal_detail) *refusal_detail = "update_savepoint_inventory_authority_invalid";
+    return false;
+  }
   for (const auto& path : paths) {
     std::vector<DmlUpdateStatementSavepointJournalRecordV1> records;
     std::string detail;
@@ -1748,6 +1757,13 @@ bool ApplyDmlUpdateBinarySavepointRecords(
     }
     const auto& first = records.front();
     const auto tx_id = first.authority.binding.owning_local_transaction_id;
+    const auto owning_transaction = LookupLocalTransaction(inventory.inventory, MakeLocalTransactionId(tx_id));
+    if (first.authority.binding.database_uuid != context.database_uuid ||
+        !owning_transaction.ok() || owning_transaction.entry.identity.transaction_uuid.value !=
+            first.authority.binding.owning_transaction_uuid) {
+      if (refusal_detail) *refusal_detail = "update_savepoint_node_transaction_authority_mismatch";
+      return false;
+    }
     const auto marker = first.private_marker;
     const auto preexisting_tx = state->active_savepoints.find(tx_id);
     if (preexisting_tx != state->active_savepoints.end() &&

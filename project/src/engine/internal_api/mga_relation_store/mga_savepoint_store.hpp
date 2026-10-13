@@ -22,6 +22,7 @@
 namespace scratchbird::engine::internal_api {
 
 struct SavepointCutoffs {
+  bool operator==(const SavepointCutoffs&) const = default;
   std::uint64_t row_event_sequence = 0;
   std::uint64_t metadata_event_sequence = 0;
   std::uint64_t index_event_sequence = 0;
@@ -31,6 +32,7 @@ struct SavepointCutoffs {
 };
 
 struct SavepointRollbackRange {
+  bool operator==(const SavepointRollbackRange&) const = default;
   SavepointCutoffs cutoffs;
   std::uint64_t row_upper_event_sequence =
       std::numeric_limits<std::uint64_t>::max();
