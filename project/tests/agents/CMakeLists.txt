@@ -1166,13 +1166,13 @@ set_tests_properties(agent_enterprise_identity_session_job_route_gate PROPERTIES
 
 add_executable(dpc_agent_scheduler_fairness_starvation_gate
   dpc_agent_scheduler_fairness_starvation_gate.cpp
-  "${PROJECT_SOURCE_DIR}/src/server/server_agent_runtime.cpp"
 )
 target_compile_features(dpc_agent_scheduler_fairness_starvation_gate PRIVATE cxx_std_23)
 target_include_directories(dpc_agent_scheduler_fairness_starvation_gate PRIVATE
   "${PROJECT_SOURCE_DIR}/src/server"
 )
 target_link_libraries(dpc_agent_scheduler_fairness_starvation_gate PRIVATE
+  sb_server_core
   sb_core_agents
   sb_core_agents_cluster_boundary
   sb_engine_internal_api
