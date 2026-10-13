@@ -4,6 +4,31 @@
 #include "catalog_metric_config_materialization.hpp"
 #include "metric_builtin_definitions.hpp"
 namespace {
+db::NativeCreationCatalogSeed DenseIndexedCatalogSeed(const db::NativeFilespaceInitializationRequest& request,unsigned count) {
+  namespace c=scratchbird::core::catalog;
+  const auto fixture=MetricSeed(request);
+  const auto descriptor=c::DecodeCatalogMetricDescriptor(fixture[0][0].metadata.record.payload);
+  Check(descriptor.ok(),"dense fixture retains exact typed labels");
+  db::NativeCreationCatalogSeed seed;
+  for(unsigned i=0;i<count;++i) {
+    auto row=fixture[0][1];row.metadata.record.header.object_uuid={UuidKind::object,Id(30000+i)};
+    row.metadata.record.header.row_uuid={UuidKind::row,Id(31000+i)};
+    row.metadata.default_name_uuid={UuidKind::object,Id(32000+i)};
+    row.metadata.name_vector_uuid={UuidKind::object,Id(33000+i)};
+    c::CatalogMetricLabelSchema labels{Id(30000+i),1,descriptor.record->definition.labels,false,request.creator.transaction_uuid,1};
+    const auto encoded=c::EncodeCatalogMetricLabelSchema(labels);Check(encoded.ok(),"independent native label definition");
+    row.metadata.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());seed[0].push_back(std::move(row));
+  }
+  std::reverse(seed[0].begin(),seed[0].end());return seed;
+}
+db::NativeCreationCatalogIndexes IndexedConstructionBindings() {
+  db::NativeCreationCatalogIndexes indexes;
+  page::NativeBtreeDependencies deps{Id(20001),1,1,Id(20002),Id(20003),Id(20004),{}};
+  const std::array<byte,16> material{'r','o','w','_','u','u','i','d','_','r','a','w','1','6',0,1};
+  const auto hash=scratchbird::core::hash::ComputeSha256Digest(material.data(),material.size());
+  Check(hash.ok(),"retained construction fixture material digest");deps.dependency_map_sha256=hash.digest;
+  indexes[0]=db::NativeCreationCatalogIndexBinding{Id(20000),deps};return indexes;
+}
 void NativeMetricConfigChecks(const fs::path& directory) {
   namespace c=scratchbird::core::catalog;
   namespace m=scratchbird::core::metrics;
@@ -107,6 +132,90 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     ++whole_persisted;
   }
   Check(whole_persisted>0,"at least one actual supported profile persists the whole configured set");
+  for(unsigned profile=0;profile<5;++profile) {
+    const auto r=Request(profile,96);page_bytes=r.bootstrap.page_size_bytes;total_pages=r.total_pages;
+    u64 coverage=(page_bytes-384)/128;
+    while(((384+(coverage+1)/2+7)&~u64{7})+128*coverage>page_bytes)--coverage;
+    selector_page=(total_pages+coverage-1)/coverage+16;
+    db::NativeCreationCatalogIndexes indexes;
+    // Component-owned fixture references, not catalog admission or permission.
+    // The map digest is computed from retained fixture material, not a readiness
+    // flag. Production must admit the actual profile/map definitions.
+    page::NativeBtreeDependencies deps{Id(20001),1,1,Id(20002),Id(20003),Id(20004),{}};
+    const std::array<byte,16> key_definition{'r','o','w','_','u','u','i','d','_','r','a','w','1','6',0,1};
+    const auto digest=scratchbird::core::hash::ComputeSha256Digest(key_definition.data(),key_definition.size());
+    Check(digest.ok(),"actual retained component index material digest");deps.dependency_map_sha256=digest.digest;
+    indexes[0]=db::NativeCreationCatalogIndexBinding{Id(20000),deps};
+    const auto budget=256*page_bytes;const auto path=fixture.Next();disk::FileDevice device;
+    Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"indexed complete metric actual device");
+    Arm();const auto made=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,r,complete,indexes,budget,*fixture.issuer);Disarm();
+    if(!made.ok())std::cerr<<"indexed creation profile="<<profile<<" error="<<static_cast<unsigned>(made.error)
+        <<" checkpoint="<<static_cast<unsigned>(made.checkpoint_error)<<" selection="<<static_cast<unsigned>(made.selection_error)
+        <<" writes="<<calls[write_call]<<" failed_page="<<made.failed_page_number.value_or(~u64{0})
+        <<" catalog_error="<<(made.catalog_read_error?static_cast<unsigned>(*made.catalog_read_error):~0u)
+        <<" relation_error="<<(made.catalog_relation_error?static_cast<unsigned>(*made.catalog_relation_error):~0u)
+        <<" tree_error="<<static_cast<unsigned>(made.btree_error)<<'\n';
+    Check(made.ok(),"complete configured batch fits actual indexed construction on every profile");
+    Check(made.receipt->relations[0].page_type==0x200&&made.receipt->relation_uuids[0]==Id(20000)&&
+        made.receipt->index_dependencies[0]==deps,"exact distinct relation/index custody in receipt");
+    Check(device.Close().ok()&&device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"indexed complete metric reopen");
+    const std::vector<disk::NativeFilespaceDevice> devices{{r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid,&device}};
+    const auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.bootstrap.database_uuid,devices,
+        made.receipt->checkpoint,2,1,{Id(20000),deps},budget);
+    Check(read.ok()&&read.rows.size()==28,"all selected dependencies resolve from actual indexed selected graph");
+    std::vector<c::CatalogMetricRowView> views;
+    for(const auto& row:read.rows)views.push_back({&row.metadata,row.provisional});
+    for(const auto& expected:*batch.definitions) {
+      const auto resolved=c::ResolveLocalCatalogMetricBindings(views,expected.descriptor.binding.metric_uuid,1);
+      Check(resolved.ok(),"every family binds after actual indexed reopen");
+      const auto actual=c::EncodeCatalogMetricDescriptor(resolved.binding->metric.descriptor);
+      const auto wanted=c::EncodeCatalogMetricDescriptor(expected.descriptor);
+      Check(actual.ok()&&wanted.ok()&&actual.bytes==wanted.bytes,"indexed descriptor bytes persist exactly");
+    }
+    auto stale=deps;++stale.descriptor_generation;
+    const auto refused=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.bootstrap.database_uuid,devices,
+        made.receipt->checkpoint,2,1,{Id(20000),stale},budget);
+    Check(!refused.ok(),"stale navigation binding cannot read indexed catalog");
+    const auto first=Read(device,selector_page,page_bytes),second=Read(device,selector_page+1,page_bytes);
+    for(unsigned lost=0;lost<2;++lost) {
+      const std::vector<byte> blank(page_bytes,0);
+      Check(device.WriteAt((selector_page+lost)*page_bytes,blank.data(),blank.size()).ok()&&device.Sync().ok(),
+          "persist interrupted indexed publication with one actual surviving selector");
+      Check(device.Close().ok()&&device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"reopen interrupted indexed owner");
+      Arm();const auto recovered=db::RecoverIndexedNativeCreationWorkspaceSelectionOnOpenDevice(device,
+          {r.bootstrap.database_uuid,r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid},r.operation_uuid,
+          complete,indexes,budget);Disarm();
+      if(!recovered.ok())std::cerr<<"indexed recovery profile="<<profile<<" error="<<static_cast<unsigned>(recovered.error)<<'\n';
+      Check(recovered.ok()&&recovered.repaired_slots==(1u<<lost)&&calls[write_call]==1,
+          "complete original indexed graph repairs exactly the lost selector without physical-page allocation or identity reissuance");
+      Check(recovered.receipt->relation_uuids[0]==Id(20000)&&recovered.receipt->index_dependencies[0]==deps&&
+          recovered.receipt->catalog_rows[0]==28&&recovered.receipt->checkpoint_sha256==made.receipt->checkpoint_sha256&&
+          Read(device,selector_page,page_bytes)==first&&Read(device,selector_page+1,page_bytes)==second,
+          "indexed recovery preserves all original bindings, root digest and exact selector bytes");
+      Arm();const auto retry=db::RecoverIndexedNativeCreationWorkspaceSelectionOnOpenDevice(device,
+          {r.bootstrap.database_uuid,r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid},r.operation_uuid,
+          complete,indexes,budget);Disarm();
+      Check(retry.ok()&&!retry.repaired_slots&&!calls[write_call],"indexed recovery retry is verified and physically idempotent");
+    }
+    const auto crash_path=fixture.Next();const auto child=fork();Check(child>=0,"fork actual indexed creation interruption");
+    if(child==0) {
+      fixture.ResetIssuer();disk::FileDevice interrupted;
+      if(!interrupted.Open(crash_path.string(),disk::FileOpenMode::create_new).ok())_exit(88);
+      Arm();stop_before_second_selector=true;
+      (void)db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(interrupted,r,complete,indexes,budget,*fixture.issuer);
+      _exit(89);
+    }
+    int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==86,
+        "indexed constructor process dies only after first selector durability/readback");
+    disk::FileDevice interrupted;
+    Check(interrupted.Open(crash_path.string(),disk::FileOpenMode::open_existing).ok(),"new process owns actual interrupted indexed file");
+    const auto surviving=Read(interrupted,selector_page,page_bytes);
+    const auto recovery=db::RecoverIndexedNativeCreationWorkspaceSelectionOnOpenDevice(interrupted,
+        {r.bootstrap.database_uuid,r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid},r.operation_uuid,
+        complete,indexes,budget);
+    Check(recovery.ok()&&recovery.repaired_slots==2&&Read(interrupted,selector_page,page_bytes)==surviving,
+        "actual indexed process-loss recovery preserves original surviving publication");
+  }
   for(unsigned which=0;which<8;++which) {
     auto inputs=batch_inputs;auto invalid_definition=*inputs.back().definition;
     switch(which) {
@@ -122,6 +231,93 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     allocations=0;allocation_fault=1;count_allocations=true;
     const auto refused=materialize_batch(inputs);count_allocations=false;allocation_fault=0;
     Check(!refused.ok()&&!refused.definitions&&!allocations,"malformed final batch input refuses before any owning copy");
+  }
+  // Independent construction boundary controls: row identity is a canonical
+  // binary key, not a caller-supplied lexical position or declared tree height.
+  const auto dense_seed=[&](unsigned count) {
+    // Deliberately reverse physical input order: tree order must derive from
+    // actual binary row identities, not input order or decimal text formatting.
+    return DenseIndexedCatalogSeed(request,count);
+  };
+  db::NativeCreationCatalogIndexes construction_indexes;
+  page::NativeBtreeDependencies construction_deps{Id(20001),1,1,Id(20002),Id(20003),Id(20004),{}};
+  const std::array<byte,16> key_material{'r','o','w','_','u','u','i','d','_','r','a','w','1','6',0,1};
+  const auto key_hash=scratchbird::core::hash::ComputeSha256Digest(key_material.data(),key_material.size());
+  Check(key_hash.ok(),"retained boundary fixture map material");construction_deps.dependency_map_sha256=key_hash.digest;
+  construction_indexes[0]=db::NativeCreationCatalogIndexBinding{Id(20000),construction_deps};
+  const auto dense_request=Request(0,128);page_bytes=dense_request.bootstrap.page_size_bytes;total_pages=dense_request.total_pages;
+  u64 coverage=(page_bytes-384)/128;
+  while(((384+(coverage+1)/2+7)&~u64{7})+128*coverage>page_bytes)--coverage;
+  selector_page=(total_pages+coverage-1)/coverage+16;
+  const unsigned root_capacity=(page_bytes-640)/164,child_capacity=(page_bytes-640-112)/164;
+  for(unsigned count:{0u,1u,root_capacity,root_capacity+1,child_capacity*3+1}) {
+    const auto seed=dense_seed(count);disk::FileDevice device;const auto path=fixture.Next();
+    Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"actual boundary construction owner");
+    Arm();const auto made=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,dense_request,seed,
+        construction_indexes,256*page_bytes,*fixture.issuer);Disarm();
+    Check(made.ok(),"exact empty/root-full/split/multiple-child indexed construction");
+    Check(device.Close().ok()&&device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"actual indexed boundary reopen");
+    const std::vector<disk::NativeFilespaceDevice> devices{{dense_request.bootstrap.filespace_uuid,dense_request.bootstrap.page_size_profile_uuid,&device}};
+    const auto tree=page::ReadNativeBtreeTreeFromOpenDevices(dense_request.bootstrap.database_uuid,devices,
+        made.receipt->relations[0].page,construction_deps,256*page_bytes);
+    Check(tree.ok()&&tree.pages.front().page->tree_level==(count>root_capacity?1:0),
+        "independent whole-tree traversal proves actual split levels/fences/sibling reciprocity");
+    unsigned seen=0;
+    for(auto at:tree.leaves)for(const auto& cell:tree.pages[at].page->cells) {
+      const auto id=Id(31000+seen++);
+      Check(cell.key.row_uuid==id&&cell.key.encoded_key==std::vector<byte>(id.bytes.begin(),id.bytes.end()),
+          "binary ascending canonical row UUID keys despite reversed physical input");
+    }
+    Check(seen==count,"no indexed row is dropped or duplicated at a split boundary");
+    const auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(dense_request.bootstrap.database_uuid,devices,
+        made.receipt->checkpoint,2,1,{Id(20000),construction_deps},256*page_bytes);
+    Check(read.ok()&&read.rows.size()==count,"every split base row has actual committed native custody");
+    const auto original_selector=Read(device,selector_page+1,page_bytes);
+    const std::vector<byte> blank(page_bytes,0);
+    Check(device.WriteAt((selector_page+1)*page_bytes,blank.data(),blank.size()).ok()&&device.Sync().ok(),"interrupt actual split-tree publication");
+    const auto recovered=db::RecoverIndexedNativeCreationWorkspaceSelectionOnOpenDevice(device,
+        {dense_request.bootstrap.database_uuid,dense_request.bootstrap.filespace_uuid,dense_request.bootstrap.page_size_profile_uuid},
+        dense_request.operation_uuid,seed,construction_indexes,256*page_bytes);
+    Check(recovered.ok()&&recovered.repaired_slots==2&&Read(device,selector_page+1,page_bytes)==original_selector,
+        "original split/fence/sibling graph must fully reconstruct before selector repair");
+  }
+  for(unsigned fault=0;fault<6;++fault) {
+    auto indices=construction_indexes;auto seed=dense_seed(root_capacity+1);const auto path=fixture.Next();disk::FileDevice device;
+    Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"invalid index construction owner");
+    switch(fault) {
+      case 0:indices[0]->relation_uuid=indices[0]->dependencies.index_uuid;break;
+      case 1:indices[0]->dependencies.descriptor_generation=2;break;
+      case 2:indices[0]->dependencies.dependency_map_sha256.fill(0);break;
+      case 3:indices[0]->dependencies.key_profile_uuid={};break;
+      case 4:seed=dense_seed((root_capacity+1)*child_capacity+1);break;
+      case 5:indices[0]->relation_uuid=dense_request.bootstrap.database_uuid;break;
+    }
+    Arm();const auto refused=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,dense_request,seed,
+        indices,256*page_bytes,*fixture.issuer);Disarm();
+    Check(!refused.ok()&&!refused.receipt&&!calls[write_call]&&device.Size().ok()&&!device.Size().size_bytes,
+        "invalid identity/generation/map or tree capacity leaves owned file untouched");
+  }
+  {
+    const auto seed=dense_seed(root_capacity+1);
+    const u64 base_capacity=page_bytes-128-32-page::kRowDataPageBodyHeaderBytes;
+    u64 base_pages=1,remaining=base_capacity;
+    for(const auto& row:seed[0]) {
+      const auto bytes=db::NativeCreationCatalogRowBytes(row);Check(bytes&&*bytes<=base_capacity,"exact budget row fit");
+      if(*bytes>remaining){++base_pages;remaining=base_capacity;}remaining-=*bytes;
+    }
+    const u64 maps=(total_pages+coverage-1)/coverage;
+    const u64 navigation=(seed[0].size()+child_capacity-1)/child_capacity;
+    const u64 exact=(maps+20+base_pages+navigation+2)*page_bytes;
+    const auto path=fixture.Next();disk::FileDevice device;
+    Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"exact indexed image budget owner");
+    Arm();auto refused=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,dense_request,seed,
+        construction_indexes,exact-1,*fixture.issuer);Disarm();
+    Check(!refused.ok()&&refused.error==db::NativeCreationWorkspaceError::resource_exhausted&&
+        !calls[write_call]&&device.Size().ok()&&!device.Size().size_bytes,
+        "one-short complete graph budget refuses before physical effects");
+    const auto accepted=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,dense_request,seed,
+        construction_indexes,exact,*fixture.issuer);
+    Check(accepted.ok(),"exact indexed image budget performs the complete graph and actual admission");
   }
   allocations=0;allocation_fault=0;count_allocations=true;
   const auto counted_batch=materialize_batch(batch_inputs);count_allocations=false;

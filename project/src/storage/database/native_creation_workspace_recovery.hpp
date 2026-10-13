@@ -30,4 +30,12 @@ NativeCreationRecoveryResult RecoverPopulatedNativeCreationWorkspaceSelectionOnO
     disk::FileDevice&,const disk::FilespaceBootstrapBinding&,
     const core::platform::Uuid& creation_operation_uuid,const NativeCreationCatalogSeed&,
     core::platform::u64 maximum_retained_image_bytes) noexcept;
+// Exact original index bindings and original admitted seed, never current
+// defaults or identities inferred from a damaged selector. Reconstruct and
+// compare every base/navigation image, allocation and control dependency before
+// repairing either selector. Does not grant profile/security/serving authority.
+NativeCreationRecoveryResult RecoverIndexedNativeCreationWorkspaceSelectionOnOpenDevice(
+    disk::FileDevice&,const disk::FilespaceBootstrapBinding&,
+    const core::platform::Uuid& creation_operation_uuid,const NativeCreationCatalogSeed&,
+    const NativeCreationCatalogIndexes&,core::platform::u64 maximum_retained_image_bytes) noexcept;
 }  // namespace scratchbird::storage::database

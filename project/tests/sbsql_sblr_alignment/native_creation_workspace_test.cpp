@@ -301,8 +301,16 @@ extern "C" scratchbird::core::time::ClockSnapshotResult __wrap__ZN11scratchbird4
 }
 #include "native_creation_catalog_checks.hpp"
 #include "native_metric_config_checks.hpp"
+#include "native_indexed_creation_failure_checks.hpp"
 #include "native_catalog_authority_checks.hpp"
 int main(int argc,char** argv){try{
+  if(argc==2&&std::string_view(argv[1])=="--indexed-negatives") {
+    NativeIndexedRecoveryNegativeChecks();std::cout<<"PASS indexed_negative_checks="<<checks<<'\n';return 0;
+  }
+  if((argc==3||argc==4)&&std::string_view(argv[1])=="--indexed-faults") {
+    NativeIndexedCreationFailureChecks(std::stoul(argv[2]),argc==4?std::stoul(argv[3]):1);
+    std::cout<<"PASS indexed_fault_checks="<<checks<<'\n';return 0;
+  }
   if(argc==2&&std::string_view(argv[1])=="--zero-batches"){
     Fixture fixture;
     for(unsigned profile=0;profile<5;++profile){

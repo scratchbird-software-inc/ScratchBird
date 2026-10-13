@@ -1227,6 +1227,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     COMMAND sbsql_sblr_alignment_native_creation_workspace --metric-config ${CMAKE_SOURCE_DIR}/config/templates)
   set_tests_properties(sbsql_sblr_alignment_native_metric_config PROPERTIES
     TIMEOUT 180 LABELS "actual_files;native_creation;metric_catalog;not_SQL_E2E")
+  foreach(shard RANGE 0 3)
+    add_test(NAME sbsql_sblr_alignment_native_indexed_creation_faults_${shard}
+      COMMAND sbsql_sblr_alignment_native_creation_workspace --indexed-faults ${shard})
+    set_tests_properties(sbsql_sblr_alignment_native_indexed_creation_faults_${shard} PROPERTIES
+      TIMEOUT 1200 RUN_SERIAL TRUE LABELS "actual_files;native_creation;indexed_recovery;allocation_faults;not_SQL_E2E")
+  endforeach()
+  add_test(NAME sbsql_sblr_alignment_native_indexed_recovery_negatives
+    COMMAND sbsql_sblr_alignment_native_creation_workspace --indexed-negatives)
+  set_tests_properties(sbsql_sblr_alignment_native_indexed_recovery_negatives PROPERTIES
+    TIMEOUT 180 RUN_SERIAL TRUE LABELS "actual_files;native_creation;indexed_recovery;resealed_negatives;not_SQL_E2E")
   add_test(NAME sbsql_sblr_alignment_native_creation_catalog
     COMMAND sbsql_sblr_alignment_native_creation_workspace --populated)
   set_tests_properties(sbsql_sblr_alignment_native_creation_catalog PROPERTIES
