@@ -1047,6 +1047,12 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   target_compile_features(database_lifecycle_relation_projection_view_conformance
     PRIVATE cxx_std_23
   )
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_definitions(database_lifecycle_relation_projection_view_conformance
+      PRIVATE SB_VIEW_TEST_WRAP_SYNC=1)
+    target_link_options(database_lifecycle_relation_projection_view_conformance
+      PRIVATE "-Wl,--wrap=fsync")
+  endif()
   target_link_libraries(database_lifecycle_relation_projection_view_conformance
     PRIVATE
       sb_engine

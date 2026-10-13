@@ -52,6 +52,51 @@
 #include <utility>
 #include <vector>
 
+#if defined(SB_VIEW_TEST_WRAP_SYNC)
+#include <cerrno>
+#include <sys/stat.h>
+#include <unistd.h>
+namespace view_publication_fault {
+thread_local bool armed = false, hit = false;
+thread_local unsigned skip = 0;
+thread_local struct stat target {};
+struct AfterSync {
+  struct stat trigger {}, failure {};
+  unsigned skip = 0;
+  bool hit = false;
+};
+thread_local AfterSync* after_sync = nullptr;
+}
+extern "C" int __real_fsync(int);
+extern "C" int __wrap_fsync(int fd) {
+  struct stat actual {};
+  if (view_publication_fault::armed && ::fstat(fd, &actual) == 0 &&
+      actual.st_dev == view_publication_fault::target.st_dev &&
+      actual.st_ino == view_publication_fault::target.st_ino) {
+    if (view_publication_fault::skip) --view_publication_fault::skip;
+    else {
+      view_publication_fault::armed = false;
+      view_publication_fault::hit = true;
+      errno = EIO;
+      return -1;
+    }
+  }
+  const int result = __real_fsync(fd);
+  auto* after = view_publication_fault::after_sync;
+  if (result == 0 && after && !after->hit && ::fstat(fd, &actual) == 0 &&
+      actual.st_dev == after->trigger.st_dev && actual.st_ino == after->trigger.st_ino) {
+    if (after->skip) --after->skip;
+    else {
+      after->hit = true;
+      view_publication_fault::target = after->failure;
+      view_publication_fault::skip = 0;
+      view_publication_fault::armed = true;
+    }
+  }
+  return result;
+}
+#endif
+
 namespace {
 
 namespace api = scratchbird::engine::internal_api;
@@ -2937,6 +2982,99 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
   Rollback(final_reader);
 }
 
+void TestNativeViewPublicationFailures(Fixture& fixture) {
+#if defined(SB_VIEW_TEST_WRAP_SYNC)
+  const auto catalog = fixture.database_path.string() + ".sb.catalog_object_events";
+  const auto names = fixture.database_path.string() + ".sb.name_events.v2";
+  const auto allocator = fixture.database_path.string() + ".sb.mga_event_sequence_allocator";
+  for (unsigned phase = 0; phase != 10; ++phase) {
+    auto owner = Begin(fixture, 2000 + phase * 2);
+    const auto view_name = "V_SYNC_FAILURE_" + std::to_string(phase);
+    const auto request = ViewRequest(fixture, owner, fixture.singleton_descriptor, view_name, "X");
+    const auto catalog_before = ReadDescriptorStoreBytes(catalog);
+    const auto names_before = ReadDescriptorStoreBytes(names);
+    const auto target = phase < 2 ? allocator : phase < 4 ? catalog : phase < 6 ? names
+        : fixture.database_path.string();
+    view_publication_fault::AfterSync after;
+    Require(::stat(target.c_str(), &view_publication_fault::target) == 0,
+            "actual VIEW sync fault target missing");
+    after.trigger = view_publication_fault::target;
+    Require(::stat(fixture.directory.c_str(), &after.failure) == 0,
+            "actual VIEW directory sync target missing");
+    const bool directory = phase < 6 ? phase % 2 != 0 : phase >= 8;
+    after.skip = phase == 9 ? 1 : 0;
+    struct FaultScope {
+      FaultScope(bool directory, unsigned phase, view_publication_fault::AfterSync& after) {
+        view_publication_fault::hit = false;
+        view_publication_fault::skip = phase == 7 ? 1 : 0;
+        view_publication_fault::armed = !directory;
+        view_publication_fault::after_sync = directory ? &after : nullptr;
+      }
+      ~FaultScope() {
+        view_publication_fault::armed = false;
+        view_publication_fault::after_sync = nullptr;
+      }
+    };
+    api::EngineCreateViewResult failed;
+    {
+      FaultScope fault(directory, phase, after);
+      failed = api::EngineCreateView(request);
+    }
+    Require(view_publication_fault::hit && !failed.ok && (!directory || after.hit),
+            "native VIEW ignored actual allocator/catalog/resolver/inventory synchronization failure");
+    const auto actual = db::AcquireStrongLocalTransactionInventorySnapshot(owner.database_path);
+    Require(actual.ok(), "failed VIEW inventory could not be reopened");
+    const auto entry = scratchbird::transaction::mga::LookupLocalTransaction(actual.snapshot->inventory,
+        scratchbird::transaction::mga::MakeLocalTransactionId(owner.local_transaction_id));
+    const bool excluded = phase != 6 && phase != 9;
+    Require(entry.ok() && entry.entry.identity.transaction_uuid.value == owner.transaction_uuid &&
+                entry.entry.rollback_only == excluded,
+            "failed VIEW finality was inferred from acknowledgement rather than native inventory");
+    bool typed_owner = false, classified = false;
+    for (const auto& diagnostic : failed.diagnostics) {
+      for (const auto& [key, value] : diagnostic.identity_fields)
+        typed_owner |= key == "transaction_uuid" && value == owner.transaction_uuid;
+      for (const auto& field : diagnostic.fields)
+        classified |= field.key == "observed_native_commit_exclusion" &&
+            field.value == (excluded ? "retained" : "absent");
+    }
+    Require(typed_owner && classified, "VIEW failure omitted its binary owner or actual native exclusion");
+    if (phase == 6 || phase == 8)
+      Require(ReadDescriptorStoreBytes(catalog) == catalog_before &&
+                  ReadDescriptorStoreBytes(names) == names_before,
+              "failed initial exclusion published VIEW definition or names");
+    if (excluded) {
+      api::EngineCommitTransactionRequest commit;
+      commit.context = owner;
+      Require(!api::EngineCommitTransaction(commit).ok,
+              "partially published VIEW remained committable");
+    }
+    if (phase == 9) {
+      const auto resolved = api::EngineResolveName(ResolveRequest(fixture, owner, view_name));
+      RequireOk(resolved, "lost VIEW release acknowledgement erased complete actual publication");
+      const auto descriptor = api::DescribeEngineRelationProjectionView(owner, resolved.primary_object.uuid);
+      Require(descriptor.present && !descriptor.diagnostic.error,
+              "actual complete VIEW definition lost after release acknowledgement failure");
+      (void)NativeViewRecord(owner, descriptor.view_uuid);
+    }
+    Rollback(owner);
+    auto retry = Begin(fixture, 2001 + phase * 2);
+    const auto absent = api::EngineResolveName(ResolveRequest(fixture, retry, view_name));
+    Require(!absent.ok && !absent.diagnostics.empty() &&
+                absent.diagnostics.front().code == "CATALOG.NAME.NOT_FOUND",
+            "rolled-back failed VIEW left a visible resolver name");
+    const auto retried = api::EngineCreateView(ViewRequest(fixture, retry,
+        fixture.singleton_descriptor, view_name, "X"));
+    RequireOk(retried, "fresh native VIEW retry after physical failure failed");
+    Require(NativeViewRecord(retry, retried.primary_object.uuid).catalog_row_uuid == retried.catalog_row_uuid,
+            "VIEW retry did not publish its actual owning row");
+    Rollback(retry);
+  }
+#else
+  (void)fixture;
+#endif
+}
+
 }  // namespace
 
 int main() {
@@ -2949,6 +3087,7 @@ int main() {
     Fixture fixture;
     CreateFixture(fixture);
     TestRelationProjectionView(fixture);
+    TestNativeViewPublicationFailures(fixture);
     TestUpdatableRelationProjectionView(fixture);
     fixture.temporary.Cleanup();
     std::cout << "relation projection view conformance passed\n";
