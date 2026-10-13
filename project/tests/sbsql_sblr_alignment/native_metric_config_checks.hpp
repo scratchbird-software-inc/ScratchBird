@@ -29,6 +29,9 @@ db::NativeCreationCatalogIndexes IndexedConstructionBindings() {
   Check(hash.ok(),"retained construction fixture material digest");deps.dependency_map_sha256=hash.digest;
   indexes[0]=db::NativeCreationCatalogIndexBinding{Id(20000),deps};return indexes;
 }
+} // namespace
+#include "native_named_creation_checks.hpp"
+namespace {
 void NativeMetricConfigChecks(const fs::path& directory) {
   namespace c=scratchbird::core::catalog;
   namespace m=scratchbird::core::metrics;
@@ -85,6 +88,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     for(auto& record:records)complete[0].push_back(std::move(record));
   }
   std::size_t batch_bytes=0;
+  NativeNamedCreationChecks(complete);
   for(const auto& row:complete[0]) {
     const auto n=db::NativeCreationCatalogRowBytes(row);Check(n.has_value(),"complete batch structural size");
     batch_bytes+=*n;

@@ -150,10 +150,12 @@ bool CatalogNamePayloadPreservesIdentity(const CatalogNamePayloadView& before,co
 }
 std::optional<std::size_t> CatalogNameEnvelopeEncodedBytes(const CatalogNamePayload& payload) {
   if(payload.valueless_by_exception())return {};
+  return CatalogNameEnvelopeEncodedBytes(BorrowCatalogNamePayload(payload));
+}
+std::optional<std::size_t> CatalogNameEnvelopeEncodedBytes(const CatalogNamePayloadView& payload) {
+  if(payload.valueless_by_exception())return {};
   const auto bytes=std::visit([](const auto& value){
-    if constexpr(std::is_same_v<std::decay_t<decltype(value)>,CatalogNameVector>)
-      return CatalogNameEncodedBytes(BorrowCatalogNameVector(value));
-    else return CatalogNameEncodedBytes(BorrowCatalogNameEntry(value));
+    return CatalogNameEncodedBytes(value);
   },payload);
   if(!bytes||*bytes>kMaxBytes-kHeaderBytes)return {};
   return kHeaderBytes+*bytes;

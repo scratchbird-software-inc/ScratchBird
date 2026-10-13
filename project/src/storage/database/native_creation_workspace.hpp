@@ -4,6 +4,7 @@
 #include "native_filespace_initialization.hpp"
 #include "native_checkpoint_selection.hpp"
 #include "catalog_name_envelope.hpp"
+#include "catalog_named_creation.hpp"
 #include "native_index_btree_page.hpp"
 
 namespace scratchbird::storage::database {
@@ -48,10 +49,7 @@ NativeCreationWorkspaceResult InitializeNativeCreationWorkspaceOnOpenDevice(
     core::platform::u64 maximum_retained_image_bytes,
     core::uuid::StandaloneUuidV7Issuer&) noexcept;
 
-struct NativeCreationCatalogRecord {
-  core::catalog::CatalogMetadataVersion metadata;
-  std::optional<core::catalog::CatalogNamePayload> name;
-};
+using NativeCreationCatalogRecord = core::catalog::CatalogCreationRecord;
 // Role1..6 correspond to the six native catalog relations. Inputs are complete
 // owning-catalog definitions, not strings interpreted by storage. The caller
 // retains admitted input memory and owns family/reference/security admission.

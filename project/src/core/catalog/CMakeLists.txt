@@ -38,6 +38,7 @@ add_library(sb_core_catalog
   catalog_resource_record_codec.cpp
   catalog_name_record_codec.cpp
   catalog_name_envelope.cpp
+  catalog_named_creation.cpp
   catalog_records.cpp
 )
 
