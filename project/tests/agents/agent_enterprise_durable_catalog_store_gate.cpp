@@ -8,6 +8,7 @@
 
 #include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 #include "../support/database_fixture_cleanup.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include "agent_binary_identity_fixture.hpp"
 using scratchbird::tests::BinaryFixtureIdentity;
 using scratchbird::tests::NativeFixtureIdentity;
@@ -24,12 +25,15 @@ using scratchbird::tests::NativeFixtureIdentity;
 #include "uuid.hpp"
 #include "disk_device.hpp"
 #include "database_format.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <string>
 #include <set>
+#include <memory>
+#include <stdexcept>
 #include <utility>
 #include <cerrno>
 #if defined(SB_CATALOG_NATIVE_READ_FAULT)
@@ -61,8 +65,7 @@ namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
 [[noreturn]] void Fail(const std::string& message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(message);
 }
 
 void Require(bool condition, const std::string& message) {
@@ -70,6 +73,7 @@ void Require(bool condition, const std::string& message) {
 }
 
 struct TestDatabase {
+  std::shared_ptr<scratchbird::tests::OwnedTempDirectory> owned;
   std::filesystem::path path;
   api::EngineUuid database_uuid;
   api::EngineUuid transaction_uuid;
@@ -82,10 +86,8 @@ void Cleanup(const std::filesystem::path& path) {
 }
 
 TestDatabase CreateActiveDatabase() {
-  const std::filesystem::path path =
-      std::filesystem::temp_directory_path() /
-      "scratchbird_aeic_agent_catalog_store.sbdb";
-  Cleanup(path);
+  const auto owned = std::make_shared<scratchbird::tests::OwnedTempDirectory>();
+  const auto path = owned->path() / "scratchbird_aeic_agent_catalog_store.sbdb";
 
   const auto database_uuid = uuid::GenerateEngineIdentityV7(UuidKind::database,
                                                             1790000000001);
@@ -133,6 +135,7 @@ TestDatabase CreateActiveDatabase() {
   Require(persisted.ok(), "local transaction inventory persist failed");
 
   TestDatabase result;
+  result.owned = owned;
   result.path = path;
   result.resource_epoch = created.state.resource_seed_catalog.resource_epoch;
   result.database_uuid = database_uuid.value.value;
@@ -254,7 +257,25 @@ void TestPersistLoadRoundTrip() {
                   .insert(relation_descriptor.descriptor.descriptor_uuid)
                   .second,
           "durable catalog relation/descriptor identities are missing or collide");
+  const auto node = db::ReadDatabaseCatalogIdentity(context.database_path, context.database_uuid);
+  Require(node.ok() && node.record->datatype_cohort.has_value(),
+          "actual node datatype cohort unavailable");
+  const auto& cohort = *node.record->datatype_cohort;
   for (const auto& column : relation_descriptor.descriptor.columns) {
+    const auto& descriptor = column.value_descriptor;
+    const auto* codec = scratchbird::core::datatypes::FindDatatypeTypeCodecIdentityV3(
+        cohort.catalog_snapshot_uuid.value, cohort.catalog_generation, cohort.registry_generation,
+        descriptor.datatype_descriptor_uuid, descriptor.datatype_descriptor_generation);
+    Require(!scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+                cohort.catalog_snapshot_uuid.value, cohort.catalog_generation, cohort.registry_generation,
+                descriptor.datatype_descriptor_uuid, descriptor.datatype_descriptor_generation).ok,
+            "fixture no longer exercises a cohort absent from the frozen V1 registry");
+    Require(codec != nullptr && descriptor.type_uuid == codec->legacy_fields.type_uuid &&
+                descriptor.type_uuid != descriptor.datatype_descriptor_uuid &&
+                descriptor.datatype_cohort.catalog_snapshot_uuid == cohort.catalog_snapshot_uuid.value &&
+                descriptor.datatype_cohort.catalog_generation == cohort.catalog_generation &&
+                descriptor.datatype_cohort.registry_generation == cohort.registry_generation,
+            "persisted agent column lost its exact node-selected datatype identity/cohort");
     Require(!column.column_uuid.is_nil() &&
                 descriptor_identities.insert(column.column_uuid).second,
             "durable catalog column identity is missing or collides");
@@ -608,7 +629,7 @@ void TestVisibleTableInvisibleImage() {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
   scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("agent_enterprise_durable_catalog_store_gate");
 #if defined(SB_CATALOG_NATIVE_READ_FAULT)
   catalog_test_executable = argv[0];
@@ -652,4 +673,7 @@ int main(int argc, char** argv) {
   TestInvalidImageNotInitialization();
   TestVisibleTableInvisibleImage();
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

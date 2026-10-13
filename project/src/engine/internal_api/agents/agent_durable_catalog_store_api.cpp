@@ -13,7 +13,8 @@
 
 #include "crud_support/crud_store.hpp"
 #include "catalog/schema_tree_api.hpp"
-#include "catalog/datatype_bootstrap_identity.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
+#include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_operations.hpp"
@@ -165,16 +166,18 @@ AgentDurableCatalogStoreResult EnsureCatalogTable(const EngineRequestContext& co
     create.context.default_root_uuid = startup.state.first_filespace_uuid.value;
     // The identity read is complete. DDL acquires its own device ownership;
     // retaining this exclusive read handle would refuse embedded callers.
-    device.Close();
+    if (!device.Close().ok()) return ErrorResult("database_identity_source_close_failed");
     namespace types = scratchbird::core::datatypes;
     const auto manifest = types::LoadCurrentCoreDatatypeCatalogManifest();
     if (!manifest.ok()) return ErrorResult("datatype_catalog_unavailable");
-    // This system relation is an engine bootstrap publication. Use the exact
-    // bootstrap cohort shared with the receipt issuer, never a registry row
-    // selected by enumeration order or a caller-supplied default.
-    create.context.datatype_catalog_snapshot_uuid = kBootstrapDatatypeCatalogUuid;
-    create.context.datatype_catalog_generation = kBootstrapDatatypeCatalogGeneration;
-    create.context.datatype_registry_generation = kBootstrapDatatypeRegistryGeneration;
+    const auto catalog = scratchbird::storage::database::ReadDatabaseCatalogIdentity(
+        context.database_path, context.database_uuid);
+    if (!catalog.ok() || !catalog.record->datatype_cohort)
+      return ErrorResult("datatype_catalog_owner_unavailable");
+    const auto& cohort = *catalog.record->datatype_cohort;
+    create.context.datatype_catalog_snapshot_uuid = cohort.catalog_snapshot_uuid.value;
+    create.context.datatype_catalog_generation = cohort.catalog_generation;
+    create.context.datatype_registry_generation = cohort.registry_generation;
     create.requested_table_uuid = GenerateCrudEngineUuid("object");
     EngineLocalizedName name;
     name.language_tag = "en";
@@ -203,19 +206,19 @@ AgentDurableCatalogStoreResult EnsureCatalogTable(const EngineRequestContext& co
       column.descriptor.encoded_descriptor = "type=" + type_name + ";nullable=false";
       column.descriptor.datatype_descriptor_uuid = catalog.descriptor_uuid.value;
       column.descriptor.datatype_descriptor_generation = catalog.descriptor_epoch;
-      column.descriptor.type_uuid = catalog.descriptor_uuid.value;
-      const auto codec = types::LookupDatatypeTypeCodecIdentityV1(
+      const auto* codec = types::FindDatatypeTypeCodecIdentityV3(
           create.context.datatype_catalog_snapshot_uuid,
           create.context.datatype_catalog_generation,
           create.context.datatype_registry_generation,
           catalog.descriptor_uuid.value, catalog.descriptor_epoch);
-      // The binary image and uint64 counters retain the existing core-manifest
-      // bindings used by this engine-owned system relation. UUID and TEXT use
-      // the exact admitted descriptor/type/codec tuple; never alias their IDs.
-      if (!codec.ok && type != types::CanonicalTypeId::binary &&
-          type != types::CanonicalTypeId::uint64)
+      // Every column requires its exact node-selected identity; no datatype
+      // may fall back to treating a descriptor UUID as a type UUID.
+      if (!codec || codec->legacy_fields.canonical_binary_type_code !=
+                        static_cast<std::uint32_t>(type))
         return ErrorResult("catalog_column_codec_unavailable");
-      if (codec.ok) column.descriptor.type_uuid = codec.row.type_uuid;
+      column.descriptor.type_uuid = codec->legacy_fields.type_uuid;
+      column.descriptor.datatype_cohort = {cohort.catalog_snapshot_uuid.value,
+          cohort.catalog_generation, cohort.registry_generation};
       create.table_columns.push_back(std::move(column));
     }
     const auto created = EngineCreateTable(create);
