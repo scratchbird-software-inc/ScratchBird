@@ -91,19 +91,18 @@ std::optional<std::uint64_t> ParseCanonicalU64(std::string_view value) {
   return parsed;
 }
 
-std::optional<std::int32_t> ParseCanonicalI32(std::string_view value) {
-  if (value.empty() || value == "-0" || value.front() == '+' ||
-      (value.size() > 1 && value.front() == '0') ||
-      (value.size() > 2 && value[0] == '-' && value[1] == '0')) {
-    return std::nullopt;
-  }
-  std::int32_t parsed = 0;
-  const auto [end, error] =
-      std::from_chars(value.data(), value.data() + value.size(), parsed);
-  if (error != std::errc{} || end != value.data() + value.size()) {
-    return std::nullopt;
-  }
-  return parsed;
+std::string NativeIntegerBytes(std::uint64_t bits, unsigned width) {
+  if (width != 4 && width != 8) return {};
+  std::string bytes(width, '\0');
+  for (unsigned i = 0; i < width; ++i) bytes[i] = static_cast<char>(bits >> (8 * i));
+  return bytes;
+}
+std::optional<std::uint64_t> NativeIntegerBits(std::string_view bytes, unsigned width) {
+  if ((width != 4 && width != 8) || bytes.size() != width) return std::nullopt;
+  std::uint64_t bits = 0;
+  for (unsigned i = 0; i < width; ++i)
+    bits |= static_cast<std::uint64_t>(static_cast<unsigned char>(bytes[i])) << (8 * i);
+  return bits;
 }
 
 bool SafeCanonicalIdentifier(std::string_view identifier) {
@@ -247,16 +246,16 @@ std::optional<EngineGlobalAggregateViewDescriptor> ParsePersistedDescriptor(
       options[0] != std::string("view_query_shape:") +
                         kEngineGlobalAggregateViewMarkerV1 ||
       options[1].rfind("view_descriptor_uuid:", 0) != 0 ||
-      options[2].rfind("view_descriptor_generation:", 0) != 0 ||
+      options[2].rfind("view_descriptor_generation_le64:", 0) != 0 ||
       options[3].rfind("source_relation_uuid:", 0) != 0 ||
       options[4].rfind("source_relation_descriptor_uuid:", 0) != 0 ||
-      options[5].rfind("source_relation_descriptor_generation:", 0) != 0 ||
+      options[5].rfind("source_relation_descriptor_generation_le64:", 0) != 0 ||
       options[6].rfind("source_column_uuid:", 0) != 0 ||
       options[7].rfind("source_column_descriptor_uuid:", 0) != 0 ||
       options[8] != std::string("expression_kind:") +
                         kEngineGlobalAggregateViewInt32MultiplyV1 ||
       options[9] != "expression_literal_type:int32" ||
-      options[10].rfind("expression_literal_value:", 0) != 0 ||
+      options[10].rfind("expression_literal_int32_le:", 0) != 0 ||
       options[11] != "expression_result_type:int64" ||
       options[12].rfind("aggregate_function_uuid:", 0) != 0 ||
       options[13].rfind("aggregate_result_alias:", 0) != 0 ||
@@ -268,25 +267,25 @@ std::optional<EngineGlobalAggregateViewDescriptor> ParsePersistedDescriptor(
   descriptor.view_uuid = record.object_uuid;
   descriptor.view_descriptor_uuid =
       BinaryViewUuid(options[1].substr(std::string("view_descriptor_uuid:").size()));
-  const auto view_generation = ParseCanonicalU64(
+  const auto view_generation = NativeIntegerBits(
       options[2].substr(
-          std::string("view_descriptor_generation:").size()));
+          std::string("view_descriptor_generation_le64:").size()), 8);
   descriptor.source_relation_uuid =
       BinaryViewUuid(options[3].substr(std::string("source_relation_uuid:").size()));
   descriptor.source_relation_descriptor_uuid =
       BinaryViewUuid(options[4].substr(
           std::string("source_relation_descriptor_uuid:").size()));
-  const auto source_generation = ParseCanonicalU64(
+  const auto source_generation = NativeIntegerBits(
       options[5].substr(
-          std::string("source_relation_descriptor_generation:").size()));
+          std::string("source_relation_descriptor_generation_le64:").size()), 8);
   descriptor.source_column_uuid =
       BinaryViewUuid(options[6].substr(std::string("source_column_uuid:").size()));
   descriptor.source_column_descriptor_uuid =
       BinaryViewUuid(options[7].substr(
           std::string("source_column_descriptor_uuid:").size()));
-  const auto literal = ParseCanonicalI32(
+  const auto literal = NativeIntegerBits(
       options[10].substr(
-          std::string("expression_literal_value:").size()));
+          std::string("expression_literal_int32_le:").size()), 4);
   descriptor.aggregate_function_uuid =
       BinaryViewUuid(options[12].substr(
           std::string("aggregate_function_uuid:").size()));
@@ -337,7 +336,7 @@ std::optional<EngineGlobalAggregateViewDescriptor> ParsePersistedDescriptor(
   }
   descriptor.view_descriptor_generation = *view_generation;
   descriptor.source_relation_descriptor_generation = *source_generation;
-  descriptor.expression_literal_int32 = *literal;
+  descriptor.expression_literal_int32 = std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(*literal));
   descriptor.present = true;
   descriptor.diagnostic = OkDiagnostic();
   return descriptor;
@@ -721,20 +720,16 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
       std::string("view_query_shape:") +
           kEngineGlobalAggregateViewMarkerV1,
       BinaryViewUuidOption("view_descriptor_uuid:", descriptor.view_descriptor_uuid),
-      "view_descriptor_generation:" +
-          std::to_string(descriptor.view_descriptor_generation),
+      "view_descriptor_generation_le64:" + NativeIntegerBytes(descriptor.view_descriptor_generation, 8),
       BinaryViewUuidOption("source_relation_uuid:", descriptor.source_relation_uuid),
       BinaryViewUuidOption("source_relation_descriptor_uuid:", descriptor.source_relation_descriptor_uuid),
-      "source_relation_descriptor_generation:" +
-          std::to_string(
-              descriptor.source_relation_descriptor_generation),
+      "source_relation_descriptor_generation_le64:" + NativeIntegerBytes(descriptor.source_relation_descriptor_generation, 8),
       BinaryViewUuidOption("source_column_uuid:", descriptor.source_column_uuid),
       BinaryViewUuidOption("source_column_descriptor_uuid:", descriptor.source_column_descriptor_uuid),
       std::string("expression_kind:") +
           kEngineGlobalAggregateViewInt32MultiplyV1,
       "expression_literal_type:int32",
-      "expression_literal_value:" +
-          std::to_string(descriptor.expression_literal_int32),
+      "expression_literal_int32_le:" + NativeIntegerBytes(std::bit_cast<std::uint32_t>(descriptor.expression_literal_int32), 4),
       "expression_result_type:int64",
       BinaryViewUuidOption("aggregate_function_uuid:", descriptor.aggregate_function_uuid),
       "aggregate_result_alias:" + descriptor.result_alias,

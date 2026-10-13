@@ -1387,10 +1387,19 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
   Require(created_catalog.ok && !created.catalog_row_uuid.is_nil(),
           "aggregate creation did not return a real native catalog identity");
   bool owning_row = false, relation_dependency = false, column_dependency = false, function_dependency = false;
-  for (const auto& record : created_catalog.state.objects)
+  for (const auto& record : created_catalog.state.objects) {
     owning_row |= record.object_uuid == view_uuid && record.object_kind == "view" &&
         record.catalog_row_uuid == created.catalog_row_uuid && record.definition_epoch == 1 &&
         record.payload.starts_with("SBVIEW02");
+    if (record.object_uuid == view_uuid) {
+      std::vector<std::string> fields;
+      Require(api::DecodeBinaryViewOptions(record.payload, &fields) && fields.size() == 15 &&
+                  fields[2] == "view_descriptor_generation_le64:" + std::string("\1\0\0\0\0\0\0\0", 8) &&
+                  fields[5] == "source_relation_descriptor_generation_le64:" + std::string("\1\0\0\0\0\0\0\0", 8) &&
+                  fields[10] == "expression_literal_int32_le:" + std::string("\x00\x75\x2b\x7d", 4),
+              "aggregate native integer fields are not independent exact LE carriers");
+    }
+  }
   for (const auto& dependency : created_catalog.state.dependencies) {
     if (dependency.source_uuid != view_uuid) continue;
     relation_dependency |= dependency.dependency_uuid == source_descriptor.relation_uuid;
@@ -1515,6 +1524,24 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
                   "global_aggregate_view_source_descriptor_stale"),
           "global aggregate view accepted a stale source generation");
   Rollback(baseline_reader);
+  unsigned literal_case = 0;
+  for (const std::int32_t literal : {std::int32_t{0}, std::int32_t{-1},
+           std::numeric_limits<std::int32_t>::min(), std::numeric_limits<std::int32_t>::max()}) {
+    auto literal_owner = Begin(fixture, 650 + literal_case);
+    const auto name = "V_NATIVE_LITERAL_" + std::to_string(literal_case++);
+    const auto actual = api::EngineCreateView(GlobalAggregateViewRequest(fixture, literal_owner,
+        source_descriptor, name, literal));
+    RequireOk(actual, "native aggregate literal boundary creation failed");
+    const auto retained = api::DescribeEngineGlobalAggregateView(literal_owner, actual.primary_object.uuid);
+    Require(retained.present && !retained.diagnostic.error && retained.expression_literal_int32 == literal,
+            "native aggregate signed literal boundary did not persist exactly");
+    const auto resolved = api::EngineResolveName(ResolveViewRequest(fixture, literal_owner, name));
+    RequireOk(resolved, "native aggregate literal boundary name resolution failed");
+    RequireGlobalAggregateViewValue(api::EngineSelectRows(GlobalAggregateViewSelectRequest(literal_owner, resolved)),
+        std::to_string(static_cast<std::int64_t>(literal) * 2100000000LL), 1,
+        "native aggregate signed literal boundary execution failed");
+    Rollback(literal_owner);
+  }
 
   const auto read_file = [](const std::string& path) {
     std::ifstream input(path, std::ios::binary);
@@ -1745,37 +1772,48 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
     output.close();
     Require(!output.fail(), "owned aggregate corruption fixture write failed");
   };
-  std::istringstream frames(original_bytes, std::ios::in | std::ios::binary);
-  std::string corrupted;
-  unsigned matches = 0;
-  while (frames.peek() != std::char_traits<char>::eof()) {
-    const auto begin = frames.tellg();
-    api::CatalogLifecycleRecord frame;
-    std::uint64_t sequence = 0;
-    Require(api::ReadCatalogLifecycleRecord(frames, &frame, &sequence),
-            "actual aggregate source frame decode failed");
-    const auto end = frames.tellg();
-    Require(begin >= 0 && end >= begin, "actual aggregate frame boundary invalid");
-    auto* object = std::get_if<api::EngineCatalogObjectRecord>(&frame);
-    if (object && object->object_uuid == view_uuid &&
-        object->catalog_row_uuid == owning_record->catalog_row_uuid &&
-        object->creator_tx == owning_record->creator_tx &&
-        object->definition_epoch == owning_record->definition_epoch) {
-      Require(++matches == 1 && object->payload == owning_record->payload,
-              "aggregate corruption fixture did not select exact published version");
-      std::vector<std::string> options;
-      Require(api::DecodeBinaryViewOptions(object->payload, &options) && options.size() == 15,
-              "actual aggregate options decode failed");
-      options[1] = "view_descriptor_uuid:not-a-native-uuid";
-      object->payload = api::EncodeBinaryViewOptions(options);
-      std::string encoded;
-      Require(api::EncodeCatalogLifecycleRecord(*object, &encoded, sequence),
-              "aggregate corruption frame encode failed");
-      corrupted += encoded;
-    } else corrupted.append(original_bytes, static_cast<std::size_t>(begin),
-                            static_cast<std::size_t>(end - begin));
-  }
-  Require(matches == 1 && !frames.bad(), "exact aggregate corruption target missing");
+  const auto corrupt_version = [&](unsigned mutation) {
+    std::istringstream frames(original_bytes, std::ios::in | std::ios::binary);
+    std::string corrupted;
+    unsigned matches = 0;
+    while (frames.peek() != std::char_traits<char>::eof()) {
+      const auto begin = frames.tellg();
+      api::CatalogLifecycleRecord frame;
+      std::uint64_t sequence = 0;
+      Require(api::ReadCatalogLifecycleRecord(frames, &frame, &sequence),
+              "actual aggregate source frame decode failed");
+      const auto end = frames.tellg();
+      Require(begin >= 0 && end >= begin, "actual aggregate frame boundary invalid");
+      auto* object = std::get_if<api::EngineCatalogObjectRecord>(&frame);
+      if (object && object->object_uuid == view_uuid &&
+          object->catalog_row_uuid == owning_record->catalog_row_uuid &&
+          object->creator_tx == owning_record->creator_tx &&
+          object->definition_epoch == owning_record->definition_epoch) {
+        Require(++matches == 1 && object->payload == owning_record->payload,
+                "aggregate corruption fixture did not select exact published version");
+        std::vector<std::string> options;
+        Require(api::DecodeBinaryViewOptions(object->payload, &options) && options.size() == 15,
+                "actual aggregate options decode failed");
+        if (mutation == 0) options[1] = "view_descriptor_uuid:not-a-native-uuid";
+        if (mutation == 1) options[10] = "expression_literal_int32_le:" + std::string(3, '\0');
+        if (mutation == 2) options[10] = "expression_literal_int32_le:" + std::string(5, '\0');
+        if (mutation == 3) options[10] = "expression_literal_value:2000000000";
+        if (mutation == 4) options[2].push_back('\0');
+        if (mutation == 5) options[5].pop_back();
+        if (mutation == 6) options[2] = "view_descriptor_generation_le64:" + std::string(8, '\0');
+        if (mutation == 7) options[5] = "source_relation_descriptor_generation_le64:" + std::string(8, '\0');
+        if (mutation == 8) options[10] = "expression_literal_int32_le:1234";
+        object->payload = api::EncodeBinaryViewOptions(options);
+        std::string encoded;
+        Require(api::EncodeCatalogLifecycleRecord(*object, &encoded, sequence),
+                "aggregate corruption frame encode failed");
+        corrupted += encoded;
+      } else corrupted.append(original_bytes, static_cast<std::size_t>(begin),
+                              static_cast<std::size_t>(end - begin));
+    }
+    Require(matches == 1 && !frames.bad(), "exact aggregate corruption target missing");
+    return corrupted;
+  };
   struct Restore {
     const decltype(write_bytes)& write;
     const std::string& bytes;
@@ -1784,18 +1822,23 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
       std::cerr << "owned aggregate corruption restoration failed during unwinding\n";
     } }
   } restore{write_bytes, original_bytes};
-  write_bytes(corrupted);
-  const auto malformed = api::DescribeEngineGlobalAggregateView(
-      fresh_reader, view_uuid);
-  Require(malformed.diagnostic.error && !malformed.present &&
-              malformed.diagnostic.detail.find(
-                  "global_aggregate_view_descriptor_invalid") !=
-                  std::string::npos,
-          "malformed persisted descriptor reached semantic projection");
-  write_bytes(original_bytes);
-  Require(read_bytes() == original_bytes &&
-              api::DescribeEngineGlobalAggregateView(fresh_reader, view_uuid).present,
-          "native aggregate corruption restoration lost actual descriptor");
+  for (unsigned mutation = 0; mutation != 9; ++mutation) {
+    write_bytes(corrupt_version(mutation));
+    const auto malformed = api::DescribeEngineGlobalAggregateView(
+        fresh_reader, view_uuid);
+    if (mutation == 8) {
+      Require(!malformed.diagnostic.error && malformed.present && malformed.expression_literal_int32 == 875770417,
+              "ASCII-looking native INT32 bytes were treated as lexical decimal");
+    } else Require(malformed.diagnostic.error && !malformed.present &&
+                malformed.diagnostic.detail.find(
+                    "global_aggregate_view_descriptor_invalid") !=
+                    std::string::npos,
+            "malformed persisted descriptor reached semantic projection");
+    write_bytes(original_bytes);
+    Require(read_bytes() == original_bytes &&
+                api::DescribeEngineGlobalAggregateView(fresh_reader, view_uuid).present,
+            "native aggregate corruption restoration lost actual descriptor");
+  }
   restore.active = false;
 
   api::EngineGlobalAggregateProjectionEnvelope invalid_literal;
