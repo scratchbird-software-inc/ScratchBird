@@ -5,6 +5,7 @@
 #include "catalog_metric_retention_policy.hpp"
 #include "catalog_metric_visibility_policy.hpp"
 #include "../config/metric_policy_config.hpp"
+#include <vector>
 
 namespace scratchbird::core::catalog {
 // First-version payloads only: no common metadata, names, publication, grants,
@@ -35,4 +36,26 @@ CatalogMetricMaterializationResult MaterializeConfiguredLocalMetricDefinitions(
     const metrics::MetricDescriptorBinding&, const Uuid& database_uuid,
     const TypedUuid& origin_transaction_uuid, u64 origin_local_transaction_id,
     const config::MetricPolicyDefinition* governing_definition = nullptr) noexcept;
+
+// Borrowed compiled definitions and owner-issued binary identities. A batch
+// covers every selected local family exactly once; no registry enumeration,
+// identity generation, observation, grant or publication is implied.
+struct CatalogConfiguredMetricInput {
+  const metrics::MetricDescriptorDefinition* definition = nullptr;
+  metrics::MetricDescriptorBinding binding;
+};
+struct CatalogMetricBatchMaterializationResult {
+  CatalogMetricMaterializationError error = CatalogMetricMaterializationError::invalid_definition;
+  std::optional<std::vector<CatalogMetricDefinitionBundle>> definitions;
+  bool ok() const { return error == CatalogMetricMaterializationError::none && definitions.has_value(); }
+};
+// Resource/identity/family preflight the entire borrowed batch (including
+// cross-family identity custody) before making any owning payload copies.
+// Complete native semantic codec checks follow. On every failure return no partial
+// bundle. Input and result allocations remain the owning catalog's admission
+// responsibility; this is not a storage or memory grant.
+CatalogMetricBatchMaterializationResult MaterializeConfiguredLocalMetricBatch(
+    const config::MetricPolicyConfig&, const std::vector<CatalogConfiguredMetricInput>&,
+    const Uuid& database_uuid, const TypedUuid& origin_transaction_uuid,
+    u64 origin_local_transaction_id) noexcept;
 }  // namespace scratchbird::core::catalog

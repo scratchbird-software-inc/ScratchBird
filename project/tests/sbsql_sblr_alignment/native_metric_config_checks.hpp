@@ -18,6 +18,122 @@ void NativeMetricConfigChecks(const fs::path& directory) {
   Check(fixture_descriptor.ok(),"fixture binary bindings");
   const auto binding=fixture_descriptor.record->binding;
   Fixture fixture;
+  std::vector<c::CatalogConfiguredMetricInput> batch_inputs;
+  unsigned family_index=0;
+  for(const auto& [family,policy]:loaded.config->families) {
+    const auto found=std::find_if(definitions.begin(),definitions.end(),[&](const auto& d){return d.family==family;});
+    Check(found!=definitions.end(),"complete configured batch uses actual compiled definitions");
+    auto ids=binding;const unsigned base=1000+100*family_index++;
+    ids.metric_uuid=Id(base);ids.label_schema_uuid=Id(base+1);
+    ids.retention_policy_uuid=Id(base+2);ids.visibility_policy_uuid=Id(base+3);
+    batch_inputs.push_back({&*found,ids});
+  }
+  const auto materialize_batch=[&](const auto& inputs) {
+    return c::MaterializeConfiguredLocalMetricBatch(*loaded.config,inputs,
+        request.bootstrap.database_uuid,request.creator.transaction_uuid,1);
+  };
+  const auto batch=materialize_batch(batch_inputs);
+  Check(batch.ok()&&batch.definitions->size()==7,"complete selected set materializes atomically");
+  db::NativeCreationCatalogSeed complete;
+  for(unsigned i=0;i<batch.definitions->size();++i) {
+    const auto& bundle=(*batch.definitions)[i];
+    Check(bundle.labels.has_value(),"configured batch label dependencies retained");
+    auto records=fixture_seed[0];
+    const std::array ids{bundle.descriptor.binding.metric_uuid,bundle.descriptor.binding.label_schema_uuid,
+        bundle.descriptor.binding.retention_policy_uuid,bundle.descriptor.binding.visibility_policy_uuid};
+    for(unsigned j=0;j<records.size();++j) {
+      auto& meta=records[j].metadata;
+      meta.record.header.object_uuid={UuidKind::object,ids[j]};
+      meta.record.header.row_uuid={UuidKind::row,Id(1020+100*i+j)};
+      meta.default_name_uuid={UuidKind::object,Id(1040+100*i+j)};
+      meta.name_vector_uuid={UuidKind::object,Id(1060+100*i+j)};
+      meta.security_policy_uuid={UuidKind::object,ids[3]};
+    }
+    const auto replace=[&](unsigned at,const auto& encoded) {
+      Check(encoded.ok(),"complete configured batch native codec");
+      records[at].metadata.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
+    };
+    replace(0,c::EncodeCatalogMetricDescriptor(bundle.descriptor));
+    replace(1,c::EncodeCatalogMetricLabelSchema(*bundle.labels));
+    replace(2,c::EncodeCatalogMetricRetentionPolicy(bundle.retention));
+    replace(3,c::EncodeCatalogMetricVisibilityPolicy(bundle.visibility));
+    for(auto& record:records)complete[0].push_back(std::move(record));
+  }
+  std::size_t batch_bytes=0;
+  for(const auto& row:complete[0]) {
+    const auto n=db::NativeCreationCatalogRowBytes(row);Check(n.has_value(),"complete batch structural size");
+    batch_bytes+=*n;
+  }
+  unsigned whole_persisted=0;
+  for(unsigned profile=0;profile<5;++profile) {
+    const auto r=Request(profile);page_bytes=r.bootstrap.page_size_bytes;total_pages=r.total_pages;selector_page=17;
+    const auto budget=256*page_bytes;disk::FileDevice device;const auto path=fixture.Next();
+    Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"complete batch actual owned device");
+    Arm();const auto made=db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(device,r,complete,budget,*fixture.issuer);Disarm();
+    if(batch_bytes>page_bytes-128-32-96) {
+      // Existing one-leaf construction is a known bound, not permission to
+      // truncate families or claim ordinary database bootstrap completion.
+      Check(!made.ok()&&made.error==db::NativeCreationWorkspaceError::catalog_capacity_exceeded&&
+          device.Size().ok()&&device.Size().size_bytes==0&&calls[write_call]==0,
+          "complete batch overcapacity refuses before any physical effects");
+      continue;
+    }
+    Check(made.ok(),"all selected metric dependencies publish in one actual construction");
+    Check(device.Close().ok()&&device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"complete batch reopens");
+    const std::vector<disk::NativeFilespaceDevice> devices{{r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid,&device}};
+    const auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.bootstrap.database_uuid,devices,
+        made.receipt->checkpoint,2,1,{made.receipt->relations[0].object_uuid,{}},budget);
+    Check(read.ok()&&read.rows.size()==28,"all seven families and their dependencies survive reopen together");
+    std::vector<c::CatalogMetricRowView> views;
+    for(const auto& row:read.rows)views.push_back({&row.metadata,row.provisional});
+    for(const auto& expected:*batch.definitions) {
+      const auto resolved=c::ResolveLocalCatalogMetricBindings(views,expected.descriptor.binding.metric_uuid,1);
+      Check(resolved.ok(),"complete batch resolves each actual retained family");
+      const auto actual_descriptor=c::EncodeCatalogMetricDescriptor(resolved.binding->metric.descriptor);
+      const auto expected_descriptor=c::EncodeCatalogMetricDescriptor(expected.descriptor);
+      Check(actual_descriptor.ok()&&expected_descriptor.ok()&&actual_descriptor.bytes==expected_descriptor.bytes,
+          "complete batch exact descriptor custody");
+      const auto actual_retention=c::EncodeCatalogMetricRetentionPolicy(resolved.binding->metric.retention);
+      const auto expected_retention=c::EncodeCatalogMetricRetentionPolicy(expected.retention);
+      Check(actual_retention.ok()&&expected_retention.ok()&&actual_retention.bytes==expected_retention.bytes,
+          "complete batch exact retained policy");
+      const auto visibility=c::DecodeCatalogMetricVisibilityPolicy(resolved.binding->metric.visibility_policy.record.payload);
+      Check(visibility.ok(),"complete batch retained visibility codec");
+      const auto actual_visibility=c::EncodeCatalogMetricVisibilityPolicy(*visibility.record);
+      const auto expected_visibility=c::EncodeCatalogMetricVisibilityPolicy(expected.visibility);
+      Check(actual_visibility.ok()&&expected_visibility.ok()&&actual_visibility.bytes==expected_visibility.bytes,
+          "complete batch exact visibility policy");
+    }
+    ++whole_persisted;
+  }
+  Check(whole_persisted>0,"at least one actual supported profile persists the whole configured set");
+  for(unsigned which=0;which<8;++which) {
+    auto inputs=batch_inputs;auto invalid_definition=*inputs.back().definition;
+    switch(which) {
+      case 0:inputs.pop_back();break;
+      case 1:inputs.back().definition=nullptr;break;
+      case 2:inputs.back().binding.metric_uuid=inputs.front().binding.label_schema_uuid;break;
+      case 3:inputs.back().binding.visibility_policy_uuid=inputs.front().binding.retention_policy_uuid;break;
+      case 4:inputs.back().definition=inputs.front().definition;break;
+      case 5:invalid_definition.family="not_selected";inputs.back().definition=&invalid_definition;break;
+      case 6:inputs.back().binding.descriptor_generation=2;break;
+      case 7:invalid_definition.help.assign(16385,'x');inputs.back().definition=&invalid_definition;break;
+    }
+    allocations=0;allocation_fault=1;count_allocations=true;
+    const auto refused=materialize_batch(inputs);count_allocations=false;allocation_fault=0;
+    Check(!refused.ok()&&!refused.definitions&&!allocations,"malformed final batch input refuses before any owning copy");
+  }
+  allocations=0;allocation_fault=0;count_allocations=true;
+  const auto counted_batch=materialize_batch(batch_inputs);count_allocations=false;
+  const auto batch_allocations=allocations;
+  Check(counted_batch.ok()&&batch_allocations>0,"complete batch allocation baseline");
+  for(unsigned at=1;at<=batch_allocations;++at) {
+    allocations=0;allocation_fault=at;count_allocations=true;
+    const auto refused=materialize_batch(batch_inputs);count_allocations=false;allocation_fault=0;
+    Check(!refused.ok()&&!refused.definitions&&refused.error==E::resource_exhausted,
+        "every complete-batch allocation failure returns no partial definitions");
+    Check(materialize_batch(batch_inputs).ok(),"complete batch retry preserves borrowed inputs");
+  }
   unsigned persisted=0;
   for(const auto& [family,policy]:loaded.config->families) {
     const auto found=std::find_if(definitions.begin(),definitions.end(),[&](const auto& d){return d.family==family;});
