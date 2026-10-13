@@ -27,7 +27,12 @@ const CatalogMetadataVersion* Find(std::span<const CatalogMetricRowView> rows,
   if (m.authority_scope != CatalogAuthorityScope::local) { error = E::nonlocal_scope; return nullptr; }
   if (m.definition_version != generation) { error = E::stale_generation; return nullptr; }
   if (m.record.header.kind != kind) { error = E::wrong_family; return nullptr; }
-  if (!EncodeCatalogMetadataVersion(m).ok()) { error = E::invalid_catalog; return nullptr; }
+  // Validate the complete borrowed metadata/family extent, without inventing
+  // a new encoded image and hashes. Actual byte integrity and selected-source
+  // provenance remain the owning native reader's responsibility.
+  if (!CatalogMetadataVersionEncodedBytes(BorrowCatalogMetadataVersion(m))) {
+    error = E::invalid_catalog; return nullptr;
+  }
   return &m;
 }
 bool Bind(std::span<const CatalogMetricRowView> rows, const Uuid& identity, u64 generation,
@@ -105,7 +110,8 @@ CatalogMetricSeriesBindingResult ResolveLocalCatalogMetricSeriesBinding(
       const auto& m=*row.metadata;
       if (m.record.header.kind!=CatalogRecordKind::metric_series && m.object_subtype!="metric_series" &&
           !IsCatalogMetricSeriesPayload(m.record.payload)) continue;
-      if (!EncodeCatalogMetadataVersion(m).ok() || !CatalogMetricSeriesMatchesMetadata(m))
+      if (!CatalogMetadataVersionEncodedBytes(BorrowCatalogMetadataVersion(m)) ||
+          !CatalogMetricSeriesMatchesMetadata(m))
         return {E::invalid_catalog,{}};
       if (&m==metadata || row.provisional || m.record.header.deleted ||
           m.lifecycle!=CatalogObjectLifecycle::active || m.status!=CatalogObjectStatus::active) continue;

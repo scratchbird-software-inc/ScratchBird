@@ -7,6 +7,7 @@
 #undef main
 #include "catalog_metric_binding.hpp"
 #include "metric_value_update.hpp"
+#include <chrono>
 
 namespace {
 using BE=c::CatalogMetricBindingError;
@@ -160,7 +161,8 @@ void BindingAllocationFailures() {
     const auto result=c::ResolveLocalCatalogMetricBindings(views,f.descriptor.binding.metric_uuid,1);
     descriptor_allocation_fault::remaining=-1;const bool fired=descriptor_allocation_fault::fired;
     Check(f.rows[0].record.payload==before,"dependency allocation failure mutated catalog");
-    if(fired){++injected;Check(!result.ok()&&!result.binding,"dependency allocation failure exposed bundle");}
+    if(fired){++injected;Check(!result.ok()&&!result.binding&&result.error==BE::resource_exhausted,
+                             "dependency allocation failure exposed bundle or wrong typed cause");}
     else{completed=true;Check(result.ok(),"dependency selection failed allocation recovery");break;}
   }
   Check(completed&&injected>20,"dependency allocation sweep missed allocation sites");
@@ -360,10 +362,72 @@ void SeriesSelectionAllocationFailures() {
 }
 
 }
+void BorrowedMetadataValidationParity() {
+  const auto fixture=SeriesCatalog(true);
+  for(const auto& original:fixture.rows)for(unsigned mutation=0;mutation<18;++mutation) {
+    auto value=original;
+    if(mutation==1)value.record.header.row_uuid={};
+    if(mutation==2)value.record.header.object_uuid.kind=p::UuidKind::row;
+    if(mutation==3)value.creator_transaction_uuid.kind=p::UuidKind::object;
+    if(mutation==4)value.creator_local_transaction_id=0;
+    if(mutation==5)value.definition_version=0;
+    if(mutation==6)value.default_name_uuid.kind=p::UuidKind::row;
+    if(mutation==7)value.name_vector_uuid.kind=p::UuidKind::row;
+    if(mutation==8)value.security_policy_uuid.kind=p::UuidKind::row;
+    if(mutation==9)value.owning_schema_uuid.kind=p::UuidKind::object;
+    if(mutation==10)value.record.header.parent_uuid.value.bytes.back()^=1;
+    if(mutation==11)value.record.payload.assign(1024*1024,'x');
+    if(mutation==12)value.trace_search_key.assign(4097,'x');
+    if(mutation==13)value.object_subtype.assign(257,'x');
+    if(mutation==14)value.retention_class.assign(257,'x');
+    if(mutation==15)value.authority_scope=static_cast<c::CatalogAuthorityScope>(255);
+    if(mutation==16)value.record.header.deleted=true;
+    if(mutation==17)value.record.header.object_uuid.value.bytes[6]=0x41;
+    descriptor_allocation_fault::allocations=0;
+    const auto extent=c::CatalogMetadataVersionEncodedBytes(c::BorrowCatalogMetadataVersion(value));
+    const auto validation_allocations=descriptor_allocation_fault::allocations;
+    Check(validation_allocations==0,"complete borrowed metadata validation cannot allocate or copy payloads");
+    const auto encoded=c::EncodeCatalogMetadataVersion(value);
+    Check(extent.has_value()==encoded.ok()&&(!extent||*extent==encoded.bytes.size()),
+        "borrowed structural/family/size admission exactly matches native encoding");
+  }
+}
+void SelectionPerformanceSamples() {
+  constexpr unsigned iterations=256;
+  for(unsigned profile=0;profile<3;++profile) {
+    const auto fixture=profile==0?Catalog():profile==1?RateCatalog():SeriesCatalog(true);
+    const auto views=Views(fixture);const auto before=fixture.rows.front().record.payload;
+    // Borrow the same selected snapshot; fixture/view setup is outside the
+    // measurement. Successful results still own their complete definitions.
+    const auto once=[&] {
+      if(profile==2) {
+        const auto result=c::ResolveLocalCatalogMetricSeriesBinding(views,Id(p::UuidKind::database,82).value,
+            Id(p::UuidKind::object,83).value,Id(p::UuidKind::object,81).value,1);
+        return result.ok()&&result.binding->dependencies.metric.descriptor_metadata.record.payload==before;
+      }
+      const auto result=c::ResolveLocalCatalogMetricBindings(views,fixture.descriptor.binding.metric_uuid,
+          fixture.descriptor.binding.descriptor_generation);
+      return result.ok()&&result.binding->metric.descriptor_metadata.record.payload==before;
+    };
+    Check(once(),"performance sample warmup requires real complete selection");
+    descriptor_allocation_fault::allocations=0;
+    const auto start=std::chrono::steady_clock::now();unsigned completed=0;
+    for(unsigned i=0;i<iterations;++i)if(once())++completed;
+    const auto elapsed=std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now()-start).count();
+    const auto allocations=descriptor_allocation_fault::allocations;
+    Check(completed==iterations&&fixture.rows.front().record.payload==before,
+        "every measured selection returns unchanged complete definitions");
+    std::cout<<"binding performance profile="<<profile<<" iterations="<<iterations
+        <<" allocations="<<allocations<<" elapsed_ns="<<elapsed<<'\n';
+  }
+}
 int main(){
   const int prior=MetricDescriptorBindingBaseMain();const auto before=checks;
   DependencySelection();RateDependencies();BindingAllocationFailures();
   SeriesSelection();SeriesAmbiguity();SeriesSelectionAllocationFailures();
+  BorrowedMetadataValidationParity();
+  SelectionPerformanceSamples();
   std::cout<<"metric binding checks="<<checks-before<<" combined="<<checks<<" failures="<<failures<<'\n';
   return prior||failures?1:0;
 }
