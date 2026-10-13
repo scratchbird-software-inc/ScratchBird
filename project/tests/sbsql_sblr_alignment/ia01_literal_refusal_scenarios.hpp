@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/internal_api/sblr_executor_availability_registry.hpp"
+#include "core/datatypes/admitted_datatype_cohort.hpp"
 #include "ia01_literal_live_fixture.hpp"
 
 inline int RunLiteralRefusalScenario(bool cancel_after_admission) {
@@ -61,6 +62,10 @@ inline int RunLiteralRefusalScenario(bool cancel_after_admission) {
     return cancel_after_admission;
   };
   bridge::StatementContextAcquireRequest acquire;
+  // A caller's stale observations cannot select the node's executable cohort.
+  context.datatype_catalog_snapshot_uuid = scratchbird::core::datatypes::kDatatypeCohortV5;
+  context.datatype_catalog_generation = 5;
+  context.datatype_registry_generation = 5;
   acquire.engine_context = &context;
   acquire.exact_transaction_uuid = context.transaction_uuid;
   bridge::StatementContextReceiptHandle receipt;
@@ -72,6 +77,9 @@ inline int RunLiteralRefusalScenario(bool cancel_after_admission) {
           cancel_after_admission ? "CSC-TEST-002328 receipt acquisition failed"
                                  : "CSC-TEST-002327 receipt acquisition failed");
   if (result) (void)sb_engine_result_release(result);
+  Require(view.literal_catalog_snapshot_uuid == scratchbird::core::datatypes::kDatatypeCohortV11 &&
+              view.literal_catalog_generation == 11 && view.literal_registry_generation == 11,
+          "live receipt inherited caller observations instead of durable D711");
   auto literal = literal_fixture::FinalizeLiteral(receipt, view);
   const auto parser_uuid = Identity(NewUuid(platform::UuidKind::object, 8327));
   const auto submission = literal_fixture::BuildLiteralSubmission(
