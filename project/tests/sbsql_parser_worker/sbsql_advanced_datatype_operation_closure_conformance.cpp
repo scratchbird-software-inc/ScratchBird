@@ -14,6 +14,7 @@
 #include "crud_support/crud_store.hpp"
 #include "catalog/datatype_bootstrap_identity.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "datatype_text_set.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
 #include "descriptor_value_runtime.hpp"
@@ -27,7 +28,11 @@
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
+#include <bit>
+#include <charconv>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -134,16 +139,18 @@ api::EngineDescriptor BoundScalarDescriptor(
   Require(row.ok() && row.manifest.descriptor_rows.size() == 1,
           "bound consumer fixture datatype absent from catalog");
   const auto& datatype = row.manifest.descriptor_rows.front();
-  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+  const auto* identity = dt::FindDatatypeTypeCodecIdentityV3(
       api::kBootstrapDatatypeCatalogUuid,
       api::kBootstrapDatatypeCatalogGeneration,
       api::kBootstrapDatatypeRegistryGeneration,
       datatype.descriptor_uuid.value, datatype.descriptor_epoch);
-  Require(identity.ok,
+  Require(identity != nullptr,
           "bound consumer fixture datatype identity is not admitted");
   auto descriptor = Descriptor(std::string(type));
   descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(2086, ordinal);
-  descriptor.type_uuid = identity.row.type_uuid;
+  descriptor.type_uuid = identity->legacy_fields.type_uuid;
+  descriptor.datatype_cohort = {api::kBootstrapDatatypeCatalogUuid,
+      api::kBootstrapDatatypeCatalogGeneration, api::kBootstrapDatatypeRegistryGeneration};
   descriptor.datatype_descriptor_uuid = datatype.descriptor_uuid.value;
   descriptor.datatype_descriptor_generation = datatype.descriptor_epoch;
   descriptor.encoded_descriptor = std::move(encoded_descriptor);
@@ -391,10 +398,7 @@ void RequireNullConsumerContracts(const api::EngineRequestContext& context) {
   const auto int32 = BoundScalarDescriptor("int32", 4);
   api::EngineExtractValueRequest extract;
   extract.context = context;
-  extract.context.datatype_catalog_snapshot_uuid =
-      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d710");
-  extract.context.datatype_catalog_generation = 10;
-  extract.context.datatype_registry_generation = 10;
+  scratchbird::tests::UseBootstrapDatatypeCohort(extract.context);
   extract.field = "year";
   extract.input_value.descriptor = date;
   const auto day = static_cast<std::uint32_t>((std::chrono::sys_days(
@@ -424,34 +428,85 @@ void RequireNullConsumerContracts(const api::EngineRequestContext& context) {
                   "DATATYPE.NULL_STATE.INVALID",
           "NULL extraction accepted a substitute binary payload");
 
-  const auto character = BoundScalarDescriptor("character", 5);
-  const auto character_execution =
-      CoreExecutionDescriptor(dt::CanonicalTypeId::character, true);
-  dt::DatatypeSetDescriptor set_descriptor;
-  set_descriptor.element_type_id = dt::CanonicalTypeId::character;
-  set_descriptor.element_descriptor = character_execution;
-  set_descriptor.allow_null_elements = true;
-  dt::DatatypeOperationValue printable_null{
-      dt::CanonicalTypeId::character, "<NULL>", false};
-  printable_null.descriptor = character_execution;
-  dt::DatatypeOperationValue sql_null{
-      dt::CanonicalTypeId::character, {}, true};
-  sql_null.descriptor = character_execution;
-  const auto encoded_set =
-      dt::EncodeSetValue(set_descriptor, {printable_null, sql_null});
+  // TEXT SET requires a real node collation and live statement memory grants.
+  // Fixture frame encoding uses a mechanism allocator, never as engine authority.
+  scratchbird::tests::OwnedTempDirectory set_directory;
+  auto set_owner = CreateFixtureDatabase(set_directory.path() / "text-set.sbdb");
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(set_owner);
+  scratchbird::tests::FixtureEngineSession set_session(set_owner);
+  api::EngineBeginTransactionRequest set_begin;
+  set_begin.context = set_owner; set_begin.isolation_level = "read_committed";
+  const auto set_begun = api::EngineBeginTransaction(set_begin);
+  Require(set_begun.ok, "native TEXT SET fixture BEGIN failed");
+  set_owner.transaction_uuid = set_begun.transaction_uuid;
+  set_owner.local_transaction_id = set_begun.local_transaction_id;
+  set_owner.snapshot_visible_through_local_transaction_id =
+      set_begun.snapshot_visible_through_local_transaction_id;
+  scratchbird::tests::FixtureEngineStatement set_statement(set_session, set_owner);
+  const auto& set_context = set_statement.context;
+  const auto rows = dt::CurrentDatatypeTypeCodecIdentityRowsV3();
+  const auto identity = std::find_if(rows.begin(), rows.end(), [&](const auto& row) {
+    return row.legacy_fields.catalog_snapshot_uuid == set_context.datatype_catalog_snapshot_uuid &&
+        row.legacy_fields.catalog_generation == set_context.datatype_catalog_generation &&
+        row.legacy_fields.registry_generation == set_context.datatype_registry_generation &&
+        dt::IsExactCanonicalTextTypeCodecIdentityV1(row.legacy_fields);
+  });
+  Require(identity != rows.end(), "live statement TEXT identity missing");
+  api::EngineColumnDefinition text_column;
+  auto& character = text_column.descriptor;
+  character = Descriptor("character");
+  character.descriptor_uuid = scratchbird::tests::FixtureUuid(2086, 5);
+  character.type_uuid = identity->legacy_fields.type_uuid;
+  character.datatype_descriptor_uuid = identity->legacy_fields.descriptor_uuid;
+  character.datatype_descriptor_generation = identity->legacy_fields.descriptor_generation;
+  character.datatype_cohort = {set_context.datatype_catalog_snapshot_uuid,
+      set_context.datatype_catalog_generation, set_context.datatype_registry_generation};
+  character.encoded_descriptor = "nullability=nullable";
+  const auto collation = api::LookupEngineResourceDescriptorByName(
+      set_context, "SB_UTF8_BINARY", "collation");
+  Require(collation.ok && collation.resource_descriptor.present, "live SET collation missing");
+  character.charset_uuid = collation.resource_descriptor.parent_resource_uuid;
+  character.collation_uuid = collation.resource_descriptor.resource_uuid;
+  api::CatalogColumnMetadata text_fields;
+  text_fields.text["nullability"] = "nullable";
+  Require(api::EncodeCatalogColumnMetadata(text_fields, &character.encoded_descriptor),
+          "live SET descriptor metadata encoding failed");
+  dt::CatalogExecutionTypeMetadata metadata;
+  metadata.descriptor_uuid = {UuidKind::object, character.datatype_descriptor_uuid};
+  metadata.descriptor_epoch = character.datatype_descriptor_generation;
+  metadata.charset_uuid = {UuidKind::object, character.charset_uuid};
+  metadata.collation_uuid = {UuidKind::object, character.collation_uuid};
+  const auto element = dt::LookupExecutionTypeDescriptorFromCatalog(dt::CanonicalTypeId::character, metadata);
+  Require(element.ok(), "live SET element descriptor refused");
+  dt::NativeTextSetBindingV1 binding;
+  binding.policy_uuid = dt::kNativeTextSetPolicyV1; binding.policy_generation = 1;
+  binding.catalog_snapshot_uuid = set_context.datatype_catalog_snapshot_uuid;
+  binding.catalog_generation = set_context.datatype_catalog_generation;
+  binding.registry_generation = set_context.datatype_registry_generation;
+  binding.element_type_uuid = character.type_uuid;
+  binding.element_type_generation = identity->legacy_fields.type_generation;
+  binding.element = element.descriptor; binding.element.nullable_allowed = true;
+  binding.allow_null_elements = true;
+  binding.text_seed = api::TextSeedFromResource(collation.resource_descriptor);
+  dt::NativeTextSetControlV1 control{16, 1024, 1024, 65536, 65536};
+  control.memory = std::pmr::new_delete_resource();
+  const std::array<dt::NativeTextSetElementV1, 2> elements{{{false, "<NULL>"}, {true, {}}}};
+  const auto encoded_set = dt::EncodeNativeTextSetV1(binding, elements, control);
   Require(encoded_set.ok(), "engine set fixture did not encode");
 
   api::EngineSetOperationRequest membership;
-  membership.context = context;
+  membership.context = set_context;
   membership.set_operation = "membership";
   membership.descriptors.push_back(character);
   membership.allow_null_elements = true;
-  membership.left_set = TypedValue("set_value", encoded_set.encoded_set);
+  membership.left_set.descriptor = Descriptor("set_value");
+  membership.left_set.binary_value.assign(encoded_set.encoded_set.begin(), encoded_set.encoded_set.end());
   membership.right_set_or_value.descriptor = character;
   membership.right_set_or_value.setState(api::EngineValueState::sql_null);
   const auto null_membership = api::EngineSetOperation(membership);
   Require(null_membership.ok &&
-              null_membership.value.encoded_value == "true" &&
+              null_membership.value.encoded_value.empty() &&
+              null_membership.value.binary_value == std::vector<std::uint8_t>{1} &&
               !null_membership.value.is_null,
           "engine set membership lost descriptor-bound SQL NULL");
 
@@ -473,11 +528,13 @@ void RequireNullConsumerContracts(const api::EngineRequestContext& context) {
                   "DATATYPE.NULL_STATE.INVALID",
           "engine set lost dirty left SQL NULL diagnostic precedence");
 
-  membership.right_set_or_value = TypedValue("character", "<NULL>");
+  membership.right_set_or_value = {};
   membership.right_set_or_value.descriptor = character;
+  membership.right_set_or_value.binary_value = {'<','N','U','L','L','>'};
   const auto printable_membership = api::EngineSetOperation(membership);
   Require(printable_membership.ok &&
-              printable_membership.value.encoded_value == "true",
+              printable_membership.value.encoded_value.empty() &&
+              printable_membership.value.binary_value == std::vector<std::uint8_t>{1},
           "engine set membership collapsed present <NULL> payload");
 
   auto wrong_left_type = membership;
@@ -499,7 +556,8 @@ void RequireNullConsumerContracts(const api::EngineRequestContext& context) {
   equality_request.set_operation = "equals";
   equality_request.right_set_or_value = equality_request.left_set;
   const auto equality_result = api::EngineSetOperation(equality_request);
-  Require(equality_result.ok && equality_result.value.encoded_value == "true",
+  Require(equality_result.ok && equality_result.value.encoded_value.empty() &&
+              equality_result.value.binary_value == std::vector<std::uint8_t>{1},
           "engine set equality did not populate the right encoded set");
 
   const auto binary = BoundScalarDescriptor(
@@ -532,20 +590,27 @@ void RequireNullConsumerContracts(const api::EngineRequestContext& context) {
           "engine set membership did not preserve native binary payload bytes");
 
   api::EngineSetOperationRequest cardinality_request;
-  cardinality_request.context = context;
+  cardinality_request.context = set_context;
   cardinality_request.set_operation = "cardinality";
   cardinality_request.descriptors.push_back(character);
   cardinality_request.allow_null_elements = true;
   cardinality_request.left_set = membership.left_set;
   const auto set_cardinality = api::EngineSetOperation(cardinality_request);
   Require(set_cardinality.ok &&
-              set_cardinality.value.encoded_value == "2",
+              set_cardinality.value.encoded_value.empty() &&
+              set_cardinality.value.binary_value == std::vector<std::uint8_t>({2,0,0,0,0,0,0,0}),
           "engine unary set cardinality required a synthetic right operand");
 
-  const auto nonnull_character = BoundScalarDescriptor(
-      "character", 6, "nullability=non_null");
+  auto nonnull_character = character;
+  api::CatalogColumnMetadata nonnull_fields;
+  Require(api::AdmitCatalogColumnMetadata(character.encoded_descriptor, &nonnull_fields),
+          "live SET descriptor metadata invalid");
+  nonnull_fields.text["nullability"] = "non_null";
+  Require(api::EncodeCatalogColumnMetadata(nonnull_fields, &nonnull_character.encoded_descriptor),
+          "non-null SET descriptor encoding failed");
   membership.descriptors.front() = nonnull_character;
   membership.right_set_or_value.descriptor = nonnull_character;
+  membership.right_set_or_value.binary_value.clear();
   membership.right_set_or_value.setState(api::EngineValueState::sql_null);
   const auto forbidden_null_membership = api::EngineSetOperation(membership);
   Require(!forbidden_null_membership.ok &&
@@ -553,6 +618,9 @@ void RequireNullConsumerContracts(const api::EngineRequestContext& context) {
               forbidden_null_membership.diagnostics.front().code ==
                   "DATATYPE.NULL_NOT_ADMITTED",
           "engine set accepted nullable profile under non-null descriptor");
+  set_statement.Release();
+  set_session.Close();
+  set_directory.Cleanup();
 }
 
 struct AdvancedCase {
@@ -1120,13 +1188,22 @@ void RequireAdvancedIndexDDL(const api::EngineRequestContext& context) {
 }
 
 void RequireDescriptorRuntimeDatatypeSlice() {
+  const auto native_bits = [](std::uint64_t bits, unsigned width) {
+    std::vector<std::uint8_t> bytes(width);
+    for(unsigned n=0;n<width;++n) bytes[n]=static_cast<std::uint8_t>(bits>>(8*n));
+    return bytes;
+  };
+  const auto text_value = [](const std::string& text) {
+    return exec::MakeExecutorValue(exec::MakeExecutorDescriptor("text", "nullability=non_null"),text,false);
+  };
   exec::DescriptorRuntimeDiagnostic diagnostic;
   auto result = exec::EvaluateDescriptorExpression(exec::DescriptorExpressionOperator::kReal64Add,
                                                    exec::EncodeReal64Value(1.5),
                                                    exec::EncodeReal64Value(2.25),
                                                    &diagnostic);
   Require(diagnostic.ok && result.descriptor.canonical_type_name == "real64" &&
-              std::fabs(std::stod(result.encoded_value) - 3.75) < 0.000001,
+              result.encoded_value.empty() &&
+              result.binary_value == native_bits(std::bit_cast<std::uint64_t>(3.75),8),
           "descriptor real64 expression failed");
 
   result = exec::EvaluateDescriptorExpression(exec::DescriptorExpressionOperator::kTextConcat,
@@ -1143,10 +1220,10 @@ void RequireDescriptorRuntimeDatatypeSlice() {
   Require(!diagnostic.ok && diagnostic.diagnostic_code == "SB_EXECUTOR_DIVIDE_BY_ZERO",
           "descriptor divide-by-zero diagnostic drifted");
 
-  result = exec::CastDescriptorValue(exec::EncodeTextValue("42"),
-                                     exec::MakeExecutorDescriptor("int64"),
+  result = exec::CastDescriptorValue(text_value("42"),
+                                     exec::MakeExecutorDescriptor("int64", "nullability=non_null"),
                                      &diagnostic);
-  Require(diagnostic.ok && result.encoded_value == "42" &&
+  Require(diagnostic.ok && result.encoded_value.empty() && result.binary_value==native_bits(42,8) &&
               result.descriptor.canonical_type_name == "int64",
           "descriptor text to int64 cast failed");
 
@@ -1156,10 +1233,16 @@ void RequireDescriptorRuntimeDatatypeSlice() {
           const std::string& maximum,
           const std::string& underflow,
           const std::string& overflow) {
-        const auto descriptor = exec::MakeExecutorDescriptor(type);
+        auto descriptor = exec::MakeExecutorDescriptor(type,"nullability=non_null");
+        descriptor.canonical_type_name=dt::CanonicalTypeName(dt::CanonicalTypeIdFromStableName(type));
+        const unsigned width=(type=="int8")?1:(type=="int16"||type=="smallint")?2:
+            (type=="int32"||type=="integer")?4:8;
         for (const auto& accepted : {minimum, maximum}) {
-          const auto value =
-              exec::MakeExecutorValue(descriptor, accepted, false);
+          std::int64_t number=0;
+          const auto parsed=std::from_chars(accepted.data(),accepted.data()+accepted.size(),number);
+          Require(parsed.ec==std::errc{} && parsed.ptr==accepted.data()+accepted.size(),"integer fixture invalid");
+          auto value = exec::MakeExecutorValue(descriptor, {}, false);
+          value.binary_value=native_bits(static_cast<std::uint64_t>(number),width);
           const auto decoded = exec::DecodeInt64Value(value);
           Require(decoded.ok() && std::to_string(decoded.value) == accepted,
                   "bounded signed integer endpoint decode failed");
@@ -1171,8 +1254,10 @@ void RequireDescriptorRuntimeDatatypeSlice() {
                   "bounded signed integer endpoint batch validation failed");
 
           const auto cast = exec::CastDescriptorValue(
-              exec::EncodeTextValue(accepted), descriptor, &diagnostic);
-          Require(diagnostic.ok && cast.encoded_value == accepted,
+              text_value(accepted), descriptor, &diagnostic);
+          if(!diagnostic.ok) std::cerr<<type<<' '<<accepted<<' '<<diagnostic.diagnostic_code<<':'<<diagnostic.detail<<'\n';
+          Require(diagnostic.ok && cast.encoded_value.empty() && cast.binary_value==value.binary_value &&
+                      cast.descriptor==descriptor,
                   "bounded signed integer endpoint cast failed");
         }
 
@@ -1188,11 +1273,11 @@ void RequireDescriptorRuntimeDatatypeSlice() {
           const auto batch_diagnostic = exec::ValidateDescriptorBatch(batch);
           Require(!batch_diagnostic.ok &&
                       batch_diagnostic.diagnostic_code ==
-                          "SB_EXECUTOR_INT64_DECODE_FAILED",
+                          "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
                   "bounded signed integer overflow batch was accepted");
 
           const auto cast = exec::CastDescriptorValue(
-              exec::EncodeTextValue(refused), descriptor, &diagnostic);
+              text_value(refused), descriptor, &diagnostic);
           Require(!diagnostic.ok && cast.descriptor.canonical_type_name.empty(),
                   "bounded signed integer overflow cast was accepted");
         }
@@ -1226,14 +1311,13 @@ void RequireDescriptorRuntimeDatatypeSlice() {
 
   exec::DescriptorBatch empty_integer_batch;
   empty_integer_batch.columns.push_back(
-      {"integer_value", exec::MakeExecutorDescriptor("integer"), true, 0});
+      {"integer_value", exec::MakeExecutorDescriptor("int32","nullability=nullable"), true, 0});
   Require(exec::ValidateDescriptorBatch(empty_integer_batch).ok,
           "empty ordinary integer descriptor batch was rejected");
 
-  const auto int64_two_hundred = exec::MakeExecutorValue(
-      exec::MakeExecutorDescriptor("int64"), "200", false);
+  const auto int64_two_hundred = exec::EncodeInt64Value(200);
   result = exec::CastDescriptorValue(
-      int64_two_hundred, exec::MakeExecutorDescriptor("int8"), &diagnostic);
+      int64_two_hundred, exec::MakeExecutorDescriptor("int8","nullability=non_null"), &diagnostic);
   Require(!diagnostic.ok && result.descriptor.canonical_type_name.empty(),
           "narrow signed integer cast accepted out-of-range source value");
 
@@ -1242,23 +1326,23 @@ void RequireDescriptorRuntimeDatatypeSlice() {
               result.encoded_value == "5",
           "descriptor text length extract failed");
 
-  auto native_binary = exec::MakeExecutorValue(exec::MakeExecutorDescriptor("binary"), {}, false);
+  auto native_binary = exec::MakeExecutorValue(exec::MakeExecutorDescriptor("binary","nullability=non_null"), {}, false);
   native_binary.binary_value = {'a', 'b', 'c', 'd'};
   result = exec::ExtractDescriptorField(native_binary,
                                         "octet_length",
                                         &diagnostic);
   Require(diagnostic.ok && result.descriptor.canonical_type_name == "uint64" &&
-              result.encoded_value == "4",
+              result.encoded_value.empty() && result.binary_value==native_bits(4,8),
           "descriptor binary octet length extract failed");
 
-  auto native_uuid = exec::MakeExecutorValue(exec::MakeExecutorDescriptor("uuid"), {}, false);
+  auto native_uuid = exec::MakeExecutorValue(exec::MakeExecutorDescriptor("uuid","nullability=non_null"), {}, false);
   constexpr auto uuid_data = scratchbird::tests::FixtureUuidLiteral("550e8400-e29b-41d4-a716-446655440000");
   native_uuid.binary_value.assign(uuid_data.bytes.begin(), uuid_data.bytes.end());
   result = exec::ExtractDescriptorField(native_uuid,
       "version",
       &diagnostic);
   Require(diagnostic.ok && result.descriptor.canonical_type_name == "uint8" &&
-              result.encoded_value == "4",
+              result.encoded_value.empty() && result.binary_value==native_bits(4,1),
           "descriptor uuid version extract failed");
 }
 
@@ -1280,21 +1364,35 @@ int main(int argc, char** argv) try {
   api::EngineRequestContext api_context;
   api_context.request_id = "sbsql-advanced-datatype-operation-api";
   api_context.security_context_present = true;
+  scratchbird::tests::UseBootstrapDatatypeCohort(api_context);
 
-  RequireNumericOperations(api_context);
-  RequireNullConsumerContracts(api_context);
-  RequireAdvancedFamilies(api_context);
-  RequireSblrDescriptorAuthorityBoundary(api_context);
-  RequireSblrCollectionVectorSpecializedOperators();
-  RequireDescriptorRuntimeDatatypeSlice();
-
-  scratchbird::tests::OwnedTempDirectory temporary;
-  const auto path = temporary.path() / "advanced.sbdb";
-  const auto context = BeginTransaction(EngineContext(path, CreateFixtureDatabase(path)));
-  CreateSchema(context);
-  RequireAdvancedIndexDDL(context);
-  temporary.Cleanup();
-  return EXIT_SUCCESS;
+  unsigned failures = 0;
+  const auto section = [&](const char* name, auto&& run) {
+    try {
+      run();
+      std::cout << name << ": PASS\n";
+    } catch (const std::exception& error) {
+      ++failures;
+      std::cerr << name << ": FAIL: " << error.what() << '\n';
+    }
+  };
+  // Independent sections must all execute: a stale early fixture must not
+  // hide regressions in unrelated consumers. Any failure still fails the gate.
+  section("numeric", [&] { RequireNumericOperations(api_context); });
+  section("null_consumers", [&] { RequireNullConsumerContracts(api_context); });
+  section("advanced_families", [&] { RequireAdvancedFamilies(api_context); });
+  section("sblr_authority", [&] { RequireSblrDescriptorAuthorityBoundary(api_context); });
+  section("sblr_collections_vectors", [&] { RequireSblrCollectionVectorSpecializedOperators(); });
+  section("descriptor_runtime", [&] { RequireDescriptorRuntimeDatatypeSlice(); });
+  section("persistent_index_ddl", [&] {
+    scratchbird::tests::OwnedTempDirectory temporary;
+    const auto path = temporary.path() / "advanced.sbdb";
+    const auto context = BeginTransaction(EngineContext(path, CreateFixtureDatabase(path)));
+    CreateSchema(context);
+    RequireAdvancedIndexDDL(context);
+    temporary.Cleanup();
+  });
+  return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 } catch (const std::exception& error) {
   std::cerr << error.what() << '\n';
   return EXIT_FAILURE;
