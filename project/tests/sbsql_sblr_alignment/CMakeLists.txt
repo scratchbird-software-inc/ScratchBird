@@ -73,6 +73,7 @@ set_tests_properties(sbsql_sblr_alignment_scoped_session_value_store PROPERTIES
 add_executable(sbsql_sblr_alignment_retained_row_value_state retained_row_value_state_conformance.cpp
   ${CMAKE_SOURCE_DIR}/src/engine/optimizer/bulk_placement_order.cpp)
 target_compile_features(sbsql_sblr_alignment_retained_row_value_state PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_retained_row_value_state PRIVATE sb_core_datatypes)
 target_include_directories(sbsql_sblr_alignment_retained_row_value_state PRIVATE
   ${CMAKE_SOURCE_DIR}/src/engine/internal_api
   ${CMAKE_SOURCE_DIR}/src/core/platform ${CMAKE_SOURCE_DIR}/src/core/uuid
