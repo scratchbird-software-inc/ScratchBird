@@ -69,7 +69,7 @@ target_include_directories(sb_core_datatypes PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${_sb_datatypes_project_source_dir}/include
 )
-target_link_libraries(sb_core_datatypes PUBLIC sb_core_platform sb_core_hash sb_core_metrics sbl_numeric)
-target_link_libraries(sb_core_datatypes PRIVATE sb_core_uuid sb_core_resources)
+target_link_libraries(sb_core_datatypes PUBLIC sb_core_platform sb_core_hash sb_core_metrics sbl_numeric sb_core_uuid)
+target_link_libraries(sb_core_datatypes PRIVATE sb_core_resources)
 
 unset(_sb_datatypes_project_source_dir)

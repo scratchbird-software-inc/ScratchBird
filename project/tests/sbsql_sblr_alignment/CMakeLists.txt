@@ -648,7 +648,7 @@ add_executable(sbsql_sblr_alignment_transactional_index_mutation_identity
 target_compile_features(sbsql_sblr_alignment_transactional_index_mutation_identity PRIVATE cxx_std_23)
 target_include_directories(sbsql_sblr_alignment_transactional_index_mutation_identity PRIVATE
   ../../src/engine/internal_api ../../src ../../src/core/index ../../src/transaction/mga)
-target_link_libraries(sbsql_sblr_alignment_transactional_index_mutation_identity PRIVATE sb_core_hash sb_core_uuid)
+target_link_libraries(sbsql_sblr_alignment_transactional_index_mutation_identity PRIVATE sb_core_hash sb_core_uuid sb_core_datatypes)
 add_test(NAME sbsql_sblr_alignment_transactional_index_mutation_identity COMMAND sbsql_sblr_alignment_transactional_index_mutation_identity)
 set_tests_properties(sbsql_sblr_alignment_transactional_index_mutation_identity PROPERTIES
   TIMEOUT 60 LABELS "sbsql_sblr_alignment;binary_uuid;index_mutation_evidence;actual_digest;not_runtime_acceptance")
@@ -660,7 +660,7 @@ add_executable(sbsql_sblr_alignment_temporary_name_visibility
 target_compile_features(sbsql_sblr_alignment_temporary_name_visibility PRIVATE cxx_std_23)
 target_include_directories(sbsql_sblr_alignment_temporary_name_visibility PRIVATE
   ../../src/engine/internal_api ../../src ../../src/core/index ../../src/transaction/mga)
-target_link_libraries(sbsql_sblr_alignment_temporary_name_visibility PRIVATE sb_core_uuid sb_core_diagnostic_catalog)
+target_link_libraries(sbsql_sblr_alignment_temporary_name_visibility PRIVATE sb_core_uuid sb_core_diagnostic_catalog sb_core_datatypes)
 add_test(NAME sbsql_sblr_alignment_temporary_name_visibility COMMAND sbsql_sblr_alignment_temporary_name_visibility)
 set_tests_properties(sbsql_sblr_alignment_temporary_name_visibility PROPERTIES
   TIMEOUT 60 LABELS "sbsql_sblr_alignment;binary_uuid;temporary_table;namespace_isolation;actual_classifier;not_runtime_acceptance")
@@ -804,7 +804,7 @@ add_executable(sbsql_sblr_alignment_admission_token_binary_binding admission_tok
 target_compile_features(sbsql_sblr_alignment_admission_token_binary_binding PRIVATE cxx_std_23)
 target_include_directories(sbsql_sblr_alignment_admission_token_binary_binding PRIVATE
   ../../src ../../src/engine/internal_api ../../src/core/datatypes ../../include)
-target_link_libraries(sbsql_sblr_alignment_admission_token_binary_binding PRIVATE sb_core_platform)
+target_link_libraries(sbsql_sblr_alignment_admission_token_binary_binding PRIVATE sb_core_platform sb_core_datatypes)
 add_test(NAME sbsql_sblr_alignment_admission_token_binary_binding
   COMMAND sbsql_sblr_alignment_admission_token_binary_binding)
 set_tests_properties(sbsql_sblr_alignment_admission_token_binary_binding PROPERTIES
