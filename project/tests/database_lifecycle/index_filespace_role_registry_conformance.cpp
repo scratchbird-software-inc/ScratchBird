@@ -29,6 +29,24 @@ int main() {
     }
   }
   if(!families)return EXIT_FAILURE;
+  // A related management/dependency page is not an index placement family.
+  // Its independent six-role contract must not widen through a shared helper.
+  const auto dependency=page::LookupPageFamily(scratchbird::storage::disk::PageType::index_resource_state);
+  const std::set<Role> dependency_roles{Role::active_primary,Role::primary_shadow,
+      Role::primary_snapshot,Role::primary_candidate,Role::archive_history,Role::import_candidate};
+  if(!dependency.ok()||dependency.descriptor.family!=page::PageFamily::typed_dependency||
+      dependency.descriptor.registry_status!=page::PageRegistryStatus::reserved||
+      dependency.descriptor.supported_local_read||dependency.descriptor.supported_local_write||
+      std::set<Role>(dependency.descriptor.legal_filespace_roles.begin(),
+          dependency.descriptor.legal_filespace_roles.end())!=dependency_roles||
+      dependency.descriptor.legal_filespace_roles.size()!=dependency_roles.size())return EXIT_FAILURE;
+  for(unsigned value=0;value<=17;++value) {
+    const auto role=static_cast<Role>(value);
+    const auto result=page::ValidatePageTypeFilespaceRole(dependency.descriptor.page_type,role,"inspect_dependency");
+    ++checks;
+    if(result.ok()!=dependency_roles.contains(role)||(!result.ok()&&
+        result.diagnostic.diagnostic_code!="SB_DIAG_PAGE_FILESPACE_ROLE_FORBIDDEN"))return EXIT_FAILURE;
+  }
   std::cout<<"PASS index filespace registry families="<<families<<" checks="<<checks<<'\n';
   return EXIT_SUCCESS;
 }
