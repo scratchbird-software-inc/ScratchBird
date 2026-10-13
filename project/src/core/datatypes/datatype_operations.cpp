@@ -5684,9 +5684,9 @@ NativeTextSetDecodeResultV1 DecodeNativeTextSetV1(const NativeTextSetBindingV1& 
   return result;
 }
 
-DatatypeSetOperationResult ApplyNativeTextSetOperationV1(const NativeTextSetBindingV1& supplied_binding,
+DatatypeSetOperationResult ApplyNativeTextSetOperationBorrowedV1(const NativeTextSetBindingV1& supplied_binding,
     DatatypeSetOperationKind operation,std::string_view left,std::string_view right,
-    const NativeTextSetElementV1& member,const NativeTextSetControlV1& supplied_control) try {
+    NativeTextSetElementViewV1 member,const NativeTextSetControlV1& supplied_control) try {
   const auto control=supplied_control;TextSetWork work(control);
   const auto binding=ValidateTextSetBinding(supplied_binding);
   if(operation!=DatatypeSetOperationKind::membership && operation!=DatatypeSetOperationKind::cardinality &&
@@ -5715,6 +5715,15 @@ DatatypeSetOperationResult ApplyNativeTextSetOperationV1(const NativeTextSetBind
   catch(const TextSetBudgetExceeded&){return TextSetError("RESOURCE.BUDGET_EXCEEDED","text_set_work_budget_exceeded");}
   catch(const std::bad_alloc&){return TextSetError("DATATYPE.RESOURCE_EXHAUSTED","text_set_allocation_failed");}
   catch(const std::length_error&){return TextSetError("RESOURCE.BUDGET_EXCEEDED","text_set_size_unrepresentable");}
+
+DatatypeSetOperationResult ApplyNativeTextSetOperationV1(const NativeTextSetBindingV1& binding,
+    DatatypeSetOperationKind operation, std::string_view left, std::string_view right,
+    const NativeTextSetElementV1& member, const NativeTextSetControlV1& control) {
+  return ApplyNativeTextSetOperationBorrowedV1(binding, operation, left, right,
+      {member.is_null, member.bytes}, control);
+}
+bool NativeTextSetElementDescriptorEqualV1(const ExecutionTypeDescriptor& a,
+    const ExecutionTypeDescriptor& b) noexcept { return ExecutionDescriptorEquals(a, b); }
 
 bool ResolveExactDecimalArithmeticBindingV1(const DatatypeNumericOperationRequest& request,
                                            DatatypeDecimalArithmeticBindingV1* binding) {

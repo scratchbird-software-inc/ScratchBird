@@ -15,6 +15,7 @@
 #include "datatype_descriptor.hpp"
 #include "datatype_operations.hpp"
 #include "datatype_temporal_wire.hpp"
+#include "datatype_text_set.hpp"
 #include "sbl_numeric.hpp"
 #include "../../../core/uuid/uuid.hpp"
 
@@ -42,6 +43,8 @@
 #include "domain_support/domain_store.hpp"
 #include "transaction/transaction_api.hpp"
 #include "security/security_model.hpp"
+#include "engine/statement_scratch_memory.hpp"
+#include "engine/sblr/relational_descriptor_codec.hpp"
 
 #include <sstream>
 #endif
@@ -4027,7 +4030,199 @@ EngineExtractValueResult EngineExtractValue(const EngineExtractValueRequest& req
   return result;
 }
 
+namespace {
+const EngineTypedValue& BorrowSetOperand(const EngineSetOperationRequest& request, bool second) {
+  const auto& typed = second ? request.right_set_or_value : request.left_set;
+  if (!typed.descriptor.canonical_type_name.empty() || !typed.encoded_value.empty() ||
+      !typed.binary_value.empty() || typed.is_null || typed.state != EngineValueState::value) return typed;
+  if (second) {
+    if (request.predicate.bound_values.size() >= 2) return request.predicate.bound_values[1];
+    if (!request.rows.empty() && request.rows.front().fields.size() >= 2) return request.rows.front().fields[1].second;
+  } else {
+    if (!request.rows.empty() && !request.rows.front().fields.empty()) return request.rows.front().fields.front().second;
+    if (!request.predicate.bound_values.empty()) return request.predicate.bound_values.front();
+  }
+  return typed;
+}
+bool NativeTextSetElementMetadata(const EngineDescriptor& descriptor, const EngineRequestContext& context) {
+  // The complete supported TEXT field set fits the canonical relational
+  // descriptor ceiling. Refuse oversized legacy spelling before map/string
+  // staging, rather than allowing input metadata to escape the work boundary.
+  if (descriptor.encoded_descriptor.size() > sblr::kRelationalDescriptorMaximumBytesV1) return false;
+  CatalogColumnMetadata fields;
+  if (!AdmitCatalogColumnMetadata(descriptor.encoded_descriptor, &fields)) {
+    RelationalTypeDescriptor relational;
+    return QowDecodeCanonicalTextDescriptorV1(descriptor, &relational) &&
+        relational.statement_receipt_uuid == context.statement_receipt_uuid;
+  }
+  for (const auto& [name, value] : fields.text) {
+    if (name != "nullability" && name != "nullable" && name != "length") return false;
+  }
+  for (const auto& [name, value] : fields.identities) {
+    if (name == "type_uuid" && value == descriptor.type_uuid) continue;
+    if (name == "datatype_descriptor_uuid" && value == descriptor.datatype_descriptor_uuid) continue;
+    if (name == "charset_uuid" && value == descriptor.charset_uuid) continue;
+    if (name == "collation_uuid" && value == descriptor.collation_uuid) continue;
+    return false;
+  }
+  return true;
+}
+EngineSetOperationResult NativeTextSetOperationAdmitted(const EngineSetOperationRequest& request,
+    StatementScratchMemoryV1& scratch) {
+  const auto refuse = [&](std::string code, std::string detail) {
+    return ApiFailure<EngineSetOperationResult>(request.context, "query.set_operation",
+        MakeEngineApiDiagnostic(std::move(code), "engine.query.native_text_set_refused", std::move(detail)));
+  };
+  const auto& context = scratch.context();
+  if (scratch.cancelled()) return refuse("PROCESS.CANCELLED", "native_text_set_cancelled_at_admission");
+  const auto& descriptor = request.descriptors.front();
+  dt::NativeTextSetBindingV1 binding;
+  std::string detail;
+  if (!NativeTextSetElementMetadata(descriptor, context) ||
+      descriptor.datatype_cohort.catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
+      descriptor.datatype_cohort.catalog_generation != context.datatype_catalog_generation ||
+      descriptor.datatype_cohort.registry_generation != context.datatype_registry_generation ||
+      !QowBoundExecutionTypeDescriptorV1(descriptor, dt::CanonicalTypeId::character, &binding.element, &detail))
+    return refuse("DATATYPE.DESCRIPTOR.INVALID", "native_text_set_element_not_in_statement_cohort:" + detail);
+  const auto* identity = dt::FindDatatypeTypeCodecIdentityV3(
+      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+      context.datatype_registry_generation, descriptor.datatype_descriptor_uuid,
+      descriptor.datatype_descriptor_generation);
+  if (!identity || !dt::IsExactCanonicalTextTypeCodecIdentityV1(identity->legacy_fields) ||
+      descriptor.charset_uuid.is_nil() || descriptor.collation_uuid.is_nil())
+    return refuse("DATATYPE.DESCRIPTOR.INVALID", "native_text_set_element_identity_incomplete");
+  const auto resource = LookupEngineResourceDescriptorByUuid(context, descriptor.collation_uuid, "collation");
+  if (!resource.ok)
+    return ApiFailure<EngineSetOperationResult>(context, "query.set_operation", resource.diagnostic);
+  if (!resource.resource_descriptor.present ||
+      resource.resource_descriptor.database_uuid != context.database_uuid ||
+      resource.resource_descriptor.resource_uuid != descriptor.collation_uuid ||
+      resource.resource_descriptor.parent_resource_uuid != descriptor.charset_uuid ||
+      resource.resource_descriptor.resource_epoch != context.resource_epoch ||
+      !resource.resource_descriptor.family_epoch)
+    return refuse("DATATYPE.DESCRIPTOR.INVALID", "native_text_set_collation_authority_mismatch");
+  binding.policy_uuid = dt::kNativeTextSetPolicyV1; binding.policy_generation = 1;
+  binding.catalog_snapshot_uuid = context.datatype_catalog_snapshot_uuid;
+  binding.catalog_generation = context.datatype_catalog_generation;
+  binding.registry_generation = context.datatype_registry_generation;
+  binding.element_type_uuid = identity->legacy_fields.type_uuid;
+  binding.element_type_generation = identity->legacy_fields.type_generation;
+  binding.text_seed = TextSeedFromResource(resource.resource_descriptor);
+  binding.ordered = request.ordered; binding.allow_null_elements = request.allow_null_elements;
+  binding.duplicates = request.allow_duplicates ? dt::TextSetDuplicatePolicyV1::preserve :
+      request.ordered ? dt::TextSetDuplicatePolicyV1::collapse_first : dt::TextSetDuplicatePolicyV1::collapse_minimum_bytes;
+  dt::DatatypeSetOperationKind operation;
+  const auto operation_name = request.set_operation.empty() ? OptionValue(request, "set_operation:") : request.set_operation;
+  if (!SetOperationKind(operation_name, &operation))
+    return refuse("SB_ENGINE_API_INVALID_REQUEST", "native_text_set_operation_required");
+  const bool membership = operation == dt::DatatypeSetOperationKind::membership;
+  const bool consumes_right = operation != dt::DatatypeSetOperationKind::cardinality;
+  const auto& left = BorrowSetOperand(request, false);
+  const auto& right = BorrowSetOperand(request, true);
+  if ((left.isSqlNull() && !QowCanonicalSqlNullStateV1(left)) ||
+      (consumes_right && right.isSqlNull() && !QowCanonicalSqlNullStateV1(right)))
+    return refuse("DATATYPE.NULL_STATE.INVALID", "native_text_set_dirty_null");
+  const auto frame = [](const EngineTypedValue& value) -> std::string_view {
+    if (value.binary_value.empty()) return {};
+    return {reinterpret_cast<const char*>(value.binary_value.data()), value.binary_value.size()};
+  };
+  const auto valid_set = [](const EngineTypedValue& value) {
+    return value.descriptor.canonical_type_name == "set_value" &&
+        value.state == EngineValueState::value && !value.isSqlNull() && value.encoded_value.empty();
+  };
+  if (!valid_set(left) || (consumes_right && !membership && !valid_set(right)))
+    return refuse("CSCR.DESCRIPTOR.INVALID", "native_text_set_binary_frame_required");
+  dt::NativeTextSetElementViewV1 member;
+  if (membership) {
+    ExecutionTypeDescriptor execution;
+    if (!NativeTextSetElementMetadata(right.descriptor, context) ||
+        right.descriptor.datatype_cohort != descriptor.datatype_cohort ||
+        !QowBoundExecutionTypeDescriptorV1(right.descriptor, dt::CanonicalTypeId::character, &execution, &detail) ||
+        right.descriptor.type_uuid != descriptor.type_uuid ||
+        right.descriptor.datatype_descriptor_uuid != descriptor.datatype_descriptor_uuid ||
+        right.descriptor.datatype_descriptor_generation != descriptor.datatype_descriptor_generation ||
+        right.descriptor.charset_uuid != descriptor.charset_uuid ||
+        right.descriptor.collation_uuid != descriptor.collation_uuid ||
+        !dt::NativeTextSetElementDescriptorEqualV1(execution, binding.element) ||
+        (!right.isSqlNull() && right.state != EngineValueState::value) ||
+        !right.encoded_value.empty())
+      return refuse("DATATYPE.DESCRIPTOR.INVALID", "native_text_set_membership_descriptor_mismatch");
+    member = {right.isSqlNull(), frame(right)};
+  }
+  dt::NativeTextSetControlV1 control;
+  const auto limit = scratch.limit_bytes();
+  control.maximum_elements = limit / sizeof(dt::NativeTextSetElementV1);
+  control.maximum_value_bytes = limit; control.maximum_key_bytes = limit;
+  control.maximum_work_bytes = limit; control.maximum_output_bytes = limit;
+  control.memory = scratch.memory(); control.cancelled = &StatementScratchMemoryV1::Poll;
+  control.cancellation_context = &scratch;
+  const auto value = dt::ApplyNativeTextSetOperationBorrowedV1(binding, operation, frame(left),
+      consumes_right && !membership ? frame(right) : std::string_view{}, member, control);
+  if (!value.ok())
+    return ApiFailure<EngineSetOperationResult>(context, "query.set_operation",
+        DatatypeDiagnosticToApi("query.set_operation", value.diagnostic));
+  if (scratch.cancelled()) return refuse("PROCESS.CANCELLED", "native_text_set_cancelled_before_publication");
+  // Result scalars use actual native registry identities and machine payloads;
+  // neither the SET frame nor a large membership operand escapes in the result.
+  const auto rows = dt::CurrentDatatypeTypeCodecIdentityRowsV3();
+  const auto output = std::find_if(rows.begin(), rows.end(), [&](const auto& row) {
+    return row.legacy_fields.catalog_snapshot_uuid == binding.catalog_snapshot_uuid &&
+        row.legacy_fields.catalog_generation == binding.catalog_generation &&
+        row.legacy_fields.registry_generation == binding.registry_generation &&
+        dt::CanonicalTypeIdFromStableName(row.legacy_fields.canonical_name) == value.value.type_id;
+  });
+  if (output == rows.end()) return refuse("DATATYPE.DESCRIPTOR.INVALID", "native_text_set_result_type_unbound");
+  auto result = ApiSuccess<EngineSetOperationResult>(context, "query.set_operation");
+  auto& out = result.value.descriptor;
+  out.descriptor_kind = "scalar"; out.canonical_type_name = dt::CanonicalTypeName(value.value.type_id);
+  out.descriptor_uuid = output->legacy_fields.descriptor_uuid;
+  out.datatype_descriptor_uuid = output->legacy_fields.descriptor_uuid;
+  out.datatype_descriptor_generation = output->legacy_fields.descriptor_generation;
+  out.type_uuid = output->legacy_fields.type_uuid; out.datatype_cohort = descriptor.datatype_cohort;
+  CatalogColumnMetadata fields; fields.text["nullability"] = "non_null";
+  if (!EncodeCatalogColumnMetadata(fields, &out.encoded_descriptor))
+    return refuse("DATATYPE.DESCRIPTOR.INVALID", "native_text_set_result_metadata_invalid");
+  result.value.binary_value.assign(value.value.encoded_value.begin(), value.value.encoded_value.end());
+  result.result_shape.result_kind = "typed_value"; result.result_shape.columns.push_back(out);
+  const auto memory = scratch.Snapshot();
+  result.evidence.push_back({"native_text_set_scratch_peak_bytes", std::to_string(memory.peak_allocated_bytes)});
+  result.evidence.push_back({"datatype_set_operation", operation_name});
+  return result;
+}
+EngineSetOperationResult NativeTextSetOperation(const EngineSetOperationRequest& request) try {
+  EngineSetOperationResult result;
+  core::platform::DiagnosticRecord admission_diagnostic;
+  const auto admitted = RunWithStatementScratchMemoryV1(request.context, [&](StatementScratchMemoryV1& scratch) {
+    result = NativeTextSetOperationAdmitted(request, scratch);
+  }, &admission_diagnostic);
+  if (admitted == SB_ENGINE_STATUS_OK) return result;
+  if (!admission_diagnostic.diagnostic_code.empty())
+    return ApiFailure<EngineSetOperationResult>(request.context, "query.set_operation",
+        DatatypeDiagnosticToApi("query.set_operation", admission_diagnostic));
+  return ApiFailure<EngineSetOperationResult>(request.context, "query.set_operation",
+      MakeEngineApiDiagnostic(admitted == SB_ENGINE_STATUS_RESOURCE_EXHAUSTED ? "RESOURCE.BUDGET_EXCEEDED" :
+          "DATATYPE.CONTEXT_REQUIRED", "engine.query.native_text_set_refused",
+          "native_text_set_statement_admission_or_staging_failed"));
+} catch (const std::bad_alloc&) {
+  return ApiFailure<EngineSetOperationResult>(request.context, "query.set_operation",
+      MakeEngineApiDiagnostic("DATATYPE.RESOURCE_EXHAUSTED", "engine.query.native_text_set_refused", "native_text_set_staging_allocation_failed"));
+} catch (const std::length_error&) {
+  return ApiFailure<EngineSetOperationResult>(request.context, "query.set_operation",
+      MakeEngineApiDiagnostic("RESOURCE.BUDGET_EXCEEDED", "engine.query.native_text_set_refused", "native_text_set_staging_size_unrepresentable"));
+}
+} // namespace
+
 EngineSetOperationResult EngineSetOperation(const EngineSetOperationRequest& request) {
+  if (!request.descriptors.empty()) {
+    const auto& descriptor = request.descriptors.front();
+    const auto* identity = dt::FindDatatypeTypeCodecIdentityV3(
+        descriptor.datatype_cohort.catalog_snapshot_uuid, descriptor.datatype_cohort.catalog_generation,
+        descriptor.datatype_cohort.registry_generation, descriptor.datatype_descriptor_uuid,
+        descriptor.datatype_descriptor_generation);
+    if ((identity && dt::IsExactCanonicalTextTypeCodecIdentityV1(identity->legacy_fields)) ||
+        dt::CanonicalTypeIdFromStableName(descriptor.canonical_type_name) == dt::CanonicalTypeId::character)
+      return NativeTextSetOperation(request);
+  }
   const EngineTypedValue left = RequestInputValue(request, request.left_set);
   const EngineTypedValue right =
       RequestSecondValue(request, request.right_set_or_value);

@@ -18,6 +18,7 @@
 #include "engine/public_abi_real64_payload.hpp"
 #include "engine/statement_management_ack_codec.hpp"
 #include "engine/statement_context_receipt_retention.hpp"
+#include "engine/statement_scratch_memory.hpp"
 #include "engine/statement_identity_binding.hpp"
 #include "session/scoped_value_store.hpp"
 #include "engine/authority_hash_material.hpp"
@@ -616,6 +617,14 @@ struct EnginePreparedNameReservationV1 {
 struct StatementContextSessionLifetime {
   std::mutex mutex;
   bool closed = false;
+  std::atomic<std::uint64_t> teardown_requests{0};
+};
+struct StatementContextTeardownObservation {
+  std::shared_ptr<StatementContextSessionLifetime> lifetime;
+  explicit StatementContextTeardownObservation(decltype(lifetime) owner) : lifetime(std::move(owner)) {
+    lifetime->teardown_requests.fetch_add(1, std::memory_order_release);
+  }
+  ~StatementContextTeardownObservation() { lifetime->teardown_requests.fetch_sub(1, std::memory_order_release); }
 };
 
 struct sb_engine_session_s {
@@ -704,6 +713,12 @@ struct StatementContextReceiptOpaque {
   scratchbird::engine::internal_api::EngineRequestContext engine_context;
   std::shared_ptr<scratchbird::engine::internal_api::EngineDmlUpdateResourceReceiptV1>
       dml_update_resource_receipt;
+  // Shared across synchronous scalar invocations under this exact receipt.
+  // Physical process/context totals remain enforced by DefaultMemoryManager.
+  std::shared_ptr<scratchbird::core::memory::HierarchicalMemoryBudgetLedger>
+      scalar_scratch_ledger;
+  std::shared_ptr<scratchbird::engine::internal_api::StatementScratchMemoryAdmissionV1>
+      scalar_scratch_admission;
   ~StatementContextReceiptOpaque() {
     if (dml_update_resource_receipt) dml_update_resource_receipt->Revoke();
   }
@@ -5085,6 +5100,7 @@ sb_engine_status_t sb_engine_session_end(sb_engine_session_t session,
     }
   }
   const auto receipt_lifetime = session->statement_receipt_lifetime;
+  StatementContextTeardownObservation teardown_observation(receipt_lifetime);
   std::lock_guard<std::mutex> lifetime_guard(receipt_lifetime->mutex);
   {
     std::lock_guard<std::mutex> guard(session->mutex);
@@ -5369,6 +5385,204 @@ sb_engine_status_t RetainStatementContextForResultV1(
     return SB_ENGINE_STATUS_INTERNAL_ERROR;
   }
 }
+
+class NativeStatementScratchMemoryV1 final : public StatementScratchMemoryV1 {
+ public:
+ struct State {
+  transaction::mga::PublishedSnapshotPin pin;
+  std::shared_ptr<core::memory::HierarchicalMemoryBudgetLedger> ledger;
+  std::unique_ptr<core::memory::ReservationBackedMemoryResource> resource;
+  std::unique_ptr<core::memory::ReservationBackedPmrMemoryResource> adapter;
+  std::function<bool()> cancellation;
+  const EngineRequestContext* issued_context = nullptr;
+  const std::atomic<std::uint64_t>* teardown_requests = nullptr;
+ };
+ explicit NativeStatementScratchMemoryV1(std::unique_ptr<State> state) : state_(std::move(state)) {}
+ std::pmr::memory_resource* memory() noexcept override {
+  return state_->adapter.get();
+}
+ const EngineRequestContext& context() const noexcept override {
+  return *state_->issued_context;
+}
+ std::uint64_t limit_bytes() const noexcept override {
+  return state_->resource->request().requested_bytes;
+}
+ std::uint64_t teardown_requests() const noexcept override {
+  return state_->teardown_requests->load(std::memory_order_acquire);
+ }
+ core::memory::ReservationBackedMemoryResourceSnapshot Snapshot() const override { return state_->resource->Snapshot(); }
+ bool cancelled() noexcept override {
+  try {
+    return (state_->cancellation && state_->cancellation()) || !state_->pin.valid();
+  } catch (...) { return true; }
+}
+ private:
+ std::unique_ptr<State> state_;
+};
+
+namespace {
+// Only the owning public dispatch installs this nonserializable lock binding.
+// It is thread-local and supports nested scopes without weakening mutex rules.
+struct SynchronousStatementDispatchLockV1 {
+  std::shared_ptr<server_engine_bridge::StatementContextReceiptOpaque> receipt;
+  std::unique_lock<std::mutex>* lock;
+  SynchronousStatementDispatchLockV1* previous;
+  static thread_local SynchronousStatementDispatchLockV1* current;
+  SynchronousStatementDispatchLockV1(decltype(receipt) owner, std::unique_lock<std::mutex>& guard)
+      : receipt(std::move(owner)), lock(&guard), previous(current) { current = this; }
+  ~SynchronousStatementDispatchLockV1() { current = previous; }
+};
+thread_local SynchronousStatementDispatchLockV1* SynchronousStatementDispatchLockV1::current = nullptr;
+thread_local bool scalar_scratch_call_active = false;
+} // namespace
+
+class NativeStatementScratchAdmissionV1 final : public StatementScratchMemoryAdmissionV1 {
+ public:
+ sb_engine_status_t Run(
+    const EngineRequestContext& context,
+    const std::function<void(StatementScratchMemoryV1&)>& callback,
+    core::platform::DiagnosticRecord* diagnostic) noexcept override {
+  if (diagnostic) *diagnostic = {};
+  if (!callback) return SB_ENGINE_STATUS_INVALID_ARGUMENT;
+  // Synchronous scalar execution does not recursively loan its entire grant.
+  // Reject before any lock, including reentry from cancellation callbacks.
+  if (scalar_scratch_call_active) return SB_ENGINE_STATUS_CONFLICT;
+  struct ActiveCall {
+    ActiveCall() { scalar_scratch_call_active = true; }
+    ~ActiveCall() { scalar_scratch_call_active = false; }
+  } active;
+  try {
+    std::shared_ptr<server_engine_bridge::StatementContextReceiptOpaque> receipt;
+    const auto* dispatch = SynchronousStatementDispatchLockV1::current;
+    if (dispatch && (!dispatch->lock->owns_lock() ||
+        dispatch->receipt->binary_receipt_uuid != context.statement_receipt_uuid.bytes))
+      return SB_ENGINE_STATUS_CONFLICT;
+    if (dispatch && dispatch->lock->owns_lock() &&
+        dispatch->lock->mutex() == &dispatch->receipt->mutex &&
+        dispatch->receipt->binary_receipt_uuid == context.statement_receipt_uuid.bytes) {
+      receipt = dispatch->receipt;
+    } else {
+      std::lock_guard<std::mutex> guard(g_statement_context_receipt_registry_mutex);
+      for (const auto& [id, candidate] : g_live_statement_context_receipts) {
+        if (candidate->binary_receipt_uuid == context.statement_receipt_uuid.bytes) {
+          receipt = candidate; break;
+        }
+      }
+    }
+    if (!receipt) return SB_ENGINE_STATUS_INVALID_HANDLE;
+    auto state = std::make_unique<NativeStatementScratchMemoryV1::State>();
+    {
+      const auto lifetime = receipt->session_lifetime;
+      std::unique_lock<std::mutex> lifetime_guard(lifetime->mutex, std::defer_lock);
+      std::unique_lock<std::mutex> receipt_guard(receipt->mutex, std::defer_lock);
+      const bool already_locked = dispatch && dispatch->receipt == receipt &&
+          dispatch->lock->owns_lock() && dispatch->lock->mutex() == &receipt->mutex;
+      if (!already_locked) lifetime_guard.lock();
+      if (lifetime->closed) return SB_ENGINE_STATUS_INVALID_HANDLE;
+      if (!already_locked) receipt_guard.lock();
+      if (receipt->released || receipt->invalidated)
+        return SB_ENGINE_STATUS_INVALID_HANDLE;
+      const auto& issued = receipt->engine_context;
+      // The binary projection must still refer to this exact privately issued
+      // context; neither booleans nor a copied receipt UUID grant authority.
+      if (!context.security_context_present ||
+          context.database_path != issued.database_path ||
+          context.database_uuid != issued.database_uuid ||
+          context.principal_uuid != issued.principal_uuid ||
+          context.session_uuid != issued.session_uuid ||
+          context.transaction_uuid != issued.transaction_uuid ||
+          context.local_transaction_id != issued.local_transaction_id ||
+          context.statement_uuid != issued.statement_uuid ||
+          context.statement_snapshot_uuid != issued.statement_snapshot_uuid ||
+          context.statement_snapshot_generation != issued.statement_snapshot_generation ||
+          context.statement_metadata_snapshot_uuid != issued.statement_metadata_snapshot_uuid ||
+          context.resource_admission_uuid != issued.resource_admission_uuid ||
+          context.security_epoch != issued.security_epoch ||
+          context.authorization_context.policy_epoch != issued.authorization_context.policy_epoch ||
+          context.catalog_generation_id != issued.catalog_generation_id ||
+          context.authorization_context.authority_uuid != issued.authorization_context.authority_uuid ||
+          context.authorization_context.security_context_generation != issued.authorization_context.security_context_generation ||
+          context.resource_epoch != issued.resource_epoch ||
+          context.datatype_catalog_snapshot_uuid != issued.datatype_catalog_snapshot_uuid ||
+          context.datatype_catalog_generation != issued.datatype_catalog_generation ||
+          context.datatype_registry_generation != issued.datatype_registry_generation ||
+          context.statement_scratch_memory_admission.lock() != receipt->scalar_scratch_admission ||
+          this != receipt->scalar_scratch_admission.get() ||
+          context.dml_update_resource_receipt.lock() != receipt->dml_update_resource_receipt)
+        return SB_ENGINE_STATUS_SECURITY_DENIED;
+      auto& manager = core::memory::DefaultMemoryManager();
+      const auto policy = manager.policy();
+      const auto limit = std::min(policy.hard_limit_bytes, policy.per_context_limit_bytes);
+      if (!limit || policy.refuse_all_allocations)
+        return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED;
+      if (!receipt->scalar_scratch_ledger)
+        receipt->scalar_scratch_ledger =
+            std::make_shared<core::memory::HierarchicalMemoryBudgetLedger>();
+      state->ledger = receipt->scalar_scratch_ledger;
+      using Scope = core::memory::HierarchicalMemoryScopeKind;
+      std::vector<core::memory::HierarchicalMemoryScopeRef> scopes = {
+          {Scope::database, {}, issued.database_uuid.bytes},
+          {Scope::session, {}, issued.session_uuid.bytes},
+          {Scope::transaction, {}, issued.transaction_uuid.bytes},
+          {Scope::statement, {}, issued.statement_uuid.bytes}};
+      core::memory::HierarchicalMemoryBudgetProvenance provenance;
+      provenance.source = core::memory::HierarchicalMemoryBudgetProvenanceSource::runtime_policy;
+      provenance.source_label = "configured_physical_memory_manager";
+      for (const auto& scope : scopes) {
+        auto budget = state->ledger->SetBudget({scope, limit, limit, provenance});
+        if (!budget.ok()) {
+          if (diagnostic) *diagnostic = std::move(budget.diagnostic);
+          return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED;
+        }
+      }
+      state->pin = transaction::mga::RetainPublishedSnapshotVector(receipt->snapshot_vector.snapshot_uuid);
+      if (!state->pin.valid() || !state->pin.Resolve().ok()) return SB_ENGINE_STATUS_CONFLICT;
+      core::memory::ReservationBackedMemoryResourceRequest acquire;
+      acquire.reservation_ledger = state->ledger.get();
+      acquire.memory_manager = &manager;
+      acquire.scope_chain = std::move(scopes);
+      acquire.requested_bytes = limit;
+      acquire.route_label = "engine.native_scalar";
+      acquire.purpose = "statement_scalar_scratch";
+      acquire.provenance = provenance;
+      acquire.binary_operation_uuid = issued.statement_uuid.bytes;
+      auto& ownership = acquire.binary_ownership;
+      using Kind = core::memory::MemoryBinaryScopeKind;
+      ownership[Kind::context] = issued.statement_receipt_uuid.bytes;
+      ownership[Kind::owner] = issued.statement_uuid.bytes;
+      ownership[Kind::database] = issued.database_uuid.bytes;
+      ownership[Kind::session] = issued.session_uuid.bytes;
+      ownership[Kind::transaction] = issued.transaction_uuid.bytes;
+      ownership[Kind::statement] = issued.statement_uuid.bytes;
+      core::memory::MemoryTag tag;
+      tag.category = core::memory::MemoryCategory::executor_query_reserved;
+      tag.binary_ownership = ownership;
+      const auto available = manager.allocator()->AvailableCapacity(tag);
+      if (!available.ok() || !available.available_bytes) return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED;
+      // Respect real existing allocations/credits at every owner scope. This
+      // observation is only a hint; acquisition still performs locked admission.
+      acquire.requested_bytes = std::min<std::uint64_t>(limit, available.available_bytes);
+      // Authority flags describe checks above and the real MGA pin, not input.
+      auto granted = core::memory::AcquireReservationBackedMemoryResource(std::move(acquire));
+      if (!granted.ok()) {
+        if (diagnostic) *diagnostic = std::move(granted.diagnostic);
+        return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED;
+      }
+      state->resource = std::move(granted.resource);
+      state->adapter = std::make_unique<core::memory::ReservationBackedPmrMemoryResource>(
+          state->resource.get(), "native_scalar");
+      state->cancellation = issued.query_cancellation_requested;
+      state->issued_context = &issued;
+      state->teardown_requests = &lifetime->teardown_requests;
+      NativeStatementScratchMemoryV1 owner(std::move(state));
+      callback(owner);
+      // Physical scratch destruction precedes releasing the owning locks.
+      return SB_ENGINE_STATUS_OK;
+    }
+  } catch (const std::bad_alloc&) { return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED; }
+    catch (...) { return SB_ENGINE_STATUS_INTERNAL_ERROR; }
+ }
+};
 
 sb_engine_status_t AdoptTypedResultPublicAbiV1(
     PublicAbiTypedResultAdoptionV1&& adoption,
@@ -8011,6 +8225,9 @@ sb_engine_status_t AcquireStatementContextReceipt(
       scratchbird::engine::internal_api::EngineDmlUpdateResourceReceiptV1>(
           receipt->engine_context, session->engine->dml_update_resource_governor);
   receipt->engine_context.dml_update_resource_receipt = receipt->dml_update_resource_receipt;
+  receipt->scalar_scratch_admission = std::make_shared<
+      scratchbird::engine::internal_api::NativeStatementScratchAdmissionV1>();
+  receipt->engine_context.statement_scratch_memory_admission = receipt->scalar_scratch_admission;
   receipt->contextual_text_target_resolver =
       scratchbird::engine::internal_api::
           CreateEngineContextualTextTargetAuthorityResolverForReceiptV2(
@@ -8095,6 +8312,7 @@ sb_engine_status_t ReleaseStatementContextReceipt(
         ? SB_ENGINE_STATUS_ALREADY_RELEASED : SB_ENGINE_STATUS_INVALID_HANDLE;
   }
   const auto lifetime = receipt->session_lifetime;
+  StatementContextTeardownObservation teardown_observation(lifetime);
   std::lock_guard<std::mutex> lifetime_guard(lifetime->mutex);
   if (lifetime->closed) return SB_ENGINE_STATUS_ALREADY_RELEASED;
   {
@@ -20158,6 +20376,8 @@ sb_engine_status_t DispatchStatementContextReceipt(
   }
   auto* receipt = dispatch_receipt_owner.get();
   std::unique_lock<std::mutex> receipt_guard(receipt->mutex);
+  scratchbird::engine::internal_api::SynchronousStatementDispatchLockV1 scalar_dispatch_lock(
+      dispatch_receipt_owner, receipt_guard);
   StatementPackageAdmissionReservationOpaque consumed_reservation;
   if (request->package_admission_reservation) {
     const auto reserved = g_package_admission_reservations.find(

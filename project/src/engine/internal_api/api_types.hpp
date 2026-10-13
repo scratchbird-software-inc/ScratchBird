@@ -37,6 +37,7 @@ struct EngineQueryResultValuesV1;
 
 using EngineApiU64 = std::uint64_t;
 using EngineApiI64 = std::int64_t;
+class StatementScratchMemoryAdmissionV1;
 
 // Engine-owned statement resource-policy bounds for decoded MGA relation
 // bytes.  This authority is independent of optimizer memory, I/O quotas,
@@ -548,6 +549,8 @@ struct EngineRequestContext {
   // Engine-issued, revocable process-local capability. Never serialized into
   // a receipt view, SBLR operand, parser packet or public ABI structure.
   std::weak_ptr<EngineDmlUpdateResourceReceiptV1> dml_update_resource_receipt;
+  // Private synchronous physical-memory issuer; never serialized to a parser.
+  std::weak_ptr<StatementScratchMemoryAdmissionV1> statement_scratch_memory_admission;
   // Exact active-transaction policy authority pinned by the engine-issued
   // statement receipt.  These fields are not parser-selectable policy input.
   EngineUuid transaction_policy_snapshot_uuid;

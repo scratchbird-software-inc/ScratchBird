@@ -46,6 +46,13 @@ struct NativeTextSetElementV1 {
   std::string bytes;
   bool operator==(const NativeTextSetElementV1&) const = default;
 };
+struct NativeTextSetElementViewV1 {
+  bool is_null = false;
+  std::string_view bytes;
+};
+bool NativeTextSetElementDescriptorEqualV1(
+    const scratchbird::engine::ExecutionTypeDescriptor&,
+    const scratchbird::engine::ExecutionTypeDescriptor&) noexcept;
 struct NativeTextSetDecodeResultV1 {
   Status status;
   DiagnosticRecord diagnostic;
@@ -61,4 +68,10 @@ DatatypeSetOperationResult ApplyNativeTextSetOperationV1(
     const NativeTextSetBindingV1&, DatatypeSetOperationKind,
     std::string_view left, std::string_view right,
     const NativeTextSetElementV1& member, const NativeTextSetControlV1&);
+// Scalar operation with a borrowed membership operand: no unaccounted owning
+// payload copy at the engine receiving boundary. Bytes remain valid through return.
+DatatypeSetOperationResult ApplyNativeTextSetOperationBorrowedV1(
+    const NativeTextSetBindingV1&, DatatypeSetOperationKind,
+    std::string_view left, std::string_view right,
+    NativeTextSetElementViewV1 member, const NativeTextSetControlV1&);
 } // namespace scratchbird::core::datatypes
