@@ -1469,6 +1469,14 @@ if(TARGET sb_storage_database)
   )
 
   if(TARGET sb_storage_filespace)
+    add_executable(database_lifecycle_index_filespace_role_registry_conformance
+      index_filespace_role_registry_conformance.cpp)
+    target_compile_features(database_lifecycle_index_filespace_role_registry_conformance PRIVATE cxx_std_23)
+    target_link_libraries(database_lifecycle_index_filespace_role_registry_conformance PRIVATE sb_storage_page)
+    add_test(NAME database_lifecycle_index_filespace_role_registry_conformance
+      COMMAND database_lifecycle_index_filespace_role_registry_conformance)
+    set_tests_properties(database_lifecycle_index_filespace_role_registry_conformance PROPERTIES
+      TIMEOUT 30 LABELS "page_registry;index_placement;not_SQL_E2E")
     add_executable(database_lifecycle_storage_page_filespace_p2_conformance
       storage_page_filespace_p2_conformance.cpp
     )

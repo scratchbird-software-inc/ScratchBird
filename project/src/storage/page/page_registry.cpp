@@ -97,10 +97,19 @@ std::vector<FilespaceRole> DataRoles() {
 
 std::vector<FilespaceRole> IndexRoles() {
   return Roles({FilespaceRole::active_primary,
+                FilespaceRole::primary_shadow,
+                FilespaceRole::primary_snapshot,
+                FilespaceRole::primary_candidate,
                 FilespaceRole::secondary_data,
                 FilespaceRole::secondary_index,
+                FilespaceRole::secondary_overflow,
+                FilespaceRole::secondary_history,
                 FilespaceRole::secondary_shard,
-                FilespaceRole::temporary});
+                FilespaceRole::archive_history,
+                FilespaceRole::archive_log,
+                FilespaceRole::archive_detached,
+                FilespaceRole::temporary,
+                FilespaceRole::import_candidate});
 }
 
 std::vector<FilespaceRole> ArchiveRoles() {
@@ -113,10 +122,6 @@ std::vector<FilespaceRole> ImportRoles() {
   return Roles({FilespaceRole::import_candidate,
                 FilespaceRole::archive_detached,
                 FilespaceRole::forbidden});
-}
-
-std::vector<FilespaceRole> TemporaryRoles() {
-  return Roles({FilespaceRole::temporary});
 }
 
 std::vector<FilespaceRole> AllDurableRoles() {
@@ -217,7 +222,7 @@ const std::vector<PageFamilyDescriptor>& BuiltinPageFamilyRegistry() {
       Descriptor(PageType::index_spatial, PageFamily::index, PageRegistryStatus::implemented, "index_spatial", true, true, IndexRoles(), "PAGE-REG-IMPLEMENTED-SPATIAL-INDEX", false, false, true, true, true),
       Descriptor(PageType::index_vector, PageFamily::index, PageRegistryStatus::implemented, "index_vector", true, true, IndexRoles(), "PAGE-REG-IMPLEMENTED-VECTOR-INDEX", false, false, true, true, true),
       Descriptor(PageType::index_graph, PageFamily::index, PageRegistryStatus::implemented, "index_graph", true, true, IndexRoles(), "PAGE-REG-IMPLEMENTED-GRAPH-INDEX", false, false, true, true, true),
-      Descriptor(PageType::index_temporary, PageFamily::index, PageRegistryStatus::implemented, "index_temporary", true, true, TemporaryRoles(), "PAGE-REG-IMPLEMENTED-TEMPORARY-INDEX", false, false, true, true, true),
+      Descriptor(PageType::index_temporary, PageFamily::index, PageRegistryStatus::implemented, "index_temporary", true, true, IndexRoles(), "PAGE-REG-IMPLEMENTED-TEMPORARY-INDEX", false, false, true, true, true),
       Descriptor(PageType::index_statistics, PageFamily::index, PageRegistryStatus::implemented, "index_statistics", true, true, IndexRoles(), "PAGE-REG-IMPLEMENTED-INDEX-STATISTICS", false, false, true, true, true),
       Descriptor(PageType::index_special_root, PageFamily::index, PageRegistryStatus::implemented, "index_special_root", true, true, IndexRoles(), "PAGE-REG-IMPLEMENTED-INDEX-SPECIAL-ROOT", false, false, true, true, true),
       Descriptor(PageType::blob, PageFamily::blob, PageRegistryStatus::implemented, "blob", true, true, DataRoles(), "PAGE-REG-IMPLEMENTED-BLOB"),
