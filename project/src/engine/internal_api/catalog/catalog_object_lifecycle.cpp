@@ -16,6 +16,7 @@
 #include "security/authorization_api.hpp"
 #include "catalog/constraint_metadata_codec.hpp"
 #include "dml/mutation_savepoint_capability.hpp"
+#include "dml/global_aggregate_projection.hpp"
 
 #include "behavior_support/api_behavior_store.hpp"
 #include "behavior_support/api_behavior_record_codec.hpp"
@@ -1059,9 +1060,11 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
     const auto column = columns.find(dependency.dependency_uuid);
     const bool active_column = column != columns.end() &&
         active_objects.count(column->second.owner_object_uuid) != 0;
+    const bool builtin_aggregate = dependency.dependency_kind == "view_builtin_aggregate" &&
+        dependency.dependency_uuid == EngineGlobalAggregateAvgFunctionUuid();
     if (active_objects.count(dependency.source_uuid) != 0 &&
         (active_objects.count(dependency.dependency_uuid) != 0 ||
-         (dependency.dependency_kind == "view_source_column" && active_column))) {
+         (dependency.dependency_kind == "view_source_column" && active_column) || builtin_aggregate)) {
       result.state.dependencies.push_back(std::move(dependency));
     }
   }
@@ -2096,10 +2099,15 @@ static EngineApiDiagnostic ValidateCurrentViewResolverOccupancy(
 
 EngineApiDiagnostic ValidateCatalogViewCreationAdmission(
     const EngineCatalogCreateObjectRequest& request,
-    const EngineRelationProjectionViewDescriptor& definition,
+    const CatalogViewSourceBinding& definition,
     std::optional<std::uint64_t>* expected_catalog_epoch,
     std::optional<std::vector<std::string>>* expected_schema_frames) {
   constexpr const char* operation = "ddl.create_view";
+  if (!definition.view_generation || !definition.source_relation_descriptor_generation ||
+      !core::uuid::IsEngineIdentityUuid(definition.view_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(definition.source_relation_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(definition.source_column_uuid))
+    return MakeInvalidRequestDiagnostic(operation, "view_source_binding_invalid");
   const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   const auto authority = ValidateCurrentMutatingTransactionAuthority(request.context, operation);
   if (authority.error) return authority;
@@ -2184,8 +2192,20 @@ EngineApiDiagnostic ValidateCatalogViewCreationAdmission(
   if (*expected_catalog_epoch && **expected_catalog_epoch != current.state.metadata_epoch)
     return MakeInvalidRequestDiagnostic(operation, "view_catalog_generation_changed");
   *expected_catalog_epoch = current.state.metadata_epoch;
-  if (FindObject(current.state, definition.view_uuid))
-    return CatalogDiagnostic(kCatalogObjectDiagnosticDuplicateName, "view_uuid_occupied");
+  const auto* predecessor = FindObject(current.state, definition.view_uuid);
+  if (definition.view_generation == 1) {
+    if (predecessor) return CatalogDiagnostic(kCatalogObjectDiagnosticDuplicateName, "view_uuid_occupied");
+  } else {
+    const auto* visible_predecessor = FindObject(visible.state, definition.view_uuid);
+    if (!predecessor || !visible_predecessor || predecessor->object_kind != "view" ||
+        predecessor->schema_uuid != request.target_schema.uuid ||
+        predecessor->definition_epoch != definition.view_generation - 1 ||
+        predecessor->catalog_row_uuid != visible_predecessor->catalog_row_uuid ||
+        predecessor->creator_tx != visible_predecessor->creator_tx ||
+        predecessor->metadata_epoch != visible_predecessor->metadata_epoch ||
+        predecessor->payload != visible_predecessor->payload)
+      return MakeInvalidRequestDiagnostic(operation, "view_predecessor_generation_changed");
+  }
   const auto collision = CheckNameConflict(current.state, definition.view_uuid, "view",
       request.target_schema.uuid, EffectiveNames(request), request.context);
   if (collision.error) return collision;
@@ -2197,7 +2217,7 @@ EngineApiDiagnostic ValidateCatalogViewCreationAdmission(
     return MakeInvalidRequestDiagnostic(operation, "view_source_catalog_generation_changed");
   bool source_column_found = false;
   for (const auto& column : current.state.columns) {
-    if (column.column_uuid != definition.outputs.front().source_column_uuid) continue;
+    if (column.column_uuid != definition.source_column_uuid) continue;
     if (source_column_found || column.owner_object_uuid != definition.source_relation_uuid)
       return MakeInvalidRequestDiagnostic(operation, "view_source_column_catalog_owner_invalid");
     source_column_found = true;
@@ -2222,7 +2242,7 @@ EngineCatalogCreateObjectResult EngineCatalogCreateViewWithDefinition(
   const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   const auto readmit = custody.Readmit();
   if (readmit.error) return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation, readmit);
-  const auto& definition = custody.definition();
+  const auto definition = custody.source();
   if (ObjectKind(request) != "view" || ObjectUuid(request) != definition.view_uuid ||
       custody.payload().empty() || !custody.payload().starts_with("SBVIEW02"))
     return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation,
@@ -2230,23 +2250,77 @@ EngineCatalogCreateObjectResult EngineCatalogCreateViewWithDefinition(
   const auto current = LoadState(request.context, {.enforce_visibility = false, .creation_admission = true});
   if (!current.ok) return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation, current.diagnostic);
   std::vector<PreparedCatalogJournalRecord> prepared;
-  auto result = PrepareCatalogObjectCreateData(request, prepared, &custody.payload(), &current.state);
+  EngineCatalogCreateObjectResult result;
+  if (definition.view_generation == 1) {
+    result = PrepareCatalogObjectCreateData(request, prepared, &custody.payload(), &current.state);
+  } else {
+    const auto* predecessor = FindObject(current.state, definition.view_uuid);
+    if (!predecessor || current.state.metadata_epoch == std::numeric_limits<std::uint64_t>::max())
+      return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation,
+          MakeInvalidRequestDiagnostic(operation, "view_predecessor_or_generation_invalid"));
+    auto replacement = *predecessor;
+    replacement.creator_tx = request.context.local_transaction_id;
+    replacement.definition_epoch = definition.view_generation;
+    replacement.metadata_epoch = current.state.metadata_epoch + 1;
+    replacement.payload = custody.payload();
+    auto staged = StageCatalogJournalEvent(request.context, ObjectEvent(replacement), prepared);
+    if (staged.error) return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation, staged);
+    for (const auto& old : current.state.dependencies) {
+      if (old.source_uuid != definition.view_uuid) continue;
+      auto retired = old;
+      retired.creator_tx = request.context.local_transaction_id;
+      retired.metadata_epoch = replacement.metadata_epoch;
+      retired.deleted = true;
+      staged = StageCatalogJournalEvent(request.context, DependencyEvent(retired), prepared);
+      if (staged.error) return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation, staged);
+    }
+    EngineCatalogDependencyRecord relation;
+    relation.creator_tx = request.context.local_transaction_id;
+    relation.source_uuid = definition.view_uuid; relation.source_kind = "view";
+    relation.dependency_uuid = definition.source_relation_uuid;
+    relation.dependency_kind = DependencyKindForRelatedObject("view", {definition.source_relation_uuid, "table"});
+    relation.metadata_epoch = replacement.metadata_epoch;
+    staged = StageCatalogJournalEvent(request.context, DependencyEvent(relation), prepared);
+    if (staged.error) return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation, staged);
+    staged = StageCatalogJournalEvent(request.context, CacheInvalidateEvent(request.context, operation,
+        definition.view_uuid, replacement.metadata_epoch), prepared);
+    if (staged.error) return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation, staged);
+    result = SuccessResult<EngineCatalogCreateObjectResult>(request.context, operation);
+    FillObjectResult(&result, request.context, replacement, replacement.metadata_epoch);
+    AddDdlPublicationResult(&result, operation, "view", definition.view_uuid, result.catalog_row_uuid, "view");
+  }
   if (!result.ok) return result;
   result.operation_id = operation;
-  AddEvidence(&result, "relation_projection_view_marker", definition.marker);
-  AddEvidence(&result, "relation_projection_view_descriptor_uuid", definition.view_descriptor_uuid);
-  AddEvidence(&result, "relation_projection_view_descriptor_generation", std::to_string(definition.view_descriptor_generation));
-  AddEvidence(&result, "relation_projection_view_source_resource_epoch", std::to_string(definition.source_resource_epoch));
-  AddEvidence(&result, "relation_projection_view_output_count", std::to_string(definition.outputs.size()));
-  AddEvidence(&result, "relation_projection_view_parser_sql", "false");
-  AddEvidence(&result, "relation_projection_view_row_storage", "none_mga_source_scan_only");
+  if (const auto* projection = custody.projection()) {
+    AddEvidence(&result, "relation_projection_view_marker", projection->marker);
+    AddEvidence(&result, "relation_projection_view_descriptor_uuid", projection->view_descriptor_uuid);
+    AddEvidence(&result, "relation_projection_view_descriptor_generation", std::to_string(projection->view_descriptor_generation));
+    AddEvidence(&result, "relation_projection_view_source_resource_epoch", std::to_string(projection->source_resource_epoch));
+    AddEvidence(&result, "relation_projection_view_output_count", std::to_string(projection->outputs.size()));
+    AddEvidence(&result, "relation_projection_view_parser_sql", "false");
+    AddEvidence(&result, "relation_projection_view_row_storage", "none_mga_source_scan_only");
+  } else if (const auto* aggregate = custody.aggregate()) {
+    AddEvidence(&result, "global_aggregate_view_marker", kEngineGlobalAggregateViewMarkerV1);
+    AddEvidence(&result, "global_aggregate_view_descriptor_uuid", aggregate->view_descriptor_uuid);
+    AddEvidence(&result, "global_aggregate_view_descriptor_generation", std::to_string(aggregate->view_descriptor_generation));
+    AddEvidence(&result, "global_aggregate_view_create_or_alter_resolution", definition.view_generation > 1 ? "alter" : "create");
+    AddEvidence(&result, "global_aggregate_view_parser_sql", "false");
+  }
   EngineCatalogDependencyRecord column;
   column.creator_tx = request.context.local_transaction_id;
   column.source_uuid = definition.view_uuid; column.source_kind = "view";
-  column.dependency_uuid = definition.outputs.front().source_column_uuid;
+  column.dependency_uuid = definition.source_column_uuid;
   column.dependency_kind = "view_source_column"; column.metadata_epoch = result.metadata_cache_epoch;
   const auto staged = StageCatalogJournalEvent(request.context, DependencyEvent(column), prepared);
   if (staged.error) return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation, staged);
+  if (const auto* aggregate = custody.aggregate()) {
+    auto function = column;
+    function.dependency_uuid = aggregate->aggregate_function_uuid;
+    function.dependency_kind = "view_builtin_aggregate";
+    const auto function_staged = StageCatalogJournalEvent(request.context, DependencyEvent(function), prepared);
+    if (function_staged.error)
+      return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation, function_staged);
+  }
   const auto publication = PublishPreparedCatalogJournalBatch(custody, request.context, operation, std::move(prepared));
   if (publication.error) return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation,
       CatalogBatchPublicationDiagnostic(publication));
@@ -2599,6 +2673,9 @@ EngineCatalogAlterObjectResult EngineCatalogAlterObject(const EngineCatalogAlter
     return DiagnosticResult<EngineCatalogAlterObjectResult>(
         request.context, kOperation, CatalogDiagnostic(kCatalogObjectDiagnosticNotFound, object_uuid));
   }
+  if (existing->object_kind == "view" && existing->payload.starts_with("SBVIEW02"))
+    return DiagnosticResult<EngineCatalogAlterObjectResult>(request.context, kOperation,
+        MakeInvalidRequestDiagnostic(kOperation, "view_owned_publication_required"));
   if (!PrincipalOwnsSchema(loaded.state, request.context, existing->schema_uuid)) {
     return DiagnosticResult<EngineCatalogAlterObjectResult>(
         request.context, kOperation, CatalogDiagnostic(kCatalogObjectDiagnosticSchemaOwnerDenied, existing->schema_uuid));

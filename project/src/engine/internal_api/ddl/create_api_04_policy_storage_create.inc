@@ -397,30 +397,27 @@ EngineCreateViewResult EngineCreateView(const EngineCreateViewRequest& request) 
     effective.assignments.clear();
     effective.projection.canonical_projection_envelopes.clear();
     effective.option_envelopes = prepared.canonical_persisted_options;
-    auto result = PersistedCreateWithNameRegistry<EngineCreateViewResult>(
-        effective, "ddl.create_view", "view", true, "created",
-        EncodeBinaryViewOptions(prepared.canonical_persisted_options));
-    if (result.ok) {
-      AddApiBehaviorEvidence(&result,
-                             "global_aggregate_view_marker",
-                             kEngineGlobalAggregateViewMarkerV1);
-      AddApiBehaviorEvidence(
-          &result,
-          "global_aggregate_view_descriptor_uuid",
-          prepared.descriptor.view_descriptor_uuid);
-      AddApiBehaviorEvidence(
-          &result,
-          "global_aggregate_view_descriptor_generation",
-          std::to_string(
-              prepared.descriptor.view_descriptor_generation));
-      AddApiBehaviorEvidence(
-          &result,
-          "global_aggregate_view_create_or_alter_resolution",
-          prepared.altered_existing ? "alter" : "create");
-      AddApiBehaviorEvidence(&result,
-                             "global_aggregate_view_parser_sql",
-                             "false");
-    }
+    EngineCatalogCreateObjectRequest catalog;
+    static_cast<EngineApiRequest&>(catalog) = effective;
+    catalog.related_objects.push_back({prepared.descriptor.source_relation_uuid, "table"});
+    const CatalogViewSourceBinding source_binding{prepared.descriptor.view_uuid,
+        prepared.descriptor.source_relation_uuid, prepared.descriptor.source_column_uuid,
+        prepared.descriptor.view_descriptor_generation, prepared.descriptor.source_relation_descriptor_generation};
+    std::optional<std::uint64_t> expected_catalog_epoch;
+    std::optional<std::vector<std::string>> expected_schema_frames;
+    const auto readmit = [&]() {
+      const auto admitted = ValidateCatalogViewCreationAdmission(catalog, source_binding,
+          &expected_catalog_epoch, &expected_schema_frames);
+      if (admitted.error) return admitted;
+      return RevalidateEngineGlobalAggregateViewSource(catalog.context, prepared.descriptor,
+          prepared.admitted_source, prepared.admitted_aliases, prepared.altered_existing);
+    };
+    const CatalogViewCreationCustody custody(prepared.descriptor,
+        EncodeBinaryViewOptions(prepared.canonical_persisted_options), readmit);
+    auto published = EngineCatalogCreateViewWithDefinition(custody, catalog);
+    EngineCreateViewResult result;
+    static_assert(std::is_nothrow_move_assignable_v<EngineApiResult>);
+    static_cast<EngineApiResult&>(result) = std::move(static_cast<EngineApiResult&>(published));
     return result;
   }
   if (IsEngineRelationProjectionViewCreateRequest(request)) {
@@ -449,7 +446,10 @@ EngineCreateViewResult EngineCreateView(const EngineCreateViewRequest& request) 
     std::optional<std::uint64_t> expected_catalog_epoch;
     std::optional<std::vector<std::string>> expected_schema_frames;
     const auto readmit = [&]() {
-      const auto admitted = ValidateCatalogViewCreationAdmission(catalog, prepared.descriptor,
+      const CatalogViewSourceBinding source_binding{prepared.descriptor.view_uuid,
+          prepared.descriptor.source_relation_uuid, prepared.descriptor.outputs.front().source_column_uuid,
+          prepared.descriptor.view_descriptor_generation, prepared.descriptor.source_relation_descriptor_generation};
+      const auto admitted = ValidateCatalogViewCreationAdmission(catalog, source_binding,
           &expected_catalog_epoch, &expected_schema_frames);
       if (admitted.error) return admitted;
       const auto source = LoadMgaRelationStorageDescriptor(catalog.context, prepared.descriptor.source_relation_uuid);

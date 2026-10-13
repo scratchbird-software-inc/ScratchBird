@@ -10,6 +10,7 @@
 
 #include "api_types.hpp"
 #include "catalog/binary_view_options.hpp"
+#include "mga_relation_store/mga_relation_descriptor.hpp"
 
 #include <cstdint>
 #include <string>
@@ -53,6 +54,8 @@ struct EngineGlobalAggregateViewCreatePreparation {
   EngineApiDiagnostic diagnostic;
   EngineGlobalAggregateViewDescriptor descriptor;
   std::vector<std::string> canonical_persisted_options;
+  MgaRelationStorageDescriptor admitted_source;
+  std::vector<std::string> admitted_aliases;
 };
 
 bool IsEngineGlobalAggregateViewCreateRequest(
@@ -64,6 +67,9 @@ bool IsEngineGlobalAggregateViewCreateRequest(
 // descriptor UUID with the next generation.
 EngineGlobalAggregateViewCreatePreparation
 PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request);
+EngineApiDiagnostic RevalidateEngineGlobalAggregateViewSource(
+    const EngineRequestContext&, const EngineGlobalAggregateViewDescriptor&,
+    const MgaRelationStorageDescriptor&, const std::vector<std::string>&, bool replacing);
 
 // Loads the descriptor visible to the exact selected MGA transaction. An
 // ordinary persisted view is classified with present=false and a successful

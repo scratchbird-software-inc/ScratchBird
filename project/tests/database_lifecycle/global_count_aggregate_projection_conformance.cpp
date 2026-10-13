@@ -13,6 +13,9 @@
 #include "../support/engine_statement_fixture.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/global_aggregate_view.hpp"
+#include "catalog/catalog_object_lifecycle_codec.hpp"
+#include "catalog/name_registry.hpp"
+#include "mga_relation_store/mga_relation_metadata_store.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "ddl/create_api.hpp"
 #include "dml/global_aggregate_projection.hpp"
@@ -33,6 +36,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <iostream>
 #include <limits>
 #include <map>
@@ -1378,6 +1383,24 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
       fixture, create, source_descriptor, "V_AVG_EXPRESSION", 2100000000));
   RequireOk(created, "persisted global aggregate view create failed");
   const platform::Uuid view_uuid = created.primary_object.uuid;
+  const auto created_catalog = api::LoadCatalogObjectLifecycleState(create);
+  Require(created_catalog.ok && !created.catalog_row_uuid.is_nil(),
+          "aggregate creation did not return a real native catalog identity");
+  bool owning_row = false, relation_dependency = false, column_dependency = false, function_dependency = false;
+  for (const auto& record : created_catalog.state.objects)
+    owning_row |= record.object_uuid == view_uuid && record.object_kind == "view" &&
+        record.catalog_row_uuid == created.catalog_row_uuid && record.definition_epoch == 1 &&
+        record.payload.starts_with("SBVIEW02");
+  for (const auto& dependency : created_catalog.state.dependencies) {
+    if (dependency.source_uuid != view_uuid) continue;
+    relation_dependency |= dependency.dependency_uuid == source_descriptor.relation_uuid;
+    column_dependency |= dependency.dependency_uuid == source_descriptor.columns.front().column_uuid &&
+        dependency.dependency_kind == "view_source_column";
+    function_dependency |= dependency.dependency_uuid == api::EngineGlobalAggregateAvgFunctionUuid() &&
+        dependency.dependency_kind == "view_builtin_aggregate";
+  }
+  Require(owning_row && relation_dependency && column_dependency && function_dependency,
+          "aggregate actual native definition/dependency closure is incomplete");
   Require(!view_uuid.is_nil() &&
               EvidenceValue(created, "global_aggregate_view_marker") ==
                   api::kEngineGlobalAggregateViewMarkerV1 &&
@@ -1395,17 +1418,12 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
               << own_descriptor.view_descriptor_generation
               << " code=" << own_descriptor.diagnostic.code
               << " detail=" << own_descriptor.diagnostic.detail << '\n';
-    api::EngineApiDiagnostic behavior_read_diagnostic_1;
-    const auto visible = api::FindVisibleApiBehaviorRecord(
-        create, view_uuid, create.local_transaction_id, behavior_read_diagnostic_1);
-    Require(!behavior_read_diagnostic_1.error, "behavior catalog read failed");
-    if (visible.has_value()) {
-      std::cerr << "own descriptor record: operation="
-                << visible->operation_id << " kind=" << visible->object_kind
-                << " state=" << visible->state
-                << " name=" << visible->default_name
-                << " payload=" << visible->payload << '\n';
-    }
+    const auto visible = api::LoadCatalogObjectLifecycleState(create);
+    Require(visible.ok, "native aggregate catalog diagnostic read failed");
+    for (const auto& record : visible.state.objects)
+      if (record.object_uuid == view_uuid)
+        std::cerr << "own native descriptor record: kind=" << record.object_kind
+                  << " generation=" << record.definition_epoch << '\n';
   }
   Require(!own_descriptor.diagnostic.error && own_descriptor.present &&
               own_descriptor.view_descriptor_generation == 1,
@@ -1497,6 +1515,66 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
                   "global_aggregate_view_source_descriptor_stale"),
           "global aggregate view accepted a stale source generation");
   Rollback(baseline_reader);
+
+  const auto read_file = [](const std::string& path) {
+    std::ifstream input(path, std::ios::binary);
+    Require(input.is_open(), "aggregate callback storage image read failed");
+    std::string bytes(std::istreambuf_iterator<char>(input), {});
+    Require(!input.bad(), "aggregate callback storage image read failed");
+    return bytes;
+  };
+  for (unsigned mutation = 0; mutation != 2; ++mutation) {
+    auto callback_owner = Begin(fixture, 600 + mutation);
+    auto callback_request = GlobalAggregateViewRequest(fixture, callback_owner,
+        source_descriptor, mutation ? "V_AVG_EXPRESSION" : "V_CALLBACK_SOURCE",
+        2000000000, mutation ? view_uuid : platform::Uuid{}, mutation != 0);
+    bool changed = false;
+    std::string catalog_after, names_after, metadata_after;
+    const auto original_source = api::LoadMgaRelationStorageDescriptor(callback_owner, source_descriptor.relation_uuid);
+    Require(original_source.ok, "actual callback source read failed");
+    callback_request.context.query_cancellation_requested = [&] {
+      if (!changed) {
+        changed = true;
+        if (mutation) {
+          Require(!api::RetireNameRegistryEntriesForObject(callback_owner, "view.callback.alias_retire", view_uuid).error,
+                  "actual callback alias retirement failed");
+        } else {
+          auto successor = original_source.descriptor;
+          successor.columns.front().max_inline_bytes /= 2;
+          Require(!api::PersistDescriptorFields(callback_owner, successor.relation_uuid,
+              api::SerializeMgaRelationStorageDescriptor(successor)).error,
+              "actual same-generation callback source mutation failed");
+          const auto actual = api::LoadMgaRelationStorageDescriptor(callback_owner, successor.relation_uuid);
+          Require(actual.ok && actual.descriptor == successor,
+                  "callback source mutation did not publish actual retained metadata");
+        }
+        catalog_after = read_file(callback_owner.database_path + ".sb.catalog_object_events");
+        names_after = read_file(callback_owner.database_path + ".sb.name_events.v2");
+        metadata_after = read_file(callback_owner.database_path + ".sb.mga_relation_metadata");
+      }
+      return false;
+    };
+    const auto refused = api::EngineCreateView(callback_request);
+    Require(changed && !refused.ok && HasDiagnosticDetail(refused, mutation
+                ? "global_aggregate_view_alias_generation_changed" : "global_aggregate_view_source_descriptor_stale") &&
+                read_file(callback_owner.database_path + ".sb.catalog_object_events") == catalog_after &&
+                read_file(callback_owner.database_path + ".sb.name_events.v2") == names_after &&
+                read_file(callback_owner.database_path + ".sb.mga_relation_metadata") == metadata_after,
+            "aggregate callback source/alias mutation escaped final admission or published outer metadata");
+    callback_request.context.query_cancellation_requested = {};
+    if (mutation) {
+      Require(!api::PersistNameRegistryEntriesForObject(callback_owner, "view.callback.alias_restore", view_uuid,
+          "view", fixture.schema_uuid, callback_request.localized_names, "V_AVG_EXPRESSION").error,
+          "actual callback alias restoration failed");
+    } else {
+      Require(!api::PersistDescriptorFields(callback_owner, original_source.descriptor.relation_uuid,
+          api::SerializeMgaRelationStorageDescriptor(original_source.descriptor)).error,
+          "actual callback source restoration failed");
+    }
+    RequireOk(api::EngineCreateView(callback_request),
+              "corrected same-owner aggregate callback retry failed");
+    Rollback(callback_owner);
+  }
 
   auto old_snapshot = Begin(fixture, 27, "snapshot");
   const auto snapshot_baseline = api::EngineResolveName(
@@ -1635,40 +1713,90 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
                             "global_aggregate_relation_scan").empty(),
           "fresh reader accepted stale semantic descriptor generation one");
 
-  const platform::Uuid malformed_view_uuid =
-      NewUuid(platform::UuidKind::object, NowMillis());
-  api::ApiBehaviorRecord malformed_record;
-  malformed_record.creator_tx = fresh_reader.local_transaction_id;
-  malformed_record.operation_id = "ddl.create_view";
-  malformed_record.object_uuid = malformed_view_uuid;
-  malformed_record.object_kind = "view";
-  malformed_record.default_name = "V_MALFORMED";
-  malformed_record.state = "created";
-  malformed_record.payload = api::EncodeBinaryViewOptions({
-      std::string("view_query_shape:") + api::kEngineGlobalAggregateViewMarkerV1,
-      "view_descriptor_uuid:not-a-native-uuid", "view_descriptor_generation:1",
-      api::BinaryViewUuidOption("source_relation_uuid:", source_descriptor.relation_uuid),
-      api::BinaryViewUuidOption("source_relation_descriptor_uuid:", source_descriptor.descriptor_uuid),
-      "source_relation_descriptor_generation:" + std::to_string(source_descriptor.descriptor_generation),
-      api::BinaryViewUuidOption("source_column_uuid:", source_descriptor.columns.front().column_uuid),
-      api::BinaryViewUuidOption("source_column_descriptor_uuid:", source_descriptor.columns.front().value_descriptor.descriptor_uuid),
-      std::string("expression_kind:") + api::kEngineGlobalAggregateViewInt32MultiplyV1,
-      "expression_literal_type:int32", "expression_literal_value:2100000000",
-      "expression_result_type:int64",
-      api::BinaryViewUuidOption("aggregate_function_uuid:", api::EngineGlobalAggregateAvgFunctionUuid()),
-      "aggregate_result_alias:AVG_RESULT", "aggregate_result_type:int64_nullable"});
-  Require(!api::AppendApiBehaviorEvent(
-               fresh_reader,
-               api::MakeApiBehaviorRecordEvent(malformed_record))
-               .error,
-          "malformed descriptor probe append failed");
+  const auto catalog = api::LoadCatalogObjectLifecycleState(fresh_reader);
+  Require(catalog.ok, "actual aggregate catalog read failed");
+  const api::EngineCatalogObjectRecord* owning_record = nullptr;
+  for (const auto& record : catalog.state.objects)
+    if (record.object_uuid == view_uuid) owning_record = &record;
+  Require(owning_record && !owning_record->catalog_row_uuid.is_nil() &&
+              owning_record->definition_epoch == 2 && owning_record->payload.starts_with("SBVIEW02"),
+          "aggregate replacement did not publish an actual complete owning catalog row");
+  const auto journal_path = fresh_reader.database_path + ".sb.catalog_object_events";
+  const auto read_bytes = [&] {
+    std::ifstream input(journal_path, std::ios::binary);
+    Require(input.is_open(), "actual aggregate journal read failed");
+    std::string bytes(std::istreambuf_iterator<char>(input), {});
+    Require(!input.bad(), "actual aggregate journal read failed");
+    return bytes;
+  };
+  const auto original_bytes = read_bytes();
+  api::EngineCatalogAlterObjectRequest generic_alter;
+  generic_alter.context = fresh_reader;
+  generic_alter.target_object = {view_uuid, "view"};
+  generic_alter.option_envelopes = {"definition_embedded:true"};
+  const auto generic_refusal = api::EngineCatalogAlterObject(generic_alter);
+  Require(!generic_refusal.ok && HasDiagnosticDetail(generic_refusal, "view_owned_publication_required") &&
+              read_bytes() == original_bytes,
+          "generic catalog alteration replaced an executable aggregate definition without custody");
+  const auto write_bytes = [&](const std::string& bytes) {
+    std::ofstream output(journal_path, std::ios::binary | std::ios::trunc);
+    Require(output.is_open(), "owned aggregate corruption fixture open failed");
+    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    output.close();
+    Require(!output.fail(), "owned aggregate corruption fixture write failed");
+  };
+  std::istringstream frames(original_bytes, std::ios::in | std::ios::binary);
+  std::string corrupted;
+  unsigned matches = 0;
+  while (frames.peek() != std::char_traits<char>::eof()) {
+    const auto begin = frames.tellg();
+    api::CatalogLifecycleRecord frame;
+    std::uint64_t sequence = 0;
+    Require(api::ReadCatalogLifecycleRecord(frames, &frame, &sequence),
+            "actual aggregate source frame decode failed");
+    const auto end = frames.tellg();
+    Require(begin >= 0 && end >= begin, "actual aggregate frame boundary invalid");
+    auto* object = std::get_if<api::EngineCatalogObjectRecord>(&frame);
+    if (object && object->object_uuid == view_uuid &&
+        object->catalog_row_uuid == owning_record->catalog_row_uuid &&
+        object->creator_tx == owning_record->creator_tx &&
+        object->definition_epoch == owning_record->definition_epoch) {
+      Require(++matches == 1 && object->payload == owning_record->payload,
+              "aggregate corruption fixture did not select exact published version");
+      std::vector<std::string> options;
+      Require(api::DecodeBinaryViewOptions(object->payload, &options) && options.size() == 15,
+              "actual aggregate options decode failed");
+      options[1] = "view_descriptor_uuid:not-a-native-uuid";
+      object->payload = api::EncodeBinaryViewOptions(options);
+      std::string encoded;
+      Require(api::EncodeCatalogLifecycleRecord(*object, &encoded, sequence),
+              "aggregate corruption frame encode failed");
+      corrupted += encoded;
+    } else corrupted.append(original_bytes, static_cast<std::size_t>(begin),
+                            static_cast<std::size_t>(end - begin));
+  }
+  Require(matches == 1 && !frames.bad(), "exact aggregate corruption target missing");
+  struct Restore {
+    const decltype(write_bytes)& write;
+    const std::string& bytes;
+    bool active = true;
+    ~Restore() { if (active) try { write(bytes); } catch (...) {
+      std::cerr << "owned aggregate corruption restoration failed during unwinding\n";
+    } }
+  } restore{write_bytes, original_bytes};
+  write_bytes(corrupted);
   const auto malformed = api::DescribeEngineGlobalAggregateView(
-      fresh_reader, malformed_view_uuid);
+      fresh_reader, view_uuid);
   Require(malformed.diagnostic.error && !malformed.present &&
               malformed.diagnostic.detail.find(
                   "global_aggregate_view_descriptor_invalid") !=
                   std::string::npos,
           "malformed persisted descriptor reached semantic projection");
+  write_bytes(original_bytes);
+  Require(read_bytes() == original_bytes &&
+              api::DescribeEngineGlobalAggregateView(fresh_reader, view_uuid).present,
+          "native aggregate corruption restoration lost actual descriptor");
+  restore.active = false;
 
   api::EngineGlobalAggregateProjectionEnvelope invalid_literal;
   invalid_literal.relation_uuid = source_descriptor.relation_uuid;

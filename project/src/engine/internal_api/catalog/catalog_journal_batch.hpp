@@ -95,7 +95,7 @@ class CatalogJournalBatchPublisher final {
           owns_comment_mutation = true;
         if (const auto* object = std::get_if<EngineCatalogObjectRecord>(&decoded);
             object && object->object_kind == "view" && !object->deleted && object->payload.starts_with("SBVIEW02")) {
-          if (!view_custody || object->object_uuid != view_custody->definition().view_uuid ||
+          if (!view_custody || object->object_uuid != view_custody->source().view_uuid ||
               object->payload != view_custody->payload()) return refused("view_owned_publication_required");
           owns_view_definition = true;
         }

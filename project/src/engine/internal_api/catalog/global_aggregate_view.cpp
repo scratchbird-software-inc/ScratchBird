@@ -7,12 +7,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "catalog/global_aggregate_view.hpp"
+#include "catalog/catalog_object_lifecycle.hpp"
 #include <bit>
 #include "catalog/binary_view_options.hpp"
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/name_registry.hpp"
+#include "catalog/name_registry_codec.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "catalog/schema_tree_api.hpp"
 #include "crud_support/crud_store.hpp"
 #include "datatype_operations.hpp"
@@ -237,7 +240,7 @@ bool PayloadMentionsBoundedViewFamily(
 }
 
 std::optional<EngineGlobalAggregateViewDescriptor> ParsePersistedDescriptor(
-    const ApiBehaviorRecord& record) {
+    const EngineCatalogObjectRecord& record) {
   const auto options = PayloadOptions(record.payload);
   if (!PayloadRequestsBoundedView(options)) return std::nullopt;
   if (options.size() != 15 ||
@@ -293,9 +296,7 @@ std::optional<EngineGlobalAggregateViewDescriptor> ParsePersistedDescriptor(
       EngineGlobalAggregateAvgIntegerResultDescriptor();
 
   const EngineUuid schema_uuid =
-      record.target_schema_uuid;
-  const EngineUuid target_uuid =
-      record.target_object_uuid;
+      record.schema_uuid;
   const std::set<EngineUuid> persisted_identities = {
       descriptor.view_uuid,
       descriptor.view_descriptor_uuid,
@@ -309,9 +310,9 @@ std::optional<EngineGlobalAggregateViewDescriptor> ParsePersistedDescriptor(
       persisted_identities.contains(
           descriptor.source_column_descriptor_uuid);
 
-  if (!view_generation || *view_generation == 0 || !source_generation ||
+  if (!view_generation || *view_generation == 0 || record.definition_epoch != *view_generation || !source_generation ||
       *source_generation == 0 || !literal ||
-      !SafeViewName(record.default_name) || target_uuid != record.object_uuid ||
+      !core::uuid::IsEngineIdentityUuid(record.catalog_row_uuid) ||
       !CanonicalTypedUuid(scratchbird::core::platform::UuidKind::schema,
                           schema_uuid) ||
       !CanonicalTypedUuid(scratchbird::core::platform::UuidKind::object,
@@ -359,22 +360,22 @@ const MgaRelationColumnStorageDescriptor* FindExactColumn(
   return found;
 }
 
-struct VisibleApiBehaviorLookup {
+struct VisibleCatalogViewLookup {
   bool ok = false;
   EngineApiDiagnostic diagnostic = OkDiagnostic();
-  std::optional<ApiBehaviorRecord> record;
+  std::optional<EngineCatalogObjectRecord> record;
 };
 
-VisibleApiBehaviorLookup LookupVisibleApiBehaviorRecord(
+VisibleCatalogViewLookup LookupVisibleCatalogViewRecord(
     const EngineRequestContext& context,
     const EngineUuid& object_uuid) {
-  VisibleApiBehaviorLookup lookup;
-  const auto loaded = LoadApiBehaviorState(context);
+  VisibleCatalogViewLookup lookup;
+  const auto loaded = LoadCatalogObjectLifecycleState(context);
   if (!loaded.ok) {
     lookup.diagnostic = loaded.diagnostic;
     return lookup;
   }
-  for (const auto& record : loaded.state.records) {
+  for (const auto& record : loaded.state.objects) {
     if (record.object_uuid == object_uuid) {
       lookup.record = record;
       break;
@@ -585,11 +586,11 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
     return result;
   }
 
-  std::optional<ApiBehaviorRecord> existing;
+  std::optional<EngineCatalogObjectRecord> existing;
   EngineUuid view_uuid = request.target_object.uuid;
   if (!view_uuid.is_nil()) {
     const auto lookup =
-        LookupVisibleApiBehaviorRecord(request.context, view_uuid);
+        LookupVisibleCatalogViewRecord(request.context, view_uuid);
     if (!lookup.ok) {
       result.diagnostic = lookup.diagnostic;
       return result;
@@ -612,7 +613,7 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
       }
       view_uuid = by_name.matches.front().object_uuid;
       const auto lookup =
-          LookupVisibleApiBehaviorRecord(request.context, view_uuid);
+          LookupVisibleCatalogViewRecord(request.context, view_uuid);
       if (!lookup.ok) {
         result.diagnostic = lookup.diagnostic;
         return result;
@@ -628,10 +629,8 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
   if (existing) {
     const auto parsed = ParsePersistedDescriptor(*existing);
     if (!parsed || existing->object_kind != "view" ||
-        existing->operation_id != "ddl.create_view" ||
-        existing->state != "created" || existing->deleted ||
-        existing->default_name != view_name ||
-        existing->target_schema_uuid !=
+        existing->lifecycle_state != "active" || existing->deleted ||
+        existing->schema_uuid !=
             request.target_schema.uuid) {
       result.diagnostic = ViewDiagnostic(
           "global_aggregate_view_existing_descriptor_invalid");
@@ -643,6 +642,13 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
       return result;
     }
     previous = *parsed;
+    EngineApiRequest alias_request = request;
+    alias_request.option_envelopes.clear();
+    const auto alias = ResolveNameRegistryPrivate(alias_request, "view");
+    if (!alias.ok || alias.matches.size() != 1 || alias.matches.front().object_uuid != view_uuid) {
+      result.diagnostic = ViewDiagnostic("global_aggregate_view_existing_name_mismatch");
+      return result;
+    }
     result.altered_existing = true;
   } else {
     if (!view_uuid.is_nil()) {
@@ -733,10 +739,76 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
       BinaryViewUuidOption("aggregate_function_uuid:", descriptor.aggregate_function_uuid),
       "aggregate_result_alias:" + descriptor.result_alias,
       "aggregate_result_type:int64_nullable"};
+  result.admitted_source = relation;
+  if (result.altered_existing) {
+    const auto names = LoadNameRegistryState(request.context, request.context.local_transaction_id);
+    if (!names.ok) { result.diagnostic = names.diagnostic; return result; }
+    for (const auto& name : names.state.entries) {
+      if (name.object_uuid != descriptor.view_uuid) continue;
+      std::string encoded;
+      if (!EncodeNameRegistryEntry(name, &encoded)) {
+        result.diagnostic = ViewDiagnostic("global_aggregate_view_alias_binding_invalid");
+        return result;
+      }
+      result.admitted_aliases.push_back(std::move(encoded));
+    }
+    std::sort(result.admitted_aliases.begin(), result.admitted_aliases.end());
+    if (result.admitted_aliases.empty()) {
+      result.diagnostic = ViewDiagnostic("global_aggregate_view_existing_name_mismatch");
+      return result;
+    }
+  }
   result.descriptor = std::move(descriptor);
   result.ok = true;
   result.diagnostic = OkDiagnostic();
   return result;
+}
+
+EngineApiDiagnostic RevalidateEngineGlobalAggregateViewSource(
+    const EngineRequestContext& context, const EngineGlobalAggregateViewDescriptor& definition,
+    const MgaRelationStorageDescriptor& admitted_source,
+    const std::vector<std::string>& admitted_aliases, bool replacing) {
+  const auto loaded = LoadMgaRelationStorageDescriptor(context, definition.source_relation_uuid);
+  if (!loaded.ok) return loaded.diagnostic;
+  const auto& relation = loaded.descriptor;
+  if (relation != admitted_source || relation.relation_kind != "table" || relation.descriptor_uuid != definition.source_relation_descriptor_uuid ||
+      relation.descriptor_generation != definition.source_relation_descriptor_generation)
+    return ViewDiagnostic("global_aggregate_view_source_descriptor_stale");
+  bool duplicate = false;
+  const auto* column = FindExactColumn(relation, definition.source_column_uuid, &duplicate);
+  if (!column || duplicate || column->value_descriptor.descriptor_uuid != definition.source_column_descriptor_uuid ||
+      column->value_descriptor.canonical_type_name != dt::CanonicalTypeName(dt::CanonicalTypeId::int32) ||
+      column->value_descriptor.datatype_cohort != EngineDatatypeCohort{
+          context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation, context.datatype_registry_generation} ||
+      definition.aggregate_function_uuid != EngineGlobalAggregateAvgFunctionUuid())
+    return ViewDiagnostic("global_aggregate_view_source_column_descriptor_stale");
+  const auto& type = column->value_descriptor;
+  const auto* selected = dt::FindDatatypeTypeCodecIdentityV3(context.datatype_catalog_snapshot_uuid,
+      context.datatype_catalog_generation, context.datatype_registry_generation,
+      type.datatype_descriptor_uuid, type.datatype_descriptor_generation);
+  if (!selected || selected->legacy_fields.type_uuid != type.type_uuid ||
+      selected->legacy_fields.canonical_binary_type_code != static_cast<std::uint32_t>(dt::CanonicalTypeId::int32) ||
+      selected->legacy_fields.canonical_value_exact_bytes != 4 ||
+      (selected->native_fields.present && (selected->native_fields.canonical_value_minimum_bytes != 4 ||
+       selected->native_fields.canonical_value_maximum_bytes != 4 ||
+       selected->native_fields.canonical_value_transport_width != 4 || selected->native_fields.canonical_value_variable_width)))
+    return ViewDiagnostic("global_aggregate_source_datatype_binding_invalid");
+  if (replacing) {
+    const auto names = LoadNameRegistryState(context, context.local_transaction_id);
+    if (!names.ok) return names.diagnostic;
+    std::vector<std::string> actual;
+    for (const auto& name : names.state.entries) {
+      if (name.object_uuid != definition.view_uuid) continue;
+      std::string encoded;
+      if (!EncodeNameRegistryEntry(name, &encoded))
+        return ViewDiagnostic("global_aggregate_view_alias_binding_invalid");
+      actual.push_back(std::move(encoded));
+    }
+    std::sort(actual.begin(), actual.end());
+    if (actual.empty() || actual != admitted_aliases)
+      return ViewDiagnostic("global_aggregate_view_alias_generation_changed");
+  }
+  return OkDiagnostic();
 }
 
 EngineGlobalAggregateViewDescriptor DescribeEngineGlobalAggregateView(
@@ -755,7 +827,7 @@ EngineGlobalAggregateViewDescriptor DescribeEngineGlobalAggregateView(
     descriptor.diagnostic = exact_transaction;
     return descriptor;
   }
-  const auto lookup = LookupVisibleApiBehaviorRecord(context, view_uuid);
+  const auto lookup = LookupVisibleCatalogViewRecord(context, view_uuid);
   if (!lookup.ok) {
     descriptor.diagnostic = lookup.diagnostic;
     return descriptor;
@@ -779,8 +851,7 @@ EngineGlobalAggregateViewDescriptor DescribeEngineGlobalAggregateView(
   const auto parsed = ParsePersistedDescriptor(record);
   if (!PayloadRequestsBoundedView(options) || !parsed ||
       record.object_kind != "view" ||
-      record.operation_id != "ddl.create_view" ||
-      record.state != "created" || record.deleted) {
+      record.lifecycle_state != "active" || record.deleted) {
     descriptor.diagnostic = ViewDiagnostic(
         "global_aggregate_view_descriptor_invalid");
     return descriptor;
