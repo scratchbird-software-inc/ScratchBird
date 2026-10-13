@@ -350,7 +350,7 @@ target_compile_features(sbsql_sblr_alignment_variable_registry_binary_identity P
 target_include_directories(sbsql_sblr_alignment_variable_registry_binary_identity PRIVATE
   ../../src/engine/internal_api)
 target_link_libraries(sbsql_sblr_alignment_variable_registry_binary_identity PRIVATE
-  sb_core_uuid sb_core_hash sb_engine_api_diagnostics)
+  sb_core_uuid sb_core_hash sb_engine_api_diagnostics sb_core_datatypes)
 add_test(NAME sbsql_sblr_alignment_variable_registry_binary_identity
   COMMAND sbsql_sblr_alignment_variable_registry_binary_identity)
 set_tests_properties(sbsql_sblr_alignment_variable_registry_binary_identity PROPERTIES
@@ -363,7 +363,7 @@ target_compile_features(sbsql_sblr_alignment_transaction_begin_binary_identity P
 target_include_directories(sbsql_sblr_alignment_transaction_begin_binary_identity PRIVATE
   ../../src/engine/internal_api)
 target_link_libraries(sbsql_sblr_alignment_transaction_begin_binary_identity PRIVATE
-  sb_core_uuid sb_core_hash sb_engine_api_diagnostics)
+  sb_core_uuid sb_core_hash sb_engine_api_diagnostics sb_core_datatypes)
 add_test(NAME sbsql_sblr_alignment_transaction_begin_binary_identity
   COMMAND sbsql_sblr_alignment_transaction_begin_binary_identity)
 set_tests_properties(sbsql_sblr_alignment_transaction_begin_binary_identity PROPERTIES
@@ -420,7 +420,7 @@ target_include_directories(sbsql_sblr_alignment_trigger_cache_binary_identity PR
   ../../src/storage/filespace ../../src/storage/disk ../../src/storage/database
   ../../src/storage/page ../../src/core/bulk_load ../../src/engine/optimizer
   ../../src/engine/sblr)
-target_link_libraries(sbsql_sblr_alignment_trigger_cache_binary_identity PRIVATE sb_core_uuid sb_core_hash)
+target_link_libraries(sbsql_sblr_alignment_trigger_cache_binary_identity PRIVATE sb_core_uuid sb_core_hash sb_core_datatypes)
 add_test(NAME sbsql_sblr_alignment_trigger_cache_binary_identity
   COMMAND sbsql_sblr_alignment_trigger_cache_binary_identity)
 set_tests_properties(sbsql_sblr_alignment_trigger_cache_binary_identity PROPERTIES
@@ -432,7 +432,7 @@ target_compile_features(sbsql_sblr_alignment_descriptor_record_binary_identity P
 target_include_directories(sbsql_sblr_alignment_descriptor_record_binary_identity PRIVATE
   ../../src ../../src/engine/internal_api ../../src/wire
   ../../src/core/index ../../src/transaction/mga)
-target_link_libraries(sbsql_sblr_alignment_descriptor_record_binary_identity PRIVATE sb_core_uuid)
+target_link_libraries(sbsql_sblr_alignment_descriptor_record_binary_identity PRIVATE sb_core_uuid sb_core_datatypes)
 add_test(NAME sbsql_sblr_alignment_descriptor_record_binary_identity
   COMMAND sbsql_sblr_alignment_descriptor_record_binary_identity)
 set_tests_properties(sbsql_sblr_alignment_descriptor_record_binary_identity PROPERTIES
@@ -444,7 +444,7 @@ target_compile_features(sbsql_sblr_alignment_scoped_index_binary_identity PRIVAT
 target_include_directories(sbsql_sblr_alignment_scoped_index_binary_identity PRIVATE
   ../../src ../../src/engine/internal_api ../../src/wire
   ../../src/core/index ../../src/transaction/mga)
-target_link_libraries(sbsql_sblr_alignment_scoped_index_binary_identity PRIVATE sb_core_uuid)
+target_link_libraries(sbsql_sblr_alignment_scoped_index_binary_identity PRIVATE sb_core_uuid sb_core_datatypes)
 add_test(NAME sbsql_sblr_alignment_scoped_index_binary_identity
   COMMAND sbsql_sblr_alignment_scoped_index_binary_identity)
 set_tests_properties(sbsql_sblr_alignment_scoped_index_binary_identity PROPERTIES
@@ -481,7 +481,7 @@ target_compile_features(sbsql_sblr_alignment_update_frame_binary_identity PRIVAT
 target_include_directories(sbsql_sblr_alignment_update_frame_binary_identity PRIVATE
   ../../src ../../src/engine/internal_api ../../src/wire
   ../../src/core/index ../../src/transaction/mga)
-target_link_libraries(sbsql_sblr_alignment_update_frame_binary_identity PRIVATE sb_core_hash sb_core_uuid)
+target_link_libraries(sbsql_sblr_alignment_update_frame_binary_identity PRIVATE sb_core_hash sb_core_uuid sb_core_datatypes)
 add_test(NAME sbsql_sblr_alignment_update_frame_binary_identity
   COMMAND sbsql_sblr_alignment_update_frame_binary_identity)
 set_tests_properties(sbsql_sblr_alignment_update_frame_binary_identity PROPERTIES
