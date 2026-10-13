@@ -31,6 +31,8 @@
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "transaction/transaction_api.hpp"
+#include "transaction/mga/transaction_inventory.hpp"
+#include "local_transaction_store.hpp"
 #include "uuid.hpp"
 
 #include <chrono>
@@ -1743,6 +1745,50 @@ void TestRelationProjectionView(Fixture& fixture) {
             "current VIEW occupancy was released by active owner or historical snapshot");
   }
   Rollback(occupancy_reader);
+  auto prepared_writer = Begin(fixture, 83);
+  const auto prepared_view = api::EngineCreateView(ViewRequest(fixture, prepared_writer,
+      fixture.singleton_descriptor, "V_PREPARED_OCCUPANCY", "X"));
+  RequireOk(prepared_view, "actual prepared-owner VIEW creation failed");
+  api::EnginePrepareTransactionRequest prepare_view;
+  prepare_view.context = prepared_writer;
+  RequireOk(api::EnginePrepareTransaction(prepare_view),
+            "native VIEW owner PREPARE failed");
+  auto prepared_competitor = Begin(fixture, 84);
+  const auto prepared_image = publication_image();
+  const auto prepared_duplicate = api::EngineCreateView(ViewRequest(fixture, prepared_competitor,
+      fixture.singleton_descriptor, "V_PREPARED_OCCUPANCY", "X"));
+  Require(!prepared_duplicate.ok && !prepared_duplicate.diagnostics.empty() &&
+              prepared_duplicate.diagnostics.front().code == api::kCatalogObjectDiagnosticDuplicateName &&
+              publication_image() == prepared_image,
+          "actual prepared VIEW owner released current name occupancy");
+  Rollback(prepared_writer);
+  {
+    const auto archive_owner = api::AcquireTransactionInventoryGuard(prepared_writer.database_path);
+    const auto loaded = db::LoadLocalTransactionInventoryFromDatabase(prepared_writer.database_path);
+    Require(loaded.ok(), "archive VIEW rollback inventory load failed");
+    const auto archived = scratchbird::transaction::mga::ArchiveLocalTransaction(
+        loaded.inventory, scratchbird::transaction::mga::MakeLocalTransactionId(prepared_writer.local_transaction_id));
+    Require(archived.ok(), "actual VIEW rollback could not enter archived state");
+    const auto published = db::PersistLocalTransactionInventoryToDatabase(
+        prepared_writer.database_path, archived.inventory);
+    Require(published.ok(), "actual archived VIEW rollback was not durably published");
+    const auto reopened = db::LoadLocalTransactionInventoryFromDatabase(prepared_writer.database_path);
+    Require(reopened.ok(), "archived VIEW rollback inventory reopen failed");
+    const auto observed = scratchbird::transaction::mga::LookupLocalTransaction(reopened.inventory,
+        scratchbird::transaction::mga::MakeLocalTransactionId(prepared_writer.local_transaction_id));
+    Require(observed.ok() && observed.entry.state == scratchbird::transaction::mga::TransactionState::archived &&
+                scratchbird::transaction::mga::InventoryVisibilityState(observed.entry) ==
+                    scratchbird::transaction::mga::TransactionState::rolled_back,
+            "actual archived VIEW rollback finality was not retained on reopen");
+  }
+  const auto archived_descriptor = api::DescribeEngineRelationProjectionView(
+      prepared_competitor, prepared_view.primary_object.uuid);
+  Require(!archived_descriptor.diagnostic.error && !archived_descriptor.present,
+          "archived rolled-back native VIEW remained visible");
+  RequireOk(api::EngineCreateView(ViewRequest(fixture, prepared_competitor,
+      fixture.singleton_descriptor, "V_PREPARED_OCCUPANCY", "X")),
+      "actual archived rollback did not release native VIEW name occupancy");
+  Rollback(prepared_competitor);
   const auto singleton = api::EngineResolveName(
       ResolveRequest(fixture, fresh, "V_TEST"));
   const auto multi = api::EngineResolveName(
