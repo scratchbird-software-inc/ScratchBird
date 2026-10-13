@@ -49,6 +49,7 @@ add_executable(sbsql_sblr_alignment_native_storage_components
   ../../src/core/catalog/catalog_records.cpp
   ../../src/core/catalog/catalog_record_codec.cpp
   ../../src/core/catalog/catalog_security_record_codec.cpp
+  ../../src/core/catalog/catalog_context_namespace.cpp
   ../../src/core/catalog/catalog_storage_record_codec.cpp
   ../../src/core/catalog/catalog_value_codec.cpp
   ../../src/core/catalog/catalog_schema_definition.cpp
@@ -93,7 +94,7 @@ target_include_directories(sbsql_sblr_alignment_native_storage_components PRIVAT
 target_link_libraries(sbsql_sblr_alignment_native_storage_components PRIVATE
   sb_core_platform sb_core_uuid sb_core_time sb_core_hash sbl_numeric
   OpenSSL::Crypto Threads::Threads)
-target_link_libraries(sbsql_sblr_alignment_native_storage_components PRIVATE sb_core_memory)
+target_link_libraries(sbsql_sblr_alignment_native_storage_components PRIVATE sb_core_memory sb_core_datatypes)
 # The source files also contain legacy entry points outside this component.
 # Link-time reachability must not replace any reachable production function.
 target_compile_options(sbsql_sblr_alignment_native_storage_components PRIVATE
