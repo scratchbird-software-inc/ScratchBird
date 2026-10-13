@@ -223,7 +223,10 @@ NativeBtreePageResult ReadNativeBtreePageFromOpenDevice(disk::FileDevice& device
       if(zero.error==disk::FilespacePageZeroError::io_failure)return Fail(E::io_failure);
       return Fail(E::invalid_filespace);}
     const auto& z=*zero.record;
-    if((z.bootstrap.filespace_role!=5&&z.bootstrap.filespace_role!=6)||ref.page_number>=z.total_pages)return Fail(E::invalid_filespace);
+    // Registered filespace roles describe purpose, not an index placement ban.
+    // The validated bootstrap, actual capacity and owning security/lifecycle
+    // admission remain mandatory; this reader does not authorize creation.
+    if(ref.page_number>=z.total_pages)return Fail(E::invalid_filespace);
     if(z.bootstrap.flags&disk::FilespaceBootstrapFlag::payload_encrypted)return Fail(E::encrypted_requires_crypto_authority);
     if(z.bootstrap.flags&disk::FilespaceBootstrapFlag::cluster_authority_required)return Fail(E::cluster_requires_authority);
     std::vector<byte> bytes(z.bootstrap.page_size_bytes);const auto io=device.ReadAt(ref.page_number*z.bootstrap.page_size_bytes,bytes.data(),bytes.size());

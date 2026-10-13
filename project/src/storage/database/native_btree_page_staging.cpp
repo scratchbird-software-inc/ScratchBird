@@ -18,8 +18,12 @@ NativeBtreeStageResult StageNativeBtreePageFromOpenDevices(
       return Fail(E::creator_mismatch);
     NativeBtreeStageResult result;
     auto prepared=detail::PrepareNativeReservedPage<NativeBtreeStageResult,E>(
-      supplied,checkpoint,owner,node.header,node.dependencies.index_uuid,0x60u,budget,result);
+      supplied,checkpoint,owner,node.header,node.dependencies.index_uuid,0x7ffeu,budget,result);
     if(!prepared)return result;
+    // This entrypoint has only ordinary local transaction authority. A role
+    // does not forbid placement, but fenced lifecycle writes require a distinct
+    // admitted construction/maintenance/migration operation, not this tuple.
+    if(prepared->target_lifecycle_state!=1)return Fail(E::invalid_destination);
     if(2*u64{node.header.page_size_bytes}>budget-prepared->retained_image_bytes)return Fail(E::resource_exhausted);
     auto encoded=page::EncodeNativeBtreePage(node);
     if(!encoded.ok()){auto r=Fail(E::page_failure);r.page_error=encoded.error;return r;}

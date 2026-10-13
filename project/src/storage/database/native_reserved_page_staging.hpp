@@ -29,6 +29,7 @@ struct NativeReservedPage {
   page::NativeAllocationChainResult allocation;
   page::NativeAllocationRecord reservation;
   disk::FileDevice* target=nullptr;
+  u16 target_lifecycle_state=0; // Actual guarded page-zero observation, not a grant.
   u64 retained_image_bytes=0;
 };
 // Trusted internal preflight. Returned guards remain held while the owning
@@ -79,6 +80,7 @@ std::optional<NativeReservedPage> PrepareNativeReservedPage(
         target_zero.error==Z::hash_provider_failure?E::hash_failure:
         target_zero.error==Z::io_failure?E::io_failure:E::invalid_destination);
     }
+    prepared.target_lifecycle_state=target_zero.record->bootstrap.lifecycle_state;
     if(target_zero.record->bootstrap.flags&disk::FilespaceBootstrapFlag::payload_encrypted)return fail(E::header_requires_authority);
     const bool selected_primary=std::any_of(target_zero.record->roots.begin(),target_zero.record->roots.end(),[](const auto& r){return r.kind==18;});
     const auto selected_root=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==4;});

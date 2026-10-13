@@ -1274,11 +1274,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME sbsql_sblr_alignment_native_btree_staging
     COMMAND sbsql_sblr_alignment_filespace_page_zero --btree-stage-only)
   set_tests_properties(sbsql_sblr_alignment_native_btree_staging PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_btree;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120)
+    LABELS "sbsql_sblr_alignment;native_btree;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120 RUN_SERIAL TRUE)
+  add_test(NAME sbsql_sblr_alignment_native_index_filespace_placement
+    COMMAND sbsql_sblr_alignment_filespace_page_zero --index-placement-only)
+  set_tests_properties(sbsql_sblr_alignment_native_index_filespace_placement PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_btree;actual_files;physical_memory;binary_UUID;not_SQL_E2E" TIMEOUT 600)
   add_test(NAME sbsql_sblr_alignment_native_catalog_root_staging
     COMMAND sbsql_sblr_alignment_filespace_page_zero --catalog-root-stage-only)
   set_tests_properties(sbsql_sblr_alignment_native_catalog_root_staging PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_catalog;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120)
+    LABELS "sbsql_sblr_alignment;native_catalog;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120 RUN_SERIAL TRUE)
   add_test(NAME sbsql_sblr_alignment_bound_checkpoint_selection
     COMMAND sbsql_sblr_alignment_filespace_page_zero --bound-selector-only)
   add_test(NAME sbsql_sblr_alignment_directory_selected_staging
@@ -1328,11 +1332,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME sbsql_sblr_alignment_native_catalog_leaf_staging
     COMMAND sbsql_sblr_alignment_filespace_page_zero --catalog-stage-only)
   set_tests_properties(sbsql_sblr_alignment_native_catalog_leaf_staging PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_catalog;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120)
+    LABELS "sbsql_sblr_alignment;native_catalog;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120 RUN_SERIAL TRUE)
   add_test(NAME sbsql_sblr_alignment_native_row_data_staging
     COMMAND sbsql_sblr_alignment_filespace_page_zero --row-data-stage-only)
   set_tests_properties(sbsql_sblr_alignment_native_row_data_staging PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_row;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120)
+    LABELS "sbsql_sblr_alignment;native_row;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120 RUN_SERIAL TRUE)
   add_test(NAME sbsql_sblr_alignment_checkpoint_horizon
     COMMAND sbsql_sblr_alignment_filespace_page_zero --checkpoint-horizon-only)
   set_tests_properties(sbsql_sblr_alignment_checkpoint_horizon PROPERTIES

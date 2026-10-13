@@ -752,9 +752,14 @@ void NativeBtreePages() {
     observed_allocations=0;count_allocations=true;result=read();count_allocations=false;const auto allocations=observed_allocations;Check(result.ok(),"measure B-tree reader allocations");
     bool success=false;for(unsigned long budget=0;budget<=allocations;++budget){allocation_budget=budget;result=read();allocation_budget=-1;
       if(result.ok()){success=true;break;}empty(result);Check(result.error==E::resource_exhausted,"native B-tree allocation refusal classified");}Check(success,"every B-tree reader allocation fault position");
-    for(unsigned role:{1u,10u,14u}){const auto bad_zero=Oracle(Example(p,role));
-      Check(disk::DecodeFilespacePageZero(bad_zero.data(),bad_zero.size()).ok(),"nonserving role has valid canonical page zero");
-      Check(device.WriteAt(0,bad_zero.data(),bad_zero.size()).ok(),"write nonserving filespace role");result=read();empty(result);Check(result.error==E::invalid_filespace,"primary archive and import candidates not B-tree serving filespaces");}
+    for(unsigned role=1;role<=14;++role){const auto placed_zero=Oracle(Example(p,role));
+      Check(disk::DecodeFilespacePageZero(placed_zero.data(),placed_zero.size()).ok(),"registered placement role has valid canonical page zero");
+      Check(device.WriteAt(0,placed_zero.data(),placed_zero.size()).ok(),"persist architect-selected index placement role");
+      result=read();Check(result.ok()&&result.bytes==image,"all registered roles admit exact structural index read, not lifecycle authorization");}
+    for(unsigned role:{0u,15u}){const auto bad_zero=Oracle(Example(p,role));
+      Check(!disk::DecodeFilespacePageZero(bad_zero.data(),bad_zero.size()).ok(),"unregistered placement role is invalid despite coherent checksums");
+      Check(device.WriteAt(0,bad_zero.data(),bad_zero.size()).ok(),"persist unknown role negative");result=read();empty(result);
+      Check(result.error==E::invalid_filespace,"placement flexibility never admits an unknown filespace role");}
     Check(device.WriteAt(0,zero.data(),zero.size()).ok()&&device.Sync().ok(),"restore owned B-tree filespace");Exclusive(path);
     Check(device.Close().ok(),"close B-tree before independent reopen");const auto child=::fork();Check(child>=0,"fork B-tree persisted reader");
     if(child==0){const auto profile=std::to_string(p);::execl("/proc/self/exe","native-btree-probe","--native-btree-probe",path.c_str(),profile.c_str(),nullptr);::_exit(125);}
@@ -1534,6 +1539,17 @@ void NativeBtreeTreeMemory() {
         auto refused=db::ReadNativeBtreeTreeWithMemoryFromOpenDevices(Id(1),wrong,root,nodes[0].dependencies,limits,extra.memory,extra.binding);track_reads=false;
         empty(refused);Check(refused.tree_error==T::invalid_filespace&&!reads,"duplicate identities aliased handles and nil filespaces refused before I/O");}
       const auto original=Oracle(z2);
+      for(unsigned role=1;role<=14;++role) {
+        auto placed=Example(q,role);placed.bootstrap.filespace_uuid=z2.bootstrap.filespace_uuid;placed.page_uuid=z2.page_uuid;
+        for(auto& ref:placed.roots)ref.filespace_uuid=placed.bootstrap.filespace_uuid;
+        const auto bytes=Oracle(placed);
+        Check(disk::DecodeFilespacePageZero(bytes.data(),bytes.size()).ok(),"governed tree placement uses a registered complete filespace bootstrap");
+        Check(second.WriteAt(0,bytes.data(),bytes.size()).ok(),"persist actual governed index placement role");
+        {auto accepted=read();Check(accepted.ok()&&accepted.pages.size()==7,
+            "actual memory-backed tree reads exact navigation in every registered placement role");}
+        Check(!grant.manager.Snapshot().current_bytes,"placement read releases actual physical backing");
+      }
+      Check(second.WriteAt(0,original.data(),original.size()).ok(),"restore actual placement bootstrap");
       for(unsigned flag:{1u,2u}){auto bad=z2;bad.bootstrap.flags=flag;
         if(flag==1)bad.bootstrap.encryption_profile_uuid=Id(4);const auto bytes=Oracle(bad);
         Check(disk::DecodeFilespacePageZero(bytes.data(),bytes.size()).ok(),"authority requirement fixture is a valid page zero");
@@ -3896,7 +3912,8 @@ void CanonicalCatalogRootStaging(){using E=db::NativeCatalogRootStageError;using
 }
 
 void CanonicalBtreeStaging(){using E=db::NativeBtreeStageError;using S=page::NativeAllocationState;
-  for(unsigned p=0;p<5;++p)for(unsigned role:{5u,6u})for(unsigned variant=0;variant<5;++variant){
+  for(unsigned p=0;p<5;++p)for(unsigned role=2;role<=14;++role)for(unsigned variant=0;variant<5;++variant){
+    if(role!=5&&role!=6&&(p||variant))continue; // Shared faults retain exhaustive original coverage.
     Fixture fixture;disk::FileDevice first,second;const unsigned q=(p+1)%5;
     auto z1=Example(p),z2=Example(q,role);z2.bootstrap.filespace_uuid=Id(7);z2.page_uuid=Id(8);for(auto& r:z2.roots)r.filespace_uuid=Id(7);
     z1.free_pages=z1.preallocated_pages=z2.free_pages=z2.preallocated_pages=0;
@@ -3917,7 +3934,7 @@ void CanonicalBtreeStaging(){using E=db::NativeBtreeStageError;using S=page::Nat
     page::NativeAllocationMap map;map.header={sizes[q],3,Id(1),Id(7),Id(70),13,103,0,Profile(q)};map.object_uuid=Id(43);map.map_generation=map.capacity_generation=1;map.total_pages=64;
     map.creator_transaction_uuid=Id(98);map.creator_local_transaction_id=17;map.states.assign(64,S::quarantined);
     for(unsigned n:{0u,13u,30u}){page::NativeAllocationRecord r;r.page_number=n;r.allocation_uuid=Id(200+n);r.creator_transaction_uuid=Id(98);r.creator_local_transaction_id=17;map.states[n]=S::allocated;
-      if(n==0){r.page_uuid=Id(8);r.page_generation=7;r.page_type=2;r.owner_uuid=Id(7);}
+      if(n==0){r.page_uuid=Id(8);r.page_generation=7;r.page_type=role<=4?1:2;r.owner_uuid=Id(7);}
       if(n==13){r.page_uuid=Id(70);r.page_generation=103;r.page_type=3;r.owner_uuid=Id(43);}
       if(n==30){r.page_uuid=node.header.page_uuid;r.page_generation=node.header.page_generation;r.page_type=node.header.page_type;r.owner_uuid=node.dependencies.index_uuid;r.creator_transaction_uuid=Id(162);r.creator_local_transaction_id=13;map.states[n]=S::reserved;}map.records.push_back(r);}
     page::NativeFilespaceDirectory directory;directory.header={sizes[p],9,Id(1),Id(2),Id(150),15,105,0,Profile(p)};directory.object_uuid=Id(45);directory.directory_generation=1;
@@ -3961,7 +3978,15 @@ void CanonicalBtreeStaging(){using E=db::NativeBtreeStageError;using S=page::Nat
     node.creator_transaction_uuid=Id(98);node.creator_local_transaction_id=17;map.records.back().creator_transaction_uuid=Id(98);map.records.back().creator_local_transaction_id=17;persist();
     result=db::StageNativeBtreePageFromOpenDevices(devices,CheckpointRef(cp),committed.identity,dependencies,node,budget);empty(result);Check(result.error==E::creator_not_active&&bytes()==blank,"committed creator cannot perform new B-tree staging");node=saved;map=original_map;
     z2.bootstrap.flags=disk::FilespaceBootstrapFlag::payload_encrypted;z2.bootstrap.encryption_profile_uuid=Id(4);persist();result=stage(budget);empty(result);Check(result.error==E::header_requires_authority&&bytes()==blank,"actual encrypted B-tree destination not bypassed");z2.bootstrap.flags=0;z2.bootstrap.encryption_profile_uuid={};
-    const auto original_zero=z2;for(unsigned bad_role:{1u,4u,7u,14u}){z2=Example(q,bad_role);z2.bootstrap.filespace_uuid=Id(7);z2.page_uuid=Id(8);z2.free_pages=z2.preallocated_pages=0;for(auto& r:z2.roots)r.filespace_uuid=Id(7);persist();result=stage(budget);empty(result);Check(result.error==E::invalid_destination&&bytes()==blank,"B-tree rejects illegal destination role before map use");}z2=original_zero;persist();
+    if(p==0&&role==5&&variant==1) {
+      for(unsigned state=2;state<=15;++state) {
+        z2.bootstrap.lifecycle_state=state;persist();result=stage(budget);empty(result);
+        Check(result.error==E::invalid_destination&&bytes()==blank,
+            "ordinary index staging cannot manufacture fenced lifecycle maintenance or migration authority");
+      }
+      z2.bootstrap.lifecycle_state=1;persist();
+    }
+    const auto original_zero=z2;for(unsigned bad_role:{0u,15u}){z2=Example(q,bad_role);z2.bootstrap.filespace_uuid=Id(7);z2.page_uuid=Id(8);z2.free_pages=z2.preallocated_pages=0;for(auto& r:z2.roots)r.filespace_uuid=Id(7);persist();result=stage(budget);empty(result);Check(result.error==E::checkpoint_failure&&bytes()==blank,"B-tree rejects unknown destination role through actual directory admission before map use");}z2=original_zero;persist();
     if(p==0&&role==5&&variant==1){auto duplicate=devices;duplicate.push_back(devices.front());empty(db::StageNativeBtreePageFromOpenDevices(duplicate,CheckpointRef(cp),owner,dependencies,node,budget));
       auto reverse=devices;std::reverse(reverse.begin(),reverse.end());std::atomic<unsigned> completed{0};stage_writes=stage_syncs=0;
       std::thread a([&]{if(stage(budget).ok())++completed;}),b([&]{if(db::StageNativeBtreePageFromOpenDevices(reverse,CheckpointRef(cp),owner,dependencies,node,budget).ok())++completed;});a.join();b.join();Check(completed==2&&stage_writes==1&&stage_syncs==2,"opposite-order B-tree writers preserve serialized exact retry");}
@@ -7823,6 +7848,10 @@ int main(int argc,char** argv) {
   }
   if(argc==2&&std::string_view(argv[1])=="--native-btree-memory-only"){
     try{NativeBtreeTreeMemory();NativeBtreeTrees();std::cout<<"PASS governed_tree_checks="<<checks<<'\n';return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
+  if(argc==2&&std::string_view(argv[1])=="--index-placement-only"){
+    try{NativeBtreePages();NativeBtreeTreeMemory();NativeBtreeTrees();
+      std::cout<<"PASS index_placement_checks="<<checks<<'\n';return 0;}
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
   if(argc==2&&std::string_view(argv[1])=="--checkpoint-inventory-memory-only"){
     try{CanonicalCheckpointInventoryMemoryPairs();CanonicalCheckpointInventoryPair();std::cout<<"PASS checkpoint_inventory_memory_checks="<<checks<<'\n';return 0;}

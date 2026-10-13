@@ -258,7 +258,8 @@ struct Reader {
     std::size_t pending_count=1,count=0,leaf_count=0,image_used=0,cells_used=0;pending[0]={root};
     while(pending_count){const auto next=pending[--pending_count];const auto fs=filespace(next.ref);
       if(fs==files.size()){fail(T::invalid_filespace);return out;}const auto& f=files[fs];
-      if(f.role!=5&&f.role!=6){fail(T::invalid_filespace);return out;}
+      // Bootstrap validation admits the registered role. Index placement is
+      // architect-selectable across roles, not restricted to data/index files.
       if(f.flags&disk::FilespaceBootstrapFlag::payload_encrypted){fail(T::encrypted_requires_crypto_authority);return out;}
       if(f.flags&disk::FilespaceBootstrapFlag::cluster_authority_required){fail(T::cluster_requires_authority);return out;}
       auto slot=Hash(next.ref.filespace_uuid,next.ref.page_number)%slots.size();
