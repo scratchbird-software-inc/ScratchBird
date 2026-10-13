@@ -10,6 +10,12 @@ namespace a = scratchbird::engine::internal_api;
 void Check(bool ok, std::source_location at = std::source_location::current()) {
   if (!ok) { std::cerr << "failure at " << at.line() << '\n'; std::abort(); }
 }
+void CheckPublication(const a::EngineNoSqlProviderPublicationEffects& effects) {
+  Check(effects.attempted_phase==a::EngineNoSqlProviderPublicationPhase::complete&&
+      !effects.exception_observed&&effects.staging_created&&effects.staging_written&&
+      effects.file_synchronized&&effects.published_file_replaced&&
+      effects.parent_synchronized&&effects.completed);
+}
 int main() {
   using scratchbird::tests::FixtureUuid;
   auto identity = FixtureUuid(1134, 1);
@@ -71,7 +77,9 @@ int main() {
     Check(!std::filesystem::exists(a::GenerationPath(context)));
     Check(a::GenerationCache().empty());
   }
-  Check(a::PublishNoSqlProviderGeneration(context, metadata).ok);
+  const auto publication=a::PublishNoSqlProviderGeneration(context, metadata);
+  Check(publication.ok);
+  CheckPublication(publication.publication_effects);
   Check(std::filesystem::exists(a::GenerationPath(context)));
   a::GenerationCache().clear();
   metadata.collection_uuid.bytes[15] ^= 1;
@@ -80,7 +88,7 @@ int main() {
   Check(!a::ValidateTimeSeriesRollupCapabilityBindingV1(metadata)); metadata = original;
   metadata.time_series_rollup_binding_digest[31] ^= 1;
   Check(!a::ValidateTimeSeriesRollupCapabilityBindingV1(metadata)); metadata = original;
-  Check(a::RewriteLocked(context, {metadata}));
+  CheckPublication(a::RewriteLocked(context, {metadata}));
   auto loaded = a::LoadLocked(context);
   Check(loaded.size() == 1 && loaded[0].persistence_valid);
   Check(loaded[0].database_uuid == identity);
@@ -92,7 +100,7 @@ int main() {
   loaded = a::LoadLocked(other);
   Check(loaded.size() == 1 && !loaded[0].persistence_valid);
   // Duplicates remain visible to admission rather than being normalized away.
-  Check(a::RewriteLocked(context, {metadata, metadata}));
+  CheckPublication(a::RewriteLocked(context, {metadata, metadata}));
   loaded = a::LoadLocked(context); Check(loaded.size() == 2);
   a::GenerationCache().clear();
   auto filename = a::GenerationPath(context);
@@ -104,6 +112,10 @@ int main() {
     out << "SBNOSQLPG1\tGENERATION\tlegacy\n"; }
   loaded = a::LoadLocked(context);
   Check(loaded.size() == 1 && !loaded[0].persistence_valid);
-  std::filesystem::remove(filename);
-  std::filesystem::remove(directory);
+  // Publication devices have closed. Their persistent ownership sidecar is
+  // part of this private fixture, not unresolved staging data or a live lease.
+  Check(!std::filesystem::exists(filename + ".pending"));
+  Check(std::filesystem::remove(filename));
+  Check(std::filesystem::remove(filename + ".pending.sb.owner.lock"));
+  Check(std::filesystem::remove(directory));
 }
