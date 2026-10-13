@@ -12,7 +12,7 @@ namespace c = core::catalog;
 bool ActiveLocal(const c::CatalogMetadataVersion& m) {
   return !m.record.header.deleted && m.lifecycle == c::CatalogObjectLifecycle::active &&
       m.status == c::CatalogObjectStatus::active && m.authority_scope == c::CatalogAuthorityScope::local &&
-      c::EncodeCatalogMetadataVersion(m).ok();
+      c::CatalogMetadataVersionEncodedBytes(c::BorrowCatalogMetadataVersion(m)).has_value();
 }
 bool Granted(const MaterializedAuthorizationDecision& d) {
   return d.authorized && !d.denied && !d.policy_recheck_required;

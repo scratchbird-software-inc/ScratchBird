@@ -7,6 +7,7 @@
 #include "catalog_metric_visibility_policy.hpp"
 #include "security/metric_visibility_policy.hpp"
 #include "security/security_model.hpp"
+#include <chrono>
 
 namespace api = scratchbird::engine::internal_api;
 namespace {
@@ -177,14 +178,66 @@ void PermissionChecks() {
 }
 void AllocationChecks() {
   VisibilityFixture f;bool complete=false;unsigned injected=0;
+  const auto before=descriptor_allocation_fault::allocations;
+  const auto admitted=f.Read();
+  const auto expected=descriptor_allocation_fault::allocations-before;
+  Check(admitted.read_allowed&&!admitted.sensitive_labels_allowed,"allocation baseline permission refused");
   for(long budget=0;budget<10000;++budget) {
     descriptor_allocation_fault::remaining=budget;descriptor_allocation_fault::fired=false;
     const auto r=f.Read();
     descriptor_allocation_fault::remaining=-1;
-    if(descriptor_allocation_fault::fired){++injected;Check(!r.read_allowed&&!r.sensitive_labels_allowed,"allocation failure exposed partial permission");}
+    if(descriptor_allocation_fault::fired){++injected;Check(!r.read_allowed&&!r.sensitive_labels_allowed&&r.diagnostic=="METRIC.ACCESS_DENIED","allocation failure exposed partial permission");}
     else {Check(r.read_allowed&&!r.sensitive_labels_allowed,"permission failed after allocation retry");complete=true;break;}
   }
-  Check(complete&&injected>10,"visibility allocation sweep incomplete");
+  Check(complete&&expected>0&&injected==expected,"visibility allocation sweep did not cover every measured site");
+  std::cout<<"visibility allocation sites="<<injected<<'\n';
+}
+void BorrowedPermissionMetadataChecks() {
+  for(bool descriptor:{false,true})for(unsigned mutation=0;mutation<18;++mutation) {
+    VisibilityFixture f;auto& value=descriptor?f.dm:f.pm;
+    if(mutation==1)value.record.header.row_uuid={};
+    if(mutation==2)value.record.header.object_uuid.kind=p::UuidKind::row;
+    if(mutation==3)value.creator_transaction_uuid.kind=p::UuidKind::object;
+    if(mutation==4)value.creator_local_transaction_id=0;
+    if(mutation==5)value.definition_version=0;
+    if(mutation==6)value.default_name_uuid.kind=p::UuidKind::row;
+    if(mutation==7)value.name_vector_uuid.kind=p::UuidKind::row;
+    if(mutation==8)value.security_policy_uuid.kind=p::UuidKind::row;
+    if(mutation==9)value.owning_schema_uuid.kind=p::UuidKind::object;
+    if(mutation==10)value.record.header.parent_uuid.value.bytes.back()^=1;
+    if(mutation==11)value.record.payload.assign(1024*1024,'x');
+    if(mutation==12)value.trace_search_key.assign(4097,'x');
+    if(mutation==13)value.object_subtype.assign(257,'x');
+    if(mutation==14)value.retention_class.assign(257,'x');
+    if(mutation==15)value.authority_scope=static_cast<c::CatalogAuthorityScope>(255);
+    if(mutation==16)value.record.header.deleted=true;
+    if(mutation==17)value.record.header.object_uuid.value.bytes[6]=0x41;
+    const auto extent=WithoutDescriptorHeap([&] {
+      return c::CatalogMetadataVersionEncodedBytes(c::BorrowCatalogMetadataVersion(value));
+    });
+    const auto encoded=c::EncodeCatalogMetadataVersion(value);
+    Check(extent.has_value()==encoded.ok()&&(!extent||*extent==encoded.bytes.size()),
+        "permission metadata borrowed validator differs from complete native encoding");
+    if(!encoded.ok())Refused(f);
+  }
+}
+void MeasurementChecks() {
+  VisibilityFixture f;
+  const auto descriptor=f.dm.record.payload,policy=f.pm.record.payload;
+  constexpr unsigned iterations=256;
+  const auto before=descriptor_allocation_fault::allocations;
+  const auto start=std::chrono::steady_clock::now();
+  bool exact=true;
+  for(unsigned i=0;i<iterations;++i) {
+    const auto r=f.Read();
+    exact=exact&&r.read_allowed&&!r.sensitive_labels_allowed&&r.diagnostic.empty();
+  }
+  const auto elapsed=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+  const auto allocations=descriptor_allocation_fault::allocations-before;
+  Check(exact&&f.dm.record.payload==descriptor&&f.pm.record.payload==policy,
+      "measured visibility decisions changed the source or permission");
+  std::cout<<"visibility sample iterations="<<iterations<<" allocations="<<allocations
+      <<" elapsed_ms="<<elapsed<<'\n';
 }
 }
-int main(){CodecChecks();PermissionChecks();AllocationChecks();std::cout<<"metric visibility checks="<<checks<<" failures="<<failures<<'\n';return failures?1:0;}
+int main(){CodecChecks();PermissionChecks();AllocationChecks();BorrowedPermissionMetadataChecks();MeasurementChecks();std::cout<<"metric visibility checks="<<checks<<" failures="<<failures<<'\n';return failures?1:0;}
