@@ -121,6 +121,7 @@ struct EngineExecutableObjectRecord {
   std::uint64_t invalidated_generation = 0;
   EngineUuid invalidation_reason_uuid;
   bool deleted = false;
+  bool operator==(const EngineExecutableObjectRecord&) const = default;
 };
 
 struct EngineExecutableDependencyRecord {
@@ -243,6 +244,8 @@ EngineInspectExecutableObjectResult EngineInspectExecutableObjects(
 
 EngineLoadExecutableObjectLifecycleStateResult LoadExecutableObjectLifecycleState(
     const EngineRequestContext& context);
+EngineApiDiagnostic ValidateExecutableObjectCurrentAdmission(
+    const EngineRequestContext& context, const EngineExecutableObjectRecord& admitted);
 EngineLoadExecutableObjectLifecycleStateResult LoadExecutableObjectLifecycleStateForRuntimeDispatch(
     const EngineRequestContext& context);
 EngineApiDiagnostic ValidateExecutableObjectExactMgaSelector(

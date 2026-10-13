@@ -11,6 +11,8 @@
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
 #include "catalog/relation_descriptor_projection.hpp"
+#include "catalog/catalog_object_lifecycle.hpp"
+#include "catalog/binary_view_options.hpp"
 #include "database_lifecycle_test_memory.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
@@ -28,9 +30,11 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <future>
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -44,8 +48,7 @@ namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -121,6 +124,7 @@ struct Fixture {
   api::EngineUuid view_uuid;
   api::EngineUuid relation_uuid;
   std::uint64_t function_creator_tx = 0;
+  std::uint64_t function_successor_creator_tx = 0;
   std::uint64_t view_creator_tx = 0;
   std::uint64_t salt = 0;
 
@@ -169,7 +173,8 @@ Fixture CreateFixture() {
 
 api::EngineRequestContext Begin(Fixture& fixture,
                                 std::uint64_t ordinal,
-                                bool read_only = false) {
+                                bool read_only = false,
+                                std::string isolation = "read_committed") {
   api::EngineBeginTransactionRequest begin;
   begin.context = fixture.owner_context;
   begin.context.trust_mode = api::EngineTrustMode::server_isolated;
@@ -185,7 +190,7 @@ api::EngineRequestContext Begin(Fixture& fixture,
   begin.context.resource_epoch =
       fixture.created.state.resource_seed_catalog.resource_epoch;
   begin.context.name_resolution_epoch = 1;
-  begin.isolation_level = "read_committed";
+  begin.isolation_level = std::move(isolation);
   if (read_only) {
     begin.transaction_policy_profile.encoded_profiles.push_back(
         "transaction_read_mode:read_only");
@@ -217,6 +222,16 @@ void Rollback(const api::EngineRequestContext& context) {
             "catalog projection rollback failed");
 }
 
+std::vector<std::string> TypeNameFunctionOptions() {
+  return {
+      "executor:metadata_only", "side_effect_class:none",
+      std::string("compiled_body_descriptor:") + api::kRelationTypeNameFunctionDescriptorV1,
+      "compiled_body_provenance:engine.catalog.neutral_projection.v1",
+      "routine_parameter_count:2", "routine_parameter_0_mode:in", "routine_parameter_0_type:int16",
+      "routine_parameter_1_mode:in", "routine_parameter_1_type:int16", "routine_return_count:1",
+      "routine_return_0_type:text", "permission:manage_executable"};
+}
+
 void CreateSchemaAndFunction(Fixture& fixture,
                              const api::EngineRequestContext& context) {
   api::EngineCreateSchemaRequest schema;
@@ -234,23 +249,71 @@ void CreateSchemaAndFunction(Fixture& fixture,
   function.target_object.uuid = fixture.function_uuid;
   function.target_object.object_kind = "function";
   function.localized_names.push_back(Name("generic_type_name_resolver"));
-  function.option_envelopes = {
-      "executor:metadata_only",
-      "side_effect_class:none",
-      std::string("compiled_body_descriptor:") +
-          api::kRelationTypeNameFunctionDescriptorV1,
-      "compiled_body_provenance:engine.catalog.neutral_projection.v1",
-      "routine_parameter_count:2",
-      "routine_parameter_0_mode:in",
-      "routine_parameter_0_type:int16",
-      "routine_parameter_1_mode:in",
-      "routine_parameter_1_type:int16",
-      "routine_return_count:1",
-      "routine_return_0_type:text",
-      "permission:manage_executable"};
+  function.option_envelopes = TypeNameFunctionOptions();
   RequireOk(api::EngineCreateFunction(function),
             "catalog projection function create failed");
   fixture.function_creator_tx = context.local_transaction_id;
+}
+
+void RequireFunctionSuccessorAdmission(Fixture& fixture) {
+  auto reader = Begin(fixture, 110, true, "repeatable_read");
+  const auto loaded = api::LoadExecutableObjectLifecycleState(reader);
+  Require(loaded.ok, "function admission predecessor read failed");
+  const auto found = std::find_if(loaded.state.objects.begin(), loaded.state.objects.end(),
+      [&](const auto& row) { return row.object_uuid == fixture.function_uuid; });
+  Require(found != loaded.state.objects.end(), "function admission predecessor missing");
+  const auto predecessor = *found;
+  auto writer = Begin(fixture, 111);
+  api::EngineAlterExecutableObjectRequest alter;
+  alter.context = writer;
+  alter.target_object = {fixture.function_uuid, "function"};
+  alter.option_envelopes = TypeNameFunctionOptions();
+  RequireOk(api::EngineAlterExecutableObject(alter), "active sibling function ALTER failed");
+  Require(api::RevalidateRelationDescriptorProjectionFunction(reader, predecessor).error,
+      "VIEW admission accepted an unresolved sibling function successor");
+  Rollback(writer);
+  Require(!api::RevalidateRelationDescriptorProjectionFunction(reader, predecessor).error,
+      "rolled-back function successor still blocks current admission");
+
+  writer = Begin(fixture, 112);
+  alter.context = writer;
+  // The real executable writer must share the native VIEW publication lock.
+  auto owner = api::AcquireTransactionInventoryGuard(writer.database_path);
+  std::promise<void> started;
+  auto ready = started.get_future();
+  auto pending = std::async(std::launch::async, [&] {
+    started.set_value();
+    return api::EngineAlterExecutableObject(alter);
+  });
+  ready.wait();
+  const bool blocked = pending.wait_for(std::chrono::milliseconds(50)) == std::future_status::timeout;
+  owner.unlock();
+  RequireOk(pending.get(), "serialized sibling function ALTER failed");
+  Require(blocked, "executable ALTER escaped retained native publication guard");
+  Commit(writer);
+  fixture.function_successor_creator_tx = writer.local_transaction_id;
+  Require(api::RevalidateRelationDescriptorProjectionFunction(reader, predecessor).error,
+      "VIEW admission accepted a late-committed function successor hidden by its snapshot");
+  Rollback(reader);
+
+  reader = Begin(fixture, 113, true, "repeatable_read");
+  const auto current = api::LoadExecutableObjectLifecycleState(reader);
+  Require(current.ok, "current function read failed");
+  const auto current_row = std::find_if(current.state.objects.begin(), current.state.objects.end(),
+      [&](const auto& row) { return row.object_uuid == fixture.function_uuid; });
+  Require(current_row != current.state.objects.end(), "current function missing");
+  writer = Begin(fixture, 114);
+  api::EngineDropExecutableObjectRequest drop;
+  drop.context = writer;
+  drop.target_object = {fixture.function_uuid, "function"};
+  drop.option_envelopes = {"permission:manage_executable"};
+  RequireOk(api::EngineDropExecutableObject(drop), "active sibling function DROP failed");
+  Require(api::RevalidateRelationDescriptorProjectionFunction(reader, *current_row).error,
+      "VIEW admission accepted an unresolved sibling function DROP");
+  Rollback(writer);
+  Require(!api::RevalidateRelationDescriptorProjectionFunction(reader, *current_row).error,
+      "rolled-back DROP blocked valid function admission");
+  Rollback(reader);
 }
 
 api::EngineCreateViewRequest ViewRequest(
@@ -301,6 +364,24 @@ void CreateViewAndRefusalProbes(
   const auto created = api::EngineCreateView(view);
   RequireOk(created, "catalog projection view create failed");
   fixture.view_creator_tx = context.local_transaction_id;
+
+  const auto catalog = api::LoadCatalogObjectLifecycleState(context);
+  Require(catalog.ok, "inventory VIEW owning catalog read failed");
+  const auto object = std::find_if(catalog.state.objects.begin(), catalog.state.objects.end(),
+      [&](const auto& row) { return row.object_uuid == fixture.view_uuid; });
+  Require(object != catalog.state.objects.end() && object->object_kind == "view" &&
+              !object->catalog_row_uuid.is_nil() && object->definition_epoch == 1 &&
+              object->creator_tx == context.local_transaction_id &&
+              object->payload.starts_with("SBVIEW02"),
+          "inventory VIEW lacks a real owning catalog row and binary definition");
+  Require(std::any_of(catalog.state.dependencies.begin(), catalog.state.dependencies.end(),
+      [&](const auto& edge) { return edge.source_uuid == fixture.view_uuid &&
+          edge.dependency_uuid == fixture.function_uuid && edge.dependency_kind == "view_type_name_function"; }),
+      "inventory VIEW omitted its actual function dependency");
+  Require(std::none_of(catalog.state.dependencies.begin(), catalog.state.dependencies.end(),
+      [&](const auto& edge) { return edge.source_uuid == fixture.view_uuid &&
+          edge.dependency_kind == "view_source_column"; }),
+      "inventory VIEW fabricated a source column before its table exists");
 
   const auto described = api::DescribeEngineCatalogRelationProjectionView(
       context, fixture.view_uuid);
@@ -616,6 +697,8 @@ void RequireProjectionRows(
   excluded_dependency
       .statement_metadata_snapshot_active_excluded_local_transaction_ids
       .push_back(fixture.function_creator_tx);
+  excluded_dependency.statement_metadata_snapshot_active_excluded_local_transaction_ids
+      .push_back(fixture.function_successor_creator_tx);
   const auto excluded = api::DescribeEngineCatalogRelationProjectionView(
       excluded_dependency, fixture.view_uuid);
   Require(excluded.diagnostic.error && !excluded.present,
@@ -625,6 +708,7 @@ void RequireProjectionRows(
 }  // namespace
 
 int main() {
+  try {
   auto policy = memory::DefaultLocalEngineMemoryPolicy();
   policy.policy_name = "database_lifecycle_relation_descriptor_projection";
   const auto configured = memory::ConfigureDefaultMemoryManagerForFixture(
@@ -636,7 +720,20 @@ int main() {
 
   auto function_tx = Begin(fixture, 1);
   CreateSchemaAndFunction(fixture, function_tx);
+  auto stable_reader = Begin(fixture, 100, true, "repeatable_read");
+  auto current_reader = Begin(fixture, 101, true);
   Commit(function_tx);
+  const auto stable_functions = api::LoadExecutableObjectLifecycleState(stable_reader);
+  Require(stable_functions.ok && std::none_of(stable_functions.state.objects.begin(),
+      stable_functions.state.objects.end(), [&](const auto& row) { return row.object_uuid == fixture.function_uuid; }),
+      "stable reader admitted an earlier-allocated function committed after its BEGIN");
+  const auto current_functions = api::LoadExecutableObjectLifecycleState(current_reader);
+  Require(current_functions.ok && std::any_of(current_functions.state.objects.begin(),
+      current_functions.state.objects.end(), [&](const auto& row) { return row.object_uuid == fixture.function_uuid; }),
+      "read-committed reader missed actual committed function");
+  Rollback(stable_reader);
+  Rollback(current_reader);
+  RequireFunctionSuccessorAdmission(fixture);
 
   auto view_tx = Begin(fixture, 2);
   CreateViewAndRefusalProbes(fixture, view_tx);
@@ -650,6 +747,14 @@ int main() {
   RequireProjectionRows(fixture, read_tx, descriptor);
   Rollback(read_tx);
 
+  std::error_code cleanup_error;
+  std::filesystem::remove_all(fixture.directory, cleanup_error);
+  Require(!cleanup_error, "catalog projection fixture cleanup failed");
+
   std::cout << "database_lifecycle_relation_descriptor_projection_conformance: PASS\n";
   return EXIT_SUCCESS;
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }

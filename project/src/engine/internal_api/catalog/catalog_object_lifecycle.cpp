@@ -1064,7 +1064,8 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
         dependency.dependency_uuid == EngineGlobalAggregateAvgFunctionUuid();
     if (active_objects.count(dependency.source_uuid) != 0 &&
         (active_objects.count(dependency.dependency_uuid) != 0 ||
-         (dependency.dependency_kind == "view_source_column" && active_column) || builtin_aggregate)) {
+         (dependency.dependency_kind == "view_source_column" && active_column) || builtin_aggregate ||
+         dependency.dependency_kind == "view_type_name_function")) {
       result.state.dependencies.push_back(std::move(dependency));
     }
   }
@@ -2103,10 +2104,13 @@ EngineApiDiagnostic ValidateCatalogViewCreationAdmission(
     std::optional<std::uint64_t>* expected_catalog_epoch,
     std::optional<std::vector<std::string>>* expected_schema_frames) {
   constexpr const char* operation = "ddl.create_view";
-  if (!definition.view_generation || !definition.source_relation_descriptor_generation ||
-      !core::uuid::IsEngineIdentityUuid(definition.view_uuid) ||
-      !core::uuid::IsEngineIdentityUuid(definition.source_relation_uuid) ||
-      !core::uuid::IsEngineIdentityUuid(definition.source_column_uuid))
+  const bool inventory = definition.kind == CatalogViewSourceBinding::Kind::deferred_inventory;
+  if (!definition.view_generation || !core::uuid::IsEngineIdentityUuid(definition.view_uuid) ||
+      (!inventory && (!definition.source_relation_descriptor_generation ||
+       !core::uuid::IsEngineIdentityUuid(definition.source_relation_uuid) ||
+       !core::uuid::IsEngineIdentityUuid(definition.source_column_uuid))) ||
+      (inventory && (definition.view_generation != 1 || !definition.source_relation_uuid.is_nil() ||
+                     !definition.source_column_uuid.is_nil() || definition.source_relation_descriptor_generation)))
     return MakeInvalidRequestDiagnostic(operation, "view_source_binding_invalid");
   const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   const auto authority = ValidateCurrentMutatingTransactionAuthority(request.context, operation);
@@ -2211,6 +2215,10 @@ EngineApiDiagnostic ValidateCatalogViewCreationAdmission(
   if (collision.error) return collision;
   const auto resolver = ValidateCurrentViewResolverOccupancy(request);
   if (resolver.error) return resolver;
+  const auto* current_schema = FindObject(current.state, request.target_schema.uuid);
+  if (schema && (!current_schema || current_schema->catalog_row_uuid != schema->catalog_row_uuid))
+    return MakeInvalidRequestDiagnostic(operation, "view_schema_generation_changed");
+  if (inventory) return OkDiagnostic();
   const auto* source = FindObject(current.state, definition.source_relation_uuid);
   if (!source || source->object_kind != "table" ||
       source->definition_epoch != definition.source_relation_descriptor_generation)
@@ -2224,9 +2232,6 @@ EngineApiDiagnostic ValidateCatalogViewCreationAdmission(
   }
   if (!source_column_found)
     return MakeInvalidRequestDiagnostic(operation, "view_source_column_catalog_record_missing");
-  const auto* current_schema = FindObject(current.state, request.target_schema.uuid);
-  if (schema && (!current_schema || current_schema->catalog_row_uuid != schema->catalog_row_uuid))
-    return MakeInvalidRequestDiagnostic(operation, "view_schema_generation_changed");
   authorization.target_object = {definition.source_relation_uuid, "table"};
   authorization.required_right = "SELECT";
   const auto readable = EngineAuthorize(authorization);
@@ -2305,21 +2310,40 @@ EngineCatalogCreateObjectResult EngineCatalogCreateViewWithDefinition(
     AddEvidence(&result, "global_aggregate_view_descriptor_generation", std::to_string(aggregate->view_descriptor_generation));
     AddEvidence(&result, "global_aggregate_view_create_or_alter_resolution", definition.view_generation > 1 ? "alter" : "create");
     AddEvidence(&result, "global_aggregate_view_parser_sql", "false");
+  } else if (custody.inventory()) {
+    AddEvidence(&result, "catalog_projection_marker", kRelationDescriptorProjectionMarkerV1);
+    AddEvidence(&result, "catalog_projection_parser_sql", "false");
   }
-  EngineCatalogDependencyRecord column;
-  column.creator_tx = request.context.local_transaction_id;
-  column.source_uuid = definition.view_uuid; column.source_kind = "view";
-  column.dependency_uuid = definition.source_column_uuid;
-  column.dependency_kind = "view_source_column"; column.metadata_epoch = result.metadata_cache_epoch;
-  const auto staged = StageCatalogJournalEvent(request.context, DependencyEvent(column), prepared);
-  if (staged.error) return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation, staged);
+  if (definition.kind == CatalogViewSourceBinding::Kind::relation_column) {
+    EngineCatalogDependencyRecord column;
+    column.creator_tx = request.context.local_transaction_id;
+    column.source_uuid = definition.view_uuid; column.source_kind = "view";
+    column.dependency_uuid = definition.source_column_uuid;
+    column.dependency_kind = "view_source_column"; column.metadata_epoch = result.metadata_cache_epoch;
+    const auto staged = StageCatalogJournalEvent(request.context, DependencyEvent(column), prepared);
+    if (staged.error) return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation, staged);
+  }
   if (const auto* aggregate = custody.aggregate()) {
-    auto function = column;
+    EngineCatalogDependencyRecord function;
+    function.creator_tx = request.context.local_transaction_id;
+    function.source_uuid = definition.view_uuid; function.source_kind = "view";
+    function.metadata_epoch = result.metadata_cache_epoch;
     function.dependency_uuid = aggregate->aggregate_function_uuid;
     function.dependency_kind = "view_builtin_aggregate";
     const auto function_staged = StageCatalogJournalEvent(request.context, DependencyEvent(function), prepared);
     if (function_staged.error)
       return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation, function_staged);
+  }
+  if (const auto* inventory_definition = custody.inventory();
+      inventory_definition && !inventory_definition->function_uuid.is_nil()) {
+    EngineCatalogDependencyRecord function;
+    function.creator_tx = request.context.local_transaction_id;
+    function.source_uuid = definition.view_uuid; function.source_kind = "view";
+    function.dependency_uuid = inventory_definition->function_uuid;
+    function.dependency_kind = "view_type_name_function";
+    function.metadata_epoch = result.metadata_cache_epoch;
+    const auto staged = StageCatalogJournalEvent(request.context, DependencyEvent(function), prepared);
+    if (staged.error) return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation, staged);
   }
   const auto publication = PublishPreparedCatalogJournalBatch(custody, request.context, operation, std::move(prepared));
   if (publication.error) return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, operation,

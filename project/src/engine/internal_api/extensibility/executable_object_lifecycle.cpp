@@ -17,6 +17,7 @@
 #include "engine/sblr/sblr_procedure_abi_runtime.hpp"
 #include "hash_digest.hpp"
 #include "local_transaction_store.hpp"
+#include "transaction/transaction_api.hpp"
 #include "dml/insert_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "security/security_model.hpp"
@@ -331,7 +332,8 @@ bool EventVisible(
     const EngineRequestContext& context,
     std::uint64_t creator_tx,
     const scratchbird::storage::database::LocalTransactionStoreResult*
-        transaction_inventory) {
+        transaction_inventory,
+    const std::optional<scratchbird::transaction::mga::TransactionInventoryEntry>& reader) {
   if (creator_tx == 0) { return true; }
   const bool engine_metadata_snapshot =
       context.statement_metadata_snapshot_engine_owned;
@@ -367,6 +369,12 @@ bool EventVisible(
       if (!scratchbird::transaction::mga::HasCommittedInventoryOutcome(entry)) {
         return false;
       }
+      if (!engine_metadata_snapshot && context.local_transaction_id != 0) {
+        if (!reader || !reader->identity.transaction_uuid.valid() ||
+            reader->identity.transaction_uuid.value != context.transaction_uuid) return false;
+        return !reader->stable_snapshot ||
+               entry.commit_sequence <= reader->begin_visible_through_commit_sequence;
+      }
       const std::uint64_t visible_through =
           engine_metadata_snapshot
               ? context
@@ -380,27 +388,6 @@ bool EventVisible(
     }
     return false;
   }
-  if (context.local_transaction_id != 0 &&
-      creator_tx == context.local_transaction_id) {
-    return true;
-  }
-  if (engine_metadata_snapshot) {
-    if (metadata_excludes(
-            context
-                .statement_metadata_snapshot_active_excluded_local_transaction_ids) ||
-        metadata_excludes(
-            context
-                .statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids)) {
-      return false;
-    }
-    return creator_tx <=
-           context
-               .statement_metadata_snapshot_visible_through_local_transaction_id;
-  }
-  if (context.snapshot_visible_through_local_transaction_id != 0) {
-    return creator_tx <= context.snapshot_visible_through_local_transaction_id;
-  }
-  if (context.local_transaction_id != 0) { return creator_tx <= context.local_transaction_id; }
   return false;
 }
 
@@ -813,6 +800,7 @@ std::string EventTriggerFireEvent(const EngineRequestContext& context,const Engi
 }
 
 EngineApiDiagnostic AppendEvent(const EngineRequestContext& context, const std::string& event) {
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   if (context.database_path.empty()) {
     return ExecDiagnostic(kExecutableObjectDiagnosticDatabasePathRequired, "database_path");
   }
@@ -841,6 +829,7 @@ struct LoadOptions {
 
 EngineLoadExecutableObjectLifecycleStateResult LoadState(const EngineRequestContext& context,
                                                          LoadOptions options) {
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   EngineLoadExecutableObjectLifecycleStateResult result;
   if (context.database_path.empty()) {
     result.diagnostic = ExecDiagnostic(kExecutableObjectDiagnosticDatabasePathRequired, "database_path");
@@ -863,14 +852,28 @@ EngineLoadExecutableObjectLifecycleStateResult LoadState(const EngineRequestCont
   const auto transaction_inventory =
       scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(
           context.database_path);
-  if (options.enforce_visibility &&
-      context.statement_metadata_snapshot_engine_owned &&
-      !transaction_inventory.ok()) {
+  if (options.enforce_visibility && !transaction_inventory.ok()) {
     result.diagnostic = ExecDiagnostic(
         kExecutableObjectDiagnosticMgaVisibilityRefused,
         "prepared_metadata_transaction_inventory_unavailable");
     return result;
   }
+  std::optional<scratchbird::transaction::mga::TransactionInventoryEntry> reader;
+  if (options.enforce_visibility && context.local_transaction_id != 0) {
+    const auto found = scratchbird::transaction::mga::LookupLocalTransaction(
+        transaction_inventory.inventory,
+        scratchbird::transaction::mga::MakeLocalTransactionId(context.local_transaction_id));
+    if (!found.ok() || !found.entry.identity.transaction_uuid.valid() ||
+        found.entry.identity.transaction_uuid.value != context.transaction_uuid) {
+      result.diagnostic = ExecDiagnostic(kExecutableObjectDiagnosticMgaVisibilityRefused,
+          "executable_reader_transaction_identity_mismatch");
+      return result;
+    }
+    reader = found.entry;
+  }
+  // A journal can contain many versions from one creator. Resolve visibility
+  // once per creator against this immutable inventory, not once per frame.
+  std::map<std::uint64_t, bool> creator_visibility;
   std::uint64_t event_sequence = 0;
   while (in.peek()!=std::char_traits<char>::eof()) {
     ApiBehaviorRecord frame;ExecutableLifecycleRecord event;
@@ -878,7 +881,11 @@ EngineLoadExecutableObjectLifecycleStateResult LoadState(const EngineRequestCont
       result.diagnostic=ExecDiagnostic(kExecutableObjectDiagnosticDatabaseWriteFailed,"binary_executable_event_corrupt_or_legacy");return result;
     }
     ++event_sequence;
-    if(options.enforce_visibility&&!EventVisible(context,frame.creator_tx,&transaction_inventory))continue;
+    if (options.enforce_visibility) {
+      auto [visible, inserted] = creator_visibility.try_emplace(frame.creator_tx, false);
+      if (inserted) visible->second = EventVisible(context, frame.creator_tx, &transaction_inventory, reader);
+      if (!visible->second) continue;
+    }
     std::visit([&](auto& record) {
       using T=std::decay_t<decltype(record)>;
       record.event_sequence=event_sequence;
@@ -1800,6 +1807,42 @@ EngineApiDiagnostic PreflightCreateExecutableObjectImpl(
 
 }  // namespace
 
+EngineApiDiagnostic ValidateExecutableObjectCurrentAdmission(
+    const EngineRequestContext& context, const EngineExecutableObjectRecord& admitted) {
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
+  const auto inventory = scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(context.database_path);
+  if (!inventory.ok()) return ExecDiagnostic(kExecutableObjectDiagnosticMgaVisibilityRefused,
+      "executable_admission_inventory_unavailable");
+  std::ifstream in(EventPath(context), std::ios::binary);
+  if (!in) return ExecDiagnostic(kExecutableObjectDiagnosticDatabaseWriteFailed, "executable_admission_read_failed");
+  std::uint64_t sequence = 0;
+  while (in.peek() != std::char_traits<char>::eof()) {
+    ApiBehaviorRecord frame;
+    ExecutableLifecycleRecord event;
+    if (!ReadApiBehaviorRecord(in, &frame) || !DecodeExecutableLifecycleFrame(frame, &event))
+      return ExecDiagnostic(kExecutableObjectDiagnosticDatabaseWriteFailed, "binary_executable_event_corrupt_or_legacy");
+    ++sequence;
+    const auto* object = std::get_if<EngineExecutableObjectRecord>(&event);
+    const auto* invalidation = std::get_if<EngineExecutableInvalidationRecord>(&event);
+    if ((!object || object->object_uuid != admitted.object_uuid) &&
+        (!invalidation || invalidation->object_uuid != admitted.object_uuid)) continue;
+    const auto creator = scratchbird::transaction::mga::LookupLocalTransaction(inventory.inventory,
+        scratchbird::transaction::mga::MakeLocalTransactionId(frame.creator_tx));
+    if (!creator.ok()) return ExecDiagnostic(kExecutableObjectDiagnosticMgaVisibilityRefused, "executable_admission_creator_unavailable");
+    const auto state = scratchbird::transaction::mga::InventoryVisibilityState(creator.entry);
+    if (state == scratchbird::transaction::mga::TransactionState::rolled_back ||
+        state == scratchbird::transaction::mga::TransactionState::failed_terminal) continue;
+    const bool own = frame.creator_tx == context.local_transaction_id &&
+        creator.entry.identity.transaction_uuid.value == context.transaction_uuid;
+    if (!own && !scratchbird::transaction::mga::HasCommittedInventoryOutcome(creator.entry))
+      return ExecDiagnostic(kExecutableObjectDiagnosticMgaVisibilityRefused, "executable_admission_unresolved_creator");
+    if (sequence > admitted.event_sequence)
+      return ExecDiagnostic(kExecutableObjectDiagnosticMgaVisibilityRefused, "executable_admission_successor_changed");
+  }
+  if (in.bad()) return ExecDiagnostic(kExecutableObjectDiagnosticDatabaseWriteFailed, "executable_admission_read_failed");
+  return OkDiagnostic();
+}
+
 EngineLoadExecutableObjectLifecycleStateResult LoadExecutableObjectLifecycleState(
     const EngineRequestContext& context) {
   return LoadState(context, {.enforce_visibility = true});
@@ -1822,6 +1865,7 @@ EngineApiDiagnostic PreflightCreateExecutableObject(
 
 EngineCreateExecutableObjectResult EngineCreateExecutableObject(
     const EngineCreateExecutableObjectRequest& request) {
+  const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   const EngineUuid object_uuid = ObjectUuid(request);
   const std::string object_kind = ObjectKind(request);
   if (object_kind.empty()) {
@@ -1971,6 +2015,7 @@ EngineCreateExecutableObjectResult EngineCreateExecutableObject(
 
 EngineAlterExecutableObjectResult EngineAlterExecutableObject(
     const EngineAlterExecutableObjectRequest& request) {
+  const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   const EngineUuid object_uuid = ObjectUuid(request);
   const auto authority = ValidateManageAuthority(request, ObjectKind(request));
   if (authority.error) {
@@ -2066,6 +2111,7 @@ EngineAlterExecutableObjectResult EngineAlterExecutableObject(
 
 EngineDropExecutableObjectResult EngineDropExecutableObject(
     const EngineDropExecutableObjectRequest& request) {
+  const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   const EngineUuid object_uuid = ObjectUuid(request);
   const auto authority = ValidateManageAuthority(request, ObjectKind(request));
   if (authority.error) {
@@ -2128,6 +2174,7 @@ EngineDropExecutableObjectResult EngineDropExecutableObject(
 
 EngineQuiesceExecutableObjectResult EngineQuiesceExecutableObject(
     const EngineQuiesceExecutableObjectRequest& request) {
+  const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   const EngineUuid object_uuid = ObjectUuid(request);
   const auto authority = ValidateManageAuthority(request, ObjectKind(request));
   if (authority.error) {
@@ -2163,6 +2210,7 @@ EngineQuiesceExecutableObjectResult EngineQuiesceExecutableObject(
 
 EngineUnloadExecutableObjectResult EngineUnloadExecutableObject(
     const EngineUnloadExecutableObjectRequest& request) {
+  const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   const EngineUuid object_uuid = ObjectUuid(request);
   const auto authority = ValidateManageAuthority(request, ObjectKind(request));
   if (authority.error) {

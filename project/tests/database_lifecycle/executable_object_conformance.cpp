@@ -10,6 +10,14 @@
 
 #include "extensibility/executable_object_lifecycle.hpp"
 #include "catalog/binary_view_options.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
+#include "database_lifecycle_test_memory.hpp"
+#include "database_lifecycle.hpp"
+#include "ddl/create_api.hpp"
+#include "memory.hpp"
+#include "transaction/transaction_api.hpp"
+#include "uuid.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -18,14 +26,14 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 
 namespace {
 
 namespace api = scratchbird::engine::internal_api;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -95,28 +103,90 @@ std::uint64_t CurrentUnixMillis() {
           .count());
 }
 
-std::filesystem::path TestPath() {
-  return std::filesystem::temp_directory_path() /
-         ("sb_dblc_013ag_executable_object_" + std::to_string(CurrentUnixMillis()) + ".sbdb");
-}
+struct NativeFixture {
+  scratchbird::tests::OwnedTempDirectory directory;
+  std::filesystem::path path = directory.path() / "executable.sbdb";
+  api::EngineRequestContext owner;
+  api::EngineRequestContext current;
+  api::EngineRequestContext stable;
+  std::uint64_t ordinal = 0;
+
+  NativeFixture() {
+    namespace db = scratchbird::storage::database;
+    namespace uuid = scratchbird::core::uuid;
+    using scratchbird::core::platform::UuidKind;
+    db::DatabaseCreateConfig create;
+    create.path = path.string();
+    const auto database = uuid::GenerateEngineIdentityV7(UuidKind::database, CurrentUnixMillis());
+    const auto filespace = uuid::GenerateEngineIdentityV7(UuidKind::filespace, CurrentUnixMillis() + 1);
+    Require(database.ok() && filespace.ok(), "native executable fixture UUID allocation failed");
+    create.database_uuid = database.value;
+    create.filespace_uuid = filespace.value;
+    create.creation_unix_epoch_millis = CurrentUnixMillis();
+    create.page_size = 8192;
+    create.require_resource_seed_pack = true;
+    create.allow_minimal_resource_bootstrap = false;
+    scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+    Require(db::CreateDatabaseFile(create).ok(), "native executable fixture database create failed");
+    owner = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+    owner.database_path = path.string();
+    owner.session_uuid = scratchbird::tests::FixtureUuid(1208, 1603);
+    owner.trust_mode = api::EngineTrustMode::embedded_in_process;
+    owner.security_context_present = true;
+  }
+
+  api::EngineRequestContext Begin(std::string isolation = "read_committed", bool read_only = false) {
+    api::EngineBeginTransactionRequest request;
+    request.context = owner;
+    request.isolation_level = std::move(isolation);
+    if (read_only) request.transaction_policy_profile.encoded_profiles.push_back("transaction_read_mode:read_only");
+    const auto result = api::EngineBeginTransaction(request);
+    RequireOk(result, "native executable fixture BEGIN failed");
+    auto context = owner;
+    context.local_transaction_id = result.local_transaction_id;
+    context.transaction_uuid = result.transaction_uuid;
+    context.transaction_isolation_level = result.isolation_level;
+    context.snapshot_visible_through_local_transaction_id = result.snapshot_visible_through_local_transaction_id;
+    context.read_only_mode = result.read_only;
+    return context;
+  }
+
+  void CommitCurrent() {
+    if (!current.local_transaction_id) return;
+    api::EngineCommitTransactionRequest request;
+    request.context = current;
+    RequireOk(api::EngineCommitTransaction(request), "native executable fixture COMMIT failed");
+    current = {};
+  }
+
+  api::EngineRequestContext Context(std::uint64_t step) {
+    if (ordinal != step) {
+      CommitCurrent();
+      // Freeze an actual native reader before the first function definition.
+      if (step == 3) stable = Begin("repeatable_read", true);
+      current = Begin();
+      ordinal = step;
+    }
+    return current;
+  }
+
+  void Finish() {
+    CommitCurrent();
+    api::EngineRollbackTransactionRequest rollback;
+    rollback.context = stable;
+    RequireOk(api::EngineRollbackTransaction(rollback), "native executable stable reader rollback failed");
+    directory.Cleanup();
+  }
+};
+
+NativeFixture* active_fixture = nullptr;
 
 api::EngineRequestContext Context(const std::filesystem::path& path,
                                   std::uint64_t tx,
                                   std::uint64_t visible_through = 0) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::embedded_in_process;
-  context.database_path = path.string();
-  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 1601);
-  context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 1602);
-  context.session_uuid = scratchbird::tests::FixtureUuid(1208, 1603);
-  context.transaction_uuid = scratchbird::tests::FixtureUuid(1418, 10000 + tx);
-  context.local_transaction_id = tx;
-  context.snapshot_visible_through_local_transaction_id = visible_through;
-  context.security_context_present = true;
-  context.trace_tags.push_back("security.fixture_trace_authority");
-  context.catalog_generation_id = tx;
-  context.security_epoch = tx;
-  context.resource_epoch = tx;
+  Require(active_fixture && active_fixture->path == path, "native executable fixture context not owned");
+  auto context = active_fixture->Context(tx);
+  (void)visible_through;
   return context;
 }
 
@@ -235,7 +305,8 @@ void TestCreateAlterDropDependencyAndGeneration(const std::filesystem::path& pat
           "inspect did not expose invalidated dependency state");
 
   auto hidden_invoke = InvokeRequest(path, 10, scratchbird::tests::FixtureUuid(1418, 6), "function");
-  hidden_invoke.context.snapshot_visible_through_local_transaction_id = 2;
+  hidden_invoke.context = active_fixture->stable;
+  AddInvoke(&hidden_invoke);
   RequireDiagnostic(api::EngineInvokeExecutableObject(hidden_invoke),
                     api::kExecutableObjectDiagnosticMgaVisibilityRefused,
                     "snapshot-invisible executable generation was accepted");
@@ -256,6 +327,7 @@ void TestCreateAlterDropDependencyAndGeneration(const std::filesystem::path& pat
 void TestPermissionExecutionBoundaryAndStoredSblr(const std::filesystem::path& path) {
   auto no_permission = BaseRequest<api::EngineCreateExecutableObjectRequest>(
       path, 20, scratchbird::tests::FixtureUuid(1418, 2), "function");
+  no_permission.context.authorization_context = {};
   AddStoredSblr(&no_permission, "denied");
   RequireDiagnostic(api::EngineCreateExecutableObject(no_permission),
                     api::kExecutableObjectDiagnosticPermissionDenied,
@@ -405,12 +477,26 @@ void TestEventTriggerBoundary(const std::filesystem::path& path) {
 }  // namespace
 
 int main() {
-  const auto path = TestPath();
+  try {
+  namespace memory = scratchbird::core::memory;
+  auto policy = memory::DefaultLocalEngineMemoryPolicy();
+  policy.policy_name = "database_lifecycle_executable_object";
+  Require(memory::ConfigureDefaultMemoryManagerForFixture(policy, policy.policy_name).ok(),
+      "native executable fixture memory configuration failed");
+  NativeFixture fixture;
+  active_fixture = &fixture;
+  const auto path = fixture.path;
   TestCreateAlterDropDependencyAndGeneration(path);
   TestPermissionExecutionBoundaryAndStoredSblr(path);
   TestSideEffectPolicy(path);
   TestUnloadQuiesceAndActiveInvocation(path);
   TestEventTriggerBoundary(path);
-  std::filesystem::remove(path.string() + ".sb.executable_object_events");
+  fixture.Finish();
+  active_fixture = nullptr;
   return EXIT_SUCCESS;
+  } catch (const std::exception& error) {
+    active_fixture = nullptr;
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }

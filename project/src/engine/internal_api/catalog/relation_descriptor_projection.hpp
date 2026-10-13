@@ -9,8 +9,10 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "extensibility/executable_object_lifecycle.hpp"
 
 #include <string>
+#include <optional>
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
@@ -20,11 +22,23 @@ struct EngineSelectRowsResult;
 
 struct EngineCatalogRelationProjectionViewDescriptor {
   bool present = false;
+  EngineUuid view_uuid;
   std::string semantic_variant;
   std::string source_relation_name;
   EngineUuid function_uuid;
   EngineApiDiagnostic diagnostic;
 };
+struct EngineCatalogRelationProjectionViewPreparation {
+  bool ok = false;
+  EngineApiDiagnostic diagnostic;
+  EngineCatalogRelationProjectionViewDescriptor descriptor;
+  std::vector<std::string> options;
+  std::optional<EngineExecutableObjectRecord> admitted_function;
+};
+EngineCatalogRelationProjectionViewPreparation PrepareRelationDescriptorProjectionViewCreate(
+    const EngineApiRequest&);
+EngineApiDiagnostic RevalidateRelationDescriptorProjectionFunction(
+    const EngineRequestContext&, const std::optional<EngineExecutableObjectRecord>&);
 
 // SEARCH_KEY: SB_ENGINE_CATALOG_RELATION_DESCRIPTOR_PROJECTION_V1
 // This is an engine-owned, dialect-neutral projection over an exact persisted

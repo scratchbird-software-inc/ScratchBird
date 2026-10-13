@@ -376,8 +376,6 @@ EngineCreateViewResult EngineCreateView(const EngineCreateViewRequest& request) 
         request.context, "ddl.create_view",
         MakeInvalidRequestDiagnostic("ddl.create_view", "target_object_kind_must_be_view"));
   }
-  const std::string object_kind =
-      request.target_object.object_kind.empty() ? "view" : request.target_object.object_kind;
   if (IsEngineGlobalAggregateViewCreateRequest(request)) {
     const auto prepared = PrepareEngineGlobalAggregateViewCreate(request);
     if (!prepared.ok) {
@@ -473,26 +471,40 @@ EngineCreateViewResult EngineCreateView(const EngineCreateViewRequest& request) 
     return result;
   }
   if (IsRelationDescriptorProjectionViewCreateRequest(request)) {
-    const auto admitted =
-        ValidateRelationDescriptorProjectionViewCreate(request);
-    if (admitted.error) {
+    const auto prepared = PrepareRelationDescriptorProjectionViewCreate(request);
+    if (!prepared.ok) {
       return MakeApiBehaviorDiagnostic<EngineCreateViewResult>(
-          request.context, "ddl.create_view", admitted);
+          request.context, "ddl.create_view", prepared.diagnostic);
     }
     EngineCreateViewRequest effective = request;
-    effective.option_envelopes =
-        CanonicalRelationDescriptorProjectionViewOptions(request);
-    auto result = PersistedCreateWithNameRegistry<EngineCreateViewResult>(
-        effective, "ddl.create_view", object_kind, true, "created",
-        EncodeBinaryViewOptions(effective.option_envelopes));
-    if (result.ok) {
-      AddApiBehaviorEvidence(&result,
-                             "catalog_projection_marker",
-                             kRelationDescriptorProjectionMarkerV1);
-      AddApiBehaviorEvidence(&result,
-                             "catalog_projection_parser_sql",
-                             "false");
-    }
+    effective.target_object = {prepared.descriptor.view_uuid, "view"};
+    effective.operation_id.clear();
+    effective.option_envelopes = prepared.options;
+    effective.related_objects.clear();
+    effective.descriptors.clear();
+    effective.columns.clear();
+    effective.constraints.clear();
+    effective.indexes.clear();
+    effective.rows.clear();
+    effective.assignments.clear();
+    effective.projection.canonical_projection_envelopes.clear();
+    EngineCatalogCreateObjectRequest catalog;
+    static_cast<EngineApiRequest&>(catalog) = effective;
+    const CatalogViewSourceBinding source_binding{prepared.descriptor.view_uuid, {}, {}, 1, 0,
+        CatalogViewSourceBinding::Kind::deferred_inventory};
+    std::optional<std::uint64_t> expected_epoch;
+    std::optional<std::vector<std::string>> expected_schema_frames;
+    const auto readmit = [&] {
+      const auto admitted = ValidateCatalogViewCreationAdmission(catalog, source_binding,
+          &expected_epoch, &expected_schema_frames);
+      if (admitted.error) return admitted;
+      return RevalidateRelationDescriptorProjectionFunction(catalog.context, prepared.admitted_function);
+    };
+    const CatalogViewCreationCustody custody(prepared.descriptor, EncodeBinaryViewOptions(prepared.options), readmit);
+    auto published = EngineCatalogCreateViewWithDefinition(custody, catalog);
+    EngineCreateViewResult result;
+    static_assert(std::is_nothrow_move_assignable_v<EngineApiResult>);
+    static_cast<EngineApiResult&>(result) = std::move(static_cast<EngineApiResult&>(published));
     return result;
   }
   // A query-shape label and "definition embedded" assertion are not a bound

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "catalog/relation_descriptor_projection.hpp"
+#include "catalog/catalog_object_lifecycle.hpp"
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
@@ -259,49 +260,6 @@ bool PayloadRequestsRelationDescriptorProjection(
                  kRelationDescriptorProjectionMarkerV1) != options.end();
 }
 
-bool CreatorInsideMetadataBoundary(const EngineRequestContext& context,
-                                   std::uint64_t creator_tx) {
-  if (creator_tx == 0) return false;
-  if (creator_tx == context.local_transaction_id) return true;
-  if (context.statement_metadata_snapshot_engine_owned) {
-    if (std::find(
-            context
-                .statement_metadata_snapshot_active_excluded_local_transaction_ids
-                .begin(),
-            context
-                .statement_metadata_snapshot_active_excluded_local_transaction_ids
-                .end(),
-            creator_tx) !=
-            context
-                .statement_metadata_snapshot_active_excluded_local_transaction_ids
-                .end() ||
-        std::find(
-            context
-                .statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids
-                .begin(),
-            context
-                .statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids
-                .end(),
-            creator_tx) !=
-            context
-                .statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids
-                .end()) {
-      return false;
-    }
-    return context
-                   .statement_metadata_snapshot_visible_through_local_transaction_id !=
-               0 &&
-           creator_tx <=
-               context
-                   .statement_metadata_snapshot_visible_through_local_transaction_id;
-  }
-  const std::uint64_t boundary =
-      context.snapshot_visible_through_local_transaction_id != 0
-          ? context.snapshot_visible_through_local_transaction_id
-          : context.local_transaction_id;
-  return boundary != 0 && creator_tx <= boundary;
-}
-
 bool NameEntryMatches(const NameRegistryEntry& entry,
                       const EngineRequestContext& context,
                       const EngineUuid& object_uuid,
@@ -310,8 +268,7 @@ bool NameEntryMatches(const NameRegistryEntry& entry,
                       const std::string& expected_name) {
   if (entry.object_uuid != object_uuid ||
       entry.object_class != object_class || entry.deleted ||
-      entry.lifecycle_state != "active" ||
-      !CreatorInsideMetadataBoundary(context, entry.creator_tx)) {
+      entry.lifecycle_state != "active") {
     return false;
   }
   if (!schema_uuid.is_nil() && entry.scope_uuid != schema_uuid &&
@@ -362,8 +319,7 @@ std::string ExecutablePayloadField(const std::string& payload,
 
 EngineApiDiagnostic ValidateTypeNameFunction(
     const EngineRequestContext& context,
-    const EngineUuid& function_uuid,
-    std::uint64_t latest_allowed_creator_tx) {
+    const EngineUuid& function_uuid) {
   if (function_uuid.is_nil()) {
     return ProjectionDiagnostic("type_name_function_uuid_required");
   }
@@ -380,8 +336,6 @@ EngineApiDiagnostic ValidateTypeNameFunction(
   if (function == nullptr || function->object_kind != "function" ||
       function->lifecycle_state != "active" || function->deleted ||
       function->invalidated || function->creator_tx == 0 ||
-      !CreatorInsideMetadataBoundary(context, function->creator_tx) ||
-      function->creator_tx > latest_allowed_creator_tx ||
       function->executor_kind != "metadata_only" ||
       function->side_effect_class != "none" ||
       !function->stored_sblr_hash.empty() ||
@@ -605,8 +559,7 @@ EngineApiDiagnostic ValidateRelationDescriptorProjectionViewCreate(
       kRelationDescriptorProjectionTypeInventoryVariantV1) {
     const auto dependency = ValidateTypeNameFunction(
         request.context,
-        definition.function_uuid,
-        request.context.local_transaction_id);
+        definition.function_uuid);
     if (dependency.error) return dependency;
   }
   return OkDiagnostic();
@@ -642,6 +595,55 @@ std::vector<std::string> CanonicalRelationDescriptorProjectionViewOptions(
   return options;
 }
 
+EngineCatalogRelationProjectionViewPreparation PrepareRelationDescriptorProjectionViewCreate(
+    const EngineApiRequest& request) {
+  EngineCatalogRelationProjectionViewPreparation result;
+  result.diagnostic = ValidateRelationDescriptorProjectionViewCreate(request);
+  if (result.diagnostic.error) return result;
+  result.options = CanonicalRelationDescriptorProjectionViewOptions(request);
+  const auto parsed = ParseCanonicalViewOptions(result.options);
+  if (!parsed) { result.diagnostic = ProjectionDiagnostic("projection_view_definition_invalid"); return result; }
+  result.descriptor.view_uuid = request.target_object.uuid.is_nil()
+      ? GenerateCrudEngineUuid("object") : request.target_object.uuid;
+  result.descriptor.semantic_variant = parsed->variant;
+  result.descriptor.source_relation_name = parsed->source_relation_name;
+  result.descriptor.function_uuid = parsed->function_uuid;
+  if (!core::uuid::IsEngineIdentityUuid(result.descriptor.view_uuid) ||
+      result.descriptor.view_uuid == request.target_schema.uuid) {
+    result.diagnostic = ProjectionDiagnostic("projection_view_identity_invalid"); return result;
+  }
+  const auto functions = LoadExecutableObjectLifecycleState(request.context);
+  if (!functions.ok) { result.diagnostic = functions.diagnostic; return result; }
+  for (const auto& object : functions.state.objects) {
+    if (object.object_uuid == result.descriptor.view_uuid) {
+      result.diagnostic = ProjectionDiagnostic("projection_view_identity_occupied"); return result;
+    }
+    if (object.object_uuid == parsed->function_uuid) result.admitted_function = object;
+  }
+  if (!parsed->function_uuid.is_nil() && !result.admitted_function) {
+    result.diagnostic = ProjectionDiagnostic("type_name_function_dependency_not_visible_or_invalid"); return result;
+  }
+  result.descriptor.present = true;
+  result.descriptor.diagnostic = OkDiagnostic();
+  result.ok = true;
+  return result;
+}
+
+EngineApiDiagnostic RevalidateRelationDescriptorProjectionFunction(
+    const EngineRequestContext& context, const std::optional<EngineExecutableObjectRecord>& admitted) {
+  if (!admitted) return OkDiagnostic();
+  const auto valid = ValidateTypeNameFunction(context, admitted->object_uuid);
+  if (valid.error) return valid;
+  const auto current = ValidateExecutableObjectCurrentAdmission(context, *admitted);
+  if (current.error) return current;
+  const auto actual = LoadExecutableObjectLifecycleState(context);
+  if (!actual.ok) return actual.diagnostic;
+  for (const auto& object : actual.state.objects)
+    if (object.object_uuid == admitted->object_uuid)
+      return object == *admitted ? OkDiagnostic() : ProjectionDiagnostic("projection_function_generation_changed");
+  return ProjectionDiagnostic("type_name_function_dependency_not_visible_or_invalid");
+}
+
 EngineCatalogRelationProjectionViewDescriptor
 DescribeEngineCatalogRelationProjectionView(
     const EngineRequestContext& context,
@@ -658,8 +660,10 @@ DescribeEngineCatalogRelationProjectionView(
     return descriptor;
   }
 
-  const auto view = FindVisibleApiBehaviorRecord(
-      context, view_uuid, context.local_transaction_id, descriptor.diagnostic);
+  const auto catalog = LoadCatalogObjectLifecycleState(context);
+  if (!catalog.ok) { descriptor.diagnostic = catalog.diagnostic; return descriptor; }
+  std::optional<EngineCatalogObjectRecord> view;
+  for (const auto& object : catalog.state.objects) if (object.object_uuid == view_uuid) view = object;
   if (descriptor.diagnostic.error) return descriptor;
   if (!view) {
     descriptor.diagnostic =
@@ -676,10 +680,8 @@ DescribeEngineCatalogRelationProjectionView(
     return descriptor;
   }
   if (view->object_kind != "view" ||
-      view->operation_id != "ddl.create_view" || view->state != "created" ||
-      view->deleted || view->creator_tx == 0 ||
-      !CreatorInsideMetadataBoundary(context, view->creator_tx) ||
-      !IsSafePersistedCanonicalName(view->default_name)) {
+      view->lifecycle_state != "active" || view->deleted ||
+      !core::uuid::IsEngineIdentityUuid(view->catalog_row_uuid)) {
     descriptor.diagnostic =
         ProjectionDiagnostic("projection_view_not_visible_or_invalid");
     return descriptor;
@@ -687,26 +689,16 @@ DescribeEngineCatalogRelationProjectionView(
 
   const auto definition = ParseCanonicalViewOptions(options);
   const EngineUuid view_schema_uuid =
-      view->target_schema_uuid;
+      view->schema_uuid;
   if (!definition || view_schema_uuid.is_nil()) {
     descriptor.diagnostic =
         ProjectionDiagnostic("projection_view_definition_invalid");
     return descriptor;
   }
-  const auto view_name = ValidateRegisteredName(context,
-                                                view_uuid,
-                                                "view",
-                                                view_schema_uuid,
-                                                view->default_name,
-                                                "projection_view_name_not_visible");
-  if (view_name.error) {
-    descriptor.diagnostic = view_name;
-    return descriptor;
-  }
   if (definition->variant ==
       kRelationDescriptorProjectionTypeInventoryVariantV1) {
     const auto dependency = ValidateTypeNameFunction(
-        context, definition->function_uuid, view->creator_tx);
+        context, definition->function_uuid);
     if (dependency.error) {
       descriptor.diagnostic = dependency;
       return descriptor;
@@ -718,6 +710,7 @@ DescribeEngineCatalogRelationProjectionView(
   }
 
   descriptor.present = true;
+  descriptor.view_uuid = view_uuid;
   descriptor.semantic_variant = definition->variant;
   descriptor.source_relation_name = definition->source_relation_name;
   descriptor.function_uuid = definition->function_uuid;
@@ -775,16 +768,13 @@ EngineSelectRowsResult EngineSelectRelationDescriptorProjection(
         ProjectionDiagnostic("projection_identity_envelope_invalid"));
   }
 
-  EngineApiDiagnostic behavior_diagnostic;
-  const auto view = FindVisibleApiBehaviorRecord(
-      request.context, view_uuid, request.context.local_transaction_id, behavior_diagnostic);
-  if (behavior_diagnostic.error) return ProjectionFailure<EngineSelectRowsResult>(
-      request.context, behavior_diagnostic);
+  const auto catalog = LoadCatalogObjectLifecycleState(request.context);
+  if (!catalog.ok) return ProjectionFailure<EngineSelectRowsResult>(request.context, catalog.diagnostic);
+  std::optional<EngineCatalogObjectRecord> view;
+  for (const auto& object : catalog.state.objects) if (object.object_uuid == view_uuid) view = object;
   if (!view || view->object_kind != "view" ||
-      view->operation_id != "ddl.create_view" || view->state != "created" ||
-      view->deleted || view->creator_tx == 0 ||
-      !CreatorInsideMetadataBoundary(request.context, view->creator_tx) ||
-      !IsSafePersistedCanonicalName(view->default_name)) {
+      view->lifecycle_state != "active" || view->deleted ||
+      !core::uuid::IsEngineIdentityUuid(view->catalog_row_uuid)) {
     return ProjectionFailure<EngineSelectRowsResult>(
         request.context,
         ProjectionDiagnostic("projection_view_not_visible_or_invalid"));
@@ -793,28 +783,17 @@ EngineSelectRowsResult EngineSelectRelationDescriptorProjection(
   const auto persisted_definition =
       ParseCanonicalViewOptions(PayloadOptions(view->payload));
   if (!persisted_definition || persisted_definition->variant != variant ||
-      view->target_schema_uuid.is_nil()) {
+      view->schema_uuid.is_nil()) {
     return ProjectionFailure<EngineSelectRowsResult>(
         request.context,
         ProjectionDiagnostic("projection_view_definition_invalid"));
   }
   const EngineUuid view_schema_uuid =
-      view->target_schema_uuid;
-  const auto view_name = ValidateRegisteredName(request.context,
-                                                view_uuid,
-                                                "view",
-                                                view_schema_uuid,
-                                                view->default_name,
-                                                "projection_view_name_not_visible");
-  if (view_name.error) {
-    return ProjectionFailure<EngineSelectRowsResult>(
-        request.context, view_name);
-  }
+      view->schema_uuid;
   if (variant == kRelationDescriptorProjectionTypeInventoryVariantV1) {
     const auto dependency = ValidateTypeNameFunction(
         request.context,
-        persisted_definition->function_uuid,
-        view->creator_tx);
+        persisted_definition->function_uuid);
     if (dependency.error) {
       return ProjectionFailure<EngineSelectRowsResult>(
           request.context, dependency);
