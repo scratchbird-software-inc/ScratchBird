@@ -15,6 +15,7 @@
 #include "security/security_crypto_policy.hpp"
 #include "security/security_principal_lifecycle.hpp"
 #include "security/runtime_principal_credential.hpp"
+#include "security/durable_authorization_projection.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
@@ -532,6 +533,42 @@ EngineApiDiagnostic VerifySecurityDatabaseTemporaryTokenEvidence(
 
 }  // namespace
 
+DurableAuthorizationMaterializeResult RuntimePrincipalCredentialLease::MaterializeLocalAuthorization(
+    std::uint64_t security_epoch, std::uint64_t policy_epoch,
+    std::uint64_t catalog_generation) const {
+  const auto refuse = [](const char* detail) {
+    DurableAuthorizationMaterializeResult result;
+    result.diagnostics.push_back(MakeSecurityDiagnostic("SECURITY.CONTEXT.EXPIRED", detail));
+    return result;
+  };
+  if (thread_ != std::this_thread::get_id() || !guard_.owns_lock() ||
+      !security_epoch || !policy_epoch || !catalog_generation)
+    return refuse("runtime_service_authorization_fence_or_configuration_invalid");
+  EngineRequestContext source;
+  source.database_uuid = database_;
+  source.database_path = path_;
+  const auto loaded = LoadSecurityPrincipalLifecycleState(source);
+  if (!loaded.ok) {
+    DurableAuthorizationMaterializeResult result;
+    result.diagnostics.push_back(loaded.diagnostic);
+    return result;
+  }
+  const auto& state = loaded.state;
+  if (state.security_context_generation != context_generation_ ||
+      state.security_generation != security_generation_ || state.policy_generation != policy_generation_)
+    return refuse("runtime_service_authorization_source_changed");
+  const auto active = std::find_if(state.principals.begin(), state.principals.end(),
+      [&](const auto& principal) { return principal.principal_uuid == principal_; });
+  if (active == state.principals.end() || active->deleted || active->lifecycle_state != "active" ||
+      active->principal_kind != "service") return refuse("runtime_service_principal_not_active");
+  const DurableAuthorizationProjectionBinding binding{
+      database_, principal_, security_epoch, policy_epoch, catalog_generation};
+  const auto projection = ProjectDurableAuthorizationState(state, binding);
+  DurableAuthorizationMaterializeRequest request;
+  request.principal_uuid = principal_;
+  return MaterializeDurableAuthorizationContext(projection, request);
+}
+
 RuntimePrincipalCredentialResult VerifyRuntimePrincipalCredential(
     const RuntimePrincipalCredentialRequest& request) noexcept {
   using Error = RuntimePrincipalCredentialError;
@@ -570,7 +607,7 @@ RuntimePrincipalCredentialResult VerifyRuntimePrincipalCredential(
     if (!selected || !VerifyLocalPasswordCredentialFingerprint(
                          selected->credential_fingerprint, request.password)) return result;
     result.lease.reset(new RuntimePrincipalCredentialLease(
-        std::move(guard), request.database_uuid, selected->principal_uuid,
+        std::move(guard), request.database_path, request.database_uuid, selected->principal_uuid,
         state.security_context_generation, state.security_generation, state.policy_generation));
     result.error = Error::none;
   } catch (const std::bad_alloc&) {

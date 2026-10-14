@@ -184,6 +184,20 @@ inline void ProjectionChecks(const api::EngineRequestContext& admin,
           "owning materializer refuses unbound projection");
     Check(api::MaterializeDurableAuthorizationContext(result, materialize).ok,
           "owning materializer consumes real active principal projection");
+    auto authenticated = api::VerifyRuntimePrincipalCredential(CredentialRequest(request));
+    Check(authenticated.ok(), "projection authenticates the actual service principal");
+    const auto authenticated_rights = authenticated.lease->MaterializeLocalAuthorization(
+        binding.security_epoch, binding.policy_epoch, binding.catalog_generation_id);
+    const auto expected_rights = api::MaterializeDurableAuthorizationContext(result, materialize);
+    Check(authenticated_rights.ok && authenticated_rights.context.grants.size() == expected_rights.context.grants.size(),
+          "authenticated projection preserves actual committed grant cardinality");
+    for (std::size_t i = 0; i < expected_rights.context.grants.size(); ++i) {
+      const auto& a = authenticated_rights.context.grants[i];
+      const auto& b = expected_rights.context.grants[i];
+      Check(a.grant_uuid == b.grant_uuid && a.subject_uuid == b.subject_uuid &&
+            a.target_uuid == b.target_uuid && a.right == b.right && a.deny == b.deny,
+            "authenticated projection preserves real grant/denial/target identities");
+    }
     return result;
   };
   const auto selected = [&](const api::DurableAuthorizationState& state) {
@@ -194,6 +208,8 @@ inline void ProjectionChecks(const api::EngineRequestContext& admin,
     return grants;
   };
   Check(selected(project()).empty(), "projection supplies no implicit service grant");
+  auto stale_credential = api::VerifyRuntimePrincipalCredential(CredentialRequest(request));
+  Check(stale_credential.ok(), "stale projection fixture owns actual credential fence");
   api::EngineSecurityGrantPrivilegeRequest grant;
   grant.context = Begin(admin);
   grant.grant_uuid = NewId(platform::UuidKind::object).value;
@@ -204,6 +220,14 @@ inline void ProjectionChecks(const api::EngineRequestContext& admin,
   Check(granted.ok && granted.privilege_granted, "actual service inspection grant");
   Check(selected(project()).empty(), "uncommitted grant excluded from projection");
   Finish(grant.context, true);
+  // Adversarial same-thread recursive publication deliberately violates normal
+  // lease-consumer ordering. A retained authentication observation must not
+  // silently become authority for the newly published grant generation.
+  const auto stale_rights = stale_credential.lease->MaterializeLocalAuthorization(901, 902, 903);
+  Check(!stale_rights.ok && !stale_rights.context.present && stale_rights.diagnostics.size() == 1 &&
+        stale_rights.diagnostics.front().detail == "runtime_service_authorization_source_changed",
+        "real committed security mutation invalidates retained credential projection");
+  stale_credential.lease.reset();
   auto grants = selected(project());
   Check(grants.size() == 1 && grants[0].grant_uuid == grant.grant_uuid &&
         grants[0].subject_kind == "principal" && grants[0].target_uuid == request.database_uuid &&
@@ -362,6 +386,31 @@ inline void CredentialFenceChecks(const api::EngineRequestContext& admin,
         admitted.lease->security_generation() == observation.observation->security_generation &&
         admitted.lease->policy_generation() == observation.observation->policy_generation,
         "credential lease binds actual committed binary principal and all source generations");
+  // Configuration epochs are deliberately distinct from security event
+  // generations. This is authenticated projection, not startup/provider
+  // admission or permission to manufacture missing configuration authority.
+  const auto rights = admitted.lease->MaterializeLocalAuthorization(901, 902, 903);
+  Check(rights.ok && rights.context.present &&
+        rights.context.principal_uuid == source.principal_uuid &&
+        rights.context.authority_uuid == source.database_uuid &&
+        rights.context.security_context_generation == admitted.lease->security_context_generation() &&
+        rights.context.security_epoch == 901 && rights.context.policy_epoch == 902 &&
+        rights.context.catalog_generation_id == 903 &&
+        rights.context.engine_owned_bootstrap_role_uuid.is_nil() && rights.context.grants.empty(),
+        "credential fence projects actual service rights without bootstrap substitution");
+  for (unsigned missing = 0; missing < 3; ++missing) {
+    const auto invalid = admitted.lease->MaterializeLocalAuthorization(
+        missing == 0 ? 0 : 901, missing == 1 ? 0 : 902, missing == 2 ? 0 : 903);
+    Check(!invalid.ok && !invalid.context.present && !invalid.diagnostics.empty(),
+          "projection never supplies missing configuration epochs");
+  }
+  bool foreign_thread_refused = false;
+  std::thread foreign_reader([&] {
+    const auto result = admitted.lease->MaterializeLocalAuthorization(901, 902, 903);
+    foreign_thread_refused = !result.ok && !result.context.present;
+  });
+  foreign_reader.join();
+  Check(foreign_thread_refused, "foreign thread cannot consume authentication publication fence");
   auto lookup = api::AcquireTransactionInventoryGuard(source.database_path);
   auto* publication_mutex = lookup.mutex(); lookup.unlock();
   std::promise<bool> probed;
