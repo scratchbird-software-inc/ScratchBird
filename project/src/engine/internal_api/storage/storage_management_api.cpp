@@ -15,6 +15,8 @@
 #include "filespace_package.hpp"
 #include "page_registry.hpp"
 #include "security/security_model.hpp"
+#include "transaction/transaction_api.hpp"
+#include "transaction/mutation_authority.hpp"
 #include "uuid.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include <stdexcept>
@@ -1192,7 +1194,12 @@ EngineFilespaceDiscoveryResult EngineDiscoverFilespaceAnomalies(
         request,
         MakeInvalidRequestDiagnostic(operation, "discovery_mutation_action_required"));
   }
+  // Retain native transaction publication ordering from admission through
+  // physical effects. A nonzero caller local-id is not a transaction receipt.
+  // Denied security requests above acquire no transaction publication guard.
+  std::unique_lock<std::recursive_mutex> transaction_owner;
   if (action_execution_requested) {
+    transaction_owner = AcquireTransactionInventoryGuard(request.context.database_path);
     const auto open_state_diagnostic =
         FilespaceDiscoveryOpenStateDiagnostic(request, operation);
     if (!open_state_diagnostic.code.empty()) {
@@ -1203,6 +1210,9 @@ EngineFilespaceDiscoveryResult EngineDiscoverFilespaceAnomalies(
           request,
           MakeInvalidRequestDiagnostic(operation, "local_transaction_id_required"));
     }
+    const auto admission = ValidateCurrentMutatingTransactionAuthority(
+        request.context, operation);
+    if (admission.error) return FilespaceDiscoveryFailure(request, admission);
   }
   if (request.context.database_uuid.is_nil()) {
     return FilespaceDiscoveryFailure(

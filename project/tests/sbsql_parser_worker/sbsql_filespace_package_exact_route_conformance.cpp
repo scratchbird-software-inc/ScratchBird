@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/owned_bootstrap_database_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -28,6 +29,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -56,8 +58,7 @@ constexpr std::array<PackageRouteRow, 5> kRows{{
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
-    std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -205,26 +206,19 @@ void RequireExactLowering(const PackageRouteRow& row) {
   // only. Their code-zero registry rows cannot be canonical server submissions.
 }
 
+scratchbird::tests::OwnedBootstrapDatabaseFixture& DatabaseFixture() {
+  static scratchbird::tests::OwnedBootstrapDatabaseFixture fixture(
+      scratchbird::tests::FixtureUuidLiteral("019f3100-0000-7000-8000-000000002001"));
+  return fixture;
+}
 api::EngineRequestContext EngineContext(const PackageRouteRow& row) {
-  api::EngineRequestContext context;
+  auto context = DatabaseFixture().Context(row.mutation);
   context.request_id = "sbsql-filespace-package-exact-route";
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.security_context_present = true;
-  context.database_path = "/tmp/sbsql_filespace_package_exact_route.sbdb";
-  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f3100-0000-7000-8000-000000002001");
-  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f3100-0000-7000-8000-000000002002");
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f3100-0000-7000-8000-000000002003");
   context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f3100-0000-7000-8000-000000002004");
   context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f3100-0000-7000-8000-000000002005");
   context.current_diagnostic_uuid = scratchbird::tests::FixtureUuidLiteral("019f3100-0000-7000-8000-000000002006");
-  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f3100-0000-7000-8000-000000002007");
-  context.catalog_generation_id = 311;
-  context.security_epoch = 312;
-  context.resource_epoch = 313;
-  context.local_transaction_id = row.mutation ? 701 : 0;
-  context.trace_tags.push_back("security.fixture_trace_authority");
-  context.trace_tags.push_back("right:OBS_CONFIG_INSPECT");
-  context.trace_tags.push_back("right:FILESPACE_LIFECYCLE_CONTROL");
   return context;
 }
 
@@ -428,13 +422,18 @@ void RequireRuntimePhysicalPackageTransferDirectEngineApi() {
 
 }  // namespace
 
-int main() {
+int main() try {
+  scratchbird::tests::ConfigureOwnedBootstrapFixtureMemory("filespace_package_component");
   for (const auto& row : kRows) {
     RequireExactLowering(row);
     RequireNoncanonicalRegistryBoundary(row);
   }
   RequireRuntimePackageFileIoDirectEngineApi();
   RequireRuntimePhysicalPackageTransferDirectEngineApi();
+  DatabaseFixture().Finish();
   std::cout << "sbsql_filespace_package_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

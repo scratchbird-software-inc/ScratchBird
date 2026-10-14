@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/owned_bootstrap_database_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -30,6 +31,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -58,8 +60,7 @@ constexpr std::array<DiscoveryRouteRow, 3> kRows{{
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
-    std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -211,24 +212,19 @@ void RequireExactLowering(const DiscoveryRouteRow& row) {
   // Their code-zero registry rows cannot be canonical server submissions.
 }
 
-api::EngineRequestContext EngineContext() {
-  api::EngineRequestContext context;
+scratchbird::tests::OwnedBootstrapDatabaseFixture& DatabaseFixture() {
+  static scratchbird::tests::OwnedBootstrapDatabaseFixture fixture(
+      scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000002001"));
+  return fixture;
+}
+api::EngineRequestContext EngineContext(bool mutation = false) {
+  auto context = DatabaseFixture().Context(mutation);
   context.request_id = "sbsql-filespace-discovery-exact-route";
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.security_context_present = true;
-  context.database_path = "/tmp/sbsql_filespace_discovery_exact_route.sbdb";
-  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000002001");
-  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000002002");
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000002003");
   context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000002004");
   context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000002005");
   context.current_diagnostic_uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000002006");
-  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000002007");
-  context.catalog_generation_id = 301;
-  context.security_epoch = 302;
-  context.resource_epoch = 303;
-  context.trace_tags.push_back("security.fixture_trace_authority");
-  context.trace_tags.push_back("right:OBS_CONFIG_INSPECT");
   return context;
 }
 
@@ -290,10 +286,7 @@ void RequireRuntimeScanDirectEngineApi() {
 
 void RequireEngineOwnedQuarantineExecutionDirectApi() {
   api::EngineFilespaceDiscoveryRequest request;
-  request.context = EngineContext();
-  request.context.local_transaction_id = 701;
-  request.context.snapshot_visible_through_local_transaction_id = 701;
-  request.context.trace_tags.push_back("right:FILESPACE_LIFECYCLE_CONTROL");
+  request.context = EngineContext(true);
   request.discovery_scope = api::EngineFilespaceDiscoveryScope::all;
   request.mutation_requested = true;
   request.execute_quarantine_actions = true;
@@ -343,7 +336,7 @@ void RequireEngineOwnedPhysicalCleanupDirectApi() {
   } cleanup{dir};
 
   const auto now = CurrentUnixMillis();
-  const auto database_uuid = MakeUuid(UuidKind::database, now + 10);
+  const auto database_uuid = uuid::MakeTypedUuid(UuidKind::database, EngineContext().database_uuid).value;
   const auto filespace_uuid = MakeUuid(UuidKind::filespace, now + 11);
   const auto writer_uuid = MakeUuid(UuidKind::object, now + 12);
   const auto path = dir / "engine-owned-cleanup.fsp";
@@ -366,11 +359,8 @@ void RequireEngineOwnedPhysicalCleanupDirectApi() {
   descriptor.active = false;
 
   api::EngineFilespaceDiscoveryRequest request;
-  request.context = EngineContext();
+  request.context = EngineContext(true);
   request.context.database_uuid = database_uuid.value;
-  request.context.local_transaction_id = 702;
-  request.context.snapshot_visible_through_local_transaction_id = 702;
-  request.context.trace_tags.push_back("right:FILESPACE_LIFECYCLE_CONTROL");
   request.discovery_scope = api::EngineFilespaceDiscoveryScope::all;
   request.expected_filespaces.push_back(descriptor);
   request.runtime_filesystem_scan_requested = true;
@@ -381,6 +371,20 @@ void RequireEngineOwnedPhysicalCleanupDirectApi() {
   request.physical_delete_legal_hold_clear = true;
   request.physical_delete_retention_satisfied = true;
   request.physical_delete_cleanup_horizon_authoritative = true;
+
+  const auto initial_bytes = std::filesystem::file_size(path);
+  for (unsigned fault = 0; fault < 4; ++fault) {
+    auto stale = request;
+    if (fault == 0) stale.context.local_transaction_id = 0;
+    if (fault == 1) stale.context.local_transaction_id = UINT64_MAX;
+    if (fault == 2) stale.context.transaction_uuid.bytes[15] ^= 1;
+    if (fault == 3) stale.context.database_uuid.bytes[15] ^= 1;
+    const auto refused = api::EngineDiscoverFilespaceAnomalies(stale);
+    Require(!refused.ok && !refused.diagnostics.empty() && !refused.durable_state_changed &&
+                !refused.physical_cleanup_executed && !refused.physical_file_removed &&
+                std::filesystem::exists(path) && std::filesystem::file_size(path) == initial_bytes,
+            "unadmitted transaction/database identity caused physical filespace effects");
+  }
 
   const auto result = api::EngineDiscoverFilespaceAnomalies(request);
   for (const auto& diagnostic : result.diagnostics) {
@@ -423,7 +427,8 @@ void RequireEngineOwnedPhysicalCleanupDirectApi() {
 
 }  // namespace
 
-int main() {
+int main() try {
+  scratchbird::tests::ConfigureOwnedBootstrapFixtureMemory("filespace_discovery_component");
   for (const auto& row : kRows) {
     RequireExactLowering(row);
     RequireNoncanonicalRegistryBoundary(row);
@@ -431,6 +436,10 @@ int main() {
   RequireRuntimeScanDirectEngineApi();
   RequireEngineOwnedQuarantineExecutionDirectApi();
   RequireEngineOwnedPhysicalCleanupDirectApi();
+  DatabaseFixture().Finish();
   std::cout << "sbsql_filespace_discovery_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }
