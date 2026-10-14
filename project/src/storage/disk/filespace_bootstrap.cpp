@@ -125,6 +125,27 @@ FilespaceBootstrapDecodeResult DecodeFilespaceBootstrap(
   return {Error::none, value};
 }
 
+FilespaceBootstrapReadResult ReadFilespaceBootstrapBoundedFromOpenDevice(
+    FileDevice& device,const FilespaceBootstrapBinding* expected) noexcept {
+  FilespaceBootstrapReadResult out;
+  try {
+    SerializedFilespaceBootstrap bytes{};
+    FileDevice::BoundedIoBatch observations(device);
+    const auto guard=device.AcquireOperationGuard();
+    out.io=observations.ReadAt(0,bytes.data(),bytes.size());
+    if(!out.io.ok()||out.io.bytes_transferred!=bytes.size()) {
+      out.error=out.io.error==BoundedIoError::not_open?Error::device_not_open:Error::io_failure;
+      return out;
+    }
+    static_cast<FilespaceBootstrapDecodeResult&>(out)=
+        DecodeFilespaceBootstrap(bytes.data(),bytes.size(),expected);
+  }catch(const std::bad_alloc&){out.error=Error::resource_exhausted;}
+   catch(const std::length_error&){out.error=Error::resource_exhausted;}
+   catch(...){out.error=Error::io_failure;}
+  if(out.error!=Error::none)out.preamble.reset();
+  return out;
+}
+
 FilespaceBootstrapDecodeResult ReadFilespaceBootstrapFromOpenDevice(
     FileDevice& device, const FilespaceBootstrapBinding* expected) noexcept {
   try {

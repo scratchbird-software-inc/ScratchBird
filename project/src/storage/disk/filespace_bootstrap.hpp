@@ -3,6 +3,7 @@
 #pragma once
 
 #include "runtime_platform.hpp"
+#include "disk_device.hpp"
 #include <array>
 #include <cstddef>
 #include <optional>
@@ -88,5 +89,13 @@ FilespaceBootstrapDecodeResult DecodeFilespaceBootstrap(
 // Structural probe only. Never reopens/closes/writes the caller's owned device.
 // Success is NOT full page-zero validation, attachment/serving or MGA admission.
 FilespaceBootstrapDecodeResult ReadFilespaceBootstrapFromOpenDevice(
+    FileDevice&, const FilespaceBootstrapBinding* expected = nullptr) noexcept;
+struct FilespaceBootstrapReadResult : FilespaceBootstrapDecodeResult {
+  BoundedIoResult io;
+};
+// Fixed error/transfer observation for guarded native readers. Metric capture
+// ends after this call's guard unlocks; callers retaining an outer guard use
+// their own retained batch/decoder instead. No error strings are rendered.
+FilespaceBootstrapReadResult ReadFilespaceBootstrapBoundedFromOpenDevice(
     FileDevice&, const FilespaceBootstrapBinding* expected = nullptr) noexcept;
 }  // namespace scratchbird::storage::disk

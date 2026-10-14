@@ -98,6 +98,8 @@ struct NativeCatalogRootsLeaseReadResult {
  page::NativeCatalogRootError catalog_error=page::NativeCatalogRootError::none;
  core::platform::Status io_status;
  core::platform::DiagnosticRecord io_diagnostic;
+ disk::BoundedIoResult io;
+ Uuid io_filespace_uuid;
  u64 physical_bytes_read=0,retained_image_bytes=0;
  std::span<const NativeReadCatalogRootImage> catalogs;
  usize feature_root_index=0;
@@ -132,18 +134,19 @@ class NativeCatalogRootsLeaseReader {
       return f.filespace_uuid==ref.filespace_uuid&&f.page_size_profile_uuid==ref.page_size_profile_uuid;});
     if(file==lease.devices_.end()){out.error=E::binding_mismatch;return out;}
     if(ref.page_number>std::numeric_limits<u64>::max()/size||
-        !disk::CheckFileDeviceExtent(ref.page_number*size,size).ok()){out.error=E::binding_mismatch;return out;}
+        disk::CheckFileDeviceExtentNative(ref.page_number*size,size)!=disk::BoundedIoError::none){out.error=E::binding_mismatch;return out;}
     auto& device=*file->device;auto& batch=lease.batches_[file-lease.devices_.begin()];
     auto image=backing.images_.subspan(count*backing.maximum_page_bytes_,size);
     const auto read=[&](u64 at,void* bytes,usize n){
-      auto r=batch.ReadAt(at,bytes,n);out.physical_bytes_read+=r.bytes_transferred;
-      out.io_status=r.status;out.io_diagnostic=std::move(r.diagnostic);return r.ok()&&r.bytes_transferred==n;};
+      auto r=batch.ReadAtBounded(at,bytes,n);out.physical_bytes_read+=r.bytes_transferred;
+      out.io=r;out.io_filespace_uuid=file->filespace_uuid;
+      out.io_status=disk::BoundedIoStatus(r);return r.ok()&&r.bytes_transferred==n;};
     const disk::FilespaceBootstrapBinding binding{cp.header.database_uuid,ref.filespace_uuid,ref.page_size_profile_uuid};
     disk::SerializedFilespaceBootstrap prefix{};
     if(!read(0,prefix.data(),prefix.size())){out.error=E::io_failure;return out;}
     const auto bootstrap=disk::DecodeFilespaceBootstrap(prefix.data(),prefix.size(),&binding);
     if(!bootstrap.ok()){out.error=E::bootstrap_failure;out.bootstrap_error=bootstrap.error;return out;}
-    auto before=device.Size();out.io_status=before.status;out.io_diagnostic=std::move(before.diagnostic);
+    auto before=batch.SizeBounded();out.io=before;out.io_status=disk::BoundedIoStatus(before);
     if(!before.ok()){out.error=E::io_failure;return out;}
     if(!read(0,image.data(),size)){out.error=E::io_failure;return out;}
     if(!std::equal(prefix.begin(),prefix.end(),image.begin())){
@@ -157,7 +160,7 @@ class NativeCatalogRootsLeaseReader {
     if(zero.record->bootstrap.flags&disk::FilespaceBootstrapFlag::cluster_authority_required){out.error=E::cluster_requires_authority;return out;}
     const auto total_pages=zero.record->total_pages;
     if(!read(ref.page_number*size,image.data(),size)){out.error=E::io_failure;return out;}
-    auto after=device.Size();out.io_status=after.status;out.io_diagnostic=std::move(after.diagnostic);
+    auto after=batch.SizeBounded();out.io=after;out.io_status=disk::BoundedIoStatus(after);
     if(!after.ok()){out.error=E::io_failure;return out;}
     if(before.size_bytes!=after.size_bytes){out.error=E::page_zero_failure;out.page_zero_error=disk::FilespacePageZeroError::invalid_capacity;return out;}
     const disk::NativeCommonPageHeaderBinding expected{binding,ref.page_number,ref.page_generation,5,{}};

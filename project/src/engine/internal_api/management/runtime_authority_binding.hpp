@@ -58,6 +58,8 @@ struct RuntimeAuthorityBindingLeaseReadResult {
   storage::database::NativeCatalogRelationLeaseError relation_error =
       storage::database::NativeCatalogRelationLeaseError::none;
   core::platform::u64 physical_bytes_read = 0;
+  std::optional<storage::disk::BoundedIoResult> io_failure;
+  core::platform::Uuid io_failure_filespace_uuid;
   bool ok() const noexcept {
     return error == RuntimeAuthorityBindingReadError::none && binding.has_value();
   }
@@ -83,7 +85,20 @@ inline RuntimeAuthorityBindingLeaseReadResult ReadCommittedRuntimeAuthorityBindi
   result.source_error = rows.error;
   result.relation_error = rows.source.error;
   result.physical_bytes_read = rows.source.physical_bytes_read;
-  if (!rows.ok()) { result.error = E::source_failure; return result; }
+  if (!rows.ok()) {
+    result.error = E::source_failure;
+    if(!rows.source.roots.io.ok()){
+      result.io_failure=rows.source.roots.io;
+      result.io_failure_filespace_uuid=rows.source.roots.io_filespace_uuid;
+    }else if(!rows.source.tree.io.ok()){
+      result.io_failure=rows.source.tree.io;
+      result.io_failure_filespace_uuid=rows.source.tree.io_filespace_uuid;
+    }else if(!rows.source.leaf_failure.io.ok()){
+      result.io_failure=rows.source.leaf_failure.io;
+      result.io_failure_filespace_uuid=rows.source.leaf_failure.io_filespace_uuid;
+    }
+    return result;
+  }
   const storage::database::NativeCatalogVisibleRow* selected = nullptr;
   for (const auto& row : rows.rows) {
     if (row.metadata.record.header.object_uuid.value != binding_uuid) continue;

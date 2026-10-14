@@ -87,6 +87,8 @@ struct NativeCatalogLeafLeaseReadResult {
   disk::NativeCommonPageHeaderError header_error=disk::NativeCommonPageHeaderError::none;
   core::platform::Status io_status;
   core::platform::DiagnosticRecord io_diagnostic;
+  disk::BoundedIoResult io;
+  Uuid io_filespace_uuid;
   u64 bytes_read=0;
   NativeCatalogLeafViewResult leaf;
   std::span<const byte> image;
@@ -125,12 +127,12 @@ class NativeCatalogLeafLeaseReader {
       const auto size=image.size();
       if(target.page_number>std::numeric_limits<u64>::max()/size)return out;
       const auto offset=target.page_number*size;
-      if(!disk::CheckFileDeviceExtent(offset,size).ok())return out;
+      if(disk::CheckFileDeviceExtentNative(offset,size)!=disk::BoundedIoError::none)return out;
       // No grant checks, new batches, owned scratch or metric callbacks here.
       // The existing lease's batches publish only after all its guards release.
       const auto read=[&](u64 at,void* data,std::size_t bytes){
-        auto io=observations.ReadAt(at,data,bytes);out.bytes_read+=io.bytes_transferred;
-        out.io_status=io.status;out.io_diagnostic=std::move(io.diagnostic);
+        auto io=observations.ReadAtBounded(at,data,bytes);out.bytes_read+=io.bytes_transferred;
+        out.io=io;out.io_filespace_uuid=found->filespace_uuid;out.io_status=disk::BoundedIoStatus(io);
         return io.ok()&&io.bytes_transferred==bytes;
       };
       const disk::FilespaceBootstrapBinding expected{database,target.filespace_uuid,target.page_size_profile_uuid};
@@ -138,7 +140,7 @@ class NativeCatalogLeafLeaseReader {
       if(!read(0,prefix.data(),prefix.size())){out.error=E::io_failure;return out;}
       const auto bootstrap=disk::DecodeFilespaceBootstrap(prefix.data(),prefix.size(),&expected);
       if(!bootstrap.ok()){out.error=E::bootstrap_failure;out.bootstrap_error=bootstrap.error;return out;}
-      auto before=device.Size();out.io_status=before.status;out.io_diagnostic=std::move(before.diagnostic);
+      auto before=observations.SizeBounded();out.io=before;out.io_status=disk::BoundedIoStatus(before);
       if(!before.ok()){out.error=E::io_failure;return out;}
       if(!read(0,image.data(),size)){out.error=E::io_failure;return out;}
       if(!std::equal(prefix.begin(),prefix.end(),image.begin())){
@@ -154,7 +156,7 @@ class NativeCatalogLeafLeaseReader {
       if(zero.record->bootstrap.flags&disk::FilespaceBootstrapFlag::payload_encrypted){out.error=E::encrypted_requires_authority;return out;}
       if(zero.record->bootstrap.flags&disk::FilespaceBootstrapFlag::cluster_authority_required){out.error=E::cluster_requires_authority;return out;}
       if(!read(offset,image.data(),size)){out.error=E::io_failure;return out;}
-      auto after=device.Size();out.io_status=after.status;out.io_diagnostic=std::move(after.diagnostic);
+      auto after=observations.SizeBounded();out.io=after;out.io_status=disk::BoundedIoStatus(after);
       if(!after.ok()){out.error=E::io_failure;return out;}
       if(before.size_bytes!=after.size_bytes){out.error=E::page_zero_failure;out.page_zero_error=disk::FilespacePageZeroError::invalid_capacity;return out;}
       const disk::NativeCommonPageHeaderBinding expected_page{expected,target.page_number,target.page_generation,6,{}};

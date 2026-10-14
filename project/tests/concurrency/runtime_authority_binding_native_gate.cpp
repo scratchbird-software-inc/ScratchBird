@@ -7,6 +7,7 @@
 #include "management/runtime_authority_binding.hpp"
 #include "../../src/server/database_ownership.hpp"
 #include <future>
+#include <fstream>
 #include <latch>
 
 namespace {
@@ -37,6 +38,10 @@ void GovernedRuntimeBinding(disk::FileDevice& device, unsigned profile) {
     auto result=runtime_api::ReadCommittedRuntimeAuthorityBindingOnNativeLease(
         *source.lease,database,2,1,{Id(101),{}},binding,generation,ceiling?ceiling:budget,prepared.workspace);
     const auto remaining=allocation_budget;allocation_budget=-1;
+    if(remaining!=0)std::cerr<<"governed forbidden allocation profile="<<profile<<" reads="<<reads
+        <<" fault="<<read_fault<<" allocation_failure_reads="<<allocation_failure_reads
+        <<" result="<<int(result.error)<<" source="<<int(result.source_error)
+        <<" relation="<<int(result.relation_error)<<'\n';
     Check(remaining==0,"governed runtime binding performs no heap allocation under native device guards");
     return result;
   };
@@ -67,6 +72,12 @@ void GovernedRuntimeBinding(disk::FileDevice& device, unsigned profile) {
     reads=0;read_fault=fault;track_reads=true;const auto failed=read();track_reads=false;
     Check(read_fault==0,"governed binding exact physical read failure injected");
     empty(failed,BindingError::source_failure);
+    Check(failed.io_failure&&failed.io_failure->error==disk::BoundedIoError::native_failure&&
+        failed.io_failure->operation==disk::BoundedIoOperation::read&&
+        failed.io_failure->native_attempted&&failed.io_failure->native_error==EIO&&
+        failed.io_failure->requested_bytes>0&&failed.io_failure->bytes_transferred==0&&
+        failed.io_failure_filespace_uuid==Id(2),
+        "governed read refusal preserves the fixed native I/O error and exact requested extent");
   }
   Check(read().ok(),"governed binding recovers its scratch after each read refusal");
   Check(valid.binding->binding_uuid==Id(180)&&valid.native_version_uuid==Id(170),
@@ -177,11 +188,57 @@ void OwnedRuntimeBinding(const std::string& path,unsigned p) {
   server::DatabaseOwnershipRequest request;request.database_path=path;
   auto route=server::AcquireDatabaseOwnership(request);Check(route.acquired&&route.lock,"actual configuration route owner");
   auto transition=route.lock->BeginNativeSourceTransition();Check(transition.ok(),"actual source transition issuer");
+  {
+    const auto probe=Source::ProbeRouteBootstrap(transition.transition);
+    Check(probe.ok()&&probe.bootstrap->database_uuid==Id(1)&&probe.bootstrap->filespace_uuid==Id(2)&&
+        probe.bootstrap->page_size_profile_uuid==Profile(p)&&probe.bootstrap->page_size_bytes==sizes[p],
+        "route bootstrap discovery returns actual binary identities and owning page profile");
+    Check(probe.physical_bytes_read==disk::kFilespaceBootstrapBytes&&probe.io.ok()&&
+        probe.io.native_attempted&&probe.io.bytes_transferred==disk::kFilespaceBootstrapBytes,
+        "bootstrap probe reports actual bounded read bytes rather than a zero/default observation");
+    Check(transition.transition->ObserveDrain().legacy_borrowers==0,
+        "bootstrap probe releases every temporary route/source pin");
+    const auto repeated=Source::ProbeRouteBootstrap(transition.transition);
+    Check(repeated.ok()&&repeated.bootstrap->database_uuid==probe.bootstrap->database_uuid,
+        "bootstrap observation leaves transition available for fresh admission");
+    const auto absent=Source::ProbeRouteBootstrap({});
+    Check(!absent.ok()&&!absent.bootstrap&&absent.error==db::NativeOwnedSourceError::invalid_request,
+        "missing private route transition cannot discover a node by pathname");
+    reads=0;read_fault=1;track_reads=true;
+    const auto failed=Source::ProbeRouteBootstrap(transition.transition);track_reads=false;
+    Check(read_fault==0&&!failed.ok()&&!failed.bootstrap&&
+        failed.error==db::NativeOwnedSourceError::bootstrap_failure&&
+        failed.bootstrap_error==disk::FilespaceBootstrapError::io_failure,
+        "bootstrap read failure retains exact cause and no usable identity tuple");
+    Check(Source::ProbeRouteBootstrap(transition.transition).ok(),
+        "failed bootstrap probe aborts its reservation and allows original transition retry");
+    const auto retained_path=path+".probe-retained";
+    std::filesystem::rename(path,retained_path);
+    auto foreign=*probe.bootstrap;foreign.database_uuid=Id(250);
+    const auto counterfeit=disk::EncodeFilespaceBootstrap(foreign);
+    Check(counterfeit.ok(),"encode independently replaced pathname bootstrap");
+    {
+      std::ofstream output(path,std::ios::binary|std::ios::trunc);
+      output.write(reinterpret_cast<const char*>(counterfeit.bytes->data()),counterfeit.bytes->size());
+      output.close();Check(bool(output),"write owned pathname-replacement negative fixture");
+    }
+    const auto pinned=Source::ProbeRouteBootstrap(transition.transition);
+    Check(pinned.ok()&&pinned.bootstrap->database_uuid==Id(1),
+        "bootstrap probe uses actual retained inode, never a replacement at its diagnostic pathname");
+    Check(std::filesystem::remove(path),"remove only the owned counterfeit pathname fixture");
+    std::filesystem::rename(retained_path,path);
+  }
   std::vector<std::unique_ptr<disk::FileDevice>> secondary;
   auto source=Source::AdoptRoute(transition.transition,Id(1),Id(2),secondary,budget);
   if(!source.ok())std::cerr<<"owned fixture error="<<int(source.error)<<" selection="<<int(source.selection_error)
       <<" checkpoint="<<int(source.checkpoint_error)<<" directory="<<int(source.directory_error)<<'\n';
   Check(source.ok(),"actual complete route-owned configuration source");
+  {
+    const auto consumed=Source::ProbeRouteBootstrap(transition.transition);
+    Check(!consumed.ok()&&!consumed.bootstrap&&consumed.error==db::NativeOwnedSourceError::route_admission&&
+        consumed.route_error==disk::RouteSourceTransitionError::already_transferred,
+        "completed source ownership cannot be reprobed through an old transition");
+  }
   const auto read=[&](u64 generation=1,byte binding=180,u64 ceiling=0) {
     return runtime_api::ReadCommittedRuntimeAuthorityBindingFromOwnedSource(source.owner,Id(1),2,1,
         {Id(101),{}},Id(binding),generation,ceiling?ceiling:budget);

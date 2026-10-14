@@ -27,6 +27,8 @@ struct NativeBtreeTreeReadResult {
   disk::FilespacePageZeroError page_zero_error=disk::FilespacePageZeroError::none;
   core::platform::Status allocation_status,io_status;
   core::platform::DiagnosticRecord allocation_diagnostic,io_diagnostic;
+  disk::BoundedIoResult io;
+  core::platform::Uuid io_filespace_uuid;
   core::platform::u64 physical_bytes_read=0,retained_image_bytes=0;
   std::span<const page::NativeBtreePageViewResult> pages;
   std::span<const std::size_t> leaves;
@@ -230,8 +232,9 @@ struct Reader {
     std::fill(slots.begin(),slots.end(),missing);std::fill(identities.begin(),identities.end(),missing);
     std::fill(levels.begin(),levels.end(),missing);
     const auto read=[&](std::size_t i,u64 offset,void* data,std::size_t size){
-      auto io=batches[i].ReadAt(offset,data,size);out.physical_bytes_read+=io.bytes_transferred;
-      out.io_status=io.status;out.io_diagnostic=std::move(io.diagnostic);return io.ok()&&io.bytes_transferred==size;};
+      auto io=batches[i].ReadAtBounded(offset,data,size);out.physical_bytes_read+=io.bytes_transferred;
+      out.io=io;out.io_filespace_uuid=files[i].source.filespace_uuid;
+      out.io_status=disk::BoundedIoStatus(io);return io.ok()&&io.bytes_transferred==size;};
     for(std::size_t i=0;i<files.size();++i){auto& f=files[i];
       const disk::FilespaceBootstrapBinding expected{database,f.source.filespace_uuid,f.source.page_size_profile_uuid};
       disk::SerializedFilespaceBootstrap prefix{};
@@ -247,7 +250,7 @@ struct Reader {
       if(!zero.ok()){out.page_zero_error=zero.error;
         fail(zero.error==disk::FilespacePageZeroError::hash_provider_failure?T::hash_failure:T::invalid_filespace);return out;}
       f.total_pages=zero.record->total_pages;f.role=zero.record->bootstrap.filespace_role;f.flags=zero.record->bootstrap.flags;
-      auto size=f.source.device->Size();out.io_status=size.status;out.io_diagnostic=std::move(size.diagnostic);
+      auto size=batches[i].SizeBounded();out.io=size;out.io_status=disk::BoundedIoStatus(size);
       if(!size.ok()){fail(T::io_failure);return out;}
       if(f.total_pages>std::numeric_limits<u64>::max()/f.size||size.size_bytes!=f.total_pages*f.size){out.page_zero_error=disk::FilespacePageZeroError::invalid_capacity;fail(T::invalid_filespace);return out;}
     }

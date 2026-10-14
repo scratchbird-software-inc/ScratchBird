@@ -41,6 +41,7 @@ struct NativeOwnedSourceDiagnostics {
   core::platform::Status allocation_status,io_status;
   core::platform::DiagnosticRecord allocation_diagnostic,io_diagnostic;
   u64 physical_bytes_read=0;
+  std::optional<disk::BoundedIoResult> io_failure;
   void FromMemorySource(NativeSelectedCheckpointMemoryResult& r) noexcept {
     error=NativeOwnedSourceError::source_failure;memory_source_error=r.error;memory_error=r.memory_error;
     selection_error=r.selection_error;checkpoint_error=r.checkpoint_error;allocation_error=r.allocation_error;
@@ -58,6 +59,13 @@ struct NativeOwnedSourceDiagnostics {
 struct NativeOwnedSourceResult : NativeOwnedSourceDiagnostics {
   std::shared_ptr<NativeOwnedCheckpointSource> owner;
   bool ok() const noexcept { return error==NativeOwnedSourceError::none&&owner!=nullptr; }
+};
+struct NativeOwnedSourceBootstrapResult : NativeOwnedSourceDiagnostics {
+  disk::BoundedIoResult io;
+  std::optional<disk::FilespaceBootstrap> bootstrap;
+  bool ok() const noexcept {
+    return error==NativeOwnedSourceError::none&&bootstrap.has_value();
+  }
 };
 struct NativeOwnedSourceReadResult : NativeOwnedSourceDiagnostics {
   std::unique_ptr<NativeOwnedCheckpointReadLease> lease;
@@ -133,6 +141,13 @@ class NativeOwnedCheckpointSource {
   std::size_t owner_backing_bytes_used() const noexcept {
     return memory_state_?memory_state_->backing_bytes_used:0;
   }
+  // Discover actual binary grant bindings from the already-owned primary inode.
+  // Aborts the temporary source-admission reservation on every exit; neither
+  // consumes the transition nor permits legacy borrowing. No pathname reopen,
+  // supplied identity/profile, mounted source, page-zero or readiness receipt.
+  // Full adoption MUST freshly revalidate this observation and the entire graph.
+  static NativeOwnedSourceBootstrapResult ProbeRouteBootstrap(
+      const std::shared_ptr<disk::RouteSourceTransition>&) noexcept;
   static NativeOwnedSourceResult AdoptWithMemory(const Uuid&,const Uuid&,
       std::vector<std::unique_ptr<disk::FileDevice>>&,
       NativeOwnedCheckpointMemoryLimits,NativeStorageMemory&,const NativeStorageMemoryBinding&,
@@ -343,9 +358,10 @@ class NativeOwnedCheckpointSource {
     if(!file.is_open()){out.error=NativeOwnedSourceError::bootstrap_failure;
       out.bootstrap_error=disk::FilespaceBootstrapError::device_not_open;return false;}
     disk::SerializedFilespaceBootstrap bytes{};
-    auto read=batch.ReadAt(0,bytes.data(),bytes.size());
+    auto read=batch.ReadAtBounded(0,bytes.data(),bytes.size());
     out.physical_bytes_read+=read.bytes_transferred;
-    out.io_status=read.status;out.io_diagnostic=std::move(read.diagnostic);
+    out.io_status=disk::BoundedIoStatus(read);
+    if(!read.ok())out.io_failure=read;
     if(!read.ok()||read.bytes_transferred!=bytes.size()){
       out.error=NativeOwnedSourceError::bootstrap_failure;
       out.bootstrap_error=disk::FilespaceBootstrapError::io_failure;return false;
@@ -474,6 +490,39 @@ inline NativeOwnedSourceMemoryReadResult NativeOwnedCheckpointSource::ReadWithMe
    catch(...){out.error=E::io_failure;}
   return out;
 }
+inline NativeOwnedSourceBootstrapResult NativeOwnedCheckpointSource::ProbeRouteBootstrap(
+    const std::shared_ptr<disk::RouteSourceTransition>& transition) noexcept {
+  using E=NativeOwnedSourceError;
+  NativeOwnedSourceBootstrapResult out;
+  try {
+    if(!transition)return out;
+    auto retained=transition;
+    std::unique_ptr<disk::FileDevice> primary;
+    out.route_error=retained->BeginSourceAdmission(primary);
+    if(out.route_error!=disk::RouteSourceTransitionError::none) {
+      out.error=E::route_admission;return out;
+    }
+    const auto abort=[&primary](disk::RouteSourceTransition* t) {
+      primary.reset();t->AbortSourceAdmission();
+    };
+    std::unique_ptr<disk::RouteSourceTransition,decltype(abort)> rollback(retained.get(),abort);
+    const auto observed=disk::ReadFilespaceBootstrapBoundedFromOpenDevice(*primary);
+    out.io=observed.io;
+    if(!observed.io.ok())out.io_failure=observed.io;
+    out.physical_bytes_read=observed.io.bytes_transferred;
+    out.io_status=disk::BoundedIoStatus(observed.io);
+    out.bootstrap_error=observed.error;
+    if(!observed.ok()){out.error=E::bootstrap_failure;return out;}
+    out.bootstrap=observed.preamble;
+    out.error=E::none;
+  }catch(const std::bad_alloc&){out.error=E::resource_exhausted;}
+   catch(const std::length_error&){out.error=E::resource_exhausted;}
+   catch(const std::system_error&){out.error=E::lock_failure;}
+   catch(...){out.error=E::io_failure;}
+  if(out.error!=E::none)out.bootstrap.reset();
+  return out;
+}
+
 inline NativeOwnedSourceResult NativeOwnedCheckpointSource::AdoptRouteWithMemory(
     const std::shared_ptr<disk::RouteSourceTransition>& transition,const Uuid& database,const Uuid& primary,
     std::vector<std::unique_ptr<disk::FileDevice>>& secondary,NativeOwnedCheckpointMemoryLimits limits,

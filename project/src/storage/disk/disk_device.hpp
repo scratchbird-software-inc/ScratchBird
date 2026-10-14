@@ -126,6 +126,12 @@ struct BoundedIoResult {
   bool read_only_noop = false;
   bool ok() const noexcept { return error == BoundedIoError::none; }
 };
+// Fixed status projection only; the precise native cause remains in the receipt.
+inline Status BoundedIoStatus(const BoundedIoResult& result) noexcept {
+  using namespace scratchbird::core::platform;
+  return {result.ok()?StatusCode::ok:StatusCode::platform_required_feature_missing,
+          result.ok()?Severity::info:Severity::error,Subsystem::storage_disk};
+}
 // Render only after releasing ALL enclosing device/source guards. The path is
 // diagnostic data supplied by the owner, never a resource identity. Does not
 // publish metrics (the originating batch already owns those observations).
@@ -250,13 +256,19 @@ class FileDevice {
   // The device must outlive the batch. No detached work or registry authority.
   class ReadLatencyBatch {
    public:
-    explicit ReadLatencyBatch(FileDevice& device) noexcept : device_(device) {}
+    explicit ReadLatencyBatch(FileDevice& device) noexcept : device_(device),bounded_(device) {}
     ReadLatencyBatch(const ReadLatencyBatch&) = delete;
     ReadLatencyBatch& operator=(const ReadLatencyBatch&) = delete;
     ~ReadLatencyBatch();
     // Immutable observation-route binding, never storage permission.
     const FileDevice& device() const noexcept { return device_; }
     IoResult ReadAt(u64 offset, void* buffer, usize bytes);
+    // Guarded native consumers retain fixed causes, including error/partial
+    // effects, and render diagnostics only after the owning source unlocks.
+    BoundedIoResult ReadAtBounded(u64 offset, void* buffer, usize bytes) {
+      return bounded_.ReadAt(offset,buffer,bytes);
+    }
+    BoundedIoResult SizeBounded() { return bounded_.Size(); }
    private:
     friend class FileDevice;
     struct Sample {
@@ -265,6 +277,7 @@ class FileDevice {
       bool opened = false;
     };
     FileDevice& device_;
+    BoundedIoBatch bounded_;
     std::array<Sample,16> samples_{};
     usize count_ = 0;
   };
