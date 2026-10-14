@@ -35,6 +35,7 @@
 #include "executor_foundation.hpp"
 #include "cluster_provider/cluster_provider.hpp"
 #include "database_format.hpp"
+#include "disk_device.hpp"
 #include "hash_digest.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "catalog/schema_tree_api.hpp"
@@ -3556,21 +3557,65 @@ bool looks_like_sblr_operation_envelope(const scratchbird::engine::SblrExecution
 struct DatabaseHeaderSnapshot {
   scratchbird::engine::internal_api::EngineUuid database_uuid;
   std::uint64_t page_size_bytes = 0;
+  std::string failure_detail = "database_source_unavailable";
+  std::optional<scratchbird::core::platform::DiagnosticRecord> source_failure;
+  std::optional<scratchbird::core::platform::DiagnosticRecord> cleanup_failure;
+  std::optional<std::error_code> source_exception;
 };
 
-DatabaseHeaderSnapshot database_header_snapshot(std::string_view database_path) {
+DatabaseHeaderSnapshot database_header_snapshot(std::string_view database_path) try {
   DatabaseHeaderSnapshot snapshot;
   if (database_path.empty()) return snapshot;
   scratchbird::storage::disk::SerializedDatabaseHeader serialized{};
-  std::ifstream in(std::string(database_path), std::ios::binary);
-  if (!in) return snapshot;
-  in.read(reinterpret_cast<char*>(serialized.data()),
-          static_cast<std::streamsize>(serialized.size()));
-  if (in.gcount() != static_cast<std::streamsize>(serialized.size())) return snapshot;
+  namespace disk = scratchbird::storage::disk;
+  disk::FileDevice device;
+  const auto opened = device.Open(std::string(database_path), disk::FileOpenMode::open_existing_read_only);
+  if (!opened.ok()) { snapshot.source_failure = opened.diagnostic; return snapshot; }
+  // Keep the opening-thread source/operation guard through identity and extent
+  // observation. This is header admission, not retained node ownership.
+  const auto read = device.ReadAt(0, serialized.data(), serialized.size());
+  const auto extent = device.Size();
+  const auto closed = device.Close();
+  if (!closed.ok()) snapshot.cleanup_failure = closed.diagnostic;
+  if (!read.ok() || read.bytes_transferred != serialized.size()) {
+    snapshot.failure_detail = "database_header_read_failed";
+    snapshot.source_failure = read.diagnostic;
+    return snapshot;
+  }
+  if (!extent.ok()) {
+    snapshot.failure_detail = "database_extent_read_failed";
+    snapshot.source_failure = extent.diagnostic;
+    return snapshot;
+  }
+  if (!closed.ok()) {
+    snapshot.failure_detail = "database_source_close_failed";
+    snapshot.source_failure = closed.diagnostic;
+    return snapshot;
+  }
   const auto parsed = scratchbird::storage::disk::ParseDatabaseHeader(serialized);
-  if (!parsed.ok()) return snapshot;
+  if (!parsed.ok()) {
+    snapshot.failure_detail = "database_header_invalid";
+    snapshot.source_failure = parsed.diagnostic;
+    return snapshot;
+  }
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(parsed.header.database_uuid)) {
+    snapshot.failure_detail = "database_identity_invalid";
+    return snapshot;
+  }
+  if (extent.size_bytes < parsed.header.page_size || extent.size_bytes % parsed.header.page_size) {
+    snapshot.failure_detail = "database_extent_invalid";
+    return snapshot;
+  }
   snapshot.database_uuid = parsed.header.database_uuid;
   snapshot.page_size_bytes = parsed.header.page_size;
+  snapshot.failure_detail.clear();
+  return snapshot;
+} catch (const std::system_error& error) {
+  // Filesystem lookup and ownership-guard failures are input admission
+  // failures, not exceptions allowed to escape the public C ABI. Preserve
+  // the typed OS cause without rendering a possibly sensitive source path.
+  DatabaseHeaderSnapshot snapshot;
+  snapshot.source_exception = error.code();
   return snapshot;
 }
 
@@ -4895,6 +4940,10 @@ sb_engine_status_t sb_engine_open(const sb_engine_open_params_v1_t* params,
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 1006, "ENGINE.OPEN.MODE_INVALID",
                        "engine.open.mode_invalid");
   }
+  if (params->database_path_size == 0 && params->mode != SB_ENGINE_OPEN_VALIDATION_ONLY) {
+    return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 1005,
+                       "ENGINE.OPEN.PATH_INVALID", "engine.open.path_invalid", "database_path_required");
+  }
   auto handle = std::make_unique<sb_engine_handle_s>();
   // Explicit built-in engine-instance policy, not a parser/carrier-selected
   // grant. Canonical bytes are reserved across receipts, with a 256 MiB pool.
@@ -4910,7 +4959,48 @@ sb_engine_status_t sb_engine_open(const sb_engine_open_params_v1_t* params,
   if (params->database_path_utf8 != nullptr && params->database_path_size != 0) {
     handle->database_path.assign(params->database_path_utf8,
                                  params->database_path_utf8 + params->database_path_size);
+    if (handle->database_path.find('\0') != std::string::npos)
+      return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 1005,
+                         "ENGINE.OPEN.PATH_INVALID", "engine.open.path_invalid", "database_path_contains_nul");
     const auto snapshot = database_header_snapshot(handle->database_path);
+    if (!snapshot.failure_detail.empty()) {
+      namespace api = scratchbird::engine::internal_api;
+      auto diagnostic = snapshot.source_failure
+          ? api::MakeEngineApiDiagnosticFromNative(*snapshot.source_failure,
+              "ENGINE.OPEN.PATH_INVALID", "engine.open.path_invalid", snapshot.failure_detail, true)
+          : api::MakeEngineApiDiagnostic("ENGINE.OPEN.PATH_INVALID",
+              "engine.open.path_invalid", snapshot.failure_detail, true);
+      if (snapshot.source_failure) {
+        const auto& source = *snapshot.source_failure;
+        diagnostic.fields.push_back({"source_code", source.diagnostic_code});
+        diagnostic.fields.push_back({"source_message_key", source.message_key});
+        diagnostic.fields.push_back({"source_component", source.source_component});
+        for (const auto& argument : source.arguments) {
+          if (const auto* identity = argument.uuid())
+            diagnostic.identity_fields.push_back({argument.key, *identity});
+          else if (const auto* text = argument.text())
+            diagnostic.fields.push_back({argument.key, *text});
+        }
+      }
+      if (snapshot.cleanup_failure) {
+        const auto& cleanup = *snapshot.cleanup_failure;
+        diagnostic.fields.push_back({"cleanup_source_code", cleanup.diagnostic_code});
+        diagnostic.fields.push_back({"cleanup_source_message_key", cleanup.message_key});
+        diagnostic.fields.push_back({"cleanup_source_component", cleanup.source_component});
+        for (const auto& argument : cleanup.arguments) {
+          if (const auto* identity = argument.uuid())
+            diagnostic.identity_fields.push_back({"cleanup_" + argument.key, *identity});
+          else if (const auto* text = argument.text())
+            diagnostic.fields.push_back({"cleanup_" + argument.key, *text});
+        }
+      }
+      if (snapshot.source_exception) {
+        diagnostic.fields.push_back({"source_error_value", std::to_string(snapshot.source_exception->value())});
+        diagnostic.fields.push_back({"source_error_category", snapshot.source_exception->category().name()});
+      }
+      return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 1005,
+          diagnostic.code, diagnostic.message_key, diagnostic.detail, {}, nullptr, &diagnostic);
+    }
     handle->database_uuid = snapshot.database_uuid;
     handle->database_page_size_bytes = snapshot.page_size_bytes;
     if (!handle->database_uuid.is_nil() && params->mode == SB_ENGINE_OPEN_NORMAL) {

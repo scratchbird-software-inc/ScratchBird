@@ -7,6 +7,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "scratchbird/engine/engine.h"
+#include "../support/owned_temp_directory.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "memory.hpp"
 
 #include <array>
 #include <cstdint>
@@ -14,6 +17,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <iostream>
 
 // Only serialized bytes cross between this public-ABI test and its codec
 // fixture producer. Never redeclare private C++ types: their layouts are not ABI.
@@ -23,9 +27,6 @@ bool ValidateCanonicalOperationBytes(std::string_view bytes);
 }
 
 namespace {
-
-constexpr const char* kDatabasePath =
-    "/tmp/sb_engine_public_sblr_admission.sbdb";
 
 sb_engine_uuid_t TestUuid(unsigned char tail) {
   sb_engine_uuid_t uuid{};
@@ -37,17 +38,33 @@ sb_engine_uuid_t TestUuid(unsigned char tail) {
 }
 
 struct Harness {
+  scratchbird::tests::OwnedTempDirectory temporary;
+  std::string database_path = (temporary.path() / "admission.sbdb").string();
   sb_engine_handle_t engine = nullptr;
   sb_engine_session_t session = nullptr;
   sb_engine_session_params_v1_t session_params{};
 
   bool Open() {
+    namespace db = scratchbird::storage::database;
+    namespace uuid = scratchbird::core::uuid;
+    namespace memory = scratchbird::core::memory;
+    if (!memory::ConfigureDefaultMemoryManagerForFixture(
+            memory::DefaultLocalEngineMemoryPolicy(), "public_sblr_admission").ok()) return false;
+    db::DatabaseCreateConfig create;
+    create.path = database_path;
+    create.database_uuid = uuid::GenerateEngineIdentityV7(
+        scratchbird::core::platform::UuidKind::database, 1791800000000).value;
+    create.filespace_uuid = uuid::GenerateEngineIdentityV7(
+        scratchbird::core::platform::UuidKind::filespace, 1791800000000).value;
+    create.creation_unix_epoch_millis = 1791800000000;
+    scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+    if (!db::CreateDatabaseFile(create).ok()) return false;
     sb_engine_open_params_v1_t open_params{};
     open_params.struct_size = sizeof(open_params);
     open_params.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
     open_params.mode = SB_ENGINE_OPEN_VALIDATION_ONLY;
-    open_params.database_path_utf8 = kDatabasePath;
-    open_params.database_path_size = std::strlen(kDatabasePath);
+    open_params.database_path_utf8 = database_path.data();
+    open_params.database_path_size = database_path.size();
     if (sb_engine_open(&open_params, &engine, nullptr) != SB_ENGINE_STATUS_OK ||
         engine == nullptr) {
       return false;
@@ -64,16 +81,29 @@ struct Harness {
            session != nullptr;
   }
 
-  ~Harness() {
+  void Close() {
     if (session != nullptr) {
       sb_engine_session_end_params_v1_t end_params{};
       end_params.struct_size = sizeof(end_params);
       end_params.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
       end_params.rollback_active_transactions = 1;
       end_params.cancel_open_results = 1;
-      (void)sb_engine_session_end(session, &end_params, nullptr);
+      if (sb_engine_session_end(session, &end_params, nullptr) != SB_ENGINE_STATUS_OK) {
+        throw std::runtime_error("admission fixture session cleanup failed");
+      }
+      session = nullptr;
     }
-    if (engine != nullptr) (void)sb_engine_close(engine, nullptr);
+    if (engine != nullptr && sb_engine_close(engine, nullptr) != SB_ENGINE_STATUS_OK) {
+      throw std::runtime_error("admission fixture engine cleanup failed");
+    }
+    engine = nullptr;
+  }
+  ~Harness() {
+    try { Close(); }
+    catch (const std::exception& error) {
+      std::cerr << error.what() << '\n';
+      std::terminate();
+    }
   }
 };
 
@@ -135,7 +165,7 @@ sb_engine_status_t Dispatch(Harness& harness,
 
 }  // namespace
 
-int main() {
+int main() try {
   Harness harness;
   if (!harness.Open()) return 1;
 
@@ -187,5 +217,10 @@ int main() {
     return 9;
   }
   (void)sb_engine_result_release(result);
+  harness.Close();
+  harness.temporary.Cleanup();
   return 0;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return 10;
 }
