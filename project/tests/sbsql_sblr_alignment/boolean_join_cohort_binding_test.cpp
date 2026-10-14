@@ -306,6 +306,27 @@ int main() try {
       api::EngineDatatypeCohort{dt::kDatatypeCohortV11, 11, 11}}) {
     for (bool rows : {false, true}) {
       auto in = Build(cohort, rows);
+      const auto& source = in.dag.descriptors.front();
+      auto projected = in.left.batch.columns.front().descriptor;
+      const auto before_projection = projected;
+      for (unsigned change = 0; change < 9; ++change) {
+        auto invalid = source;
+        if (change == 0) invalid.nullability = api::RelationalNullability::kUnknown;
+        if (change == 1) invalid.datatype_identity_authoritative = false;
+        if (change == 2) invalid.statement_receipt_uuid = {};
+        if (change == 3) invalid.datatype_registry_generation++;
+        if (change == 4) invalid.type_generation++;
+        if (change == 5) invalid.codec_generation++;
+        if (change == 6) invalid.collation_uuid = source.type_uuid;
+        if (change == 7) invalid.width = 1;
+        if (change == 8) invalid.precision = 1;
+        Check(!api::BuildExactCanonicalScalarRuntimeDescriptorV1(invalid,
+                  dt::CanonicalTypeId::boolean, &projected) && projected == before_projection,
+              "failed exact scalar projection erased the retained descriptor");
+      }
+      Check(!api::BuildExactCanonicalScalarRuntimeDescriptorV1(source,
+                dt::CanonicalTypeId::unknown, &projected) && projected == before_projection,
+            "unsupported scalar projection erased the retained descriptor");
       const auto prepared = Prepare(in);
       Check(prepared.ok, "current BOOLEAN join preparation refused: " + prepared.detail);
       Carriers(in.left.batch.columns[0].descriptor);

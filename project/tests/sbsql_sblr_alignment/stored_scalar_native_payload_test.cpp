@@ -15,7 +15,9 @@
 #include "engine/functions/dispatch/function_dispatch.hpp"
 #include "engine/functions/registry/function_seed_registry.hpp"
 #include "../support/exact_datatype_descriptor_fixture.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/internal_api/query/projection_api.hpp"
+#include "engine/internal_api/query/native_scalar_descriptor_projection.hpp"
 
 #include <array>
 #include <cstdlib>
@@ -1062,7 +1064,165 @@ void StoredIntegerDescriptors() {
     Require(count == 2, "current V3 cohort did not exercise both signed integer bindings");
 }
 
+api::RelationalTypeDescriptor ProjectionSourceFixture(const auto& row, unsigned occurrence) {
+  api::RelationalTypeDescriptor source;
+  source.descriptor_id = 1;
+  source.descriptor_uuid = scratchbird::tests::FixtureUuid(282, occurrence);
+  source.type_uuid = row.type_uuid;
+  source.nullability = api::RelationalNullability::kNullable;
+  source.datatype_identity_authoritative = true;
+  source.descriptor_generation = row.descriptor_generation;
+  source.type_generation = row.type_generation;
+  source.codec_id = row.codec_id;
+  source.codec_version = row.codec_version;
+  source.codec_generation = row.codec_generation;
+  source.statement_receipt_uuid = scratchbird::tests::FixtureUuid(283, occurrence);
+  source.datatype_catalog_snapshot_uuid = row.catalog_snapshot_uuid;
+  source.datatype_catalog_generation = row.catalog_generation;
+  source.datatype_registry_generation = row.registry_generation;
+  return source;
+}
+
+void ScalarProjectionFailurePreservesOutput() {
+  namespace dt = scratchbird::core::datatypes;
+  unsigned exercised = 0;
+  for (const auto& identity : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row = identity.legacy_fields;
+    const auto type = static_cast<dt::CanonicalTypeId>(row.canonical_binary_type_code);
+    if (type != dt::CanonicalTypeId::boolean && type != dt::CanonicalTypeId::int64 &&
+        type != dt::CanonicalTypeId::uint64 && type != dt::CanonicalTypeId::real64 &&
+        type != dt::CanonicalTypeId::decimal) continue;
+    auto source = ProjectionSourceFixture(row, ++exercised);
+    if (type == dt::CanonicalTypeId::decimal) {
+      source.precision = 76; source.scale = 2;
+      source.decimal_codec_profile = dt::DecimalCodecProfile{dt::kExactDecimal40CodecUuid, 1};
+    }
+    const auto original_source = source;
+    auto expected = Sentinel("expected_projection").descriptor;
+    Require(api::BuildExactCanonicalScalarRuntimeDescriptorV1(source, type, &expected),
+            "native scalar projection fixture refused exact registered identity");
+    bool completed = false;
+    unsigned failures = 0;
+    for (long allocation = 0; allocation < 256; ++allocation) {
+      auto output = Sentinel("retained_projection").descriptor;
+      const auto retained = output;
+      fail_after = allocation;
+      try {
+        const bool accepted = api::BuildExactCanonicalScalarRuntimeDescriptorV1(source, type, &output);
+        fail_after = -1;
+        Require(accepted && output == expected && source == original_source,
+                "scalar projection allocation sweep changed valid descriptor or source");
+        completed = true;
+        break;
+      } catch (const std::bad_alloc&) {
+        fail_after = -1;
+        ++failures;
+        Require(output == retained && source == original_source,
+                "scalar projection allocation failure erased output or changed source");
+      }
+    }
+    Require(completed && failures != 0, "scalar projection allocation sweep did not reach a fault and valid retry");
+  }
+  Require(exercised >= 4, "scalar projection allocation coverage omitted native types");
+}
+
+void DecimalProjectionWidths() {
+  namespace dt = scratchbird::core::datatypes;
+  unsigned rows = 0;
+  for (const auto& identity : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row = identity.legacy_fields;
+    if (row.canonical_binary_type_code != static_cast<std::uint32_t>(dt::CanonicalTypeId::decimal)) continue;
+    ++rows;
+    for (std::uint32_t precision = 1; precision <= 76; ++precision) {
+      for (std::uint32_t scale = 0; scale <= precision; ++scale) {
+        for (const bool nullable : {false, true}) {
+          auto source = ProjectionSourceFixture(row, rows);
+          source.nullability = nullable ? api::RelationalNullability::kNullable : api::RelationalNullability::kNonNull;
+          source.precision = precision; source.scale = scale;
+          source.decimal_codec_profile = dt::DecimalCodecProfile{
+              precision <= 38 ? dt::kExactDecimal24CodecUuid : dt::kExactDecimal40CodecUuid, 1};
+          auto output = Sentinel("decimal_projection").descriptor;
+          Require(api::BuildExactCanonicalScalarRuntimeDescriptorV1(source, dt::CanonicalTypeId::decimal, &output),
+                  "exact decimal projection refused a registered24/40-byte profile");
+          scratchbird::engine::ExecutionTypeDescriptor execution;
+          dt::DatatypeDecimalCodecBindingV1 codec;
+          Require(scratchbird::engine::executor::BuildBoundDecimalExecutionTypeDescriptor(output, &execution, &codec) &&
+                      execution.precision == precision && execution.scale == scale &&
+                      codec.codec_uuid == source.decimal_codec_profile->uuid && codec.generation == 1,
+                  "decimal projection lost precision/scale or selected binary codec");
+          api::EngineTypedValue value;
+          value.descriptor = output; value.setState(State::value);
+          // Independent canonical positive-zero oracle for each binary width.
+          value.binary_value.assign(precision <= 38 ? 24 : 40, 0);
+          value.binary_value[1] = value.binary_value[2] = 1;
+          scratchbird::engine::executor::DescriptorBatch batch;
+          batch.columns = {{"decimal", output, nullable, 1}};
+          batch.rows = {{{value}}};
+          Require(scratchbird::engine::executor::ValidateDescriptorBatch(batch).ok,
+                  "receiving executor refused actual projected decimal zero");
+          auto wrong_width = batch;
+          wrong_width.rows[0].values[0].binary_value.resize(precision <= 38 ? 40 : 24, 0);
+          Require(!scratchbird::engine::executor::ValidateDescriptorBatch(wrong_width).ok,
+                  "receiving executor selected a decimal codec from the wrong payload width");
+          if (nullable) {
+            batch.rows[0].values[0].binary_value.clear();
+            batch.rows[0].values[0].setState(State::sql_null);
+            Require(scratchbird::engine::executor::ValidateDescriptorBatch(batch).ok,
+                    "receiving executor refused projected nullable decimal");
+          } else {
+            batch.rows[0].values[0].binary_value.clear();
+            batch.rows[0].values[0].setState(State::sql_null);
+            Require(!scratchbird::engine::executor::ValidateDescriptorBatch(batch).ok,
+                    "receiving executor admitted NULL to nonnullable decimal projection");
+          }
+          const auto retained = output;
+          auto invalid = source;
+          invalid.decimal_codec_profile->generation = 2;
+          Require(!api::BuildExactCanonicalScalarRuntimeDescriptorV1(invalid, dt::CanonicalTypeId::decimal, &output) &&
+                      output == retained, "stale decimal profile erased retained projection");
+          invalid = source;
+          invalid.precision = 77;
+          Require(!api::BuildExactCanonicalScalarRuntimeDescriptorV1(invalid, dt::CanonicalTypeId::decimal, &output) &&
+                      output == retained, "out-of-range decimal precision replaced retained projection");
+          invalid = source;
+          invalid.precision = 0;
+          invalid.scale = 0;
+          Require(!api::BuildExactCanonicalScalarRuntimeDescriptorV1(invalid, dt::CanonicalTypeId::decimal, &output) &&
+                      output == retained, "zero decimal precision replaced retained projection");
+          invalid = source;
+          invalid.scale = precision + 1;
+          Require(!api::BuildExactCanonicalScalarRuntimeDescriptorV1(invalid, dt::CanonicalTypeId::decimal, &output) &&
+                      output == retained, "out-of-range decimal scale replaced retained projection");
+          invalid = source;
+          invalid.decimal_codec_profile->uuid = precision <= 38 ?
+              dt::kExactDecimal40CodecUuid : dt::kExactDecimal24CodecUuid;
+          Require(!api::BuildExactCanonicalScalarRuntimeDescriptorV1(invalid, dt::CanonicalTypeId::decimal, &output) &&
+                      output == retained, "substituted decimal width profile replaced retained projection");
+          invalid = source;
+          invalid.precision = 39;
+          invalid.scale = 0;
+          invalid.decimal_codec_profile.reset();
+          Require(!api::BuildExactCanonicalScalarRuntimeDescriptorV1(invalid, dt::CanonicalTypeId::decimal, &output) &&
+                      output == retained, "decimal projection invented a missing wide profile");
+        }
+      }
+    }
+    auto legacy = ProjectionSourceFixture(row, rows);
+    legacy.precision = 38; legacy.scale = 0;
+    api::EngineDescriptor legacy_projection;
+    Require(api::BuildExactCanonicalScalarRuntimeDescriptorV1(legacy, dt::CanonicalTypeId::decimal, &legacy_projection),
+            "legacy38-digit structural projection was silently retired");
+    scratchbird::engine::ExecutionTypeDescriptor execution;
+    dt::DatatypeDecimalCodecBindingV1 codec;
+    Require(!scratchbird::engine::executor::BuildBoundDecimalExecutionTypeDescriptor(legacy_projection, &execution, &codec),
+            "legacy unprofiled decimal projection manufactured runtime codec admission");
+  }
+  Require(rows != 0, "decimal projection width coverage omitted registry rows");
+}
+
 int main() {
+  ScalarProjectionFailurePreservesOutput();
+  DecimalProjectionWidths();
   StoredIntegerDescriptors();
   StoredBooleanDescriptors();
   UuidValues(); Int64Values(); TimestampOctets(); OtherCarriersAndState(); AliasAndAllocation();

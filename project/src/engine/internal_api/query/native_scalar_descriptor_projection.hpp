@@ -8,6 +8,7 @@
 #include "datatype_decimal_codec_profile.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "uuid.hpp"
+#include <type_traits>
 #include <utility>
 
 namespace scratchbird::engine::internal_api {
@@ -46,7 +47,9 @@ inline bool BuildExactCanonicalScalarRuntimeDescriptorV1(
     const RelationalTypeDescriptor& source,
     core::datatypes::CanonicalTypeId expected_type, EngineDescriptor* output) {
   if (!output) return false;
-  *output = {};
+  // Build locally and publish only after every identity/profile check and
+  // fallible allocation succeeds. Failed inference must not erase a caller's
+  // already selected descriptor (including on allocation failure).
   namespace dt = core::datatypes;
   if (expected_type != dt::CanonicalTypeId::uuid &&
       expected_type != dt::CanonicalTypeId::binary &&
@@ -68,7 +71,7 @@ inline bool BuildExactCanonicalScalarRuntimeDescriptorV1(
        source.nullability != RelationalNullability::kNullable) ||
       source.collation_uuid || source.timezone_profile_id || source.width ||
       (decimal ? (!source.precision || !source.scale || *source.precision == 0 ||
-                  *source.precision > 38 ||
+                  *source.precision > (source.decimal_codec_profile ? 76u : 38u) ||
                   *source.scale > *source.precision)
                : (source.precision.has_value() || source.scale.has_value()))) return false;
   const auto* identity = FindExactRelationalDatatypeIdentityV3(source);
@@ -97,6 +100,7 @@ inline bool BuildExactCanonicalScalarRuntimeDescriptorV1(
     fields.identities.emplace("decimal_codec_uuid", source.decimal_codec_profile->uuid);
     if (!EncodeCatalogColumnMetadata(fields, &descriptor.encoded_descriptor)) return false;
   }
+  static_assert(std::is_nothrow_move_assignable_v<EngineDescriptor>);
   *output = std::move(descriptor);
   return true;
 }
