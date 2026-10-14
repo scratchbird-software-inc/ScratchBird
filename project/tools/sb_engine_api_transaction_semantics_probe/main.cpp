@@ -167,6 +167,9 @@ bool CreateProbeDatabase(const Args& args, EngineUuid* database_identity) {
   create.page_size = 16384;
   create.creation_unix_epoch_millis = args.creation_millis;
   scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  const auto project_root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
+  create.metric_policy_defaults_path = (project_root / "config/templates/metric-policy-defaults.conf").string();
+  create.metric_policy_families_path = (project_root / "config/templates/metric-policy-families.conf").string();
   create.allow_overwrite = args.overwrite;
   const auto created = scratchbird::storage::database::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -599,7 +602,22 @@ int RunProbe(const Args& args) {
   metrics_registry_request.context = inspect_base;
   metrics_registry_request.option_envelopes.push_back("family:sb_mga_row_versions_reclaimed_total");
   const auto metrics_registry_result = Diagnosed(EngineSysMetricsRegistry(metrics_registry_request));
-  const bool mga_metrics_registered = metrics_registry_result.ok && !metrics_registry_result.result_shape.rows.empty();
+  bool mga_metrics_registered = metrics_registry_result.ok && metrics_registry_result.result_shape.rows.size() == 1;
+  bool native_metric_source = false;
+  for (const auto& evidence : metrics_registry_result.evidence)
+    if (evidence.evidence_kind == "metrics_registry_source" &&
+        std::holds_alternative<std::string>(evidence.evidence_id) &&
+        std::get<std::string>(evidence.evidence_id) == "native_committed_creation_catalog") native_metric_source = true;
+  mga_metrics_registered = mga_metrics_registered && native_metric_source;
+  if (mga_metrics_registered) {
+    for (const auto* name : {"metric_uuid", "label_schema_uuid", "retention_policy_uuid", "visibility_policy_uuid"}) {
+      bool binary_identity = false;
+      for (const auto& field : metrics_registry_result.result_shape.rows.front().fields)
+        if (field.first == name) binary_identity = field.second.encoded_value.empty() &&
+            field.second.descriptor.canonical_type_name == "uuid" && field.second.binary_value.size() == 16;
+      mga_metrics_registered = mga_metrics_registered && binary_identity;
+    }
+  }
   const bool row_version_chain_events_present =
       NativeRowVersionChain(inspect_base, table.uuid, ada_row_uuid, setup_tx, multi_update_tx);
   const bool inspect_commit = Commit(inspect_base);

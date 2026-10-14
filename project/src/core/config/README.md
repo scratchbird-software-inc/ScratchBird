@@ -15,6 +15,13 @@ and `metric-policy-families.conf`, installed into `etc/scratchbird`. Pass both
 paths explicitly; there is no working-directory search, environment expansion,
 include directive, silent compiled fallback or automatic runtime reload.
 
+`storage::database::DatabaseCreateConfig` accepts both explicit paths as
+`metric_policy_defaults_path` and `metric_policy_families_path`. The creator
+publishes the selected native descriptors, labels and policy dependencies in its
+creation transaction. Supplying only one path refuses creation; supplying neither
+selects no metric definitions. Reopening reads the persisted records, not these
+files. Publication does not activate producers or create initial measurements.
+
 The operational profile supplies 14 days of raw samples and 400 days of
 1-minute/1-hour/1-day rollups, database metric-read permission and redacted
 sensitive labels. Only exact family sections opting into that profile inherit

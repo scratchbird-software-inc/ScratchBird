@@ -12,6 +12,7 @@
 // SEARCH_KEY: CONFIG_POLICY_MIGRATION
 #include "database_format.hpp"
 #include "catalog_database_record_codec.hpp"
+#include "catalog_metric_config_materialization.hpp"
 #include "disk_device.hpp"
 #include "agent_engine_lifecycle.hpp"
 #include "memory.hpp"
@@ -58,6 +59,9 @@ struct DatabaseCreateConfig {
   bool allow_minimal_resource_bootstrap = false;
   std::string policy_seed_pack_root;
   bool require_policy_seed_pack = false;
+  // Explicit creation inputs only. Both or neither; never runtime fallbacks.
+  std::string metric_policy_defaults_path;
+  std::string metric_policy_families_path;
   std::string bootstrap_principal_name;
   std::string bootstrap_credential_fingerprint;
   bool require_bootstrap_principal = false;
@@ -365,6 +369,16 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config);
 DatabaseBootstrapSecurityCatalogReadResult ReadDatabaseBootstrapSecurityCatalog(
     const std::string& path);
 DatabaseCatalogIdentityReadResult ReadDatabaseCatalogIdentity(
+    const std::string& path, const scratchbird::core::platform::Uuid& expected_database_uuid);
+struct DatabaseBootstrapMetricCatalogReadResult {
+  Status status;
+  DiagnosticRecord diagnostic;
+  std::vector<scratchbird::core::catalog::CatalogMetricDefinitionBundle> definitions;
+  bool ok() const { return status.ok(); }
+};
+// Immutable creation records from this opened node and their exact committed
+// dependencies. This does not activate producers or authorize metric access.
+DatabaseBootstrapMetricCatalogReadResult ReadDatabaseBootstrapMetricCatalog(
     const std::string& path, const scratchbird::core::platform::Uuid& expected_database_uuid);
 DatabaseLifecycleResult OpenDatabaseFile(const DatabaseOpenConfig& config);
 DatabaseLifecycleResult EnterDatabaseMaintenanceMode(const DatabaseLifecycleOperationConfig& config);

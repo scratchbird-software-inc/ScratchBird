@@ -20,6 +20,7 @@
 #include "metric_bound_definition.hpp"
 #include "metric_retention_policy.hpp"
 #include "security/security_model.hpp"
+#include "database_lifecycle.hpp"
 
 #include <map>
 #include <set>
@@ -359,6 +360,39 @@ TResult RegistrySurface(const EngineApiRequest& request, const std::string& oper
     return ClusterMetricsUnavailable<TResult>(request, operation_id);
   }
   auto result = MakeApiBehaviorSuccess<TResult>(request.context, operation_id);
+  if (!cluster_surface) {
+    if (request.context.authorization_context.authority_uuid != request.context.database_uuid)
+      return MetricsSecurityFailure<TResult>(request, operation_id);
+    const auto catalog = storage::database::ReadDatabaseBootstrapMetricCatalog(
+        request.context.database_path, request.context.database_uuid);
+    if (!catalog.ok()) return MakeApiBehaviorDiagnostic<TResult>(request.context, operation_id,
+        MakeEngineApiDiagnosticFromNative(catalog.diagnostic, "CATALOG.INVALID_INPUT",
+                                         "catalog.metric_catalog.invalid", "native_metric_catalog_read_failed"));
+    for (const auto& bundle : catalog.definitions) {
+      const auto& policy = bundle.visibility;
+      if (!IsKnownSecurityRight(policy.read_right) ||
+          (!policy.sensitive_read_right.empty() && !IsKnownSecurityRight(policy.sensitive_read_right)))
+        return MakeApiBehaviorDiagnostic<TResult>(request.context, operation_id,
+            MakeInvalidRequestDiagnostic(operation_id, "metric_visibility_right_unregistered"));
+      const auto decision = EvaluateMaterializedAuthorization(request.context,
+          request.context.authorization_context, policy.read_right, policy.metric_uuid);
+      if (!decision.authorized || decision.denied || decision.policy_recheck_required) continue;
+      MetricDescriptor descriptor;
+      static_cast<core::metrics::MetricDescriptorDefinition&>(descriptor) = bundle.descriptor.definition;
+      static_cast<core::metrics::MetricDescriptorBinding&>(descriptor) = bundle.descriptor.binding;
+      // Definition visibility is not runtime activation or producer readiness.
+      if (!DescriptorMatches(request, descriptor, false)) continue;
+      AddDescriptorRow(&result, descriptor);
+      auto& row = result.result_shape.rows.back();
+      row.fields.push_back({"metric_uuid", ApiBehaviorValue(descriptor.metric_uuid)});
+      row.fields.push_back({"label_schema_uuid", ApiBehaviorValue(descriptor.label_schema_uuid)});
+      row.fields.push_back({"retention_policy_uuid", ApiBehaviorValue(descriptor.retention_policy_uuid)});
+      row.fields.push_back({"visibility_policy_uuid", ApiBehaviorValue(descriptor.visibility_policy_uuid)});
+    }
+    AddApiBehaviorEvidence(&result, "metrics_surface", "sys.metrics.registry");
+    AddApiBehaviorEvidence(&result, "metrics_registry_source", "native_committed_creation_catalog");
+    return result;
+  }
   for (const auto& descriptor : scratchbird::core::metrics::DefaultMetricRegistry().Descriptors(true)) {
     if (DescriptorMatches(request, descriptor, cluster_surface)) {
       AddDescriptorRow(&result, descriptor);

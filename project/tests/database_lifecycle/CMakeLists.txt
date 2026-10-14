@@ -8,6 +8,16 @@
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+add_executable(metric_creation_publication_conformance metric_creation_publication_conformance.cpp)
+target_compile_features(metric_creation_publication_conformance PRIVATE cxx_std_23)
+target_link_libraries(metric_creation_publication_conformance PRIVATE sb_engine sb_engine_internal_api sb_storage_database sb_core_metrics)
+foreach(metric_page_size IN ITEMS 8192 16384 32768 65536 131072)
+  add_test(NAME metric_creation_publication_${metric_page_size}
+    COMMAND metric_creation_publication_conformance ${metric_page_size})
+  set_tests_properties(metric_creation_publication_${metric_page_size} PROPERTIES
+    LABELS "metrics;binary_uuid;native_storage;creation;regression")
+endforeach()
+
 add_executable(metric_api_native_projection_conformance metric_api_native_projection_conformance.cpp)
 target_compile_features(metric_api_native_projection_conformance PRIVATE cxx_std_23)
 target_link_libraries(metric_api_native_projection_conformance PRIVATE sb_engine_internal_api sb_core_metrics)

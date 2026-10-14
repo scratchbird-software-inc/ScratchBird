@@ -512,10 +512,17 @@ void RequireResourceSeedData(const std::vector<page::CatalogPageRow>& rows,
 }
 
 void RequireMetricBootstrapData(const std::vector<DecodedRecord>& records) {
-  Require(CountKind(records, catalog::CatalogRecordKind::metric_descriptor) > 0,
-          "typed metric_descriptor records are missing");
-  Require(CountKind(records, catalog::CatalogRecordKind::metric_current_value) > 0,
-          "typed metric_current_value records are missing");
+  // This fixture supplies neither selection file. Creation must not infer a
+  // selection from the process registry, and it never fabricates measurements.
+  Require(CountKind(records, catalog::CatalogRecordKind::metric_descriptor) == 0,
+          "unconfigured creation inferred metric definitions");
+  Require(CountKind(records, catalog::CatalogRecordKind::metric_current_value) == 0,
+          "creation fabricated metric measurements");
+  Require(CountKind(records, catalog::CatalogRecordKind::metric_label_schema) == 0,
+          "unconfigured creation inferred metric label definitions");
+  for (const auto& record : records)
+    Require(!catalog::IsCatalogMetricRetentionPolicyPayload(record.record.payload),
+            "unconfigured creation inferred metric retention policy");
 }
 
 void RequireSecurityBootstrapData(const std::vector<DecodedRecord>& records) {

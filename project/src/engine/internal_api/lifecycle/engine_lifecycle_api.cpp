@@ -403,6 +403,8 @@ EngineCreateLifecycleResult EngineCreateLifecycle(const EngineCreateLifecycleReq
   create.page_size = OptionU32(request, "page_size:", 16384u);
   create.creation_unix_epoch_millis = now;
   create.resource_seed_pack_root = OptionValue(request, "resource_seed_pack_root:");
+  create.metric_policy_defaults_path = OptionValue(request, "metric_policy_defaults_path:");
+  create.metric_policy_families_path = OptionValue(request, "metric_policy_families_path:");
   create.allow_minimal_resource_bootstrap =
       OptionBool(request, "allow_minimal_resource_bootstrap:", false);
   create.require_resource_seed_pack =
