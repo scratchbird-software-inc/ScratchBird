@@ -1482,7 +1482,8 @@ void ProjectionBinaryValues() {
     const char* types[]{"character", "binary", "uint64", "uint32", "uint32", "uint16"};
     for (unsigned i = 0; i < 6; ++i) values[i].descriptor.canonical_type_name = types[i];
     values[0].encoded_value = std::string("a\0b", 3); values[1].binary_value = {0, 255, 1, 128};
-    values[2].encoded_value = "16"; values[3].encoded_value = "1"; values[4].encoded_value = "1";
+    values[2].binary_value = {16, 0, 0, 0, 0, 0, 0, 0};
+    values[3].encoded_value = "1"; values[4].encoded_value = "1";
     values[5].descriptor = Uint16ProjectionDescriptor();
     values[5].binary_value = {static_cast<std::uint8_t>(output_bytes & 255),
                               static_cast<std::uint8_t>(output_bytes >> 8)};

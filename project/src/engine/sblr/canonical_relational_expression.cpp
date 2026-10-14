@@ -3146,6 +3146,18 @@ bool CanonicalRelationalExpressionRuntime::BuildDescriptor(
       source.codec_id == "datatype.timestamp.utc_tuple.le.v1") {
     return api::BuildHistoricalTimestampScalarDescriptorV1(source, descriptor, refusal_detail);
   }
+  if (native_type == dt::CanonicalTypeId::character) {
+    api::EngineDescriptor prepared;
+    if (!BuildExactCanonicalScalarRuntimeDescriptorV1(source, native_type, &prepared)) {
+      *refusal_detail = "canonical character datatype receipt binding is invalid";
+      return false;
+    }
+    // Preserve the admitted datatype cohort as well as the occurrence. NULL
+    // coercion and function publication must not reconstruct it from a name.
+    prepared.canonical_type_name = std::string(type_name);
+    *descriptor = std::move(prepared);
+    return true;
+  }
   if (native_type == dt::CanonicalTypeId::uuid ||
       native_type == dt::CanonicalTypeId::binary ||
       native_type == dt::CanonicalTypeId::boolean ||

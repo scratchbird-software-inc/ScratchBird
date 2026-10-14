@@ -51,6 +51,35 @@ inline bool BuildExactCanonicalScalarRuntimeDescriptorV1(
   // fallible allocation succeeds. Failed inference must not erase a caller's
   // already selected descriptor (including on allocation failure).
   namespace dt = core::datatypes;
+  if (expected_type == dt::CanonicalTypeId::character) {
+    const auto* identity = FindExactRelationalDatatypeIdentityV3(source);
+    if (!identity || identity->legacy_fields.canonical_binary_type_code !=
+            static_cast<std::uint32_t>(expected_type) ||
+        (source.nullability != RelationalNullability::kNullable &&
+         source.nullability != RelationalNullability::kNonNull) ||
+        source.timezone_profile_id || source.precision || source.scale ||
+        source.decimal_codec_profile) return false;
+    EngineDescriptor prepared;
+    prepared.descriptor_uuid = source.descriptor_uuid;
+    prepared.descriptor_kind = "scalar";
+    prepared.canonical_type_name = dt::CanonicalTypeName(expected_type);
+    prepared.type_uuid = source.type_uuid;
+    prepared.datatype_descriptor_uuid = identity->legacy_fields.descriptor_uuid;
+    prepared.datatype_descriptor_generation = identity->legacy_fields.descriptor_generation;
+    prepared.datatype_cohort = {source.datatype_catalog_snapshot_uuid,
+        source.datatype_catalog_generation, source.datatype_registry_generation};
+    CatalogColumnMetadata fields;
+    fields.text["nullability"] = source.nullability == RelationalNullability::kNullable
+        ? "nullable" : "non_null";
+    if (source.width) fields.text["length"] = std::to_string(*source.width);
+    if (source.collation_uuid) {
+      prepared.collation_uuid = *source.collation_uuid;
+      fields.identities["collation_uuid"] = *source.collation_uuid;
+    }
+    if (!EncodeCatalogColumnMetadata(fields, &prepared.encoded_descriptor)) return false;
+    *output = std::move(prepared);
+    return true;
+  }
   if (expected_type != dt::CanonicalTypeId::uuid &&
       expected_type != dt::CanonicalTypeId::binary &&
       expected_type != dt::CanonicalTypeId::boolean &&

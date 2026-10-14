@@ -290,7 +290,15 @@ bool BoundExecutionTypeDescriptor(
       descriptor.datatype_descriptor_uuid.is_nil() ||
       descriptor.datatype_descriptor_generation == 0 ||
       descriptor.type_uuid.is_nil()) {
-    return refuse("bound scalar datatype descriptor identity is incomplete");
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(descriptor.descriptor_uuid))
+      return refuse("bound scalar datatype descriptor identity is incomplete: occurrence UUID");
+    if (type_id == CanonicalTypeId::unknown || type_id == CanonicalTypeId::null_type)
+      return refuse("bound scalar datatype descriptor identity is incomplete: concrete type");
+    if (descriptor.datatype_descriptor_uuid.is_nil())
+      return refuse("bound scalar datatype descriptor identity is incomplete: datatype UUID");
+    if (descriptor.datatype_descriptor_generation == 0)
+      return refuse("bound scalar datatype descriptor identity is incomplete: datatype generation");
+    return refuse("bound scalar datatype descriptor identity is incomplete: type UUID");
   }
   const auto* identity = dt::FindDatatypeTypeCodecIdentityV3(
       descriptor.datatype_cohort.catalog_snapshot_uuid,

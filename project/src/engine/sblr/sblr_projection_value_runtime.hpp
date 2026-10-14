@@ -37,6 +37,9 @@ inline bool BinaryCarrierValid(const SblrValue& value) noexcept {
 inline bool EmptyNullCarrier(const SblrValue& value) noexcept {
   return SblrNullPayloadEmpty(value);
 }
+inline bool CharacterType(std::string_view type) noexcept {
+  return type == "character" || type == "text";
+}
 inline bool NativeBinaryType(std::string_view type) noexcept {
   return type == "uuid" || type == "binary" || type == "varbinary";
 }
@@ -94,7 +97,7 @@ inline bool BoundSignedCharacterCarrierValid(const SblrValue& value) noexcept {
       ReferencesUint16Projection(*value.projection_descriptor) ||
       value.projection_descriptor->canonical_type_name != value.descriptor_id) return false;
   const auto width = SblrSignedIntegerWidth(value.descriptor_id);
-  if (!width && value.descriptor_id != "character") return false;
+  if (!width && !CharacterType(value.descriptor_id)) return false;
   if (value.is_null) return EmptyNullCarrier(value);
   if (!value.binary_value.empty() || !value.uuid_value.is_nil() ||
       !value.uuid_array_value.empty() || !value.charset_name.empty() ||
@@ -160,7 +163,7 @@ inline SblrValue SblrValueFromProjectionArgument(
     return value;
   }
   const auto signed_width = SblrSignedIntegerWidth(type_name);
-  if ((signed_width || type_name == "character") &&
+  if ((signed_width || projection_value_detail::CharacterType(type_name)) &&
       !argument.descriptor.canonical_type_name.empty()) {
     using State = internal_api::EngineValueState;
     if (ReferencesDecimalProjection(argument.descriptor) ||
@@ -403,7 +406,7 @@ inline bool ProjectionSblrValueResolved(const SblrValue& value) {
   if (value.descriptor_id == "boolean")
     return projection_value_detail::BooleanCarrierValid(value);
   if (value.projection_descriptor &&
-      (SblrSignedIntegerWidth(value.descriptor_id) || value.descriptor_id == "character"))
+      (SblrSignedIntegerWidth(value.descriptor_id) || projection_value_detail::CharacterType(value.descriptor_id)))
     return projection_value_detail::BoundSignedCharacterCarrierValid(value);
   if (value.descriptor_id == "decimal" ||
       (value.projection_descriptor && ReferencesDecimalProjection(*value.projection_descriptor)))
@@ -468,7 +471,7 @@ inline internal_api::EngineTypedValue EngineTypedValueFromSblrValue(const SblrVa
     return out;
   }
   if (value.projection_descriptor &&
-      (SblrSignedIntegerWidth(value.descriptor_id) || value.descriptor_id == "character")) {
+      (SblrSignedIntegerWidth(value.descriptor_id) || projection_value_detail::CharacterType(value.descriptor_id))) {
     if (!projection_value_detail::BoundSignedCharacterCarrierValid(value))
       throw std::invalid_argument("conflicting bound signed CHARACTER projection carrier");
     internal_api::EngineTypedValue out;

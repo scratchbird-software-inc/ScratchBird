@@ -10,6 +10,7 @@
 #include "query/historical_timestamp_scalar.hpp"
 #include "mga_relation_store/stored_scalar_descriptor.hpp"
 #include "sbl_numeric.hpp"
+#include "sblr_projection_value_runtime.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <source_location>
@@ -35,6 +36,104 @@ namespace a = scratchbird::engine::internal_api;
 namespace d = scratchbird::core::datatypes;
 void Check(bool ok, std::source_location at = std::source_location::current()) {
   if (!ok) { std::cerr << "failure at " << at.line() << '\n'; std::abort(); }
+}
+void CheckCharacterProjectionBindings() {
+  unsigned cases = 0;
+  for (const auto& identity : d::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row = identity.legacy_fields;
+    if (row.canonical_binary_type_code != static_cast<std::uint32_t>(d::CanonicalTypeId::character)) continue;
+    a::RelationalTypeDescriptor source;
+    source.descriptor_id = 1;
+    source.descriptor_uuid = scratchbird::tests::FixtureUuid(1086, 9001);
+    source.statement_receipt_uuid = scratchbird::tests::FixtureUuid(1086, 9002);
+    source.datatype_identity_authoritative = true;
+    source.type_uuid = row.type_uuid;
+    source.descriptor_generation = row.descriptor_generation;
+    source.type_generation = row.type_generation;
+    source.codec_id = row.codec_id; source.codec_version = row.codec_version;
+    source.codec_generation = row.codec_generation;
+    source.datatype_catalog_snapshot_uuid = row.catalog_snapshot_uuid;
+    source.datatype_catalog_generation = row.catalog_generation;
+    source.datatype_registry_generation = row.registry_generation;
+    source.nullability = a::RelationalNullability::kNullable;
+    source.width = 1024;
+    a::EngineDescriptor exact;
+    Check(s::BuildExactCanonicalScalarRuntimeDescriptorV1(source, d::CanonicalTypeId::character, &exact));
+    Check(exact.descriptor_uuid == source.descriptor_uuid && exact.type_uuid == row.type_uuid &&
+          exact.datatype_descriptor_uuid == row.descriptor_uuid &&
+          exact.datatype_descriptor_generation == row.descriptor_generation &&
+          exact.datatype_cohort == a::EngineDatatypeCohort{row.catalog_snapshot_uuid, row.catalog_generation, row.registry_generation});
+    a::CatalogColumnMetadata metadata;
+    Check(a::DecodeCatalogColumnMetadata(exact.encoded_descriptor, &metadata) &&
+          metadata.text.at("length") == "1024" && metadata.text.at("nullability") == "nullable");
+    bool completed = false;
+    unsigned allocation_failures = 0;
+    for (long budget = 0; budget < 100 && !completed; ++budget) {
+      auto output = exact;
+      descriptor_allocation_budget = budget;
+      try {
+        completed = s::BuildExactCanonicalScalarRuntimeDescriptorV1(source, d::CanonicalTypeId::character, &output);
+        descriptor_allocation_budget = -1;
+        Check(completed && output == exact);
+      } catch (const std::bad_alloc&) {
+        descriptor_allocation_budget = -1;
+        Check(output == exact);
+        ++allocation_failures;
+      }
+    }
+    Check(completed && allocation_failures > 0);
+    for (unsigned fault = 0; fault < 15; ++fault) {
+      auto invalid = source;
+      if (fault == 0) invalid.descriptor_uuid = {};
+      if (fault == 1) invalid.statement_receipt_uuid = {};
+      if (fault == 2) invalid.datatype_identity_authoritative = false;
+      if (fault == 3) invalid.type_uuid.bytes[15] ^= 1;
+      if (fault == 4) ++invalid.descriptor_generation;
+      if (fault == 5) ++invalid.type_generation;
+      if (fault == 6) invalid.codec_id += ".invalid";
+      if (fault == 7) ++invalid.codec_version;
+      if (fault == 8) ++invalid.codec_generation;
+      if (fault == 9) invalid.datatype_catalog_snapshot_uuid = {};
+      if (fault == 10) invalid.datatype_registry_generation = 0;
+      if (fault == 11) invalid.nullability = a::RelationalNullability::kUnknown;
+      if (fault == 12) invalid.timezone_profile_id = "UTC";
+      if (fault == 13) invalid.precision = 5;
+      if (fault == 14) invalid.scale = 0;
+      auto output = exact;
+      Check(!s::BuildExactCanonicalScalarRuntimeDescriptorV1(invalid, d::CanonicalTypeId::character, &output) && output == exact);
+    }
+    for (const auto* spelling : {"character", "text"}) for (bool null : {false, true}) {
+      a::EngineTypedValue original;
+      original.descriptor = exact;
+      original.descriptor.canonical_type_name = spelling;
+      original.setState(null ? a::EngineValueState::sql_null : a::EngineValueState::value);
+      if (!null) original.encoded_value = std::string("a\0b", 3);
+      auto argument = a::MakeProjectionFunctionArgument("value", original);
+      auto value = s::SblrValueFromProjectionArgument(argument);
+      Check(s::ProjectionSblrValueResolved(value) && value.projection_descriptor &&
+            *value.projection_descriptor == original.descriptor && value.is_null == null);
+      argument.descriptor = {};
+      const auto returned = s::EngineTypedValueFromSblrValue(value);
+      Check(returned.descriptor == original.descriptor && returned.state == original.state &&
+            returned.encoded_value == original.encoded_value && returned.binary_value.empty());
+      for (unsigned fault = 0; fault < 4; ++fault) {
+        auto malformed = a::MakeProjectionFunctionArgument("value", original);
+        if (fault == 0) malformed.binary_value = {1};
+        if (fault == 1) malformed.is_null = !null;
+        if (fault == 2) malformed.state = a::EngineValueState::error;
+        if (fault == 3) malformed.descriptor.canonical_type_name = "int64";
+        const auto rejected = s::SblrValueFromProjectionArgument(malformed);
+        Check(!s::ProjectionSblrValueResolved(rejected) && !rejected.is_null && !rejected.projection_descriptor);
+      }
+      if (null) {
+        auto malformed = a::MakeProjectionFunctionArgument("value", original);
+        malformed.encoded_value = "NULL";
+        Check(!s::ProjectionSblrValueResolved(s::SblrValueFromProjectionArgument(malformed)));
+      }
+    }
+    ++cases;
+  }
+  Check(cases > 0);
 }
 void CheckV3RelationalBindings() {
   unsigned cases = 0;
@@ -824,6 +923,7 @@ void CheckGroupedPreparationCohortCustody() {
 }
 
 int main() {
+  CheckCharacterProjectionBindings();
   CheckV3RelationalBindings();
   CheckExplicitDecimalProfiles();
   CheckDecimalBatchAdmission();
