@@ -1,0 +1,78 @@
+Linux regression repair continuation, 2026-10-14
+================================================
+
+This is a recovery checkpoint, NOT regression qualification or completion.
+Qualified head before this checkpoint: eea3c5d4802c02d96bdd31f54fc13b735e1d4d67.
+The checkpoint preserves seven previously unsealed candidate files at the
+owner's explicit request to commit all outstanding work before reboot/migration:
+
+  project/src/engine/sblr/sblr_procedural_block_runtime.cpp
+  project/tests/database_lifecycle/sblr_procedural_block_v1_conformance.cpp
+  project/tests/optimizer/optimizer_deficiency_odf_076_gate.cpp
+  project/tests/performance/CMakeLists.txt
+  project/tests/performance/scratchbird_beta_performance_baseline_conformance.cpp
+  project/tests/sbsql_parser_worker/agent_examples_evidence_payload_gate.cpp
+  project/tests/sbsql_parser_worker/sbsql_create_view_exact_route_conformance.cpp
+
+These candidates migrate native integer carriers, fixtures, binary evidence,
+authorization and actual performance-result oracles. They are NOT newly sealed
+by this checkpoint. Their original positive tests still require full replay and
+repair; do not mark them closed merely because they have been committed.
+
+Frozen baseline: 260 names, 198 qualified closures, 62 outstanding qualifications
+across eight groups. This is not a fresh full-suite failure census. The last
+complete full clean/build/unfiltered regression has NOT passed. No tests may be
+disabled, positive assertions waived, or authority manufactured to close it.
+
+Primary active shared root: six IA09 session/context process routes fail during
+server agent catalog seeding with SECURITY.CONTEXT.EXPIRED/CATALOG_MUTATE.
+Replace synthetic ServerAgentBaseContext authority with real provisioned
+node-bound service authentication, durable grants, admitted native binding and
+selected provider/configuration/source lifecycle before every effect-capable
+BEGIN. No SYSARCH/operator fallback. Protected credential transport/source and
+committed credential verification components exist but are not production
+persistent-source/provider/BEGIN wiring. Native owned checkpoint versus legacy
+flat database bootstrap integration also requires genuine ownership admission.
+
+Owner security decisions: non-cluster encrypted credential file is allowed;
+non-cluster shared/external security database encryption is optional, requiring
+OS-admin initial key delivery when encrypted. Cluster full-key STORAGE/CACHING
+on one node is prohibited; bounded transient reconstruction in protected memory
+is permitted for admitted work and must be zeroized. Copied node files cannot
+self-unlock, authorize share retrieval, or replace external master startup keys
+after total shutdown. No plaintext login-password disclosure is authorized.
+
+Local/manual artifacts, NOT distributed through this repository:
+  /home/dcalford/Sandbox/Specifications/Core/
+  /home/dcalford/Sandbox/Specifications/migration/contradiction-log.md
+  /home/dcalford/Sandbox/Workplans/foundational-completion-series/
+  /home/dcalford/Sandbox/handoff/linux-regression-evidence-20261014/
+
+The exact ordered outstanding list, groups, closures, qualified receipts and
+historical failures are in 01e-device-page-management/LINUX_FULL_CLEAN_20261006.json
+and LINUX_REGRESSION_REPAIR_GROUPS_20261007.csv. Consult Core README, AUTHORITY and
+MANIFEST before implementation. Core remains local; distribute these directories
+manually before another platform/checkout takes over.
+
+Disposable Linux build tree build/linux-clean-20261006 and owned test temporary
+space are being removed for reboot. Diagnostic text/receipts are relocated to
+the handoff evidence directory, retaining their build-relative layout. Old
+absolute paths in historical receipts identify old runs, not surviving binaries.
+Reconfigure and rebuild from source; do not reuse platform-specific build files.
+The old ENV script references removed build/TMPDIR paths and must be reviewed and
+updated for the new run/platform. Retained JSON receipts are historical evidence,
+not permission to claim a new source checkout or new platform passes.
+
+Most recent qualified component: startup credential lease thread-affinity checks
+before mutable custody reads, both complete source/transport gates PASS at
+eea3c5d48, LastTest retained. No baseline closure from that component (still 62).
+Identity publication failure custody is qualified at 419696bc1: incomplete
+publication durably excludes COMMIT; final release only after real completion.
+Preserve genuine MGA failure/recovery semantics while repairing followers.
+
+Next: restore environment, rebuild all affected targets, replay outstanding
+tests grouped by shared root, repair and rerun every affected positive/negative,
+update exact ledger only for genuinely qualified original closures, then run
+fresh full clean/build/unfiltered regression. Serialize Ninja and CTest; retain
+LastTest.log before the next CTest. Use /usr/bin/python3 -B for owned Linux
+process probes. No detached workers or synthetic readiness/authority receipts.
