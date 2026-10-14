@@ -90,6 +90,93 @@ int main() {
   tag.binary_ownership[mem::MemoryBinaryScopeKind::context] = binding.database.bytes;
   tag.binary_ownership[mem::MemoryBinaryScopeKind::owner] = binding.principal.bytes;
   tag.binary_ownership[mem::MemoryBinaryScopeKind::database] = binding.database.bytes;
+  {
+    using F = srv::StartupCredentialFrameError;
+    mem::ProtectedMemoryRequest request;
+    request.bytes = page_size; request.alignment = page_size; request.tag = tag;
+    request.material_class = "startup_credential_frame_test";
+    request.platform_policy = mem::ProtectedMemoryPlatformPolicy::require_lock_and_no_dump;
+    auto staging = manager.AllocateProtected(std::move(request));
+    Check(staging.ok(), "frame encoder uses actual governed protected staging");
+    if (!staging.ok()) return 1;
+    auto* storage = static_cast<std::uint8_t*>(staging.buffer.data());
+    const auto secret = std::span<const std::uint8_t>(bytes).subspan(88);
+    auto output = std::span<std::uint8_t>(storage, bytes.size());
+    Check(srv::EncodeStartupCredentialFrame(binding, secret, output) == F::none &&
+          std::memcmp(output.data(), bytes.data(), bytes.size()) == 0,
+          "encoder matches independently constructed exact wire bytes");
+    Check(srv::InspectStartupCredentialFrame(output, binding).ok(), "complete encoded frame inspection");
+    auto changed_binding = binding;
+    changed_binding.custodian_uid.reset();
+    Check(srv::InspectStartupCredentialFrame(output, changed_binding).ok(),
+          "OS custodian is not invented as a wire field or authority");
+    for (std::size_t byte = 8; byte < 80; ++byte) {
+      storage[byte] ^= 1;
+      Check(srv::InspectStartupCredentialFrame(output, binding).error == F::binding_mismatch,
+            "complete frame checks every binary identity and generation byte");
+      storage[byte] ^= 1;
+    }
+    const auto untouched = [&] {
+      for (std::size_t i = 0; i < bytes.size(); ++i) if (storage[i] != 0xa5) return false;
+      return true;
+    };
+    std::memset(storage, 0xa5, bytes.size());
+    changed_binding.generation = 0;
+    Check(srv::EncodeStartupCredentialFrame(changed_binding, secret, output) == F::invalid_binding && untouched(),
+          "invalid generation leaves output untouched");
+    for (auto identity : {&changed_binding.database, &changed_binding.principal,
+                          &changed_binding.provider, &changed_binding.credential_reference}) {
+      changed_binding = binding;
+      identity->bytes[6] = 0x40;
+      Check(srv::EncodeStartupCredentialFrame(changed_binding, secret, output) == F::invalid_binding && untouched(),
+            "non-system UUID encoder refusal preserves output");
+    }
+    const std::array<std::uint8_t, 3> nul_secret{1, 0, 2};
+    Check(srv::EncodeStartupCredentialFrame(binding, nul_secret, output.first(91)) == F::invalid_credential && untouched(),
+          "embedded NUL encoder refusal preserves output");
+    Check(srv::EncodeStartupCredentialFrame(binding, secret, output.first(output.size() - 1)) == F::invalid_extent && untouched(),
+          "short output encoder refusal preserves output");
+    Check(srv::EncodeStartupCredentialFrame(binding, {}, output.first(88)) == F::invalid_extent && untouched(),
+          "empty credential encoder refusal preserves output");
+    for (std::size_t offset : {0u, 1u, 87u, 88u}) {
+      Check(srv::EncodeStartupCredentialFrame(binding, {storage + offset, 7}, output) == F::invalid_extent && untouched(),
+            "overlap at header or payload cannot corrupt staging");
+    }
+    for (std::size_t size : {1u, 1024u, 1025u}) {
+      Bytes bounded(size, 'x');
+      auto region = std::span<std::uint8_t>(storage, 88 + size);
+      std::memset(storage, 0xa5, region.size());
+      auto high_generation = binding;
+      high_generation.generation = UINT64_MAX;
+      const auto encoded = srv::EncodeStartupCredentialFrame(high_generation, bounded, region);
+      if (size <= 1024) {
+        Check(encoded == F::none && srv::InspectStartupCredentialFrame(region, high_generation).credential_bytes == size,
+              "minimum and maximum body with maximum generation roundtrip");
+        bool exact = true;
+        for (std::size_t i = 72; i < 80; ++i) exact &= storage[i] == 255;
+        Check(exact && storage[80] == 0 && storage[81] == 0 && storage[82] == 0 && storage[83] == 1 &&
+              storage[84] == 0 && storage[85] == 0 && storage[86] == (size >> 8) && storage[87] == (size & 255),
+              "numeric fields use exact unsigned big-endian bytes");
+        storage[88] = 0;
+        Check(srv::InspectStartupCredentialFrame(region, high_generation).error == F::invalid_credential,
+              "header acceptance cannot certify a malformed body");
+      } else {
+        bool preserved = true;
+        for (auto byte : region) preserved &= byte == 0xa5;
+        Check(encoded == F::invalid_extent && preserved, "oversize body cannot change output");
+      }
+    }
+    for (std::size_t size = 0; size < bytes.size(); ++size)
+      Check(!srv::InspectStartupCredentialFrame(std::span<const std::uint8_t>(bytes).first(size), binding).ok(),
+            "all truncations refused by complete-frame inspector");
+    for (auto at : {0u, 7u, 80u, 83u, 84u, 87u, 88u}) {
+      auto malformed = bytes; malformed[at] = 0;
+      if (malformed == bytes) malformed[at] = 2;
+      Check(!srv::InspectStartupCredentialFrame(malformed, binding).ok(),
+            "malformed magic purpose length and body refused");
+    }
+  }
+  Check(manager.Snapshot().current_bytes == 0, "frame staging releases actual memory grant");
   const auto import = [&](int fd, const auto& expected) {
     return srv::ImportStartupCredentialTransport(fd, expected, manager, tag);
   };

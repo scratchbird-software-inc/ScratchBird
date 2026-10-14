@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "memory.hpp"
-#include "uuid.hpp"
+#include "startup_credential_frame.hpp"
 #include <array>
 #include <cstring>
 #include <optional>
@@ -21,11 +21,6 @@ namespace scratchbird::server {
 // generation/revocation fencing or startup permission. The provisioner must
 // separately retain its admitted source fence through BEGIN. A sealed copy
 // cannot establish current source authority. No implicit FD/environment lookup.
-struct StartupCredentialTransportBinding {
-  core::platform::Uuid database, principal, provider, credential_reference;
-  std::uint64_t generation = 0;
-  std::optional<std::uint32_t> custodian_uid;
-};
 enum class StartupCredentialTransportError {
   none, invalid_request, unsupported_platform, source_io, source_protection,
   invalid_frame, binding_mismatch, protected_memory_unavailable
@@ -52,13 +47,11 @@ inline StartupCredentialTransportResult ImportStartupCredentialTransport(
   using E = StartupCredentialTransportError;
   StartupCredentialTransportResult result;
   try {
-    const std::array identities{binding.database, binding.principal,
-                                binding.provider, binding.credential_reference};
     if (borrowed_fd < 0 || !binding.custodian_uid || !binding.generation ||
         tag.binary_ownership.empty() || !core::memory::MemoryBinaryOwnershipValid(tag) ||
         tag.binary_ownership[core::memory::MemoryBinaryScopeKind::database] != binding.database.bytes)
       return result;
-    for (const auto& id : identities) if (!core::uuid::IsEngineIdentityUuid(id)) return result;
+    if (!ValidStartupCredentialFrameBinding(binding)) return result;
 #if defined(__linux__)
     struct Descriptor {
       int fd;
@@ -76,26 +69,21 @@ inline StartupCredentialTransportResult ImportStartupCredentialTransport(
         state.st_uid != *binding.custodian_uid || (state.st_mode & 07777) != 0400 ||
         (seals & required_seals) != required_seals) return result;
     result.error = E::invalid_frame;
-    constexpr std::size_t header_size = 88;
+    constexpr std::size_t header_size = kStartupCredentialHeaderBytes;
     if (state.st_size < static_cast<off_t>(header_size + 1) ||
-        state.st_size > static_cast<off_t>(header_size + 1024)) return result;
+        state.st_size > static_cast<off_t>(header_size + kStartupCredentialMaximumBytes)) return result;
     std::array<unsigned char, header_size> header{};
     if (::pread(owned.fd, header.data(), header.size(), 0) != static_cast<ssize_t>(header.size())) {
       result.error = E::source_io; return result;
     }
-    if (std::memcmp(header.data(), "SBACRED1", 8) != 0) return result;
-    const auto integer = [&](std::size_t offset, std::size_t count) {
-      std::uint64_t value = 0;
-      for (std::size_t i = 0; i < count; ++i) value = (value << 8) | header[offset + i];
-      return value;
-    };
-    const auto size = integer(84, 4);
-    if (integer(80, 4) != 1 || !size || size > 1024 ||
-        state.st_size != static_cast<off_t>(header_size + size)) return result;
-    result.error = E::binding_mismatch;
-    for (std::size_t i = 0; i < identities.size(); ++i)
-      if (std::memcmp(header.data() + 8 + 16 * i, identities[i].bytes.data(), 16)) return result;
-    if (integer(72, 8) != binding.generation) return result;
+    const auto framed = InspectStartupCredentialFrameHeader(
+        header, static_cast<std::size_t>(state.st_size), binding);
+    if (!framed.ok()) {
+      result.error = framed.error == StartupCredentialFrameError::binding_mismatch
+          ? E::binding_mismatch : E::invalid_frame;
+      return result;
+    }
+    const auto size = framed.credential_bytes;
     const long native_page = ::sysconf(_SC_PAGESIZE);
     result.error = E::protected_memory_unavailable;
     if (native_page <= 0) return result;
