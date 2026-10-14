@@ -352,7 +352,10 @@ void RegistryRoundTripsCapacityAndWriterIdentity() {
 
   const auto serialized = filespace::SerializeFilespaceRegistry(registry);
   Require(serialized.ok(), "filespace registry serialization failed");
-  Require(serialized.payload.find("scratchbird.filespace.registry.v2") != std::string::npos,
+  Require(serialized.payload.starts_with("SBFSREG3") && serialized.payload.size() >= 80 &&
+              serialized.payload.compare(32, 16, reinterpret_cast<const char*>(descriptor.database_uuid.value.bytes.data()), 16) == 0 &&
+              serialized.payload.compare(48, 16, reinterpret_cast<const char*>(descriptor.filespace_uuid.value.bytes.data()), 16) == 0 &&
+              serialized.payload.compare(64, 16, reinterpret_cast<const char*>(descriptor.writer_identity_uuid.value.bytes.data()), 16) == 0,
           "registry did not use durable capacity format");
 
   const auto parsed = filespace::ParseFilespaceRegistry(serialized.payload);

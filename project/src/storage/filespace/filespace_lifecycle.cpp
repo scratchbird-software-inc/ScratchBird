@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "filespace_lifecycle.hpp"
+#include "filespace_registry_binary_codec.hpp"
 
 #include "disk_device.hpp"
 #include "filespace_header.hpp"
@@ -689,166 +690,9 @@ FilespaceOperationResult ValidateRequest(const FilespaceOperationRequest& reques
   return result;
 }
 
-std::string EscapeField(std::string value) {
-  for (char& ch : value) {
-    if (ch == '\n' || ch == '\r' || ch == '|') {
-      ch = ' ';
-    }
-  }
-  return value;
-}
 
-std::string Row(const std::vector<std::string>& fields) {
-  std::string row;
-  for (std::size_t index = 0; index < fields.size(); ++index) {
-    if (index != 0) {
-      row += '|';
-    }
-    row += EscapeField(fields[index]);
-  }
-  row += '\n';
-  return row;
-}
-
-u16 ParseU16(const std::string& value) {
-  return static_cast<u16>(std::strtoul(value.c_str(), nullptr, 10));
-}
-
-u32 ParseU32(const std::string& value) {
-  return static_cast<u32>(std::strtoul(value.c_str(), nullptr, 10));
-}
-
-u64 ParseU64(const std::string& value) {
-  return static_cast<u64>(std::strtoull(value.c_str(), nullptr, 10));
-}
-
-bool ParseStrictU64(const std::string& value, u64* parsed) {
-  if (parsed == nullptr || value.empty()) {
-    return false;
-  }
-  u64 accumulator = 0;
-  for (char ch : value) {
-    if (ch < '0' || ch > '9') {
-      return false;
-    }
-    const u64 digit = static_cast<u64>(ch - '0');
-    if (accumulator > (std::numeric_limits<u64>::max() - digit) / 10) {
-      return false;
-    }
-    accumulator = accumulator * 10 + digit;
-  }
-  *parsed = accumulator;
-  return true;
-}
-
-std::vector<std::string> SplitRow(const std::string& row) {
-  std::vector<std::string> fields;
-  std::stringstream stream(row);
-  std::string field;
-  while (std::getline(stream, field, '|')) {
-    fields.push_back(field);
-  }
-  return fields;
-}
-
-FilespaceRole ParseRole(u16 value) {
-  switch (static_cast<FilespaceRole>(value)) {
-    case FilespaceRole::active_primary:
-    case FilespaceRole::primary_shadow:
-    case FilespaceRole::primary_snapshot:
-    case FilespaceRole::primary_candidate:
-    case FilespaceRole::secondary_data:
-    case FilespaceRole::secondary_index:
-    case FilespaceRole::secondary_overflow:
-    case FilespaceRole::secondary_history:
-    case FilespaceRole::secondary_shard:
-    case FilespaceRole::archive_history:
-    case FilespaceRole::archive_log:
-    case FilespaceRole::archive_detached:
-    case FilespaceRole::temporary:
-    case FilespaceRole::import_candidate:
-    case FilespaceRole::drop_pending:
-    case FilespaceRole::forbidden:
-      return static_cast<FilespaceRole>(value);
-    default:
-      return FilespaceRole::unknown;
-  }
-}
-
-FilespaceState ParseState(u16 value) {
-  switch (static_cast<FilespaceState>(value)) {
-    case FilespaceState::online:
-    case FilespaceState::read_only:
-    case FilespaceState::detached:
-    case FilespaceState::archived:
-    case FilespaceState::deleted:
-    case FilespaceState::creating:
-    case FilespaceState::initializing:
-    case FilespaceState::maintenance:
-    case FilespaceState::moving:
-    case FilespaceState::relocating_objects:
-    case FilespaceState::promoting:
-    case FilespaceState::demoting:
-    case FilespaceState::detaching:
-    case FilespaceState::drop_pending:
-    case FilespaceState::quarantine:
-    case FilespaceState::forbidden:
-      return static_cast<FilespaceState>(value);
-    default:
-      return FilespaceState::absent;
-  }
-}
-
-FilespacePinKind ParsePinKind(u16 value) {
-  switch (static_cast<FilespacePinKind>(value)) {
-    case FilespacePinKind::page_owner:
-    case FilespacePinKind::transaction:
-    case FilespacePinKind::backup:
-    case FilespacePinKind::archive:
-    case FilespacePinKind::catalog:
-    case FilespacePinKind::external:
-      return static_cast<FilespacePinKind>(value);
-  }
-  return FilespacePinKind::external;
-}
-
-FilespaceOperation ParseOperation(u16 value) {
-  switch (static_cast<FilespaceOperation>(value)) {
-    case FilespaceOperation::create_filespace:
-    case FilespaceOperation::attach_filespace:
-    case FilespaceOperation::detach_filespace:
-    case FilespaceOperation::promote_filespace:
-    case FilespaceOperation::demote_filespace:
-    case FilespaceOperation::set_read_only:
-    case FilespaceOperation::set_read_write:
-    case FilespaceOperation::assign_archive_owner:
-    case FilespaceOperation::assign_history_owner:
-    case FilespaceOperation::pin_filespace:
-    case FilespaceOperation::unpin_filespace:
-    case FilespaceOperation::verify_filespace:
-    case FilespaceOperation::compact_filespace:
-    case FilespaceOperation::truncate_filespace:
-    case FilespaceOperation::drop_filespace:
-    case FilespaceOperation::create_snapshot_filespace:
-    case FilespaceOperation::create_shadow_filespace:
-    case FilespaceOperation::refresh_snapshot_or_shadow:
-    case FilespaceOperation::retire_snapshot_or_shadow:
-    case FilespaceOperation::quarantine_filespace:
-    case FilespaceOperation::move_filespace:
-    case FilespaceOperation::merge_filespace:
-    case FilespaceOperation::delete_physical_filespace:
-    case FilespaceOperation::repair_filespace:
-    case FilespaceOperation::rebuild_filespace:
-    case FilespaceOperation::salvage_filespace:
-      return static_cast<FilespaceOperation>(value);
-  }
-  return FilespaceOperation::verify_filespace;
-}
-
-constexpr const char* kFilespaceManifestHeader =
-    "scratchbird.filespace.registry.manifest.v1";
-constexpr const char* kFilespaceManifestChecksumAlgorithm =
-    "fnv1a64-filespace-registry-v1";
+constexpr std::string_view kFilespaceManifestHeader = "SBFSRM03";
+constexpr std::size_t kFilespaceManifestHeaderBytes = 48;
 constexpr u64 kFnv1a64OffsetBasis = 14695981039346656037ull;
 constexpr u64 kFnv1a64Prime = 1099511628211ull;
 
@@ -858,13 +702,15 @@ std::string Hex64(u64 value) {
   return stream.str();
 }
 
-std::string FilespaceManifestChecksum(const std::string& payload) {
+u64 FilespaceManifestChecksum(std::string_view payload) {
   u64 hash = kFnv1a64OffsetBasis;
-  for (unsigned char ch : payload) {
+  for (std::size_t i = 0; i < payload.size(); ++i) {
+    if (i >= 40 && i < 48) continue; // Checksum slot, not any identity/header field.
+    const auto ch = static_cast<unsigned char>(payload[i]);
     hash ^= static_cast<u64>(ch);
     hash *= kFnv1a64Prime;
   }
-  return Hex64(hash);
+  return hash;
 }
 
 std::filesystem::path FilespaceManifestTempPath(const std::filesystem::path& path) {
@@ -2356,224 +2202,31 @@ FilespaceOperationResult ApplyFilespaceOperation(FilespaceRegistry* registry,
 
 FilespaceSerializeResult SerializeFilespaceRegistry(const FilespaceRegistry& registry) {
   FilespaceSerializeResult result;
-  result.status = FilespaceOkStatus();
-  result.payload += Row({"scratchbird.filespace.registry.v2", std::to_string(registry.next_evidence_sequence)});
-  for (const FilespaceDescriptor& descriptor : registry.filespaces) {
-    if (!CapacityWindowValid(descriptor.total_pages,
-                             descriptor.free_pages,
-                             descriptor.preallocated_pages,
-                             descriptor.allocation_root_page)) {
-      result.status = FilespaceErrorStatus();
-      result.diagnostic = MakeFilespaceDiagnostic(result.status,
-                                                  "SB-FILESPACE-LIFECYCLE-SERIALIZE-CAPACITY-WINDOW-INVALID",
-                                                  "storage.filespace.serialize_capacity_window_invalid");
-      return result;
-    }
-    if (descriptor.header_generation == 0) {
-      result.status = FilespaceErrorStatus();
-      result.diagnostic = MakeFilespaceDiagnostic(result.status,
-                                                  "SB-FILESPACE-LIFECYCLE-SERIALIZE-GENERATION-INVALID",
-                                                  "storage.filespace.serialize_generation_invalid");
-      return result;
-    }
-    if (!IsTypedEngineIdentity(descriptor.writer_identity_uuid, UuidKind::object)) {
-      result.status = FilespaceErrorStatus();
-      result.diagnostic = MakeFilespaceDiagnostic(result.status,
-                                                  "SB-FILESPACE-LIFECYCLE-SERIALIZE-WRITER-UUID-INVALID",
-                                                  "storage.filespace.serialize_writer_uuid_invalid");
-      return result;
-    }
-    result.payload += Row({"F",
-                           std::to_string(static_cast<u16>(descriptor.role)),
-                           std::to_string(static_cast<u16>(descriptor.state)),
-                           std::to_string(descriptor.page_size),
-                           std::to_string(descriptor.generation),
-                           descriptor.path,
-                           descriptor.read_only ? "1" : "0",
-                           descriptor.archive_owner ? "1" : "0",
-                           descriptor.history_owner ? "1" : "0",
-                           descriptor.startup_authority ? "1" : "0",
-                           descriptor.catalog_persistence_owner ? "1" : "0",
-                           descriptor.filespace_manifest_owner ? "1" : "0",
-                           descriptor.recovery_evidence_owner ? "1" : "0",
-                           descriptor.first_filespace ? "1" : "0",
-                           descriptor.active ? "1" : "0",
-                           scratchbird::core::uuid::UuidToString(descriptor.database_uuid.value),
-                           scratchbird::core::uuid::UuidToString(descriptor.filespace_uuid.value),
-                           std::to_string(descriptor.physical_filespace_id),
-                           std::to_string(descriptor.total_pages),
-                           std::to_string(descriptor.free_pages),
-                           std::to_string(descriptor.preallocated_pages),
-                           std::to_string(descriptor.allocation_root_page),
-                           std::to_string(descriptor.header_generation),
-                           scratchbird::core::uuid::UuidToString(descriptor.writer_identity_uuid.value)});
-    for (const FilespacePin& pin : descriptor.pins) {
-      result.payload += Row({"P",
-                             scratchbird::core::uuid::UuidToString(descriptor.filespace_uuid.value),
-                             std::to_string(static_cast<u16>(pin.kind)),
-                             pin.owner,
-                             std::to_string(pin.count)});
-    }
-  }
-  for (const FilespaceEvidenceRecord& evidence : registry.evidence) {
-    result.payload += Row({"E",
-                           std::to_string(evidence.sequence),
-                           std::to_string(static_cast<u16>(evidence.operation)),
-                           scratchbird::core::uuid::UuidToString(evidence.filespace_uuid.value),
-                           std::to_string(static_cast<u16>(evidence.previous_state)),
-                           std::to_string(static_cast<u16>(evidence.new_state)),
-                           std::to_string(static_cast<u16>(evidence.previous_role)),
-                           std::to_string(static_cast<u16>(evidence.new_role)),
-                           evidence.reason,
-                           evidence.diagnostic_code,
-                           evidence.durable_state_changed ? "1" : "0"});
-  }
+  const auto error = registry_binary::Encode(registry, result.payload);
+  result.status = error == registry_binary::Error::none ? FilespaceOkStatus() : FilespaceErrorStatus();
+  if (error != registry_binary::Error::none)
+    result.diagnostic = MakeFilespaceDiagnostic(result.status,
+        error == registry_binary::Error::generation ? "SB-FILESPACE-LIFECYCLE-SERIALIZE-GENERATION-INVALID" :
+        error == registry_binary::Error::identity ? "SB-FILESPACE-LIFECYCLE-SERIALIZE-WRITER-UUID-INVALID" :
+        "SB-FILESPACE-LIFECYCLE-SERIALIZE-CAPACITY-WINDOW-INVALID",
+        error == registry_binary::Error::generation ? "storage.filespace.serialize_generation_invalid" :
+        error == registry_binary::Error::identity ? "storage.filespace.serialize_writer_uuid_invalid" :
+        "storage.filespace.serialize_capacity_window_invalid",
+        "binary_registry_invalid:" + std::to_string(static_cast<unsigned>(error)));
   return result;
 }
 
 FilespaceParseResult ParseFilespaceRegistry(const std::string& payload) {
   FilespaceParseResult result;
-  result.status = FilespaceOkStatus();
-
-  std::stringstream stream(payload);
-  std::string row;
-  bool header_seen = false;
-  bool registry_v2 = false;
-  std::map<std::string, std::size_t> uuid_to_index;
-  while (std::getline(stream, row)) {
-    if (row.empty()) {
-      continue;
-    }
-    const auto fields = SplitRow(row);
-    if (!header_seen) {
-      if (fields.size() != 2 ||
-          (fields[0] != "scratchbird.filespace.registry.v1" &&
-           fields[0] != "scratchbird.filespace.registry.v2")) {
-        result.status = FilespaceErrorStatus();
-        result.diagnostic = MakeFilespaceDiagnostic(result.status,
-                                                    "SB-FILESPACE-LIFECYCLE-PARSE-HEADER-INVALID",
-                                                    "storage.filespace.parse_header_invalid");
-        return result;
-      }
-      registry_v2 = fields[0] == "scratchbird.filespace.registry.v2";
-      result.registry.next_evidence_sequence = ParseU64(fields[1]);
-      header_seen = true;
-      continue;
-    }
-    if (fields.empty()) {
-      continue;
-    }
-    if (fields[0] == "F" &&
-        ((!registry_v2 && fields.size() == 17) ||
-         (registry_v2 && fields.size() == 24))) {
-      FilespaceDescriptor descriptor;
-      descriptor.role = ParseRole(ParseU16(fields[1]));
-      descriptor.state = ParseState(ParseU16(fields[2]));
-      descriptor.page_size = ParseU32(fields[3]);
-      descriptor.generation = ParseU64(fields[4]);
-      descriptor.path = fields[5];
-      descriptor.read_only = fields[6] == "1";
-      descriptor.archive_owner = fields[7] == "1";
-      descriptor.history_owner = fields[8] == "1";
-      descriptor.startup_authority = fields[9] == "1";
-      descriptor.catalog_persistence_owner = fields[10] == "1";
-      descriptor.filespace_manifest_owner = fields[11] == "1";
-      descriptor.recovery_evidence_owner = fields[12] == "1";
-      descriptor.first_filespace = fields[13] == "1";
-      descriptor.active = fields[14] == "1";
-      const auto database_uuid = scratchbird::core::uuid::ParseTypedUuid(UuidKind::database, fields[15]);
-      const auto filespace_uuid = scratchbird::core::uuid::ParseTypedUuid(UuidKind::filespace, fields[16]);
-      if (!database_uuid.ok() || !filespace_uuid.ok()) {
-        result.status = FilespaceErrorStatus();
-        result.diagnostic = MakeFilespaceDiagnostic(result.status,
-                                                    "SB-FILESPACE-LIFECYCLE-PARSE-UUID-INVALID",
-                                                    "storage.filespace.parse_uuid_invalid");
-        return result;
-      }
-      descriptor.database_uuid = database_uuid.value;
-      descriptor.filespace_uuid = filespace_uuid.value;
-      if (registry_v2) {
-        descriptor.physical_filespace_id = ParseU16(fields[17]);
-        descriptor.total_pages = ParseU64(fields[18]);
-        descriptor.free_pages = ParseU64(fields[19]);
-        descriptor.preallocated_pages = ParseU64(fields[20]);
-        descriptor.allocation_root_page = ParseU64(fields[21]);
-        descriptor.header_generation = ParseU64(fields[22]);
-        const auto writer_uuid = scratchbird::core::uuid::ParseTypedUuid(UuidKind::object, fields[23]);
-        if (!writer_uuid.ok()) {
-          result.status = FilespaceErrorStatus();
-          result.diagnostic = MakeFilespaceDiagnostic(result.status,
-                                                      "SB-FILESPACE-LIFECYCLE-PARSE-WRITER-UUID-INVALID",
-                                                      "storage.filespace.parse_writer_uuid_invalid");
-          return result;
-        }
-        descriptor.writer_identity_uuid = writer_uuid.value;
-        if (!CapacityWindowValid(descriptor.total_pages,
-                                 descriptor.free_pages,
-                                 descriptor.preallocated_pages,
-                                 descriptor.allocation_root_page)) {
-          result.status = FilespaceErrorStatus();
-          result.diagnostic = MakeFilespaceDiagnostic(result.status,
-                                                      "SB-FILESPACE-LIFECYCLE-PARSE-CAPACITY-WINDOW-INVALID",
-                                                      "storage.filespace.parse_capacity_window_invalid");
-          return result;
-        }
-        if (descriptor.header_generation == 0) {
-          result.status = FilespaceErrorStatus();
-          result.diagnostic = MakeFilespaceDiagnostic(result.status,
-                                                      "SB-FILESPACE-LIFECYCLE-PARSE-GENERATION-INVALID",
-                                                      "storage.filespace.parse_generation_invalid");
-          return result;
-        }
-      }
-      uuid_to_index[fields[16]] = result.registry.filespaces.size();
-      result.registry.filespaces.push_back(std::move(descriptor));
-    } else if (fields[0] == "P" && fields.size() == 5) {
-      const auto found = uuid_to_index.find(fields[1]);
-      if (found == uuid_to_index.end()) {
-        result.status = FilespaceErrorStatus();
-        result.diagnostic = MakeFilespaceDiagnostic(result.status,
-                                                    "SB-FILESPACE-LIFECYCLE-PARSE-PIN-ORPHANED",
-                                                    "storage.filespace.parse_pin_orphaned");
-        return result;
-      }
-      result.registry.filespaces[found->second].pins.push_back({ParsePinKind(ParseU16(fields[2])), fields[3], ParseU64(fields[4])});
-    } else if (fields[0] == "E" && fields.size() == 11) {
-      FilespaceEvidenceRecord evidence;
-      evidence.sequence = ParseU64(fields[1]);
-      evidence.operation = ParseOperation(ParseU16(fields[2]));
-      const auto filespace_uuid = scratchbird::core::uuid::ParseTypedUuid(UuidKind::filespace, fields[3]);
-      if (!filespace_uuid.ok()) {
-        result.status = FilespaceErrorStatus();
-        result.diagnostic = MakeFilespaceDiagnostic(result.status,
-                                                    "SB-FILESPACE-LIFECYCLE-PARSE-EVIDENCE-UUID-INVALID",
-                                                    "storage.filespace.parse_evidence_uuid_invalid");
-        return result;
-      }
-      evidence.filespace_uuid = filespace_uuid.value;
-      evidence.previous_state = ParseState(ParseU16(fields[4]));
-      evidence.new_state = ParseState(ParseU16(fields[5]));
-      evidence.previous_role = ParseRole(ParseU16(fields[6]));
-      evidence.new_role = ParseRole(ParseU16(fields[7]));
-      evidence.reason = fields[8];
-      evidence.diagnostic_code = fields[9];
-      evidence.durable_state_changed = fields[10] == "1";
-      result.registry.evidence.push_back(std::move(evidence));
-    } else {
-      result.status = FilespaceErrorStatus();
-      result.diagnostic = MakeFilespaceDiagnostic(result.status,
-                                                  "SB-FILESPACE-LIFECYCLE-PARSE-ROW-INVALID",
-                                                  "storage.filespace.parse_row_invalid");
-      return result;
-    }
-  }
-
-  if (!header_seen) {
-    result.status = FilespaceErrorStatus();
+  const auto error = registry_binary::Decode(payload, result.registry);
+  result.status = error == registry_binary::Error::none ? FilespaceOkStatus() : FilespaceErrorStatus();
+  if (error != registry_binary::Error::none)
     result.diagnostic = MakeFilespaceDiagnostic(result.status,
-                                                "SB-FILESPACE-LIFECYCLE-PARSE-HEADER-MISSING",
-                                                "storage.filespace.parse_header_missing");
-  }
+        error == registry_binary::Error::header ? "SB-FILESPACE-LIFECYCLE-PARSE-HEADER-INVALID"
+                                              : "SB-FILESPACE-LIFECYCLE-PARSE-ROW-INVALID",
+        error == registry_binary::Error::header ? "storage.filespace.parse_header_invalid"
+                                              : "storage.filespace.parse_row_invalid",
+        "binary_registry_invalid:" + std::to_string(static_cast<unsigned>(error)));
   return result;
 }
 
@@ -2606,7 +2259,18 @@ FilespaceRegistryManifestResult PersistFilespaceRegistryManifest(
     result.diagnostic = serialized.diagnostic;
     return result;
   }
-  result.checksum = FilespaceManifestChecksum(serialized.payload);
+  std::string frame(kFilespaceManifestHeaderBytes, '\0');
+  std::memcpy(frame.data(), kFilespaceManifestHeader.data(), 8);
+  const auto number = [&](std::size_t at, u64 n) {
+    for (unsigned i = 0; i < 8; ++i) frame[at+i] = static_cast<char>(n >> (8*i));
+  };
+  number(8, request.generation);
+  std::memcpy(frame.data()+16, request.writer_identity_uuid.value.bytes.data(), 16);
+  number(32, serialized.payload.size());
+  frame.append(serialized.payload);
+  const auto checksum = FilespaceManifestChecksum(frame);
+  number(40, checksum);
+  result.checksum = Hex64(checksum); // Checksum presentation, never UUID identity.
 
   std::error_code ec;
   const std::filesystem::path parent = request.path.parent_path();
@@ -2652,12 +2316,7 @@ FilespaceRegistryManifestResult PersistFilespaceRegistryManifest(
                                 "storage.filespace.registry_manifest.temp_open_failed",
                                 temp_path.string());
     }
-    out << kFilespaceManifestHeader << '|'
-        << request.generation << '|'
-        << scratchbird::core::uuid::UuidToString(request.writer_identity_uuid.value) << '|'
-        << kFilespaceManifestChecksumAlgorithm << '|'
-        << result.checksum << '\n'
-        << serialized.payload;
+    out.write(frame.data(), static_cast<std::streamsize>(frame.size()));
     out.close();
     if (!out) {
       return ManifestWriteError(std::move(result),
@@ -2739,71 +2398,69 @@ FilespaceRegistryManifestLoadResult LoadFilespaceRegistryManifest(
                              request.path.string());
   }
 
-  std::string header;
-  std::getline(in, header);
-  if (!in && header.empty()) {
+  in.seekg(0, std::ios::end);
+  const auto length = in.tellg();
+  if (length < static_cast<std::streamoff>(kFilespaceManifestHeaderBytes) ||
+      length > static_cast<std::streamoff>(registry_binary::maximum_bytes + kFilespaceManifestHeaderBytes))
     return ManifestLoadError(std::move(result),
-                             "SB-FILESPACE-REGISTRY-MANIFEST-LOAD-HEADER-MISSING",
-                             "storage.filespace.registry_manifest.load_header_missing");
-  }
-  std::ostringstream payload_stream;
-  payload_stream << in.rdbuf();
-  const std::string payload = payload_stream.str();
-
-  const auto fields = SplitRow(header);
-  if (fields.size() != 5 || fields[0] != kFilespaceManifestHeader) {
+        "SB-FILESPACE-REGISTRY-MANIFEST-LOAD-HEADER-INVALID",
+        "storage.filespace.registry_manifest.load_header_invalid");
+  in.seekg(0, std::ios::beg);
+  std::string frame(static_cast<std::size_t>(length), '\0');
+  in.read(frame.data(), length);
+  if (!in || in.peek() != std::char_traits<char>::eof() ||
+      std::string_view(frame).substr(0, 8) != kFilespaceManifestHeader)
     return ManifestLoadError(std::move(result),
-                             "SB-FILESPACE-REGISTRY-MANIFEST-LOAD-HEADER-INVALID",
-                             "storage.filespace.registry_manifest.load_header_invalid");
-  }
-  if (!ParseStrictU64(fields[1], &result.generation) || result.generation == 0) {
+        "SB-FILESPACE-REGISTRY-MANIFEST-LOAD-HEADER-INVALID",
+        "storage.filespace.registry_manifest.load_header_invalid");
+  const auto number = [&](std::size_t at) {
+    u64 value = 0;
+    for (unsigned i = 0; i < 8; ++i)
+      value |= u64(static_cast<unsigned char>(frame[at+i])) << (8*i);
+    return value;
+  };
+  const auto checksum = number(40);
+  const auto observed_checksum = FilespaceManifestChecksum(frame);
+  if (checksum != observed_checksum)
     return ManifestLoadError(std::move(result),
-                             "SB-FILESPACE-REGISTRY-MANIFEST-LOAD-GENERATION-INVALID",
-                             "storage.filespace.registry_manifest.load_generation_invalid",
-                             fields[1]);
-  }
-  const auto writer_uuid = scratchbird::core::uuid::ParseTypedUuid(UuidKind::object, fields[2]);
-  if (!writer_uuid.ok() || !IsTypedEngineIdentity(writer_uuid.value, UuidKind::object)) {
+        "SB-FILESPACE-REGISTRY-MANIFEST-LOAD-CHECKSUM-MISMATCH",
+        "storage.filespace.registry_manifest.load_checksum_mismatch");
+  if (number(32) != frame.size() - kFilespaceManifestHeaderBytes)
     return ManifestLoadError(std::move(result),
-                             "SB-FILESPACE-REGISTRY-MANIFEST-LOAD-WRITER-UUID-INVALID",
-                             "storage.filespace.registry_manifest.load_writer_uuid_invalid",
-                             fields[2]);
-  }
-  result.writer_identity_uuid = writer_uuid.value;
-  if (fields[3] != kFilespaceManifestChecksumAlgorithm) {
+        "SB-FILESPACE-REGISTRY-MANIFEST-LOAD-HEADER-INVALID",
+        "storage.filespace.registry_manifest.load_header_invalid");
+  result.generation = number(8);
+  if (!result.generation)
     return ManifestLoadError(std::move(result),
-                             "SB-FILESPACE-REGISTRY-MANIFEST-LOAD-CHECKSUM-ALGORITHM-INVALID",
-                             "storage.filespace.registry_manifest.load_checksum_algorithm_invalid",
-                             fields[3]);
-  }
-  result.checksum = fields[4];
-  const std::string observed_checksum = FilespaceManifestChecksum(payload);
-  if (observed_checksum != result.checksum) {
+        "SB-FILESPACE-REGISTRY-MANIFEST-LOAD-GENERATION-INVALID",
+        "storage.filespace.registry_manifest.load_generation_invalid");
+  result.writer_identity_uuid.kind = UuidKind::object;
+  std::memcpy(result.writer_identity_uuid.value.bytes.data(), frame.data()+16, 16);
+  if (!IsTypedEngineIdentity(result.writer_identity_uuid, UuidKind::object))
     return ManifestLoadError(std::move(result),
-                             "SB-FILESPACE-REGISTRY-MANIFEST-LOAD-CHECKSUM-MISMATCH",
-                             "storage.filespace.registry_manifest.load_checksum_mismatch",
-                             observed_checksum);
-  }
+        "SB-FILESPACE-REGISTRY-MANIFEST-LOAD-WRITER-UUID-INVALID",
+        "storage.filespace.registry_manifest.load_writer_uuid_invalid");
+  result.checksum = Hex64(checksum);
   result.checksum_verified = true;
-
-  if (request.expected_writer_identity_uuid.valid()) {
+  // Structural writer validity is not an expected-owner match or admission.
+  if (request.expected_writer_identity_uuid.kind != UuidKind::unknown ||
+      !request.expected_writer_identity_uuid.value.is_nil()) {
     if (!IsTypedEngineIdentity(request.expected_writer_identity_uuid, UuidKind::object) ||
-        request.expected_writer_identity_uuid.value != result.writer_identity_uuid.value) {
+        request.expected_writer_identity_uuid.value != result.writer_identity_uuid.value)
       return ManifestLoadError(std::move(result),
-                               "SB-FILESPACE-REGISTRY-MANIFEST-LOAD-WRITER-UUID-MISMATCH",
-                               "storage.filespace.registry_manifest.load_writer_uuid_mismatch",
-                               fields[2]);
-    }
+          "SB-FILESPACE-REGISTRY-MANIFEST-LOAD-WRITER-UUID-MISMATCH",
+          "storage.filespace.registry_manifest.load_writer_uuid_mismatch");
+    result.writer_identity_verified = true;
   }
-  result.writer_identity_verified = true;
-
-  const auto parsed = ParseFilespaceRegistry(payload);
-  if (!parsed.ok()) {
-    result.status = parsed.status;
-    result.diagnostic = parsed.diagnostic;
-    return result;
-  }
-  result.registry = parsed.registry;
+  // Decode the borrowed body in place: no extra full-size body or registry copy.
+  const auto decoded = registry_binary::Decode(
+      std::string_view(frame).substr(kFilespaceManifestHeaderBytes), result.registry);
+  if (decoded != registry_binary::Error::none)
+    return ManifestLoadError(std::move(result),
+        decoded == registry_binary::Error::header ? "SB-FILESPACE-LIFECYCLE-PARSE-HEADER-INVALID"
+                                                : "SB-FILESPACE-LIFECYCLE-PARSE-ROW-INVALID",
+        decoded == registry_binary::Error::header ? "storage.filespace.parse_header_invalid"
+                                                : "storage.filespace.parse_row_invalid");
   return result;
 }
 

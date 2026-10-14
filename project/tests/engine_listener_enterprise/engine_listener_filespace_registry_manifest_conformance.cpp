@@ -7,9 +7,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "filespace_lifecycle.hpp"
+#include "filespace_registry_binary_codec.hpp"
 #include "temp_workspace_lifecycle.hpp"
 #include "uuid.hpp"
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -18,6 +20,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -36,8 +39,7 @@ namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -52,25 +54,6 @@ platform::TypedUuid MakeUuid(platform::UuidKind kind, platform::u64 seed) {
     Fail("uuid generation failed");
   }
   return generated.value;
-}
-
-std::filesystem::path TempRoot() {
-  std::string scope = std::filesystem::current_path().filename().string();
-  if (scope.empty()) {
-    scope = "default";
-  }
-#ifdef _WIN32
-  const auto pid = static_cast<unsigned long long>(::GetCurrentProcessId());
-#else
-  const auto pid = static_cast<unsigned long long>(::getpid());
-#endif
-  auto root = std::filesystem::temp_directory_path() /
-              ("scratchbird_engine_listener_manifest_" + scope + "_" +
-               std::to_string(pid));
-  std::error_code ignored;
-  std::filesystem::remove_all(root, ignored);
-  std::filesystem::create_directories(root);
-  return root;
 }
 
 std::string ReadFile(const std::filesystem::path& path) {
@@ -125,6 +108,83 @@ void TestFilespaceRegistryManifest(const std::filesystem::path& root) {
   const auto registry_path = root / "registry" / "filespace.registry.manifest";
   const auto member_path = root / "member-001.sbfs";
   auto registry = MakeRegistry(member_path, writer_uuid);
+  registry.filespaces[0].pins.push_back({filespace::FilespacePinKind::backup, std::string("a|b\n\0c", 6), UINT64_MAX});
+  registry.evidence.push_back({8, filespace::FilespaceOperation::verify_filespace,
+      registry.filespaces[0].filespace_uuid, filespace::FilespaceState::online,
+      filespace::FilespaceState::online, filespace::FilespaceRole::active_primary,
+      filespace::FilespaceRole::active_primary, "reason|with\nframing", "SB-FILESPACE-LIFECYCLE-OK", false});
+
+  const auto encoded = filespace::SerializeFilespaceRegistry(registry);
+  Require(encoded.ok(), "binary registry encoding refused valid fixture");
+  std::string golden = "SBFSREG3";
+  const auto n = [&](std::uint64_t value, unsigned width) {
+    for (unsigned i = 0; i < width; ++i) golden.push_back(static_cast<char>(value >> (8 * i)));
+  };
+  const auto id = [&](const platform::TypedUuid& value) {
+    golden.append(reinterpret_cast<const char*>(value.value.bytes.data()), 16);
+  };
+  const auto text = [&](const std::string& value) { n(value.size(), 4); golden.append(value); };
+  n(0, 8); n(9, 8); n(1, 4); n(1, 4);
+  const auto& d = registry.filespaces[0];
+  id(d.database_uuid); id(d.filespace_uuid); id(d.writer_identity_uuid);
+  n(1, 2); n(1, 2); n(16384, 4); n(3, 8); n(0x1f8, 2); n(1, 2);
+  n(64, 8); n(48, 8); n(8, 8); n(2, 8); n(5, 8); text(d.path);
+  n(1, 4); n(2, 2); text(d.pins[0].owner); n(UINT64_MAX, 8);
+  n(8, 8); n(11, 2); id(d.filespace_uuid); n(1, 2); n(1, 2); n(1, 2); n(1, 2); n(0, 1);
+  text(registry.evidence[0].reason); text(registry.evidence[0].diagnostic_code);
+  for (unsigned i = 0; i < 8; ++i) golden[8+i] = static_cast<char>(std::uint64_t(golden.size()) >> (8*i));
+  Require(encoded.payload == golden, "registry differs from independent exact binary wire oracle");
+  const auto decoded = filespace::ParseFilespaceRegistry(golden);
+  Require(decoded.ok() && decoded.registry.filespaces.size() == 1 && decoded.registry.evidence.size() == 1 &&
+              decoded.registry.filespaces[0].database_uuid.value == d.database_uuid.value &&
+              decoded.registry.filespaces[0].filespace_uuid.value == d.filespace_uuid.value &&
+              decoded.registry.filespaces[0].pins[0].owner == d.pins[0].owner &&
+              decoded.registry.filespaces[0].pins[0].count == UINT64_MAX &&
+              filespace::SerializeFilespaceRegistry(decoded.registry).payload == golden,
+          "binary registry loses IDs, framed strings, bounds or exact bytes");
+  for (std::size_t size = 0; size < golden.size(); ++size) {
+    const auto rejected = filespace::ParseFilespaceRegistry(golden.substr(0, size));
+    Require(!rejected.ok() && rejected.registry.filespaces.empty() && rejected.registry.evidence.empty(),
+            "truncated registry published partial state");
+  }
+  for (const auto* old : {"scratchbird.filespace.registry.v1|1\n", "scratchbird.filespace.registry.v2|1\n"})
+    Require(!filespace::ParseFilespaceRegistry(old).ok(), "text UUID registry accepted by native reader");
+  auto duplicate = registry; duplicate.filespaces.push_back(d);
+  const auto rejected_duplicate = filespace::SerializeFilespaceRegistry(duplicate);
+  Require(!rejected_duplicate.ok() && rejected_duplicate.payload.empty(), "duplicate binary identity encoded");
+  for (const auto at : {std::size_t{38}, std::size_t{54}, std::size_t{70}}) {
+    auto wrong = golden; wrong[at] = 0x40;
+    const auto rejected = filespace::ParseFilespaceRegistry(wrong);
+    Require(!rejected.ok() && rejected.registry.filespaces.empty(), "non-v7 system identity decoded");
+  }
+  auto impossible = golden; impossible[24] = impossible[25] = impossible[26] = impossible[27] = char(255);
+  Require(!filespace::ParseFilespaceRegistry(impossible).ok(), "unbounded row count accepted");
+  auto trailing = golden; trailing.push_back(0);
+  Require(!filespace::ParseFilespaceRegistry(trailing).ok(), "trailing registry bytes accepted");
+  for (unsigned fault = 0; fault < 9; ++fault) {
+    auto invalid = registry;
+    auto& descriptor = invalid.filespaces[0];
+    if (fault == 0) descriptor.database_uuid.kind = platform::UuidKind::object;
+    if (fault == 1) descriptor.filespace_uuid.value = {};
+    if (fault == 2) descriptor.writer_identity_uuid.value = {};
+    if (fault == 3) descriptor.free_pages = 65;
+    if (fault == 4) descriptor.header_generation = 0;
+    if (fault == 5) descriptor.state = static_cast<filespace::FilespaceState>(65535);
+    if (fault == 6) descriptor.role = static_cast<filespace::FilespaceRole>(65535);
+    if (fault == 7) descriptor.page_size = 24576;
+    if (fault == 8) invalid.next_evidence_sequence = 8;
+    std::string output = "unchanged";
+    Require(filespace::registry_binary::Encode(invalid, output) != filespace::registry_binary::Error::none &&
+                output == "unchanged", "invalid registry changed encoder destination");
+  }
+  for (const auto [offset, width] : {std::pair<std::size_t, unsigned>{8,8}, {96,2}, {140,4}}) {
+    auto invalid = golden;
+    for (unsigned i = 0; i < width; ++i) invalid[offset+i] = char(255);
+    auto unchanged = registry;
+    Require(filespace::registry_binary::Decode(invalid, unchanged) != filespace::registry_binary::Error::none &&
+                filespace::SerializeFilespaceRegistry(unchanged).payload == golden,
+            "malformed length or reserved flags changed decoder destination");
+  }
 
   filespace::FilespaceRegistryManifestWriteRequest write_request;
   write_request.path = registry_path;
@@ -139,6 +199,11 @@ void TestFilespaceRegistryManifest(const std::filesystem::path& root) {
   Require(persisted.parent_synced, "filespace manifest did not report parent sync");
   Require(!persisted.checksum.empty(), "filespace manifest checksum missing");
   Require(std::filesystem::is_regular_file(registry_path), "filespace manifest missing");
+  const auto manifest = ReadFile(registry_path);
+  Require(manifest.substr(0, 8) == "SBFSRM03" && manifest.substr(48) == golden &&
+              manifest.compare(16, 16, reinterpret_cast<const char*>(writer_uuid.value.bytes.data()), 16) == 0 &&
+              manifest.find(uuid::UuidToString(writer_uuid.value)) == std::string::npos,
+          "manifest does not retain binary writer and binary registry body");
   Require(!std::filesystem::exists(registry_path.string() + ".tmp"),
           "filespace manifest temp survived successful persist");
 
@@ -155,6 +220,28 @@ void TestFilespaceRegistryManifest(const std::filesystem::path& root) {
           "filespace header generation did not survive manifest round trip");
   Require(loaded.registry.filespaces[0].writer_identity_uuid.value == writer_uuid.value,
           "filespace writer uuid did not survive manifest round trip");
+  load_request.expected_writer_identity_uuid = MakeUuid(platform::UuidKind::object, 31);
+  const auto wrong_owner = filespace::LoadFilespaceRegistryManifest(load_request);
+  Require(!wrong_owner.ok() && wrong_owner.registry.filespaces.empty() &&
+              wrong_owner.diagnostic.diagnostic_code == "SB-FILESPACE-REGISTRY-MANIFEST-LOAD-WRITER-UUID-MISMATCH",
+          "wrong binary writer identity accepted");
+  load_request.expected_writer_identity_uuid = {};
+  const auto unbound = filespace::LoadFilespaceRegistryManifest(load_request);
+  Require(unbound.ok() && !unbound.writer_identity_verified,
+          "structural parsing manufactured an expected writer match");
+  load_request.expected_writer_identity_uuid.value = writer_uuid.value;
+  Require(!filespace::LoadFilespaceRegistryManifest(load_request).ok(),
+          "nonempty unknown-kind expected owner was silently treated as absent");
+  load_request.expected_writer_identity_uuid = {platform::UuidKind::object, {}};
+  Require(!filespace::LoadFilespaceRegistryManifest(load_request).ok(),
+          "explicit nil expected owner was silently treated as absent");
+  load_request.expected_writer_identity_uuid = writer_uuid;
+  auto changed_generation = manifest;
+  changed_generation[8] ^= 1;
+  WriteFile(registry_path, changed_generation);
+  Require(!filespace::LoadFilespaceRegistryManifest(load_request).ok(),
+          "manifest checksum did not cover generation binding");
+  WriteFile(registry_path, manifest);
 
   WriteFile(registry_path.string() + ".tmp", "stale-temp");
   write_request.generation = 8;
@@ -277,11 +364,14 @@ void TestTempWorkspaceManifest(const std::filesystem::path& root) {
 
 }  // namespace
 
-int main() {
-  const auto root = TempRoot();
+int main() try {
+  scratchbird::tests::OwnedTempDirectory owned;
+  const auto root = owned.path();
   TestFilespaceRegistryManifest(root);
   TestTempWorkspaceManifest(root);
-  std::error_code ignored;
-  std::filesystem::remove_all(root, ignored);
+  owned.Cleanup();
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }
