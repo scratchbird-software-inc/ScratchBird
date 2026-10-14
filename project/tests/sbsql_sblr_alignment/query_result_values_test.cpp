@@ -106,7 +106,8 @@ struct Fixture {
         api::EngineTypedValue value;
         value.descriptor = d;
         if (null) value.setState(api::EngineValueState::sql_null);
-        else if (binary || v.code==dt::CanonicalTypeId::real64) value.binary_value = v.bytes;
+        else if (binary || v.code==dt::CanonicalTypeId::real64 ||
+                 v.code==dt::CanonicalTypeId::boolean) value.binary_value = v.bytes;
         else value.encoded_value = v.lexical;
         row.fields.emplace_back("same;=é", std::move(value));
       }

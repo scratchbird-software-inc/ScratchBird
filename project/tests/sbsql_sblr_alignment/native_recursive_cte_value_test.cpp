@@ -240,7 +240,7 @@ void Test(const api::EngineDatatypeCohort& cohort) {
     Check(cycle.diagnostic.ok && cycle.value==(i==3) && found.row_metadata[i].cycle==(i==3),"cycle truth");
     for (const auto& cell:row.values) actual_payload+=cell.encoded_value.size()+cell.binary_value.size();
   }
-  Check(found.output_payload_bytes==actual_payload && actual_payload==104,"search payload accounting");
+  Check(found.output_payload_bytes==actual_payload && actual_payload==85,"search payload accounting");
   for (bool empty : {false,true}) {
     auto valid=search;
     if(empty) { valid.anchor_batch.rows.clear(); valid.anchor_batch.rows.shrink_to_fit(); }
@@ -273,7 +273,7 @@ void Test(const api::EngineDatatypeCohort& cohort) {
     if(short_grant)
       Check(!result.diagnostic.ok && result.output_batch.rows.empty() &&
             result.diagnostic.diagnostic_code=="QOW-DIAG-QRY-014-RESOURCE-REFUSAL-V1", "one-short grant accepted: "+result.diagnostic.detail);
-    else Check(result.diagnostic.ok && result.output_payload_bytes==104,"exact peak grant refused: "+result.diagnostic.detail);
+    else Check(result.diagnostic.ok && result.output_payload_bytes==85,"exact peak grant refused: "+result.diagnostic.detail);
   }
   auto cancelled=search;
   cancelled.cancellation_evidence_uuid=Id(14);

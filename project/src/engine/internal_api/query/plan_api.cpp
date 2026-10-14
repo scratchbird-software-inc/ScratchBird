@@ -8126,7 +8126,7 @@ std::optional<std::string> EqualityKeyForTypedValue(const EngineTypedValue& valu
 EngineTypedValue BoolValue(bool value) {
   EngineTypedValue typed;
   typed.descriptor = BoolDescriptor();
-  typed.encoded_value = value ? "true" : "false";
+  typed.binary_value = {static_cast<std::uint8_t>(value)};
   return typed;
 }
 

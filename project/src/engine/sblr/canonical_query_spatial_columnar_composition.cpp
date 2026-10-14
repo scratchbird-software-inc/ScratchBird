@@ -5806,7 +5806,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                 if (ordinal == 2) {
                   value.binary_value.assign(row.crs_uuid.bytes.begin(), row.crs_uuid.bytes.end());
                 }
-                if (ordinal == 3 && has_match) value.encoded_value = "true";
+                if (ordinal == 3 && has_match) value.binary_value = {1};
                 if ((ordinal == 3 && !has_match && has_nearest) ||
                     ordinal == 4) {
                   value.binary_value = exec::EncodeReal64Value(row.distance).binary_value;

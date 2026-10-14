@@ -6,6 +6,7 @@
 #include "datatype_operations.hpp"
 #include "datatype_physical_encoding.hpp"
 #include "disk_device.hpp"
+#include "../support/owned_temp_directory.hpp"
 
 #include <algorithm>
 #include <array>
@@ -295,14 +296,8 @@ void Persistence() {
                        true_oracle.begin()),
         "production TRUE bytes equal independent oracle before persistence");
   std::copy(true_oracle.begin(), true_oracle.end(), expected.begin()+40);
-#ifdef _WIN32
-  const auto pid = ::_getpid();
-#else
-  const auto pid = ::getpid();
-#endif
-  const fs::path path = fs::temp_directory_path() /
-      ("sb-base-boolean-" + std::to_string(pid) + ".codec");
-  struct Cleanup { fs::path p; ~Cleanup(){ std::error_code e; fs::remove(p,e); } } cleanup{path};
+  scratchbird::tests::OwnedTempDirectory directory;
+  const fs::path path = directory.path() / "boolean.codec";
   disk::FileDevice writer;
   Check(writer.Open(path.string(), disk::FileOpenMode::create_new).ok(), "create fixture");
   const auto write = writer.WriteAt(0, expected.data(), expected.size());
@@ -323,6 +318,7 @@ void Persistence() {
             decoded.ok() && decoded.value.payload == std::vector<platform::byte>{1},
         "reopen preserves exact identity and canonical TRUE byte");
   Check(reader.Close().ok(), "close reopened fixture");
+  directory.Cleanup();
 }
 }  // namespace
 

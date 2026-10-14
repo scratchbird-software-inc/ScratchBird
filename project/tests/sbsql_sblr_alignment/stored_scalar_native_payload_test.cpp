@@ -707,19 +707,36 @@ void StoredBooleanDescriptors() {
       Require(api::StoredScalarProjectionRequiredV1(source) &&
           api::ProjectStoredScalarDescriptorV1(context, source, nullable, &output, &detail) &&
           output == expected, "BOOLEAN stored scalar projection lost exact binding");
-      // This test qualifies descriptor projection, not replacement of the
-      // legacy executor's BOOLEAN payload carrier. Exercise its actual caller
-      // contract; native BOOLEAN carrier unification is a separate repair.
+      // The actual stored byte must survive native projection and replay
+      // without text translation or alternate carriers.
       for (const bool expected_value : {false, true}) {
         api::EngineTypedValue value;
         value.descriptor = output;
-        value.encoded_value = expected_value ? "true" : "false";
+        const std::string bytes(1, static_cast<char>(expected_value));
+        Require(api::RestoreStoredScalarPayloadV1(bytes, State::value, &value) &&
+                api::StoredScalarPayloadMatchesV1(value, bytes, State::value) &&
+                value.encoded_value.empty() && value.binary_value ==
+                    std::vector<std::uint8_t>{static_cast<std::uint8_t>(expected_value)},
+                "stored Boolean byte did not survive projection and replay");
         const auto decoded = scratchbird::engine::executor::DecodeBoolValue(value);
         Require(decoded.ok() && decoded.value == expected_value,
                 "projected BOOLEAN descriptor changed the executor value");
-        value.binary_value = {static_cast<std::uint8_t>(expected_value)};
+        const auto clean = value;
+        for (const auto malformed : {std::string{}, std::string(1,'\2'), std::string(2,'\0')}) {
+          auto invalid = clean;
+          invalid.binary_value.assign(malformed.begin(), malformed.end());
+          Require(!api::StoredScalarPayloadMatchesV1(invalid,malformed,State::value),
+                  "clean-carrier malformed Boolean byte matched stored replay");
+        }
+        value.encoded_value = expected_value ? "true" : "false";
         Require(!scratchbird::engine::executor::DecodeBoolValue(value).ok(),
                 "projected BOOLEAN descriptor admitted a dual carrier");
+        const auto before = value;
+        for (const auto malformed : {std::string{}, std::string(1,'\2'),
+                                     std::string(2,'\0'), std::string("true"), std::string("false")})
+          Require(!api::RestoreStoredScalarPayloadV1(malformed, State::value, &value) &&
+                  Equal(value,before) && !api::StoredScalarPayloadMatchesV1(value,malformed,State::value),
+                  "malformed Boolean storage changed destination or matched replay");
       }
       for (unsigned change = 0; change < 9; ++change) {
         auto invalid = source;

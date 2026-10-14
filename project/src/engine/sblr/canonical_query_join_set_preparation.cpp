@@ -24,6 +24,7 @@
 #include "catalog/name_resolution_api.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_operations.hpp"
+#include "query/native_scalar_descriptor_projection.hpp"
 
 #include <algorithm>
 #include <array>
@@ -457,25 +458,25 @@ MaterializedSetOperationPlanningState MaterializeSetOperationPlanningState(
 bool ExactCanonicalBooleanJoinAliasDescriptorV1(
     const api::RelationalTypeDescriptor& descriptor) {
   if (!descriptor.datatype_identity_authoritative ||
+      descriptor.collation_uuid || descriptor.timezone_profile_id || descriptor.width ||
+      descriptor.precision || descriptor.scale || descriptor.decimal_codec_profile ||
       (descriptor.nullability != api::RelationalNullability::kNonNull &&
        descriptor.nullability != api::RelationalNullability::kNullable) ||
       descriptor.descriptor_uuid != descriptor.type_uuid ||
       !core::uuid::IsEngineIdentityUuid(descriptor.statement_receipt_uuid)) {
     return false;
   }
-  const auto identity = dt::LookupCanonicalBooleanTypeCodecIdentityV1(
-      descriptor.datatype_catalog_snapshot_uuid,
-      descriptor.datatype_catalog_generation,
-      descriptor.datatype_registry_generation);
-  return identity.ok &&
-         descriptor.descriptor_uuid == identity.row.descriptor_uuid &&
+  const auto* identity = api::FindExactRelationalDatatypeIdentityV3(descriptor);
+  return identity &&
+         identity->legacy_fields.canonical_binary_type_code == static_cast<std::uint32_t>(dt::CanonicalTypeId::boolean) &&
+         descriptor.descriptor_uuid == identity->legacy_fields.descriptor_uuid &&
          descriptor.descriptor_generation ==
-             identity.row.descriptor_generation &&
-         descriptor.type_uuid == identity.row.type_uuid &&
-         descriptor.type_generation == identity.row.type_generation &&
-         descriptor.codec_id == identity.row.codec_id &&
-         descriptor.codec_version == identity.row.codec_version &&
-         descriptor.codec_generation == identity.row.codec_generation &&
+             identity->legacy_fields.descriptor_generation &&
+         descriptor.type_uuid == identity->legacy_fields.type_uuid &&
+         descriptor.type_generation == identity->legacy_fields.type_generation &&
+         descriptor.codec_id == identity->legacy_fields.codec_id &&
+         descriptor.codec_version == identity->legacy_fields.codec_version &&
+         descriptor.codec_generation == identity->legacy_fields.codec_generation &&
          dt::IsExactCanonicalBooleanDescriptorTypeAliasV1(
              descriptor.descriptor_uuid, descriptor.descriptor_generation,
              descriptor.type_uuid, descriptor.type_generation,
@@ -540,6 +541,24 @@ bool ProjectCanonicalBooleanJoinAliasRuntimeCarriersV1(
       *detail = "join canonical boolean alias carrier is unresolved";
       return false;
     }
+    const api::EngineDatatypeCohort cohort{
+        descriptor->second->datatype_catalog_snapshot_uuid,
+        descriptor->second->datatype_catalog_generation,
+        descriptor->second->datatype_registry_generation};
+    const auto short_encoding = column.nullable ? "nullability=nullable" : "nullability=non_null";
+    // Project formatting, not authority. An already-bound tuple must match
+    // exactly, including on empty inputs; never fill or overwrite a nil,
+    // foreign or partial cohort from the DAG's otherwise valid declaration.
+    if (column.descriptor.datatype_cohort != cohort ||
+        column.descriptor.type_uuid != descriptor->second->type_uuid ||
+        column.descriptor.datatype_descriptor_uuid != descriptor->second->descriptor_uuid ||
+        column.descriptor.datatype_descriptor_generation != descriptor->second->descriptor_generation ||
+        !column.descriptor.charset_uuid.is_nil() || !column.descriptor.collation_uuid.is_nil() ||
+        (column.descriptor.encoded_descriptor != encoded &&
+         column.descriptor.encoded_descriptor != short_encoding)) {
+      *detail = "join canonical boolean runtime binding differs from its admitted tuple";
+      return false;
+    }
     for (auto& row : batch->rows) {
       if (ordinal >= row.values.size() ||
           row.values[ordinal].descriptor.descriptor_uuid !=
@@ -556,11 +575,18 @@ bool ProjectCanonicalBooleanJoinAliasRuntimeCarriersV1(
       row.values[ordinal].descriptor.type_uuid = descriptor->second->type_uuid;
       row.values[ordinal].descriptor.datatype_descriptor_uuid = descriptor->second->descriptor_uuid;
       row.values[ordinal].descriptor.datatype_descriptor_generation = descriptor->second->descriptor_generation;
+      row.values[ordinal].descriptor.datatype_cohort = {
+          descriptor->second->datatype_catalog_snapshot_uuid,
+          descriptor->second->datatype_catalog_generation,
+          descriptor->second->datatype_registry_generation};
     }
     column.descriptor.encoded_descriptor = encoded;
     column.descriptor.type_uuid = descriptor->second->type_uuid;
     column.descriptor.datatype_descriptor_uuid = descriptor->second->descriptor_uuid;
     column.descriptor.datatype_descriptor_generation = descriptor->second->descriptor_generation;
+    column.descriptor.datatype_cohort = {descriptor->second->datatype_catalog_snapshot_uuid,
+        descriptor->second->datatype_catalog_generation,
+        descriptor->second->datatype_registry_generation};
   }
   return true;
 }
@@ -1007,7 +1033,8 @@ PreparedSetOperationRoot PrepareSetOperationRoot(
     const auto result_type = dt::CanonicalTypeIdFromStableName(result_type_name);
     if ((result_type == dt::CanonicalTypeId::uuid || result_type == dt::CanonicalTypeId::binary ||
          result_type == dt::CanonicalTypeId::int32 || result_type == dt::CanonicalTypeId::int64) &&
-        !BuildExactCanonicalScalarRuntimeDescriptorV1(*descriptor->second, result_type, &engine_descriptor)) {
+        !::scratchbird::engine::sblr::BuildExactCanonicalScalarRuntimeDescriptorV1(
+            *descriptor->second, result_type, &engine_descriptor)) {
       result.detail = "set-operation result lacks exact admitted datatype/codec binding";
       return result;
     }

@@ -107,7 +107,7 @@ bool EncodeCanonicalScalarEqualityKey(const api::EngineTypedValue& value,
       *refusal_detail = decoded.diagnostic.detail;
       return false;
     }
-    canonical_payload = decoded.value ? "true" : "false";
+    canonical_payload.assign(1, static_cast<char>(decoded.value));
   } else if (type == "real64" || type == "double" ||
              type == "double precision") {
     const auto decoded = exec::DecodeReal64Value(value);

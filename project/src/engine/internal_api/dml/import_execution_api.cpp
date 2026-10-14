@@ -680,7 +680,7 @@ EngineTypedValue RejectBoolValue(bool value) {
   typed.descriptor.descriptor_kind = "scalar";
   typed.descriptor.canonical_type_name = "boolean";
   typed.descriptor.encoded_descriptor = "type=boolean;nullable=false";
-  typed.encoded_value = value ? "true" : "false";
+  typed.binary_value = {static_cast<std::uint8_t>(value)};
   return typed;
 }
 

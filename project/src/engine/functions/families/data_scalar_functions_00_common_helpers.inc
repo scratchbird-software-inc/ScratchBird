@@ -1038,6 +1038,8 @@ EngineRequestContextForFunction(
 scratchbird::engine::sblr::SblrValue MakeBooleanValue(bool input) {
   auto value = MakeInt64Value("boolean", input ? 1 : 0);
   value.payload_kind = scratchbird::engine::sblr::SblrValuePayloadKind::boolean;
+  value.encoded_value.clear();
+  value.text_value.clear();
   return value;
 }
 

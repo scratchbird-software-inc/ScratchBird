@@ -218,6 +218,12 @@ api::EngineTypedValue Value(const api::EngineDescriptor& descriptor,
     return scratchbird::tests::NativeInt64Fixture(descriptor, encoded);
   if (descriptor.canonical_type_name == "real64")
     return scratchbird::tests::NativeReal64Fixture(descriptor, encoded);
+  if (descriptor.canonical_type_name == "boolean") {
+    if (encoded != "true" && encoded != "false")
+      throw std::invalid_argument("invalid Boolean fixture oracle");
+    value.binary_value = {static_cast<std::uint8_t>(encoded == "true")};
+    return value;
+  }
   value.encoded_value = encoded;
   value.state = api::EngineValueState::value;
   return value;
@@ -327,6 +333,11 @@ exec::CanonicalAggregateRuntimeRequest Request(
 }
 
 bool ScalarMatches(const api::EngineTypedValue& value, const std::string& expected) {
+  if (value.descriptor.canonical_type_name == "boolean") {
+    const auto decoded = exec::DecodeBoolValue(value);
+    return decoded.ok() && (expected == "true" || expected == "false") &&
+        decoded.value == (expected == "true");
+  }
   if (value.descriptor.canonical_type_name == "real64") {
     const auto decoded = exec::DecodeReal64Value(value);
     return decoded.ok() && std::abs(decoded.value - std::stod(expected)) < 1e-12;

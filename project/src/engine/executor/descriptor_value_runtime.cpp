@@ -311,6 +311,30 @@ bool BoundExecutionTypeDescriptor(
                                        &fields)) {
     return refuse("bound scalar descriptor metadata is not admitted column metadata");
   }
+  if (type_id == CanonicalTypeId::boolean) {
+    if (!fields.identities.empty() || !descriptor.charset_uuid.is_nil() ||
+        !descriptor.collation_uuid.is_nil())
+      return refuse("BOOLEAN has no charset, collation or other identity modifiers");
+    const auto& row = identity->legacy_fields;
+    const std::pair<std::string_view, std::string> expected[] = {
+        {"datatype_descriptor_generation", std::to_string(row.descriptor_generation)},
+        {"type_generation", std::to_string(row.type_generation)},
+        {"codec_id", row.codec_id},
+        {"codec_version", std::to_string(row.codec_version)},
+        {"codec_generation", std::to_string(row.codec_generation)},
+        {"null_encoding", "1"}};
+    std::size_t profile_fields = 0;
+    for (const auto& [key, value] : fields.text) {
+      if (key == "nullability" || key == "nullable") continue;
+      bool matched = false;
+      for (const auto& [wanted_key, wanted_value] : expected)
+        if (key == wanted_key && value == wanted_value) matched = true;
+      if (!matched) return refuse("BOOLEAN metadata contains unknown or contradictory profile fields");
+      ++profile_fields;
+    }
+    if (profile_fields != 0 && profile_fields != std::size(expected))
+      return refuse("BOOLEAN explicit codec profile is incomplete");
+  }
   if (fields.identities.contains("domain_uuid")) {
     return refuse("bound domain descriptor lacks the complete ordered domain stack");
   }
@@ -636,7 +660,7 @@ std::vector<std::string> RowKey(const DescriptorTuple& tuple) {
         if (decoded.ok()) canonical_payload = std::to_string(decoded.value);
       } else if (IsBoolType(value.descriptor)) {
         const auto decoded = DecodeBoolValue(value);
-        if (decoded.ok()) canonical_payload = decoded.value ? "true" : "false";
+        if (decoded.ok()) canonical_payload.assign(1, static_cast<char>(decoded.value));
       } else if (IsReal64Type(value.descriptor)) {
         const auto decoded = DecodeReal64Value(value);
         canonical_payload.assign(value.binary_value.begin(),value.binary_value.end());
@@ -1218,6 +1242,14 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
       return ErrorDiagnostic("SB_EXECUTOR_DESCRIPTOR_TYPE_UNSUPPORTED", descriptor.canonical_type_name, 0, column);
     }
     const auto type = CanonicalDescriptorTypeId(descriptor);
+    if (type == CanonicalTypeId::boolean) {
+      engine::ExecutionTypeDescriptor bound;
+      std::string reason;
+      if (!BoundExecutionTypeDescriptor(descriptor, type, &bound, &reason) ||
+          bound.nullable_allowed != batch.columns[column].nullable)
+        return ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID",
+            "boolean column binding/nullability is invalid:" + reason, 0, column);
+    }
     if (type == CanonicalTypeId::decimal &&
         !ValidateBoundDecimalColumn(descriptor, batch.columns[column].nullable))
       return ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID",
@@ -1340,6 +1372,13 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
       if (CanonicalDescriptorTypeId(expected.descriptor) == CanonicalTypeId::real64) {
         const auto decoded=DecodeReal64Value(value);
         if (!decoded.ok()) return ErrorDiagnostic(decoded.diagnostic.diagnostic_code, decoded.diagnostic.detail,row,column);
+        continue;
+      }
+      if (IsBoolType(expected.descriptor)) {
+        if (!value.encoded_value.empty() || value.binary_value.size() != 1 ||
+            value.binary_value[0] > 1)
+          return ErrorDiagnostic("SB_EXECUTOR_BOOL_DECODE_FAILED",
+              "BOOLEAN requires exactly one canonical native byte", row, column);
         continue;
       }
       if (!value.binary_value.empty() &&
@@ -1690,6 +1729,14 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
     }
     const auto& bound_column = batch.columns[column];
     const auto& descriptor = bound_column.descriptor;
+    if (CanonicalDescriptorTypeId(descriptor) == CanonicalTypeId::boolean) {
+      engine::ExecutionTypeDescriptor bound;
+      std::string reason;
+      if (!BoundExecutionTypeDescriptor(descriptor, CanonicalTypeId::boolean, &bound, &reason) ||
+          bound.nullable_allowed != bound_column.nullable)
+        return ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID",
+            "boolean output binding/nullability is invalid:" + reason, 0, column);
+    }
     if (CanonicalDescriptorTypeId(descriptor) == CanonicalTypeId::decimal &&
         !ValidateBoundDecimalColumn(descriptor, bound_column.nullable))
       return ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID",
@@ -1790,6 +1837,11 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
         std::string detail;
         if (!ValidateBoundDecimalPayload(value, &detail))
           return ErrorDiagnostic("NUMERIC.ENCODING.NONCANONICAL", std::move(detail), row, column);
+        continue;
+      }
+      if (CanonicalDescriptorTypeId(bound_column.descriptor) == CanonicalTypeId::boolean) {
+        const auto decoded = DecodeBoolValue(value);
+        if (!decoded.ok()) return decoded.diagnostic;
         continue;
       }
       if (IsCanonicalInt128DescriptorV1(bound_column.descriptor) &&
@@ -2888,7 +2940,20 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
     }
   }
   DescriptorBatch source_batch;
-  source_batch.columns = {{"cast_source", value.descriptor, true}};
+  bool source_nullable = true;
+  if (IsBoolType(value.descriptor) || IsBoolType(target_descriptor)) {
+    engine::ExecutionTypeDescriptor source_bound, target_bound;
+    std::string detail;
+    if (!BoundExecutionTypeDescriptor(value.descriptor, CanonicalDescriptorTypeId(value.descriptor),
+                                      &source_bound, &detail) ||
+        !BoundExecutionTypeDescriptor(target_descriptor, CanonicalDescriptorTypeId(target_descriptor),
+                                      &target_bound, &detail)) {
+      SetDiagnostic(diagnostic, ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID", std::move(detail)));
+      return failed_value();
+    }
+    source_nullable = source_bound.nullable_allowed;
+  }
+  source_batch.columns = {{"cast_source", value.descriptor, source_nullable}};
   source_batch.rows = {{{value}}};
   const auto source_validation = ValidateDescriptorBatch(source_batch);
   if (!source_validation.ok) {
@@ -2978,7 +3043,7 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
       return failed_value();
     }
     SetDiagnostic(diagnostic, OkDiagnostic());
-    return MakeExecutorValue(target_descriptor, decoded.value ? "true" : "false", false);
+    return EncodeBoundBoolValue(decoded.value, target_descriptor);
   }
   if (IsTextType(target_descriptor)) {
     if (IsInt64Type(value.descriptor)) {
@@ -3025,11 +3090,11 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
     const std::string text = LowerAscii(value.encoded_value);
     if (text == "true" || text == "1") {
       SetDiagnostic(diagnostic, OkDiagnostic());
-      return MakeExecutorValue(target_descriptor, "true", false);
+      return EncodeBoundBoolValue(true, target_descriptor);
     }
     if (text == "false" || text == "0") {
       SetDiagnostic(diagnostic, OkDiagnostic());
-      return MakeExecutorValue(target_descriptor, "false", false);
+      return EncodeBoundBoolValue(false, target_descriptor);
     }
     SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_CAST_FAILED", value.encoded_value));
     return failed_value();
@@ -3498,10 +3563,20 @@ Int64DecodeResult DecodeInt64Value(const EngineTypedValue& value) {
 
 BoolDecodeResult DecodeBoolValue(const EngineTypedValue& value) {
   BoolDecodeResult result;
+  if (!IsBoolType(value.descriptor)) {
+    result.diagnostic = ErrorDiagnostic("SB_EXECUTOR_VALUE_DESCRIPTOR_MISMATCH", value.descriptor.canonical_type_name);
+    return result;
+  }
+  engine::ExecutionTypeDescriptor bound;
+  std::string reason;
+  if (!BoundExecutionTypeDescriptor(value.descriptor, CanonicalTypeId::boolean, &bound, &reason)) {
+    result.diagnostic = ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID", std::move(reason));
+    return result;
+  }
   if (value.state ==
       scratchbird::engine::internal_api::EngineValueState::sql_null) {
     if (!value.is_null || !value.encoded_value.empty() ||
-        !value.binary_value.empty()) {
+        !value.binary_value.empty() || !bound.nullable_allowed) {
       result.diagnostic = ErrorDiagnostic(
           "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
           "boolean SQL NULL state is malformed");
@@ -3512,26 +3587,14 @@ BoolDecodeResult DecodeBoolValue(const EngineTypedValue& value) {
   }
   if (value.state !=
           scratchbird::engine::internal_api::EngineValueState::value ||
-      value.is_null || !value.binary_value.empty()) {
+      value.is_null || !value.encoded_value.empty() || value.binary_value.size() != 1 ||
+      value.binary_value[0] > 1) {
     result.diagnostic = ErrorDiagnostic(
         "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
-        "boolean decode received a non-value sentinel or auxiliary binary "
-        "payload");
+        "boolean decode requires a sole canonical native byte");
     return result;
   }
-  if (!IsBoolType(value.descriptor)) {
-    result.diagnostic = ErrorDiagnostic("SB_EXECUTOR_VALUE_DESCRIPTOR_MISMATCH", value.descriptor.canonical_type_name);
-    return result;
-  }
-  const std::string text = LowerAscii(value.encoded_value);
-  if (text == "true" || text == "1") {
-    result.value = true;
-  } else if (text == "false" || text == "0") {
-    result.value = false;
-  } else {
-    result.diagnostic = ErrorDiagnostic("SB_EXECUTOR_BOOL_DECODE_FAILED", value.encoded_value);
-    return result;
-  }
+  result.value = value.binary_value[0] != 0;
   result.diagnostic = OkDiagnostic();
   return result;
 }
@@ -3602,7 +3665,15 @@ EngineTypedValue EncodeInt64Value(std::int64_t value) {
 }
 
 EngineTypedValue EncodeBoolValue(bool value) {
-  return MakeExecutorValue(MakeExecutorDescriptor("boolean"), value ? "true" : "false", false);
+  return EncodeBoundBoolValue(value, MakeExecutorDescriptor("boolean", "nullability=non_null"));
+}
+
+EngineTypedValue EncodeBoundBoolValue(bool value, const EngineDescriptor& descriptor) {
+  EngineTypedValue output;
+  output.descriptor = descriptor;
+  output.setState(scratchbird::engine::internal_api::EngineValueState::value);
+  output.binary_value = {static_cast<std::uint8_t>(value)};
+  return output;
 }
 
 EngineTypedValue EncodeUint64Value(std::uint64_t value) {

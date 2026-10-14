@@ -3070,12 +3070,10 @@ EngineTypedValue FinalizeCanonicalAggregateCoreUnchecked(
   }
   if (function == CanonicalAggregateFunction::bool_and ||
       function == CanonicalAggregateFunction::every) {
-    return AggregateValue(request.result_column,
-                          state.saw_false ? "false" : "true");
+    return EncodeBoundBoolValue(!state.saw_false, request.result_column.descriptor);
   }
   if (function == CanonicalAggregateFunction::bool_or) {
-    return AggregateValue(request.result_column,
-                          state.saw_true ? "true" : "false");
+    return EncodeBoundBoolValue(state.saw_true, request.result_column.descriptor);
   }
   *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-UNIMPLEMENTED-V1",
                         "aggregate final state is unavailable");

@@ -9,7 +9,7 @@
 
 namespace scratchbird::engine::internal_api {
 
-enum class StoredScalarPayloadKindV1 { encoded, uuid16, binary, int32_le4, scalar_le8, timestamp16 };
+enum class StoredScalarPayloadKindV1 { encoded, uuid16, binary, int32_le4, scalar_le8, timestamp16, boolean_u8 };
 
 inline StoredScalarPayloadKindV1 StoredScalarPayloadKindForV1(
     std::string_view type) noexcept {
@@ -26,6 +26,7 @@ inline StoredScalarPayloadKindV1 StoredScalarPayloadKindForV1(
   if (matches("int64") || matches("uint64") || matches("real64"))
     return StoredScalarPayloadKindV1::scalar_le8;
   if (matches("int32")) return StoredScalarPayloadKindV1::int32_le4;
+  if (matches("boolean") || matches("bool")) return StoredScalarPayloadKindV1::boolean_u8;
   if (matches("timestamp")) return StoredScalarPayloadKindV1::timestamp16;
   if (matches("binary") || matches("bytes") || matches("blob"))
     return StoredScalarPayloadKindV1::binary;
@@ -43,6 +44,8 @@ inline bool RestoreStoredScalarPayloadV1(std::string_view bytes,
       (state != EngineValueState::value && state != EngineValueState::sql_null) ||
       (state == EngineValueState::sql_null && !bytes.empty())) return false;
   const auto kind = StoredScalarPayloadKindForV1(value->descriptor.canonical_type_name);
+  if (state == EngineValueState::value && kind == StoredScalarPayloadKindV1::boolean_u8 &&
+      (bytes.size() != 1 || static_cast<unsigned char>(bytes[0]) > 1)) return false;
   if (state == EngineValueState::value && kind == StoredScalarPayloadKindV1::uuid16 &&
       bytes.size() != 16) return false;
   if (state == EngineValueState::value && kind == StoredScalarPayloadKindV1::scalar_le8 &&
@@ -82,6 +85,8 @@ inline bool StoredScalarPayloadMatchesV1(const EngineTypedValue& value,
       (kind == StoredScalarPayloadKindV1::uuid16 && bytes.size() != 16) ||
       (kind == StoredScalarPayloadKindV1::int32_le4 && bytes.size() != 4) ||
       (kind == StoredScalarPayloadKindV1::timestamp16 && bytes.size() != 16) ||
+      (kind == StoredScalarPayloadKindV1::boolean_u8 &&
+       (bytes.size() != 1 || static_cast<unsigned char>(bytes[0]) > 1)) ||
       (kind == StoredScalarPayloadKindV1::scalar_le8 && bytes.size() != 8)) return false;
   return std::equal(value.binary_value.begin(), value.binary_value.end(), bytes.begin(),
                     [](std::uint8_t left, char right) {

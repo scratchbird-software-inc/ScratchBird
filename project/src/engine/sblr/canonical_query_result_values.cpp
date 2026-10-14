@@ -74,10 +74,8 @@ bool MaterializePayload(const api::EngineTypedValue& value,
       if (!binary) payload->assign(value.encoded_value.begin(), value.encoded_value.end());
       break;
     case dt::CanonicalTypeId::boolean:
-      if (!binary) {
-        if (value.encoded_value != "true" && value.encoded_value != "false") return false;
-        payload->assign(1, value.encoded_value == "true" ? 1 : 0);
-      }
+      if (!binary || !value.encoded_value.empty() ||
+          payload->size() != 1 || (*payload)[0] > 1) return false;
       break;
     case dt::CanonicalTypeId::int32:
       if (!binary && !EncodeInteger<std::int32_t>(value.encoded_value, payload)) return false;

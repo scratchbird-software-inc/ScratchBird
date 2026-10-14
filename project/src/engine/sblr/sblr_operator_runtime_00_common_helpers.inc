@@ -129,14 +129,10 @@ SblrValue BinaryValue(std::vector<std::uint8_t> value) {
 SblrValue BoolValue(SblrTruthValue value) {
   SblrValue out;
   out.descriptor_id = "boolean";
-  out.payload_kind = SblrValuePayloadKind::boolean;
+  out.payload_kind = value == SblrTruthValue::unknown ? SblrValuePayloadKind::none : SblrValuePayloadKind::boolean;
   out.is_null = value == SblrTruthValue::unknown;
   out.has_int64_value = value != SblrTruthValue::unknown;
   out.int64_value = value == SblrTruthValue::true_value ? 1 : 0;
-  out.encoded_value = value == SblrTruthValue::true_value ? "TRUE" :
-                      value == SblrTruthValue::false_value ? "FALSE" : "UNKNOWN";
-  out.text_value = value == SblrTruthValue::true_value ? "TRUE" :
-                   value == SblrTruthValue::false_value ? "FALSE" : "UNKNOWN";
   return out;
 }
 

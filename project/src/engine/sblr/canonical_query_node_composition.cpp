@@ -1367,12 +1367,14 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         }
         api::EngineTypedValue sequence;
         sequence.descriptor = search_sequence_column.descriptor;
-        sequence.encoded_value = std::to_string(row + 1);
+        sequence.binary_value.resize(8);
+        for (unsigned byte = 0; byte < 8; ++byte)
+          sequence.binary_value[byte] = static_cast<std::uint8_t>(
+              static_cast<std::uint64_t>(row + 1) >> (8 * byte));
         sequence.state = api::EngineValueState::value;
         api::EngineTypedValue cycle;
         cycle.descriptor = cycle_mark_column.descriptor;
-        cycle.encoded_value =
-            row + 1 == accumulated.rows.size() ? "true" : "false";
+        cycle.binary_value = {static_cast<std::uint8_t>(row + 1 == accumulated.rows.size())};
         cycle.state = api::EngineValueState::value;
         accumulated.rows[row].values.push_back(std::move(sequence));
         accumulated.rows[row].values.push_back(std::move(cycle));
@@ -3232,7 +3234,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 function == exec::CanonicalAggregateFunction::bool_or
                     ? saw_true
                     : !saw_false;
-            value.encoded_value = aggregate_truth ? "true" : "false";
+            value.binary_value = {static_cast<std::uint8_t>(aggregate_truth)};
           }
           tuple.values.push_back(std::move(value));
           output.rows.push_back(std::move(tuple));

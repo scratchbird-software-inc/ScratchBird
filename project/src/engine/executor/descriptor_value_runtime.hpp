@@ -3681,6 +3681,8 @@ Real64DecodeResult DecodeReal64Value(const scratchbird::engine::internal_api::En
 scratchbird::engine::internal_api::EngineTypedValue EncodeInt64Value(std::int64_t value);
 scratchbird::engine::internal_api::EngineTypedValue EncodeUint64Value(std::uint64_t value);
 scratchbird::engine::internal_api::EngineTypedValue EncodeBoolValue(bool value);
+scratchbird::engine::internal_api::EngineTypedValue EncodeBoundBoolValue(
+    bool value, const scratchbird::engine::internal_api::EngineDescriptor& descriptor);
 scratchbird::engine::internal_api::EngineTypedValue EncodeReal64Value(double value);
 scratchbird::engine::internal_api::EngineTypedValue EncodeTextValue(std::string value);
 

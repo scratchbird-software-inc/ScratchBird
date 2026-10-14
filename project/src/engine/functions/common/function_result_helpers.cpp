@@ -54,8 +54,10 @@ scratchbird::engine::sblr::SblrValue MakeInt64Value(std::string descriptor_id, s
   value.descriptor_id = std::move(descriptor_id);
   value.int64_value = int_value;
   value.has_int64_value = true;
-  value.payload_kind = scratchbird::engine::sblr::SblrValuePayloadKind::signed_integer;
-  if (value.descriptor_id != "int64") {
+  value.payload_kind = value.descriptor_id == "boolean"
+      ? scratchbird::engine::sblr::SblrValuePayloadKind::boolean
+      : scratchbird::engine::sblr::SblrValuePayloadKind::signed_integer;
+  if (value.descriptor_id != "int64" && value.descriptor_id != "boolean") {
     value.encoded_value = std::to_string(int_value);
     value.text_value = value.encoded_value;
   }

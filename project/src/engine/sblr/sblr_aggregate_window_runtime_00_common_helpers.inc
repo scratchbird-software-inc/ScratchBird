@@ -93,8 +93,6 @@ SblrValue BoolValue(bool value) {
   out.is_null = false;
   out.has_int64_value = true;
   out.int64_value = value ? 1 : 0;
-  out.encoded_value = value ? "TRUE" : "FALSE";
-  out.text_value = out.encoded_value;
   return out;
 }
 

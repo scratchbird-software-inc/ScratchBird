@@ -319,8 +319,6 @@ scratchbird::engine::sblr::SblrValue MakeBoolValue(bool input) {
   value.payload_kind = scratchbird::engine::sblr::SblrValuePayloadKind::boolean;
   value.int64_value = input ? 1 : 0;
   value.has_int64_value = true;
-  value.encoded_value = input ? "true" : "false";
-  value.text_value = value.encoded_value;
   value.is_null = false;
   return value;
 }

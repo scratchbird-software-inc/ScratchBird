@@ -11,6 +11,7 @@
 #include "api_types.hpp"
 #include "dml/import_api.hpp"
 #include "query/contextual_text_literal_authority.hpp"
+#include "query/projection_api.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sblr_parameter_runtime.hpp"
 #include "query_execute_result_handle.hpp"
@@ -114,5 +115,11 @@ SblrDispatchResult DecodeAndDispatchSblrOperation(
     scratchbird::engine::internal_api::EngineRequestContext context,
     scratchbird::engine::internal_api::EngineApiRequest api_request = {});
 std::string SerializeSblrDispatchResultToJson(const SblrDispatchResult& result);
+
+// Exact registered callback seam for component qualification. This does not
+// replace transport, authentication, transaction or storage-route admission.
+scratchbird::engine::internal_api::EngineProjectionFunctionResult
+EvaluateProjectionFunctionForTest(
+    const scratchbird::engine::internal_api::EngineProjectionFunctionRequest& request);
 
 }  // namespace scratchbird::engine::sblr

@@ -8031,16 +8031,18 @@ SblrValue ProjectionTypedValueToSblrValue(const api::EngineTypedValue& value) {
 
 bool TruthFromProjectionValue(const api::EngineTypedValue& value, SblrTruthValue* truth) {
   if (truth == nullptr || value.descriptor.canonical_type_name != "boolean") return false;
-  if (value.is_null) {
+  if (value.state == api::EngineValueState::sql_null && value.is_null &&
+      value.binary_value.empty() && value.encoded_value.empty()) {
     *truth = SblrTruthValue::unknown;
     return true;
   }
-  const std::string lowered = LowerAscii(value.encoded_value);
-  if (lowered == "true" || lowered == "1") {
+  if (value.state != api::EngineValueState::value || value.is_null ||
+      !value.encoded_value.empty() || value.binary_value.size() != 1) return false;
+  if (value.binary_value[0] == 1) {
     *truth = SblrTruthValue::true_value;
     return true;
   }
-  if (lowered == "false" || lowered == "0") {
+  if (value.binary_value[0] == 0) {
     *truth = SblrTruthValue::false_value;
     return true;
   }
@@ -8997,7 +8999,58 @@ api::EngineProjectionFunctionResult EvaluateProjectionFunction(
                                "function execution requires a binary system UUIDv7",
                                request.function_id);
   }
+  const auto references_boolean = [](const api::EngineDescriptor& descriptor) {
+    if (descriptor.canonical_type_name == "boolean" || descriptor.canonical_type_name == "bool") return true;
+    // Classification only, never admission: renamed labels must not conceal a
+    // Boolean identity. The complete supplied cohort is revalidated below.
+    for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV3())
+      if (row.legacy_fields.canonical_binary_type_code == static_cast<std::uint32_t>(dt::CanonicalTypeId::boolean) &&
+          (row.legacy_fields.type_uuid == descriptor.type_uuid ||
+           row.legacy_fields.descriptor_uuid == descriptor.datatype_descriptor_uuid)) return true;
+    return false;
+  };
+  const bool boolean_result = references_boolean(request.result_descriptor);
+  bool boolean_nullable = false;
+  if (boolean_result) {
+    if (request.result_descriptor.canonical_type_name != "boolean")
+      return UserFunctionFailure("DATATYPE.DESCRIPTOR.INVALID",
+          "function BOOLEAN result has a conflicting type label", request.function_id);
+    scratchbird::engine::ExecutionTypeDescriptor bound;
+    std::string detail;
+    if (!executor::BuildBoundExecutionTypeDescriptor(request.result_descriptor,
+          scratchbird::core::datatypes::CanonicalTypeId::boolean, &bound, &detail))
+      return UserFunctionFailure("DATATYPE.DESCRIPTOR.INVALID", detail, request.function_id);
+    boolean_nullable = bound.nullable_allowed;
+    executor::DescriptorBatch schema;
+    schema.columns = {{"function_result", request.result_descriptor, boolean_nullable, 1}};
+    const auto admitted = executor::ValidateDescriptorBatch(schema);
+    if (!admitted.ok)
+      return UserFunctionFailure(admitted.diagnostic_code, admitted.detail, request.function_id);
+  }
   for (const auto& argument : request.arguments) {
+    const auto declared_type = projection_value_detail::LowerAscii(argument.type_name);
+    if (declared_type == "boolean" || declared_type == "bool" ||
+        references_boolean(argument.descriptor)) {
+      if ((declared_type != "boolean" && declared_type != "bool") ||
+          argument.descriptor.canonical_type_name != "boolean")
+        return UserFunctionFailure("DATATYPE.DESCRIPTOR.INVALID",
+            "function Boolean argument has conflicting type labels", request.function_id);
+      scratchbird::engine::ExecutionTypeDescriptor bound;
+      std::string detail;
+      if (!executor::BuildBoundExecutionTypeDescriptor(argument.descriptor,
+            scratchbird::core::datatypes::CanonicalTypeId::boolean, &bound, &detail))
+        return UserFunctionFailure("DATATYPE.DESCRIPTOR.INVALID", detail, request.function_id);
+      api::EngineTypedValue value;
+      value.descriptor = argument.descriptor; value.state = argument.state;
+      value.is_null = argument.is_null; value.binary_value = argument.binary_value;
+      value.encoded_value = argument.encoded_value;
+      executor::DescriptorBatch input;
+      input.columns = {{"function_argument", value.descriptor, bound.nullable_allowed, 1}};
+      input.rows = {{{std::move(value)}}};
+      const auto admitted = executor::ValidateDescriptorBatch(input);
+      if (!admitted.ok)
+        return UserFunctionFailure(admitted.diagnostic_code, admitted.detail, request.function_id);
+    }
     const bool valid_encoding = ProjectionArgumentEncodingValid(argument);
     // This existing scalar function projection profile admits finite numeric
     // arguments only. Payload transfer preserves special bits, but does not
@@ -9098,6 +9151,38 @@ api::EngineProjectionFunctionResult EvaluateProjectionFunction(
            ProjectionSblrValueResolved(function_result.scalar_values.front());
   if (out.ok) {
     out.value = EngineTypedValueFromSblrValue(function_result.scalar_values.front());
+    if (boolean_result) {
+      const auto& scalar = function_result.scalar_values.front();
+      if (scalar.descriptor_id != "boolean")
+        return UserFunctionFailure("DATATYPE.DESCRIPTOR.INVALID",
+            "function BOOLEAN output conflicts with its admitted result binding", request.function_id);
+      if (scalar.projection_descriptor) {
+        const auto& source = *scalar.projection_descriptor;
+        scratchbird::engine::ExecutionTypeDescriptor bound;
+        std::string detail;
+        if (!executor::BuildBoundExecutionTypeDescriptor(source,
+              scratchbird::core::datatypes::CanonicalTypeId::boolean, &bound, &detail) ||
+            source.type_uuid != request.result_descriptor.type_uuid ||
+            source.datatype_descriptor_uuid != request.result_descriptor.datatype_descriptor_uuid ||
+            source.datatype_descriptor_generation != request.result_descriptor.datatype_descriptor_generation ||
+            source.datatype_cohort != request.result_descriptor.datatype_cohort)
+          return UserFunctionFailure("DATATYPE.DESCRIPTOR.INVALID",
+              "selected BOOLEAN source binding is invalid or differs from admitted result cohort", request.function_id);
+        executor::DescriptorBatch selected;
+        selected.columns = {{"selected_result", source, bound.nullable_allowed, 1}};
+        selected.rows = {{{out.value}}};
+        const auto admitted = executor::ValidateDescriptorBatch(selected);
+        if (!admitted.ok)
+          return UserFunctionFailure(admitted.diagnostic_code, admitted.detail, request.function_id);
+      }
+      out.value.descriptor = request.result_descriptor;
+      executor::DescriptorBatch batch;
+      batch.columns = {{"function_result", request.result_descriptor, boolean_nullable, 1}};
+      batch.rows = {{{out.value}}};
+      const auto admitted = executor::ValidateDescriptorBatch(batch);
+      if (!admitted.ok)
+        return UserFunctionFailure(admitted.diagnostic_code, admitted.detail, request.function_id);
+    }
     out.evidence.push_back({"function_runtime", request.function_uuid});
     return out;
   }
@@ -9939,6 +10024,11 @@ std::string JsonEscape(std::string_view input) {
 }
 
 }  // namespace
+
+api::EngineProjectionFunctionResult EvaluateProjectionFunctionForTest(
+    const api::EngineProjectionFunctionRequest& request) {
+  return EvaluateProjectionFunction(request);
+}
 
 SblrQueryPreflightResult PreflightSblrQueryOperation(
     SblrDispatchRequest request) {

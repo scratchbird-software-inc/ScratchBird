@@ -58,6 +58,17 @@ inline bool Real64CarrierValid(const SblrValue& value) noexcept {
       value.projection_descriptor->canonical_type_name != "real64")) return false;
   return value.is_null ? EmptyNullCarrier(value) : SblrReal64PayloadValid(value);
 }
+inline bool BooleanCarrierValid(const SblrValue& value) noexcept {
+  if (value.descriptor_id != "boolean" || (value.projection_descriptor &&
+      value.projection_descriptor->canonical_type_name != "boolean")) return false;
+  if (value.is_null) return EmptyNullCarrier(value);
+  return value.payload_kind == SblrValuePayloadKind::boolean &&
+      value.has_int64_value && (value.int64_value == 0 || value.int64_value == 1) &&
+      !value.has_uint64_value && !value.has_real64_value &&
+      value.binary_value.empty() && value.encoded_value.empty() && value.text_value.empty() &&
+      value.uuid_value.is_nil() && value.uuid_array_value.empty() &&
+      value.charset_name.empty() && value.collation_name.empty();
+}
 inline bool BoundSignedCharacterCarrierValid(const SblrValue& value) noexcept {
   if (!value.projection_descriptor ||
       ReferencesDecimalProjection(*value.projection_descriptor) ||
@@ -96,6 +107,25 @@ inline SblrValue SblrValueFromProjectionArgument(
   value.descriptor_id = type_name;
   // Invalid carriers are unresolved non-NULL values, never manufactured NULLs.
   value.is_null = false;
+  if (type_name == "boolean" || type_name == "bool") {
+    using State = internal_api::EngineValueState;
+    if (argument.descriptor.canonical_type_name != "boolean" ||
+        (argument.state != State::value && argument.state != State::sql_null) ||
+        argument.is_null != (argument.state == State::sql_null) ||
+        !argument.encoded_value.empty() ||
+        argument.binary_value.size() != (argument.is_null ? 0u : 1u) ||
+        (!argument.is_null && argument.binary_value[0] > 1)) return value;
+    value.descriptor_id = "boolean";
+    value.projection_descriptor =
+        std::make_shared<const internal_api::EngineDescriptor>(argument.descriptor);
+    value.is_null = argument.is_null;
+    if (!value.is_null) {
+      value.payload_kind = SblrValuePayloadKind::boolean;
+      value.has_int64_value = true;
+      value.int64_value = argument.binary_value[0];
+    }
+    return value;
+  }
   const auto signed_width = SblrSignedIntegerWidth(type_name);
   if ((signed_width || type_name == "character") &&
       !argument.descriptor.canonical_type_name.empty()) {
@@ -287,25 +317,6 @@ inline SblrValue SblrValueFromProjectionArgument(
     value.payload_kind = SblrValuePayloadKind::none;
     return value;
   }
-  if (type_name == "boolean" || type_name == "bool") {
-    const std::string lowered = projection_value_detail::LowerAscii(argument.encoded_value);
-    if (lowered == "true" || lowered == "1") {
-      value.int64_value = 1;
-      value.has_int64_value = true;
-      value.payload_kind = SblrValuePayloadKind::boolean;
-      value.descriptor_id = "boolean";
-      return value;
-    }
-    if (lowered == "false" || lowered == "0") {
-      value.int64_value = 0;
-      value.has_int64_value = true;
-      value.payload_kind = SblrValuePayloadKind::boolean;
-      value.descriptor_id = "boolean";
-      return value;
-    }
-    value.payload_kind = SblrValuePayloadKind::none;
-    return value;
-  }
   if (type_name == "real32" || type_name == "real64" ||
       type_name == "real128" || type_name == "double" ||
       type_name == "numeric" || type_name == "decimal" ||
@@ -356,6 +367,8 @@ inline bool ProjectionArgumentEncodingValid(
 
 inline bool ProjectionSblrValueResolved(const SblrValue& value) {
   if (value.descriptor_id.empty()) return false;
+  if (value.descriptor_id == "boolean")
+    return projection_value_detail::BooleanCarrierValid(value);
   if (value.projection_descriptor &&
       (SblrSignedIntegerWidth(value.descriptor_id) || value.descriptor_id == "character"))
     return projection_value_detail::BoundSignedCharacterCarrierValid(value);
@@ -387,6 +400,20 @@ inline bool ProjectionSblrValueResolved(const SblrValue& value) {
 }
 
 inline internal_api::EngineTypedValue EngineTypedValueFromSblrValue(const SblrValue& value) {
+  if (value.descriptor_id == "boolean") {
+    if (!projection_value_detail::BooleanCarrierValid(value))
+      throw std::invalid_argument("conflicting or unbound SBLR BOOLEAN carrier");
+    internal_api::EngineTypedValue out;
+    if (value.projection_descriptor) out.descriptor = *value.projection_descriptor;
+    else {
+      // Payload adaptation only; no registry binding or execution authority.
+      out.descriptor.descriptor_kind = "scalar";
+      out.descriptor.canonical_type_name = "boolean";
+    }
+    out.setState(value.is_null ? internal_api::EngineValueState::sql_null : internal_api::EngineValueState::value);
+    if (!value.is_null) out.binary_value = {static_cast<std::uint8_t>(value.int64_value)};
+    return out;
+  }
   if (value.projection_descriptor &&
       (SblrSignedIntegerWidth(value.descriptor_id) || value.descriptor_id == "character")) {
     if (!projection_value_detail::BoundSignedCharacterCarrierValid(value))

@@ -238,7 +238,12 @@ void CheckFunctionResultAdmission(const a::EngineTypedValue& input) {
     boolean.precomputed_value->binary_value.clear();
     for (const auto spelling : {"true", "false", "TRUE", "FALSE", "0", "1"}) {
       boolean.precomputed_value->encoded_value = spelling;
-      evaluate(boolean, std::string_view(spelling) == "true" || std::string_view(spelling) == "false");
+      evaluate(boolean, false);
+    }
+    boolean.precomputed_value->encoded_value.clear();
+    for (const auto byte : {0u, 1u, 2u, 255u}) {
+      boolean.precomputed_value->binary_value = {static_cast<std::uint8_t>(byte)};
+      evaluate(boolean, byte <= 1);
     }
   }
   if (!input.is_null && type != d::CanonicalTypeId::decimal && type != d::CanonicalTypeId::boolean) {
@@ -1204,7 +1209,8 @@ int main() {
   std::string canonical, detail;
   for (const auto* text : {"true", "false"}) {
     Check(s::CanonicalizeLiteralPayload("boolean", output, text, &canonical, &detail));
-    Check(canonical == text);
+    Check(canonical.size() == 1 && static_cast<unsigned char>(canonical[0]) ==
+          (std::string_view(text) == "true" ? 1u : 0u));
   }
   for (const auto* invalid : {"", "TRUE", "False", "1", "0", "truth"}) {
     canonical = "unchanged";
@@ -1436,7 +1442,7 @@ int main() {
     Check(empty.expression_output_batch.columns.front().descriptor == runtime_descriptor);
     a::EngineTypedValue value;
     value.descriptor = runtime_descriptor;
-    if (type == d::CanonicalTypeId::boolean) value.encoded_value = "true";
+    if (type == d::CanonicalTypeId::boolean) value.binary_value = {1};
     else value.binary_value.resize(type == d::CanonicalTypeId::uuid ? 16 :
         type == d::CanonicalTypeId::int8 ? 1 : type == d::CanonicalTypeId::int16 ? 2 :
         type == d::CanonicalTypeId::int32 ? 4 :

@@ -119,6 +119,14 @@ api::EngineDescriptor Descriptor(const api::EngineUuid& descriptor_uuid,
                                  const api::EngineUuid& type_uuid,
                                  const std::string& type_name,
                                  const std::string& nullability) {
+  if (type_name == "boolean") {
+    auto descriptor = exec::MakeExecutorDescriptor("boolean", "nullability=" + nullability);
+    descriptor.descriptor_uuid = descriptor_uuid;
+    descriptor.descriptor_kind = "scalar";
+    if (descriptor.type_uuid != type_uuid)
+      throw std::runtime_error("Boolean EXISTS fixture type identity mismatch");
+    return descriptor;
+  }
   api::EngineDescriptor descriptor;
   descriptor.descriptor_uuid = descriptor_uuid;
   descriptor.descriptor_kind = "scalar";
@@ -222,7 +230,8 @@ bool ValidateExistsSubquery() {
           result.output_batch.rows.size() == 1 &&
           result.output_batch.rows[0].values[0].state ==
               api::EngineValueState::value &&
-          result.output_batch.rows[0].values[0].encoded_value == "true" &&
+          result.output_batch.rows[0].values[0].encoded_value.empty() &&
+          result.output_batch.rows[0].values[0].binary_value == std::vector<std::uint8_t>{1} &&
           !result.output_batch.rows[0].values[0].is_null &&
           result.selected_plan_uuid ==
               BinaryUuid("019f0000-0000-7200-8000-000000002805") &&
@@ -240,7 +249,8 @@ bool ValidateExistsSubquery() {
   passed &= Require(
       result.diagnostic.ok && !result.exists && result.source_row_count == 0 &&
           result.output_batch.rows.size() == 1 &&
-          result.output_batch.rows[0].values[0].encoded_value == "false" &&
+          result.output_batch.rows[0].values[0].encoded_value.empty() &&
+          result.output_batch.rows[0].values[0].binary_value == std::vector<std::uint8_t>{0} &&
           result.output_batch.rows[0].values[0].state ==
               api::EngineValueState::value,
       "empty table subquery did not produce canonical FALSE EXISTS");

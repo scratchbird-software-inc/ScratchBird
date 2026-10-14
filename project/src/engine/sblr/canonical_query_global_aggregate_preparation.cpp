@@ -1198,15 +1198,15 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
                   &option, &option_detail) ||
               option.state != api::EngineValueState::value || option.is_null ||
               option.descriptor.canonical_type_name != "boolean" ||
-              (option.encoded_value != "true" &&
-               option.encoded_value != "false")) {
+              !option.encoded_value.empty() || option.binary_value.size() != 1 ||
+              option.binary_value[0] > 1) {
             result.detail =
                 "global LISTAGG WITH/WITHOUT COUNT option must be a canonical "
                 "boolean literal";
             if (!option_detail.empty()) result.detail += ": " + option_detail;
             return result;
           }
-          result.listagg_with_count = option.encoded_value == "true";
+          result.listagg_with_count = option.binary_value[0] != 0;
           continue;
         }
       }

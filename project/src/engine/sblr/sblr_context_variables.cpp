@@ -46,8 +46,6 @@ SblrValue BoolContextValue(bool bool_value) {
   value.is_null = false;
   value.has_int64_value = true;
   value.int64_value = bool_value ? 1 : 0;
-  value.encoded_value = bool_value ? "TRUE" : "FALSE";
-  value.text_value = bool_value ? "TRUE" : "FALSE";
   return value;
 }
 

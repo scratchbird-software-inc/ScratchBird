@@ -65,12 +65,7 @@ void PublishScalarCastValue(const core::datatypes::DatatypeOperationValue& cast,
                                : EngineValueState::value;
   if (cast.is_null) return;
   if (cast.type_id == core::datatypes::CanonicalTypeId::boolean) {
-    if (cast.encoded_value.size() == 1) {
-      output->encoded_value =
-          static_cast<unsigned char>(cast.encoded_value[0]) == 1u
-              ? "true"
-              : "false";
-    }
+    output->binary_value.assign(cast.encoded_value.begin(), cast.encoded_value.end());
   } else if (cast.type_id == core::datatypes::CanonicalTypeId::int8 ||
              cast.type_id == core::datatypes::CanonicalTypeId::uint8) {
     const bool decoded = cast.type_id == core::datatypes::CanonicalTypeId::int8
@@ -107,14 +102,6 @@ bool ScalarCastInputEncoding(const EngineTypedValue& input,
         return false;
       }
       bytes->assign(1, static_cast<char>(input.binary_value[0]));
-      return true;
-    }
-    if (input.encoded_value == "true" || input.encoded_value == "TRUE") {
-      bytes->assign(1, static_cast<char>(1));
-      return true;
-    }
-    if (input.encoded_value == "false" || input.encoded_value == "FALSE") {
-      bytes->assign(1, static_cast<char>(0));
       return true;
     }
     return false;
@@ -427,8 +414,8 @@ bool PublishBoundScalarFunctionResult(const EngineTypedValue& source,
       return false;
     }
     if (type == dt::CanonicalTypeId::boolean) {
-      if (!source.binary_value.empty() ||
-          (source.encoded_value != "true" && source.encoded_value != "false")) {
+      if (!source.encoded_value.empty() || source.binary_value.size() != 1 ||
+          source.binary_value[0] > 1) {
         *detail = "NUMERIC.ENCODING.NONCANONICAL:function boolean carrier invalid";
         return false;
       }
@@ -490,14 +477,6 @@ bool QowCanonicalComparableEncodingV1(
         return false;
       }
       encoded_value->assign(1, static_cast<char>(value.binary_value[0]));
-      return true;
-    }
-    if (value.encoded_value == "true" || value.encoded_value == "TRUE") {
-      encoded_value->assign(1, static_cast<char>(1));
-      return true;
-    }
-    if (value.encoded_value == "false" || value.encoded_value == "FALSE") {
-      encoded_value->assign(1, static_cast<char>(0));
       return true;
     }
     return false;
@@ -2116,8 +2095,8 @@ bool QowMaterializeCanonicalTruthValueV1(
     output_value->is_null = true;
     output_value->state = EngineValueState::sql_null;
   } else {
-    output_value->encoded_value =
-        truth_value == EngineSqlTruthValue::true_value ? "true" : "false";
+    output_value->encoded_value.clear();
+    output_value->binary_value = {static_cast<std::uint8_t>(truth_value == EngineSqlTruthValue::true_value)};
     output_value->is_null = false;
     output_value->state = EngineValueState::value;
   }
@@ -2162,12 +2141,12 @@ bool QowCanonicalTruthFromTypedValueV1(
     return true;
   }
   if (value.state != EngineValueState::value || value.is_null ||
-      !value.binary_value.empty() ||
-      (value.encoded_value != "true" && value.encoded_value != "false")) {
+      !value.encoded_value.empty() || value.binary_value.size() != 1 ||
+      value.binary_value[0] > 1) {
     *refusal_detail = "expression truth operand has a noncanonical payload";
     return false;
   }
-  *truth = value.encoded_value == "true"
+  *truth = value.binary_value[0] != 0
                ? EngineSqlTruthValue::true_value
                : EngineSqlTruthValue::false_value;
   return true;

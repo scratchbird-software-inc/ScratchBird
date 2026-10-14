@@ -503,7 +503,7 @@ bool CanonicalizeLiteralPayload(const std::string_view type_name,
       *refusal_detail = "Core BOOLEAN literal result is not canonical";
       return false;
     }
-    *canonical_payload = canonical.value.encoded_value[0] == '\1' ? "true" : "false";
+    *canonical_payload = canonical.value.encoded_value;
   } else {
     *canonical_payload = canonical.value.encoded_value;
   }
@@ -3596,6 +3596,10 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
                                     &literal.encoded_value,
                                     refusal_detail)) {
       return false;
+    }
+    if (dt::CanonicalTypeIdFromStableName(inferred_type) == dt::CanonicalTypeId::boolean) {
+      literal.binary_value.assign(literal.encoded_value.begin(), literal.encoded_value.end());
+      literal.encoded_value.clear();
     }
     return finish(std::move(literal));
   }

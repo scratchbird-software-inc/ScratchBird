@@ -856,7 +856,7 @@ CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubqueryBound(
   const bool exists = table.materialized_row_count != 0;
   EngineTypedValue value;
   value.descriptor = request.result_column.descriptor;
-  value.encoded_value = exists ? "true" : "false";
+  value.binary_value = {static_cast<std::uint8_t>(exists)};
   value.state = EngineValueState::value;
   output.rows = {{{std::move(value)}}};
   auto output_validation = ValidateCanonicalDescriptorBatch(

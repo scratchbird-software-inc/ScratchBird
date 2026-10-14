@@ -2156,7 +2156,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
       boolean_typed.is_null = true;
       boolean_typed.state = api::EngineValueState::sql_null;
     } else {
-      boolean_typed.encoded_value = value == 1 ? "true" : "false";
+      boolean_typed.binary_value = {static_cast<std::uint8_t>(value == 1)};
     }
     api::EngineTypedValue text_typed;
     text_typed.descriptor.descriptor_kind = "scalar";
@@ -3570,11 +3570,12 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
               "through the complete engine-issued aggregate registry");
     }
 
-    static constexpr std::array<AggregateProof, 3>
+    struct BooleanAggregateProof { const char* function; const char* column; bool truth; };
+    static constexpr std::array<BooleanAggregateProof, 3>
         kBooleanAggregateProofs{{
-            {"BOOL_AND", "bool_and_value=false"},
-            {"BOOL_OR", "bool_or_value=true"},
-            {"EVERY", "every_value=false"},
+            {"BOOL_AND", "bool_and_value", false},
+            {"BOOL_OR", "bool_or_value", true},
+            {"EVERY", "every_value", false},
         }};
     for (const auto& proof : kBooleanAggregateProofs) {
       const auto sql = "SELECT " + std::string(proof.function) +
@@ -3582,12 +3583,28 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                        "qow_packet7.qow_packet7_relation;";
       auto aggregate = parser.RunPipeline(sql, true);
       if (!aggregate.accepted) PrintMessages(aggregate.messages);
+      namespace result = scratchbird::wire::public_result;
+      std::vector<result::Field> fields;
+      bool native_truth = false;
+      std::size_t rows = 0;
+      std::size_t matching_fields = 0;
+      Require(result::Decode(aggregate.server_result_payload, &fields),
+              "Boolean aggregate result packet is not canonical framing");
+      for (const auto& field : fields) if (field.kind == result::Kind::row) {
+        ++rows;
+        std::vector<result::Field> values;
+        Require(result::Decode(field.value, &values), "Boolean result row framing is invalid");
+        for (const auto& value : values) if (value.name == proof.column) {
+          ++matching_fields;
+          native_truth = value.kind == result::Kind::bytes && value.value.size() == 1 &&
+              static_cast<unsigned char>(value.value[0]) == static_cast<unsigned>(proof.truth);
+        }
+      }
       Require(aggregate.accepted &&
                   aggregate.server_operation_id == "query.execute" &&
                   aggregate.server_cursor_uuid.is_nil() &&
                   aggregate.server_row_count == 1 &&
-                  ScalarResultText(aggregate.server_result_payload).find(
-                      proof.expected_payload) != std::string::npos,
+                  rows == 1 && matching_fields == 1 && native_truth,
               "object-backed boolean aggregate did not execute through the "
               "complete engine-issued aggregate registry");
     }

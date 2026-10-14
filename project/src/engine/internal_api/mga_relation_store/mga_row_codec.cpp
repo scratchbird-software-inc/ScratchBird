@@ -149,6 +149,12 @@ bool ScopedRowBinaryCanonicalPayload(const EngineTypedValue& typed,
   }
   payload->clear();
   const std::string type_name = ScopedRowBinaryTypeName(typed);
+  if (type_name == "boolean") {
+    if (!typed.encoded_value.empty() || typed.binary_value.size() != 1 || typed.binary_value[0] > 1)
+      return false;
+    payload->assign(1, static_cast<char>(typed.binary_value[0]));
+    return true;
+  }
   if (type_name == "uuid") {
     if (!typed.encoded_value.empty() || typed.binary_value.size() != 16) return false;
     payload->assign(reinterpret_cast<const char*>(typed.binary_value.data()), 16);
@@ -182,17 +188,6 @@ bool ScopedRowBinaryCanonicalPayload(const EngineTypedValue& typed,
   }
 
   const std::string_view text = typed.encoded_value;
-  if (type_name == "boolean") {
-    if (text == "true" || text == "1") {
-      payload->push_back('\x01');
-      return true;
-    }
-    if (text == "false" || text == "0") {
-      payload->push_back('\x00');
-      return true;
-    }
-    return false;
-  }
   if (type_name == "int32") {
     std::int32_t value = 0;
     const auto parsed = std::from_chars(text.data(), text.data() + text.size(),

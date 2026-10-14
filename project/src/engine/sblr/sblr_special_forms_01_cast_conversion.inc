@@ -176,8 +176,8 @@ SblrValue SblrValueFromDatatypeValue(const datatypes::DatatypeOperationValue& va
       out.payload_kind = SblrValuePayloadKind::boolean;
       out.has_int64_value = true;
       out.int64_value = static_cast<unsigned char>(value.encoded_value[0]);
-      out.encoded_value = out.int64_value == 1 ? "true" : "false";
-      out.text_value = out.int64_value == 1 ? "TRUE" : "FALSE";
+      out.encoded_value.clear();
+      out.text_value.clear();
       return out;
     case datatypes::CanonicalTypeId::int8: {
       out.payload_kind = SblrValuePayloadKind::signed_integer;

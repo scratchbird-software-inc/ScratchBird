@@ -2896,13 +2896,13 @@ ExecuteCanonicalRecursiveCteSearchCycleBound(
   const auto cycle_value = [&](const bool cycle) {
     api::EngineTypedValue value;
     value.descriptor = request.cycle_mark_column.descriptor;
-    value.encoded_value = cycle ? "true" : "false";
+    value.binary_value = {static_cast<std::uint8_t>(cycle)};
     value.state = api::EngineValueState::value;
     return value;
   };
   const auto measure_projected_payload =
       [&](const DescriptorTuple& row, const std::uint64_t next_sequence,
-          const bool cycle, std::size_t* bytes) {
+          const bool /*cycle*/, std::size_t* bytes) {
         if (bytes == nullptr || next_sequence == 0 ||
             next_sequence > static_cast<std::uint64_t>(
                                 std::numeric_limits<std::int64_t>::max())) {
@@ -2911,7 +2911,7 @@ ExecuteCanonicalRecursiveCteSearchCycleBound(
         *bytes = 0;
         if (!AddRecursiveCteTuplePayload(row, bytes)) return false;
         constexpr std::size_t sequence_bytes = 8;
-        const std::size_t cycle_bytes = cycle ? 4 : 5;
+        constexpr std::size_t cycle_bytes = 1;
         if (sequence_bytes >
                 std::numeric_limits<std::size_t>::max() - *bytes ||
             cycle_bytes >
