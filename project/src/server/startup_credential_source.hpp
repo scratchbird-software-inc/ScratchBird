@@ -32,7 +32,7 @@ class StartupCredentialSource {
     Lease(const Lease&) = delete;
     Lease& operator=(const Lease&) = delete;
     Lease(Lease&& other) noexcept
-        : source_(std::exchange(other.source_, nullptr)), task_(other.task_),
+        : source_(TakeSource(other)), task_(other.task_),
           thread_(other.thread_), material_(std::move(other.material_)) {}
     Lease& operator=(Lease&&) = delete;
     ~Lease() { Reset(); }
@@ -57,6 +57,13 @@ class StartupCredentialSource {
       // Reject foreign-thread access before inspecting mutable custody state.
       // Otherwise a refused reader could race the owning thread's Reset.
       if (thread_ != std::this_thread::get_id()) std::terminate();
+    }
+    static StartupCredentialSource* TakeSource(Lease& other) noexcept {
+      // Member initialization is ordered: reject a foreign move before reading
+      // or transferring custody, just as credential() and Reset() do. A move
+      // is not permission to transfer a held source lock to another thread.
+      other.CheckThread();
+      return std::exchange(other.source_, nullptr);
     }
     StartupCredentialSource* source_;
     Uuid task_;

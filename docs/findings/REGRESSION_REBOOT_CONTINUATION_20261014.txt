@@ -76,3 +76,41 @@ update exact ledger only for genuinely qualified original closures, then run
 fresh full clean/build/unfiltered regression. Serialize Ninja and CTest; retain
 LastTest.log before the next CTest. Use /usr/bin/python3 -B for owned Linux
 process probes. No detached workers or synthetic readiness/authority receipts.
+
+Resume qualification, later on 2026-10-14
+---------------------------------------
+Fresh Linux Ninja/GCC13 Release configuration restores every prior SB/SCRATCHBIRD
+boolean and all 9,389 registrations. Fresh private TMPDIR is now selected in the
+local ENV. The five affected binary targets rebuilt successfully (owned j8
+receipt, 1487.584 seconds, no leaked descendants). These are targeted rebuilds,
+NOT a complete all-target build or full-suite qualification.
+
+The original scratchbird_beta_performance_baseline_conformance now passes twice
+on the current source, retaining genuine native schema/table/statement/DML
+ownership, all timing/resource thresholds, actual returned-value hashing and
+independently constructed expected values. Unmeasured metrics are explicitly
+unknown, not fabricated zero observations or copied cross-route hashes.
+Its two previously unsealed performance/CMake files are now qualified.
+Frozen original qualification partition: 199 closed, 61 outstanding.
+
+The credential source lease now also refuses foreign-thread MOVE construction
+before any source/secret custody transfer. The new death-test oracle explicitly
+distinguishes a completed forbidden move followed by a late refusal from refusal
+before transfer; it reproduces two failures with the old constructor. The fixed
+source passes all 66 source checks and the complete transport gate, including
+same-thread live/erased moves, real protected-memory ownership and reacquisition.
+Combined final three-test receipt PASS7.548576 seconds, no leaked descendants:
+  build/linux-clean-20261006/credential-move-performance-qualified-tests-20261014/
+Before-fix failure evidence is retained separately, never relabeled as passing.
+Core09 and its digest are amended locally; no source-custody component pass is
+counted as production provider/configuration admission or startup BEGIN.
+
+Five older candidate files (procedural runtime/test, ODF076 diagnostics, agent
+examples and CREATE VIEW fixture) still require functional repair/qualification.
+Fresh original replay confirms the temporal-descriptor, missing agent metric,
+untrusted time-series provider row and missing executable view-definition roots.
+The first compile-link follower replay lacked its binary; that follower target
+has subsequently been built and must be replayed, not credited from a Not Run.
+The six IA09 service-startup routes remain open. Consult the live local ledger
+for the exact current list and source/evidence custody; do not reuse stale counts
+from the reboot snapshot above as current status.

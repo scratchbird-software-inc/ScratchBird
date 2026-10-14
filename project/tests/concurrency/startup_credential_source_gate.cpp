@@ -11,6 +11,7 @@ namespace srv = scratchbird::server;
 namespace mem = scratchbird::core::memory;
 using Source = srv::StartupCredentialSource;
 namespace {
+std::atomic<bool> foreign_move_completed{false};
 unsigned checks = 0, failures = 0;
 std::atomic<bool> watch_park{false};
 std::binary_semaphore parked{0};
@@ -81,10 +82,16 @@ extern "C" int __wrap_pthread_cond_timedwait(pthread_cond_t* c, pthread_mutex_t*
 int main() {
   // Construct each death-test owner AFTER fork, before any parent worker or
   // memory-manager state exists. Never enter inherited source locks in a child.
-  for (const bool reset_first : {false, true}) {
+  for (const auto [foreign_move, reset_first] :
+       {std::pair{false, false}, std::pair{false, true},
+        std::pair{true, false}, std::pair{true, true}}) {
     const auto child = ::fork();
     if (child == 0) {
-      std::set_terminate([] { ::_exit(73); });
+      std::set_terminate([] {
+        // A later accessor/destructor refusal cannot qualify a move that
+        // already transferred the mutex/secret custody to a foreign thread.
+        ::_exit(foreign_move_completed.load() ? 77 : 73);
+      });
       const auto page = static_cast<size_t>(::sysconf(_SC_PAGESIZE));
       auto policy = mem::DefaultLocalEngineMemoryPolicy();
       policy.hard_limit_bytes = page * 2; policy.per_context_limit_bytes = page * 2;
@@ -103,15 +110,26 @@ int main() {
       auto acquired = source.Acquire(request, manager, tag);
       if (!acquired.outcome.ok() || !acquired.lease) ::_exit(75);
       if (reset_first) acquired.lease->Reset();
-      std::thread reader([&] { (void)acquired.lease->credential(); });
+      std::thread reader([&] {
+        if (foreign_move) {
+          Source::Lease moved(std::move(*acquired.lease));
+          foreign_move_completed.store(true);
+          (void)moved.credential();
+        } else {
+          (void)acquired.lease->credential();
+        }
+      });
       reader.join();
       ::_exit(76);
     }
     int status = 0;
     const auto waited = child > 0 ? ::waitpid(child, &status, 0) : -1;
     Check(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 73,
-          reset_first ? "foreign-thread erased lease refuses before state inspection"
-                      : "foreign-thread live lease refuses before state inspection");
+          foreign_move
+              ? (reset_first ? "foreign-thread erased lease move refuses before custody transfer"
+                             : "foreign-thread live lease move refuses before custody transfer")
+              : (reset_first ? "foreign-thread erased lease refuses before state inspection"
+                             : "foreign-thread live lease refuses before state inspection"));
   }
   const auto page = static_cast<size_t>(::sysconf(_SC_PAGESIZE));
   auto policy = mem::DefaultLocalEngineMemoryPolicy();
@@ -136,6 +154,25 @@ int main() {
   auto next = binding; next.generation = 8;
   Check(source.Publish(request, first.fd, next, manager, tag).error == Source::Error::transport,
         "wrong framed generation refuses replacement");
+  {
+    auto held = source.Acquire(request, manager, tag);
+    Check(held.outcome.ok() && held.lease.has_value(), "same-thread move acquires real source lease");
+    if (!held.lease) return EXIT_FAILURE;
+    Source::Lease moved(std::move(*held.lease));
+    Check(held.lease->credential().empty() && moved.credential() == "fixture",
+          "same-thread move retains exactly one credential owner");
+    held.lease.reset();
+    Check(manager.Snapshot().current_bytes == page,
+          "moved-from destruction does not release protected custody");
+    moved.Reset();
+    Check(manager.Snapshot().current_bytes == 0,
+          "same-thread moved lease reset erases and releases its actual grant");
+    Source::Lease erased_move(std::move(moved));
+    Check(erased_move.credential().empty(), "same-thread erased lease move remains empty");
+    erased_move.Reset();
+    Check(source.Acquire(request, manager, tag).outcome.ok(),
+          "same-thread move/reset leaves source admission reusable");
+  }
   {
     auto held = source.Acquire(request, manager, tag);
     Check(held.outcome.ok() && held.lease && held.lease->credential() == "fixture", "old source survives failed replacement");
