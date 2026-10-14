@@ -585,8 +585,8 @@ SblrProceduralBlockExecutionResult ExecuteSblrProceduralBlockV1(
     start.int64_value = instruction.start_value;
     start.has_int64_value = true;
     start.is_null = false;
-    start.text_value = std::to_string(instruction.start_value);
-    start.encoded_value = start.text_value;
+    // Native INT64 has exactly one carrier. Presentation text alongside the
+    // integer is conflicting input, not a cached display representation.
 
     const auto& cast_value = cast.scalar_values.front();
     const std::size_t zero_based_start = instruction.start_value <= 0
@@ -611,8 +611,6 @@ SblrProceduralBlockExecutionResult ExecuteSblrProceduralBlockV1(
     length.int64_value = static_cast<std::int64_t>(remaining);
     length.has_int64_value = true;
     length.is_null = false;
-    length.text_value = std::to_string(length.int64_value);
-    length.encoded_value = length.text_value;
 
     const auto substring = EvaluateSblrSubstringForm(
         kProceduralOperationId, cast_value, start, length, context);

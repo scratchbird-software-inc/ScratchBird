@@ -1,4 +1,6 @@
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -35,9 +37,12 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
+#include <memory>
 #include <numeric>
 #include <regex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -138,8 +143,7 @@ memory::AllocationPolicy MemoryPolicy() {
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
-    std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -350,23 +354,11 @@ MeasurementStats MeasureRepeatedMs(Fn&& fn, std::uint64_t repeat_count) {
   return stats;
 }
 
-api::EngineRequestContext BaseContext(const std::filesystem::path& database_path,
+api::EngineRequestContext BaseContext(const api::EngineRequestContext& owner,
                                       std::uint32_t session_ordinal = 1) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+  auto context = owner;
   context.request_id = "phase7m-performance-baseline";
-  context.database_path = database_path.string();
-  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e07f0-0000-7000-8000-000000000001");
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e07f0-0000-7000-8000-000000000002");
   context.session_uuid = scratchbird::tests::FixtureUuid(1539, session_ordinal);
-  context.security_context_present = true;
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
-  context.name_resolution_epoch = 1;
   context.trace_tags.push_back("PHASE7M");
   context.trace_tags.push_back("performance-baseline");
   return context;
@@ -446,7 +438,8 @@ api::EngineLocalizedName Name(std::string name) {
   return {"en", "primary", name, name, true};
 }
 
-api::EngineColumnDefinition Column(std::uint32_t ordinal,
+api::EngineColumnDefinition Column(const api::EngineRequestContext& context,
+                                   std::uint32_t ordinal,
                                    std::string name,
                                    std::string type,
                                    std::uint32_t identity_ordinal) {
@@ -458,6 +451,8 @@ api::EngineColumnDefinition Column(std::uint32_t ordinal,
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = std::move(type);
   column.descriptor.encoded_descriptor = "type=" + column.descriptor.canonical_type_name;
+  scratchbird::tests::BindFixtureColumnDatatype(
+      context, scratchbird::core::datatypes::CanonicalTypeId::character, column);
   return column;
 }
 
@@ -473,11 +468,15 @@ api::EngineRowValue Row(std::uint64_t index) {
 struct BaselineTransaction {
   api::EngineRequestContext context;
   scratchbird::core::hash::Digest256 begin_admission_sha256{};
+  std::unique_ptr<scratchbird::tests::FixtureEngineSession> session;
 };
 
-BaselineTransaction BeginTransaction(const std::filesystem::path& database_path,
+using ResultValues = std::map<std::string, std::string>;
+ResultValues ReadResultValues(const std::vector<api::EngineRowValue>& rows);
+
+BaselineTransaction BeginTransaction(const api::EngineRequestContext& owner,
                                      std::uint32_t session_ordinal) {
-  auto context = BaseContext(database_path, session_ordinal);
+  auto context = BaseContext(owner, session_ordinal);
   auto envelope = Envelope("engine.op.txn_begin", "SBLR_TXN_BEGIN");
   envelope.requires_transaction_context = false;
 
@@ -527,11 +526,12 @@ BaselineTransaction BeginTransaction(const std::filesystem::path& database_path,
   context.snapshot_visible_through_local_transaction_id =
       begun.snapshot_visible_through_local_transaction_id;
   context.transaction_isolation_level = begun.isolation_level;
-  return {std::move(context), admission_sha.digest};
+  auto session = std::make_unique<scratchbird::tests::FixtureEngineSession>(context);
+  return {std::move(context), admission_sha.digest, std::move(session)};
 }
 
 void Commit(const std::filesystem::path& database_path,
-            const BaselineTransaction& transaction) {
+            BaselineTransaction& transaction) {
   (void)database_path;
   auto envelope = Envelope("engine.op.txn_commit", "SBLR_TXN_COMMIT");
   envelope.requires_transaction_context = true;
@@ -575,10 +575,12 @@ void Commit(const std::filesystem::path& database_path,
   Require(committed.ok && committed.engine_finality_known &&
               committed.commit_finality_state == "committed_by_engine_inventory",
           "engine-owned transaction commit failed after canonical admission");
+  transaction.session.reset();
 }
 
 void CreateSchemaAndTable(const std::filesystem::path& database_path,
-                          const api::EngineRequestContext& context) {
+                          const BaselineTransaction& transaction) {
+  const auto& context = transaction.context;
   (void)database_path;
   api::EngineCreateSchemaRequest schema_request;
   schema_request.context = context;
@@ -586,7 +588,11 @@ void CreateSchemaAndTable(const std::filesystem::path& database_path,
   schema_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e07f0-0000-7000-8000-000000000101");
   schema_request.target_object.object_kind = "schema";
   schema_request.localized_names.push_back(Name("phase7m_perf_schema"));
-  const auto schema = api::EngineCreateSchema(schema_request);
+  const auto schema = [&] {
+    scratchbird::tests::FixtureEngineStatement statement(*transaction.session, context);
+    schema_request.context = statement.context;
+    return api::EngineCreateSchema(schema_request);
+  }();
   Require(schema.ok, "engine-owned schema create failed");
   Require(schema.primary_object.uuid == kSchemaUuid,
           "schema UUID not preserved");
@@ -600,9 +606,13 @@ void CreateSchemaAndTable(const std::filesystem::path& database_path,
   table_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e07f0-0000-7000-8000-000000000102");
   table_request.target_object.object_kind = "table";
   table_request.table_names.push_back(Name("phase7m_perf_table"));
-  table_request.table_columns.push_back(Column(0, "id", "text", 1));
-  table_request.table_columns.push_back(Column(1, "note", "text", 2));
-  const auto table = api::EngineCreateTable(table_request);
+  table_request.table_columns.push_back(Column(context, 0, "id", "text", 1));
+  table_request.table_columns.push_back(Column(context, 1, "note", "text", 2));
+  const auto table = [&] {
+    scratchbird::tests::FixtureEngineStatement statement(*transaction.session, context);
+    table_request.context = statement.context;
+    return api::EngineCreateTable(table_request);
+  }();
   if (!table.ok) {
     for (const auto& diagnostic : table.diagnostics) {
       std::cerr << "table create diagnostic: " << diagnostic.code << ':'
@@ -615,11 +625,12 @@ void CreateSchemaAndTable(const std::filesystem::path& database_path,
 }
 
 void InsertRows(const std::filesystem::path& database_path,
-                const api::EngineRequestContext& context,
+                const BaselineTransaction& transaction,
                 std::uint64_t row_count) {
+  scratchbird::tests::FixtureEngineStatement statement(*transaction.session, transaction.context);
   (void)database_path;
   api::EngineInsertRowsRequest request;
-  request.context = context;
+  request.context = statement.context;
   request.operation_id = "dml.insert_rows";
   request.target_table.uuid = scratchbird::tests::FixtureUuidLiteral("019e07f0-0000-7000-8000-000000000102");
   request.target_table.object_kind = "table";
@@ -635,30 +646,36 @@ void InsertRows(const std::filesystem::path& database_path,
 }
 
 std::size_t SelectById(const std::filesystem::path& database_path,
-                       const api::EngineRequestContext& context,
+                       const BaselineTransaction& transaction,
                        std::string id) {
+  scratchbird::tests::FixtureEngineStatement statement(*transaction.session, transaction.context);
   (void)database_path;
   api::EngineSelectRowsRequest request;
-  request.context = context;
+  request.context = statement.context;
   request.operation_id = "dml.select_rows";
   request.source_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e07f0-0000-7000-8000-000000000102");
   request.source_object.object_kind = "table";
   request.select_predicate.predicate_kind = "column_equals";
   request.select_predicate.canonical_predicate_envelope = "id";
-  request.select_predicate.bound_values.push_back(TextValue(std::move(id)));
+  request.select_predicate.bound_values.push_back(TextValue(id));
   request.select_projection.canonical_projection_envelopes.push_back("id");
   request.select_projection.canonical_projection_envelopes.push_back("note");
   const auto selected = api::EngineSelectRows(request);
   Require(selected.ok, "engine-owned point select failed");
+  const auto values = ReadResultValues(selected.result_shape.rows);
+  Require(id.starts_with("perf-") && values.size() == 1 && values.contains(id) &&
+              values.at(id) == "baseline row " + id.substr(5),
+          "point select returned the wrong row values");
   return selected.result_shape.rows.size();
 }
 
-std::size_t SelectAll(const std::filesystem::path& database_path,
-                      const api::EngineRequestContext& context,
+api::EngineResultShape SelectAll(const std::filesystem::path& database_path,
+                      const BaselineTransaction& transaction,
                       std::uint64_t limit) {
+  scratchbird::tests::FixtureEngineStatement statement(*transaction.session, transaction.context);
   (void)database_path;
   api::EngineSelectRowsRequest request;
-  request.context = context;
+  request.context = statement.context;
   request.operation_id = "dml.select_rows";
   request.source_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e07f0-0000-7000-8000-000000000102");
   request.source_object.object_kind = "table";
@@ -667,7 +684,7 @@ std::size_t SelectAll(const std::filesystem::path& database_path,
   request.select_projection.canonical_projection_envelopes.push_back("note");
   const auto selected = api::EngineSelectRows(request);
   Require(selected.ok, "engine-owned full select failed");
-  return selected.result_shape.rows.size();
+  return selected.result_shape;
 }
 
 std::string JsonEscape(std::string_view value) {
@@ -694,10 +711,73 @@ void WriteSamplesJson(std::ostream& out, const std::vector<double>& samples) {
   out << ']';
 }
 
-std::string StableResultHash(std::uint64_t inserted_rows, std::uint64_t selected_rows) {
-  return "sb-perf-baseline-v1:inserted=" + std::to_string(inserted_rows) +
-         ";selected=" + std::to_string(selected_rows) +
-         ";route=sblr.dml.select_rows";
+ResultValues ReadResultValues(const std::vector<api::EngineRowValue>& rows) {
+  ResultValues values;
+  for (const auto& row : rows) {
+    std::map<std::string, std::string> fields;
+    for (const auto& [name, value] : row.fields) {
+      Require(value.state == api::EngineValueState::value && !value.isSqlNull() &&
+                  (value.encoded_value.empty() || value.binary_value.empty()),
+              "benchmark result has NULL, sentinel or ambiguous payload");
+      // The retained-row API supplies bytes and state, not public result
+      // metadata. The fixture's bound columns are character; this oracle
+      // verifies those actual bytes without inventing returned descriptors.
+      const auto payload = value.binary_value.empty() ? value.encoded_value :
+          std::string(value.binary_value.begin(), value.binary_value.end());
+      Require(fields.emplace(name, payload).second, "duplicate result field");
+    }
+    Require(fields.size() == 2 && fields.contains("id") && fields.contains("note"),
+            "benchmark result shape changed");
+    Require(values.emplace(fields.at("id"), fields.at("note")).second,
+            "benchmark select duplicated a row");
+  }
+  return values;
+}
+
+std::string StableResultHash(const ResultValues& values) {
+  std::vector<std::uint8_t> material;
+  const auto append = [&](std::string_view bytes) {
+    const auto size = static_cast<std::uint64_t>(bytes.size());
+    for (unsigned i = 0; i < 8; ++i) material.push_back(size >> (8*i));
+    material.insert(material.end(), bytes.begin(), bytes.end());
+  };
+  append("ScratchBird.Performance.ResultRows.V2");
+  for (const auto& [id, note] : values) { append(id); append(note); }
+  const auto hash = scratchbird::core::hash::ComputeSha256Digest(material);
+  Require(hash.ok(), "benchmark result SHA256 failed");
+  return scratchbird::core::hash::HexLower(hash.digest);
+}
+
+void RequireResultOracleControls() {
+  const auto row = Row(0);
+  const auto baseline = ReadResultValues({row});
+  Require(baseline == ResultValues{{"perf-0", "baseline row 0"}},
+          "result oracle positive control failed");
+  const auto rejects = [&](std::vector<api::EngineRowValue> rows) {
+    bool rejected = false;
+    try { (void)ReadResultValues(rows); }
+    catch (const std::runtime_error&) { rejected = true; }
+    Require(rejected, "result oracle accepted a malformed control");
+  };
+  rejects({row, row});
+  auto changed = row;
+  changed.fields.pop_back();
+  rejects({changed});
+  changed = row;
+  changed.fields.push_back(row.fields.front());
+  rejects({changed});
+  changed = row;
+  changed.fields.front().second.setState(api::EngineValueState::sql_null);
+  rejects({changed});
+  changed = row;
+  changed.fields.front().second.binary_value = {1};
+  rejects({changed});
+  changed = row;
+  changed.fields.back().second.encoded_value.back() = '1';
+  Require(StableResultHash(ReadResultValues({changed})) != StableResultHash(baseline),
+          "result hash did not observe a changed cell");
+  Require(StableResultHash({{"a", "bc"}}) != StableResultHash({{"ab", "c"}}),
+          "result hash did not frame fields independently");
 }
 
 void WriteMeasurements(const Measurements& m, const Thresholds& t) {
@@ -765,7 +845,7 @@ void WriteMeasurements(const Measurements& m, const Thresholds& t) {
       << "  },\n"
       << "  \"route_controls\": {\n"
       << "    \"cluster_mode\": \"local_noncluster\",\n"
-      << "    \"routes\": [\"sblr.lifecycle\", \"sblr.transaction\", \"sblr.ddl\", \"sblr.dml\"],\n"
+      << "    \"routes\": [\"sblr.lifecycle\", \"sblr.transaction_admission\", \"engine_api.transaction\", \"engine_api.ddl\", \"engine_api.dml\"],\n"
       << "    \"parser_executes_sql\": false,\n"
       << "    \"route_selection_locked\": true\n"
       << "  },\n"
@@ -814,8 +894,9 @@ void WriteMeasurements(const Measurements& m, const Thresholds& t) {
       << "  \"ipar_profiler_evidence\": {\n"
       << "    \"profiler_kind\": \"internal_ctest_equivalent\",\n"
       << "    \"host_perf_required\": false,\n"
-      << "    \"baseline_profile_captured\": true,\n"
-      << "    \"post_fix_profile_captured\": true,\n"
+      << "    \"baseline_profile_captured\": false,\n"
+      << "    \"post_fix_profile_captured\": false,\n"
+      << "    \"qualification\": \"single-run latency/resource samples, not before/after profiles\",\n"
       << "    \"cpu_hotspot_proxy\": {\n"
       << "      \"startup_open_latency_ms\": " << m.startup_open_latency_ms << ",\n"
       << "      \"session_begin_commit_latency_ms\": " << m.session_begin_commit_latency_ms << ",\n"
@@ -830,12 +911,12 @@ void WriteMeasurements(const Measurements& m, const Thresholds& t) {
       << "    \"allocation_proxy\": {\n"
       << "      \"rss_growth_bytes\": " << m.rss_growth_bytes << ",\n"
       << "      \"memory_high_water_bytes\": " << m.memory_high_water_bytes << ",\n"
-      << "      \"spill_rate\": " << m.spill_rate << "\n"
+      << "      \"spill_rate\": null\n"
       << "    },\n"
       << "    \"latch_wait_proxy\": {\n"
       << "      \"worker_parallelism\": \"single_process_single_worker\",\n"
-      << "      \"contention_waits_observed\": 0,\n"
-      << "      \"transaction_inventory_waits_observed\": 0\n"
+      << "      \"contention_waits_observed\": null,\n"
+      << "      \"transaction_inventory_waits_observed\": null\n"
       << "    },\n"
       << "    \"comparison_to_targets\": {\n"
       << "      \"startup_open_latency_within_target\": " << (m.startup_open_latency_ms <= t.startup_open_latency_ms_max ? "true" : "false") << ",\n"
@@ -869,11 +950,11 @@ void WriteMeasurements(const Measurements& m, const Thresholds& t) {
       << "    \"rss_growth_bytes_max\": " << t.rss_growth_bytes_max << "\n"
       << "  },\n"
       << "  \"selected_physical_path_result_parity\": {\n"
-      << "    \"selected_physical_path\": \"scratchbird_mga_relation_store.sblr_dml_select_rows\",\n"
+      << "    \"selected_physical_path\": \"scratchbird_mga_relation_store.engine_api_dml_select_rows\",\n"
       << "    \"selected_result_hash\": \"" << JsonEscape(m.selected_result_hash) << "\",\n"
       << "    \"hash_parity\": true,\n"
+      << "    \"parity_scope\": \"actual returned values versus independently constructed expected rows; not cross-route parity\",\n"
       << "    \"route_result_hashes\": {\n"
-      << "      \"sblr.dml.select_rows\": \"" << JsonEscape(m.selected_result_hash) << "\",\n"
       << "      \"engine_api.dml.select_rows\": \"" << JsonEscape(m.selected_result_hash) << "\"\n"
       << "    }\n"
       << "  },\n"
@@ -918,57 +999,75 @@ void CheckThresholds(const Measurements& m, const Thresholds& t) {
 }  // namespace
 
 int main() {
+  std::filesystem::path work;
+  int result = EXIT_SUCCESS;
+  try {
   ConfigureMemoryFixture();
+  RequireResultOracleControls();
   const Thresholds thresholds = LoadThresholds();
   const std::uint64_t rss_before = CurrentRssBytes();
   const std::uint64_t fd_before = CurrentFdCount();
-  const auto work = MakeTempDir();
+  work = MakeTempDir();
   Require(!work.empty(), "failed to create temp directory");
   const auto database_path = work / "phase7m_perf.sbdb";
 
   Measurements measurements;
+  api::EngineRequestContext owner;
   measurements.startup_open_latency_ms = MeasureMs([&]() {
     const auto created =
         scratchbird::tests::database_lifecycle::CreateCredentialedDatabaseFixture(
             database_path, SB_PERF_SEED_PACK_ROOT);
     Require(created.ok(), "credentialed lifecycle fixture create failed");
+    scratchbird::storage::database::DatabaseCreateConfig identity;
+    identity.path = database_path.string();
+    identity.database_uuid = created.state.database_uuid;
+    identity.filespace_uuid = created.state.filespace_uuid;
+    owner = scratchbird::tests::BootstrapFixtureOwnerContext(identity);
     auto opened = Dispatch(database_path,
                            "lifecycle.open_database",
                            "SBLR_LIFECYCLE_OPEN_DATABASE",
-                           BaseContext(database_path));
+                           BaseContext(owner));
     Require(opened.api_result.ok, "lifecycle open failed");
   });
 
   measurements.session_begin_commit_latency_ms = MeasureMs([&]() {
-    auto transaction = BeginTransaction(database_path, 101);
+    auto transaction = BeginTransaction(owner, 101);
     Commit(database_path, transaction);
   });
 
-  auto ddl_transaction = BeginTransaction(database_path, 201);
-  CreateSchemaAndTable(database_path, ddl_transaction.context);
+  auto ddl_transaction = BeginTransaction(owner, 201);
+  CreateSchemaAndTable(database_path, ddl_transaction);
   Commit(database_path, ddl_transaction);
 
-  auto insert_transaction = BeginTransaction(database_path, 202);
+  auto insert_transaction = BeginTransaction(owner, 202);
   const double insert_ms = MeasureMs([&]() {
-    InsertRows(database_path, insert_transaction.context, thresholds.sample_rows);
+    InsertRows(database_path, insert_transaction, thresholds.sample_rows);
   });
   Commit(database_path, insert_transaction);
   measurements.inserted_rows = thresholds.sample_rows;
   measurements.insert_rows_per_second =
       insert_ms > 0.0 ? (static_cast<double>(thresholds.sample_rows) * 1000.0 / insert_ms) : thresholds.sample_rows;
 
-  auto query_transaction = BeginTransaction(database_path, 203);
+  auto query_transaction = BeginTransaction(owner, 203);
   measurements.simple_query_stats = MeasureRepeatedMs([&]() {
-    Require(SelectById(database_path, query_transaction.context,
+    Require(SelectById(database_path, query_transaction,
                        "perf-" + std::to_string(thresholds.sample_rows / 2)) == 1,
             "simple query did not return exactly one row");
   }, thresholds.repeat_count);
   measurements.simple_query_latency_ms = measurements.simple_query_stats.mean_ms;
   std::size_t selected_rows = 0;
+  ResultValues expected;
+  for (std::uint64_t i = 0; i < thresholds.sample_rows; ++i)
+    expected.emplace("perf-" + std::to_string(i), "baseline row " + std::to_string(i));
+  const auto expected_hash = StableResultHash(expected);
   measurements.select_all_stats = MeasureRepeatedMs([&]() {
-    selected_rows = SelectAll(database_path, query_transaction.context,
-                              thresholds.sample_rows);
+    const auto selected = SelectAll(database_path, query_transaction, thresholds.sample_rows);
+    selected_rows = selected.rows.size();
     Require(selected_rows == thresholds.sample_rows, "select throughput sample row count mismatch");
+    const auto values = ReadResultValues(selected.rows);
+    Require(values == expected, "select changed actual row values");
+    measurements.selected_result_hash = StableResultHash(values);
+    Require(measurements.selected_result_hash == expected_hash, "selected row hash mismatch");
   }, thresholds.repeat_count);
   Commit(database_path, query_transaction);
   measurements.selected_rows = selected_rows;
@@ -976,7 +1075,6 @@ int main() {
       measurements.select_all_stats.mean_ms > 0.0
           ? (static_cast<double>(selected_rows) * 1000.0 / measurements.select_all_stats.mean_ms)
           : selected_rows;
-  measurements.selected_result_hash = StableResultHash(measurements.inserted_rows, measurements.selected_rows);
 
   const std::uint64_t rss_after = CurrentRssBytes();
   const std::uint64_t fd_after = CurrentFdCount();
@@ -988,10 +1086,6 @@ int main() {
   WriteMeasurements(measurements, thresholds);
   CheckThresholds(measurements, thresholds);
 
-  std::error_code cleanup_error;
-  std::filesystem::remove_all(work, cleanup_error);
-  Require(!cleanup_error, "failed to remove performance temp directory after successful measurement");
-
   std::cout << "scratchbird_beta_performance_baseline_conformance=passed "
             << "startup_open_ms=" << measurements.startup_open_latency_ms
             << " session_begin_commit_ms=" << measurements.session_begin_commit_latency_ms
@@ -1000,5 +1094,17 @@ int main() {
             << " select_rows_per_second=" << measurements.select_rows_per_second
             << " rss_growth_bytes=" << measurements.rss_growth_bytes
             << " output=" << SB_PERF_OUTPUT_JSON << '\n';
-  return EXIT_SUCCESS;
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    result = EXIT_FAILURE;
+  }
+  if (!work.empty()) {
+    std::error_code error;
+    std::filesystem::remove_all(work, error);
+    if (error) {
+      std::cerr << "performance fixture cleanup failed: " << error.message() << '\n';
+      result = EXIT_FAILURE;
+    }
+  }
+  return result;
 }

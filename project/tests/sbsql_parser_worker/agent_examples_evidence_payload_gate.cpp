@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "agents/agent_action_hooks_api.hpp"
+#include "../support/component_authorization_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include "agents/agent_management_api.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
@@ -28,6 +30,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <memory>
 #include <regex>
 #include <string>
 #include <string_view>
@@ -59,16 +62,13 @@ struct ExampleRoute {
 };
 
 struct TempDir {
-  std::filesystem::path path;
-  ~TempDir() {
-    std::error_code ignored;
-    std::filesystem::remove_all(path, ignored);
-  }
+  std::unique_ptr<scratchbird::tests::OwnedTempDirectory> owner =
+      std::make_unique<scratchbird::tests::OwnedTempDirectory>();
+  std::filesystem::path path = owner->path();
 };
 
 [[noreturn]] void Fail(const std::string& message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(message);
 }
 
 void Require(bool condition, const std::string& message) {
@@ -98,16 +98,8 @@ std::string IdentityBytes(const platform::Uuid& id) {
   return {reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size()};
 }
 
-TempDir MakeTempDir(std::string_view prefix, platform::u64 seed) {
-  TempDir dir;
-  auto pattern = (std::filesystem::temp_directory_path() /
-      (std::string(prefix) + "_" + std::to_string(seed) + "_XXXXXX")).string();
-  std::vector<char> writable(pattern.begin(), pattern.end());
-  writable.push_back('\0');
-  const char* made = ::mkdtemp(writable.data());
-  Require(made != nullptr, "unique temporary fixture directory creation failed");
-  dir.path = made;
-  return dir;
+TempDir MakeTempDir(std::string_view, platform::u64) {
+  return {};
 }
 
 SessionContext ParserSession() {
@@ -148,13 +140,13 @@ api::EngineRequestContext EngineContext(std::string_view required_right,
   context.catalog_generation_id = 31;
   context.security_epoch = 37;
   context.resource_epoch = 41;
-  context.trace_tags.push_back("right:OBS_AGENT_STATE_READ");
-  context.trace_tags.push_back("right:OBS_CLUSTER_HEALTH_INSPECT");
-  context.trace_tags.push_back("security.fixture_trace_authority");
   context.trace_tags.push_back("pfar_020a_agent_examples");
-  if (!required_right.empty()) {
-    context.trace_tags.push_back("right:" + std::string(required_right));
-  }
+  if (required_right.empty())
+    scratchbird::tests::MaterializeComponentAuthorization(context,
+        {"OBS_AGENT_STATE_READ", "OBS_CLUSTER_HEALTH_INSPECT"});
+  else
+    scratchbird::tests::MaterializeComponentAuthorization(context,
+        {"OBS_AGENT_STATE_READ", "OBS_CLUSTER_HEALTH_INSPECT", required_right});
   return context;
 }
 
@@ -376,9 +368,8 @@ void RequireCommandSurfaceExample(std::string operation_id,
                                   std::string expected_surface) {
   api::EngineAgentCommandSurfaceRequest request;
   request.context = EngineContext("OBS_AGENT_STATE_READ");
-  request.context.trace_tags.push_back("right:OBS_POLICY_READ");
-  request.context.trace_tags.push_back("right:OBS_AGENT_EVIDENCE_READ");
-  request.context.trace_tags.push_back("right:OBS_AGENT_RECOMMENDATION_READ");
+  scratchbird::tests::MaterializeComponentAuthorization(request.context,
+      {"OBS_AGENT_STATE_READ", "OBS_POLICY_READ", "OBS_AGENT_EVIDENCE_READ", "OBS_AGENT_RECOMMENDATION_READ"});
   request.operation_id = operation_id;
   request.target_object.object_kind = "memory_governor";
   request.agent_catalog_identity_sources = CatalogIdentities();
@@ -387,7 +378,8 @@ void RequireCommandSurfaceExample(std::string operation_id,
   Require(result.ok || expected_state == "refused",
           "command surface example returned unexpected hard failure");
   Require(FieldValue(result, "result_state") == expected_state,
-          operation_id + " result state mismatch");
+          operation_id + " result state mismatch: expected=" + expected_state +
+              " actual=" + FieldValue(result, "result_state") + " diagnostics=" + DiagnosticSummary(result));
   Require(FieldValue(result, "diagnostic_code") == expected_diagnostic,
           operation_id + " diagnostic field mismatch");
   Require(FieldValue(result, "sys_surface") == expected_surface,
@@ -516,7 +508,7 @@ void RequireSupportEvidenceExample() {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
   Require(argc == 3,
           "usage: agent_examples_evidence_payload_gate <spec-doc> <reference-doc>");
   const DocumentPaths paths{argv[1], argv[2]};
@@ -580,4 +572,7 @@ int main(int argc, char** argv) {
 
   std::cout << "agent_examples_evidence_payload_gate=passed\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

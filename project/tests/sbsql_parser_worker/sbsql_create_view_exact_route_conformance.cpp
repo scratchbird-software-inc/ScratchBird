@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include "../support/engine_evidence_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
@@ -30,6 +31,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -58,8 +60,7 @@ constexpr std::string_view kSourceUuid = "019f0000-0000-7000-8000-000000278503";
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
-    std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -73,9 +74,10 @@ bool HasValue(const std::vector<std::string>& values, std::string_view expected)
 
 bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
-                 std::string_view id) {
+                 const api::EngineUuid& id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
+    const auto* identity = std::get_if<api::EngineUuid>(&evidence.evidence_id);
+    if (evidence.evidence_kind == kind && identity && *identity == id) return true;
   }
   return false;
 }
@@ -225,8 +227,11 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
           "CREATE VIEW payload missing normalized view definition");
   Require(Contains(artifacts.envelope.payload, "\"view_query_dependencies_included\":true"),
           "CREATE VIEW payload missing dependency tracking");
-  Require(Contains(artifacts.envelope.payload, kSourceUuid),
-          "CREATE VIEW payload missing UUID-bound source relation");
+  Require(artifacts.envelope.resolved_object_uuids ==
+              std::vector<scratchbird::core::platform::Uuid>{
+                  scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000278503")} &&
+              !Contains(artifacts.envelope.payload, kSourceUuid),
+          "CREATE VIEW lost its exact binary source cohort or emitted a text UUID");
   Require(Contains(artifacts.envelope.payload, kSurfaceId),
           "CREATE VIEW payload missing row-identifiable surface evidence");
   Require(Contains(artifacts.envelope.payload, kViewNameSurfaceId),
@@ -438,7 +443,8 @@ sblr::SblrOperationEnvelope EngineEnvelope(std::string_view operation_id,
 }
 
 void RequireEngineDispatch() {
-  const auto path = TestDatabasePath();
+  scratchbird::tests::OwnedTempDirectory temporary;
+  const auto path = temporary.path() / TestDatabasePath().filename();
   RemoveDatabaseArtifacts(path);
   const auto database_uuid = CreateMinimalDatabase(path);
   const auto context = BeginEngineTransaction(path, database_uuid);
@@ -467,7 +473,8 @@ void RequireEngineDispatch() {
           "EngineCreateView returned wrong view UUID");
   Require(std::any_of(result.api_result.evidence.begin(), result.api_result.evidence.end(), [](const auto& evidence) { return evidence.evidence_kind == "view" && scratchbird::tests::EvidenceIdentityEquals(evidence.evidence_id, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000278501")); }),
           "EngineCreateView missing view descriptor evidence");
-  Require(HasEvidence(result.api_result, "name_registry", kViewUuid),
+  Require(HasEvidence(result.api_result, "name_registry",
+                      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000278501")),
           "EngineCreateView missing name registry evidence");
   Require(!result.api_result.catalog_row_uuid.is_nil(),
           "EngineCreateView missing catalog row UUID evidence");
@@ -476,7 +483,7 @@ void RequireEngineDispatch() {
 
 }  // namespace
 
-int main() {
+int main() try {
   RequireRegistryEvidence();
   const auto artifacts = RunPipeline();
   RequireExactLowering(artifacts);
@@ -484,4 +491,7 @@ int main() {
   RequireEngineDispatch();
   std::cout << "sbsql_create_view_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

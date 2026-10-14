@@ -2313,6 +2313,7 @@ if(TARGET sb_engine_sblr AND TARGET sb_storage_database AND TARGET sb_transactio
   target_link_libraries(
     scratchbird_beta_performance_baseline_conformance
     PRIVATE
+      sb_engine
       sb_engine_sblr
       sb_core_memory
       sb_storage_database

@@ -172,6 +172,8 @@ void RequireEvidenceHygiene(const api::EngineApiResult& result) {
 
 void BatchAppendBuildsBucketsColumnsSummariesRollupsAndLateDelta() {
   const auto result = api::EngineTimeSeriesAppend(BaseRequest());
+  if (!result.ok) for (const auto& diagnostic : result.diagnostics)
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   Require(result.ok, "ODF-076 physical time-series append failed");
   Require(result.dml_summary.rows_changed == 6,
           "ODF-076 append row count summary drifted");

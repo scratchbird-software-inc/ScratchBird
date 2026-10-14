@@ -1,4 +1,3 @@
-#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -7,6 +6,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/engine_evidence_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include "database_lifecycle.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
@@ -21,6 +23,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -37,8 +40,7 @@ using scratchbird::core::platform::UuidKind;
 
 void Require(bool condition, std::string_view message) {
   if (condition) return;
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 bool HasDiagnostic(const api::EngineApiResult& result,
@@ -100,74 +102,45 @@ api::EngineUuid NewUuid(UuidKind kind, std::uint64_t timestamp) {
 }
 
 struct DatabaseFixture {
+  // Declared first so all handles close before exception cleanup.
+  scratchbird::tests::OwnedTempDirectory owned;
   std::filesystem::path directory;
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
-
-  DatabaseFixture() = default;
-  DatabaseFixture(const DatabaseFixture&) = delete;
-  DatabaseFixture& operator=(const DatabaseFixture&) = delete;
-  DatabaseFixture(DatabaseFixture&& other) noexcept
-      : directory(std::move(other.directory)),
-        database_path(std::move(other.database_path)),
-        database_uuid(std::move(other.database_uuid)) {
-    other.directory.clear();
-  }
-  DatabaseFixture& operator=(DatabaseFixture&&) = delete;
-
-  ~DatabaseFixture() {
-    if (directory.empty()) return;
-    std::error_code error;
-    std::filesystem::remove_all(directory, error);
-  }
-};
-
-DatabaseFixture CreateDatabaseFixture() {
+  api::EngineRequestContext owner;
+  DatabaseFixture() {
   const auto now = NowMillis();
-  DatabaseFixture fixture;
-  fixture.directory = std::filesystem::temp_directory_path() /
-                      ("sb_procedural_block_v1_" + std::to_string(now) + "_" +
-                       std::to_string(static_cast<long long>(getpid())));
-  std::filesystem::create_directories(fixture.directory);
-  fixture.database_path = fixture.directory / "fixture.sbdb";
+  directory = owned.path();
+  database_path = directory / "fixture.sbdb";
 
   db::DatabaseCreateConfig create;
-  create.path = fixture.database_path.string();
+  create.path = database_path.string();
   create.database_uuid =
       uuid::GenerateEngineIdentityV7(UuidKind::database, now + 1).value;
   create.filespace_uuid =
       uuid::GenerateEngineIdentityV7(UuidKind::filespace, now + 2).value;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = now + 3;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
-  create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ':'
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "procedural block test database creation failed");
-  fixture.database_uuid = create.database_uuid.value;
-  return fixture;
-}
+  database_uuid = create.database_uuid.value;
+  owner = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  }
+};
 
 api::EngineRequestContext BeginTransaction(const DatabaseFixture& fixture) {
   const auto now = NowMillis();
   api::EngineBeginTransactionRequest begin;
-  begin.context.trust_mode = api::EngineTrustMode::server_isolated;
+  begin.context = fixture.owner;
   begin.context.request_id = "sblr-procedural-block-v1";
-  begin.context.database_path = fixture.database_path.string();
-  begin.context.database_uuid = fixture.database_uuid;
-  begin.context.principal_uuid =
-      NewUuid(UuidKind::object, now + 10);
   begin.context.session_uuid =
       NewUuid(UuidKind::object, now + 11);
-  begin.context.security_context_present = true;
-  begin.context.catalog_generation_id = 1;
-  begin.context.security_epoch = 1;
-  begin.context.resource_epoch = 1;
-  begin.context.name_resolution_epoch = 1;
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(begin.context);
   begin.isolation_level = "read_committed";
 
   const auto begun = api::EngineBeginTransaction(begin);
@@ -386,6 +359,8 @@ void TestRuntimeSemantics() {
   context.current_timestamp = "2026-07-15T12:34:56.123456Z";
   const auto assigned =
       sblr::ExecuteSblrProceduralBlockV1(assignment.block, context);
+  if (!assigned.result.ok()) for (const auto& d : assigned.result.diagnostics)
+    std::cerr << d.diagnostic_id << ':' << d.detail << '\n';
   Require(assigned.result.ok() && assigned.result.rows.empty() &&
               assigned.instructions_executed == 1,
           "timestamp substring assignment was not executed exactly once");
@@ -416,7 +391,7 @@ void TestRuntimeSemantics() {
 }
 
 void TestDispatchRefusalAndMgaNonMutation() {
-  const auto fixture = CreateDatabaseFixture();
+  DatabaseFixture fixture;
   const auto context = BeginTransaction(fixture);
 
   const auto assigned = DispatchBlock(context, TimestampAssignmentOptions());
@@ -470,14 +445,22 @@ void TestDispatchRefusalAndMgaNonMutation() {
   Require(!before_commit.dispatched_to_api && !before_commit.api_result.ok,
           "procedural refusal unexpectedly mutated the commit candidate");
   CommitTransaction(committed_context);
+  fixture.owned.Cleanup();
 }
 
 }  // namespace
 
-int main() {
+int main() try {
+  namespace memory = scratchbird::core::memory;
+  const auto configured = memory::ConfigureDefaultMemoryManagerForFixture(
+      memory::DefaultLocalEngineMemoryPolicy(), "procedural_block_runtime_gate");
+  Require(configured.ok(), "procedural runtime fixture memory policy admission failed");
   TestStrictDecoder();
   TestRuntimeSemantics();
   TestDispatchRefusalAndMgaNonMutation();
   std::cout << "sblr procedural block v1 conformance: ok\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }
