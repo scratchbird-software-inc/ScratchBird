@@ -7205,6 +7205,8 @@ api::EngineCreateTableRequest TypedCreateTableRequest(const SblrDispatchRequest&
     column.descriptor.datatype_descriptor_uuid = binding.datatype_descriptor_uuid;
     column.descriptor.datatype_descriptor_generation = binding.datatype_descriptor_generation;
     column.descriptor.type_uuid = binding.type_uuid;
+    column.descriptor.datatype_cohort = {typed.context.datatype_catalog_snapshot_uuid,
+        typed.context.datatype_catalog_generation, typed.context.datatype_registry_generation};
   }
   typed.table_constraints = base.constraints;
   typed.table_indexes = base.indexes;
@@ -9219,31 +9221,34 @@ api::EngineEvaluateProjectionRequest TypedEvaluateProjectionRequest(
     const auto& value_record = request.parameter_value_set->records.front();
     const api::EngineUuid descriptor_uuid{value_record.datatype_descriptor_uuid};
     const auto identity = scratchbird::core::datatypes::
-        LookupDatatypeTypeCodecIdentityV1(
+        LookupDatatypeTypeCodecIdentityV3(
             request.context.datatype_catalog_snapshot_uuid,
             request.context.datatype_catalog_generation,
             request.context.datatype_registry_generation, descriptor_uuid,
             value_record.datatype_descriptor_generation);
+    const auto& identity_fields = identity.row.legacy_fields;
     const std::string parameter_name =
         api::SecurityOptionValue(base, "projection_0_name:");
     if (!parameter_name.empty() && value_record.slot_ordinal == 0 &&
         value_record.direction == SblrParameterDirectionV1::in &&
         value_record.state == SblrParameterValueStateV1::value &&
         value_record.canonical_value_bytes.size() == 8 && identity.ok &&
-        identity.row.descriptor_uuid ==
+        identity_fields.descriptor_uuid ==
             api::EngineUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x11}} &&
-        identity.row.type_uuid ==
+        identity_fields.type_uuid ==
             api::EngineUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x12}} &&
-        identity.row.canonical_value_exact_bytes == 8 &&
-        identity.row.codec_id == "datatype.int64.le.v1") {
+        identity_fields.canonical_value_exact_bytes == 8 &&
+        identity_fields.codec_id == "datatype.int64.le.v1") {
       // Preserve the admitted registry binding and its sole native payload;
       // no display spelling is an additional executable value carrier.
       api::EngineDescriptor descriptor;
       descriptor.descriptor_uuid = descriptor_uuid;
-      descriptor.type_uuid = identity.row.type_uuid;
-      descriptor.datatype_descriptor_uuid = identity.row.descriptor_uuid;
+      descriptor.type_uuid = identity_fields.type_uuid;
+      descriptor.datatype_descriptor_uuid = identity_fields.descriptor_uuid;
       descriptor.datatype_descriptor_generation =
-          identity.row.descriptor_generation;
+          identity_fields.descriptor_generation;
+      descriptor.datatype_cohort = {identity_fields.catalog_snapshot_uuid,
+          identity_fields.catalog_generation, identity_fields.registry_generation};
       descriptor.descriptor_kind = "scalar";
       descriptor.canonical_type_name = "int64";
       descriptor.encoded_descriptor = "nullability=non_null";

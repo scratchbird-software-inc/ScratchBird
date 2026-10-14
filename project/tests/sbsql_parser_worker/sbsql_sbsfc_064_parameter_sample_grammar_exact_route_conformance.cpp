@@ -22,6 +22,8 @@
 #include "sblr_engine_envelope.hpp"
 #include "uuid.hpp"
 #include "wire/sbsql_test_wire.hpp"
+#include "admitted_datatype_cohort.hpp"
+#include "sblr_bound_column_identity.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -29,11 +31,19 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unistd.h>
 #include <utility>
 #include <vector>
+
+namespace scratchbird::parser::sbsql {
+// Actual parser projection only; no executor/receipt/storage substitute.
+bool BindCanonicalCreateTableColumnsForTest(
+    engine::sblr::SblrOperationEnvelope*, const ipc::ParserStatementContext&);
+}
 
 namespace {
 
@@ -44,6 +54,84 @@ namespace sblr = scratchbird::engine::sblr;
 namespace uuid = scratchbird::core::uuid;
 namespace memory = scratchbird::core::memory;
 using scratchbird::core::platform::UuidKind;
+
+void RequireColumnBindingProjection() {
+  namespace dt = scratchbird::core::datatypes;
+  const auto make_envelope = [](std::vector<std::string> names,
+                                std::string count = "2") {
+    auto envelope = sblr::MakeSblrEnvelope("ddl.create_table", "SBLR_DDL_CREATE_TABLE", "column.binding");
+    envelope.operands.push_back({"text", "column_count", std::move(count)});
+    for (std::size_t i = 0; i < names.size(); ++i)
+      envelope.operands.push_back({"text", "column_" + std::to_string(i) + "_type", std::move(names[i])});
+    return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(std::move(envelope));
+  };
+  const auto require = [](bool value, const char* message) {
+    if (!value) throw std::runtime_error(message);
+  };
+  for (const auto& [snapshot, generation] : {
+      std::pair{dt::kDatatypeCohortV5, std::uint64_t{5}},
+      std::pair{dt::kDatatypeCohortV10, std::uint64_t{10}},
+      std::pair{dt::kDatatypeCohortV11, std::uint64_t{11}}}) {
+    scratchbird::parser::ipc::ParserStatementContext context;
+    context.literal_catalog_snapshot_uuid = snapshot;
+    context.literal_catalog_generation = generation;
+    auto envelope = make_envelope({"int32", "int64"});
+    require(BindCanonicalCreateTableColumnsForTest(&envelope, context), "exact column cohort refused");
+    std::vector<sblr::SblrColumnIdentityBinding> bindings;
+    require(sblr::DecodeSblrColumnIdentities(envelope, &bindings) && bindings.size() == 2,
+            "column tuple not encoded as binary identities");
+    std::set<api::EngineUuid> occurrences;
+    for (std::size_t i = 0; i < bindings.size(); ++i) {
+      const auto descriptor = i == 0
+          ? scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d716")
+          : scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711");
+      const auto type = i == 0
+          ? scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d717")
+          : scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712");
+      const auto& binding = bindings[i];
+      require(binding.datatype_descriptor_uuid == descriptor && binding.type_uuid == type &&
+              binding.datatype_descriptor_generation == 1 && descriptor != type,
+              "column substituted a descriptor-as-type or different codec identity");
+      require(uuid::IsEngineIdentityUuid(binding.column_uuid) &&
+              uuid::IsEngineIdentityUuid(binding.value_descriptor_uuid) &&
+              occurrences.insert(binding.column_uuid).second &&
+              occurrences.insert(binding.value_descriptor_uuid).second &&
+              binding.column_uuid != descriptor && binding.column_uuid != type &&
+              binding.value_descriptor_uuid != descriptor && binding.value_descriptor_uuid != type,
+              "column occurrence identities collide or are not binary UUIDv7");
+    }
+    const auto reject = [&](auto invalid, auto bad_context) {
+      const auto before = sblr::EncodeSblrEnvelope(invalid);
+      const auto operand_count = invalid.operands.size();
+      require(!BindCanonicalCreateTableColumnsForTest(&invalid, bad_context) &&
+              invalid.operands.size() == operand_count &&
+              std::none_of(invalid.operands.begin(), invalid.operands.end(),
+                  [](const auto& operand) { return sblr::IsColumnIdentityRole(operand.name); }) &&
+              sblr::EncodeSblrEnvelope(invalid) == before,
+              "refused declaration published partial binary column bindings");
+    };
+    auto bad_context = context;
+    bad_context.literal_catalog_snapshot_uuid = {};
+    reject(make_envelope({"int32", "int64"}), bad_context);
+    bad_context = context;
+    bad_context.literal_catalog_snapshot_uuid.bytes[15] ^= 0x40;
+    reject(make_envelope({"int32", "int64"}), bad_context);
+    bad_context = context;
+    bad_context.literal_catalog_generation = 0;
+    reject(make_envelope({"int32", "int64"}), bad_context);
+    bad_context.literal_catalog_generation = generation + 1;
+    reject(make_envelope({"int32", "int64"}), bad_context);
+    reject(make_envelope({"missing_type", "int64"}), context);
+    reject(make_envelope({"int32", "missing_type"}), context);
+    for (const auto count : {"0", "02", "invalid", "999999999999999999999999", "3"})
+      reject(make_envelope({"int32", "int64"}, count), context);
+    auto duplicate = make_envelope({"int32", "int64"});
+    auto operand = duplicate.operands[1];
+    operand.ordinal = duplicate.operands.size() + 1;
+    duplicate.operands.push_back(std::move(operand));
+    reject(std::move(duplicate), context);
+  }
+}
 
 constexpr std::string_view kTableUuid = "019f0000-0000-7000-8000-000000064001";
 constexpr std::string_view kProcedureUuid = "019f0000-0000-7000-8000-000000064002";
@@ -686,6 +774,7 @@ int main() try {
       memory_policy, "sbsql_sbsfc_064_parameter_sample_conformance");
   Require(memory_configured.ok(),
           "SBSFC-064 memory manager configuration failed");
+  RequireColumnBindingProjection();
 
   scratchbird::tests::OwnedTempDirectory fixture_directory;
   const auto fixture_database = MakePipelineFixtureDatabase(fixture_directory.path());

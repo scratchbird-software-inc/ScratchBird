@@ -12,6 +12,7 @@
 
 #include "wire/sbsql_test_wire.hpp"
 #include "admitted_datatype_cohort.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "engine/sblr/native_row_field.hpp"
 #include "engine/sblr/sblr_bound_column_identity.hpp"
 #include "wire/native_insert_literals.hpp"
@@ -19976,7 +19977,7 @@ bool BindCanonicalCreateTableColumns(engine::sblr::SblrOperationEnvelope* envelo
     return value;
   };
   const auto count_text = text("column_count");
-  if (!count_text) return false;
+  if (!count_text || (count_text->size() > 1 && count_text->front() == '0')) return false;
   std::size_t count = 0;
   const auto parsed = std::from_chars(count_text->data(), count_text->data() + count_text->size(), count);
   if (parsed.ec != std::errc{} || parsed.ptr != count_text->data() + count_text->size() ||
@@ -19984,6 +19985,7 @@ bool BindCanonicalCreateTableColumns(engine::sblr::SblrOperationEnvelope* envelo
   const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return false;
   std::vector<engine::sblr::SblrColumnIdentityBinding> bindings;
+  bindings.reserve(count);
   for (std::size_t index = 0; index < count; ++index) {
     const auto name = text("column_" + std::to_string(index) + "_type");
     if (!name) return false;
@@ -19991,24 +19993,30 @@ bool BindCanonicalCreateTableColumns(engine::sblr::SblrOperationEnvelope* envelo
         dt::CanonicalTypeIdFromStableName(*name));
     if (!row.ok() || row.manifest.descriptor_rows.size() != 1) return false;
     const auto& descriptor = row.manifest.descriptor_rows.front();
+    // The public statement projection has no registry-generation field.
+    // Select exactly one actual row from its projected snapshot/generation,
+    // never assume equal generations or fall back to descriptor-as-type.
+    // Receiving engine admission checks its independently retained full cohort.
+    const dt::DatatypeTypeCodecIdentityRowV1* selected = nullptr;
+    for (const auto& candidate : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+      const auto& identity = candidate.legacy_fields;
+      if (identity.catalog_snapshot_uuid != context.literal_catalog_snapshot_uuid ||
+          identity.catalog_generation != context.literal_catalog_generation ||
+          identity.descriptor_uuid != descriptor.descriptor_uuid.value ||
+          identity.descriptor_generation != descriptor.descriptor_epoch) continue;
+      if (selected) return false;
+      selected = &identity;
+    }
+    if (!selected || !core::uuid::IsEngineIdentityUuid(selected->type_uuid) ||
+        selected->canonical_binary_type_code !=
+            static_cast<std::uint32_t>(dt::CanonicalTypeIdFromStableName(*name))) return false;
+    const auto& identity = *selected;
     engine::sblr::SblrColumnIdentityBinding binding;
     binding.column_uuid = NewCreatedObjectUuid("column");
     binding.value_descriptor_uuid = NewCreatedObjectUuid("descriptor");
-    binding.datatype_descriptor_uuid = descriptor.descriptor_uuid.value;
-    binding.datatype_descriptor_generation = descriptor.descriptor_epoch;
-    binding.type_uuid = descriptor.descriptor_uuid.value;
-    bool registered = false, matched = false;
-    for (const auto& candidate : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
-      if (candidate.descriptor_uuid != binding.datatype_descriptor_uuid) continue;
-      registered = true;
-      if (candidate.catalog_snapshot_uuid != context.literal_catalog_snapshot_uuid ||
-          candidate.catalog_generation != context.literal_catalog_generation ||
-          candidate.descriptor_generation != binding.datatype_descriptor_generation) continue;
-      if (matched) return false;
-      matched = true;
-      binding.type_uuid = candidate.type_uuid;
-    }
-    if (registered && !matched) return false;
+    binding.datatype_descriptor_uuid = identity.descriptor_uuid;
+    binding.datatype_descriptor_generation = identity.descriptor_generation;
+    binding.type_uuid = identity.type_uuid;
     bindings.push_back(binding);
   }
   for (std::size_t index = 0; index < bindings.size(); ++index)
@@ -24888,6 +24896,12 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
 }
 
 } // namespace
+
+bool BindCanonicalCreateTableColumnsForTest(
+    engine::sblr::SblrOperationEnvelope* envelope,
+    const ipc::ParserStatementContext& context) {
+  return BindCanonicalCreateTableColumns(envelope, context);
+}
 
 std::optional<ipc::ParserCanonicalSblrSubmission>
 BuildCanonicalScalarProjectionSubmissionForTest(const SblrEnvelope& lowered,
