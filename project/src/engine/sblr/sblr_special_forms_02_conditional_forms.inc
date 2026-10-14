@@ -8,8 +8,7 @@
 
 // SBSQL source-layout fragment. Included only by sblr_special_forms.cpp.
 // This fragment preserves pre-existing behavior; do not add unrelated future work here.
-    case datatypes::CanonicalTypeId::uint32:
-    case datatypes::CanonicalTypeId::uint64: {
+    case datatypes::CanonicalTypeId::uint32: {
       out.payload_kind = SblrValuePayloadKind::unsigned_integer;
       std::uint64_t parsed = 0;
       if (ParseUnsignedInt64(value.encoded_value, &parsed)) {
@@ -18,6 +17,9 @@
       }
       out.text_value = value.encoded_value;
       return out;
+    }
+    case datatypes::CanonicalTypeId::uint64: {
+      return SblrValueFromCanonicalUInt64Bytes(value.encoded_value);
     }
     case datatypes::CanonicalTypeId::real32:
     case datatypes::CanonicalTypeId::real64: {

@@ -160,10 +160,11 @@ SblrValue SblrValueFromDatatypeValue(const datatypes::DatatypeOperationValue& va
   SblrValue out;
   out.descriptor_id = datatypes::CanonicalTypeName(value.type_id);
   out.is_null = value.is_null;
-  // Native UUID/BINARY are published directly into their sole binary carrier.
+  // Native UUID/BINARY/UINT64 are published directly into their sole carrier.
   // Do not allocate a temporary string copy which is immediately discarded.
   if (!value.is_null && value.type_id != datatypes::CanonicalTypeId::uuid &&
-      value.type_id != datatypes::CanonicalTypeId::binary)
+      value.type_id != datatypes::CanonicalTypeId::binary &&
+      value.type_id != datatypes::CanonicalTypeId::uint64)
     out.encoded_value = value.encoded_value;
   if (value.is_null) {
     out.encoded_value.clear();

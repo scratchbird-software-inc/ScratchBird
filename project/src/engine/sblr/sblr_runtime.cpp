@@ -11,9 +11,24 @@
 #include "../../core/uuid/uuid.hpp"
 
 #include <utility>
+#include <stdexcept>
+#include "datatype_operations.hpp"
 #include "sblr_binary_value_carrier.hpp"
 
 namespace scratchbird::engine::sblr {
+SblrValue SblrValueFromCanonicalUInt64Bytes(std::string_view bytes) {
+  std::uint64_t decoded = 0;
+  if (!core::datatypes::DecodeCanonicalUint64Value(bytes, &decoded))
+    throw std::invalid_argument("datatype owner returned noncanonical UINT64 bytes");
+  SblrValue result;
+  result.descriptor_id = "uint64";
+  result.payload_kind = SblrValuePayloadKind::unsigned_integer;
+  result.uint64_value = decoded;
+  result.has_uint64_value = true;
+  result.is_null = false;
+  return result;
+}
+
 SblrValue MakeSblrUuidValue(const SblrUuid& uuid) {
   SblrValue result;
   result.descriptor_id = "uuid";

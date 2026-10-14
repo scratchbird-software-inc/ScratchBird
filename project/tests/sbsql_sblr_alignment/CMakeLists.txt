@@ -457,7 +457,8 @@ add_executable(sbsql_sblr_alignment_sequence_binary_identity
 target_compile_features(sbsql_sblr_alignment_sequence_binary_identity PRIVATE cxx_std_23)
 target_include_directories(sbsql_sblr_alignment_sequence_binary_identity PRIVATE
   ../../src/engine/sblr)
-target_link_libraries(sbsql_sblr_alignment_sequence_binary_identity PRIVATE sb_core_uuid)
+target_link_libraries(sbsql_sblr_alignment_sequence_binary_identity PRIVATE
+  sb_core_uuid sb_core_datatypes)
 add_test(NAME sbsql_sblr_alignment_sequence_binary_identity
   COMMAND sbsql_sblr_alignment_sequence_binary_identity)
 set_tests_properties(sbsql_sblr_alignment_sequence_binary_identity PROPERTIES
@@ -467,8 +468,9 @@ add_executable(sbsql_sblr_alignment_context_variable_binary_identity
   context_variable_binary_identity_test.cpp)
 target_compile_features(sbsql_sblr_alignment_context_variable_binary_identity PRIVATE cxx_std_23)
 target_include_directories(sbsql_sblr_alignment_context_variable_binary_identity PRIVATE
-  ../../src/engine/sblr)
-target_link_libraries(sbsql_sblr_alignment_context_variable_binary_identity PRIVATE sb_engine_sblr)
+  ../../src/engine/sblr ../../src/engine/functions)
+target_link_libraries(sbsql_sblr_alignment_context_variable_binary_identity PRIVATE
+  sb_engine_sblr sb_engine_functions)
 add_test(NAME sbsql_sblr_alignment_context_variable_binary_identity
   COMMAND sbsql_sblr_alignment_context_variable_binary_identity)
 set_tests_properties(sbsql_sblr_alignment_context_variable_binary_identity PROPERTIES

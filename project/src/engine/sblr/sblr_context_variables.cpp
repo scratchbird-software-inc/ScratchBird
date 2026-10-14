@@ -53,15 +53,9 @@ SblrValue UInt64ContextValue(std::uint64_t uint_value) {
   SblrValue value;
   value.descriptor_id = "uint64";
   value.is_null = false;
-  value.text_value = std::to_string(uint_value);
-  value.encoded_value = value.text_value;
   value.payload_kind = SblrValuePayloadKind::unsigned_integer;
   value.has_uint64_value = true;
   value.uint64_value = uint_value;
-  if (uint_value <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
-    value.has_int64_value = true;
-    value.int64_value = static_cast<std::int64_t>(uint_value);
-  }
   return value;
 }
 

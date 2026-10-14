@@ -292,5 +292,3 @@ SblrResult EvaluateSblrCollectionOperator(std::string_view operator_id,
     out.payload_kind = SblrValuePayloadKind::unsigned_integer;
     out.has_uint64_value = true;
     out.uint64_value = CollectionCardinality(left_collection);
-    out.encoded_value = std::to_string(out.uint64_value);
-    out.text_value = out.encoded_value;

@@ -113,6 +113,9 @@ struct SblrResultRow {
 };
 
 SblrValue MakeSblrUuidValue(const SblrUuid& uuid);
+// Payload-only adaptation of Core's canonical LE8 UINT64 bytes. No statement,
+// descriptor or policy authority is issued; malformed width throws.
+SblrValue SblrValueFromCanonicalUInt64Bytes(std::string_view bytes);
 // Payload transfer only, not descriptor/catalog/identity-policy admission.
 // Conflicting legacy representations fail without changing the destination.
 bool CopySblrUuidPayload(const SblrValue& value,

@@ -77,6 +77,7 @@ SblrResult EvaluateThunkScalar(std::string_view operation_id,
 bool Truthy(const SblrValue& value) {
   if (value.is_null) return false;
   if (value.has_int64_value) return value.int64_value != 0;
+  if (value.has_uint64_value) return value.uint64_value != 0;
   std::string text = value.text_value;
   std::transform(text.begin(), text.end(), text.begin(), [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
   return text == "TRUE" || text == "T" || text == "YES" || text == "Y" || text == "1";
@@ -112,6 +113,21 @@ int CompareValues(const SblrValue& left, const SblrValue& right) {
 }
 
 bool NativeComparisonValid(const SblrValue& left, const SblrValue& right) {
+  if (left.descriptor_id == "uint64" || right.descriptor_id == "uint64") {
+    const auto contextual_null = [](const SblrValue& value) {
+      return value.descriptor_id.empty() && !value.projection_descriptor && SblrNullPayloadEmpty(value);
+    };
+    const auto uint64_carrier = [](const SblrValue& value) {
+      return value.descriptor_id == "uint64" &&
+          (value.is_null ? SblrNullPayloadEmpty(value) : SblrUInt64PayloadValid(value));
+    };
+    if (contextual_null(left)) return uint64_carrier(right);
+    if (contextual_null(right)) return uint64_carrier(left);
+    // This payload-only helper cannot admit a mixed-numeric policy. In
+    // particular, empty text arms of native integers are not equal strings.
+    if (left.descriptor_id != "uint64" || right.descriptor_id != "uint64") return false;
+    return uint64_carrier(left) && uint64_carrier(right);
+  }
   const auto comparison = CompareSblrNativeBinaryValues(left, right);
   return !comparison.attempted || comparison.valid;
 }
