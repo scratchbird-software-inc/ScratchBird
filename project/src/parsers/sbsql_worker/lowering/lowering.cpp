@@ -28901,6 +28901,22 @@ void PopulateScalarProjectionAuthority(SblrEnvelope* envelope, const ScalarProje
       value.canonical_value_body.insert(value.canonical_value_body.end(), 7, 0);
       value.canonical_value_body.insert(value.canonical_value_body.end(), uuid.bytes.begin(), uuid.bytes.end());
       envelope->operands.push_back(std::move(value));
+    } else if (item.expression_kind == "literal" && item.type_name == "boolean" && !item.is_null) {
+      const auto catalog = core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+      const auto row = core::datatypes::LookupDatatypeCatalogRow(
+          catalog.manifest, core::datatypes::CanonicalTypeId::boolean);
+      if ((item.value != "true" && item.value != "false") || !catalog.ok() ||
+          !row.ok() || row.manifest.descriptor_rows.size() != 1) {
+        complete = false; return;
+      }
+      SblrOperand value{"boolean", prefix + "value", {}};
+      value.canonical_value_kind = static_cast<std::uint16_t>(engine::sblr::SblrValueKind::literal_typed);
+      const auto& descriptor = row.manifest.descriptor_rows.front().descriptor_uuid.value;
+      value.canonical_value_body.assign(descriptor.bytes.begin(), descriptor.bytes.end());
+      value.canonical_value_body.push_back(1);
+      value.canonical_value_body.insert(value.canonical_value_body.end(), 7, 0);
+      value.canonical_value_body.push_back(item.value == "true" ? 1 : 0);
+      envelope->operands.push_back(std::move(value));
     } else if (item.expression_kind == "literal" && item.type_name == "real64" && !item.is_null) {
       const auto encoded = libraries::sbl_numeric::EncodeReal64LittleEndian(item.value);
       const auto catalog = core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();

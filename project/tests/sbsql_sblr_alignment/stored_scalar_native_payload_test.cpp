@@ -15,6 +15,7 @@
 #include "engine/functions/dispatch/function_dispatch.hpp"
 #include "engine/functions/registry/function_seed_registry.hpp"
 #include "../support/exact_datatype_descriptor_fixture.hpp"
+#include "engine/internal_api/query/projection_api.hpp"
 
 #include <array>
 #include <cstdlib>
@@ -35,6 +36,11 @@ void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 
 namespace api = scratchbird::engine::internal_api;
+namespace scratchbird::engine::internal_api {
+bool QowReadCanonicalProjectionExpressionsV1(
+    const EngineApiRequest&, std::uint64_t, std::vector<EngineProjectionExpression>*,
+    std::size_t*, std::size_t*, std::string*, std::string*);
+}
 using State = api::EngineValueState;
 unsigned checks = 0;
 void Require(bool ok, const char* message) {
@@ -517,6 +523,111 @@ void NativeReal64LiteralBinding() {
   }
 }
 
+void NativeBooleanLiteralBinding() {
+  namespace sblr = scratchbird::engine::sblr;
+  namespace dt = scratchbird::core::datatypes;
+  const auto catalog = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(catalog.ok(), "BOOLEAN structural catalog unavailable");
+  const auto row = dt::LookupDatatypeCatalogRow(catalog.manifest, dt::CanonicalTypeId::boolean);
+  Require(row.ok() && row.manifest.descriptor_rows.size() == 1, "BOOLEAN structural identity unavailable");
+  const auto read = [](const api::EngineApiRequest& request,
+                       std::vector<api::EngineProjectionExpression>* output) {
+    std::size_t nodes = 0, depth = 0;
+    std::string reason, detail;
+    return api::QowReadCanonicalProjectionExpressionsV1(request, 1, output,
+        &nodes, &depth, &reason, &detail);
+  };
+  for (const auto byte : {std::uint8_t{0}, std::uint8_t{1}}) {
+    api::EngineApiRequest request;
+    request.option_envelopes = {"projection_0_expr_kind:literal", "projection_0_type:boolean",
+                               "projection_0_is_null:false"};
+    request.projection.boolean_literals = {{"projection_0_", byte}};
+    std::vector<api::EngineProjectionExpression> output;
+    Require(read(request, &output) && output.size() == 1 && !output[0].is_null &&
+                output[0].encoded_value.empty() && output[0].binary_value == std::vector<std::uint8_t>{byte},
+            "projection receiver changed native BOOLEAN data");
+    for (unsigned change = 0; change < 14; ++change) {
+      auto invalid = request;
+      if (change == 0) invalid.option_envelopes.push_back("projection_0_value:true");
+      if (change == 1) invalid.option_envelopes.push_back("projection_0_value:");
+      if (change == 2) invalid.option_envelopes.back() = "projection_0_is_null:true";
+      if (change == 3) invalid.option_envelopes.back() = "projection_0_is_null:garbage";
+      if (change == 4) invalid.option_envelopes.pop_back();
+      if (change == 5) invalid.projection.boolean_literals.front().second = 2;
+      if (change == 6) invalid.projection.boolean_literals.push_back(invalid.projection.boolean_literals.front());
+      if (change == 7) invalid.projection.boolean_literals.push_back({"projection_1_", byte});
+      if (change == 8) invalid.projection.boolean_literals.clear();
+      if (change == 9) invalid.option_envelopes[1] = "projection_0_type:text";
+      if (change == 10) invalid.option_envelopes[0] = "projection_0_expr_kind:function";
+      if (change == 11) invalid.option_envelopes.push_back("projection_0_is_null:true");
+      if (change == 12) invalid.option_envelopes.push_back("projection_0_type:text");
+      if (change == 13) invalid.option_envelopes.push_back("projection_0_expr_kind:parameter");
+      output.resize(1);
+      Require(!read(invalid, &output) && output.empty(),
+              "projection receiver accepted malformed BOOLEAN state/carrier");
+    }
+    request.projection.boolean_literals.clear();
+    request.option_envelopes.back() = "projection_0_is_null:true";
+    Require(read(request, &output) && output.size() == 1 && output[0].is_null &&
+                output[0].binary_value.empty() && output[0].encoded_value.empty(),
+            "clean contextual BOOLEAN NULL was given a value payload");
+  }
+  for (const auto byte : {std::uint8_t{0}, std::uint8_t{1}}) {
+    sblr::SblrOperationEnvelope envelope;
+    sblr::SblrOperand operand;
+    operand.ordinal = 1; operand.type = "boolean";
+    operand.name = "projection_0_arg_1_value";
+    operand.value_kind = sblr::SblrValueKind::literal_typed;
+    const auto& id = row.manifest.descriptor_rows.front().descriptor_uuid.value;
+    operand.value_body.assign(id.bytes.begin(), id.bytes.end());
+    operand.value_body.push_back(1); operand.value_body.insert(operand.value_body.end(), 7, 0);
+    operand.value_body.push_back(byte);
+    envelope.operands.push_back(operand);
+    api::EngineApiRequest request;
+    Require(sblr::ProjectSblrBooleanLiterals(envelope, &request) &&
+                request.projection.boolean_literals.size() == 1 &&
+                request.projection.boolean_literals.front() ==
+                    std::pair<std::string, std::uint8_t>{"projection_0_arg_1_", byte},
+            "native BOOLEAN literal changed during projection");
+    const auto retained = request.projection.boolean_literals;
+    Require(sblr::ProjectSblrBooleanLiterals(envelope, &request), "identical BOOLEAN reconciliation refused");
+    for (unsigned change = 0; change < 13; ++change) {
+      auto malformed = envelope;
+      auto& item = malformed.operands.front();
+      if (change == 0) item.ordinal = 2;
+      if (change == 1) item.value = "true";
+      if (change == 2) item.value_kind = sblr::SblrValueKind::uuid_ref;
+      if (change == 3) item.value_flags = 1;
+      if (change == 4) item.value_body.pop_back();
+      if (change == 5) item.value_body.push_back(0);
+      if (change == 6) item.value_body[0] ^= 1;
+      if (change == 7) item.value_body[16] = 0;
+      if (change == 8) item.value_body[23] = 1;
+      if (change == 9) item.value_body[24] ^= 1;
+      if (change == 10) item.name = "projection_00_arg_1_value";
+      if (change == 11) { malformed.operands.push_back(item); malformed.operands.back().ordinal = 2; }
+      if (change == 12) item.value_body[24] = 2;
+      Require(!sblr::ProjectSblrBooleanLiterals(malformed, &request) &&
+                  request.projection.boolean_literals == retained,
+              "invalid BOOLEAN literal partially replaced retained bindings");
+    }
+    for (std::size_t size = 0; size < 25; ++size) {
+      auto malformed = envelope;
+      malformed.operands.front().value_body.resize(size);
+      Require(!sblr::ProjectSblrBooleanLiterals(malformed, &request) &&
+                  request.projection.boolean_literals == retained,
+              "truncated BOOLEAN literal replaced retained bindings");
+    }
+    fail_after = 0;
+    sblr::SblrIdentityProjectionFailure reason;
+    const bool allocated = sblr::ProjectSblrBooleanLiterals(envelope, &request, &reason);
+    fail_after = -1;
+    Require(!allocated && reason == sblr::SblrIdentityProjectionFailure::allocation_failed &&
+                request.projection.boolean_literals == retained,
+            "BOOLEAN allocation failure lost retained bindings");
+  }
+}
+
 void NativeSequenceConsumers() {
   namespace sblr = scratchbird::engine::sblr;
   auto identity = Sentinel("int64").descriptor.descriptor_uuid;
@@ -960,5 +1071,6 @@ int main() {
   NativeRegisteredAggregate();
   NativeReal64Projection();
   NativeReal64LiteralBinding();
+  NativeBooleanLiteralBinding();
   std::cout << "stored scalar native payload checks=" << checks << '\n';
 }

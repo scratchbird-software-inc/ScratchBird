@@ -313,6 +313,9 @@ struct EngineProjectionEnvelope {
   std::vector<std::pair<std::string, std::vector<std::uint8_t>>> binary_literals;
   // REAL64 interchange payloads; never decimal strings or a binary-type alias.
   std::vector<std::pair<std::string, std::array<std::uint8_t, 8>>> real64_literals;
+  // Native BOOLEAN data only (0 or 1). This carrier conveys no catalog,
+  // occurrence, statement, authorization or lifetime admission.
+  std::vector<std::pair<std::string, std::uint8_t>> boolean_literals;
 };
 
 struct EngineOrderingEnvelope {

@@ -19308,7 +19308,7 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalScalarProjectionSubmi
       if (!source.value.empty()) return std::nullopt;
       const auto function = FindDmlObjectIdentity(lowered, source.name);
       const bool native_literal = (source.type == "uuid" || source.type == "binary" ||
-          source.type == "real64") && source.name.ends_with("_value") &&
+          source.type == "real64" || source.type == "boolean") && source.name.ends_with("_value") &&
           engine::sblr::IsProjectionFunctionIdentityPath(
               std::string_view(source.name).substr(0, source.name.size() - 5)) &&
           source.canonical_value_kind ==
@@ -19319,7 +19319,9 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalScalarProjectionSubmi
       // Its generic variable-width literal check is not a REAL64/UUID width check.
       if (native_literal &&
           ((source.type == "real64" && source.canonical_value_body.size() != 32) ||
-           (source.type == "uuid" && source.canonical_value_body.size() != 40)))
+           (source.type == "uuid" && source.canonical_value_body.size() != 40) ||
+           (source.type == "boolean" && (source.canonical_value_body.size() != 25 ||
+                                         source.canonical_value_body[24] > 1))))
         return std::nullopt;
       engine::sblr::SblrOperand operand;
       operand.ordinal = static_cast<std::uint32_t>(envelope->operands.size() + 1);

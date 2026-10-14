@@ -95,6 +95,30 @@ int main() try {
     }
   };
   verify(lowered);
+  for (const auto& sql : {"SELECT TRUE AS truth;", "SELECT FALSE AS truth;"}) {
+    const auto boolean_cst = p::BuildCst(sql);
+    const auto boolean_bound = p::BindAst(p::BuildAst(boolean_cst), boolean_cst, config, session, {});
+    const auto boolean = p::LowerToSblr(boolean_bound, boolean_cst, session);
+    const auto value = std::ranges::find(boolean.operands, "projection_0_value", &p::SblrOperand::name);
+    Check(!boolean.messages.has_errors() && value != boolean.operands.end() &&
+        value->type == "boolean" && value->value.empty() && value->canonical_value_body.size() == 25 &&
+        value->canonical_value_body[16] == 1 && value->canonical_value_body[24] ==
+            (std::string_view(sql).find("TRUE") != std::string_view::npos ? 1 : 0),
+        "actual BOOLEAN lowering did not produce canonical native byte");
+    verify(boolean);
+    const auto index = static_cast<std::size_t>(value - boolean.operands.begin());
+    for (unsigned change = 0; change < 6; ++change) {
+      auto invalid = boolean;
+      auto& changed = invalid.operands[index];
+      if (change == 0) changed.canonical_value_body[24] = 2;
+      if (change == 1) changed.canonical_value_body[16] = 0;
+      if (change == 2) changed.canonical_value_body.pop_back();
+      if (change == 3) changed.canonical_value_body.push_back(0);
+      if (change == 4) changed.value = "true";
+      if (change == 5) changed.name = "projection_00_value";
+      Check(!submit(invalid), "invalid BOOLEAN native submission forwarded");
+    }
+  }
   const auto position = static_cast<std::size_t>(literal - lowered.operands.begin());
   // Exercise nested occurrence paths produced by the actual binder/lowerer.
   // This is compiled builtin metadata, not a live execution authorization.
@@ -113,6 +137,18 @@ int main() try {
       nested_literal->canonical_value_body == literal->canonical_value_body,
       "nested REAL64 occurrence changed");
   verify(nested);
+  const auto iif_cst = p::BuildCst("SELECT IIF(TRUE,NULL,'other') AS value;");
+  const std::vector<scratchbird::wire::BuiltinFunctionIdentity> iif_functions{{
+      "sb.scalar.iif", Uuid{{0x01,0x9d,0xff,0xbb,0xf0,0x01,0x70,0x2b,
+                            0x8a,0,0,0,0,0,0,0x2b}}}};
+  const auto iif_bound = p::BindAst(p::BuildAst(iif_cst), iif_cst, config, session, {}, nullptr, iif_functions);
+  const auto iif = p::LowerToSblr(iif_bound, iif_cst, session);
+  const auto condition = std::ranges::find(iif.operands, "projection_0_arg_0_value", &p::SblrOperand::name);
+  Check(!iif.messages.has_errors() && condition != iif.operands.end() && condition->type == "boolean" &&
+      condition->value.empty() && condition->canonical_value_body.size() == 25 &&
+      condition->canonical_value_body[24] == 1,
+      "nested IIF BOOLEAN literal was rendered as text");
+  verify(iif); // Framing proof only; no catalog or function admission claim.
   // Existing UUID and BINARY carriers remain byte-preserving, including UUID
   // data that is not a system identity and empty non-NULL binary values.
   for (const auto& payload : std::vector<std::vector<std::uint8_t>>{

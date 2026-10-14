@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/native_boolean_projection_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -291,7 +292,7 @@ sblr::SblrOperationEnvelope EngineEnvelope() {
   envelope.operands.push_back({"text", "projection_0_special_form_arg_count", "3"});
   envelope.operands.push_back({"text", "projection_0_arg_0_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_0_arg_0_type", "boolean"});
-  envelope.operands.push_back({"text", "projection_0_arg_0_value", "true"});
+  scratchbird::tests::AppendNativeBooleanProjectionFixture(envelope, "projection_0_arg_0_value", true);
   envelope.operands.push_back({"text", "projection_0_arg_0_is_null", "false"});
   envelope.operands.push_back({"text", "projection_0_arg_1_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_0_arg_1_type", "text"});

@@ -5272,7 +5272,7 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
         (IsProjectionFunctionIdentityRole(operand.name) ||
          (request.envelope.operation_id == "query.evaluate_projection" &&
           (IsProjectionUuidLiteral(operand) || IsProjectionBinaryLiteral(operand) ||
-           IsProjectionReal64Literal(operand))))) continue;
+           IsProjectionReal64Literal(operand) || IsProjectionBooleanLiteral(operand))))) continue;
     auto operand_value = OperandExecutionValue(operand);
     const bool binary_row = IsNativeRowFieldType(operand.type);
     const bool row_field = operand.type == "row_field" ||
@@ -8020,6 +8020,8 @@ std::optional<SblrValue> ProjectionLiteralToSblrValue(
   argument.encoded_value = expression.encoded_value;
   argument.binary_value = expression.binary_value;
   argument.is_null = expression.is_null;
+  argument.state = expression.is_null ? api::EngineValueState::sql_null
+                                      : api::EngineValueState::value;
   if (!ProjectionArgumentEncodingValid(argument)) return std::nullopt;
   return SblrValueFromProjectionArgument(argument);
 }
@@ -10944,7 +10946,8 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   if (request.envelope.operation_id == "query.evaluate_projection" &&
       (!ProjectSblrUuidLiterals(request.envelope, &request.api_request, &identity_failure) ||
        !ProjectSblrBinaryLiterals(request.envelope, &request.api_request, &identity_failure) ||
-       !ProjectSblrReal64Literals(request.envelope, &request.api_request, &identity_failure))) {
+       !ProjectSblrReal64Literals(request.envelope, &request.api_request, &identity_failure) ||
+       !ProjectSblrBooleanLiterals(request.envelope, &request.api_request, &identity_failure))) {
     if (identity_failure == SblrIdentityProjectionFailure::allocation_failed) {
       result.resource_exhausted = true;
       return result;
@@ -11261,7 +11264,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
           (IsProjectionFunctionIdentityRole(operand.name) ||
          (request.envelope.operation_id == "query.evaluate_projection" &&
           (IsProjectionUuidLiteral(operand) || IsProjectionBinaryLiteral(operand) ||
-           IsProjectionReal64Literal(operand))))) continue;
+           IsProjectionReal64Literal(operand) || IsProjectionBooleanLiteral(operand))))) continue;
       if (operand.value_kind != SblrValueKind::literal_typed ||
           operand.value_body.size() < 24) {
         const std::string detail =

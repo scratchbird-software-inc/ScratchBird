@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/native_boolean_projection_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
@@ -73,6 +74,14 @@ std::vector<std::uint8_t> FixtureHexBytes(std::string_view hex) {
 }
 
 bool ScalarFixtureValueEquals(const api::EngineTypedValue& value, std::string_view expected) {
+  if (value.is_null || value.state == api::EngineValueState::sql_null)
+    return value.is_null && value.state == api::EngineValueState::sql_null && expected.empty() &&
+        value.encoded_value.empty() && value.binary_value.empty();
+  if (value.descriptor.canonical_type_name == "boolean")
+    return value.state == api::EngineValueState::value && !value.is_null &&
+        value.encoded_value.empty() && value.binary_value.size() == 1 &&
+        (((expected == "true" || expected == "1") && value.binary_value[0] == 1) ||
+         ((expected == "false" || expected == "0") && value.binary_value[0] == 0));
   if (value.descriptor.canonical_type_name == "binary")
     return value.encoded_value.empty() && value.binary_value == FixtureHexBytes(expected);
   if (value.descriptor.canonical_type_name != "uuid") return value.encoded_value == expected;
@@ -1583,7 +1592,7 @@ sblr::SblrOperationEnvelope EngineEnvelope() {
   envelope.operands.push_back({"text", "projection_3_name", "truth"});
   envelope.operands.push_back({"text", "projection_3_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_3_type", "boolean"});
-  envelope.operands.push_back({"text", "projection_3_value", "true"});
+  scratchbird::tests::AppendNativeBooleanProjectionFixture(envelope, "projection_3_value", true);
   envelope.operands.push_back({"text", "projection_3_is_null", "false"});
   return envelope;
 }
@@ -1601,7 +1610,7 @@ sblr::SblrOperationEnvelope FalseLiteralEngineEnvelope() {
   envelope.operands.push_back({"text", "projection_0_name", "falsehood"});
   envelope.operands.push_back({"text", "projection_0_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_0_type", "boolean"});
-  envelope.operands.push_back({"text", "projection_0_value", "false"});
+  scratchbird::tests::AppendNativeBooleanProjectionFixture(envelope, "projection_0_value", false);
   envelope.operands.push_back({"text", "projection_0_is_null", "false"});
   return envelope;
 }
@@ -1909,6 +1918,9 @@ void AppendFunctionProjectionOperand(sblr::SblrOperationEnvelope& envelope,
         value.value_body.push_back(static_cast<std::uint8_t>(static_cast<std::uint64_t>(bytes.size()) >> (8 * n)));
       value.value_body.insert(value.value_body.end(), bytes.begin(), bytes.end());
       envelope.operands.push_back(std::move(value));
+    } else if (arg.type == "boolean" && !arg.is_null) {
+      Require(arg.value == "true" || arg.value == "false", "BOOLEAN fixture must name exact truth data");
+      scratchbird::tests::AppendNativeBooleanProjectionFixture(envelope, arg_prefix + "_value", arg.value == "true");
     } else envelope.operands.push_back({"text", arg_prefix + "_value", arg.value});
     envelope.operands.push_back({"text", arg_prefix + "_is_null", arg.is_null ? "true" : "false"});
     ++arg_index;
@@ -1922,7 +1934,10 @@ void AppendLiteralProjectionExpression(sblr::SblrOperationEnvelope& envelope,
                                        bool is_null = false) {
   envelope.operands.push_back({"text", std::string(prefix) + "expr_kind", "literal"});
   envelope.operands.push_back({"text", std::string(prefix) + "type", std::string(type)});
-  envelope.operands.push_back({"text", std::string(prefix) + "value", std::string(value)});
+  if (type == "boolean" && !is_null) {
+    Require(value == "true" || value == "false", "BOOLEAN literal fixture must name exact truth data");
+    scratchbird::tests::AppendNativeBooleanProjectionFixture(envelope, std::string(prefix) + "value", value == "true");
+  } else envelope.operands.push_back({"text", std::string(prefix) + "value", std::string(value)});
   envelope.operands.push_back({"text", std::string(prefix) + "is_null", is_null ? "true" : "false"});
 }
 
@@ -8833,7 +8848,7 @@ void RequireEngineDispatch() {
           "engine scalar projection NULL field mismatch");
   Require(row.fields[3].first == "truth" &&
               row.fields[3].second.descriptor.canonical_type_name == "boolean" &&
-              row.fields[3].second.encoded_value == "true" &&
+              ScalarFixtureValueEquals(row.fields[3].second, "true") &&
               !row.fields[3].second.is_null,
           "engine scalar projection boolean field mismatch");
 
@@ -8859,7 +8874,7 @@ void RequireEngineDispatch() {
           "engine FALSE literal scalar projection column count mismatch");
   Require(false_row.fields[0].first == "falsehood" &&
               false_row.fields[0].second.descriptor.canonical_type_name == "boolean" &&
-              false_row.fields[0].second.encoded_value == "false" &&
+              ScalarFixtureValueEquals(false_row.fields[0].second, "false") &&
               !false_row.fields[0].second.is_null,
           "engine FALSE literal scalar projection field mismatch");
 

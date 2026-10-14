@@ -250,6 +250,7 @@ struct QowProjectionExpressionBuildStateV1 {
   std::size_t uuid_literal_count = 0;
   std::size_t binary_literal_count = 0;
   std::size_t real64_literal_count = 0;
+  std::size_t boolean_literal_count = 0;
 };
 
 bool QowReadProjectionExpressionV1(
@@ -310,6 +311,16 @@ bool QowReadProjectionExpressionV1(
   }
   expression->encoded_value = QowProjectionOptionValueV1(request, prefix + "value:");
   const auto is_null = QowProjectionOptionValueV1(request, prefix + "is_null:");
+  if (expression->type_name == "boolean") {
+    if (is_null != "true" && is_null != "false")
+      return refuse("boolean_state", "BOOLEAN expression requires an explicit canonical NULL state");
+    for (const auto field : {"expr_kind:", "type:", "is_null:", "value:"}) {
+      const auto key = prefix + field;
+      if (std::count_if(request.option_envelopes.begin(), request.option_envelopes.end(),
+              [&](const auto& option) { return std::string_view(option).starts_with(key); }) > 1)
+        return refuse("boolean_state", "BOOLEAN expression has ambiguous duplicate fields");
+    }
+  }
   expression->is_null = is_null == "true" || is_null == "1";
   if (expression->is_null && !expression->encoded_value.empty())
     return refuse("null_payload", "SQL NULL projection cannot carry a value payload");
@@ -353,6 +364,26 @@ bool QowReadProjectionExpressionV1(
   }
   expression->function_id =
       QowProjectionOptionValueV1(request, prefix + "function_id:");
+  const std::uint8_t* boolean_literal = nullptr;
+  for (const auto& binding : request.projection.boolean_literals) {
+    if (binding.first != prefix) continue;
+    if (boolean_literal) return refuse("boolean_literal", "duplicate BOOLEAN literal");
+    boolean_literal = &binding.second;
+  }
+  if (boolean_literal) {
+    if (expression->expression_kind != "literal" || expression->type_name != "boolean" ||
+        expression->is_null || *boolean_literal > 1 || !expression->encoded_value.empty() ||
+        !expression->binary_value.empty())
+      return refuse("boolean_literal", "BOOLEAN literal conflicts with its expression descriptor");
+    for (const auto& option : request.option_envelopes)
+      if (std::string_view(option).starts_with(prefix + "value:"))
+        return refuse("boolean_literal", "BOOLEAN literal cannot also have a text value carrier");
+    expression->binary_value = {*boolean_literal};
+    ++graph->boolean_literal_count;
+  } else if (expression->expression_kind == "literal" && expression->type_name == "boolean" &&
+             !expression->is_null) {
+    return refuse("boolean_literal", "BOOLEAN scalar literal requires one native byte");
+  }
   const std::array<std::uint8_t, 8>* real64_literal = nullptr;
   if (expression->type_name == "real64" && expression->expression_kind == "literal" &&
       expression->is_null && !expression->encoded_value.empty())
@@ -530,6 +561,8 @@ bool QowReadCanonicalProjectionExpressionsV1(
     return refuse("binary_literal", "projection contains an unused binary literal binding");
   if (graph.real64_literal_count != request.projection.real64_literals.size())
     return refuse("real64_literal", "projection contains an unused REAL64 literal binding");
+  if (graph.boolean_literal_count != request.projection.boolean_literals.size())
+    return refuse("boolean_literal", "projection contains an unused BOOLEAN literal binding");
   if (graph.function_identity_count != request.projection.function_identities.size())
     return refuse("function_uuid", "projection contains an unused function identity binding");
   if (!QowValidateCanonicalExpressionGraphV1(

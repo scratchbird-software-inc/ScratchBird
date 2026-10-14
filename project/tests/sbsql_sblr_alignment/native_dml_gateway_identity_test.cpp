@@ -5,6 +5,7 @@
 #include "server/sblr_local_gateway.hpp"
 #include "engine/sblr/sblr_bound_column_identity.hpp"
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/native_boolean_projection_fixture.hpp"
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
@@ -133,8 +134,36 @@ sblr::SblrOperationEnvelope GroupedRoot(bool bulk) {
   }
   return root;
 }
+void NativeScalarGateway() {
+  for (const bool null : {false, true}) {
+    for (const bool truth : {false, true}) {
+      auto root = scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
+          "query.evaluate_projection", "SBLR_QUERY_EVALUATE_PROJECTION", "native.scalar.gateway");
+      Text(root, "projection_count", "1");
+      Text(root, "projection_0_name", "truth");
+      Text(root, "projection_0_expr_kind", "literal");
+      Text(root, "projection_0_type", "boolean");
+      Text(root, "projection_0_is_null", null ? "true" : "false");
+      if (null) Text(root, "projection_0_value", "");
+      else scratchbird::tests::AppendNativeBooleanProjectionFixture(root, "projection_0_value", truth);
+      Check(Admit(root).ok, "native BOOLEAN structural scalar gateway refused");
+      for (unsigned flags = 1; flags != 8; ++flags)
+        Check(!Admit(root, flags).ok, "cluster-owned BOOLEAN scalar fell through locally");
+      for (unsigned change = 0; change < 5; ++change) {
+        auto invalid = root;
+        if (change == 0) Text(invalid, "projection_0_value", "true");
+        if (change == 1) Text(invalid, "projection_0_is_null", null ? "false" : "true");
+        if (change == 2) scratchbird::tests::AppendNativeBooleanProjectionFixture(invalid, "projection_0_value", truth);
+        if (change == 3) Text(invalid, "projection_1_is_null", "false");
+        if (change == 4) invalid.operands.pop_back();
+        Check(!Admit(invalid).ok, "malformed BOOLEAN structural scalar gateway accepted");
+      }
+    }
+  }
+}
 }
 int main() {
+  NativeScalarGateway(); // Structural routing only, not receipt or execution proof.
   for (bool bulk : {false, true}) {
     const auto root = GroupedRoot(bulk);
     Check(Admit(root).ok, "native new-row grouping did not pass DML gateway");

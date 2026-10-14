@@ -4,6 +4,67 @@
 #include "sblr_projection_uuid_literals.hpp"
 
 namespace scratchbird::engine::sblr {
+inline bool IsProjectionBooleanLiteral(const SblrOperand& operand) noexcept {
+  return operand.type == "boolean" && operand.name.starts_with("projection_") &&
+      operand.name.ends_with("_value");
+}
+
+// Structural reconciliation only. Never derive a bound execution descriptor
+// or a statement/catalog receipt from this datatype tag or payload.
+inline bool ProjectSblrBooleanLiterals(const SblrOperationEnvelope& envelope,
+    internal_api::EngineApiRequest* request,
+    SblrIdentityProjectionFailure* failure = nullptr) noexcept try {
+  if (failure) *failure = SblrIdentityProjectionFailure::invalid_operand;
+  if (!request) return false;
+  const auto& bound = request->projection.boolean_literals;
+  for (std::size_t i = 0; i < bound.size(); ++i) {
+    if (!IsProjectionFunctionIdentityPath(bound[i].first) || bound[i].second > 1)
+      return false;
+    for (std::size_t j = 0; j < i; ++j)
+      if (bound[i].first == bound[j].first) return false;
+  }
+  decltype(internal_api::EngineProjectionEnvelope::boolean_literals) values;
+  std::array<std::uint8_t, 16> descriptor_bytes{};
+  bool descriptor_loaded = false;
+  for (std::size_t i = 0; i < envelope.operands.size(); ++i) {
+    const auto& operand = envelope.operands[i];
+    if (!IsProjectionBooleanLiteral(operand)) continue;
+    const auto path = operand.name.substr(0, operand.name.size() - 5);
+    if (!IsProjectionFunctionIdentityPath(path) || operand.ordinal != i + 1 ||
+        !operand.value.empty() || operand.value_kind != SblrValueKind::literal_typed ||
+        operand.value_flags != 0 || operand.value_body.size() != 25) return false;
+    if (!descriptor_loaded) {
+      namespace dt = core::datatypes;
+      const auto catalog = dt::LoadCurrentCoreDatatypeCatalogManifest();
+      if (!catalog.ok()) return false;
+      const auto row = dt::LookupDatatypeCatalogRow(catalog.manifest, dt::CanonicalTypeId::boolean);
+      if (!row.ok() || row.manifest.descriptor_rows.size() != 1) return false;
+      descriptor_bytes = row.manifest.descriptor_rows.front().descriptor_uuid.value.bytes;
+      descriptor_loaded = true;
+    }
+    if (!std::equal(descriptor_bytes.begin(), descriptor_bytes.end(), operand.value_body.begin()) ||
+        operand.value_body[16] != 1 || operand.value_body[24] > 1 ||
+        std::any_of(operand.value_body.begin() + 17, operand.value_body.begin() + 24,
+                    [](auto byte) { return byte != 0; })) return false;
+    if (std::any_of(values.begin(), values.end(), [&](const auto& item) { return item.first == path; }))
+      return false;
+    values.emplace_back(path, operand.value_body[24]);
+  }
+  if (!values.empty()) {
+    if (!bound.empty()) {
+      if (bound.size() != values.size()) return false;
+      for (const auto& value : values)
+        if (std::find(bound.begin(), bound.end(), value) == bound.end()) return false;
+    }
+    request->projection.boolean_literals.swap(values);
+  }
+  if (failure) *failure = SblrIdentityProjectionFailure::none;
+  return true;
+} catch (const std::bad_alloc&) {
+  if (failure) *failure = SblrIdentityProjectionFailure::allocation_failed;
+  return false;
+}
+
 inline bool IsProjectionReal64Literal(const SblrOperand& operand) noexcept {
   return operand.type == "real64" && operand.name.starts_with("projection_") &&
       operand.name.ends_with("_value");
