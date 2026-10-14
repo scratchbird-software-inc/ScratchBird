@@ -73,7 +73,7 @@ bool Nonzero(const engine_api::MgaDmlUpdateStatementAuthoritySha256V1& sha) {
 }
 
 bool ExactNonzeroUuid(const engine_api::EngineUuid& value) {
-  return !value.is_nil() && scratchbird::core::uuid::IsValidUuidVariant(value);
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 
 class TemporaryDirectory final {
@@ -462,6 +462,72 @@ void TestBinarySavepointFileIdentity(const std::filesystem::path& database_path)
           "restored binary frame remained invalid");
 }
 
+void TestSystemIdentityVersions(const std::filesystem::path& database_path) {
+  const auto request = Request(database_path);
+  const auto directory = database_path.string() + ".sb.mga_update_statement_savepoints.v1";
+  Require(!std::filesystem::exists(directory), "version fixture unexpectedly has savepoint effects");
+  for (const unsigned version : {1u, 4u, 5u, 6u, 8u}) {
+    for (unsigned field = 0; field < 7; ++field) {
+      auto invalid = request;
+      auto change = [&](engine_api::EngineUuid& identity) {
+        identity.bytes[6] = static_cast<std::uint8_t>((version << 4) | (identity.bytes[6] & 0x0f));
+        Require(scratchbird::core::uuid::IsValidUuidVariant(identity) &&
+                    !scratchbird::core::uuid::IsEngineIdentityUuid(identity),
+                "version mutation is not a valid non-system UUID");
+      };
+      switch (field) {
+        case 0: change(invalid.context.database_uuid); break;
+        case 1: change(invalid.context.transaction_uuid); break;
+        case 2:
+          change(invalid.authenticated_statement_receipt_uuid);
+          invalid.context.statement_receipt_uuid = invalid.authenticated_statement_receipt_uuid;
+          break;
+        case 3: change(invalid.operation_uuid); break;
+        case 4: change(invalid.descriptor_uuid); break;
+        case 5: change(invalid.recovery_token_uuid); break;
+        case 6: change(invalid.reserved_publication_barrier_uuid); break;
+      }
+      const auto refused = engine_api::OpenDmlUpdateStatementMgaAuthorityV1(invalid);
+      RequireDiagnostic(refused.diagnostic, engine_api::kDmlUpdateStatementMgaDiagnosticInvalid,
+                        "non-v7 system identity was not rejected at admission");
+      Require(!refused.ok && refused.authority.savepoint_uuid.is_nil() &&
+                  !std::filesystem::exists(directory),
+              "invalid system identity published durable effects or returned authority");
+      engine_api::MgaDmlUpdateStatementSavepointBindingV1 binding;
+      binding.database_uuid = invalid.context.database_uuid;
+      binding.owning_transaction_uuid = invalid.context.transaction_uuid;
+      binding.owning_local_transaction_id = invalid.context.local_transaction_id;
+      binding.authenticated_statement_receipt_uuid = invalid.authenticated_statement_receipt_uuid;
+      binding.operation_uuid = invalid.operation_uuid;
+      binding.descriptor_uuid = invalid.descriptor_uuid;
+      binding.descriptor_generation = invalid.descriptor_generation;
+      binding.recovery_token_uuid = invalid.recovery_token_uuid;
+      binding.recovery_generation = invalid.recovery_generation;
+      const auto direct = engine_api::CreateMgaDmlUpdateStatementSavepointAuthorityWithReservedBarrierV1(
+          invalid.context, binding, invalid.reserved_publication_barrier_uuid,
+          invalid.reserved_publication_barrier_generation);
+      RequireDiagnostic(direct.diagnostic, "MGA.TRANSACTION.STALE",
+                        "direct native savepoint seam admitted non-v7 system identity");
+      Require(!direct.ok && direct.authority.savepoint_uuid.is_nil() &&
+                  !std::filesystem::exists(directory),
+              "direct invalid system identity acquired authority or durable effects");
+    }
+  }
+  std::array<std::uint8_t,16> scratch;
+  scratch.fill(0xa5);
+  const auto unchanged = scratch;
+  auto non_system = request.operation_uuid;
+  non_system.bytes[6] = static_cast<std::uint8_t>(0x40 | (non_system.bytes[6] & 0x0f));
+  Require(!engine_api::mga_update_durable_detail::DmlUpdateDurableUuidBytes(non_system, &scratch) &&
+              scratch == unchanged,
+          "durable system identity codec admitted UUIDv4 or changed output on refusal");
+  const auto valid = engine_api::OpenDmlUpdateStatementMgaAuthorityV1(request);
+  Require(valid.ok && ExactNonzeroUuid(valid.authority.savepoint_uuid),
+          "refused version attempts poisoned valid native system identity admission");
+  Require(engine_api::RollbackDmlUpdateStatementMgaAuthorityV1(Transition(request, valid.authority)).ok,
+          "valid version control could not roll back");
+}
+
 void ResealStatementFrame(engine_api::mga_update_durable_detail::DmlUpdateDurableFrameV1* frame) {
   const std::string_view domain = "ScratchBird.MgaDmlUpdateStatementSavepointAuthority.V1";
   std::vector<std::uint8_t> material(domain.begin(), domain.end());
@@ -558,6 +624,7 @@ int main() {
       scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(),
       "update_statement_authority_fixture").ok(), "native authority memory configuration failed");
   TemporaryDirectory temporary;
+  TestSystemIdentityVersions(temporary.path() / "system_versions.sdb");
   TestReplayOwnershipAndCutoffs(temporary.path());
   TestBinarySavepointFileIdentity(temporary.path() / "binary_paths.sdb");
   TestFreshIdentityAndStaleRefusals(temporary.path() / "fresh.sdb");

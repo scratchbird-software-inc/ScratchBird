@@ -148,7 +148,7 @@ bool DmlUpdateDurableZero(std::span<const std::uint8_t> bytes) {
 
 bool DmlUpdateDurableUuidBytes(
     const EngineUuid& uuid, std::array<std::uint8_t, 16>* bytes) {
-  if (!bytes || uuid.is_nil() || !scratchbird::core::uuid::IsValidUuidVariant(uuid)) return false;
+  if (!bytes || !scratchbird::core::uuid::IsEngineIdentityUuid(uuid)) return false;
   *bytes = uuid.bytes;
   return true;
 }

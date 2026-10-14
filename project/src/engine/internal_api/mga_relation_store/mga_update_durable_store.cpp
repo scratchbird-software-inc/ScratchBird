@@ -1320,7 +1320,7 @@ DmlUpdateStatementSavepointFailure(std::string code, std::string key,
 
 bool DmlUpdateStatementUuidValid(
     const EngineUuid& uuid, std::array<std::uint8_t, 16>* bytes = nullptr) {
-  if (uuid.is_nil() || !scratchbird::core::uuid::IsValidUuidVariant(uuid)) return false;
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(uuid)) return false;
   if (bytes) *bytes = uuid.bytes;
   return true;
 }

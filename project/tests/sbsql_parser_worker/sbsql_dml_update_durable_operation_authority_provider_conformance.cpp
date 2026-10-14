@@ -160,6 +160,28 @@ api::EngineDmlUpdateDurableAuthorityReservationRequestV1 Reservation(
   return request;
 }
 
+void TestSystemContextVersions(const Fixture& fixture) {
+  const auto directory = fixture.database_path.string() + ".sb.mga_durable_operations";
+  Require(!std::filesystem::exists(directory), "system version fixture already has durable reservations");
+  for (const unsigned version : {1u, 4u, 5u, 6u, 8u}) {
+    for (unsigned field = 0; field < 3; ++field) {
+      auto request = Reservation(fixture.context);
+      auto* identity = field == 0 ? &request.context.database_uuid
+          : field == 1 ? &request.context.transaction_uuid : &request.context.statement_receipt_uuid;
+      identity->bytes[6] = static_cast<std::uint8_t>((version << 4) | (identity->bytes[6] & 0x0f));
+      Require(uuid::IsValidUuidVariant(*identity) && !uuid::IsEngineIdentityUuid(*identity),
+              "system version fixture did not retain a valid non-system UUID variant");
+      const auto refused = api::ReserveDmlUpdateDurableOperationAuthorityV1(request);
+      Require(!refused.ok() && refused.diagnostic.error &&
+                  refused.diagnostic.code == api::kDmlUpdateDurableOperationDiagnosticInvalid &&
+                  refused.diagnostic.detail == "authenticated_context_invalid" &&
+                  refused.identity.validated_durable_handle_uuid.is_nil() &&
+                  !std::filesystem::exists(directory),
+              "non-v7 context reached durable reservation instead of entry refusal");
+    }
+  }
+}
+
 void TestReservationAuthority(Fixture* fixture) {
   Require(fixture != nullptr, "durable provider fixture missing");
   const auto request = Reservation(fixture->context);
@@ -272,6 +294,7 @@ int main() {
   TemporaryDirectory temporary;
   auto fixture =
       CreateFixture(temporary.path() / "durable-operation-authority.sbdb");
+  TestSystemContextVersions(fixture);
   TestReservationAuthority(&fixture);
   Rollback(fixture);
   std::cout
