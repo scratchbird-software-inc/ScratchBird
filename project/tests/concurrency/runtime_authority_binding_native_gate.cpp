@@ -16,6 +16,65 @@ template<class T> concept HasSnapshotIdentity=requires(T value){value.snapshot_u
 static_assert(!HasSnapshotIdentity<runtime_api::RuntimeAuthorityBindingCommittedReadResult>);
 static_assert(!HasSnapshotIdentity<runtime_api::RuntimeAuthorityBindingOwnedReadResult>);
 static_assert(!std::is_copy_constructible_v<runtime_api::RuntimeAuthorityBindingOwnedReadResult>);
+static_assert(!HasSnapshotIdentity<runtime_api::RuntimeAuthorityBindingLeaseReadResult>);
+
+void GovernedRuntimeBinding(disk::FileDevice& device, unsigned profile) {
+  const u64 budget = 64*u64{sizes[profile]};
+  const db::NativeCatalogRelationMemoryLimits limits{
+      Profile(profile), 1, 1, 4, 4, {1, sizes[profile]}};
+  LeafMemoryFixture catalog_memory(db::NativeCatalogVisibilityWorkspaceBytes(limits));
+  LeafMemoryFixture source_memory(32*1024*1024);
+  auto prepared = db::PrepareNativeCatalogVisibilityRead(
+      limits, catalog_memory.memory, catalog_memory.binding);
+  Check(prepared.ok(), "prepare actual governed configuration backing before source guards");
+  const std::array<disk::NativeFilespaceDevice,1> devices{{{Id(2),Profile(profile),&device}}};
+  auto source = db::AcquireNativeSelectedCheckpointMemoryLease(
+      Id(1), devices, Id(2), {budget,32*1024*1024}, source_memory.memory, source_memory.binding);
+  Check(source.ok(), "retain real selected native source for governed binding read");
+  const auto writes_before=stage_writes,syncs_before=stage_syncs;
+  const auto read=[&](Uuid database=Id(1),Uuid binding=Id(180),u64 generation=1,u64 ceiling=0) {
+    allocation_budget=0;
+    auto result=runtime_api::ReadCommittedRuntimeAuthorityBindingOnNativeLease(
+        *source.lease,database,2,1,{Id(101),{}},binding,generation,ceiling?ceiling:budget,prepared.workspace);
+    const auto remaining=allocation_budget;allocation_budget=-1;
+    Check(remaining==0,"governed runtime binding performs no heap allocation under native device guards");
+    return result;
+  };
+  reads=0;track_reads=true;const auto valid=read();track_reads=false;const auto read_count=reads;
+  if(!valid.ok())std::cerr<<"governed binding="<<int(valid.error)<<" source="<<int(valid.source_error)
+      <<" relation="<<int(valid.relation_error)<<'\n';
+  Check(valid.ok()&&valid.binding->binding_uuid==Id(180)&&valid.binding->service_principal_uuid==Id(200)&&
+      valid.binding->credential_reference_uuid==Id(203)&&valid.binding->generation==1&&
+      valid.binding->provider_generation==5&&valid.native_version_uuid==Id(170)&&valid.physical_bytes_read,
+      "governed reader copies exact committed binary authority definition without a fabricated snapshot");
+  const auto empty=[](const auto& result,BindingError expected) {
+    Check(result.error==expected&&!result.binding&&result.native_version_uuid.is_nil(),
+          "governed configuration refusal exposes no usable authority tuple");
+  };
+  empty(read(Id(1),Id(180),2),BindingError::generation_mismatch);
+  empty(read(Id(1),Id(250)),BindingError::absent);
+  empty(read(Id(250)),BindingError::invalid_request);
+  empty(read({},Id(180)),BindingError::invalid_request);
+  empty(read(Id(1),{}),BindingError::invalid_request);
+  empty(read(Id(1),Id(180),0),BindingError::invalid_request);
+  empty(read(Id(1),Id(180),1,1),BindingError::source_failure);
+  auto moved=std::move(prepared.workspace);
+  const auto missing=read();empty(missing,BindingError::source_failure);
+  Check(!missing.physical_bytes_read,"missing pre-admitted backing refuses before configuration I/O");
+  prepared.workspace=std::move(moved);
+  const auto again=read();Check(again.ok(),"governed binding succeeds again after workspace restoration");
+  for(unsigned fault=1;fault<=read_count;++fault) {
+    reads=0;read_fault=fault;track_reads=true;const auto failed=read();track_reads=false;
+    Check(read_fault==0,"governed binding exact physical read failure injected");
+    empty(failed,BindingError::source_failure);
+  }
+  Check(read().ok(),"governed binding recovers its scratch after each read refusal");
+  Check(valid.binding->binding_uuid==Id(180)&&valid.native_version_uuid==Id(170),
+        "workspace reuse does not invalidate the copied fixed-size authority tuple");
+  Check(stage_writes==writes_before&&stage_syncs==syncs_before,"governed configuration read is physically read-only");
+  source.lease.Reset();prepared.workspace={};
+  source_memory.memory={};catalog_memory.memory={};source_memory.Empty();catalog_memory.Empty();
+}
 
 void VerifyCommittedBinding(const runtime_api::RuntimeAuthorityBindingCommittedReadResult& result) {
   if(!result.ok())std::cerr<<"committed binding error="<<static_cast<unsigned>(result.error)
@@ -394,6 +453,7 @@ void RuntimeBindingFiles() {
     int status=0; Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable reads actual committed binding");
     Check(device.Open(path,disk::FileOpenMode::open_existing).ok(),"own fixture before selector installation");
     InstallOwnedSelection(device,profile,zero,checkpoint,inventory);
+    GovernedRuntimeBinding(device,profile);
     Check(device.Close().ok(),"release fixture writer before actual route admission");
     OwnedRuntimeBinding(path,profile);
   }

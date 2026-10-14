@@ -4,6 +4,7 @@
 #include "catalog_runtime_authority_binding.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "native_owned_checkpoint_source.hpp"
+#include "native_catalog_visibility_lease_reader.hpp"
 #include <new>
 #include <stdexcept>
 
@@ -43,6 +44,73 @@ struct RuntimeAuthorityBindingOwnedReadResult : RuntimeAuthorityBindingCommitted
     return RuntimeAuthorityBindingCommittedReadResult::ok() && source_lease != nullptr;
   }
 };
+
+// Copied fixed-size selection from the caller's real, retained native lease.
+// No borrowed catalog rows escape, and no snapshot/activation/security grant
+// is manufactured. Prepare catalog backing BEFORE acquiring the source lease;
+// retain that lease through the owner's separate admission/effect boundary.
+struct RuntimeAuthorityBindingLeaseReadResult {
+  RuntimeAuthorityBindingReadError error = RuntimeAuthorityBindingReadError::invalid_request;
+  std::optional<core::catalog::CatalogRuntimeAuthorityBinding> binding;
+  core::platform::Uuid native_version_uuid;
+  storage::database::NativePinnedCatalogReadError source_error =
+      storage::database::NativePinnedCatalogReadError::none;
+  storage::database::NativeCatalogRelationLeaseError relation_error =
+      storage::database::NativeCatalogRelationLeaseError::none;
+  core::platform::u64 physical_bytes_read = 0;
+  bool ok() const noexcept {
+    return error == RuntimeAuthorityBindingReadError::none && binding.has_value();
+  }
+};
+
+inline RuntimeAuthorityBindingLeaseReadResult ReadCommittedRuntimeAuthorityBindingOnNativeLease(
+    const storage::database::NativeSelectedCheckpointMemoryLease& source,
+    const core::platform::Uuid& database_uuid,
+    core::platform::u16 catalog_selector, core::platform::u16 relation_role,
+    const storage::database::NativeCatalogRelationBinding& relation,
+    const core::platform::Uuid& binding_uuid, core::platform::u64 expected_generation,
+    core::platform::u64 maximum_retained_image_bytes,
+    storage::database::NativeCatalogVisibilityPreparedMemory& workspace) noexcept {
+  using E = RuntimeAuthorityBindingReadError;
+  RuntimeAuthorityBindingLeaseReadResult result;
+  if (!core::uuid::IsEngineIdentityUuid(database_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(binding_uuid) || !expected_generation ||
+      !maximum_retained_image_bytes || !source.selection().checkpoint_inventory.checkpoint ||
+      source.selection().checkpoint_inventory.checkpoint->header.database_uuid != database_uuid)
+    return result;
+  const auto rows = storage::database::NativeCatalogVisibilityLeaseReader::ReadCommitted(
+      source, catalog_selector, relation_role, relation, maximum_retained_image_bytes, workspace);
+  result.source_error = rows.error;
+  result.relation_error = rows.source.error;
+  result.physical_bytes_read = rows.source.physical_bytes_read;
+  if (!rows.ok()) { result.error = E::source_failure; return result; }
+  const storage::database::NativeCatalogVisibleRow* selected = nullptr;
+  for (const auto& row : rows.rows) {
+    if (row.metadata.record.header.object_uuid.value != binding_uuid) continue;
+    if (selected) { result.error = E::ambiguous; return result; }
+    selected = &row;
+  }
+  if (!selected) { result.error = E::absent; return result; }
+  if (selected->provisional || selected->metadata.record.header.deleted ||
+      selected->effective_lifecycle != core::catalog::CatalogObjectLifecycle::active ||
+      selected->effective_status != core::catalog::CatalogObjectStatus::active) {
+    result.error = E::not_committed_active; return result;
+  }
+  if (!core::catalog::CatalogRuntimeAuthorityBindingMatchesMetadata(selected->metadata)) {
+    result.error = E::invalid_definition; return result;
+  }
+  const auto decoded = core::catalog::DecodeCatalogRuntimeAuthorityBinding(selected->metadata.record.payload);
+  if (!decoded.ok() || decoded.record->database_uuid != database_uuid) {
+    result.error = E::invalid_definition; return result;
+  }
+  if (decoded.record->generation != expected_generation) {
+    result.error = E::generation_mismatch; return result;
+  }
+  result.binding = decoded.record;
+  result.native_version_uuid = selected->version_uuid;
+  result.error = E::none;
+  return result;
+}
 
 namespace runtime_binding_read_detail {
 // Both native readers already own visibility. This shared selection only
