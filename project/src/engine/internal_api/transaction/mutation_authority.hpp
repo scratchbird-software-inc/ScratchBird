@@ -4,6 +4,7 @@
 
 #include "api_diagnostics.hpp"
 #include "local_transaction_store.hpp"
+#include "identity_publication_fence.hpp"
 #include "uuid.hpp"
 
 namespace scratchbird::engine::internal_api {
@@ -43,7 +44,10 @@ inline EngineApiDiagnostic ValidateCurrentMutatingTransactionAuthority(
     return MakeInvalidRequestDiagnostic(operation_id, "transaction_identity_mismatch");
   if (owner.entry.state != transaction::mga::TransactionState::active)
     return MakeInvalidRequestDiagnostic(operation_id, "active_local_transaction_required");
-  if (owner.entry.rollback_only)
+  if (owner.entry.rollback_only &&
+      (!context.identity_publication_fence ||
+       !context.identity_publication_fence->Allows(context.database_path, context.database_uuid,
+           context.local_transaction_id, context.transaction_uuid, loaded.snapshot->inventory)))
     return MakeInvalidRequestDiagnostic(operation_id, "transaction_rollback_only");
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }

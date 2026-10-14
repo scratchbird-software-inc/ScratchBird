@@ -523,6 +523,7 @@ struct PhysicalMgaCowMutation {
   u64 predecessor_page_number = 0;
   std::optional<NativeCatalogNameMaterialization> catalog_name;
   std::shared_ptr<const scratchbird::storage::page::RowDataTemporalSchema> temporal_schema;
+  const class IdentityPublicationFence* identity_publication_fence = nullptr;
 };
 
 struct PhysicalMgaCowMutationRequest : PhysicalMgaCowMutation {

@@ -19,6 +19,7 @@
 #include "whole_store_crash_injection.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -355,6 +356,12 @@ u64 CurrentUnixEpochMillisForInventoryPage() {
 
 using LocalTransactionStoreSteadyClock = std::chrono::steady_clock;
 
+struct LocalTransactionStorePhase {
+  std::string_view name;
+  u64 micros = 0;
+  bool observed = false;
+};
+
 u64 LocalTransactionStoreElapsedMicros(
     LocalTransactionStoreSteadyClock::time_point begin,
     LocalTransactionStoreSteadyClock::time_point end = LocalTransactionStoreSteadyClock::now()) {
@@ -365,7 +372,8 @@ u64 LocalTransactionStoreElapsedMicros(
 void WriteLocalTransactionStorePhaseTrace(
     std::string_view operation_id,
     bool ok,
-    const std::map<std::string, u64>& phases) {
+    const std::array<LocalTransactionStorePhase, 11>& phases) {
+  try {
   const char* path = std::getenv("SCRATCHBIRD_LOCAL_TXN_STORE_PHASE_TRACE_FILE");
   if (path == nullptr || *path == '\0') {
     return;
@@ -376,10 +384,16 @@ void WriteLocalTransactionStorePhaseTrace(
   }
   out << "operation_id=" << operation_id
       << '\t' << "ok=" << (ok ? "true" : "false");
-  for (const auto& [name, micros] : phases) {
-    out << '\t' << name << "_us=" << micros;
+  for (const auto& phase : phases) {
+    if (phase.observed) out << '\t' << phase.name << "_us=" << phase.micros;
   }
   out << '\n';
+  } catch (const std::exception&) {
+    // Optional timing output cannot alter native publication/finality. In
+    // particular, allocation failure after durable completion is not a failed
+    // transaction. The owning result and on-disk inventory remain authoritative.
+    // Do not catch forced unwind (e.g. pthread cancellation during I/O).
+  }
 }
 
 
@@ -1258,7 +1272,14 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToDatabase(
                                                             parsed_header.header.page_size,
                                                             std::move(inventory), sync_policy);
   if (result.ok()) {
-    RefreshTransactionInventoryCache(path, result.inventory, result.horizons);
+    try {
+      RefreshTransactionInventoryCache(path, result.inventory, result.horizons);
+    } catch (const std::bad_alloc&) {
+      // This optimization cache was invalidated before publication. Retain a
+      // cold authoritative reader rather than turning durable success into
+      // failure because an optional cache fill exhausted memory.
+      InvalidateTransactionInventoryCache(path);
+    }
   } else {
     InvalidateTransactionInventoryCache(path);
   }
@@ -1283,18 +1304,34 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
     return StorePageError("STORAGE.READ_ONLY_DEVICE",
                           "storage.transaction_inventory.read_only_device");
   }
-  const auto trace_start = LocalTransactionStoreSteadyClock::now();
+  const char* trace_path = std::getenv("SCRATCHBIRD_LOCAL_TXN_STORE_PHASE_TRACE_FILE");
+  const bool trace_enabled = trace_path != nullptr && *trace_path != '\0';
+  const auto trace_start = trace_enabled ? LocalTransactionStoreSteadyClock::now()
+                                       : LocalTransactionStoreSteadyClock::time_point{};
   auto phase_start = trace_start;
-  std::map<std::string, u64> trace_phases;
-  auto mark_phase = [&](std::string name) {
+  std::array<LocalTransactionStorePhase, 11> trace_phases{{
+      {"make_root_page_context"}, {"compute_transaction_horizons"},
+      {"collect_existing_chain"}, {"publish_starting_allocation"},
+      {"publish_reserved_activation"}, {"plan_inventory_pages"},
+      {"publish_begin_journal"}, {"write_inventory_pages"},
+      {"device_sync"}, {"publish_commit_journal"}, {"total"}}};
+  auto mark_phase = [&](std::string_view name) noexcept {
+    if (!trace_enabled) return;
     const auto now = LocalTransactionStoreSteadyClock::now();
-    trace_phases[std::move(name)] += LocalTransactionStoreElapsedMicros(phase_start, now);
+    for (auto& phase : trace_phases) if (phase.name == name) {
+      phase.micros += LocalTransactionStoreElapsedMicros(phase_start, now);
+      phase.observed = true;
+      break;
+    }
     phase_start = now;
   };
   auto trace_and_return = [&](LocalTransactionStoreResult result) {
-    trace_phases["total"] = LocalTransactionStoreElapsedMicros(trace_start);
-    WriteLocalTransactionStorePhaseTrace(
-        "persist_local_transaction_inventory", result.ok(), trace_phases);
+    if (trace_enabled) {
+      trace_phases.back().micros = LocalTransactionStoreElapsedMicros(trace_start);
+      trace_phases.back().observed = true;
+      WriteLocalTransactionStorePhaseTrace(
+          "persist_local_transaction_inventory", result.ok(), trace_phases);
+    }
     return result;
   };
 

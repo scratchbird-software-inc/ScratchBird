@@ -7,6 +7,7 @@
 #include "catalog/name_registry_codec.hpp"
 #include "disk_device.hpp"
 #include "local_transaction_store.hpp"
+#include "identity_publication_fence.hpp"
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
 #include "transaction/transaction_api.hpp"
 
@@ -87,7 +88,11 @@ inline EngineApiDiagnostic AppendSequencedCatalogJournalRecord(
       inventory.snapshot->inventory, transaction::mga::MakeLocalTransactionId(context.local_transaction_id));
   if (!admitted_transaction.ok() || !admitted_transaction.entry.identity.valid() ||
       admitted_transaction.entry.identity.transaction_uuid.value != context.transaction_uuid ||
-      admitted_transaction.entry.state != transaction::mga::TransactionState::active || admitted_transaction.entry.rollback_only)
+      admitted_transaction.entry.state != transaction::mga::TransactionState::active ||
+      (admitted_transaction.entry.rollback_only &&
+       (!context.identity_publication_fence ||
+        !context.identity_publication_fence->Allows(context.database_path, context.database_uuid,
+            context.local_transaction_id, context.transaction_uuid, inventory.snapshot->inventory))))
     return refused("catalog_publication_transaction_authority_invalid");
   const auto path = context.database_path + suffix;
   std::error_code error;

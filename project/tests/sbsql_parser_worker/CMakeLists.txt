@@ -6372,6 +6372,10 @@ if(TARGET sb_engine_sblr AND TARGET sb_storage_database)
       SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
   )
   target_link_libraries(sbsql_database_create_schema_bootstrap_gate PRIVATE sb_engine_sblr sb_storage_database sb_core_uuid)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(sbsql_database_create_schema_bootstrap_gate PRIVATE SB_IDENTITY_TEST_WRAP_IO=1)
+    target_link_options(sbsql_database_create_schema_bootstrap_gate PRIVATE "LINKER:--wrap=fsync")
+  endif()
   add_test(NAME sbsql_database_create_schema_bootstrap_gate COMMAND sbsql_database_create_schema_bootstrap_gate)
   set_tests_properties(sbsql_database_create_schema_bootstrap_gate PROPERTIES
     LABELS "sbsql_database_create_schema_bootstrap_gate;sbsql_parser_worker;schema_bootstrap;engine_uuid_return;sys_catalog_table_materialization_gate;catalog_common_descriptor_gate;catalog_generation_mga_gate"

@@ -23,6 +23,7 @@
 
 namespace scratchbird::storage::database {
 struct LocalTransactionInventorySnapshot;
+class IdentityPublicationFence;
 }
 
 namespace scratchbird::engine::internal_api {
@@ -465,6 +466,9 @@ struct EngineRequestContext {
   EngineUuid principal_uuid;
   EngineUuid session_uuid;
   EngineUuid transaction_uuid;
+  // Borrowed lexical execution custody from the identity composer only. Never
+  // serialized, supplied by a parser, retained in a session, or authentication.
+  const scratchbird::storage::database::IdentityPublicationFence* identity_publication_fence = nullptr;
   EngineUuid statement_uuid;
   EngineUuid statement_snapshot_uuid;
   // Generation of the immutable MGA statement snapshot issued with this

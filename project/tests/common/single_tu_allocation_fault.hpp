@@ -5,6 +5,7 @@
 // Include in exactly one translation unit per test executable. These global
 // allocator replacements must never be linked into a product target.
 #include <cstddef>
+#include <algorithm>
 #include <cstdlib>
 #include <new>
 
@@ -35,11 +36,16 @@ void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 void* operator new(std::size_t bytes, std::align_val_t alignment) {
   AllocationPoint();
+  // PMR may request valid alignments smaller than a pointer (e.g. uint32_t).
+  // posix_memalign additionally requires a pointer-size multiple. Increasing
+  // that platform minimum preserves the requested alignment; refusing it
+  // would inject an allocation failure even when fault injection is disabled.
+  const auto platform_alignment = std::max(static_cast<std::size_t>(alignment), sizeof(void*));
 #ifdef _MSC_VER
-  if (void* p = ::_aligned_malloc(bytes ? bytes : 1, static_cast<std::size_t>(alignment))) return p;
+  if (void* p = ::_aligned_malloc(bytes ? bytes : 1, platform_alignment)) return p;
 #else
   void* p = nullptr;
-  if (::posix_memalign(&p, static_cast<std::size_t>(alignment), bytes ? bytes : 1) == 0) return p;
+  if (::posix_memalign(&p, platform_alignment, bytes ? bytes : 1) == 0) return p;
 #endif
   throw std::bad_alloc();
 }

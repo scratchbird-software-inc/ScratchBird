@@ -364,6 +364,10 @@ struct EngineSecurityCreatePrincipalResult : EngineApiResult {
 };
 EngineSecurityCreatePrincipalResult EngineSecurityCreatePrincipal(
     const EngineSecurityCreatePrincipalRequest& request);
+// The principal owner performs the same effect-free validation used at native
+// execution. This is not a reusable admission token: execution revalidates.
+EngineApiDiagnostic ValidateEngineSecurityCreatePrincipal(
+    const EngineSecurityCreatePrincipalRequest& request);
 
 struct EngineSecurityAlterPrincipalRequest : EngineApiRequest {
   EngineUuid principal_uuid;

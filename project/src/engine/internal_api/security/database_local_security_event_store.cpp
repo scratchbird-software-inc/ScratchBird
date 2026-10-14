@@ -1014,6 +1014,7 @@ AppendDatabaseLocalSecurityEventBatchV1(
   mutation.begin_unix_epoch_millis = transaction.begin_unix_epoch_millis;
   mutation.stable_slot_id = 1;
   mutation.cells.push_back(std::move(cell));
+  mutation.identity_publication_fence = context.identity_publication_fence;
   const auto written = storage::WritePhysicalMgaCowUnpublishedMutation(mutation);
   if (!written.ok()) {
     result.diagnostic = StorageDiagnostic(

@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "behavior_support/api_behavior_store.hpp"
+#include "transaction/mutation_authority.hpp"
+#include "transaction/transaction_api.hpp"
 
 #include "uuid.hpp"
 #include "api_behavior_record_codec.hpp"
@@ -39,6 +41,11 @@ std::string JoinOptions(const std::vector<std::string>& options) {
 EngineApiDiagnostic AppendApiBehaviorEvent(const EngineRequestContext& context, const std::string& event) {
   const auto path_status = ValidateApiBehaviorContext(context, "api_behavior.append_event", false, true);
   if (path_status.error) { return path_status; }
+  const auto owner = AcquireTransactionInventoryGuard(context.database_path);
+  if (context.local_transaction_id != 0) {
+    const auto authority = ValidateCurrentMutatingTransactionAuthority(context, "api_behavior.append_event");
+    if (authority.error) return authority;
+  }
   ApiBehaviorRecord checked;
   if(!DecodeApiBehaviorRecord({reinterpret_cast<const std::uint8_t*>(event.data()),event.size()},&checked))return MakeInvalidRequestDiagnostic("api_behavior.append_event","binary_record_invalid");
   std::error_code error;

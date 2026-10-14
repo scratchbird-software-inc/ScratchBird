@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "physical_mga_cow_store.hpp"
+#include "identity_publication_fence.hpp"
 #include "catalog_context_namespace.hpp"
 
 #include "database_format.hpp"
@@ -899,6 +900,7 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutationToOpenDevice(
   const auto perform = [&]() -> PhysicalMgaCowMutationResult {
   LocalTransactionInventory active_inventory = loaded_inventory.inventory;
   TransactionInventoryEntry active_entry;
+  TransactionInventoryEntry execution_entry;
   if (request.use_existing_transaction) {
     const auto existing =
         LookupLocalTransaction(active_inventory,
@@ -913,7 +915,16 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutationToOpenDevice(
           "SB-PHYSICAL-MGA-COW-TRANSACTION-UUID-MISMATCH",
           "storage.physical_mga_cow.transaction_uuid_mismatch");
     }
-    const auto admission = ValidateCopyOnWriteTransactionState(existing.entry);
+    execution_entry = existing.entry;
+    if (execution_entry.rollback_only && request.identity_publication_fence &&
+        request.identity_publication_fence->Allows(device.path(), context.page_context.database_uuid.value,
+            execution_entry.identity.local_id.value, execution_entry.identity.transaction_uuid.value,
+            active_inventory)) {
+      // An execution view only: native inventory remains durably excluded.
+      // Only the admitted identity composer can release its original marker.
+      execution_entry.rollback_only = false;
+    }
+    const auto admission = ValidateCopyOnWriteTransactionState(execution_entry);
     if (!admission.ok()) {
       return Propagate<PhysicalMgaCowMutationResult>(admission.status, admission.diagnostic);
     }
@@ -937,6 +948,7 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutationToOpenDevice(
     }
     active_inventory = persisted_active.inventory;
     active_entry = begin.entry;
+    execution_entry = active_entry;
   }
 
   RowDataPageBody row_page;
@@ -987,7 +999,7 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutationToOpenDevice(
   RowIdentity row_identity;
   row_identity.row_uuid = request.row_uuid;
   const auto planned = PlanLocalCopyOnWriteMutationForTransaction(
-      active_entry,
+      execution_entry,
       row_identity,
       ToTransactionCowKind(request.kind),
       base.found ? base.row.row_version : 0,

@@ -2137,56 +2137,60 @@ EngineOwnedSysarchRoleIdentityResult ResolveEngineOwnedSysarchRoleIdentity(
   return result;
 }
 
-EngineSecurityCreatePrincipalResult EngineSecurityCreatePrincipal(
-    const EngineSecurityCreatePrincipalRequest& request) {
+namespace {
+EngineApiDiagnostic ValidateEngineSecurityCreatePrincipalOwned(
+    const EngineSecurityCreatePrincipalRequest& request, std::uint64_t* generation) {
   constexpr const char* kOperation = "security.principal.create";
-  auto preflight =
-      MutatingSetupFailure<EngineSecurityCreatePrincipalResult>(request,
-                                                                kOperation,
-                                                                "SEC_IDENTITY_ADMIN");
-  if (!preflight.ok) { return preflight; }
+  const auto authority = ValidateSecurityAuthority(request, kOperation, "SEC_IDENTITY_ADMIN");
+  if (authority.error) return authority;
+  const auto context = ValidateMutatingContext(request.context);
+  if (context.error) return context;
   if (PlaintextCredentialRefused(request)) {
-    return DiagnosticResult<EngineSecurityCreatePrincipalResult>(
-        request.context,
-        kOperation,
-        PrincipalDiagnostic(kSecurityPrincipalDiagnosticProtectedMaterialPlaintextRefused,
-                            "plaintext_credential_material_is_forbidden"));
+    return PrincipalDiagnostic(kSecurityPrincipalDiagnosticProtectedMaterialPlaintextRefused,
+                              "plaintext_credential_material_is_forbidden");
   }
   const EngineUuid principal_uuid = PrincipalUuid(request);
-  if (principal_uuid.is_nil()) {
-    return DiagnosticResult<EngineSecurityCreatePrincipalResult>(
-        request.context,
-        kOperation,
-        PrincipalDiagnostic(kSecurityPrincipalDiagnosticPrincipalInvalid, "principal_uuid_required"));
+  if (!core::uuid::IsEngineIdentityUuid(principal_uuid)) {
+    return PrincipalDiagnostic(kSecurityPrincipalDiagnosticPrincipalInvalid, "native_v7_principal_identity_required");
   }
   const std::string principal_name = PrimaryName(request, request.principal_name);
   if (principal_name.empty()) {
-    return DiagnosticResult<EngineSecurityCreatePrincipalResult>(
-        request.context,
-        kOperation,
-        PrincipalDiagnostic(kSecurityPrincipalDiagnosticPrincipalInvalid, "principal_name_required"));
+    return PrincipalDiagnostic(kSecurityPrincipalDiagnosticPrincipalInvalid, "principal_name_required");
   }
   const std::string kind = request.principal_kind.empty() ? "user" : request.principal_kind;
   if (kind != "user" && kind != "service" && kind != "system_actor") {
-    return DiagnosticResult<EngineSecurityCreatePrincipalResult>(
-        request.context,
-        kOperation,
-        PrincipalDiagnostic(kSecurityPrincipalDiagnosticPrincipalInvalid, "principal_kind:" + kind));
+    return PrincipalDiagnostic(kSecurityPrincipalDiagnosticPrincipalInvalid, "principal_kind:" + kind);
   }
   const auto loaded = LoadState(request.context, {.enforce_visibility = true});
   if (!loaded.ok) {
-    return DiagnosticResult<EngineSecurityCreatePrincipalResult>(request.context,
-                                                                kOperation,
-                                                                loaded.diagnostic);
+    return loaded.diagnostic;
   }
   if (FindPrincipal(loaded.state, principal_uuid) != nullptr) {
-    return DiagnosticResult<EngineSecurityCreatePrincipalResult>(
-        request.context,
-        kOperation,
-        PrincipalDiagnostic(kSecurityPrincipalDiagnosticPrincipalDuplicate, principal_uuid));
+    return PrincipalDiagnostic(kSecurityPrincipalDiagnosticPrincipalDuplicate, principal_uuid);
   }
+  const auto next_generation = NextGeneration(loaded.state);
+  if (next_generation == 0)
+    return PrincipalDiagnostic(kSecurityPrincipalDiagnosticPrincipalInvalid, "security_generation_exhausted");
+  if (generation) *generation = next_generation;
+  return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+}
+} // namespace
 
-  const std::uint64_t generation = NextGeneration(loaded.state);
+EngineApiDiagnostic ValidateEngineSecurityCreatePrincipal(
+    const EngineSecurityCreatePrincipalRequest& request) {
+  return ValidateEngineSecurityCreatePrincipalOwned(request, nullptr);
+}
+
+EngineSecurityCreatePrincipalResult EngineSecurityCreatePrincipal(
+    const EngineSecurityCreatePrincipalRequest& request) {
+  constexpr const char* kOperation = "security.principal.create";
+  std::uint64_t generation = 0;
+  const auto preflight = ValidateEngineSecurityCreatePrincipalOwned(request, &generation);
+  if (preflight.error)
+    return DiagnosticResult<EngineSecurityCreatePrincipalResult>(request.context, kOperation, preflight);
+  const auto principal_uuid = PrincipalUuid(request);
+  const auto principal_name = PrimaryName(request, request.principal_name);
+  const auto kind = request.principal_kind.empty() ? "user" : request.principal_kind;
   EngineSecurityPrincipalRecord record;
   record.creator_tx = request.context.local_transaction_id;
   record.principal_uuid = principal_uuid;
