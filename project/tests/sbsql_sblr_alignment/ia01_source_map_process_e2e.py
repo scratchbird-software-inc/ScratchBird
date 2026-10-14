@@ -10,41 +10,15 @@ import argparse
 import hashlib
 import struct
 import os
-import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 from ia01_package_process_e2e import (
-    ProofError, allocate_work, require_stopped_fixture_group,
-    seed_database, stop, wait_unix,
+    ProofError, allocate_work, finish_fixture_work,
+    seed_database, stop, wait_unix, wait_service_ready,
 )
-
-
-def wait_service_ready(process: subprocess.Popen, endpoint: Path, timeout: float = 60.0) -> None:
-    """A listening socket precedes synchronous startup catalog publication."""
-    state_path = endpoint.parent / "sb_server.lifecycle.state"
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if process.poll() is not None:
-            raise ProofError("server exited before service-ready publication")
-        try:
-            lines = state_path.read_text(encoding="utf-8").splitlines()
-            pairs = [line.split("=", 1) for line in lines]
-            if all(len(pair) == 2 for pair in pairs):
-                fields = dict(pairs)
-                if (len(fields) == len(pairs) and
-                        fields.get("format") == "SB_SERVER_LIFECYCLE_STATE_V1" and
-                        fields.get("state") == "service_ready" and
-                        fields.get("service_ready") == "true" and
-                        fields.get("sbps_endpoint") == str(endpoint) and
-                        int(fields.get("generation", "0")) > 0):
-                    return
-        except (OSError, UnicodeError, ValueError):
-            pass  # The writer may be between truncation and close.
-        time.sleep(0.01)
-    raise ProofError(f"timed out waiting for server service-ready publication: {state_path}")
 
 
 def durable_api_authority_rows(name_journal: Path) -> tuple[tuple[str, bytes], ...]:
@@ -414,6 +388,7 @@ def main() -> int:
     work = allocate_work(Path(args.work_dir))
     server = None
     fixture_servers = []
+    failed = False
 
     def start_server(*arguments, **options):
         process = subprocess.Popen(
@@ -505,9 +480,8 @@ def main() -> int:
             stdout=(work / "server.out").open("wb"),
             stderr=(work / "server.err").open("wb"), env=env,
         )
+        wait_service_ready(server, endpoint)
         wait_unix(endpoint)
-        if args.operation == "security-policy-evaluation-parent":
-            wait_service_ready(server, endpoint)
         catalog_event_path = Path(f"{database}.sb.catalog_object_events")
         catalog_event_before = None
         executor_availability_before = None
@@ -2969,22 +2943,17 @@ def main() -> int:
         # All result/restart/durability assertions above must finish before
         # teardown. Track earlier restart processes too: reaping only the last
         # parent is not proof that the private database has no live users.
-        for process in reversed(fixture_servers):
-            stop(process)
-        cleaned = os.name == "posix"
-        if cleaned:
-            for process in fixture_servers:
-                require_stopped_fixture_group(process)
-            shutil.rmtree(work)
-        print(f"sbsql_sblr_alignment_ia01_{args.operation.replace('-', '_')}_process_e2e=passed work={work} cleaned={cleaned}")
-        return 0
     except Exception as exc:  # noqa: BLE001
+        failed = True
         print(f"sbsql_sblr_alignment_ia01_{args.operation.replace('-', '_')}_process_e2e=failed work={work}: {exc}",
               file=sys.stderr)
-        return 1
     finally:
-        for process in reversed(fixture_servers):
-            stop(process)
+        cleaned = finish_fixture_work(work, fixture_servers, failed=failed)
+    if failed:
+        print(f"fixture_failed_cleanup=complete cleaned={cleaned} work={work}", file=sys.stderr)
+        return 1
+    print(f"sbsql_sblr_alignment_ia01_{args.operation.replace('-', '_')}_process_e2e=passed work={work} cleaned={cleaned}")
+    return 0
 
 
 if __name__ == "__main__":

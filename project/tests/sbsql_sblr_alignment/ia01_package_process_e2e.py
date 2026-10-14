@@ -19,6 +19,7 @@ import argparse
 import os
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -88,6 +89,31 @@ def wait_unix(path: Path, timeout: float = 60.0) -> None:
     raise ProofError(f"timed out waiting for Unix listener {path}")
 
 
+def wait_service_ready(process: subprocess.Popen, endpoint: Path, timeout: float = 60.0) -> None:
+    """A listening socket precedes synchronous startup catalog publication."""
+    state_path = endpoint.parent / "sb_server.lifecycle.state"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise ProofError("server exited before service-ready publication")
+        try:
+            lines = state_path.read_text(encoding="utf-8").splitlines()
+            pairs = [line.split("=", 1) for line in lines]
+            if all(len(pair) == 2 for pair in pairs):
+                fields = dict(pairs)
+                if (len(fields) == len(pairs) and
+                        fields.get("format") == "SB_SERVER_LIFECYCLE_STATE_V1" and
+                        fields.get("state") == "service_ready" and
+                        fields.get("service_ready") == "true" and
+                        fields.get("sbps_endpoint") == str(endpoint) and
+                        int(fields.get("generation", "0")) > 0):
+                    return
+        except (OSError, UnicodeError, ValueError):
+            pass  # The writer may be between truncation and close.
+        time.sleep(0.01)
+    raise ProofError(f"timed out waiting for server service-ready publication: {state_path}")
+
+
 def stop(process: subprocess.Popen[bytes] | None) -> None:
     if process is None or process.poll() is not None:
         return
@@ -113,6 +139,49 @@ def require_stopped_fixture_group(process: subprocess.Popen[bytes]) -> None:
     except ProcessLookupError:
         return
     raise ProofError(f"fixture process group still exists after shutdown: {process.pid}")
+
+
+def finish_fixture_work(work: Path, processes: list[subprocess.Popen], *, failed: bool) -> bool:
+    """Drain every owned parent; retain full text failures before safe deletion.
+
+    CTest/the owning command controller retains stderr. Failed databases are
+    reproducible test inputs, not local archives. A surviving process group or
+    unreadable diagnostic blocks deletion and remains an explicit test failure.
+    Non-POSIX teardown has not qualified process-tree ownership yet.
+    """
+    errors = []
+    for process in reversed(processes):
+        try:
+            stop(process)
+        except Exception as exc:  # Still attempt every other owned parent.
+            errors.append(str(exc))
+    if errors:
+        raise ProofError("fixture parent teardown failed: " + "; ".join(errors))
+    if os.name != "posix":
+        return False
+    for process in processes:
+        require_stopped_fixture_group(process)
+    if failed:
+        for path in sorted((*work.glob("*.err"), *work.glob("*.out"))):
+            # Logs are fixture-owned regular files, never paths through a
+            # substituted symlink/device. Stream rather than copying a whole
+            # log into memory; no tail-only truncation loses the actual cause.
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                    raise ProofError(f"fixture diagnostic is not a regular file: {path.name}")
+                with os.fdopen(descriptor, "r", encoding="utf-8", errors="replace") as log:
+                    descriptor = -1
+                    print(f"fixture_failure_log={path.name}", file=sys.stderr)
+                    while chunk := log.read(65536):
+                        sys.stderr.write(chunk)
+                    print(file=sys.stderr)
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
+        sys.stderr.flush()
+    shutil.rmtree(work)
+    return True
 
 
 def seed_database(
@@ -210,6 +279,7 @@ def main() -> int:
     work = allocate_work(Path(args.work_dir))
     server: subprocess.Popen[bytes] | None = None
     listener: subprocess.Popen[bytes] | None = None
+    failed = False
     try:
         database = work / "package.sbdb"
         server_control, server_runtime = work / "sc", work / "sr"
@@ -244,6 +314,7 @@ def main() -> int:
             env=server_env,
             start_new_session=os.name == "posix",
         )
+        wait_service_ready(server, endpoint)
         wait_path(endpoint)
         listener_env = os.environ.copy()
         listener_env["SCRATCHBIRD_SBSQL_PIPELINE_PHASE_TRACE_FILE"] = str(worker_trace)
@@ -269,26 +340,17 @@ def main() -> int:
         # A distinct OS process and authenticated session verifies the result;
         # no cursor, receipt, parser-worker request, or client state is reused.
         run_client(args, database, port, evidence, work, "verifier_session")
-        stop(listener)
-        stop(server)
-        cleaned = False
-        if os.name == "posix":
-            require_stopped_fixture_group(listener)
-            require_stopped_fixture_group(server)
-            shutil.rmtree(work)
-            cleaned = True
-        print(f"sbsql_sblr_alignment_ia01_package_process_e2e=passed work={work} cleaned={cleaned}")
-        return 0
     except Exception as exc:  # noqa: BLE001 - preserve concrete test evidence.
+        failed = True
         print(f"sbsql_sblr_alignment_ia01_package_process_e2e=failed work={work}: {exc}",
               file=sys.stderr)
-        for path in sorted(work.glob("*.err")):
-            print(f"--- {path.name} ---", file=sys.stderr)
-            print(path.read_text(encoding="utf-8", errors="replace"), file=sys.stderr)
-        return 1
     finally:
-        stop(listener)
-        stop(server)
+        cleaned = finish_fixture_work(work, [p for p in (server, listener) if p is not None], failed=failed)
+    if failed:
+        print(f"fixture_failed_cleanup=complete cleaned={cleaned} work={work}", file=sys.stderr)
+        return 1
+    print(f"sbsql_sblr_alignment_ia01_package_process_e2e=passed work={work} cleaned={cleaned}")
+    return 0
 
 
 if __name__ == "__main__":
