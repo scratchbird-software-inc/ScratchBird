@@ -41,8 +41,8 @@ class StartupCredentialSource {
       return source_ ? material_.credential() : std::string_view{};
     }
     void Reset() noexcept {
-      if (!source_) return;
       CheckThread();
+      if (!source_) return;
       material_ = {}; // Erase protected material BEFORE allowing revocation.
       if (!source_->mutex_.Unlock(task_.bytes)) std::terminate();
       source_ = nullptr;
@@ -54,7 +54,9 @@ class StartupCredentialSource {
         : source_(&source), task_(task), thread_(std::this_thread::get_id()),
           material_(std::move(material)) {}
     void CheckThread() const noexcept {
-      if (source_ && thread_ != std::this_thread::get_id()) std::terminate();
+      // Reject foreign-thread access before inspecting mutable custody state.
+      // Otherwise a refused reader could race the owning thread's Reset.
+      if (thread_ != std::this_thread::get_id()) std::terminate();
     }
     StartupCredentialSource* source_;
     Uuid task_;

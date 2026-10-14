@@ -6,6 +6,7 @@
 #include <iostream>
 #include <semaphore>
 #include <thread>
+#include <sys/wait.h>
 namespace srv = scratchbird::server;
 namespace mem = scratchbird::core::memory;
 using Source = srv::StartupCredentialSource;
@@ -78,6 +79,40 @@ extern "C" int __wrap_pthread_cond_timedwait(pthread_cond_t* c, pthread_mutex_t*
   return __real_pthread_cond_timedwait(c, m, t);
 }
 int main() {
+  // Construct each death-test owner AFTER fork, before any parent worker or
+  // memory-manager state exists. Never enter inherited source locks in a child.
+  for (const bool reset_first : {false, true}) {
+    const auto child = ::fork();
+    if (child == 0) {
+      std::set_terminate([] { ::_exit(73); });
+      const auto page = static_cast<size_t>(::sysconf(_SC_PAGESIZE));
+      auto policy = mem::DefaultLocalEngineMemoryPolicy();
+      policy.hard_limit_bytes = page * 2; policy.per_context_limit_bytes = page * 2;
+      policy.soft_limit_bytes = 0;
+      mem::MemoryManager manager(policy);
+      srv::StartupCredentialTransportBinding binding{Id(1), Id(2), Id(3), Id(4), 7, ::geteuid()};
+      mem::MemoryTag tag;
+      tag.binary_ownership[mem::MemoryBinaryScopeKind::context] = binding.database.bytes;
+      tag.binary_ownership[mem::MemoryBinaryScopeKind::owner] = binding.principal.bytes;
+      tag.binary_ownership[mem::MemoryBinaryScopeKind::database] = binding.database.bytes;
+      Fd fd{Sealed(binding)};
+      Source source(Id(5), 4);
+      Source::Request request{Id(5), Id(6), 0, {}, {}};
+      if (!source.Publish(request, fd.fd, binding, manager, tag).ok()) ::_exit(74);
+      request.generation = 7;
+      auto acquired = source.Acquire(request, manager, tag);
+      if (!acquired.outcome.ok() || !acquired.lease) ::_exit(75);
+      if (reset_first) acquired.lease->Reset();
+      std::thread reader([&] { (void)acquired.lease->credential(); });
+      reader.join();
+      ::_exit(76);
+    }
+    int status = 0;
+    const auto waited = child > 0 ? ::waitpid(child, &status, 0) : -1;
+    Check(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 73,
+          reset_first ? "foreign-thread erased lease refuses before state inspection"
+                      : "foreign-thread live lease refuses before state inspection");
+  }
   const auto page = static_cast<size_t>(::sysconf(_SC_PAGESIZE));
   auto policy = mem::DefaultLocalEngineMemoryPolicy();
   policy.hard_limit_bytes = page * 2; policy.per_context_limit_bytes = page * 2;
