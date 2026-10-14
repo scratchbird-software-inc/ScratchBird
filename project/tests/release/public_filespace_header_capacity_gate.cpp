@@ -423,6 +423,140 @@ void AttachComparesHeaderRegistryCapacity() {
           "attach mismatch diagnostic mismatch");
 }
 
+void PromotionRetainsObservedMetadataAndRejectsStaleGeneration() {
+  // Compatibility-format corruption regression only. These fixtures do not
+  // qualify the native SBFP bootstrap or node activation/publication route.
+  const auto candidate_path = TempPath("promote-candidate.sbfs");
+  const auto primary_path = TempPath("promote-primary.sbfs");
+  auto candidate = MakeHeader();
+  candidate.role = filespace::FilespaceRole::primary_candidate;
+  candidate.compatibility_flags = 0x123456789abcdef0ull;
+  candidate.attach_policy_flags = 0xfedcba9876543210ull;
+  candidate.creation_operation_uuid = "original-candidate-creation";
+  auto primary = candidate;
+  primary.filespace_uuid = MakeUuid(UuidKind::filespace, 81);
+  primary.role = filespace::FilespaceRole::active_primary;
+  primary.physical_filespace_id = 1;
+  primary.creation_operation_uuid = "original-primary-creation";
+  auto original_registry = filespace::FilespaceRegistry{};
+  for (const auto& [path, header] : {
+           std::pair{candidate_path, candidate}, std::pair{primary_path, primary}}) {
+    Require(filespace::CreatePhysicalFilespaceFile(path.string(), header).ok(),
+            "promotion physical fixture creation failed");
+    filespace::FilespaceOperationRequest attach;
+    attach.operation = filespace::FilespaceOperation::attach_filespace;
+    attach.database_uuid = header.database_uuid;
+    attach.filespace_uuid = header.filespace_uuid;
+    attach.role = header.role;
+    attach.path = path.string();
+    attach.page_size = header.page_size;
+    attach.physical_filespace_id = header.physical_filespace_id;
+    attach.total_pages = header.total_pages;
+    attach.free_pages = header.free_pages;
+    attach.preallocated_pages = header.preallocated_pages;
+    attach.allocation_root_page = header.allocation_root_page;
+    attach.header_generation = header.header_generation;
+    attach.writer_identity_uuid = header.writer_identity_uuid;
+    Require(filespace::ApplyFilespaceOperation(&original_registry, attach).ok(),
+            "promotion registry fixture attach failed");
+  }
+  const auto read_bytes = [](const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    return std::vector<char>(std::istreambuf_iterator<char>(input), {});
+  };
+  filespace::FilespaceOperationRequest promote;
+  promote.operation = filespace::FilespaceOperation::promote_filespace;
+  promote.database_uuid = candidate.database_uuid;
+  promote.filespace_uuid = candidate.filespace_uuid;
+  promote.path = candidate_path.string();
+  promote.writer_identity_uuid = MakeUuid(UuidKind::object, 82);
+  promote.reason = "maintenance-reason-is-not-creation";
+  promote.policy.allow_primary_replacement = true;
+  promote.policy.require_physical_header_for_promote = true;
+
+  for (bool old_primary : {false, true}) {
+    auto stale = old_primary ? primary : candidate;
+    ++stale.header_generation;
+    const auto& path = old_primary ? primary_path : candidate_path;
+    Require(filespace::WritePhysicalFilespaceHeader(path.string(), stale, true).ok(),
+            "stale promotion fixture write failed");
+    auto registry = original_registry;
+    const auto before_candidate = read_bytes(candidate_path);
+    const auto before_primary = read_bytes(primary_path);
+    const auto refused = filespace::ApplyFilespaceOperation(&registry, promote);
+    Require(!refused.ok() &&
+                refused.diagnostic.diagnostic_code == (old_primary
+                    ? "SB-FILESPACE-LIFECYCLE-PRIMARY-REPLACEMENT-PHYSICAL-HEADER-MISMATCH"
+                    : "SB-FILESPACE-LIFECYCLE-PROMOTE-PHYSICAL-HEADER-MISMATCH"),
+            "promotion did not reject stale physical generation");
+    Require(read_bytes(candidate_path) == before_candidate &&
+                read_bytes(primary_path) == before_primary &&
+                registry.filespaces[0].generation == original_registry.filespaces[0].generation &&
+                registry.filespaces[1].generation == original_registry.filespaces[1].generation,
+            "stale promotion changed physical or registry state");
+    Require(filespace::WritePhysicalFilespaceHeader(path.string(), old_primary ? primary : candidate, true).ok(),
+            "promotion stale fixture restore failed");
+  }
+  for (std::size_t index : {0u, 1u}) {
+    auto exhausted = index ? primary : candidate;
+    exhausted.header_generation = std::numeric_limits<std::uint64_t>::max();
+    const auto& path = index ? primary_path : candidate_path;
+    Require(filespace::WritePhysicalFilespaceHeader(path.string(), exhausted, true).ok(),
+            "exhausted promotion fixture write failed");
+    auto registry = original_registry;
+    registry.filespaces[index].header_generation = exhausted.header_generation;
+    const auto before_candidate = read_bytes(candidate_path);
+    const auto before_primary = read_bytes(primary_path);
+    const auto refused = filespace::ApplyFilespaceOperation(&registry, promote);
+    Require(!refused.ok() && refused.diagnostic.diagnostic_code ==
+                "SB-FILESPACE-LIFECYCLE-PROMOTE-GENERATION-EXHAUSTED",
+            "promotion did not reject physical generation exhaustion");
+    Require(read_bytes(candidate_path) == before_candidate && read_bytes(primary_path) == before_primary,
+            "generation exhaustion changed a physical header");
+    Require(filespace::WritePhysicalFilespaceHeader(path.string(), index ? primary : candidate, true).ok(),
+            "promotion exhausted fixture restore failed");
+  }
+  for (std::size_t index : {0u, 1u}) {
+    auto registry = original_registry;
+    registry.filespaces[index].generation = std::numeric_limits<std::uint64_t>::max();
+    const auto before_candidate = read_bytes(candidate_path);
+    const auto before_primary = read_bytes(primary_path);
+    const auto refused = filespace::ApplyFilespaceOperation(&registry, promote);
+    Require(!refused.ok() && refused.diagnostic.diagnostic_code ==
+                "SB-FILESPACE-LIFECYCLE-PROMOTE-GENERATION-EXHAUSTED" &&
+                registry.filespaces[index].generation == std::numeric_limits<std::uint64_t>::max(),
+            "promotion did not reject lifecycle generation exhaustion unchanged");
+    Require(read_bytes(candidate_path) == before_candidate && read_bytes(primary_path) == before_primary,
+            "lifecycle generation exhaustion changed a physical header");
+  }
+  auto registry = original_registry;
+  Require(filespace::ApplyFilespaceOperation(&registry, promote).ok(),
+          "qualified compatibility promotion failed");
+  for (const auto& [path, original] : {
+           std::pair{candidate_path, candidate}, std::pair{primary_path, primary}}) {
+    const auto observed = filespace::ReadPhysicalFilespaceHeader(path.string());
+    Require(observed.ok(), "promoted physical header reopen failed");
+    const auto& after = observed.header;
+    Require(after.creation_operation_uuid == original.creation_operation_uuid &&
+                after.compatibility_flags == original.compatibility_flags &&
+                after.attach_policy_flags == original.attach_policy_flags &&
+                after.format_version == original.format_version &&
+                after.checksum_profile == original.checksum_profile &&
+                after.encryption_profile == original.encryption_profile &&
+                after.total_pages == original.total_pages && after.free_pages == original.free_pages &&
+                after.preallocated_pages == original.preallocated_pages &&
+                after.allocation_root_page == original.allocation_root_page &&
+                after.header_generation == original.header_generation + 1 &&
+                after.writer_identity_uuid.value == promote.writer_identity_uuid.value,
+            "promotion/demotion lost original creation, profile, capacity or generation metadata");
+    Require(after.role == (path == candidate_path ? filespace::FilespaceRole::active_primary
+                                                : filespace::FilespaceRole::primary_shadow) &&
+                after.state == (path == candidate_path ? filespace::FilespaceState::online
+                                                      : filespace::FilespaceState::read_only),
+            "promotion/demotion did not apply the requested role/state");
+  }
+}
+
 }  // namespace
 
 #if defined(__linux__)
@@ -478,6 +612,7 @@ int main() try {
   HeaderReadRejectsFileSizeMismatch();
   RegistryRoundTripsCapacityAndWriterIdentity();
   AttachComparesHeaderRegistryCapacity();
+  PromotionRetainsObservedMetadataAndRejectsStaleGeneration();
   directory.Cleanup();
   return EXIT_SUCCESS;
 } catch (const std::exception& error) {

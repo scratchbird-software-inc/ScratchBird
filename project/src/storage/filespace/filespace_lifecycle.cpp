@@ -1311,6 +1311,22 @@ FilespaceOperationResult ApplyFilespaceOperation(FilespaceRegistry* registry,
                            request,
                            std::to_string(ActivePinCount(*descriptor)));
       }
+      if (descriptor->generation == std::numeric_limits<u64>::max()) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-PROMOTE-GENERATION-EXHAUSTED",
+                           "storage.filespace.promote_generation_exhausted", request);
+      }
+      if (request.policy.allow_primary_replacement) {
+        for (const auto& candidate : registry->filespaces) {
+          if (candidate.role == FilespaceRole::active_primary &&
+              candidate.filespace_uuid.value != request.filespace_uuid.value &&
+              candidate.generation == std::numeric_limits<u64>::max()) {
+            return ErrorResult("SB-FILESPACE-LIFECYCLE-PROMOTE-GENERATION-EXHAUSTED",
+                               "storage.filespace.promote_generation_exhausted", request,
+                               candidate.path);
+          }
+        }
+      }
+      PhysicalFilespaceHeader promoted_header;
       if (request.policy.require_physical_header_for_promote) {
         const auto physical = ReadPhysicalFilespaceHeader(descriptor->path);
         if (!physical.ok()) {
@@ -1328,6 +1344,28 @@ FilespaceOperationResult ApplyFilespaceOperation(FilespaceRegistry* registry,
                              "storage.filespace.promote_physical_header_mismatch",
                              request);
         }
+        // This compatibility actuator must retain the observed creation and
+        // profile fields. Reconstructing a header from the registry drops those
+        // fields and turns a maintenance reason into a false creation identity.
+        if (physical.header.page_size != descriptor->page_size ||
+            physical.header.physical_filespace_id != descriptor->physical_filespace_id ||
+            physical.header.total_pages != descriptor->total_pages ||
+            physical.header.free_pages != descriptor->free_pages ||
+            physical.header.preallocated_pages != descriptor->preallocated_pages ||
+            physical.header.allocation_root_page != descriptor->allocation_root_page ||
+            physical.header.header_generation != descriptor->header_generation ||
+            physical.header.writer_identity_uuid.value != descriptor->writer_identity_uuid.value ||
+            physical.header.writer_identity_uuid.kind != descriptor->writer_identity_uuid.kind) {
+          return ErrorResult("SB-FILESPACE-LIFECYCLE-PROMOTE-PHYSICAL-HEADER-MISMATCH",
+                             "storage.filespace.promote_physical_header_mismatch",
+                             request);
+        }
+        if (physical.header.header_generation == std::numeric_limits<u64>::max()) {
+          return ErrorResult("SB-FILESPACE-LIFECYCLE-PROMOTE-GENERATION-EXHAUSTED",
+                             "storage.filespace.promote_generation_exhausted",
+                             request);
+        }
+        promoted_header = physical.header;
       }
       struct DemotedPrimaryPhysicalHeader {
         std::string path;
@@ -1362,6 +1400,24 @@ FilespaceOperationResult ApplyFilespaceOperation(FilespaceRegistry* registry,
                                  request,
                                  candidate.path);
             }
+            if (physical.header.page_size != candidate.page_size ||
+                physical.header.physical_filespace_id != candidate.physical_filespace_id ||
+                physical.header.total_pages != candidate.total_pages ||
+                physical.header.free_pages != candidate.free_pages ||
+                physical.header.preallocated_pages != candidate.preallocated_pages ||
+                physical.header.allocation_root_page != candidate.allocation_root_page ||
+                physical.header.header_generation != candidate.header_generation ||
+                physical.header.writer_identity_uuid.value != candidate.writer_identity_uuid.value ||
+                physical.header.writer_identity_uuid.kind != candidate.writer_identity_uuid.kind) {
+              return ErrorResult("SB-FILESPACE-LIFECYCLE-PRIMARY-REPLACEMENT-PHYSICAL-HEADER-MISMATCH",
+                                 "storage.filespace.primary_replacement_physical_header_mismatch",
+                                 request, candidate.path);
+            }
+            if (physical.header.header_generation == std::numeric_limits<u64>::max()) {
+              return ErrorResult("SB-FILESPACE-LIFECYCLE-PROMOTE-GENERATION-EXHAUSTED",
+                                 "storage.filespace.promote_generation_exhausted",
+                                 request, candidate.path);
+            }
             PhysicalFilespaceHeader demoted_header = physical.header;
             demoted_header.role = FilespaceRole::primary_shadow;
             demoted_header.state = FilespaceState::read_only;
@@ -1369,28 +1425,17 @@ FilespaceOperationResult ApplyFilespaceOperation(FilespaceRegistry* registry,
             if (request.writer_identity_uuid.valid()) {
               demoted_header.writer_identity_uuid = request.writer_identity_uuid;
             }
-            demoted_header.creation_operation_uuid = request.reason;
             demoted_primary_headers.push_back({candidate.path, candidate.filespace_uuid, demoted_header});
           }
         }
       }
       if (request.policy.require_physical_header_for_promote) {
-        PhysicalFilespaceHeader promoted_header;
-        promoted_header.database_uuid = descriptor->database_uuid;
-        promoted_header.filespace_uuid = descriptor->filespace_uuid;
         promoted_header.role = FilespaceRole::active_primary;
         promoted_header.state = FilespaceState::online;
-        promoted_header.page_size = descriptor->page_size;
-        promoted_header.physical_filespace_id = descriptor->physical_filespace_id;
-        promoted_header.total_pages = descriptor->total_pages;
-        promoted_header.free_pages = descriptor->free_pages;
-        promoted_header.preallocated_pages = descriptor->preallocated_pages;
-        promoted_header.allocation_root_page = descriptor->allocation_root_page;
-        promoted_header.header_generation = descriptor->header_generation + 1;
-        promoted_header.writer_identity_uuid = request.writer_identity_uuid.valid()
-                                                   ? request.writer_identity_uuid
-                                                   : descriptor->writer_identity_uuid;
-        promoted_header.creation_operation_uuid = request.reason;
+        ++promoted_header.header_generation;
+        if (request.writer_identity_uuid.valid()) {
+          promoted_header.writer_identity_uuid = request.writer_identity_uuid;
+        }
         const auto write_promoted_header = WritePhysicalFilespaceHeader(descriptor->path, promoted_header, true);
         if (!write_promoted_header.ok()) {
           return ErrorResult("SB-FILESPACE-LIFECYCLE-PROMOTE-PHYSICAL-HEADER-WRITE-FAILED",
