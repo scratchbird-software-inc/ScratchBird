@@ -4,6 +4,7 @@
 #include "native_creation_workspace.hpp"
 #include "datatype_binary.hpp"
 #include "catalog_identifier_profile.hpp"
+#include "catalog_construction_intent.hpp"
 
 namespace scratchbird::storage::database {
 // Exact size of the encoded first-version row including its stable slot and
@@ -35,6 +36,14 @@ template<class Reserve> void ReserveNativeCreationCatalogReferences(
       const auto& p=*profile.record;reserve(p.database_uuid);reserve(p.origin_transaction_uuid.value);
       if(p.resources){reserve(p.resources->charset_uuid);reserve(p.resources->collation_uuid);}
       if(p.platform)reserve(p.platform->profile_uuid);
+    }
+  }
+  if(core::catalog::IsCatalogConstructionIntentPayload(m.record.payload)){
+    const auto event=core::catalog::DecodeCatalogConstructionIntent(m.record.payload);
+    if(event.ok()){
+      const auto& e=*event.record;
+      for(const auto& id:{e.database_uuid,e.engine_uuid,e.operation_uuid,e.filespace_uuid,e.origin_transaction_uuid.value})reserve(id);
+      if(e.actor_uuid)reserve(e.actor_uuid->value);
     }
   }
   if(!r.name)return;

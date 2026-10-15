@@ -2372,7 +2372,20 @@ foreach(codec_target IN ITEMS
   target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_bootstrap_policy.cpp)
   target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_memory_configuration.cpp)
   target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_identifier_profile.cpp)
+  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_construction_intent.cpp)
 endforeach()
+
+add_executable(sbsql_sblr_alignment_catalog_construction_intent catalog_construction_intent_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_construction_intent PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_construction_intent PRIVATE sb_storage_database)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_compile_definitions(sbsql_sblr_alignment_catalog_construction_intent PRIVATE SB_CONSTRUCTION_AUDIT_CLOCK_WRAP=1)
+  target_link_options(sbsql_sblr_alignment_catalog_construction_intent PRIVATE
+    "-Wl,--wrap=_ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv")
+endif()
+add_test(NAME sbsql_sblr_alignment_catalog_construction_intent COMMAND sbsql_sblr_alignment_catalog_construction_intent)
+set_tests_properties(sbsql_sblr_alignment_catalog_construction_intent PROPERTIES
+  LABELS "sbsql_sblr_alignment;catalog;binary_uuid;native_configuration;not_runtime_acceptance" TIMEOUT 120)
 
 add_executable(sbsql_sblr_alignment_catalog_identifier_profile catalog_identifier_profile_test.cpp)
 target_compile_features(sbsql_sblr_alignment_catalog_identifier_profile PRIVATE cxx_std_23)

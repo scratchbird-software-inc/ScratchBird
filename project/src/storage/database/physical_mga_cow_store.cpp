@@ -10,6 +10,7 @@
 #include "identity_publication_fence.hpp"
 #include "catalog_context_namespace.hpp"
 #include "catalog_identifier_profile.hpp"
+#include "catalog_construction_intent.hpp"
 
 #include "database_format.hpp"
 #include "disk_device.hpp"
@@ -1881,6 +1882,8 @@ DecodedNativeCatalogRows DecodeNativeCatalogRows(const RowDataPageBody& body,
         !catalog::CatalogContextNamespaceMatchesDatabase(
             catalog::BorrowCatalogMetadataVersion(value.record),database_uuid.value)||
         !catalog::CatalogIdentifierProfileMatchesDatabase(
+            catalog::BorrowCatalogMetadataVersion(value.record),database_uuid.value)||
+        !catalog::CatalogConstructionIntentMatchesDatabase(
             catalog::BorrowCatalogMetadataVersion(value.record),database_uuid.value))
       return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_version.mga_binding_invalid");
     if (!decoded.metadata.emplace(row.version_uuid, value.record).second)
@@ -2043,7 +2046,8 @@ NativeCatalogLeafViewResult DecodeNativeCatalogLeafInto(
           !SameUuid(value.creator_transaction_uuid,row.transaction_uuid)||
           value.creator_local_transaction_id!=row.local_transaction_id||
           !catalog::CatalogContextNamespaceMatchesDatabase(value,header.header->database_uuid)||
-          !catalog::CatalogIdentifierProfileMatchesDatabase(value,header.header->database_uuid))return fail(LeafError::invalid_metadata);
+          !catalog::CatalogIdentifierProfileMatchesDatabase(value,header.header->database_uuid)||
+          !catalog::CatalogConstructionIntentMatchesDatabase(value,header.header->database_uuid))return fail(LeafError::invalid_metadata);
       auto& record=records[i];record={row.version_uuid,i,value,{}};
       if(value.record.header.kind==catalog::CatalogRecordKind::localized_name){
         const auto name=catalog::DecodeCatalogNameEnvelopeView(

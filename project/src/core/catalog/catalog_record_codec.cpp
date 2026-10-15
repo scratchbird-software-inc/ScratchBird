@@ -19,6 +19,7 @@
 #include "catalog_bootstrap_policy.hpp"
 #include "catalog_memory_configuration.hpp"
 #include "catalog_identifier_profile.hpp"
+#include "catalog_construction_intent.hpp"
 #include "catalog_scheduler_policy.hpp"
 #include "catalog_scheduler_fairness.hpp"
 #include "catalog_metric_visibility_policy.hpp"
@@ -157,6 +158,10 @@ CatalogTypedRecordViewResult ValidateCatalogTypedRecordView(CatalogTypedRecordVi
       !CatalogRuntimeAuthorityBindingMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.runtime_authority_binding.invalid",
                       "runtime_authority_binary_payload_or_header_invalid");
+  if (IsCatalogConstructionIntentPayload(record.payload) &&
+      !CatalogConstructionIntentMatchesHeader(record))
+    return RecordViewError("AUDIT.EVENT_INVALID", "audit.construction_intent.invalid",
+                          "construction_intent_binary_payload_or_header_invalid");
   if (IsCatalogIdentifierProfilePayload(record.payload) &&
       !CatalogIdentifierProfileMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.identifier_profile.invalid",
@@ -435,6 +440,11 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
        IsCatalogMemoryConfigurationPayload(value.record.payload)) &&
       !CatalogMemoryConfigurationMatchesMetadata(value))
     return MetadataViewError("memory_configuration_definition_binding_invalid");
+  if ((value.object_subtype == "node_construction_intent" ||
+       IsCatalogConstructionIntentPayload(value.record.payload)) &&
+      !CatalogConstructionIntentMatchesMetadata(value))
+    return CatalogRecordDiagnosticView{CodecErrorStatus(),"AUDIT.EVENT_INVALID",
+        "audit.construction_intent.invalid","construction_intent_definition_binding_invalid","core.catalog.record_codec"};
   if ((value.object_subtype == "identifier_resolution_profile" ||
        IsCatalogIdentifierProfilePayload(value.record.payload)) &&
       !CatalogIdentifierProfileMatchesMetadata(value))
@@ -661,6 +671,7 @@ bool CatalogMetadataPreservesFamilyOrigin(
       CatalogBootstrapPolicyPreservesOrigin(previous,successor) &&
       CatalogMemoryConfigurationPreservesOrigin(previous,successor) &&
       CatalogIdentifierProfilePreservesOrigin(previous,successor) &&
+      CatalogConstructionIntentPreservesOrigin(previous,successor) &&
       CatalogRuntimeAuthorityBindingPreservesOrigin(previous,successor) &&
       CatalogContextNamespacePreservesOrigin(previous,successor) &&
       CatalogSchedulerPolicyPreservesOrigin(previous,successor) &&

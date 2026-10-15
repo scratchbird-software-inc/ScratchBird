@@ -29,6 +29,7 @@ add_library(sb_core_catalog
   catalog_bootstrap_policy.cpp
   catalog_memory_configuration.cpp
   catalog_identifier_profile.cpp
+  catalog_construction_intent.cpp
   memory_configuration_import.cpp
   catalog_table_definition.cpp
   catalog_table_datatype_binding.cpp

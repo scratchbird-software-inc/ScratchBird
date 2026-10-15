@@ -3,6 +3,7 @@
 #include "physical_mga_cow_store.hpp"
 #include "catalog_context_namespace.hpp"
 #include "catalog_identifier_profile.hpp"
+#include "catalog_construction_intent.hpp"
 #include "disk_device.hpp"
 #include "uuid.hpp"
 #include "hash_digest_parts.hpp"
@@ -81,6 +82,8 @@ NativeCatalogVersionStageResult detail::NativeCatalogVersionStager::Run(
     if(!catalog::CatalogContextNamespaceMatchesDatabase(
         catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||
        !catalog::CatalogIdentifierProfileMatchesDatabase(
+        catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||
+       !catalog::CatalogConstructionIntentMatchesDatabase(
         catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid))return Fail(E::invalid_metadata);
     auto devices=supplied;std::sort(devices.begin(),devices.end(),[](const auto& a,const auto& b){return a.filespace_uuid<b.filespace_uuid;});
     std::set<disk::FileDevice*> handles;std::vector<std::unique_lock<std::recursive_mutex>> guards;guards.reserve(devices.size());

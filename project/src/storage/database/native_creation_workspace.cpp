@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_creation_workspace.hpp"
+#include "native_construction_audit.hpp"
 #include "native_creation_catalog_input.hpp"
 #include "native_creation_catalog_layout.hpp"
 #include "native_publication_watermark.hpp"
@@ -143,6 +144,7 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
            m.schema_epoch!=1||m.security_epoch!=1||m.catalog_generation!=1||
            !core::catalog::CatalogIdentifierProfileMatchesDatabase(
              core::catalog::BorrowCatalogMetadataVersion(m),b.database_uuid)||
+           !NativeConstructionIntentMatchesRequest(core::catalog::BorrowCatalogMetadataVersion(m),request)||
            name!=record.name.has_value()||
            (name&&(!m.record.payload.empty()||!core::catalog::CatalogNamePayloadMatchesMetadata(*record.name,m)))||
            !ids.insert(m.record.header.object_uuid.value).second||
