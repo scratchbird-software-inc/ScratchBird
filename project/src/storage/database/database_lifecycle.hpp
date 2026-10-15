@@ -23,6 +23,7 @@
 #include "transaction_horizon.hpp"
 #include "transaction_inventory.hpp"
 #include "uuid.hpp"
+#include "catalog_value_codec.hpp"
 
 #include <string>
 #include <vector>
@@ -84,6 +85,9 @@ struct PolicySeedPackDescriptor {
 };
 
 struct PolicySeedPackCatalogImage {
+  // Structural source failure, not an authority/activation assertion.
+  scratchbird::core::catalog::CatalogValueError native_definition_error =
+      scratchbird::core::catalog::CatalogValueError::none;
   bool active = false;
   std::string policy_pack_id;
   std::string policy_pack_uuid;

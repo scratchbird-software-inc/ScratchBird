@@ -171,3 +171,33 @@ controller, native security/provider admission and transaction2 activation remai
 required for original live startup qualification. Core03 and contradictory local
 default-policy packet/registry/conformance dispositions are corrected under the
 accepted no-deferral decision; manual distribution remains required.
+
+2026-10-15 production policy import/native provider-profile repair
+-------------------------------------------------------------
+Production imports now retain binary provider/role/group/membership/grant/profile
+identities and compare all relationship references by raw16, not source casing.
+Provider family/authority/verifier are bounded native enums. Native65589/65590
+production payloads retain actual inventory TX1 identity and generation; the
+legacy creator_tx text prefix is explicitly forbidden for these native bodies.
+Reopen reconciles counts, pack/generation bindings, exact committed origin and
+object/row uniqueness before dirty publication. Malformed optional import fields
+and duplicate identity/target/verifier keys refuse rather than becoming absent.
+
+Qualified policy-import-reopen-corruption-build/tests-20261015 PASS2/2; expanded
+public import test covers independent reference casing, within/across-class raw16
+duplicates, six malformed optional cases, valid-checksum foreign-origin and
+duplicate provider/row reopen corruptions. Public custom pack remains passing.
+policy-import-authority-followers-build/tests-20261015 PASS13/13; test elapsed
+6.542390s; both suites no leaked descendants. LastTest copied before next CTest.
+Earlier legacy-test-oracle and mistaken-header-member failures remain in their
+original FAILED receipts; they were repaired and replayed, not relabeled.
+Authorized read-only review confirms the three admission gaps repaired and finds
+no additional concrete defect in targeted diff. Owned temp root empty4KiB.
+
+No frozen original regression is closed by this prerequisite qualification:
+199 qualified/61 outstanding,9400 registered remains current. Pack summary,
+public image pack UUID and default-policy value bodies still need native carrier
+migration, full package/resource reference closure and owning native construction.
+Actual unified mutable security/provider/service admission, activation and hosted
+BEGIN integration remain required. Do not combine native config with legacy
+path-backed security or infer authority from the passing codec/import tests.

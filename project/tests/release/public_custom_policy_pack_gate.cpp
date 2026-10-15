@@ -10,6 +10,7 @@
 #include "memory.hpp"
 #include "security/policy_api.hpp"
 #include "uuid.hpp"
+#include "../support/owned_temp_directory.hpp"
 
 #include <openssl/sha.h>
 
@@ -23,6 +24,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -34,8 +36,7 @@ namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -51,8 +52,12 @@ std::uint64_t CurrentUnixMillis() {
           .count());
 }
 
+scratchbird::tests::OwnedTempDirectory& TestRoot() {
+  static scratchbird::tests::OwnedTempDirectory root;
+  return root;
+}
 std::filesystem::path UniquePath(std::string_view stem) {
-  return std::filesystem::temp_directory_path() /
+  return TestRoot().path() /
          (std::string(stem) + "_" + std::to_string(CurrentUnixMillis()));
 }
 
@@ -378,12 +383,17 @@ void ProvePostCreatePackMutationStillRefuses(const std::filesystem::path& databa
 
 }  // namespace
 
-int main() {
+int main() try {
   ConfigureMemoryFixture();
   TempRoot temp{UniquePath("sb_pcr132_custom_policy_pack")};
   std::filesystem::create_directories(temp.root);
   ProveCustomPackCreateAndReopen(temp.root);
   ProveFailClosedDiagnostics(temp.root);
   ProvePostCreatePackMutationStillRefuses(temp.root / "custom_policy_pack.sbdb");
+  TestRoot().Cleanup();
   return EXIT_SUCCESS;
+}catch(const std::exception& error) {
+  std::cerr<<error.what()<<'\n';
+  try{TestRoot().Cleanup();}catch(const std::exception& cleanup){std::cerr<<cleanup.what()<<'\n';}
+  return EXIT_FAILURE;
 }

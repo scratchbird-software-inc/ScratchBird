@@ -9,6 +9,9 @@
 #include "catalog_page.hpp"
 #include "catalog_record_codec.hpp"
 #include "catalog_security_record_codec.hpp"
+#include "catalog_bootstrap_policy.hpp"
+#include "local_transaction_store.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include "database_lifecycle.hpp"
 #include "disk_device.hpp"
 #include "memory.hpp"
@@ -28,6 +31,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -46,8 +50,7 @@ struct DecodedRecord {
 };
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -83,8 +86,12 @@ std::uint64_t CurrentUnixMillis() {
           .count());
 }
 
+scratchbird::tests::OwnedTempDirectory& TestRoot() {
+  static scratchbird::tests::OwnedTempDirectory root;
+  return root;
+}
 std::filesystem::path UniquePath(std::string_view stem) {
-  return std::filesystem::temp_directory_path() /
+  return TestRoot().path() /
          (std::string(stem) + "_" + std::to_string(CurrentUnixMillis()));
 }
 
@@ -167,6 +174,18 @@ std::vector<DecodedRecord> DecodeTypedRecords(const std::vector<page::CatalogPag
       records.push_back({decoded.record, std::move(fields)});
       continue;
     }
+    if(catalog::IsCatalogBootstrapPolicyPayload(decoded.record.payload)) {
+      const auto provider=catalog::DecodeCatalogBootstrapSecurityProvider(decoded.record.payload);
+      const auto profile=catalog::DecodeCatalogBootstrapPolicyProfile(decoded.record.payload);
+      Require(provider.ok()||profile.ok(),"native imported provider/profile did not decode");
+      std::map<std::string,std::string> fields;
+      fields.emplace("policy_class",provider.ok()?"security_provider":"policy_profile");
+      // Test-side presentation only; the source body contains raw16 identity
+      // and native unsigned origin fields, not these readable strings.
+      fields.emplace("policy_pack_uuid",uuid::UuidToString(provider.ok()?provider.record->policy_pack_uuid:profile.record->policy_pack_uuid));
+      records.push_back({decoded.record,std::move(fields)});
+      continue;
+    }
     records.push_back({decoded.record, ParsePayloadFields(decoded.record.payload)});
   }
   Require(!records.empty(), "no typed catalog records were decoded");
@@ -229,9 +248,20 @@ std::uint32_t CountDefaultPoliciesFromPack(const std::vector<DecodedRecord>& rec
   return count;
 }
 
-void RequireImportedRecordsCreatedByTx1(const std::vector<DecodedRecord>& records) {
+void RequireImportedRecordsCreatedByTx1(const std::vector<DecodedRecord>& records,
+                                      const scratchbird::core::platform::TypedUuid& expected_origin) {
   for (const auto& record : records) {
     if (record.fields.count("policy_pack_uuid") == 0) {
+      continue;
+    }
+    if(catalog::IsCatalogBootstrapPolicyPayload(record.record.payload)) {
+      const auto provider=catalog::DecodeCatalogBootstrapSecurityProvider(record.record.payload);
+      const auto profile=catalog::DecodeCatalogBootstrapPolicyProfile(record.record.payload);
+      Require(provider.ok()||profile.ok(),"native imported origin body invalid");
+      const auto& origin=provider.ok()?provider.record->origin_transaction_uuid:profile.record->origin_transaction_uuid;
+      const auto local=provider.ok()?provider.record->origin_local_transaction_id:profile.record->origin_local_transaction_id;
+      Require(local==1&&origin.kind==UuidKind::transaction&&origin.kind==expected_origin.kind&&origin.value==expected_origin.value,
+          "native imported declaration does not bind actual committed construction tx1 identity");
       continue;
     }
     Require(record.fields.count("creator_tx") != 0 && record.fields.at("creator_tx") == "1",
@@ -316,7 +346,13 @@ void RequirePolicyCatalogImport(const std::filesystem::path& database_path,
           "standard policy grants were not imported");
   Require(CountKindFromPack(records, catalog::CatalogRecordKind::grant_record, "group_membership") == 5,
           "standard policy group memberships were not imported");
-  RequireImportedRecordsCreatedByTx1(records);
+  const auto inventory=db::AcquireStrongLocalTransactionInventorySnapshot(database_path.string());
+  Require(inventory.ok(),"actual policy construction inventory unavailable");
+  const auto creator=scratchbird::transaction::mga::LookupLocalTransaction(inventory.snapshot->inventory,
+      scratchbird::transaction::mga::MakeLocalTransactionId(1));
+  Require(creator.ok()&&scratchbird::transaction::mga::HasCommittedInventoryOutcome(creator.entry),
+          "actual policy construction transaction is not committed");
+  RequireImportedRecordsCreatedByTx1(records,creator.entry.identity.transaction_uuid);
 }
 
 db::DatabaseCreateConfig BaseCreateConfig(const std::filesystem::path& path,
@@ -482,12 +518,163 @@ void RunNativeReservedRoleIdentityCases() {
   }
 }
 
+template<class Edit> void RewriteAndResealPack(const std::filesystem::path& root,Edit edit) {
+  const auto read=[](const auto& path){std::ifstream input(path,std::ios::binary);
+    Require(bool(input),"identity fixture read failed");return std::string(std::istreambuf_iterator<char>(input),{});};
+  const auto write=[](const auto& path,const std::string& value){std::ofstream output(path,std::ios::binary|std::ios::trunc);
+    output.write(value.data(),value.size());Require(bool(output),"identity fixture write failed");};
+  const auto replace=[](std::string& value,const std::string& from,const std::string& to) {
+    for(std::size_t at=0;(at=value.find(from,at))!=value.npos;at+=to.size())value.replace(at,from.size(),to);
+  };
+  const auto sha=[](const std::string& value){std::string normalized;
+    for(std::size_t i=0;i<value.size();++i){if(value[i]=='\r'&&i+1<value.size()&&value[i+1]=='\n')continue;normalized+=value[i];}
+    const auto result=scratchbird::core::hash::ComputeSha256Digest(
+        reinterpret_cast<const scratchbird::core::platform::byte*>(normalized.data()),normalized.size());
+    Require(result.ok(),"identity fixture hash failed");return scratchbird::core::hash::HexLower(result.digest);
+  };
+  auto manifest=read(root/"POLICY_PACK_MANIFEST.json");const auto original=manifest;
+  const std::regex entry(R"re("path"\s*:\s*"([^"]+)"\s*,\s*"sha256"\s*:\s*"([0-9a-f]{64})")re");
+  std::string aggregate;unsigned files=0;
+  for(auto it=std::sregex_iterator(original.begin(),original.end(),entry);it!=std::sregex_iterator();++it) {
+    const auto relative=(*it)[1].str();auto value=read(root/relative);edit(relative,value,replace);write(root/relative,value);
+    const auto digest=sha(value);replace(manifest,(*it)[2].str(),digest);
+    aggregate+=relative;aggregate.push_back('\0');aggregate+=digest;aggregate.push_back('\n');++files;
+  }
+  Require(files==9,"identity fixture retains complete manifest");
+  const std::regex field(R"re("content_sha256"\s*:\s*"([0-9a-f]{64})")re");std::smatch match;
+  Require(std::regex_search(manifest,match,field),"identity fixture aggregate field missing");
+  manifest.replace(match.position(1),match.length(1),sha(aggregate));write(root/"POLICY_PACK_MANIFEST.json",manifest);
+}
+
+void RunBinaryIdentityBindingCases() {
+  for(unsigned scenario=0;scenario<10;++scenario) {
+    const auto root=UniquePath("policy_binary_identity_"+std::to_string(scenario));
+    std::filesystem::copy(SB_DEFAULT_POLICY_PACK_ROOT,root,std::filesystem::copy_options::recursive);
+    RewriteAndResealPack(root,[&](const auto& path,std::string& value,const auto& replace) {
+      if(scenario==0&&(path=="policies/groups.json"||path=="policies/grants.json"))
+        replace(value,"\"parent_uuid\": \"018f7a10-1280-7000-8000-000000000100\"",
+                      "\"parent_uuid\": \"018F7A10-1280-7000-8000-000000000100\"");
+      if(scenario==0&&path=="policies/grants.json")
+        replace(value,"\"subject_uuid\": \"018f7a10-1280-7000-8000-000000000100\"",
+                      "\"subject_uuid\": \"018F7A10-1280-7000-8000-000000000100\"");
+      if(scenario==1&&path=="policies/security_providers.json")
+        replace(value,"018f7a10-1280-7000-8000-000000000011","018F7A10-1280-7000-8000-000000000010");
+      if(scenario==2)replace(value,"018f7a10-1280-7000-8000-000000000200","018F7A10-1280-7000-8000-000000000010");
+      if(scenario==3&&path=="policies/roles.json")
+        replace(value,"018f7a10-1280-7000-8000-000000000101","018F7A10-1280-7000-8000-000000000100");
+      if(scenario>=4&&scenario<=6&&path=="policies/grants.json") {
+        const std::string malformed=scenario==4?"42":scenario==5?"{}":"\"\", \"target_uuid\": \"\"";
+        replace(value,"\"target_uuid\": \"\"","\"target_uuid\": "+malformed);
+      }
+      if(scenario>=7&&path=="policies/security_providers.json") {
+        const std::string malformed=scenario==7?"42":scenario==8?"{}":"\"\", \"credential_verifier_policy\": \"\"";
+        replace(value,"\"external_provider\": true","\"credential_verifier_policy\": "+malformed+", \"external_provider\": true");
+      }
+    });
+    const auto path=root/"node.sbdb";auto config=BaseCreateConfig(path,CurrentUnixMillis());config.policy_seed_pack_root=root.string();
+    const auto result=db::CreateDatabaseFile(config);
+    if(scenario==0) {
+      Require(result.ok()&&result.create_finality==db::DatabaseCreateFinalityClass::committed,
+              "independent reference spelling changed binary relationship identity");
+      db::DatabaseOpenConfig open;open.path=path.string();open.read_only=true;
+      const auto reopened=db::OpenDatabaseFile(open);Require(reopened.ok(),"binary alias relationship did not reopen");
+      const auto records=DecodeTypedRecords(ReadCatalogRows(path,reopened.state.header.page_size));
+      Require(CountKindFromPack(records,catalog::CatalogRecordKind::grant_record,"group_membership")==5&&
+          CountKindFromPack(records,catalog::CatalogRecordKind::grant_record,"privilege")==10,
+          "binary alias binding lost actual membership/grant rows");
+      const auto expected=uuid::ParseTypedUuid(UuidKind::object,"018f7a10-1280-7000-8000-000000000100");
+      Require(expected.ok(),"binary oracle identity invalid");unsigned memberships=0,grants=0;
+      for(const auto& record:records)if(record.record.header.kind==catalog::CatalogRecordKind::grant_record) {
+        const auto security=catalog::DecodeCatalogSecurityRecord(record.record.header.kind,record.record.payload);
+        Require(security.ok(),"actual binary grant payload invalid");
+        memberships+=security.record->Identity("parent_uuid")==expected.value.value;
+        grants+=security.record->Identity("subject_uuid")==expected.value.value;
+      }
+      Require(memberships==1&&grants==1,"reference-only casing did not preserve exact raw16 parent/subject identity");
+    }else {
+      const char* expected[]{"","SB-POLICY-PACK-PROVIDERS-INVALID","SB-POLICY-PACK-GROUPS-INVALID","SB-POLICY-PACK-ROLES-INVALID",
+          "SB-POLICY-PACK-GRANTS-INVALID","SB-POLICY-PACK-GRANTS-INVALID","SB-POLICY-PACK-GRANTS-INVALID",
+          "SB-POLICY-PACK-PROVIDERS-INVALID","SB-POLICY-PACK-PROVIDERS-INVALID","SB-POLICY-PACK-PROVIDERS-INVALID"};
+      Require(!result.ok()&&result.diagnostic.diagnostic_code==expected[scenario]&&
+          result.create_finality==db::DatabaseCreateFinalityClass::not_published&&!std::filesystem::exists(path),
+          "same raw16 identity reused within/across imported classes reached physical creation");
+    }
+  }
+}
+
+void RunNativePolicyReopenCorruptionCases() {
+  for (unsigned scenario=0; scenario<3; ++scenario) {
+    const auto path=UniquePath("policy_reopen_corruption_"+std::to_string(scenario)+".sbdb");
+    auto config=BaseCreateConfig(path,CurrentUnixMillis());
+    const auto created=db::CreateDatabaseFile(config);
+    Require(created.ok(),"reopen corruption fixture creation failed");
+    auto rows=ReadCatalogRows(path,config.page_size);
+    std::optional<page::CatalogPageRow> previous_provider;
+    bool changed=false;
+    for (auto& row:rows) {
+      if(row.kind!=page::CatalogPageRowKind::typed_catalog_record)continue;
+      auto decoded=catalog::DecodeCatalogTypedRecord(row);
+      Require(decoded.ok(),"reopen corruption source framing invalid");
+      auto provider=catalog::DecodeCatalogBootstrapSecurityProvider(decoded.record.payload);
+      if(!provider.ok())continue;
+      if(scenario==0) {
+        const auto foreign=uuid::ParseTypedUuid(UuidKind::transaction,"018f7a10-1280-7000-8000-000000000999");
+        Require(foreign.ok(),"foreign origin fixture invalid");
+        provider.record->origin_transaction_uuid=foreign.value;
+        std::array<scratchbird::core::platform::byte,2048> backing{};
+        const auto encoded=catalog::EncodeCatalogBootstrapSecurityProviderInto(*provider.record,backing);
+        Require(encoded.ok(),"foreign origin is not structurally valid");
+        decoded.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
+        const auto wrapped=catalog::EncodeCatalogTypedRecord(decoded.record,row.ordinal);
+        Require(wrapped.ok(),"foreign origin common framing failed");row=wrapped.row;
+        changed=true;break;
+      }
+      if(!provider.record->external_provider)continue;
+      if(!previous_provider){previous_provider=row;continue;}
+      if(scenario==1) {
+        const auto ordinal=row.ordinal;row=*previous_provider;row.ordinal=ordinal;
+      } else {
+        const auto prior=catalog::DecodeCatalogTypedRecord(*previous_provider);
+        Require(prior.ok(),"duplicate row source invalid");
+        decoded.record.header.row_uuid=prior.record.header.row_uuid;
+        const auto wrapped=catalog::EncodeCatalogTypedRecord(decoded.record,row.ordinal);
+        Require(wrapped.ok(),"duplicate row common framing failed");row=wrapped.row;
+      }
+      changed=true;break;
+    }
+    Require(changed,"native corruption did not change intended definition");
+    const auto pages=page::BuildCatalogPageSet(rows,config.page_size,db::kCatalogPageNumber,db::kCatalogOverflowFirstPageNumber);
+    Require(pages.ok(),"corrupted definitions could not be validly checksummed");
+    {
+      disk::FileDevice device;Require(device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"corruption writer open failed");
+      for(const auto& image:pages.pages) {
+        const auto offset=page::CheckedPageBodyOffset(config.page_size,image.page_number,disk::kPageHeaderSerializedBytes);
+        Require(offset.ok()&&device.WriteAt(offset.offset,image.body.data(),image.body.size()).ok(),"corruption body write failed");
+      }
+      Require(device.Sync().ok(),"corruption fixture sync failed");
+    }
+    // First verify transport/framing integrity independently of admission.
+    Require(ReadCatalogRows(path,config.page_size).size()==rows.size(),"corruption failed page integrity before admission");
+    db::DatabaseOpenConfig open;open.path=path.string();open.read_only=true;
+    const auto result=db::OpenDatabaseFile(open);
+    Require(!result.ok()&&result.diagnostic.diagnostic_code=="SB-POLICY-PACK-CATALOG-INVALID",
+            "foreign native origin or duplicate raw16 identity survived reopen");
+  }
+}
+
 }  // namespace
 
-int main() {
+int main() try {
   ConfigureMemoryFixture();
   RunSuccessfulImportCase();
   RunHashMismatchCase();
   RunNativeReservedRoleIdentityCases();
+  RunBinaryIdentityBindingCases();
+  RunNativePolicyReopenCorruptionCases();
+  TestRoot().Cleanup();
   return EXIT_SUCCESS;
+}catch(const std::exception& error) {
+  std::cerr<<error.what()<<'\n';
+  try{TestRoot().Cleanup();}catch(const std::exception& cleanup){std::cerr<<cleanup.what()<<'\n';}
+  return EXIT_FAILURE;
 }

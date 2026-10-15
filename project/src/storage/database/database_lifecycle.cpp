@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "catalog_bootstrap_policy.hpp"
 #include "bootstrap_security_validation.hpp"
 #include "native_drop_evidence.hpp"
 #include "../disk/filespace_bootstrap.hpp"
@@ -82,6 +83,7 @@ using scratchbird::core::platform::Severity;
 using scratchbird::core::platform::StatusCode;
 using scratchbird::core::platform::Subsystem;
 using scratchbird::core::platform::UuidKind;
+using scratchbird::core::platform::Uuid;
 using scratchbird::core::platform::u16;
 using scratchbird::core::catalog::CatalogRecordKind;
 using scratchbird::core::catalog::CatalogRecordKindName;
@@ -1199,45 +1201,47 @@ DatabaseCatalogSummaryResult DatabaseCatalogSummaryError(Status status, Diagnost
 }
 
 struct PolicyProviderSeed {
-  std::string provider_uuid;
-  std::string provider_family;
-  std::string authority;
-  std::string credential_verifier_policy;
+  Uuid provider_uuid;
+  scratchbird::core::catalog::BootstrapProviderFamily family=
+      static_cast<scratchbird::core::catalog::BootstrapProviderFamily>(0);
+  scratchbird::core::catalog::BootstrapProviderAuthority authority=
+      static_cast<scratchbird::core::catalog::BootstrapProviderAuthority>(0);
+  std::optional<scratchbird::core::catalog::BootstrapVerifierPolicy> verifier_policy;
   bool enabled_by_default = false;
   bool external_provider = false;
 };
 
 struct PolicyRoleSeed {
-  std::string role_uuid;
+  Uuid role_uuid;
   std::string role_code;
   std::string description;
   std::string default_assignment;
 };
 
 struct PolicyGroupSeed {
-  std::string group_uuid;
+  Uuid group_uuid;
   std::string group_code;
   std::string description;
 };
 
 struct PolicyGroupMembershipSeed {
-  std::string member_uuid;
+  Uuid member_uuid;
   std::string member_kind;
-  std::string parent_uuid;
+  Uuid parent_uuid;
   std::string parent_kind;
 };
 
 struct PolicyGrantSeed {
-  std::string grant_uuid;
-  std::string subject_uuid;
+  Uuid grant_uuid;
+  Uuid subject_uuid;
   std::string subject_kind;
-  std::string target_uuid;
+  std::optional<Uuid> target_uuid;
   std::string right;
   std::string effect;
 };
 
 struct PolicyProfileSeed {
-  std::string profile_uuid;
+  Uuid profile_uuid;
   std::string area;
   std::string mode;
 };
@@ -1356,6 +1360,18 @@ bool ExtractStringField(const std::string& object, const std::string& key, std::
   }
   *value = match[1].str();
   return true;
+}
+
+// Optional is not synonymous with malformed. Reject duplicate keys and present
+// non-string values rather than silently converting either into absence.
+bool ExtractOptionalStringField(const std::string& object, const std::string& key,
+                                std::string* value) {
+  const std::regex key_pattern("\"" + key + "\"\\s*:");
+  const auto first = std::sregex_iterator(object.begin(), object.end(), key_pattern);
+  if (first == std::sregex_iterator()) { value->clear(); return true; }
+  auto next = first;
+  if (++next != std::sregex_iterator()) return false;
+  return ExtractStringField(object, key, value);
 }
 
 bool ExtractU32Field(const std::string& object, const std::string& key, u32* value) {
@@ -1518,6 +1534,16 @@ std::vector<std::string> SplitTopLevelObjects(const std::string& array_body) {
 bool ValidatePolicyUuid(const std::string& value, UuidKind kind) {
   const auto parsed = ParseTypedUuid(kind, value);
   return parsed.ok();
+}
+
+// Configuration import boundary only: no textual identity survives in loaded
+// provider/role/group/grant/profile definitions or their relationship indexes.
+bool ExtractPolicyIdentity(const std::string& object,const std::string& field,Uuid* out) {
+  std::string text;
+  if(!ExtractOptionalStringField(object,field,&text)||text.empty())return false;
+  const auto parsed=ParseTypedUuid(UuidKind::object,text);
+  if(!parsed.ok())return false;
+  *out=parsed.value.value;return true;
 }
 
 bool ArrayContainsString(const std::string& text,
@@ -2069,29 +2095,44 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
   if (!ExtractArrayBody(providers_json, "providers", &array_body)) {
     return PolicyPackLoadError("SB-POLICY-PACK-PROVIDERS-INVALID", "providers");
   }
+  const auto pack_identity=ParseTypedUuid(UuidKind::object,image.policy_pack_uuid);
+  if(!pack_identity.ok())return PolicyPackLoadError("SB-POLICY-PACK-MANIFEST-FIELD-INVALID","pack identity");
+  std::set<Uuid> definition_identities{pack_identity.value.value};
   for (const std::string& object : SplitTopLevelObjects(array_body)) {
     PolicyProviderSeed provider;
-    if (!ExtractStringField(object, "provider_uuid", &provider.provider_uuid) ||
-        !ExtractStringField(object, "provider_family", &provider.provider_family) ||
-        !ExtractStringField(object, "authority", &provider.authority) ||
+    std::string provider_family,authority,verifier_policy;
+    if (!ExtractPolicyIdentity(object, "provider_uuid", &provider.provider_uuid) ||
+        !definition_identities.insert(provider.provider_uuid).second||
+        !ExtractStringField(object, "provider_family", &provider_family) ||
+        !ExtractStringField(object, "authority", &authority) ||
         !ExtractBoolField(object, "enabled_by_default", &provider.enabled_by_default) ||
-        !ExtractBoolField(object, "external_provider", &provider.external_provider) ||
-        !ValidatePolicyUuid(provider.provider_uuid, UuidKind::object)) {
+        !ExtractBoolField(object, "external_provider", &provider.external_provider)) {
       return PolicyPackLoadError("SB-POLICY-PACK-PROVIDERS-INVALID", "provider");
     }
-    ExtractStringField(object, "credential_verifier_policy", &provider.credential_verifier_policy);
-    if (provider.provider_family == "local_password") {
+    if (!ExtractOptionalStringField(object, "credential_verifier_policy", &verifier_policy))
+      return PolicyPackLoadError("SB-POLICY-PACK-PROVIDERS-INVALID", "credential verifier type or duplicate key");
+    namespace c=scratchbird::core::catalog;
+    static constexpr std::string_view families[]{"local_password","ldap_ad","oidc_jwt","saml",
+        "kerberos_pac","pam","radius","webauthn","certificate_mtls","workload_identity",
+        "managed_identity","custom_cpp_plugin"};
+    const auto family=std::find(std::begin(families),std::end(families),provider_family);
+    if(family==std::end(families))return PolicyPackLoadError("SB-POLICY-PACK-PROVIDERS-INVALID","provider family");
+    provider.family=static_cast<c::BootstrapProviderFamily>(1+std::distance(std::begin(families),family));
+    if (provider.family == c::BootstrapProviderFamily::local_password) {
       if (!provider.enabled_by_default || provider.external_provider ||
-          provider.authority != "durable_catalog_row") {
+          authority != "durable_catalog_row"||verifier_policy!="local_password_verifier_required") {
         return PolicyPackLoadError("SB-POLICY-PACK-PROVIDERS-INVALID",
                                    "local_password");
       }
+      provider.authority=c::BootstrapProviderAuthority::durable_catalog;
+      provider.verifier_policy=c::BootstrapVerifierPolicy::local_password_verifier_required;
       ++image.enabled_local_password_provider_records;
     } else if (provider.enabled_by_default || !provider.external_provider ||
-               provider.authority != "unsupported_by_default") {
+               (authority != "unsupported_by_default"&&authority!="external_provider_admission")||!verifier_policy.empty()) {
       return PolicyPackLoadError("SB-POLICY-PACK-PROVIDERS-INVALID",
-                                 provider.provider_family);
+                                 provider_family);
     } else {
+      provider.authority=c::BootstrapProviderAuthority::external_provider_admission;
       ++image.external_provider_disabled_records;
     }
     loaded.providers.push_back(std::move(provider));
@@ -2106,17 +2147,16 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
   if (!ExtractArrayBody(roles_json, "roles", &array_body)) {
     return PolicyPackLoadError("SB-POLICY-PACK-ROLES-INVALID", "roles");
   }
-  std::set<std::string> role_uuids;
+  std::set<Uuid> role_uuids;
   for (const std::string& object : SplitTopLevelObjects(array_body)) {
     PolicyRoleSeed role;
-    if (!ExtractStringField(object, "role_uuid", &role.role_uuid) ||
-        !ExtractStringField(object, "role_code", &role.role_code) ||
-        !ValidatePolicyUuid(role.role_uuid, UuidKind::object)) {
+    if (!ExtractPolicyIdentity(object, "role_uuid", &role.role_uuid) ||
+        !ExtractStringField(object, "role_code", &role.role_code)||!role_uuids.insert(role.role_uuid).second||
+        !definition_identities.insert(role.role_uuid).second) {
       return PolicyPackLoadError("SB-POLICY-PACK-ROLES-INVALID", "role");
     }
     ExtractStringField(object, "description", &role.description);
     ExtractStringField(object, "default_assignment", &role.default_assignment);
-    role_uuids.insert(role.role_uuid);
     loaded.roles.push_back(std::move(role));
   }
   image.role_records = static_cast<u32>(loaded.roles.size());
@@ -2124,16 +2164,15 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
   if (!ExtractArrayBody(groups_json, "groups", &array_body)) {
     return PolicyPackLoadError("SB-POLICY-PACK-GROUPS-INVALID", "groups");
   }
-  std::set<std::string> group_uuids;
+  std::set<Uuid> group_uuids;
   for (const std::string& object : SplitTopLevelObjects(array_body)) {
     PolicyGroupSeed group;
-    if (!ExtractStringField(object, "group_uuid", &group.group_uuid) ||
-        !ExtractStringField(object, "group_code", &group.group_code) ||
-        !ValidatePolicyUuid(group.group_uuid, UuidKind::object)) {
+    if (!ExtractPolicyIdentity(object, "group_uuid", &group.group_uuid) ||
+        !ExtractStringField(object, "group_code", &group.group_code)||!group_uuids.insert(group.group_uuid).second||
+        !definition_identities.insert(group.group_uuid).second) {
       return PolicyPackLoadError("SB-POLICY-PACK-GROUPS-INVALID", "group");
     }
     ExtractStringField(object, "description", &group.description);
-    group_uuids.insert(group.group_uuid);
     loaded.groups.push_back(std::move(group));
   }
   image.group_records = static_cast<u32>(loaded.groups.size());
@@ -2141,9 +2180,9 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
   if (ExtractArrayBody(groups_json, "memberships", &array_body)) {
     for (const std::string& object : SplitTopLevelObjects(array_body)) {
       PolicyGroupMembershipSeed membership;
-      if (!ExtractStringField(object, "member_uuid", &membership.member_uuid) ||
+      if (!ExtractPolicyIdentity(object, "member_uuid", &membership.member_uuid) ||
           !ExtractStringField(object, "member_kind", &membership.member_kind) ||
-          !ExtractStringField(object, "parent_uuid", &membership.parent_uuid) ||
+          !ExtractPolicyIdentity(object, "parent_uuid", &membership.parent_uuid) ||
           !ExtractStringField(object, "parent_kind", &membership.parent_kind) ||
           membership.member_kind != "group" ||
           membership.parent_kind != "role" ||
@@ -2161,23 +2200,30 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
   }
   for (const std::string& object : SplitTopLevelObjects(array_body)) {
     PolicyGrantSeed grant;
-    if (!ExtractStringField(object, "grant_uuid", &grant.grant_uuid) ||
-        !ExtractStringField(object, "subject_uuid", &grant.subject_uuid) ||
+    if (!ExtractPolicyIdentity(object, "grant_uuid", &grant.grant_uuid) ||
+        !definition_identities.insert(grant.grant_uuid).second||
+        !ExtractPolicyIdentity(object, "subject_uuid", &grant.subject_uuid) ||
         !ExtractStringField(object, "subject_kind", &grant.subject_kind) ||
         !ExtractStringField(object, "right", &grant.right) ||
         !ExtractStringField(object, "effect", &grant.effect) ||
-        !ValidatePolicyUuid(grant.grant_uuid, UuidKind::row) ||
         (grant.subject_kind != "role" && grant.subject_kind != "group") ||
         (grant.effect != "allow" && grant.effect != "deny")) {
       return PolicyPackLoadError("SB-POLICY-PACK-GRANTS-INVALID", "grant");
     }
-    ExtractStringField(object, "target_uuid", &grant.target_uuid);
+    std::string target_text;
+    if(!ExtractOptionalStringField(object,"target_uuid",&target_text))
+      return PolicyPackLoadError("SB-POLICY-PACK-GRANTS-INVALID","target identity type or duplicate key");
+    if(!target_text.empty()) {
+      const auto parsed=ParseTypedUuid(UuidKind::object,target_text);
+      if(!parsed.ok())return PolicyPackLoadError("SB-POLICY-PACK-GRANTS-INVALID","target identity");
+      grant.target_uuid=parsed.value.value;
+    }
     const bool subject_known =
         (grant.subject_kind == "role" && role_uuids.count(grant.subject_uuid) != 0) ||
         (grant.subject_kind == "group" && group_uuids.count(grant.subject_uuid) != 0);
     if (!subject_known) {
       return PolicyPackLoadError("SB-POLICY-PACK-GRANTS-INVALID",
-                                 grant.subject_uuid);
+                                 "unknown binary grant subject");
     }
     loaded.grants.push_back(std::move(grant));
   }
@@ -2189,10 +2235,10 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
   std::set<std::string> profile_areas;
   for (const std::string& object : SplitTopLevelObjects(array_body)) {
     PolicyProfileSeed profile;
-    if (!ExtractStringField(object, "profile_uuid", &profile.profile_uuid) ||
+    if (!ExtractPolicyIdentity(object, "profile_uuid", &profile.profile_uuid) ||
+        !definition_identities.insert(profile.profile_uuid).second||
         !ExtractStringField(object, "area", &profile.area) ||
         !ExtractStringField(object, "mode", &profile.mode) ||
-        !ValidatePolicyUuid(profile.profile_uuid, UuidKind::object) ||
         !profile_areas.insert(profile.area).second) {
       return PolicyPackLoadError("SB-POLICY-PACK-PROFILES-INVALID", "profile");
     }
@@ -2342,6 +2388,7 @@ CatalogRowsBuildResult AddTypedCatalogRecord(std::vector<CatalogPageRow>* rows,
       return CatalogRowsBuildError(refused.status, refused.diagnostic);
     }
   } else if (!scratchbird::core::catalog::IsCatalogSecurityRecordKind(kind) &&
+             !scratchbird::core::catalog::IsCatalogBootstrapPolicyPayload(payload) &&
              !scratchbird::core::catalog::IsCatalogMetricRetentionPolicyPayload(payload) &&
              !scratchbird::core::catalog::IsCatalogMetricVisibilityPolicyPayload(payload) &&
              kind != CatalogRecordKind::metric_label_schema &&
@@ -2613,7 +2660,8 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
                                                      u64 identity_seed,
                                                      TypedUuid database_object_uuid,
                                                      TypedUuid security_parent_uuid,
-                                                     const LoadedPolicySeedPack& pack) {
+                                                     const LoadedPolicySeedPack& pack,
+                                                     const TypedUuid& creator_transaction_uuid) {
   if (!pack.image.active) {
     CatalogRowsBuildResult result;
     result.status = DatabaseLifecycleOkStatus();
@@ -2685,39 +2733,28 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
 
   u64 seed = identity_seed + 100;
   for (const auto& provider : pack.providers) {
-    TypedUuid provider_uuid;
-    parsed_uuid = ParsePolicyObjectUuid(provider.provider_uuid, &provider_uuid);
-    if (!parsed_uuid.ok()) { return parsed_uuid; }
-    typed = AddTypedCatalogRecord(
-        rows,
-        CatalogRecordKind::policy,
-        ordinal,
-        seed,
-        KeyValuePayload({{"policy_key", "security.provider." + provider.provider_family},
-                         {"policy_name", "security.provider." + provider.provider_family},
-                         {"policy_class", "security_provider"},
-                         {"provider_uuid", provider.provider_uuid},
-                         {"provider_family", provider.provider_family},
-                         {"enabled_by_default", BoolText(provider.enabled_by_default)},
-                         {"authority", provider.authority},
-                         {"credential_verifier_policy", provider.credential_verifier_policy},
-                         {"external_provider", BoolText(provider.external_provider)},
-                         {"policy_pack_uuid", pack.image.policy_pack_uuid},
-                         {"policy_generation", std::to_string(pack.image.policy_generation)},
-                         {"created_txn", std::to_string(kBootstrapCatalogTransactionId)},
-                         {"loaded_at_database_create", "1"},
-                         {"default_provider_mode", "local-password-only"},
-                         {"engine_owned", "1"}}),
-        security_parent_uuid,
-        provider_uuid);
-    if (!typed.ok()) { return typed; }
-    seed += 4;
+    namespace c=scratchbird::core::catalog;
+    c::CatalogBootstrapSecurityProvider native;
+    native.provider_uuid=provider.provider_uuid;native.policy_pack_uuid=policy_pack_uuid.value;
+    native.generation=native.policy_pack_generation=pack.image.policy_generation;
+    native.family=provider.family;
+    native.enabled_by_default=provider.enabled_by_default;native.external_provider=provider.external_provider;
+    native.authority=provider.authority;native.verifier_policy=provider.verifier_policy;
+    native.origin_transaction_uuid=creator_transaction_uuid;
+    native.origin_local_transaction_id=kBootstrapCatalogTransactionId;
+    std::array<scratchbird::core::platform::byte,2048> backing;
+    const auto encoded=c::EncodeCatalogBootstrapSecurityProviderInto(native,backing);
+    if(!encoded.ok())return CatalogRowsBuildError(DatabaseLifecycleErrorStatus(),
+        MakeDatabaseLifecycleDiagnostic(DatabaseLifecycleErrorStatus(),
+          "SB-POLICY-PACK-PROVIDERS-INVALID","storage.database_lifecycle.policy_pack_invalid",{},"native provider definition"));
+    typed=AddTypedCatalogRecord(rows,CatalogRecordKind::policy,ordinal,seed,
+        std::string(encoded.bytes.begin(),encoded.bytes.end()),security_parent_uuid,
+        TypedUuid{UuidKind::object,provider.provider_uuid});
+    if(!typed.ok())return typed;
+    seed+=4;
   }
-
   for (const auto& role : pack.roles) {
-    TypedUuid role_uuid;
-    parsed_uuid = ParsePolicyObjectUuid(role.role_uuid, &role_uuid);
-    if (!parsed_uuid.ok()) { return parsed_uuid; }
+    const TypedUuid role_uuid{UuidKind::object,role.role_uuid};
     scratchbird::core::catalog::CatalogSecurityRecord record;
     record.kind = CatalogRecordKind::role_account;
     record.identities = {{"role_uuid", role_uuid.value},
@@ -2737,9 +2774,7 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
   }
 
   for (const auto& group : pack.groups) {
-    TypedUuid group_uuid;
-    parsed_uuid = ParsePolicyObjectUuid(group.group_uuid, &group_uuid);
-    if (!parsed_uuid.ok()) { return parsed_uuid; }
+    const TypedUuid group_uuid{UuidKind::object,group.group_uuid};
     scratchbird::core::catalog::CatalogSecurityRecord record;
     record.kind = CatalogRecordKind::group_account;
     record.identities = {{"group_uuid", group_uuid.value},
@@ -2758,11 +2793,8 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
   }
 
   for (const auto& membership : pack.memberships) {
-    TypedUuid member_uuid, parent_uuid;
-    parsed_uuid = ParsePolicyObjectUuid(membership.member_uuid, &member_uuid);
-    if (!parsed_uuid.ok()) return parsed_uuid;
-    parsed_uuid = ParsePolicyObjectUuid(membership.parent_uuid, &parent_uuid);
-    if (!parsed_uuid.ok()) return parsed_uuid;
+    const TypedUuid member_uuid{UuidKind::object,membership.member_uuid};
+    const TypedUuid parent_uuid{UuidKind::object,membership.parent_uuid};
     scratchbird::core::catalog::CatalogSecurityRecord record;
     record.kind = CatalogRecordKind::grant_record;
     record.identities = {{"member_uuid", member_uuid.value},
@@ -2784,20 +2816,15 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
   }
 
   for (const auto& grant : pack.grants) {
-    TypedUuid grant_uuid, subject_uuid, target_uuid;
-    parsed_uuid = ParsePolicyObjectUuid(grant.grant_uuid, &grant_uuid);
-    if (!parsed_uuid.ok()) return parsed_uuid;
-    parsed_uuid = ParsePolicyObjectUuid(grant.subject_uuid, &subject_uuid);
-    if (!parsed_uuid.ok()) return parsed_uuid;
+    const TypedUuid grant_uuid{UuidKind::object,grant.grant_uuid};
+    const TypedUuid subject_uuid{UuidKind::object,grant.subject_uuid};
     scratchbird::core::catalog::CatalogSecurityRecord record;
     record.kind = CatalogRecordKind::grant_record;
     record.identities = {{"grant_uuid", grant_uuid.value},
                          {"subject_uuid", subject_uuid.value},
                          {"policy_pack_uuid", policy_pack_uuid.value}};
-    if (!grant.target_uuid.empty()) {
-      parsed_uuid = ParsePolicyObjectUuid(grant.target_uuid, &target_uuid);
-      if (!parsed_uuid.ok()) return parsed_uuid;
-      record.identities.emplace("target_uuid", target_uuid.value);
+    if (grant.target_uuid) {
+      record.identities.emplace("target_uuid", *grant.target_uuid);
     }
     record.attributes = {{"grant_class", "privilege"},
                          {"subject_kind", grant.subject_kind},
@@ -2815,32 +2842,24 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
   }
 
   for (const auto& profile : pack.profiles) {
-    TypedUuid profile_uuid;
-    parsed_uuid = ParsePolicyObjectUuid(profile.profile_uuid, &profile_uuid);
-    if (!parsed_uuid.ok()) { return parsed_uuid; }
-    typed = AddTypedCatalogRecord(
-        rows,
-        CatalogRecordKind::policy,
-        ordinal,
-        seed,
-        KeyValuePayload({{"policy_key", "policy.profile." + profile.area},
-                         {"policy_name", profile.area},
-                         {"policy_class", "policy_profile"},
-                         {"profile_uuid", profile.profile_uuid},
-                         {"area", profile.area},
-                         {"mode", profile.mode},
-                         {"policy_pack_uuid", pack.image.policy_pack_uuid},
-                         {"policy_generation", std::to_string(pack.image.policy_generation)},
-                         {"created_txn", std::to_string(kBootstrapCatalogTransactionId)},
-                         {"loaded_at_database_create", "1"},
-                         {"identity_authority", "uuid"},
-                         {"engine_owned", "1"}}),
-        database_object_uuid,
-        profile_uuid);
-    if (!typed.ok()) { return typed; }
-    seed += 4;
+    namespace c=scratchbird::core::catalog;
+    c::CatalogBootstrapPolicyProfile native;
+    native.profile_uuid=profile.profile_uuid;native.policy_pack_uuid=policy_pack_uuid.value;
+    native.generation=native.policy_pack_generation=pack.image.policy_generation;
+    native.area=profile.area;native.mode=profile.mode;
+    native.origin_transaction_uuid=creator_transaction_uuid;
+    native.origin_local_transaction_id=kBootstrapCatalogTransactionId;
+    std::array<scratchbird::core::platform::byte,2048> backing;
+    const auto encoded=c::EncodeCatalogBootstrapPolicyProfileInto(native,backing);
+    if(!encoded.ok())return CatalogRowsBuildError(DatabaseLifecycleErrorStatus(),
+        MakeDatabaseLifecycleDiagnostic(DatabaseLifecycleErrorStatus(),
+          "SB-POLICY-PACK-PROFILES-INVALID","storage.database_lifecycle.policy_pack_invalid",{},"native profile declaration"));
+    typed=AddTypedCatalogRecord(rows,CatalogRecordKind::policy,ordinal,seed,
+        std::string(encoded.bytes.begin(),encoded.bytes.end()),database_object_uuid,
+        TypedUuid{UuidKind::object,profile.profile_uuid});
+    if(!typed.ok())return typed;
+    seed+=4;
   }
-
   CatalogRowsBuildResult result;
   result.status = DatabaseLifecycleOkStatus();
   return result;
@@ -3017,9 +3036,7 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
                                  parsed_sysarch.diagnostic);
   }
   for (const auto& role : policy_seed_pack.roles) {
-    TypedUuid role_uuid;
-    const auto parsed_role = ParsePolicyObjectUuid(role.role_uuid, &role_uuid);
-    if (!parsed_role.ok()) return parsed_role;
+    const TypedUuid role_uuid{UuidKind::object,role.role_uuid};
     if (role_uuid.value == parsed_sysarch.value.value ||
         role.role_code == "ROLE_SYSARCH") {
       const auto error = LifecycleError(
@@ -3468,7 +3485,8 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
                                                               config.creation_unix_epoch_millis + 26000,
                                                               database_object.value,
                                                               sys_security_object.value,
-                                                              policy_seed_pack);
+                                                              policy_seed_pack,
+                                                              bootstrap_transaction_uuid);
   if (!policy_seed_rows.ok()) {
     return policy_seed_rows;
   }
@@ -4333,10 +4351,13 @@ std::optional<ResourceSeedCatalogImage> BuildResourceImageFromCatalogRows(const 
   return image;
 }
 
-PolicySeedPackCatalogImage BuildPolicyImageFromCatalogRows(const std::vector<CatalogPageRow>& rows) {
+PolicySeedPackCatalogImage BuildPolicyImageFromCatalogRows(const std::vector<CatalogPageRow>& rows,
+                                                          const TypedUuid& committed_origin) {
   PolicySeedPackCatalogImage image;
   std::set<std::string> profile_areas;
   u32 default_policy_records_from_catalog = 0;
+  u64 native_providers=0,native_local_enabled=0,native_external_disabled=0,native_profiles=0;
+  std::set<Uuid> native_identities;
   for (const CatalogPageRow& row : rows) {
     if (row.kind == CatalogPageRowKind::policy_seed_pack) {
       const auto fields = ParseKeyValuePayload(row.payload);
@@ -4377,6 +4398,22 @@ PolicySeedPackCatalogImage BuildPolicyImageFromCatalogRows(const std::vector<Cat
       continue;
     }
     if (decoded.record.header.kind != CatalogRecordKind::policy) continue;
+    if(scratchbird::core::catalog::IsCatalogBootstrapPolicyPayload(decoded.record.payload)) {
+      namespace c=scratchbird::core::catalog;
+      if (!native_identities.insert(decoded.record.header.object_uuid.value).second ||
+          !native_identities.insert(decoded.record.header.row_uuid.value).second)
+        image.native_definition_error=c::CatalogValueError::invalid_value;
+      const auto provider=c::DecodeCatalogBootstrapSecurityProvider(decoded.record.payload);
+      const auto profile=c::DecodeCatalogBootstrapPolicyProfile(decoded.record.payload);
+      if(provider.ok()) {
+        ++native_providers;
+        native_local_enabled+=provider.record->family==c::BootstrapProviderFamily::local_password&&provider.record->enabled_by_default;
+        native_external_disabled+=provider.record->external_provider&&!provider.record->enabled_by_default;
+      }else if(profile.ok()) {
+        ++native_profiles;profile_areas.emplace(profile.record->area);
+      }else image.native_definition_error=c::CatalogValueError::invalid_value;
+      continue;
+    }
     const auto fields = ParseKeyValuePayload(decoded.record.payload);
     if (decoded.record.header.kind == CatalogRecordKind::policy) {
       const auto policy_class = fields.find("policy_class");
@@ -4384,22 +4421,47 @@ PolicySeedPackCatalogImage BuildPolicyImageFromCatalogRows(const std::vector<Cat
         continue;
       }
       if (policy_class->second == "security_provider") {
-        if (fields.count("provider_family") != 0 &&
-            fields.at("provider_family") == "local_password" &&
-            ParseU32Field(fields, "enabled_by_default") != 0) {
-          image.enabled_local_password_provider_records =
-              std::max<u32>(image.enabled_local_password_provider_records, 1);
-        }
+        image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
       } else if (policy_class->second == "policy_profile") {
-        const auto area = fields.find("area");
-        if (area != fields.end()) {
-          profile_areas.insert(area->second);
-        }
+        image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
       } else if (fields.count("default_profile") != 0 &&
                  fields.count("tx1_seed_required") != 0 &&
                  fields.at("tx1_seed_required") == "1" &&
                  fields.count("policy_pack_uuid") != 0) {
         ++default_policy_records_from_catalog;
+      }
+    }
+  }
+  if(image.active&&(native_providers!=image.security_provider_records||
+      native_local_enabled!=image.enabled_local_password_provider_records||
+      native_external_disabled!=image.external_provider_disabled_records||native_profiles!=image.policy_profile_records))
+    image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
+  if(!image.active&&(native_providers||native_profiles))
+    image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
+  if(image.active) {
+    const auto expected_pack=ParseTypedUuid(UuidKind::object,image.policy_pack_uuid);
+    if(!expected_pack.ok())image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
+    else {
+      if (native_identities.count(expected_pack.value.value))
+        image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
+      for(const auto& row:rows) {
+      if(row.kind!=CatalogPageRowKind::typed_catalog_record)continue;
+      const auto decoded=DecodeCatalogTypedRecord(row);
+      if(!decoded.ok())continue;
+      const auto provider=scratchbird::core::catalog::DecodeCatalogBootstrapSecurityProvider(decoded.record.payload);
+      const auto profile=scratchbird::core::catalog::DecodeCatalogBootstrapPolicyProfile(decoded.record.payload);
+      if(provider.ok()&&(provider.record->policy_pack_uuid!=expected_pack.value.value||
+          provider.record->origin_transaction_uuid.kind!=committed_origin.kind||
+          provider.record->origin_transaction_uuid.value!=committed_origin.value||
+          provider.record->policy_pack_generation!=image.policy_generation||provider.record->generation!=image.policy_generation||
+          provider.record->origin_local_transaction_id!=kBootstrapCatalogTransactionId))
+        image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
+      if(profile.ok()&&(profile.record->policy_pack_uuid!=expected_pack.value.value||
+          profile.record->origin_transaction_uuid.kind!=committed_origin.kind||
+          profile.record->origin_transaction_uuid.value!=committed_origin.value||
+          profile.record->policy_pack_generation!=image.policy_generation||profile.record->generation!=image.policy_generation||
+          profile.record->origin_local_transaction_id!=kBootstrapCatalogTransactionId))
+        image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
       }
     }
   }
@@ -4418,6 +4480,9 @@ PolicySeedPackCatalogImage BuildPolicyImageFromCatalogRows(const std::vector<Cat
 
 DatabaseLifecycleResult ValidatePolicySeedCatalogImage(const PolicySeedPackCatalogImage& image,
                                                        const std::string& path) {
+  if(image.native_definition_error!=scratchbird::core::catalog::CatalogValueError::none)
+    return LifecycleError("SB-POLICY-PACK-CATALOG-INVALID",
+        "storage.database_lifecycle.policy_pack_catalog_invalid",path,"native_policy_definition_or_cohort_invalid");
   if (!image.active) {
     DatabaseLifecycleResult result;
     result.status = DatabaseLifecycleOkStatus();
@@ -8204,6 +8269,21 @@ DatabaseLifecycleResult OpenDatabaseFile(const DatabaseOpenConfig& config) {
   std::vector<CatalogPageRow> catalog_rows;
   ResourceSeedCatalogImage resource_seed_catalog;
   PolicySeedPackCatalogImage policy_seed_catalog;
+  // Read and validate the owning inventory before policy admission or dirty
+  // publication. A definition's origin must match the actual committed TX1.
+  LocalTransactionInventory local_transaction_inventory;
+  LocalTransactionHorizons local_transaction_horizons;
+  const auto read_txn_inventory = ReadTransactionInventoryPage(&device,
+      parsed.header.page_size, &local_transaction_inventory, &local_transaction_horizons);
+  if (!read_txn_inventory.ok()) return read_txn_inventory;
+  const auto bootstrap_evidence = ValidateBootstrapLifecycleEvidence(
+      startup_state.state, local_transaction_inventory, config.path);
+  if (!bootstrap_evidence.ok()) return bootstrap_evidence;
+  const auto policy_origin = LookupLocalTransaction(local_transaction_inventory,
+      MakeLocalTransactionId(kBootstrapCatalogTransactionId));
+  if (!policy_origin.ok() || !scratchbird::transaction::mga::HasCommittedInventoryOutcome(policy_origin.entry))
+    return LifecycleError("SB-POLICY-PACK-CATALOG-INVALID",
+        "storage.database_lifecycle.policy_pack_catalog_invalid", config.path, "creation_transaction_not_committed");
   const auto read_catalog_rows = ReadCatalogPageRows(&device, parsed.header.page_size, &catalog_rows);
   if (read_catalog_rows.ok()) {
     const auto catalog_migration =
@@ -8221,7 +8301,8 @@ DatabaseLifecycleResult OpenDatabaseFile(const DatabaseOpenConfig& config) {
           "catalog.record_codec.fields_missing",config.path,"resource_binary_catalog_image_invalid");
     }
     resource_seed_catalog = std::move(*resources);
-    policy_seed_catalog = BuildPolicyImageFromCatalogRows(catalog_rows);
+    policy_seed_catalog = BuildPolicyImageFromCatalogRows(catalog_rows,
+        policy_origin.entry.identity.transaction_uuid);
   } else {
     return read_catalog_rows;
   }
@@ -8365,22 +8446,6 @@ DatabaseLifecycleResult OpenDatabaseFile(const DatabaseOpenConfig& config) {
     }
   }
 
-  LocalTransactionInventory local_transaction_inventory;
-  LocalTransactionHorizons local_transaction_horizons;
-  const auto read_txn_inventory = ReadTransactionInventoryPage(&device,
-                                                              parsed.header.page_size,
-                                                              &local_transaction_inventory,
-                                                              &local_transaction_horizons);
-  if (!read_txn_inventory.ok()) {
-    return read_txn_inventory;
-  }
-  const auto bootstrap_evidence =
-      ValidateBootstrapLifecycleEvidence(startup_state.state,
-                                         local_transaction_inventory,
-                                         config.path);
-  if (!bootstrap_evidence.ok()) {
-    return bootstrap_evidence;
-  }
   if (startup_state.state.first_open_activation_local_transaction_id != 0) {
     if (!StartupLifecycleEvidencePresent(startup_state.state,
                                          StartupLifecycleEvidenceFlag::first_open_tx2_committed)) {
