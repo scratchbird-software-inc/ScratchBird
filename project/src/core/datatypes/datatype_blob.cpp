@@ -1901,6 +1901,98 @@ bool ValidateBlobLifetimeInvariantFactDomainV3(
   return InvariantFactDomainValid(key, fact);
 }
 
+BlobReaderResultValidationV3 ValidateBlobReaderResultV3Generation1(
+    const BlobReaderResultV3& result, u64 requested_octets,
+    u64 admitted_window_octets, u64 admitted_timeout_milliseconds) noexcept {
+  constexpr u32 known_facts = 0x1ff;
+  if (requested_octets == 0 || result.actual_octets > requested_octets ||
+      !AllZero(result.reserved) || result.status > 1 ||
+      (result.fact_bits & ~known_facts) != 0)
+    return {};
+  const auto same_payload = [](const auto& a, const auto& b) noexcept {
+    return a.lifetime_enum == b.lifetime_enum &&
+        a.expiry_reason_enum == b.expiry_reason_enum &&
+        a.resource_enum == b.resource_enum && a.format_enum == b.format_enum &&
+        a.reason_enum == b.reason_enum &&
+        a.window_octets == b.window_octets &&
+        a.timeout_milliseconds == b.timeout_milliseconds &&
+        a.required == b.required && a.available == b.available;
+  };
+  const auto& facts = result.diagnostic_facts;
+  BlobReaderDiagnosticFactsV3 expected{};
+  if (result.status == 0) {
+    if (result.fact_bits != 0 || result.actual_octets == 0 ||
+        !same_payload(facts, expected)) return {};
+    return {BlobReaderResultKindV3::progress, BlobReaderFactV3::none};
+  }
+  if (result.fact_bits == 0) return {};
+  // The lowest set known bit is the highest-priority observed terminal fact.
+  // Do not infer another fact from a populated payload or an I/O reason.
+  const u32 selected = result.fact_bits & (~result.fact_bits + 1U);
+  switch (static_cast<BlobReaderFactV3>(selected)) {
+    case BlobReaderFactV3::security_denied:
+    case BlobReaderFactV3::cancellation:
+      break;
+    case BlobReaderFactV3::snapshot_invalid:
+      if (facts.lifetime_enum < 1 || facts.lifetime_enum > 9 ||
+          facts.expiry_reason_enum != facts.lifetime_enum) return {};
+      expected.lifetime_enum = facts.lifetime_enum;
+      expected.expiry_reason_enum = facts.expiry_reason_enum;
+      break;
+    case BlobReaderFactV3::authority_unavailable:
+      if (facts.reason_enum != 22 && facts.reason_enum != 26) return {};
+      expected.reason_enum = facts.reason_enum;
+      break;
+    case BlobReaderFactV3::callback_protocol:
+      // Exact protected-access protocol selectors; factory, ticket cleanup,
+      // index policy, binding and administrative selectors are not reader facts.
+      if (facts.reason_enum != 11 && facts.reason_enum != 12 &&
+          facts.reason_enum != 13 && facts.reason_enum != 15) return {};
+      expected.reason_enum = facts.reason_enum;
+      break;
+    case BlobReaderFactV3::timeout:
+      if (facts.reason_enum != 16 ||
+          facts.window_octets != admitted_window_octets ||
+          facts.timeout_milliseconds != admitted_timeout_milliseconds)
+        return {};
+      expected.reason_enum = 16;
+      expected.window_octets = admitted_window_octets;
+      expected.timeout_milliseconds = admitted_timeout_milliseconds;
+      break;
+    case BlobReaderFactV3::resource_budget:
+      if (facts.resource_enum < 1 || facts.resource_enum > 11 ||
+          facts.required <= facts.available) return {};
+      expected.resource_enum = facts.resource_enum;
+      expected.required = facts.required;
+      expected.available = facts.available;
+      break;
+    case BlobReaderFactV3::io:
+      if (facts.reason_enum != 17) return {};
+      expected.reason_enum = 17;
+      break;
+    case BlobReaderFactV3::integrity: {
+      const bool pair =
+          (facts.format_enum == 1 &&
+           (facts.reason_enum == 30 || facts.reason_enum == 31)) ||
+          (facts.format_enum == 2 &&
+           (facts.reason_enum == 32 || facts.reason_enum == 33 ||
+            facts.reason_enum == 35)) ||
+          (facts.format_enum == 5 && facts.reason_enum == 34) ||
+          (facts.format_enum == 4 && facts.reason_enum == 36) ||
+          (facts.format_enum == 6 && facts.reason_enum == 37);
+      if (!pair) return {};
+      expected.format_enum = facts.format_enum;
+      expected.reason_enum = facts.reason_enum;
+      break;
+    }
+    case BlobReaderFactV3::none:
+      return {};
+  }
+  if (!same_payload(facts, expected)) return {};
+  return {BlobReaderResultKindV3::terminal_fact,
+          static_cast<BlobReaderFactV3>(selected)};
+}
+
 bool BlobLifetimeBudgetLedgerV3Generation1::Configure(
     const BlobLifetimeBudgetConfigurationV3Generation1& configuration)
     noexcept {

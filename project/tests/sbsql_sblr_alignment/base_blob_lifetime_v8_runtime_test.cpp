@@ -1086,6 +1086,178 @@ dt::BlobReaderResultV3 NeverReadDuringAdmission(
   Fail("logical reader invoked before guarded access");
 }
 
+void ReaderResultClosedShapeMatrix() {
+  using Kind = dt::BlobReaderResultKindV3;
+  constexpr std::uint64_t requested = 64, window = 41, timeout = 17;
+  std::array<dt::BlobReaderDiagnosticFactsV3, 9> payloads{};
+  payloads[2].lifetime_enum = payloads[2].expiry_reason_enum = 1;
+  payloads[3].reason_enum = 22;
+  payloads[4].reason_enum = 11;
+  payloads[5].reason_enum = 16;
+  payloads[5].window_octets = window;
+  payloads[5].timeout_milliseconds = timeout;
+  payloads[6].resource_enum = 2;
+  payloads[6].required = 1;
+  payloads[7].reason_enum = 17;
+  payloads[8].format_enum = 6;
+  payloads[8].reason_enum = 37;
+  const auto validate = [&](const auto& result, Kind expected,
+                             std::uint32_t selected = 0) {
+    const auto actual = dt::ValidateBlobReaderResultV3Generation1(
+        result, requested, window, timeout);
+    Check(actual.kind == expected &&
+              static_cast<std::uint32_t>(actual.selected_fact) == selected,
+          "logical reader closed result shape/fact precedence differs");
+  };
+  const auto before = allocation_probe::calls.load();
+  allocation_probe::enabled.store(true);
+  dt::BlobReaderResultV3 progress;
+  progress.status = 0;
+  progress.actual_octets = 1;
+  validate(progress, Kind::progress);
+  for (std::uint32_t bits = 0; bits < 512; ++bits) {
+    unsigned selected_index = 0;
+    if (bits != 0)
+      while ((bits & (UINT32_C(1) << selected_index)) == 0) ++selected_index;
+    for (unsigned status = 0; status < 256; ++status) {
+      for (const auto actual : {UINT64_C(0), UINT64_C(1), requested,
+                               requested + 1, UINT64_MAX}) {
+        dt::BlobReaderResultV3 result;
+        result.status = static_cast<std::uint8_t>(status);
+        result.actual_octets = actual;
+        result.fact_bits = bits;
+        if (bits != 0) result.diagnostic_facts = payloads[selected_index];
+        const bool terminal = status == 1 && bits != 0 && actual <= requested;
+        const bool ok = status == 0 && bits == 0 && actual != 0 && actual <= requested;
+        validate(result, terminal ? Kind::terminal_fact
+                                   : ok ? Kind::progress : Kind::protocol_violation,
+                 terminal ? UINT32_C(1) << selected_index : 0);
+      }
+    }
+  }
+  constexpr std::array<unsigned, 9> used_fields{
+      0, 0, 3, 16, 16, 16 | 32 | 64, 4 | 128 | 256, 16, 8 | 16};
+  for (unsigned bit = 0; bit < 9; ++bit) {
+    dt::BlobReaderResultV3 result;
+    result.actual_octets = 1;
+    result.fact_bits = UINT32_C(1) << bit;
+    result.diagnostic_facts = payloads[bit];
+    for (std::size_t reserved = 0; reserved < 7; ++reserved) {
+      auto bad = result;
+      bad.reserved[reserved] = 1;
+      validate(bad, Kind::protocol_violation);
+    }
+    for (unsigned field = 0; field < 9; ++field) {
+      if ((used_fields[bit] & (1U << field)) != 0) continue;
+      auto bad = result;
+      auto& facts = bad.diagnostic_facts;
+      switch (field) {
+        case 0: facts.lifetime_enum = 1; break;
+        case 1: facts.expiry_reason_enum = 1; break;
+        case 2: facts.resource_enum = 1; break;
+        case 3: facts.format_enum = 1; break;
+        case 4: facts.reason_enum = 1; break;
+        case 5: facts.window_octets = 1; break;
+        case 6: facts.timeout_milliseconds = 1; break;
+        case 7: facts.required = 1; break;
+        case 8: facts.available = 1; break;
+      }
+      validate(bad, Kind::protocol_violation);
+    }
+    for (unsigned unknown = 9; unknown < 32; ++unknown) {
+      auto bad = result;
+      bad.fact_bits |= UINT32_C(1) << unknown;
+      validate(bad, Kind::protocol_violation);
+    }
+  }
+  for (unsigned lifetime = 0; lifetime < 256; ++lifetime) {
+    for (unsigned expiry = 0; expiry < 256; ++expiry) {
+      dt::BlobReaderResultV3 result;
+      result.fact_bits = 4;
+      result.diagnostic_facts.lifetime_enum = lifetime;
+      result.diagnostic_facts.expiry_reason_enum = expiry;
+      const bool valid = lifetime >= 1 && lifetime <= 9 && expiry == lifetime;
+      validate(result, valid ? Kind::terminal_fact : Kind::protocol_violation,
+               valid ? 4 : 0);
+    }
+  }
+  for (unsigned reason = 0; reason < 256; ++reason) {
+    for (unsigned index : {3U, 4U, 7U}) {
+      dt::BlobReaderResultV3 result;
+      result.fact_bits = UINT32_C(1) << index;
+      result.diagnostic_facts.reason_enum = reason;
+      const bool valid = index == 3 ? reason == 22 || reason == 26
+          : index == 4 ? reason == 11 || reason == 12 || reason == 13 || reason == 15
+          : reason == 17;
+      validate(result, valid ? Kind::terminal_fact : Kind::protocol_violation,
+               valid ? result.fact_bits : 0);
+    }
+    for (unsigned format = 0; format < 256; ++format) {
+      dt::BlobReaderResultV3 result;
+      result.fact_bits = 256;
+      result.diagnostic_facts.format_enum = format;
+      result.diagnostic_facts.reason_enum = reason;
+      const bool valid = (format == 1 && (reason == 30 || reason == 31)) ||
+          (format == 2 && (reason == 32 || reason == 33 || reason == 35)) ||
+          (format == 4 && reason == 36) || (format == 5 && reason == 34) ||
+          (format == 6 && reason == 37);
+      validate(result, valid ? Kind::terminal_fact : Kind::protocol_violation,
+               valid ? 256 : 0);
+    }
+  }
+  for (unsigned resource = 0; resource < 256; ++resource) {
+    for (const auto bounds : {std::pair{UINT64_C(0), UINT64_C(0)},
+                              std::pair{UINT64_C(1), UINT64_C(0)},
+                              std::pair{UINT64_MAX, UINT64_MAX - 1},
+                              std::pair{UINT64_MAX, UINT64_MAX},
+                              std::pair{UINT64_C(0), UINT64_MAX}}) {
+      dt::BlobReaderResultV3 result;
+      result.fact_bits = 64;
+      result.diagnostic_facts.resource_enum = resource;
+      result.diagnostic_facts.required = bounds.first;
+      result.diagnostic_facts.available = bounds.second;
+      const bool valid = resource >= 1 && resource <= 11 && bounds.first > bounds.second;
+      validate(result, valid ? Kind::terminal_fact : Kind::protocol_violation,
+               valid ? 64 : 0);
+    }
+  }
+  dt::BlobReaderResultV3 timed;
+  timed.fact_bits = 32;
+  timed.diagnostic_facts = payloads[5];
+  validate(timed, Kind::terminal_fact, 32);
+  ++timed.diagnostic_facts.window_octets;
+  validate(timed, Kind::protocol_violation);
+  timed.diagnostic_facts = payloads[5];
+  ++timed.diagnostic_facts.timeout_milliseconds;
+  validate(timed, Kind::protocol_violation);
+  Check(dt::ValidateBlobReaderResultV3Generation1(progress, 0, window, timeout).kind ==
+            Kind::protocol_violation,
+        "reader reply accepted a zero-request callback");
+  progress.actual_octets = UINT64_MAX;
+  Check(dt::ValidateBlobReaderResultV3Generation1(progress, UINT64_MAX, window, timeout).kind ==
+            Kind::progress,
+        "opaque reader result truncated a uint64 progress count");
+  progress.status = 1;
+  progress.fact_bits = 1;
+  const auto maximum_failure = dt::ValidateBlobReaderResultV3Generation1(
+      progress, UINT64_MAX, window, timeout);
+  Check(maximum_failure.kind == Kind::terminal_fact &&
+            maximum_failure.selected_fact == dt::BlobReaderFactV3::security_denied,
+        "reader result truncated exact uint64 discarded work");
+  for (const auto reason : {UINT32_C(256), UINT32_C(0x80000000), UINT32_MAX}) {
+    for (unsigned bit = 0; bit < 9; ++bit) {
+      dt::BlobReaderResultV3 result;
+      result.fact_bits = UINT32_C(1) << bit;
+      result.diagnostic_facts = payloads[bit];
+      result.diagnostic_facts.reason_enum = reason;
+      validate(result, Kind::protocol_violation);
+    }
+  }
+  allocation_probe::enabled.store(false);
+  Check(allocation_probe::calls.load() == before,
+        "reader-result validation allocated memory");
+}
+
 void LogicalReaderFactoryAdmission() {
   using Capability = dt::BlobReceiverLogicalReaderCapabilityV3Generation1;
   using Carrier = dt::BlobBoundLogicalReaderCarrierV3Generation1;
@@ -5864,6 +6036,7 @@ int main(int argc, char** argv) {
     return EXIT_SUCCESS;
   }
   ProductionPrecedence();
+  ReaderResultClosedShapeMatrix();
   LogicalReaderFactoryAdmission();
   AuthenticatedLogicalReaderLength();
   RetainedLogicalReaderTransfers();

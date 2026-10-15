@@ -537,6 +537,39 @@ struct BlobReaderResultV3 {
   BlobReaderDiagnosticFactsV3 diagnostic_facts{};
 };
 
+enum class BlobReaderFactV3 : u32 {
+  none = 0,
+  security_denied = 1,
+  cancellation = 2,
+  snapshot_invalid = 4,
+  authority_unavailable = 8,
+  callback_protocol = 16,
+  timeout = 32,
+  resource_budget = 64,
+  io = 128,
+  integrity = 256,
+};
+
+enum class BlobReaderResultKindV3 : u8 {
+  protocol_violation = 0,
+  progress = 1,
+  terminal_fact = 2,
+};
+
+struct BlobReaderResultValidationV3 {
+  BlobReaderResultKindV3 kind = BlobReaderResultKindV3::protocol_violation;
+  BlobReaderFactV3 selected_fact = BlobReaderFactV3::none;
+};
+
+// Pure structural consistency only; neither an admission nor a public
+// diagnostic. The guarded caller must charge the exact returned actual_octets
+// before invoking this validator, including unknown/failed/overlong replies.
+// Actual operation/adapter/verifier provenance and security/lifetime gates
+// remain independently mandatory before a terminal fact can be materialized.
+BlobReaderResultValidationV3 ValidateBlobReaderResultV3Generation1(
+    const BlobReaderResultV3& result, u64 requested_octets,
+    u64 admitted_window_octets, u64 admitted_timeout_milliseconds) noexcept;
+
 using BlobReadAtV3 = BlobReaderResultV3 (*)(void*, const BlobReaderRequestV3&);
 
 class BlobReceiverLogicalReaderCapabilityV3Generation1 final {
