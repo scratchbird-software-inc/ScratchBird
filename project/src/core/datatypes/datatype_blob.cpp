@@ -5030,6 +5030,22 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::Release() noexcept {
 
 BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::CloneInto(
     BlobRetainedLifetimeLeaseV3& destination) noexcept {
+  return CloneIntoInternal(destination, nullptr);
+}
+
+BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::CastIdentityInto(
+    const BlobValidatedProfileHandleV3& profile,
+    const scratchbird::engine::ExecutionTypeDescriptor& source_descriptor,
+    const scratchbird::engine::ExecutionTypeDescriptor& target_descriptor,
+    DatatypeCastContext context,
+    BlobRetainedLifetimeLeaseV3& destination) noexcept {
+  const IdentityCastAdmission checked{profile, source_descriptor, target_descriptor, context};
+  return CloneIntoInternal(destination, &checked);
+}
+
+BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::CloneIntoInternal(
+    BlobRetainedLifetimeLeaseV3& destination,
+    const IdentityCastAdmission* identity_cast) noexcept {
   if (&destination == this)
     return CanonicalProtocolFailure("clone_alias");
   BlobRetainedLifetimeLeaseV3* first = this;
@@ -5124,6 +5140,36 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::CloneInto(
       if (state_.TryFinalize(State::idle, 1)) return result;
     }
   };
+  if (identity_cast != nullptr) {
+    // Both wrappers are exclusively claimed before touching source metadata.
+    // Reuse the qualified clone's pin/ticket/cleanup/publication machinery:
+    // identity conversion cannot create an unowned raw span, skip NULL lifetime
+    // authentication, or introduce a second transfer linearization protocol.
+    const auto& c = *identity_cast;
+    if (!ValidateBlobExecutionDescriptorV3(c.profile, c.source).ok() ||
+        !ValidateBlobExecutionDescriptorV3(c.profile, c.target).ok() ||
+        descriptor_uuid_ != c.profile.identity.descriptor_uuid ||
+        descriptor_generation_ != c.profile.identity.descriptor_generation) {
+      return finish_source(ProtocolFailure("authority_profile_binding_mismatch",
+          descriptor_uuid_, descriptor_generation_));
+    }
+    if (carrier_binding_.carrier_kind != SB_BLOB_MODE_MATERIALIZED_BYTES_V3 &&
+        carrier_binding_.carrier_kind != SB_BLOB_MODE_LOGICAL_READER_V3)
+      return finish_source(RuntimeTerminated());
+    if (carrier_state_ == BlobValueStateV3::sql_null &&
+        (!c.source.nullable_allowed || !c.target.nullable_allowed)) {
+      auto failure = RuntimeFailure("BLOB.STATE_INVALID", "sql_null_not_admitted");
+      failure.fact.parameters.present = blob_parameter_supplied_state |
+                                        blob_parameter_operation;
+      failure.fact.parameters.supplied_state_u8 = static_cast<u8>(BlobValueStateV3::sql_null);
+      failure.fact.parameters.operation_enum = request_.operation;
+      return finish_source(failure);
+    }
+    if (c.context != DatatypeCastContext::implicit &&
+        c.context != DatatypeCastContext::assignment &&
+        c.context != DatatypeCastContext::explicit_cast)
+      return finish_source(RuntimeTerminated());
+  }
   const auto cloned = admission_.pin_ops_.clone_pin(
       admission_.pin_ops_.stable_host_context, admission_.pin_cookie_);
   ValidatePinReplyOrTerminate(cloned);

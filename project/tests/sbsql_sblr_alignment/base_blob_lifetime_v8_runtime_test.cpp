@@ -223,6 +223,10 @@ class BlobLifetimeRuntimeConformanceAccessV3 final {
       const BlobRetainedLifetimeLeaseV3& lease) noexcept {
     return lease.carrier_logical_length_;
   }
+  static bool ScalarMatches(const BlobRetainedLifetimeLeaseV3& lease,
+                            BlobValueStateV3 state, const byte* bytes) noexcept {
+    return lease.carrier_state_ == state && lease.carrier_data_ == bytes;
+  }
 
   static bool LogicalRoutingMatches(const BlobRetainedLifetimeLeaseV3& lease,
                                     void* context, BlobReadAtV3 read_at) noexcept {
@@ -7801,6 +7805,125 @@ dt::BlobLogicalReaderLengthResultV3 AdmittedLogicalLength(
       fixture.request, null_allowed);
 }
 
+void AuthenticatedBlobIdentityCasts() {
+  namespace en = scratchbird::engine;
+  using Access = dt::BlobLifetimeRuntimeConformanceAccessV3;
+  const auto descriptor = [](const dt::BlobValidatedProfileHandleV3& profile) {
+    en::ExecutionTypeDescriptor d;
+    std::copy(profile.identity.descriptor_uuid.bytes.begin(),
+              profile.identity.descriptor_uuid.bytes.end(), d.descriptor_uuid.bytes);
+    d.descriptor_epoch = profile.identity.descriptor_generation;
+    d.canonical_type_id = static_cast<std::uint32_t>(dt::CanonicalTypeId::blob);
+    d.family = en::ExecutionTypeFamily::blob;
+    d.width_class = en::ExecutionTypeWidthClass::descriptor_defined;
+    return d;
+  };
+  for (bool logical : {false, true}) {
+    for (const auto context : {dt::DatatypeCastContext::implicit,
+                              dt::DatatypeCastContext::assignment,
+                              dt::DatatypeCastContext::explicit_cast}) {
+      for (unsigned scenario = 0; scenario < 26; ++scenario) {
+        Fixture f(32);
+        f.fake.pins = 0;  // No fixture-only initial owner: the factory acquires both pins.
+        const bool null = scenario % 2 == 0;
+        const auto state = null ? dt::BlobValueStateV3::sql_null : dt::BlobValueStateV3::value;
+        const std::array<platform::byte,3> bytes{0,255,129};
+        const auto length = null || scenario / 2 == 12 ? 0 :
+            logical ? dt::kBlobMaximumLogicalBytesV3 : bytes.size();
+        dt::BlobRetainedLifetimeLeaseV3 source, target;
+        auto control = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(f.ledger, f.pins);
+        dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
+        if (logical) {
+          ConfigureLogicalFixture(f);
+          const auto capability = dt::BlobLifetimeReceiverHostV3Generation1::LogicalCapability(
+              f.carrier_binding, state, length, &f.fake, NeverReadDuringAdmission);
+          dt::BlobBoundLogicalReaderCarrierV3Generation1 carrier;
+          Check(dt::BlobLifetimeRuntimeFactoryV3Generation1::AdmitLogicalReader(
+              SB_BLOB_OP_READ_V3, f.profile, &f.authority, &f.services, f.pins,
+              control, f.services.monotonic_clock, f.services.monotonic_clock,
+              f.token, f.request, capability, admission, carrier).ok(), "identity logical admission");
+          Check(dt::RetainBaseBlobLifetimeLeaseV3Generation1(f.profile, std::move(admission),
+              carrier, f.token, f.request, source).ok(), "identity logical retain");
+        } else {
+          const auto capability = dt::BlobLifetimeReceiverHostV3Generation1::Capability(
+              f.carrier_binding, state, null ? nullptr : bytes.data(), length);
+          dt::BlobBoundMaterializedCarrierV3Generation1 carrier;
+          Check(dt::BlobLifetimeRuntimeFactoryV3Generation1::AdmitMaterialized(
+              SB_BLOB_OP_READ_V3, f.profile, &f.authority, &f.services, f.pins,
+              control, f.services.monotonic_clock, f.services.monotonic_clock,
+              f.token, f.request, capability, admission, carrier).ok(), "identity materialized admission");
+          Check(dt::RetainBaseBlobLifetimeLeaseV3Generation1(f.profile, std::move(admission),
+              carrier, f.token, f.request, source).ok(), "identity materialized retain");
+        }
+        auto p = f.profile;
+        auto a = descriptor(p), b = a;
+        b.stable_name = "alias-is-data-not-authority";
+        const auto alias = source.CastIdentityInto(p, a, b, context, source);
+        Check(!alias.ok() && source.retained() && f.fake.pins == 2 && CountCall(f.fake, 'R') == 1,
+              "identity cast aliased its source or changed ownership on alias refusal");
+        auto selected_context = context;
+        switch (scenario / 2) {
+          case 1: ++b.descriptor_epoch; break;
+          case 2: b.charset_uuid.bytes[0] = 1; break;
+          case 3: a.domain_stack.push_back(a.descriptor_uuid); break;
+          case 4: ++p.receipt.registry_generation; break;
+          case 5: b.nullable_allowed = false; break;
+          case 6: selected_context = static_cast<dt::DatatypeCastContext>(65535); break;
+          case 7: f.fake.pin_clone_status = dt::BlobReceiverPinAcquireStatusV3::unavailable; break;
+          case 8: f.fake.retain_code = SB_BLOB_CALLBACK_SECURITY_DENIED_V3; break;
+          case 9: f.fake.retain_code = SB_BLOB_CALLBACK_STALE_SNAPSHOT_V3; break;
+          case 10: f.fake.cancelled = true; break;
+          case 11: f.fake.clock_unavailable = true; break;
+        }
+        const auto allocations = allocation_probe::calls.load();
+        allocation_probe::enabled.store(true);
+        const auto cast = source.CastIdentityInto(p, a, b, selected_context, target);
+        allocation_probe::enabled.store(false);
+        Check(allocation_probe::calls.load() == allocations, "identity cast allocated");
+        const bool positive = scenario / 2 == 0 || scenario / 2 == 12 || (scenario / 2 == 5 && !null);
+        Check(cast.ok() == positive && target.retained() == positive,
+              "identity cast admitted invalid binding or refused valid VALUE/NULL");
+        Check(source.retained(), "identity cast consumed source");
+        Check(CountCall(f.fake, 'B') == 0 && CountCall(f.fake, 'E') == 0,
+              "identity cast accessed content");
+        if (positive) {
+          Check(Access::CarrierLength(target) == length &&
+                    (logical ? Access::LogicalRoutingMatches(target, &f.fake, NeverReadDuringAdmission)
+                             : Access::ScalarMatches(target, state, null ? nullptr : bytes.data())),
+                "identity cast lost exact scalar or reader routing");
+          Check(f.fake.pins == 4 && CountCall(f.fake, 'R') == 2,
+                "identity cast failed distinct result pin/ticket ownership");
+          const auto armed = source.CastIdentityInto(p, a, b, selected_context, target);
+          Check(!armed.ok() && source.retained() && target.retained() && f.fake.pins == 4 &&
+                    CountCall(f.fake, 'R') == 2, "identity cast overwrote an armed result");
+          if (!logical && !null && length != 0) {
+            VisitContext copied;
+            auto visitor = Access::Visitor(CopyVisitor, &copied);
+            Check(target.VisitBoundMaterializedBytes(visitor).ok() && copied.copied_size == bytes.size() &&
+                      std::equal(bytes.begin(), bytes.end(), copied.copied.begin()),
+                  "identity result did not preserve exact binary content");
+          }
+          if (scenario / 2 == 12) {
+            Check(source.Release().ok() && f.fake.pins == 2 && target.Probe().ok(),
+                  "identity result depended on source wrapper lifetime");
+            Check(target.Release().ok() && f.fake.pins == 0 && Access::ReservedCleanup(f.ledger) == 0,
+                  "empty/NULL independent identity cleanup");
+            continue;
+          }
+          Check(target.Release().ok(), "identity result cleanup");
+        } else {
+          Check(f.fake.pins == 2 && Access::ReaderRoutingCleared(target),
+                "failed identity cast published unowned routing or leaked pins");
+        }
+        f.fake.cancelled = false;
+        f.fake.clock_unavailable = false;
+        Check(source.Release().ok() && f.fake.pins == 0 && Access::ReservedCleanup(f.ledger) == 0,
+              "identity cast failed exact cleanup");
+      }
+    }
+  }
+}
+
 void AuthenticatedLogicalReaderLength() {
   for (const auto state : {dt::BlobValueStateV3::value,
                           dt::BlobValueStateV3::sql_null}) {
@@ -8275,6 +8398,7 @@ int main(int argc, char** argv) {
   ReaderResultClosedShapeMatrix();
   LogicalReaderFactoryAdmission();
   AuthenticatedLogicalReaderLength();
+  AuthenticatedBlobIdentityCasts();
   RetainedLogicalReaderTransfers();
   FailedLogicalRetainClearsAndReusesRouting();
   AuthenticatedMaterializedLength();

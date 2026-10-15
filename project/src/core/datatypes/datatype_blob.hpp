@@ -1104,6 +1104,16 @@ class BlobRetainedLifetimeLeaseV3 final {
       BlobRetainedLifetimeLeaseV3&& source) noexcept;
   BlobLifetimeRuntimeResultV3 CloneInto(
       BlobRetainedLifetimeLeaseV3& destination) noexcept;
+  // BLOB-CAST-008. Descriptor/profile validation and NULL admission precede
+  // acquisition of a distinct retained result. No content is read or copied.
+  // Names are presentation data; domain/security decorations require their
+  // owning cast route. Destination must be disarmed, just as for CloneInto.
+  BlobLifetimeRuntimeResultV3 CastIdentityInto(
+      const BlobValidatedProfileHandleV3& profile,
+      const scratchbird::engine::ExecutionTypeDescriptor& source_descriptor,
+      const scratchbird::engine::ExecutionTypeDescriptor& target_descriptor,
+      DatatypeCastContext context,
+      BlobRetainedLifetimeLeaseV3& destination) noexcept;
   BlobLifetimeRuntimeResultV3 Probe() noexcept;
   BlobLifetimeRuntimeResultV3 VisitBoundMaterializedBytes(
       const BlobTrustedInternalVisitorV3& visitor) noexcept;
@@ -1230,6 +1240,15 @@ class BlobRetainedLifetimeLeaseV3 final {
       u8 invariant_operation = 16,
       bool destination_entrant_already_held = false,
       State reserved_destination_predecessor = State::terminal) noexcept;
+  struct IdentityCastAdmission {
+    const BlobValidatedProfileHandleV3& profile;
+    const scratchbird::engine::ExecutionTypeDescriptor& source;
+    const scratchbird::engine::ExecutionTypeDescriptor& target;
+    DatatypeCastContext context;
+  };
+  BlobLifetimeRuntimeResultV3 CloneIntoInternal(
+      BlobRetainedLifetimeLeaseV3& destination,
+      const IdentityCastAdmission* identity_cast) noexcept;
   template <typename Carrier>
   BlobLifetimeRuntimeResultV3 RetainFrom(
       const BlobValidatedProfileHandleV3& profile,
