@@ -36,4 +36,14 @@ struct NativeInitialDatabaseResult {
 // and combines all families before the native storage constructor is called.
 NativeInitialDatabaseResult AssembleNativeInitialDatabaseRecords(
     const NativeInitialDatabaseRequest&) noexcept;
+struct NativeInitialDatabaseFilespaceRequest {
+  NativeInitialDatabaseRequest database;
+  core::catalog::CatalogNamedCreationInput primary_filespace;
+};
+// Coherent initial database AND actual primary filespace definitions/names.
+// Complete borrowed admission and cross-family identity/budget checks precede
+// owning copies. Primary manifest state remains the actual initializing state;
+// required-validation flags are declarations, not completed checks or serving.
+NativeInitialDatabaseResult AssembleNativeInitialDatabaseFilespaceRecords(
+    const NativeInitialDatabaseFilespaceRequest&) noexcept;
 } // namespace scratchbird::storage::database

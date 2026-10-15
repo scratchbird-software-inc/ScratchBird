@@ -8,6 +8,7 @@
 #include "admitted_datatype_cohort.hpp"
 #include "native_creation_workspace.hpp"
 #include "native_database_creation.hpp"
+#include "../support/catalog_filespace_golden.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "../support/owned_temp_directory.hpp"
 #include <algorithm>
@@ -180,6 +181,128 @@ struct DatabasePackage {
     return db::AssembleNativeInitialDatabaseRecords(Request(limits));
   }
 };
+struct PrimaryPackage {
+  DatabasePackage database,primary;
+  explicit PrimaryPackage(unsigned profile=0):database(profile),primary(profile) {
+    auto& x=primary.aliases.items[0];
+    x.metadata=Metadata(130,c::CatalogRecordKind::filespace,"filespace");
+    x.metadata.record.header.parent_uuid=database.aliases.items[0].metadata.record.header.object_uuid;
+    x.metadata.name_vector_uuid=Typed(p::UuidKind::object,150);
+    x.metadata.default_name_uuid=Typed(p::UuidKind::object,151);
+    x.vector_metadata=Metadata(150,c::CatalogRecordKind::localized_name,"name_vector");
+    x.vector_metadata.record.header.parent_uuid=x.metadata.record.header.object_uuid;
+    x.vector_metadata.default_name_uuid=x.metadata.default_name_uuid;x.vector_metadata.name_vector_uuid=x.metadata.name_vector_uuid;
+    x.entry_metadata=Metadata(151,c::CatalogRecordKind::localized_name,"name_entry");
+    x.entry_metadata.record.header.parent_uuid=x.metadata.name_vector_uuid;
+    x.entry_metadata.default_name_uuid=x.metadata.default_name_uuid;x.entry_metadata.name_vector_uuid=x.metadata.name_vector_uuid;
+    x.entry_metadata.resource_epoch=1;
+    x.vector.object_uuid=x.entry.object_uuid=x.metadata.record.header.object_uuid;
+    x.vector.name_vector_uuid=x.entry.name_vector_uuid=x.metadata.name_vector_uuid;
+    x.vector.default_name_entry_uuid=x.entry.name_entry_uuid=x.metadata.default_name_uuid;
+    x.vector.object_class=x.entry.object_class="filespace";
+    x.entry.scope_uuid=database.aliases.items[0].metadata.record.header.object_uuid;
+    x.entry.raw_name_text=x.entry.display_name="initial_primary";
+    x.entry.normalized_lookup_key.assign(x.entry.raw_name_text.begin(),x.entry.raw_name_text.end());
+    primary.aliases.Rebind();
+  }
+  auto Request(c::CatalogNamedCreationLimits limits={100000,64*1024*1024}) const {
+    const auto& x=primary.aliases.items[0];
+    return db::NativeInitialDatabaseFilespaceRequest{database.Request(limits),
+        {&x.metadata,&x.vector_metadata,&x.vector,x.entries}};
+  }
+  auto Assemble(c::CatalogNamedCreationLimits limits={100000,64*1024*1024}) const {
+    return db::AssembleNativeInitialDatabaseFilespaceRecords(Request(limits));
+  }
+};
+void PrimaryChecks() {
+  using DE=db::NativeInitialDatabaseError;
+  PrimaryPackage package;const auto made=package.Assemble();
+  Check(made.ok()&&made.records->definitions.size()==2&&made.records->names.size()==4,
+        "actual native database and primary definitions/names form one coherent package");
+  c::CatalogFilespaceRecord expected;
+  expected.filespace_uuid=Typed(p::UuidKind::filespace,2);expected.database_uuid=Typed(p::UuidKind::database,1);
+  expected.filespace_role=1;expected.first_filespace=true;expected.startup_authority=true;
+  expected.catalog_persistence_owner=true;expected.filespace_manifest_owner=true;expected.recovery_evidence_owner=true;
+  expected.state=7;expected.physical_filespace_id=0;expected.lifecycle_generation=1;expected.filespace_manifest_generation=1;
+  expected.catalog_manifest_format_version=1;expected.resource_seed_manifest_format_version=1;
+  expected.registered_txn=1;expected.last_lifecycle_transaction=1;expected.uuid_source=1;
+  expected.header_database_uuid_match_required=true;expected.header_filespace_uuid_match_required=true;
+  expected.startup_state_coupled=true;expected.page_header_coupled=true;expected.open_validate_header=true;
+  expected.attach_admission_validate_header=true;expected.transaction_admission_validate_filespace=true;
+  expected.maintenance_validate_header=true;expected.verify_repair_validate_header=true;
+  expected.shutdown_validate_header=true;expected.recovery_validate_header=true;
+  expected.drop_requires_database_lifecycle=true;expected.quarantine_on_ambiguous=true;
+  expected.state_change_evidence_before_success=true;expected.mga_visibility_required=true;
+  expected.path_is_locator_not_identity=true;expected.duplicate_identity_refusal=true;expected.stale_identity_refusal=true;
+  expected.creator_transaction_number=1;
+  Check(made.records->definitions[1].metadata.record.payload==
+      scratchbird::tests::catalog_filespace_golden::Golden(expected),
+      "all37 actual native primary fields match independent full byte oracle; no false online state");
+  Check(package.primary.aliases.items[0].metadata.record.payload.empty(),"compound primary input remains unchanged");
+  const auto exact=c::CatalogNamedCreationLimits{6,made.records->encoded_bytes};
+  Check(package.Assemble(exact).ok(),"exact compound database/primary aggregate budget");
+  for(const auto limits:{c::CatalogNamedCreationLimits{5,exact.maximum_encoded_bytes},
+      c::CatalogNamedCreationLimits{6,exact.maximum_encoded_bytes-1}}) {
+    allocation_calls=0;allocation_budget=0;const auto failed=package.Assemble(limits);
+    const bool no_copy=allocation_calls==0;allocation_budget=-1;
+    Check(no_copy&&failed.error==DE::resource_exhausted&&!failed.records,
+          "one-short compound bound refuses before first database/name owning copy");
+  }
+  for(unsigned fault=0;fault<17;++fault) {
+    PrimaryPackage bad;auto& x=bad.primary.aliases.items[0];auto request=bad.Request();
+    auto expected_error=DE::invalid_definition;
+    switch(fault) {
+      case 0:request.primary_filespace.definition=nullptr;expected_error=DE::invalid_request;break;
+      case 1:request.primary_filespace.entries={};expected_error=DE::invalid_request;break;
+      case 2:x.metadata.record.header.kind=c::CatalogRecordKind::database;break;
+      case 3:x.metadata.object_subtype="table";break;
+      case 4:x.metadata.record.header.parent_uuid.value=Id(99);break;
+      case 5:x.metadata.record.header.parent_uuid.kind=p::UuidKind::database;break;
+      case 6:x.metadata.record.payload="prototype filespace manifest";break;
+      case 7:x.metadata.owner_uuid={};break;
+      case 8:x.metadata.owning_schema_uuid=Typed(p::UuidKind::schema,99);break;
+      case 9:x.vector.object_class=x.entry.object_class="database";expected_error=DE::invalid_names;break;
+      case 10:x.entry.scope_uuid.value=Id(99);expected_error=DE::invalid_names;break;
+      case 11:x.entry.scope_uuid.kind=p::UuidKind::filespace;expected_error=DE::invalid_names;break;
+      case 12:x.entry.parent_object_uuid=Typed(p::UuidKind::object,99);expected_error=DE::invalid_names;break;
+      case 13:x.entry.default_for_object=false;expected_error=DE::invalid_names;break;
+      case 14:x.entry_metadata.trace_search_key.assign(200000,'x');break;
+      case 15:x.metadata.creator_transaction_uuid=Typed(p::UuidKind::transaction,99);break;
+      case 16:x.metadata.catalog_generation=2;break;
+    }
+    allocation_calls=0;allocation_budget=0;
+    const auto failed=db::AssembleNativeInitialDatabaseFilespaceRecords(request);
+    const bool no_copy=allocation_calls==0;allocation_budget=-1;
+    if(failed.error!=expected_error)std::cerr<<"primary fault="<<fault<<" observed="<<static_cast<unsigned>(failed.error)<<'\n';
+    Check(no_copy&&failed.error==expected_error&&!failed.records,
+          "malformed final primary input refuses before database/primary owning prefix");
+  }
+  for(unsigned member=0;member<3;++member)for(unsigned identity=0;identity<12;++identity) {
+    PrimaryPackage bad;const auto& b=bad.database.construction;const auto& d=bad.database.aliases.items[0];
+    const std::array<p::Uuid,12> reserved{b.bootstrap.database_uuid,b.bootstrap.filespace_uuid,
+        b.bootstrap.page_size_profile_uuid,b.bootstrap.checksum_profile_uuid,b.operation_uuid,b.writer_uuid,
+        tx.value,b.policy_snapshot_uuid,bad.database.cohort.catalog_snapshot_uuid.value,
+        d.metadata.record.header.row_uuid.value,d.vector_metadata.record.header.row_uuid.value,d.entry_metadata.record.header.row_uuid.value};
+    auto& x=bad.primary.aliases.items[0];
+    auto* m=member==0?&x.metadata:member==1?&x.vector_metadata:&x.entry_metadata;
+    m->record.header.row_uuid.value=reserved[identity];
+    allocation_calls=0;allocation_budget=0;const auto failed=bad.Assemble();
+    const bool no_copy=allocation_calls==0;allocation_budget=-1;
+    Check(no_copy&&failed.error==DE::duplicate_identity&&!failed.records,
+          "physical/cohort and cross-family database/primary row collisions refuse before copies");
+  }
+  allocation_calls=0;allocation_budget=1000000;const auto counted=package.Assemble();
+  const auto sites=allocation_calls;allocation_budget=-1;Check(counted.ok()&&sites,"compound allocation calibration");
+  for(unsigned site=0;site<sites;++site) {
+    allocation_calls=0;allocation_budget=site;const auto failed=package.Assemble();
+    const bool consumed=allocation_budget<0;allocation_budget=-1;
+    Check(consumed&&failed.error==DE::resource_exhausted&&!failed.records,
+          "every compound allocation failure discards both definition/name families");
+  }
+  package.primary.aliases.items[0].entry.display_name="changed";
+  Check(std::get<c::CatalogNameEntry>(*made.records->names[3].name).display_name=="initial_primary",
+        "compound primary aliases own independent admitted bytes");
+}
 void DatabaseChecks() {
   using DE=db::NativeInitialDatabaseError;
   DatabasePackage package;const auto made=package.Assemble();
@@ -439,7 +562,7 @@ void PhysicalChecks() {
   scratchbird::tests::OwnedTempDirectory artifacts;
   for(unsigned profile=0;profile<5;++profile) {
     const auto& p=disk::kCanonicalFilespacePageProfiles[profile];Package package;
-    DatabasePackage native(profile);const auto database=native.Assemble();Check(database.ok(),"native database producer package");
+    PrimaryPackage native(profile);const auto database=native.Assemble();Check(database.ok(),"native database/primary producer package");
     package.database=database.records->definitions[0].metadata;
     const auto made=package.Assemble();Check(made.ok(),"schema producer package");
     db::NativeCreationCatalogSeed seed;seed[0]=made.records->definitions;seed[1]=made.records->names;
@@ -463,7 +586,7 @@ void PhysicalChecks() {
       deps.dependency_map_uuid=Id(8040+role);deps.dependency_map_sha256.fill(static_cast<p::byte>(1+role));
       indexes[role]=db::NativeCreationCatalogIndexBinding{Id(8000+role),deps};
     }
-    const auto& request=native.construction;
+    const auto& request=native.database.construction;
     u::StandaloneUuidV7Issuer issuer({Id(1),Id(10)},{{},0,1000});
     const auto path=(artifacts.path()/std::to_string(profile)).string();disk::FileDevice device;
     Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"actual native schema filespace owner");
@@ -483,6 +606,8 @@ void PhysicalChecks() {
             c::CatalogSchemaDefinitionMatchesMetadata(row.metadata):
             row.metadata.record.header.kind==c::CatalogRecordKind::database?
               c::DecodeCatalogDatabaseRecord(row.metadata.record.payload).ok():
+            row.metadata.record.header.kind==c::CatalogRecordKind::filespace?
+              c::DecodeCatalogFilespaceRecord(row.metadata.record.payload).ok():
             row.metadata.record.header.kind==c::CatalogRecordKind::config_profile?
               c::CatalogMemoryConfigurationMatchesMetadata(c::BorrowCatalogMetadataVersion(row.metadata)):
               c::CatalogBootstrapPolicyMatchesMetadata(c::BorrowCatalogMetadataVersion(row.metadata))),
@@ -511,5 +636,5 @@ void PhysicalChecks() {
   artifacts.Cleanup();
 }
 } // namespace
-int main() try {DatabaseChecks();LogicalChecks();PhysicalChecks();std::cout<<"PASS complete initial database/schema family construction\n";return 0;}
+int main() try {DatabaseChecks();PrimaryChecks();LogicalChecks();PhysicalChecks();std::cout<<"PASS complete initial database/primary/schema family construction\n";return 0;}
 catch(const std::exception& error){allocation_budget=-1;std::cerr<<error.what()<<'\n';return 1;}

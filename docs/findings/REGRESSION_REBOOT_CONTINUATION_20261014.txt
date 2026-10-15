@@ -575,3 +575,53 @@ creating and write-fenced. No fixture governance promotion, synthetic effective
 grant or SYSARCH/operator fallback. Original live startup routes,5 older unsealed
 candidates, other outstanding groups and full clean/all-target/unfiltered
 qualification remain open.
+
+Coherent native primary-filespace construction, 2026-10-15
+----------------------------------------------------------
+AssembleNativeInitialDatabaseFilespaceRecords accepts required database and
+primary complete metadata/name inputs, binds both to the actual native primary
+construction request and returns both complete families or neither. Whole
+borrowed common/name/class/root-scope/parent/aggregate-budget admission and
+cross-family raw16 identity uniqueness precede owning copies. The full37-field
+primary manifest preserves actual initializing7 rather than fabricated online1;
+its validation/ownership flags declare required behavior, not completed effects,
+resource admission, grants, authentication or node activation. Existing scoped
+database-only construction remains available without claiming a full node.
+
+Filespace V1 encode/decode/size now use fixed stack-backed schemas/fields/native
+scalars with no heap or decode payload copy, including first use and malformed
+input. Only final owning encode output allocates. Frozen464-byte format retained;
+whole-input overlap/value/capacity refusal precedes writes, preserving backing
+and tail. Independent37-field oracle moved mechanically unchanged to test-only
+support and compared byte-for-byte to its committed predecessor.
+
+Expanded3/3 PASS3.548310s,peak53548KiB: DB48860 checks and FS35039 checks fail0.
+Actual DB+primary+schema definitions/names persist together and independently
+reopen through native indexes on all5 page profiles. Full primary payload matches
+independent expected bytes and stays initializing7. Includes17 final-primary
+malformed cases before database copies,36 physical/cohort/cross-family identity
+substitutions, exact/short aggregate limits, every actual combined allocation
+failure and independent alias ownership. All old schema/deep forest/optional
+defaults/enlarged alias and bootstrap checks remain.
+
+Final44/44 affected PASS123.200279s,user62.638920s,system4.983310s,peak324720KiB,
+no leaked descendants,LastTest retained. Follower17-edge build PASS4.941875s,
+peak413504KiB. Private temporary root empty12KiB; no archive/new build tree or
+retained test databases. Core03 CATALOG-NATIVE-INITIAL-PRIMARY-COHORT-20261015
+and durable-format phase/bounded-codec definitions amended; DIGESTS synchronized.
+Core03 sha256657e44b8b20c819cf3fdce527a89486c91ee5348d5a7769919d74b4fae777361;
+registry sha256799b4d8a25ca4706c671111fd46e4d073999932f83b7818d3fd717a67754f533.
+Specifications/workplans remain local/manual.
+Final test-only header EOF formatting replay:4-edge build PASS, all3 rebuilt
+database/filespace/schema tests PASS4.493003s,peak53352KiB,no leaked descendants.
+No semantic/production edit followed the44/44 qualification; Git diff check clean.
+
+Still260=199 qualified+61 outstanding plus supplemental1, not a new full census.
+Remaining original startup work: full actual native reference/governance/name
+profile admission, separately provisioned service principal/provider/protected
+generation-bound credential/runtime binding, retained native mutable controller/
+security projection and real activation before hosted BEGIN. No fixture metadata
+promotion, synthetic grants or SYSARCH/operator fallback. Also replay/repair the
+other original groups and5 older unsealed candidates before full clean/build/
+unfiltered historical qualification. Neither constructor acceptance nor a green
+component suite closes an original end-to-end failure.

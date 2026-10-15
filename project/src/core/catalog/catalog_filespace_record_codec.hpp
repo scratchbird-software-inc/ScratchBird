@@ -54,6 +54,11 @@ struct CatalogFilespaceRecordDecodeResult {
   bool ok() const { return error == CatalogValueError::none && record.has_value(); }
 };
 const CatalogValueSchema& CatalogFilespaceRecordSchema();
+// Fixed464-byte canonical payload, with complete value/capacity/non-overlap
+// admission before writes. These paths allocate no heap, including schema setup.
+std::optional<std::size_t> CatalogFilespaceRecordEncodedBytes(const CatalogFilespaceRecord&);
+CatalogValueEncodeIntoResult EncodeCatalogFilespaceRecordInto(
+    const CatalogFilespaceRecord&,std::span<byte> backing);
 CatalogValueEncodeResult EncodeCatalogFilespaceRecord(const CatalogFilespaceRecord& record);
 CatalogFilespaceRecordDecodeResult DecodeCatalogFilespaceRecord(std::string_view bytes);
 }  // namespace scratchbird::core::catalog
