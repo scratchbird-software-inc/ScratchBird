@@ -139,6 +139,7 @@ bool SameLiteralNode(const sblr::SblrExpressionLiteralNodeV1& left,
          left.parent_operand_ordinal == right.parent_operand_ordinal &&
          left.descriptor_generation == right.descriptor_generation &&
          left.descriptor_uuid == right.descriptor_uuid &&
+         left.value_state == right.value_state &&
          left.literal_body == right.literal_body;
 }
 

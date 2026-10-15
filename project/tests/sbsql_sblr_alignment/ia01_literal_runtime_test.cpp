@@ -43,7 +43,107 @@ sblr::SblrLiteralExactDecimalCodecResultV1 RequireDecimal(
 std::array<std::uint8_t,16> Identity(std::uint8_t suffix) {
   return {1,0xa0,0x7c,0x0a,0x0d,0x5c,0x70,0,0x80,0,0xff,0,0,0,0,suffix};
 }
+std::vector<std::uint8_t> StatefulGolden(const sblr::SblrExpressionNodeTableV1& table){
+  std::size_t bytes=32;for(const auto& n:table.nodes)bytes+=133+n.literal_body.size();
+  std::vector<std::uint8_t> out{'S','B','X','N'};U16(&out,2);U16(&out,32);
+  U32(&out,table.nodes.size());U32(&out,0);U64(&out,bytes);U64(&out,32);
+  const auto text=[&](std::string_view s){U16(&out,s.size());out.insert(out.end(),s.begin(),s.end());};
+  for(const auto& n:table.nodes){
+    U32(&out,133+n.literal_body.size());U64(&out,n.node_id);U64(&out,0);
+    U32(&out,n.parent_operand_ordinal);U16(&out,3);U16(&out,1);U16(&out,0);
+    U64(&out,n.descriptor_generation);out.insert(out.end(),n.descriptor_uuid.begin(),n.descriptor_uuid.end());
+    out.push_back(n.value_state);out.insert(out.end(),7,0);U64(&out,n.literal_body.size());
+    text("SBLR_LITERAL");text("typed_literal");out.insert(out.end(),n.literal_body.begin(),n.literal_body.end());
+    text("engine.op.literal");text("typed_value");U16(&out,1);
+  }
+  return out;
+}
+void StatefulTableChecks(){
+  sblr::SblrExpressionNodeTableV1 table;
+  for(unsigned at=0;at<4;++at){
+    sblr::SblrExpressionLiteralNodeV1 n;n.node_id=7+at;n.parent_operand_ordinal=at+1;
+    n.descriptor_uuid=Identity(at+1);n.descriptor_generation=1;
+    if(at==1)n.value_state=1;
+    else n.literal_body={static_cast<std::uint8_t>(at==2)};
+    if(at==3)n.literal_body={7,0,0,0,0,0,0,0};
+    table.nodes.push_back(n);
+  }
+  const auto bytes=sblr::EncodeSblrStatefulExpressionNodeTableV2(table);
+  Require(bytes.size()==574&&bytes==StatefulGolden(table)&&bytes[4]==2&&bytes[220]==1,
+          "stateful node table differs from full independent V2 byte oracle");
+  const auto decoded=sblr::DecodeSblrStatefulExpressionNodeTableV2(bytes.data(),bytes.size());
+  Require(decoded.ok&&decoded.table.wire_version==2&&decoded.canonical_bytes==bytes&&
+      decoded.table.nodes.size()==4&&decoded.table.nodes[0].value_state==0&&
+      decoded.table.nodes[0].literal_body==std::vector<std::uint8_t>{0}&&
+      decoded.table.nodes[1].value_state==1&&decoded.table.nodes[1].literal_body.empty()&&
+      decoded.table.nodes[2].value_state==0&&decoded.table.nodes[2].literal_body==std::vector<std::uint8_t>{1}&&
+      decoded.table.nodes[3].literal_body==table.nodes[3].literal_body&&
+      sblr::EncodeSblrStatefulExpressionNodeTableV2(decoded.table)==bytes,
+      "FALSE/NULL/TRUE/numeric state or version lost on structural roundtrip");
+  Require(!sblr::DecodeSblrExpressionNodeTableV1(bytes.data(),bytes.size()).ok&&
+      !sblr::DecodeSblrContextualComposedExpressionNodeTableV2(bytes.data(),bytes.size()).ok&&
+      sblr::EncodeSblrExpressionNodeTableV1(table).empty(),
+      "old ingress must refuse stateful wire until its real owning integration exists");
+  const auto refuse=[&](const std::vector<std::uint8_t>& b){
+    const auto d=sblr::DecodeSblrStatefulExpressionNodeTableV2(b.data(),b.size());
+    Require(!d.ok&&d.table.nodes.empty()&&d.canonical_bytes.empty(),"invalid V2 returns a decoded prefix");
+  };
+  for(std::size_t n=0;n<bytes.size();++n)refuse({bytes.begin(),bytes.begin()+n});
+  for(const auto at:{0u,4u,6u,12u,24u,32u,86u,220u}){
+    auto b=bytes;b[at]=0xff;refuse(b);
+  }
+  for(unsigned reserved=1;reserved<8;++reserved){auto b=bytes;b[86+reserved]=1;refuse(b);}
+  auto b=bytes;b.push_back(0);refuse(b);
+  auto invalid=table;invalid.nodes[1].literal_body={0};refuse(StatefulGolden(invalid));
+  Require(sblr::EncodeSblrStatefulExpressionNodeTableV2(invalid).empty(),"NULL payload encoded");
+  invalid=table;invalid.nodes[1].value_state=0;refuse(StatefulGolden(invalid));
+  invalid=table;invalid.nodes[0].value_state=2;refuse(StatefulGolden(invalid));
+  Require(sblr::EncodeSblrStatefulExpressionNodeTableV2(invalid).empty(),"unknown state encoded");
+  for(const auto version:{1u,3u,65535u}){
+    invalid=table;invalid.wire_version=version;
+    Require(sblr::EncodeSblrStatefulExpressionNodeTableV2(invalid).empty(),"pinned version silently changed");
+  }
+  invalid=decoded.table;invalid.nodes[1].value_state=0;
+  Require(sblr::EncodeSblrStatefulExpressionNodeTableV2(invalid).empty(),"decoded V2 silently downgraded");
+  auto present=table;present.nodes[1].value_state=0;present.nodes[1].literal_body={0};
+  const auto old=sblr::EncodeSblrExpressionNodeTableV1(present);
+  Require(!old.empty()&&old[4]==1&&sblr::EncodeSblrStatefulExpressionNodeTableV2(present)==old,
+          "all-present extension changes frozen V1 bytes");
+  const auto old_decoded=sblr::DecodeSblrStatefulExpressionNodeTableV2(old.data(),old.size());
+  Require(old_decoded.ok&&old_decoded.table.wire_version==1&&
+      sblr::EncodeSblrStatefulExpressionNodeTableV2(old_decoded.table)==old,
+      "decoded V1 version/hash material not retained");
+  present.nodes[0].literal_body.clear();const auto empty_present=sblr::EncodeSblrExpressionNodeTableV1(present);
+  const auto empty=sblr::DecodeSblrStatefulExpressionNodeTableV2(empty_present.data(),empty_present.size());
+  Require(empty.ok&&empty.table.nodes[0].value_state==0,"empty present body inferred NULL without type admission");
+  sblr::SblrExpressionNodeTableV1 maximum;
+  for(unsigned n=1;n<=4096;++n){auto item=table.nodes[0];item.node_id=n;item.parent_operand_ordinal=n;
+    item.value_state=n==1?1:0;item.literal_body.assign(n==1?0:24,0);maximum.nodes.push_back(item);}
+  const auto max=sblr::EncodeSblrStatefulExpressionNodeTableV2(maximum);
+  Require(max.size()==643080&&sblr::DecodeSblrStatefulExpressionNodeTableV2(max.data(),max.size()).ok,
+          "exact4096-node stateful bound refused");
+  maximum.nodes.back().literal_body.push_back(0);
+  Require(sblr::EncodeSblrStatefulExpressionNodeTableV2(maximum).empty(),"one-byte stateful excess encoded");
+  refuse(StatefulGolden(maximum));
+  maximum.nodes.back().literal_body.assign(32563,0);
+  const auto composed=sblr::EncodeSblrStatefulComposedExpressionNodeTableV2(maximum);
+  Require(composed.size()==675619&&
+      sblr::DecodeSblrStatefulComposedExpressionNodeTableV2(composed.data(),composed.size()).ok&&
+      !sblr::DecodeSblrStatefulExpressionNodeTableV2(composed.data(),composed.size()).ok,
+      "composed bound or ordinary/composed separation lost");
+  maximum.nodes.back().literal_body.push_back(0);
+  const auto too_large=StatefulGolden(maximum);
+  Require(sblr::EncodeSblrStatefulComposedExpressionNodeTableV2(maximum).empty()&&
+      !sblr::DecodeSblrStatefulComposedExpressionNodeTableV2(too_large.data(),too_large.size()).ok,
+      "one-byte composed excess admitted");
+  for(const auto ordinal:{0u,1u,4097u,0xffffffffu}){
+    invalid=table;invalid.nodes[1].parent_operand_ordinal=ordinal;
+    Require(sblr::EncodeSblrStatefulExpressionNodeTableV2(invalid).empty(),"invalid/doubled ordinal encoded");
+    refuse(StatefulGolden(invalid));
+  }
+}
 int main(){
+  StatefulTableChecks();
   {
     const auto hex=[](const std::array<std::uint8_t,32>& digest){
       constexpr char digits[]="0123456789abcdef";std::string out;

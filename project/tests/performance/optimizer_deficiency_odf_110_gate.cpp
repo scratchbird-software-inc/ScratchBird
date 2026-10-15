@@ -14,6 +14,7 @@
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
 #include "core/datatypes/datatype_catalog_manifest.hpp"
+#include "core/datatypes/datatype_type_codec_identity_v3.hpp"
 #include "core/memory/memory.hpp"
 #include "sblr_literal_runtime.hpp"
 #include "hash_digest.hpp"
@@ -616,7 +617,8 @@ sblr::SblrOperand DescriptorOperand(std::uint32_t id, const platform::Uuid& occu
   namespace dt = scratchbird::core::datatypes;
   const auto context = Context();
   const dt::DatatypeTypeCodecIdentityRowV1* identity = nullptr;
-  for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+  for (const auto& registered : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row=registered.legacy_fields;
     if (row.catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
         row.catalog_generation != context.datatype_catalog_generation ||
         row.registry_generation != context.datatype_registry_generation ||

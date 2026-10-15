@@ -65,6 +65,14 @@ constexpr std::size_t kHeaderBytes = 32;
 constexpr std::size_t kRecordFixedBytes = 125;
 constexpr std::size_t kMaximumLiteralBytes = 65536;
 constexpr std::uint32_t kMaximumNodes = 4096;
+using LiteralOrdinalBitmap=std::array<std::uint64_t,(kMaximumNodes+63)/64>;
+bool ClaimLiteralOrdinal(LiteralOrdinalBitmap& bits,std::uint32_t ordinal,std::size_t count) {
+  if(ordinal==0||ordinal>count)return false;
+  const auto index=ordinal-1;
+  auto& word=bits[index/64];const auto mask=std::uint64_t{1}<<(index%64);
+  if(word&mask)return false;
+  word|=mask;return true;
+}
 constexpr std::size_t kMaximumBoundAstBytes = 491592;
 constexpr std::size_t kMaximumExpressionNodeTableBytes = 610336;
 constexpr std::size_t kMaximumFinalizeRequestBytes = 1102136;
@@ -627,37 +635,50 @@ SblrLiteralExactDecimalCodecResultV1 DecodeSblrLiteralExactDecimalV1(
 static SblrExpressionNodeTableCodecResultV1
 DecodeSblrExpressionNodeTableWithLimitV1(
     const std::uint8_t* bytes, std::size_t size,
-    const std::size_t maximum_bytes) {
+    const std::size_t maximum_v1_bytes,const std::size_t maximum_v2_bytes=0) {
   if (bytes == nullptr || size < kHeaderBytes ||
-      size > maximum_bytes ||
       !std::equal(bytes, bytes + 4, reinterpret_cast<const std::uint8_t*>("SBXN")) ||
-      U16(bytes + 4) != 1 || U16(bytes + 6) != kHeaderBytes ||
+      (U16(bytes + 4) != 1 && U16(bytes + 4) != 2) || U16(bytes + 6) != kHeaderBytes ||
       U32(bytes + 12) != 0 || U64(bytes + 16) != size ||
       U64(bytes + 24) != kHeaderBytes) return Fail("SBXN header is noncanonical");
+  const auto version=U16(bytes+4);
+  const auto maximum_bytes=version==1?maximum_v1_bytes:maximum_v2_bytes;
+  if(!maximum_bytes||size>maximum_bytes)return Fail("SBXN versioned extent is not admitted");
+  const std::size_t state_bytes=version==2?8:0;
+  const auto fixed_bytes=kRecordFixedBytes+state_bytes;
   const auto count = U32(bytes + 8);
   if (count == 0 || count > kMaximumNodes ||
-      count > (size - kHeaderBytes) / kRecordFixedBytes)
+      count > (size - kHeaderBytes) / fixed_bytes)
     return Fail("SBXN node count is invalid");
 
   std::size_t offset = kHeaderBytes;
   std::uint64_t previous_id = 0;
+  bool any_null=false;
+  LiteralOrdinalBitmap ordinals{};
   for (std::uint32_t i = 0; i != count; ++i) {
-    if (offset > size || size - offset < kRecordFixedBytes) return Fail("SBXN record is truncated");
+    if (offset > size || size - offset < fixed_bytes) return Fail("SBXN record is truncated");
     const auto record_bytes = U32(bytes + offset);
-    if (record_bytes < kRecordFixedBytes || record_bytes > size - offset) return Fail("SBXN record size is invalid");
+    if (record_bytes < fixed_bytes || record_bytes > size - offset) return Fail("SBXN record size is invalid");
     const auto end = offset + record_bytes;
     const auto node_id = U64(bytes + offset + 4);
     const auto parent_id = U64(bytes + offset + 12);
     const auto parent_ordinal = U32(bytes + offset + 20);
     const auto generation = U64(bytes + offset + 30);
-    const auto literal_size = U64(bytes + offset + 54);
+    const auto literal_size = U64(bytes + offset + 54 + state_bytes);
+    if(version==2){
+      const auto state=bytes[offset+54];
+      if(state>1||std::any_of(bytes+offset+55,bytes+offset+62,[](auto b){return b!=0;})||
+          (state==1&&literal_size!=0))return Fail("SBXN value state is noncanonical");
+      any_null|=state==1;
+    }
     if (node_id == 0 || node_id <= previous_id || generation == 0 ||
-        parent_id != 0 || parent_ordinal == 0 || literal_size > kMaximumLiteralBytes ||
+        parent_id != 0 || !ClaimLiteralOrdinal(ordinals,parent_ordinal,count) ||
+        literal_size > kMaximumLiteralBytes ||
         U16(bytes + offset + 24) != 3 || U16(bytes + offset + 26) != 1 ||
         U16(bytes + offset + 28) != 0) return Fail("SBXN record fields are invalid");
     std::array<std::uint8_t,16> uuid{}; std::copy_n(bytes + offset + 38, 16, uuid.begin());
     if (!SystemUuidValid(uuid)) return Fail("SBXN descriptor UUID is not a system UUIDv7");
-    std::size_t cursor = offset + 62;
+    std::size_t cursor = offset + 62 + state_bytes;
     if (!TakeText(bytes,end,&cursor,"SBLR_LITERAL") ||
         !TakeText(bytes,end,&cursor,"typed_literal") ||
         literal_size > end - cursor) return Fail("SBXN literal prefix is invalid");
@@ -668,8 +689,10 @@ DecodeSblrExpressionNodeTableWithLimitV1(
     previous_id = node_id; offset = end;
   }
   if (offset != size) return Fail("SBXN trailing bytes are forbidden");
+  if(version==2&&!any_null)return Fail("SBXN all-present version2 is noncanonical");
 
-  SblrExpressionNodeTableCodecResultV1 result; result.table.nodes.reserve(count);
+  SblrExpressionNodeTableCodecResultV1 result; result.table.wire_version=version;
+  result.table.nodes.reserve(count);
   offset = kHeaderBytes;
   for (std::uint32_t i = 0; i != count; ++i) {
     const auto end = offset + U32(bytes + offset);
@@ -677,18 +700,11 @@ DecodeSblrExpressionNodeTableWithLimitV1(
     node.node_id=U64(bytes+offset+4); node.parent_node_id=U64(bytes+offset+12);
     node.parent_operand_ordinal=U32(bytes+offset+20); node.descriptor_generation=U64(bytes+offset+30);
     std::copy_n(bytes+offset+38,16,node.descriptor_uuid.begin());
-    const auto literal_size=U64(bytes+offset+54); std::size_t cursor=offset+62;
+    if(version==2)node.value_state=bytes[offset+54];
+    const auto literal_size=U64(bytes+offset+54+state_bytes); std::size_t cursor=offset+62+state_bytes;
     cursor += 2 + U16(bytes+cursor); cursor += 2 + U16(bytes+cursor);
     node.literal_body.assign(bytes+cursor,bytes+cursor+literal_size);
     result.table.nodes.push_back(std::move(node)); offset=end;
-  }
-  std::vector<bool> ordinals(count + 1, false);
-  for (const auto& node : result.table.nodes) {
-    if (node.parent_operand_ordinal > count ||
-        ordinals[node.parent_operand_ordinal]) {
-      return Fail("SBXN literal ordinals are not unique and dense");
-    }
-    ordinals[node.parent_operand_ordinal] = true;
   }
   result.canonical_bytes.assign(bytes, bytes + size);
   result.ok=true; return result;
@@ -716,24 +732,67 @@ DecodeSblrContextualComposedExpressionNodeTableV2(
       kSblrContextualComposedExpressionNodeTableMaximumBytesV2);
 }
 
-std::vector<std::uint8_t> EncodeSblrExpressionNodeTableV1(const SblrExpressionNodeTableV1& table) {
+static std::vector<std::uint8_t> EncodeSblrExpressionNodeTableWithLimits(
+    const SblrExpressionNodeTableV1& table,std::size_t maximum_v1_bytes,
+    std::size_t maximum_v2_bytes) {
   if (table.nodes.empty() || table.nodes.size()>kMaximumNodes) return {};
+  bool any_null=false;
+  for(const auto& n:table.nodes){
+    if(n.value_state>1||(n.value_state==1&&!n.literal_body.empty()))return{};
+    any_null|=n.value_state==1;
+  }
+  const std::uint16_t version=any_null?2:1;
+  if(table.wire_version!=0&&table.wire_version!=version)return{};
+  const auto maximum_bytes=version==1?maximum_v1_bytes:maximum_v2_bytes;
+  if(!maximum_bytes)return{};
+  const auto fixed_bytes=kRecordFixedBytes+(version==2?8:0);
   std::size_t total=kHeaderBytes; std::uint64_t previous=0;
+  LiteralOrdinalBitmap ordinals{};
   for (const auto& n:table.nodes) {
     if(n.node_id==0||n.node_id<=previous||n.descriptor_generation==0||!SystemUuidValid(n.descriptor_uuid)||
-       n.parent_node_id!=0||n.parent_operand_ordinal==0||n.literal_body.size()>kMaximumLiteralBytes||
-       n.literal_body.size()>std::numeric_limits<std::size_t>::max()-kRecordFixedBytes) return {};
-    const auto record=kRecordFixedBytes+n.literal_body.size(); if(record>std::numeric_limits<std::uint32_t>::max()||record>std::numeric_limits<std::size_t>::max()-total)return{};
+       n.parent_node_id!=0||!ClaimLiteralOrdinal(ordinals,n.parent_operand_ordinal,table.nodes.size())||
+       n.literal_body.size()>kMaximumLiteralBytes||
+       n.literal_body.size()>std::numeric_limits<std::size_t>::max()-fixed_bytes) return {};
+    const auto record=fixed_bytes+n.literal_body.size(); if(record>std::numeric_limits<std::uint32_t>::max()||record>std::numeric_limits<std::size_t>::max()-total)return{};
     total+=record;
-    if(total>kMaximumExpressionNodeTableBytes)return{};
+    if(total>maximum_bytes)return{};
     previous=n.node_id;
   }
-  std::vector<bool> ordinals(table.nodes.size()+1,false);
-  for(const auto& n:table.nodes){if(n.parent_operand_ordinal>table.nodes.size()||ordinals[n.parent_operand_ordinal])return{};ordinals[n.parent_operand_ordinal]=true;}
   std::vector<std::uint8_t> out; out.reserve(total); out.insert(out.end(),{'S','B','X','N'});
-  Put16(&out,1);Put16(&out,32);Put32(&out,static_cast<std::uint32_t>(table.nodes.size()));Put32(&out,0);Put64(&out,total);Put64(&out,32);
-  for(const auto& n:table.nodes){Put32(&out,static_cast<std::uint32_t>(kRecordFixedBytes+n.literal_body.size()));Put64(&out,n.node_id);Put64(&out,n.parent_node_id);Put32(&out,n.parent_operand_ordinal);Put16(&out,3);Put16(&out,1);Put16(&out,0);Put64(&out,n.descriptor_generation);out.insert(out.end(),n.descriptor_uuid.begin(),n.descriptor_uuid.end());Put64(&out,n.literal_body.size());PutText(&out,"SBLR_LITERAL");PutText(&out,"typed_literal");out.insert(out.end(),n.literal_body.begin(),n.literal_body.end());PutText(&out,"engine.op.literal");PutText(&out,"typed_value");Put16(&out,1);}
+  Put16(&out,version);Put16(&out,32);Put32(&out,static_cast<std::uint32_t>(table.nodes.size()));Put32(&out,0);Put64(&out,total);Put64(&out,32);
+  for(const auto& n:table.nodes){
+    Put32(&out,static_cast<std::uint32_t>(fixed_bytes+n.literal_body.size()));
+    Put64(&out,n.node_id);Put64(&out,n.parent_node_id);Put32(&out,n.parent_operand_ordinal);
+    Put16(&out,3);Put16(&out,1);Put16(&out,0);Put64(&out,n.descriptor_generation);
+    out.insert(out.end(),n.descriptor_uuid.begin(),n.descriptor_uuid.end());
+    if(version==2){out.push_back(n.value_state);out.insert(out.end(),7,0);}
+    Put64(&out,n.literal_body.size());PutText(&out,"SBLR_LITERAL");PutText(&out,"typed_literal");
+    out.insert(out.end(),n.literal_body.begin(),n.literal_body.end());
+    PutText(&out,"engine.op.literal");PutText(&out,"typed_value");Put16(&out,1);
+  }
   return out;
+}
+
+std::vector<std::uint8_t> EncodeSblrExpressionNodeTableV1(const SblrExpressionNodeTableV1& table) {
+  return EncodeSblrExpressionNodeTableWithLimits(table,kSblrExpressionNodeTableMaximumBytesV1,0);
+}
+std::vector<std::uint8_t> EncodeSblrStatefulExpressionNodeTableV2(const SblrExpressionNodeTableV1& table) {
+  return EncodeSblrExpressionNodeTableWithLimits(table,kSblrExpressionNodeTableMaximumBytesV1,
+      kSblrStatefulExpressionNodeTableMaximumBytesV2);
+}
+SblrExpressionNodeTableCodecResultV1 DecodeSblrStatefulExpressionNodeTableV2(
+    const std::uint8_t* bytes,std::size_t size) {
+  return DecodeSblrExpressionNodeTableWithLimitV1(bytes,size,kSblrExpressionNodeTableMaximumBytesV1,
+      kSblrStatefulExpressionNodeTableMaximumBytesV2);
+}
+std::vector<std::uint8_t> EncodeSblrStatefulComposedExpressionNodeTableV2(const SblrExpressionNodeTableV1& table) {
+  return EncodeSblrExpressionNodeTableWithLimits(table,kSblrContextualComposedExpressionNodeTableMaximumBytesV2,
+      kSblrStatefulComposedExpressionNodeTableMaximumBytesV2);
+}
+SblrExpressionNodeTableCodecResultV1 DecodeSblrStatefulComposedExpressionNodeTableV2(
+    const std::uint8_t* bytes,std::size_t size) {
+  return DecodeSblrExpressionNodeTableWithLimitV1(bytes,size,kSblrContextualComposedExpressionNodeTableMaximumBytesV2,
+      kSblrStatefulComposedExpressionNodeTableMaximumBytesV2);
 }
 
 bool DecodeSblrExpressionNodeReferenceV1(

@@ -19,10 +19,15 @@ struct SblrExpressionLiteralNodeV1 {
   std::uint64_t descriptor_generation = 0;
   std::array<std::uint8_t, 16> descriptor_uuid{};
   std::vector<std::uint8_t> literal_body;
+  // Canonical node state:0 present,1 SQL NULL. V1 wire admits only0.
+  std::uint8_t value_state = 0;
 };
 
 struct SblrExpressionNodeTableV1 {
   std::vector<SblrExpressionLiteralNodeV1> nodes;
+  // Zero requests canonical selection on a new in-process table, never wire0.
+  // Decode retains1/2 so re-encoding cannot silently change admitted version.
+  std::uint16_t wire_version = 0;
 };
 
 struct SblrExpressionNodeTableCodecResultV1 {
@@ -37,6 +42,20 @@ inline constexpr std::size_t kSblrExpressionNodeTableMaximumBytesV1 =
     610336;
 inline constexpr std::size_t
     kSblrContextualComposedExpressionNodeTableMaximumBytesV2 = 642875;
+inline constexpr std::size_t kSblrStatefulExpressionNodeTableMaximumBytesV2 = 643080;
+inline constexpr std::size_t kSblrStatefulComposedExpressionNodeTableMaximumBytesV2 = 675619;
+
+// Structural stateful codecs only. Old V1 ingress continues to reject wire2
+// until its owning receipt/profile/executor integration explicitly selects
+// these entrypoints. Neither valid framing nor SQL NULL supplies authority.
+std::vector<std::uint8_t> EncodeSblrStatefulExpressionNodeTableV2(
+    const SblrExpressionNodeTableV1&);
+SblrExpressionNodeTableCodecResultV1 DecodeSblrStatefulExpressionNodeTableV2(
+    const std::uint8_t*,std::size_t);
+std::vector<std::uint8_t> EncodeSblrStatefulComposedExpressionNodeTableV2(
+    const SblrExpressionNodeTableV1&);
+SblrExpressionNodeTableCodecResultV1 DecodeSblrStatefulComposedExpressionNodeTableV2(
+    const std::uint8_t*,std::size_t);
 
 struct SblrExpressionNodeReferenceV1 {
   std::uint32_t occurrence_ordinal = 0;

@@ -52,9 +52,25 @@ int main(){
   sblr::SblrLiteralPrebindResultV1 q;q.preliminary_receipt_uuid=n.preliminary_receipt_uuid;q.catalog_snapshot_uuid=n.catalog_snapshot_uuid;q.catalog_generation=1;q.mga_snapshot_uuid=n.mga_snapshot_uuid;q.demand_sha256=n.demand_sha256;q.mappings.push_back({1,sblp});q.ordered_profile_sha256=sblr::ComputeSblrLiteralOrderedProfilesSha256V1(q.mappings);auto sblq=sblr::EncodeSblrLiteralPrebindResultV1(q);Require(Sblq(sblq),"SBLQ seed invalid");Fuzz("SBLQ",sblq,[&](const Bytes&b){(void)Sblq(b);});
   sblr::SblrExpressionNodeTableV1 t;sblr::SblrExpressionLiteralNodeV1 node;node.node_id=7;node.parent_operand_ordinal=1;node.descriptor_uuid=p.descriptor_uuid;node.descriptor_generation=p.descriptor_generation;auto scalar=sblr::EncodeSblrLiteralInt64LeV1(1);node.literal_body.assign(scalar.begin(),scalar.end());t.nodes.push_back(node);auto sbxn=sblr::EncodeSblrExpressionNodeTableV1(t);Fuzz("SBXN",sbxn,[&](const Bytes&b){auto d=sblr::DecodeSblrExpressionNodeTableV1(b.data(),b.size());if(d.ok)Require(d.canonical_bytes==b,"SBXN noncanonical acceptance");});
   auto sbxn_sha=hash::ComputeSha256Digest(sbxn).digest;Bytes ref;U16(&ref,1);U16(&ref,0);U32(&ref,1);U64(&ref,7);ref.insert(ref.end(),sbxn_sha.begin(),sbxn_sha.end());ref.insert(ref.end(),p.descriptor_uuid.begin(),p.descriptor_uuid.end());U64(&ref,p.descriptor_generation);sblr::SblrExpressionNodeReferenceV1 r;Require(sblr::DecodeSblrExpressionNodeReferenceV1(ref.data(),ref.size(),&r),"kind17 seed invalid");Fuzz("kind17",ref,[&](const Bytes&b){sblr::SblrExpressionNodeReferenceV1 x;if(sblr::DecodeSblrExpressionNodeReferenceV1(b.data(),b.size(),&x))Require(b.size()==72,"kind17 extent admitted");});
+  auto stateful=t;stateful.nodes.front().literal_body={0};
+  auto null_node=node;null_node.node_id=8;null_node.parent_operand_ordinal=2;
+  null_node.value_state=1;null_node.literal_body.clear();stateful.nodes.push_back(null_node);
+  const auto sbxn_state=sblr::EncodeSblrStatefulExpressionNodeTableV2(stateful);
+  Require(!sbxn_state.empty(),"stateful SBXN fuzz seed invalid");
+  Fuzz("SBXN-state",sbxn_state,[&](const Bytes& b){
+    const auto d=sblr::DecodeSblrStatefulExpressionNodeTableV2(b.data(),b.size());
+    if(d.ok){
+      Require(d.canonical_bytes==b&&sblr::EncodeSblrStatefulExpressionNodeTableV2(d.table)==b,
+          "stateful SBXN noncanonical acceptance or wire-version change");
+      const bool any_null=std::any_of(d.table.nodes.begin(),d.table.nodes.end(),[](const auto& n){return n.value_state==1;});
+      Require(d.table.wire_version==(any_null?2:1),"stateful SBXN canonical version lost");
+      for(const auto& n:d.table.nodes)Require(n.value_state<=1&&(n.value_state!=1||n.literal_body.empty()),
+          "stateful SBXN invalid state or NULL payload admitted");
+    }
+  });
   sblr::SblrLiteralBoundAstV1 ba;ba.preliminary_receipt_uuid=n.preliminary_receipt_uuid;ba.demand_sha256=n.demand_sha256;auto sbba=sblr::EncodeSblrLiteralBoundAstV1(ba);auto sbba_sha=sblr::ComputeSblrLiteralBoundAstSha256V1(sbba);
   Bytes f;f.insert(f.end(),{'S','B','L','F'});U16(&f,1);U16(&f,208);U32(&f,208+sbba.size()+sbxn.size());U32(&f,0);f.insert(f.end(),n.preliminary_receipt_uuid.begin(),n.preliminary_receipt_uuid.end());f.insert(f.end(),n.demand_sha256.begin(),n.demand_sha256.end());f.insert(f.end(),q.ordered_profile_sha256.begin(),q.ordered_profile_sha256.end());f.insert(f.end(),sbba_sha.begin(),sbba_sha.end());f.insert(f.end(),sbxn_sha.begin(),sbxn_sha.end());U64(&f,1);U64(&f,0);U64(&f,0);f.insert(f.end(),n.mga_snapshot_uuid.begin(),n.mga_snapshot_uuid.end());U32(&f,sbba.size());U32(&f,sbxn.size());f.insert(f.end(),sbba.begin(),sbba.end());f.insert(f.end(),sbxn.begin(),sbxn.end());sblr::SblrLiteralFinalizeRequestV1 fv;Require(sblr::DecodeSblrLiteralFinalizeRequestV1(f.data(),f.size(),&fv),"SBLF seed invalid");Fuzz("SBLF",f,[&](const Bytes&b){sblr::SblrLiteralFinalizeRequestV1 x;(void)sblr::DecodeSblrLiteralFinalizeRequestV1(b.data(),b.size(),&x);});
   sblr::SblrLiteralAdmissionV1 a;a.preliminary_receipt_uuid=n.preliminary_receipt_uuid;a.final_receipt_uuid=Identity(4);a.admission_token_uuid=Identity(5);a.demand_sha256=n.demand_sha256;a.ordered_profile_sha256=q.ordered_profile_sha256;a.bound_ast_sha256=sbba_sha;a.sbxn_sha256=sbxn_sha;a.catalog_generation=1;a.mga_snapshot_uuid=n.mga_snapshot_uuid;auto sbla=sblr::EncodeSblrLiteralAdmissionV1(&a);Require(Sbla(sbla),"SBLA seed invalid");Fuzz("SBLA",sbla,[&](const Bytes&b){if(Sbla(b))Require(b==sbla,"SBLA altered canonical token");});
   Bytes sbel(176);std::copy_n("SBEL",4,sbel.begin());sbel[4]=1;sbel[6]=176;sbel[8]=176;std::copy_n(sbla.begin()+32,16,sbel.begin()+16);std::copy_n(sbla.begin()+48,16,sbel.begin()+32);std::copy_n(sbla.begin()+232,32,sbel.begin()+48);std::copy(sbba_sha.begin(),sbba_sha.end(),sbel.begin()+80);std::copy(sbxn_sha.begin(),sbxn_sha.end(),sbel.begin()+112);Require(Sbel(sbel),"SBEL seed invalid");Fuzz("SBEL",sbel,[&](const Bytes&b){if(Sbel(b))Require(b.size()==176,"SBEL extent admitted");});
-  std::cout<<"seed=0x"<<std::hex<<kSeed<<std::dec<<" iterations="<<kIterations<<" minimized=8 protocols=8\n";return EXIT_SUCCESS;
+  std::cout<<"seed=0x"<<std::hex<<kSeed<<std::dec<<" iterations="<<kIterations<<" minimized=8 protocols=9\n";return EXIT_SUCCESS;
 }

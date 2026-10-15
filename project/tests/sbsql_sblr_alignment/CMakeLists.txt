@@ -4098,6 +4098,7 @@ function(sbsql_sblr_alignment_register_ia01_literal_process_e2e)
       NAME sbsql_sblr_alignment_ia01_literal_process_e2e
       COMMAND "${Python3_EXECUTABLE}"
               "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_package_process_e2e.py"
+              --database-seeder $<TARGET_FILE:public_driver_test_database_seed>
               --server $<TARGET_FILE:sb_server>
               --listener $<TARGET_FILE:sb_listener>
               --parser-worker $<TARGET_FILE:sbp_sbsql>

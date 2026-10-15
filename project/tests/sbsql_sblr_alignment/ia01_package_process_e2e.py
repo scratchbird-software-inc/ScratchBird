@@ -185,10 +185,12 @@ def finish_fixture_work(work: Path, processes: list[subprocess.Popen], *, failed
 
 
 def seed_database(
-    server: Path, database: Path, extra_args: tuple[str, ...] = ()
+    server: Path, database: Path, extra_args: tuple[str, ...] = (), *,
+    seeder: Path | None = None,
 ) -> str:
     """Create the database through the admitted embedded-bootstrap fixture."""
-    seeder = server.with_name("public_driver_test_database_seed")
+    if seeder is None:
+        seeder = server.with_name("public_driver_test_database_seed")
     if not seeder.is_file() or not os.access(seeder, os.X_OK):
         raise ProofError(f"approved database seeder is unavailable: {seeder}")
     project_root = Path(__file__).resolve().parents[2]
@@ -270,6 +272,7 @@ def require_package_evidence(paths: tuple[Path, ...]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--server", required=True)
+    parser.add_argument("--database-seeder", required=True)
     parser.add_argument("--listener", required=True)
     parser.add_argument("--parser-worker", required=True)
     parser.add_argument("--sb-isql", required=True)
@@ -286,7 +289,8 @@ def main() -> int:
         listener_control, listener_runtime = work / "lc", work / "lr"
         endpoint = server_control / "s.sock"
         port = free_port()
-        evidence = seed_database(Path(args.server), database)
+        evidence = seed_database(Path(args.server), database,
+                                 seeder=Path(args.database_seeder))
         server_trace = work / "server_phase.jsonl"
         dispatch_trace = work / "dispatch_phase.jsonl"
         worker_trace = work / "worker_phase.jsonl"
