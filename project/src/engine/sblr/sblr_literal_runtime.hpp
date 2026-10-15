@@ -274,6 +274,12 @@ std::optional<std::array<std::uint8_t,32>>
 ComputeSblrBooleanLiteralLexicalSha256V1(
     std::uint8_t state,const std::uint8_t* canonical_body,std::size_t body_bytes);
 
+// Executor integrity, not lexical identity: SHA256(state byte || exact body).
+// States0/1 mean value/NULL; NULL has no body. Inputs are borrowed, bounded by
+// the SBXN literal ceiling and never concatenated into a temporary allocation.
+std::optional<std::array<std::uint8_t,32>> ComputeSblrLiteralStateSha256V1(
+    std::uint8_t state,const std::uint8_t* canonical_body,std::size_t body_bytes);
+
 struct SblrLiteralExactDecimalCodecResultV1 {
   bool ok = false;
   std::string diagnostic_id;
@@ -291,6 +297,7 @@ struct SblrLiteralExecutorEvidenceV1 {
   std::string operand_descriptor_id = "typed_literal";
   std::array<std::uint8_t,16> descriptor_uuid{};
   std::uint64_t descriptor_generation = 0;
+  std::uint8_t value_state = 0;
   std::array<std::uint8_t,32> canonical_value_sha256{};
   std::string result_descriptor_id = "typed_value";
   std::uint16_t result_descriptor_version = 1;

@@ -660,7 +660,7 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::null_value:
       return size == 0;
     case SblrValueKind::expression_node_table:
-      return DecodeSblrExpressionNodeTableV1(data, size).ok;
+      return DecodeSblrStatefulExpressionNodeTableV2(data, size).ok;
     case SblrValueKind::expression_node_ref: {
       SblrExpressionNodeReferenceV1 reference;
       return DecodeSblrExpressionNodeReferenceV1(data, size, &reference);
@@ -1856,18 +1856,28 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
       ++expression_node_table_count;
       if (envelope.operation_id != "query.execute" ||
           envelope.opcode != "SBLR_QUERY_EXECUTE" ||
-          operand.type != "expression.node_table.v1" ||
+          (operand.type != "expression.node_table.v1" &&
+           operand.type != "expression.node_table.v2") ||
           operand.name != "expression_nodes" ||
           expression_node_table_count != 1) {
         fail("SBLR.OPERAND_INVALID",
-             "SBXN v1 is admitted only as the unique query.execute expression_nodes carrier");
+             "SBXN is admitted only as the unique version-matched query.execute expression_nodes carrier");
         break;
       }
-      expression_node_table = query_execute_v1_1
+      expression_node_table = operand.type=="expression.node_table.v2"
+          ? DecodeSblrStatefulExpressionNodeTableV2(
+                operand.value_body.data(),operand.value_body.size())
+          : query_execute_v1_1
           ? DecodeSblrContextualComposedExpressionNodeTableV2(
                 operand.value_body.data(), operand.value_body.size())
           : DecodeSblrExpressionNodeTableV1(
                 operand.value_body.data(), operand.value_body.size());
+      if(expression_node_table->ok&&
+         expression_node_table->table.wire_version!=
+             (operand.type=="expression.node_table.v2"?2:1)){
+        fail("SBLR.OPERAND_INVALID","SBXN key/header versions differ");
+        break;
+      }
     }
     if (operand.value_kind == SblrValueKind::expression_node_ref) {
       SblrExpressionNodeReferenceV1 reference;

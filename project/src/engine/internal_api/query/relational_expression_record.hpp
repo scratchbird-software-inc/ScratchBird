@@ -48,11 +48,19 @@ struct RelationalExpressionRecord {
   std::optional<std::string> operator_name;
   std::optional<std::string> literal_or_parameter_ref;
   struct LiteralTypedValueV1 {
+    enum class HashProfile : std::uint8_t {
+      canonical_bytes=0,
+      state_and_canonical_bytes=1,
+    };
     EngineUuid descriptor_uuid;
     std::uint64_t descriptor_generation{0};
     std::string value_state;
     std::vector<std::uint8_t> canonical_value_bytes;
     std::array<std::uint8_t,32> canonical_value_sha256{};
+    // In-process execution state only, never an alternative wire authority.
+    // Ordinary SBXN receiving explicitly selects state-bound integrity. Native
+    // UUID/temporal and other non-SBXN carriers keep their existing byte hash.
+    HashProfile hash_profile=HashProfile::canonical_bytes;
   };
   std::optional<LiteralTypedValueV1> literal_typed_value_v1;
   struct ParameterTypedValueV1 {

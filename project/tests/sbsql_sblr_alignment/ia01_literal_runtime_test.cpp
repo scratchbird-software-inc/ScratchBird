@@ -143,6 +143,36 @@ void StatefulTableChecks(){
   }
 }
 int main(){
+  const std::uint8_t false_byte=0,true_byte=1;
+  const auto false_state=sblr::ComputeSblrLiteralStateSha256V1(0,&false_byte,1);
+  const auto true_state=sblr::ComputeSblrLiteralStateSha256V1(0,&true_byte,1);
+  const auto null_state=sblr::ComputeSblrLiteralStateSha256V1(1,nullptr,0);
+  Require(false_state&&scratchbird::core::hash::HexLower(*false_state)==
+      "96a296d224f285c67bee93c30f8a309157f0daa35dc5b87e410b78630a09cfc7",
+      "literal FALSE state hash differs from independent SHA256 oracle");
+  Require(true_state&&scratchbird::core::hash::HexLower(*true_state)==
+      "b413f47d13ee2fe6c845b2ee141af81de858df4ec549a58b7970bb96645bc8d2",
+      "literal TRUE state hash differs from independent SHA256 oracle");
+  Require(null_state&&scratchbird::core::hash::HexLower(*null_state)==
+      "4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a",
+      "literal NULL state hash differs from independent SHA256 oracle");
+  const auto empty_state=sblr::ComputeSblrLiteralStateSha256V1(0,nullptr,0);
+  Require(empty_state&&*empty_state!=*null_state,
+      "literal present-empty and NULL state hashes alias");
+  for(unsigned state=2;state<256;++state)
+    Require(!sblr::ComputeSblrLiteralStateSha256V1(state,nullptr,0),
+        "literal unknown state was hashed");
+  Require(!sblr::ComputeSblrLiteralStateSha256V1(1,&false_byte,1)&&
+      !sblr::ComputeSblrLiteralStateSha256V1(0,nullptr,1)&&
+      !sblr::ComputeSblrLiteralStateSha256V1(0,&false_byte,65537)&&
+      !sblr::ComputeSblrLiteralStateSha256V1(0,&false_byte,std::numeric_limits<std::size_t>::max()),
+      "literal malformed state/body extents were hashed");
+  std::vector<std::uint8_t> largest_body(65536,0);
+  const auto largest_state=sblr::ComputeSblrLiteralStateSha256V1(0,largest_body.data(),largest_body.size());
+  auto independent_largest=largest_body;independent_largest.insert(independent_largest.begin(),0);
+  const auto largest_oracle=scratchbird::core::hash::ComputeSha256Digest(independent_largest);
+  Require(largest_state&&largest_oracle.ok()&&*largest_state==largest_oracle.digest,
+      "literal exact65536-byte state hash limit refused or changed");
   StatefulTableChecks();
   {
     const auto hex=[](const std::array<std::uint8_t,32>& digest){
@@ -287,9 +317,26 @@ int main(){
   sblr::SblrLiteralExecutorEvidenceV1 executor_evidence;
   executor_evidence.descriptor_uuid=Identity(1);
   executor_evidence.descriptor_generation=1;
-  executor_evidence.canonical_value_sha256[0]=1;
+  executor_evidence.canonical_value_sha256=*false_state;
   Require(sblr::ComputeSblrLiteralExecutorEvidenceSha256V1(executor_evidence).has_value(),
           "exact literal executor evidence schema refused");
+  const auto present_evidence=sblr::ComputeSblrLiteralExecutorEvidenceSha256V1(executor_evidence);
+  Require(present_evidence&&scratchbird::core::hash::HexLower(*present_evidence)==
+      "40fde19e74b555f3ca1522824edb3bf4437c6788481c36aefcc8d8a02a1562c4",
+      "literal executor evidence differs from independent complete byte oracle");
+  auto null_evidence=executor_evidence;null_evidence.value_state=1;
+  Require(sblr::ComputeSblrLiteralExecutorEvidenceSha256V1(null_evidence)!=present_evidence,
+          "literal executor evidence omits explicit state");
+  null_evidence.canonical_value_sha256=*null_state;
+  const auto exact_null_evidence=sblr::ComputeSblrLiteralExecutorEvidenceSha256V1(null_evidence);
+  Require(exact_null_evidence&&scratchbird::core::hash::HexLower(*exact_null_evidence)==
+      "b7245e1f60b6d7c3604368cd302bffcc8e57c4c3b37db714eb530958762ad565",
+      "literal NULL executor evidence differs from independent complete byte oracle");
+  for(unsigned state=2;state<256;++state){
+    auto altered=executor_evidence;altered.value_state=state;
+    Require(!sblr::ComputeSblrLiteralExecutorEvidenceSha256V1(altered),
+            "literal executor evidence admitted unknown state");
+  }
   for(const auto malformed : {std::string{"executor_id"},std::string{"opcode_version"},
                               std::string{"operand_descriptor_id"},std::string{"result_descriptor_id"}}){
     auto candidate=executor_evidence;
@@ -497,6 +544,28 @@ int main(){
   Require(!canonical_carrier.empty()&&
               sblr::DecodeSblrEnvelope(canonical_carrier).ok,
           "numeric kind17 canonical decode/re-encode failed");
+  auto stateful_carrier=carrier;
+  auto nullable_table=table;nullable_table.nodes[0].value_state=1;
+  nullable_table.nodes[0].literal_body.clear();
+  const auto nullable_bytes=sblr::EncodeSblrStatefulExpressionNodeTableV2(nullable_table);
+  Require(!nullable_bytes.empty(),"stateful envelope fixture encoding failed");
+  stateful_carrier.operands[0].type="expression.node_table.v2";
+  stateful_carrier.operands[0].value_body=nullable_bytes;
+  const auto nullable_hash=scratchbird::core::hash::ComputeSha256Digest(nullable_bytes);
+  Require(nullable_hash.ok(),"stateful envelope fixture hash failed");
+  std::copy(nullable_hash.digest.begin(),nullable_hash.digest.end(),
+            stateful_carrier.operands[1].value_body.begin()+16);
+  Require(sblr::ValidateSblrEnvelope(stateful_carrier).ok,
+          "exact V2 key/header/reference carrier refused");
+  const auto stateful_wire=sblr::EncodeSblrEnvelope(stateful_carrier);
+  Require(!stateful_wire.empty()&&sblr::DecodeSblrEnvelope(stateful_wire).ok,
+          "stateful SBOP carrier decode/re-encode failed");
+  stateful_carrier.operands[0].type="expression.node_table.v1";
+  Require(!sblr::ValidateSblrEnvelope(stateful_carrier).ok,
+          "V1 type key admitted V2 table header");
+  stateful_carrier=carrier;stateful_carrier.operands[0].type="expression.node_table.v2";
+  Require(!sblr::ValidateSblrEnvelope(stateful_carrier).ok,
+          "V2 type key admitted V1 table header");
   carrier.operands.back().name="07";
   Require(!sblr::ValidateSblrEnvelope(carrier).ok,"noncanonical numeric expression identity admitted");
   carrier.operands.back().name="7";

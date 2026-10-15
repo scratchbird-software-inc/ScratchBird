@@ -3503,20 +3503,60 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
     }
     api::EngineTypedValue literal;
     literal.descriptor = result_descriptor;
-    if (*expression.literal_kind == api::RelationalLiteralKind::kNull) {
+    if (*expression.literal_kind == api::RelationalLiteralKind::kNull &&
+        !expression.literal_typed_value_v1.has_value()) {
       literal.setState(api::EngineValueState::sql_null);
       return finish(std::move(literal));
     }
     literal.setState(api::EngineValueState::value);
     if(expression.literal_typed_value_v1.has_value()){
       const auto& typed=*expression.literal_typed_value_v1;
-      const auto digest=scratchbird::core::hash::ComputeSha256Digest(
-          typed.canonical_value_bytes);
-      if(typed.value_state!="value"||typed.descriptor_generation==0||
+      using HashProfile=api::RelationalExpressionRecord::LiteralTypedValueV1::HashProfile;
+      const bool state_bound=typed.hash_profile==HashProfile::state_and_canonical_bytes;
+      const bool is_null=typed.value_state=="null";
+      const bool is_boolean=dt::CanonicalTypeIdFromStableName(inferred_type)==dt::CanonicalTypeId::boolean;
+      if((typed.hash_profile!=HashProfile::canonical_bytes&&!state_bound)||
+         (typed.value_state!="value"&&!is_null)||typed.descriptor_generation==0||
          typed.descriptor_uuid!=result_descriptor.descriptor_uuid||
-         !digest.ok()||digest.digest!=typed.canonical_value_sha256){
+         typed.descriptor_generation!=descriptors_.at(expression.result_descriptor_id)->descriptor_generation||
+         ((is_null||is_boolean)&&!state_bound)){
+        *refusal_detail="typed_value_v1 descriptor, state, or hash profile differs";
+        return false;
+      }
+      const auto digest=state_bound
+          ? ComputeSblrLiteralStateSha256V1(is_null?1:0,
+                typed.canonical_value_bytes.data(),typed.canonical_value_bytes.size())
+          : [&]() -> std::optional<std::array<std::uint8_t,32>> {
+              const auto raw=core::hash::ComputeSha256DigestNative(
+                  typed.canonical_value_bytes.data(),typed.canonical_value_bytes.size());
+              return raw.ok()?std::optional{raw.digest}:std::nullopt;
+            }();
+      if(!digest||*digest!=typed.canonical_value_sha256){
         *refusal_detail="typed_value_v1 descriptor, state, bytes, or SHA differs";
         return false;
+      }
+      if(is_null){
+        if(!state_bound||*expression.literal_kind!=api::RelationalLiteralKind::kNull||
+           !typed.canonical_value_bytes.empty()||
+           descriptors_.at(expression.result_descriptor_id)->nullability!=api::RelationalNullability::kNullable){
+          *refusal_detail="typed NULL requires its nullable descriptor, NULL kind and zero payload";
+          return false;
+        }
+        literal.setState(api::EngineValueState::sql_null);
+        return finish(std::move(literal));
+      }
+      if(*expression.literal_kind==api::RelationalLiteralKind::kNull){
+        *refusal_detail="typed NULL kind contradicts its value state";
+        return false;
+      }
+      if(is_boolean){
+        if(!state_bound||*expression.literal_kind!=api::RelationalLiteralKind::kBoolean||
+           typed.canonical_value_bytes.size()!=1||typed.canonical_value_bytes[0]>1){
+          *refusal_detail="typed BOOLEAN requires its Boolean kind and canonical byte0/1";
+          return false;
+        }
+        literal.binary_value=typed.canonical_value_bytes;
+        return finish(std::move(literal));
       }
       if (*expression.literal_kind == api::RelationalLiteralKind::kUuid) {
         if (dt::CanonicalTypeIdFromStableName(inferred_type) !=

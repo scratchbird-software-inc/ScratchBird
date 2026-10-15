@@ -3,6 +3,7 @@
 
 #include "sblr_literal_runtime.hpp"
 #include "hash_digest.hpp"
+#include "hash_digest_parts.hpp"
 #include "sbl_numeric.hpp"
 #include "core/datatypes/datatype_boolean_alias_shape.hpp"
 
@@ -51,12 +52,22 @@ ComputeSblrBooleanLiteralLexicalSha256V1(
 }
 
 std::optional<std::array<std::uint8_t,32>>
+ComputeSblrLiteralStateSha256V1(
+    std::uint8_t state,const std::uint8_t* body,std::size_t size) {
+  if(state>1||size>65536||(size&&!body)||(state==1&&size))return std::nullopt;
+  const core::hash::HashDigestSegment segments[]{{&state,1},{body,size}};
+  const auto digest=core::hash::ComputeSha256DigestPartsNative(segments,2);
+  return digest.ok()?std::optional{digest.digest}:std::nullopt;
+}
+
+std::optional<std::array<std::uint8_t,32>>
 ComputeSblrLiteralExecutorEvidenceSha256V1(
     const SblrLiteralExecutorEvidenceV1& evidence) {
   if (evidence.executor_id != "engine.op.literal" ||
       evidence.opcode_code != 3 || evidence.opcode_version != "1.0" ||
       evidence.operand_descriptor_id != "typed_literal" ||
       !SystemUuidValid(evidence.descriptor_uuid) || evidence.descriptor_generation == 0 ||
+      evidence.value_state > 1 ||
       evidence.result_descriptor_id != "typed_value" ||
       evidence.result_descriptor_version != 1) return std::nullopt;
   static constexpr std::string_view domain =
@@ -69,6 +80,7 @@ ComputeSblrLiteralExecutorEvidenceSha256V1(
   text(evidence.opcode_version);text(evidence.operand_descriptor_id);
   bytes.insert(bytes.end(),evidence.descriptor_uuid.begin(),evidence.descriptor_uuid.end());
   u64(evidence.descriptor_generation);
+  bytes.push_back(evidence.value_state);
   bytes.insert(bytes.end(),evidence.canonical_value_sha256.begin(),evidence.canonical_value_sha256.end());
   text(evidence.result_descriptor_id);u16(evidence.result_descriptor_version);
   const auto digest=core::hash::ComputeSha256Digest(bytes);

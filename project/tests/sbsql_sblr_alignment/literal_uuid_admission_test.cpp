@@ -177,7 +177,10 @@ int main() {
   Required(a,{&A::preliminary_receipt_uuid,&A::final_receipt_uuid,&A::admission_token_uuid,&A::mga_snapshot_uuid},
     [](A value){return s::EncodeSblrLiteralAdmissionV1(&value);});
   using E=s::SblrLiteralExecutorEvidenceV1;
-  E evidence;evidence.descriptor_uuid=Identity(4);evidence.descriptor_generation=1;evidence.canonical_value_sha256=hash(x.literal_body);
+  E evidence;evidence.descriptor_uuid=Identity(4);evidence.descriptor_generation=1;
+  const auto state_hash=s::ComputeSblrLiteralStateSha256V1(0,x.literal_body.data(),x.literal_body.size());
+  Require(state_hash.has_value(),"literal state hash unavailable");
+  evidence.canonical_value_sha256=*state_hash;
   Required(evidence,{&E::descriptor_uuid},[](E value){auto h=s::ComputeSblrLiteralExecutorEvidenceSha256V1(value);return h?Bytes(h->begin(),h->end()):Bytes{};});
   std::cout<<"literal UUID admission checks="<<checks<<'\n';
 }

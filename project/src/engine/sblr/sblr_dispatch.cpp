@@ -33,6 +33,7 @@
 #include "sblr_opcode_registry.hpp"
 #include "dml/mutation_savepoint_capability.hpp"
 #include "sblr_literal_runtime.hpp"
+#include "engine/statement_identity_binding.hpp"
 #include "uuid.hpp"
 #include "../../wire/projection_fields.hpp"
 #include "catalog/binary_view_options.hpp"
@@ -1092,7 +1093,10 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
         decoded.detail = "duplicate SBXN literal table";
         return decoded;
       }
-      literal_node_table = contextual_query
+      literal_node_table = operand.type=="expression.node_table.v2"
+                               ? DecodeSblrStatefulExpressionNodeTableV2(
+                                     operand.value_body.data(),operand.value_body.size())
+                               : contextual_query
                                ? scratchbird::engine::internal_api::
                                      DecodeContextualTextComposedSbxnV2(
                                          operand.value_body.data(),
@@ -1737,6 +1741,14 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
             ? contextual_execute->mappings.size()
             : 0,
         false);
+    SblrLiteralDemandV1 boolean_demand;
+    boolean_demand.lexical_class=4;boolean_demand.context_class=1;
+    const auto boolean_identity=scratchbird::core::datatypes::
+        LookupDatatypeTypeCodecIdentityV3(
+            dispatch_request.context.datatype_catalog_snapshot_uuid,
+            dispatch_request.context.datatype_catalog_generation,
+            dispatch_request.context.datatype_registry_generation,
+            *scratchbird::engine::LiteralDemandDescriptorIdentityV1(boolean_demand),1);
     for(const auto& [expression_id,reference]:literal_references){
       if (dispatch_request.context.query_cancellation_requested &&
           dispatch_request.context.query_cancellation_requested()) {
@@ -1780,9 +1792,25 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
                                  .literal_descriptor_handle
                        : candidate.descriptor_uuid == descriptor_uuid;
           });
+      const bool boolean_literal=descriptor!=decoded.request.relational_dag.descriptors.end()&&
+          boolean_identity.ok&&descriptor->datatype_identity_authoritative&&
+          descriptor->statement_receipt_uuid==dispatch_request.context.statement_receipt_uuid&&
+          descriptor->datatype_catalog_snapshot_uuid==dispatch_request.context.datatype_catalog_snapshot_uuid&&
+          descriptor->datatype_catalog_generation==dispatch_request.context.datatype_catalog_generation&&
+          descriptor->datatype_registry_generation==dispatch_request.context.datatype_registry_generation&&
+          descriptor->type_uuid==boolean_identity.row.legacy_fields.type_uuid&&
+          descriptor->descriptor_generation==boolean_identity.row.legacy_fields.descriptor_generation&&
+          descriptor->type_generation==boolean_identity.row.legacy_fields.type_generation&&
+          descriptor->codec_id==boolean_identity.row.legacy_fields.codec_id&&
+          descriptor->codec_version==boolean_identity.row.legacy_fields.codec_version&&
+          descriptor->codec_generation==boolean_identity.row.legacy_fields.codec_generation;
       const bool canonical_literal = [&]() {
         if (node == literal_node_table->table.nodes.end()) return false;
-        if (contextual_mapping_index.has_value()) return true;
+        if (contextual_mapping_index.has_value()) return node->value_state==0;
+        if(boolean_literal)return ComputeSblrBooleanLiteralLexicalSha256V1(
+            node->value_state,node->literal_body.data(),node->literal_body.size()).has_value()&&
+            (node->value_state==0||descriptor->nullability==api::RelationalNullability::kNullable);
+        if(node->value_state!=0)return false;
         if (DecodeSblrLiteralInt64LeV1(node->literal_body.data(),
                                       node->literal_body.size()).has_value()) {
           return true;
@@ -1792,6 +1820,7 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       }();
       if(node==literal_node_table->table.nodes.end()||
          descriptor==decoded.request.relational_dag.descriptors.end()||
+         descriptor->descriptor_generation!=reference.descriptor_generation||
          !canonical_literal ||
          (contextual_mapping_index.has_value() &&
           (contextual_mapping_used[*contextual_mapping_index] ||
@@ -1820,25 +1849,28 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
             std::move(expression));
         continue;
       }
-      const auto body_sha = scratchbird::core::hash::ComputeSha256Digest(
-          node->literal_body);
-      if (!body_sha.ok()) {
+      const auto body_sha = ComputeSblrLiteralStateSha256V1(
+          node->value_state,node->literal_body.data(),node->literal_body.size());
+      if (!body_sha) {
         decoded.diagnostic_id = "DATATYPE.DESCRIPTOR.INVALID";
         decoded.detail = "SBXN literal canonical body hash failed";
         return decoded;
       }
       const std::string body_sha_text =
-          scratchbird::core::hash::HexLower(body_sha.digest);
+          scratchbird::core::hash::HexLower(*body_sha);
       api::RelationalExpressionRecord::LiteralTypedValueV1 typed_value;
       typed_value.descriptor_uuid = descriptor_uuid;
       typed_value.descriptor_generation = reference.descriptor_generation;
-      typed_value.value_state = "value";
+      typed_value.value_state = node->value_state==1?"null":"value";
       typed_value.canonical_value_bytes = node->literal_body;
-      typed_value.canonical_value_sha256 = body_sha.digest;
+      typed_value.canonical_value_sha256 = *body_sha;
+      typed_value.hash_profile=api::RelationalExpressionRecord::LiteralTypedValueV1::
+          HashProfile::state_and_canonical_bytes;
       SblrLiteralExecutorEvidenceV1 executor_evidence;
       executor_evidence.descriptor_uuid=reference.descriptor_uuid;
       executor_evidence.descriptor_generation=reference.descriptor_generation;
-      executor_evidence.canonical_value_sha256=body_sha.digest;
+      executor_evidence.value_state=node->value_state;
+      executor_evidence.canonical_value_sha256=*body_sha;
       const auto executor_evidence_sha=
           ComputeSblrLiteralExecutorEvidenceSha256V1(executor_evidence);
       if(!executor_evidence_sha.has_value()){
@@ -1857,6 +1889,7 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
           {"descriptor_uuid", descriptor_uuid},
           {"descriptor_generation",
            std::to_string(reference.descriptor_generation)},
+          {"value_state",node->value_state==1?"null":"value"},
           {"canonical_value_sha256", body_sha_text},
           {"result_descriptor_id", "typed_value"},
           {"result_descriptor_version", "1"},
@@ -1873,7 +1906,8 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       expression.expression_id=expression_id;
       expression.expression_kind=api::RelationalExpressionKind::kLiteral;
       expression.result_descriptor_id=descriptor->descriptor_id;
-      expression.literal_kind=api::RelationalLiteralKind::kNumeric;
+      expression.literal_kind=node->value_state==1?api::RelationalLiteralKind::kNull:
+          boolean_literal?api::RelationalLiteralKind::kBoolean:api::RelationalLiteralKind::kNumeric;
       expression.literal_typed_value_v1=std::move(typed_value);
       decoded.request.relational_dag.expressions.push_back(std::move(expression));
     }

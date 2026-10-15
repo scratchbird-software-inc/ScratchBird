@@ -3,6 +3,99 @@
 #pragma once
 
 #include "ia01_literal_live_fixture.hpp"
+#include "engine/sblr/canonical_relational_expression.hpp"
+#include "core/datatypes/datatype_type_codec_identity_v3.hpp"
+
+inline void CheckAdmittedBooleanLiteralExecution(
+    const bridge::StatementContextReceiptView& view,
+    const literal_fixture::runtime::SblrLiteralStatementDescriptorProfileV1& profile,
+    const literal_fixture::runtime::SblrExpressionLiteralNodeV1& node) {
+  namespace rt=literal_fixture::runtime;
+  const auto identity=scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV3(
+      view.literal_catalog_snapshot_uuid,view.literal_catalog_generation,
+      view.literal_registry_generation,api::EngineUuid{profile.descriptor_uuid},
+      profile.descriptor_generation);
+  Require(identity.ok,"BOOLEAN admitted execution registry lookup failed");
+  api::RelationalTypeDescriptor descriptor;
+  descriptor.descriptor_id=1;descriptor.descriptor_uuid.bytes=profile.profile_uuid;
+  descriptor.type_uuid=identity.row.legacy_fields.type_uuid;
+  descriptor.nullability=profile.nullable?api::RelationalNullability::kNullable:
+                                         api::RelationalNullability::kNonNull;
+  descriptor.datatype_identity_authoritative=true;
+  descriptor.descriptor_generation=profile.descriptor_generation;
+  descriptor.type_generation=identity.row.legacy_fields.type_generation;
+  descriptor.codec_id=profile.codec_id;descriptor.codec_version=profile.codec_version;
+  descriptor.codec_generation=profile.codec_generation;
+  descriptor.statement_receipt_uuid=view.receipt_uuid;
+  descriptor.datatype_catalog_snapshot_uuid=view.literal_catalog_snapshot_uuid;
+  descriptor.datatype_catalog_generation=view.literal_catalog_generation;
+  descriptor.datatype_registry_generation=view.literal_registry_generation;
+  api::RelationalExpressionRecord expression;
+  expression.expression_id=node.node_id;
+  expression.result_descriptor_id=1;
+  expression.expression_kind=api::RelationalExpressionKind::kLiteral;
+  expression.literal_kind=node.value_state==1?api::RelationalLiteralKind::kNull:
+                                             api::RelationalLiteralKind::kBoolean;
+  api::RelationalExpressionRecord::LiteralTypedValueV1 typed;
+  using HashProfile=decltype(typed)::HashProfile;
+  typed.descriptor_uuid=descriptor.descriptor_uuid;
+  typed.descriptor_generation=node.descriptor_generation;
+  typed.value_state=node.value_state==1?"null":"value";
+  typed.canonical_value_bytes=node.literal_body;
+  typed.hash_profile=HashProfile::state_and_canonical_bytes;
+  const auto hash=rt::ComputeSblrLiteralStateSha256V1(node.value_state,
+      node.literal_body.data(),node.literal_body.size());
+  Require(hash.has_value(),"BOOLEAN admitted value/state hash unavailable");
+  typed.canonical_value_sha256=*hash;
+  expression.literal_typed_value_v1=typed;
+  api::TypedRelationalDag dag;dag.descriptors={descriptor};dag.expressions={expression};
+  rt::CanonicalRelationalExpressionRuntime runtime(dag);
+  api::EngineTypedValue value;std::string detail;
+  if(!runtime.Evaluate(node.node_id,"boolean",&value,&detail)){
+    std::cerr<<"BOOLEAN admitted evaluation: "<<detail<<'\n';
+    Require(false,"BOOLEAN admitted typed literal did not execute");
+  }
+  Require(value.descriptor.descriptor_uuid==descriptor.descriptor_uuid&&
+          value.descriptor.type_uuid.bytes==profile.type_uuid&&
+          value.descriptor.datatype_descriptor_uuid==identity.row.legacy_fields.descriptor_uuid&&
+          value.descriptor.datatype_cohort==api::EngineDatatypeCohort{
+              view.literal_catalog_snapshot_uuid,view.literal_catalog_generation,view.literal_registry_generation}&&
+          value.encoded_value.empty()&&value.binary_value==node.literal_body&&
+          value.isSqlNull()==(node.value_state==1),
+          "BOOLEAN typed literal lost actual occurrence/cohort/native value state");
+  for(unsigned mutation=0;mutation<12;++mutation){
+    auto changed=dag;
+    auto& e=changed.expressions[0];auto& t=*e.literal_typed_value_v1;
+    if(mutation==0)t.value_state="invalid";
+    if(mutation==1)t.value_state=node.value_state==1?"value":"null";
+    if(mutation==2)t.canonical_value_sha256[0]^=1;
+    if(mutation==3)t.descriptor_uuid=view.receipt_uuid;
+    if(mutation==4)++t.descriptor_generation;
+    if(mutation==5){t.canonical_value_bytes={2};
+      t.canonical_value_sha256=*rt::ComputeSblrLiteralStateSha256V1(0,t.canonical_value_bytes.data(),1);}
+    if(mutation==6)e.literal_kind=node.value_state==1?api::RelationalLiteralKind::kBoolean:
+                                                               api::RelationalLiteralKind::kNull;
+    if(mutation==7){
+      t.hash_profile=HashProfile::canonical_bytes;
+      const auto raw=scratchbird::core::hash::ComputeSha256Digest(t.canonical_value_bytes);
+      Require(raw.ok(),"BOOLEAN downgrade fixture raw hash unavailable");
+      t.canonical_value_sha256=raw.digest;
+    }
+    if(mutation==8)t.hash_profile=static_cast<HashProfile>(255);
+    if(mutation==9)e.literal_kind=api::RelationalLiteralKind::kNumeric;
+    if(mutation==10){
+      if(node.value_state!=1)continue;
+      changed.descriptors[0].nullability=api::RelationalNullability::kNonNull;
+    }
+    if(mutation==11)t.hash_profile=HashProfile::canonical_bytes;
+    rt::CanonicalRelationalExpressionRuntime invalid(changed);
+    api::EngineTypedValue refused;
+    Require(!invalid.Evaluate(node.node_id,"boolean",&refused,&detail)&&
+            refused.state==api::EngineValueState::error&&refused.binary_value.empty()&&
+            refused.encoded_value.empty()&&!detail.empty(),
+            "BOOLEAN malformed typed execution published a value or bypassed NULL checks");
+  }
+}
 
 // These tests use the real session/MGA owner and acquire a fresh retained
 // statement for each case. No UUID, cohort, generation or profile is supplied
@@ -152,6 +245,7 @@ inline void CheckBooleanLiteralAdmission(
     Require(status==wanted,"BOOLEAN finalization status drifted");
     Require(positive?admission.size()==264:admission.empty(),
             "BOOLEAN finalization published invalid admission/prefix");
+    if(positive)CheckAdmittedBooleanLiteralExecution(view,profile.profile,node);
     if(!positive){
       sb_engine_diagnostic_set_view_t diagnostics{};
       Require(result&&sb_engine_result_diagnostics(result,&diagnostics)==SB_ENGINE_STATUS_OK&&
