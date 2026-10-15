@@ -87,6 +87,35 @@ void Roundtrip(const c::CatalogDatabaseRecord& r) {
   Check(encoded.ok(),"valid payload encode");
   if(!encoded.ok())return;
   Check(Bytes(encoded)==Golden(r),"independent complete payload byte oracle");
+  std::array<p::byte,240> backing;backing.fill(0xa7);
+  allocation_probe::forbidden=true;
+  const auto bounded=c::EncodeCatalogDatabaseRecordInto(r,backing);
+  const auto extent=c::CatalogDatabaseRecordEncodedBytes(r);
+  allocation_probe::forbidden=false;
+  const auto golden=Golden(r);
+  Check(bounded.ok()&&extent==golden.size()&&bounded.bytes.size()==golden.size()&&
+      std::equal(bounded.bytes.begin(),bounded.bytes.end(),
+          reinterpret_cast<const p::byte*>(golden.data()))&&
+      std::all_of(backing.begin()+golden.size(),backing.end(),[](auto b){return b==0xa7;}),
+      "no-allocation bounded encoder matches independent V1/V2 bytes and preserves tail");
+  for(std::size_t size=0;size<golden.size();++size) {
+    backing.fill(0xa7);allocation_probe::forbidden=true;
+    const auto refused=c::EncodeCatalogDatabaseRecordInto(r,std::span(backing).first(size));
+    allocation_probe::forbidden=false;
+    Check(!refused.ok()&&refused.bytes.empty()&&
+        std::all_of(backing.begin(),backing.end(),[](auto b){return b==0xa7;}),
+        "every short backing refuses without allocation or changed bytes");
+  }
+  auto overlapping=r;
+  std::array<p::byte,sizeof(r)> before;
+  std::copy_n(reinterpret_cast<const p::byte*>(&overlapping),before.size(),before.begin());
+  allocation_probe::forbidden=true;
+  const auto overlap=c::EncodeCatalogDatabaseRecordInto(overlapping,
+      {reinterpret_cast<p::byte*>(&overlapping),sizeof(overlapping)});
+  allocation_probe::forbidden=false;
+  Check(!overlap.ok()&&overlap.bytes.empty()&&
+      std::equal(before.begin(),before.end(),reinterpret_cast<const p::byte*>(&overlapping)),
+      "complete input backing overlap refuses without object mutation");
   const auto decoded=DecodeNoAllocation(Bytes(encoded));
   Check(decoded.ok(),"valid payload decode");
   if(decoded.ok()) {

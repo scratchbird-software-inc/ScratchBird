@@ -526,3 +526,52 @@ generation-bound credential/runtime binding, retained native mutable controller
 and security admission/activation before hosted BEGIN. Bootstrap administrator
 enrollment MUST NOT be used as server SYSARCH/operator fallback. The six live
 startup failures and full clean/all-target/unfiltered qualification remain open.
+
+Native initial database definition and aliases, 2026-10-15
+---------------------------------------------------------
+NativeInitialDatabaseRequest now binds an actual initial primary SBFP request
+and explicit admitted datatype tuple to a complete owned schema65537V2 database
+definition plus actual caller-supplied localized names. It uses the actual
+native format/page/time/construction values, never a legacy header/cache or
+inferred executable-default cohort. Database catalog object and physical DB
+identities remain distinct. Root aliases require database class and the supplied
+database catalog object scope with object kind; physical DB bytes must not be
+retyped into that namespace. The API issues no owner/alias/profile or authority.
+
+Complete borrowed common/name/budget and raw identity admission precede owning
+copies; enlarged alias sets use bounded scratch and O(N log N) sorting. The
+database V1/V2 codec now has stack-backed Into serialization/size inspection,
+without transient field/size vectors or schema setup allocations. Frozen exact
+bytes remain unchanged; invalid values, short capacity and whole-input overlap
+refuse before writes, preserving output backing/tail. Owning encoding performs
+only its final payload allocation; no unmeasured speed claim is made.
+
+Final pair2/2 PASS2.358540s, peak53340KiB; rebuilt affected43/43 PASS115.876250s,
+peak324552KiB, no leaked descendants, LastTest retained. Independent V1/V2 byte
+goldens, every short backing, complete input overlap, native request/cohort/
+metadata/name/class/scope/identity refusals, exact/short aggregate budgets,
+33-alias enlarged scratch and all actual allocation failures, owning lifetime
+and actual indexed DB-plus-schema persistence/independent reopen on all5 page
+profiles pass. Existing full schema/deep forest/optional defaults, bootstrap,
+public-policy/security/memory/runtime/crypto assertions remain. Initial pair
+failed on new fixture's incorrect database-kind scope; corrected to actual
+catalog-object root scope, failed receipt retained rather than relabeled.
+Serialized final follower build26edges PASS120.500229s, peak2728216KiB.
+
+Core03 CATALOG-NATIVE-INITIAL-DATABASE-PRODUCER-20261015 and durable-format
+native initial binding/encoding clauses amended, DIGESTS synchronized.
+Core03 sha256088b4e5ac27755234d1199bb28ce0eb58750c8b64baa312b15ecd14269ca02a7;
+durable-format sha256f80dde04553fcbed52f6d39d9561490b43ba0797ab5d17a1a1c67a0a3ca3ecc5.
+Specifications/workplans remain local/manual. Private temporary root empty12KiB;
+no extra build tree, archives or retained new test databases.
+
+No baseline closure:260=199 qualified+61 outstanding plus supplemental1 open.
+NEXT: compose the actual enclosing native database/schema/policy/security/
+bootstrap families with admitted governance/name-profile/reference definitions,
+separately provisioned service principal/provider/protected generation-bound
+credential/runtime binding, real retained native mutable controller/security
+projection and activation before hosted BEGIN. Construction stays initializing/
+creating and write-fenced. No fixture governance promotion, synthetic effective
+grant or SYSARCH/operator fallback. Original live startup routes,5 older unsealed
+candidates, other outstanding groups and full clean/all-target/unfiltered
+qualification remain open.

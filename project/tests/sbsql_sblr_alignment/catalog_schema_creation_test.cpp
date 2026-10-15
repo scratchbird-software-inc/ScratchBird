@@ -7,6 +7,7 @@
 #include "catalog_schema_record_codec.hpp"
 #include "admitted_datatype_cohort.hpp"
 #include "native_creation_workspace.hpp"
+#include "native_database_creation.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "../support/owned_temp_directory.hpp"
 #include <algorithm>
@@ -40,6 +41,15 @@ p::Uuid Id(unsigned n){p::Uuid id;id.bytes[0]=1;id.bytes[6]=0x70;id.bytes[8]=0x8
   id.bytes[12]=n>>24;id.bytes[13]=n>>16;id.bytes[14]=n>>8;id.bytes[15]=n;return id;}
 p::TypedUuid Typed(p::UuidKind kind,unsigned n){return {kind,Id(n)};}
 const auto tx=Typed(p::UuidKind::transaction,5);
+db::NativeFilespaceInitializationRequest Construction(unsigned profile=0) {
+  const auto& p=disk::kCanonicalFilespacePageProfiles[profile];
+  db::NativeFilespaceInitializationRequest request;
+  request.bootstrap={Id(1),Id(2),p.uuid,disk::kNativeBootstrapIntegrityProfile,{},p.page_size_bytes,1,0,1,7};
+  request.operation_uuid=Id(3);request.writer_uuid=Id(4);request.policy_snapshot_uuid=Id(10);
+  request.creator.transaction_uuid=tx;request.creator.local_id=mga::MakeLocalTransactionId(1);
+  request.creator.scope=mga::TransactionScope::local_node;
+  request.total_pages=96;request.creation_utc_millis=1789357072000ULL;return request;
+}
 c::CatalogMetadataVersion Metadata(unsigned n,c::CatalogRecordKind kind,const char* subtype) {
   c::CatalogMetadataVersion m;m.record.header.kind=kind;
   m.record.header.object_uuid=Typed(p::UuidKind::object,n);m.record.header.row_uuid=Typed(p::UuidKind::row,n+100000);
@@ -134,6 +144,185 @@ struct Package {
     return c::AssembleLocalInitialSchemaRecords(Id(1),database,tx,"en-US",inputs,limits);
   }
 };
+struct DatabasePackage {
+  Package aliases{1};
+  db::NativeFilespaceInitializationRequest construction;
+  c::CatalogDatabaseDatatypeCohort cohort{
+      {p::UuidKind::object,scratchbird::core::datatypes::kDatatypeCohortV10},10,10};
+  explicit DatabasePackage(unsigned profile=0):construction(Construction(profile)) {
+    auto& x=aliases.items[0];
+    x.metadata=Metadata(100,c::CatalogRecordKind::database,"database");
+    x.metadata.name_vector_uuid=Typed(p::UuidKind::object,120);
+    x.metadata.default_name_uuid=Typed(p::UuidKind::object,121);
+    x.vector_metadata=Metadata(120,c::CatalogRecordKind::localized_name,"name_vector");
+    x.vector_metadata.record.header.parent_uuid=x.metadata.record.header.object_uuid;
+    x.vector_metadata.default_name_uuid=x.metadata.default_name_uuid;
+    x.vector_metadata.name_vector_uuid=x.metadata.name_vector_uuid;
+    x.entry_metadata=Metadata(121,c::CatalogRecordKind::localized_name,"name_entry");
+    x.entry_metadata.record.header.parent_uuid=x.metadata.name_vector_uuid;
+    x.entry_metadata.default_name_uuid=x.metadata.default_name_uuid;
+    x.entry_metadata.name_vector_uuid=x.metadata.name_vector_uuid;x.entry_metadata.resource_epoch=1;
+    x.vector.object_uuid=x.entry.object_uuid=x.metadata.record.header.object_uuid;
+    x.vector.name_vector_uuid=x.entry.name_vector_uuid=x.metadata.name_vector_uuid;
+    x.vector.default_name_entry_uuid=x.entry.name_entry_uuid=x.metadata.default_name_uuid;
+    x.vector.object_class=x.entry.object_class="database";
+    x.entry.scope_uuid=x.metadata.record.header.object_uuid;
+    x.entry.raw_name_text=x.entry.display_name="native_node";
+    x.entry.normalized_lookup_key.assign(x.entry.raw_name_text.begin(),x.entry.raw_name_text.end());
+    aliases.Rebind();
+  }
+  auto Request(c::CatalogNamedCreationLimits limits={100000,64*1024*1024}) const {
+    const auto& x=aliases.items[0];
+    return db::NativeInitialDatabaseRequest{&construction,cohort,"en-US",
+        {&x.metadata,&x.vector_metadata,&x.vector,x.entries},limits};
+  }
+  auto Assemble(c::CatalogNamedCreationLimits limits={100000,64*1024*1024}) const {
+    return db::AssembleNativeInitialDatabaseRecords(Request(limits));
+  }
+};
+void DatabaseChecks() {
+  using DE=db::NativeInitialDatabaseError;
+  DatabasePackage package;const auto made=package.Assemble();
+  Check(made.ok()&&made.records->definitions.size()==1&&made.records->names.size()==2,
+        "native database construction produces complete definition and real aliases");
+  const auto payload=made.records->definitions[0].metadata.record.payload;
+  const auto decoded=c::DecodeCatalogDatabaseRecord(payload);
+  Check(decoded.ok()&&decoded.record->database_uuid.value==Id(1)&&
+      decoded.record->database_header_format_major==1&&decoded.record->database_header_format_minor==0&&
+      decoded.record->catalog_manifest_format_version==1&&decoded.record->page_size==8192&&
+      decoded.record->creation_unix_epoch_millis==1789357072000ULL&&
+      decoded.record->feature_flags==0&&decoded.record->compatibility_flags==0&&
+      decoded.record->creator_transaction_number==1&&decoded.record->datatype_cohort==package.cohort,
+      "exact actual construction values and independently admitted cohort, not legacy/default metadata");
+  Check(package.aliases.items[0].metadata.record.payload.empty(),"native database source not mutated");
+  for(unsigned fault=0;fault<5;++fault) {
+    auto request=package.Request();
+    switch(fault) {
+      case 0:request.construction=nullptr;break;
+      case 1:request.definition.definition=nullptr;break;
+      case 2:request.definition.entries={};break;
+      case 3:request.database_default_language={};break;
+      case 4:request.limits.maximum_records=0;break;
+    }
+    allocation_calls=0;allocation_budget=0;
+    const auto failed=db::AssembleNativeInitialDatabaseRecords(request);
+    const bool no_allocation=allocation_calls==0;allocation_budget=-1;
+    Check(no_allocation&&failed.error==DE::invalid_request&&!failed.records,
+          "missing native construction/names/language/budget refuses without allocation");
+  }
+  const auto exact=c::CatalogNamedCreationLimits{3,made.records->encoded_bytes};
+  Check(package.Assemble(exact).ok(),"database exact whole-family bounds");
+  for(const auto limits:{c::CatalogNamedCreationLimits{2,exact.maximum_encoded_bytes},
+      c::CatalogNamedCreationLimits{3,exact.maximum_encoded_bytes-1}}) {
+    allocation_calls=0;allocation_budget=0;const auto failed=package.Assemble(limits);
+    const bool no_allocation=allocation_calls==0;allocation_budget=-1;
+    Check(no_allocation&&failed.error==DE::resource_exhausted&&!failed.records,
+          "database whole-family short limit refuses before any allocation/copy");
+  }
+  for(unsigned fault=0;fault<23;++fault) {
+    DatabasePackage bad;auto& x=bad.aliases.items[0];auto expected=DE::invalid_construction;
+    switch(fault) {
+      case 0:bad.construction.bootstrap.filespace_role=2;break;
+      case 1:bad.construction.bootstrap.lifecycle_state=1;break;
+      case 2:bad.construction.bootstrap.page_size_bytes=1234;break;
+      case 3:bad.construction.bootstrap.durable_format_generation=2;break;
+      case 4:bad.construction.creator.local_id=mga::MakeLocalTransactionId(2);break;
+      case 5:bad.construction.creator.transaction_uuid.kind=p::UuidKind::object;break;
+      case 6:bad.construction.creation_utc_millis=0;break;
+      case 7:bad.construction.creation_utc_millis=0x1000000000000ULL;break;
+      case 8:bad.construction.total_pages=0;break;
+      case 9:bad.construction.writer_uuid=bad.construction.operation_uuid;break;
+      case 10:bad.construction.operation_uuid={};break;
+      case 11:bad.cohort.catalog_generation=1;expected=DE::invalid_definition;break;
+      case 12:bad.cohort.catalog_snapshot_uuid.kind=p::UuidKind::database;expected=DE::invalid_definition;break;
+      case 13:x.metadata.record.payload="legacy SBDBV001";expected=DE::invalid_definition;break;
+      case 14:x.metadata.owner_uuid={};expected=DE::invalid_definition;break;
+      case 15:x.entry.default_for_object=false;expected=DE::invalid_names;break;
+      case 16:x.entry.display_name.assign(200000,'x');expected=DE::invalid_names;break;
+      case 17:x.metadata.creator_local_transaction_id=2;expected=DE::invalid_definition;break;
+      case 18:x.metadata.record.header.parent_uuid=Typed(p::UuidKind::object,77);expected=DE::invalid_definition;break;
+      case 19:x.vector.object_class=x.entry.object_class="schema";expected=DE::invalid_names;break;
+      case 20:x.entry.scope_uuid.value=Id(77);expected=DE::invalid_names;break;
+      case 21:x.entry.scope_uuid.kind=p::UuidKind::schema;expected=DE::invalid_names;break;
+      case 22:x.entry.parent_object_uuid=Typed(p::UuidKind::object,77);expected=DE::invalid_names;break;
+    }
+    allocation_calls=0;allocation_budget=0;const auto failed=bad.Assemble();
+    const bool no_allocation=allocation_calls==0;allocation_budget=-1;
+    if(failed.error!=expected)std::cerr<<"database fault="<<fault<<" observed="<<static_cast<unsigned>(failed.error)<<'\n';
+    Check(no_allocation&&failed.error==expected&&!failed.records,"database invalid final input refuses before copies");
+  }
+  for(unsigned member=0;member<3;++member)for(unsigned identity=0;identity<9;++identity) {
+    DatabasePackage bad;auto& x=bad.aliases.items[0];const auto& b=bad.construction.bootstrap;
+    const std::array<p::Uuid,9> reserved{b.database_uuid,b.filespace_uuid,b.page_size_profile_uuid,
+        b.checksum_profile_uuid,bad.construction.operation_uuid,bad.construction.writer_uuid,
+        tx.value,bad.construction.policy_snapshot_uuid,bad.cohort.catalog_snapshot_uuid.value};
+    auto* meta=member==0?&x.metadata:member==1?&x.vector_metadata:&x.entry_metadata;
+    meta->record.header.row_uuid.value=reserved[identity];
+    allocation_calls=0;allocation_budget=0;const auto failed=bad.Assemble();
+    const bool no_allocation=allocation_calls==0;allocation_budget=-1;
+    Check(no_allocation&&failed.error==DE::duplicate_identity&&!failed.records,
+          "database/name rows cannot reuse physical/cohort identities, before allocations");
+  }
+  {DatabasePackage bad;auto& x=bad.aliases.items[0];
+    x.entry_metadata.record.header.row_uuid=x.vector_metadata.record.header.row_uuid;
+    allocation_calls=0;allocation_budget=0;const auto failed=bad.Assemble();
+    const bool no_allocation=allocation_calls==0;allocation_budget=-1;
+    Check(no_allocation&&failed.error==DE::duplicate_identity&&!failed.records,
+          "internal database name row collision refuses before owning copy");}
+  {
+    // More than64 raw identities exercises the bounded enlarged scratch path,
+    // not merely the three-record/small-stack bootstrap case.
+    DatabasePackage many;const auto& x=many.aliases.items[0];
+    std::vector<c::CatalogMetadataVersion> metadata(33,x.entry_metadata);
+    std::vector<c::CatalogNameEntry> names(33,x.entry);
+    std::vector<c::CatalogCreationNameEntryInput> entries(33);
+    for(unsigned i=0;i<33;++i) {
+      if(i) {
+        metadata[i].record.header.object_uuid=Typed(p::UuidKind::object,200+i);
+        metadata[i].record.header.row_uuid=Typed(p::UuidKind::row,200200+i);
+        metadata[i].default_name_uuid=metadata[i].record.header.object_uuid;
+        names[i].name_entry_uuid=metadata[i].record.header.object_uuid;
+        names[i].default_for_object=names[i].default_for_language=false;
+        names[i].raw_name_text=names[i].display_name="native_node_alias_"+std::to_string(i);
+        names[i].normalized_lookup_key.assign(names[i].raw_name_text.begin(),names[i].raw_name_text.end());
+      }
+      entries[i]={&metadata[i],&names[i]};
+    }
+    auto request=many.Request();request.definition.entries=entries;
+    const auto large=db::AssembleNativeInitialDatabaseRecords(request);
+    Check(large.ok()&&large.records->names.size()==34,"complete enlarged database alias family owns all supplied entries");
+    metadata.back().trace_search_key.assign(200000,'x');
+    allocation_calls=0;allocation_budget=0;
+    const auto malformed=db::AssembleNativeInitialDatabaseRecords(request);
+    const bool no_copy=allocation_calls==0;allocation_budget=-1;
+    Check(no_copy&&malformed.error==DE::invalid_definition&&!malformed.records,
+          "malformed final enlarged alias refuses before scratch or payload/name copies");
+    metadata.back().trace_search_key=x.entry_metadata.trace_search_key;
+    allocation_calls=0;allocation_budget=1000000;
+    const auto counted=db::AssembleNativeInitialDatabaseRecords(request);
+    const auto sites=allocation_calls;allocation_budget=-1;Check(counted.ok()&&sites,"enlarged database allocation calibration");
+    for(unsigned site=0;site<sites;++site) {
+      allocation_calls=0;allocation_budget=site;
+      const auto failed=db::AssembleNativeInitialDatabaseRecords(request);
+      const bool consumed=allocation_budget<0;allocation_budget=-1;
+      Check(consumed&&failed.error==DE::resource_exhausted&&!failed.records,
+            "enlarged scratch and every owning database alias allocation failure is atomic");
+    }
+  }
+  allocation_calls=0;allocation_budget=1000000;const auto counted=package.Assemble();
+  const auto sites=allocation_calls;allocation_budget=-1;Check(counted.ok()&&sites,"database allocation calibration");
+  for(unsigned site=0;site<sites;++site) {
+    allocation_calls=0;allocation_budget=site;const auto failed=package.Assemble();
+    const bool consumed=allocation_budget<0;allocation_budget=-1;
+    Check(consumed&&failed.error==DE::resource_exhausted&&!failed.records,
+          "each database allocation failure drops complete staged output");
+  }
+  const auto preserved=made.records->definitions[0].metadata.record.payload;
+  package.construction.creation_utc_millis=1;package.aliases.items[0].entry.display_name="changed";
+  Check(made.records->definitions[0].metadata.record.payload==preserved&&
+      std::get<c::CatalogNameEntry>(*made.records->names[1].name).display_name=="native_node",
+      "owning database definition and alias retain independent admitted input snapshot");
+}
 void LogicalChecks() {
   Package package;auto made=package.Assemble();Check(made.ok()&&made.records->definitions.size()==6&&
       made.records->names.size()==12,"whole local schema family and names assembled");
@@ -250,8 +439,12 @@ void PhysicalChecks() {
   scratchbird::tests::OwnedTempDirectory artifacts;
   for(unsigned profile=0;profile<5;++profile) {
     const auto& p=disk::kCanonicalFilespacePageProfiles[profile];Package package;
-    package.database=Database(profile);const auto made=package.Assemble();Check(made.ok(),"schema producer package");
+    DatabasePackage native(profile);const auto database=native.Assemble();Check(database.ok(),"native database producer package");
+    package.database=database.records->definitions[0].metadata;
+    const auto made=package.Assemble();Check(made.ok(),"schema producer package");
     db::NativeCreationCatalogSeed seed;seed[0]=made.records->definitions;seed[1]=made.records->names;
+    seed[0].insert(seed[0].end(),database.records->definitions.begin(),database.records->definitions.end());
+    seed[1].insert(seed[1].end(),database.records->names.begin(),database.records->names.end());
     scratchbird::tests::bootstrap_policy::Fixture policies(tx);
     auto memory=scratchbird::tests::memory_configuration::Values(tx);
     memory.policy_pack_uuid=policies.pack.policy_pack_uuid;memory.profile_uuid=policies.profile.profile_uuid;
@@ -270,11 +463,7 @@ void PhysicalChecks() {
       deps.dependency_map_uuid=Id(8040+role);deps.dependency_map_sha256.fill(static_cast<p::byte>(1+role));
       indexes[role]=db::NativeCreationCatalogIndexBinding{Id(8000+role),deps};
     }
-    db::NativeFilespaceInitializationRequest request;
-    request.bootstrap={Id(1),Id(2),p.uuid,disk::kNativeBootstrapIntegrityProfile,{},p.page_size_bytes,1,0,1,7};
-    request.operation_uuid=Id(3);request.writer_uuid=Id(4);request.policy_snapshot_uuid=Id(10);
-    request.creator.transaction_uuid=tx;request.creator.local_id=mga::MakeLocalTransactionId(1);
-    request.creator.scope=mga::TransactionScope::local_node;request.total_pages=96;request.creation_utc_millis=1789357072000ULL;
+    const auto& request=native.construction;
     u::StandaloneUuidV7Issuer issuer({Id(1),Id(10)},{{},0,1000});
     const auto path=(artifacts.path()/std::to_string(profile)).string();disk::FileDevice device;
     Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"actual native schema filespace owner");
@@ -292,6 +481,8 @@ void PhysicalChecks() {
       Check(original!=seed[0].end()&&row.metadata.record.payload==original->metadata.record.payload&&
           (row.metadata.record.header.kind==c::CatalogRecordKind::schema?
             c::CatalogSchemaDefinitionMatchesMetadata(row.metadata):
+            row.metadata.record.header.kind==c::CatalogRecordKind::database?
+              c::DecodeCatalogDatabaseRecord(row.metadata.record.payload).ok():
             row.metadata.record.header.kind==c::CatalogRecordKind::config_profile?
               c::CatalogMemoryConfigurationMatchesMetadata(c::BorrowCatalogMetadataVersion(row.metadata)):
               c::CatalogBootstrapPolicyMatchesMetadata(c::BorrowCatalogMetadataVersion(row.metadata))),
@@ -320,5 +511,5 @@ void PhysicalChecks() {
   artifacts.Cleanup();
 }
 } // namespace
-int main() try {LogicalChecks();PhysicalChecks();std::cout<<"PASS complete initial schema family construction\n";return 0;}
+int main() try {DatabaseChecks();LogicalChecks();PhysicalChecks();std::cout<<"PASS complete initial database/schema family construction\n";return 0;}
 catch(const std::exception& error){allocation_budget=-1;std::cerr<<error.what()<<'\n';return 1;}

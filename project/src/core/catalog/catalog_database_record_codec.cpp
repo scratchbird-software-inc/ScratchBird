@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "catalog_database_record_codec.hpp"
 #include "../datatypes/admitted_datatype_cohort.hpp"
+#include "uuid.hpp"
 #include <array>
+#include <cstdint>
 #include <limits>
 namespace scratchbird::core::catalog {
 namespace {
@@ -20,7 +22,8 @@ constexpr CatalogValueSchemaView kDatabaseSchemaV1{
 constexpr CatalogValueSchemaView kDatabaseSchemaV2{65537, 2, kDatabaseFields};
 bool Valid(const CatalogDatabaseRecord& r) {
   constexpr auto max = std::numeric_limits<u32>::max();
-  return r.database_header_format_major > 0 && r.database_header_format_major <= max &&
+  return r.database_uuid.kind == UuidKind::database && uuid::IsEngineIdentityUuid(r.database_uuid.value) &&
+      r.database_header_format_major > 0 && r.database_header_format_major <= max &&
       r.database_header_format_minor <= max &&
       r.catalog_manifest_format_version > 0 && r.catalog_manifest_format_version <= max &&
       r.page_size > 0 && r.page_size <= max && r.creator_transaction_number > 0 &&
@@ -42,23 +45,47 @@ const CatalogValueSchema& CatalogDatabaseRecordSchemaV2() {
       {kDatabaseFields.begin(), kDatabaseFields.end()}};
   return schema;
 }
-CatalogValueEncodeResult EncodeCatalogDatabaseRecord(const CatalogDatabaseRecord& r) {
-  if (!Valid(r)) return {CatalogValueError::invalid_value, {}};
-  if (r.datatype_cohort) {
-    const auto& cohort = *r.datatype_cohort;
-    return EncodeCatalogValueBlock(CatalogDatabaseRecordSchemaV2(), {
-        {1,r.database_uuid}, {2,r.database_header_format_major},
-        {3,r.database_header_format_minor}, {4,r.catalog_manifest_format_version},
-        {5,r.page_size}, {6,r.creation_unix_epoch_millis}, {7,r.feature_flags},
-        {8,r.compatibility_flags}, {9,r.creator_transaction_number},
-        {10,cohort.catalog_snapshot_uuid}, {11,cohort.catalog_generation},
-        {12,cohort.registry_generation}});
+std::optional<std::size_t> CatalogDatabaseRecordEncodedBytes(const CatalogDatabaseRecord& r) {
+  if(!Valid(r))return {};
+  return r.datatype_cohort?232:176;
+}
+CatalogValueEncodeIntoResult EncodeCatalogDatabaseRecordInto(
+    const CatalogDatabaseRecord& r,std::span<byte> backing) {
+  if(!Valid(r))return {CatalogValueError::invalid_value,{}};
+  // Scalars are serialized from stack backing below; still reject overlap
+  // with the complete input, including scalar/padding/optional storage.
+  const auto out=reinterpret_cast<std::uintptr_t>(backing.data());
+  const auto input=reinterpret_cast<std::uintptr_t>(&r);
+  if((backing.size()&&!backing.data())||
+      backing.size()>std::numeric_limits<std::uintptr_t>::max()-out||
+      (out<input+sizeof(r)&&input<out+backing.size()))
+    return {CatalogValueError::invalid_backing,{}};
+  std::array<std::array<byte,8>,10> scalars{};
+  const std::array<u64,10> values{r.database_header_format_major,r.database_header_format_minor,
+      r.catalog_manifest_format_version,r.page_size,r.creation_unix_epoch_millis,
+      r.feature_flags,r.compatibility_flags,r.creator_transaction_number,
+      r.datatype_cohort?r.datatype_cohort->catalog_generation:0,
+      r.datatype_cohort?r.datatype_cohort->registry_generation:0};
+  for(std::size_t i=0;i<values.size();++i)for(unsigned j=0;j<8;++j)
+    scalars[i][j]=static_cast<byte>(values[i]>>(8*j));
+  std::array<CatalogValueFieldView,12> fields{};
+  fields[0]={1,T::engine_identity,r.database_uuid.kind,r.database_uuid.value.bytes};
+  for(unsigned i=0;i<8;++i)
+    fields[i+1]={static_cast<u16>(i+2),T::unsigned_integer,UuidKind::unknown,scalars[i]};
+  if(r.datatype_cohort) {
+    fields[9]={10,T::engine_identity,r.datatype_cohort->catalog_snapshot_uuid.kind,
+        r.datatype_cohort->catalog_snapshot_uuid.value.bytes};
+    fields[10]={11,T::unsigned_integer,UuidKind::unknown,scalars[8]};
+    fields[11]={12,T::unsigned_integer,UuidKind::unknown,scalars[9]};
   }
-  return EncodeCatalogValueBlock(CatalogDatabaseRecordSchema(), {
-      {1,r.database_uuid}, {2,r.database_header_format_major},
-      {3,r.database_header_format_minor}, {4,r.catalog_manifest_format_version},
-      {5,r.page_size}, {6,r.creation_unix_epoch_millis}, {7,r.feature_flags},
-      {8,r.compatibility_flags}, {9,r.creator_transaction_number}});
+  return EncodeCatalogValueBlockInto(r.datatype_cohort?kDatabaseSchemaV2:kDatabaseSchemaV1,
+      std::span<const CatalogValueFieldView>(fields).first(r.datatype_cohort?12:9),backing);
+}
+CatalogValueEncodeResult EncodeCatalogDatabaseRecord(const CatalogDatabaseRecord& r) {
+  std::array<byte,232> backing;
+  const auto encoded=EncodeCatalogDatabaseRecordInto(r,backing);
+  if(!encoded.ok())return {encoded.error,{}};
+  return {CatalogValueError::none,{encoded.bytes.begin(),encoded.bytes.end()}};
 }
 CatalogDatabaseRecordDecodeResult DecodeCatalogDatabaseRecord(std::string_view bytes) {
   // Fixed stack-backed structural admission: neither a payload copy nor a

@@ -41,6 +41,12 @@ struct CatalogDatabaseRecordDecodeResult {
 };
 const CatalogValueSchema& CatalogDatabaseRecordSchema();
 const CatalogValueSchema& CatalogDatabaseRecordSchemaV2();
+// Fixed-width canonical serialization into caller-admitted backing. Complete
+// validation and capacity/non-overlap admission precede all writes; no heap
+// allocation, including schema setup. Refusal leaves backing unchanged.
+std::optional<std::size_t> CatalogDatabaseRecordEncodedBytes(const CatalogDatabaseRecord&);
+CatalogValueEncodeIntoResult EncodeCatalogDatabaseRecordInto(
+    const CatalogDatabaseRecord&, std::span<byte> backing);
 CatalogValueEncodeResult EncodeCatalogDatabaseRecord(const CatalogDatabaseRecord& record);
 CatalogDatabaseRecordDecodeResult DecodeCatalogDatabaseRecord(std::string_view bytes);
 }  // namespace scratchbird::core::catalog

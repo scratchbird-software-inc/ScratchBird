@@ -48,6 +48,7 @@ add_library(sb_storage_database
   native_inventory_publication_delta.cpp
   native_filespace_initialization.cpp
   native_creation_workspace.cpp
+  native_database_creation.cpp
   native_creation_workspace_recovery.cpp
   repair_event_ledger.cpp
   repair_history_inspection.cpp
