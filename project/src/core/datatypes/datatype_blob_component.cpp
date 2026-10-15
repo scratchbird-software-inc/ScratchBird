@@ -65,6 +65,17 @@ bool Overlaps(const void* owner, std::size_t owner_size,
   return a < b+bytes && b < a+owner_size;
 }
 
+bool ReadableRange(std::span<const byte> bytes) noexcept {
+  if (bytes.empty()) return true;
+  const auto start = reinterpret_cast<std::uintptr_t>(bytes.data());
+  return bytes.data() != nullptr && bytes.size() <= std::numeric_limits<std::uintptr_t>::max()-start;
+}
+
+BlobComponentPassResultV3 CanonicalEncodingFailure(u32 reason, u64 offset) noexcept {
+  return {BlobComponentPassFailureV3::canonical_encoding_invalid,
+          "BLOB.CANONICAL_ENCODING_INVALID",reason,1,true,offset,kEncodingDiagnostic,1};
+}
+
 void ScrubBytes(std::span<byte> bytes) noexcept {
   volatile byte* p = bytes.data();
   for (std::size_t i = 0; i < bytes.size(); ++i) p[i] = 0;
@@ -84,6 +95,57 @@ bool HashDomain(hash::Blake3IncrementalStateV3& state, const char (&text)[N]) no
 
 } // namespace
 
+BlobComponentPassResultV3 ValidateBlobComponentHeaderNoAllocV3(
+    const BlobValidatedProfileHandleV3& profile, u64 extent,
+    std::span<const byte> header, bool null_allowed) noexcept {
+  if (!ReadableRange(header)) return {BlobComponentPassFailureV3::input_extent_invalid};
+  if (!ValidateBlobProfileHandleV3(profile).ok())
+    return {BlobComponentPassFailureV3::profile_invalid};
+  if (header.size() < 320 || extent < 320)
+    return CanonicalEncodingFailure(41,std::min<u64>(header.size(),extent));
+  if (header.size() != 320) return {BlobComponentPassFailureV3::input_extent_invalid};
+  for (std::size_t i = 0; i < kMagic.size(); ++i)
+    if (header[i] != kMagic[i]) return CanonicalEncodingFailure(42,i);
+  if (Get(header,8,2) != 3) return CanonicalEncodingFailure(43,8);
+  if (Get(header,10,2) != 320) return CanonicalEncodingFailure(44,10);
+  if (Get(header,12,4) != 0) return CanonicalEncodingFailure(45,12);
+  for (std::size_t i = 25; i < 32; ++i)
+    if (header[i] != 0) return CanonicalEncodingFailure(46,i);
+  for (std::size_t i = 312; i < 320; ++i)
+    if (header[i] != 0) return CanonicalEncodingFailure(46,i);
+  const auto length = Get(header,32,8);
+  if (length > kBlobMaximumLogicalBytesV3) return CanonicalEncodingFailure(55,32);
+  const auto total = 320+length; // Prior bound makes this addition representable.
+  if (Get(header,16,8) != total) return CanonicalEncodingFailure(47,16);
+  if (extent != total) return CanonicalEncodingFailure(48,std::min(extent,total));
+  if (header[24] > 1) return CanonicalEncodingFailure(49,24);
+  if (header[24] == static_cast<byte>(BlobValueStateV3::sql_null) && (length != 0 || !null_allowed))
+    return CanonicalEncodingFailure(50,32);
+  // Direct field comparisons avoid a second320-byte header or any hash state
+  // before the initial structural gate completes. Report each FIELD start,
+  // not the differing byte within a binary UUID, generation or fingerprint.
+  const auto uuid_equal = [&](std::size_t at, const platform::Uuid& id) noexcept {
+    return std::equal(id.bytes.begin(),id.bytes.end(),header.begin()+at);
+  };
+  if (!uuid_equal(40,profile.identity.descriptor_uuid)) return CanonicalEncodingFailure(51,40);
+  if (Get(header,56,8) != profile.identity.descriptor_generation) return CanonicalEncodingFailure(51,56);
+  if (!uuid_equal(64,profile.identity.type_uuid)) return CanonicalEncodingFailure(51,64);
+  if (Get(header,80,8) != profile.identity.type_generation) return CanonicalEncodingFailure(51,80);
+  if (!uuid_equal(88,profile.identity.codec_uuid)) return CanonicalEncodingFailure(51,88);
+  if (Get(header,104,8) != profile.identity.codec_version) return CanonicalEncodingFailure(51,104);
+  if (Get(header,112,8) != profile.identity.codec_generation) return CanonicalEncodingFailure(51,112);
+  if (!uuid_equal(120,profile.receipt.receipt_uuid)) return CanonicalEncodingFailure(51,120);
+  if (Get(header,136,8) != profile.receipt.catalog_generation) return CanonicalEncodingFailure(51,136);
+  if (Get(header,144,8) != profile.receipt.registry_generation) return CanonicalEncodingFailure(51,144);
+  if (!uuid_equal(152,profile.identity.descriptor_policy.uuid)) return CanonicalEncodingFailure(51,152);
+  if (!uuid_equal(168,profile.identity.canonicalization_policy.uuid)) return CanonicalEncodingFailure(51,168);
+  if (!uuid_equal(184,profile.identity.hash_policy.uuid)) return CanonicalEncodingFailure(51,184);
+  if (!uuid_equal(200,profile.identity.operation_policy.uuid)) return CanonicalEncodingFailure(51,200);
+  if (!std::equal(profile.profile_fingerprint.begin(),profile.profile_fingerprint.end(),header.begin()+216))
+    return CanonicalEncodingFailure(51,216);
+  return {};
+}
+
 void BlobComponentDigestPassV3::ClearWork() noexcept {
   hash::ScrubBlake3IncrementalV3(&content_hash_);
   hash::ScrubBlake3IncrementalV3(&frame_hash_);
@@ -101,13 +163,6 @@ BlobComponentPassResultV3 BlobComponentDigestPassV3::Fail(
     BlobComponentPassFailureV3 failure) noexcept {
   Scrub(); phase_ = Phase::failed;
   return {failure};
-}
-
-BlobComponentPassResultV3 BlobComponentDigestPassV3::CanonicalFailure(
-    u32 reason, u64 offset) noexcept {
-  (void)Fail(BlobComponentPassFailureV3::canonical_encoding_invalid);
-  return {BlobComponentPassFailureV3::canonical_encoding_invalid,
-          "BLOB.CANONICAL_ENCODING_INVALID",reason,1,true,offset,kEncodingDiagnostic,1};
 }
 
 BlobComponentPassResultV3 BlobComponentDigestPassV3::StartDigests() noexcept {
@@ -154,37 +209,14 @@ BlobComponentPassResultV3 BlobComponentDigestPassV3::BeginDecode(
   if (Overlaps(this,sizeof(*this),header.data(),header.size()))
     return {BlobComponentPassFailureV3::input_overlap};
   if (phase_ != Phase::empty) return Fail(BlobComponentPassFailureV3::invalid_phase);
-  if (!ValidateBlobProfileHandleV3(profile).ok())
-    return Fail(BlobComponentPassFailureV3::profile_invalid);
-  if (header.size() < 320 || extent < 320)
-    return CanonicalFailure(41,std::min<u64>(header.size(),extent));
-  if (header.size() != 320) return Fail(BlobComponentPassFailureV3::input_extent_invalid);
-  for (std::size_t i = 0; i < kMagic.size(); ++i)
-    if (header[i] != kMagic[i]) return CanonicalFailure(42,i);
-  if (Get(header,8,2) != 3) return CanonicalFailure(43,8);
-  if (Get(header,10,2) != 320) return CanonicalFailure(44,10);
-  if (Get(header,12,4) != 0) return CanonicalFailure(45,12);
-  for (std::size_t i = 25; i < 32; ++i)
-    if (header[i] != 0) return CanonicalFailure(46,i);
-  for (std::size_t i = 312; i < 320; ++i)
-    if (header[i] != 0) return CanonicalFailure(46,i);
+  const auto validated = ValidateBlobComponentHeaderNoAllocV3(profile,extent,header,null_allowed);
+  if (!validated.ok()) {
+    (void)Fail(validated.failure);
+    return validated;
+  }
   const auto length = Get(header,32,8);
-  if (length > kBlobMaximumLogicalBytesV3) return CanonicalFailure(55,32);
-  const auto total = 320+length; // Prior bound makes this addition representable.
-  if (Get(header,16,8) != total) return CanonicalFailure(47,16);
-  if (extent != total) return CanonicalFailure(48,std::min(extent,total));
-  if (header[24] > 1) return CanonicalFailure(49,24);
   const auto state = static_cast<BlobValueStateV3>(header[24]);
-  if (state == BlobValueStateV3::sql_null && (length != 0 || !null_allowed))
-    return CanonicalFailure(50,32);
-  // Compare whole identity fields, not the first differing byte inside a
-  // UUID/digest. The canonical diagnostic reports the first FIELD start.
   BuildHeader(header_,profile,state,length);
-  constexpr std::array<std::size_t,16> starts{{
-    40,56,64,80,88,104,112,120,136,144,152,168,184,200,216,248}};
-  for (std::size_t i = 0; i+1 < starts.size(); ++i)
-    if (!std::equal(header.begin()+starts[i],header.begin()+starts[i+1],header_.begin()+starts[i]))
-      return CanonicalFailure(51,starts[i]);
   std::copy(header.begin()+248,header.begin()+312,expected_digests_.begin());
   state_ = state; expected_ = length;
   hash_policy_generation_ = profile.identity.hash_policy.generation;

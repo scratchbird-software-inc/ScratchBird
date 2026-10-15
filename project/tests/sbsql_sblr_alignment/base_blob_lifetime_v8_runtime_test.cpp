@@ -3383,8 +3383,18 @@ void BlobComponentFieldAndIntegrityFailures() {
   std::copy_n(full.begin(),320,valid.begin());
   const auto check_failure = [&](const dt::BlobComponentHeaderV3& changed,
       std::uint64_t extent, std::uint32_t reason, std::uint64_t offset) {
+    const auto allocations_before = allocation_probe::calls.load();
+    allocation_probe::enabled.store(true);
+    const auto first_gate = dt::ValidateBlobComponentHeaderNoAllocV3(profile,extent,changed);
+    allocation_probe::enabled.store(false);
     dt::BlobComponentDigestPassV3 decoder;
     const auto result = decoder.BeginDecode(profile,extent,changed);
+    Check(first_gate.failure == result.failure && first_gate.diagnostic_uuid == result.diagnostic_uuid &&
+              first_gate.diagnostic_generation == result.diagnostic_generation &&
+              first_gate.diagnostic_code == result.diagnostic_code && first_gate.reason_enum == result.reason_enum &&
+              first_gate.format_enum == result.format_enum && first_gate.failure_offset_present == result.failure_offset_present &&
+              first_gate.failure_offset == result.failure_offset && allocation_probe::calls.load() == allocations_before,
+          "initial header-only gate differs from complete digest initialization or allocates before field validation");
     Check(!result.ok() && result.failure == dt::BlobComponentPassFailureV3::canonical_encoding_invalid &&
               result.diagnostic_code == "BLOB.CANONICAL_ENCODING_INVALID" && result.format_enum == 1 &&
               result.reason_enum == reason && result.failure_offset_present && result.failure_offset == offset &&
@@ -3575,6 +3585,63 @@ void BlobComponentFragmentedHashBoundariesAndScrub() {
     Check(std::all_of(workspace.begin(),workspace.end(),[](auto b) { return b == 0; }),
           "component destruction retained native content, expected digest or hash state");
   }
+}
+
+void BlobComponentInitialHeaderAdmission() {
+  const auto profile = dt::BuildCurrentBlobValidatedProfileHandleV3(dt::kBlobV11ReceiptUuid).profile;
+  const auto page = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
+  Check(page >= 320,"native page cannot contain component header fixture");
+  auto* region = static_cast<platform::byte*>(mmap(nullptr,3*page,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0));
+  Check(region != MAP_FAILED,"header-only guarded source allocation");
+  auto* source = region+page;
+  for (const auto& v : kBlobComponentGoldenVectors) {
+    Check(mprotect(source,page,PROT_READ|PROT_WRITE) == 0,"header-only source write setup");
+    std::array<platform::byte,360> full{};
+    const auto extent = LoadBlobGolden(v,full);
+    std::copy_n(full.begin(),320,source+page-320);
+    Check(mprotect(source,page,PROT_READ) == 0,"header-only source read-only guard");
+    // Each shortened span ends at PROT_NONE, including the zero span located
+    // inside the guard page. An overread, write or input scrub is a real fault.
+    const auto allocations_before = allocation_probe::calls.load();
+    allocation_probe::enabled.store(true);
+    for (std::size_t n = 0; n <= 320; ++n) {
+      const auto result = dt::ValidateBlobComponentHeaderNoAllocV3(
+          profile,extent,{source+page-n,n});
+      if (n == 320) Check(result.ok(),"exact header-only shape gate rejected independent oracle");
+      else Check(result.failure == dt::BlobComponentPassFailureV3::canonical_encoding_invalid &&
+                     result.reason_enum == 41 && result.failure_offset_present && result.failure_offset == n,
+                 "short initial span read outside admission or lost first-unavailable offset");
+    }
+    const auto excess = dt::ValidateBlobComponentHeaderNoAllocV3(profile,extent,{source+page-321,321});
+    Check(excess.failure == dt::BlobComponentPassFailureV3::input_extent_invalid &&
+              excess.diagnostic_code.empty() && excess.reason_enum == 0 &&
+              excess.diagnostic_uuid == platform::Uuid{} && excess.diagnostic_generation == 0 &&
+              allocation_probe::calls.load() == allocations_before,
+          "non-exact header call invented malformed-frame authority or allocated hash/header state");
+    allocation_probe::enabled.store(false);
+  }
+  auto invalid = profile; ++invalid.identity.descriptor_generation;
+  const auto before = dt::ValidateBlobComponentHeaderNoAllocV3(invalid,320,{});
+  Check(before.failure == dt::BlobComponentPassFailureV3::profile_invalid && before.diagnostic_code.empty(),
+        "invalid profile was relabeled as observed input failure");
+  Check(munmap(region,3*page) == 0,"header-only guarded source cleanup");
+  std::array<platform::byte,360> full{};
+  const auto extent = LoadBlobGolden(kBlobComponentGoldenVectors[3],full);
+  auto header = std::span(full).first(320);
+  Check(dt::ValidateBlobComponentHeaderNoAllocV3(profile,extent,header).ok(),
+        "initial shape test admission");
+  full[40] ^= 1;
+  dt::BlobComponentDigestPassV3 changed;
+  Check(changed.BeginDecode(profile,extent,header).reason_enum == 51,
+        "earlier header shape success admitted changed identity into digest pass");
+  full[40] ^= 1; full[248] ^= 1; full[280] ^= 1;
+  Check(dt::ValidateBlobComponentHeaderNoAllocV3(profile,extent,header).ok(),
+        "initial shape incorrectly claimed to verify unprocessed digest fields");
+  changed.Scrub();
+  Check(changed.BeginDecode(profile,extent,header).ok() &&
+            changed.UpdateContent(std::span(full).subspan(320,extent-320)).ok() &&
+            changed.FinishDecode().reason_enum == 30,
+        "shape-only success bypassed both-digest verification or registered mismatch precedence");
 }
 
 struct GuardedReaderContext {
@@ -8121,6 +8188,7 @@ int main(int argc, char** argv) {
     BlobComponentFieldAndIntegrityFailures();
     BlobComponentPassLifecycleAndBounds();
     BlobComponentFragmentedHashBoundariesAndScrub();
+    BlobComponentInitialHeaderAdmission();
     std::cout << "PASS native component digest checks=" << checks << '\n';
     return EXIT_SUCCESS;
   }
@@ -8192,6 +8260,7 @@ int main(int argc, char** argv) {
   BlobComponentFieldAndIntegrityFailures();
   BlobComponentPassLifecycleAndBounds();
   BlobComponentFragmentedHashBoundariesAndScrub();
+  BlobComponentInitialHeaderAdmission();
   ProtectedWorkFailureObservation();
   ProtectedWorkCleanupSelection();
   GuardedReaderExecution();

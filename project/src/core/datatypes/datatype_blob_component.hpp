@@ -38,6 +38,14 @@ struct BlobComponentPassResultV3 {
   bool ok() const noexcept { return failure == BlobComponentPassFailureV3::none; }
 };
 
+// Initial decoder gate: validate the already admitted320-byte header without
+// constructing/reserving either hash state or any additional header buffer.
+// This lets malformed fields win before later hash/content/sink admission.
+// Success proves byte shape/identity ONLY, not integrity, lifetime or authority.
+BlobComponentPassResultV3 ValidateBlobComponentHeaderNoAllocV3(
+    const BlobValidatedProfileHandleV3& profile, u64 declared_extent,
+    std::span<const byte> header, bool null_allowed = true) noexcept;
+
 // Pure fixed-workspace framing/digest machinery, NOT a retained BLOB value,
 // token issuer, reader adapter, sink, storage locator or execution authority.
 // The owning codec must admit/account sizeof(this), input/header staging and
@@ -77,7 +85,6 @@ class BlobComponentDigestPassV3 final {
   BlobComponentPassResultV3 StartDigests() noexcept;
   BlobComponentPassResultV3 FinishDigests() noexcept;
   BlobComponentPassResultV3 Fail(BlobComponentPassFailureV3) noexcept;
-  BlobComponentPassResultV3 CanonicalFailure(u32 reason, u64 offset) noexcept;
   void ClearWork() noexcept;
   Phase phase_ = Phase::empty;
   BlobValueStateV3 state_ = BlobValueStateV3::value;
