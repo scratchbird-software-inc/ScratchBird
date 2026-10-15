@@ -397,7 +397,10 @@ struct BlobLifetimeCounterV3 {
   u64 limit = 0;
   u64 invoked = 0;
   u64 reserved_cleanup = 0;
+  u64 reserved_work = 0;
 };
+
+enum class BlobReaderSettlementV3 : u8 { settled = 0, overrun = 1, corrupt = 2 };
 
 struct BlobCleanupReservationConsumptionV3 {
   bool obligation_consumed = false;
@@ -451,6 +454,13 @@ class BlobLifetimeBudgetLedgerV3Generation1 final {
                                  u64* available_before) noexcept;
   bool Charge(BlobLifetimeResourceV3 resource, u64 amount,
               u64* available_before) noexcept;
+  bool ReserveReaderCall(BlobLifetimeResourceV3 resource, u64 requested,
+                         BlobLifetimeResourceV3& failed_resource,
+                         u64& available_before) noexcept;
+  BlobReaderSettlementV3 SettleReaderCall(BlobLifetimeResourceV3 resource,
+                                         u64 requested, u64 actual) noexcept;
+  bool ReserveReaderScratch(u64 amount, std::span<byte>& out,
+                            u64* available_before) noexcept;
   bool ChargeOrdinary(u64 amount, u64* available_before) noexcept;
   BlobCleanupReservationConsumptionV3 ConsumeCleanup(u64 amount) noexcept;
   bool CancelCleanup(u64 amount) noexcept;
@@ -467,6 +477,9 @@ class BlobLifetimeBudgetLedgerV3Generation1 final {
   std::atomic<bool> callback_counter_quarantined_{false};
   std::array<BlobLifetimeCounterV3, 12> counters_{};
   std::span<byte> scratch_{};
+  // Monotonic, shared operation arena. Never refunded/reset by clone or move.
+  // Each operation reuses only its own disjoint slice across read windows.
+  u64 scratch_consumed_ = 0;
   u64 admitted_window_octets_ = 0;
   u64 admitted_relative_timeout_ns_ = 0;
 };
@@ -924,6 +937,7 @@ enum class BlobLifetimeAuthoritySourceV3 : u8 {
   callback_code_17 = 15,
   callback_code_18 = 16,
   datatype_local_state = 17,
+  reader_callback = 18,
 };
 
 enum class BlobLifetimeFactStageV3 : u8 {
@@ -1093,6 +1107,10 @@ class BlobRetainedLifetimeLeaseV3 final {
   BlobLifetimeRuntimeResultV3 Probe() noexcept;
   BlobLifetimeRuntimeResultV3 VisitBoundMaterializedBytes(
       const BlobTrustedInternalVisitorV3& visitor) noexcept;
+  // Complete one-pass traversal. Visitor bytes are usable only in that call,
+  // before the matching end_access; they are not output staging or a locator.
+  BlobLifetimeRuntimeResultV3 VisitBoundReaderBytes(
+      const BlobTrustedInternalVisitorV3& visitor) noexcept;
   BlobLifetimeRuntimeResultV3 Release() noexcept;
 
  private:
@@ -1222,9 +1240,16 @@ class BlobRetainedLifetimeLeaseV3 final {
       const BlobLifetimeUseRequestV3& request,
       const platform::Uuid& descriptor_uuid,
       u64 descriptor_generation) const noexcept;
+  BlobLifetimeRuntimeResultV3 BeginAccessInternal(
+      BlobLifetimeAccessTicketV3& access) noexcept;
   BlobLifetimeRuntimeResultV3 EndAccessInternal(
       BlobLifetimeAccessTicketV3 access,
-      BlobLifetimeRuntimeResultV3 primary) noexcept;
+      BlobLifetimeRuntimeResultV3 primary, bool final_probe = true) noexcept;
+  BlobLifetimeRuntimeResultV3 ReaderFact(
+      const BlobReaderResultV3& returned,
+      BlobReaderFactV3 selected_fact) noexcept;
+  bool PrivateProtectedFailurePending() noexcept;
+  BlobLifetimeRuntimeResultV3 ProtectedWorkAdmissionResult() noexcept;
   BlobLifetimeRuntimeResultV3 ReleaseInternal(
       BlobLifetimePhaseV3 callback_phase,
       u8 invariant_operation,
