@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "native_policy_creation.hpp"
 #include "catalog_bootstrap_policy.hpp"
 #include "catalog_memory_configuration.hpp"
 #include "bootstrap_security_validation.hpp"
@@ -2663,6 +2664,55 @@ CatalogRowsBuildResult AddLocalizedRecordPair(std::vector<CatalogPageRow>* rows,
       target_object_uuid);
 }
 
+std::optional<scratchbird::core::catalog::CatalogBootstrapPolicyPack> NativePolicyPackDefinition(
+    const LoadedPolicySeedPack& pack,const TypedUuid& creator_transaction_uuid) {
+  scratchbird::core::catalog::CatalogBootstrapPolicyPack native;
+  native.policy_pack_uuid=pack.image.policy_pack_uuid;native.generation=pack.image.policy_generation;
+  native.imported_schema_version=pack.image.schema_version;
+  native.pack_id=pack.image.policy_pack_id;native.pack_version=pack.image.policy_pack_version;
+  native.declared_signature_status=pack.image.signature_status;
+  native.create_time_only=pack.image.create_time_only;native.post_create_filesystem_authority=pack.image.post_create_filesystem_authority;
+  native.local_password_only=pack.image.local_password_only;native.origin_transaction_uuid=creator_transaction_uuid;
+  native.origin_local_transaction_id=kBootstrapCatalogTransactionId;
+  native.declared_counts={pack.image.security_provider_records,pack.image.enabled_local_password_provider_records,
+      pack.image.external_provider_disabled_records,pack.image.role_records,pack.image.group_records,
+      pack.image.group_membership_records,pack.image.grant_records,pack.image.policy_profile_records,pack.image.default_policy_records};
+  if(!IsSha256Hex(pack.image.content_sha256))return {};
+  const auto nibble=[](char v)->unsigned{return v<='9'?v-'0':v<='F'?v-'A'+10:v-'a'+10;};
+  for(std::size_t n=0;n<native.content_sha256.size();++n)
+    native.content_sha256[n]=static_cast<scratchbird::core::platform::byte>(
+        (nibble(pack.image.content_sha256[2*n])<<4)|nibble(pack.image.content_sha256[2*n+1]));
+  return native;
+}
+scratchbird::core::catalog::CatalogBootstrapSecurityProvider NativePolicyProviderDefinition(
+    const LoadedPolicySeedPack& pack,const PolicyProviderSeed& provider,const TypedUuid& tx) {
+  scratchbird::core::catalog::CatalogBootstrapSecurityProvider native;
+  native.provider_uuid=provider.provider_uuid;native.policy_pack_uuid=pack.image.policy_pack_uuid;
+  native.generation=native.policy_pack_generation=pack.image.policy_generation;
+  native.family=provider.family;native.enabled_by_default=provider.enabled_by_default;
+  native.external_provider=provider.external_provider;native.authority=provider.authority;
+  native.verifier_policy=provider.verifier_policy;native.origin_transaction_uuid=tx;
+  native.origin_local_transaction_id=kBootstrapCatalogTransactionId;return native;
+}
+scratchbird::core::catalog::CatalogBootstrapPolicyProfile NativePolicyProfileDefinition(
+    const LoadedPolicySeedPack& pack,const PolicyProfileSeed& profile,const TypedUuid& tx,
+    std::optional<Uuid> memory_identity) {
+  scratchbird::core::catalog::CatalogBootstrapPolicyProfile native;
+  native.profile_uuid=profile.profile_uuid;native.policy_pack_uuid=pack.image.policy_pack_uuid;
+  native.generation=native.policy_pack_generation=pack.image.policy_generation;
+  native.area=profile.area;native.mode=profile.mode;
+  if(pack.memory_configuration&&profile.profile_uuid==pack.memory_configuration->values.profile_uuid) {
+    native.resource_definition_uuid=memory_identity;
+    native.resource_definition_generation=pack.memory_configuration->values.generation;
+  }
+  native.origin_transaction_uuid=tx;native.origin_local_transaction_id=kBootstrapCatalogTransactionId;return native;
+}
+scratchbird::core::catalog::CatalogMemoryConfiguration NativeMemoryConfigurationDefinition(
+    const LoadedPolicySeedPack& pack,const Uuid& identity,const TypedUuid& tx) {
+  auto memory=pack.memory_configuration->Borrow();memory.configuration_uuid=identity;
+  memory.origin_transaction_uuid=tx;memory.origin_local_transaction_id=kBootstrapCatalogTransactionId;return memory;
+}
+
 CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>* rows,
                                                      u32* ordinal,
                                                      u64 identity_seed,
@@ -2677,29 +2727,12 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
   }
 
   namespace c=scratchbird::core::catalog;
-  c::CatalogBootstrapPolicyPack native_pack;
-  native_pack.policy_pack_uuid=pack.image.policy_pack_uuid;
-  native_pack.generation=pack.image.policy_generation;
-  native_pack.imported_schema_version=pack.image.schema_version;
-  native_pack.pack_id=pack.image.policy_pack_id;native_pack.pack_version=pack.image.policy_pack_version;
-  native_pack.declared_signature_status=pack.image.signature_status;
-  native_pack.create_time_only=pack.image.create_time_only;
-  native_pack.post_create_filesystem_authority=pack.image.post_create_filesystem_authority;
-  native_pack.local_password_only=pack.image.local_password_only;
-  native_pack.origin_transaction_uuid=creator_transaction_uuid;
-  native_pack.origin_local_transaction_id=kBootstrapCatalogTransactionId;
-  native_pack.declared_counts={pack.image.security_provider_records,pack.image.enabled_local_password_provider_records,
-      pack.image.external_provider_disabled_records,pack.image.role_records,pack.image.group_records,
-      pack.image.group_membership_records,pack.image.grant_records,pack.image.policy_profile_records,pack.image.default_policy_records};
-  if(!IsSha256Hex(pack.image.content_sha256))return CatalogRowsBuildError(DatabaseLifecycleErrorStatus(),
+  const auto native_pack=NativePolicyPackDefinition(pack,creator_transaction_uuid);
+  if(!native_pack)return CatalogRowsBuildError(DatabaseLifecycleErrorStatus(),
       MakeDatabaseLifecycleDiagnostic(DatabaseLifecycleErrorStatus(),"SB-POLICY-PACK-MANIFEST-FIELD-INVALID",
           "storage.database_lifecycle.policy_pack_invalid",{},"native pack content digest"));
-  const auto nibble=[](char value)->unsigned{return value<='9'?value-'0':value<='F'?value-'A'+10:value-'a'+10;};
-  for(std::size_t n=0;n<native_pack.content_sha256.size();++n)
-    native_pack.content_sha256[n]=static_cast<scratchbird::core::platform::byte>(
-        (nibble(pack.image.content_sha256[2*n])<<4)|nibble(pack.image.content_sha256[2*n+1]));
   std::array<scratchbird::core::platform::byte,2048> pack_backing;
-  const auto encoded_pack=c::EncodeCatalogBootstrapPolicyPackInto(native_pack,pack_backing);
+  const auto encoded_pack=c::EncodeCatalogBootstrapPolicyPackInto(*native_pack,pack_backing);
   if(!encoded_pack.ok())return CatalogRowsBuildError(DatabaseLifecycleErrorStatus(),
       MakeDatabaseLifecycleDiagnostic(DatabaseLifecycleErrorStatus(),"SB-POLICY-PACK-MANIFEST-FIELD-INVALID",
           "storage.database_lifecycle.policy_pack_invalid",{},"native pack declaration"));
@@ -2719,14 +2752,7 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
   u64 seed = identity_seed + 100;
   for (const auto& provider : pack.providers) {
     namespace c=scratchbird::core::catalog;
-    c::CatalogBootstrapSecurityProvider native;
-    native.provider_uuid=provider.provider_uuid;native.policy_pack_uuid=policy_pack_uuid.value;
-    native.generation=native.policy_pack_generation=pack.image.policy_generation;
-    native.family=provider.family;
-    native.enabled_by_default=provider.enabled_by_default;native.external_provider=provider.external_provider;
-    native.authority=provider.authority;native.verifier_policy=provider.verifier_policy;
-    native.origin_transaction_uuid=creator_transaction_uuid;
-    native.origin_local_transaction_id=kBootstrapCatalogTransactionId;
+    const auto native=NativePolicyProviderDefinition(pack,provider,creator_transaction_uuid);
     std::array<scratchbird::core::platform::byte,2048> backing;
     const auto encoded=c::EncodeCatalogBootstrapSecurityProviderInto(native,backing);
     if(!encoded.ok())return CatalogRowsBuildError(DatabaseLifecycleErrorStatus(),
@@ -2828,11 +2854,9 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
 
   std::optional<Uuid> memory_configuration_uuid;
   if(pack.memory_configuration) {
-    auto memory=pack.memory_configuration->Borrow();
     const auto identity=GenerateEngineIdentityV7(UuidKind::object,seed);
     if(!identity.ok())return CatalogRowsBuildError(identity.status,identity.diagnostic);
-    memory.configuration_uuid=identity.value.value;
-    memory.origin_transaction_uuid=creator_transaction_uuid;memory.origin_local_transaction_id=kBootstrapCatalogTransactionId;
+    const auto memory=NativeMemoryConfigurationDefinition(pack,identity.value.value,creator_transaction_uuid);
     std::array<scratchbird::core::platform::byte,2048> backing;
     const auto encoded=c::EncodeCatalogMemoryConfigurationInto(memory,backing);
     if(!encoded.ok())return CatalogRowsBuildError(DatabaseLifecycleErrorStatus(),
@@ -2845,16 +2869,7 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
   }
   for (const auto& profile : pack.profiles) {
     namespace c=scratchbird::core::catalog;
-    c::CatalogBootstrapPolicyProfile native;
-    native.profile_uuid=profile.profile_uuid;native.policy_pack_uuid=policy_pack_uuid.value;
-    native.generation=native.policy_pack_generation=pack.image.policy_generation;
-    native.area=profile.area;native.mode=profile.mode;
-    if(pack.memory_configuration&&profile.profile_uuid==pack.memory_configuration->values.profile_uuid) {
-      native.resource_definition_uuid=memory_configuration_uuid;
-      native.resource_definition_generation=pack.memory_configuration->values.generation;
-    }
-    native.origin_transaction_uuid=creator_transaction_uuid;
-    native.origin_local_transaction_id=kBootstrapCatalogTransactionId;
+    const auto native=NativePolicyProfileDefinition(pack,profile,creator_transaction_uuid,memory_configuration_uuid);
     std::array<scratchbird::core::platform::byte,2048> backing;
     const auto encoded=c::EncodeCatalogBootstrapPolicyProfileInto(native,backing);
     if(!encoded.ok())return CatalogRowsBuildError(DatabaseLifecycleErrorStatus(),
@@ -6590,6 +6605,120 @@ DatabaseLifecycleResult RecordStartupEvidence(const DatabaseLifecycleOperationCo
 
 }  // namespace
 
+NativeInitialPolicyResult AssembleNativeInitialPolicyRecords(const NativeInitialPolicyRequest& request) noexcept {
+  namespace c=scratchbird::core::catalog;
+  using E=NativeInitialPolicyError;
+  const auto fail=[](E error,c::CatalogNamedCreationError names=c::CatalogNamedCreationError::none) {
+    NativeInitialPolicyResult result;result.error=error;result.name_error=names;return result;
+  };
+  try {
+    if(!IsEngineIdentityUuid(request.database_uuid)||!IsEngineIdentityUuid(request.memory_configuration_uuid)||
+        request.construction_transaction.kind!=UuidKind::transaction||
+        !IsEngineIdentityUuid(request.construction_transaction.value)||
+        request.database_uuid==request.construction_transaction.value||
+        request.memory_configuration_uuid==request.database_uuid||
+        request.memory_configuration_uuid==request.construction_transaction.value||
+        request.policy_seed_pack_root.empty()||request.policy_seed_pack_root.find('\0')!=std::string_view::npos||
+        request.database_default_language.empty()||request.definitions.empty())
+      return fail(E::invalid_request);
+    if(!request.limits.maximum_records||!request.limits.maximum_encoded_bytes||
+        request.definitions.size()>request.limits.maximum_records/3)return fail(E::resource_exhausted);
+    u64 proposed_records=0;
+    for(const auto& input:request.definitions) {
+      if(!input.definition||!input.definition->record.payload.empty())return fail(E::invalid_definition);
+      if(!input.vector_metadata||!input.vector||input.entries.empty())return fail(E::invalid_names);
+      if(request.limits.maximum_records-proposed_records<2||
+          input.entries.size()>request.limits.maximum_records-proposed_records-2)return fail(E::resource_exhausted);
+      proposed_records+=2+input.entries.size();
+      for(const auto& entry:input.entries)if(!entry.metadata||!entry.entry)return fail(E::invalid_names);
+    }
+    const auto loaded=LoadSelectedPolicySeedPack(std::string(request.policy_seed_pack_root));
+    if(!loaded.ok()) {
+      auto result=fail(E::source_invalid);result.source_diagnostic=loaded.diagnostic;return result;
+    }
+    const auto& pack=loaded.pack;
+    if(!pack.image.active||!pack.memory_configuration||
+        request.definitions.size()!=2+pack.providers.size()+pack.profiles.size())return fail(E::invalid_definition);
+    // These security definitions are not returned by this family assembler,
+    // but their admitted identities are already known. Do not admit a new
+    // configuration/enclosing identity which aliases one of them by kind.
+    const auto aliases_enclosing=[&](const Uuid& identity) {
+      return identity==request.database_uuid||identity==request.construction_transaction.value||
+          identity==request.memory_configuration_uuid;
+    };
+    for(const auto& role:pack.roles)if(aliases_enclosing(role.role_uuid))return fail(E::duplicate_identity);
+    for(const auto& group:pack.groups)if(aliases_enclosing(group.group_uuid))return fail(E::duplicate_identity);
+    for(const auto& grant:pack.grants)if(aliases_enclosing(grant.grant_uuid))return fail(E::duplicate_identity);
+    struct Definition {CatalogRecordKind kind;std::string_view subtype;std::string payload;};
+    std::map<Uuid,Definition> definitions;
+    const auto append=[&]<class Record>(const Uuid& identity,CatalogRecordKind kind,std::string_view subtype,const Record& record) {
+      std::array<scratchbird::core::platform::byte,2048> backing;
+      const auto encoded=[&] {
+        if constexpr(std::is_same_v<Record,c::CatalogBootstrapPolicyPack>)return c::EncodeCatalogBootstrapPolicyPackInto(record,backing);
+        else if constexpr(std::is_same_v<Record,c::CatalogBootstrapSecurityProvider>)return c::EncodeCatalogBootstrapSecurityProviderInto(record,backing);
+        else if constexpr(std::is_same_v<Record,c::CatalogBootstrapPolicyProfile>)return c::EncodeCatalogBootstrapPolicyProfileInto(record,backing);
+        else return c::EncodeCatalogMemoryConfigurationInto(record,backing);
+      }();
+      return encoded.ok()&&definitions.emplace(identity,Definition{kind,subtype,
+          std::string(encoded.bytes.begin(),encoded.bytes.end())}).second;
+    };
+    const auto native_pack=NativePolicyPackDefinition(pack,request.construction_transaction);
+    if(!native_pack||!append(native_pack->policy_pack_uuid,CatalogRecordKind::policy,"bootstrap_policy_pack",*native_pack))
+      return fail(E::invalid_definition);
+    for(const auto& provider:pack.providers)
+      if(!append(provider.provider_uuid,CatalogRecordKind::policy,"bootstrap_security_provider",
+          NativePolicyProviderDefinition(pack,provider,request.construction_transaction)))return fail(E::invalid_definition);
+    for(const auto& profile:pack.profiles)
+      if(!append(profile.profile_uuid,CatalogRecordKind::policy,"bootstrap_policy_profile",
+          NativePolicyProfileDefinition(pack,profile,request.construction_transaction,request.memory_configuration_uuid)))
+        return fail(E::invalid_definition);
+    if(!append(request.memory_configuration_uuid,CatalogRecordKind::config_profile,"memory_configuration",
+        NativeMemoryConfigurationDefinition(pack,request.memory_configuration_uuid,request.construction_transaction)))
+      return fail(E::invalid_definition);
+
+    // All canonical payload/common/name validation and raw identity admission
+    // precede owning metadata/name copies. No prototype row is decoded here.
+    u64 records=0,bytes=0;
+    for(const auto& input:request.definitions) {
+      if(!input.definition||!input.definition->record.payload.empty())return fail(E::invalid_definition);
+      const auto found=definitions.find(input.definition->record.header.object_uuid.value);
+      if(found==definitions.end()||input.definition->record.header.kind!=found->second.kind||
+          input.definition->object_subtype!=found->second.subtype)return fail(E::invalid_definition);
+      auto view=c::BorrowCatalogMetadataVersion(*input.definition);view.record.payload=found->second.payload;
+      const auto checked=c::PreflightLocalNamedCreationRecord(view,input,request.construction_transaction,
+          request.database_default_language,{request.limits.maximum_records-records,request.limits.maximum_encoded_bytes-bytes});
+      if(checked.error!=c::CatalogNamedCreationError::none)
+        return fail(checked.error==c::CatalogNamedCreationError::resource_exhausted?E::resource_exhausted:E::invalid_names,checked.error);
+      records+=checked.records;bytes+=checked.encoded_bytes;
+    }
+    if(records>(std::numeric_limits<std::size_t>::max()-2)/2)return fail(E::resource_exhausted);
+    std::vector<Uuid> identities;identities.reserve(static_cast<std::size_t>(2*records+2));
+    identities.push_back(request.database_uuid);identities.push_back(request.construction_transaction.value);
+    const auto identify=[&](const auto& m) {
+      identities.push_back(m.record.header.object_uuid.value);identities.push_back(m.record.header.row_uuid.value);
+    };
+    for(const auto& input:request.definitions) {
+      identify(*input.definition);identify(*input.vector_metadata);for(const auto& entry:input.entries)identify(*entry.metadata);
+    }
+    std::sort(identities.begin(),identities.end());
+    if(std::adjacent_find(identities.begin(),identities.end())!=identities.end())return fail(E::duplicate_identity);
+    std::vector<c::CatalogMetadataVersion> completed;completed.reserve(request.definitions.size());
+    std::vector<c::CatalogNamedCreationInput> inputs;inputs.reserve(request.definitions.size());
+    for(const auto& input:request.definitions) {
+      completed.push_back(*input.definition);
+      completed.back().record.payload=definitions.at(completed.back().record.header.object_uuid.value).payload;
+      inputs.push_back({&completed.back(),input.vector_metadata,input.vector,input.entries});
+    }
+    auto assembled=c::AssembleLocalNamedCreationRecords(request.database_uuid,request.construction_transaction,
+        request.database_default_language,inputs,request.limits);
+    if(!assembled.ok())return fail(assembled.error==c::CatalogNamedCreationError::resource_exhausted?
+        E::resource_exhausted:E::invalid_names,assembled.error);
+    NativeInitialPolicyResult result;result.error=E::none;result.records=std::move(assembled.records);return result;
+  }catch(const std::bad_alloc&) {return fail(E::resource_exhausted);}
+   catch(const std::length_error&) {return fail(E::resource_exhausted);}
+   catch(...) {return fail(E::invalid_request);}
+}
+
 DatabaseArtifactCompatibilityResult ClassifyDatabaseArtifactVersionCompatibility(
     const DatabaseArtifactVersionCompatibilityRequest& request) {
   const std::string detail = ArtifactVersionDetail(request);
@@ -9292,11 +9421,12 @@ DiagnosticRecord MakeDatabaseLifecycleDiagnostic(Status status,
                                                 std::string path,
                                                 std::string detail) {
   std::vector<DiagnosticArgument> arguments;
+  arguments.reserve(static_cast<std::size_t>(!path.empty())+static_cast<std::size_t>(!detail.empty()));
   if (!path.empty()) {
-    arguments.push_back({"path", path});
+    arguments.push_back({"path", std::move(path)});
   }
   if (!detail.empty()) {
-    arguments.push_back({"detail", detail});
+    arguments.push_back({"detail", std::move(detail)});
   }
 
   return MakeDiagnostic(status.code,

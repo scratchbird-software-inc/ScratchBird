@@ -351,3 +351,40 @@ Do not copy MetricSeed fixture metadata or infer authority constants. Native
 construction must remain fenced until real activation and retained native
 source/security/controller/provider wiring can admit hosted effect-capable
 BEGIN. This required shared root still owns all6 original startup failures.
+
+Owning native policy-family creation producer, 2026-10-15
+-------------------------------------------------------
+Added storage/database/native_policy_creation.hpp API and implementation beside
+the actual admitted pack loader. AssembleNativeInitialPolicyRecords accepts
+actual construction TX, owner-issued memory resource UUID and complete supplied
+metadata/names; shares the actual native pack/provider/profile/memory translators
+with production MaterializePolicySeedPackRows. It does not convert legacy rows,
+invent owner/audit/profile/name metadata or turn source declarations into rights.
+Complete borrowed family/name/size checks and sorted raw16 cohort admission
+precede owning metadata/name copies. Known imported role/group/grant identities
+cannot be reused as new configuration/database/transaction identities. All
+refusals return no partial output. Embedded-NUL source paths, bad pointers and
+impossible counts refuse before source intake. Full84-record result owns data.
+
+New actual producer gate1073checks: real default/custom pack selection, exact
+28definitions+56 supplied names, complete memory bytes/source identities,21
+negative request/name/identity/bounds cases,6 actual allocation failures, exact
+output limits and owning lifetimes after source removal. Actual indexed native
+construction/reopen across all5 page profiles retains definitions and names,
+without falsely activating the node. Existing production importer/custom and
+native family/schema/runtime-binding followers remain passing. Final combined
+qualification37/37 PASS12.788608s,peak148624KiB,no leaked descendants; LastTest
+retained, source/build edits serialized. Lifecycle diagnostic builder pre-reserves
+exact0..2 arguments and moves strings: removes reallocations/copies and GCC13
+variant growth warning without suppression. Private generated databases/source
+packs removed, owned temporary root empty4KiB. No archives retained.
+
+Core03 producer contract/digest updated locally/manual. New unit registration
+will be reconciled by actual preflight (9404). Frozen260 remains199 qualified+
+61 outstanding, supplemental1 open: zero original closures from this slice.
+NEXT remains actual complete database/schema/name/governance/profile cohort,
+native security/provider/service credential provisioning and retained mutable
+native security/controller/activation before hosted BEGIN. Current structural
+bootstrap security codec's text scalar attributes are not the complete native
+security authority; do not wrap/promote those or generic58 declaration strings
+as functional policy. No full all-target/clean/unfiltered acceptance yet.
