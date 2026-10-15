@@ -4200,6 +4200,18 @@ if(TARGET sb_core_datatypes AND TARGET sb_core_memory)
   target_link_libraries(sb_core_blob_persistence PUBLIC sb_core_datatypes sb_core_memory)
 endif()
 
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/LinkPruning.cmake")
+# Run after deferred target enrollment, retaining all existing targets/tests,
+# static ownership and linker wrapping used by native fault-injection gates.
+cmake_language(DEFER CALL sb_enable_link_pruning "${CMAKE_CURRENT_SOURCE_DIR}")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_test(NAME cmake_link_pruning
+    COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/tools/test_cmake_link_pruning.py")
+  set_tests_properties(cmake_link_pruning PROPERTIES
+    TIMEOUT 180 LABELS "build_hygiene;cmake_config;link_pruning;native_fault_injection")
+endif()
+
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestAssertions.cmake")
 # Alignment registers some targets in deferred root-directory functions.
 # Enqueue this last so those targets receive the same assertion policy.
