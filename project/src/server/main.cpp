@@ -15,6 +15,7 @@
 #include "product_identity.hpp"
 #include "server_daemon_lifecycle.hpp"
 #include "startup.hpp"
+#include "process_crypto_owner.hpp"
 #include "standalone_shutdown_deadline.hpp"
 #include "windows_service_runtime.hpp"
 
@@ -22,6 +23,7 @@
 #include <algorithm>
 #include <string>
 #include <vector>
+#include <optional>
 
 namespace {
 
@@ -45,7 +47,25 @@ int RunServerProduct(
     return 0;
   }
 
+  // The deadline also outlives provider cleanup. Crypto custody precedes every
+  // hosted owner and is destroyed only after all engine/worker/context teardown.
+  std::optional<scratchbird::server::StandaloneShutdownDeadline> shutdown_deadline;
+#if !defined(_WIN32)
+  scratchbird::server::ServerProcessCryptoOwner crypto;
+  struct CryptoShutdownArm {
+    ~CryptoShutdownArm() {scratchbird::server::RequestParserServerStop();}
+  } crypto_shutdown_arm;
+  auto selected_config=scratchbird::server::ResolveServerBootstrapConfig(options);
+  if(selected_config.ok())shutdown_deadline.emplace(
+      selected_config.config.shutdown_drain_timeout_ms,
+      scratchbird::server::ParserServerStopRequested);
+  const auto startup = scratchbird::server::RunServerStartup(std::move(selected_config),crypto);
+#else
+  // Preserve the existing SCM provider lifecycle. Its dispatcher outlives the
+  // worker, so a worker-local terminal global cleanup would invalidate later
+  // dispatcher diagnostics. The Linux exclusive host does not own that cohort.
   const auto startup = scratchbird::server::RunServerStartup(options);
+#endif
   if (!startup.stdout_text.empty()) {
     std::cout << startup.stdout_text;
   }
@@ -55,9 +75,11 @@ int RunServerProduct(
     return startup.exit_code;
   }
   // Declared before engine/IPC owners: it outlives their actual destruction.
-  scratchbird::server::StandaloneShutdownDeadline shutdown_deadline(
+#if defined(_WIN32)
+  shutdown_deadline.emplace(
       startup.effective_config.shutdown_drain_timeout_ms,
       scratchbird::server::ParserServerStopRequested);
+#endif
   const auto engine_host =
       scratchbird::server::StartHostedEngine(startup.effective_config,
                                             scratchbird::server::RequestParserServerStop);
@@ -109,8 +131,11 @@ int RunServerProduct(
 
 }  // namespace
 
-int main(int argc, char** argv) {
-  const auto parse = scratchbird::server::ParseServerCli(argc, argv);
+int main(int argc, char** argv) try {
+  const auto parse = [&] {
+    scratchbird::server::BootstrapDiagnosticScope diagnostics;
+    return scratchbird::server::ParseServerCli(argc, argv);
+  }();
   if (!parse.ok()) {
     return EmitDiagnostics(parse.diagnostics);
   }
@@ -133,4 +158,7 @@ int main(int argc, char** argv) {
   }
 #endif
   return RunServerProduct(parse.options);
+} catch(const scratchbird::server::BootstrapDiagnosticIdentityFailure& failure) {
+  (void)scratchbird::server::WriteBootstrapDiagnosticFailureStatus(2,failure.error());
+  return 2;
 }

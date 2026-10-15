@@ -168,6 +168,7 @@ if(SB_BUILD_SERVER)
     parser_admission.cpp
     parser_package_registry.cpp
     process_association_registry.cpp
+    process_crypto_owner.cpp
     product_identity.cpp
     sbps.cpp
     server_observability.cpp

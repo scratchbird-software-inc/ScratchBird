@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "config.hpp"
 #include "runtime_crypto_pool_owner.hpp"
+#include "process_crypto_owner.hpp"
+#include "startup.hpp"
 #include "uuid.hpp"
 #include "../support/owned_temp_directory.hpp"
 #include <openssl/crypto.h>
@@ -16,6 +18,7 @@
 #include <string_view>
 #include <thread>
 #include <sys/random.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 namespace s=scratchbird::server;
@@ -120,7 +123,7 @@ void DiagnosticBoundary() {
 int main(int argc,char** argv) try {
   test_mode=argc>1?argv[1]:"default";
   if(test_mode.starts_with("diag")) {DiagnosticBoundary(); return 0;}
-  const bool override_budget=argc>1 && std::string_view(argv[1])=="override";
+  const bool override_budget=test_mode=="override"||test_mode=="host_override";
   scratchbird::tests::OwnedTempDirectory artifacts;
   const auto path=artifacts.path()/"bootstrap.conf";
   {
@@ -147,6 +150,144 @@ int main(int argc,char** argv) try {
   Check(m::ConfigureDefaultMemoryManager(policy.policy,loaded.config.memory_policy_provenance).ok(),
         "install actual shared process manager policy");
   auto& manager=m::DefaultMemoryManager();
+  if(test_mode=="host_product") {
+    const auto output_path=(artifacts.path()/"product-output.json").string();
+    const auto run=[&](const std::string& config_path,bool valid,bool invalid_cli=false) {
+      const int output=::open(output_path.c_str(),O_CREAT|O_TRUNC|O_WRONLY|O_CLOEXEC,0600);
+      Check(output>=0,"owned product evidence file");
+      const auto child=::fork();
+      if(child<0) {::close(output);Check(false,"fork real server executable");}
+      if(child==0) {
+        if(::dup2(output,STDOUT_FILENO)<0||::dup2(output,STDERR_FILENO)<0)::_exit(126);
+        ::close(output);
+        if(invalid_cli)::execl(SB_SERVER_EXECUTABLE,SB_SERVER_EXECUTABLE,"--no-such-option",nullptr);
+        else ::execl(SB_SERVER_EXECUTABLE,SB_SERVER_EXECUTABLE,"--validate-config","--config",config_path.c_str(),nullptr);
+        ::_exit(127);
+      }
+      ::close(output);
+      int status=0;pid_t waited;
+      do {waited=::waitpid(child,&status,0);}while(waited<0&&errno==EINTR);
+      Check(waited==child&&WIFEXITED(status)&&WEXITSTATUS(status)==(valid?0:2),
+            "real product startup exits with exact success/refusal outcome, not signal or exec failure");
+      std::ifstream input(output_path);
+      const std::string text{std::istreambuf_iterator<char>(input),{}};
+      Check(valid?text.find("\"server_config_validation\":{\"accepted\":true")!=std::string::npos:
+                  text.find("message_vector")!=std::string::npos,
+            "real product emits validation evidence or the source-owned diagnostic vector");
+    };
+    run(path.string(),true);
+    const auto bad=artifacts.path()/"bad-product.conf";
+    {std::ofstream out(bad);out<<"[config]\nformat = SBCD2\n";Check(bool(out),"bad product config fixture");}
+    run(bad.string(),false);
+    run(path.string(),false,true);
+    Check(rand_calls==0&&manager.Snapshot().current_bytes==0,
+          "external product lifetime cannot consume the fixture parent's provider or backing");
+    artifacts.Cleanup();return 0;
+  }
+  if(test_mode.starts_with("host_")) {
+    s::ServerProcessCryptoOwner host;
+    if(test_mode=="host_bad_config") {
+      const auto bad_path=artifacts.path()/"bad.conf";
+      {std::ofstream out(bad_path);out<<"[config]\nformat = SBCD2\n";Check(bool(out),"bad config fixture");}
+      auto bad_cli=cli;bad_cli.config_path=bad_path.string();
+      const auto startup=s::RunServerStartup(bad_cli,host);
+      Check(startup.exit_code!=0&&!startup.diagnostics.empty()&&rand_calls==0&&!host.installed(),
+          "actual host config rejection has source-owned diagnostics before provider admission");
+      Check(u::IsEngineIdentityUuid(Uuid{startup.diagnostics.front().occurrence_uuid}),
+          "bad host config retains a genuine binary diagnostic occurrence");
+    } else if(test_mode=="host_startup") {
+      provider_allowed=true;
+      auto startup=s::RunServerStartup(s::ResolveServerBootstrapConfig(cli),host);
+      Check(startup.exit_code==0&&host.installed()&&startup.emergency_reserve&&rand_calls>0,
+          "actual startup installs process provider before emergency owner UUID issuance");
+      Check(host.Snapshot().backing_bytes==bytes&&manager.Snapshot().current_bytes>bytes,
+          "actual startup retains separately accounted provider and emergency backing");
+      startup.emergency_reserve.reset();
+    } else {
+      auto selected=loaded.config;
+      if(test_mode=="host_low_budget")selected.memory_openssl_budget_bytes=1;
+      if(test_mode=="host_reservation_refusal")selected.memory_openssl_budget_bytes=policy.effective_hard_limit_bytes+1;
+      if(test_mode=="host_late_provider") {
+        provider_allowed=true;std::array<unsigned char,16> random{};
+        Check(__real_RAND_bytes(random.data(),random.size())==1,"actual unowned provider initialization");
+      }
+      if(test_mode=="host_foreign_thread") {
+        s::ProcessCryptoStartResult foreign;
+        std::thread other([&]{foreign=host.Start(selected,policy);});other.join();
+        Check(foreign.error==s::ProcessCryptoStartError::wrong_owner&&rand_calls==0,
+              "wrong native owner cannot claim bootstrap or touch provider");
+      }
+      const auto admitted=host.Start(selected,policy);
+      if(test_mode=="host_low_budget"||test_mode=="host_reservation_refusal"||test_mode=="host_late_provider") {
+        Check(!admitted.ok()&&!host.installed()&&rand_calls==0,
+              "actual resource or late-install refusal cannot yield provider readiness");
+        if(test_mode=="host_late_provider")Check(admitted.pool.adapter_error==h::CryptoMemoryError::late_installation,
+            "late provider refusal retains exact adapter cause");
+        if(test_mode=="host_reservation_refusal")Check(admitted.error==s::ProcessCryptoStartError::reservation_failure,
+            "budget refusal precedes backing allocation");
+      } else {
+        Check(admitted.ok()&&host.installed()&&rand_calls==0,"production owner installs before actual RAND");
+        provider_allowed=true;
+        const auto identity=u::IssueRuntimeIdentityV7();
+        Check(identity&&rand_calls>0&&u::IsEngineIdentityUuid(*identity),"actual admitted host UUID provider");
+        const auto before=host.Snapshot();
+        Check(before.backing_bytes==bytes&&manager.Snapshot().current_bytes==bytes,
+              "selected host budget is charged once to the shared actual manager");
+        Check(host.Start(selected,policy).error==s::ProcessCryptoStartError::already_started,
+              "repeat host startup cannot replace process identities or grants");
+        if(test_mode=="host_foreign_thread") {
+          r::RuntimeCryptoPoolResult foreign;
+          h::CryptoMemorySnapshot observed;
+          std::thread other([&]{foreign=host.CloseAfterUserDrain();observed=host.Snapshot();});other.join();
+          Check(!foreign.ok()&&host.installed()&&host.Snapshot().binding==before.binding,
+                "wrong owner cannot run global provider cleanup or release custody");
+          Check(observed.observation_error==h::CryptoMemoryError::invalid_binding&&observed.binding==h::CryptoMemoryBinding{},
+                "foreign-thread observation rejects before reading shared pool state");
+          const auto child=::fork();Check(child>=0,"fork native process-custody refusal fixture");
+          if(child==0) {
+            const auto inherited=host.Snapshot();
+            const bool rejected=inherited.observation_error==h::CryptoMemoryError::invalid_binding&&
+                inherited.binding==h::CryptoMemoryBinding{}&&!host.installed()&&
+                host.Start(selected,policy).error==s::ProcessCryptoStartError::wrong_owner&&
+                !host.CloseAfterUserDrain().ok();
+            ::_exit(rejected?0:1);
+          }
+          int status=0;pid_t waited;
+          do {waited=::waitpid(child,&status,0);}while(waited<0&&errno==EINTR);
+          Check(waited==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,
+                "inherited process cannot enter pool observation or cleanup synchronization");
+        }
+        Check(host.WithProviderScope([&] {
+          Check(host.CloseAfterUserDrain().adapter_error==h::CryptoMemoryError::busy&&host.installed(),
+                "live admitted work refuses terminal cleanup without losing provider custody");
+        }).ok(),"actual process provider work scope");
+        bool work_threw=false;
+        try {host.WithProviderScope([] {throw std::runtime_error("actual scoped work failure");});}
+        catch(const std::runtime_error&) {work_threw=true;}
+        Check(work_threw&&host.Snapshot().scopes==0&&host.installed(),
+              "callback exception releases its actual scope without losing pool ownership");
+        std::array<bool,2> worker_ok{};
+        std::array<std::thread,2> workers;
+        for(std::size_t i=0;i<workers.size();++i)workers[i]=std::thread([&,i] {
+          const auto issued=u::IssueRuntimeIdentityV7();
+          worker_ok[i]=issued&&u::IsEngineIdentityUuid(*issued);
+          OPENSSL_thread_stop();
+        });
+        for(auto& worker:workers)worker.join();
+        Check(worker_ok[0]&&worker_ok[1]&&host.Snapshot().allocations>before.allocations,
+              "real provider workers use retained shared backing and finish before cleanup");
+        const s::ServerDiagnostic ordinary{"CONFIG.MALFORMED","config.malformed"};
+        Check(u::IsEngineIdentityUuid(Uuid{ordinary.occurrence_uuid}),
+              "production readiness restores ordinary source instead of sealed bootstrap selection");
+        Check(u::IssueCryptoBootstrapDiagnosticIdentityV7().error==u::CryptoBootstrapDiagnosticError::sealed,
+              "production host permanently seals pre-provider source");
+      }
+    }
+    Check(host.CloseAfterUserDrain().ok()&&!host.installed()&&manager.Snapshot().current_bytes==0&&
+          manager.Snapshot().reserved_capacity_bytes==0,"actual production teardown releases all backing and reservations");
+    Check(host.CloseAfterUserDrain().ok(),"host terminal close is idempotent");
+    artifacts.Cleanup();return 0;
+  }
   const auto batch=u::IssueCryptoBootstrapIdentitiesV7();
   Check(bool(batch) && rand_calls==0,"OS bootstrap before provider");
   h::CryptoMemoryBinding binding{{},batch->operation,batch->owner,batch->context,batch->process};

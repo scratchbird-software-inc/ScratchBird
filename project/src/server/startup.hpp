@@ -22,6 +22,7 @@
 #include <vector>
 
 namespace scratchbird::server {
+class ServerProcessCryptoOwner;
 
 struct ServerStartupResult {
   int exit_code = 0;
@@ -36,6 +37,11 @@ struct ServerStartupResult {
 };
 
 ServerStartupResult RunServerStartup(const ServerCliOptions& cli);
+// Exclusive process host, not an embedded caller's global provider lifecycle.
+ServerStartupResult RunServerStartup(const ServerCliOptions& cli,ServerProcessCryptoOwner&);
+// Consume the already resolved owning configuration. Allows the exclusive
+// host to install its watchdog before any fallible provider/startup work.
+ServerStartupResult RunServerStartup(ServerConfigLoadResult,ServerProcessCryptoOwner&);
 ServerStartupResult RunServerStartup(const ServerCliOptions& cli,
                                     const ServerConfigResolutionContext& context);
 // False forbids ordinary admission: serialization, write and flush must all

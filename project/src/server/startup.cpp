@@ -10,6 +10,7 @@
 
 #include "startup.hpp"
 #include "host_platform_admission.hpp"
+#include "process_crypto_owner.hpp"
 
 #include "memory.hpp"
 #include "uuid.hpp"
@@ -85,7 +86,8 @@ ServerDiagnostic MemoryConfigInstallDiagnostic(
   return result;
 }
 
-ServerStartupResult CompleteServerStartup(ServerConfigLoadResult config) {
+ServerStartupResult CompleteServerStartup(ServerConfigLoadResult config,
+                                         ServerProcessCryptoOwner* crypto=nullptr) {
   ServerStartupResult result;
   result.effective_config = config.config;
   if (!config.ok()) {
@@ -148,6 +150,18 @@ ServerStartupResult CompleteServerStartup(ServerConfigLoadResult config) {
     return result;
   }
 
+  if(crypto) {
+    const auto admitted=crypto->Start(config.config,memory_policy);
+    if(!admitted.ok()) {
+      result.exit_code=2;
+      result.diagnostics.push_back({"CRYPTO.PROFILE.UNAVAILABLE","CRYPTO.PROFILE.UNAVAILABLE",
+          ServerDiagnosticSeverity::kError,"The process crypto provider could not be admitted.",
+          {{"startup_error",std::to_string(static_cast<unsigned>(admitted.error))},
+           {"pool_error",std::to_string(static_cast<unsigned>(admitted.pool.error))},
+           {"adapter_error",std::to_string(static_cast<unsigned>(admitted.pool.adapter_error))}}});
+      return result;
+    }
+  }
   const auto owner = scratchbird::core::uuid::IssueRuntimeIdentityV7();
   const auto context = scratchbird::core::uuid::IssueRuntimeIdentityV7();
   if (!owner || !context) {
@@ -254,6 +268,14 @@ ServerStartupResult CompleteServerStartup(ServerConfigLoadResult config) {
 
 ServerStartupResult RunServerStartup(const ServerCliOptions& cli) {
   return CompleteServerStartup(ResolveServerBootstrapConfig(cli));
+}
+
+ServerStartupResult RunServerStartup(const ServerCliOptions& cli,ServerProcessCryptoOwner& crypto) {
+  return CompleteServerStartup(ResolveServerBootstrapConfig(cli),&crypto);
+}
+
+ServerStartupResult RunServerStartup(ServerConfigLoadResult config,ServerProcessCryptoOwner& crypto) {
+  return CompleteServerStartup(std::move(config),&crypto);
 }
 
 ServerStartupResult RunServerStartup(const ServerCliOptions& cli,
