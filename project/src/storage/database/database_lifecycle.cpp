@@ -1256,6 +1256,7 @@ struct PolicyDefaultSeed {
 
 struct LoadedPolicySeedPack {
   PolicySeedPackCatalogImage image;
+  Uuid pack_identity;
   std::vector<PolicyProviderSeed> providers;
   std::vector<PolicyRoleSeed> roles;
   std::vector<PolicyGroupSeed> groups;
@@ -2097,6 +2098,7 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
   }
   const auto pack_identity=ParseTypedUuid(UuidKind::object,image.policy_pack_uuid);
   if(!pack_identity.ok())return PolicyPackLoadError("SB-POLICY-PACK-MANIFEST-FIELD-INVALID","pack identity");
+  loaded.pack_identity=pack_identity.value.value;
   std::set<Uuid> definition_identities{pack_identity.value.value};
   for (const std::string& object : SplitTopLevelObjects(array_body)) {
     PolicyProviderSeed provider;
@@ -2639,22 +2641,6 @@ CatalogRowsBuildResult AddLocalizedRecordPair(std::vector<CatalogPageRow>* rows,
       target_object_uuid);
 }
 
-const char* BoolText(bool value) {
-  return value ? "1" : "0";
-}
-
-CatalogRowsBuildResult ParsePolicyObjectUuid(const std::string& text,
-                                             TypedUuid* out) {
-  const auto parsed = ParseTypedUuid(UuidKind::object, text);
-  if (!parsed.ok()) {
-    return CatalogRowsBuildError(parsed.status, parsed.diagnostic);
-  }
-  *out = parsed.value;
-  CatalogRowsBuildResult result;
-  result.status = DatabaseLifecycleOkStatus();
-  return result;
-}
-
 CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>* rows,
                                                      u32* ordinal,
                                                      u64 identity_seed,
@@ -2668,65 +2654,42 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
     return result;
   }
 
-  const std::string pack_payload =
-      KeyValuePayload({{"policy_pack_id", pack.image.policy_pack_id},
-                       {"policy_pack_uuid", pack.image.policy_pack_uuid},
-                       {"policy_pack_version", pack.image.policy_pack_version},
-                       {"schema_version", std::to_string(pack.image.schema_version)},
-                       {"policy_generation", std::to_string(pack.image.policy_generation)},
-                       {"content_sha256", pack.image.content_sha256},
-                       {"signature_status", pack.image.signature_status},
-                       {"create_time_only", BoolText(pack.image.create_time_only)},
-                       {"post_create_filesystem_authority", BoolText(pack.image.post_create_filesystem_authority)},
-                       {"local_password_only", BoolText(pack.image.local_password_only)},
-                       {"materialized_inside_create_transaction",
-                        BoolText(pack.image.materialized_inside_create_transaction)},
-                       {"requires_mga_catalog_commit", BoolText(pack.image.requires_mga_catalog_commit)},
-                       {"security_provider_records", std::to_string(pack.image.security_provider_records)},
-                       {"enabled_local_password_provider_records",
-                        std::to_string(pack.image.enabled_local_password_provider_records)},
-                       {"external_provider_disabled_records",
-                        std::to_string(pack.image.external_provider_disabled_records)},
-                       {"role_records", std::to_string(pack.image.role_records)},
-                       {"group_records", std::to_string(pack.image.group_records)},
-                       {"group_membership_records", std::to_string(pack.image.group_membership_records)},
-                       {"grant_records", std::to_string(pack.image.grant_records)},
-                       {"policy_profile_records", std::to_string(pack.image.policy_profile_records)},
-                       {"default_policy_records", std::to_string(pack.image.default_policy_records)},
-                       {"loaded_at_database_create", "1"},
-                       {"created_txn", std::to_string(kBootstrapCatalogTransactionId)},
-                       {"uuid_source", "policy_pack_manifest"},
-                       {"mga_visibility_required", "1"},
-                       {"filesystem_pack_not_post_create_authority", "1"}});
+  namespace c=scratchbird::core::catalog;
+  c::CatalogBootstrapPolicyPack native_pack;
+  native_pack.policy_pack_uuid=pack.pack_identity;
+  native_pack.generation=pack.image.policy_generation;
+  native_pack.imported_schema_version=pack.image.schema_version;
+  native_pack.pack_id=pack.image.policy_pack_id;native_pack.pack_version=pack.image.policy_pack_version;
+  native_pack.declared_signature_status=pack.image.signature_status;
+  native_pack.create_time_only=pack.image.create_time_only;
+  native_pack.post_create_filesystem_authority=pack.image.post_create_filesystem_authority;
+  native_pack.local_password_only=pack.image.local_password_only;
+  native_pack.origin_transaction_uuid=creator_transaction_uuid;
+  native_pack.origin_local_transaction_id=kBootstrapCatalogTransactionId;
+  native_pack.declared_counts={pack.image.security_provider_records,pack.image.enabled_local_password_provider_records,
+      pack.image.external_provider_disabled_records,pack.image.role_records,pack.image.group_records,
+      pack.image.group_membership_records,pack.image.grant_records,pack.image.policy_profile_records,pack.image.default_policy_records};
+  if(!IsSha256Hex(pack.image.content_sha256))return CatalogRowsBuildError(DatabaseLifecycleErrorStatus(),
+      MakeDatabaseLifecycleDiagnostic(DatabaseLifecycleErrorStatus(),"SB-POLICY-PACK-MANIFEST-FIELD-INVALID",
+          "storage.database_lifecycle.policy_pack_invalid",{},"native pack content digest"));
+  const auto nibble=[](char value)->unsigned{return value<='9'?value-'0':value<='F'?value-'A'+10:value-'a'+10;};
+  for(std::size_t n=0;n<native_pack.content_sha256.size();++n)
+    native_pack.content_sha256[n]=static_cast<scratchbird::core::platform::byte>(
+        (nibble(pack.image.content_sha256[2*n])<<4)|nibble(pack.image.content_sha256[2*n+1]));
+  std::array<scratchbird::core::platform::byte,2048> pack_backing;
+  const auto encoded_pack=c::EncodeCatalogBootstrapPolicyPackInto(native_pack,pack_backing);
+  if(!encoded_pack.ok())return CatalogRowsBuildError(DatabaseLifecycleErrorStatus(),
+      MakeDatabaseLifecycleDiagnostic(DatabaseLifecycleErrorStatus(),"SB-POLICY-PACK-MANIFEST-FIELD-INVALID",
+          "storage.database_lifecycle.policy_pack_invalid",{},"native pack declaration"));
+  const std::string pack_payload(encoded_pack.bytes.begin(),encoded_pack.bytes.end());
   rows->push_back(Row(CatalogPageRowKind::policy_seed_pack, (*ordinal)++, pack_payload));
 
-  TypedUuid policy_pack_uuid;
-  auto parsed_uuid = ParsePolicyObjectUuid(pack.image.policy_pack_uuid, &policy_pack_uuid);
-  if (!parsed_uuid.ok()) {
-    return parsed_uuid;
-  }
+  const TypedUuid policy_pack_uuid{UuidKind::object,pack.pack_identity};
   auto typed = AddTypedCatalogRecord(rows,
                                      CatalogRecordKind::policy,
                                      ordinal,
                                      identity_seed,
-                                     KeyValuePayload({{"policy_key", "policy_pack." + pack.image.policy_pack_id},
-                                                      {"policy_name", pack.image.policy_pack_id},
-                                                      {"policy_class", "policy_pack"},
-                                                      {"policy_pack_uuid", pack.image.policy_pack_uuid},
-                                                      {"policy_pack_version", pack.image.policy_pack_version},
-                                                      {"content_sha256", pack.image.content_sha256},
-                                                      {"signature_status", pack.image.signature_status},
-                                                      {"policy_generation", std::to_string(pack.image.policy_generation)},
-                                                      {"created_txn", std::to_string(kBootstrapCatalogTransactionId)},
-                                                      {"create_time_only", BoolText(pack.image.create_time_only)},
-                                                      {"post_create_filesystem_authority",
-                                                       BoolText(pack.image.post_create_filesystem_authority)},
-                                                      {"materialized_inside_create_transaction",
-                                                       BoolText(pack.image.materialized_inside_create_transaction)},
-                                                      {"requires_mga_catalog_commit",
-                                                       BoolText(pack.image.requires_mga_catalog_commit)},
-                                                      {"loaded_at_database_create", "1"},
-                                                      {"engine_owned", "1"}}),
+                                     pack_payload,
                                      database_object_uuid,
                                      policy_pack_uuid);
   if (!typed.ok()) { return typed; }
@@ -4358,36 +4321,38 @@ PolicySeedPackCatalogImage BuildPolicyImageFromCatalogRows(const std::vector<Cat
   u32 default_policy_records_from_catalog = 0;
   u64 native_providers=0,native_local_enabled=0,native_external_disabled=0,native_profiles=0;
   std::set<Uuid> native_identities;
+  u64 native_packs=0,pack_summaries=0;
+  std::string_view selected_pack_payload;
+  Uuid selected_pack_identity;
   for (const CatalogPageRow& row : rows) {
     if (row.kind == CatalogPageRowKind::policy_seed_pack) {
-      const auto fields = ParseKeyValuePayload(row.payload);
+      namespace c=scratchbird::core::catalog;
+      const auto decoded=c::DecodeCatalogBootstrapPolicyPack(row.payload);
+      if(!decoded.ok()||++pack_summaries!=1) {
+        image.native_definition_error=c::CatalogValueError::invalid_value;continue;
+      }
+      const auto& pack=*decoded.record;
+      selected_pack_payload=row.payload;selected_pack_identity=pack.policy_pack_uuid;
       image.active = true;
-      image.policy_pack_id = fields.count("policy_pack_id") == 0 ? "" : fields.at("policy_pack_id");
-      image.policy_pack_uuid = fields.count("policy_pack_uuid") == 0 ? "" : fields.at("policy_pack_uuid");
-      image.policy_pack_version =
-          fields.count("policy_pack_version") == 0 ? "" : fields.at("policy_pack_version");
-      image.content_sha256 = fields.count("content_sha256") == 0 ? "" : fields.at("content_sha256");
-      image.signature_status = fields.count("signature_status") == 0 ? "" : fields.at("signature_status");
-      image.schema_version = ParseU32Field(fields, "schema_version");
-      image.policy_generation = ParseU32Field(fields, "policy_generation");
-      image.create_time_only = ParseU32Field(fields, "create_time_only") != 0;
-      image.post_create_filesystem_authority =
-          ParseU32Field(fields, "post_create_filesystem_authority") != 0;
-      image.local_password_only = ParseU32Field(fields, "local_password_only") != 0;
-      image.materialized_inside_create_transaction =
-          ParseU32Field(fields, "materialized_inside_create_transaction") != 0;
-      image.requires_mga_catalog_commit = ParseU32Field(fields, "requires_mga_catalog_commit") != 0;
-      image.security_provider_records = ParseU32Field(fields, "security_provider_records");
-      image.enabled_local_password_provider_records =
-          ParseU32Field(fields, "enabled_local_password_provider_records");
-      image.external_provider_disabled_records =
-          ParseU32Field(fields, "external_provider_disabled_records");
-      image.role_records = ParseU32Field(fields, "role_records");
-      image.group_records = ParseU32Field(fields, "group_records");
-      image.group_membership_records = ParseU32Field(fields, "group_membership_records");
-      image.grant_records = ParseU32Field(fields, "grant_records");
-      image.policy_profile_records = ParseU32Field(fields, "policy_profile_records");
-      image.default_policy_records = ParseU32Field(fields, "default_policy_records");
+      image.policy_pack_id=pack.pack_id;image.policy_pack_version=pack.pack_version;
+      image.policy_pack_uuid=scratchbird::core::uuid::UuidToString(pack.policy_pack_uuid); // public status presentation only
+      image.content_sha256=HexDigest(pack.content_sha256.data(),pack.content_sha256.size());
+      image.signature_status=pack.declared_signature_status;
+      if(pack.imported_schema_version>std::numeric_limits<u32>::max()||pack.generation>std::numeric_limits<u32>::max()||
+          std::any_of(pack.declared_counts.begin(),pack.declared_counts.end(),[](u64 n){return n>std::numeric_limits<u32>::max();})) {
+        image.native_definition_error=c::CatalogValueError::invalid_value;continue;
+      }
+      image.schema_version=static_cast<u32>(pack.imported_schema_version);image.policy_generation=static_cast<u32>(pack.generation);
+      image.create_time_only=pack.create_time_only;image.post_create_filesystem_authority=pack.post_create_filesystem_authority;
+      image.local_password_only=pack.local_password_only;
+      image.materialized_inside_create_transaction=true;image.requires_mga_catalog_commit=true;
+      image.security_provider_records=pack.declared_counts[0];image.enabled_local_password_provider_records=pack.declared_counts[1];
+      image.external_provider_disabled_records=pack.declared_counts[2];image.role_records=pack.declared_counts[3];
+      image.group_records=pack.declared_counts[4];image.group_membership_records=pack.declared_counts[5];image.grant_records=pack.declared_counts[6];
+      image.policy_profile_records=pack.declared_counts[7];image.default_policy_records=pack.declared_counts[8];
+      if(pack.origin_transaction_uuid.kind!=committed_origin.kind||pack.origin_transaction_uuid.value!=committed_origin.value||
+          pack.origin_local_transaction_id!=kBootstrapCatalogTransactionId)
+        image.native_definition_error=c::CatalogValueError::invalid_value;
       continue;
     }
     if (row.kind != CatalogPageRowKind::typed_catalog_record) {
@@ -4405,12 +4370,15 @@ PolicySeedPackCatalogImage BuildPolicyImageFromCatalogRows(const std::vector<Cat
         image.native_definition_error=c::CatalogValueError::invalid_value;
       const auto provider=c::DecodeCatalogBootstrapSecurityProvider(decoded.record.payload);
       const auto profile=c::DecodeCatalogBootstrapPolicyProfile(decoded.record.payload);
+      const auto pack=c::DecodeCatalogBootstrapPolicyPack(decoded.record.payload);
       if(provider.ok()) {
         ++native_providers;
         native_local_enabled+=provider.record->family==c::BootstrapProviderFamily::local_password&&provider.record->enabled_by_default;
         native_external_disabled+=provider.record->external_provider&&!provider.record->enabled_by_default;
       }else if(profile.ok()) {
         ++native_profiles;profile_areas.emplace(profile.record->area);
+      }else if(pack.ok()) {
+        ++native_packs;
       }else image.native_definition_error=c::CatalogValueError::invalid_value;
       continue;
     }
@@ -4422,7 +4390,7 @@ PolicySeedPackCatalogImage BuildPolicyImageFromCatalogRows(const std::vector<Cat
       }
       if (policy_class->second == "security_provider") {
         image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
-      } else if (policy_class->second == "policy_profile") {
+      } else if (policy_class->second == "policy_profile" || policy_class->second == "policy_pack") {
         image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
       } else if (fields.count("default_profile") != 0 &&
                  fields.count("tx1_seed_required") != 0 &&
@@ -4436,45 +4404,62 @@ PolicySeedPackCatalogImage BuildPolicyImageFromCatalogRows(const std::vector<Cat
       native_local_enabled!=image.enabled_local_password_provider_records||
       native_external_disabled!=image.external_provider_disabled_records||native_profiles!=image.policy_profile_records))
     image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
-  if(!image.active&&(native_providers||native_profiles))
+  if(image.active&&native_packs!=1)
+    image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
+  if(!image.active&&(native_providers||native_profiles||native_packs))
     image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
   if(image.active) {
-    const auto expected_pack=ParseTypedUuid(UuidKind::object,image.policy_pack_uuid);
-    if(!expected_pack.ok())image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
-    else {
-      if (native_identities.count(expected_pack.value.value))
-        image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
+      std::array<u64,4> security_counts{}; // role, group, membership, grant
       for(const auto& row:rows) {
       if(row.kind!=CatalogPageRowKind::typed_catalog_record)continue;
       const auto decoded=DecodeCatalogTypedRecord(row);
       if(!decoded.ok())continue;
+      namespace c=scratchbird::core::catalog;
+      if(c::IsCatalogSecurityRecordKind(decoded.record.header.kind)) {
+        const auto security=c::DecodeCatalogSecurityRecordView(decoded.record.header.kind,decoded.record.payload);
+        if(!security.ok()) { image.native_definition_error=c::CatalogValueError::invalid_value;continue; }
+        const auto pack_identity=security.record->Identity("policy_pack_uuid");
+        if(!pack_identity.is_nil()) {
+          if(pack_identity!=selected_pack_identity||
+              !native_identities.insert(decoded.record.header.object_uuid.value).second||
+              !native_identities.insert(decoded.record.header.row_uuid.value).second)
+            image.native_definition_error=c::CatalogValueError::invalid_value;
+          if(decoded.record.header.kind==CatalogRecordKind::role_account)++security_counts[0];
+          else if(decoded.record.header.kind==CatalogRecordKind::group_account)++security_counts[1];
+          else if(decoded.record.header.kind==CatalogRecordKind::grant_record) {
+            const auto grant_class=security.record->Attribute("grant_class");
+            if(grant_class=="group_membership")++security_counts[2];
+            else if(grant_class=="privilege")++security_counts[3];
+            else image.native_definition_error=c::CatalogValueError::invalid_value;
+          }else image.native_definition_error=c::CatalogValueError::invalid_value;
+        }
+      }
       const auto provider=scratchbird::core::catalog::DecodeCatalogBootstrapSecurityProvider(decoded.record.payload);
       const auto profile=scratchbird::core::catalog::DecodeCatalogBootstrapPolicyProfile(decoded.record.payload);
-      if(provider.ok()&&(provider.record->policy_pack_uuid!=expected_pack.value.value||
+      const auto pack=scratchbird::core::catalog::DecodeCatalogBootstrapPolicyPack(decoded.record.payload);
+      if(pack.ok()&&decoded.record.payload!=selected_pack_payload)
+        image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
+      if(provider.ok()&&(provider.record->policy_pack_uuid!=selected_pack_identity||
           provider.record->origin_transaction_uuid.kind!=committed_origin.kind||
           provider.record->origin_transaction_uuid.value!=committed_origin.value||
           provider.record->policy_pack_generation!=image.policy_generation||provider.record->generation!=image.policy_generation||
           provider.record->origin_local_transaction_id!=kBootstrapCatalogTransactionId))
         image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
-      if(profile.ok()&&(profile.record->policy_pack_uuid!=expected_pack.value.value||
+      if(profile.ok()&&(profile.record->policy_pack_uuid!=selected_pack_identity||
           profile.record->origin_transaction_uuid.kind!=committed_origin.kind||
           profile.record->origin_transaction_uuid.value!=committed_origin.value||
           profile.record->policy_pack_generation!=image.policy_generation||profile.record->generation!=image.policy_generation||
           profile.record->origin_local_transaction_id!=kBootstrapCatalogTransactionId))
         image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
       }
-    }
+      if(security_counts!=std::array<u64,4>{image.role_records,image.group_records,image.group_membership_records,image.grant_records})
+        image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
   }
   if (!profile_areas.empty()) {
     image.policy_profile_areas.assign(profile_areas.begin(), profile_areas.end());
   }
-  if (default_policy_records_from_catalog != 0 &&
-      image.default_policy_records != 0 &&
-      image.default_policy_records != default_policy_records_from_catalog) {
-    image.default_policy_records = 0;
-  } else if (image.default_policy_records == 0) {
-    image.default_policy_records = default_policy_records_from_catalog;
-  }
+  if (image.active && image.default_policy_records != default_policy_records_from_catalog)
+    image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
   return image;
 }
 

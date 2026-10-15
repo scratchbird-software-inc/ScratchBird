@@ -177,12 +177,13 @@ std::vector<DecodedRecord> DecodeTypedRecords(const std::vector<page::CatalogPag
     if(catalog::IsCatalogBootstrapPolicyPayload(decoded.record.payload)) {
       const auto provider=catalog::DecodeCatalogBootstrapSecurityProvider(decoded.record.payload);
       const auto profile=catalog::DecodeCatalogBootstrapPolicyProfile(decoded.record.payload);
-      Require(provider.ok()||profile.ok(),"native imported provider/profile did not decode");
+      const auto pack=catalog::DecodeCatalogBootstrapPolicyPack(decoded.record.payload);
+      Require(provider.ok()||profile.ok()||pack.ok(),"native imported policy declaration did not decode");
       std::map<std::string,std::string> fields;
-      fields.emplace("policy_class",provider.ok()?"security_provider":"policy_profile");
+      fields.emplace("policy_class",provider.ok()?"security_provider":profile.ok()?"policy_profile":"policy_pack");
       // Test-side presentation only; the source body contains raw16 identity
       // and native unsigned origin fields, not these readable strings.
-      fields.emplace("policy_pack_uuid",uuid::UuidToString(provider.ok()?provider.record->policy_pack_uuid:profile.record->policy_pack_uuid));
+      fields.emplace("policy_pack_uuid",uuid::UuidToString(provider.ok()?provider.record->policy_pack_uuid:profile.ok()?profile.record->policy_pack_uuid:pack.record->policy_pack_uuid));
       records.push_back({decoded.record,std::move(fields)});
       continue;
     }
@@ -257,9 +258,10 @@ void RequireImportedRecordsCreatedByTx1(const std::vector<DecodedRecord>& record
     if(catalog::IsCatalogBootstrapPolicyPayload(record.record.payload)) {
       const auto provider=catalog::DecodeCatalogBootstrapSecurityProvider(record.record.payload);
       const auto profile=catalog::DecodeCatalogBootstrapPolicyProfile(record.record.payload);
-      Require(provider.ok()||profile.ok(),"native imported origin body invalid");
-      const auto& origin=provider.ok()?provider.record->origin_transaction_uuid:profile.record->origin_transaction_uuid;
-      const auto local=provider.ok()?provider.record->origin_local_transaction_id:profile.record->origin_local_transaction_id;
+      const auto pack=catalog::DecodeCatalogBootstrapPolicyPack(record.record.payload);
+      Require(provider.ok()||profile.ok()||pack.ok(),"native imported origin body invalid");
+      const auto& origin=provider.ok()?provider.record->origin_transaction_uuid:profile.ok()?profile.record->origin_transaction_uuid:pack.record->origin_transaction_uuid;
+      const auto local=provider.ok()?provider.record->origin_local_transaction_id:profile.ok()?profile.record->origin_local_transaction_id:pack.record->origin_local_transaction_id;
       Require(local==1&&origin.kind==UuidKind::transaction&&origin.kind==expected_origin.kind&&origin.value==expected_origin.value,
           "native imported declaration does not bind actual committed construction tx1 identity");
       continue;
@@ -282,22 +284,25 @@ void RequirePolicyPackSummary(const std::vector<page::CatalogPageRow>& rows,
       continue;
     }
     ++summaries;
-    const auto fields = ParsePayloadFields(row.payload);
-    Require(fields.at("policy_pack_id") == descriptor.policy_pack_id,
+    const auto decoded=catalog::DecodeCatalogBootstrapPolicyPack(row.payload);
+    Require(decoded.ok(),"policy pack summary is not a native declaration");
+    const auto& pack=*decoded.record;
+    const auto expected=uuid::ParseTypedUuid(UuidKind::object,descriptor.policy_pack_uuid);
+    Require(pack.pack_id == descriptor.policy_pack_id,
             "policy pack summary id mismatch");
-    Require(fields.at("policy_pack_uuid") == descriptor.policy_pack_uuid,
+    Require(expected.ok()&&pack.policy_pack_uuid == expected.value.value,
             "policy pack summary UUID mismatch");
-    Require(fields.at("content_sha256") == descriptor.content_sha256,
+    Require(scratchbird::core::hash::HexLower(pack.content_sha256) == descriptor.content_sha256,
             "policy pack summary content hash mismatch");
-    Require(fields.at("create_time_only") == "1",
+    Require(pack.create_time_only,
             "policy pack summary was not create-time-only");
-    Require(fields.at("post_create_filesystem_authority") == "0",
+    Require(!pack.post_create_filesystem_authority,
             "policy pack summary allowed post-create filesystem authority");
-    Require(fields.at("materialized_inside_create_transaction") == "1",
+    Require(pack.origin_transaction_uuid.kind==UuidKind::transaction&&pack.origin_local_transaction_id==1,
             "policy pack summary missing create transaction materialization");
-    Require(fields.at("requires_mga_catalog_commit") == "1",
+    Require(pack.generation==1&&pack.imported_schema_version==1,
             "policy pack summary missing MGA catalog commit requirement");
-    Require(fields.at("default_policy_records") == "58",
+    Require(pack.declared_counts[8] == 58,
             "policy pack summary did not record all default policies");
   }
   Require(summaries == 1, "expected exactly one policy seed pack summary row");
@@ -603,7 +608,7 @@ void RunBinaryIdentityBindingCases() {
 }
 
 void RunNativePolicyReopenCorruptionCases() {
-  for (unsigned scenario=0; scenario<3; ++scenario) {
+  for (unsigned scenario=0; scenario<10; ++scenario) {
     const auto path=UniquePath("policy_reopen_corruption_"+std::to_string(scenario)+".sbdb");
     auto config=BaseCreateConfig(path,CurrentUnixMillis());
     const auto created=db::CreateDatabaseFile(config);
@@ -612,6 +617,35 @@ void RunNativePolicyReopenCorruptionCases() {
     std::optional<page::CatalogPageRow> previous_provider;
     bool changed=false;
     for (auto& row:rows) {
+      if(scenario>=3) {
+        catalog::CatalogTypedRecord typed;
+        std::string_view payload=row.payload;
+        if(row.kind==page::CatalogPageRowKind::typed_catalog_record) {
+          const auto decoded=catalog::DecodeCatalogTypedRecord(row);
+          Require(decoded.ok(),"pack corruption source framing invalid");
+          typed=decoded.record;payload=typed.payload;
+        }else if(row.kind!=page::CatalogPageRowKind::policy_seed_pack)continue;
+        auto pack=catalog::DecodeCatalogBootstrapPolicyPack(payload);
+        if(!pack.ok())continue;
+        if(scenario==3&&row.kind!=page::CatalogPageRowKind::policy_seed_pack)continue;
+        if(scenario==3)pack.record->pack_version="1.0.9";
+        if(scenario==4) {
+          const auto foreign=uuid::ParseTypedUuid(UuidKind::transaction,"018f7a10-1280-7000-8000-000000000999");
+          Require(foreign.ok(),"foreign pack origin fixture invalid");pack.record->origin_transaction_uuid=foreign.value;
+        }
+        if(scenario==5)pack.record->declared_counts[8]=0;
+        if(scenario>=6)++pack.record->declared_counts[scenario-3];
+        std::array<scratchbird::core::platform::byte,2048> backing{};
+        const auto encoded=catalog::EncodeCatalogBootstrapPolicyPackInto(*pack.record,backing);
+        Require(encoded.ok(),"pack corruption is not structurally valid");
+        if(row.kind==page::CatalogPageRowKind::policy_seed_pack)row.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
+        else {
+          typed.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
+          const auto wrapped=catalog::EncodeCatalogTypedRecord(typed,row.ordinal);
+          Require(wrapped.ok(),"corrupted pack common framing failed");row=wrapped.row;
+        }
+        changed=true;continue;
+      }
       if(row.kind!=page::CatalogPageRowKind::typed_catalog_record)continue;
       auto decoded=catalog::DecodeCatalogTypedRecord(row);
       Require(decoded.ok(),"reopen corruption source framing invalid");

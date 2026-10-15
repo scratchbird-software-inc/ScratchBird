@@ -12,6 +12,7 @@
 #include "public_release_authz_fixture.hpp"
 #include "security/policy_api.hpp"
 #include "uuid.hpp"
+#include "../support/owned_temp_directory.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -21,6 +22,7 @@
 #include <iterator>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 
 namespace {
 
@@ -31,8 +33,12 @@ namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
+}
+
+scratchbird::tests::OwnedTempDirectory& TestRoot() {
+  static scratchbird::tests::OwnedTempDirectory root;
+  return root;
 }
 
 void Require(bool condition, std::string_view message) {
@@ -49,7 +55,7 @@ std::uint64_t CurrentUnixMillis() {
 }
 
 std::filesystem::path UniquePath(std::string_view stem) {
-  return std::filesystem::temp_directory_path() /
+  return TestRoot().path() /
          (std::string(stem) + "_" + std::to_string(CurrentUnixMillis()));
 }
 
@@ -243,6 +249,8 @@ void RequirePolicyMutationCommandBoundary(const std::filesystem::path& database_
   Require(!read_only_refused.ok, "policy mutation in read-only context unexpectedly succeeded");
 
   const auto success = api::EngineMutatePolicy(BaseMutationRequest(database_path));
+  if(!success.ok)for(const auto& diagnostic:success.diagnostics)
+    std::cerr<<diagnostic.code<<' '<<diagnostic.message_key<<' '<<diagnostic.detail<<'\n';
   Require(success.ok, "authorized policy mutation command failed");
   Require(success.mutation_performed, "policy mutation did not report mutation_performed");
   Require(success.mga_catalog_commit_required,
@@ -276,9 +284,14 @@ void RequirePolicyMutationCommandBoundary(const std::filesystem::path& database_
 
 }  // namespace
 
-int main() {
+int main() try {
   ConfigureMemoryFixture();
   auto fixture = CreateDatabaseThenCorruptFilesystemPack();
   RequirePolicyMutationCommandBoundary(fixture.database_path);
+  TestRoot().Cleanup();
   return EXIT_SUCCESS;
+} catch(const std::exception& error) {
+  std::cerr<<error.what()<<'\n';
+  try{TestRoot().Cleanup();}catch(const std::exception& cleanup){std::cerr<<cleanup.what()<<'\n';}
+  return EXIT_FAILURE;
 }

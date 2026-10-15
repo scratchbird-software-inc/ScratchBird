@@ -201,3 +201,41 @@ migration, full package/resource reference closure and owning native constructio
 Actual unified mutable security/provider/service admission, activation and hosted
 BEGIN integration remain required. Do not combine native config with legacy
 path-backed security or infer authority from the passing codec/import tests.
+
+2026-10-15 native production pack declaration and exact cohort counts
+------------------------------------------------------------------
+Production pack summary and typed declaration now share native SBCV65588, raw16
+pack identity/raw32 digest, actual committed TX1 origin and native counts. The
+loaded owning pack retains binary identity. Reopen requires exactly one summary
+and one typed declaration with byte-equal bodies, exact origin, representable
+status projection and exact observed counts including zero. Security role/group/
+membership/grant records are counted from decoded native fields and their raw16
+object/row/pack identities are reconciled with the native policy cohort.
+
+policy-pack-native-cohort-build PASS; expanded public import/custom tests pass.
+Ten valid checksummed reopen corruption scenarios retain positive native decode
+and page-integrity assertions: foreign provider origin, duplicate provider/row,
+summary-only version substitution, foreign pack origin in both matched bodies,
+declared zero defaults, and each of four security count mismatches.
+policy-pack-native-followers-build/tests PASS13/13, elapsed13.395953s, no leaked
+descendants, LastTest retained. No frozen original closure is claimed.
+
+The broader3-test run retains FAILED evidence (2passes/1failure): newly exercised
+public_policy_mutation_boundary_gate fails binary_transaction_owner_required at
+api_behavior.append_event. Its request supplies local number42 with no actual
+binary database/transaction owner. Production EngineMutatePolicy also still
+reports mutation/epoch/MGA claims after event-only persistence, not native policy
+publication. Do NOT repair this by filling fixture UUID constants, weakening the
+guard, waiving assertions or treating event append as committed mutation. It
+requires real owning transaction/admission and actual typed policy publication.
+The mutation probe now reports full safe diagnostics and owns/cleans all its
+fixture files on exception; its unchanged success assertion still FAILS. The
+diagnostic replay remains FAILED and leaves its private root empty. Three old
+reproducible fixture artifacts were deleted only after terminal run/open-handle
+checks; diagnostics and incremental build retained.
+
+Original partition199/61 remains separate from this newly exercised supplemental
+failure, which is not in the frozen260 baseline. Public presentation image pack
+UUID and default-policy bodies remain unmigrated; full native owning package,
+mutable controller/security/service/provider activation and hosted BEGIN remain
+required. Core03/DIGESTS contract expanded; local/manual distribution only.
