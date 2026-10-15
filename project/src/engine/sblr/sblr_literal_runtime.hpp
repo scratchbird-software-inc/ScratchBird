@@ -235,6 +235,14 @@ inline constexpr std::string_view kSblrLiteralExactDecimalCodecId =
 inline constexpr std::uint16_t kSblrLiteralExactDecimalCodecVersion = 1;
 inline constexpr std::size_t kSblrLiteralExactDecimalBytes = 24;
 
+// SBLR-BOOLEAN-LITERAL-RECEIVING-20261015 normalized lexical identity only.
+// State0 is a present one-byte BOOLEAN; state1 is SQL NULL with no payload.
+// This helper issues no descriptor, statement profile or execution authority.
+// Unknown states, alternate Boolean bytes and NULL payloads are refused.
+std::optional<std::array<std::uint8_t,32>>
+ComputeSblrBooleanLiteralLexicalSha256V1(
+    std::uint8_t state,const std::uint8_t* canonical_body,std::size_t body_bytes);
+
 struct SblrLiteralExactDecimalCodecResultV1 {
   bool ok = false;
   std::string diagnostic_id;

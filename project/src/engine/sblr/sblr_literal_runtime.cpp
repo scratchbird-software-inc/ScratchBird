@@ -23,6 +23,20 @@ static_assert(kSblrLiteralExactDecimalBytes ==
               scratchbird::libraries::sbl_numeric::kExactDecimalBinaryBytes);
 
 std::optional<std::array<std::uint8_t,32>>
+ComputeSblrBooleanLiteralLexicalSha256V1(
+    std::uint8_t state,const std::uint8_t* body,std::size_t size) {
+  if ((state==0 && (size!=1 || !body || body[0]>1)) ||
+      (state==1 && size!=0) || state>1) return std::nullopt;
+  // Fixed framing separates FALSE from NULL and binds the lexical-contract
+  // version. Borrowed input is validated before even the bounded hash call.
+  std::array<std::uint8_t,9> bytes{'S','B','B','L',1,0,state,
+                                static_cast<std::uint8_t>(size),0};
+  if(size)bytes[8]=body[0];
+  const auto digest=core::hash::ComputeSha256DigestNative(bytes.data(),8+size);
+  return digest.ok()?std::optional{digest.digest}:std::nullopt;
+}
+
+std::optional<std::array<std::uint8_t,32>>
 ComputeSblrLiteralExecutorEvidenceSha256V1(
     const SblrLiteralExecutorEvidenceV1& evidence) {
   if (evidence.executor_id != "engine.op.literal" ||

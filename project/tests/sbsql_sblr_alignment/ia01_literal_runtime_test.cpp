@@ -44,6 +44,47 @@ std::array<std::uint8_t,16> Identity(std::uint8_t suffix) {
   return {1,0xa0,0x7c,0x0a,0x0d,0x5c,0x70,0,0x80,0,0xff,0,0,0,0,suffix};
 }
 int main(){
+  {
+    const auto hex=[](const std::array<std::uint8_t,32>& digest){
+      constexpr char digits[]="0123456789abcdef";std::string out;
+      for(const auto b:digest){out.push_back(digits[b>>4]);out.push_back(digits[b&15]);}
+      return out;
+    };
+    const std::array<std::uint8_t,2> body{0,1};
+    const auto no=sblr::ComputeSblrBooleanLiteralLexicalSha256V1(0,body.data(),1);
+    const auto yes=sblr::ComputeSblrBooleanLiteralLexicalSha256V1(0,body.data()+1,1);
+    const auto null=sblr::ComputeSblrBooleanLiteralLexicalSha256V1(1,nullptr,0);
+    // Independent SHA-256 vectors for exact SBBL/version/state/count/body bytes,
+    // not an expectation computed by the production framing/hash helper.
+    Require(no&&hex(*no)=="0983f09b6c908a036475624ec51d863d60534832da47187d25a955966dec0414",
+            "FALSE lexical framing/hash differs");
+    Require(yes&&hex(*yes)=="a528a06a6bebfd2192e2bd6cba17b75898610f513e0045d3c466ee07284a6cd5",
+            "TRUE lexical framing/hash differs");
+    Require(null&&hex(*null)=="ee94fa875bbed7c2216f22905dde7dcb64de43ef1234263977383f8ef33cdc43"&&
+        *no!=*null&&*yes!=*null&&*yes!=*no,
+        "typed NULL lexical identity must differ from both present Boolean values");
+    Require(sblr::ComputeSblrBooleanLiteralLexicalSha256V1(1,body.data(),0)==null,
+            "empty SQL NULL must not dereference or hash backing bytes");
+    for(unsigned state=0;state<256;++state){
+      const auto result=sblr::ComputeSblrBooleanLiteralLexicalSha256V1(state,body.data(),1);
+      Require((state==0)==result.has_value(),"unknown or NULL state accepted present payload");
+      const auto empty=sblr::ComputeSblrBooleanLiteralLexicalSha256V1(state,nullptr,0);
+      Require((state==1)==empty.has_value(),"empty bytes inferred NULL or accepted an unknown state");
+    }
+    for(unsigned value=0;value<256;++value){
+      const std::uint8_t byte=static_cast<std::uint8_t>(value);
+      Require((value<2)==sblr::ComputeSblrBooleanLiteralLexicalSha256V1(0,&byte,1).has_value(),
+              "noncanonical Boolean byte accepted");
+    }
+    for(const auto bytes:{std::size_t{1},std::size_t{2},std::numeric_limits<std::size_t>::max()}){
+      Require(!sblr::ComputeSblrBooleanLiteralLexicalSha256V1(0,nullptr,bytes),
+              "missing present backing accepted");
+      Require(!sblr::ComputeSblrBooleanLiteralLexicalSha256V1(1,body.data(),bytes),
+              "SQL NULL payload accepted");
+      if(bytes!=1)Require(!sblr::ComputeSblrBooleanLiteralLexicalSha256V1(0,body.data(),bytes),
+              "wrong Boolean extent read or accepted");
+    }
+  }
   for (const auto value : {std::int64_t{0}, std::int64_t{1},
                            std::int64_t{-1},
                            std::numeric_limits<std::int64_t>::min(),
