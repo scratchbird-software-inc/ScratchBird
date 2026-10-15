@@ -47,6 +47,7 @@ struct CatalogBootstrapPolicyProfile {
   std::string_view area,mode;
   // Actual materialized configuration definition, never a post-create path.
   std::optional<Uuid> resource_definition_uuid;
+  std::optional<u64> resource_definition_generation;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id=0;
 };

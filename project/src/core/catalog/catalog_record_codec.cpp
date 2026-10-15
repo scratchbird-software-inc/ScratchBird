@@ -17,6 +17,7 @@
 #include "catalog_storage_action_policy.hpp"
 #include "catalog_runtime_authority_binding.hpp"
 #include "catalog_bootstrap_policy.hpp"
+#include "catalog_memory_configuration.hpp"
 #include "catalog_scheduler_policy.hpp"
 #include "catalog_scheduler_fairness.hpp"
 #include "catalog_metric_visibility_policy.hpp"
@@ -159,6 +160,10 @@ CatalogTypedRecordViewResult ValidateCatalogTypedRecordView(CatalogTypedRecordVi
       !CatalogBootstrapPolicyMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.bootstrap_policy.invalid",
                       "bootstrap_policy_binary_payload_or_header_invalid");
+  if (IsCatalogMemoryConfigurationPayload(record.payload) &&
+      !CatalogMemoryConfigurationMatchesHeader(record))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.memory_configuration.invalid",
+                          "memory_configuration_binary_payload_or_header_invalid");
   if (record.header.kind == CatalogRecordKind::storage_descriptor &&
       !CatalogStoragePayloadMatchesHeader(record)) {
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.storage_record.invalid",
@@ -418,6 +423,10 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
        IsCatalogBootstrapPolicyPayload(value.record.payload)) &&
       !CatalogBootstrapPolicyMatchesMetadata(value))
     return MetadataViewError("bootstrap_policy_definition_binding_invalid");
+  if ((value.object_subtype == "memory_configuration" ||
+       IsCatalogMemoryConfigurationPayload(value.record.payload)) &&
+      !CatalogMemoryConfigurationMatchesMetadata(value))
+    return MetadataViewError("memory_configuration_definition_binding_invalid");
   if ((IsCatalogTableDefinitionPayload(value.record.payload) ||
        value.object_subtype == "ordinary_persistent_table") &&
       !CatalogTableDefinitionMatchesMetadata(value))
@@ -637,6 +646,7 @@ DiagnosticRecord MakeCatalogRecordCodecDiagnostic(Status status,
 bool CatalogMetadataPreservesFamilyOrigin(
     const CatalogMetadataVersionView& previous, const CatalogMetadataVersionView& successor) {
   return CatalogBootstrapPolicyPreservesOrigin(previous,successor) &&
+      CatalogMemoryConfigurationPreservesOrigin(previous,successor) &&
       CatalogRuntimeAuthorityBindingPreservesOrigin(previous,successor) &&
       CatalogContextNamespacePreservesOrigin(previous,successor) &&
       CatalogSchedulerPolicyPreservesOrigin(previous,successor) &&

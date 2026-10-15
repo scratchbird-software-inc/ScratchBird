@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "catalog_schema_creation.hpp"
 #include "bootstrap_policy_fixture.hpp"
+#include "memory_configuration_fixture.hpp"
 #include "catalog_database_record_codec.hpp"
 #include "catalog_schema_record_codec.hpp"
 #include "admitted_datatype_cohort.hpp"
@@ -251,10 +252,16 @@ void PhysicalChecks() {
     const auto& p=disk::kCanonicalFilespacePageProfiles[profile];Package package;
     package.database=Database(profile);const auto made=package.Assemble();Check(made.ok(),"schema producer package");
     db::NativeCreationCatalogSeed seed;seed[0]=made.records->definitions;seed[1]=made.records->names;
-    const scratchbird::tests::bootstrap_policy::Fixture policies(tx);
+    scratchbird::tests::bootstrap_policy::Fixture policies(tx);
+    auto memory=scratchbird::tests::memory_configuration::Values(tx);
+    memory.policy_pack_uuid=policies.pack.policy_pack_uuid;memory.profile_uuid=policies.profile.profile_uuid;
+    policies.profile.area="memory_resource_governance";policies.profile.mode="configured_policy_required";
+    policies.profile.resource_definition_uuid=memory.configuration_uuid;
+    policies.profile.resource_definition_generation=memory.generation;
     const auto policy_payloads=policies.Payloads();
     for(unsigned i=0;i<policy_payloads.size();++i)seed[0].push_back({
       scratchbird::tests::bootstrap_policy::Metadata(i,tx,package.items[0].definition.schema_object_uuid.value,policy_payloads[i]),{}});
+    seed[0].push_back({scratchbird::tests::memory_configuration::Metadata(memory,package.items[0].definition.schema_object_uuid.value),{}});
     db::NativeCreationCatalogIndexes indexes;
     for(unsigned role=0;role<2;++role) {
       scratchbird::storage::page::NativeBtreeDependencies deps;
@@ -285,8 +292,10 @@ void PhysicalChecks() {
       Check(original!=seed[0].end()&&row.metadata.record.payload==original->metadata.record.payload&&
           (row.metadata.record.header.kind==c::CatalogRecordKind::schema?
             c::CatalogSchemaDefinitionMatchesMetadata(row.metadata):
-            c::CatalogBootstrapPolicyMatchesMetadata(c::BorrowCatalogMetadataVersion(row.metadata))),
-          "exact full schema/policy/provider/profile definition survives native bytes/reopen");
+            row.metadata.record.header.kind==c::CatalogRecordKind::config_profile?
+              c::CatalogMemoryConfigurationMatchesMetadata(c::BorrowCatalogMetadataVersion(row.metadata)):
+              c::CatalogBootstrapPolicyMatchesMetadata(c::BorrowCatalogMetadataVersion(row.metadata))),
+          "exact full schema/policy/provider/profile/memory definition survives native bytes/reopen");
     }
     const auto names=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(Id(1),devices,created.receipt->checkpoint,
         2,2,{indexes[1]->relation_uuid,indexes[1]->dependencies},budget);

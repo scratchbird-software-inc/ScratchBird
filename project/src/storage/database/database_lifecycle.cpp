@@ -8,6 +8,7 @@
 
 #include "database_lifecycle.hpp"
 #include "catalog_bootstrap_policy.hpp"
+#include "catalog_memory_configuration.hpp"
 #include "bootstrap_security_validation.hpp"
 #include "native_drop_evidence.hpp"
 #include "../disk/filespace_bootstrap.hpp"
@@ -1254,6 +1255,18 @@ struct PolicyDefaultSeed {
   std::string required_properties;
 };
 
+struct PolicyMemoryConfigurationSeed {
+  scratchbird::core::catalog::CatalogMemoryConfiguration values;
+  std::array<char,768> labels{};
+  std::array<std::size_t,3> lengths{};
+  // Do not retain self-referential views across package moves/copies.
+  scratchbird::core::catalog::CatalogMemoryConfiguration Borrow() const {
+    auto out=values;out.policy_key={labels.data(),lengths[0]};
+    out.policy_name={labels.data()+lengths[0],lengths[1]};
+    out.provenance={labels.data()+lengths[0]+lengths[1],lengths[2]};return out;
+  }
+};
+
 struct LoadedPolicySeedPack {
   PolicySeedPackCatalogImage image;
   std::vector<PolicyProviderSeed> providers;
@@ -1263,6 +1276,7 @@ struct LoadedPolicySeedPack {
   std::vector<PolicyGrantSeed> grants;
   std::vector<PolicyProfileSeed> profiles;
   std::vector<PolicyDefaultSeed> default_policies;
+  std::optional<PolicyMemoryConfigurationSeed> memory_configuration;
 };
 
 struct PolicyPackLoadResult {
@@ -1991,6 +2005,7 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
   }
   std::string aggregate_payload;
   std::set<std::string> seen_content_paths;
+  std::map<std::string,std::string> admitted_content;
   for (const std::string& object : SplitTopLevelObjects(content_manifest_body)) {
     std::string rel_path;
     std::string expected_sha256;
@@ -2001,7 +2016,7 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
       return PolicyPackLoadError("SB-POLICY-PACK-CONTENT-MANIFEST-INVALID",
                                  rel_path);
     }
-    const std::string content = ReadTextFileOrEmpty(pack_root / rel_path, &read_ok);
+    std::string content = ReadTextFileOrEmpty(pack_root / rel_path, &read_ok);
     if (!read_ok) {
       return PolicyPackLoadError("SB-POLICY-PACK-CONTENT-FILE-MISSING",
                                  rel_path);
@@ -2016,6 +2031,7 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
     aggregate_payload.push_back('\0');
     aggregate_payload += actual_sha256;
     aggregate_payload.push_back('\n');
+    admitted_content.emplace(rel_path,std::move(content));
   }
   if (seen_content_paths.empty() || Sha256Hex(aggregate_payload) != image.content_sha256) {
     return PolicyPackLoadError("SB-POLICY-PACK-CONTENT-HASH-MISMATCH",
@@ -2044,12 +2060,12 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
     return PolicyPackLoadError("SB-POLICY-PACK-MATERIALIZATION-MISSING",
                                "catalog_materialization_metadata");
   }
-  const std::string materialization =
-      ReadTextFileOrEmpty(pack_root / materialization_path, &read_ok);
-  if (!read_ok) {
+  const auto admitted_materialization=admitted_content.find(materialization_path);
+  if (admitted_materialization==admitted_content.end()) {
     return PolicyPackLoadError("SB-POLICY-PACK-MATERIALIZATION-MISSING",
                                materialization_path);
   }
+  const std::string& materialization=admitted_materialization->second;
   if (!ExtractU32Field(materialization, "policy_generation", &image.policy_generation) ||
       !ExtractBoolField(materialization, "materialize_inside_create_transaction",
                         &image.materialized_inside_create_transaction) ||
@@ -2068,23 +2084,15 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
                                materialization_path);
   }
 
-  const auto load_content = [&](const char* rel_path) -> std::string {
-    return ReadTextFileOrEmpty(pack_root / rel_path, &read_ok);
-  };
-  const std::string providers_json = load_content("policies/security_providers.json");
-  if (!read_ok) { return PolicyPackLoadError("SB-POLICY-PACK-CONTENT-FILE-MISSING", "policies/security_providers.json"); }
-  const std::string roles_json = load_content("policies/roles.json");
-  if (!read_ok) { return PolicyPackLoadError("SB-POLICY-PACK-CONTENT-FILE-MISSING", "policies/roles.json"); }
-  const std::string groups_json = load_content("policies/groups.json");
-  if (!read_ok) { return PolicyPackLoadError("SB-POLICY-PACK-CONTENT-FILE-MISSING", "policies/groups.json"); }
-  const std::string grants_json = load_content("policies/grants.json");
-  if (!read_ok) { return PolicyPackLoadError("SB-POLICY-PACK-CONTENT-FILE-MISSING", "policies/grants.json"); }
-  const std::string profiles_json = load_content("policies/policy_profiles.json");
-  if (!read_ok) { return PolicyPackLoadError("SB-POLICY-PACK-CONTENT-FILE-MISSING", "policies/policy_profiles.json"); }
-  const std::string default_policies_json = load_content("policies/default_policy_catalog.json");
-  if (!read_ok) { return PolicyPackLoadError("SB-POLICY-PACK-CONTENT-FILE-MISSING", "policies/default_policy_catalog.json"); }
-  const std::string policy_defaults_json = load_content("policies/policy_defaults.json");
-  if (!read_ok) { return PolicyPackLoadError("SB-POLICY-PACK-CONTENT-FILE-MISSING", "policies/policy_defaults.json"); }
+  // Parse the exact buffers whose hashes were admitted. Reopening a pathname
+  // here would permit post-verification substitution and duplicate all reads.
+  const auto& providers_json=admitted_content.at("policies/security_providers.json");
+  const auto& roles_json=admitted_content.at("policies/roles.json");
+  const auto& groups_json=admitted_content.at("policies/groups.json");
+  const auto& grants_json=admitted_content.at("policies/grants.json");
+  const auto& profiles_json=admitted_content.at("policies/policy_profiles.json");
+  const auto& default_policies_json=admitted_content.at("policies/default_policy_catalog.json");
+  const auto& policy_defaults_json=admitted_content.at("policies/policy_defaults.json");
 
   std::string array_body;
   if (!ExtractArrayBody(providers_json, "providers", &array_body)) {
@@ -2228,13 +2236,35 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
   std::set<std::string> profile_areas;
   for (const std::string& object : SplitTopLevelObjects(array_body)) {
     PolicyProfileSeed profile;
-    if (!ExtractPolicyIdentity(object, "profile_uuid", &profile.profile_uuid) ||
+    std::array<char,768> profile_labels;
+    namespace c=scratchbird::core::catalog;
+    const auto imported=c::ImportBootstrapPolicyProfileInto(object,profile_labels);
+    if(!imported.ok())return PolicyPackLoadError("SB-POLICY-PACK-PROFILES-INVALID","profile schema");
+    profile.profile_uuid=imported.profile->profile_uuid;
+    profile.area=imported.profile->area;profile.mode=imported.profile->mode;
+    if (
         !definition_identities.insert(profile.profile_uuid).second||
-        !ExtractStringField(object, "area", &profile.area) ||
-        !ExtractStringField(object, "mode", &profile.mode) ||
         !profile_areas.insert(profile.area).second) {
       return PolicyPackLoadError("SB-POLICY-PACK-PROFILES-INVALID", "profile");
     }
+    if(profile.area=="memory_resource_governance") {
+      if(!imported.profile->resource_file||profile.mode!="configured_policy_required"||
+          !IsSafePackRelativePath(std::string(*imported.profile->resource_file)))
+        return PolicyPackLoadError("SB-POLICY-PACK-PROFILES-INVALID","memory configuration source required");
+      const auto content=admitted_content.find(std::string(*imported.profile->resource_file));
+      if(content==admitted_content.end())return PolicyPackLoadError("SB-POLICY-PACK-PROFILES-INVALID","memory configuration is not in admitted manifest");
+      PolicyMemoryConfigurationSeed memory;
+      const auto parsed=c::ImportMemoryConfigurationInto(content->second,memory.labels);
+      if(!parsed.ok()||parsed.settings->generation!=image.policy_generation)
+        return PolicyPackLoadError("SB-POLICY-PACK-PROFILES-INVALID","memory configuration schema, values or generation invalid");
+      memory.values=*parsed.settings;
+      memory.lengths={memory.values.policy_key.size(),memory.values.policy_name.size(),memory.values.provenance.size()};
+      memory.values.policy_key={};memory.values.policy_name={};memory.values.provenance={};
+      memory.values.profile_uuid=profile.profile_uuid;memory.values.policy_pack_uuid=image.policy_pack_uuid;
+      memory.values.policy_pack_generation=image.policy_generation;
+      loaded.memory_configuration=std::move(memory);
+    }else if(imported.profile->resource_file)
+      return PolicyPackLoadError("SB-POLICY-PACK-PROFILES-INVALID","resource requires its owning typed configuration family");
     loaded.profiles.push_back(std::move(profile));
   }
   image.policy_profile_records = static_cast<u32>(loaded.profiles.size());
@@ -2382,6 +2412,7 @@ CatalogRowsBuildResult AddTypedCatalogRecord(std::vector<CatalogPageRow>* rows,
     }
   } else if (!scratchbird::core::catalog::IsCatalogSecurityRecordKind(kind) &&
              !scratchbird::core::catalog::IsCatalogBootstrapPolicyPayload(payload) &&
+             !scratchbird::core::catalog::IsCatalogMemoryConfigurationPayload(payload) &&
              !scratchbird::core::catalog::IsCatalogMetricRetentionPolicyPayload(payload) &&
              !scratchbird::core::catalog::IsCatalogMetricVisibilityPolicyPayload(payload) &&
              kind != CatalogRecordKind::metric_label_schema &&
@@ -2795,12 +2826,33 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
     seed += 4;
   }
 
+  std::optional<Uuid> memory_configuration_uuid;
+  if(pack.memory_configuration) {
+    auto memory=pack.memory_configuration->Borrow();
+    const auto identity=GenerateEngineIdentityV7(UuidKind::object,seed);
+    if(!identity.ok())return CatalogRowsBuildError(identity.status,identity.diagnostic);
+    memory.configuration_uuid=identity.value.value;
+    memory.origin_transaction_uuid=creator_transaction_uuid;memory.origin_local_transaction_id=kBootstrapCatalogTransactionId;
+    std::array<scratchbird::core::platform::byte,2048> backing;
+    const auto encoded=c::EncodeCatalogMemoryConfigurationInto(memory,backing);
+    if(!encoded.ok())return CatalogRowsBuildError(DatabaseLifecycleErrorStatus(),
+        MakeDatabaseLifecycleDiagnostic(DatabaseLifecycleErrorStatus(),"SB-POLICY-PACK-PROFILES-INVALID",
+          "storage.database_lifecycle.policy_pack_invalid",{},"native memory configuration"));
+    typed=AddTypedCatalogRecord(rows,CatalogRecordKind::config_profile,ordinal,seed,
+        std::string(encoded.bytes.begin(),encoded.bytes.end()),database_object_uuid,identity.value);
+    if(!typed.ok())return typed;
+    memory_configuration_uuid=memory.configuration_uuid;seed+=4;
+  }
   for (const auto& profile : pack.profiles) {
     namespace c=scratchbird::core::catalog;
     c::CatalogBootstrapPolicyProfile native;
     native.profile_uuid=profile.profile_uuid;native.policy_pack_uuid=policy_pack_uuid.value;
     native.generation=native.policy_pack_generation=pack.image.policy_generation;
     native.area=profile.area;native.mode=profile.mode;
+    if(pack.memory_configuration&&profile.profile_uuid==pack.memory_configuration->values.profile_uuid) {
+      native.resource_definition_uuid=memory_configuration_uuid;
+      native.resource_definition_generation=pack.memory_configuration->values.generation;
+    }
     native.origin_transaction_uuid=creator_transaction_uuid;
     native.origin_local_transaction_id=kBootstrapCatalogTransactionId;
     std::array<scratchbird::core::platform::byte,2048> backing;
@@ -4312,6 +4364,8 @@ PolicySeedPackCatalogImage BuildPolicyImageFromCatalogRows(const std::vector<Cat
   u32 default_policy_records_from_catalog = 0;
   u64 native_providers=0,native_local_enabled=0,native_external_disabled=0,native_profiles=0;
   std::set<Uuid> native_identities;
+  std::map<Uuid,scratchbird::core::catalog::CatalogMemoryConfiguration> memory_configurations;
+  std::set<Uuid> bound_memory_configurations;
   u64 native_packs=0,pack_summaries=0;
   std::string_view selected_pack_payload;
   Uuid selected_pack_identity;
@@ -4347,6 +4401,19 @@ PolicySeedPackCatalogImage BuildPolicyImageFromCatalogRows(const std::vector<Cat
       continue;
     }
     if (row.kind != CatalogPageRowKind::typed_catalog_record) {
+      continue;
+    }
+    // Keep text views in the immutable row backing, not in the temporary
+    // owning record decoder. Reopen never consults the original import path.
+    const auto borrowed=scratchbird::core::catalog::DecodeCatalogTypedRecordView(row.kind,row.payload);
+    if(borrowed.ok()&&scratchbird::core::catalog::IsCatalogMemoryConfigurationPayload(borrowed.record->payload)) {
+      namespace c=scratchbird::core::catalog;
+      const auto memory=c::DecodeCatalogMemoryConfiguration(borrowed.record->payload);
+      if(!memory.ok()||borrowed.record->header.kind!=CatalogRecordKind::config_profile||
+          !native_identities.insert(borrowed.record->header.object_uuid.value).second||
+          !native_identities.insert(borrowed.record->header.row_uuid.value).second||
+          !memory_configurations.emplace(memory.record->configuration_uuid,*memory.record).second)
+        image.native_definition_error=c::CatalogValueError::invalid_value;
       continue;
     }
     const auto decoded = DecodeCatalogTypedRecord(row);
@@ -4397,7 +4464,7 @@ PolicySeedPackCatalogImage BuildPolicyImageFromCatalogRows(const std::vector<Cat
     image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
   if(image.active&&native_packs!=1)
     image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
-  if(!image.active&&(native_providers||native_profiles||native_packs))
+  if(!image.active&&(native_providers||native_profiles||native_packs||!memory_configurations.empty()))
     image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
   if(image.active) {
       std::array<u64,4> security_counts{}; // role, group, membership, grant
@@ -4442,8 +4509,32 @@ PolicySeedPackCatalogImage BuildPolicyImageFromCatalogRows(const std::vector<Cat
           profile.record->policy_pack_generation!=image.policy_generation||profile.record->generation!=image.policy_generation||
           profile.record->origin_local_transaction_id!=kBootstrapCatalogTransactionId))
         image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
+      if(profile.ok()) {
+        const auto& p=*profile.record;
+        if(p.area=="memory_resource_governance") {
+          const auto found=p.resource_definition_uuid?memory_configurations.find(*p.resource_definition_uuid):memory_configurations.end();
+          if(p.mode!="configured_policy_required"||!p.resource_definition_generation||found==memory_configurations.end())
+            image.native_definition_error=c::CatalogValueError::invalid_value;
+          else {
+            const auto& memory=found->second;
+            if(!bound_memory_configurations.insert(memory.configuration_uuid).second||
+                memory.generation!=*p.resource_definition_generation||memory.generation!=image.policy_generation||
+                memory.policy_pack_uuid!=selected_pack_identity||memory.policy_pack_generation!=image.policy_generation||
+                memory.profile_uuid!=p.profile_uuid||memory.imported_schema_version!=image.schema_version||
+                memory.origin_transaction_uuid.kind!=committed_origin.kind||memory.origin_transaction_uuid.value!=committed_origin.value||
+                memory.origin_local_transaction_id!=kBootstrapCatalogTransactionId)
+              image.native_definition_error=c::CatalogValueError::invalid_value;
+          }
+        }else if(p.resource_definition_uuid) {
+          // Each future resource family needs its own authoritative resolver;
+          // a path or an unrelated memory configuration is not that resolver.
+          image.native_definition_error=c::CatalogValueError::invalid_value;
+        }
+      }
       }
       if(security_counts!=std::array<u64,4>{image.role_records,image.group_records,image.group_membership_records,image.grant_records})
+        image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
+      if(bound_memory_configurations.size()!=memory_configurations.size())
         image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
   }
   if (!profile_areas.empty()) {

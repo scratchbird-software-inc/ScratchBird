@@ -1188,6 +1188,15 @@ bool OpenSslPackagedBudgetValidation() {
       ok = Expect(!loaded.ok() && HasDiagnostic(loaded, invalid_size ?
           "CONFIG.DEFAULT_MEMORY_POLICY_INVALID" : "CONFIG.DEFAULT_MEMORY_POLICY_MALFORMED"),
           "invalid packaged crypto value cannot parse a numeric prefix or use compiled fallback") && ok;
+      if(invalid_size) {
+        bool name=false,provenance=false;
+        for(const auto& diagnostic:loaded.diagnostics)if(diagnostic.code=="CONFIG.DEFAULT_MEMORY_POLICY_INVALID")
+          for(const auto& argument:diagnostic.fields) {
+            name|=argument.key=="policy_name"&&argument.value=="default_local_server_memory_cache_v1";
+            provenance|=argument.key=="provenance"&&argument.value=="default_policy_pack:default-local-password:server_memory_cache_policy";
+          }
+        ok=Expect(name&&provenance,"invalid packaged memory values retain full decoded policy diagnostic labels")&&ok;
+      }
     }
   }
   auto missing = original;
@@ -1198,12 +1207,49 @@ bool OpenSslPackagedBudgetValidation() {
   return Expect(!absent.ok() && HasDiagnostic(absent,"CONFIG.DEFAULT_MEMORY_POLICY_MALFORMED"),
                 "missing packaged crypto budget cannot silently fall back") && ok;
 }
+bool TypedPackagedMemoryValidation() {
+  const auto root=TempRoot()/"typed-memory-policy-pack";
+  std::filesystem::create_directories(root/"policies");
+  const auto filename="server_memory_cache_policy.json";
+  std::ifstream source(std::filesystem::path(SB_DEFAULT_POLICY_PACK_ROOT)/"policies"/filename);
+  std::ostringstream buffer;buffer<<source.rdbuf();const auto original=buffer.str();
+  if(!Expect(source.good()&&!original.empty(),"read typed memory policy source"))return false;
+  bool ok=true;
+  for(unsigned scenario=0;scenario<8;++scenario) {
+    auto text=original;
+    const auto replace=[&](std::string_view from,std::string_view to) {
+      const auto at=text.find(from);if(at==text.npos)return false;
+      text.replace(at,from.size(),to);return true;
+    };
+    bool edited=false;
+    if(scenario==0)edited=replace("\"hard_limit_bytes\": 1073741824","\"hard_limit_bytes\": 1073741824, \"hard\\u005flimit_bytes\": 1073741824");
+    if(scenario==1)edited=replace("\"profile_mode\": \"configured_policy_required\"","\"profile_mode\": \"ignore\"");
+    if(scenario==2)edited=replace("\"page_buffer_growth\": \"adaptive_with_policy_limit\"","\"page_buffer_growth\": \"unknown\"");
+    if(scenario==3)edited=replace("\"write_flush_authority\": \"mga_inventory_and_page_writeback\"","\"write_flush_authority\": \"cache_finality\"");
+    if(scenario==4)edited=replace("\"enabled\": true","\"enabled\": truefalse");
+    if(scenario==5)edited=replace("\"policy_name\": \"default_local_server_memory_cache_v1\"","\"policy_name\": \"native_\\u03a9\"");
+    if(scenario==6)edited=replace("\"soft_limit_bytes\": 805306368,","")&&replace("\"limits\": {","\"soft_limit_bytes\": 805306368, \"limits\": {");
+    if(scenario==7)edited=replace("\"failure_mode\": \"return_error\"","\"failure_mode\": \"fatal_status\"");
+    if(!Expect(edited,"typed memory mutation must alter actual supplied field"))return false;
+    {std::ofstream output(root/"policies"/filename);output<<text;}
+    const auto loaded=Load("typed-memory-pack.conf",std::string("enable_platform_memory_probe = false\n")+
+        "[server.database]\npolicy_seed_pack_root = "+root.string()+"\n");
+    if(scenario==5)ok=Expect(loaded.ok()&&loaded.config.memory_policy_name=="native_\xce\xa9","server import preserves decoded label bytes")&&ok;
+    else if(scenario==7)ok=Expect(loaded.ok()&&loaded.config.memory_failure_mode==memory::AllocationFailureMode::fatal_status,
+        "native failure enum must map explicitly to actual allocator mode")&&ok;
+    else ok=Expect(!loaded.ok()&&HasDiagnostic(loaded,(scenario>=1&&scenario<=3)?
+        "CONFIG.DEFAULT_MEMORY_POLICY_INVALID":"CONFIG.DEFAULT_MEMORY_POLICY_MALFORMED"),
+        "server must refuse duplicate, unscoped, malformed and unknown authority fields without fallback")&&ok;
+  }
+  return ok;
+}
 } // namespace
 
 int main() try {
   bool ok = true;
   ok = OpenSslBudgetConfiguration() && ok;
   ok = OpenSslPackagedBudgetValidation() && ok;
+  ok = TypedPackagedMemoryValidation() && ok;
   ok = ValidConfigBuildsAllocationPolicy() && ok;
   ok = DefaultPolicyPackMemoryPolicyLoads() && ok;
   ok = ExplicitConfigOverridesPolicyPackMemoryFields() && ok;

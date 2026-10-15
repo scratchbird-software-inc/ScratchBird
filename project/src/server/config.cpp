@@ -11,6 +11,7 @@
 #include "config.hpp"
 
 #include "memory.hpp"
+#include "catalog_memory_configuration.hpp"
 #include "security/auth_provider_model.hpp"
 
 #include <algorithm>
@@ -777,95 +778,6 @@ bool PublicStartupAuthProviderFamilyAllowed(const std::string& value,
   return true;
 }
 
-std::optional<std::size_t> JsonValueOffset(const std::string& text,
-                                           const std::string& key) {
-  const std::string marker = "\"" + key + "\"";
-  const auto key_pos = text.find(marker);
-  if (key_pos == std::string::npos) {
-    return std::nullopt;
-  }
-  const auto colon = text.find(':', key_pos + marker.size());
-  if (colon == std::string::npos) {
-    return std::nullopt;
-  }
-  auto value_pos = colon + 1;
-  while (value_pos < text.size() &&
-         (text[value_pos] == ' ' || text[value_pos] == '\t' ||
-          text[value_pos] == '\r' || text[value_pos] == '\n')) {
-    ++value_pos;
-  }
-  return value_pos;
-}
-
-bool ExtractJsonStringField(const std::string& text,
-                            const std::string& key,
-                            std::string* out) {
-  const auto value_pos = JsonValueOffset(text, key);
-  if (!value_pos || *value_pos >= text.size() || text[*value_pos] != '"') {
-    return false;
-  }
-  std::string value;
-  bool escaped = false;
-  for (std::size_t i = *value_pos + 1; i < text.size(); ++i) {
-    const char ch = text[i];
-    if (escaped) {
-      value.push_back(ch);
-      escaped = false;
-      continue;
-    }
-    if (ch == '\\') {
-      escaped = true;
-      continue;
-    }
-    if (ch == '"') {
-      *out = std::move(value);
-      return true;
-    }
-    value.push_back(ch);
-  }
-  return false;
-}
-
-bool ExtractJsonUint64Field(const std::string& text,
-                            const std::string& key,
-                            std::uint64_t* out) {
-  const auto value_pos = JsonValueOffset(text, key);
-  if (!value_pos) {
-    return false;
-  }
-  std::size_t end = *value_pos;
-  while (end < text.size() && text[end] >= '0' && text[end] <= '9') {
-    ++end;
-  }
-  if (end == *value_pos || (end - *value_pos > 1 && text[*value_pos] == '0')) {
-    return false;
-  }
-  auto delimiter = end;
-  while (delimiter < text.size() && std::isspace(static_cast<unsigned char>(text[delimiter])))
-    ++delimiter;
-  if (delimiter == text.size() || (text[delimiter] != ',' && text[delimiter] != '}'))
-    return false; // Reject fractional/exponent/suffixed prefixes, not just overflow.
-  return ParseUint64(text.substr(*value_pos, end - *value_pos), out);
-}
-
-bool ExtractJsonBoolField(const std::string& text,
-                          const std::string& key,
-                          bool* out) {
-  const auto value_pos = JsonValueOffset(text, key);
-  if (!value_pos) {
-    return false;
-  }
-  if (text.compare(*value_pos, 4, "true") == 0) {
-    *out = true;
-    return true;
-  }
-  if (text.compare(*value_pos, 5, "false") == 0) {
-    *out = false;
-    return true;
-  }
-  return false;
-}
-
 std::set<std::string> ExplicitServerMemoryKeys(const ParsedConfig* parsed) {
   std::set<std::string> keys;
   if (parsed == nullptr) {
@@ -909,94 +821,38 @@ bool ApplyDefaultMemoryPolicyFromPolicyPack(
   buffer << input.rdbuf();
   const std::string text = buffer.str();
 
-  std::string profile_area;
-  std::string policy_name;
-  std::string provenance;
-  std::string failure_mode;
-  std::uint64_t schema_version = 0;
-  std::uint64_t policy_generation = 0;
-  std::uint64_t hard_limit_bytes = 0;
-  std::uint64_t soft_limit_bytes = 0;
-  std::uint64_t per_context_limit_bytes = 0;
-  std::uint64_t page_buffer_pool_limit_bytes = 0;
-  std::uint64_t openssl_budget_bytes = 0;
-  std::uint64_t min_startup_available_bytes = 0;
-  bool track_allocations = false;
-  bool zero_memory_on_allocate = false;
-  bool zero_memory_on_release = false;
-  bool reject_over_soft_limit = false;
-  bool enable_platform_memory_probe = false;
-  bool require_platform_memory_ceiling = false;
-  bool adaptive_page_cache_enabled = false;
-  bool index_read_cache_enabled = false;
-  bool trim_heap_on_disconnect = true;
-  bool cache_finality_authority = true;
-  bool cache_visibility_authority = true;
-  bool wal_or_redo_authority = true;
-  bool dirty_writeback_required = false;
-
-  if (!ExtractJsonUint64Field(text, "schema_version", &schema_version) ||
-      schema_version != 1 ||
-      !ExtractJsonUint64Field(text, "policy_generation", &policy_generation) ||
-      policy_generation == 0 ||
-      !ExtractJsonStringField(text, "profile_area", &profile_area) ||
-      profile_area != "memory_resource_governance" ||
-      !ExtractJsonStringField(text, "policy_name", &policy_name) ||
-      !ExtractJsonStringField(text, "provenance", &provenance) ||
-      !ExtractJsonUint64Field(text, "hard_limit_bytes", &hard_limit_bytes) ||
-      !ExtractJsonUint64Field(text, "soft_limit_bytes", &soft_limit_bytes) ||
-      !ExtractJsonUint64Field(text, "per_context_limit_bytes", &per_context_limit_bytes) ||
-      !ExtractJsonUint64Field(text, "page_buffer_pool_limit_bytes",
-                              &page_buffer_pool_limit_bytes) ||
-      !ExtractJsonUint64Field(text, "openssl_budget_bytes", &openssl_budget_bytes) ||
-      !ExtractJsonUint64Field(text, "min_startup_available_bytes",
-                              &min_startup_available_bytes) ||
-      !ExtractJsonStringField(text, "failure_mode", &failure_mode) ||
-      !ExtractJsonBoolField(text, "track_allocations", &track_allocations) ||
-      !ExtractJsonBoolField(text, "zero_memory_on_allocate", &zero_memory_on_allocate) ||
-      !ExtractJsonBoolField(text, "zero_memory_on_release", &zero_memory_on_release) ||
-      !ExtractJsonBoolField(text, "reject_over_soft_limit", &reject_over_soft_limit) ||
-      !ExtractJsonBoolField(text, "enable_platform_memory_probe",
-                            &enable_platform_memory_probe) ||
-      !ExtractJsonBoolField(text, "require_platform_memory_ceiling",
-                            &require_platform_memory_ceiling) ||
-      !ExtractJsonBoolField(text, "enabled", &adaptive_page_cache_enabled) ||
-      !ExtractJsonBoolField(text, "index_read_optimization", &index_read_cache_enabled) ||
-      !ExtractJsonBoolField(text, "ordinary_disconnect_heap_trim",
-                            &trim_heap_on_disconnect) ||
-      !ExtractJsonBoolField(text, "dirty_writeback_required", &dirty_writeback_required) ||
-      !ExtractJsonBoolField(text, "cache_finality_authority", &cache_finality_authority) ||
-      !ExtractJsonBoolField(text, "cache_visibility_authority", &cache_visibility_authority) ||
-      !ExtractJsonBoolField(text, "wal_or_redo_authority", &wal_or_redo_authority)) {
+  // The import boundary and durable catalog use one scoped, typed schema.
+  // ResolveServerMemoryAllocationPolicy still performs real platform and
+  // effective-capacity admission; successful import does not install a grant.
+  std::array<char,768> labels;
+  namespace catalog=scratchbird::core::catalog;
+  const auto imported=catalog::ImportMemoryConfigurationInto(text,labels);
+  if(!imported.ok()) {
+    const bool invalid=imported.error==catalog::CatalogValueError::invalid_value;
     diagnostics->push_back(ConfigDiagnostic(
-        "CONFIG.DEFAULT_MEMORY_POLICY_MALFORMED",
-        "config.default_memory_policy_malformed",
-        "The default server memory/cache policy is malformed.",
-        {{"path_redacted", path.string()}}));
+        invalid?"CONFIG.DEFAULT_MEMORY_POLICY_INVALID":"CONFIG.DEFAULT_MEMORY_POLICY_MALFORMED",
+        invalid?"config.default_memory_policy_invalid":"config.default_memory_policy_malformed",
+        "The default server memory/cache policy violates its typed schema or value contract.",
+        {{"path_redacted",path.string()}}));
+    if(imported.diagnostic) {
+      diagnostics->back().fields.push_back({"policy_name",std::string(imported.diagnostic->policy_name())});
+      diagnostics->back().fields.push_back({"provenance",std::string(imported.diagnostic->provenance())});
+    }
     return false;
   }
-
-  memory::AllocationFailureMode parsed_failure_mode{};
-  if (!memory::ParseAllocationFailureMode(failure_mode, &parsed_failure_mode) ||
-      hard_limit_bytes < min_startup_available_bytes ||
-      soft_limit_bytes > hard_limit_bytes ||
-      per_context_limit_bytes > hard_limit_bytes ||
-      page_buffer_pool_limit_bytes > hard_limit_bytes ||
-      openssl_budget_bytes == 0 ||
-      openssl_budget_bytes >= hard_limit_bytes ||
-      !dirty_writeback_required ||
-      cache_finality_authority ||
-      cache_visibility_authority ||
-      wal_or_redo_authority) {
-    diagnostics->push_back(ConfigDiagnostic(
-        "CONFIG.DEFAULT_MEMORY_POLICY_INVALID",
-        "config.default_memory_policy_invalid",
-        "The default server memory/cache policy violates the ScratchBird authority or limit contract.",
-        {{"path_redacted", path.string()},
-         {"policy_name", policy_name},
-         {"provenance", provenance}}));
-    return false;
-  }
+  const auto& settings=*imported.settings;
+  const std::string policy_name(settings.policy_name),provenance(settings.provenance);
+  const auto policy_generation=settings.generation,hard_limit_bytes=settings.hard_limit_bytes,
+      soft_limit_bytes=settings.soft_limit_bytes,per_context_limit_bytes=settings.per_context_limit_bytes,
+      page_buffer_pool_limit_bytes=settings.page_buffer_pool_limit_bytes,openssl_budget_bytes=settings.openssl_budget_bytes,
+      min_startup_available_bytes=settings.min_startup_available_bytes;
+  const auto parsed_failure_mode=settings.failure_mode==catalog::MemoryConfigurationFailureMode::return_error?
+      memory::AllocationFailureMode::return_error:memory::AllocationFailureMode::fatal_status;
+  const bool track_allocations=settings.track_allocations,zero_memory_on_allocate=settings.zero_memory_on_allocate,
+      zero_memory_on_release=settings.zero_memory_on_release,reject_over_soft_limit=settings.reject_over_soft_limit,
+      enable_platform_memory_probe=settings.enable_platform_memory_probe,require_platform_memory_ceiling=settings.require_platform_memory_ceiling,
+      adaptive_page_cache_enabled=settings.adaptive_cache_enabled,index_read_cache_enabled=settings.index_read_optimization,
+      trim_heap_on_disconnect=settings.ordinary_disconnect_heap_trim;
 
   auto apply_string = [&](const std::string& key, std::string value, std::string* target) {
     if (!ExplicitlyConfigured(explicit_memory_keys, key)) {

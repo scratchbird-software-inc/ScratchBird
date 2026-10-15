@@ -10,6 +10,8 @@
 #include "catalog_record_codec.hpp"
 #include "catalog_security_record_codec.hpp"
 #include "catalog_bootstrap_policy.hpp"
+#include "catalog_memory_configuration.hpp"
+#include "../sbsql_sblr_alignment/memory_configuration_fixture.hpp"
 #include "local_transaction_store.hpp"
 #include "../support/owned_temp_directory.hpp"
 #include "database_lifecycle.hpp"
@@ -190,6 +192,12 @@ std::vector<DecodedRecord> DecodeTypedRecords(const std::vector<page::CatalogPag
       records.push_back({decoded.record,std::move(fields)});
       continue;
     }
+    if(catalog::IsCatalogMemoryConfigurationPayload(decoded.record.payload)) {
+      const auto memory=catalog::DecodeCatalogMemoryConfiguration(decoded.record.payload);
+      Require(memory.ok(),"imported native memory configuration did not decode");
+      records.push_back({decoded.record,{{"policy_pack_uuid",uuid::UuidToString(memory.record->policy_pack_uuid)}}});
+      continue;
+    }
     records.push_back({decoded.record, ParsePayloadFields(decoded.record.payload)});
   }
   Require(!records.empty(), "no typed catalog records were decoded");
@@ -256,6 +264,13 @@ void RequireImportedRecordsCreatedByTx1(const std::vector<DecodedRecord>& record
                                       const scratchbird::core::platform::TypedUuid& expected_origin) {
   for (const auto& record : records) {
     if (record.fields.count("policy_pack_uuid") == 0) {
+      continue;
+    }
+    if(catalog::IsCatalogMemoryConfigurationPayload(record.record.payload)) {
+      const auto memory=catalog::DecodeCatalogMemoryConfiguration(record.record.payload);
+      Require(memory.ok()&&memory.record->origin_transaction_uuid.kind==expected_origin.kind&&
+          memory.record->origin_transaction_uuid.value==expected_origin.value&&memory.record->origin_local_transaction_id==1,
+          "memory configuration must bind actual committed construction transaction");
       continue;
     }
     if(catalog::IsCatalogBootstrapPolicyPayload(record.record.payload)) {
@@ -362,6 +377,29 @@ void RequirePolicyCatalogImport(const std::filesystem::path& database_path,
   Require(creator.ok()&&scratchbird::transaction::mga::HasCommittedInventoryOutcome(creator.entry),
           "actual policy construction transaction is not committed");
   RequireImportedRecordsCreatedByTx1(records,creator.entry.identity.transaction_uuid);
+  unsigned memory_count=0,bindings=0;
+  for(const auto& record:records) {
+    const auto memory=catalog::DecodeCatalogMemoryConfiguration(record.record.payload);
+    if(!memory.ok())continue;
+    ++memory_count;
+    auto expected=scratchbird::tests::memory_configuration::Values(creator.entry.identity.transaction_uuid);
+    expected.configuration_uuid=memory.record->configuration_uuid;
+    expected.profile_uuid=memory.record->profile_uuid;expected.policy_pack_uuid=expected_pack.value.value;
+    Require(record.record.header.kind==catalog::CatalogRecordKind::config_profile&&
+        record.record.header.object_uuid.value==memory.record->configuration_uuid&&
+        scratchbird::tests::memory_configuration::Golden(expected)==record.record.payload,
+        "all persisted memory values, raw identities and generation must match independent actual defaults");
+    for(const auto& candidate:records) {
+      const auto profile=catalog::DecodeCatalogBootstrapPolicyProfile(candidate.record.payload);
+      if(!profile.ok()||profile.record->area!="memory_resource_governance")continue;
+      Require(profile.record->profile_uuid==memory.record->profile_uuid&&
+          profile.record->resource_definition_uuid==memory.record->configuration_uuid&&
+          profile.record->resource_definition_generation==memory.record->generation,
+          "memory profile must reference exact materialized resource identity and generation");
+      ++bindings;
+    }
+  }
+  Require(memory_count==1&&bindings==1,"actual memory configuration and profile binding missing or duplicated");
 }
 
 db::DatabaseCreateConfig BaseCreateConfig(const std::filesystem::path& path,
@@ -616,8 +654,42 @@ void RunBinaryIdentityBindingCases() {
   }
 }
 
+void RunMemoryImportAdmissionCases() {
+  for(unsigned scenario=0;scenario<8;++scenario) {
+    const auto root=UniquePath("policy_memory_admission_"+std::to_string(scenario));
+    std::filesystem::copy(SB_DEFAULT_POLICY_PACK_ROOT,root,std::filesystem::copy_options::recursive);
+    RewriteAndResealPack(root,[&](const auto& path,std::string& value,const auto& replace) {
+      if(path=="policies/policy_profiles.json") {
+        if(scenario==1)replace(value,"\"resource_file\": \"policies/server_memory_cache_policy.json\"","\"resource_file\": null");
+        if(scenario==2)replace(value,"policies/server_memory_cache_policy.json","../server_memory_cache_policy.json");
+        if(scenario==3)replace(value,"policies/server_memory_cache_policy.json","policies/unadmitted.json");
+        if(scenario==4)replace(value,"\"resource_file\": \"policies/server_memory_cache_policy.json\"","\"resource_file\": \"policies/server_memory_cache_policy.json\", \"resource\\u005ffile\": \"policies/server_memory_cache_policy.json\"");
+      }
+      if(path=="policies/server_memory_cache_policy.json") {
+        if(scenario==5)replace(value,"\"policy_generation\": 1","\"policy_generation\": 2");
+        if(scenario==6)replace(value,"\"hard_limit_bytes\": 1073741824","\"hard_limit_bytes\": 1073741824, \"hard\\u005flimit_bytes\": 1073741824");
+        if(scenario==7)replace(value,"\"dirty_writeback_required\": true","\"dirty_writeback_required\": false");
+      }
+    });
+    const auto path=root/"node.sbdb";auto config=BaseCreateConfig(path,CurrentUnixMillis());config.policy_seed_pack_root=root.string();
+    const auto result=db::CreateDatabaseFile(config);
+    if(scenario) {
+      Require(!result.ok()&&result.diagnostic.diagnostic_code=="SB-POLICY-PACK-PROFILES-INVALID"&&
+          result.create_finality==db::DatabaseCreateFinalityClass::not_published&&!std::filesystem::exists(path),
+          "invalid memory configuration or unadmitted source reached physical creation");
+    }else {
+      Require(result.ok(),"memory persistence source fixture failed to create");
+      Require(std::filesystem::remove(root/"policies/server_memory_cache_policy.json"),"remove owned mutable source fixture");
+      db::DatabaseOpenConfig open;open.path=path.string();open.read_only=true;
+      const auto reopened=db::OpenDatabaseFile(open);
+      Require(reopened.ok(),"persisted memory configuration improperly depends on import source after creation");
+      RequirePolicyCatalogImport(path,reopened.state);
+    }
+  }
+}
+
 void RunNativePolicyReopenCorruptionCases() {
-  for (unsigned scenario=0; scenario<10; ++scenario) {
+  for (unsigned scenario=0; scenario<17; ++scenario) {
     const auto path=UniquePath("policy_reopen_corruption_"+std::to_string(scenario)+".sbdb");
     auto config=BaseCreateConfig(path,CurrentUnixMillis());
     const auto created=db::CreateDatabaseFile(config);
@@ -626,6 +698,36 @@ void RunNativePolicyReopenCorruptionCases() {
     std::optional<page::CatalogPageRow> previous_provider;
     bool changed=false;
     for (auto& row:rows) {
+      if(scenario>=10) {
+        if(row.kind!=page::CatalogPageRowKind::typed_catalog_record)continue;
+        auto decoded=catalog::DecodeCatalogTypedRecord(row);
+        Require(decoded.ok(),"memory corruption source framing invalid");
+        auto profile=catalog::DecodeCatalogBootstrapPolicyProfile(decoded.record.payload);
+        auto memory=catalog::DecodeCatalogMemoryConfiguration(decoded.record.payload);
+        std::array<scratchbird::core::platform::byte,2048> backing{};
+        catalog::CatalogValueEncodeIntoResult encoded;
+        const auto foreign=uuid::ParseTypedUuid(UuidKind::object,"018f7a10-1280-7000-8000-000000000999");
+        Require(foreign.ok(),"memory foreign identity fixture invalid");
+        if(scenario<=12) {
+          if(!profile.ok()||profile.record->area!="memory_resource_governance")continue;
+          if(scenario==10)profile.record->resource_definition_generation=2;
+          if(scenario==11)profile.record->resource_definition_uuid=foreign.value.value;
+          if(scenario==12){profile.record->resource_definition_uuid.reset();profile.record->resource_definition_generation.reset();}
+          encoded=catalog::EncodeCatalogBootstrapPolicyProfileInto(*profile.record,backing);
+        }else {
+          if(!memory.ok())continue;
+          if(scenario==13)memory.record->profile_uuid=foreign.value.value;
+          if(scenario==14)memory.record->policy_pack_uuid=foreign.value.value;
+          if(scenario==15)memory.record->policy_pack_generation=2;
+          if(scenario==16)memory.record->origin_transaction_uuid.value=foreign.value.value;
+          encoded=catalog::EncodeCatalogMemoryConfigurationInto(*memory.record,backing);
+        }
+        Require(encoded.ok(),"memory corruption must retain structurally valid native values");
+        decoded.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
+        const auto wrapped=catalog::EncodeCatalogTypedRecord(decoded.record,row.ordinal);
+        Require(wrapped.ok(),"memory corruption must retain valid common framing");
+        row=wrapped.row;changed=true;break;
+      }
       if(scenario>=3) {
         catalog::CatalogTypedRecord typed;
         std::string_view payload=row.payload;
@@ -713,6 +815,7 @@ int main() try {
   RunHashMismatchCase();
   RunNativeReservedRoleIdentityCases();
   RunBinaryIdentityBindingCases();
+  RunMemoryImportAdmissionCases();
   RunNativePolicyReopenCorruptionCases();
   TestRoot().Cleanup();
   return EXIT_SUCCESS;

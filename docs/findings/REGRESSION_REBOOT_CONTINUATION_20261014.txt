@@ -279,3 +279,38 @@ visibility, storage action65548/attachment65549, scheduler786433..786435 and the
 bootstrap declarations65588..65590. Many remaining58 entries are architecture
 invariants rather than editable defaults; map actual typed owners/consumers
 individually, do not invent values or wrap text policy blobs.
+
+Native memory configuration prerequisite, 2026-10-15
+--------------------------------------------------
+SBCV65591 now persists all33 actual memory settings, raw16 configuration/pack/
+profile/origin identities and generations. Profile65590 optional resource UUID
+and generation must be present together; no inferred generation1. Production
+import uses the exact manifest-hashed retained buffers (no second path read),
+issues actual resource identity and binds actual construction transaction.
+Reopen rejects stale/foreign/missing/orphan bindings without import files.
+Shared bounded no-heap JSON import now also drives server/config.cpp, replacing
+global substring extraction and ignored cache growth/write-authority values.
+Operator override precedence and real effective/platform memory admission stay
+in place. Codec/configuration success is NOT a memory grant or node activation.
+
+Serialized native-memory-qualified-repair-build PASS39 edges; qualified-tests
+PASS17/17 (12.170593s,141652KiB peak). Includes independent exact33-field oracles,
+heap-denied/refusal atomicity, optional generation presence, actual native
+indexed persistence/reopen across5 page profiles, source-file removal positive,
+7 resealed bad import pre-effect refusals and17 checksummed reopen corruptions.
+Read-only review caught diagnostic name/provenance loss; restored as separate
+bounded owned diagnostic data with exact server-field and heap-denied copy tests.
+The first erroneous arguments-vs-fields compile receipt remains FAILED; fixed
+replay passes. Product server rebuilt; complete27 process/config/provider and
+allocator-adapter followers PASS (2.290764s), no leaked descendants. LastTest
+retained for every run. Owned temporary root empty4KiB; no build archive.
+
+Native-memory-current-preflight PASS62 known outstanding,9401 registrations,
+38 targets. Frozen260 remains199 qualified+61 outstanding, plus supplemental
+policy mutation failure; this component closes zero originals. Full unfiltered
+clean/build/test still required. Core03/memory appendix specs/digests and local
+01e ledger updated manually, not Git-distributed. NEXT: complete owning native
+bootstrap/reference closure and mutable security/controller, provision actual
+service/provider credentials and activation before original live startup BEGIN.
+Generic58 required_by_default strings still do not constitute executable typed
+policies, and neither this persistence family nor status image supplies them.

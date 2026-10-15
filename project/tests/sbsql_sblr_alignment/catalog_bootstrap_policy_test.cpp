@@ -71,7 +71,7 @@ void Tests() {
     pack.local_password_only=false;pack.declared_counts.fill(maximum);pack.declared_counts[2]=0;Roundtrip(pack);
     auto provider=fixture.provider;provider.generation=provider.policy_pack_generation=provider.origin_local_transaction_id=maximum;Roundtrip(provider);
     auto profile=fixture.profile;profile.generation=profile.policy_pack_generation=profile.origin_local_transaction_id=maximum;
-    profile.resource_definition_uuid=f::Id(9200);Roundtrip(profile);
+    profile.resource_definition_uuid=f::Id(9200);profile.resource_definition_generation=maximum;Roundtrip(profile);
   }
   for(unsigned bad=0;bad<10;++bad) {
     auto r=fixture.provider;
@@ -97,6 +97,14 @@ void Tests() {
     auto pack=fixture.pack;pack.policy_pack_uuid.bytes[6]=version<<4;Refused(pack);
     auto provider=fixture.provider;provider.policy_pack_uuid.bytes[6]=version<<4;Refused(provider);
     auto profile=fixture.profile;profile.profile_uuid.bytes[6]=version<<4;Refused(profile);
+  }
+  for(unsigned bad=0;bad<4;++bad) {
+    auto profile=fixture.profile;
+    if(bad==0)profile.resource_definition_uuid=f::Id(9200);
+    if(bad==1)profile.resource_definition_generation=0;
+    if(bad==2)profile.resource_definition_generation=1;
+    if(bad==3){profile.resource_definition_uuid=f::Id(9200);profile.resource_definition_generation=0;}
+    Refused(profile);
   }
   std::string maximum_text(256,'x');auto profile=fixture.profile;profile.area=maximum_text;Roundtrip(profile);
   maximum_text.push_back('x');profile.area=maximum_text;Refused(profile);

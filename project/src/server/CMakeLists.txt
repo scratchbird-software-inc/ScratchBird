@@ -191,6 +191,7 @@ if(SB_BUILD_SERVER)
 
   target_link_libraries(sb_server_core PUBLIC
     sb_core_hash
+    sb_core_catalog
     sb_core_agents
     sb_core_memory
     sb_server_resource_governance

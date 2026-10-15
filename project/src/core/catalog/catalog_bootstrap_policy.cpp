@@ -27,7 +27,8 @@ constexpr CatalogValueFieldSchema profile_fields[]{
   {3,T::engine_identity,true,16,UuidKind::object},{4,T::unsigned_integer,true,8},
   {5,T::utf8_text,true,256},{6,T::utf8_text,true,256},
   {7,T::engine_identity,false,16,UuidKind::object},
-  {8,T::engine_identity,true,16,UuidKind::transaction},{9,T::unsigned_integer,true,8}};
+  {8,T::engine_identity,true,16,UuidKind::transaction},{9,T::unsigned_integer,true,8},
+  {10,T::unsigned_integer,false,8}};
 constexpr CatalogValueSchemaView pack_schema{65588,1,pack_fields};
 constexpr CatalogValueSchemaView provider_schema{65589,1,provider_fields};
 constexpr CatalogValueSchemaView profile_schema{65590,1,profile_fields};
@@ -60,9 +61,11 @@ bool Valid(const CatalogBootstrapPolicyProfile& r) {
   return Id(r.profile_uuid)&&Id(r.policy_pack_uuid)&&r.profile_uuid!=r.policy_pack_uuid&&
       r.generation&&r.policy_pack_generation&&Origin(r.origin_transaction_uuid,r.origin_local_transaction_id)&&
       r.profile_uuid!=r.origin_transaction_uuid.value&&r.policy_pack_uuid!=r.origin_transaction_uuid.value&&
-      Text(r.area)&&Text(r.mode)&&(!r.resource_definition_uuid||
-        (Id(*r.resource_definition_uuid)&&*r.resource_definition_uuid!=r.profile_uuid&&
-         *r.resource_definition_uuid!=r.policy_pack_uuid&&*r.resource_definition_uuid!=r.origin_transaction_uuid.value));
+      Text(r.area)&&Text(r.mode)&&(r.resource_definition_uuid?
+        (r.resource_definition_generation&&*r.resource_definition_generation&&
+         Id(*r.resource_definition_uuid)&&*r.resource_definition_uuid!=r.profile_uuid&&
+         *r.resource_definition_uuid!=r.policy_pack_uuid&&*r.resource_definition_uuid!=r.origin_transaction_uuid.value):
+        !r.resource_definition_generation);
 }
 // Fixed field/scalar backing. Values are already canonical native bytes;
 // shared SBCV validation rejects framing/value/size/overlap before output.
@@ -135,6 +138,7 @@ CatalogValueEncodeIntoResult EncodeCatalogBootstrapPolicyProfileInto(const Catal
   Fields f;f.Id(1,r.profile_uuid);f.Number(2,r.generation);f.Id(3,r.policy_pack_uuid);f.Number(4,r.policy_pack_generation);
   f.Text(5,r.area);f.Text(6,r.mode);if(r.resource_definition_uuid)f.Id(7,*r.resource_definition_uuid);
   f.Id(8,r.origin_transaction_uuid.value,UuidKind::transaction);f.Number(9,r.origin_local_transaction_id);
+  if(r.resource_definition_generation)f.Number(10,*r.resource_definition_generation);
   return f.Encode(profile_schema,backing);
 }
 CatalogBootstrapPolicyResult<CatalogBootstrapPolicyPack> DecodeCatalogBootstrapPolicyPack(std::string_view bytes) {
@@ -178,7 +182,7 @@ CatalogBootstrapPolicyResult<CatalogBootstrapSecurityProvider> DecodeCatalogBoot
   return {E::none,r};
 }
 CatalogBootstrapPolicyResult<CatalogBootstrapPolicyProfile> DecodeCatalogBootstrapPolicyProfile(std::string_view bytes) {
-  std::array<CatalogValueFieldView,9> backing;
+  std::array<CatalogValueFieldView,10> backing;
   const auto fields=DecodeCatalogValueBlockInto(profile_schema,
       {reinterpret_cast<const byte*>(bytes.data()),bytes.size()},backing);
   if(!fields.ok())return {fields.error,{}};
@@ -189,6 +193,7 @@ CatalogBootstrapPolicyResult<CatalogBootstrapPolicyProfile> DecodeCatalogBootstr
     case 5:r.area=Text(f);break;case 6:r.mode=Text(f);break;
     case 7:r.resource_definition_uuid=f.identity()->value;break;
     case 8:r.origin_transaction_uuid=*f.identity();break;case 9:r.origin_local_transaction_id=*f.unsigned_value();break;
+    case 10:r.resource_definition_generation=*f.unsigned_value();break;
   }
   if(!Valid(r))return {E::invalid_value,{}};
   return {E::none,r};

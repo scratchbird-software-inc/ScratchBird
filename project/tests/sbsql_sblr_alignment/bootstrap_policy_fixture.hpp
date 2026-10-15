@@ -43,7 +43,8 @@ inline std::string EncodeGolden(const c::CatalogBootstrapPolicyProfile& r) {
   Golden g(65590);g.Identity(1,r.profile_uuid);g.Integer(2,r.generation);g.Identity(3,r.policy_pack_uuid);
   g.Integer(4,r.policy_pack_generation);g.Field(5,3,r.area);g.Field(6,3,r.mode);
   if(r.resource_definition_uuid)g.Identity(7,*r.resource_definition_uuid);
-  g.Identity(8,r.origin_transaction_uuid.value);g.Integer(9,r.origin_local_transaction_id);return g.Finish();
+  g.Identity(8,r.origin_transaction_uuid.value);g.Integer(9,r.origin_local_transaction_id);
+  if(r.resource_definition_generation)g.Integer(10,*r.resource_definition_generation);return g.Finish();
 }
 struct Fixture {
   c::CatalogBootstrapPolicyPack pack;
