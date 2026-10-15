@@ -72,6 +72,13 @@ NativeInitialPolicyDescriptorResult AssembleNativeInitialPolicyDescriptorRecords
     }
     std::sort(ids,ids+count);
     if(std::adjacent_find(ids,ids+count)!=ids+count)return Fail(E::duplicate_identity);
+    // A typed body is resolved by the enclosing owning cohort, not any
+    // descriptor/version/name/row emitted by this adapter. Shared body references
+    // (including different explicitly selected generations) are not duplicate
+    // definitions. Reuse the existing canonical index; no quadratic scan or
+    // second scratch allocation is needed for these reference exclusions.
+    for(const auto& input:r.policies)
+      if(std::binary_search(ids,ids+count,input.descriptor->body_uuid))return Fail(E::duplicate_identity);
     // Exactly sized actual temporary owners; all borrowed definitions/names and
     // budgets were admitted above. Allocation failure returns no partial set.
     std::vector<c::CatalogMetadataVersion> owned(r.policies.size());

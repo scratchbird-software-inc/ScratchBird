@@ -24,6 +24,11 @@ enum class CatalogPolicyActivation : u64 { new_connection=1,new_transaction,new_
 // activation. No text UUID/numeric carrier and no guessed scope/profile owner.
 struct CatalogPolicyDescriptor {
   Uuid policy_uuid,policy_version_uuid,database_uuid;
+  // Exact class-specific body object and semantic definition generation, not
+  // the physical MGA version UUID issued later by storage. Neither a display
+  // name nor a coincident policy generation can select or activate a body.
+  Uuid body_uuid;
+  u64 body_generation=0;
   u64 generation=0;
   CatalogPolicyClass policy_class=static_cast<CatalogPolicyClass>(0);
   u64 creating_transaction_number=0;
@@ -42,7 +47,8 @@ struct CatalogPolicyDescriptor {
   u64 origin_local_transaction_id=0;
   TypedUuid creating_transaction_uuid;
 };
-inline constexpr std::size_t kCatalogPolicyDescriptorMaxBytes=512;
+inline constexpr u16 kCatalogPolicyDescriptorSchemaVersion=2;
+inline constexpr std::size_t kCatalogPolicyDescriptorMaxBytes=552;
 inline constexpr u64 kCatalogPolicyEnforcementMask=(u64{1}<<25)-1;
 inline constexpr u64 kCatalogPolicyInvalidationMask=255;
 struct CatalogPolicyDescriptorResult {

@@ -51,7 +51,7 @@ template<class Reserve> void ReserveNativeCreationCatalogReferences(
     const auto descriptor=core::catalog::DecodeCatalogPolicyDescriptor(m.record.payload);
     if(descriptor.ok()){
       const auto& p=*descriptor.record;
-      for(const auto& id:{p.policy_version_uuid,p.database_uuid,p.scope_uuid,p.authority_owner_uuid,
+      for(const auto& id:{p.policy_version_uuid,p.body_uuid,p.database_uuid,p.scope_uuid,p.authority_owner_uuid,
           p.origin_transaction_uuid.value,p.creating_transaction_uuid.value})reserve(id);
       for(const auto* id:{&p.evidence_profile_uuid,&p.disclosure_profile_uuid,&p.retention_profile_uuid,&p.cluster_uuid})if(*id)reserve(**id);
     }

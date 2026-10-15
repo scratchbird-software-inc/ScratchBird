@@ -3,6 +3,7 @@
 #include "catalog_policy_descriptor.hpp"
 #include "native_policy_descriptor_creation.hpp"
 #include "native_creation_workspace.hpp"
+#include "native_creation_catalog_input.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "bootstrap_policy_fixture.hpp"
 #include "../support/owned_temp_directory.hpp"
@@ -45,13 +46,15 @@ unsigned checks=0;
 void Check(bool ok,const char* why){++checks;if(!ok){allocation_budget=-1;throw std::runtime_error(why);}}
 c::CatalogPolicyDescriptor Value(unsigned n=0){
   c::CatalogPolicyDescriptor r;r.policy_uuid=f::Id(100+n);r.policy_version_uuid=f::Id(200+n);r.database_uuid=f::Id(1);
+  r.body_uuid=f::Id(3000+n);r.body_generation=1;
   r.generation=1;r.policy_class=c::CatalogPolicyClass::metadata;r.creating_transaction_number=1;
   r.scope=c::CatalogPolicyScope::database;r.scope_uuid=r.database_uuid;r.authority_owner_uuid=f::Id(50);
   r.precedence_rank=3;r.enforcement_points=c::kCatalogPolicyEnforcementMask;
   r.origin_transaction_uuid=r.creating_transaction_uuid={p::UuidKind::transaction,f::Id(5)};r.origin_local_transaction_id=1;return r;
 }
 std::string Golden(const c::CatalogPolicyDescriptor& r){
-  f::Golden g(65619);g.Identity(1,r.policy_uuid);g.Identity(2,r.policy_version_uuid);g.Identity(3,r.database_uuid);
+  f::Golden g(65619);f::Put(g.bytes,20,2,2);
+  g.Identity(1,r.policy_uuid);g.Identity(2,r.policy_version_uuid);g.Identity(3,r.database_uuid);
   g.Integer(4,r.generation);g.Integer(5,static_cast<p::u64>(r.policy_class));g.Integer(6,r.creating_transaction_number);
   if(r.effective_transaction_number)g.Integer(7,*r.effective_transaction_number);
   if(r.superseding_transaction_number)g.Integer(8,*r.superseding_transaction_number);
@@ -62,7 +65,8 @@ std::string Golden(const c::CatalogPolicyDescriptor& r){
   g.Integer(18,static_cast<p::u64>(r.recovery_behavior));g.Integer(19,static_cast<p::u64>(r.activation_boundary));
   g.Integer(20,r.cache_invalidation_mask);g.Integer(21,r.enforcement_points);
   if(r.cluster_uuid)g.Identity(22,*r.cluster_uuid);g.Identity(23,r.origin_transaction_uuid.value);
-  g.Integer(24,r.origin_local_transaction_id);g.Identity(25,r.creating_transaction_uuid.value);return g.Finish();
+  g.Integer(24,r.origin_local_transaction_id);g.Identity(25,r.creating_transaction_uuid.value);
+  g.Identity(26,r.body_uuid);g.Integer(27,r.body_generation);return g.Finish();
 }
 c::CatalogMetadataVersion Metadata(const c::CatalogPolicyDescriptor& r,unsigned n=0){
   auto m=f::Metadata(0,r.creating_transaction_uuid,f::Id(60),Golden(r));m.record.header.kind=c::CatalogRecordKind::policy;
@@ -97,10 +101,10 @@ void Refuse(const c::CatalogPolicyDescriptor& r,bool wire=true){
 void Values(){
   const auto v=Value();Check(v.default_decision==c::CatalogPolicyDefault::deny&&v.exception_behavior==c::CatalogPolicyException::fail_closed&&
       v.recovery_behavior==c::CatalogPolicyRecovery::deny_on_uncertain&&v.activation_boundary==c::CatalogPolicyActivation::new_transaction,
-      "existing normative deny/fail-closed defaults preserved");Roundtrip(v,true);Check(Golden(v).size()==384,"independent minimum extent");
+      "existing normative deny/fail-closed defaults preserved");Roundtrip(v,true);Check(Golden(v).size()==424,"independent minimum extent");
   auto all=v;all.effective_transaction_number=2;all.superseding_transaction_number=3;all.evidence_profile_uuid=f::Id(300);
   all.disclosure_profile_uuid=f::Id(301);all.retention_profile_uuid=f::Id(302);all.cluster_uuid=f::Id(303);Roundtrip(all,true);
-  Check(Golden(all).size()==512,"independent maximum extent");
+  Check(Golden(all).size()==552,"independent maximum extent");
   for(unsigned mask=0;mask<64;++mask){auto r=v;
     if(mask&1)r.effective_transaction_number=2;if(mask&2)r.superseding_transaction_number=3;
     if(mask&4)r.evidence_profile_uuid=f::Id(300);if(mask&8)r.disclosure_profile_uuid=f::Id(301);
@@ -115,8 +119,8 @@ void Values(){
   for(unsigned n=1;n<=4;++n){auto r=v;r.recovery_behavior=static_cast<c::CatalogPolicyRecovery>(n);Roundtrip(r);}
   auto maximum=v;maximum.generation=UINT64_MAX;maximum.creating_transaction_number=maximum.origin_local_transaction_id=UINT64_MAX;
   maximum.effective_transaction_number=maximum.superseding_transaction_number=UINT64_MAX;maximum.precedence_rank=65535;
-  maximum.cache_invalidation_mask=255;Roundtrip(maximum);
-  for(unsigned n=0;n<29;++n){auto r=v;
+  maximum.cache_invalidation_mask=255;maximum.body_generation=UINT64_MAX;Roundtrip(maximum);
+  for(unsigned n=0;n<35;++n){auto r=v;
     if(n==0)r.policy_uuid={};if(n==1)r.policy_version_uuid={};if(n==2)r.database_uuid={};if(n==3)r.scope_uuid={};if(n==4)r.authority_owner_uuid={};
     if(n==5)r.generation=0;if(n==6)r.policy_class=static_cast<c::CatalogPolicyClass>(24);if(n==7)r.scope=static_cast<c::CatalogPolicyScope>(22);
     if(n==8)r.precedence_rank=0;if(n==9)r.default_decision=static_cast<c::CatalogPolicyDefault>(0);if(n==10)r.exception_behavior=static_cast<c::CatalogPolicyException>(6);
@@ -130,17 +134,28 @@ void Values(){
     if(n==25)r.origin_transaction_uuid.value=f::Id(6);if(n==26)r.evidence_profile_uuid=p::Uuid{};
     if(n==27)r.retention_profile_uuid=f::Id(304),r.retention_profile_uuid->bytes[6]=0x40;
     if(n==28)r.policy_uuid.bytes[8]=0;
+    if(n==29)r.body_uuid={};if(n==30)r.body_generation=0;if(n==31)r.body_uuid=r.policy_uuid;
+    if(n==32)r.body_uuid=r.database_uuid;if(n==33)r.body_uuid=r.creating_transaction_uuid.value;
+    if(n==34)r.body_uuid.bytes[6]=0x40;
     Refuse(r,n!=16&&n!=17);
   }
   // Wire precedence must be checked before narrowing to the native uint16.
   auto wire=Golden(v);for(std::size_t at=24;at<wire.size();){const auto tag=p::LoadLittle16(wire.data()+at);const auto length=p::LoadLittle32(wire.data()+at+4);
     if(tag==12){for(const auto rank:{p::u64{65536},UINT64_MAX}){auto bad=wire;f::Put(bad,at+8,rank,8);
       allocation_budget=0;const auto r=c::DecodeCatalogPolicyDescriptor(bad);allocation_budget=-1;Check(!r.ok(),"out-of-range wire precedence cannot truncate into valid rank");}}
-    for(unsigned mode=0;mode<4;++mode){auto bad=wire;if(mode==0){bad.erase(at,8+length);f::Put(bad,8,bad.size(),4);f::Put(bad,12,18,4);}
+    for(unsigned mode=0;mode<4;++mode){auto bad=wire;if(mode==0){bad.erase(at,8+length);f::Put(bad,8,bad.size(),4);f::Put(bad,12,p::LoadLittle32(wire.data()+12)-1,4);}
       if(mode==1)f::Put(bad,at,65000,2);if(mode==2)f::Put(bad,at+2,4,1);if(mode==3)f::Put(bad,at+4,length-1,4);
       allocation_budget=0;const auto r=c::DecodeCatalogPolicyDescriptor(bad);allocation_budget=-1;Check(!r.ok(),"required field/type/width/unknown refusal");}
     at+=8+length;
   }
+  // A complete historical v1 descriptor still lacks body authority. It must
+  // not select an implicit/latest body, even if all its old fields are valid.
+  auto legacy=wire;legacy.resize(legacy.size()-40);f::Put(legacy,8,legacy.size(),4);
+  f::Put(legacy,12,p::LoadLittle32(wire.data()+12)-2,4);f::Put(legacy,20,1,2);
+  allocation_budget=0;allocation_count=0;const auto old=c::DecodeCatalogPolicyDescriptor(legacy);
+  const auto old_allocs=allocation_count;allocation_budget=-1;
+  Check(!old_allocs&&!old.ok()&&!old.record&&old.error==c::CatalogValueError::invalid_schema,
+      "historical v1 cannot invent a body binding or silently enter v2");
   auto object=v;std::array<p::byte,sizeof(object)> before,after;std::memcpy(before.data(),&object,sizeof(object));
   for(std::size_t n=0;n<sizeof(object);++n){allocation_budget=0;const auto r=c::EncodeCatalogPolicyDescriptorInto(object,{reinterpret_cast<p::byte*>(&object)+n,1});allocation_budget=-1;
     std::memcpy(after.data(),&object,sizeof(object));Check(!r.ok()&&before==after,"whole input object cannot be overwritten");}
@@ -167,6 +182,23 @@ void Bindings(){
   }
   auto next=v;next.generation=2;next.policy_version_uuid=f::Id(201);next.creating_transaction_uuid.value=f::Id(6);next.creating_transaction_number=2;
   auto successor=Metadata(next);Check(c::CatalogMetadataPreservesFamilyOrigin(m,successor),"admitted new generation retains policy class/database/origin and new version identity");
+  auto new_body=next;new_body.body_generation=2;
+  Check(c::CatalogMetadataPreservesFamilyOrigin(m,Metadata(new_body)),"new policy version may select an explicit new body generation");
+  new_body.body_uuid=f::Id(3001);
+  Check(c::CatalogMetadataPreservesFamilyOrigin(m,Metadata(new_body)),"new policy version may select a different explicit body object");
+  for(unsigned n=0;n<2;++n){auto unchanged=m;auto rebound=v;
+    if(n==0)rebound.body_uuid=f::Id(3001);else rebound.body_generation=2;
+    unchanged.record.payload=Golden(rebound);
+    Check(!c::CatalogMetadataPreservesFamilyOrigin(m,unchanged),"same policy generation cannot change exact body object or generation");}
+  auto bad_row=m;bad_row.record.header.row_uuid.value=v.body_uuid;
+  Check(!c::CatalogPolicyDescriptorMatchesHeader(c::BorrowCatalogMetadataVersion(bad_row).record),"policy row cannot alias its body object");
+  db::NativeCreationCatalogRecord referenced;referenced.metadata=m;
+  std::array<p::Uuid,32> references;std::size_t count=0;
+  allocation_count=0;allocation_budget=0;
+  db::ReserveNativeCreationCatalogReferences(referenced,[&](const p::Uuid& id){references[count++]=id;});
+  const auto allocs=allocation_count;allocation_budget=-1;
+  Check(!allocs&&std::find(references.begin(),references.begin()+count,v.body_uuid)!=references.begin()+count,
+      "physical construction reserves exact binary body reference without heap or text conversion");
   for(unsigned n=0;n<5;++n){auto bad=next;if(n==0)bad.policy_version_uuid=v.policy_version_uuid;if(n==1)bad.policy_class=c::CatalogPolicyClass::authorization;
     if(n==2)bad.database_uuid=bad.scope_uuid=f::Id(9);if(n==3)bad.origin_transaction_uuid.value=f::Id(7);if(n==4)bad.origin_local_transaction_id=2;
     Check(!c::CatalogMetadataPreservesFamilyOrigin(m,Metadata(bad)),"policy identity/class/database/origin cannot change or version identity be reused");}
@@ -211,26 +243,45 @@ void Creation(){
   auto exact=request;exact.limits={6,made.records->encoded_bytes};Check(db::AssembleNativeInitialPolicyDescriptorRecords(exact).ok(),"exact combined record/byte budgets admitted");
   --exact.limits.maximum_encoded_bytes;Check(!db::AssembleNativeInitialPolicyDescriptorRecords(exact).ok(),"one-short byte budget refused");
   exact=request;exact.limits.maximum_records=5;Check(!db::AssembleNativeInitialPolicyDescriptorRecords(exact).ok(),"one-short record budget refused");
-  for(unsigned mode=0;mode<6;++mode){const auto saved=second.descriptor;const auto saved_meta=second.definition;
+  for(unsigned mode=0;mode<10;++mode){const auto saved=second.descriptor;const auto saved_meta=second.definition;
     if(mode==0)second.descriptor.database_uuid=f::Id(9);if(mode==1)second.descriptor.effective_transaction_number=1;
     if(mode==2)second.descriptor.policy_version_uuid=first.descriptor.policy_version_uuid;
     if(mode==3)second.descriptor.policy_version_uuid=first.definition.record.header.row_uuid.value;
     if(mode==4)second.definition.record.payload="area=metadata;mode=strict";if(mode==5)second.descriptor.origin_transaction_uuid.value=f::Id(6);
+    if(mode==6)second.descriptor.body_uuid=first.definition.record.header.object_uuid.value;
+    if(mode==7)second.descriptor.body_uuid=first.entry_metadata.record.header.row_uuid.value;
+    if(mode==8)second.descriptor.body_uuid=first.descriptor.policy_version_uuid;
+    if(mode==9)second.descriptor.body_uuid=first.definition.name_vector_uuid.value;
     allocation_count=0;allocation_budget=0;const auto failed=db::AssembleNativeInitialPolicyDescriptorRecords(request);const auto allocs=allocation_count;allocation_budget=-1;
     Check(!allocs&&!failed.ok()&&!failed.records,"foreign origin/node, guessed text, premature effectiveness and whole-cohort version identity collisions refuse before copies");
     second.descriptor=saved;second.definition=saved_meta;
   }
+  {const auto saved=second.descriptor;
+    second.descriptor.body_uuid=first.descriptor.body_uuid;
+    second.descriptor.body_generation=first.descriptor.body_generation;
+    Check(db::AssembleNativeInitialPolicyDescriptorRecords(request).ok(),"shared exact typed body references are not duplicate definitions or implicit policy activation");
+    second.descriptor.body_generation=2;
+    Check(db::AssembleNativeInitialPolicyDescriptorRecords(request).ok(),"distinct policies may explicitly select different generations of the same typed body");
+    second.descriptor=saved;}
   first.entry.display_name="changed after assembly";
   Check(made.records->definitions[0].metadata.record.payload==retained&&made.records->names[1].name.has_value(),"result owns exact admitted source after caller changes");
   // Cross the64-identity inline scratch threshold; test its real allocation
   // and the complete larger package, not only the small fixed-array lane.
-  std::vector<Item> large;large.reserve(10);for(unsigned n=0;n<10;++n)large.emplace_back(n);
+  std::vector<Item> large;large.reserve(20);for(unsigned n=0;n<20;++n)large.emplace_back(n);
   std::vector<db::NativeInitialPolicyDescriptorInput> large_inputs;large_inputs.reserve(large.size());
   for(auto& item:large)large_inputs.push_back(item.Input());auto big=request;big.policies=large_inputs;big.limits.maximum_records=1000;
   allocation_count=0;const auto large_made=db::AssembleNativeInitialPolicyDescriptorRecords(big);const auto large_sites=allocation_count;
-  Check(large_made.ok()&&large_made.records->definitions.size()==10&&large_made.records->names.size()==20,"larger actual cohort uses bounded canonical identity index");
+  Check(large_made.ok()&&large_made.records->definitions.size()==20&&large_made.records->names.size()==40,"larger actual cohort reuses bounded canonical identity index for body references");
   for(unsigned n=0;n<large_sites;++n){allocation_budget=n;const auto failed=db::AssembleNativeInitialPolicyDescriptorRecords(big);allocation_budget=-1;
     Check(!failed.ok()&&!failed.records&&failed.error==db::NativeInitialPolicyDescriptorError::resource_exhausted,"large scratch and every owning allocation failure remain atomic");}
+  const auto saved=large.back().descriptor;
+  for(unsigned mode=0;mode<3;++mode){auto& last=large.back().descriptor;
+    if(mode==0)last.body_uuid=large.front().definition.record.header.object_uuid.value;
+    if(mode==1)last.body_uuid=large.front().definition.record.header.row_uuid.value;
+    if(mode==2)last.body_uuid=large.front().definition.name_vector_uuid.value;
+    const auto conflict=db::AssembleNativeInitialPolicyDescriptorRecords(big);
+    Check(!conflict.ok()&&!conflict.records&&conflict.error==db::NativeInitialPolicyDescriptorError::duplicate_identity,
+        "large reference index rejects body aliases of emitted identities without partial output");last=saved;}
   large.back().descriptor.policy_version_uuid=large.front().descriptor.policy_version_uuid;
   const auto duplicate=db::AssembleNativeInitialPolicyDescriptorRecords(big);
   Check(!duplicate.ok()&&duplicate.error==db::NativeInitialPolicyDescriptorError::duplicate_identity&&!duplicate.records,"large index rejects duplicate policy-version identity");

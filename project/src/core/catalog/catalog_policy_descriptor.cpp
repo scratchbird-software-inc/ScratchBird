@@ -20,8 +20,9 @@ constexpr CatalogValueFieldSchema fields[]{
   {17,T::engine_identity,false,16,UuidKind::object},{18,T::unsigned_integer,true,8},
   {19,T::unsigned_integer,true,8},{20,T::unsigned_integer,true,8},{21,T::unsigned_integer,true,8},
   {22,T::engine_identity,false,16,UuidKind::cluster},{23,T::engine_identity,true,16,UuidKind::transaction},
-  {24,T::unsigned_integer,true,8},{25,T::engine_identity,true,16,UuidKind::transaction}};
-constexpr CatalogValueSchemaView schema{schema_id,1,fields};
+  {24,T::unsigned_integer,true,8},{25,T::engine_identity,true,16,UuidKind::transaction},
+  {26,T::engine_identity,true,16,UuidKind::object},{27,T::unsigned_integer,true,8}};
+constexpr CatalogValueSchemaView schema{schema_id,kCatalogPolicyDescriptorSchemaVersion,fields};
 bool Id(const Uuid& id){return uuid::IsEngineIdentityUuid(id);}
 bool Typed(const TypedUuid& id,UuidKind kind){return id.kind==kind&&Id(id.value);}
 bool AuthorityOwner(const TypedUuid& id){
@@ -37,6 +38,7 @@ template<class Enum>bool Range(Enum value,u64 maximum){const auto n=static_cast<
 bool ClusterScope(CatalogPolicyScope scope){return scope==CatalogPolicyScope::cluster_member||scope==CatalogPolicyScope::placement_unit;}
 bool Valid(const CatalogPolicyDescriptor& r){
   if(!Id(r.policy_uuid)||!Id(r.policy_version_uuid)||!Id(r.database_uuid)||!Id(r.scope_uuid)||!Id(r.authority_owner_uuid)||
+      !Id(r.body_uuid)||!r.body_generation||
       !Typed(r.origin_transaction_uuid,UuidKind::transaction)||!Typed(r.creating_transaction_uuid,UuidKind::transaction)||
       !r.generation||!r.creating_transaction_number||!r.origin_local_transaction_id||
       r.origin_local_transaction_id>r.creating_transaction_number||!Range(r.policy_class,23)||!Range(r.scope,21)||
@@ -52,6 +54,9 @@ bool Valid(const CatalogPolicyDescriptor& r){
     if(r.policy_uuid==id||r.policy_version_uuid==id)return false;
   if(r.policy_uuid==r.policy_version_uuid||r.database_uuid==r.origin_transaction_uuid.value||
       r.database_uuid==r.creating_transaction_uuid.value)return false;
+  for(const auto& id:{r.policy_uuid,r.policy_version_uuid,r.database_uuid,
+      r.origin_transaction_uuid.value,r.creating_transaction_uuid.value})
+    if(r.body_uuid==id)return false;
   for(const auto* value:{&r.effective_transaction_number,&r.superseding_transaction_number})
     if(*value&&(!**value||**value<r.creating_transaction_number))return false;
   if(r.effective_transaction_number&&r.superseding_transaction_number&&
@@ -61,8 +66,8 @@ bool Valid(const CatalogPolicyDescriptor& r){
   return true;
 }
 struct Backing {
-  std::array<CatalogValueFieldView,25> views{};
-  std::array<std::array<byte,8>,25> numbers{};
+  std::array<CatalogValueFieldView,27> views{};
+  std::array<std::array<byte,8>,27> numbers{};
   std::size_t size=0;
   void Identity(u16 tag,const Uuid& id,UuidKind kind=UuidKind::object){views[size++]={tag,T::engine_identity,kind,id.bytes};}
   void Number(u16 tag,u64 value){auto& b=numbers[tag-1];platform::StoreLittle64(b.data(),value);views[size++]={tag,T::unsigned_integer,UuidKind::unknown,b};}
@@ -81,13 +86,15 @@ struct Backing {
     if(r.cluster_uuid)Identity(22,*r.cluster_uuid,UuidKind::cluster);
     Identity(23,r.origin_transaction_uuid.value,UuidKind::transaction);Number(24,r.origin_local_transaction_id);
     Identity(25,r.creating_transaction_uuid.value,UuidKind::transaction);
+    Identity(26,r.body_uuid);Number(27,r.body_generation);
   }
   auto View()const{return std::span<const CatalogValueFieldView>(views).first(size);}
 };
 bool Header(const CatalogTypedRecordView& m,const CatalogPolicyDescriptor& r){
   return m.header.kind==CatalogRecordKind::policy&&Typed(m.header.object_uuid,UuidKind::object)&&
       m.header.object_uuid.value==r.policy_uuid&&Typed(m.header.row_uuid,UuidKind::row)&&
-      m.header.row_uuid.value!=r.policy_uuid&&m.header.row_uuid.value!=r.policy_version_uuid;
+      m.header.row_uuid.value!=r.policy_uuid&&m.header.row_uuid.value!=r.policy_version_uuid&&
+      m.header.row_uuid.value!=r.body_uuid;
 }
 bool Metadata(const CatalogMetadataVersionView& m,const CatalogPolicyDescriptor& r){
   return Header(m.record,r)&&m.object_subtype=="policy_descriptor"&&m.definition_version==r.generation&&
@@ -114,7 +121,7 @@ CatalogValueEncodeIntoResult EncodeCatalogPolicyDescriptorInto(const CatalogPoli
   const Backing b(r);return EncodeCatalogValueBlockInto(schema,b.View(),out);
 }
 CatalogPolicyDescriptorResult DecodeCatalogPolicyDescriptor(std::string_view bytes){
-  std::array<CatalogValueFieldView,25> backing;
+  std::array<CatalogValueFieldView,27> backing;
   const auto d=DecodeCatalogValueBlockInto(schema,{reinterpret_cast<const byte*>(bytes.data()),bytes.size()},backing);
   if(!d.ok())return {d.error,{}};CatalogPolicyDescriptor r;
   for(const auto& f:d.fields)switch(f.id){
@@ -133,6 +140,7 @@ CatalogPolicyDescriptorResult DecodeCatalogPolicyDescriptor(std::string_view byt
     case 20:r.cache_invalidation_mask=*f.unsigned_value();break;case 21:r.enforcement_points=*f.unsigned_value();break;
     case 22:r.cluster_uuid=f.identity()->value;break;case 23:r.origin_transaction_uuid=*f.identity();break;
     case 24:r.origin_local_transaction_id=*f.unsigned_value();break;case 25:r.creating_transaction_uuid=*f.identity();break;
+    case 26:r.body_uuid=f.identity()->value;break;case 27:r.body_generation=*f.unsigned_value();break;
   }
   if(!Valid(r))return {E::invalid_value,{}};return {E::none,r};
 }
