@@ -2371,7 +2371,15 @@ foreach(codec_target IN ITEMS
     sbsql_sblr_alignment_catalog_metric_binding)
   target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_bootstrap_policy.cpp)
   target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_memory_configuration.cpp)
+  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_identifier_profile.cpp)
 endforeach()
+
+add_executable(sbsql_sblr_alignment_catalog_identifier_profile catalog_identifier_profile_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_identifier_profile PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_identifier_profile PRIVATE sb_storage_database)
+add_test(NAME sbsql_sblr_alignment_catalog_identifier_profile COMMAND sbsql_sblr_alignment_catalog_identifier_profile)
+set_tests_properties(sbsql_sblr_alignment_catalog_identifier_profile PROPERTIES
+  LABELS "sbsql_sblr_alignment;catalog;binary_uuid;native_configuration;not_runtime_acceptance" TIMEOUT 120)
 
 add_executable(sbsql_sblr_alignment_catalog_memory_configuration catalog_memory_configuration_test.cpp)
 target_compile_features(sbsql_sblr_alignment_catalog_memory_configuration PRIVATE cxx_std_23)

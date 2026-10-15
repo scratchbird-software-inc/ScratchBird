@@ -676,3 +676,46 @@ actual collection/descriptors/security/resources, rollback/partial-failure recov
 exact REAL64, framed tag identity, checked negative bucket math and single-count
 late points. Existing immutable-provider ledgers/zone serializers/page skeletons
 are not that implementation. ODF092/113 need their own route evidence.
+
+Native identifier profile and guarded-reader diagnostic repair (2026-10-15)
+------------------------------------------------------------------------
+Native config-profile schema65617/V1 now stores the complete explicitly supplied
+identifier-resolution definition: raw16 identities, generations, native scalar/
+enum options, charset/collation/platform references and immutable creator origin.
+The profile name is display data, not behavior selection. Fixed no-heap size,
+Into encoding and borrowed decoding; owning encoding performs one final payload
+allocation. Common/header/subtype/origin/physical-node checks apply in creation,
+staging and both native leaf readers. Actual allocator reference reservation and
+isolated production-source fixture dependencies are included.
+
+Focused independent byte/semantic/allocation/aliasing/persistence conformance
+PASS29645checks, including indexed persistence/independent reopen on all5 page
+profiles and foreign-node no-effect refusal. This is NOT resolver execution,
+reference-graph closure, activation, authentication or hosted BEGIN admission.
+Actual dialect/collision/audit/governance definitions and their source/controller/
+security integration remain required; old name-selected fallback is not authority.
+
+449 affected followers were qualified in explicit batches: first27 PASS before
+owned overall timeout; remaining422 yielded362 PASS and60 shared failures. Those
+60 exposed an old assertion against a never-populated owning diagnostic field in
+the guarded leaf result. Leaf/root APIs now expose fixed receipts only. Repaired
+tests require allocation-free exact native EIO receipts/binary source correlation
+under the source lease, then every canonical diagnostic argument after releasing
+all source guards, preserving corruption/effect/progress/identity/retry controls.
+All60 original failing page-profile variants plus runtime binding PASS61/61,
+57.421086s,peak53352KiB. Final45 profile/security/policy/crypto followers PASS
+138.539378s,peak324900KiB. Both actual header consumers rebuilt. No descendants or
+retained test databases; private temporary root empty12KiB. Earlier failed/timeout
+and invalid-zero-selection evidence is retained, never relabeled as passing.
+This is explicitly split qualification, not one449-test final-source invocation.
+
+Evidence: identifier-profile-full-build/tests-20261015,
+identifier-profile-followers-tests/remaining-tests-20261015[-b],
+guarded-catalog-diagnostic-build/auth-build/tests-20261015,
+identifier-profile-final-followers-tests-20261015 under build/linux-clean-20261006.
+Local Core03, name-resolution appendix, durable-format registry and Core04 amended;
+DIGESTS synchronized. Specifications and workplans remain manually distributed.
+No original baseline closure:260=199 qualified+61 outstanding plus1 older
+supplemental;9405 registrations. The newly found60 followers are actually repaired
+and rerun, not silently added to or removed from the frozen baseline. Full clean/
+all-target/unfiltered acceptance is still outstanding.

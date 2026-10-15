@@ -481,6 +481,7 @@ void Checks(std::span<const d::NativeFilespaceDevice> borrowed,u64 allowance,boo
    auto prepared=db::PrepareNativeCatalogLeafRead(ref.page.page_size_profile_uuid,catalog_memory.memory,catalog_memory.binding);
    Check(prepared.ok(),"catalog backing admitted before owned source guard");
    auto moved=std::move(prepared.workspace);
+   std::array<d::BoundedIoResult,3> read_failures;
    {
     const auto held=read(admitted.owner);parity(held);
     const auto moved_from=db::NativeCatalogLeafLeaseReader::Read(held.lease.source(),ref,prepared.workspace);
@@ -522,19 +523,49 @@ void Checks(std::span<const d::NativeFilespaceDevice> borrowed,u64 allowance,boo
     for(unsigned fault=0;fault<2;++fault)for(unsigned site=1;site<=3;++site){
      reads=writes=syncs=0;history_observed_read_bytes=0;io_counting=true;
      if(fault==0)read_fault=site;else corrupt_read=site;
+     allocation_budget=0;
      const auto failed=db::NativeCatalogLeafLeaseReader::Read(held.lease.source(),ref,prepared.workspace);
+     const auto unspent=allocation_budget;allocation_budget=-1;
      io_counting=false;read_fault=corrupt_read=0;
-     Check(reads>=site&&!failed.ok()&&failed.image.empty()&&!failed.leaf.page&&
+     Check(unspent==0&&reads>=site&&!failed.ok()&&failed.image.empty()&&!failed.leaf.page&&
        !writes&&!syncs&&failed.bytes_read==history_observed_read_bytes,
        "every physical read/corruption failure has exact effects and no successful prefix under the same lease");
-     if(fault==0)Check(failed.error==db::NativeCatalogLeafMemoryError::io_failure&&!failed.io_status.ok()&&
-       failed.io_diagnostic.diagnostic_code=="SB-STORAGE-DISK-READ-SHORT",
-       "guarded read preserves full physical I/O diagnostic");
+     if(fault==0){
+      const auto page_bytes=leaf_images[i].size();
+      Check(failed.error==db::NativeCatalogLeafMemoryError::io_failure&&!failed.io_status.ok()&&
+        failed.io_filespace_uuid==ref.page.filespace_uuid&&
+        failed.io.operation==d::BoundedIoOperation::read&&failed.io.error==d::BoundedIoError::native_failure&&
+        failed.io.native_attempted&&failed.io.native_error==EIO&&!failed.io.bytes_transferred&&
+        failed.io.offset==(site==3?ref.page.page_number*page_bytes:0)&&
+        failed.io.requested_bytes==(site==1?d::kFilespaceBootstrapBytes:page_bytes),
+        "guarded read preserves exact fixed physical I/O receipt and binary source without allocating");
+      read_failures[site-1]=failed.io;
+     }
     }
     allocation_budget=0;
     const auto retry=db::NativeCatalogLeafLeaseReader::Read(held.lease.source(),ref,prepared.workspace);
     const auto left=allocation_budget;allocation_budget=-1;
     Check(left==0&&retry.ok(),"same retained source remains usable after failed leaf observations");
+   }
+   const auto member=std::find_if(original.begin(),original.end(),[&](const auto& f){
+    return f.filespace_uuid==ref.page.filespace_uuid;});
+   Check(member!=original.end(),"diagnostic source is an actual retained binary filespace member");
+   for(const auto& receipt:read_failures){
+    const auto rendered=d::RenderBoundedIoResult(receipt,member->device->path());
+    const std::array<std::pair<std::string,std::string>,6> expected{{
+      {"path",member->device->path()},{"offset",std::to_string(receipt.offset)},
+      {"requested_bytes",std::to_string(receipt.requested_bytes)},
+      {"bytes_transferred","0"},{"native_error",std::to_string(EIO)},{"native_attempted","true"}}};
+    Check(!rendered.ok()&&!rendered.bytes_transferred&&
+      rendered.diagnostic.diagnostic_code=="SB-STORAGE-DISK-READ-SHORT"&&
+      rendered.diagnostic.message_key=="storage.disk.read_short"&&
+      rendered.diagnostic.arguments.size()==expected.size(),
+      "after releasing source guards render complete physical failure diagnostic");
+    for(std::size_t arg=0;arg<expected.size();++arg)
+     Check(rendered.diagnostic.arguments[arg].key==expected[arg].first&&
+       rendered.diagnostic.arguments[arg].text()&&
+       *rendered.diagnostic.arguments[arg].text()==expected[arg].second,
+       "deferred diagnostic preserves every exact physical I/O argument");
    }
    prepared={};catalog_memory.memory={};catalog_memory.Empty();
   }

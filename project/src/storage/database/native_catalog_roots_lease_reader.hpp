@@ -97,7 +97,7 @@ struct NativeCatalogRootsLeaseReadResult {
  disk::NativeCommonPageHeaderError header_error=disk::NativeCommonPageHeaderError::none;
  page::NativeCatalogRootError catalog_error=page::NativeCatalogRootError::none;
  core::platform::Status io_status;
- core::platform::DiagnosticRecord io_diagnostic;
+ // Fixed receipt only: render diagnostics after every enclosing source/device guard releases.
  disk::BoundedIoResult io;
  Uuid io_filespace_uuid;
  u64 physical_bytes_read=0,retained_image_bytes=0;

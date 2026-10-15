@@ -18,6 +18,7 @@
 #include "catalog_runtime_authority_binding.hpp"
 #include "catalog_bootstrap_policy.hpp"
 #include "catalog_memory_configuration.hpp"
+#include "catalog_identifier_profile.hpp"
 #include "catalog_scheduler_policy.hpp"
 #include "catalog_scheduler_fairness.hpp"
 #include "catalog_metric_visibility_policy.hpp"
@@ -156,6 +157,10 @@ CatalogTypedRecordViewResult ValidateCatalogTypedRecordView(CatalogTypedRecordVi
       !CatalogRuntimeAuthorityBindingMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.runtime_authority_binding.invalid",
                       "runtime_authority_binary_payload_or_header_invalid");
+  if (IsCatalogIdentifierProfilePayload(record.payload) &&
+      !CatalogIdentifierProfileMatchesHeader(record))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.identifier_profile.invalid",
+                          "identifier_profile_binary_payload_or_header_invalid");
   if (IsCatalogBootstrapPolicyPayload(record.payload) &&
       !CatalogBootstrapPolicyMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.bootstrap_policy.invalid",
@@ -430,6 +435,10 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
        IsCatalogMemoryConfigurationPayload(value.record.payload)) &&
       !CatalogMemoryConfigurationMatchesMetadata(value))
     return MetadataViewError("memory_configuration_definition_binding_invalid");
+  if ((value.object_subtype == "identifier_resolution_profile" ||
+       IsCatalogIdentifierProfilePayload(value.record.payload)) &&
+      !CatalogIdentifierProfileMatchesMetadata(value))
+    return MetadataViewError("identifier_profile_definition_binding_invalid");
   if ((IsCatalogTableDefinitionPayload(value.record.payload) ||
        value.object_subtype == "ordinary_persistent_table") &&
       !CatalogTableDefinitionMatchesMetadata(value))
@@ -651,6 +660,7 @@ bool CatalogMetadataPreservesFamilyOrigin(
   return CatalogSecurityPreservesOrigin(previous,successor) &&
       CatalogBootstrapPolicyPreservesOrigin(previous,successor) &&
       CatalogMemoryConfigurationPreservesOrigin(previous,successor) &&
+      CatalogIdentifierProfilePreservesOrigin(previous,successor) &&
       CatalogRuntimeAuthorityBindingPreservesOrigin(previous,successor) &&
       CatalogContextNamespacePreservesOrigin(previous,successor) &&
       CatalogSchedulerPolicyPreservesOrigin(previous,successor) &&
