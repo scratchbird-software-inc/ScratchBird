@@ -255,8 +255,8 @@ void ProveCustomPackCreateAndReopen(const std::filesystem::path& root) {
   Require(created.ok(), "custom policy pack create failed");
   Require(created.state.policy_seed_catalog.policy_pack_id == "custom-local-password",
           "custom policy pack id was not materialized");
-  Require(created.state.policy_seed_catalog.policy_pack_uuid ==
-              "018f7a10-1280-7000-8000-000000000002",
+  const auto expected_pack=uuid::ParseTypedUuid(UuidKind::object,"018f7a10-1280-7000-8000-000000000002");
+  Require(expected_pack.ok()&&created.state.policy_seed_catalog.policy_pack_uuid == expected_pack.value.value,
           "custom policy pack UUID was not materialized");
   Require(created.state.policy_seed_catalog.policy_pack_version == "1.0.1",
           "custom policy pack version was not materialized");

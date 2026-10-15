@@ -90,7 +90,7 @@ struct PolicySeedPackCatalogImage {
       scratchbird::core::catalog::CatalogValueError::none;
   bool active = false;
   std::string policy_pack_id;
-  std::string policy_pack_uuid;
+  scratchbird::core::platform::Uuid policy_pack_uuid;
   std::string policy_pack_version;
   std::string content_sha256;
   std::string signature_status;

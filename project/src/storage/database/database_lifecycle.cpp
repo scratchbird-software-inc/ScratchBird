@@ -1256,7 +1256,6 @@ struct PolicyDefaultSeed {
 
 struct LoadedPolicySeedPack {
   PolicySeedPackCatalogImage image;
-  Uuid pack_identity;
   std::vector<PolicyProviderSeed> providers;
   std::vector<PolicyRoleSeed> roles;
   std::vector<PolicyGroupSeed> groups;
@@ -1530,11 +1529,6 @@ std::vector<std::string> SplitTopLevelObjects(const std::string& array_body) {
     }
   }
   return objects;
-}
-
-bool ValidatePolicyUuid(const std::string& value, UuidKind kind) {
-  const auto parsed = ParseTypedUuid(kind, value);
-  return parsed.ok();
 }
 
 // Configuration import boundary only: no textual identity survives in loaded
@@ -1942,7 +1936,7 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
   }
   std::string content_hash_algorithm;
   if (!ExtractStringField(manifest, "policy_pack_id", &image.policy_pack_id) ||
-      !ExtractStringField(manifest, "policy_pack_uuid", &image.policy_pack_uuid) ||
+      !ExtractPolicyIdentity(manifest, "policy_pack_uuid", &image.policy_pack_uuid) ||
       !ExtractStringField(manifest, "policy_pack_version", &image.policy_pack_version) ||
       !ExtractStringField(manifest, "content_hash_algorithm", &content_hash_algorithm) ||
       !ExtractStringField(manifest, "content_sha256", &image.content_sha256) ||
@@ -1951,7 +1945,7 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
                                "manifest identity/hash/signature fields");
   }
   if (!IsSafePolicyPackId(image.policy_pack_id) ||
-      !ValidatePolicyUuid(image.policy_pack_uuid, UuidKind::object) ||
+      !IsEngineIdentityUuid(image.policy_pack_uuid) ||
       image.policy_pack_version.empty() ||
       content_hash_algorithm != "sha256" ||
       !IsSha256Hex(image.content_sha256) ||
@@ -2096,10 +2090,7 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
   if (!ExtractArrayBody(providers_json, "providers", &array_body)) {
     return PolicyPackLoadError("SB-POLICY-PACK-PROVIDERS-INVALID", "providers");
   }
-  const auto pack_identity=ParseTypedUuid(UuidKind::object,image.policy_pack_uuid);
-  if(!pack_identity.ok())return PolicyPackLoadError("SB-POLICY-PACK-MANIFEST-FIELD-INVALID","pack identity");
-  loaded.pack_identity=pack_identity.value.value;
-  std::set<Uuid> definition_identities{pack_identity.value.value};
+  std::set<Uuid> definition_identities{image.policy_pack_uuid};
   for (const std::string& object : SplitTopLevelObjects(array_body)) {
     PolicyProviderSeed provider;
     std::string provider_family,authority,verifier_policy;
@@ -2656,7 +2647,7 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
 
   namespace c=scratchbird::core::catalog;
   c::CatalogBootstrapPolicyPack native_pack;
-  native_pack.policy_pack_uuid=pack.pack_identity;
+  native_pack.policy_pack_uuid=pack.image.policy_pack_uuid;
   native_pack.generation=pack.image.policy_generation;
   native_pack.imported_schema_version=pack.image.schema_version;
   native_pack.pack_id=pack.image.policy_pack_id;native_pack.pack_version=pack.image.policy_pack_version;
@@ -2684,7 +2675,7 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
   const std::string pack_payload(encoded_pack.bytes.begin(),encoded_pack.bytes.end());
   rows->push_back(Row(CatalogPageRowKind::policy_seed_pack, (*ordinal)++, pack_payload));
 
-  const TypedUuid policy_pack_uuid{UuidKind::object,pack.pack_identity};
+  const TypedUuid policy_pack_uuid{UuidKind::object,pack.image.policy_pack_uuid};
   auto typed = AddTypedCatalogRecord(rows,
                                      CatalogRecordKind::policy,
                                      ordinal,
@@ -2956,7 +2947,7 @@ std::vector<BootstrapRecordSeed> PackDefaultRegistryPolicyRecords(const LoadedPo
                                         {"uuid_source", "fresh_uuidv7"},
                                         {"mga_visibility_required", "1"},
                                         {"engine_owned", "1"},
-                                        {"policy_pack_uuid", pack.image.policy_pack_uuid},
+                                        {"policy_pack_uuid", scratchbird::core::uuid::UuidToString(pack.image.policy_pack_uuid)},
                                         {"policy_pack_version", pack.image.policy_pack_version},
                                         {"loaded_at_database_create", "1"},
                                         {"catalog_authority", "durable_catalog_after_create"}})});
@@ -4335,7 +4326,7 @@ PolicySeedPackCatalogImage BuildPolicyImageFromCatalogRows(const std::vector<Cat
       selected_pack_payload=row.payload;selected_pack_identity=pack.policy_pack_uuid;
       image.active = true;
       image.policy_pack_id=pack.pack_id;image.policy_pack_version=pack.pack_version;
-      image.policy_pack_uuid=scratchbird::core::uuid::UuidToString(pack.policy_pack_uuid); // public status presentation only
+      image.policy_pack_uuid=pack.policy_pack_uuid;
       image.content_sha256=HexDigest(pack.content_sha256.data(),pack.content_sha256.size());
       image.signature_status=pack.declared_signature_status;
       if(pack.imported_schema_version>std::numeric_limits<u32>::max()||pack.generation>std::numeric_limits<u32>::max()||
@@ -4474,7 +4465,7 @@ DatabaseLifecycleResult ValidatePolicySeedCatalogImage(const PolicySeedPackCatal
     return result;
   }
   if (!IsSafePolicyPackId(image.policy_pack_id) ||
-      !ValidatePolicyUuid(image.policy_pack_uuid, UuidKind::object) ||
+      !IsEngineIdentityUuid(image.policy_pack_uuid) ||
       image.policy_pack_version.empty() ||
       !IsSha256Hex(image.content_sha256) ||
       image.signature_status != "signature-ready-unsigned" ||

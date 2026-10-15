@@ -239,3 +239,43 @@ failure, which is not in the frozen260 baseline. Public presentation image pack
 UUID and default-policy bodies remain unmigrated; full native owning package,
 mutable controller/security/service/provider activation and hosted BEGIN remain
 required. Core03/DIGESTS contract expanded; local/manual distribution only.
+
+2026-10-15 binary policy lifecycle image and complete known recheck selection
+-------------------------------------------------------------------------
+PolicySeedPackCatalogImage.policy_pack_uuid is now raw16Uuid, not string.
+Manifest import parses once; native production/reopen/returned state preserve
+binary identity. Removes redundant owning pack UUID and reparsing. The explicit
+manifest descriptor remains presentation data. One legacy default-policy body
+writer still renders pack UUID and requires native migration; do not claim that
+the entire policy subsystem is binary or functionally complete.
+
+Serialized policy-image-binary-carrier-build PASS56 affected edges195.614948s;
+fresh manifest-controls build PASS; public import/custom PASS2/2 in3.812478s,
+no leaked descendants. Compile-time rawUuid carrier assertion and uppercase-only
+manifest UUID positive ensure native returned-state identity, independently of
+original lowercase descriptor spelling. Thirteen native catalog/runtime-binding
+followers rebuilt and PASS. Every original assertion retained. LastTest copied.
+
+Local recheck runner now includes the explicit supplemental inventory in both
+historical and current scopes, while keeping frozen260 baseline separate. It
+rejects duplicate JSON keys, malformed/duplicate supplemental entries, missing,
+disabled and unbuildable registrations; neither component PASS nor old baseline
+partition silently excludes a newly observed failure. Eight mocked selection
+unit tests PASS, then actual source/registry/target preflight PASS62 outstanding,
+9400 registrations,38 current build targets. Preflight is not test execution or
+clean/all-target certification; privileged full namespace run still required.
+Local runner/test/specification/workplan files remain manual-distribution only.
+
+NEXT smallest genuine native bootstrap dependency: actual memory configuration
+from policy-packs/default-local-password/policies/server_memory_cache_policy.json.
+Reuse memory::MemoryPolicyConfig, server/config.cpp BuildMemoryPolicyConfig and
+ResolveServerMemoryAllocationPolicy semantics; no durable native codec currently
+exists. Persist exact actual typed values, real catalog identity/origin and bind
+profile.resource_definition_uuid to the materialized configuration; prove reopen
+without import file. Do not serialize or execute generic required_by_default
+strings: the58-entry policy_defaults.json validator only checks token presence,
+not its value/type. Existing real native policy families are metric retention/
+visibility, storage action65548/attachment65549, scheduler786433..786435 and the
+bootstrap declarations65588..65590. Many remaining58 entries are architecture
+invariants rather than editable defaults; map actual typed owners/consumers
+individually, do not invent values or wrap text policy blobs.

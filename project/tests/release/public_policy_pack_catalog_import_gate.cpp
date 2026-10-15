@@ -32,6 +32,7 @@
 #include <string>
 #include <string_view>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 namespace {
@@ -43,6 +44,8 @@ namespace memory = scratchbird::core::memory;
 namespace page = scratchbird::storage::page;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
+static_assert(std::is_same_v<decltype(db::PolicySeedPackCatalogImage{}.policy_pack_uuid),
+                             scratchbird::core::platform::Uuid>);
 
 struct DecodedRecord {
   catalog::CatalogTypedRecord record;
@@ -315,7 +318,8 @@ void RequirePolicyCatalogImport(const std::filesystem::path& database_path,
   Require(state.policy_seed_catalog.active, "policy seed catalog image was inactive");
   Require(state.policy_seed_catalog.policy_pack_id == descriptor.policy_pack_id,
           "state policy pack id mismatch");
-  Require(state.policy_seed_catalog.policy_pack_uuid == descriptor.policy_pack_uuid,
+  const auto expected_pack=uuid::ParseTypedUuid(UuidKind::object,descriptor.policy_pack_uuid);
+  Require(expected_pack.ok()&&state.policy_seed_catalog.policy_pack_uuid == expected_pack.value.value,
           "state policy pack UUID mismatch");
   Require(state.policy_seed_catalog.content_sha256 == descriptor.content_sha256,
           "state policy pack content hash mismatch");
@@ -537,7 +541,9 @@ template<class Edit> void RewriteAndResealPack(const std::filesystem::path& root
         reinterpret_cast<const scratchbird::core::platform::byte*>(normalized.data()),normalized.size());
     Require(result.ok(),"identity fixture hash failed");return scratchbird::core::hash::HexLower(result.digest);
   };
-  auto manifest=read(root/"POLICY_PACK_MANIFEST.json");const auto original=manifest;
+  auto manifest=read(root/"POLICY_PACK_MANIFEST.json");
+  edit(std::string("POLICY_PACK_MANIFEST.json"),manifest,replace);
+  const auto original=manifest;
   const std::regex entry(R"re("path"\s*:\s*"([^"]+)"\s*,\s*"sha256"\s*:\s*"([0-9a-f]{64})")re");
   std::string aggregate;unsigned files=0;
   for(auto it=std::sregex_iterator(original.begin(),original.end(),entry);it!=std::sregex_iterator();++it) {
@@ -552,7 +558,7 @@ template<class Edit> void RewriteAndResealPack(const std::filesystem::path& root
 }
 
 void RunBinaryIdentityBindingCases() {
-  for(unsigned scenario=0;scenario<10;++scenario) {
+  for(unsigned scenario=0;scenario<11;++scenario) {
     const auto root=UniquePath("policy_binary_identity_"+std::to_string(scenario));
     std::filesystem::copy(SB_DEFAULT_POLICY_PACK_ROOT,root,std::filesystem::copy_options::recursive);
     RewriteAndResealPack(root,[&](const auto& path,std::string& value,const auto& replace) {
@@ -572,13 +578,16 @@ void RunBinaryIdentityBindingCases() {
         replace(value,"\"target_uuid\": \"\"","\"target_uuid\": "+malformed);
       }
       if(scenario>=7&&path=="policies/security_providers.json") {
+        if(scenario==10)return;
         const std::string malformed=scenario==7?"42":scenario==8?"{}":"\"\", \"credential_verifier_policy\": \"\"";
         replace(value,"\"external_provider\": true","\"credential_verifier_policy\": "+malformed+", \"external_provider\": true");
       }
+      if(scenario==10&&path=="POLICY_PACK_MANIFEST.json")
+        replace(value,"018f7a10-1280-7000-8000-000000000001","018F7A10-1280-7000-8000-000000000001");
     });
     const auto path=root/"node.sbdb";auto config=BaseCreateConfig(path,CurrentUnixMillis());config.policy_seed_pack_root=root.string();
     const auto result=db::CreateDatabaseFile(config);
-    if(scenario==0) {
+    if(scenario==0||scenario==10) {
       Require(result.ok()&&result.create_finality==db::DatabaseCreateFinalityClass::committed,
               "independent reference spelling changed binary relationship identity");
       db::DatabaseOpenConfig open;open.path=path.string();open.read_only=true;
