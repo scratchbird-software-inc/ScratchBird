@@ -670,6 +670,45 @@ class BlobBoundLogicalReaderCarrierV3Generation1 final {
   BlobReadAtV3 read_at_ = nullptr;
 };
 
+// Encoded bytes are not a logical BLOB value: there is deliberately no SQL
+// state or logical_length field. The uint64 extent includes envelope overhead
+// and may exceed INT64_MAX; the owning decoder validates its actual format.
+class BlobReceiverEncodedReaderCapabilityV3Generation1 final {
+ public:
+  BlobReceiverEncodedReaderCapabilityV3Generation1(const BlobReceiverEncodedReaderCapabilityV3Generation1&) = delete;
+  BlobReceiverEncodedReaderCapabilityV3Generation1& operator=(const BlobReceiverEncodedReaderCapabilityV3Generation1&) = delete;
+  BlobReceiverEncodedReaderCapabilityV3Generation1(BlobReceiverEncodedReaderCapabilityV3Generation1&&) = delete;
+  BlobReceiverEncodedReaderCapabilityV3Generation1& operator=(BlobReceiverEncodedReaderCapabilityV3Generation1&&) = delete;
+ private:
+  friend class BlobLifetimeReceiverHostV3Generation1;
+  friend class BlobLifetimeRuntimeFactoryV3Generation1;
+  BlobReceiverEncodedReaderCapabilityV3Generation1(const BlobCarrierBindingV3& binding,
+      u64 extent, void* context, BlobReadAtV3 read_at) noexcept
+      : binding_(binding), encoded_extent_(extent), context_(context), read_at_(read_at) {}
+  BlobCarrierBindingV3 binding_{};
+  u64 encoded_extent_ = 0;
+  void* context_ = nullptr;
+  BlobReadAtV3 read_at_ = nullptr;
+};
+
+class BlobBoundEncodedReaderCarrierV3Generation1 final {
+ public:
+  BlobBoundEncodedReaderCarrierV3Generation1() noexcept = default;
+  BlobBoundEncodedReaderCarrierV3Generation1(const BlobBoundEncodedReaderCarrierV3Generation1&) = delete;
+  BlobBoundEncodedReaderCarrierV3Generation1& operator=(const BlobBoundEncodedReaderCarrierV3Generation1&) = delete;
+  BlobBoundEncodedReaderCarrierV3Generation1(BlobBoundEncodedReaderCarrierV3Generation1&&) = delete;
+  BlobBoundEncodedReaderCarrierV3Generation1& operator=(BlobBoundEncodedReaderCarrierV3Generation1&&) = delete;
+  u64 encoded_extent() const noexcept { return encoded_extent_; }
+ private:
+  friend class BlobLifetimeRuntimeFactoryV3Generation1;
+  friend class BlobLifetimeDatatypeConsumerAccessV3Generation1;
+  friend class BlobRetainedLifetimeLeaseV3;
+  BlobCarrierBindingV3 binding_{};
+  u64 encoded_extent_ = 0;
+  void* context_ = nullptr;
+  BlobReadAtV3 read_at_ = nullptr;
+};
+
 // Implemented by the receiver owner in the stable host. Its exact class name
 // is the only construction authority for the unforgeable carrier capability.
 class BlobReceiverMaterializedCapabilityV3Generation1 final {
@@ -969,6 +1008,19 @@ struct BlobLifetimeRuntimeResultV3 {
 
 class BlobLifetimeRuntimeFactoryV3Generation1 final {
  public:
+  static BlobLifetimeRuntimeResultV3 AdmitEncodedReader(
+      u8 trusted_operation, const BlobValidatedProfileHandleV3& profile,
+      const BlobLifetimeAuthorityV3* authority,
+      const BaseBlobLifetimeReceiverServicesV3Generation1* services,
+      const BlobReceiverLifetimePinOpsV3Generation1& pin_ops,
+      const BlobLifetimeBudgetControlCapabilityV3Generation1& budget_control,
+      BlobMonotonicClockBindingV3 token_clock,
+      BlobMonotonicClockBindingV3 request_clock,
+      const BlobLifetimeTokenV3& token, const BlobLifetimeUseRequestV3& request,
+      const BlobReceiverEncodedReaderCapabilityV3Generation1& capability,
+      BlobLifetimeAuthorityAdmissionV3Generation1& out_admission,
+      BlobBoundEncodedReaderCarrierV3Generation1& out_carrier) noexcept;
+
   static BlobLifetimeRuntimeResultV3 AdmitLogicalReader(
       u8 trusted_operation,
       const BlobValidatedProfileHandleV3& profile,
@@ -1046,6 +1098,12 @@ class BlobRetainedLifetimeLeaseV3 final {
  private:
   friend class BlobLifetimeRuntimeConformanceAccessV3;
   friend struct BlobLeaseConstructionResultV3;
+  friend BlobLifetimeRuntimeResultV3 RetainBaseBlobLifetimeLeaseV3Generation1(
+      const BlobValidatedProfileHandleV3&,
+      BlobLifetimeAuthorityAdmissionV3Generation1&&,
+      const BlobBoundEncodedReaderCarrierV3Generation1&,
+      const BlobLifetimeTokenV3&, const BlobLifetimeUseRequestV3&,
+      BlobRetainedLifetimeLeaseV3&) noexcept;
   friend BlobLifetimeRuntimeResultV3
   RetainBaseBlobLifetimeLeaseV3Generation1(
       const BlobValidatedProfileHandleV3&,
@@ -1211,11 +1269,14 @@ class BlobRetainedLifetimeLeaseV3 final {
 
   BlobLifetimeAuthorityAdmissionV3Generation1 admission_{};
   BlobMaterializedCarrierBindingV3 carrier_binding_{};
+  // Scalar-only metadata, inspected only after a concrete scalar-kind check.
+  // Encoded carriers use encoded_extent_ and never acquire SQL value state.
   BlobValueStateV3 carrier_state_ = BlobValueStateV3::value;
   const byte* carrier_data_ = nullptr;
   void* carrier_reader_context_ = nullptr;
   BlobReadAtV3 carrier_read_at_ = nullptr;
   u64 carrier_logical_length_ = 0;
+  u64 carrier_encoded_extent_ = 0;
   BlobLifetimeTokenV3 token_{};
   BlobLifetimeUseRequestV3 request_{};
   platform::Uuid descriptor_uuid_{};
@@ -1288,6 +1349,14 @@ BlobLifetimeRuntimeResultV3 RetainBaseBlobLifetimeLeaseV3Generation1(
     const BlobValidatedProfileHandleV3& profile,
     BlobLifetimeAuthorityAdmissionV3Generation1&& trusted_admission,
     const BlobBoundLogicalReaderCarrierV3Generation1& carrier,
+    const BlobLifetimeTokenV3& token,
+    const BlobLifetimeUseRequestV3& request,
+    BlobRetainedLifetimeLeaseV3& destination) noexcept;
+
+BlobLifetimeRuntimeResultV3 RetainBaseBlobLifetimeLeaseV3Generation1(
+    const BlobValidatedProfileHandleV3& profile,
+    BlobLifetimeAuthorityAdmissionV3Generation1&& trusted_admission,
+    const BlobBoundEncodedReaderCarrierV3Generation1& carrier,
     const BlobLifetimeTokenV3& token,
     const BlobLifetimeUseRequestV3& request,
     BlobRetainedLifetimeLeaseV3& destination) noexcept;

@@ -232,7 +232,15 @@ class BlobLifetimeRuntimeConformanceAccessV3 final {
   static bool ReaderRoutingCleared(const BlobRetainedLifetimeLeaseV3& lease)
       noexcept {
     return lease.carrier_reader_context_ == nullptr &&
-        lease.carrier_read_at_ == nullptr;
+        lease.carrier_read_at_ == nullptr && lease.carrier_encoded_extent_ == 0;
+  }
+
+  static bool EncodedRoutingMatches(const BlobRetainedLifetimeLeaseV3& lease,
+      void* context, BlobReadAtV3 read_at, u64 extent) noexcept {
+    return lease.carrier_binding_.carrier_kind == SB_BLOB_MODE_OPAQUE_ENCODED_READER_V3 &&
+        lease.carrier_data_ == nullptr && lease.carrier_logical_length_ == 0 &&
+        lease.carrier_reader_context_ == context && lease.carrier_read_at_ == read_at &&
+        lease.carrier_encoded_extent_ == extent;
   }
 
   static BlobUuid16V3 RetainTicketUuid(
@@ -424,6 +432,17 @@ class BlobLifetimeRuntimeConformanceAccessV3 final {
 
 class BlobLifetimeReceiverHostV3Generation1 final {
  public:
+  static BlobReceiverEncodedReaderCapabilityV3Generation1 EncodedCapability(
+      const BlobCarrierBindingV3& binding, u64 extent,
+      void* context, BlobReadAtV3 read_at) noexcept {
+    return BlobReceiverEncodedReaderCapabilityV3Generation1(binding, extent, context, read_at);
+  }
+  static BlobReceiverEncodedReaderCapabilityV3Generation1* EncodedCapabilityAt(
+      void* storage, const BlobCarrierBindingV3& binding, void* context,
+      BlobReadAtV3 read_at) noexcept {
+    return new (storage) BlobReceiverEncodedReaderCapabilityV3Generation1(
+        binding, UINT64_MAX, context, read_at);
+  }
   static BlobReceiverLogicalReaderCapabilityV3Generation1 LogicalCapability(
       const BlobCarrierBindingV3& binding, BlobValueStateV3 state, u64 length,
       void* context, BlobReadAtV3 read_at) noexcept {
@@ -3044,6 +3063,259 @@ void BudgetConfigureFreezeLifecycle() {
                 dt::BlobLifetimeReasonV3::authority_abi_mismatch &&
             fixture.fake.pin_drop_calls == 2,
         "factory did not refuse unfrozen budget capability with exact cleanup");
+}
+
+void EncodedReaderAdmissionAndRetention() {
+  using Host = dt::BlobLifetimeReceiverHostV3Generation1;
+  using Access = dt::BlobLifetimeRuntimeConformanceAccessV3;
+  using Capability = dt::BlobReceiverEncodedReaderCapabilityV3Generation1;
+  using Carrier = dt::BlobBoundEncodedReaderCarrierV3Generation1;
+  static_assert(!std::is_default_constructible_v<Capability>);
+  static_assert(!std::is_copy_constructible_v<Capability>);
+  static_assert(!std::is_move_constructible_v<Capability>);
+  static_assert(!std::is_copy_constructible_v<Carrier>);
+  static_assert(!std::is_move_constructible_v<Carrier>);
+  const auto prepare = [](Fixture& f, std::uint8_t op) {
+    f.fake.pins = 0;
+    f.token.owner_class = f.request.required_owner_class = SB_BLOB_OWNER_ENCODED_ARTIFACT_BORROW_V3;
+    f.token.mode_bits = SB_BLOB_MODE_IMMUTABLE_READ_V3 | SB_BLOB_MODE_OPAQUE_ENCODED_READER_V3;
+    f.request.required_mode_bits = SB_BLOB_MODE_IMMUTABLE_READ_V3;
+    f.request.operation = op;
+    f.carrier_binding.carrier_kind = SB_BLOB_MODE_OPAQUE_ENCODED_READER_V3;
+  };
+  const auto admit = [](Fixture& f, const Capability& capability,
+                        dt::BlobLifetimeAuthorityAdmissionV3Generation1& admission,
+                        Carrier& carrier) {
+    auto budget = Host::BudgetControl(f.ledger, f.pins);
+    return dt::BlobLifetimeRuntimeFactoryV3Generation1::AdmitEncodedReader(
+        f.request.operation, f.profile, &f.authority, &f.services, f.pins, budget,
+        f.services.monotonic_clock, f.services.monotonic_clock,
+        f.token, f.request, capability, admission, carrier);
+  };
+  for (unsigned owner = 1; owner <= 3; ++owner) {
+    for (unsigned op = 1; op <= 13; ++op) {
+      for (unsigned choice = 0; choice < 153; ++choice) {
+        Fixture f(0);
+        prepare(f, op);
+        f.token.owner_class = f.request.required_owner_class = owner;
+        if (owner == SB_BLOB_OWNER_EXECUTION_BORROW_V3) {
+          f.token.session_uuid = f.request.expected_session_uuid = BlobUuid(0xb0);
+          f.token.statement_uuid = f.request.expected_statement_uuid = BlobUuid(0xc0);
+        }
+        const auto modes = choice < 128 ? choice : (0x21U | (1U << (choice-128+7)));
+        f.token.mode_bits = modes;
+        auto cap = Host::EncodedCapability(f.carrier_binding, UINT64_MAX,
+                                           &f.fake, NeverReadDuringAdmission);
+        const bool expected = owner == 3 && op >= 9 &&
+            (modes & ~0x3fU) == 0 && (modes & 0x3bU) == 0x21U;
+        const auto before = allocation_probe::calls.load();
+        {
+          dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
+          Carrier carrier;
+          allocation_probe::enabled.store(true);
+          const auto result = admit(f, cap, admission, carrier);
+          allocation_probe::enabled.store(false);
+          Check(result.ok() == expected && allocation_probe::calls.load() == before &&
+                    f.fake.pins == (expected ? 2U : 0U) &&
+                    carrier.encoded_extent() == (expected ? UINT64_MAX : 0),
+                "opaque reader owner/operation/mode/extent admission matrix");
+          Check(f.fake.call_count == 0 && f.fake.clock_calls == 0 &&
+                    f.fake.cancellation_calls == 0,
+                "opaque admission performed runtime/content work");
+        }
+        Check(f.fake.pins == 0 && f.fake.pin_drop_calls == 2,
+              "opaque admission pin leak");
+      }
+    }
+  }
+  for (std::uint8_t op = 9; op <= 13; ++op) {
+    for (const std::uint64_t extent : {UINT64_C(0), UINT64_C(1),
+          dt::kBlobMaximumLogicalBytesV3 + 1, dt::kBlobMaximumLogicalBytesV3 + 320,
+          UINT64_MAX}) {
+      Fixture f(16);
+      prepare(f, op);
+      auto cap = Host::EncodedCapability(f.carrier_binding, extent, &f.fake,
+                                         NeverReadDuringAdmission);
+      dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
+      Carrier carrier;
+      Check(admit(f, cap, admission, carrier).ok(), "opaque extent admission");
+      const auto before = allocation_probe::calls.load();
+      allocation_probe::enabled.store(true);
+      dt::BlobRetainedLifetimeLeaseV3 lease, clone, destination;
+      const auto retained = dt::RetainBaseBlobLifetimeLeaseV3Generation1(
+          f.profile, std::move(admission), carrier, f.token, f.request, lease);
+      const bool original_routing = Access::EncodedRoutingMatches(
+          lease, &f.fake, NeverReadDuringAdmission, extent);
+      const auto cloned = lease.CloneInto(clone);
+      auto moved = dt::BlobRetainedLifetimeLeaseV3::MoveConstructFrom(std::move(clone));
+      const bool moved_routing = moved.result.ok() && Access::EncodedRoutingMatches(
+          *moved.lease(), &f.fake, NeverReadDuringAdmission, extent);
+      const auto replaced = moved.result.ok() ? destination.MoveReplaceFrom(std::move(*moved.lease()))
+                                       : moved.result;
+      const bool destination_routing = Access::EncodedRoutingMatches(
+          destination, &f.fake, NeverReadDuringAdmission, extent);
+      const auto probed = lease.Probe();
+      const auto first_release = lease.Release();
+      const auto second_release = destination.Release();
+      allocation_probe::enabled.store(false);
+      Check(retained.ok() && original_routing && cloned.ok() && moved_routing &&
+                replaced.ok() && destination_routing && probed.ok() && first_release.ok() &&
+                second_release.ok() && Access::ReaderRoutingCleared(lease) &&
+                Access::ReaderRoutingCleared(clone) && Access::ReaderRoutingCleared(destination) &&
+                f.fake.pins == 0 && CountCall(f.fake,'R') == 2 &&
+                CountCall(f.fake,'P') == 1 && CountCall(f.fake,'L') == 2 &&
+                CountCall(f.fake,'B') == 0 && Access::Invoked(f.ledger) == 5 &&
+                Access::ReservedCleanup(f.ledger) == 0 && allocation_probe::calls.load() == before,
+            "opaque retention/clone/move/probe/release lost full extent or custody");
+    }
+  }
+  // Revalidation must reject foreign token carrier modes even when the
+  // caller changes its required mask to match the forged token.
+  for (const std::uint32_t substituted : {SB_BLOB_MODE_MATERIALIZED_BYTES_V3,
+                                          SB_BLOB_MODE_LOGICAL_READER_V3}) {
+    Fixture f(8);
+    prepare(f, 9);
+    auto cap = Host::EncodedCapability(f.carrier_binding, UINT64_MAX, &f.fake,
+                                       NeverReadDuringAdmission);
+    {
+      dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
+      Carrier carrier;
+      Check(admit(f, cap, admission, carrier).ok(), "opaque substitution setup");
+      f.token.mode_bits = f.request.required_mode_bits = SB_BLOB_MODE_IMMUTABLE_READ_V3 | substituted;
+      dt::BlobRetainedLifetimeLeaseV3 lease;
+      const auto refused = dt::RetainBaseBlobLifetimeLeaseV3Generation1(
+          f.profile, std::move(admission), carrier, f.token, f.request, lease);
+      Check(!refused.ok() && !lease.retained() && f.fake.call_count == 0 && f.fake.pins == 2,
+            "opaque retained validation admitted substituted token mode");
+    }
+    Check(f.fake.pins == 0, "opaque failed revalidation lost admission pins");
+  }
+  for (unsigned mutation = 0; mutation < 8; ++mutation) {
+    Fixture f(8);
+    prepare(f, 10);
+    void* context = &f.fake;
+    dt::BlobReadAtV3 read_at = NeverReadDuringAdmission;
+    switch (mutation) {
+      case 0: context = nullptr; break;
+      case 1: read_at = nullptr; break;
+      case 2: f.carrier_binding.carrier_generation = 0; break;
+      case 3: ++f.carrier_binding.immutable_binding_generation; break;
+      case 4: ++f.request.expected_security_generation; break;
+      case 5: ++f.profile.receipt.registry_generation; break;
+      case 6: f.carrier_binding.carrier_kind = SB_BLOB_MODE_LOGICAL_READER_V3; break;
+      case 7: f.authority.probe = nullptr; break;
+    }
+    auto cap = Host::EncodedCapability(f.carrier_binding, 0, context, read_at);
+    dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
+    Carrier carrier;
+    const auto result = admit(f, cap, admission, carrier);
+    Check(!result.ok() && carrier.encoded_extent() == 0 && f.fake.pins == 0 && f.fake.call_count == 0,
+          "opaque malformed capability admitted or mutated output");
+  }
+  for (std::uint8_t op = 9; op <= 13; ++op) {
+    for (unsigned phase = 0; phase < 3; ++phase) {
+      Fixture f(8);
+      prepare(f, op);
+      auto cap = Host::EncodedCapability(f.carrier_binding, UINT64_MAX, &f.fake,
+                                         NeverReadDuringAdmission);
+      dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
+      Carrier carrier;
+      Check(admit(f, cap, admission, carrier).ok(), "opaque callback mode setup");
+      dt::BlobRetainedLifetimeLeaseV3 lease;
+      if (phase == 0) f.fake.retain_code = SB_BLOB_CALLBACK_WRONG_MODE_V3;
+      auto result = dt::RetainBaseBlobLifetimeLeaseV3Generation1(
+          f.profile, std::move(admission), carrier, f.token, f.request, lease);
+      if (phase == 1) {
+        Check(result.ok(), "opaque probe mode retain");
+        f.fake.probe_code = SB_BLOB_CALLBACK_WRONG_MODE_V3;
+        result = lease.Probe();
+      } else if (phase == 2) {
+        Check(result.ok(), "opaque release mode retain");
+        f.fake.release_code = SB_BLOB_CALLBACK_WRONG_MODE_V3;
+        result = lease.Release();
+      }
+      Check(result.diagnostic_code == "BLOB.HANDLE_MODE_REFUSED" &&
+                result.fact.parameters.open_mode_enum == 6 &&
+                result.fact.parameters.operation_enum == op && f.fake.pins == 0 &&
+                Access::ReaderRoutingCleared(lease),
+            "opaque callback diagnostic substituted scalar mode or leaked custody");
+    }
+  }
+  {
+    Fixture f(8);
+    prepare(f, 11);
+    auto cap = Host::EncodedCapability(f.carrier_binding, UINT64_MAX, &f.fake,
+                                       NeverReadDuringAdmission);
+    dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
+    Carrier carrier;
+    Check(admit(f, cap, admission, carrier).ok(), "opaque populated output setup");
+    dt::BlobLifetimeAuthorityAdmissionV3Generation1 other;
+    const auto refused = admit(f, cap, other, carrier);
+    Check(refused.diagnostic_code == "BLOB.STATE_INVALID" &&
+              refused.fact.parameters.supplied_state_u8 == 2 &&
+              carrier.encoded_extent() == UINT64_MAX && f.fake.pins == 2,
+          "opaque populated output lost encoded-artifact state/custody");
+    dt::BlobRetainedLifetimeLeaseV3 lease;
+    f.fake.retain_code = SB_BLOB_CALLBACK_WRONG_MODE_V3;
+    const auto failed = dt::RetainBaseBlobLifetimeLeaseV3Generation1(
+        f.profile, std::move(admission), carrier, f.token, f.request, lease);
+    Check(failed.diagnostic_code == "BLOB.HANDLE_MODE_REFUSED" &&
+              failed.fact.parameters.open_mode_enum == 6 && f.fake.pins == 0 &&
+              Access::ReaderRoutingCleared(lease),
+          "opaque failed retain mode diagnostic or clear-before-unpin");
+    f.fake.retain_code = 0;
+    dt::BlobLifetimeAuthorityAdmissionV3Generation1 retry;
+    Carrier fresh;
+    Check(admit(f, cap, retry, fresh).ok() &&
+              dt::RetainBaseBlobLifetimeLeaseV3Generation1(f.profile, std::move(retry),
+                  fresh, f.token, f.request, lease).ok(), "opaque failed retain reuse");
+    VisitContext visit;
+    auto visitor = Access::Visitor(CopyVisitor, &visit);
+    const auto wrong_consumer = lease.VisitBoundMaterializedBytes(visitor);
+    Check(wrong_consumer.disposition == dt::BlobLifetimeOuterDispositionV3::terminated_out_of_band &&
+              visit.copied_size == 0 && CountCall(f.fake,'B') == 0 &&
+              CountCall(f.fake,'L') == 1 && f.fake.pins == 0 && Access::ReaderRoutingCleared(lease),
+          "opaque carrier exposed scalar/materialized content");
+  }
+  const auto page_size = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
+  void* page = mmap(nullptr, page_size, PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  Check(page != MAP_FAILED, "opaque capability guard allocation");
+  Fixture guarded(0);
+  prepare(guarded, 9);
+  auto* guarded_cap = Host::EncodedCapabilityAt(page, guarded.carrier_binding,
+      &guarded.fake, NeverReadDuringAdmission);
+  Check(mprotect(page, page_size, PROT_NONE) == 0, "opaque capability protect");
+  for (unsigned pin = 1; pin <= 2; ++pin) {
+    guarded.fake.pin_acquire_calls = 0;
+    guarded.fake.pin_failure_call = pin;
+    guarded.fake.pin_acquire_status = dt::BlobReceiverPinAcquireStatusV3::draining;
+    guarded.fake.pin_zero_cookie = true;
+    dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
+    Carrier carrier;
+    const auto result = admit(guarded, *guarded_cap, admission, carrier);
+    Check(result.diagnostic_code == "BLOB.LIFETIME_AUTHORITY_UNAVAILABLE" &&
+              guarded.fake.pins == 0 && guarded.fake.call_count == 0 &&
+              guarded.fake.pin_acquire_calls == pin,
+          "opaque factory read unstable capability before both pins");
+  }
+  Check(mprotect(page, page_size, PROT_READ | PROT_WRITE) == 0,
+        "opaque capability restore");
+  guarded_cap->~BlobReceiverEncodedReaderCapabilityV3Generation1();
+  auto* guarded_carrier = new (page) Carrier;
+  Check(mprotect(page, page_size, PROT_NONE) == 0, "opaque retained carrier protect");
+  dt::BlobLifetimeAuthorityAdmissionV3Generation1 absent;
+  dt::BlobRetainedLifetimeLeaseV3 lease;
+  const auto refused = dt::RetainBaseBlobLifetimeLeaseV3Generation1(
+      guarded.profile, std::move(absent), *guarded_carrier,
+      guarded.token, guarded.request, lease);
+  Check(!refused.ok() && guarded.fake.call_count == 0 && guarded.fake.pins == 0,
+        "opaque retained validation read carrier without admission");
+  Check(mprotect(page, page_size, PROT_READ | PROT_WRITE) == 0,
+        "opaque retained carrier restore");
+  guarded_carrier->~BlobBoundEncodedReaderCarrierV3Generation1();
+  Check(munmap(page, page_size) == 0,
+        "opaque capability guard cleanup");
 }
 
 void ContextualNullDescriptorBinding() {
@@ -6381,6 +6653,7 @@ int main(int argc, char** argv) {
   AllocationFreeMaterializedPath();
   BudgetConfigureFreezeLifecycle();
   ContextualNullDescriptorBinding();
+  EncodedReaderAdmissionAndRetention();
   IndependentResourceCleanupAccounting();
   TwoThreadCloneMoveGuardContention();
   AtomicWinnerReceiptProtocol();
