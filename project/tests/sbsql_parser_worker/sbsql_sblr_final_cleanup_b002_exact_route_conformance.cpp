@@ -7,6 +7,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
+#include "core/memory/memory.hpp"
+#include "transaction/transaction_api.hpp"
+#include "observability/metrics_api.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -26,6 +31,8 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -91,8 +98,7 @@ constexpr std::array<B002Row, 35> kRows{{
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
-    std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -264,28 +270,58 @@ PipelineArtifacts RunPipeline(std::string_view sql) {
   return artifacts;
 }
 
+struct B002EngineFixture {
+  scratchbird::tests::OwnedTempDirectory directory;
+  api::EngineRequestContext transaction;
+  std::unique_ptr<scratchbird::tests::FixtureEngineSession> session;
+  std::unique_ptr<scratchbird::tests::FixtureEngineStatement> statement;
+
+  B002EngineFixture() {
+    namespace db = scratchbird::storage::database;
+    namespace platform = scratchbird::core::platform;
+    namespace memory = scratchbird::core::memory;
+    Require(memory::ConfigureDefaultMemoryManagerForFixture(
+        memory::DefaultLocalEngineMemoryPolicy(), "b002_exact_routes").ok(),
+        "B002 physical memory policy unavailable");
+    db::DatabaseCreateConfig create;
+    create.path = (directory.path() / "b002.sbdb").string();
+    create.database_uuid = {platform::UuidKind::database, api::GenerateCrudEngineUuid("database")};
+    create.filespace_uuid = {platform::UuidKind::filespace, api::GenerateCrudEngineUuid("filespace")};
+    scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+    Require(db::CreateDatabaseFile(create).ok(), "B002 credentialed node creation failed");
+    transaction = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+    session = std::make_unique<scratchbird::tests::FixtureEngineSession>(transaction);
+    api::EngineBeginTransactionRequest begin;
+    begin.context = transaction;
+    begin.isolation_level = "read_committed";
+    const auto started = api::EngineBeginTransaction(begin);
+    Require(started.ok, "B002 actual MGA BEGIN failed");
+    transaction.transaction_uuid = started.transaction_uuid;
+    transaction.local_transaction_id = started.local_transaction_id;
+    transaction.snapshot_visible_through_local_transaction_id =
+        started.snapshot_visible_through_local_transaction_id;
+  }
+  api::EngineRequestContext Context() {
+    statement.reset();
+    statement = std::make_unique<scratchbird::tests::FixtureEngineStatement>(*session, transaction);
+    return statement->context;
+  }
+  void Close() {
+    statement.reset();
+    session->Close();
+    session.reset();
+    directory.Cleanup();
+  }
+};
+B002EngineFixture* active_fixture = nullptr;
+
 api::EngineRequestContext EngineContext(bool security_context_present = true) {
-  api::EngineRequestContext context;
-  context.request_id = "sbsql-sblr-final-cleanup-b002";
-  context.security_context_present = security_context_present;
-  context.database_path = "/tmp/sbsql_sblr_final_cleanup_b002.sbdb";
-  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000d801");
-  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000d802");
-  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000d807");
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000d803");
-  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000d804");
-  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000d805");
-  context.current_diagnostic_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000d806");
-  context.catalog_generation_id = 71;
-  context.security_epoch = 73;
-  context.resource_epoch = 79;
-  context.local_transaction_id = 1;
-  context.trust_mode = api::EngineTrustMode::embedded_in_process;
-  context.trace_tags.push_back("security.bootstrap");
-  context.trace_tags.push_back("security.fixture_trace_authority");
-  context.trace_tags.push_back("right:OBS_METRICS_READ_ALL");
-  context.trace_tags.push_back("right:OBS_SECURITY_INSPECT");
-  context.trace_tags.push_back("right:POLICY_ADMIN");
+  Require(active_fixture != nullptr, "B002 actual engine fixture not installed");
+  auto context = active_fixture->Context();
+  if (!security_context_present) {
+    context.security_context_present = false;
+    context.authorization_context = {};
+  }
   return context;
 }
 
@@ -468,6 +504,21 @@ void RequireSecurityRefusalRedaction() {
   }
 }
 
+void RequireTraceClaimsDoNotAuthorizeMetrics() {
+  for (const auto mode : {api::EngineTrustMode::server_isolated,
+                          api::EngineTrustMode::embedded_in_process}) {
+    api::EngineShowMetricsRequest request;
+    request.context = EngineContext();
+    request.context.trust_mode = mode;
+    request.context.authorization_context = {};
+    request.context.trace_tags = {"security.bootstrap", "security.fixture_trace_authority",
+                                  "right:OBS_METRICS_READ_ALL", "right:MGA_METRICS_READ"};
+    const auto result = api::EngineShowMetrics(request);
+    Require(!result.ok && !result.diagnostics.empty() && result.result_shape.rows.empty(),
+            "trace-tag privilege claims authorized metrics or exposed a partial row");
+  }
+}
+
 void RequireOverlapRoutesPreserved() {
   const auto plural_jobs = RunPipeline("SHOW JOBS");
   Require(plural_jobs.verifier.admitted, "SHOW JOBS verifier rejected plural route");
@@ -540,7 +591,9 @@ void RequireProductionSourceIntegrity() {
 
 }  // namespace
 
-int main() {
+int main() try {
+  B002EngineFixture fixture;
+  active_fixture = &fixture;
   RequireProductionSourceIntegrity();
   for (const auto& row : kRows) {
     RequireExactLowering(row);
@@ -548,7 +601,14 @@ int main() {
   }
   RequireInvalidSyntaxDiagnostics();
   RequireSecurityRefusalRedaction();
+  RequireTraceClaimsDoNotAuthorizeMetrics();
   RequireOverlapRoutesPreserved();
+  active_fixture = nullptr;
+  fixture.Close();
   std::cout << "sbsql_sblr_final_cleanup_b002_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  active_fixture = nullptr;
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }
