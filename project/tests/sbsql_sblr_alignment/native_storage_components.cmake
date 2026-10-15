@@ -49,6 +49,8 @@ add_executable(sbsql_sblr_alignment_native_storage_components
   ../../src/core/catalog/catalog_records.cpp
   ../../src/core/catalog/catalog_record_codec.cpp
   ../../src/core/catalog/catalog_bootstrap_policy.cpp
+  ../../src/core/catalog/catalog_construction_intent.cpp
+  ../../src/core/catalog/catalog_policy_descriptor.cpp
   ../../src/core/catalog/catalog_memory_configuration.cpp
   ../../src/core/catalog/catalog_identifier_profile.cpp
   ../../src/core/catalog/catalog_security_record_codec.cpp

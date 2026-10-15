@@ -2367,12 +2367,19 @@ set_tests_properties(sbsql_sblr_alignment_catalog_bootstrap_policy PROPERTIES
 
 # These intentionally isolated codec fixtures compile the common dispatcher
 # directly; retain its complete native-family implementation dependencies.
-foreach(codec_target IN ITEMS
+set(catalog_dispatcher_fixture_targets
     sbsql_sblr_alignment_catalog_metric_retention_policy
     sbsql_sblr_alignment_catalog_metric_descriptor
     sbsql_sblr_alignment_catalog_metric_label_schema
     sbsql_sblr_alignment_catalog_metric_series
     sbsql_sblr_alignment_catalog_metric_binding)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # This fixture copied the descriptor target's sources before these family
+  # dependencies were attached. Keep its real dispatcher closure complete too.
+  list(APPEND catalog_dispatcher_fixture_targets
+    sbsql_sblr_alignment_metric_visibility_policy)
+endif()
+foreach(codec_target IN LISTS catalog_dispatcher_fixture_targets)
   target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_bootstrap_policy.cpp)
   target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_memory_configuration.cpp)
   target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_identifier_profile.cpp)
