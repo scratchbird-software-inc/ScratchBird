@@ -432,3 +432,53 @@ or the six original live startup failures. NEXT remains full actual enclosing
 database/schema/name/governance/profile/security/provider/service credential
 cohort, retained native mutable controller and activation before hosted BEGIN.
 Do not promote typed metadata or generic declaration strings into authority.
+
+Same-snapshot imported policy/security creation cohort, 2026-10-15
+-----------------------------------------------------------------
+AssembleNativeInitialPolicySecurityRecords now returns the complete imported
+declaration cohort from ONE LoadSelectedPolicySeedPack snapshot:54 definitions
+and108 supplied one-alias name records for the actual default source. Shares
+NativeImportedRole/Group/Membership/GrantDefinition translators with production
+creation. The policy-only28-definition API remains explicit; the enclosing
+complete node producer must use the combined API, not independently reopen
+source paths or silently omit imported security records. No source identity,
+owner/name/governance reference, service principal, credential or effective
+permission is invented. Complete common/name/byte/count and raw object/row/
+enclosing identity admission precedes owning metadata/name copies.
+
+New membership identities are actual owner-supplied UUIDs, keyed to exact
+binary source member/parent pairs. All source pairs must be covered exactly
+once. Missing/extra/duplicate/unknown/self-pair or colliding identities refuse
+without partial output. Source importer now also refuses repeated source pairs
+even after valid content/aggregate resealing, before physical creation. Actual
+native records retain the same grant/membership UUID, actual source references
+and construction UUID/local number. Early nonempty-null source/language/span
+and mismatched object-class checks avoid invalid dereference/identity confusion.
+
+Expanded native producer gate9326checks retains policy-only qualification and
+adds complete independent security golden bytes,24 combined request/binding/
+name/identity/bounds cases,23 existing-path controls,12 actual allocation fault
+cases, exact limits, reordered bindings, actual custom role/group/grant values,
+all10 explicit deny/nonempty binary grant targets, owning lifetimes after source
+deletion and actual indexed construction/reopen across all5 page profiles for
+BOTH cohorts. Nodes remain initializing/write-fenced; external reference closure
+and activation are not inferred. Shared test-only pack resealing helper retains
+the production import gate's exact9-file/hash rules and all its assertions.
+
+Final owned42/42 combined producer/security/UUID/bootstrap/public import/custom/
+schema/memory/runtime-binding/crypto/config regression PASS111.071297s,
+peak324532KiB,no leaked descendants. LastTest retained. Source/build/test edits
+serialized, private temporary root empty12KiB, no archives/extra build trees.
+Core03 CATALOG-INITIAL-POLICY-SECURITY-COHORT-20261015 added; digest
+f74d8496fcf9571b643e1c9b805f73b4c5722bd017472580af327ba4f6dacc00.
+Specifications/workplans remain local/manual. No new baseline closure:
+260=199 qualified+61 outstanding, plus supplemental1 open,62 known names.
+
+NEXT: compose the actual enclosing native database/schema/name/governance/
+profile cohort with this combined declaration producer and actual bootstrap/
+service principal/provider/credential/runtime-binding definitions; retain real
+native mutable source/controller/security admission and complete activation
+before hosted BEGIN. Do not use fixture governance metadata, opaque generic
+policy tokens or supplied trust flags as reference/authentication/permission
+proof. The six original live service startup failures remain open, along with
+the other outstanding groups and full all-target/clean/unfiltered qualification.

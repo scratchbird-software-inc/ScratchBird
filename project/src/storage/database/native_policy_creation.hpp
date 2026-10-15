@@ -37,4 +37,23 @@ struct NativeInitialPolicyResult {
 // cohort, authentication, activation or serving success. Never enter under a
 // storage guard: source intake and owning result assembly can allocate.
 NativeInitialPolicyResult AssembleNativeInitialPolicyRecords(const NativeInitialPolicyRequest&) noexcept;
+
+// Imported group-to-role membership declarations have no source object UUID.
+// The actual construction owner supplies newly issued object identities and
+// binds each to an exact binary source pair. No synthesized/hash identity and
+// no caller-selected replacement for a source role/group/grant is admitted.
+struct NativeInitialMembershipIdentity {
+  core::platform::Uuid membership_uuid,member_uuid,parent_uuid;
+};
+struct NativeInitialPolicySecurityRequest {
+  NativeInitialPolicyRequest policy;
+  std::span<const NativeInitialMembershipIdentity> group_memberships;
+};
+// Complete imported policy AND security declaration cohort from one admitted
+// source snapshot, with all complete caller metadata/names. No bootstrap or
+// service principal, credential, authentication, effective grant or activation
+// is inferred. Physical publication and native reference closure remain owned
+// by the enclosing actual node constructor.
+NativeInitialPolicyResult AssembleNativeInitialPolicySecurityRecords(
+    const NativeInitialPolicySecurityRequest&) noexcept;
 } // namespace scratchbird::storage::database

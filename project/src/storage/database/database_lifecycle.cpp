@@ -2179,6 +2179,7 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
   }
   image.group_records = static_cast<u32>(loaded.groups.size());
 
+  std::set<std::pair<Uuid,Uuid>> membership_pairs;
   if (ExtractArrayBody(groups_json, "memberships", &array_body)) {
     for (const std::string& object : SplitTopLevelObjects(array_body)) {
       PolicyGroupMembershipSeed membership;
@@ -2189,7 +2190,8 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
           membership.member_kind != "group" ||
           membership.parent_kind != "role" ||
           group_uuids.count(membership.member_uuid) == 0 ||
-          role_uuids.count(membership.parent_uuid) == 0) {
+          role_uuids.count(membership.parent_uuid) == 0 ||
+          !membership_pairs.emplace(membership.member_uuid,membership.parent_uuid).second) {
         return PolicyPackLoadError("SB-POLICY-PACK-GROUPS-INVALID", "membership");
       }
       loaded.memberships.push_back(std::move(membership));
@@ -2723,6 +2725,60 @@ scratchbird::core::catalog::CatalogMemoryConfiguration NativeMemoryConfiguration
   memory.origin_transaction_uuid=tx;memory.origin_local_transaction_id=kBootstrapCatalogTransactionId;return memory;
 }
 
+scratchbird::core::catalog::CatalogSecurityRecord NativeImportedSecurityDefinition(
+    CatalogRecordKind kind,const Uuid& identity,const LoadedPolicySeedPack& pack,
+    const TypedUuid& origin) {
+  namespace c=scratchbird::core::catalog;
+  c::CatalogSecurityRecord record;
+  record.kind=kind;
+  record.identities={{std::string(c::CatalogSecurityPrimaryIdentityName(kind)),identity},
+      {"policy_pack_uuid",pack.image.policy_pack_uuid},{"origin_transaction_uuid",origin.value}};
+  record.attributes={{"creator_tx",u64{kBootstrapCatalogTransactionId}},
+      {"created_txn",u64{kBootstrapCatalogTransactionId}},
+      {"policy_generation",u64{pack.image.policy_generation}},
+      {"loaded_at_database_create",true},{"identity_authority","uuid"},{"engine_owned",true}};
+  return record;
+}
+scratchbird::core::catalog::CatalogSecurityRecord NativeImportedRoleDefinition(
+    const LoadedPolicySeedPack& pack,const PolicyRoleSeed& role,const TypedUuid& origin) {
+  auto record=NativeImportedSecurityDefinition(CatalogRecordKind::role_account,role.role_uuid,pack,origin);
+  record.attributes.emplace("role_code",role.role_code);
+  record.attributes.emplace("description",role.description);
+  record.attributes.emplace("default_assignment",role.default_assignment);
+  return record;
+}
+scratchbird::core::catalog::CatalogSecurityRecord NativeImportedGroupDefinition(
+    const LoadedPolicySeedPack& pack,const PolicyGroupSeed& group,const TypedUuid& origin) {
+  auto record=NativeImportedSecurityDefinition(CatalogRecordKind::group_account,group.group_uuid,pack,origin);
+  record.attributes.emplace("group_code",group.group_code);
+  record.attributes.emplace("description",group.description);
+  return record;
+}
+scratchbird::core::catalog::CatalogSecurityRecord NativeImportedMembershipDefinition(
+    const LoadedPolicySeedPack& pack,const PolicyGroupMembershipSeed& membership,
+    const Uuid& identity,const TypedUuid& origin) {
+  auto record=NativeImportedSecurityDefinition(CatalogRecordKind::grant_record,identity,pack,origin);
+  record.identities.emplace("membership_uuid",identity);
+  record.identities.emplace("member_uuid",membership.member_uuid);
+  record.identities.emplace("parent_uuid",membership.parent_uuid);
+  record.attributes.emplace("grant_class","group_membership");
+  record.attributes.emplace("member_kind",membership.member_kind);
+  record.attributes.emplace("parent_kind",membership.parent_kind);
+  record.attributes.emplace("effect","allow");
+  return record;
+}
+scratchbird::core::catalog::CatalogSecurityRecord NativeImportedGrantDefinition(
+    const LoadedPolicySeedPack& pack,const PolicyGrantSeed& grant,const TypedUuid& origin) {
+  auto record=NativeImportedSecurityDefinition(CatalogRecordKind::grant_record,grant.grant_uuid,pack,origin);
+  record.identities.emplace("subject_uuid",grant.subject_uuid);
+  if(grant.target_uuid)record.identities.emplace("target_uuid",*grant.target_uuid);
+  record.attributes.emplace("grant_class","privilege");
+  record.attributes.emplace("subject_kind",grant.subject_kind);
+  record.attributes.emplace("right",grant.right);
+  record.attributes.emplace("effect",grant.effect);
+  return record;
+}
+
 CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>* rows,
                                                      u32* ordinal,
                                                      u64 identity_seed,
@@ -2775,19 +2831,7 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
     seed+=4;
   }
   for (const auto& role : pack.roles) {
-    const TypedUuid role_uuid{UuidKind::object,role.role_uuid};
-    scratchbird::core::catalog::CatalogSecurityRecord record;
-    record.kind = CatalogRecordKind::role_account;
-    record.identities = {{"role_uuid", role_uuid.value},
-                         {"policy_pack_uuid", policy_pack_uuid.value}};
-    record.attributes = {{"role_code", role.role_code},
-                         {"description", role.description},
-                         {"default_assignment", role.default_assignment},
-                         {"policy_generation", u64{pack.image.policy_generation}},
-                         {"created_txn", u64{kBootstrapCatalogTransactionId}},
-                         {"loaded_at_database_create", true},
-                         {"identity_authority", "uuid"},
-                         {"engine_owned", true}};
+    auto record=NativeImportedRoleDefinition(pack,role,creator_transaction_uuid);
     typed = AddSecurityCatalogRecord(rows, ordinal, seed, std::move(record),
                                      security_parent_uuid, creator_transaction_uuid);
     if (!typed.ok()) { return typed; }
@@ -2795,18 +2839,7 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
   }
 
   for (const auto& group : pack.groups) {
-    const TypedUuid group_uuid{UuidKind::object,group.group_uuid};
-    scratchbird::core::catalog::CatalogSecurityRecord record;
-    record.kind = CatalogRecordKind::group_account;
-    record.identities = {{"group_uuid", group_uuid.value},
-                         {"policy_pack_uuid", policy_pack_uuid.value}};
-    record.attributes = {{"group_code", group.group_code},
-                         {"description", group.description},
-                         {"policy_generation", u64{pack.image.policy_generation}},
-                         {"created_txn", u64{kBootstrapCatalogTransactionId}},
-                         {"loaded_at_database_create", true},
-                         {"identity_authority", "uuid"},
-                         {"engine_owned", true}};
+    auto record=NativeImportedGroupDefinition(pack,group,creator_transaction_uuid);
     typed = AddSecurityCatalogRecord(rows, ordinal, seed, std::move(record),
                                      security_parent_uuid, creator_transaction_uuid);
     if (!typed.ok()) { return typed; }
@@ -2814,22 +2847,9 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
   }
 
   for (const auto& membership : pack.memberships) {
-    const TypedUuid member_uuid{UuidKind::object,membership.member_uuid};
-    const TypedUuid parent_uuid{UuidKind::object,membership.parent_uuid};
-    scratchbird::core::catalog::CatalogSecurityRecord record;
-    record.kind = CatalogRecordKind::grant_record;
-    record.identities = {{"member_uuid", member_uuid.value},
-                         {"parent_uuid", parent_uuid.value},
-                         {"policy_pack_uuid", policy_pack_uuid.value}};
-    record.attributes = {{"grant_class", "group_membership"},
-                         {"member_kind", membership.member_kind},
-                         {"parent_kind", membership.parent_kind},
-                         {"effect", "allow"},
-                         {"policy_generation", u64{pack.image.policy_generation}},
-                         {"created_txn", u64{kBootstrapCatalogTransactionId}},
-                         {"loaded_at_database_create", true},
-                         {"identity_authority", "uuid"},
-                         {"engine_owned", true}};
+    const auto issued=GenerateEngineIdentityV7(UuidKind::object,seed+1);
+    if(!issued.ok())return CatalogRowsBuildError(issued.status,issued.diagnostic);
+    auto record=NativeImportedMembershipDefinition(pack,membership,issued.value.value,creator_transaction_uuid);
     typed = AddSecurityCatalogRecord(rows, ordinal, seed, std::move(record),
                                      security_parent_uuid, creator_transaction_uuid);
     if (!typed.ok()) { return typed; }
@@ -2837,25 +2857,7 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
   }
 
   for (const auto& grant : pack.grants) {
-    const TypedUuid grant_uuid{UuidKind::object,grant.grant_uuid};
-    const TypedUuid subject_uuid{UuidKind::object,grant.subject_uuid};
-    scratchbird::core::catalog::CatalogSecurityRecord record;
-    record.kind = CatalogRecordKind::grant_record;
-    record.identities = {{"grant_uuid", grant_uuid.value},
-                         {"subject_uuid", subject_uuid.value},
-                         {"policy_pack_uuid", policy_pack_uuid.value}};
-    if (grant.target_uuid) {
-      record.identities.emplace("target_uuid", *grant.target_uuid);
-    }
-    record.attributes = {{"grant_class", "privilege"},
-                         {"subject_kind", grant.subject_kind},
-                         {"right", grant.right},
-                         {"effect", grant.effect},
-                         {"policy_generation", u64{pack.image.policy_generation}},
-                         {"created_txn", u64{kBootstrapCatalogTransactionId}},
-                         {"loaded_at_database_create", true},
-                         {"identity_authority", "uuid"},
-                         {"engine_owned", true}};
+    auto record=NativeImportedGrantDefinition(pack,grant,creator_transaction_uuid);
     typed = AddSecurityCatalogRecord(rows, ordinal, seed, std::move(record),
                                      security_parent_uuid, creator_transaction_uuid);
     if (!typed.ok()) { return typed; }
@@ -6611,7 +6613,9 @@ DatabaseLifecycleResult RecordStartupEvidence(const DatabaseLifecycleOperationCo
 
 }  // namespace
 
-NativeInitialPolicyResult AssembleNativeInitialPolicyRecords(const NativeInitialPolicyRequest& request) noexcept {
+static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
+    const NativeInitialPolicyRequest& request,
+    std::optional<std::span<const NativeInitialMembershipIdentity>> security_memberships) noexcept {
   namespace c=scratchbird::core::catalog;
   using E=NativeInitialPolicyError;
   const auto fail=[](E error,c::CatalogNamedCreationError names=c::CatalogNamedCreationError::none) {
@@ -6624,29 +6628,44 @@ NativeInitialPolicyResult AssembleNativeInitialPolicyRecords(const NativeInitial
         request.database_uuid==request.construction_transaction.value||
         request.memory_configuration_uuid==request.database_uuid||
         request.memory_configuration_uuid==request.construction_transaction.value||
-        request.policy_seed_pack_root.empty()||request.policy_seed_pack_root.find('\0')!=std::string_view::npos||
-        request.database_default_language.empty()||request.definitions.empty())
+        request.policy_seed_pack_root.empty()||!request.policy_seed_pack_root.data()||
+        request.policy_seed_pack_root.find('\0')!=std::string_view::npos||
+        request.database_default_language.empty()||!request.database_default_language.data()||
+        request.definitions.empty()||!request.definitions.data()||
+        (security_memberships && (security_memberships->size()>request.definitions.size()||
+          (!security_memberships->empty()&&!security_memberships->data()))))
       return fail(E::invalid_request);
     if(!request.limits.maximum_records||!request.limits.maximum_encoded_bytes||
         request.definitions.size()>request.limits.maximum_records/3)return fail(E::resource_exhausted);
     u64 proposed_records=0;
     for(const auto& input:request.definitions) {
       if(!input.definition||!input.definition->record.payload.empty())return fail(E::invalid_definition);
-      if(!input.vector_metadata||!input.vector||input.entries.empty())return fail(E::invalid_names);
+      if(!input.vector_metadata||!input.vector||input.entries.empty()||!input.entries.data())return fail(E::invalid_names);
       if(request.limits.maximum_records-proposed_records<2||
           input.entries.size()>request.limits.maximum_records-proposed_records-2)return fail(E::resource_exhausted);
       proposed_records+=2+input.entries.size();
       for(const auto& entry:input.entries)if(!entry.metadata||!entry.entry)return fail(E::invalid_names);
+    }
+    std::map<std::pair<Uuid,Uuid>,Uuid> membership_identities;
+    if(security_memberships)for(const auto& binding:*security_memberships) {
+      if(!IsEngineIdentityUuid(binding.membership_uuid)||!IsEngineIdentityUuid(binding.member_uuid)||
+          !IsEngineIdentityUuid(binding.parent_uuid)||binding.member_uuid==binding.parent_uuid)
+        return fail(E::invalid_definition);
+      if(!membership_identities.emplace(std::make_pair(binding.member_uuid,binding.parent_uuid),binding.membership_uuid).second)
+        return fail(E::duplicate_identity);
     }
     const auto loaded=LoadSelectedPolicySeedPack(std::string(request.policy_seed_pack_root));
     if(!loaded.ok()) {
       auto result=fail(E::source_invalid);result.source_diagnostic=loaded.diagnostic;return result;
     }
     const auto& pack=loaded.pack;
+    const auto security_count=security_memberships ?
+        pack.roles.size()+pack.groups.size()+pack.memberships.size()+pack.grants.size():0;
     if(!pack.image.active||!pack.memory_configuration||
-        request.definitions.size()!=2+pack.providers.size()+pack.profiles.size())return fail(E::invalid_definition);
-    // These security definitions are not returned by this family assembler,
-    // but their admitted identities are already known. Do not admit a new
+        request.definitions.size()!=2+pack.providers.size()+pack.profiles.size()+security_count||
+        (security_memberships && security_memberships->size()!=pack.memberships.size()))return fail(E::invalid_definition);
+    // The policy-only entrypoint excludes these security definitions, but both
+    // entrypoints already know their identities. Do not admit a new
     // configuration/enclosing identity which aliases one of them by kind.
     const auto aliases_enclosing=[&](const Uuid& identity) {
       return identity==request.database_uuid||identity==request.construction_transaction.value||
@@ -6682,6 +6701,27 @@ NativeInitialPolicyResult AssembleNativeInitialPolicyRecords(const NativeInitial
         NativeMemoryConfigurationDefinition(pack,request.memory_configuration_uuid,request.construction_transaction)))
       return fail(E::invalid_definition);
 
+    if(security_memberships) {
+      const auto append_security=[&](const c::CatalogSecurityRecord& record) {
+        const auto encoded=c::EncodeCatalogSecurityRecord(record);
+        const auto identity=record.Identity(c::CatalogSecurityPrimaryIdentityName(record.kind));
+        return encoded.ok()&&definitions.emplace(identity,Definition{record.kind,
+            c::CatalogRecordKindName(record.kind),std::string(encoded.bytes.begin(),encoded.bytes.end())}).second;
+      };
+      for(const auto& role:pack.roles)
+        if(!append_security(NativeImportedRoleDefinition(pack,role,request.construction_transaction)))return fail(E::invalid_definition);
+      for(const auto& group:pack.groups)
+        if(!append_security(NativeImportedGroupDefinition(pack,group,request.construction_transaction)))return fail(E::invalid_definition);
+      for(const auto& membership:pack.memberships) {
+        const auto found=membership_identities.find({membership.member_uuid,membership.parent_uuid});
+        if(found==membership_identities.end())return fail(E::invalid_definition);
+        if(!append_security(NativeImportedMembershipDefinition(pack,membership,found->second,request.construction_transaction)))
+          return fail(E::duplicate_identity);
+      }
+      for(const auto& grant:pack.grants)
+        if(!append_security(NativeImportedGrantDefinition(pack,grant,request.construction_transaction)))return fail(E::invalid_definition);
+    }
+
     // All canonical payload/common/name validation and raw identity admission
     // precede owning metadata/name copies. No prototype row is decoded here.
     u64 records=0,bytes=0;
@@ -6690,6 +6730,7 @@ NativeInitialPolicyResult AssembleNativeInitialPolicyRecords(const NativeInitial
       const auto found=definitions.find(input.definition->record.header.object_uuid.value);
       if(found==definitions.end()||input.definition->record.header.kind!=found->second.kind||
           input.definition->object_subtype!=found->second.subtype)return fail(E::invalid_definition);
+      if(input.vector->object_class!=c::CatalogRecordKindName(found->second.kind))return fail(E::invalid_names);
       auto view=c::BorrowCatalogMetadataVersion(*input.definition);view.record.payload=found->second.payload;
       const auto checked=c::PreflightLocalNamedCreationRecord(view,input,request.construction_transaction,
           request.database_default_language,{request.limits.maximum_records-records,request.limits.maximum_encoded_bytes-bytes});
@@ -6723,6 +6764,14 @@ NativeInitialPolicyResult AssembleNativeInitialPolicyRecords(const NativeInitial
   }catch(const std::bad_alloc&) {return fail(E::resource_exhausted);}
    catch(const std::length_error&) {return fail(E::resource_exhausted);}
    catch(...) {return fail(E::invalid_request);}
+}
+
+NativeInitialPolicyResult AssembleNativeInitialPolicyRecords(const NativeInitialPolicyRequest& request) noexcept {
+  return AssembleNativeInitialPolicyRecordsImpl(request,std::nullopt);
+}
+NativeInitialPolicyResult AssembleNativeInitialPolicySecurityRecords(
+    const NativeInitialPolicySecurityRequest& request) noexcept {
+  return AssembleNativeInitialPolicyRecordsImpl(request.policy,request.group_memberships);
 }
 
 DatabaseArtifactCompatibilityResult ClassifyDatabaseArtifactVersionCompatibility(
