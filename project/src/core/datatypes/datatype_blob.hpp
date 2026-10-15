@@ -1173,8 +1173,10 @@ class BlobRetainedLifetimeLeaseV3 final {
     State load(std::memory_order order) const noexcept;
     void store(State desired, std::memory_order order) noexcept;
     bool compare_exchange_strong(State& expected, State desired,
-                                 std::memory_order success) noexcept;
+                                 std::memory_order success,
+                                 u8 owner_operation) noexcept;
     bool Publish(u64 packed) noexcept;
+    bool PublishReleaseOverlap() noexcept;
     u64 Deferred() const noexcept;
     bool BeginClosing() noexcept;
     u64 PeekDeferredWhileClosing() const noexcept;
@@ -1183,7 +1185,7 @@ class BlobRetainedLifetimeLeaseV3 final {
     void WaitForClosingQuiescence(u32 owner_entrants) const noexcept;
     GenerationResetOutcome ResetGeneration(
         State expected_predecessor, State installed_state) noexcept;
-    GenerationResetOutcome ClaimIdleForTransfer() noexcept;
+    GenerationResetOutcome ClaimIdleForTransfer(u8 owner_operation) noexcept;
     bool TryEnter(bool allow_reusable_predecessor = false) noexcept;
     void Leave() noexcept;
     u32 entrants() const noexcept;

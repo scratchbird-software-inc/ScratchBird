@@ -356,8 +356,13 @@ class BlobLifetimeRuntimeConformanceAccessV3 final {
     return lease.state_.entrants();
   }
 
-  static auto ControlClaimTransfer(BlobRetainedLifetimeLeaseV3& lease) noexcept {
-    return lease.state_.ClaimIdleForTransfer();
+  static auto ControlClaimTransfer(BlobRetainedLifetimeLeaseV3& lease,
+                                    u8 operation = 16) noexcept {
+    return lease.state_.ClaimIdleForTransfer(operation);
+  }
+  static BlobLifetimeRuntimeResultV3 ReleaseTransferOwner(
+      BlobRetainedLifetimeLeaseV3& lease, u8 operation) noexcept {
+    return lease.ReleaseOwned(BlobLifetimePhaseV3::release,operation);
   }
 
   static auto ControlResetGeneration(BlobRetainedLifetimeLeaseV3& lease,
@@ -663,6 +668,13 @@ struct FakeReceiver {
   bool cancellation_dirty_reserved = false;
   bool cancelled = false;
   bool cancel_on_release = false;
+  bool cancel_on_next_retain = false;
+  bool block_release = false;
+  std::atomic<bool> release_entered{false};
+  std::atomic<bool> finish_release{false};
+  bool block_clone_pin = false;
+  std::atomic<bool> clone_pin_entered{false};
+  std::atomic<bool> finish_clone_pin{false};
   bool regress_clock = false;
   bool throw_retain = false;
   bool throw_retain_after_output = false;
@@ -797,6 +809,10 @@ BlobLifetimeCallbackResultV3 SCRATCHBIRD_ENGINE_CALL Retain(
   auto& fake = *static_cast<FakeReceiver*>(context);
   std::lock_guard lock(fake.callback_mutex);
   fake.Push('R');
+  if (fake.cancel_on_next_retain) {
+    fake.cancel_on_next_retain = false;
+    fake.cancelled = true;
+  }
   AttemptAdminReentry(fake);
   if (fake.throw_retain) throw 1;
   if (fake.corrupt_cancel_ledger != nullptr &&
@@ -893,6 +909,10 @@ BlobLifetimeCallbackResultV3 SCRATCHBIRD_ENGINE_CALL Release(
   auto& fake = *static_cast<FakeReceiver*>(context);
   std::lock_guard lock(fake.callback_mutex);
   fake.Push('L');
+  if (fake.block_release) {
+    fake.release_entered.store(true,std::memory_order_release);
+    while (!fake.finish_release.load(std::memory_order_acquire)) std::this_thread::yield();
+  }
   fake.release_ticket_seen = *inout;
   if (fake.cancel_on_release) fake.cancelled = true;
   if (fake.throw_release) throw 1;
@@ -980,6 +1000,10 @@ dt::BlobReceiverPinCloneResultV3 ClonePin(void* context,
                                          std::uint64_t) noexcept {
   auto& fake = *static_cast<FakeReceiver*>(context);
   std::lock_guard lock(fake.callback_mutex);
+  if (fake.block_clone_pin) {
+    fake.clone_pin_entered.store(true,std::memory_order_release);
+    while (!fake.finish_clone_pin.load(std::memory_order_acquire)) std::this_thread::yield();
+  }
   if (++fake.pin_clone_calls == fake.pin_clone_failure_call) {
     dt::BlobReceiverPinCloneResultV3 result{};
     result.status = fake.pin_acquire_status;
@@ -5839,6 +5863,216 @@ bool RunIsolatedRegression(std::string_view name, Function function) {
   return false;
 }
 
+bool ReleaseLosesToOrdinaryWork(std::uint8_t op, unsigned carrier_kind) {
+  using Access = dt::BlobLifetimeRuntimeConformanceAccessV3;
+  std::array<platform::byte,8> scratch{};
+  dt::BlobLifetimeBudgetConfigurationV3Generation1 config;
+  config.limits.fill(UINT64_MAX); config.scratch = scratch; config.admitted_window_octets = 4;
+  Fixture f(32,0,&config);
+  f.fake.pins = 0;
+  f.request.operation = op;
+  dt::BlobRetainedLifetimeLeaseV3 lease;
+  GuardedReaderContext reader_context{&f.fake};
+  const std::array<platform::byte,1> bytes{{0x51}};
+  if (carrier_kind == 0) {
+    auto carrier = Access::Carrier(f.carrier_binding,dt::BlobValueStateV3::value,bytes.data(),1);
+    if (!dt::RetainBaseBlobLifetimeLeaseV3Generation1(f.profile,f.Admission(),carrier,
+        f.token,f.request,lease).ok()) return false;
+  } else RetainGuardedReader(f,4,carrier_kind == 2,reader_context,lease);
+  struct Context {
+    dt::BlobRetainedLifetimeLeaseV3* lease;
+    dt::BlobLifetimeRuntimeResultV3 loser;
+    unsigned calls = 0;
+  } context{&lease,{}};
+  auto visitor = Access::Visitor([](void* raw,std::span<const platform::byte>) -> dt::BlobProtectedWorkResultV3 {
+    auto& c = *static_cast<Context*>(raw);
+    ++c.calls;
+    c.loser = c.lease->Release();
+    dt::BlobProtectedWorkResultV3 result; result.status = 0; return result;
+  },&context);
+  const auto result = carrier_kind == 0 ? lease.VisitBoundMaterializedBytes(visitor)
+                                        : lease.VisitBoundReaderBytes(visitor);
+  return result.reason == "same_ticket_concurrent_use" &&
+      context.loser.reason == "same_ticket_concurrent_use" && context.calls == 1 &&
+      f.fake.pins == 0 && CountCall(f.fake,'R') == 1 && CountCall(f.fake,'B') == 1 &&
+      CountCall(f.fake,'E') == 1 && CountCall(f.fake,'L') == 1 && CountCall(f.fake,'P') == 0 &&
+      ExactInvariantTuple(f.fake,dt::BlobLifetimeInvariantEventV3::same_ticket_concurrent_use,
+          dt::BlobLifetimePhaseV3::protected_access,op,255);
+}
+
+std::size_t ReleaseOverlappingOrdinaryRegressions() {
+  std::size_t failures = 0;
+  for (const std::uint8_t op : {1,2,4,5,6,7})
+    if (!RunIsolatedRegression("release_loses_to_materialized_work",[op] {
+      return ReleaseLosesToOrdinaryWork(op,0);
+    })) ++failures;
+  for (std::uint8_t op = 2; op <= 13; ++op)
+    if (!RunIsolatedRegression("release_loses_to_guarded_reader_work",[op] {
+      return ReleaseLosesToOrdinaryWork(op,op >= 9 ? 2 : 1);
+    })) ++failures;
+  return failures;
+}
+
+std::size_t ReleaseAdministrativeOverlapRegressions() {
+  using Access = dt::BlobLifetimeRuntimeConformanceAccessV3;
+  std::size_t failures = 0;
+  // These control-level tests use real retained tickets, admitted entrants,
+  // native transfer claims and actual cleanup. They are not substitutes for
+  // the real Clone/Move API interleavings below and elsewhere in this suite.
+  for (std::uint8_t operation = 15; operation <= 17; ++operation) {
+    for (bool during_release : {false,true}) {
+      if (!RunIsolatedRegression(during_release ? "release_loses_to_administrative_cleanup" :
+              "release_loses_to_administrative_claim",[operation,during_release] {
+        Fixture f(16);
+        f.fake.pins = 0;
+        auto carrier = Access::Carrier(f.carrier_binding,dt::BlobValueStateV3::value,nullptr,0);
+        dt::BlobRetainedLifetimeLeaseV3 lease;
+        if (!dt::RetainBaseBlobLifetimeLeaseV3Generation1(f.profile,f.Admission(),carrier,
+            f.token,f.request,lease).ok()) return false;
+        dt::BlobLifetimeRuntimeResultV3 owner;
+        dt::BlobLifetimeRuntimeResultV3 loser;
+        if (during_release) {
+          f.fake.block_release = true;
+          std::thread thread([&] {
+            if (!Access::ControlEnter(lease) ||
+                static_cast<std::uint8_t>(Access::ControlClaimTransfer(lease,operation).status) != 0)
+              Fail("administrative cleanup owner admission");
+            owner = Access::ReleaseTransferOwner(lease,operation);
+            Access::ControlLeave(lease);
+          });
+          while (!f.fake.release_entered.load(std::memory_order_acquire)) std::this_thread::yield();
+          loser = lease.Release();
+          f.fake.finish_release.store(true,std::memory_order_release);
+          thread.join();
+        } else {
+          if (!Access::ControlEnter(lease) ||
+              static_cast<std::uint8_t>(Access::ControlClaimTransfer(lease,operation).status) != 0)
+            return false;
+          loser = lease.Release();
+          owner = Access::ReleaseTransferOwner(lease,operation);
+          Access::ControlLeave(lease);
+        }
+        const auto phase = during_release ? dt::BlobLifetimePhaseV3::release : operation == 15 ?
+            dt::BlobLifetimePhaseV3::retain : operation == 16 ? dt::BlobLifetimePhaseV3::move_construct :
+            dt::BlobLifetimePhaseV3::move_replace;
+        return loser.reason == "same_ticket_concurrent_use" && owner.reason == "same_ticket_concurrent_use" &&
+            CountCall(f.fake,'R') == 1 && CountCall(f.fake,'L') == 1 && f.fake.pins == 0 &&
+            Access::ControlEntrants(lease) == 0 && ExactInvariantTuple(f.fake,
+                dt::BlobLifetimeInvariantEventV3::same_ticket_concurrent_use,phase,operation,255);
+      })) ++failures;
+    }
+  }
+  if (!RunIsolatedRegression("second_release_loses_to_explicit_release_owner",[] {
+    Fixture f(16); f.fake.pins = 0;
+    auto carrier = Access::Carrier(f.carrier_binding,dt::BlobValueStateV3::value,nullptr,0);
+    dt::BlobRetainedLifetimeLeaseV3 lease;
+    if (!dt::RetainBaseBlobLifetimeLeaseV3Generation1(f.profile,f.Admission(),carrier,
+        f.token,f.request,lease).ok()) return false;
+    f.fake.block_release = true;
+    dt::BlobLifetimeRuntimeResultV3 owner;
+    std::thread thread([&] { owner = lease.Release(); });
+    while (!f.fake.release_entered.load(std::memory_order_acquire)) std::this_thread::yield();
+    const auto loser = lease.Release();
+    f.fake.finish_release.store(true,std::memory_order_release);
+    thread.join();
+    return owner.reason == "same_ticket_concurrent_use" && loser.reason == "same_ticket_concurrent_use" &&
+        CountCall(f.fake,'L') == 1 && f.fake.pins == 0 && ExactInvariantTuple(f.fake,
+            dt::BlobLifetimeInvariantEventV3::same_ticket_concurrent_use,dt::BlobLifetimePhaseV3::release,18,255);
+  })) ++failures;
+  for (unsigned kind = 0; kind < 3; ++kind) {
+    if (!RunIsolatedRegression("release_loses_to_ordinary_failure_cleanup",[kind] {
+      std::array<platform::byte,4> scratch{};
+      dt::BlobLifetimeBudgetConfigurationV3Generation1 config;
+      config.limits.fill(UINT64_MAX); config.scratch = scratch; config.admitted_window_octets = 4;
+      Fixture f(16,0,&config); f.fake.pins = 0;
+      f.request.operation = kind == 2 ? 9 : 2;
+      dt::BlobRetainedLifetimeLeaseV3 lease;
+      GuardedReaderContext context{&f.fake};
+      const std::array<platform::byte,1> bytes{{0x51}};
+      if (kind == 0) {
+        auto carrier = Access::Carrier(f.carrier_binding,dt::BlobValueStateV3::value,bytes.data(),1);
+        if (!dt::RetainBaseBlobLifetimeLeaseV3Generation1(f.profile,f.Admission(),carrier,
+            f.token,f.request,lease).ok()) return false;
+      } else RetainGuardedReader(f,4,kind == 2,context,lease);
+      f.fake.block_release = true;
+      auto visitor = Access::Visitor(ResourceVisitor,nullptr);
+      dt::BlobLifetimeRuntimeResultV3 owner;
+      std::thread thread([&] {
+        owner = kind == 0 ? lease.VisitBoundMaterializedBytes(visitor) : lease.VisitBoundReaderBytes(visitor);
+      });
+      while (!f.fake.release_entered.load(std::memory_order_acquire)) std::this_thread::yield();
+      const auto loser = lease.Release();
+      f.fake.finish_release.store(true,std::memory_order_release);
+      thread.join();
+      return owner.diagnostic_code == "RESOURCE.BUDGET_EXCEEDED" &&
+          owner.required == 2 && owner.available == 1 && loser.reason == "same_ticket_concurrent_use" &&
+          f.fake.pins == 0 && CountCall(f.fake,'E') == 1 && CountCall(f.fake,'L') == 1 &&
+          ExactInvariantTuple(f.fake,dt::BlobLifetimeInvariantEventV3::same_ticket_concurrent_use,
+                              dt::BlobLifetimePhaseV3::protected_access,f.request.operation,255);
+    })) ++failures;
+  }
+  if (!RunIsolatedRegression("release_loses_to_real_clone_before_new_retain",[] {
+    Fixture f(32); f.fake.pins = 0;
+    auto carrier = Access::Carrier(f.carrier_binding,dt::BlobValueStateV3::value,nullptr,0);
+    dt::BlobRetainedLifetimeLeaseV3 source,destination;
+    if (!dt::RetainBaseBlobLifetimeLeaseV3Generation1(f.profile,f.Admission(),carrier,
+        f.token,f.request,source).ok()) return false;
+    f.fake.block_clone_pin = true;
+    dt::BlobLifetimeRuntimeResultV3 owner;
+    std::thread thread([&] { owner = source.CloneInto(destination); });
+    while (!f.fake.clone_pin_entered.load(std::memory_order_acquire)) std::this_thread::yield();
+    const auto loser = source.Release();
+    f.fake.finish_clone_pin.store(true,std::memory_order_release);
+    thread.join();
+    return !source.retained() && !destination.retained() && f.fake.pins == 0 &&
+        owner.reason == "same_ticket_concurrent_use" && loser.reason == "same_ticket_concurrent_use" &&
+        ExactInvariantTuple(f.fake,dt::BlobLifetimeInvariantEventV3::same_ticket_concurrent_use,
+                            dt::BlobLifetimePhaseV3::retain,15,255);
+  })) ++failures;
+  if (!RunIsolatedRegression("release_loses_to_real_clone_failure_cleanup",[] {
+    Fixture f(32); f.fake.pins = 0;
+    auto carrier = Access::Carrier(f.carrier_binding,dt::BlobValueStateV3::value,nullptr,0);
+    dt::BlobRetainedLifetimeLeaseV3 source,destination;
+    if (!dt::RetainBaseBlobLifetimeLeaseV3Generation1(f.profile,f.Admission(),carrier,
+        f.token,f.request,source).ok()) return false;
+    f.fake.block_release = true;
+    f.fake.cancel_on_next_retain = true;
+    dt::BlobLifetimeRuntimeResultV3 owner;
+    std::thread thread([&] { owner = source.CloneInto(destination); });
+    while (!f.fake.release_entered.load(std::memory_order_acquire)) std::this_thread::yield();
+    const auto loser = destination.Release();
+    f.fake.finish_release.store(true,std::memory_order_release);
+    thread.join();
+    const bool exact = owner.diagnostic_code == "PROCESS.CANCELLED" &&
+        loser.reason == "same_ticket_concurrent_use" && !destination.retained() && source.retained() &&
+        ExactInvariantTuple(f.fake,dt::BlobLifetimeInvariantEventV3::same_ticket_concurrent_use,
+                            dt::BlobLifetimePhaseV3::release,15,255);
+    f.fake.cancelled = false;
+    return source.Release().ok() && f.fake.pins == 0 && exact;
+  })) ++failures;
+  if (!RunIsolatedRegression("release_loses_to_real_move_replace_destination_cleanup",[] {
+    Fixture f(32); f.fake.pins = 0;
+    auto carrier = Access::Carrier(f.carrier_binding,dt::BlobValueStateV3::value,nullptr,0);
+    dt::BlobRetainedLifetimeLeaseV3 source,destination;
+    if (!dt::RetainBaseBlobLifetimeLeaseV3Generation1(f.profile,f.Admission(),carrier,
+        f.token,f.request,source).ok() || !dt::RetainBaseBlobLifetimeLeaseV3Generation1(
+        f.profile,f.Admission(),carrier,f.token,f.request,destination).ok()) return false;
+    f.fake.block_release = true;
+    dt::BlobLifetimeRuntimeResultV3 owner;
+    std::thread thread([&] { owner = destination.MoveReplaceFrom(std::move(source)); });
+    while (!f.fake.release_entered.load(std::memory_order_acquire)) std::this_thread::yield();
+    const auto loser = destination.Release();
+    f.fake.finish_release.store(true,std::memory_order_release);
+    thread.join();
+    const bool exact = owner.reason == "same_ticket_concurrent_use" &&
+        loser.reason == "same_ticket_concurrent_use" && !destination.retained() && source.retained() &&
+        ExactInvariantTuple(f.fake,dt::BlobLifetimeInvariantEventV3::same_ticket_concurrent_use,
+                            dt::BlobLifetimePhaseV3::release,17,255);
+    return source.Release().ok() && f.fake.pins == 0 && exact;
+  })) ++failures;
+  return failures;
+}
+
 std::size_t ReleaseOuterOperationRegressions() {
   std::size_t failures = 0;
 
@@ -6606,7 +6840,8 @@ std::size_t CloneCallbackReentryRegressions() {
 }
 
 [[maybe_unused]] std::size_t KnownGapRegressions() {
-  return ReleaseOuterOperationRegressions() +
+  return ReleaseOverlappingOrdinaryRegressions() + ReleaseAdministrativeOverlapRegressions() +
+         ReleaseOuterOperationRegressions() +
          ReservedSamplerPrecedenceRegressions() +
          DirtyTicketRegressions() + AdapterExceptionRegressions() +
          AdapterExceptionOutputMatrix() +
@@ -7302,6 +7537,11 @@ int main(int argc, char** argv) {
 #endif
   const std::string_view mode = argc > 1 ? std::string_view{argv[1]}
                                          : std::string_view{argv[0]};
+  if (mode == "release_overlap") {
+    if (ReleaseOverlappingOrdinaryRegressions()+ReleaseAdministrativeOverlapRegressions() != 0) return EXIT_FAILURE;
+    std::cout << "PASS release overlap checks=" << checks << '\n';
+    return EXIT_SUCCESS;
+  }
   if (mode == "post_work") {
     ProtectedWorkFailureObservation();
     ProtectedWorkCleanupSelection();

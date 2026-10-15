@@ -282,12 +282,19 @@ inline constexpr unsigned kLeaseControlEntrantsShiftV8 = 25;
 inline constexpr u64 kLeaseControlEntrantsValueMaskV8 = UINT64_C(0xffffffff);
 inline constexpr u64 kLeaseControlEntrantsMaskV8 =
     kLeaseControlEntrantsValueMaskV8 << kLeaseControlEntrantsShiftV8;
+inline constexpr unsigned kLeaseControlOwnerOperationShiftV11 = 57;
+inline constexpr u64 kLeaseControlOwnerOperationMaskV11 =
+    UINT64_C(31) << kLeaseControlOwnerOperationShiftV11;
 static_assert(UINT8_C(10) <= UINT8_C(0x0f));  // State::installing.
 static_assert(kLeaseControlTupleValueMaskV8 < (UINT64_C(1) << 19));
 static_assert((UINT64_C(13) | (UINT64_C(31) << 4) |
                (UINT64_C(15) << 9) | (UINT64_C(31) << 13)) <=
               kLeaseControlTupleValueMaskV8);
 static_assert(kLeaseControlEntrantsShiftV8 + 32 <= 64);
+static_assert((kLeaseControlOwnerOperationMaskV11 &
+    (kLeaseControlEntrantsMaskV8 | kLeaseControlTupleMaskV8 |
+     kLeaseControlStateMaskV8 | kLeaseControlClosingV8 |
+     kLeaseControlInvariantAcceptedV8 | kLeaseControlServiceReceiptV8)) == 0);
 }
 
 BlobRetainedLifetimeLeaseV3::State
@@ -310,7 +317,9 @@ void BlobRetainedLifetimeLeaseV3::AtomicControl::store(
 }
 
 bool BlobRetainedLifetimeLeaseV3::AtomicControl::compare_exchange_strong(
-    State& expected, State desired, std::memory_order success) noexcept {
+    State& expected, State desired, std::memory_order success,
+    u8 owner_operation) noexcept {
+  if (owner_operation == 0 || owner_operation > 19 || owner_operation == 14) std::terminate();
   u64 observed = word_.load(std::memory_order_acquire);
   for (;;) {
     const State actual =
@@ -319,8 +328,10 @@ bool BlobRetainedLifetimeLeaseV3::AtomicControl::compare_exchange_strong(
       expected = actual;
       return false;
     }
-    const u64 replacement =
+    u64 replacement =
         (observed & ~kLeaseControlStateMaskV8) | static_cast<u64>(desired);
+    replacement = (replacement & ~kLeaseControlOwnerOperationMaskV11) |
+        (static_cast<u64>(owner_operation) << kLeaseControlOwnerOperationShiftV11);
     if (word_.compare_exchange_weak(observed, replacement, success,
                                     std::memory_order_acquire))
       return true;
@@ -470,7 +481,8 @@ BlobRetainedLifetimeLeaseV3::AtomicControl::ResetGeneration(
 }
 
 BlobRetainedLifetimeLeaseV3::AtomicControl::GenerationResetOutcome
-BlobRetainedLifetimeLeaseV3::AtomicControl::ClaimIdleForTransfer() noexcept {
+BlobRetainedLifetimeLeaseV3::AtomicControl::ClaimIdleForTransfer(u8 owner_operation) noexcept {
+  if (owner_operation < 15 || owner_operation > 17) std::terminate();
   u64 observed = word_.load(std::memory_order_acquire);
   for (;;) {
     const State actual =
@@ -483,7 +495,8 @@ BlobRetainedLifetimeLeaseV3::AtomicControl::ClaimIdleForTransfer() noexcept {
     if ((observed & kLeaseControlEntrantsMaskV8) == 0)
       return {GenerationResetStatus::contended, actual};
     const u64 replacement = (observed & kLeaseControlEntrantsMaskV8) |
-        static_cast<u64>(State::moving);
+        static_cast<u64>(State::moving) |
+        (static_cast<u64>(owner_operation) << kLeaseControlOwnerOperationShiftV11);
     if (word_.compare_exchange_weak(observed, replacement,
                                     std::memory_order_acq_rel,
                                     std::memory_order_acquire))
@@ -2008,6 +2021,42 @@ bool ValidateBlobLifetimeInvariantFactDomainV3(
   return InvariantFactDomainValid(key, fact);
 }
 
+bool BlobRetainedLifetimeLeaseV3::AtomicControl::PublishReleaseOverlap() noexcept {
+  u64 observed = word_.load(std::memory_order_acquire);
+  for (;;) {
+    const State owner_state = static_cast<State>(observed & kLeaseControlStateMaskV8);
+    const u8 operation = static_cast<u8>((observed & kLeaseControlOwnerOperationMaskV11) >>
+                                         kLeaseControlOwnerOperationShiftV11);
+    BlobLifetimePhaseV3 phase;
+    if (operation >= 1 && operation <= 13 &&
+        (owner_state == State::retaining || owner_state == State::callback_active ||
+         owner_state == State::access_active || owner_state == State::releasing)) {
+      phase = BlobLifetimePhaseV3::protected_access;
+    } else if (operation >= 15 && operation <= 18 && owner_state == State::releasing) {
+      phase = BlobLifetimePhaseV3::release;
+    } else if (operation == 15 && (owner_state == State::moving || owner_state == State::retaining)) {
+      phase = BlobLifetimePhaseV3::retain;
+    } else if (operation == 16 && owner_state == State::moving) {
+      phase = BlobLifetimePhaseV3::move_construct;
+    } else if (operation == 17 && owner_state == State::moving) {
+      phase = BlobLifetimePhaseV3::move_replace;
+    } else {
+      // No owner (including an installer/destructor) grants this public loser
+      // an invariant tuple. Never invent a phase or normalize an unknown op.
+      return false;
+    }
+    if ((observed & kLeaseControlInvariantAcceptedV8) != 0) return true;
+    const u64 packed = PackDeferredInvariant(BlobLifetimeInvariantEventV3::same_ticket_concurrent_use,
+                                             operation, phase, 255);
+    const u64 replacement = observed | kLeaseControlInvariantAcceptedV8 |
+        (packed << kLeaseControlTupleShiftV8);
+    // Recompute both phase and operation if the owner's window changed. A
+    // scalar operation store or two separate atomic observations would race.
+    if (word_.compare_exchange_weak(observed, replacement,
+          std::memory_order_acq_rel,std::memory_order_acquire)) return true;
+  }
+}
+
 BlobReaderResultValidationV3 ValidateBlobReaderResultV3Generation1(
     const BlobReaderResultV3& result, u64 requested_octets,
     u64 admitted_window_octets, u64 admitted_timeout_milliseconds) noexcept {
@@ -2893,6 +2942,9 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::RejectOverlappingUse(
     u8 operation_override_or_zero) noexcept {
   const bool reentrant = callback_active_.load(std::memory_order_acquire) &&
                          SameActiveCallbackBinding(token_);
+  if (!reentrant && operation_override_or_zero == 18) {
+    return state_.PublishReleaseOverlap() ? CanonicalConcurrentUseFailure() : RuntimeTerminated();
+  }
   const auto event = reentrant
       ? BlobLifetimeInvariantEventV3::callback_reentrant
       : BlobLifetimeInvariantEventV3::same_ticket_concurrent_use;
@@ -2932,7 +2984,7 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::AdoptFrom(
   const auto source_claim = source_already_guarded_moving
       ? AtomicControl::GenerationResetOutcome{
             AtomicControl::GenerationResetStatus::installed, State::moving}
-      : source.state_.ClaimIdleForTransfer();
+      : source.state_.ClaimIdleForTransfer(invariant_operation);
   if ((!source_already_guarded_moving &&
        source_claim.status != AtomicControl::GenerationResetStatus::installed) ||
       (source_already_guarded_moving &&
@@ -3031,7 +3083,7 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::AdoptFrom(
   source.suppress_publication_gate_ = false;
   State installing = State::installing;
   if (!state_.compare_exchange_strong(installing, State::moving,
-                                      std::memory_order_acq_rel))
+                                      std::memory_order_acq_rel, invariant_operation))
     std::terminate();
   (void)state_.BeginClosing();
   state_.WaitForClosingQuiescence(1);
@@ -3060,7 +3112,7 @@ BlobLeaseConstructionResultV3 BlobRetainedLifetimeLeaseV3::MoveConstructFrom(
     return BlobLeaseConstructionResultV3(
         CanonicalProtocolFailure("callback_reentrant"));
   }
-  const auto claim = source.state_.ClaimIdleForTransfer();
+  const auto claim = source.state_.ClaimIdleForTransfer(16);
   if (claim.status != AtomicControl::GenerationResetStatus::installed) {
     if (claim.status != AtomicControl::GenerationResetStatus::wrong_state)
       return BlobLeaseConstructionResultV3(
@@ -3161,10 +3213,10 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::MoveReplaceFrom(
   // retires its unowned entrant before the first owner waits for quiescence.
   State destination_predecessor = State::terminal;
   const auto claim = [&](BlobRetainedLifetimeLeaseV3* lease) noexcept {
-    if (lease == &source) return lease->state_.ClaimIdleForTransfer();
+    if (lease == &source) return lease->state_.ClaimIdleForTransfer(17);
     destination_predecessor = state_.load(std::memory_order_acquire);
     if (destination_predecessor == State::idle)
-      return state_.ClaimIdleForTransfer();
+      return state_.ClaimIdleForTransfer(17);
     if (destination_predecessor == State::disarmed ||
         destination_predecessor == State::released ||
         destination_predecessor == State::moved_from)
@@ -3365,7 +3417,7 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::RetainFrom(
   descriptor_generation_ = profile.identity.descriptor_generation;
   State installing = State::installing;
   if (!state_.compare_exchange_strong(installing, State::retaining,
-                                      std::memory_order_acq_rel))
+                                      std::memory_order_acq_rel, invariant_operation))
     std::terminate();
   const auto close_without_ticket = [&](BlobLifetimeRuntimeResultV3 primary,
                                         State clean_state) noexcept {
@@ -3686,7 +3738,7 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::ProbeInternal(
                            descriptor_generation_);
   State expected = owner_already_active ? State::access_active : State::idle;
   if (!state_.compare_exchange_strong(expected, State::callback_active,
-                                       std::memory_order_acq_rel)) {
+                                       std::memory_order_acq_rel, request_.operation)) {
     if (expected == State::moved_from) return MovedBindingFailure();
     if (expected == State::retaining || expected == State::callback_active ||
         expected == State::access_active || expected == State::moving ||
@@ -3838,7 +3890,7 @@ BlobRetainedLifetimeLeaseV3::VisitBoundMaterializedBytes(
   }
   State expected = State::idle;
   if (!state_.compare_exchange_strong(expected, State::access_active,
-                                       std::memory_order_acq_rel)) {
+                                       std::memory_order_acq_rel, request_.operation)) {
     if (expected == State::moved_from) return MovedBindingFailure();
     if (expected == State::retaining || expected == State::callback_active ||
         expected == State::access_active || expected == State::moving ||
@@ -4044,7 +4096,7 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::VisitBoundReaderBytes(
     return RejectOverlappingUse(BlobLifetimePhaseV3::begin_access);
   }
   State expected = State::idle;
-  if (!state_.compare_exchange_strong(expected, State::access_active, std::memory_order_acq_rel)) {
+  if (!state_.compare_exchange_strong(expected, State::access_active, std::memory_order_acq_rel, request_.operation)) {
     if (expected == State::moved_from) return MovedBindingFailure();
     if (expected == State::retaining || expected == State::callback_active ||
         expected == State::access_active || expected == State::moving ||
@@ -4537,7 +4589,7 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::ReleaseInternal(
     return RuntimeTerminated();
   }
   if (!state_.compare_exchange_strong(expected, State::releasing,
-                                       std::memory_order_acq_rel)) {
+                                       std::memory_order_acq_rel, invariant_operation)) {
     if (expected == State::disarmed || expected == State::released ||
         expected == State::moved_from) {
       if (callback_phase == BlobLifetimePhaseV3::destructor_cleanup)
@@ -4949,7 +5001,7 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::CloneInto(
     return CanonicalProtocolFailure("callback_reentrant");
   }
   const auto claim = [&](BlobRetainedLifetimeLeaseV3* lease) noexcept {
-    return lease == this ? state_.ClaimIdleForTransfer()
+    return lease == this ? state_.ClaimIdleForTransfer(15)
         : destination.state_.ResetGeneration(State::disarmed,
                                               State::installing);
   };
