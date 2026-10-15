@@ -22,6 +22,7 @@
 #include "engine/statement_scratch_memory.hpp"
 #include "engine/statement_retained_memory.hpp"
 #include "engine/statement_cancellation.hpp"
+#include "engine/statement_monotonic_clock.hpp"
 #include "engine/internal_api/api_diagnostics.hpp"
 #include "engine/statement_identity_binding.hpp"
 #include "session/scoped_value_store.hpp"
@@ -434,6 +435,14 @@
 #include <cstdint>
 #include <cstdlib>
 #include <ctime>
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -675,11 +684,15 @@ namespace scratchbird::engine::internal_api {
 // binding and source classification are published together with the receipt.
 struct StatementCancellationChannelStateV1 {
   static constexpr std::uint8_t requested = 1, public_closed = 2;
-  const StatementCancellationBindingV1 binding;
+  const StatementMonotonicClockBindingV1 clock_binding;
+  const std::uint64_t issuing_process;
   const bool lexical_probe_present;
   std::atomic<std::uint8_t> flags{0};
-  StatementCancellationChannelStateV1(StatementCancellationBindingV1 ids, bool lexical)
-      : binding(ids), lexical_probe_present(lexical) {}
+  StatementCancellationChannelStateV1(StatementCancellationBindingV1 ids,
+      wire::TypedResultUuid clock, std::uint64_t clock_generation,
+      std::uint64_t process, bool lexical)
+      : clock_binding{ids, clock, clock_generation},
+        issuing_process(process), lexical_probe_present(lexical) {}
   bool RequestRetained() noexcept {
     return (flags.fetch_or(requested, std::memory_order_acq_rel) & requested) == 0;
   }
@@ -710,6 +723,49 @@ struct StatementCancellationProbeV1 {
 struct StatementCancellationAllocationFailureV1 {
   core::platform::DiagnosticRecord diagnostic;
 };
+namespace {
+std::uint64_t MonotonicClockProcessV1() noexcept {
+#if defined(_WIN32)
+  return static_cast<std::uint64_t>(::GetCurrentProcessId());
+#else
+  return static_cast<std::uint64_t>(::getpid());
+#endif
+}
+// Fixed process-source metadata, no heap/control block or cached samples.
+// Claim the PID BEFORE touching an inherited mutex or initialization guard.
+// A child must exec; it must not use the parent's clock/receipt/MM ownership.
+std::atomic<std::uint64_t> monotonic_clock_process_v1{0};
+std::mutex monotonic_clock_domain_mutex_v1;
+wire::TypedResultUuid monotonic_clock_domain_v1{};
+std::atomic<bool> monotonic_clock_domain_ready_v1{false};
+bool RetainNativeMonotonicDomainV1(wire::TypedResultUuid* identity,
+                                  std::uint64_t* process) {
+  const auto pid = MonotonicClockProcessV1();
+  if (!pid) return false;
+  auto claimed = monotonic_clock_process_v1.load(std::memory_order_acquire);
+  if (!claimed) {
+    monotonic_clock_process_v1.compare_exchange_strong(claimed, pid,
+        std::memory_order_acq_rel, std::memory_order_acquire);
+    claimed = monotonic_clock_process_v1.load(std::memory_order_acquire);
+  }
+  if (claimed != pid) return false;
+  if (!monotonic_clock_domain_ready_v1.load(std::memory_order_acquire)) {
+    std::lock_guard<std::mutex> guard(monotonic_clock_domain_mutex_v1);
+    if (!monotonic_clock_domain_ready_v1.load(std::memory_order_relaxed)) {
+      if (!core::time::ReadNativeMonotonicTime().ok()) return false;
+      const auto issued = core::uuid::IssueRuntimeIdentityV7();
+      if (!issued || !core::uuid::IsEngineIdentityUuid(*issued)) return false;
+      monotonic_clock_domain_v1 = issued->bytes;
+      // Publish one immutable identity. Warm receipt admission neither locks
+      // this source mutex nor writes the process-claim cache line.
+      monotonic_clock_domain_ready_v1.store(true, std::memory_order_release);
+    }
+  }
+  *identity = monotonic_clock_domain_v1;
+  *process = pid;
+  return true;
+}
+} // namespace
 // std::allocate_shared charges the complete source plus shared-control block
 // to the real process allocator. Rebound allocators retain that SAME manager
 // through final deallocation; they do not create a shadow pool or use UUID text.
@@ -726,7 +782,7 @@ template<class T> struct StatementCancellationAllocatorV1 {
     core::memory::MemoryTag tag;
     tag.category = core::memory::MemoryCategory::core_runtime;
     tag.lifetime = core::memory::MemoryLifetime::statement;
-    tag.purpose = "stmt_cancel";
+    tag.purpose = "stmt_control";
     using Kind = core::memory::MemoryBinaryScopeKind;
     tag.binary_ownership[Kind::context] = binding.receipt;
     tag.binary_ownership[Kind::owner] = binding.statement;
@@ -5867,8 +5923,58 @@ bool RetainedMemoryForbiddenLockScope() noexcept {
 RetainedStatementCancellationV1::RetainedStatementCancellationV1(
     std::shared_ptr<StatementCancellationChannelStateV1> state) noexcept
     : state_(std::move(state)) {}
+RetainedStatementMonotonicClockV1::RetainedStatementMonotonicClockV1(
+    std::shared_ptr<StatementCancellationChannelStateV1> state) noexcept
+    : state_(std::move(state)) {}
+const StatementMonotonicClockBindingV1* RetainedStatementMonotonicClockV1::binding() const noexcept {
+  return state_ && state_->issuing_process == MonotonicClockProcessV1()
+      ? &state_->clock_binding : nullptr;
+}
+StatementMonotonicClockSampleV1 RetainedStatementMonotonicClockV1::Sample() const noexcept {
+  using Error = StatementMonotonicClockReadErrorV1;
+  if (!state_) return {Error::owner_unavailable, 0};
+  if (state_->issuing_process != MonotonicClockProcessV1()) return {Error::process_mismatch, 0};
+  const auto sample = core::time::ReadNativeMonotonicTime();
+  using Native = core::time::NativeMonotonicReadError;
+  switch (sample.error) {
+    case Native::none: return {Error::none, sample.nanoseconds};
+    case Native::source_unavailable: return {Error::source_unavailable, 0};
+    case Native::invalid_sample: return {Error::invalid_sample, 0};
+    case Native::out_of_range: return {Error::out_of_range, 0};
+  }
+  std::terminate();
+}
+sb_engine_status_t RetainStatementMonotonicClockV1(
+    server_engine_bridge::StatementContextReceiptHandle handle,
+    const wire::TypedResultUuid& expected_session, const wire::TypedResultUuid& expected_receipt,
+    std::optional<RetainedStatementMonotonicClockV1>* output) noexcept {
+  if (!handle || !output || *output) return SB_ENGINE_STATUS_INVALID_ARGUMENT;
+  // Fail before an inherited registry lock, including fork during issuance.
+  if (monotonic_clock_process_v1.load(std::memory_order_acquire) != MonotonicClockProcessV1())
+    return SB_ENGINE_STATUS_INVALID_HANDLE;
+  if (RetainedMemoryForbiddenLockScope()) return SB_ENGINE_STATUS_CONFLICT;
+  try {
+    std::shared_ptr<StatementCancellationChannelStateV1> source;
+    {
+      std::lock_guard<std::mutex> guard(g_statement_context_receipt_registry_mutex);
+      const auto found = g_live_statement_context_receipts.find(handle.opaque_id);
+      if (found == g_live_statement_context_receipts.end()) return SB_ENGINE_STATUS_INVALID_HANDLE;
+      const auto& receipt = *found->second;
+      if (receipt.binary_session_uuid != expected_session) return SB_ENGINE_STATUS_SECURITY_DENIED;
+      if (receipt.binary_receipt_uuid != expected_receipt) return SB_ENGINE_STATUS_INVALID_HANDLE;
+      source = receipt.cancellation_channel;
+      if (!source || source->issuing_process != MonotonicClockProcessV1() ||
+          source->flags.load(std::memory_order_acquire) & StatementCancellationChannelStateV1::public_closed)
+        return SB_ENGINE_STATUS_INVALID_HANDLE;
+    }
+    RetainedStatementMonotonicClockV1 owner(std::move(source));
+    output->emplace(std::move(owner));
+    return SB_ENGINE_STATUS_OK;
+  } catch (const std::bad_alloc&) { return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED; }
+    catch (...) { return SB_ENGINE_STATUS_INTERNAL_ERROR; }
+}
 const StatementCancellationBindingV1* RetainedStatementCancellationV1::binding() const noexcept {
-  return state_ ? &state_->binding : nullptr;
+  return state_ ? &state_->clock_binding.owner : nullptr;
 }
 bool RetainedStatementCancellationV1::Request() noexcept { return state_ && state_->RequestRetained(); }
 StatementCancellationObservationV1 RetainedStatementCancellationV1::Observe() const noexcept {
@@ -8705,9 +8811,17 @@ sb_engine_status_t AcquireStatementContextReceipt(
     if (!manager) return fail_result(SB_ENGINE_STATUS_RESOURCE_EXHAUSTED, out_result, 4047,
         "ENGINE.STATEMENT_CONTEXT.RECEIPT_ALLOCATION_FAILED",
         "engine.statement_context.cancellation_memory_manager_unavailable");
+    wire::TypedResultUuid clock{};
+    std::uint64_t clock_process = 0;
+    if (!RetainNativeMonotonicDomainV1(&clock, &clock_process))
+      return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4047,
+          "TIME.SOURCE_FAILED", "engine.statement_context.monotonic_clock_unavailable");
+    if (!distinct_identities.insert(EngineUuid{clock}).second)
+      return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4047,
+          "TIME.SOURCE_FAILED", "engine.statement_context.monotonic_clock_identity_alias");
     receipt->cancellation_channel = std::allocate_shared<StatementCancellationChannelStateV1>(
         StatementCancellationAllocatorV1<StatementCancellationChannelStateV1>{std::move(manager), binding},
-        binding, static_cast<bool>(lexical));
+        binding, clock, 1, clock_process, static_cast<bool>(lexical));
     receipt->engine_context.query_cancellation_requested = StatementCancellationProbeV1{
         receipt->cancellation_channel, std::move(lexical)};
   } catch (const scratchbird::engine::internal_api::StatementCancellationAllocationFailureV1& failed) {

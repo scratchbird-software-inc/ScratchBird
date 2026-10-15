@@ -9,12 +9,21 @@
 #include "time.hpp"
 
 #include <chrono>
+#include <cstdint>
 #include <ctime>
 #include <iomanip>
 #include <limits>
 #include <sstream>
 #include <utility>
 #include <vector>
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <time.h>
+#endif
 
 namespace scratchbird::core::time {
 namespace {
@@ -74,11 +83,54 @@ const char* LocalClockObservationDecisionName(LocalClockObservationDecision deci
   return "unknown";
 }
 
+NativeMonotonicTimeSample ReadNativeMonotonicTime() noexcept {
+  using Error = NativeMonotonicReadError;
+#if defined(_WIN32)
+  LARGE_INTEGER frequency{}, counter{};
+  if (!::QueryPerformanceFrequency(&frequency) || !::QueryPerformanceCounter(&counter))
+    return {Error::source_unavailable, 0};
+  if (frequency.QuadPart <= 0 || counter.QuadPart < 0)
+    return {Error::invalid_sample, 0};
+  // Integer conversion, with a wide intermediate: no floating-point rounding
+  // or overflow before the representable nanosecond bound is admitted.
+  const auto nanos = static_cast<unsigned __int128>(counter.QuadPart) * 1000000000u /
+      static_cast<u64>(frequency.QuadPart);
+  if (nanos > std::numeric_limits<u64>::max()) return {Error::out_of_range, 0};
+  return {Error::none, static_cast<u64>(nanos)};
+#else
+  timespec value{};
+#if defined(CLOCK_MONOTONIC_RAW)
+  constexpr auto source = CLOCK_MONOTONIC_RAW;
+#else
+  // Preserve a native monotonic conversion on other POSIX targets. Their
+  // owning port must qualify its source profile; compilation alone is not
+  // nonadjusting BLOB clock admission. Never fall back after a failed read.
+  constexpr auto source = CLOCK_MONOTONIC;
+#endif
+  if (::clock_gettime(source, &value) != 0)
+    return {Error::source_unavailable, 0};
+  if (value.tv_sec < 0 || value.tv_nsec < 0 || value.tv_nsec >= 1000000000L)
+    return {Error::invalid_sample, 0};
+  const auto seconds = static_cast<std::uintmax_t>(value.tv_sec);
+  const auto nanos = static_cast<u64>(value.tv_nsec);
+  if (seconds > (std::numeric_limits<u64>::max() - nanos) / 1000000000u)
+    return {Error::out_of_range, 0};
+  return {Error::none, static_cast<u64>(seconds) * 1000000000u + nanos};
+#endif
+}
+
 MonotonicTimeResult ReadMonotonicTime() {
   MonotonicTimeResult result;
-  result.status = TimeOkStatus();
-  const auto now = std::chrono::steady_clock::now().time_since_epoch();
-  result.value.ticks = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+  const auto sample = ReadNativeMonotonicTime();
+  result.status = sample.ok() ? TimeOkStatus() : TimeErrorStatus();
+  if (sample.ok()) result.value.ticks = sample.nanoseconds;
+  else {
+    const char* reason = sample.error == NativeMonotonicReadError::source_unavailable
+        ? "source_unavailable" : sample.error == NativeMonotonicReadError::invalid_sample
+        ? "invalid_sample" : "out_of_range";
+    result.diagnostic = MakeTimeDiagnostic(result.status, "TIME.SOURCE_FAILED",
+        "time.monotonic.source_failed", reason);
+  }
   return result;
 }
 

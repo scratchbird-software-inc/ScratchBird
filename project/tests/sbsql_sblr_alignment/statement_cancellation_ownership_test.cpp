@@ -168,7 +168,7 @@ void ActualSourceAllocationFailure(tests::FixtureEngineSession& session,const ap
   fault.test_guard=mem::MakeMemoryFailureInjectionTestGuard();fault.fixture_enabled=true;
   fault.fixture_name="statement_cancellation_ownership";fault.evidence_note="actual native source/control-block backing";
   mem::MemoryFailureInjectionRule rule;rule.rule_id="statement_cancel_source";
-  rule.category=mem::MemoryCategory::core_runtime;rule.purpose="stmt_cancel";fault.rules.push_back(rule);
+  rule.category=mem::MemoryCategory::core_runtime;rule.purpose="stmt_control";fault.rules.push_back(rule);
   Check(manager->EnableAllocationFailureInjection(fault).ok(),"actual cancellation-source allocator fault enable");
   bridge::StatementContextAcquireRequest request;
   request.engine_context=&base;request.exact_transaction_uuid=base.transaction_uuid;

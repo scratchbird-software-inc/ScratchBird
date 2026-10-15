@@ -43,6 +43,18 @@ struct MonotonicTimeResult {
   }
 };
 
+// A native observation, NOT a clock-domain/lifetime credential. This small
+// result is safe under guarded callbacks: no allocation, locks or diagnostics.
+enum class NativeMonotonicReadError : u8 {
+  none, source_unavailable, invalid_sample, out_of_range
+};
+struct NativeMonotonicTimeSample {
+  NativeMonotonicReadError error = NativeMonotonicReadError::source_unavailable;
+  u64 nanoseconds = 0;
+  bool ok() const noexcept { return error == NativeMonotonicReadError::none; }
+};
+NativeMonotonicTimeSample ReadNativeMonotonicTime() noexcept;
+
 struct WallClockTimeResult {
   Status status;
   WallClockTime value;
