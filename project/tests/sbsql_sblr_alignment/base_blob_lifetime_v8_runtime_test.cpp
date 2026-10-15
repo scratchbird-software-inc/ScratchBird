@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "datatype_blob.hpp"
+#include "datatype_operations.hpp"
 
 #include <algorithm>
 #include <array>
@@ -3043,6 +3044,187 @@ void BudgetConfigureFreezeLifecycle() {
                 dt::BlobLifetimeReasonV3::authority_abi_mismatch &&
             fixture.fake.pin_drop_calls == 2,
         "factory did not refuse unfrozen budget capability with exact cleanup");
+}
+
+void ContextualNullDescriptorBinding() {
+  namespace en = scratchbird::engine;
+  using Failure = dt::BlobContextualNullFailureV3;
+  const auto admitted = dt::BuildCurrentBlobValidatedProfileHandleV3(dt::kBlobV11ReceiptUuid);
+  Check(admitted.ok(), "contextual BLOB target profile admission");
+  const auto& profile = admitted.profile;
+  const auto target_descriptor = [&]() {
+    en::ExecutionTypeDescriptor d;
+    std::copy(profile.identity.descriptor_uuid.bytes.begin(),
+              profile.identity.descriptor_uuid.bytes.end(), d.descriptor_uuid.bytes);
+    d.descriptor_epoch = profile.identity.descriptor_generation;
+    d.canonical_type_id = static_cast<std::uint32_t>(dt::CanonicalTypeId::blob);
+    d.family = en::ExecutionTypeFamily::blob;
+    d.width_class = en::ExecutionTypeWidthClass::descriptor_defined;
+    d.stable_name = std::string(256, 'b');
+    return d;
+  };
+  const auto equal = [](const en::ExecutionTypeDescriptor& a,
+                        const en::ExecutionTypeDescriptor& b) {
+    const auto uuid_equal = [](const en::Uuid& x, const en::Uuid& y) {
+      return std::equal(std::begin(x.bytes), std::end(x.bytes), std::begin(y.bytes));
+    };
+    bool domains_equal = a.domain_stack.size() == b.domain_stack.size();
+    for (std::size_t i = 0; domains_equal && i < a.domain_stack.size(); ++i)
+      domains_equal = uuid_equal(a.domain_stack[i], b.domain_stack[i]);
+    return uuid_equal(a.descriptor_uuid,b.descriptor_uuid) && a.descriptor_epoch==b.descriptor_epoch &&
+        a.canonical_type_id==b.canonical_type_id && a.family==b.family && a.width_class==b.width_class &&
+        a.stable_name==b.stable_name && a.bit_width==b.bit_width && a.precision==b.precision &&
+        a.scale==b.scale && a.length==b.length && a.vector_dimensions==b.vector_dimensions &&
+        a.container_rank==b.container_rank && a.modifier_flags==b.modifier_flags &&
+        uuid_equal(a.domain_uuid,b.domain_uuid) && domains_equal &&
+        uuid_equal(a.charset_uuid,b.charset_uuid) && uuid_equal(a.collation_uuid,b.collation_uuid) &&
+        uuid_equal(a.timezone_uuid,b.timezone_uuid) && uuid_equal(a.element_descriptor_uuid,b.element_descriptor_uuid) &&
+        uuid_equal(a.security_policy_uuid,b.security_policy_uuid) && a.nullable_allowed==b.nullable_allowed &&
+        a.descriptor_authoritative==b.descriptor_authoritative && a.parser_independent==b.parser_independent;
+  };
+  const dt::DatatypeOperationValue clean{dt::CanonicalTypeId::null_type, {}, true};
+  const auto invoke = [&](const dt::BlobValidatedProfileHandleV3& p,
+                          const dt::DatatypeOperationValue& source,
+                          dt::DatatypeCastContext context,
+                          en::ExecutionTypeDescriptor& target) {
+    const auto before = allocation_probe::calls.load();
+    allocation_probe::enabled.store(true);
+    auto result = dt::BindBlobContextualNullV3(p, source, context, std::move(target));
+    allocation_probe::enabled.store(false);
+    Check(allocation_probe::calls.load() == before,
+          "contextual BLOB binding allocated on success or failure");
+    return result;
+  };
+  for (const auto context : {dt::DatatypeCastContext::implicit,
+                            dt::DatatypeCastContext::assignment,
+                            dt::DatatypeCastContext::explicit_cast}) {
+    for (unsigned alias = 0; alias < 3; ++alias) {
+      auto target = target_descriptor();
+      if (alias == 0) target.stable_name.clear();
+      if (alias == 1) target.stable_name = "not-a-datatype-name";
+      const auto exact_target = target;
+      const auto* owned_name = target.stable_name.data();
+      const auto result = invoke(profile, clean, context, target);
+      Check(result.ok() && result.failure == Failure::none && result.binding &&
+                result.binding->state == dt::BlobValueStateV3::sql_null &&
+                equal(result.binding->descriptor, exact_target) &&
+                (alias != 2 || result.binding->descriptor.stable_name.data() == owned_name) &&
+                dt::ValidateBlobProfileHandleV3(result.binding->profile).ok(),
+            "contextual BLOB binding lost exact owned target or profile");
+    }
+  }
+  const auto refused = [&](const dt::BlobValidatedProfileHandleV3& p,
+                           const dt::DatatypeOperationValue& source,
+                           dt::DatatypeCastContext context,
+                           en::ExecutionTypeDescriptor& target, Failure expected) {
+    const auto prior = target;
+    const auto* name = target.stable_name.data();
+    const auto result = invoke(p, source, context, target);
+    Check(!result.ok() && !result.binding && result.failure == expected &&
+              equal(target, prior) && target.stable_name.data() == name,
+          "contextual BLOB refusal published output, moved input or selected wrong primary");
+  };
+  for (unsigned mutation = 0; mutation < 24; ++mutation) {
+    auto target = target_descriptor();
+    switch (mutation) {
+      case 0: target.descriptor_uuid.bytes[15] ^= 1; break;
+      case 1: ++target.descriptor_epoch; break;
+      case 2: target.canonical_type_id = 0; break;
+      case 3: target.family = en::ExecutionTypeFamily::binary; break;
+      case 4: target.width_class = en::ExecutionTypeWidthClass::variable; break;
+      case 5: target.bit_width = 1; break;
+      case 6: target.precision = 1; break;
+      case 7: target.scale = 1; break;
+      case 8: target.length = 1; break;
+      case 9: target.vector_dimensions = 1; break;
+      case 10: target.container_rank = 1; break;
+      case 11: target.modifier_flags = UINT64_MAX; break;
+      case 12: target.domain_uuid = target.descriptor_uuid; break;
+      case 13: target.domain_stack.push_back(target.descriptor_uuid); break;
+      case 14: target.charset_uuid = target.descriptor_uuid; break;
+      case 15: target.collation_uuid = target.descriptor_uuid; break;
+      case 16: target.timezone_uuid = target.descriptor_uuid; break;
+      case 17: target.element_descriptor_uuid = target.descriptor_uuid; break;
+      case 18: target.security_policy_uuid = target.descriptor_uuid; break;
+      case 19: target.descriptor_authoritative = false; break;
+      case 20: target.parser_independent = false; break;
+      case 21: target.descriptor_epoch = 0; break;
+      case 22: target.family = en::ExecutionTypeFamily::unknown; break;
+      case 23: target.width_class = en::ExecutionTypeWidthClass::unknown; break;
+    }
+    refused(profile, clean, dt::DatatypeCastContext::implicit, target,
+            Failure::target_descriptor_invalid);
+  }
+  for (unsigned mutation = 0; mutation < 26; ++mutation) {
+    auto source = clean;
+    auto& d = source.descriptor;
+    auto target = target_descriptor();
+    switch (mutation) {
+      case 0: d.descriptor_uuid = target.descriptor_uuid; break;
+      case 1: d.descriptor_epoch = 1; break;
+      case 2: d.canonical_type_id = 500; break;
+      case 3: d.family = en::ExecutionTypeFamily::null_type; break;
+      case 4: d.width_class = en::ExecutionTypeWidthClass::fixed; break;
+      case 5: d.stable_name = "NULL"; break;
+      case 6: d.bit_width = 1; break;
+      case 7: d.precision = 1; break;
+      case 8: d.scale = 1; break;
+      case 9: d.length = 1; break;
+      case 10: d.vector_dimensions = 1; break;
+      case 11: d.container_rank = 1; break;
+      case 12: d.modifier_flags = 1; break;
+      case 13: d.domain_uuid = target.descriptor_uuid; break;
+      case 14: d.domain_stack.push_back(target.descriptor_uuid); break;
+      case 15: d.charset_uuid = target.descriptor_uuid; break;
+      case 16: d.collation_uuid = target.descriptor_uuid; break;
+      case 17: d.timezone_uuid = target.descriptor_uuid; break;
+      case 18: d.element_descriptor_uuid = target.descriptor_uuid; break;
+      case 19: d.security_policy_uuid = target.descriptor_uuid; break;
+      case 20: d.nullable_allowed = false; break;
+      case 21: d.descriptor_authoritative = false; break;
+      case 22: d.parser_independent = false; break;
+      case 23: source.is_null = false; break;
+      case 24: source.encoded_value = "not NULL"; break;
+      case 25: source.type_id = dt::CanonicalTypeId::blob; break;
+    }
+    refused(profile, source, dt::DatatypeCastContext::implicit, target,
+        mutation < 23 ? Failure::source_descriptor_invalid :
+        mutation < 25 ? Failure::source_state_invalid : Failure::contextual_source_required);
+  }
+  auto target = target_descriptor();
+  for (std::uint32_t raw = 3; raw <= UINT16_MAX; ++raw)
+    refused(profile, clean, static_cast<dt::DatatypeCastContext>(raw), target,
+            Failure::invalid_cast_context);
+  target.nullable_allowed = false;
+  refused(profile, clean, dt::DatatypeCastContext::assignment, target,
+          Failure::null_not_admitted);
+  for (std::size_t policy = 0; policy < dt::kBlobPolicyBindingCountV3; ++policy) {
+    auto mismatched = profile;
+    ++mismatched.policy_bindings[policy].generation;
+    refused(mismatched, clean, dt::DatatypeCastContext::implicit, target,
+            Failure::target_descriptor_invalid);
+  }
+  auto bad_profile = profile;
+  ++bad_profile.receipt.registry_generation;
+  auto dirty_source = clean;
+  dirty_source.is_null = false;
+  refused(profile, dirty_source, static_cast<dt::DatatypeCastContext>(UINT16_MAX),
+          target, Failure::source_state_invalid);
+  dirty_source.descriptor.stable_name = "not-empty-sentinel";
+  refused(profile, dirty_source, static_cast<dt::DatatypeCastContext>(UINT16_MAX),
+          target, Failure::source_descriptor_invalid);
+  refused(profile, clean, static_cast<dt::DatatypeCastContext>(UINT16_MAX),
+          target, Failure::null_not_admitted);
+  refused(bad_profile, dirty_source, static_cast<dt::DatatypeCastContext>(UINT16_MAX),
+          target, Failure::target_descriptor_invalid);
+  // An aliased source descriptor cannot be both the exact BLOB target and an
+  // untyped contextual sentinel. Refusal must not move its shared metadata.
+  auto aliased = clean;
+  aliased.descriptor = target_descriptor();
+  refused(profile, aliased, dt::DatatypeCastContext::implicit,
+          aliased.descriptor, Failure::source_descriptor_invalid);
+  Check(!dt::BlobContextualNullBindingResultV3{}.ok(),
+        "default contextual BLOB result claims binding");
 }
 
 void IndependentResourceCleanupAccounting() {
@@ -6198,6 +6380,7 @@ int main(int argc, char** argv) {
   PinSelectorObservability();
   AllocationFreeMaterializedPath();
   BudgetConfigureFreezeLifecycle();
+  ContextualNullDescriptorBinding();
   IndependentResourceCleanupAccounting();
   TwoThreadCloneMoveGuardContention();
   AtomicWinnerReceiptProtocol();

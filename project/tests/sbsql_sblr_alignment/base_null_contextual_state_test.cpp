@@ -8,6 +8,7 @@
 
 #include "datatype_binary.hpp"
 #include "datatype_bit_string.hpp"
+#include "datatype_blob.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_descriptor.hpp"
 #include "datatype_layout.hpp"
@@ -281,13 +282,36 @@ void ContextualBindingPreservesTargetType() {
                         "generic typed temporal NULL identity without D710 profile");
         continue;
       }
-      Check(bound.ok(), "contextual NULL did not bind in " + label);
-      Check(bound.value.type_id == descriptor.type_id,
-            "contextual NULL lost target descriptor in " + label);
-      Check(bound.value.is_null && bound.value.encoded_value.empty(),
-            "contextual NULL produced a payload/present state in " + label);
-      Check(DescriptorEquals(bound.value.descriptor, target_descriptor),
-            "contextual NULL lost its exact target descriptor in " + label);
+      if (descriptor.type_id == dt::CanonicalTypeId::blob) {
+        CheckRejectedAs(bound, "BLOB.V1_V2_REFUSED",
+                        "generic contextual BLOB NULL without V11 profile");
+        const auto profile = dt::BuildCurrentBlobValidatedProfileHandleV3(
+            dt::kBlobV11ReceiptUuid);
+        Check(profile.ok(), "admit contextual BLOB V11 profile");
+        auto owned_target = target_descriptor;
+        const auto native = dt::BindBlobContextualNullV3(
+            profile.profile, bind.value, context, std::move(owned_target));
+        Check(native.ok(), "contextual NULL did not bind in " + label);
+        Check(native.binding && native.binding->descriptor.canonical_type_id ==
+                  static_cast<std::uint32_t>(descriptor.type_id),
+              "contextual NULL lost target descriptor in " + label);
+        // The descriptor-binding result has no payload/carrier member. It is
+        // typed SQL NULL metadata, not a fabricated retained runtime value.
+        Check(native.binding && native.binding->state == dt::BlobValueStateV3::sql_null,
+              "contextual NULL produced a payload/present state in " + label);
+        Check(native.binding &&
+                  DescriptorEquals(native.binding->descriptor, target_descriptor) &&
+                  dt::ValidateBlobProfileHandleV3(native.binding->profile).ok(),
+              "contextual NULL lost its exact target descriptor in " + label);
+      } else {
+        Check(bound.ok(), "contextual NULL did not bind in " + label);
+        Check(bound.value.type_id == descriptor.type_id,
+              "contextual NULL lost target descriptor in " + label);
+        Check(bound.value.is_null && bound.value.encoded_value.empty(),
+              "contextual NULL produced a payload/present state in " + label);
+        Check(DescriptorEquals(bound.value.descriptor, target_descriptor),
+              "contextual NULL lost its exact target descriptor in " + label);
+      }
 
       dt::DatatypeCastRequest identity;
       identity.value = TypedNull(descriptor.type_id, target_descriptor);

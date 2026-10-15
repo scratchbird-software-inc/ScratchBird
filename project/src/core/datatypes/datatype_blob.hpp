@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <type_traits>
@@ -175,6 +176,49 @@ BlobValidationResultV3 ValidateBlobMaterializedValueViewNoAllocV3(
     const BlobMaterializedValueViewV3& value,
     bool null_allowed = true,
     const BlobExecutionControlV3& control = {}) noexcept;
+
+struct DatatypeOperationValue;
+enum class DatatypeCastContext : u16;
+
+// Descriptor binding is not a retained runtime value, reader or component.
+// The admitted target is moved only after all checks; no string/vector copy,
+// payload access, lifetime callback or allocation is performed here.
+enum class BlobContextualNullFailureV3 : u8 {
+  none = 0,
+  target_descriptor_invalid,
+  source_descriptor_invalid,
+  source_state_invalid,
+  null_not_admitted,
+  // Private API preconditions, not public cast-policy refusals. Unknown
+  // contexts cannot acquire a fabricated valid diagnostic context, and a
+  // concrete operand belongs to its own admitted cast route.
+  invalid_cast_context,
+  contextual_source_required,
+};
+
+struct BlobContextualNullBindingV3 {
+  BlobValidatedProfileHandleV3 profile{};
+  scratchbird::engine::ExecutionTypeDescriptor descriptor;
+  BlobValueStateV3 state = BlobValueStateV3::sql_null;
+};
+
+struct BlobContextualNullBindingResultV3 {
+  platform::Status status{};
+  BlobContextualNullFailureV3 failure =
+      BlobContextualNullFailureV3::target_descriptor_invalid;
+  std::optional<BlobContextualNullBindingV3> binding;
+  bool ok() const noexcept { return status.ok() && binding.has_value(); }
+};
+
+BlobValidationResultV3 ValidateBlobExecutionDescriptorV3(
+    const BlobValidatedProfileHandleV3& profile,
+    const scratchbird::engine::ExecutionTypeDescriptor& descriptor) noexcept;
+
+BlobContextualNullBindingResultV3 BindBlobContextualNullV3(
+    const BlobValidatedProfileHandleV3& profile,
+    const DatatypeOperationValue& contextual_source,
+    DatatypeCastContext context,
+    scratchbird::engine::ExecutionTypeDescriptor&& target) noexcept;
 
 // The declarations below are the private generation-1 materialized lifetime
 // runtime. They do not alter the frozen public C ABI above.

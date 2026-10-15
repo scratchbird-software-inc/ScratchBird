@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "datatype_blob.hpp"
+#include "datatype_operations.hpp"
 
 #include <algorithm>
 #include <array>
@@ -660,6 +661,94 @@ BlobValidationResultV3 ValidateBlobMaterializedValueViewNoAllocV3(
         BlobStructuralDiagnosticV3::descriptor_invalid);
   }
   return Success<BlobValidationResultV3>();
+}
+
+BlobValidationResultV3 ValidateBlobExecutionDescriptorV3(
+    const BlobValidatedProfileHandleV3& profile,
+    const scratchbird::engine::ExecutionTypeDescriptor& descriptor) noexcept {
+  using namespace scratchbird::engine;
+  const auto nil = [](const Uuid& uuid) noexcept {
+    return std::all_of(std::begin(uuid.bytes), std::end(uuid.bytes),
+                       [](auto octet) noexcept { return octet == 0; });
+  };
+  if (!ExactProfile(profile) ||
+      !std::equal(std::begin(descriptor.descriptor_uuid.bytes),
+                  std::end(descriptor.descriptor_uuid.bytes),
+                  profile.identity.descriptor_uuid.bytes.begin()) ||
+      descriptor.descriptor_epoch != profile.identity.descriptor_generation ||
+      descriptor.canonical_type_id != static_cast<u32>(CanonicalTypeId::blob) ||
+      descriptor.family != ExecutionTypeFamily::blob ||
+      descriptor.width_class != ExecutionTypeWidthClass::descriptor_defined ||
+      descriptor.bit_width != 0 || descriptor.precision != 0 ||
+      descriptor.scale != 0 || descriptor.length != 0 ||
+      descriptor.vector_dimensions != 0 || descriptor.container_rank != 0 ||
+      descriptor.modifier_flags != 0 || !nil(descriptor.domain_uuid) ||
+      !descriptor.domain_stack.empty() || !nil(descriptor.charset_uuid) ||
+      !nil(descriptor.collation_uuid) || !nil(descriptor.timezone_uuid) ||
+      !nil(descriptor.element_descriptor_uuid) ||
+      !nil(descriptor.security_policy_uuid) ||
+      !descriptor.descriptor_authoritative || !descriptor.parser_independent) {
+    return Failure<BlobValidationResultV3>(
+        BlobStructuralDiagnosticV3::descriptor_invalid);
+  }
+  // Display aliases and nullable/nonnullable occurrences do not change the
+  // base identity. Domain/security decorations need their owning admission,
+  // not a UUID copied into this base-descriptor entrypoint.
+  return Success<BlobValidationResultV3>();
+}
+
+BlobContextualNullBindingResultV3 BindBlobContextualNullV3(
+    const BlobValidatedProfileHandleV3& profile,
+    const DatatypeOperationValue& source, DatatypeCastContext context,
+    scratchbird::engine::ExecutionTypeDescriptor&& target) noexcept {
+  using namespace scratchbird::engine;
+  static_assert(std::is_nothrow_move_constructible_v<ExecutionTypeDescriptor>);
+  static_assert(std::is_nothrow_move_constructible_v<BlobContextualNullBindingV3>);
+  static_assert(std::is_nothrow_move_constructible_v<BlobContextualNullBindingResultV3>);
+  BlobContextualNullBindingResultV3 result;
+  result.status = ErrorStatus();
+  if (!ValidateBlobExecutionDescriptorV3(profile, target).ok()) return result;
+  if (source.type_id != CanonicalTypeId::null_type) {
+    result.failure = BlobContextualNullFailureV3::contextual_source_required;
+    return result;
+  }
+  const auto nil = [](const Uuid& uuid) noexcept {
+    return std::all_of(std::begin(uuid.bytes), std::end(uuid.bytes),
+                       [](auto octet) noexcept { return octet == 0; });
+  };
+  const auto& d = source.descriptor;
+  if (!nil(d.descriptor_uuid) || d.descriptor_epoch != 0 ||
+      d.canonical_type_id != 0 || d.family != ExecutionTypeFamily::unknown ||
+      d.width_class != ExecutionTypeWidthClass::unknown ||
+      !d.stable_name.empty() || d.bit_width != 0 || d.precision != 0 ||
+      d.scale != 0 || d.length != 0 || d.vector_dimensions != 0 ||
+      d.container_rank != 0 || d.modifier_flags != 0 || !nil(d.domain_uuid) ||
+      !d.domain_stack.empty() || !nil(d.charset_uuid) ||
+      !nil(d.collation_uuid) || !nil(d.timezone_uuid) ||
+      !nil(d.element_descriptor_uuid) || !nil(d.security_policy_uuid) ||
+      !d.nullable_allowed || !d.descriptor_authoritative || !d.parser_independent) {
+    result.failure = BlobContextualNullFailureV3::source_descriptor_invalid;
+    return result;
+  }
+  if (!source.is_null || !source.encoded_value.empty()) {
+    result.failure = BlobContextualNullFailureV3::source_state_invalid;
+    return result;
+  }
+  if (!target.nullable_allowed) {
+    result.failure = BlobContextualNullFailureV3::null_not_admitted;
+    return result;
+  }
+  if (context != DatatypeCastContext::implicit &&
+      context != DatatypeCastContext::assignment &&
+      context != DatatypeCastContext::explicit_cast) {
+    result.failure = BlobContextualNullFailureV3::invalid_cast_context;
+    return result;
+  }
+  result.binding.emplace(BlobContextualNullBindingV3{
+      profile, std::move(target), BlobValueStateV3::sql_null});
+  result.failure = BlobContextualNullFailureV3::none;
+  result.status = OkStatus();
+  return result;
 }
 
 namespace {
