@@ -280,8 +280,8 @@ std::mutex& DefaultMemoryManagerMutex() {
   return mutex;
 }
 
-std::unique_ptr<MemoryManager>& DefaultMemoryManagerStorage() {
-  static std::unique_ptr<MemoryManager> manager;
+std::shared_ptr<MemoryManager>& DefaultMemoryManagerStorage() {
+  static std::shared_ptr<MemoryManager> manager;
   return manager;
 }
 
@@ -2550,7 +2550,7 @@ DefaultMemoryManagerConfigurationResult ConfigureDefaultMemoryManagerInternal(
   prepared_state.explicitly_configured = true;
   prepared_state.fixture_mode = fixture_mode;
   prepared_state.provenance = std::move(provenance);
-  auto prepared_manager = std::make_unique<MemoryManager>(prepared_policy);
+  auto prepared_manager = std::make_shared<MemoryManager>(prepared_policy);
   result.status = OkStatus();
   result.active_policy = prepared_policy;
   result.applied = true;
@@ -2624,6 +2624,13 @@ MemoryManager& DefaultMemoryManager() {
     return UnconfiguredDefaultMemoryManager();
   }
   return *storage;
+}
+
+std::shared_ptr<MemoryManager> RetainDefaultMemoryManagerV1() noexcept {
+  try {
+    std::lock_guard<std::mutex> lock(DefaultMemoryManagerMutex());
+    return DefaultMemoryManagerStorage();
+  } catch (...) { return {}; }
 }
 
 }  // namespace scratchbird::core::memory

@@ -14,7 +14,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
-#include "route_ownership_lease.hpp"
+#include "../storage/disk/route_ownership_lease.hpp"
 
 namespace scratchbird::storage::disk {
 class RouteOwnershipLease;

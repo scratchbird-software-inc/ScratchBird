@@ -52,20 +52,29 @@ int main() {
   // Independent bytes from manifest-listed datatype-type-codec-identity-registry.
   constexpr Uuid bigint{{1,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x11}};
   constexpr Uuid decimal{{0xa0,0,0,0,0x64,0x65,0x73,0x69,0xad,0x61,0x6c,0,0,0,0,0}};
+  constexpr Uuid boolean{{0x01,0,0,0,0x62,0x6f,0x7f,0x6c,0xa5,0x61,0x6e,0,0,0,0,0}};
+  constexpr Uuid bigint_type{{1,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x12}};
+  constexpr Uuid decimal_type{{1,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x13}};
   for (unsigned lexical = 0; lexical <= std::numeric_limits<std::uint16_t>::max(); ++lexical) {
     engine::sblr::SblrLiteralDemandV1 demand;
     demand.lexical_class = static_cast<std::uint16_t>(lexical);
     demand.context_class = 1;
     const auto selected = engine::LiteralDemandDescriptorIdentityV1(demand);
-    const bool expected = lexical == 1 || lexical == 2;
+    const bool expected = lexical == 1 || lexical == 2 || lexical == 4;
     Check(selected.has_value() == expected, "incorrect literal demand selection");
     if (selected) {
-      Check(*selected == (lexical == 1 ? bigint : decimal), "descriptor identity drift");
+      Check(*selected == (lexical == 1 ? bigint : lexical == 2 ? decimal : boolean),
+            "descriptor identity drift");
       const auto row = dt::LookupDatatypeTypeCodecIdentityV1(base, 1, 1, *selected, 1);
       Check(row.ok && row.row.descriptor_uuid == *selected &&
-                row.row.type_uuid.bytes[15] == (lexical == 1 ? 0x12 : 0x13) &&
+                row.row.type_uuid == (lexical == 1 ? bigint_type : lexical == 2 ? decimal_type : boolean) &&
+                row.row.catalog_snapshot_uuid == base && row.row.catalog_generation == 1 &&
+                row.row.registry_generation == 1 && row.row.descriptor_generation == 1 &&
+                row.row.type_generation == 1 && row.row.codec_version == 1 && row.row.codec_generation == 1 &&
+                row.row.null_supported == (lexical == 4) &&
                 row.row.codec_id == (lexical == 1 ? "datatype.int64.le.v1" :
-                                                   "datatype.decimal.base1e9.le.v1"),
+                                    lexical == 2 ? "datatype.decimal.base1e9.le.v1" :
+                                                   "datatype.boolean.u8.v1"),
             "selected descriptor has no exact registry binding");
       Check(!dt::LookupDatatypeTypeCodecIdentityV1(nil, 1, 1, *selected, 1).ok,
             "descriptor selection fabricated a catalog snapshot");
@@ -75,16 +84,22 @@ int main() {
             "descriptor selection fabricated a generation");
     }
     demand.nullable = true;
-    Check(!engine::LiteralDemandDescriptorIdentityV1(demand),
-          "nullable demand gained an unregistered SBLP v1 rule");
+    const auto nullable = engine::LiteralDemandDescriptorIdentityV1(demand);
+    Check(nullable.has_value() == (lexical == 4),
+          "nullable demand differs from exact registered BOOLEAN-only SBLP v1 rule");
+    if (nullable) Check(*nullable == boolean, "nullable BOOLEAN descriptor identity drift");
   }
   for (unsigned context = 0; context <= std::numeric_limits<std::uint16_t>::max(); ++context)
-    for (std::uint16_t lexical : {1, 2}) {
+    for (std::uint16_t lexical : {1, 2, 4}) {
+     for (bool nullable : {false, true}) {
       engine::sblr::SblrLiteralDemandV1 demand;
       demand.context_class = static_cast<std::uint16_t>(context);
       demand.lexical_class = lexical;
-      Check(engine::LiteralDemandDescriptorIdentityV1(demand).has_value() == (context == 1),
+      demand.nullable = nullable;
+      Check(engine::LiteralDemandDescriptorIdentityV1(demand).has_value() ==
+                (context == 1 && (!nullable || lexical == 4)),
             "context demand mismatch");
+     }
     }
   std::cout << (failures ? "FAIL" : "PASS") << " checks=" << checks << '\n';
   return failures ? 1 : 0;

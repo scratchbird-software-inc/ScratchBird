@@ -21,6 +21,8 @@
 #include "engine/statement_context_receipt_retention.hpp"
 #include "engine/statement_scratch_memory.hpp"
 #include "engine/statement_retained_memory.hpp"
+#include "engine/statement_cancellation.hpp"
+#include "engine/internal_api/api_diagnostics.hpp"
 #include "engine/statement_identity_binding.hpp"
 #include "session/scoped_value_store.hpp"
 #include "engine/authority_hash_material.hpp"
@@ -668,6 +670,87 @@ struct sb_engine_transaction_s {
   bool closed = false;
 };
 
+namespace scratchbird::engine::internal_api {
+// The native signal is not a copied context predicate. Its immutable binary
+// binding and source classification are published together with the receipt.
+struct StatementCancellationChannelStateV1 {
+  static constexpr std::uint8_t requested = 1, public_closed = 2;
+  const StatementCancellationBindingV1 binding;
+  const bool lexical_probe_present;
+  std::atomic<std::uint8_t> flags{0};
+  StatementCancellationChannelStateV1(StatementCancellationBindingV1 ids, bool lexical)
+      : binding(ids), lexical_probe_present(lexical) {}
+  bool RequestRetained() noexcept {
+    return (flags.fetch_or(requested, std::memory_order_acq_rel) & requested) == 0;
+  }
+  bool RequestPublic() noexcept {
+    auto observed = flags.load(std::memory_order_acquire);
+    for (;;) {
+      if (observed & public_closed) return false;
+      if (flags.compare_exchange_weak(observed, observed | requested,
+              std::memory_order_acq_rel, std::memory_order_acquire)) return true;
+    }
+  }
+  void ClosePublic() noexcept { flags.fetch_or(public_closed, std::memory_order_acq_rel); }
+};
+// Only the synchronous engine context invokes the original lexical probe.
+// Retained consumers observe the separate signal and never this capture.
+struct StatementCancellationProbeV1 {
+  std::shared_ptr<StatementCancellationChannelStateV1> state;
+  std::function<bool()> lexical;
+  bool operator()() const {
+    const auto observed = state->flags.load(std::memory_order_acquire);
+    if (observed & StatementCancellationChannelStateV1::requested) return true;
+    // A retired receipt's cleanup must not invoke an ended lexical source.
+    if (observed & StatementCancellationChannelStateV1::public_closed) return false;
+    if (lexical && lexical()) { state->RequestRetained(); return true; }
+    return false;
+  }
+};
+struct StatementCancellationAllocationFailureV1 {
+  core::platform::DiagnosticRecord diagnostic;
+};
+// std::allocate_shared charges the complete source plus shared-control block
+// to the real process allocator. Rebound allocators retain that SAME manager
+// through final deallocation; they do not create a shadow pool or use UUID text.
+template<class T> struct StatementCancellationAllocatorV1 {
+  using value_type = T;
+  std::shared_ptr<core::memory::MemoryManager> manager;
+  StatementCancellationBindingV1 binding;
+  StatementCancellationAllocatorV1(std::shared_ptr<core::memory::MemoryManager> owner,
+      StatementCancellationBindingV1 ids) noexcept : manager(std::move(owner)), binding(ids) {}
+  template<class U> StatementCancellationAllocatorV1(const StatementCancellationAllocatorV1<U>& other) noexcept
+      : manager(other.manager), binding(other.binding) {}
+  T* allocate(std::size_t count) {
+    if (!manager || count > std::numeric_limits<std::size_t>::max()/sizeof(T)) throw std::bad_alloc();
+    core::memory::MemoryTag tag;
+    tag.category = core::memory::MemoryCategory::core_runtime;
+    tag.lifetime = core::memory::MemoryLifetime::statement;
+    tag.purpose = "stmt_cancel";
+    using Kind = core::memory::MemoryBinaryScopeKind;
+    tag.binary_ownership[Kind::context] = binding.receipt;
+    tag.binary_ownership[Kind::owner] = binding.statement;
+    tag.binary_ownership[Kind::database] = binding.database;
+    tag.binary_ownership[Kind::session] = binding.session;
+    tag.binary_ownership[Kind::transaction] = binding.transaction;
+    tag.binary_ownership[Kind::statement] = binding.statement;
+    auto allocation = manager->Allocate(count*sizeof(T), alignof(T), std::move(tag));
+    if (!allocation.ok()) throw StatementCancellationAllocationFailureV1{std::move(allocation.diagnostic)};
+    return static_cast<T*>(allocation.pointer);
+  }
+  void deallocate(T* pointer, std::size_t count) noexcept {
+    if (!pointer || count > std::numeric_limits<std::size_t>::max()/sizeof(T)) std::terminate();
+    auto owner = manager;
+    core::memory::SecureZeroMemory(pointer, count*sizeof(T));
+    try { if (!owner->allocator()->DeallocateNoAlloc(pointer).ok()) std::terminate(); }
+    catch (...) { std::terminate(); }
+  }
+  template<class U> bool operator==(const StatementCancellationAllocatorV1<U>& other) const noexcept {
+    return manager == other.manager && binding == other.binding;
+  }
+};
+} // namespace scratchbird::engine::internal_api
+
 namespace scratchbird::server_engine_bridge {
 
 struct PreparedMetadataBindingOpaque {
@@ -714,6 +797,8 @@ struct StatementContextReceiptOpaque {
   StatementContextReceiptView view;
   scratchbird::transaction::mga::SnapshotVectorDescriptor snapshot_vector;
   scratchbird::engine::internal_api::EngineRequestContext engine_context;
+  std::shared_ptr<scratchbird::engine::internal_api::StatementCancellationChannelStateV1>
+      cancellation_channel;
   std::shared_ptr<scratchbird::engine::internal_api::EngineDmlUpdateResourceReceiptV1>
       dml_update_resource_receipt;
   // Shared across synchronous scalar invocations under this exact receipt.
@@ -3468,6 +3553,7 @@ sb_engine_status_t finish_retired_statement_context_receipt(
         it = g_package_admission_reservations.erase(it);
       }
       std::lock_guard<std::mutex> receipt_guard(receipt->mutex);
+      if (receipt->cancellation_channel) receipt->cancellation_channel->ClosePublic();
       receipt->invalidated = true;
       g_retired_statement_context_receipts.erase(id);
     }
@@ -3503,6 +3589,7 @@ sb_engine_status_t release_statement_context_receipts_for_session(
       }
       for (const auto& [id, receipt] : released) {
         std::lock_guard<std::mutex> receipt_guard(receipt->mutex);
+        if (receipt->cancellation_channel) receipt->cancellation_channel->ClosePublic();
         receipt->released = true;
         receipt->invalidated = true;
         receipt->magic = 0;
@@ -5776,6 +5863,51 @@ bool RetainedMemoryForbiddenLockScope() noexcept {
   return scalar_scratch_call_active || SynchronousStatementDispatchLockV1::current != nullptr;
 }
 } // namespace
+
+RetainedStatementCancellationV1::RetainedStatementCancellationV1(
+    std::shared_ptr<StatementCancellationChannelStateV1> state) noexcept
+    : state_(std::move(state)) {}
+const StatementCancellationBindingV1* RetainedStatementCancellationV1::binding() const noexcept {
+  return state_ ? &state_->binding : nullptr;
+}
+bool RetainedStatementCancellationV1::Request() noexcept { return state_ && state_->RequestRetained(); }
+StatementCancellationObservationV1 RetainedStatementCancellationV1::Observe() const noexcept {
+  if (!state_) return StatementCancellationObservationV1::source_unavailable;
+  if (state_->flags.load(std::memory_order_acquire) & StatementCancellationChannelStateV1::requested)
+    return StatementCancellationObservationV1::requested;
+  return state_->lexical_probe_present
+      ? StatementCancellationObservationV1::source_unavailable
+      : StatementCancellationObservationV1::not_requested;
+}
+sb_engine_status_t RetainStatementCancellationV1(
+    server_engine_bridge::StatementContextReceiptHandle handle,
+    const wire::TypedResultUuid& expected_session, const wire::TypedResultUuid& expected_receipt,
+    std::optional<RetainedStatementCancellationV1>* output) noexcept {
+  if (!handle || !output || *output) return SB_ENGINE_STATUS_INVALID_ARGUMENT;
+  if (RetainedMemoryForbiddenLockScope()) return SB_ENGINE_STATUS_CONFLICT;
+  try {
+    std::shared_ptr<StatementCancellationChannelStateV1> source;
+    {
+      std::lock_guard<std::mutex> guard(g_statement_context_receipt_registry_mutex);
+      const auto found = g_live_statement_context_receipts.find(handle.opaque_id);
+      if (found == g_live_statement_context_receipts.end()) return SB_ENGINE_STATUS_INVALID_HANDLE;
+      const auto& receipt = *found->second;
+      if (receipt.binary_session_uuid != expected_session) return SB_ENGINE_STATUS_SECURITY_DENIED;
+      if (receipt.binary_receipt_uuid != expected_receipt) return SB_ENGINE_STATUS_INVALID_HANDLE;
+      source = receipt.cancellation_channel;
+      if (!source || source->flags.load(std::memory_order_acquire) & StatementCancellationChannelStateV1::public_closed)
+        return SB_ENGINE_STATUS_INVALID_HANDLE;
+      // Admission linearizes here with public retirement under the registry
+      // guard. The independent signal can then outlive public ownership.
+    }
+    // Fixed caller-owned optional metadata: no secondary heap/control block
+    // and no allocation-dependent path for retaining an existing signal.
+    RetainedStatementCancellationV1 owner(std::move(source));
+    output->emplace(std::move(owner));
+    return SB_ENGINE_STATUS_OK;
+  } catch (const std::bad_alloc&) { return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED; }
+    catch (...) { return SB_ENGINE_STATUS_INTERNAL_ERROR; }
+}
 
 class NativeStatementScratchAdmissionV1 final : public StatementScratchMemoryAdmissionV1 {
  public:
@@ -8563,6 +8695,32 @@ sb_engine_status_t AcquireStatementContextReceipt(
   receipt->view = view;
   receipt->snapshot_vector = snapshot;
   receipt->engine_context = std::move(engine_context);
+  try {
+    using namespace scratchbird::engine::internal_api;
+    auto lexical = std::move(receipt->engine_context.query_cancellation_requested);
+    StatementCancellationBindingV1 binding{receipt->engine_context.database_uuid.bytes,
+        receipt->binary_session_uuid, receipt->engine_context.transaction_uuid.bytes,
+        receipt->engine_context.statement_uuid.bytes, receipt->binary_receipt_uuid};
+    auto manager = scratchbird::core::memory::RetainDefaultMemoryManagerV1();
+    if (!manager) return fail_result(SB_ENGINE_STATUS_RESOURCE_EXHAUSTED, out_result, 4047,
+        "ENGINE.STATEMENT_CONTEXT.RECEIPT_ALLOCATION_FAILED",
+        "engine.statement_context.cancellation_memory_manager_unavailable");
+    receipt->cancellation_channel = std::allocate_shared<StatementCancellationChannelStateV1>(
+        StatementCancellationAllocatorV1<StatementCancellationChannelStateV1>{std::move(manager), binding},
+        binding, static_cast<bool>(lexical));
+    receipt->engine_context.query_cancellation_requested = StatementCancellationProbeV1{
+        receipt->cancellation_channel, std::move(lexical)};
+  } catch (const scratchbird::engine::internal_api::StatementCancellationAllocationFailureV1& failed) {
+    const auto source = scratchbird::engine::internal_api::MakeEngineApiDiagnosticFromNative(
+        failed.diagnostic, "ENGINE.STATEMENT_CONTEXT.RECEIPT_ALLOCATION_FAILED",
+        "engine.statement_context.cancellation_source_allocation_failed", {});
+    return fail_result(SB_ENGINE_STATUS_RESOURCE_EXHAUSTED, out_result, 4047,
+        source.code, source.message_key, source.detail, {}, &source.occurrence_uuid, &source);
+  } catch (const std::bad_alloc&) {
+    return fail_result(SB_ENGINE_STATUS_RESOURCE_EXHAUSTED, out_result, 4047,
+        "ENGINE.STATEMENT_CONTEXT.RECEIPT_ALLOCATION_FAILED",
+        "engine.statement_context.cancellation_source_allocation_failed");
+  }
   receipt->dml_update_resource_receipt = std::make_shared<
       scratchbird::engine::internal_api::EngineDmlUpdateResourceReceiptV1>(
           receipt->engine_context, session->engine->dml_update_resource_governor);
@@ -8636,6 +8794,30 @@ sb_engine_status_t AcquireStatementContextReceipt(
   return SB_ENGINE_STATUS_OK;
 }
 
+sb_engine_status_t RequestStatementContextCancellationV1(
+    StatementContextReceiptHandle handle, const wire::TypedResultUuid& expected_session,
+    const wire::TypedResultUuid& expected_receipt) noexcept {
+  if (!handle) return SB_ENGINE_STATUS_INVALID_ARGUMENT;
+  if (scratchbird::engine::internal_api::RetainedMemoryForbiddenLockScope())
+    return SB_ENGINE_STATUS_CONFLICT;
+  try {
+    std::shared_ptr<scratchbird::engine::internal_api::StatementCancellationChannelStateV1> source;
+    {
+      std::lock_guard<std::mutex> guard(g_statement_context_receipt_registry_mutex);
+      const auto found = g_live_statement_context_receipts.find(handle.opaque_id);
+      if (found == g_live_statement_context_receipts.end()) return SB_ENGINE_STATUS_INVALID_HANDLE;
+      const auto& receipt = *found->second;
+      if (receipt.binary_session_uuid != expected_session) return SB_ENGINE_STATUS_SECURITY_DENIED;
+      if (receipt.binary_receipt_uuid != expected_receipt) return SB_ENGINE_STATUS_INVALID_HANDLE;
+      source = receipt.cancellation_channel;
+    }
+    // Never acquire the lifetime/receipt/session mutex. In-flight work keeps
+    // those guards while it polls the signal; waiting for them defeats cancel.
+    if (!source) return SB_ENGINE_STATUS_INVALID_HANDLE;
+    return source->RequestPublic() ? SB_ENGINE_STATUS_OK : SB_ENGINE_STATUS_ALREADY_RELEASED;
+  } catch (...) { return SB_ENGINE_STATUS_INTERNAL_ERROR; }
+}
+
 sb_engine_status_t ReleaseStatementContextReceipt(
     StatementContextReceiptHandle handle) {
   if (!handle) return SB_ENGINE_STATUS_INVALID_HANDLE;
@@ -8668,6 +8850,7 @@ sb_engine_status_t ReleaseStatementContextReceipt(
         return SB_ENGINE_STATUS_ALREADY_RELEASED;
       // A previous fallible final release retained its actual cleanup state.
     } else {
+      if (receipt->cancellation_channel) receipt->cancellation_channel->ClosePublic();
       receipt->released = true;
       receipt->magic = 0;
       g_retired_statement_context_receipts.insert(

@@ -931,5 +931,10 @@ DefaultMemoryManagerConfigurationResult ConfigureDefaultMemoryManagerForFixture(
     std::string fixture_name);
 DefaultMemoryManagerStateSnapshot DefaultMemoryManagerState();
 MemoryManager& DefaultMemoryManager();
+// Own the actual explicitly configured process manager, without initializing
+// or falling back to the refusal-only singleton. Retained native allocator
+// clients must keep this owner through final backing deallocation; a policy
+// copy or raw reference is not lifetime custody. Null means unavailable.
+std::shared_ptr<MemoryManager> RetainDefaultMemoryManagerV1() noexcept;
 
 }  // namespace scratchbird::core::memory
