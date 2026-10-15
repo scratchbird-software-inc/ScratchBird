@@ -1381,9 +1381,8 @@ std::uint32_t RouteOwnershipLease::AcquireDataFile(const std::string& path) {
     // Missing primary permits a pathname reservation, not an engine open.
     return error == ERROR_FILE_NOT_FOUND&&storage_access_==RouteStorageAccess::read_only?ERROR_SUCCESS:error;
   }
-  const DWORD error = BindDataFile(file);
-  (void)::CloseHandle(file);
-  return error;
+  const ProvisionalHandleCleanup cleanup{[file]() noexcept {(void)::CloseHandle(file);}};
+  return BindDataFile(file);
 }
 #else
 std::shared_ptr<RouteOwnershipLease> RouteOwnershipLease::BorrowAlias(
@@ -1463,15 +1462,18 @@ int RouteOwnershipLease::BindDataFile(int fd,int initial_writer_fd) {
 int RouteOwnershipLease::AcquireDataFile(const std::string& path) {
   const int fd = ::open(path.c_str(), O_RDONLY | O_NONBLOCK | FileOpenCloexecFlag());
   if (fd < 0) return errno == ENOENT&&storage_access_==RouteStorageAccess::read_only?0:errno;
+  const ProvisionalHandleCleanup read_cleanup{[fd]() noexcept {(void)::close(fd);}};
   int writable=-1;
+  const ProvisionalHandleCleanup write_cleanup{[&writable]() noexcept {
+    if(writable>=0)(void)::close(writable);
+  }};
   if(storage_access_==RouteStorageAccess::read_write) {
     writable=::open(path.c_str(),O_RDWR|O_NONBLOCK|FileOpenCloexecFlag());
-    if(writable<0){const int error=errno;::close(fd);return error;}
+    if(writable<0)return errno;
   }
-  const int error = BindDataFile(fd,writable);
-  if(writable>=0)(void)::close(writable);
-  (void)::close(fd);
-  return error;
+  // The registry lock can throw before retention. Both actual provisional
+  // descriptors must still close; a failed admission owns no primary handles.
+  return BindDataFile(fd,writable);
 }
 #endif
 

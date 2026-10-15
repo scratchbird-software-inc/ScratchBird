@@ -11,9 +11,12 @@
 #include <thread>
 #include <utility>
 #include <cerrno>
+#include <cstdarg>
+#include <cstring>
 #include <fcntl.h>
 #include <pthread.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -23,6 +26,20 @@ using Error = disk::RouteSourceTransitionError;
 using Drain = disk::RouteSourceDrainState;
 thread_local long allocation_budget = -1;
 thread_local bool forbid_mutex = false;
+thread_local bool fail_next_mutex=false;
+thread_local const char* writer_fault_path=nullptr;
+extern "C" int __real_open(const char*,int,...);
+extern "C" int __wrap_open(const char* path,int flags,...) {
+  mode_t mode=0;
+  if(flags&O_CREAT) {
+    va_list args;va_start(args,flags);mode=va_arg(args,mode_t);va_end(args);
+  }
+  const int fd=(flags&O_CREAT)?__real_open(path,flags,mode):__real_open(path,flags);
+  if(fd>=0&&writer_fault_path&&(flags&O_ACCMODE)==O_RDWR&&std::strcmp(path,writer_fault_path)==0) {
+    writer_fault_path=nullptr;fail_next_mutex=true;
+  }
+  return fd;
+}
 void* operator new(std::size_t n) {
   if (allocation_budget >= 0 && allocation_budget-- == 0) throw std::bad_alloc();
   if (auto* p = std::malloc(n ? n : 1)) return p;
@@ -36,6 +53,7 @@ void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 extern "C" int __real_pthread_mutex_lock(pthread_mutex_t*);
 extern "C" int __wrap_pthread_mutex_lock(pthread_mutex_t* mutex) {
   if (forbid_mutex) ::_exit(77);
+  if(fail_next_mutex){fail_next_mutex=false;return EAGAIN;}
   return __real_pthread_mutex_lock(mutex);
 }
 unsigned checks = 0;
@@ -154,9 +172,37 @@ void MoveOwnership(Fixture& f) {
   second->release(); Check(original.transition->ObserveDrain().state == Drain::withdrawn, "moved owner releases actual issuer");
   Locks(a, true); original.transition.reset(); Locks(a, false);
 }
+unsigned RetainedPrimaryDescriptors(const struct stat& expected) {
+  unsigned count=0;
+  for(const auto& entry:std::filesystem::directory_iterator("/proc/self/fd")) {
+    const auto name=entry.path().filename().string();
+    const int fd=std::stoi(name);struct stat actual{};
+    if(::fstat(fd,&actual)==0&&actual.st_dev==expected.st_dev&&actual.st_ino==expected.st_ino)++count;
+  }
+  return count;
+}
+void InitialWriterExceptionCleanup(Fixture& f) {
+  const auto path=f.Seed("writer-exception");struct stat inode{};
+  Check(::stat(path.c_str(),&inode)==0&&RetainedPrimaryDescriptors(inode)==0,"initial descriptor oracle");
+  server::DatabaseOwnershipRequest request;request.database_path=path;
+  request.storage_access=disk::RouteStorageAccess::read_write;
+  writer_fault_path=path.c_str();bool failed=false;
+  try {(void)server::AcquireDatabaseOwnership(request);}
+  catch(const std::system_error& e){failed=e.code().value()==EAGAIN;}
+  const bool consumed=writer_fault_path==nullptr&&!fail_next_mutex;
+  writer_fault_path=nullptr;fail_next_mutex=false;
+  Check(consumed&&failed,"actual native writer opened before registry lock exception");
+  Check(RetainedPrimaryDescriptors(inode)==0,"exception releases both provisional primary descriptors");
+  Locks(path,false);
+  auto reopened=server::AcquireDatabaseOwnership(request);
+  Check(reopened.acquired&&reopened.lock&&reopened.lock->ObserveWriteCustody()==disk::RouteWriteCustodyState::retained,
+        "failed native writer admission releases locks for exact-inode retry");
+  reopened.lock->release();reopened.lock.reset();
+  Check(RetainedPrimaryDescriptors(inode)==0,"successful writer final release leaves no primary descriptor");
+}
 int main() {
   try {
-    Fixture fixture; IssuanceAndLifetime(fixture); MoveOwnership(fixture);
+    Fixture fixture; IssuanceAndLifetime(fixture); MoveOwnership(fixture);InitialWriterExceptionCleanup(fixture);
     std::cout << "route source issuer checks=" << checks << " PASS; issuer only, not source transfer\n";
     return 0;
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
