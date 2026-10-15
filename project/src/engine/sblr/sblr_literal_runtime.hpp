@@ -196,6 +196,12 @@ struct SblrLiteralFinalizeRequestV1 {
 bool DecodeSblrLiteralFinalizeRequestV1(const std::uint8_t* bytes,
                                         std::size_t size,
                                         SblrLiteralFinalizeRequestV1* out);
+// Explicit structural ingress for the stateful ordinary-node profile. Receipt
+// finalization must additionally require a negotiated BOOLEAN demand and
+// independently validate every state, profile and lexical identity.
+bool DecodeSblrStatefulLiteralFinalizeRequestV2(const std::uint8_t* bytes,
+                                               std::size_t size,
+                                               SblrLiteralFinalizeRequestV1* out);
 struct SblrLiteralAdmissionV1 {
   std::array<std::uint8_t,16> preliminary_receipt_uuid{},final_receipt_uuid{},admission_token_uuid{};
   std::array<std::uint8_t,32> demand_sha256{},ordered_profile_sha256{},bound_ast_sha256{},sbxn_sha256{};
@@ -230,10 +236,16 @@ inline constexpr bool IsAdmittedExactDecimalLiteralDemandV1(
          !demand.nullable;
 }
 
+inline constexpr bool IsAdmittedBooleanLiteralDemandV1(
+    const SblrLiteralDemandV1& demand) {
+  return demand.lexical_class==4 && demand.context_class==1;
+}
+
 inline constexpr bool IsAdmittedLiteralDemandV1(
     const SblrLiteralDemandV1& demand) {
   return IsAdmittedBigintLiteralDemandV1(demand) ||
-         IsAdmittedExactDecimalLiteralDemandV1(demand);
+         IsAdmittedExactDecimalLiteralDemandV1(demand) ||
+         IsAdmittedBooleanLiteralDemandV1(demand);
 }
 
 std::array<std::uint8_t, 32> ComputeSblrLiteralDescriptorProfileBindingV1(

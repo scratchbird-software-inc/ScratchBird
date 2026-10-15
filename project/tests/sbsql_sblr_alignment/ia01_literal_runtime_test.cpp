@@ -368,6 +368,35 @@ int main(){
   non_distinct_v2.persisted_descriptor_uuid = non_distinct_v2.type_uuid;
   Require(sblr::EncodeSblrLiteralDescriptorProfileV2(non_distinct_v2).empty(),
           "SBLP v2 accepted a persisted handle aliased to type authority");
+  const auto check_boolean_alias=[&](auto boolean_profile,auto encode,auto decode){
+    boolean_profile.descriptor_uuid={0x01,0,0,0,0x62,0x6f,0x7f,0x6c,
+                                     0xa5,0x61,0x6e,0,0,0,0,0};
+    boolean_profile.type_uuid=boolean_profile.descriptor_uuid;
+    boolean_profile.descriptor_generation=1;
+    boolean_profile.codec_id="datatype.boolean.u8.v1";
+    boolean_profile.codec_version=1;boolean_profile.codec_generation=1;
+    for(bool nullable:{false,true}){
+      boolean_profile.nullable=nullable;
+      const auto encoded=encode(boolean_profile);
+      const auto decoded=decode(encoded.data(),encoded.size());
+      Require(!encoded.empty()&&decoded.ok&&decoded.profile.nullable==nullable&&
+              decoded.canonical_bytes==encoded,
+              "SBLP exact BOOLEAN alias/nullability round trip refused");
+      for(unsigned mutation=0;mutation<5;++mutation){
+        auto altered=boolean_profile;
+        if(mutation==0)++altered.descriptor_generation;
+        if(mutation==1)++altered.codec_generation;
+        if(mutation==2)++altered.codec_version;
+        if(mutation==3){altered.descriptor_uuid[15]^=1;altered.type_uuid=altered.descriptor_uuid;}
+        if(mutation==4)altered.codec_id="datatype.int64.le.v1";
+        Require(encode(altered).empty(),"SBLP admitted altered/second BOOLEAN alias tuple");
+      }
+    }
+  };
+  check_boolean_alias(profile,sblr::EncodeSblrLiteralDescriptorProfileV1,
+                      sblr::DecodeSblrLiteralDescriptorProfileV1);
+  check_boolean_alias(profile_v2,sblr::EncodeSblrLiteralDescriptorProfileV2,
+                      sblr::DecodeSblrLiteralDescriptorProfileV2);
   sblr::SblrLiteralPrebindRequestV1 prebind;
   prebind.preliminary_receipt_uuid=Identity(1);prebind.catalog_snapshot_uuid=Identity(2);
   prebind.catalog_generation=1;prebind.security_epoch=0;prebind.resource_epoch=0;

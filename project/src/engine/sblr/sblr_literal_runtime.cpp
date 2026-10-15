@@ -4,6 +4,7 @@
 #include "sblr_literal_runtime.hpp"
 #include "hash_digest.hpp"
 #include "sbl_numeric.hpp"
+#include "core/datatypes/datatype_boolean_alias_shape.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -17,6 +18,19 @@ namespace scratchbird::engine::sblr {
 namespace {
 bool SystemUuidValid(const std::array<std::uint8_t,16>& value) {
   return (value[6] & 0xf0u) == 0x70u && (value[8] & 0xc0u) == 0x80u;
+}
+template<class Profile>
+bool DescriptorTypeShapeValid(const Profile& profile) {
+  if(profile.descriptor_uuid!=profile.type_uuid)return true;
+  // The immutable Core BOOLEAN tuple is the sole structural alias exception.
+  // SBLP always explicitly carries nullable0/1. Its frozen layout has no type
+  // generation field; the alias exception is exactly type generation1. This
+  // check issues no authority: finalization still resolves the actual retained
+  // catalog/registry cohort and independently compares every profile field.
+  return core::datatypes::IsExactCanonicalBooleanAliasShapeV1(
+      profile.descriptor_uuid,profile.descriptor_generation,
+      profile.type_uuid,1,profile.codec_id,
+      profile.codec_version,profile.codec_generation,true);
 }
 }  // namespace
 static_assert(kSblrLiteralExactDecimalBytes ==
@@ -370,14 +384,30 @@ std::vector<std::uint8_t> EncodeSblrLiteralPrebindResultV1(
   return out;
 }
 
-bool DecodeSblrLiteralFinalizeRequestV1(const std::uint8_t* b,std::size_t n,
-                                        SblrLiteralFinalizeRequestV1* out){
-  if(b==nullptr||out==nullptr||n<208||n>kMaximumFinalizeRequestBytes||!std::equal(b,b+4,reinterpret_cast<const std::uint8_t*>("SBLF"))||U16(b+4)!=1||U16(b+6)!=208||U32(b+8)!=n||U32(b+12)!=0)return false;
+namespace {
+bool DecodeLiteralFinalizeRequest(const std::uint8_t* b,std::size_t n,
+                                 SblrLiteralFinalizeRequestV1* out,
+                                 bool stateful){
+  const auto table_limit=stateful?kSblrStatefulExpressionNodeTableMaximumBytesV2:
+                                  kMaximumExpressionNodeTableBytes;
+  const auto request_limit=stateful?208+kMaximumBoundAstBytes+table_limit:
+                                    kMaximumFinalizeRequestBytes;
+  if(b==nullptr||out==nullptr||n<208||n>request_limit||!std::equal(b,b+4,reinterpret_cast<const std::uint8_t*>("SBLF"))||U16(b+4)!=1||U16(b+6)!=208||U32(b+8)!=n||U32(b+12)!=0)return false;
   SblrLiteralFinalizeRequestV1 v;std::copy_n(b+16,16,v.preliminary_receipt_uuid.begin());
   std::copy_n(b+32,32,v.demand_sha256.begin());std::copy_n(b+64,32,v.ordered_profile_sha256.begin());std::copy_n(b+96,32,v.bound_ast_sha256.begin());std::copy_n(b+128,32,v.sbxn_sha256.begin());
   v.catalog_generation=U64(b+160);v.security_epoch=U64(b+168);v.resource_epoch=U64(b+176);std::copy_n(b+184,16,v.mga_snapshot_uuid.begin());
-  const auto sbba_bytes=U32(b+200),sbxn_bytes=U32(b+204);if(sbba_bytes>kMaximumBoundAstBytes||sbxn_bytes>kMaximumExpressionNodeTableBytes||sbba_bytes>n-208||sbxn_bytes>n-208-sbba_bytes||208+std::size_t(sbba_bytes)+std::size_t(sbxn_bytes)!=n)return false;
-  if(!SystemUuidValid(v.preliminary_receipt_uuid)||v.catalog_generation==0||!SystemUuidValid(v.mga_snapshot_uuid))return false;v.canonical_sbba.assign(b+208,b+208+sbba_bytes);v.canonical_sbxn.assign(b+208+sbba_bytes,b+n);SblrLiteralBoundAstV1 parsed;if(!DecodeSblrLiteralBoundAstV1(v.canonical_sbba.data(),v.canonical_sbba.size(),&parsed)||ComputeSblrLiteralBoundAstSha256V1(v.canonical_sbba)!=v.bound_ast_sha256)return false;if(v.canonical_sbxn.empty()){if(!parsed.nodes.empty()||std::any_of(v.sbxn_sha256.begin(),v.sbxn_sha256.end(),[](auto x){return x!=0;}))return false;}else{const auto table=DecodeSblrExpressionNodeTableV1(v.canonical_sbxn.data(),v.canonical_sbxn.size());const auto digest=core::hash::ComputeSha256Digest(v.canonical_sbxn);if(!table.ok||!digest.ok()||digest.digest!=v.sbxn_sha256)return false;}*out=std::move(v);return true;
+  const auto sbba_bytes=U32(b+200),sbxn_bytes=U32(b+204);if(sbba_bytes>kMaximumBoundAstBytes||sbxn_bytes>table_limit||sbba_bytes>n-208||sbxn_bytes>n-208-sbba_bytes||208+std::size_t(sbba_bytes)+std::size_t(sbxn_bytes)!=n)return false;
+  if(!SystemUuidValid(v.preliminary_receipt_uuid)||v.catalog_generation==0||!SystemUuidValid(v.mga_snapshot_uuid))return false;v.canonical_sbba.assign(b+208,b+208+sbba_bytes);v.canonical_sbxn.assign(b+208+sbba_bytes,b+n);SblrLiteralBoundAstV1 parsed;if(!DecodeSblrLiteralBoundAstV1(v.canonical_sbba.data(),v.canonical_sbba.size(),&parsed)||ComputeSblrLiteralBoundAstSha256V1(v.canonical_sbba)!=v.bound_ast_sha256)return false;if(v.canonical_sbxn.empty()){if(stateful||!parsed.nodes.empty()||std::any_of(v.sbxn_sha256.begin(),v.sbxn_sha256.end(),[](auto x){return x!=0;}))return false;}else{const auto table=stateful?DecodeSblrStatefulExpressionNodeTableV2(v.canonical_sbxn.data(),v.canonical_sbxn.size()):DecodeSblrExpressionNodeTableV1(v.canonical_sbxn.data(),v.canonical_sbxn.size());const auto digest=core::hash::ComputeSha256Digest(v.canonical_sbxn);if(!table.ok||(stateful&&table.table.wire_version!=2)||!digest.ok()||digest.digest!=v.sbxn_sha256)return false;}*out=std::move(v);return true;
+}
+}  // namespace
+
+bool DecodeSblrLiteralFinalizeRequestV1(const std::uint8_t* b,std::size_t n,
+                                       SblrLiteralFinalizeRequestV1* out){
+  return DecodeLiteralFinalizeRequest(b,n,out,false);
+}
+bool DecodeSblrStatefulLiteralFinalizeRequestV2(const std::uint8_t* b,std::size_t n,
+                                              SblrLiteralFinalizeRequestV1* out){
+  return DecodeLiteralFinalizeRequest(b,n,out,true);
 }
 
 std::vector<std::uint8_t> EncodeSblrLiteralAdmissionV1(SblrLiteralAdmissionV1* a){
@@ -407,7 +437,7 @@ std::vector<std::uint8_t> EncodeSblrLiteralDescriptorProfileV1(
   if (!SystemUuidValid(profile.profile_uuid) || !SystemUuidValid(profile.statement_receipt_uuid) ||
       !SystemUuidValid(profile.catalog_snapshot_uuid) || profile.catalog_generation == 0 ||
       !SystemUuidValid(profile.descriptor_uuid) || profile.descriptor_generation == 0 ||
-      !SystemUuidValid(profile.type_uuid) || profile.descriptor_uuid == profile.type_uuid ||
+      !SystemUuidValid(profile.type_uuid) || !DescriptorTypeShapeValid(profile) ||
       profile.codec_id.empty() || profile.codec_id.size() > 65535 ||
       profile.codec_id.find('\0') != std::string::npos ||
       profile.codec_version == 0 || profile.codec_generation == 0) return {};
@@ -490,7 +520,7 @@ std::vector<std::uint8_t> EncodeSblrLiteralDescriptorProfileV2(
   if (!SystemUuidValid(profile.profile_uuid) || !SystemUuidValid(profile.statement_receipt_uuid) ||
       !SystemUuidValid(profile.catalog_snapshot_uuid) || profile.catalog_generation == 0 ||
       !SystemUuidValid(profile.descriptor_uuid) || profile.descriptor_generation == 0 ||
-      !SystemUuidValid(profile.type_uuid) || profile.descriptor_uuid == profile.type_uuid ||
+      !SystemUuidValid(profile.type_uuid) || !DescriptorTypeShapeValid(profile) ||
       !SystemUuidValid(profile.persisted_descriptor_uuid) ||
       profile.persisted_descriptor_generation == 0 ||
       profile.persisted_descriptor_uuid == profile.descriptor_uuid ||

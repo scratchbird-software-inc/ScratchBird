@@ -23,8 +23,8 @@ inline bool MatchesStatementIdentity(
          std::equal(identity.bytes.begin(), identity.bytes.end(), wire.begin());
 }
 
-// Exact registered descriptor selection for the existing SBLP v1 integer and
-// exact-decimal demand classes. No catalog epoch, generation or visibility is
+// Exact registered descriptor selection for the SBLP v1 integer,
+// exact-decimal and BOOLEAN demand classes. No catalog epoch, generation or visibility is
 // supplied here: the caller must perform the owning catalog lookup afterwards.
 inline std::optional<core::platform::Uuid> LiteralDemandDescriptorIdentityV1(
     const sblr::SblrLiteralDemandV1& demand) noexcept {
@@ -34,6 +34,9 @@ inline std::optional<core::platform::Uuid> LiteralDemandDescriptorIdentityV1(
   if (sblr::IsAdmittedExactDecimalLiteralDemandV1(demand))
     return core::platform::Uuid{{0xa0, 0, 0, 0, 0x64, 0x65, 0x73, 0x69,
                                 0xad, 0x61, 0x6c, 0, 0, 0, 0, 0}};
+  if (sblr::IsAdmittedBooleanLiteralDemandV1(demand))
+    return core::platform::Uuid{{0x01, 0, 0, 0, 0x62, 0x6f, 0x7f, 0x6c,
+                                0xa5, 0x61, 0x6e, 0, 0, 0, 0, 0}};
   return std::nullopt;
 }
 

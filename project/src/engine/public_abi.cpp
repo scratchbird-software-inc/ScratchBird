@@ -18243,6 +18243,9 @@ sb_engine_status_t NegotiateStatementLiteralDescriptorsV1(
   response.resource_epoch=receipt->view.resource_epoch;
   response.mga_snapshot_uuid=mga_uuid;
   response.demand_sha256=decoded.request.demand_sha256;
+  auto persisted_mappings=receipt->literal_persisted_descriptor_mappings;
+  response.mappings.reserve(decoded.request.demands.size());
+  persisted_mappings.reserve(persisted_mappings.size()+decoded.request.demands.size());
   if(!decoded.request.demands.empty()){
     std::unordered_set<scratchbird::engine::internal_api::EngineUuid, scratchbird::engine::internal_api::EngineUuidHash> identities{receipt->view.receipt_uuid};
     for(const auto& demand:decoded.request.demands){
@@ -18284,7 +18287,8 @@ sb_engine_status_t NegotiateStatementLiteralDescriptorsV1(
       profile.catalog_generation=identity.row.legacy_fields.catalog_generation;
       profile.descriptor_generation=identity.row.legacy_fields.descriptor_generation;
       profile.codec_id=identity.row.legacy_fields.codec_id;profile.codec_version=identity.row.legacy_fields.codec_version;
-      profile.codec_generation=identity.row.legacy_fields.codec_generation;profile.nullable=false;
+      profile.codec_generation=identity.row.legacy_fields.codec_generation;
+      profile.nullable=demand.nullable;
       profile.profile_binding_sha256=
           scratchbird::engine::sblr::ComputeSblrLiteralDescriptorProfileBindingV1(
               profile,receipt->view.security_epoch,receipt->view.resource_epoch);
@@ -18307,7 +18311,7 @@ sb_engine_status_t NegotiateStatementLiteralDescriptorsV1(
                            "DATATYPE.DESCRIPTOR.INVALID",
                            "sblr.literal_prebind.persisted_identity_invalid");
       persisted.persisted_descriptor_generation = identity.row.legacy_fields.descriptor_generation;
-      receipt->literal_persisted_descriptor_mappings.push_back(persisted);
+      persisted_mappings.push_back(persisted);
       response.mappings.push_back({demand.occurrence_id,std::move(sblp)});
     }
   }
@@ -18319,11 +18323,17 @@ sb_engine_status_t NegotiateStatementLiteralDescriptorsV1(
                        "DATATYPE.DESCRIPTOR.INVALID",
                        "sblr.literal_prebind.result_encoding_failed");
   }
-  receipt->literal_prebind_negotiated=true;
+  // Finish every allocation/copy before publishing receipt-owned state. A
+  // failed later occurrence must not leave a prefix of descriptor mappings
+  // attached to an otherwise retryable preliminary receipt.
+  auto retained_sblq=encoded;
+  auto retained_demands=decoded.request.demands;
   receipt->literal_demand_sha256=response.demand_sha256;
   receipt->literal_ordered_profile_sha256=response.ordered_profile_sha256;
-  receipt->literal_canonical_sblq=encoded;
-  receipt->literal_demands=decoded.request.demands;
+  receipt->literal_canonical_sblq=std::move(retained_sblq);
+  receipt->literal_demands=std::move(retained_demands);
+  receipt->literal_persisted_descriptor_mappings=std::move(persisted_mappings);
+  receipt->literal_prebind_negotiated=true;
   *out_canonical_sblq=std::move(encoded);
   return SB_ENGINE_STATUS_OK;
 }
@@ -18334,11 +18344,15 @@ sb_engine_status_t FinalizeStatementLiteralBindingV1(
     std::vector<std::uint8_t>* out_canonical_sbla,
     sb_engine_result_t* out_result){
   clear_result(out_result);if(!receipt_handle||out_canonical_sbla==nullptr)return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4074,"SBLR.OPERAND_INVALID","sblr.literal_finalize.request_invalid");
+  out_canonical_sbla->clear();
   scratchbird::engine::sblr::SblrLiteralFinalizeRequestV1 request;
   const bool decoded_under_v1_limits =
       scratchbird::engine::sblr::DecodeSblrLiteralFinalizeRequestV1(
           canonical_sblf.data(), canonical_sblf.size(), &request);
-  if(!decoded_under_v1_limits &&
+  const bool decoded_stateful = !decoded_under_v1_limits &&
+      scratchbird::engine::sblr::DecodeSblrStatefulLiteralFinalizeRequestV2(
+          canonical_sblf.data(),canonical_sblf.size(),&request);
+  if(!decoded_under_v1_limits && !decoded_stateful &&
      !scratchbird::engine::internal_api::
           DecodeContextualTextComposedLiteralFinalizeRequestV2(
               canonical_sblf.data(),canonical_sblf.size(),&request))
@@ -18385,7 +18399,14 @@ sb_engine_status_t FinalizeStatementLiteralBindingV1(
     return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4075,
                        "DATATYPE.DESCRIPTOR.INVALID",
                        "sblr.literal_finalize.live_binding_mismatch");
-  if(!decoded_under_v1_limits && !has_contextual_set)
+  const bool has_boolean_demand=std::any_of(
+      receipt->literal_demands.begin(),receipt->literal_demands.end(),
+      scratchbird::engine::sblr::IsAdmittedBooleanLiteralDemandV1);
+  if(decoded_stateful && !has_boolean_demand)
+    return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4075,
+                       "SBLR.OPERAND_INVALID",
+                       "sblr.literal_finalize.stateful_profile_missing");
+  if(!decoded_under_v1_limits && !decoded_stateful && !has_contextual_set)
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4075,
                        "SBLR.OPERAND_INVALID",
                        "sblr.literal_finalize.v1_limit_exceeded_without_contextual_set");
@@ -18418,7 +18439,10 @@ sb_engine_status_t FinalizeStatementLiteralBindingV1(
                          "DATATYPE.DESCRIPTOR.INVALID",
                          "sblr.literal_finalize.registry_sbba_mismatch");
   }
-  const auto table = has_contextual_set
+  const auto table = decoded_stateful
+      ? scratchbird::engine::sblr::DecodeSblrStatefulExpressionNodeTableV2(
+            request.canonical_sbxn.data(),request.canonical_sbxn.size())
+      : has_contextual_set
       ? scratchbird::engine::internal_api::
             DecodeContextualTextComposedSbxnV2(
                 request.canonical_sbxn.data(),request.canonical_sbxn.size())
@@ -18504,6 +18528,7 @@ sb_engine_status_t FinalizeStatementLiteralBindingV1(
     const auto profile_descriptor_generation = is_v2 ? profile_v2.profile.descriptor_generation : profile.profile.descriptor_generation;
     const auto& profile_type_uuid = is_v2 ? profile_v2.profile.type_uuid : profile.profile.type_uuid;
     const auto& profile_codec_id = is_v2 ? profile_v2.profile.codec_id : profile.profile.codec_id;
+    const bool profile_nullable=is_v2 ? profile_v2.profile.nullable : profile.profile.nullable;
     const bool profile_binding_valid = is_v2
         ? profile_v2.profile.profile_binding_sha256 ==
               scratchbird::engine::sblr::ComputeSblrLiteralDescriptorProfileBindingV2(
@@ -18546,6 +18571,7 @@ sb_engine_status_t FinalizeStatementLiteralBindingV1(
        profile_descriptor_uuid!=core_descriptor||
        bound_descriptor_generation!=ast.descriptor_generation||
        profile_type_uuid!=core_type||profile_type_uuid!=ast.type_uuid||
+       profile_nullable!=demand_it->nullable||
        !profile_binding_valid||(!persisted_matches_v1 && !persisted_matches_v2)||
        node.node_id!=ast.node_id||
        node.parent_operand_ordinal!=ast.parent_operand_ordinal||
@@ -18554,7 +18580,21 @@ sb_engine_status_t FinalizeStatementLiteralBindingV1(
       return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4075,
                          "DATATYPE.DESCRIPTOR.INVALID",
                          "sblr.literal_finalize.profile_sbba_sbxn_bijection_failed");
-    if(scratchbird::engine::sblr::IsAdmittedBigintLiteralDemandV1(*demand_it)){
+    if(scratchbird::engine::sblr::IsAdmittedBooleanLiteralDemandV1(*demand_it)){
+      const auto lexical=scratchbird::engine::sblr::
+          ComputeSblrBooleanLiteralLexicalSha256V1(
+              node.value_state,node.literal_body.data(),node.literal_body.size());
+      if(profile_codec_id!="datatype.boolean.u8.v1" ||
+         (node.value_state==1&&!profile_nullable)||
+         !lexical||*lexical!=demand_it->lexical_sha256)
+        return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4075,
+                           "SBLR.OPERAND_INVALID",
+                           "sblr.literal_finalize.boolean_body_noncanonical");
+    }else if(node.value_state!=0){
+      return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4075,
+                         "SBLR.OPERAND_INVALID",
+                         "sblr.literal_finalize.nonboolean_null_unregistered");
+    }else if(scratchbird::engine::sblr::IsAdmittedBigintLiteralDemandV1(*demand_it)){
       if(profile_codec_id!=scratchbird::engine::sblr::
               kSblrLiteralInt64LeCodecId ||
          !scratchbird::engine::sblr::DecodeSblrLiteralInt64LeV1(

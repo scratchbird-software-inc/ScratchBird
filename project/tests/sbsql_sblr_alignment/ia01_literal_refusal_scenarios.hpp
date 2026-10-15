@@ -3,6 +3,7 @@
 #include "engine/internal_api/sblr_executor_availability_registry.hpp"
 #include "core/datatypes/admitted_datatype_cohort.hpp"
 #include "ia01_literal_live_fixture.hpp"
+#include "ia01_boolean_literal_admission_fixture.hpp"
 
 inline int RunLiteralRefusalScenario(bool cancel_after_admission) {
   struct FixtureCleanupEvidence {
@@ -57,6 +58,7 @@ inline int RunLiteralRefusalScenario(bool cancel_after_admission) {
       literal_admin_context, literal_install);
   Require(installed.ok && installed.snapshot.installed,
           "literal executor availability install failed");
+  if(!cancel_after_admission)CheckBooleanLiteralAdmission(session.session,context);
   context.query_cancellation_requested = [&probes, cancel_after_admission] {
     probes.fetch_add(1, std::memory_order_relaxed);
     return cancel_after_admission;

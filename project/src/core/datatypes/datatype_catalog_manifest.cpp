@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "datatype_catalog_manifest.hpp"
+#include "datatype_boolean_alias_shape.hpp"
 #include "admitted_datatype_cohort.hpp"
 
 #include <algorithm>
@@ -887,7 +888,10 @@ bool IsExactCanonicalBooleanDescriptorTypeAliasV1(
     const u16 codec_version,
     const u64 codec_generation,
     const bool containing_slot_nullability_authoritative) {
-  if (!containing_slot_nullability_authoritative) return false;
+  if (!IsExactCanonicalBooleanAliasShapeV1(
+          descriptor_uuid.bytes,descriptor_generation,type_uuid.bytes,
+          type_generation,codec_id,codec_version,codec_generation,
+          containing_slot_nullability_authoritative)) return false;
   const auto boolean = LookupCanonicalBooleanTypeCodecIdentityV1(
       scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x01}}, 1, 1);
   return boolean.ok && descriptor_uuid == boolean.row.descriptor_uuid &&
