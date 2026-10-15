@@ -2883,6 +2883,8 @@ bool BudgetSnapshotsEqual(
     const dt::BlobLifetimeBudgetSnapshotV3Generation1& right) noexcept {
   if (left.configured != right.configured || left.frozen != right.frozen ||
       left.terminal_quarantined != right.terminal_quarantined ||
+      left.lifetime_callback_terminal_quarantined !=
+          right.lifetime_callback_terminal_quarantined ||
       left.scratch_data != right.scratch_data ||
       left.scratch_size != right.scratch_size ||
       left.admitted_window_octets != right.admitted_window_octets ||
@@ -3041,6 +3043,145 @@ void BudgetConfigureFreezeLifecycle() {
                 dt::BlobLifetimeReasonV3::authority_abi_mismatch &&
             fixture.fake.pin_drop_calls == 2,
         "factory did not refuse unfrozen budget capability with exact cleanup");
+}
+
+void IndependentResourceCleanupAccounting() {
+  for (unsigned resource = 2; resource <= 11; ++resource) {
+    for (unsigned shape = 0; shape < 3; ++shape) {
+      dt::BlobLifetimeBudgetLedgerV3Generation1 ledger;
+      dt::BlobLifetimeRuntimeConformanceAccessV3::SetCallbackLimit(ledger, 8);
+      std::uint64_t available = 0;
+      Check(dt::BlobLifetimeRuntimeConformanceAccessV3::Reserve(ledger, 1, 2,
+                                                               &available),
+            "independent cleanup setup reservation");
+      const auto family = static_cast<dt::BlobLifetimeResourceV3>(resource);
+      dt::BlobLifetimeRuntimeConformanceAccessV3::SetCounter(
+          ledger, family, shape == 0 ? 0 : shape == 1 ? 1 : UINT64_MAX,
+          shape == 0 ? 1 : shape == 1 ? 1 : UINT64_MAX, shape == 0 ? 0 : 1);
+      const auto corrupt = dt::BlobLifetimeRuntimeConformanceAccessV3::Counter(
+          ledger, family);
+      Check(!dt::BlobLifetimeRuntimeConformanceAccessV3::Charge(
+                ledger, family, 1, &available) && available == 0,
+            "noncallback corrupt counter admitted work");
+      Check(!dt::BlobLifetimeRuntimeConformanceAccessV3::Reserve(
+                ledger, 1, 0, &available) && available == 0,
+            "quarantined operation admitted an ordinary callback");
+      const auto first = dt::BlobLifetimeRuntimeConformanceAccessV3::Consume(ledger, 1);
+      const auto second = dt::BlobLifetimeRuntimeConformanceAccessV3::Consume(ledger, 1);
+      Check(first.obligation_consumed && first.cleanup_callback_charge_commit &&
+                first.ledger_terminal_quarantined && second.obligation_consumed &&
+                second.cleanup_callback_charge_commit && second.ledger_terminal_quarantined,
+            "noncallback quarantine suppressed healthy exact cleanup accounting");
+      const auto callback = dt::BlobLifetimeRuntimeConformanceAccessV3::Counter(
+          ledger, dt::BlobLifetimeResourceV3::lifetime_callback_calls);
+      const auto after = dt::BlobLifetimeRuntimeConformanceAccessV3::Counter(ledger, family);
+      const auto snapshot = dt::BlobLifetimeRuntimeConformanceAccessV3::Snapshot(ledger);
+      Check(callback.invoked == 3 && callback.reserved_cleanup == 0 &&
+                after.limit == corrupt.limit && after.invoked == corrupt.invoked &&
+                after.reserved_cleanup == corrupt.reserved_cleanup &&
+                snapshot.terminal_quarantined &&
+                !snapshot.lifetime_callback_terminal_quarantined &&
+                !dt::BlobLifetimeRuntimeConformanceAccessV3::Reserve(
+                    ledger, 1, 0, &available) && available == 0,
+            "cleanup repaired subject counter or resurrected quarantined ordinary work");
+    }
+  }
+  {
+    dt::BlobLifetimeBudgetLedgerV3Generation1 ledger;
+    dt::BlobLifetimeRuntimeConformanceAccessV3::SetCallbackLimit(ledger, 8);
+    std::uint64_t available = 0;
+    Check(dt::BlobLifetimeRuntimeConformanceAccessV3::Reserve(ledger, 1, 2, &available),
+          "concurrent independent cleanup setup reservation");
+    dt::BlobLifetimeRuntimeConformanceAccessV3::SetCounter(
+        ledger, dt::BlobLifetimeResourceV3::logical_bytes_read, 0, 1, 0);
+    Check(!dt::BlobLifetimeRuntimeConformanceAccessV3::Charge(
+        ledger, dt::BlobLifetimeResourceV3::logical_bytes_read, 1, &available),
+        "concurrent independent cleanup corruption setup");
+    std::atomic<unsigned> ready{0};
+    std::atomic<bool> go{false};
+    std::array<dt::BlobCleanupReservationConsumptionV3, 2> outcomes{};
+    const auto consume = [&](unsigned index) {
+      ready.fetch_add(1, std::memory_order_release);
+      while (!go.load(std::memory_order_acquire)) std::this_thread::yield();
+      outcomes[index] = dt::BlobLifetimeRuntimeConformanceAccessV3::Consume(ledger, 1);
+    };
+    std::thread first(consume, 0), second(consume, 1);
+    while (ready.load(std::memory_order_acquire) != 2) std::this_thread::yield();
+    go.store(true, std::memory_order_release);
+    first.join();
+    second.join();
+    for (const auto& outcome : outcomes)
+      Check(outcome.obligation_consumed && outcome.cleanup_callback_charge_commit &&
+                outcome.ledger_terminal_quarantined,
+            "concurrent mandatory cleanup lost a reservation or numeric charge");
+    Check(dt::BlobLifetimeRuntimeConformanceAccessV3::Invoked(ledger) == 3 &&
+              dt::BlobLifetimeRuntimeConformanceAccessV3::ReservedCleanup(ledger) == 0 &&
+              !dt::BlobLifetimeRuntimeConformanceAccessV3::Snapshot(ledger)
+                  .lifetime_callback_terminal_quarantined,
+          "concurrent independent cleanup double-charged or poisoned healthy counter");
+  }
+  {
+    dt::BlobLifetimeBudgetLedgerV3Generation1 ledger;
+    dt::BlobLifetimeRuntimeConformanceAccessV3::SetCallbackLimit(ledger, 8);
+    std::uint64_t available = 0;
+    Check(dt::BlobLifetimeRuntimeConformanceAccessV3::Reserve(ledger, 1, 2, &available),
+          "independent prospective cleanup reservation");
+    dt::BlobLifetimeRuntimeConformanceAccessV3::SetCounter(
+        ledger, dt::BlobLifetimeResourceV3::logical_bytes_read, 0, 1, 0);
+    Check(!dt::BlobLifetimeRuntimeConformanceAccessV3::Charge(
+              ledger, dt::BlobLifetimeResourceV3::logical_bytes_read, 1, &available) &&
+              dt::BlobLifetimeRuntimeConformanceAccessV3::Cancel(ledger, 1),
+          "other resource quarantine prevented cancellation of prospective cleanup");
+    const auto final = dt::BlobLifetimeRuntimeConformanceAccessV3::Consume(ledger, 1);
+    Check(final.obligation_consumed && final.cleanup_callback_charge_commit &&
+              final.ledger_terminal_quarantined &&
+              dt::BlobLifetimeRuntimeConformanceAccessV3::ReservedCleanup(ledger) == 0,
+          "prospective cancellation lost real release accounting");
+  }
+  {
+    dt::BlobLifetimeBudgetLedgerV3Generation1 ledger;
+    dt::BlobLifetimeRuntimeConformanceAccessV3::SetCallbackLimit(ledger, 8);
+    dt::BlobLifetimeRuntimeConformanceAccessV3::SetCounter(
+        ledger, dt::BlobLifetimeResourceV3::lifetime_callback_calls, 1, 2, 2);
+    std::uint64_t available = 0;
+    Check(!dt::BlobLifetimeRuntimeConformanceAccessV3::Charge(
+              ledger, dt::BlobLifetimeResourceV3::lifetime_callback_calls, 1, &available),
+          "generic callback charge bypassed sticky callback corruption");
+    // Fault injection makes the numbers look healthy; the original callback
+    // corruption must remain sticky and must never fabricate an invoked count.
+    dt::BlobLifetimeRuntimeConformanceAccessV3::SetCounter(
+        ledger, dt::BlobLifetimeResourceV3::lifetime_callback_calls, 8, 1, 1);
+    const auto cleanup = dt::BlobLifetimeRuntimeConformanceAccessV3::Consume(ledger, 1);
+    const auto snapshot = dt::BlobLifetimeRuntimeConformanceAccessV3::Snapshot(ledger);
+    Check(cleanup.obligation_consumed && !cleanup.cleanup_callback_charge_commit &&
+              snapshot.terminal_quarantined &&
+              snapshot.lifetime_callback_terminal_quarantined &&
+              dt::BlobLifetimeRuntimeConformanceAccessV3::Invoked(ledger) == 1 &&
+              dt::BlobLifetimeRuntimeConformanceAccessV3::ReservedCleanup(ledger) == 0,
+          "numeric repair resurrected terminal callback ledger");
+  }
+  {
+    Fixture fixture(8);
+    const std::array<platform::byte, 1> content{0x51};
+    auto carrier = dt::BlobLifetimeRuntimeConformanceAccessV3::Carrier(
+        fixture.carrier_binding, dt::BlobValueStateV3::value, content.data(), 1);
+    dt::BlobRetainedLifetimeLeaseV3 lease;
+    Check(dt::RetainBaseBlobLifetimeLeaseV3Generation1(
+        fixture.profile, fixture.Admission(), carrier, fixture.token,
+        fixture.request, lease).ok(), "independent cleanup runtime retain");
+    dt::BlobLifetimeRuntimeConformanceAccessV3::SetCounter(
+        fixture.ledger, dt::BlobLifetimeResourceV3::logical_bytes_read, 0, 1, 0);
+    VisitContext visit;
+    auto visitor = dt::BlobLifetimeRuntimeConformanceAccessV3::Visitor(CopyVisitor, &visit);
+    const auto result = lease.VisitBoundMaterializedBytes(visitor);
+    Check(result.disposition == dt::BlobLifetimeOuterDispositionV3::terminated_out_of_band &&
+              CountCall(fixture.fake, 'R') == 1 && CountCall(fixture.fake, 'B') == 1 &&
+              CountCall(fixture.fake, 'E') == 1 && CountCall(fixture.fake, 'L') == 1 &&
+              CountCall(fixture.fake, 'P') == 0 && visit.copied_size == 0 &&
+              dt::BlobLifetimeRuntimeConformanceAccessV3::Invoked(fixture.ledger) == 4 &&
+              dt::BlobLifetimeRuntimeConformanceAccessV3::ReservedCleanup(fixture.ledger) == 0,
+          "runtime noncallback corruption lost exact end/release accounting");
+  }
 }
 
 void TwoThreadCloneMoveGuardContention() {
@@ -6057,6 +6198,7 @@ int main(int argc, char** argv) {
   PinSelectorObservability();
   AllocationFreeMaterializedPath();
   BudgetConfigureFreezeLifecycle();
+  IndependentResourceCleanupAccounting();
   TwoThreadCloneMoveGuardContention();
   AtomicWinnerReceiptProtocol();
   GenerationResetProtocol();

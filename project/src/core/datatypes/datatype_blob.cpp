@@ -2032,6 +2032,8 @@ BlobLifetimeBudgetLedgerV3Generation1::SnapshotForConformance() noexcept {
   snapshot.frozen = frozen_.load(std::memory_order_relaxed);
   snapshot.terminal_quarantined =
       terminal_quarantined_.load(std::memory_order_relaxed);
+  snapshot.lifetime_callback_terminal_quarantined =
+      callback_counter_quarantined_.load(std::memory_order_relaxed);
   snapshot.counters = counters_;
   snapshot.scratch_data = scratch_.data();
   snapshot.scratch_size = static_cast<u64>(scratch_.size());
@@ -2046,12 +2048,16 @@ bool BlobLifetimeBudgetLedgerV3Generation1::ReserveOrdinaryAndCleanup(
   while (lock_.test_and_set(std::memory_order_acquire)) {}
   auto& counter = counters_[static_cast<std::size_t>(
       BlobLifetimeResourceV3::lifetime_callback_calls)];
+  const bool numeric_valid = counter.invoked <= counter.limit &&
+      counter.reserved_cleanup <= counter.limit - counter.invoked;
+  if (frozen_.load(std::memory_order_relaxed) && !numeric_valid) {
+    callback_counter_quarantined_.store(true, std::memory_order_relaxed);
+    terminal_quarantined_.store(true, std::memory_order_release);
+  }
   const bool valid = frozen_.load(std::memory_order_relaxed) &&
       !terminal_quarantined_.load(std::memory_order_relaxed) &&
-      counter.invoked <= counter.limit &&
-      counter.reserved_cleanup <= counter.limit - counter.invoked;
-  if (frozen_.load(std::memory_order_relaxed) && !valid)
-    terminal_quarantined_.store(true, std::memory_order_release);
+      !callback_counter_quarantined_.load(std::memory_order_relaxed) &&
+      numeric_valid;
   const u64 available = valid
       ? counter.limit - counter.invoked - counter.reserved_cleanup : 0;
   if (available_before != nullptr) *available_before = available;
@@ -2075,6 +2081,8 @@ bool BlobLifetimeBudgetLedgerV3Generation1::Charge(
     u64* available_before) noexcept {
   const auto index = static_cast<std::size_t>(resource);
   if (index == 0 || index >= counters_.size()) return false;
+  if (resource == BlobLifetimeResourceV3::lifetime_callback_calls)
+    return ChargeOrdinary(amount, available_before);
   while (lock_.test_and_set(std::memory_order_acquire)) {}
   auto& counter = counters_[index];
   const bool valid = frozen_.load(std::memory_order_relaxed) &&
@@ -2103,15 +2111,17 @@ BlobLifetimeBudgetLedgerV3Generation1::ConsumeCleanup(u64 amount) noexcept {
       amount <= counter.reserved_cleanup;
   if (obligation_exists) counter.reserved_cleanup -= amount;
   const bool numeric_charge_can_commit = obligation_exists &&
-      !terminal_quarantined_.load(std::memory_order_relaxed) &&
+      !callback_counter_quarantined_.load(std::memory_order_relaxed) &&
       counter.invoked <= counter.limit && amount <= counter.limit - counter.invoked &&
       counter.reserved_cleanup <= counter.limit - counter.invoked - amount;
   if (numeric_charge_can_commit) {
     counter.invoked += amount;
   } else {
-    // Preserve invoked exactly. The actual cleanup is evidenced independently
-    // by the callback trace owned by the receiver; this ledger is never
-    // admitted again.
+    // Only corruption of this callback counter suppresses its numeric charge.
+    // Another family's terminal state cannot erase actual healthy cleanup.
+    // Once this counter itself fails, even later plausible numbers cannot
+    // resurrect it; actual cleanup remains independently traced by the owner.
+    callback_counter_quarantined_.store(true, std::memory_order_relaxed);
     terminal_quarantined_.store(true, std::memory_order_release);
   }
   const BlobCleanupReservationConsumptionV3 result{
@@ -2126,12 +2136,15 @@ bool BlobLifetimeBudgetLedgerV3Generation1::CancelCleanup(u64 amount) noexcept {
   auto& counter = counters_[static_cast<std::size_t>(
       BlobLifetimeResourceV3::lifetime_callback_calls)];
   const bool valid = frozen_.load(std::memory_order_relaxed) &&
-      !terminal_quarantined_.load(std::memory_order_relaxed) &&
+      !callback_counter_quarantined_.load(std::memory_order_relaxed) &&
       counter.invoked <= counter.limit &&
       counter.reserved_cleanup <= counter.limit - counter.invoked &&
       amount <= counter.reserved_cleanup;
   if (valid) counter.reserved_cleanup -= amount;
-  else terminal_quarantined_.store(true, std::memory_order_release);
+  else {
+    callback_counter_quarantined_.store(true, std::memory_order_relaxed);
+    terminal_quarantined_.store(true, std::memory_order_release);
+  }
   lock_.clear(std::memory_order_release);
   return valid;
 }

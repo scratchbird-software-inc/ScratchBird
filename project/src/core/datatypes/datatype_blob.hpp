@@ -372,6 +372,7 @@ struct BlobLifetimeBudgetSnapshotV3Generation1 {
   bool configured = false;
   bool frozen = false;
   bool terminal_quarantined = false;
+  bool lifetime_callback_terminal_quarantined = false;
   std::array<BlobLifetimeCounterV3, 12> counters{};
   byte* scratch_data = nullptr;
   u64 scratch_size = 0;
@@ -416,6 +417,10 @@ class BlobLifetimeBudgetLedgerV3Generation1 final {
   std::atomic<bool> configured_{false};
   std::atomic<bool> frozen_{false};
   std::atomic<bool> terminal_quarantined_{false};
+  // Other resource families can quarantine the operation while its separately
+  // reserved lifetime cleanup remains exactly countable. Callback corruption
+  // is sticky independently, even if consuming a reservation restores bounds.
+  std::atomic<bool> callback_counter_quarantined_{false};
   std::array<BlobLifetimeCounterV3, 12> counters_{};
   std::span<byte> scratch_{};
   u64 admitted_window_octets_ = 0;
