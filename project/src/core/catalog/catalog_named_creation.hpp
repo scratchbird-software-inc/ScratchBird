@@ -38,6 +38,17 @@ struct CatalogNamedCreationResult {
   std::optional<CatalogNamedCreationSet> records;
   bool ok() const noexcept{return error==CatalogNamedCreationError::none&&records.has_value();}
 };
+struct CatalogNamedCreationPreflightResult {
+  CatalogNamedCreationError error=CatalogNamedCreationError::invalid_request;
+  u64 records=0,encoded_bytes=0;
+};
+// Complete borrowed per-definition/name admission. Definition payload may refer
+// to bounded caller backing. No allocation/copies or identity-set admission;
+// the owning cohort assembler must separately reject raw identity collisions.
+CatalogNamedCreationPreflightResult PreflightLocalNamedCreationRecord(
+    const CatalogMetadataVersionView&,const CatalogNamedCreationInput&,
+    const TypedUuid& creation_transaction,std::string_view database_default_language,
+    CatalogNamedCreationLimits) noexcept;
 // All supplied definitions, vectors and aliases are returned together or not
 // at all. Complete borrowed preflight precedes owning field/payload copies.
 // Initial node construction only: creator local number1 and catalog/schema/

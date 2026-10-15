@@ -33,7 +33,11 @@ struct CatalogSchemaDefinitionResult {
 };
 const char* CatalogSchemaTypeName(CatalogSchemaType type);
 const CatalogValueSchema& CatalogSchemaDefinitionSchema();
+// Exact validated fixed-width payload size; no allocation or serialization.
+std::optional<std::size_t> CatalogSchemaDefinitionEncodedBytes(const CatalogSchemaDefinition&);
 CatalogValueEncodeResult EncodeCatalogSchemaDefinition(const CatalogSchemaDefinition&);
+CatalogValueEncodeIntoResult EncodeCatalogSchemaDefinitionInto(
+    const CatalogSchemaDefinition&, std::span<byte> backing);
 CatalogSchemaDefinitionResult DecodeCatalogSchemaDefinition(std::string_view);
 // Structural bindings only; these functions perform no authorization, graph
 // lookup, name/default resolution, cluster routing or storage publication.

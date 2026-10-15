@@ -114,3 +114,30 @@ has subsequently been built and must be replayed, not credited from a Not Run.
 The six IA09 service-startup routes remain open. Consult the live local ledger
 for the exact current list and source/evidence custody; do not reuse stale counts
 from the reboot snapshot above as current status.
+
+Native initial schema-family prerequisite (2026-10-14 local / 2026-10-15 UTC)
+-------------------------------------------------------------------------
+The actual schema65540 producer now assembles complete supplied local schema
+forests, common metadata and localized names; it does not wrap legacy schema65539
+path/name caches. Binary enclosing/cohort identity checks and complete borrowed
+metadata/name/byte preflight precede owning copies. Parent lookup is indexed and
+cycle traversal iterative. Fixed caller-backed schema encoding removes temporary
+field/value allocation; no missing owner/profile/policy or permission is invented.
+
+Serialized native-schema-cohort-qualified-build/tests-20261014 PASS7/7 includes
+the full existing native construction and metric/name assembly tests, all local
+schema types/default-presence combinations, deep/cyclic forests, actual allocation
+failure sites, exact/short bounds before copies and indexed native close/reopen
+across all five page profiles. Earlier failed candidate evidence is retained:
+the new generic overlap oracle initially confused zero-byte values with actual
+source overlap; its correction retains every existing positive/negative oracle
+and adds field/schema-storage overlap refusals. This is component qualification,
+not production creation/activation or startup authentication. Frozen original
+partition remains199 qualified/61 outstanding; current registrations9399.
+
+Next shared startup work remains full owning native bootstrap assembly, explicit
+node-bound service/provider/policy/credential binding, actual MGA activation,
+private same-route mutable controller and fresh hosted admission through BEGIN.
+Production CreateDatabaseFile/host still use the old SBDBV001 route; do not replace
+its missing references with synthetic metadata or claim the six IA09 routes closed.
+Core03 amendment/digest and live ledger are local/manual, not GitHub distribution.

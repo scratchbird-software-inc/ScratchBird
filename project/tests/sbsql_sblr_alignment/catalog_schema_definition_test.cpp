@@ -94,7 +94,19 @@ void Refused(std::string_view bytes) {
 int main() {
   for(unsigned options=0;options<32;++options)for(unsigned type=1;type<=7;++type) {
     const auto d=Definition(options,type);const auto expected=Golden(d);const auto encoded=c::EncodeCatalogSchemaDefinition(d);
+    Check(c::CatalogSchemaDefinitionEncodedBytes(d)==expected.size(),"exact nonallocating schema size matches independent byte oracle");
     Check(encoded.ok()&&std::string(encoded.bytes.begin(),encoded.bytes.end())==expected,"independent full byte oracle");
+    std::array<p::byte,256> backing;backing.fill(0x5a);
+    allocation_budget=0;const auto into=c::EncodeCatalogSchemaDefinitionInto(d,backing);
+    const bool no_heap=allocation_budget==0;allocation_budget=-1;
+    Check(no_heap&&into.ok()&&into.bytes.size()==expected.size()&&
+        std::equal(into.bytes.begin(),into.bytes.end(),reinterpret_cast<const p::byte*>(expected.data()))&&
+        std::all_of(backing.begin()+expected.size(),backing.end(),[](auto b){return b==0x5a;}),
+        "stack-backed encoder matches independent oracle without allocation or tail writes");
+    backing.fill(0x5a);
+    const auto short_output=c::EncodeCatalogSchemaDefinitionInto(d,std::span<p::byte>(backing).first(expected.size()-1));
+    Check(short_output.error==c::CatalogValueError::invalid_backing&&short_output.bytes.empty()&&
+        std::all_of(backing.begin(),backing.end(),[](auto b){return b==0x5a;}),"one-short backing refuses before writes");
     const auto decoded=c::DecodeCatalogSchemaDefinition(expected);
     Check(decoded.ok()&&Golden(*decoded.definition)==expected,"all defaults/types and original identity preserved");
     const auto m=Metadata(d);Check(c::CatalogSchemaDefinitionMatchesMetadata(m),"complete family/common binding");

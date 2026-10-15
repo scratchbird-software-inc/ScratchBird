@@ -414,6 +414,33 @@ CatalogValueError ValidateCatalogValueFields(
   return Error::none;
 }
 
+CatalogValueEncodeIntoResult EncodeCatalogValueBlockInto(
+    CatalogValueSchemaView schema, std::span<const CatalogValueFieldView> fields,
+    std::span<byte> backing) {
+  const auto error = ValidateCatalogValueFields(schema, fields);
+  if (error != Error::none) return {error, {}};
+  std::size_t total = kCatalogValueBlockHeaderBytes;
+  for (const auto& field : fields) total += kFieldHeader + field.bytes.size();
+  if (!ValidRegion(backing) || backing.size() < total ||
+      Overlap(backing, schema.fields) || Overlap(backing, fields))
+    return {Error::invalid_backing, {}};
+  for (const auto& field : fields)
+    if (Overlap(backing, field.bytes)) return {Error::invalid_backing, {}};
+  std::size_t at = 0;
+  const auto put = [&](u64 value, unsigned width) {
+    for (unsigned i = 0; i < width; ++i) backing[at++] = static_cast<byte>(value >> (8*i));
+  };
+  for (const auto value : {'S','B','C','V'}) backing[at++] = value;
+  put(1,2); put(kCatalogValueBlockHeaderBytes,2); put(total,4); put(fields.size(),4);
+  put(schema.id,4); put(schema.version,2); put(0,2);
+  for (const auto& field : fields) {
+    put(field.id,2); put(static_cast<u8>(field.type),1); put(0,1); put(field.bytes.size(),4);
+    std::copy(field.bytes.begin(),field.bytes.end(),backing.begin()+at);
+    at += field.bytes.size();
+  }
+  return {Error::none, backing.first(total)};
+}
+
 CatalogValueDecodeViewResult DecodeCatalogValueBlockInto(
     CatalogValueSchemaView schema, std::span<const byte> bytes,
     std::span<CatalogValueFieldView> backing) {

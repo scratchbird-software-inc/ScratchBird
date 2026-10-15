@@ -12,7 +12,7 @@ namespace scratchbird::core::catalog {
 namespace {
 using E=CatalogNamedCreationError;
 CatalogNamedCreationResult Fail(E e){return {e,{}};}
-bool First(const CatalogMetadataVersion& m,const TypedUuid& tx) {
+template<class M> bool First(const M& m,const TypedUuid& tx) {
   return m.authority_scope==CatalogAuthorityScope::local&&m.definition_version==1&&
       m.schema_epoch==1&&m.security_epoch==1&&m.catalog_generation==1&&
       m.creator_local_transaction_id==1&&m.creator_transaction_uuid.kind==tx.kind&&
@@ -26,6 +26,61 @@ template<class F> void Each(std::span<const CatalogNamedCreationInput> inputs,F 
   }
 }
 }
+CatalogNamedCreationPreflightResult PreflightLocalNamedCreationRecord(
+    const CatalogMetadataVersionView& d,const CatalogNamedCreationInput& input,
+    const TypedUuid& tx,std::string_view language,CatalogNamedCreationLimits limits) noexcept {
+  try {
+    if(!uuid::IsEngineIdentityUuid(tx.value)||tx.kind!=UuidKind::transaction||
+        language.empty()||language.size()>131040)
+      return {E::invalid_request,0,0};
+    if(!limits.maximum_records||!limits.maximum_encoded_bytes)
+      return {E::resource_exhausted,0,0};
+    u64 records=0,bytes=0;
+    const auto account=[&](u64 n) {
+      if(records==limits.maximum_records||n>limits.maximum_encoded_bytes-bytes)throw E::resource_exhausted;
+      ++records;bytes+=n;
+    };
+      if(!input.vector_metadata||!input.vector||input.entries.empty())return {E::invalid_request,0,0};
+      if(input.entries.size()>limits.maximum_records-records||limits.maximum_records-records-input.entries.size()<2)
+        return {E::resource_exhausted,0,0};
+      const auto& vm=*input.vector_metadata;const auto& v=*input.vector;
+      if(!First(d,tx)||!First(vm,tx)||d.record.header.kind==CatalogRecordKind::localized_name||
+          !vm.record.payload.empty())return {E::invalid_metadata,0,0};
+      const auto extent=CatalogMetadataVersionEncodedBytes(d);
+      const auto vector_extent=CatalogMetadataVersionEncodedBytes(BorrowCatalogMetadataVersion(vm));
+      if(!extent||!vector_extent)return {E::invalid_metadata,0,0};
+      const CatalogNamePayloadView vector=BorrowCatalogNameVector(v);
+      const auto name_extent=CatalogNameEnvelopeEncodedBytes(vector);
+      if(!name_extent||!CatalogNamePayloadMatchesMetadata(vector,BorrowCatalogMetadataVersion(vm))||
+          v.lifecycle_state!=CatalogNameLifecycle::active||v.default_language_tag!=language||
+          v.object_uuid.value!=d.record.header.object_uuid.value||
+          v.name_vector_uuid.value!=d.name_vector_uuid.value||v.default_name_entry_uuid.value!=d.default_name_uuid.value||
+          v.owning_schema_uuid.has_value()!=( !d.owning_schema_uuid.value.is_nil())||
+          (v.owning_schema_uuid&&v.owning_schema_uuid->value!=d.owning_schema_uuid.value))return {E::invalid_names,0,0};
+      account(*extent);account(*vector_extent+*name_extent);
+      unsigned defaults=0;
+      for(const auto& input_entry:input.entries) {
+        if(!input_entry.metadata||!input_entry.entry)return {E::invalid_request,0,0};
+        const auto& m=*input_entry.metadata;const auto& e=*input_entry.entry;
+        if(!First(m,tx)||!m.record.payload.empty())return {E::invalid_metadata,0,0};
+        const auto metadata_extent=CatalogMetadataVersionEncodedBytes(BorrowCatalogMetadataVersion(m));
+        if(!metadata_extent)return {E::invalid_metadata,0,0};
+        const CatalogNamePayloadView entry=BorrowCatalogNameEntry(e);
+        const auto entry_extent=CatalogNameEnvelopeEncodedBytes(entry);
+        const bool is_default=e.name_entry_uuid.value==v.default_name_entry_uuid.value;
+        if(!entry_extent||!CatalogNamePayloadMatchesMetadata(entry,BorrowCatalogMetadataVersion(m))||
+            e.lifecycle_state!=CatalogNameLifecycle::active||e.object_uuid.value!=d.record.header.object_uuid.value||
+            e.name_vector_uuid.value!=v.name_vector_uuid.value||e.object_class!=v.object_class||
+            e.default_for_object!=is_default||
+            (is_default&&(e.language_tag!=language||!e.default_for_language)))return {E::invalid_names,0,0};
+        defaults+=is_default;
+        account(*metadata_extent+*entry_extent);
+      }
+      if(defaults!=1)return {E::invalid_names,0,0};
+
+    return {E::none,records,bytes};
+  }catch(E e){return {e,0,0};}
+}
 CatalogNamedCreationResult AssembleLocalNamedCreationRecords(
     const Uuid& database,const TypedUuid& tx,std::string_view language,
     std::span<const CatalogNamedCreationInput> inputs,CatalogNamedCreationLimits limits) noexcept {
@@ -35,48 +90,12 @@ CatalogNamedCreationResult AssembleLocalNamedCreationRecords(
         inputs.empty()||!limits.maximum_records||!limits.maximum_encoded_bytes)return Fail(E::invalid_request);
     if(inputs.size()>limits.maximum_records/3)return Fail(E::resource_exhausted);
     u64 records=0,bytes=0;
-    const auto account=[&](u64 n) {
-      if(records==limits.maximum_records||n>limits.maximum_encoded_bytes-bytes)throw E::resource_exhausted;
-      ++records;bytes+=n;
-    };
     for(const auto& input:inputs) {
-      if(!input.definition||!input.vector_metadata||!input.vector||input.entries.empty())return Fail(E::invalid_request);
-      if(input.entries.size()>limits.maximum_records-records||limits.maximum_records-records-input.entries.size()<2)
-        return Fail(E::resource_exhausted);
-      const auto& d=*input.definition;const auto& vm=*input.vector_metadata;const auto& v=*input.vector;
-      if(!First(d,tx)||!First(vm,tx)||d.record.header.kind==CatalogRecordKind::localized_name||
-          !vm.record.payload.empty())return Fail(E::invalid_metadata);
-      const auto extent=CatalogMetadataVersionEncodedBytes(BorrowCatalogMetadataVersion(d));
-      const auto vector_extent=CatalogMetadataVersionEncodedBytes(BorrowCatalogMetadataVersion(vm));
-      if(!extent||!vector_extent)return Fail(E::invalid_metadata);
-      const CatalogNamePayloadView vector=BorrowCatalogNameVector(v);
-      const auto name_extent=CatalogNameEnvelopeEncodedBytes(vector);
-      if(!name_extent||!CatalogNamePayloadMatchesMetadata(vector,BorrowCatalogMetadataVersion(vm))||
-          v.lifecycle_state!=CatalogNameLifecycle::active||v.default_language_tag!=language||
-          v.object_uuid.value!=d.record.header.object_uuid.value||
-          v.name_vector_uuid.value!=d.name_vector_uuid.value||v.default_name_entry_uuid.value!=d.default_name_uuid.value||
-          v.owning_schema_uuid.has_value()!=( !d.owning_schema_uuid.value.is_nil())||
-          (v.owning_schema_uuid&&v.owning_schema_uuid->value!=d.owning_schema_uuid.value))return Fail(E::invalid_names);
-      account(*extent);account(*vector_extent+*name_extent);
-      unsigned defaults=0;
-      for(const auto& input_entry:input.entries) {
-        if(!input_entry.metadata||!input_entry.entry)return Fail(E::invalid_request);
-        const auto& m=*input_entry.metadata;const auto& e=*input_entry.entry;
-        if(!First(m,tx)||!m.record.payload.empty())return Fail(E::invalid_metadata);
-        const auto metadata_extent=CatalogMetadataVersionEncodedBytes(BorrowCatalogMetadataVersion(m));
-        if(!metadata_extent)return Fail(E::invalid_metadata);
-        const CatalogNamePayloadView entry=BorrowCatalogNameEntry(e);
-        const auto entry_extent=CatalogNameEnvelopeEncodedBytes(entry);
-        const bool is_default=e.name_entry_uuid.value==v.default_name_entry_uuid.value;
-        if(!entry_extent||!CatalogNamePayloadMatchesMetadata(entry,BorrowCatalogMetadataVersion(m))||
-            e.lifecycle_state!=CatalogNameLifecycle::active||e.object_uuid.value!=d.record.header.object_uuid.value||
-            e.name_vector_uuid.value!=v.name_vector_uuid.value||e.object_class!=v.object_class||
-            e.default_for_object!=is_default||
-            (is_default&&(e.language_tag!=language||!e.default_for_language)))return Fail(E::invalid_names);
-        defaults+=is_default;
-        account(*metadata_extent+*entry_extent);
-      }
-      if(defaults!=1)return Fail(E::invalid_names);
+      if(!input.definition)return Fail(E::invalid_request);
+      const auto checked=PreflightLocalNamedCreationRecord(BorrowCatalogMetadataVersion(*input.definition),
+          input,tx,language,{limits.maximum_records-records,limits.maximum_encoded_bytes-bytes});
+      if(checked.error!=E::none)return Fail(checked.error);
+      records+=checked.records;bytes+=checked.encoded_bytes;
     }
     // Sort exact raw16 identities, not names or an ambiguous digest. The small
     // bootstrap case needs no heap scratch. Larger cohorts use bounded scratch

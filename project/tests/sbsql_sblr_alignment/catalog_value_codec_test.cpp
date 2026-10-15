@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "catalog_value_codec.hpp"
 
+#include <algorithm>
 #include <array>
 #include <iostream>
 #include <limits>
@@ -57,6 +58,51 @@ void Roundtrip(const c::CatalogValueSchema& schema, const std::vector<c::Catalog
   if (!decoded.ok()) return;
   const auto again = c::EncodeCatalogValueBlock(schema, decoded.fields);
   Check(again.ok() && again.bytes == encoded.bytes, "canonical bytes changed on reencode");
+  std::vector<c::CatalogValueFieldView> views(fields.size());
+  const auto view=c::DecodeCatalogValueBlockInto(c::BorrowCatalogValueSchema(schema),encoded.bytes,views);
+  Check(view.ok(),"borrowed field admission for encoding");
+  if(!view.ok())return;
+  std::vector<p::byte> backing(encoded.bytes.size()+16,0x5a);
+  const auto into=c::EncodeCatalogValueBlockInto(c::BorrowCatalogValueSchema(schema),view.fields,backing);
+  Check(into.ok()&&std::equal(into.bytes.begin(),into.bytes.end(),encoded.bytes.begin(),encoded.bytes.end())&&
+      std::all_of(backing.begin()+encoded.bytes.size(),backing.end(),[](auto b){return b==0x5a;}),
+      "borrowed encoder preserves every canonical type and untouched tail");
+  std::fill(backing.begin(),backing.end(),0x5a);
+  // Exhaust small frames; large byte/list fixtures sample the extent while
+  // always checking the decisive one-short boundary (avoid quadratic scans).
+  for(std::size_t n=0;n<encoded.bytes.size();) {
+    const auto short_backing=c::EncodeCatalogValueBlockInto(c::BorrowCatalogValueSchema(schema),view.fields,
+        std::span<p::byte>(backing).first(n));
+    Check(short_backing.error==E::invalid_backing&&short_backing.bytes.empty()&&
+        std::all_of(backing.begin(),backing.end(),[](auto b){return b==0x5a;}),
+        "truncated destination refuses without writes");
+    if(n==encoded.bytes.size()-1)break;
+    n=std::min(encoded.bytes.size()-1,n+(encoded.bytes.size()>256?encoded.bytes.size()/16:1));
+  }
+  if(!views.empty()) {
+    auto source=encoded.bytes;
+    const auto source_view=c::DecodeCatalogValueBlockInto(c::BorrowCatalogValueSchema(schema),source,views);
+    const auto overlap=c::EncodeCatalogValueBlockInto(c::BorrowCatalogValueSchema(schema),source_view.fields,source);
+    const bool has_source=std::any_of(views.begin(),views.end(),[](const auto& field){return !field.bytes.empty();});
+    Check((has_source?(overlap.error==E::invalid_backing&&overlap.bytes.empty()):overlap.ok())&&source==encoded.bytes,
+        "actual source-byte overlap refuses unchanged; empty values have no overlapping source extent");
+    if(views.size()*sizeof(c::CatalogValueFieldView)>=encoded.bytes.size()) {
+      const auto field_overlap=c::EncodeCatalogValueBlockInto(c::BorrowCatalogValueSchema(schema),views,
+          {reinterpret_cast<p::byte*>(views.data()),views.size()*sizeof(c::CatalogValueFieldView)});
+      Check(field_overlap.error==E::invalid_backing&&field_overlap.bytes.empty(),"borrowed field storage overlap refuses");
+    }
+    auto schema_copy=schema;
+    if(schema_copy.fields.size()*sizeof(c::CatalogValueFieldSchema)>=encoded.bytes.size()) {
+      const auto schema_overlap=c::EncodeCatalogValueBlockInto(c::BorrowCatalogValueSchema(schema_copy),views,
+          {reinterpret_cast<p::byte*>(schema_copy.fields.data()),schema_copy.fields.size()*sizeof(c::CatalogValueFieldSchema)});
+      Check(schema_overlap.error==E::invalid_backing&&schema_overlap.bytes.empty(),"schema storage overlap refuses");
+    }
+    views.back().id=0;
+    const auto malformed=c::EncodeCatalogValueBlockInto(c::BorrowCatalogValueSchema(schema),views,backing);
+    Check(!malformed.ok()&&malformed.bytes.empty()&&
+        std::all_of(backing.begin(),backing.end(),[](auto b){return b==0x5a;}),
+        "malformed final borrowed field refuses before output");
+  }
 }
 void Golden() {
   const c::CatalogValueSchema schema{0x01020304, 2, {

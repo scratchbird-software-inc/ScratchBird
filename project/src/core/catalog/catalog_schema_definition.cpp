@@ -68,18 +68,39 @@ const CatalogValueSchema& CatalogSchemaDefinitionSchema() {
   }();
   return schema;
 }
-CatalogValueEncodeResult EncodeCatalogSchemaDefinition(const CatalogSchemaDefinition& d) {
+std::optional<std::size_t> CatalogSchemaDefinitionEncodedBytes(const CatalogSchemaDefinition& d) {
+  if(!Valid(d))return {};
+  std::size_t bytes=128;
+  for(const auto* id:{&d.parent_schema_uuid,&d.default_filespace_uuid,&d.default_charset_uuid,
+      &d.default_collation_uuid,&d.permissions_policy_uuid})if(!Absent(*id))bytes+=24;
+  return bytes;
+}
+CatalogValueEncodeIntoResult EncodeCatalogSchemaDefinitionInto(
+    const CatalogSchemaDefinition& d,std::span<byte> backing) {
   if (!Valid(d)) return {CatalogValueError::invalid_value,{}};
-  std::vector<CatalogValueField> fields{{1,d.schema_object_uuid},{2,d.database_catalog_object_uuid}};
-  if (!Absent(d.parent_schema_uuid)) fields.push_back({3,d.parent_schema_uuid});
-  fields.push_back({4,static_cast<u64>(d.schema_type)});
-  if (!Absent(d.default_filespace_uuid)) fields.push_back({5,d.default_filespace_uuid});
-  if (!Absent(d.default_charset_uuid)) fields.push_back({6,d.default_charset_uuid});
-  if (!Absent(d.default_collation_uuid)) fields.push_back({7,d.default_collation_uuid});
-  if (!Absent(d.permissions_policy_uuid)) fields.push_back({8,d.permissions_policy_uuid});
-  fields.push_back({9,d.origin_transaction_uuid});
-  fields.push_back({10,d.origin_local_transaction_id});
-  return EncodeCatalogValueBlock(CatalogSchemaDefinitionSchema(),fields);
+  std::array<CatalogValueFieldView,10> fields;
+  std::array<byte,8> type{},local{};
+  for(unsigned i=0;i<8;++i) {
+    type[i]=static_cast<byte>(static_cast<u64>(d.schema_type)>>(8*i));
+    local[i]=static_cast<byte>(d.origin_local_transaction_id>>(8*i));
+  }
+  std::size_t count=0;
+  const auto identity=[&](u16 tag,const TypedUuid& id) {
+    if(!Absent(id))fields[count++]={tag,CatalogValueType::engine_identity,id.kind,id.value.bytes};
+  };
+  identity(1,d.schema_object_uuid);identity(2,d.database_catalog_object_uuid);identity(3,d.parent_schema_uuid);
+  fields[count++]={4,CatalogValueType::unsigned_integer,UuidKind::unknown,type};
+  identity(5,d.default_filespace_uuid);identity(6,d.default_charset_uuid);
+  identity(7,d.default_collation_uuid);identity(8,d.permissions_policy_uuid);identity(9,d.origin_transaction_uuid);
+  fields[count++]={10,CatalogValueType::unsigned_integer,UuidKind::unknown,local};
+  return EncodeCatalogValueBlockInto(CatalogSchemaDefinitionSchemaView(),
+      std::span<const CatalogValueFieldView>(fields).first(count),backing);
+}
+CatalogValueEncodeResult EncodeCatalogSchemaDefinition(const CatalogSchemaDefinition& d) {
+  std::array<byte,248> backing;
+  const auto encoded=EncodeCatalogSchemaDefinitionInto(d,backing);
+  if(!encoded.ok())return {encoded.error,{}};
+  return {CatalogValueError::none,{encoded.bytes.begin(),encoded.bytes.end()}};
 }
 CatalogSchemaDefinitionResult DecodeCatalogSchemaDefinition(std::string_view bytes) {
   if (bytes.size() < 128 || bytes.size() > 248) return {CatalogValueError::invalid_framing,{}};
