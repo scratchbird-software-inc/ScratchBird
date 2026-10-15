@@ -8,6 +8,7 @@
 
 #include "security_lifecycle_event_codec.hpp"
 #include "database_local_security_event_store.hpp"
+#include "database_local_security_retained_snapshot.hpp"
 #include "api_diagnostics.hpp"
 
 #include "database_format.hpp"
@@ -32,6 +33,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <iterator>
 #include <set>
 #include <string>
 #include <string_view>
@@ -73,6 +75,7 @@ struct ParsedBatch {
   Uuid outer_page_uuid;
   std::uint64_t outer_page_generation = 0;
   TypedUuid row_uuid;
+  bool visible_in_reader_snapshot = false;
 };
 
 struct LocatorRuntimeState {
@@ -368,8 +371,18 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
     const EngineRequestContext& context,
     DatabaseLocalSecurityEventVisibilityV1 visibility,
     bool refuse_concurrent_security_writer,
-    LocatorRuntimeState* runtime_out) {
+    LocatorRuntimeState* runtime_out,
+    const mga::PublishedSnapshotPin* retained_snapshot = nullptr) {
   DatabaseLocalSecurityEventStoreLoadResultV1 result;
+  mga::PublishedSnapshotObservation pinned;
+  if (retained_snapshot) {
+    pinned = retained_snapshot->Observe();
+    if (!pinned.ok()) {
+      result.diagnostic = ErrorDiagnostic(pinned.diagnostic_code(),
+          "retained_security_snapshot_unavailable", pinned.message_key());
+      return result;
+    }
+  }
   const auto bootstrap = storage::ReadDatabaseBootstrapSecurityCatalog(
       context.database_path);
   if (!bootstrap.ok() || bootstrap.state.security_context_generation == 0) {
@@ -404,19 +417,45 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
   mga::TransactionInventoryEntry reader;
   if (visibility ==
       DatabaseLocalSecurityEventVisibilityV1::include_reader_own_uncommitted) {
-    if (!ExactTransactionIdentity(context, loaded_inventory.inventory, true,
+    if (!ExactTransactionIdentity(context, loaded_inventory.inventory, false,
                                   &reader, &result.diagnostic)) {
       return result;
     }
-    const auto snapshot = mga::CreateLocalTransactionSnapshot(
-        loaded_inventory.inventory, reader.identity.local_id);
-    if (!snapshot.ok()) {
-      result.diagnostic = StorageDiagnostic(
-          snapshot.diagnostic, kDatabaseLocalSecurityDiagnosticCorrupt,
-          "reader_visibility_snapshot_invalid");
+    if (reader.state != mga::TransactionState::active &&
+        reader.state != mga::TransactionState::read_only_active) {
+      result.diagnostic = ErrorDiagnostic(
+          kDatabaseLocalSecurityDiagnosticTransactionRequired,
+          "exact_active_or_read_only_inventory_reader_required");
       return result;
     }
-    reader_visibility = snapshot.visibility_snapshot;
+    if (retained_snapshot) {
+      const auto& source = *pinned.descriptor;
+      if (source.owning_transaction_uuid.kind != reader.identity.transaction_uuid.kind ||
+          source.owning_transaction_uuid.value != reader.identity.transaction_uuid.value ||
+          source.owning_transaction.value != reader.identity.local_id.value ||
+          loaded_inventory.inventory.next_local_transaction_id <
+              source.publication_inventory_next_local_transaction_id) {
+        result.diagnostic = ErrorDiagnostic(
+            kDatabaseLocalSecurityDiagnosticTransactionRequired,
+            "retained_security_snapshot_owner_mismatch");
+        return result;
+      }
+      reader_visibility.reader_transaction = source.owning_transaction;
+      reader_visibility.visible_through_local_transaction_id = source.visible_committed_high_watermark;
+      reader_visibility.visible_through_local_transaction_id_is_boundary = true;
+      reader_visibility.active_excluded_local_transaction_ids = source.active_excluded_local_transaction_ids;
+      reader_visibility.in_doubt_excluded_local_transaction_ids = source.in_doubt_excluded_local_transaction_ids;
+    } else {
+      const auto snapshot = mga::CreateLocalTransactionSnapshot(
+          loaded_inventory.inventory, reader.identity.local_id);
+      if (!snapshot.ok()) {
+        result.diagnostic = StorageDiagnostic(
+            snapshot.diagnostic, kDatabaseLocalSecurityDiagnosticCorrupt,
+            "reader_visibility_snapshot_invalid");
+        return result;
+      }
+      reader_visibility = snapshot.visibility_snapshot;
+    }
   }
 
   disk::FileDevice device;
@@ -566,9 +605,16 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
       visibility_request;
   visibility_request.inspected = &inspected;
   visibility_request.inventory = &loaded_inventory.inventory;
+  // Select an authenticated physical chain, NOT logical security authority.
+  // A two-slot locator is not a history horizon: older readers must traverse
+  // its validated reverse chain and filter each batch through actual MGA.
+  const auto& anchored = inspected.locators[inspected.anchored_locator_slot];
+  const bool reader_owns_head =
+      visibility == DatabaseLocalSecurityEventVisibilityV1::include_reader_own_uncommitted &&
+      anchored.creator_local_transaction_id == reader.identity.local_id.value &&
+      anchored.creator_transaction_uuid == reader.identity.transaction_uuid.value;
   visibility_request.visibility_snapshot = reader_visibility;
-  visibility_request.use_latest_committed_snapshot =
-      visibility == DatabaseLocalSecurityEventVisibilityV1::latest_committed;
+  visibility_request.use_latest_committed_snapshot = !reader_owns_head;
   if (!visibility_request.use_latest_committed_snapshot) {
     visibility_request.reader_transaction_uuid =
         reader.identity.transaction_uuid;
@@ -597,10 +643,7 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
     return result;
   }
   std::vector<ParsedBatch> reverse_batches;
-  std::vector<std::uint64_t> reverse_page_numbers;
   reverse_batches.reserve(static_cast<std::size_t>(locator.chain_page_count));
-  reverse_page_numbers.reserve(
-      static_cast<std::size_t>(locator.chain_page_count));
   std::set<std::uint64_t> visited_pages;
   Uuid expected_page_uuid = locator.head_page_uuid;
   std::uint64_t expected_page_number = locator.head_page_number;
@@ -644,19 +687,10 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
       return result;
     }
 
-    storage::PhysicalMgaCowReadRequest request;
-    request.database_path = context.database_path;
-    request.relation_uuid = relation_uuid;
-    request.page_number = expected_page_number;
-    request.use_latest_committed_snapshot =
-        visibility == DatabaseLocalSecurityEventVisibilityV1::latest_committed;
-    if (!request.use_latest_committed_snapshot) {
-      request.visibility_snapshot = reader_visibility;
-    }
+    const bool latest = visibility == DatabaseLocalSecurityEventVisibilityV1::latest_committed;
     const auto read = storage::ReadPhysicalMgaCowRowsFromOpenDevice(
-        device, request.relation_uuid, request.page_number,
-        request.visibility_snapshot, request.use_latest_committed_snapshot,
-        request.use_latest_committed_snapshot ? mga::TransactionIdentity{} : reader.identity);
+        device, relation_uuid, expected_page_number, reader_visibility, latest,
+        latest ? mga::TransactionIdentity{} : reader.identity);
     if (!read.ok() || read.recovery_required_count != 0) {
       result.diagnostic = read.ok()
                               ? ErrorDiagnostic(
@@ -668,8 +702,11 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
                                     "security_row_read_failed");
       return result;
     }
-    if (read.rows.size() != 1 || read.visible_rows.size() != 1 ||
-        !read.rows[0].visible || read.rows[0].visible_delete_marker ||
+    if (read.rows.size() != 1 ||
+        read.visible_rows.size() != (read.rows[0].visible ? 1 : 0) ||
+        (read.rows[0].decision != mga::VisibilityDecision::visible &&
+         read.rows[0].decision != mga::VisibilityDecision::invisible) ||
+        read.rows[0].visible_delete_marker ||
         read.visible_delete_marker_count != 0 ||
         read.wait_for_transaction_count != 0 ||
         read.rolled_back_version_count != 0 ||
@@ -679,8 +716,10 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
           "security_chain_exact_physical_row_cardinality_invalid");
       return result;
     }
-    const auto& row = read.visible_rows[0];
-    if (row.cells.size() != 1 || row.cells[0].column_ordinal != 1 ||
+    // Invisible bytes may be inspected only to authenticate chain linkage.
+    // They must never enter the returned event/materialization projection.
+    const auto& row = read.rows[0].row;
+    if (row.deleted || row.cells.size() != 1 || row.cells[0].column_ordinal != 1 ||
         row.cells[0].value.type_id != CanonicalTypeId::binary ||
         row.cells[0].value.is_null ||
         row.cells[0].value.payload_is_toast_reference) {
@@ -694,6 +733,7 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
     batch.outer_page_uuid = page_header.header.page_uuid;
     batch.outer_page_generation = page_header.header.page_generation;
     batch.row_uuid = row.row_uuid;
+    batch.visible_in_reader_snapshot = read.rows[0].visible;
     std::string refusal;
     if (!DecodeBatch(row.cells[0].value.payload, &batch, &refusal) ||
         !ValidateDecodedBatch(batch, parsed_header.header.database_uuid,
@@ -712,7 +752,6 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
           "security_chain_tail_predecessor_invalid");
       return result;
     }
-    reverse_page_numbers.push_back(expected_page_number);
     reverse_batches.push_back(std::move(batch));
     observed_extent_min =
         std::min(observed_extent_min, expected_page_number);
@@ -727,8 +766,7 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
 
   if (locator.chain_page_count == 0) {
     observed_extent_min = 0;
-  } else if (reverse_page_numbers.back() != locator.tail_page_number ||
-             reverse_batches.back().page_number != locator.tail_page_number ||
+  } else if (reverse_batches.back().page_number != locator.tail_page_number ||
              reverse_batches.back().outer_page_uuid != locator.tail_page_uuid ||
              reverse_batches.back().outer_page_generation !=
                  locator.tail_page_generation) {
@@ -746,9 +784,9 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
   }
 
   std::reverse(reverse_batches.begin(), reverse_batches.end());
-  std::reverse(reverse_page_numbers.begin(), reverse_page_numbers.end());
   std::uint64_t generation = bootstrap.state.security_context_generation;
-  for (const auto& batch : reverse_batches) {
+  std::uint64_t visible_generation = generation;
+  for (auto& batch : reverse_batches) {
     if (generation == std::numeric_limits<std::uint64_t>::max() ||
         batch.prior_generation != generation ||
         batch.successor_generation != generation + 1) {
@@ -757,8 +795,14 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
           "security_context_successor_chain_invalid");
       return result;
     }
-    result.state.events.insert(result.state.events.end(), batch.events.begin(),
-                               batch.events.end());
+    if (batch.visible_in_reader_snapshot) {
+      // Authentication already completed; transfer these privately owned
+      // serialized bytes without allocating another copy of every event.
+      result.state.events.insert(result.state.events.end(),
+          std::make_move_iterator(batch.events.begin()), std::make_move_iterator(batch.events.end()));
+      result.state.page_numbers.push_back(batch.page_number);
+      visible_generation = batch.successor_generation;
+    }
     generation = batch.successor_generation;
   }
   if (generation != locator.security_context_generation ||
@@ -772,6 +816,15 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
         "locator_head_batch_authority_mismatch");
     return result;
   }
+  if (runtime_out && visible_generation != generation) {
+    // Appending a successor to an obsolete snapshot would fork the chain or
+    // lose committed authority. Refuse BEFORE physical staging, not afterwards.
+    result = {};
+    result.diagnostic = ErrorDiagnostic(
+        kDatabaseLocalSecurityDiagnosticAuthorityRequired,
+        "security_write_snapshot_not_current");
+    return result;
+  }
   const auto closed = device.Close();
   if (!closed.ok()) {
     result.diagnostic = StorageDiagnostic(
@@ -782,7 +835,7 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
 
   result.ok = true;
   result.diagnostic = OkDiagnostic();
-  result.state.security_context_generation = generation;
+  result.state.security_context_generation = visible_generation;
   result.state.bootstrap_authority.authenticated = true;
   result.state.bootstrap_authority.principal_present =
       bootstrap.state.present;
@@ -807,7 +860,6 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
       bootstrap.state.policy_generation;
   result.state.bootstrap_authority.security_context_generation =
       bootstrap.state.security_context_generation;
-  result.state.page_numbers = reverse_page_numbers;
   result.state.database_identity_authenticated = true;
   result.state.page_identity_authenticated = true;
   result.state.durable_inventory_authenticated = true;
@@ -830,7 +882,7 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
       "database_local_security.locator_migration_count=" +
           std::to_string(result.state.locator_migration_count),
       "database_local_security.security_context_generation=" +
-          std::to_string(generation),
+          std::to_string(visible_generation),
   };
   if (runtime_out != nullptr) {
     runtime_out->serialized_header = serialized_header;
@@ -842,6 +894,14 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
     runtime_out->filespace_uuid = filespace_uuid;
     runtime_out->page_size = parsed_header.header.page_size;
     runtime_out->next_page_number = page_count;
+  }
+  if (retained_snapshot) {
+    const auto final = retained_snapshot->Observe();
+    if (!final.ok()) {
+      result = {};
+      result.diagnostic = ErrorDiagnostic(final.diagnostic_code(),
+          "retained_security_snapshot_revoked_during_read", final.message_key());
+    }
   }
   return result;
 }
@@ -861,7 +921,27 @@ LoadDatabaseLocalSecurityEventStoreV1(
   }
   const auto inventory_guard =
       AcquireTransactionInventoryGuard(context.database_path);
-  return LoadUnlocked(context, visibility, false, nullptr);
+  auto result = LoadUnlocked(context, visibility, false, nullptr);
+  if (!result.ok) { result.state = {}; result.evidence.clear(); }
+  return result;
+}
+
+DatabaseLocalSecurityEventStoreLoadResultV1
+LoadDatabaseLocalSecurityEventStoreAtRetainedSnapshotV1(
+    const EngineRequestContext& context,
+    const mga::PublishedSnapshotPin& pin) {
+  if (context.database_path.empty()) {
+    DatabaseLocalSecurityEventStoreLoadResultV1 result;
+    result.diagnostic = ErrorDiagnostic(kDatabaseLocalSecurityDiagnosticAuthorityRequired,
+        "database_path_required");
+    return result;
+  }
+  const auto inventory_guard = AcquireTransactionInventoryGuard(context.database_path);
+  auto result = LoadUnlocked(context,
+      DatabaseLocalSecurityEventVisibilityV1::include_reader_own_uncommitted,
+      false, nullptr, &pin);
+  if (!result.ok) { result.state = {}; result.evidence.clear(); }
+  return result;
 }
 
 DatabaseLocalSecurityEventStoreAppendResultV1

@@ -11,6 +11,8 @@
 #include "security_lifecycle_event_codec.hpp"
 #include "database_local_private_relation_locator.hpp"
 #include "security/database_local_security_event_store.hpp"
+#include "security/database_local_security_retained_snapshot.hpp"
+#include "transaction_snapshot.hpp"
 #include "database_format.hpp"
 #include "disk_device.hpp"
 #include "hash_digest.hpp"
@@ -28,12 +30,43 @@
 #include <filesystem>
 #include <iostream>
 #include <limits>
+#include <memory>
+#include <new>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <utility>
 #include <vector>
+
+namespace source_allocation_fault {
+thread_local long budget = -1;
+thread_local bool hit = false, count = false;
+thread_local std::size_t attempts = 0;
+thread_local long revoke_after = -1;
+thread_local bool revoke_fired = false;
+thread_local scratchbird::core::platform::TypedUuid revoke_snapshot;
+}
+void* operator new(std::size_t n) {
+  using namespace source_allocation_fault;
+  if (count) ++attempts;
+  if (revoke_after == 0) {
+    revoke_after = -1; revoke_fired = true;
+    scratchbird::transaction::mga::RevokePublishedSnapshotVector(revoke_snapshot);
+  } else if (revoke_after > 0) --revoke_after;
+  if (budget == 0) { budget = -1; hit = true; throw std::bad_alloc(); }
+  if (budget > 0) --budget;
+  if (void* p = std::malloc(n ? n : 1)) return p;
+  throw std::bad_alloc();
+}
+void* operator new[](std::size_t n) { return ::operator new(n); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+#include "../support/aligned_allocation_fault_bridge.hpp"
 
 namespace {
 
@@ -66,8 +99,7 @@ constexpr auto kConnectDeny = FixtureUuidLiteral("019e108d-1700-7000-8000-000000
 constexpr auto kRowPolicy = FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007e1");
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -85,7 +117,8 @@ struct TempDirectory {
 };
 
 TempDirectory MakeTempDirectory() {
-  std::string pattern = "/tmp/sb_database_local_security.XXXXXX";
+  std::string pattern = (std::filesystem::temp_directory_path() /
+      "sb_database_local_security.XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
   char* created = ::mkdtemp(writable.data());
@@ -100,7 +133,8 @@ struct Fixture {
 };
 
 Fixture CreateFixture(const std::filesystem::path& path,
-                      std::uint64_t identity_time) {
+                      std::uint64_t identity_time,
+                      std::uint32_t page_size = 16384) {
   const auto database_uuid =
       uuid::GenerateDurableEngineIdentityV7(UuidKind::database, identity_time);
   const auto filespace_uuid = uuid::GenerateDurableEngineIdentityV7(
@@ -112,7 +146,7 @@ Fixture CreateFixture(const std::filesystem::path& path,
   create.path = path.string();
   create.database_uuid = database_uuid.value;
   create.filespace_uuid = filespace_uuid.value;
-  create.page_size = 16384;
+  create.page_size = page_size;
   create.creation_unix_epoch_millis = identity_time + 2;
   create.allow_minimal_resource_bootstrap = true;
   create.require_resource_seed_pack = false;
@@ -151,7 +185,9 @@ Fixture CreateFixture(const std::filesystem::path& path,
 
 api::EngineRequestContext BeginTransaction(
     const api::EngineRequestContext& base,
-    std::uint64_t identity_time) {
+    std::uint64_t identity_time,
+    bool stable = false,
+    bool read_only = false) {
   const auto loaded =
       db::LoadLocalTransactionInventoryFromDatabase(base.database_path);
   Require(loaded.ok(), "private security transaction inventory load failed");
@@ -159,9 +195,15 @@ api::EngineRequestContext BeginTransaction(
       UuidKind::transaction, identity_time);
   Require(transaction_uuid.ok(),
           "private security transaction identity generation failed");
-  const auto begun = mga::BeginLocalTransaction(
-      loaded.inventory, transaction_uuid.value, identity_time + 1);
+  auto begun = read_only
+      ? mga::BeginLocalReadOnlyTransaction(loaded.inventory, transaction_uuid.value, identity_time + 1)
+      : mga::BeginLocalTransaction(loaded.inventory, transaction_uuid.value, identity_time + 1);
   Require(begun.ok(), "private security transaction begin failed");
+  // Admit the selected isolation in the candidate BEFORE durable publication,
+  // never rewrite an already-issued transaction's immutable isolation flags.
+  for (auto& entry : begun.inventory.entries)
+    if (entry.identity.local_id.value == begun.entry.identity.local_id.value)
+      entry.stable_snapshot = stable;
   Require(db::PersistLocalTransactionInventoryToDatabase(
               base.database_path, begun.inventory)
               .ok(),
@@ -1228,7 +1270,298 @@ void TestSealedLegacyMigration() {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+struct RetainedSecuritySnapshot {
+  scratchbird::core::platform::TypedUuid id;
+  mga::PublishedSnapshotPin pin;
+  explicit RetainedSecuritySnapshot(const api::EngineRequestContext& context) {
+    const auto inventory = db::LoadLocalTransactionInventoryFromDatabase(context.database_path);
+    Require(inventory.ok(), "retained security source inventory unavailable");
+    const auto published = mga::PublishStatementStableSnapshotVector(inventory.inventory,
+        mga::MakeLocalTransactionId(context.local_transaction_id), 1788109000000ull);
+    Require(published.ok(), "actual retained security snapshot publication failed");
+    id = published.descriptor.snapshot_uuid;
+    pin = mga::RetainPublishedSnapshotVector(id);
+    Require(pin.valid() && pin.Observe().ok(), "actual retained security snapshot pin failed");
+  }
+  ~RetainedSecuritySnapshot() { mga::ReleasePublishedSnapshotVector(id); }
+};
+
+std::array<byte, 32> ReadDatabaseDigest(const std::string& path) {
+  disk::FileDevice device;
+  Require(device.Open(path, disk::FileOpenMode::open_existing_read_only).ok(),
+      "source no-effects digest open failed");
+  const auto size = device.Size();
+  Require(size.ok() && size.size_bytes && size.size_bytes <= 64 * 1024 * 1024,
+      "bounded source fixture digest size invalid");
+  std::vector<byte> bytes(static_cast<std::size_t>(size.size_bytes));
+  Require(device.ReadAt(0, bytes.data(), bytes.size()).ok() && device.Close().ok(),
+      "source no-effects digest read/close failed");
+  const auto digest = core_hash::ComputeSha256Digest(bytes);
+  Require(digest.ok(), "source no-effects digest computation failed");
+  return digest.digest;
+}
+
+void TestRetainedSourceAllocationFailures(const api::EngineRequestContext& context,
+    const mga::PublishedSnapshotPin& pin) {
+  const auto expected = api::LoadDatabaseLocalSecurityEventStoreAtRetainedSnapshotV1(context, pin);
+  Require(expected.ok, "allocation sweep reference source unavailable");
+  source_allocation_fault::attempts = 0;
+  source_allocation_fault::count = true;
+  const auto measured = api::LoadDatabaseLocalSecurityEventStoreAtRetainedSnapshotV1(context, pin);
+  source_allocation_fault::count = false;
+  const auto count = source_allocation_fault::attempts;
+  Require(measured.ok && count && count < 100000, "bounded source allocation inventory unavailable");
+  const auto file_size = std::filesystem::file_size(context.database_path);
+  const auto file_digest = ReadDatabaseDigest(context.database_path);
+  unsigned exceptions = 0, refusals = 0, complete = 0;
+  for (std::size_t i = 0; i != count; ++i) {
+    std::optional<api::DatabaseLocalSecurityEventStoreLoadResultV1> output;
+    source_allocation_fault::hit = false;
+    source_allocation_fault::budget = static_cast<long>(i);
+    try { output.emplace(api::LoadDatabaseLocalSecurityEventStoreAtRetainedSnapshotV1(context, pin)); }
+    catch (const std::bad_alloc&) { ++exceptions; }
+    catch (...) { source_allocation_fault::budget = -1; throw; }
+    source_allocation_fault::budget = -1;
+    Require(source_allocation_fault::hit, "measured source allocation position did not fire");
+    if (output) {
+      if (output->ok) {
+        ++complete;
+        const auto& actual_bootstrap = output->state.bootstrap_authority;
+        const auto& expected_bootstrap = expected.state.bootstrap_authority;
+        Require(output->state.events == expected.state.events &&
+            output->state.page_numbers == expected.state.page_numbers &&
+            output->state.security_context_generation == expected.state.security_context_generation &&
+            output->state.database_identity_authenticated && output->state.page_identity_authenticated &&
+            output->state.durable_inventory_authenticated &&
+            actual_bootstrap.authenticated == expected_bootstrap.authenticated &&
+            actual_bootstrap.principal_present == expected_bootstrap.principal_present &&
+            actual_bootstrap.principal_uuid == expected_bootstrap.principal_uuid &&
+            actual_bootstrap.principal_name == expected_bootstrap.principal_name &&
+            actual_bootstrap.credential_fingerprint == expected_bootstrap.credential_fingerprint &&
+            actual_bootstrap.sysarch_role_uuid == expected_bootstrap.sysarch_role_uuid &&
+            actual_bootstrap.membership_uuid == expected_bootstrap.membership_uuid &&
+            actual_bootstrap.creator_tx == expected_bootstrap.creator_tx &&
+            actual_bootstrap.policy_generation == expected_bootstrap.policy_generation &&
+            actual_bootstrap.security_context_generation == expected_bootstrap.security_context_generation,
+            "optional allocation failure published an incomplete source");
+      } else {
+        ++refusals;
+        Require(output->state.events.empty() && output->state.page_numbers.empty() &&
+            output->state.security_context_generation == 0 &&
+            !output->state.database_identity_authenticated && !output->state.page_identity_authenticated &&
+            !output->state.durable_inventory_authenticated && !output->diagnostic.code.empty(),
+            "failed source allocation exposed partial authority or lost diagnostics");
+      }
+    }
+    Require(std::filesystem::file_size(context.database_path) == file_size && pin.Observe().ok(),
+        "source allocation failure changed physical storage or revoked its caller's pin");
+    const auto retry = api::LoadDatabaseLocalSecurityEventStoreAtRetainedSnapshotV1(context, pin);
+    Require(retry.ok && retry.state.events == expected.state.events &&
+        retry.state.page_numbers == expected.state.page_numbers &&
+        retry.state.security_context_generation == expected.state.security_context_generation,
+        "source allocation failure stranded device/guard custody or poisoned retry");
+  }
+  Require(ReadDatabaseDigest(context.database_path) == file_digest,
+      "source allocation sweep changed persisted bytes without extending the file");
+  std::cout << "retained_security_source_allocation_faults=" << count << " exceptions=" << exceptions
+      << " refusals=" << refusals << " complete_optional=" << complete << '\n';
+}
+
+void TestRetainedSecuritySnapshots() {
+  using Visibility = api::DatabaseLocalSecurityEventVisibilityV1;
+  for (const std::uint32_t page_size : {8192u, 16384u, 32768u, 65536u, 131072u}) {
+    auto directory = MakeTempDirectory();
+    const auto fixture = CreateFixture(directory.path / "retained.sbdb",
+        1788109000000ull + page_size, page_size);
+    auto writer = BeginTransaction(fixture.context, 1788109200000ull);
+    // A lower-numbered writer commits AFTER publication. A higher-numbered
+    // committed marker ensures the test requires actual captured exclusions,
+    // not just comparing row numbers to the committed high watermark.
+    const auto marker = BeginTransaction(fixture.context, 1788109200100ull);
+    Finalize(marker, db::PhysicalMgaCowFinalizeDecision::commit, 1788109200200ull);
+    auto reader = BeginTransaction(fixture.context, 1788109200300ull);
+    auto stable = BeginTransaction(fixture.context, 1788109200400ull, true);
+    auto read_only = BeginTransaction(fixture.context, 1788109200500ull, true, true);
+    RetainedSecuritySnapshot original(reader), stable_source(stable), read_only_source(read_only);
+    const auto before = original.pin.Observe();
+    Require(before.ok() && before.descriptor->visible_committed_high_watermark >= writer.local_transaction_id &&
+        std::binary_search(before.descriptor->active_excluded_local_transaction_ids.begin(),
+            before.descriptor->active_excluded_local_transaction_ids.end(), writer.local_transaction_id),
+        "retained fixture did not capture lower-numbered active-writer exclusion");
+    const auto empty = api::LoadDatabaseLocalSecurityEventStoreAtRetainedSnapshotV1(reader, {});
+    Require(!empty.ok && empty.state.events.empty() && empty.state.page_numbers.empty() &&
+        empty.diagnostic.code == "SB-MGA-SNAPSHOT-VECTOR-UNKNOWN", "empty pin fabricated security authority");
+    const auto initial = api::LoadDatabaseLocalSecurityEventStoreAtRetainedSnapshotV1(reader, original.pin);
+    Require(initial.ok && initial.state.security_context_generation == fixture.bootstrap_generation &&
+        initial.state.events.empty(), "initial pinned security source differs from bootstrap");
+    std::uint64_t last_page = 0;
+    std::optional<api::EngineRequestContext> mid_reader;
+    std::unique_ptr<RetainedSecuritySnapshot> middle;
+    for (unsigned n = 0; n != 4; ++n) {
+      if (n) writer = BeginTransaction(fixture.context, 1788109300000ull + n * 1000);
+      const auto role = uuid::GenerateDurableEngineIdentityV7(UuidKind::object, 1788109400000ull + n);
+      Require(role.ok(), "historical security role identity issuance failed");
+      const auto staged = api::AppendDatabaseLocalSecurityEventBatchV1(writer,
+          SingleRoleBatch(writer, fixture.bootstrap_generation + n + 1, role.value.value));
+      Require(staged.ok, "real historical security successor staging failed");
+      last_page = staged.page_number;
+      Finalize(writer, db::PhysicalMgaCowFinalizeDecision::commit, 1788109500000ull + n * 1000);
+      if (!n) {
+        mid_reader = BeginTransaction(fixture.context, 1788109600000ull);
+        middle = std::make_unique<RetainedSecuritySnapshot>(*mid_reader);
+      }
+      const auto old = api::LoadDatabaseLocalSecurityEventStoreAtRetainedSnapshotV1(reader, original.pin);
+      Require(old.ok && old.state.security_context_generation == fixture.bootstrap_generation &&
+          old.state.events.empty() && old.state.page_numbers.empty() &&
+          old.state.security_chain_page_reads == n + 1,
+          "old pin advanced or two-slot locator lost historical security state");
+      const auto stable_read = api::LoadDatabaseLocalSecurityEventStoreV1(stable,
+          Visibility::include_reader_own_uncommitted);
+      const auto read_only_read = api::LoadDatabaseLocalSecurityEventStoreAtRetainedSnapshotV1(
+          read_only, read_only_source.pin);
+      Require(stable_read.ok && read_only_read.ok && stable_read.state.events.empty() &&
+          read_only_read.state.events.empty() &&
+          stable_read.state.security_context_generation == fixture.bootstrap_generation &&
+          read_only_read.state.security_context_generation == fixture.bootstrap_generation,
+          "stable/read-only security source did not preserve admitted visibility");
+      const auto current = api::LoadDatabaseLocalSecurityEventStoreV1(reader,
+          Visibility::include_reader_own_uncommitted);
+      const auto midway = api::LoadDatabaseLocalSecurityEventStoreAtRetainedSnapshotV1(*mid_reader, middle->pin);
+      Require(current.ok && current.state.security_context_generation == fixture.bootstrap_generation + n + 1 &&
+          CountEventKind(current.state.events, "ROLE") == n + 1 &&
+          midway.ok && midway.state.security_context_generation == fixture.bootstrap_generation + 1 &&
+          CountEventKind(midway.state.events, "ROLE") == 1 && midway.state.page_numbers.size() == 1,
+          "pinned middle generation was replaced by latest security authority");
+    }
+    const auto size_before = std::filesystem::file_size(fixture.database_path);
+    const auto digest_before = ReadDatabaseDigest(fixture.database_path.string());
+    const auto stale_write = api::AppendDatabaseLocalSecurityEventBatchV1(stable,
+        SingleRoleBatch(stable, fixture.bootstrap_generation + 1));
+    Require(!stale_write.ok && stale_write.page_number == 0 &&
+        stale_write.diagnostic.detail == "security_write_snapshot_not_current" &&
+        std::filesystem::file_size(fixture.database_path) == size_before &&
+        ReadDatabaseDigest(fixture.database_path.string()) == digest_before,
+        "obsolete stable security source staged a physical successor");
+    const auto readonly_write = api::AppendDatabaseLocalSecurityEventBatchV1(read_only,
+        SingleRoleBatch(read_only, fixture.bootstrap_generation + 1));
+    Require(!readonly_write.ok && readonly_write.page_number == 0 &&
+        std::filesystem::file_size(fixture.database_path) == size_before &&
+        ReadDatabaseDigest(fixture.database_path.string()) == digest_before,
+        "read-only security source acquired mutation authority");
+    auto invented_observations = reader;
+    invented_observations.snapshot_visible_through_local_transaction_id = std::numeric_limits<std::uint64_t>::max();
+    invented_observations.statement_snapshot_uuid = kAlicePrincipal;
+    const auto ignored = api::LoadDatabaseLocalSecurityEventStoreAtRetainedSnapshotV1(invented_observations, original.pin);
+    Require(ignored.ok && ignored.state.events.empty() &&
+        ignored.state.security_context_generation == fixture.bootstrap_generation,
+        "caller snapshot observations overrode actual retained publication");
+    if (page_size == 8192)
+      TestRetainedSourceAllocationFailures(*mid_reader, middle->pin);
+    const auto prepared_writer = BeginTransaction(fixture.context, 1788109800000ull);
+    const auto prepared_role = uuid::GenerateDurableEngineIdentityV7(UuidKind::object, 1788109800100ull);
+    Require(prepared_role.ok(), "prepared security role UUID unavailable");
+    const auto prepared_batch = api::AppendDatabaseLocalSecurityEventBatchV1(prepared_writer,
+        SingleRoleBatch(prepared_writer, fixture.bootstrap_generation + 5, prepared_role.value.value));
+    Require(prepared_batch.ok, "prepared security batch staging failed");
+    last_page = prepared_batch.page_number;
+    const auto to_prepare = db::LoadLocalTransactionInventoryFromDatabase(fixture.database_path.string());
+    Require(to_prepare.ok(), "prepared security inventory unavailable");
+    const auto prepared = mga::PrepareLocalTransaction(to_prepare.inventory,
+        mga::MakeLocalTransactionId(prepared_writer.local_transaction_id));
+    Require(prepared.ok() && db::PersistLocalTransactionInventoryToDatabase(
+        fixture.database_path.string(), prepared.inventory).ok(), "prepared security inventory publication failed");
+    const auto higher_marker = BeginTransaction(fixture.context, 1788109800200ull);
+    Finalize(higher_marker, db::PhysicalMgaCowFinalizeDecision::commit, 1788109800300ull);
+    RetainedSecuritySnapshot in_doubt_source(reader);
+    const auto in_doubt = in_doubt_source.pin.Observe();
+    Require(in_doubt.ok() && in_doubt.descriptor->visible_committed_high_watermark >= prepared_writer.local_transaction_id &&
+        std::binary_search(in_doubt.descriptor->in_doubt_excluded_local_transaction_ids.begin(),
+            in_doubt.descriptor->in_doubt_excluded_local_transaction_ids.end(), prepared_writer.local_transaction_id),
+        "fixture did not capture below-boundary prepared-writer exclusion");
+    const auto before_commit = api::LoadDatabaseLocalSecurityEventStoreAtRetainedSnapshotV1(reader, in_doubt_source.pin);
+    Require(before_commit.ok && before_commit.state.security_context_generation == fixture.bootstrap_generation + 4 &&
+        CountEventKind(before_commit.state.events, "ROLE") == 4,
+        "prepared security creator became visible before finality");
+    Finalize(prepared_writer, db::PhysicalMgaCowFinalizeDecision::commit, 1788109800400ull);
+    const auto after_commit = api::LoadDatabaseLocalSecurityEventStoreAtRetainedSnapshotV1(reader, in_doubt_source.pin);
+    Require(after_commit.ok && after_commit.state.events == before_commit.state.events &&
+        after_commit.state.page_numbers == before_commit.state.page_numbers &&
+        after_commit.state.security_context_generation == before_commit.state.security_context_generation,
+        "prepared creator became visible inside an earlier retained security source after commit");
+    const auto after_new_statement = api::LoadDatabaseLocalSecurityEventStoreV1(reader,
+        Visibility::include_reader_own_uncommitted);
+    Require(after_new_statement.ok && after_new_statement.state.security_context_generation == fixture.bootstrap_generation + 5 &&
+        CountEventKind(after_new_statement.state.events, "ROLE") == 5,
+        "fresh security source failed to observe real prepared-writer commit");
+    if (page_size == 8192) {
+      RetainedSecuritySnapshot late_revoke(reader);
+      const auto warm = api::LoadDatabaseLocalSecurityEventStoreAtRetainedSnapshotV1(reader, late_revoke.pin);
+      Require(warm.ok && !warm.state.events.empty(), "late revocation source warmup failed");
+      source_allocation_fault::attempts = 0;
+      source_allocation_fault::count = true;
+      const auto measured = api::LoadDatabaseLocalSecurityEventStoreAtRetainedSnapshotV1(reader, late_revoke.pin);
+      source_allocation_fault::count = false;
+      Require(measured.ok && source_allocation_fault::attempts, "late revocation source measurement failed");
+      // The final owning allocation precedes the source's final, allocation-
+      // free pin observation. Publish REAL MGA revocation at that allocation,
+      // rather than fabricating a provider callback or caller expiry Boolean.
+      source_allocation_fault::revoke_snapshot = late_revoke.id;
+      source_allocation_fault::revoke_fired = false;
+      source_allocation_fault::revoke_after = static_cast<long>(source_allocation_fault::attempts - 1);
+      const auto late = api::LoadDatabaseLocalSecurityEventStoreAtRetainedSnapshotV1(reader, late_revoke.pin);
+      source_allocation_fault::revoke_after = -1;
+      Require(source_allocation_fault::revoke_fired && !late.ok && late.state.events.empty() &&
+          late.state.page_numbers.empty() && late.state.security_context_generation == 0 &&
+          !late.state.database_identity_authenticated && !late.state.page_identity_authenticated &&
+          !late.state.durable_inventory_authenticated &&
+          late.diagnostic.code == "SB-MGA-SNAPSHOT-VECTOR-REVOKED" &&
+          late.diagnostic.detail == "retained_security_snapshot_revoked_during_read",
+          "late real revocation published a materialized security-source prefix");
+    }
+    for (unsigned octet = 0; octet != 16; ++octet) {
+      auto foreign = reader;
+      foreign.transaction_uuid.bytes[octet] ^= 0x20;
+      const auto refused = api::LoadDatabaseLocalSecurityEventStoreAtRetainedSnapshotV1(foreign, original.pin);
+      Require(!refused.ok && refused.state.events.empty() && refused.state.page_numbers.empty(),
+          "foreign binary transaction observed a retained security source");
+      foreign = reader;
+      foreign.database_uuid.bytes[octet] ^= 0x20;
+      const auto wrong_node = api::LoadDatabaseLocalSecurityEventStoreAtRetainedSnapshotV1(foreign, original.pin);
+      Require(!wrong_node.ok && wrong_node.state.events.empty() && wrong_node.state.page_numbers.empty(),
+          "foreign binary node observed a retained security source");
+    }
+    const auto wrong_reader = api::LoadDatabaseLocalSecurityEventStoreAtRetainedSnapshotV1(*mid_reader, original.pin);
+    Require(!wrong_reader.ok && wrong_reader.state.events.empty() &&
+        wrong_reader.diagnostic.detail == "retained_security_snapshot_owner_mismatch",
+        "another active real transaction adopted foreign security snapshot");
+    mga::ReleasePublishedSnapshotVector(original.id);
+    Require(!mga::RetainPublishedSnapshotVector(original.id).valid(), "retired security publication issued new pin");
+    const auto retired = api::LoadDatabaseLocalSecurityEventStoreAtRetainedSnapshotV1(reader, original.pin);
+    Require(retired.ok && retired.state.events.empty() &&
+        retired.state.security_context_generation == fixture.bootstrap_generation,
+        "ordinary public retirement revoked existing security pin");
+    mga::RevokePublishedSnapshotVector(middle->id);
+    const auto revoked = api::LoadDatabaseLocalSecurityEventStoreAtRetainedSnapshotV1(*mid_reader, middle->pin);
+    Require(!revoked.ok && revoked.state.events.empty() && revoked.state.page_numbers.empty() &&
+        revoked.diagnostic.code == "SB-MGA-SNAPSHOT-VECTOR-REVOKED", "revoked pin retained security authority");
+    Finalize(stable, db::PhysicalMgaCowFinalizeDecision::rollback, 1788109700000ull);
+    const auto terminal = api::LoadDatabaseLocalSecurityEventStoreAtRetainedSnapshotV1(stable, stable_source.pin);
+    Require(!terminal.ok && terminal.state.events.empty() && terminal.state.page_numbers.empty(),
+        "terminal transaction retained security source read admission");
+    CorruptSecurityPage(fixture.database_path, last_page, page_size);
+    const auto corrupt_hidden = api::LoadDatabaseLocalSecurityEventStoreAtRetainedSnapshotV1(reader, original.pin);
+    Require(!corrupt_hidden.ok && corrupt_hidden.state.events.empty() && corrupt_hidden.state.page_numbers.empty() &&
+        !corrupt_hidden.state.database_identity_authenticated && !corrupt_hidden.diagnostic.code.empty(),
+        "invisible security bytes bypassed authenticated chain validation or exposed partial source");
+    std::cout << "retained_security_snapshot_profile=" << page_size << " PASS\n";
+  }
+}
+
+int main(int argc, char** argv) try {
+  if (argc == 2 && std::string_view(argv[1]) == "--retained-snapshots") {
+    TestRetainedSecuritySnapshots();
+    return EXIT_SUCCESS;
+  }
   if (argc == 3 && std::string_view(argv[1]) == "--probe-owner") {
     for (const auto mode : {disk::FileOpenMode::open_existing,
                             disk::FileOpenMode::open_existing_read_only}) {
@@ -1249,4 +1582,10 @@ int main(int argc, char** argv) {
   TestSealedLegacyMigration();
   std::cout << "database-local security event store conformance passed\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  source_allocation_fault::budget = -1;
+  source_allocation_fault::count = false;
+  source_allocation_fault::revoke_after = -1;
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

@@ -1455,6 +1455,10 @@ if(UNIX)
     sb_storage_page sb_transaction_mga)
   add_test(NAME sbsql_sblr_alignment_security_event_store
     COMMAND sbsql_sblr_alignment_security_event_store)
+  add_test(NAME sbsql_sblr_alignment_security_event_store_retained_snapshot
+    COMMAND sbsql_sblr_alignment_security_event_store --retained-snapshots)
+  set_tests_properties(sbsql_sblr_alignment_security_event_store_retained_snapshot PROPERTIES
+    LABELS "security;binary_uuid;retained_snapshot;real_storage;not_policy_activation" TIMEOUT 180)
   set_tests_properties(sbsql_sblr_alignment_security_event_store PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-01;component_regression;security;node_ownership;real_storage;recovery"
     TIMEOUT 120)
