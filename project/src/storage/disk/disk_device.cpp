@@ -969,8 +969,8 @@ struct RouteOwnershipLease::DrainSignal {
 };
 
 RouteOwnershipLease::RouteOwnershipLease(std::string route_path,
-                                         std::uint64_t owner_pid)
-    : route_path_(std::move(route_path)), owner_pid_(owner_pid) {}
+                                         std::uint64_t owner_pid,RouteStorageAccess access)
+    : route_path_(std::move(route_path)), owner_pid_(owner_pid),storage_access_(access) {}
 
 // A distinct control block counts one admitted borrow, not arbitrary references
 // to the route owner. Allocate before incrementing; copies retain the same pin.
@@ -1159,13 +1159,32 @@ RouteOwnershipLease::~RouteOwnershipLease() {
     ::CloseHandle(static_cast<HANDLE>(storage_handle_));
   if (data_handle_ != nullptr && data_handle_ != INVALID_HANDLE_VALUE)
     ::CloseHandle(static_cast<HANDLE>(data_handle_));
+  if(write_data_handle_&&write_data_handle_!=INVALID_HANDLE_VALUE)
+    ::CloseHandle(static_cast<HANDLE>(write_data_handle_));
 #else
   // Close, never LOCK_UN: a fork may share these open-file descriptions.
   // The last process-local reader pin retains both native handles.
   if (handle_ >= 0) (void)::close(handle_);
   if (storage_handle_ >= 0) (void)::close(storage_handle_);
   if (data_fd_ >= 0) (void)::close(data_fd_);
+  if(write_data_fd_>=0)(void)::close(write_data_fd_);
 #endif
+}
+
+RouteWriteCustodyState RouteOwnershipLease::ObserveWriteCustody() const noexcept {
+  auto& registry=LeaseRegistry();
+  if(owner_pid_!=OwnershipProcessId()||registry.process_id!=OwnershipProcessId())
+    return RouteWriteCustodyState::wrong_process;
+  try {
+    std::lock_guard<std::mutex> guard(registry.mutex);
+    if(!issuing_||!valid())return RouteWriteCustodyState::withdrawn;
+    if(storage_access_!=RouteStorageAccess::read_write)return RouteWriteCustodyState::not_requested;
+#ifdef _WIN32
+    return write_data_handle_?RouteWriteCustodyState::retained:RouteWriteCustodyState::primary_not_bound;
+#else
+    return write_data_fd_>=0?RouteWriteCustodyState::retained:RouteWriteCustodyState::primary_not_bound;
+#endif
+  }catch(...){return RouteWriteCustodyState::lock_failure;}
 }
 
 RouteSourceTransitionError RouteSourceTransition::BeginSourceAdmission(
@@ -1332,7 +1351,8 @@ std::uint32_t RouteOwnershipLease::BindDataFile(void* file) {
   }
   // Reopen the actual file object, never its mutable pathname. Lock the
   // retained handle itself so closing the creator cannot release this lock.
-  HANDLE retained = ::ReOpenFile(static_cast<HANDLE>(file), GENERIC_READ,
+  const bool writing=storage_access_==RouteStorageAccess::read_write;
+  HANDLE retained = ::ReOpenFile(static_cast<HANDLE>(file), writing?(GENERIC_READ|GENERIC_WRITE):GENERIC_READ,
       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0);
   if (retained == INVALID_HANDLE_VALUE) return ::GetLastError();
   const DWORD locked = detail::WindowsLockDataFile(retained);
@@ -1340,18 +1360,26 @@ std::uint32_t RouteOwnershipLease::BindDataFile(void* file) {
     (void)::CloseHandle(retained);
     return locked;
   }
-  data_handle_ = retained;
+  if(writing) {
+    HANDLE observer=nullptr;
+    if(!::DuplicateHandle(::GetCurrentProcess(),retained,::GetCurrentProcess(),&observer,
+        GENERIC_READ,FALSE,0)) {
+      const auto duplicate_error=::GetLastError();::CloseHandle(retained);return duplicate_error;
+    }
+    data_handle_=observer;write_data_handle_=retained;
+  }else data_handle_ = retained;
   return ERROR_SUCCESS;
 }
 
 std::uint32_t RouteOwnershipLease::AcquireDataFile(const std::string& path) {
-  HANDLE file = ::CreateFileA(path.c_str(), GENERIC_READ,
+  HANDLE file = ::CreateFileA(path.c_str(), storage_access_==RouteStorageAccess::read_write?
+      (GENERIC_READ|GENERIC_WRITE):GENERIC_READ,
       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE) {
     const DWORD error = ::GetLastError();
     // Missing primary permits a pathname reservation, not an engine open.
-    return error == ERROR_FILE_NOT_FOUND ? ERROR_SUCCESS : error;
+    return error == ERROR_FILE_NOT_FOUND&&storage_access_==RouteStorageAccess::read_only?ERROR_SUCCESS:error;
   }
   const DWORD error = BindDataFile(file);
   (void)::CloseHandle(file);
@@ -1376,7 +1404,7 @@ std::shared_ptr<RouteOwnershipLease> RouteOwnershipLease::BorrowAlias(
   return {};
 }
 
-int RouteOwnershipLease::BindDataFile(int fd) {
+int RouteOwnershipLease::BindDataFile(int fd,int initial_writer_fd) {
   auto& registry = LeaseRegistry();
   if (!valid() || registry.process_id != OwnershipProcessId()) return EPERM;
   std::lock_guard<std::mutex> guard(registry.mutex);
@@ -1390,6 +1418,17 @@ int RouteOwnershipLease::BindDataFile(int fd) {
     // before any read, write or truncate, including after pathname replacement.
     return requested.st_dev == held.st_dev && requested.st_ino == held.st_ino
         ? 0 : ESTALE;
+  }
+  const bool writing=storage_access_==RouteStorageAccess::read_write;
+  if(writing) {
+    if(initial_writer_fd<0)return EBADF;
+    struct stat writable{};
+    if(::fstat(initial_writer_fd,&writable)!=0)return errno;
+    if(!S_ISREG(writable.st_mode)||requested.st_dev!=writable.st_dev||requested.st_ino!=writable.st_ino)
+      return ESTALE;
+    const int access=::fcntl(initial_writer_fd,F_GETFL);
+    if(access<0)return errno;
+    if((access&O_ACCMODE)!=O_RDWR)return EACCES;
   }
   const int locked = LockDataFile(fd);
   if (locked != 0) return locked;
@@ -1405,14 +1444,32 @@ int RouteOwnershipLease::BindDataFile(int fd) {
     return error;
   }
 #endif
-  data_fd_ = retained;
+  int writable=-1;
+  if(writing) {
+#ifdef F_DUPFD_CLOEXEC
+    writable=::fcntl(initial_writer_fd,F_DUPFD_CLOEXEC,0);
+#else
+    writable=::dup(initial_writer_fd);
+    if(writable>=0&&::fcntl(writable,F_SETFD,FD_CLOEXEC)!=0) {
+      const int error=errno;::close(writable);::close(retained);return error;
+    }
+#endif
+    if(writable<0){const int error=errno;::close(retained);return error;}
+  }
+  data_fd_ = retained;write_data_fd_=writable;
   return 0;
 }
 
 int RouteOwnershipLease::AcquireDataFile(const std::string& path) {
   const int fd = ::open(path.c_str(), O_RDONLY | O_NONBLOCK | FileOpenCloexecFlag());
-  if (fd < 0) return errno == ENOENT ? 0 : errno;
-  const int error = BindDataFile(fd);
+  if (fd < 0) return errno == ENOENT&&storage_access_==RouteStorageAccess::read_only?0:errno;
+  int writable=-1;
+  if(storage_access_==RouteStorageAccess::read_write) {
+    writable=::open(path.c_str(),O_RDWR|O_NONBLOCK|FileOpenCloexecFlag());
+    if(writable<0){const int error=errno;::close(fd);return error;}
+  }
+  const int error = BindDataFile(fd,writable);
+  if(writable>=0)(void)::close(writable);
   (void)::close(fd);
   return error;
 }

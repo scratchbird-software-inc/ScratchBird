@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include "route_ownership_lease.hpp"
 
 namespace scratchbird::storage::disk {
 class RouteOwnershipLease;
@@ -57,6 +58,7 @@ class DatabaseOwnershipLock {
   // The result definition is in storage/disk/route_ownership_lease.hpp.
   [[nodiscard]] storage::disk::RouteSourceTransitionResult
   BeginNativeSourceTransition() noexcept;
+  [[nodiscard]] storage::disk::RouteWriteCustodyState ObserveWriteCustody() const noexcept;
   [[nodiscard]] NativeHandle native_handle() const;
 #ifndef _WIN32
   [[nodiscard]] int fd() const { return native_handle(); }
@@ -70,9 +72,9 @@ class DatabaseOwnershipLock {
                         std::filesystem::path lock_path);
   bool PublishStorageLease();
 #ifdef _WIN32
-  std::uint32_t PrepareStorageLease(const std::string& database_path);
+  std::uint32_t PrepareStorageLease(const std::string& database_path,storage::disk::RouteStorageAccess);
 #else
-  int PrepareStorageLease(const std::string& database_path);
+  int PrepareStorageLease(const std::string& database_path,storage::disk::RouteStorageAccess);
 #endif
   std::shared_ptr<storage::disk::RouteOwnershipLease> lease_;
   NativeHandle handle_{
@@ -98,6 +100,9 @@ struct DatabaseOwnershipRequest {
   std::filesystem::path database_path;
   std::string owner_kind = "server";
   std::filesystem::path sbps_endpoint;
+  // Physical capability is retained privately at initial OS ownership only.
+  // Read-source transfer still yields no writer or engine admission authority.
+  storage::disk::RouteStorageAccess storage_access=storage::disk::RouteStorageAccess::read_only;
 };
 
 struct DatabaseOwnershipResult {

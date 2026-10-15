@@ -24,6 +24,11 @@ class RouteOwnershipLease;
 class RouteSourceTransition;
 class RouteSourceDrainWait;
 class FileDevice;
+// Initial OS capability selection only; neither mode grants engine mutation.
+enum class RouteStorageAccess : std::uint8_t { read_only, read_write };
+enum class RouteWriteCustodyState : std::uint8_t {
+  not_requested, retained, primary_not_bound, withdrawn, wrong_process, lock_failure
+};
 enum class RouteSourceTransitionError {
   none, invalid_owner, wrong_process, withdrawn, resource_exhausted, lock_failure,
   invalid_deadline, not_drained, admission_busy, already_transferred,
@@ -114,6 +119,7 @@ class RouteOwnershipLease final {
   // Includes admitted opens waiting for their path mutex. Copies share one
   // admission, which retires only after the last copy. Never an authority grant.
   std::optional<std::uint64_t> ObserveLegacyBorrowers() const noexcept;
+  RouteWriteCustodyState ObserveWriteCustody() const noexcept;
 
  private:
   friend class scratchbird::server::DatabaseOwnershipLock;
@@ -134,10 +140,11 @@ class RouteOwnershipLease final {
   void* data_handle_ = nullptr;  // independently reopened physical owner handle
 #else
   int AcquireDataFile(const std::string& path);
-  int BindDataFile(int fd);
+  int BindDataFile(int fd,int initial_writer_fd=-1);
   int data_fd_ = -1;  // actual primary inode; retained through the final reader
 #endif
-  RouteOwnershipLease(std::string route_path, std::uint64_t owner_pid);
+  RouteOwnershipLease(std::string route_path, std::uint64_t owner_pid,
+      RouteStorageAccess access=RouteStorageAccess::read_only);
   bool Publish(const std::shared_ptr<RouteOwnershipLease>& self);
   void Withdraw();
   bool valid() const;
@@ -163,6 +170,12 @@ class RouteOwnershipLease final {
   };
   const std::string route_path_;
   const std::uint64_t owner_pid_;
+  const RouteStorageAccess storage_access_;
+#ifdef _WIN32
+  void* write_data_handle_ = nullptr;
+#else
+  int write_data_fd_ = -1;
+#endif
   bool accepting_ = false;  // guarded by the process-local registry mutex
   bool issuing_ = false;   // Withdraw revokes even a previously fenced issuer
   bool transition_started_ = false;

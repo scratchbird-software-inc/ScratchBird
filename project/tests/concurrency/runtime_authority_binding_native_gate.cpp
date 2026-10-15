@@ -8,6 +8,8 @@
 #include "../../src/server/database_ownership.hpp"
 #include <future>
 #include <fstream>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <latch>
 
 namespace {
@@ -186,7 +188,23 @@ void OwnedRuntimeBinding(const std::string& path,unsigned p) {
   using Source=db::NativeOwnedCheckpointSource;
   const u64 budget=64*u64{sizes[p]};
   server::DatabaseOwnershipRequest request;request.database_path=path;
+  request.storage_access=disk::RouteStorageAccess::read_write;
   auto route=server::AcquireDatabaseOwnership(request);Check(route.acquired&&route.lock,"actual configuration route owner");
+  Check(route.lock->ObserveWriteCustody()==disk::RouteWriteCustodyState::retained,
+      "initial route owner retains actual same-inode write capability separately from read-source admission");
+  {
+    struct stat target{};Check(::stat(path.c_str(),&target)==0,"inspect owned native primary inode");
+    unsigned readers=0,writers=0;
+    for(const auto& entry:std::filesystem::directory_iterator("/proc/self/fd")) {
+      const auto fd=std::stoi(entry.path().filename().string());struct stat held{};
+      if(::fstat(fd,&held)!=0||held.st_dev!=target.st_dev||held.st_ino!=target.st_ino)continue;
+      const auto access=::fcntl(fd,F_GETFL),flags=::fcntl(fd,F_GETFD);
+      Check(access>=0&&flags>=0&&(flags&FD_CLOEXEC),"native custody descriptors are real and close-on-exec");
+      if((access&O_ACCMODE)==O_RDONLY)++readers;
+      if((access&O_ACCMODE)==O_RDWR)++writers;
+    }
+    Check(readers==1&&writers==1,"OS descriptor oracle proves distinct same-inode read-only and read/write custody");
+  }
   auto transition=route.lock->BeginNativeSourceTransition();Check(transition.ok(),"actual source transition issuer");
   {
     const auto probe=Source::ProbeRouteBootstrap(transition.transition);
@@ -233,6 +251,13 @@ void OwnedRuntimeBinding(const std::string& path,unsigned p) {
   if(!source.ok())std::cerr<<"owned fixture error="<<int(source.error)<<" selection="<<int(source.selection_error)
       <<" checkpoint="<<int(source.checkpoint_error)<<" directory="<<int(source.directory_error)<<'\n';
   Check(source.ok(),"actual complete route-owned configuration source");
+  {
+    const auto held=Source::Read(source.owner,budget);Check(held.ok(),"actual read source after write-custody retention");
+    const byte attempted=0xff;
+    const auto denied=held.lease->devices().front().device->WriteAt(0,&attempted,1);
+    Check(!denied.ok()&&denied.diagnostic.diagnostic_code=="SB-STORAGE-DISK-WRITE-READ-ONLY",
+        "retained write capability does not upgrade observation-source devices or grant mutation");
+  }
   {
     const auto consumed=Source::ProbeRouteBootstrap(transition.transition);
     Check(!consumed.ok()&&!consumed.bootstrap&&consumed.error==db::NativeOwnedSourceError::route_admission&&

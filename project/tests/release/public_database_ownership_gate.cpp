@@ -11,6 +11,7 @@
 #include "disk_device.hpp"
 #include "memory.hpp"
 #include "uuid.hpp"
+#include "../support/owned_temp_directory.hpp"
 
 #include <cstdlib>
 #include <cerrno>
@@ -47,26 +48,11 @@ bool Expect(bool condition, const char* message) {
   return true;
 }
 
-std::filesystem::path TempRoot() {
-  static const auto root = [] {
-    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-    for (unsigned attempt = 0; attempt < 100; ++attempt) {
-      const auto candidate = std::filesystem::temp_directory_path() /
-          ("scratchbird_database_ownership_" + std::to_string(stamp) +
-           "_" + std::to_string(attempt));
-      std::error_code error;
-      if (std::filesystem::create_directory(candidate, error)) {
-        std::filesystem::permissions(candidate, std::filesystem::perms::owner_all);
-        std::cerr << "ownership fixture retained: " << candidate << '\n';
-        return candidate;
-      }
-      if (error && error != std::errc::file_exists) break;
-    }
-    std::cerr << "cannot create exclusive ownership fixture directory\n";
-    std::exit(EXIT_FAILURE);
-  }();
-  return root;
+scratchbird::tests::OwnedTempDirectory& TempOwner() {
+  static scratchbird::tests::OwnedTempDirectory owner;
+  return owner;
 }
+std::filesystem::path TempRoot() {return TempOwner().path();}
 
 void CreateRealDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig config;
@@ -137,6 +123,33 @@ bool StorageMutableConflictsFailClosed() {
               "read-only conflict used wrong diagnostic") && ok;
 
   ok = Expect(writer.Close().ok(), "first mutable storage close should succeed") && ok;
+  return ok;
+}
+
+bool InitialWriteCustodyRefusalsAndReadOnlyDefault() {
+  const auto absent=TempRoot()/"native-writer-missing.sbdb";
+  auto request=OwnershipRequest(absent,"server");
+  request.storage_access=static_cast<disk::RouteStorageAccess>(255);
+  const auto invalid=server::AcquireDatabaseOwnership(request);
+  bool ok=Expect(!invalid.acquired&&!invalid.lock&&invalid.diagnostic_code==
+      "ARCH.DATABASE_STORAGE_ACCESS_INVALID"&&!std::filesystem::exists(server::DatabaseOwnershipLockPath(absent)),
+      "invalid physical mode must refuse before creating lock metadata");
+  request.storage_access=disk::RouteStorageAccess::read_write;
+  const auto missing=server::AcquireDatabaseOwnership(request);
+  ok=Expect(!missing.acquired&&!missing.lock&&!std::filesystem::exists(absent),
+      "missing primary cannot provide writable custody or create a database")&&ok;
+  request.storage_access=disk::RouteStorageAccess::read_only;
+  auto reservation=server::AcquireDatabaseOwnership(request);
+  ok=Expect(reservation.acquired&&reservation.lock&&reservation.lock->ObserveWriteCustody()==
+      disk::RouteWriteCustodyState::not_requested,
+      "failed writable admission must release every lock for read-only pathname reservation")&&ok;
+  if(reservation.lock)reservation.lock->release();
+  const auto path=TempRoot()/"native-reader-default.sbdb";CreateRealDatabase(path);
+  auto reader=server::AcquireDatabaseOwnership(OwnershipRequest(path,"server"));
+  ok=Expect(reader.acquired&&reader.lock&&reader.lock->ObserveWriteCustody()==
+      disk::RouteWriteCustodyState::not_requested,
+      "default route ownership must not manufacture a writer")&&ok;
+  if(reader.lock)reader.lock->release();
   return ok;
 }
 
@@ -1095,6 +1108,7 @@ int main(int argc, char** argv) {
 
   bool ok = true;
   ok = StorageMutableConflictsFailClosed() && ok;
+  ok = InitialWriteCustodyRefusalsAndReadOnlyDefault() && ok;
   ok = StorageReadOnlyOwnershipIsExclusive() && ok;
   ok = ServerOwnershipConflictsFailClosed() && ok;
 #ifndef _WIN32
@@ -1127,5 +1141,6 @@ int main(int argc, char** argv) {
 #else
   std::cerr << "POSIX exec, inode and crash cases are not run on Windows\n";
 #endif
+  TempOwner().Cleanup();
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

@@ -174,14 +174,14 @@ DatabaseOwnershipLock& DatabaseOwnershipLock::operator=(DatabaseOwnershipLock&& 
 }
 
 #ifdef _WIN32
-std::uint32_t DatabaseOwnershipLock::PrepareStorageLease(const std::string& database_path) {
+std::uint32_t DatabaseOwnershipLock::PrepareStorageLease(const std::string& database_path,storage::disk::RouteStorageAccess access) {
 #else
-int DatabaseOwnershipLock::PrepareStorageLease(const std::string& database_path) {
+int DatabaseOwnershipLock::PrepareStorageLease(const std::string& database_path,storage::disk::RouteStorageAccess access) {
 #endif
   // Allocate before transferring either handle. Existing primary files are
   // locked by their opened inode before any descriptor publication.
   auto lease = std::shared_ptr<storage::disk::RouteOwnershipLease>(
-      new storage::disk::RouteOwnershipLease(lock_path_.string(), owner_pid_));
+      new storage::disk::RouteOwnershipLease(lock_path_.string(), owner_pid_,access));
 #ifdef _WIN32
   lease->handle_ = std::exchange(handle_, nullptr);
   lease->storage_handle_ = std::exchange(storage_handle_, nullptr);
@@ -196,6 +196,11 @@ int DatabaseOwnershipLock::PrepareStorageLease(const std::string& database_path)
 bool DatabaseOwnershipLock::PublishStorageLease() {
   // Publication still happens only after the checked durable descriptor write.
   return lease_ && lease_->Publish(lease_);
+}
+
+storage::disk::RouteWriteCustodyState DatabaseOwnershipLock::ObserveWriteCustody() const noexcept {
+  if(owner_pid_!=CurrentProcessId())return storage::disk::RouteWriteCustodyState::wrong_process;
+  return lease_?lease_->ObserveWriteCustody():storage::disk::RouteWriteCustodyState::withdrawn;
 }
 
 DatabaseOwnershipLock::NativeHandle DatabaseOwnershipLock::native_handle() const {
@@ -277,6 +282,12 @@ DatabaseOwnershipDescriptor ReadDatabaseOwnershipDescriptor(
 DatabaseOwnershipResult AcquireDatabaseOwnership(const DatabaseOwnershipRequest& request) {
   DatabaseOwnershipResult result;
   result.lock_path = DatabaseOwnershipLockPath(request.database_path);
+  if(request.storage_access!=storage::disk::RouteStorageAccess::read_only&&
+      request.storage_access!=storage::disk::RouteStorageAccess::read_write) {
+    result.diagnostic_code="ARCH.DATABASE_STORAGE_ACCESS_INVALID";
+    result.diagnostic_detail="invalid_initial_physical_access";
+    return result;
+  }
   if (request.database_path.empty()) {
     result.diagnostic_code = "ARCH.DATABASE_OWNERSHIP_PATH_REQUIRED";
     result.diagnostic_detail = "database_path_required";
@@ -329,7 +340,7 @@ DatabaseOwnershipResult AcquireDatabaseOwnership(const DatabaseOwnershipRequest&
     return result;
   }
   DatabaseOwnershipLock ownership(handle, storage_handle, std::move(retained_lock_path));
-  const DWORD data_owner_error = ownership.PrepareStorageLease(request.database_path.string());
+  const DWORD data_owner_error = ownership.PrepareStorageLease(request.database_path.string(),request.storage_access);
   if (data_owner_error != ERROR_SUCCESS) {
     result.diagnostic_code = WindowsSharingConflict(data_owner_error)
         ? "ARCH.DATABASE_MULTI_OWNER" : "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED";
@@ -424,7 +435,7 @@ DatabaseOwnershipResult AcquireDatabaseOwnership(const DatabaseOwnershipRequest&
     return result;
   }
   DatabaseOwnershipLock ownership(fd, storage_fd, std::move(retained_lock_path));
-  const int data_owner_error = ownership.PrepareStorageLease(request.database_path.string());
+  const int data_owner_error = ownership.PrepareStorageLease(request.database_path.string(),request.storage_access);
   if (data_owner_error != 0) {
     result.diagnostic_code = (data_owner_error == EWOULDBLOCK || data_owner_error == EAGAIN)
         ? "ARCH.DATABASE_MULTI_OWNER" : "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED";
