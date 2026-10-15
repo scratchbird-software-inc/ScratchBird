@@ -10,6 +10,7 @@
 #include "native_policy_creation.hpp"
 #include "catalog_bootstrap_policy.hpp"
 #include "catalog_memory_configuration.hpp"
+#include "catalog_runtime_authority_binding.hpp"
 #include "bootstrap_security_validation.hpp"
 #include "native_drop_evidence.hpp"
 #include "../disk/filespace_bootstrap.hpp"
@@ -3090,6 +3091,27 @@ scratchbird::core::catalog::CatalogSecurityRecord NativeBootstrapMembershipDefin
   record.attributes.emplace("grant_class","role_membership");record.attributes.emplace("member_kind","principal");
   record.attributes.emplace("parent_kind","role");record.attributes.emplace("security_generation",u64{1});
   return record;
+}
+scratchbird::core::catalog::CatalogSecurityRecord NativeLocalServicePrincipalDefinition(
+    const NativeInitialLocalServiceIdentity& service,const TypedUuid& origin,u64 policy_generation) {
+  auto record=NativeBootstrapDefinition(CatalogRecordKind::user_account,service.principal_uuid,origin,policy_generation);
+  record.attributes["create_time_only"]=false;
+  record.attributes.emplace("principal_name",std::string(service.principal_name));
+  record.attributes.emplace("credential_fingerprint",std::string(service.credential_fingerprint));
+  record.attributes.emplace("kind","service");record.attributes.emplace("principal_kind","service");
+  record.attributes.emplace("security_generation",u64{1});record.attributes.emplace("bootstrap_principal",false);
+  return record;
+}
+scratchbird::core::catalog::CatalogSecurityRecord NativeLocalServiceGrantDefinition(
+    const NativeInitialLocalServiceIdentity& service,unsigned slot,const TypedUuid& origin,u64 policy_generation) {
+  static constexpr std::array<std::string_view,5> rights{
+      "CONNECT","CATALOG_MUTATE","OBS_AGENT_STATE_READ","OBS_AGENT_EVIDENCE_READ","OBS_AGENT_CONTROL"};
+  auto record=NativeBootstrapDefinition(CatalogRecordKind::grant_record,service.grant_uuids[slot],origin,policy_generation);
+  record.attributes["create_time_only"]=false;
+  record.identities.emplace("subject_uuid",service.principal_uuid);
+  record.attributes.emplace("security_generation",u64{1});record.attributes.emplace("grant_class","privilege");
+  record.attributes.emplace("subject_kind","principal");record.attributes.emplace("effect","allow");
+  record.attributes.emplace("right",std::string(rights[slot]));return record;
 }
 
 CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
@@ -6610,7 +6632,8 @@ DatabaseLifecycleResult RecordStartupEvidence(const DatabaseLifecycleOperationCo
 static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
     const NativeInitialPolicyRequest& request,
     std::optional<std::span<const NativeInitialMembershipIdentity>> security_memberships,
-    const std::optional<NativeInitialBootstrapIdentity>& bootstrap) noexcept {
+    const std::optional<NativeInitialBootstrapIdentity>& bootstrap,
+    const std::optional<NativeInitialLocalServiceIdentity>& service) noexcept {
   namespace c=scratchbird::core::catalog;
   using E=NativeInitialPolicyError;
   const auto fail=[](E error,c::CatalogNamedCreationError names=c::CatalogNamedCreationError::none) {
@@ -6644,6 +6667,31 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
             (id==kCanonicalSysarchRoleIdentity&&(id==b.principal_uuid||id==b.membership_uuid)))
           return fail(E::duplicate_identity);
     }
+    if(service) {
+      const auto& s=*service;
+      if(!bootstrap||!security_memberships||!s.principal_name.data()||!s.credential_fingerprint.data()||
+          s.credential_fingerprint.size()>256||!IsSafeBootstrapPrincipalName(s.principal_name)||
+          !ParseBootstrapCredentialFingerprint(s.credential_fingerprint))return fail(E::invalid_request);
+      const std::array<Uuid,10> ids{s.principal_uuid,s.runtime_binding_uuid,s.credential_reference_uuid,
+          s.provider_uuid,s.policy_uuid,s.grant_uuids[0],s.grant_uuids[1],s.grant_uuids[2],s.grant_uuids[3],s.grant_uuids[4]};
+      for(std::size_t i=0;i<ids.size();++i) {
+        if(!IsEngineIdentityUuid(ids[i]))return fail(E::invalid_request);
+        for(std::size_t j=0;j<i;++j)if(ids[i]==ids[j])return fail(E::duplicate_identity);
+        for(const auto& reserved:{request.database_uuid,request.memory_configuration_uuid,request.construction_transaction.value,
+            bootstrap->principal_uuid,bootstrap->membership_uuid,kCanonicalSysarchRoleIdentity})
+          if(ids[i]==reserved)return fail(E::duplicate_identity);
+      }
+      const auto equal_name=[](std::string_view a,std::string_view b) {
+        if(a.size()!=b.size())return false;
+        for(std::size_t i=0;i<a.size();++i) {
+          const auto lower=[](unsigned char ch){return ch>='A'&&ch<='Z'?ch+('a'-'A'):ch;};
+          if(lower(a[i])!=lower(b[i]))return false;
+        }
+        return true;
+      };
+      if(equal_name(s.principal_name,bootstrap->principal_name)||equal_name(s.principal_name,"ROOT"))
+        return fail(E::duplicate_identity);
+    }
     u64 proposed_records=0;
     for(const auto& input:request.definitions) {
       if(!input.definition||!input.definition->record.payload.empty())return fail(E::invalid_definition);
@@ -6669,7 +6717,7 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
     const auto security_count=security_memberships ?
         pack.roles.size()+pack.groups.size()+pack.memberships.size()+pack.grants.size():0;
     if(!pack.image.active||!pack.memory_configuration||
-        request.definitions.size()!=2+pack.providers.size()+pack.profiles.size()+security_count+(bootstrap?3:0)||
+        request.definitions.size()!=2+pack.providers.size()+pack.profiles.size()+security_count+(bootstrap?3:0)+(service?7:0)||
         (security_memberships && security_memberships->size()!=pack.memberships.size()))return fail(E::invalid_definition);
     if(bootstrap)for(const auto& role:pack.roles)
       if(role.role_uuid==kCanonicalSysarchRoleIdentity||role.role_code=="ROLE_SYSARCH") {
@@ -6678,6 +6726,17 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
             "storage.database_lifecycle.bootstrap_security_sysarch_duplicate",{},role.role_code);
         refused.source_diagnostic=diagnostic.diagnostic;return refused;
       }
+    if(service) {
+      const auto& s=*service;
+      const auto provider=std::find_if(pack.providers.begin(),pack.providers.end(),[&](const auto& p){return p.provider_uuid==s.provider_uuid;});
+      const auto policy=std::find_if(pack.profiles.begin(),pack.profiles.end(),[&](const auto& p){return p.profile_uuid==s.policy_uuid;});
+      if(provider==pack.providers.end()||provider->family!=c::BootstrapProviderFamily::local_password||
+          !provider->enabled_by_default||provider->external_provider||
+          provider->authority!=c::BootstrapProviderAuthority::durable_catalog||
+          provider->verifier_policy!=c::BootstrapVerifierPolicy::local_password_verifier_required||
+          policy==pack.profiles.end()||policy->area!="default_security_posture"||policy->mode!="deny_by_default")
+        return fail(E::invalid_definition);
+    }
     // The policy-only entrypoint excludes these security definitions, but both
     // entrypoints already know their identities. Do not admit a new
     // configuration/enclosing identity which aliases one of them by kind.
@@ -6741,6 +6800,26 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
             !append_security(NativeBootstrapMembershipDefinition(bootstrap->membership_uuid,bootstrap->principal_uuid,
               request.construction_transaction,pack.image.policy_generation)))return fail(E::duplicate_identity);
       }
+      if(service) {
+        if(!append_security(NativeLocalServicePrincipalDefinition(*service,request.construction_transaction,pack.image.policy_generation)))
+          return fail(E::duplicate_identity);
+        for(unsigned slot=0;slot<service->grant_uuids.size();++slot)
+          if(!append_security(NativeLocalServiceGrantDefinition(*service,slot,request.construction_transaction,pack.image.policy_generation)))
+            return fail(E::duplicate_identity);
+        c::CatalogRuntimeAuthorityBinding binding;
+        binding.binding_uuid=service->runtime_binding_uuid;binding.database_uuid=request.database_uuid;
+        binding.service_principal_uuid=service->principal_uuid;binding.security_authority_uuid=request.database_uuid;
+        binding.provider_uuid=service->provider_uuid;binding.policy_uuid=service->policy_uuid;
+        binding.credential_reference_uuid=service->credential_reference_uuid;
+        binding.generation=binding.security_epoch=binding.catalog_generation=1;
+        binding.policy_epoch=binding.provider_generation=pack.image.policy_generation;
+        binding.authority_mode=c::RuntimeAuthorityMode::database_local;
+        binding.origin_transaction_uuid=request.construction_transaction;binding.origin_local_transaction_id=1;
+        const auto encoded=c::EncodeCatalogRuntimeAuthorityBinding(binding);
+        if(!encoded.ok()||!definitions.emplace(binding.binding_uuid,Definition{CatalogRecordKind::config_profile,
+            "agent_runtime_authority",std::string(encoded.bytes.begin(),encoded.bytes.end())}).second)
+          return fail(E::duplicate_identity);
+      }
     }
 
     // All canonical payload/common/name validation and raw identity admission
@@ -6751,6 +6830,10 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
       const auto found=definitions.find(input.definition->record.header.object_uuid.value);
       if(found==definitions.end()||input.definition->record.header.kind!=found->second.kind||
           input.definition->object_subtype!=found->second.subtype)return fail(E::invalid_definition);
+      if(service&&(found->first==service->principal_uuid||found->first==service->runtime_binding_uuid||
+          std::find(service->grant_uuids.begin(),service->grant_uuids.end(),found->first)!=service->grant_uuids.end())&&
+          (input.definition->owner_uuid.kind!=UuidKind::principal||input.definition->owner_uuid.value!=bootstrap->principal_uuid))
+        return fail(E::invalid_definition);
       if(input.vector->object_class!=c::CatalogRecordKindName(found->second.kind))return fail(E::invalid_names);
       auto view=c::BorrowCatalogMetadataVersion(*input.definition);view.record.payload=found->second.payload;
       const auto checked=c::PreflightLocalNamedCreationRecord(view,input,request.construction_transaction,
@@ -6759,9 +6842,11 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         return fail(checked.error==c::CatalogNamedCreationError::resource_exhausted?E::resource_exhausted:E::invalid_names,checked.error);
       records+=checked.records;bytes+=checked.encoded_bytes;
     }
-    if(records>(std::numeric_limits<std::size_t>::max()-2)/2)return fail(E::resource_exhausted);
-    std::vector<Uuid> identities;identities.reserve(static_cast<std::size_t>(2*records+2));
+    const std::size_t enclosing=service?3:2;
+    if(records>(std::numeric_limits<std::size_t>::max()-enclosing)/2)return fail(E::resource_exhausted);
+    std::vector<Uuid> identities;identities.reserve(static_cast<std::size_t>(2*records+enclosing));
     identities.push_back(request.database_uuid);identities.push_back(request.construction_transaction.value);
+    if(service)identities.push_back(service->credential_reference_uuid);
     const auto identify=[&](const auto& m) {
       identities.push_back(m.record.header.object_uuid.value);identities.push_back(m.record.header.row_uuid.value);
     };
@@ -6788,11 +6873,11 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
 }
 
 NativeInitialPolicyResult AssembleNativeInitialPolicyRecords(const NativeInitialPolicyRequest& request) noexcept {
-  return AssembleNativeInitialPolicyRecordsImpl(request,std::nullopt,std::nullopt);
+  return AssembleNativeInitialPolicyRecordsImpl(request,std::nullopt,std::nullopt,std::nullopt);
 }
 NativeInitialPolicyResult AssembleNativeInitialPolicySecurityRecords(
     const NativeInitialPolicySecurityRequest& request) noexcept {
-  return AssembleNativeInitialPolicyRecordsImpl(request.policy,request.group_memberships,request.bootstrap);
+  return AssembleNativeInitialPolicyRecordsImpl(request.policy,request.group_memberships,request.bootstrap,request.local_service);
 }
 
 DatabaseArtifactCompatibilityResult ClassifyDatabaseArtifactVersionCompatibility(

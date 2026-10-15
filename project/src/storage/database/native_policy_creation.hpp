@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "catalog_named_creation.hpp"
+#include <array>
 
 namespace scratchbird::storage::database {
 enum class NativeInitialPolicyError {
@@ -49,6 +50,18 @@ struct NativeInitialBootstrapIdentity {
   core::platform::Uuid principal_uuid,membership_uuid;
   std::string_view principal_name,credential_fingerprint;
 };
+// Explicit default LOCAL startup enrollment, not a credential source or an
+// authentication/authorization receipt. Grant identities, in order, name the
+// actual CONNECT, CATALOG_MUTATE, OBS_AGENT_STATE_READ, OBS_AGENT_EVIDENCE_READ
+// and OBS_AGENT_CONTROL declarations. They are node-scoped, not SYSARCH or an
+// implicit role membership. Selected provider/policy must occur in the same
+// admitted source snapshot as enabled local-password / deny-by-default.
+struct NativeInitialLocalServiceIdentity {
+  core::platform::Uuid principal_uuid,runtime_binding_uuid,credential_reference_uuid;
+  core::platform::Uuid provider_uuid,policy_uuid;
+  std::array<core::platform::Uuid,5> grant_uuids;
+  std::string_view principal_name,credential_fingerprint;
+};
 struct NativeInitialPolicySecurityRequest {
   NativeInitialPolicyRequest policy;
   std::span<const NativeInitialMembershipIdentity> group_memberships;
@@ -56,11 +69,16 @@ struct NativeInitialPolicySecurityRequest {
   // authentication proof. When supplied, complete metadata/names must also
   // cover the canonical SYSARCH role, this principal and its membership.
   std::optional<NativeInitialBootstrapIdentity> bootstrap=std::nullopt;
+  // Requires the distinct explicit bootstrap owner and all seven additional
+  // complete metadata/name inputs. No protected secret is accepted or stored;
+  // actual credential-source custody and release admission remain separate.
+  std::optional<NativeInitialLocalServiceIdentity> local_service=std::nullopt;
 };
 // Complete imported policy AND security declaration cohort from one admitted
 // source snapshot, with all complete caller metadata/names. Bootstrap is
-// enrolled only from explicit validated inputs; no service principal,
-// credential, authentication, effective grant or activation is inferred.
+// enrolled only from explicit validated inputs. Default local service records
+// likewise require explicit identities/verifier/provider/policy/grants/binding;
+// no credential, authentication, effective grant or activation is inferred.
 // Physical publication and native reference closure remain owned
 // by the enclosing actual node constructor.
 NativeInitialPolicyResult AssembleNativeInitialPolicySecurityRecords(

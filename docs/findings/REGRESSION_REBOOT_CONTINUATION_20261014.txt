@@ -625,3 +625,54 @@ promotion, synthetic grants or SYSARCH/operator fallback. Also replay/repair the
 other original groups and5 older unsealed candidates before full clean/build/
 unfiltered historical qualification. Neither constructor acceptance nor a green
 component suite closes an original end-to-end failure.
+
+Explicit native local service provisioning, 2026-10-15
+----------------------------------------------------
+NativeInitialPolicySecurityRequest now accepts separately explicit local-service
+identities/verifier/provider/posture/credential-reference and five direct grant
+identities. Actual same-source enabled local-password provider and deny-by-default
+profile required; valid alternate source UUIDs work, no default substitution.
+Distinct explicit bootstrap owns the seven complete native definitions/names:
+service principal, five grants, runtime binding65587V1. No SYSARCH membership or
+imported-grant provenance manufactured. Actual construction origin, source policy
+generation, native u64/Boolean values and raw16 identities retained. Separately
+custodied credential-reference identity is reserved against all rows/objects and
+enclosing identities. Full common/name/owner/budget/identity checks precede owning
+copies; no partial identity/grant/binding output on refusal.
+
+Final native producer19674checks PASS: full independent seven-record byte oracles,
+43 malformed/selection/common/name/owner/credential/bounds controls, seven actual
+allocation faults, exact limits, caller/source ownership, correctly resealed unsafe
+provider/posture and alternate admitted UUID tests. Complete64definitions128names
+actually persist/index/independently reopen on all5 page profiles, retaining node
+initializing7. All earlier28/54/57 cohort assertions remain. Preliminary new-test
+TypedUuid comparison compile error and incorrectly assumed empty-normalized-key
+refusal were corrected against the existing kind/raw identity and default-name
+contract; failed receipts retained, no new lookup semantics invented.
+
+Final44/44 affected PASS120.323298s,user58.380632s,system5.002148s,peak325004KiB,
+no leaked descendants,LastTest retained. Fresh19-target follower build PASS1.411023s,
+peak413784KiB. Read-only review found no concrete scoped defect; did not execute
+tests. Core03 CATALOG-NATIVE-LOCAL-SERVICE-ENROLLMENT-20261015 and Core09 amended,
+DIGESTS synchronized; local/manual. Core03 sha256
+3d3b20ce6ff8ff8627f76e68486e2e2b8174395db84da633d02f30c657d4371e;
+Core09 e29e71341d440f27ba830d9f1f1aedc8aa51dd50bf4de14a317f28b10725c678.
+Private temporary root empty12KiB; no retained test DB/archive/new build tree.
+
+No original baseline closure:260=199 qualified+61 outstanding plus supplemental1.
+Provisioning declarations are NOT credential-source custody/release, password
+verification/effective rights, full enclosing native reference closure, retained
+mutable native controller or activation. Continue those real prerequisites before
+hosted BEGIN; six original service routes still open, no fallback/fake context.
+
+ODF076 also freshly replayed against d23e98cf: build PASS, original test FAILED
+SB_BATCH_POINT_LOOKUP.PROVIDER_ROW_UNTRUSTED, full LastTest retained. Inspection
+confirms physical time-series append computes maps/vectors/response summaries,
+does not persist actual metric-column/bucket/rollup generations, then synthesizes
+nil-row lookup items. Native provider correctly refuses them. Do not set proof
+flags, invent row IDs or call ordinary rows persisted metric-column storage.
+Must use real native MGA base-row plus derived generation publication/read/reopen,
+actual collection/descriptors/security/resources, rollback/partial-failure recovery,
+exact REAL64, framed tag identity, checked negative bucket math and single-count
+late points. Existing immutable-provider ledgers/zone serializers/page skeletons
+are not that implementation. ODF092/113 need their own route evidence.

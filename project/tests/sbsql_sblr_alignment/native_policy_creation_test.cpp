@@ -8,6 +8,7 @@
 #include "bootstrap_policy_fixture.hpp"
 #include "memory_configuration_fixture.hpp"
 #include "catalog_security_record_codec.hpp"
+#include "catalog_runtime_authority_binding.hpp"
 #include "../support/owned_temp_directory.hpp"
 #include "../support/policy_pack_fixture.hpp"
 #include <algorithm>
@@ -53,19 +54,20 @@ struct Item {
 struct Package {
   std::vector<Item> items;std::vector<c::CatalogNamedCreationInput> inputs;
   std::array<db::NativeInitialMembershipIdentity,5> memberships;
-  explicit Package(bool security=false,bool bootstrap=false):items(bootstrap?57:security?54:28) {
+  explicit Package(bool security=false,bool bootstrap=false,bool service=false):items(service?64:bootstrap?57:security?54:28) {
     for(unsigned i=0;i<memberships.size();++i)memberships[i]={f::Id(13000+i),SourceId(0x201+i),SourceId(0x100+i)};
     for(unsigned n=0;n<items.size();++n) {
       auto& x=items[n];const auto object=n==0?SourceId(1):n<=12?SourceId(0x10+n-1):n<=26?SourceId(0x400+n-13):n==27?f::Id(12000):
           n<=32?SourceId(0x100+n-28):n<=38?SourceId(0x200+n-33):n<=43?f::Id(13000+n-39):n<=53?SourceId(0x300+n-44):
-          n==54?SourceId(0x105):f::Id(14000+n-55);
+          n==54?SourceId(0x105):n<=56?f::Id(14000+n-55):n<=58?f::Id(15000+n-57):f::Id(15100+n-59);
       const auto subtype=n==0?"bootstrap_policy_pack":n<=12?"bootstrap_security_provider":n<=26?"bootstrap_policy_profile":n==27?"memory_configuration":
-          n<=32?"role_account":n<=38?"group_account":n<=53?"grant_record":n==54?"role_account":n==55?"user_account":"grant_record";
+          n<=32?"role_account":n<=38?"group_account":n<=53?"grant_record":n==54?"role_account":n==55||n==57?"user_account":n==58?"agent_runtime_authority":"grant_record";
       auto& meta=x.definition;meta=f::Metadata(0,tx,f::Id(60),{});
       if(bootstrap)meta.owner_uuid=Typed(p::UuidKind::principal,14000);
       meta.record.header.object_uuid={p::UuidKind::object,object};meta.record.header.row_uuid=Typed(p::UuidKind::row,200000+3*n);
       meta.object_subtype=subtype;if(n==27)meta.record.header.kind=c::CatalogRecordKind::config_profile;
-      if(n>=28)meta.record.header.kind=n<=32||n==54?c::CatalogRecordKind::role_account:n<=38?c::CatalogRecordKind::group_account:n==55?c::CatalogRecordKind::user_account:c::CatalogRecordKind::grant_record;
+      if(n>=28)meta.record.header.kind=n<=32||n==54?c::CatalogRecordKind::role_account:n<=38?c::CatalogRecordKind::group_account:n==55||n==57?c::CatalogRecordKind::user_account:n==58?c::CatalogRecordKind::config_profile:c::CatalogRecordKind::grant_record;
+      if(n==58)meta.security_policy_uuid={p::UuidKind::object,SourceId(0x402)};
       meta.default_name_uuid=Typed(p::UuidKind::object,300000+2*n);meta.name_vector_uuid=Typed(p::UuidKind::object,300001+2*n);
       x.vector_metadata=meta;x.vector_metadata.record.header.kind=c::CatalogRecordKind::localized_name;
       x.vector_metadata.record.header.object_uuid=meta.name_vector_uuid;x.vector_metadata.record.header.row_uuid=Typed(p::UuidKind::row,200001+3*n);
@@ -93,6 +95,9 @@ struct Package {
   auto SecurityRequest()const{return db::NativeInitialPolicySecurityRequest{Request(),memberships};}
   auto BootstrapRequest()const{return db::NativeInitialPolicySecurityRequest{Request(),memberships,
       db::NativeInitialBootstrapIdentity{f::Id(14000),f::Id(14001),"BootstrapAdmin",fingerprint}};}
+  auto ServiceRequest()const{auto request=BootstrapRequest();request.local_service=db::NativeInitialLocalServiceIdentity{
+      f::Id(15000),f::Id(15001),f::Id(15002),SourceId(0x10),SourceId(0x402),
+      {f::Id(15100),f::Id(15101),f::Id(15102),f::Id(15103),f::Id(15104)},"NodeService",fingerprint};return request;}
 };
 std::pair<p::Uuid,std::string> SecurityGolden(unsigned n) {
   static constexpr std::array<const char*,5> roles{"ROLE_APP_RUNTIME","ROLE_DBA","ROLE_SECURITY_ADMIN","ROLE_AUDIT_READER","ROLE_OPERATOR"};
@@ -139,14 +144,44 @@ std::pair<p::Uuid,std::string> BootstrapGolden(unsigned n) {
   if(n==2){g.Field(54,3,"role_membership");g.Field(55,3,"principal");g.Field(56,3,"role");}
   return {id,g.Finish()};
 }
-void Verify(const c::CatalogNamedCreationSet& out,bool security=false,bool bootstrap=false) {
-  Check(out.definitions.size()==(bootstrap?57:security?54:28)&&out.names.size()==(bootstrap?114:security?108:56)&&out.encoded_bytes>0,"all admitted policy/security definitions and every supplied name returned");
+std::pair<p::Uuid,std::string> ServiceGolden(unsigned n) {
+  if(n==1){
+    f::Golden g(65587);g.Identity(1,f::Id(15001));g.Integer(2,1);g.Identity(3,f::Id(1));
+    g.Identity(4,f::Id(15000));g.Identity(5,f::Id(1));g.Identity(6,SourceId(0x10));g.Identity(7,SourceId(0x402));
+    g.Identity(8,f::Id(15002));g.Integer(9,1);g.Integer(10,1);g.Integer(11,1);g.Integer(12,1);g.Integer(13,1);
+    g.Identity(14,tx.value);g.Integer(15,1);return {f::Id(15001),g.Finish()};
+  }
+  const auto id=n==0?f::Id(15000):f::Id(15100+n-2);
+  f::Golden g(n==0?65596:65599);f::Put(g.bytes,20,2,2);
+  g.Identity(n==0?1:4,id);if(n!=0)g.Identity(7,f::Id(15000));g.Identity(11,tx.value);
+  g.Integer(32,1);g.Integer(34,1);g.Field(36,3,"uuid");g.Integer(38,1);g.Integer(39,1);g.Integer(40,1);
+  g.Boolean(41,true);g.Boolean(43,false);
+  if(n==0){g.Field(49,3,"NodeService");g.Field(50,3,fingerprint);g.Field(51,3,"service");g.Field(52,3,"service");g.Boolean(53,false);}
+  else {static constexpr std::array<const char*,5> rights{"CONNECT","CATALOG_MUTATE","OBS_AGENT_STATE_READ","OBS_AGENT_EVIDENCE_READ","OBS_AGENT_CONTROL"};
+    g.Field(54,3,"privilege");g.Field(57,3,"principal");g.Field(58,3,"allow");g.Field(59,3,rights[n-2]);}
+  return {id,g.Finish()};
+}
+void Verify(const c::CatalogNamedCreationSet& out,bool security=false,bool bootstrap=false,bool service=false) {
+  const unsigned count=service?64:bootstrap?57:security?54:28;
+  Check(out.definitions.size()==count&&out.names.size()==2*count&&out.encoded_bytes>0,"all admitted policy/security definitions and every supplied name returned");
   unsigned packs=0,providers=0,profiles=0,memories=0,bindings=0;
   std::array<bool,26> security_seen{};
   std::array<bool,3> bootstrap_seen{};
+  std::array<bool,7> service_seen{};
   for(const auto& record:out.definitions) {
     const auto& meta=record.metadata;
     Check(c::CatalogMetadataVersionEncodedBytes(c::BorrowCatalogMetadataVersion(meta)).has_value(),"complete native common metadata binding");
+    if(service){bool matched=false;
+      for(unsigned i=0;i<service_seen.size();++i){const auto expected=ServiceGolden(i);
+        if(meta.record.header.object_uuid.value!=expected.first)continue;
+        Check(!service_seen[i]&&meta.record.payload==expected.second,"independent complete native service principal, direct grants and runtime binding bytes");
+        Check(meta.owner_uuid.kind==p::UuidKind::principal&&meta.owner_uuid.value==f::Id(14000)&&
+            meta.creator_transaction_uuid.kind==tx.kind&&meta.creator_transaction_uuid.value==tx.value&&meta.creator_local_transaction_id==1,
+            "service records retain explicit bootstrap ownership and actual construction origin");
+        service_seen[i]=true;matched=true;
+      }
+      if(matched)continue;
+    }
     if(c::IsCatalogSecurityRecordKind(meta.record.header.kind)) {
       bool matched=false;
       if(bootstrap)for(unsigned i=0;i<bootstrap_seen.size();++i){const auto expected=BootstrapGolden(i);
@@ -181,6 +216,7 @@ void Verify(const c::CatalogNamedCreationSet& out,bool security=false,bool boots
   Check(packs==1&&providers==12&&profiles==14&&memories==1&&bindings==1,"complete source family coverage");
   Check(std::count(security_seen.begin(),security_seen.end(),true)==(security?26:0),"complete security coverage, no bootstrap or service principal invented");
   Check(std::count(bootstrap_seen.begin(),bootstrap_seen.end(),true)==(bootstrap?3:0),"bootstrap supplied explicitly or wholly absent");
+  Check(std::count(service_seen.begin(),service_seen.end(),true)==(service?7:0),"service enrollment is complete or wholly absent, never inferred");
 }
 void BootstrapLogical() {
   Package package(true,true);auto request=package.BootstrapRequest();
@@ -231,6 +267,66 @@ void BootstrapLogical() {
   for(long budget:{0,1,5,31,97,257}){allocation_failed=false;allocation_budget=budget;
     const auto refused=db::AssembleNativeInitialPolicySecurityRecords(request);allocation_budget=-1;
     Check(allocation_failed&&!refused.ok()&&!refused.records,"actual bootstrap allocation fault cannot publish partial credentials or metadata");}
+}
+void ServiceLogical() {
+  Package package(true,true,true);auto request=package.ServiceRequest();
+  std::string name="NodeService",credential(fingerprint);
+  request.local_service->principal_name=name;request.local_service->credential_fingerprint=credential;
+  const auto made=db::AssembleNativeInitialPolicySecurityRecords(request);
+  Check(made.ok(),"explicit local service provisioning from actual admitted provider and security policy");
+  name.assign("destroyed caller name");credential.assign("destroyed caller verifier");Verify(*made.records,true,true,true);
+  request.local_service->principal_name="NodeService";request.local_service->credential_fingerprint=fingerprint;
+  const auto binding=std::find_if(made.records->definitions.begin(),made.records->definitions.end(),[](const auto& r){return r.metadata.record.header.object_uuid.value==f::Id(15001);});
+  Check(binding!=made.records->definitions.end()&&c::CatalogRuntimeAuthorityBindingMatchesMetadata(binding->metadata),
+      "runtime selection uses the qualified native binding metadata contract");
+  const auto decoded=c::DecodeCatalogRuntimeAuthorityBinding(binding->metadata.record.payload);
+  Check(decoded.ok()&&decoded.record->credential_reference_uuid==f::Id(15002)&&decoded.record->service_principal_uuid==f::Id(15000)&&
+      decoded.record->database_uuid==f::Id(1)&&decoded.record->security_authority_uuid==f::Id(1),"exact node-bound service and separately custodied credential reference");
+  for(unsigned scenario=0;scenario<43;++scenario){
+    Package bad(true,true,true);auto changed=bad.ServiceRequest();auto& s=*changed.local_service;
+    std::string invalid;
+    if(scenario==0)changed.bootstrap.reset();
+    if(scenario==1)s.principal_uuid={};if(scenario==2)s.runtime_binding_uuid.bytes[6]=0x40;
+    if(scenario==3)s.credential_reference_uuid={};if(scenario==4)s.grant_uuids[4]={};
+    if(scenario==5)s.principal_uuid=f::Id(14000);if(scenario==6)s.runtime_binding_uuid=f::Id(14001);
+    if(scenario==7)s.credential_reference_uuid=SourceId(0x105);if(scenario==8)s.grant_uuids[0]=s.principal_uuid;
+    if(scenario==9)s.grant_uuids[4]=s.grant_uuids[0];if(scenario==10)s.runtime_binding_uuid=s.principal_uuid;
+    if(scenario==11)s.credential_reference_uuid=changed.policy.database_uuid;
+    if(scenario==12)s.credential_reference_uuid=changed.policy.construction_transaction.value;
+    if(scenario==13)s.credential_reference_uuid=changed.policy.memory_configuration_uuid;
+    if(scenario==14)s.provider_uuid=SourceId(0x11);if(scenario==15)s.provider_uuid=f::Id(16000);
+    if(scenario==16)s.policy_uuid=SourceId(0x400);if(scenario==17)s.policy_uuid=f::Id(16001);
+    if(scenario==18)s.principal_name="bootstrapadmin";if(scenario==19)s.principal_name="rOoT";
+    if(scenario==20)s.principal_name="";if(scenario==21)s.principal_name="not a name";
+    if(scenario==22)s.principal_name={static_cast<const char*>(nullptr),1};
+    if(scenario==23)s.credential_fingerprint="";if(scenario==24)s.credential_fingerprint="not-a-verifier";
+    if(scenario==25)s.credential_fingerprint={static_cast<const char*>(nullptr),1};
+    if(scenario==26){invalid=fingerprint;invalid.push_back('\0');s.credential_fingerprint=invalid;}
+    if(scenario==27){invalid=fingerprint;invalid.replace(invalid.find("600000"),6,"0600000");s.credential_fingerprint=invalid;}
+    if(scenario==28)changed.policy.definitions=changed.policy.definitions.first(63);
+    if(scenario==29)changed.local_service.reset();
+    if(scenario==30)changed.policy.limits.maximum_records=191;
+    if(scenario==31)changed.policy.limits.maximum_encoded_bytes=made.records->encoded_bytes-1;
+    if(scenario==32)bad.items[57].definition.owner_uuid=Typed(p::UuidKind::principal,16002);
+    if(scenario==33)bad.items[58].definition.security_policy_uuid=Typed(p::UuidKind::object,55);
+    if(scenario==34)bad.items[58].definition.object_subtype="memory_configuration";
+    if(scenario==35)bad.items[63].definition.owner_uuid=Typed(p::UuidKind::principal,16002);
+    if(scenario==36)s.credential_reference_uuid=bad.items[63].definition.record.header.row_uuid.value;
+    if(scenario==37)s.credential_reference_uuid=bad.items[63].entry.name_entry_uuid.value;
+    if(scenario==38)s.credential_reference_uuid=SourceId(0x300);
+    if(scenario==39)s.grant_uuids[4]=SourceId(0x300);
+    if(scenario==40)bad.items[63].entry.default_for_object=false;
+    if(scenario==41)bad.items[58].definition.security_epoch=2;
+    if(scenario==42)bad.items[58].definition.visibility=c::CatalogVisibilityClass::public_metadata;
+    const auto refused=db::AssembleNativeInitialPolicySecurityRecords(changed);
+    if(refused.ok()||refused.records)std::cerr<<"service refusal scenario "<<scenario<<" unexpectedly admitted\n";
+    Check(!refused.ok()&&!refused.records,"bad service identity, selection, ownership, alias, credentials or limits refuses the whole cohort");
+  }
+  request.policy.limits={192,made.records->encoded_bytes};
+  Check(db::AssembleNativeInitialPolicySecurityRecords(request).ok(),"exact service cohort record/byte admission");
+  for(long budget:{0,1,5,31,97,257,1024}){allocation_failed=false;allocation_budget=budget;
+    const auto refused=db::AssembleNativeInitialPolicySecurityRecords(request);allocation_budget=-1;
+    Check(allocation_failed&&!refused.ok()&&!refused.records,"service construction allocation failure cannot publish a partial identity/grant/binding cohort");}
 }
 void SecurityLogical() {
   Package package(true);auto request=package.SecurityRequest();
@@ -342,6 +438,62 @@ void CustomSource(bool security=false) {
   Check(std::filesystem::remove_all(root)>0,"remove exact owned mutable source after successful assembly");
   Verify(*made.records,security);
 }
+void ServiceSourceMutations() {
+  for(unsigned scenario=0;scenario<6;++scenario){
+    scratchbird::tests::OwnedTempDirectory artifacts;const auto root=artifacts.path()/"selected-service-pack";
+    std::filesystem::copy(SB_DEFAULT_POLICY_PACK_ROOT,root,std::filesystem::copy_options::recursive);
+    scratchbird::tests::RewriteAndResealPolicyPack(root,[&](const auto& path,auto& text,const auto& replace){
+      if(scenario==0){
+        replace(text,"018f7a10-1280-7000-8000-000000000010","018f7a10-1280-7000-8000-000000000050");
+        replace(text,"018f7a10-1280-7000-8000-000000000402","018f7a10-1280-7000-8000-000000000450");
+      }
+      if(path=="policies/security_providers.json"){
+        if(scenario==1)replace(text,"\"enabled_by_default\": true","\"enabled_by_default\": false");
+        if(scenario==2)replace(text,"\"external_provider\": false","\"external_provider\": true");
+        if(scenario==3)replace(text,"\"authority\": \"durable_catalog_row\"","\"authority\": \"unsupported_by_default\"");
+        if(scenario==4)replace(text,"local_password_verifier_required","not_a_verifier_policy");
+      }
+      if(scenario==5&&path=="policies/policy_profiles.json")replace(text,"deny_by_default","allow_by_default");
+    });
+    Package package(true,true,true);auto request=package.ServiceRequest();const auto source=root.string();request.policy.policy_seed_pack_root=source;
+    if(scenario==0){
+      request.local_service->provider_uuid=SourceId(0x50);request.local_service->policy_uuid=SourceId(0x450);
+      for(const auto n:{1u,15u}){
+        const auto id=SourceId(n==1?0x50:0x450);auto& x=package.items[n];
+        x.definition.record.header.object_uuid.value=id;x.vector_metadata.record.header.parent_uuid.value=id;
+        x.vector.object_uuid.value=id;x.entry.object_uuid.value=id;
+      }
+      auto& binding=package.items[58];
+      binding.definition.security_policy_uuid.value=binding.vector_metadata.security_policy_uuid.value=
+          binding.vector.security_policy_uuid.value=binding.entry_metadata.security_policy_uuid.value=binding.entry.security_policy_uuid.value=SourceId(0x450);
+    }
+    const auto made=db::AssembleNativeInitialPolicySecurityRecords(request);
+    if(scenario==0){
+      Check(made.ok(),"valid alternate source provider/policy identities, not hardcoded defaults");
+      Check(std::filesystem::remove_all(root)>0,"release exact private service source before reading owning result");
+      unsigned providers=0,policies=0,bindings=0;
+      for(const auto& record:made.records->definitions){
+        const auto& meta=record.metadata;
+        if(meta.record.header.object_uuid.value==SourceId(0x50)){
+          const auto value=c::DecodeCatalogBootstrapSecurityProvider(meta.record.payload);
+          Check(value.ok()&&value.record->provider_uuid==SourceId(0x50)&&value.record->family==c::BootstrapProviderFamily::local_password,
+              "actual alternate provider definition survives source removal");++providers;
+        }
+        if(meta.record.header.object_uuid.value==SourceId(0x450)){
+          const auto value=c::DecodeCatalogBootstrapPolicyProfile(meta.record.payload);
+          Check(value.ok()&&value.record->profile_uuid==SourceId(0x450)&&value.record->area=="default_security_posture"&&value.record->mode=="deny_by_default",
+              "actual alternate posture source survives source removal");++policies;
+        }
+        if(meta.record.header.object_uuid.value==f::Id(15001)){
+          const auto value=c::DecodeCatalogRuntimeAuthorityBinding(meta.record.payload);
+          Check(value.ok()&&c::CatalogRuntimeAuthorityBindingMatchesMetadata(meta)&&value.record->provider_uuid==SourceId(0x50)&&
+              value.record->policy_uuid==SourceId(0x450),"runtime selection binds actual alternate source, not a default substitution");++bindings;
+        }
+      }
+      Check(providers==1&&policies==1&&bindings==1,"all alternate selected definitions exist exactly once");
+    }else Check(!made.ok()&&!made.records,"correctly resealed unsafe provider/posture refuses before any service output");
+  }
+}
 void SecuritySourceMutations() {
   for(unsigned scenario=0;scenario<4;++scenario){
     scratchbird::tests::OwnedTempDirectory artifacts;
@@ -405,9 +557,9 @@ void SecuritySourceMutations() {
     }
   }
 }
-void Physical(bool security=false,bool bootstrap=false) {
+void Physical(bool security=false,bool bootstrap=false,bool service=false) {
   scratchbird::tests::OwnedTempDirectory artifacts;
-  Package package(security,bootstrap);const auto made=security?db::AssembleNativeInitialPolicySecurityRecords(bootstrap?package.BootstrapRequest():package.SecurityRequest()):db::AssembleNativeInitialPolicyRecords(package.Request());Check(made.ok(),"actual source producer before physical construction");
+  Package package(security,bootstrap,service);const auto made=security?db::AssembleNativeInitialPolicySecurityRecords(service?package.ServiceRequest():bootstrap?package.BootstrapRequest():package.SecurityRequest()):db::AssembleNativeInitialPolicyRecords(package.Request());Check(made.ok(),"actual source producer before physical construction");
   for(const auto& profile:d::kCanonicalFilespacePageProfiles) {
     db::NativeCreationCatalogSeed seed;seed[0]=made.records->definitions;seed[1]=made.records->names;
     db::NativeCreationCatalogIndexes indexes;
@@ -450,5 +602,5 @@ void Physical(bool security=false,bool bootstrap=false) {
   }
 }
 }
-int main()try{Logical();SecurityLogical();BootstrapLogical();CustomSource();CustomSource(true);SecuritySourceMutations();Physical();Physical(true);Physical(true,true);std::cout<<"PASS native policy creation "<<checks<<" checks\n";return 0;}
+int main()try{Logical();SecurityLogical();BootstrapLogical();ServiceLogical();CustomSource();CustomSource(true);SecuritySourceMutations();ServiceSourceMutations();Physical();Physical(true);Physical(true,true);Physical(true,true,true);std::cout<<"PASS native policy creation "<<checks<<" checks\n";return 0;}
 catch(const std::exception& e){allocation_budget=-1;std::cerr<<e.what()<<'\n';return 1;}
