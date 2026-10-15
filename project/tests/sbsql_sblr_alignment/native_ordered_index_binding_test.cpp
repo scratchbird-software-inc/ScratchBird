@@ -165,6 +165,190 @@ void Refusals(const char* name, std::string bytes) {
           "substituted DDL codec metadata was accepted");
   }
 }
+void BooleanColumnProjection() {
+  for (const unsigned generation : {5u, 10u, 11u}) {
+    auto source = Source("boolean", "nullable=true");
+    source.datatype_cohort = {
+        generation == 5 ? dt::kDatatypeCohortV5 :
+        generation == 10 ? dt::kDatatypeCohortV10 : dt::kDatatypeCohortV11,
+        generation, generation};
+    key::OrderedIndexColumn binding;
+    Check(dt::LookupDatatypeStorageIdentityV3(source.datatype_cohort.catalog_snapshot_uuid,
+        generation, generation, source.datatype_descriptor_uuid,
+        source.datatype_descriptor_generation, &binding.datatype),
+        "BOOLEAN retained cohort storage identity unavailable");
+    binding.descriptor = {scratchbird::core::platform::UuidKind::object,
+                          source.datatype_descriptor_uuid};
+    std::string detail;
+    Check(key::BuildOrderedColumnExecutionDescriptor(source, binding.datatype, true,
+        &binding.execution_descriptor, &detail), "short BOOLEAN column profile refused");
+    const auto& row = binding.datatype.codec->legacy_fields;
+    api::CatalogColumnMetadata fields;
+    fields.identities = {{"type_uuid", row.type_uuid},
+        {"datatype_descriptor_uuid", row.descriptor_uuid}, {"codec_uuid", row.codec_uuid}};
+    fields.text = {{"nullable", "true"},
+        {"datatype_descriptor_generation", std::to_string(row.descriptor_generation)},
+        {"type_generation", std::to_string(row.type_generation)}, {"codec_id", row.codec_id},
+        {"codec_version", std::to_string(row.codec_version)},
+        {"codec_generation", std::to_string(row.codec_generation)},
+        {"null_encoding", std::to_string(row.null_encoding_code)}};
+    Check(api::EncodeCatalogColumnMetadata(fields, &source.encoded_descriptor),
+          "BOOLEAN binary column metadata did not encode");
+    // Catalog declarations are not runtime modifier authority. The runtime
+    // receiver stays strict; the owning column boundary validates/project them.
+    scratchbird::engine::ExecutionTypeDescriptor projected;
+    Check(!exec::BuildBoundExecutionTypeDescriptor(source, dt::CanonicalTypeId::boolean,
+          &projected, &detail), "runtime receiver admitted unprojected BOOLEAN declaration");
+    if (!key::BuildOrderedColumnExecutionDescriptor(source, binding.datatype, true,
+          &projected, &detail)) {
+      std::cerr << "BOOLEAN projection: " << detail << '\n';
+      Check(false, "exact binary BOOLEAN column codec metadata refused");
+    }
+    auto actual = binding;
+    actual.execution_descriptor = projected;
+    const std::string false_bytes(1, '\0'), true_bytes(1, '\1');
+    for (const auto& value : {api::CrudStoredValue{false_bytes},
+                              api::CrudStoredValue{true_bytes}, api::CrudStoredValue::SqlNull()})
+      Check(Encode(actual, value) == Encode(binding, value),
+            "projected BOOLEAN key differs from exact short profile");
+    Check(Encode(actual, false_bytes) < Encode(actual, true_bytes) &&
+          Encode(actual, api::CrudStoredValue::SqlNull()) < Encode(actual, false_bytes),
+          "BOOLEAN NULL/FALSE/TRUE ordering changed");
+    auto non_null_fields = fields;
+    non_null_fields.text["nullable"] = "false";
+    auto non_null_source = source;
+    Check(api::EncodeCatalogColumnMetadata(non_null_fields, &non_null_source.encoded_descriptor) &&
+          key::BuildOrderedColumnExecutionDescriptor(non_null_source, binding.datatype, false,
+            &projected, &detail) && !projected.nullable_allowed,
+          "exact nonnullable BOOLEAN column refused or widened");
+    auto non_null_binding = binding;
+    non_null_binding.execution_descriptor = projected;
+    for (const auto& bytes : {false_bytes, true_bytes})
+      Check(Encode(non_null_binding, bytes) == Encode(binding, bytes),
+            "BOOLEAN nullability changed PRESENT key bytes");
+    std::string null_output = "unchanged";
+    bool null_flag = false;
+    api::EngineApiDiagnostic null_diagnostic;
+    Check(!key::EncodeOrderedIndexKey(api::EncodeStoredLogicalKey({api::CrudStoredValue::SqlNull()}),
+          {non_null_binding}, &null_output, &null_flag, &null_diagnostic) &&
+          null_output == "unchanged" && !null_flag && null_diagnostic.error,
+          "nonnullable BOOLEAN index admitted NULL or published a partial result");
+    auto relabeled = binding.datatype;
+    relabeled.codec->legacy_fields.canonical_name = "localized label";
+    relabeled.codec->legacy_fields.codec_id = "localized codec label";
+    Check(key::BuildOrderedColumnExecutionDescriptor(source, relabeled, true,
+          &projected, &detail), "presentation labels replaced BOOLEAN binding authority");
+    const auto original = source.encoded_descriptor;
+    const auto refuse = [&](const api::EngineDescriptor& invalid, bool nullable = true) {
+      auto destination = binding.execution_descriptor;
+      Check(!key::BuildOrderedColumnExecutionDescriptor(invalid, binding.datatype, nullable,
+            &destination, &detail) && !detail.empty() &&
+            destination.descriptor_epoch == binding.execution_descriptor.descriptor_epoch &&
+            destination.nullable_allowed == binding.execution_descriptor.nullable_allowed &&
+            destination.canonical_type_id == binding.execution_descriptor.canonical_type_id &&
+            destination.bit_width == binding.execution_descriptor.bit_width,
+            "invalid BOOLEAN column metadata admitted or changed caller output");
+    };
+    const auto refuse_fields = [&](const api::CatalogColumnMetadata& invalid) {
+      auto candidate = source;
+      Check(api::EncodeCatalogColumnMetadata(invalid, &candidate.encoded_descriptor),
+            "BOOLEAN negative binary metadata fixture invalid");
+      refuse(candidate);
+    };
+    for (const auto& [name, id] : fields.identities) {
+      for (unsigned byte = 0; byte < 16; ++byte) {
+        auto invalid = fields;
+        // Retained rows can have an absent codec UUID. Substitute a real v7
+        // identity so the negative reaches the column boundary, not merely
+        // the binary framing codec's invalid-UUID guard.
+        if (id.is_nil())
+          invalid.identities[name] = scratchbird::tests::FixtureUuid(1401, 999);
+        invalid.identities[name].bytes[byte] ^= 1;
+        refuse_fields(invalid);
+      }
+    }
+    for (const auto name : {"charset_uuid", "collation_uuid", "timezone_uuid",
+                            "domain_uuid", "security_policy_uuid", "unknown_uuid"}) {
+      auto invalid = fields;
+      invalid.identities[name] = source.type_uuid;
+      refuse_fields(invalid);
+    }
+    for (const auto& [name, value] : fields.text) {
+      if (name == "nullable") continue;
+      auto invalid = fields;
+      invalid.text.erase(name);
+      refuse_fields(invalid);
+      invalid = fields;
+      invalid.text[name] += "x";
+      refuse_fields(invalid);
+    }
+    for (const auto name : {"unknown", "precision", "scale", "length", "bit_profile_kind"}) {
+      auto invalid = fields;
+      invalid.text[name] = "1";
+      refuse_fields(invalid);
+    }
+    auto declared = fields;
+    declared.text.insert({{"canonical", "boolean"}, {"primary_key", "false"},
+                          {"default", "false"}});
+    auto declaration = source;
+    Check(api::EncodeCatalogColumnMetadata(declared, &declaration.encoded_descriptor) &&
+          key::BuildOrderedColumnExecutionDescriptor(declaration, binding.datatype, true,
+            &projected, &detail), "validated BOOLEAN declaration attributes were refused");
+    actual.execution_descriptor = projected;
+    Check(Encode(actual, true_bytes) == Encode(binding, true_bytes),
+          "BOOLEAN declaration attributes changed comparison bytes");
+    declared.text["canonical"] = "int64";
+    refuse_fields(declared);
+    auto invalid = fields;
+    invalid.text["nullability"] = "nullable";
+    refuse_fields(invalid);
+    refuse(source, false);
+    auto changed = source;
+    ++changed.datatype_descriptor_generation;
+    refuse(changed);
+    changed = source;
+    ++changed.datatype_cohort.registry_generation;
+    refuse(changed);
+    changed = source;
+    changed.charset_uuid = source.type_uuid;
+    refuse(changed);
+    changed = source;
+    changed.collation_uuid = source.type_uuid;
+    refuse(changed);
+    changed = source;
+    changed.encoded_descriptor = "nullable=true;type_uuid=text-is-not-an-engine-identity";
+    refuse(changed);
+    for (unsigned mutation = 0; mutation < 6; ++mutation) {
+      auto altered = binding.datatype;
+      switch (mutation) {
+        case 0: altered.codec.reset(); break;
+        case 1: altered.codec->legacy_fields.codec_uuid.bytes[0] ^= 1; break;
+        case 2: altered.codec->descriptor_policy.uuid.bytes[0] ^= 1; break;
+        case 3: ++altered.codec->legacy_fields.catalog_generation; break;
+        case 4: ++altered.codec->native_fields.canonical_value_transport_width; break;
+        case 5: altered.codec->legacy_fields.canonical_binary_type_code =
+            static_cast<std::uint32_t>(dt::CanonicalTypeId::int64); break;
+      }
+      auto destination = binding.execution_descriptor;
+      Check(!key::BuildOrderedColumnExecutionDescriptor(source, altered, true,
+            &destination, &detail) && !detail.empty() &&
+            destination.descriptor_epoch == binding.execution_descriptor.descriptor_epoch,
+            "BOOLEAN projection trusted caller-substituted codec authority");
+    }
+    for (const auto& bytes : {std::string{}, std::string(2, '\0'), std::string(1, '\2'),
+                              std::string{"false"}, std::string{"0"}}) {
+      std::string output = "unchanged";
+      bool null_key = true;
+      api::EngineApiDiagnostic diagnostic;
+      Check(!key::EncodeOrderedIndexKey(api::EncodeStoredLogicalKey({api::CrudStoredValue{bytes}}),
+            {binding}, &output, &null_key, &diagnostic) && output == "unchanged" &&
+            null_key && diagnostic.error,
+            "BOOLEAN index admitted malformed/text native bytes or published a prefix");
+    }
+    Check(source.encoded_descriptor == original,
+          "BOOLEAN projection rewrote persisted metadata instead of staging a projection");
+  }
+}
 void PolicyBearingBinding() {
   auto binding = Binding("int64");
   Check(dt::LookupDatatypeStorageIdentityV3(dt::kDatatypeCohortV10, 10, 10,
@@ -614,6 +798,7 @@ void BitBoundKeys() {
 }
 
 int main() {
+  BooleanColumnProjection();
   BitBoundKeys();
   TimestampBoundKeys();
   TimeBoundKeys();

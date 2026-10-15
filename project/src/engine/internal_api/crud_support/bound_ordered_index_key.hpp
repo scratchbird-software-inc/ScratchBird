@@ -112,6 +112,19 @@ inline bool BuildOrderedColumnExecutionDescriptor(
     bool nullable, engine::ExecutionTypeDescriptor* output, std::string* detail) {
   if (!output || !detail) return false;
   const auto type = datatype.type_id;
+  const auto* column_codec = datatype.codec ? &*datatype.codec : nullptr;
+  if (type == core::datatypes::CanonicalTypeId::boolean) {
+    const auto* registered = core::datatypes::FindDatatypeTypeCodecIdentityV3(
+        source.datatype_cohort.catalog_snapshot_uuid,
+        source.datatype_cohort.catalog_generation, source.datatype_cohort.registry_generation,
+        source.datatype_descriptor_uuid, source.datatype_descriptor_generation);
+    if (!registered || !column_codec ||
+        !core::datatypes::SameDatatypeTypeCodecIdentityV3(*registered, *column_codec)) {
+      *detail = "BOOLEAN column codec is not the exact retained registry binding";
+      return false;
+    }
+    column_codec = registered;
+  }
   CatalogColumnMetadata fields;
   if (!AdmitCatalogColumnMetadata(source.encoded_descriptor, &fields) ||
       source.datatype_descriptor_uuid != datatype.descriptor_uuid ||
@@ -137,7 +150,8 @@ inline bool BuildOrderedColumnExecutionDescriptor(
     *detail = "decimal occurrence requires a complete nonzero precision/scale binding";
     return false;
   }
-  if (type == core::datatypes::CanonicalTypeId::int64 ||
+  if (type == core::datatypes::CanonicalTypeId::boolean ||
+      type == core::datatypes::CanonicalTypeId::int64 ||
       type == core::datatypes::CanonicalTypeId::uuid ||
       type == core::datatypes::CanonicalTypeId::date ||
       type == core::datatypes::CanonicalTypeId::time ||
@@ -155,7 +169,7 @@ inline bool BuildOrderedColumnExecutionDescriptor(
           (name == "decimal_codec_uuid" || name == "codec_uuid")) continue;
       if ((name == "type_uuid" && identity == datatype.type_uuid) ||
           (name == "datatype_descriptor_uuid" && identity == datatype.descriptor_uuid) ||
-          (name == "codec_uuid" && datatype.codec && identity == datatype.codec->legacy_fields.codec_uuid)) continue;
+          (name == "codec_uuid" && column_codec && identity == column_codec->legacy_fields.codec_uuid)) continue;
       *detail = "base index column identity metadata disagrees with its binding";
       return false;
     }
@@ -176,8 +190,8 @@ inline bool BuildOrderedColumnExecutionDescriptor(
            name == "codec_generation" || name == "codec_version" || name == "codec_id")) continue;
       if (type == core::datatypes::CanonicalTypeId::bit_string &&
           (name == "bit_profile_kind" || name == "length")) continue;
-      if (datatype.codec) {
-        const auto& codec = datatype.codec->legacy_fields;
+      if (column_codec) {
+        const auto& codec = column_codec->legacy_fields;
         if ((name == "datatype_descriptor_generation" && value == std::to_string(codec.descriptor_generation)) ||
             (name == "type_generation" && value == std::to_string(codec.type_generation)) ||
             (name == "codec_id" && value == codec.codec_id) ||
@@ -199,6 +213,22 @@ inline bool BuildOrderedColumnExecutionDescriptor(
   // The typed storage column owns nullability. Legacy metadata can omit its
   // duplicate spelling, but any supplied spelling must agree with that owner.
   auto projection = source;
+  if (type == core::datatypes::CanonicalTypeId::boolean) {
+    // The declaration's binary type/descriptor/codec identities were checked
+    // against the exact retained row above. They are redundant binding facts,
+    // not runtime modifiers. Likewise, admitted declaration attributes do not
+    // become Boolean comparison semantics. Keep the explicit codec profile
+    // whole: the runtime receiver still rejects a partial/contradictory profile.
+    fields.identities.clear();
+    for (auto field = fields.text.begin(); field != fields.text.end();) {
+      const auto& name = field->first;
+      if (name == "nullable" || name == "nullability" ||
+          name == "datatype_descriptor_generation" || name == "type_generation" ||
+          name == "codec_id" || name == "codec_version" || name == "codec_generation" ||
+          name == "null_encoding") ++field;
+      else field = fields.text.erase(field);
+    }
+  }
   if (!fields.text.contains("nullable") && !fields.text.contains("nullability"))
     fields.text["nullable"] = nullable ? "true" : "false";
   if (!EncodeCatalogColumnMetadata(fields, &projection.encoded_descriptor)) {
