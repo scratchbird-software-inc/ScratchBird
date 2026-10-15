@@ -10964,11 +10964,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_definitions(sbsql_sblr_alignment_base_blob_owned_persistence PRIVATE
     SCRATCHBIRD_MEMORY_FAILURE_INJECTION_TEST_GUARD=1)
   target_link_libraries(sbsql_sblr_alignment_base_blob_owned_persistence PRIVATE
-    sb_core_blob_persistence sb_storage_disk Threads::Threads)
+    sb_core_blob_persistence sb_storage_disk sb_storage_page Threads::Threads)
   add_test(NAME sbsql_sblr_alignment_base_blob_owned_persistence
     COMMAND sbsql_sblr_alignment_base_blob_owned_persistence)
   set_tests_properties(sbsql_sblr_alignment_base_blob_owned_persistence PROPERTIES
-    LABELS "datatype;base_blob;owned_persistence;binary_uuid;fault_atomicity;independent_reopen;not_runtime_authority"
+    LABELS "datatype;base_blob;owned_persistence;hash_candidate;raw_index_policy;binary_uuid;fault_atomicity;independent_reopen;not_runtime_authority"
     TIMEOUT 180)
   # The runtime is portable; this harness uses fork/mmap and Linux death tests.
   add_executable(sbsql_sblr_alignment_base_blob_lifetime_runtime

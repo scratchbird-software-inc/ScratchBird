@@ -3,6 +3,8 @@
 #include "../support/blob_persistence_fixture.hpp"
 #include "../support/owned_temp_directory.hpp"
 #include "disk_device.hpp"
+#include "datatype_blob_hash_candidate.hpp"
+#include "index_hash_page.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
@@ -48,6 +50,8 @@ void Check(bool ok, const char* why) {
 }
 namespace {
 #include "base_blob_component_vectors.inc"
+#include "base_blob_hash_candidate_vectors.inc"
+#include "base_blob_index_family_vectors.inc"
 std::vector<byte> Golden(unsigned index) {
   const auto hex = kBlobComponentGoldenVectors[index].component_hex;
   const auto digit = [](char c) -> byte {
@@ -73,6 +77,8 @@ void Clean(Fixture& f) {
         budget.active_allocation_count == 0 && budget.active_reservation_count == 0,
         "standalone hierarchical budget leaked");
 }
+#include "base_blob_hash_candidate_test.inc"
+#include "base_blob_hash_file_test.inc"
 void GoldenRoundTrips() {
   Fixture f;
   for (unsigned index = 0; index < 5; ++index) {
@@ -437,10 +443,13 @@ void FilePersistence(const char* executable) {
 int main(int argc,char** argv) {
   try {
     if (argc==3 && std::string_view(argv[1])=="--reopen") return Reopen(argv[2]);
+    if (argc==3 && std::string_view(argv[1])=="--reopen-hash") return BlobHashFileReopen(argv[2]);
+    BlobHashCandidateVectors(); BlobHashCandidateMalformed(); BlobRawIndexFamilyPolicy();
     GoldenRoundTrips(); LongBinaryRoundTrips(); PrivateRefusalsAndCancellation();
     MalformedFrames(); Quotas(); AllocationFaults(); PhysicalAllocatorFaults();
     CancellationAtEveryAllocation(); ConcurrentReaders();
     const auto executable=std::filesystem::absolute(argv[0]); FilePersistence(executable.c_str());
+    BlobHashFilePersistence(executable.c_str());
     std::cout << "owned_blob_persistence_checks=" << checks.load() << '\n'; return 0;
   } catch (const std::exception& error) {
     allocation_budget=-1; stop_on_allocation=nullptr;

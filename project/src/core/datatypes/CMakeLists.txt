@@ -13,6 +13,7 @@ add_library(sb_core_datatypes
   datatype_bit_string_projection.cpp
   datatype_blob.cpp
   datatype_blob_component.cpp
+  datatype_blob_hash_candidate.cpp
   datatype_date.cpp
   datatype_date_projection.cpp
   datatype_interval.cpp
