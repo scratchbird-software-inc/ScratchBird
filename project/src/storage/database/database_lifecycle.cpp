@@ -2466,6 +2466,7 @@ CatalogRowsBuildResult AddSecurityCatalogRecord(
     std::vector<CatalogPageRow>* rows, u32* ordinal, u64 identity_seed,
     scratchbird::core::catalog::CatalogSecurityRecord record,
     TypedUuid parent_object_uuid,
+    const TypedUuid& construction_transaction_uuid,
     scratchbird::core::platform::Uuid* created_object = nullptr) {
   namespace catalog = scratchbird::core::catalog;
   const auto primary_name = std::string(catalog::CatalogSecurityPrimaryIdentityName(record.kind));
@@ -2481,7 +2482,16 @@ CatalogRowsBuildResult AddSecurityCatalogRecord(
     if (!issued.ok()) return CatalogRowsBuildError(issued.status, issued.diagnostic);
     record.identities.emplace(primary_name, issued.value.value);
   }
-  record.attributes.try_emplace("creator_tx", std::to_string(kBootstrapCatalogTransactionId));
+  if (construction_transaction_uuid.kind != UuidKind::transaction)
+    return CatalogRowsBuildError(DatabaseLifecycleErrorStatus(),
+        MakeDatabaseLifecycleDiagnostic(DatabaseLifecycleErrorStatus(),"CATALOG.INVALID_INPUT",
+          "catalog.security_record.invalid",{},"construction_transaction_kind"));
+  const auto [origin,inserted]=record.identities.emplace("origin_transaction_uuid", construction_transaction_uuid.value);
+  if (!inserted && origin->second!=construction_transaction_uuid.value)
+    return CatalogRowsBuildError(DatabaseLifecycleErrorStatus(),
+        MakeDatabaseLifecycleDiagnostic(DatabaseLifecycleErrorStatus(),"CATALOG.INVALID_INPUT",
+          "catalog.security_record.invalid",{},"construction_transaction_mismatch"));
+  record.attributes.try_emplace("creator_tx", u64{kBootstrapCatalogTransactionId});
   const auto encoded = catalog::EncodeCatalogSecurityRecord(record);
   if (!encoded.ok()) {
     const auto error = LifecycleError("CATALOG.INVALID_INPUT",
@@ -2773,13 +2783,13 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
     record.attributes = {{"role_code", role.role_code},
                          {"description", role.description},
                          {"default_assignment", role.default_assignment},
-                         {"policy_generation", std::to_string(pack.image.policy_generation)},
-                         {"created_txn", std::to_string(kBootstrapCatalogTransactionId)},
-                         {"loaded_at_database_create", "1"},
+                         {"policy_generation", u64{pack.image.policy_generation}},
+                         {"created_txn", u64{kBootstrapCatalogTransactionId}},
+                         {"loaded_at_database_create", true},
                          {"identity_authority", "uuid"},
-                         {"engine_owned", "1"}};
+                         {"engine_owned", true}};
     typed = AddSecurityCatalogRecord(rows, ordinal, seed, std::move(record),
-                                     security_parent_uuid);
+                                     security_parent_uuid, creator_transaction_uuid);
     if (!typed.ok()) { return typed; }
     seed += 4;
   }
@@ -2792,13 +2802,13 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
                          {"policy_pack_uuid", policy_pack_uuid.value}};
     record.attributes = {{"group_code", group.group_code},
                          {"description", group.description},
-                         {"policy_generation", std::to_string(pack.image.policy_generation)},
-                         {"created_txn", std::to_string(kBootstrapCatalogTransactionId)},
-                         {"loaded_at_database_create", "1"},
+                         {"policy_generation", u64{pack.image.policy_generation}},
+                         {"created_txn", u64{kBootstrapCatalogTransactionId}},
+                         {"loaded_at_database_create", true},
                          {"identity_authority", "uuid"},
-                         {"engine_owned", "1"}};
+                         {"engine_owned", true}};
     typed = AddSecurityCatalogRecord(rows, ordinal, seed, std::move(record),
-                                     security_parent_uuid);
+                                     security_parent_uuid, creator_transaction_uuid);
     if (!typed.ok()) { return typed; }
     seed += 4;
   }
@@ -2815,13 +2825,13 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
                          {"member_kind", membership.member_kind},
                          {"parent_kind", membership.parent_kind},
                          {"effect", "allow"},
-                         {"policy_generation", std::to_string(pack.image.policy_generation)},
-                         {"created_txn", std::to_string(kBootstrapCatalogTransactionId)},
-                         {"loaded_at_database_create", "1"},
+                         {"policy_generation", u64{pack.image.policy_generation}},
+                         {"created_txn", u64{kBootstrapCatalogTransactionId}},
+                         {"loaded_at_database_create", true},
                          {"identity_authority", "uuid"},
-                         {"engine_owned", "1"}};
+                         {"engine_owned", true}};
     typed = AddSecurityCatalogRecord(rows, ordinal, seed, std::move(record),
-                                     security_parent_uuid);
+                                     security_parent_uuid, creator_transaction_uuid);
     if (!typed.ok()) { return typed; }
     seed += 4;
   }
@@ -2841,13 +2851,13 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
                          {"subject_kind", grant.subject_kind},
                          {"right", grant.right},
                          {"effect", grant.effect},
-                         {"policy_generation", std::to_string(pack.image.policy_generation)},
-                         {"created_txn", std::to_string(kBootstrapCatalogTransactionId)},
-                         {"loaded_at_database_create", "1"},
+                         {"policy_generation", u64{pack.image.policy_generation}},
+                         {"created_txn", u64{kBootstrapCatalogTransactionId}},
+                         {"loaded_at_database_create", true},
                          {"identity_authority", "uuid"},
-                         {"engine_owned", "1"}};
+                         {"engine_owned", true}};
     typed = AddSecurityCatalogRecord(rows, ordinal, seed, std::move(record),
-                                     security_parent_uuid);
+                                     security_parent_uuid, creator_transaction_uuid);
     if (!typed.ok()) { return typed; }
     seed += 4;
   }
@@ -3024,11 +3034,8 @@ std::vector<BootstrapRecordSeed> PackDefaultRegistryPolicyRecords(const LoadedPo
 
 std::vector<BootstrapRecordSeed> DefaultBootstrapCatalogRecords(const LoadedPolicySeedPack& policy_seed_pack) {
   std::vector<BootstrapRecordSeed> records = PackDefaultRegistryPolicyRecords(policy_seed_pack);
-  const std::array<BootstrapRecordSeed, 12> additional_records = {{
+  const std::array<BootstrapRecordSeed, 9> additional_records = {{
       {CatalogRecordKind::config_profile, KeyValuePayload({{"profile_name", "default_local_node_profile"}, {"scope", "local_database"}, {"unsafe_combinations_fail_closed", "1"}})},
-      {CatalogRecordKind::group_account, KeyValuePayload({{"group_name", "PUBLIC"}, {"ambient_rights", "minimal"}, {"connect_only", "1"}})},
-      {CatalogRecordKind::group_account, KeyValuePayload({{"group_name", "DBA"}, {"operational_role", "database_administration"}, {"created_disabled", "1"}})},
-      {CatalogRecordKind::grant_record, KeyValuePayload({{"grant_name", "PUBLIC_CONNECT_BASELINE"}, {"target", "PUBLIC"}, {"right", "CONNECT"}, {"ambient", "0"}})},
       {CatalogRecordKind::masking_policy, KeyValuePayload({{"policy_name", "default_no_unmask_without_grant"}, {"unmask_requires_explicit_right", "1"}})},
       {CatalogRecordKind::rls_policy, KeyValuePayload({{"policy_name", "default_rls_engine_authority"}, {"parser_authority", "0"}, {"fail_closed", "1"}})},
       {CatalogRecordKind::udr_package, KeyValuePayload({{"package_name", "system_builtin_udr_registry"}, {"trusted_engine_side", "1"}, {"registered", "1"}})},
@@ -3048,7 +3055,8 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
     u64 identity_seed,
     const DatabaseCreateConfig& config,
     const LoadedPolicySeedPack& policy_seed_pack,
-    TypedUuid security_parent_uuid) {
+    TypedUuid security_parent_uuid,
+    const TypedUuid& creator_transaction_uuid) {
   const auto parsed_sysarch =
       scratchbird::core::uuid::MakeDurableEngineIdentityUuid(
           UuidKind::object, kCanonicalSysarchRoleIdentity);
@@ -3077,17 +3085,17 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
   role_record.identities = {{"role_uuid", parsed_sysarch.value.value}};
   role_record.attributes = {{"role_code", "ROLE_SYSARCH"},
                        {"authority_class", "engine_owned_sysarch"},
-                       {"engine_owned", "1"},
+                       {"engine_owned", true},
                        {"identity_authority", "uuid"},
-                       {"immutable", "1"},
-                       {"create_time_only", "1"},
-                       {"creator_tx", std::to_string(kBootstrapCatalogTransactionId)},
-                       {"policy_generation", std::to_string(policy_generation)},
-                       {"security_context_authority_version", "1"},
-                       {"security_context_generation", "1"},
-                       {"active", "1"}};
+                       {"immutable", true},
+                       {"create_time_only", true},
+                       {"creator_tx", u64{kBootstrapCatalogTransactionId}},
+                       {"policy_generation", u64{policy_generation}},
+                       {"security_context_authority_version", u64{1}},
+                       {"security_context_generation", u64{1}},
+                       {"active", true}};
   auto typed = AddSecurityCatalogRecord(rows, ordinal, identity_seed,
-      std::move(role_record), security_parent_uuid);
+      std::move(role_record), security_parent_uuid, creator_transaction_uuid);
   if (!typed.ok()) {
     return typed;
   }
@@ -3112,17 +3120,17 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
                        {"credential_fingerprint", config.bootstrap_credential_fingerprint},
                        {"kind", "user"},
                        {"principal_kind", "user"},
-                       {"active", "1"},
-                       {"security_generation", "1"},
-                       {"creator_tx", std::to_string(kBootstrapCatalogTransactionId)},
-                       {"policy_generation", std::to_string(policy_generation)},
-                       {"security_context_authority_version", "1"},
-                       {"security_context_generation", "1"},
+                       {"active", true},
+                       {"security_generation", u64{1}},
+                       {"creator_tx", u64{kBootstrapCatalogTransactionId}},
+                       {"policy_generation", u64{policy_generation}},
+                       {"security_context_authority_version", u64{1}},
+                       {"security_context_generation", u64{1}},
                        {"identity_authority", "uuid"},
-                       {"create_time_only", "1"},
-                       {"bootstrap_principal", "1"}};
+                       {"create_time_only", true},
+                       {"bootstrap_principal", true}};
   typed = AddSecurityCatalogRecord(rows, ordinal, identity_seed + 4,
-      std::move(principal_record), security_parent_uuid);
+      std::move(principal_record), security_parent_uuid, creator_transaction_uuid);
   if (!typed.ok()) {
     return typed;
   }
@@ -3144,16 +3152,16 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
   membership_record.attributes = {{"grant_class", "role_membership"},
                        {"member_kind", "principal"},
                        {"parent_kind", "role"},
-                       {"active", "1"},
-                       {"security_generation", "1"},
-                       {"creator_tx", std::to_string(kBootstrapCatalogTransactionId)},
-                       {"policy_generation", std::to_string(policy_generation)},
-                       {"security_context_authority_version", "1"},
-                       {"security_context_generation", "1"},
+                       {"active", true},
+                       {"security_generation", u64{1}},
+                       {"creator_tx", u64{kBootstrapCatalogTransactionId}},
+                       {"policy_generation", u64{policy_generation}},
+                       {"security_context_authority_version", u64{1}},
+                       {"security_context_generation", u64{1}},
                        {"identity_authority", "uuid"},
-                       {"create_time_only", "1"}};
+                       {"create_time_only", true}};
   typed = AddSecurityCatalogRecord(rows, ordinal, identity_seed + 8,
-      std::move(membership_record), security_parent_uuid);
+      std::move(membership_record), security_parent_uuid, creator_transaction_uuid);
   if (!typed.ok()) {
     return typed;
   }
@@ -3475,28 +3483,27 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
   const auto bootstrap_records = DefaultBootstrapCatalogRecords(policy_seed_pack);
   u64 bootstrap_seed = config.creation_unix_epoch_millis + 14000;
   scratchbird::core::platform::Uuid public_group_uuid{};
+  std::array<scratchbird::core::catalog::CatalogSecurityRecord,3> base_security;
+  base_security[0].kind=CatalogRecordKind::group_account;
+  base_security[0].attributes={{"group_name","PUBLIC"},{"ambient_rights","minimal"},{"connect_only",true}};
+  base_security[1].kind=CatalogRecordKind::group_account;
+  base_security[1].attributes={{"group_name","DBA"},{"operational_role","database_administration"},{"created_disabled",true}};
+  base_security[2].kind=CatalogRecordKind::grant_record;
+  base_security[2].attributes={{"grant_name","PUBLIC_CONNECT_BASELINE"},{"right","CONNECT"},{"ambient",false}};
+  for (std::size_t i=0;i<base_security.size();++i) {
+    if(i==2)base_security[i].identities.emplace("target_uuid",public_group_uuid);
+    typed=AddSecurityCatalogRecord(&result.rows,&ordinal,bootstrap_seed,std::move(base_security[i]),
+        database_object.value,bootstrap_transaction_uuid,i==0?&public_group_uuid:nullptr);
+    if(!typed.ok())return typed;
+    bootstrap_seed+=4;
+  }
   for (const auto& bootstrap_record : bootstrap_records) {
-    if (scratchbird::core::catalog::IsCatalogSecurityRecordKind(bootstrap_record.kind)) {
-      scratchbird::core::catalog::CatalogSecurityRecord record;
-      record.kind = bootstrap_record.kind;
-      record.attributes = ParseKeyValuePayload(bootstrap_record.payload);
-      const bool public_group = record.kind == CatalogRecordKind::group_account &&
-          record.attributes.at("group_name") == "PUBLIC";
-      if (record.kind == CatalogRecordKind::grant_record) {
-        record.identities.emplace("target_uuid", public_group_uuid);
-        record.attributes.erase("target");
-      }
-      typed = AddSecurityCatalogRecord(&result.rows, &ordinal, bootstrap_seed,
-          std::move(record), database_object.value,
-          public_group ? &public_group_uuid : nullptr);
-    } else {
       typed = AddTypedCatalogRecord(&result.rows,
                                   bootstrap_record.kind,
                                   &ordinal,
                                   bootstrap_seed,
                                   bootstrap_record.payload,
                                   database_object.value);
-    }
     if (!typed.ok()) { return typed; }
     bootstrap_seed += 4;
   }
@@ -3518,7 +3525,8 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
       config.creation_unix_epoch_millis + 900000,
       config,
       policy_seed_pack,
-      sys_security_object.value);
+      sys_security_object.value,
+      bootstrap_transaction_uuid);
   if (!bootstrap_security_rows.ok()) {
     return bootstrap_security_rows;
   }
@@ -5766,20 +5774,18 @@ BootstrapSecurityContextAuthorityClass InspectBootstrapSecurityContextAuthority(
     const bool relevant_principal =
         decoded.record.header.kind == CatalogRecordKind::user_account &&
         fields.contains("bootstrap_principal") &&
-        fields.at("bootstrap_principal") == "1";
+        security.record->Boolean("bootstrap_principal") == true;
     const bool relevant_membership =
         decoded.record.header.kind == CatalogRecordKind::grant_record &&
         fields.contains("grant_class") &&
-        fields.at("grant_class") == "role_membership" &&
+        security.record->Attribute("grant_class") == "role_membership" &&
         security.record->Identity("role_uuid") == sysarch.value.value;
     if (!relevant_role && !relevant_principal && !relevant_membership) {
       continue;
     }
     ++relevant;
-    const auto version = ParseU64Field(
-        fields, "security_context_authority_version");
-    const auto row_generation = ParseU64Field(
-        fields, "security_context_generation");
+    const auto version = security.record->Unsigned("security_context_authority_version").value_or(0);
+    const auto row_generation = security.record->Unsigned("security_context_generation").value_or(0);
     const bool has_version =
         fields.contains("security_context_authority_version");
     const bool has_generation = fields.contains("security_context_generation");
@@ -5830,11 +5836,11 @@ bool AddBootstrapSecurityContextAuthorityToRows(
     const bool relevant_principal =
         decoded.record.header.kind == CatalogRecordKind::user_account &&
         fields.contains("bootstrap_principal") &&
-        fields.at("bootstrap_principal") == "1";
+        security.record->Boolean("bootstrap_principal") == true;
     const bool relevant_membership =
         decoded.record.header.kind == CatalogRecordKind::grant_record &&
         fields.contains("grant_class") &&
-        fields.at("grant_class") == "role_membership" &&
+        security.record->Attribute("grant_class") == "role_membership" &&
         security.record->Identity("role_uuid") == sysarch.value.value;
     if (!relevant_role && !relevant_principal && !relevant_membership) {
       continue;
@@ -5844,8 +5850,8 @@ bool AddBootstrapSecurityContextAuthorityToRows(
       return false;
     }
     auto record = decoded.record;
-    security.record->attributes["security_context_authority_version"] = "1";
-    security.record->attributes["security_context_generation"] = "1";
+    security.record->attributes["security_context_authority_version"] = u64{1};
+    security.record->attributes["security_context_generation"] = u64{1};
     const auto payload = scratchbird::core::catalog::EncodeCatalogSecurityRecord(*security.record);
     if (!payload.ok()) return false;
     record.payload.assign(payload.bytes.begin(), payload.bytes.end());
@@ -7988,13 +7994,22 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
     return propagate(tx1.status, tx1.diagnostic);
   }
 
+  const auto committed_origin=LookupLocalTransaction(inventory,
+      MakeLocalTransactionId(kBootstrapCatalogTransactionId));
   std::vector<CatalogTypedRecord> records;
   for (const auto& row : catalog_rows) {
     if (row.kind != CatalogPageRowKind::typed_catalog_record) continue;
     auto decoded = DecodeCatalogTypedRecord(row);
     if (!decoded.ok()) return propagate(decoded.status, decoded.diagnostic);
-    if (scratchbird::core::catalog::IsCatalogSecurityRecordKind(decoded.record.header.kind))
+    if (scratchbird::core::catalog::IsCatalogSecurityRecordKind(decoded.record.header.kind)) {
+      const auto security=scratchbird::core::catalog::DecodeCatalogSecurityRecordView(
+          decoded.record.header.kind,decoded.record.payload);
+      if (!security.ok() || security.record->Unsigned("creator_tx")!=kBootstrapCatalogTransactionId ||
+          security.record->Identity("origin_transaction_uuid")!=committed_origin.entry.identity.transaction_uuid.value)
+        return fail("CATALOG.INVALID_INPUT","catalog.security_record.invalid",
+            "security_origin_not_committed_bootstrap");
       records.push_back(std::move(decoded.record));
+    }
   }
   auto validated = ValidateBootstrapSecurityRecords(records, path);
   if (!validated.ok()) return validated;
@@ -8038,19 +8053,16 @@ DatabaseBootstrapSecurityCatalogReadResult ValidateBootstrapSecurityRecords(
   u64 principal_context_generation = 0;
   u32 membership_policy_generation = 0;
   u64 membership_context_generation = 0;
+  std::optional<scratchbird::core::platform::Uuid> cohort_origin;
 
-  // Security generations are exact unsigned decimal attributes in the V1
-  // payload, not permissive strtoul inputs. In particular, overflow, signs and
-  // trailing bytes must not alias a valid admitted generation.
-  const auto generation = []<typename T>(const std::map<std::string, std::string>& fields,
+  // V2 native integer values must not narrow into a valid authority generation.
+  using SecurityAttributes = decltype(scratchbird::core::catalog::CatalogSecurityRecord::attributes);
+  const auto generation = []<typename T>(const SecurityAttributes& fields,
                                          const std::string& key) -> T {
     const auto found = fields.find(key);
-    if (found == fields.end() || found->second.empty()) return 0;
-    const auto& text = found->second;
-    T value = 0;
-    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value, 10);
-    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size()) return 0;
-    return value;
+    if (found == fields.end()) return 0;
+    const auto* value = std::get_if<u64>(&found->second);
+    return value && *value <= std::numeric_limits<T>::max() ? static_cast<T>(*value) : 0;
   };
   const auto read_u32 = [&](const auto& fields, const std::string& key) {
     return generation.operator()<u32>(fields, key);
@@ -8059,9 +8071,9 @@ DatabaseBootstrapSecurityCatalogReadResult ValidateBootstrapSecurityRecords(
     return generation.operator()<u64>(fields, key);
   };
 
-  auto exact_field = [](const std::map<std::string, std::string>& fields,
+  auto exact_field = [](const SecurityAttributes& fields,
                         const std::string& key,
-                        const std::string& value) {
+                        scratchbird::core::catalog::CatalogSecurityRecord::AttributeValue value) {
     const auto found = fields.find(key);
     return found != fields.end() && found->second == value;
   };
@@ -8087,16 +8099,20 @@ DatabaseBootstrapSecurityCatalogReadResult ValidateBootstrapSecurityRecords(
         decoded.record.header.kind, decoded.record.payload);
     if (!security.ok()) return fail("CATALOG.INVALID_INPUT",
         "catalog.security_record.invalid", "security_binary_payload_invalid");
+    const auto origin=security.record->Identity("origin_transaction_uuid");
+    if(cohort_origin && *cohort_origin!=origin)
+      return fail("CATALOG.INVALID_INPUT","catalog.security_record.invalid","security_origin_cohort_mismatch");
+    cohort_origin=origin;
     const auto& fields = security.record->attributes;
 
     if (decoded.record.header.kind == CatalogRecordKind::role_account) {
       const std::string role_code = fields.count("role_code") == 0
                                         ? std::string{}
-                                        : fields.at("role_code");
+                                        : std::string(security.record->Attribute("role_code").value_or(""));
       const auto role_uuid = security.record->Identity("role_uuid");
       const std::string role_name = fields.count("role_name") == 0
                                         ? std::string{}
-                                        : fields.at("role_name");
+                                        : std::string(security.record->Attribute("role_name").value_or(""));
       if (role_name == "ROOT_ROLE") {
         return fail(
             "SB-DB-BOOTSTRAP-SECURITY-LEGACY-ROLE-REFUSED",
@@ -8106,7 +8122,7 @@ DatabaseBootstrapSecurityCatalogReadResult ValidateBootstrapSecurityRecords(
       if (role_code != "ROLE_SYSARCH" &&
           role_uuid != sysarch.value.value &&
           (fields.count("authority_class") == 0 ||
-           fields.at("authority_class") != "engine_owned_sysarch")) {
+           security.record->Attribute("authority_class") != "engine_owned_sysarch")) {
         continue;
       }
       ++sysarch_count;
@@ -8115,13 +8131,13 @@ DatabaseBootstrapSecurityCatalogReadResult ValidateBootstrapSecurityRecords(
           role_uuid != sysarch.value.value ||
           role_code != "ROLE_SYSARCH" ||
           !exact_field(fields, "authority_class", "engine_owned_sysarch") ||
-          !exact_field(fields, "engine_owned", "1") ||
+          !exact_field(fields, "engine_owned", true) ||
           !exact_field(fields, "identity_authority", "uuid") ||
-          !exact_field(fields, "immutable", "1") ||
-          !exact_field(fields, "create_time_only", "1") ||
-          !exact_field(fields, "creator_tx", "1") ||
-          !exact_field(fields, "active", "1") ||
-          !exact_field(fields, "security_context_authority_version", "1") ||
+          !exact_field(fields, "immutable", true) ||
+          !exact_field(fields, "create_time_only", true) ||
+          !exact_field(fields, "creator_tx", u64{1}) ||
+          !exact_field(fields, "active", true) ||
+          !exact_field(fields, "security_context_authority_version", u64{1}) ||
           read_u64(fields, "security_context_generation") == 0 ||
           read_u32(fields, "policy_generation") == 0) {
         return fail(
@@ -8140,7 +8156,7 @@ DatabaseBootstrapSecurityCatalogReadResult ValidateBootstrapSecurityRecords(
     if (decoded.record.header.kind == CatalogRecordKind::user_account) {
       const std::string principal_name = fields.count("principal_name") == 0
                                              ? std::string{}
-                                             : fields.at("principal_name");
+                                             : std::string(security.record->Attribute("principal_name").value_or(""));
       if (!principal_name.empty() &&
           !principal_names.insert(lower(principal_name)).second) {
         return fail(
@@ -8148,7 +8164,7 @@ DatabaseBootstrapSecurityCatalogReadResult ValidateBootstrapSecurityRecords(
             "storage.database_lifecycle.bootstrap_security_principal_name_duplicate",
             principal_name);
       }
-      const bool bootstrap = exact_field(fields, "bootstrap_principal", "1");
+      const bool bootstrap = exact_field(fields, "bootstrap_principal", true);
       if (principal_name == "ROOT" && !bootstrap) {
         return fail(
             "SB-DB-BOOTSTRAP-SECURITY-LEGACY-ROOT-REFUSED",
@@ -8163,7 +8179,7 @@ DatabaseBootstrapSecurityCatalogReadResult ValidateBootstrapSecurityRecords(
       const std::string fingerprint =
           fields.count("credential_fingerprint") == 0
               ? std::string{}
-              : fields.at("credential_fingerprint");
+              : std::string(security.record->Attribute("credential_fingerprint").value_or(""));
       const auto header_uuid = decoded.record.header.object_uuid.value;
       BootstrapCredentialFingerprintFields fingerprint_fields;
       const bool fingerprint_valid = ParseBootstrapCredentialFingerprint(
@@ -8176,13 +8192,13 @@ DatabaseBootstrapSecurityCatalogReadResult ValidateBootstrapSecurityRecords(
           !credential_salts.insert(fingerprint_fields.salt_hex).second ||
           !exact_field(fields, "kind", "user") ||
           !exact_field(fields, "principal_kind", "user") ||
-          !exact_field(fields, "active", "1") ||
-          !exact_field(fields, "security_generation", "1") ||
-          !exact_field(fields, "creator_tx", "1") ||
-          !exact_field(fields, "security_context_authority_version", "1") ||
+          !exact_field(fields, "active", true) ||
+          !exact_field(fields, "security_generation", u64{1}) ||
+          !exact_field(fields, "creator_tx", u64{1}) ||
+          !exact_field(fields, "security_context_authority_version", u64{1}) ||
           read_u64(fields, "security_context_generation") == 0 ||
           !exact_field(fields, "identity_authority", "uuid") ||
-          !exact_field(fields, "create_time_only", "1") ||
+          !exact_field(fields, "create_time_only", true) ||
           read_u32(fields, "policy_generation") == 0) {
         return fail(
             "SB-DB-BOOTSTRAP-SECURITY-PRINCIPAL-INVALID",
@@ -8214,13 +8230,13 @@ DatabaseBootstrapSecurityCatalogReadResult ValidateBootstrapSecurityRecords(
           !exact_field(fields, "parent_kind", "role") ||
           security.record->Identity("principal_uuid") != member_uuid ||
           security.record->Identity("role_uuid") != sysarch.value.value ||
-          !exact_field(fields, "active", "1") ||
-          !exact_field(fields, "security_generation", "1") ||
-          !exact_field(fields, "creator_tx", "1") ||
-          !exact_field(fields, "security_context_authority_version", "1") ||
+          !exact_field(fields, "active", true) ||
+          !exact_field(fields, "security_generation", u64{1}) ||
+          !exact_field(fields, "creator_tx", u64{1}) ||
+          !exact_field(fields, "security_context_authority_version", u64{1}) ||
           read_u64(fields, "security_context_generation") == 0 ||
           !exact_field(fields, "identity_authority", "uuid") ||
-          !exact_field(fields, "create_time_only", "1") ||
+          !exact_field(fields, "create_time_only", true) ||
           read_u32(fields, "policy_generation") == 0) {
         return fail(
             "SB-DB-BOOTSTRAP-SECURITY-MEMBERSHIP-INVALID",
@@ -8502,6 +8518,22 @@ DatabaseLifecycleResult OpenDatabaseFile(const DatabaseOpenConfig& config) {
   } else {
     return read_catalog_rows;
   }
+  // Bind every security definition to actual committed construction evidence
+  // before either an authorized legacy-context upgrade or activation effects.
+  std::vector<CatalogTypedRecord> bootstrap_records;
+  for (const auto& row:catalog_rows) {
+    if(row.kind!=CatalogPageRowKind::typed_catalog_record)continue;
+    auto decoded=DecodeCatalogTypedRecord(row);
+    if(!decoded.ok())return PropagateDiagnostic(decoded.status,decoded.diagnostic);
+    if(!scratchbird::core::catalog::IsCatalogSecurityRecordKind(decoded.record.header.kind))continue;
+    const auto security=scratchbird::core::catalog::DecodeCatalogSecurityRecordView(
+        decoded.record.header.kind,decoded.record.payload);
+    if(!security.ok() || security.record->Unsigned("creator_tx")!=kBootstrapCatalogTransactionId ||
+        security.record->Identity("origin_transaction_uuid")!=policy_origin.entry.identity.transaction_uuid.value)
+      return LifecycleError("CATALOG.INVALID_INPUT","catalog.security_record.invalid",
+          config.path,"security_origin_not_committed_bootstrap");
+    bootstrap_records.push_back(std::move(decoded.record));
+  }
   u64 security_context_generation = 0;
   const auto security_context_authority =
       InspectBootstrapSecurityContextAuthority(
@@ -8538,14 +8570,6 @@ DatabaseLifecycleResult OpenDatabaseFile(const DatabaseOpenConfig& config) {
   // Check the same complete semantics as the security reader before locator
   // migration, dirty marking or activation effects. Inventory finality is
   // still established separately below, never by this in-memory validation.
-  std::vector<CatalogTypedRecord> bootstrap_records;
-  for (const auto& row : catalog_rows) {
-    if (row.kind != CatalogPageRowKind::typed_catalog_record) continue;
-    auto decoded = DecodeCatalogTypedRecord(row);
-    if (!decoded.ok()) return PropagateDiagnostic(decoded.status, decoded.diagnostic);
-    if (scratchbird::core::catalog::IsCatalogSecurityRecordKind(decoded.record.header.kind))
-      bootstrap_records.push_back(std::move(decoded.record));
-  }
   const auto bootstrap_security = ValidateBootstrapSecurityRecords(bootstrap_records, config.path);
   if (!bootstrap_security.ok())
     return PropagateDiagnostic(bootstrap_security.status, bootstrap_security.diagnostic);

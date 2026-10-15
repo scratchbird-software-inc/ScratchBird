@@ -11,6 +11,7 @@
 #include "catalog_page.hpp"
 #include "catalog_record_codec.hpp"
 #include "catalog_security_record_codec.hpp"
+#include "../support/catalog_security_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "bootstrap_security_validation.hpp"
 #include "disk_device.hpp"
@@ -155,7 +156,7 @@ db::DatabaseLifecycleResult CreateCommitted(Cleanup* cleanup,
 std::map<std::string, std::string> FixtureFields(const catalog::CatalogTypedRecord& record) {
   const auto decoded = catalog::DecodeCatalogSecurityRecord(record.header.kind, record.payload);
   Require(decoded.ok(), "security fixture payload decode failed");
-  auto fields = decoded.record->attributes;
+  auto fields = scratchbird::tests::SecurityFixtureAttributes(*decoded.record);
   for (const auto& [name, identity] : decoded.record->identities)
     fields.emplace(name, uuid::UuidToString(identity));
   return fields;
@@ -168,11 +169,11 @@ std::string SerializeFields(
   record.kind = kind;
   for (const auto& [name, value] : fields) {
     if (name.ends_with("_uuid")) {
-      const auto parsed = uuid::ParseTypedUuid(UuidKind::object, value);
+      const auto parsed = uuid::ParseTypedUuid(name=="origin_transaction_uuid" ? UuidKind::transaction : UuidKind::object, value);
       Require(parsed.ok(), "security fixture identity parse failed");
       record.identities.emplace(name, parsed.value.value);
     } else {
-      record.attributes.emplace(name, value);
+      record.attributes.emplace(name, scratchbird::tests::SecurityFixtureValue(name,value));
     }
   }
   const auto encoded = catalog::EncodeCatalogSecurityRecord(record);
@@ -505,7 +506,9 @@ void TestSemanticTamperRejection(Cleanup* cleanup) {
         },
         [&](auto* record, auto* fields) {
           record->header.object_uuid = canonical.value;
+          const auto origin=fields->at("origin_transaction_uuid");
           fields->clear();
+          (*fields)["origin_transaction_uuid"]=origin;
           (*fields)["role_uuid"] = db::kCanonicalSysarchRoleObjectUuid;
           (*fields)["role_code"] = "ROLE_SYSARCH";
           (*fields)["authority_class"] = "engine_owned_sysarch";
@@ -597,7 +600,7 @@ void CheckSemanticValidation(
   auto change = [](auto& record, const char* field, const std::string& value) {
     auto security = catalog::DecodeCatalogSecurityRecord(record.header.kind, record.payload);
     Require(security.ok(), "semantic mutation decode failed");
-    security.record->attributes[field] = value;
+    security.record->attributes[field] = scratchbird::tests::SecurityFixtureValue(field,value);
     const auto encoded = catalog::EncodeCatalogSecurityRecord(*security.record);
     Require(encoded.ok(), "semantic mutation encode failed");
     record.payload.assign(encoded.bytes.begin(), encoded.bytes.end());
@@ -615,15 +618,29 @@ void CheckSemanticValidation(
         "SB-DB-BOOTSTRAP-SECURITY-PRINCIPAL-INVALID" :
         "SB-DB-BOOTSTRAP-SECURITY-MEMBERSHIP-INVALID";
     for (const char* field : {"policy_generation", "security_context_generation"}) {
-      for (const std::string bad : {"", "0", "-1", "+1", " 1", "1junk",
-                                    "18446744073709551616", "999999999999999999999999999"}) {
+      for (const std::string bad : {"0"}) {
         auto candidate = records;
         change(candidate[i], field, bad);
         refused(candidate, invalid);
       }
-      auto candidate = records;
-      change(candidate[i], field, std::string("1\0suffix", 8));
-      refused(candidate, invalid);
+      // Malformed decimal carriers have no representation in V2. Inject each
+      // independently into a correctly framed UTF8 TLV and require structural
+      // rejection, rather than passing them through the native encoder.
+      for (const std::string bad : std::vector<std::string>{"", "-1", "+1", " 1", "1junk",
+              "18446744073709551616", "999999999999999999999999999",std::string("1\0suffix",8)}) {
+        auto candidate=records;
+        auto& bytes=candidate[i].payload;
+        const auto id=std::string_view(field)=="policy_generation"?34u:40u;
+        std::size_t at=24;
+        const auto load=[&](std::size_t pos,unsigned n){std::uint32_t v=0;for(unsigned j=0;j<n;++j)v|=std::uint32_t(static_cast<unsigned char>(bytes[pos+j]))<<(8*j);return v;};
+        while(at+8<=bytes.size()&&load(at,2)!=id)at+=8+load(at+4,4);
+        Require(at+16<=bytes.size(),"independent generation field not found");
+        bytes[at+2]=3;
+        bytes.replace(at+8,8,bad);
+        const auto put=[&](std::size_t pos,std::uint32_t v){for(unsigned j=0;j<4;++j)bytes[pos+j]=static_cast<char>(v>>(8*j));};
+        put(at+4,bad.size());put(8,bytes.size());
+        refused(candidate,"CATALOG.INVALID_INPUT");
+      }
     }
     for (const char* overflow : {"4294967296", "4294967297"}) {
       auto candidate = records;
@@ -830,6 +847,76 @@ void TestNativeSecurityGenerationRepair(Cleanup* cleanup) {
   }
 }
 
+void TestCommittedSecurityOrigin(Cleanup* cleanup) {
+  std::filesystem::path path;
+  const auto created=CreateCommitted(cleanup,"committed_security_origin",&path);
+  const auto replacement=uuid::ParseTypedUuid(UuidKind::transaction,
+      "018f7a10-1280-7000-8000-00000000dead");
+  Require(replacement.ok(),"independent wrong-origin fixture invalid");
+  auto rows=ReadCatalogRows(path,created.state.header.page_size);
+  std::vector<catalog::CatalogTypedRecord> records;
+  for(auto& row:rows) {
+    if(row.kind!=page::CatalogPageRowKind::typed_catalog_record)continue;
+    auto outer=catalog::DecodeCatalogTypedRecord(row);
+    Require(outer.ok(),"origin fixture outer decode failed");
+    if(!catalog::IsCatalogSecurityRecordKind(outer.record.header.kind))continue;
+    auto security=catalog::DecodeCatalogSecurityRecord(outer.record.header.kind,outer.record.payload);
+    Require(security.ok(),"origin fixture native decode failed");
+    Require(security.record->Identity("origin_transaction_uuid")!=replacement.value.value,
+        "wrong-origin fixture accidentally matches actual creator");
+    security.record->identities["origin_transaction_uuid"]=replacement.value.value;
+    const auto encoded=catalog::EncodeCatalogSecurityRecord(*security.record);
+    Require(encoded.ok(),"origin fixture native encode failed");
+    outer.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
+    const auto framed=catalog::EncodeCatalogTypedRecord(outer.record,row.ordinal);
+    Require(framed.ok(),"origin fixture outer encode failed");
+    row=framed.row;records.push_back(std::move(outer.record));
+  }
+  const auto structural=db::ValidateBootstrapSecurityRecords(records,"wrong-origin-fixture");
+  Require(structural.ok()&&structural.state.present&&!structural.state.committed_by_inventory,
+      "structural validation invented commitment or rejected consistent native values");
+  WriteCatalogRows(path,created.state.header.page_size,rows);
+  const auto image=[&] {
+    std::ifstream input(path,std::ios::binary);
+    const auto digest=scratchbird::core::hash::ComputeSha256Stream(input,std::filesystem::file_size(path));
+    Require(digest.ok(),"origin refusal image hash failed");return digest.digest;
+  };
+  const auto before=image();
+  const auto refused=db::ReadDatabaseBootstrapSecurityCatalog(path.string());
+  Require(!refused.ok()&&!refused.state.present&&!refused.state.committed_by_inventory&&
+      refused.diagnostic.diagnostic_code=="CATALOG.INVALID_INPUT"&&
+      refused.diagnostic.message_key=="catalog.security_record.invalid",
+      "source reader accepted a structurally consistent but uncommitted origin");
+  for(bool readonly:{true,false}) {
+    db::DatabaseOpenConfig open;open.path=path.string();open.read_only=readonly;
+    const auto opened=db::OpenDatabaseFile(open);
+    Require(!opened.ok()&&opened.diagnostic.diagnostic_code=="CATALOG.INVALID_INPUT"&&image()==before,
+        "wrong-origin open admitted effects or altered source bytes");
+  }
+  // Missing optional context fields must not turn the same uncommitted origin
+  // into permission for the legacy-context migration writer.
+  for(auto& row:rows) {
+    if(row.kind!=page::CatalogPageRowKind::typed_catalog_record)continue;
+    auto outer=catalog::DecodeCatalogTypedRecord(row);
+    Require(outer.ok(),"legacy origin fixture decode failed");
+    if(!catalog::IsCatalogSecurityRecordKind(outer.record.header.kind))continue;
+    auto security=catalog::DecodeCatalogSecurityRecord(outer.record.header.kind,outer.record.payload);
+    security.record->attributes.erase("security_context_authority_version");
+    security.record->attributes.erase("security_context_generation");
+    const auto encoded=catalog::EncodeCatalogSecurityRecord(*security.record);
+    Require(encoded.ok(),"legacy origin fixture native encode failed");
+    outer.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
+    const auto framed=catalog::EncodeCatalogTypedRecord(outer.record,row.ordinal);
+    Require(framed.ok(),"legacy origin fixture frame failed");row=framed.row;
+  }
+  WriteCatalogRows(path,created.state.header.page_size,rows);
+  const auto legacy_image=image();
+  db::DatabaseOpenConfig open;open.path=path.string();
+  const auto migration=db::OpenDatabaseFile(open);
+  Require(!migration.ok()&&migration.diagnostic.diagnostic_code=="CATALOG.INVALID_INPUT"&&image()==legacy_image,
+      "wrong-origin legacy context triggered migration effects");
+}
+
 }  // namespace
 
 int main() try {
@@ -842,6 +929,7 @@ int main() try {
   Require(configured.ok(), "bootstrap security memory fixture failed");
 
   Cleanup cleanup;
+  TestCommittedSecurityOrigin(&cleanup);
   TestBootstrapRecordOrder();
   TestPrepublicationFaults(&cleanup);
   TestPostpublicationFaults(&cleanup);

@@ -28,7 +28,8 @@ std::vector<WireField> SecurityFields(unsigned kind,unsigned mask=0){
     if(id==primary||(mask&(1u<<bit)))f.push_back({static_cast<p::u16>(id),T::engine_identity,Identity(id)});
     if(id!=primary)++bit;
   }
-  f.push_back({32,T::utf8_text,{'1'}});return f;
+  f.push_back({11,T::engine_identity,Identity(99)});
+  f.push_back({32,T::unsigned_integer,Integer(1)});return f;
 }
 void SecurityRefused(unsigned kind,const Bytes& b,E error){
   const auto v=Security(kind,b);Check(v.error==error&&!v.record,"security exact borrowed refusal");
@@ -40,10 +41,10 @@ c::CatalogTypedRecord Header(const Bytes& b,unsigned kind,unsigned owner){
 }
 void SecurityMatrices(){
   // First use of every kind must precede all owning schema initialization.
-  for(unsigned kind=60;kind<=63;++kind){const auto b=Wire(SecurityFields(kind),65536+kind);
+  for(unsigned kind=60;kind<=63;++kind){const auto b=Wire(SecurityFields(kind),65536+kind,2);
     Check(Security(kind,b).ok(),"security first-use static schema without heap");}
   for(unsigned kind=60;kind<=63;++kind)for(unsigned mask=0;mask<(kind==63?256u:2u);++mask){
-    const auto fields=SecurityFields(kind,mask);const auto b=Wire(fields,65536+kind);const auto v=Security(kind,b);
+    const auto fields=SecurityFields(kind,mask);const auto b=Wire(fields,65536+kind,2);const auto v=Security(kind,b);
     Check(v.ok()&&v.record->kind==Kind(kind),"security all optional identity masks");
     for(unsigned index=0;index<10;++index){const bool present=std::any_of(fields.begin(),fields.end(),[&](const auto& f){return f.id==index+1;});
       Check(v.record->identities[index].has_value()==present,"native identity presence");
@@ -55,20 +56,50 @@ void SecurityMatrices(){
     header.header.row_uuid.value=header.header.object_uuid.value;
     Check(!NoHeap([&]{return c::CatalogSecurityPayloadMatchesHeader(header);}),"security row is not owner");
   }
+  const auto attribute_type=[](unsigned index) {
+    switch(index) {
+      case 0:case 1:case 2:case 6:case 7:case 8:return T::unsigned_integer;
+      case 3:case 5:case 9:case 10:case 11:case 21:case 30:case 34:case 36:return T::boolean;
+      default:return T::utf8_text;
+    }
+  };
   for(unsigned kind=60;kind<=63;++kind)for(unsigned index=0;index<attributes.size();++index)for(bool empty:{false,true}){
     auto fields=SecurityFields(kind);const Bytes text=empty?Bytes{}:Bytes{'A',0,10,0xc3,0xa9};
-    if(index==0)fields.back().value=text;
-    else fields.push_back({static_cast<p::u16>(32+index),T::utf8_text,text});
-    const auto b=Wire(fields,65536+kind);const auto v=Security(kind,b);Check(v.ok(),"security optional attributes and empty values");
-    for(unsigned j=0;j<attributes.size();++j){const auto a=NoHeap([&]{return v.record->Attribute(attributes[j]);});
-      Check(a.has_value()==(j==0||j==index),"attribute absence differs from empty presence");
-      if(j==index)Check(*a==View(text),"attribute exact UTF8/NUL/newline bytes");}
+    const auto type=attribute_type(index);
+    const auto value=type==T::unsigned_integer?Integer(index<=1?1:empty?0:~p::u64{0}):type==T::boolean?Bytes{static_cast<p::byte>(!empty)}:text;
+    if(index==0)fields.back().value=value;
+    else fields.push_back({static_cast<p::u16>(32+index),type,value});
+    const auto b=Wire(fields,65536+kind,2);const auto v=Security(kind,b);Check(v.ok(),"security optional attributes and empty values");
+    for(unsigned j=0;j<attributes.size();++j){
+      const auto a=NoHeap([&]{return v.record->Attribute(attributes[j]);});
+      const auto n=NoHeap([&]{return v.record->Unsigned(attributes[j]);});
+      const auto b=NoHeap([&]{return v.record->Boolean(attributes[j]);});
+      const bool present=j==0||j==index;
+      Check(a.has_value()==(present&&attribute_type(j)==T::utf8_text)&&
+          n.has_value()==(present&&attribute_type(j)==T::unsigned_integer)&&
+          b.has_value()==(present&&attribute_type(j)==T::boolean),"typed attribute presence differs from empty/zero/false");
+      if(j==index){
+        if(a)Check(*a==View(text),"attribute exact UTF8/NUL/newline bytes");
+        if(n)Check(*n==(index<=1?1:empty?0:~p::u64{0}),"native u64 exact bounds");
+        if(b)Check(*b==!empty,"native boolean exact value");
+      }
+    }
     Check(!NoHeap([&]{return v.record->Attribute("not_a_registered_attribute");}),"unknown attribute absent");
     Check(NoHeap([&]{return v.record->Identity("not_a_registered_identity");}).is_nil(),"unknown identity absent");
     const auto own=c::DecodeCatalogSecurityRecord(Kind(kind),View(b));Check(own.ok()&&c::EncodeCatalogSecurityRecord(*own.record).bytes==b,"all attribute names exact mapping");
+    auto wrong=fields;wrong.back().type=type==T::utf8_text?T::unsigned_integer:T::utf8_text;
+    wrong.back().value=type==T::utf8_text?Integer(1):Bytes{'1'};
+    SecurityRefused(kind,Wire(wrong,65536+kind,2),E::type_mismatch);
+    if(type!=T::utf8_text){
+      for(unsigned size:{0u,2u,7u,9u})if(size!=value.size()){
+        wrong=fields;wrong.back().value=Bytes(size,0);
+        Check(!Security(kind,Wire(wrong,65536+kind,2)).ok(),"native scalar wrong width refused");
+      }
+      if(type==T::boolean){wrong=fields;wrong.back().value={2};SecurityRefused(kind,Wire(wrong,65536+kind,2),E::invalid_value);}
+    }
   }
   for(unsigned kind=60;kind<=63;++kind)for(unsigned pos=0;pos<16;++pos)for(unsigned octet=0;octet<256;++octet){
-    auto fields=SecurityFields(kind);fields[0].value[pos]=octet;const auto b=Wire(fields,65536+kind);
+    auto fields=SecurityFields(kind);fields[0].value[pos]=octet;const auto b=Wire(fields,65536+kind,2);
     const bool valid=(pos!=6||(octet>>4)==7)&&(pos!=8||(octet>>6)==2);const auto v=Security(kind,b);
     Check(v.ok()==valid,"security every UUID octet and value");
     if(valid){const auto actual=v.record->Identity(ids[kind-60]);Check(std::equal(actual.bytes.begin(),actual.bytes.end(),fields[0].value.begin()),"security UUID lossless native result");}
@@ -77,25 +108,36 @@ void SecurityMatrices(){
 }
 void SecurityBounds(){
   for(unsigned kind=60;kind<=63;++kind){
-    auto f=SecurityFields(kind);f.push_back({46,T::utf8_text,Bytes(130000,'D')});f.push_back({47,T::utf8_text,Bytes(903,'A')});
-    auto b=Wire(f,65536+kind);Check(b.size()==130976,"independent maximum security frame");
-    const auto v=Security(kind,b);Check(v.ok()&&v.record->attributes[14]->size()==130000,"maximum security payload without heap");
-    Check(v.record->Attribute("creator_tx")->data()==reinterpret_cast<const char*>(b.data()+56),"security text aliases source");
+    auto f=SecurityFields(kind);f.push_back({46,T::utf8_text,Bytes(130000,'D')});f.push_back({47,T::utf8_text,Bytes(872,'A')});
+    auto b=Wire(f,65536+kind,2);Check(b.size()==130976,"independent maximum security frame");
+    const auto v=Security(kind,b);Check(v.ok()&&v.record->Attribute("description")->size()==130000,"maximum security payload without heap");
+    Check(v.record->Attribute("description")->data()==reinterpret_cast<const char*>(b.data()+96),"security text aliases source");
     const auto own=c::DecodeCatalogSecurityRecord(Kind(kind),View(b));Check(own.ok(),"maximum owning security payload");
-    std::fill(b.begin(),b.end(),0);Check(own.record->attributes.at("description")==std::string(130000,'D'),"owning security attributes survive source mutation");
-    f.back().value.push_back('A');SecurityRefused(kind,Wire(f,65536+kind),E::invalid_framing);
-    f=SecurityFields(kind);f.push_back({46,T::utf8_text,Bytes(130001,'D')});SecurityRefused(kind,Wire(f,65536+kind),E::size_limit);
-    f=SecurityFields(kind);f.pop_back();SecurityRefused(kind,Wire(f,65536+kind),E::missing_field);
-    f=SecurityFields(kind);f.erase(f.begin());SecurityRefused(kind,Wire(f,65536+kind),E::missing_field);
-    f=SecurityFields(kind);f.back().value={0xc0,0x80};SecurityRefused(kind,Wire(f,65536+kind),E::invalid_value);
-    const auto good=Wire(SecurityFields(kind),65536+kind);
+    std::fill(b.begin(),b.end(),0);Check(own.record->Attribute("description")==std::string(130000,'D'),"owning security attributes survive source mutation");
+    f.back().value.push_back('A');SecurityRefused(kind,Wire(f,65536+kind,2),E::invalid_framing);
+    f=SecurityFields(kind);f.push_back({46,T::utf8_text,Bytes(130001,'D')});SecurityRefused(kind,Wire(f,65536+kind,2),E::size_limit);
+    f=SecurityFields(kind);f.pop_back();SecurityRefused(kind,Wire(f,65536+kind,2),E::missing_field);
+    f=SecurityFields(kind);f.erase(f.begin());SecurityRefused(kind,Wire(f,65536+kind,2),E::missing_field);
+    f=SecurityFields(kind);f.push_back({46,T::utf8_text,{0xc0,0x80}});SecurityRefused(kind,Wire(f,65536+kind,2),E::invalid_value);
+    const auto good=Wire(SecurityFields(kind),65536+kind,2);
+    f=SecurityFields(kind);f.erase(f.begin()+1);
+    SecurityRefused(kind,Wire(f,65536+kind,2),E::missing_field);
+    f=SecurityFields(kind);f[1].value=Bytes(16,0);
+    SecurityRefused(kind,Wire(f,65536+kind,2),E::invalid_value);
+    f=SecurityFields(kind);f[1].value=f[0].value;
+    SecurityRefused(kind,Wire(f,65536+kind,2),E::invalid_value);
+    f=SecurityFields(kind);f.back().value=Integer(0);
+    SecurityRefused(kind,Wire(f,65536+kind,2),E::invalid_value);
+    f=SecurityFields(kind);f.push_back({33,T::unsigned_integer,Integer(2)});
+    SecurityRefused(kind,Wire(f,65536+kind,2),E::invalid_value);
+    SecurityRefused(kind,Wire(SecurityFields(kind),65536+kind,1),E::invalid_schema);
     for(std::size_t n=0;n<good.size();++n){const auto r=Security(kind,Bytes(good.begin(),good.begin()+n));Check(!r.ok()&&!r.record,"security every truncation");}
     for(unsigned at:{0u,4u,6u,8u,12u,16u,20u,22u,24u,26u,27u,28u}){auto bad=good;bad[at]^=1;
       const auto r=Security(kind,bad);Check(!r.ok()&&!r.record,"security malformed header or TLV");}
     for(unsigned other=60;other<=63;++other)if(kind!=other)SecurityRefused(other,good,E::invalid_schema);
     for(unsigned field=1;field<=10;++field){if(field==kind-59||field==9||(kind==63&&field!=2))continue;
       f=SecurityFields(kind);f.push_back({static_cast<p::u16>(field),T::engine_identity,Identity(field)});
-      std::sort(f.begin(),f.end(),[](const auto&a,const auto&b){return a.id<b.id;});SecurityRefused(kind,Wire(f,65536+kind),E::unknown_field);}
+      std::sort(f.begin(),f.end(),[](const auto&a,const auto&b){return a.id<b.id;});SecurityRefused(kind,Wire(f,65536+kind,2),E::unknown_field);}
   }
   SecurityRefused(0,{},E::invalid_schema);
 }

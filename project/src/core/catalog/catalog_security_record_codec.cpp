@@ -8,9 +8,10 @@
 namespace scratchbird::core::catalog {
 namespace {
 constexpr std::size_t kMaximumPayloadBytes = 130976;
-constexpr std::array<std::string_view, 10> kIdentityNames{
+constexpr std::array<std::string_view, 11> kIdentityNames{
     "principal_uuid", "group_uuid", "role_uuid", "grant_uuid", "member_uuid",
-    "parent_uuid", "subject_uuid", "target_uuid", "policy_pack_uuid", "membership_uuid"};
+    "parent_uuid", "subject_uuid", "target_uuid", "policy_pack_uuid", "membership_uuid",
+    "origin_transaction_uuid"};
 constexpr std::array<std::string_view, 37> kAttributeNames{
     "creator_tx", "created_txn", "policy_generation", "loaded_at_database_create",
     "identity_authority", "engine_owned", "security_generation",
@@ -21,6 +22,16 @@ constexpr std::array<std::string_view, 37> kAttributeNames{
     "parent_kind", "subject_kind", "effect", "right", "grant_name", "target",
     "ambient", "authority_class", "group_name", "ambient_rights", "connect_only",
     "operational_role", "created_disabled"};
+
+constexpr CatalogValueType AttributeType(std::size_t i) {
+  switch (i) {
+    case 0: case 1: case 2: case 6: case 7: case 8:
+      return CatalogValueType::unsigned_integer;
+    case 3: case 5: case 9: case 10: case 11: case 21: case 30: case 34: case 36:
+      return CatalogValueType::boolean;
+    default: return CatalogValueType::utf8_text;
+  }
+}
 
 constexpr u16 PrimaryField(CatalogRecordKind kind) {
   switch (kind) {
@@ -35,7 +46,7 @@ constexpr u16 PrimaryField(CatalogRecordKind kind) {
 struct FixedSchema {
   u32 id = 0;
   u16 version = 0;
-  std::array<CatalogValueFieldSchema, 47> fields{};
+  std::array<CatalogValueFieldSchema, 48> fields{};
   std::size_t count = 0;
   constexpr CatalogValueSchemaView View() const { return {id, version, std::span(fields).first(count)}; }
 };
@@ -44,16 +55,19 @@ constexpr FixedSchema Schema(CatalogRecordKind kind) {
   const auto primary = PrimaryField(kind);
   if (!primary) return schema;
   schema.id = 65536 + static_cast<u32>(kind);
-  schema.version = 1;
+  schema.version = 2;
   for (u16 id = 1; id <= kIdentityNames.size(); ++id) {
-    const bool admitted = id == primary || id == 9 ||
+    const bool admitted = id == primary || id == 9 || id == 11 ||
         (kind == CatalogRecordKind::grant_record && id != 2);
     if (admitted) schema.fields[schema.count++] =
-        {id, CatalogValueType::engine_identity, id == primary, 16, UuidKind::object};
+        {id, CatalogValueType::engine_identity, id == primary || id == 11, 16,
+         id == 11 ? UuidKind::transaction : UuidKind::object};
   }
   for (u16 index = 0; index < kAttributeNames.size(); ++index) {
-    schema.fields[schema.count++] = {static_cast<u16>(32 + index), CatalogValueType::utf8_text,
-                             index == 0, 130000};
+    const auto type = AttributeType(index);
+    schema.fields[schema.count++] = {static_cast<u16>(32 + index), type,
+                             index == 0, type == CatalogValueType::utf8_text ? 130000u :
+                             type == CatalogValueType::boolean ? 1u : 8u};
   }
   return schema;
 }
@@ -89,6 +103,25 @@ Uuid CatalogSecurityRecord::Identity(std::string_view name) const {
   const auto found = identities.find(std::string(name));
   return found == identities.end() ? Uuid{} : found->second;
 }
+template<class T> std::optional<T> OwningAttribute(const CatalogSecurityRecord& r, std::string_view name) {
+  const auto found = r.attributes.find(std::string(name));
+  if (found == r.attributes.end()) return {};
+  if (const auto* value = std::get_if<T>(&found->second)) return *value;
+  return {};
+}
+std::optional<std::string_view> CatalogSecurityRecord::Attribute(std::string_view name) const {
+  const auto found = attributes.find(std::string(name));
+  if (found != attributes.end())
+    if (const auto* value = std::get_if<std::string>(&found->second)) return *value;
+  return {};
+}
+std::optional<u64> CatalogSecurityRecord::Unsigned(std::string_view n) const { return OwningAttribute<u64>(*this,n); }
+std::optional<bool> CatalogSecurityRecord::Boolean(std::string_view n) const { return OwningAttribute<bool>(*this,n); }
+
+std::optional<CatalogValueType> CatalogSecurityAttributeType(std::string_view name) {
+  const auto id = FieldId(kAttributeNames, name, 32);
+  return id ? std::optional(AttributeType(*id - 32)) : std::nullopt;
+}
 
 bool IsCatalogSecurityRecordKind(CatalogRecordKind kind) { return PrimaryField(kind) != 0; }
 
@@ -123,18 +156,20 @@ CatalogValueEncodeResult EncodeCatalogSecurityRecord(const CatalogSecurityRecord
     const auto id = FieldId(kIdentityNames, name, 1);
     if (!id) return {CatalogValueError::unknown_field, {}};
     TypedUuid typed;
-    typed.kind = UuidKind::object;
+    typed.kind = *id == 11 ? UuidKind::transaction : UuidKind::object;
     typed.value = identity;
     fields.push_back({*id, typed});
   }
   for (const auto& [name, value] : record.attributes) {
     const auto id = FieldId(kAttributeNames, name, 32);
     if (!id) return {CatalogValueError::unknown_field, {}};
-    if (value.size() > 130000 || total_bytes > kMaximumPayloadBytes - 8 ||
-        value.size() > kMaximumPayloadBytes - total_bytes - 8)
+    const auto* text = std::get_if<std::string>(&value);
+    const auto size = text ? text->size() : std::holds_alternative<bool>(value) ? 1u : 8u;
+    if (size > 130000 || total_bytes > kMaximumPayloadBytes - 8 ||
+        size > kMaximumPayloadBytes - total_bytes - 8)
       return {CatalogValueError::size_limit, {}};
-    total_bytes += 8 + value.size();
-    fields.push_back({*id, value});
+    total_bytes += 8 + size;
+    std::visit([&](const auto& v) { fields.push_back({*id, v}); }, value);
   }
   std::sort(fields.begin(), fields.end(), [](const auto& left, const auto& right) {
     return left.id < right.id;
@@ -142,6 +177,9 @@ CatalogValueEncodeResult EncodeCatalogSecurityRecord(const CatalogSecurityRecord
   auto encoded = EncodeCatalogValueBlock(CatalogSecurityRecordSchema(record.kind), fields);
   if (encoded.ok() && encoded.bytes.size() > kMaximumPayloadBytes)
     return {CatalogValueError::size_limit, {}};
+  if (encoded.ok() && !DecodeCatalogSecurityRecordView(record.kind,
+      {reinterpret_cast<const char*>(encoded.bytes.data()), encoded.bytes.size()}).ok())
+    return {CatalogValueError::invalid_value, {}};
   return encoded;
 }
 
@@ -151,14 +189,24 @@ Uuid CatalogSecurityRecordView::Identity(std::string_view name) const {
 }
 std::optional<std::string_view> CatalogSecurityRecordView::Attribute(std::string_view name) const {
   const auto id = FieldId(kAttributeNames, name, 32);
-  return id ? attributes[*id - 32] : std::nullopt;
+  if (id && attributes[*id - 32])
+    if (const auto* value = std::get_if<std::string_view>(&*attributes[*id - 32])) return *value;
+  return {};
 }
+template<class T> std::optional<T> ViewAttribute(const CatalogSecurityRecordView& r, std::string_view name) {
+  const auto id = FieldId(kAttributeNames,name,32);
+  if (id && r.attributes[*id-32])
+    if (const auto* value = std::get_if<T>(&*r.attributes[*id-32])) return *value;
+  return {};
+}
+std::optional<u64> CatalogSecurityRecordView::Unsigned(std::string_view n) const { return ViewAttribute<u64>(*this,n); }
+std::optional<bool> CatalogSecurityRecordView::Boolean(std::string_view n) const { return ViewAttribute<bool>(*this,n); }
 CatalogSecurityRecordViewResult DecodeCatalogSecurityRecordView(
     CatalogRecordKind kind, std::string_view bytes) {
   if (!IsCatalogSecurityRecordKind(kind)) return {CatalogValueError::invalid_schema, {}};
   if (bytes.size() < kCatalogValueBlockHeaderBytes || bytes.size() > kMaximumPayloadBytes)
     return {CatalogValueError::invalid_framing, {}};
-  std::array<CatalogValueFieldView, 47> fields;
+  std::array<CatalogValueFieldView, 48> fields;
   const auto decoded = DecodeCatalogValueBlockInto(SchemaView(kind),
       {reinterpret_cast<const byte*>(bytes.data()), bytes.size()}, fields);
   if (!decoded.ok()) return {decoded.error, {}};
@@ -166,9 +214,20 @@ CatalogSecurityRecordViewResult DecodeCatalogSecurityRecordView(
   record.kind = kind;
   for (const auto& field : decoded.fields) {
     if (field.id <= kIdentityNames.size()) record.identities[field.id - 1] = field.identity()->value;
+    else if (field.type == CatalogValueType::unsigned_integer)
+      record.attributes[field.id - 32] = *field.unsigned_value();
+    else if (field.type == CatalogValueType::boolean)
+      record.attributes[field.id - 32] = field.bytes.front() != 0;
     else record.attributes[field.id - 32] = std::string_view(
         reinterpret_cast<const char*>(field.bytes.data()), field.bytes.size());
   }
+  const auto creator = record.Unsigned("creator_tx");
+  if (!creator || *creator == 0 ||
+      (record.Unsigned("created_txn") && record.Unsigned("created_txn") != creator))
+    return {CatalogValueError::invalid_value, {}};
+  for (std::size_t i=0; i<10; ++i)
+    if (record.identities[i] && record.identities[i] == record.identities[10])
+      return {CatalogValueError::invalid_value, {}};
   return {CatalogValueError::none, record};
 }
 CatalogSecurityRecordDecodeResult DecodeCatalogSecurityRecord(
@@ -181,7 +240,12 @@ CatalogSecurityRecordDecodeResult DecodeCatalogSecurityRecord(
   for (std::size_t i = 0; i < v.identities.size(); ++i)
     if (v.identities[i]) record.identities.emplace(std::string(kIdentityNames[i]), *v.identities[i]);
   for (std::size_t i = 0; i < v.attributes.size(); ++i)
-    if (v.attributes[i]) record.attributes.emplace(std::string(kAttributeNames[i]), std::string(*v.attributes[i]));
+    if (v.attributes[i]) std::visit([&](const auto& value) {
+      using T=std::decay_t<decltype(value)>;
+      if constexpr (std::is_same_v<T,std::string_view>)
+        record.attributes.emplace(std::string(kAttributeNames[i]),std::string(value));
+      else record.attributes.emplace(std::string(kAttributeNames[i]),value);
+    }, *v.attributes[i]);
   return {CatalogValueError::none, std::move(record)};
 }
 
@@ -190,9 +254,39 @@ bool CatalogSecurityPayloadMatchesHeader(const CatalogTypedRecordView& record) {
   return decoded.ok() && record.header.object_uuid.kind == UuidKind::object &&
       record.header.object_uuid.value == decoded.record->Identity(
           CatalogSecurityPrimaryIdentityName(record.header.kind)) &&
-      record.header.row_uuid.value != record.header.object_uuid.value;
+      record.header.row_uuid.value != record.header.object_uuid.value &&
+      record.header.row_uuid.value != decoded.record->Identity("origin_transaction_uuid");
 }
 bool CatalogSecurityPayloadMatchesHeader(const CatalogTypedRecord& record) {
   return CatalogSecurityPayloadMatchesHeader(BorrowCatalogTypedRecord(record));
+}
+bool CatalogSecurityPayloadMatchesMetadata(const CatalogMetadataVersionView& m) {
+  const auto typed=[](const TypedUuid& id,UuidKind kind) {
+    return id.kind==kind && !id.value.is_nil() && (id.value.bytes[6]>>4)==7 &&
+        (id.value.bytes[8]&0xc0)==0x80;
+  };
+  if (!CatalogSecurityPayloadMatchesHeader(m.record) ||
+      m.object_subtype!=CatalogRecordKindName(m.record.header.kind) ||
+      m.authority_scope!=CatalogAuthorityScope::local ||
+      !typed(m.owner_uuid,UuidKind::principal) || !typed(m.audit_uuid,UuidKind::object) ||
+      !typed(m.security_policy_uuid,UuidKind::object) || !typed(m.default_name_uuid,UuidKind::object) ||
+      !typed(m.name_vector_uuid,UuidKind::object) || !typed(m.owning_schema_uuid,UuidKind::schema) ||
+      !typed(m.creator_transaction_uuid,UuidKind::transaction) ||
+      m.record.header.parent_uuid.value!=m.owning_schema_uuid.value) return false;
+  const auto r=DecodeCatalogSecurityRecordView(m.record.header.kind,m.record.payload);
+  const auto local=r.record->Unsigned("creator_tx");
+  return local && *local<=m.creator_local_transaction_id &&
+      (m.definition_version!=1 || (*local==m.creator_local_transaction_id &&
+       r.record->Identity("origin_transaction_uuid")==m.creator_transaction_uuid.value));
+}
+bool CatalogSecurityPreservesOrigin(const CatalogMetadataVersionView& a,const CatalogMetadataVersionView& b) {
+  if (!IsCatalogSecurityRecordKind(a.record.header.kind) && !IsCatalogSecurityRecordKind(b.record.header.kind)) return true;
+  if (!CatalogSecurityPayloadMatchesMetadata(a) || !CatalogSecurityPayloadMatchesMetadata(b)) return false;
+  const auto x=DecodeCatalogSecurityRecordView(a.record.header.kind,a.record.payload);
+  const auto y=DecodeCatalogSecurityRecordView(b.record.header.kind,b.record.payload);
+  return a.record.header.kind==b.record.header.kind &&
+      a.record.header.object_uuid.value==b.record.header.object_uuid.value &&
+      x.record->Identity("origin_transaction_uuid")==y.record->Identity("origin_transaction_uuid") &&
+      x.record->Unsigned("creator_tx")==y.record->Unsigned("creator_tx");
 }
 }  // namespace scratchbird::core::catalog

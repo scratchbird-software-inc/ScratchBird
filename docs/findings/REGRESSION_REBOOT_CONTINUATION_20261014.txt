@@ -388,3 +388,47 @@ native security/controller/activation before hosted BEGIN. Current structural
 bootstrap security codec's text scalar attributes are not the complete native
 security authority; do not wrap/promote those or generic58 declaration strings
 as functional policy. No full all-target/clean/unfiltered acceptance yet.
+
+Native security scalar/origin regression prerequisite, 2026-10-15
+----------------------------------------------------------------
+Security schemas65596..65599 now use version2: six u64 generation/origin
+attributes, nine canonical Boolean attributes,22 bounded text attributes and
+required binary transaction-domain originUUID11. Borrowed decoding remains
+fixed48-fields/no-heap; explicit typed accessors retain absence/false/zero.
+Version1/text scalar carriers refuse; no production text adapter. Native
+common metadata binds complete family/object/schema/governance/name metadata,
+first creation UUID/local number and immutable successor origin. The actual
+creation producers pass the real allocated construction UUID, including source
+pack roles/groups/grants. PUBLIC/DBA/CONNECT rows now originate as typed values,
+not parsed engine text templates. Authorized missing-context-field repair
+re-encodes the native schema without inventing origin or granting authority.
+
+Both actual source reader and OpenDatabaseFile compare every security record
+to committed TX1 before commitment export, context migration or activation.
+The semantic validator checks cohort consistency only, never durable authority.
+Generation projection retains checked u64-to-u32 overflow refusal. No SYSARCH
+fallback, simulated service grants or forced authority generation was added.
+
+Qualified six security/UUID/bootstrap/import gates PASS102.436795s, peak324436KiB;
+37 prior policy/memory/runtime/crypto followers plus final cleanup-safe creation
+fixture PASS38/38 in12.330987s, peak192372KiB (42 distinct registrations overall).
+Both owned receipts have no leaked descendants and retained LastTest logs.
+Independent golden/version/width/type/scalar matrices, every primary AND origin
+UUID octet, full metadata/successor-origin negatives, native source lifetimes,
+all five real-file page profiles/30 reorderings, semantic generation bounds,
+persisted wrong-origin consistency-vs-commit refusal and no-effect read/write/
+legacy-upgrade refusals all pass. The creation fixture now understands actual
+native policy/memory origin fields, retains its TX1 assertions and unwinds its
+cleanup on failed assertions. Removed its exact failed-run46MiB database/lock
+after no open users; private temporary root is empty (12KiB directory itself).
+Earlier failed attempts remain preserved as failed evidence, not overwritten.
+
+Core03/Core08 and durable-format registry now specify version2 and all native
+scalar/origin rules; synchronized digests and workplan bookkeeping are local,
+manually distributed. No baseline name is newly closed:199/260 qualified,
+61 outstanding plus supplemental1,62 known names. This closes a required
+security-carrier prerequisite, NOT complete native service/security provisioning
+or the six original live startup failures. NEXT remains full actual enclosing
+database/schema/name/governance/profile/security/provider/service credential
+cohort, retained native mutable controller and activation before hosted BEGIN.
+Do not promote typed metadata or generic declaration strings into authority.

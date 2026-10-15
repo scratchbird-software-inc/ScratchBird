@@ -208,7 +208,11 @@ void SetFamilyPayload(cat::CatalogTypedRecord& record, const std::string& annota
     security.kind = record.header.kind;
     security.identities.emplace(std::string(cat::CatalogSecurityPrimaryIdentityName(record.header.kind)),
                                 record.header.object_uuid.value);
-    security.attributes = {{"creator_tx", "1"}, {"description", annotation}};
+    security.attributes = {{"creator_tx", p::u64{1}}, {"description", annotation}};
+    // Independent transaction identity for this structural wire fixture only.
+    p::Uuid origin;
+    origin.bytes={0xa1,0xb2,0xc3,0xd4,0xe5,0xf6,0x71,0x23,0x89,0xab,0xcd,0xef,0x44,0x55,0x66,0x77};
+    security.identities.emplace("origin_transaction_uuid",origin);
     const auto encoded = cat::EncodeCatalogSecurityRecord(security);
     Check(encoded.ok(), "typed security payload fixture failed admission");
     record.payload.assign(encoded.bytes.begin(), encoded.bytes.end());

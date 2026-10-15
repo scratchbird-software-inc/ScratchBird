@@ -9,6 +9,7 @@
 #include "catalog_page.hpp"
 #include "catalog_record_codec.hpp"
 #include "catalog_security_record_codec.hpp"
+#include "../support/catalog_security_fixture.hpp"
 #include "catalog_bootstrap_policy.hpp"
 #include "catalog_memory_configuration.hpp"
 #include "../sbsql_sblr_alignment/memory_configuration_fixture.hpp"
@@ -172,7 +173,7 @@ std::vector<DecodedRecord> DecodeTypedRecords(const std::vector<page::CatalogPag
     if (catalog::IsCatalogSecurityRecordKind(decoded.record.header.kind)) {
       const auto security = catalog::DecodeCatalogSecurityRecord(decoded.record.header.kind, decoded.record.payload);
       Require(security.ok(), "imported native security payload did not decode");
-      auto fields = security.record->attributes;
+      auto fields = scratchbird::tests::SecurityFixtureAttributes(*security.record);
       // Readable assertions only; no textual identities persist in the catalog.
       for (const auto& [name, identity] : security.record->identities)
         fields.emplace(name, uuid::UuidToString(identity));

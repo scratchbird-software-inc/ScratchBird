@@ -356,6 +356,9 @@ template <typename Enum> bool MetadataEnum(Enum value, u16 maximum) {
 }
 
 std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(const CatalogMetadataVersionView& value) {
+  if (IsCatalogSecurityRecordKind(value.record.header.kind) &&
+      !CatalogSecurityPayloadMatchesMetadata(value))
+    return MetadataViewError("security_definition_binding_invalid");
   if (!MetadataEnum(value.authority_scope, 7) || !MetadataEnum(value.lifecycle, 10) ||
       !MetadataEnum(value.status, 9) || !MetadataEnum(value.visibility, 7))
     return MetadataViewError("enum_invalid");
@@ -645,7 +648,8 @@ DiagnosticRecord MakeCatalogRecordCodecDiagnostic(Status status,
 
 bool CatalogMetadataPreservesFamilyOrigin(
     const CatalogMetadataVersionView& previous, const CatalogMetadataVersionView& successor) {
-  return CatalogBootstrapPolicyPreservesOrigin(previous,successor) &&
+  return CatalogSecurityPreservesOrigin(previous,successor) &&
+      CatalogBootstrapPolicyPreservesOrigin(previous,successor) &&
       CatalogMemoryConfigurationPreservesOrigin(previous,successor) &&
       CatalogRuntimeAuthorityBindingPreservesOrigin(previous,successor) &&
       CatalogContextNamespacePreservesOrigin(previous,successor) &&

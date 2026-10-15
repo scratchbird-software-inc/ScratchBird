@@ -11,6 +11,9 @@
 #include "catalog_page.hpp"
 #include "catalog_record_codec.hpp"
 #include "catalog_security_record_codec.hpp"
+#include "catalog_bootstrap_policy.hpp"
+#include "catalog_memory_configuration.hpp"
+#include "../support/catalog_security_fixture.hpp"
 #include "catalog_database_record_codec.hpp"
 #include "catalog_filespace_record_codec.hpp"
 #include "catalog_storage_record_codec.hpp"
@@ -38,6 +41,7 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -59,8 +63,7 @@ struct DecodedRecord {
 };
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -250,7 +253,7 @@ std::vector<DecodedRecord> DecodeTypedRecords(const std::vector<page::CatalogPag
     if (catalog::IsCatalogSecurityRecordKind(kind)) {
       const auto security = catalog::DecodeCatalogSecurityRecord(kind, decoded.record.payload);
       Require(security.ok(), "binary security catalog payload decode failed");
-      auto fields = security.record->attributes;
+      auto fields = scratchbird::tests::SecurityFixtureAttributes(*security.record);
       // Formatting is confined to this test's human-readable assertions.
       for (const auto& [name, identity] : security.record->identities)
         fields.emplace(name, uuid::UuidToString(identity));
@@ -330,6 +333,21 @@ void RequireAllTypedRecordsCreatedByTx1(const std::vector<DecodedRecord>& record
               uuid::IsEngineIdentityUuid(definition.origin_transaction_uuid.value),
               "binary metric catalog origin is not bootstrap tx1");
     };
+    if(catalog::IsCatalogBootstrapPolicyPayload(bytes)) {
+      const auto pack=catalog::DecodeCatalogBootstrapPolicyPack(bytes);
+      const auto provider=catalog::DecodeCatalogBootstrapSecurityProvider(bytes);
+      const auto profile=catalog::DecodeCatalogBootstrapPolicyProfile(bytes);
+      Require(pack.ok()||provider.ok()||profile.ok(),"native bootstrap policy did not decode");
+      if(pack.ok())require_metric_tx1(*pack.record);
+      if(provider.ok())require_metric_tx1(*provider.record);
+      if(profile.ok())require_metric_tx1(*profile.record);
+      continue;
+    }
+    if(catalog::IsCatalogMemoryConfigurationPayload(bytes)) {
+      const auto memory=catalog::DecodeCatalogMemoryConfiguration(bytes);
+      Require(memory.ok(),"native memory configuration did not decode");
+      require_metric_tx1(*memory.record);continue;
+    }
     if(kind==catalog::CatalogRecordKind::metric_descriptor) {
       const auto decoded=catalog::DecodeCatalogMetricDescriptor(bytes);
       Require(decoded.ok(), "binary metric descriptor did not decode");
@@ -538,7 +556,7 @@ void RequireSecurityBootstrapData(const std::vector<DecodedRecord>& records) {
 
 }  // namespace
 
-int main() {
+int main() try {
   auto memory_policy = memory::DefaultLocalEngineMemoryPolicy();
   memory_policy.policy_name = "database_lifecycle_create_bootstrap_conformance";
   const auto memory_configured = memory::ConfigureDefaultMemoryManagerForFixture(
@@ -671,4 +689,7 @@ int main() {
           "local password sidecar was created");
 
   return EXIT_SUCCESS;
+} catch(const std::exception& error) {
+  std::cerr<<error.what()<<'\n';
+  return EXIT_FAILURE;
 }
