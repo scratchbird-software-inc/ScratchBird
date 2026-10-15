@@ -3733,6 +3733,8 @@ if(TARGET sb_core_datatypes)
     PRIVATE
       sb_core_datatypes
       sb_core_platform
+      sb_core_blob_persistence
+      sb_storage_disk
   )
 
   add_test(

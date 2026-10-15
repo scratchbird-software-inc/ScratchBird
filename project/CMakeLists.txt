@@ -4191,6 +4191,15 @@ if(TARGET scratchbird_public_output_stage)
 endif()
 unset(SB_PUBLIC_STANDALONE_OUTPUT_TARGETS_READY)
 
+# The owned persistence codec is a distinct composition. Pure datatype/profile
+# and parser-only users do not acquire a physical-memory dependency implicitly.
+if(TARGET sb_core_datatypes AND TARGET sb_core_memory)
+  add_library(sb_core_blob_persistence
+    src/core/datatypes/datatype_blob_owned_persistence.cpp)
+  target_compile_features(sb_core_blob_persistence PUBLIC cxx_std_20)
+  target_link_libraries(sb_core_blob_persistence PUBLIC sb_core_datatypes sb_core_memory)
+endif()
+
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestAssertions.cmake")
 # Alignment registers some targets in deferred root-directory functions.
 # Enqueue this last so those targets receive the same assertion policy.

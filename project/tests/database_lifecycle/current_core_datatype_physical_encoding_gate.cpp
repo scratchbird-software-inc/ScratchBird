@@ -10,6 +10,9 @@
 #include "datatype_date.hpp"
 #include "datatype_time.hpp"
 #include "datatype_timestamp.hpp"
+#include "../support/blob_persistence_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
+#include "disk_device.hpp"
 
 #include <array>
 #include <cstdint>
@@ -74,12 +77,13 @@ void RoundTrip(const dt::DatatypePhysicalValue& value) {
 
 void TestEveryCanonicalDatatypePhysicalRoundTrip() {
   for (const auto& descriptor : dt::BuiltinDatatypeDescriptors()) {
-    // base.bit_string is context-sensitive and has no raw generic semantic
-    // path. Its exact V3 receipt/profile adapter is exercised below.
+    // Profile-authoritative types use their complete native adapters below,
+    // not a raw V1/V2 carrier relabeled as a currently admitted value.
     if (descriptor.type_id == dt::CanonicalTypeId::bit_string ||
         descriptor.type_id == dt::CanonicalTypeId::date ||
         descriptor.type_id == dt::CanonicalTypeId::time ||
-        descriptor.type_id == dt::CanonicalTypeId::timestamp) continue;
+        descriptor.type_id == dt::CanonicalTypeId::timestamp ||
+        descriptor.type_id == dt::CanonicalTypeId::blob) continue;
     const auto layout = dt::LookupDatatypeStorageLayout(descriptor.type_id);
     Require(layout.ok(), "MDF-013 missing storage layout");
     RoundTrip(dt::SampleDatatypePhysicalValueForLayout(layout.layout));
@@ -391,9 +395,13 @@ void TestBitStringStructuralBoundaryAndRawRefusal() {
 }
 
 void TestOverflowLocatorOpaqueAndProtectedStates() {
-  RoundTrip(PhysicalValue(dt::CanonicalTypeId::blob,
-                          dt::DatatypePhysicalValueState::overflow_root,
-                          Payload(24, 0x20)));
+  // Standalone BLOB bytes now roundtrip through the full native SBBLOB03
+  // adapter below. An arbitrary legacy overflow_root is not a BLOB component
+  // or an authenticated row/MGA locator and must remain an exact refusal.
+  const auto legacy = dt::EncodeDatatypePhysicalValue(PhysicalValue(
+      dt::CanonicalTypeId::blob, dt::DatatypePhysicalValueState::overflow_root, Payload(24,0x20)));
+  Require(!legacy.ok() && legacy.diagnostic.diagnostic_code == "BLOB.V1_V2_REFUSED",
+          "MDF-013 legacy BLOB overflow carrier bypassed native component");
   RoundTrip(PhysicalValue(dt::CanonicalTypeId::document,
                           dt::DatatypePhysicalValueState::overflow_chunk,
                           Payload(64, 0x30)));
@@ -453,7 +461,8 @@ void TestRestartPersistenceRoundTrip() {
     if (descriptor.type_id == dt::CanonicalTypeId::bit_string ||
         descriptor.type_id == dt::CanonicalTypeId::date ||
         descriptor.type_id == dt::CanonicalTypeId::time ||
-        descriptor.type_id == dt::CanonicalTypeId::timestamp) continue;
+        descriptor.type_id == dt::CanonicalTypeId::timestamp ||
+        descriptor.type_id == dt::CanonicalTypeId::blob) continue;
     const auto layout = dt::LookupDatatypeStorageLayout(descriptor.type_id);
     const auto encoded = dt::EncodeDatatypePhysicalValue(
         dt::SampleDatatypePhysicalValueForLayout(layout.layout));
@@ -467,31 +476,38 @@ void TestRestartPersistenceRoundTrip() {
     ++expected_count;
   }
 
-  const auto path = std::filesystem::temp_directory_path() /
-                    "sb_mdf013_physical_encoding.bin";
+  scratchbird::tests::OwnedTempDirectory temporary;
+  const auto path = temporary.path() / "physical_encoding.bin";
   {
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    out.write(reinterpret_cast<const char*>(image.data()),
-              static_cast<std::streamsize>(image.size()));
+    scratchbird::storage::disk::FileDevice device;
+    Require(device.Open(path.string(),scratchbird::storage::disk::FileOpenMode::create_new).ok(),
+            "MDF-013 restart image create failed");
+    const auto written=device.WriteAt(0,image.data(),image.size());
+    Require(written.ok() && written.bytes_transferred==image.size(),"MDF-013 restart image write failed");
+    Require(device.Sync().ok() && device.Close().ok(),"MDF-013 restart image sync/close failed");
   }
   std::vector<platform::byte> restored(image.size());
   {
-    std::ifstream in(path, std::ios::binary);
-    in.read(reinterpret_cast<char*>(restored.data()),
-            static_cast<std::streamsize>(restored.size()));
+    scratchbird::storage::disk::FileDevice device;
+    Require(device.Open(path.string(),scratchbird::storage::disk::FileOpenMode::open_existing_read_only).ok(),
+            "MDF-013 restart image reopen failed");
+    const auto read=device.ReadAt(0,restored.data(),restored.size());
+    Require(read.ok() && read.bytes_transferred==restored.size(),"MDF-013 restart image read failed");
+    Require(device.Close().ok(),"MDF-013 restart image reader close failed");
   }
-  std::filesystem::remove(path);
   Require(restored == image, "MDF-013 restart image changed on disk");
 
   std::size_t offset = 0;
   std::size_t decoded_count = 0;
   while (offset < restored.size()) {
+    Require(restored.size()-offset>=4,"MDF-013 truncated persisted length prefix");
     const std::uint32_t size =
         static_cast<std::uint32_t>(restored[offset]) |
         (static_cast<std::uint32_t>(restored[offset + 1]) << 8) |
         (static_cast<std::uint32_t>(restored[offset + 2]) << 16) |
         (static_cast<std::uint32_t>(restored[offset + 3]) << 24);
     offset += 4;
+    Require(size<=restored.size()-offset,"MDF-013 persisted length exceeds actual bounded image");
     const auto decoded = dt::DecodeDatatypePhysicalValue(restored.data() + offset,
                                                          size);
     Require(decoded.ok(), "MDF-013 persisted physical packet did not decode");
@@ -500,6 +516,66 @@ void TestRestartPersistenceRoundTrip() {
   }
   Require(decoded_count == expected_count,
           "MDF-013 persisted row count mismatch");
+  temporary.Cleanup();
+}
+
+void TestBlobNativeOwnedPersistence() {
+  scratchbird::tests::OwnedTempDirectory temporary;
+  scratchbird::tests::BlobPersistenceFixture fixture;
+  namespace disk = scratchbird::storage::disk;
+  // Exact binary octets, including embedded zero and invalid text sequences.
+  const std::array<std::vector<platform::byte>,4> values{{{}, {}, {0,0xff,0xc0,0x80}, Payload(24,0x20)}};
+  for (unsigned index=0;index<values.size();++index) {
+    const auto state=index==0 ? dt::BlobValueStateV3::sql_null : dt::BlobValueStateV3::value;
+    {
+      dt::BlobOwnedPersistenceBytesV3 source,encoded;
+      fixture.Copy(values[index],source); auto grant=fixture.Grant();
+      const auto result=dt::EncodeOwnedBlobComponentV3(fixture.profile,state,source,grant,encoded,{7});
+      Require(result.ok() && !grant && encoded.bytes().size()==320+values[index].size(),
+              "MDF-013 complete native BLOB persistence encoding failed");
+      const auto path=temporary.path()/std::to_string(index);
+      disk::FileDevice device;
+      Require(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"MDF-013 native BLOB file create failed");
+      const auto written=device.WriteAt(0,encoded.bytes().data(),encoded.bytes().size());
+      Require(written.ok() && written.bytes_transferred==encoded.bytes().size(),"MDF-013 native BLOB file write failed");
+      Require(device.Sync().ok() && device.Close().ok(),"MDF-013 native BLOB file sync/close failed");
+      Require(device.Open(path.string(),disk::FileOpenMode::open_existing_read_only).ok(),"MDF-013 native BLOB reopen failed");
+      std::vector<platform::byte> bytes(encoded.bytes().size());
+      const auto read=device.ReadAt(0,bytes.data(),bytes.size());
+      Require(read.ok() && read.bytes_transferred==bytes.size() && device.Close().ok(),"MDF-013 native BLOB reread failed");
+      Require(std::equal(bytes.begin(),bytes.end(),encoded.bytes().begin(),encoded.bytes().end()),
+              "MDF-013 native BLOB persisted bytes changed");
+      dt::BlobOwnedPersistenceBytesV3 restored; fixture.Copy(bytes,restored);
+      dt::BlobOwnedPersistenceDecodedV3 decoded; grant=fixture.Grant();
+      Require(dt::DecodeOwnedBlobComponentV3(fixture.profile,restored,true,grant,decoded,{3}).ok() && !grant &&
+          decoded.state()==state && std::equal(values[index].begin(),values[index].end(),
+          decoded.content().bytes().begin(),decoded.content().bytes().end()),
+          "MDF-013 complete native BLOB persistence lost content/NULL state");
+      auto corrupted=bytes; corrupted[280]^=1;
+      dt::BlobOwnedPersistenceBytesV3 damaged; fixture.Copy(corrupted,damaged);
+      dt::BlobOwnedPersistenceDecodedV3 refused; grant=fixture.Grant();
+      const auto invalid=dt::DecodeOwnedBlobComponentV3(fixture.profile,damaged,true,grant,refused);
+      Require(!invalid.ok() && invalid.component.diagnostic_code=="BLOB.INTEGRITY_FAILED" &&
+          grant && !refused.content().bound(),"MDF-013 native BLOB corruption published a false positive");
+      if (state==dt::BlobValueStateV3::sql_null) {
+        const auto nonnull=dt::DecodeOwnedBlobComponentV3(fixture.profile,restored,false,grant,refused);
+        Require(!nonnull.ok() && nonnull.component.reason_enum==50,
+                "MDF-013 native BLOB NULL crossed nonnull occurrence");
+      }
+    }
+    const auto physical=fixture.manager.Snapshot();
+    Require(physical.current_bytes==0 && physical.reserved_capacity_bytes==0 &&
+        physical.active_capacity_reservation_count==0 && fixture.ledger.Snapshot().current_bytes==0,
+        "MDF-013 native BLOB persistence leaked owned physical memory");
+  }
+  // Legacy generic positives are replaced by stronger complete native encode,
+  // actual durable file effect/reopen, full decode and corruption negatives.
+  for (const auto state : {dt::DatatypePhysicalValueState::value,dt::DatatypePhysicalValueState::sql_null}) {
+    const auto legacy=dt::EncodeDatatypePhysicalValue(PhysicalValue(dt::CanonicalTypeId::blob,state,{}));
+    Require(!legacy.ok() && legacy.diagnostic.diagnostic_code=="BLOB.V1_V2_REFUSED",
+            "MDF-013 raw legacy BLOB value/NULL was re-enabled");
+  }
+  temporary.Cleanup();
 }
 
 }  // namespace
@@ -516,6 +592,7 @@ int main() {
   TestTimestampStructuralBoundaryAndRawRefusal();
   TestD708TemporalProfileReceiptsAreRefusedAsCurrent();
   TestOverflowLocatorOpaqueAndProtectedStates();
+  TestBlobNativeOwnedPersistence();
   TestMalformedPhysicalPayloadsAreRefused();
   TestRestartPersistenceRoundTrip();
   std::cout << "current_core_datatype_physical_encoding_gate=passed\n";

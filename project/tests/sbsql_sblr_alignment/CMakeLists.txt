@@ -10924,6 +10924,18 @@ set_tests_properties(sbsql_sblr_alignment_base_blob_profile_value PROPERTIES
 add_executable(sbsql_sblr_alignment_base_blob_lifetime_abi_c
   base_blob_lifetime_abi_c_test.c)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(sbsql_sblr_alignment_base_blob_owned_persistence
+    base_blob_owned_persistence_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_base_blob_owned_persistence PRIVATE cxx_std_23)
+  target_compile_definitions(sbsql_sblr_alignment_base_blob_owned_persistence PRIVATE
+    SCRATCHBIRD_MEMORY_FAILURE_INJECTION_TEST_GUARD=1)
+  target_link_libraries(sbsql_sblr_alignment_base_blob_owned_persistence PRIVATE
+    sb_core_blob_persistence sb_storage_disk Threads::Threads)
+  add_test(NAME sbsql_sblr_alignment_base_blob_owned_persistence
+    COMMAND sbsql_sblr_alignment_base_blob_owned_persistence)
+  set_tests_properties(sbsql_sblr_alignment_base_blob_owned_persistence PROPERTIES
+    LABELS "datatype;base_blob;owned_persistence;binary_uuid;fault_atomicity;independent_reopen;not_runtime_authority"
+    TIMEOUT 180)
   # The runtime is portable; this harness uses fork/mmap and Linux death tests.
   add_executable(sbsql_sblr_alignment_base_blob_lifetime_runtime
     base_blob_lifetime_v8_runtime_test.cpp)
