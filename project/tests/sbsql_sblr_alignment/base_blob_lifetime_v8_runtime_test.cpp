@@ -643,13 +643,18 @@ struct FakeReceiver {
   void* poison_reader_scratch_on_last_drop = nullptr;
   std::size_t poison_reader_scratch_size = 0;
   dt::BlobReceiverMaterializedCapabilityV3Generation1* poison_capability_on_drop = nullptr;
-  std::array<char, 32> calls{};
+  // A short-read two-pass traversal can exceed32 lifetime callbacks. Keep
+  // complete bounded evidence; never silently truncate the recorded sequence.
+  std::array<char, 128> calls{};
   std::size_t call_count = 0;
   std::uint8_t next_ticket = 0x90;
   std::uint64_t now = 100;
   std::uint64_t pins = 1;
   std::uint64_t invariant_calls = 0;
   std::uint64_t clock_calls = 0;
+  std::uint64_t clock_action_call = 0;
+  void (*clock_action)(void*) noexcept = nullptr;
+  void* clock_action_context = nullptr;
   std::uint64_t cancellation_calls = 0;
   std::uint64_t pin_acquire_calls = 0;
   std::uint64_t pin_clone_calls = 0;
@@ -668,6 +673,11 @@ struct FakeReceiver {
   bool cancellation_dirty_reserved = false;
   bool cancelled = false;
   bool cancel_on_release = false;
+  bool cancel_on_probe = false;
+  std::uint64_t clock_on_probe = 0;
+  std::atomic<bool> block_probe{false};
+  std::atomic<bool> probe_entered{false};
+  std::atomic<bool> finish_probe{false};
   bool cancel_on_next_retain = false;
   bool block_release = false;
   std::atomic<bool> release_entered{false};
@@ -735,7 +745,8 @@ struct FakeReceiver {
   dt::BlobLifetimeRuntimeResultV3 reentry_result{};
 
   void Push(char code) noexcept {
-    if (call_count < calls.size()) calls[call_count++] = code;
+    if (call_count == calls.size()) Fail("receiver callback evidence capacity exhausted");
+    calls[call_count++] = code;
   }
 };
 
@@ -843,6 +854,12 @@ BlobLifetimeCallbackResultV3 SCRATCHBIRD_ENGINE_CALL Probe(
   auto& fake = *static_cast<FakeReceiver*>(context);
   std::lock_guard lock(fake.callback_mutex);
   fake.Push('P');
+  if (fake.block_probe) {
+    fake.probe_entered.store(true, std::memory_order_release);
+    while (!fake.finish_probe.load(std::memory_order_acquire)) std::this_thread::yield();
+  }
+  if (fake.cancel_on_probe) fake.cancelled = true;
+  if (fake.clock_on_probe != 0) fake.now = fake.clock_on_probe;
   AttemptAdminReentry(fake);
   if (fake.throw_probe) throw 1;
   if (fake.dirty_probe_ticket || MalformedTicket(fake, 2))
@@ -936,6 +953,8 @@ dt::BlobMonotonicReadResultV3 ReadClock(void* context) noexcept {
       std::this_thread::yield();
   }
   std::lock_guard lock(fake.callback_mutex);
+  if (fake.clock_action != nullptr && fake.clock_action_call == fake.clock_calls)
+    fake.clock_action(fake.clock_action_context);
   if (fake.defer_on_clock_call == fake.clock_calls && fake.defer_clock_lease != nullptr) {
     if (fake.defer_clock_private)
       (void)dt::BlobLifetimeRuntimeConformanceAccessV3::ControlPublish(*fake.defer_clock_lease,
@@ -3314,6 +3333,12 @@ struct GuardedReaderContext {
 
 dt::BlobReaderResultV3 GuardedReader(void* raw, const dt::BlobReaderRequestV3& request) {
   auto& c = *static_cast<GuardedReaderContext*>(raw);
+  if (CountCall(*c.fake, 'B') != CountCall(*c.fake, 'E')+1 ||
+      request.offset != c.expected_reader_offset || request.requested_octets == 0 ||
+      request.requested_octets > 4 || request.destination_capacity != request.requested_octets)
+    std::cerr << "reader boundary B=" << +CountCall(*c.fake, 'B') << " E=" << +CountCall(*c.fake, 'E')
+              << " offset=" << request.offset << " expected=" << c.expected_reader_offset
+              << " requested=" << request.requested_octets << " capacity=" << request.destination_capacity << '\n';
   Check(CountCall(*c.fake, 'B') == CountCall(*c.fake, 'E')+1 &&
             request.offset == c.expected_reader_offset && request.requested_octets > 0 &&
             request.requested_octets <= 4 && request.destination_capacity == request.requested_octets,
@@ -3380,7 +3405,8 @@ dt::BlobProtectedWorkResultV3 GuardedReaderVisitor(void* raw,
 
 void RetainGuardedReader(Fixture& f, std::uint64_t extent, bool encoded,
     GuardedReaderContext& context, dt::BlobRetainedLifetimeLeaseV3& lease,
-    dt::BlobValueStateV3 state = dt::BlobValueStateV3::value) {
+    dt::BlobValueStateV3 state = dt::BlobValueStateV3::value,
+    dt::BlobReadAtV3 read_at = GuardedReader) {
   using Host = dt::BlobLifetimeReceiverHostV3Generation1;
   f.token.mode_bits = SB_BLOB_MODE_IMMUTABLE_READ_V3 |
       (encoded ? SB_BLOB_MODE_OPAQUE_ENCODED_READER_V3 : SB_BLOB_MODE_LOGICAL_READER_V3);
@@ -3396,7 +3422,7 @@ void RetainGuardedReader(Fixture& f, std::uint64_t extent, bool encoded,
   auto budget = Host::BudgetControl(f.ledger, f.pins);
   dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
   if (encoded) {
-    auto cap = Host::EncodedCapability(f.carrier_binding, extent, &context, GuardedReader);
+    auto cap = Host::EncodedCapability(f.carrier_binding, extent, &context, read_at);
     dt::BlobBoundEncodedReaderCarrierV3Generation1 carrier;
     Check(dt::BlobLifetimeRuntimeFactoryV3Generation1::AdmitEncodedReader(f.request.operation,
         f.profile, &f.authority, &f.services, f.pins, budget, f.services.monotonic_clock,
@@ -3406,7 +3432,7 @@ void RetainGuardedReader(Fixture& f, std::uint64_t extent, bool encoded,
         carrier, f.token, f.request, lease).ok(), "guarded encoded retain");
   } else {
     auto cap = Host::LogicalCapability(f.carrier_binding, state,
-                                      extent, &context, GuardedReader);
+                                      extent, &context, read_at);
     dt::BlobBoundLogicalReaderCarrierV3Generation1 carrier;
     Check(dt::BlobLifetimeRuntimeFactoryV3Generation1::AdmitLogicalReader(f.request.operation,
         f.profile, &f.authority, &f.services, f.pins, budget, f.services.monotonic_clock,
@@ -3488,6 +3514,276 @@ void GuardedReaderExecution() {
               success ? 9U : mode == 2 ? 0U : mode == 3 || mode == 19 ? 5U : 4U),
             "returned byte count was not charged before malformed/failed reply rejection");
     }
+  }
+}
+
+dt::BlobReaderResultV3 ReplayReader(void* raw, const dt::BlobReaderRequestV3& request) {
+  auto& c = *static_cast<GuardedReaderContext*>(raw);
+  if (request.offset == 0 && c.calls != 0) {
+    Check(CountCall(*c.fake, 'P') == 1 && reader_destination_to_scrub.empty(),
+          "replay reset offset without exactly one transition probe or retained protected bytes");
+    c.expected_reader_offset = 0;
+  }
+  return GuardedReader(raw, request);
+}
+
+void GuardedReaderReplayExecution() {
+  using Access = dt::BlobLifetimeRuntimeConformanceAccessV3;
+  for (unsigned op : {3U,8U}) {
+    for (unsigned short_read : {0U,1U}) {
+      for (std::uint64_t extent : {0U,1U,4U,9U}) {
+        std::array<platform::byte,4> scratch{};
+        dt::BlobLifetimeBudgetConfigurationV3Generation1 config;
+        config.limits.fill(UINT64_MAX);
+        config.scratch = scratch;
+        config.admitted_window_octets = 4;
+        const auto calls_per_pass = short_read ? extent : (extent+3)/4;
+        config.limits[0] = extent == 0 ? 3 : 4*calls_per_pass+4;
+        config.limits[1] = 2*extent;
+        config.limits[4] = 2*calls_per_pass;
+        config.limits[7] = std::min<std::uint64_t>(4,extent);
+        Fixture f(0,0,&config);
+        f.fake.pins = 0;
+        f.request.operation = op;
+        GuardedReaderContext source{&f.fake,short_read};
+        GuardedReaderContext first{&f.fake}, second{&f.fake};
+        dt::BlobRetainedLifetimeLeaseV3 lease;
+        RetainGuardedReader(f,extent,false,source,lease,dt::BlobValueStateV3::value,ReplayReader);
+        auto first_visitor = Access::Visitor(GuardedReaderVisitor,&first);
+        auto second_visitor = Access::Visitor(GuardedReaderVisitor,&second);
+        const auto before = allocation_probe::calls.load();
+        allocation_probe::enabled.store(true);
+        const auto result = lease.VisitBoundReplayableReaderBytes(first_visitor,second_visitor);
+        const auto released = lease.Release();
+        allocation_probe::enabled.store(false);
+        Check(result.ok() && released.ok() && first.visited == extent && second.visited == extent &&
+                  source.calls == 2*calls_per_pass && CountCall(f.fake,'P') == (extent ? 2U : 1U) &&
+                  CountCall(f.fake,'B') == source.calls && CountCall(f.fake,'E') == source.calls &&
+                  Access::Invoked(f.ledger) == config.limits[0] &&
+                  Access::Invoked(f.ledger,dt::BlobLifetimeResourceV3::logical_bytes_read) == 2*extent &&
+                  Access::Invoked(f.ledger,dt::BlobLifetimeResourceV3::reader_calls) == source.calls &&
+                  Access::Invoked(f.ledger,dt::BlobLifetimeResourceV3::temporary_bytes) == std::min<std::uint64_t>(4,extent) &&
+                  allocation_probe::calls.load() == before && f.fake.pins == 0 &&
+                  Access::ReservedCleanup(f.ledger) == 0,
+              "replay lost exact shared budgets, independent offsets, exclusive ownership or 2N+4 formula");
+        Check(std::all_of(scratch.begin(),scratch.end(),[](auto b) { return b == 0; }),
+              "replay retained source octets across access or operation completion");
+      }
+    }
+  }
+  // NULL is independently authenticated, not replayed and not confused with
+  // empty VALUE. Neither consumer may observe an empty protected span.
+  Fixture f(3);
+  f.fake.pins = 0;
+  f.request.operation = 8;
+  GuardedReaderContext source{&f.fake},first{&f.fake},second{&f.fake};
+  dt::BlobRetainedLifetimeLeaseV3 lease;
+  RetainGuardedReader(f,0,false,source,lease,dt::BlobValueStateV3::sql_null,ReplayReader);
+  auto a = Access::Visitor(GuardedReaderVisitor,&first);
+  auto b = Access::Visitor(GuardedReaderVisitor,&second);
+  Check(lease.VisitBoundReplayableReaderBytes(a,b).ok() && lease.Release().ok() &&
+            source.calls == 0 && first.visitor_calls == 0 && second.visitor_calls == 0 &&
+            CountCall(f.fake,'P') == 1 && Access::Invoked(f.ledger) == 3 && f.fake.pins == 0,
+        "replay SQL NULL bypassed authentication or invoked a payload consumer");
+}
+
+void GuardedReaderReplayFailureAndOwnership() {
+  using Access = dt::BlobLifetimeRuntimeConformanceAccessV3;
+  for (unsigned failure = 0; failure < 12; ++failure) {
+    const auto page = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
+    auto* backing = static_cast<platform::byte*>(mmap(nullptr,page,PROT_READ|PROT_WRITE,
+        MAP_PRIVATE|MAP_ANONYMOUS,-1,0));
+    Check(backing != MAP_FAILED,"replay poison backing allocation");
+    dt::BlobLifetimeBudgetConfigurationV3Generation1 config;
+    config.limits.fill(UINT64_MAX);
+    config.scratch = {backing,4};
+    config.admitted_window_octets = 4;
+    // Nine bytes in three calls per pass. Exhaust exactly at the first
+    // transition, or independently at the second pass's first byte/call.
+    if (failure == 8) config.limits[0] = 8; // retain+first pass+reserved release
+    if (failure == 9) config.limits[1] = 9;
+    if (failure == 10) config.limits[4] = 3;
+    Fixture f(0,0,&config);
+    f.fake.pins = 0;
+    f.request.operation = 8;
+    if (failure == 7) f.token.valid_until_monotonic_ns = 200;
+    GuardedReaderContext source{&f.fake},first{&f.fake},second{&f.fake};
+    dt::BlobRetainedLifetimeLeaseV3 lease;
+    RetainGuardedReader(f,9,false,source,lease,dt::BlobValueStateV3::value,ReplayReader);
+    f.fake.poison_reader_scratch_on_last_drop = backing;
+    f.fake.poison_reader_scratch_size = page;
+    if (failure == 0) f.fake.probe_code = SB_BLOB_CALLBACK_STALE_SNAPSHOT_V3;
+    if (failure == 1) f.fake.probe_code = SB_BLOB_CALLBACK_SECURITY_DENIED_V3;
+    if (failure == 2) f.fake.probe_code = SB_BLOB_CALLBACK_AUTHORITY_UNAVAILABLE_V3;
+    if (failure == 3) f.fake.throw_probe = true;
+    if (failure == 4) f.fake.dirty_probe_ticket = true;
+    if (failure == 5) { f.fake.malformed_phase = 2; f.fake.malformed_stimulus = 1; }
+    if (failure == 6) f.fake.cancel_on_probe = true;
+    if (failure == 7) f.fake.clock_on_probe = 200;
+    if (failure == 11) second.mode = 17; // second consumer throws after actual read
+    auto a = Access::Visitor(GuardedReaderVisitor,&first);
+    auto b = Access::Visitor(GuardedReaderVisitor,&second);
+    const auto result = lease.VisitBoundReplayableReaderBytes(a,b);
+    constexpr std::array<std::string_view,12> expected{{
+      "CINL.LOB.HANDLE_EXPIRED","SECURITY.ACCESS_DENIED","BLOB.LIFETIME_AUTHORITY_UNAVAILABLE","",
+      "CINL.LOB.DESCRIPTOR_INVALID","CINL.LOB.DESCRIPTOR_INVALID","PROCESS.CANCELLED",
+      "CINL.LOB.HANDLE_EXPIRED","RESOURCE.BUDGET_EXCEEDED","RESOURCE.BUDGET_EXCEEDED",
+      "RESOURCE.BUDGET_EXCEEDED",""}};
+    Check(!result.ok() && result.diagnostic_code == expected[failure] && first.visited == 9 &&
+              source.calls == (failure == 11 ? 4U : 3U) &&
+              second.visitor_calls == (failure == 11 ? 1U : 0U) &&
+              CountCall(f.fake,'P') == (failure == 8 ? 0U : 1U) &&
+              CountCall(f.fake,'L') == 1 && f.fake.pins == 0 &&
+              Access::ReservedCleanup(f.ledger) == 0 &&
+              Access::Invoked(f.ledger,dt::BlobLifetimeResourceV3::logical_bytes_read) == (failure == 11 ? 13U : 9U),
+          "replay failure admitted second-pass work, lost exact precedence/settlement or accessed backing after unpin");
+    if (failure >= 8 && failure <= 10) {
+      Check(result.resource == (failure == 8 ? dt::BlobLifetimeResourceV3::lifetime_callback_calls :
+                  failure == 9 ? dt::BlobLifetimeResourceV3::logical_bytes_read : dt::BlobLifetimeResourceV3::reader_calls) &&
+                result.required == (failure == 9 ? 4U : 1U) && result.available == 0,
+            "replay exhaustion lost exact independent remaining resource parameters");
+    }
+    Check(munmap(backing,page) == 0,"replay poison backing cleanup");
+    f.fake.poison_reader_scratch_on_last_drop = nullptr;
+  }
+  // Hold the actual transition callback while a second thread tries Release.
+  // The losing thread must not see idle, steal the owner or acquire an access
+  // pair. The original owner drains the deferred failure without pass two.
+  {
+    std::array<platform::byte,4> scratch{};
+    dt::BlobLifetimeBudgetConfigurationV3Generation1 config;
+    config.limits.fill(UINT64_MAX); config.scratch = scratch; config.admitted_window_octets = 4;
+    Fixture f(0,0,&config); f.fake.pins = 0; f.request.operation = 8;
+    GuardedReaderContext source{&f.fake},first{&f.fake},second{&f.fake};
+    dt::BlobRetainedLifetimeLeaseV3 lease;
+    RetainGuardedReader(f,9,false,source,lease,dt::BlobValueStateV3::value,ReplayReader);
+    f.fake.block_probe = true;
+    auto a = Access::Visitor(GuardedReaderVisitor,&first);
+    auto b = Access::Visitor(GuardedReaderVisitor,&second);
+    dt::BlobLifetimeRuntimeResultV3 owner;
+    std::thread worker([&] { owner = lease.VisitBoundReplayableReaderBytes(a,b); });
+    while (!f.fake.probe_entered.load(std::memory_order_acquire)) std::this_thread::yield();
+    const auto losing = lease.Release();
+    f.fake.finish_probe.store(true,std::memory_order_release);
+    worker.join();
+    Check(!owner.ok() && !losing.ok() && owner.reason == "same_ticket_concurrent_use" &&
+              losing.reason == owner.reason && source.calls == 3 && second.visitor_calls == 0 &&
+              CountCall(f.fake,'P') == 1 && CountCall(f.fake,'L') == 1 &&
+              f.fake.last_invariant_operation == 8 &&
+              f.fake.last_invariant_phase == dt::BlobLifetimePhaseV3::protected_access &&
+              f.fake.invariant_calls == 1 && f.fake.pins == 0,
+          "transition probe exposed an idle window or lost actual owner provenance/cleanup");
+  }
+  // Concrete capabilities, not an operation selector, govern replay. These
+  // internal misuse cases cannot call a reader or publish an empty success.
+  for (bool encoded : {false,true}) {
+    Fixture f(16); f.fake.pins = 0; f.request.operation = encoded ? 9 : 2;
+    GuardedReaderContext source{&f.fake};
+    dt::BlobRetainedLifetimeLeaseV3 lease;
+    RetainGuardedReader(f,0,encoded,source,lease);
+    auto visitor = Access::Visitor(GuardedReaderVisitor,&source);
+    const auto result = lease.VisitBoundReplayableReaderBytes(visitor,visitor);
+    Check(result.disposition == dt::BlobLifetimeOuterDispositionV3::terminated_out_of_band &&
+              source.calls == 0 && CountCall(f.fake,'B') == 0 && CountCall(f.fake,'P') == 0 &&
+              CountCall(f.fake,'L') == 1 && f.fake.invariant_calls == 1 && f.fake.pins == 0,
+          "wrong concrete capability acquired replay authority through empty shortcut");
+  }
+}
+
+struct ReplayTransitionObservation {
+  GuardedReaderContext first;
+  dt::BlobRetainedLifetimeLeaseV3* lease = nullptr;
+  unsigned stimulus = 0;
+  std::uint64_t cancellation_calls_before_gate = 0;
+  dt::BlobLifetimeRuntimeResultV3 nested;
+};
+
+void ReplayTransitionClockAction(void* raw) noexcept {
+  auto& c = *static_cast<ReplayTransitionObservation*>(raw);
+  auto& f = *c.first.fake;
+  c.cancellation_calls_before_gate = f.cancellation_calls;
+  switch (c.stimulus) {
+    case 0: f.clock_unavailable = true; break;
+    case 1: f.cancellation_unavailable = true; break;
+    case 2: f.clock_unavailable = f.cancellation_unavailable = true; break;
+    case 3: f.cancelled = true; break;
+    case 4: case 11: f.now = 200; break;
+    case 5: c.nested = c.lease->Probe(); break;
+    case 6: c.nested = c.lease->Release(); break;
+    case 7:
+      (void)dt::BlobLifetimeRuntimeConformanceAccessV3::ControlPublish(*c.lease,
+          dt::BlobLifetimeInvariantEventV3::receiver_services_failed,8,
+          dt::BlobLifetimePhaseV3::pass_transition,255);
+      break;
+    case 8: f.clock_dirty_reserved = true; break;
+    case 9: f.cancellation_dirty_reserved = true; break;
+    case 10: f.now = 0; break;
+    default: std::terminate();
+  }
+}
+
+dt::BlobProtectedWorkResultV3 ReplayTransitionArmingVisitor(
+    void* raw, std::span<const platform::byte> bytes) {
+  auto& c = *static_cast<ReplayTransitionObservation*>(raw);
+  auto result = GuardedReaderVisitor(&c.first,bytes);
+  if (c.first.visited == 9) {
+    // The next sample is the returned-visitor observation; the following
+    // sample is exactly the registered before_pass_transition gate. Target
+    // that real call, not a callback-free emulation of the transition.
+    c.first.fake->clock_action_call = c.first.fake->clock_calls+2;
+    c.first.fake->clock_action = ReplayTransitionClockAction;
+    c.first.fake->clock_action_context = &c;
+  }
+  return result;
+}
+
+void GuardedReaderReplayTransitionObservations() {
+  using Access = dt::BlobLifetimeRuntimeConformanceAccessV3;
+  for (unsigned stimulus = 0; stimulus < 12; ++stimulus) {
+    std::array<platform::byte,4> scratch{};
+    dt::BlobLifetimeBudgetConfigurationV3Generation1 config;
+    config.limits.fill(UINT64_MAX); config.scratch = scratch; config.admitted_window_octets = 4;
+    Fixture f(0,0,&config); f.fake.pins = 0; f.request.operation = 8;
+    if (stimulus == 4) f.token.valid_until_monotonic_ns = 200;
+    if (stimulus == 11) f.request.absolute_deadline_monotonic_ns = 200;
+    GuardedReaderContext source{&f.fake},second{&f.fake};
+    dt::BlobRetainedLifetimeLeaseV3 lease;
+    RetainGuardedReader(f,9,false,source,lease,dt::BlobValueStateV3::value,ReplayReader);
+    ReplayTransitionObservation observed{{&f.fake},&lease,stimulus};
+    auto a = Access::Visitor(ReplayTransitionArmingVisitor,&observed);
+    auto b = Access::Visitor(GuardedReaderVisitor,&second);
+    const auto result = lease.VisitBoundReplayableReaderBytes(a,b);
+    constexpr std::array<std::string_view,12> expected{{
+      "BLOB.LIFETIME_AUTHORITY_UNAVAILABLE","BLOB.LIFETIME_AUTHORITY_UNAVAILABLE",
+      "BLOB.LIFETIME_AUTHORITY_UNAVAILABLE","PROCESS.CANCELLED","CINL.LOB.HANDLE_EXPIRED",
+      "CINL.LOB.DESCRIPTOR_INVALID","CINL.LOB.DESCRIPTOR_INVALID","",
+      "BLOB.LIFETIME_AUTHORITY_UNAVAILABLE","BLOB.LIFETIME_AUTHORITY_UNAVAILABLE","",
+      "CINL.LOB.STREAM_BACKPRESSURE_EXHAUSTED"}};
+    Check(!result.ok() && result.diagnostic_code == expected[stimulus] && source.calls == 3 &&
+              observed.first.visited == 9 && second.visitor_calls == 0 &&
+              CountCall(f.fake,'P') == 0 && CountCall(f.fake,'L') == 1 &&
+              f.fake.pins == 0 && Access::ReservedCleanup(f.ledger) == 0 &&
+              Access::Invoked(f.ledger) == 8,
+          "transition admission ignored sampler-time failure or invoked a new probe/pass after deferred conflict");
+    if (stimulus <= 4 || stimulus == 8 || stimulus == 9 || stimulus == 11) {
+      Check(result.fact.gate_present && result.fact.gate == dt::BlobLifetimeGateV3::before_pass_transition &&
+                result.fact.stage == dt::BlobLifetimeFactStageV3::ordinary_gate,
+            "transition failure substituted ordinary-probe gate provenance");
+      if (stimulus != 4 && stimulus != 11)
+        Check(result.fact.parameters.operation_enum == 8 &&
+                  result.fact.parameters.phase_enum == dt::BlobLifetimePublicPhaseV3::final_probe,
+              "transition failure lost actual operation or registered final_probe public phase");
+      if (stimulus == 2) Check(result.reason == "monotonic_clock_unavailable",
+          "simultaneous transition sampler failure lost deterministic clock-first tie");
+    }
+    if (stimulus == 5 || stimulus == 6)
+      Check(!observed.nested.ok() && result.reason == "same_ticket_concurrent_use" &&
+                f.fake.last_invariant_operation == 8 &&
+                f.fake.last_invariant_phase == dt::BlobLifetimePhaseV3::protected_access,
+            "sampler-time overlap lost actual owner and exact public conflict primary");
+    Check(f.fake.cancellation_calls == observed.cancellation_calls_before_gate+
+              (stimulus == 7 || stimulus == 10 ? 0U : 1U),
+          "private transition failure sampled cancellation or public failure skipped required sampling");
   }
 }
 
@@ -7557,6 +7853,13 @@ int main(int argc, char** argv) {
     std::cout << "PASS guarded reader checks=" << checks << '\n';
     return EXIT_SUCCESS;
   }
+  if (mode == "guarded_replay") {
+    GuardedReaderReplayExecution();
+    GuardedReaderReplayFailureAndOwnership();
+    GuardedReaderReplayTransitionObservations();
+    std::cout << "PASS guarded replay checks=" << checks << '\n';
+    return EXIT_SUCCESS;
+  }
   if (mode == "timeout_rounding") {
     ExactAdmittedTimeoutRounding();
     std::cout << "PASS exact timeout rounding checks=" << checks << '\n';
@@ -7624,6 +7927,9 @@ int main(int argc, char** argv) {
   ProtectedWorkFailureObservation();
   ProtectedWorkCleanupSelection();
   GuardedReaderExecution();
+  GuardedReaderReplayExecution();
+  GuardedReaderReplayFailureAndOwnership();
+  GuardedReaderReplayTransitionObservations();
   GuardedReaderAdmissionAndPinLifetime();
   GuardedReaderSharedArenaAndBytes();
   GuardedReaderEmptyAndPrivateGates();

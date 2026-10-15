@@ -3732,7 +3732,12 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::Probe() noexcept {
 }
 
 BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::ProbeInternal(
-    bool final_probe, bool owner_already_active) noexcept {
+    bool final_probe, bool owner_already_active,
+    bool retain_operation_owner) noexcept {
+  // This private continuation cannot be used to retain an owner that the
+  // caller did not already hold, or to suppress final publication fencing.
+  if (retain_operation_owner && (!owner_already_active || final_probe))
+    return RuntimeTerminated();
   if (MarkActiveBindingReentry(token_))
     return ProtocolFailure("callback_reentrant", descriptor_uuid_,
                            descriptor_generation_);
@@ -3752,10 +3757,12 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::ProbeInternal(
   if (state_.Deferred() != 0)
     return ReleaseOwned(BlobLifetimePhaseV3::release, request_.operation);
   auto gate = OrdinaryGate(
+      retain_operation_owner ? BlobLifetimeGateV3::before_pass_transition :
       final_probe ? BlobLifetimeGateV3::before_final_probe
                   : BlobLifetimeGateV3::before_ordinary_probe,
-      BlobLifetimePublicPhaseV3::probe, BlobLifetimePhaseV3::probe);
-  if (!gate.ok()) {
+      retain_operation_owner ? BlobLifetimePublicPhaseV3::final_probe : BlobLifetimePublicPhaseV3::probe,
+      retain_operation_owner ? BlobLifetimePhaseV3::pass_transition : BlobLifetimePhaseV3::probe);
+  if (!gate.ok() || state_.Deferred() != 0) {
       return ReleaseOwned(BlobLifetimePhaseV3::release,
                            request_.operation, gate);
   }
@@ -3854,6 +3861,15 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::ProbeInternal(
     }
     return ReleaseOwned(BlobLifetimePhaseV3::release,
                            request_.operation, selected);
+  }
+  if (retain_operation_owner) {
+    State active = State::callback_active;
+    if (!state_.compare_exchange_strong(active, State::access_active,
+          std::memory_order_acq_rel, request_.operation))
+      return RuntimeTerminated();
+    if (state_.Deferred() != 0)
+      return ReleaseOwned(BlobLifetimePhaseV3::release, request_.operation);
+    return selected;
   }
   (void)state_.BeginClosing();
   state_.WaitForClosingQuiescence(1);
@@ -4078,6 +4094,20 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::ReaderFact(
 
 BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::VisitBoundReaderBytes(
     const BlobTrustedInternalVisitorV3& visitor) noexcept {
+  return VisitBoundReaderBytesInternal(visitor, nullptr);
+}
+
+BlobLifetimeRuntimeResultV3
+BlobRetainedLifetimeLeaseV3::VisitBoundReplayableReaderBytes(
+    const BlobTrustedInternalVisitorV3& first_pass,
+    const BlobTrustedInternalVisitorV3& second_pass) noexcept {
+  return VisitBoundReaderBytesInternal(first_pass, &second_pass);
+}
+
+BlobLifetimeRuntimeResultV3
+BlobRetainedLifetimeLeaseV3::VisitBoundReaderBytesInternal(
+    const BlobTrustedInternalVisitorV3& first_pass,
+    const BlobTrustedInternalVisitorV3* second_pass) noexcept {
   EntrantGuard entrant(state_);
   if (!entrant.acquired()) {
     const State observed = state_.load(std::memory_order_acquire);
@@ -4086,7 +4116,8 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::VisitBoundReaderBytes(
   }
   if (MarkActiveBindingReentry(token_))
     return ProtocolFailure("callback_reentrant", descriptor_uuid_, descriptor_generation_);
-  if (visitor.function_ == nullptr) {
+  if (first_pass.function_ == nullptr ||
+      (second_pass != nullptr && second_pass->function_ == nullptr)) {
     const State observed = state_.load(std::memory_order_acquire);
     if (observed == State::idle)
       return ProtocolFailure("visitor_missing", descriptor_uuid_, descriptor_generation_);
@@ -4111,6 +4142,17 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::VisitBoundReaderBytes(
   if ((!encoded && carrier_binding_.carrier_kind != SB_BLOB_MODE_LOGICAL_READER_V3) ||
       carrier_read_at_ == nullptr || carrier_reader_context_ == nullptr)
     return ReleaseOwned(BlobLifetimePhaseV3::release, request_.operation, RuntimeTerminated());
+  if (second_pass != nullptr && (encoded ||
+      (token_.mode_bits & SB_BLOB_MODE_REPLAYABLE_SAME_SNAPSHOT_V3) == 0 ||
+      (request_.operation != SB_BLOB_OP_REPLAY_V3 &&
+       request_.operation != SB_BLOB_OP_COMPONENT_ENCODE_V3))) {
+    // A trusted consumer cannot turn a one-pass or encoded capability into a
+    // replay authority by selecting this method. This is internal misuse, not
+    // an invented lifetime callback refusal or a successful empty shortcut.
+    (void)PublishDeferredInvariant(BlobLifetimeInvariantEventV3::receiver_services_failed,
+        request_.operation, BlobLifetimePhaseV3::protected_access, 255);
+    return ReleaseOwned(BlobLifetimePhaseV3::release, request_.operation, RuntimeTerminated());
+  }
   const u64 extent = encoded ? carrier_encoded_extent_ : carrier_logical_length_;
   if (extent == 0) return ProbeInternal(true, true);
   const auto entry_gate = OrdinaryGate(BlobLifetimeGateV3::before_begin_access,
@@ -4143,133 +4185,144 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::VisitBoundReaderBytes(
   const u64 token_deadline = token_.valid_until_monotonic_ns;
   const u64 effective_deadline = request_deadline == 0 ? token_deadline :
       token_deadline == 0 ? request_deadline : std::min(request_deadline, token_deadline);
-  u64 offset = 0;
-  while (offset < extent) {
-    BlobLifetimeAccessTicketV3 access{};
-    auto primary = BeginAccessInternal(access);
-    // No workspace content survives any end or begin; a failed helper may
-    // have dropped the last backing pin. Never inspect workspace afterward.
-    if (!primary.ok()) return primary;
-    primary = OrdinaryGate(BlobLifetimeGateV3::after_begin_access,
-        BlobLifetimePublicPhaseV3::begin_access, BlobLifetimePhaseV3::begin_access);
-    if (primary.ok()) primary = ProtectedWorkAdmissionResult();
-    if (primary.ok()) primary = OrdinaryGate(BlobLifetimeGateV3::before_protected_work,
-        BlobLifetimePublicPhaseV3::protected_access, BlobLifetimePhaseV3::protected_access);
-    if (primary.ok()) primary = ProtectedWorkAdmissionResult();
-    const u64 requested = std::min<u64>(workspace_size, extent-offset);
-    bool exposed = false;
-    BlobReaderResultV3 returned{};
-    BlobReaderResultValidationV3 classified{};
-    BlobLifetimeResourceV3 failed_resource = resource;
-    if (primary.ok() && !admission_.budget_->ReserveReaderCall(
-            resource, requested, failed_resource, available)) {
-      if (admission_.budget_->terminal_quarantined()) {
-        (void)PublishDeferredInvariant(BlobLifetimeInvariantEventV3::progress_counter_overflow,
-            request_.operation, BlobLifetimePhaseV3::protected_access, 255);
-        primary = RuntimeTerminated();
-      } else {
-        primary = BudgetFailure(failed_resource,
-            failed_resource == resource ? requested : 1, available);
-      }
-    }
-    if (primary.ok()) {
-      exposed = true;
-      try {
-        returned = carrier_read_at_(carrier_reader_context_,
-            {offset, requested, workspace.data(), requested,
-             effective_deadline});
-      } catch (...) {
-        // No returned count exists; consume the exact reservation with zero
-        // known bytes, without claiming that a throwing adapter did no work.
-        (void)admission_.budget_->SettleReaderCall(resource, requested, 0);
-        (void)PublishDeferredInvariant(BlobLifetimeInvariantEventV3::receiver_services_failed,
-            request_.operation, BlobLifetimePhaseV3::protected_access, 255);
-        primary = RuntimeTerminated();
-      }
-      if (primary.ok()) {
-        // This charge precedes all status/count/fact inspection, even when
-        // bytes are discarded, the status is unknown or actual is overlong.
-        const auto settlement = admission_.budget_->SettleReaderCall(resource, requested, returned.actual_octets);
-        if (settlement == BlobReaderSettlementV3::corrupt) {
+  const unsigned passes = second_pass == nullptr ? 1U : 2U;
+  for (unsigned pass = 0; pass < passes; ++pass) {
+    const auto& visitor = pass == 0 ? first_pass : *second_pass;
+    u64 offset = 0;
+    while (offset < extent) {
+      BlobLifetimeAccessTicketV3 access{};
+      auto primary = BeginAccessInternal(access);
+      // No workspace content survives any end or begin; a failed helper may
+      // have dropped the last backing pin. Never inspect workspace afterward.
+      if (!primary.ok()) return primary;
+      primary = OrdinaryGate(BlobLifetimeGateV3::after_begin_access,
+          BlobLifetimePublicPhaseV3::begin_access, BlobLifetimePhaseV3::begin_access);
+      if (primary.ok()) primary = ProtectedWorkAdmissionResult();
+      if (primary.ok()) primary = OrdinaryGate(BlobLifetimeGateV3::before_protected_work,
+          BlobLifetimePublicPhaseV3::protected_access, BlobLifetimePhaseV3::protected_access);
+      if (primary.ok()) primary = ProtectedWorkAdmissionResult();
+      const u64 requested = std::min<u64>(workspace_size, extent-offset);
+      bool exposed = false;
+      BlobReaderResultV3 returned{};
+      BlobReaderResultValidationV3 classified{};
+      BlobLifetimeResourceV3 failed_resource = resource;
+      if (primary.ok() && !admission_.budget_->ReserveReaderCall(
+              resource, requested, failed_resource, available)) {
+        if (admission_.budget_->terminal_quarantined()) {
           (void)PublishDeferredInvariant(BlobLifetimeInvariantEventV3::progress_counter_overflow,
               request_.operation, BlobLifetimePhaseV3::protected_access, 255);
           primary = RuntimeTerminated();
-        } else if (settlement == BlobReaderSettlementV3::overrun) {
-          (void)PublishDeferredInvariant(BlobLifetimeInvariantEventV3::receiver_services_failed,
-              request_.operation, BlobLifetimePhaseV3::protected_access, 255);
-          primary = ProtocolFailure("callback_output_impossible", descriptor_uuid_,
-              descriptor_generation_, BlobLifetimeFactStageV3::callback_return);
-        }
-        const u64 deferred = state_.Deferred();
-        if (deferred != 0 && DeferredInvariantPrimary(deferred, descriptor_uuid_,
-            descriptor_generation_).disposition == BlobLifetimeOuterDispositionV3::terminated_out_of_band) {
-          // A returned protocol violation still has its exact public primary,
-          // but private-fatal deferred work authorizes no further sampling.
-          if (settlement != BlobReaderSettlementV3::overrun)
-            primary = RuntimeTerminated();
-        }
-        if (primary.disposition != BlobLifetimeOuterDispositionV3::terminated_out_of_band) {
-          if (deferred == 0 || DeferredInvariantPrimary(deferred, descriptor_uuid_,
-              descriptor_generation_).disposition != BlobLifetimeOuterDispositionV3::terminated_out_of_band) {
-            const auto observed = OrdinaryGate(BlobLifetimeGateV3::after_protected_work,
-                BlobLifetimePublicPhaseV3::protected_access, BlobLifetimePhaseV3::protected_access);
-            primary = SelectByV7Precedence(primary, observed);
-          }
-          classified = ValidateBlobReaderResultV3Generation1(returned, requested, window, timeout_ms);
-          if (classified.kind == BlobReaderResultKindV3::protocol_violation) {
-            (void)PublishDeferredInvariant(BlobLifetimeInvariantEventV3::receiver_services_failed,
-                request_.operation, BlobLifetimePhaseV3::protected_access, 255);
-            primary = SelectByV7Precedence(primary, ProtocolFailure("callback_output_impossible",
-                descriptor_uuid_, descriptor_generation_, BlobLifetimeFactStageV3::callback_return));
-          } else if (classified.kind == BlobReaderResultKindV3::terminal_fact) {
-            const auto fact = ReaderFact(returned, classified.selected_fact);
-            primary = SelectByV7Precedence(primary, fact);
-            if (classified.selected_fact == BlobReaderFactV3::callback_protocol ||
-                classified.selected_fact == BlobReaderFactV3::integrity)
-              (void)PublishDeferredInvariant(BlobLifetimeInvariantEventV3::receiver_services_failed,
-                  request_.operation, BlobLifetimePhaseV3::protected_access, 255);
-          }
+        } else {
+          primary = BudgetFailure(failed_resource,
+              failed_resource == resource ? requested : 1, available);
         }
       }
-    }
-    if (primary.ok()) primary = ProtectedWorkAdmissionResult();
-    if (primary.ok() && state_.Deferred() == 0) {
-      primary = OrdinaryGate(BlobLifetimeGateV3::before_protected_work,
-          BlobLifetimePublicPhaseV3::protected_access, BlobLifetimePhaseV3::protected_access);
-      if (primary.ok()) primary = ProtectedWorkAdmissionResult();
       if (primary.ok()) {
-        BlobProtectedWorkResultV3 work;
+        exposed = true;
         try {
-          work = visitor.function_(visitor.context_,
-              workspace.first(static_cast<std::size_t>(returned.actual_octets)));
+          returned = carrier_read_at_(carrier_reader_context_,
+              {offset, requested, workspace.data(), requested,
+               effective_deadline});
         } catch (...) {
+          // No returned count exists; consume the exact reservation with zero
+          // known bytes, without claiming that a throwing adapter did no work.
+          (void)admission_.budget_->SettleReaderCall(resource, requested, 0);
           (void)PublishDeferredInvariant(BlobLifetimeInvariantEventV3::receiver_services_failed,
               request_.operation, BlobLifetimePhaseV3::protected_access, 255);
           primary = RuntimeTerminated();
         }
         if (primary.ok()) {
-          if (work.status > 1 || !AllZero(work.reserved)) primary = RuntimeTerminated();
-          else if (work.status != 0) primary = RuntimeFromProtectedFact(work.fact);
-          if (primary.disposition == BlobLifetimeOuterDispositionV3::terminated_out_of_band)
+          // This charge precedes all status/count/fact inspection, even when
+          // bytes are discarded, the status is unknown or actual is overlong.
+          const auto settlement = admission_.budget_->SettleReaderCall(resource, requested, returned.actual_octets);
+          if (settlement == BlobReaderSettlementV3::corrupt) {
+            (void)PublishDeferredInvariant(BlobLifetimeInvariantEventV3::progress_counter_overflow,
+                request_.operation, BlobLifetimePhaseV3::protected_access, 255);
+            primary = RuntimeTerminated();
+          } else if (settlement == BlobReaderSettlementV3::overrun) {
             (void)PublishDeferredInvariant(BlobLifetimeInvariantEventV3::receiver_services_failed,
                 request_.operation, BlobLifetimePhaseV3::protected_access, 255);
-          else if (!PrivateProtectedFailurePending()) {
-            const auto observed = OrdinaryGate(BlobLifetimeGateV3::after_protected_work,
-                BlobLifetimePublicPhaseV3::protected_access, BlobLifetimePhaseV3::protected_access);
-            primary = SelectByV7Precedence(primary, observed);
+            primary = ProtocolFailure("callback_output_impossible", descriptor_uuid_,
+                descriptor_generation_, BlobLifetimeFactStageV3::callback_return);
+          }
+          const u64 deferred = state_.Deferred();
+          if (deferred != 0 && DeferredInvariantPrimary(deferred, descriptor_uuid_,
+              descriptor_generation_).disposition == BlobLifetimeOuterDispositionV3::terminated_out_of_band) {
+            // A returned protocol violation still has its exact public primary,
+            // but private-fatal deferred work authorizes no further sampling.
+            if (settlement != BlobReaderSettlementV3::overrun)
+              primary = RuntimeTerminated();
+          }
+          if (primary.disposition != BlobLifetimeOuterDispositionV3::terminated_out_of_band) {
+            if (deferred == 0 || DeferredInvariantPrimary(deferred, descriptor_uuid_,
+                descriptor_generation_).disposition != BlobLifetimeOuterDispositionV3::terminated_out_of_band) {
+              const auto observed = OrdinaryGate(BlobLifetimeGateV3::after_protected_work,
+                  BlobLifetimePublicPhaseV3::protected_access, BlobLifetimePhaseV3::protected_access);
+              primary = SelectByV7Precedence(primary, observed);
+            }
+            classified = ValidateBlobReaderResultV3Generation1(returned, requested, window, timeout_ms);
+            if (classified.kind == BlobReaderResultKindV3::protocol_violation) {
+              (void)PublishDeferredInvariant(BlobLifetimeInvariantEventV3::receiver_services_failed,
+                  request_.operation, BlobLifetimePhaseV3::protected_access, 255);
+              primary = SelectByV7Precedence(primary, ProtocolFailure("callback_output_impossible",
+                  descriptor_uuid_, descriptor_generation_, BlobLifetimeFactStageV3::callback_return));
+            } else if (classified.kind == BlobReaderResultKindV3::terminal_fact) {
+              const auto fact = ReaderFact(returned, classified.selected_fact);
+              primary = SelectByV7Precedence(primary, fact);
+              if (classified.selected_fact == BlobReaderFactV3::callback_protocol ||
+                  classified.selected_fact == BlobReaderFactV3::integrity)
+                (void)PublishDeferredInvariant(BlobLifetimeInvariantEventV3::receiver_services_failed,
+                    request_.operation, BlobLifetimePhaseV3::protected_access, 255);
+            }
           }
         }
       }
+      if (primary.ok()) primary = ProtectedWorkAdmissionResult();
+      if (primary.ok() && state_.Deferred() == 0) {
+        primary = OrdinaryGate(BlobLifetimeGateV3::before_protected_work,
+            BlobLifetimePublicPhaseV3::protected_access, BlobLifetimePhaseV3::protected_access);
+        if (primary.ok()) primary = ProtectedWorkAdmissionResult();
+        if (primary.ok()) {
+          BlobProtectedWorkResultV3 work;
+          try {
+            work = visitor.function_(visitor.context_,
+                workspace.first(static_cast<std::size_t>(returned.actual_octets)));
+          } catch (...) {
+            (void)PublishDeferredInvariant(BlobLifetimeInvariantEventV3::receiver_services_failed,
+                request_.operation, BlobLifetimePhaseV3::protected_access, 255);
+            primary = RuntimeTerminated();
+          }
+          if (primary.ok()) {
+            if (work.status > 1 || !AllZero(work.reserved)) primary = RuntimeTerminated();
+            else if (work.status != 0) primary = RuntimeFromProtectedFact(work.fact);
+            if (primary.disposition == BlobLifetimeOuterDispositionV3::terminated_out_of_band)
+              (void)PublishDeferredInvariant(BlobLifetimeInvariantEventV3::receiver_services_failed,
+                  request_.operation, BlobLifetimePhaseV3::protected_access, 255);
+            else if (!PrivateProtectedFailurePending()) {
+              const auto observed = OrdinaryGate(BlobLifetimeGateV3::after_protected_work,
+                  BlobLifetimePublicPhaseV3::protected_access, BlobLifetimePhaseV3::protected_access);
+              primary = SelectByV7Precedence(primary, observed);
+            }
+          }
+        }
+      }
+      if (exposed) {
+        // The adapter can dirty the complete destination even on throw or an
+        // impossible actual count. Never use its untrusted count for scrubbing.
+        volatile byte* scrub = workspace.data();
+        for (u64 i = 0; i < requested; ++i) scrub[i] = 0;
+      }
+      const auto ended = EndAccessInternal(access, primary, false);
+      if (!ended.ok()) return ended; // pins may be gone; workspace is already clean
+      offset += returned.actual_octets; // classified progress proves <= extent-offset
     }
-    if (exposed) {
-      // The adapter can dirty the complete destination even on throw or an
-      // impossible actual count. Never use its untrusted count for scrubbing.
-      volatile byte* scrub = workspace.data();
-      for (u64 i = 0; i < requested; ++i) scrub[i] = 0;
+    if (pass+1 < passes) {
+      // No access ticket or content span survives the transition. Keep the
+      // same exclusive owner and shared arena: no idle/clone/move window and
+      // no second workspace charge. A failing probe may drop the final pin.
+      const auto transition = ProbeInternal(false, true, true);
+      if (!transition.ok()) return transition;
     }
-    const auto ended = EndAccessInternal(access, primary, false);
-    if (!ended.ok()) return ended; // pins may be gone; workspace is already clean
-    offset += returned.actual_octets; // classified progress proves <= extent-offset
   }
   return ProbeInternal(true, true);
 }

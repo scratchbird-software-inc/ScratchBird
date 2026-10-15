@@ -1111,6 +1111,12 @@ class BlobRetainedLifetimeLeaseV3 final {
   // before the matching end_access; they are not output staging or a locator.
   BlobLifetimeRuntimeResultV3 VisitBoundReaderBytes(
       const BlobTrustedInternalVisitorV3& visitor) noexcept;
+  // One exclusive operation, not two one-pass operations. Both logical passes
+  // share one workspace/grant and one retain ticket, with a snapshot probe at
+  // the transition and at final return. Empty/NULL still uses one probe only.
+  BlobLifetimeRuntimeResultV3 VisitBoundReplayableReaderBytes(
+      const BlobTrustedInternalVisitorV3& first_pass,
+      const BlobTrustedInternalVisitorV3& second_pass) noexcept;
   BlobLifetimeRuntimeResultV3 Release() noexcept;
 
  private:
@@ -1236,7 +1242,11 @@ class BlobRetainedLifetimeLeaseV3 final {
       bool defer_idle_publication = false,
       bool destination_already_installing = false) noexcept;
   BlobLifetimeRuntimeResultV3 ProbeInternal(
-      bool final_probe, bool owner_already_active = false) noexcept;
+      bool final_probe, bool owner_already_active = false,
+      bool retain_operation_owner = false) noexcept;
+  BlobLifetimeRuntimeResultV3 VisitBoundReaderBytesInternal(
+      const BlobTrustedInternalVisitorV3& first_pass,
+      const BlobTrustedInternalVisitorV3* second_pass) noexcept;
   BlobLifetimeRuntimeResultV3 CallbackFailure(
       u8 code, BlobLifetimePhaseV3 phase,
       const BlobLifetimeUseRequestV3& request,
