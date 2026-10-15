@@ -20,6 +20,7 @@
 #include "engine/statement_management_ack_codec.hpp"
 #include "engine/statement_context_receipt_retention.hpp"
 #include "engine/statement_scratch_memory.hpp"
+#include "engine/statement_retained_memory.hpp"
 #include "engine/statement_identity_binding.hpp"
 #include "session/scoped_value_store.hpp"
 #include "engine/authority_hash_material.hpp"
@@ -5401,11 +5402,20 @@ class RetainedResultSnapshotV1 final : public TypedResultMgaSnapshotPinHandleV1 
   TypedResultProducerMgaObservationV1 ObserveSnapshot(
       const wire::TypedResultUuid& statement_snapshot_uuid,
       const wire::TypedResultUuid& result_snapshot_uuid) override {
-    std::lock_guard<std::mutex> guard(mutex_);
-    return pin_.valid() && statement_snapshot_uuid == snapshot_uuid_ &&
-                   result_snapshot_uuid == snapshot_uuid_ && pin_.Resolve().ok()
+    return ObservePinnedState(statement_snapshot_uuid, result_snapshot_uuid) ==
+            transaction::mga::PublishedSnapshotObservationError::none
         ? TypedResultProducerMgaObservationV1::live_and_equal
         : TypedResultProducerMgaObservationV1::stale_or_unequal;
+  }
+  transaction::mga::PublishedSnapshotObservationError ObservePinnedState(
+      const wire::TypedResultUuid& statement_snapshot_uuid,
+      const wire::TypedResultUuid& result_snapshot_uuid) {
+    std::lock_guard<std::mutex> guard(mutex_);
+    if (statement_snapshot_uuid != snapshot_uuid_ || result_snapshot_uuid != snapshot_uuid_)
+      return transaction::mga::PublishedSnapshotObservationError::unknown;
+    // Retain the actual publication-owned backing; observing revocation does
+    // not require copying its vectors/diagnostics on every cursor/PMR probe.
+    return pin_.Observe().error;
   }
   void Release(TypedResultProducerReleaseReasonV1) noexcept override {
     try {
@@ -5484,6 +5494,236 @@ sb_engine_status_t RetainStatementContextForResultV1(
   }
 }
 
+namespace {
+bool RetainedMemoryForbiddenLockScope() noexcept;
+thread_local bool retained_memory_admission_active = false;
+}
+
+struct RetainedStatementMemoryV1::State {
+  // Reverse destruction: proxy/payload bookkeeping and physical capacity die
+  // before ledger and private statement/snapshot owners. Never a raw session.
+  RetainedStatementResultAuthoritiesV1 authorities;
+  std::shared_ptr<server_engine_bridge::StatementContextReceiptOpaque> receipt;
+  std::shared_ptr<core::memory::HierarchicalMemoryBudgetLedger> ledger;
+  std::unique_ptr<core::memory::ReservationBackedMemoryResource> resource;
+  std::unique_ptr<core::memory::ReservationBackedPmrMemoryResource> upstream;
+  RetainedStatementMemoryBindingV1 binding;
+  mutable std::mutex mutex;
+  bool released = false;
+  State* deferred_next = nullptr;
+  static thread_local State* deferred_head;
+
+  RetainedStatementMemoryObservationV1 ObserveReceiptLocked() const {
+    if (released) return RetainedStatementMemoryObservationV1::released;
+    if (receipt->invalidated || receipt->binary_session_uuid != binding.session ||
+        receipt->binary_receipt_uuid != binding.receipt)
+      return RetainedStatementMemoryObservationV1::receipt_revoked;
+    // The only issuer below constructs this exact private class. No abstract
+    // caller-supplied owner can enter State. Preserve actual revocation versus
+    // unavailable observation instead of inventing an expiry fact.
+    const auto snapshot = static_cast<RetainedResultSnapshotV1*>(authorities.snapshot.get())
+        ->ObservePinnedState(binding.snapshot, binding.snapshot);
+    if (snapshot != transaction::mga::PublishedSnapshotObservationError::none)
+      return snapshot == transaction::mga::PublishedSnapshotObservationError::revoked
+          ? RetainedStatementMemoryObservationV1::snapshot_revoked
+          : RetainedStatementMemoryObservationV1::unavailable;
+    return resource->active() ? RetainedStatementMemoryObservationV1::live
+                             : RetainedStatementMemoryObservationV1::released;
+  }
+  class Proxy final : public std::pmr::memory_resource {
+   public:
+    explicit Proxy(State& owner) noexcept : owner_(owner) {}
+   private:
+    void* do_allocate(std::size_t bytes, std::size_t alignment) override {
+      if (RetainedMemoryForbiddenLockScope()) throw std::bad_alloc();
+      std::lock_guard<std::mutex> guard(owner_.mutex);
+      std::lock_guard<std::mutex> receipt_guard(owner_.receipt->mutex);
+      // Actual receipt revocation cannot race between admission and physical
+      // allocation. Ordinary public retirement is intentionally not revocation.
+      if (owner_.ObserveReceiptLocked() != RetainedStatementMemoryObservationV1::live)
+        throw std::bad_alloc();
+      return owner_.upstream->allocate(bytes, alignment);
+    }
+    void do_deallocate(void* p, std::size_t bytes, std::size_t alignment) override {
+      if (RetainedMemoryForbiddenLockScope()) throw std::bad_alloc();
+      std::lock_guard<std::mutex> guard(owner_.mutex);
+      owner_.upstream->deallocate(p, bytes, alignment);
+    }
+    bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {
+      return this == &other;
+    }
+    State& owner_;
+  } proxy{*this};
+};
+thread_local RetainedStatementMemoryV1::State* RetainedStatementMemoryV1::State::deferred_head = nullptr;
+
+// Destruction in a synchronous receipt callback cannot recursively acquire its
+// locks. Preserve actual ownership in an allocation-free intrusive chain until
+// that SAME owning scope has unwound its locks. No detached thread, TLS teardown
+// gamble or fabricated successful resource release.
+class RetainedStatementMemoryCleanupScopeV1 final {
+ public:
+  ~RetainedStatementMemoryCleanupScopeV1() { RetainedStatementMemoryV1::DrainDeferred(); }
+};
+
+RetainedStatementMemoryV1::RetainedStatementMemoryV1(std::unique_ptr<State> state) noexcept
+    : state_(std::move(state)) {}
+RetainedStatementMemoryV1::~RetainedStatementMemoryV1() {
+  if (RetainedMemoryForbiddenLockScope()) {
+    auto* deferred = state_.release();
+    deferred->deferred_next = State::deferred_head;
+    State::deferred_head = deferred;
+  }
+}
+void RetainedStatementMemoryV1::DrainDeferred() noexcept {
+  if (RetainedMemoryForbiddenLockScope()) return;
+  while (State::deferred_head) {
+    auto* next = State::deferred_head;
+    State::deferred_head = next->deferred_next;
+    delete next;
+  }
+}
+std::pmr::memory_resource* RetainedStatementMemoryV1::memory() noexcept { return &state_->proxy; }
+const RetainedStatementMemoryBindingV1& RetainedStatementMemoryV1::binding() const noexcept {
+  return state_->binding;
+}
+core::memory::ReservationBackedMemoryResourceSnapshot RetainedStatementMemoryV1::Snapshot() const {
+  if (RetainedMemoryForbiddenLockScope()) throw std::bad_alloc();
+  std::lock_guard<std::mutex> guard(state_->mutex);
+  return state_->resource->Snapshot();
+}
+core::memory::ReservationBackedPmrMemoryResourceSnapshot RetainedStatementMemoryV1::AllocationSnapshot() const {
+  if (RetainedMemoryForbiddenLockScope()) throw std::bad_alloc();
+  std::lock_guard<std::mutex> guard(state_->mutex);
+  return state_->upstream->Snapshot();
+}
+RetainedStatementMemoryObservationV1 RetainedStatementMemoryV1::Observe() const noexcept {
+  if (RetainedMemoryForbiddenLockScope()) return RetainedStatementMemoryObservationV1::unavailable;
+  try {
+    std::lock_guard<std::mutex> guard(state_->mutex);
+    std::lock_guard<std::mutex> receipt_guard(state_->receipt->mutex);
+    return state_->ObserveReceiptLocked();
+  } catch (...) { return RetainedStatementMemoryObservationV1::unavailable; }
+}
+sb_engine_status_t RetainedStatementMemoryV1::Release() noexcept {
+  if (RetainedMemoryForbiddenLockScope()) return SB_ENGINE_STATUS_CONFLICT;
+  try {
+    std::lock_guard<std::mutex> guard(state_->mutex);
+    if (state_->released) return SB_ENGINE_STATUS_OK;
+    if (state_->resource->Snapshot().allocated_bytes != 0) return SB_ENGINE_STATUS_CONFLICT;
+    if (!state_->resource->ReleaseNoAlloc().ok()) return SB_ENGINE_STATUS_INTERNAL_ERROR;
+    state_->released = true;
+    state_->authorities = {};
+    return SB_ENGINE_STATUS_OK;
+  } catch (...) { return SB_ENGINE_STATUS_INTERNAL_ERROR; }
+}
+
+sb_engine_status_t RetainStatementMemoryForResultV1(
+    server_engine_bridge::StatementContextReceiptHandle handle,
+    const wire::TypedResultUuid& expected_session,
+    const wire::TypedResultUuid& expected_receipt,
+    std::uint64_t requested_bytes,
+    std::unique_ptr<RetainedStatementMemoryV1>* out,
+    core::platform::DiagnosticRecord* diagnostic) noexcept {
+  if (diagnostic) *diagnostic = {};
+  if (!handle || !out || *out || !requested_bytes) return SB_ENGINE_STATUS_INVALID_ARGUMENT;
+  if (retained_memory_admission_active || RetainedMemoryForbiddenLockScope())
+    return SB_ENGINE_STATUS_CONFLICT;
+  struct ActiveAdmission {
+    ActiveAdmission() { retained_memory_admission_active = true; }
+    ~ActiveAdmission() { retained_memory_admission_active = false; }
+  } active_admission;
+  try {
+    // Declare the provisional owner before all guards: failed admission may
+    // drop actual retained receipt ownership only AFTER releasing those guards.
+    auto owner = std::unique_ptr<RetainedStatementMemoryV1>(
+        new RetainedStatementMemoryV1(std::make_unique<RetainedStatementMemoryV1::State>()));
+    auto& state = *owner->state_;
+    {
+      std::lock_guard<std::mutex> registry_guard(g_statement_context_receipt_registry_mutex);
+      const auto found = g_live_statement_context_receipts.find(handle.opaque_id);
+      if (found == g_live_statement_context_receipts.end()) return SB_ENGINE_STATUS_INVALID_HANDLE;
+      state.receipt = found->second;
+    }
+    const auto lifetime = state.receipt->session_lifetime;
+    std::lock_guard<std::mutex> lifetime_guard(lifetime->mutex);
+    if (lifetime->closed) return SB_ENGINE_STATUS_INVALID_HANDLE;
+    std::unique_lock<std::mutex> registry_guard(g_statement_context_receipt_registry_mutex);
+    std::lock_guard<std::mutex> receipt_guard(state.receipt->mutex);
+    if (state.receipt->released || state.receipt->invalidated ||
+        g_live_statement_context_receipts.find(handle.opaque_id) == g_live_statement_context_receipts.end())
+      return SB_ENGINE_STATUS_INVALID_HANDLE;
+    if (state.receipt->binary_session_uuid != expected_session) return SB_ENGINE_STATUS_SECURITY_DENIED;
+    if (state.receipt->binary_receipt_uuid != expected_receipt) return SB_ENGINE_STATUS_INVALID_HANDLE;
+    registry_guard.unlock(); // The retained receipt plus owning guards, not this global map lock, cover allocation.
+    const auto& issued = state.receipt->engine_context;
+    auto& manager = core::memory::DefaultMemoryManager();
+    const auto policy = manager.policy();
+    const auto limit = std::min(policy.hard_limit_bytes, policy.per_context_limit_bytes);
+    if (!limit || policy.refuse_all_allocations || requested_bytes > limit)
+      return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED;
+    const auto retained = RetainStatementContextForResultLockedV1(handle, state.receipt, &state.authorities);
+    if (retained != SB_ENGINE_STATUS_OK) return retained;
+    state.binding = {issued.database_uuid.bytes, issued.session_uuid.bytes,
+        issued.transaction_uuid.bytes, issued.statement_uuid.bytes, issued.statement_receipt_uuid.bytes,
+        issued.statement_snapshot_uuid.bytes, issued.authorization_context.authority_uuid.bytes,
+        issued.resource_admission_uuid.bytes, issued.local_transaction_id,
+        issued.statement_snapshot_generation, issued.authorization_context.security_context_generation};
+    for (const auto& id : {state.binding.database, state.binding.session, state.binding.transaction,
+             state.binding.statement, state.binding.receipt, state.binding.snapshot,
+             state.binding.security_context, state.binding.resource_admission})
+      if (!core::uuid::IsEngineIdentityUuid(core::platform::Uuid{id})) return SB_ENGINE_STATUS_INVALID_HANDLE;
+    if (!issued.security_context_present || !issued.authorization_context.present ||
+        !state.binding.local_transaction_id || !state.binding.snapshot_generation || !state.binding.security_generation)
+      return SB_ENGINE_STATUS_INVALID_HANDLE;
+    if (!state.receipt->scalar_scratch_ledger)
+      state.receipt->scalar_scratch_ledger = std::make_shared<core::memory::HierarchicalMemoryBudgetLedger>();
+    state.ledger = state.receipt->scalar_scratch_ledger;
+    using Scope = core::memory::HierarchicalMemoryScopeKind;
+    std::vector<core::memory::HierarchicalMemoryScopeRef> scopes = {
+        {Scope::database, {}, issued.database_uuid.bytes}, {Scope::session, {}, issued.session_uuid.bytes},
+        {Scope::transaction, {}, issued.transaction_uuid.bytes}, {Scope::statement, {}, issued.statement_uuid.bytes}};
+    core::memory::HierarchicalMemoryBudgetProvenance provenance;
+    provenance.source = core::memory::HierarchicalMemoryBudgetProvenanceSource::runtime_policy;
+    provenance.source_label = "configured_physical_memory_manager";
+    for (const auto& scope : scopes) {
+      auto budget = state.ledger->SetBudget({scope, limit, limit, provenance});
+      if (!budget.ok()) {
+        if (diagnostic) *diagnostic = std::move(budget.diagnostic);
+        return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED;
+      }
+    }
+    core::memory::ReservationBackedMemoryResourceRequest request;
+    request.consumer_kind = core::memory::ReservationBackedMemoryConsumerKind::result_frame;
+    request.reservation_ledger = state.ledger.get(); request.memory_manager = &manager;
+    request.scope_chain = std::move(scopes); request.requested_bytes = requested_bytes;
+    request.category = core::memory::MemoryCategory::datatype_payload;
+    request.memory_class = "retained_statement_payload";
+    request.route_label = "engine.retained_statement"; request.purpose = "retained_result_payload";
+    request.provenance = provenance; request.binary_operation_uuid = issued.statement_uuid.bytes;
+    using Kind = core::memory::MemoryBinaryScopeKind;
+    request.binary_ownership[Kind::context] = issued.statement_receipt_uuid.bytes;
+    request.binary_ownership[Kind::owner] = issued.statement_uuid.bytes;
+    request.binary_ownership[Kind::database] = issued.database_uuid.bytes;
+    request.binary_ownership[Kind::session] = issued.session_uuid.bytes;
+    request.binary_ownership[Kind::transaction] = issued.transaction_uuid.bytes;
+    request.binary_ownership[Kind::statement] = issued.statement_uuid.bytes;
+    auto granted = core::memory::AcquireReservationBackedMemoryResource(std::move(request));
+    if (!granted.ok()) {
+      if (diagnostic) *diagnostic = std::move(granted.diagnostic);
+      return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED;
+    }
+    state.resource = std::move(granted.resource);
+    state.upstream = std::make_unique<core::memory::ReservationBackedPmrMemoryResource>(
+        state.resource.get(), "retained_statement_payload");
+    if (state.authorities.snapshot->ObserveSnapshot(state.binding.snapshot, state.binding.snapshot) !=
+        TypedResultProducerMgaObservationV1::live_and_equal) return SB_ENGINE_STATUS_INVALID_HANDLE;
+    *out = std::move(owner);
+    return SB_ENGINE_STATUS_OK;
+  } catch (const std::bad_alloc&) { return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED; }
+    catch (...) { return SB_ENGINE_STATUS_INTERNAL_ERROR; }
+}
+
 class NativeStatementScratchMemoryV1 final : public StatementScratchMemoryV1 {
  public:
  struct State {
@@ -5532,6 +5772,9 @@ struct SynchronousStatementDispatchLockV1 {
 };
 thread_local SynchronousStatementDispatchLockV1* SynchronousStatementDispatchLockV1::current = nullptr;
 thread_local bool scalar_scratch_call_active = false;
+bool RetainedMemoryForbiddenLockScope() noexcept {
+  return scalar_scratch_call_active || SynchronousStatementDispatchLockV1::current != nullptr;
+}
 } // namespace
 
 class NativeStatementScratchAdmissionV1 final : public StatementScratchMemoryAdmissionV1 {
@@ -5545,6 +5788,7 @@ class NativeStatementScratchAdmissionV1 final : public StatementScratchMemoryAdm
   // Synchronous scalar execution does not recursively loan its entire grant.
   // Reject before any lock, including reentry from cancellation callbacks.
   if (scalar_scratch_call_active) return SB_ENGINE_STATUS_CONFLICT;
+  RetainedStatementMemoryCleanupScopeV1 deferred_memory_cleanup;
   struct ActiveCall {
     ActiveCall() { scalar_scratch_call_active = true; }
     ~ActiveCall() { scalar_scratch_call_active = false; }
@@ -20494,6 +20738,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
   // Acquire before the registry/receipt/session locks. Session teardown and
   // final result cleanup cannot delete this dispatch's owning session.
   const auto dispatch_lifetime = dispatch_receipt_owner->session_lifetime;
+  scratchbird::engine::internal_api::RetainedStatementMemoryCleanupScopeV1 deferred_memory_cleanup;
   std::lock_guard<std::mutex> dispatch_lifetime_guard(dispatch_lifetime->mutex);
   if (dispatch_lifetime->closed) {
     return fail_result(SB_ENGINE_STATUS_INVALID_HANDLE, out_result, 4052,

@@ -4063,6 +4063,17 @@ set_tests_properties(
   LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_recovery;IA-05;SBLR_STMT_PREPARE;SBLR_STMT_FREE;CSC-TEST-003576;CSC-TEST-003588;recovery;durable_registry"
   TIMEOUT 60)
 
+add_executable(sbsql_sblr_alignment_statement_retained_memory statement_retained_memory_test.cpp)
+target_compile_features(sbsql_sblr_alignment_statement_retained_memory PRIVATE cxx_std_23)
+target_compile_definitions(sbsql_sblr_alignment_statement_retained_memory
+  PRIVATE SCRATCHBIRD_MEMORY_FAILURE_INJECTION_TEST_GUARD=1)
+target_include_directories(sbsql_sblr_alignment_statement_retained_memory
+  PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_statement_retained_memory PRIVATE sb_engine sb_server_core)
+add_test(NAME sbsql_sblr_alignment_statement_retained_memory COMMAND sbsql_sblr_alignment_statement_retained_memory)
+set_tests_properties(sbsql_sblr_alignment_statement_retained_memory PROPERTIES
+  LABELS "datatype;memory;receipt_lifetime;binary_uuid;allocation;concurrency" TIMEOUT 180)
+
 add_executable(sbsql_sblr_alignment_statement_result_receipt_retention
   statement_result_receipt_retention_test.cpp)
 target_compile_features(sbsql_sblr_alignment_statement_result_receipt_retention
