@@ -1469,11 +1469,11 @@ BlobLifetimeRuntimeResultV3 BudgetFailure(BlobLifetimeResourceV3 resource,
   return result;
 }
 
-BlobLifetimeRuntimeResultV3 CallbackFailure(
+BlobLifetimeRuntimeResultV3 MapCallbackFailure(
     u8 code, BlobLifetimePhaseV3 phase,
     const BlobLifetimeUseRequestV3& request,
     const platform::Uuid& descriptor_uuid,
-    u64 descriptor_generation) noexcept {
+    u64 descriptor_generation, u8 carrier_kind) noexcept {
   BlobLifetimeRuntimeResultV3 result;
   switch (code) {
     case SB_BLOB_CALLBACK_INVALID_ARGUMENT_V3:
@@ -1647,7 +1647,11 @@ BlobLifetimeRuntimeResultV3 CallbackFailure(
              BlobLifetimeDiagnosticCodeV3::handle_mode_refused) {
     result.fact.parameters.present |= blob_parameter_open_mode |
                                       blob_parameter_operation;
-    result.fact.parameters.open_mode_enum = 4;
+    result.fact.parameters.open_mode_enum =
+        carrier_kind == SB_BLOB_MODE_MATERIALIZED_BYTES_V3 ? 4 :
+        carrier_kind == SB_BLOB_MODE_LOGICAL_READER_V3 ? 5 :
+        carrier_kind == SB_BLOB_MODE_OPAQUE_ENCODED_READER_V3 ? 6 : 0;
+    if (result.fact.parameters.open_mode_enum == 0) return RuntimeTerminated();
     result.fact.parameters.operation_enum = request.operation;
   }
   if (code == SB_BLOB_CALLBACK_RESOURCE_EXHAUSTED_V3 ||
@@ -1845,93 +1849,12 @@ bool TokenAndRequestShapeValid(const BlobLifetimeAuthorityV3& authority,
     noexcept {
   if (ClassifyFactoryStructure(authority, token, request, carrier) !=
       BlobFactoryStructuralClassV3::valid) return false;
-  if (authority.struct_bytes != sizeof(BlobLifetimeAuthorityV3) ||
-      authority.abi_major != SB_BLOB_LIFETIME_ABI_MAJOR_V3 ||
-      authority.abi_minor != SB_BLOB_LIFETIME_ABI_MINOR_V3 ||
-      BlobUuidIsNil(authority.authority_instance_uuid) ||
-      authority.authority_instance_generation == 0 ||
-      authority.retain == nullptr || authority.probe == nullptr ||
-      authority.begin_access == nullptr || authority.end_access == nullptr ||
-      authority.release == nullptr ||
-      token.struct_bytes != sizeof(BlobLifetimeTokenV3) ||
-      token.abi_major != SB_BLOB_LIFETIME_ABI_MAJOR_V3 ||
-      token.abi_minor != SB_BLOB_LIFETIME_ABI_MINOR_V3 ||
-      request.struct_bytes != sizeof(BlobLifetimeUseRequestV3) ||
-      request.abi_major != SB_BLOB_LIFETIME_ABI_MAJOR_V3 ||
-      request.abi_minor != SB_BLOB_LIFETIME_ABI_MINOR_V3 ||
-      !AllZero(token.reserved_33_39) || !AllZero(token.reserved_196_199) ||
-      !AllZero(request.reserved_10_11) ||
-      token.owner_class < SB_BLOB_OWNER_EXECUTION_BORROW_V3 ||
-      token.owner_class > SB_BLOB_OWNER_ENCODED_ARTIFACT_BORROW_V3 ||
-      request.operation < SB_BLOB_OP_VALIDATE_VIEW_V3 ||
-      request.operation > SB_BLOB_OP_RESTORE_V3 ||
-      request.required_owner_class != token.owner_class ||
-      token.mode_bits == 0 || request.required_mode_bits == 0 ||
-      (token.mode_bits & ~SB_BLOB_MODE_KNOWN_MASK_V3) != 0 ||
-      (request.required_mode_bits & ~SB_BLOB_MODE_KNOWN_MASK_V3) != 0 ||
-      (token.mode_bits & request.required_mode_bits) != request.required_mode_bits ||
-      (token.mode_bits & SB_BLOB_MODE_IMMUTABLE_READ_V3) == 0 ||
-      (token.mode_bits & SB_BLOB_MODE_MATERIALIZED_BYTES_V3) == 0 ||
-      (token.mode_bits & (SB_BLOB_MODE_LOGICAL_READER_V3 |
-                          SB_BLOB_MODE_OPAQUE_ENCODED_READER_V3)) != 0 ||
-      BlobUuidIsNil(token.lifetime_token_uuid) ||
-      BlobUuidIsNil(token.authority_instance_uuid) ||
-      BlobUuidIsNil(token.database_uuid) ||
-      BlobUuidIsNil(token.transaction_uuid) ||
-      BlobUuidIsNil(token.snapshot_uuid) ||
-      BlobUuidIsNil(token.security_context_uuid) ||
-      token.lifetime_token_generation == 0 ||
-      token.authority_instance_generation == 0 || token.snapshot_generation == 0 ||
-      token.security_generation == 0 || token.immutable_binding_generation == 0 ||
-      token.lifetime_token_generation != token.snapshot_generation ||
-      !BlobUuidEqual(authority.authority_instance_uuid,
-                     token.authority_instance_uuid) ||
-      authority.authority_instance_generation !=
-          token.authority_instance_generation ||
-      !BlobUuidEqual(request.expected_authority_instance_uuid,
-                     token.authority_instance_uuid) ||
-      request.expected_authority_instance_generation !=
-          token.authority_instance_generation ||
-      !BlobUuidEqual(request.expected_database_uuid, token.database_uuid) ||
-      !BlobUuidEqual(request.expected_session_uuid, token.session_uuid) ||
-      !BlobUuidEqual(request.expected_statement_uuid, token.statement_uuid) ||
-      !BlobUuidEqual(request.expected_transaction_uuid, token.transaction_uuid) ||
-      !BlobUuidEqual(request.expected_snapshot_uuid, token.snapshot_uuid) ||
-      request.expected_snapshot_generation != token.snapshot_generation ||
-      !BlobUuidEqual(request.expected_security_context_uuid,
-                     token.security_context_uuid) ||
-      request.expected_security_generation != token.security_generation ||
-      !PlatformEqualsBlob(carrier.authority_instance_uuid,
-                          token.authority_instance_uuid) ||
-      carrier.authority_instance_generation !=
-          token.authority_instance_generation ||
-      !PlatformEqualsBlob(carrier.lifetime_token_uuid,
-                          token.lifetime_token_uuid) ||
-      carrier.lifetime_token_generation != token.lifetime_token_generation ||
-      carrier.immutable_binding_generation !=
-          token.immutable_binding_generation ||
-      PlatformUuidIsNil(carrier.carrier_uuid) || carrier.carrier_generation == 0 ||
-      carrier.carrier_kind != SB_BLOB_MODE_MATERIALIZED_BYTES_V3) {
-    return false;
-  }
-  const bool session_nil = BlobUuidIsNil(token.session_uuid);
-  const bool statement_nil = BlobUuidIsNil(token.statement_uuid);
-  if (session_nil != statement_nil) return false;
-  if (token.owner_class == SB_BLOB_OWNER_EXECUTION_BORROW_V3 &&
-      (session_nil || statement_nil)) return false;
-  if (token.owner_class == SB_BLOB_OWNER_ENCODED_ARTIFACT_BORROW_V3)
-    return false;
-  switch (request.operation) {
-    case SB_BLOB_OP_VALIDATE_VIEW_V3:
-    case SB_BLOB_OP_READ_V3:
-    case SB_BLOB_OP_MATERIALIZE_V3:
-    case SB_BLOB_OP_HASH_V3:
-    case SB_BLOB_OP_COMPARE_V3:
-    case SB_BLOB_OP_INTRINSIC_TRANSFORM_V3:
-      return true;
-    default:
-      return false;
-  }
+  // One closed structural matrix controls both factory admission and later
+  // retained consumers. Do not repeat the retired materialized-only matrix
+  // here: that rejects a genuinely admitted logical reader after pinning it.
+  return authority.retain != nullptr && authority.probe != nullptr &&
+      authority.begin_access != nullptr && authority.end_access != nullptr &&
+      authority.release != nullptr;
 }
 
 bool RetainTicketValid(const BlobLifetimeRetainTicketV3& ticket,
@@ -2585,6 +2508,8 @@ void BlobRetainedLifetimeLeaseV3::PrepareInvariantLocalCleanup() noexcept {
   ZeroTicket();
   carrier_binding_ = {};
   carrier_data_ = nullptr;
+  carrier_reader_context_ = nullptr;
+  carrier_read_at_ = nullptr;
   carrier_logical_length_ = 0;
   descriptor_uuid_ = {};
   descriptor_generation_ = 0;
@@ -2732,6 +2657,8 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::AdoptFrom(
   carrier_binding_ = source.carrier_binding_;
   carrier_state_ = source.carrier_state_;
   carrier_data_ = source.carrier_data_;
+  carrier_reader_context_ = source.carrier_reader_context_;
+  carrier_read_at_ = source.carrier_read_at_;
   carrier_logical_length_ = source.carrier_logical_length_;
   token_ = source.token_;
   request_ = source.request_;
@@ -2748,6 +2675,8 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::AdoptFrom(
   source.ZeroTicket();
   source.carrier_binding_ = {};
   source.carrier_data_ = nullptr;
+  source.carrier_reader_context_ = nullptr;
+  source.carrier_read_at_ = nullptr;
   source.carrier_logical_length_ = 0;
   source.descriptor_uuid_ = {};
   source.descriptor_generation_ = 0;
@@ -2949,10 +2878,11 @@ class BlobLifetimeDatatypeConsumerAccessV3Generation1 final {
  public:
   // Shared, callback-free gate. A NULL shortcut must never outrank profile,
   // admission, token/carrier binding or dirty-state validation.
+  template <typename Carrier>
   static BlobLifetimeRuntimeResultV3 Validate(
       const BlobValidatedProfileHandleV3& profile,
       const BlobLifetimeAuthorityAdmissionV3Generation1& admission,
-      const BlobBoundMaterializedCarrierV3Generation1& carrier,
+      const Carrier& carrier,
       const BlobLifetimeTokenV3& token,
       const BlobLifetimeUseRequestV3& request) noexcept {
     if (!ExactProfile(profile)) {
@@ -2989,18 +2919,32 @@ class BlobLifetimeDatatypeConsumerAccessV3Generation1 final {
         (carrier.state_ != BlobValueStateV3::sql_null &&
          carrier.state_ != BlobValueStateV3::value) ||
         (carrier.state_ == BlobValueStateV3::sql_null &&
-         (carrier.logical_length_ != 0 || carrier.data_ != nullptr)) ||
-        (carrier.logical_length_ != 0 && carrier.data_ == nullptr) ||
+         carrier.logical_length_ != 0) ||
         carrier.logical_length_ > kBlobMaximumLogicalBytesV3)
       return RuntimeTerminated();
+    if constexpr (std::is_same_v<Carrier,
+                      BlobBoundMaterializedCarrierV3Generation1>) {
+      if (carrier.binding_.carrier_kind != SB_BLOB_MODE_MATERIALIZED_BYTES_V3 ||
+          (carrier.state_ == BlobValueStateV3::sql_null &&
+           carrier.data_ != nullptr) ||
+          (carrier.logical_length_ != 0 && carrier.data_ == nullptr))
+        return RuntimeTerminated();
+    } else {
+      static_assert(std::is_same_v<Carrier,
+                        BlobBoundLogicalReaderCarrierV3Generation1>);
+      if (carrier.binding_.carrier_kind != SB_BLOB_MODE_LOGICAL_READER_V3 ||
+          carrier.context_ == nullptr || carrier.read_at_ == nullptr)
+        return RuntimeTerminated();
+    }
     return RuntimeSuccess();
   }
 };
 
+template <typename Carrier>
 BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::RetainFrom(
     const BlobValidatedProfileHandleV3& profile,
     BlobLifetimeAuthorityAdmissionV3Generation1& admission,
-    const BlobBoundMaterializedCarrierV3Generation1& carrier,
+    const Carrier& carrier,
     const BlobLifetimeTokenV3& token,
     const BlobLifetimeUseRequestV3& request,
     u8 invariant_operation,
@@ -3045,7 +2989,16 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::RetainFrom(
   admission_.TransferFrom(admission);
   carrier_binding_ = carrier.binding_;
   carrier_state_ = carrier.state_;
-  carrier_data_ = carrier.data_;
+  if constexpr (std::is_same_v<Carrier,
+                    BlobBoundMaterializedCarrierV3Generation1>) {
+    carrier_data_ = carrier.data_;
+    carrier_reader_context_ = nullptr;
+    carrier_read_at_ = nullptr;
+  } else {
+    carrier_data_ = nullptr;
+    carrier_reader_context_ = carrier.context_;
+    carrier_read_at_ = carrier.read_at_;
+  }
   carrier_logical_length_ = carrier.logical_length_;
   token_ = token;
   request_ = request;
@@ -3070,6 +3023,16 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::RetainFrom(
     }
     if (!state_.TryFinalize(invariant_seen ? State::terminal : clean_state, 1))
       std::terminate();
+    // A clean retain refusal may leave this wrapper reusable. No unowned
+    // carrier pointer or routing callable may survive dropping its pins.
+    carrier_binding_ = {};
+    carrier_state_ = BlobValueStateV3::value;
+    carrier_data_ = nullptr;
+    carrier_reader_context_ = nullptr;
+    carrier_read_at_ = nullptr;
+    carrier_logical_length_ = 0;
+    descriptor_uuid_ = {};
+    descriptor_generation_ = 0;
     admission_.DropPin();
     return primary;
   };
@@ -3325,6 +3288,26 @@ BlobLifetimeRuntimeResultV3 RetainBaseBlobLifetimeLeaseV3Generation1(
                                 request, request.operation);
 }
 
+BlobLifetimeRuntimeResultV3 RetainBaseBlobLifetimeLeaseV3Generation1(
+    const BlobValidatedProfileHandleV3& profile,
+    BlobLifetimeAuthorityAdmissionV3Generation1&& trusted_admission,
+    const BlobBoundLogicalReaderCarrierV3Generation1& carrier,
+    const BlobLifetimeTokenV3& token,
+    const BlobLifetimeUseRequestV3& request,
+    BlobRetainedLifetimeLeaseV3& destination) noexcept {
+  return destination.RetainFrom(profile, trusted_admission, carrier, token,
+                                request, request.operation);
+}
+
+BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::CallbackFailure(
+    u8 code, BlobLifetimePhaseV3 phase,
+    const BlobLifetimeUseRequestV3& request,
+    const platform::Uuid& descriptor_uuid,
+    u64 descriptor_generation) const noexcept {
+  return MapCallbackFailure(code, phase, request, descriptor_uuid,
+                            descriptor_generation, carrier_binding_.carrier_kind);
+}
+
 BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::Probe() noexcept {
   EntrantGuard entrant(state_);
   if (!entrant.acquired()) {
@@ -3508,6 +3491,13 @@ BlobRetainedLifetimeLeaseV3::VisitBoundMaterializedBytes(
   suppress_publication_gate_ = false;
   if (state_.Deferred() != 0)
     return ReleaseOwned(BlobLifetimePhaseV3::release, request_.operation);
+  if (carrier_binding_.carrier_kind != SB_BLOB_MODE_MATERIALIZED_BYTES_V3) {
+    // The private materialized visitor cannot turn reader routing metadata
+    // into a byte span. Consume the retained cleanup obligation, without an
+    // access callback or a fabricated public diagnostic.
+    return ReleaseOwned(BlobLifetimePhaseV3::release, request_.operation,
+                        RuntimeTerminated());
+  }
   auto primary = OrdinaryGate(BlobLifetimeGateV3::before_begin_access,
                               BlobLifetimePublicPhaseV3::begin_access,
                               BlobLifetimePhaseV3::begin_access);
@@ -3991,6 +3981,8 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::ReleaseInternal(
   }
   carrier_binding_ = {};
   carrier_data_ = nullptr;
+  carrier_reader_context_ = nullptr;
+  carrier_read_at_ = nullptr;
   carrier_logical_length_ = 0;
   descriptor_uuid_ = {};
   descriptor_generation_ = 0;
@@ -4351,11 +4343,6 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::CloneInto(
   admission.token_clock_ = admission_.token_clock_;
   admission.request_clock_ = admission_.request_clock_;
   admission.admitted_ = true;
-  BlobBoundMaterializedCarrierV3Generation1 carrier;
-  carrier.binding_ = carrier_binding_;
-  carrier.state_ = carrier_state_;
-  carrier.data_ = carrier_data_;
-  carrier.logical_length_ = carrier_logical_length_;
   const auto built = BuildCurrentBlobValidatedProfileHandleV3(kBlobV11ReceiptUuid);
   if (!built.ok()) {
     auto profile_failure = ProtocolFailure(
@@ -4368,8 +4355,25 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::CloneInto(
     const auto result = finish_source(profile_failure);
     return result;
   }
-  const auto clone_result = destination.RetainFrom(
-      built.profile, admission, carrier, token_, request_, 15, true, true, true);
+  const auto clone_result = [&]() noexcept {
+    if (carrier_binding_.carrier_kind == SB_BLOB_MODE_LOGICAL_READER_V3) {
+      BlobBoundLogicalReaderCarrierV3Generation1 carrier;
+      carrier.binding_ = carrier_binding_;
+      carrier.state_ = carrier_state_;
+      carrier.logical_length_ = carrier_logical_length_;
+      carrier.context_ = carrier_reader_context_;
+      carrier.read_at_ = carrier_read_at_;
+      return destination.RetainFrom(built.profile, admission, carrier, token_,
+                                    request_, 15, true, true, true);
+    }
+    BlobBoundMaterializedCarrierV3Generation1 carrier;
+    carrier.binding_ = carrier_binding_;
+    carrier.state_ = carrier_state_;
+    carrier.data_ = carrier_data_;
+    carrier.logical_length_ = carrier_logical_length_;
+    return destination.RetainFrom(built.profile, admission, carrier, token_,
+                                  request_, 15, true, true, true);
+  }();
   destination_retained_by_clone = clone_result.ok();
   const auto result = finish_source(clone_result);
   return result;
@@ -4417,9 +4421,10 @@ BlobLifetimeRuntimeResultV3 ConsumeBlobMaterializedValueScopedV3Generation1(
   return primary;
 }
 
-BlobMaterializedLengthResultV3 ReadBlobMaterializedLengthV3Generation1(
+template <typename Carrier>
+BlobMaterializedLengthResultV3 ReadBlobAuthenticatedLengthV3Generation1(
     const BlobValidatedProfileHandleV3& profile,
-    const BlobBoundMaterializedCarrierV3Generation1& carrier,
+    const Carrier& carrier,
     BlobLifetimeAuthorityAdmissionV3Generation1&& trusted_admission,
     const BlobLifetimeTokenV3& token,
     const BlobLifetimeUseRequestV3& request,
@@ -4459,6 +4464,30 @@ BlobMaterializedLengthResultV3 ReadBlobMaterializedLengthV3Generation1(
   const auto released = lease.Release();
   if (!released.ok()) return {released};
   return {released, is_null, length};
+}
+
+BlobMaterializedLengthResultV3 ReadBlobMaterializedLengthV3Generation1(
+    const BlobValidatedProfileHandleV3& profile,
+    const BlobBoundMaterializedCarrierV3Generation1& carrier,
+    BlobLifetimeAuthorityAdmissionV3Generation1&& trusted_admission,
+    const BlobLifetimeTokenV3& token,
+    const BlobLifetimeUseRequestV3& request,
+    bool null_allowed) noexcept {
+  return ReadBlobAuthenticatedLengthV3Generation1(
+      profile, carrier, std::move(trusted_admission), token, request,
+      null_allowed);
+}
+
+BlobLogicalReaderLengthResultV3 ReadBlobLogicalReaderLengthV3Generation1(
+    const BlobValidatedProfileHandleV3& profile,
+    const BlobBoundLogicalReaderCarrierV3Generation1& carrier,
+    BlobLifetimeAuthorityAdmissionV3Generation1&& trusted_admission,
+    const BlobLifetimeTokenV3& token,
+    const BlobLifetimeUseRequestV3& request,
+    bool null_allowed) noexcept {
+  return ReadBlobAuthenticatedLengthV3Generation1(
+      profile, carrier, std::move(trusted_admission), token, request,
+      null_allowed);
 }
 
 }  // namespace scratchbird::core::datatypes

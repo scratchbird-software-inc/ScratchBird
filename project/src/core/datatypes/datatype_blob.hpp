@@ -579,6 +579,8 @@ class BlobBoundLogicalReaderCarrierV3Generation1 final {
   u64 logical_length() const noexcept { return logical_length_; }
  private:
   friend class BlobLifetimeRuntimeFactoryV3Generation1;
+  friend class BlobLifetimeDatatypeConsumerAccessV3Generation1;
+  friend class BlobRetainedLifetimeLeaseV3;
   BlobCarrierBindingV3 binding_{};
   BlobValueStateV3 state_ = BlobValueStateV3::value;
   u64 logical_length_ = 0;
@@ -969,6 +971,13 @@ class BlobRetainedLifetimeLeaseV3 final {
       const BlobBoundMaterializedCarrierV3Generation1&,
       const BlobLifetimeTokenV3&, const BlobLifetimeUseRequestV3&,
       BlobRetainedLifetimeLeaseV3&) noexcept;
+  friend BlobLifetimeRuntimeResultV3
+  RetainBaseBlobLifetimeLeaseV3Generation1(
+      const BlobValidatedProfileHandleV3&,
+      BlobLifetimeAuthorityAdmissionV3Generation1&&,
+      const BlobBoundLogicalReaderCarrierV3Generation1&,
+      const BlobLifetimeTokenV3&, const BlobLifetimeUseRequestV3&,
+      BlobRetainedLifetimeLeaseV3&) noexcept;
 
   enum class State : u8 {
     disarmed = 0,
@@ -1055,10 +1064,11 @@ class BlobRetainedLifetimeLeaseV3 final {
       u8 invariant_operation = 16,
       bool destination_entrant_already_held = false,
       State reserved_destination_predecessor = State::terminal) noexcept;
+  template <typename Carrier>
   BlobLifetimeRuntimeResultV3 RetainFrom(
       const BlobValidatedProfileHandleV3& profile,
       BlobLifetimeAuthorityAdmissionV3Generation1& admission,
-      const BlobBoundMaterializedCarrierV3Generation1& carrier,
+      const Carrier& carrier,
       const BlobLifetimeTokenV3& token,
       const BlobLifetimeUseRequestV3& request,
       u8 invariant_operation,
@@ -1067,6 +1077,11 @@ class BlobRetainedLifetimeLeaseV3 final {
       bool destination_already_installing = false) noexcept;
   BlobLifetimeRuntimeResultV3 ProbeInternal(
       bool final_probe, bool owner_already_active = false) noexcept;
+  BlobLifetimeRuntimeResultV3 CallbackFailure(
+      u8 code, BlobLifetimePhaseV3 phase,
+      const BlobLifetimeUseRequestV3& request,
+      const platform::Uuid& descriptor_uuid,
+      u64 descriptor_generation) const noexcept;
   BlobLifetimeRuntimeResultV3 EndAccessInternal(
       BlobLifetimeAccessTicketV3 access,
       BlobLifetimeRuntimeResultV3 primary) noexcept;
@@ -1116,6 +1131,8 @@ class BlobRetainedLifetimeLeaseV3 final {
   BlobMaterializedCarrierBindingV3 carrier_binding_{};
   BlobValueStateV3 carrier_state_ = BlobValueStateV3::value;
   const byte* carrier_data_ = nullptr;
+  void* carrier_reader_context_ = nullptr;
+  BlobReadAtV3 carrier_read_at_ = nullptr;
   u64 carrier_logical_length_ = 0;
   BlobLifetimeTokenV3 token_{};
   BlobLifetimeUseRequestV3 request_{};
@@ -1185,6 +1202,14 @@ BlobLifetimeRuntimeResultV3 RetainBaseBlobLifetimeLeaseV3Generation1(
     const BlobLifetimeUseRequestV3& request,
     BlobRetainedLifetimeLeaseV3& destination) noexcept;
 
+BlobLifetimeRuntimeResultV3 RetainBaseBlobLifetimeLeaseV3Generation1(
+    const BlobValidatedProfileHandleV3& profile,
+    BlobLifetimeAuthorityAdmissionV3Generation1&& trusted_admission,
+    const BlobBoundLogicalReaderCarrierV3Generation1& carrier,
+    const BlobLifetimeTokenV3& token,
+    const BlobLifetimeUseRequestV3& request,
+    BlobRetainedLifetimeLeaseV3& destination) noexcept;
+
 BlobLifetimeRuntimeResultV3 ConsumeBlobMaterializedValueScopedV3Generation1(
     const BlobValidatedProfileHandleV3& profile,
     const BlobBoundMaterializedCarrierV3Generation1& carrier,
@@ -1211,6 +1236,17 @@ struct BlobMaterializedLengthResultV3 {
 BlobMaterializedLengthResultV3 ReadBlobMaterializedLengthV3Generation1(
     const BlobValidatedProfileHandleV3& profile,
     const BlobBoundMaterializedCarrierV3Generation1& carrier,
+    BlobLifetimeAuthorityAdmissionV3Generation1&& trusted_admission,
+    const BlobLifetimeTokenV3& token,
+    const BlobLifetimeUseRequestV3& request,
+    bool null_allowed) noexcept;
+
+// Identical scalar publication/cleanup contract for authenticated logical
+// reader metadata. Does not invoke the reader or grant content access.
+using BlobLogicalReaderLengthResultV3 = BlobMaterializedLengthResultV3;
+BlobLogicalReaderLengthResultV3 ReadBlobLogicalReaderLengthV3Generation1(
+    const BlobValidatedProfileHandleV3& profile,
+    const BlobBoundLogicalReaderCarrierV3Generation1& carrier,
     BlobLifetimeAuthorityAdmissionV3Generation1&& trusted_admission,
     const BlobLifetimeTokenV3& token,
     const BlobLifetimeUseRequestV3& request,
