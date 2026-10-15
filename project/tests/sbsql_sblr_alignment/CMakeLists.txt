@@ -2373,9 +2373,16 @@ foreach(codec_target IN ITEMS
   target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_memory_configuration.cpp)
   target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_identifier_profile.cpp)
   target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_construction_intent.cpp)
+  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_policy_descriptor.cpp)
 endforeach()
 
 add_executable(sbsql_sblr_alignment_catalog_construction_intent catalog_construction_intent_test.cpp)
+add_executable(sbsql_sblr_alignment_catalog_policy_descriptor catalog_policy_descriptor_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_policy_descriptor PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_policy_descriptor PRIVATE sb_storage_database)
+add_test(NAME sbsql_sblr_alignment_catalog_policy_descriptor COMMAND sbsql_sblr_alignment_catalog_policy_descriptor)
+set_tests_properties(sbsql_sblr_alignment_catalog_policy_descriptor PROPERTIES
+  LABELS "sbsql_sblr_alignment;catalog;binary_uuid;native_policy;not_runtime_acceptance" TIMEOUT 120)
 target_compile_features(sbsql_sblr_alignment_catalog_construction_intent PRIVATE cxx_std_23)
 target_link_libraries(sbsql_sblr_alignment_catalog_construction_intent PRIVATE sb_storage_database)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

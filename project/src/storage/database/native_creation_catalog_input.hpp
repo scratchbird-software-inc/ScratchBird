@@ -5,6 +5,7 @@
 #include "datatype_binary.hpp"
 #include "catalog_identifier_profile.hpp"
 #include "catalog_construction_intent.hpp"
+#include "catalog_policy_descriptor.hpp"
 
 namespace scratchbird::storage::database {
 // Exact size of the encoded first-version row including its stable slot and
@@ -44,6 +45,15 @@ template<class Reserve> void ReserveNativeCreationCatalogReferences(
       const auto& e=*event.record;
       for(const auto& id:{e.database_uuid,e.engine_uuid,e.operation_uuid,e.filespace_uuid,e.origin_transaction_uuid.value})reserve(id);
       if(e.actor_uuid)reserve(e.actor_uuid->value);
+    }
+  }
+  if(core::catalog::IsCatalogPolicyDescriptorPayload(m.record.payload)){
+    const auto descriptor=core::catalog::DecodeCatalogPolicyDescriptor(m.record.payload);
+    if(descriptor.ok()){
+      const auto& p=*descriptor.record;
+      for(const auto& id:{p.policy_version_uuid,p.database_uuid,p.scope_uuid,p.authority_owner_uuid,
+          p.origin_transaction_uuid.value,p.creating_transaction_uuid.value})reserve(id);
+      for(const auto* id:{&p.evidence_profile_uuid,&p.disclosure_profile_uuid,&p.retention_profile_uuid,&p.cluster_uuid})if(*id)reserve(**id);
     }
   }
   if(!r.name)return;

@@ -20,6 +20,7 @@
 #include "catalog_memory_configuration.hpp"
 #include "catalog_identifier_profile.hpp"
 #include "catalog_construction_intent.hpp"
+#include "catalog_policy_descriptor.hpp"
 #include "catalog_scheduler_policy.hpp"
 #include "catalog_scheduler_fairness.hpp"
 #include "catalog_metric_visibility_policy.hpp"
@@ -162,6 +163,10 @@ CatalogTypedRecordViewResult ValidateCatalogTypedRecordView(CatalogTypedRecordVi
       !CatalogConstructionIntentMatchesHeader(record))
     return RecordViewError("AUDIT.EVENT_INVALID", "audit.construction_intent.invalid",
                           "construction_intent_binary_payload_or_header_invalid");
+  if (IsCatalogPolicyDescriptorPayload(record.payload) &&
+      !CatalogPolicyDescriptorMatchesHeader(record))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.policy_descriptor.invalid",
+                          "policy_descriptor_binary_payload_or_header_invalid");
   if (IsCatalogIdentifierProfilePayload(record.payload) &&
       !CatalogIdentifierProfileMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.identifier_profile.invalid",
@@ -445,6 +450,10 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
       !CatalogConstructionIntentMatchesMetadata(value))
     return CatalogRecordDiagnosticView{CodecErrorStatus(),"AUDIT.EVENT_INVALID",
         "audit.construction_intent.invalid","construction_intent_definition_binding_invalid","core.catalog.record_codec"};
+  if ((value.object_subtype == "policy_descriptor" ||
+       IsCatalogPolicyDescriptorPayload(value.record.payload)) &&
+      !CatalogPolicyDescriptorMatchesMetadata(value))
+    return MetadataViewError("policy_descriptor_definition_binding_invalid");
   if ((value.object_subtype == "identifier_resolution_profile" ||
        IsCatalogIdentifierProfilePayload(value.record.payload)) &&
       !CatalogIdentifierProfileMatchesMetadata(value))
@@ -672,6 +681,7 @@ bool CatalogMetadataPreservesFamilyOrigin(
       CatalogMemoryConfigurationPreservesOrigin(previous,successor) &&
       CatalogIdentifierProfilePreservesOrigin(previous,successor) &&
       CatalogConstructionIntentPreservesOrigin(previous,successor) &&
+      CatalogPolicyDescriptorPreservesOrigin(previous,successor) &&
       CatalogRuntimeAuthorityBindingPreservesOrigin(previous,successor) &&
       CatalogContextNamespacePreservesOrigin(previous,successor) &&
       CatalogSchedulerPolicyPreservesOrigin(previous,successor) &&

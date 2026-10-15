@@ -4,6 +4,7 @@
 #include "catalog_context_namespace.hpp"
 #include "catalog_identifier_profile.hpp"
 #include "catalog_construction_intent.hpp"
+#include "catalog_policy_descriptor.hpp"
 #include "disk_device.hpp"
 #include "uuid.hpp"
 #include "hash_digest_parts.hpp"
@@ -84,6 +85,8 @@ NativeCatalogVersionStageResult detail::NativeCatalogVersionStager::Run(
        !catalog::CatalogIdentifierProfileMatchesDatabase(
         catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||
        !catalog::CatalogConstructionIntentMatchesDatabase(
+        catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||
+       !catalog::CatalogPolicyDescriptorMatchesDatabase(
         catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid))return Fail(E::invalid_metadata);
     auto devices=supplied;std::sort(devices.begin(),devices.end(),[](const auto& a,const auto& b){return a.filespace_uuid<b.filespace_uuid;});
     std::set<disk::FileDevice*> handles;std::vector<std::unique_lock<std::recursive_mutex>> guards;guards.reserve(devices.size());
