@@ -96,25 +96,6 @@ ServerStartupResult CompleteServerStartup(ServerConfigLoadResult config,
     return result;
   }
 
-  if (config.config.mode != ServerMode::kValidationOnly) {
-    const auto host = ProbeServerHostPlatform();
-    if (!host.supported) {
-      result.exit_code = 2;
-      result.diagnostics.push_back({
-          "PROFILE.BUILTIN_PROFILE_UNAVAILABLE",
-          "PROFILE.BUILTIN_PROFILE_UNAVAILABLE",
-          ServerDiagnosticSeverity::kError,
-          "The server host lacks a required platform capability.",
-          {{"platform", host.platform},
-           {"kernel_release", host.kernel_release},
-           {"minimum_linux_kernel", "6.6"},
-           {"failed_capability", host.failed_capability},
-           {"native_error", std::to_string(host.native_error)},
-           {"operator_action", "Use a qualified maintained kernel and permit required process/IPC APIs."}}});
-      return result;
-    }
-  }
-
   auto memory_policy = ResolveServerMemoryAllocationPolicy(config.config);
   if (!memory_policy.ok()) {
     for (const auto& diagnostic : memory_policy.diagnostics) {
@@ -159,6 +140,28 @@ ServerStartupResult CompleteServerStartup(ServerConfigLoadResult config,
           {{"startup_error",std::to_string(static_cast<unsigned>(admitted.error))},
            {"pool_error",std::to_string(static_cast<unsigned>(admitted.pool.error))},
            {"adapter_error",std::to_string(static_cast<unsigned>(admitted.pool.adapter_error))}}});
+      return result;
+    }
+  }
+  // The real IPC-capability probe traverses the control-plane decoder, whose
+  // message-vector correlation uses the ordinary crypto UUID provider. It is
+  // not a provider-free OS query. Install admitted process backing/hooks first;
+  // retain the full platform checks before lifecycle files or hosted effects.
+  if (config.config.mode != ServerMode::kValidationOnly) {
+    const auto host = ProbeServerHostPlatform();
+    if (!host.supported) {
+      result.exit_code = 2;
+      result.diagnostics.push_back({
+          "PROFILE.BUILTIN_PROFILE_UNAVAILABLE",
+          "PROFILE.BUILTIN_PROFILE_UNAVAILABLE",
+          ServerDiagnosticSeverity::kError,
+          "The server host lacks a required platform capability.",
+          {{"platform", host.platform},
+           {"kernel_release", host.kernel_release},
+           {"minimum_linux_kernel", "6.6"},
+           {"failed_capability", host.failed_capability},
+           {"native_error", std::to_string(host.native_error)},
+           {"operator_action", "Use a qualified maintained kernel and permit required process/IPC APIs."}}});
       return result;
     }
   }

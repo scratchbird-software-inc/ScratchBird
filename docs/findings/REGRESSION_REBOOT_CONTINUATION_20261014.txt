@@ -314,3 +314,40 @@ bootstrap/reference closure and mutable security/controller, provision actual
 service/provider credentials and activation before original live startup BEGIN.
 Generic58 required_by_default strings still do not constitute executable typed
 policies, and neither this persistence family nor status image supplies them.
+
+Serving-only crypto ordering repair, 2026-10-15
+----------------------------------------------
+Memory prerequisite committed/pushed54b029a498393de0fb6b765996cc4f7c57211049.
+Fresh6 original IA09 replay then found CRYPTO.PROFILE.UNAVAILABLE with
+startup6/pool6/adapter6: late installation. Real foreground capability probe
+uses ControlPeerIdentity::ReadFrame -> DecodeControlFrame -> message-vector
+correlation -> ordinary UUID/RAND, before allocator hooks were installed.
+Existing host/product fixtures validated configuration only and skipped it.
+
+Added actual foreground startup regression: FAILED before repair. Moved the
+unchanged capability probe after real configured process crypto admission but
+before emergency/lifecycle/engine/IPC effects. Added real foreground lifecycle/
+memory accounting positive and unsupported-kernel uname fault negative proving
+exact diagnostics, no lifecycle publication and retained then released provider
+custody. No platform flag, alternate UUID source, skipped probe or relaxed late
+guard. All29 crypto/config/adapter tests PASS2.491682s; actual server/seeder/
+client/parser rebuilt. Six original IA09 tests replayed with current binaries:
+all still FAILED at original SECURITY.CONTEXT.EXPIRED/CATALOG_MUTATE, now after
+crypto startup, not hidden by the late-installation regression. No original
+closed. Full failure receipts/logs/LastTest retained; no leaked descendants,
+all6 exact generated private databases/workspaces cleaned. Core09 contract and
+digest updated locally; actual preflight verifies62 known outstanding/9403
+registrations/38 current targets. Frozen260 remains199+61 plus supplemental1.
+
+NEXT owning native creation-plan producer under storage/database. Reuse actual
+BuildCreateCatalogRows input inventory, MaterializePolicySeedPackRows typed
+values/issuer and real MaterializeConfiguredLocalMetricBatch, not incomplete
+legacy metadata. Assemble real database/schema/alias definitions with supplied
+owner/audit/policy/identifier/dialect/collision references using existing named
+and initial-schema assemblers; complete actual reference closure before native
+physical construction. Provision explicitly requested node service principal,
+credential reference and native65587 runtime binding in that same real cohort.
+Do not copy MetricSeed fixture metadata or infer authority constants. Native
+construction must remain fenced until real activation and retained native
+source/security/controller/provider wiring can admit hosted effect-capable
+BEGIN. This required shared root still owns all6 original startup failures.

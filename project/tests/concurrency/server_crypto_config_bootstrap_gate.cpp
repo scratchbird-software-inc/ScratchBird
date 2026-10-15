@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cerrno>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <fcntl.h>
 #include <iostream>
@@ -19,6 +20,7 @@
 #include <thread>
 #include <sys/random.h>
 #include <sys/wait.h>
+#include <sys/utsname.h>
 #include <unistd.h>
 
 namespace s=scratchbird::server;
@@ -28,10 +30,18 @@ namespace h=scratchbird::core::hash;
 namespace r=scratchbird::core::runtime;
 using scratchbird::core::platform::Uuid;
 std::atomic<unsigned> rand_calls{0}, entropy_calls{0};
+std::atomic<unsigned> host_probe_calls{0};
 bool provider_allowed=false;
 std::string_view test_mode;
 int status_descriptor=-1;
 unsigned write_calls=0;
+extern "C" int __real_uname(struct utsname*);
+extern "C" int __wrap_uname(struct utsname* out) {
+  ++host_probe_calls;
+  const auto result=__real_uname(out);
+  if(result==0&&test_mode=="host_platform_refusal")std::memcpy(out->release,"6.5.0",6);
+  return result;
+}
 extern "C" ssize_t __real_getrandom(void*,std::size_t,unsigned);
 extern "C" ssize_t __wrap_getrandom(void* out,std::size_t size,unsigned flags) {
   ++entropy_calls;
@@ -195,13 +205,40 @@ int main(int argc,char** argv) try {
           "actual host config rejection has source-owned diagnostics before provider admission");
       Check(u::IsEngineIdentityUuid(Uuid{startup.diagnostics.front().occurrence_uuid}),
           "bad host config retains a genuine binary diagnostic occurrence");
-    } else if(test_mode=="host_startup") {
+    } else if(test_mode=="host_startup"||test_mode=="host_platform_startup"||test_mode=="host_platform_refusal") {
       provider_allowed=true;
-      auto startup=s::RunServerStartup(s::ResolveServerBootstrapConfig(cli),host);
-      Check(startup.exit_code==0&&host.installed()&&startup.emergency_reserve&&rand_calls>0,
-          "actual startup installs process provider before emergency owner UUID issuance");
-      Check(host.Snapshot().backing_bytes==bytes&&manager.Snapshot().current_bytes>bytes,
-          "actual startup retains separately accounted provider and emergency backing");
+      auto resolved=s::ResolveServerBootstrapConfig(cli);
+      if(test_mode!="host_startup") {
+        resolved.config.mode=s::ServerMode::kForeground;
+        resolved.config.data_dir=artifacts.path()/"data";
+        resolved.config.control_dir=artifacts.path()/"control";
+        resolved.config.pid_file=resolved.config.control_dir/"server.pid";
+        resolved.config.lifecycle_state_file=resolved.config.control_dir/"server.state";
+        resolved.config.lifecycle_journal_file=resolved.config.control_dir/"server.journal";
+        resolved.config.database_default_path=artifacts.path()/"node.sbdb";
+      }
+      auto startup=s::RunServerStartup(std::move(resolved),host);
+      if(test_mode=="host_platform_refusal") {
+        Check(startup.exit_code==2&&host.installed()&&!startup.emergency_reserve&&host_probe_calls==1&&
+            host.Snapshot().backing_bytes==bytes&&manager.Snapshot().current_bytes==bytes&&
+            !std::filesystem::exists(startup.effective_config.control_dir),
+            "unsupported host retains actual provider custody but refuses before emergency/lifecycle effects");
+        bool refused=false,kernel=false,capability=false;
+        for(const auto& diagnostic:startup.diagnostics)if(diagnostic.code=="PROFILE.BUILTIN_PROFILE_UNAVAILABLE") {
+          refused=true;for(const auto& field:diagnostic.fields){kernel|=field.key=="kernel_release"&&field.value=="6.5.0";
+            capability|=field.key=="failed_capability"&&field.value=="linux_kernel_6_6_minimum";}
+        }
+        Check(refused&&kernel&&capability,"host refusal preserves exact kernel/capability diagnostic after provider admission");
+      }else {
+        Check(startup.exit_code==0&&host.installed()&&startup.emergency_reserve&&rand_calls>0,
+            "actual startup installs process provider before emergency owner UUID issuance");
+        if(test_mode=="host_platform_startup")
+          Check(host_probe_calls==1&&std::filesystem::exists(startup.effective_config.lifecycle_state_file)&&
+              startup.effective_config.mode==s::ServerMode::kForeground,
+              "serving startup executes real host IPC probe after provider admission and publishes actual lifecycle artifacts");
+        Check(host.Snapshot().backing_bytes==bytes&&manager.Snapshot().current_bytes>bytes,
+            "actual startup retains separately accounted provider and emergency backing");
+      }
       startup.emergency_reserve.reset();
     } else {
       auto selected=loaded.config;
