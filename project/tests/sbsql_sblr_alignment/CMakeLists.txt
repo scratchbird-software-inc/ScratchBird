@@ -2345,6 +2345,24 @@ add_test(NAME sbsql_sblr_alignment_catalog_schema_creation COMMAND sbsql_sblr_al
 set_tests_properties(sbsql_sblr_alignment_catalog_schema_creation PROPERTIES
   LABELS "sbsql_sblr_alignment;catalog;binary_uuid;native_creation;not_runtime_acceptance" TIMEOUT 120)
 
+add_executable(sbsql_sblr_alignment_catalog_bootstrap_policy catalog_bootstrap_policy_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_bootstrap_policy PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_bootstrap_policy PRIVATE sb_core_catalog)
+add_test(NAME sbsql_sblr_alignment_catalog_bootstrap_policy COMMAND sbsql_sblr_alignment_catalog_bootstrap_policy)
+set_tests_properties(sbsql_sblr_alignment_catalog_bootstrap_policy PROPERTIES
+  LABELS "sbsql_sblr_alignment;catalog;binary_uuid;native_policy;not_runtime_acceptance" TIMEOUT 120)
+
+# These intentionally isolated codec fixtures compile the common dispatcher
+# directly; retain its complete native-family implementation dependencies.
+foreach(codec_target IN ITEMS
+    sbsql_sblr_alignment_catalog_metric_retention_policy
+    sbsql_sblr_alignment_catalog_metric_descriptor
+    sbsql_sblr_alignment_catalog_metric_label_schema
+    sbsql_sblr_alignment_catalog_metric_series
+    sbsql_sblr_alignment_catalog_metric_binding)
+  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_bootstrap_policy.cpp)
+endforeach()
+
 add_executable(sbsql_sblr_alignment_catalog_schema_record catalog_schema_record_test.cpp)
 target_compile_features(sbsql_sblr_alignment_catalog_schema_record PRIVATE cxx_std_23)
 target_link_libraries(sbsql_sblr_alignment_catalog_schema_record PRIVATE

@@ -16,6 +16,7 @@
 #include "catalog_metric_retention_policy.hpp"
 #include "catalog_storage_action_policy.hpp"
 #include "catalog_runtime_authority_binding.hpp"
+#include "catalog_bootstrap_policy.hpp"
 #include "catalog_scheduler_policy.hpp"
 #include "catalog_scheduler_fairness.hpp"
 #include "catalog_metric_visibility_policy.hpp"
@@ -154,6 +155,10 @@ CatalogTypedRecordViewResult ValidateCatalogTypedRecordView(CatalogTypedRecordVi
       !CatalogRuntimeAuthorityBindingMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.runtime_authority_binding.invalid",
                       "runtime_authority_binary_payload_or_header_invalid");
+  if (IsCatalogBootstrapPolicyPayload(record.payload) &&
+      !CatalogBootstrapPolicyMatchesHeader(record))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.bootstrap_policy.invalid",
+                      "bootstrap_policy_binary_payload_or_header_invalid");
   if (record.header.kind == CatalogRecordKind::storage_descriptor &&
       !CatalogStoragePayloadMatchesHeader(record)) {
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.storage_record.invalid",
@@ -407,6 +412,12 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
        IsCatalogRuntimeAuthorityBindingPayload(value.record.payload)) &&
       !CatalogRuntimeAuthorityBindingMatchesMetadata(value))
     return MetadataViewError("runtime_authority_definition_binding_invalid");
+  if ((value.object_subtype == "bootstrap_policy_pack" ||
+       value.object_subtype == "bootstrap_security_provider" ||
+       value.object_subtype == "bootstrap_policy_profile" ||
+       IsCatalogBootstrapPolicyPayload(value.record.payload)) &&
+      !CatalogBootstrapPolicyMatchesMetadata(value))
+    return MetadataViewError("bootstrap_policy_definition_binding_invalid");
   if ((IsCatalogTableDefinitionPayload(value.record.payload) ||
        value.object_subtype == "ordinary_persistent_table") &&
       !CatalogTableDefinitionMatchesMetadata(value))
@@ -625,7 +636,8 @@ DiagnosticRecord MakeCatalogRecordCodecDiagnostic(Status status,
 
 bool CatalogMetadataPreservesFamilyOrigin(
     const CatalogMetadataVersionView& previous, const CatalogMetadataVersionView& successor) {
-  return CatalogRuntimeAuthorityBindingPreservesOrigin(previous,successor) &&
+  return CatalogBootstrapPolicyPreservesOrigin(previous,successor) &&
+      CatalogRuntimeAuthorityBindingPreservesOrigin(previous,successor) &&
       CatalogContextNamespacePreservesOrigin(previous,successor) &&
       CatalogSchedulerPolicyPreservesOrigin(previous,successor) &&
       CatalogSchedulerQueueProfilePreservesOrigin(previous,successor) &&

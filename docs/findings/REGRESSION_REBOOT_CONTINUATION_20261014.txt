@@ -141,3 +141,33 @@ private same-route mutable controller and fresh hosted admission through BEGIN.
 Production CreateDatabaseFile/host still use the old SBDBV001 route; do not replace
 its missing references with synthetic metadata or claim the six IA09 routes closed.
 Core03 amendment/digest and live ledger are local/manual, not GitHub distribution.
+
+Native bootstrap policy-family prerequisite (2026-10-15 UTC)
+----------------------------------------------------------
+Canonical SBCV65588..65590 now define bootstrap pack, security-provider and profile
+records with binary identities/digests, machine generations/counts/booleans,
+bounded borrowed text data and exact origins. Fixed caller-backed serialization
+and borrowed inspection allocate no heap; common native catalog admission rejects
+family/header/subtype/name/parent/version confusion and rewritten origin. Provider
+default disablement is data, not permanent exclusion or admission; external
+providers still require their actual installed provider and owning fences.
+
+Serialized native-bootstrap-policy-qualified-build/tests-20261015 PASS13/13,
+including all existing isolated metric/common/value/schema/table/native-binding
+followers and actual indexed native persistence/reopen of the three new families
+across all5 page profiles. Independent exact bytes, all12 provider classes with
+both enabled states, machine bounds, truncations, heap-denied paths and positive
+generation2 replacement/changed-origin refusals qualify the codec component only.
+The mistaken nonexistent-target build receipt is retained, not counted as PASS.
+Current registrations9400; original partition still199 qualified/61 outstanding.
+
+NEXT: connect explicit creation/import translation to a complete owning native
+bootstrap producer and its admitted references/generations/count reconciliation.
+Loaded legacy policy inputs still retain textual UUIDs and MaterializePolicySeedPackRows
+still emits key/value policy bodies; neither is now magically native. Migrate the
+actual producer/consumers, not merely wrap those old payloads or combine native
+binding reads with path-keyed legacy security. Full service provisioning, mutable
+controller, native security/provider admission and transaction2 activation remain
+required for original live startup qualification. Core03 and contradictory local
+default-policy packet/registry/conformance dispositions are corrected under the
+accepted no-deferral decision; manual distribution remains required.
