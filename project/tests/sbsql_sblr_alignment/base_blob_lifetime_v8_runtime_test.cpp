@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "datatype_blob.hpp"
+#include "datatype_blob_component.hpp"
 #include "datatype_operations.hpp"
 
 #include <algorithm>
@@ -12,6 +13,7 @@
 #include <exception>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <cstring>
 #include <new>
@@ -3318,6 +3320,260 @@ void ExactAdmittedTimeoutRounding() {
               CountCall(f.fake,'E') == 1 && CountCall(f.fake,'L') == 1 && f.fake.pins == 0 &&
               allocation_probe::calls.load() == before,
           "relative timeout rounding fabricated saturation instead of exact ceil milliseconds");
+  }
+}
+
+#include "base_blob_component_vectors.inc"
+
+std::size_t LoadBlobGolden(const BlobComponentGoldenVector& v,
+                           std::span<platform::byte> destination) {
+  Check(v.component_hex.size()%2 == 0 && v.component_hex.size()/2 <= destination.size(),
+        "invalid compiled BLOB component oracle extent");
+  const auto digit = [](char c) -> platform::byte {
+    if (c >= '0' && c <= '9') return c-'0';
+    if (c >= 'a' && c <= 'f') return c-'a'+10;
+    Fail("invalid compiled BLOB component oracle hex digit");
+  };
+  for (std::size_t i = 0; i < v.component_hex.size()/2; ++i)
+    destination[i] = static_cast<platform::byte>((digit(v.component_hex[2*i])<<4)|digit(v.component_hex[2*i+1]));
+  return v.component_hex.size()/2;
+}
+
+void BlobComponentGoldenDigestPasses() {
+  const auto admitted = dt::BuildCurrentBlobValidatedProfileHandleV3(dt::kBlobV11ReceiptUuid);
+  Check(admitted.ok(),"native component exact profile admission");
+  for (const auto& v : kBlobComponentGoldenVectors) {
+    std::array<platform::byte,360> frame{};
+    const auto total = LoadBlobGolden(v,frame);
+    const auto content = std::span<const platform::byte>(frame).subspan(320,total-320);
+    for (std::size_t split = 0; split <= content.size(); ++split) {
+      dt::BlobComponentDigestPassV3 encoder,decoder;
+      dt::BlobComponentHeaderV3 encoded{};
+      const auto before = allocation_probe::calls.load();
+      allocation_probe::enabled.store(true);
+      Check(encoder.BeginEncode(admitted.profile,v.state,content.size()).ok() &&
+                encoder.UpdateContent(content.first(split)).ok() &&
+                encoder.UpdateContent({}).ok() &&
+                encoder.UpdateContent(content.subspan(split)).ok() && encoder.FinishEncode(encoded).ok(),
+            "native component digest pass failed a canonical split including zero-length updates");
+      Check(std::equal(encoded.begin(),encoded.end(),frame.begin()),
+            "SBBLOB03 encoder differs from independent complete binary header oracle");
+      Check(decoder.BeginDecode(admitted.profile,total,std::span(frame).first(320)).ok() &&
+                decoder.UpdateContent(content.first(split)).ok() &&
+                decoder.UpdateContent(content.subspan(split)).ok() && decoder.FinishDecode().ok(),
+            "SBBLOB03 decoder rejected independent frame or chunk partition");
+      Check(allocation_probe::calls.load() == before,"component framing/digests allocated heap memory");
+      allocation_probe::enabled.store(false);
+      const auto saved = encoded;
+      Check(!encoder.FinishEncode(encoded).ok() && encoded == saved && !decoder.FinishDecode().ok(),
+            "component finalized more than once or changed output after failure");
+      encoder.Scrub(); decoder.Scrub();
+      Check(encoder.BeginEncode(admitted.profile,v.state,content.size()).ok() &&
+                encoder.UpdateContent(content).ok() && encoder.FinishEncode(encoded).ok() && encoded == saved,
+            "explicit scrub did not allow an independent deterministic new pass");
+    }
+  }
+}
+
+void BlobComponentFieldAndIntegrityFailures() {
+  const auto profile = dt::BuildCurrentBlobValidatedProfileHandleV3(dt::kBlobV11ReceiptUuid).profile;
+  std::array<platform::byte,360> full{};
+  const auto total = LoadBlobGolden(kBlobComponentGoldenVectors[3],full); // abc
+  dt::BlobComponentHeaderV3 valid{};
+  std::copy_n(full.begin(),320,valid.begin());
+  const auto check_failure = [&](const dt::BlobComponentHeaderV3& changed,
+      std::uint64_t extent, std::uint32_t reason, std::uint64_t offset) {
+    dt::BlobComponentDigestPassV3 decoder;
+    const auto result = decoder.BeginDecode(profile,extent,changed);
+    Check(!result.ok() && result.failure == dt::BlobComponentPassFailureV3::canonical_encoding_invalid &&
+              result.diagnostic_code == "BLOB.CANONICAL_ENCODING_INVALID" && result.format_enum == 1 &&
+              result.reason_enum == reason && result.failure_offset_present && result.failure_offset == offset &&
+              result.diagnostic_generation == 1 && result.diagnostic_uuid.bytes == std::array<platform::byte,16>{{
+                0x01,0xa1,0x09,0x5f,0xf2,0x05,0x7f,0x8b,0xbe,0xac,0x36,0xa9,0xdc,0x66,0xaa,0x68}},
+          "component malformed field lost exact canonical reason/offset/precedence");
+    Check(!decoder.UpdateContent({}).ok() && !decoder.FinishDecode().ok(),
+          "failed header left a usable hash pass");
+  };
+  for (std::size_t n = 0; n < 320; ++n) {
+    dt::BlobComponentDigestPassV3 decoder;
+    const auto result = decoder.BeginDecode(profile,total,std::span(valid).first(n));
+    Check(result.reason_enum == 41 && result.failure_offset == n && result.format_enum == 1,
+          "truncated header read outside exact extent or fabricated failure offset");
+  }
+  // Every individual identity octet reports its containing FIELD start,
+  // including binary UUID bytes, u64 generations and the profile fingerprint.
+  constexpr std::array<std::size_t,16> fields{{40,56,64,80,88,104,112,120,136,144,152,168,184,200,216,248}};
+  for (std::size_t i = 0; i+1 < fields.size(); ++i)
+    for (std::size_t p = fields[i]; p < fields[i+1]; ++p) {
+      auto h = valid; h[p] ^= 0x80;
+      check_failure(h,total,51,fields[i]);
+    }
+  for (std::size_t p = 0; p < 8; ++p) { auto h = valid; h[p] ^= 1; check_failure(h,total,42,p); }
+  for (std::size_t p : {8U,9U}) { auto h = valid; h[p] ^= 1; check_failure(h,total,43,8); }
+  for (std::size_t p : {10U,11U}) { auto h = valid; h[p] ^= 1; check_failure(h,total,44,10); }
+  for (std::size_t p = 12; p < 16; ++p) { auto h = valid; h[p] = 1; check_failure(h,total,45,12); }
+  for (std::size_t p = 25; p < 32; ++p) { auto h = valid; h[p] = 1; check_failure(h,total,46,p); }
+  for (std::size_t p = 312; p < 320; ++p) { auto h = valid; h[p] = 1; check_failure(h,total,46,p); }
+  { auto h = valid; h[39] = 0x80; check_failure(h,total,55,32); }
+  for (std::size_t p = 16; p < 24; ++p) { auto h = valid; h[p] ^= 1; check_failure(h,total,47,16); }
+  check_failure(valid,total-1,48,total-1);
+  check_failure(valid,total+1,48,total);
+  check_failure(valid,UINT64_MAX,48,total);
+  for (std::uint64_t extent : {0U,1U,319U}) check_failure(valid,extent,41,extent);
+  { auto h = valid; h[24] = 2; check_failure(h,total+1,48,total); }
+  { auto h = valid; h[24] = 1; h[40] ^= 1; check_failure(h,total,50,32); }
+  { auto h = valid; h[24] = 2; check_failure(h,total,49,24); }
+  { auto h = valid; h[24] = 1; check_failure(h,total,50,32); }
+  // Adjacent gates with both faults present must select the earlier gate,
+  // independently of fault injection order.
+  struct Fault { std::size_t byte; platform::byte value; std::uint32_t reason; std::size_t offset; };
+  constexpr std::array<Fault,11> ordered{{
+    {0,0,42,0},{8,4,43,8},{10,0,44,10},{12,1,45,12},{25,1,46,25},{312,1,46,312},
+    {39,0x80,55,32},{16,0,47,16},{24,2,49,24},{40,0,51,40},{247,0,51,216}}};
+  for (std::size_t i = 0; i+1 < ordered.size(); ++i) {
+    auto h = valid; h[ordered[i+1].byte] = ordered[i+1].value; h[ordered[i].byte] = ordered[i].value;
+    check_failure(h,total,ordered[i].reason,ordered[i].offset);
+  }
+  // Header-digest fields are intentionally not part of the frame preimage.
+  // Verify them only after exact content, with state/content before frame.
+  for (unsigned fault = 0; fault < 4; ++fault) {
+    auto h = valid;
+    auto content = std::span(full).subspan(320,total-320);
+    if (fault == 0 || fault == 2) h[248] ^= 1;
+    if (fault == 1 || fault == 2) h[311] ^= 1;
+    if (fault == 3) content[1] ^= 1;
+    dt::BlobComponentDigestPassV3 decoder;
+    Check(decoder.BeginDecode(profile,total,h).ok() && decoder.UpdateContent(content).ok(),
+          "digest fields incorrectly entered header structural checks");
+    const auto result = decoder.FinishDecode();
+    Check(result.failure == dt::BlobComponentPassFailureV3::integrity_failed &&
+              result.diagnostic_code == "BLOB.INTEGRITY_FAILED" && result.format_enum == 1 &&
+              result.reason_enum == (fault == 1 ? 31U : 30U) && !result.failure_offset_present &&
+              result.diagnostic_generation == 1 && result.diagnostic_uuid.bytes == std::array<platform::byte,16>{{
+                0x01,0xa1,0x09,0x5f,0xf2,0x05,0x78,0x79,0xb9,0x23,0x42,0x5b,0xe9,0x3f,0x2c,0x1a}},
+          "verified integrity mismatch lost precedence/provenance or invented encoding offset");
+    if (fault == 3) content[1] ^= 1;
+  }
+}
+
+void BlobComponentPassLifecycleAndBounds() {
+  const auto profile = dt::BuildCurrentBlobValidatedProfileHandleV3(dt::kBlobV11ReceiptUuid).profile;
+  dt::BlobComponentHeaderV3 output; output.fill(0x5a);
+  const auto saved = output;
+  dt::BlobComponentDigestPassV3 pass;
+  Check(!pass.FinishEncode(output).ok() && output == saved,
+        "uninitialized component pass published or changed output");
+  pass.Scrub();
+  Check(pass.BeginEncode(profile,dt::BlobValueStateV3::value,3).ok() &&
+            pass.UpdateContent({}).ok() && !pass.FinishEncode(output).ok() && output == saved,
+        "incomplete content silently finalized or changed output");
+  pass.Scrub();
+  std::array<platform::byte,4> bytes{{0,1,2,3}};
+  Check(pass.BeginEncode(profile,dt::BlobValueStateV3::value,3).ok() &&
+            !pass.UpdateContent(bytes).ok() && !pass.FinishEncode(output).ok() && output == saved,
+        "overlong content admitted, wrapped or published partial encoding");
+  pass.Scrub();
+  Check(pass.BeginEncode(profile,dt::BlobValueStateV3::value,dt::kBlobMaximumLogicalBytesV3).ok() &&
+            !pass.FinishEncode(output).ok() && output == saved,
+        "INT64_MAX shape was not representable or fabricated absent content");
+  pass.Scrub();
+  Check(!pass.BeginEncode(profile,dt::BlobValueStateV3::value,dt::kBlobMaximumLogicalBytesV3+1).ok(),
+        "above logical maximum admitted");
+  pass.Scrub();
+  Check(!pass.BeginEncode(profile,dt::BlobValueStateV3::sql_null,1).ok(),"NULL payload admitted");
+  pass.Scrub();
+  Check(!pass.BeginEncode(profile,static_cast<dt::BlobValueStateV3>(2),0).ok(),"locator-like state admitted");
+  pass.Scrub();
+  auto invalid = profile; ++invalid.identity.hash_policy.generation;
+  Check(!pass.BeginEncode(invalid,dt::BlobValueStateV3::value,0).ok(),"substituted hash policy admitted");
+  pass.Scrub();
+  Check(pass.BeginEncode(profile,dt::BlobValueStateV3::value,0).ok(),"alias test initialize");
+  const auto self = std::span<const platform::byte>(reinterpret_cast<const platform::byte*>(&pass),sizeof(pass));
+  Check(pass.UpdateContent(self).failure == dt::BlobComponentPassFailureV3::input_overlap &&
+            pass.FinishEncode(output).ok(),"input alias consumed live codec state or destroyed valid pass");
+  pass.Scrub();
+  Check(pass.BeginDecode(profile,320,self).failure == dt::BlobComponentPassFailureV3::input_overlap &&
+            pass.BeginEncode(profile,dt::BlobValueStateV3::value,0).ok(),
+        "header alias mutated or read live framing state");
+  pass.Scrub();
+  std::array<platform::byte,360> null_frame{};
+  (void)LoadBlobGolden(kBlobComponentGoldenVectors[0],null_frame);
+  const auto refused = pass.BeginDecode(profile,320,std::span(null_frame).first(320),false);
+  Check(refused.reason_enum == 50 && refused.failure_offset == 32,
+        "nonnull decode target accepted SQL NULL");
+  pass.Scrub();
+  Check(pass.BeginEncode(profile,dt::BlobValueStateV3::value,0).ok() &&
+            !pass.BeginEncode(profile,dt::BlobValueStateV3::value,0).ok() &&
+            !pass.FinishEncode(output).ok(),
+        "second initialize silently reset active work or revived failed state");
+  pass.Scrub();
+  std::array<platform::byte,360> abc{};
+  const auto size = LoadBlobGolden(kBlobComponentGoldenVectors[3],abc);
+  Check(pass.BeginDecode(profile,size,std::span(abc).first(320)).ok() &&
+            pass.UpdateContent(std::span(abc).subspan(320,2)).ok() &&
+            pass.FinishDecode().failure == dt::BlobComponentPassFailureV3::content_extent_mismatch,
+        "decoder accepted missing content or fabricated encoded-field evidence from caller schedule");
+}
+
+void BlobComponentFragmentedHashBoundariesAndScrub() {
+  const auto profile = dt::BuildCurrentBlobValidatedProfileHandleV3(dt::kBlobV11ReceiptUuid).profile;
+  std::array<platform::byte,65537> content{};
+  for (std::size_t i = 0; i < content.size(); ++i) content[i] = static_cast<platform::byte>((i*131U)^(i>>7));
+  for (std::size_t length : {63U,64U,65U,511U,512U,513U,1023U,1024U,1025U,4095U,4096U,4097U,65535U,65536U,65537U}) {
+    dt::BlobComponentDigestPassV3 whole;
+    dt::BlobComponentHeaderV3 expected{};
+    const auto bytes = std::span<const platform::byte>(content).first(length);
+    Check(whole.BeginEncode(profile,dt::BlobValueStateV3::value,length).ok() &&
+              whole.UpdateContent(bytes).ok() && whole.FinishEncode(expected).ok(),
+          "complete long native component digest pass failed");
+    for (std::size_t chunk : {1U,31U,64U,65U,1023U,1024U,1025U,4096U}) {
+      dt::BlobComponentDigestPassV3 encode,decode;
+      dt::BlobComponentHeaderV3 actual{};
+      const auto before = allocation_probe::calls.load();
+      allocation_probe::enabled.store(true);
+      Check(encode.BeginEncode(profile,dt::BlobValueStateV3::value,length).ok() &&
+                decode.BeginDecode(profile,320+length,expected).ok(),"fragmented long pass initialization");
+      for (std::size_t offset = 0; offset < length; offset += std::min(chunk,length-offset)) {
+        const auto part = bytes.subspan(offset,std::min(chunk,length-offset));
+        Check(encode.UpdateContent(part).ok() && decode.UpdateContent(part).ok(),
+              "fragmented BLAKE3 block/chunk boundary lost content or progress");
+      }
+      Check(encode.FinishEncode(actual).ok() && actual == expected && decode.FinishDecode().ok() &&
+                allocation_probe::calls.load() == before,
+            "content segmentation changed native component digests or allocated memory");
+      allocation_probe::enabled.store(false);
+    }
+    // A same-length substitution cannot pass merely because the frame's
+    // structural header/extent/identity is valid and unchanged.
+    dt::BlobComponentDigestPassV3 changed;
+    Check(changed.BeginDecode(profile,320+length,expected).ok(),"long integrity input admission");
+    const auto at = length/2;
+    content[at] ^= 0x40;
+    Check(changed.UpdateContent(bytes).ok() && changed.FinishDecode().reason_enum == 30,
+          "long same-length content substitution escaped logical digest verification");
+    content[at] ^= 0x40;
+  }
+  // Caller-owned, zero-initialized fixed workspace permits byte-exact evidence
+  // that the destructor scrubbed every retained header/digest/hash-state byte,
+  // including an active buffered plaintext pass, not just finalized states.
+  for (unsigned phase = 0; phase < 4; ++phase) {
+    alignas(dt::BlobComponentDigestPassV3)
+        std::array<platform::byte,sizeof(dt::BlobComponentDigestPassV3)> workspace{};
+    auto* pass = std::construct_at(reinterpret_cast<dt::BlobComponentDigestPassV3*>(workspace.data()));
+    dt::BlobComponentHeaderV3 header{};
+    Check(pass->BeginEncode(profile,dt::BlobValueStateV3::value,40).ok() &&
+              pass->UpdateContent(std::span(content).first(phase == 0 ? 17 : 40)).ok(),
+          "scrub test buffered native content admission");
+    if (phase == 1) Check(pass->FinishEncode(header).ok(),"scrub finalized encode");
+    if (phase == 2) Check(!pass->UpdateContent(std::span(content).first(1)).ok(),"scrub failed encode");
+    if (phase == 3) {
+      Check(pass->FinishEncode(header).ok(),"scrub decode header construction"); pass->Scrub();
+      Check(pass->BeginDecode(profile,360,header).ok() && pass->UpdateContent(std::span(content).first(17)).ok(),
+            "scrub active decode input");
+    }
+    std::destroy_at(pass);
+    Check(std::all_of(workspace.begin(),workspace.end(),[](auto b) { return b == 0; }),
+          "component destruction retained native content, expected digest or hash state");
   }
 }
 
@@ -7860,6 +8116,14 @@ int main(int argc, char** argv) {
     std::cout << "PASS guarded replay checks=" << checks << '\n';
     return EXIT_SUCCESS;
   }
+  if (mode == "component_digest") {
+    BlobComponentGoldenDigestPasses();
+    BlobComponentFieldAndIntegrityFailures();
+    BlobComponentPassLifecycleAndBounds();
+    BlobComponentFragmentedHashBoundariesAndScrub();
+    std::cout << "PASS native component digest checks=" << checks << '\n';
+    return EXIT_SUCCESS;
+  }
   if (mode == "timeout_rounding") {
     ExactAdmittedTimeoutRounding();
     std::cout << "PASS exact timeout rounding checks=" << checks << '\n';
@@ -7924,6 +8188,10 @@ int main(int argc, char** argv) {
     return EXIT_SUCCESS;
   }
   ProductionPrecedence();
+  BlobComponentGoldenDigestPasses();
+  BlobComponentFieldAndIntegrityFailures();
+  BlobComponentPassLifecycleAndBounds();
+  BlobComponentFragmentedHashBoundariesAndScrub();
   ProtectedWorkFailureObservation();
   ProtectedWorkCleanupSelection();
   GuardedReaderExecution();
