@@ -82,11 +82,12 @@ namespace scratchbird::core::datatypes {
 class BlobLifetimeRuntimeConformanceAccessV3 final {
  public:
   static void SetCallbackLimit(BlobLifetimeBudgetLedgerV3Generation1& ledger,
-                               u64 limit) noexcept {
+                               u64 limit, u64 relative_timeout_ns = 0) noexcept {
     BlobLifetimeBudgetConfigurationV3Generation1 configuration{};
     configuration.limits.fill(std::numeric_limits<u64>::max());
     configuration.limits[static_cast<std::size_t>(
         BlobLifetimeResourceV3::lifetime_callback_calls) - 1] = limit;
+    configuration.admitted_relative_timeout_ns = relative_timeout_ns;
     if (!ledger.Configure(configuration) || !ledger.Freeze()) std::terminate();
   }
 
@@ -1022,7 +1023,7 @@ struct Fixture {
   dt::BlobMaterializedCarrierBindingV3 carrier_binding{};
   dt::BlobValidatedProfileHandleV3 profile{};
 
-  explicit Fixture(std::uint64_t callback_limit) {
+  explicit Fixture(std::uint64_t callback_limit, std::uint64_t relative_timeout_ns = 0) {
     profile = dt::BuildCurrentBlobValidatedProfileHandleV3(
                   dt::kBlobV11ReceiptUuid).profile;
     const auto authority_uuid = BlobUuid(0x10);
@@ -1090,7 +1091,7 @@ struct Fixture {
     carrier_binding.lifetime_token_generation = 7;
     carrier_binding.immutable_binding_generation = 9;
     dt::BlobLifetimeRuntimeConformanceAccessV3::SetCallbackLimit(
-        ledger, callback_limit);
+        ledger, callback_limit, relative_timeout_ns);
   }
 
   dt::BlobLifetimeAuthorityAdmissionV3Generation1 Admission() {
@@ -1533,6 +1534,31 @@ dt::BlobProtectedWorkResultV3 ResourceVisitor(
 struct TypedFailureVisitorContext {
   dt::BlobLifetimeTypedFactV3 fact{};
 };
+
+struct PostWorkObservationContext {
+  FakeReceiver* receiver = nullptr;
+  unsigned stimulus = 0;
+  bool fail_work = false;
+};
+
+dt::BlobProtectedWorkResultV3 PostWorkObservationVisitor(
+    void* context, std::span<const platform::byte> bytes) noexcept {
+  const auto& work = *static_cast<PostWorkObservationContext*>(context);
+  auto& f = *work.receiver;
+  switch (work.stimulus) {
+    case 1: f.cancelled = true; break;
+    case 2: case 3: case 8: f.now = 200; break;
+    case 4: f.clock_unavailable = true; break;
+    case 5: f.cancellation_unavailable = true; break;
+    case 6: f.clock_dirty_reserved = true; break;
+    case 7: f.cancelled = true; f.now = 200; break;
+    case 9: f.clock_unavailable = true; f.cancelled = true; break;
+    case 10: case 11: f.cancellation_unavailable = true; f.now = 200; break;
+    case 12: f.now = 0; break;
+  }
+  return work.fail_work ? ResourceVisitor(nullptr, bytes)
+                        : dt::BlobProtectedWorkResultV3{0, {}, {}};
+}
 
 dt::BlobProtectedWorkResultV3 TypedFailureVisitor(
     void* context, std::span<const platform::byte>) noexcept {
@@ -3063,6 +3089,163 @@ void BudgetConfigureFreezeLifecycle() {
                 dt::BlobLifetimeReasonV3::authority_abi_mismatch &&
             fixture.fake.pin_drop_calls == 2,
         "factory did not refuse unfrozen budget capability with exact cleanup");
+}
+
+void ProtectedWorkFailureObservation() {
+  using Access = dt::BlobLifetimeRuntimeConformanceAccessV3;
+  constexpr std::array<std::string_view, 13> codes{{
+      "", "PROCESS.CANCELLED", "CINL.LOB.HANDLE_EXPIRED",
+      "CINL.LOB.STREAM_BACKPRESSURE_EXHAUSTED", "BLOB.LIFETIME_AUTHORITY_UNAVAILABLE",
+      "BLOB.LIFETIME_AUTHORITY_UNAVAILABLE", "BLOB.LIFETIME_AUTHORITY_UNAVAILABLE",
+      "PROCESS.CANCELLED", "CINL.LOB.HANDLE_EXPIRED", "PROCESS.CANCELLED",
+      "CINL.LOB.HANDLE_EXPIRED", "BLOB.LIFETIME_AUTHORITY_UNAVAILABLE", ""}};
+  for (bool fail_work : {false, true}) {
+    for (unsigned stimulus = 0; stimulus < codes.size(); ++stimulus) {
+      Fixture f(8);
+      f.fake.pins = 0;
+      if (stimulus == 2 || stimulus == 8 || stimulus == 10)
+        f.token.valid_until_monotonic_ns = 200;
+      if (stimulus == 3 || stimulus == 7 || stimulus == 8 || stimulus == 11)
+        f.request.absolute_deadline_monotonic_ns = 200;
+      const std::array<platform::byte, 1> bytes{0x51};
+      auto carrier = Access::Carrier(f.carrier_binding, dt::BlobValueStateV3::value,
+                                    bytes.data(), bytes.size());
+      dt::BlobRetainedLifetimeLeaseV3 lease;
+      Check(dt::RetainBaseBlobLifetimeLeaseV3Generation1(f.profile, f.Admission(),
+          carrier, f.token, f.request, lease).ok(), "post-work observation retain");
+      PostWorkObservationContext context{&f.fake, stimulus, fail_work};
+      auto visitor = Access::Visitor(PostWorkObservationVisitor, &context);
+      const auto before = allocation_probe::calls.load();
+      allocation_probe::enabled.store(true);
+      const auto result = lease.VisitBoundMaterializedBytes(visitor);
+      const auto clocks_before_cleanup = f.fake.clock_calls;
+      const auto cancellations_before_cleanup = f.fake.cancellation_calls;
+      const bool clean = stimulus == 0 && !fail_work;
+      const auto released = clean ? lease.Release() : dt::BlobLifetimeRuntimeResultV3{};
+      allocation_probe::enabled.store(false);
+      Check(clocks_before_cleanup == (clean ? 8 : 6) &&
+                cancellations_before_cleanup == (clean ? 8 : stimulus == 12 ? 5 : 6),
+            "protected work result skipped or duplicated post-return observation");
+      if (clean) {
+        Check(result.ok() && released.ok(), "clean protected work observation refused");
+      } else if (stimulus == 12) {
+        Check(result.disposition == dt::BlobLifetimeOuterDispositionV3::terminated_out_of_band &&
+                  result.diagnostic_code.empty() && f.fake.invariant_calls == 1 &&
+                  f.fake.last_event == dt::BlobLifetimeInvariantEventV3::monotonic_clock_regression,
+              "post-work clock regression lost private quarantine or manufactured a diagnostic");
+      } else {
+        const auto expected = stimulus == 0 ? std::string_view{"RESOURCE.BUDGET_EXCEEDED"}
+                                            : codes[stimulus];
+        Check(!result.ok() && result.diagnostic_code == expected,
+              "post-work observation failed total failure precedence");
+        if (stimulus == 0) {
+          Check(result.required == 2 && result.available == 1 &&
+                    result.fact.stage == dt::BlobLifetimeFactStageV3::callback_return,
+                "post-work successful gate replaced original exact resource fact");
+        } else {
+          Check(result.fact.stage == dt::BlobLifetimeFactStageV3::ordinary_gate &&
+                    result.fact.gate_present &&
+                    result.fact.gate == dt::BlobLifetimeGateV3::after_protected_work,
+                "post-work failure lost its actual observation gate");
+        }
+      }
+      Check(CountCall(f.fake,'R') == 1 && CountCall(f.fake,'B') == 1 &&
+                CountCall(f.fake,'E') == 1 && CountCall(f.fake,'L') == 1 &&
+                CountCall(f.fake,'P') == (clean ? 1 : 0) && f.fake.pins == 0 &&
+                Access::ReservedCleanup(f.ledger) == 0 &&
+                Access::Invoked(f.ledger) == (clean ? 5 : 4) &&
+                allocation_probe::calls.load() == before,
+            "post-work failure changed exact cleanup, callback accounting or allocation");
+    }
+  }
+}
+
+void ProtectedWorkCleanupSelection() {
+  using Access = dt::BlobLifetimeRuntimeConformanceAccessV3;
+  const std::array<platform::byte, 1> bytes{0x51};
+  for (bool release_phase : {false, true}) {
+    for (bool security : {false, true}) {
+      Fixture f(8);
+      f.fake.pins = 0;
+      const auto code = security ? SB_BLOB_CALLBACK_SECURITY_DENIED_V3
+                                 : SB_BLOB_CALLBACK_WRONG_OWNER_V3;
+      if (release_phase) f.fake.release_code = code;
+      else f.fake.end_code = code;
+      auto carrier = Access::Carrier(f.carrier_binding, dt::BlobValueStateV3::value,
+                                    bytes.data(), bytes.size());
+      dt::BlobRetainedLifetimeLeaseV3 lease;
+      Check(dt::RetainBaseBlobLifetimeLeaseV3Generation1(f.profile, f.Admission(), carrier,
+                f.token, f.request, lease).ok(), "post-work cleanup primary retain");
+      auto visitor = Access::Visitor(ResourceVisitor, nullptr);
+      const auto result = lease.VisitBoundMaterializedBytes(visitor);
+      Check(result.diagnostic_code == (security ? "SECURITY.ACCESS_DENIED" : "RESOURCE.BUDGET_EXCEEDED") &&
+                result.fact.stage == (security ? dt::BlobLifetimeFactStageV3::cleanup_return
+                                               : dt::BlobLifetimeFactStageV3::callback_return) &&
+                CountCall(f.fake,'E') == 1 && CountCall(f.fake,'L') == 1 &&
+                CountCall(f.fake,'P') == 0 && f.fake.clock_calls == 6 &&
+                f.fake.cancellation_calls == 6 && f.fake.pins == 0 &&
+                f.fake.invariant_calls == 1 && Access::ReservedCleanup(f.ledger) == 0,
+            "post-work observation changed sticky cleanup primary or security override");
+    }
+  }
+  for (unsigned violation = 0; violation < 4; ++violation) {
+    Fixture f(8);
+    f.fake.pins = 0;
+    auto carrier = Access::Carrier(f.carrier_binding, dt::BlobValueStateV3::value,
+                                  bytes.data(), bytes.size());
+    dt::BlobRetainedLifetimeLeaseV3 lease;
+    Check(dt::RetainBaseBlobLifetimeLeaseV3Generation1(f.profile, f.Admission(), carrier,
+              f.token, f.request, lease).ok(), "private protected work retain");
+    std::pair<FakeReceiver*, unsigned> context{&f.fake, violation};
+    auto visitor = Access::Visitor(
+        [](void* raw, std::span<const platform::byte>) -> dt::BlobProtectedWorkResultV3 {
+          auto& c = *static_cast<std::pair<FakeReceiver*, unsigned>*>(raw);
+          c.first->cancelled = true;
+          if (c.second == 3) throw 1;
+          dt::BlobProtectedWorkResultV3 result;
+          if (c.second == 0) result.status = 2;
+          if (c.second == 1) result.reserved[0] = 1;
+          return result; // violation2: terminal failure with no admitted fact
+        }, &context);
+    const auto result = lease.VisitBoundMaterializedBytes(visitor);
+    Check(result.disposition == dt::BlobLifetimeOuterDispositionV3::terminated_out_of_band &&
+              result.diagnostic_code.empty() && f.fake.clock_calls == 5 &&
+              f.fake.cancellation_calls == 5 && f.fake.invariant_calls == 1 &&
+              f.fake.last_event == dt::BlobLifetimeInvariantEventV3::receiver_services_failed &&
+              f.fake.pins == 0 && CountCall(f.fake,'E') == 1 && CountCall(f.fake,'L') == 1 &&
+              CountCall(f.fake,'P') == 0 && Access::ReservedCleanup(f.ledger) == 0,
+          "private protected failure entered a later ordinary observation or lost cleanup");
+  }
+}
+
+void ExactAdmittedTimeoutRounding() {
+  using Access = dt::BlobLifetimeRuntimeConformanceAccessV3;
+  for (const std::uint64_t ns : {UINT64_C(0), UINT64_C(1), UINT64_C(999999),
+        UINT64_C(1000000), UINT64_C(1000001), UINT64_MAX-UINT64_C(999999),
+        UINT64_MAX-UINT64_C(1), UINT64_MAX}) {
+    Fixture f(8, ns);
+    f.fake.pins = 0;
+    f.request.absolute_deadline_monotonic_ns = 200;
+    const std::array<platform::byte, 1> bytes{0x51};
+    auto carrier = Access::Carrier(f.carrier_binding, dt::BlobValueStateV3::value,
+                                  bytes.data(), bytes.size());
+    dt::BlobRetainedLifetimeLeaseV3 lease;
+    Check(dt::RetainBaseBlobLifetimeLeaseV3Generation1(f.profile, f.Admission(), carrier,
+              f.token, f.request, lease).ok(), "timeout rounding retain");
+    PostWorkObservationContext context{&f.fake, 3, false};
+    auto visitor = Access::Visitor(PostWorkObservationVisitor, &context);
+    const auto before = allocation_probe::calls.load();
+    allocation_probe::enabled.store(true);
+    const auto result = lease.VisitBoundMaterializedBytes(visitor);
+    allocation_probe::enabled.store(false);
+    const std::uint64_t expected = ns/UINT64_C(1000000) + (ns%UINT64_C(1000000) != 0);
+    Check(result.diagnostic_code == "CINL.LOB.STREAM_BACKPRESSURE_EXHAUSTED" &&
+              result.fact.parameters.timeout_milliseconds_u64 == expected &&
+              result.fact.parameters.window_octets_u64 == 0 &&
+              CountCall(f.fake,'E') == 1 && CountCall(f.fake,'L') == 1 && f.fake.pins == 0 &&
+              allocation_probe::calls.load() == before,
+          "relative timeout rounding fabricated saturation instead of exact ceil milliseconds");
+  }
 }
 
 void EncodedReaderAdmissionAndRetention() {
@@ -6572,6 +6755,17 @@ int main(int argc, char** argv) {
 #endif
   const std::string_view mode = argc > 1 ? std::string_view{argv[1]}
                                          : std::string_view{argv[0]};
+  if (mode == "post_work") {
+    ProtectedWorkFailureObservation();
+    ProtectedWorkCleanupSelection();
+    std::cout << "PASS protected work observations checks=" << checks << '\n';
+    return EXIT_SUCCESS;
+  }
+  if (mode == "timeout_rounding") {
+    ExactAdmittedTimeoutRounding();
+    std::cout << "PASS exact timeout rounding checks=" << checks << '\n';
+    return EXIT_SUCCESS;
+  }
   if (mode == "factory") {
     LogicalReaderFactoryAdmission();
     FactoryEarlyGateObservability();
@@ -6631,6 +6825,9 @@ int main(int argc, char** argv) {
     return EXIT_SUCCESS;
   }
   ProductionPrecedence();
+  ProtectedWorkFailureObservation();
+  ProtectedWorkCleanupSelection();
+  ExactAdmittedTimeoutRounding();
   ReaderResultClosedShapeMatrix();
   LogicalReaderFactoryAdmission();
   AuthenticatedLogicalReaderLength();

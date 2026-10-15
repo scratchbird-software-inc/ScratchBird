@@ -3984,8 +3984,12 @@ BlobRetainedLifetimeLeaseV3::VisitBoundMaterializedBytes(
               static_cast<std::size_t>(carrier_logical_length_)));
     } catch (...) {
       primary = RuntimeTerminated();
-      (void)PublishDeferredInvariant(BlobLifetimeInvariantEventV3::adapter_exception, request_.operation,
-                                   BlobLifetimePhaseV3::protected_access, 255);
+      // This is trusted receiver-owned computation, not one of the lifetime
+      // C ABI callbacks. Its failure uses the existing protected-access
+      // receiver-service invariant; adapter_exception has callback phases only.
+      (void)PublishDeferredInvariant(
+          BlobLifetimeInvariantEventV3::receiver_services_failed,
+          request_.operation, BlobLifetimePhaseV3::protected_access, 255);
     }
     if (primary.ok() && ((work.status != 0 && work.status != 1) ||
                          !AllZero(work.reserved))) {
@@ -4000,10 +4004,20 @@ BlobRetainedLifetimeLeaseV3::VisitBoundMaterializedBytes(
                                    BlobLifetimePhaseV3::protected_access, 255);
       }
     }
-    if (primary.ok())
-      primary = OrdinaryGate(BlobLifetimeGateV3::after_protected_work,
-                             BlobLifetimePublicPhaseV3::protected_access,
-                             BlobLifetimePhaseV3::protected_access);
+    // A well-formed returned public failure is still an observed work result.
+    // Sample before selecting it, so cancellation, expiry or authority loss
+    // cannot be hidden by a lower-priority resource/IO/integrity fact. Fatal
+    // private/exception paths do cleanup only; they authorize no ordinary work.
+    const u64 deferred = state_.Deferred();
+    if (primary.disposition != BlobLifetimeOuterDispositionV3::terminated_out_of_band &&
+        (deferred == 0 || DeferredInvariantPrimary(
+            deferred, descriptor_uuid_, descriptor_generation_).disposition !=
+                BlobLifetimeOuterDispositionV3::terminated_out_of_band)) {
+      const auto observed = OrdinaryGate(BlobLifetimeGateV3::after_protected_work,
+                                        BlobLifetimePublicPhaseV3::protected_access,
+                                        BlobLifetimePhaseV3::protected_access);
+      primary = SelectByV7Precedence(primary, observed);
+    }
   }
 
   return EndAccessInternal(access, primary);
@@ -4411,22 +4425,6 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::OrdinaryGate(
     result.fact.parameters.phase_enum = public_phase;
     return result;
   }
-  if (!cancellation_shape_valid ||
-      cancellation.status != BlobReceiverSampleStatusV3::ok) {
-    suppress_publication_gate_ = true;
-    auto result = RuntimeFailure("BLOB.LIFETIME_AUTHORITY_UNAVAILABLE",
-                                 "receiver_services_failed");
-    result.fact.stage = BlobLifetimeFactStageV3::ordinary_gate;
-    result.fact.gate_present = true;
-    result.fact.authority_source =
-        BlobLifetimeAuthoritySourceV3::cancellation_sampler_unavailable;
-    result.fact.gate = gate;
-    result.fact.parameters.present = blob_parameter_operation |
-                                     blob_parameter_phase;
-    result.fact.parameters.operation_enum = request_.operation;
-    result.fact.parameters.phase_enum = public_phase;
-    return result;
-  }
   const bool token_expired = token_.valid_until_monotonic_ns != 0 &&
       clock.now_monotonic_ns >= token_.valid_until_monotonic_ns;
   const bool request_expired = request_.absolute_deadline_monotonic_ns != 0 &&
@@ -4446,6 +4444,25 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::OrdinaryGate(
         BlobLifetimeDiagnosticExpiryReasonV3::monotonic_expiry;
     return result;
   }
+  // A valid clock still proves token expiry when the independent cancellation
+  // sampler is unavailable. Snapshot invalidation outranks authority failure;
+  // the latter in turn outranks an ordinary request timeout.
+  if (!cancellation_shape_valid ||
+      cancellation.status != BlobReceiverSampleStatusV3::ok) {
+    suppress_publication_gate_ = true;
+    auto result = RuntimeFailure("BLOB.LIFETIME_AUTHORITY_UNAVAILABLE",
+                                 "receiver_services_failed");
+    result.fact.stage = BlobLifetimeFactStageV3::ordinary_gate;
+    result.fact.gate_present = true;
+    result.fact.authority_source =
+        BlobLifetimeAuthoritySourceV3::cancellation_sampler_unavailable;
+    result.fact.gate = gate;
+    result.fact.parameters.present = blob_parameter_operation |
+                                     blob_parameter_phase;
+    result.fact.parameters.operation_enum = request_.operation;
+    result.fact.parameters.phase_enum = public_phase;
+    return result;
+  }
   if (request_expired) {
     suppress_publication_gate_ = true;
     auto result = RuntimeFailure("CINL.LOB.STREAM_BACKPRESSURE_EXHAUSTED",
@@ -4459,10 +4476,11 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::OrdinaryGate(
         admission_.budget_->admitted_window_octets_;
     const u64 timeout_ns =
         admission_.budget_->admitted_relative_timeout_ns_;
-    result.fact.parameters.timeout_milliseconds_u64 = timeout_ns == 0
-        ? 0 : (timeout_ns > UINT64_MAX - UINT64_C(999999)
-            ? UINT64_MAX : (timeout_ns + UINT64_C(999999)) /
-                UINT64_C(1000000));
+    // Exact ceil division without an overflowing numerator addition. Even
+    // UINT64_MAX nanoseconds fits in 18,446,744,073,710 milliseconds.
+    result.fact.parameters.timeout_milliseconds_u64 =
+        timeout_ns / UINT64_C(1000000) +
+        static_cast<u64>(timeout_ns % UINT64_C(1000000) != 0);
     return result;
   }
   return RuntimeSuccess();
