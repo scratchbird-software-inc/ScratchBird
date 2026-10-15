@@ -9552,6 +9552,7 @@ bool ConsumeLiteralPrebindResult(const CanonicalBytes& response,
                        ? std::nullopt
                        : CanonicalUuidBytes(context->literal_mga_snapshot_uuid);
   if (!state || !context ||
+      state->occurrences.size() > 4096 ||
       (!allow_empty_contextual_subset && state->occurrences.empty()) ||
       !receipt || !catalog || !mga ||
       response.size() < 160 || response[0]!='S' ||
@@ -9569,8 +9570,31 @@ bool ConsumeLiteralPrebindResult(const CanonicalBytes& response,
       !std::equal(state->demand_sha256.begin(), state->demand_sha256.end(),
                   response.begin() + 88))
     return false;
-  std::copy_n(response.begin()+128,32,state->ordered_profiles_sha256.begin());
-  context->literal_statement_descriptor_profiles.clear();
+  // A response is one indivisible mapping, not a sequence of admissions.
+  // In particular, a malformed final record/hash must not publish an earlier
+  // profile or overwrite a descriptor slot belonging to the prior binding.
+  std::array<std::uint8_t, 32> ordered_profiles_sha256{};
+  std::copy_n(response.begin() + 128, 32, ordered_profiles_sha256.begin());
+  if (std::ranges::all_of(ordered_profiles_sha256,
+                         [](auto byte) { return byte == 0; })) return false;
+  std::vector<ParserStatementContext::LiteralStatementDescriptorProfileV1>
+      staged_profiles;
+  staged_profiles.reserve(state->occurrences.size());
+  struct DescriptorPatch {
+    std::size_t index;
+    core::platform::Uuid descriptor_uuid;
+    core::platform::Uuid type_uuid;
+  };
+  std::vector<DescriptorPatch> descriptor_patches;
+  descriptor_patches.reserve(state->occurrences.size());
+  std::set<std::size_t> targeted_descriptor_slots;
+  std::unordered_map<std::uint32_t, std::size_t> numeric_slots;
+  for (std::size_t index = 0; index < context->descriptor_profiles.size();
+       ++index) {
+    const auto& candidate = context->descriptor_profiles[index];
+    if (candidate.profile_kind == 1 && !candidate.nullable &&
+        !numeric_slots.emplace(candidate.slot, index).second) return false;
+  }
   std::set<core::platform::Uuid> binding_descriptor_uuids;
   std::vector<scratchbird::engine::sblr::SblrLiteralProfileMappingV1>
       profile_mappings;
@@ -9592,31 +9616,23 @@ bool ConsumeLiteralPrebindResult(const CanonicalBytes& response,
     profile_mappings.push_back(
         {state->occurrences[index].occurrence_id, decoded.canonical_bytes});
     const auto& issued = decoded.profile;
-    CanonicalBytes profile_uuid_bytes(issued.profile_uuid.begin(),
-                                      issued.profile_uuid.end());
-    CanonicalBytes receipt_uuid_bytes(issued.statement_receipt_uuid.begin(),
-                                      issued.statement_receipt_uuid.end());
-    CanonicalBytes catalog_uuid_bytes(issued.catalog_snapshot_uuid.begin(),
-                                      issued.catalog_snapshot_uuid.end());
-    CanonicalBytes descriptor_uuid_bytes(issued.descriptor_uuid.begin(),
-                                         issued.descriptor_uuid.end());
-    CanonicalBytes type_uuid_bytes(issued.type_uuid.begin(),
-                                   issued.type_uuid.end());
     ParserStatementContext::LiteralStatementDescriptorProfileV1 profile;
     profile.profile_version = 1;
-    profile.profile_uuid = LiteralReadUuid(profile_uuid_bytes, 0);
+    profile.profile_uuid = core::platform::Uuid{issued.profile_uuid};
     // SBLP descriptor_uuid identifies the canonical datatype row.  The
     // engine-issued profile UUID is the distinct statement-local descriptor
     // handle for this literal occurrence and is what the relational DAG,
     // SBBA, and SBXN carry.  Relation-backed literals use the separately
     // authenticated persisted handle in SBLP v2.
     profile.binding_descriptor_uuid = profile.profile_uuid;
-    profile.statement_receipt_uuid = LiteralReadUuid(receipt_uuid_bytes, 0);
-    profile.catalog_snapshot_uuid = LiteralReadUuid(catalog_uuid_bytes, 0);
+    profile.statement_receipt_uuid =
+        core::platform::Uuid{issued.statement_receipt_uuid};
+    profile.catalog_snapshot_uuid =
+        core::platform::Uuid{issued.catalog_snapshot_uuid};
     profile.catalog_generation = issued.catalog_generation;
-    profile.descriptor_uuid = LiteralReadUuid(descriptor_uuid_bytes, 0);
+    profile.descriptor_uuid = core::platform::Uuid{issued.descriptor_uuid};
     profile.descriptor_generation = issued.descriptor_generation;
-    profile.type_uuid = LiteralReadUuid(type_uuid_bytes, 0);
+    profile.type_uuid = core::platform::Uuid{issued.type_uuid};
     profile.codec_id = issued.codec_id;
     profile.codec_version = issued.codec_version;
     profile.codec_generation = issued.codec_generation;
@@ -9639,26 +9655,41 @@ bool ConsumeLiteralPrebindResult(const CanonicalBytes& response,
         profile.catalog_snapshot_uuid !=
             context->literal_catalog_snapshot_uuid ||
         profile.catalog_generation != context->literal_catalog_generation ||
+        std::ranges::all_of(issued.profile_binding_sha256,
+                           [](auto byte) { return byte == 0; }) ||
+        issued.profile_binding_sha256 !=
+            scratchbird::engine::sblr::
+                ComputeSblrLiteralDescriptorProfileBindingV1(
+                    issued, context->literal_security_epoch,
+                    context->literal_resource_epoch) ||
         !binding_descriptor_uuids.insert(profile.binding_descriptor_uuid).second)
       return false;
-    context->literal_statement_descriptor_profiles.push_back(profile);
-    const auto numeric = std::ranges::find_if(
-        context->descriptor_profiles, [&](const auto& candidate) {
-          return candidate.profile_kind == 1 &&
-                 candidate.slot ==
-                     state->occurrences[index].intended_numeric_profile_slot &&
-                 !candidate.nullable;
-        });
-    if (numeric == context->descriptor_profiles.end()) return false;
+    const auto numeric = numeric_slots.find(
+        state->occurrences[index].intended_numeric_profile_slot);
+    if (numeric == numeric_slots.end()) return false;
+    const auto descriptor_index = numeric->second;
+    if (!targeted_descriptor_slots.insert(descriptor_index).second)
+      return false;
     if (state->occurrences[index].lexical_class == 1) {
-      numeric->descriptor_uuid = profile.binding_descriptor_uuid;
-      numeric->type_uuid = profile.type_uuid;
+      descriptor_patches.push_back(
+          {descriptor_index, profile.binding_descriptor_uuid,
+           profile.type_uuid});
     }
+    staged_profiles.push_back(std::move(profile));
     mapping_offset += profile_bytes;
   }
   if (mapping_offset != response.size() ||
       scratchbird::engine::sblr::ComputeSblrLiteralOrderedProfilesSha256V1(
-          profile_mappings) != state->ordered_profiles_sha256) return false;
+          profile_mappings) != ordered_profiles_sha256) return false;
+  // All allocating/validating work is complete. Publication only performs
+  // fixed binary assignments and a no-throw vector swap.
+  for (const auto& patch : descriptor_patches) {
+    context->descriptor_profiles[patch.index].descriptor_uuid =
+        patch.descriptor_uuid;
+    context->descriptor_profiles[patch.index].type_uuid = patch.type_uuid;
+  }
+  context->literal_statement_descriptor_profiles.swap(staged_profiles);
+  state->ordered_profiles_sha256 = ordered_profiles_sha256;
   return true;
 }
 
@@ -24227,6 +24258,205 @@ std::uint64_t ContextualTextLiteralV2ParserProofMaskImpl() {
       mask |= 1ull << 6;
     }
   }
+  // This is a structural receiver test, not proof that these fixture-issued
+  // profiles were authenticated by a live engine. Exercise publication as a
+  // batch, including errors discovered only after the first valid mapping.
+  const auto atomic_prebind = [&]() {
+    auto original_context = zero_numeric_context;
+    for (std::uint16_t slot = 0; slot < 2; ++slot) {
+      ParserStatementContext::DescriptorProfile descriptor;
+      descriptor.profile_kind = 1;
+      descriptor.slot = slot;
+      descriptor.descriptor_uuid = Rcp073ProofUuid(9200 + slot);
+      descriptor.type_uuid = Rcp073ProofUuid(9210 + slot);
+      original_context.descriptor_profiles.push_back(descriptor);
+    }
+    ParserStatementContext::LiteralStatementDescriptorProfileV1 previous;
+    previous.profile_version = 1;
+    previous.profile_uuid = Rcp073ProofUuid(9220);
+    previous.opaque_projection = {4, 3, 2, 1};
+    original_context.literal_statement_descriptor_profiles.push_back(previous);
+    LiteralPrebindState original_state;
+    original_state.demand_sha256.fill(0x31);
+    original_state.ordered_profiles_sha256.fill(0x57);
+    original_state.occurrences = {{1, 0, 1, {}}, {2, 1, 1, {}}};
+    auto result = zero_result;
+    result.demand_sha256 = original_state.demand_sha256;
+    std::vector<contextual::SblrLiteralStatementDescriptorProfileV1> issued;
+    for (std::uint32_t index = 0; index < 2; ++index) {
+      contextual::SblrLiteralStatementDescriptorProfileV1 profile;
+      profile.profile_uuid = *uuid(9230 + index);
+      profile.statement_receipt_uuid = *zero_receipt;
+      profile.catalog_snapshot_uuid = *zero_catalog;
+      profile.catalog_generation = 1;
+      profile.descriptor_uuid = *uuid(9240);
+      profile.descriptor_generation = 1;
+      profile.type_uuid = *uuid(9241);
+      profile.codec_id = contextual::kSblrLiteralInt64LeCodecId;
+      profile.codec_version = 1;
+      profile.codec_generation = 1;
+      profile.profile_binding_sha256 =
+          contextual::ComputeSblrLiteralDescriptorProfileBindingV1(profile, 1, 1);
+      issued.push_back(profile);
+      result.mappings.push_back(
+          {index + 1, contextual::EncodeSblrLiteralDescriptorProfileV1(profile)});
+    }
+    const auto encode = [](auto value) {
+      value.ordered_profile_sha256 =
+          contextual::ComputeSblrLiteralOrderedProfilesSha256V1(value.mappings);
+      return contextual::EncodeSblrLiteralPrebindResultV1(value);
+    };
+    const auto bytes = encode(result);
+    const auto same_context = [](const auto& left, const auto& right) {
+      return std::ranges::equal(left.descriptor_profiles,
+          right.descriptor_profiles, [](const auto& a, const auto& b) {
+        const auto fields = [](const auto& p) {
+          return std::tie(p.profile_kind, p.slot, p.descriptor_uuid, p.type_uuid,
+                          p.collation_uuid, p.nullable, p.width, p.precision,
+                          p.scale);
+        };
+        return fields(a) == fields(b);
+      }) && std::ranges::equal(left.literal_statement_descriptor_profiles,
+          right.literal_statement_descriptor_profiles,
+          [](const auto& a, const auto& b) {
+        const auto fields = [](const auto& p) {
+          return std::tie(p.profile_version, p.profile_uuid,
+              p.binding_descriptor_uuid, p.statement_receipt_uuid,
+              p.catalog_snapshot_uuid, p.catalog_generation, p.descriptor_uuid,
+              p.descriptor_generation, p.type_uuid, p.codec_id, p.codec_version,
+              p.codec_generation, p.nullable, p.profile_binding_sha256,
+              p.opaque_projection);
+        };
+        return fields(a) == fields(b);
+      });
+    };
+    const auto refuses_unchanged = [&](const auto& candidate,
+                                      auto state, auto context) {
+      const auto before_state = state;
+      const auto before_context = context;
+      return !ConsumeLiteralPrebindResult(candidate, &state, &context, false) &&
+          state.demand_sha256 == before_state.demand_sha256 &&
+          state.ordered_profiles_sha256 == before_state.ordered_profiles_sha256 &&
+          std::ranges::equal(state.occurrences, before_state.occurrences,
+              [](const auto& a, const auto& b) {
+            return std::tie(a.occurrence_id, a.intended_numeric_profile_slot,
+                            a.lexical_class, a.lexical_sha256) ==
+                std::tie(b.occurrence_id, b.intended_numeric_profile_slot,
+                         b.lexical_class, b.lexical_sha256);
+          }) && same_context(context, before_context);
+    };
+    if (bytes.empty()) return false;
+    auto accepted_context = original_context;
+    auto accepted_state = original_state;
+    if (!ConsumeLiteralPrebindResult(bytes, &accepted_state, &accepted_context,
+                                     false) ||
+        accepted_context.literal_statement_descriptor_profiles.size() != 2 ||
+        accepted_state.ordered_profiles_sha256 ==
+            original_state.ordered_profiles_sha256) return false;
+    for (std::size_t index = 0; index < 2; ++index) {
+      const auto& profile =
+          accepted_context.literal_statement_descriptor_profiles[index];
+      if (profile.profile_uuid.bytes != issued[index].profile_uuid ||
+          accepted_context.descriptor_profiles[index].descriptor_uuid !=
+              profile.profile_uuid ||
+          accepted_context.descriptor_profiles[index].type_uuid !=
+              profile.type_uuid ||
+          profile.opaque_projection != result.mappings[index].sblp_bytes)
+        return false;
+    }
+    for (std::size_t length = 0; length < bytes.size(); ++length) {
+      CanonicalBytes truncated(bytes.begin(), bytes.begin() + length);
+      if (!refuses_unchanged(truncated, original_state, original_context))
+        return false;
+      if (length >= 160) {
+        CanonicalStoreU32(&truncated, 8, static_cast<std::uint32_t>(length));
+        CanonicalStoreU32(&truncated, 124,
+                          static_cast<std::uint32_t>(length - 160));
+        if (!refuses_unchanged(truncated, original_state, original_context))
+          return false;
+      }
+    }
+    // Header, ordered digest, second-record occurrence/length/profile/hash,
+    // and a trailing byte all fail without publishing the valid first row.
+    const auto second_record = 160 + 12 + result.mappings[0].sblp_bytes.size();
+    for (const auto offset : {std::size_t(12), std::size_t(128), second_record,
+                             second_record + 8, second_record + 12,
+                             second_record + 12 + 132}) {
+      auto bad = bytes;
+      bad[offset] ^= 1;
+      if (!refuses_unchanged(bad, original_state, original_context)) return false;
+    }
+    auto bad = bytes;
+    bad.push_back(0);
+    if (!refuses_unchanged(bad, original_state, original_context)) return false;
+    auto conflicting = result;
+    conflicting.mappings[1].sblp_bytes = conflicting.mappings[0].sblp_bytes;
+    if (!refuses_unchanged(encode(conflicting), original_state, original_context))
+      return false;
+    auto wrong_binding = issued[1];
+    wrong_binding.profile_binding_sha256[0] ^= 1;
+    conflicting = result;
+    conflicting.mappings[1].sblp_bytes =
+        contextual::EncodeSblrLiteralDescriptorProfileV1(wrong_binding);
+    if (!refuses_unchanged(encode(conflicting), original_state, original_context))
+      return false;
+    auto wrong_slot = original_state;
+    wrong_slot.occurrences[1].intended_numeric_profile_slot = 0;
+    if (!refuses_unchanged(bytes, wrong_slot, original_context)) return false;
+    wrong_slot.occurrences[1].intended_numeric_profile_slot = 99;
+    if (!refuses_unchanged(bytes, wrong_slot, original_context)) return false;
+    auto duplicate_slot = original_context;
+    duplicate_slot.descriptor_profiles.push_back(
+        duplicate_slot.descriptor_profiles.front());
+    if (!refuses_unchanged(bytes, original_state, duplicate_slot)) return false;
+    for (bool security : {false, true}) {
+      auto stale = original_context;
+      if (security) ++stale.literal_security_epoch;
+      else ++stale.literal_resource_epoch;
+      // Match the outer epoch while retaining the stale inner profile hash.
+      auto outer = bytes;
+      CanonicalStoreU64(&outer, security ? 56 : 64, 2);
+      if (!refuses_unchanged(outer, original_state, stale)) return false;
+    }
+    // The largest admitted occurrence inventory exercises the indexed slot
+    // join, rather than hiding a quadratic scan behind tiny two-row cases.
+    auto maximum_context = original_context;
+    auto maximum_state = original_state;
+    auto maximum_result = result;
+    maximum_context.descriptor_profiles.clear();
+    maximum_state.occurrences.clear();
+    maximum_result.mappings.clear();
+    for (std::uint32_t index = 0; index < 4096; ++index) {
+      auto descriptor = original_context.descriptor_profiles.front();
+      descriptor.slot = static_cast<std::uint16_t>(index);
+      maximum_context.descriptor_profiles.push_back(descriptor);
+      maximum_state.occurrences.push_back({index + 1, index, 1, {}});
+      auto profile = issued.front();
+      profile.profile_uuid = *uuid(10000 + index);
+      profile.profile_binding_sha256 =
+          contextual::ComputeSblrLiteralDescriptorProfileBindingV1(profile, 1, 1);
+      maximum_result.mappings.push_back({index + 1,
+          contextual::EncodeSblrLiteralDescriptorProfileV1(profile)});
+    }
+    const auto maximum_bytes = encode(maximum_result);
+    if (maximum_bytes.empty() ||
+        !ConsumeLiteralPrebindResult(maximum_bytes, &maximum_state,
+                                     &maximum_context, false) ||
+        maximum_context.literal_statement_descriptor_profiles.size() != 4096)
+      return false;
+    for (std::size_t index = 0; index < 4096; ++index) {
+      if (maximum_context.descriptor_profiles[index].descriptor_uuid !=
+              Rcp073ProofUuid(10000 + index) ||
+          maximum_context.literal_statement_descriptor_profiles[index]
+                  .opaque_projection != maximum_result.mappings[index].sblp_bytes)
+        return false;
+    }
+    maximum_state.occurrences.push_back({4097, 4096, 1, {}});
+    if (!refuses_unchanged(maximum_bytes, maximum_state, maximum_context))
+      return false;
+    return true;
+  };
+  if (atomic_prebind()) mask |= 1ull << 7;
   return mask;
 }
 

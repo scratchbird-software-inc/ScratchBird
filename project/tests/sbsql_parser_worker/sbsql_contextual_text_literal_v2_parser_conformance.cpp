@@ -15,7 +15,7 @@ std::uint64_t ContextualTextLiteralV2ParserProofMaskForTest();
 }
 
 int main() {
-  constexpr std::uint64_t kExpectedMask = 0x7f;
+  constexpr std::uint64_t kExpectedMask = 0xff;
   const auto actual = scratchbird::parser::sbsql::
       ContextualTextLiteralV2ParserProofMaskForTest();
   if (actual != kExpectedMask) {
