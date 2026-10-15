@@ -45,14 +45,23 @@ NativeInitialPolicyResult AssembleNativeInitialPolicyRecords(const NativeInitial
 struct NativeInitialMembershipIdentity {
   core::platform::Uuid membership_uuid,member_uuid,parent_uuid;
 };
+struct NativeInitialBootstrapIdentity {
+  core::platform::Uuid principal_uuid,membership_uuid;
+  std::string_view principal_name,credential_fingerprint;
+};
 struct NativeInitialPolicySecurityRequest {
   NativeInitialPolicyRequest policy;
   std::span<const NativeInitialMembershipIdentity> group_memberships;
+  // Explicit credentialed bootstrap enrollment, never a service identity or
+  // authentication proof. When supplied, complete metadata/names must also
+  // cover the canonical SYSARCH role, this principal and its membership.
+  std::optional<NativeInitialBootstrapIdentity> bootstrap=std::nullopt;
 };
 // Complete imported policy AND security declaration cohort from one admitted
-// source snapshot, with all complete caller metadata/names. No bootstrap or
-// service principal, credential, authentication, effective grant or activation
-// is inferred. Physical publication and native reference closure remain owned
+// source snapshot, with all complete caller metadata/names. Bootstrap is
+// enrolled only from explicit validated inputs; no service principal,
+// credential, authentication, effective grant or activation is inferred.
+// Physical publication and native reference closure remain owned
 // by the enclosing actual node constructor.
 NativeInitialPolicyResult AssembleNativeInitialPolicySecurityRecords(
     const NativeInitialPolicySecurityRequest&) noexcept;

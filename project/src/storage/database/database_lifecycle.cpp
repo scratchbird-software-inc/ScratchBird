@@ -1592,7 +1592,7 @@ bool IsSha256Hex(const std::string& value) {
   return true;
 }
 
-bool IsSafeBootstrapPrincipalName(const std::string& value) {
+bool IsSafeBootstrapPrincipalName(std::string_view value) {
   if (value.empty() || value.size() > 128) {
     return false;
   }
@@ -1615,13 +1615,13 @@ struct BootstrapCredentialFingerprintFields {
 };
 
 bool ParseBootstrapCredentialFingerprint(
-    const std::string& value,
+    std::string_view value,
     BootstrapCredentialFingerprintFields* parsed_fields = nullptr) {
   static constexpr const char* kPrefix =
       "local-password-pbkdf2-sha256:v1:iterations=";
   static constexpr const char* kSaltMarker = ":salt=";
   static constexpr const char* kVerifierMarker = ":verifier=";
-  const std::string prefix(kPrefix);
+  constexpr std::string_view prefix(kPrefix);
   if (value.compare(0, prefix.size(), prefix) != 0) {
     return false;
   }
@@ -1629,7 +1629,7 @@ bool ParseBootstrapCredentialFingerprint(
   if (salt_marker == std::string::npos) {
     return false;
   }
-  const std::string iterations_text =
+  const std::string_view iterations_text =
       value.substr(prefix.size(), salt_marker - prefix.size());
   if (iterations_text.empty() || iterations_text.size() > 8 ||
       (iterations_text.size() > 1 && iterations_text.front() == '0')) {
@@ -1669,8 +1669,8 @@ bool ParseBootstrapCredentialFingerprint(
       !lowercase_hex(verifier_begin, value.size())) {
     return false;
   }
-  const std::string salt = value.substr(salt_begin, 32);
-  if (salt == std::string(32, '0')) {
+  const std::string_view salt = value.substr(salt_begin, 32);
+  if (std::all_of(salt.begin(),salt.end(),[](char c){return c=='0';})) {
     return false;
   }
   bool verifier_nonzero = false;
@@ -3051,6 +3051,47 @@ std::vector<BootstrapRecordSeed> DefaultBootstrapCatalogRecords(const LoadedPoli
   return records;
 }
 
+scratchbird::core::catalog::CatalogSecurityRecord NativeBootstrapDefinition(
+    CatalogRecordKind kind,const Uuid& identity,const TypedUuid& origin,u64 policy_generation) {
+  namespace c=scratchbird::core::catalog;
+  c::CatalogSecurityRecord record;
+  record.kind=kind;
+  record.identities={{std::string(c::CatalogSecurityPrimaryIdentityName(kind)),identity},
+      {"origin_transaction_uuid",origin.value}};
+  record.attributes={{"creator_tx",u64{kBootstrapCatalogTransactionId}},
+      {"policy_generation",policy_generation},{"security_context_authority_version",u64{1}},
+      {"security_context_generation",u64{1}},{"identity_authority","uuid"},
+      {"create_time_only",true},{"active",true}};
+  return record;
+}
+scratchbird::core::catalog::CatalogSecurityRecord NativeBootstrapRoleDefinition(
+    const TypedUuid& origin,u64 policy_generation) {
+  auto record=NativeBootstrapDefinition(CatalogRecordKind::role_account,kCanonicalSysarchRoleIdentity,origin,policy_generation);
+  record.attributes.emplace("role_code","ROLE_SYSARCH");
+  record.attributes.emplace("authority_class","engine_owned_sysarch");
+  record.attributes.emplace("engine_owned",true);record.attributes.emplace("immutable",true);
+  return record;
+}
+scratchbird::core::catalog::CatalogSecurityRecord NativeBootstrapPrincipalDefinition(
+    const Uuid& identity,std::string_view name,std::string_view fingerprint,const TypedUuid& origin,u64 policy_generation) {
+  auto record=NativeBootstrapDefinition(CatalogRecordKind::user_account,identity,origin,policy_generation);
+  record.attributes.emplace("principal_name",std::string(name));
+  record.attributes.emplace("credential_fingerprint",std::string(fingerprint));
+  record.attributes.emplace("kind","user");record.attributes.emplace("principal_kind","user");
+  record.attributes.emplace("security_generation",u64{1});record.attributes.emplace("bootstrap_principal",true);
+  return record;
+}
+scratchbird::core::catalog::CatalogSecurityRecord NativeBootstrapMembershipDefinition(
+    const Uuid& identity,const Uuid& principal,const TypedUuid& origin,u64 policy_generation) {
+  auto record=NativeBootstrapDefinition(CatalogRecordKind::grant_record,identity,origin,policy_generation);
+  record.identities.emplace("membership_uuid",identity);record.identities.emplace("member_uuid",principal);
+  record.identities.emplace("principal_uuid",principal);record.identities.emplace("parent_uuid",kCanonicalSysarchRoleIdentity);
+  record.identities.emplace("role_uuid",kCanonicalSysarchRoleIdentity);
+  record.attributes.emplace("grant_class","role_membership");record.attributes.emplace("member_kind","principal");
+  record.attributes.emplace("parent_kind","role");record.attributes.emplace("security_generation",u64{1});
+  return record;
+}
+
 CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
     std::vector<CatalogPageRow>* rows,
     u32* ordinal,
@@ -3082,20 +3123,7 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
   const u32 policy_generation = policy_seed_pack.image.active
                                     ? policy_seed_pack.image.policy_generation
                                     : 1;
-  scratchbird::core::catalog::CatalogSecurityRecord role_record;
-  role_record.kind = CatalogRecordKind::role_account;
-  role_record.identities = {{"role_uuid", parsed_sysarch.value.value}};
-  role_record.attributes = {{"role_code", "ROLE_SYSARCH"},
-                       {"authority_class", "engine_owned_sysarch"},
-                       {"engine_owned", true},
-                       {"identity_authority", "uuid"},
-                       {"immutable", true},
-                       {"create_time_only", true},
-                       {"creator_tx", u64{kBootstrapCatalogTransactionId}},
-                       {"policy_generation", u64{policy_generation}},
-                       {"security_context_authority_version", u64{1}},
-                       {"security_context_generation", u64{1}},
-                       {"active", true}};
+  auto role_record=NativeBootstrapRoleDefinition(creator_transaction_uuid,policy_generation);
   auto typed = AddSecurityCatalogRecord(rows, ordinal, identity_seed,
       std::move(role_record), security_parent_uuid, creator_transaction_uuid);
   if (!typed.ok()) {
@@ -3115,22 +3143,7 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
   if (!principal.ok()) {
     return CatalogRowsBuildError(principal.status, principal.diagnostic);
   }
-  scratchbird::core::catalog::CatalogSecurityRecord principal_record;
-  principal_record.kind = CatalogRecordKind::user_account;
-  principal_record.identities = {{"principal_uuid", principal.value.value}};
-  principal_record.attributes = {{"principal_name", config.bootstrap_principal_name},
-                       {"credential_fingerprint", config.bootstrap_credential_fingerprint},
-                       {"kind", "user"},
-                       {"principal_kind", "user"},
-                       {"active", true},
-                       {"security_generation", u64{1}},
-                       {"creator_tx", u64{kBootstrapCatalogTransactionId}},
-                       {"policy_generation", u64{policy_generation}},
-                       {"security_context_authority_version", u64{1}},
-                       {"security_context_generation", u64{1}},
-                       {"identity_authority", "uuid"},
-                       {"create_time_only", true},
-                       {"bootstrap_principal", true}};
+  auto principal_record=NativeBootstrapPrincipalDefinition(principal.value.value,config.bootstrap_principal_name,config.bootstrap_credential_fingerprint,creator_transaction_uuid,policy_generation);
   typed = AddSecurityCatalogRecord(rows, ordinal, identity_seed + 4,
       std::move(principal_record), security_parent_uuid, creator_transaction_uuid);
   if (!typed.ok()) {
@@ -3142,26 +3155,7 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
   if (!membership.ok()) {
     return CatalogRowsBuildError(membership.status, membership.diagnostic);
   }
-  scratchbird::core::catalog::CatalogSecurityRecord membership_record;
-  membership_record.kind = CatalogRecordKind::grant_record;
-  membership_record.identities = {
-      {"membership_uuid", membership.value.value},
-      {"grant_uuid", membership.value.value},
-      {"member_uuid", principal.value.value},
-      {"principal_uuid", principal.value.value},
-      {"parent_uuid", parsed_sysarch.value.value},
-      {"role_uuid", parsed_sysarch.value.value}};
-  membership_record.attributes = {{"grant_class", "role_membership"},
-                       {"member_kind", "principal"},
-                       {"parent_kind", "role"},
-                       {"active", true},
-                       {"security_generation", u64{1}},
-                       {"creator_tx", u64{kBootstrapCatalogTransactionId}},
-                       {"policy_generation", u64{policy_generation}},
-                       {"security_context_authority_version", u64{1}},
-                       {"security_context_generation", u64{1}},
-                       {"identity_authority", "uuid"},
-                       {"create_time_only", true}};
+  auto membership_record=NativeBootstrapMembershipDefinition(membership.value.value,principal.value.value,creator_transaction_uuid,policy_generation);
   typed = AddSecurityCatalogRecord(rows, ordinal, identity_seed + 8,
       std::move(membership_record), security_parent_uuid, creator_transaction_uuid);
   if (!typed.ok()) {
@@ -6615,7 +6609,8 @@ DatabaseLifecycleResult RecordStartupEvidence(const DatabaseLifecycleOperationCo
 
 static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
     const NativeInitialPolicyRequest& request,
-    std::optional<std::span<const NativeInitialMembershipIdentity>> security_memberships) noexcept {
+    std::optional<std::span<const NativeInitialMembershipIdentity>> security_memberships,
+    const std::optional<NativeInitialBootstrapIdentity>& bootstrap) noexcept {
   namespace c=scratchbird::core::catalog;
   using E=NativeInitialPolicyError;
   const auto fail=[](E error,c::CatalogNamedCreationError names=c::CatalogNamedCreationError::none) {
@@ -6637,6 +6632,18 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
       return fail(E::invalid_request);
     if(!request.limits.maximum_records||!request.limits.maximum_encoded_bytes||
         request.definitions.size()>request.limits.maximum_records/3)return fail(E::resource_exhausted);
+    if(bootstrap) {
+      const auto& b=*bootstrap;
+      if(!security_memberships || !IsEngineIdentityUuid(b.principal_uuid)||!IsEngineIdentityUuid(b.membership_uuid)||
+          !b.principal_name.data()||!b.credential_fingerprint.data()||b.credential_fingerprint.size()>256||
+          !IsSafeBootstrapPrincipalName(b.principal_name)||!ParseBootstrapCredentialFingerprint(b.credential_fingerprint))
+        return fail(E::invalid_request);
+      if(b.principal_uuid==b.membership_uuid)return fail(E::duplicate_identity);
+      for(const auto& id:{b.principal_uuid,b.membership_uuid,kCanonicalSysarchRoleIdentity})
+        if(id==request.database_uuid||id==request.memory_configuration_uuid||id==request.construction_transaction.value||
+            (id==kCanonicalSysarchRoleIdentity&&(id==b.principal_uuid||id==b.membership_uuid)))
+          return fail(E::duplicate_identity);
+    }
     u64 proposed_records=0;
     for(const auto& input:request.definitions) {
       if(!input.definition||!input.definition->record.payload.empty())return fail(E::invalid_definition);
@@ -6662,8 +6669,15 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
     const auto security_count=security_memberships ?
         pack.roles.size()+pack.groups.size()+pack.memberships.size()+pack.grants.size():0;
     if(!pack.image.active||!pack.memory_configuration||
-        request.definitions.size()!=2+pack.providers.size()+pack.profiles.size()+security_count||
+        request.definitions.size()!=2+pack.providers.size()+pack.profiles.size()+security_count+(bootstrap?3:0)||
         (security_memberships && security_memberships->size()!=pack.memberships.size()))return fail(E::invalid_definition);
+    if(bootstrap)for(const auto& role:pack.roles)
+      if(role.role_uuid==kCanonicalSysarchRoleIdentity||role.role_code=="ROLE_SYSARCH") {
+        auto refused=fail(E::source_invalid);
+        const auto diagnostic=LifecycleError("SB-DB-BOOTSTRAP-SECURITY-SYSARCH-DUPLICATE",
+            "storage.database_lifecycle.bootstrap_security_sysarch_duplicate",{},role.role_code);
+        refused.source_diagnostic=diagnostic.diagnostic;return refused;
+      }
     // The policy-only entrypoint excludes these security definitions, but both
     // entrypoints already know their identities. Do not admit a new
     // configuration/enclosing identity which aliases one of them by kind.
@@ -6720,6 +6734,13 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
       }
       for(const auto& grant:pack.grants)
         if(!append_security(NativeImportedGrantDefinition(pack,grant,request.construction_transaction)))return fail(E::invalid_definition);
+      if(bootstrap) {
+        if(!append_security(NativeBootstrapRoleDefinition(request.construction_transaction,pack.image.policy_generation))||
+            !append_security(NativeBootstrapPrincipalDefinition(bootstrap->principal_uuid,bootstrap->principal_name,
+              bootstrap->credential_fingerprint,request.construction_transaction,pack.image.policy_generation))||
+            !append_security(NativeBootstrapMembershipDefinition(bootstrap->membership_uuid,bootstrap->principal_uuid,
+              request.construction_transaction,pack.image.policy_generation)))return fail(E::duplicate_identity);
+      }
     }
 
     // All canonical payload/common/name validation and raw identity admission
@@ -6767,11 +6788,11 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
 }
 
 NativeInitialPolicyResult AssembleNativeInitialPolicyRecords(const NativeInitialPolicyRequest& request) noexcept {
-  return AssembleNativeInitialPolicyRecordsImpl(request,std::nullopt);
+  return AssembleNativeInitialPolicyRecordsImpl(request,std::nullopt,std::nullopt);
 }
 NativeInitialPolicyResult AssembleNativeInitialPolicySecurityRecords(
     const NativeInitialPolicySecurityRequest& request) noexcept {
-  return AssembleNativeInitialPolicyRecordsImpl(request.policy,request.group_memberships);
+  return AssembleNativeInitialPolicyRecordsImpl(request.policy,request.group_memberships,request.bootstrap);
 }
 
 DatabaseArtifactCompatibilityResult ClassifyDatabaseArtifactVersionCompatibility(

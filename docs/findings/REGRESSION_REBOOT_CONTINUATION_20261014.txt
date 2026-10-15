@@ -482,3 +482,47 @@ before hosted BEGIN. Do not use fixture governance metadata, opaque generic
 policy tokens or supplied trust flags as reference/authentication/permission
 proof. The six original live service startup failures remain open, along with
 the other outstanding groups and full all-target/clean/unfiltered qualification.
+
+Explicit native bootstrap enrollment, 2026-10-15
+------------------------------------------------
+The same-snapshot producer now accepts optional explicit bootstrap enrollment:
+actual owner-issued principal/membership UUIDs, chosen name and validated
+credential verifier, plus all three complete common/name inputs. It shares
+NativeBootstrapRole/Principal/MembershipDefinition translators with production
+creation. Default combined source plus enrollment returns57 definitions and114
+supplied one-alias names. The canonical binary SYSARCH identity is retained,
+not derived from a name or replaced by an imported source role. Reserved source
+UUID/classification conflicts refuse with the existing typed duplicate-role
+diagnostic before assembly; all ordinary identity/coverage/name/count/byte and
+allocation refusals remain atomic. Omitted enrollment still means declarations
+only, never uncredentialed serving or successful complete node creation.
+
+Bootstrap name/verifier inspection now borrows string_view rather than copying
+prefix/iteration/salt/zero-template strings on every check; requested salt output
+still owns its bytes. Existing canonical PBKDF2/SHA256 shape, iteration, salt and
+verifier bounds remain unchanged. This is neither password derivation nor proof
+of authentication; no sensitive verifier is placed in diagnostics.
+
+Native producer13569checks: independent full-byte bootstrap goldens,24 new
+credential/UUID/coverage/bounds refusals, six actual bootstrap allocation faults,
+exact and maximum iteration/byte limits, mutation of caller credential/name
+buffers, two validly resealed reserved-role conflicts, shared semantic validation
+and actual indexed native persistence/reopen of57 records on all5 page profiles.
+Earlier28/54 cohorts and their5-profile proofs remain. Actual reopened bootstrap
+semantics preserve principal/membership/verifier without manufacturing commitment
+or authentication; node page-zero stays initializing/write-fenced.
+
+Final combined42/42 PASS113.531589s, peak324736KiB, no leaked descendants;
+LastTest retained. Actual production import/bootstrap/recovery/permutation and
+policy/memory/runtime/crypto/config assertions retained. Source/build/test edits
+serialized, private temporary root empty12KiB, no archive/new build tree.
+Core03 CATALOG-NATIVE-BOOTSTRAP-ENROLLMENT-20261015 added; local/manual digest
+f64cf36a18dfdc8135bf5a3cb864d8dafe7627af490f9a0ab06cf2986c607fd5.
+
+No original baseline closure:199/260 qualified,61 outstanding plus supplemental1.
+NEXT remains actual enclosing database/schema/name/governance/profile/reference
+cohort, separately provisioned node service principal/provider/protected
+generation-bound credential/runtime binding, retained native mutable controller
+and security admission/activation before hosted BEGIN. Bootstrap administrator
+enrollment MUST NOT be used as server SYSARCH/operator fallback. The six live
+startup failures and full clean/all-target/unfiltered qualification remain open.

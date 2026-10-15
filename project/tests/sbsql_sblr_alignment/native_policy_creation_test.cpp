@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "native_policy_creation.hpp"
 #include "database_lifecycle.hpp"
+#include "bootstrap_security_validation.hpp"
 #include "native_creation_workspace.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "bootstrap_policy_fixture.hpp"
@@ -35,6 +36,9 @@ namespace {
 unsigned checks=0;
 void Check(bool value,const char* why){++checks;if(!value)throw std::runtime_error(why);}
 const p::TypedUuid tx{p::UuidKind::transaction,f::Id(5)};
+constexpr std::string_view fingerprint="local-password-pbkdf2-sha256:v1:iterations=600000:"
+    "salt=89abcdef0123456789abcdef01234567:"
+    "verifier=abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
 p::TypedUuid Typed(p::UuidKind kind,unsigned n){return {kind,f::Id(n)};}
 p::Uuid SourceId(unsigned suffix) {
   auto id=u::ParseTypedUuid(p::UuidKind::object,"018f7a10-1280-7000-8000-000000000001");
@@ -49,17 +53,19 @@ struct Item {
 struct Package {
   std::vector<Item> items;std::vector<c::CatalogNamedCreationInput> inputs;
   std::array<db::NativeInitialMembershipIdentity,5> memberships;
-  explicit Package(bool security=false):items(security?54:28) {
+  explicit Package(bool security=false,bool bootstrap=false):items(bootstrap?57:security?54:28) {
     for(unsigned i=0;i<memberships.size();++i)memberships[i]={f::Id(13000+i),SourceId(0x201+i),SourceId(0x100+i)};
     for(unsigned n=0;n<items.size();++n) {
       auto& x=items[n];const auto object=n==0?SourceId(1):n<=12?SourceId(0x10+n-1):n<=26?SourceId(0x400+n-13):n==27?f::Id(12000):
-          n<=32?SourceId(0x100+n-28):n<=38?SourceId(0x200+n-33):n<=43?f::Id(13000+n-39):SourceId(0x300+n-44);
+          n<=32?SourceId(0x100+n-28):n<=38?SourceId(0x200+n-33):n<=43?f::Id(13000+n-39):n<=53?SourceId(0x300+n-44):
+          n==54?SourceId(0x105):f::Id(14000+n-55);
       const auto subtype=n==0?"bootstrap_policy_pack":n<=12?"bootstrap_security_provider":n<=26?"bootstrap_policy_profile":n==27?"memory_configuration":
-          n<=32?"role_account":n<=38?"group_account":"grant_record";
+          n<=32?"role_account":n<=38?"group_account":n<=53?"grant_record":n==54?"role_account":n==55?"user_account":"grant_record";
       auto& meta=x.definition;meta=f::Metadata(0,tx,f::Id(60),{});
+      if(bootstrap)meta.owner_uuid=Typed(p::UuidKind::principal,14000);
       meta.record.header.object_uuid={p::UuidKind::object,object};meta.record.header.row_uuid=Typed(p::UuidKind::row,200000+3*n);
       meta.object_subtype=subtype;if(n==27)meta.record.header.kind=c::CatalogRecordKind::config_profile;
-      if(n>=28)meta.record.header.kind=n<=32?c::CatalogRecordKind::role_account:n<=38?c::CatalogRecordKind::group_account:c::CatalogRecordKind::grant_record;
+      if(n>=28)meta.record.header.kind=n<=32||n==54?c::CatalogRecordKind::role_account:n<=38?c::CatalogRecordKind::group_account:n==55?c::CatalogRecordKind::user_account:c::CatalogRecordKind::grant_record;
       meta.default_name_uuid=Typed(p::UuidKind::object,300000+2*n);meta.name_vector_uuid=Typed(p::UuidKind::object,300001+2*n);
       x.vector_metadata=meta;x.vector_metadata.record.header.kind=c::CatalogRecordKind::localized_name;
       x.vector_metadata.record.header.object_uuid=meta.name_vector_uuid;x.vector_metadata.record.header.row_uuid=Typed(p::UuidKind::row,200001+3*n);
@@ -85,6 +91,8 @@ struct Package {
   void Rebind(){inputs.clear();for(auto& x:items){x.entries[0]={&x.entry_metadata,&x.entry};inputs.push_back({&x.definition,&x.vector_metadata,&x.vector,x.entries});}}
   auto Request()const{return db::NativeInitialPolicyRequest{SB_DEFAULT_POLICY_PACK_ROOT,f::Id(1),tx,f::Id(12000),"en-US",inputs,{1000,4*1024*1024}};}
   auto SecurityRequest()const{return db::NativeInitialPolicySecurityRequest{Request(),memberships};}
+  auto BootstrapRequest()const{return db::NativeInitialPolicySecurityRequest{Request(),memberships,
+      db::NativeInitialBootstrapIdentity{f::Id(14000),f::Id(14001),"BootstrapAdmin",fingerprint}};}
 };
 std::pair<p::Uuid,std::string> SecurityGolden(unsigned n) {
   static constexpr std::array<const char*,5> roles{"ROLE_APP_RUNTIME","ROLE_DBA","ROLE_SECURITY_ADMIN","ROLE_AUDIT_READER","ROLE_OPERATOR"};
@@ -114,15 +122,38 @@ std::pair<p::Uuid,std::string> SecurityGolden(unsigned n) {
   else {g.Field(54,3,"privilege");g.Field(57,3,"role");g.Field(58,3,"allow");g.Field(59,3,rights[n-16]);}
   return {id,g.Finish()};
 }
-void Verify(const c::CatalogNamedCreationSet& out,bool security=false) {
-  Check(out.definitions.size()==(security?54:28)&&out.names.size()==(security?108:56)&&out.encoded_bytes>0,"all admitted policy/security definitions and every supplied name returned");
+std::pair<p::Uuid,std::string> BootstrapGolden(unsigned n) {
+  const unsigned kind=n==0?62:n==1?60:63;
+  const auto id=n==0?SourceId(0x105):f::Id(14000+n-1);
+  f::Golden g(65536+kind);f::Put(g.bytes,20,2,2);
+  if(n==0)g.Identity(3,id);
+  else if(n==1)g.Identity(1,id);
+  else{g.Identity(1,f::Id(14000));g.Identity(3,SourceId(0x105));g.Identity(4,id);g.Identity(5,f::Id(14000));g.Identity(6,SourceId(0x105));g.Identity(10,id);}
+  g.Identity(11,tx.value);g.Integer(32,1);g.Integer(34,1);g.Field(36,3,"uuid");
+  if(n==0)g.Boolean(37,true);else g.Integer(38,1);
+  g.Integer(39,1);g.Integer(40,1);g.Boolean(41,true);
+  if(n==0)g.Boolean(42,true);
+  g.Boolean(43,true);
+  if(n==0){g.Field(44,3,"ROLE_SYSARCH");g.Field(63,3,"engine_owned_sysarch");}
+  if(n==1){g.Field(49,3,"BootstrapAdmin");g.Field(50,3,fingerprint);g.Field(51,3,"user");g.Field(52,3,"user");g.Boolean(53,true);}
+  if(n==2){g.Field(54,3,"role_membership");g.Field(55,3,"principal");g.Field(56,3,"role");}
+  return {id,g.Finish()};
+}
+void Verify(const c::CatalogNamedCreationSet& out,bool security=false,bool bootstrap=false) {
+  Check(out.definitions.size()==(bootstrap?57:security?54:28)&&out.names.size()==(bootstrap?114:security?108:56)&&out.encoded_bytes>0,"all admitted policy/security definitions and every supplied name returned");
   unsigned packs=0,providers=0,profiles=0,memories=0,bindings=0;
   std::array<bool,26> security_seen{};
+  std::array<bool,3> bootstrap_seen{};
   for(const auto& record:out.definitions) {
     const auto& meta=record.metadata;
     Check(c::CatalogMetadataVersionEncodedBytes(c::BorrowCatalogMetadataVersion(meta)).has_value(),"complete native common metadata binding");
     if(c::IsCatalogSecurityRecordKind(meta.record.header.kind)) {
       bool matched=false;
+      if(bootstrap)for(unsigned i=0;i<bootstrap_seen.size();++i){const auto expected=BootstrapGolden(i);
+        if(meta.record.header.object_uuid.value!=expected.first)continue;
+        Check(!bootstrap_seen[i]&&meta.record.payload==expected.second,"complete independently encoded bootstrap values and identities");
+        bootstrap_seen[i]=true;matched=true;
+      }
       for(unsigned i=0;i<security_seen.size();++i){const auto expected=SecurityGolden(i);
         if(meta.record.header.object_uuid.value!=expected.first)continue;
         Check(!security_seen[i]&&meta.record.payload==expected.second,"complete exact native imported security bytes and immutable origin");
@@ -149,6 +180,57 @@ void Verify(const c::CatalogNamedCreationSet& out,bool security=false) {
   }
   Check(packs==1&&providers==12&&profiles==14&&memories==1&&bindings==1,"complete source family coverage");
   Check(std::count(security_seen.begin(),security_seen.end(),true)==(security?26:0),"complete security coverage, no bootstrap or service principal invented");
+  Check(std::count(bootstrap_seen.begin(),bootstrap_seen.end(),true)==(bootstrap?3:0),"bootstrap supplied explicitly or wholly absent");
+}
+void BootstrapLogical() {
+  Package package(true,true);auto request=package.BootstrapRequest();
+  std::string name="BootstrapAdmin",credential_input(fingerprint);
+  request.bootstrap->principal_name=name;request.bootstrap->credential_fingerprint=credential_input;
+  const auto made=db::AssembleNativeInitialPolicySecurityRecords(request);Check(made.ok(),"explicit native bootstrap enrollment");
+  name.assign("changed");credential_input.assign("destroyed caller credential input");Verify(*made.records,true,true);
+  request.bootstrap->principal_name="BootstrapAdmin";request.bootstrap->credential_fingerprint=fingerprint;
+  std::vector<c::CatalogTypedRecord> records;
+  for(const auto& record:made.records->definitions)if(c::IsCatalogSecurityRecordKind(record.metadata.record.header.kind))records.push_back(record.metadata.record);
+  const auto semantic=db::ValidateBootstrapSecurityRecords(records,"native-bootstrap");
+  Check(semantic.ok()&&semantic.state.present&&!semantic.state.committed_by_inventory&&semantic.state.principal_uuid.value==f::Id(14000)&&
+      semantic.state.membership_uuid.value==f::Id(14001)&&semantic.state.sysarch_role_uuid.value==SourceId(0x105)&&
+      semantic.state.principal_name=="BootstrapAdmin"&&semantic.state.credential_fingerprint==fingerprint&&semantic.state.security_context_generation==1,
+      "shared semantic bootstrap validation preserves identities, not commitment or authentication");
+  for(unsigned scenario=0;scenario<24;++scenario){Package bad(true,true);auto changed=bad.BootstrapRequest();std::string credential;
+    auto& b=*changed.bootstrap;
+    if(scenario==0)b.principal_uuid={};if(scenario==1)b.membership_uuid.bytes[6]=0x40;
+    if(scenario==2)b.membership_uuid=b.principal_uuid;if(scenario==3)b.principal_uuid=SourceId(0x105);
+    if(scenario==4)b.principal_uuid=changed.policy.database_uuid;if(scenario==5)b.principal_uuid=SourceId(0x100);
+    if(scenario==6)b.membership_uuid=SourceId(0x300);
+    if(scenario==7)b.principal_name="bad name";if(scenario==8)b.principal_name="";
+    if(scenario==9)b.principal_name={static_cast<const char*>(nullptr),1};
+    if(scenario==10)b.credential_fingerprint="";if(scenario==11)b.credential_fingerprint="sha256:not-a-verifier";
+    if(scenario==12){credential=fingerprint;const auto at=credential.find("89abcdef0123456789abcdef01234567");credential.replace(at,32,std::string(32,'0'));b.credential_fingerprint=credential;}
+    if(scenario==13){credential=fingerprint;credential.replace(credential.find("600000"),6,"599999");b.credential_fingerprint=credential;}
+    if(scenario==14){credential=fingerprint;credential.replace(credential.find("verifier=")+9,64,std::string(64,'0'));b.credential_fingerprint=credential;}
+    if(scenario==15)changed.policy.definitions=changed.policy.definitions.first(56);
+    if(scenario==16)bad.items[55].definition.record.header.kind=c::CatalogRecordKind::role_account;
+    if(scenario==17)changed.policy.limits.maximum_records=170;
+    if(scenario==18)changed.policy.limits.maximum_encoded_bytes=made.records->encoded_bytes-1;
+    if(scenario==19)changed.bootstrap.reset();
+    if(scenario==20)b.credential_fingerprint={static_cast<const char*>(nullptr),1};
+    if(scenario==21){credential=fingerprint;credential.replace(credential.find("600000"),6,"10000001");b.credential_fingerprint=credential;}
+    if(scenario==22){credential=fingerprint;credential.replace(credential.find("600000"),6,"0600000");b.credential_fingerprint=credential;}
+    if(scenario==23){credential=fingerprint;credential.push_back('\0');b.credential_fingerprint=credential;}
+    const auto refused=db::AssembleNativeInitialPolicySecurityRecords(changed);
+    Check(!refused.ok()&&!refused.records,"invalid credential, identity, bootstrap coverage and budget refuse atomically");
+  }
+  request.policy.limits={171,made.records->encoded_bytes};Check(db::AssembleNativeInitialPolicySecurityRecords(request).ok(),"exact enrolled bootstrap limits");
+  std::string maximum(fingerprint);maximum.replace(maximum.find("600000"),6,"10000000");
+  auto bounded=request;bounded.policy.limits.maximum_encoded_bytes+=2;bounded.bootstrap->credential_fingerprint=maximum;
+  const auto admitted_maximum=db::AssembleNativeInitialPolicySecurityRecords(bounded);
+  Check(admitted_maximum.ok(),"exact maximum verifier iteration bound accepted");
+  for(const auto& record:admitted_maximum.records->definitions)if(record.metadata.record.header.kind==c::CatalogRecordKind::user_account){
+    const auto native=c::DecodeCatalogSecurityRecordView(record.metadata.record.header.kind,record.metadata.record.payload);
+    Check(native.ok()&&native.record->Attribute("credential_fingerprint")==maximum,"maximum verifier value is retained exactly, not normalized/truncated");}
+  for(long budget:{0,1,5,31,97,257}){allocation_failed=false;allocation_budget=budget;
+    const auto refused=db::AssembleNativeInitialPolicySecurityRecords(request);allocation_budget=-1;
+    Check(allocation_failed&&!refused.ok()&&!refused.records,"actual bootstrap allocation fault cannot publish partial credentials or metadata");}
 }
 void SecurityLogical() {
   Package package(true);auto request=package.SecurityRequest();
@@ -261,7 +343,7 @@ void CustomSource(bool security=false) {
   Verify(*made.records,security);
 }
 void SecuritySourceMutations() {
-  for(unsigned scenario=0;scenario<2;++scenario){
+  for(unsigned scenario=0;scenario<4;++scenario){
     scratchbird::tests::OwnedTempDirectory artifacts;
     const auto root=artifacts.path()/"selected-security-pack";
     std::filesystem::copy(SB_DEFAULT_POLICY_PACK_ROOT,root,std::filesystem::copy_options::recursive);
@@ -274,15 +356,17 @@ void SecuritySourceMutations() {
           replace(text,"\"effect\": \"allow\"","\"effect\": \"deny\"");
           replace(text,"\"target_uuid\": \"\"","\"target_uuid\": \"018f7a10-1280-7000-8000-000000000106\"");
         }
-      }else if(path=="policies/groups.json"){
+      }else if(scenario==1&&path=="policies/groups.json"){
         // Duplicate the first complete source relationship with a valid new
         // content hash: this must reach semantic admission, not hash refusal.
         const auto list=text.find("\"memberships\"");const auto first=text.find('{',list);const auto last=text.find('}',first);
         Check(list!=text.npos&&first!=text.npos&&last!=text.npos,"actual source membership to duplicate");
         const auto entry=text.substr(first,last-first+1);text.insert(last+1,","+entry);
       }
+      if(scenario==2&&path=="policies/roles.json")replace(text,"ROLE_APP_RUNTIME","ROLE_SYSARCH");
+      if(scenario==3)replace(text,"018f7a10-1280-7000-8000-000000000100","018f7a10-1280-7000-8000-000000000105");
     });
-    Package package(true);auto request=package.SecurityRequest();const auto source=root.string();request.policy.policy_seed_pack_root=source;
+    Package package(true,scenario>=2);auto request=scenario>=2?package.BootstrapRequest():package.SecurityRequest();const auto source=root.string();request.policy.policy_seed_pack_root=source;
     const auto made=db::AssembleNativeInitialPolicySecurityRecords(request);
     if(scenario==0){
       Check(made.ok(),"actual changed source values, no hardcoded default fallback");
@@ -301,7 +385,7 @@ void SecuritySourceMutations() {
         }
       }
       Check(changed==3&&targets==10,"every changed value and actual targeted grant retained");
-    }else{
+    }else if(scenario==1){
       Check(!made.ok()&&!made.records&&made.error==db::NativeInitialPolicyError::source_invalid&&made.source_diagnostic&&
           made.source_diagnostic->diagnostic_code=="SB-POLICY-PACK-GROUPS-INVALID",
           "resealed duplicate source pair refuses semantically before native output");
@@ -314,12 +398,16 @@ void SecuritySourceMutations() {
       const auto refused=db::CreateDatabaseFile(create);
       Check(!refused.ok()&&refused.diagnostic.diagnostic_code=="SB-POLICY-PACK-GROUPS-INVALID"&&
           !std::filesystem::exists(create.path),"same production importer refuses duplicate membership before physical publication");
+    }else{
+      Check(!made.ok()&&!made.records&&made.error==db::NativeInitialPolicyError::source_invalid&&made.source_diagnostic&&
+          made.source_diagnostic->diagnostic_code=="SB-DB-BOOTSTRAP-SECURITY-SYSARCH-DUPLICATE",
+          "validly resealed imported role cannot replace reserved bootstrap identity or classification");
     }
   }
 }
-void Physical(bool security=false) {
+void Physical(bool security=false,bool bootstrap=false) {
   scratchbird::tests::OwnedTempDirectory artifacts;
-  Package package(security);const auto made=security?db::AssembleNativeInitialPolicySecurityRecords(package.SecurityRequest()):db::AssembleNativeInitialPolicyRecords(package.Request());Check(made.ok(),"actual source producer before physical construction");
+  Package package(security,bootstrap);const auto made=security?db::AssembleNativeInitialPolicySecurityRecords(bootstrap?package.BootstrapRequest():package.SecurityRequest()):db::AssembleNativeInitialPolicyRecords(package.Request());Check(made.ok(),"actual source producer before physical construction");
   for(const auto& profile:d::kCanonicalFilespacePageProfiles) {
     db::NativeCreationCatalogSeed seed;seed[0]=made.records->definitions;seed[1]=made.records->names;
     db::NativeCreationCatalogIndexes indexes;
@@ -346,6 +434,14 @@ void Physical(bool security=false) {
       const auto original=std::find_if(seed[0].begin(),seed[0].end(),[&](const auto& r){return r.metadata.record.header.object_uuid.value==row.metadata.record.header.object_uuid.value;});
       Check(original!=seed[0].end()&&row.metadata.record.payload==original->metadata.record.payload,"exact native imported bytes and raw identity survive persistence");
     }
+    if(bootstrap){
+      std::vector<c::CatalogTypedRecord> security_records;
+      for(const auto& row:rows.rows)if(c::IsCatalogSecurityRecordKind(row.metadata.record.header.kind))security_records.push_back(row.metadata.record);
+      const auto validated=db::ValidateBootstrapSecurityRecords(security_records,"actual-native-bootstrap-reopen");
+      Check(validated.ok()&&validated.state.present&&!validated.state.committed_by_inventory&&validated.state.principal_uuid.value==f::Id(14000)&&
+          validated.state.membership_uuid.value==f::Id(14001)&&validated.state.credential_fingerprint==fingerprint,
+          "actual reopened native records preserve bootstrap semantics without claiming authentication or activation");
+    }
     const auto names=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,created.receipt->checkpoint,2,2,
         {indexes[1]->relation_uuid,indexes[1]->dependencies},budget);
     Check(names.ok()&&names.rows.size()==2*package.items.size(),"every supplied localized name persists separately from object identity");
@@ -354,5 +450,5 @@ void Physical(bool security=false) {
   }
 }
 }
-int main()try{Logical();SecurityLogical();CustomSource();CustomSource(true);SecuritySourceMutations();Physical();Physical(true);std::cout<<"PASS native policy creation "<<checks<<" checks\n";return 0;}
+int main()try{Logical();SecurityLogical();BootstrapLogical();CustomSource();CustomSource(true);SecuritySourceMutations();Physical();Physical(true);Physical(true,true);std::cout<<"PASS native policy creation "<<checks<<" checks\n";return 0;}
 catch(const std::exception& e){allocation_budget=-1;std::cerr<<e.what()<<'\n';return 1;}
