@@ -5,6 +5,7 @@
 #include "engine/statement_context_receipt_retention.hpp"
 #include "engine/internal_api/dml/update_resource_authority_provider.hpp"
 #include "transaction_snapshot.hpp"
+#include "../support/engine_statement_fixture.hpp"
 #include <barrier>
 #include <thread>
 
@@ -244,6 +245,38 @@ static void TransactionRevocation() {
   Check(session.End() == SB_ENGINE_STATUS_OK, "revoked transaction session cleanup failed");
 }
 
+static void FixtureStatementShutdownOrders() {
+  for (bool session_first : {false, true}) {
+    auto fixture = CreateFixture();
+    std::atomic<unsigned> probes{0};
+    auto context = BeginTransaction(fixture, &probes);
+    scratchbird::tests::FixtureEngineSession session(context);
+    scratchbird::tests::FixtureEngineStatement statement(session, context);
+    const auto resources = statement.context.dml_update_resource_receipt.lock();
+    Check(resources && !resources->IsRevoked(),
+          "fixture statement did not own actual live receipt resources");
+    if (session_first) session.Close();
+    statement.Release();
+    statement.Release();
+    Check(resources->IsRevoked(),
+          "fixture shutdown order retained actual statement resources");
+    session.Close();
+    // The scope exits through both real destructors after explicit replay.
+    // INVALID_HANDLE and other errors must not be normalized like the engine's
+    // affirmative ALREADY_RELEASED result for this known owned receipt.
+  }
+  for (auto status : {SB_ENGINE_STATUS_INVALID_HANDLE,
+                      SB_ENGINE_STATUS_RESOURCE_EXHAUSTED,
+                      SB_ENGINE_STATUS_CONFLICT,
+                      SB_ENGINE_STATUS_INTERNAL_ERROR}) {
+    bool refused = false;
+    try {
+      scratchbird::tests::FixtureEngineSession::Check(status, nullptr, "negative cleanup control");
+    } catch (const std::runtime_error&) { refused = true; }
+    Check(refused, "fixture cleanup swallowed a nonterminal engine error");
+  }
+}
+
 // Bounded competing histories: a single actual session shutdown races public
 // retirement, private final release and observation. No sleeps or retry passes.
 static void ConcurrentShutdown() {
@@ -296,6 +329,7 @@ int main() {
   ForcedSession(false);
   ForcedSession(true);
   TransactionRevocation();
+  FixtureStatementShutdownOrders();
   ConcurrentShutdown();
   std::cout << "real statement/result retention " << checks.load()
             << " checks PASS; binary identity matrix;40 release histories;32 competing shutdown histories\n";

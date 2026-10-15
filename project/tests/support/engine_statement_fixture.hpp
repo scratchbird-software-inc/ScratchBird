@@ -139,7 +139,14 @@ class FixtureEngineStatement {
   void Release() {
     if (!receipt_) return;
     const auto status = scratchbird::server_engine_bridge::ReleaseStatementContextReceipt(receipt_);
-    if (status == SB_ENGINE_STATUS_OK) receipt_ = {};
+    // Session shutdown may already have completed this exact receipt's
+    // retirement. The owning engine confirms that terminal state; a fixture
+    // which outlives its session must not turn successful cleanup into abort.
+    // All other errors retain the handle and remain failures for retry.
+    if (status == SB_ENGINE_STATUS_OK || status == SB_ENGINE_STATUS_ALREADY_RELEASED) {
+      receipt_ = {};
+      return;
+    }
     FixtureEngineSession::Check(status, nullptr, "statement release");
   }
   FixtureEngineStatement(const FixtureEngineStatement&) = delete;
