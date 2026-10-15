@@ -19,6 +19,7 @@
 #include "disk_device.hpp"
 #include "sbl_numeric.hpp"
 #include "../support/owned_temp_directory.hpp"
+#include "../support/blob_persistence_fixture.hpp"
 
 #include <algorithm>
 #include <array>
@@ -946,6 +947,38 @@ void DurableCodecsRequireConcreteTypes() {
     physical_null.type_id = descriptor.type_id;
     physical_null.state = dt::DatatypePhysicalValueState::sql_null;
     const auto physical_encoded = dt::EncodeDatatypePhysicalValue(physical_null);
+    if (descriptor.type_id == dt::CanonicalTypeId::blob) {
+      CheckRejectedAs(physical_encoded,"BLOB.V1_V2_REFUSED",
+                      "generic BLOB NULL physical encode without native profile");
+      // Keep the positive NULL persistence obligation: the actual standalone
+      // native codec owns/accounted bytes without inventing a runtime token.
+      // The wire and serialization positives above/below remain independent;
+      // a component frame is not substituted for either envelope.
+      scratchbird::tests::BlobPersistenceFixture fixture;
+      {
+        dt::BlobOwnedPersistenceBytesV3 source,component;
+        fixture.Copy({},source); auto grant=fixture.Grant();
+        const auto encoded_blob=dt::EncodeOwnedBlobComponentV3(fixture.profile,
+            dt::BlobValueStateV3::sql_null,source,grant,component);
+        Check(encoded_blob.ok() && !grant && component.bytes().size()==320,
+              "typed BLOB NULL native physical encoding failed or contains content");
+        if (encoded_blob.ok()) {
+          dt::BlobOwnedPersistenceDecodedV3 decoded; grant=fixture.Grant();
+          const auto restored=dt::DecodeOwnedBlobComponentV3(fixture.profile,component,true,grant,decoded);
+          Check(restored.ok() && !grant && decoded.content().bound() &&
+                decoded.state()==dt::BlobValueStateV3::sql_null && decoded.content().bytes().empty(),
+                "typed BLOB NULL native physical roundtrip lost exact type/profile/state");
+          dt::BlobOwnedPersistenceDecodedV3 nonnull; grant=fixture.Grant();
+          const auto refused=dt::DecodeOwnedBlobComponentV3(fixture.profile,component,false,grant,nonnull);
+          Check(!refused.ok() && refused.component.reason_enum==50 && grant && !nonnull.content().bound(),
+                "typed BLOB NULL native physical decoder crossed nonnullable occurrence");
+        }
+      }
+      Check(fixture.manager.Snapshot().current_bytes==0 && fixture.manager.Snapshot().reserved_capacity_bytes==0 &&
+                fixture.ledger.Snapshot().current_bytes==0,
+            "typed BLOB NULL native physical roundtrip leaked actual ownership");
+      continue;
+    }
     Check(physical_encoded.ok(), "typed NULL physical encoding failed for " + label);
     if (physical_encoded.ok()) {
       const auto decoded = dt::DecodeDatatypePhysicalValue(
