@@ -107,24 +107,38 @@ scratchbird::core::metrics::MetricLabelSet MemoryMetricLabels(
   return labels;
 }
 
-bool PublishMemorySnapshot(const MemoryAccountingSnapshot& snapshot) {
+// Allocation gauges consume ONLY aggregate/category counters. Constructing a
+// complete requested snapshot here used to copy every retained binary scope
+// and the sharded ledger for each allocation, even though none was published.
+// Keep this bounded capture under the allocation lock; metric calls remain
+// outside that lock and preserve the existing best-effort telemetry contract.
+struct AllocationMetricSnapshot {
+  u64 current_bytes=0, emergency_reserve_available_bytes=0;
+  std::array<std::pair<MemoryCategory,u64>,
+      static_cast<std::size_t>(MemoryCategory::test_probe)+1> categories{};
+  std::size_t category_count=0;
+  bool complete=true;
+};
+bool PublishMemorySnapshot(const AllocationMetricSnapshot& snapshot) {
+  if(!snapshot.complete) return false;
   bool published = true;
   published = scratchbird::core::metrics::SetGauge(
       "sb_memory_allocated_bytes",
       MemoryMetricLabels({{"component", "core.memory"}, {"operation", "snapshot"}}),
-      static_cast<double>(snapshot.current_bytes),
+      snapshot.current_bytes,
       "core_memory").ok && published;
   published = scratchbird::core::metrics::SetGauge(
       "sb_memory_emergency_reserve_bytes",
       MemoryMetricLabels({{"component", "core.memory"}, {"operation", "snapshot"}}),
       snapshot.emergency_reserve_available_bytes,
       "core_memory").ok && published;
-  for (const auto& category : snapshot.categories) {
+  for (std::size_t i=0;i<snapshot.category_count;++i) {
+    const auto& [category,current_bytes]=snapshot.categories[i];
     published = scratchbird::core::metrics::SetGauge(
         "sb_memory_allocated_bytes",
         MemoryMetricLabels({{"component", "core.memory"}, {"operation", "snapshot"},
-                                            {"producer", MemoryCategoryName(category.category)}}),
-        static_cast<double>(category.current_bytes),
+                                            {"producer", MemoryCategoryName(category)}}),
+        current_bytes,
         "core_memory").ok && published;
   }
   return published;
@@ -905,6 +919,7 @@ AllocationResult BoundedAllocator::AllocateImpl(
   bool failure_recorded = false;
   try {
   const auto metric_start = Clock::now();
+  AllocationMetricSnapshot metric_snapshot;
   AllocationResult result;
   result.status = OkStatus();
   if (tag.callsite.empty()) {
@@ -1064,6 +1079,17 @@ AllocationResult BoundedAllocator::AllocateImpl(
       ConsumeCapacityCredits(capacity->second, bytes);
       capacity->second.live_bytes += bytes;
     }
+    metric_snapshot.current_bytes=accounting_.current_bytes;
+    metric_snapshot.emergency_reserve_available_bytes=accounting_.emergency_reserve_available_bytes;
+    for(const auto& [category,accounting]:category_accounting_) {
+      if(metric_snapshot.category_count==metric_snapshot.categories.size()) {
+        // Invalid/unregistered extra categories must not turn bounded capture
+        // into unbounded allocation or overwrite stack storage. Ownership and
+        // complete requested snapshots remain unchanged; report telemetry loss.
+        metric_snapshot.complete=false; break;
+      }
+      metric_snapshot.categories[metric_snapshot.category_count++]={category,accounting.current_bytes};
+    }
   }
 
   if (policy_.zero_memory_on_allocate) {
@@ -1073,7 +1099,7 @@ AllocationResult BoundedAllocator::AllocateImpl(
   result.bytes = bytes;
   result.alignment = alignment;
   try {
-  const bool snapshot_published = PublishMemorySnapshot(Snapshot());
+  const bool snapshot_published = PublishMemorySnapshot(metric_snapshot);
   const auto latency_published = scratchbird::core::metrics::ObserveHistogram(
       "sb_memory_allocation_latency_microseconds",
       MemoryMetricLabels({{"component", "core.memory"}, {"operation", "allocate"}, {"result", "ok"},

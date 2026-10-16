@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "memory.hpp"
+#include "../support/metric_projection_fixture.hpp"
 #include <array>
 #include <atomic>
 #include <barrier>
@@ -15,9 +16,11 @@
 namespace fault {
 thread_local long remaining = -1;
 thread_local bool hit = false;
+thread_local std::size_t allocations = 0;
 void Arm(long n) { remaining = n; hit = false; }
 void Off() { remaining = -1; }
 void BeforeAllocation() {
+  ++allocations;
   if (remaining >= 0 && remaining-- == 0) {
     remaining = 0; hit = true; throw std::bad_alloc();
   }
@@ -126,6 +129,96 @@ void CheckAccounting(const mem::MemoryAccountingSnapshot& s, std::size_t bytes, 
     const bool original_owner = c.scope_id == "physical-memory-test-" + c.scope_kind + "-label";
     Check(c.current_bytes == (original_owner ? bytes : 0), "context physical charges mismatch");
   }
+}
+void AllocationTelemetryScopeBound() {
+  mem::BoundedAllocator allocator(Policy());
+  const auto tag_for=[](unsigned value) {
+    mem::MemoryTag tag; tag.purpose="allocation-telemetry-scope-bound";
+    tag.category=mem::MemoryCategory::test_probe;
+    mem::MemoryBinaryUuid id{}; id[0]=1; id[6]=0x70; id[8]=0x80;
+    for(unsigned i=0;i<4;++i) id[12+i]=static_cast<unsigned char>(value>>(8*i));
+    tag.binary_ownership[mem::MemoryBinaryScopeKind::context]=id;
+    tag.binary_ownership[mem::MemoryBinaryScopeKind::owner]=id;
+    return tag;
+  };
+  const auto hot=tag_for(1);
+  const auto measure=[&] {
+    const auto before=fault::allocations;
+    auto allocation=allocator.Allocate(64,64,hot);
+    const auto count=fault::allocations-before;
+    Check(allocation.ok() && allocator.DeallocateNoAlloc(allocation.pointer).ok(),
+        "allocation telemetry measurement failed actual allocate/release");
+    return count;
+  };
+  (void)measure(); (void)measure();
+  const auto small=measure();
+  for(unsigned i=2;i<=257;++i) {
+    auto allocation=allocator.Allocate(64,64,tag_for(i));
+    Check(allocation.ok() && allocator.DeallocateNoAlloc(allocation.pointer).ok(),
+        "allocation telemetry actual distinct binary owner setup failed");
+  }
+  const auto large=measure();
+  const auto snapshot=allocator.Snapshot();
+  std::cout<<"allocation_telemetry_heap_allocations before_scopes="<<small<<" after_scopes="<<large
+      <<" retained_contexts="<<snapshot.contexts.size()<<'\n';
+  Check(large==small,"allocation metric publication enumerates historical owner/context snapshots");
+  Check(snapshot.current_bytes==0 && snapshot.active_allocation_count==0 && snapshot.contexts.size()==514,
+      "bounded telemetry erased complete requested accounting or leaked live storage");
+  for(const auto& context:snapshot.contexts)
+    Check(context.binary_scope && context.scope_id.empty() && context.current_bytes==0 &&
+        context.active_allocation_count==0 && context.allocation_count>0,
+        "complete requested snapshot lost binary scope identity/counters after bounded allocation telemetry");
+}
+void AllocationTelemetryValues() {
+  namespace metrics=scratchbird::core::metrics;
+  namespace tests=scratchbird::tests;
+  // Admission is observational component setup only; all samples below must
+  // come from the actual allocator producer, never fixture.Emit or supplied
+  // gauges. Use exact builtin definitions and binary fixture identities.
+  tests::MetricProjectionFixture fixture(tests::FixtureUuid(0x414d,1),tests::FixtureUuid(0x414d,2),0x414d,64);
+  const metrics::MetricLabelSet aggregate{{"component","core.memory"},{"operation","snapshot"}};
+  fixture.Admit("sb_memory_allocated_bytes",aggregate);
+  fixture.Admit("sb_memory_emergency_reserve_bytes",aggregate);
+  for(const auto* category:{"core_runtime","test_probe"}) {
+    fixture.Admit("sb_memory_allocated_bytes",
+        {{"component","core.memory"},{"operation","snapshot"},{"producer",category}});
+    fixture.Admit("sb_memory_allocation_latency_microseconds",
+        {{"component","core.memory"},{"operation","allocate"},{"result","ok"},{"producer",category}});
+  }
+  mem::BoundedAllocator allocator(Policy());
+  auto core=Tag(); core.category=mem::MemoryCategory::core_runtime;
+  auto probe=core; probe.category=mem::MemoryCategory::test_probe;
+  auto first=allocator.Allocate(64,64,core);
+  auto second=allocator.Allocate(128,64,probe);
+  auto third=allocator.Allocate(32,64,core);
+  Check(first.ok() && second.ok() && third.ok(),"actual metric-producing allocations failed");
+  const auto samples=metrics::DefaultMetricRegistry().SnapshotCurrent(false);
+  const auto lookup=[&](const std::string& family,const metrics::MetricLabelSet& labels)->const metrics::MetricValue* {
+    const auto expected=metrics::MakeMetricSeriesKey(family,labels);
+    for(const auto& sample:samples)
+      if(metrics::MakeMetricSeriesKey(sample.family,sample.labels)==expected) return &sample;
+    return nullptr;
+  };
+  const auto gauge=[&](const std::string& family,metrics::MetricLabelSet labels,std::uint64_t expected) {
+    const auto* sample=lookup(family,labels);
+    const auto* value=sample ? std::get_if<std::uint64_t>(&sample->value) : nullptr;
+    Check(value && *value==expected,"allocation gauge missing, inexact or not native UINT64");
+  };
+  gauge("sb_memory_allocated_bytes",aggregate,224);
+  gauge("sb_memory_emergency_reserve_bytes",aggregate,0);
+  gauge("sb_memory_allocated_bytes",{{"component","core.memory"},{"operation","snapshot"},{"producer","core_runtime"}},96);
+  gauge("sb_memory_allocated_bytes",{{"component","core.memory"},{"operation","snapshot"},{"producer","test_probe"}},128);
+  for(const auto& [category,count]:{std::pair{"core_runtime",2u},std::pair{"test_probe",1u}}) {
+    const auto* sample=lookup("sb_memory_allocation_latency_microseconds",
+        {{"component","core.memory"},{"operation","allocate"},{"result","ok"},{"producer",category}});
+    Check(sample && sample->count==count,"actual allocation latency producer lost an observation or changed labels");
+  }
+  Check(allocator.DeallocateNoAlloc(first.pointer).ok() && allocator.DeallocateNoAlloc(second.pointer).ok() &&
+      allocator.DeallocateNoAlloc(third.pointer).ok() && allocator.Snapshot().current_bytes==0,
+      "metric-producing actual allocation cleanup failed");
+  // First allocation emits total+reserve+one category+latency; each later
+  // allocation emits total+reserve+two categories+latency. Decode every one.
+  fixture.ExpectProduced(14); fixture.Seal(); fixture.VerifyAndDrain();
 }
 void WarmMetrics() {
   mem::BoundedAllocator a(Policy());
@@ -483,12 +576,14 @@ void ConcurrentReplacement() {
 int main() {
   WarmMetrics();
 #ifndef SB_PHYSICAL_NO_ALLOC_OVERRIDE
+  AllocationTelemetryScopeBound();
   AllocationSweep(); DeallocationSweep(); ScopedResetSweep();
   ReallocationSweep(); CompositeAllocationSweeps(); CompositeResetSweeps(); ForcedCleanupBlackouts();
   Check(fault::nonzero_frees == 0, "released physical memory was not zeroized");
 #endif
   ConcurrentOwners();
   ReallocationOwnerIsolation(); ConcurrentReplacement();
+  AllocationTelemetryValues();
   std::cout << checks << " checks; " << injected << " allocation faults; " << failures << " failures\n";
   return failures ? 1 : 0;
 }
